@@ -1015,16 +1015,16 @@ export const en = {
       queue: {
         title: "Training Queue",
         description:
-          "Queued runs execute one after another on your GPU — line them up and let them run overnight.",
+          "Queued runs execute one after another. Pause the queue to line up runs without starting them.",
         buttonLabel: "Queue",
         addToQueue: "Add to Queue ({count}/{max})",
         adding: "Adding...",
         queueFull: "Queue full",
         queueFullNote:
           "The queue is full. Remove an item or wait for the current job to finish.",
-        empty: "No queued jobs. Configure a run and add it to the queue.",
+        empty: "No queued jobs yet.",
         pausedNote:
-          "The queue is paused: finished jobs stay recorded, but no new queued job will start until you resume.",
+          "The queue is paused. You can add runs, and nothing new will start until you press Resume.",
         restartBanner:
           "{count} queued training job(s) are paused after a restart. Resume the queue to continue.",
         resume: "Resume",
@@ -1034,8 +1034,11 @@ export const en = {
         moveDown: "Move down",
         remove: "Remove from queue",
         runsNext: "Runs next",
+        runningNow: "Running now",
         recentlyFinished: "Recently finished",
-        pendingOfMax: "{count} of {max} pending",
+        pendingCount: "{count} pending",
+        configureHint:
+          "Add runs from the Configure tab. While a run is active or the queue is paused, the Start button becomes Add to Queue.",
         statusPending: "Pending",
         statusRunning: "Running",
         statusSkipped: "Skipped",

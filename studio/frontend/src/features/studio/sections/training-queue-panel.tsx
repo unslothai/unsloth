@@ -14,6 +14,7 @@ import {
 import {
   useTrainingQueueActions,
   useTrainingQueueStore,
+  useTrainingRuntimeStore,
 } from "@/features/training";
 import type { TrainingQueueItem } from "@/features/training";
 import {
@@ -157,6 +158,11 @@ export function TrainingQueuePanel(): ReactElement {
   const paused = useTrainingQueueStore((s) => s.paused);
   const pendingCount = useTrainingQueueStore((s) => s.pendingCount);
   const maxPending = useTrainingQueueStore((s) => s.maxPending);
+  const activeJobId = useTrainingQueueStore((s) => s.activeJobId);
+  const isTrainingRunning = useTrainingRuntimeStore((s) => s.isTrainingRunning);
+  const runtimeJobId = useTrainingRuntimeStore((s) => s.jobId);
+  const runtimeModelName = useTrainingRuntimeStore((s) => s.startModelName);
+  const runtimeDatasetName = useTrainingRuntimeStore((s) => s.startDatasetName);
   const { pause, resume } = useTrainingQueueActions();
 
   const active = items.filter(
@@ -164,6 +170,15 @@ export function TrainingQueuePanel(): ReactElement {
   );
   const finished = items.filter((i) => i.status === "done" || i.status === "skipped");
   const pendingIds = active.filter((i) => i.status === "pending").map((i) => i.id);
+
+  // Direct starts never enter the queue; show them here anyway.
+  const hasRowForActiveRun = items.some(
+    (i) =>
+      (i.status === "starting" || i.status === "running") &&
+      i.job_id !== null &&
+      (i.job_id === activeJobId || i.job_id === runtimeJobId),
+  );
+  const showDirectRun = isTrainingRunning && !hasRowForActiveRun;
 
   return (
     <Sheet>
@@ -187,9 +202,8 @@ export function TrainingQueuePanel(): ReactElement {
         <div className="flex flex-col gap-4 px-6 pb-6">
           <div className="flex items-center justify-between gap-2">
             <span className="text-xs text-muted-foreground">
-              {t("studio.training.queue.pendingOfMax", {
+              {t("studio.training.queue.pendingCount", {
                 count: String(pendingCount),
-                max: String(maxPending),
               })}
             </span>
             {paused ? (
@@ -217,10 +231,40 @@ export function TrainingQueuePanel(): ReactElement {
             </p>
           )}
 
+          {showDirectRun && (
+            <>
+              <p className="text-xs font-medium text-muted-foreground">
+                {t("studio.training.queue.runningNow")}
+              </p>
+              <ul className="flex flex-col gap-2">
+                <li className="flex items-start gap-2 rounded-lg border bg-card px-3 py-2.5">
+                  <div className="flex min-w-0 flex-1 flex-col gap-1">
+                    <div className="flex items-center gap-2">
+                      <span className="truncate text-sm font-medium text-foreground">
+                        {runtimeModelName ?? t("studio.training.queue.statusRunning")}
+                      </span>
+                      <Badge className="bg-emerald-500/15 text-emerald-600 dark:text-emerald-400">
+                        <HugeiconsIcon icon={PlayCircleIcon} />
+                        {t("studio.training.queue.statusRunning")}
+                      </Badge>
+                    </div>
+                    {runtimeDatasetName && (
+                      <span className="truncate text-xs text-muted-foreground">
+                        {runtimeDatasetName}
+                      </span>
+                    )}
+                  </div>
+                </li>
+              </ul>
+            </>
+          )}
+
           {active.length === 0 ? (
-            <p className="rounded-lg border border-dashed px-3 py-6 text-center text-sm text-muted-foreground">
-              {t("studio.training.queue.empty")}
-            </p>
+            !showDirectRun && (
+              <p className="rounded-lg border border-dashed px-3 py-6 text-center text-sm text-muted-foreground">
+                {t("studio.training.queue.empty")}
+              </p>
+            )
           ) : (
             <ul className="flex flex-col gap-2">
               {active.map((item) => (
@@ -237,6 +281,10 @@ export function TrainingQueuePanel(): ReactElement {
               ))}
             </ul>
           )}
+
+          <p className="text-xs leading-relaxed text-muted-foreground/70">
+            {t("studio.training.queue.configureHint")}
+          </p>
 
           {finished.length > 0 && (
             <>

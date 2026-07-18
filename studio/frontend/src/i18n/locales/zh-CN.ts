@@ -913,15 +913,15 @@ export const zhCN = {
       queue: {
         title: "训练队列",
         description:
-          "队列中的任务会在你的 GPU 上依次执行——排好队，让它们通宵运行。",
+          "队列中的任务会依次执行。暂停队列可以先排好任务而不启动。",
         buttonLabel: "队列",
         addToQueue: "加入队列 ({count}/{max})",
         adding: "添加中...",
         queueFull: "队列已满",
         queueFullNote: "队列已满。请移除一项或等待当前任务完成。",
-        empty: "队列中没有任务。配置一次训练并加入队列。",
+        empty: "队列中还没有任务。",
         pausedNote:
-          "队列已暂停：已完成的任务仍会记录，但在恢复之前不会启动新的队列任务。",
+          "队列已暂停。你可以添加任务，但在按下恢复之前不会启动新的任务。",
         restartBanner:
           "重启后有 {count} 个排队的训练任务处于暂停状态。恢复队列以继续。",
         resume: "恢复",
@@ -931,8 +931,11 @@ export const zhCN = {
         moveDown: "下移",
         remove: "从队列中移除",
         runsNext: "即将运行",
+        runningNow: "正在运行",
         recentlyFinished: "最近完成",
-        pendingOfMax: "{count} / {max} 个等待中",
+        pendingCount: "{count} 个等待中",
+        configureHint:
+          "在“配置”标签页添加任务。当有任务运行或队列暂停时，开始按钮会变为“加入队列”。",
         statusPending: "等待中",
         statusRunning: "运行中",
         statusSkipped: "已跳过",

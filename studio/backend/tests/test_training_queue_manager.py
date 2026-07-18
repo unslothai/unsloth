@@ -376,6 +376,47 @@ def test_reconcile_waits_for_unfinalized_run_row(manager, backend, monkeypatch):
     assert studio_db.get_queue_item(item["id"])["status"] == "running"
 
 
+def test_tick_defers_launch_until_previous_item_reconciled(manager, backend, monkeypatch):
+    record = []
+    _patch_launch(monkeypatch, record = record)
+    item1 = _enqueue(manager, monkeypatch)
+    item2 = _enqueue(manager, monkeypatch)
+    _seed_run("job_1", "running")
+    studio_db.update_queue_item_status(item1["id"], "running", job_id = "job_1")
+    backend.active = False
+
+    manager._tick()
+
+    assert record == []
+    assert studio_db.get_queue_item(item1["id"])["status"] == "running"
+    assert studio_db.get_queue_item(item2["id"])["status"] == "pending"
+
+
+def test_stuck_running_item_force_finalized_after_deferrals(manager, backend, monkeypatch):
+    record = []
+    _patch_launch(monkeypatch, record = record)
+    item1 = _enqueue(manager, monkeypatch)
+    item2 = _enqueue(manager, monkeypatch)
+    _seed_run("job_1", "running")
+    studio_db.update_queue_item_status(item1["id"], "running", job_id = "job_1")
+    backend.active = False
+    manager.max_finalize_waits = 2
+
+    manager._tick()
+    manager._tick()
+    assert studio_db.get_queue_item(item1["id"])["status"] == "running"
+    assert record == []
+
+    manager._tick()
+
+    stored1 = studio_db.get_queue_item(item1["id"])
+    assert stored1["status"] == "done"
+    assert stored1["result_status"] == "error"
+    assert "hf_secret" not in stored1["request_json"]
+    assert studio_db.get_queue_item(item2["id"])["status"] == "running"
+    assert len(record) == 1
+
+
 def test_full_cycle_error_run_advances_queue(manager, backend, monkeypatch):
     # Skip-on-failure: item1's run errors, item2 still launches.
     record = []

@@ -761,6 +761,8 @@ class TrainingBackend:
         # Left True after an abnormal death so _ensure_pump_alive spots a crash.
         self._pump_running: bool = False
         self._lock = threading.Lock()
+        # Set while a start is between guard-pass and spawn.
+        self._start_in_flight: bool = False
 
         # Stop watchdog: after a stop is requested, escalates to force_terminate()
         # if the worker does not exit on its own within a bounded time. The watched
@@ -838,10 +840,26 @@ class TrainingBackend:
         Hook failures never block the start.
         """
         with self._lock:
+            if self._start_in_flight:
+                logger.warning("Training start already in progress")
+                return False
             if self._proc is not None and self._proc.is_alive():
                 logger.warning("Training subprocess already running")
                 return False
+            self._start_in_flight = True
+        try:
+            return self._start_training_impl(job_id, before_spawn = before_spawn, **kwargs)
+        finally:
+            with self._lock:
+                self._start_in_flight = False
 
+    def _start_training_impl(
+        self,
+        job_id: str,
+        *,
+        before_spawn = None,
+        **kwargs,
+    ) -> bool:
         # Join prior pump thread — refuse to start if it won't die
         if self._pump_thread is not None and self._pump_thread.is_alive():
             self._pump_thread.join(timeout = 5.0)
@@ -1428,6 +1446,8 @@ class TrainingBackend:
         # training invisibly behind a frozen UI. Cheap enough for per-second polls.
         self._ensure_pump_alive()
         with self._lock:
+            if self._start_in_flight:
+                return True
             if self._proc is not None and self._proc.is_alive():
                 return True
 

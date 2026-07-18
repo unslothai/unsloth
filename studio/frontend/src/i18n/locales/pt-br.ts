@@ -942,16 +942,16 @@ export const ptBR = {
       queue: {
         title: "Fila de Treinamento",
         description:
-          "As execuções na fila rodam uma após a outra na sua GPU — enfileire e deixe rodando durante a noite.",
+          "As execuções na fila rodam uma após a outra. Pause a fila para enfileirar execuções sem iniciá-las.",
         buttonLabel: "Fila",
         addToQueue: "Adicionar à Fila ({count}/{max})",
         adding: "Adicionando...",
         queueFull: "Fila cheia",
         queueFullNote:
           "A fila está cheia. Remova um item ou aguarde o job atual terminar.",
-        empty: "Nenhum job na fila. Configure uma execução e adicione à fila.",
+        empty: "Nenhum job na fila ainda.",
         pausedNote:
-          "A fila está pausada: jobs concluídos ficam registrados, mas nenhum novo job da fila inicia até você retomar.",
+          "A fila está pausada. Você pode adicionar execuções, e nada novo inicia até você retomar.",
         restartBanner:
           "{count} job(s) de treinamento na fila estão pausados após um reinício. Retome a fila para continuar.",
         resume: "Retomar",
@@ -961,8 +961,11 @@ export const ptBR = {
         moveDown: "Mover para baixo",
         remove: "Remover da fila",
         runsNext: "Próximo a executar",
+        runningNow: "Executando agora",
         recentlyFinished: "Concluídos recentemente",
-        pendingOfMax: "{count} de {max} pendentes",
+        pendingCount: "{count} pendente(s)",
+        configureHint:
+          "Adicione execuções na aba Configurar. Com uma execução ativa ou a fila pausada, o botão Iniciar vira Adicionar à Fila.",
         statusPending: "Pendente",
         statusRunning: "Executando",
         statusSkipped: "Ignorado",
