@@ -761,72 +761,6 @@ def _rocm_linux_sysfs_vram_per_card_gb() -> list[tuple[float, float]]:
     return [(used, total) for _n, used, total in cards]
 
 
-def _rocm_windows_perf_counter_vram_per_adapter_gb() -> dict[int, float]:
-    """Per-adapter dedicated VRAM usage via Windows Performance Counters.
-
-    Counter instances are grouped by their adapter LUID -- each independent
-    adapter has a distinct LUID, while the ``phys_<N>`` suffix only numbers
-    members WITHIN a logical adapter and reads ``phys_0`` for every separate
-    GPU, so it cannot distinguish adapters. LUIDs (allocated in device order)
-    are then mapped to 0-based positions by ascending value, the best available
-    stand-in for the device ordinal. Returns {position: used_gb}; empty on
-    failure. Unlike _rocm_windows_perf_counter_vram_gb, which sums every
-    adapter into one figure.
-    """
-    if platform.system() != "Windows":
-        return {}
-    try:
-        ps = (
-            "$s=(Get-Counter '\\GPU Adapter Memory(*)\\Dedicated Usage'"
-            " -ErrorAction SilentlyContinue).CounterSamples;"
-            'if($s){$s|ForEach-Object{"$($_.InstanceName)|$($_.CookedValue)"}}'
-        )
-        r = subprocess.run(
-            ["powershell", "-NoProfile", "-NonInteractive", "-Command", ps],
-            capture_output = True,
-            text = True,
-            timeout = 5,
-        )
-        if r.returncode != 0 or not r.stdout.strip():
-            return {}
-        by_luid: dict[tuple[int, int], float] = {}
-        for line in r.stdout.strip().splitlines():
-            name, sep, raw = line.rpartition("|")
-            if not sep:
-                continue
-            m = re.search(r"luid_(0x[0-9a-fA-F]+)_(0x[0-9a-fA-F]+)", name)
-            if m is None:
-                continue
-            try:
-                used_bytes = float(raw.strip())
-            except ValueError:
-                continue
-            luid = (int(m.group(1), 16), int(m.group(2), 16))
-            by_luid[luid] = by_luid.get(luid, 0.0) + used_bytes
-        return {
-            pos: round(by_luid[luid] / (1024**3), 2) for pos, luid in enumerate(sorted(by_luid))
-        }
-    except Exception:
-        return {}
-
-
-def _torch_props_total_gb(ordinal) -> Optional[float]:
-    """Physical VRAM capacity from torch device properties, or None.
-
-    On Windows WDDM, ``mem_get_info``'s "total" is the calling process's memory
-    budget, not the card, so a system-wide usage overlay must pair with the
-    real capacity from ``get_device_properties`` instead (as the primary-GPU
-    Windows fallback already does)."""
-    if ordinal is None:
-        return None
-    try:
-        import torch
-        total = torch.cuda.get_device_properties(int(ordinal)).total_memory
-        return round(total / (1024**3), 2)
-    except Exception:
-        return None
-
-
 def _rocm_windows_perf_counter_vram_gb() -> tuple[Optional[float], Optional[float]]:
     """Query system-wide dedicated GPU VRAM via Windows Performance Counters.
 
@@ -1153,37 +1087,26 @@ def _reconcile_primary_rocm_unified_memory(
 
 
 def _overlay_system_wide_vram(devices: list[Dict[str, Any]]) -> None:
-    """Replace process-local torch VRAM figures with system-wide ones (ROCm).
+    """Replace process-local torch VRAM figures with system-wide ones on Linux
+    ROCm.
 
-    The torch fallback cannot see other processes' VRAM on Windows (WDDM hands
-    each process its own budget), so a model served by the separate llama-server
-    process reads as ~0 used even with the GPU full (#7072). Overlay the same
-    system-wide sources the primary-GPU endpoint already trusts: per-adapter
-    Windows Performance Counters (Task Manager's source) and per-card Linux DRM
-    sysfs. Sources are matched by the device's PHYSICAL index (never by list
-    position), so a reordering visibility mask (HIP_VISIBLE_DEVICES=1,0) keeps
-    each card's figures on the right GPU. Best-effort, in place; a device with
-    no matching source entry keeps its torch figures, and a unified-memory APU
-    whose sysfs total is below torch's GTT-backed total keeps torch's (mirrors
-    _apply_unified_memory_correction)."""
-    if not devices:
-        return
-    if platform.system() == "Windows":
-        per_adapter = _rocm_windows_perf_counter_vram_per_adapter_gb()
-        for dev in devices:
-            used = per_adapter.get(dev.get("index"))
-            if used is None:
-                continue
-            # WDDM: torch's mem_get_info total is the process budget, not the
-            # card, so pair the system-wide usage with the physical capacity.
-            props_total = _torch_props_total_gb(dev.get("visible_ordinal"))
-            total = props_total if props_total else (dev.get("vram_total_gb") or 0.0)
-            if props_total:
-                dev["vram_total_gb"] = props_total
-            dev["vram_used_gb"] = min(used, total) if total > 0 else used
-            dev["vram_utilization_pct"] = (
-                round((dev["vram_used_gb"] / total) * 100, 1) if total > 0 else None
-            )
+    The torch fallback is process-local, so a model served by the separate
+    llama-server process reads as ~0 used even with the GPU full (#7072). On
+    Linux, DRM sysfs (``mem_info_vram_{used,total}``) gives per-card system-wide
+    figures the kernel updates across all processes. Sources are matched by the
+    device's PHYSICAL index (never by list position), so a reordering visibility
+    mask (HIP_VISIBLE_DEVICES=1,0) keeps each card's figures on the right GPU.
+    Best-effort, in place; a device with no matching card keeps its torch
+    figures, and a unified-memory APU whose sysfs total is below torch's
+    GTT-backed total keeps torch's (mirrors _apply_unified_memory_correction).
+
+    Windows is intentionally not overlaid: the per-adapter Performance Counters
+    cannot be reliably mapped to ROCm device ordinals (the wildcard query also
+    returns non-ROCm/iGPU adapters, LUID order is not device order) and read
+    only Dedicated Usage, missing WDDM shared memory on unified-memory GPUs -- so
+    the multi-GPU view keeps the torch fallback there rather than risk
+    misattributing another adapter's usage."""
+    if not devices or platform.system() != "Linux":
         return
     # Cards sorted by DRM number, position-normalized: position N is the best
     # available stand-in for physical device index N. Matching by the device's

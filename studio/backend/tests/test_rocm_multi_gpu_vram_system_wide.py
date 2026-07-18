@@ -15,11 +15,9 @@ physical device index so reordering visibility masks stay correct.
 from __future__ import annotations
 
 import importlib
-import subprocess
 import sys
 import types
 from pathlib import Path
-from unittest import mock
 
 _BACKEND_DIR = Path(__file__).resolve().parent.parent
 if str(_BACKEND_DIR) not in sys.path:
@@ -75,50 +73,6 @@ def _device(
     }
 
 
-# ── Windows per-adapter perf counters (grouped by LUID) ──
-
-
-def _mock_powershell(stdout, returncode = 0):
-    real_run = subprocess.run
-
-    def fake_run(cmd, *args, **kwargs):
-        if isinstance(cmd, list) and cmd and "powershell" in str(cmd[0]).lower():
-            return subprocess.CompletedProcess(
-                args = cmd, returncode = returncode, stdout = stdout, stderr = ""
-            )
-        return real_run(cmd, *args, **kwargs)
-
-    return mock.patch.object(hw.subprocess, "run", side_effect = fake_run)
-
-
-def test_windows_per_adapter_groups_by_luid(monkeypatch):
-    # Two independent adapters: distinct LUIDs but BOTH phys_0 (the phys_<N>
-    # suffix numbers members within one logical adapter, not across adapters).
-    monkeypatch.setattr(hw.platform, "system", lambda: "Windows")
-    out = (
-        "luid_0x00000000_0x0000d3ec_phys_0|21474836480\n"  # 20 GiB, adapter A
-        "luid_0x00000000_0x0000e001_phys_0|1073741824\n"  # 1 GiB, adapter B
-        "luid_0x00000000_0x0000e001_phys_0|1073741824\n"  # +1 GiB, adapter B again
-        "garbage-line-without-separator\n"
-        "no_luid_here_phys_3|123\n"
-    )
-    with _mock_powershell(out):
-        per_adapter = hw._rocm_windows_perf_counter_vram_per_adapter_gb()
-    # LUIDs sorted ascending -> positions 0 (0xd3ec) and 1 (0xe001).
-    assert per_adapter == {0: 20.0, 1: 2.0}
-
-
-def test_windows_per_adapter_failure_is_empty(monkeypatch):
-    monkeypatch.setattr(hw.platform, "system", lambda: "Windows")
-    with _mock_powershell("", returncode = 1):
-        assert hw._rocm_windows_perf_counter_vram_per_adapter_gb() == {}
-
-
-def test_windows_per_adapter_off_windows_is_empty(monkeypatch):
-    monkeypatch.setattr(hw.platform, "system", lambda: "Linux")
-    assert hw._rocm_windows_perf_counter_vram_per_adapter_gb() == {}
-
-
 # ── Linux per-card sysfs ──
 
 
@@ -161,36 +115,18 @@ def test_linux_per_card_skips_zero_total_and_bad_files(monkeypatch, tmp_path):
 # ── overlay ──
 
 
-def test_overlay_windows_uses_props_capacity(monkeypatch):
+def test_overlay_windows_is_noop_keeps_torch(monkeypatch):
+    # Windows multi-GPU is intentionally not overlaid (perf counters can't be
+    # mapped to ROCm ordinals and miss WDDM shared memory): keep torch figures.
     monkeypatch.setattr(hw.platform, "system", lambda: "Windows")
-    monkeypatch.setattr(hw, "_rocm_windows_perf_counter_vram_per_adapter_gb", lambda: {0: 21.5})
-    # WDDM: mem_get_info's total is the process budget; capacity must come
-    # from device properties instead.
-    monkeypatch.setattr(hw, "_torch_props_total_gb", lambda ordinal: 45.0)
-    devices = [_device(0, used = 0.02, total = 20.0)]
+    monkeypatch.setattr(
+        hw,
+        "_rocm_linux_sysfs_vram_per_card_gb",
+        lambda: (_ for _ in ()).throw(AssertionError("sysfs must not run on Windows")),
+    )
+    devices = [_device(0, used = 0.02, total = 8.0)]
     hw._overlay_system_wide_vram(devices)
-    assert devices[0]["vram_used_gb"] == 21.5  # llama-server's usage now visible
-    assert devices[0]["vram_total_gb"] == 45.0  # props capacity, not the budget
-    assert devices[0]["vram_utilization_pct"] == 47.8
-
-
-def test_overlay_windows_unmatched_adapter_untouched(monkeypatch):
-    monkeypatch.setattr(hw.platform, "system", lambda: "Windows")
-    monkeypatch.setattr(hw, "_rocm_windows_perf_counter_vram_per_adapter_gb", lambda: {0: 5.0})
-    monkeypatch.setattr(hw, "_torch_props_total_gb", lambda ordinal: None)
-    devices = [_device(1, used = 0.01, total = 8.0)]  # only position 0 reported
-    hw._overlay_system_wide_vram(devices)
-    assert devices[0]["vram_used_gb"] == 0.01  # untouched
-
-
-def test_overlay_windows_clamps_to_total(monkeypatch):
-    monkeypatch.setattr(hw.platform, "system", lambda: "Windows")
-    monkeypatch.setattr(hw, "_rocm_windows_perf_counter_vram_per_adapter_gb", lambda: {0: 99.0})
-    monkeypatch.setattr(hw, "_torch_props_total_gb", lambda ordinal: 8.0)
-    devices = [_device(0, used = 0.0, total = 6.0)]
-    hw._overlay_system_wide_vram(devices)
-    assert devices[0]["vram_used_gb"] == 8.0
-    assert devices[0]["vram_total_gb"] == 8.0
+    assert devices[0]["vram_used_gb"] == 0.02  # untouched
 
 
 def test_overlay_linux_matches_by_physical_index(monkeypatch):
