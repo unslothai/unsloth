@@ -2227,10 +2227,15 @@ exit 0
         # install.sh --shortcuts-only through the wsl.exe shim, which carries no env,
         # so without the marker the first update would recreate the duplicate .lnk.
         $_fwdEnv += 'export UNSLOTH_SKIP_WSL_WINDOWS_SHORTCUT=1; mkdir -p /root/.unsloth; touch /root/.unsloth/.skip-wsl-windows-shortcut; '
+        # Forward a non-default --package into the WSL install (already validated
+        # against ^[a-zA-Z0-9][a-zA-Z0-9._-]*$ at parse time, so splicing is safe);
+        # previously it was silently dropped and the user got stock unsloth.
+        $_shArgs = ''
+        if ($PackageName -ne 'unsloth') { $_shArgs = ' -s -- --package ' + $PackageName }
         if ($_instRef -eq 'main') {
-            $wslInstall = $_fwdEnv + 'export DEBIAN_FRONTEND=noninteractive UNSLOTH_WSL_LLAMA_DEFERRED=1; apt-get update -y >/dev/null; apt-get install -y build-essential cmake git curl pciutils libcurl4-openssl-dev >/dev/null; curl -fsSL https://unsloth.ai/install.sh | sh'
+            $wslInstall = $_fwdEnv + 'export DEBIAN_FRONTEND=noninteractive UNSLOTH_WSL_LLAMA_DEFERRED=1; apt-get update -y >/dev/null; apt-get install -y build-essential cmake git curl pciutils libcurl4-openssl-dev >/dev/null; curl -fsSL https://unsloth.ai/install.sh | sh' + $_shArgs
         } else {
-            $wslInstall = $_fwdEnv + 'export DEBIAN_FRONTEND=noninteractive UNSLOTH_WSL_LLAMA_DEFERRED=1; export UNSLOTH_INSTALL_REF=' + $_instRef + '; apt-get update -y >/dev/null; apt-get install -y build-essential cmake git curl pciutils libcurl4-openssl-dev >/dev/null; curl -fsSL https://raw.githubusercontent.com/unslothai/unsloth/' + $_instRef + '/install.sh | sh'
+            $wslInstall = $_fwdEnv + 'export DEBIAN_FRONTEND=noninteractive UNSLOTH_WSL_LLAMA_DEFERRED=1; export UNSLOTH_INSTALL_REF=' + $_instRef + '; apt-get update -y >/dev/null; apt-get install -y build-essential cmake git curl pciutils libcurl4-openssl-dev >/dev/null; curl -fsSL https://raw.githubusercontent.com/unslothai/unsloth/' + $_instRef + '/install.sh | sh' + $_shArgs
         }
         # install.sh may exit non-zero on the optional llama.cpp prebuilt step (no aarch64 prebuilt)
         # even though torch + unsloth + Studio install; lower EAP so it doesn't abort under Stop.

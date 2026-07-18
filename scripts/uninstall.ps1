@@ -435,7 +435,11 @@ function Uninstall-UnslothStudio {
                     $_sc = $_scWs.CreateShortcut($_.FullName)
                     if ("$($_sc.TargetPath) $($_sc.Arguments)" -match "wsl\.exe") {
                         $_scD = $null
-                        if ($_sc.Arguments -match '-d\s+"?([^"\s]+)"?') { $_scD = $Matches[1] }
+                        # install.sh quotes spaced distro names (-d "Ubuntu Preview"), so match a
+                        # full quoted token first; a naive [^"\s]+ would truncate at the space.
+                        if ($_sc.Arguments -match '-d\s+(?:"([^"]+)"|(\S+))') {
+                            $_scD = if ($Matches[1]) { $Matches[1] } else { $Matches[2] }
+                        }
                         elseif ($_.Name -match '^Unsloth Studio \(WSL - (.+)\)\.lnk$') { $_scD = $Matches[1] }
                         if ($_scD -and ($_scCands -notcontains $_scD)) { $_scKeep = $true }
                     }
@@ -555,8 +559,21 @@ function Uninstall-UnslothStudio {
         } catch { }
         _RemovePath $unslothDir
     }
-    # The WoA shortcut icon lives under the user profile (icon broker can't read AppData\Local).
-    if ($env:USERPROFILE) { _RemovePath (Join-Path $env:USERPROFILE ".unsloth\unsloth.ico") }
+    # The WoA shortcut icon lives under the user profile (icon broker can't read
+    # AppData\Local). The shortcut sweep above deliberately keeps launchers for
+    # WSL installs it has no evidence for; those .lnks point at this icon, so
+    # only remove it when no Unsloth shortcut survives anywhere (mirrors the
+    # _drop_shared_icon_if_unused guard on the WSL-side uninstaller).
+    if ($env:USERPROFILE) {
+        $_icoInUse = $false
+        foreach ($_icoDir in $shortcutDirs) {
+            if ($_icoDir -and (Test-Path -LiteralPath $_icoDir) -and
+                (Get-ChildItem -LiteralPath $_icoDir -Filter "Unsloth Studio*.lnk" -ErrorAction SilentlyContinue)) {
+                $_icoInUse = $true; break
+            }
+        }
+        if (-not $_icoInUse) { _RemovePath (Join-Path $env:USERPROFILE ".unsloth\unsloth.ico") }
+    }
     # The empty-dir sweep of ~/.unsloth above ran BEFORE this icon removal, so on a WoA install
     # the still-present unsloth.ico kept ~/.unsloth non-empty then and it was skipped -- leaving an
     # empty ~/.unsloth behind. Re-attempt now that the icon (the last default-mode child) is gone.

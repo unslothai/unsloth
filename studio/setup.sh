@@ -1436,6 +1436,30 @@ if [ "$_NEED_LLAMA_SOURCE_BUILD" = true ] \
     _LLAMA_CPP_DEFERRED=true
 fi
 
+# ── Native Linux aarch64 + NVIDIA, no nvcc yet: skip the CPU build too ──
+# The aarch64+NVIDIA provision block below installs the CUDA toolkit and does
+# the only build this host needs; a CPU source build first would burn minutes
+# (and thermal headroom on Spark-class machines) on a binary the CUDA rebuild
+# replaces in the same run. Provision failure still cascades to the
+# CPU-prebuilt last resort via _LLAMA_CPP_DEGRADED, so no-server states surface.
+if [ "$_NEED_LLAMA_SOURCE_BUILD" = true ] \
+        && [ "$_LLAMA_FORCE_COMPILE" != "1" ] \
+        && [ -z "$_LLAMA_PR" ] \
+        && [ "${UNSLOTH_NO_LLAMA_CUDA:-0}" != "1" ] \
+        && [ "${_SKIP_GGUF_BUILD:-}" != true ] \
+        && ! grep -qi microsoft /proc/version 2>/dev/null \
+        && { [ "$_HOST_MACHINE" = "aarch64" ] || [ "$_HOST_MACHINE" = "arm64" ]; } \
+        && command -v nvidia-smi >/dev/null 2>&1 \
+        && nvidia-smi -L 2>/dev/null | awk '/^GPU[[:space:]]+[0-9]+:/{found=1} END{exit !found}' \
+        && [ "${_setup_nvidia_usable:-}" = true ] \
+        && ! command -v nvcc >/dev/null 2>&1 \
+        && ! ls /usr/local/cuda*/bin/nvcc >/dev/null 2>&1; then
+    step "llama.cpp" "GGUF engine: deferring to this run's CUDA provision (aarch64 + NVIDIA, no nvcc)" "$C_WARN"
+    substep "skipping the slow CPU build; the CUDA llama.cpp build below provides the server"
+    substep "(opt out / keep the CPU build with UNSLOTH_NO_LLAMA_CUDA=1)"
+    _NEED_LLAMA_SOURCE_BUILD=false
+fi
+
 # ── 8. WSL: pre-install GGUF build dependencies for fallback source builds ──
 # On WSL, sudo requires a password and can't be entered during GGUF export
 # (runs in a non-interactive subprocess). Install build deps here instead.
@@ -1996,6 +2020,7 @@ if [ "$_HOST_SYSTEM" = "Linux" ] \
         && [ "${_SKIP_GGUF_BUILD:-}" != true ] \
         && command -v nvidia-smi >/dev/null 2>&1 \
         && nvidia-smi -L 2>/dev/null | awk '/^GPU[[:space:]]+[0-9]+:/{found=1} END{exit !found}' \
+        && [ "${_setup_nvidia_usable:-}" = true ] \
         && ! _have_cuda_llama_server; then
     # Under WSL this runs ONLY for a DIRECT `install.sh` run: install.ps1 sets
     # UNSLOTH_WSL_LLAMA_DEFERRED=1 and builds in the background; a direct run has

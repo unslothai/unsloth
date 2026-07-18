@@ -92,8 +92,22 @@ find_nvcc() {
     command -v nvcc 2>/dev/null || ls /usr/local/cuda*/bin/nvcc 2>/dev/null | sort -V | tail -1
 }
 NVCC="$(find_nvcc)"
-if [ -z "$NVCC" ] && [ "$HAVE_APT" -eq 1 ]; then
-    log "CUDA toolkit (nvcc) not found - installing CUDA 13.3 (matches torch cu13x; avoids glibc>=2.41 rsqrt clash)"
+# A CUDA < 13 toolkit cannot build for the sm_121 Spark class (and CUDA < 13.3
+# hits the glibc >= 2.41 rsqrt clash from the header) -- keeping it made every
+# rerun fail configure/build and exit with the CPU server forever. When apt can
+# provide 13.3, upgrade past a stale toolkit; find_nvcc's sort -V then prefers
+# the new install, and if the install fails the old toolkit remains the last
+# resort (previous behavior, still fine on non-Spark hosts like GH200 + cu12x).
+_nvcc_stale=0
+if [ -n "$NVCC" ]; then
+    _nvcc_major="$("$NVCC" --version 2>/dev/null | sed -n 's/.*release \([0-9][0-9]*\)\..*/\1/p' | head -1)"
+    if [ -n "$_nvcc_major" ] && [ "$_nvcc_major" -lt 13 ] 2>/dev/null; then
+        log "existing CUDA $_nvcc_major toolkit ($NVCC) predates this machine class; provisioning CUDA 13.3 alongside it"
+        _nvcc_stale=1
+    fi
+fi
+if { [ -z "$NVCC" ] || [ "$_nvcc_stale" -eq 1 ]; } && [ "$HAVE_APT" -eq 1 ]; then
+    [ -z "$NVCC" ] && log "CUDA toolkit (nvcc) not found - installing CUDA 13.3 (matches torch cu13x; avoids glibc>=2.41 rsqrt clash)"
     # shellcheck disable=SC1091
     . /etc/os-release 2>/dev/null || true
     case "$(uname -m)" in
@@ -188,20 +202,38 @@ if [ ! -d "$LLAMA_DIR/.git" ]; then
         _restore_prev
         exit 0
     fi
-    # Honor a UNSLOTH_LLAMA_PR pin (same var setup.sh supports); best-effort --
-    # a failed fetch keeps the default branch.
-    case "${UNSLOTH_LLAMA_PR:-}" in
-        ''|*[!0-9]*) ;;
-        *)
-            if git -C "$LLAMA_DIR" fetch --depth 1 origin "pull/${UNSLOTH_LLAMA_PR}/head:_unsloth_pr_${UNSLOTH_LLAMA_PR}" >/dev/null 2>&1 \
-                    && git -C "$LLAMA_DIR" checkout "_unsloth_pr_${UNSLOTH_LLAMA_PR}" >/dev/null 2>&1; then
-                log "checked out llama.cpp PR #${UNSLOTH_LLAMA_PR} (UNSLOTH_LLAMA_PR)"
-            else
-                log "could not fetch llama.cpp PR #${UNSLOTH_LLAMA_PR}; building the default branch"
+else
+    # Existing checkout: honor the pin on reruns too (previously all ref
+    # handling lived in the fresh-clone branch, so an existing tree rebuilt
+    # whatever commit it had regardless of the pin). Best-effort -- an
+    # unreachable ref keeps the current commit, matching the clone fallback.
+    if [ -n "$_LLAMA_REF" ]; then
+        _cur_head="$(git -C "$LLAMA_DIR" rev-parse HEAD 2>/dev/null)"
+        if git -C "$LLAMA_DIR" fetch --depth 1 origin "$_LLAMA_REF" >/dev/null 2>&1; then
+            _ref_head="$(git -C "$LLAMA_DIR" rev-parse FETCH_HEAD 2>/dev/null)"
+            if [ -n "$_ref_head" ] && [ "$_ref_head" != "$_cur_head" ]; then
+                git -C "$LLAMA_DIR" checkout -q FETCH_HEAD >/dev/null 2>&1 \
+                    && log "updated existing llama.cpp checkout to $_LLAMA_REF" \
+                    || log "could not check out $_LLAMA_REF; keeping the current commit"
             fi
-            ;;
-    esac
+        else
+            log "could not fetch $_LLAMA_REF; keeping the current commit"
+        fi
+    fi
 fi
+# Honor a UNSLOTH_LLAMA_PR pin (same var setup.sh supports) on fresh clones and
+# existing checkouts alike; best-effort -- a failed fetch keeps what's there.
+case "${UNSLOTH_LLAMA_PR:-}" in
+    ''|*[!0-9]*) ;;
+    *)
+        if git -C "$LLAMA_DIR" fetch --depth 1 origin "pull/${UNSLOTH_LLAMA_PR}/head:_unsloth_pr_${UNSLOTH_LLAMA_PR}" >/dev/null 2>&1 \
+                && git -C "$LLAMA_DIR" checkout "_unsloth_pr_${UNSLOTH_LLAMA_PR}" >/dev/null 2>&1; then
+            log "checked out llama.cpp PR #${UNSLOTH_LLAMA_PR} (UNSLOTH_LLAMA_PR)"
+        else
+            log "could not fetch llama.cpp PR #${UNSLOTH_LLAMA_PR}; building the default branch"
+        fi
+        ;;
+esac
 cd "$LLAMA_DIR" || { _restore_prev; exit 0; }
 
 # When rebuilding in-place over an existing git checkout, the whole-dir backup above
