@@ -102,7 +102,5 @@ def test_importing_registry_does_not_register_models():
         text = True,
         check = True,
     )
-    size_lines = [
-        line for line in result.stdout.splitlines() if line.startswith("REGISTRY_SIZE")
-    ]
+    size_lines = [line for line in result.stdout.splitlines() if line.startswith("REGISTRY_SIZE")]
     assert size_lines == ["REGISTRY_SIZE 0"], result.stdout
