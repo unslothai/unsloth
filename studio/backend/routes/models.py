@@ -3468,6 +3468,30 @@ def _resolve_cached_model_path(repo_id: str, variant: Optional[str]) -> Path:
     raise HTTPException(status_code = 404, detail = "Cached model path not found")
 
 
+def _wsl_reveal_in_explorer(path: Path) -> bool:
+    import subprocess
+
+    from utils.paths.path_utils import _IS_WSL
+
+    if not _IS_WSL:
+        return False
+    try:
+        windows_path = subprocess.run(
+            ["wslpath", "-w", str(path)],
+            capture_output = True,
+            text = True,
+            check = True,
+            timeout = 10,
+        ).stdout.strip()
+        if not windows_path:
+            return False
+        argument = f"/select,{windows_path}" if path.is_file() else windows_path
+        subprocess.Popen(["explorer.exe", argument])
+        return True
+    except (OSError, subprocess.SubprocessError):
+        return False
+
+
 def _reveal_in_file_manager(path: Path) -> None:
     """Open the OS file manager with *path* selected (best effort per platform)."""
     import subprocess
@@ -3481,7 +3505,7 @@ def _reveal_in_file_manager(path: Path) -> None:
             subprocess.Popen(["explorer", f"/select,{target}"])
         else:
             os.startfile(target)  # noqa: S606 - local user's own file manager
-    else:
+    elif not _wsl_reveal_in_explorer(path):
         # No cross-desktop "select file" standard on Linux; open the directory.
         directory = target if path.is_dir() else str(path.parent)
         subprocess.Popen(["xdg-open", directory])
