@@ -10,6 +10,7 @@ export type CapabilityKey =
   | "reasoning"
   | "code"
   | "embedding"
+  | "diffusion"
   | "multilingual"
   | "conversational";
 
@@ -60,6 +61,20 @@ const REASONING_TAGS = new Set([
   "chain-of-thought",
   "math-reasoning",
   "step-by-step",
+]);
+
+// Image generation / diffusion (surfaced as "Image to text" in filters).
+const DIFFUSION_TAGS = new Set([
+  "diffusers",
+  "diffusion",
+  "stable-diffusion",
+  "latent-diffusion",
+  "flux",
+  "text-to-image",
+  "image-to-image",
+  "text-to-video",
+  "image-to-video",
+  "unconditional-image-generation",
 ]);
 
 const CODE_TAGS = new Set([
@@ -186,10 +201,7 @@ export function detectCapabilities(
   ) {
     out.push({ key: "code", label: "Code" });
   }
-  if (
-    hasAny(CONVERSATIONAL_TAGS) ||
-    CONVERSATIONAL_ID_RE.test(lowerId)
-  ) {
+  if (hasAny(CONVERSATIONAL_TAGS) || CONVERSATIONAL_ID_RE.test(lowerId)) {
     out.push({ key: "conversational", label: "Conversational" });
   }
   if (
@@ -199,6 +211,14 @@ export function detectCapabilities(
     )
   ) {
     out.push({ key: "embedding", label: "Embeddings" });
+  }
+  if (
+    hasAny(DIFFUSION_TAGS) ||
+    /stable[-_]?diffusion|\bsdxl\b|\bflux\b|qwen[-_]?image|hunyuan[-_]?(?:video|image)|wan2|latent[-_]?consistency|[-_]lcm\b|dreamshaper/.test(
+      lowerId,
+    )
+  ) {
+    out.push({ key: "diffusion", label: "Image to text" });
   }
   const languageCodes = new Set<string>();
   for (const tag of tags ?? []) {

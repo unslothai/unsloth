@@ -7,18 +7,18 @@ import type {
   CachedInventoryRow,
   LocalInventoryRow,
 } from "@/features/hub/inventory/types";
+import { ownerOf, repoOf } from "@/features/hub/lib/format";
 import type {
   CapabilityFilter,
   DiscoverRow,
   ModelFormatFilter,
 } from "../types";
+import { estimateSizeFromDtypes, isGgufLike } from "./hf-model-meta";
 import {
+  type CapabilityKey,
   detectBaseModel,
   detectCapabilities,
-  type CapabilityKey,
 } from "./model-capabilities";
-import { ownerOf, repoOf } from "@/features/hub/lib/format";
-import { estimateSizeFromDtypes, isGgufLike } from "./hf-model-meta";
 export {
   detectResultFormat,
   isUnslothFinetunable,
@@ -39,6 +39,7 @@ export const CAPABILITY_FILTER_OPTIONS: ReadonlyArray<{
   { value: "vision", label: "Vision" },
   { value: "audio", label: "Audio" },
   { value: "embedding", label: "Embeddings" },
+  { value: "diffusion", label: "Image to text" },
 ];
 
 export const FORMAT_FILTER_OPTIONS: ReadonlyArray<{

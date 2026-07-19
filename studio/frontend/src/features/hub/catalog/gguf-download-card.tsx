@@ -258,25 +258,28 @@ function createGgufVariantMenuItems(
   }));
 }
 
-// Shared per-quant options menu: used on every variant row and, for the
-// selected quant, in the run bar. The identifier uses llama.cpp's repo:quant
-// syntax so it pastes straight into `-hf`.
-function QuantOptionsMenu({
+// Shared options menu: used on every variant row, the run bar, and the
+// single-model (non-GGUF) run bar. Omit `quant` for a repo-level model. The
+// identifier uses llama.cpp's repo:quant syntax so it pastes into `-hf`.
+export function QuantOptionsMenu({
   repoId,
   quant,
   label,
   downloaded,
   canDelete,
   onDelete,
+  showPin = true,
   buttonClassName,
   iconClassName,
 }: {
   repoId: string;
-  quant: string;
+  quant?: string;
   label: string;
   downloaded: boolean;
   canDelete: boolean;
-  onDelete: (quant: string) => void;
+  onDelete: (quant?: string) => void;
+  // Hidden in the run bar; pinning belongs to the On Device list.
+  showPin?: boolean;
   buttonClassName?: string;
   iconClassName?: string;
 }) {
@@ -305,7 +308,8 @@ function QuantOptionsMenu({
     }
   }, [repoId, quant]);
   const handleCopyId = useCallback(async () => {
-    if (await copyToClipboard(`${repoId}:${quant}`)) {
+    const id = quant ? `${repoId}:${quant}` : repoId;
+    if (await copyToClipboard(id)) {
       toast.success("Copied identifier");
     } else {
       toast.error("Failed to copy");
@@ -339,7 +343,7 @@ function QuantOptionsMenu({
         sideOffset={2}
         className="unsloth-plus-menu menu-flat-destructive w-48"
       >
-        {downloaded && (
+        {showPin && downloaded && (
           <DropdownMenuItem
             onSelect={(e) => {
               e.stopPropagation();
@@ -523,7 +527,7 @@ const GgufVariantMenuRow = memo(function GgufVariantMenuRow({
             label={item.label}
             downloaded={Boolean(item.downloaded)}
             canDelete={canDelete}
-            onDelete={onDelete}
+            onDelete={(q) => q && onDelete(q)}
           />
         ) : (
           <span aria-hidden={true} className="size-6 shrink-0" />
@@ -1005,7 +1009,8 @@ export function GgufDownloadCard({
                 !downloadingThisVariant &&
                 !isLoadingThisModel
               }
-              onDelete={handleDeleteVariant}
+              onDelete={(q) => q && handleDeleteVariant(q)}
+              showPin={false}
               buttonClassName="ml-0.5 size-7"
               iconClassName="size-4"
             />
