@@ -8998,6 +8998,55 @@ class LlamaCppBackend:
             logger.debug("Could not close httpx client", exc_info = True)
 
     @staticmethod
+    def _install_cancel_aware_read(
+        client: "httpx.Client",
+        cancel_event: threading.Event,
+        poll_s: float = 0.2,
+    ) -> None:
+        """Make the reader thread interrupt its own blocked recv() on cancel.
+
+        The watcher's cross-thread socket shutdown unblocks a parked recv() on
+        POSIX but is unreliable on Windows (Winsock does not dependably wake a
+        recv() in progress on another thread). Instead, wrap the httpcore
+        network stream so each read loops in short slices and polls cancel_event
+        between them: the reader interrupts itself, so cancel is portable and
+        works for plain and TLS streams. Slice timeouts are swallowed, so a
+        slow-but-alive stream is never torn down."""
+        import httpcore
+        try:
+            pool = getattr(getattr(client, "_transport", None), "_pool", None)
+            for connection in list(getattr(pool, "_connections", []) or []):
+                inner = getattr(connection, "_connection", None)
+                stream = getattr(inner, "_network_stream", None)
+                if stream is None or getattr(stream, "_unsloth_cancel_wrapped", False):
+                    continue
+                orig_read = stream.read
+
+                def read(max_bytes, timeout = None, _orig = orig_read):
+                    deadline = None if timeout is None else time.monotonic() + timeout
+                    while True:
+                        if cancel_event.is_set():
+                            raise httpcore.ReadError("stream cancelled by user")
+                        if deadline is None:
+                            step = poll_s
+                        else:
+                            remaining = deadline - time.monotonic()
+                            if remaining <= 0:
+                                raise httpcore.ReadTimeout("read operation timed out")
+                            step = min(poll_s, remaining)
+                        try:
+                            return _orig(max_bytes, timeout = step)
+                        except httpcore.ReadTimeout:
+                            if deadline is not None and time.monotonic() >= deadline:
+                                raise
+                            continue  # slice timed out on silence, keep the stream alive
+
+                stream.read = read
+                stream._unsloth_cancel_wrapped = True
+        except Exception:
+            logger.debug("Could not install cancel-aware read", exc_info = True)
+
+    @staticmethod
     @contextlib.contextmanager
     def _stream_with_retry(
         client: "httpx.Client",
@@ -9054,6 +9103,11 @@ class LlamaCppBackend:
                 headers = headers,
             ) as response:
                 _response_ref[0] = response
+                if cancel_event is not None:
+                    # Portable mid-stream cancel: the reader polls cancel itself,
+                    # so Stop interrupts a stalled read even where the watcher's
+                    # cross-thread socket shutdown does not (Windows).
+                    LlamaCppBackend._install_cancel_aware_read(client, cancel_event)
                 if cancel_event is not None and cancel_event.is_set():
                     raise _LlamaStreamCancelled
                 yield response
