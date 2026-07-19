@@ -9731,6 +9731,13 @@ async def openai_chat_completions(
                 backend.reset_generation_state()
                 api_monitor.finish(monitor_id, "cancelled")
                 raise
+            except GenStreamErrorRaised as exc:
+                # Adapter-controlled (compare-mode) backend failure. Honor the
+                # public flag so operational errors surface their real message.
+                backend.reset_generation_state()
+                _msg = _friendly_gen_stream_error(exc)
+                api_monitor.fail(monitor_id, _msg)
+                yield _openai_stream_error_sse({"error": {"message": _msg, "type": "server_error"}})
             except Exception as e:
                 backend.reset_generation_state()
                 logger.error(f"Error during OpenAI streaming: {e}", exc_info = True)
@@ -9879,6 +9886,13 @@ async def openai_chat_completions(
 
         except HTTPException:
             raise
+        except GenStreamErrorRaised as exc:
+            # Adapter-controlled (compare-mode) backend failure. Honor the public
+            # flag so operational errors surface their real message.
+            backend.reset_generation_state()
+            _msg = _friendly_gen_stream_error(exc)
+            api_monitor.fail(monitor_id, _msg)
+            raise HTTPException(status_code = 500, detail = _msg)
         except Exception as e:
             backend.reset_generation_state()
             logger.error(f"Error during OpenAI completion: {e}", exc_info = True)

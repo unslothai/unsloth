@@ -152,14 +152,14 @@ export const zhCN = {
           "当兼容 OpenAI 的请求指定了另一个已下载的 GGUF 时，先加载它再提供服务。默认关闭；未知名称将继续使用已加载的模型。",
         idleUnload: "空闲自动卸载",
         idleUnloadDescription:
-          "空闲达到该秒数后卸载模型以释放 VRAM；下次请求会重新加载。设为 0 则保持加载。",
+          "空闲达到该秒数后卸载模型以释放 VRAM；下次请求会重新加载。设为 0 则保持加载。最小 60 秒。",
         idleNeedsEnable:
           "开启“按请求切换模型”，以便已卸载的模型在下次使用时重新加载。",
         idleActiveViaEnv:
           "空闲自动卸载已通过 UNSLOTH_MODEL_IDLE_TTL 环境变量启用。",
         loadError: "加载模型自动切换设置失败。",
         saveError: "保存模型自动切换设置失败。",
-        idleError: "请输入整数秒数（0 或以上）。",
+        idleError: "输入 0 保持模型加载，或输入至少 60 秒。",
       },
       previewSharing: {
         sectionTitle: "预览分享",
