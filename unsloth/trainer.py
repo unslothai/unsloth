@@ -99,6 +99,8 @@ _AUTO_PADDING_FREE_ENV_DISABLED = os.environ.get(
 PADDING_FREE_BLOCKLIST = {
     "gemma2",  # - gemma2:  Uses slow_attention_softcapping which has torch.compile issues
     "gpt_oss",  # - gpt_oss: Uses Flex Attention which doesn't handle padding_free correctly
+    "qwen3_5",  # - qwen3_5 / qwen3_next: hybrid linear attention + conv1d leak across packed sequences
+    "qwen3_next",
 }
 
 
