@@ -2,13 +2,12 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 # Unit tests for install.sh's _previous_torch_pin, which keeps the previous
-# venv's torch RELEASE on a re-run (curl | sh over an existing install) instead
-# of silently moving the user to a newer release. The release is preserved
-# regardless of the old build's flavor tag (PyPI bare, +cuXXX, +rocm, +cpu):
-# the pin installs from the freshly chosen index, so the flavor follows the
-# machine while the release follows the user. Per-leaf constraint windows
-# still win (rocm7.2 / Strix floors, out-of-window manual installs). Helpers
-# are extracted from install.sh and sourced.
+# venv's torch RELEASE on a re-run instead of moving the user to a newer one.
+# The release is kept regardless of the old build's flavor tag (PyPI bare,
+# +cuXXX, +rocm, +cpu): the pin installs from the freshly chosen index, so the
+# flavor follows the machine while the release follows the user. Per-leaf
+# windows still win (rocm7.2 / Strix floors, out-of-window manual installs).
+# Helpers are extracted from install.sh and sourced.
 set -e
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"

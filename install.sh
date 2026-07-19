@@ -2225,26 +2225,23 @@ _torch_release_in_window() {
     echo "no"
 }
 
-# Whether a re-run should keep the previous venv's torch: echo "torch==X.Y.Z" when the
-# probed previous version ($1) sits inside the active constraint window ($2), else "".
-# The RELEASE is preserved regardless of the old build's flavor tag: the pin installs
-# from the freshly chosen index, so the flavor always follows the machine (cpu <-> cuda,
-# cu126 -> cu130, PyPI bare -> +cu130) while the release follows the user. Gating on a
-# flavor match was wrong in practice: a PyPI-sourced torch reports a BARE version (on
-# Linux the PyPI wheel IS a CUDA build), classified "cpu", so a healthy 2.10 on a cu130
-# host was silently moved to 2.11 instead of kept. Per-leaf windows still win: rocm7.2 /
-# gfx-2.11 leaves carry a >=2.11 floor (Strix _grouped_mm fix), so an old 2.10 is out of
-# window there and never pinned, and a release outside the window (2.3.x manual install,
-# 2.12.x manual upgrade) is never kept. If the chosen index does not carry the exact
-# release, the caller's _PREV_FALLBACK_CONSTRAINT path installs the newest supported
-# release instead. Opt out with UNSLOTH_TORCH_UPGRADE=1 to get the newest release.
+# Keep the previous venv's torch on a re-run: echo "torch==X.Y.Z" when the probed
+# version ($1) is inside the active constraint window ($2), else "". The RELEASE is kept
+# regardless of flavor tag; the pin installs from the freshly chosen index, so flavor
+# follows the machine (cpu <-> cuda, cu126 -> cu130, PyPI bare -> +cu130) while the
+# release follows the user. Gating on flavor was wrong: a PyPI torch reports a BARE
+# version (on Linux the PyPI wheel IS CUDA), misclassified "cpu", so a healthy 2.10 on a
+# cu130 host was moved to 2.11. Per-leaf floors still win (rocm7.2 / gfx >=2.11 for the
+# Strix _grouped_mm fix, out-of-window manual installs) and are never pinned; the caller's
+# _PREV_FALLBACK_CONSTRAINT installs the newest supported release when the index lacks the
+# exact one. Opt out with UNSLOTH_TORCH_UPGRADE=1.
 _previous_torch_pin() {
     _ptp_ver="$1"
     _ptp_con="$2"
     [ -n "$_ptp_ver" ] || { echo ""; return; }
     [ "${UNSLOTH_TORCH_UPGRADE:-0}" = "1" ] && { echo ""; return; }
     _ptp_base="${_ptp_ver%%+*}"
-    # The base must look like a release (probe noise / garbage must never become a pin).
+    # Base must look like a release; probe noise must never become a pin.
     case "$_ptp_base" in
         [0-9]*.[0-9]*) ;;
         *) echo ""; return ;;
@@ -2253,12 +2250,10 @@ _previous_torch_pin() {
     echo "torch==$_ptp_base"
 }
 
-# Install torch from TORCH_INDEX_URL honoring a kept-release pin: when
-# _PREV_TORCH_PIN is set, TORCH_CONSTRAINT is the exact previous release; if the
-# chosen index does not carry it (pruned mirror, flavor without that release),
-# fall back to the supported range instead of failing the install. Used by every
-# --default-index torch install path (NVIDIA cu*, AMD rocm/gfx fallbacks, cpu/mac)
-# so preservation behaves identically across them.
+# Install torch from TORCH_INDEX_URL honoring a kept-release pin: with _PREV_TORCH_PIN
+# set, TORCH_CONSTRAINT is the exact previous release; fall back to the supported range
+# if the index lacks it (pruned mirror) rather than failing. Used by every --default-index
+# path (NVIDIA cu*, AMD rocm/gfx fallbacks, cpu/mac) so preservation is uniform.
 _install_torch_default_index() {
     if [ -n "$_PREV_TORCH_PIN" ]; then
         if ! run_install_cmd_retry "install PyTorch (kept release)" uv pip install --python "$_VENV_PY" "$TORCH_CONSTRAINT" torchvision torchaudio \
@@ -2660,14 +2655,12 @@ case "$TORCH_INDEX_URL" in
         fi
         ;;
 esac
-# Re-run over an existing install: keep the previous venv's torch RELEASE instead of
-# resolving the newest in range; the fresh index above supplies the right flavor for
-# this machine (NVIDIA cu*, AMD rocm/gfx, mac/CPU alike). Evaluated HERE, after every
-# index/constraint decision including the Strix reroute, so the window it checks is the
-# final one -- a floor raised above (rocm7.2 / Strix gfx) correctly rejects an older
-# release. The range stays in _PREV_FALLBACK_CONSTRAINT so the install can fall back
-# when the exact release is not on the chosen index (custom mirrors may prune old
-# wheels). Skipped for --no-torch (no previous probe runs).
+# Re-run over an existing install: keep the previous venv's torch RELEASE; the fresh
+# index above supplies the right flavor for this machine. Evaluated HERE, after every
+# index/constraint decision including the Strix reroute, so the window checked is the
+# final one and a raised floor (rocm7.2 / Strix gfx) rejects an older release.
+# _PREV_FALLBACK_CONSTRAINT keeps the range so the install can fall back when the exact
+# release is not on the chosen index (mirrors may prune old wheels). Skipped for --no-torch.
 _PREV_TORCH_PIN=""
 _PREV_FALLBACK_CONSTRAINT="$TORCH_CONSTRAINT"
 if [ "$SKIP_TORCH" = false ]; then
@@ -2983,14 +2976,12 @@ elif [ -n "$TORCH_INDEX_URL" ]; then
                     [ "$_tv_equiv_minor" -lt "$_target_minor" ] && _target_minor=$_tv_equiv_minor
                     [ "$_ta_minor" -lt "$_target_minor" ] && _target_minor=$_ta_minor
 
-                    # A kept previous release (_PREV_TORCH_PIN) must also win
-                    # here: start the trio search at the kept minor when the
-                    # repo still offers a torch wheel for it, so a re-run over
-                    # an in-window 2.9 install is not moved to 2.10 just
-                    # because the listing carries both. Radeon wheels are
-                    # patch-curated per rocm release, so the minor is the unit
-                    # of preservation; if the kept minor's trio has gaps the
-                    # loop's existing downward search / index fallback applies.
+                    # Kept release (_PREV_TORCH_PIN) wins here too: start the
+                    # trio search at the kept minor when the repo still offers a
+                    # torch wheel for it, so a re-run over an in-window 2.9 is
+                    # not moved to 2.10. Radeon wheels are patch-curated per
+                    # rocm release, so the minor is the unit of preservation; if
+                    # the kept minor has gaps the downward search / fallback below applies.
                     if [ -n "$_PREV_TORCH_PIN" ]; then
                         _prev_kept_minor="${_PREV_TORCH_PIN#torch==}"
                         _prev_kept_minor="${_prev_kept_minor#*.}"
