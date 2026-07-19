@@ -45,12 +45,18 @@ import {
 import {
   type PendingImageEditReference,
   type RagAutoInject,
+  GPU_LAYERS_AUTO,
+  loadedGpuMemoryFieldsUnlessStaged,
+  reconcilePersistedGpuIds,
   resolveLoadedSpeculativeSettings,
   resolveSpeculativeSettingsForLoad,
+  persistGpuMemoryModeOnLoad,
   resolveToolsEnabledOnLoad,
   saveSpeculativeType,
   useChatRuntimeStore,
 } from "../stores/chat-runtime-store";
+import { resolveFitMaxSeqLength, resolveManualAutoCtxPin } from "../presets/preset-policy";
+import { ensureGpuDeviceCache } from "@/hooks/use-gpu-info";
 import { useExternalProvidersStore } from "../stores/external-providers-store";
 import {
   shouldPreserveFullOutput,
@@ -1489,6 +1495,13 @@ async function autoLoadSmallestModel(): Promise<{
     max_seq_length: number;
     is_lora: boolean;
     gguf_variant?: string | null;
+    // GGUF-only: scopes the training guard to the same placement policy /load
+    // will use. Manual mode must match because it makes placement user-owned.
+    // The layer/MoE/split/KV/spec knobs are deliberately not sent: Auto mode's
+    // guard sizes conservatively, while Manual mode bypasses that estimate.
+    // The safetensors fallback omits both fields and uses HF auto-placement.
+    gpu_ids?: number[];
+    gpu_memory_mode?: "auto" | "manual";
   }): Promise<boolean> {
     const validation = await validateModel({
       ...payload,
@@ -1520,12 +1533,18 @@ async function autoLoadSmallestModel(): Promise<{
       return false;
     }
     const currentStore = useChatRuntimeStore.getState();
-    const remembered = loadRememberedLoadSettings(
-      rememberedLoadSettingsKey({
-        id: candidate.id,
-        ggufVariant: candidate.ggufVariant,
-      }),
-    );
+    // Blobs are saved for GGUF picks only (the sheet gates on it), so don't
+    // let a legacy non-GGUF blob feed a stale context/spec choice into a
+    // safetensors auto-load.
+    const remembered =
+      candidate.kind === "gguf"
+        ? loadRememberedLoadSettings(
+            rememberedLoadSettingsKey({
+              id: candidate.id,
+              ggufVariant: candidate.ggufVariant,
+            }),
+          )
+        : null;
     const effectiveMaxSeqLength = resolveLoadMaxSeqLength({
       modelId: candidate.id,
       ggufVariant: candidate.ggufVariant,
@@ -1537,6 +1556,38 @@ async function autoLoadSmallestModel(): Promise<{
       maxSeqLength: candidate.maxSeqLength,
       presetSource: currentStore.activePresetSource,
     });
+    // The GPU knobs are per-model, so read them from the same remembered
+    // settings that fed effectiveMaxSeqLength -- on a background auto-load the
+    // live store holds session defaults, not the saved Manual mode / layer pin /
+    // GPU pick. Absent fields fall back like applyRememberedLoadSettings: the
+    // mode to the store (a persisted standing preference), the per-model knobs to
+    // their defaults. The saved GPU pick is reconciled against the GPUs present
+    // now, like the interactive restore.
+    const effectiveGpuMemoryMode =
+      remembered?.gpuMemoryMode ?? currentStore.gpuMemoryMode;
+    const effectiveGpuLayers = remembered?.gpuLayers ?? GPU_LAYERS_AUTO;
+    const effectiveNCpuMoe = remembered?.nCpuMoe ?? 0;
+    if (remembered?.selectedGpuIds != null) {
+      // Warm the device cache first: on a cold cache the reconcile passes the
+      // saved pick through unvalidated, and a stale cross-host pick then fails
+      // the load with the picker hidden.
+      await ensureGpuDeviceCache();
+    }
+    const effectiveGpuIds =
+      remembered?.selectedGpuIds !== undefined
+        ? reconcilePersistedGpuIds(remembered.selectedGpuIds)
+        : null;
+    // Under Manual GPU memory + Auto layers, llama.cpp's --fit owns context
+    // sizing, so send 0 (or the pinned length). GGUF-only; a no-op otherwise.
+    // The context pin is per-model too, so it comes from remembered settings,
+    // not the live store.
+    const fitMaxSeqLength = resolveFitMaxSeqLength(
+      candidate.kind === "gguf",
+      effectiveGpuMemoryMode,
+      effectiveGpuLayers,
+      remembered?.contextLength ?? null,
+      effectiveMaxSeqLength,
+    );
     const effectiveSpeculativeType =
       remembered?.speculativeType ?? specSettings.speculativeType;
     const effectiveSpecDraftNMax =
@@ -1544,9 +1595,16 @@ async function autoLoadSmallestModel(): Promise<{
     if (
       !(await canAutoLoad({
         model_path: candidate.id,
-        max_seq_length: effectiveMaxSeqLength,
+        max_seq_length: fitMaxSeqLength,
         is_lora: false,
         gguf_variant: candidate.ggufVariant,
+        // The same remembered-derived GPU pick the load below sends.
+        ...(candidate.kind === "gguf"
+          ? {
+              gpu_ids: effectiveGpuIds ?? undefined,
+              gpu_memory_mode: effectiveGpuMemoryMode,
+            }
+          : {}),
       }))
     ) {
       skippedAutoLoadCandidates.add(
@@ -1558,7 +1616,7 @@ async function autoLoadSmallestModel(): Promise<{
     const loadResp = await loadModel({
       model_path: candidate.id,
       hf_token: hfToken,
-      max_seq_length: effectiveMaxSeqLength,
+      max_seq_length: fitMaxSeqLength,
       load_in_4bit: true,
       is_lora: false,
       gguf_variant: candidate.ggufVariant,
@@ -1567,8 +1625,22 @@ async function autoLoadSmallestModel(): Promise<{
       speculative_type: effectiveSpeculativeType,
       spec_draft_n_max: effectiveSpecDraftNMax,
       tensor_parallel: remembered?.tensorParallel ?? false,
+      // GGUF-only: the safetensors fallback loads via HF auto-placement (no
+      // explicit pins). The split ratio is deliberately never remembered
+      // (positionally bound to an exact GPU set), so auto-load leaves llama.cpp's
+      // free-VRAM default in charge rather than sending a stale store value.
+      ...(candidate.kind === "gguf"
+        ? {
+            gpu_memory_mode: effectiveGpuMemoryMode,
+            gpu_layers: effectiveGpuLayers,
+            n_cpu_moe: effectiveNCpuMoe,
+            gpu_ids: effectiveGpuIds ?? undefined,
+          }
+        : {}),
     });
     saveSpeculativeType(effectiveSpeculativeType);
+    // Self-gates on is_gguf (skips diffusion), so persists only for a real GGUF load.
+    persistGpuMemoryModeOnLoad(loadResp, effectiveGpuMemoryMode);
     useChatRuntimeStore
       .getState()
       .setCheckpoint(candidate.id, candidate.ggufVariant ?? undefined);
@@ -1597,6 +1669,15 @@ async function autoLoadSmallestModel(): Promise<{
       store.setModels([...store.models, autoModel]);
     }
     if (candidate.kind === "gguf") {
+      // Keep an explicit Manual+Auto context pin the load just applied (so a
+      // later Apply doesn't silently revert it to auto-fit sizing), mirroring
+      // the interactive path's keepCustomCtx; other cases baseline on
+      // ggufContextLength.
+      const keepCustomCtx = resolveManualAutoCtxPin(
+        effectiveGpuMemoryMode,
+        effectiveGpuLayers,
+        remembered?.contextLength ?? null,
+      );
       useChatRuntimeStore.setState({
         ggufContextLength: loadResp.context_length ?? 131072,
         ggufMaxContextLength:
@@ -1613,6 +1694,10 @@ async function autoLoadSmallestModel(): Promise<{
         loadedKvCacheDtype: loadResp.cache_type_kv ?? null,
         tensorParallel: loadResp.tensor_parallel ?? false,
         loadedTensorParallel: loadResp.tensor_parallel ?? false,
+        ...loadedGpuMemoryFieldsUnlessStaged(loadResp, {
+          customContextLength: keepCustomCtx,
+        }),
+        loadedCustomContextLength: keepCustomCtx,
         defaultChatTemplate: loadResp.chat_template ?? null,
         chatTemplateOverride: null,
         loadedChatTemplateOverride: null,
@@ -1633,6 +1718,9 @@ async function autoLoadSmallestModel(): Promise<{
         loadedKvCacheDtype: loadResp.cache_type_kv ?? null,
         tensorParallel: loadResp.tensor_parallel ?? false,
         loadedTensorParallel: loadResp.tensor_parallel ?? false,
+        // Non-GGUF response: clears any stale GPU baseline a prior manual-GPU
+        // GGUF load left, matching the interactive/status sibling load paths.
+        ...loadedGpuMemoryFieldsUnlessStaged(loadResp),
         defaultChatTemplate: loadResp.chat_template ?? null,
         chatTemplateOverride: null,
         loadedChatTemplateOverride: null,
@@ -1820,12 +1908,17 @@ async function autoLoadSmallestModel(): Promise<{
       duration: 30000,
     });
     try {
+      const rt = useChatRuntimeStore.getState();
       if (
         !(await canAutoLoad({
           model_path: "unsloth/Qwen3.5-4B-MTP-GGUF",
           max_seq_length: 0,
           is_lora: false,
           gguf_variant: "UD-Q4_K_XL",
+          // The same live-store GPU pick the load below sends (a fresh default
+          // model has no remembered settings to prefer).
+          gpu_ids: rt.selectedGpuIds ?? undefined,
+          gpu_memory_mode: rt.gpuMemoryMode,
         }))
       ) {
         toast.dismiss(toastId);
@@ -1835,6 +1928,9 @@ async function autoLoadSmallestModel(): Promise<{
       const loadResp = await loadModel({
         model_path: "unsloth/Qwen3.5-4B-MTP-GGUF",
         hf_token: hfToken,
+        // Model default under both modes: Auto layers + no pin means
+        // resolveFitMaxSeqLength returns 0 for every mode (the canAutoLoad
+        // preflight above sends the same).
         max_seq_length: 0,
         load_in_4bit: true,
         is_lora: false,
@@ -1842,8 +1938,20 @@ async function autoLoadSmallestModel(): Promise<{
         trust_remote_code: trustRemoteCode,
         speculative_type: specSettings.speculativeType,
         spec_draft_n_max: specSettings.specDraftNMax,
+        // GPU Memory mode is a standing preference, so honor it on auto-load.
+        // The layer/MoE/split knobs and the context pin are per-model: the live
+        // store may hold edits drafted for a staged pick, and a fresh default
+        // model has no remembered settings, so those stay at their defaults like
+        // the cached-candidate path. The GPU pick deliberately differs (it's the
+        // picker's current on-screen selection, which the canAutoLoad preflight
+        // above already committed to).
+        gpu_memory_mode: rt.gpuMemoryMode,
+        gpu_layers: GPU_LAYERS_AUTO,
+        n_cpu_moe: 0,
+        gpu_ids: rt.selectedGpuIds ?? undefined,
       });
       saveSpeculativeType(specSettings.speculativeType);
+      persistGpuMemoryModeOnLoad(loadResp, rt.gpuMemoryMode);
       useChatRuntimeStore
         .getState()
         .setCheckpoint("unsloth/Qwen3.5-4B-MTP-GGUF", "UD-Q4_K_XL");
@@ -1880,6 +1988,10 @@ async function autoLoadSmallestModel(): Promise<{
         loadedKvCacheDtype: loadResp.cache_type_kv ?? null,
         tensorParallel: loadResp.tensor_parallel ?? false,
         loadedTensorParallel: loadResp.tensor_parallel ?? false,
+        ...loadedGpuMemoryFieldsUnlessStaged(loadResp),
+        // Drives the GPU Memory controls' diffusion gate; set alongside the
+        // GPU fields on every load path so the gate can't read stale.
+        loadedIsDiffusion: loadResp.is_diffusion ?? false,
         defaultChatTemplate: loadResp.chat_template ?? null,
         chatTemplateOverride: null,
         loadedIsMultimodal: isMultimodalResponse(loadResp),

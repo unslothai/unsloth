@@ -101,13 +101,13 @@ def studio_server(request):
 
 @pytest.fixture
 def base_url(studio_server):
-    """Base URL for the e2e Studio server (from ``studio_server``)."""
+    """Base URL for the e2e Unsloth server (from ``studio_server``)."""
     return studio_server[0]
 
 
 @pytest.fixture
 def api_key(studio_server):
-    """API key for the e2e Studio server (from ``studio_server``)."""
+    """API key for the e2e Unsloth server (from ``studio_server``)."""
     return studio_server[1]
 
 

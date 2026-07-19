@@ -75,7 +75,7 @@ validate_extra_args = _lsa.validate_extra_args
         # Reasoning controls
         ["--reasoning-format", "deepseek"],
         ["-rea", "auto"],
-        # Soft-managed: user flags last-wins over Studio's auto-set version.
+        # Soft-managed: user flags last-wins over Unsloth's auto-set version.
         # --parallel / -np / --n-parallel are hard-denied (KV-cache + slot
         # count would desync); use `unsloth studio run --parallel N` instead.
         ["-c", "131072"],
@@ -150,7 +150,7 @@ def test_non_flag_token_passes_through():
         "--mmproj",
         "-mmu",
         "--mmproj-url",
-        # Networking (Studio binds + proxies)
+        # Networking (Unsloth binds + proxies)
         "--host",
         "--port",
         "--path",
@@ -176,12 +176,12 @@ def test_non_flag_token_passes_through():
         "--models-autoload",
         "--no-models-autoload",
         # Server-mode flips: --embedding / --rerank restrict llama-server to
-        # those endpoints and break Studio's chat hop.
+        # those endpoints and break Unsloth's chat hop.
         "--embedding",
         "--embeddings",
         "--rerank",
         "--reranking",
-        # llama-server's own --tools clashes with Studio's tool policy.
+        # llama-server's own --tools clashes with Unsloth's tool policy.
         "--tools",
     ],
 )
@@ -194,7 +194,7 @@ def test_denylist_rejects_all_aliases(denied):
     "args,offending",
     [
         # Pass-through --parallel would last-wins-override the real slot
-        # count while Studio's KV-cache fit + llama_parallel_slots stay at
+        # count while Unsloth's KV-cache fit + llama_parallel_slots stay at
         # the typer value -- plan vs. process disagree.
         (["--parallel", "8"], "--parallel"),
         (["--parallel=8"], "--parallel"),
@@ -656,7 +656,7 @@ def test_extra_args_disable_mmproj_last_wins():
 
 
 def test_strip_shadowing_flags_drops_model_draft_with_spec():
-    # --model-draft (and aliases) are Studio-managed since the separate
+    # --model-draft (and aliases) are Unsloth-managed since the separate
     # MTP drafter support: an inherited copy must not last-wins-override
     # the auto-detected drafter.
     out = strip_shadowing_flags(
@@ -681,7 +681,7 @@ def test_strip_shadowing_flags_drops_model_draft_with_spec():
 )
 def test_strip_shadowing_flags_drops_hf_drafter_selectors_with_spec(selector):
     # HF drafter selectors must reset on inherit like local --model-draft, or a
-    # stale inherited HF drafter last-wins over Studio's re-derived spec choice.
+    # stale inherited HF drafter last-wins over Unsloth's re-derived spec choice.
     out = strip_shadowing_flags(
         selector + ["--top-k", "20"],
         strip_context = False,
@@ -747,6 +747,34 @@ def test_strip_shadowing_flags_defaults_strip_split_mode_too():
     assert strip_shadowing_flags(["--split-mode", "tensor"]) == []
 
 
+def test_strip_offload_is_opt_in_and_covers_moe():
+    base = dict(
+        strip_context = False,
+        strip_cache = False,
+        strip_spec = False,
+        strip_template = False,
+        strip_split_mode = False,
+    )
+    # Default: offload (incl. MoE) flags are NOT stripped.
+    assert strip_shadowing_flags(["--n-cpu-moe", "8", "--top-k", "20"], **base) == [
+        "--n-cpu-moe",
+        "8",
+        "--top-k",
+        "20",
+    ]
+    # Opt-in strips layer AND MoE offload flags (value-aware), keeps the rest.
+    assert strip_shadowing_flags(
+        ["--n-cpu-moe", "8", "--gpu-layers", "33", "--fit", "off", "--top-k", "20"],
+        **base,
+        strip_offload = True,
+    ) == ["--top-k", "20"]
+    # Boolean --cpu-moe drops the flag only, not the following value.
+    assert strip_shadowing_flags(["--cpu-moe", "--seed", "-1"], **base, strip_offload = True) == [
+        "--seed",
+        "-1",
+    ]
+
+
 @pytest.mark.parametrize(
     "args",
     [
@@ -769,7 +797,7 @@ def test_strip_split_mode_only_preserves_none_and_empty():
 
 def test_strip_shadowing_flags_drops_tensor_split_with_split_mode():
     # --tensor-split is coupled to the split mode: stripped together so a stale
-    # ratio can't override Studio's computed tensor split. Other flags survive.
+    # ratio can't override Unsloth's computed tensor split. Other flags survive.
     out = strip_shadowing_flags(
         ["--split-mode", "row", "--tensor-split", "1,1", "--top-k", "20"],
         strip_context = False,
@@ -794,6 +822,23 @@ def test_strip_split_mode_only_drops_tensor_split_too():
         ["--split-mode", "tensor", "--tensor-split", "1,1", "-c", "4096"]
     ) == ["-c", "4096"]
     assert strip_split_mode_only(["-sm=tensor", "-ts=3,1"]) == []
+
+
+def test_strip_tensor_split_alone_preserves_split_mode():
+    # Manual mode emits its own --tensor-split, so an inherited ratio is dropped
+    # -- but the user's --split-mode row/none/layer choice (which the manual
+    # ratio toggle can't express) must survive. strip_tensor_split removes only
+    # the ratio, unlike strip_split_mode which removes the whole group.
+    out = strip_shadowing_flags(
+        ["--split-mode", "row", "--tensor-split", "1,1", "--top-k", "20"],
+        strip_context = False,
+        strip_cache = False,
+        strip_spec = False,
+        strip_template = False,
+        strip_split_mode = False,
+        strip_tensor_split = True,
+    )
+    assert out == ["--split-mode", "row", "--top-k", "20"]
 
 
 def test_strip_shadowing_flags_keeps_model_draft_without_spec():

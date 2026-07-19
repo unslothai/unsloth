@@ -30,7 +30,7 @@ VLM_PROCESSING = DATASETS_DIR / "vlm_processing.py"
 ITERABLE = DATASETS_DIR / "iterable.py"
 HARDWARE_PY = HARDWARE_DIR / "hardware.py"
 
-# Studio venv for server tests
+# Unsloth venv for server tests
 STUDIO_VENV = Path.home() / ".unsloth" / "studio" / "unsloth_studio"
 
 sys.path.insert(0, str(STUDIO_DIR))
@@ -957,20 +957,20 @@ server = pytest.mark.server
 
 @server
 class TestLiveServerStartup:
-    """Live server startup against the existing Studio venv with torch made unimportable (pytest -m server)."""
+    """Live server startup against the existing Unsloth venv with torch made unimportable (pytest -m server)."""
 
     @pytest.fixture(autouse = True)
     def _check_studio_venv(self):
         py = _studio_venv_python()
         if py is None:
-            pytest.skip("Studio venv not found at ~/.unsloth/studio/unsloth_studio")
+            pytest.skip("Unsloth venv not found at ~/.unsloth/studio/unsloth_studio")
 
     @pytest.fixture(scope = "class")
     def server_process(self):
         """Start the studio backend server without torch, yield (proc, port), then stop."""
         py = _studio_venv_python()
         if py is None:
-            pytest.skip("Studio venv not found")
+            pytest.skip("Unsloth venv not found")
 
         port = _server_port()
         backend_dir = BACKEND_DIR

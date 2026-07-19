@@ -18,7 +18,7 @@ _THINK_OPEN = "<think>"
 _THINK_BLOCK = re.compile(rf"{re.escape(_THINK_OPEN)}.*?</think>", re.DOTALL)
 _STREAMED_ERROR_PREFIX = "Error: "
 
-# Cloudflare (in front of remote Studio proxies like RunPod) 403s the default
+# Cloudflare (in front of remote Unsloth proxies like RunPod) 403s the default
 # "Python-urllib/X.Y" User-Agent as a bot; send a real one on every request.
 _USER_AGENT = "unsloth-cli"
 _MPI_ENV_PAIRS = (
@@ -36,7 +36,7 @@ _no_redirect_opener = None
 def urlopen_no_redirect(request, timeout):
     """urlopen that errors on any redirect: following a 3xx would send a bearer
     token (or accept an identity proof) to a base we never vetted, letting a port
-    squatter relay a real Studio's response."""
+    squatter relay a real Unsloth's response."""
     global _no_redirect_opener
     if _no_redirect_opener is None:
         import urllib.error
@@ -540,7 +540,7 @@ def find_studio_server(timeout: float = 3.0) -> Optional[str]:
 def is_loopback_url(base: str) -> bool:
     """True only when *base* resolves to loopback. find_studio_server() trusts a
     base after only a health probe, so credentials are auto-sent only to loopback
-    (a local Studio or an SSH tunnel on 127.0.0.1), the targets the auto flows mean."""
+    (a local Unsloth or an SSH tunnel on 127.0.0.1), the targets the auto flows mean."""
     from urllib.parse import urlparse
 
     host = (urlparse(base).hostname or "").lower()
@@ -554,7 +554,7 @@ def is_loopback_url(base: str) -> bool:
 
 
 def verify_studio_identity(base: str, timeout: float = 3.0) -> bool:
-    """Confirm `base` is really this machine's Studio before sending a secret.
+    """Confirm `base` is really this machine's Unsloth before sending a secret.
 
     Send a random nonce to /api/auth/identity and check the returned HMAC against
     the one computed from the local same-user secret; an endpoint without that
@@ -578,7 +578,7 @@ def verify_studio_identity(base: str, timeout: float = 3.0) -> bool:
     port = parsed.port or (443 if parsed.scheme == "https" else 80)
     # Resolve to one concrete address and talk to *that* address, then bind the
     # proof to (address, port). A name like localhost can resolve to a squatter on
-    # ::1 while the real Studio is on 127.0.0.1; connecting to the resolved IP and
+    # ::1 while the real Unsloth is on 127.0.0.1; connecting to the resolved IP and
     # binding to it means a proof relayed from a different address/port won't match.
     try:
         ip = socket.getaddrinfo(host, port, type = socket.SOCK_STREAM)[0][4][0]
@@ -592,7 +592,7 @@ def verify_studio_identity(base: str, timeout: float = 3.0) -> bool:
         headers = {"User-Agent": _USER_AGENT, "Host": parsed.netloc},
     )
     try:
-        # No redirects: a 302 could relay a real Studio's proof (see urlopen_no_redirect).
+        # No redirects: a 302 could relay a real Unsloth's proof (see urlopen_no_redirect).
         # Cap the read: the server is still unverified, so don't trust its length.
         with urlopen_no_redirect(request, timeout = timeout) as response:
             proof = json.loads(response.read(65536).decode() or "{}").get("proof")
@@ -623,7 +623,7 @@ def _studio_token() -> Optional[str]:
 
 
 class HttpChatBackend:
-    """Chat against a running Studio server over its OpenAI-compatible API.
+    """Chat against a running Unsloth server over its OpenAI-compatible API.
 
     close() leaves the model loaded on purpose — the next session (or the
     UI) starts instantly.
@@ -666,7 +666,7 @@ class HttpChatBackend:
         tensor_parallel: bool = False,
         llama_extra_args: Optional[List[str]] = None,
     ) -> None:
-        typer.echo(f"Loading {model} on the Studio server", err = True)
+        typer.echo(f"Loading {model} on the Unsloth server", err = True)
         payload = {
             "model_path": model,
             "hf_token": hf_token,
@@ -769,7 +769,7 @@ def connect_studio_server(
     tensor_parallel: bool = False,
     llama_extra_args: Optional[List[str]] = None,
 ):
-    """Backend on a running Studio server, or None (caller loads locally)."""
+    """Backend on a running Unsloth server, or None (caller loads locally)."""
     base_url = find_studio_server()
     if not base_url:
         return None
@@ -782,20 +782,20 @@ def connect_studio_server(
         if not explicit:
             return None
         typer.echo(
-            f"Can't attach to the Studio server at {base_url}: {reason} Run Studio "
+            f"Can't attach to the Unsloth server at {base_url}: {reason} Run Unsloth "
             "on this machine, or unset UNSLOTH_STUDIO_URL to load the model locally.",
             err = True,
         )
         raise typer.Exit(code = 1)
 
     # Only hand the self-issued JWT (signed with the local secret) to loopback: a
-    # remote URL is unverified and a real remote Studio would reject it anyway.
+    # remote URL is unverified and a real remote Unsloth would reject it anyway.
     if not is_loopback_url(base_url):
         return _refuse(
-            "it isn't a local Studio, so a self-issued token can't "
+            "it isn't a local Unsloth, so a self-issued token can't "
             "authenticate to it and must not be sent to it."
         )
-    # Confirm the loopback responder is really our Studio (not a port squatter).
+    # Confirm the loopback responder is really our Unsloth (not a port squatter).
     if not verify_studio_identity(base_url):
         return _refuse(
             "its identity couldn't be verified (it may be running as a "
@@ -803,7 +803,7 @@ def connect_studio_server(
         )
     token = _studio_token()
     if not token:
-        return _refuse("couldn't self-issue a Studio token (is Studio set up here?).")
+        return _refuse("couldn't self-issue an Unsloth token (is Unsloth set up here?).")
     backend = HttpChatBackend(base_url, token)
     backend.ensure_loaded(
         model,

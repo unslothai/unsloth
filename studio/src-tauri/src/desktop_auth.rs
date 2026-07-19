@@ -201,7 +201,7 @@ async fn exchange_desktop_secret(
 
     if response.status() == reqwest::StatusCode::NOT_FOUND {
         return Err(AuthError::StaleResponder(
-            "Running Studio backend is too old for this desktop app. Update that backend and restart."
+            "Running Unsloth backend is too old for this desktop app. Update that backend and restart."
                 .to_string(),
         ));
     }
@@ -364,7 +364,7 @@ async fn desktop_auth_inner(
     }
 
     Err(
-        "Desktop auth failed. Update or repair the managed Studio install, then restart Studio."
+        "Desktop auth failed. Update or repair the managed Unsloth install, then restart Unsloth."
             .to_string(),
     )
 }
@@ -465,7 +465,7 @@ mod tests {
             .message();
         assert_eq!(
             error,
-            "Running Studio backend is too old for this desktop app. Update that backend and restart."
+            "Running Unsloth backend is too old for this desktop app. Update that backend and restart."
         );
     }
 }

@@ -539,7 +539,7 @@ class AnthropicPassthroughEmitter:
 
         Only calls naming a tool in ``allowed_tools`` (the client's declared
         tools) are promoted; everything else streams as text exactly as before.
-        Never enabled for Studio's own tool loop.
+        Never enabled for Unsloth's own tool loop.
         """
         from core.inference.passthrough_healing import StreamToolCallHealer
 
