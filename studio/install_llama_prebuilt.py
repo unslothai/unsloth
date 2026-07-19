@@ -6475,9 +6475,9 @@ def write_prebuilt_metadata(
         "release_tag": release_tag,
         "published_repo": approved_checksums.repo,
         "asset": choice.name,
-        # Whether CPU was explicitly forced (--cpu-fallback). The updater re-asserts it
-        # so a deliberate CPU install is not re-routed to a GPU bundle (#7213); a natural
-        # CPU fallback stays False so it can still heal to GPU.
+        # True only for a deliberate CPU choice (--force-cpu). The updater re-asserts it
+        # so a forced CPU install is not re-routed to a GPU bundle (#7213). An automatic
+        # --cpu-fallback (e.g. arm64 GPU-build recovery) stays False so it can heal to GPU.
         "force_cpu": force_cpu,
         "asset_sha256": choice.expected_sha256,
         "source": choice.source_label,
@@ -6948,8 +6948,8 @@ def _route_to_vulkan_prebuilt(
     """Point a Vulkan-capable host at the upstream ggml-org Vulkan prebuilt.
 
     The unsloth published repo ships only CUDA/ROCm/CPU assets, so Vulkan comes
-    from UPSTREAM_REPO. Two triggers route here, both suppressed under
-    --cpu-fallback (the explicit "give me CPU" last resort wins):
+    from UPSTREAM_REPO. Two triggers route here, both suppressed when a CPU flag
+    (--cpu-fallback or --force-cpu, folded into force_cpu) wins:
       * UNSLOTH_FORCE_VULKAN forces Vulkan over the detected CUDA/ROCm backend;
       * an auto-detected Intel GPU with NO physical NVIDIA/ROCm -- the purpose
         of the has_intel_gpu probe, since the fork manifest ships no Vulkan asset.
@@ -7029,8 +7029,11 @@ def install_prebuilt(
     override_has_rocm: bool = False,
     override_rocm_gfx: str | None = None,
     force_cpu: bool = False,
+    persist_force_cpu: bool = False,
     instruction_cleanup_root: Path | None = None,
 ) -> None:
+    # force_cpu drops GPU detection (mechanism, both --cpu-fallback and --force-cpu);
+    # persist_force_cpu records the deliberate choice so the updater re-asserts it.
     host = detect_host()
     host = _apply_host_overrides(
         host,
@@ -7121,7 +7124,8 @@ def install_prebuilt(
                             initial_fallback_used = release_index > 0,
                             # Skip is gated per-attempt inside, so pass the dir always.
                             existing_install_dir = install_dir,
-                            force_cpu = force_cpu,
+                            # Persist only the deliberate choice, not a transient fallback.
+                            force_cpu = persist_force_cpu,
                         )
                     except ExistingInstallSatisfied:
                         return
@@ -7219,8 +7223,21 @@ def parse_args() -> argparse.Namespace:
         default = False,
         help = (
             "Select the CPU prebuilt for this OS/arch even when a GPU is present. "
-            "setup.sh uses this as a last resort for arm64 Linux GPU hosts whose "
-            "source build failed (no arm64 CUDA prebuilt exists anywhere)."
+            "Automatic/transient: setup.sh uses this as a last resort for arm64 Linux "
+            "GPU hosts whose source build failed. Does NOT persist, so a later update "
+            "heals back to a GPU bundle once one is available (#6097). Use --force-cpu "
+            "for a deliberate CPU-only choice that survives updates."
+        ),
+    )
+    parser.add_argument(
+        "--force-cpu",
+        action = "store_true",
+        default = False,
+        help = (
+            "Deliberate CPU-only install (UNSLOTH_LLAMA_CPP_BACKEND=cpu). Drops GPU "
+            "detection like --cpu-fallback but also records force_cpu in the marker, so "
+            "the in-app updater re-asserts CPU and never re-routes to a GPU/Vulkan "
+            "bundle that would revive the Intel iGPU crash (#7213)."
         ),
     )
     resolve_group = parser.add_mutually_exclusive_group()
@@ -7343,16 +7360,19 @@ def main() -> int:
         # Host-aware "is a prebuilt available" probe, no download. Every host now
         # plans against the fork (args.published_repo defaults to it); an explicit
         # --published-repo overrides. PrebuiltFallback == source build.
+        # Both flags drop GPU detection; --force-cpu additionally persists (install
+        # path only). The probe only needs the mechanism, so OR them.
+        _cpu_mechanism = args.cpu_fallback or args.force_cpu
         host = _apply_host_overrides(
             detect_host(),
             override_has_rocm = args.has_rocm,
             override_rocm_gfx = args.rocm_gfx,
-            force_cpu = args.cpu_fallback,
+            force_cpu = _cpu_mechanism,
         )
         # Same Vulkan routing the install path applies, so the probe's answer
         # matches what would install (an Intel/forced-Vulkan host -> upstream).
         host, repo, release_tag = _route_to_vulkan_prebuilt(
-            host, args.published_repo, args.published_release_tag or "", force_cpu = args.cpu_fallback
+            host, args.published_repo, args.published_release_tag or "", force_cpu = _cpu_mechanism
         )
         try:
             _requested, plans = resolve_simple_install_release_plans(
@@ -7390,7 +7410,10 @@ def main() -> int:
         published_release_tag = args.published_release_tag or "",
         override_has_rocm = args.has_rocm,
         override_rocm_gfx = args.rocm_gfx,
-        force_cpu = args.cpu_fallback,
+        # Both drop GPU detection; only --force-cpu (deliberate) is recorded so the
+        # updater re-asserts it. --cpu-fallback stays transient and heals to GPU.
+        force_cpu = args.cpu_fallback or args.force_cpu,
+        persist_force_cpu = args.force_cpu,
         instruction_cleanup_root = install_arg.absolute(),
     )
     return EXIT_SUCCESS

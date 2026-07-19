@@ -523,12 +523,12 @@ def _run_update(
         if pin_release_tag:
             cmd.extend(["--published-release-tag", pin_release_tag])
         cmd.extend(_rocm_install_args(asset))
-        # Re-assert an explicitly forced CPU install (--cpu-fallback) so detect_host on a
-        # GPU host does not re-route to a GPU/Vulkan bundle and revive the crash (#7213).
-        # Only an explicit force is preserved: a natural CPU fallback (or a legacy marker
-        # without the flag) stays free to heal to a GPU bundle (#6097).
+        # Re-assert a deliberate CPU install (--force-cpu) so detect_host on a GPU host
+        # does not re-route to a GPU/Vulkan bundle and revive the crash (#7213). --force-cpu
+        # (not --cpu-fallback) also re-persists force_cpu, keeping the choice across future
+        # updates. A natural fallback (or a legacy marker without the flag) heals to GPU (#6097).
         if force_cpu:
-            cmd.append("--cpu-fallback")
+            cmd.append("--force-cpu")
         logger.info("llama update: installing", cmd = " ".join(cmd))
         # Stream progress lines into job["progress"].
         env = dict(os.environ, UNSLOTH_PROGRESS_PERCENT_STEP = "5")

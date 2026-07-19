@@ -3372,10 +3372,11 @@ if ($LocalLlamaCppLinked) {
             $prebuiltArgs += @("--published-release-tag", $env:UNSLOTH_LLAMA_RELEASE_TAG)
         }
         # UNSLOTH_LLAMA_CPP_BACKEND=cpu (case-insensitive, whitespace-trimmed) forces the
-        # CPU-only prebuilt via --cpu-fallback. Fixes Intel iGPU Vulkan crash (#7213).
+        # CPU-only prebuilt via --force-cpu (persisted so updates keep it). Fixes Intel
+        # iGPU Vulkan crash (#7213).
         $llamaBackend = "$($env:UNSLOTH_LLAMA_CPP_BACKEND)".Trim().ToLowerInvariant()
         if ($llamaBackend -eq "cpu") {
-            $prebuiltArgs += "--cpu-fallback"
+            $prebuiltArgs += "--force-cpu"
         } elseif ($llamaBackend -and $llamaBackend -ne "auto") {
             Write-Host "[WARN] Ignoring UNSLOTH_LLAMA_CPP_BACKEND='$($env:UNSLOTH_LLAMA_CPP_BACKEND)' (expected 'auto' or 'cpu')" -ForegroundColor Yellow
         }

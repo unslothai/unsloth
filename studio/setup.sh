@@ -1364,10 +1364,18 @@ else
         _PREBUILT_CMD+=(--has-rocm)
     fi
     # UNSLOTH_LLAMA_CPP_BACKEND=cpu (case-insensitive, trimmed) forces the CPU-only
-    # prebuilt via --cpu-fallback, bypassing Vulkan/CUDA/ROCm. Fixes Intel iGPU crash (#7213).
+    # prebuilt via --force-cpu, bypassing Vulkan/CUDA/ROCm. Fixes Intel iGPU crash (#7213).
+    # No effect on macOS: the universal bundle already runs on CPU (Metal is a runtime
+    # -ngl choice), so warn instead of writing a misleading forced-CPU marker.
     _llama_backend="$(printf '%s' "${UNSLOTH_LLAMA_CPP_BACKEND:-auto}" | awk '{$1=$1; print tolower($0)}')"
     case "$_llama_backend" in
-        cpu)     _PREBUILT_CMD+=(--cpu-fallback) ;;
+        cpu)
+            if [ "$_HOST_SYSTEM" = "Darwin" ]; then
+                step "llama.cpp" "UNSLOTH_LLAMA_CPP_BACKEND=cpu has no effect on macOS (universal build; use -ngl 0 at runtime for CPU-only)" "$C_WARN" >&2
+            else
+                _PREBUILT_CMD+=(--force-cpu)
+            fi
+            ;;
         ""|auto) ;;
         *) step "llama.cpp" "Ignoring UNSLOTH_LLAMA_CPP_BACKEND='$UNSLOTH_LLAMA_CPP_BACKEND' (expected 'auto' or 'cpu')" "$C_WARN" >&2 ;;
     esac

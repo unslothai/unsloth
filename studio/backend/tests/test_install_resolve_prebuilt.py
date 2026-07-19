@@ -445,8 +445,10 @@ def test_route_to_vulkan_prebuilt_cpu_fallback_wins():
     assert routed is host
 
 
-def test_resolve_prebuilt_cpu_fallback_overrides_intel_vulkan(monkeypatch, capsys):
-    """--cpu-fallback via CLI must suppress Vulkan even on an Intel GPU host."""
+@pytest.mark.parametrize("cpu_flag", ["--cpu-fallback", "--force-cpu"])
+def test_resolve_prebuilt_cpu_fallback_overrides_intel_vulkan(monkeypatch, capsys, cpu_flag):
+    """Either CPU flag via CLI must suppress Vulkan even on an Intel GPU host: both
+    drop GPU detection (--force-cpu additionally persists, on the install path)."""
     monkeypatch.setattr(
         ilp,
         "detect_host",
@@ -467,15 +469,43 @@ def test_resolve_prebuilt_cpu_fallback_overrides_intel_vulkan(monkeypatch, capsy
             "install_llama_prebuilt.py",
             "--resolve-prebuilt",
             "latest",
-            "--cpu-fallback",
+            cpu_flag,
             "--output-format",
             "json",
         ],
     )
     assert ilp.main() == ilp.EXIT_SUCCESS
-    # --cpu-fallback must suppress Intel GPU, route to fork (not upstream Vulkan)
+    # The CPU flag must suppress Intel GPU, route to fork (not upstream Vulkan)
     assert seen["host"].has_intel_gpu is False
     assert seen["repo"] == FORK
+
+
+@pytest.mark.parametrize(
+    "flags, expect_force, expect_persist",
+    [
+        ([], False, False),
+        # Automatic/transient last resort (arm64 GPU-build recovery): drops GPU but
+        # does NOT persist, so a later update heals to a GPU bundle (#6097).
+        (["--cpu-fallback"], True, False),
+        # Deliberate CPU-only (UNSLOTH_LLAMA_CPP_BACKEND=cpu): drops GPU AND persists so
+        # the updater re-asserts it and never revives the Intel iGPU crash (#7213).
+        (["--force-cpu"], True, True),
+        (["--cpu-fallback", "--force-cpu"], True, True),
+    ],
+)
+def test_cli_cpu_flags_thread_force_and_persist(
+    monkeypatch, tmp_path, flags, expect_force, expect_persist
+):
+    captured = {}
+    monkeypatch.setattr(ilp, "install_prebuilt", lambda **kw: captured.update(kw))
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        ["install_llama_prebuilt.py", "--install-dir", str(tmp_path / "llama.cpp"), *flags],
+    )
+    assert ilp.main() == ilp.EXIT_SUCCESS
+    assert captured["force_cpu"] is expect_force
+    assert captured["persist_force_cpu"] is expect_persist
 
 
 def test_route_to_vulkan_prebuilt_hidden_nvidia_not_rerouted():
