@@ -4028,6 +4028,23 @@ const useOwnsResearchMessage = () => {
     );
 };
 
+// Whether the active thread has a non-terminal durable research run. After a
+// reload the run is followed by the research store rather than an assistant-ui
+// run, so `thread.isRunning` is false while research is still active; message
+// edit/reload/branch actions must also gate on this to preserve one-run-per-chat.
+const useThreadResearchActive = (): boolean => {
+  const activeThreadId = useChatRuntimeStore((s) => s.activeThreadId);
+  return useResearchRunStore((state) => {
+    const runId = activeThreadId
+      ? state.latestRunByThreadId[activeThreadId]
+      : undefined;
+    const run = runId ? state.sessions[runId]?.run : undefined;
+    return Boolean(
+      run && !["completed", "failed", "cancelled"].includes(run.status),
+    );
+  });
+};
+
 const DeleteMessageButton: FC = () => {
   const aui = useAui();
   const messageId = useAuiState(({ message }) => message.id);
@@ -4132,6 +4149,7 @@ const EditAssistantMessageButton: FC = () => {
   const messageId = useAuiState(({ message }) => message.id);
   const researchRunId = useResearchMessageRunId();
   const isRunning = useAuiState(({ thread }) => thread.isRunning);
+  const researchActive = useThreadResearchActive();
   const setEditingId = useChatRuntimeStore((s) => s.setEditingMessageId);
 
   if (researchRunId) return null;
@@ -4139,7 +4157,7 @@ const EditAssistantMessageButton: FC = () => {
   return (
     <TooltipIconButton
       tooltip="Edit response"
-      disabled={isRunning}
+      disabled={isRunning || researchActive}
       onClick={() => setEditingId(messageId)}
     >
       <HugeiconsIcon
@@ -4154,6 +4172,7 @@ const EditAssistantMessageButton: FC = () => {
 const AssistantActionBar: FC = () => {
   const { forkMessage, forkDisabled } = useForkMessageAction();
   const researchRunId = useResearchMessageRunId();
+  const researchActive = useThreadResearchActive();
   const [detailsOpen, setDetailsOpen] = useState(false);
   const ttsEnabled = useVoiceSettingsStore((s) => s.ttsEnabled);
   // hideWhenRunning is thread-level, so a new run would hide this bar and its
@@ -4168,7 +4187,7 @@ const AssistantActionBar: FC = () => {
       >
         <CopyButton />
         <EditAssistantMessageButton />
-        {!researchRunId && (
+        {!researchRunId && !researchActive && (
           <ActionBarPrimitive.Reload asChild={true}>
             <TooltipIconButton tooltip="Refresh">
               <RefreshCwIcon strokeWidth={1.75} className="size-icon" />
@@ -4296,13 +4315,14 @@ const UserMessage: FC = () => {
 
 const UserActionBar: FC = () => {
   const ownsResearchMessage = useOwnsResearchMessage();
+  const researchActive = useThreadResearchActive();
   return (
     <ActionBarPrimitive.Root
       autohide="always"
       className="aui-user-action-bar-root flex gap-1 text-chat-icon-fg [&_button]:size-8 [&_button]:!rounded-full [&_button:hover]:bg-chat-icon-bg-hover [&_button:hover]:text-chat-icon-fg-hover"
     >
       <CopyButton />
-      {!ownsResearchMessage && (
+      {!ownsResearchMessage && !researchActive && (
         <ActionBarPrimitive.Edit asChild={true}>
           <TooltipIconButton tooltip="Edit" className="aui-user-action-edit">
             <HugeiconsIcon
@@ -4324,6 +4344,7 @@ const EditComposer: FC = () => {
   const aui = useAui();
   const { inputProps, isComposingRef } = useImeComposerInputHandlers();
   const resendAfterCancelRef = useRef(false);
+  const researchActive = useThreadResearchActive();
 
   useAuiEvent("thread.runEnd", () => {
     if (!resendAfterCancelRef.current) {
@@ -4352,6 +4373,7 @@ const EditComposer: FC = () => {
           <Button
             type="button"
             size="sm"
+            disabled={researchActive}
             onClick={(event) => {
               if (isComposingRef.current) {
                 event.preventDefault();
