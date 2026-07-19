@@ -166,8 +166,8 @@ parse_connect() {
   echo "[$AGENT] connect --no-launch printed:"; cat_redacted "$raw"
   CONNECT_ENV="$(grep -E '^(export |unset )' "$raw" || true)"
   # The launch command is the last non-export, non-status line. start.py
-  # prints "Studio <url> · model <id>" and "Updated ..." status lines first.
-  CONNECT_CMD="$(grep -vE '^(export |unset |Studio |Updated |Disabled |Warning|Loading)' "$raw" \
+  # prints "Unsloth <url> · model <id>" and "Updated ..." status lines first.
+  CONNECT_CMD="$(grep -vE '^(export |unset |Unsloth |Updated |Disabled |Warning|Loading)' "$raw" \
     | grep -E '[^[:space:]]' | tail -1)"
   [ -n "$CONNECT_CMD" ] || guide_fail "could not parse a launch command from connect --no-launch output"
   redact "$raw"

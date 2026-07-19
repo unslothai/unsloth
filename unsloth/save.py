@@ -228,7 +228,7 @@ def _loaded_via_remote_code(obj):
 
     Transformers loads auto_map code into the ``transformers_modules`` package, so a
     ``transformers_modules`` class proves the original load actually ran that remote code
-    (which the caller's / Studio's consent gate scans at load time). Export paths derive their
+    (which the caller's / Unsloth's consent gate scans at load time). Export paths derive their
     reload trust_remote_code from this - the already approved load decision - instead of from a
     checkpoint's static ``auto_map``: a model that loads with built-in classes must not have its
     unvetted remote code run when it is re-read during quantization export. Walks PEFT / wrapper
@@ -3879,7 +3879,7 @@ def _prewarm_base_model_hub_cache(
         from huggingface_hub import HfFileSystem, hf_hub_download, snapshot_download
 
         # Resolve the cache from the live env like the merge, not huggingface_hub's frozen
-        # constants: a runtime cache redirect (read-only default, Studio) would else miss (#6890).
+        # constants: a runtime cache redirect (read-only default, Unsloth) would else miss (#6890).
         try:
             from unsloth_zoo.hf_cache import _active_caches
             _hub_cache = _active_caches()[1]
