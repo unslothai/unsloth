@@ -10,8 +10,8 @@ import {
 import { cn } from "@/lib/utils";
 import {
   Alert02Icon,
-  PencilEdit02Icon,
   PlayIcon,
+  RemoveCircleIcon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { useEffect, useState } from "react";
@@ -64,7 +64,7 @@ export function SafetensorsDownloadCard({
   isLoadingThisModel,
   knownBytes,
   onLoad,
-  onUseInChat,
+  onEject,
   onTrain,
   onChange,
 }: {
@@ -80,7 +80,9 @@ export function SafetensorsDownloadCard({
   cachePath?: string | null;
   knownBytes?: number | null;
   onLoad: (opts: { ggufVariant?: string; expectedBytes?: number }) => void;
+  /** Accepted for API parity; the run bar ejects instead of opening chat. */
   onUseInChat?: () => void;
+  onEject?: () => void;
   onTrain?: () => void;
   onChange?: () => void;
 }) {
@@ -228,6 +230,8 @@ export function SafetensorsDownloadCard({
             )}
           </span>
           <div className="ml-auto flex items-center gap-0.5">
+            {/* Gear before the 3-dots menu. */}
+            <SamplingSettingsButton className="ml-0.5" />
             {/* Same 3-dots menu as GGUF, at repo level (no quant); pinning is
                 omitted in the run bar. Managed HF-cache repos only. */}
             {isDownloaded && !/^([/\\~.]|[A-Za-z]:)/.test(repoId) && (
@@ -242,7 +246,6 @@ export function SafetensorsDownloadCard({
                 iconClassName="size-4"
               />
             )}
-            <SamplingSettingsButton className="ml-0.5" />
           </div>
         </div>
         {/* Info/actions hairline; dropped for the run action row (no divider before
@@ -271,7 +274,7 @@ export function SafetensorsDownloadCard({
               onClick={() => {
                 if (!canRun) return;
                 if (isActive) {
-                  onUseInChat?.();
+                  onEject?.();
                   return;
                 }
                 onLoad({});
@@ -290,8 +293,8 @@ export function SafetensorsDownloadCard({
                 </>
               ) : isActive ? (
                 <>
-                  <HugeiconsIcon icon={PencilEdit02Icon} strokeWidth={1.75} />
-                  Chat
+                  <HugeiconsIcon icon={RemoveCircleIcon} strokeWidth={1.75} />
+                  Eject
                 </>
               ) : canRun ? (
                 <>

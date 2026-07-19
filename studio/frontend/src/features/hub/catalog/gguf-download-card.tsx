@@ -34,10 +34,10 @@ import {
   Folder01Icon,
   InformationCircleIcon,
   MoreVerticalIcon,
-  PencilEdit02Icon,
   PinIcon,
   PinOffIcon,
   PlayIcon,
+  RemoveCircleIcon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import {
@@ -548,7 +548,7 @@ export function GgufDownloadCard({
   preferLocalCache = false,
   isPartial = false,
   onLoad,
-  onUseInChat,
+  onEject,
   onChange,
 }: {
   repoId: string;
@@ -561,7 +561,9 @@ export function GgufDownloadCard({
   preferLocalCache?: boolean;
   isPartial?: boolean;
   onLoad: (opts: { ggufVariant?: string; expectedBytes?: number }) => void;
+  /** Accepted for API parity; the run bar ejects instead of opening chat. */
   onUseInChat?: () => void;
+  onEject?: () => void;
   onChange?: () => void;
 }) {
   const hfToken = useHfTokenStore((s) => s.token);
@@ -993,6 +995,8 @@ export function GgufDownloadCard({
           </PopoverContent>
         </Popover>
 
+        {/* Gear before the 3-dots menu. */}
+        <SamplingSettingsButton className="ml-0.5" />
         {/* Options only resolve managed HF-cache repos, so skip local paths;
             they also only apply to quants actually on disk. */}
         {selected &&
@@ -1015,7 +1019,6 @@ export function GgufDownloadCard({
               iconClassName="size-4"
             />
           )}
-        <SamplingSettingsButton className="ml-0.5" />
 
         {!isGgufRunCta && <CardDivider />}
 
@@ -1047,7 +1050,7 @@ export function GgufDownloadCard({
               return;
             }
             if (selectedIsActive) {
-              onUseInChat?.();
+              onEject?.();
               return;
             }
             if (!selected) return;
@@ -1105,8 +1108,8 @@ export function GgufDownloadCard({
             </span>
           ) : selectedIsActive ? (
             <>
-              <HugeiconsIcon icon={PencilEdit02Icon} strokeWidth={1.75} />
-              New Chat
+              <HugeiconsIcon icon={RemoveCircleIcon} strokeWidth={1.75} />
+              Eject
             </>
           ) : selected?.downloaded ? (
             <>

@@ -6,8 +6,8 @@ import { pinKey, usePinnedModelsStore } from "@/features/model-picker";
 import {
   CubeIcon,
   DownloadCircle02Icon,
-  FolderSearchIcon,
   PinIcon,
+  Search01Icon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import type { RefObject } from "react";
@@ -211,7 +211,7 @@ export function DiscoverList({
           <SkeletonList />
         ) : (
           <EmptyState
-            icon={query.trim() ? FolderSearchIcon : CubeIcon}
+            icon={query.trim() ? Search01Icon : CubeIcon}
             title={
               query.trim()
                 ? `No matching ${isDataset ? "datasets" : "models"}`
@@ -379,7 +379,7 @@ export function DownloadedList({
   if (cachedRows.length === 0 && localRows.length === 0) {
     return (
       <EmptyState
-        icon={query.trim() ? FolderSearchIcon : DownloadCircle02Icon}
+        icon={query.trim() ? Search01Icon : DownloadCircle02Icon}
         title={query.trim() ? "No matches on device" : "Nothing on device yet"}
         body={
           query.trim()

@@ -228,7 +228,9 @@ export function HubListHeader({
           </button>
         )}
         <div className="min-w-0 space-y-0.5">
-          <h2 className="whitespace-nowrap text-[18px] font-semibold tracking-[-0.02em] text-foreground">
+          {/* truncate keeps the heading on one line and clips a long search
+              query with an ellipsis instead of overflowing the pills. */}
+          <h2 className="truncate text-[18px] font-semibold tracking-[-0.02em] text-foreground">
             {title}
           </h2>
           {subtitle && (

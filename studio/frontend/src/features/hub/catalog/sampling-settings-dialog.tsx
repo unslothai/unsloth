@@ -29,6 +29,8 @@ import {
 import {
   type PerModelConfig,
   SidebarModelConfig,
+  applyPerModelConfigToRuntime,
+  currentRuntimePerModelConfig,
 } from "@/features/model-picker";
 import { RetrievalSettingsSection } from "@/features/rag";
 import { toast } from "@/lib/toast";
@@ -156,14 +158,22 @@ export function SamplingSettingsButton({ className }: { className?: string }) {
         });
         return;
       }
+      // selectModel reads config from the runtime store, not the selection, so
+      // apply it first (snapshotting the current one for rollback).
+      const previousConfig = currentRuntimePerModelConfig({
+        includeMaxSeqLength: true,
+      });
+      applyPerModelConfigToRuntime(config);
       void selectModel({
         id: activeCheckpoint,
+        source: "local",
         ggufVariant: runtime.activeGgufVariant ?? undefined,
         nativePathToken: nativeToken ?? undefined,
         nativePathExpiresAtMs: nativeExpiry,
         isGguf: activeModelIsGguf,
         isDownloaded: true,
-        config,
+        keepSpeculative: true,
+        previousConfig,
         forceReload: true,
       });
     },

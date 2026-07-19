@@ -55,18 +55,14 @@ import {
   InventoryTypeFilterControl,
   ResultListHeader,
 } from "./catalog/models-table";
-import {
-  type ModelTypeFilter,
-  matchesModelType,
-} from "./lib/model-type-filter";
 import { ModelsToolbar } from "./catalog/models-toolbar";
 import { OnDeviceFoldersDialog } from "./catalog/on-device-folders-dialog";
 import { OwnerScopeToggle } from "./catalog/owner-scope-toggle";
 import { useDiscoverSearch } from "./hooks/use-discover-search";
 import { useFeedWriteBack } from "./hooks/use-feed-write-back";
+import { useHiddenEmbeddingModelIds } from "./hooks/use-hidden-embedding-models";
 import { useHubFeed } from "./hooks/use-hub-feed";
 import { useHubModelVram } from "./hooks/use-hub-model-vram";
-import { useHiddenEmbeddingModelIds } from "./hooks/use-hidden-embedding-models";
 import { useModelsSelection } from "./hooks/use-models-selection";
 import {
   CHANNEL_TO_SECTION,
@@ -82,6 +78,10 @@ import {
   isHiddenModelId,
 } from "./lib/hidden-models";
 import { inventoryRowMatches, tokenizeQuery } from "./lib/inventory-search";
+import {
+  type ModelTypeFilter,
+  matchesModelType,
+} from "./lib/model-type-filter";
 import { resolveOwnerProviderLogo } from "./lib/provider-logos";
 import {
   buildDiscoverRows,
@@ -714,7 +714,10 @@ export function ModelsPage() {
         // The default feed only shows models with a provider logo.
         (!isFeedMode ||
           resolveOwnerProviderLogo(row.owner, row.repo) !== null) &&
-        matchesFormat(detectResultFormat(row.result), effectiveDiscoverFormat) &&
+        matchesFormat(
+          detectResultFormat(row.result),
+          effectiveDiscoverFormat,
+        ) &&
         matchesCapability(row.capabilities, deferredCapabilityFilter) &&
         (!activeChannel?.finetunableOnly || isUnslothFinetunable(row.result)) &&
         // Models already on disk stay visible regardless of device fit,
@@ -817,7 +820,8 @@ export function ModelsPage() {
       // Local rows may lack a repo id, so also check path and title.
       return (
         !isHiddenModelId(row.id, row.repoId, row.path, row.title) ||
-        (inventoryTokens.length > 0 && inventoryRowMatches(row, inventoryTokens))
+        (inventoryTokens.length > 0 &&
+          inventoryRowMatches(row, inventoryTokens))
       );
     },
     [hiddenEmbeddingModelIds, inventoryTokens],
@@ -1236,6 +1240,7 @@ export function ModelsPage() {
       onLoad: handleLoad,
       onLoadLocal: handleLoadLocal,
       onUseInChat: openNewChat,
+      onEject: () => void ejectModel(),
       onTrain: handleTrain,
       onInventoryChange: refreshInventory,
       onSearchHub: handleSearchHub,
@@ -1244,6 +1249,7 @@ export function ModelsPage() {
       handleLoad,
       handleLoadLocal,
       openNewChat,
+      ejectModel,
       handleTrain,
       handleSearchHub,
       refreshInventory,
