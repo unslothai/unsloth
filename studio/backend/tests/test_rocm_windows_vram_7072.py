@@ -206,6 +206,24 @@ def test_match_adapter_reports_unknown_when_more_active_than_visible():
     assert hw._match_adapter_used_to_devices([40 * GB, 0.5 * GB], [8 * GB]) == [None]
 
 
+def test_match_adapter_reports_unknown_when_usage_not_capacity_ordered():
+    # 8 GiB card near full (7 GiB) beside a lightly used 48 GiB card (5 GiB). The
+    # bigger usage (7) still fits the smaller card, so ranking cannot tell which
+    # LUID is which torch ordinal: both [8<-7, 48<-5] and [8<-5, 48<-7] are
+    # feasible. Without a verified mapping, report unknown rather than swap the
+    # per-index values that routes/training_vram.py consumes.
+    assert hw._match_adapter_used_to_devices([7 * GB, 5 * GB], [8 * GB, 48 * GB]) == [None, None]
+    # Device order must not matter (same physical situation, ordinals flipped).
+    assert hw._match_adapter_used_to_devices([7 * GB, 5 * GB], [48 * GB, 8 * GB]) == [None, None]
+    # Same-capacity cards with unequal usage are equally unattributable.
+    assert hw._match_adapter_used_to_devices([12 * GB, 8 * GB], [24 * GB, 24 * GB]) == [None, None]
+    # A single usage that fits both cards can sit on either -> unknown.
+    assert hw._match_adapter_used_to_devices([5 * GB], [48 * GB, 8 * GB]) == [None, None]
+    # But a capacity-forced assignment (usage exceeds the smaller card) is kept:
+    # 40 GiB can only be the 48 GiB card, so it is not fabrication.
+    assert hw._match_adapter_used_to_devices([40 * GB], [48 * GB, 8 * GB]) == [40 * GB, None]
+
+
 def test_perf_counter_parser_and_sentinel(monkeypatch):
     monkeypatch.setattr(hw.platform, "system", lambda: "Windows")
     monkeypatch.setattr(

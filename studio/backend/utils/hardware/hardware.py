@@ -796,12 +796,20 @@ def _rocm_windows_perf_counter_vram_by_adapter() -> Optional[list[tuple[str, flo
 def _match_adapter_used_to_devices(
     adapter_useds: list[float], device_totals: list[float]
 ) -> list[Optional[float]]:
-    """Attribute per-adapter used bytes to torch devices (by index position).
+    """Attribute per-adapter used bytes to torch devices (by capacity ranking).
 
     Windows shares no key between LUID counter instances and torch ordinals, so
-    the largest usage pairs with the largest-capacity device (single-model /
-    size-proportional-shard case), clamped to that total. Unmatched devices get
-    ``None``. Returns a list aligned to ``device_totals``.
+    usage is paired with capacity: the largest usage goes to the largest device,
+    clamped to that total. That pairing is trustworthy only when it is the *only*
+    feasible one, i.e. capacity forces it (a usage larger than every smaller
+    device can sit on just one card). When a smaller-capacity device could
+    equally hold a strictly larger usage (e.g. an 8 GiB card near full beside a
+    lightly used 48 GiB card), the two values could be swapped without violating
+    any capacity, so the ranking is a guess. There is no verified LUID-to-torch
+    mapping to break the tie, and a wrong guess both mislabels the System tab and
+    feeds ``routes/training_vram.py`` a wrong per-index free value, so report
+    unknown (``None``) for every device rather than fabricate. Unmatched devices
+    get ``None``. Returns a list aligned to ``device_totals``.
     """
     n = len(device_totals)
     if n == 0:
@@ -818,6 +826,18 @@ def _match_adapter_used_to_devices(
             return [None] * n
         useds = (non_trivial or useds)[:n]
     ranked_positions = sorted(range(n), key = lambda i: -device_totals[i])
+    # Usage per rank (largest usage to largest capacity), 0 for devices with no
+    # adapter counter, plus the capacity at that rank.
+    ranked_useds = [useds[rank] if rank < len(useds) else 0.0 for rank in range(n)]
+    ranked_totals = [device_totals[pos] for pos in ranked_positions]
+    # Ambiguous whenever a strictly larger usage would also fit the next
+    # smaller-capacity device: those two values could be swapped without breaking
+    # any capacity, so ranking cannot know which card actually holds which. No
+    # verified LUID->ordinal mapping exists to resolve it -> report unknown.
+    for rank in range(n - 1):
+        upper, lower = ranked_useds[rank], ranked_useds[rank + 1]
+        if upper > lower and upper <= ranked_totals[rank + 1]:
+            return [None] * n
     assigned: list[Optional[float]] = [None] * n
     for rank, pos in enumerate(ranked_positions):
         if rank < len(useds):
