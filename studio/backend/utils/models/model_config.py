@@ -2118,18 +2118,37 @@ def _persisted_embedders_path() -> Path:
     return _studio_root() / "embedding_verdicts.json"
 
 
+# Serializes the read-modify-write in _persist_embedder so two threads confirming
+# different embedders at once cannot each overwrite the file with a one-entry update
+# (a lost verdict) or collide on the temp file. Cross-process writers are inherently
+# best-effort -- os.replace stays atomic, and a dropped verdict is only an
+# optimization miss a later online re-confirmation heals.
+_persist_lock = threading.Lock()
+
+
+def _verdict_key(model_name: str) -> str:
+    """Case-folded key for the embedder allowlist. The verdict is a property of the
+    repo, not its spelling: model_info() is queried under the requested casing while
+    the settings route saves the cache-resolved casing, so keying by the exact string
+    would miss the persisted positive after a restart (``baai/model`` recorded,
+    ``BAAI/model`` looked up). Repo ids are case-insensitive, so fold both sides."""
+    return model_name.casefold()
+
+
 def _load_persisted_embedders() -> set:
-    """Repo ids recorded as embedders in a prior session; empty set on any error.
+    """Case-folded repo ids recorded as embedders in a prior session; empty set on any
+    error.
 
     Best-effort and never raises: a missing, empty, corrupt, or non-list file
     (and any read/decode error) reads as "nothing recorded" so callers fall back
-    to their normal cache-marker logic.
+    to their normal cache-marker logic. Folding at load time also normalizes any
+    mixed-case entries an older build may have written.
     """
     try:
         with open(_persisted_embedders_path(), encoding = "utf-8") as fh:
             data = json.load(fh)
         if isinstance(data, list):
-            return {name for name in data if isinstance(name, str)}
+            return {_verdict_key(name) for name in data if isinstance(name, str)}
     except Exception:
         pass
     return set()
@@ -2138,24 +2157,28 @@ def _load_persisted_embedders() -> set:
 def _persist_embedder(model_name: str) -> None:
     """Record *model_name* as an online-confirmed embedder, best-effort.
 
-    Only positive Hub verdicts are written (never a negative or a token): the
-    file is a durable allowlist the offline branch consults, gated there on the
-    active revision actually being materialized on disk, so a stale entry for a
-    since-deleted cache cannot resurrect a False. Any failure (unwritable home,
-    race) is swallowed -- persistence is an optimization, not a correctness
-    requirement for the online path that calls it.
+    Only positive Hub verdicts are written (never a negative or a token), case-folded
+    so the lookup matches regardless of casing: the file is a durable allowlist the
+    offline branch consults, gated there on the active revision actually being
+    materialized on disk, so a stale entry for a since-deleted cache cannot resurrect
+    a False. The read-modify-write is serialized under ``_persist_lock`` and writes
+    through a per-thread temp file, so concurrent confirmations cannot drop each
+    other's entry or collide. Any failure (unwritable home, race) is swallowed --
+    persistence is an optimization, not a correctness requirement for the online path.
     """
     try:
-        current = _load_persisted_embedders()
-        if model_name in current:
-            return
-        current.add(model_name)
-        path = _persisted_embedders_path()
-        path.parent.mkdir(parents = True, exist_ok = True)
-        tmp = path.with_name(path.name + f".{os.getpid()}.tmp")
-        with open(tmp, "w", encoding = "utf-8") as fh:
-            json.dump(sorted(current), fh)
-        os.replace(tmp, path)
+        key = _verdict_key(model_name)
+        with _persist_lock:
+            current = _load_persisted_embedders()
+            if key in current:
+                return
+            current.add(key)
+            path = _persisted_embedders_path()
+            path.parent.mkdir(parents = True, exist_ok = True)
+            tmp = path.with_name(path.name + f".{os.getpid()}.{threading.get_ident()}.tmp")
+            with open(tmp, "w", encoding = "utf-8") as fh:
+                json.dump(sorted(current), fh)
+            os.replace(tmp, path)
     except Exception as e:
         logger.debug(f"Could not persist embedder verdict for {model_name}: {e}")
 
@@ -2163,10 +2186,11 @@ def _persist_embedder(model_name: str) -> None:
 def _known_embedder(model_name: str, cache_key: tuple) -> bool:
     """True when *model_name* was confirmed an embedder online, this session or a
     prior one -- the session memo (authoritative, token-scoped) OR the persisted
-    cross-restart allowlist. Callers still gate this on a materialized snapshot."""
+    cross-restart allowlist (matched case-insensitively). Callers still gate this on a
+    materialized snapshot."""
     if _embedding_detection_cache.get(cache_key) is True:
         return True
-    return model_name in _load_persisted_embedders()
+    return _verdict_key(model_name) in _load_persisted_embedders()
 
 
 # The base-model weight files the RAG loader's default backend consumes. _get()
@@ -2180,6 +2204,25 @@ def _known_embedder(model_name: str, cache_key: tuple) -> bool:
 # fail on the first RAG load, the exact validate-then-fail this helper prevents.
 _ST_WEIGHT_FILE_RE = re.compile(r"^(model|pytorch_model)(-\d+-of-\d+)?\.(safetensors|bin)$")
 _ST_SHARD_RE = re.compile(r"^(model|pytorch_model)-(\d+)-of-(\d+)\.(safetensors|bin)$")
+
+# A SentenceTransformer Transformer module loads its weights AND an AutoTokenizer,
+# so a snapshot with a complete weight set but no tokenizer asset still fails the
+# local_files_only load. Any ONE of these is enough to load some tokenizer -- kept a
+# permissive union (fast tokenizer, config, or a WordPiece/BPE/SentencePiece vocab)
+# so an unusual-but-valid layout is not rejected, only a genuinely tokenizer-less
+# partial download.
+_ST_TOKENIZER_FILES = frozenset(
+    {
+        "tokenizer.json",
+        "tokenizer_config.json",
+        "tokenizer.model",
+        "vocab.txt",
+        "vocab.json",
+        "merges.txt",
+        "spiece.model",
+        "sentencepiece.bpe.model",
+    }
+)
 
 
 def _dir_has_complete_torch_weights(names: set) -> bool:
@@ -2214,16 +2257,17 @@ def _dir_has_complete_torch_weights(names: set) -> bool:
 
 
 def _snapshot_has_complete_weights(snap: Path) -> bool:
-    """True when *snap* is materialized with a config and a COMPLETE Torch weight
-    set the default SentenceTransformer backend can load -- the ``modules.json``
-    sentence-transformers marker aside.
+    """True when *snap* is materialized with a config, a tokenizer asset, and a
+    COMPLETE Torch weight set the default SentenceTransformer backend can load --
+    the ``modules.json`` sentence-transformers marker aside.
 
-    A tag-only feature-extraction embedder confirmed online has exactly this
-    (config plus weights, no ``modules.json``) and SentenceTransformer's auto-model
-    fallback loads it, so an online-confirmed positive may be trusted for it
-    offline. A partial download (config present but weights missing or an
-    incomplete shard set) does NOT satisfy this, so it must fail validation here
-    rather than at first indexing -- the validate-then-fail this guards against.
+    A tag-only feature-extraction embedder confirmed online has exactly this (config,
+    tokenizer, weights, no ``modules.json``) and SentenceTransformer's auto-model
+    fallback loads it, so an online-confirmed positive may be trusted for it offline.
+    A partial download -- config present but weights missing / an incomplete shard
+    set, or weights present but the tokenizer AutoTokenizer needs absent -- does NOT
+    satisfy this and must fail validation here rather than at first indexing, the
+    validate-then-fail this guards against.
     """
     try:
         if not any(
@@ -2231,14 +2275,19 @@ def _snapshot_has_complete_weights(snap: Path) -> bool:
         ):
             return False
         by_dir: dict = {}
+        has_tokenizer = False
         for path in snap.rglob("*"):
             try:
-                if path.is_file() and (
-                    _ST_WEIGHT_FILE_RE.match(path.name) or path.name.endswith(".index.json")
-                ):
+                if not path.is_file():
+                    continue
+                if path.name in _ST_TOKENIZER_FILES:
+                    has_tokenizer = True
+                if _ST_WEIGHT_FILE_RE.match(path.name) or path.name.endswith(".index.json"):
                     by_dir.setdefault(path.parent, set()).add(path.name)
             except OSError:
                 continue
+        if not has_tokenizer:
+            return False
         return any(_dir_has_complete_torch_weights(names) for names in by_dir.values())
     except OSError:
         return False

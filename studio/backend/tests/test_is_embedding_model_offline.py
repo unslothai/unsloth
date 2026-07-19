@@ -70,8 +70,8 @@ def _repo(
     """Build a real cache repo dir and point the ST cache root at it.
 
     ``snapshots``: (commit, sentence_transformer) tuples. A snapshot is written
-    fully loadable (config + weights) so only the marker varies. ``main_ref``
-    writes refs/main. Returns the snapshot dirs in the given order.
+    fully loadable (config + tokenizer + weights) so only the marker varies.
+    ``main_ref`` writes refs/main. Returns the snapshot dirs in the given order.
     """
     cache_root = root if root is not None else tmp_path / "cache"
     cache_root.mkdir(parents = True, exist_ok = True)
@@ -81,6 +81,7 @@ def _repo(
         d = repo / "snapshots" / name
         d.mkdir(parents = True, exist_ok = True)
         (d / "config.json").write_text("{}")
+        (d / "tokenizer.json").write_text("{}")
         (d / "model.safetensors").write_bytes(b"\0")
         if is_st:
             (d / "modules.json").write_text("[]")
@@ -202,6 +203,7 @@ def _st_snapshot(
     (snap / "modules.json").write_text("[]")
     if loadable:
         (snap / "config.json").write_text("{}")
+        (snap / "tokenizer.json").write_text("{}")
         (snap / "model.safetensors").write_bytes(b"\0")
     refs = root / repo_dir / "refs"
     refs.mkdir(parents = True, exist_ok = True)
@@ -276,6 +278,7 @@ def test_marker_onnx_only_snapshot_is_not_loadable(tmp_path, monkeypatch):
     snap.mkdir(parents = True)
     (snap / "modules.json").write_text("[]")
     (snap / "config.json").write_text("{}")
+    (snap / "tokenizer.json").write_text("{}")  # isolate the failure to the weight format
     (snap / "model.onnx").write_bytes(b"\0")
     # refs/main so the probe resolves this revision and reaches the weight check
     # (without it the answer would be None -- a cache miss -- for a different reason).
@@ -286,19 +289,41 @@ def test_marker_onnx_only_snapshot_is_not_loadable(tmp_path, monkeypatch):
     assert mc._embedding_marker_in_hf_cache("org/model") is False
 
 
+def test_marker_rejects_weights_without_tokenizer(tmp_path, monkeypatch):
+    # A snapshot with modules.json + config + a complete weight set but NO tokenizer
+    # asset is not loadable: SentenceTransformer's Transformer module also builds an
+    # AutoTokenizer, which fails offline when tokenizer.json / tokenizer_config.json /
+    # a vocab is absent. Accepting it would pass validation and then fail at load.
+    _cache_repo_with_files(tmp_path, monkeypatch, "model.safetensors", tokenizer = False)
+    assert mc._embedding_marker_in_hf_cache("org/model") is False
+
+
+@pytest.mark.parametrize("tok_file", ["tokenizer_config.json", "vocab.txt", "spiece.model"])
+def test_marker_accepts_alternate_tokenizer_assets(tmp_path, monkeypatch, tok_file):
+    # The tokenizer check is a permissive union: any one recognized asset (fast
+    # tokenizer json, a WordPiece vocab, a SentencePiece model, ...) is enough, so a
+    # valid non-tokenizer.json layout is not wrongly rejected.
+    _cache_repo_with_files(tmp_path, monkeypatch, "model.safetensors", tok_file, tokenizer = False)
+    assert mc._embedding_marker_in_hf_cache("org/model") is True
+
+
 def _cache_repo_with_files(
     tmp_path,
     monkeypatch,
     *files,
     commit = "aaa",
+    tokenizer = True,
 ):
-    """A cache repo whose active snapshot holds modules.json + config + *files*."""
+    """A cache repo whose active snapshot holds modules.json + config + a tokenizer +
+    *files*. ``tokenizer=False`` omits the tokenizer asset (a partial download)."""
     hf_root = tmp_path / "hf"
     repo = hf_root / "models--org--model"
     snap = repo / "snapshots" / commit
     snap.mkdir(parents = True)
     (snap / "modules.json").write_text("[]")
     (snap / "config.json").write_text("{}")
+    if tokenizer:
+        (snap / "tokenizer.json").write_text("{}")
     for name in files:
         target = snap / name
         target.parent.mkdir(parents = True, exist_ok = True)
@@ -624,6 +649,50 @@ def test_offline_persisted_verdict_not_trusted_when_snapshot_partial(tmp_path, m
     monkeypatch.setenv("HF_HUB_OFFLINE", "1")
     _fake_hf_model_info(monkeypatch, _no_network)
     assert mc.is_embedding_model("org/partial") is False  # partial snapshot -> not trusted
+
+
+def test_offline_persisted_verdict_matches_across_casing(tmp_path, monkeypatch):
+    # The verdict is recorded under the online-request spelling but the settings route
+    # saves the cache-resolved spelling, so an exact-string lookup would miss it. A
+    # tag-only embedder verified online as baai/model, then looked up offline as the
+    # saved BAAI/model, must still be recognized: the allowlist is case-folded.
+    _repo(tmp_path, monkeypatch, ("aaa", False), main_ref = "aaa", repo_id = "BAAI/model")
+
+    def _info(model_name, token = None):
+        return types.SimpleNamespace(tags = ["feature-extraction"], pipeline_tag = None)
+
+    _fake_hf_model_info(monkeypatch, _info)
+    assert mc.is_embedding_model("baai/model") is True  # online: confirmed as baai/model
+
+    mc._embedding_detection_cache.clear()  # restart: memo lost, disk verdict remains
+    monkeypatch.setenv("HF_HUB_OFFLINE", "1")
+    _fake_hf_model_info(monkeypatch, _no_network)
+    # Looked up under the cache-resolved casing the settings route persisted.
+    assert mc.is_embedding_model("BAAI/model") is True
+
+
+def test_persist_embedder_concurrent_writes_keep_every_verdict(tmp_path, monkeypatch):
+    # Concurrent online confirmations must not drop each other's entry: the
+    # read-modify-write is serialized and each writer uses a per-thread temp file, so
+    # every model persisted from parallel threads survives (a lost verdict would go
+    # unrecognized offline after a restart).
+    import threading
+
+    names = [f"org/emb-{i}" for i in range(24)]
+    barrier = threading.Barrier(len(names))
+
+    def _writer(name):
+        barrier.wait()  # maximize overlap on the shared file
+        mc._persist_embedder(name)
+
+    threads = [threading.Thread(target = _writer, args = (n,)) for n in names]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+
+    persisted = mc._load_persisted_embedders()
+    assert {n.casefold() for n in names} <= persisted
 
 
 def test_persist_embedder_is_best_effort_when_home_unwritable(tmp_path, monkeypatch):
