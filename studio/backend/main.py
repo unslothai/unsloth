@@ -1148,11 +1148,18 @@ def _get_cached_system_gpu_info(logger) -> dict[str, Any]:
             util = util_devices.get(idx, {})
 
             total_vram = util.get("vram_total_gb") or dev.get("memory_total_gb") or 0
-            used_vram = util.get("vram_used_gb") or 0
+            # None means usage is unknown (e.g. Windows ROCm perf counter
+            # unavailable); keep it None so the UI shows unknown, not a fabricated
+            # 0 used / full free. ``or 0`` would re-hide the reported bug.
+            used_vram = util.get("vram_used_gb")
 
             enriched_dev = dict(dev)
             enriched_dev["vram_used_gb"] = used_vram
-            enriched_dev["vram_free_gb"] = round(total_vram - used_vram, 2) if total_vram else 0
+            enriched_dev["vram_free_gb"] = (
+                round(total_vram - used_vram, 2)
+                if total_vram and used_vram is not None
+                else None
+            )
             enriched_dev["vram_utilization_pct"] = util.get("vram_utilization_pct")
             enriched_devices.append(enriched_dev)
 

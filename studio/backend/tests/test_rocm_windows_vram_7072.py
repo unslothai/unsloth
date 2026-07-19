@@ -200,6 +200,12 @@ def test_match_adapter_pairs_and_clamps():
     assert hw._match_adapter_used_to_devices([40 * GB], [48 * GB, 8 * GB]) == [40 * GB, None]
 
 
+def test_match_adapter_reports_unknown_when_more_active_than_visible():
+    # More adapters actively using VRAM than are visible (a GPU outside the mask):
+    # attribution would fabricate a value, so report unknown for every device.
+    assert hw._match_adapter_used_to_devices([40 * GB, 0.5 * GB], [8 * GB]) == [None]
+
+
 def test_perf_counter_parser_and_sentinel(monkeypatch):
     monkeypatch.setattr(hw.platform, "system", lambda: "Windows")
     monkeypatch.setattr(

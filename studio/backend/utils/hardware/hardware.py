@@ -810,6 +810,12 @@ def _match_adapter_used_to_devices(
     # Drop placeholder adapters only if they'd outnumber real devices.
     if len(useds) > n:
         non_trivial = [u for u in useds if u >= _ROCM_WIN_ADAPTER_MIN_BYTES]
+        if len(non_trivial) > n:
+            # More adapters are actively using VRAM than are visible here (a GPU
+            # outside the visibility mask, or an extra discrete adapter). Usage
+            # alone can't tell the visible set apart, so any pairing would
+            # fabricate values; report unknown rather than mis-assign.
+            return [None] * n
         useds = (non_trivial or useds)[:n]
     ranked_positions = sorted(range(n), key = lambda i: -device_totals[i])
     assigned: list[Optional[float]] = [None] * n
