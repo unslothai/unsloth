@@ -215,7 +215,16 @@ _SHADOWING_FLAGS: frozenset[str] = (
 
 # Shadowing flags that take no value -- strip the flag only, not the next token.
 _BOOLEAN_SHADOWING_FLAGS: frozenset[str] = frozenset(
-    {"--spec-default", "--jinja", "--no-jinja", "-cmoe", "--cpu-moe", "--mlock", "--no-mmap", "--mmap"}
+    {
+        "--spec-default",
+        "--jinja",
+        "--no-jinja",
+        "-cmoe",
+        "--cpu-moe",
+        "--mlock",
+        "--no-mmap",
+        "--mmap",
+    }
 )
 
 
