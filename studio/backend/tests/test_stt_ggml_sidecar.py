@@ -5,6 +5,7 @@ import http.server
 import io
 import json
 import threading
+import time
 import wave
 
 import numpy as np
@@ -22,6 +23,7 @@ from core.inference.stt_ggml_sidecar import (
 )
 from core.inference.stt_sidecar import (
     SttLanguageError,
+    SttLoadCancelledError,
     SttModelIdError,
     SttModelNotDownloadedError,
     SttUnavailableError,
@@ -200,7 +202,9 @@ def test_server_pid_is_tracked_for_parent_lifetime(monkeypatch):
     monkeypatch.setattr(ggml_module, "adopt_pid", lambda pid: events.append(("adopt", pid)))
     monkeypatch.setattr(ggml_module, "forget_pid", lambda pid: events.append(("forget", pid)))
     monkeypatch.setattr(
-        GgmlSttSidecar, "_wait_for_server", staticmethod(lambda process, port: None)
+        GgmlSttSidecar,
+        "_wait_for_server",
+        staticmethod(lambda process, port, cancel_event = None: None),
     )
 
     sidecar = GgmlSttSidecar()
@@ -236,7 +240,9 @@ def test_training_forces_whisper_server_off_gpu(monkeypatch):
     monkeypatch.setattr(ggml_module, "adopt_pid", lambda pid: None)
     monkeypatch.setattr(ggml_module, "forget_pid", lambda pid: None)
     monkeypatch.setattr(
-        GgmlSttSidecar, "_wait_for_server", staticmethod(lambda process, port: None)
+        GgmlSttSidecar,
+        "_wait_for_server",
+        staticmethod(lambda process, port, cancel_event = None: None),
     )
 
     monkeypatch.setattr(ggml_module, "_training_active", lambda: False)
@@ -251,6 +257,71 @@ def test_training_forces_whisper_server_off_gpu(monkeypatch):
     training.load("small")
     assert "--no-gpu" in commands[1]
     training.unload()
+
+
+def test_startup_is_cancellable_before_training(monkeypatch):
+    # A whisper-server still binding its (Metal/CUDA) backend must be preemptible
+    # so training coordination can stop it before admitting the run, instead of
+    # racing an allocating subprocess.
+    _available(monkeypatch)
+    monkeypatch.setattr(ggml_module, "_cached_model_path", lambda model_id: "/tmp/ggml.bin")
+
+    class FakeProcess:
+        pid = 4243
+
+        def __init__(self, *args, **kwargs):
+            self.terminated = False
+            self.killed = False
+
+        def poll(self):
+            return -15 if (self.terminated or self.killed) else None
+
+        def terminate(self):
+            self.terminated = True
+
+        def kill(self):
+            self.killed = True
+
+        def wait(self, timeout = None):
+            return 0
+
+    monkeypatch.setattr(ggml_module.subprocess, "Popen", FakeProcess)
+    monkeypatch.setattr(ggml_module, "adopt_pid", lambda pid: None)
+    monkeypatch.setattr(ggml_module, "forget_pid", lambda pid: None)
+
+    # The server never reports ready, so _wait_for_server loops until cancelled.
+    def never_ready(req, timeout = None):
+        raise OSError("connection refused")
+
+    monkeypatch.setattr(ggml_module.urllib.request, "urlopen", never_ready)
+
+    sidecar = GgmlSttSidecar()
+    result: dict = {}
+
+    def _load():
+        try:
+            sidecar.load("small")
+            result["ok"] = True
+        except Exception as exc:  # noqa: BLE001 - recorded for the assertion below
+            result["error"] = exc
+
+    thread = threading.Thread(target = _load)
+    thread.start()
+    try:
+        deadline = time.monotonic() + 5
+        while time.monotonic() < deadline and not sidecar.is_loading():
+            time.sleep(0.01)
+        assert sidecar.is_loading() is True
+        assert sidecar.cancel_pending_load() is True
+        # Blocks until the cancelled startup has been reaped and the lock freed.
+        sidecar.wait_for_load_to_settle()
+    finally:
+        thread.join(timeout = 5)
+
+    assert thread.is_alive() is False
+    assert isinstance(result.get("error"), SttLoadCancelledError)
+    assert sidecar.is_loading() is False
+    assert sidecar.loaded_model is None
 
 
 class _FakeWhisperHandler(http.server.BaseHTTPRequestHandler):
