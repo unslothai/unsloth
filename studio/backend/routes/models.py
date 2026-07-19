@@ -552,7 +552,7 @@ def _ollama_links_dir(ollama_dir: Path) -> Optional[Path]:
     """Return a writable directory for Ollama ``.gguf`` symlinks.
 
     Prefers ``<ollama_dir>/.studio_links/`` so links sit next to their
-    blobs; falls back to a per-ollama-dir namespace under Studio's cache
+    blobs; falls back to a per-ollama-dir namespace under Unsloth's cache
     when the models dir is read-only (common for system installs).
     """
     from utils.paths.storage_roots import cache_root
@@ -563,7 +563,7 @@ def _ollama_links_dir(ollama_dir: Path) -> Optional[Path]:
         return primary
     except OSError as e:
         logger.debug(
-            "Ollama dir %s not writable for .studio_links (%s); falling back to Studio cache",
+            "Ollama dir %s not writable for .studio_links (%s); falling back to Unsloth cache",
             ollama_dir,
             e,
         )
@@ -602,7 +602,7 @@ def _scan_ollama_dir(ollama_dir: Path, limit: Optional[int] = None) -> List[Loca
     model, keyed by a short hash of the manifest path, so
     ``detect_mmproj_file`` only sees that model's projector). Links are
     symlinks when possible, else hardlinks; the link dir is
-    ``.studio_links/`` when writable, else Studio's cache.
+    ``.studio_links/`` when writable, else Unsloth's cache.
     """
     manifests_root = ollama_dir / "manifests"
     if not manifests_root.is_dir():
@@ -1202,7 +1202,7 @@ def _build_browse_allowlist(
     """Return the root directories the folder browser may walk.
 
     The same list seeds the sidebar suggestion chips, so chip targets are
-    always reachable. Roots: HOME, resolved HF cache dirs, Studio's
+    always reachable. Roots: HOME, resolved HF cache dirs, Unsloth's
     outputs/exports/studio root, registered scan folders, and well-known
     local-LLM dirs (LM Studio, Ollama, ``~/models``); each added only if
     it resolves to a real directory.
@@ -1494,7 +1494,7 @@ def browse_folders(
             "Directory to list. If omitted, defaults to the current user's "
             "home directory. Tilde (`~`) and relative paths are expanded. "
             "Must resolve inside the allowlist of browseable roots (HOME, "
-            "HF cache, Studio dirs, registered scan folders, well-known "
+            "HF cache, Unsloth dirs, registered scan folders, well-known "
             "model dirs)."
         ),
     ),
@@ -2261,15 +2261,15 @@ async def delete_finetuned_model(
     gguf_variant: Optional[str] = Body(None),
     current_subject: str = Depends(get_current_subject),
 ):
-    """Delete a Studio-trained or exported model from disk.
+    """Delete an Unsloth-trained or exported model from disk.
 
-    Only paths under Studio's outputs/exports roots are accepted.
+    Only paths under Unsloth's outputs/exports roots are accepted.
     Exported GGUF entries can delete one quant variant at a time.
     """
     if source not in {"training", "exported"}:
         raise HTTPException(
             status_code = 400,
-            detail = "Only trained or exported Studio models can be deleted",
+            detail = "Only trained or exported Unsloth models can be deleted",
         )
 
     if not model_path or not model_path.strip():
@@ -2301,14 +2301,14 @@ async def delete_finetuned_model(
         if not _is_path_under_lexically(delete_path, allowed_root):
             raise HTTPException(
                 status_code = 400,
-                detail = "Model path is outside Studio storage",
+                detail = "Model path is outside Unsloth storage",
             )
         if export_type == "gguf" and gguf_variant:
             target_path = delete_path.resolve()
             if not _is_path_under(target_path, allowed_root):
                 raise HTTPException(
                     status_code = 400,
-                    detail = "Model path is outside Studio storage",
+                    detail = "Model path is outside Unsloth storage",
                 )
         else:
             target_path = delete_path
@@ -2321,7 +2321,7 @@ async def delete_finetuned_model(
     if should_check_resolved_path and not _is_path_under(target_path, allowed_root):
         raise HTTPException(
             status_code = 400,
-            detail = "Model path is outside Studio storage",
+            detail = "Model path is outside Unsloth storage",
         )
     if target_path == allowed_root:
         raise HTTPException(
@@ -3470,7 +3470,7 @@ _EXPORT_SIZE_CACHE: dict[str, tuple[int, int, str]] = {}
 
 
 def _is_sizable_local_path(model: str) -> bool:
-    """True only for local paths under a Studio data root.
+    """True only for local paths under an Unsloth data root.
 
     Containment is decided lexically (no filesystem access) before the path is
     touched, then the path is symlink-resolved and re-checked so a symlink

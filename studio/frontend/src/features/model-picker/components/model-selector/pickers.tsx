@@ -1679,7 +1679,7 @@ export function HubModelPicker({
   const deviceType = usePlatformStore((s) => s.deviceType);
   const isMac = deviceType === "mac";
 
-  // Drop models Studio can't run for chat (diffusion / image / video / etc.)
+  // Drop models Unsloth can't run for chat (diffusion / image / video / etc.)
   // using the Hub's classifier on the tags the listing already carries.
   const isChatSupported = useCallback(
     (r: HfModelResult) =>
@@ -1731,7 +1731,7 @@ export function HubModelPicker({
     let rows = recommendedSearch.results
       .filter((r) => !isHiddenModelId(r.id))
       .filter((r) => !isMobileVariant(r.id));
-    // Drop models Studio can't run for chat (diffusion / image / video / etc.).
+    // Drop models Unsloth can't run for chat (diffusion / image / video / etc.).
     rows = rows.filter(isChatSupported);
     // With no explicit format, show the device-recommended formats (GGUF, plus
     // MLX on Mac). When the user picks a format, honor it instead so Safetensors
@@ -1869,7 +1869,7 @@ export function HubModelPicker({
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [lmStudioModels, downloadedSort, formatFilter, loadTimes, localQuery],
   );
-  // Local ./models entries. Chat-only Studio runs GGUF (any host) and MLX (Mac
+  // Local ./models entries. Chat-only Unsloth runs GGUF (any host) and MLX (Mac
   // only), so raw checkpoints there are hidden (mirrors the cached non-GGUF
   // rule). An MLX build a Mac user dropped in ./models stays selectable.
   const sortedLocalDir = useMemo(

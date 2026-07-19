@@ -2897,7 +2897,7 @@ def _pick_rocm_gfx_target(out: str) -> str | None:
             break
     if _vis_raw is not None:
         _vis = _vis_raw.strip()
-        # Empty or "-1" means "no AMD GPU visible" (matches the rest of Studio).
+        # Empty or "-1" means "no AMD GPU visible" (matches the rest of Unsloth).
         if _vis == "" or _vis == "-1":
             return None
         _first = _vis.split(",")[0].strip()
@@ -4437,7 +4437,7 @@ def ensure_diffusion_visual_server(
     approved_checksums: ApprovedReleaseChecksums,
 ) -> None:
     """Best-effort placement of the DiffusionGemma visual-server binary next to
-    llama-server in the install tree, so Studio can serve DiffusionGemma GGUFs
+    llama-server in the install tree, so Unsloth can serve DiffusionGemma GGUFs
     without any DG_* env. This is an Unsloth artifact (not a ggml-org one), so it
     is optional: if it is already present we just make it executable, otherwise we
     try the published release and quietly skip on absence. A source build
@@ -4719,7 +4719,7 @@ def runtime_patterns_for_choice(choice: AssetChoice) -> list[str]:
     # repackage the SO/DLL set (e.g. ggml-org/llama.cpp#23462 split the
     # per-binary entry code into paired ``lib<binary>-impl.so`` shared
     # libraries between b9279 and b9283) without us re-enumerating
-    # every new file. Studio invokes llama-server, llama-quantize, and the
+    # every new file. Unsloth invokes llama-server, llama-quantize, and the
     # DiffusionGemma visual-server (when the bundle ships it, for native
     # DiffusionGemma serving); other CLIs upstream ships (llama-cli,
     # llama-bench, ...) are skipped.
@@ -6320,7 +6320,7 @@ def _linux_published_attempts(host: HostInfo, bundle: PublishedReleaseBundle) ->
     from asset names."""
     attempts: list[AssetChoice] = []
     if host.has_usable_nvidia:
-        # Prefer the cudart major Studio loads at runtime (torch's bundled
+        # Prefer the cudart major Unsloth loads at runtime (torch's bundled
         # libcudart), not the newest detected on disk. Without this a stray
         # cuda13 runtime outranks the torch cuda12 the binary links against.
         torch_preference = detect_torch_cuda_runtime_preference(host)
