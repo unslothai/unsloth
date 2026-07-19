@@ -180,12 +180,9 @@ def _guard_finite_logits(model):
         logits = getattr(output, "logits", None)
         if logits is None:
             return output
-        output.logits = torch.nan_to_num(
-            logits,
-            nan = 0.0,
-            posinf = 30.0,
-            neginf = -30.0,
-        ).clamp(-30.0, 30.0)
+        # nan_to_num maps nan -> 0 and the infinities to large finite values;
+        # clamp then bounds everything to [-30, 30].
+        output.logits = torch.nan_to_num(logits).clamp(-30.0, 30.0)
         return output
 
     model.register_forward_hook(_finite_logits_hook)
