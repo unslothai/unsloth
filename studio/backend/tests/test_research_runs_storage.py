@@ -423,6 +423,81 @@ def test_owner_scoped_claim_schema_migrates_to_global(tmp_path, monkeypatch):
     assert research_db.claim_next("migration-worker")["id"] == "alice-run"
 
 
+def test_owner_scoped_claim_migration_rolls_back_on_interruption(tmp_path, monkeypatch):
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path))
+    monkeypatch.setattr(studio_db, "_schema_ready", False)
+    studio_db.upsert_chat_thread(
+        {
+            "id": "shared-thread",
+            "title": "Shared",
+            "modelType": "base",
+            "modelId": "model",
+            "createdAt": 1,
+        }
+    )
+    conn = studio_db.get_connection()
+    try:
+        conn.execute("DROP TABLE research_thread_claims")
+        conn.execute(
+            """CREATE TABLE research_thread_claims (
+                   owner_subject TEXT NOT NULL,
+                   thread_id TEXT NOT NULL REFERENCES chat_threads(id) ON DELETE CASCADE,
+                   created_at INTEGER NOT NULL,
+                   PRIMARY KEY(owner_subject, thread_id)
+               ) WITHOUT ROWID"""
+        )
+        conn.execute(
+            "INSERT INTO research_thread_claims VALUES ('alice', 'shared-thread', 10)"
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    # Simulate a crash midway through the migration (after RENAME/CREATE/INSERT,
+    # right before DROP). With the atomic transaction the whole rebuild must roll
+    # back, leaving the legacy owner-scoped table and its data intact.
+    real_connect = studio_db.sqlite3.connect
+
+    class _FailingConnection(studio_db.sqlite3.Connection):
+        def execute(self, sql, *args, **kwargs):
+            if "DROP TABLE research_thread_claims_legacy" in sql:
+                raise RuntimeError("simulated crash during migration")
+            return super().execute(sql, *args, **kwargs)
+
+    def _failing_connect(path, *args, **kwargs):
+        kwargs["factory"] = _FailingConnection
+        return real_connect(path, *args, **kwargs)
+
+    monkeypatch.setattr(studio_db.sqlite3, "connect", _failing_connect)
+    studio_db._schema_ready = False
+    with pytest.raises(RuntimeError, match = "simulated crash"):
+        studio_db.get_connection()
+
+    # Recover: the interrupted migration left nothing half-applied, so a clean boot
+    # completes the migration and preserves the original claim exactly once.
+    monkeypatch.setattr(studio_db.sqlite3, "connect", real_connect)
+    studio_db._schema_ready = False
+    conn = studio_db.get_connection()
+    try:
+        primary_key = [
+            row["name"]
+            for row in conn.execute("PRAGMA table_info(research_thread_claims)").fetchall()
+            if row["pk"]
+        ]
+        claims = conn.execute(
+            "SELECT owner_subject, thread_id FROM research_thread_claims"
+        ).fetchall()
+        legacy = conn.execute(
+            "SELECT name FROM sqlite_master WHERE name = 'research_thread_claims_legacy'"
+        ).fetchall()
+    finally:
+        conn.close()
+
+    assert primary_key == ["thread_id"]
+    assert [tuple(row) for row in claims] == [("alice", "shared-thread")]
+    assert legacy == []
+
+
 def test_pruning_messages_preserves_runs_whose_user_message_survives(research_home):
     _create()
     studio_db.upsert_chat_message(

@@ -445,24 +445,37 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
         if int(row[5] or 0) > 0
     ]
     if claim_pk != ["thread_id"]:
-        conn.execute("ALTER TABLE research_thread_claims RENAME TO research_thread_claims_legacy")
-        conn.execute(
-            """
-            CREATE TABLE research_thread_claims (
-                owner_subject TEXT NOT NULL,
-                thread_id TEXT NOT NULL PRIMARY KEY REFERENCES chat_threads(id) ON DELETE CASCADE,
-                created_at INTEGER NOT NULL
-            ) WITHOUT ROWID
-            """
-        )
-        conn.execute(
-            """INSERT OR IGNORE INTO research_thread_claims
-               (owner_subject, thread_id, created_at)
-               SELECT owner_subject, thread_id, created_at
-               FROM research_thread_claims_legacy
-               ORDER BY created_at, owner_subject"""
-        )
-        conn.execute("DROP TABLE research_thread_claims_legacy")
+        # Rebuild the claims table (legacy owner_subject+thread_id PK -> thread_id PK)
+        # atomically. Without an explicit transaction the RENAME/CREATE/INSERT/DROP run
+        # in autocommit, so an interruption after CREATE left the new table empty and the
+        # rows orphaned in _legacy, and the migration never re-triggered.
+        conn.commit()
+        conn.execute("BEGIN IMMEDIATE")
+        try:
+            conn.execute(
+                "ALTER TABLE research_thread_claims RENAME TO research_thread_claims_legacy"
+            )
+            conn.execute(
+                """
+                CREATE TABLE research_thread_claims (
+                    owner_subject TEXT NOT NULL,
+                    thread_id TEXT NOT NULL PRIMARY KEY REFERENCES chat_threads(id) ON DELETE CASCADE,
+                    created_at INTEGER NOT NULL
+                ) WITHOUT ROWID
+                """
+            )
+            conn.execute(
+                """INSERT OR IGNORE INTO research_thread_claims
+                   (owner_subject, thread_id, created_at)
+                   SELECT owner_subject, thread_id, created_at
+                   FROM research_thread_claims_legacy
+                   ORDER BY created_at, owner_subject"""
+            )
+            conn.execute("DROP TABLE research_thread_claims_legacy")
+            conn.commit()
+        except Exception:
+            conn.rollback()
+            raise
     conn.execute(
         """INSERT OR IGNORE INTO research_thread_claims
            (owner_subject, thread_id, created_at)
