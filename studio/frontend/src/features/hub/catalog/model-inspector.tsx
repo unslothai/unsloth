@@ -531,11 +531,26 @@ export const ModelInspector = memo(function ModelInspector({
     ? formatCompact(model.totalParams)
     : "N/A";
   const unslothSupported = unslothSupport.status !== "unsupported";
+  // Embedding-only non-GGUF repos classify as supported but have no generative
+  // head, so a chat load dead-ends. Keep them out of the non-GGUF Run gate.
+  const isEmbeddingOnly =
+    !model.isGguf &&
+    model.capabilities.some((c) => c.key === "embedding") &&
+    !model.capabilities.some(
+      (c) =>
+        c.key === "conversational" ||
+        c.key === "tools" ||
+        c.key === "reasoning" ||
+        c.key === "code" ||
+        c.key === "vision" ||
+        c.key === "audio",
+    );
   // Chat-only hosts (no supported GPU / usable MLX) run inference only through
   // llama.cpp, so only GGUF is loadable.
   const canRunModel =
     !isDataset &&
     (model.runtimeCapabilities?.canChat ?? true) &&
+    !isEmbeddingOnly &&
     (model.isGguf || (!chatOnly && unslothSupported));
   const canTrainModel =
     !isDataset &&
