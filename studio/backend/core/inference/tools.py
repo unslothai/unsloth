@@ -492,18 +492,13 @@ def _python_payload_launches_startup_bypass(code: str, depth: int) -> bool:
             if command_node is None:
                 continue
             nested = _static_python_command_argument(command_node)
-            if nested is not None and _sandbox_python_startup_bypasses_guard(
-                nested, depth + 1
-            ):
+            if nested is not None and _sandbox_python_startup_bypasses_guard(nested, depth + 1):
                 return True
     return False
 
 
 def _segment_python_launch_bypasses_guard(
-    segment: list[str],
-    python_index: int,
-    environment_tainted: bool,
-    depth: int,
+    segment: list[str], python_index: int, environment_tainted: bool, depth: int
 ) -> bool:
     if environment_tainted or _segment_mutates_sandbox_python_env(segment, python_index):
         return True
@@ -3229,7 +3224,9 @@ def _render_html_computed_network_access(code: str, depth: int = 0) -> bool:
         arguments = _js_call_arguments(code, match.end())
         if arguments is None:
             return True
-        method = (match.group("insert") or match.group("contextual") or match.group("write")).lower()
+        method = (
+            match.group("insert") or match.group("contextual") or match.group("write")
+        ).lower()
         if _render_html_markup_call_reaches_network(arguments, method, depth):
             return True
 
@@ -6186,11 +6183,7 @@ def _check_signal_escape_patterns(code: str):
         def _source_loader_module_name(self, node) -> str | None:
             if isinstance(node, ast.Name):
                 return self.source_loader_names.get(node.id)
-            if (
-                isinstance(node, ast.Call)
-                and self._is_source_file_loader(node.func)
-                and node.args
-            ):
+            if isinstance(node, ast.Call) and self._is_source_file_loader(node.func) and node.args:
                 return self._static_string(node.args[0])
             return None
 

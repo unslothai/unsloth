@@ -1131,10 +1131,7 @@ def test_render_html_gated_only_when_networked():
         is True
     )
     assert (
-        rh(
-            "<script>document.createRange().createContextualFragment("
-            "'<p>Local</p>')</script>"
-        )
+        rh("<script>document.createRange().createContextualFragment('<p>Local</p>')</script>")
         is False
     )
     assert rh("<script>[img.src] = ['https://evil/x']</script>") is True

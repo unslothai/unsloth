@@ -380,6 +380,7 @@ def _guarded_import_module(name, package = None):
         _guard_loaded_httpcore_modules()
     return module
 
+
 def _guard_legacy_source_loader():
     cls = importlib.machinery.SourceFileLoader
     original = getattr(cls, "load_module", None)
@@ -450,12 +451,8 @@ def _make_network_guard_audit():
                 origin_relative = relpath(origin_path, root).replace("\\", "/")
                 code_relative = relpath(code_path, root).replace("\\", "/")
                 return (
-                    (
-                        origin_relative == package
-                        or origin_relative.startswith(f"{package}/")
-                    )
-                    and (code_relative == package or code_relative.startswith(f"{package}/"))
-                )
+                    origin_relative == package or origin_relative.startswith(f"{package}/")
+                ) and (code_relative == package or code_relative.startswith(f"{package}/"))
         except (OSError, ValueError):
             return False
         return False
@@ -483,9 +480,7 @@ def _make_network_guard_audit():
             ):
                 frame = frame.f_back
                 continue
-            return not (
-                frame_uses_package(frame, "httpx") or frame_uses_package(frame, "httpcore")
-            )
+            return not (frame_uses_package(frame, "httpx") or frame_uses_package(frame, "httpcore"))
         return True
 
     def audit(event, args):
@@ -494,18 +489,18 @@ def _make_network_guard_audit():
             if not isinstance(fullname, str):
                 return
             root = fullname.split(".", 1)[0]
-            if root in blocked or (
-                root in direct_blocked and sandbox_requested_import(2)
-            ):
+            if root in blocked or (root in direct_blocked and sandbox_requested_import(2)):
                 blocked_error(root)
             return
         if event not in {"socket.connect", "socket.connect_ex", "socket.getaddrinfo"}:
             return
         if httpcore_network_active():
             return
-        if package_in_stack("httpcore", 2) or package_in_stack(
-            "anyio", 2
-        ) or package_in_stack("trio", 2):
+        if (
+            package_in_stack("httpcore", 2)
+            or package_in_stack("anyio", 2)
+            or package_in_stack("trio", 2)
+        ):
             blocked_error("httpcore")
 
     return audit
