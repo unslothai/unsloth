@@ -479,6 +479,7 @@ def _run_update(
     asset: Optional[str],
     script: Path,
     pin_release_tag: Optional[str] = None,
+    install_kind: Optional[str] = None,
 ) -> None:
     """Worker: put the backend into a maintenance state, run the installer for
     the latest prebuilt, then refresh caches so the next load uses the new build.
@@ -522,6 +523,12 @@ def _run_update(
         if pin_release_tag:
             cmd.extend(["--published-release-tag", pin_release_tag])
         cmd.extend(_rocm_install_args(asset))
+        # Preserve a forced-CPU install across updates: on an Intel iGPU box
+        # detect_host would otherwise re-route to the Vulkan bundle and bring
+        # back the crash the override avoids (#7213). install_kind is *-cpu for
+        # every CPU bundle; the asset name has no "cpu" marker on Linux.
+        if install_kind and install_kind.endswith("-cpu"):
+            cmd.append("--cpu-fallback")
         logger.info("llama update: installing", cmd = " ".join(cmd))
         # Stream progress lines into job["progress"].
         env = dict(os.environ, UNSLOTH_PROGRESS_PERCENT_STEP = "5")
@@ -671,6 +678,7 @@ def start_update() -> dict:
         repo = marker.get("published_repo") or DEFAULT_PUBLISHED_REPO
         from_tag = marker.get("tag") or marker.get("release_tag")
         asset = marker.get("asset")
+        install_kind = marker.get("install_kind")
         # Install exactly the release the banner offered: the installer's own
         # "latest" is commit-date ordered and can lag the published_at pick
         # above, reinstalling the current build in a loop (the #6219 class).
@@ -705,6 +713,7 @@ def start_update() -> dict:
         repo = (res or {}).get("repo") or DEFAULT_PUBLISHED_REPO
         from_tag = None
         asset = (res or {}).get("asset")
+        install_kind = (res or {}).get("install_kind")
         # No pin: source-build detection resolves via --resolve-prebuilt latest,
         # the same resolver the unpinned apply uses, so the two already agree.
         pin_release_tag = None
@@ -735,7 +744,7 @@ def start_update() -> dict:
 
     thread = threading.Thread(
         target = _run_update,
-        args = (install_dir, repo, asset, script, pin_release_tag),
+        args = (install_dir, repo, asset, script, pin_release_tag, install_kind),
         name = "llama-cpp-update",
         daemon = True,
     )

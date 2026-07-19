@@ -83,6 +83,7 @@ def _write_install(
     repo: str = "unslothai/llama.cpp",
     asset: str | None = None,
     release_tag: str | None = None,
+    install_kind: str | None = None,
 ) -> str:
     """Create a fake prebuilt install and return the llama-server path."""
     bin_dir = dir_ / "build" / "bin"
@@ -99,6 +100,8 @@ def _write_install(
     }
     if asset is not None:
         marker["asset"] = asset
+    if install_kind is not None:
+        marker["install_kind"] = install_kind
     (dir_ / MARKER).write_text(json.dumps(marker))
     return str(binary)
 
@@ -491,6 +494,46 @@ def test_start_update_preserves_vulkan_via_env(monkeypatch, tmp_path):
         time.sleep(0.05)
     assert job["state"] == "success", job
     assert popen_kwargs["env"]["UNSLOTH_FORCE_VULKAN"] == "1"
+
+
+def test_start_update_preserves_cpu_via_flag(monkeypatch, tmp_path):
+    # A forced-CPU install (UNSLOTH_LLAMA_CPP_BACKEND=cpu) must re-assert
+    # --cpu-fallback on update, or detect_host on an Intel iGPU box re-routes to
+    # the Vulkan bundle and reintroduces the crash (#7213). Keyed off install_kind
+    # since the Linux CPU asset name carries no "cpu" marker.
+    install_dir = tmp_path / "llama.cpp"
+    binary = _write_install(
+        install_dir,
+        "b9493",
+        asset = "llama-b9493-bin-ubuntu-x64.tar.gz",
+        install_kind = "linux-cpu",
+    )
+    monkeypatch.setattr(upd, "_find_binary", lambda: binary)
+    monkeypatch.setattr(upd, "_installer_script", lambda: tmp_path / "install_llama_prebuilt.py")
+    monkeypatch.setattr(freshness, "_fetch_latest_release_tag", lambda repo, timeout = 5.0: "b9518")
+
+    captured: dict = {}
+
+    def _on_start(cmd):
+        captured["cmd"] = cmd
+        _write_install(
+            install_dir,
+            "b9518",
+            asset = "llama-b9518-bin-ubuntu-x64.tar.gz",
+            install_kind = "linux-cpu",
+        )
+
+    _patch_installer_popen(monkeypatch, lines = ["installed\n"], on_start = _on_start)
+
+    assert upd.start_update()["started"] is True
+    deadline = time.time() + 10
+    while time.time() < deadline:
+        job = upd.get_update_status()["job"]
+        if job["state"] in ("success", "error"):
+            break
+        time.sleep(0.05)
+    assert job["state"] == "success", job
+    assert "--cpu-fallback" in captured["cmd"]
 
 
 def test_start_update_reports_full_release_tag(monkeypatch, tmp_path):
