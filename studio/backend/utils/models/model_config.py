@@ -2079,7 +2079,13 @@ def download_gguf_file(
 _embedding_detection_cache: Dict[tuple, bool] = {}
 
 
-_ST_WEIGHT_SUFFIXES = (".safetensors", ".bin", ".pt", ".onnx")
+# Only the weight formats the RAG loader's default backend consumes. _get()
+# constructs SentenceTransformer without backend="onnx"/"openvino", so it loads
+# through Torch (model.safetensors / pytorch_model.bin, incl. sharded). ".onnx"
+# (and ".pt", which is not an HF weight filename) would let a snapshot cached
+# with only an ONNX export pass offline validation and then fail on the first
+# RAG load -- the exact validate-then-fail this helper exists to prevent.
+_ST_WEIGHT_SUFFIXES = (".safetensors", ".bin")
 
 
 def _snapshot_is_loadable_st_model(snap: Path) -> bool:
@@ -2090,7 +2096,8 @@ def _snapshot_is_loadable_st_model(snap: Path) -> bool:
     leave it behind too, so a snapshot can carry the marker while the weights and
     config SentenceTransformer needs are absent. Accepting that offline would
     pass validation and then fail on the first RAG load. Requires the marker plus
-    a config and at least one weight file somewhere in the snapshot.
+    a config and at least one weight file the default Torch backend can load
+    (``_ST_WEIGHT_SUFFIXES``) somewhere in the snapshot.
     """
     try:
         if not (snap / "modules.json").is_file():

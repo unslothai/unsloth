@@ -447,6 +447,34 @@ def _legb_chain(scope: Scope) -> list[Scope]:
 # ---------------------------------------------------------------- analysis
 
 
+def _collect_dunder_all(tree: ast.Module) -> set[str]:
+    """Module-level ``__all__`` string entries (``= [...]``, ``+= [...]``, or an
+    annotated assign).
+
+    A name listed in ``__all__`` is a public re-export, which is a real use of the
+    import that binds it. ``__all__`` entries are string constants, not ``Name``
+    loads, so the load-based use scan never sees them -- without this a package
+    ``__init__`` that adds ``from .x import y`` purely to re-export ``y`` looks
+    like an unused hoist and trips ``HOISTED-IMPORT-UNUSED``.
+    """
+    names: set[str] = set()
+    for node in tree.body:
+        if isinstance(node, ast.Assign):
+            targets = node.targets
+        elif isinstance(node, (ast.AnnAssign, ast.AugAssign)):
+            targets = [node.target]
+        else:
+            continue
+        if not any(isinstance(t, ast.Name) and t.id == "__all__" for t in targets):
+            continue
+        value = node.value
+        if isinstance(value, (ast.List, ast.Tuple, ast.Set)):
+            for elt in value.elts:
+                if isinstance(elt, ast.Constant) and isinstance(elt.value, str):
+                    names.add(elt.value)
+    return names
+
+
 def _analyze(src: str):
     tree = ast.parse(src)
     b = _Builder()
@@ -476,6 +504,16 @@ def _analyze(src: str):
         for n, bs in module.bindings.items()
         if any(x.kind in ("import", "importfrom") for x in bs)
     }
+    # Re-exports count as uses: a name listed in module-level __all__ that is bound
+    # by a module import is deliberately exported, not a dangling hoist. Fold its
+    # targets into the used set so HOISTED-IMPORT-UNUSED does not fire on a
+    # legitimately-added `from .x import y` in a package __init__.
+    for _n in _collect_dunder_all(tree):
+        _bs = module_imports.get(_n)
+        if _bs:
+            targets_by_scope.setdefault(module.qualname, set()).update(
+                x.target for x in _bs if x.target
+            )
     module_dup = {
         n
         for n, bs in module.bindings.items()
@@ -705,6 +743,20 @@ _SELF_TESTS = {
         "import os\ndef f(x):\n    import sys as _b\n    return x._b + _b.argv[0]\n",
         "import os\nimport sys\ndef f(x):\n    return x._b + sys.argv[0]\n",
         None,
+    ),
+    "reexport_in_all_is_used": (
+        # a new re-export added to a package __init__ (name in __all__, no load) is
+        # a deliberate export, NOT a botched hoist -> must not block
+        'from pkg import a\n__all__ = ["a"]\n',
+        'from pkg import a\nfrom pkg import b\n__all__ = ["a", "b"]\n',
+        None,
+    ),
+    "unused_import_not_in_all_still_blocks": (
+        # the fix is precise: a newly-added module import that is neither loaded nor
+        # listed in __all__ is still a dangling/unused hoist
+        'from pkg import a\n__all__ = ["a"]\n',
+        'from pkg import a\nfrom pkg import b\n__all__ = ["a"]\n',
+        "BLOCKER",
     ),
 }
 

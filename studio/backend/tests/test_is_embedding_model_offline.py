@@ -246,6 +246,23 @@ def test_marker_only_snapshot_is_not_loadable(tmp_path, monkeypatch):
     assert mc._embedding_marker_in_hf_cache("org/model") is False
 
 
+def test_marker_onnx_only_snapshot_is_not_loadable(tmp_path, monkeypatch):
+    # A snapshot with the marker and config but ONLY an ONNX export cached is not
+    # loadable: _get() builds SentenceTransformer with the default Torch backend
+    # (no backend="onnx"), which reads model.safetensors / pytorch_model.bin, so
+    # accepting the ONNX offline would pass validation and then fail on the first
+    # RAG load -- the same validate-then-fail as the marker-only case.
+    hf_root = tmp_path / "hf"
+    snap = hf_root / "models--org--model" / "snapshots" / "aaa"
+    snap.mkdir(parents = True)
+    (snap / "modules.json").write_text("[]")
+    (snap / "config.json").write_text("{}")
+    (snap / "model.onnx").write_bytes(b"\0")
+    _fake_hf_cache(monkeypatch, hf_root)
+    monkeypatch.delenv("SENTENCE_TRANSFORMERS_HOME", raising = False)
+    assert mc._embedding_marker_in_hf_cache("org/model") is False
+
+
 def _case_sensitive_fs(tmp_path) -> bool:
     probe = tmp_path / "_CaseProbe"
     probe.mkdir()
