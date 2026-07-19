@@ -169,11 +169,13 @@ def _yolo_command_flags(agent: str, yolo: bool) -> list:
 
 # OpenCode exposes --auto on its default TUI and `run` commands, but not on utility
 # subcommands. Keep the explicit list so `unsloth start opencode --yolo serve` does not
-# become an invalid `opencode serve --auto` invocation. Unknown first positionals are
-# project paths for the default TUI and therefore support --auto.
+# become an invalid `opencode serve --auto` invocation. This must include commands that
+# are hidden from `opencode --help` but still registered and reject --auto (console,
+# generate). Unknown first positionals are project paths for the default TUI and so
+# support --auto.
 _OPENCODE_NON_AUTO_SUBCOMMANDS = frozenset(
     "completion acp mcp attach debug providers auth agent upgrade uninstall serve web "
-    "models stats export import github pr session plugin plug db".split()
+    "models stats export import github pr session plugin plug db console generate".split()
 )
 _OPENCODE_GLOBAL_BOOLEAN_OPTIONS = frozenset(
     "-h --help -v --version --print-logs --pure --mdns".split()
@@ -237,6 +239,11 @@ def _opencode_native_auto_args(args: list[str], yolo: bool) -> tuple[list[str], 
     if _opencode_subcommand(routed) in _OPENCODE_NON_AUTO_SUBCOMMANDS:
         return routed, False
     separator = routed.index("--") if "--" in routed else len(routed)
+    # --mini starts OpenCode's minimal TUI, which routes through runMini and always runs
+    # with auto=false (it never forwards --auto), so appending --auto silently does
+    # nothing. Fall back to the config permission block so --yolo still auto-approves.
+    if any(arg == "--mini" or arg.startswith("--mini=") for arg in routed[:separator]):
+        return routed, False
     if "--auto" not in routed[:separator]:
         routed.insert(separator, "--auto")
     return routed, True

@@ -2333,6 +2333,12 @@ def test_yolo_opencode_old_version_uses_config_fallback(fake_studio, monkeypatch
         (["serve"], ["serve"], False),
         (["--print-logs", "serve"], ["--print-logs", "serve"], False),
         (["run", "--auto", "hello"], ["run", "--auto", "hello"], True),
+        # Hidden commands that reject --auto fall back like the visible utility ones.
+        (["generate"], ["generate"], False),
+        (["console", "login"], ["console", "login"], False),
+        # --mini ignores --auto (runMini forces auto=false), so use the config fallback.
+        (["--mini"], ["--mini"], False),
+        (["--session", "sid", "--mini"], ["--session", "sid", "--mini"], False),
     ],
 )
 def test_opencode_native_auto_args(args, expected, native):
@@ -2348,6 +2354,24 @@ def test_yolo_opencode_non_agent_subcommand_uses_config_fallback(fake_studio):
     assert result.exit_code == 0, result.output
     command = _launch_command(result.output)
     assert command == ["opencode", "serve"]
+    assert _opencode_inline_config(result.output)["permission"] == {
+        "edit": "allow",
+        "bash": "allow",
+        "webfetch": "allow",
+        "external_directory": {"*": "allow"},
+    }
+
+
+@pytest.mark.parametrize("passthrough", (["generate"], ["console", "login"], ["--mini"]))
+def test_yolo_opencode_no_auto_command_uses_config_fallback(fake_studio, passthrough):
+    # generate/console are registered but hidden and reject --auto; --mini ignores it.
+    # None must get --auto appended, and each must keep the config permission fallback.
+    result = CliRunner().invoke(
+        start.start_app,
+        ["opencode", "--yolo", "--no-launch", *passthrough],
+    )
+    assert result.exit_code == 0, result.output
+    assert _launch_command(result.output) == ["opencode", *passthrough]
     assert _opencode_inline_config(result.output)["permission"] == {
         "edit": "allow",
         "bash": "allow",
