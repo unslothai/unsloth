@@ -2404,14 +2404,13 @@ _TOOL_WEB_EXPANDED_TIP = (
 )
 _TOOL_CODE_TIP = (
     "Use code execution for math, calculations, data processing, or to parse "
-    "and analyze information from tool results. The python and terminal tools "
-    "run in a sandbox whose working directory is an isolated scratch space that "
-    "may already hold files from earlier work and can reach only a fixed "
-    "allowlist of public sites, not the user's own machines or private hosts, so "
-    "do not assume a file, folder, or repository the user mentions is already "
-    "present. List the working directory to see what is there; if what you need "
-    "is not present, ask the user to upload it or give an exact path rather than "
-    "running commands against a guessed one."
+    "and analyze information from tool results. It runs in a sandbox whose "
+    "working directory is an isolated scratch space that may already hold files "
+    "from earlier work; it cannot access the user's own computer, and its "
+    "internet access is limited, so do not assume a file, folder, or repository "
+    "the user mentions is already present. List the working directory to see "
+    "what is there; if what you need is not present, ask the user to provide it "
+    "or give an exact path rather than running commands against a guessed one."
 )
 _TOOL_ARTIFACT_TIP = (
     "For HTML, CSS, or JavaScript canvas requests, call render_html once when "

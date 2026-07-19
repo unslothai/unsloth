@@ -22,7 +22,12 @@ _BACKEND_DIR = str(Path(__file__).resolve().parent.parent)
 if _BACKEND_DIR not in sys.path:
     sys.path.insert(0, _BACKEND_DIR)
 
-from core.inference.tools import PYTHON_TOOL, TERMINAL_TOOL, _SANDBOX_PATHS_NOTE
+from core.inference.tools import (
+    PYTHON_TOOL,
+    TERMINAL_TOOL,
+    _SANDBOX_PATHS_NOTE,
+    _bash_exec,
+)
 
 
 def test_note_does_not_claim_full_network_isolation():
@@ -48,3 +53,34 @@ def test_note_does_not_claim_project_sandbox_starts_empty():
 def test_note_is_appended_to_both_tool_descriptions():
     assert PYTHON_TOOL["function"]["description"].endswith(_SANDBOX_PATHS_NOTE)
     assert TERMINAL_TOOL["function"]["description"].endswith(_SANDBOX_PATHS_NOTE)
+
+
+def test_note_scopes_network_block_to_the_terminal_not_all_shell_commands():
+    # The terminal leaves the network namespace intact and does not block git/pip,
+    # so the note must not claim shell network is fully blocked; it names the
+    # commands that are blocked (curl / wget) and attributes the host allowlist to
+    # the python tool.
+    lowered = _SANDBOX_PATHS_NOTE.lower()
+    assert "shell network commands are blocked" not in lowered
+    assert "curl" in lowered and "wget" in lowered
+    assert "python tool can fetch" in lowered
+
+
+def test_note_distinguishes_attachments_from_sandbox_uploads():
+    # Chat/project document uploads land in the RAG store, not the sandbox workdir,
+    # so the note must not tell the model that uploaded files appear via `ls`.
+    lowered = _SANDBOX_PATHS_NOTE.lower()
+    assert "was uploaded" not in lowered
+    assert "or that is uploaded" not in lowered
+    assert "retrieved separately" in lowered
+    assert "attach" in lowered
+
+
+def test_blocked_network_command_message_points_to_python_egress():
+    # A blocked curl/wget must not tell the model the whole sandbox is offline: the
+    # python tool can still fetch allowlisted public hosts.
+    msg = _bash_exec("curl https://raw.githubusercontent.com/foo/bar/main/x.py").lower()
+    assert "blocked command" in msg
+    assert "cannot reach other machines or remote hosts" not in msg
+    assert "python" in msg
+    assert "github.com" in msg

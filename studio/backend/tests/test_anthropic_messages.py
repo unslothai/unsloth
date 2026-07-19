@@ -173,6 +173,25 @@ class TestToolActionNudge:
     def test_balanced_nudge_empty_without_known_tool_categories(self):
         assert _build_tool_action_nudge(tools = [], model_name = "Llama-3.1-8B-Instruct") == ""
 
+    def test_code_tip_does_not_name_a_disabled_sibling_code_tool(self):
+        # has_code fires when either python or terminal is present, so the code tip
+        # must stay tool-neutral: a request that enabled only one must never name
+        # the other as an available tool (the missing-tool hallucination the
+        # render_html gate already avoids).
+        py_only = _build_tool_action_nudge(
+            tools = [{"type": "function", "function": {"name": "python"}}],
+            model_name = "Llama-3.1-8B-Instruct",
+        )
+        assert "Use code execution for math" in py_only
+        assert "terminal" not in py_only.lower()
+
+        term_only = _build_tool_action_nudge(
+            tools = [{"type": "function", "function": {"name": "terminal"}}],
+            model_name = "Llama-3.1-8B-Instruct",
+        )
+        assert "Use code execution for math" in term_only
+        assert "python" not in term_only.lower()
+
 
 # =====================================================================
 # Pydantic model tests

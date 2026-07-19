@@ -2955,18 +2955,21 @@ WEB_SEARCH_TOOL = {
 _SANDBOX_PATHS_NOTE = (
     " The working directory is an isolated scratch space that may already hold "
     "files from earlier work in this conversation or project, plus anything you "
-    "create here or that is uploaded; it persists across this conversation and, "
-    "for a project, across the project's threads. Code execution can fetch from a "
-    "fixed allowlist of public sites (such as github.com, huggingface.co, and "
-    "pypi.org); shell network commands are blocked, and neither can reach the "
-    "user's own machines, private hosts, or arbitrary addresses. A repository, "
-    "folder, or file the user refers to is not present "
-    "here unless it was uploaded, created here, or already part of this project, "
-    "so list the working directory to see what is available rather than assuming "
-    "a mentioned path exists or guessing where it lives. Read and write files "
-    "using relative paths in the working directory; absolute paths like "
-    "/mnt/data or /tmp/outputs do not exist. If the files you need are not here, "
-    "ask the user to upload them or provide an exact path instead of guessing one."
+    "create here; it persists across this conversation and, for a project, "
+    "across the project's threads. It cannot see the user's own computer or the "
+    "files stored on it. Internet access is limited: the python tool can fetch "
+    "only from a fixed allowlist of public sites (such as github.com, "
+    "huggingface.co, and pypi.org), not the user's own machines, private hosts, "
+    "or arbitrary addresses, and the terminal blocks direct download commands "
+    "like curl and wget. Documents the user attaches to the chat are retrieved "
+    "separately and are not listed here. A repository, folder, or file the user "
+    "refers to is not present here unless you created it here or it is already "
+    "part of this project, so list the working directory to see what is "
+    "available rather than assuming a mentioned path exists or guessing where it "
+    "lives. Read and write files using relative paths in the working directory; "
+    "absolute paths like /mnt/data or /tmp/outputs do not exist. If the files "
+    "you need are not here, ask the user to provide them or an exact path "
+    "instead of guessing one."
 )
 
 PYTHON_TOOL = {
@@ -5849,11 +5852,12 @@ def _bash_exec(
             base = f"Blocked command(s) for safety: {', '.join(sorted(blocked))}."
             if blocked & _NETWORK_BLOCKED_COMMANDS:
                 return (
-                    base + " This sandbox cannot reach other machines or remote "
-                    "hosts over the network, so files that live on another "
-                    "machine are not accessible from here. Do not retry with "
-                    "other remote-access commands; ask the user to upload the "
-                    "files they want you to work with."
+                    base + " Direct network commands are blocked in the "
+                    "terminal. Public files on allowlisted sites (such as "
+                    "github.com, huggingface.co, or pypi.org) can be downloaded "
+                    "from Python code instead; the user's own machine and other "
+                    "private or arbitrary hosts are not reachable, so for those "
+                    "ask the user to upload the files they want you to work with."
                 )
             return base
     elif not _harden_parent_against_proc_env_leak():
