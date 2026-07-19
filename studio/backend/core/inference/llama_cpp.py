@@ -48,7 +48,6 @@ from core.inference.llama_server_args import (
     parse_ctx_override,
     parse_split_mode_override,
     resolve_requested_ctx,
-    resolve_tensor_parallel,
     strip_shadowing_flags,
     strip_split_mode_only,
 )
