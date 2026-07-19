@@ -1166,7 +1166,12 @@ def _wsl_shim_env(command: list, env: dict, unset_env: tuple) -> tuple[dict, tup
     wsl_env_bridge = _wsl_bridge_names(env, unset_env) if _wsl_windows_executable(command) else ()
     if not wsl_env_bridge:
         return env, wsl_env_bridge
-    return {**env, "PWD": os.getcwd()}, (*wsl_env_bridge, "PWD/p")
+    # Bridge PWD so the Windows shim discovers its project root from the live working
+    # directory rather than a stale inherited Linux PWD. Only add PWD/p to WSLENV here;
+    # do NOT freeze env["PWD"], so a --no-launch recipe translates the shell's live PWD
+    # when it is eventually run, not the directory it was generated in. _launch applies
+    # the concrete cwd override for a direct launch.
+    return env, (*wsl_env_bridge, "PWD/p")
 
 
 def _launch(
@@ -1181,6 +1186,9 @@ def _launch(
     env, wsl_env_bridge = _wsl_shim_env(command, env, unset_env)
     child_env = dict(os.environ)
     if wsl_env_bridge:
+        # Override the possibly-stale inherited PWD with this process's real cwd so the
+        # Windows shim (via WSLENV PWD/p) resolves the correct project root on launch.
+        env = {**env, "PWD": os.getcwd()}
         child_env["WSLENV"] = _merge_wslenv(child_env.get("WSLENV", ""), wsl_env_bridge)
         for name in unset_env:
             child_env[name] = ""
@@ -1248,8 +1256,8 @@ def _run(
     if launch and clear_screen:
         click.clear()
     typer.echo(f"Studio {base} · model {entry['id']}")
-    env, wsl_env_bridge = _wsl_shim_env(command, env, unset_env)
     if not launch:
+        env, wsl_env_bridge = _wsl_shim_env(command, env, unset_env)
         _print_env(env, command, unset_env = unset_env, wsl_env_bridge = wsl_env_bridge)
         return
     try:
