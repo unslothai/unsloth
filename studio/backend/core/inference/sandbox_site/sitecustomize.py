@@ -279,14 +279,6 @@ def _guarded_import_module(name, package = None):
     return module
 
 
-def _network_import_audit(event, args):
-    if event != "import" or not args:
-        return
-    root = _blocked_network_module(args[0])
-    if root is not None:
-        _raise_blocked_network_module(root)
-
-
 class _BlockedNetworkModuleFinder:
     _unsloth_blocked_network_guard = True
 
@@ -302,12 +294,73 @@ class _BlockedNetworkModuleFinder:
         return None
 
 
+def _loaded_from_sandbox_site():
+    """True when this shim is imported from the sandbox site dir on PYTHONPATH.
+
+    The parent adds this directory to a sandbox child's PYTHONPATH, so its
+    presence confirms the child is still running under the sandbox launcher even
+    if ``UNSLOTH_STUDIO_SANDBOXED`` has been altered in ``os.environ``.
+    """
+    try:
+        module_dir = os.path.realpath(os.path.dirname(__file__))
+    except (OSError, NameError, TypeError):
+        return False
+    for entry in os.environ.get("PYTHONPATH", "").split(os.pathsep):
+        if not entry:
+            continue
+        try:
+            if os.path.realpath(entry) == module_dir:
+                return True
+        except OSError:
+            continue
+    return False
+
+
+def _sandbox_guard_should_activate():
+    """Decide whether to install the runtime network guard.
+
+    Normal sandbox children set ``UNSLOTH_STUDIO_SANDBOXED=1``. Bypass (full
+    access) removes the variable entirely, so an absent flag means "do not
+    guard". A flag that is PRESENT but not ``"1"`` (e.g. sandbox code running
+    ``os.environ['UNSLOTH_STUDIO_SANDBOXED']='0'`` before spawning a child to
+    escape the guard) is tampering: keep the guard on as long as this shim was
+    still loaded from the sandbox site dir the launcher put on PYTHONPATH.
+    """
+    flag = os.environ.get("UNSLOTH_STUDIO_SANDBOXED")
+    if flag == "1":
+        return True
+    if flag is None:
+        return False
+    return _loaded_from_sandbox_site()
+
+
 def _install_import_guard():
     global _import_guard_installed
-    if os.environ.get("UNSLOTH_STUDIO_SANDBOXED") != "1":
+    if not _sandbox_guard_should_activate():
         return
     if not _import_guard_installed:
-        sys.addaudithook(_network_import_audit)
+        # Capture the block sets and trust probe as closure locals. Audit hooks
+        # cannot be removed once registered, so this hook is the backstop for the
+        # import wrapper and meta-path finder (both of which sandbox code can
+        # restore/detach). Reading globals here would let sandbox code neutralise
+        # it by rebinding this module's attributes, so the decision is frozen.
+        blocked_roots = frozenset(_BLOCKED_NETWORK_MODULES)
+        direct_roots = frozenset(_DIRECT_BLOCKED_NETWORK_MODULES)
+        sandbox_requested = _sandbox_code_requested_import
+
+        def _immutable_network_import_audit(event, args):
+            if event != "import" or not args:
+                return
+            name = args[0]
+            if not isinstance(name, str):
+                return
+            root = name.split(".", 1)[0]
+            if root in blocked_roots or (root in direct_roots and sandbox_requested()):
+                raise ModuleNotFoundError(
+                    f"Blocked: low-level network module {root!r} is unavailable in sandboxed code"
+                )
+
+        sys.addaudithook(_immutable_network_import_audit)
         builtins.__import__ = _guarded_import
         importlib.import_module = _guarded_import_module
         _import_guard_installed = True

@@ -394,6 +394,61 @@ class TestSandboxEnvIsolation:
         assert bypass.returncode == 0, bypass.stderr
         assert bypass.stdout.strip() == "7"
 
+    def test_runtime_import_guard_survives_global_tampering(self, monkeypatch, tmp_path):
+        # Sandbox code can restore builtins.__import__, detach the meta-path
+        # finder and rebind this module's globals, but the audit hook (which
+        # cannot be removed) freezes its decision in a closure and still blocks.
+        from core.inference.tools import _build_safe_env
+
+        monkeypatch.setenv("UNSLOTH_STUDIO_SANDBOXED", "1")
+        code = (
+            "import sys, builtins, sitecustomize\n"
+            "sitecustomize._blocked_network_module = lambda _: None\n"
+            "sitecustomize._BLOCKED_NETWORK_MODULES = frozenset()\n"
+            "builtins.__import__ = sitecustomize._original_import\n"
+            "sys.meta_path[:] = [f for f in sys.meta_path "
+            "if not getattr(f, '_unsloth_blocked_network_guard', False)]\n"
+            "name = ''.join(['bo', 'to3'])\n"
+            "print(__import__(name).__name__)\n"
+        )
+        result = subprocess.run(
+            [sys.executable, "-c", code],
+            cwd = tmp_path,
+            env = _build_safe_env(str(tmp_path)),
+            capture_output = True,
+            text = True,
+            check = False,
+        )
+        assert result.returncode != 0
+        assert "Blocked: low-level network module 'boto3'" in result.stderr
+
+    def test_runtime_import_guard_survives_env_flag_reset_for_children(self, tmp_path):
+        # Clearing UNSLOTH_STUDIO_SANDBOXED before spawning a child must not
+        # unguard the child: the child re-imports this shim from the sandbox site
+        # dir still on PYTHONPATH, which is itself the sandbox signal.
+        from core.inference.tools import _build_safe_env
+
+        code = (
+            "import os, subprocess, sys\n"
+            "os.environ['UNSLOTH_STUDIO_SANDBOXED'] = '0'\n"
+            "r = subprocess.run([sys.executable, '-c', 'import boto3'], "
+            "capture_output=True, text=True)\n"
+            "sys.stdout.write('RC=%d\\n' % r.returncode)\n"
+            "sys.stdout.write('BLOCKED=%d\\n' % "
+            "(\"low-level network module 'boto3'\" in r.stderr))\n"
+        )
+        result = subprocess.run(
+            [sys.executable, "-c", code],
+            cwd = tmp_path,
+            env = _build_safe_env(str(tmp_path)),
+            capture_output = True,
+            text = True,
+            check = False,
+        )
+        assert result.returncode == 0, result.stderr
+        assert "RC=1" in result.stdout
+        assert "BLOCKED=1" in result.stdout
+
     @pytest.mark.parametrize(
         "code",
         [

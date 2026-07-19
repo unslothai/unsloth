@@ -325,9 +325,18 @@ def _sandbox_python_startup_bypasses_guard(command: str, depth: int = 0) -> bool
     for segment in _shell_command_segments(command):
         first = os.path.basename(segment[0].replace("\\", "/")).lower()
         wrapper_context = first in _PYTHON_LAUNCH_WRAPPERS
+        find_exec = first in {"find", "fd"}
         for shell_index, shell_token in enumerate(segment):
             shell = os.path.basename(shell_token.replace("\\", "/")).lower()
-            if shell not in shell_names or (shell_index and not wrapper_context):
+            # A shell after the first token is only a real launch when it follows
+            # a launch wrapper (env/xargs/...) or a find/fd -exec flag; otherwise
+            # it is an argument (e.g. a path) and is ignored.
+            find_exec_context = find_exec and any(
+                token in _FIND_EXEC_FLAGS for token in segment[:shell_index]
+            )
+            if shell not in shell_names or (
+                shell_index and not wrapper_context and not find_exec_context
+            ):
                 continue
             for index in range(shell_index + 1, len(segment) - 1):
                 token = segment[index]
@@ -2596,7 +2605,11 @@ _RENDER_HTML_MARKUP_ASSIGNMENT_START_RE = re.compile(
 )
 _RENDER_HTML_MARKUP_CALL_START_RE = re.compile(
     r"(?:\.\s*(?P<insert>insertAdjacentHTML)|"
-    r"\bdocument\s*(?:\?\.\s*|\.\s*)(?P<write>write|writeln))"
+    # document.write / writeln, optionally reached through a document-valued
+    # receiver such as document.open(): document.open().write('<img src=...>')
+    # returns the same document and inserts the remote-loading markup.
+    r"\bdocument\s*(?:(?:\?\.\s*|\.\s*)open\s*\([^()]*\)\s*)?"
+    r"(?:\?\.\s*|\.\s*)(?P<write>write|writeln))"
     r"\s*(?:\?\.\s*)?\(",
     re.IGNORECASE,
 )
@@ -2605,7 +2618,7 @@ _RENDER_HTML_COMPUTED_ASSIGNMENT_START_RE = re.compile(
     re.IGNORECASE | re.DOTALL,
 )
 _RENDER_HTML_COMPUTED_CALL_START_RE = re.compile(
-    r"(?:(?P<document>\bdocument)\s*)?\[\s*(?P<member>[^\]]+)\s*\]\s*(?:\?\.\s*)?\(",
+    r"(?:(?P<document>\bdocument)\s*(?:\?\.\s*)?)?\[\s*(?P<member>[^\]]+)\s*\]\s*(?:\?\.\s*)?\(",
     re.IGNORECASE | re.DOTALL,
 )
 _RENDER_HTML_REFLECT_SET_START_RE = re.compile(
@@ -2776,12 +2789,19 @@ def _render_html_data_document_reaches_network(value: str, depth: int) -> bool:
     media_type = (parts[0] or "text/plain").lower()
     if media_type not in _RENDER_HTML_ACTIVE_DATA_MIME_TYPES:
         return False
+    # Honour a declared charset so a UTF-16/Latin-1 document decodes the same way
+    # the browser would; an unknown/undecodable charset fails closed rather than
+    # letting a mangled UTF-8 read hide a remote load.
+    charset = "utf-8"
+    for part in parts[1:]:
+        if part.lower().startswith("charset="):
+            charset = part.split("=", 1)[1].strip() or "utf-8"
     try:
         payload_bytes = urllib.parse.unquote_to_bytes(payload)
         if any(part.lower() == "base64" for part in parts[1:]):
             payload_bytes = base64.b64decode(b"".join(payload_bytes.split()), validate = True)
-        markup = payload_bytes.decode("utf-8", errors = "replace")
-    except (ValueError, binascii.Error):
+        markup = payload_bytes.decode(charset, errors = "replace")
+    except (ValueError, binascii.Error, LookupError):
         return True
     return _render_html_code_reaches_network(markup, depth + 1)
 

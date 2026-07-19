@@ -1113,6 +1113,16 @@ def test_render_html_gated_only_when_networked():
     assert rh("<script>document.write('<img sr','c=https://evil/x>')</script>") is True
     assert rh("<script>document.writeln('<p>Local</p>')</script>") is False
     assert rh("<script>writer.write('<img src=https://evil/x>')</script>") is False
+    # Optional-chained computed document.write still recurses into the markup.
+    assert rh("<script>document?.['write']('<img src=https://evil/x>')</script>") is True
+    assert rh("<script>document?.['write']('<p>Local</p>')</script>") is False
+    # document.open() returns the document, so a write through it is an HTML sink.
+    assert rh("<script>document.open().write('<img src=https://evil/x>')</script>") is True
+    assert (
+        rh("<script>document.open('text/html').writeln('<img src=https://evil/x>')</script>")
+        is True
+    )
+    assert rh("<script>document.open().write('<p>Local</p>')</script>") is False
     # A computed bracket key spliced from string fragments on a global host object.
     assert rh("<script>window['fet'+'ch']('https://attacker.example')</script>") is True
     assert rh("<script>self['open' + '']('https://x')</script>") is True
@@ -1142,6 +1152,25 @@ def test_render_html_gated_only_when_networked():
     assert rh('<img src="data:image/png;base64,iVBORw0KGgo=">') is False
     assert rh('<object data="data:image/svg+xml,<image href=https://evil/x>"></object>') is True
     assert rh('<iframe src="data:text/html;base64,not-valid-***"></iframe>') is True
+    # A declared charset is honoured so a UTF-16 document is decoded like the
+    # browser would; an unknown charset fails closed instead of hiding the load.
+    assert (
+        rh(
+            '<iframe src="data:text/html;charset=utf-16le;base64,'
+            'PABpAG0AZwAgAHMAcgBjAD0AaAB0AHQAcABzADoALwAvAGUAdgBpAGwALwB4AD4A"></iframe>'
+        )
+        is True
+    )
+    assert (
+        rh(
+            '<iframe src="data:text/html;charset=utf-16le;base64,'
+            'PABoADEAPgBMAG8AYwBhAGwAPAAvAGgAMQA+AA=="></iframe>'
+        )
+        is False
+    )
+    assert (
+        rh('<iframe src="data:text/html;charset=nonesuch,%3Cimg%3E"></iframe>') is True
+    )  # unknown charset fails closed
     assert rh("<script>frame.src='data:text/html,<img src=https://evil/x>'</script>") is True
     assert (
         rh(
