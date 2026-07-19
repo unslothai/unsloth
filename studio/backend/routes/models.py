@@ -803,7 +803,7 @@ def collect_local_models(models_root: Path) -> List[LocalModelInfo]:
 
     models = sorted(
         deduped.values(),
-        key = lambda item: (item.updated_at or 0),
+        key = lambda item: item.updated_at or 0,
         reverse = True,
     )
     return [m for m in models if not _is_hidden_model(m.id, m.model_id, m.path)]
@@ -3123,7 +3123,9 @@ async def list_cached_gguf(current_subject: str = Depends(get_current_subject)):
                     if repo_info.repo_type != "model":
                         continue
                     repo_id = repo_info.repo_id
-                    if _is_hidden_model(repo_id):
+                    # Pass the snapshot path too so the config-based check hides a
+                    # custom Whisper checkpoint here, not just curated repo ids.
+                    if _is_hidden_model(repo_id, str(repo_info.repo_path)):
                         continue
                     total_size = _repo_gguf_size_bytes(repo_info)
                     if total_size == 0:
@@ -3180,7 +3182,9 @@ async def list_cached_models(
                     if repo_info.repo_type != "model":
                         continue
                     repo_id = repo_info.repo_id
-                    if _is_hidden_model(repo_id):
+                    # Pass the snapshot path too so the config-based check hides a
+                    # custom Whisper checkpoint here, not just curated repo ids.
+                    if _is_hidden_model(repo_id, str(repo_info.repo_path)):
                         continue
                     if _repo_has_gguf_files(repo_info):
                         continue

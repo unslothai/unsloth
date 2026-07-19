@@ -159,6 +159,44 @@ def test_is_hidden_model_hides_dictation_models(tmp_path):
     assert not models_route._is_hidden_model("user/whisper-finetune", str(named_only))
 
 
+def test_list_cached_models_hides_custom_whisper_by_config(monkeypatch, tmp_path):
+    # Regression: the legacy /cached-models picker must pass the snapshot path so
+    # the config check hides a custom (non-curated) Whisper checkpoint; a bare
+    # repo id cannot ("user/whisper-finetune" is not in the curated set).
+    repo_path = tmp_path / "models--user--whisper-finetune"
+    snap = repo_path / "snapshots" / "abc"
+    snap.mkdir(parents = True)
+    (snap / "config.json").write_text(
+        '{"model_type": "whisper", "architectures": ["WhisperForConditionalGeneration"]}'
+    )
+    (snap / "model.safetensors").write_bytes(b"weights")
+
+    captured: list = []
+    real_hidden = models_route._is_hidden_model
+
+    def spy(*values):
+        captured.append(values)
+        return real_hidden(*values)
+
+    monkeypatch.setattr(models_route, "_is_hidden_model", spy)
+    repo = _repo(
+        "user/whisper-finetune",
+        [SimpleNamespace(file_name = "model.safetensors", size_on_disk = 10)],
+        repo_path,
+    )
+    monkeypatch.setattr(
+        models_route, "_all_hf_cache_scans", lambda: [SimpleNamespace(repos = [repo])]
+    )
+
+    result = asyncio.run(
+        models_route.list_cached_models(current_subject = "test-user", hf_token = None)
+    )
+    # The route passed the snapshot path (not just the repo id) ...
+    assert any(str(repo_path) in values for values in captured)
+    # ... so the custom Whisper checkpoint is hidden from the chat picker.
+    assert result["cached"] == []
+
+
 def test_is_hidden_model_matches_repo_ids_exactly(monkeypatch):
     """A custom embedder with a generic basename is hidden by EXACT repo-id
     match only, so unrelated cached repos that merely contain the basename stay
