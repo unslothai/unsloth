@@ -62,8 +62,7 @@ _QUERY_OPAQUE_TOKEN = re.compile(
 # International (+CC ...) or NANP-formatted phone numbers. Requires separators or a
 # leading ``+`` so bare numeric research terms are not redacted.
 _QUERY_PHONE = re.compile(
-    r"(?<!\w)\+\d[\d\s().-]{7,17}\d(?!\w)"
-    r"|(?<!\w)\(?\d{3}\)?[\s.-]\d{3}[\s.-]\d{4}(?!\w)"
+    r"(?<!\w)\+\d[\d\s().-]{7,17}\d(?!\w)|(?<!\w)\(?\d{3}\)?[\s.-]\d{3}[\s.-]\d{4}(?!\w)"
 )
 _QUERY_IPV4 = re.compile(r"(?<![\w.])(?:\d{1,3}\.){3}\d{1,3}(?![\w.])")
 _QUERY_LABELED_PRIVATE_ID = re.compile(

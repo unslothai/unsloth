@@ -75,12 +75,12 @@ def _make_payload(**overrides) -> CreateResearchRun:
 
 
 def test_sanitize_config_rejects_nested_inference_credential():
-    payload = _make_payload(inferenceRequest={"model": {"api_key": "sk-should-not-persist"}})
+    payload = _make_payload(inferenceRequest = {"model": {"api_key": "sk-should-not-persist"}})
     with pytest.raises(Exception):
         _sanitize_config(payload, {"modelId": "m"})
 
 
 def test_sanitize_config_rejects_nested_rag_scope_secret():
-    payload = _make_payload(ragScope={"kb_id": {"token": "rag-secret"}})
+    payload = _make_payload(ragScope = {"kb_id": {"token": "rag-secret"}})
     with pytest.raises(Exception):
         _sanitize_config(payload, {"modelId": "m"})
