@@ -355,13 +355,61 @@ def test_marker_rejects_incomplete_shard_set(tmp_path, monkeypatch, weights):
             "model-00002-of-00002.safetensors",
             "model.safetensors.index.json",
         ),
-        ("0_Transformer/model.safetensors",),  # weight in a module dir
+        (  # ST module dir that is itself a complete load root
+            "0_Transformer/model.safetensors",
+            "0_Transformer/config.json",
+            "0_Transformer/tokenizer.json",
+        ),
     ],
 )
 def test_marker_accepts_recognized_torch_weights(tmp_path, monkeypatch, weights):
-    # Must not over-reject: single bin, complete sharded set, and a weight in a module dir.
+    # Must not over-reject: single bin, complete sharded set, and a complete module dir.
     _cache_repo_with_files(tmp_path, monkeypatch, *weights)
     assert mc._embedding_marker_in_hf_cache("org/model") is True
+
+
+def test_marker_rejects_weights_split_from_their_config(tmp_path, monkeypatch):
+    # modules.json sends SentenceTransformer at 0_Transformer/, which is loaded FROM that
+    # directory. Weights there with the config and tokenizer only at the root is a partial
+    # cache: a scattered any-of check would pass it and the local-only load would fail.
+    _cache_repo_with_files(tmp_path, monkeypatch, "0_Transformer/model.safetensors")
+    assert mc._embedding_marker_in_hf_cache("org/model") is False
+
+
+@pytest.mark.parametrize(
+    ("tok_files", "expected"),
+    [
+        (("vocab.json", "merges.txt"), True),  # the complete BPE pair
+        (("vocab.json",), False),  # half a pair: AutoTokenizer still fails
+        (("merges.txt",), False),
+        (("vocab.json", "tokenizer.json"), True),  # serialized tokenizer is self-contained
+    ],
+)
+def test_marker_requires_both_bpe_tokenizer_files(tmp_path, monkeypatch, tok_files, expected):
+    # BPE needs vocab.json AND merges.txt; either alone would validate here and then fail
+    # AutoTokenizer.from_pretrained(local_files_only=True) at first indexing.
+    _cache_repo_with_files(tmp_path, monkeypatch, "model.safetensors", *tok_files, tokenizer = False)
+    assert mc._embedding_marker_in_hf_cache("org/model") is expected
+
+
+def test_short_name_resolves_through_the_sentence_transformers_org(tmp_path, monkeypatch):
+    # "all-MiniLM-L6-v2" is a supported ST alias: the loader falls back to the
+    # sentence-transformers/ org, so the snapshot is cached under that full id. Probing only
+    # the bare name would report a miss and 409 a model that is cached and loadable.
+    hf_root = tmp_path / "hf"
+    _st_snapshot(hf_root, "models--sentence-transformers--all-MiniLM-L6-v2")
+    _fake_hf_cache(monkeypatch, hf_root)
+    monkeypatch.delenv("SENTENCE_TRANSFORMERS_HOME", raising = False)
+    assert mc._embedding_marker_in_hf_cache("all-MiniLM-L6-v2") is True
+
+
+def test_short_name_prefers_a_bare_cache_dir_when_present(tmp_path, monkeypatch):
+    # The bare id is tried first, matching the loader's own resolution order.
+    hf_root = tmp_path / "hf"
+    _st_snapshot(hf_root, "models--all-MiniLM-L6-v2")
+    _fake_hf_cache(monkeypatch, hf_root)
+    monkeypatch.delenv("SENTENCE_TRANSFORMERS_HOME", raising = False)
+    assert mc._st_cache_repo_dir("all-MiniLM-L6-v2") == hf_root / "models--all-MiniLM-L6-v2"
 
 
 def _case_sensitive_fs(tmp_path) -> bool:
@@ -501,7 +549,7 @@ def test_offline_retains_online_confirmed_positive(tmp_path, monkeypatch):
     _repo(tmp_path, monkeypatch, ("aaa", False), main_ref = "aaa", repo_id = "org/gte-modernbert")
 
     def _info(model_name, token = None):
-        return types.SimpleNamespace(tags = ["feature-extraction"], pipeline_tag = None)
+        return types.SimpleNamespace(tags = ["feature-extraction"], pipeline_tag = None, sha = "aaa")
 
     _fake_hf_model_info(monkeypatch, _info)
     assert mc.is_embedding_model("org/gte-modernbert") is True
@@ -517,7 +565,7 @@ def test_offline_metadata_only_positive_not_trusted_without_cache(monkeypatch):
     _no_cache(monkeypatch)
 
     def _info(model_name, token = None):
-        return types.SimpleNamespace(tags = ["feature-extraction"], pipeline_tag = None)
+        return types.SimpleNamespace(tags = ["feature-extraction"], pipeline_tag = None, sha = "aaa")
 
     _fake_hf_model_info(monkeypatch, _info)
     assert mc.is_embedding_model("org/uncached-embedder") is True
@@ -533,7 +581,7 @@ def test_offline_detects_persisted_tag_only_embedder_after_restart(tmp_path, mon
     _repo(tmp_path, monkeypatch, ("aaa", False), main_ref = "aaa", repo_id = "org/gte-modernbert")
 
     def _info(model_name, token = None):
-        return types.SimpleNamespace(tags = ["feature-extraction"], pipeline_tag = None)
+        return types.SimpleNamespace(tags = ["feature-extraction"], pipeline_tag = None, sha = "aaa")
 
     _fake_hf_model_info(monkeypatch, _info)
     assert mc.is_embedding_model("org/gte-modernbert") is True
@@ -551,7 +599,7 @@ def test_offline_persisted_verdict_not_trusted_when_uncached(tmp_path, monkeypat
     _no_cache(monkeypatch)
 
     def _info(model_name, token = None):
-        return types.SimpleNamespace(tags = ["feature-extraction"], pipeline_tag = None)
+        return types.SimpleNamespace(tags = ["feature-extraction"], pipeline_tag = None, sha = "aaa")
 
     _fake_hf_model_info(monkeypatch, _info)
     assert mc.is_embedding_model("org/uncached-embedder") is True
@@ -577,7 +625,7 @@ def test_offline_persisted_verdict_not_trusted_when_snapshot_partial(tmp_path, m
     monkeypatch.setattr(mc, "_st_cache_roots", lambda: [cache_root])
 
     def _info(model_name, token = None):
-        return types.SimpleNamespace(tags = ["feature-extraction"], pipeline_tag = None)
+        return types.SimpleNamespace(tags = ["feature-extraction"], pipeline_tag = None, sha = "aaa")
 
     _fake_hf_model_info(monkeypatch, _info)
     assert mc.is_embedding_model("org/partial") is True
@@ -596,7 +644,7 @@ def test_offline_persisted_verdict_matches_across_casing(tmp_path, monkeypatch):
     _repo(tmp_path, monkeypatch, ("aaa", False), main_ref = "aaa", repo_id = "BAAI/model")
 
     def _info(model_name, token = None):
-        return types.SimpleNamespace(tags = ["feature-extraction"], pipeline_tag = None)
+        return types.SimpleNamespace(tags = ["feature-extraction"], pipeline_tag = None, sha = "aaa")
 
     _fake_hf_model_info(monkeypatch, _info)
     assert mc.is_embedding_model("baai/model") is True
@@ -649,17 +697,41 @@ def test_online_verdict_stops_applying_when_the_revision_advances(tmp_path, monk
     assert mc.is_embedding_model("org/emb") is False
 
 
-def test_verdict_without_a_revision_is_pinned_to_the_one_it_meets(tmp_path, monkeypatch):
-    # Confirmed online before the repo was cached, so there was no revision to record.
-    # The first revision observed afterwards is the one it was about: trust it, and pin
-    # it so a LATER advance is caught.
-    pinned: dict = {}
+def test_verdict_without_a_revision_is_not_trusted(tmp_path, monkeypatch):
+    # A legacy entry from before revision pinning proves nothing about what would load
+    # now, so it must not be trusted -- trusting it and pinning whatever happens to be in
+    # the local cache would allowlist a revision nobody verified. The next online check
+    # re-records it against info.sha.
     monkeypatch.setattr(mc, "_load_persisted_embedders", lambda: {"org/emb": None})
-    monkeypatch.setattr(mc, "_persist_embedder", lambda name, commit: pinned.update({name: commit}))
-    _tag_only_repo(tmp_path, monkeypatch, "first_commit")
+    _tag_only_repo(tmp_path, monkeypatch, "some_commit")
     monkeypatch.setenv("HF_HUB_OFFLINE", "1")
+    assert mc.is_embedding_model("org/emb") is False
+
+
+def test_verdict_pins_the_hub_revision_not_the_cached_one(tmp_path, monkeypatch):
+    # model_info() describes the CURRENT Hub revision. With a stale local cache the two
+    # differ, and pinning refs/main would allowlist the older cached snapshot even though
+    # its metadata was never verified.
+    recorded: dict = {}
+    monkeypatch.setattr(
+        mc, "_persist_embedder", lambda name, commit: recorded.update({name: commit})
+    )
+    _tag_only_repo(tmp_path, monkeypatch, "stale_local_commit")
+
+    def _info(model_name, token = None):
+        return types.SimpleNamespace(
+            tags = ["feature-extraction"], pipeline_tag = None, sha = "hub_head_commit"
+        )
+
+    _fake_hf_model_info(monkeypatch, _info)
     assert mc.is_embedding_model("org/emb") is True
-    assert pinned == {"org/emb": "first_commit"}
+    assert recorded == {"org/emb": "hub_head_commit"}
+
+    # ...and offline that verdict does NOT vouch for the stale cached revision.
+    mc._embedding_detection_cache.clear()
+    monkeypatch.setattr(mc, "_load_persisted_embedders", lambda: {"org/emb": "hub_head_commit"})
+    monkeypatch.setenv("HF_HUB_OFFLINE", "1")
+    assert mc.is_embedding_model("org/emb") is False
 
 
 def test_persist_embedder_concurrent_writes_keep_every_verdict(tmp_path, monkeypatch):
@@ -692,7 +764,7 @@ def test_persist_embedder_is_best_effort_when_home_unwritable(tmp_path, monkeypa
     _no_cache(monkeypatch)
 
     def _info(model_name, token = None):
-        return types.SimpleNamespace(tags = ["feature-extraction"], pipeline_tag = None)
+        return types.SimpleNamespace(tags = ["feature-extraction"], pipeline_tag = None, sha = "aaa")
 
     _fake_hf_model_info(monkeypatch, _info)
     assert mc.is_embedding_model("org/emb") is True
@@ -720,7 +792,7 @@ def test_online_uncached_still_uses_network(monkeypatch):
 
     def _info(model_name, token = None):
         calls.append(model_name)
-        return types.SimpleNamespace(tags = ["feature-extraction"], pipeline_tag = None)
+        return types.SimpleNamespace(tags = ["feature-extraction"], pipeline_tag = None, sha = "aaa")
 
     _fake_hf_model_info(monkeypatch, _info)
     assert mc.is_embedding_model("org/gte-modernbert") is True
@@ -735,7 +807,7 @@ def test_offline_negative_is_not_cached_then_online_detects(monkeypatch):
 
     def _info(model_name, token = None):
         calls.append(model_name)
-        return types.SimpleNamespace(tags = ["feature-extraction"], pipeline_tag = None)
+        return types.SimpleNamespace(tags = ["feature-extraction"], pipeline_tag = None, sha = "aaa")
 
     _fake_hf_model_info(monkeypatch, _info)
 

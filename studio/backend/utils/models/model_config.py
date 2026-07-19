@@ -1707,10 +1707,33 @@ def resolve_st_cached_repo_id_case(repo_id: str) -> str:
     return repo_id
 
 
+def _st_repo_id_candidates(repo_id: str) -> list[str]:
+    """Repo ids the ST loader could resolve *repo_id* to, in the order it tries them.
+
+    A slashless short name like ``all-MiniLM-L6-v2`` is a supported Sentence Transformers
+    alias: the loader falls back to the ``sentence-transformers/`` organization, so the
+    snapshot is cached under ``models--sentence-transformers--all-MiniLM-L6-v2``. Probing
+    only the bare name would report a cache miss -- a 409 offline -- for a model that is
+    cached and loadable."""
+    if "/" in repo_id:
+        return [repo_id]
+    return [repo_id, f"sentence-transformers/{repo_id}"]
+
+
 def _st_cache_repo_dir(repo_id: str) -> Optional[Path]:
-    """The ONE cache repo dir the ST loader opens for *repo_id*, or None (exact case, then
-    a deterministic pick). Scoping to one dir avoids judging a duplicate case variant that
-    is not the one loaded."""
+    """The ONE cache repo dir the ST loader opens for *repo_id*, or None -- following the
+    same short-name alias fallback the loader uses."""
+    for candidate in _st_repo_id_candidates(repo_id):
+        found = _repo_dir_for_exact_id(candidate)
+        if found is not None:
+            return found
+    return None
+
+
+def _repo_dir_for_exact_id(repo_id: str) -> Optional[Path]:
+    """The cache dir for exactly *repo_id* (exact case, then a deterministic case variant),
+    or None. Scoping to one dir avoids judging a duplicate case variant that is not the one
+    loaded."""
     prefix = "models--"
     expected = f"{prefix}{repo_id.replace('/', '--')}"
     target = expected.lower()
@@ -2149,10 +2172,9 @@ def _known_embedder(model_name: str, cache_key: tuple, active_commit: Optional[s
     snapshot -- the recorded positive says nothing about the revision that would now load,
     so it is not trusted and the caller falls through to re-verification.
 
-    A verdict confirmed before the repo was cached has no revision to compare; the first
-    revision observed afterwards is the one it was about, so it is trusted and PINNED here,
-    which is what lets a later advance be caught. Callers still gate on a materialized
-    snapshot.
+    A verdict with no recorded revision (a legacy entry from before pinning) proves nothing
+    about what would load now, so it is NOT trusted -- the next online check re-records it
+    against info.sha. Callers still gate on a materialized snapshot.
     """
     known, recorded = False, None
     if _embedding_detection_cache.get(cache_key) is True:
@@ -2162,13 +2184,8 @@ def _known_embedder(model_name: str, cache_key: tuple, active_commit: Optional[s
         key = _verdict_key(model_name)
         if key in persisted:
             known, recorded = True, persisted[key]
-    if not known:
+    if not known or recorded is None or active_commit is None:
         return False
-    if recorded is None:
-        if active_commit is not None:
-            _embedding_verdict_commit[cache_key] = active_commit
-            _persist_embedder(model_name, active_commit)
-        return True
     return recorded == active_commit
 
 
@@ -2182,21 +2199,28 @@ _ST_SHARD_RE = re.compile(r"^(model|pytorch_model)-(\d+)-of-(\d+)\.(safetensors|
 # fail the local_files_only load. Any ONE of these suffices -- a permissive union, so only
 # a genuinely tokenizer-less partial download is rejected.
 # Real tokenizer ARTIFACTS -- a serialized tokenizer or its vocabulary. Note that
-# tokenizer_config.json is deliberately absent: it only DESCRIBES a tokenizer, so a
-# snapshot carrying it without vocab.txt / vocab.json+merges.txt / tokenizer.json
-# still fails AutoTokenizer.from_pretrained(local_files_only=True) for common
-# BERT/GPT-style models -- validating here and failing at first indexing.
-_ST_TOKENIZER_FILES = frozenset(
+# A tokenizer counts only as a COMPLETE artifact set. Deliberately absent:
+# tokenizer_config.json (only DESCRIBES a tokenizer, supplies no vocabulary) and half a
+# BPE pair. Either would validate here and then fail at first indexing.
+_ST_TOKENIZER_SOLO_FILES = frozenset(
     {
-        "tokenizer.json",
-        "tokenizer.model",
-        "vocab.txt",
-        "vocab.json",
-        "merges.txt",
+        "tokenizer.json",  # serialized fast tokenizer: self-contained
+        "tokenizer.model",  # sentencepiece
         "spiece.model",
         "sentencepiece.bpe.model",
+        "vocab.txt",  # wordpiece (BERT-style)
     }
 )
+# BPE needs BOTH halves: vocab.json or merges.txt alone still fails
+# AutoTokenizer.from_pretrained(local_files_only=True) unless tokenizer.json is there.
+_ST_TOKENIZER_BPE_PAIR = ("vocab.json", "merges.txt")
+
+
+def _names_have_tokenizer(names: set) -> bool:
+    """True when *names* (one directory's files) supply a usable tokenizer."""
+    if names & _ST_TOKENIZER_SOLO_FILES:
+        return True
+    return all(part in names for part in _ST_TOKENIZER_BPE_PAIR)
 
 
 def _dir_has_complete_torch_weights(names: set) -> bool:
@@ -2220,31 +2244,35 @@ def _dir_has_complete_torch_weights(names: set) -> bool:
     return False
 
 
+_ST_CONFIG_FILES = ("config.json", "config_sentence_transformers.json")
+
+
 def _snapshot_has_complete_weights(snap: Path) -> bool:
-    """True when *snap* has a config, a tokenizer asset, and a COMPLETE Torch weight set
-    (``modules.json`` aside). A tag-only embedder confirmed online has exactly this and ST's
-    auto-model fallback loads it; a partial download fails here rather than at first
-    indexing."""
+    """True when some LOAD ROOT inside *snap* is complete: a config, a tokenizer and a
+    COMPLETE Torch weight set, all in the SAME directory.
+
+    Co-location is the point. ``modules.json`` can send SentenceTransformer at a module
+    subdirectory (``0_Transformer/``), loaded from that directory -- so a snapshot with the
+    config at the root, a tokenizer elsewhere and ``0_Transformer/model.safetensors`` but no
+    ``0_Transformer/config.json`` would pass a scattered any-of check and then fail the
+    local-only load. Per-directory covers both layouts: a plain HF model has all three at
+    the root, an ST model inside its Transformer module dir."""
     try:
-        if not any(
-            (snap / name).is_file() for name in ("config.json", "config_sentence_transformers.json")
-        ):
-            return False
         by_dir: dict = {}
-        has_tokenizer = False
         for path in snap.rglob("*"):
             try:
-                if not path.is_file():
-                    continue
-                if path.name in _ST_TOKENIZER_FILES:
-                    has_tokenizer = True
-                if _ST_WEIGHT_FILE_RE.match(path.name) or path.name.endswith(".index.json"):
+                if path.is_file():
                     by_dir.setdefault(path.parent, set()).add(path.name)
             except OSError:
                 continue
-        if not has_tokenizer:
-            return False
-        return any(_dir_has_complete_torch_weights(names) for names in by_dir.values())
+        for names in by_dir.values():
+            if not any(cfg in names for cfg in _ST_CONFIG_FILES):
+                continue
+            if not _names_have_tokenizer(names):
+                continue
+            if _dir_has_complete_torch_weights(names):
+                return True
+        return False
     except OSError:
         return False
 
@@ -2376,9 +2404,11 @@ def is_embedding_model(model_name: str, hf_token: Optional[str] = None) -> bool:
         _embedding_detection_cache[cache_key] = is_emb
         if is_emb:
             # Durably record the positive so a later offline session can recognize a
-            # downloaded tag-only embedder -- pinned to the revision it was confirmed at,
-            # so it stops applying once refs/main advances.
-            confirmed_at = _active_commit(model_name)
+            # downloaded tag-only embedder -- pinned to the revision whose metadata was
+            # actually verified. That is info.sha, the Hub revision model_info() just
+            # described, NOT the local cache's refs/main: with a stale cache the two differ
+            # and pinning the local one would allowlist a snapshot nobody verified.
+            confirmed_at = getattr(info, "sha", None) or None
             _embedding_verdict_commit[cache_key] = confirmed_at
             _persist_embedder(model_name, confirmed_at)
             logger.info(
