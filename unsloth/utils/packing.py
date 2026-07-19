@@ -281,10 +281,12 @@ def _varlen_from_position_ids(position_ids):
     starts = (row == 0).nonzero(as_tuple = False).flatten()
     if starts.numel() <= 1 or int(starts[0].item()) != 0:
         return None
-    cu_seqlens = torch.cat([
-        starts.to(torch.int32),
-        torch.tensor([total], dtype = torch.int32, device = row.device),
-    ])
+    cu_seqlens = torch.cat(
+        [
+            starts.to(torch.int32),
+            torch.tensor([total], dtype = torch.int32, device = row.device),
+        ]
+    )
     lengths = cu_seqlens[1:] - cu_seqlens[:-1]
     if not bool((lengths > 0).all()):
         return None
@@ -312,13 +314,23 @@ def patch_hybrid_linear_attention_varlen(model) -> bool:
             continue
         conv_orig, scan_orig = module.causal_conv1d_fn, module.chunk_gated_delta_rule
 
-        def conv_fn(*args, _orig = conv_orig, _module = module, **kwargs):
+        def conv_fn(
+            *args,
+            _orig = conv_orig,
+            _module = module,
+            **kwargs,
+        ):
             varlen = getattr(_module, "_unsloth_varlen", None)
             if varlen is not None and kwargs.get("seq_idx") is None:
                 kwargs["seq_idx"] = varlen[1]
             return _orig(*args, **kwargs)
 
-        def scan_fn(*args, _orig = scan_orig, _module = module, **kwargs):
+        def scan_fn(
+            *args,
+            _orig = scan_orig,
+            _module = module,
+            **kwargs,
+        ):
             varlen = getattr(_module, "_unsloth_varlen", None)
             if varlen is not None and kwargs.get("cu_seqlens") is None:
                 kwargs["cu_seqlens"] = varlen[0]

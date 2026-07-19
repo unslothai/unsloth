@@ -231,7 +231,10 @@ def _is_hybrid_linear_attention_model(model) -> bool:
         return False
 
     # Config-level: explicit hybrid layer schedule or linear-attn markers.
-    for config in (getattr(model, "config", None), getattr(getattr(model, "config", None), "text_config", None)):
+    for config in (
+        getattr(model, "config", None),
+        getattr(getattr(model, "config", None), "text_config", None),
+    ):
         if config is None:
             continue
         layer_types = getattr(config, "layer_types", None)
@@ -252,7 +255,9 @@ def _is_hybrid_linear_attention_model(model) -> bool:
             continue
         seen.add(id(module))
         cls = type(module).__name__
-        if not (cls.endswith("GatedDeltaNet") or "LinearAttention" in cls or cls.endswith("Mamba2Mixer")):
+        if not (
+            cls.endswith("GatedDeltaNet") or "LinearAttention" in cls or cls.endswith("Mamba2Mixer")
+        ):
             continue
         has_recurrent = any(
             hasattr(module, attr)
