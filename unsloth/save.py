@@ -4645,9 +4645,7 @@ def _offload_model_for_quantize_subprocess(model):
             # disk/meta is NOT: accelerate keeps those parameters off the model
             # entirely, so removing the hooks and calling .to("cpu") would try to
             # materialize the whole checkpoint into RAM (or move meta tensors).
-            if not all(
-                t.isdigit() or t.startswith(("cuda", "xpu")) or t == "cpu" for t in targets
-            ):
+            if not all(t.isdigit() or t.startswith(("cuda", "xpu")) or t == "cpu" for t in targets):
                 return None
             if not any(t.isdigit() or t.startswith(("cuda", "xpu")) for t in targets):
                 return None  # nothing on an accelerator: no GPU memory to reclaim
