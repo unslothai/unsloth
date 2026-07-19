@@ -165,27 +165,20 @@ def test_configure_padding_free():
 
 # --- Hybrid linear-attention guard + varlen shim (PR #7211 / #7249) ---------------
 
-
 def _hybrid_config_model():
     # Qwen3.5 / Qwen3-Next style: explicit linear_attention layer schedule.
-    return SimpleNamespace(
-        config = SimpleNamespace(layer_types = ["linear_attention", "full_attention"])
-    )
+    return SimpleNamespace(config = SimpleNamespace(layer_types = ["linear_attention", "full_attention"]))
 
 
 def _gemma3_model():
     # Has layer_types but no linear_attention -> must NOT be flagged as hybrid.
     return SimpleNamespace(
-        config = SimpleNamespace(
-            model_type = "gemma3", layer_types = ["sliding_attention", "full_attention"]
-        ),
+        config = SimpleNamespace(model_type = "gemma3", layer_types = ["sliding_attention", "full_attention"]),
     )
 
 
 def _dense_qwen3_model():
-    return SimpleNamespace(
-        config = SimpleNamespace(model_type = "qwen3", architectures = ["Qwen3ForCausalLM"])
-    )
+    return SimpleNamespace(config = SimpleNamespace(model_type = "qwen3", architectures = ["Qwen3ForCausalLM"]))
 
 
 class _FakeGatedDeltaNet(torch.nn.Module):
@@ -208,10 +201,10 @@ class _FakeHybridModel(torch.nn.Module):
 def test_is_hybrid_linear_attention_detects_and_excludes():
     is_hybrid = trainer_module._is_hybrid_linear_attention_model
     assert is_hybrid(_hybrid_config_model()) is True
-    assert is_hybrid(_FakeHybridModel()) is True  # module-structural evidence
-    assert is_hybrid(_text_model()) is False  # Llama
-    assert is_hybrid(_gemma3_model()) is False  # layer_types without linear_attention
-    assert is_hybrid(_dense_qwen3_model()) is False  # dense Qwen3
+    assert is_hybrid(_FakeHybridModel()) is True          # module-structural evidence
+    assert is_hybrid(_text_model()) is False              # Llama
+    assert is_hybrid(_gemma3_model()) is False            # layer_types without linear_attention
+    assert is_hybrid(_dense_qwen3_model()) is False       # dense Qwen3
     assert is_hybrid(None) is False
 
 
@@ -219,13 +212,9 @@ def test_varlen_from_position_ids():
     cu, seq_idx = packing_module._varlen_from_position_ids(torch.tensor([[0, 1, 0, 0, 1, 2]]))
     assert cu.tolist() == [0, 2, 3, 6]
     assert seq_idx.tolist() == [[0, 0, 1, 2, 2, 2]]
-    assert (
-        packing_module._varlen_from_position_ids(torch.tensor([[0, 1, 2, 3]])) is None
-    )  # single sequence
-    assert packing_module._varlen_from_position_ids(torch.tensor([[1, 2, 3]])) is None  # first != 0
-    assert (
-        packing_module._varlen_from_position_ids(torch.tensor([[0, 1], [0, 1]])) is None
-    )  # normal 2-row batch
+    assert packing_module._varlen_from_position_ids(torch.tensor([[0, 1, 2, 3]])) is None   # single sequence
+    assert packing_module._varlen_from_position_ids(torch.tensor([[1, 2, 3]])) is None       # first != 0
+    assert packing_module._varlen_from_position_ids(torch.tensor([[0, 1], [0, 1]])) is None   # normal 2-row batch
     assert packing_module._varlen_from_position_ids(None) is None
 
 
@@ -234,19 +223,18 @@ def test_seq_idx_from_cu_seqlens_handles_trailing_pad():
     boundaries, seq_idx = packing_module._seq_idx_from_cu_seqlens(cu, total = 8)  # pad_to_multiple_of
     assert boundaries.tolist() == [0, 2, 5, 8]
     assert seq_idx.tolist() == [[0, 0, 1, 1, 1, 2, 2, 2]]
-    boundaries2, _ = packing_module._seq_idx_from_cu_seqlens(cu, total = 5)  # exact fit
+    boundaries2, _ = packing_module._seq_idx_from_cu_seqlens(cu, total = 5)       # exact fit
     assert boundaries2.tolist() == [0, 2, 5]
-    assert (
-        packing_module._seq_idx_from_cu_seqlens(torch.tensor([1, 2], dtype = torch.int32), total = 2)
-        is None
-    )
-    assert packing_module._seq_idx_from_cu_seqlens(cu, total = 3) is None  # boundaries exceed total
+    assert packing_module._seq_idx_from_cu_seqlens(torch.tensor([1, 2], dtype = torch.int32), total = 2) is None
+    assert packing_module._seq_idx_from_cu_seqlens(cu, total = 3) is None          # boundaries exceed total
 
 
 def test_hybrid_varlen_metadata_prefers_packed_seq_lengths():
+    # A competing position_ids would segment [0, 3, 6]; packed_seq_lengths must win.
     kwargs = {
         "input_ids": torch.zeros(1, 6, dtype = torch.long),
         "packed_seq_lengths": torch.tensor([2, 1, 3], dtype = torch.int32),
+        "position_ids": torch.tensor([[0, 1, 2, 0, 1, 2]]),
     }
     cu, seq_idx = packing_module._hybrid_varlen_metadata(kwargs)
     assert cu.tolist() == [0, 2, 3, 6]
@@ -263,36 +251,19 @@ def test_hybrid_varlen_metadata_suppressed_when_cached():
 
 
 def test_hybrid_varlen_metadata_none_for_plain_batch():
-    kwargs = {
-        "input_ids": torch.zeros(1, 4, dtype = torch.long),
-        "position_ids": torch.tensor([[0, 1, 2, 3]]),
-    }
+    kwargs = {"input_ids": torch.zeros(1, 4, dtype = torch.long), "position_ids": torch.tensor([[0, 1, 2, 3]])}
     assert packing_module._hybrid_varlen_metadata(kwargs) is None
 
 
 def _make_fake_kernels():
-    def causal_conv1d_fn(
-        x,
-        weight = None,
-        bias = None,
-        activation = None,
-        seq_idx = None,
-    ):
+    def causal_conv1d_fn(x, weight = None, bias = None, activation = None, seq_idx = None):
         causal_conv1d_fn.calls.append(seq_idx)
         return x
-
     causal_conv1d_fn.calls = []
 
-    def chunk_gated_delta_rule(
-        q,
-        k = None,
-        v = None,
-        cu_seqlens = None,
-        **kw,
-    ):
+    def chunk_gated_delta_rule(q, k = None, v = None, cu_seqlens = None, **kw):
         chunk_gated_delta_rule.calls.append(cu_seqlens)
         return q
-
     chunk_gated_delta_rule.calls = []
     return causal_conv1d_fn, chunk_gated_delta_rule
 
@@ -313,14 +284,7 @@ class _ShimHybridModel(torch.nn.Module):
         self.config = SimpleNamespace(layer_types = ["linear_attention", "full_attention"])
         self.linear_attn = _ShimGatedDeltaNet()
 
-    def forward(
-        self,
-        input_ids = None,
-        position_ids = None,
-        packed_seq_lengths = None,
-        use_cache = None,
-        **kwargs,
-    ):
+    def forward(self, input_ids = None, position_ids = None, packed_seq_lengths = None, use_cache = None, **kwargs):
         return self.linear_attn(input_ids.float())
 
 
@@ -334,35 +298,24 @@ def test_patch_hybrid_varlen_flag_off(monkeypatch):
 def test_patch_hybrid_varlen_active_and_idempotent(monkeypatch):
     monkeypatch.setenv("UNSLOTH_EXPERIMENTAL_HYBRID_PACKING", "1")
     model = _ShimHybridModel()
-    conv_orig, scan_orig = (
-        model.linear_attn.causal_conv1d_fn,
-        model.linear_attn.chunk_gated_delta_rule,
-    )
+    conv_orig, scan_orig = model.linear_attn.causal_conv1d_fn, model.linear_attn.chunk_gated_delta_rule
 
     assert patch_hybrid_linear_attention_varlen(model) is True
     assert model._unsloth_varlen_forward_wrapped is True
     assert model.linear_attn._unsloth_varlen_wrapped is True
     assert patch_hybrid_linear_attention_varlen(model) is True  # idempotent, no double-wrap
 
-    conv_orig.calls.clear()
-    scan_orig.calls.clear()
+    conv_orig.calls.clear(); scan_orig.calls.clear()
     packing_module._HYBRID_WARNED.clear()
     ids = torch.zeros(1, 6, dtype = torch.long)
-    model(
-        input_ids = ids,
-        packed_seq_lengths = torch.tensor([2, 1, 3], dtype = torch.int32),
-        use_cache = False,
-    )
-    assert conv_orig.calls[-1] is not None  # seq_idx injected
-    assert scan_orig.calls[-1].tolist() == [0, 2, 3, 6]  # cu_seqlens injected
-    assert not any("never invoked" in r for r in packing_module._HYBRID_WARNED)  # handshake ok
+    model(input_ids = ids, packed_seq_lengths = torch.tensor([2, 1, 3], dtype = torch.int32), use_cache = False)
+    assert conv_orig.calls[-1] is not None                       # seq_idx injected
+    assert scan_orig.calls[-1].tolist() == [0, 2, 3, 6]          # cu_seqlens injected
+    assert not packing_module._HYBRID_WARNED                     # handshake passed, no rejection
 
-    conv_orig.calls.clear()
-    scan_orig.calls.clear()
-    model(
-        input_ids = ids, packed_seq_lengths = torch.tensor([2, 1, 3], dtype = torch.int32), use_cache = True
-    )
-    assert conv_orig.calls[-1] is None  # cached forward -> no injection
+    conv_orig.calls.clear(); scan_orig.calls.clear()
+    model(input_ids = ids, packed_seq_lengths = torch.tensor([2, 1, 3], dtype = torch.int32), use_cache = True)
+    assert conv_orig.calls[-1] is None                           # cached forward -> no injection
     assert scan_orig.calls[-1] is None
 
 
@@ -370,13 +323,8 @@ def test_patch_hybrid_varlen_torch_fallback_fail_closed(monkeypatch):
     monkeypatch.setenv("UNSLOTH_EXPERIMENTAL_HYBRID_PACKING", "1")
     model = _ShimHybridModel()
 
-    def torch_chunk_gated_delta_rule(
-        q,
-        cu_seqlens = None,
-        **kw,
-    ):
+    def torch_chunk_gated_delta_rule(q, cu_seqlens = None, **kw):
         return q
-
     model.linear_attn.chunk_gated_delta_rule = torch_chunk_gated_delta_rule
     assert patch_hybrid_linear_attention_varlen(model) is False
     assert not getattr(model, "_unsloth_varlen_forward_wrapped", False)
@@ -388,50 +336,72 @@ def test_patch_hybrid_varlen_bad_signature_fail_closed(monkeypatch):
 
     def scan_no_cu(q, **kw):  # missing cu_seqlens
         return q
-
     model.linear_attn.chunk_gated_delta_rule = scan_no_cu
     assert patch_hybrid_linear_attention_varlen(model) is False
 
 
-def test_patch_hybrid_varlen_runtime_handshake_warns(monkeypatch):
-    # Unsloth wraps each module forward, so dispatch cannot be proven statically; it
-    # is verified at runtime. A mixer that never calls self.<kernel> still installs
-    # the shim, but the first packed forward warns that it was never invoked.
-    monkeypatch.setenv("UNSLOTH_EXPERIMENTAL_HYBRID_PACKING", "1")
-
-    class _NoDispatchGatedDeltaNet(torch.nn.Module):
+def _hybrid_model_with_gdn(gdn_forward):
+    # Build a fake hybrid model whose gated-delta mixer forward is `gdn_forward`.
+    class _GatedDeltaNet(torch.nn.Module):
         def __init__(self):
             super().__init__()
             self.conv1d = torch.nn.Conv1d(4, 4, 3, groups = 4)
             self.causal_conv1d_fn, self.chunk_gated_delta_rule = _make_fake_kernels()
-
-        def forward(self, hidden_states, **kwargs):  # never calls self.<kernel>
-            return hidden_states
+        forward = gdn_forward
 
     class _Model(torch.nn.Module):
         def __init__(self):
             super().__init__()
             self.config = SimpleNamespace(layer_types = ["linear_attention", "full_attention"])
-            self.linear_attn = _NoDispatchGatedDeltaNet()
+            self.linear_attn = _GatedDeltaNet()
 
-        def forward(
-            self,
-            input_ids = None,
-            packed_seq_lengths = None,
-            use_cache = None,
-            **kwargs,
-        ):
+        def forward(self, input_ids = None, packed_seq_lengths = None, use_cache = None, **kwargs):
             return self.linear_attn(input_ids.float())
 
-    model = _Model()
+    return _Model()
+
+
+def test_patch_hybrid_varlen_no_dispatch_aborts(monkeypatch):
+    # Unsloth wraps each module forward, so dispatch cannot be proven statically; it is
+    # verified at runtime. A mixer that never calls self.<kernel> installs the shim, but
+    # the first packed forward aborts (both boundary kernels are load-bearing).
+    monkeypatch.setenv("UNSLOTH_EXPERIMENTAL_HYBRID_PACKING", "1")
+    model = _hybrid_model_with_gdn(lambda self, hidden_states, **kw: hidden_states)
     assert patch_hybrid_linear_attention_varlen(model) is True  # kernels valid -> installs
-    packing_module._HYBRID_WARNED.clear()
-    model(
-        input_ids = torch.zeros(1, 6),
-        packed_seq_lengths = torch.tensor([2, 1, 3], dtype = torch.int32),
-        use_cache = False,
-    )
-    assert any("never invoked" in reason for reason in packing_module._HYBRID_WARNED)
+    with pytest.raises(RuntimeError, match = "both invoked"):
+        model(input_ids = torch.zeros(1, 6), packed_seq_lengths = torch.tensor([2, 1, 3], dtype = torch.int32), use_cache = False)
+
+
+def test_patch_hybrid_varlen_partial_dispatch_aborts(monkeypatch):
+    # Only the conv fires; the scan would leak state. Both must be invoked, so abort.
+    monkeypatch.setenv("UNSLOTH_EXPERIMENTAL_HYBRID_PACKING", "1")
+    conv_only = _hybrid_model_with_gdn(lambda self, hidden_states, **kw: self.causal_conv1d_fn(hidden_states))
+    assert patch_hybrid_linear_attention_varlen(conv_only) is True
+    with pytest.raises(RuntimeError, match = "both invoked"):
+        conv_only(input_ids = torch.zeros(1, 6), packed_seq_lengths = torch.tensor([2, 1, 3], dtype = torch.int32), use_cache = False)
+
+    scan_only = _hybrid_model_with_gdn(lambda self, hidden_states, **kw: self.chunk_gated_delta_rule(hidden_states))
+    assert patch_hybrid_linear_attention_varlen(scan_only) is True
+    with pytest.raises(RuntimeError, match = "both invoked"):
+        scan_only(input_ids = torch.zeros(1, 6), packed_seq_lengths = torch.tensor([2, 1, 3], dtype = torch.int32), use_cache = False)
+
+
+def test_varlen_from_position_ids_mrope_3d():
+    pos = torch.tensor([[0, 1, 0, 0, 1, 2]]).unsqueeze(0).expand(3, 1, 6).clone()  # [3,1,T] text plane
+    cu, seq_idx = packing_module._varlen_from_position_ids(pos)
+    assert cu.tolist() == [0, 2, 3, 6]
+    assert seq_idx.tolist() == [[0, 0, 1, 2, 2, 2]]
+
+
+def test_hybrid_varlen_metadata_trailing_pad():
+    # packed_seq_lengths sum to 6 but the flattened input is 8 (pad_to_multiple_of).
+    kwargs = {
+        "input_ids": torch.zeros(1, 8, dtype = torch.long),
+        "packed_seq_lengths": torch.tensor([2, 1, 3], dtype = torch.int32),
+    }
+    cu, seq_idx = packing_module._hybrid_varlen_metadata(kwargs)
+    assert cu.tolist() == [0, 2, 3, 6, 8]
+    assert seq_idx.tolist() == [[0, 0, 1, 2, 2, 2, 3, 3]]
 
 
 def _patch_fake_sft_trainer():

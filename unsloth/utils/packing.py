@@ -242,10 +242,7 @@ _HYBRID_WARNED: set = set()
 def _hybrid_packing_enabled() -> bool:
     # Read at call time so setting the flag after `import unsloth` still takes effect.
     return os.environ.get(_HYBRID_PACKING_ENV_VAR, "0").strip().lower() in {
-        "1",
-        "true",
-        "yes",
-        "on",
+        "1", "true", "yes", "on",
     }
 
 
@@ -254,8 +251,7 @@ def _hybrid_reject(reason: str) -> bool:
     if reason not in _HYBRID_WARNED:
         _HYBRID_WARNED.add(reason)
         _HYBRID_LOGGER.warning(
-            "Unsloth: hybrid linear-attention packing disabled (padded path): %s.",
-            reason,
+            "Unsloth: hybrid linear-attention packing disabled (padded path): %s.", reason,
         )
     return False
 
@@ -285,21 +281,15 @@ def _hybrid_varlen_kernels_available(gated_delta_modules) -> Optional[str]:
         return "no gated-delta modules found"
     for module in gated_delta_modules:
         conv = getattr(module, "_unsloth_varlen_orig_conv", None) or getattr(
-            module,
-            "causal_conv1d_fn",
-            None,
+            module, "causal_conv1d_fn", None,
         )
         scan = getattr(module, "_unsloth_varlen_orig_scan", None) or getattr(
-            module,
-            "chunk_gated_delta_rule",
-            None,
+            module, "chunk_gated_delta_rule", None,
         )
         if conv is None or scan is None:
             return "accelerated kernels missing (install causal_conv1d and fla)"
         if getattr(scan, "__name__", "").startswith("torch_") or getattr(
-            conv,
-            "__name__",
-            "",
+            conv, "__name__", "",
         ).startswith("torch_"):
             return "pure-torch kernel fallback in use"
         try:
@@ -316,7 +306,10 @@ def _varlen_from_position_ids(position_ids):
     """(cu_seqlens int32[n+1], seq_idx int32[1,T]) for a flattened padding-free
     batch, else None. Padding-free position_ids reset to 0 at each sequence start.
     Only a validated single-row pack is accepted; a normal batch or single
-    sequence returns None (a no-op)."""
+    sequence returns None (a no-op). This is the fallback used only when the
+    authoritative packed_seq_lengths is absent; it assumes right-packed reset
+    position_ids and would mis-segment a left-padded row (leading zeros read as
+    segment starts), which is why packed_seq_lengths is always preferred."""
     if position_ids is None:
         return None
     pos = position_ids
@@ -329,12 +322,10 @@ def _varlen_from_position_ids(position_ids):
     starts = (row == 0).nonzero(as_tuple = False).flatten()
     if starts.numel() <= 1 or int(starts[0].item()) != 0:
         return None
-    cu_seqlens = torch.cat(
-        [
-            starts.to(torch.int32),
-            torch.tensor([total], dtype = torch.int32, device = row.device),
-        ]
-    )
+    cu_seqlens = torch.cat([
+        starts.to(torch.int32),
+        torch.tensor([total], dtype = torch.int32, device = row.device),
+    ])
     return _seq_idx_from_cu_seqlens(cu_seqlens, total)
 
 
@@ -349,12 +340,10 @@ def _seq_idx_from_cu_seqlens(cu_seqlens, total):
     if last > total:
         return None
     if last < total:  # trailing pad tokens -> one final segment
-        boundaries = torch.cat(
-            [
-                boundaries,
-                torch.tensor([total], dtype = torch.int32, device = boundaries.device),
-            ]
-        )
+        boundaries = torch.cat([
+            boundaries,
+            torch.tensor([total], dtype = torch.int32, device = boundaries.device),
+        ])
     lengths = boundaries[1:] - boundaries[:-1]
     if not bool((lengths > 0).all()):
         return None
@@ -383,12 +372,14 @@ def _hybrid_varlen_metadata(kwargs):
             break
     if total is None:
         return None
-    info = get_packed_info_from_kwargs(kwargs, device)  # authoritative packed_seq_lengths
-    if info is not None:
-        _, cu_seqlens, _ = info
-        built = _seq_idx_from_cu_seqlens(cu_seqlens, total)
-        if built is not None:
-            return built
+    psl = kwargs.get("packed_seq_lengths")
+    if psl is not None and getattr(psl, "numel", lambda: 1)() > 0:  # skip empty (no max())
+        info = get_packed_info_from_kwargs(kwargs, device)  # authoritative packed_seq_lengths
+        if info is not None:
+            _, cu_seqlens, _ = info
+            built = _seq_idx_from_cu_seqlens(cu_seqlens, total)
+            if built is not None:
+                return built
     return _varlen_from_position_ids(kwargs.get("position_ids"))
 
 
@@ -403,10 +394,8 @@ def patch_hybrid_linear_attention_varlen(model) -> bool:
     gated_delta_modules = _iter_gated_delta_modules(model)
 
     # Idempotency: an already fully-patched model stays active without re-validation.
-    if (
-        getattr(model, "_unsloth_varlen_forward_wrapped", False)
-        and gated_delta_modules
-        and all(getattr(m, "_unsloth_varlen_wrapped", False) for m in gated_delta_modules)
+    if getattr(model, "_unsloth_varlen_forward_wrapped", False) and gated_delta_modules and all(
+        getattr(m, "_unsloth_varlen_wrapped", False) for m in gated_delta_modules
     ):
         return True
 
@@ -423,29 +412,19 @@ def patch_hybrid_linear_attention_varlen(model) -> bool:
         module._unsloth_varlen_orig_scan = scan_orig
 
         @wraps(conv_orig)
-        def conv_fn(
-            *args,
-            _orig = conv_orig,
-            _module = module,
-            **kwargs,
-        ):
+        def conv_fn(*args, _orig = conv_orig, _module = module, **kwargs):
             varlen = getattr(_module, "_unsloth_varlen", None)
             if varlen is not None:
-                _module._unsloth_varlen_hit = True  # runtime dispatch handshake
+                _module._unsloth_varlen_conv_hit = True  # runtime dispatch handshake
                 if kwargs.get("seq_idx") is None:
                     kwargs["seq_idx"] = varlen[1]
             return _orig(*args, **kwargs)
 
         @wraps(scan_orig)
-        def scan_fn(
-            *args,
-            _orig = scan_orig,
-            _module = module,
-            **kwargs,
-        ):
+        def scan_fn(*args, _orig = scan_orig, _module = module, **kwargs):
             varlen = getattr(_module, "_unsloth_varlen", None)
             if varlen is not None:
-                _module._unsloth_varlen_hit = True
+                _module._unsloth_varlen_scan_hit = True
                 if kwargs.get("cu_seqlens") is None:
                     kwargs["cu_seqlens"] = varlen[0]
             return _orig(*args, **kwargs)
@@ -475,19 +454,39 @@ def patch_hybrid_linear_attention_varlen(model) -> bool:
                 varlen = _hybrid_varlen_metadata(bound)
             except Exception:
                 varlen = None
+            first_pack = varlen is not None and not getattr(
+                model, "_unsloth_varlen_handshake_done", False,
+            )
             for module in gated_delta_modules:
                 module._unsloth_varlen = varlen
-                if varlen is not None:
-                    module._unsloth_varlen_hit = False
+                if first_pack:
+                    module._unsloth_varlen_conv_hit = False
+                    module._unsloth_varlen_scan_hit = False
             out = forward_orig(*args, **kwargs)
-            # Runtime dispatch handshake: on the first real packed forward, confirm the
-            # shim was actually reached. If not (a future version stopped dispatching
-            # through self.<kernel>), warn once so a silent regression is visible.
-            if varlen is not None and not getattr(model, "_unsloth_varlen_handshake_done", False):
+            # Runtime dispatch handshake: on the first real packed forward, confirm BOTH
+            # boundary kernels ran for EVERY gated-delta module. Both seq_idx (conv) and
+            # cu_seqlens (scan) are load-bearing, so a partial or absent dispatch (a future
+            # version that stops routing through self.<kernel>) leaves cross-sequence
+            # contamination. The batch is already flattened, so there is no padded recovery
+            # here: abort before loss/backward rather than train on corrupted data.
+            if first_pack:
                 model._unsloth_varlen_handshake_done = True
-                if not any(getattr(m, "_unsloth_varlen_hit", False) for m in gated_delta_modules):
-                    _hybrid_reject(
-                        "varlen shim never invoked on a packed batch (dispatch changed?)"
+                missing = [
+                    type(m).__name__ for m in gated_delta_modules
+                    if not (
+                        getattr(m, "_unsloth_varlen_conv_hit", False)
+                        and getattr(m, "_unsloth_varlen_scan_hit", False)
+                    )
+                ]
+                if missing:
+                    for m in gated_delta_modules:
+                        m._unsloth_varlen = None
+                    _hybrid_reject("varlen conv/scan not both dispatched (dispatch changed?)")
+                    raise RuntimeError(
+                        "Unsloth: experimental hybrid packing cannot continue because the "
+                        "varlen conv/scan wrappers were not both invoked for "
+                        f"{sorted(set(missing))}. Unset UNSLOTH_EXPERIMENTAL_HYBRID_PACKING "
+                        "to train these models on the padded path."
                     )
             return out
 
