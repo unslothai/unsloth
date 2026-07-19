@@ -2688,10 +2688,42 @@ exit 0
     # caller explicitly disabled the post-install prompt.
     # In non-interactive environments (CI, Docker) just print instructions.
     $IsInteractive = (-not $SkipAutostart) -and [Environment]::UserInteractive -and (-not [Console]::IsInputRedirected)
+    # Select the same bounded free-port range as the generated desktop launcher.
+    # Passing the selected port to both the server and watcher prevents an
+    # existing Studio on 8888 from moving the backend while the watcher stays
+    # behind.
+    function Find-PostInstallStudioPort {
+        param([int]$BasePort = 8888, [int]$MaxPortOffset = 20)
+        $probes = @(
+            @{ Family = [System.Net.Sockets.AddressFamily]::InterNetwork; Host = '127.0.0.1' },
+            @{ Family = [System.Net.Sockets.AddressFamily]::InterNetworkV6; Host = '::1' }
+        )
+        for ($offset = 0; $offset -le $MaxPortOffset; $offset++) {
+            $candidate = $BasePort + $offset
+            $busy = $false
+            foreach ($probe in $probes) {
+                $client = $null
+                try {
+                    $client = [System.Net.Sockets.TcpClient]::new($probe.Family)
+                    $connect = $client.ConnectAsync($probe.Host, $candidate)
+                    if ($connect.Wait(100) -and $client.Connected) {
+                        $busy = $true
+                        break
+                    }
+                } catch {
+                } finally {
+                    if ($client) { $client.Dispose() }
+                }
+            }
+            if (-not $busy) { return $candidate }
+        }
+        return $BasePort
+    }
+
     # Background watcher for the foreground launch below: once the server is
-    # healthy, open the browser per the persisted preference (mirrors the
-    # desktop launcher). Guarded by the per-install root id so a different
-    # Studio already on the port is never the one opened.
+    # healthy on the selected port, open the browser per the persisted
+    # preference. Guarded by the per-install root id so a different Studio is
+    # never the one opened.
     $_browserWatch = {
         param($RootId, $Port)
         $deadline = (Get-Date).AddSeconds(120)
@@ -2711,6 +2743,7 @@ exit 0
         Write-Host ""
         $reply = Read-Host "  Start Unsloth Studio now? [Y/n]"
         if ([string]::IsNullOrWhiteSpace($reply) -or $reply -match '^[Yy]') {
+            $_launchPort = Find-PostInstallStudioPort
             # Open the browser once the server is up, unless opted out. The
             # server prints its own URL, so no watcher is needed when off.
             if ($OpenBrowserPref -ne '0') {
@@ -2720,10 +2753,10 @@ exit 0
                     try { $_watchRootId = ([System.IO.File]::ReadAllText($_watchIdFile)).Trim() } catch {}
                 }
                 try {
-                    $null = Start-Job -ScriptBlock $_browserWatch -ArgumentList @($_watchRootId, 8888)
+                    $null = Start-Job -ScriptBlock $_browserWatch -ArgumentList @($_watchRootId, $_launchPort)
                 } catch {}
             }
-            & $UnslothExe studio -p 8888
+            & $UnslothExe studio -p $_launchPort
         } else {
             step "launch" "to start later, run:"
             substep "unsloth studio -p 8888"

@@ -3295,10 +3295,48 @@ printf "  ${C_TITLE}%s${C_RST}\n" "Unsloth Studio installed!"
 printf "  ${C_DIM}%s${C_RST}\n" "$RULE"
 echo ""
 
+# Select the same bounded free-port range as the generated desktop launcher.
+# Passing the selected port to both the server and watcher prevents an existing
+# Studio on 8888 from making the backend move while the watcher stays behind.
+_find_post_install_port() {
+    _pifp_base="${1:-8888}"
+    _pifp_max_offset="${2:-20}"
+    "$VENV_DIR/bin/python" - "$_pifp_base" "$_pifp_max_offset" <<'PY'
+import socket
+import sys
+
+base = int(sys.argv[1])
+max_offset = int(sys.argv[2])
+
+def is_free(port):
+    endpoints = (
+        (socket.AF_INET, ("127.0.0.1", port)),
+        (socket.AF_INET6, ("::1", port, 0, 0)),
+    )
+    for family, address in endpoints:
+        try:
+            with socket.socket(family, socket.SOCK_STREAM) as probe:
+                probe.settimeout(0.1)
+                if probe.connect_ex(address) == 0:
+                    return False
+        except OSError:
+            # IPv6 can be unavailable; match the backend's loopback probe.
+            continue
+    return True
+
+for offset in range(max_offset + 1):
+    candidate = base + offset
+    if is_free(candidate):
+        print(candidate)
+        raise SystemExit(0)
+raise SystemExit(1)
+PY
+}
+
 # Background watcher for the post-install foreground launch below: once the
-# server is healthy, open the browser per the persisted preference (mirrors
-# the desktop launcher). Guarded by the per-install root id so a different
-# Studio already on the port is never the one opened.
+# server is healthy on the selected port, open the browser per the persisted
+# preference. Guarded by the per-install root id so a different Studio is never
+# the one opened.
 _post_install_browser_watch() {
     _pibw_port="$1"
     _pibw_url="http://localhost:$_pibw_port"
@@ -3353,10 +3391,14 @@ if [ "$_SKIP_AUTOSTART" != true ] && [ -t 1 ]; then
     case "${_reply:-y}" in
         [Yy]*|"")
             step "launch" "starting Unsloth Studio..."
+            _post_install_port=$(_find_post_install_port 8888 20) || _post_install_port=8888
+            case "$_post_install_port" in
+                ''|*[!0-9]*) _post_install_port=8888 ;;
+            esac
             # Open the browser once the server is up, unless opted out. The
             # server prints its own URL, so no watcher is needed when off.
             if [ "${_STUDIO_OPEN_BROWSER:-1}" != "0" ]; then
-                _post_install_browser_watch 8888
+                _post_install_browser_watch "$_post_install_port"
             fi
             # Detach stdin from the `curl | sh` pipe: as a foreground server the
             # studio would otherwise drain the rest of this piped script, leaving
@@ -3366,7 +3408,7 @@ if [ "$_SKIP_AUTOSTART" != true ] && [ -t 1 ]; then
             trap '' INT
             # `|| ...`: capture the exit code without set -e aborting first.
             _LAUNCH_EXIT=0
-            (trap - INT; exec "$VENV_DIR/bin/unsloth" studio -p 8888 </dev/null) || _LAUNCH_EXIT=$?
+            (trap - INT; exec "$VENV_DIR/bin/unsloth" studio -p "$_post_install_port" </dev/null) || _LAUNCH_EXIT=$?
             if [ "$_LAUNCH_EXIT" -ne 0 ] && [ "$_MIGRATED" = true ]; then
                 echo ""
                 echo "⚠️  Unsloth Studio failed to start after migration."

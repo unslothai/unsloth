@@ -94,7 +94,13 @@ assert_contains \
 # The post-install foreground launch honors the preference too.
 assert_contains \
     "install.sh: post-install launch opens browser via gated watcher" \
-    "$_installer" "_post_install_browser_watch 8888"
+    "$_installer" '_post_install_browser_watch "$_post_install_port"'
+assert_contains \
+    "install.sh: post-install launch selects a free port" \
+    "$_installer" "_find_post_install_port()"
+assert_contains \
+    "install.sh: server uses the watcher-selected port" \
+    "$_installer" 'studio -p "$_post_install_port"'
 # The --shortcuts-only early exit must not EPIPE a curl | sh pipeline.
 assert_contains \
     "install.sh: shortcuts-only exit drains piped stdin" \
@@ -182,6 +188,15 @@ assert_file_contains \
 assert_file_contains \
     "install.ps1: post-install launch opens browser via gated watcher" \
     "$INSTALL_PS1" 'Start-Job -ScriptBlock $_browserWatch'
+assert_file_contains \
+    "install.ps1: post-install launch selects a free port" \
+    "$INSTALL_PS1" 'function Find-PostInstallStudioPort {'
+assert_file_contains \
+    "install.ps1: watcher receives the selected port" \
+    "$INSTALL_PS1" 'ArgumentList @($_watchRootId, $_launchPort)'
+assert_file_contains \
+    "install.ps1: server uses the watcher-selected port" \
+    "$INSTALL_PS1" '& $UnslothExe studio -p $_launchPort'
 # All launcher URL opens must route through the gated helper. The one
 # allowed direct call is inside the post-install $_browserWatch scriptblock,
 # whose Start-Job call site is itself gated on the preference.
