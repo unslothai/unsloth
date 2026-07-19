@@ -931,10 +931,18 @@ class TestRouteErrors(unittest.TestCase):
         )
         request = LoadRequest(model_path = "unsloth/test.gguf", gpu_ids = [0, 1])
         model_config = SimpleNamespace(
-            is_gguf = True, is_lora = False, gguf_hf_repo = None,
-            gguf_file = "/tmp/test.gguf", gguf_mmproj_file = None, gguf_variant = None,
-            identifier = "unsloth/test.gguf", display_name = "unsloth/test.gguf",
-            is_vision = False, is_audio = False, audio_type = None, has_audio_input = False,
+            is_gguf = True,
+            is_lora = False,
+            gguf_hf_repo = None,
+            gguf_file = "/tmp/test.gguf",
+            gguf_mmproj_file = None,
+            gguf_variant = None,
+            identifier = "unsloth/test.gguf",
+            display_name = "unsloth/test.gguf",
+            is_vision = False,
+            is_audio = False,
+            audio_type = None,
+            has_audio_input = False,
         )
         fake_backend = SimpleNamespace(
             is_loaded = False,
@@ -944,7 +952,8 @@ class TestRouteErrors(unittest.TestCase):
         )
         with (
             patch.object(
-                inference_route, "ModelConfig",
+                inference_route,
+                "ModelConfig",
                 SimpleNamespace(from_identifier = lambda **_kwargs: model_config),
             ),
             patch.object(inference_route, "_guard_chat_load_against_training", return_value = None),
