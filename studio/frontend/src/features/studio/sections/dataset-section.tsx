@@ -76,6 +76,7 @@ import {
   type DragEvent,
   useCallback,
   useEffect,
+  useId,
   useMemo,
   useRef,
   useState,
@@ -155,6 +156,8 @@ export function DatasetSection() {
   const t = useT();
   const navigate = useNavigate();
   const reducedMotion = useReducedMotion();
+  // Scopes the pill layoutId so multiple instances never share one.
+  const sourcePillLayoutId = useId();
   const {
     dataset,
     datasetSource,
@@ -734,7 +737,7 @@ export function DatasetSection() {
                     {datasetSource === item.value && (
                       <motion.span
                         aria-hidden="true"
-                        layoutId="dataset-source-pill"
+                        layoutId={sourcePillLayoutId}
                         className="hub-tab-toggle-pill absolute inset-0 rounded-full"
                         transition={
                           reducedMotion
