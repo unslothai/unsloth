@@ -4,7 +4,8 @@
 """Per-MTok pricing tables and ``calculate_cost`` (usage block -> USD).
 
 Sources: Anthropic prompt-caching docs (5m write 1.25x, 1h write 2x,
-read 0.1x), web search ($10/1000), code execution; OpenAI pricing page.
+read 0.1x), web search ($10/1000), code execution; OpenAI pricing page;
+MiniMax pay-as-you-go pricing guide.
 """
 
 from __future__ import annotations
@@ -61,6 +62,34 @@ OPENAI_PRICING: dict[str, dict[str, float]] = {
     # returns priced=False instead of silently $0.
 }
 
+MINIMAX_PRICING: dict[str, dict[str, float]] = {
+    "MiniMax-M3": {
+        "input_per_mtok": 0.3,
+        "output_per_mtok": 1.2,
+        "cache_read_per_mtok": 0.06,
+        "cache_write_per_mtok": 0.0,
+        "long_context_threshold_exclusive": 512_000,
+        "long_context_input_per_mtok": 0.6,
+        "long_context_output_per_mtok": 2.4,
+        "long_context_cache_read_per_mtok": 0.12,
+        "long_context_cache_write_per_mtok": 0.0,
+        "priority_input_per_mtok": 0.45,
+        "priority_output_per_mtok": 1.8,
+        "priority_cache_read_per_mtok": 0.09,
+        "priority_cache_write_per_mtok": 0.0,
+        "priority_long_context_input_per_mtok": 0.9,
+        "priority_long_context_output_per_mtok": 3.6,
+        "priority_long_context_cache_read_per_mtok": 0.18,
+        "priority_long_context_cache_write_per_mtok": 0.0,
+    },
+    "MiniMax-M2.7": {
+        "input_per_mtok": 0.3,
+        "output_per_mtok": 1.2,
+        "cache_read_per_mtok": 0.06,
+        "cache_write_per_mtok": 0.375,
+    },
+}
+
 # Shared multipliers (all Anthropic models).
 ANTHROPIC_CACHE_5M_WRITE_MULT = 1.25
 ANTHROPIC_CACHE_1H_WRITE_MULT = 2.0
@@ -89,6 +118,8 @@ def _lookup(provider: str, model: str) -> Optional[dict[str, float]]:
         if provider == "anthropic"
         else OPENAI_PRICING
         if provider == "openai"
+        else MINIMAX_PRICING
+        if provider == "minimax"
         else None
     )
     if table is None:
@@ -130,8 +161,15 @@ def calculate_cost(provider: str, model: str, usage: dict[str, Any]) -> dict[str
     #   Studio OpenAI:    prompt_tokens == raw input_tokens
     # Clamp >=0 so corrupted payloads can't produce a negative bill.
     cache_creation = max(0, int(usage.get("cache_creation_input_tokens") or 0))
+    cache_creation_native_present = (
+        "cache_creation_input_tokens" in usage
+        and usage.get("cache_creation_input_tokens") is not None
+    )
     cache_read_native_present = (
         "cache_read_input_tokens" in usage and usage.get("cache_read_input_tokens") is not None
+    )
+    uses_anthropic_cache_semantics = provider == "anthropic" or (
+        provider == "minimax" and (cache_creation_native_present or cache_read_native_present)
     )
     cache_read = max(0, int(usage.get("cache_read_input_tokens") or 0))
     # Fall back to mirrored prompt_tokens_details only when native
@@ -148,7 +186,7 @@ def calculate_cost(provider: str, model: str, usage: dict[str, Any]) -> dict[str
         # Chat-style: peel cache buckets back out for Anthropic to get
         # the raw uncached prompt count.
         prompt_tokens = max(0, int(usage.get("prompt_tokens") or 0))
-        if provider == "anthropic":
+        if uses_anthropic_cache_semantics:
             input_tokens = max(0, prompt_tokens - cache_creation - cache_read)
         else:
             input_tokens = prompt_tokens
@@ -158,7 +196,7 @@ def calculate_cost(provider: str, model: str, usage: dict[str, Any]) -> dict[str
         output_tokens = max(0, int(usage.get("output_tokens") or 0))
     else:
         output_tokens = max(0, int(usage.get("completion_tokens") or 0))
-    if provider == "openai":
+    if provider == "openai" or (provider == "minimax" and not uses_anthropic_cache_semantics):
         # Cached tokens land on input_tokens_details (raw Responses) or
         # prompt_tokens_details (Studio chat-style).
         for key in ("input_tokens_details", "prompt_tokens_details"):
@@ -177,20 +215,55 @@ def calculate_cost(provider: str, model: str, usage: dict[str, Any]) -> dict[str
 
     # Long-context tier: whole-turn flip (not per-token blend) once
     # billable_input_tokens crosses the threshold.
-    lc_thresh = prices.get("long_context_threshold")
+    lc_exclusive_thresh = prices.get("long_context_threshold_exclusive")
+    lc_thresh = (
+        lc_exclusive_thresh
+        if lc_exclusive_thresh is not None
+        else prices.get("long_context_threshold")
+    )
+    lc_inclusive = lc_exclusive_thresh is None
+    crosses_lc_threshold = (
+        out["billable_input_tokens"] >= int(lc_thresh)
+        if lc_thresh is not None and lc_inclusive
+        else out["billable_input_tokens"] > int(lc_thresh)
+        if lc_thresh is not None
+        else False
+    )
     in_long_context_tier = (
-        lc_thresh is not None
-        and out["billable_input_tokens"] >= int(lc_thresh)
+        crosses_lc_threshold
         and "long_context_input_per_mtok" in prices
         and "long_context_output_per_mtok" in prices
     )
+    uses_priority_tier = (
+        provider == "minimax"
+        and usage.get("service_tier") == "priority"
+        and "priority_input_per_mtok" in prices
+    )
+
+    def _tier_price(key: str) -> float:
+        candidates = []
+        if uses_priority_tier and in_long_context_tier:
+            candidates.append(f"priority_long_context_{key}")
+        if uses_priority_tier:
+            candidates.append(f"priority_{key}")
+        if in_long_context_tier:
+            candidates.append(f"long_context_{key}")
+        candidates.append(key)
+        for candidate in candidates:
+            if candidate in prices:
+                return prices[candidate]
+        return 0.0
+
+    base = _tier_price("input_per_mtok")
+    out_per = _tier_price("output_per_mtok")
+    markers = []
+    if uses_priority_tier:
+        markers.append("priority")
     if in_long_context_tier:
-        base = prices["long_context_input_per_mtok"]
-        out_per = prices["long_context_output_per_mtok"]
-        out["model_priced"] = f"{model} (long-context >{lc_thresh})"
-    else:
-        base = prices["input_per_mtok"]
-        out_per = prices["output_per_mtok"]
+        operator = ">=" if lc_inclusive else ">"
+        markers.append(f"long-context {operator}{int(lc_thresh)}")
+    if markers:
+        out["model_priced"] = f"{model} ({', '.join(markers)})"
 
     # Anthropic fast-mode: 6x on input + output. Cache multipliers stack
     # on top, so applying once to (base, out_per) flows into the
@@ -227,6 +300,17 @@ def calculate_cost(provider: str, model: str, usage: dict[str, Any]) -> dict[str
                 web_searches / 1_000.0 * ANTHROPIC_WEB_SEARCH_USD_PER_1K
                 + code_exec_hours * ANTHROPIC_CODE_EXEC_USD_PER_HOUR
             )
+    elif provider == "minimax":
+        # MiniMax exposes OpenAI- and Anthropic-compatible protocols. The
+        # former folds cache reads into input tokens, while the latter reports
+        # separate cache buckets; both use absolute cache prices per model.
+        if not uses_anthropic_cache_semantics and cache_read > 0:
+            non_cached_input = max(0, input_tokens - cache_read)
+            out["input_usd"] = (non_cached_input / 1_000_000.0) * base
+        out["cache_write_usd"] = (cache_creation / 1_000_000.0) * _tier_price(
+            "cache_write_per_mtok"
+        )
+        out["cache_read_usd"] = (cache_read / 1_000_000.0) * _tier_price("cache_read_per_mtok")
     else:
         # OpenAI: cache writes pay base input, only reads get 0.1x.
         # Subtract cached from already-counted input_usd to avoid
@@ -274,5 +358,8 @@ def pricing_snapshot() -> dict[str, Any]:
             "cache_read_mult": OPENAI_CACHE_READ_MULT,
             "web_search_usd_per_1k": OPENAI_WEB_SEARCH_USD_PER_1K,
             "container_usd_per_hour": OPENAI_CONTAINER_USD_PER_HOUR,
+        },
+        "minimax": {
+            "models": dict(MINIMAX_PRICING),
         },
     }

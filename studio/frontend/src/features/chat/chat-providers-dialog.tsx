@@ -79,6 +79,19 @@ const CUSTOM_PROVIDER_MISSING_KEY_MESSAGE =
 const ANTHROPIC_DATED_SNAPSHOT_SUFFIX = /-\d{8}$/;
 const OPENAI_DEPRECATED_MODELS = new Set(["gpt-5.3"]);
 const HIDDEN_PROVIDER_TYPES = new Set(["qwen"]);
+const MINIMAX_PROVIDER_TYPE = "minimax";
+const MINIMAX_ENDPOINT_OPTIONS = [
+  { label: "Global (OpenAI)", value: "https://api.minimax.io/v1" },
+  {
+    label: "Global (Anthropic)",
+    value: "https://api.minimax.io/anthropic",
+  },
+  { label: "China mainland (OpenAI)", value: "https://api.minimaxi.com/v1" },
+  {
+    label: "China mainland (Anthropic)",
+    value: "https://api.minimaxi.com/anthropic",
+  },
+] as const;
 const OPENROUTER_EXCLUDED_MODELS = new Set([
   "google/chirp-3",
   "kwaivgi/kling-v3.0-pro",
@@ -244,6 +257,7 @@ export function ChatProvidersSettings({
     (s) => s.setConnectionsEnabled,
   );
   const isCustomProvider = isCustomProviderType(providerType);
+  const isMiniMaxProvider = providerType === MINIMAX_PROVIDER_TYPE;
   // Local presets (Ollama, llama.cpp) never use API keys — hide the field.
   // vLLM may optionally use a bearer token on secured deployments.
   const showApiKeyField = !customPresetSkipsApiKeyField(providerType);
@@ -340,7 +354,9 @@ export function ChatProvidersSettings({
     setSelectedModelIds([]);
     setManualModelIds("");
     setModelSearchQuery("");
-    setBaseUrlDraft("");
+    setBaseUrlDraft(
+      providerType === MINIMAX_PROVIDER_TYPE ? entry.base_url : "",
+    );
   }, [providerType, editingProviderId, registryByType]);
 
   const totalModels = useMemo(
@@ -491,6 +507,9 @@ export function ChatProvidersSettings({
     const entry = providerType ? registryByType.get(providerType) : null;
     if (entry?.model_list_mode === "curated") {
       setAvailableModels([...entry.default_models]);
+    }
+    if (entry?.provider_type === MINIMAX_PROVIDER_TYPE) {
+      setBaseUrlDraft(entry.base_url);
     }
     setPage("form");
   }
@@ -1148,6 +1167,40 @@ export function ChatProvidersSettings({
                       )}
                     </button>
                   </div>
+                </div>
+              ) : null}
+
+              {isMiniMaxProvider ? (
+                <div className="grid grid-cols-[minmax(150px,0.8fr)_minmax(260px,1.2fr)] items-center gap-4 px-4 py-3 max-sm:grid-cols-1">
+                  <div className="flex min-w-0 flex-col gap-0.5">
+                    <Label
+                      htmlFor="provider-minimax-endpoint"
+                      className="text-sm font-medium"
+                    >
+                      Endpoint
+                    </Label>
+                    <p className="text-xs leading-snug text-muted-foreground">
+                      Protocol and region.
+                    </p>
+                  </div>
+                  <Select
+                    value={baseUrlDraft}
+                    onValueChange={setBaseUrlDraft}
+                  >
+                    <SelectTrigger
+                      id="provider-minimax-endpoint"
+                      className="h-9 w-full text-sm"
+                    >
+                      <SelectValue placeholder="Choose an endpoint" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {MINIMAX_ENDPOINT_OPTIONS.map((endpoint) => (
+                        <SelectItem key={endpoint.value} value={endpoint.value}>
+                          {endpoint.label}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
                 </div>
               ) : null}
 

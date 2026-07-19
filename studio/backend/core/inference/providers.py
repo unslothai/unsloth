@@ -4,8 +4,8 @@
 """
 Static registry of supported external LLM providers.
 
-All providers expose OpenAI-compatible /v1/chat/completions endpoints
-with Bearer token auth and SSE streaming.
+Provider-specific protocol, authentication, and streaming behavior is handled
+by ``external_provider.py`` using the metadata declared here.
 """
 
 import re
@@ -196,6 +196,28 @@ PROVIDER_REGISTRY: dict[str, dict[str, Any]] = {
         "auth_header": "Authorization",
         "auth_prefix": "Bearer ",
         "notes": "DashScope API key. China mainland: override base URL to https://dashscope.aliyuncs.com/compatible-mode/v1",
+    },
+    "minimax": {
+        "display_name": "MiniMax",
+        "base_url": "https://api.minimax.io/v1",
+        "default_models": [
+            "MiniMax-M3",
+            "MiniMax-M2.7",
+        ],
+        "supports_streaming": True,
+        "supports_vision": True,
+        "supports_tool_calling": True,
+        "auth_header": "Authorization",
+        "auth_prefix": "Bearer ",
+        "body_omit": ("presence_penalty",),
+        "notes": (
+            "OpenAI- and Anthropic-compatible APIs. API key from platform.minimax.io. "
+            "MiniMax-M3 has a 1M-token context window with image and video input; "
+            "MiniMax-M2.7 has a 204.8K-token context window with text input. "
+            "Global endpoints: https://api.minimax.io/v1 and "
+            "https://api.minimax.io/anthropic. China mainland endpoints: "
+            "https://api.minimaxi.com/v1 and https://api.minimaxi.com/anthropic"
+        ),
     },
     "huggingface": {
         "display_name": "Hugging Face",
