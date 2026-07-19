@@ -90,8 +90,13 @@ def test_sanitize_config_rejects_nested_rag_scope_secret():
 
 def test_sensitive_key_matches_prefixed_and_camelcase_variants():
     for key in (
-        "apiKey", "openaiApiKey", "accessToken", "access_token",
-        "clientSecret", "refreshToken", "authorization",
+        "apiKey",
+        "openaiApiKey",
+        "accessToken",
+        "access_token",
+        "clientSecret",
+        "refreshToken",
+        "authorization",
     ):
         assert _is_sensitive_key(key), key
     # Ordinary request fields must not be flagged, so normal runs still validate.
@@ -102,9 +107,7 @@ def test_sensitive_key_matches_prefixed_and_camelcase_variants():
 def test_sanitize_query_redacts_nonpublic_ipv6_but_keeps_public():
     assert "fd00" not in _sanitize_public_query("inspect fd00::dead:beef service health")
     assert "fe80" not in _sanitize_public_query("connect to fe80::1%eth0 gateway now")
-    assert "2606:4700:4700::1111" in _sanitize_public_query(
-        "what runs on 2606:4700:4700::1111 dns"
-    )
+    assert "2606:4700:4700::1111" in _sanitize_public_query("what runs on 2606:4700:4700::1111 dns")
 
 
 def test_escape_link_destination_escapes_only_unbalanced_paren():

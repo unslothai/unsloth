@@ -1676,9 +1676,7 @@ def _research_message_ids(conn: sqlite3.Connection, thread_id: str) -> set[str]:
     }
 
 
-def _research_message_would_change(
-    conn: sqlite3.Connection, thread_id: str, message: dict
-) -> bool:
+def _research_message_would_change(conn: sqlite3.Connection, thread_id: str, message: dict) -> bool:
     row = conn.execute(
         "SELECT parent_id, role, content_json, metadata_json "
         "FROM chat_messages WHERE thread_id = ? AND id = ?",
@@ -1688,7 +1686,7 @@ def _research_message_would_change(
         return False
 
     def canon(value: object) -> str | None:
-        return json.dumps(value, sort_keys=True) if value is not None else None
+        return json.dumps(value, sort_keys = True) if value is not None else None
 
     return (
         canon(message.get("content", [])) != canon(json.loads(row["content_json"] or "[]"))

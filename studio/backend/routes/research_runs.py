@@ -23,11 +23,24 @@ from storage.studio_db import get_chat_message, get_chat_thread, upsert_chat_mes
 
 router = APIRouter()
 _SENSITIVE_KEY_EXACT = {
-    "authorization", "password", "secret", "token", "apikey", "credential", "credentials",
+    "authorization",
+    "password",
+    "secret",
+    "token",
+    "apikey",
+    "credential",
+    "credentials",
 }
 _SENSITIVE_KEY_SUFFIXES = (
-    "apikey", "accesskey", "accesstoken", "authtoken", "bearertoken",
-    "clientsecret", "privatekey", "refreshtoken", "sessiontoken",
+    "apikey",
+    "accesskey",
+    "accesstoken",
+    "authtoken",
+    "bearertoken",
+    "clientsecret",
+    "privatekey",
+    "refreshtoken",
+    "sessiontoken",
 )
 _MAX_PLAN_STEPS = 30
 _DELTA_ONLY_EVENTS = {"reasoning.updated", "report.updated"}
@@ -140,8 +153,7 @@ def _contains_sensitive_key(value: object) -> bool:
     so credentials cannot be smuggled into a durable run via a nested dict."""
     if isinstance(value, dict):
         return any(
-            _is_sensitive_key(key) or _contains_sensitive_key(item)
-            for key, item in value.items()
+            _is_sensitive_key(key) or _contains_sensitive_key(item) for key, item in value.items()
         )
     if isinstance(value, (list, tuple)):
         return any(_contains_sensitive_key(item) for item in value)

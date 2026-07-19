@@ -583,7 +583,7 @@ def _validate_report_sources(report: str, sources: list[dict]) -> str:
         raw = match.group(0)
         core = raw.rstrip(".,;:!?")
         if core in source_by_url:
-            return (citation(core) or core) + raw[len(core):]
+            return (citation(core) or core) + raw[len(core) :]
         return ""
 
     validated = replace_markdown_links(report)
