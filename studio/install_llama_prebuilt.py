@@ -6506,6 +6506,24 @@ def write_prebuilt_metadata(
     (install_dir / "UNSLOTH_PREBUILT_INFO.json").write_text(json.dumps(metadata, indent = 2) + "\n")
 
 
+def sync_marker_force_cpu(install_dir: Path, persist_force_cpu: bool) -> None:
+    """Sync only the force_cpu flag of an existing marker when the resolved bundle is
+    unchanged, so the install is skipped without a full metadata rewrite. A deliberate
+    --force-cpu on top of a naturally installed CPU bundle (same asset) must still be
+    recorded, else the updater will not re-assert it and can re-route the install to a
+    GPU/Vulkan bundle that revives the crash (#7213)."""
+    marker_path = install_dir / "UNSLOTH_PREBUILT_INFO.json"
+    try:
+        marker = json.loads(marker_path.read_text())
+    except (OSError, ValueError):
+        return
+    if not isinstance(marker, dict) or bool(marker.get("force_cpu")) == persist_force_cpu:
+        return
+    marker["force_cpu"] = persist_force_cpu
+    marker_path.write_text(json.dumps(marker, indent = 2) + "\n")
+    log(f"existing install reused; recorded force_cpu={persist_force_cpu} from this run")
+
+
 def expected_install_fingerprint(
     *,
     llama_tag: str,
@@ -7084,6 +7102,9 @@ def install_prebuilt(
                         "existing llama.cpp install already matches selected release "
                         f"{current.release_tag} upstream_tag={current.llama_tag}; skipping download and install"
                     )
+                    # Reused bundle is unchanged, but a fresh --force-cpu still must be
+                    # recorded so the updater re-asserts it (#7213).
+                    sync_marker_force_cpu(install_dir, persist_force_cpu)
                     return
             with tempfile.TemporaryDirectory(prefix = "unsloth-llama-prebuilt-") as tmp:
                 work_dir = Path(tmp)
@@ -7104,6 +7125,7 @@ def install_prebuilt(
                                 "existing llama.cpp install already matches fallback release "
                                 f"{plan.release_tag} upstream_tag={plan.llama_tag}; skipping reinstall"
                             )
+                            sync_marker_force_cpu(install_dir, persist_force_cpu)
                             return
                     log(
                         "selected "

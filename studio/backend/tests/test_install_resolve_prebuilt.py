@@ -508,6 +508,38 @@ def test_cli_cpu_flags_thread_force_and_persist(
     assert captured["persist_force_cpu"] is expect_persist
 
 
+@pytest.mark.parametrize(
+    "existing, requested, expected",
+    [
+        # A deliberate --force-cpu on top of a naturally-installed CPU bundle (same
+        # asset, install skipped) must still flip the marker to true (#7213).
+        (False, True, True),
+        (None, True, True),
+        # No spurious writes when already in sync, and a released force syncs down.
+        (True, True, True),
+        (False, False, False),
+        (True, False, False),
+    ],
+)
+def test_sync_marker_force_cpu(tmp_path, existing, requested, expected):
+    marker = {"tag": "b9585", "asset": "llama-b9585-bin-ubuntu-x64.tar.gz"}
+    if existing is not None:
+        marker["force_cpu"] = existing
+    marker_path = tmp_path / "UNSLOTH_PREBUILT_INFO.json"
+    marker_path.write_text(json.dumps(marker))
+    ilp.sync_marker_force_cpu(tmp_path, requested)
+    written = json.loads(marker_path.read_text())
+    assert written["force_cpu"] is expected
+    # Unrelated fields are preserved.
+    assert written["asset"] == "llama-b9585-bin-ubuntu-x64.tar.gz"
+
+
+def test_sync_marker_force_cpu_missing_marker_is_noop(tmp_path):
+    # No marker (or unreadable) must not crash the reuse path.
+    ilp.sync_marker_force_cpu(tmp_path, True)
+    assert not (tmp_path / "UNSLOTH_PREBUILT_INFO.json").exists()
+
+
 def test_route_to_vulkan_prebuilt_hidden_nvidia_not_rerouted():
     # A mixed NVIDIA+Intel host that hid NVIDIA (CUDA_VISIBLE_DEVICES=""/-1):
     # physical NVIDIA present but not usable. Must NOT auto-route to Vulkan, or
