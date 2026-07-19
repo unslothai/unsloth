@@ -473,6 +473,12 @@ def _rocm_install_args(asset: Optional[str]) -> list[str]:
     return ["--has-rocm"]
 
 
+# CPU-only prebuilt kinds that detect_host would re-route to a GPU/source build on a
+# GPU host if --cpu-fallback is dropped: the x86_64 (*-cpu) and arm64 (*-arm64) bundles
+# on Linux and Windows. macOS bundles ignore --cpu-fallback, so are omitted.
+_CPU_INSTALL_KINDS = ("linux-cpu", "windows-cpu", "linux-arm64", "windows-arm64")
+
+
 def _run_update(
     install_dir: Path,
     repo: str,
@@ -523,11 +529,12 @@ def _run_update(
         if pin_release_tag:
             cmd.extend(["--published-release-tag", pin_release_tag])
         cmd.extend(_rocm_install_args(asset))
-        # Preserve a forced-CPU install across updates: on an Intel iGPU box
-        # detect_host would otherwise re-route to the Vulkan bundle and bring
-        # back the crash the override avoids (#7213). install_kind is *-cpu for
-        # every CPU bundle; the asset name has no "cpu" marker on Linux.
-        if install_kind and install_kind.endswith("-cpu"):
+        # Preserve a CPU install across updates: on a GPU host detect_host would
+        # otherwise re-route to a GPU/Vulkan bundle (or source build) and bring back
+        # the crash the override avoids (#7213). The marker's install_kind is
+        # authoritative -- the asset name has no reliable "cpu" marker (Linux x64 CPU
+        # is bin-ubuntu-x64, and arm64 CPU kinds are *-arm64, not *-cpu).
+        if install_kind in _CPU_INSTALL_KINDS:
             cmd.append("--cpu-fallback")
         logger.info("llama update: installing", cmd = " ".join(cmd))
         # Stream progress lines into job["progress"].

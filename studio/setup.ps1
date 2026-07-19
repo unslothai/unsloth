@@ -3313,6 +3313,12 @@ if ($LocalLlamaCppLinked) {
     substep "Skipping prebuilt install -- falling back to source build" "Yellow"
 } else {
     Write-Host ""
+    # Normalize the CPU-backend override once (case-insensitive, whitespace-trimmed) so
+    # both the mismatch-prune and the prebuilt args honor UNSLOTH_LLAMA_CPP_BACKEND=cpu.
+    $llamaBackend = "$($env:UNSLOTH_LLAMA_CPP_BACKEND)".Trim().ToLowerInvariant()
+    if ($llamaBackend -and $llamaBackend -notin @("auto", "cpu")) {
+        Write-Host "[WARN] Ignoring UNSLOTH_LLAMA_CPP_BACKEND='$($env:UNSLOTH_LLAMA_CPP_BACKEND)' (expected 'auto' or 'cpu')" -ForegroundColor Yellow
+    }
     if (Test-Path -LiteralPath $LlamaCppDir) {
         substep "Existing llama.cpp install detected -- validating staged prebuilt update before replacement"
         # If the existing install is the wrong kind (e.g. windows-cpu on a ROCm
@@ -3330,11 +3336,9 @@ if ($LocalLlamaCppLinked) {
                 # ROCm-capable -- the ROCm prebuilt bundles its own runtime,
                 # mirroring the --rocm-gfx forward below. The CPU branch covers both
                 # the x64 windows-cpu and arm64 windows-arm64 bundles (Windows arm64
-                # has no GPU prebuilt). NOTE: this block is currently inert --
-                # write_prebuilt_metadata does not persist an install_kind key, so
-                # $existingKind is always null; keep $expectedKinds in sync with the
-                # kinds install_llama_prebuilt.py installs before relying on it.
-                $expectedKinds = if ($HasROCm -or $script:ROCmGfxArch) { @("windows-rocm", "windows-hip") } elseif ($HasNvidiaSmi) { @("windows-cuda") } else { @("windows-cpu", "windows-arm64") }
+                # has no GPU prebuilt), and UNSLOTH_LLAMA_CPP_BACKEND=cpu makes CPU
+                # expected so a deliberate CPU install is not pruned on a GPU host.
+                $expectedKinds = if ($llamaBackend -eq "cpu") { @("windows-cpu", "windows-arm64") } elseif ($HasROCm -or $script:ROCmGfxArch) { @("windows-rocm", "windows-hip") } elseif ($HasNvidiaSmi) { @("windows-cuda") } else { @("windows-cpu", "windows-arm64") }
                 if ($existingKind -and ($existingKind -notin $expectedKinds)) {
                     substep "Removing mismatched llama.cpp install (found '$existingKind', need one of: $($expectedKinds -join ', '))..."
                     Remove-Item -Recurse -Force -LiteralPath $LlamaCppDir -ErrorAction SilentlyContinue
@@ -3371,14 +3375,11 @@ if ($LocalLlamaCppLinked) {
         if ($env:UNSLOTH_LLAMA_RELEASE_TAG) {
             $prebuiltArgs += @("--published-release-tag", $env:UNSLOTH_LLAMA_RELEASE_TAG)
         }
-        # UNSLOTH_LLAMA_CPP_BACKEND=cpu forces the CPU-only prebuilt (case-insensitive
-        # and whitespace-trimmed), bypassing Vulkan/CUDA/ROCm. Fixes Intel iGPU Vulkan
+        # UNSLOTH_LLAMA_CPP_BACKEND=cpu forces the CPU-only prebuilt ($llamaBackend
+        # normalized above), bypassing Vulkan/CUDA/ROCm. Fixes Intel iGPU Vulkan
         # crashes (#7213). Maps to install_llama_prebuilt.py --cpu-fallback.
-        $llamaBackend = "$($env:UNSLOTH_LLAMA_CPP_BACKEND)".Trim().ToLowerInvariant()
         if ($llamaBackend -eq "cpu") {
             $prebuiltArgs += "--cpu-fallback"
-        } elseif ($llamaBackend -and $llamaBackend -ne "auto") {
-            Write-Host "[WARN] Ignoring UNSLOTH_LLAMA_CPP_BACKEND='$($env:UNSLOTH_LLAMA_CPP_BACKEND)' (expected 'auto' or 'cpu')" -ForegroundColor Yellow
         }
         $prevEAPPrebuilt = $ErrorActionPreference
         $ErrorActionPreference = "Continue"

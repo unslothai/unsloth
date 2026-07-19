@@ -496,18 +496,25 @@ def test_start_update_preserves_vulkan_via_env(monkeypatch, tmp_path):
     assert popen_kwargs["env"]["UNSLOTH_FORCE_VULKAN"] == "1"
 
 
-def test_start_update_preserves_cpu_via_flag(monkeypatch, tmp_path):
-    # A forced-CPU install (UNSLOTH_LLAMA_CPP_BACKEND=cpu) must re-assert
-    # --cpu-fallback on update, or detect_host on an Intel iGPU box re-routes to
-    # the Vulkan bundle and reintroduces the crash (#7213). Keyed off install_kind
-    # since the Linux CPU asset name carries no "cpu" marker.
+@pytest.mark.parametrize(
+    "install_kind, asset, expect_flag",
+    [
+        ("linux-cpu", "llama-b9493-bin-ubuntu-x64.tar.gz", True),
+        ("windows-cpu", "llama-b9493-bin-win-cpu-x64.zip", True),
+        ("linux-arm64", "llama-b9493-bin-ubuntu-arm64.tar.gz", True),
+        ("windows-arm64", "llama-b9493-bin-win-cpu-arm64.zip", True),
+        ("linux-vulkan", "llama-b9493-bin-ubuntu-vulkan-x64.tar.gz", False),
+        ("linux-cuda", "llama-b9493-bin-ubuntu-cuda-x64.tar.gz", False),
+    ],
+)
+def test_start_update_cpu_fallback_preserved_by_kind(
+    monkeypatch, tmp_path, install_kind, asset, expect_flag
+):
+    # A CPU install (x86_64 *-cpu or arm64 *-arm64) must re-assert --cpu-fallback on
+    # update, or detect_host on a GPU host re-routes to a GPU/source build and
+    # reintroduces the crash (#7213). Keyed off install_kind, not the asset name.
     install_dir = tmp_path / "llama.cpp"
-    binary = _write_install(
-        install_dir,
-        "b9493",
-        asset = "llama-b9493-bin-ubuntu-x64.tar.gz",
-        install_kind = "linux-cpu",
-    )
+    binary = _write_install(install_dir, "b9493", asset = asset, install_kind = install_kind)
     monkeypatch.setattr(upd, "_find_binary", lambda: binary)
     monkeypatch.setattr(upd, "_installer_script", lambda: tmp_path / "install_llama_prebuilt.py")
     monkeypatch.setattr(freshness, "_fetch_latest_release_tag", lambda repo, timeout = 5.0: "b9518")
@@ -516,12 +523,7 @@ def test_start_update_preserves_cpu_via_flag(monkeypatch, tmp_path):
 
     def _on_start(cmd):
         captured["cmd"] = cmd
-        _write_install(
-            install_dir,
-            "b9518",
-            asset = "llama-b9518-bin-ubuntu-x64.tar.gz",
-            install_kind = "linux-cpu",
-        )
+        _write_install(install_dir, "b9518", asset = asset, install_kind = install_kind)
 
     _patch_installer_popen(monkeypatch, lines = ["installed\n"], on_start = _on_start)
 
@@ -533,7 +535,7 @@ def test_start_update_preserves_cpu_via_flag(monkeypatch, tmp_path):
             break
         time.sleep(0.05)
     assert job["state"] == "success", job
-    assert "--cpu-fallback" in captured["cmd"]
+    assert ("--cpu-fallback" in captured["cmd"]) is expect_flag
 
 
 def test_start_update_reports_full_release_tag(monkeypatch, tmp_path):
