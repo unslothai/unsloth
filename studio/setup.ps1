@@ -3375,9 +3375,8 @@ if ($LocalLlamaCppLinked) {
         if ($env:UNSLOTH_LLAMA_RELEASE_TAG) {
             $prebuiltArgs += @("--published-release-tag", $env:UNSLOTH_LLAMA_RELEASE_TAG)
         }
-        # UNSLOTH_LLAMA_CPP_BACKEND=cpu forces the CPU-only prebuilt ($llamaBackend
-        # normalized above), bypassing Vulkan/CUDA/ROCm. Fixes Intel iGPU Vulkan
-        # crashes (#7213). Maps to install_llama_prebuilt.py --cpu-fallback.
+        # UNSLOTH_LLAMA_CPP_BACKEND=cpu ($llamaBackend, normalized above) forces the
+        # CPU-only prebuilt via --cpu-fallback. Fixes Intel iGPU Vulkan crash (#7213).
         if ($llamaBackend -eq "cpu") {
             $prebuiltArgs += "--cpu-fallback"
         }

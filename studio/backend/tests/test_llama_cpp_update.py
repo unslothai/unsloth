@@ -513,10 +513,9 @@ def test_start_update_preserves_vulkan_via_env(monkeypatch, tmp_path):
 def test_start_update_cpu_fallback_preserved_by_kind(
     monkeypatch, tmp_path, install_kind, asset, expect_flag
 ):
-    # A CPU install (x86_64 *-cpu or arm64 *-arm64) must re-assert --cpu-fallback on
-    # update, or detect_host on a GPU host re-routes to a GPU/source build and
-    # reintroduces the crash (#7213). Keyed off install_kind; legacy markers with no
-    # install_kind deliberately do not force CPU (#6097 heal-to-GPU).
+    # A CPU install (*-cpu or *-arm64) must re-assert --cpu-fallback on update, else
+    # detect_host on a GPU host re-routes and revives the crash (#7213). Keyed off
+    # install_kind; legacy markers without it stay heal-to-GPU (#6097).
     install_dir = tmp_path / "llama.cpp"
     binary = _write_install(install_dir, "b9493", asset = asset, install_kind = install_kind)
     monkeypatch.setattr(upd, "_find_binary", lambda: binary)

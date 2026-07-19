@@ -1363,9 +1363,8 @@ else
         # present so it can still attempt a prebuilt. Mirrors setup.ps1 behaviour.
         _PREBUILT_CMD+=(--has-rocm)
     fi
-    # UNSLOTH_LLAMA_CPP_BACKEND=cpu forces the CPU-only prebuilt (case-insensitive
-    # and whitespace-trimmed, matching setup.ps1), bypassing Vulkan/CUDA/ROCm. Fixes
-    # Intel iGPU Vulkan crashes (#7213). Maps to install_llama_prebuilt.py --cpu-fallback.
+    # UNSLOTH_LLAMA_CPP_BACKEND=cpu (case-insensitive, trimmed) forces the CPU-only
+    # prebuilt via --cpu-fallback, bypassing Vulkan/CUDA/ROCm. Fixes Intel iGPU crash (#7213).
     _llama_backend="$(printf '%s' "${UNSLOTH_LLAMA_CPP_BACKEND:-auto}" | awk '{$1=$1; print tolower($0)}')"
     case "$_llama_backend" in
         cpu)     _PREBUILT_CMD+=(--cpu-fallback) ;;

@@ -6474,8 +6474,8 @@ def write_prebuilt_metadata(
         "release_tag": release_tag,
         "published_repo": approved_checksums.repo,
         "asset": choice.name,
-        # Canonical backend of this install (e.g. linux-cpu/linux-vulkan); lets
-        # the in-app updater re-assert a forced-CPU build across updates (#7213).
+        # Canonical backend (e.g. linux-cpu); lets the updater re-assert a forced-CPU
+        # build across updates (#7213).
         "install_kind": choice.install_kind,
         "asset_sha256": choice.expected_sha256,
         "source": choice.source_label,

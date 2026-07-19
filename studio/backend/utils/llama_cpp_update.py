@@ -473,9 +473,8 @@ def _rocm_install_args(asset: Optional[str]) -> list[str]:
     return ["--has-rocm"]
 
 
-# CPU-only prebuilt kinds that detect_host would re-route to a GPU/source build on a
-# GPU host if --cpu-fallback is dropped: the x86_64 (*-cpu) and arm64 (*-arm64) bundles
-# on Linux and Windows. macOS bundles ignore --cpu-fallback, so are omitted.
+# CPU-only prebuilt kinds to re-assert with --cpu-fallback on update: the x86_64
+# (*-cpu) and arm64 (*-arm64) Linux/Windows bundles. macOS ignores it, so is omitted.
 _CPU_INSTALL_KINDS = ("linux-cpu", "windows-cpu", "linux-arm64", "windows-arm64")
 
 
@@ -529,12 +528,10 @@ def _run_update(
         if pin_release_tag:
             cmd.extend(["--published-release-tag", pin_release_tag])
         cmd.extend(_rocm_install_args(asset))
-        # Preserve a CPU install across updates: on a GPU host detect_host would
-        # otherwise re-route to a GPU/Vulkan bundle (or source build) and bring back
-        # the crash the override avoids (#7213). The marker's install_kind is
-        # authoritative -- the asset name has no reliable "cpu" marker (Linux x64 CPU
-        # is bin-ubuntu-x64, and arm64 CPU kinds are *-arm64, not *-cpu). Legacy
-        # markers without install_kind keep the pre-#6097 heal-to-GPU behaviour.
+        # Preserve a CPU install across updates, else detect_host on a GPU host
+        # re-routes to a GPU/Vulkan bundle and revives the crash (#7213). Keyed off
+        # install_kind, not the asset (Linux x64 CPU is bin-ubuntu-x64, arm64 is
+        # *-arm64); legacy markers without it keep #6097 heal-to-GPU.
         if install_kind in _CPU_INSTALL_KINDS:
             cmd.append("--cpu-fallback")
         logger.info("llama update: installing", cmd = " ".join(cmd))
