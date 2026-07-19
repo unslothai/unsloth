@@ -157,7 +157,7 @@ export const fr = {
           "Lorsqu'une requête compatible OpenAI nomme un autre GGUF téléchargé, le charger avant de répondre. Désactivé par défaut ; les noms inconnus continuent de servir le modèle chargé.",
         idleUnload: "Déchargement automatique en cas d'inactivité",
         idleUnloadDescription:
-          "Décharger le modèle après ce nombre de secondes d'inactivité pour libérer la VRAM ; la requête suivante le recharge. 0 le maintient chargé.",
+          "Décharger le modèle après ce nombre de secondes d'inactivité pour libérer la VRAM ; la requête suivante le recharge. 0 le maintient chargé. Minimum 60 secondes.",
         idleNeedsEnable:
           "Activez Changer de modèle par requête pour qu'un modèle déchargé se recharge à la prochaine utilisation.",
         idleActiveViaEnv:
@@ -166,7 +166,7 @@ export const fr = {
           "Échec du chargement des paramètres de changement automatique de modèle.",
         saveError:
           "Échec de l'enregistrement des paramètres de changement automatique de modèle.",
-        idleError: "Saisissez un nombre entier de secondes (0 ou plus).",
+        idleError: "Saisissez 0 pour garder le modèle chargé, ou au moins 60 secondes.",
       },
       previewSharing: {
         sectionTitle: "Partage de l'aperçu",
