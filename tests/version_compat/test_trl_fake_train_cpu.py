@@ -175,12 +175,16 @@ def _guard_finite_logits(model):
     runs end to end, not the (deliberately meaningless) numerics, so bounding the
     logits changes nothing it checks while making the run reliable.
     """
+
     def _finite_logits_hook(_module, _inputs, output):
         logits = getattr(output, "logits", None)
         if logits is None:
             return output
         output.logits = torch.nan_to_num(
-            logits, nan = 0.0, posinf = 30.0, neginf = -30.0,
+            logits,
+            nan = 0.0,
+            posinf = 30.0,
+            neginf = -30.0,
         ).clamp(-30.0, 30.0)
         return output
 
