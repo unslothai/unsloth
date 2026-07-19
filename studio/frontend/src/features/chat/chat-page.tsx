@@ -1445,9 +1445,11 @@ export function ChatPage({
   // were already seeded on stage, so keepSpeculative only when a config was
   // saved -- otherwise the standing speculative preference should win.
   autoLoadStagedRef.current = (pending) => {
-    const remembered = loadRememberedLoadSettings(
-      rememberedLoadSettingsKey(pending),
-    );
+    // Blobs are saved for GGUF picks only (the sheet gates on it), so don't
+    // let a legacy non-GGUF blob claim a seeded config here.
+    const remembered = hasGgufSource(pending)
+      ? loadRememberedLoadSettings(rememberedLoadSettingsKey(pending))
+      : null;
     void selectModel({
       ...pending,
       isDownloaded: true,
@@ -2813,6 +2815,11 @@ export function ChatPage({
             selectModel({
               id: state.params.checkpoint,
               ggufVariant: state.activeGgufVariant ?? undefined,
+              // A native (drag-drop / picked) GGUF's checkpoint is only a display
+              // label, so the reload needs its path token to re-mint a lease --
+              // else applying the now-exposed GPU/context controls can't resolve
+              // the file. Null for non-native loads, which reload by id as before.
+              nativePathToken: state.activeNativePathToken ?? undefined,
               forceReload: true,
               isDownloaded: true,
               loadingDescription: "Reloading with updated chat template.",
