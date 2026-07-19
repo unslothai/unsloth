@@ -2364,8 +2364,8 @@ def test_yolo_opencode_non_agent_subcommand_uses_config_fallback(fake_studio):
 
 @pytest.mark.parametrize("passthrough", (["generate"], ["console", "login"], ["--mini"]))
 def test_yolo_opencode_no_auto_command_uses_config_fallback(fake_studio, passthrough):
-    # generate/console are registered but hidden and reject --auto; --mini ignores it.
-    # None must get --auto appended, and each must keep the config permission fallback.
+    # generate/console are hidden and reject --auto, --mini ignores it: none get --auto,
+    # all keep the config permission fallback.
     result = CliRunner().invoke(
         start.start_app,
         ["opencode", "--yolo", "--no-launch", *passthrough],
