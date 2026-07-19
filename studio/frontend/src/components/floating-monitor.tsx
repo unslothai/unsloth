@@ -70,13 +70,19 @@ export function FloatingMonitor() {
     (sum, device) => sum + (device.memory_total_gb ?? 0),
     0,
   );
-  const vramUsed = devices.reduce(
-    (sum, device) => sum + (device.vram_used_gb ?? 0),
-    0,
-  );
+  // A device reports null usage when it is unknown (e.g. Windows ROCm perf
+  // counter unavailable). Treating null as 0 would fabricate a 0-used/full-free
+  // readout, so surface the aggregate as unknown when any device is unknown.
+  const vramUsageKnown =
+    devices.length > 0 &&
+    devices.every((device) => Number.isFinite(device.vram_used_gb));
+  const vramUsed = vramUsageKnown
+    ? devices.reduce((sum, device) => sum + (device.vram_used_gb ?? 0), 0)
+    : 0;
   const vramPercent = clampPercent(
-    vramTotal > 0 ? (vramUsed / vramTotal) * 100 : 0,
+    vramUsageKnown && vramTotal > 0 ? (vramUsed / vramTotal) * 100 : 0,
   );
+  const unknownLabel = t("settings.resources.environment.unknown");
 
   const hasGpu = (systemInfo.gpu?.available ?? false) && devices.length > 0;
 
@@ -164,17 +170,20 @@ export function FloatingMonitor() {
                     <span
                       className={cn(
                         "shrink-0 tabular-nums",
-                        usageTextClass(vramPercent),
+                        vramUsageKnown
+                          ? usageTextClass(vramPercent)
+                          : "text-muted-foreground",
                       )}
                     >
-                      {Math.round(vramPercent)}%
+                      {vramUsageKnown ? `${Math.round(vramPercent)}%` : "--"}
                     </span>
                   </div>
                   <div className="text-xs text-muted-foreground font-mono tabular-nums">
-                    {formatGiB(vramUsed)} / {formatGiB(vramTotal)}
+                    {vramUsageKnown ? formatGiB(vramUsed) : unknownLabel} /{" "}
+                    {formatGiB(vramTotal)}
                   </div>
                   <Progress
-                    value={vramPercent}
+                    value={vramUsageKnown ? vramPercent : 0}
                     className="mt-1 h-1.5 rounded-full bg-muted"
                     indicatorClassName={usageIndicatorClass(vramPercent)}
                   />

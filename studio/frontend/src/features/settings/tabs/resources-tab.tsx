@@ -90,8 +90,11 @@ function MetricTile({
   label: string;
   value: string;
   detail: string;
-  percent: number;
+  // null means usage is unknown (e.g. Windows ROCm perf counter unavailable);
+  // show a dash and an empty bar rather than a fabricated 0%.
+  percent: number | null;
 }) {
+  const percentKnown = isFiniteNumber(percent);
   const safePercent = clampPercent(percent);
   return (
     <div className="flex min-w-0 flex-col gap-2 rounded-md border border-border/60 bg-muted/20 p-3">
@@ -102,10 +105,10 @@ function MetricTile({
         <span
           className={cn(
             "shrink-0 font-mono text-xs tabular-nums",
-            usageTextClass(safePercent),
+            percentKnown ? usageTextClass(safePercent) : "text-muted-foreground",
           )}
         >
-          {formatPercent(safePercent)}
+          {percentKnown ? formatPercent(safePercent) : "--"}
         </span>
       </div>
       <div className="min-w-0">
@@ -117,7 +120,7 @@ function MetricTile({
         </div>
       </div>
       <Progress
-        value={safePercent}
+        value={percentKnown ? safePercent : 0}
         aria-label={label}
         className="h-1.5 rounded-full bg-muted"
         indicatorClassName={usageIndicatorClass(safePercent)}
@@ -356,7 +359,7 @@ export function ResourcesTab() {
                   : unknownLabel
                 : backendLabel
             }
-            percent={metrics.vramPercent}
+            percent={metrics.vramUsageKnown ? metrics.vramPercent : null}
           />
         </div>
       </SettingsSection>
