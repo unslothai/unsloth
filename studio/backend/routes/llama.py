@@ -44,9 +44,7 @@ _REFUSAL_MESSAGES = {
         "The confirmation is missing or unrecognized. Re-check for the update and "
         "confirm again before it runs."
     ),
-    "expired_token": (
-        "The confirmation expired. Re-check for the update and confirm again."
-    ),
+    "expired_token": ("The confirmation expired. Re-check for the update and confirm again."),
     "stale_target": (
         "The available build changed since you confirmed. Re-check for the update "
         "and confirm the new build before it runs."
@@ -284,7 +282,9 @@ async def llama_update(
         return LlamaUpdateActionResponse(
             started = False,
             reason = refuse_reason,
-            message = _REFUSAL_MESSAGES.get(refuse_reason, _REFUSAL_MESSAGES["confirmation_required"]),
+            message = _REFUSAL_MESSAGES.get(
+                refuse_reason, _REFUSAL_MESSAGES["confirmation_required"]
+            ),
             machine = machine,
             installed_tag = installed_tag,
             latest_tag = target_tag,

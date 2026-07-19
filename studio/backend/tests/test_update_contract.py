@@ -162,6 +162,7 @@ def _track_start(monkeypatch):
 # update_confirm token unit tests
 # --------------------------------------------------------------------------- #
 
+
 def test_token_roundtrip_single_use():
     tok, exp = _uc.mint_confirm_token("b9909")
     assert isinstance(tok, str) and tok
@@ -193,6 +194,7 @@ def test_token_missing_refused():
 # Handler-level: the swap only runs with an explicit confirmation
 # --------------------------------------------------------------------------- #
 
+
 def test_apply_without_confirmation_is_refused_and_never_swaps(monkeypatch):
     calls = _track_start(monkeypatch)
     out = asyncio.run(rl.llama_update(request = None, current_subject = "operator"))
@@ -210,8 +212,8 @@ def test_apply_with_confirmed_true_proceeds(monkeypatch):
     body = rl.LlamaUpdateRequest(confirmed = True)
     out = asyncio.run(rl.llama_update(request = body, current_subject = "operator"))
     assert out.started is True
-    assert out.machine.hostname          # which machine
-    assert out.latest_tag == "b9909"     # which version
+    assert out.machine.hostname  # which machine
+    assert out.latest_tag == "b9909"  # which version
     assert calls["n"] == 1
 
 
@@ -273,9 +275,7 @@ def test_confirm_endpoint_up_to_date_offers_no_token(monkeypatch):
 
 
 def test_status_reports_machine():
-    out = asyncio.run(
-        rl.llama_update_status(force_refresh = False, current_subject = "operator")
-    )
+    out = asyncio.run(rl.llama_update_status(force_refresh = False, current_subject = "operator"))
     assert out.machine.hostname
     assert out.machine.platform
     assert out.latest_tag == "b9909"
@@ -284,6 +284,7 @@ def test_status_reports_machine():
 # --------------------------------------------------------------------------- #
 # HTTP-level: auth gate + wiring + backwards-compatible bodyless POST
 # --------------------------------------------------------------------------- #
+
 
 def _client():
     from fastapi import FastAPI

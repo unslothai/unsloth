@@ -47,9 +47,7 @@ def _purge_expired_locked(now: float) -> None:
 
 
 def mint_confirm_token(
-    target_tag: str,
-    *,
-    ttl_seconds: int = CONFIRM_TOKEN_TTL_SECONDS,
+    target_tag: str, *, ttl_seconds: int = CONFIRM_TOKEN_TTL_SECONDS
 ) -> Tuple[str, str]:
     """Mint a single-use token bound to ``target_tag``.
 
@@ -70,8 +68,7 @@ def mint_confirm_token(
 
 
 def consume_confirm_token(
-    token: Optional[str],
-    current_target_tag: str,
+    token: Optional[str], current_target_tag: str
 ) -> Tuple[bool, Optional[str]]:
     """Validate and consume a token for a swap to ``current_target_tag``.
 
