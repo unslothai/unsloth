@@ -9022,7 +9022,11 @@ class LlamaCppBackend:
                     continue
                 orig_read = stream.read
 
-                def read(max_bytes, timeout = None, _orig = orig_read):
+                def read(
+                    max_bytes,
+                    timeout = None,
+                    _orig = orig_read,
+                ):
                     deadline = None if timeout is None else time.monotonic() + timeout
                     while True:
                         if cancel_event.is_set():
