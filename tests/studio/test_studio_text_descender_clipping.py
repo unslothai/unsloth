@@ -34,18 +34,18 @@ def test_model_selector_trigger_label_uses_leading_tight():
 
 def test_sidebar_account_block_uses_leading_tight():
     src = _read(APP_SIDEBAR)
-    # Match the account-block parent div regardless of its other layout
-    # utilities (min-w-0 / flex-1 / gap-*); this guard is about the leading-*
-    # class, not the surrounding spacing/sizing classes.
-    pattern = re.compile(
-        r'<div\s+className="flex\b[^"]*\bflex-col\b[^"]*\s(\S+)\s+group-data-\[collapsible=icon\]:hidden">',
-    )
-    matches = pattern.findall(src)
-    assert matches, "could not find sidebar account-block parent div"
-    leading_classes = [m for m in matches if m.startswith("leading-")]
-    assert leading_classes, f"no leading-* class on sidebar account-block parent: {matches}"
-    for cls in leading_classes:
-        assert cls == "leading-tight", f"sidebar account-block must use leading-tight, got: {cls}"
+    # Identify each account-block parent div by its class SET (order-independent),
+    # not a positional regex: a flex-col column hidden when the sidebar collapses
+    # to icons. EVERY such block must carry leading-tight and never leading-none,
+    # checked per block -- a filter-then-"any" check would let one block drop the
+    # class and hide behind another, defeating the per-block descender guard.
+    div_classes = re.findall(r'<div\s+[^>]*className="([^"]*)"', src)
+    markers = {"flex", "flex-col", "group-data-[collapsible=icon]:hidden"}
+    blocks = [c.split() for c in div_classes if markers <= set(c.split())]
+    assert blocks, "could not find sidebar account-block parent div"
+    for classes in blocks:
+        assert "leading-tight" in classes, f"sidebar account-block must use leading-tight, got: {classes}"
+        assert "leading-none" not in classes, f"leading-none must not coexist with truncate here: {classes}"
 
 
 def test_no_truncate_plus_leading_none_in_changed_files():
