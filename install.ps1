@@ -102,6 +102,8 @@ function Install-UnslothStudio {
     $SkipTorch = $false
     $SkipAutostart = $false
     $ShortcutsOnly = $false
+    # Launcher browser auto-open: "" = undecided (prompt, else keep existing, else on).
+    $OpenBrowserPref = ""
     $WithLlamaCppDir = ""
     $argList = $args
     for ($i = 0; $i -lt $argList.Count; $i++) {
@@ -112,6 +114,8 @@ function Install-UnslothStudio {
             "--verbose"  { $script:UnslothVerbose = $true }
             "-v"         { $script:UnslothVerbose = $true }
             "--shortcuts-only" { $ShortcutsOnly = $true }
+            "--no-browser" { $OpenBrowserPref = '0' }
+            "--browser"    { $OpenBrowserPref = '1' }
             "--package"  {
                 $i++
                 if ($i -ge $argList.Count) {
@@ -656,6 +660,20 @@ function Install-UnslothStudio {
                 "`$portFile = `$null`n`$mutexName = 'Local\UnslothStudioLauncher'`n"
             }
 
+            # Browser auto-open: explicit installer choice wins; else keep the
+            # value baked into the existing launcher so `studio update`
+            # (--shortcuts-only) never resets it.
+            $_openBrowser = $OpenBrowserPref
+            if (-not $_openBrowser -and (Test-Path -LiteralPath $launcherPs1)) {
+                try {
+                    $_prevLauncher = [System.IO.File]::ReadAllText($launcherPs1)
+                    if ($_prevLauncher -match "(?m)^\`$openBrowserDefault = '([01])'") {
+                        $_openBrowser = $Matches[1]
+                    }
+                } catch {}
+            }
+            if ($_openBrowser -ne '0') { $_openBrowser = '1' }
+
             $launcherContent = @"
 $studioHomeExport`$ErrorActionPreference = 'Stop'
 `$basePort = 8888
@@ -663,6 +681,30 @@ $studioHomeExport`$ErrorActionPreference = 'Stop'
 `$timeoutSec = 60
 `$pollIntervalMs = 1000
 `$_ExpectedStudioRootId = '$_studioRootId'
+`$openBrowserDefault = '$_openBrowser'
+
+# Browser auto-open: disabled by -NoBrowser/--no-browser, the
+# UNSLOTH_STUDIO_NO_BROWSER env var, or the baked installer preference.
+# When off the server still starts; the URL is printed instead (PWA use).
+`$openBrowser = (`$openBrowserDefault -ne '0')
+if (`$env:UNSLOTH_STUDIO_NO_BROWSER -and
+    (`$env:UNSLOTH_STUDIO_NO_BROWSER -notin @('0', 'false', 'no', 'off'))) {
+    `$openBrowser = `$false
+}
+foreach (`$_launchArg in `$args) {
+    if (`$_launchArg -in @('-NoBrowser', '--no-browser')) { `$openBrowser = `$false }
+    elseif (`$_launchArg -in @('-Browser', '--browser')) { `$openBrowser = `$true }
+}
+
+function Open-StudioUrl {
+    param([Parameter(Mandatory = `$true)][string]`$Url)
+    if (`$openBrowser) {
+        Start-Process `$Url
+    } else {
+        # Hidden-window launches have no console; never fail on the echo.
+        try { Write-Host "Unsloth Studio is running at: `$Url" } catch {}
+    }
+}
 
 function Test-StudioHealth {
     param([Parameter(Mandatory = `$true)][int]`$Port)
@@ -759,7 +801,7 @@ function Find-FreeLaunchPort {
 # If Studio is already healthy on any expected port, just open it and exit.
 `$existingPort = Find-HealthyStudioPort
 if (`$existingPort) {
-    Start-Process "http://localhost:`$existingPort"
+    Open-StudioUrl "http://localhost:`$existingPort"
     exit 0
 }
 
@@ -776,7 +818,7 @@ try {
         `$deadline = (Get-Date).AddSeconds(`$timeoutSec)
         while ((Get-Date) -lt `$deadline) {
             `$port = Find-HealthyStudioPort
-            if (`$port) { Start-Process "http://localhost:`$port"; exit 0 }
+            if (`$port) { Open-StudioUrl "http://localhost:`$port"; exit 0 }
             Start-Sleep -Milliseconds `$pollIntervalMs
         }
         exit 0
@@ -825,7 +867,7 @@ try {
                     [System.IO.File]::WriteAllText(`$portFile, "`$launchPort`n")
                 } catch {}
             }
-            Start-Process "http://localhost:`$launchPort"
+            Open-StudioUrl "http://localhost:`$launchPort"
             `$browserOpened = `$true
             break
         }
@@ -2586,6 +2628,32 @@ exit 0
         return
     }
 
+    # Ask once (interactive installs only) whether the launcher should open
+    # the browser after the server is up. Skipped when --no-browser/--browser
+    # was passed or input is redirected; then an existing choice is kept.
+    # Enter keeps the choice baked into the existing launcher so a reinstall
+    # that accepts the defaults never flips a saved no-browser preference.
+    $_browserPromptOk = [Environment]::UserInteractive -and (-not [Console]::IsInputRedirected)
+    if (-not $OpenBrowserPref -and $_browserPromptOk) {
+        $_existingPref = ""
+        $_promptLauncher = if ($StudioDataDir) { Join-Path $StudioDataDir "launch-studio.ps1" } else { $null }
+        if ($_promptLauncher -and (Test-Path -LiteralPath $_promptLauncher)) {
+            try {
+                $_prevText = [System.IO.File]::ReadAllText($_promptLauncher)
+                if ($_prevText -match "(?m)^\`$openBrowserDefault = '([01])'") {
+                    $_existingPref = $Matches[1]
+                }
+            } catch {}
+        }
+        $_browserHint = if ($_existingPref -eq '0') { '[y/N]' } else { '[Y/n]' }
+        Write-Host ""
+        $_browserReply = Read-Host "  Open Unsloth Studio in your default browser after launch? $_browserHint"
+        $OpenBrowserPref = if ($_browserReply -match '^[Nn]') { '0' }
+            elseif ($_browserReply -match '^[Yy]') { '1' }
+            elseif ($_existingPref) { $_existingPref }
+            else { '1' }
+    }
+
     # New-StudioShortcuts gates the .lnk shortcuts on env-mode internally.
     New-StudioShortcuts -UnslothExePath $UnslothExe
 
@@ -2620,11 +2688,75 @@ exit 0
     # caller explicitly disabled the post-install prompt.
     # In non-interactive environments (CI, Docker) just print instructions.
     $IsInteractive = (-not $SkipAutostart) -and [Environment]::UserInteractive -and (-not [Console]::IsInputRedirected)
+    # Select the same bounded free-port range as the generated desktop launcher.
+    # Passing the selected port to both the server and watcher prevents an
+    # existing Studio on 8888 from moving the backend while the watcher stays
+    # behind.
+    function Find-PostInstallStudioPort {
+        param([int]$BasePort = 8888, [int]$MaxPortOffset = 20)
+        $probes = @(
+            @{ Family = [System.Net.Sockets.AddressFamily]::InterNetwork; Host = '127.0.0.1' },
+            @{ Family = [System.Net.Sockets.AddressFamily]::InterNetworkV6; Host = '::1' }
+        )
+        for ($offset = 0; $offset -le $MaxPortOffset; $offset++) {
+            $candidate = $BasePort + $offset
+            $busy = $false
+            foreach ($probe in $probes) {
+                $client = $null
+                try {
+                    $client = [System.Net.Sockets.TcpClient]::new($probe.Family)
+                    $connect = $client.ConnectAsync($probe.Host, $candidate)
+                    if ($connect.Wait(100) -and $client.Connected) {
+                        $busy = $true
+                        break
+                    }
+                } catch {
+                } finally {
+                    if ($client) { $client.Dispose() }
+                }
+            }
+            if (-not $busy) { return $candidate }
+        }
+        return $BasePort
+    }
+
+    # Background watcher for the foreground launch below: once the server is
+    # healthy on the selected port, open the browser per the persisted
+    # preference. Guarded by the per-install root id so a different Studio is
+    # never the one opened.
+    $_browserWatch = {
+        param($RootId, $Port)
+        $deadline = (Get-Date).AddSeconds(120)
+        while ((Get-Date) -lt $deadline) {
+            try {
+                $r = Invoke-RestMethod -Uri "http://127.0.0.1:$Port/api/health" -TimeoutSec 1 -Method Get
+                if ($r.service -eq 'Unsloth UI Backend' -and
+                    ((-not $RootId) -or $r.studio_root_id -eq $RootId)) {
+                    Start-Process "http://localhost:$Port"
+                    break
+                }
+            } catch {}
+            Start-Sleep -Seconds 1
+        }
+    }
     if ($IsInteractive) {
         Write-Host ""
         $reply = Read-Host "  Start Unsloth Studio now? [Y/n]"
         if ([string]::IsNullOrWhiteSpace($reply) -or $reply -match '^[Yy]') {
-            & $UnslothExe studio -p 8888
+            $_launchPort = Find-PostInstallStudioPort
+            # Open the browser once the server is up, unless opted out. The
+            # server prints its own URL, so no watcher is needed when off.
+            if ($OpenBrowserPref -ne '0') {
+                $_watchRootId = ""
+                $_watchIdFile = Join-Path $StudioHome "share\studio_install_id"
+                if (Test-Path -LiteralPath $_watchIdFile) {
+                    try { $_watchRootId = ([System.IO.File]::ReadAllText($_watchIdFile)).Trim() } catch {}
+                }
+                try {
+                    $null = Start-Job -ScriptBlock $_browserWatch -ArgumentList @($_watchRootId, $_launchPort)
+                } catch {}
+            }
+            & $UnslothExe studio -p $_launchPort
         } else {
             step "launch" "to start later, run:"
             substep "unsloth studio -p 8888"

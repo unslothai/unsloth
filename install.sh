@@ -13,6 +13,7 @@
 #   curl -fsSL https://unsloth.ai/install.sh | UNSLOTH_PYTHON=3.12 sh      # pin Python version
 #   curl -fsSL https://unsloth.ai/install.sh | UNSLOTH_STUDIO_HOME=/abs/path sh
 # Equivalent flags: ./install.sh --no-torch --python 3.12  (or pipe them: sh -s -- --no-torch)
+# ./install.sh --no-browser: launcher starts the server without opening the browser.
 #
 # Install dir priority: UNSLOTH_STUDIO_HOME > STUDIO_HOME (alias) > $HOME/.unsloth/studio
 #
@@ -53,6 +54,8 @@ _NO_TORCH_FLAG=false
 _SKIP_AUTOSTART=false
 _VERBOSE=false
 _SHORTCUTS_ONLY=false
+# Launcher browser auto-open: "" = undecided (prompt, else keep existing, else on).
+_STUDIO_OPEN_BROWSER=""
 _next_is_package=false
 _next_is_python=false
 _next_is_llama_cpp_dir=false
@@ -84,6 +87,8 @@ for arg in "$@"; do
         --no-torch) _NO_TORCH_FLAG=true ;;
         --verbose|-v) _VERBOSE=true ;;
         --shortcuts-only) _SHORTCUTS_ONLY=true ;;
+        --no-browser) _STUDIO_OPEN_BROWSER=0 ;;
+        --browser) _STUDIO_OPEN_BROWSER=1 ;;
         --with-llama-cpp-dir) _next_is_llama_cpp_dir=true ;;
     esac
 done
@@ -656,6 +661,22 @@ if [ -z "${UNSLOTH_EXE:-}" ] || [ ! -x "${UNSLOTH_EXE:-}" ]; then
     exit 1
 fi
 
+# Browser auto-open. Priority: --no-browser/--browser arg, then
+# UNSLOTH_STUDIO_NO_BROWSER env var, then studio.conf, default on.
+# When off the server still starts; the URL is printed instead (PWA use).
+OPEN_BROWSER="${STUDIO_OPEN_BROWSER:-1}"
+# Case-insensitive falsy check, matching the PowerShell launcher's -notin.
+case "$(printf '%s' "${UNSLOTH_STUDIO_NO_BROWSER:-}" | tr '[:upper:]' '[:lower:]')" in
+    ''|0|false|no|off) ;;
+    *) OPEN_BROWSER=0 ;;
+esac
+for _arg in "$@"; do
+    case "$_arg" in
+        --no-browser) OPEN_BROWSER=0 ;;
+        --browser)    OPEN_BROWSER=1 ;;
+    esac
+done
+
 BASE_PORT=8888
 MAX_PORT_OFFSET=20
 TIMEOUT_SEC=60
@@ -789,6 +810,10 @@ _find_launch_port() {
 # ── Open browser ──
 _open_browser() {
     _url="$1"
+    if [ "$OPEN_BROWSER" = "0" ]; then
+        echo "Unsloth Studio is running at: $_url"
+        return 0
+    fi
     if [ "$(uname)" = "Darwin" ] && command -v open >/dev/null 2>&1; then
         open "$_url"
     elif grep -qi microsoft /proc/version 2>/dev/null; then
@@ -1020,11 +1045,21 @@ LAUNCHER_EOF
 
     chmod +x "$_css_launcher"
 
+    # Browser auto-open: explicit installer choice wins; else keep the existing
+    # studio.conf value so `studio update` (--shortcuts-only) never resets it.
+    _css_open_browser="${_STUDIO_OPEN_BROWSER:-}"
+    if [ -z "$_css_open_browser" ] && [ -f "$_css_data_dir/studio.conf" ]; then
+        _css_open_browser=$(sed -n "s/^STUDIO_OPEN_BROWSER='\([01]\)'\$/\1/p" \
+            "$_css_data_dir/studio.conf" 2>/dev/null | head -n 1)
+    fi
+    [ "$_css_open_browser" = "0" ] || _css_open_browser=1
+
     # studio.conf: exe path + (env-mode only) persisted env vars so fresh
     # shells launch the right install without re-exporting.
     _css_quoted_exe=$(printf '%s' "$_css_exe" | sed "s/'/'\\\\''/g")
     {
         printf '%s\n' "UNSLOTH_EXE='$_css_quoted_exe'"
+        printf '%s\n' "STUDIO_OPEN_BROWSER='$_css_open_browser'"
         if [ "$_STUDIO_HOME_REDIRECT" = "env" ]; then
             # When an override resolves to the legacy default, llama.cpp
             # still lives at ~/.unsloth/llama.cpp (one shared build).
@@ -1407,6 +1442,10 @@ if [ "$_SHORTCUTS_ONLY" = true ]; then
         fi
         create_studio_shortcuts "$VENV_ABS_BIN/unsloth" "$OS"
     fi
+    # Drain piped stdin (curl | sh -s -- --shortcuts-only ...) before this
+    # early exit; otherwise curl dies with EPIPE, prints "curl: (23) Failure
+    # writing output to destination", and fails the whole pipeline.
+    [ ! -t 0 ] && cat > /dev/null 2>&1
     exit 0
 fi
 
@@ -1640,6 +1679,10 @@ _maybe_reroute_strixhalo_to_2404() {
     [ -n "$_USER_PYTHON" ] && _rr_args="$_rr_args --python $(_rr_q "$_USER_PYTHON")"
     [ "$_VERBOSE" = true ] && _rr_args="$_rr_args --verbose"
     [ "$TAURI_MODE" = true ] && _rr_args="$_rr_args --tauri"
+    # Forward an explicit browser choice; "" (undecided) forwards nothing so
+    # the rerouted install keeps its own default.
+    [ "$_STUDIO_OPEN_BROWSER" = "0" ] && _rr_args="$_rr_args --no-browser"
+    [ "$_STUDIO_OPEN_BROWSER" = "1" ] && _rr_args="$_rr_args --browser"
     if [ -n "${UNSLOTH_WSL_REROUTE_CMD:-}" ]; then
         _rr_cmd="$UNSLOTH_WSL_REROUTE_CMD"               # user took full control
     elif [ -n "$_rr_args" ]; then
@@ -3170,6 +3213,31 @@ esac
 # create_studio_shortcuts gates persistent menu shortcuts on env-mode;
 # launcher + studio.conf + icon are always written.
 if [ "$TAURI_MODE" != true ]; then
+    # Ask once (interactive installs only) whether the launcher should open
+    # the browser after the server is up. Skipped when --no-browser/--browser
+    # was passed or no TTY; then an existing choice is kept, defaulting to on.
+    # Enter keeps the choice persisted in studio.conf so a reinstall that
+    # accepts the defaults never flips a saved no-browser preference.
+    if [ -z "$_STUDIO_OPEN_BROWSER" ] && [ -t 1 ] && [ -r /dev/tty ]; then
+        _existing_open_browser=""
+        if [ -f "$DATA_DIR/studio.conf" ]; then
+            _existing_open_browser=$(sed -n "s/^STUDIO_OPEN_BROWSER='\([01]\)'\$/\1/p" \
+                "$DATA_DIR/studio.conf" 2>/dev/null | head -n 1)
+        fi
+        if [ "$_existing_open_browser" = "0" ]; then
+            _browser_hint="[y/N]"
+        else
+            _browser_hint="[Y/n]"
+        fi
+        echo ""
+        printf "  Open Unsloth Studio in your default browser after launch? %s " "$_browser_hint"
+        read -r _browser_reply </dev/tty || _browser_reply=""
+        case "$_browser_reply" in
+            [nN]*) _STUDIO_OPEN_BROWSER=0 ;;
+            [yY]*) _STUDIO_OPEN_BROWSER=1 ;;
+            *) _STUDIO_OPEN_BROWSER="${_existing_open_browser:-1}" ;;
+        esac
+    fi
     create_studio_shortcuts "$VENV_ABS_BIN/unsloth" "$OS"
 fi
 
@@ -3227,6 +3295,87 @@ printf "  ${C_TITLE}%s${C_RST}\n" "Unsloth Studio installed!"
 printf "  ${C_DIM}%s${C_RST}\n" "$RULE"
 echo ""
 
+# Select the same bounded free-port range as the generated desktop launcher.
+# Passing the selected port to both the server and watcher prevents an existing
+# Studio on 8888 from making the backend move while the watcher stays behind.
+_find_post_install_port() {
+    _pifp_base="${1:-8888}"
+    _pifp_max_offset="${2:-20}"
+    "$VENV_DIR/bin/python" - "$_pifp_base" "$_pifp_max_offset" <<'PY'
+import socket
+import sys
+
+base = int(sys.argv[1])
+max_offset = int(sys.argv[2])
+
+def is_free(port):
+    endpoints = (
+        (socket.AF_INET, ("127.0.0.1", port)),
+        (socket.AF_INET6, ("::1", port, 0, 0)),
+    )
+    for family, address in endpoints:
+        try:
+            with socket.socket(family, socket.SOCK_STREAM) as probe:
+                probe.settimeout(0.1)
+                if probe.connect_ex(address) == 0:
+                    return False
+        except OSError:
+            # IPv6 can be unavailable; match the backend's loopback probe.
+            continue
+    return True
+
+for offset in range(max_offset + 1):
+    candidate = base + offset
+    if is_free(candidate):
+        print(candidate)
+        raise SystemExit(0)
+raise SystemExit(1)
+PY
+}
+
+# Background watcher for the post-install foreground launch below: once the
+# server is healthy on the selected port, open the browser per the persisted
+# preference. Guarded by the per-install root id so a different Studio is never
+# the one opened.
+_post_install_browser_watch() {
+    _pibw_port="$1"
+    _pibw_url="http://localhost:$_pibw_port"
+    _pibw_id=$(cat "$STUDIO_HOME/share/studio_install_id" 2>/dev/null || true)
+    (
+        _pibw_deadline=$(($(date +%s) + 120))
+        while [ "$(date +%s)" -lt "$_pibw_deadline" ]; do
+            _pibw_resp=$(curl -fsS --max-time 1 "http://127.0.0.1:$_pibw_port/api/health" 2>/dev/null \
+                || wget -qO- --timeout=1 "http://127.0.0.1:$_pibw_port/api/health" 2>/dev/null \
+                || true)
+            case "$_pibw_resp" in
+                *'"Unsloth UI Backend"'*)
+                    if [ -n "$_pibw_id" ]; then
+                        case "$_pibw_resp" in
+                            *"\"studio_root_id\":\"$_pibw_id\""*|*"\"studio_root_id\": \"$_pibw_id\""*) ;;
+                            *) sleep 1; continue ;;
+                        esac
+                    fi
+                    if [ "$(uname)" = "Darwin" ] && command -v open >/dev/null 2>&1; then
+                        open "$_pibw_url" 2>/dev/null
+                    elif grep -qi microsoft /proc/version 2>/dev/null; then
+                        if command -v powershell.exe >/dev/null 2>&1; then
+                            powershell.exe -NoProfile -Command "Start-Process '$_pibw_url'" >/dev/null 2>&1
+                        elif command -v cmd.exe >/dev/null 2>&1; then
+                            cmd.exe /c start "" "$_pibw_url" >/dev/null 2>&1
+                        elif command -v xdg-open >/dev/null 2>&1; then
+                            xdg-open "$_pibw_url" >/dev/null 2>&1
+                        fi
+                    elif command -v xdg-open >/dev/null 2>&1; then
+                        xdg-open "$_pibw_url" >/dev/null 2>&1
+                    fi
+                    exit 0
+                    ;;
+            esac
+            sleep 1
+        done
+    ) &
+}
+
 # In interactive terminals, ask the user before starting Studio unless the
 # caller explicitly disabled the post-install prompt.
 # In non-interactive environments (Docker, CI, cloud-init) just print instructions.
@@ -3242,6 +3391,15 @@ if [ "$_SKIP_AUTOSTART" != true ] && [ -t 1 ]; then
     case "${_reply:-y}" in
         [Yy]*|"")
             step "launch" "starting Unsloth Studio..."
+            _post_install_port=$(_find_post_install_port 8888 20) || _post_install_port=8888
+            case "$_post_install_port" in
+                ''|*[!0-9]*) _post_install_port=8888 ;;
+            esac
+            # Open the browser once the server is up, unless opted out. The
+            # server prints its own URL, so no watcher is needed when off.
+            if [ "${_STUDIO_OPEN_BROWSER:-1}" != "0" ]; then
+                _post_install_browser_watch "$_post_install_port"
+            fi
             # Detach stdin from the `curl | sh` pipe: as a foreground server the
             # studio would otherwise drain the rest of this piped script, leaving
             # the shell to die parsing the now-truncated tail (`unexpected fi`).
@@ -3250,7 +3408,7 @@ if [ "$_SKIP_AUTOSTART" != true ] && [ -t 1 ]; then
             trap '' INT
             # `|| ...`: capture the exit code without set -e aborting first.
             _LAUNCH_EXIT=0
-            (trap - INT; exec "$VENV_DIR/bin/unsloth" studio -p 8888 </dev/null) || _LAUNCH_EXIT=$?
+            (trap - INT; exec "$VENV_DIR/bin/unsloth" studio -p "$_post_install_port" </dev/null) || _LAUNCH_EXIT=$?
             if [ "$_LAUNCH_EXIT" -ne 0 ] && [ "$_MIGRATED" = true ]; then
                 echo ""
                 echo "⚠️  Unsloth Studio failed to start after migration."

@@ -86,6 +86,8 @@ unsloth studio -p 8888
 ```
 For LAN or cloud access, add `-H 0.0.0.0` (raw port only; add `--cloudflare` for a public URL). By default, Unsloth is accessible only locally.
 
+Launching from the terminal never opens a browser -- open the printed URL yourself. The desktop shortcut opens your default browser once the server is up; to launch the server without that (e.g. when running Studio as a browser PWA / app window), answer "n" at the installer's browser prompt, pass `--no-browser` to the launcher, or set `UNSLOTH_STUDIO_NO_BROWSER=1`.
+
 To reach Studio over HTTPS, use `unsloth studio --secure`. Studio stays bound to localhost and is reached only through a free Cloudflare tunnel, which publishes it at a public `https://*.trycloudflare.com` URL (it fails closed if the tunnel can't start, so the raw port is never exposed). This makes Studio reachable from the internet, so anyone with the link and API key can use it and run code: keep your API key private (see Remote access below).
 
 #### Docker
