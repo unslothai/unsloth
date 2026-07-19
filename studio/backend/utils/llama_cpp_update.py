@@ -533,7 +533,8 @@ def _run_update(
         # otherwise re-route to a GPU/Vulkan bundle (or source build) and bring back
         # the crash the override avoids (#7213). The marker's install_kind is
         # authoritative -- the asset name has no reliable "cpu" marker (Linux x64 CPU
-        # is bin-ubuntu-x64, and arm64 CPU kinds are *-arm64, not *-cpu).
+        # is bin-ubuntu-x64, and arm64 CPU kinds are *-arm64, not *-cpu). Legacy
+        # markers without install_kind keep the pre-#6097 heal-to-GPU behaviour.
         if install_kind in _CPU_INSTALL_KINDS:
             cmd.append("--cpu-fallback")
         logger.info("llama update: installing", cmd = " ".join(cmd))

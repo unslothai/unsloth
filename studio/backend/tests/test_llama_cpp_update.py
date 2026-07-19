@@ -505,6 +505,9 @@ def test_start_update_preserves_vulkan_via_env(monkeypatch, tmp_path):
         ("windows-arm64", "llama-b9493-bin-win-cpu-arm64.zip", True),
         ("linux-vulkan", "llama-b9493-bin-ubuntu-vulkan-x64.tar.gz", False),
         ("linux-cuda", "llama-b9493-bin-ubuntu-cuda-x64.tar.gz", False),
+        # Legacy markers without install_kind keep the pre-#6097 heal-to-GPU behaviour
+        # (no forced --cpu-fallback); see test_install_cmd_ggml_cpu_marker_has_no_cpu_fallback.
+        (None, "llama-b9493-bin-ubuntu-x64.tar.gz", False),
     ],
 )
 def test_start_update_cpu_fallback_preserved_by_kind(
@@ -512,7 +515,8 @@ def test_start_update_cpu_fallback_preserved_by_kind(
 ):
     # A CPU install (x86_64 *-cpu or arm64 *-arm64) must re-assert --cpu-fallback on
     # update, or detect_host on a GPU host re-routes to a GPU/source build and
-    # reintroduces the crash (#7213). Keyed off install_kind, not the asset name.
+    # reintroduces the crash (#7213). Keyed off install_kind; legacy markers with no
+    # install_kind deliberately do not force CPU (#6097 heal-to-GPU).
     install_dir = tmp_path / "llama.cpp"
     binary = _write_install(install_dir, "b9493", asset = asset, install_kind = install_kind)
     monkeypatch.setattr(upd, "_find_binary", lambda: binary)
