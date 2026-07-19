@@ -74,6 +74,16 @@ verbose_substep() {
     return 0
 }
 
+_remove_agent_instruction_files() {
+    local _root
+    for _root in "$@"; do
+        [ -d "$_root" ] || continue
+        [ -L "$_root" ] && continue
+        find "$_root" \( -type f -o -type l \) \( -name 'AGENTS.md' -o -name 'CLAUDE.md' \) \
+            -exec rm -f {} + 2>/dev/null || true
+    done
+}
+
 # ── Corporate-mirror / proxy escape hatch for the frontend npm/bun install (#6491) ──
 # studio/frontend/.npmrc pins registry=https://registry.npmjs.org/ as a supply-chain
 # lock. A project-level pin overrides a corporate user's ~/.npmrc proxy, so the install
@@ -117,13 +127,13 @@ _suggest_npm_registry() {
     printf '\n' >&2
     step "frontend" "registry.npmjs.org looks blocked (corporate firewall/proxy?)" "$C_WARN" >&2
     if [ -n "$_mirror" ]; then
-        substep "Studio pins the public npm registry; your mirror is being ignored." >&2
+        substep "Unsloth pins the public npm registry; your mirror is being ignored." >&2
         substep "Detected a registry in your npm config:" >&2
         substep "  $_mirror" >&2
-        substep "Re-run pointing Studio at it:" >&2
+        substep "Re-run pointing Unsloth at it:" >&2
         substep "  UNSLOTH_NPM_REGISTRY=$_mirror ./install.sh --local" >&2
     else
-        substep "If you use a private mirror/proxy, point Studio at it and re-run:" >&2
+        substep "If you use a private mirror/proxy, point Unsloth at it and re-run:" >&2
         substep "  UNSLOTH_NPM_REGISTRY=https://your-mirror.example/api/npm/ ./install.sh --local" >&2
     fi
     substep "(min-release-age and save-exact stay enforced.)" >&2
@@ -386,7 +396,7 @@ _print_cuda_driver_toolkit_mismatch() {
     local _driver_major=${_driver_version%%.*}
     substep "CUDA Toolkit $_toolkit_version is a major-version mismatch: toolkit major $_toolkit_major exceeds driver CUDA major $_driver_major ($_driver_version)." "$C_WARN"
     substep "Update the NVIDIA GPU driver to run CUDA Toolkit $_toolkit_version, or install a CUDA $_driver_major.x toolkit." "$C_WARN"
-    substep "Or let Studio use the prebuilt CUDA bundle; it does not need the local toolkit." "$C_WARN"
+    substep "Or let Unsloth use the prebuilt CUDA bundle; it does not need the local toolkit." "$C_WARN"
 }
 
 print_llama_error_log() {
@@ -521,7 +531,7 @@ _STUDIO_HOME_IS_CUSTOM=false
 if [ "$_studio_home_canon" != "$_LEGACY_STUDIO_HOME" ]; then
     _STUDIO_HOME_IS_CUSTOM=true
 fi
-# Directory-local evidence Studio created "$1": only prebuilt-installer metadata
+# Directory-local evidence Unsloth created "$1": only prebuilt-installer metadata
 # counts (UNSLOTH_PREBUILT_INFO.json for llama.cpp, UNSLOTH_NODE_PREBUILT_INFO.json
 # for Node), both written only by our installers. Mirrors the setup.ps1 Node guard.
 # A markerless source build stays strict since this runs right before an rm -rf.
@@ -539,7 +549,7 @@ _assert_studio_owned_or_absent() {
             : > "$_aso_dir/$_STUDIO_OWNED_MARKER" 2>/dev/null || true
             return 0
         fi
-        echo "ERROR: $_aso_dir already exists and is not marked as a Studio-owned $_aso_label." >&2
+        echo "ERROR: $_aso_dir already exists and is not marked as an Unsloth-owned $_aso_label." >&2
         echo "       Move it aside or choose an empty UNSLOTH_STUDIO_HOME before re-running." >&2
         exit 1
     fi
@@ -575,7 +585,7 @@ if [ "$_NEED_FRONTEND_BUILD" = false ] && [ ! -d "$_OXC_DIR" ]; then
 else
 
 # ── Node (isolated; never touches the system Node/npm) ──
-# Studio's frontend (Vite 8) needs Node ^20.19 || >=22.12 || >=23 and npm >= 11.
+# Unsloth's frontend (Vite 8) needs Node ^20.19 || >=22.12 || >=23 and npm >= 11.
 # Three sources:
 #   system  -- system Node + npm already satisfy both; used read-only.
 #   bundled -- install a pinned isolated Node under $UNSLOTH_HOME/node, build-only.
@@ -656,9 +666,9 @@ elif [ "$NODE_SOURCE" = bundled ]; then
     fi
     set -e
     if [ "$_NODE_STATUS" -eq 3 ]; then
-        step "node" "install blocked by another active Studio install" "$C_ERR"
+        step "node" "install blocked by another active Unsloth install" "$C_ERR"
         sed 's/^/   | /' "$_NODE_LOG" >&2; rm -f "$_NODE_LOG"
-        substep "close other Studio installs and retry"
+        substep "close other Unsloth installs and retry"
         exit 3
     elif [ "$_NODE_STATUS" -ne 0 ]; then
         step "node" "isolated Node install failed" "$C_ERR"
@@ -682,7 +692,7 @@ elif [ "$NODE_SOURCE" = bundled ]; then
 else
     _FRONTEND_SKIP=true
     step "frontend" "skipped (no suitable Node; system left untouched)" "$C_WARN"
-    substep "found Node='${_SYS_NODE_VER:-none}' npm='${_SYS_NPM_VER:-none}'; Studio needs Node >=20.19/22.12/23 and npm >= 11"
+    substep "found Node='${_SYS_NODE_VER:-none}' npm='${_SYS_NPM_VER:-none}'; Unsloth needs Node >=20.19/22.12/23 and npm >= 11"
     substep "install a suitable Node + npm, or unset UNSLOTH_SKIP_NODE_INSTALL to let Unsloth manage an isolated Node"
 fi
 verbose_substep "node source: $NODE_SOURCE (sys node=${_SYS_NODE_VER:-none} npm=${_SYS_NPM_VER:-none}) dir=$NODE_DIR"
@@ -847,6 +857,10 @@ elif [ -d "$_OXC_DIR" ] && [ "${NODE_SOURCE:-}" != skip ]; then
     substep "OXC validator runtime skipped (no npm found); code validation degrades until Node is available" "$C_WARN"
 fi
 
+_remove_agent_instruction_files \
+    "$SCRIPT_DIR/frontend/node_modules" \
+    "$_OXC_DIR/node_modules"
+
 # ── Python venv + deps ──
 
 [ -d "$REPO_ROOT/.venv" ] && rm -rf "$REPO_ROOT/.venv"
@@ -859,11 +873,11 @@ fi
 _COLAB_NO_VENV=false
 if [ ! -x "$VENV_DIR/bin/python" ]; then
     if [ "$IS_COLAB" = true ]; then
-        # On Colab there is no Studio venv -- install backend deps into system Python.
+        # On Colab there is no Unsloth venv -- install backend deps into system Python.
         # Strip all version constraints so pip keeps Colab's pre-installed
         # packages (huggingface-hub, datasets, transformers) and only pulls
         # in genuinely missing ones (structlog, fastapi, etc.).
-        substep "Colab detected, installing Studio backend dependencies..."
+        substep "Colab detected, installing Unsloth backend dependencies..."
         _COLAB_REQS_TMP="$(mktemp)"
         sed 's/[><=!~;].*//' "$SCRIPT_DIR/backend/requirements/studio.txt" \
             | grep -v '^#' | grep -v '^$' > "$_COLAB_REQS_TMP"
@@ -1240,7 +1254,7 @@ _link_local_llama_quantize_shim() {
 }
 
 # Accept any layout LlamaCppBackend._layout_candidates() resolves so the flag
-# never rejects a tree Studio could actually run: a root-level llama-server (a
+# never rejects a tree Unsloth could actually run: a root-level llama-server (a
 # `make` build or a flat-extracted release) or the CMake build/bin/llama-server.
 _has_local_llama_server() {
     [ -x "$1/llama-server" ] || [ -x "$1/build/bin/llama-server" ]
@@ -1284,13 +1298,13 @@ if [ -n "${UNSLOTH_LOCAL_LLAMA_CPP_DIR:-}" ]; then
         # Reusing disables BOTH the prebuilt download and the source build, so the
         # linked tree must already contain a runnable llama-server in one of the
         # layouts the backend resolves (root-level or build/bin/). Fail clearly
-        # rather than link an unbuilt or wrong-platform checkout and leave Studio
+        # rather than link an unbuilt or wrong-platform checkout and leave Unsloth
         # with no usable binary.
         if ! _has_local_llama_server "$_RESOLVED_LOCAL"; then
             step "llama.cpp" "no llama-server under $_RESOLVED_LOCAL (looked for ./llama-server and ./build/bin/llama-server) -- build llama.cpp there first, or drop --with-llama-cpp-dir" "$C_ERR"
             exit 1
         fi
-        # A stale link from a previous --with-llama-cpp-dir run isn't Studio-owned
+        # A stale link from a previous --with-llama-cpp-dir run isn't Unsloth-owned
         # content; drop it before the ownership check so re-runs stay idempotent
         # for a custom UNSLOTH_STUDIO_HOME (the assert would otherwise follow the
         # link into the user's dir and reject it as unowned).
@@ -1375,7 +1389,7 @@ else
         if [ -d "$LLAMA_CPP_DIR" ]; then
             substep "existing install was restored"
         fi
-        substep "close Studio or other llama.cpp users and retry"
+        substep "close Unsloth or other llama.cpp users and retry"
         exit 3
     else
         step "llama.cpp" "prebuilt install failed (continuing)" "$C_WARN"
@@ -1872,7 +1886,7 @@ else
                 ln -sf build/bin/llama-quantize "$LLAMA_CPP_DIR/llama-quantize"
             fi
             # DiffusionGemma visual server, if it was built (PR #24423): link next to
-            # llama-server so Studio serves DiffusionGemma GGUFs without DG_VISUAL_BIN.
+            # llama-server so Unsloth serves DiffusionGemma GGUFs without DG_VISUAL_BIN.
             if [ -f "$LLAMA_CPP_DIR/build/bin/llama-diffusion-gemma-visual-server" ]; then
                 ln -sf build/bin/llama-diffusion-gemma-visual-server "$LLAMA_CPP_DIR/llama-diffusion-gemma-visual-server"
             fi
@@ -1919,6 +1933,14 @@ if [ "$_LLAMA_CPP_DEGRADED" = true ] \
     fi
 fi
 
+if [ ! -L "$LLAMA_CPP_DIR" ] && {
+    [ "$_STUDIO_HOME_IS_CUSTOM" != true ] ||
+        [ -f "$LLAMA_CPP_DIR/$_STUDIO_OWNED_MARKER" ] ||
+        _studio_owned_adoptable "$LLAMA_CPP_DIR"
+}; then
+    _remove_agent_instruction_files "$LLAMA_CPP_DIR"
+fi
+
 # ── Footer ──
 if [ "$_LLAMA_ONLY" = "1" ]; then
     echo ""
@@ -1953,15 +1975,15 @@ else
     else
         printf "  ${C_DIM}%-15s${C_OK}%s${C_RST}\n" "launch" "unsloth studio -p 8888"
     fi
-    printf "  ${C_DIM}%-15s%s${C_RST}\n" "" "(add -H 0.0.0.0 to allow network / cloud access)"
-    printf "  ${C_DIM}%-15s%s${C_RST}\n" "" "(add --secure for a public Cloudflare HTTPS link; anyone with the API key can run code)"
+    printf "  ${C_DIM}%-15s%s${C_RST}\n" "" "(add -H 0.0.0.0 for LAN / cloud access; exposes the raw port only, not a public URL)"
+    printf "  ${C_DIM}%-15s%s${C_RST}\n" "" "(add -H 0.0.0.0 --cloudflare for a public Cloudflare HTTPS link, or --secure to keep the raw port private; anyone with the API key can run code)"
 fi
 echo ""
 
 # When called from install.sh (SKIP_STUDIO_BASE=1), exit non-zero so the
 # installer can report the GGUF failure after finishing PATH/shortcut setup.
 # When called directly via 'unsloth studio update', keep the install
-# successful -- the footer above already reports the limitation and Studio
+# successful -- the footer above already reports the limitation and Unsloth
 # is still usable for non-GGUF workflows.
 if [ "$_LLAMA_CPP_DEGRADED" = true ] && [ "${SKIP_STUDIO_BASE:-0}" = "1" ]; then
     exit 1

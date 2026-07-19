@@ -6,6 +6,7 @@
 # irm | iex cannot forward arguments, so web installs take options as env vars set
 # before the pipe (flags still work via .\install.ps1):
 #   $env:UNSLOTH_NO_TORCH=1; irm https://unsloth.ai/install.ps1 | iex       # skip PyTorch (GGUF-only)
+#   $env:UNSLOTH_SKIP_AUTOSTART=1; irm https://unsloth.ai/install.ps1 | iex # do not prompt to launch
 #   $env:UNSLOTH_PYTHON='3.12'; irm https://unsloth.ai/install.ps1 | iex    # pin Python version
 #   $env:UNSLOTH_STUDIO_HOME='C:\path'; irm https://unsloth.ai/install.ps1 | iex
 #   .\install.ps1 --no-torch                                                # equivalent flag
@@ -93,6 +94,7 @@ function Install-UnslothStudio {
         if ($TauriMode) {
             exit $Code
         }
+        throw $Message
     }
 
     # ── Parse flags ──
@@ -101,6 +103,7 @@ function Install-UnslothStudio {
     $RepoRoot = ""
     $TauriMode = $false
     $SkipTorch = $false
+    $SkipAutostart = $false
     $ShortcutsOnly = $false
     $WithLlamaCppDir = ""
     $argList = $args
@@ -133,6 +136,7 @@ function Install-UnslothStudio {
 
     # Env-var equivalent for web installs; an explicit flag still wins.
     if ($env:UNSLOTH_NO_TORCH -in @('1', 'true', 'yes', 'on')) { $SkipTorch = $true }
+    if ($env:UNSLOTH_SKIP_AUTOSTART -in @('1', 'true', 'yes', 'on')) { $SkipAutostart = $true }
 
     # Propagate to child processes so they also respect verbose mode.
     # Process-scoped -- does not persist.
@@ -175,7 +179,7 @@ function Install-UnslothStudio {
         $envOverride = $env:STUDIO_HOME.Trim()
     }
 
-    # Custom Studio roots are not supported with --tauri (desktop app still
+    # Custom Unsloth roots are not supported with --tauri (desktop app still
     # resolves %USERPROFILE%\.unsloth\studio). Pass through if override == legacy.
     if ($TauriMode -and $envOverride) {
         $_tauriOverride = $envOverride
@@ -774,7 +778,7 @@ function Find-FreeLaunchPort {
     return `$null
 }
 
-# If Studio is already healthy on any expected port, just open it and exit.
+# If Unsloth is already healthy on any expected port, just open it and exit.
 `$existingPort = Find-HealthyStudioPort
 if (`$existingPort) {
     Start-Process "http://localhost:`$existingPort"
@@ -790,7 +794,7 @@ try {
         `$haveMutex = `$true
     }
     if (-not `$haveMutex) {
-        # Another launcher is already running; wait for it to bring Studio up
+        # Another launcher is already running; wait for it to bring Unsloth up
         `$deadline = (Get-Date).AddSeconds(`$timeoutSec)
         while ((Get-Date) -lt `$deadline) {
             `$port = Find-HealthyStudioPort
@@ -1456,7 +1460,7 @@ exit 0
     if (Test-Path -LiteralPath $VenvPython) {
         # why: matching guard to the .venv branch below -- in env-mode
         # $StudioHome is a user-chosen workspace, so refuse to nuke an
-        # existing $StudioHome\unsloth_studio that lacks Studio sentinels.
+        # existing $StudioHome\unsloth_studio that lacks Unsloth sentinels.
         # -PathType Leaf rejects a directory at the sentinel path. Accept the
         # in-VENV ownership marker so partial-install retries are not blocked.
         if (
@@ -1467,7 +1471,7 @@ exit 0
         ) {
             Write-Host "[ERROR] $VenvDir already exists but does not look like an Unsloth Studio install." -ForegroundColor Red
             Write-Host "        Move it aside or choose an empty UNSLOTH_STUDIO_HOME." -ForegroundColor Yellow
-            throw "Refusing to delete non-Studio venv at $VenvDir"
+            throw "Refusing to delete non-Unsloth venv at $VenvDir"
         }
         # New layout already exists -- replace only after preserving rollback copy.
         substep "preserving existing environment for rollback..."
@@ -1486,7 +1490,7 @@ exit 0
         # workspace root (e.g. user's existing project Python venv).
         $OldVenv = Join-Path $StudioHome ".venv"
         $OldPy = Join-Path $OldVenv "Scripts\python.exe"
-        substep "found legacy Studio environment, validating..."
+        substep "found legacy Unsloth environment, validating..."
         $prevEAP2 = $ErrorActionPreference
         $ErrorActionPreference = "Continue"
         try {
@@ -1516,7 +1520,7 @@ exit 0
         # Skip in env-mode so we don't relocate the default-install venv into
         # the workspace root.
         $CwdVenv = Join-Path $env:USERPROFILE "unsloth_studio"
-        substep "found CWD-relative Studio environment, migrating to $VenvDir..."
+        substep "found CWD-relative Unsloth environment, migrating to $VenvDir..."
         Move-Item -LiteralPath $CwdVenv -Destination $VenvDir -Force
         substep "moved ~/unsloth_studio -> ~/.unsloth/studio/unsloth_studio"
         $_Migrated = $true
@@ -1535,7 +1539,7 @@ exit 0
         substep "$VenvDir"
     }
 
-    # Mark the freshly-created venv as Studio-owned so a partial install can be
+    # Mark the freshly-created venv as Unsloth-owned so a partial install can be
     # repaired by re-running install.ps1; the env-mode deletion guard above
     # accepts this marker as the primary sentinel.
     if (Test-Path -LiteralPath $VenvDir -PathType Container) {
@@ -1544,7 +1548,7 @@ exit 0
 
     # ── Helper: run amd-smi without triggering a UAC elevation prompt ──
     # amd-smi on Windows auto-elevates to read GPU/APU memory, surfacing a confusing
-    # DiskPart UAC prompt mid-install (Studio backend amd.py hits the same).
+    # DiskPart UAC prompt mid-install (Unsloth backend amd.py hits the same).
     # __COMPAT_LAYER=RunAsInvoker forces it (and helpers it spawns) to run
     # un-elevated; on failure the WMI name -> gfx fallback still resolves the arch.
     function Invoke-AmdSmiNoElevate {
@@ -1671,7 +1675,7 @@ exit 0
         function Test-HipinfoIsVenvInternal {
             param([AllowNull()][string]$HipinfoPath)
             if ([string]::IsNullOrWhiteSpace($HipinfoPath)) { return $false }
-            # Also derive the venv from the setup python + default Studio home, so
+            # Also derive the venv from the setup python + default Unsloth home, so
             # the venv hipInfo is caught when VenvDir/VIRTUAL_ENV are unset.
             $venvRoots = @()
             if ($env:VIRTUAL_ENV) { $venvRoots += $env:VIRTUAL_ENV }
@@ -1681,7 +1685,7 @@ exit 0
                 try { $venvRoots += (Split-Path -Parent (Split-Path -Parent $env:UNSLOTH_SETUP_PYTHON)) } catch {}
             }
             if ($env:USERPROFILE) { $venvRoots += (Join-Path $env:USERPROFILE ".unsloth\studio\unsloth_studio") }
-            # A custom Studio home (UNSLOTH_STUDIO_HOME / STUDIO_HOME alias) moves the
+            # A custom Unsloth home (UNSLOTH_STUDIO_HOME / STUDIO_HOME alias) moves the
             # venv off the default path; seed it too or its hipInfo escapes the filter.
             $studioHomeEnv = if (-not [string]::IsNullOrWhiteSpace($env:UNSLOTH_STUDIO_HOME)) { $env:UNSLOTH_STUDIO_HOME.Trim() } elseif (-not [string]::IsNullOrWhiteSpace($env:STUDIO_HOME)) { $env:STUDIO_HOME.Trim() } else { $null }
             if ($studioHomeEnv) {
@@ -1960,7 +1964,7 @@ exit 0
         substep "       Ensure the ROCm compute driver is installed alongside the display driver:" "Yellow"
         substep "       https://rocm.docs.amd.com/en/latest/deploy/windows/index.html" "Yellow"
     } elseif ($ROCmGfxArch) {
-        # Known arch: Studio setup installs AMD's bundled-runtime ROCm PyTorch wheels
+        # Known arch: Unsloth setup installs AMD's bundled-runtime ROCm PyTorch wheels
         # (repo.amd.com), which ship their own runtime -- HIP SDK optional.
         step "gpu" "AMD ROCm ($ROCmGfxArch)" "Cyan"
         substep "Detected: $ROCmGpuLabel" "Cyan"
@@ -2272,7 +2276,7 @@ exit 0
         if ($SkipTorch) {
             # No-torch: install unsloth + unsloth-zoo with --no-deps, then
             # runtime deps (typer, safetensors, transformers, etc.) with --no-deps.
-            $baseInstallExit = Invoke-InstallCommandRetry -Label "install unsloth (migrated no-torch)" { uv pip install --python $VenvPython --no-deps --reinstall-package unsloth --reinstall-package unsloth-zoo "unsloth>=2026.7.2" "unsloth-zoo>=2026.7.2" }
+            $baseInstallExit = Invoke-InstallCommandRetry -Label "install unsloth (migrated no-torch)" { uv pip install --python $VenvPython --no-deps --reinstall-package unsloth --reinstall-package unsloth-zoo "unsloth>=2026.7.3" "unsloth-zoo>=2026.7.3" }
             if ($baseInstallExit -eq 0) {
                 # Resolve pydantic WITH deps so pip pins pydantic-core
                 # to the matching version (no-torch-runtime.txt below
@@ -2286,7 +2290,7 @@ exit 0
                 }
             }
         } else {
-            $baseInstallExit = Invoke-InstallCommandRetry -Label "install unsloth (migrated)" { uv pip install --python $VenvPython --reinstall-package unsloth --reinstall-package unsloth-zoo "unsloth>=2026.7.2" "unsloth-zoo>=2026.7.2" }
+            $baseInstallExit = Invoke-InstallCommandRetry -Label "install unsloth (migrated)" { uv pip install --python $VenvPython --reinstall-package unsloth --reinstall-package unsloth-zoo "unsloth>=2026.7.3" "unsloth-zoo>=2026.7.3" }
         }
         if ($baseInstallExit -ne 0) {
             Write-Host "[ERROR] Failed to install unsloth (exit code $baseInstallExit)" -ForegroundColor Red
@@ -2319,11 +2323,11 @@ exit 0
             $audioSpec = if ($PinnedRocmAudioSpec) { $PinnedRocmAudioSpec } elseif ($ROCmGfxArch -and $torchaudioFloorMap -and $torchaudioFloorMap.ContainsKey($ROCmGfxArch)) { $torchaudioFloorMap[$ROCmGfxArch] } else { "torchaudio" }
             $torchInstallExit = Invoke-InstallCommandRetry -Label "install PyTorch (AMD ROCm)" { uv pip install --python $VenvPython --force-reinstall --default-index $ROCmIndexUrl $torchSpec $visionSpec $audioSpec }
             if ($torchInstallExit -ne 0) {
-                # Transient AMD-index failure: fall back to a CPU base (Studio setup
+                # Transient AMD-index failure: fall back to a CPU base (Unsloth setup
                 # retries ROCm). Use an explicit CPU index -- for a pinned ROCm index
                 # $TorchIndexUrl IS the ROCm mirror, so reusing it would just retry it.
                 $CpuFallbackIndexUrl = if ($env:UNSLOTH_PYTORCH_MIRROR) { "$($env:UNSLOTH_PYTORCH_MIRROR.TrimEnd('/'))/cpu" } else { "https://download.pytorch.org/whl/cpu" }
-                substep "ROCm PyTorch install failed (exit $torchInstallExit); using a CPU base, Studio setup retries ROCm." "Yellow"
+                substep "ROCm PyTorch install failed (exit $torchInstallExit); using a CPU base, Unsloth setup retries ROCm." "Yellow"
                 # --force-reinstall: a failed ROCm install can leave an unpinned ROCm
                 # torch (e.g. 2.10.0+rocm on gfx110X/gfx90a) that still satisfies the CPU
                 # torch>= range, so without it uv would keep the ROCm build and only swap
@@ -2365,7 +2369,7 @@ exit 0
         if ($SkipTorch) {
             # No-torch: install unsloth + unsloth-zoo with --no-deps, then
             # runtime deps (typer, safetensors, transformers, etc.) with --no-deps.
-            $baseInstallExit = Invoke-InstallCommandRetry -Label "install unsloth (no-torch)" { uv pip install --python $VenvPython --no-deps --upgrade-package unsloth --upgrade-package unsloth-zoo "unsloth>=2026.7.2" "unsloth-zoo>=2026.7.2" }
+            $baseInstallExit = Invoke-InstallCommandRetry -Label "install unsloth (no-torch)" { uv pip install --python $VenvPython --no-deps --upgrade-package unsloth --upgrade-package unsloth-zoo "unsloth>=2026.7.3" "unsloth-zoo>=2026.7.3" }
             if ($baseInstallExit -eq 0) {
                 # Same pydantic-with-deps trick as the migrated branch.
                 $baseInstallExit = Invoke-InstallCommandRetry -Label "install pydantic" { uv pip install --python $VenvPython pydantic }
@@ -2377,7 +2381,7 @@ exit 0
                 }
             }
         } elseif ($StudioLocalInstall) {
-            $baseInstallExit = Invoke-InstallCommandRetry -Label "install unsloth (local)" { uv pip install --python $VenvPython --upgrade-package unsloth "unsloth>=2026.7.2" "unsloth-zoo>=2026.7.2" }
+            $baseInstallExit = Invoke-InstallCommandRetry -Label "install unsloth (local)" { uv pip install --python $VenvPython --upgrade-package unsloth "unsloth>=2026.7.3" "unsloth-zoo>=2026.7.3" }
         } else {
             $baseInstallExit = Invoke-InstallCommandRetry -Label "install unsloth" { uv pip install --python $VenvPython --upgrade-package unsloth -- "$PackageName" }
         }
@@ -2405,7 +2409,7 @@ exit 0
         Write-TauriLog "STEP" "Installing unsloth"
         substep "installing unsloth (this may take a few minutes)..."
         if ($StudioLocalInstall) {
-            $baseInstallExit = Invoke-InstallCommandRetry -Label "install unsloth (auto torch backend)" { uv pip install --python $VenvPython "unsloth-zoo>=2026.7.2" "unsloth>=2026.7.2" --torch-backend=auto }
+            $baseInstallExit = Invoke-InstallCommandRetry -Label "install unsloth (auto torch backend)" { uv pip install --python $VenvPython "unsloth-zoo>=2026.7.3" "unsloth>=2026.7.3" --torch-backend=auto }
             if ($baseInstallExit -ne 0) {
                 Write-Host "[ERROR] Failed to install unsloth (exit code $baseInstallExit)" -ForegroundColor Red
                 return (Exit-InstallFailure "Failed to install unsloth (exit code $baseInstallExit)" $baseInstallExit)
@@ -2536,7 +2540,7 @@ exit 0
         Write-TauriLog "ERROR" "unsloth CLI was not installed correctly"
         Write-Host "[ERROR] unsloth CLI was not installed correctly." -ForegroundColor Red
         Write-Host "        Expected: $UnslothExe" -ForegroundColor Yellow
-        Write-Host "        This usually means an older unsloth version was installed that does not include the Studio CLI." -ForegroundColor Yellow
+        Write-Host "        This usually means an older unsloth version was installed that does not include the Unsloth CLI." -ForegroundColor Yellow
         Write-Host "        Try re-running the installer or see: https://github.com/unslothai/unsloth?tab=readme-ov-file#-quickstart" -ForegroundColor Yellow
         return (Exit-InstallFailure "unsloth CLI was not installed correctly")
     }
@@ -2647,7 +2651,7 @@ exit 0
         Write-Host "        Move or remove it manually, then re-run the installer." -ForegroundColor Yellow
         throw "Cannot create unsloth launcher: $ShimExe is a directory."
     }
-    # try/catch: if unsloth.exe is locked (Studio running), keep the old shim.
+    # try/catch: if unsloth.exe is locked (Unsloth running), keep the old shim.
     $shimUpdated = $false
     try {
         if (Test-Path -LiteralPath $ShimExe) { Remove-Item -LiteralPath $ShimExe -Force -ErrorAction Stop }
@@ -2665,7 +2669,7 @@ exit 0
         if (Test-Path -LiteralPath $ShimExe) {
             Write-Host "[WARN] Could not refresh unsloth launcher at $ShimExe." -ForegroundColor Yellow
             Write-Host "       This usually means a running 'unsloth studio' process still holds the file open." -ForegroundColor Yellow
-            Write-Host "       Close Studio and re-run the installer to pick up the latest launcher." -ForegroundColor Yellow
+            Write-Host "       Close Unsloth and re-run the installer to pick up the latest launcher." -ForegroundColor Yellow
             Write-Host "       Continuing with the existing launcher." -ForegroundColor Yellow
         } else {
             Write-Host "[WARN] Could not create unsloth launcher at $ShimExe" -ForegroundColor Yellow
@@ -2730,9 +2734,10 @@ exit 0
         # Diagnostic only; never block install on a probe failure.
     }
 
-    # In interactive terminals, ask the user before starting Studio.
+    # In interactive terminals, ask the user before starting Unsloth unless the
+    # caller explicitly disabled the post-install prompt.
     # In non-interactive environments (CI, Docker) just print instructions.
-    $IsInteractive = [Environment]::UserInteractive -and (-not [Console]::IsInputRedirected)
+    $IsInteractive = (-not $SkipAutostart) -and [Environment]::UserInteractive -and (-not [Console]::IsInputRedirected)
     if ($IsInteractive) {
         Write-Host ""
         $reply = Read-Host "  Start Unsloth Studio now? [Y/n]"
@@ -2741,8 +2746,8 @@ exit 0
         } else {
             step "launch" "to start later, run:"
             substep "unsloth studio -p 8888"
-            substep "(add -H 0.0.0.0 to allow network / cloud access)"
-            substep "(add --secure for a public Cloudflare HTTPS link; anyone with the API key can run code)"
+            substep "(add -H 0.0.0.0 for LAN / cloud access; exposes the raw port only, not a public URL)"
+            substep "(add -H 0.0.0.0 --cloudflare for a public Cloudflare HTTPS link, or --secure to keep the raw port private; anyone with the API key can run code)"
             Write-Host ""
         }
     } else {
@@ -2762,8 +2767,8 @@ exit 0
             substep "& $_actLiteral"
             substep "unsloth studio -p 8888"
         }
-        substep "(add -H 0.0.0.0 to allow network / cloud access)"
-        substep "(add --secure for a public Cloudflare HTTPS link; anyone with the API key can run code)"
+        substep "(add -H 0.0.0.0 for LAN / cloud access; exposes the raw port only, not a public URL)"
+        substep "(add -H 0.0.0.0 --cloudflare for a public Cloudflare HTTPS link, or --secure to keep the raw port private; anyone with the API key can run code)"
         Write-Host ""
     }
 }

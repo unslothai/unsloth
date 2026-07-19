@@ -119,6 +119,20 @@ _gated=$(grep -c '_expected_torch_flavor_tag "$TORCH_INDEX_URL"' "$INSTALL_SH" |
 _has_gate=$([ "$_gated" -ge 1 ] && echo "yes" || echo "no")
 assert_eq "custom-companion bound gated on empty flavor tag" "yes" "$_has_gate"
 
+# A fresh CUDA install widens the ceiling to <2.12.0 so cu12x/cu13x land torch
+# 2.11.x (matches the base image and _CUDA_TORCH_PKG_SPEC).
+_cuda_widen=$(grep -c 'TORCH_CONSTRAINT="torch>=2.4,<2.12.0"' "$INSTALL_SH" || true)
+assert_eq "CUDA TORCH_CONSTRAINT widened to <2.12.0" "1" "$_cuda_widen"
+
+# Widening keys off the final leaf (_torch_index_leaf), not the full URL, so a
+# mirror base path with cu*/rocm7.2 but a cpu/older-rocm leaf is not mis-widened.
+_cuda_case=$(grep -c 'cu\[0-9\]\*)' "$INSTALL_SH" || true)
+_has_cuda_case=$([ "$_cuda_case" -ge 1 ] && echo "yes" || echo "no")
+assert_eq "cu* index case adjusts TORCH_CONSTRAINT" "yes" "$_has_cuda_case"
+_leaf_case=$(grep -c 'case "\$_torch_index_leaf" in' "$INSTALL_SH" || true)
+_has_leaf_constraint=$([ "$_leaf_case" -ge 2 ] && echo "yes" || echo "no")
+assert_eq "constraint case anchors on _torch_index_leaf" "yes" "$_has_leaf_constraint"
+
 echo ""
 echo "=== Structural: tokenizers in no-torch-runtime.txt ==="
 

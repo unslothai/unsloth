@@ -69,6 +69,14 @@ pinned_macos_release_tag = INSTALL_LLAMA_PREBUILT.pinned_macos_release_tag
 resolve_simple_install_release_plans = INSTALL_LLAMA_PREBUILT.resolve_simple_install_release_plans
 
 
+@pytest.fixture(autouse = True)
+def _disable_download_host_fast_path(monkeypatch):
+    # This module exercises the GitHub API enumeration and asset selection against
+    # mocked releases; keep the download-host fast path (real CDN) out of the way.
+    # test_download_host_resolve.py covers the fast path itself.
+    monkeypatch.setenv("UNSLOTH_LLAMA_DISABLE_DOWNLOAD_HOST_RESOLVE", "1")
+
+
 def load_studio_run_module(monkeypatch):
     logger = types.SimpleNamespace(
         debug = lambda *a, **k: None,
@@ -262,13 +270,13 @@ def mock_windows_runtime(monkeypatch, lines):
 
 
 # ===========================================================================
-# Studio run.py localhost warning
+# Unsloth run.py localhost warning
 # ===========================================================================
 
 
 class TestStudioLocalhostIpv6Warning:
     def _prepare_loopback(self, run_module, monkeypatch):
-        # Studio confirmed answering on the IPv4 loopback.
+        # Unsloth confirmed answering on the IPv4 loopback.
         monkeypatch.setattr(
             run_module,
             "_working_local_url",
@@ -319,7 +327,7 @@ class TestStudioLocalhostIpv6Warning:
         assert "http://localhost:8888" in captured.out
 
     def test_ipv6_listener_does_not_suppress_warning(self, monkeypatch):
-        # A process on ::1 is NOT Studio (binds 127.0.0.1 only), so the warning must
+        # A process on ::1 is NOT Unsloth (binds 127.0.0.1 only), so the warning must
         # still fire -- that is exactly when http://localhost opens the wrong service.
         run_module = load_studio_run_module(monkeypatch)
         self._prepare_loopback(run_module, monkeypatch)
@@ -348,7 +356,7 @@ class TestStudioLocalhostIpv6Warning:
         assert run_module._localhost_ipv6_mismatch_url("127.0.0.1", port) is None
 
     def test_ipv4_not_answering_suppresses_warning(self, monkeypatch):
-        # Studio not confirmed on 127.0.0.1 -> no warning.
+        # Unsloth not confirmed on 127.0.0.1 -> no warning.
         run_module = load_studio_run_module(monkeypatch)
         monkeypatch.setattr(run_module, "_working_local_url", lambda port: None)
         self._set_getaddrinfo(monkeypatch, [self._ipv6()])
@@ -1629,7 +1637,7 @@ class TestResolveInstallAttempts:
         monkeypatch.setattr(
             INSTALL_LLAMA_PREBUILT,
             "iter_resolved_published_releases",
-            lambda requested_tag, published_repo, published_release_tag = "": iter(
+            lambda requested_tag, published_repo, published_release_tag = "", **_kwargs: iter(
                 [
                     INSTALL_LLAMA_PREBUILT.ResolvedPublishedRelease(
                         bundle = release,
@@ -1674,7 +1682,7 @@ class TestResolveInstallAttempts:
         monkeypatch.setattr(
             INSTALL_LLAMA_PREBUILT,
             "iter_resolved_published_releases",
-            lambda requested_tag, published_repo, published_release_tag = "": iter(
+            lambda requested_tag, published_repo, published_release_tag = "", **_kwargs: iter(
                 [
                     INSTALL_LLAMA_PREBUILT.ResolvedPublishedRelease(
                         bundle = release,
@@ -1739,7 +1747,7 @@ class TestResolveInstallAttempts:
         monkeypatch.setattr(
             INSTALL_LLAMA_PREBUILT,
             "iter_resolved_published_releases",
-            lambda requested_tag, published_repo, published_release_tag = "": iter(
+            lambda requested_tag, published_repo, published_release_tag = "", **_kwargs: iter(
                 [
                     INSTALL_LLAMA_PREBUILT.ResolvedPublishedRelease(
                         bundle = release,
@@ -1771,7 +1779,7 @@ class TestResolveInstallAttempts:
         monkeypatch.setattr(
             INSTALL_LLAMA_PREBUILT,
             "iter_resolved_published_releases",
-            lambda requested_tag, published_repo, published_release_tag = "": iter(
+            lambda requested_tag, published_repo, published_release_tag = "", **_kwargs: iter(
                 [
                     INSTALL_LLAMA_PREBUILT.ResolvedPublishedRelease(
                         bundle = release,
@@ -1820,7 +1828,7 @@ class TestResolveInstallAttempts:
         monkeypatch.setattr(
             INSTALL_LLAMA_PREBUILT,
             "iter_resolved_published_releases",
-            lambda requested_tag, published_repo, published_release_tag = "": iter(
+            lambda requested_tag, published_repo, published_release_tag = "", **_kwargs: iter(
                 [
                     INSTALL_LLAMA_PREBUILT.ResolvedPublishedRelease(
                         bundle = release,
@@ -1911,7 +1919,7 @@ class TestResolveInstallAttempts:
         monkeypatch.setattr(
             INSTALL_LLAMA_PREBUILT,
             "iter_resolved_published_releases",
-            lambda requested_tag, published_repo, published_release_tag = "": iter(
+            lambda requested_tag, published_repo, published_release_tag = "", **_kwargs: iter(
                 [
                     INSTALL_LLAMA_PREBUILT.ResolvedPublishedRelease(
                         bundle = release,
@@ -1980,7 +1988,7 @@ class TestResolveInstallAttempts:
         monkeypatch.setattr(
             INSTALL_LLAMA_PREBUILT,
             "iter_resolved_published_releases",
-            lambda requested_tag, published_repo, published_release_tag = "": iter(
+            lambda requested_tag, published_repo, published_release_tag = "", **_kwargs: iter(
                 [
                     INSTALL_LLAMA_PREBUILT.ResolvedPublishedRelease(
                         bundle = release,
@@ -2030,7 +2038,7 @@ class TestResolveInstallAttempts:
         monkeypatch.setattr(
             INSTALL_LLAMA_PREBUILT,
             "iter_resolved_published_releases",
-            lambda requested_tag, published_repo, published_release_tag = "": iter(
+            lambda requested_tag, published_repo, published_release_tag = "", **_kwargs: iter(
                 [
                     INSTALL_LLAMA_PREBUILT.ResolvedPublishedRelease(
                         bundle = release,
@@ -2093,7 +2101,7 @@ class TestResolveInstallAttempts:
         monkeypatch.setattr(
             INSTALL_LLAMA_PREBUILT,
             "iter_resolved_published_releases",
-            lambda requested_tag, published_repo, published_release_tag = "": iter(
+            lambda requested_tag, published_repo, published_release_tag = "", **_kwargs: iter(
                 [
                     INSTALL_LLAMA_PREBUILT.ResolvedPublishedRelease(
                         bundle = release,
@@ -2156,7 +2164,9 @@ class TestResolveInstallReleasePlans:
         monkeypatch.setattr(
             INSTALL_LLAMA_PREBUILT,
             "iter_resolved_published_releases",
-            lambda requested_tag, published_repo, published_release_tag = "": iter(releases),
+            lambda requested_tag, published_repo, published_release_tag = "", **_kwargs: iter(
+                releases
+            ),
         )
 
         requested_tag, plans = _fork_manifest_release_plans(
@@ -2190,7 +2200,9 @@ class TestResolveInstallReleasePlans:
         monkeypatch.setattr(
             INSTALL_LLAMA_PREBUILT,
             "iter_resolved_published_releases",
-            lambda requested_tag, published_repo, published_release_tag = "": iter(releases),
+            lambda requested_tag, published_repo, published_release_tag = "", **_kwargs: iter(
+                releases
+            ),
         )
 
         _requested_tag, plans = _fork_manifest_release_plans(
@@ -3656,7 +3668,7 @@ class TestCpuFallback:
 # ===========================================================================
 
 
-@pytest.mark.skipif(sys.platform == "win32", reason = "bash-only Studio installer tests")
+@pytest.mark.skipif(sys.platform == "win32", reason = "bash-only Unsloth installer tests")
 class TestCudaDriverToolkitMismatchMessage:
     _SETUP_SH = PACKAGE_ROOT / "studio" / "setup.sh"
     _SETUP_PS1 = PACKAGE_ROOT / "studio" / "setup.ps1"
@@ -3861,7 +3873,7 @@ class TestCudaDriverToolkitMismatchMessage:
             "or install a CUDA $driverMajor.x toolkit." in source
         )
         assert (
-            "Or let Studio use the prebuilt CUDA bundle; it does not need the local toolkit."
+            "Or let Unsloth use the prebuilt CUDA bundle; it does not need the local toolkit."
         ) in source
         assert (
             "Write-CudaDriverToolkitMismatch -ToolkitVersion $IncompatibleToolkit "

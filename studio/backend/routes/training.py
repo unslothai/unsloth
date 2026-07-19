@@ -127,9 +127,9 @@ async def start_training(
     try:
         logger.info(f"Starting training job with model: {request.model_name}")
 
-        # When Studio is driven as an inference API (API-key auth), refuse to start
+        # When Unsloth is driven as an inference API (API-key auth), refuse to start
         # training while a request is in flight: training frees VRAM by unloading
-        # the chat model, which would kill the stream. The Studio UI (session auth)
+        # the chat model, which would kill the stream. The Unsloth UI (session auth)
         # still starts training and coexists/frees VRAM as before. (A mixed UI+API
         # session is not yet special-cased.)
         if via_api_key is True:
@@ -139,12 +139,22 @@ async def start_training(
                     status_code = 409,
                     detail = (
                         "Cannot start training over the API while an inference request is in "
-                        "progress. Wait for it to finish, or start training from the Studio UI."
+                        "progress. Wait for it to finish, or start training from the Unsloth UI."
                     ),
                 )
 
         # No in-process ensure_transformers_version(): the subprocess
         # (worker.py) activates the correct version before importing ML libs.
+
+        # A consented latest-transformers install stage-and-swaps .venv_t5_latest;
+        # a worker spawned mid-swap could activate a half-replaced sidecar.
+        from utils.transformers_latest import is_install_in_progress
+
+        if is_install_in_progress():
+            raise HTTPException(
+                status_code = 409,
+                detail = ("A transformers installation is in progress. Retry when it completes."),
+            )
 
         backend = get_training_backend()
 
@@ -341,6 +351,24 @@ async def start_training(
             "s3_config": request.s3_config.model_dump() if request.s3_config else None,
         }
 
+        # Latest-sidecar models size and train 16-bit (same flip as chat load):
+        # 4-bit is disabled for brand-new architectures, so VRAM coexistence
+        # checks must not underestimate against a load the worker will refuse.
+        if training_kwargs["load_in_4bit"]:
+            from utils.transformers_version import latest_tier_active_for
+            if await asyncio.to_thread(
+                latest_tier_active_for,
+                training_kwargs["model_name"],
+                training_kwargs["hf_token"] or None,
+            ):
+                training_kwargs["load_in_4bit"] = False
+                logger.info(
+                    "Latest-transformers sidecar active for %s - sizing and "
+                    "training in 16-bit (4-bit is disabled for brand-new "
+                    "architectures)",
+                    training_kwargs["model_name"],
+                )
+
         # Training page has no trust_remote_code toggle, so honor the YAML default
         # -- but only for genuine first-party (unsloth/nvidia) Hub repos, never a
         # local path or a name merely starting with "unsloth/".
@@ -426,9 +454,16 @@ async def start_training(
                 logger.warning("Chat/training VRAM coordination failed; proceeding: %s", e)
 
         # The hook runs only once start guards pass -> VRAM freed iff training starts.
-        success = backend.start_training(
-            job_id = job_id, before_spawn = _free_vram_for_training, **training_kwargs
-        )
+        from utils.transformers_version import SidecarSwapInProgress
+
+        try:
+            success = backend.start_training(
+                job_id = job_id, before_spawn = _free_vram_for_training, **training_kwargs
+            )
+        except SidecarSwapInProgress as exc:
+            # Expected loss of the race against a sidecar install: a retryable
+            # 409 matching the route-entry guard, not an internal error.
+            raise HTTPException(status_code = 409, detail = str(exc))
 
         if not success:
             progress_error = backend.trainer.training_progress.error
@@ -698,7 +733,9 @@ async def stream_training_progress(
     if last_event_id is not None:
         try:
             resume_from_step = int(last_event_id)
-            logger.info(f"SSE reconnect: resuming from step {resume_from_step}")
+            # Fires on every reconnect (each tab switch); the meaningful signal is
+            # the "replayed N missed steps" line below, logged only when N > 0.
+            logger.debug(f"SSE reconnect: resuming from step {resume_from_step}")
         except ValueError:
             logger.warning(f"Invalid Last-Event-ID: {last_event_id}")
 

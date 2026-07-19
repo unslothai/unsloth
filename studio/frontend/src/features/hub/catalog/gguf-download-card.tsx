@@ -120,7 +120,7 @@ const CHIP_BASE =
 const CHIP_DEFAULT =
   "border-foreground/15 bg-muted text-foreground/85 dark:border-border/60 dark:bg-white/[0.04] dark:text-foreground/85";
 const CHIP_ACTIVE =
-  "border-emerald-500/40 bg-emerald-500/10 text-emerald-700 dark:text-emerald-300";
+  "border-control-accent/40 bg-control-accent/10 text-control-accent";
 
 function QuantBadge({
   quant,
@@ -173,7 +173,7 @@ function QuantBadge({
       <span
         className={cn(
           "inline-flex shrink-0 cursor-help items-center gap-1.5 whitespace-nowrap text-[12.5px] font-medium tracking-tight tabular-nums",
-          active ? "text-emerald-600 dark:text-emerald-400" : "text-foreground",
+          active ? "text-control-accent" : "text-foreground",
         )}
       >
         {showFit && (

@@ -14,6 +14,9 @@ import {
 import { SettingsRow } from "./settings-row";
 import { SettingsSection } from "./settings-section";
 
+// Mirrors MIN_AUTO_UNLOAD_IDLE_SECONDS in the backend settings store.
+const MIN_IDLE_SECONDS = 60;
+
 export function ModelAutoSwitchSection() {
   const t = useT();
   const [settings, setSettings] = useState<OpenAIAutoSwitchSettings | null>(
@@ -45,13 +48,16 @@ export function ModelAutoSwitchSection() {
     };
   }, [t]);
 
-  // Parse the idle-seconds draft to a non-negative integer; empty/invalid -> null.
+  // Parse the idle-seconds draft: 0 (off) or >= MIN_IDLE_SECONDS; else null.
   const parseIdleSeconds = (): number | null => {
     if (!draftIdleSeconds.trim()) {
       return null;
     }
     const parsed = Number(draftIdleSeconds);
-    return Number.isInteger(parsed) && parsed >= 0 ? parsed : null;
+    if (!Number.isInteger(parsed)) {
+      return null;
+    }
+    return parsed === 0 || parsed >= MIN_IDLE_SECONDS ? parsed : null;
   };
 
   const persist = async (
@@ -121,7 +127,7 @@ export function ModelAutoSwitchSection() {
       >
         <div className="flex flex-col items-end gap-1">
           <div className="flex items-center gap-2">
-            <div className="relative w-28">
+            <div className="flex items-center gap-1.5">
               <Input
                 type="number"
                 min={0}
@@ -130,9 +136,9 @@ export function ModelAutoSwitchSection() {
                 aria-label="Idle auto-unload seconds"
                 disabled={!settings?.enabled || isSaving}
                 onChange={(event) => setDraftIdleSeconds(event.target.value)}
-                className="h-8 w-full pr-8"
+                className="h-8 w-24"
               />
-              <span className="pointer-events-none absolute inset-y-0 right-3 flex items-center text-xs font-medium text-muted-foreground">
+              <span className="text-xs font-medium text-muted-foreground">
                 s
               </span>
             </div>

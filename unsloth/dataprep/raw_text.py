@@ -132,6 +132,13 @@ class RawTextDataLoader:
         3. Maintains context with stride overlap
         4. Returns tokenized chunks directly (more efficient) or text chunks
         """
+        if chunk_size <= 0:
+            raise ValueError(f"chunk_size must be positive, got {chunk_size}")
+        if stride >= chunk_size:
+            raise ValueError(
+                f"stride ({stride}) must be smaller than chunk_size ({chunk_size}) to progress the chunking loop"
+            )
+
         # Tokenize the whole text once for accurate token counts
         tokenized = self.tokenizer(text, return_tensors = "pt", add_special_tokens = False)
         tokens = tokenized["input_ids"]
@@ -147,9 +154,9 @@ class RawTextDataLoader:
         if len(tokens) <= chunk_size:
             # Fits in a single chunk
             if return_tokenized:
+                tokens = tokens.tolist() if hasattr(tokens, "tolist") else list(tokens)
                 eos_token_id = getattr(self.tokenizer, "eos_token_id", None)
                 if eos_token_id is not None:
-                    tokens = tokens.tolist() if hasattr(tokens, "tolist") else list(tokens)
                     tokens.append(eos_token_id)
 
                 attention_mask = [1] * len(tokens)
@@ -229,6 +236,10 @@ class RawTextDataLoader:
 
     def _extract_text_from_json(self, data):
         """Extract text from JSON object using common field names."""
+        # Skip non-object lines (str/list/number): `field in data` would be a
+        # substring/membership test, not a key lookup, and `data[field]` raises.
+        if not isinstance(data, dict):
+            return ""
         for field in self._TEXT_FIELDS:
             if field in data and isinstance(data[field], str):
                 return data[field]

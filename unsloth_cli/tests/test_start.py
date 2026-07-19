@@ -294,15 +294,56 @@ def test_merge_codex_config_keeps_user_oss_provider():
     assert _parse_toml(merged)["oss_provider"] == "ollama"
 
 
-def test_write_codex_config_profile(tmp_path):
+def test_write_codex_config_profile(tmp_path, monkeypatch):
+    monkeypatch.setattr(start, "_codex_supports_model_catalog", lambda: True)
     start.write_codex_config(BASE, MODEL, tmp_path)
     profile = _parse_toml((tmp_path / "unsloth_api.config.toml").read_text())
     assert profile["oss_provider"] == "unsloth_api"
     assert profile["model_provider"] == "unsloth_api"
     assert profile["model"] == MODEL["id"]
     assert profile["model_context_window"] == 131072
+
+    catalog_path = Path(profile["model_catalog_json"])
+    assert catalog_path == Path("model-catalog.json")
+    catalog = json.loads((tmp_path / catalog_path).read_text())
+    assert catalog["models"][0]["slug"] == MODEL["id"]
+    assert catalog["models"][0]["context_window"] == 131072
+    assert catalog["models"][0]["max_context_window"] == 131072
+    assert catalog["models"][0]["supports_reasoning_summary_parameter"] is False
+    assert catalog["models"][0]["supports_parallel_tool_calls"] is False
+
+    assert catalog["models"][0]["base_instructions"] == start._CODEX_FALLBACK_PROMPT.read_text()
     config = _parse_toml((tmp_path / "config.toml").read_text())
     assert config["model_providers"]["unsloth_api"]["env_key"] == "UNSLOTH_STUDIO_AUTH_TOKEN"
+
+
+def test_write_codex_config_catalog_without_context_length(tmp_path, monkeypatch):
+    monkeypatch.setattr(start, "_codex_supports_model_catalog", lambda: True)
+    start.write_codex_config(BASE, {"id": "unsloth/no-window"}, tmp_path)
+    profile = _parse_toml((tmp_path / "unsloth_api.config.toml").read_text())
+    catalog = json.loads((tmp_path / profile["model_catalog_json"]).read_text())
+    entry = catalog["models"][0]
+    assert entry["slug"] == "unsloth/no-window"
+    assert "context_window" not in entry
+    assert "max_context_window" not in entry
+
+
+@pytest.mark.parametrize(
+    ("version", "expected"),
+    [("codex-cli 0.109.0", False), ("codex-cli 0.110.0", True), ("codex-cli 0.144.4", True)],
+)
+def test_codex_model_catalog_version_gate(monkeypatch, version, expected):
+    monkeypatch.setattr(start.shutil, "which", lambda _: "/usr/local/bin/codex")
+    monkeypatch.setattr(start.subprocess, "check_output", lambda *args, **kwargs: version)
+    assert start._codex_supports_model_catalog() is expected
+
+
+def test_write_codex_config_omits_catalog_for_old_codex(tmp_path, monkeypatch):
+    monkeypatch.setattr(start, "_codex_supports_model_catalog", lambda: False)
+    start.write_codex_config(BASE, MODEL, tmp_path)
+    profile = _parse_toml((tmp_path / "unsloth_api.config.toml").read_text())
+    assert "model_catalog_json" not in profile
+    assert not (tmp_path / "model-catalog.json").exists()
 
 
 @pytest.fixture()
@@ -607,7 +648,7 @@ def test_resolve_model_attaches_to_loaded_catalog_hit_without_reload(monkeypatch
 
 
 def test_resolve_model_remote_studio_does_not_casefold_attach(monkeypatch):
-    # Against a remote Studio the local existence probe cannot see server-side paths,
+    # Against a remote Unsloth the local existence probe cannot see server-side paths,
     # so a case-variant loaded id must NOT attach without a load: it could be a distinct
     # server-side path on a case-sensitive host. The load endpoint resolves the request.
     calls = []
@@ -697,7 +738,7 @@ def test_no_launch_output_is_parseable(fake_studio):
     result = CliRunner().invoke(start.start_app, ["codex", "--no-launch"])
     assert result.exit_code == 0, result.output
     lines = [ln for ln in result.output.splitlines() if ln.strip()]
-    skip = ("export ", "unset ", "Studio ", "Updated ", "Disabled ", "Warning", "Loading")
+    skip = ("export ", "unset ", "Unsloth ", "Updated ", "Disabled ", "Warning", "Loading")
     body = [ln for ln in lines if not ln.startswith(skip)]
     assert "codex --oss --profile unsloth_api" in body[-1]
     assert any(ln.startswith("export CODEX_HOME=") for ln in lines)
@@ -726,7 +767,7 @@ def test_no_launch_last_line_is_self_contained(fake_studio, tmp_path):
 
 def test_no_launch_claude_last_line_blanks_conflicting_auth(fake_studio):
     # The unset vars must be neutralized inline too, or a partial copy would send the
-    # user's own ANTHROPIC_API_KEY to the Studio base.
+    # user's own ANTHROPIC_API_KEY to the Unsloth base.
     result = CliRunner().invoke(start.start_app, ["claude", "--no-launch"])
     assert result.exit_code == 0, result.output
     last = [ln for ln in result.output.splitlines() if ln.strip()][-1]
@@ -742,7 +783,12 @@ def test_opencode_inline_config_beats_project_config(fake_studio):
     assert result.exit_code == 0, result.output
     inline = _opencode_inline_config(result.output)
     assert inline["model"] == f"{start._OPENCODE_PROVIDER}/{MODEL['id']}"
-    assert inline["permission"] == {"edit": "allow", "bash": "allow", "webfetch": "allow"}
+    assert inline["permission"] == {
+        "edit": "allow",
+        "bash": "allow",
+        "webfetch": "allow",
+        "external_directory": {"*": "allow"},
+    }
     assert "sk-unsloth" not in result.output  # key stays in the private file, not the env
 
 
@@ -768,7 +814,7 @@ def test_https_loopback_never_auto_serves(fake_studio, monkeypatch):
     )
     result = CliRunner().invoke(start.start_app, ["claude", "--model", "unsloth/Qwen3-1.7B-GGUF"])
     assert result.exit_code == 1
-    assert "No running Studio server" in result.output
+    assert "No running Unsloth server" in result.output
     assert started["called"] is False
 
 
@@ -921,7 +967,7 @@ def test_connect_model_flag_forwards_load_options(fake_studio):
 
 
 def test_connect_model_flag_matches_canonical_id(fake_studio, monkeypatch):
-    # Studio registers a loaded model under a canonical id (resolved identifier
+    # Unsloth registers a loaded model under a canonical id (resolved identifier
     # / casing) that can differ from the path we passed. The agent must connect
     # to that model, not silently fall through to the first loaded one.
     requested = "Unsloth/Qwen3.5-35B-A3B"
@@ -978,7 +1024,7 @@ def test_connect_model_bare_id_matches_loaded_without_reload(fake_studio):
 
 def test_connect_model_variant_suffix_defers_to_server_dedup(fake_studio):
     # `--model repo:QUANT` splits into a VALID load payload (bare repo + gguf_variant),
-    # never the `:`-suffixed repo id Studio rejects. The variant knob defers to
+    # never the `:`-suffixed repo id Unsloth rejects. The variant knob defers to
     # /api/inference/load, whose already-loaded dedup answers without reloading when the
     # active variant+settings match -- so a second session running the same command
     # attaches without evicting the first, while a genuinely different quant reloads.
@@ -1070,7 +1116,7 @@ def test_connect_no_model_loaded_errors(fake_studio, monkeypatch):
 
 
 def test_connect_requested_model_not_loaded_fails(fake_studio, monkeypatch):
-    # Studio never surfaces the requested model; fail loudly rather than
+    # Unsloth never surfaces the requested model; fail loudly rather than
     # silently connecting to whatever else happens to be loaded.
     inner = start._http_json
 
@@ -1141,7 +1187,7 @@ def test_connect_nonloopback_explicit_key_is_allowed(fake_studio, monkeypatch):
 
 
 def test_connect_nonloopback_replays_saved_key(fake_studio, tmp_path, monkeypatch):
-    # A key saved for a remote (non-loopback) Studio is replayed on keyless runs;
+    # A key saved for a remote (non-loopback) Unsloth is replayed on keyless runs;
     # auto-minting stays blocked for non-loopback.
     remote = "http://studio.example:8888"
     monkeypatch.setattr(start, "find_studio_server", lambda: remote)
@@ -1155,7 +1201,7 @@ def test_connect_nonloopback_replays_saved_key(fake_studio, tmp_path, monkeypatc
 
 
 def test_connect_studio_server_errors_on_explicit_remote(monkeypatch):
-    # A user who pointed UNSLOTH_STUDIO_URL at a remote Studio should get an
+    # A user who pointed UNSLOTH_STUDIO_URL at a remote Unsloth should get an
     # error, not a silent local model load (which they did not ask for).
     import typer
 
@@ -1196,7 +1242,7 @@ def test_connect_unverified_loopback_without_cached_key_refuses_to_mint(
 
 
 def test_connect_replays_saved_key_without_identity_check(fake_studio, tmp_path, monkeypatch):
-    # A "saved" key (e.g. for an SSH-tunnelled Studio the handshake can't match)
+    # A "saved" key (e.g. for an SSH-tunnelled Unsloth the handshake can't match)
     # replays on keyless runs without the handshake, scoped to its own base.
     cache = tmp_path / "agent_api_key.json"
     cache.write_text(json.dumps({"servers": {BASE: {"saved": ["sk-unsloth-deadbeefdeadbeef"]}}}))
@@ -1312,7 +1358,7 @@ def _serve_redirect(target):
 
 
 def test_verify_studio_identity_rejects_redirect(tmp_path, monkeypatch):
-    # A squatter could 302 /api/auth/identity to the real Studio and relay its
+    # A squatter could 302 /api/auth/identity to the real Unsloth and relay its
     # proof; redirects must be refused so the squatter's base isn't accepted.
     import unsloth_cli._inference as inference
 
@@ -1338,7 +1384,7 @@ def test_verify_studio_identity_rejects_redirect(tmp_path, monkeypatch):
 
 
 def test_verify_studio_identity_rejects_relayed_proof(tmp_path, monkeypatch):
-    # A squatter that proxies the nonce to the real Studio on another port gets a
+    # A squatter that proxies the nonce to the real Unsloth on another port gets a
     # proof bound to *that* port; the client expects one bound to the port it
     # connected to, so the relayed proof is rejected.
     import unsloth_cli._inference as inference
@@ -1389,7 +1435,7 @@ def test_connect_no_studio_errors(fake_studio, monkeypatch):
     monkeypatch.setattr(start, "find_studio_server", lambda: None)
     result = CliRunner().invoke(start.start_app, ["claude", "--no-launch"])
     assert result.exit_code == 1
-    assert "No running Studio server" in result.output
+    assert "No running Unsloth server" in result.output
 
 
 @pytest.fixture(autouse = True)
@@ -1518,7 +1564,7 @@ def test_no_serve_preserves_error(fake_studio, monkeypatch):
         start.start_app, ["claude", "--model", "unsloth/Qwen3-1.7B-GGUF", "--no-serve"]
     )
     assert result.exit_code == 1
-    assert "No running Studio server" in result.output
+    assert "No running Unsloth server" in result.output
     assert started["called"] is False
 
 
@@ -1532,7 +1578,7 @@ def test_no_launch_never_serves(fake_studio, monkeypatch):
         start.start_app, ["claude", "--model", "unsloth/Qwen3-1.7B-GGUF", "--no-launch"]
     )
     assert result.exit_code == 1
-    assert "No running Studio server" in result.output
+    assert "No running Unsloth server" in result.output
     assert started["called"] is False
 
 
@@ -1611,10 +1657,48 @@ def test_write_openclaw_config_fresh(tmp_path):
     ]
     # The default model must be pinned or OpenClaw has nothing active.
     assert config["agents"]["defaults"]["model"]["primary"] == f"unsloth/{MODEL['id']}"
+    assert config["agents"]["defaults"]["workspace"] == str(tmp_path / "workspace")
+    assert (tmp_path / "workspace").is_dir()
     assert config["gateway"]["mode"] == "local"
     assert config["gateway"]["auth"]["mode"] == "none"  # unauth loopback gateway
     if os.name != "nt":  # the file holds an API key
         assert path.stat().st_mode & 0o777 == 0o600
+
+
+def test_write_openclaw_config_clears_per_agent_path_overrides(tmp_path):
+    path = tmp_path / "openclaw.json"
+    path.write_text(
+        json.dumps(
+            {
+                "agents": {
+                    "defaults": {"workspace": "/old/default"},
+                    "list": [
+                        {
+                            "id": "main",
+                            "default": True,
+                            "workspace": "/old/main-workspace",
+                            "agentDir": "/old/main-agent",
+                            "model": "keep/me",
+                        },
+                        {
+                            "id": "reviewer",
+                            "workspace": "/old/reviewer-workspace",
+                            "agentDir": "/old/reviewer-agent",
+                        },
+                    ],
+                }
+            }
+        )
+    )
+
+    start.write_openclaw_config(BASE, "sk-unsloth-abc", MODEL, path)
+
+    agents = json.loads(path.read_text())["agents"]
+    assert agents["defaults"]["workspace"] == str(tmp_path / "workspace")
+    assert agents["list"] == [
+        {"id": "main", "default": True, "model": "keep/me"},
+        {"id": "reviewer"},
+    ]
 
 
 def test_write_openclaw_config_preserves_and_idempotent(tmp_path):
@@ -1660,9 +1744,30 @@ def test_connect_openclaw_no_launch(fake_studio, tmp_path):
     config = json.loads(config_path.read_text())
     assert config["models"]["providers"]["unsloth"]["apiKey"] == "sk-unsloth-feedfacefeedface"
     assert config["agents"]["defaults"]["model"]["primary"] == f"unsloth/{MODEL['id']}"
+    assert config["agents"]["defaults"]["workspace"] == str(
+        tmp_path / "agents" / "openclaw" / "workspace"
+    )
     assert _launch_command(result.output) == ["openclaw", "tui", "--local"]
     # OpenAI /v1/chat/completions works on either backend — no GGUF gate.
     assert not any(c[1].endswith("/api/inference/status") for c in fake_studio)
+
+
+@pytest.mark.skipif(os.name == "nt", reason = "WSL scenario")
+def test_connect_openclaw_wsl_windows_shim_translates_workspace(fake_studio, tmp_path, monkeypatch):
+    windows_workspace = r"\\wsl.localhost\Ubuntu\tmp\openclaw\workspace"
+    monkeypatch.setenv("WSL_DISTRO_NAME", "Ubuntu")
+    monkeypatch.setattr(
+        start.shutil, "which", lambda _: "/mnt/c/Users/x/AppData/Roaming/npm/openclaw"
+    )
+    monkeypatch.setattr(start.subprocess, "check_output", lambda *args, **kwargs: windows_workspace)
+
+    result = CliRunner().invoke(start.start_app, ["openclaw", "--no-launch"])
+
+    assert result.exit_code == 0, result.output
+    config_path = tmp_path / "agents" / "openclaw" / "openclaw.json"
+    config = json.loads(config_path.read_text())
+    assert config["agents"]["defaults"]["workspace"] == windows_workspace
+    assert (config_path.parent / "workspace").is_dir()
 
 
 def test_connect_openclaw_no_launch_keeps_explicit_subcommand(fake_studio):
@@ -1766,7 +1871,7 @@ def _opencode_inline_config(output: str) -> dict:
 def test_opencode_inline_scopes_session_to_studio_provider(fake_studio):
     # opencode filters even config-defined providers through enabled/disabled_providers,
     # and a model pin does not bypass that gate. The inline overlay (session-only, highest
-    # layer, arrays replace) allowlists our provider and clears the denylist so the Studio
+    # layer, arrays replace) allowlists our provider and clears the denylist so the Unsloth
     # model always loads regardless of the user's config, without reading or editing it.
     result = CliRunner().invoke(start.start_app, ["opencode", "--no-launch"])
     assert result.exit_code == 0, result.output
@@ -2090,7 +2195,12 @@ def test_yolo_opencode_writes_permission_block(fake_studio, tmp_path):
     result = CliRunner().invoke(start.start_app, ["opencode", "--yolo", "--no-launch"])
     assert result.exit_code == 0, result.output
     config = json.loads((tmp_path / "agents" / "opencode" / "opencode.json").read_text())
-    assert config["permission"] == {"edit": "allow", "bash": "allow", "webfetch": "allow"}
+    assert config["permission"] == {
+        "edit": "allow",
+        "bash": "allow",
+        "webfetch": "allow",
+        "external_directory": {"*": "allow"},
+    }
 
 
 def test_no_yolo_opencode_has_no_permission_block(fake_studio, tmp_path):
@@ -2112,6 +2222,7 @@ def test_no_yolo_opencode_flips_prior_yolo_allow_to_ask(fake_studio, tmp_path):
         "edit": "allow",
         "bash": "allow",
         "webfetch": "allow",
+        "external_directory": {"*": "allow"},
     }
     plain = CliRunner().invoke(start.start_app, ["opencode", "--no-launch"])
     assert plain.exit_code == 0, plain.output
@@ -2119,6 +2230,7 @@ def test_no_yolo_opencode_flips_prior_yolo_allow_to_ask(fake_studio, tmp_path):
         "edit": "ask",
         "bash": "ask",
         "webfetch": "ask",
+        "external_directory": {"*": "ask"},
     }
 
 
@@ -2152,7 +2264,12 @@ def test_write_opencode_config_yolo_unit(tmp_path):
     path = tmp_path / "opencode.json"
     start.write_opencode_config(BASE, "sk-unsloth-abc", MODEL, path, yolo = True)
     config = json.loads(path.read_text())
-    assert config["permission"] == {"edit": "allow", "bash": "allow", "webfetch": "allow"}
+    assert config["permission"] == {
+        "edit": "allow",
+        "bash": "allow",
+        "webfetch": "allow",
+        "external_directory": {"*": "allow"},
+    }
 
 
 def test_write_openclaw_config_yolo_unit(tmp_path):
@@ -2180,7 +2297,12 @@ def test_no_launch_rerun_clears_stale_opencode_yolo_permissions(fake_studio, tmp
     config = json.loads(config_path.read_text())
     # The yolo allow policy is replaced by a prompting one, not deleted (which would
     # revert to OpenCode's permissive "allow" default).
-    assert config["permission"] == {"edit": "ask", "bash": "ask", "webfetch": "ask"}
+    assert config["permission"] == {
+        "edit": "ask",
+        "bash": "ask",
+        "webfetch": "ask",
+        "external_directory": {"*": "ask"},
+    }
     # The session provider survives the cleanup.
     assert start._OPENCODE_PROVIDER in config["provider"]
 
@@ -2218,7 +2340,12 @@ def test_write_opencode_config_yolo_then_plain_unit(tmp_path):
     start.write_opencode_config(BASE, "sk-unsloth-abc", MODEL, path, yolo = False)
     config = json.loads(path.read_text())
     # A plain rerun replaces the yolo allow policy with a prompting one.
-    assert config["permission"] == {"edit": "ask", "bash": "ask", "webfetch": "ask"}
+    assert config["permission"] == {
+        "edit": "ask",
+        "bash": "ask",
+        "webfetch": "ask",
+        "external_directory": {"*": "ask"},
+    }
 
 
 def test_openclaw_non_yolo_keeps_runtime_approvals(tmp_path):
@@ -2530,7 +2657,7 @@ def test_agent_api_key_auto_started_rejected_env_key_falls_back(fake_studio, tmp
 
 
 def test_agent_api_key_auto_started_accepted_key_is_honored(fake_studio, tmp_path):
-    # An explicit key the fresh server accepts (e.g. persisted in this Studio
+    # An explicit key the fresh server accepts (e.g. persisted in this Unsloth
     # home's auth db across restarts) keeps working exactly as before.
     key = start._agent_api_key(BASE, "sk-unsloth-deadbeefdeadbeef", auto_started = True)
     assert key == "sk-unsloth-deadbeefdeadbeef"
@@ -2670,8 +2797,7 @@ def test_default_launch_has_no_resume_token(fake_studio, monkeypatch):
 
 
 def test_resume_persist_only_agents_have_no_resume_token(fake_studio, monkeypatch):
-    # openclaw/hermes persist their session dir but have no non-interactive resume
-    # selector, so --persist must not append a token; their own picker resumes.
+    # Persistence alone must not select a session.
     for agent in ("openclaw", "hermes"):
         monkeypatch.setattr(start.shutil, "which", lambda _, a = agent: f"/usr/local/bin/{a}")
         captured = _capture_launch(monkeypatch, [agent, "--persist"])
@@ -2679,14 +2805,143 @@ def test_resume_persist_only_agents_have_no_resume_token(fake_studio, monkeypatc
         assert "--continue" not in captured["command"]
 
 
+@pytest.mark.parametrize(
+    ("args", "expected"),
+    [
+        (
+            ["--resume", "session-id", "-z", "follow up"],
+            [
+                "chat",
+                "-Q",
+                "--yolo",
+                "--accept-hooks",
+                "--resume",
+                "session-id",
+                "-q",
+                "follow up",
+            ],
+        ),
+        (
+            ["-rsession-id", "-zfollow up"],
+            ["chat", "-Q", "--yolo", "--accept-hooks", "-rsession-id", "-qfollow up"],
+        ),
+        (
+            ["-c=project", "-z=follow up"],
+            ["chat", "-Q", "--yolo", "--accept-hooks", "-c=project", "-q=follow up"],
+        ),
+        (
+            ["-r", "session-id", "--oneshot=follow up"],
+            [
+                "chat",
+                "-Q",
+                "--yolo",
+                "--accept-hooks",
+                "-r",
+                "session-id",
+                "--query=follow up",
+            ],
+        ),
+        (
+            ["--continue", "project", "--oneshot", "follow up"],
+            [
+                "chat",
+                "-Q",
+                "--yolo",
+                "--accept-hooks",
+                "--continue",
+                "project",
+                "-q",
+                "follow up",
+            ],
+        ),
+        (
+            ["--yolo", "--resume", "session-id", "-z", "follow up"],
+            [
+                "chat",
+                "-Q",
+                "--accept-hooks",
+                "--yolo",
+                "--resume",
+                "session-id",
+                "-q",
+                "follow up",
+            ],
+        ),
+        (
+            ["--accept-hooks", "--resume", "session-id", "-z", "follow up"],
+            [
+                "chat",
+                "-Q",
+                "--yolo",
+                "--accept-hooks",
+                "--resume",
+                "session-id",
+                "-q",
+                "follow up",
+            ],
+        ),
+        (
+            ["--resume", "chat", "-z", "follow up"],
+            [
+                "chat",
+                "-Q",
+                "--yolo",
+                "--accept-hooks",
+                "--resume",
+                "chat",
+                "-q",
+                "follow up",
+            ],
+        ),
+        (["--resume", "session-id"], ["--resume", "session-id"]),
+        (["-z", "new session"], ["-z", "new session"]),
+    ],
+)
+def test_hermes_resume_oneshot_args(args, expected):
+    assert start._hermes_resume_oneshot_args(args) == expected
+
+
+def test_hermes_resume_oneshot_uses_session_aware_chat(fake_studio, monkeypatch):
+    monkeypatch.setattr(start.shutil, "which", lambda _: "/usr/local/bin/hermes")
+    captured = _capture_launch(
+        monkeypatch,
+        ["hermes", "--persist", "--resume", "session-id", "-z", "follow up"],
+    )
+    assert captured["command"][1:] == [
+        "chat",
+        "-Q",
+        "--yolo",
+        "--accept-hooks",
+        "--resume",
+        "session-id",
+        "-q",
+        "follow up",
+    ]
+
+
+@pytest.mark.parametrize("usage_arg", ["--usage-file", "--usage-file=usage.json"])
+def test_hermes_resume_oneshot_rejects_usage_file(monkeypatch, usage_arg):
+    monkeypatch.setattr(
+        start,
+        "_connect",
+        lambda *args, **kwargs: pytest.fail("argument validation must run before connect"),
+    )
+    argv = ["hermes", "--resume", "session-id", "-z", "follow up", usage_arg]
+    if usage_arg == "--usage-file":
+        argv.append("usage.json")
+    result = CliRunner().invoke(start.start_app, argv)
+    assert result.exit_code == 2
+    assert "cannot resume a one-shot session with --usage-file" in result.output
+
+
 def test_native_resume_flag_passes_through_unchanged(fake_studio, monkeypatch):
     # The persistence flag is --persist, NOT --resume, so an agent's own
     # `--resume <id>` (e.g. `unsloth start claude --resume <guid>`) still flows
-    # through to the agent verbatim and is not swallowed as a Studio option.
+    # through to the agent verbatim and is not swallowed as an Unsloth option.
     monkeypatch.setattr(start.shutil, "which", lambda _: "/usr/local/bin/claude")
     monkeypatch.setattr(start, "_claude_flags", lambda: [])
     captured = _capture_launch(monkeypatch, ["claude", "--resume", "some-session-guid"])
     assert captured["command"][-2:] == ["--resume", "some-session-guid"]
-    # Studio never auto-appends its own resume token when the user drives resume.
+    # Unsloth never auto-appends its own resume token when the user drives resume.
     assert captured["command"].count("--resume") == 1
     assert "--continue" not in captured["command"]

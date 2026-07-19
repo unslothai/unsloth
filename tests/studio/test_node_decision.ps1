@@ -60,7 +60,7 @@ $globalBunOffset = $source.IndexOf('npm install -g bun')
 Check "NodeSource initialized before SKIP_STUDIO_FRONTEND branch" (
     $nodeSourceOffset -ge 0 -and $skipFrontendBranchOffset -ge 0 -and $nodeSourceOffset -lt $skipFrontendBranchOffset
 )
-Check "custom Studio home validated before Node parent creation" (
+Check "custom Unsloth home validated before Node parent creation" (
     $customHomeErrorOffset -ge 0 -and $nodeParentMkdirOffset -ge 0 -and $customHomeErrorOffset -lt $nodeParentMkdirOffset
 )
 Check "bundled Node pins npm prefix and clears NODE_PATH" (

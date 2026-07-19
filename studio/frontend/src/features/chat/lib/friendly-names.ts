@@ -5,7 +5,7 @@
  * Friendly default names for auto-created OpenAI shell containers, used by the
  * chat-adapter's lazy-create path (Code pill on, no thread container, non-default
  * TTL). Goal: a memorable label like "otter" instead of "chat-abc12345"; users
- * can still rename via the Studio alias map.
+ * can still rename via the Unsloth alias map.
  *
  * The list is curated to be unambiguous, non-offensive nouns from natural
  * categories (animals, plants, geography, materials, weather), avoid
