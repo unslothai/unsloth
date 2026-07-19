@@ -102,6 +102,17 @@ def patch_unified_memory_safetensors_load():
     if getattr(real_safe_open, "_unsloth_uma_clone", False):
         return True
 
+    def _clone_move(tensor, device):
+        # Fast pinned-DMA path: clone into a regular CPU allocation, then move.
+        # The clone transiently doubles one tensor's CPU footprint, which can
+        # OOM a UMA box with little free memory; fall back to the direct
+        # (slow but allocation-free) move so the load still succeeds. A
+        # genuine non-memory error re-raises identically from the fallback.
+        try:
+            return tensor.clone().to(device, non_blocking = False)
+        except (MemoryError, RuntimeError):
+            return tensor.to(device, non_blocking = False)
+
     class _ClonedSlice:
         """Proxy over a safetensors ``PySafeSlice`` that clones+moves on read."""
 
@@ -117,7 +128,7 @@ def patch_unified_memory_safetensors_load():
             return getattr(self._real, name)
 
         def __getitem__(self, key):
-            return self._real[key].clone().to(self._device, non_blocking = False)
+            return _clone_move(self._real[key], self._device)
 
     class _ClonedSafeOpen:
         """Safetensors-handle proxy: load on CPU, clone+move tensors to CUDA."""
@@ -150,7 +161,7 @@ def patch_unified_memory_safetensors_load():
             return _ClonedSlice(self._real.get_slice(name), self._device)
 
         def get_tensor(self, name):
-            return self._real.get_tensor(name).clone().to(self._device, non_blocking = False)
+            return _clone_move(self._real.get_tensor(name), self._device)
 
     @functools.wraps(real_safe_open)
     def _uma_safe_open(*args, **kwargs):

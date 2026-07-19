@@ -207,3 +207,34 @@ def test_cuda_target_clones_and_moves(uma, force_uma, monkeypatch, tiny_safetens
             got_full = f.get_tensor(key)
             assert got_full.device.type == "cuda"
             assert torch.equal(got_full.cpu(), expected)
+
+
+@pytest.mark.skipif(
+    not (hasattr(torch, "cuda") and torch.cuda.is_available()),
+    reason = "needs a GPU for the low-memory fallback path",
+)
+def test_low_memory_falls_back_to_direct_move(uma, force_uma, monkeypatch, tiny_safetensors):
+    path, tensors = tiny_safetensors
+    force_uma(True)
+    fake_mu = _install_fake_modeling_utils(monkeypatch, safetensors.safe_open)
+    uma.patch_unified_memory_safetensors_load()
+    # Simulate the clone OOMing (transient CPU doubling on a constrained UMA
+    # box): the wrapper must fall back to the direct move and still succeed.
+    real_clone = torch.Tensor.clone
+
+    def _oom_clone(self, *a, **k):
+        raise RuntimeError("[enforce fail] not enough memory")
+
+    monkeypatch.setattr(torch.Tensor, "clone", _oom_clone)
+    try:
+        with fake_mu.safe_open(str(path), framework = "pt", device = "cuda") as f:
+            for key, expected in tensors.items():
+                got = f.get_slice(key)[:]
+                assert got.device.type == "cuda"
+                got_full = f.get_tensor(key)
+                assert got_full.device.type == "cuda"
+    finally:
+        monkeypatch.setattr(torch.Tensor, "clone", real_clone)
+    for key, expected in tensors.items():
+        with fake_mu.safe_open(str(path), framework = "pt", device = "cuda") as f:
+            assert torch.equal(f.get_tensor(key).cpu(), expected)
