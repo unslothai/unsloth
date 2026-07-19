@@ -3,7 +3,7 @@
 
 """Filesystem layout for Hub download state.
 
-State directory sits beside HF's cache (under Studio's own cache root)
+State directory sits beside HF's cache (under Unsloth's own cache root)
 so it survives ``huggingface-cli delete-cache`` and any other HF-side
 cache lifecycle. Two subdirectories:
 

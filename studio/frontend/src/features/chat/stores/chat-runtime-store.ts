@@ -2,7 +2,11 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import type { RememberedLoadSettings } from "@/components/assistant-ui/model-selector/remembered-load-settings";
-import { cancelStagedModelDownload } from "@/features/hub";
+import {
+  cancelStagedModelDownload,
+  mirrorHfTokenInto,
+  useHfTokenStore,
+} from "@/features/hub";
 import { toast } from "@/lib/toast";
 import { create } from "zustand";
 import { isExternalModelId, parseExternalModelId } from "../external-providers";
@@ -25,8 +29,6 @@ import {
 import { useExternalProvidersStore } from "./external-providers-store";
 import { PLUS_MENU_PINS_STORAGE_KEY } from "./plus-menu-prefs-store";
 
-const HF_TOKEN_KEY = "unsloth_hf_token";
-const HF_TOKEN_CHANGED_EVENT = "unsloth:hf-token-changed";
 export const CHAT_REASONING_ENABLED_KEY = "unsloth_chat_reasoning_enabled";
 export const CHAT_TOOLS_ENABLED_KEY = "unsloth_chat_tools_enabled";
 export const CHAT_CODE_TOOLS_ENABLED_KEY = "unsloth_chat_code_tools_enabled";
@@ -495,17 +497,6 @@ export function saveSpeculativeType(value: string | null): void {
   }
 }
 
-function notifyHfTokenChanged(value: string): void {
-  if (!canUseStorage()) return;
-  try {
-    window.dispatchEvent(
-      new CustomEvent(HF_TOKEN_CHANGED_EVENT, { detail: value }),
-    );
-  } catch {
-    // ignore
-  }
-}
-
 /** A local model staged for a deferred load (see `pendingSelection`). Shape is
  *  a subset of the load hook's `SelectedModelInput`, structurally assignable. */
 export type PendingModelSelection = {
@@ -680,7 +671,7 @@ type ChatRuntimeStore = {
   // Describe figures/charts at ingest time (vision model required).
   ragCaptionFigures: boolean;
   /**
-   * When on, local Studio tool calls pause for an explicit allow/deny in the
+   * When on, local Unsloth tool calls pause for an explicit allow/deny in the
    * chat before they run.
    */
   confirmToolCalls: boolean;
@@ -1144,7 +1135,7 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
   runningByThreadId: {},
   cancelByThreadId: {},
   autoTitle: false,
-  hfToken: loadString(HF_TOKEN_KEY, ""),
+  hfToken: useHfTokenStore.getState().token,
   modelsError: null,
   lastModelLoadError: null,
   activeGgufVariant: null,
@@ -1349,11 +1340,7 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
       setScalarSettingVersion("autoTitle", autoTitle, state.autoTitle);
       return { autoTitle };
     }),
-  setHfToken: (hfToken) => {
-    saveString(HF_TOKEN_KEY, hfToken);
-    set({ hfToken });
-    notifyHfTokenChanged(hfToken);
-  },
+  setHfToken: (hfToken) => useHfTokenStore.getState().setToken(hfToken),
   setModelsError: (modelsError) => set({ modelsError }),
   setLastModelLoadError: (lastModelLoadError) => set({ lastModelLoadError }),
   setCheckpoint: (modelId, ggufVariant) =>
@@ -1836,6 +1823,12 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
     set({ pendingImageEditReference: null }),
   setContextUsage: (contextUsage) => set({ contextUsage }),
 }));
+
+// Mirror token edits made through the shared store (e.g. Unsloth's field).
+const unsubscribeHfTokenMirror = mirrorHfTokenInto(useChatRuntimeStore);
+if (import.meta.hot) {
+  import.meta.hot.dispose(unsubscribeHfTokenMirror);
+}
 
 export function resolveSpeculativeSettingsForLoad({
   usePersistedPreference = false,

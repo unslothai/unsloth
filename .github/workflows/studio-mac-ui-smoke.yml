@@ -84,7 +84,7 @@ jobs:
           path: hf-cache
           key: ${{ runner.os }}-hf-${{ env.GGUF_REPO }}-${{ env.GGUF_VARIANT }}-v2
 
-      - name: Install Studio (--local, --no-torch)
+      - name: Install Unsloth (--local, --no-torch)
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           # Withheld on PR: this step runs checked-out PR code; public GGUF still downloads.
@@ -144,7 +144,7 @@ jobs:
               print(f"pipeTransport.js: patched JSON.parse calls in {path}")
           PY
 
-      - name: Reset auth + boot Studio
+      - name: Reset auth + boot Unsloth
         run: |
           unsloth studio reset-password
           mkdir -p logs
@@ -189,7 +189,7 @@ jobs:
         # dies mid-test, (2) Chromium net::ERR_NO_BUFFER_SPACE when the
         # runner's kernel briefly runs out of socket buffers, and (3) a
         # goto 'interrupted by another navigation' when the SPA auth
-        # guard redirects mid-navigation. The retry FULLY resets Studio
+        # guard redirects mid-navigation. The retry FULLY resets Unsloth
         # (kill, reset-password, reboot, wait /api/health, re-export
         # bootstrap pw) before re-running the script. A real test failure
         # (assertion / timeout) does NOT match any pattern so it bypasses
@@ -210,7 +210,7 @@ jobs:
                  || grep -q "ERR_NO_BUFFER_SPACE"             logs/playwright_attempt_${attempt}.log \
                  || grep -q "interrupted by another navigation" logs/playwright_attempt_${attempt}.log; } \
                && [ "$attempt" -lt "$max_attempts" ]; then
-              echo "::warning::Playwright flake on attempt ${attempt}; resetting Studio and retrying..."
+              echo "::warning::Playwright flake on attempt ${attempt}; resetting Unsloth and retrying..."
               kill "${STUDIO_PID}" 2>/dev/null || true
               sleep 2
               unsloth studio reset-password
@@ -239,7 +239,7 @@ jobs:
             exit "$rc"
           done
 
-      - name: Stop Studio (chat-ui ends with Shutdown click; this is belt-and-suspenders)
+      - name: Stop Unsloth (chat-ui ends with Shutdown click; this is belt-and-suspenders)
         if: always()
         run: |
           kill "${STUDIO_PID}" 2>/dev/null || true
@@ -249,7 +249,7 @@ jobs:
         run: |
           bash .github/scripts/run-studio-permission-browser.sh 18895 webkit
 
-      - name: Reset auth + boot Studio for extra UI tests (port 18897)
+      - name: Reset auth + boot Unsloth for extra UI tests (port 18897)
         run: |
           unsloth studio reset-password
           mkdir -p logs
@@ -276,7 +276,7 @@ jobs:
           echo "STUDIO_EXTRA_OLD_PW=$OLD" >> "$GITHUB_ENV"
           echo "STUDIO_EXTRA_NEW_PW=$NEW" >> "$GITHUB_ENV"
 
-      - name: Drive Compare/Recipes/Export/Studio/Settings with Playwright
+      - name: Drive Compare/Recipes/Export/Unsloth/Settings with Playwright
         env:
           BASE_URL: http://127.0.0.1:18897
           STUDIO_OLD_PW: ${{ env.STUDIO_EXTRA_OLD_PW }}
@@ -305,7 +305,7 @@ jobs:
                  || grep -q "ERR_NO_BUFFER_SPACE"             logs/playwright_extra_attempt_${attempt}.log \
                  || grep -q "interrupted by another navigation" logs/playwright_extra_attempt_${attempt}.log; } \
                && [ "$attempt" -lt "$max_attempts" ]; then
-              echo "::warning::Playwright flake on attempt ${attempt}; resetting Studio and retrying..."
+              echo "::warning::Playwright flake on attempt ${attempt}; resetting Unsloth and retrying..."
               kill "${STUDIO_EXTRA_PID}" 2>/dev/null || true
               sleep 2
               unsloth studio reset-password
@@ -332,7 +332,7 @@ jobs:
             exit "$rc"
           done
 
-      - name: Stop second Studio
+      - name: Stop second Unsloth
         if: always()
         run: |
           kill "${STUDIO_EXTRA_PID}" 2>/dev/null || true

@@ -59,6 +59,18 @@ def _fetch_with(monkeypatch, body: bytes, content_type: str | None) -> str:
     return tools._fetch_page_text("https://example.com/thing", timeout = 5)
 
 
+def _pdf_bytes(*page_texts: str) -> bytes:
+    pymupdf = pytest.importorskip("pymupdf")
+    doc = pymupdf.open()
+    for text in page_texts:
+        page = doc.new_page()
+        if text:
+            page.insert_textbox(pymupdf.Rect(40, 40, 550, 750), text, fontsize = 11)
+    data = doc.tobytes()
+    doc.close()
+    return data
+
+
 @pytest.mark.parametrize(
     "content_type,expected",
     [
@@ -90,10 +102,119 @@ def test_is_text_candidate_content_type(content_type, expected):
     assert tools._is_text_candidate_content_type(content_type) is expected
 
 
-def test_pdf_rejected_by_content_type(monkeypatch):
-    out = _fetch_with(monkeypatch, b"%PDF-1.7\n\xff\xd8\xff\x00\x89PNG" * 200, "application/pdf")
-    assert "�" not in out
-    assert "non-text content" in out and "application/pdf" in out
+@pytest.mark.parametrize(
+    "content_type",
+    ["application/pdf", "application/octet-stream", "text/html", "text/plain", None],
+)
+def test_pdf_text_extracted(monkeypatch, content_type):
+    out = _fetch_with(
+        monkeypatch,
+        _pdf_bytes("First page marker", "Second page marker"),
+        content_type,
+    )
+    assert "## Page 1\n\nFirst page marker" in out
+    assert "## Page 2" in out and "Second page marker" in out
+    assert "binary content" not in out and "non-text content" not in out
+
+
+@pytest.mark.parametrize("content_type", ["application/pdf", "text/plain"])
+def test_malformed_pdf_returns_safe_placeholder(monkeypatch, content_type):
+    out = _fetch_with(monkeypatch, b"%PDF-1.7\nnot a complete PDF", content_type)
+    assert out == "(PDF content could not be read as text)"
+
+
+def test_pdf_without_text_layer_reported(monkeypatch):
+    out = _fetch_with(monkeypatch, _pdf_bytes(""), "application/pdf")
+    assert out == "(PDF contains no extractable text)"
+
+
+def test_encrypted_pdf_returns_safe_placeholder(monkeypatch):
+    pymupdf = pytest.importorskip("pymupdf")
+    doc = pymupdf.open()
+    doc.new_page().insert_text((40, 40), "private text")
+    data = doc.tobytes(
+        encryption = pymupdf.PDF_ENCRYPT_AES_256,
+        owner_pw = "owner",
+        user_pw = "secret",
+    )
+    doc.close()
+    out = _fetch_with(monkeypatch, data, "application/pdf")
+    assert out == "(PDF content could not be read as text)"
+
+
+def test_pdf_download_limit_enforced(monkeypatch):
+    monkeypatch.setattr(tools, "_MAX_PDF_FETCH_BYTES", 256)
+    out = _fetch_with(monkeypatch, _pdf_bytes("Readable but oversized"), "application/pdf")
+    assert out == "(PDF content exceeds the download limit; not readable as text)"
+
+
+def test_mislabeled_pdf_is_read_past_text_download_cap(monkeypatch):
+    body = _pdf_bytes("Cross-reference data was fetched")
+    monkeypatch.setattr(tools, "_MAX_FETCH_BYTES", 128)
+    monkeypatch.setattr(tools, "_MAX_PDF_FETCH_BYTES", len(body) + 100)
+    out = _fetch_with(monkeypatch, body, "text/plain")
+    assert "Cross-reference data was fetched" in out
+
+
+def test_pdf_extraction_caps_pages_and_intermediate_text(monkeypatch):
+    from core.rag.parsers import Page
+
+    seen = {}
+
+    def fake_parse(data, *, max_pages = None):
+        seen["max_pages"] = max_pages
+        pages = [Page(text = "x" * 1000, page_number = i, char_count = 1000) for i in range(1, 51)]
+        return pages, 60  # document actually has more pages than the cap
+
+    monkeypatch.setattr("core.rag.parsers.parse_pdf_bytes", fake_parse)
+    text = tools._extract_pdf_text(b"unused")
+    assert seen["max_pages"] == tools._MAX_WEB_PDF_PAGES
+    assert len(text) <= tools._MAX_PAGE_CHARS
+    assert "text limited to 16,000 characters" in text
+    assert "page processing capped at 50 pages" in text
+
+
+def test_pdf_exactly_at_page_cap_not_marked_capped(monkeypatch):
+    from core.rag.parsers import Page
+
+    # Exactly _MAX_WEB_PDF_PAGES pages are fully read, so no "capped" marker.
+    monkeypatch.setattr(
+        "core.rag.parsers.parse_pdf_bytes",
+        lambda data, *, max_pages = None: (
+            [Page(text = "short", page_number = i, char_count = 5) for i in range(1, 51)],
+            50,
+        ),
+    )
+    text = tools._extract_pdf_text(b"unused")
+    assert "page processing capped" not in text
+    assert "## Page 50\n\nshort" in text
+
+
+def test_pdf_page_cap_does_not_claim_later_pages_are_textless(monkeypatch):
+    from core.rag.parsers import Page
+    monkeypatch.setattr(
+        "core.rag.parsers.parse_pdf_bytes",
+        lambda data, *, max_pages = None: (
+            [Page(text = "", page_number = i, char_count = 0) for i in range(1, 51)],
+            60,
+        ),
+    )
+    assert tools._extract_pdf_text(b"unused") == (
+        "(PDF contains no extractable text in the first 50 pages)"
+    )
+
+
+def test_pdf_result_discarded_after_fetch_deadline(monkeypatch):
+    clock = {"time": 1000.0}
+    monkeypatch.setattr(tools.time, "monotonic", lambda: clock["time"])
+
+    def slow_extract(data):
+        clock["time"] += 10.0
+        return "late PDF text"
+
+    monkeypatch.setattr(tools, "_extract_pdf_text", slow_extract)
+    out = _fetch_with(monkeypatch, _pdf_bytes("Readable text"), "application/pdf")
+    assert out == "Failed to fetch URL: timed out."
 
 
 def test_text_octet_stream_kept_after_sniffing(monkeypatch):
@@ -154,7 +275,6 @@ def test_valid_utf8_binary_caught_by_control_chars(monkeypatch):
 @pytest.mark.parametrize(
     "magic",
     [
-        b"%PDF-",
         b"PK\x03\x04",
         b"\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1",
         b"\x1f\x8b",
@@ -180,8 +300,8 @@ def test_text_labeled_binary_caught_by_magic(monkeypatch, magic):
         b"\t\xef\xbb\xbf ",
     ],
 )
-def test_pdf_magic_after_harmless_prefix(monkeypatch, prefix):
-    body = prefix + b"%PDF-1.7\n" + b"1 0 obj<</Type/Catalog>>endobj\n" * 100
+def test_binary_magic_after_harmless_prefix(monkeypatch, prefix):
+    body = prefix + b"\x1f\x8b" + b" printable text-heavy body" * 100
     out = _fetch_with(monkeypatch, body, "text/plain")
     assert "binary content" in out
 
@@ -243,10 +363,10 @@ def test_html_page_unaffected(monkeypatch):
 
 def test_content_type_sanitized_in_message(monkeypatch):
     # Do not echo obs-folded header content into the model response.
-    out = _fetch_with(monkeypatch, b"\x00\x01\x02" * 500, "application/pdf\r\n data: injected")
+    out = _fetch_with(monkeypatch, b"PK\x03\x04" * 500, "application/zip\r\n data: injected")
     assert "\n" not in out and "\r" not in out
     assert "injected" not in out
-    assert "application/pdf" in out
+    assert "application/zip" in out
 
 
 @pytest.mark.parametrize(

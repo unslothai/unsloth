@@ -11,7 +11,7 @@ the CLI's ``--help`` output:
     1. curl -- basic chat completions (non-streaming)
     2. curl -- streaming chat completions
     3. Python OpenAI SDK -- streaming completions
-    4. curl -- Studio server-side tools (enable_tools=true)
+    4. curl -- Unsloth server-side tools (enable_tools=true)
     5. curl -- Standard OpenAI function calling (non-streaming)
     6. curl -- Standard OpenAI function calling (streaming)
     7. curl -- Standard OpenAI function calling (multi-turn tool loop)
@@ -31,7 +31,7 @@ Usage:
     python tests/test_studio_api.py
     python tests/test_studio_api.py --model unsloth/... --gguf-variant ...
 
-    # Pytest mode, external server — start a Studio server yourself,
+    # Pytest mode, external server — start an Unsloth server yourself,
     # then point pytest at it. Fastest iteration loop.
     unsloth studio run --model unsloth/Qwen3-1.7B-GGUF --gguf-variant UD-Q4_K_XL &
     export UNSLOTH_E2E_BASE_URL=http://127.0.0.1:8080
@@ -341,7 +341,7 @@ def _final_finish_reason(chunks: list[dict]) -> str | None:
 def test_openai_tools_nonstream(base_url: str, api_key: str):
     """Standard OpenAI function calling, non-streaming, tool_choice='required'.
 
-    Regression: before the fix, Studio stripped `tools` and the model
+    Regression: before the fix, Unsloth stripped `tools` and the model
     returned plain text with finish_reason='stop'. After the fix,
     llama-server's response is forwarded verbatim so the client sees
     finish_reason='tool_calls' with a structured tool_calls array and
