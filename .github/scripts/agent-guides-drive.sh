@@ -36,6 +36,7 @@ AGENT="${2:?usage: agent-guides-drive.sh <mode> <agent>}"
 # Determinism (seed/temp) is applied at the server level by
 # serve-unsloth-run.sh --extra; agents inherit it through the API.
 TIMEOUT="${AGENT_INVOKE_TIMEOUT:-180}"
+TIMEOUT="${TIMEOUT%s}"  # tolerate a trailing 's' (timeout(1) style) so the arithmetic and "${TIMEOUT}s" below stay valid
 # opencode is the slow outlier. Unlike the print-mode agents (claude -p, codex
 # exec) it runs a full turn AND a separate small_model call to name the session,
 # so one connection reply takes ~8 min on a CPU-served 4B -- right at the shared
