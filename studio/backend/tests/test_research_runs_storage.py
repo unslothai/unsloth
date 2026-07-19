@@ -446,9 +446,7 @@ def test_owner_scoped_claim_migration_rolls_back_on_interruption(tmp_path, monke
                    PRIMARY KEY(owner_subject, thread_id)
                ) WITHOUT ROWID"""
         )
-        conn.execute(
-            "INSERT INTO research_thread_claims VALUES ('alice', 'shared-thread', 10)"
-        )
+        conn.execute("INSERT INTO research_thread_claims VALUES ('alice', 'shared-thread', 10)")
         conn.commit()
     finally:
         conn.close()
