@@ -870,10 +870,14 @@ def test_is_vulkan_backend_matches_versioned_soname(tmp_path):
         return d
 
     # Versioned-only Vulkan lib (no unversioned symlink) -> detected as Vulkan.
-    with patch("core.inference.llama_cpp._llama_lib_dir", return_value = _dir(f"{pre}ggml-vulkan.{ext}.0")):
+    with patch(
+        "core.inference.llama_cpp._llama_lib_dir", return_value = _dir(f"{pre}ggml-vulkan.{ext}.0")
+    ):
         assert LlamaCppBackend._is_vulkan_backend(binary) is True
     # Unversioned Vulkan lib -> still detected (regression).
-    with patch("core.inference.llama_cpp._llama_lib_dir", return_value = _dir(f"{pre}ggml-vulkan.{ext}")):
+    with patch(
+        "core.inference.llama_cpp._llama_lib_dir", return_value = _dir(f"{pre}ggml-vulkan.{ext}")
+    ):
         assert LlamaCppBackend._is_vulkan_backend(binary) is True
     # A CUDA/HIP sibling (versioned or not) means a multi-backend build -> defer to that backend.
     for sib in (f"{pre}ggml-cuda.{ext}", f"{pre}ggml-hip.{ext}.0"):
@@ -883,7 +887,9 @@ def test_is_vulkan_backend_matches_versioned_soname(tmp_path):
         ):
             assert LlamaCppBackend._is_vulkan_backend(binary) is False
     # No Vulkan lib at all -> not a Vulkan build.
-    with patch("core.inference.llama_cpp._llama_lib_dir", return_value = _dir(f"{pre}ggml-cpu.{ext}")):
+    with patch(
+        "core.inference.llama_cpp._llama_lib_dir", return_value = _dir(f"{pre}ggml-cpu.{ext}")
+    ):
         assert LlamaCppBackend._is_vulkan_backend(binary) is False
 
 
