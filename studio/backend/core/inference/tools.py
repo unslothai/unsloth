@@ -2953,16 +2953,19 @@ WEB_SEARCH_TOOL = {
 # nonexistent /mnt/data or cd/grep-ing a guessed local path for a repo the
 # user only mentioned but never uploaded.
 _SANDBOX_PATHS_NOTE = (
-    " The working directory is an isolated scratch space that starts empty "
-    "except for files created here or explicitly uploaded to this "
-    "conversation, and it persists only for this conversation. This sandbox "
-    "cannot reach other machines or remote hosts. A repository, folder, or "
-    "file the user refers to is not present here unless it was uploaded or "
-    "created in the sandbox, so do not assume a mentioned path exists or guess "
-    "where it lives. Read and write files using relative paths in the working "
-    "directory; absolute paths like /mnt/data or /tmp/outputs do not exist. If "
-    "the files you need are not here, ask the user to upload them or provide an "
-    "exact path instead of guessing one."
+    " The working directory is an isolated scratch space that may already hold "
+    "files from earlier work in this conversation or project, plus anything you "
+    "create here or that is uploaded; it persists across this conversation and, "
+    "for a project, across the project's threads. It can reach only a fixed "
+    "allowlist of public sites (such as github.com, huggingface.co, and "
+    "pypi.org), not the user's own machines, private hosts, or arbitrary "
+    "addresses. A repository, folder, or file the user refers to is not present "
+    "here unless it was uploaded, created here, or already part of this project, "
+    "so list the working directory to see what is available rather than assuming "
+    "a mentioned path exists or guessing where it lives. Read and write files "
+    "using relative paths in the working directory; absolute paths like "
+    "/mnt/data or /tmp/outputs do not exist. If the files you need are not here, "
+    "ask the user to upload them or provide an exact path instead of guessing one."
 )
 
 PYTHON_TOOL = {
