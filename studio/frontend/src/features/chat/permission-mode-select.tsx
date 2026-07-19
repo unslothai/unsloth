@@ -278,28 +278,23 @@ export function PermissionModeComposerPill({
           data-pill-label={active.label}
           data-active={fullAccess ? "true" : "false"}
           data-variant={fullAccess ? "danger" : undefined}
+          data-keep-label="true"
           aria-label="Permission level for tool calls"
           title={`${active.label}: ${active.description}`}
         >
           {/* The icon doubles as an off switch (mirrors the MCP pill): hover
               swaps it to an X; clicking it turns bypass permissions Off (no
-              prompts, sandbox on) without opening the menu. In compact
-              icon-only mode the glyph is the whole button, so clicks fall
-              through and open the menu instead. */}
+              prompts, sandbox on) without opening the menu. data-keep-label
+              exempts this pill from compact icon-only mode, so the off switch
+              stays clickable even while the other pills are collapsed. */}
           <span
             role="button"
             aria-label="Turn off bypass permissions"
             tabIndex={-1}
             onPointerDown={(e) => {
-              if (e.currentTarget.closest('[data-pill-compact="true"]')) {
-                return;
-              }
               e.stopPropagation();
             }}
             onClick={(e) => {
-              if (e.currentTarget.closest('[data-pill-compact="true"]')) {
-                return;
-              }
               e.stopPropagation();
               setPermissionMode("off");
             }}

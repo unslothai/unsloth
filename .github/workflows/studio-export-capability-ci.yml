@@ -9,7 +9,7 @@
 # export is validated separately. No GPU / model / llama.cpp: the tests mock the probes and block
 # torch/unsloth, so the job installs only a CPU PyTorch plus import deps.
 
-name: Studio export capability
+name: Unsloth export capability
 
 on:
   pull_request:
