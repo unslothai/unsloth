@@ -238,8 +238,8 @@ export function LlamaUpdateBanner({
     </div>
   ) : null;
 
-  // The confirm dialog renders unconditionally (inert until Update is clicked)
-  // so it survives the banner hiding once the swap begins.
+  // Render the confirm dialog unconditionally (inert until Update) so it survives
+  // the banner hiding once the swap begins.
   return (
     <>
       {dialog}

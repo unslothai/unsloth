@@ -53,7 +53,7 @@ _REFUSAL_MESSAGES = {
 
 
 class UpdateMachine(BaseModel):
-    """Host a swap targets, so a remote operator sees which machine would change."""
+    """The host a swap targets, so a remote operator sees which machine changes."""
 
     hostname: str = Field("", description = "Hostname of the machine running Studio.")
     platform: str = Field(
@@ -112,8 +112,7 @@ class LlamaUpdateStatusResponse(BaseModel):
 
 
 class LlamaUpdateRequest(BaseModel):
-    """Body for POST /update. Empty body means no confirmation, so the swap is
-    refused (safe default) and a stale banner or replay cannot swap the binary."""
+    """Body for POST /update. Empty body = no confirmation, so the swap is refused."""
 
     confirm_token: Optional[str] = Field(
         None,
@@ -165,8 +164,7 @@ _last_llama_update_step = -1
 
 
 def _log_llama_update_progress(job: LlamaUpdateJob) -> None:
-    """One llama_update_progress line per 10% step so a prebuilt update reports
-    progress without a line per poll. Resyncs when a new update starts."""
+    """Log one progress line per 10% step, not per poll; resyncs on a new update."""
     global _last_llama_update_step
     if job.state != "running" or job.progress is None:
         return
@@ -199,9 +197,9 @@ async def llama_update_status(
 async def llama_update_confirm(
     current_subject: str = Depends(get_current_subject),
 ) -> LlamaUpdateConfirmResponse:
-    """Step one of the two-step apply: describe the pending swap and, when it can
-    be applied, mint a single-use token bound to the offered build. Available to
-    any authenticated operator; confirmation, not location, is the gate."""
+    """Step one of the two-step apply: describe the pending swap and, when
+    appliable, mint a single-use token bound to the offered build. The gate is
+    confirmation, not caller location."""
     # Force-refresh so the token binds the current build, not a stale cached tag.
     status = await asyncio.to_thread(get_update_status, force_refresh = True)
     machine = _current_machine()
@@ -209,9 +207,8 @@ async def llama_update_confirm(
     latest_tag = status.get("latest_tag")
     size = status.get("update_size_bytes")
 
-    # A --with-llama-cpp-dir local link reports update_available=False, so this
-    # must run before the up_to_date branch below or the local_link reason is
-    # masked and callers are wrongly told there is no update.
+    # A --with-llama-cpp-dir local link reports update_available=False, so this must
+    # run before the up_to_date branch or the local_link reason gets masked.
     if status.get("local_link"):
         return LlamaUpdateConfirmResponse(
             update_available = True,
@@ -256,15 +253,13 @@ async def llama_update(
     """Apply the swap, but only with an explicit, fresh confirmation.
 
     The installer replaces the host binary, so a caller must either echo the
-    single-use ``confirm_token`` from POST /update/confirm (preferred: replay-safe,
-    bound to the build) or send ``confirmed=true`` (non-interactive callers). With
-    neither, the swap is refused and the binary is left untouched. The gate is the
-    confirmation, not the caller's location, so a headless SSH server confirms like a local one."""
+    single-use ``confirm_token`` from POST /update/confirm (replay-safe, build-bound)
+    or send ``confirmed=true`` (non-interactive callers); with neither, the swap is
+    refused untouched. The gate is confirmation, not the caller's location."""
     req = request or LlamaUpdateRequest()
     machine = _current_machine()
-    # Force-refresh so the token is validated against the same build start_update
-    # will resolve: a stale cache would accept a token minted for an older tag and
-    # then install a newer one, bypassing the exact-build binding.
+    # Force-refresh so the token is validated against the same build start_update will
+    # resolve; a stale cache could accept an old-tag token then install a newer build.
     status = await asyncio.to_thread(get_update_status, force_refresh = True)
     installed_tag = status.get("installed_tag")
     target_tag = status.get("latest_tag")

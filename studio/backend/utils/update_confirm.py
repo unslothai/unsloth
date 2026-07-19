@@ -5,11 +5,10 @@
 
 The update runs an OS installer that replaces the binary on the machine running
 Studio, so it must not fire from an unconfirmed click, a stale banner, or a replay.
-Confirmation is required uniformly for every caller (local, desktop, or remote over
-SSH/Cloudflare); we do not gate on "same machine" since a headless SSH server never
-has a host-local session. A token binds the build it was offered for (``target_tag``)
-and is single-use with a short TTL. The store is in-process, matching Studio's
-single-process backend; for a multi-worker deploy swap it for an HMAC stateless token.
+Confirmation is required uniformly for every caller (not gated on "same machine",
+since a headless SSH server has no host-local session). A token binds its offered
+build (``target_tag``), is single-use with a short TTL, and lives in-process
+(matching the single-process backend; use an HMAC stateless token for multi-worker).
 """
 
 from __future__ import annotations
@@ -22,8 +21,7 @@ from typing import Optional, Tuple
 
 # How long a freshly minted confirmation token stays valid.
 CONFIRM_TOKEN_TTL_SECONDS = 300
-# Cap the store so a burst of confirm calls that are never applied cannot grow
-# memory without bound; oldest entries are evicted first.
+# Cap the store so unapplied confirm calls can't grow memory unbounded; oldest first.
 _MAX_TOKENS = 64
 
 _lock = threading.Lock()

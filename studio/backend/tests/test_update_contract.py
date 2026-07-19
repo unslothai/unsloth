@@ -10,9 +10,8 @@ Properties covered:
   - unauthenticated                    -> refused (401), NO swap
   - stale / expired / replayed token   -> refused, NO swap
 
-routes/llama.py is loaded standalone with stubbed auth / loggers / llama_cpp_update
-and the real utils.update_confirm, so no heavy backend deps are needed. Both handler
-calls and a real FastAPI TestClient (HTTP + auth gate) are exercised.
+routes/llama.py loads standalone with stubbed auth/loggers/llama_cpp_update and the
+real utils.update_confirm. Exercised via handler calls and a FastAPI TestClient.
 """
 
 from __future__ import annotations
@@ -33,10 +32,8 @@ _BACKEND = _HERE.parent
 
 
 def _install_stubs():
-    """Register stub packages so routes/llama.py imports cleanly, plus the real
-    update_confirm module under its production name."""
-    # auth.authentication.get_current_subject -> a real FastAPI dependency that
-    # 401s without a valid bearer, so the HTTP tests can prove the auth gate.
+    """Stub packages so routes/llama.py imports cleanly, plus the real update_confirm."""
+    # auth.get_current_subject: a real FastAPI dep that 401s without a valid bearer.
     from fastapi import Header, HTTPException
 
     def get_current_subject(authorization: Optional[str] = Header(default = None)) -> str:
@@ -159,9 +156,7 @@ def _track_start(monkeypatch):
     return calls
 
 
-# --------------------------------------------------------------------------- #
 # update_confirm token unit tests
-# --------------------------------------------------------------------------- #
 
 
 def test_token_roundtrip_single_use():
@@ -191,9 +186,7 @@ def test_token_missing_refused():
     assert ok is False and reason == "invalid_token"
 
 
-# --------------------------------------------------------------------------- #
 # Handler-level: the swap only runs with an explicit confirmation
-# --------------------------------------------------------------------------- #
 
 
 def test_apply_without_confirmation_is_refused_and_never_swaps(monkeypatch):
@@ -279,9 +272,8 @@ def test_confirm_endpoint_up_to_date_offers_no_token(monkeypatch):
 
 
 def test_confirm_endpoint_reports_local_link_not_up_to_date(monkeypatch):
-    # A --with-llama-cpp-dir tree reports local_link=True with update_available=False.
-    # The confirm endpoint must surface reason="local_link", not mask it behind the
-    # generic up_to_date refusal.
+    # A --with-llama-cpp-dir tree reports local_link=True with update_available=False;
+    # the confirm endpoint must surface reason="local_link", not the generic up_to_date.
     monkeypatch.setattr(
         rl,
         "get_update_status",
@@ -300,9 +292,8 @@ def test_confirm_endpoint_reports_local_link_not_up_to_date(monkeypatch):
 
 
 def test_apply_revalidates_token_against_refreshed_target(monkeypatch):
-    # A token confirmed for b9909; a newer build b9910 publishes before apply.
-    # The apply must re-resolve the target and refuse the now-stale token rather
-    # than install a build the operator never confirmed.
+    # Token confirmed for b9909; b9910 publishes before apply. The apply must
+    # re-resolve and refuse the now-stale token, not install an unconfirmed build.
     def _status(force_refresh: bool = False):
         return {
             "supported": True,
@@ -330,18 +321,14 @@ def test_status_reports_machine():
     assert out.latest_tag == "b9909"
 
 
-# --------------------------------------------------------------------------- #
-# start_update pins the confirmed target: a release that publishes in the gap
-# after confirmation must not be installed in place of the confirmed build.
-# --------------------------------------------------------------------------- #
+# start_update pins the confirmed target: a release publishing after confirmation
+# must not be installed in place of the confirmed build.
 
 
 def _load_real_llama_cpp_update():
-    """Load the real utils.llama_cpp_update to exercise start_update's
-    confirmed-target guard directly. The module-level stubs shadow only
-    utils.llama_cpp_update, so this loads it under a private name (leaving that
-    stub in place for the handler tests) and its two real deps under their
-    production names."""
+    """Load the real utils.llama_cpp_update under a private name (leaving the
+    module-level stub for the handler tests) plus its two real deps, to exercise
+    start_update's confirmed-target guard directly."""
 
     def _load(mod_name: str, filename: str):
         spec = importlib.util.spec_from_file_location(mod_name, str(_BACKEND / "utils" / filename))
@@ -437,9 +424,7 @@ def test_start_update_proceeds_when_resolved_latest_matches_confirmed(monkeypatc
     lcu._reset_job_for_tests()
 
 
-# --------------------------------------------------------------------------- #
 # HTTP-level: auth gate + wiring + backwards-compatible bodyless POST
-# --------------------------------------------------------------------------- #
 
 
 def _client():
@@ -461,8 +446,8 @@ def test_http_unauthenticated_update_is_refused(monkeypatch):
 
 
 def test_http_authenticated_bodyless_post_refused_no_swap(monkeypatch):
-    # Backwards compat: an OLD frontend posts /update with no body. That must be
-    # safe -- refused (confirmation_required), NEVER a silent swap.
+    # Backwards compat: an OLD frontend posts /update with no body -> refused
+    # (confirmation_required), never a silent swap.
     calls = _track_start(monkeypatch)
     client = _client()
     r = client.post("/api/llama/update", headers = {"Authorization": "Bearer good"})
@@ -492,13 +477,12 @@ def test_http_two_step_confirm_then_apply(monkeypatch):
 
 
 def test_http_local_and_remote_behave_identically(monkeypatch):
-    # There is no same-machine axis: the contract depends only on auth + confirm,
-    # so a "local" and a "remote" authenticated caller get identical outcomes.
+    # No same-machine axis: the contract depends only on auth + confirm, so local
+    # and remote authenticated callers get identical outcomes.
     calls = _track_start(monkeypatch)
     client = _client()
     h = {"Authorization": "Bearer good"}
-    # Simulate a remote caller by adding proxy/forwarding headers that the closed
-    # PR would have treated as "not host" -- here they change nothing.
+    # Proxy/forwarding headers a "not host" gate would key on change nothing here.
     remote_h = {**h, "X-Forwarded-For": "203.0.113.7", "CF-Connecting-IP": "203.0.113.7"}
 
     local = client.post("/api/llama/update", headers = h, json = {"confirmed": True})

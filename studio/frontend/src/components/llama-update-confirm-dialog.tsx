@@ -16,10 +16,9 @@ import { useCallback, useRef, useState, type ReactElement } from "react";
 
 interface LlamaUpdateConfirmGate {
   /**
-   * Open the confirmation prompt for `target` and resolve true only on an
-   * explicit accept, false on cancel/dismiss. Pass this as the `apply()` gate so
-   * the destructive host-binary swap never runs without a visible, accepted
-   * build + target host.
+   * Open the prompt for `target`; resolve true only on explicit accept, false on
+   * cancel/dismiss. Pass as the `apply()` gate so the destructive swap never runs
+   * without a visible, accepted build + target host.
    */
   requestConfirm: (target: LlamaApplyTarget) => Promise<boolean>;
   /** Render once in the tree; inert until requestConfirm opens it. */
@@ -27,9 +26,8 @@ interface LlamaUpdateConfirmGate {
 }
 
 /**
- * Reusable accept/cancel gate for the llama.cpp host-binary swap. Shows the
- * exact build (from -> to) and the machine the swap targets, and only resolves
- * true when the user explicitly accepts.
+ * Accept/cancel gate for the llama.cpp host-binary swap: shows the exact build
+ * (from -> to) and target machine, resolving true only on explicit accept.
  */
 export function useLlamaUpdateConfirmGate(): LlamaUpdateConfirmGate {
   const [target, setTarget] = useState<LlamaApplyTarget | null>(null);

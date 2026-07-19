@@ -626,11 +626,10 @@ def start_update(expected_tag: Optional[str] = None) -> dict:
     """Kick off a background update. Idempotent: a second call while one is
     running returns the in-flight job rather than starting another.
 
-    ``expected_tag`` is the build the caller already confirmed. The updater
-    re-resolves "latest" itself, so a release published in the gap after
-    confirmation would move the target; when the freshly-resolved latest differs
-    from ``expected_tag`` this aborts rather than swapping to a build the caller
-    never confirmed. Left None, it behaves as before (no target pinning)."""
+    ``expected_tag`` is the build the caller confirmed. Since the updater re-resolves
+    "latest", a release published after confirmation could move the target; when the
+    freshly-resolved latest differs from ``expected_tag`` this aborts rather than swap
+    an unconfirmed build. None -> no target pinning (prior behaviour)."""
     binary = _find_binary()
     # Refuse to update a --with-llama-cpp-dir local link: installing a prebuilt
     # here would write through the link into the user's own checkout (or fail)
@@ -712,20 +711,17 @@ def start_update(expected_tag: Optional[str] = None) -> dict:
         repo = (res or {}).get("repo") or DEFAULT_PUBLISHED_REPO
         from_tag = None
         asset = (res or {}).get("asset")
-        # Pin the installer to the exact release the host-aware resolver already
-        # picked (res release_tag, which is the real GitHub release tag and has
-        # any macOS walk-back already applied), so a release published between
-        # this resolve and the installer's own "latest" re-resolve cannot swap in
-        # an unconfirmed build. The pinned tag is host-compatible by construction,
-        # so pinning does not disable a needed walk-back (unlike the marker path);
-        # it also arms the post-install tag check in _run_update. Falls back to
-        # unpinned only if the resolver reported no release tag.
+        # Pin the installer to the release the host-aware resolver already picked (res
+        # release_tag: the real GitHub tag with any macOS walk-back applied), so a
+        # release published before the installer's own re-resolve can't swap in an
+        # unconfirmed build. Host-compatible by construction, so pinning disables no
+        # needed walk-back (unlike the marker path); also arms _run_update's post-
+        # install tag check. Unpinned only if the resolver reported no release tag.
         pin_release_tag = (res or {}).get("release_tag") or None
         resolved_tag = src.get("latest_tag")
 
-    # Install exactly the build the caller confirmed. A release published in the
-    # gap since confirmation moves the freshly-resolved latest above, so abort
-    # rather than swap to a build the caller never saw or confirmed.
+    # Install exactly the build the caller confirmed: a release published since
+    # confirmation moves latest above, so abort rather than swap an unconfirmed build.
     if expected_tag is not None and resolved_tag != expected_tag:
         return {
             "started": False,

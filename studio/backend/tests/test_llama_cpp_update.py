@@ -393,19 +393,17 @@ def test_start_update_source_build_installs_prebuilt(monkeypatch, tmp_path):
     assert "--llama-tag" in cmd and "latest" in cmd
     assert cmd[cmd.index("--rocm-gfx") + 1] == "gfx110x"
     assert "--simple-policy" not in cmd and "--cpu-fallback" not in cmd
-    # Pin to the release the host-aware resolver already picked, so a release
-    # published between resolve and the installer's own "latest" re-resolve
-    # cannot swap in an unconfirmed build (matches the marker path's pin).
+    # Pin to the release the resolver picked, so one published before the installer's
+    # own re-resolve can't swap in an unconfirmed build (matches the marker path).
     assert "--published-release-tag" in cmd
     assert cmd[cmd.index("--published-release-tag") + 1] == "b9585"
 
 
 def test_start_update_source_build_pins_resolver_release_tag(monkeypatch, tmp_path):
-    # The source-build apply must pin the installer to the release the host-aware
-    # resolver picked (res release_tag), not the display tag. For a fork-wrapper
-    # release the two differ ("v1.0" release vs "b9457" display); only the real
-    # release tag is a valid --published-release-tag and post-install anchor.
-    # Confirming the displayed tag must still proceed and pin the real release.
+    # The source-build apply pins the installer to the resolver's release_tag, not the
+    # display tag. For a fork wrapper they differ ("v1.0" vs "b9457"); only the real
+    # release tag is a valid --published-release-tag. Confirming the displayed tag
+    # must still proceed and pin the real release.
     install_dir = tmp_path / "llama.cpp"
     binary = install_dir / "build" / "bin" / "llama-server"
     binary.parent.mkdir(parents = True)

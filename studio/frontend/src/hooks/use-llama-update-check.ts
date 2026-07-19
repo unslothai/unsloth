@@ -125,8 +125,8 @@ export interface LlamaMachine {
   platform: string;
 }
 
-/** The pending swap a confirmation prompt describes: the exact build (from ->
- *  to), the host it targets, and the single-use token that applies it. */
+/** The pending swap a confirm prompt describes: build (from -> to), target host,
+ *  and the single-use token that applies it. */
 export interface LlamaApplyTarget {
   token: string;
   machine: LlamaMachine | null;
@@ -335,10 +335,9 @@ export function useLlamaUpdateCheck({
     ): Promise<LlamaApplyResult> => {
       if (applying) return { ok: false, error: "already running" };
 
-      // Step 1: describe the pending swap. /confirm force-refreshes and mints a
-      // single-use token bound to the offered build, and reports the host + the
-      // from/to tags. No install starts here, so `applying` stays false while the
-      // confirmation prompt is open.
+      // Step 1: describe the pending swap. /confirm force-refreshes, mints a
+      // single-use token bound to the offered build, and reports host + from/to tags.
+      // No install starts here, so `applying` stays false while the prompt is open.
       let target: LlamaApplyTarget;
       try {
         const cres = await authFetch("/api/llama/update/confirm", {
