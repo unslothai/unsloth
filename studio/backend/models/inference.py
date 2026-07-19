@@ -146,9 +146,7 @@ class LoadRequest(BaseModel):
 
     @field_validator("tensor_split")
     @classmethod
-    def _reject_degenerate_tensor_split(
-        cls, value: Optional[List[float]]
-    ) -> Optional[List[float]]:
+    def _reject_degenerate_tensor_split(cls, value: Optional[List[float]]) -> Optional[List[float]]:
         # A negative / non-finite / all-zero split is silently dropped at launch
         # (stored as None) yet still compared raw in the reload dedupe, so an
         # identical Apply reloads forever. Reject it up front; [] = no split.
@@ -161,6 +159,7 @@ class LoadRequest(BaseModel):
         if sum(value) <= 0:
             raise ValueError("tensor_split must have a positive total")
         return value
+
     llama_extra_args: Optional[List[str]] = Field(
         None,
         description = (
