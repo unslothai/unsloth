@@ -34,6 +34,7 @@ import io
 import json
 import os
 import sys
+import types
 
 # Code-interpreter convention prefixes. Remapping is gated on the prefix being
 # ABSENT (see _remap) so a genuine host mount / user dir is never shadowed.
@@ -56,20 +57,60 @@ _original_import = builtins.__import__
 _original_import_module = importlib.import_module
 
 
-def _path_is_in_sandbox(filename):
+def _initial_trusted_library_roots():
+    """Capture interpreter-managed package roots before sandbox code can edit sys.path."""
+    roots = []
+    for entry in sys.path:
+        if not isinstance(entry, str) or not entry:
+            continue
+        try:
+            path = os.path.realpath(entry)
+        except OSError:
+            continue
+        if os.path.basename(path).lower() not in {"site-packages", "dist-packages"}:
+            continue
+        if path not in roots:
+            roots.append(path)
+    return tuple(roots)
+
+
+_TRUSTED_LIBRARY_ROOTS = _initial_trusted_library_roots()
+
+
+def _path_is_in_roots(filename, roots):
     if not isinstance(filename, str) or filename.startswith("<"):
         return False
     try:
-        cwd = os.path.realpath(os.getcwd())
         path = os.path.realpath(filename)
-        return os.path.commonpath((cwd, path)) == cwd
+        return any(os.path.commonpath((root, path)) == root for root in roots)
     except (OSError, ValueError):
         return False
 
 
-def _sandbox_code_requested_import():
+def _trusted_http_client_frame(frame):
+    module = frame.f_globals.get("__name__", "")
+    root = module.split(".", 1)[0]
+    return root in {"httpx", "httpcore"} and _path_is_in_roots(
+        frame.f_globals.get("__file__"), _TRUSTED_LIBRARY_ROOTS
+    )
+
+
+def _trusted_httpx_in_call_stack(skip = 1):
     try:
-        frame = sys._getframe(1)
+        frame = sys._getframe(skip)
+    except ValueError:
+        return False
+    while frame is not None:
+        module = frame.f_globals.get("__name__", "")
+        if module == "httpx" or module.startswith("httpx."):
+            return _trusted_http_client_frame(frame)
+        frame = frame.f_back
+    return False
+
+
+def _sandbox_code_requested_import(skip = 1):
+    try:
+        frame = sys._getframe(skip)
     except ValueError:
         return True
     while frame is not None:
@@ -82,9 +123,7 @@ def _sandbox_code_requested_import():
         ):
             frame = frame.f_back
             continue
-        if module == "__main__" or _path_is_in_sandbox(frame.f_globals.get("__file__")):
-            return True
-        return False
+        return not _trusted_http_client_frame(frame)
     return True
 
 
@@ -103,6 +142,91 @@ def _raise_blocked_network_module(root):
     raise ModuleNotFoundError(
         f"Blocked: low-level network module {root!r} is unavailable in sandboxed code"
     )
+
+
+_HTTP_CORE_METADATA = frozenset(
+    {
+        "__cached__",
+        "__doc__",
+        "__file__",
+        "__loader__",
+        "__name__",
+        "__package__",
+        "__path__",
+        "__spec__",
+    }
+)
+
+
+class _GuardedHttpcoreModule(types.ModuleType):
+    """Keep httpx working while denying cached low-level APIs to sandbox code."""
+
+    def __getattribute__(self, name):
+        if name not in _HTTP_CORE_METADATA and _sandbox_code_requested_import(2):
+            _raise_blocked_network_module("httpcore")
+        return types.ModuleType.__getattribute__(self, name)
+
+    def __setattr__(self, name, value):
+        if _sandbox_code_requested_import(2):
+            _raise_blocked_network_module("httpcore")
+        return types.ModuleType.__setattr__(self, name, value)
+
+    def __delattr__(self, name):
+        if _sandbox_code_requested_import(2):
+            _raise_blocked_network_module("httpcore")
+        return types.ModuleType.__delattr__(self, name)
+
+
+def _guard_httpcore_backend_method(cls, method_name):
+    original = cls.__dict__.get(method_name)
+    if not callable(original) or getattr(original, "_unsloth_httpcore_backend_guard", False):
+        return
+
+    code = getattr(original, "__code__", None)
+    if code is not None and code.co_flags & 0x80:  # CO_COROUTINE
+
+        async def guarded(*args, **kwargs):
+            if not _trusted_httpx_in_call_stack(2):
+                _raise_blocked_network_module("httpcore")
+            return await original(*args, **kwargs)
+
+    else:
+
+        def guarded(*args, **kwargs):
+            if not _trusted_httpx_in_call_stack(2):
+                _raise_blocked_network_module("httpcore")
+            return original(*args, **kwargs)
+
+    guarded._unsloth_httpcore_backend_guard = True
+    guarded.__name__ = getattr(original, "__name__", method_name)
+    guarded.__qualname__ = getattr(original, "__qualname__", guarded.__name__)
+    guarded.__doc__ = getattr(original, "__doc__", None)
+    setattr(cls, method_name, guarded)
+
+
+def _guard_httpcore_network_backends(module):
+    """Guard httpcore's connection boundary even if module attribute lookup is bypassed."""
+    seen = set()
+    for value in vars(module).values():
+        if not isinstance(value, type) or id(value) in seen:
+            continue
+        seen.add(id(value))
+        _guard_httpcore_backend_method(value, "connect_tcp")
+        _guard_httpcore_backend_method(value, "connect_unix_socket")
+
+
+def _guard_loaded_httpcore_modules():
+    """Harden httpcore modules loaded transitively by an approved high-level client."""
+    for name, module in tuple(sys.modules.items()):
+        if name != "httpcore" and not name.startswith("httpcore."):
+            continue
+        if not isinstance(module, types.ModuleType) or isinstance(module, _GuardedHttpcoreModule):
+            continue
+        spec = getattr(module, "__spec__", None)
+        if getattr(spec, "_initializing", False):
+            continue
+        _guard_httpcore_network_backends(module)
+        module.__class__ = _GuardedHttpcoreModule
 
 
 def _absolute_import_name(
@@ -134,17 +258,25 @@ def _guarded_import(
     level = 0,
 ):
     package = globals.get("__package__") if isinstance(globals, dict) else None
-    root = _blocked_network_module(_absolute_import_name(name, package, level))
+    absolute_name = _absolute_import_name(name, package, level)
+    root = _blocked_network_module(absolute_name)
     if root is not None:
         _raise_blocked_network_module(root)
-    return _original_import(name, globals, locals, fromlist, level)
+    module = _original_import(name, globals, locals, fromlist, level)
+    if isinstance(absolute_name, str) and absolute_name.split(".", 1)[0] == "httpcore":
+        _guard_loaded_httpcore_modules()
+    return module
 
 
 def _guarded_import_module(name, package = None):
-    root = _blocked_network_module(_absolute_import_name(name, package))
+    absolute_name = _absolute_import_name(name, package)
+    root = _blocked_network_module(absolute_name)
     if root is not None:
         _raise_blocked_network_module(root)
-    return _original_import_module(name, package)
+    module = _original_import_module(name, package)
+    if isinstance(absolute_name, str) and absolute_name.split(".", 1)[0] == "httpcore":
+        _guard_loaded_httpcore_modules()
+    return module
 
 
 def _network_import_audit(event, args):

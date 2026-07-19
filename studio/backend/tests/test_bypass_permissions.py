@@ -159,6 +159,67 @@ def test_bash_blocklist_enforced_when_sandboxed(captured_popen):
     assert "cmd" not in captured_popen  # never reached Popen
 
 
+@pytest.mark.parametrize(
+    "command",
+    [
+        'python -S -c "import boto3"',
+        'python -E -c "import boto3"',
+        'python -I -c "import boto3"',
+        'python --no-site -c "import boto3"',
+        'python --ignore-environment -c "import boto3"',
+        'python --isolated -c "import boto3"',
+        'env -u PYTHONPATH python -c "import boto3"',
+        'env --unset=UNSLOTH_STUDIO_SANDBOXED python3 -c "import boto3"',
+        'env -i python -c "import boto3"',
+        'PYTHONPATH= python -c "import boto3"',
+        'unset PYTHONPATH; python -c "import boto3"',
+        'export UNSLOTH_STUDIO_SANDBOXED=0; python -c "import boto3"',
+        'uv run python -S -c "import boto3"',
+        'bash -lc "python -I -c import\\ boto3"',
+        'env -S "python -S -c import\\ boto3"',
+        'env --split-string="python -I -c import\\ boto3"',
+        'env -u PYTHONPATH sh -c "python -c import\\ boto3"',
+        'command sh -c "python -I -c import\\ boto3"',
+        'find . -exec python -S -c "import boto3" ;',
+    ],
+)
+def test_bash_blocks_python_startup_guard_bypasses(captured_popen, command):
+    out = _bash_exec(command, None, 5, "t", disable_sandbox = False)
+    assert "cannot disable the Studio runtime guard" in out
+    assert "cmd" not in captured_popen
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        'python -c "print(1)"',
+        "python script.py -S",
+        "echo python -S",
+        "python -c \"print('-S')\"",
+    ],
+)
+def test_bash_allows_python_without_startup_guard_bypass(captured_popen, command):
+    out = _bash_exec(command, None, 5, "t", disable_sandbox = False)
+    assert out == "FAKEOUT"
+    assert "cmd" in captured_popen
+
+
+@pytest.mark.parametrize(
+    ("command", "blocked"),
+    [
+        ('py -3.12 -I -c "import boto3"', True),
+        ('C:\\Python312\\python.exe -S -c "import boto3"', True),
+        ('set PYTHONPATH= & python -c "import boto3"', True),
+        ('cmd /c "python -E -c import boto3"', True),
+        ('python.exe -c "print(1)"', False),
+        ("echo python -S", False),
+    ],
+)
+def test_python_startup_guard_windows_command_parsing(monkeypatch, command, blocked):
+    monkeypatch.setattr(tools.sys, "platform", "win32")
+    assert tools._sandbox_python_startup_bypasses_guard(command) is blocked
+
+
 def test_bash_blocklist_skipped_when_bypassed(captured_popen):
     out = _bash_exec("rm -rf /", None, 5, "t", disable_sandbox = True)
     assert out == "FAKEOUT"  # blocklist skipped -> reached (faked) execution

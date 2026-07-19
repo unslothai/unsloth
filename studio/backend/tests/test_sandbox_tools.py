@@ -144,14 +144,8 @@ class TestLowLevelNetworkModules:
                 "load = getattr(importlib, 'import_' + 'module'); "
                 "print(load('boto3').__name__)"
             ),
-            (
-                "import importlib; "
-                "print(getattr(importlib, 'import_module')(name='boto3').__name__)"
-            ),
-            (
-                "import importlib; "
-                "print(importlib.import_module(name='botocore.session').__name__)"
-            ),
+            ("import importlib; print(getattr(importlib, 'import_module')(name='boto3').__name__)"),
+            ("import importlib; print(importlib.import_module(name='botocore.session').__name__)"),
             ("import importlib; print(vars(importlib)['import_module']('httpcore').__name__)"),
             ("import importlib; print(importlib.__dict__['import_module']('boto3').__name__)"),
             ("import builtins; print(getattr(builtins, '__import__')('botocore').__name__)"),
@@ -164,10 +158,7 @@ class TestLowLevelNetworkModules:
         "code",
         [
             "m = __import__('statistics'); print(m.mean([1, 2]))",
-            (
-                "from importlib import import_module as load; "
-                "print(load('statistics').mean([1, 2]))"
-            ),
+            ("from importlib import import_module as load; print(load('statistics').mean([1, 2]))"),
             (
                 "import importlib; "
                 "print(getattr(importlib, 'import_module')(name='statistics').mean([1, 2]))"
@@ -280,7 +271,7 @@ class TestUploadDenylist:
         )
 
     def test_plain_post_json_not_blocked(self):
-        _ok("import requests\n" 'requests.post("https://api.weather.gov/lookup", json={"k": "v"})')
+        _ok('import requests\nrequests.post("https://api.weather.gov/lookup", json={"k": "v"})')
 
 
 class TestSandboxEnvIsolation:
@@ -462,6 +453,76 @@ class TestSandboxEnvIsolation:
         assert result.returncode != 0
         assert "Blocked: low-level network module 'httpcore'" in result.stderr
 
+    @pytest.mark.parametrize("module_name", ["loader", "httpx"])
+    def test_runtime_import_guard_blocks_external_module_httpcore_import(
+        self, tmp_path, module_name
+    ):
+        from core.inference.tools import _build_safe_env
+
+        workdir = tmp_path / "sandbox"
+        external = tmp_path / "external"
+        workdir.mkdir()
+        external.mkdir()
+        (external / f"{module_name}.py").write_text(
+            "name = ''.join(['http', 'core'])\nprint(__import__(name).__name__)\n",
+            encoding = "utf-8",
+        )
+        code = f"import sys; sys.path.insert(0, {str(external)!r}); import {module_name}"
+        result = subprocess.run(
+            [sys.executable, "-c", code],
+            cwd = workdir,
+            env = _build_safe_env(str(workdir)),
+            capture_output = True,
+            text = True,
+            check = False,
+        )
+        assert result.returncode != 0
+        assert "Blocked: low-level network module 'httpcore'" in result.stderr
+
+    @pytest.mark.parametrize(
+        "code",
+        [
+            (
+                "import httpx, sys; client = httpx.Client(); client.close(); "
+                "print(sys.modules['httpcore'].request)"
+            ),
+            (
+                "import httpx, sys; client = httpx.Client(); client.close(); "
+                "print(sys.modules['httpcore._sync.connection_pool'].ConnectionPool)"
+            ),
+            (
+                "import httpx, sys, types; client = httpx.Client(); client.close(); "
+                "module = sys.modules['httpcore']; "
+                "request = types.ModuleType.__getattribute__(module, 'request'); "
+                "request('GET', 'http://127.0.0.1:9/probe')"
+            ),
+            (
+                "import asyncio, httpx, sys, types\n"
+                "async def main():\n"
+                "    async with httpx.AsyncClient():\n"
+                "        pass\n"
+                "    module = sys.modules['httpcore']\n"
+                "    pool_type = types.ModuleType.__getattribute__(module, 'AsyncConnectionPool')\n"
+                "    async with pool_type() as pool:\n"
+                "        await pool.request('GET', 'http://127.0.0.1:9/probe')\n"
+                "asyncio.run(main())"
+            ),
+        ],
+    )
+    def test_runtime_import_guard_blocks_cached_httpcore_access(self, tmp_path, code):
+        from core.inference.tools import _build_safe_env
+
+        result = subprocess.run(
+            [sys.executable, "-c", code],
+            cwd = tmp_path,
+            env = _build_safe_env(str(tmp_path)),
+            capture_output = True,
+            text = True,
+            check = False,
+        )
+        assert result.returncode != 0
+        assert "Blocked: low-level network module 'httpcore'" in result.stderr
+
     @pytest.mark.parametrize("module", ["httpx", "requests", "huggingface_hub"])
     def test_runtime_import_guard_keeps_supported_clients_available(self, tmp_path, module):
         from core.inference.tools import _build_safe_env
@@ -476,6 +537,21 @@ class TestSandboxEnvIsolation:
         )
         assert result.returncode == 0, result.stderr
         assert result.stdout.strip() == module
+
+    def test_runtime_import_guard_keeps_httpx_transport_available(self, tmp_path):
+        from core.inference.tools import _build_safe_env
+
+        code = "import httpx; client = httpx.Client(); print(type(client).__name__); client.close()"
+        result = subprocess.run(
+            [sys.executable, "-c", code],
+            cwd = tmp_path,
+            env = _build_safe_env(str(tmp_path)),
+            capture_output = True,
+            text = True,
+            check = False,
+        )
+        assert result.returncode == 0, result.stderr
+        assert result.stdout.strip() == "Client"
 
     def test_home_points_at_sandbox_workdir(self, tmp_path):
         from core.inference.tools import _build_safe_env
@@ -693,15 +769,11 @@ class TestHfUploadImportGate:
 
     def test_hf_bare_name_upload_folder_safe_allowed(self):
         _ok(
-            "from huggingface_hub import upload_folder;"
-            " upload_folder(folder_path='x', repo_id='r')"
+            "from huggingface_hub import upload_folder; upload_folder(folder_path='x', repo_id='r')"
         )
 
     def test_hf_bare_name_create_commit_safe_allowed(self):
-        _ok(
-            "from huggingface_hub import create_commit;"
-            " create_commit(operations=[], repo_id='r')"
-        )
+        _ok("from huggingface_hub import create_commit; create_commit(operations=[], repo_id='r')")
 
     def test_bare_name_upload_file_without_hf_import_allowed(self):
         # No HF import -- local helper named upload_file passes.

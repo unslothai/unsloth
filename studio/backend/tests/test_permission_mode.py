@@ -1080,8 +1080,34 @@ def test_render_html_gated_only_when_networked():
     assert rh("<script>const i={};i.src='./local.png'.replace('local','/api')</script>") is True
     assert rh("<script>const i={};i.srcset='local.png 1x, https://evil/x 2x'</script>") is True
     assert rh("<script>document.body.innerHTML='<img src=https://evil/x>'</script>") is True
+    assert rh("<script>document.body.innerHTML += '<img src=https://evil/x>'</script>") is True
+    assert rh("<script>document.body.innerHTML += '<p>Local</p>'</script>") is False
+    assert rh("<script>document.body.innerHTML ||= '<img src=https://evil/x>'</script>") is True
     assert rh("<script>document.body.innerHTML='<p>Local</p>'</script>") is False
     assert rh("<script>document.body.innerHTML=markup</script>") is True
+    assert rh("<script>frame.srcdoc='<img src=https://evil/x>'</script>") is True
+    assert rh("<script>frame.srcdoc='<h1>Local</h1>'</script>") is False
+    assert rh("<script>frame.srcdoc=markup</script>") is True
+    assert rh("<script>frame.setAttribute('srcdoc','<img src=https://evil/x>')</script>") is True
+    assert rh("<script>frame.setAttribute('srcdoc','<h1>Local</h1>')</script>") is False
+    assert rh("<script>img['src']='https://evil/x'</script>") is True
+    assert rh("<script>frame['srcdoc']='<img src=https://evil/x>'</script>") is True
+    assert rh("<script>document.body['inner'+'HTML']='<img src=https://evil/x>'</script>") is True
+    assert rh("<script>img['setAttribute']('src','https://evil/x')</script>") is True
+    assert (
+        rh("<script>node['insertAdjacentHTML']('beforeend','<img src=https://evil/x>')</script>")
+        is True
+    )
+    assert rh("<script>Reflect.set(img,'src','https://evil/x')</script>") is True
+    assert rh("<script>Object.assign(img,{src:'https://evil/x'})</script>") is True
+    assert rh("<script>Object.assign(frame,{'srcdoc':'<img src=https://evil/x>'})</script>") is True
+    assert rh("<script>img['src']='./local.png'</script>") is False
+    assert rh("<script>img['setAttribute']('src','./local.png')</script>") is False
+    assert rh("<script>Reflect.set(obj,'title','https://evil/x')</script>") is False
+    assert (
+        rh("<script>Object.assign(obj,{src:'./local.png',title:'https://evil/x'})</script>")
+        is False
+    )
     assert rh("<script>node.outerHTML='<script>fetch(1)<\\/script>'</script>") is True
     assert rh("<script>node.insertAdjacentHTML('beforeend','<img src=/api/x>')</script>") is True
     assert rh("<script>document.write('<img sr','c=https://evil/x>')</script>") is True
@@ -1103,6 +1129,20 @@ def test_render_html_gated_only_when_networked():
         )
         is False
     )
+    assert rh('<iframe src="data:text/html,<img src=https://evil/x>"></iframe>') is True
+    assert (
+        rh('<iframe src="data:text/html,%3Cimg%20src%3Dhttps%3A%2F%2Fevil%2Fx%3E"></iframe>')
+        is True
+    )
+    assert (
+        rh('<iframe src="data:text/html;base64,PGltZyBzcmM9aHR0cHM6Ly9ldmlsL3g+"></iframe>') is True
+    )
+    assert rh('<iframe src="data:text/html,<h1>Local</h1>"></iframe>') is False
+    assert rh('<iframe src="data:text/plain,<img src=https://evil/x>"></iframe>') is False
+    assert rh('<img src="data:image/png;base64,iVBORw0KGgo=">') is False
+    assert rh('<object data="data:image/svg+xml,<image href=https://evil/x>"></object>') is True
+    assert rh('<iframe src="data:text/html;base64,not-valid-***"></iframe>') is True
+    assert rh("<script>frame.src='data:text/html,<img src=https://evil/x>'</script>") is True
     assert (
         rh(
             "<script>const i=document.createElement('img');"
@@ -1122,10 +1162,7 @@ def test_render_html_gated_only_when_networked():
     assert rh("<script>const i={};i.setAttribute('disabled')</script>") is False
     assert rh("<script>const i={};i.src='./local.png'</script>") is False
     assert (
-        rh(
-            "<script>const a=document.createElement('a');"
-            "a.setAttribute('href','#section')</script>"
-        )
+        rh("<script>const a=document.createElement('a');a.setAttribute('href','#section')</script>")
         is False
     )
     assert (

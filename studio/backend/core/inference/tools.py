@@ -5,6 +5,8 @@
 (DuckDuckGo), Python code execution, and terminal commands."""
 
 import ast
+import base64
+import binascii
 import codecs
 import fnmatch
 import http.client
@@ -207,6 +209,154 @@ def _env_assignment_is_unsafe(name: str) -> bool:
 
 
 _FIND_EXEC_FLAGS = frozenset({"-exec", "-execdir", "-ok", "-okdir"})
+_SANDBOX_PYTHON_ENV_VARS = frozenset(
+    {"PATH", "PYTHONHOME", "PYTHONPATH", "UNSLOTH_STUDIO_SANDBOXED"}
+)
+_PYTHON_LAUNCH_WRAPPERS = _COMMAND_PREFIXES | frozenset({"conda", "hatch", "pipx", "poetry", "uv"})
+
+
+def _python_executable_token(token: str) -> bool:
+    base = os.path.basename(token.replace("\\", "/")).lower()
+    if base.endswith(".exe"):
+        base = base[:-4]
+    return bool(re.fullmatch(r"(?:python(?:w)?(?:\d+(?:\.\d+)*)?|py)", base))
+
+
+def _shell_command_segments(command: str) -> list[list[str]]:
+    try:
+        lexer = shlex.shlex(command, posix = sys.platform != "win32", punctuation_chars = ";&|()`")
+        lexer.whitespace_split = True
+        tokens = list(lexer)
+    except ValueError:
+        tokens = command.split()
+    segments: list[list[str]] = [[]]
+    for token in tokens:
+        if token in _SHELL_SEPARATORS:
+            if segments[-1]:
+                segments.append([])
+            continue
+        segments[-1].append(token.strip("\"'"))
+    return [segment for segment in segments if segment]
+
+
+def _segment_python_index(segment: list[str]) -> int | None:
+    command_index = 0
+    while command_index < len(segment) and _ASSIGNMENT_RE.match(segment[command_index]):
+        command_index += 1
+    if command_index >= len(segment):
+        return None
+    command = os.path.basename(segment[command_index].replace("\\", "/")).lower()
+    if _python_executable_token(segment[command_index]):
+        return command_index
+    if command not in _PYTHON_LAUNCH_WRAPPERS:
+        if command not in {"find", "fd"}:
+            return None
+        for index in range(command_index + 1, len(segment)):
+            if _python_executable_token(segment[index]) and any(
+                token in _FIND_EXEC_FLAGS for token in segment[command_index:index]
+            ):
+                return index
+        return None
+    for index in range(command_index + 1, len(segment)):
+        if _python_executable_token(segment[index]):
+            return index
+    return None
+
+
+def _python_flags_skip_sitecustomize(arguments: list[str]) -> bool:
+    skip_next = False
+    for argument in arguments:
+        if skip_next:
+            skip_next = False
+            continue
+        if argument in {"-c", "-m"} or not argument.startswith("-"):
+            break
+        if argument == "--":
+            break
+        if argument in {"--ignore-environment", "--isolated", "--no-site"}:
+            return True
+        if re.fullmatch(r"-[^-]*[SEI][^-]*", argument):
+            return True
+        if argument in {"-W", "-X", "--check-hash-based-pycs"}:
+            skip_next = True
+    return False
+
+
+def _segment_mutates_sandbox_python_env(segment: list[str], python_index: int) -> bool:
+    before_python = segment[:python_index]
+    for index, token in enumerate(before_python):
+        assignment = _ASSIGNMENT_RE.match(token)
+        if assignment and token.split("=", 1)[0].upper() in _SANDBOX_PYTHON_ENV_VARS:
+            return True
+        lowered = token.lower()
+        if lowered in {"-i", "--ignore-environment"} and before_python:
+            if os.path.basename(before_python[0]).lower() == "env":
+                return True
+        if lowered.startswith("--unset="):
+            if token.split("=", 1)[1].upper() in _SANDBOX_PYTHON_ENV_VARS:
+                return True
+        if lowered in {"-u", "--unset"} and index + 1 < len(before_python):
+            if before_python[index + 1].upper() in _SANDBOX_PYTHON_ENV_VARS:
+                return True
+    return False
+
+
+def _segment_persistently_mutates_sandbox_python_env(segment: list[str]) -> bool:
+    if not segment:
+        return False
+    first = os.path.basename(segment[0].replace("\\", "/")).lower()
+    if all(_ASSIGNMENT_RE.match(token) for token in segment):
+        return any(token.split("=", 1)[0].upper() in _SANDBOX_PYTHON_ENV_VARS for token in segment)
+    if first in {"unset", "unsetenv"}:
+        return any(token.upper() in _SANDBOX_PYTHON_ENV_VARS for token in segment[1:])
+    if first in {"export", "set", "setenv"}:
+        return any(
+            token.split("=", 1)[0].upper() in _SANDBOX_PYTHON_ENV_VARS for token in segment[1:]
+        )
+    return False
+
+
+def _sandbox_python_startup_bypasses_guard(command: str, depth: int = 0) -> bool:
+    """Detect terminal-launched Python that suppresses the sandbox sitecustomize guard."""
+    if depth > 4:
+        return True
+    environment_tainted = False
+    shell_names = {"bash", "cmd", "cmd.exe", "dash", "fish", "ksh", "sh", "zsh"}
+    for segment in _shell_command_segments(command):
+        first = os.path.basename(segment[0].replace("\\", "/")).lower()
+        wrapper_context = first in _PYTHON_LAUNCH_WRAPPERS
+        for shell_index, shell_token in enumerate(segment):
+            shell = os.path.basename(shell_token.replace("\\", "/")).lower()
+            if shell not in shell_names or (shell_index and not wrapper_context):
+                continue
+            for index in range(shell_index + 1, len(segment) - 1):
+                token = segment[index]
+                if token.lower() == "/c" or (token.startswith("-") and token.lower().endswith("c")):
+                    nested = segment[index + 1]
+                    if _segment_mutates_sandbox_python_env(segment, shell_index):
+                        nested = f"PYTHONPATH=; {nested}"
+                    if _sandbox_python_startup_bypasses_guard(nested, depth + 1):
+                        return True
+                    break
+            break
+        if first == "env":
+            for index, token in enumerate(segment):
+                if token in {"-S", "--split-string"} and index + 1 < len(segment):
+                    if _sandbox_python_startup_bypasses_guard(segment[index + 1], depth + 1):
+                        return True
+                elif token.startswith("--split-string="):
+                    if _sandbox_python_startup_bypasses_guard(token.split("=", 1)[1], depth + 1):
+                        return True
+        python_index = _segment_python_index(segment)
+        if python_index is not None:
+            if environment_tainted or _segment_mutates_sandbox_python_env(segment, python_index):
+                return True
+            if _python_flags_skip_sitecustomize(segment[python_index + 1 :]):
+                return True
+        environment_tainted = (
+            environment_tainted or _segment_persistently_mutates_sandbox_python_env(segment)
+        )
+    return False
 
 
 def _find_blocked_commands(command: str) -> set[str]:
@@ -2436,17 +2586,38 @@ _RENDER_HTML_SET_ATTRIBUTE_START_RE = re.compile(
     re.IGNORECASE,
 )
 _RENDER_HTML_PROPERTY_ASSIGNMENT_START_RE = re.compile(
-    r"\.\s*(?P<attr>src|href|srcset|action|formaction|poster|data|ping)\s*=(?!=)",
+    r"\.\s*(?P<attr>src|href|srcset|action|formaction|poster|data|ping|srcdoc)\s*"
+    r"(?P<operator>\+=|&&=|\|\|=|\?\?=|=(?!=))",
     re.IGNORECASE,
 )
 _RENDER_HTML_MARKUP_ASSIGNMENT_START_RE = re.compile(
-    r"\.\s*(?:innerHTML|outerHTML)\s*=(?!=)",
+    r"\.\s*(?:innerHTML|outerHTML)\s*(?:\+=|&&=|\|\|=|\?\?=|=(?!=))",
     re.IGNORECASE,
 )
 _RENDER_HTML_MARKUP_CALL_START_RE = re.compile(
     r"(?:\.\s*(?P<insert>insertAdjacentHTML)|"
     r"\bdocument\s*(?:\?\.\s*|\.\s*)(?P<write>write|writeln))"
     r"\s*(?:\?\.\s*)?\(",
+    re.IGNORECASE,
+)
+_RENDER_HTML_COMPUTED_ASSIGNMENT_START_RE = re.compile(
+    r"\[\s*(?P<member>[^\]]+)\s*\]\s*(?:\+=|&&=|\|\|=|\?\?=|=(?!=))",
+    re.IGNORECASE | re.DOTALL,
+)
+_RENDER_HTML_COMPUTED_CALL_START_RE = re.compile(
+    r"(?:(?P<document>\bdocument)\s*)?\[\s*(?P<member>[^\]]+)\s*\]\s*"
+    r"(?:\?\.\s*)?\(",
+    re.IGNORECASE | re.DOTALL,
+)
+_RENDER_HTML_REFLECT_SET_START_RE = re.compile(
+    r"\bReflect\s*\.\s*set\s*(?:\?\.\s*)?\(", re.IGNORECASE
+)
+_RENDER_HTML_OBJECT_ASSIGN_START_RE = re.compile(
+    r"\bObject\s*\.\s*assign\s*(?:\?\.\s*)?\(", re.IGNORECASE
+)
+_RENDER_HTML_OBJECT_PROPERTY_START_RE = re.compile(
+    r"(?P<quote>['\"]?)(?P<member>src|href|srcset|action|formaction|poster|data|ping|"
+    r"srcdoc|innerHTML|outerHTML)(?P=quote)\s*:\s*",
     re.IGNORECASE,
 )
 _RENDER_HTML_NETWORK_MEMBERS = frozenset(
@@ -2466,6 +2637,9 @@ _RENDER_HTML_NETWORK_ATTRIBUTES = frozenset(
 )
 _RENDER_HTML_URL_LIST_ATTRIBUTES = frozenset({"srcset", "ping"})
 _RENDER_HTML_URL_LIST_NETWORK_RE = re.compile(r"(?:^|[\s,])(?:https?:|/)", re.IGNORECASE)
+_RENDER_HTML_ACTIVE_DATA_MIME_TYPES = frozenset(
+    {"text/html", "application/xhtml+xml", "image/svg+xml"}
+)
 
 
 def _leading_js_string(expression: str) -> tuple[str, int] | None:
@@ -2592,10 +2766,37 @@ def _static_js_assignment_string(expression: str) -> str | None:
     return None
 
 
-def _render_html_attribute_reaches_network(name: str, value: str | None) -> bool:
+def _render_html_data_document_reaches_network(value: str, depth: int) -> bool:
+    """Inspect executable document payloads embedded in data: URLs."""
+    if not value.lower().startswith("data:"):
+        return False
+    header, separator, payload = value[5:].partition(",")
+    if not separator:
+        return True
+    parts = [part.strip() for part in header.split(";")]
+    media_type = (parts[0] or "text/plain").lower()
+    if media_type not in _RENDER_HTML_ACTIVE_DATA_MIME_TYPES:
+        return False
+    try:
+        payload_bytes = urllib.parse.unquote_to_bytes(payload)
+        if any(part.lower() == "base64" for part in parts[1:]):
+            payload_bytes = base64.b64decode(b"".join(payload_bytes.split()), validate = True)
+        markup = payload_bytes.decode("utf-8", errors = "replace")
+    except (ValueError, binascii.Error):
+        return True
+    return _render_html_code_reaches_network(markup, depth + 1)
+
+
+def _render_html_attribute_reaches_network(
+    name: str,
+    value: str | None,
+    depth: int = 0,
+) -> bool:
     if value is None:
         return False
     value = value.lstrip()
+    if value.lower().startswith("data:"):
+        return _render_html_data_document_reaches_network(value, depth)
     if name in _RENDER_HTML_URL_LIST_ATTRIBUTES:
         return bool(_RENDER_HTML_URL_LIST_NETWORK_RE.search(value))
     return value.lower().startswith(("http:", "https:", "/"))
@@ -2617,7 +2818,7 @@ class _RenderHtmlAttributeParser(HTMLParser):
             if name == "xlink:href":
                 name = "href"
             if name in _RENDER_HTML_NETWORK_ATTRIBUTES and _render_html_attribute_reaches_network(
-                name, value
+                name, value, self.depth
             ):
                 self.reaches_network = True
                 return
@@ -2667,6 +2868,51 @@ def _js_call_arguments(code: str, offset: int) -> list[str] | None:
     return None
 
 
+def _render_html_assigned_member_reaches_network(
+    member: str, value: str | None, depth: int
+) -> bool:
+    member = member.lower()
+    if member in {"innerhtml", "outerhtml", "srcdoc"}:
+        return value is None or _render_html_code_reaches_network(value, depth + 1)
+    if member in _RENDER_HTML_NETWORK_ATTRIBUTES:
+        return value is None or _render_html_attribute_reaches_network(member, value, depth)
+    return False
+
+
+def _render_html_set_attribute_arguments(arguments: list[str], method: str, depth: int) -> bool:
+    if method == "setattributens":
+        name_index, value_index = 1, 2
+    else:
+        name_index, value_index = 0, 1
+    if len(arguments) <= value_index:
+        return False
+    name = _static_js_string(arguments[name_index])
+    value = _static_js_string(arguments[value_index])
+    if name is None:
+        return bool(
+            value is None
+            or _RENDER_HTML_URL_LIST_NETWORK_RE.search(value.lstrip())
+            or _render_html_code_reaches_network(value, depth + 1)
+        )
+    name = name.lower().rsplit(":", 1)[-1]
+    return _render_html_assigned_member_reaches_network(name, value, depth)
+
+
+def _render_html_markup_call_reaches_network(arguments: list[str], method: str, depth: int) -> bool:
+    if method == "insertadjacenthtml":
+        if len(arguments) < 2:
+            return False
+        markup = _static_js_string(arguments[1])
+    else:
+        if not arguments:
+            return False
+        parts = [_static_js_string(argument) for argument in arguments]
+        markup = "".join(part for part in parts if part is not None)
+        if any(part is None for part in parts):
+            markup = None
+    return markup is None or _render_html_code_reaches_network(markup, depth + 1)
+
+
 def _render_html_computed_network_access(code: str, depth: int = 0) -> bool:
     for match in _RENDER_HTML_GLOBAL_BRACKET_RE.finditer(code):
         expression = match.group(1)
@@ -2689,29 +2935,15 @@ def _render_html_computed_network_access(code: str, depth: int = 0) -> bool:
         arguments = _js_call_arguments(code, match.end())
         if arguments is None:
             return True
-        if match.group("method").lower() == "setattributens":
-            name_index, value_index = 1, 2
-        else:
-            name_index, value_index = 0, 1
-        if len(arguments) <= value_index:
-            continue
-        name = _static_js_string(arguments[name_index])
-        value = _static_js_string(arguments[value_index])
-        if name is None:
-            if value is None or _RENDER_HTML_URL_LIST_NETWORK_RE.search(value.lstrip()):
-                return True
-            continue
-        name = name.lower().rsplit(":", 1)[-1]
-        if name not in _RENDER_HTML_NETWORK_ATTRIBUTES:
-            continue
-        if value is None or _render_html_attribute_reaches_network(name, value):
+        if _render_html_set_attribute_arguments(arguments, match.group("method").lower(), depth):
             return True
 
     for match in _RENDER_HTML_PROPERTY_ASSIGNMENT_START_RE.finditer(code):
         value = _static_js_assignment_string(code[match.end() :])
         if value is None:
             return True
-        if _render_html_attribute_reaches_network(match.group("attr").lower(), value):
+        name = match.group("attr").lower()
+        if _render_html_assigned_member_reaches_network(name, value, depth):
             return True
 
     for match in _RENDER_HTML_MARKUP_ASSIGNMENT_START_RE.finditer(code):
@@ -2726,19 +2958,58 @@ def _render_html_computed_network_access(code: str, depth: int = 0) -> bool:
         if arguments is None:
             return True
         method = (match.group("insert") or match.group("write")).lower()
-        if method == "insertadjacenthtml":
-            if len(arguments) < 2:
-                continue
-            markup = _static_js_string(arguments[1])
-        else:
-            if not arguments:
-                continue
-            parts = [_static_js_string(argument) for argument in arguments]
-            markup = "".join(part for part in parts if part is not None)
-            if any(part is None for part in parts):
-                markup = None
-        if markup is None or _render_html_code_reaches_network(markup, depth + 1):
+        if _render_html_markup_call_reaches_network(arguments, method, depth):
             return True
+
+    for match in _RENDER_HTML_COMPUTED_ASSIGNMENT_START_RE.finditer(code):
+        member = _static_js_string(match.group("member"))
+        if member is None:
+            continue
+        value = _static_js_assignment_string(code[match.end() :])
+        if _render_html_assigned_member_reaches_network(member, value, depth):
+            return True
+
+    for match in _RENDER_HTML_COMPUTED_CALL_START_RE.finditer(code):
+        method = _static_js_string(match.group("member"))
+        if method is None:
+            continue
+        method = method.lower()
+        arguments = _js_call_arguments(code, match.end())
+        if arguments is None:
+            return True
+        if method in {"setattribute", "setattributens"}:
+            if _render_html_set_attribute_arguments(arguments, method, depth):
+                return True
+        elif method == "insertadjacenthtml" or (
+            method in {"write", "writeln"} and match.group("document")
+        ):
+            if _render_html_markup_call_reaches_network(arguments, method, depth):
+                return True
+
+    for match in _RENDER_HTML_REFLECT_SET_START_RE.finditer(code):
+        arguments = _js_call_arguments(code, match.end())
+        if arguments is None:
+            return True
+        if len(arguments) < 3:
+            continue
+        member = _static_js_string(arguments[1])
+        if member is None:
+            continue
+        value = _static_js_string(arguments[2])
+        if _render_html_assigned_member_reaches_network(member, value, depth):
+            return True
+
+    for match in _RENDER_HTML_OBJECT_ASSIGN_START_RE.finditer(code):
+        arguments = _js_call_arguments(code, match.end())
+        if arguments is None:
+            return True
+        for source in arguments[1:]:
+            for property_match in _RENDER_HTML_OBJECT_PROPERTY_START_RE.finditer(source):
+                value = _static_js_assignment_string(source[property_match.end() :])
+                if _render_html_assigned_member_reaches_network(
+                    property_match.group("member"), value, depth
+                ):
+                    return True
     return False
 
 
@@ -6217,6 +6488,8 @@ def _bash_exec(
 
     # Block dangerous commands (skipped when the sandbox is disabled)
     if not disable_sandbox:
+        if _sandbox_python_startup_bypasses_guard(command):
+            return "Blocked: sandboxed Python cannot disable the Studio runtime guard."
         blocked = _find_blocked_commands(command)
         if blocked:
             return f"Blocked command(s) for safety: {', '.join(sorted(blocked))}"
