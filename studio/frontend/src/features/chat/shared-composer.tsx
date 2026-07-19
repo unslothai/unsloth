@@ -1220,6 +1220,12 @@ export function SharedComposer({
           ggufMaxContextLength: resp.is_gguf
             ? (resp.max_context_length ?? null)
             : null,
+          // Compare selections load by repo/variant, never from the desktop
+          // file picker, so they carry no native lease. Clear any prior picked
+          // file's token/expiry (mirroring the single-model load path) so the
+          // reload path never sends a stale lease for the now-active pane.
+          activeNativePathToken: null,
+          activeNativePathExpiresAtMs: null,
           ...resolveLoadedSpeculativeSettings(resp),
         });
         if (!isGgufLoad) {
