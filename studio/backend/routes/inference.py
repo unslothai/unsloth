@@ -2143,6 +2143,23 @@ def _permission_mode_confirm(payload) -> bool:
     return bool(getattr(payload, "stream", False))
 
 
+def _sandbox_disabled(payload) -> bool:
+    """Whether python/terminal execution actually runs unsandboxed for this request.
+
+    Both agent loops (llama_cpp.py and safetensors_agentic.py) normalize the
+    permissive switch the same way: permission_mode "full" is turned into
+    bypass_permissions=True, and an explicit bypass_permissions is turned into
+    permission_mode "full". Execution then passes disable_sandbox=bypass_permissions,
+    so "full" and bypass_permissions are equivalent and BOTH skip _check_code_safety
+    and the terminal curl/wget blocklist. The tool notes and action nudge must match
+    what executes, so they key off this effective flag rather than bypass_permissions
+    alone.
+    """
+    return bool(getattr(payload, "bypass_permissions", False)) or (
+        getattr(payload, "permission_mode", None) == "full"
+    )
+
+
 def _confirm_gate_needs_stream(payload) -> bool:
     """Whether Unsloth's local tool-loop confirm gate still requires stream=true.
 
@@ -2506,11 +2523,11 @@ async def _select_request_tools(
     # Drop the RAG tool without a scope: nothing to search over.
     if not payload.rag_scope:
         tools = [t for t in tools if t["function"]["name"] != "search_knowledge_base"]
-    # Bypass Permissions disables the sandbox (disable_sandbox = bypass_permissions
-    # in the tool loops), so the python/terminal descriptions must not claim the
-    # allowlist/curl-wget block that no longer applies. permission_mode "full"
-    # alone does not disable the sandbox, so gate strictly on bypass_permissions.
-    if getattr(payload, "bypass_permissions", False):
+    # A sandbox-disabled request (bypass_permissions, or permission_mode "full"
+    # which both loops normalize to bypass_permissions=True) runs python/terminal
+    # with disable_sandbox=True, so the descriptions must not claim the
+    # allowlist/curl-wget block that no longer applies at execution.
+    if _sandbox_disabled(payload):
         tools = apply_bypass_tool_notes(tools)
     if mcp_allowed:
         tools = tools + await get_enabled_mcp_tools()
@@ -7502,7 +7519,7 @@ async def openai_chat_completions(
             _nudge = _build_tool_action_nudge(
                 tools = tools_to_use,
                 model_name = model_name,
-                disable_sandbox = bool(payload.bypass_permissions),
+                disable_sandbox = _sandbox_disabled(payload),
             )
 
             # Nudge the model to ground in attached documents instead of memory.
@@ -8853,7 +8870,7 @@ async def openai_chat_completions(
         _sf_nudge = _build_tool_action_nudge(
             tools = _sf_tools_to_use,
             model_name = model_name,
-            disable_sandbox = bool(payload.bypass_permissions),
+            disable_sandbox = _sandbox_disabled(payload),
         )
 
         # RAG nudge, mirroring the GGUF path.
@@ -12582,16 +12599,17 @@ async def anthropic_messages(
             requested_studio_tools,
             payload.enabled_tools,
         )
-        # Bypass Permissions disables the sandbox, so drop the allowlist/curl-wget
-        # restriction from the python/terminal descriptions here too.
-        if getattr(payload, "bypass_permissions", False):
+        # A sandbox-disabled request (bypass_permissions or permission_mode "full")
+        # runs unsandboxed, so drop the allowlist/curl-wget restriction from the
+        # python/terminal descriptions here too.
+        if _sandbox_disabled(payload):
             openai_tools = apply_bypass_tool_notes(openai_tools)
 
         # Build tool-use system prompt nudge (same logic as /chat/completions)
         _nudge = _build_tool_action_nudge(
             tools = openai_tools,
             model_name = model_name,
-            disable_sandbox = bool(getattr(payload, "bypass_permissions", False)),
+            disable_sandbox = _sandbox_disabled(payload),
         )
 
         if _nudge:

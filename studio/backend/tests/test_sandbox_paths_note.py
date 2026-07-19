@@ -199,3 +199,24 @@ def test_code_execution_nudge_does_not_deny_local_file_access():
     assert "cannot access the user's own computer" not in lowered
     assert "default" in lowered and "location for your work" in lowered
     assert "give an exact path" in lowered
+
+
+def test_sandbox_disabled_treats_permission_mode_full_as_unsandboxed():
+    # Both agent loops fold permission_mode "full" into bypass_permissions=True and
+    # pass disable_sandbox=bypass_permissions at execution, so "full" runs python /
+    # terminal unsandboxed (skips _check_code_safety and the curl/wget blocklist).
+    # The tool notes and action nudge key off the effective flag so they always
+    # match what executes, even if the model-layer fold is ever refactored away.
+    from types import SimpleNamespace
+
+    from routes.inference import _sandbox_disabled
+
+    # Explicit bypass -> unsandboxed.
+    assert _sandbox_disabled(SimpleNamespace(bypass_permissions=True, permission_mode="ask")) is True
+    # "full" even without bypass set on the object -> still unsandboxed (decoupled
+    # from the model-layer fold, so the notes never overclaim a live restriction).
+    assert _sandbox_disabled(SimpleNamespace(bypass_permissions=False, permission_mode="full")) is True
+    # A genuinely sandboxed request keeps the restrictive notes.
+    assert _sandbox_disabled(SimpleNamespace(bypass_permissions=False, permission_mode="ask")) is False
+    # Missing attributes must not raise (defensive getattr).
+    assert _sandbox_disabled(SimpleNamespace()) is False
