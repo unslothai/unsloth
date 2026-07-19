@@ -311,8 +311,35 @@ export function useLlamaUpdateCheck({
       message?: string | null;
       job?: unknown;
     } | null = null;
+    // Two-step apply: confirm to mint a single-use token bound to the offered
+    // build, then apply with it. A bare POST is refused with confirmation_required.
+    let confirmToken: string;
     try {
-      const res = await authFetch("/api/llama/update", { method: "POST" });
+      const cres = await authFetch("/api/llama/update/confirm", { method: "POST" });
+      if (!cres.ok) {
+        setApplying(false);
+        return { ok: false, error: `HTTP ${cres.status}` };
+      }
+      const confirm = (await cres.json().catch(() => null)) as {
+        appliable?: boolean;
+        reason?: string | null;
+        confirm_token?: string | null;
+      } | null;
+      if (!confirm?.appliable || !confirm.confirm_token) {
+        setApplying(false);
+        return { ok: false, error: confirm?.reason ?? "update is not applicable" };
+      }
+      confirmToken = confirm.confirm_token;
+    } catch (e) {
+      setApplying(false);
+      return { ok: false, error: String(e) };
+    }
+    try {
+      const res = await authFetch("/api/llama/update", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ confirm_token: confirmToken }),
+      });
       if (!res.ok) {
         setApplying(false);
         return { ok: false, error: `HTTP ${res.status}` };

@@ -274,6 +274,51 @@ def test_confirm_endpoint_up_to_date_offers_no_token(monkeypatch):
     assert out.confirm_token is None
 
 
+def test_confirm_endpoint_reports_local_link_not_up_to_date(monkeypatch):
+    # A --with-llama-cpp-dir tree reports local_link=True with update_available=False.
+    # The confirm endpoint must surface reason="local_link", not mask it behind the
+    # generic up_to_date refusal.
+    monkeypatch.setattr(
+        rl,
+        "get_update_status",
+        lambda force_refresh = False: {
+            "update_available": False,
+            "local_link": True,
+            "installed_tag": "b9909",
+            "latest_tag": None,
+            "job": {"state": "idle"},
+        },
+    )
+    out = asyncio.run(rl.llama_update_confirm(current_subject = "operator"))
+    assert out.reason == "local_link"
+    assert out.appliable is False
+    assert out.confirm_token is None
+
+
+def test_apply_revalidates_token_against_refreshed_target(monkeypatch):
+    # A token confirmed for b9909; a newer build b9910 publishes before apply.
+    # The apply must re-resolve the target and refuse the now-stale token rather
+    # than install a build the operator never confirmed.
+    def _status(force_refresh: bool = False):
+        return {
+            "supported": True,
+            "update_available": True,
+            "installed_tag": "b9860",
+            "latest_tag": "b9910" if force_refresh else "b9909",
+            "update_size_bytes": 42_000_000,
+            "job": {"state": "idle"},
+        }
+
+    monkeypatch.setattr(rl, "get_update_status", _status)
+    calls = _track_start(monkeypatch)
+    tok, _ = _uc.mint_confirm_token("b9909")
+    body = rl.LlamaUpdateRequest(confirm_token = tok)
+    out = asyncio.run(rl.llama_update(request = body, current_subject = "operator"))
+    assert out.started is False
+    assert out.reason == "stale_target"
+    assert calls["n"] == 0  # never installed the unconfirmed b9910
+
+
 def test_status_reports_machine():
     out = asyncio.run(rl.llama_update_status(force_refresh = False, current_subject = "operator"))
     assert out.machine.hostname

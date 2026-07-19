@@ -209,22 +209,24 @@ async def llama_update_confirm(
     latest_tag = status.get("latest_tag")
     size = status.get("update_size_bytes")
 
-    if not status.get("update_available"):
-        return LlamaUpdateConfirmResponse(
-            update_available = False,
-            appliable = False,
-            reason = status.get("reason") or "up_to_date",
-            machine = machine,
-            installed_tag = installed_tag,
-            latest_tag = latest_tag,
-            update_size_bytes = size,
-        )
-    # Update exists but the tree is a --with-llama-cpp-dir local link: describe, do not apply.
+    # A --with-llama-cpp-dir local link reports update_available=False, so this
+    # must run before the up_to_date branch below or the local_link reason is
+    # masked and callers are wrongly told there is no update.
     if status.get("local_link"):
         return LlamaUpdateConfirmResponse(
             update_available = True,
             appliable = False,
             reason = "local_link",
+            machine = machine,
+            installed_tag = installed_tag,
+            latest_tag = latest_tag,
+            update_size_bytes = size,
+        )
+    if not status.get("update_available"):
+        return LlamaUpdateConfirmResponse(
+            update_available = False,
+            appliable = False,
+            reason = status.get("reason") or "up_to_date",
             machine = machine,
             installed_tag = installed_tag,
             latest_tag = latest_tag,
@@ -260,8 +262,10 @@ async def llama_update(
     confirmation, not the caller's location, so a headless SSH server confirms like a local one."""
     req = request or LlamaUpdateRequest()
     machine = _current_machine()
-    # Cached read: names the host and build for the prompt and binds the token.
-    status = await asyncio.to_thread(get_update_status)
+    # Force-refresh so the token is validated against the same build start_update
+    # will resolve: a stale cache would accept a token minted for an older tag and
+    # then install a newer one, bypassing the exact-build binding.
+    status = await asyncio.to_thread(get_update_status, force_refresh = True)
     installed_tag = status.get("installed_tag")
     target_tag = status.get("latest_tag")
     size = status.get("update_size_bytes")
