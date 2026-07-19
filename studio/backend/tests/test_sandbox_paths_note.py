@@ -50,6 +50,17 @@ def test_note_does_not_claim_project_sandbox_starts_empty():
     assert "project" in lowered
 
 
+def test_note_does_not_claim_local_files_are_inaccessible():
+    lowered = _SANDBOX_PATHS_NOTE.lower()
+    # On a locally hosted Studio the child runs on the host with no filesystem
+    # isolation on this branch (Landlock is a separate change), and cat is an
+    # auto-safe terminal command, so an exact local path is readable; the note
+    # must not claim otherwise. It should frame the workdir as the default work
+    # location instead.
+    assert "cannot see the user's own computer" not in lowered
+    assert "default location for your work" in lowered
+
+
 def test_note_is_appended_to_both_tool_descriptions():
     assert PYTHON_TOOL["function"]["description"].endswith(_SANDBOX_PATHS_NOTE)
     assert TERMINAL_TOOL["function"]["description"].endswith(_SANDBOX_PATHS_NOTE)
