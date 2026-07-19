@@ -161,7 +161,9 @@ export async function* streamResearchEvents(
   try {
     while (true) {
       const { done, value } = await reader.read();
-      buffer += decoder.decode(value, { stream: !done }).replace(/\r\n/g, "\n");
+      buffer += decoder.decode(value, { stream: !done });
+      // Normalize on the whole buffer so a CRLF split across chunks still frames.
+      buffer = buffer.replace(/\r\n/g, "\n");
       let boundary = buffer.indexOf("\n\n");
       while (boundary >= 0) {
         const block = buffer.slice(0, boundary);

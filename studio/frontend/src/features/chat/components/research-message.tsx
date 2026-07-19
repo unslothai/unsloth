@@ -106,7 +106,7 @@ export function ResearchMessage(): ReactElement {
           markdown={run.report}
           className="max-h-none overflow-visible border-0 bg-transparent p-0 text-[15.5px]"
         />
-        <SourcesGroup sources={sources} />
+        <SourcesGroup sources={sources} allowRemoteIcons={false} />
         <DocumentSourcesGroup sources={documentSources} />
       </div>
     );

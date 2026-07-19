@@ -40,14 +40,16 @@ function SourceIcon({
   url,
   className,
   size = 3,
+  allowRemoteIcons = true,
   ...props
-}: ComponentProps<"span"> & { url: string; size?: number }) {
+}: ComponentProps<"span"> & { url: string; size?: number; allowRemoteIcons?: boolean }) {
   const [hasError, setHasError] = useState(false);
   const domain = extractDomain(url);
   const SIZE_CLASSES: Record<number, string> = { 3: "size-3", 4: "size-4", 5: "size-5" };
   const sizeClass = SIZE_CLASSES[size] ?? "size-3";
 
-  if (hasError) {
+  // When disabled, render the letter fallback instead of fetching a third-party favicon.
+  if (hasError || !allowRemoteIcons) {
     return (
       <span
         data-slot="source-icon-fallback"
@@ -137,7 +139,10 @@ export interface SourceData {
   description?: string;
 }
 
-const SourceBadge: FC<{ source: SourceData }> = ({ source }) => {
+const SourceBadge: FC<{ source: SourceData; allowRemoteIcons?: boolean }> = ({
+  source,
+  allowRemoteIcons = true,
+}) => {
   const domain = extractDomain(source.url);
   const displayTitle = source.title || domain;
 
@@ -146,7 +151,7 @@ const SourceBadge: FC<{ source: SourceData }> = ({ source }) => {
       <HoverCardTrigger asChild>
         <span className="inline-block">
           <Source href={source.url}>
-            <SourceIcon url={source.url} />
+            <SourceIcon url={source.url} allowRemoteIcons={allowRemoteIcons} />
             <SourceTitle>{displayTitle}</SourceTitle>
           </Source>
         </span>
@@ -158,7 +163,12 @@ const SourceBadge: FC<{ source: SourceData }> = ({ source }) => {
         style={{ animation: "none" }}
       >
         <div className="flex gap-2.5">
-          <SourceIcon url={source.url} size={4} className="mt-0.5 shrink-0" />
+          <SourceIcon
+            url={source.url}
+            size={4}
+            className="mt-0.5 shrink-0"
+            allowRemoteIcons={allowRemoteIcons}
+          />
           <div className="min-w-0 space-y-1">
             <p className="text-sm font-semibold leading-tight truncate">
               {source.title || domain}
@@ -178,8 +188,9 @@ const SourceBadge: FC<{ source: SourceData }> = ({ source }) => {
 
 // ── Grouped sources with 2-row collapse ─────────────────────
 
-const SourcesGroup: FC<{ sources?: SourceData[] }> = ({
+const SourcesGroup: FC<{ sources?: SourceData[]; allowRemoteIcons?: boolean }> = ({
   sources: suppliedSources,
+  allowRemoteIcons = true,
 }) => {
   const message = useMessage();
   const containerRef = useRef<HTMLDivElement>(null);
@@ -280,7 +291,7 @@ const SourcesGroup: FC<{ sources?: SourceData[] }> = ({
           {sources.map((source) => (
             <span key={source.id} className="inline-block">
               <Source href={source.url}>
-                <SourceIcon url={source.url} />
+                <SourceIcon url={source.url} allowRemoteIcons={allowRemoteIcons} />
                 <SourceTitle>{source.title || extractDomain(source.url)}</SourceTitle>
               </Source>
             </span>
@@ -291,7 +302,7 @@ const SourcesGroup: FC<{ sources?: SourceData[] }> = ({
       {/* Visible container */}
       <div className="flex flex-wrap gap-1">
         {displayedSources.map((source) => (
-          <SourceBadge key={source.id} source={source} />
+          <SourceBadge key={source.id} source={source} allowRemoteIcons={allowRemoteIcons} />
         ))}
         {shouldCollapse && !expanded && (
           <button

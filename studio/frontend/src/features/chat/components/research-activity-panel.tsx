@@ -633,7 +633,7 @@ function PlanReview({ runId }: { runId: string }): ReactElement | null {
                 <Button
                   variant="ghost"
                   size="sm"
-                  disabled={draft.steps.length >= 30}
+                  disabled={draft.steps.length >= (run?.config?.budgets?.maxSteps ?? 30)}
                   onClick={() => {
                     setStepKeys((keys) => [
                       ...keys,
@@ -787,6 +787,11 @@ export function ResearchActivityPanel({
   }
   const { run, activities } = session;
   const elapsedEnd = run.completedAt ?? elapsedNow ?? run.updatedAt;
+  // Count web and document sources together so a RAG-only run is not shown as 0.
+  const documentCount = new Set(
+    (run.documentSources ?? []).map((source) => source.documentId ?? source.filename),
+  ).size;
+  const sourceCount = run.sources.length + documentCount;
   const allowedDomains = run.config?.websitePolicy?.allowedDomains ?? [];
   const blockedDomains = run.config?.websitePolicy?.blockedDomains ?? [];
   const websiteLimitLabel = allowedDomains.length
@@ -857,7 +862,7 @@ export function ResearchActivityPanel({
               </p>
             ) : null}
             <p className="mt-1 text-[10.5px] tabular-nums text-muted-foreground">
-              {formatElapsed(run.createdAt, elapsedEnd)} · {run.sources.length}{" "}
+              {formatElapsed(run.createdAt, elapsedEnd)} · {sourceCount}{" "}
               sources ·{" "}
               {run.steps.filter((step) => step.status === "completed").length}{" "}
               actions
