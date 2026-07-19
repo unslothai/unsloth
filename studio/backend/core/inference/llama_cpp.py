@@ -9001,6 +9001,7 @@ class LlamaCppBackend:
     def _install_cancel_aware_read(
         client: "httpx.Client",
         cancel_event: threading.Event,
+        response: Optional["httpx.Response"] = None,
         poll_s: float = 0.2,
     ) -> None:
         """Make the reader thread interrupt its own blocked recv() on cancel.
@@ -9011,8 +9012,29 @@ class LlamaCppBackend:
         network stream so each read loops in short slices and polls cancel_event
         between them: the reader interrupts itself, so cancel is portable and
         works for plain and TLS streams. Slice timeouts are swallowed, so a
-        slow-but-alive stream is never torn down."""
+        slow-but-alive stream is never torn down.
+
+        httpcore's _receive_response_body snapshots request.extensions["timeout"]
+        ["read"] once when the body starts, so lowering it to the stall timeout
+        after the first token never reaches the socket read. When ``response`` is
+        given we re-read that live value per call and bound each read by it, so
+        the post-first-token stall timeout is honored instead of the long prefill
+        timeout."""
         import httpcore
+
+        def _live_read_timeout() -> Optional[float]:
+            if response is None:
+                return None
+            try:
+                ext = response.request.extensions.get("timeout")
+                if isinstance(ext, dict):
+                    value = ext.get("read")
+                    if isinstance(value, (int, float)):
+                        return float(value)
+            except Exception:
+                pass
+            return None
+
         try:
             pool = getattr(getattr(client, "_transport", None), "_pool", None)
             for connection in list(getattr(pool, "_connections", []) or []):
@@ -9027,7 +9049,11 @@ class LlamaCppBackend:
                     timeout = None,
                     _orig = orig_read,
                 ):
-                    deadline = None if timeout is None else time.monotonic() + timeout
+                    live = _live_read_timeout()
+                    effective = live if live is not None else timeout
+                    deadline = (
+                        None if effective is None else time.monotonic() + effective
+                    )
                     while True:
                         if cancel_event.is_set():
                             raise httpcore.ReadError("stream cancelled by user")
@@ -9110,8 +9136,12 @@ class LlamaCppBackend:
                 if cancel_event is not None:
                     # Portable mid-stream cancel: the reader polls cancel itself,
                     # so Stop interrupts a stalled read even where the watcher's
-                    # cross-thread socket shutdown does not (Windows).
-                    LlamaCppBackend._install_cancel_aware_read(client, cancel_event)
+                    # cross-thread socket shutdown does not (Windows). Pass the
+                    # response so the wrapper honors the live (post-first-token
+                    # stall) read timeout, which httpcore otherwise snapshots.
+                    LlamaCppBackend._install_cancel_aware_read(
+                        client, cancel_event, response
+                    )
                 if cancel_event is not None and cancel_event.is_set():
                     raise _LlamaStreamCancelled
                 yield response
