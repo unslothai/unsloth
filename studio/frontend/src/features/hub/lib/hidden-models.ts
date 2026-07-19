@@ -19,8 +19,20 @@ export function isHiddenModelId(
   ...values: (string | null | undefined)[]
 ): boolean {
   return values.some((v) => {
-    if (!v) return false;
+    if (!v) {
+      return false;
+    }
     const lower = v.toLowerCase();
     return HIDDEN_NEEDLES.some((needle) => lower.includes(needle));
   });
+}
+
+/** Exact-match configured infra repos without hiding similarly named models. */
+export function isConfiguredHiddenModelId(
+  configuredIds: ReadonlySet<string>,
+  ...values: (string | null | undefined)[]
+): boolean {
+  return values.some(
+    (value) => value != null && configuredIds.has(value.trim().toLowerCase()),
+  );
 }

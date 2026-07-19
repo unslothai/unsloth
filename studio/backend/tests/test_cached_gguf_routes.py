@@ -201,6 +201,22 @@ def test_is_hidden_model_keeps_stale_default_embedder_hidden(monkeypatch):
     assert not models_route._is_hidden_model("/models/bge-small-en-v1.50")
 
 
+def test_is_hidden_model_keeps_env_default_hidden_after_override(monkeypatch):
+    """A persisted override must not expose the deployment's env default."""
+    from core.rag import config as rag_config
+
+    monkeypatch.delenv("RAG_EMBED_GGUF_REPO", raising = False)
+    monkeypatch.setattr(rag_config, "EMBEDDING_MODEL", "org/env-default")
+    monkeypatch.setattr(rag_config, "effective_embedding_model", lambda: "org/custom")
+    monkeypatch.setattr(rag_config, "effective_gguf_repo", lambda: "org/custom-GGUF")
+
+    assert models_route._is_hidden_model("org/env-default")
+    assert models_route._is_hidden_model("org/env-default-GGUF")
+    assert models_route._is_hidden_model("org/custom")
+    assert models_route._is_hidden_model("org/custom-GGUF")
+    assert not models_route._is_hidden_model("org/env-default-chat")
+
+
 def test_hidden_models_importable_without_heavy_model_stack():
     """The hub cache scanner imports ``is_hidden_model`` at module scope, so it
     must not drag in ``utils/models/__init__`` (the model-config + checkpoint

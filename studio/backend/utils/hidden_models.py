@@ -99,10 +99,12 @@ def is_hidden_model(*values: str | None) -> bool:
         *(repo_id.lower() for repo_id in _DEFAULT_EMBEDDING_REPO_IDS),
     }
     exact_paths: list[str] = []
-    for model in (
+    for model in {
+        rag_config.EMBEDDING_MODEL,
+        rag_config.default_gguf_repo(),
         rag_config.effective_embedding_model(),
         rag_config.effective_gguf_repo(),
-    ):
+    }:
         existing_path = _existing_resolved_path(model)
         if existing_path:
             exact_paths.append(existing_path.lower())

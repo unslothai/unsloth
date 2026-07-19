@@ -63,6 +63,7 @@ import { useDiscoverSearch } from "./hooks/use-discover-search";
 import { useFeedWriteBack } from "./hooks/use-feed-write-back";
 import { useHubFeed } from "./hooks/use-hub-feed";
 import { useHubModelVram } from "./hooks/use-hub-model-vram";
+import { useHiddenEmbeddingModelIds } from "./hooks/use-hidden-embedding-models";
 import { useModelsSelection } from "./hooks/use-models-selection";
 import {
   CHANNEL_TO_SECTION,
@@ -73,7 +74,10 @@ import {
   SECTION_TO_CHANNEL,
   findChannel,
 } from "./lib/channels";
-import { isHiddenModelId } from "./lib/hidden-models";
+import {
+  isConfiguredHiddenModelId,
+  isHiddenModelId,
+} from "./lib/hidden-models";
 import { inventoryRowMatches, tokenizeQuery } from "./lib/inventory-search";
 import {
   buildDiscoverRows,
@@ -385,6 +389,7 @@ export function ModelsPage() {
     useState<ModelFormatFilter>("all");
   const isDiscoverTab = tab === "discover";
   const isDatasetMode = resourceType === "datasets";
+  const hiddenEmbeddingModelIds = useHiddenEmbeddingModelIds(!isDatasetMode);
   const urlSection = hubSearch.section ?? null;
   const isModelDiscover = isDiscoverTab && !isDatasetMode;
   const sectionChannelId: ChannelId | null = urlSection
@@ -780,7 +785,13 @@ export function ModelsPage() {
       if (row.kind === "cache") {
         return (
           !row.optimistic ||
-          !isHiddenModelId(row.id, row.repoId, row.cachePath)
+          (!isHiddenModelId(row.id, row.repoId, row.cachePath) &&
+            !isConfiguredHiddenModelId(
+              hiddenEmbeddingModelIds,
+              row.id,
+              row.repoId,
+              row.cachePath,
+            ))
         );
       }
       // Local rows may lack a repo id, so also check path and title.
@@ -789,7 +800,7 @@ export function ModelsPage() {
         (inventoryTokens.length > 0 && inventoryRowMatches(row, inventoryTokens))
       );
     },
-    [inventoryTokens],
+    [hiddenEmbeddingModelIds, inventoryTokens],
   );
   // Format filter is a deliberate scope narrowing, so hard-filter it out. The
   // text query instead drives dim-not-filter on On Device (see ModelsCatalog) so
