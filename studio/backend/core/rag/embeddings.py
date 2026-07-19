@@ -207,7 +207,6 @@ def _get(model_name: str | None = None):
 
             if not is_local_path(load_name):
                 from utils.models import resolve_st_cached_repo_id_case
-
                 load_name = resolve_st_cached_repo_id_case(load_name)
             logger.info("loading embedding model %s on %s", load_name, device)
             # Read the offline state ONCE and use that single value for both the
