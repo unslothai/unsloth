@@ -203,6 +203,8 @@ def exercise_permission_mode_controls(page, shoot):
 
     choose("Run automatically")
     expect_mode("Run automatically")
+    expect(page.locator('button[data-pill-label="Search"]:visible').first).to_be_visible()
+    expect(page.locator('button[data-pill-label="Code"]:visible').first).to_be_visible()
     stored = page.evaluate("() => localStorage.getItem('unsloth_chat_permission_mode')")
     if stored != "off":
         fail(f"Run automatically persisted {stored!r}, expected 'off'")
@@ -222,6 +224,12 @@ def exercise_permission_mode_controls(page, shoot):
     dialog.get_by_role("button", name = "I understand").click()
     expect_mode("Full access")
     expect(pill).to_have_attribute("data-variant", "danger")
+    active_icon = pill.locator(".composer-pill-glyph > :first-child")
+    pill.hover()
+    page.wait_for_timeout(200)
+    icon_opacity = float(active_icon.evaluate("el => getComputedStyle(el).opacity"))
+    if icon_opacity < 0.5:
+        fail(f"Full access icon disappeared on hover (opacity={icon_opacity})")
     stored = page.evaluate("() => localStorage.getItem('unsloth_chat_permission_mode')")
     if stored != "off":
         fail(f"Full access overwrote persisted mode with {stored!r}")

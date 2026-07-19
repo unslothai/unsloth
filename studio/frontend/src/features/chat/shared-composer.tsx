@@ -789,7 +789,7 @@ export function SharedComposer({
   const pillsCompact =
     4 +
       (showImagePill ? 1 : 0) +
-      (showRagPill && ragEnabled && !ragDisabled ? 1 : 0) +
+      (showRagPill && ragEnabled ? 1 : 0) +
       (showWebFetchPill ? 1 : 0) +
       (artifactsEnabled ? 1 : 0) +
       (mcpEnabledForChat ? 1 : 0) >
