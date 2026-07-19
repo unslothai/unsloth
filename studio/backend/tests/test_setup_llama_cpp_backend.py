@@ -26,7 +26,9 @@ def _backend_case_block() -> str:
 
 def _run(value: str | None) -> list[str]:
     assign = "" if value is None else f"export UNSLOTH_LLAMA_CPP_BACKEND={value}\n"
-    script = f'_PREBUILT_CMD=()\n{assign}{_backend_case_block()}\nprintf "%s\\n" "${{_PREBUILT_CMD[@]}}"'
+    script = (
+        f'_PREBUILT_CMD=()\n{assign}{_backend_case_block()}\nprintf "%s\\n" "${{_PREBUILT_CMD[@]}}"'
+    )
     out = subprocess.run(["bash", "-c", script], capture_output = True, text = True, check = True)
     return out.stdout.split()
 
