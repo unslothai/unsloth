@@ -99,6 +99,14 @@ assert_eq "pin gated on SKIP_TORCH"        "yes" "$(grep -q 'if \[ "\$SKIP_TORCH
 # helper (definition + default path + three ROCm-index fallbacks).
 _helper_uses=$(grep -c '_install_torch_default_index' "$INSTALL_SH")
 assert_eq "kept-release helper used by all default-index paths" "yes" "$([ "$_helper_uses" -ge 5 ] && echo yes)"
+# The Radeon direct-wheel path must also honor the pin: the trio search is
+# clamped to the kept release's minor when the repo still offers it, inside
+# the versions-match block (i.e. between the initial target computation and
+# the downward search loop).
+_radeon_clamp_line=$(grep -n '_prev_kept_minor="\${_PREV_TORCH_PIN#torch==}"' "$INSTALL_SH" | head -1 | cut -d: -f1)
+_radeon_target_line=$(grep -n '_target_minor=\$_torch_minor' "$INSTALL_SH" | head -1 | cut -d: -f1)
+_radeon_loop_line=$(grep -n 'Loop downwards to find the first complete matching trio' "$INSTALL_SH" | head -1 | cut -d: -f1)
+assert_eq "Radeon trio search honors the kept release" "yes" "$([ -n "$_radeon_clamp_line" ] && [ -n "$_radeon_target_line" ] && [ -n "$_radeon_loop_line" ] && [ "$_radeon_clamp_line" -gt "$_radeon_target_line" ] && [ "$_radeon_clamp_line" -lt "$_radeon_loop_line" ] && echo yes)"
 
 echo ""
 if [ "$FAIL" -gt 0 ]; then

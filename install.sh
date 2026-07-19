@@ -2983,6 +2983,29 @@ elif [ -n "$TORCH_INDEX_URL" ]; then
                     [ "$_tv_equiv_minor" -lt "$_target_minor" ] && _target_minor=$_tv_equiv_minor
                     [ "$_ta_minor" -lt "$_target_minor" ] && _target_minor=$_ta_minor
 
+                    # A kept previous release (_PREV_TORCH_PIN) must also win
+                    # here: start the trio search at the kept minor when the
+                    # repo still offers a torch wheel for it, so a re-run over
+                    # an in-window 2.9 install is not moved to 2.10 just
+                    # because the listing carries both. Radeon wheels are
+                    # patch-curated per rocm release, so the minor is the unit
+                    # of preservation; if the kept minor's trio has gaps the
+                    # loop's existing downward search / index fallback applies.
+                    if [ -n "$_PREV_TORCH_PIN" ]; then
+                        _prev_kept_minor="${_PREV_TORCH_PIN#torch==}"
+                        _prev_kept_minor="${_prev_kept_minor#*.}"
+                        _prev_kept_minor="${_prev_kept_minor%%.*}"
+                        case "$_prev_kept_minor" in
+                            ''|*[!0-9]*) ;;
+                            *)
+                                if [ "$_prev_kept_minor" -lt "$_target_minor" ] && \
+                                   [ -n "$(_pick_radeon_wheel "torch" "2.${_prev_kept_minor}." 2>/dev/null)" ]; then
+                                    _target_minor=$_prev_kept_minor
+                                fi
+                                ;;
+                        esac
+                    fi
+
                     # Loop downwards to find the first complete matching trio.
                     # This avoids aborting if the repo has gaps.
                     _attempts=0
