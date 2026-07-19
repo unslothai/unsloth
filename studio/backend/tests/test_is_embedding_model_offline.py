@@ -267,11 +267,16 @@ def test_marker_onnx_only_snapshot_is_not_loadable(tmp_path, monkeypatch):
     # accepting the ONNX offline would pass validation and then fail on the first
     # RAG load -- the same validate-then-fail as the marker-only case.
     hf_root = tmp_path / "hf"
-    snap = hf_root / "models--org--model" / "snapshots" / "aaa"
+    repo = hf_root / "models--org--model"
+    snap = repo / "snapshots" / "aaa"
     snap.mkdir(parents = True)
     (snap / "modules.json").write_text("[]")
     (snap / "config.json").write_text("{}")
     (snap / "model.onnx").write_bytes(b"\0")
+    # refs/main so the probe resolves this revision and reaches the weight check
+    # (without it the answer would be None -- a cache miss -- for a different reason).
+    (repo / "refs").mkdir(parents = True)
+    (repo / "refs" / "main").write_text("aaa")
     _fake_hf_cache(monkeypatch, hf_root)
     monkeypatch.delenv("SENTENCE_TRANSFORMERS_HOME", raising = False)
     assert mc._embedding_marker_in_hf_cache("org/model") is False
