@@ -234,11 +234,7 @@ export function SafetensorsDownloadCard({
               />
             )}
             {isDownloaded && cachePath && (
-              <PathInfoButton
-                path={cachePath}
-                title="On-device location"
-                description={`Where ${repoId} lives on disk.`}
-              />
+              <PathInfoButton path={cachePath} />
             )}
           </div>
         </div>

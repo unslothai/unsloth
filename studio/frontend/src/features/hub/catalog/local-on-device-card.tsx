@@ -550,11 +550,7 @@ export function LocalOnDeviceCard({
                   onClick={() => setDeleteOpen(true)}
                 />
               )}
-              <PathInfoButton
-                path={path}
-                title={sourceLabel}
-                description="Where this model lives on disk."
-              />
+              <PathInfoButton path={path} />
             </div>
           </div>
           {onTrain && HUB_POST_DOWNLOAD_ACTIONS_VISIBLE && (

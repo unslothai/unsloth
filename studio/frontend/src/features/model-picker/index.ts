@@ -4,6 +4,11 @@
 export { ModelSelector } from "./components/model-selector";
 export { FolderBrowser } from "./components/model-selector/folder-browser";
 export { ModelDeleteAction } from "./components/model-selector/model-delete-action";
+export { ModelRowMenu } from "./components/model-selector/model-row-menu";
+export {
+  pinKey,
+  usePinnedModelsStore,
+} from "./components/model-selector/pinned-models";
 export { hfModelFitsDevice } from "./components/model-selector/recommended-fit";
 export {
   NumericValueInput,

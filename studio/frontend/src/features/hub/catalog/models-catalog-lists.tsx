@@ -2,11 +2,14 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { Spinner } from "@/components/ui/spinner";
+import { pinKey, usePinnedModelsStore } from "@/features/model-picker";
 import {
   CubeIcon,
   DownloadCircle02Icon,
   FolderSearchIcon,
+  PinIcon,
 } from "@hugeicons/core-free-icons";
+import { HugeiconsIcon } from "@hugeicons/react";
 import type { RefObject } from "react";
 import { useMemo } from "react";
 import {
@@ -274,11 +277,21 @@ export function DownloadedList({
   sort: InventorySort;
   onInventoryChange?: () => void;
 }) {
+  // Pinned repos surface first regardless of the active sort; the chosen sort
+  // still orders rows within the pinned and unpinned groups.
+  const pinnedIds = usePinnedModelsStore((s) => s.pinned);
+  const pinnedSet = useMemo(() => new Set(pinnedIds), [pinnedIds]);
   const inventoryItems = useMemo<InventoryItem[]>(() => {
     const merged: InventoryItem[] = [
       ...cachedRows.map((row) => ({ variant: "cached" as const, row })),
       ...localRows.map((row) => ({ variant: "local" as const, row })),
     ];
+    // Pinned rows order by pin recency (newest pin first), not the active
+    // sort, so "Pin to top" puts the row exactly where the user expects.
+    const pinIndex = new Map(pinnedIds.map((key, index) => [key, index]));
+    const pinRank = (item: InventoryItem) =>
+      (item.row.repoId ? pinIndex.get(pinKey(item.row.repoId)) : undefined) ??
+      Number.MAX_SAFE_INTEGER;
     if (inventoryTokens.length > 0) {
       return merged
         .map((item, index) => ({
@@ -286,25 +299,64 @@ export function DownloadedList({
           index,
           score: scoreInventoryRow(item.row, inventoryTokens),
         }))
-        .sort((a, b) => b.score - a.score || a.index - b.index)
+        .sort(
+          (a, b) =>
+            pinRank(a.item) - pinRank(b.item) ||
+            b.score - a.score ||
+            a.index - b.index,
+        )
         .map((entry) => entry.item);
     }
     if (sort === "recent") {
-      return merged;
+      return merged
+        .map((item, index) => ({ item, index }))
+        .sort((a, b) => pinRank(a.item) - pinRank(b.item) || a.index - b.index)
+        .map((entry) => entry.item);
     }
     return merged
       .map((item, index) => ({ item, index }))
-      .sort((a, b) =>
-        sort === "name"
-          ? inventoryItemTitle(a.item).localeCompare(
-              inventoryItemTitle(b.item),
-            ) || a.index - b.index
-          : inventoryItemSize(b.item) - inventoryItemSize(a.item) ||
-            a.index - b.index,
+      .sort(
+        (a, b) =>
+          pinRank(a.item) - pinRank(b.item) ||
+          (sort === "name"
+            ? inventoryItemTitle(a.item).localeCompare(
+                inventoryItemTitle(b.item),
+              ) || a.index - b.index
+            : inventoryItemSize(b.item) - inventoryItemSize(a.item) ||
+              a.index - b.index),
       )
       .map((entry) => entry.item);
-  }, [cachedRows, localRows, inventoryTokens, sort]);
+  }, [cachedRows, localRows, inventoryTokens, sort, pinnedIds]);
   const hasInventoryRows = cachedRows.length > 0 || localRows.length > 0;
+  // Pinned repos get their own labelled section so it's clear why they lead
+  // the list; inventoryItems already sorts them first, so this is a prefix.
+  const pinnedCount = useMemo(
+    () =>
+      inventoryItems.filter(
+        (item) => item.row.repoId && pinnedSet.has(pinKey(item.row.repoId)),
+      ).length,
+    [inventoryItems, pinnedSet],
+  );
+  const pinnedItems = inventoryItems.slice(0, pinnedCount);
+  const unpinnedItems = inventoryItems.slice(pinnedCount);
+  const rowHeightPx = compact
+    ? RESULT_SPLIT_ROW_HEIGHT_PX
+    : RESULT_GRID_ROW_HEIGHT_PX;
+  const cellHeightPx = compact ? RESULT_SPLIT_HEIGHT_PX : RESULT_GRID_HEIGHT_PX;
+  const renderInventoryRow = (item: InventoryItem) => (
+    <InventoryRow
+      row={item.row}
+      selected={selectedId === item.row.id}
+      activeCheckpoint={activeCheckpoint}
+      activeGgufVariant={activeGgufVariant}
+      isDataset={isDataset}
+      dimmed={!inventoryRowMatches(item.row, inventoryTokens)}
+      deviceType={deviceType}
+      compact={compact}
+      onSelect={onSelect}
+      onChange={onInventoryChange}
+    />
+  );
 
   if (!downloadedReady && !hasInventoryRows) {
     return (
@@ -341,27 +393,54 @@ export function DownloadedList({
   }
 
   return (
-    <VirtualRows
-      items={inventoryItems}
-      scrollElement={scrollElement}
-      columns={columns}
-      rowHeight={compact ? RESULT_SPLIT_ROW_HEIGHT_PX : RESULT_GRID_ROW_HEIGHT_PX}
-      cellHeight={compact ? RESULT_SPLIT_HEIGHT_PX : RESULT_GRID_HEIGHT_PX}
-      getKey={(item) => `${item.variant}-${item.row.id}`}
-      renderRow={(item) => (
-        <InventoryRow
-          row={item.row}
-          selected={selectedId === item.row.id}
-          activeCheckpoint={activeCheckpoint}
-          activeGgufVariant={activeGgufVariant}
-          isDataset={isDataset}
-          dimmed={!inventoryRowMatches(item.row, inventoryTokens)}
-          deviceType={deviceType}
-          compact={compact}
-          onSelect={onSelect}
-          onChange={onInventoryChange}
-        />
+    <>
+      {pinnedItems.length > 0 && (
+        <>
+          <div className="flex items-center gap-1.5 px-1 pb-2 pt-3 text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">
+            <HugeiconsIcon
+              icon={PinIcon}
+              strokeWidth={1.75}
+              className="size-3.5"
+            />
+            Pinned
+          </div>
+          {/* Pinned rows are few, so render them as a plain grid matching the
+              virtualized list's lane count and row spacing. */}
+          <div
+            style={{
+              display: "grid",
+              gridTemplateColumns: `repeat(${Math.max(1, columns)}, minmax(0, 1fr))`,
+              columnGap: 12,
+              rowGap: rowHeightPx - cellHeightPx,
+              paddingBottom: rowHeightPx - cellHeightPx,
+            }}
+          >
+            {pinnedItems.map((item) => (
+              <div
+                key={`${item.variant}-${item.row.id}`}
+                className="min-w-0"
+                style={{ height: cellHeightPx }}
+              >
+                {renderInventoryRow(item)}
+              </div>
+            ))}
+          </div>
+          {unpinnedItems.length > 0 && (
+            <div className="px-1 pb-2 pt-2 text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">
+              All {isDataset ? "datasets" : "models"}
+            </div>
+          )}
+        </>
       )}
-    />
+      <VirtualRows
+        items={unpinnedItems}
+        scrollElement={scrollElement}
+        columns={columns}
+        rowHeight={rowHeightPx}
+        cellHeight={cellHeightPx}
+        getKey={(item) => `${item.variant}-${item.row.id}`}
+        renderRow={renderInventoryRow}
+      />
+    </>
   );
 }

@@ -997,28 +997,6 @@ export function AppSidebar() {
             </DropdownMenuItem>
           </DropdownMenuContent>
         </DropdownMenu>
-        {isPinned ? (
-          <Tooltip>
-            <TooltipPrimitive.Trigger asChild>
-              <button
-                type="button"
-                onClick={(e) => {
-                  e.stopPropagation();
-                  unpinChat(item.id);
-                }}
-                aria-label="Unpin chat"
-                className={cn(actionClass, "is-unpin-action")}
-              >
-                <span className="sidebar-row-action-glyph">
-                  <HugeiconsIcon icon={PinOffIcon} strokeWidth={1.75} className="size-4" />
-                </span>
-              </button>
-            </TooltipPrimitive.Trigger>
-            <TooltipContent side="bottom" sideOffset={6} className="tooltip-compact">
-              Unpin
-            </TooltipContent>
-          </Tooltip>
-        ) : null}
       </SidebarMenuItem>
     );
   }

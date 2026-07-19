@@ -52,8 +52,13 @@ import {
   HubListHeader,
   type InventorySort,
   InventorySortControl,
+  InventoryTypeFilterControl,
   ResultListHeader,
 } from "./catalog/models-table";
+import {
+  type ModelTypeFilter,
+  matchesModelType,
+} from "./lib/model-type-filter";
 import { ModelsToolbar } from "./catalog/models-toolbar";
 import { OnDeviceFoldersDialog } from "./catalog/on-device-folders-dialog";
 import { OwnerScopeToggle } from "./catalog/owner-scope-toggle";
@@ -449,6 +454,8 @@ export function ModelsPage() {
     setInventorySortState(sort);
     writeInventorySortPreference(sort);
   }, []);
+  const [inventoryTypeFilter, setInventoryTypeFilter] =
+    useState<ModelTypeFilter>("all");
   const [foldersDialogOpen, setFoldersDialogOpen] = useState(false);
   const [discoverFetchIntent, setDiscoverFetchIntent] = useState(0);
   const [sortBrowseActive, setSortBrowseActive] = useState(false);
@@ -828,6 +835,7 @@ export function ModelsPage() {
             // id/title/path happens to contain an infra needle is not dropped.
             isDatasetMode ||
             (matchesFormat(row.modelFormat, deferredFormatFilter) &&
+              matchesModelType(row, inventoryTypeFilter) &&
               isVisibleInventoryRow(row)),
         ),
         inventoryTokens,
@@ -836,6 +844,7 @@ export function ModelsPage() {
       effectiveCachedRows,
       isDatasetMode,
       deferredFormatFilter,
+      inventoryTypeFilter,
       inventoryTokens,
       isVisibleInventoryRow,
     ],
@@ -851,6 +860,7 @@ export function ModelsPage() {
             // id/title/path happens to contain an infra needle is not dropped.
             isDatasetMode ||
             (matchesFormat(row.modelFormat, deferredFormatFilter) &&
+              matchesModelType(row, inventoryTypeFilter) &&
               isVisibleInventoryRow(row)),
         ),
         inventoryTokens,
@@ -859,6 +869,7 @@ export function ModelsPage() {
       effectiveLocalRows,
       isDatasetMode,
       deferredFormatFilter,
+      inventoryTypeFilter,
       inventoryTokens,
       isVisibleInventoryRow,
     ],
@@ -1421,18 +1432,27 @@ export function ModelsPage() {
   ]);
 
   const downloadedHeader = useMemo(() => {
-    const sortControl = (
-      <InventorySortControl value={inventorySort} onChange={setInventorySort} />
+    // Compact pills so they stay beside the view-mode tabs even in the narrow
+    // split pane instead of dropping to their own row.
+    const controls = (
+      <div className="flex min-w-0 items-center gap-1.5">
+        <InventoryTypeFilterControl
+          value={inventoryTypeFilter}
+          onChange={setInventoryTypeFilter}
+        />
+        <InventorySortControl
+          value={inventorySort}
+          onChange={setInventorySort}
+        />
+      </div>
     );
-    // Compact pill so it stays beside the view-mode tabs even in the narrow
-    // split pane instead of dropping to its own row.
     return (
       <HubListHeader
         title="On device"
         count={visibleCachedCount + visibleLocalCount}
         view={allModelsView}
         onViewChange={setAllModelsView}
-        actions={sortControl}
+        actions={controls}
       />
     );
   }, [
@@ -1442,6 +1462,7 @@ export function ModelsPage() {
     setAllModelsView,
     inventorySort,
     setInventorySort,
+    inventoryTypeFilter,
   ]);
 
   const detailOpen = urlModel !== null;

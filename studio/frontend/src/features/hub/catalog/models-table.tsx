@@ -18,6 +18,10 @@ import {
   formatRelativeShort,
 } from "@/features/hub/lib/format";
 import {
+  MODEL_TYPE_FILTER_OPTIONS,
+  type ModelTypeFilter,
+} from "@/features/hub/lib/model-type-filter";
+import {
   formatModelParamLabel,
   formatPipelineTag,
 } from "@/features/hub/lib/view-models";
@@ -25,6 +29,7 @@ import { copyToClipboard } from "@/lib/copy-to-clipboard";
 import { cn, formatCompact } from "@/lib/utils";
 import {
   ArrowLeft01Icon,
+  ArrowUpDownIcon,
   Copy01Icon,
   Download01Icon,
   FavouriteIcon,
@@ -124,6 +129,7 @@ export function InventorySortControl({
   value: InventorySort;
   onChange: (value: InventorySort) => void;
 }) {
+  const selected = INVENTORY_SORTS.find((option) => option.value === value);
   return (
     <HubOptionMenu<InventorySort>
       value={value}
@@ -131,7 +137,46 @@ export function InventorySortControl({
       onValueChange={onChange}
       ariaLabel="Sort downloads"
       align="end"
-      className="h-8 text-[11.5px]"
+      title={selected?.label}
+      // Capped and shrinkable so a long label truncates instead of wrapping
+      // the "On device" heading beside these pills in the narrow split pane.
+      className="h-8 min-w-[72px] max-w-[124px] shrink text-[11.5px]"
+      triggerContent={
+        <span className="flex min-w-0 items-center gap-1">
+          <HugeiconsIcon
+            icon={ArrowUpDownIcon}
+            strokeWidth={1.75}
+            className="size-3.5 shrink-0 text-muted-foreground"
+          />
+          <span className="truncate">{selected?.label ?? value}</span>
+        </span>
+      }
+    />
+  );
+}
+
+// Model-type filter pill (Text / Vision / Embedding / …) beside the sort pill.
+export function InventoryTypeFilterControl({
+  value,
+  onChange,
+}: {
+  value: ModelTypeFilter;
+  onChange: (value: ModelTypeFilter) => void;
+}) {
+  const selected = MODEL_TYPE_FILTER_OPTIONS.find(
+    (option) => option.value === value,
+  );
+  return (
+    <HubOptionMenu<ModelTypeFilter>
+      value={value}
+      options={MODEL_TYPE_FILTER_OPTIONS}
+      onValueChange={onChange}
+      ariaLabel="Filter by model type"
+      align="end"
+      title={selected?.label}
+      // Capped and shrinkable so a long label ("Speech to text") truncates
+      // instead of wrapping the "On device" heading beside these pills.
+      className="h-8 min-w-[72px] max-w-[124px] shrink text-[11.5px]"
     />
   );
 }
@@ -183,7 +228,7 @@ export function HubListHeader({
           </button>
         )}
         <div className="min-w-0 space-y-0.5">
-          <h2 className="text-[18px] font-semibold tracking-[-0.02em] text-foreground">
+          <h2 className="whitespace-nowrap text-[18px] font-semibold tracking-[-0.02em] text-foreground">
             {title}
           </h2>
           {subtitle && (
@@ -216,7 +261,9 @@ export function HubListHeader({
         )}
       </div>
       {(actions || onViewChange) && (
-        <div className="flex shrink-0 items-center gap-2">
+        // min-w-0 (not shrink-0) so shrinkable actions (the On-device filter
+        // pills) compress before the title is forced onto two lines.
+        <div className="flex min-w-0 items-center gap-2">
           {actions}
           {onViewChange && (
             <div
@@ -524,7 +571,9 @@ function useResultRowModel(
     [isDataset, row.id, row.result, deviceType],
   );
   const sizeLabel = formatModelParamLabel(row.repo, row.result.totalParams);
-  const taskLabel = isDataset ? null : formatPipelineTag(row.result.pipelineTag);
+  const taskLabel = isDataset
+    ? null
+    : formatPipelineTag(row.result.pipelineTag);
   const unsupported = support?.status === "unsupported";
   return {
     support,

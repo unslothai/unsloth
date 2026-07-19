@@ -114,7 +114,7 @@ function hasPromptVariableSyntax(prompt: string): boolean {
   return PROMPT_VARIABLE_PATTERN.test(prompt);
 }
 
-function ParamSlider({
+export function ParamSlider({
   label,
   value,
   min,

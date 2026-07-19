@@ -284,7 +284,19 @@ export function matchProviderLogo(repoName: string): ProviderLogo | null {
 }
 
 // Owners whose avatars get swapped for the matched provider's logo.
-const RELABELED_OWNERS: ReadonlySet<string> = new Set(["unsloth"]);
+const RELABELED_OWNERS: ReadonlySet<string> = new Set(["unsloth", "unslothai"]);
+
+// Fallback for Unsloth-owned repos that match no upstream provider (original
+// Unsloth uploads, e.g. whisper re-releases): the Unsloth mascot instead of a
+// colored-initial tile.
+const UNSLOTH_LOGO: ProviderLogo = {
+	id: "unsloth",
+	name: "Unsloth",
+	logoPath: "/unsloth-gem.png",
+	treatment: "original",
+	background: "transparent",
+	prefixes: [],
+};
 
 /** True if the owner's avatars get replaced with the upstream provider's logo. */
 export function isProviderRelabeledOwner(
@@ -303,5 +315,5 @@ export function resolveOwnerProviderLogo(
 	repoName: string | null | undefined,
 ): ProviderLogo | null {
 	if (!isProviderRelabeledOwner(owner) || !repoName) return null;
-	return matchProviderLogo(repoName);
+	return matchProviderLogo(repoName) ?? UNSLOTH_LOGO;
 }

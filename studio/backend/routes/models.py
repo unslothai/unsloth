@@ -3397,6 +3397,118 @@ async def delete_cached_model(
         )
 
 
+def _resolve_cached_model_path(repo_id: str, variant: Optional[str]) -> Path:
+    """Absolute path of a cached repo (newest snapshot dir) or, with *variant*,
+    that quant's main GGUF file (first split of a sharded quant). Paths come
+    from the HF cache scan only, so callers can't probe arbitrary paths."""
+    cache_scans = _all_hf_cache_scans()
+
+    target_repo = None
+    for hf_cache in cache_scans:
+        for repo_info in hf_cache.repos:
+            if repo_info.repo_type != "model":
+                continue
+            if repo_info.repo_id.lower() == repo_id.lower():
+                target_repo = repo_info
+                break
+        if target_repo is not None:
+            break
+    if target_repo is None:
+        raise HTTPException(status_code = 404, detail = "Model not found in cache")
+
+    if variant:
+        matches = []
+        for rev in target_repo.revisions:
+            for f in rev.files:
+                if not _is_main_gguf_filename(f.file_name):
+                    continue
+                if _extract_quant_label(f.file_name).lower() != variant.lower():
+                    continue
+                p = Path(f.file_path)
+                if p.exists() or p.is_symlink():
+                    matches.append(p)
+        if not matches:
+            raise HTTPException(
+                status_code = 404,
+                detail = f"Variant {variant} not found in cache for {repo_id}",
+            )
+        # Name-sorted so a sharded quant deterministically yields its first split.
+        return sorted(matches, key = lambda p: p.name.lower())[0]
+
+    # Whole repo: the newest revision's snapshot dir holds the visible files.
+    revisions = sorted(
+        (rev for rev in target_repo.revisions if getattr(rev, "snapshot_path", None)),
+        key = lambda rev: getattr(rev, "last_modified", 0) or 0,
+        reverse = True,
+    )
+    for rev in revisions:
+        p = Path(rev.snapshot_path)
+        if p.exists():
+            return p
+    p = Path(target_repo.repo_path)
+    if p.exists():
+        return p
+    raise HTTPException(status_code = 404, detail = "Cached model path not found")
+
+
+def _reveal_in_file_manager(path: Path) -> None:
+    """Open the OS file manager with *path* selected (best effort per platform)."""
+    import subprocess
+
+    target = str(path)
+    if sys.platform == "darwin":
+        cmd = ["open", "-R", target] if path.is_file() else ["open", target]
+        subprocess.Popen(cmd)
+    elif os.name == "nt":
+        if path.is_file():
+            subprocess.Popen(["explorer", f"/select,{target}"])
+        else:
+            os.startfile(target)  # noqa: S606 - local user's own file manager
+    else:
+        # No cross-desktop "select file" standard on Linux; open the directory.
+        directory = target if path.is_dir() else str(path.parent)
+        subprocess.Popen(["xdg-open", directory])
+
+
+class CachedModelPathResponse(BaseModel):
+    path: str
+    is_dir: bool
+
+
+@router.get("/cached-model-path", response_model = CachedModelPathResponse)
+async def get_cached_model_path(
+    repo_id: str = Query(..., description = "HuggingFace repo ID"),
+    variant: str = Query("", description = "Quantization variant (empty for whole repo)"),
+    current_subject: str = Depends(get_current_subject),
+):
+    """Absolute on-disk path of a cached repo or one of its GGUF variants."""
+    if not _is_valid_repo_id(repo_id):
+        raise HTTPException(status_code = 400, detail = "Invalid repo_id format")
+    path = await asyncio.to_thread(
+        _resolve_cached_model_path, repo_id, variant.strip() or None
+    )
+    return {"path": str(path), "is_dir": path.is_dir()}
+
+
+@router.post("/reveal-cached-model")
+async def reveal_cached_model(
+    repo_id: str = Body(...),
+    variant: Optional[str] = Body(None),
+    current_subject: str = Depends(get_current_subject),
+):
+    """Reveal a cached repo (or one GGUF variant's file) in the OS file manager."""
+    if not _is_valid_repo_id(repo_id):
+        raise HTTPException(status_code = 400, detail = "Invalid repo_id format")
+    variant = (variant or "").strip() or None
+    path = await asyncio.to_thread(_resolve_cached_model_path, repo_id, variant)
+    try:
+        await asyncio.to_thread(_reveal_in_file_manager, path)
+    except Exception as e:
+        logger.error(f"Failed to reveal {path}: {e}")
+        raise HTTPException(status_code = 500, detail = "Failed to open file manager")
+    return {"status": "ok", "path": str(path)}
+
+
 @router.get("/checkpoints", response_model = CheckpointListResponse)
 async def list_checkpoints(
     outputs_dir: str = Query(

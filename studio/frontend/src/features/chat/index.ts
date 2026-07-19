@@ -8,6 +8,7 @@ export {
   deleteCachedModel,
   deleteFineTunedModel,
   fetchGgufContextLength,
+  getCachedModelPath,
   getInferenceStatus,
   listGgufVariants,
   listLocalModels,
@@ -15,6 +16,7 @@ export {
   listScanFolders,
   loadModel,
   removeScanFolder,
+  revealCachedModel,
   type BrowseFoldersResponse,
   type CachedGgufRepo,
   type CachedModelRepo,
@@ -24,10 +26,20 @@ export {
 export type { GgufVariantDetail } from "./types/api";
 export {
   ChatSettingsPanel,
+  ParamSlider,
   defaultInferenceParams,
   type InferenceParams,
   type Preset,
 } from "./chat-settings-sheet";
+export {
+  BUILTIN_PRESETS,
+  BUILTIN_PRESET_NAMES,
+  applyPresetParams,
+  getBuiltinVariantName,
+  getOrderedPresets,
+  getPresetSource,
+  toPresetParams,
+} from "./presets/preset-policy";
 export { useChatRuntimeStore } from "./stores/chat-runtime-store";
 export {
   normalizeSpeculativeType,

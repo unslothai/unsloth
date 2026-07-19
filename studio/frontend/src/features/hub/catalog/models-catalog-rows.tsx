@@ -22,7 +22,11 @@ import {
   modelIdsMatch,
   useHfTokenStore,
 } from "@/features/hub";
-import { ModelDeleteAction } from "@/features/model-picker";
+import {
+  ModelRowMenu,
+  pinKey,
+  usePinnedModelsStore,
+} from "@/features/model-picker";
 import { cn, formatCompact } from "@/lib/utils";
 import {
   Download01Icon,
@@ -147,7 +151,7 @@ function CachedSizeChipLive({
   const rows: Array<{ label: string; size_bytes: number }> | null =
     needsVariantFetch
       ? currentVariantState.status === "loaded" &&
-          currentVariantState.variants.length > 0
+        currentVariantState.variants.length > 0
         ? currentVariantState.variants.map((variant) => ({
             label: ggufVariantDisplayLabel(variant),
             size_bytes: variant.size_bytes,
@@ -723,37 +727,72 @@ export const InventoryRow = memo(function InventoryRow({
     </span>
   );
 
+  const pinnedKeys = usePinnedModelsStore((s) => s.pinned);
+  const togglePinned = usePinnedModelsStore((s) => s.togglePinned);
+  const rowPinned =
+    cacheDeletableRepoId != null &&
+    pinnedKeys.includes(pinKey(cacheDeletableRepoId));
   const deleteAction =
     canDelete && cacheDeletableRepoId ? (
-      <ModelDeleteAction
-        ariaLabel={`Delete ${cacheDeletableRepoId}`}
-        title={isDataset ? "Delete cached dataset?" : "Delete cached model?"}
-        description={
-          <>
-            This will remove{" "}
-            <span className="font-medium text-foreground">
-              {cacheDeletableRepoId}
-            </span>{" "}
-            {isDataset
-              ? "and its downloaded files"
-              : row.isGguf
-                ? "and all of its downloaded quantizations"
-                : "and all of its downloaded files"}
-            {row.kind === "cache" ? ` (${formatBytes(row.bytes)})` : ""} from
-            disk. You can re-download it later.
-          </>
-        }
-        successMessage={`Deleted ${cacheDeletableRepoId}`}
+      <ModelRowMenu
+        ariaLabel={`More options for ${cacheDeletableRepoId}`}
         buttonClassName="pointer-events-auto hub-modal-pe-guard p-2 opacity-0 transition-opacity group-hover/row:opacity-100 focus-visible:opacity-100 data-[state=open]:opacity-100 [@media(pointer:coarse)]:opacity-100"
         iconClassName="size-4"
-        onConfirm={async () => {
-          if (isDataset) {
-            await deleteCachedDataset(cacheDeletableRepoId);
-          } else {
-            await deleteCachedModel(cacheDeletableRepoId);
-          }
+        pin={
+          isDataset
+            ? undefined
+            : {
+                pinned: rowPinned,
+                pinLabel: "Pin to top",
+                unpinLabel: "Unpin",
+                onToggle: () => togglePinned(cacheDeletableRepoId),
+              }
+        }
+        cachePath={isDataset ? undefined : { repoId: cacheDeletableRepoId }}
+        del={{
+          title: isDataset ? "Delete cached dataset?" : "Delete cached model?",
+          description: (
+            <>
+              This will remove{" "}
+              <span className="font-medium text-foreground">
+                {cacheDeletableRepoId}
+              </span>{" "}
+              {isDataset
+                ? "and its downloaded files"
+                : row.isGguf
+                  ? "and all of its downloaded quantizations"
+                  : "and all of its downloaded files"}
+              {row.kind === "cache" ? ` (${formatBytes(row.bytes)})` : ""} from
+              disk. You can re-download it later.
+            </>
+          ),
+          successMessage: `Deleted ${cacheDeletableRepoId}`,
+          onConfirm: async () => {
+            if (isDataset) {
+              await deleteCachedDataset(cacheDeletableRepoId);
+            } else {
+              await deleteCachedModel(cacheDeletableRepoId);
+              // Deleted repos can't stay pinned: drop the repo pin and any of
+              // its per-quant pins so stale rows don't linger up top.
+              const { pinned, togglePinned: toggle } =
+                usePinnedModelsStore.getState();
+              for (const key of pinned) {
+                if (
+                  key === pinKey(cacheDeletableRepoId) ||
+                  key.startsWith(`${cacheDeletableRepoId}::`)
+                ) {
+                  toggle(
+                    cacheDeletableRepoId,
+                    key.includes("::")
+                      ? key.slice(key.indexOf("::") + 2)
+                      : undefined,
+                  );
+                }
+              }
+            }
+          },
+          onDeleted: onChange,
         }}
-        onDeleted={onChange}
       />
     ) : null;
 
