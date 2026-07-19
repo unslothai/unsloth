@@ -42,10 +42,9 @@ set -euo pipefail
 
 IMAGE="${UNSLOTH_IMAGE:-unsloth/unsloth:latest}"
 GPUS="${UNSLOTH_GPUS:-all}"
-# Translate index selectors to Docker's `device=` form: Docker reads a bare
-# integer for --gpus as a COUNT not an INDEX, so `UNSLOTH_GPUS=0` would expose
-# zero GPUs. `all` and already-quoted `device=...` selectors pass through;
-# "none" omits --gpus (CPU mode; pair with UNSLOTH_ALLOW_CPU=1).
+# Translate index selectors to Docker's `device=` form: a bare integer is a COUNT
+# not an INDEX, so `UNSLOTH_GPUS=0` would expose zero GPUs. `all`/quoted `device=`
+# pass through; "none" omits --gpus (CPU mode).
 GPU_FLAG=(--gpus "$GPUS")
 case "$GPUS" in
     none)       GPU_FLAG=()              ;;
@@ -78,10 +77,9 @@ declare -a ENV_FORWARD=(-e HF_HUB_ENABLE_HF_TRANSFER=1)
 [[ -n "${WANDB_API_KEY:-}"     ]] && ENV_FORWARD+=(-e WANDB_API_KEY)
 [[ -n "${UNSLOTH_LICENSE:-}"   ]] && ENV_FORWARD+=(-e UNSLOTH_LICENSE)
 [[ -n "${UNSLOTH_ALLOW_CPU:-}" ]] && ENV_FORWARD+=(-e UNSLOTH_ALLOW_CPU)
-# Studio/Jupyter service config read by studio_launch.sh. Same dash-only -e VAR
-# form so even JUPYTER_PASSWORD never lands in argv. Without these, the bundled
-# launcher got a random password and never enabled sshd (PUBLIC_KEY/SSH_KEY) or
-# the tunnel (UNSLOTH_JUPYTER_CLOUDFLARE).
+# Studio/Jupyter service config read by studio_launch.sh. Dash-only -e VAR so
+# JUPYTER_PASSWORD never lands in argv. Without these the launcher gets a random
+# password and no sshd/tunnel.
 [[ -n "${JUPYTER_PASSWORD:-}"           ]] && ENV_FORWARD+=(-e JUPYTER_PASSWORD)
 [[ -n "${PUBLIC_KEY:-}"                 ]] && ENV_FORWARD+=(-e PUBLIC_KEY)
 [[ -n "${SSH_KEY:-}"                    ]] && ENV_FORWARD+=(-e SSH_KEY)

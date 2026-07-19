@@ -32,8 +32,7 @@ def check_torch() -> tuple[int, int]:
     banner("torch + arch list")
     import torch
 
-    # Use the raw C++ accessor so this works even when CUDA isn't available
-    # (lets us run a partial smoke test on a no-GPU host).
+    # Raw C++ accessor works even without CUDA (partial smoke test on no-GPU host).
     arches = torch._C._cuda_getArchFlags().split()
     print(f"torch       {torch.__version__}")
     print(f"cuda build  {torch.version.cuda}")
@@ -45,9 +44,8 @@ def check_torch() -> tuple[int, int]:
     cap = torch.cuda.get_device_capability(0)
     name = torch.cuda.get_device_name(0)
     print(f"device 0    {name}  sm_{cap[0]}{cap[1]}")
-    # cu128 wheels ship SASS down to sm_75 (Turing); match the runtime entrypoint's
-    # floor so the smoke job doesn't false-fail on a Turing-only runner. Turing
-    # falls back to fp16 (a capability hint, not a hard failure).
+    # cu128 wheels ship SASS down to sm_75 (Turing); match the entrypoint floor so
+    # a Turing-only runner doesn't false-fail (Turing falls back to fp16).
     if cap[0] < 7 or (cap[0] == 7 and cap[1] < 5):
         sys.exit(f"FAIL: pre-Turing GPU {name} is not supported by this image")
     if cap[0] < 8:
@@ -60,17 +58,16 @@ def check_imports() -> None:
     import triton
 
     print(f"triton      {triton.__version__}")
-    # Import order matters: unsloth BEFORE transformers/trl/peft (so its patches
-    # land) and BEFORE unsloth_zoo (which needs the UNSLOTH_IS_PRESENT marker,
-    # else its __init__ guard raises "Please install Unsloth via pip install unsloth").
+    # Import order matters: unsloth before transformers/trl/peft (so its patches
+    # land) and before unsloth_zoo (which needs the UNSLOTH_IS_PRESENT marker).
     import unsloth
 
     print(f"unsloth     {unsloth.__version__}")
     import unsloth_zoo
 
     print(f"unsloth_zoo {unsloth_zoo.__version__}")
-    # xformers has no aarch64 cu128 wheel, so the arm64 image omits it
-    # ([huggingface] extras). Best-effort import so one script covers both arches.
+    # xformers has no aarch64 cu128 wheel; arm64 omits it. Best-effort so one
+    # script covers both arches.
     try:
         import xformers
         print(f"xformers    {xformers.__version__}")
@@ -92,8 +89,7 @@ def check_imports() -> None:
 
 def check_unsloth_import() -> None:
     banner("unsloth FastLanguageModel reachable")
-    # unsloth itself was already imported in check_imports() above (it has to be
-    # imported first for unsloth_zoo to load). This re-import is a no-op.
+    # Already imported in check_imports(); this re-import is a no-op.
     import unsloth
     from unsloth import FastLanguageModel
 

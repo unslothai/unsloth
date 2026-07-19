@@ -45,9 +45,8 @@ def _logging_enabled() -> bool:
     )
 
 
-# Model-name -> minimum transformers tier, ported from Studio's
-# transformers_version.py (substring match on the lowered model id). Used as a
-# fallback when a notebook does not pin transformers but names a new-family model.
+# Model-name -> minimum transformers tier (substring match on the lowered id),
+# ported from Studio. Fallback when a notebook names a new model but pins nothing.
 _TIER_SUBSTRINGS = {
     "5.10.2": ("gemma-4-12b", "gemma4-12b"),
     "5.5.0": ("gemma-4", "gemma4", "qwen3.6"),

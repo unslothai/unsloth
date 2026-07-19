@@ -1964,9 +1964,8 @@ exit 0
     # Mirrors Get-PytorchCudaTag in setup.ps1.
     function Get-TorchIndexUrl {
         $baseUrl = if ($env:UNSLOTH_PYTORCH_MIRROR) { $env:UNSLOTH_PYTORCH_MIRROR.TrimEnd('/') } else { "https://download.pytorch.org/whl" }
-        # Explicit override (parity with install.sh):
-        # UNSLOTH_TORCH_INDEX_FAMILY=cu128|cu130|cu126|cpu|... pins the wheel index
-        # when probing is wrong or impossible (no GPU, containers, CI).
+        # Explicit override (parity with install.sh): UNSLOTH_TORCH_INDEX_FAMILY=
+        # cu128|cu130|cu126|cpu|... pins the wheel index when probing can't (no GPU, CI).
         if ($env:UNSLOTH_TORCH_INDEX_FAMILY) { return "$baseUrl/$($env:UNSLOTH_TORCH_INDEX_FAMILY)" }
         if (-not $NvidiaSmiExe) { return "$baseUrl/cpu" }
         try {

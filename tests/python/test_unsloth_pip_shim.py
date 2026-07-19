@@ -101,11 +101,9 @@ def _run(shim, tool, args):
 
 
 # --------------------------------------------------------------------------
-# Item 3541142907 -- pair -e/--editable with its target (the attached short
-# `-e<target>` form from item 3541404845 is folded in here). A protected
-# editable such as `pip install -e git+...unsloth...#egg=unsloth peft` must
-# NOT become `pip install -e peft` (which pip rejects): the flag drops WITH
-# its value, and an unprotected editable is forwarded verbatim.
+# Item 3541142907 -- pair -e/--editable with its target. A protected editable
+# drops the flag WITH its value (never `pip install -e peft`); an unprotected
+# editable is forwarded verbatim.
 # --------------------------------------------------------------------------
 UNSLOTH_VCS = "git+https://github.com/unslothai/unsloth.git#egg=unsloth"
 
@@ -497,10 +495,9 @@ def test_upgrade_strategy_forms(shim, args, expected):
 
 
 # --------------------------------------------------------------------------
-# Resolver-level protection: every forwarded install carries a constraints
-# file pinning the installed protected packages, so a kept target's
-# DEPENDENCY on an incompatible torch/transformers/etc. fails loudly instead
-# of replacing the baked wheel.
+# Resolver-level protection: every forwarded install carries a constraints file
+# pinning the installed protected packages, so a kept target's dependency on an
+# incompatible torch/transformers fails loudly instead of replacing the wheel.
 # --------------------------------------------------------------------------
 def _raw_execd(shim, tool, args):
     """Like _run but WITHOUT stripping the injected constraint pair."""
@@ -658,11 +655,9 @@ def test_local_dir_without_metadata_passes_through(shim, tmp_path):
 
 # --------------------------------------------------------------------------
 # Item 3592835033 -- every uv/pip value-taking flag must be in _VALUE_FLAGS.
-# `uv pip install --torch-backend cu128 torch` used to drop the protected
-# torch but keep the SEPARATED flag pair, exec'ing uv with no install target
-# at all (uv hard-errors) instead of no-oping like the attached `=` form; and
-# `--extra torch peft` misread the extra NAME "torch" as a protected target,
-# leaving a dangling `--extra` that swallowed peft.
+# `--torch-backend cu128 torch` used to drop torch but keep the separated flag
+# pair, exec'ing uv with no target; `--extra torch peft` misread the extra NAME
+# "torch" as a target, leaving a dangling `--extra` that swallowed peft.
 
 
 @pytest.mark.parametrize(
@@ -721,11 +716,9 @@ def _value_flags_from_help(cmd):
 
 
 # The help-derived drift guards are OPT-IN: repo CI runs whatever pip/uv are
-# current that week, so a hard assert here turns every upstream flag addition
-# into an unrelated red PR. The authoritative check runs at image BUILD time
-# against the exact baked tools (`unsloth_pip_shim.py
-# --unsloth-selfcheck-value-flags` in the Dockerfile verify step); set
-# UNSLOTH_SHIM_FLAG_DRIFT_CHECK=1 to run these locally.
+# current, so a hard assert would turn every upstream flag addition into a red
+# PR. The authoritative check runs at image BUILD time against the baked tools
+# (--unsloth-selfcheck-value-flags); set UNSLOTH_SHIM_FLAG_DRIFT_CHECK=1 locally.
 _DRIFT_OPT_IN = os.environ.get("UNSLOTH_SHIM_FLAG_DRIFT_CHECK") == "1"
 
 
@@ -750,10 +743,8 @@ def test_uv_help_value_flags_all_classified(shim):
 
 
 # --------------------------------------------------------------------------
-# Item 3592947879 -- a VCS @ref may itself contain a slash (@feature/foo);
-# the ref must be stripped from the PATH before the last-segment split, or
-# `git+https://github.com/unslothai/unsloth.git@feature/foo` canonicalizes as
-# "foo" and a protected repo installed from a branch dodges _KEEP.
+# Item 3592947879 -- a VCS @ref may contain a slash (@feature/foo); strip it
+# before the last-segment split, else the ref's basename dodges _KEEP.
 
 
 @pytest.mark.parametrize(

@@ -11,13 +11,9 @@ import { INotebookTracker } from '@jupyterlab/notebook';
  * Colab-style cell navigation in BOTH command and edit mode.
  *
  * ArrowDown on a cell's last line (edit) or while selected (command) moves to the
- * next cell and aligns its TOP to the viewport; ArrowUp mirrors it. JupyterLab's
- * built-in scroll CENTERS cells taller than the viewport, dropping the view in
- * the middle of a long output (e.g. `trainer.train()`).
- *
- * Settings can't fix this (JupyterLab 4.1 handles keydown in the bubbling phase,
- * command-mode arrows are Lumino's), so we listen in the CAPTURE phase, detect a
- * cell boundary, and move + scroll-to-top ourselves.
+ * next cell and aligns its TOP to the viewport; ArrowUp mirrors it. JupyterLab
+ * centers tall cells, dropping the view mid-output. Settings can't fix this, so
+ * we listen in the CAPTURE phase, detect a cell boundary, and scroll-to-top.
  */
 const cellNavPlugin: JupyterFrontEndPlugin<void> = {
   id: 'unsloth-jupyterlab:cell-nav',
@@ -40,9 +36,8 @@ const cellNavPlugin: JupyterFrontEndPlugin<void> = {
       if (!panel.node.contains(event.target as Node)) {
         return;
       }
-      // Never hijack arrows that belong to an interactive output (an ipywidgets
-      // slider / dropdown / text box created by a cell) or a plain form control;
-      // only the cell editor and the notebook's own command-mode cell nav.
+      // Never hijack arrows belonging to an interactive output (ipywidgets) or a
+      // form control; only the cell editor and command-mode cell nav.
       const targetEl = event.target as HTMLElement | null;
       if (targetEl) {
         if (targetEl.closest('.jp-OutputArea')) {
@@ -61,9 +56,8 @@ const cellNavPlugin: JupyterFrontEndPlugin<void> = {
         if (!editor) {
           return;
         }
-        // While a completion / autocomplete popup is open, the arrows belong to
-        // it (moving through the suggestions) -- do not take over even at a cell
-        // boundary, which is common in one-line setup cells.
+        // While a completion popup is open the arrows belong to it; don't take
+        // over even at a cell boundary (common in one-line setup cells).
         if (
           document.querySelector(
             '.jp-Completer:not(.lm-mod-hidden), .cm-tooltip-autocomplete'
@@ -72,8 +66,7 @@ const cellNavPlugin: JupyterFrontEndPlugin<void> = {
           return;
         }
         const line = editor.getCursorPosition().line;
-        // Only take over at the cell boundary; otherwise let CodeMirror move the
-        // cursor within the editor as usual (do not preventDefault/stop).
+        // Only take over at the cell boundary; else let CodeMirror move the cursor.
         if (direction === 1 && line !== editor.lineCount - 1) {
           return;
         }
@@ -85,9 +78,8 @@ const cellNavPlugin: JupyterFrontEndPlugin<void> = {
       if (target < 0 || target >= notebook.widgets.length) {
         return;
       }
-      // We own this key now: stop CodeMirror (edit mode) and the Lumino command
-      // system (command mode) from also handling it, which would re-trigger the
-      // centering scroll we are trying to replace.
+      // We own this key: stop CodeMirror and Lumino from also handling it and
+      // re-triggering the centering scroll we replace.
       event.preventDefault();
       event.stopPropagation();
       notebook.activeCellIndex = target;

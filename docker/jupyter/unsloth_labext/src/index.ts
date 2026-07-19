@@ -17,10 +17,9 @@ import splashPlugin from './splash';
 import uiChromePlugin from './uiChrome';
 
 /**
- * The "Unsloth Dark" theme: JupyterLab Dark repainted with the Sublime/Colab
- * Monokai palette (see style/variables.css). Registered as a named theme so it
- * appears in Settings > Theme and works with the adaptive (system) light/dark
- * switch configured in overrides.json.
+ * The "Unsloth Dark" theme: JupyterLab Dark repainted with the Monokai palette
+ * (style/variables.css). A named theme so it appears in Settings > Theme and
+ * works with the adaptive light/dark switch in overrides.json.
  */
 const themePlugin: JupyterFrontEndPlugin<void> = {
   id: 'unsloth-jupyterlab:theme',
@@ -41,9 +40,8 @@ const themePlugin: JupyterFrontEndPlugin<void> = {
 
 /**
  * Replace the top-left Jupyter logo with the Unsloth logo. The stock logo plugin
- * is disabled + locked at build time, so this is the only logo widget. Rendered
- * as an <img> with inline styles (not a LabIcon/CSS) so branding shows identically
- * in any theme (the theme CSS loads only while Unsloth Dark is selected).
+ * is disabled + locked at build, so this is the only logo widget. An <img> with
+ * inline styles (not a LabIcon) so branding shows in any theme.
  */
 const logoPlugin: JupyterFrontEndPlugin<void> = {
   id: 'unsloth-jupyterlab:logo',

@@ -2,8 +2,7 @@
 // Copyright 2026-Present the Unsloth team. See /studio/LICENSE.AGPL-3.0
 //
 // "About Unsloth Docker Studio" command -> Help menu + command palette. Surfaces
-// the AGPLv3 license, the copyright line and the Unsloth source/website links so
-// the image's provenance is one click away inside JupyterLab.
+// the AGPLv3 license, copyright and source/website links inside JupyterLab.
 
 import {
   JupyterFrontEnd,
@@ -30,10 +29,9 @@ import {
 const COMMAND_ID = 'unsloth:about';
 
 /**
- * Build the About dialog body. The content is composed only from the trusted
- * constants in branding.ts (no user input), so the static innerHTML carries no
- * injection surface. PHRASE is stamped as a data attribute so the canonical
- * attribution string is bundled verbatim for the integrity guard to find.
+ * Build the About dialog body from the trusted branding.ts constants only (no
+ * user input, so innerHTML has no injection surface). PHRASE is stamped as a data
+ * attribute so it's bundled verbatim for the integrity guard.
  */
 function aboutBody(): Widget {
   const body = new Widget();
@@ -42,9 +40,8 @@ function aboutBody(): Widget {
   el.style.padding = '4px 10px 10px';
   el.style.maxWidth = '430px';
   el.setAttribute('data-unsloth-attribution', PHRASE);
-  // The link rows sit in a left-aligned inline-block centered in the dialog, so
-  // the "Source:/Website:/Licenses" labels line up instead of each row centering
-  // independently (the previous ragged look).
+  // Link rows in a left-aligned inline-block centered in the dialog, so the
+  // labels line up instead of each row centering independently.
   el.innerHTML = `
     <img src="${UNSLOTH_LOGO_DATA_URI}" alt="Unsloth"
          style="height:64px;width:auto;margin:2px auto 10px;display:block;" />

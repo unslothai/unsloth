@@ -10,10 +10,9 @@ import {
 /**
  * Colab-like chrome tweaks applied image-wide.
  *
- * Hide the right activity bar (Property Inspector / Debugger tabs) by default.
- * JupyterLab has no settings key to hide a side activity bar, so hide the strip
- * with always-on CSS and collapse the right panel once on startup. Panels can
- * still be reopened from the View menu; nothing is removed, only hidden.
+ * Hide the right activity bar (Property Inspector / Debugger) by default.
+ * JupyterLab has no settings key for this, so hide the strip with CSS and
+ * collapse the right panel once on startup. Reopen from the View menu.
  */
 
 const STYLE_ID = 'unsloth-ui-chrome-style';
@@ -40,8 +39,7 @@ const uiChromePlugin: JupyterFrontEndPlugin<void> = {
   requires: [ILabShell],
   activate: (app: JupyterFrontEnd, shell: ILabShell): void => {
     injectStyle();
-    // Collapse the right area once the layout is restored so a previously
-    // expanded right panel does not linger on first paint.
+    // Collapse the right area once restored so an expanded panel doesn't linger.
     app.restored
       .then(() => {
         try {

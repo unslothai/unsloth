@@ -65,9 +65,9 @@ echo "[studio-update] before: unsloth $(version_of)"
 # (or any branch/tag/sha); otherwise take the latest PyPI release.
 if [ -n "$REF" ]; then
     SPECS="git+https://github.com/unslothai/unsloth.git@${REF}#egg=unsloth"
-    # unsloth-zoo does NOT track unsloth's tags/SHAs (different cadence). Use
-    # --zoo-ref if given; else the unsloth ref only when the zoo repo has it,
-    # falling back to main so `--ref <unsloth-tag>` doesn't fail on a missing ref.
+    # unsloth-zoo does NOT track unsloth's tags (different cadence). Use --zoo-ref
+    # if given; else the unsloth ref only when the zoo repo has it, falling back to
+    # main.
     _zoo_ref="$ZOO_REF"
     if [ -z "$_zoo_ref" ]; then
         if git ls-remote --exit-code https://github.com/unslothai/unsloth-zoo.git \
@@ -90,8 +90,8 @@ fi
 
 echo "[studio-update] after:  unsloth $(version_of)"
 
-# Sanity: the backend must still import after the swap (a missing transitive
-# dep from --no-deps shows up here). Non-fatal: just warn with the remedy.
+# Sanity: the backend must still import after the swap (a missing --no-deps
+# transitive dep shows up here). Non-fatal: just warn with the remedy.
 if ! "$PY" -c "import studio.backend.main" >/dev/null 2>&1; then
     echo "[studio-update] WARNING: 'import studio.backend.main' failed after update." >&2
     echo "[studio-update] A new dependency may be missing. Re-run with --with-deps:" >&2

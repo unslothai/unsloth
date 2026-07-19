@@ -41,19 +41,16 @@ FROM ${BASE_IMAGE}
 # the base) so the published image is reproducible.
 ARG UNSLOTH_STUDIO_REF=main
 # unsloth-zoo ref overlaid into the Studio venv by install.sh --local. The publish
-# workflow passes ONE zoo ref to both builds, so Studio runs the same zoo as the
-# base and the operator-requested ref instead of always main.
+# workflow passes ONE zoo ref to both builds, so Studio runs the same zoo as base.
 ARG UNSLOTH_STUDIO_ZOO_REF=main
-# The SAME llama.cpp tag the base baked (prepare resolves it once). install.sh ->
-# setup.sh honours UNSLOTH_LLAMA_TAG; without the pin the Studio build could
-# re-resolve "latest" and replace the base's pinned bundle instead of reusing it.
+# The SAME llama.cpp tag the base baked. setup.sh honours UNSLOTH_LLAMA_TAG;
+# without the pin the Studio build could re-resolve "latest" and diverge.
 ARG LLAMA_PREBUILT_TAG=latest
 ARG TARGETARCH
 
-# Services run as root here (base is root-only; non-root parity is a follow-up).
-# sshd is key-only and stays disabled unless PUBLIC_KEY/SSH_KEY is set; no secrets
-# are persisted (see studio_launch.sh). The JUPYTER_PORT / UNSLOTH_ENABLE_SSHD
-# defaults let supervisord's %(ENV_*)s resolve when run directly (bypassing the launcher).
+# Services run as root here (non-root parity is a follow-up). sshd is key-only,
+# disabled unless PUBLIC_KEY/SSH_KEY is set (see studio_launch.sh). The
+# JUPYTER_PORT / UNSLOTH_ENABLE_SSHD defaults let supervisord's %(ENV_*)s resolve.
 USER root
 ENV UNSLOTH_STUDIO_HOME=/opt/unsloth-studio \
     JUPYTER_PORT=8888 \
@@ -68,22 +65,19 @@ RUN apt-get update \
  && rm -rf /var/lib/apt/lists/*
 
 # Clone + install Studio into a dedicated venv under $UNSLOTH_STUDIO_HOME.
-# --local uses the cloned tree (editable install), so the source MUST persist for
-# the venv's unsloth_cli entrypoint -- move it to $STUDIO_HOME/src, strip .git (~120MB).
+# --local is editable, so the source MUST persist -- keep it at $STUDIO_HOME/src,
+# strip .git (~120MB).
 #
 # The llama.cpp symlink BEFORE install.sh points Studio's prebuilt dir at the
-# base image's baked bundle so the installer skips a second ~400MB download; the
+# base's baked bundle so the installer skips a second ~400MB download; the
 # .unsloth-studio-owned marker satisfies setup.sh's ownership assertion.
 #
-# UNSLOTH_TORCH_INDEX_FAMILY pins the Studio venv's torch index: no GPU/nvidia-smi
-# at build time would land install.sh on cpu/cu126 wheels. cu128 on both arches,
-# mirroring the base (cu130 would lift the arm64 floor to 580+). Blackwell JIT
-# (sm_103/sm_121) comes from the same cu13 NVRTC swap the base applies, repeated
-# below for the Studio venv on both arches.
+# UNSLOTH_TORCH_INDEX_FAMILY pins the Studio venv's torch index (no nvidia-smi at
+# build time would land on cpu/cu126). cu128 on both arches, mirroring the base.
+# Blackwell JIT (sm_103/sm_121) comes from the same cu13 NVRTC swap, repeated below.
 #
-# UNSLOTH_PYTHON=3.12 pins the Studio venv to the base's Python minor (install.sh
-# defaults to 3.13), making the nvidia-*-cu12 wheels byte-identical so the dedup
-# below can symlink the Studio venv's ~3.7GB of CUDA .so into the base venv's.
+# UNSLOTH_PYTHON=3.12 pins the Studio venv to the base's Python minor so the
+# nvidia-*-cu12 wheels are byte-identical and the dedup below can symlink them.
 #
 # fetch+checkout FETCH_HEAD, not `clone --branch`: CI passes a commit SHA.
 RUN set -eux \
@@ -106,25 +100,18 @@ RUN set -eux \
     UNSLOTH_PYTHON=3.12 \
     bash install.sh --local \
     # Fail loud unless the Studio venv torch EXACTLY matches the base (version AND
-    # CUDA family) before the dedup symlinks their CUDA libs. A family-only check
-    # would miss a torch that ignored UNSLOTH_TORCH_INDEX_FAMILY (cu126 probe) or
-    # capped below the base's version, linking incompatible libs. Compare to the
-    # base's own torch (no hardcoded version); metadata only, since importing torch
-    # needs native libs QEMU arm64 can't load.
+    # CUDA family) before the dedup symlinks their CUDA libs. Compare to the base's
+    # own torch (no hardcoded version); metadata only (QEMU arm64 can't import torch).
  && BASE_TORCH="$(/opt/unsloth-venv/bin/python -c "from importlib.metadata import version; print(version('torch'))")" \
  && "${UNSLOTH_STUDIO_HOME}/unsloth_studio/bin/python" -c "import sys; from importlib.metadata import version; assert sys.version_info[:2] == (3, 12), 'Studio venv python %d.%d is not 3.12 (UNSLOTH_PYTHON pin ignored) -- CUDA dedup below depends on it' % sys.version_info[:2]; v = version('torch'); assert v == '${BASE_TORCH}', 'Studio venv torch ' + v + ' does not match base venv torch ${BASE_TORCH} (CUDA dedup would link mismatched libs)'; print('Studio venv python %d.%d torch' % sys.version_info[:2], v, '== base', '${BASE_TORCH}')" \
-    # setup.sh may relink llama-quantize into build/bin; prove it still resolves
-    # its libraries or GGUF export breaks with "No working quantizer found".
-    # Content check, not rc: --help exits nonzero but prints usage; a loader
-    # failure prints "error while loading shared libraries" and no usage.
+    # setup.sh may relink llama-quantize into build/bin; prove it still resolves its
+    # libraries. Content check, not rc: --help exits nonzero but prints usage.
  && { "${UNSLOTH_STUDIO_HOME}/llama.cpp/llama-quantize" --help 2>&1 || true; } | grep -q "usage" \
  && rm -rf "${UNSLOTH_STUDIO_HOME}/src/.git" \
           "${UNSLOTH_STUDIO_HOME}/src/studio/frontend/node_modules" \
           /root/.cache \
-    # Stage the Studio venv's NVRTC like the base venv (.cu128.orig default +
-    # staged .cu13 alias, retargeted per device by select_cuda_jit_tools). Both
-    # arches: sm_103 needs cu13 NVRTC as much as sm_121, the dedup never touches
-    # cuda_nvrtc, and the base layer installed cuda-nvrtc-13-0 on both arches.
+    # Stage the Studio venv's NVRTC like the base (.cu128.orig default + .cu13
+    # alias, retargeted per device by select_cuda_jit_tools). Both arches.
  && for NVRTC_DIR in "${UNSLOTH_STUDIO_HOME}"/unsloth_studio/lib/python*/site-packages/nvidia/cuda_nvrtc/lib; do \
         if [ -f "${NVRTC_DIR}/libnvrtc.so.12" ] && [ ! -L "${NVRTC_DIR}/libnvrtc.so.12" ]; then \
             mv "${NVRTC_DIR}/libnvrtc.so.12" "${NVRTC_DIR}/libnvrtc.so.12.cu128.orig"; \
@@ -168,20 +155,15 @@ COPY fetch_llama_prebuilt.py /usr/local/lib/unsloth/fetch_llama_prebuilt.py
 # Optional public Cloudflare tunnel for JupyterLab (UNSLOTH_JUPYTER_CLOUDFLARE=1,
 # or `unsloth-jupyter-tunnel --force`); supervisord runs it as jupyter-cloudflare.
 COPY unsloth_jupyter_tunnel.sh /usr/local/bin/unsloth-jupyter-tunnel
-# JupyterLab defaults baked for every container: "Unsloth Dark" (Monokai) theme
-# with adaptive light/dark, a per-cell run button that doesn't auto-advance, a
-# labeled "Restart & Run All", windowing off (collapsing output won't snap to
-# top), ArrowDown/Up to the top of the next/prev cell, and the "news" prompt off.
-# overrides.json is the system-wide settings override; the theme + keymap + logo
-# ship as the prebuilt labextension from labext-builder above.
+# JupyterLab defaults baked for every container (theme, non-advancing run button,
+# labeled "Restart & Run All", windowing off, cell-nav keymap, news prompt off).
+# overrides.json is the settings override; theme + keymap + logo ship as the
+# prebuilt labextension from labext-builder above.
 COPY jupyter/overrides.json /opt/unsloth-venv/share/jupyter/lab/settings/overrides.json
 COPY --from=labext-builder /opt/labext-src/unsloth-jupyterlab/labextension /opt/unsloth-venv/share/jupyter/labextensions/unsloth-jupyterlab
-# Unsloth branding (served by jupyter_server, applied to its site-packages):
-# replace the favicon + page logo, brand the login screen (login.html), and
-# disable+lock the stock top-left Jupyter logo so only the labextension's Unsloth
-# logo renders. The sloth-sticker install is the ONLY fail-soft step (own { }
-# group with `|| echo`), so a missing "Sloth emojis" folder doesn't break the
-# build; the required steps above (JS resolve, favicon/logo/login copy) stay fatal.
+# Unsloth branding (applied to jupyter_server's site-packages): replace favicon +
+# logo, brand login.html, disable+lock the stock top-left logo. Only the
+# sloth-sticker install is fail-soft (`|| echo`); the copies above stay fatal.
 COPY jupyter/favicon.ico /tmp/unsloth-branding/favicon.ico
 COPY jupyter/logo.png /tmp/unsloth-branding/logo.png
 COPY jupyter/login.html /tmp/unsloth-branding/login.html
@@ -203,10 +185,8 @@ RUN JS="$(/opt/unsloth-venv/bin/python -c 'import os, jupyter_server; print(os.p
  && /opt/unsloth-venv/bin/jupyter labextension lock @jupyterlab/apputils-extension:splash \
  && /opt/unsloth-venv/bin/jupyter labextension lock unsloth-jupyterlab
 # Branding integrity guard: the attribution checker (a jupyter_server extension),
-# the AGPLv3 license text, and its enabling config, installed into the base venv
-# (on the jupyter import + config path). The stock splash is disabled+locked
-# above so the labextension's splash is the sole provider. --verify FAILS the
-# build if any attribution / license asset is missing or altered.
+# the AGPLv3 license text, and its enabling config, into the base venv. --verify
+# FAILS the build if any attribution / license asset is missing or altered.
 COPY jupyter/unsloth_branding.py /tmp/unsloth-branding-guard/unsloth_branding.py
 COPY jupyter/jupyter_server_config.d/unsloth_branding_guard.json /tmp/unsloth-branding-guard/unsloth_branding_guard.json
 RUN SP="$(/opt/unsloth-venv/bin/python -c 'import sysconfig; print(sysconfig.get_path("purelib"))')" \

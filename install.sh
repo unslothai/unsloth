@@ -2006,10 +2006,8 @@ fi
 _REPO_ROOT="$(cd "$(dirname "$0" 2>/dev/null || echo ".")" && pwd)"
 
 # ── unsloth-zoo overlay ref (for --local installs) ──
-# --local overlays unsloth-zoo from git so the Studio venv tracks the same zoo as
-# the editable unsloth checkout. Honor UNSLOTH_ZOO_REF (the Docker publish
-# workflow forwards one ref to both builds) so the image runs the requested zoo.
-# Unset -> main, byte-identical to the previous bare git URL.
+# Honor UNSLOTH_ZOO_REF so the Studio venv tracks the requested zoo (the Docker
+# publish workflow forwards one ref to both builds). Unset -> main.
 _ZOO_REF="${UNSLOTH_ZOO_REF:-main}"
 _ZOO_GIT_SPEC="unsloth-zoo @ git+https://github.com/unslothai/unsloth-zoo@${_ZOO_REF}"
 
@@ -2077,10 +2075,9 @@ _has_amd_rocm_gpu() {
 get_torch_index_url() {
     _base="${UNSLOTH_PYTORCH_MIRROR:-https://download.pytorch.org/whl}"
     _base="${_base%/}"
-    # Explicit pin for hosts where probing is impossible (Docker builds, CI).
-    # Names the index leaf: UNSLOTH_TORCH_INDEX_FAMILY=cu128|cu130|cu126|rocm7.2|cpu|...
-    # The Blackwell build uses this: no GPU/nvidia-smi at build time, but the image
-    # targets CUDA, so probing would land on cpu (CI) or cu126 wheels.
+    # Explicit pin for hosts where probing is impossible (Docker builds, CI):
+    # UNSLOTH_TORCH_INDEX_FAMILY=cu128|cu130|cu126|rocm7.2|cpu|... names the index
+    # leaf. The Blackwell build needs it: no GPU at build time but a CUDA target.
     if [ -n "${UNSLOTH_TORCH_INDEX_FAMILY:-}" ]; then
         echo "$_base/${UNSLOTH_TORCH_INDEX_FAMILY}"; return
     fi

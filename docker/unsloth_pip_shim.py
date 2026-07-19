@@ -47,8 +47,7 @@ _KEEP = {
     "unsloth_zoo",
 }
 _KEEP_PREFIX = ("nvidia-", "nvidia_")
-# pip/uv flags that consume the following token as a value (so we don't mistake
-# that value for a requirement).
+# pip/uv flags that consume the next token as a value (not a requirement).
 _VALUE_FLAGS = {
     "-r",
     "--requirement",
@@ -80,8 +79,7 @@ _VALUE_FLAGS = {
     "-e",
     "--editable",
     # Every remaining value-taking flag of pip/uv install (from both --help). A
-    # missing one makes the scanner misread its VALUE: `--torch-backend cu128 torch`
-    # dropped torch then exec'd uv with no target (hard-error). uv:
+    # missing one makes the scanner misread its VALUE. uv:
     "--allow-insecure-host",
     "--build-constraints",
     "-b",
@@ -139,35 +137,30 @@ _VALUE_FLAGS = {
     "--requirements-from-script",
     "--uploaded-prior-to",
 }
-# Value-flags whose VALUE is itself an install target: a requirements file pulls
-# real requirements (index-url/find-links/constraint/target values are options).
-# uv spells the long forms plural (--requirements/--constraints); include both.
+# Value-flags whose VALUE is itself an install target (a requirements file pulls
+# real requirements). uv spells the long forms plural; include both.
 _REQ_FILE_FLAGS = {"-r", "--requirement", "--requirements"}
-# Constraint files aren't install targets, but pip applies their pins during
-# resolution, so a -c that pins torch/transformers can still downgrade a baked
-# package. Filter them like requirement files. (uv's long form is --constraints.)
+# Constraint files aren't install targets, but pip applies their pins, so a -c
+# pinning torch/transformers can downgrade a baked package. Filter like -r files.
 _CONSTRAINT_FILE_FLAGS = {"-c", "--constraint", "--constraints"}
-# -e/--editable <path|url|vcs> takes the NEXT token as a real install target. A
-# protected editable must drop BOTH flag and value; dropping only the value
-# leaves pip a dangling -e that swallows the next kept package and fails the cell.
+# -e/--editable takes the next token as a real install target. A protected
+# editable must drop BOTH flag and value, else a dangling -e swallows the next
+# kept package and fails the cell.
 _EDITABLE_FLAGS = {"-e", "--editable"}
-# -P/--upgrade-package and --reinstall-package are uv's selective upgrade flags:
-# naming a baked package lets an ordinary target refresh it. Filter the value
-# through _KEEP, dropping the flag+value pair for a protected name. Unlike -e,
-# none is itself an install target.
+# -P/--upgrade-package/--reinstall-package are uv's selective upgrade flags:
+# filter the value through _KEEP, dropping the flag+value pair for a protected
+# name. Unlike -e, none is itself an install target.
 _UPGRADE_PKG_FLAGS = {"-P", "--upgrade-package", "--reinstall-package"}
-# Short value-flags accepted ATTACHED (flag glued to value): -rreqs.txt, -cX,
-# -epath, -Pname. The scanner splits flag from value so it is filtered/classified,
-# else an attached -r-only cell no-ops and -c/-e/-P bypasses _KEEP.
+# Short value-flags accepted ATTACHED (-rreqs.txt, -cX, -epath, -Pname). Split
+# flag from value so it's filtered, else -r no-ops and -c/-e/-P bypass _KEEP.
 _ATTACHED_SHORT_FLAGS = {"-r", "-c", "-e", "-P"}
 # Resolver-wide reinstall/ignore-installed switches (pip --force-reinstall,
-# --ignore-installed, -I; uv --reinstall) rebuild already-satisfied baked deps;
-# drop them (the kept target still installs). uv's --exact is destructive the
-# other way (SYNC removes everything outside the target's closure), so drop it too.
+# --ignore-installed, -I; uv --reinstall) rebuild baked deps; drop them (the kept
+# target still installs). uv's --exact removes everything outside the closure, so
+# drop it too.
 _REINSTALL_FLAGS = {"--force-reinstall", "--ignore-installed", "-I", "--reinstall", "--exact"}
-# Value-flags whose flag+value pair is dropped outright. --upgrade-strategy eager
-# would upgrade EVERY dep of a kept target; dropping it falls back to pip's
-# only-if-needed default so satisfied protected deps stay.
+# Value-flags dropped outright with their value. --upgrade-strategy eager would
+# upgrade every dep of a kept target; dropping it falls back to only-if-needed.
 _DROP_VALUE_FLAGS = {"--upgrade-strategy"}
 
 
@@ -198,9 +191,8 @@ def _canon(token):
     if the token is not a plain pkg spec (url / path / vcs / option)."""
     if token.startswith("-"):
         return None
-    # PEP 508 direct reference: "name [extras] @ <url>". The name is at the front,
-    # so pull it out BEFORE the url/vcs guard below, or a protected package pinned
-    # through a URL slips past _KEEP. Non-protected refs still return their name.
+    # PEP 508 direct reference: "name [extras] @ <url>". Pull the name out BEFORE
+    # the url/vcs guard below, else a protected package pinned via URL slips _KEEP.
     _dref = re.match(
         r"^([A-Za-z0-9][A-Za-z0-9._-]*)\s*(?:\[[^\]]*\])?\s*@(?:\s|git\+|hg\+|bzr\+|svn\+|[a-z]+://)",
         token,
@@ -208,37 +200,31 @@ def _canon(token):
     if _dref:
         return _dref.group(1).lower().replace("_", "-") or None
     if re.match(r"^[a-z]+\+", token) or "://" in token or token.startswith((".", "/")):
-        # A VCS/URL install can name a protected package via the legacy #egg=NAME
-        # (or &egg=NAME) fragment; pull it out so _KEEP can drop it, else the shim
-        # execs the URL and reinstalls a baked package.
+        # A VCS/URL install can name a protected package via the #egg=NAME
+        # fragment; pull it out so _KEEP can drop it.
         _egg = re.search(r"[#&]egg=([A-Za-z0-9][A-Za-z0-9._-]*)", token)
         if _egg:
             return _egg.group(1).lower().replace("_", "-") or None
-        # A wheel URL/path names its distribution in the PEP 427 filename, so a
-        # bare `pip install .../torch-2.11.0+cu128-...whl` would slip torch past
-        # _KEEP. Dashes can't appear in the distribution component, so the leading
-        # dash-split of the basename is the name; pull it so _KEEP can drop it.
+        # A wheel URL/path names its distribution in the PEP 427 filename (leading
+        # dash-split of the basename), so a bare torch-*.whl would slip _KEEP.
         _whl = re.search(r"([^/\\#?]+)\.whl(?:[#?]|$)", token)
         if _whl:
             dist = _whl.group(1).split("-", 1)[0].strip().lower().replace("_", "-")
             if dist:
                 return dist
-        # A source archive URL/path names its distribution the same way
-        # ({name}-{version}.tar.gz), so match it against _KEEP too instead of
-        # passing it through as an opaque positional.
+        # A source archive ({name}-{version}.tar.gz) names its distribution too;
+        # match it against _KEEP instead of passing it through as opaque.
         _arch = _sdist_name(token.split("#", 1)[0].split("?", 1)[0].rstrip("/").rsplit("/", 1)[-1])
         if _arch:
             return _arch
-        # A VCS URL without #egg= still installs a named project: the repo
-        # basename equals the distribution for the packages we protect
-        # (huggingface/transformers.git -> transformers). Infer it from the last
-        # path segment so a bare egg-less git+ URL can't reinstall past _KEEP.
+        # A VCS URL without #egg= still installs a named project; the repo basename
+        # equals the distribution for our protected packages. Infer from the last
+        # path segment so an egg-less git+ URL can't reinstall past _KEEP.
         if re.match(r"^[a-z]+\+", token):
             _rest = token.split("#", 1)[0].split("?", 1)[0]
-            # Drop the @ref from the PATH before taking the basename: a ref may
-            # contain a slash (@feature/foo) and dodge _KEEP. Split path from
-            # authority first so an SSH userinfo @ isn't mistaken for the ref;
-            # like pip, the ref is everything after the LAST @.
+            # Drop the @ref before the basename (a ref may contain a slash). Split
+            # path from authority first so an SSH userinfo @ isn't the ref; like
+            # pip, the ref is everything after the LAST @.
             if "://" in _rest:
                 _authority, _slash, _path = _rest.partition("://")[2].partition("/")
                 if "@" in _path:
@@ -251,10 +237,8 @@ def _canon(token):
             _seg = _seg.strip().lower().replace("_", "-")
             if _seg:
                 return _seg
-        # A local project DIRECTORY installs the project it contains; a same-
-        # version dev build slips past even the constraints file (which only
-        # rejects a MISMATCH). Resolve the name from its metadata so _KEEP applies
-        # like every other artifact form. Metadata-less dirs pass through.
+        # A local project DIRECTORY installs the project it contains; resolve its
+        # name from metadata so _KEEP applies. Metadata-less dirs pass through.
         _local = _local_project_name(token)
         if _local:
             return _local
@@ -265,15 +249,13 @@ def _canon(token):
         _local = _local_project_name(token)
         if _local:
             return _local
-    # A bare wheel filename from the CWD (no ./ or scheme) is still a valid pip
-    # target; without this it falls through and misses _KEEP. Parse its PEP 427
-    # distribution like the URL/path wheel case above.
+    # A bare wheel filename from the CWD is a valid pip target; parse its PEP 427
+    # distribution like the URL/path wheel case above, else it misses _KEEP.
     if token.lower().endswith(".whl"):
         dist = token.rsplit("/", 1)[-1][:-4].split("-", 1)[0].strip().lower().replace("_", "-")
         if dist:
             return dist
-    # A bare source-archive filename from the CWD (`pip install torch-2.11.0.tar.gz`)
-    # is a valid pip target too; parse its distribution the same way.
+    # A bare source-archive filename from the CWD is a valid target too; parse it.
     _barch = _sdist_name(token.rsplit("/", 1)[-1])
     if _barch:
         return _barch
@@ -330,9 +312,8 @@ def _version_pin(token):
     return m.group(1) if m else None
 
 
-# pip expands ${UPPERCASE_NAME} in requirements files after we classify the text,
-# so `${PKG}==...` with PKG=torch would slip past _KEEP. Expand for CLASSIFICATION
-# only; kept lines are forwarded verbatim.
+# pip expands ${UPPERCASE_NAME} in requirements files, so `${PKG}==...` with
+# PKG=torch would slip _KEEP. Expand for CLASSIFICATION only; kept lines verbatim.
 _ENV_REF_RE = re.compile(r"\$\{([A-Z0-9_]+)\}")
 
 
@@ -410,11 +391,9 @@ def _rewrite_include(line, stripped, src_dir, depth):
             rebuilt += " " + comment
         return rebuilt + newline_char
 
-    # A remote (URL) nested include cannot be fetched/filtered here, so its
-    # protected pins would reach the real tool untouched. Drop the include line
-    # instead of letting pip pull an unfiltered requirements file off the network
-    # (mirrors the top-level remote `-r`/`-c` refusal in main). new_line=None
-    # tells the caller to remove the line entirely.
+    # A remote (URL) nested include can't be filtered here, so drop it rather than
+    # let pip pull unfiltered pins off the network (mirrors main's top-level
+    # refusal). new_line=None tells the caller to remove the line.
     if "://" in target:
         return None, True, None, [flag + " " + raw_target]
     abs_target = target if os.path.isabs(target) else os.path.join(src_dir, target)
@@ -422,14 +401,12 @@ def _rewrite_include(line, stripped, src_dir, depth):
     if depth < 8:
         f_path, f_rec, f_drp = _filter_requirements_file(abs_target, _depth = depth + 1)
         # A nested -c include is a resolver CONSTRAINT, not an install request, so
-        # a transformers pin inside it must NOT be recorded as a request (mirrors
-        # the top-level -c path in main(), which ignores _c_rec). Only a nested -r
-        # requirement include carries real install requests, so keep its pin.
+        # don't record its transformers pin (mirrors main's -c path). Only -r
+        # includes carry real requests, so keep their pin.
         if flag in _CONSTRAINT_FILE_FLAGS:
             f_rec = None
         if f_path != abs_target:
-            # The include was rewritten (protected specs dropped and/or its own
-            # nested includes absolutised); point at the filtered copy.
+            # The include was rewritten; point at the filtered copy.
             return _emit(f_path), True, f_rec, f_drp
     # Nothing to filter inside; just make sure the path still resolves from /tmp.
     if not os.path.isabs(target):
@@ -462,12 +439,10 @@ def _filter_requirements_file(path, _depth = 0):
             out.append(line)  # comment / blank -> keep
             continue
         if stripped.startswith("-"):
-            # An editable requirement (-e/--editable <target>) inside the file is
-            # a real install target, so a protected editable such as
-            # `-e git+https://.../unsloth.git#egg=unsloth` would reinstall the
-            # baked stack. Classify it through _KEEP exactly like the
-            # command-line -e case and drop the whole line (flag + target) when
-            # the target is protected; a transformers pin is still recorded.
+            # An -e/--editable <target> in the file is a real install target, so a
+            # protected editable would reinstall the baked stack. Classify through
+            # _KEEP like the command-line -e case; drop the whole line when
+            # protected (a transformers pin is still recorded).
             e_flag, e_target, _e_comment = _parse_flag_line(stripped, ("-e", "--editable"))
             if e_target is not None:
                 _action, _ver = _classify_flag_target(_expand_env_refs(e_target))
@@ -480,8 +455,7 @@ def _filter_requirements_file(path, _depth = 0):
                 out.append(line)  # kept editable -> forward the line verbatim
                 continue
             # Option or nested include. Recursively filter a nested `-r`/`-c`
-            # include (so protected specs deep in the include tree cannot slip
-            # past _KEEP) and repoint it so it still resolves from /tmp.
+            # include (protected specs deep in the tree) and repoint it for /tmp.
             new_line, rewrote, inc_rec, inc_drp = _rewrite_include(line, stripped, src_dir, _depth)
             if new_line is not None:
                 out.append(new_line)  # None -> a remote include was dropped
@@ -516,9 +490,8 @@ def _filter_requirements_file(path, _depth = 0):
         with os.fdopen(fd, "w", encoding = "utf-8") as f:
             f.writelines(out)
     except OSError as exc:
-        # Fail CLOSED: protected requirements were detected in this file, so
-        # forwarding the original would hand pip exactly the specs we must
-        # filter. Abort the install with a clear error instead.
+        # Fail CLOSED: protected requirements were detected, so forwarding the
+        # original would hand pip the specs we must filter. Abort instead.
         raise SystemExit(
             f"[unsloth-nb] could not write a filtered copy of {path} ({exc}); "
             "refusing to forward a requirements file that pins protected packages."
@@ -604,8 +577,7 @@ def main():
     if argv[:1] == ["--unsloth-selfcheck-value-flags"]:
         _selfcheck_value_flags()
 
-    # Only intercept inside a notebook kernel (UNSLOTH_NB_SHIM set by the baked
-    # IPython startup and unsloth-run). Everywhere else (build install.sh, shells)
+    # Only intercept inside a notebook kernel (UNSLOTH_NB_SHIM); everywhere else
     # behave exactly like the real tool.
     if os.environ.get("UNSLOTH_NB_SHIM") != "1":
         os.execv(REAL[tool], [REAL[tool]] + argv)
@@ -626,23 +598,19 @@ def main():
     prev_flag = None
     for tok in tail:
         if skip_next:
-            # The value of -r/--requirement pulls real requirements (a target); the
-            # value of an index-url / find-links / constraint / etc. flag is an
-            # option, not something to install.
+            # -r/--requirement's value pulls real requirements (a target); an
+            # index-url / find-links / constraint value is an option, not a target.
             if prev_flag in _REQ_FILE_FLAGS or prev_flag in _CONSTRAINT_FILE_FLAGS:
                 if "://" in tok:
-                    # Remote requirement/constraint file: it cannot be inspected
-                    # or filtered, so refuse it in shim mode rather than let the
-                    # real tool fetch and install protected pins off the network.
-                    # The flag was appended when we first saw it; pop it so pip/uv
-                    # is not left a dangling -r/-c.
+                    # Remote requirement/constraint file: can't be filtered, so
+                    # refuse it rather than fetch protected pins off the network.
+                    # Pop the flag we appended so pip/uv has no dangling -r/-c.
                     if keep_args and keep_args[-1] == prev_flag:
                         keep_args.pop()
                     dropped.append(prev_flag + " " + tok)
                 elif prev_flag in _REQ_FILE_FLAGS:
-                    # Filter baked/protected packages out of the requirements file
-                    # so a notebook `pip install -r reqs.txt` cannot clobber the
-                    # cu128 stack or push transformers into the base venv.
+                    # Filter protected packages out of the requirements file so
+                    # `pip install -r reqs.txt` can't clobber the cu128 stack.
                     _req_path, _req_rec, _req_drp = _filter_requirements_file(tok)
                     keep_args.append(_req_path)
                     has_target = True
@@ -650,24 +618,22 @@ def main():
                         recorded = _req_rec
                     dropped.extend(_req_drp)
                 else:
-                    # Strip protected pins from the constraint file so it cannot
-                    # downgrade the baked stack, but a constraint is not an install
-                    # target and its transformers pin is not an install request, so
-                    # do not set has_target / recorded here.
+                    # Strip protected pins from the constraint file so it can't
+                    # downgrade the baked stack; a constraint isn't an install
+                    # target, so don't set has_target / recorded here.
                     _c_path, _c_rec, _c_drp = _filter_requirements_file(tok)
                     keep_args.append(_c_path)
                     dropped.extend(_c_drp)
             elif prev_flag in _DROP_VALUE_FLAGS:
-                # --upgrade-strategy (eager): pop the appended flag and drop the
-                # pair so pip falls back to only-if-needed.
+                # --upgrade-strategy (eager): drop the pair so pip falls back to
+                # only-if-needed.
                 if keep_args and keep_args[-1] == prev_flag:
                     keep_args.pop()
                 dropped.append(prev_flag + " " + tok)
             elif prev_flag in _EDITABLE_FLAGS or prev_flag in _UPGRADE_PKG_FLAGS:
-                # The flag was held back: its value is an install target (-e) or
-                # upgrade selector (-P), both filtered through _KEEP. Dropping a
-                # protected value drops the flag too (no dangling -e/-P). A kept
-                # editable sets has_target; -P does not.
+                # Flag held back: its value is an install target (-e) or upgrade
+                # selector (-P), filtered through _KEEP. A protected value drops
+                # the flag too. A kept editable sets has_target; -P does not.
                 _action, _ver = _classify_flag_target(tok)
                 if _action == "drop":
                     if _ver and not recorded:
@@ -683,16 +649,14 @@ def main():
             skip_next = False
             prev_flag = None
             continue
-        # --flag=value form (--requirement=reqs.txt / --index-url=URL as one
-        # token). Without this it is kept as an opaque option, the -r file is never
-        # filtered, and a file-only cell silently installs nothing.
+        # --flag=value form (--requirement=reqs.txt / --index-url=URL as one token).
+        # Without this the -r file is never filtered and a file-only cell no-ops.
         if tok.startswith("--") and "=" in tok:
             _flag, _, _val = tok.partition("=")
             if _flag in _VALUE_FLAGS:
                 if (_flag in _REQ_FILE_FLAGS or _flag in _CONSTRAINT_FILE_FLAGS) and "://" in _val:
                     # Remote requirement/constraint file in `--flag=URL` form:
-                    # refuse it in shim mode (the flag rides in the same token, so
-                    # dropping the token leaves nothing dangling).
+                    # refuse it (dropping the token leaves nothing dangling).
                     dropped.append(tok)
                 elif _flag in _REQ_FILE_FLAGS:
                     _req_path, _req_rec, _req_drp = _filter_requirements_file(_val)
@@ -709,8 +673,7 @@ def main():
                     dropped.extend(_c_drp)
                 elif _flag in _EDITABLE_FLAGS or _flag in _UPGRADE_PKG_FLAGS:
                     # --editable=<target> / --upgrade-package=<name>: filter the
-                    # inline value through _KEEP just like the space-separated
-                    # form, dropping the whole token for a protected package.
+                    # inline value through _KEEP, dropping the token if protected.
                     _action, _ver = _classify_flag_target(_val)
                     if _action == "drop":
                         if _ver and not recorded:
@@ -724,15 +687,13 @@ def main():
                     keep_args.append(tok)  # option with inline value, not a target
                 continue
         # Attached short value-flag form (-rreqs.txt, -cX, -epath, -Pname as ONE
-        # token). Without this it falls through as an opaque option: an -r-only
-        # cell no-ops and -c/-e/-P bypasses _KEEP. Split the flag from its value
-        # and reuse the separated-form handling.
+        # token). Split flag from value and reuse the separated-form handling,
+        # else -r no-ops and -c/-e/-P bypass _KEEP.
         if len(tok) > 2 and tok[0] == "-" and tok[1] != "-" and tok[:2] in _ATTACHED_SHORT_FLAGS:
             _sflag, _sval = tok[:2], tok[2:]
             if (_sflag in _REQ_FILE_FLAGS or _sflag in _CONSTRAINT_FILE_FLAGS) and "://" in _sval:
                 # Remote requirement/constraint file in attached `-rURL`/`-cURL`
-                # form: refuse it in shim mode (nothing was appended yet, so just
-                # drop the whole token).
+                # form: refuse it (nothing appended yet, drop the whole token).
                 dropped.append(_sflag + " " + _sval)
             elif _sflag in _REQ_FILE_FLAGS:
                 _req_path, _req_rec, _req_drp = _filter_requirements_file(_sval)
@@ -761,16 +722,14 @@ def main():
             continue
         if tok in _REINSTALL_FLAGS:
             # Resolver-wide reinstall / ignore-installed switch: drop it so pip/uv
-            # cannot rebuild already-satisfied baked deps (torch/transformers
-            # pulled in by a kept target). The kept target still installs.
+            # can't rebuild satisfied baked deps. The kept target still installs.
             dropped.append(tok)
             continue
         if tok in _VALUE_FLAGS:
-            # -e/--editable and -P/--upgrade-package carry a value that is a
-            # potential install target, so hold the flag back and let the
-            # skip_next handler emit or drop the flag+value pair together. Every
-            # other value-flag keeps its flag verbatim; only its value (an
-            # index-url / find-links / target dir / etc.) is an opaque option.
+            # -e/--editable and -P/--upgrade-package carry a potential install
+            # target, so hold the flag back and let skip_next emit or drop the
+            # pair together. Every other value-flag keeps its flag verbatim; only
+            # its value is an opaque option.
             if tok not in _EDITABLE_FLAGS and tok not in _UPGRADE_PKG_FLAGS:
                 keep_args.append(tok)
             skip_next = True
@@ -808,15 +767,14 @@ def main():
     if dropped:
         print("[unsloth-nb] kept baked versions, skipped: " + " ".join(dropped))
 
-    # Anything left to install? has_target was set for a kept spec, a positional
-    # url/path/vcs/editable, or a -r file. A line with only baked packages + option
-    # flags leaves no target, so no-op instead of exec'ing a bare install that fails.
+    # Anything left to install? A line with only baked packages + option flags
+    # leaves no target, so no-op instead of exec'ing a bare install that fails.
     if not has_target:
         print("[unsloth-nb] nothing to install after keeping the baked stack; ok.")
         return
     cmd = [REAL[tool]] + head + keep_args
     # Constrain the resolver too: an allowed target could pull an incompatible
-    # torch/transformers in as a DEPENDENCY and replace the baked wheel.
+    # torch/transformers in as a dependency and replace the baked wheel.
     constraints = _protected_constraints_file()
     if constraints:
         cmd += ["--constraint", constraints]

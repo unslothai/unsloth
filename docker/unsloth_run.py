@@ -71,10 +71,9 @@ def main():
     want = args.tf or pin or (compat.tier_for_model(model) if compat else None)
     sidecar = compat.sidecar_for(want) if (compat and want) else None
 
-    # Materialise the notebook for nbconvert. With --out, stage the input copy and
-    # the result as temp files NEXT TO the destination (same dir, so kernel cwd
-    # matches and publish is one atomic os.replace) and only publish on success --
-    # a timeout / failed cell / missing kernel must not destroy the previous output.
+    # Materialise the notebook for nbconvert. With --out, stage input + result as
+    # temp files next to the destination (same dir => atomic os.replace publish)
+    # and publish only on success, so a failed run can't destroy the old output.
     tmp_dir = None
     tmp_files = []
     publish_from = None
@@ -104,8 +103,7 @@ def main():
     env = dict(os.environ)
     env["UNSLOTH_NB_SHIM"] = "1"  # enable safe-install for the notebook's cells
     # Per-run marker unless the caller pinned one: the shared default would leak
-    # this run's transformers pin into later or concurrent runs in the same
-    # container (their kernels would activate a stale sidecar). An empty marker
+    # this run's transformers pin into concurrent/later runs. An empty marker
     # reads as "no pin", so pre-creating it is safe.
     marker = env.get("UNSLOTH_NB_TF_MARKER")
     if not marker:
@@ -149,8 +147,7 @@ def main():
         if rc == 0 and publish_from is not None:
             os.replace(publish_from, out_path)
     finally:
-        # Clean up the temp dir we materialised a downloaded notebook into and
-        # any staging files left next to --out (already gone when published).
+        # Clean up the temp dir and any staging files (already gone when published).
         if tmp_dir is not None:
             shutil.rmtree(tmp_dir, ignore_errors = True)
         for p in tmp_files:

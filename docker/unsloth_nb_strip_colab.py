@@ -4,38 +4,32 @@
 
 # Remove the Colab-only "how to run" sentence from Unsloth notebooks for Docker.
 #
-# Every generated notebook's first markdown cell opens with a Colab instruction
-# ("To run this, press Runtime > Run all on a free Tesla T4 ...", plus A100/L4/AMD
-# variants). Inside Docker there is no such menu or Colab GPU, so it is wrong;
-# strip ONLY that leading sentence and keep the rest of the cell (badge row,
-# local-install link, "You will learn ..." line). Docker-only, applied at sync
-# time; NOT pushed upstream (on Colab the sentence is correct).
+# Each generated notebook's first markdown cell opens with a Colab instruction
+# ("To run this, press Runtime > Run all ...") that is wrong inside Docker. Strip
+# only that leading sentence and keep the rest (badge row, install link, etc).
+# Docker-only, applied at sync time; NOT pushed upstream.
 #
 # Two modes:
 #   unsloth_nb_strip_colab.py <a.ipynb> [b.ipynb ...]   strip in place (idempotent)
 #   unsloth_nb_strip_colab.py --state <STATE> --dest <DEST>
-#       STATE-aware sync migration: for each .ipynb in the STATE file that still
-#       hashes to its recorded value (owned + unedited), strip the intro and update
-#       the hash; user-edited notebooks are left untouched. Runs after every STATE
-#       write (populate, restore, refresh, in-place upgrade).
+#       STATE-aware migration: strip + rehash each owned+unedited notebook (one
+#       whose hash still matches STATE); user-edited ones are left untouched.
 #
-# Safe with refresh decisions: content_sig already classifies the intro cell as
-# boilerplate, so the body digest is identical with or without the sentence.
-# Exit code is always 0.
+# Safe with refresh: content_sig classifies the intro cell as boilerplate, so the
+# body digest is unchanged. Exit code is always 0.
 import argparse
 import hashlib
 import json
 import os
 import sys
 
-# The stable identifier for the offending line (covers every GPU/Cloud variant).
+# Stable identifier for the offending line (all GPU/Cloud variants).
 _INTRO_PREFIX = "to run this, press"
 
-# The baked notebooks ship example tqdm widget outputs + a metadata.widgets state
-# block; JupyterLab can't always rebuild the Colab-saved state, so they render as
-# a stuck "Loading widget..." placeholder. Dropping the widget outputs + orphan
-# state removes it (running the cell recreates a fresh widget). Outputs aren't in
-# the refresh signature (content_sig hashes cell type+source), so this is safe.
+# Baked notebooks ship tqdm widget outputs + a metadata.widgets block that
+# JupyterLab can't rebuild, so they render as a stuck "Loading widget...". Drop
+# them (the cell recreates a fresh widget). Outputs aren't in the refresh
+# signature (content_sig hashes type+source), so this is safe.
 _WIDGET_VIEW_MIME = "application/vnd.jupyter.widget-view+json"
 
 

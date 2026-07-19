@@ -12,18 +12,15 @@ outside IPython, when no version was requested, or once transformers is imported
 try:
     import os
 
-    # Tell the pip/uv shim it's running inside a notebook kernel, so a cell's
-    # `!pip install ...` / `!uv pip install ...` (which inherits this env) gets
-    # the safe-install behaviour. Unset everywhere else => shim is a passthrough.
+    # Tell the pip/uv shim it's inside a notebook kernel, so a cell's
+    # `!pip install ...` gets safe-install behaviour. Unset elsewhere => passthrough.
     os.environ["UNSLOTH_NB_SHIM"] = "1"
 
     # Scope the transformers-request marker to THIS kernel so concurrent notebooks
-    # don't read each other's pin. The pip/uv shim (a child of this kernel)
-    # inherits UNSLOTH_NB_TF_MARKER, so writer and reader agree on the path. Falls
-    # back to the shared default when unset (e.g. `unsloth-run`, one notebook/process).
+    # don't read each other's pin. The shim (a child) inherits UNSLOTH_NB_TF_MARKER,
+    # so writer and reader agree. Unset => shared default (one notebook/process).
     if not os.environ.get("UNSLOTH_NB_TF_MARKER"):
-        # A kernel id that is stable for the kernel's lifetime and unique per
-        # kernel: the ipykernel connection file name, else the kernel PID.
+        # Stable, unique kernel id: the ipykernel connection file name, else the PID.
         _kid = ""
         try:
             from ipykernel import get_connection_file  # type: ignore
@@ -37,9 +34,8 @@ try:
 
     unsloth_nb_compat.register_ipython()
 
-    # Re-point the %pip / %uv line magics and `!python -m pip` at the same shim,
-    # so the in-process / module install paths cannot bypass the PATH shim and
-    # overwrite the baked torch/vLLM stack. Independent of the sidecar hook.
+    # Re-point %pip / %uv and `!python -m pip` at the same shim so in-process
+    # installs can't bypass it and overwrite the baked torch/vLLM stack.
     import unsloth_nb_pip_magic
 
     unsloth_nb_pip_magic.register_ipython()
@@ -48,8 +44,7 @@ except Exception as _e:  # never break a kernel because of the helper
     print(f"[unsloth-nb] startup hook skipped: {_e!r}", file = sys.stderr)
 
 # Colab cell-magic compatibility (hoist `%%capture` above a leading `#@title`
-# form so it fires instead of raising UsageError). Independent try/except so a
-# failure here never disables the transformers-sidecar hook above and vice versa.
+# form). Separate try/except so it can't disable the hook above, or vice versa.
 try:
     import unsloth_colab_compat
     unsloth_colab_compat.register_ipython()

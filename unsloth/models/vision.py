@@ -398,10 +398,9 @@ def unsloth_base_fast_generate(self, *args, **kwargs):
     ):
         kwargs.pop("mm_token_type_ids", None)
 
-    # VLMs do not allow logits_to_keep. transformers >= 5.0 sets logits_to_keep=1
-    # itself in GenerationMixin.generate AFTER _validate_model_kwargs, so pre-
-    # injecting it makes the strict validator raise on PEFT models. Skip on v5+
-    # and strip any leaked kwarg defensively.
+    # VLMs do not allow logits_to_keep. transformers >= 5.0 sets it itself in
+    # generate() after _validate_model_kwargs, so pre-injecting makes the strict
+    # validator raise on PEFT models. Skip on v5+ and strip any leaked kwarg.
     if Version(transformers_version) < Version("5.0.0.dev0"):
         global NUM_LOGITS_TO_KEEP
         if arch not in NUM_LOGITS_TO_KEEP:

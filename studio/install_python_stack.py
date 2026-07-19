@@ -1027,9 +1027,8 @@ def _detect_cuda_torch_index_url() -> str:
     Defaults to cu126 when nvidia-smi is missing or the version is unreadable
     (e.g. NVIDIA detected only via the /proc/driver/nvidia/gpus fallback).
     """
-    # Explicit override (parity with install.sh / install.ps1):
-    # UNSLOTH_TORCH_INDEX_FAMILY=cu128|cu130|cu126|cpu|... pins the wheel index
-    # when probing is wrong or impossible (no GPU at build time, CI).
+    # Explicit override (parity with install.sh / install.ps1): UNSLOTH_TORCH_INDEX_FAMILY=
+    # cu128|cu130|cu126|cpu|... pins the wheel index when probing can't (no GPU, CI).
     family = os.environ.get("UNSLOTH_TORCH_INDEX_FAMILY")
     if family:
         return f"{_PYTORCH_WHL_BASE}/{family}"
@@ -2069,9 +2068,8 @@ def install_python_stack() -> int:
     package_name = os.environ.get("STUDIO_PACKAGE_NAME", "unsloth")
     # --local overlays a local repo checkout after updating deps.
     local_repo = os.environ.get("STUDIO_LOCAL_REPO", "")
-    # unsloth-zoo git ref for the --local overlay. Honor UNSLOTH_ZOO_REF (the
-    # publish workflow / unsloth-studio-update forward one ref) so the Studio venv
-    # tracks the requested zoo, not always main. Unset -> main.
+    # unsloth-zoo git ref for the --local overlay. Honor UNSLOTH_ZOO_REF so the
+    # Studio venv tracks the requested zoo, not always main. Unset -> main.
     zoo_ref = os.environ.get("UNSLOTH_ZOO_REF", "").strip() or "main"
     zoo_git_spec = "unsloth-zoo @ git+https://github.com/unslothai/unsloth-zoo@" + zoo_ref
     base_total = 11 if IS_WINDOWS else 12  # +1 for the anyio repair check (step 8b)

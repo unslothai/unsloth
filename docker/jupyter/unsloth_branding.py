@@ -29,9 +29,8 @@ import os
 import sys
 
 # ---------------------------------------------------------------------------
-# Canonical attribution strings. Plain text. Keep in sync with the TypeScript
-# mirror at unsloth_labext/src/branding.ts (the guard checks the built bundle
-# contains these same strings).
+# Canonical attribution strings. Plain text; keep in sync with the TS mirror
+# unsloth_labext/src/branding.ts (the guard greps the built bundle for these).
 # ---------------------------------------------------------------------------
 PRODUCT = "Unsloth Docker Studio"
 SHORT_LABEL = "Built by the Unsloth team"
@@ -45,9 +44,8 @@ SOURCE_URL = "https://github.com/unslothai/unsloth"
 LICENSE_URL = "https://github.com/unslothai/unsloth#license"
 AGPL_URL = "https://www.gnu.org/licenses/agpl-3.0.html"
 APACHE_URL = "https://www.apache.org/licenses/LICENSE-2.0"
-# ONE plain literal, byte-identical to PHRASE in unsloth_labext/src/branding.ts.
-# The guard greps the built labext bundle for this exact string, so it must match
-# the TS literal verbatim (webpack keeps single string literals as-is).
+# ONE plain literal, byte-identical to PHRASE in unsloth_labext/src/branding.ts;
+# the guard greps the built bundle for it verbatim.
 PHRASE = (
     "Unsloth Docker Studio and JupyterLab image. Built by the Unsloth team. "
     "Licensed under Apache 2.0 and the GNU AGPLv3. "
@@ -80,9 +78,8 @@ def resolve_paths(
         jupyter_server_dir = os.path.dirname(jupyter_server.__file__)
     labext_dir = os.path.join(venv_share, "labextensions", LABEXT_NAME)
 
-    # Every page_config.json JupyterLab merges for disabledExtensions: the
-    # app-settings file plus a labconfig/ file per jupyter config dir. Tests pass
-    # config_dirs=[] for a hermetic tree; live resolution scans the real path.
+    # Every page_config.json JupyterLab merges for disabledExtensions (app-settings
+    # + a labconfig/ file per config dir). Tests pass config_dirs=[] for hermeticity.
     if config_dirs is None:
         try:
             from jupyter_core.paths import jupyter_config_path
@@ -200,9 +197,8 @@ def verify_branding(paths = None):
         problems.append("missing or empty logo: " + paths["logo"])
 
     # 7. No page_config.json disables the Unsloth extension or its plugins.
-    #    Disabling via disabledExtensions leaves the bundle on disk (check 5 passes)
-    #    yet strips the logo/About/splash at load, so reject it too. We only flag
-    #    ids belonging to unsloth-jupyterlab (our own stock disables are fine).
+    #    disabledExtensions leaves the bundle on disk (check 5 passes) but strips
+    #    it at load, so reject it. Only flag unsloth-jupyterlab ids.
     for pc_path in paths.get("page_configs", []):
         text = _read(pc_path)
         if not text:
@@ -270,9 +266,8 @@ def _load_jupyter_server_extension(serverapp):
         serverapp.log.critical(msg)
     except Exception:
         pass
-    # Stop the server cleanly, then guarantee exit if that is swallowed during
-    # extension load. studio_launch.sh (Layer A) normally refuses the whole
-    # container first; this is defense in depth for a direct `jupyter lab` run.
+    # Stop the server cleanly, then force exit if that's swallowed. Layer A
+    # (studio_launch.sh) refuses the container first; this backstops a direct run.
     try:
         serverapp.exit(1)
     except Exception:

@@ -1,14 +1,12 @@
 #!/usr/bin/env bash
 # Populate and refresh /workspace/unsloth-notebooks from unslothai/notebooks.
 #
-# The image bakes a read-only template at /opt/unsloth-notebooks so notebooks are
-# present instantly and offline. On boot this copies the template into
-# /workspace/unsloth-notebooks (first run) then best-effort refreshes from GitHub
-# when upstream advances.
+# On boot this copies the baked read-only template into /workspace/unsloth-notebooks
+# (first run), then best-effort refreshes from GitHub when upstream advances.
 #
-# The user's edits ALWAYS win: we record each written file's hash; on refresh a
-# file whose hash differs is treated as user-modified and left untouched. So a
-# refresh only updates unchanged files and adds new ones, never clobbering edits.
+# The user's edits ALWAYS win: each written file's hash is recorded; on refresh a
+# file whose hash differs is left untouched. So a refresh only updates unchanged
+# files and adds new ones.
 #
 # Opt-out / tuning (all optional):
 #   UNSLOTH_SKIP_NOTEBOOK_SYNC=1      do nothing (no populate, no refresh)
@@ -36,8 +34,7 @@ SYNCED="$DEST/.unsloth_sync_commit"   # upstream commit we last synced to
 TIMEOUT="${UNSLOTH_NOTEBOOK_FETCH_TIMEOUT:-60}"
 
 # Resolve a helper script ($1 override, $2 PATH command, $3 sibling filename),
-# echoing the path or nothing (empty lets the caller degrade). Used for SIG,
-# VIEW and STRIP helpers.
+# echoing the path or nothing. Used for SIG, VIEW and STRIP helpers.
 PYBIN="$(command -v python3 2>/dev/null || command -v python 2>/dev/null || true)"
 _self_dir="$(cd "$(dirname "$0")" 2>/dev/null && pwd)"
 resolve_helper() {
@@ -50,10 +47,9 @@ SIG_HELPER="$(resolve_helper "${UNSLOTH_NB_SIG_HELPER:-}" unsloth-nb-content-sig
 VIEW_HELPER="$(resolve_helper "${UNSLOTH_NB_VIEW_HELPER:-}" unsloth-nb-view unsloth_nb_view.py)"
 STRIP_HELPER="$(resolve_helper "${UNSLOTH_NB_STRIP_HELPER:-}" unsloth-nb-strip-colab unsloth_nb_strip_colab.py)"
 
-# True only when both are .ipynb, the SIG helper is usable, and it reports the
-# non-boilerplate middle (ignoring install header/announcements/footer) identical,
-# so a refresh doesn't rewrite an untouched notebook when only boilerplate moved.
-# Any failure returns false (caller falls back to a normal refresh).
+# True only when both are .ipynb and the SIG helper reports the non-boilerplate
+# middle identical, so a refresh doesn't rewrite a notebook when only boilerplate
+# moved. Any failure returns false.
 middle_unchanged() {
     case "$1" in *.ipynb) : ;; *) return 1 ;; esac
     [ -n "$PYBIN" ] && [ -n "$SIG_HELPER" ] || return 1
@@ -86,9 +82,8 @@ nb_gpu_is_amd() {
     return 1   # default: treat as non-AMD (hide AMD-* notebooks)
 }
 
-# Rebuild the sibling symlink VIEW (categorized folders mirroring the README
-# headers) from scratch. Symlinks live OUTSIDE $DEST, so the sync state machine
-# (find -type f) never sees them.
+# Rebuild the sibling symlink VIEW from scratch. Symlinks live OUTSIDE $DEST, so
+# the sync state machine (find -type f) never sees them.
 build_categorized_view() {
     [ "${UNSLOTH_SKIP_NOTEBOOK_VIEW:-0}" = "1" ] && return 0
     [ -n "$PYBIN" ] && [ -n "$VIEW_HELPER" ] || return 0
@@ -136,9 +131,8 @@ if [ ! -f "$STATE" ]; then
         case "$rel" in .unsloth_template_commit) continue ;; esac
         mkdir -p "$DEST/$(dirname "$rel")" 2>/dev/null || true
         # A pre-existing file (bind-mounted or hand-created) is user data: keep it
-        # and do NOT record it -- if recorded, the refresh below would see a hash
-        # match, treat it as pristine and overwrite it. Only files we lay down (or
-        # that match the template byte-for-byte) are recorded as managed.
+        # and do NOT record it, else the refresh below would treat it as pristine
+        # and overwrite it. Only files we lay down are recorded as managed.
         if [ -e "$DEST/$rel" ] \
            && [ "$(hash_of "$DEST/$rel")" != "$(hash_of "$TEMPLATE/$rel")" ]; then
             echo "[unsloth-nb] kept existing user file: $DEST/$rel"
@@ -154,10 +148,8 @@ if [ ! -f "$STATE" ]; then
 fi
 
 # 1b) Every-boot OFFLINE restore of deleted notebooks: a file we wrote that the
-# user has since DELETED comes back from the baked template (no network). Existing
-# files are never touched (can't clobber an edit); the restored hash is reset to
-# the template's so the refresh below bumps it to latest. Opt out with
-# UNSLOTH_KEEP_DELETED_NOTEBOOKS=1.
+# user DELETED comes back from the baked template (no network). Existing files are
+# never touched. Opt out with UNSLOTH_KEEP_DELETED_NOTEBOOKS=1.
 if [ -f "$STATE" ] && [ "${UNSLOTH_KEEP_DELETED_NOTEBOOKS:-0}" != "1" ]; then
     restored=0
     RS_TMP="$(mktemp)"
@@ -229,9 +221,8 @@ while IFS= read -r -d '' f; do
             continue
         fi
     elif [ -n "${LAST[$rel]:-}" ] && [ "${UNSLOTH_KEEP_DELETED_NOTEBOOKS:-0}" = "1" ]; then
-        # We wrote this notebook and the user DELETED it. With the opt-out set,
-        # honor the deletion instead of restoring it from the fresh clone. Keep
-        # the record so it stays known as managed-but-deleted.
+        # We wrote this notebook and the user DELETED it; with the opt-out set,
+        # honor the deletion. Keep the record as managed-but-deleted.
         printf '%s  %s\n' "${LAST[$rel]}" "$rel" >> "$TMPSTATE"
         kept=$((kept + 1))
         continue

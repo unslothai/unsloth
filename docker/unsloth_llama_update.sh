@@ -99,10 +99,9 @@ fi
 # an atomic rename), then swap. On any failure the existing install is untouched.
 parent="$(dirname "$INSTALL_DIR")"
 
-# The persistence recipe mounts a named volume AT the install dir. A mount point
-# can't be renamed (rename(2) EBUSY), so the whole-dir swap below would fail
-# there; detect the mount and swap the CONTENTS inside the tree (also keeps the
-# update in the volume). UNSLOTH_LLAMA_UPDATE_IN_PLACE=1/0 overrides autodetection.
+# A named volume mounted AT the install dir can't be renamed (EBUSY), so the
+# whole-dir swap below would fail; detect the mount and swap the CONTENTS inside
+# the tree. UNSLOTH_LLAMA_UPDATE_IN_PLACE=1/0 overrides autodetection.
 IN_PLACE="${UNSLOTH_LLAMA_UPDATE_IN_PLACE:-}"
 if [ -z "$IN_PLACE" ]; then
     IN_PLACE=0
@@ -122,9 +121,9 @@ else
     backup="${INSTALL_DIR}.old.$$"
 fi
 swap_done=0
-# The exit handler must never delete $backup while it is the ONLY copy of the
-# install: put the old tree back first, and remove it only after the new tree is
-# verifiably active. The signal traps run the EXIT trap on HUP/INT/TERM too.
+# The exit handler must never delete $backup while it's the ONLY copy: restore the
+# old tree first, remove it only after the new tree is active. Signal traps run
+# the EXIT trap on HUP/INT/TERM too.
 cleanup() {
     if [ "$swap_done" -ne 1 ]; then
         if [ "$IN_PLACE" = "1" ]; then

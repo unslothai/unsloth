@@ -30,11 +30,9 @@ assert_eq() {
 }
 
 # $1 = compute_cap(s) the mock nvidia-smi reports, ONE PER LINE ("none" -> no
-# nvidia-smi). A multi-line value models a mixed-GPU host (checks every cap is
-# scanned). $2 (optional) = the target libnvrtc.so.12 starts on; defaults to the
-# cu12.8 default, "libnvrtc.so.12.cu13" models a stale link from an earlier boot.
-# Builds a fake Studio venv NVRTC dir as the build stages it and runs the function
-# via UNSLOTH_STUDIO_HOME. Prints "<PTXAS_STATE> <NVRTC_TARGET>".
+# nvidia-smi; multi-line models a mixed-GPU host). $2 (optional) = the initial
+# libnvrtc.so.12 target (default cu12.8; "libnvrtc.so.12.cu13" models a stale
+# link). Builds a fake Studio venv NVRTC dir. Prints "<PTXAS_STATE> <NVRTC_TARGET>".
 run_select() {
     _cap="$1"
     _init="${2:-libnvrtc.so.12.cu128.orig}"

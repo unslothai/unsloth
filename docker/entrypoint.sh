@@ -8,38 +8,28 @@
 set -euo pipefail
 
 # --- CUDA JIT toolchain selection (device-gated) ----------------------------
-# The image bakes CUDA 13 ptxas + NVRTC only for the two Blackwell datacenter
-# arches cu12.8 can't target -- sm_103 (B300/GB300) and sm_121 (GB10/DGX Spark).
-# Both launched after cu12.8, so their hosts run a >=580 driver, exactly what a
-# cu13 cubin needs to load. Every other arch (Turing..sm_120) uses the cu12.8
-# tools on the documented 570-579 floor; a cu13 cubin can't load there (CUDA
-# driver compat is forward-only), so routing their JIT through cu13 would break
-# training. ptxas/NVRTC are host-side compilers, so they RUN under any driver --
-# only their output the old driver rejects.
-# Pick per DEVICE at boot (cap unknown at build time): cu12.8 is the immutable
-# default (loadable on 570+), only sm_103/sm_121 switch Triton to cu13 ptxas and
-# retarget the NVRTC symlink. Runs before every early-exit. Best-effort: the safe
-# default needs no write (non-root/read-only fine); only a non-root datacenter
-# host can't switch.
+# The image bakes CUDA 13 ptxas + NVRTC only for sm_103 (B300/GB300) and sm_121
+# (GB10/DGX Spark), which cu12.8 can't target. Both ship on >=580 drivers, which a
+# cu13 cubin needs. Every other arch uses cu12.8 on the 570-579 floor, where a
+# cu13 cubin can't load. Pick per DEVICE at boot: cu12.8 is the immutable default,
+# only sm_103/sm_121 switch Triton to cu13 ptxas and retarget the NVRTC symlink.
+# Best-effort: the default needs no write; only a non-root datacenter host can't switch.
 select_cuda_jit_tools() {
     local caps="" cc nvrtc_dir need_cu13=0
     if command -v nvidia-smi >/dev/null 2>&1; then
         caps="$( { nvidia-smi --query-gpu=compute_cap --format=csv,noheader 2>/dev/null || true; } )"
     fi
-    # Scan EVERY visible GPU: a sm_103/sm_121 part can sit behind an H100/B200 in
-    # nvidia-smi ordering. If ANY needs cu13, switch for the whole process -- those
-    # parts ship on >=580 drivers, so the host tolerates cu13 cubins for all archs.
+    # Scan EVERY visible GPU (a sm_103/sm_121 part can sit behind an H100). If ANY
+    # needs cu13, switch the whole process -- those hosts run >=580 drivers.
     while IFS= read -r cc || [[ -n "${cc}" ]]; do
         cc="$(printf '%s' "${cc}" | tr -d '[:space:]')"
         case "${cc}" in
             10.3|12.1) need_cu13=1 ;;
         esac
     done <<< "${caps}"
-    # Non-datacenter / undetectable / CPU host: keep cu12.8 (libnvrtc.so.12 ->
-    # .cu128.orig, Triton on bundled cu12.8 ptxas), loadable on 570+ and needs no
-    # write. One exception needs a write: an earlier boot on sm_103/sm_121 left
-    # libnvrtc.so.12 -> .cu13 and this GPU's 570-579 driver can't load it --
-    # reverse that selection (best-effort, same non-root caveat).
+    # Non-datacenter / undetectable / CPU host: keep cu12.8 (needs no write). One
+    # exception: an earlier sm_103/sm_121 boot left libnvrtc.so.12 -> .cu13 that a
+    # 570-579 driver can't load -- reverse that (best-effort).
     if [[ "${need_cu13}" -ne 1 ]]; then
         for nvrtc_dir in \
             /opt/unsloth-venv/lib/python*/site-packages/nvidia/cuda_nvrtc/lib \
@@ -51,9 +41,8 @@ select_cuda_jit_tools() {
         return 0
     fi
     # Blackwell datacenter present: point Triton at cu13 ptxas and retarget each
-    # venv's libnvrtc.so.12 -> the staged cu13 alias. -z guard lets an explicit
-    # TRITON_PTXAS_PATH win. Best-effort: a read-only/--user rootfs keeps cu12.8.
-    # Covers the base venv and the Studio venv.
+    # venv's libnvrtc.so.12 -> the cu13 alias. -z guard lets an explicit
+    # TRITON_PTXAS_PATH win. Covers the base + Studio venvs.
     if [[ -x /usr/local/cuda-13.0/bin/ptxas && -z "${TRITON_PTXAS_PATH:-}" ]]; then
         export TRITON_PTXAS_PATH=/usr/local/cuda-13.0/bin/ptxas
     fi
@@ -84,12 +73,10 @@ fi
 err()  { printf "\033[1;31mERROR:\033[0m %s\n" "$*" >&2; }
 warn() { printf "\033[1;33mWARN:\033[0m %s\n"  "$*" >&2; }
 
-# CPU mode for hosts that can't pass a GPU into a container (Docker Desktop on
-# macOS/Windows-without-WSL2, CPU Linux, CI). Covers Jupyter, GGUF tooling,
-# llama.cpp Studio chat and Data Recipes; NOT training or loading an Unsloth
-# model (FastLanguageModel runs CUDA probes and raises without a GPU). With
-# UNSLOTH_ALLOW_CPU=1 a missing GPU warns instead of failing pre-flight; a
-# visible GPU still runs the checks below.
+# CPU mode for hosts that can't pass a GPU (Docker Desktop, CPU Linux, CI). Covers
+# Jupyter, GGUF tooling, Studio chat; NOT training or loading a model. With
+# UNSLOTH_ALLOW_CPU=1 a missing GPU warns instead of failing; a visible GPU still
+# runs the checks below.
 if [[ "${UNSLOTH_ALLOW_CPU:-0}" == "1" ]]; then
     if ! command -v nvidia-smi >/dev/null 2>&1 || ! nvidia-smi -L 2>/dev/null | grep -q '^GPU'; then
         warn "UNSLOTH_ALLOW_CPU=1 and no GPU visible -- continuing on CPU."
@@ -207,10 +194,9 @@ for d in range(1, n):
 PY
 
 # --- arm64 note: baked llama.cpp is a CUDA 13 build -------------------------
-# Upstream ships no CUDA 12 arm64 llama.cpp (only arm64-cpu/arm64-cuda13), so the
-# arm64 image bakes cu13 while the torch stack (cu128) runs on 570+. A cu13 cubin
-# can't load on 570-579, so below 580 GGUF export / Studio chat fail even though
-# training works -- say so up front instead of failing mysteriously later.
+# Upstream ships no CUDA 12 arm64 llama.cpp, so the arm64 image bakes cu13 while
+# torch (cu128) runs on 570+. A cu13 cubin can't load on 570-579, so below 580
+# GGUF export / Studio chat fail even though training works -- warn up front.
 if [ "$(uname -m)" = "aarch64" ]; then
     _drv="$(nvidia-smi --query-gpu=driver_version --format=csv,noheader 2>/dev/null | head -1)"
     _drv_major="${_drv%%.*}"

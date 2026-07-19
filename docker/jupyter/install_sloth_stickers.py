@@ -24,9 +24,8 @@ import os
 import shutil
 import sys
 
-# Curated, in display order -> NN.png. Mirrors Studio's SLOTH_AVATARS
-# (frontend/src/features/profile/sloth-avatars.ts): the square, low-whitespace
-# stickers that frame cleanly. Kept in sync by hand; missing names are skipped.
+# Curated, in display order -> NN.png. Mirrors Studio's SLOTH_AVATARS: the square,
+# low-whitespace stickers that frame cleanly. Synced by hand; missing names skipped.
 CURATED = [
     "large sloth yay.png",
     "large sloth heart.png",
@@ -72,8 +71,7 @@ def main() -> int:
             print("  skip (%s): %s" % (error, name))
 
     print("installed %d/%d sloth stickers into %s" % (installed, len(CURATED), args.dest))
-    # Non-fatal: the login page degrades to the logo if none were installed, but
-    # a totally empty copy usually means a wrong --src, so signal that.
+    # Non-fatal, but an empty copy usually means a wrong --src, so signal it.
     return 0 if installed else 1
 
 

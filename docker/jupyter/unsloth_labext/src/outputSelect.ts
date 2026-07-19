@@ -9,21 +9,15 @@ import {
 /**
  * Colab-style Ctrl/Cmd+A inside a cell output.
  *
- * Clicking a cell's output leaves the notebook in command mode, so Ctrl/Cmd+A
- * fires `notebook:select-all` (selects EVERY cell). Colab instead selects only
- * the clicked output's text; this reproduces that and stops the event so the
- * notebook-wide select-all never runs.
- *
- * Listens in the CAPTURE phase and acts only when the chord is exactly Ctrl/Cmd+A
- * (no Alt), focus is NOT in an editor/input/contenteditable, and the keystroke
- * target or last pointer-down landed in an output area. We use the last
- * pointer-down, not the text selection anchor, because a stale anchor survives a
- * click away and would hijack select-all elsewhere.
+ * Clicking an output leaves the notebook in command mode, so Ctrl/Cmd+A fires
+ * `notebook:select-all` (every cell). Colab selects only the clicked output's
+ * text; reproduce that and stop the event. Listens in the CAPTURE phase, acts
+ * only on exactly Ctrl/Cmd+A (no Alt) outside an editor/input, keyed off the
+ * target or last pointer-down (not the stale selection anchor).
  */
 
-// Output containers, widest first. `.jp-OutputArea-output` is a single output;
-// `.jp-Cell-outputWrapper` is the whole output column of one cell (covers the
-// case where a click lands on padding between outputs).
+// Output containers, widest first: a single output, then the whole output column
+// (covers a click on padding between outputs).
 const OUTPUT_SELECTORS = ['.jp-OutputArea-output', '.jp-Cell-outputWrapper'];
 
 function closestOutput(node: Node | null): HTMLElement | null {
@@ -67,9 +61,8 @@ const outputSelectPlugin: JupyterFrontEndPlugin<void> = {
     'Ctrl/Cmd+A inside a cell output selects only that output, not every cell.',
   autoStart: true,
   activate: (_app: JupyterFrontEnd): void => {
-    // Remember where the last pointer-down landed: a click on an image / widget
-    // output may not leave a text selection inside it, so the selection anchor
-    // alone is not enough to know which output the user means.
+    // Remember the last pointer-down: a click on an image/widget output leaves no
+    // text selection, so the anchor alone can't tell which output is meant.
     let lastPointerOutput: HTMLElement | null = null;
     document.addEventListener(
       'pointerdown',
@@ -89,16 +82,14 @@ const outputSelectPlugin: JupyterFrontEndPlugin<void> = {
       if (inEditableContext()) {
         return;
       }
-      // Own the chord only when in an output now: the keystroke target, else the
-      // last click. Not the selection anchor -- it goes stale after clicking away
-      // (see the header) and would hijack select-all elsewhere.
+      // Own the chord only when in an output: the target, else the last click
+      // (not the stale selection anchor; see the header).
       const output =
         closestOutput(event.target as Node | null) ?? lastPointerOutput;
       if (!output) {
         return;
       }
-      // We own this key: prevent `notebook:select-all` (Lumino, command mode)
-      // from also running and selecting the whole notebook.
+      // We own this key: prevent Lumino's `notebook:select-all` from also running.
       event.preventDefault();
       event.stopPropagation();
       try {

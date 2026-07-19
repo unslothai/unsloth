@@ -61,9 +61,7 @@ c.PasswordIdentityProvider.hashed_password = "${HASH}"
 EOF
     # Land in the categorized notebook view, but only when it's enabled AND under
     # root_dir (expressible as /lab/tree). Mirror unsloth_sync_notebooks.sh's
-    # gating (UNSLOTH_NOTEBOOKS_VIEW_DIR + SKIP_NOTEBOOK_VIEW + SKIP_NOTEBOOK_SYNC)
-    # so a relocated/disabled/unsynced view never points at a missing dir;
-    # otherwise JupyterLab opens on its default /lab over /workspace.
+    # gating so a relocated/disabled/unsynced view never points at a missing dir.
     _root_dir="/workspace"
     _view_dir="${UNSLOTH_NOTEBOOKS_VIEW_DIR:-/workspace/Unsloth Notebooks}"
     if [[ "${UNSLOTH_SKIP_NOTEBOOK_VIEW:-0}" != "1" \

@@ -24,10 +24,10 @@ subprocess, so the shim applies. Safe no-op outside IPython.
 
 import re
 
-# Only the explicit `!<python> -m pip|uv ...` shell form. Input transformers see
-# the RAW cell text (IPython expands `{sys.executable}` later), so the braced form
-# (`!{sys.executable} -m pip install ...`) and absolute interpreter paths, quoted
-# or bare, must be matched here too or module-pip bypasses the PATH shim.
+# Only the explicit `!<python> -m pip|uv ...` shell form. Transformers see the RAW
+# cell text (IPython expands `{sys.executable}` later), so the braced form and
+# quoted/bare interpreter paths must be matched here too, else module-pip bypasses
+# the shim.
 _PY_M_PIP = re.compile(
     r"""^(\s*)!\s*
     (?:

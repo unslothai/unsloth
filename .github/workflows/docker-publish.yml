@@ -61,11 +61,9 @@ permissions:
 jobs:
   # ---------------------------------------------------------------------------
   # Resolve every upstream ref ONCE (llama tag + unsloth/zoo shas + notebooks
-  # commit) so both arch legs and the Studio build bake identical bits; resolving
-  # per-leg would let upstream advance mid-run under one tag. A dispatch input
-  # pins a frozen value; else a branch/tag is frozen to a sha via ls-remote
-  # (falling back to the bare ref on a miss), and llama "latest" follows the
-  # /releases/latest redirect (mirrors build.sh).
+  # commit) so both arch legs and Studio bake identical bits. A dispatch input
+  # pins a frozen value; else a branch/tag is frozen to a sha via ls-remote, and
+  # llama "latest" follows the /releases/latest redirect (mirrors build.sh).
   # ---------------------------------------------------------------------------
   prepare:
     runs-on: ubuntu-latest
@@ -157,10 +155,9 @@ jobs:
           echo "notebooks commit: ${SHA}"
 
   # ---------------------------------------------------------------------------
-  # Per-arch build. The matrix fans out two parallel jobs on native runners;
-  # each pushes a single-arch image by digest (no tag), and the merge job
-  # stitches the digests into one multi-arch manifest. Canonical build-push-action
-  # pattern; avoids the "last push wins" race of two jobs pushing the same tag.
+  # Per-arch build: two parallel jobs on native runners, each pushing a single-arch
+  # image by digest (no tag); the merge job stitches them into one manifest. Avoids
+  # the "last push wins" race of two jobs pushing the same tag.
   # ---------------------------------------------------------------------------
   build:
     needs: prepare
@@ -185,9 +182,7 @@ jobs:
       # lacks /usr/share/dotnet), hence `|| true`.
       - name: Reclaim disk
         run: |
-          # Hosted runners keep only ~14-20 GB free -- not enough for the image +
-          # buildkit state. None of these toolchains are used; paths differ across
-          # runners, hence `|| true`.
+          # None of these toolchains are used; paths differ across runners, hence `|| true`.
           sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc \
                       /opt/hostedtoolcache "$AGENT_TOOLSDIRECTORY" \
                       /usr/local/.ghcup /usr/share/swift \
@@ -359,9 +354,7 @@ jobs:
 
       - name: Reclaim disk
         run: |
-          # Hosted runners keep only ~14-20 GB free -- not enough for the image +
-          # buildkit state. None of these toolchains are used; paths differ across
-          # runners, hence `|| true`.
+          # None of these toolchains are used; paths differ across runners, hence `|| true`.
           sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc \
                       /opt/hostedtoolcache "$AGENT_TOOLSDIRECTORY" \
                       /usr/local/.ghcup /usr/share/swift \
@@ -489,16 +482,10 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      # Re-compute the tag list deterministically from the same metadata-action
-      # config the merge job used, so tag/schedule/SHA runs pull the image
-      # they just published instead of an unrelated tag from a prior run.
-      # IMPORTANT: keep the `enable=` expressions byte-identical to the
-      # corresponding merge jobs' gates above. The two used to differ
-      # (merge: ref + unsloth_ref guard; smoke: is_default_branch only),
-      # which meant workflow_dispatch with unsloth_ref defaulting to "main"
-      # would skip :latest on merge but still emit :latest as tags[0] on
-      # smoke -- so docker pull would fetch a previously-published :latest
-      # from Docker Hub, not the image just merged.
+      # Re-compute the tag list from the same metadata-action config the merge job
+      # used, so a run pulls the image it just published. IMPORTANT: keep the
+      # `enable=` expressions byte-identical to the merge jobs' gates above, else
+      # smoke could pull a previously-published :latest instead of the merged image.
       - name: Resolve published base tag
         id: meta_base
         uses: docker/metadata-action@v5

@@ -37,12 +37,11 @@ from __future__ import annotations
 import sys
 
 
-# Cell magics whose body runs as code (Python or shell), so a hoisted comment
-# stays inert. We ONLY hoist these; content/data magics (%%writefile, %%html,
-# ...) are left untouched (see the module docstring).
+# Cell magics whose body runs as code, so a hoisted comment stays inert. Only
+# these; content/data magics (%%writefile, %%html, ...) untouched (see docstring).
 _SAFE_CELL_MAGICS = frozenset(
     {
-        "capture",  # the Colab install pattern: suppress pip/install output
+        "capture",  # Colab install pattern: suppress pip output
         "time",
         "timeit",
         "prun",
@@ -71,15 +70,13 @@ def colab_cell_magic_fix(lines):
             if stripped == "" or stripped.startswith("#"):
                 skipped.append(line)  # blank or comment (incl. #@title)
                 continue
-            # First real line. Only act if it is a cell magic that is not yet on
-            # top (i.e. something was skipped before it).
+            # First real line. Act only if it's a cell magic not already on top.
             if stripped.startswith("%%") and i > 0:
                 name = stripped[2:].split(maxsplit = 1)
                 name = name[0] if name else ""
                 if name in _SAFE_CELL_MAGICS:
                     return [line] + skipped + lines[i + 1 :]
-                # Content/data magic (%%writefile, %%html, ...): do not move the
-                # comment into its body. Leave the cell exactly as written.
+                # Content/data magic: don't move the comment into its body.
                 return lines
             return lines  # already on top, or not a magic
         return lines  # all blank/comment -> nothing to do

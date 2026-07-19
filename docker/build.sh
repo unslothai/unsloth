@@ -18,10 +18,9 @@ PYTHON_VERSION="${PYTHON_VERSION:-3.12}"
 UNSLOTH_REF="${UNSLOTH_REF:-main}"
 UNSLOTH_ZOO_REF="${UNSLOTH_ZOO_REF:-main}"
 
-# llama.cpp prebuilt: default to the newest unslothai/llama.cpp release, resolved
-# here to a concrete tag so the build-arg changes only when upstream publishes a
-# new release (correct Docker layer caching) and the build stays reproducible.
-# Pin it explicitly for a frozen build: LLAMA_PREBUILT_TAG=b9596-mix-e6f2453 ./build.sh
+# llama.cpp prebuilt: default to the newest release, resolved here to a concrete
+# tag so the build-arg changes only on a new release (correct layer caching).
+# Pin for a frozen build: LLAMA_PREBUILT_TAG=b9596-mix-e6f2453 ./build.sh
 resolve_latest_llama_tag() {
     curl -fsSL -o /dev/null -w '%{url_effective}' \
         "https://github.com/unslothai/llama.cpp/releases/latest" 2>/dev/null \

@@ -45,8 +45,7 @@ RELEASE_REPO = "unslothai/llama.cpp"
 
 
 def resolve_latest_tag(repo: str) -> str:
-    # Follow the /releases/latest redirect: no API token, no rate limit, works on
-    # any build host.
+    # Follow the /releases/latest redirect: no API token or rate limit.
     url = f"https://github.com/{repo}/releases/latest"
     request = urllib.request.Request(url, headers = {"User-Agent": "unsloth-docker-build"})
     with urllib.request.urlopen(request, timeout = 60) as response:
@@ -127,9 +126,8 @@ def main() -> None:
             if os.path.isfile(target) and not entry.startswith("lib") and ".so" not in entry:
                 os.chmod(target, 0o755)
 
-        # Converter + gguf-py from the same-tag source tarball, so the python
-        # side's tensor mappings match the binaries (mirrors unsloth_zoo's
-        # _hydrate_converter_sources).
+        # Converter + gguf-py from the same-tag source tarball so tensor mappings
+        # match the binaries (mirrors unsloth_zoo's _hydrate_converter_sources).
         source_path = fetch_verified(base_url, source_name, sums, work)
         source_dir = os.path.join(work, "source")
         os.makedirs(source_dir)
@@ -148,12 +146,10 @@ def main() -> None:
         if os.path.isdir(conversion):
             shutil.copytree(conversion, os.path.join(install_dir, "conversion"), dirs_exist_ok = True)
 
-    # Make the baked marker readable by Studio's freshness check so the in-app
-    # "newer llama.cpp available" banner works. The tarball's marker carries
-    # upstream_tag/source_repo, but the reader keys off tag/release_tag/
-    # published_repo (the schema install_llama_prebuilt.py writes). setdefault()
-    # leaves a future tarball that already has these keys untouched; no build
-    # timestamp, so the layer stays byte-identical across build hosts.
+    # Make the baked marker readable by Studio's freshness check. The tarball keys
+    # off upstream_tag/source_repo, but the reader wants tag/release_tag/
+    # published_repo (the install_llama_prebuilt.py schema). setdefault() leaves an
+    # already-populated tarball untouched; no timestamp, so layers stay identical.
     marker_path = os.path.join(install_dir, "UNSLOTH_PREBUILT_INFO.json")
     try:
         with open(marker_path) as f:
@@ -168,11 +164,10 @@ def main() -> None:
         f.write("\n")
     print(f"marker augmented for freshness: tag={tag} published_repo={RELEASE_REPO}")
 
-    # Mirror the install into build/bin/ via hardlinks (zero extra bytes). Studio's
-    # setup.sh treats executable build/bin/llama-server + llama-quantize as a
-    # complete local build and skips its source-build fallback (which would
-    # otherwise compile a CPU-only llama.cpp over the baked CUDA bundle). Hardlinks
-    # (not symlinks) keep $ORIGIN rpath resolution and avoid a cycle when setup.sh
+    # Mirror the install into build/bin/ via hardlinks (zero extra bytes) so
+    # Studio's setup.sh treats it as a complete local build and skips its
+    # source-build fallback (which would compile CPU-only llama.cpp over the baked
+    # CUDA bundle). Hardlinks keep $ORIGIN rpath and avoid a cycle when setup.sh
     # relinks the root quantizer to build/bin/llama-quantize.
     build_bin = os.path.join(install_dir, "build", "bin")
     os.makedirs(build_bin, exist_ok = True)
@@ -184,20 +179,19 @@ def main() -> None:
             except OSError:
                 shutil.copy2(source, os.path.join(build_bin, entry))
         elif os.path.islink(source):
-            # Mirror same-directory soname symlinks (libllama.so.0 -> ...).
-            # Without these, a binary relinked into build/bin fails $ORIGIN
-            # resolution: the loader wants the soname, not the real file.
+            # Mirror same-dir soname symlinks (libllama.so.0 -> ...); without them
+            # a binary relinked into build/bin fails $ORIGIN (loader wants soname).
             target = os.readlink(source)
             dest = os.path.join(build_bin, entry)
             if "/" not in target and not os.path.lexists(dest):
                 os.symlink(target, dest)
 
-    # Sanity: the server must execute on a GPU-less host (the CUDA backend is a
-    # dlopen'd plugin). Check the quantizer from BOTH roots: setup.sh relinks the
-    # root llama-quantize to build/bin, so the build/bin copy must resolve standalone.
+    # Sanity: the server must run on a GPU-less host (CUDA backend is a dlopen'd
+    # plugin). Check the quantizer from both roots: setup.sh relinks the root copy
+    # to build/bin, so build/bin must resolve standalone.
     checks = (
-        # llama-quantize has no --version; a healthy run prints usage with
-        # rc 0, while a loader failure prints to stderr with rc 127.
+        # llama-quantize has no --version: healthy run prints usage (rc 0),
+        # loader failure rc 127.
         (os.path.join(install_dir, "llama-server"), "version"),
         (os.path.join(install_dir, "llama-quantize"), "usage"),
         (os.path.join(build_bin, "llama-quantize"), "usage"),

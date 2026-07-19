@@ -29,8 +29,7 @@ def _text(cell):
     return src.replace("\r\n", "\n").replace("\r", "\n")
 
 
-# Package-manager command fragments that mark a cell as the generated install
-# cell rather than substantive tutorial code.
+# Command fragments that mark a cell as the generated install cell.
 _INSTALL_MARKERS = (
     "pip install",
     "pip3-autoremove",
@@ -48,10 +47,9 @@ def _is_install_code(cell):
     low = t.lower()
     if any(m in low for m in _INSTALL_MARKERS):
         return True
-    # A %%capture / %%bash cell is boilerplate ONLY when it also carries an install
-    # command. A bare %%capture or a %%bash doing real setup is substantive: hash
-    # it so the boot refresh doesn't skip an upstream fix (a false SAME). The
-    # install markers above already catch the generated install cell.
+    # A %%capture / %%bash cell is boilerplate only if it also carries an install
+    # command (caught above); a bare one doing real setup is substantive, so hash
+    # it to avoid a false SAME on the boot refresh.
     return False
 
 

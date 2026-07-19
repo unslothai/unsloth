@@ -267,9 +267,8 @@ class SyntheticDataKit:
             stderr = subprocess.PIPE,
             start_new_session = True,
         )
-        # vLLM <= 0.18 logs "Starting vLLM API server on ..."; 0.19 renamed it
-        # to "Starting vLLM server on ...". Accept both, with the optional
-        # server index some versions insert before "on".
+        # Accept both "Starting vLLM API server on" (<= 0.18) and "Starting vLLM
+        # server on" (0.19), with the optional server index some versions insert.
         ready_re = re.compile(r"Starting vLLM(?:\s+API)?\s+server(?:\s+\d+)?\s+on\b")
         self.vllm_process = vllm_process
         self.stdout_capture = PipeCapture(
@@ -285,22 +284,19 @@ class SyntheticDataKit:
             keep_lines = 2000,
             echo = False,
             name = "vLLM STDERR",
-            # vLLM >= 0.19 emits the startup lines through logging, which writes
-            # to STDERR; watching stdout alone makes a healthy server look like a
-            # timeout and get killed.
+            # vLLM >= 0.19 logs startup lines to STDERR; watching stdout alone
+            # makes a healthy server look like a timeout and get killed.
             ready_regex = ready_re,
             text = False,
         )
         # we don't print stderr to console but self.stderr_capture.tail(200) will print the last 200 lines
 
         ready = False
-        # timeout None/0 keeps the previous Event.wait(None): wait indefinitely
-        # for readiness (large models / slow downloads). A positive value is a deadline.
+        # timeout None/0 waits indefinitely (large models / slow downloads);
+        # a positive value is a deadline.
         deadline = (time.monotonic() + timeout) if timeout else None
         while True:
-            # Cap the final wait to the remaining budget so a fractional
-            # timeout stays a real deadline instead of overshooting by up
-            # to a full second.
+            # Cap the wait to the remaining budget so we don't overshoot the deadline.
             _wait = 1 if deadline is None else min(1, deadline - time.monotonic())
             if _wait <= 0:
                 break

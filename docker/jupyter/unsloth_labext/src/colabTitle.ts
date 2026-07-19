@@ -9,12 +9,10 @@ import { INotebookTracker, NotebookPanel } from '@jupyterlab/notebook';
 import { Cell } from '@jupyterlab/cells';
 
 /**
- * Colab "#@title" form cells. In Colab a code cell whose first line is
- * `#@title Some Title` renders as a titled, collapsed form (clickable header,
- * code hidden by default, output visible). JupyterLab has no equivalent, so this
- * reproduces it: inject a clickable title bar and hide the input via a CSS class
- * (not the model's source_hidden, so notebook metadata is never mutated).
- * Clicking toggles the code. Windowing is disabled image-wide, so the bar persists.
+ * Colab "#@title" form cells. A code cell whose first line is `#@title Some Title`
+ * renders in Colab as a titled, collapsed form. JupyterLab has no equivalent, so
+ * inject a clickable title bar and hide the input via a CSS class (not
+ * source_hidden, so metadata is never mutated). Clicking toggles the code.
  */
 
 const TITLE_RE = /^\s*#\s*@title\b[ \t]*(.*)$/;
@@ -138,9 +136,9 @@ const colabTitlePlugin: JupyterFrontEndPlugin<void> = {
         panel.content.widgets.forEach(applyTitle);
       };
       panel.revealed.then(scan).catch(() => undefined);
-      // Re-scan when cells are added/removed/moved or the user switches cells
-      // (covers editing a #@title line). applyTitle never re-collapses a cell
-      // that already has a bar, so manual expansions are preserved.
+      // Re-scan on cell add/remove/move or active-cell switch (covers editing a
+      // #@title line). applyTitle never re-collapses an existing bar, so manual
+      // expansions are preserved.
       const model = panel.content.model;
       if (model) {
         model.cells.changed.connect(() => window.setTimeout(scan, 0));

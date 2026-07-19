@@ -56,8 +56,7 @@ def test_colab_compat() -> None:
     # non-magic cell untouched
     plain = ["x = 1\n", "y = 2\n"]
     check("plain cell untouched", m.colab_cell_magic_fix(plain) == plain)
-    # content/data magic (%%writefile) NOT hoisted -- never inject the #@title
-    # comment into the written file body
+    # content magic (%%writefile) NOT hoisted into the written file body
     wf = ["#@title Config\n", "%%writefile config.json\n", "{}\n"]
     check("content magic (%%writefile) left untouched", m.colab_cell_magic_fix(wf) == wf)
     # safe magic with arg still hoisted
