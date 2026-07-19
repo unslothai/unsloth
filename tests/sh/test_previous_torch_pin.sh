@@ -43,6 +43,8 @@ assert_eq "cu130 wheel"                  "torch==2.10.0" "$(_previous_torch_pin 
 assert_eq "cpu wheel"                    "torch==2.10.0" "$(_previous_torch_pin '2.10.0+cpu' 'torch>=2.4,<2.12.0')"
 assert_eq "PyPI bare version (CUDA build on Linux)" "torch==2.10.0" "$(_previous_torch_pin '2.10.0' 'torch>=2.4,<2.12.0')"
 assert_eq "rocm wheel"                   "torch==2.10.0" "$(_previous_torch_pin '2.10.0+rocm6.4' 'torch>=2.4,<2.11.0')"
+assert_eq "rocm three-component tag"     "torch==2.9.1"  "$(_previous_torch_pin '2.9.1+rocm7.2.1' 'torch>=2.4,<2.12.0')"
+assert_eq "Intel xpu wheel"              "torch==2.9.0"  "$(_previous_torch_pin '2.9.0+xpu' 'torch>=2.4,<2.12.0')"
 assert_eq "local suffix stripped"        "torch==2.9.1"  "$(_previous_torch_pin '2.9.1+cu128' 'torch>=2.4,<2.12.0')"
 
 echo "=== _previous_torch_pin: raised floors reject older releases ==="
@@ -55,6 +57,13 @@ echo "=== _previous_torch_pin: probe noise never becomes a pin ==="
 assert_eq "empty version"                "" "$(_previous_torch_pin '' 'torch>=2.4,<2.12.0')"
 assert_eq "garbage version"              "" "$(_previous_torch_pin 'not-a-version' 'torch>=2.4,<2.12.0')"
 assert_eq "traceback fragment"           "" "$(_previous_torch_pin "ModuleNotFoundError: No module named 'torch'" 'torch>=2.4,<2.12.0')"
+
+echo "=== _previous_torch_pin: nightly / dev / source builds never pin ==="
+# No stable index carries these, so pinning would print "keeping it" and then
+# burn a doomed resolve before the range fallback rescues the install.
+assert_eq "nightly dev build"            "" "$(_previous_torch_pin '2.11.0.dev20250704+cu128' 'torch>=2.4,<2.12.0')"
+assert_eq "source build a0 tag"          "" "$(_previous_torch_pin '2.9.0a0+gitabc1234' 'torch>=2.4,<2.12.0')"
+assert_eq "release candidate"            "" "$(_previous_torch_pin '2.11.0rc1+cu130' 'torch>=2.4,<2.12.0')"
 
 echo "=== _previous_torch_pin: out-of-window releases never pin ==="
 assert_eq "2.3.x below the cu floor"     "" "$(_previous_torch_pin '2.3.1+cu118' 'torch>=2.4,<2.12.0')"

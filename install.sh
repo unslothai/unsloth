@@ -2241,8 +2241,12 @@ _previous_torch_pin() {
     [ -n "$_ptp_ver" ] || { echo ""; return; }
     [ "${UNSLOTH_TORCH_UPGRADE:-0}" = "1" ] && { echo ""; return; }
     _ptp_base="${_ptp_ver%%+*}"
-    # Base must look like a release; probe noise must never become a pin.
+    # Base must be a plain numeric release (X.Y[.Z]); probe noise and
+    # nightly/dev/source builds (2.11.0.dev20250704, 2.9.0a0) must never
+    # become a pin -- no stable index carries them, so pinning would only
+    # print "keeping it" and then burn a doomed resolve before falling back.
     case "$_ptp_base" in
+        *[!0-9.]* | *..* | .* | *.) echo ""; return ;;
         [0-9]*.[0-9]*) ;;
         *) echo ""; return ;;
     esac
