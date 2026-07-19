@@ -160,6 +160,29 @@ class LoadRequest(BaseModel):
             raise ValueError("tensor_split must have a positive total")
         return value
 
+    gguf_memory_mode: Optional[Literal["auto", "pinned", "resident"]] = Field(
+        None,
+        description = (
+            "GGUF host-memory placement mode (llama.cpp --mlock/--no-mmap). These "
+            "control system RAM residency and file mapping on the host, NOT GPU VRAM "
+            "placement, so they do not by themselves keep offloaded weights pinned in "
+            "VRAM. 'auto' (default) uses llama.cpp's normal memory-mapped loading. "
+            "'pinned' adds --mlock so the OS cannot page the model's host pages out. "
+            "'resident' loads the full model into RAM with --no-mmap and locks it with "
+            "--mlock, avoiding any file-backed mapping. Ignored for non-GGUF models."
+        ),
+    )
+
+    @field_validator("gguf_memory_mode", mode = "before")
+    @classmethod
+    def normalize_blank_gguf_memory_mode(cls, value: Any) -> Any:
+        # Map a form's blank default to explicit "auto" (not None) so it counts as a
+        # choice: the scrub of inherited LLAMA_ARG_MLOCK/NO_MMAP/MMAP only runs when the
+        # value is not None, so blank -> None would let those env vars survive (#7164).
+        if isinstance(value, str) and value.strip() == "":
+            return "auto"
+        return value
+
     llama_extra_args: Optional[List[str]] = Field(
         None,
         description = (
@@ -201,6 +224,20 @@ class ValidateModelRequest(BaseModel):
             "delegate fitting to llama.cpp, while explicit layers are user-owned."
         ),
     )
+    gguf_memory_mode: Optional[Literal["auto", "pinned", "resident"]] = Field(
+        None,
+        description = "Intended GGUF memory placement mode; mirrors /load so validate's sizing agrees with the follow-up load.",
+    )
+
+    @field_validator("gguf_memory_mode", mode = "before")
+    @classmethod
+    def normalize_blank_gguf_memory_mode(cls, value: Any) -> Any:
+        # Mirror LoadRequest: blank maps to explicit "auto" so validate and load agree
+        # and the inherited-env scrub isn't skipped (and it avoids a 422) (#7164).
+        if isinstance(value, str) and value.strip() == "":
+            return "auto"
+        return value
+
     include_context_length: bool = Field(
         False,
         description = "Also read the native context length from the local GGUF header. "
@@ -439,6 +476,10 @@ class LoadResponse(BaseModel):
         None,
         description = "Physical GPU indices the model is pinned to, or None for automatic selection.",
     )
+    gguf_memory_mode: Optional[Literal["auto", "pinned", "resident"]] = Field(
+        None,
+        description = "Active GGUF memory placement mode. Only meaningful when is_gguf is True.",
+    )
 
 
 class UnloadResponse(BaseModel):
@@ -602,6 +643,10 @@ class InferenceStatusResponse(BaseModel):
     gpu_ids: Optional[List[int]] = Field(
         None,
         description = "Physical GPU indices the model is pinned to, or None for automatic selection.",
+    )
+    gguf_memory_mode: Optional[Literal["auto", "pinned", "resident"]] = Field(
+        None,
+        description = "Active GGUF memory placement mode. Only meaningful when is_gguf is True.",
     )
     llama_cpp_supports_mtp: bool = Field(
         True,

@@ -196,6 +196,7 @@ def can_load_chat_during_training(
     max_seq_length: int,
     requested_gpu_ids: Optional[List[int]],
     is_gguf: bool = False,
+    gpu_ids_are_vulkan_ordinals: bool = False,
     required_override_gb: Optional[float] = None,
     single_device_gpu: Optional[str] = None,
 ) -> Tuple[bool, Dict[str, Any]]:
@@ -287,6 +288,28 @@ def can_load_chat_during_training(
                 free_vals = [min(free_by_index.values())] if free_by_index else []
             else:
                 free_vals = [free_by_index.get(selected_gpu, 0.0)]
+        elif requested_gpu_ids and gpu_ids_are_vulkan_ordinals:
+            # Vulkan ordinals enumerate independently of the CUDA index space free_by_index
+            # uses (the loader skips resolve_requested_gpu_ids for them), so the target
+            # physical card is unknown. Require a fit on the least-free visible GPU so no
+            # ordinal->physical mapping can approve a load that then OOMs training (#7188).
+            free_vals = list(free_by_index.values())
+            if not free_vals:
+                return False, {"mode": "gguf_vulkan", "reason": "no_visible_gpus"}
+            needed_gb = required_gb * SAFETY_MARGIN + KEEP_FLOOR_GB
+            # A multi-GPU pin shards the model (~needed/N per device), so require each
+            # visible GPU to hold one shard, not the whole model. With the mapping unknown,
+            # min_free is the safe bound: if the least-free card holds a shard, any mapping
+            # does (#7188). Returns early, so it never reaches the GGUF per-GPU-floor skip below.
+            per_gpu_needed_gb = needed_gb / len(requested_gpu_ids)
+            min_free_gb = min(free_vals)
+            return min_free_gb >= per_gpu_needed_gb, {
+                "mode": "gguf_vulkan",
+                "required_gb": round(required_gb, 3),
+                "needed_gb": round(needed_gb, 3),
+                "per_gpu_needed_gb": round(per_gpu_needed_gb, 3),
+                "min_free_gb": round(min_free_gb, 3),
+            }
         elif requested_gpu_ids:
             # Invalid ids -> load_model 400s first, so don't block; missing id = 0.
             try:

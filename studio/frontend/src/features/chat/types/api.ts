@@ -77,6 +77,8 @@ export interface LoadModelRequest {
   tensor_split?: number[] | null;
   /** Picked physical GPU indices (omit/empty = automatic). */
   gpu_ids?: number[];
+  /** GGUF host-memory placement: auto (default), pinned (--mlock), or resident (--no-mmap --mlock). */
+  gguf_memory_mode?: "auto" | "pinned" | "resident" | null;
 }
 
 export interface ValidateModelResponse {
@@ -186,6 +188,8 @@ export interface LoadModelResponse {
   /** Model's MoE expert-layer count (the n_cpu_moe ceiling); 0 if not MoE. */
   n_moe_layers?: number;
   gpu_ids?: number[] | null;
+  /** GGUF host-memory placement mode the load was invoked with. */
+  gguf_memory_mode?: "auto" | "pinned" | "resident" | null;
 }
 
 export interface UnloadModelRequest {
@@ -238,6 +242,8 @@ export interface InferenceStatusResponse {
    * Manual + Auto-layers context pin on hydration. Null for non-GGUF. */
   requested_context_length?: number | null;
   gpu_ids?: number[] | null;
+  /** Active GGUF host-memory placement mode (from /status). */
+  gguf_memory_mode?: "auto" | "pinned" | "resident" | null;
   n_layers?: number | null;
   /** Model's MoE expert-layer count (the n_cpu_moe ceiling); 0 if not MoE. */
   n_moe_layers?: number;

@@ -136,6 +136,9 @@ export async function validateModel(
       // --fit, while a pinned layer count is owned by the user. Tell validate
       // so it applies the same training-guard policy as /load.
       gpu_memory_mode: payload.gpu_memory_mode,
+      // GGUF host-memory residency (--mlock/--no-mmap): backend-owned, no UI
+      // editor. Sent so validate's preflight matches the follow-up /load.
+      gguf_memory_mode: payload.gguf_memory_mode ?? null,
     }),
   });
   return parseJsonOrThrow<ValidateModelResponse>(response);

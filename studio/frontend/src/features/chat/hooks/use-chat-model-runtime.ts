@@ -671,6 +671,15 @@ export function useChatModelRuntime() {
             const resetsPerModelSettings = Boolean(
               currentCheckpoint && switchingModelOrVariant && !keepSpeculative,
             );
+            // GGUF host-memory residency is per-model and backend-owned (no UI
+            // editor): activeMemoryMode only mirrors the loaded model's /status.
+            // On a model/variant switch, reusing it would pin the new model to
+            // the prior model's residency, so drop to auto (null); a same-model
+            // Apply/reload keeps it so an API-set value survives the reload.
+            const loadMemoryMode =
+              currentCheckpoint && switchingModelOrVariant
+                ? null
+                : stateBeforeUnload.activeMemoryMode;
             const validateCustomContextLength = resetsPerModelSettings
               ? null
               : loadCustomContextLength;
@@ -708,6 +717,7 @@ export function useChatModelRuntime() {
               gguf_variant: ggufVariant ?? null,
               gpu_ids: validateGpuIds ?? undefined,
               ...(isGguf ? { gpu_memory_mode: loadGpuMemoryMode } : {}),
+              gguf_memory_mode: loadMemoryMode ?? null,
             });
             // Upgrade consent runs before the security dialogs; Accept installs and the load continues.
             if (validation.requires_transformers_upgrade) {
@@ -858,6 +868,7 @@ export function useChatModelRuntime() {
               n_cpu_moe: loadNCpuMoe,
               tensor_split: loadSplitRatio ?? undefined,
               gpu_ids: loadSelectedGpuIds ?? undefined,
+              gguf_memory_mode: loadMemoryMode ?? null,
             });
 
             // If cancelled while loading, don't update UI to show
@@ -977,6 +988,12 @@ export function useChatModelRuntime() {
               loadedChatTemplateOverride: effectiveChatTemplateOverride,
               loadedIsMultimodal: isMultimodalResponse(loadResponse),
               loadedIsDiffusion: loadResponse.is_diffusion ?? false,
+              // Commit the residency the backend applied so the store stops
+              // reflecting the previous model's mode. Otherwise, after a switch
+              // (snapshot dropped to null) the store keeps the prior value until
+              // the next status hydration, so an immediate same-model Apply could
+              // resend a stale mode. Non-GGUF and auto loads report null here.
+              activeMemoryMode: loadResponse.gguf_memory_mode ?? null,
               activeNativePathToken: nativePathToken ?? null,
             });
             // Unlock attach menus for capabilities the catalog entry lacked.
@@ -1096,6 +1113,8 @@ export function useChatModelRuntime() {
                   n_cpu_moe: stateBeforeUnload.loadedNCpuMoe ?? 0,
                   tensor_split: stateBeforeUnload.loadedSplitRatio ?? undefined,
                   gpu_ids: stateBeforeUnload.loadedGpuIds ?? undefined,
+                  // Restore the previous model's host-memory residency too.
+                  gguf_memory_mode: stateBeforeUnload.activeMemoryMode ?? null,
                 });
                 const rollbackSpeculativeType = normalizeSpeculativeType(
                   rollbackResponse.speculative_type,

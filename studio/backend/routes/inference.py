@@ -3203,6 +3203,10 @@ def _request_matches_loaded_settings(
     # stored extras stripped the way the reload strips them, so an extras-driven
     # tensor load isn't seen as a mismatch that needlessly reloads the server.
     backend_extra = list(llama_backend.extra_args) if llama_backend.extra_args else []
+    # Strip inherited --mlock/--no-mmap/--mmap only for a real memory mode. Pydantic marks
+    # the field "set" even for an explicit null, but null == "no opinion" (placement left
+    # alone), so stripping then would needlessly reload. Gate on the value (#7188).
+    _strip_mem = request.gguf_memory_mode is not None
     effective_extra = (
         request.llama_extra_args
         if request.llama_extra_args is not None
@@ -3211,6 +3215,7 @@ def _request_matches_loaded_settings(
             strip_split_mode = _should_strip_split_mode(request, backend_extra),
             strip_tensor_split = _should_strip_tensor_split(request),
             strip_offload = request.gpu_memory_mode == "manual",
+            strip_memory_mode = _strip_mem,
         )
     )
     if not _tensor_parallel_matches_loaded(
@@ -3246,6 +3251,16 @@ def _request_matches_loaded_settings(
     else:
         _req_gpu_ids = sorted(request.gpu_ids) if request.gpu_ids else None
     if _req_gpu_ids != llama_backend.gpu_ids:
+        return False
+    # GGUF host-memory placement mode is first-class; any change must reload (#7164).
+    if LlamaCppBackend._canonical_memory_mode(
+        request.gguf_memory_mode
+    ) != LlamaCppBackend._canonical_memory_mode(llama_backend.memory_mode):
+        return False
+    # An explicit memory_mode (incl. 'auto') over a child with inherited LLAMA_ARG_* flags
+    # must reload so the scrub runs; the canonical check above treats 'auto' as omitted and
+    # would leave the child mlocked/no-mmap (#7164).
+    if request.gguf_memory_mode is not None and llama_backend.launched_with_inherited_mem_env:
         return False
     # Preserved tensor->layer fallback (both report tensor=off, so the check above
     # matches): if the user now explicitly drops tensor intent, reload so placement
@@ -3300,12 +3315,38 @@ def _request_matches_loaded_settings(
                 strip_split_mode = _should_strip_split_mode(request, backend_extra),
                 strip_tensor_split = _should_strip_tensor_split(request),
                 strip_offload = request.gpu_memory_mode == "manual",
+                strip_memory_mode = _strip_mem,
             )
             != backend_extra
         ):
             return False
     else:
-        if list(request.llama_extra_args) != backend_extra:
+        # Strip memory-placement flags request-side only for a real mode (mirrors the
+        # reload's strip of explicit extras), so a request repeating a --mlock/--mmap/--no-mmap
+        # the loaded server already dropped still hits this fast path instead of the guard.
+        # The backend side is NOT stripped: a server loaded with no memory_mode keeps a
+        # pass-through --mlock/--no-mmap and is still mlocked; keeping it forces a reload so
+        # the auto scrub runs (#7164). Explicit gpu_ids drop a user --device from the launched
+        # and stored extras, so strip it request-side too or an identical reload would miss
+        # this fast path and force a needless reload / training 409 (#7188). Gate on an
+        # EFFECTIVE pin: the load path normalizes gpu_ids=[] to None and keeps its --device,
+        # so an empty list must NOT strip here or the two sides diverge.
+        _strip_dev = bool(request.gpu_ids)
+        _request_extra = (
+            strip_shadowing_flags(
+                request.llama_extra_args,
+                strip_context = False,
+                strip_cache = False,
+                strip_spec = False,
+                strip_template = False,
+                strip_split_mode = False,
+                strip_memory_mode = _strip_mem,
+                strip_device = _strip_dev,
+            )
+            if (_strip_mem or _strip_dev)
+            else list(request.llama_extra_args)
+        )
+        if _request_extra != backend_extra:
             return False
     # A separate drafter (Gemma's root mtp-*.gguf) appearing or disappearing
     # next to the loaded weights changes the launch command (--model-draft),
@@ -3958,6 +3999,26 @@ def _classify_diffusion_gguf(config: ModelConfig) -> Optional[bool]:
         return None
 
 
+def _reject_diffusion_memory_mode(config: ModelConfig, memory_mode: Optional[str]) -> None:
+    """Raise 400 if a DiffusionGemma GGUF was given an explicit gguf_memory_mode.
+
+    The diffusion runner is single-GPU (DG_GPU) with no --mlock/--no-mmap plumbing.
+    Called by BOTH /validate and /load before either tears down the active model, so
+    they agree and a placement /load will reject isn't validated post-unload (#7188).
+    gpu_ids for diffusion is handled by the runner (collapsed to a single device), so
+    only the host-memory mode is rejected here."""
+    if LlamaCppBackend._canonical_memory_mode(memory_mode) is None:
+        return
+    if _classify_diffusion_gguf(config) is True:
+        raise HTTPException(
+            status_code = 400,
+            detail = (
+                "Explicit gguf_memory_mode is not supported for diffusion "
+                "(DiffusionGemma) GGUF models."
+            ),
+        )
+
+
 def _guard_chat_load_against_training(
     config: ModelConfig,
     *,
@@ -4017,6 +4078,16 @@ def _guard_chat_load_against_training(
         else None
     )
 
+    # Vulkan ordinals enumerate independently of the CUDA index space the guard budgets in;
+    # resolving them as CUDA physical IDs would size free VRAM on the wrong card. Flag it so
+    # the guard budgets conservatively, matching /load's deferral to the probe (#7188).
+    gpu_ids_are_vulkan_ordinals = False
+    if is_gguf and requested_gpu_ids and diffusion_gpu is None:
+        try:
+            gpu_ids_are_vulkan_ordinals = get_llama_cpp_backend().is_vulkan_build()
+        except Exception:
+            gpu_ids_are_vulkan_ordinals = False
+
     ok, info = can_load_chat_during_training(
         model_name = model_identifier,
         hf_token = hf_token,
@@ -4024,6 +4095,7 @@ def _guard_chat_load_against_training(
         max_seq_length = max_seq_length,
         requested_gpu_ids = requested_gpu_ids,
         is_gguf = is_gguf,
+        gpu_ids_are_vulkan_ordinals = gpu_ids_are_vulkan_ordinals,
         required_override_gb = required_override_gb,
         single_device_gpu = diffusion_gpu,
     )
@@ -4368,6 +4440,7 @@ async def _load_model_impl(request: LoadRequest, fastapi_request: Request, curre
                     n_layers = llama_backend.n_layers,
                     n_moe_layers = llama_backend.n_moe_layers,
                     gpu_ids = llama_backend.gpu_ids,
+                    gguf_memory_mode = llama_backend.requested_memory_mode,
                 )
         else:
             if (
@@ -4431,6 +4504,10 @@ async def _load_model_impl(request: LoadRequest, fastapi_request: Request, curre
                 detail = f"Invalid model identifier: {model_log_label}",
             )
 
+        # DiffusionGemma rejects an explicit host-memory mode before any teardown
+        # (shared with /validate); its runner has no --mlock/--no-mmap plumbing.
+        _reject_diffusion_memory_mode(config, request.gguf_memory_mode)
+
         # Normalize gpu_ids: empty list means auto-selection, same as None
         effective_gpu_ids = request.gpu_ids if request.gpu_ids else None
 
@@ -4443,6 +4520,7 @@ async def _load_model_impl(request: LoadRequest, fastapi_request: Request, curre
         if config.is_gguf and effective_gpu_ids is not None:
             from utils.hardware import DeviceType, get_device
             from utils.hardware.hardware import resolve_requested_gpu_ids
+            from core.inference.llama_cpp import _extra_args_draft_device_pin
 
             if get_device() == DeviceType.XPU:
                 raise HTTPException(
@@ -4452,23 +4530,64 @@ async def _load_model_impl(request: LoadRequest, fastapi_request: Request, curre
                         "Omit gpu_ids to use all devices."
                     ),
                 )
-            # Same reasoning for a Vulkan-only build: --device pins ggml's own
-            # Vulkan ordinals, so a physical pick can land on the wrong card on
-            # masked or non-contiguous hosts.
-            if LlamaCppBackend._is_vulkan_backend():
+            # A draft-device override in extras (--spec-draft-device / -devd / --device-draft)
+            # naming a real GPU would place the MTP drafter outside the budgeted gpu_ids and
+            # OOM training on an unreserved card. Reject before teardown; drop the flag to
+            # follow the pin, or set it to cpu to offload (cpu/none allowed). llama_extra_args
+            # None means "inherit the running server's extras" on a same-model reload, and
+            # draft-device flags survive that inherit, so check the effective extras: the
+            # request's when provided, else the loaded same-model backend's (#7188).
+            _draft_extra = request.llama_extra_args
+            if _draft_extra is None:
+                _loaded_llama = get_llama_cpp_backend()
+                if (
+                    _loaded_llama.is_loaded
+                    and _loaded_llama.model_identifier
+                    and _loaded_llama.model_identifier.lower() == model_identifier.lower()
+                ):
+                    _draft_extra = _loaded_llama.extra_args
+            _draft_dev_pin = _extra_args_draft_device_pin(_draft_extra)
+            if _draft_dev_pin is not None:
                 raise HTTPException(
                     status_code = 400,
                     detail = (
-                        "GPU selection (gpu_ids) is not supported with a Vulkan "
-                        "llama.cpp build: physical GPU ids have no defined "
-                        "mapping to Vulkan device ordinals. Omit gpu_ids to use "
-                        "all devices."
+                        f"A draft-model device override ('{_draft_dev_pin}') cannot be "
+                        "combined with explicit gpu_ids: it would place the speculative "
+                        "drafter outside the pinned GPUs the training guard budgeted. "
+                        "Remove the draft-device flag to follow gpu_ids, or set it to cpu."
                     ),
                 )
-            try:
-                resolve_requested_gpu_ids(effective_gpu_ids)
-            except ValueError as exc:
-                raise HTTPException(status_code = 400, detail = str(exc)) from exc
+            # A Vulkan build treats gpu_ids as Vulkan ordinals (never remapped through
+            # CUDA_VISIBLE_DEVICES), so defer to the backend probe even on a CUDA-visible
+            # host, else the CUDA resolver would 400 a valid Vulkan id under a CUDA/HIP
+            # mask (#7188). Otherwise keep the CUDA physical-ID resolver (#6414).
+            _gguf_vulkan_build = await asyncio.to_thread(get_llama_cpp_backend().is_vulkan_build)
+            if get_device() == DeviceType.CUDA and not _gguf_vulkan_build:
+                try:
+                    resolve_requested_gpu_ids(effective_gpu_ids)
+                except ValueError as exc:
+                    raise HTTPException(status_code = 400, detail = str(exc)) from exc
+            else:
+                # Non-CUDA GGUF host or a Vulkan build on any host: the CUDA resolver can't
+                # enumerate llama.cpp's devices, so gate on the backend probe and reject
+                # before teardown (#7188). A torch-less Vulkan host reports CPU but its
+                # probe is non-empty, so it falls through.
+                _llama_backend = get_llama_cpp_backend()
+                if not await asyncio.to_thread(_llama_backend.has_gpu_backend):
+                    raise HTTPException(
+                        status_code = 400,
+                        detail = (
+                            "gpu_ids selection is not supported: no GPU backend "
+                            "detected on this host."
+                        ),
+                    )
+                try:
+                    await asyncio.to_thread(
+                        _llama_backend.assert_requested_gpu_ids_resolvable,
+                        effective_gpu_ids,
+                    )
+                except ValueError as exc:
+                    raise HTTPException(status_code = 400, detail = str(exc)) from exc
         if not config.is_gguf and _mlx_distributed_launch_detected():
             raise HTTPException(
                 status_code = 400,
@@ -4586,6 +4705,7 @@ async def _load_model_impl(request: LoadRequest, fastapi_request: Request, curre
                 n_cpu_moe = request.n_cpu_moe,
                 tensor_split = request.tensor_split,
                 gpu_ids = effective_gpu_ids,
+                memory_mode = request.gguf_memory_mode,
                 n_parallel = _n_parallel,
             )
             if config.gguf_hf_repo:
@@ -4760,6 +4880,7 @@ async def _load_model_impl(request: LoadRequest, fastapi_request: Request, curre
                 n_layers = llama_backend.n_layers,
                 n_moe_layers = llama_backend.n_moe_layers,
                 gpu_ids = llama_backend.gpu_ids,
+                gguf_memory_mode = llama_backend.requested_memory_mode,
             )
 
         # ── Standard path: load via Unsloth/transformers ──────────
@@ -5048,6 +5169,9 @@ async def validate_model(
                 detail = f"Invalid model identifier: {model_log_label}",
             )
 
+        # Reject DiffusionGemma host-memory placement here too, matching /load (#7188).
+        _reject_diffusion_memory_mode(config, request.gguf_memory_mode)
+
         # Apply the same training coexistence policy as /load before the frontend
         # unloads the current model.
         effective_gpu_ids = request.gpu_ids if request.gpu_ids else None
@@ -5058,6 +5182,7 @@ async def validate_model(
         if config.is_gguf and effective_gpu_ids is not None:
             from utils.hardware import DeviceType, get_device
             from utils.hardware.hardware import resolve_requested_gpu_ids
+            from core.inference.llama_cpp import _extra_args_draft_device_pin
 
             if get_device() == DeviceType.XPU:
                 raise HTTPException(
@@ -5067,20 +5192,54 @@ async def validate_model(
                         "Omit gpu_ids to use all devices."
                     ),
                 )
-            if LlamaCppBackend._is_vulkan_backend():
-                raise HTTPException(
-                    status_code = 400,
-                    detail = (
-                        "GPU selection (gpu_ids) is not supported with a Vulkan "
-                        "llama.cpp build: physical GPU ids have no defined "
-                        "mapping to Vulkan device ordinals. Omit gpu_ids to use "
-                        "all devices."
-                    ),
-                )
-            try:
-                resolve_requested_gpu_ids(effective_gpu_ids)
-            except ValueError as exc:
-                raise HTTPException(status_code = 400, detail = str(exc)) from exc
+            # Mirror /load's draft-device reject for the validate-then-unload flow: a
+            # same-model reload inherits the running server's stored extras, and a
+            # stored --spec-draft-device naming a real GPU would escape the new gpu_ids
+            # pin. ValidateModelRequest carries no llama_extra_args, so only the
+            # inherited backend extras are checkable here (#7188).
+            _loaded_llama = get_llama_cpp_backend()
+            if (
+                _loaded_llama.is_loaded
+                and _loaded_llama.model_identifier
+                and _loaded_llama.model_identifier.lower() == model_identifier.lower()
+            ):
+                _draft_dev_pin = _extra_args_draft_device_pin(_loaded_llama.extra_args)
+                if _draft_dev_pin is not None:
+                    raise HTTPException(
+                        status_code = 400,
+                        detail = (
+                            f"A draft-model device override ('{_draft_dev_pin}') cannot be "
+                            "combined with explicit gpu_ids: it would place the speculative "
+                            "drafter outside the pinned GPUs the training guard budgeted. "
+                            "Remove the draft-device flag to follow gpu_ids, or set it to cpu."
+                        ),
+                    )
+            # A Vulkan build treats gpu_ids as Vulkan ordinals, so defer to the backend
+            # probe even on a CUDA-visible host; otherwise keep the CUDA resolver (#6414/#7188).
+            _gguf_vulkan_build = await asyncio.to_thread(get_llama_cpp_backend().is_vulkan_build)
+            if get_device() == DeviceType.CUDA and not _gguf_vulkan_build:
+                try:
+                    resolve_requested_gpu_ids(effective_gpu_ids)
+                except ValueError as exc:
+                    raise HTTPException(status_code = 400, detail = str(exc)) from exc
+            else:
+                # Non-CUDA GGUF host or a Vulkan build: gate on the llama.cpp probe so an
+                # unsupported selection is rejected before the unload (#7188).
+                if not await asyncio.to_thread(_loaded_llama.has_gpu_backend):
+                    raise HTTPException(
+                        status_code = 400,
+                        detail = (
+                            "gpu_ids selection is not supported: no GPU backend "
+                            "detected on this host."
+                        ),
+                    )
+                try:
+                    await asyncio.to_thread(
+                        _loaded_llama.assert_requested_gpu_ids_resolvable,
+                        effective_gpu_ids,
+                    )
+                except ValueError as exc:
+                    raise HTTPException(status_code = 400, detail = str(exc)) from exc
         effective_load_in_4bit = _effective_load_in_4bit(config, request.load_in_4bit)
 
         # Both checks cover the [adapter, base] set (matching the scan route and workers):
@@ -5879,6 +6038,7 @@ async def get_status(current_subject: str = Depends(get_current_subject)):
                 n_layers = llama_backend.n_layers,
                 n_moe_layers = llama_backend.n_moe_layers,
                 gpu_ids = llama_backend.gpu_ids,
+                gguf_memory_mode = llama_backend.requested_memory_mode,
                 llama_cpp_supports_mtp = _supports_mtp,
                 spec_fallback_reason = llama_backend.spec_fallback_reason,
                 llama_cpp_prebuilt_stale = _stale,

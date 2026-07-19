@@ -175,6 +175,9 @@ _TEMPLATE_FLAGS: frozenset[str] = frozenset(
         "--no-jinja",
     }
 )
+# Shadow the GGUF memory_mode field: pass-through in explicit extras, stripped on
+# inherit when the mode changes. --mmap is the inverse of --no-mmap.
+_MEMORY_MODE_FLAGS: frozenset[str] = frozenset({"--mlock", "--no-mmap", "--mmap"})
 # Multi-GPU split mode shadows the Tensor Parallelism toggle
 # (--split-mode tensor). Pass-through stays allowed so users keep the
 # row/none/layer modes the toggle doesn't expose, but it's stripped on
@@ -185,6 +188,10 @@ _TEMPLATE_FLAGS: frozenset[str] = frozenset(
 _SPLIT_MODE_FLAGS: frozenset[str] = frozenset({"-sm", "--split-mode"})
 _TENSOR_SPLIT_FLAGS: frozenset[str] = frozenset({"-ts", "--tensor-split"})
 _SPLIT_SHADOWING_FLAGS: frozenset[str] = _SPLIT_MODE_FLAGS | _TENSOR_SPLIT_FLAGS
+# llama.cpp offload device list (--device / -dev). Opt-in (users may pass it under
+# auto-select): stripped only when gpu_ids is set, so it can't override the pin and
+# offload to a GPU the training guard never budgeted (#7188).
+_DEVICE_FLAGS: frozenset[str] = frozenset({"--device", "-dev"})
 
 # GPU-offload flags. Stripped only when the GPU Memory mode owns offload
 # (manual emits --fit / --gpu-layers / --n-cpu-moe); in auto, a user's
@@ -198,12 +205,17 @@ _MOE_OFFLOAD_FLAGS: frozenset[str] = frozenset({"-ncmoe", "--n-cpu-moe", "-cmoe"
 _OFFLOAD_SHADOWING_FLAGS: frozenset[str] = _LAYER_OFFLOAD_FLAGS | _MOE_OFFLOAD_FLAGS
 
 _SHADOWING_FLAGS: frozenset[str] = (
-    _CONTEXT_FLAGS | _CACHE_FLAGS | _SPEC_FLAGS | _TEMPLATE_FLAGS | _SPLIT_SHADOWING_FLAGS
+    _CONTEXT_FLAGS
+    | _CACHE_FLAGS
+    | _SPEC_FLAGS
+    | _TEMPLATE_FLAGS
+    | _SPLIT_SHADOWING_FLAGS
+    | _MEMORY_MODE_FLAGS
 )
 
 # Shadowing flags that take no value -- strip the flag only, not the next token.
 _BOOLEAN_SHADOWING_FLAGS: frozenset[str] = frozenset(
-    {"--spec-default", "--jinja", "--no-jinja", "-cmoe", "--cpu-moe"}
+    {"--spec-default", "--jinja", "--no-jinja", "-cmoe", "--cpu-moe", "--mlock", "--no-mmap", "--mmap"}
 )
 
 
@@ -439,12 +451,14 @@ def strip_shadowing_flags(
     strip_split_mode: bool = True,
     strip_tensor_split: bool = False,
     strip_offload: bool = False,
+    strip_memory_mode: bool = True,
+    strip_device: bool = False,
 ) -> list[str]:
     """Strip flags that shadow first-class Unsloth settings.
 
     Used when inheriting a previous load's ``llama_extra_args`` so an
     inherited `-c 4096` can't override the current `max_seq_length`
-    (same for cache / spec / template / split-mode). Each ``strip_*``
+    (same for cache / spec / template / split-mode / memory_mode). Each ``strip_*``
     toggle controls one group; the route only strips groups whose
     first-class field the caller actually supplied.
 
@@ -452,7 +466,9 @@ def strip_shadowing_flags(
     ``--tensor-split`` (the Tensor Parallelism toggle owns the whole split).
     ``strip_tensor_split`` removes ``--tensor-split`` *alone*, so manual mode can
     replace an inherited per-GPU ratio while leaving the user's ``--split-mode``
-    row/none/layer choice intact.
+    row/none/layer choice intact. ``strip_device`` is off by default (users may
+    pass ``--device`` when Unsloth auto-selects) and enabled only for explicit
+    gpu_ids.
     """
     shadowing: set[str] = set()
     if strip_context:
@@ -469,6 +485,10 @@ def strip_shadowing_flags(
         shadowing |= _TENSOR_SPLIT_FLAGS
     if strip_offload:
         shadowing |= _OFFLOAD_SHADOWING_FLAGS
+    if strip_memory_mode:
+        shadowing |= _MEMORY_MODE_FLAGS
+    if strip_device:
+        shadowing |= _DEVICE_FLAGS
 
     tokens = [str(a) for a in (args or [])]
     out: list[str] = []
@@ -505,4 +525,5 @@ def strip_split_mode_only(args: Optional[Iterable[str]]) -> Optional[list[str]]:
         strip_spec = False,
         strip_template = False,
         strip_split_mode = True,
+        strip_memory_mode = False,
     )

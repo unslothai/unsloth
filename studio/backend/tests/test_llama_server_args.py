@@ -93,6 +93,9 @@ validate_extra_args = _lsa.validate_extra_args
         ["-fit", "off"],
         ["--fit", "on"],
         ["--fit-ctx", "8192"],
+        # Memory placement flags (soft-managed; shadowed on inherit)
+        ["--mlock"],
+        ["--no-mmap", "--mlock"],
     ],
 )
 def test_pass_through_allowed(args):
@@ -303,6 +306,9 @@ def test_is_managed_flag_false_for_pass_through():
     assert is_managed_flag("--flash-attn") is False
     assert is_managed_flag("-ngl") is False
     assert is_managed_flag("--threads") is False
+    # Memory placement flags are pass-through (shadowed on inherit only).
+    assert is_managed_flag("--mlock") is False
+    assert is_managed_flag("--no-mmap") is False
 
 
 # ── strip_shadowing_flags ─────────────────────────────────────────────
@@ -365,6 +371,36 @@ def test_strip_shadowing_flags_keeps_spec_when_spec_disabled():
         strip_spec = False,
     )
     assert out == ["--spec-type", "ngram-mod", "--draft-min", "48", "--top-k", "20"]
+
+
+def test_strip_shadowing_flags_keeps_device_by_default():
+    # --device is pass-through by default (users may pin when Unsloth auto-selects).
+    out = strip_shadowing_flags(
+        ["--device", "Vulkan1", "--top-k", "20"],
+        strip_context = False,
+        strip_cache = False,
+        strip_spec = False,
+        strip_template = False,
+        strip_split_mode = False,
+        strip_memory_mode = False,
+    )
+    assert out == ["--device", "Vulkan1", "--top-k", "20"]
+
+
+def test_strip_shadowing_flags_drops_device_when_requested():
+    # strip_device drops --device/-dev + value when explicit gpu_ids owns placement.
+    for flag in ("--device", "-dev"):
+        out = strip_shadowing_flags(
+            [flag, "Vulkan1", "--top-k", "20"],
+            strip_context = False,
+            strip_cache = False,
+            strip_spec = False,
+            strip_template = False,
+            strip_split_mode = False,
+            strip_memory_mode = False,
+            strip_device = True,
+        )
+        assert out == ["--top-k", "20"], flag
 
 
 def test_strip_shadowing_flags_drops_mtp_flags_when_requested():
@@ -850,3 +886,55 @@ def test_strip_shadowing_flags_keeps_model_draft_without_spec():
         strip_template = False,
     )
     assert out == ["--model-draft", "/custom/mtp.gguf"]
+
+
+# ── Memory mode shadowing (#7164) ───────────────────────────────────────────
+
+
+def test_strip_shadowing_flags_drops_memory_mode_when_requested():
+    out = strip_shadowing_flags(
+        ["--mlock", "--no-mmap", "--mmap", "--top-k", "20"],
+        strip_memory_mode = True,
+    )
+    assert out == ["--top-k", "20"]
+
+
+def test_strip_shadowing_flags_keeps_memory_mode_when_not_requested():
+    out = strip_shadowing_flags(
+        ["--mlock", "--no-mmap", "--mmap", "--top-k", "20"],
+        strip_memory_mode = False,
+    )
+    assert out == ["--mlock", "--no-mmap", "--mmap", "--top-k", "20"]
+
+
+def test_strip_shadowing_flags_defaults_strip_memory_mode():
+    # Default kwargs strip everything, including memory placement flags.
+    assert strip_shadowing_flags(["--mlock", "--no-mmap", "--mmap"]) == []
+
+
+def test_strip_split_mode_only_keeps_memory_mode():
+    # Tensor->layer downgrade must not strip the user's memory mode choice.
+    assert strip_split_mode_only(["--mlock", "--no-mmap", "--mmap", "-sm", "tensor"]) == [
+        "--mlock",
+        "--no-mmap",
+        "--mmap",
+    ]
+
+
+def test_strip_shadowing_flags_drops_inverse_mmap_flag():
+    # An inherited --mmap must not override Unsloth's resident-mode --no-mmap (#7164).
+    out = strip_shadowing_flags(["--mmap"], strip_memory_mode = True)
+    assert out == []
+
+
+@pytest.mark.parametrize("flag", ["--mlock", "--no-mmap", "--mmap"])
+def test_strip_memory_mode_valueless_preserves_next_token(flag):
+    # The memory-mode flags take no value; stripping must not consume the next token.
+    out = strip_shadowing_flags([flag, "--top-k", "40"], strip_memory_mode = True)
+    assert out == ["--top-k", "40"]
+
+
+def test_strip_memory_mode_kept_when_field_not_supplied():
+    # Pass-through preserved when the user didn't change gguf_memory_mode.
+    out = strip_shadowing_flags(["--mmap"], strip_memory_mode = False)
+    assert out == ["--mmap"]

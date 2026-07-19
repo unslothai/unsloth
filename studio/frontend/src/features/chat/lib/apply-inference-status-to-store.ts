@@ -336,6 +336,14 @@ export function applyActiveModelStatusToStore(
         hydratingExistingModel ||
         gpuStatusChanged) &&
       gpuStatusFields),
+    // GGUF host-memory residency is backend-owned (no UI editor), so mirror
+    // /status's gguf_memory_mode whenever load params are seeded, not only on
+    // first hydration or a model change. Otherwise an external reload of the
+    // same checkpoint with a different residency leaves a stale value for the
+    // next same-model Apply to resend. Non-GGUF status carries null.
+    ...(seedLoadParams && {
+      activeMemoryMode: status.gguf_memory_mode ?? null,
+    }),
     ...(status.chat_template_override !== undefined &&
       prevState.loadedChatTemplateOverride === null &&
       prevState.chatTemplateOverride === null && {
