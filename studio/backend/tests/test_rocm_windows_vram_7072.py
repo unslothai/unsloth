@@ -230,9 +230,10 @@ def test_match_adapter_reports_unknown_for_placeholder_fallback():
     # Order of the counters must not matter.
     assert hw._match_adapter_used_to_devices([10 * MiB, 50 * MiB], [8 * GB]) == [None]
     # Two idle visible GPUs plus a placeholder: all three counters below the floor.
-    assert hw._match_adapter_used_to_devices(
-        [50 * MiB, 10 * MiB, 5 * MiB], [48 * GB, 8 * GB]
-    ) == [None, None]
+    assert hw._match_adapter_used_to_devices([50 * MiB, 10 * MiB, 5 * MiB], [48 * GB, 8 * GB]) == [
+        None,
+        None,
+    ]
 
 
 def test_match_adapter_reports_unknown_when_usage_not_capacity_ordered():
