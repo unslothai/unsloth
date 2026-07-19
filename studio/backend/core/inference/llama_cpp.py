@@ -246,8 +246,7 @@ def _wsl_system_rocm_lib_dirs() -> "list[str]":
     return out
 
 
-# Plan-without-action re-prompt state (intent signal, caps, message) now lives
-# in tool_call_parser, imported above under its old aliases.
+# Plan-without-action re-prompt state now lives in tool_call_parser (imported above).
 
 # Default max_tokens to the effective context when known. The floor is high
 # enough for reasoning-heavy GGUFs and max_tokens-omitting API clients.

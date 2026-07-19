@@ -663,8 +663,7 @@ export function useChatModelRuntime() {
             // gpuMemoryMode is a standing preference, kept across the switch.
             // A same-repo quant switch (same checkpoint, different gguf_variant)
             // is a different model for per-model knobs: the pinned context,
-            // gpuLayers, GPU pick, and MoE offload are scoped per variant
-            // (rememberedLoadSettingsKey and stageModel both key on variant), so
+            // gpuLayers, GPU pick, and MoE offload are scoped per variant, so
             // treat a variant change like a model switch and re-baseline them.
             const switchingModelOrVariant =
               currentCheckpoint !== modelId ||
@@ -802,15 +801,13 @@ export function useChatModelRuntime() {
               loadSplitRatio = null;
             }
 
-            // Pinning layers on the SAME model keeps the context currently
-            // resolved: with no explicit pin, a manual+pinned reload would send
-            // 0, which the backend's --fit off branch treats as the NATIVE
-            // context -- far larger than the length the sheet shows when the
-            // loaded model was fit-sized (Default mode, or Manual + Auto layers,
-            // either of which may have auto-reduced context to fit VRAM), and a
-            // likely OOM. ggufContextLength is that loaded resolved value; a
-            // model already at native reloads unchanged, so this is safe for any
-            // prior mode.
+            // Pinning layers on the SAME model keeps the currently resolved
+            // context: with no explicit pin, a manual+pinned reload would send 0,
+            // which the backend's --fit off branch treats as the NATIVE context --
+            // far larger than the sheet shows when the load was fit-sized (Default
+            // or Manual + Auto layers may auto-reduce context to fit VRAM), a
+            // likely OOM. ggufContextLength is that resolved value; a model already
+            // at native reloads unchanged, so this is safe for any prior mode.
             if (
               isGguf &&
               !switchingModelOrVariant &&

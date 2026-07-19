@@ -1559,10 +1559,10 @@ async function autoLoadSmallestModel(): Promise<{
     // The GPU knobs are per-model, so read them from the same remembered
     // settings that fed effectiveMaxSeqLength -- on a background auto-load the
     // live store holds session defaults, not the saved Manual mode / layer pin /
-    // GPU pick. Absent fields fall back the way applyRememberedLoadSettings
-    // does: the mode to the store (a persisted standing preference), the
-    // per-model knobs to their defaults. The saved GPU pick is reconciled
-    // against the GPUs present now, like the interactive restore.
+    // GPU pick. Absent fields fall back like applyRememberedLoadSettings: the
+    // mode to the store (a persisted standing preference), the per-model knobs to
+    // their defaults. The saved GPU pick is reconciled against the GPUs present
+    // now, like the interactive restore.
     const effectiveGpuMemoryMode =
       remembered?.gpuMemoryMode ?? currentStore.gpuMemoryMode;
     const effectiveGpuLayers = remembered?.gpuLayers ?? GPU_LAYERS_AUTO;
@@ -1939,13 +1939,12 @@ async function autoLoadSmallestModel(): Promise<{
         speculative_type: specSettings.speculativeType,
         spec_draft_n_max: specSettings.specDraftNMax,
         // GPU Memory mode is a standing preference, so honor it on auto-load.
-        // The layer/MoE/split knobs and the context pin are per-model: the
-        // live store may hold edits drafted for a staged pick, and a fresh
-        // default model has no remembered settings, so those stay at their
-        // defaults like the cached-candidate path. The GPU pick deliberately
-        // differs from that path (remembered-or-nothing): it's the picker's
-        // current on-screen selection, and the canAutoLoad preflight above
-        // already committed to it.
+        // The layer/MoE/split knobs and the context pin are per-model: the live
+        // store may hold edits drafted for a staged pick, and a fresh default
+        // model has no remembered settings, so those stay at their defaults like
+        // the cached-candidate path. The GPU pick deliberately differs (it's the
+        // picker's current on-screen selection, which the canAutoLoad preflight
+        // above already committed to).
         gpu_memory_mode: rt.gpuMemoryMode,
         gpu_layers: GPU_LAYERS_AUTO,
         n_cpu_moe: 0,

@@ -708,12 +708,11 @@ export function ChatSettingsPanel({
   const specDirty = speculativeType !== loadedSpeculativeType;
   const specDraftDirty = specDraftNMax !== loadedSpecDraftNMax;
   const tpDirty = tensorParallel !== (loadedTensorParallel ?? false);
-  // A loaded diffusion GGUF runs mode-agnostic (its runner pins all layers on one
-  // GPU and ignores --fit/--gpu-layers), so the GPU Memory mode + manual controls
-  // don't apply -- hide them and don't let the preserved standing mode read as
-  // dirty. The GPU picker still applies (diffusion pins the chosen device). A
-  // staged pick keeps the controls (a pending pick's diffusion-ness isn't known
-  // until it loads).
+  // A loaded diffusion GGUF runs mode-agnostic (pins all layers on one GPU,
+  // ignores --fit/--gpu-layers), so the GPU Memory mode + manual controls don't
+  // apply -- hide them and don't let the preserved standing mode read as dirty.
+  // The GPU picker still applies (diffusion pins the chosen device). A staged pick
+  // keeps the controls (a pending pick's diffusion-ness isn't known until load).
   const gpuModeApplies =
     isGguf && (pendingSelection != null || !loadedIsDiffusion);
   const gpuDirty =

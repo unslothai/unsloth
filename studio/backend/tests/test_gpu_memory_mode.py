@@ -199,9 +199,8 @@ def test_already_in_target_state_reloads_on_mode_change(loaded, requested):
 
 
 def test_already_in_target_state_ignores_mode_for_diffusion():
-    # The diffusion runner is mode-agnostic (always reports "auto"), so a standing
-    # manual preference in the request must not force a needless reload of an
-    # already-loaded diffusion model.
+    # The diffusion runner is mode-agnostic (always "auto"), so a standing manual
+    # preference must not force a needless reload.
     backend = _loaded_backend("auto")
     backend._is_diffusion = True
     assert _target_state(backend, "manual") is True
@@ -364,9 +363,8 @@ def test_manual_properties_default_and_reflect_and_reset():
 
 
 def test_n_moe_layers_property():
-    # Behavior: 0 for a dense model (hides the slider); block_count for an
-    # all-MoE model; block_count - leading_dense for a leading-dense model
-    # (GLM-4.7-Flash: deepseek2, block_count 47, leading_dense 1 -> 46).
+    # 0 for a dense model (hides the slider); block_count for all-MoE;
+    # block_count - leading_dense otherwise (GLM-4.7-Flash: 47 - 1 -> 46).
     b = LlamaCppBackend()
     b._n_layers = 36
     b._n_experts = None
@@ -423,8 +421,7 @@ def test_manual_reloads_on_gpu_layers_or_n_cpu_moe_or_split_change():
 
 def test_auto_layers_reload_tracks_only_gpu_layers():
     # Under Auto (gpu_layers < 0) the MoE/split knobs don't apply, so a leftover
-    # value in the request must not force a reload -- only a change in gpu_layers
-    # (Auto -> a pinned count) does.
+    # request value must not reload -- only a gpu_layers change (Auto -> pinned) does.
     backend = _loaded_backend("manual")
     backend._gpu_layers = -1
     backend._n_cpu_moe = 0
@@ -538,8 +535,8 @@ def test_zero_offload_mask_honors_device_pin_spellings():
 
 
 def test_resolve_cpu_moe_flag():
-    # Behavior: clamp the requested MoE-layer count to the model's MoE layers,
-    # then offset past leading dense layers (--n-cpu-moe counts from layer 0).
+    # Clamp the requested MoE-layer count to the model's MoE layers, then offset
+    # past leading dense layers (--n-cpu-moe counts from layer 0).
     R = LlamaCppBackend._resolve_cpu_moe_flag
     assert R(0, 40, 0) is None  # nothing requested
     assert R(8, 0, 0) is None  # dense model (no MoE layers)
@@ -570,8 +567,7 @@ def test_manual_allows_tensor_parallel_via_split_mode():
 
 
 def test_fit_sets_target_margin():
-    # Behavior: Manual + Auto (auto_fit) tightens the per-device VRAM margin to
-    # 512 MiB.
+    # Manual + Auto (auto_fit) tightens the per-device VRAM margin to 512 MiB.
     caps = {"supports_fit_target": True}
     flags = LlamaCppBackend._ctx_integrity_flags(1, True, True, 0, 0, caps)
     assert flags[flags.index("--fit-target") + 1] == "512"
@@ -770,8 +766,8 @@ def test_diffusion_gpu_arg_honors_override_and_cpu_mask(monkeypatch):
 
 
 def test_zero_offload_flag_false_without_companions():
-    # CPU-only by construction: False lets the training coordinator skip
-    # unloading a server that holds no VRAM.
+    # CPU-only by construction: False lets training skip unloading a server that
+    # holds no VRAM.
     cmd = ["llama-server", "-m", "model.gguf", "--gpu-layers", "0", "--fit", "off"]
     assert LlamaCppBackend._zero_offload_gpu_flag(cmd, [(0, 8000, 24000)], {}) is False
 
@@ -865,8 +861,8 @@ def test_cmd_has_gpu_companion_detection():
 
 
 def test_cmd_companion_ignores_cpu_forced_drafter():
-    # A drafter pinned to CPU holds no VRAM: the zero-offload mask may hide the
-    # GPUs and the training coordinator may leave the server alone.
+    # A CPU-pinned drafter holds no VRAM: the zero-offload mask may hide the GPUs
+    # and training may leave the server alone.
     has = LlamaCppBackend._cmd_has_gpu_companion
     cmd = ["llama-server", "-md", "d.gguf", "--spec-draft-ngl", "0"]
     assert has(cmd, {}) is False

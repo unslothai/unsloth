@@ -65,11 +65,9 @@ export interface LoadModelRequest {
    * of by layer for GGUF models. Multi-GPU only; no effect on a single GPU.
    */
   tensor_parallel?: boolean | null;
-  /**
-   * GPU memory strategy for GGUF models. "auto" (default): Unsloth selects GPUs
-   * and caps context to fit VRAM. "manual": you own the offload -- gpu_layers
-   * -1 (Auto) hands sizing to llama.cpp's --fit, >= 0 pins layers/n_cpu_moe.
-   */
+  /** GPU memory strategy for GGUF models. "auto" (default): Unsloth selects GPUs
+   *  and caps context to fit VRAM. "manual": you own the offload -- gpu_layers
+   *  -1 (Auto) hands sizing to llama.cpp's --fit, >= 0 pins layers/n_cpu_moe. */
   gpu_memory_mode?: "auto" | "manual";
   /** Manual mode: layers to offload to GPU (--gpu-layers, --fit off); -1 = Auto (--fit). */
   gpu_layers?: number;

@@ -205,8 +205,7 @@ export function applyActiveModelStatusToStore(
   // and status only exposes the RESOLVED context; re-seed the pin from the
   // requested value (parity with the load paths' keepCustomCtx). Baselines
   // unconditionally: anything but an applicable pin is null, so a previous
-  // model's pin can't survive a model change underneath and reload at the old
-  // length.
+  // model's pin can't survive a model change underneath and reload at the old length.
   const gpuPin = status.is_gguf
     ? resolveManualAutoCtxPin(
         status.gpu_memory_mode ?? "auto",

@@ -4099,13 +4099,12 @@ def _resolve_inherited_extra_args(
         # inherit via "no opinion" semantics.
         extra_llama_args = []
     else:
-        # Strip only the groups whose first-class field was set by the caller,
-        # so an inherited --chat-template-file survives an Apply that omits
-        # chat_template_override. A bundled family template (e.g. gemma-4) counts
-        # as a first-class template setting even when the request omits
-        # chat_template_override, so strip the inherited --chat-template-file then
-        # too -- else the stale arg (appended last) shadows the bundled template
-        # while Studio reports the bundled template's capabilities.
+        # Strip only the groups whose first-class field was set by the caller, so
+        # an inherited --chat-template-file survives an Apply that omits
+        # chat_template_override. A bundled family template (e.g. gemma-4) counts as
+        # a first-class template even when the request omits chat_template_override,
+        # so strip the inherited --chat-template-file then too -- else the stale arg
+        # (appended last) shadows the bundled template while Studio reports its caps.
         fields_set = getattr(request, "model_fields_set", set())
         stripped = strip_shadowing_flags(
             llama_backend.extra_args,
@@ -4121,10 +4120,9 @@ def _resolve_inherited_extra_args(
             # an inherited one (appended last would override it) while
             # keeping the user's --split-mode row/none/layer choice.
             strip_tensor_split = _should_strip_tensor_split(request),
-            # manual emits its own --fit/--gpu-layers, so an inherited
-            # offload flag must not last-wins-override it. auto leaves a
-            # user's inherited -ngl alone (offload_overridden). getattr: a
-            # validate request reuses this resolver but has no offload fields.
+            # manual emits its own --fit/--gpu-layers, so an inherited offload flag
+            # must not last-wins-override it. auto leaves a user's inherited -ngl
+            # alone. getattr: a validate request reuses this resolver, no offload fields.
             strip_offload = getattr(request, "gpu_memory_mode", "auto") == "manual",
         )
         try:
@@ -4439,10 +4437,9 @@ async def _load_model_impl(request: LoadRequest, fastapi_request: Request, curre
         # GGUF supports gpu_ids: validate the pick up front (before the training
         # guard) so a bad pick is a clean 400, not masked by a VRAM 409. Rejects
         # negative / out-of-range / duplicate ids and UUID/MIG parents. XPU hosts
-        # are rejected outright: the picker's indices are torch-xpu ordinals that
-        # neither applicator speaks (CUDA/HIP masks don't apply, the Vulkan
-        # --device pin uses ggml's own Vulkan ordinals), so a pick could silently
-        # land on the wrong device.
+        # are rejected outright: the picker's indices are torch-xpu ordinals neither
+        # applicator speaks (CUDA/HIP masks don't apply, the Vulkan --device pin
+        # uses ggml's own Vulkan ordinals), so a pick could land on the wrong device.
         if config.is_gguf and effective_gpu_ids is not None:
             from utils.hardware import DeviceType, get_device
             from utils.hardware.hardware import resolve_requested_gpu_ids
