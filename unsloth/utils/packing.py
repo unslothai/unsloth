@@ -17,8 +17,11 @@
 
 from __future__ import annotations
 
+import inspect
 import logging
+import os
 from collections import OrderedDict
+from functools import wraps
 from typing import Any, Iterable, Optional, Sequence, Tuple
 
 import torch
@@ -216,6 +219,135 @@ def enable_padding_free_metadata(model, trainer):
 
     collator.torch_call = torch_call_with_padding_free_metadata
     collator._unsloth_padding_free_lengths_wrapped = True
+
+
+# --- Experimental: correct packing / padding-free for hybrid linear-attention ---
+# Qwen3.5 / Qwen3-Next mix a gated-delta recurrence with a causal conv1d. Packing
+# flattens the batch, and both ops leak state across sequence boundaries unless we
+# pass seq_idx (conv) and cu_seqlens (scan). Both accelerated kernels support this;
+# the pure-torch fallbacks do not, so we fail closed. Gated behind an env flag.
+_HYBRID_PACKING_ENV_ENABLED = os.environ.get(
+    "UNSLOTH_EXPERIMENTAL_HYBRID_PACKING", "0"
+).strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _iter_gated_delta_modules(model):
+    modules, seen = [], set()
+    for module in model.modules():
+        if id(module) in seen:
+            continue
+        seen.add(id(module))
+        if type(module).__name__.endswith("GatedDeltaNet") and hasattr(module, "conv1d"):
+            modules.append(module)
+    return modules
+
+
+def _hybrid_varlen_kernels_available(gated_delta_modules) -> bool:
+    """Both accelerated kernels must be present and expose the boundary args.
+    The pure-torch fallbacks cannot reset state at packed boundaries."""
+    if not gated_delta_modules:
+        return False
+    module = gated_delta_modules[0]
+    conv = getattr(module, "causal_conv1d_fn", None)
+    scan = getattr(module, "chunk_gated_delta_rule", None)
+    if conv is None or scan is None:
+        return False
+    if getattr(scan, "__name__", "").startswith("torch_"):
+        return False
+    try:
+        if "seq_idx" not in inspect.signature(conv).parameters:
+            return False
+        if "cu_seqlens" not in inspect.signature(scan).parameters:
+            return False
+    except (TypeError, ValueError):
+        return False
+    return True
+
+
+def _varlen_from_position_ids(position_ids):
+    """(cu_seqlens int32[n+1], seq_idx int32[1,T]) for a flattened padding-free
+    batch, else None. Padding-free position_ids reset to 0 at each sequence start.
+    Only a validated single-row pack is accepted; a normal batch or single
+    sequence returns None (a no-op)."""
+    if position_ids is None:
+        return None
+    pos = position_ids
+    if pos.dim() == 3:  # MRoPE [3, 1, T] -> text plane
+        pos = pos[0]
+    if pos.dim() != 2 or pos.shape[0] != 1:
+        return None
+    row = pos[0]
+    total = row.shape[0]
+    starts = (row == 0).nonzero(as_tuple = False).flatten()
+    if starts.numel() <= 1 or int(starts[0].item()) != 0:
+        return None
+    cu_seqlens = torch.cat([
+        starts.to(torch.int32),
+        torch.tensor([total], dtype = torch.int32, device = row.device),
+    ])
+    lengths = cu_seqlens[1:] - cu_seqlens[:-1]
+    if not bool((lengths > 0).all()):
+        return None
+    seq_idx = torch.repeat_interleave(
+        torch.arange(lengths.numel(), dtype = torch.int32, device = row.device),
+        lengths.to(torch.int64),
+    ).unsqueeze(0)
+    return cu_seqlens, seq_idx
+
+
+def patch_hybrid_linear_attention_varlen(model) -> bool:
+    """Feed seq_idx / cu_seqlens to the gated-delta conv + scan so packing and
+    padding-free reset state at sequence boundaries. Gated by
+    UNSLOTH_EXPERIMENTAL_HYBRID_PACKING and fail-closed. Returns True when the
+    varlen path is active, so the caller may allow packing for the model."""
+    if not _HYBRID_PACKING_ENV_ENABLED:
+        return False
+    gated_delta_modules = _iter_gated_delta_modules(model)
+    if not _hybrid_varlen_kernels_available(gated_delta_modules):
+        return False
+
+    # Per-instance kernel shims: inject boundaries from a stash refreshed per step.
+    for module in gated_delta_modules:
+        if getattr(module, "_unsloth_varlen_wrapped", False):
+            continue
+        conv_orig, scan_orig = module.causal_conv1d_fn, module.chunk_gated_delta_rule
+
+        def conv_fn(*args, _orig = conv_orig, _module = module, **kwargs):
+            varlen = getattr(_module, "_unsloth_varlen", None)
+            if varlen is not None and kwargs.get("seq_idx") is None:
+                kwargs["seq_idx"] = varlen[1]
+            return _orig(*args, **kwargs)
+
+        def scan_fn(*args, _orig = scan_orig, _module = module, **kwargs):
+            varlen = getattr(_module, "_unsloth_varlen", None)
+            if varlen is not None and kwargs.get("cu_seqlens") is None:
+                kwargs["cu_seqlens"] = varlen[0]
+            return _orig(*args, **kwargs)
+
+        module.causal_conv1d_fn = conv_fn
+        module.chunk_gated_delta_rule = scan_fn
+        module._unsloth_varlen = None
+        module._unsloth_varlen_wrapped = True
+
+    # Refresh the boundary stash on the outermost forward (runs once per step,
+    # outside gradient-checkpoint recompute, so it stays valid for recomputed
+    # inner forwards of the same batch).
+    if not getattr(model, "_unsloth_varlen_forward_wrapped", False):
+        forward_orig = model.forward
+
+        @wraps(forward_orig)
+        def forward_with_varlen(*args, **kwargs):
+            try:
+                varlen = _varlen_from_position_ids(kwargs.get("position_ids"))
+            except Exception:
+                varlen = None
+            for module in gated_delta_modules:
+                module._unsloth_varlen = varlen
+            return forward_orig(*args, **kwargs)
+
+        model.forward = forward_with_varlen
+        model._unsloth_varlen_forward_wrapped = True
+    return True
 
 
 def get_packed_info_from_kwargs(

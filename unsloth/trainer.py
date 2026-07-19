@@ -31,6 +31,7 @@ from unsloth.utils import (
     configure_sample_packing,
     enable_padding_free_metadata,
     enable_sample_packing,
+    patch_hybrid_linear_attention_varlen,
 )
 from unsloth_zoo.training_utils import (
     unsloth_train as _unsloth_train,
@@ -627,6 +628,7 @@ def _patch_sft_trainer_auto_packing(trl_module):
         is_vlm = False
         is_unsupported_model = False
         is_hybrid = False
+        hybrid_varlen_active = False
         if model is not None:
             model_config = getattr(model, "config", None)
             if model_config is not None:
@@ -634,6 +636,15 @@ def _patch_sft_trainer_auto_packing(trl_module):
                 is_unsupported_model = any(x in PADDING_FREE_BLOCKLIST for x in model_types)
                 is_vlm = _is_vlm_config(model_config, model_types)
             is_hybrid = _is_hybrid_linear_attention_model(model)
+            if is_hybrid:
+                # Hybrid linear-attention models corrupt packed batches unless the
+                # gated-delta conv + scan reset at sequence boundaries. Enable the
+                # experimental varlen shim (flag + kernels) so packing stays correct;
+                # otherwise keep them blocked.
+                try:
+                    hybrid_varlen_active = patch_hybrid_linear_attention_varlen(model)
+                except Exception:
+                    hybrid_varlen_active = False
 
         processing_class = (
             args[5] if len(args) >= 6 else kwargs.get("processing_class") or kwargs.get("tokenizer")
@@ -659,7 +670,7 @@ def _patch_sft_trainer_auto_packing(trl_module):
             or is_auto_processor_vlm
             or is_vision_dataset
             or is_unsupported_model
-            or is_hybrid
+            or (is_hybrid and not hybrid_varlen_active)
             or (
                 os.environ.get("UNSLOTH_RETURN_LOGITS", "0") == "1"
             )  # Disable padding free on forced logits
@@ -679,7 +690,7 @@ def _patch_sft_trainer_auto_packing(trl_module):
                 reason = "vision-language model with auto processor"
             elif is_vision_dataset:
                 reason = "vision dataset"
-            elif is_hybrid:
+            elif is_hybrid and not hybrid_varlen_active:
                 reason = "hybrid linear-attention model"
             elif is_unsupported_model:
                 reason = f"unsupported model type(s): {', '.join(model_types)}"
