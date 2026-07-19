@@ -705,6 +705,7 @@ export function ModelsPage() {
     return discoverRows.filter(
       (row) =>
         !isHiddenModelId(row.id) &&
+        !isConfiguredHiddenModelId(hiddenEmbeddingModelIds, row.id) &&
         // The default feed only shows models with a provider logo.
         (!isFeedMode ||
           resolveOwnerProviderLogo(row.owner, row.repo) !== null) &&
@@ -719,6 +720,7 @@ export function ModelsPage() {
     );
   }, [
     discoverRows,
+    hiddenEmbeddingModelIds,
     isDatasetMode,
     isFeedMode,
     effectiveDiscoverFormat,
@@ -744,7 +746,11 @@ export function ModelsPage() {
         effectiveCachedRows,
         effectiveLocalRows,
       )
-        .filter((row) => !isHiddenModelId(row.id))
+        .filter(
+          (row) =>
+            !isHiddenModelId(row.id) &&
+            !isConfiguredHiddenModelId(hiddenEmbeddingModelIds, row.id),
+        )
         .filter((row) => matchesFormat(row.result.isGguf, "gguf"))
         // Same fit filter as the main Discover list, so the feed carousel
         // honors the toggle too.
@@ -756,6 +762,7 @@ export function ModelsPage() {
         ),
     [
       hubFeed.trending.results,
+      hiddenEmbeddingModelIds,
       modelDiscoveryInventorySignature,
       fitOnDeviceOnly,
       gpu,
