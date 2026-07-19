@@ -96,10 +96,9 @@ _ROCM_TORCH_PKG_SPECS: dict[str, tuple[str, str, str]] = {
         "torchaudio>=2.4,<2.11.0",
     ),
 }
-# Windows AMD per-arch companion pins for the repo.amd.com index (mirrors the
-# install.ps1 / setup.ps1 floor maps). Pinning companions stops AMD's per-arch index,
-# which publishes each independently, from resolving an ABI-mismatched one. Unlisted
-# arches have no published floor, so stay bare.
+# Windows AMD per-arch companion pins for the repo.amd.com index (mirrors the install.ps1 /
+# setup.ps1 floor maps): pinning stops the per-arch index (each published independently) from
+# resolving an ABI-mismatched companion. Unlisted arches have no floor, so stay bare.
 _WINDOWS_ROCM_TORCH_PKG_SPECS: dict[str, tuple[str, str, str]] = {
     "gfx1201": _ROCM_TORCH_PKG_SPECS["rocm7.2"],
     "gfx1200": _ROCM_TORCH_PKG_SPECS["rocm7.2"],
@@ -1307,9 +1306,8 @@ def _ensure_cuda_torch() -> None:
     # Never undo a deliberate ROCm install (setup.ps1 sets this marker).
     if os.environ.get("UNSLOTH_ROCM_TORCH_INSTALLED") == "1":
         return
-    # An explicit CUDA pin (headless / CI cross-install) commits to CUDA wheels and skips
-    # ALL GPU probing, so it clears both the CUDA_VISIBLE_DEVICES hide gate and the
-    # NVIDIA-presence gate below.
+    # An explicit CUDA pin (headless / CI cross-install) commits to CUDA wheels and skips ALL
+    # GPU probing, so it clears both the CUDA_VISIBLE_DEVICES hide gate and the NVIDIA gate below.
     _cuda_pinned = _explicit_cuda_torch_index_url() is not None
     # CUDA_VISIBLE_DEVICES="" / "-1" deliberately hides the NVIDIA GPU; never force CUDA
     # wheels over that unless a CUDA index is pinned.
@@ -1375,10 +1373,9 @@ def _ensure_cuda_torch() -> None:
     if not _marker_lines:
         return
     _marker, _, _installed_cu = _marker_lines[-1].partition("|")
-    # Reinstall CUDA torch on a ROCm build on an NVIDIA host (poisoning signature), or
-    # when a CUDA index is pinned but the venv has the wrong family (CPU or a different
-    # cuXXX). Covers the headless cross-install; a healthy match, or a CPU wheel with no
-    # CUDA pin, is left alone.
+    # Reinstall CUDA torch on a ROCm build on an NVIDIA host (poisoning signature), or when a
+    # CUDA index is pinned but the venv has the wrong family (CPU or a different cuXXX). A
+    # healthy match, or a CPU wheel with no CUDA pin, is left alone.
     _pin = _explicit_torch_index_url()
     _pin_leaf = _torch_index_leaf(_pin) if _pin else ""
     _pinned_cuda = _is_cuda_family_leaf(_pin_leaf)
@@ -1627,8 +1624,8 @@ def _ensure_rocm_torch() -> None:
     # ── Linux x86_64 only: PyTorch ROCm wheels are not published for aarch64 ──
     if platform.machine().lower() not in {"x86_64", "amd64"}:
         return
-    # An explicit ROCm pin commits to ROCm wheels regardless of the visible GPU (headless
-    # / CI cross-install). Mirror _ensure_cuda_torch: skip the NVIDIA/no-AMD/unreadable gates.
+    # An explicit ROCm pin commits to ROCm wheels regardless of the visible GPU (headless / CI).
+    # Mirror _ensure_cuda_torch: skip the NVIDIA/no-AMD/unreadable gates.
     _rocm_pin = _explicit_rocm_torch_index_url()
     if _rocm_pin is None:
         # NVIDIA takes precedence on mixed hosts (only if a GPU is usable).
@@ -1648,9 +1645,9 @@ def _ensure_rocm_torch() -> None:
         # is fine (sentinel keeps ver comparisons defined).
         ver = (0, 0)
 
-    # Probe whether torch links against HIP, capturing the installed ROCm tag for
-    # pin-mismatch detection. Emit ONE "<hip_marker>|<version>" line: marker before "|"
-    # (HIP version, "rocm" sentinel, or empty for CPU/CUDA), wheel version after.
+    # Probe whether torch links against HIP, capturing the installed ROCm tag for pin-mismatch
+    # detection. Emit ONE "<hip_marker>|<version>" line: marker (HIP version, "rocm" sentinel,
+    # or empty for CPU/CUDA) before "|", wheel version after.
     try:
         probe = subprocess.run(
             [
@@ -1684,10 +1681,9 @@ def _ensure_rocm_torch() -> None:
     # A "|"-delimited line is required; without it treat HIP as absent -> reinstall.
     has_hip_torch = bool(_sep) and _hip_marker != ""
 
-    # An explicit ROCm pin whose family differs from the installed torch must reinstall,
-    # or a rocm7.2/gfx* pin over an older +rocm6.4/7.1 build never applies. Version-tag
-    # heuristic only: a same-tag per-arch switch (gfx1151 -> gfx120X-all, both
-    # +rocm7.13.0) is not detectable from the wheel and stays a documented follow-up.
+    # An explicit ROCm pin whose family differs from the installed torch must reinstall, else a
+    # rocm7.2/gfx* pin over an older +rocm6.4/7.1 build never applies. Version-tag heuristic
+    # only: a same-tag per-arch switch (gfx1151 -> gfx120X-all, both +rocm7.13.0) isn't detectable.
     _rocm_pin_mismatch = (
         _rocm_pin_family_mismatch(_rocm_pin, _installed_torch_ver)
         if (has_hip_torch and _rocm_pin is not None)
@@ -1698,8 +1694,7 @@ def _ensure_rocm_torch() -> None:
 
     # Strix Halo / Point (gfx1151 / gfx1150) segfault under ROCm 7.1 in torch._grouped_mm;
     # AMD's per-gfx repo ships 2.11.0+rocm7.13.0 with the fix, so route those hosts there
-    # (mirrors install.sh). On mixed hosts, reroute only when HIP's runtime GPU
-    # (HIP_VISIBLE_DEVICES) is the Strix one, else the dGPU gets an incompatible wheel.
+    # (mirrors install.sh). On mixed hosts, reroute only when HIP's runtime GPU is the Strix one.
     _strix_override_url: "str | None" = None
     _strix_override_pkgs: "tuple[str, str, str] | None" = None
     # An explicit ROCm pin is authoritative: never auto-reroute it.
@@ -1762,8 +1757,8 @@ def _ensure_rocm_torch() -> None:
         )
         rocm_torch_ready = True
     elif not has_hip_torch or _rocm_pin_mismatch:
-        # Reinstall when torch is not ROCm yet, OR a ROCm build's family differs from an
-        # explicit pin. Honour a ROCm pin verbatim; else pick the newest wheel tag <= host.
+        # Reinstall when torch is not ROCm yet, OR a ROCm build's family differs from a pin.
+        # Honour a ROCm pin verbatim; else pick the newest wheel tag <= host.
         _override_idx = _explicit_rocm_torch_index_url()
         if _override_idx is not None:
             index_url = _override_idx
@@ -1783,8 +1778,8 @@ def _ensure_rocm_torch() -> None:
             if _override_idx is None:
                 index_url = f"{_PYTORCH_WHL_BASE}/{tag}"
             print(f"   ROCm torch -- installing from {_strip_index_url_credentials(index_url)}")
-            # Only the _grouped_mm-bug gfx arches need the 2.11 spec; other gfx indexes
-            # publish <2.11 and stay on the default range (matches install.ps1 / setup.ps1).
+            # Only the _grouped_mm-bug gfx arches need the 2.11 spec; other gfx indexes ship
+            # <2.11 and stay on the default range (matches install.ps1 / setup.ps1).
             if tag in _ROCM_GFX_TORCH211_LEAVES:
                 _torch_pkg, _vision_pkg, _audio_pkg = _ROCM_TORCH_PKG_SPECS["rocm7.2"]
             elif tag.startswith("gfx"):
@@ -1884,8 +1879,8 @@ NO_TORCH = _infer_no_torch()
 # UNSLOTH_TORCH_BACKEND is set by install.sh after get_torch_index_url() ("cuda", "rocm",
 # "cpu"; empty = standalone `studio update`, where we re-detect).
 _TORCH_BACKEND: str = os.environ.get("UNSLOTH_TORCH_BACKEND", "").lower()
-# Standalone update with an explicit pin: derive the backend from the override (classify
-# on the final URL/family segment, mirroring install.sh) instead of re-probing the GPU.
+# Standalone update with an explicit pin: derive the backend from the override (classify on
+# the final URL/family segment, mirroring install.sh) instead of re-probing the GPU.
 if not _TORCH_BACKEND:
     _idx_override = (
         os.environ.get("UNSLOTH_TORCH_INDEX_URL", "").strip()
@@ -1897,9 +1892,9 @@ if not _TORCH_BACKEND:
     elif _idx_leaf == "cpu":
         _TORCH_BACKEND = "cpu"
     elif _is_cuda_family_leaf(_idx_leaf):
-        # Require a digit after "cu" so /current or /custom is NOT branded CUDA (a wrong
-        # backend makes _ensure_rocm_torch return early on AMD hosts). An unknown leaf
-        # keeps _TORCH_BACKEND="" so the helpers probe the GPU.
+        # Require a digit after "cu" so /current or /custom is NOT branded CUDA (a wrong backend
+        # makes _ensure_rocm_torch return early on AMD hosts). An unknown leaf keeps "" so the
+        # helpers probe the GPU.
         _TORCH_BACKEND = "cuda"
 
 
@@ -2122,9 +2117,8 @@ def run(
     if result.returncode != 0:
         _step("error", f"{label} failed (exit code {result.returncode})", _red)
         if result.stdout:
-            # Redact before printing: the failing pip command may carry a pinned
-            # --index-url with userinfo/?token= creds (this is the pip fallback for
-            # pip_install), so raw pip error text would leak them.
+            # Redact before printing: the failing pip command may carry a pinned --index-url
+            # with userinfo/?token= creds, so raw pip error text would leak them.
             print(_redact_install_output(result.stdout))
         sys.exit(result.returncode)
     return result
@@ -2312,20 +2306,18 @@ def _build_uv_cmd(args: tuple[str, ...]) -> list[str]:
     cmd.extend(_translate_pip_args_for_uv(args))
     # Torch is pre-installed, so don't add --torch-backend by default (solver dead-ends on
     # CPU-only machines); callers can set UV_TORCH_BACKEND. Never add it to a pinned-index
-    # command: uv's torch backend redirects torch to its own per-backend index, defeating
-    # the pin (like the index vars _install_env_for_cmd() strips).
+    # command: uv's torch backend redirects torch to its own per-backend index, defeating the pin.
     _tb = os.environ.get("UV_TORCH_BACKEND", "")
     if _tb and not _is_pinned_index_cmd(cmd):
         cmd.append(f"--torch-backend={_tb}")
     return cmd
 
 
-# uv resolves --index-url / --default-index at LOWEST priority, so an inherited
-# UV_INDEX / UV_EXTRA_INDEX_URL mirror wins and a pinned torch repair could resolve off
-# it and silently ignore the pin. Neutralise these for pinned installs
-# (as install.sh #6898 / install.ps1 / setup.ps1 do). UV_TORCH_BACKEND is stripped too
-# (redirects torch to its own index); PIP_* matter for the pip FALLBACK; UV_CONFIG_FILE
-# is stripped + UV_NO_CONFIG=1 (a discovered uv.toml outranks the CLI pin, uv 0.10).
+# uv resolves --index-url / --default-index at LOWEST priority, so an inherited UV_INDEX /
+# UV_EXTRA_INDEX_URL mirror wins and a pinned torch repair silently ignores the pin.
+# Neutralise these for pinned installs (as install.sh #6898 / install.ps1 / setup.ps1 do).
+# UV_TORCH_BACKEND redirects torch; PIP_* matter for the pip FALLBACK; UV_CONFIG_FILE is
+# stripped + UV_NO_CONFIG=1 (a discovered uv.toml outranks the CLI pin, uv 0.10).
 _UV_INDEX_ENV_VARS = (
     "UV_CONFIG_FILE",
     "UV_DEFAULT_INDEX",
@@ -2336,9 +2328,8 @@ _UV_INDEX_ENV_VARS = (
     "UV_FIND_LINKS",
     "PIP_EXTRA_INDEX_URL",
     "PIP_FIND_LINKS",
-    # PIP_NO_INDEX=1 makes the pip fallback ignore ALL indexes, including the explicit
-    # --index-url, so an inherited value silently defeats the pin. PIP_INDEX_URL is
-    # dropped too so a stale mirror env cannot outrank the pinned --index-url.
+    # PIP_NO_INDEX=1 makes the pip fallback ignore ALL indexes (defeating --index-url);
+    # PIP_INDEX_URL is dropped too so a stale mirror env can't outrank the pin.
     "PIP_NO_INDEX",
     "PIP_INDEX_URL",
 )
