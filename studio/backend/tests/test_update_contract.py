@@ -344,9 +344,7 @@ def _load_real_llama_cpp_update():
     production names."""
 
     def _load(mod_name: str, filename: str):
-        spec = importlib.util.spec_from_file_location(
-            mod_name, str(_BACKEND / "utils" / filename)
-        )
+        spec = importlib.util.spec_from_file_location(mod_name, str(_BACKEND / "utils" / filename))
         mod = importlib.util.module_from_spec(spec)
         sys.modules[mod_name] = mod
         spec.loader.exec_module(mod)
@@ -375,9 +373,7 @@ def _stub_marker_update(monkeypatch, lcu, *, resolved_latest: str):
             "asset": "cuda-x64.zip",
         },
     )
-    monkeypatch.setattr(
-        lcu, "_installer_script", lambda: Path("/fake/install_llama_prebuilt.py")
-    )
+    monkeypatch.setattr(lcu, "_installer_script", lambda: Path("/fake/install_llama_prebuilt.py"))
     monkeypatch.setattr(lcu, "_install_dir_for", lambda binary: Path("/llama.cpp/build"))
     monkeypatch.setattr(
         lcu,
@@ -416,7 +412,14 @@ def test_start_update_proceeds_when_resolved_latest_matches_confirmed(monkeypatc
     spawned: dict = {}
 
     class _CapturingThread:
-        def __init__(self, *, target = None, args = (), name = None, daemon = None):
+        def __init__(
+            self,
+            *,
+            target = None,
+            args = (),
+            name = None,
+            daemon = None,
+        ):
             spawned["args"] = args
 
         def start(self):
