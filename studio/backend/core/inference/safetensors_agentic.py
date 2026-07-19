@@ -15,6 +15,7 @@ parses tool calls from the cumulative text and dispatches via
 """
 
 import bisect
+import inspect
 import re
 import threading
 from typing import Callable, Generator, Optional
@@ -49,6 +50,7 @@ from core.inference.tool_call_parser import (
 # pattern lists, so the safetensors streaming strip stays aligned with the parser.
 from core.tool_healing import (
     _REHEARSAL_TAIL_STRIP_RE,
+    _THINK_CLOSE_RE,
     _strip_bracket_tag_calls,
     _think_spans_outside_tool_markup,
     apply_tool_strip_patterns,
@@ -56,10 +58,12 @@ from core.tool_healing import (
 )
 from core.inference.tool_loop_controller import (
     ToolLoopController,
+    append_deferred_nudges,
     coerce_tool_arguments,
     status_for_tool,
     tool_event_provenance,
 )
+from core.inference.tool_stream_exec import stream_tool_execution
 from state.tool_approvals import (
     TOOL_REJECTED_MESSAGE,
     abort_tool_decision,
@@ -301,6 +305,45 @@ def _status_for_tool(tool_name: str, arguments: dict) -> str:
     return status_for_tool(tool_name, arguments)
 
 
+def _reprompt_intent_text(text: str, *, reasoning_prefilled: bool = False) -> str:
+    """Return visible answer text for the plan-without-action classifier.
+
+    Safetensors reasoning shares the cumulative text channel with the answer.
+    Forward-looking phrases inside ``<think>`` / ``[THINK]`` are private
+    planning, not a user-visible promise to call a tool. Match GGUF's behavior:
+    classify visible content when present and fall back to reasoning only for a
+    reasoning-only stall.
+    """
+    prefilled_reasoning = ""
+    if reasoning_prefilled:
+        close = _THINK_CLOSE_RE.search(text)
+        if close is None:
+            return text.strip()
+        prefilled_reasoning = text[: close.end()].strip()
+        text = text[close.end() :].strip()
+        if not text:
+            return prefilled_reasoning
+
+    spans = _think_spans_outside_tool_markup(text)
+    if not spans:
+        return text.strip()
+
+    visible: list[str] = []
+    reasoning: list[str] = []
+    cursor = 0
+    for start, end in spans:
+        visible.append(text[cursor:start])
+        reasoning.append(text[start:end])
+        cursor = end
+    visible.append(text[cursor:])
+
+    visible_text = "".join(visible).strip()
+    reasoning_text = "".join(reasoning).strip()
+    if visible_text:
+        return visible_text
+    return "\n".join(part for part in (prefilled_reasoning, reasoning_text) if part).strip()
+
+
 def _looks_like_enabled_bare_json(text: str, enabled_tool_names: Optional[set]) -> bool:
     """True when ``text`` opens with an ENABLED markerless bare-JSON call; an ordinary JSON answer returns False."""
     probe = strip_llama3_leading_sentinels(text.lstrip())
@@ -402,6 +445,22 @@ def _tool_event_provenance(**flags: object) -> dict[str, object]:
     return tool_event_provenance(**flags)
 
 
+def _accepts_output_callback(func: Callable[..., str]) -> bool:
+    """Whether an injectable ``execute_tool`` supports ``output_callback``.
+
+    The loop's ``execute_tool`` is a parameter (tests inject fakes), so forward
+    the live-output kwarg only when the callable declares it or takes ``**kwargs``.
+    """
+    try:
+        sig = inspect.signature(func)
+    except (TypeError, ValueError):
+        return False
+    params = sig.parameters
+    if "output_callback" in params:
+        return True
+    return any(p.kind is inspect.Parameter.VAR_KEYWORD for p in params.values())
+
+
 def _call_single_turn(single_turn, conversation: list, active_tools: list[dict]):
     """Call a single-turn generator with active tool schemas when supported."""
     try:
@@ -429,6 +488,7 @@ def run_safetensors_tool_loop(
     confirm_tool_calls: bool = False,
     bypass_permissions: bool = False,
     permission_mode: Optional[str] = None,
+    reasoning_prefilled: bool = False,
 ) -> Generator[dict, None, None]:
     """Drive an agentic tool loop on top of a cumulative-text generator.
 
@@ -552,6 +612,9 @@ def run_safetensors_tool_loop(
         provisional_render_html_started = False
         provisional_resolved = False
         provisional_render_html_id = f"call_{next_call_id}"
+        # Live-args offset for the provisional render_html card: the drained call
+        # text streams as tool_args so the canvas shows the HTML being written.
+        _live_args_streamed_upto = -1
         # When a human confirmation gate is active the real tool_start is keyed
         # by an approval id and carries awaiting_confirmation, so an early
         # provisional card (keyed by tool_call_id, no approval) would show the
@@ -623,6 +686,30 @@ def run_safetensors_tool_loop(
                         "arguments": {},
                         "provenance": _tool_event_provenance(provisional = True),
                     }
+                    # Backlog first: everything drained so far.
+                    yield {
+                        "type": "tool_args",
+                        "tool_call_id": provisional_render_html_id,
+                        "tool_name": "render_html",
+                        "text": content_accum,
+                    }
+                    _live_args_streamed_upto = len(content_accum)
+                elif (
+                    provisional_render_html_started
+                    and not provisional_resolved
+                    and _live_args_streamed_upto >= 0
+                    and len(content_accum) > _live_args_streamed_upto
+                ):
+                    # Still writing the call: stream the fragment so the canvas
+                    # renders live. Display only; content_accum still feeds the
+                    # stream-end parser verbatim.
+                    yield {
+                        "type": "tool_args",
+                        "tool_call_id": provisional_render_html_id,
+                        "tool_name": "render_html",
+                        "text": content_accum[_live_args_streamed_upto:],
+                    }
+                    _live_args_streamed_upto = len(content_accum)
                 continue
 
             if detect_state == _state_streaming:
@@ -663,6 +750,13 @@ def run_safetensors_tool_loop(
                             "arguments": {},
                             "provenance": _tool_event_provenance(provisional = True),
                         }
+                        yield {
+                            "type": "tool_args",
+                            "tool_call_id": provisional_render_html_id,
+                            "tool_name": "render_html",
+                            "text": content_accum,
+                        }
+                        _live_args_streamed_upto = len(content_accum)
                     continue
                 cumulative_display = candidate
                 cleaned = strip_tool_markup_streaming(
@@ -819,6 +913,13 @@ def run_safetensors_tool_loop(
                         "arguments": {},
                         "provenance": _tool_event_provenance(provisional = True),
                     }
+                    yield {
+                        "type": "tool_args",
+                        "tool_call_id": provisional_render_html_id,
+                        "tool_name": "render_html",
+                        "text": content_accum,
+                    }
+                    _live_args_streamed_upto = len(content_accum)
             elif is_prefix and (is_rehearsal_prefix or len(stripped) < _MAX_BUFFER_CHARS):
                 # A rehearsal prefix is self-bounded; the buffer cap must not cut long MCP names short.
                 continue
@@ -894,9 +995,12 @@ def run_safetensors_tool_loop(
             if not safety_tc:
                 # Re-prompt once on plan-without-action, before any tool runs
                 # (GGUF loop parity). The retry is gated on nudge_tool_calls so
-                # Studio callers (which send True) always nudge, while API callers
+                # Unsloth callers (which send True) always nudge, while API callers
                 # who omit the flag keep today's no-reprompt behavior (opt-in).
-                stripped_answer = content_accum.strip()
+                intent_text = _reprompt_intent_text(
+                    content_accum,
+                    reasoning_prefilled = reasoning_prefilled,
+                )
                 if (
                     auto_heal_tool_calls
                     and nudge_tool_calls
@@ -905,7 +1009,7 @@ def run_safetensors_tool_loop(
                     and not rag_autoinjected
                     and not tool_denied
                     and not any(record.executed for record in tool_controller.history)
-                    and is_short_intent_without_action(stripped_answer)
+                    and is_short_intent_without_action(intent_text)
                 ):
                     reprompt_count += 1
                     logger.info(
@@ -913,9 +1017,9 @@ def run_safetensors_tool_loop(
                         "calling tools (%d chars)",
                         reprompt_count,
                         MAX_ACT_REPROMPTS,
-                        len(stripped_answer),
+                        len(intent_text),
                     )
-                    conversation.append({"role": "assistant", "content": stripped_answer})
+                    conversation.append({"role": "assistant", "content": intent_text})
                     tool_hint = " or ".join(_active_tool_names(active_tools)) or "an available tool"
                     conversation.append(
                         {
@@ -1040,6 +1144,9 @@ def run_safetensors_tool_loop(
 
         assistant_msg: dict = {"role": "assistant", "content": content_text}
         assistant_appended = False
+        # Collect no-op nudges and flush them after the batch, so a no-op doesn't
+        # abort it and drop the parallel calls that follow.
+        deferred_noop_msgs: list = []
 
         for tc in tool_calls or []:
             func = tc.get("function", {}) or {}
@@ -1068,12 +1175,12 @@ def run_safetensors_tool_loop(
                         "provenance": decision.provenance,
                     }
                 completion = tool_controller.record_noop(decision)
-                conversation.append(completion.model_message())
+                deferred_noop_msgs.append(completion.model_message())
                 logger.info(
                     "Suppressed local safetensors tool call as internal no-op: "
                     f"action={decision.action} tool={decision.tool_name}"
                 )
-                break
+                continue
 
             if not assistant_appended:
                 assistant_msg["tool_calls"] = [decision.as_assistant_tool_call()]
@@ -1146,16 +1253,29 @@ def run_safetensors_tool_loop(
             ):
                 result = RAG_SEARCH_CAP_NUDGE
             else:
-                try:
-                    result = execute_tool(
-                        decision.tool_name,
-                        decision.arguments,
+                # Execute in a worker thread so live stdout chunks and heartbeats
+                # stream while the tool blocks (the SSE route turns heartbeats into
+                # keepalives). execute_tool is injectable; pass output_callback
+                # only when it accepts it.
+                def _invoke_tool(_output_callback, _decision = decision):
+                    kwargs = dict(
                         cancel_event = cancel_event,
                         timeout = eff_timeout,
                         session_id = session_id,
                         thread_id = thread_id,
                         rag_scope = rag_scope,
                         disable_sandbox = bypass_permissions,
+                    )
+                    if _accepts_output_callback(execute_tool):
+                        kwargs["output_callback"] = _output_callback
+                    return execute_tool(_decision.tool_name, _decision.arguments, **kwargs)
+
+                try:
+                    result = yield from stream_tool_execution(
+                        _invoke_tool,
+                        tool_name = decision.tool_name,
+                        tool_call_id = decision.tool_call_id,
+                        cancel_event = cancel_event,
                     )
                 except Exception as exc:
                     logger.exception("Tool %s raised: %s", decision.tool_name, exc)
@@ -1170,6 +1290,8 @@ def run_safetensors_tool_loop(
             _turn_executed_real_tool = True
             yield completion.tool_end_event()
             conversation.append(completion.tool_message())
+
+        append_deferred_nudges(conversation, deferred_noop_msgs)
 
         # Clear the status badge before the next turn.
         yield {"type": "status", "text": ""}

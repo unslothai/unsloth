@@ -97,7 +97,7 @@ if [ "$_VERBOSE" = true ]; then
     export UNSLOTH_VERBOSE=1
 fi
 
-# Custom Studio roots are not supported with --tauri (desktop app still
+# Custom Unsloth roots are not supported with --tauri (desktop app still
 # resolves ~/.unsloth/studio). Pass through if the override == legacy default.
 if [ "$TAURI_MODE" = true ]; then
     _tauri_override_var=""
@@ -663,7 +663,7 @@ POLL_INTERVAL_SEC=0.25
 LOG_FILE="$DATA_DIR/studio.log"
 # why: in env-override mode multiple installs share an OS user; namespace the
 # lock and remember our own healthy port so we never attach to an unrelated
-# Studio listening on the global 8888..8908 range.
+# Unsloth listening on the global 8888..8908 range.
 LOCK_DIR="${XDG_RUNTIME_DIR:-/tmp}/unsloth-studio-launcher-$(id -u).lock"
 PORT_FILE=""
 # why: gate on the install-time mode (baked above) instead of the runtime env
@@ -734,7 +734,7 @@ _candidate_ports() {
 _find_healthy_port() {
     if [ -n "$PORT_FILE" ] && [ -f "$PORT_FILE" ]; then
         # why: env-mode installs only attach to a port we previously launched
-        # ourselves; never to a sibling Studio that happens to be healthy.
+        # ourselves; never to a sibling Unsloth that happens to be healthy.
         _p=$(cat "$PORT_FILE" 2>/dev/null || true)
         case "$_p" in
             ''|*[!0-9]*) ;;
@@ -901,7 +901,7 @@ _acquire_lock() {
     # Lock dir exists -- check if owner is still alive
     _old_pid=$(cat "$LOCK_DIR/pid" 2>/dev/null || true)
     if [ -n "$_old_pid" ] && kill -0 "$_old_pid" 2>/dev/null; then
-        # Another launcher is running; wait for it to bring Studio up
+        # Another launcher is running; wait for it to bring Unsloth up
         _deadline=$(($(date +%s) + TIMEOUT_SEC))
         while [ "$(date +%s)" -lt "$_deadline" ]; do
             _port=$(_find_healthy_port) && {
@@ -1371,7 +1371,7 @@ WSLPS1_EOF
         # shortcut wasn't created; tell the user how to launch / re-enable it.
         if [ "$_css_created" -ne 1 ]; then
             substep "Couldn't create the Windows shortcut (WSL interop may be disabled)." "$C_WARN"
-            substep "  Launch Studio from Windows:  wsl -d \"$_css_distro\" -- bash -lc 'unsloth studio'" "$C_WARN"
+            substep "  Launch Unsloth from Windows:  wsl -d \"$_css_distro\" -- bash -lc 'unsloth studio'" "$C_WARN"
             substep "  (re-enable shortcuts: turn WSL interop back on, e.g. run 'wsl --shutdown' then reopen WSL.)" "$C_WARN"
         fi
     fi
@@ -1439,7 +1439,7 @@ if [ "$MAC_INTEL" = true ]; then
     echo ""
     echo "  NOTE: Intel Mac (x86_64) detected."
     echo "  PyTorch is unavailable for this platform (dropped Jan 2024)."
-    echo "  Studio will install in GGUF-only mode."
+    echo "  Unsloth will install in GGUF-only mode."
     echo "  Chat, inference via GGUF, and data recipes will work."
     echo "  Training requires Apple Silicon or Linux with GPU."
     echo ""
@@ -1671,7 +1671,7 @@ _maybe_reroute_strixhalo_to_2404() {
 _maybe_reroute_strixhalo_to_2404 || true
 
 # ── Check system dependencies ──
-# cmake/git are only needed to *build* llama.cpp from source. Studio downloads a
+# cmake/git are only needed to *build* llama.cpp from source. Unsloth downloads a
 # prebuilt by default, and setup.sh self-skips the source build when they're
 # absent -- so macOS doesn't block on cmake (requiring it would force a manual
 # Homebrew install). Linux keeps requiring them; its package manager has them.
@@ -1825,7 +1825,7 @@ _MIGRATED=false
 if [ -x "$VENV_DIR/bin/python" ]; then
     # why: matching guard to the .venv branch below -- in env-mode
     # $STUDIO_HOME is a user-chosen workspace, so refuse to nuke an
-    # existing $STUDIO_HOME/unsloth_studio that lacks Studio sentinels.
+    # existing $STUDIO_HOME/unsloth_studio that lacks Unsloth sentinels.
     # Accept the in-VENV ownership marker so partial-install retries are
     # not blocked. Sentinels must be regular files: -f follows symlinks
     # to files (the legitimate ln -s shim shape) but rejects directories
@@ -1846,7 +1846,7 @@ elif [ "$_STUDIO_HOME_REDIRECT" != "env" ] && [ -x "$STUDIO_HOME/.venv/bin/pytho
     # Skip in env-mode so we don't rm -rf an unrelated .venv at the
     # workspace root (e.g. user's existing project Python venv).
     # In no-torch mode, a missing torch package is expected; validate Python only.
-    substep "found legacy Studio environment, validating..."
+    substep "found legacy Unsloth environment, validating..."
     _legacy_ok=false
     if [ "$SKIP_TORCH" = true ]; then
         if "$STUDIO_HOME/.venv/bin/python" -c "import sys; print(sys.executable)" >/dev/null 2>&1; then
@@ -1903,7 +1903,7 @@ if [ ! -x "$VENV_DIR/bin/python" ]; then
     fi
 fi
 
-# Mark the freshly-created venv as Studio-owned so a partial install can be
+# Mark the freshly-created venv as Unsloth-owned so a partial install can be
 # repaired by re-running install.sh; the env-mode deletion guard above accepts
 # this marker as the primary sentinel.
 if [ -x "$VENV_DIR/bin/python" ]; then
@@ -2335,7 +2335,7 @@ _pick_radeon_wheel() {
 # the installer -- always returns 0. Runs the idempotent helper (ROCm 7.2 +
 # librocdxg), then sources the env it persisted so detection finds the GPU.
 # Export the ROCm-on-WSL env into this process and persist it to /etc/profile.d
-# so non-login Studio/llama launches inherit it. Idempotent (writes only when
+# so non-login Unsloth/llama launches inherit it. Idempotent (writes only when
 # the drop-in is missing); no-op without librocdxg, so never fires off WSL.
 # /etc/profile.d is root-owned -- sudo-tee when not root, else ROCm vanishes
 # after this shell on a non-root reinstall. Best-effort either way.
@@ -2380,7 +2380,7 @@ _maybe_bootstrap_rocm_wsl() {
        rocminfo 2>/dev/null | awk '/Name:[[:space:]]*gfx[1-9]/ && !/generic/{found=1} END{exit !found}'; then
         # rocminfo may work only via the transient env _ensure_rocm_probe_env
         # just set, which dies with the installer. Persist the drop-in so login
-        # shells (Studio, llama.cpp) inherit it -- else a reinstall over an
+        # shells (Unsloth, llama.cpp) inherit it -- else a reinstall over an
         # existing /opt/rocm (uninstall keeps ROCm but drops it) loses the GPU.
         _persist_rocm_wsl_dropin
         return 0
@@ -2402,7 +2402,7 @@ _maybe_bootstrap_rocm_wsl() {
             # shellcheck disable=SC1091
             . /etc/profile.d/unsloth-rocm-wsl.sh || true
         else
-            # librocdxg present but the env drop-in is gone (e.g. a Studio
+            # librocdxg present but the env drop-in is gone (e.g. an Unsloth
             # uninstall removed it while keeping shared ROCm). Restore the env.
             _persist_rocm_wsl_dropin
         fi
@@ -2716,7 +2716,7 @@ if [ "$_MIGRATED" = true ]; then
         # to prevent transitive torch resolution.
         run_install_cmd_retry "install unsloth (migrated no-torch)" uv pip install --python "$_VENV_PY" --no-deps \
             --reinstall-package unsloth --reinstall-package unsloth-zoo \
-            "unsloth>=2026.7.2" "unsloth-zoo>=2026.7.2"
+            "unsloth>=2026.7.3" "unsloth-zoo>=2026.7.3"
         # Resolve pydantic WITH deps so pip pins pydantic-core to the
         # matching version (no-torch-runtime.txt below is --no-deps).
         # All transitive deps are torch-free.
@@ -2731,7 +2731,7 @@ if [ "$_MIGRATED" = true ]; then
         # overrides file, so UV_OVERRIDE is unset and this positional is the only cover.
         run_install_cmd_retry "install unsloth (migrated)" uv pip install --python "$_VENV_PY" \
             --reinstall-package unsloth --reinstall-package unsloth-zoo \
-            "unsloth>=2026.7.2" "unsloth-zoo>=2026.7.2" ${_MLX_LM_EXCLUDE_ARG:-}
+            "unsloth>=2026.7.3" "unsloth-zoo>=2026.7.3" ${_MLX_LM_EXCLUDE_ARG:-}
     fi
     if [ "$STUDIO_LOCAL_INSTALL" = true ]; then
         substep "overlaying local repo (editable)..."
@@ -2935,7 +2935,7 @@ elif [ -n "$TORCH_INDEX_URL" ]; then
         # runtime deps (typer, safetensors, transformers, etc.) with --no-deps.
         run_install_cmd_retry "install unsloth (no-torch)" uv pip install --python "$_VENV_PY" --no-deps \
             --upgrade-package unsloth --upgrade-package unsloth-zoo \
-            "unsloth>=2026.7.2" "unsloth-zoo>=2026.7.2"
+            "unsloth>=2026.7.3" "unsloth-zoo>=2026.7.3"
         # Same pydantic-with-deps trick as the migrated branch.
         run_install_cmd_retry "install pydantic (with deps for compatible core)" \
             uv pip install --python "$_VENV_PY" pydantic
@@ -2953,7 +2953,7 @@ elif [ -n "$TORCH_INDEX_URL" ]; then
         fi
     elif [ "$STUDIO_LOCAL_INSTALL" = true ]; then
         run_install_cmd_retry "install unsloth (local)" uv pip install --python "$_VENV_PY" \
-            --upgrade-package unsloth "unsloth>=2026.7.2" "unsloth-zoo>=2026.7.2"
+            --upgrade-package unsloth "unsloth>=2026.7.3" "unsloth-zoo>=2026.7.3"
         substep "overlaying local repo (editable)..."
         run_install_cmd "overlay local repo" uv pip install --python "$_VENV_PY" -e "$_REPO_ROOT" --no-deps
         substep "overlaying unsloth-zoo from git main..."
@@ -2985,7 +2985,7 @@ else
     tauri_log "STEP" "Installing Unsloth"
     substep "installing unsloth (this may take a few minutes)..."
     if [ "$STUDIO_LOCAL_INSTALL" = true ]; then
-        run_install_cmd_retry "install unsloth (auto torch backend)" uv pip install --python "$_VENV_PY" "unsloth-zoo>=2026.7.2" "unsloth>=2026.7.2" --torch-backend=auto
+        run_install_cmd_retry "install unsloth (auto torch backend)" uv pip install --python "$_VENV_PY" "unsloth-zoo>=2026.7.3" "unsloth>=2026.7.3" --torch-backend=auto
         substep "overlaying local repo (editable)..."
         run_install_cmd "overlay local repo" uv pip install --python "$_VENV_PY" -e "$_REPO_ROOT" --no-deps
         substep "overlaying unsloth-zoo from git main..."
@@ -3033,7 +3033,7 @@ if [ "$SKIP_TORCH" = false ] && [ -n "${TORCH_INDEX_URL:-}" ]; then
 fi
 
 # ── Run studio setup ──
-tauri_log "STEP" "Running Studio setup"
+tauri_log "STEP" "Running Unsloth setup"
 # When --local, use the repo's own setup.sh directly.
 # Otherwise, find it inside the installed package.
 SETUP_SH=""
@@ -3227,7 +3227,7 @@ printf "  ${C_TITLE}%s${C_RST}\n" "Unsloth Studio installed!"
 printf "  ${C_DIM}%s${C_RST}\n" "$RULE"
 echo ""
 
-# In interactive terminals, ask the user before starting Studio unless the
+# In interactive terminals, ask the user before starting Unsloth unless the
 # caller explicitly disabled the post-install prompt.
 # In non-interactive environments (Docker, CI, cloud-init) just print instructions.
 if [ "$_SKIP_AUTOSTART" != true ] && [ -t 1 ]; then

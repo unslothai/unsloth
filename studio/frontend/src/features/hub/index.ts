@@ -3,3 +3,8 @@
 
 export { cancelStagedModelDownload } from "./download-manager";
 export { bumpInventoryVersion } from "./stores/inventory-events";
+export {
+  getHfToken,
+  mirrorHfTokenInto,
+  useHfTokenStore,
+} from "./stores/hf-token-store";

@@ -113,7 +113,7 @@ export const ko = {
       showToken: "토큰 표시",
       tokenSaved: "토큰이 저장되었습니다",
       password: "비밀번호",
-      passwordDescription: "이 Studio 계정의 비밀번호를 변경합니다.",
+      passwordDescription: "이 Unsloth 계정의 비밀번호를 변경합니다.",
       passwordDialog: {
         trigger: "비밀번호 변경",
         title: "비밀번호 변경",
@@ -153,14 +153,14 @@ export const ko = {
           "OpenAI 호환 요청이 다운로드된 다른 GGUF를 지정하면, 응답하기 전에 해당 모델을 불러옵니다. 기본값은 꺼짐이며, 알 수 없는 이름은 불러온 모델을 계속 제공합니다.",
         idleUnload: "유휴 시 자동 해제",
         idleUnloadDescription:
-          "지정한 유휴 시간(초)이 지나면 모델을 해제하여 VRAM을 확보합니다. 다음 요청 시 다시 불러옵니다. 0으로 설정하면 계속 로드된 상태로 유지됩니다.",
+          "지정한 유휴 시간(초)이 지나면 모델을 해제하여 VRAM을 확보합니다. 다음 요청 시 다시 불러옵니다. 0으로 설정하면 계속 로드된 상태로 유지됩니다. 최소 60초입니다.",
         idleNeedsEnable:
           "해제된 모델이 다음 사용 시 다시 로드되도록 하려면 요청에 따라 모델 전환을 켜세요.",
         idleActiveViaEnv:
           "유휴 시 자동 해제가 UNSLOTH_MODEL_IDLE_TTL 환경 변수를 통해 활성화되어 있습니다.",
         loadError: "모델 자동 전환 설정을 불러오지 못했습니다.",
         saveError: "모델 자동 전환 설정을 저장하지 못했습니다.",
-        idleError: "정수(초)를 입력하세요(0 이상).",
+        idleError: "모델을 로드 상태로 유지하려면 0을, 그렇지 않으면 60초 이상을 입력하세요.",
       },
       previewSharing: {
         sectionTitle: "미리보기 공유",
@@ -282,7 +282,7 @@ export const ko = {
     },
     resources: {
       title: "시스템",
-      description: "이 Studio 서버의 하드웨어와 저장소를 모니터링합니다.",
+      description: "이 Unsloth 서버의 하드웨어와 저장소를 모니터링합니다.",
       liveUpdates: "실시간 업데이트",
       floatingWindow: "플로팅 창",
       disableOverlay: "오버레이 비활성화",

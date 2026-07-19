@@ -120,7 +120,7 @@ class TestResponsesRequestTools:
     def test_builtin_tool_type_passes_validation(self):
         """Non-function built-in tools (web_search, file_search, mcp, ...)
         must not raise at validation so SDKs that default to them don't
-        fail on Studio; they're filtered out during translation."""
+        fail on Unsloth; they're filtered out during translation."""
         req = ResponsesRequest(
             input = "hi",
             tools = [{"type": "web_search_preview"}],

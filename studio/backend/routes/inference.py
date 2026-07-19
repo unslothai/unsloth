@@ -20,6 +20,7 @@ from loggers import get_logger
 import asyncio
 import threading
 import weakref
+from contextlib import ExitStack
 
 
 import re as _re
@@ -28,6 +29,7 @@ import re as _re
 from utils.models import extract_model_size_b as _extract_model_size_b
 
 from utils.api_errors import openai_error_body, anthropic_error_body
+from core.inference.orchestrator import GenStreamError, GenStreamErrorRaised
 from core.inference.llama_admission import (
     LlamaAdmissionCancelled,
     LlamaAdmissionConfig,
@@ -90,7 +92,7 @@ def _mlx_distributed_launch_detected() -> bool:
 def _install_httpcore_asyncgen_silencer() -> None:
     """Silence benign httpx/httpcore asyncgen GC noise on Python 3.13.
 
-    When Studio proxies a llama-server stream via httpx, the innermost
+    When Unsloth proxies a llama-server stream via httpx, the innermost
     ``HTTP11ConnectionByteStream.__aiter__`` async generator is finalised by
     the asyncgen GC hook on a task different from the one that opened it. Its
     ``aclose`` calls ``anyio.Lock.acquire`` → ``cancel_shielded_checkpoint``,
@@ -212,6 +214,14 @@ def _friendly_error(exc: Exception) -> str:
     return "An internal error occurred"
 
 
+def _friendly_gen_stream_error(value) -> str:
+    """Return a client-safe message for typed local generation errors."""
+    text = str(value)
+    if getattr(value, "public", False):
+        return text
+    return safe_error_detail(RuntimeError(text), fallback = "An internal error occurred.")
+
+
 def _friendly_upstream_error(text: str) -> str:
     """Rewrite a raw llama-server error body into an actionable message where we can.
 
@@ -219,14 +229,14 @@ def _friendly_upstream_error(text: str) -> str:
     parse grammar" / "failed to initialize samplers"). This surfaces to coding agents as
     a hard 400 on every tool-bearing turn. It is a llama-server limitation with some
     model/quant + tool-schema combinations, and recent llama.cpp builds handle the common
-    coding-agent tools, so point the user at updating Studio rather than the raw body.
+    coding-agent tools, so point the user at updating Unsloth rather than the raw body.
     """
     lowered = text.lower()
     if "failed to parse grammar" in lowered or "failed to initialize samplers" in lowered:
         return (
             "The model couldn't compile a tool-calling grammar for this request. This is a "
             "llama-server limitation with some model/quant and tool-schema combinations. "
-            "Update Studio (it installs the latest llama.cpp, which handles the common "
+            "Update Unsloth (it installs the latest llama.cpp, which handles the common "
             "coding-agent tools) or try a different GGUF model."
         )
     return f"llama-server error: {text}"
@@ -721,7 +731,7 @@ def _openai_passthrough_sse_line_terminal_state(raw_line: str) -> Optional[str]:
 
     Some llama-server builds can emit the logical final chunk (``finish_reason``)
     and optional usage chunk, then keep the HTTP stream open without sending the
-    OpenAI ``data: [DONE]`` sentinel. Classifying those chunks lets Studio close
+    OpenAI ``data: [DONE]`` sentinel. Classifying those chunks lets Unsloth close
     the client stream promptly while preserving an optional trailing usage chunk.
     """
     if not raw_line.startswith("data:"):
@@ -998,6 +1008,7 @@ try:
     from core.inference.llama_server_args import (
         _effective_tensor_parallel,
         _tensor_parallel_matches_loaded,
+        extra_args_disable_mmproj,
         parse_split_mode_override,
         resolve_tensor_parallel,
         strip_shadowing_flags,
@@ -1035,6 +1046,7 @@ except ImportError:
     from core.inference.llama_server_args import (
         _effective_tensor_parallel,
         _tensor_parallel_matches_loaded,
+        extra_args_disable_mmproj,
         parse_split_mode_override,
         resolve_tensor_parallel,
         strip_shadowing_flags,
@@ -1083,6 +1095,10 @@ _OPENAI_PASSTHROUGH_PREHEADER_STATUS_WINDOW_S = 0.1
 _OPENAI_PASSTHROUGH_PENDING_RESPONSE_KEEPALIVE_S = 5.0
 _OPENAI_PASSTHROUGH_SSE_KEEPALIVE = ": keep-alive\n\n"
 _OPENAI_LLAMA_ADMISSION_POLL_S = 0.25
+# Idle window before a local tool-loop stream emits an SSE keepalive comment
+# (e.g. prompt prefill between tool iterations). A second layer atop the
+# tool_stream_exec heartbeats, keeping proxies (Cloudflare drops idle at ~100s).
+_LOCAL_TOOL_STREAM_STALL_KEEPALIVE_S = 15.0
 
 
 def _openai_llama_admission_capacity(request: Optional[Request], llama_backend = None) -> int:
@@ -1770,7 +1786,7 @@ import numpy as np
 from datetime import date as _date
 
 router = APIRouter()
-# Studio-only router (not mounted on /v1 OpenAI-compat).
+# Unsloth-only router (not mounted on /v1 OpenAI-compat).
 studio_router = APIRouter()
 
 
@@ -1911,16 +1927,57 @@ async def artifact_preview_frame(allow_network: bool = False):
 _BARE_JSON_NAME_MARKER_RE = _re.compile(r'\{\s*\\?"(?:name|function)\\?"\s*:')
 
 
-def _detect_safetensors_features(backend, chat_template: Optional[str]) -> dict:
+def _detect_safetensors_features(
+    backend,
+    chat_template: Optional[str],
+    tools = None,
+) -> dict:
     """Classify reasoning/tool capabilities via the GGUF classifier so flags
     match across backends. gpt-oss is overridden: Harmony routes reasoning and
     tools through tokenizer channels, not template markup."""
     model_id = getattr(backend, "active_model_name", None)
+    feature_template = chat_template
+    try:
+        from core.inference.chat_template_helpers import _selected_template_strings_from_value
+        selected_templates = _selected_template_strings_from_value(chat_template, tools)
+        if selected_templates:
+            feature_template = selected_templates[0]
+    except Exception:
+        logger.debug("safetensors_named_template_selection_failed", exc_info = True)
     flags = detect_reasoning_flags(
-        chat_template,
+        feature_template,
         model_identifier = model_id,
         log_source = "safetensors",
     )
+    if not flags.get("supports_reasoning"):
+        try:
+            from core.inference.chat_template_helpers import (
+                detect_reasoning_channel_markers_from_template,
+            )
+
+            templates = [chat_template]
+            models = getattr(backend, "models", None)
+            model_info = (
+                models.get(model_id, {})
+                if isinstance(models, dict) and model_id is not None
+                else {}
+            )
+            if isinstance(model_info, dict):
+                templates.extend(
+                    (
+                        model_info.get("native_chat_template"),
+                        (model_info.get("chat_template_info") or {}).get("template"),
+                    )
+                )
+            if any(
+                detect_reasoning_channel_markers_from_template(template, tools = tools) is not None
+                for template in templates
+            ):
+                flags["supports_reasoning"] = True
+                flags["reasoning_always_on"] = True
+                logger.info("safetensors: model always reasons (native channel markers)")
+        except Exception:
+            logger.debug("safetensors_native_reasoning_marker_check_failed", exc_info = True)
     # Markers any supported parser recognises (template advertises tools but
     # uses none -> drop the pill). Reuse the parser's own signal list so this
     # gate never drifts (a hand-maintained copy lost the DeepSeek variants);
@@ -1934,9 +1991,9 @@ def _detect_safetensors_features(backend, chat_template: Optional[str]) -> dict:
     )
     if (
         flags.get("supports_tools")
-        and chat_template
-        and not any(m in chat_template for m in _PARSER_MARKERS)
-        and not _BARE_JSON_NAME_MARKER_RE.search(chat_template)
+        and isinstance(feature_template, str)
+        and not any(m in feature_template for m in _PARSER_MARKERS)
+        and not _BARE_JSON_NAME_MARKER_RE.search(feature_template)
     ):
         logger.info(
             "safetensors: template advertises tools but uses an "
@@ -2051,9 +2108,9 @@ def _effective_enable_tools(payload) -> Optional[bool]:
 
 
 def _explicit_studio_tool_loop_requested(payload) -> bool:
-    """True when the request itself asks Studio to execute local tools.
+    """True when the request itself asks Unsloth to execute local tools.
 
-    Process-wide CLI policy can default Studio's tool loop on for ordinary chat,
+    Process-wide CLI policy can default Unsloth's tool loop on for ordinary chat,
     but it must not steal OpenAI-compatible client tools or response_format
     requests from the llama-server passthrough path. A policy of ``False``
     (--disable-tools) vetoes even an explicit ``enable_tools: true`` ask.
@@ -2065,7 +2122,7 @@ def _explicit_studio_tool_loop_requested(payload) -> bool:
 
 
 def _permission_mode_confirm(payload) -> bool:
-    """Effective confirm-gate intent for Studio's own local tool loop.
+    """Effective confirm-gate intent for Unsloth's own local tool loop.
 
     Honors the documented default that an unset permission_mode behaves as
     "ask". An explicit confirm_tool_calls (True or False) wins; explicit
@@ -2087,7 +2144,7 @@ def _permission_mode_confirm(payload) -> bool:
 
 
 def _confirm_gate_needs_stream(payload) -> bool:
-    """Whether Studio's local tool-loop confirm gate still requires stream=true.
+    """Whether Unsloth's local tool-loop confirm gate still requires stream=true.
 
     The gate can only prompt while streaming, so a non-streaming request that will
     prompt must 400 up front. auto ("Approve for me") only prompts for a call the
@@ -2296,6 +2353,36 @@ async def _stop_local_disconnect_cancel_watcher(watcher) -> None:
         await watcher
     except (asyncio.CancelledError, Exception):
         pass
+
+
+async def _drain_pending_next_task(task, cancel_event) -> None:
+    """Wait for a pending ``asyncio.to_thread(next, gen, ...)`` task to finish
+    before its generator is closed.
+
+    On disconnect a ``next(gen)`` call may still run in a worker thread;
+    cancelling the awaiting task does NOT stop it, and ``gen.close()`` mid-
+    ``next(gen)`` raises ``ValueError: generator already executing``, leaking the
+    generator's cleanup. So re-set the cancel flag (the generator polls it) and
+    shield the task until the worker returns. No-op when there is no pending task.
+    """
+    if task is None:
+        return
+    if cancel_event is not None:
+        cancel_event.set()
+    while not task.done():
+        try:
+            await asyncio.shield(task)
+        except asyncio.CancelledError:
+            if cancel_event is not None:
+                cancel_event.set()
+            continue
+        except Exception:
+            break
+    if task.done():
+        try:
+            task.exception()
+        except (asyncio.CancelledError, Exception):
+            pass
 
 
 # Centralized local/server tool nudge. Keep render_html guidance gated to turns
@@ -3056,7 +3143,7 @@ def _is_explicit_tensor_drop(request: LoadRequest) -> bool:
     """True only when the request explicitly selects a non-tensor --split-mode (e.g.
     layer/row/none), a deliberate departure from a preserved tensor->layer fallback.
 
-    A bare tensor_parallel field is NOT a drop: the Studio UI always sends it and echoes
+    A bare tensor_parallel field is NOT a drop: the Unsloth UI always sends it and echoes
     the /load response's resolved value back, so after a fallback every reload carries
     tensor_parallel=false even though the user never changed it -- treating that as a drop
     would collapse the preserved multi-GPU placement on the next ctx/settings reload. An
@@ -3934,6 +4021,7 @@ async def _load_model_impl(request: LoadRequest, fastapi_request: Request, curre
 
     native_grant_backed = False
     model_log_label = request.model_path
+    gguf_load_stack = ExitStack()
     try:
         # Validate user pass-through args up front so a managed-flag collision
         # returns 400 before any model work.
@@ -4109,8 +4197,8 @@ async def _load_model_impl(request: LoadRequest, fastapi_request: Request, curre
             raise HTTPException(
                 status_code = 400,
                 detail = (
-                    "Studio does not support distributed MLX inference under "
-                    "mlx.launch. Use `mlx.launch ... unsloth chat` or run Studio "
+                    "Unsloth does not support distributed MLX inference under "
+                    "mlx.launch. Use `mlx.launch ... unsloth chat` or run Unsloth "
                     "without the distributed launcher."
                 ),
             )
@@ -4153,15 +4241,9 @@ async def _load_model_impl(request: LoadRequest, fastapi_request: Request, curre
             llama_backend = get_llama_cpp_backend()
             unsloth_backend = get_inference_backend()
 
-            # Unload any active Unsloth model to free VRAM (off the event loop:
-            # unload takes _gen_lock and can wait on an in-flight stream).
-            if unsloth_backend.active_model_name:
-                logger.info(
-                    f"Unloading Unsloth model '{unsloth_backend.active_model_name}' before loading GGUF"
-                )
-                await asyncio.to_thread(
-                    unsloth_backend.unload_model, unsloth_backend.active_model_name
-                )
+            if config.gguf_hf_repo:
+                from core.inference.llama_cpp import gguf_load_in_flight
+                gguf_load_stack.enter_context(gguf_load_in_flight(config.gguf_hf_repo))
 
             # Inherit llama_extra_args from the previous load when the request
             # omits the field (the chat-settings Apply path doesn't round-trip
@@ -4206,7 +4288,7 @@ async def _load_model_impl(request: LoadRequest, fastapi_request: Request, curre
                     # omits chat_template_override, so strip the inherited
                     # --chat-template-file in that case too -- otherwise the stale
                     # extra arg (appended last) shadows the bundled template while
-                    # Studio reports the bundled template's capabilities.
+                    # Unsloth reports the bundled template's capabilities.
                     fields_set = getattr(request, "model_fields_set", set())
                     stripped = strip_shadowing_flags(
                         llama_backend.extra_args,
@@ -4240,6 +4322,38 @@ async def _load_model_impl(request: LoadRequest, fastapi_request: Request, curre
                                 "load (same model, shadow-stripped): %s",
                                 extra_llama_args,
                             )
+
+            # Block cache writes that would race the download manager. This runs
+            # after pass-through argument inheritance so a carried --no-mmproj
+            # changes the companion requirement exactly as it does for the load.
+            if config.gguf_hf_repo:
+                from core.inference.llama_cpp import _hub_download_blocks_gguf_load
+                if await asyncio.to_thread(
+                    _hub_download_blocks_gguf_load,
+                    config.gguf_hf_repo,
+                    config.gguf_variant,
+                    require_mmproj = bool(
+                        config.is_vision and not extra_args_disable_mmproj(extra_llama_args)
+                    ),
+                    hf_token = request.hf_token,
+                ):
+                    raise HTTPException(
+                        status_code = 409,
+                        detail = (
+                            f"'{model_log_label}' is currently being downloaded "
+                            "by the download manager. Wait for the download to "
+                            "finish (or cancel it), then load the model."
+                        ),
+                    )
+
+            # Unload any active Unsloth model only after every hub conflict check.
+            if unsloth_backend.active_model_name:
+                logger.info(
+                    f"Unloading Unsloth model '{unsloth_backend.active_model_name}' before loading GGUF"
+                )
+                await asyncio.to_thread(
+                    unsloth_backend.unload_model, unsloth_backend.active_model_name
+                )
 
             # Route to HF or local mode based on config. Run in a thread so the
             # event loop stays free for progress polling and other requests
@@ -4605,13 +4719,15 @@ async def _load_model_impl(request: LoadRequest, fastapi_request: Request, curre
         logger.error(f"Error loading model: {e}", exc_info = True)
         msg = _maybe_unsupported_message(redacted_msg)
         raise HTTPException(status_code = 500, detail = f"Failed to load model: {msg}")
+    finally:
+        gguf_load_stack.close()
 
 
 def _requires_trust_remote_code_for_model(
     model_identifier: str, hf_token: Optional[str] = None
 ) -> bool:
     """Whether loading this model would execute custom repo code, so the consent
-    dialog must run first. True if the Studio YAML default enables
+    dialog must run first. True if the Unsloth YAML default enables
     ``trust_remote_code`` OR the raw config declares an ``auto_map`` (Hub/local,
     config.json or tokenizer_config.json). Reads raw JSON only; never imports
     model code."""
@@ -5244,7 +5360,7 @@ async def confirm_tool_call(
 
 @studio_router.get("/monitor")
 async def get_api_monitor(current_subject: str = Depends(get_current_subject)):
-    """Return recent OpenAI-compatible API activity for Studio."""
+    """Return recent OpenAI-compatible API activity for Unsloth."""
     active_model = _monitor_active_model()
     active_requests = api_monitor.active_count(subject = current_subject)
     if active_requests:
@@ -5358,6 +5474,10 @@ async def generate_stream(
                 if chunk is _DONE:
                     completed = True
                     break
+                if isinstance(chunk, GenStreamError):
+                    yield f"data: {json.dumps({'error': _friendly_gen_stream_error(chunk)})}\n\n"
+                    yield "data: [DONE]\n\n"
+                    return
                 yield f"data: {json.dumps({'content': chunk})}\n\n"
             if completed:
                 yield "data: [DONE]\n\n"
@@ -5371,6 +5491,7 @@ async def generate_stream(
             backend.reset_generation_state()
             logger.error(f"Error during generation: {e}", exc_info = True)
             yield f"data: {json.dumps({'error': _friendly_error(e)})}\n\n"
+            yield "data: [DONE]\n\n"
         finally:
             await _stop_local_disconnect_cancel_watcher(disconnect_watcher)
             if not completed and not cancel_event.is_set():
@@ -5427,7 +5548,7 @@ async def get_status(current_subject: str = Depends(get_current_subject)):
                 _display_model_id = os.path.basename(_model_id)
             _inference_cfg = load_inference_config(_model_id) if _model_id else None
             _audio_type = getattr(llama_backend, "_audio_type", None)
-            # Don't surface Studio's auto-applied bundled family template (e.g. the
+            # Don't surface Unsloth's auto-applied bundled family template (e.g. the
             # gemma-4 override) as a user-authored override: the frontend adopts
             # status.chat_template_override as editable state and would otherwise
             # re-send it as an explicit override for a later, unrelated model. Only
@@ -6052,7 +6173,7 @@ def _build_external_messages(
              metadata; strip it for providers that can't parse the unknown key.
           2. Marked server-side builtin cards (`_server_tool: true` on a
              canonical builtin name, or a Gemini `native_part` payload) are
-             Studio-internal tool cards from a prior native Gemini turn;
+             Unsloth-internal tool cards from a prior native Gemini turn;
              forwarding them to OpenAI / Anthropic / custom OAI-compat gateways
              sends an orphan `tool_calls` entry (no matching tool declaration,
              often no matching `role="tool"` reply) that can be rejected. We
@@ -6738,7 +6859,7 @@ async def openai_chat_completions(
         # is invalid and must not evict the resident model first.
         #
         # Enter the local-loop arm exactly when the passthrough router below would
-        # run Studio's own tool loop. That gate is `_tools_on or _mcp_allowed`
+        # run Unsloth's own tool loop. That gate is `_tools_on or _mcp_allowed`
         # (see the use_tools block): _effective_enable_tools (which lets a
         # process-wide --enable-tools policy force the loop on) plus mcp_enabled
         # honoring --disable-tools, and tool_choice="none" disabling it unless the
@@ -6763,7 +6884,7 @@ async def openai_chat_completions(
             or bool(payload.openai_code_exec_container_id)
             or bool(payload.anthropic_code_exec_container_id)
             # A JSON-schema response_format is guided-decoding structured output the
-            # router forwards to the llama-server passthrough, not Studio's tool
+            # router forwards to the llama-server passthrough, not Unsloth's tool
             # loop, so a --enable-tools policy must not 400 it as a local-confirm
             # request under ask/auto.
             or bool(_extract_response_format(payload))
@@ -6840,7 +6961,7 @@ async def openai_chat_completions(
     using_gguf = llama_backend.is_loaded
 
     # OpenAI-SDK clients send ``chat_template_kwargs`` via ``extra_body``, which
-    # the SDK spreads into the request body at the top level. Studio's
+    # the SDK spreads into the request body at the top level. Unsloth's
     # ChatCompletionRequest has ``extra="allow"`` so pydantic stashes them in
     # ``model_extra``, but downstream generators consume the typed
     # ``payload.enable_thinking``. Lift ``enable_thinking`` from the extra-body
@@ -6994,6 +7115,13 @@ async def openai_chat_completions(
                             chunk_text = await asyncio.to_thread(next, gen, _DONE)
                             if chunk_text is _DONE:
                                 break
+                            if isinstance(chunk_text, GenStreamError):
+                                _msg = _friendly_gen_stream_error(chunk_text)
+                                api_monitor.fail(monitor_id, _msg)
+                                yield _openai_stream_error_sse(
+                                    {"error": {"message": _msg, "type": "server_error"}}
+                                )
+                                return
                             if chunk_text:
                                 api_monitor.append_reply(monitor_id, chunk_text)
                                 yield _chat_content_chunk(
@@ -7009,8 +7137,11 @@ async def openai_chat_completions(
                         raise
                     except Exception as e:
                         logger.error(f"Error during audio input streaming: {e}", exc_info = True)
-                        api_monitor.fail(monitor_id, _friendly_error(e))
-                        yield f"data: {json.dumps({'error': {'message': _friendly_error(e), 'type': 'server_error'}})}\n\n"
+                        _msg = _friendly_error(e)
+                        api_monitor.fail(monitor_id, _msg)
+                        yield _openai_stream_error_sse(
+                            {"error": {"message": _msg, "type": "server_error"}}
+                        )
                     finally:
                         await _stop_local_disconnect_cancel_watcher(disconnect_watcher)
                         _tracker.__exit__(None, None, None)
@@ -7027,7 +7158,15 @@ async def openai_chat_completions(
                 )
             else:
                 try:
-                    full_text = "".join(audio_input_generate())
+                    full_text = ""
+                    for chunk_text in audio_input_generate():
+                        if isinstance(chunk_text, GenStreamError):
+                            _msg = _friendly_gen_stream_error(chunk_text)
+                            api_monitor.fail(monitor_id, _msg)
+                            raise HTTPException(status_code = 500, detail = _msg)
+                        full_text += chunk_text
+                except HTTPException:
+                    raise
                 except Exception as e:
                     api_monitor.fail(monitor_id, _friendly_error(e))
                     raise
@@ -7076,7 +7215,7 @@ async def openai_chat_completions(
 
     # ── Standard OpenAI function-calling pass-through (GGUF only) ────
     # When a client (opencode / Claude Code via OpenAI compat / Cursor /
-    # Continue / ...) sends standard OpenAI `tools` without Studio's
+    # Continue / ...) sends standard OpenAI `tools` without Unsloth's
     # `enable_tools` shorthand, forward the request to llama-server
     # verbatim so structured `tool_calls` flow back to the client. This
     # branch runs BEFORE `_extract_content_parts` because that helper is
@@ -7099,7 +7238,7 @@ async def openai_chat_completions(
     _has_tool_catalog = bool(payload.tools and len(payload.tools) > 0)
     _has_active_tool_catalog = _has_tool_catalog and payload.tool_choice != "none"
     _has_client_tool_contract = _has_active_tool_catalog or _has_tool_messages
-    # The Studio tool loop needs a tool-capable backend, so a request that asks
+    # The Unsloth tool loop needs a tool-capable backend, so a request that asks
     # for it on a backend that can't run it (DiffusionGemma forces supports_tools
     # off) must not steal client tools from the passthrough (#6851).
     _studio_tool_loop_requested = (
@@ -7295,7 +7434,7 @@ async def openai_chat_completions(
                 use_tools = False
 
         if use_tools:
-            # permission_mode ask/auto require the confirm gate for Studio's own
+            # permission_mode ask/auto require the confirm gate for Unsloth's own
             # tool loop. The request validator self-enables confirm only for
             # request-level tool signals (enable_tools/enabled_tools/mcp_enabled);
             # when a CLI policy (--enable-tools) forces the loop on without those,
@@ -7462,12 +7601,34 @@ async def openai_chat_completions(
                             asyncio.to_thread(next, gen, _tool_sentinel)
                         )
                         try:
-                            event = await asyncio.shield(next_task)
+                            # Stall-timeout wait: keepalive while the generator stays
+                            # silent (e.g. prefill between tool iterations). asyncio.wait
+                            # never cancels next_task, matching the finally-drain shield.
+                            while True:
+                                done_tasks, _ = await asyncio.wait(
+                                    {next_task},
+                                    timeout = _LOCAL_TOOL_STREAM_STALL_KEEPALIVE_S,
+                                )
+                                if done_tasks:
+                                    break
+                                yield _OPENAI_PASSTHROUGH_SSE_KEEPALIVE
+                            event = next_task.result()
                         finally:
                             if next_task.done():
                                 next_task = None
                         if event is _tool_sentinel:
                             break
+
+                        if event["type"] == "heartbeat":
+                            # Tool-wrapper heartbeat while a server-side tool blocks; keeps SSE alive.
+                            yield _OPENAI_PASSTHROUGH_SSE_KEEPALIVE
+                            continue
+
+                        if event["type"] in ("tool_output", "tool_args"):
+                            # Live stdout/stderr or tool-call arguments, forwarded
+                            # verbatim for the UI. Final result still arrives in tool_end.
+                            yield f"data: {json.dumps(event)}\n\n"
+                            continue
 
                         if event["type"] == "status":
                             # Empty status marks an iteration boundary in the
@@ -8018,7 +8179,18 @@ async def openai_chat_completions(
                             asyncio.to_thread(next, gen, _gguf_sentinel)
                         )
                         try:
-                            cumulative = await asyncio.shield(next_task)
+                            # Stall-timeout wait: keepalive while the generator stays
+                            # silent (e.g. no-tool prefill). asyncio.wait never cancels
+                            # next_task, matching the finally-drain shield (see GGUF stream).
+                            while True:
+                                done_tasks, _ = await asyncio.wait(
+                                    {next_task},
+                                    timeout = _LOCAL_TOOL_STREAM_STALL_KEEPALIVE_S,
+                                )
+                                if done_tasks:
+                                    break
+                                yield _OPENAI_PASSTHROUGH_SSE_KEEPALIVE
+                            cumulative = next_task.result()
                         finally:
                             if next_task.done():
                                 next_task = None
@@ -8538,19 +8710,33 @@ async def openai_chat_completions(
     # Classify capability flags from the loaded template.
     _sf_model_info = backend.models.get(backend.active_model_name, {})
     _sf_tpl = (_sf_model_info.get("chat_template_info") or {}).get("template")
-    _sf_features = _detect_safetensors_features(backend, _sf_tpl)
-
-    # GGUF parity: enable_thinking templates prefill an unclosed <think>; split into
-    # reasoning_content deltas so the UI renders the block for safetensors and MLX.
-    _sf_parse_think = bool(
-        _sf_features.get("supports_reasoning") or _sf_features.get("reasoning_always_on")
+    # Named templates may expose native reasoning only in their ``tool_use``
+    # branch. Use a truthy placeholder for Unsloth-managed tools, whose concrete
+    # schemas are selected below, and the request schemas for client passthrough.
+    _sf_server_tool_intent = bool(
+        _effective_enable_tools(payload) or _explicit_studio_tool_loop_requested(payload)
     )
-    # Prefilled-open only for prefill styles with thinking on; gpt-oss uses the normal mode.
-    _sf_reasoning_prefilled = _sf_reasoning_prefill_mode(
-        _sf_features,
-        payload.enable_thinking,
-        _sf_tpl,
-        reasoning_effort = payload.reasoning_effort,
+    _sf_template_tools = payload.tools if payload.tool_choice != "none" else None
+    if not _sf_template_tools and _sf_server_tool_intent:
+        _sf_template_tools = ({},)
+
+    def _sf_response_protocol(tools = None):
+        features = _detect_safetensors_features(backend, _sf_tpl, tools = tools)
+        parse_think = bool(
+            features.get("supports_reasoning") or features.get("reasoning_always_on")
+        )
+        reasoning_prefilled = _sf_reasoning_prefill_mode(
+            features,
+            payload.enable_thinking,
+            _sf_tpl,
+            reasoning_effort = payload.reasoning_effort,
+        )
+        return features, parse_think, reasoning_prefilled
+
+    # GGUF parity: split canonical <think> output into reasoning_content. The
+    # selected template branch must match whether this request renders tools.
+    _sf_features, _sf_parse_think, _sf_reasoning_prefilled = _sf_response_protocol(
+        _sf_template_tools
     )
 
     def _new_sf_reasoning_extractor():
@@ -8604,7 +8790,7 @@ async def openai_chat_completions(
             _sf_use_tools = False
 
     if _sf_use_tools:
-        # permission_mode ask/auto require the confirm gate for Studio's own tool
+        # permission_mode ask/auto require the confirm gate for Unsloth's own tool
         # loop; when a CLI policy (--enable-tools) forces the loop on without a
         # request-level tool signal, derive confirm here so the mode still gates
         # the call (matching the GGUF path). off/full never prompt.
@@ -8700,6 +8886,7 @@ async def openai_chat_completions(
                 permission_mode = payload.permission_mode,
                 use_adapter = payload.use_adapter,
                 stats_holder = _sf_stats_holder,
+                reasoning_prefilled = _sf_reasoning_prefilled,
             )
 
         _sf_tool_sentinel = object()
@@ -8709,6 +8896,7 @@ async def openai_chat_completions(
 
         async def sf_tool_stream():
             gen = None
+            _sf_next_task = None
             disconnect_watcher = asyncio.create_task(
                 _await_disconnect_then_cancel(request, cancel_event)
             )
@@ -8740,9 +8928,46 @@ async def openai_chat_completions(
                         api_monitor.finish(monitor_id, "cancelled")
                         return
 
-                    event = await asyncio.to_thread(next, gen, _sf_tool_sentinel)
+                    # Stall keepalive (see GGUF tool stream): silent backend segments
+                    # must not leave the SSE stream idle past proxy timeouts.
+                    _sf_next_task = asyncio.create_task(
+                        asyncio.to_thread(next, gen, _sf_tool_sentinel)
+                    )
+                    while True:
+                        _sf_done, _ = await asyncio.wait(
+                            {_sf_next_task},
+                            timeout = _LOCAL_TOOL_STREAM_STALL_KEEPALIVE_S,
+                        )
+                        if _sf_done:
+                            break
+                        yield _OPENAI_PASSTHROUGH_SSE_KEEPALIVE
+                    event = _sf_next_task.result()
+                    # Done; drop the reference so the finally-block drain no-ops.
+                    _sf_next_task = None
                     if event is _sf_tool_sentinel:
                         break
+                    if isinstance(event, GenStreamError):
+                        backend.reset_generation_state()
+                        _msg = _friendly_gen_stream_error(event)
+                        api_monitor.fail(monitor_id, _msg)
+                        yield _openai_stream_error_sse(
+                            {"error": {"message": _msg, "type": "server_error"}}
+                        )
+                        return
+                    if not isinstance(event, dict):
+                        raise RuntimeError(
+                            f"Invalid safetensors tool event: {type(event).__name__}"
+                        )
+
+                    if event["type"] == "heartbeat":
+                        # Tool-execution wrapper heartbeat -> SSE keepalive.
+                        yield _OPENAI_PASSTHROUGH_SSE_KEEPALIVE
+                        continue
+
+                    if event["type"] in ("tool_output", "tool_args"):
+                        # Live stdout/stderr, or tool-call arguments as the model writes them.
+                        yield f"data: {json.dumps(event)}\n\n"
+                        continue
 
                     if event["type"] == "status":
                         if not event["text"]:
@@ -8820,6 +9045,11 @@ async def openai_chat_completions(
                 backend.reset_generation_state()
                 api_monitor.finish(monitor_id, "cancelled")
                 raise
+            except GenStreamErrorRaised as exc:
+                backend.reset_generation_state()
+                _msg = _friendly_gen_stream_error(exc)
+                api_monitor.fail(monitor_id, _msg)
+                yield _openai_stream_error_sse({"error": {"message": _msg, "type": "server_error"}})
             except Exception:
                 backend.reset_generation_state()
                 # Generic wire message; full trace stays in the log (CWE-209:
@@ -8835,9 +9065,15 @@ async def openai_chat_completions(
                 yield _openai_stream_error_sse(error_chunk)
             finally:
                 await _stop_local_disconnect_cancel_watcher(disconnect_watcher)
+                # Drain a still-running next(gen) worker before closing: closing
+                # mid-next(gen) raises ValueError('generator already executing') and
+                # skips the generator's cleanup finally. Matches the GGUF tool stream.
+                await _drain_pending_next_task(_sf_next_task, cancel_event)
                 if gen is not None:
                     try:
-                        gen.close()
+                        # Offload the close so the generator's cleanup runs off the event
+                        # loop (matches the GGUF SSE path); a disconnect can't stall the loop.
+                        await asyncio.to_thread(gen.close)
                     except (RuntimeError, ValueError):
                         pass
                 _sf_tracker.__exit__(None, None, None)
@@ -8863,6 +9099,15 @@ async def openai_chat_completions(
                 for event in gen:
                     if cancel_event.is_set():
                         break
+                    if isinstance(event, GenStreamError):
+                        raise HTTPException(
+                            status_code = 500,
+                            detail = _friendly_gen_stream_error(event),
+                        )
+                    if not isinstance(event, dict):
+                        raise RuntimeError(
+                            f"Invalid safetensors tool event: {type(event).__name__}"
+                        )
                     if event.get("type") == "content":
                         full_text = _strip_tool_xml_for_display(
                             event.get("text", ""),
@@ -8902,6 +9147,15 @@ async def openai_chat_completions(
             cancel_event.set()
             backend.reset_generation_state()
             api_monitor.finish(monitor_id, "cancelled")
+            raise
+        except GenStreamErrorRaised as exc:
+            backend.reset_generation_state()
+            _msg = _friendly_gen_stream_error(exc)
+            api_monitor.fail(monitor_id, _msg)
+            raise HTTPException(status_code = 500, detail = _msg)
+        except HTTPException as exc:
+            backend.reset_generation_state()
+            api_monitor.fail(monitor_id, str(exc.detail))
             raise
         except Exception:
             backend.reset_generation_state()
@@ -8989,6 +9243,12 @@ async def openai_chat_completions(
         else:
             gen_kwargs["tools"] = payload.tools
 
+    # The potential tool context above is needed before server/client routing is
+    # known. This standard path now has the exact schemas that will be rendered,
+    # so resolve reasoning parsing again to keep empty registries, forced-tool
+    # misses, and tool_choice="none" on the marker-free template branch.
+    _, _sf_parse_think, _sf_reasoning_prefilled = _sf_response_protocol(gen_kwargs.get("tools"))
+
     # Request-scoped usage/timings receptacle (filled at gen_done).
     stats_holder: dict = {}
 
@@ -9027,6 +9287,8 @@ async def openai_chat_completions(
         _tracker.__enter__()
 
         async def stream_chunks():
+            gen = None
+            _next_task = None
             disconnect_watcher = asyncio.create_task(
                 _await_disconnect_then_cancel(request, cancel_event)
             )
@@ -9041,25 +9303,40 @@ async def openai_chat_completions(
                 prev_text = ""
                 # Split prefilled <think> into reasoning_content deltas (GGUF parity); single turn, serves MLX.
                 reasoning_extractor = _new_sf_reasoning_extractor()
-                # Run the sync generator in a thread pool to avoid blocking the
-                # event loop. Critical for compare mode: two SSE requests arrive
-                # concurrently but the orchestrator serializes them via
-                # _gen_lock; without run_in_executor the second request's
-                # blocking lock acquisition would freeze the entire event loop,
-                # stalling both streams.
+                # Run the sync generator in a worker thread so it can't block the event
+                # loop. Critical for compare mode: a second request's blocking _gen_lock
+                # acquisition would otherwise freeze the loop and stall both streams.
                 _DONE = object()  # sentinel for generator exhaustion
-                loop = asyncio.get_event_loop()
                 gen = generate()
                 while True:
                     if cancel_event.is_set():
                         backend.reset_generation_state()
                         break
-                    # next(gen, _DONE) returns _DONE instead of raising
-                    # StopIteration -- StopIteration can't propagate through
-                    # asyncio futures (Python limitation).
-                    cumulative = await loop.run_in_executor(None, next, gen, _DONE)
+                    # Stall keepalive (see safetensors tool stream) each window while
+                    # next(gen) runs in a worker. next(gen, _DONE) returns _DONE rather
+                    # than raising StopIteration (which can't cross asyncio futures).
+                    _next_task = asyncio.create_task(asyncio.to_thread(next, gen, _DONE))
+                    while True:
+                        _done_tasks, _ = await asyncio.wait(
+                            {_next_task},
+                            timeout = _LOCAL_TOOL_STREAM_STALL_KEEPALIVE_S,
+                        )
+                        if _done_tasks:
+                            break
+                        yield _OPENAI_PASSTHROUGH_SSE_KEEPALIVE
+                    cumulative = _next_task.result()
+                    # Done; drop the reference so the finally-block drain no-ops.
+                    _next_task = None
                     if cumulative is _DONE:
                         break
+                    if isinstance(cumulative, GenStreamError):
+                        backend.reset_generation_state()
+                        _msg = _friendly_gen_stream_error(cumulative)
+                        api_monitor.fail(monitor_id, _msg)
+                        yield _openai_stream_error_sse(
+                            {"error": {"message": _msg, "type": "server_error"}}
+                        )
+                        return
                     if await request.is_disconnected():
                         cancel_event.set()
                         backend.reset_generation_state()
@@ -9166,6 +9443,13 @@ async def openai_chat_completions(
                 backend.reset_generation_state()
                 api_monitor.finish(monitor_id, "cancelled")
                 raise
+            except GenStreamErrorRaised as exc:
+                # Adapter-controlled (compare-mode) backend failure. Honor the
+                # public flag so operational errors surface their real message.
+                backend.reset_generation_state()
+                _msg = _friendly_gen_stream_error(exc)
+                api_monitor.fail(monitor_id, _msg)
+                yield _openai_stream_error_sse({"error": {"message": _msg, "type": "server_error"}})
             except Exception as e:
                 backend.reset_generation_state()
                 logger.error(f"Error during OpenAI streaming: {e}", exc_info = True)
@@ -9180,6 +9464,17 @@ async def openai_chat_completions(
                 yield _openai_stream_error_sse(error_chunk)
             finally:
                 await _stop_local_disconnect_cancel_watcher(disconnect_watcher)
+                # Drain a still-running next(gen) worker before closing: closing
+                # mid-next(gen) raises ValueError('generator already executing') and
+                # skips the generator's cleanup finally. Matches the safetensors stream.
+                await _drain_pending_next_task(_next_task, cancel_event)
+                if gen is not None:
+                    try:
+                        # Offload the close so the generator's cleanup runs off the event
+                        # loop (matches the GGUF SSE path); a disconnect can't stall the loop.
+                        await asyncio.to_thread(gen.close)
+                    except (RuntimeError, ValueError):
+                        pass
                 _tracker.__exit__(None, None, None)
 
         return _SameTaskStreamingResponse(
@@ -9198,6 +9493,11 @@ async def openai_chat_completions(
         try:
             full_text = ""
             for token in generate():
+                if isinstance(token, GenStreamError):
+                    backend.reset_generation_state()
+                    _msg = _friendly_gen_stream_error(token)
+                    api_monitor.fail(monitor_id, _msg)
+                    raise HTTPException(status_code = 500, detail = _msg)
                 full_text = token
 
             # Split prefilled <think> reasoning (GGUF parity); also covers MLX via
@@ -9296,6 +9596,15 @@ async def openai_chat_completions(
             api_monitor.finish(monitor_id)
             return _model_json_response(response)
 
+        except HTTPException:
+            raise
+        except GenStreamErrorRaised as exc:
+            # Adapter-controlled (compare-mode) backend failure. Honor the public
+            # flag so operational errors surface their real message.
+            backend.reset_generation_state()
+            _msg = _friendly_gen_stream_error(exc)
+            api_monitor.fail(monitor_id, _msg)
+            raise HTTPException(status_code = 500, detail = _msg)
         except Exception as e:
             backend.reset_generation_state()
             logger.error(f"Error during OpenAI completion: {e}", exc_info = True)
@@ -11741,7 +12050,7 @@ def _anthropic_requested_studio_tools(tools: Optional[list]) -> set[str]:
 def _select_anthropic_server_tools(
     all_tools: list[dict], requested_studio_tools: set[str], enabled_tools: Optional[list[str]]
 ) -> list[dict]:
-    """Select Studio tools requested through Anthropic tools and extensions."""
+    """Select Unsloth tools requested through Anthropic tools and extensions."""
     if not requested_studio_tools and enabled_tools is None:
         return all_tools
 
@@ -11980,7 +12289,7 @@ async def anthropic_messages(
             ),
         )
 
-    # Reject an unsupported confirm-gated permission mode for Studio's own
+    # Reject an unsupported confirm-gated permission mode for Unsloth's own
     # ("server") Anthropic tools before the switch, mirroring the malformed- and
     # mixed-tool checks above. ask always wants a per-call pause this passthrough
     # cannot offer, so it 400s whenever server tools are selected. auto only needs
@@ -12389,8 +12698,12 @@ async def _anthropic_tool_stream(
         ends_on_tool_use = False
         tool_blocks_emitted = 0
         drop_until_tool_end = False
+        # Last drop-branch keepalive, seeded to stream start so a chatty tool busy
+        # past the stall window still gets a keepalive though its events are dropped.
+        _last_drop_keepalive = time.monotonic()
 
         gen = run_gen()
+        _next_task = None
         # Watcher to cancel on disconnect: the in-loop poll fires only between
         # events, so a mid-prefill disconnect would otherwise hold the decode slot.
         disconnect_watcher = asyncio.create_task(
@@ -12401,13 +12714,42 @@ async def _anthropic_tool_stream(
                 if cancel_event.is_set() or await request.is_disconnected():
                     cancel_event.set()
                     return
-                event = await asyncio.to_thread(next, gen, _sentinel)
+                # Stall keepalive (see GGUF tool stream): silent backend segments
+                # must not leave the SSE stream idle past proxy timeouts.
+                _next_task = asyncio.create_task(asyncio.to_thread(next, gen, _sentinel))
+                while True:
+                    _done_tasks, _ = await asyncio.wait(
+                        {_next_task},
+                        timeout = _LOCAL_TOOL_STREAM_STALL_KEEPALIVE_S,
+                    )
+                    if _done_tasks:
+                        break
+                    yield _OPENAI_PASSTHROUGH_SSE_KEEPALIVE
+                event = _next_task.result()
+                # Done; drop the reference so the finally-block drain no-ops.
+                _next_task = None
                 if event is _sentinel:
                     break
                 etype = event.get("type")
+                if etype == "heartbeat":
+                    # Tool-wrapper heartbeat -> SSE keepalive, checked BEFORE the drop
+                    # skip: a dropped tool still runs server-side and its events keep the
+                    # stall keepalive from firing, so dropping heartbeats would go silent.
+                    yield _OPENAI_PASSTHROUGH_SSE_KEEPALIVE
+                    continue
+                if etype in ("tool_output", "tool_args"):
+                    # Live stdout / arg streaming have no Anthropic Messages equivalent
+                    # (the full call/result follow in tool_use / tool_result), so drop them.
+                    # They keep the stall keepalive from firing, so a chatty tool would go
+                    # silent past the ~100s proxy cap; emit a rate-limited keepalive instead.
+                    _now = time.monotonic()
+                    if _now - _last_drop_keepalive >= _LOCAL_TOOL_STREAM_STALL_KEEPALIVE_S:
+                        _last_drop_keepalive = _now
+                        yield _OPENAI_PASSTHROUGH_SSE_KEEPALIVE
+                    continue
                 if drop_until_tool_end:
-                    # disable_parallel_tool_use: a later tool call is being
-                    # dropped — skip every event until (and including) its tool_end.
+                    # disable_parallel_tool_use: skip every event until (and
+                    # including) this dropped tool call's tool_end.
                     if etype == "tool_end":
                         drop_until_tool_end = False
                     continue
@@ -12436,11 +12778,11 @@ async def _anthropic_tool_stream(
                     ends_on_tool_use = True
                 elif etype == "tool_end":
                     tool_blocks_emitted += 1
-                    # A tool_end means Studio executed the tool server-side, so
+                    # A tool_end means Unsloth executed the tool server-side, so
                     # the response no longer ends on a pending client action.
                     # Without this, a server tool that produces no trailing text
                     # would be mislabeled stop_reason "tool_use", telling the
-                    # client to run a tool Studio already ran.
+                    # client to run a tool Unsloth already ran.
                     ends_on_tool_use = False
                 elif etype == "content" and event.get("text"):
                     ends_on_tool_use = False
@@ -12448,12 +12790,24 @@ async def _anthropic_tool_stream(
                     yield line
         except Exception as e:
             logger.error("anthropic_messages stream error: %s", e)
-            _error_event = _anthropic_stream_error_event(e)
+            # force = True so an unclassified mid-stream failure (llama-server crash,
+            # decode OOM, dropped socket) still emits an SSE error and returns, instead
+            # of a normal message_stop that masks a truncated turn as a clean finish.
+            _error_event = _anthropic_stream_error_event(e, force = True)
             if _error_event is not None:
                 yield _error_event
                 return
         finally:
             await _stop_local_disconnect_cancel_watcher(disconnect_watcher)
+            # Drain a still-running next(gen) worker before closing, so a mid-prefill
+            # disconnect releases the thread/generator/tool resources. Closing first
+            # would race into ValueError('generator already executing').
+            await _drain_pending_next_task(_next_task, cancel_event)
+            if gen is not None:
+                try:
+                    await asyncio.to_thread(gen.close)
+                except (RuntimeError, ValueError):
+                    pass
 
         stop_reason = openai_finish_to_anthropic_stop(
             captured_finish_reason, had_tool_calls = ends_on_tool_use
@@ -12490,6 +12844,7 @@ async def _anthropic_plain_stream(
         captured_finish_reason = None
 
         gen = run_gen()
+        _next_task = None
         # Watcher to cancel on disconnect: the in-loop poll fires only between
         # chunks, so a mid-prefill disconnect would otherwise hold the decode slot.
         disconnect_watcher = asyncio.create_task(
@@ -12500,7 +12855,20 @@ async def _anthropic_plain_stream(
                 if cancel_event.is_set() or await request.is_disconnected():
                     cancel_event.set()
                     return
-                cumulative = await asyncio.to_thread(next, gen, _sentinel)
+                # Stall keepalive (see Anthropic tool stream) each window while
+                # next(gen) runs in a worker.
+                _next_task = asyncio.create_task(asyncio.to_thread(next, gen, _sentinel))
+                while True:
+                    _done_tasks, _ = await asyncio.wait(
+                        {_next_task},
+                        timeout = _LOCAL_TOOL_STREAM_STALL_KEEPALIVE_S,
+                    )
+                    if _done_tasks:
+                        break
+                    yield _OPENAI_PASSTHROUGH_SSE_KEEPALIVE
+                cumulative = _next_task.result()
+                # Done; drop the reference so the finally-block drain no-ops.
+                _next_task = None
                 if cumulative is _sentinel:
                     break
                 if isinstance(cumulative, dict):
@@ -12516,12 +12884,24 @@ async def _anthropic_plain_stream(
                     yield line
         except Exception as e:
             logger.error("anthropic_messages stream error: %s", e)
-            _error_event = _anthropic_stream_error_event(e)
+            # force = True so an unclassified mid-stream failure (llama-server crash,
+            # decode OOM, dropped socket) still emits an SSE error and returns, instead
+            # of a normal message_stop that masks a truncated turn as a clean finish.
+            _error_event = _anthropic_stream_error_event(e, force = True)
             if _error_event is not None:
                 yield _error_event
                 return
         finally:
             await _stop_local_disconnect_cancel_watcher(disconnect_watcher)
+            # Drain a still-running next(gen) worker before closing, so a mid-prefill
+            # disconnect releases the thread/generator/model resources. Closing first
+            # would race into ValueError('generator already executing').
+            await _drain_pending_next_task(_next_task, cancel_event)
+            if gen is not None:
+                try:
+                    await asyncio.to_thread(gen.close)
+                except (RuntimeError, ValueError):
+                    pass
 
         stop_reason = openai_finish_to_anthropic_stop(captured_finish_reason, had_tool_calls = False)
         for line in emitter.finish(stop_reason = stop_reason, stop_sequence = None):
@@ -13318,7 +13698,7 @@ def _openai_messages_for_passthrough(payload) -> list[dict]:
     structured ``tool_calls``. Content-parts images already in the list are
     left untouched.
 
-    When a client uses Studio's legacy ``image_base64`` top-level field, the
+    When a client uses Unsloth's legacy ``image_base64`` top-level field, the
     image is re-encoded to PNG (llama-server's stb_image has limited format
     support) and spliced into the last user message as an OpenAI ``image_url``
     content part so vision + function-calling requests work transparently.
@@ -13452,7 +13832,7 @@ def _build_openai_passthrough_body(
 ) -> dict:
     """Assemble the llama-server request body from a ChatCompletionRequest.
 
-    Only known OpenAI / llama-server fields are forwarded, so Studio-specific
+    Only known OpenAI / llama-server fields are forwarded, so Unsloth-specific
     extensions (``enable_tools``, ``enabled_tools``, ``session_id``, ...) never
     leak to the backend.
     """
@@ -13702,7 +14082,7 @@ async def _openai_passthrough_stream_admitted(
     admission_lease: LlamaAdmissionLease,
     tracker,
 ):
-    """Streaming client-side pass-through after Studio granted an upstream slot.
+    """Streaming client-side pass-through after Unsloth granted an upstream slot.
 
     Forwards the client's OpenAI function-calling request to llama-server and
     relays the SSE stream back with minimal normalization (reasoning-only

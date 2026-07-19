@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-# Three end-to-end smoke jobs that boot a freshly-installed Studio and
+# Three end-to-end smoke jobs that boot a freshly-installed Unsloth and
 # exercise the surfaces real users hit through the OpenAI / Anthropic
 # SDKs and curl. Each job picks the smallest model that exercises the
 # behaviour under test, primes HF_HOME via actions/cache, and shares
@@ -27,7 +27,7 @@
 # All three jobs run in parallel. Total wall time is dominated by job 3
 # on a cold cache; warm cache cuts that to ~3 min.
 
-name: Studio GGUF CI
+name: Unsloth GGUF CI
 
 on:
   pull_request:
@@ -112,7 +112,7 @@ jobs:
           path: hf-cache
           key: ${{ runner.os }}-hf-${{ env.GGUF_REPO }}-${{ env.GGUF_VARIANT }}-v2
 
-      - name: Install Studio (--local, --no-torch)
+      - name: Install Unsloth (--local, --no-torch)
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           # Withheld on PR: this step runs checked-out PR code; public GGUF still downloads.
@@ -125,7 +125,7 @@ jobs:
       - name: Install OpenAI + Anthropic Python SDKs
         run: pip install 'openai>=1.50' 'anthropic>=0.40'
 
-      - name: Reset auth + boot Studio (API-only)
+      - name: Reset auth + boot Unsloth (API-only)
         run: |
           unsloth studio reset-password
           mkdir -p logs
@@ -142,7 +142,7 @@ jobs:
             fi
             sleep 1
           done
-          echo "Studio did not become healthy in 180s"
+          echo "Unsloth did not become healthy in 180s"
           tail -200 logs/studio.log
           exit 1
 
@@ -229,11 +229,11 @@ jobs:
               return replies
 
           def run_anthropic():
-              # Two SDK quirks vs. Studio:
+              # Two SDK quirks vs. Unsloth:
               #   1. base_url must NOT include /v1 -- the SDK appends
               #      /v1/messages itself; otherwise the request hits
               #      /v1/v1/messages and 405s.
-              #   2. The SDK sends `x-api-key` by default, but Studio's
+              #   2. The SDK sends `x-api-key` by default, but Unsloth's
               #      auth layer is HTTPBearer-only. Override via
               #      default_headers so Authorization: Bearer ... is
               #      sent instead.
@@ -276,7 +276,7 @@ jobs:
                   print(
                       f"[{label}] WARN non-determinism at temperature=0.0 across "
                       f"{len(determinism_failures)} of {len(first)} turn(s); "
-                      f"small-quant model drift, not a Studio regression. "
+                      f"small-quant model drift, not an Unsloth regression. "
                       f"Details: " + " | ".join(determinism_failures)
                   )
               # Sanity: turn-2 reply should mention the earlier question, and
@@ -290,7 +290,7 @@ jobs:
               print(f"[{label}] {status_word} -- 4 turns, history grounded ('paris' present)")
           PY
 
-      - name: Stop Studio
+      - name: Stop Unsloth
         if: always()
         run: |
           kill "${STUDIO_PID}" 2>/dev/null || true
@@ -323,7 +323,7 @@ jobs:
       # store xet chunks + blobs + snapshots = ~4 GiB compressed --
       # 4-5x file-size inflation, dominated by xet chunks. Use main's
       # `--local-dir gguf-cache` pattern to cache the flat .gguf only.
-      # Studio's /api/inference/load accepts either a HF repo (which
+      # Unsloth's /api/inference/load accepts either a HF repo (which
       # uses HF_HOME) or an absolute file path; passing the absolute
       # path keeps the test off HF_HOME entirely so the cache size
       # tracks the GGUF file 1:1. The OpenAI/Anth and JSON+images
@@ -380,7 +380,7 @@ jobs:
           path: gguf-cache
           key: ${{ runner.os }}-gguf-${{ env.GGUF_REPO }}-${{ env.GGUF_FILE }}-v1
 
-      - name: Install Studio (--local, --no-torch)
+      - name: Install Unsloth (--local, --no-torch)
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           # Withheld on PR: this step runs checked-out PR code; public GGUF still downloads.
@@ -390,7 +390,7 @@ jobs:
           set -o pipefail
           bash install.sh --local --no-torch 2>&1 | tee logs/install.log
 
-      - name: Reset auth + boot Studio (API-only, default tool policy)
+      - name: Reset auth + boot Unsloth (API-only, default tool policy)
         # We deliberately use the API-only mode rather than
         # `unsloth studio run` because the latter calls
         # `set_tool_policy(...)` with a resolved bool: on loopback the
@@ -503,7 +503,7 @@ jobs:
                                  that the tool path executed.
 
               A shared CI runner can stall the stream transport (the
-              connection opening, or a mid-stream read) even when Studio
+              connection opening, or a mid-stream read) even when Unsloth
               is healthy, so retry a stall once with a fresh request
               capped at 300s. A stall means the stream did NOT complete,
               so partial events are normally NOT returned (an early
@@ -575,11 +575,11 @@ jobs:
 
           def _tool_invoked(events):
               """Structural check: True iff some SSE payload is a real
-              tool envelope (Studio tool_start/tool_end, Anthropic
+              tool envelope (Unsloth tool_start/tool_end, Anthropic
               tool_use/tool_result, OpenAI non-empty delta.tool_calls /
               message.tool_calls / finish_reason='tool_calls' /
               role:'tool' / function_call). tool_status is NOT
-              evidence: Studio emits empty tool_status events on
+              evidence: Unsloth emits empty tool_status events on
               iteration boundaries even when no tool ran.
               """
               for raw in events:
@@ -698,7 +698,7 @@ jobs:
               attempt has structural invocation evidence. WARN (not
               FAIL) if invoked but no attempt produces the expected
               literal in tool_end.result -- small-quant Qwen3.5-2B can
-              emit OpenAI tool_calls deltas without Studio's GGUF
+              emit OpenAI tool_calls deltas without Unsloth's GGUF
               agentic loop intercepting them, and that GGUF-vs-OpenAI
               format mismatch is out of scope for #5642.
               """
@@ -729,6 +729,7 @@ jobs:
                       content, events = post_sse("/v1/chat/completions", {
                           "messages":      [{"role": "user", "content": prompt}],
                           "enable_tools":  True,
+                          "permission_mode": "full",
                           "enabled_tools": enabled,
                           "session_id":    f"{session}-att{attempt_i}",
                           "temperature":   TOOL_PROBE_TEMP,
@@ -810,7 +811,7 @@ jobs:
           # because (a) the search may legitimately return no results,
           # and (b) DuckDuckGo upstream blocks GHA IP ranges often
           # enough that requiring a tool_call marker would create
-          # red-herring failures from infra rather than from Studio.
+          # red-herring failures from infra rather than from Unsloth.
           try:
               # Best-effort and bounded: a single 180s attempt keeps a stall
               # from eating the job's timeout-minutes (it already WARNs, so a
@@ -818,6 +819,7 @@ jobs:
               content, events = post_sse("/v1/chat/completions", {
                   "messages":      [{"role": "user", "content": "Search the web for 'unsloth ai github' and summarise."}],
                   "enable_tools":  True,
+                  "permission_mode": "full",
                   "enabled_tools": ["web_search"],
                   "session_id":    "ci-tool-calling-web",
                   "temperature":   0.0,
@@ -832,7 +834,7 @@ jobs:
               print(f"[tools] WARN web_search probe failed (non-blocking): {exc}")
 
           # ── 5. Thinking on / off ─────────────────────────────────────
-          # Studio strips think blocks from message.content for tools-mode
+          # Unsloth strips think blocks from message.content for tools-mode
           # responses, so we toggle plain chat (no enable_tools) and look
           # at the surfaced reasoning_content / message.thinking field.
           def thinking_call(enable):
@@ -846,7 +848,7 @@ jobs:
               })
               assert status == 200
               msg = data["choices"][0]["message"]
-              # Studio surfaces thinking via reasoning_content (OpenAI
+              # Unsloth surfaces thinking via reasoning_content (OpenAI
               # extension). Fall back to inline <think> markers for
               # robustness across template versions.
               raw = (msg.get("content") or "") + (msg.get("reasoning_content") or "")
@@ -866,7 +868,7 @@ jobs:
           print(f"[tools] PASS thinking on/off (on={len(on_text)} chars, off={len(off_text)} chars)")
           PY
 
-      - name: Stop Studio
+      - name: Stop Unsloth
         if: always()
         run: |
           kill "${STUDIO_PID}" 2>/dev/null || true
@@ -958,7 +960,7 @@ jobs:
           path: hf-cache
           key: ${{ runner.os }}-hf-${{ env.GGUF_REPO }}-${{ env.GGUF_VARIANT }}-${{ env.MMPROJ_FILE }}-v2
 
-      - name: Install Studio (--local, --no-torch)
+      - name: Install Unsloth (--local, --no-torch)
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           # Withheld on PR: this step runs checked-out PR code; public GGUF still downloads.
@@ -971,7 +973,7 @@ jobs:
       - name: Install OpenAI + Anthropic Python SDKs
         run: pip install 'openai>=1.50' 'anthropic>=0.40'
 
-      - name: Reset auth + boot Studio (API-only)
+      - name: Reset auth + boot Unsloth (API-only)
         # See Job 2's comment: API-only mode keeps tool_policy=None so
         # response_format requests aren't routed through the agentic
         # tool loop.
@@ -1074,13 +1076,13 @@ jobs:
           # llama.cpp's HTTP server supports OpenAI-compatible JSON
           # mode: `response_format: {"type": "json_object"}` constrains
           # the model to emit syntactically-valid JSON. We use raw HTTP
-          # rather than the OpenAI SDK so that the field shape Studio
+          # rather than the OpenAI SDK so that the field shape Unsloth
           # forwards to llama-server is unambiguous (the SDK rewrites
           # response_format depending on which variant it recognises).
           # We deliberately do NOT pass a strict JSON schema -- on
           # small Gemma-4 quants the GBNF-from-schema path occasionally
           # produces empty output, and JSON mode is the surface we care
-          # about exposing through Studio.
+          # about exposing through Unsloth.
           status, data = post("/v1/chat/completions", {
               "model":         "default",
               "messages":      [
@@ -1110,7 +1112,7 @@ jobs:
           print(f"[json] PASS json_object -> {parsed}")
 
           # ── 2. OpenAI image_url (data URI base64) ───────────────────
-          # 64x64 solid-red PNG. stb_image (used by Studio's image
+          # 64x64 solid-red PNG. stb_image (used by Unsloth's image
           # normaliser at routes/inference.py:3410) rejects 4x4 or
           # smaller PNGs as truncated, so we go up to 64x64 -- still
           # tiny in token cost. The assertion is loose: any non-empty
@@ -1146,9 +1148,9 @@ jobs:
           print("[image/openai] PASS image_url accepted, non-empty response")
 
           # ── 3. Anthropic source/base64 image ────────────────────────
-          # Two SDK quirks vs. Studio: base_url must NOT include /v1
+          # Two SDK quirks vs. Unsloth: base_url must NOT include /v1
           # (the SDK appends it itself; otherwise /v1/v1/messages -> 405),
-          # and Studio's auth is HTTPBearer-only so the SDK's default
+          # and Unsloth's auth is HTTPBearer-only so the SDK's default
           # x-api-key header is ignored -- send Authorization: Bearer
           # via default_headers.
           anthropic = Anthropic(
@@ -1182,7 +1184,7 @@ jobs:
           print("[image/anthropic] PASS source/base64 accepted, non-empty response")
           PY
 
-      - name: Stop Studio
+      - name: Stop Unsloth
         if: always()
         run: |
           kill "${STUDIO_PID}" 2>/dev/null || true
