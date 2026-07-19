@@ -218,6 +218,23 @@ def test_match_adapter_reports_unknown_when_hidden_high_use_adapter_survives_fil
     assert hw._match_adapter_used_to_devices([10 * MiB, 40 * GB], [8 * GB]) == [None]
 
 
+def test_match_adapter_reports_unknown_for_placeholder_fallback():
+    # Idle real GPUs (every counter below the 64 MiB noise floor) plus a Windows
+    # "Basic Render Driver" placeholder counter. non_trivial is empty, so the old
+    # `non_trivial or useds` fallback attributed a raw sub-threshold counter to a
+    # real GPU (and, with a single visible device, escaped the swap-ambiguity
+    # check). With no LUID-to-ordinal mapping the placeholder is indistinguishable
+    # from an idle GPU, so report unknown rather than fabricate.
+    # Single visible 8 GiB card idle (10 MiB) beside a 50 MiB placeholder counter.
+    assert hw._match_adapter_used_to_devices([50 * MiB, 10 * MiB], [8 * GB]) == [None]
+    # Order of the counters must not matter.
+    assert hw._match_adapter_used_to_devices([10 * MiB, 50 * MiB], [8 * GB]) == [None]
+    # Two idle visible GPUs plus a placeholder: all three counters below the floor.
+    assert hw._match_adapter_used_to_devices(
+        [50 * MiB, 10 * MiB, 5 * MiB], [48 * GB, 8 * GB]
+    ) == [None, None]
+
+
 def test_match_adapter_reports_unknown_when_usage_not_capacity_ordered():
     # 8 GiB card near full (7 GiB) beside a lightly used 48 GiB card (5 GiB). The
     # bigger usage (7) still fits the smaller card, so ranking cannot tell which

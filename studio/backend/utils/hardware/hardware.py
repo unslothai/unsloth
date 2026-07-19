@@ -829,7 +829,17 @@ def _match_adapter_used_to_devices(
             # alone can't tell the visible set apart, so any pairing would
             # fabricate values; report unknown rather than mis-assign.
             return [None] * n
-        useds = (non_trivial or useds)[:n]
+        if not non_trivial:
+            # Every counter sits below the noise floor while an extra adapter is
+            # present (e.g. a "Basic Render Driver" placeholder alongside idle
+            # real GPUs). Falling back to the raw magnitude-sorted counters would
+            # attribute the placeholder's counter to a real GPU and drop a real
+            # card's reading, and with a single visible device the swap-ambiguity
+            # check below (which needs at least two ranks) cannot catch it. No
+            # LUID-to-ordinal mapping exists to tell the placeholder apart from a
+            # genuinely idle GPU, so report unknown rather than fabricate.
+            return [None] * n
+        useds = non_trivial[:n]
     ranked_positions = sorted(range(n), key = lambda i: -device_totals[i])
     # Usage per rank (largest usage to largest capacity), 0 for devices with no
     # adapter counter, plus the capacity at that rank.
