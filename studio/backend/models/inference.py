@@ -64,7 +64,7 @@ class LoadRequest(BaseModel):
     )
     gpu_ids: Optional[List[int]] = Field(
         None,
-        description = "Physical GPU indices to use, for example [0, 1]. Omit or pass [] to use automatic selection. Explicit gpu_ids are unsupported when the parent CUDA_VISIBLE_DEVICES uses UUID/MIG entries. For GGUF models the picked devices are pinned via CUDA/HIP_VISIBLE_DEVICES.",
+        description = "Physical GPU indices to use, for example [0, 1]. Omit or pass [] to use automatic selection. Explicit gpu_ids are unsupported when the parent CUDA_VISIBLE_DEVICES uses UUID/MIG entries. For GGUF models the picked devices are pinned via CUDA/HIP_VISIBLE_DEVICES. On a Vulkan llama.cpp build the indices are ggml's compact Vulkan ordinals (as enumerated by the Vulkan probe and pinned via --device Vulkan<i>), not CUDA physical indices; Vulkan enumerates independently of CUDA_VISIBLE_DEVICES.",
     )
     speculative_type: Optional[str] = Field(
         None,

@@ -918,6 +918,94 @@ class TestRouteErrors(unittest.TestCase):
         self.assertIn("gpu_ids", exc_info.exception.detail.lower())
         self.assertNotIn("not supported", exc_info.exception.detail.lower())
 
+    def test_inference_route_rejects_gpu_ids_on_cpu_only_llama_build(self):
+        # A CUDA-visible host with a CPU-only llama.cpp build: the CUDA resolver validates
+        # the mask but can't see that the build ignores CUDA_VISIBLE_DEVICES, so the pin
+        # would silently run on CPU while /load reports it active. The route must reject
+        # before teardown (mirrors the non-CUDA resolvable check) (#7188).
+        import utils.hardware as hardware_pkg
+
+        inference_route = _load_route_module(
+            "inference_route_module_for_cpu_only_gpu_ids_test",
+            "routes/inference.py",
+        )
+        request = LoadRequest(model_path = "unsloth/test.gguf", gpu_ids = [0, 1])
+        model_config = SimpleNamespace(
+            is_gguf = True, is_lora = False, gguf_hf_repo = None,
+            gguf_file = "/tmp/test.gguf", gguf_mmproj_file = None, gguf_variant = None,
+            identifier = "unsloth/test.gguf", display_name = "unsloth/test.gguf",
+            is_vision = False, is_audio = False, audio_type = None, has_audio_input = False,
+        )
+        fake_backend = SimpleNamespace(
+            is_loaded = False,
+            model_identifier = None,
+            is_vulkan_build = lambda: False,
+            _backend_lacks_gpu_lib = lambda *a, **k: True,
+        )
+        with (
+            patch.object(
+                inference_route, "ModelConfig",
+                SimpleNamespace(from_identifier = lambda **_kwargs: model_config),
+            ),
+            patch.object(inference_route, "_guard_chat_load_against_training", return_value = None),
+            patch.object(inference_route.asyncio, "to_thread", new = _inline_to_thread),
+            patch.object(inference_route, "_hf_offline_if_dns_dead", nullcontext),
+            patch.object(inference_route, "get_llama_cpp_backend", return_value = fake_backend),
+            patch.object(hardware_pkg, "get_device", return_value = hardware_pkg.DeviceType.CUDA),
+        ):
+            with self.assertRaises(HTTPException) as exc_info:
+                asyncio.run(
+                    inference_route._load_model_impl(
+                        request,
+                        SimpleNamespace(
+                            app = SimpleNamespace(state = SimpleNamespace(llama_parallel_slots = 1)),
+                        ),
+                        current_subject = "test-user",
+                    )
+                )
+        self.assertEqual(exc_info.exception.status_code, 400)
+        self.assertIn("cpu-only build", exc_info.exception.detail.lower())
+
+    def test_inherited_extras_preserve_memory_flags_when_mode_omitted(self):
+        # A same-model Apply that omits gguf_memory_mode must NOT drop an inherited
+        # --mlock/--no-mmap pass-through (opt-in memory stripping), while a first-class
+        # field the caller set (max_seq_length) still strips its shadow flag (#7188).
+        inference_route = _load_route_module(
+            "inference_route_module_for_inherit_memflags_keep_test",
+            "routes/inference.py",
+        )
+        model_id = "unsloth/test.gguf"
+        fake_backend = SimpleNamespace(
+            extra_args = ["--mlock", "--no-mmap", "-c", "4096"],
+            extra_args_source = (model_id, None),
+        )
+        config = SimpleNamespace(is_gguf = True, gguf_variant = None)
+        request = LoadRequest(model_path = model_id, max_seq_length = 8192)
+        with patch.object(inference_route, "get_llama_cpp_backend", return_value = fake_backend):
+            out = inference_route._resolve_inherited_extra_args(request, config, model_id, None)
+        self.assertIn("--mlock", out)
+        self.assertIn("--no-mmap", out)
+        self.assertNotIn("-c", out)  # first-class max_seq_length still strips the inherited -c
+
+    def test_inherited_extras_strip_memory_flags_when_mode_requested(self):
+        # A real gguf_memory_mode owns the memory flags, so an inherited one is stripped (#7188).
+        inference_route = _load_route_module(
+            "inference_route_module_for_inherit_memflags_strip_test",
+            "routes/inference.py",
+        )
+        model_id = "unsloth/test.gguf"
+        fake_backend = SimpleNamespace(
+            extra_args = ["--mlock", "--no-mmap", "--top-k", "20"],
+            extra_args_source = (model_id, None),
+        )
+        config = SimpleNamespace(is_gguf = True, gguf_variant = None)
+        request = LoadRequest(model_path = model_id, gguf_memory_mode = "resident")
+        with patch.object(inference_route, "get_llama_cpp_backend", return_value = fake_backend):
+            out = inference_route._resolve_inherited_extra_args(request, config, model_id, None)
+        self.assertNotIn("--mlock", out)
+        self.assertNotIn("--no-mmap", out)
+        self.assertIn("--top-k", out)
+
     def test_training_route_returns_400_for_invalid_gpu_ids(self):
         training_route = _load_route_module(
             "training_route_module_for_test",

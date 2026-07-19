@@ -4188,6 +4188,10 @@ def _resolve_inherited_extra_args(
                 or effective_chat_template_override is not None
             ),
             strip_split_mode = _should_strip_split_mode(request, llama_backend.extra_args),
+            # A real gguf_memory_mode owns --mlock/--mmap/--no-mmap, so strip an
+            # inherited one; a request that omits the field keeps the pass-through flag
+            # (opt-in, mirrors the fast-path _strip_mem). null == "no opinion" (#7188).
+            strip_memory_mode = getattr(request, "gguf_memory_mode", None) is not None,
             # manual + per-GPU ratio emits its own --tensor-split; drop
             # an inherited one (appended last would override it) while
             # keeping the user's --split-mode row/none/layer choice.
@@ -4561,8 +4565,22 @@ async def _load_model_impl(request: LoadRequest, fastapi_request: Request, curre
             # CUDA_VISIBLE_DEVICES), so defer to the backend probe even on a CUDA-visible
             # host, else the CUDA resolver would 400 a valid Vulkan id under a CUDA/HIP
             # mask (#7188). Otherwise keep the CUDA physical-ID resolver (#6414).
-            _gguf_vulkan_build = await asyncio.to_thread(get_llama_cpp_backend().is_vulkan_build)
+            _llama_backend = get_llama_cpp_backend()
+            _gguf_vulkan_build = await asyncio.to_thread(_llama_backend.is_vulkan_build)
             if get_device() == DeviceType.CUDA and not _gguf_vulkan_build:
+                # The CUDA resolver only validates the physical-ID mask; it can't tell the
+                # llama.cpp build is CPU-only. A CPU-only build ignores CUDA_VISIBLE_DEVICES,
+                # so the pin would silently run on CPU while /load reports gpu_ids active --
+                # reject before teardown here too (mirrors the non-CUDA resolvable check) (#7188).
+                if await asyncio.to_thread(_llama_backend._backend_lacks_gpu_lib):
+                    raise HTTPException(
+                        status_code = 400,
+                        detail = (
+                            f"Requested gpu_ids {list(effective_gpu_ids)} but the llama.cpp "
+                            "build has no GPU backend (CPU-only build); it would ignore the "
+                            "pin and run on CPU. Omit gpu_ids to run on CPU."
+                        ),
+                    )
                 try:
                     resolve_requested_gpu_ids(effective_gpu_ids)
                 except ValueError as exc:
@@ -4572,7 +4590,6 @@ async def _load_model_impl(request: LoadRequest, fastapi_request: Request, curre
                 # enumerate llama.cpp's devices, so gate on the backend probe and reject
                 # before teardown (#7188). A torch-less Vulkan host reports CPU but its
                 # probe is non-empty, so it falls through.
-                _llama_backend = get_llama_cpp_backend()
                 if not await asyncio.to_thread(_llama_backend.has_gpu_backend):
                     raise HTTPException(
                         status_code = 400,
@@ -5216,8 +5233,20 @@ async def validate_model(
                     )
             # A Vulkan build treats gpu_ids as Vulkan ordinals, so defer to the backend
             # probe even on a CUDA-visible host; otherwise keep the CUDA resolver (#6414/#7188).
-            _gguf_vulkan_build = await asyncio.to_thread(get_llama_cpp_backend().is_vulkan_build)
+            _gguf_vulkan_build = await asyncio.to_thread(_loaded_llama.is_vulkan_build)
             if get_device() == DeviceType.CUDA and not _gguf_vulkan_build:
+                # A CPU-only llama.cpp build ignores CUDA_VISIBLE_DEVICES; the CUDA resolver
+                # can't see that, so reject a pin it would silently run on CPU (mirrors /load
+                # and the non-CUDA resolvable check) (#7188).
+                if await asyncio.to_thread(_loaded_llama._backend_lacks_gpu_lib):
+                    raise HTTPException(
+                        status_code = 400,
+                        detail = (
+                            f"Requested gpu_ids {list(effective_gpu_ids)} but the llama.cpp "
+                            "build has no GPU backend (CPU-only build); it would ignore the "
+                            "pin and run on CPU. Omit gpu_ids to run on CPU."
+                        ),
+                    )
                 try:
                     resolve_requested_gpu_ids(effective_gpu_ids)
                 except ValueError as exc:

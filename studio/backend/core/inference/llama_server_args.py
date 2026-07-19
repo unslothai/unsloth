@@ -460,7 +460,7 @@ def strip_shadowing_flags(
     strip_split_mode: bool = True,
     strip_tensor_split: bool = False,
     strip_offload: bool = False,
-    strip_memory_mode: bool = True,
+    strip_memory_mode: bool = False,
     strip_device: bool = False,
 ) -> list[str]:
     """Strip flags that shadow first-class Unsloth settings.
@@ -475,9 +475,12 @@ def strip_shadowing_flags(
     ``--tensor-split`` (the Tensor Parallelism toggle owns the whole split).
     ``strip_tensor_split`` removes ``--tensor-split`` *alone*, so manual mode can
     replace an inherited per-GPU ratio while leaving the user's ``--split-mode``
-    row/none/layer choice intact. ``strip_device`` is off by default (users may
-    pass ``--device`` when Unsloth auto-selects) and enabled only for explicit
-    gpu_ids.
+    row/none/layer choice intact. ``strip_device`` and ``strip_memory_mode`` are
+    off by default (opt-in, like ``strip_offload`` / ``strip_tensor_split``): a user
+    may pass ``--device`` / ``--mlock`` / ``--no-mmap`` when Unsloth has no opinion,
+    so they're stripped only when the caller sets gpu_ids / gguf_memory_mode. Enabling
+    them by default would silently drop those inherited pass-through flags on an Apply
+    that omits the field.
     """
     shadowing: set[str] = set()
     if strip_context:
