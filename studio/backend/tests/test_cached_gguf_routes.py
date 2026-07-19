@@ -157,6 +157,8 @@ def test_is_hidden_model_hides_dictation_models(tmp_path):
     named_only.mkdir()
     (named_only / "config.json").write_text('{"model_type": "llama"}')
     assert not models_route._is_hidden_model("user/whisper-finetune", str(named_only))
+
+
 def test_is_hidden_model_matches_repo_ids_exactly(monkeypatch):
     """A custom embedder with a generic basename is hidden by EXACT repo-id
     match only, so unrelated cached repos that merely contain the basename stay
