@@ -102,20 +102,22 @@ def _run_ps1(value: str | None) -> str:
     return out.stdout
 
 
-def _run_ps1_expected_kinds(backend: str, has_nvidia: bool) -> str:
-    # The mismatch-prune must treat a forced-CPU install as expected on a GPU host, or
-    # persisting install_kind deletes a valid windows-cpu bundle every rerun (#7228).
+def _ps1_prune_decision(backend: str, nvidia: bool, rocm: bool, existing_kind: str) -> str:
+    # Run the real setup.ps1 expectedKinds + prune check for one host/install combo.
+    # Persisting install_kind activates this prune, so it must keep every valid
+    # current-host install and only drop a bundle the host cannot run (#7228).
     kinds = _ps1_search(
-        r"\$expectedKinds = if .*?else \{ @\(\"windows-cpu\", \"windows-arm64\"\) \}"
+        r'\$expectedKinds = if .*?else \{ @\("windows-vulkan", "windows-cpu", "windows-arm64"\) \}'
     )
     harness = (
-        f"$HasNvidiaSmi=${str(has_nvidia).lower()}; $HasROCm=$false; $script:ROCmGfxArch=$null\n"
-        f'$llamaBackend="{backend}"\n{kinds}\n"KINDS:" + ($expectedKinds -join ",")'
+        f"$HasNvidiaSmi=${str(nvidia).lower()}; $HasROCm=${str(rocm).lower()}; $script:ROCmGfxArch=$null\n"
+        f'$llamaBackend="{backend}"; $existingKind="{existing_kind}"\n{kinds}\n'
+        'if ($existingKind -and ($existingKind -notin $expectedKinds)) { "PRUNE" } else { "KEEP" }'
     )
     out = subprocess.run(
         ["pwsh", "-NoProfile", "-Command", harness], capture_output = True, text = True, check = True
     )
-    return out.stdout
+    return out.stdout.strip()
 
 
 @_SKIP_NO_PWSH
@@ -143,15 +145,27 @@ def test_ps1_backend_unknown_warns_and_no_flag(value):
 
 
 @_SKIP_NO_PWSH
-def test_ps1_cpu_override_keeps_cpu_expected_on_gpu_host():
-    # Forced CPU on an NVIDIA host: windows-cpu must stay expected so the mismatch
-    # prune does not delete a deliberate CPU install (#7228).
-    assert "windows-cpu" in _run_ps1_expected_kinds("cpu", has_nvidia = True)
-
-
-@_SKIP_NO_PWSH
-def test_ps1_auto_prunes_cpu_on_nvidia_host():
-    # Without the override an NVIDIA host still expects only windows-cuda.
-    out = _run_ps1_expected_kinds("auto", has_nvidia = True)
-    assert "windows-cuda" in out
-    assert "windows-cpu" not in out
+@pytest.mark.parametrize(
+    "backend, nvidia, rocm, existing, expected",
+    [
+        # Every valid current-host install is kept: the auto Intel->vulkan route and
+        # the per-vendor CPU/arm64 fallbacks used when a GPU prebuilt is missing.
+        ("", False, False, "windows-vulkan", "KEEP"),
+        ("", False, False, "windows-cpu", "KEEP"),
+        ("", False, False, "windows-arm64", "KEEP"),
+        ("", True, False, "windows-cuda", "KEEP"),
+        ("", True, False, "windows-cpu", "KEEP"),
+        ("", False, True, "windows-rocm", "KEEP"),
+        ("", False, True, "windows-hip", "KEEP"),
+        ("", False, True, "windows-cpu", "KEEP"),
+        # Only a bundle this host cannot run is pruned.
+        ("", False, False, "windows-cuda", "PRUNE"),
+        ("", True, False, "windows-rocm", "PRUNE"),
+        ("", False, True, "windows-cuda", "PRUNE"),
+        # Forced CPU replaces a GPU install but keeps a CPU one.
+        ("cpu", False, False, "windows-vulkan", "PRUNE"),
+        ("cpu", True, False, "windows-cpu", "KEEP"),
+    ],
+)
+def test_ps1_prune_keeps_valid_installs(backend, nvidia, rocm, existing, expected):
+    assert _ps1_prune_decision(backend, nvidia, rocm, existing) == expected

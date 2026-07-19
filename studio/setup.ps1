@@ -3321,24 +3321,22 @@ if ($LocalLlamaCppLinked) {
     }
     if (Test-Path -LiteralPath $LlamaCppDir) {
         substep "Existing llama.cpp install detected -- validating staged prebuilt update before replacement"
-        # If the existing install is the wrong kind (e.g. windows-cpu on a ROCm
-        # machine that should have windows-rocm), remove it so the installer is
-        # forced to download the correct variant rather than skipping on tag match.
+        # If the existing install is a bundle this host cannot run, remove it so the
+        # installer downloads the right variant rather than skipping on a tag match.
         $existingMetaPath = Join-Path $LlamaCppDir "UNSLOTH_PREBUILT_INFO.json"
         if (Test-Path $existingMetaPath) {
             try {
                 $existingMeta = Get-Content $existingMetaPath -Raw | ConvertFrom-Json
                 $existingKind = $existingMeta.install_kind
-                # A ROCm host may legitimately carry the fork's windows-rocm bundle
-                # or the upstream windows-hip fallback, so accept either and never
-                # treat a valid ROCm install as mismatched. A name-inferred gfx
-                # arch (Adrenalin-only, no confirmed runtime) still counts as
-                # ROCm-capable -- the ROCm prebuilt bundles its own runtime,
-                # mirroring the --rocm-gfx forward below. The CPU branch covers both
-                # the x64 windows-cpu and arm64 windows-arm64 bundles (Windows arm64
-                # has no GPU prebuilt), and UNSLOTH_LLAMA_CPP_BACKEND=cpu makes CPU
-                # expected so a deliberate CPU install is not pruned on a GPU host.
-                $expectedKinds = if ($llamaBackend -eq "cpu") { @("windows-cpu", "windows-arm64") } elseif ($HasROCm -or $script:ROCmGfxArch) { @("windows-rocm", "windows-hip") } elseif ($HasNvidiaSmi) { @("windows-cuda") } else { @("windows-cpu", "windows-arm64") }
+                # expectedKinds lists every kind the installer may produce for this
+                # host, so a valid current-host install is never pruned: the GPU kind
+                # PLUS the windows-cpu/windows-arm64 fallback used when the GPU prebuilt
+                # is missing (ROCm also accepts the upstream windows-hip; a name-inferred
+                # gfx still counts as ROCm-capable), and the non-NVIDIA/non-AMD branch
+                # adds windows-vulkan (the Intel auto-route). Only a bundle this host
+                # cannot run (e.g. windows-cuda with no NVIDIA) is pruned;
+                # UNSLOTH_LLAMA_CPP_BACKEND=cpu narrows expected to CPU to replace a GPU one.
+                $expectedKinds = if ($llamaBackend -eq "cpu") { @("windows-cpu", "windows-arm64") } elseif ($HasROCm -or $script:ROCmGfxArch) { @("windows-rocm", "windows-hip", "windows-cpu", "windows-arm64") } elseif ($HasNvidiaSmi) { @("windows-cuda", "windows-cpu", "windows-arm64") } else { @("windows-vulkan", "windows-cpu", "windows-arm64") }
                 if ($existingKind -and ($existingKind -notin $expectedKinds)) {
                     substep "Removing mismatched llama.cpp install (found '$existingKind', need one of: $($expectedKinds -join ', '))..."
                     Remove-Item -Recurse -Force -LiteralPath $LlamaCppDir -ErrorAction SilentlyContinue
