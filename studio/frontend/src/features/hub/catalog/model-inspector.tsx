@@ -59,6 +59,16 @@ import { ModelReadme } from "./model-readme";
 import { OwnerAvatar } from "./owner-avatar";
 import { AccessChip, CapabilityPill } from "./shared";
 
+// HF pipeline_tag values that denote an embedding / feature-extraction repo with
+// no generative head. Authoritative for the Run gate: topical capability labels
+// (code / vision / audio / reasoning) attach to embedding repos from their name
+// or tags (e.g. jina-embeddings-v2-base-code gets "code" from its -code suffix),
+// so they cannot be trusted to exempt a model from the gate.
+const EMBEDDING_PIPELINE_TAGS: ReadonlySet<string> = new Set([
+  "feature-extraction",
+  "sentence-similarity",
+]);
+
 function ViewRepositoryButton({
   repoId,
   isDataset,
@@ -532,19 +542,23 @@ export const ModelInspector = memo(function ModelInspector({
     : "N/A";
   const unslothSupported = unslothSupport.status !== "unsupported";
   // Embedding-only non-GGUF repos classify as supported but have no generative
-  // head, so a chat load dead-ends. Keep them out of the non-GGUF Run gate.
+  // head, so a chat load dead-ends. Keep them out of the non-GGUF Run gate. An
+  // embedding pipeline tag is authoritative (no generative head even when the
+  // repo name/tags also imply code/vision/audio/reasoning); otherwise fall back
+  // to the capability heuristic.
   const isEmbeddingOnly =
     !model.isGguf &&
     model.capabilities.some((c) => c.key === "embedding") &&
-    !model.capabilities.some(
-      (c) =>
-        c.key === "conversational" ||
-        c.key === "tools" ||
-        c.key === "reasoning" ||
-        c.key === "code" ||
-        c.key === "vision" ||
-        c.key === "audio",
-    );
+    (EMBEDDING_PIPELINE_TAGS.has(model.pipelineTag?.toLowerCase() ?? "") ||
+      !model.capabilities.some(
+        (c) =>
+          c.key === "conversational" ||
+          c.key === "tools" ||
+          c.key === "reasoning" ||
+          c.key === "code" ||
+          c.key === "vision" ||
+          c.key === "audio",
+      ));
   // Chat-only hosts (no supported GPU / usable MLX) run inference only through
   // llama.cpp, so only GGUF is loadable.
   const canRunModel =
