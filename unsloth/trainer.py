@@ -99,9 +99,11 @@ _AUTO_PADDING_FREE_ENV_DISABLED = os.environ.get(
 PADDING_FREE_BLOCKLIST = {
     "gemma2",  # - gemma2:  Uses slow_attention_softcapping which has torch.compile issues
     "gpt_oss",  # - gpt_oss: Uses Flex Attention which doesn't handle padding_free correctly
-    "qwen3_5",  # - qwen3_5 / qwen3_next: hybrid linear attention + conv1d leak across packed sequences
-    "qwen3_next",
 }
+# Hybrid linear-attention / state-space models (Qwen3.5, Qwen3-Next, ...) carry a
+# recurrent gated-delta state plus a causal conv1d. Sample packing / padding-free
+# flattens the batch, so those ops leak state across sequence boundaries. Detected
+# structurally by _is_hybrid_linear_attention_model rather than by model name.
 
 
 def _should_pack(config) -> bool:
@@ -208,6 +210,56 @@ def _is_vision_eval_dataset(dataset, *, unknown_is_vision = False) -> bool:
             for split in dataset.values()
         )
     return _is_vision_dataset(dataset, unknown_is_vision = unknown_is_vision)
+
+
+_HYBRID_CONFIG_MARKERS = (
+    "linear_conv_kernel_dim",
+    "linear_key_head_dim",
+    "linear_value_head_dim",
+    "full_attention_interval",
+)
+
+
+def _is_hybrid_linear_attention_model(model) -> bool:
+    """Detect models mixing linear-attention / state-space mixers (gated-delta,
+    Mamba-style) with a causal conv1d, e.g. Qwen3.5 / Qwen3-Next. Packing and
+    padding-free flatten the batch, and those recurrent + conv ops leak state
+    across sequence boundaries, so they must not be packed. Uses composite
+    structural evidence rather than a model-name match."""
+    if model is None:
+        return False
+
+    # Config-level: explicit hybrid layer schedule or linear-attn markers.
+    for config in (getattr(model, "config", None), getattr(getattr(model, "config", None), "text_config", None)):
+        if config is None:
+            continue
+        layer_types = getattr(config, "layer_types", None)
+        if isinstance(layer_types, (list, tuple)) and any(
+            isinstance(t, str) and "linear_attention" in t for t in layer_types
+        ):
+            return True
+        if any(hasattr(config, marker) for marker in _HYBRID_CONFIG_MARKERS):
+            return True
+
+    # Module-level: a mixer carrying a recurrent gated-delta op plus a conv1d.
+    named_modules = getattr(model, "named_modules", None)
+    if named_modules is None:
+        return False
+    seen = set()
+    for _, module in named_modules():
+        if id(module) in seen:
+            continue
+        seen.add(id(module))
+        cls = type(module).__name__
+        if not (cls.endswith("GatedDeltaNet") or "LinearAttention" in cls or cls.endswith("Mamba2Mixer")):
+            continue
+        has_recurrent = any(
+            hasattr(module, attr)
+            for attr in ("chunk_gated_delta_rule", "recurrent_gated_delta_rule", "A_log")
+        )
+        if has_recurrent and hasattr(module, "conv1d"):
+            return True
+    return False
 
 
 # Unsloth gradient accumulation fix:
@@ -574,12 +626,14 @@ def _patch_sft_trainer_auto_packing(trl_module):
         model = args[0] if len(args) >= 1 else kwargs.get("model")
         is_vlm = False
         is_unsupported_model = False
+        is_hybrid = False
         if model is not None:
             model_config = getattr(model, "config", None)
             if model_config is not None:
                 model_types = get_transformers_model_type(model_config)
                 is_unsupported_model = any(x in PADDING_FREE_BLOCKLIST for x in model_types)
                 is_vlm = _is_vlm_config(model_config, model_types)
+            is_hybrid = _is_hybrid_linear_attention_model(model)
 
         processing_class = (
             args[5] if len(args) >= 6 else kwargs.get("processing_class") or kwargs.get("tokenizer")
@@ -605,6 +659,7 @@ def _patch_sft_trainer_auto_packing(trl_module):
             or is_auto_processor_vlm
             or is_vision_dataset
             or is_unsupported_model
+            or is_hybrid
             or (
                 os.environ.get("UNSLOTH_RETURN_LOGITS", "0") == "1"
             )  # Disable padding free on forced logits
@@ -624,6 +679,8 @@ def _patch_sft_trainer_auto_packing(trl_module):
                 reason = "vision-language model with auto processor"
             elif is_vision_dataset:
                 reason = "vision dataset"
+            elif is_hybrid:
+                reason = "hybrid linear-attention model"
             elif is_unsupported_model:
                 reason = f"unsupported model type(s): {', '.join(model_types)}"
             message = f"Unsloth: Sample packing skipped ({reason} detected)."
