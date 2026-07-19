@@ -171,11 +171,10 @@ def _offline_flag(name: str) -> bool:
 
 
 def hf_env_offline() -> bool:
-    """True when either HF offline env var is truthy (strip+lower, on/true/yes/1).
+    """True when HF_HUB_OFFLINE or TRANSFORMERS_OFFLINE is truthy (strip+lower, on/true/yes/1).
 
-    The user's *intent* to work offline, broader than what ``huggingface_hub`` enforces
-    (it honors ``HF_HUB_OFFLINE`` but ignores ``TRANSFORMERS_OFFLINE``). This alone does NOT
-    stop a fetch -- callers needing that guarantee must pass ``local_files_only =
-    hf_env_offline()`` to the loader (as ``core/rag/embeddings.py`` does).
+    The user's intent to work offline, broader than ``huggingface_hub`` (which ignores
+    ``TRANSFORMERS_OFFLINE``). Does NOT itself stop a fetch -- callers needing that must pass
+    ``local_files_only = hf_env_offline()`` to the loader.
     """
     return _offline_flag("HF_HUB_OFFLINE") or _offline_flag("TRANSFORMERS_OFFLINE")

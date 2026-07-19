@@ -249,11 +249,10 @@ def _fetch_security_status(
     """
     from huggingface_hub import model_info as hf_model_info
 
-    # Only when the CALLER guarantees a local-only load -- deliberately not keyed off
-    # hf_env_offline(): this gate is shared by every loader (training, MLX/inference,
-    # export, ...) and most do not pass local_files_only, so an offline-looking session
-    # can still fetch an unscanned model through those paths. The bypass must be opted
-    # into by the callers that actually hold the invariant.
+    # Skip only when the CALLER guarantees a local-only load -- deliberately not keyed off
+    # hf_env_offline(): this gate is shared by every loader (training, MLX, export, ...) and
+    # most do not pass local_files_only, so an offline-looking session could still fetch an
+    # unscanned model. The bypass must be opted into.
     if local_only_load:
         logger.debug(
             "HF security scan skipped for '%s': caller loads local-only; failing open.",
@@ -302,10 +301,9 @@ def evaluate_file_security(
     is root-level there and blocks, and an index inside it is honored when scoping shards.
 
     ``local_only_load`` lets a caller skip the Hub round-trip when it GUARANTEES the load
-    cannot fetch -- e.g. the RAG embedder, which passes ``local_files_only`` to
-    SentenceTransformer from the same predicate. Pass it only with that guarantee: claiming
-    local-only while the loader can still fetch disables the gate. Default False, since most
-    callers (training, MLX/inference, export) do not constrain their loaders.
+    cannot fetch (e.g. the RAG embedder, which passes ``local_files_only`` to
+    SentenceTransformer from the same predicate). Pass it only with that guarantee; claiming
+    local-only while the loader can still fetch disables the gate. Default False.
     """
     # Scan the repo the load actually fetches, not the literal alias (which 404s and
     # fails open): the Spark-TTS "<parent>/LLM" alias is really unsloth/<parent> from LLM/.

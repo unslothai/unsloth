@@ -266,8 +266,7 @@ def test_clean_repo_saves_under_force(client, monkeypatch):
 
 
 def test_custom_model_saved_in_cache_casing(client, monkeypatch):
-    # A custom repo is persisted in its local HF cache casing so the offline exact-case
-    # ST load finds it (baai/bge-m3 -> BAAI/bge-m3). force=True isolates this from the gate.
+    # Persisted in the cache casing so the offline exact-case ST load finds it.
     c, saved = client
     monkeypatch.setitem(sys.modules, "utils.security", _security_stub(blocked = False))
     import utils.models as _models
@@ -279,8 +278,7 @@ def test_custom_model_saved_in_cache_casing(client, monkeypatch):
 
 
 def test_local_path_model_is_not_casing_normalized(client, monkeypatch, tmp_path):
-    # A local directory is loaded from disk; casing normalization must be skipped or it
-    # would resolve to a cache collision instead of the directory.
+    # A local directory is loaded from disk; recasing would resolve to a cache collision.
     c, saved = client
     monkeypatch.setitem(sys.modules, "utils.security", _security_stub(blocked = False))
     import utils.models as _models
@@ -297,9 +295,8 @@ def test_local_path_model_is_not_casing_normalized(client, monkeypatch, tmp_path
 
 
 def test_llama_backend_model_is_not_casing_normalized(monkeypatch):
-    # On the llama-server backend nothing loads through SentenceTransformer: the embedder
-    # derives a GGUF companion from this spelling and fetches it from the HUB cache, so an
-    # ST_HOME rewrite would point at a GGUF repo _hf_gguf_backend_error() never validated.
+    # The llama backend fetches a GGUF companion from the HUB cache, so an ST_HOME recasing
+    # could point at a GGUF repo _hf_gguf_backend_error() never validated.
     saved: dict = {}
     monkeypatch.setattr(settings, "default_embedding_model", lambda: "unsloth/default-embed")
     monkeypatch.setattr(settings, "validate_embedding_model", lambda v: v)
@@ -322,12 +319,11 @@ def test_llama_backend_model_is_not_casing_normalized(monkeypatch):
     c = TestClient(app, raise_server_exceptions = False)
     r = c.put("/embedding-model", json = {"embedding_model": "baai/bge-m3", "force": True})
     assert r.status_code == 200
-    assert saved.get("model") == "baai/bge-m3"  # the spelling the GGUF check validated
+    assert saved.get("model") == "baai/bge-m3"
 
 
 def test_default_model_is_not_casing_normalized(client, monkeypatch):
-    # The exact default must NOT be casing-normalized: rewriting it would make
-    # set_rag_embedding_model()'s exact default comparison treat it as a custom override.
+    # Recasing the default would make set_rag_embedding_model() treat it as a custom override.
     c, saved = client
     import utils.models as _models
 
@@ -350,7 +346,7 @@ def test_load_sink_refuses_flagged_model(monkeypatch):
 def test_load_sink_allows_clean_model(monkeypatch):
     monkeypatch.setitem(sys.modules, "utils.security", _security_stub(blocked = False))
     import core.rag.embeddings as embeddings
-    embeddings._guard_model_security("acme/clean-embed", False)  # no raise
+    embeddings._guard_model_security("acme/clean-embed", False)
 
 
 def test_sink_threads_ambient_token_into_scan(monkeypatch):

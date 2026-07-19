@@ -223,10 +223,8 @@ def test_st_encode_failure_without_llama_binary_reraises(monkeypatch):
 
 
 def test_get_resolves_default_casing_before_loading(monkeypatch):
-    # _get() must resolve a repo id to the exact cache casing before constructing
-    # SentenceTransformer: a default differing only by case is NOT persist-normalized by
-    # /settings, so without resolving here the offline load would miss the cache dir.
-    # Verify both the loader and the security gate receive the resolved name.
+    # _get() resolves the cache casing before loading (a default is NOT persist-normalized
+    # by /settings), and both the loader and the gate get the resolved name.
     import sys
     import types
 
@@ -257,5 +255,5 @@ def test_get_resolves_default_casing_before_loading(monkeypatch):
     monkeypatch.setattr(embeddings, "_name", None, raising = False)
     embeddings._get()
 
-    assert captured["load_name"] == "BAAI/bge-m3"  # resolved to the cache casing
-    assert guarded["name"] == "BAAI/bge-m3"  # gate scans the same resolved name
+    assert captured["load_name"] == "BAAI/bge-m3"
+    assert guarded["name"] == "BAAI/bge-m3"

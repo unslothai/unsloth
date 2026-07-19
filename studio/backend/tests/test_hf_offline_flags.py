@@ -98,19 +98,17 @@ def _fake_hub(monkeypatch, calls):
 
 @pytest.mark.parametrize("var", ["HF_HUB_OFFLINE", "TRANSFORMERS_OFFLINE"])
 def test_shared_gate_still_scans_when_offline_by_default(monkeypatch, var):
-    # THE important one: the gate is shared by loaders that do NOT pin to the local cache,
-    # so an offline env var alone must never disable the malware scan.
+    # Shared gate: an offline env var alone must never disable the scan for a fetching loader.
     import utils.security.file_security as fs
 
     calls: list = []
     _fake_hub(monkeypatch, calls)
     monkeypatch.setenv(var, "1")
-    assert fs._fetch_security_status("org/model", None) is None  # fails open on error
+    assert fs._fetch_security_status("org/model", None) is None
     assert calls, f"{var} alone must NOT bypass the shared malware gate"
 
 
 def test_security_scan_short_circuits_for_a_local_only_caller(monkeypatch):
-    # A local-only caller gets the Hub round-trip skipped instead of burning both timeouts.
     import utils.security.file_security as fs
 
     calls: list = []
@@ -124,7 +122,7 @@ def test_security_scan_runs_when_online(monkeypatch):
 
     calls: list = []
     _fake_hub(monkeypatch, calls)
-    assert fs._fetch_security_status("org/model", None) is None  # fails open on error
+    assert fs._fetch_security_status("org/model", None) is None
     assert calls, "online must attempt the Hub"
 
 
@@ -149,7 +147,6 @@ def test_embedding_loader_forces_local_only_when_offline():
         "SentenceTransformer must be pinned with the SAME captured value; a second "
         "hf_env_offline() read can flip to False and fetch the unscanned repo"
     )
-    # And the guard must not re-derive it internally.
     guard = src.split("def _guard_model_security", 1)[1].split("\ndef ", 1)[0]
     assert "hf_env_offline()" not in guard, (
         "_guard_model_security must take local_only_load as an argument so it "

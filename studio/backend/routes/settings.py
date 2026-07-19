@@ -413,9 +413,8 @@ def update_embedding_model(
     scan_st_pickle = (
         model != default_embedding_model() and not is_local_gguf and not _llama_backend_active()
     )
-    # Read the offline state ONCE and reuse it: the module probe and the scan must agree,
-    # and _hf_offline_if_dns_dead() can flip the vars between two reads (a probe forced
-    # local-only returns no module roots, letting a flagged 0_Transformer/ pickle pass).
+    # Read the offline state ONCE: the module probe and the scan must agree, and
+    # _hf_offline_if_dns_dead() can flip the vars between two reads.
     from utils.utils import hf_env_offline
 
     local_only_load = hf_env_offline()
@@ -477,20 +476,15 @@ def update_embedding_model(
         gguf_error = _local_gguf_backend_error(model) or _hf_gguf_backend_error(model, hf_token)
         if gguf_error:
             raise HTTPException(status_code = 409, detail = gguf_error)
-    # Persist the exact cache casing: validation accepts a case-insensitive hit, but the
-    # offline ST load resolves the cache by exact case. Resolved against the cache the ST
-    # loader searches (ST_HOME if set, else the Hub cache). A no-op when nothing
-    # case-matching is cached. Three cases are left alone:
+    # Persist the exact cache casing: validation accepts a case-insensitive hit but the
+    # offline ST load resolves the cache by exact case (against ST_HOME if set, else the Hub
+    # cache). No-op when nothing case-matching is cached. Three cases are left alone:
     #
     #   * the default -- rewriting it would make set_rag_embedding_model()'s exact-string
-    #     default comparison treat it as a custom override, so later default changes stop
-    #     applying;
-    #   * a local path -- a directory like "org/model" is loaded from disk, and rewriting
-    #     to a cache collision ("Org/model") would stop resolving to it;
-    #   * the llama-server backend -- it does not load through SentenceTransformer; it
-    #     derives a GGUF companion via effective_gguf_repo() and fetches it from the HUB
-    #     cache, so an ST_HOME spelling would pick a repo _hf_gguf_backend_error() never
-    #     validated (BAAI/bge-m3-GGUF vs the checked baai/bge-m3-GGUF).
+    #     default comparison treat it as an override, so later default changes stop applying;
+    #   * a local path -- loaded from disk; a cache-collision recasing would stop resolving to it;
+    #   * the llama-server backend -- loads a GGUF companion from the HUB cache, so an ST_HOME
+    #     spelling could pick a repo _hf_gguf_backend_error() never validated.
     if (
         model != default_embedding_model()
         and not is_local_path(model)
