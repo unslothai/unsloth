@@ -1,13 +1,13 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Auto-shutdown for an exposed first-run Studio whose admin password is unchanged.
+"""Auto-shutdown for an exposed first-run Unsloth whose admin password is unchanged.
 
 On a fresh install the seeded bootstrap admin password stays a valid login
 credential until first login changes it. When the web UI is put on the network
 (``--secure`` / ``0.0.0.0``) and nobody completes that first-login change within
-a deadline, tear Studio down so a fresh, unconfigured instance does not stay
-publicly reachable indefinitely. If the password was changed, Studio keeps
+a deadline, tear Unsloth down so a fresh, unconfigured instance does not stay
+publicly reachable indefinitely. If the password was changed, Unsloth keeps
 running.
 
 Scope: web UI launches only (never ``--api-only``, which authenticates by API
@@ -98,7 +98,7 @@ def enforce_bootstrap_password_deadline(
 ) -> bool:
     """Deadline handler: shut down iff the seeded admin password is still unchanged.
 
-    Returns True if it shut Studio down, False if it left it running (the
+    Returns True if it shut Unsloth down, False if it left it running (the
     password was changed in time).
     """
     try:
@@ -106,7 +106,7 @@ def enforce_bootstrap_password_deadline(
     except Exception:
         return False
     if not still_default:
-        return False  # password changed in time -> leave Studio running
+        return False  # password changed in time -> leave Unsloth running
 
     message = (
         "\nUnsloth Studio was exposed on the network but its default admin "

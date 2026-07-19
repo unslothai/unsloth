@@ -1326,7 +1326,9 @@ const ThreadWelcome: FC<{
 
   useEffect(() => {
     // Prefer the nickname; otherwise first name only. Blank falls back to none.
-    const name = nickname.trim() || (displayName.trim().split(/\s+/)[0] ?? "");
+    const raw = nickname.trim() || (displayName.trim().split(/\s+/)[0] ?? "");
+    // Cap very long names so the greeting stays on one line.
+    const name = raw.length > 20 ? `${raw.slice(0, 20)}…` : raw;
     setWelcome(buildWelcome(new Date().getHours(), name));
   }, [displayName, nickname]);
 
@@ -1968,7 +1970,7 @@ function isNativeComposing(event: Event) {
 }
 
 // Fallback timeout for stuck IME composition. With Chrome on Windows against
-// a WSL-hosted Studio (issue #5546), `compositionend` never fires after the
+// a WSL-hosted Unsloth (issue #5546), `compositionend` never fires after the
 // candidate commits, so `composingRef` stays true and Send stays disabled.
 // Every compositionupdate / non-composing input resets the timer; only a true
 // gap-after-commit lets it fire. 2500ms is above a normal candidate-window
@@ -2707,6 +2709,7 @@ const ComposerToolsMenu: FC<{ side?: "top" | "bottom" }> = ({
   const setCodeToolsEnabled = useChatRuntimeStore((s) => s.setCodeToolsEnabled);
   const artifactsEnabled = useChatRuntimeStore((s) => s.artifactsEnabled);
   const setArtifactsEnabled = useChatRuntimeStore((s) => s.setArtifactsEnabled);
+  const showCanvasMenuItem = useChatRuntimeStore((s) => s.showCanvasMenuItem);
   const mcpEnabledForChat = useChatRuntimeStore((s) => s.mcpEnabledForChat);
   const setMcpEnabledForChat = useChatRuntimeStore(
     (s) => s.setMcpEnabledForChat,
@@ -2957,7 +2960,8 @@ const ComposerToolsMenu: FC<{ side?: "top" | "bottom" }> = ({
         </DropdownMenuSubContent>
       </DropdownMenuSub>
     ),
-    canvas: (
+    // Hidden by default; enabled from Settings > Chat > Canvas.
+    canvas: showCanvasMenuItem ? (
       <DropdownMenuItem
         className={artifactsEnabled ? "text-primary font-medium" : undefined}
         onSelect={() => setArtifactsEnabled(!artifactsEnabled)}
@@ -2968,7 +2972,7 @@ const ComposerToolsMenu: FC<{ side?: "top" | "bottom" }> = ({
           <HugeiconsIcon icon={Tick02Icon} strokeWidth={2} className="ml-auto" />
         ) : null}
       </DropdownMenuItem>
-    ),
+    ) : null,
     bypassPermissions: <BypassPermissionsMenuItem />,
     projects: (
       <DropdownMenuSub>

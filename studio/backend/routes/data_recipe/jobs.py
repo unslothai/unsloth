@@ -37,7 +37,7 @@ def _resolve_local_v1_endpoint(request: Request) -> str:
 
     Resolution order:
       1. ``app.state.server_port`` (run.py, post-bind) - survives proxies/tunnels.
-      2. ``request.scope["server"]`` - when Studio starts outside ``run_server``.
+      2. ``request.scope["server"]`` - when Unsloth starts outside ``run_server``.
       3. parsed ``request.base_url`` - last resort for test fixtures.
     """
     port: Any = getattr(request.app.state, "server_port", None)
