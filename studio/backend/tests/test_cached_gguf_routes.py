@@ -192,6 +192,13 @@ def test_is_hidden_model_keeps_stale_default_embedder_hidden(monkeypatch):
 
     assert models_route._is_hidden_model("unsloth/bge-small-en-v1.5")
     assert models_route._is_hidden_model("unsloth/bge-small-en-v1.5-GGUF")
+    assert models_route._is_hidden_model("/models/bge-small-en-v1.5")
+    assert models_route._is_hidden_model("/models/bge-small-en-v1.5-F16.gguf")
+    assert models_route._is_hidden_model(r"C:\models\bge-small-en-v1.5-Q8_0.gguf")
+    # Repo IDs still use exact matching, and similar local basenames must have
+    # a real separator after the static default name.
+    assert not models_route._is_hidden_model("user/bge-small-en-v1.5-chat")
+    assert not models_route._is_hidden_model("/models/bge-small-en-v1.50")
 
 
 def test_hidden_models_importable_without_heavy_model_stack():

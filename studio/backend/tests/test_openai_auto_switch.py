@@ -699,6 +699,8 @@ def test_index_excludes_hidden_models(tmp_path, monkeypatch):
     probe.write_bytes(b"x" * 32)
     embedder = tmp_path / "embedding-Q8_0.gguf"
     embedder.write_bytes(b"x" * 32)
+    local_default_embedder = tmp_path / "bge-small-en-v1.5-F16.gguf"
+    local_default_embedder.write_bytes(b"x" * 32)
 
     def _info(mid, path):
         return SimpleNamespace(id = mid, path = str(path), model_id = mid, display_name = mid)
@@ -715,6 +717,12 @@ def test_index_excludes_hidden_models(tmp_path, monkeypatch):
                 model_id = "unsloth/bge-small-en-v1.5-GGUF",
                 display_name = "embedding-Q8_0",
             ),
+            SimpleNamespace(
+                id = str(local_default_embedder),
+                path = str(local_default_embedder),
+                model_id = None,
+                display_name = local_default_embedder.name,
+            ),
         ],
     )
     monkeypatch.setattr(models_route, "_scan_hf_cache", lambda *a, **k: [])
@@ -725,6 +733,7 @@ def test_index_excludes_hidden_models(tmp_path, monkeypatch):
     assert "org/normal-gguf" in index  # keys are normalized to lowercase
     assert "ggml-org/models" not in index
     assert "unsloth/bge-small-en-v1.5-gguf" not in index
+    assert str(local_default_embedder).lower() not in index
     # And the hidden probe cannot be auto-switched to by name.
     resolver._scan = (0.0, {})
     assert resolver.resolve_local_gguf("ggml-org/models") is None
@@ -1741,6 +1750,8 @@ def test_index_advertises_alias_not_filesystem_path(tmp_path, monkeypatch):
     # host path in /v1/models, yet the model stays resolvable by that path too.
     from types import SimpleNamespace
     import routes.models as models_route
+    from storage import studio_db
+    import utils.paths as paths
 
     gguf = tmp_path / "model-Q4_K_M.gguf"
     gguf.write_bytes(b"x" * 32)
@@ -1754,6 +1765,8 @@ def test_index_advertises_alias_not_filesystem_path(tmp_path, monkeypatch):
     monkeypatch.setattr(models_route, "_scan_hf_cache", lambda *a, **k: [])
     monkeypatch.setattr(models_route, "_resolve_hf_cache_dir", lambda: tmp_path)
     monkeypatch.setattr(models_route, "_is_hidden_model", lambda *a, **k: False)
+    monkeypatch.setattr(paths, "lmstudio_model_dirs", lambda: [])
+    monkeypatch.setattr(studio_db, "list_scan_folders", lambda: [])
     resolver._scan = (0.0, {})
 
     # The advertised id is the alias, never the absolute path.

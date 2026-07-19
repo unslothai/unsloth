@@ -27,6 +27,10 @@ _DEFAULT_EMBEDDING_REPO_IDS = {
     "unsloth/bge-small-en-v1.5",
     "unsloth/bge-small-en-v1.5-GGUF",
 }
+# Local copies do not always retain the repo id. Keep a narrow basename
+# fallback for Studio's static default embedder only; configured custom repos
+# remain exact-match-only.
+_DEFAULT_EMBEDDING_PATH_BASENAMES = {"bge-small-en-v1.5"}
 
 
 def _safe_resolve(path: Path) -> Optional[str]:
@@ -62,6 +66,17 @@ def _path_contains_repo_id(value: str, repo_ids: set[str]) -> bool:
     return False
 
 
+def _path_basename_is_default_embedder(value: str) -> bool:
+    """Match a default embedder folder or a suffixed local weight filename."""
+    normalized = value.lower().replace("\\", "/").rstrip("/")
+    basename = normalized.rsplit("/", 1)[-1]
+    return any(
+        basename == needle
+        or any(basename.startswith(f"{needle}{separator}") for separator in ("-", "_", "."))
+        for needle in _DEFAULT_EMBEDDING_PATH_BASENAMES
+    )
+
+
 def is_hidden_model(*values: str | None) -> bool:
     """True if any id/path is the RAG embedding model (the effective embedder
     or its GGUF companion repo) or the llama.cpp install validation probe
@@ -74,7 +89,9 @@ def is_hidden_model(*values: str | None) -> bool:
     custom embedder with a generic basename like "org/model" cannot substring
     hide unrelated cached repos such as "user/model-chat" or "org/model-GGUF".
     Existing paths take precedence over the identical ``owner/name`` repo
-    shape. Cache and LM Studio paths use exact repo-derived segments."""
+    shape. Cache and LM Studio paths use exact repo-derived segments. Local
+    copies of the static default embedder also use a boundary-aware basename
+    fallback; configured custom repos never do."""
     from core.rag import config as rag_config
 
     hidden_repo_ids = {
@@ -111,6 +128,8 @@ def is_hidden_model(*values: str | None) -> bool:
         # both separators so a Windows-style path ("...\\stories260K.gguf") is
         # matched even when this runs on a POSIX interpreter (and vice versa).
         if low.replace("\\", "/").rsplit("/", 1)[-1] == _PROBE_FILENAME:
+            return True
+        if _path_basename_is_default_embedder(v):
             return True
         if _path_contains_repo_id(v, hidden_repo_ids):
             return True
