@@ -478,7 +478,13 @@ export function VoiceTab() {
       try {
         const status = await fetchSttStatus(statusNonce, sttModel);
         if (cancelled) return;
-        const engineStatus = isGgufModel ? status.gguf : status.transformers;
+        // A curated model prefers the GGUF (whisper.cpp) engine, but when
+        // whisper-server is not installed the backend serves it through the
+        // Transformers engine instead of failing, so fall back to the
+        // Transformers status here too; otherwise the model shows as unavailable
+        // and download is blocked even though dictation works.
+        const engineStatus =
+          isGgufModel && status.gguf?.available ? status.gguf : status.transformers;
         if (!engineStatus?.available) {
           setSttPhase("unavailable");
           return;

@@ -5835,6 +5835,24 @@ def _resolve_stt_engine(engine: Optional[str]) -> str:
     )
 
 
+def _resolve_serving_stt_engine(engine: Optional[str]) -> str:
+    """Resolve the engine that will actually serve a model.
+
+    whisper.cpp (gguf) only accepts curated ids, which the Transformers engine
+    serves too, so when whisper-server is not installed (the common case, since
+    `unsloth studio update` does not yet build it) fall back to Transformers
+    instead of 501-ing on every recording -- the GGUF sidecar's documented
+    contract. Used for download/load/transcribe; unload targets a specific engine
+    and keeps _resolve_stt_engine.
+    """
+    resolved = _resolve_stt_engine(engine)
+    if resolved == "gguf":
+        from core.inference import stt_ggml_sidecar
+        if not stt_ggml_sidecar.is_available():
+            return "transformers"
+    return resolved
+
+
 def _stt_sidecar_for(engine: str):
     if engine == "gguf":
         from core.inference.stt_ggml_sidecar import get_ggml_stt_sidecar
@@ -5930,7 +5948,7 @@ async def stt_download(
         validate_remote_model,
     )
 
-    engine = _resolve_stt_engine(payload.engine)
+    engine = _resolve_serving_stt_engine(payload.engine)
     module = stt_ggml_sidecar if engine == "gguf" else stt_sidecar
     try:
         # The Transformers engine accepts arbitrary custom `owner/model` repos, so
@@ -5960,7 +5978,7 @@ async def stt_load(payload: SttLoadRequest, current_subject: str = Depends(get_c
         get_stt_sidecar,
     )
 
-    sidecar = _stt_sidecar_for(_resolve_stt_engine(payload.engine))
+    sidecar = _stt_sidecar_for(_resolve_serving_stt_engine(payload.engine))
     try:
         await asyncio.to_thread(sidecar.load, payload.model)
     except SttModelNotDownloadedError as e:
@@ -6041,7 +6059,7 @@ async def _transcribe_audio_bytes(
     if len(raw) > _MAX_AUDIO_RAW_BYTES:
         raise HTTPException(status_code = 413, detail = "Audio is too large.")
 
-    sidecar = _stt_sidecar_for(_resolve_stt_engine(engine))
+    sidecar = _stt_sidecar_for(_resolve_serving_stt_engine(engine))
     try:
         result = await asyncio.to_thread(
             sidecar.transcribe,
