@@ -95,17 +95,22 @@ assert_eq "pin evaluated after the Strix reroute" "yes" "$([ -n "$_pin_line" ] &
 assert_eq "resolve-failure fallback wired" "yes" "$(grep -q 'TORCH_CONSTRAINT="\$_PREV_FALLBACK_CONSTRAINT"' "$INSTALL_SH" && echo yes)"
 assert_eq "pin gated on SKIP_TORCH"        "yes" "$(grep -q 'if \[ "\$SKIP_TORCH" = false \]; then' "$INSTALL_SH" && echo yes)"
 # Every --default-index torch install path must go through the kept-release
-# helper (definition + default path + three ROCm-index fallbacks).
+# helper (definition + default path + three ROCm-index fallbacks + two ROCm
+# repairs), so a pinned release missing from the index never aborts a rerun.
 _helper_uses=$(grep -c '_install_torch_default_index' "$INSTALL_SH")
-assert_eq "kept-release helper used by all default-index paths" "yes" "$([ "$_helper_uses" -ge 5 ] && echo yes)"
-# The Radeon direct-wheel path must also honor the pin: the trio search is
-# clamped to the kept release's minor when the repo still offers it, inside
-# the versions-match block (i.e. between the initial target computation and
-# the downward search loop).
-_radeon_clamp_line=$(grep -n '_prev_kept_minor="\${_PREV_TORCH_PIN#torch==}"' "$INSTALL_SH" | head -1 | cut -d: -f1)
-_radeon_target_line=$(grep -n '_target_minor=\$_torch_minor' "$INSTALL_SH" | head -1 | cut -d: -f1)
+assert_eq "kept-release helper used by all default-index paths" "yes" "$([ "$_helper_uses" -ge 7 ] && echo yes)"
+_repair_uses=$(grep -c '_install_torch_default_index --force-reinstall' "$INSTALL_SH")
+assert_eq "ROCm repairs routed through the kept-release helper" "yes" "$([ "$_repair_uses" -ge 2 ] && echo yes)"
+# The Radeon direct-wheel path must also honor the pin: an exact-first kept-trio
+# attempt (exact patch, else the kept minor's newest patch, with paired
+# vision/audio) runs BEFORE the newest-trio search, and the newest-trio search
+# only runs when that attempt did not produce a match, so a kept release can
+# neither drift to another patch/minor nor be undercut by the gap search.
+_radeon_kept_line=$(grep -n '_kept_torch=\$(_pick_radeon_wheel "torch" *"\${_prev_kept_base}"' "$INSTALL_SH" | head -1 | cut -d: -f1)
 _radeon_loop_line=$(grep -n 'Loop downwards to find the first complete matching trio' "$INSTALL_SH" | head -1 | cut -d: -f1)
-assert_eq "Radeon trio search honors the kept release" "yes" "$([ -n "$_radeon_clamp_line" ] && [ -n "$_radeon_target_line" ] && [ -n "$_radeon_loop_line" ] && [ "$_radeon_clamp_line" -gt "$_radeon_target_line" ] && [ "$_radeon_clamp_line" -lt "$_radeon_loop_line" ] && echo yes)"
+assert_eq "Radeon kept-trio attempt before the newest-trio search" "yes" "$([ -n "$_radeon_kept_line" ] && [ -n "$_radeon_loop_line" ] && [ "$_radeon_kept_line" -lt "$_radeon_loop_line" ] && echo yes)"
+assert_eq "Radeon newest-trio search gated on no kept match" "yes" "$(grep -q 'if \[ "\$_radeon_versions_match" != true \] &&' "$INSTALL_SH" && echo yes)"
+assert_eq "Radeon kept-trio gap falls back with a warning" "yes" "$(grep -q 'lacks a complete wheel set for kept' "$INSTALL_SH" && echo yes)"
 
 echo ""
 if [ "$FAIL" -gt 0 ]; then

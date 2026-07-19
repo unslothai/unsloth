@@ -2253,19 +2253,21 @@ _previous_torch_pin() {
 # Install torch from TORCH_INDEX_URL honoring a kept-release pin: with _PREV_TORCH_PIN
 # set, TORCH_CONSTRAINT is the exact previous release; fall back to the supported range
 # if the index lacks it (pruned mirror) rather than failing. Used by every --default-index
-# path (NVIDIA cu*, AMD rocm/gfx fallbacks, cpu/mac) so preservation is uniform.
+# path (NVIDIA cu*, AMD rocm/gfx fallbacks, cpu/mac, ROCm repairs) so preservation is
+# uniform. Extra args (e.g. --force-reinstall) are passed through to uv.
 _install_torch_default_index() {
     if [ -n "$_PREV_TORCH_PIN" ]; then
         if ! run_install_cmd_retry "install PyTorch (kept release)" uv pip install --python "$_VENV_PY" "$TORCH_CONSTRAINT" torchvision torchaudio \
-            --default-index "$TORCH_INDEX_URL"; then
+            --default-index "$TORCH_INDEX_URL" "$@"; then
             substep "[WARN] $_PREV_TORCH_PIN is not installable from $TORCH_INDEX_URL -- installing the newest supported release instead" "$C_WARN"
             TORCH_CONSTRAINT="$_PREV_FALLBACK_CONSTRAINT"
+            _PREV_TORCH_PIN=""
             run_install_cmd_retry "install PyTorch" uv pip install --python "$_VENV_PY" "$TORCH_CONSTRAINT" torchvision torchaudio \
-                --default-index "$TORCH_INDEX_URL"
+                --default-index "$TORCH_INDEX_URL" "$@"
         fi
     else
         run_install_cmd_retry "install PyTorch" uv pip install --python "$_VENV_PY" "$TORCH_CONSTRAINT" torchvision torchaudio \
-            --default-index "$TORCH_INDEX_URL"
+            --default-index "$TORCH_INDEX_URL" "$@"
     fi
 }
 
@@ -2897,10 +2899,7 @@ if [ "$_MIGRATED" = true ]; then
                 _has_hip=$("$_VENV_PY" -c "import torch; print(getattr(torch.version,'hip','') or '')" 2>/dev/null || true)
                 if [ -z "$_has_hip" ]; then
                     substep "repairing ROCm torch (overwritten by dependency resolution)..."
-                    run_install_cmd_retry "repair ROCm torch" uv pip install --python "$_VENV_PY" \
-                        "$TORCH_CONSTRAINT" torchvision torchaudio \
-                        --default-index "$TORCH_INDEX_URL" \
-                        --force-reinstall
+                    _install_torch_default_index --force-reinstall
                 fi
                 ;;
         esac
@@ -2965,7 +2964,36 @@ elif [ -n "$TORCH_INDEX_URL" ]; then
                 _ta_ver=$(_extract_version "$_ta_whl" "torchaudio")
 
                 _radeon_versions_match=false
-                if [ -n "$_torch_ver" ] && [ -n "$_tv_ver" ] && [ -n "$_ta_ver" ]; then
+                # Kept release (_PREV_TORCH_PIN) wins here too: pick its exact
+                # patch (else the newest patch of its minor) plus the paired
+                # vision/audio wheels. Any gap falls back to the newest-trio
+                # search below, mirroring _install_torch_default_index, so a
+                # rerun never drifts to another release nor below the kept one.
+                if [ -n "$_PREV_TORCH_PIN" ]; then
+                    _prev_kept_base="${_PREV_TORCH_PIN#torch==}"
+                    _prev_kept_minor="${_prev_kept_base#*.}"
+                    _prev_kept_minor="${_prev_kept_minor%%.*}"
+                    case "$_prev_kept_minor" in
+                        ''|*[!0-9]*) ;;
+                        *)
+                            _kept_torch=$(_pick_radeon_wheel "torch" "${_prev_kept_base}" 2>/dev/null) || _kept_torch=""
+                            [ -z "$_kept_torch" ] && { _kept_torch=$(_pick_radeon_wheel "torch" "2.${_prev_kept_minor}." 2>/dev/null) || _kept_torch=""; }
+                            _kept_tv=$(_pick_radeon_wheel "torchvision" "0.$((_prev_kept_minor + 15))." 2>/dev/null) || _kept_tv=""
+                            _kept_ta=$(_pick_radeon_wheel "torchaudio" "2.${_prev_kept_minor}." 2>/dev/null) || _kept_ta=""
+                            if [ -n "$_kept_torch" ] && [ -n "$_kept_tv" ] && [ -n "$_kept_ta" ]; then
+                                _torch_whl=$_kept_torch
+                                _tv_whl=$_kept_tv
+                                _ta_whl=$_kept_ta
+                                _tri_whl=""
+                                _radeon_versions_match=true
+                            else
+                                substep "[WARN] Radeon repo lacks a complete wheel set for kept $_PREV_TORCH_PIN -- installing the newest compatible set instead" "$C_WARN"
+                            fi
+                            ;;
+                    esac
+                fi
+                if [ "$_radeon_versions_match" != true ] && \
+                   [ -n "$_torch_ver" ] && [ -n "$_tv_ver" ] && [ -n "$_ta_ver" ]; then
                     _torch_minor=${_torch_ver#*.}
                     _ta_minor=${_ta_ver#*.}
                     _tv_minor=${_tv_ver#*.}
@@ -2975,27 +3003,6 @@ elif [ -n "$TORCH_INDEX_URL" ]; then
                     _target_minor=$_torch_minor
                     [ "$_tv_equiv_minor" -lt "$_target_minor" ] && _target_minor=$_tv_equiv_minor
                     [ "$_ta_minor" -lt "$_target_minor" ] && _target_minor=$_ta_minor
-
-                    # Kept release (_PREV_TORCH_PIN) wins here too: start the
-                    # trio search at the kept minor when the repo still offers a
-                    # torch wheel for it, so a re-run over an in-window 2.9 is
-                    # not moved to 2.10. Radeon wheels are patch-curated per
-                    # rocm release, so the minor is the unit of preservation; if
-                    # the kept minor has gaps the downward search / fallback below applies.
-                    if [ -n "$_PREV_TORCH_PIN" ]; then
-                        _prev_kept_minor="${_PREV_TORCH_PIN#torch==}"
-                        _prev_kept_minor="${_prev_kept_minor#*.}"
-                        _prev_kept_minor="${_prev_kept_minor%%.*}"
-                        case "$_prev_kept_minor" in
-                            ''|*[!0-9]*) ;;
-                            *)
-                                if [ "$_prev_kept_minor" -lt "$_target_minor" ] && \
-                                   [ -n "$(_pick_radeon_wheel "torch" "2.${_prev_kept_minor}." 2>/dev/null)" ]; then
-                                    _target_minor=$_prev_kept_minor
-                                fi
-                                ;;
-                        esac
-                    fi
 
                     # Loop downwards to find the first complete matching trio.
                     # This avoids aborting if the repo has gaps.
@@ -3136,10 +3143,7 @@ elif [ -n "$TORCH_INDEX_URL" ]; then
                 _has_hip=$("$_VENV_PY" -c "import torch; print(getattr(torch.version,'hip','') or '')" 2>/dev/null || true)
                 if [ -z "$_has_hip" ]; then
                     substep "repairing ROCm torch (overwritten by dependency resolution)..."
-                    run_install_cmd_retry "repair ROCm torch" uv pip install --python "$_VENV_PY" \
-                        "$TORCH_CONSTRAINT" torchvision torchaudio \
-                        --default-index "$TORCH_INDEX_URL" \
-                        --force-reinstall
+                    _install_torch_default_index --force-reinstall
                 fi
                 ;;
         esac
