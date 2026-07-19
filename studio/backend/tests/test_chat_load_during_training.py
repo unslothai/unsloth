@@ -234,10 +234,11 @@ class TestCanLoadGGUF(_GpuCacheResetMixin, unittest.TestCase):
         self.assertFalse(blocked)
         self.assertEqual(blocked_info["usable_gb"], 10.0)
 
-    def test_single_device_unresolved_token_sizes_against_pool(self):
+    def test_single_device_unresolved_token_sizes_against_worst_device(self):
         # A non-numeric device token (a CUDA UUID / MIG handle) can't map to a
-        # free-VRAM index. Rather than falsely block, size against the whole
-        # visible pool: here GPU 0 has 80 GB free for a 20 GB model -> allow.
+        # free-VRAM index. The runner still drives ONE device, so size against the
+        # worst-case visible device (min free), not the aggregate pool: one GPU
+        # with 80 GB free vs a 20 GB model -> allow.
         ok, info, _ = self._run(
             devices = _devices((0, 80, 0)),
             required_override = 20.0,
@@ -247,10 +248,9 @@ class TestCanLoadGGUF(_GpuCacheResetMixin, unittest.TestCase):
         self.assertEqual(info["mode"], "single_device")
         self.assertNotIn("reason", info)
 
-    def test_single_device_unresolved_token_refuses_when_pool_full(self):
-        # Same UUID fallback, but the visible pool is nearly full (2 GB free for
-        # a 20 GB model) -> the sizing check still refuses (default-deny), just
-        # not on an unresolved-token technicality.
+    def test_single_device_unresolved_token_refuses_when_worst_device_full(self):
+        # Same UUID fallback, worst-case device nearly full (2 GB for a 20 GB
+        # model) -> refuse (default-deny), not on an unresolved-token technicality.
         ok, info, _ = self._run(
             devices = _devices((0, 80, 78)),
             required_override = 20.0,
@@ -258,6 +258,19 @@ class TestCanLoadGGUF(_GpuCacheResetMixin, unittest.TestCase):
         )
         self.assertFalse(ok)
         self.assertNotEqual(info.get("reason"), "unresolved_gpu_id")
+
+    def test_single_device_unresolved_token_uses_min_free_not_aggregate(self):
+        # The single-device runner uses ONE device but we can't tell which from a
+        # UUID token. Sizing against the aggregate pool would let a 20 GB model
+        # "fit" 160 GB of pooled free VRAM while landing on a 2 GB card and OOMing
+        # training. Min-free (2 GB) is the safe worst case -> refuse.
+        ok, info, _ = self._run(
+            devices = _devices((0, 80, 78), (1, 80, 0), (2, 80, 0)),
+            required_override = 20.0,
+            single_device_gpu = "GPU-uuid",
+        )
+        self.assertFalse(ok)
+        self.assertEqual(info["mode"], "single_device")
 
     def test_single_device_cpu_token_allows(self):
         # An empty device token = a CPU-only single-device runner (CPU diffusion

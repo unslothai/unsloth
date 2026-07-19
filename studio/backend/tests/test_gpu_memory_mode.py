@@ -42,27 +42,11 @@ _structlog_stub = _types.ModuleType("structlog")
 _structlog_stub.get_logger = lambda *a, **k: __import__("logging").getLogger("stub")
 sys.modules.setdefault("structlog", _structlog_stub)
 
-_httpx_stub = _types.ModuleType("httpx")
-for _exc in (
-    "ConnectError",
-    "TimeoutException",
-    "ReadTimeout",
-    "ReadError",
-    "RemoteProtocolError",
-    "CloseError",
-):
-    setattr(_httpx_stub, _exc, type(_exc, (Exception,), {}))
-_httpx_stub.Timeout = type("T", (), {"__init__": lambda s, *a, **k: None})
-_httpx_stub.Client = type(
-    "C",
-    (),
-    {
-        "__init__": lambda s, **kw: None,
-        "__enter__": lambda s: s,
-        "__exit__": lambda s, *a: None,
-    },
-)
-sys.modules.setdefault("httpx", _httpx_stub)
+# httpx is a real, installed backend dependency: import it so the genuine module
+# is in sys.modules. A hand-rolled stub here is inevitably incomplete and, since
+# setdefault installs it before real httpx loads, would poison a combined pytest
+# run -- routes/inference references httpx.Response (and other attrs) at def time.
+import httpx  # noqa: F401
 
 from core.inference import llama_cpp as llama_cpp_module
 from core.inference.llama_cpp import LlamaCppBackend
@@ -301,6 +285,19 @@ def test_load_request_manual_defaults():
     assert req.gpu_layers == -1
     assert req.n_cpu_moe == 0
     assert req.tensor_split is None
+
+
+@pytest.mark.parametrize("bad", [[0, 0], [-1, 2], [float("inf"), 1], [float("nan"), 1]])
+def test_load_request_rejects_degenerate_tensor_split(bad):
+    # A negative/non-finite/all-zero split is dropped at launch but compared raw
+    # in the reload dedupe, so it would reload forever -- reject it up front.
+    with pytest.raises(ValueError):
+        LoadRequest(model_path = "owner/repo", tensor_split = bad)
+
+
+@pytest.mark.parametrize("good", [[2, 1], [1, 1], [], None])
+def test_load_request_accepts_valid_tensor_split(good):
+    assert LoadRequest(model_path = "owner/repo", tensor_split = good).tensor_split == good
 
 
 def test_route_normalizes_explicit_extras_before_reload_dedupe():
@@ -650,6 +647,15 @@ def test_gpu_ids_reload_detection_collapses_diffusion_to_single_device():
     assert _target_state_gpu_ids(backend, [3, 2]) is False
     # Dropping the pick (auto) -> reload.
     assert _target_state_gpu_ids(backend, None) is False
+
+
+def test_start_diffusion_server_resets_tensor_parallel():
+    # A prior tensor-parallel chat load leaves self._tensor_parallel True (load_model
+    # phase 1 only kills the process, it skips the unload reset). Diffusion is never
+    # TP, so startup must clear it -- else /status misreports TP and an identical
+    # diffusion re-Apply reloads against stale tensor-parallel state.
+    src = inspect.getsource(llama_cpp_module.LlamaCppBackend._start_diffusion_server)
+    assert "self._tensor_parallel = False" in src
 
 
 def test_route_matches_loaded_settings_collapses_diffusion_gpu_ids():

@@ -280,10 +280,11 @@ def can_load_chat_during_training(
                     raise ValueError
             except (TypeError, ValueError):
                 # A non-numeric device token (e.g. a CUDA UUID / MIG handle)
-                # can't be mapped to a free-VRAM index; rather than reject the
-                # load, size it against the whole visible pool like the GGUF
-                # guard below so a resolvable device isn't falsely blocked.
-                free_vals = list(free_by_index.values())
+                # can't be mapped to a free-VRAM index, but the runner still
+                # drives ONE device. Size against the worst-case visible device
+                # (min free), never the aggregate pool, so a single-device load
+                # is never OK'd on capacity it can't use and OOMs training.
+                free_vals = [min(free_by_index.values())] if free_by_index else []
             else:
                 free_vals = [free_by_index.get(selected_gpu, 0.0)]
         elif requested_gpu_ids:

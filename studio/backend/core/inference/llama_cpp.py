@@ -4852,6 +4852,11 @@ class LlamaCppBackend:
         self._gpu_layers = -1
         self._n_cpu_moe = 0
         self._tensor_split = None
+        # Diffusion is never tensor-parallel; clear any state left by a prior TP
+        # chat load (load_model phase 1 only kills the process, it doesn't run
+        # the unload reset) so /status doesn't misreport TP and an identical
+        # re-Apply doesn't reload against stale tensor-parallel state.
+        self._tensor_parallel = False
         # Record only the single device the runner actually uses (the lowest
         # selected GPU, chosen above) -- not the whole pick. The diffusion runner
         # is single-device, so echoing a multi-GPU list would misreport placement
