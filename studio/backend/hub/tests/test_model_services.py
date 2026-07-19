@@ -1844,9 +1844,7 @@ def test_local_inventory_filters_custom_embedder_hf_cache_row(monkeypatch, tmp_p
             model_id = repo_id,
         )
 
-    rows = local_inventory._filter_hidden_models(
-        [_row("org/embedder"), _row("org/chat-model")]
-    )
+    rows = local_inventory._filter_hidden_models([_row("org/embedder"), _row("org/chat-model")])
 
     assert [row.model_id for row in rows] == ["org/chat-model"]
 

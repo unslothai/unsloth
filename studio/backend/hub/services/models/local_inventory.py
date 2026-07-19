@@ -627,9 +627,7 @@ def _dedupe_local_models(local_models: List[LocalModelInfo]) -> list[LocalModelI
 def _filter_hidden_models(local_models: List[LocalModelInfo]) -> list[LocalModelInfo]:
     """Remove infrastructure-only models from the shared local inventory."""
     return [
-        model
-        for model in local_models
-        if not is_hidden_model(model.id, model.model_id, model.path)
+        model for model in local_models if not is_hidden_model(model.id, model.model_id, model.path)
     ]
 
 
