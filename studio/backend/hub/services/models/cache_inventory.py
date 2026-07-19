@@ -268,11 +268,14 @@ def _scan_cached_gguf() -> list[dict]:
                 if str(repo_info.repo_type) != "model":
                     continue
                 repo_id = repo_info.repo_id
+                repo_path = Path(repo_info.repo_path)
+                snapshot_path = _cached_model_snapshot_path(repo_path)
                 total_size = _repo_gguf_size_bytes(repo_info)
                 has_variant_state, variant_state_size = _gguf_variant_state_summary(repo_id)
                 is_hidden_infra = _is_hidden_infra_repo(
                     repo_id,
-                    str(repo_info.repo_path),
+                    str(repo_path),
+                    str(snapshot_path) if snapshot_path is not None else None,
                 )
                 # Hide infra repos unless the user downloaded a variant via
                 # the Hub; variant state only exists for user downloads.
@@ -282,7 +285,7 @@ def _scan_cached_gguf() -> list[dict]:
                     continue
                 partial = hf_cache_scan.is_gguf_repo_partial(
                     repo_id,
-                    Path(repo_info.repo_path),
+                    repo_path,
                 )
                 if total_size == 0 and not partial:
                     continue
@@ -500,8 +503,14 @@ def _scan_cached_models() -> list[dict]:
                 if str(repo_info.repo_type) != "model":
                     continue
                 repo_id = repo_info.repo_id
+                repo_path = Path(repo_info.repo_path)
+                snapshot_path = _cached_model_snapshot_path(repo_path)
                 # The non-GGUF embedder has no variant downloads; always hide.
-                if _is_hidden_infra_repo(repo_id, str(repo_info.repo_path)):
+                if _is_hidden_infra_repo(
+                    repo_id,
+                    str(repo_path),
+                    str(snapshot_path) if snapshot_path is not None else None,
+                ):
                     continue
                 has_main_gguf = _repo_has_gguf_files(repo_info)
                 payload = _repo_non_gguf_model_payload(repo_info)
@@ -514,7 +523,6 @@ def _scan_cached_models() -> list[dict]:
                     continue
                 key = repo_id.lower()
                 existing = seen_lower.get(key)
-                repo_path = Path(repo_info.repo_path)
                 snapshot_partial = hf_cache_scan.is_snapshot_partial(
                     "model",
                     repo_id,

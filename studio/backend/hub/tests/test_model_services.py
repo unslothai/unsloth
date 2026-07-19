@@ -580,6 +580,69 @@ def test_cached_scans_hide_embedders_configured_by_cache_path(monkeypatch, tmp_p
     assert cache_inventory._scan_cached_models() == []
 
 
+def test_cached_scans_hide_embedders_configured_by_snapshot_path(monkeypatch, tmp_path):
+    from core.rag import config as rag_config
+
+    gguf_path = tmp_path / "hub" / "models--Org--SnapshotEmbedder-GGUF"
+    gguf_snapshot = gguf_path / "snapshots" / "gguf-revision"
+    gguf_snapshot.mkdir(parents = True)
+    gguf = _repo(
+        "Org/SnapshotEmbedder-GGUF",
+        [_file("model-F16.gguf", 60_000_000)],
+        gguf_path,
+    )
+    model_path = tmp_path / "hub" / "models--Org--SnapshotEmbedder"
+    model_snapshot = model_path / "snapshots" / "model-revision"
+    model_snapshot.mkdir(parents = True)
+    model = _repo(
+        "Org/SnapshotEmbedder",
+        [_file("config.json", 12), _file("model.safetensors", 130_000_000)],
+        model_path,
+    )
+    monkeypatch.setattr(
+        rag_config,
+        "effective_embedding_model",
+        lambda: str(model_snapshot),
+    )
+    monkeypatch.setattr(
+        rag_config,
+        "effective_gguf_repo",
+        lambda: str(gguf_snapshot),
+    )
+    monkeypatch.setattr(
+        cache_inventory,
+        "all_hf_cache_scans",
+        lambda: [SimpleNamespace(repos = [gguf, model])],
+    )
+
+    def _resolve_snapshot(repo_path):
+        return str(
+            {
+                gguf_path: gguf_snapshot,
+                model_path: model_snapshot,
+            }.get(Path(repo_path), Path(repo_path))
+        )
+
+    monkeypatch.setattr(
+        cache_inventory.hf_cache_scan,
+        "resolve_hf_cache_realpath",
+        _resolve_snapshot,
+    )
+    monkeypatch.setattr(
+        cache_inventory.hf_cache_scan,
+        "is_gguf_repo_partial",
+        lambda _repo_id, _path: False,
+    )
+    monkeypatch.setattr(
+        cache_inventory.hf_cache_scan,
+        "is_snapshot_partial",
+        lambda _kind, _repo_id, _path: False,
+    )
+
+    assert cache_inventory._scan_cached_gguf() == []
+    assert cache_inventory._scan_cached_models() == []
+
+
 def test_cached_models_scan_keeps_unrelated_repo_with_custom_generic_embedder(
     monkeypatch, tmp_path
 ):
@@ -1845,6 +1908,42 @@ def test_local_inventory_filters_custom_embedder_hf_cache_row(monkeypatch, tmp_p
         )
 
     rows = local_inventory._filter_hidden_models([_row("org/embedder"), _row("org/chat-model")])
+
+    assert [row.model_id for row in rows] == ["org/chat-model"]
+
+
+def test_local_inventory_filters_embedder_configured_by_snapshot_path(monkeypatch, tmp_path):
+    from core.rag import config as rag_config
+
+    embedder_path = tmp_path / "hub" / "models--org--embedder"
+    embedder_snapshot = embedder_path / "snapshots" / "revision"
+    embedder_snapshot.mkdir(parents = True)
+    chat_path = tmp_path / "hub" / "models--org--chat-model"
+    chat_path.mkdir(parents = True)
+    monkeypatch.setattr(
+        rag_config,
+        "effective_embedding_model",
+        lambda: str(embedder_snapshot),
+    )
+    monkeypatch.setattr(rag_config, "effective_gguf_repo", lambda: "org/embedder-GGUF")
+    monkeypatch.setattr(
+        local_inventory.hf_cache_scan,
+        "resolve_hf_cache_realpath",
+        lambda path: str(embedder_snapshot) if Path(path) == embedder_path else str(path),
+    )
+
+    def _row(repo_id: str, repo_path: Path):
+        return model_common._local_model_info(
+            scan_path = repo_path,
+            load_path = repo_path,
+            source = "hf_cache",
+            model_format = "safetensors",
+            model_id = repo_id,
+        )
+
+    rows = local_inventory._filter_hidden_models(
+        [_row("org/embedder", embedder_path), _row("org/chat-model", chat_path)]
+    )
 
     assert [row.model_id for row in rows] == ["org/chat-model"]
 

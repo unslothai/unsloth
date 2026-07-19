@@ -626,9 +626,16 @@ def _dedupe_local_models(local_models: List[LocalModelInfo]) -> list[LocalModelI
 
 def _filter_hidden_models(local_models: List[LocalModelInfo]) -> list[LocalModelInfo]:
     """Remove infrastructure-only models from the shared local inventory."""
-    return [
-        model for model in local_models if not is_hidden_model(model.id, model.model_id, model.path)
-    ]
+    visible: list[LocalModelInfo] = []
+    for model in local_models:
+        resolved_cache_path = (
+            hf_cache_scan.resolve_hf_cache_realpath(Path(model.path))
+            if model.source == "hf_cache"
+            else None
+        )
+        if not is_hidden_model(model.id, model.model_id, model.path, resolved_cache_path):
+            visible.append(model)
+    return visible
 
 
 async def list_local_models_response(models_dir: str = "./models") -> LocalModelListResponse:
