@@ -8,7 +8,7 @@ import { getAuthToken } from "@/features/auth/session";
 import type { ToolCallMessagePartComponent } from "@assistant-ui/react";
 import { useToolArgsStatus } from "@assistant-ui/react";
 import { code as codePlugin } from "@streamdown/code";
-import { CodeIcon, CopyIcon } from "lucide-react";
+import { CodeIcon, CopyIcon, DownloadIcon } from "lucide-react";
 import { Tick02Icon } from "@/lib/tick-icon";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { Spinner } from "@/components/ui/spinner";
@@ -83,6 +83,41 @@ function CopyBtn({ text }: { text: string }) {
   );
 }
 
+/** Save the executed script as a .py file via a client-side Blob (no server file serving). */
+function DownloadBtn({ code, name = "script.py" }: { code: string; name?: string }) {
+  const download = useCallback(() => {
+    if (typeof document === "undefined") {
+      return;
+    }
+    try {
+      const blob = new Blob([code], { type: "text/x-python" });
+      const url = URL.createObjectURL(blob);
+      const anchor = document.createElement("a");
+      anchor.href = url;
+      anchor.download = name;
+      document.body.appendChild(anchor);
+      anchor.click();
+      anchor.remove();
+      // Revoke next tick, after the click consumes the URL.
+      setTimeout(() => URL.revokeObjectURL(url), 0);
+    } catch {
+      // Best-effort: never break the transcript over a download.
+    }
+  }, [code, name]);
+
+  return (
+    <button
+      type="button"
+      onClick={download}
+      className="inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-xs text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
+      aria-label="Download script"
+    >
+      <DownloadIcon className="size-3" />
+      Download
+    </button>
+  );
+}
+
 /** Syntax-highlighted code via Streamdown + shiki; inherits parent container. */
 function HighlightedCode({ code: source, language }: { code: string; language: string }) {
   const markdown = useMemo(
@@ -153,23 +188,32 @@ const PythonToolUIImpl: ToolCallMessagePartComponent = ({
   const authToken = getAuthToken();
 
   return (
-    // Open when mounted mid-run so live output shows; collapsed from history.
+    // Run status and output collapse from history, but the script source is
+    // rendered outside ToolFallbackContent so it stays visible on reopen (#7165).
     <ToolFallbackRoot defaultOpen={isRunning}>
       <ToolFallbackTrigger
         toolName={firstLine ? `Python: ${firstLine}` : "Python"}
         status={status}
         icon={CodeIcon}
       />
+      {code && (
+        <div className="mt-1 pl-5">
+          <div className="border-l-2 border-muted-foreground/20 pl-2">
+            <div className="flex items-center justify-between">
+              <span className="text-xs font-medium text-muted-foreground">
+                script
+              </span>
+              <div className="flex items-center gap-1">
+                <CopyBtn text={code} />
+                <DownloadBtn code={code} />
+              </div>
+            </div>
+            <HighlightedCode code={code} language="python" />
+          </div>
+        </div>
+      )}
       <ToolFallbackContent>
         <div className="border-l-2 border-muted-foreground/20 pl-2">
-          {/* Code + copy */}
-          {code && (
-            <div className="flex justify-end">
-              <CopyBtn text={code} />
-            </div>
-          )}
-          {code && <HighlightedCode code={code} language="python" />}
-
           {/* Output */}
           {isRunning ? (
             <>
