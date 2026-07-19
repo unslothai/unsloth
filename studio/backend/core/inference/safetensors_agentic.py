@@ -995,7 +995,7 @@ def run_safetensors_tool_loop(
             if not safety_tc:
                 # Re-prompt once on plan-without-action, before any tool runs
                 # (GGUF loop parity). The retry is gated on nudge_tool_calls so
-                # Studio callers (which send True) always nudge, while API callers
+                # Unsloth callers (which send True) always nudge, while API callers
                 # who omit the flag keep today's no-reprompt behavior (opt-in).
                 intent_text = _reprompt_intent_text(
                     content_accum,

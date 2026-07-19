@@ -1,8 +1,8 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-# End-to-end Studio chat UI smoke via Playwright + Chromium against a
-# headless Linux runner. Boots Studio with the smallest GGUF
+# End-to-end Unsloth chat UI smoke via Playwright + Chromium against a
+# headless Linux runner. Boots Unsloth with the smallest GGUF
 # (gemma-3-270m-it UD-Q4_K_XL, ~254 MiB), drives the actual frontend
 # bundle, and asserts the full bootstrap-password / change-password /
 # send-message / persist-on-reload journey works end to end.
@@ -14,7 +14,7 @@
 # frontend-only CI happily pass while the actual user-visible UI is
 # broken (cf. the 2026.5.1 chat-history release).
 
-name: Studio UI CI
+name: Unsloth UI CI
 
 on:
   pull_request:
@@ -97,7 +97,7 @@ jobs:
           path: hf-cache
           key: ${{ runner.os }}-hf-${{ env.GGUF_REPO }}-${{ env.GGUF_VARIANT }}-v2
 
-      - name: Install Studio (--local, --no-torch)
+      - name: Install Unsloth (--local, --no-torch)
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           # Withheld on PR: this step runs checked-out PR code; public GGUF still downloads.
@@ -115,7 +115,7 @@ jobs:
           # warm runner.
           python -m playwright install --with-deps chromium
 
-      - name: Reset auth + boot Studio
+      - name: Reset auth + boot Unsloth
         run: |
           unsloth studio reset-password
           mkdir -p logs
@@ -147,7 +147,7 @@ jobs:
         # NEW + NEW2 are generated freshly per CI run via secrets.token_urlsafe
         # rather than hardcoded. If a workflow gets compromised, the
         # attacker can't replay a known-good rotated password against
-        # any future / parallel Studio install -- the rotated value
+        # any future / parallel Unsloth install -- the rotated value
         # only ever exists for the lifetime of this single job, masked
         # in the log via ::add-mask::.
         run: |
@@ -165,18 +165,18 @@ jobs:
         env:
           BASE_URL: http://127.0.0.1:18892
           # The test file lives in the repo so it can be run locally
-          # against a freshly-installed Studio (BASE_URL=...; STUDIO_OLD_PW=
+          # against a freshly-installed Unsloth (BASE_URL=...; STUDIO_OLD_PW=
           # $(cat ~/.unsloth/studio/auth/.bootstrap_password); python ...).
           PW_ART_DIR: logs/playwright
           # Strict mode: in CI a missing button / nav / dialog must
           # FAIL the test. Locally the test still runs against partial
-          # Studio installs without STUDIO_UI_STRICT.
+          # Unsloth installs without STUDIO_UI_STRICT.
           STUDIO_UI_STRICT: '1'
         run: |
           mkdir -p logs/playwright
           python tests/studio/playwright_chat_ui.py
 
-      - name: Stop Studio (chat-ui ends with Shutdown click; this is belt-and-suspenders)
+      - name: Stop Unsloth (chat-ui ends with Shutdown click; this is belt-and-suspenders)
         if: always()
         run: |
           kill "${STUDIO_PID}" 2>/dev/null || true
@@ -184,10 +184,10 @@ jobs:
 
       # The chat UI test ends by clicking the Shutdown menuitem, which
       # leaves the server dead. The extra UI test (Compare / Recipes /
-      # Export / Studio / Settings) needs a fresh Studio, so we boot a
+      # Export / Unsloth / Settings) needs a fresh Unsloth, so we boot a
       # second one on a different port. Boot is fast (~3-5s on the
       # warm install we already did) so this adds little wall time.
-      - name: Reset auth + boot Studio for extra UI tests (port 18894)
+      - name: Reset auth + boot Unsloth for extra UI tests (port 18894)
         run: |
           unsloth studio reset-password
           mkdir -p logs
@@ -214,7 +214,7 @@ jobs:
           echo "STUDIO_EXTRA_OLD_PW=$OLD" >> "$GITHUB_ENV"
           echo "STUDIO_EXTRA_NEW_PW=$NEW" >> "$GITHUB_ENV"
 
-      - name: Drive Compare/Recipes/Export/Studio/Settings with Playwright
+      - name: Drive Compare/Recipes/Export/Unsloth/Settings with Playwright
         env:
           BASE_URL: http://127.0.0.1:18894
           STUDIO_OLD_PW: ${{ env.STUDIO_EXTRA_OLD_PW }}
@@ -227,16 +227,16 @@ jobs:
           mkdir -p logs/playwright_extra
           python tests/studio/playwright_extra_ui.py
 
-      - name: Stop second Studio
+      - name: Stop second Unsloth
         if: always()
         run: |
           kill "${STUDIO_EXTRA_PID}" 2>/dev/null || true
           sleep 2
 
       # IME + multilingual paste regression (issue #5318 / PR #5327).
-      # Third Studio on its own port so a hang here cannot poison the
+      # Third Unsloth on its own port so a hang here cannot poison the
       # earlier UI tests. No GGUF -- the bug surface is the composer.
-      - name: Reset auth + boot Studio for IME / i18n tests (port 18896)
+      - name: Reset auth + boot Unsloth for IME / i18n tests (port 18896)
         run: |
           unsloth studio reset-password
           mkdir -p logs
@@ -256,7 +256,7 @@ jobs:
 
       - name: Pass bootstrap pw for IME / i18n test
         # IME smoke does the change-password against the bootstrap that
-        # Studio's frontend injects into the page, so it only needs the
+        # Unsloth's frontend injects into the page, so it only needs the
         # NEW password.
         run: |
           NEW="CIIme-$(python -c 'import secrets; print(secrets.token_urlsafe(16))')"
@@ -273,7 +273,7 @@ jobs:
           mkdir -p logs/playwright_ime
           python tests/studio/playwright_chat_ime_i18n.py
 
-      - name: Stop third Studio
+      - name: Stop third Unsloth
         if: always()
         run: |
           kill "${STUDIO_IME_PID}" 2>/dev/null || true

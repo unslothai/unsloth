@@ -8,7 +8,7 @@ import { cn } from "@/lib/utils";
 import { useAuiState } from "@assistant-ui/react";
 import { LayoutTwoColumnIcon as Layout2ColumnIcon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
-import { useLayoutEffect, useMemo } from "react";
+import { useLayoutEffect, useMemo, useRef } from "react";
 import { useChatRuntimeStore } from "../stores/chat-runtime-store";
 import type { ArtifactViewMode } from "./html-frame";
 import {
@@ -83,15 +83,18 @@ export function ArtifactCard({
     ],
   );
   const surface = artifactThreadId ? "panel" : "overlay";
+  // Once per mount, so a view-change cleanup can't re-trigger a stale open.
+  const autoOpenAttemptedRef = useRef(false);
 
   useLayoutEffect(() => {
     if (selectedArtifactId === artifact.id) {
       updateArtifact(artifact);
     }
 
-    if (!autoOpen) {
+    if (!autoOpen || autoOpenAttemptedRef.current) {
       return;
     }
+    autoOpenAttemptedRef.current = true;
     if (hasAutoOpenedArtifact(artifact.id)) {
       return;
     }
