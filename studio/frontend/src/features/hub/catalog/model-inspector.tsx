@@ -59,11 +59,9 @@ import { ModelReadme } from "./model-readme";
 import { OwnerAvatar } from "./owner-avatar";
 import { AccessChip, CapabilityPill } from "./shared";
 
-// HF pipeline_tag values that denote an embedding / feature-extraction repo with
-// no generative head. Authoritative for the Run gate: topical capability labels
-// (code / vision / audio / reasoning) attach to embedding repos from their name
-// or tags (e.g. jina-embeddings-v2-base-code gets "code" from its -code suffix),
-// so they cannot be trusted to exempt a model from the gate.
+// HF pipeline_tag values for embedding/feature-extraction repos with no
+// generative head. Authoritative for the Run gate: capability labels like
+// code/vision/audio can leak onto embedding repos from their name or tags.
 const EMBEDDING_PIPELINE_TAGS: ReadonlySet<string> = new Set([
   "feature-extraction",
   "sentence-similarity",
@@ -542,10 +540,8 @@ export const ModelInspector = memo(function ModelInspector({
     : "N/A";
   const unslothSupported = unslothSupport.status !== "unsupported";
   // Embedding-only non-GGUF repos classify as supported but have no generative
-  // head, so a chat load dead-ends. Keep them out of the non-GGUF Run gate. An
-  // embedding pipeline tag is authoritative (no generative head even when the
-  // repo name/tags also imply code/vision/audio/reasoning); otherwise fall back
-  // to the capability heuristic.
+  // head, so a chat load dead-ends. Keep them out of the Run gate: an embedding
+  // pipeline tag is authoritative, else fall back to the capability heuristic.
   const isEmbeddingOnly =
     !model.isGguf &&
     model.capabilities.some((c) => c.key === "embedding") &&
