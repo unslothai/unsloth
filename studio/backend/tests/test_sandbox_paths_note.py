@@ -24,9 +24,13 @@ if _BACKEND_DIR not in sys.path:
 
 from core.inference.tools import (
     PYTHON_TOOL,
+    PYTHON_TOOL_BYPASS,
     TERMINAL_TOOL,
+    TERMINAL_TOOL_BYPASS,
     _SANDBOX_PATHS_NOTE,
+    _SANDBOX_PATHS_NOTE_BYPASS,
     _bash_exec,
+    apply_bypass_tool_notes,
 )
 
 
@@ -116,6 +120,63 @@ def test_blocked_network_command_message_does_not_recommend_chat_upload():
     msg = _bash_exec("curl https://raw.githubusercontent.com/foo/bar/main/x.py").lower()
     assert "upload" not in msg
     assert "working directory" in msg or "path the sandbox can read" in msg
+
+
+def test_bypass_note_drops_the_curl_wget_allowlist_restriction():
+    # Under Bypass Permissions _python_exec/_bash_exec skip the safety analysis and
+    # the curl/wget blocklist, so egress is not limited to the allowlist and those
+    # downloads work. The bypass note must not tell the model they are blocked.
+    lowered = _SANDBOX_PATHS_NOTE_BYPASS.lower()
+    assert "curl" not in lowered and "wget" not in lowered
+    assert "allowlist" not in lowered
+    assert "internet access is limited" not in lowered
+    # It keeps the workdir-default framing and the "not a copy of the host" guard.
+    assert "default location for your work" in lowered
+    assert "do not assume files elsewhere on the host are already here" in lowered
+    # The bypass note is a strict prefix+suffix of the default note (only the
+    # network sentence is removed), so the rest of the guidance is unchanged.
+    assert _SANDBOX_PATHS_NOTE_BYPASS != _SANDBOX_PATHS_NOTE
+    assert "curl" in _SANDBOX_PATHS_NOTE.lower()
+
+
+def test_bypass_tool_variants_use_the_bypass_note():
+    assert PYTHON_TOOL_BYPASS["function"]["description"].endswith(_SANDBOX_PATHS_NOTE_BYPASS)
+    assert TERMINAL_TOOL_BYPASS["function"]["description"].endswith(_SANDBOX_PATHS_NOTE_BYPASS)
+    # Same tool names/parameters as the default variants; only the note differs.
+    assert PYTHON_TOOL_BYPASS["function"]["name"] == PYTHON_TOOL["function"]["name"]
+    assert TERMINAL_TOOL_BYPASS["function"]["name"] == TERMINAL_TOOL["function"]["name"]
+    assert PYTHON_TOOL_BYPASS["function"]["parameters"] == PYTHON_TOOL["function"]["parameters"]
+
+
+def test_apply_bypass_tool_notes_swaps_only_python_and_terminal():
+    tools = [
+        {"function": {"name": "web_search", "description": "search"}},
+        PYTHON_TOOL,
+        TERMINAL_TOOL,
+    ]
+    swapped = apply_bypass_tool_notes(tools)
+    by_name = {t["function"]["name"]: t for t in swapped}
+    assert "curl" not in by_name["python"]["function"]["description"].lower()
+    assert "curl" not in by_name["terminal"]["function"]["description"].lower()
+    # Unrelated tools pass through unchanged (same object).
+    assert by_name["web_search"] is tools[0]
+    # The shared module globals are not mutated by the swap.
+    assert "curl" in PYTHON_TOOL["function"]["description"].lower()
+    # A tool list without python/terminal is returned unchanged (same object).
+    plain = [{"function": {"name": "web_search", "description": "search"}}]
+    assert apply_bypass_tool_notes(plain) is plain
+
+
+def test_bypass_code_execution_nudge_drops_the_limited_internet_claim():
+    from routes.inference import _TOOL_CODE_TIP, _TOOL_CODE_TIP_BYPASS
+
+    lowered = _TOOL_CODE_TIP_BYPASS.lower()
+    assert "internet access is limited" not in lowered
+    # Keeps the workdir-default framing and the exact-path guidance.
+    assert "default" in lowered and "location for your work" in lowered
+    assert "give an exact path" in lowered
+    # The default nudge still carries the restriction for sandboxed sessions.
+    assert "internet access is limited" in _TOOL_CODE_TIP.lower()
 
 
 def test_code_execution_nudge_does_not_deny_local_file_access():

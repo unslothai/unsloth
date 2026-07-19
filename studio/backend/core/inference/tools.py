@@ -2952,17 +2952,30 @@ WEB_SEARCH_TOOL = {
 # Appended to the python/terminal descriptions: stop models writing to a
 # nonexistent /mnt/data or cd/grep-ing a guessed local path for a repo the
 # user only mentioned but never uploaded.
-_SANDBOX_PATHS_NOTE = (
+# Split so the Bypass Permissions variant can drop the network-restriction
+# sentence: under bypass, _python_exec/_bash_exec skip the safety analysis and
+# the curl/wget blocklist (network policy is enforced only by that AST host check
+# and the bash blocklist -- there is no network namespace), so egress is not
+# limited to the allowlist and curl/wget work. Keeping the sentence there would
+# falsely tell a full-permissions session those downloads are unavailable and can
+# block a user-supplied remote resource.
+_SANDBOX_PATHS_NOTE_INTRO = (
     " The working directory is an isolated scratch space that may already hold "
     "files from earlier work in this conversation or project, plus anything you "
     "create here; it persists across this conversation and, for a project, "
     "across the project's threads. It is the default location for your work, not "
     "a copy of the user's own computer, so do not assume files elsewhere on the "
-    "host are already here. Internet access is limited: the python tool can fetch "
+    "host are already here."
+)
+_SANDBOX_PATHS_NOTE_NETWORK = (
+    " Internet access is limited: the python tool can fetch "
     "only from a fixed allowlist of public sites (such as github.com, "
     "huggingface.co, and pypi.org), not the user's own machines, private hosts, "
     "or arbitrary addresses, and the terminal blocks direct download commands "
-    "like curl and wget. Documents the user attaches to the chat are retrieved "
+    "like curl and wget."
+)
+_SANDBOX_PATHS_NOTE_TAIL = (
+    " Documents the user attaches to the chat are retrieved "
     "separately and are not listed here. A repository, folder, or file the user "
     "refers to is not present here unless you created it here or it is already "
     "part of this project, so list the working directory to see what is "
@@ -2972,6 +2985,13 @@ _SANDBOX_PATHS_NOTE = (
     "you need are not here, ask the user to provide them or an exact path "
     "instead of guessing one."
 )
+# Default (sandboxed) note: keeps the precise allowlist + curl/wget restriction.
+_SANDBOX_PATHS_NOTE = (
+    _SANDBOX_PATHS_NOTE_INTRO + _SANDBOX_PATHS_NOTE_NETWORK + _SANDBOX_PATHS_NOTE_TAIL
+)
+# Bypass Permissions variant: same guidance without the network-restriction
+# sentence that bypass removes (stays neutral rather than claiming egress works).
+_SANDBOX_PATHS_NOTE_BYPASS = _SANDBOX_PATHS_NOTE_INTRO + _SANDBOX_PATHS_NOTE_TAIL
 
 PYTHON_TOOL = {
     "type": "function",
@@ -3073,6 +3093,46 @@ ALL_TOOLS = [
     RENDER_HTML_TOOL,
     SEARCH_KNOWLEDGE_BASE_TOOL,
 ]
+
+
+def _with_sandbox_note(tool: dict, note: str) -> dict:
+    """Shallow copy of a python/terminal tool spec with its sandbox-paths note
+    swapped for ``note`` (the default note is stripped first)."""
+    fn = dict(tool["function"])
+    base = fn["description"]
+    if base.endswith(_SANDBOX_PATHS_NOTE):
+        base = base[: -len(_SANDBOX_PATHS_NOTE)]
+    fn["description"] = base + note
+    return {**tool, "function": fn}
+
+
+# Bypass Permissions variants: descriptions omit the allowlist/curl/wget
+# restriction because that safety analysis and blocklist are skipped when the
+# sandbox is disabled (disable_sandbox = bypass_permissions in the tool loops).
+PYTHON_TOOL_BYPASS = _with_sandbox_note(PYTHON_TOOL, _SANDBOX_PATHS_NOTE_BYPASS)
+TERMINAL_TOOL_BYPASS = _with_sandbox_note(TERMINAL_TOOL, _SANDBOX_PATHS_NOTE_BYPASS)
+_BYPASS_TOOL_OVERRIDES = {
+    "python": PYTHON_TOOL_BYPASS,
+    "terminal": TERMINAL_TOOL_BYPASS,
+}
+
+
+def apply_bypass_tool_notes(tools: list[dict]) -> list[dict]:
+    """Return ``tools`` with the python/terminal specs swapped for their Bypass
+    Permissions variants (only their descriptions differ). Call this for a request
+    whose execution disables the sandbox so the note matches what the tools
+    actually enforce; a no-op for tool lists without python/terminal."""
+    swapped = False
+    result: list[dict] = []
+    for tool in tools:
+        name = (tool.get("function") or {}).get("name") if isinstance(tool, dict) else None
+        override = _BYPASS_TOOL_OVERRIDES.get(name)
+        if override is not None:
+            result.append(override)
+            swapped = True
+        else:
+            result.append(tool)
+    return result if swapped else tools
 
 
 # OpenAI's function.name regex; MCP names that violate it would 400 the whole

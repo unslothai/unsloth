@@ -2413,6 +2413,20 @@ _TOOL_CODE_TIP = (
     "you need is not present, ask the user to provide it or give an exact path "
     "rather than running commands against a guessed one."
 )
+# Bypass Permissions variant: drops the "internet access is limited" clause,
+# which is false when the sandbox is disabled (curl/wget and arbitrary-host
+# requests work), while keeping the workdir-default framing.
+_TOOL_CODE_TIP_BYPASS = (
+    "Use code execution for math, calculations, data processing, or to parse "
+    "and analyze information from tool results. It runs in a sandbox whose "
+    "working directory is an isolated scratch space that is the default "
+    "location for your work and may already hold files from earlier work; it "
+    "is not a copy of the user's computer, so do not assume a file, folder, or "
+    "repository the user mentions is already present. List the working "
+    "directory to see what is there; if what you need is not present, ask the "
+    "user to provide it or give an exact path rather than running commands "
+    "against a guessed one."
+)
 _TOOL_ARTIFACT_TIP = (
     "For HTML, CSS, or JavaScript canvas requests, call render_html once when "
     "it is available with one complete self-contained HTML document in the code "
@@ -2422,7 +2436,9 @@ _TOOL_ARTIFACT_TIP = (
 )
 
 
-def _build_tool_action_nudge(*, tools: list[dict], model_name: str) -> str:
+def _build_tool_action_nudge(
+    *, tools: list[dict], model_name: str, disable_sandbox: bool = False
+) -> str:
     tool_names = {
         (tool.get("function") or {}).get("name")
         for tool in tools
@@ -2440,7 +2456,7 @@ def _build_tool_action_nudge(*, tools: list[dict], model_name: str) -> str:
     if has_web:
         tool_tip_parts.append(_TOOL_WEB_COMPACT_TIP if compact_web_tip else _TOOL_WEB_EXPANDED_TIP)
     if has_code:
-        tool_tip_parts.append(_TOOL_CODE_TIP)
+        tool_tip_parts.append(_TOOL_CODE_TIP_BYPASS if disable_sandbox else _TOOL_CODE_TIP)
     if has_artifact:
         tool_tip_parts.append(_TOOL_ARTIFACT_TIP)
     return (
@@ -2470,7 +2486,11 @@ async def _select_request_tools(
     retrieval scope, then enabled MCP tools appended. An empty result means the
     caller should skip the tool loop, so a model-emitted built-in call can't
     piggy-back on the empty allow-list."""
-    from core.inference.tools import ALL_TOOLS, get_enabled_mcp_tools
+    from core.inference.tools import (
+        ALL_TOOLS,
+        apply_bypass_tool_notes,
+        get_enabled_mcp_tools,
+    )
 
     if not tools_on:
         # MCP-only request: skip built-ins, leave room for MCP tools.
@@ -2483,6 +2503,12 @@ async def _select_request_tools(
     # Drop the RAG tool without a scope: nothing to search over.
     if not payload.rag_scope:
         tools = [t for t in tools if t["function"]["name"] != "search_knowledge_base"]
+    # Bypass Permissions disables the sandbox (disable_sandbox = bypass_permissions
+    # in the tool loops), so the python/terminal descriptions must not claim the
+    # allowlist/curl-wget block that no longer applies. permission_mode "full"
+    # alone does not disable the sandbox, so gate strictly on bypass_permissions.
+    if getattr(payload, "bypass_permissions", False):
+        tools = apply_bypass_tool_notes(tools)
     if mcp_allowed:
         tools = tools + await get_enabled_mcp_tools()
     return tools
@@ -7473,6 +7499,7 @@ async def openai_chat_completions(
             _nudge = _build_tool_action_nudge(
                 tools = tools_to_use,
                 model_name = model_name,
+                disable_sandbox = bool(payload.bypass_permissions),
             )
 
             # Nudge the model to ground in attached documents instead of memory.
@@ -8823,6 +8850,7 @@ async def openai_chat_completions(
         _sf_nudge = _build_tool_action_nudge(
             tools = _sf_tools_to_use,
             model_name = model_name,
+            disable_sandbox = bool(payload.bypass_permissions),
         )
 
         # RAG nudge, mirroring the GGUF path.
@@ -12540,7 +12568,7 @@ async def anthropic_messages(
                     err_type = "invalid_request_error",
                 ),
             )
-        from core.inference.tools import ALL_TOOLS
+        from core.inference.tools import ALL_TOOLS, apply_bypass_tool_notes
 
         # ask/auto (and an omitted mode selecting a gate-needing terminal/python
         # tool) were already rejected before the auto-switch above, so an invalid
@@ -12551,11 +12579,16 @@ async def anthropic_messages(
             requested_studio_tools,
             payload.enabled_tools,
         )
+        # Bypass Permissions disables the sandbox, so drop the allowlist/curl-wget
+        # restriction from the python/terminal descriptions here too.
+        if getattr(payload, "bypass_permissions", False):
+            openai_tools = apply_bypass_tool_notes(openai_tools)
 
         # Build tool-use system prompt nudge (same logic as /chat/completions)
         _nudge = _build_tool_action_nudge(
             tools = openai_tools,
             model_name = model_name,
+            disable_sandbox = bool(getattr(payload, "bypass_permissions", False)),
         )
 
         if _nudge:
