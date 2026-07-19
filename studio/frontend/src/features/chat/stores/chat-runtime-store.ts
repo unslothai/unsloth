@@ -901,6 +901,14 @@ type ChatRuntimeStore = {
   /** Picked physical GPU indices (null = use all / automatic). */
   selectedGpuIds: number[] | null;
   loadedGpuIds: number[] | null;
+  /** Backend-reported GGUF host-memory residency mode (--mlock/--no-mmap),
+   *  mirrored read-only from /status. Set only via the API/extras; re-sent on a
+   *  same-model reload so an API-set value is preserved. null = unset/auto. */
+  activeMemoryMode: "auto" | "pinned" | "resident" | null;
+  /** Persisted: when false, picking a local model stages it as
+   *  `pendingSelection` (and opens settings) instead of loading immediately,
+   *  so load settings can be set before the single load. */
+  loadOnSelection: boolean;
   /** Persisted: expand every On Device GGUF repo's quantizations by default
    *  instead of waiting for a click. */
   expandQuantizations: boolean;
@@ -1354,6 +1362,8 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
   moeLayerCount: null,
   selectedGpuIds: null,
   loadedGpuIds: null,
+  activeMemoryMode: null,
+  loadOnSelection: loadBool(CHAT_LOAD_ON_SELECTION_KEY, true),
   expandQuantizations: loadBool(CHAT_EXPAND_QUANTIZATIONS_KEY, false),
   showAllQuantizations: loadBool(CHAT_SHOW_ALL_QUANTIZATIONS_KEY, true),
   fitOnDeviceOnly: loadBool(MODELS_FIT_ON_DEVICE_ONLY_KEY, false),
@@ -1608,6 +1618,7 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
       moeLayerCount: null,
       selectedGpuIds: null,
       loadedGpuIds: null,
+      activeMemoryMode: null,
       loadedIsMultimodal: false,
       loadedIsDiffusion: false,
       customContextLength: null,

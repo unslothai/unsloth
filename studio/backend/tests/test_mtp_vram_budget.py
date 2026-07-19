@@ -68,6 +68,7 @@ from core.inference.llama_cpp import (  # noqa: E402
     _CTX_FIT_VRAM_FRACTION,
     LlamaCppBackend,
     _extra_args_draft_cache_types,
+    _extra_args_draft_device_pin,
     _extra_args_draft_offloaded_to_cpu,
     _extra_args_mtp_draft_path,
     _extra_args_n_ubatch,
@@ -617,6 +618,31 @@ class TestExtraArgsMtpDetection:
     @pytest.mark.parametrize(
         "args,expected",
         [
+            # No draft-device flag -> no pin to reject.
+            (None, None),
+            ([], None),
+            (["-c", "4096"], None),
+            # cpu / none offload is a supported placement, not a GPU escape.
+            (["--spec-draft-device", "cpu"], None),
+            (["--spec-draft-device", "CPU,none"], None),
+            (["-devd", "none"], None),
+            # A real GPU device escapes the gpu_ids pin -> return the offending value.
+            (["--spec-draft-device", "CUDA1"], "CUDA1"),
+            (["--device-draft", "Vulkan2"], "Vulkan2"),
+            (["-devd", "CUDA0,CPU"], "CUDA0,CPU"),  # any GPU in the list conflicts
+            # inline flag=value form.
+            (["--spec-draft-device=Vulkan3"], "Vulkan3"),
+            # last-wins: only the final draft-device value counts.
+            (["--spec-draft-device", "CUDA1", "--spec-draft-device", "cpu"], None),
+            (["--spec-draft-device", "cpu", "--spec-draft-device", "CUDA1"], "CUDA1"),
+        ],
+    )
+    def test_draft_device_pin(self, args, expected):
+        assert _extra_args_draft_device_pin(args) == expected
+
+    @pytest.mark.parametrize(
+        "args,expected",
+        [
             (["--spec-draft-n-max", "4"], 4),
             (["--spec-draft-n-max=6"], 6),
             (["--spec-type", "draft-mtp", "--spec-draft-n-max", "3"], 3),
@@ -842,6 +868,27 @@ class TestExtraArgsMtpDetection:
         assert "not_extra_args_set_spec_type(effective_extra)" in body
         # HF-only (hf_repo): local/native loads have no download to retry.
         assert "llama_backend.hf_repo" in body
+
+    def test_route_matcher_strips_memory_flags_from_explicit_extras(self):
+        # A request repeating a --mlock/--mmap/--no-mmap the loaded server already stripped
+        # must still hit the fast path, so a no-op re-Apply during training isn't reloaded
+        # (#7164). Only the request side is stripped: the backend keeps its flags so an
+        # explicit auto over a server that inherited --mlock still reloads to clear it.
+        routes_src = (
+            Path(__file__).resolve().parent.parent / "routes" / "inference.py"
+        ).read_text()
+        start = routes_src.index("def _request_matches_loaded_settings")
+        end = routes_src.index("\ndef ", start + 1)
+        body = "".join(routes_src[start:end].split())
+        # Gated on the VALUE, not model_fields_set: an explicit null must not strip,
+        # so it dedupes as "no opinion" (#7188).
+        assert "_strip_mem=request.gguf_memory_modeisnotNone" in body
+        assert '"gguf_memory_mode"infields_set' not in body
+        # The request side is stripped and compared against the UNstripped backend.
+        assert "_request_extra" in body
+        assert "if_request_extra!=backend_extra:" in body
+        # Backend side is not stripped a second time (no _backend_extra_cmp helper).
+        assert "_backend_extra_cmp" not in body
 
     def test_extra_args_main_cache_type_heavier_axis(self):
         # Asymmetric --cache-type-k/-v must budget the heavier axis (extras win
