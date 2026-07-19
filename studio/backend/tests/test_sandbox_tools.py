@@ -149,6 +149,12 @@ class TestLowLevelNetworkModules:
             ("import importlib; print(vars(importlib)['import_module']('httpcore').__name__)"),
             ("import importlib; print(importlib.__dict__['import_module']('boto3').__name__)"),
             ("import builtins; print(getattr(builtins, '__import__')('botocore').__name__)"),
+            (
+                "import importlib.machinery, importlib.util\n"
+                "spec = importlib.util.find_spec('httpcore')\n"
+                "loader = importlib.machinery.SourceFileLoader('httpcore', spec.origin)\n"
+                "loader.load_module()"
+            ),
         ],
     )
     def test_low_level_client_blocked(self, code):
@@ -490,6 +496,101 @@ class TestSandboxEnvIsolation:
         assert bypass.returncode == 0, bypass.stderr
         assert bypass.stdout.strip() == "httpcore"
 
+    def test_runtime_import_guard_rejects_spoofed_httpx_globals(self, tmp_path):
+        from core.inference.tools import _build_safe_env
+
+        code = (
+            "import httpx\n"
+            "__name__ = 'httpx._client'\n"
+            "__file__ = httpx.__file__\n"
+            "name = ''.join(['http', 'core'])\n"
+            "module = __import__(name)\n"
+            "print(module.__name__)\n"
+        )
+        result = subprocess.run(
+            [sys.executable, "-c", code],
+            cwd = tmp_path,
+            env = _build_safe_env(str(tmp_path)),
+            capture_output = True,
+            text = True,
+            check = False,
+        )
+        assert result.returncode != 0
+        assert "Blocked: low-level network module 'httpcore'" in result.stderr
+
+    def test_runtime_import_guard_blocks_legacy_loader_httpcore(self, tmp_path):
+        from core.inference.tools import _build_safe_env
+
+        code = (
+            "import importlib.machinery, importlib.util\n"
+            "name = ''.join(['http', 'core'])\n"
+            "spec = importlib.util.find_spec(name)\n"
+            "loader = importlib.machinery.SourceFileLoader(name, spec.origin)\n"
+            "loader.load_module()\n"
+        )
+        result = subprocess.run(
+            [sys.executable, "-c", code],
+            cwd = tmp_path,
+            env = _build_safe_env(str(tmp_path)),
+            capture_output = True,
+            text = True,
+            check = False,
+        )
+        assert result.returncode != 0
+        assert "Blocked: low-level network module 'httpcore'" in result.stderr
+
+    def test_runtime_import_guard_blocks_httpcore_context_flag_tampering(self, tmp_path):
+        from core.inference.tools import _build_safe_env
+
+        code = (
+            "import sys, types\n"
+            "import httpx, sitecustomize\n"
+            "client = httpx.Client()\n"
+            "client.close()\n"
+            "module = sys.modules['httpcore._backends.sync']\n"
+            "module_dict = types.ModuleType.__getattribute__(module, '__dict__')\n"
+            "backend_type = module_dict['SyncBackend']\n"
+            "guarded = type.__getattribute__(backend_type, '__dict__')['connect_tcp']\n"
+            "dispatch = key = None\n"
+            "for cell in guarded.__closure__ or ():\n"
+            "    value = cell.cell_contents\n"
+            "    if callable(value) and getattr(value, '__name__', '') == 'dispatch':\n"
+            "        dispatch = value\n"
+            "    elif type(value) is object:\n"
+            "        key = value\n"
+            "originals = None\n"
+            "for cell in dispatch.__closure__ or ():\n"
+            "    value = cell.cell_contents\n"
+            "    if type(value) is dict:\n"
+            "        originals = value\n"
+            "original = originals[key]\n"
+            "tokens = []\n"
+            "for value in vars(sitecustomize).values():\n"
+            "    for cell in getattr(value, '__closure__', ()) or ():\n"
+            "        content = cell.cell_contents\n"
+            "        if type(content).__name__ == 'ContextVar':\n"
+            "            tokens.append((content, content.set(True)))\n"
+            "assert tokens\n"
+            "try:\n"
+            "    original(\n"
+            "        backend_type(), '127.0.0.1', 9,\n"
+            "        timeout=0.01, local_address=None, socket_options=None,\n"
+            "    )\n"
+            "finally:\n"
+            "    for content, token in reversed(tokens):\n"
+            "        content.reset(token)\n"
+        )
+        result = subprocess.run(
+            [sys.executable, "-c", code],
+            cwd = tmp_path,
+            env = _build_safe_env(str(tmp_path)),
+            capture_output = True,
+            text = True,
+            check = False,
+        )
+        assert result.returncode != 0
+        assert "Blocked: low-level network module 'httpcore'" in result.stderr
+
     def test_runtime_import_guard_blocks_local_module_httpcore_import(self, tmp_path):
         from core.inference.tools import _build_safe_env
 
@@ -624,20 +725,19 @@ class TestSandboxEnvIsolation:
         assert env["TERM"] == "dumb"
 
     def test_bypass_env_installs_sitecustomize_path_shim(self, tmp_path):
-        # Bypass mode must install the same /mnt/data path-remap shim as the safe
-        # env (finding 17), else /mnt/data writes work only in normal mode.
-        from core.inference.tools import _SANDBOX_SITE_DIR, _build_bypass_env
+        # Bypass mode keeps path remapping without installing network guards.
+        from core.inference.tools import _BYPASS_SITE_DIR, _build_bypass_env
         env = _build_bypass_env(str(tmp_path))
-        assert _SANDBOX_SITE_DIR in env["PYTHONPATH"].split(os.pathsep)
+        assert _BYPASS_SITE_DIR in env["PYTHONPATH"].split(os.pathsep)
 
     def test_bypass_env_prepends_shim_and_keeps_inherited_pythonpath(self, monkeypatch, tmp_path):
-        from core.inference.tools import _SANDBOX_SITE_DIR, _build_bypass_env
+        from core.inference.tools import _BYPASS_SITE_DIR, _build_bypass_env
 
         monkeypatch.setenv("PYTHONPATH", "/operator/libs")
         env = _build_bypass_env(str(tmp_path))
         parts = env["PYTHONPATH"].split(os.pathsep)
         # Shim first so its open()/makedirs remap wins, operator entries kept.
-        assert parts[0] == _SANDBOX_SITE_DIR
+        assert parts[0] == _BYPASS_SITE_DIR
         assert "/operator/libs" in parts
 
 

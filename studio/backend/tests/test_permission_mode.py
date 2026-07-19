@@ -1123,6 +1123,24 @@ def test_render_html_gated_only_when_networked():
         is True
     )
     assert rh("<script>document.open().write('<p>Local</p>')</script>") is False
+    assert (
+        rh(
+            "<script>document.createRange().createContextualFragment("
+            "'<img src=https://evil/x>')</script>"
+        )
+        is True
+    )
+    assert (
+        rh(
+            "<script>document.createRange().createContextualFragment("
+            "'<p>Local</p>')</script>"
+        )
+        is False
+    )
+    assert rh("<script>[img.src] = ['https://evil/x']</script>") is True
+    assert rh("<script>[img.src] = ['./local.png']</script>") is False
+    assert rh("<script>({src: img.src} = {src:'https://evil/x'})</script>") is True
+    assert rh("<script>({src: img.src} = {src:'./local.png'})</script>") is False
     # A computed bracket key spliced from string fragments on a global host object.
     assert rh("<script>window['fet'+'ch']('https://attacker.example')</script>") is True
     assert rh("<script>self['open' + '']('https://x')</script>") is True

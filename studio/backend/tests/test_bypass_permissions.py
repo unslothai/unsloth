@@ -185,6 +185,9 @@ def test_bash_blocklist_enforced_when_sandboxed(captured_popen):
         # still be recursed into, not left as an opaque exec target.
         'find . -exec sh -c "python -S -c import\\ boto3" ;',
         'find . -type f -execdir bash -c "python -I -c import\\ boto3" ;',
+        'python$IFS-S -c "import boto3"',
+        "python -c \"import subprocess; subprocess.run(['python','-S','-c','import boto3'])\"",
+        "python -c \"import os; os.system(\\\"python -S -c 'import boto3'\\\")\"",
     ],
 )
 def test_bash_blocks_python_startup_guard_bypasses(captured_popen, command):
@@ -200,6 +203,7 @@ def test_bash_blocks_python_startup_guard_bypasses(captured_popen, command):
         "python script.py -S",
         "echo python -S",
         "python -c \"print('-S')\"",
+        "python -c \"import subprocess; subprocess.run(['python','-c','print(1)'])\"",
     ],
 )
 def test_bash_allows_python_without_startup_guard_bypass(captured_popen, command):

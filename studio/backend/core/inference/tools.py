@@ -316,10 +316,211 @@ def _segment_persistently_mutates_sandbox_python_env(segment: list[str]) -> bool
     return False
 
 
+def _shell_command_substitutions(command: str) -> list[str]:
+    """Extract executable command substitutions, including quoted forms."""
+    substitutions: list[str] = []
+    index = 0
+    quote: str | None = None
+    while index < len(command):
+        char = command[index]
+        if quote == "'":
+            if char == "'":
+                quote = None
+            index += 1
+            continue
+        if char == "'" and quote is None:
+            quote = "'"
+            index += 1
+            continue
+        if char == '"':
+            quote = None if quote == '"' else '"'
+            index += 1
+            continue
+        if char == "\\":
+            index += 2
+            continue
+        if char == "\x60":
+            end = index + 1
+            while end < len(command):
+                if command[end] == "\\":
+                    end += 2
+                    continue
+                if command[end] == "\x60":
+                    substitutions.append(command[index + 1 : end])
+                    index = end + 1
+                    break
+                end += 1
+            else:
+                return substitutions
+            continue
+        if command.startswith("$((", index):
+            index += 3
+            continue
+        if not command.startswith("$(", index):
+            index += 1
+            continue
+        start = index + 2
+        end = start
+        depth = 1
+        nested_quote: str | None = None
+        while end < len(command):
+            nested = command[end]
+            if nested_quote == "'":
+                if nested == "'":
+                    nested_quote = None
+                end += 1
+                continue
+            if nested == "'" and nested_quote is None:
+                nested_quote = "'"
+                end += 1
+                continue
+            if nested == '"':
+                nested_quote = None if nested_quote == '"' else '"'
+                end += 1
+                continue
+            if nested == "\\":
+                end += 2
+                continue
+            if command.startswith("$(", end) and not command.startswith("$((", end):
+                depth += 1
+                end += 2
+                continue
+            if nested == "(":
+                depth += 1
+            elif nested == ")":
+                depth -= 1
+                if depth == 0:
+                    substitutions.append(command[start:end])
+                    index = end + 1
+                    break
+            end += 1
+        else:
+            return substitutions
+    return substitutions
+
+
+_SHELL_EXPANSION_TOKEN_RE = re.compile(
+    r"\$(?:[A-Za-z_][A-Za-z0-9_]*|\{[^}]*\}|[0-9#?*$!@_-])|%[A-Za-z_][A-Za-z0-9_]*%"
+)
+_PYTHON_CHILD_LAUNCHERS = frozenset({"run", "call", "check_call", "check_output", "Popen"})
+
+
+def _segment_with_shell_expansions_split(segment: list[str]) -> list[str] | None:
+    expanded: list[str] = []
+    changed = False
+    for token in segment:
+        if not _SHELL_EXPANSION_TOKEN_RE.search(token):
+            expanded.append(token)
+            continue
+        changed = True
+        replacement = _SHELL_EXPANSION_TOKEN_RE.sub(" ", token).split()
+        expanded.extend(replacement)
+    return expanded if changed else None
+
+
+def _python_inline_payload(arguments: list[str]) -> str | None:
+    skip_next = False
+    for index, argument in enumerate(arguments):
+        if skip_next:
+            skip_next = False
+            continue
+        if argument == "-c":
+            return arguments[index + 1] if index + 1 < len(arguments) else ""
+        if argument.startswith("-c") and argument != "-c":
+            return argument[2:]
+        if argument == "-m" or not argument.startswith("-"):
+            return None
+        if argument == "--":
+            return None
+        if argument in {"-W", "-X", "--check-hash-based-pycs"}:
+            skip_next = True
+    return None
+
+
+def _static_python_command_argument(node: ast.AST) -> str | None:
+    if isinstance(node, ast.Constant) and isinstance(node.value, str):
+        return node.value
+    if isinstance(node, (ast.List, ast.Tuple)):
+        parts: list[str] = []
+        for element in node.elts:
+            if not isinstance(element, ast.Constant) or not isinstance(element.value, str):
+                return None
+            parts.append(element.value)
+        return shlex.join(parts)
+    return None
+
+
+def _python_payload_launches_startup_bypass(code: str, depth: int) -> bool:
+    if depth > 4:
+        return True
+    try:
+        tree = ast.parse(code)
+    except SyntaxError:
+        return False
+    subprocess_aliases = {"subprocess"}
+    os_aliases = {"os"}
+    launcher_aliases: set[str] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            for alias in node.names:
+                if alias.name == "subprocess":
+                    subprocess_aliases.add(alias.asname or "subprocess")
+                elif alias.name == "os":
+                    os_aliases.add(alias.asname or "os")
+        elif isinstance(node, ast.ImportFrom):
+            if node.module == "subprocess":
+                for alias in node.names:
+                    if alias.name in _PYTHON_CHILD_LAUNCHERS:
+                        launcher_aliases.add(alias.asname or alias.name)
+        elif isinstance(node, ast.Call):
+            command_node = None
+            if isinstance(node.func, ast.Name) and node.func.id in launcher_aliases:
+                command_node = node.args[0] if node.args else None
+            elif isinstance(node.func, ast.Attribute):
+                if (
+                    isinstance(node.func.value, ast.Name)
+                    and node.func.value.id in subprocess_aliases
+                    and node.func.attr in _PYTHON_CHILD_LAUNCHERS
+                ):
+                    command_node = node.args[0] if node.args else None
+                elif (
+                    isinstance(node.func.value, ast.Name)
+                    and node.func.value.id in os_aliases
+                    and node.func.attr in {"system", "popen"}
+                ):
+                    command_node = node.args[0] if node.args else None
+            if command_node is None:
+                continue
+            nested = _static_python_command_argument(command_node)
+            if nested is not None and _sandbox_python_startup_bypasses_guard(
+                nested, depth + 1
+            ):
+                return True
+    return False
+
+
+def _segment_python_launch_bypasses_guard(
+    segment: list[str],
+    python_index: int,
+    environment_tainted: bool,
+    depth: int,
+) -> bool:
+    if environment_tainted or _segment_mutates_sandbox_python_env(segment, python_index):
+        return True
+    arguments = segment[python_index + 1 :]
+    if _python_flags_skip_sitecustomize(arguments):
+        return True
+    payload = _python_inline_payload(arguments)
+    return payload is not None and _python_payload_launches_startup_bypass(payload, depth + 1)
+
+
 def _sandbox_python_startup_bypasses_guard(command: str, depth: int = 0) -> bool:
     """Detect terminal-launched Python that suppresses the sandbox sitecustomize guard."""
     if depth > 4:
         return True
+    for nested in _shell_command_substitutions(command):
+        if _sandbox_python_startup_bypasses_guard(nested, depth + 1):
+            return True
     environment_tainted = False
     shell_names = {"bash", "cmd", "cmd.exe", "dash", "fish", "ksh", "sh", "zsh"}
     for segment in _shell_command_segments(command):
@@ -356,11 +557,18 @@ def _sandbox_python_startup_bypasses_guard(command: str, depth: int = 0) -> bool
                 elif token.startswith("--split-string="):
                     if _sandbox_python_startup_bypasses_guard(token.split("=", 1)[1], depth + 1):
                         return True
+        expanded_segment = _segment_with_shell_expansions_split(segment)
+        if expanded_segment:
+            expanded_python_index = _segment_python_index(expanded_segment)
+            if expanded_python_index is not None and _segment_python_launch_bypasses_guard(
+                expanded_segment, expanded_python_index, environment_tainted, depth
+            ):
+                return True
         python_index = _segment_python_index(segment)
         if python_index is not None:
-            if environment_tainted or _segment_mutates_sandbox_python_env(segment, python_index):
-                return True
-            if _python_flags_skip_sitecustomize(segment[python_index + 1 :]):
+            if _segment_python_launch_bypasses_guard(
+                segment, python_index, environment_tainted, depth
+            ):
                 return True
         environment_tainted = (
             environment_tainted or _segment_persistently_mutates_sandbox_python_env(segment)
@@ -488,6 +696,7 @@ def _find_blocked_commands(command: str) -> set[str]:
 # Directory holding the sandbox ``sitecustomize.py`` shim (code-interpreter
 # path remap); placed on the sandboxed child's PYTHONPATH in _build_safe_env.
 _SANDBOX_SITE_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "sandbox_site")
+_BYPASS_SITE_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "bypass_site")
 # ── "Approve for me" (permission_mode="auto") safety detection ──────────────
 # Auto mode pauses only calls classified here as potentially unsafe. The sandbox
 # and hard blocks (blocklist, rlimits) still apply at run time; this gate only
@@ -831,6 +1040,7 @@ _AUTO_UNSAFE_PY_ATTRS = frozenset(
         # extractall/extract write arbitrary files (zip-slip): extract takes a
         # single member but an attacker-controlled member path still escapes.
         "exec_module",
+        "load_module",
         "extractall",
         "extract",
         "FileIO",
@@ -2605,11 +2815,12 @@ _RENDER_HTML_MARKUP_ASSIGNMENT_START_RE = re.compile(
 )
 _RENDER_HTML_MARKUP_CALL_START_RE = re.compile(
     r"(?:\.\s*(?P<insert>insertAdjacentHTML)|"
+    r"\.\s*(?P<contextual>createContextualFragment)|"
     # document.write / writeln, optionally reached through a document-valued
     # receiver such as document.open(): document.open().write('<img src=...>')
     # returns the same document and inserts the remote-loading markup.
     r"\bdocument\s*(?:(?:\?\.\s*|\.\s*)open\s*\([^()]*\)\s*)?"
-    r"(?:\?\.\s*|\.\s*)(?P<write>write|writeln))"
+    r"\s*(?:\?\.\s*|\.\s*)(?P<write>write|writeln))"
     r"\s*(?:\?\.\s*)?\(",
     re.IGNORECASE,
 )
@@ -2618,7 +2829,8 @@ _RENDER_HTML_COMPUTED_ASSIGNMENT_START_RE = re.compile(
     re.IGNORECASE | re.DOTALL,
 )
 _RENDER_HTML_COMPUTED_CALL_START_RE = re.compile(
-    r"(?:(?P<document>\bdocument)\s*(?:\?\.\s*)?)?\[\s*(?P<member>[^\]]+)\s*\]\s*(?:\?\.\s*)?\(",
+    r"(?:(?P<document>\bdocument)\s*(?:\?\.\s*)?)?"
+    r"\[\s*(?P<member>[^\]]+)\s*\]\s*(?:\?\.\s*)?\(",
     re.IGNORECASE | re.DOTALL,
 )
 _RENDER_HTML_REFLECT_SET_START_RE = re.compile(
@@ -2631,6 +2843,16 @@ _RENDER_HTML_OBJECT_PROPERTY_START_RE = re.compile(
     r"(?P<quote>['\"]?)(?P<member>src|href|srcset|action|formaction|poster|data|ping|"
     r"srcdoc|innerHTML|outerHTML)(?P=quote)\s*:\s*",
     re.IGNORECASE,
+)
+_RENDER_HTML_DESTRUCTURING_ASSIGNMENT_START_RE = re.compile(
+    r"(?:\[[^\]]*(?:\.\s*|\[\s*['\"`])"
+    r"(?:src|href|srcset|action|formaction|poster|data|ping|srcdoc|innerHTML|outerHTML)"
+    r"[^\]]*\]|"
+    r"\{[^{}]*(?:src|href|srcset|action|formaction|poster|data|ping|srcdoc|innerHTML|"
+    r"outerHTML)\s*:\s*[^{}]*(?:\.\s*|\[\s*['\"`])"
+    r"(?:src|href|srcset|action|formaction|poster|data|ping|srcdoc|innerHTML|outerHTML)"
+    r"[^{}]*\})\s*=",
+    re.IGNORECASE | re.DOTALL,
 )
 _RENDER_HTML_NETWORK_MEMBERS = frozenset(
     {
@@ -2649,6 +2871,7 @@ _RENDER_HTML_NETWORK_ATTRIBUTES = frozenset(
 )
 _RENDER_HTML_URL_LIST_ATTRIBUTES = frozenset({"srcset", "ping"})
 _RENDER_HTML_URL_LIST_NETWORK_RE = re.compile(r"(?:^|[\s,])(?:https?:|/)", re.IGNORECASE)
+_RENDER_HTML_JS_NETWORK_URL_RE = re.compile(r"(?:^|[\s,:'\"`\[(])(?:https?:|/)", re.IGNORECASE)
 _RENDER_HTML_ACTIVE_DATA_MIME_TYPES = frozenset(
     {"text/html", "application/xhtml+xml", "image/svg+xml"}
 )
@@ -2789,19 +3012,22 @@ def _render_html_data_document_reaches_network(value: str, depth: int) -> bool:
     media_type = (parts[0] or "text/plain").lower()
     if media_type not in _RENDER_HTML_ACTIVE_DATA_MIME_TYPES:
         return False
-    # Honour a declared charset so a UTF-16/Latin-1 document decodes the same way
-    # the browser would; an unknown/undecodable charset fails closed rather than
-    # letting a mangled UTF-8 read hide a remote load.
+    # Decode declared charset so data documents match browser behavior.
     charset = "utf-8"
-    for part in parts[1:]:
-        if part.lower().startswith("charset="):
-            charset = part.split("=", 1)[1].strip() or "utf-8"
+    for parameter in parts[1:]:
+        name, equals, parameter_value = parameter.partition("=")
+        if equals and name.strip().lower() == "charset":
+            charset = urllib.parse.unquote(parameter_value.strip().strip("\"'"))
+            if not charset:
+                return True
+            break
     try:
+        encoding = codecs.lookup(charset).name
         payload_bytes = urllib.parse.unquote_to_bytes(payload)
         if any(part.lower() == "base64" for part in parts[1:]):
             payload_bytes = base64.b64decode(b"".join(payload_bytes.split()), validate = True)
-        markup = payload_bytes.decode(charset, errors = "replace")
-    except (ValueError, binascii.Error, LookupError):
+        markup = payload_bytes.decode(encoding)
+    except (LookupError, UnicodeError, ValueError, binascii.Error):
         return True
     return _render_html_code_reaches_network(markup, depth + 1)
 
@@ -2885,6 +3111,33 @@ def _js_call_arguments(code: str, offset: int) -> list[str] | None:
             arguments.append(code[start:i])
             start = i + 1
     return None
+
+
+def _js_assignment_expression(code: str) -> str | None:
+    stack: list[str] = []
+    quote: str | None = None
+    escaped = False
+    pairs = {")": "(", "]": "[", "}": "{"}
+    for index, char in enumerate(code):
+        if quote is not None:
+            if escaped:
+                escaped = False
+            elif char == "\\":
+                escaped = True
+            elif char == quote:
+                quote = None
+            continue
+        if char in "\"'`":
+            quote = char
+        elif char in "([{":
+            stack.append(char)
+        elif char in ")]}":
+            if not stack or stack[-1] != pairs[char]:
+                return code[:index]
+            stack.pop()
+        elif char in ";\n\r<" and not stack:
+            return code[:index]
+    return code if quote is None and not stack else None
 
 
 def _render_html_assigned_member_reaches_network(
@@ -2976,8 +3229,17 @@ def _render_html_computed_network_access(code: str, depth: int = 0) -> bool:
         arguments = _js_call_arguments(code, match.end())
         if arguments is None:
             return True
-        method = (match.group("insert") or match.group("write")).lower()
+        method = (match.group("insert") or match.group("contextual") or match.group("write")).lower()
         if _render_html_markup_call_reaches_network(arguments, method, depth):
+            return True
+
+    for match in _RENDER_HTML_DESTRUCTURING_ASSIGNMENT_START_RE.finditer(code):
+        value = _js_assignment_expression(code[match.end() :])
+        if value is None:
+            return True
+        if _RENDER_HTML_JS_NETWORK_URL_RE.search(value) or _render_html_code_reaches_network(
+            value, depth + 1
+        ):
             return True
 
     for match in _RENDER_HTML_COMPUTED_ASSIGNMENT_START_RE.finditer(code):
@@ -3141,7 +3403,7 @@ def _build_safe_env(workdir: str) -> dict[str, str]:
         "TERM": "dumb",
         "PYTHONIOENCODING": "utf-8",
         "UNSLOTH_STUDIO_SANDBOXED": "1",
-        # sitecustomize shim: remaps ChatGPT code-interpreter paths (/mnt/data
+        # sitecustomize shim: remaps code-interpreter paths (/mnt/data
         # etc.) onto the sandbox CWD; see sandbox_site/sitecustomize.py.
         "PYTHONPATH": _SANDBOX_SITE_DIR,
     }
@@ -3330,7 +3592,7 @@ def _build_bypass_env(workdir: str) -> dict[str, str]:
     # operator's PYTHONPATH, so prepend rather than replace.
     inherited_pythonpath = env.get("PYTHONPATH", "")
     env["PYTHONPATH"] = os.pathsep.join(
-        part for part in (_SANDBOX_SITE_DIR, inherited_pythonpath) if part
+        part for part in (_BYPASS_SITE_DIR, inherited_pythonpath) if part
     )
     # Windows SDKs read creds under the profile dirs, not $HOME; repoint set
     # ones to the workdir (HOMEDRIVE/HOMEPATH are dropped above).
@@ -3557,7 +3819,7 @@ WEB_SEARCH_TOOL = {
 }
 
 # Appended to the python/terminal descriptions: models habitually write to
-# /mnt/data (a ChatGPT code-interpreter path), which does not exist here.
+# /mnt/data (a code-interpreter path), which does not exist here.
 _SANDBOX_PATHS_NOTE = (
     " Read and write files using relative paths in the current working "
     "directory, which persists for this conversation; absolute paths like "
@@ -5826,6 +6088,8 @@ def _check_signal_escape_patterns(code: str):
             self.importlib_aliases = {"importlib"}
             self.builtins_aliases = {"builtins", "__builtins__"}
             self.import_loader_aliases = {"__import__"}
+            self.source_loader_aliases = {"SourceFileLoader"}
+            self.source_loader_names: dict[str, str] = {}
             self.literal_strings: dict[str, str] = {}
 
         def _block_low_level_network_module(self, module_name: str, node) -> None:
@@ -5914,6 +6178,22 @@ def _check_signal_escape_patterns(code: str):
                 }
             return False
 
+        def _is_source_file_loader(self, node) -> bool:
+            if isinstance(node, ast.Name):
+                return node.id in self.source_loader_aliases
+            return isinstance(node, ast.Attribute) and node.attr == "SourceFileLoader"
+
+        def _source_loader_module_name(self, node) -> str | None:
+            if isinstance(node, ast.Name):
+                return self.source_loader_names.get(node.id)
+            if (
+                isinstance(node, ast.Call)
+                and self._is_source_file_loader(node.func)
+                and node.args
+            ):
+                return self._static_string(node.args[0])
+            return None
+
         @staticmethod
         def _target_names(node) -> list[str]:
             if isinstance(node, ast.Name):
@@ -5944,6 +6224,12 @@ def _check_signal_escape_patterns(code: str):
                 self.importlib_aliases.update(names)
             if isinstance(value, ast.Name) and value.id in self.builtins_aliases:
                 self.builtins_aliases.update(names)
+            loader_name = self._source_loader_module_name(value)
+            for name in names:
+                if loader_name is None:
+                    self.source_loader_names.pop(name, None)
+                else:
+                    self.source_loader_names[name] = loader_name
 
         def visit_Import(self, node):
             for alias in node.names:
@@ -5962,6 +6248,8 @@ def _check_signal_escape_patterns(code: str):
                     self.import_loader_aliases.add(bound)
                 elif node.module == "builtins" and alias.name == "__import__":
                     self.import_loader_aliases.add(bound)
+                elif node.module == "importlib.machinery" and alias.name == "SourceFileLoader":
+                    self.source_loader_aliases.add(bound)
 
         def visit_Assign(self, node):
             self._bind_assignment(node.targets, node.value)
@@ -5981,6 +6269,14 @@ def _check_signal_escape_patterns(code: str):
                             module_node = keyword.value
                             break
                 module_name = self._static_string(module_node)
+                if module_name is not None:
+                    self._block_low_level_network_module(module_name, node)
+            if isinstance(node.func, ast.Attribute) and node.func.attr == "load_module":
+                module_name = None
+                if node.args:
+                    module_name = self._static_string(node.args[0])
+                if module_name is None:
+                    module_name = self._source_loader_module_name(node.func.value)
                 if module_name is not None:
                     self._block_low_level_network_module(module_name, node)
 
@@ -6255,7 +6551,7 @@ def _truncate(text: str, limit: int = _MAX_OUTPUT_CHARS) -> str:
     return text
 
 
-# ChatGPT code-interpreter path conventions models write out of habit; none
+# Code-interpreter path conventions models write out of habit; none
 # exist in the Studio sandbox, so a failure on one earns the retry hint.
 _MISSING_PATH_PREFIXES = (
     "/mnt/data",

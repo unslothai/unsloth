@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Sandbox-side compatibility shim for ChatGPT code-interpreter paths.
+"""Sandbox-side compatibility shim for code-interpreter path conventions.
 
 Models habitually write to /mnt/data (or /mnt/outputs, /home/sandbox,
 /workspace), none of which exist in the Studio sandbox. This module sits on the
@@ -28,7 +28,9 @@ Identical with and without output streaming because the child env is.
 """
 
 import builtins
+import contextvars
 import importlib
+import importlib.machinery
 import importlib.util
 import io
 import json
@@ -87,11 +89,31 @@ def _path_is_in_roots(filename, roots):
         return False
 
 
+def _frame_uses_trusted_package(frame, package):
+    module_name = frame.f_globals.get("__name__", "")
+    if not isinstance(module_name, str):
+        return False
+    if module_name != package and not module_name.startswith(f"{package}."):
+        return False
+    module = sys.modules.get(module_name)
+    if module is None:
+        return False
+    try:
+        module_dict = types.ModuleType.__getattribute__(module, "__dict__")
+    except TypeError:
+        module_dict = getattr(module, "__dict__", None)
+    if module_dict is not frame.f_globals:
+        return False
+    spec = getattr(module, "__spec__", None)
+    origin = getattr(spec, "origin", None) or getattr(module, "__file__", None)
+    if not _path_is_in_roots(origin, _TRUSTED_LIBRARY_ROOTS):
+        return False
+    return _path_is_in_roots(frame.f_code.co_filename, _TRUSTED_LIBRARY_ROOTS)
+
+
 def _trusted_http_client_frame(frame):
-    module = frame.f_globals.get("__name__", "")
-    root = module.split(".", 1)[0]
-    return root in {"httpx", "httpcore"} and _path_is_in_roots(
-        frame.f_globals.get("__file__"), _TRUSTED_LIBRARY_ROOTS
+    return _frame_uses_trusted_package(frame, "httpx") or _frame_uses_trusted_package(
+        frame, "httpcore"
     )
 
 
@@ -101,11 +123,20 @@ def _trusted_httpx_in_call_stack(skip = 1):
     except ValueError:
         return False
     while frame is not None:
-        module = frame.f_globals.get("__name__", "")
-        if module == "httpx" or module.startswith("httpx."):
-            return _trusted_http_client_frame(frame)
+        if _frame_uses_trusted_package(frame, "httpx"):
+            return True
         frame = frame.f_back
     return False
+
+
+def _frame_is_importlib(frame):
+    module_name = frame.f_globals.get("__name__", "")
+    if not isinstance(module_name, str) or (
+        module_name != "importlib" and not module_name.startswith("importlib.")
+    ):
+        return False
+    module = sys.modules.get(module_name)
+    return module is not None and getattr(module, "__dict__", None) is frame.f_globals
 
 
 def _sandbox_code_requested_import(skip = 1):
@@ -114,12 +145,10 @@ def _sandbox_code_requested_import(skip = 1):
     except ValueError:
         return True
     while frame is not None:
-        module = frame.f_globals.get("__name__", "")
         if (
-            module == __name__
-            or module == "importlib"
-            or module.startswith("importlib.")
-            or module.startswith("_frozen_importlib")
+            frame.f_code.co_filename == __file__
+            or _frame_is_importlib(frame)
+            or str(frame.f_code.co_filename).startswith("<frozen importlib")
         ):
             frame = frame.f_back
             continue
@@ -177,25 +206,98 @@ class _GuardedHttpcoreModule(types.ModuleType):
         return types.ModuleType.__delattr__(self, name)
 
 
+def _make_httpcore_network_gate():
+    active = contextvars.ContextVar("unsloth_httpcore_network_active", default = None)
+    active_markers = set()
+    trusted_request = _trusted_httpx_in_call_stack
+    blocked = _raise_blocked_network_module
+
+    def enter():
+        if not trusted_request(2):
+            blocked("httpcore")
+        marker = object()
+        active_markers.add(id(marker))
+        return active.set(marker), marker
+
+    def exit(state):
+        token, marker = state
+        try:
+            active.reset(token)
+        finally:
+            active_markers.discard(id(marker))
+
+    def is_active():
+        marker = active.get()
+        return marker is not None and id(marker) in active_markers
+
+    return enter, exit, is_active
+
+
+(
+    _enter_httpcore_network,
+    _exit_httpcore_network,
+    _httpcore_network_is_active,
+) = _make_httpcore_network_gate()
+
+
+def _make_httpcore_backend_dispatchers():
+    originals = {}
+
+    def register(original):
+        key = object()
+        originals[key] = original
+        return key
+
+    def dispatch(key, *args, **kwargs):
+        return originals[key](*args, **kwargs)
+
+    async def dispatch_async(key, *args, **kwargs):
+        return await originals[key](*args, **kwargs)
+
+    return register, dispatch, dispatch_async
+
+
+(
+    _register_httpcore_backend,
+    _dispatch_httpcore_backend,
+    _dispatch_httpcore_backend_async,
+) = _make_httpcore_backend_dispatchers()
+
+
 def _guard_httpcore_backend_method(cls, method_name):
     original = cls.__dict__.get(method_name)
     if not callable(original) or getattr(original, "_unsloth_httpcore_backend_guard", False):
         return
 
+    key = _register_httpcore_backend(original)
+    network_enter = _enter_httpcore_network
+    network_exit = _exit_httpcore_network
+    trusted_request = _trusted_httpx_in_call_stack
+    blocked = _raise_blocked_network_module
     code = getattr(original, "__code__", None)
     if code is not None and code.co_flags & 0x80:  # CO_COROUTINE
+        dispatch = _dispatch_httpcore_backend_async
 
         async def guarded(*args, **kwargs):
-            if not _trusted_httpx_in_call_stack(2):
-                _raise_blocked_network_module("httpcore")
-            return await original(*args, **kwargs)
+            if not trusted_request(2):
+                blocked("httpcore")
+            state = network_enter()
+            try:
+                return await dispatch(key, *args, **kwargs)
+            finally:
+                network_exit(state)
 
     else:
+        dispatch = _dispatch_httpcore_backend
 
         def guarded(*args, **kwargs):
-            if not _trusted_httpx_in_call_stack(2):
-                _raise_blocked_network_module("httpcore")
-            return original(*args, **kwargs)
+            if not trusted_request(2):
+                blocked("httpcore")
+            state = network_enter()
+            try:
+                return dispatch(key, *args, **kwargs)
+            finally:
+                network_exit(state)
 
     guarded._unsloth_httpcore_backend_guard = True
     guarded.__name__ = getattr(original, "__name__", method_name)
@@ -278,6 +380,136 @@ def _guarded_import_module(name, package = None):
         _guard_loaded_httpcore_modules()
     return module
 
+def _guard_legacy_source_loader():
+    cls = importlib.machinery.SourceFileLoader
+    original = getattr(cls, "load_module", None)
+    if not callable(original) or getattr(original, "_unsloth_network_guard", False):
+        return
+
+    def guarded(self, *args, **kwargs):
+        fullname = args[0] if args else kwargs.get("fullname", getattr(self, "name", None))
+        root = _blocked_network_module(fullname)
+        if root is not None:
+            _raise_blocked_network_module(root)
+        return original(self, *args, **kwargs)
+
+    guarded._unsloth_network_guard = True
+    guarded.__name__ = getattr(original, "__name__", "load_module")
+    guarded.__qualname__ = getattr(original, "__qualname__", guarded.__name__)
+    guarded.__doc__ = getattr(original, "__doc__", None)
+    cls.load_module = guarded
+
+
+def _make_network_guard_audit():
+    """Create a guard whose decisions do not depend on mutable module globals."""
+    blocked = _BLOCKED_NETWORK_MODULES
+    direct_blocked = _DIRECT_BLOCKED_NETWORK_MODULES
+    trusted_roots = _TRUSTED_LIBRARY_ROOTS
+    modules = sys.modules
+    module_getattribute = types.ModuleType.__getattribute__
+    getframe = sys._getframe
+    commonpath = os.path.commonpath
+    realpath = os.path.realpath
+    relpath = os.path.relpath
+    shim_path = realpath(__file__)
+    httpcore_network_active = _httpcore_network_is_active
+
+    def blocked_error(root):
+        raise ModuleNotFoundError(
+            f"Blocked: low-level network module {root!r} is unavailable in sandboxed code"
+        )
+
+    def frame_uses_package(frame, package):
+        module_name = frame.f_globals.get("__name__", "")
+        if not isinstance(module_name, str):
+            return False
+        if module_name != package and not module_name.startswith(f"{package}."):
+            return False
+        module = modules.get(module_name)
+        if module is None:
+            return False
+        try:
+            module_dict = module_getattribute(module, "__dict__")
+        except TypeError:
+            module_dict = getattr(module, "__dict__", None)
+        if module_dict is not frame.f_globals:
+            return False
+        spec = getattr(module, "__spec__", None)
+        origin = getattr(spec, "origin", None) or getattr(module, "__file__", None)
+        filename = frame.f_code.co_filename
+        if not isinstance(origin, str) or not isinstance(filename, str):
+            return False
+        try:
+            origin_path = realpath(origin)
+            code_path = realpath(filename)
+            for root in trusted_roots:
+                if commonpath((root, origin_path)) != root:
+                    continue
+                if commonpath((root, code_path)) != root:
+                    continue
+                origin_relative = relpath(origin_path, root).replace("\\", "/")
+                code_relative = relpath(code_path, root).replace("\\", "/")
+                return (
+                    (
+                        origin_relative == package
+                        or origin_relative.startswith(f"{package}/")
+                    )
+                    and (code_relative == package or code_relative.startswith(f"{package}/"))
+                )
+        except (OSError, ValueError):
+            return False
+        return False
+
+    def package_in_stack(package, skip):
+        try:
+            frame = getframe(skip)
+        except ValueError:
+            return False
+        while frame is not None:
+            if frame_uses_package(frame, package):
+                return True
+            frame = frame.f_back
+        return False
+
+    def sandbox_requested_import(skip):
+        try:
+            frame = getframe(skip)
+        except ValueError:
+            return True
+        while frame is not None:
+            filename = frame.f_code.co_filename
+            if filename == shim_path or (
+                isinstance(filename, str) and filename.startswith("<frozen importlib")
+            ):
+                frame = frame.f_back
+                continue
+            return not (
+                frame_uses_package(frame, "httpx") or frame_uses_package(frame, "httpcore")
+            )
+        return True
+
+    def audit(event, args):
+        if event == "import" and args:
+            fullname = args[0]
+            if not isinstance(fullname, str):
+                return
+            root = fullname.split(".", 1)[0]
+            if root in blocked or (
+                root in direct_blocked and sandbox_requested_import(2)
+            ):
+                blocked_error(root)
+            return
+        if event not in {"socket.connect", "socket.connect_ex", "socket.getaddrinfo"}:
+            return
+        if httpcore_network_active():
+            return
+        if package_in_stack("httpcore", 2) or package_in_stack(
+            "anyio", 2
+        ) or package_in_stack("trio", 2):
+            blocked_error("httpcore")
+
+    return audit
+
 
 class _BlockedNetworkModuleFinder:
     _unsloth_blocked_network_guard = True
@@ -336,33 +568,13 @@ def _sandbox_guard_should_activate():
 
 def _install_import_guard():
     global _import_guard_installed
-    if not _sandbox_guard_should_activate():
+    if __name__ != "sitecustomize" or not _sandbox_guard_should_activate():
         return
     if not _import_guard_installed:
-        # Capture the block sets and trust probe as closure locals. Audit hooks
-        # cannot be removed once registered, so this hook is the backstop for the
-        # import wrapper and meta-path finder (both of which sandbox code can
-        # restore/detach). Reading globals here would let sandbox code neutralise
-        # it by rebinding this module's attributes, so the decision is frozen.
-        blocked_roots = frozenset(_BLOCKED_NETWORK_MODULES)
-        direct_roots = frozenset(_DIRECT_BLOCKED_NETWORK_MODULES)
-        sandbox_requested = _sandbox_code_requested_import
-
-        def _immutable_network_import_audit(event, args):
-            if event != "import" or not args:
-                return
-            name = args[0]
-            if not isinstance(name, str):
-                return
-            root = name.split(".", 1)[0]
-            if root in blocked_roots or (root in direct_roots and sandbox_requested()):
-                raise ModuleNotFoundError(
-                    f"Blocked: low-level network module {root!r} is unavailable in sandboxed code"
-                )
-
-        sys.addaudithook(_immutable_network_import_audit)
+        sys.addaudithook(_make_network_guard_audit())
         builtins.__import__ = _guarded_import
         importlib.import_module = _guarded_import_module
+        _guard_legacy_source_loader()
         _import_guard_installed = True
     if any(getattr(finder, "_unsloth_blocked_network_guard", False) for finder in sys.meta_path):
         return
