@@ -150,8 +150,11 @@ def test_system_message_is_consumed_by_the_system_part(default_system_message):
             {"role": "user", "content": "Hi"},
         ],
     )
-    assert "Be terse." in rendered
+    assert rendered.count("Be terse.") == 1
     assert rendered.count("Hi") == 1
+    # A caller system message overrides the default; the default must not leak in.
+    if default_system_message is not None:
+        assert default_system_message not in rendered
 
 
 def test_absent_system_message_still_renders_without_default():
@@ -165,3 +168,29 @@ def test_absent_system_message_still_renders_without_default():
     )
     rendered = _render(jinja_template, [{"role": "user", "content": "Hi"}])
     assert "Hi" in rendered
+
+
+_NO_SYSTEM_CHAT_TEMPLATE = (
+    "PREAMBLE\n"
+    "### User: {INPUT}\n### Assistant: {OUTPUT}</s>"
+    "### User: {INPUT}\n### Assistant: {OUTPUT}</s>"
+)
+
+
+def test_static_prefix_without_system_still_rejects_system_message():
+    """A template with a static prefix but no {SYSTEM} placeholder cannot render a
+    caller system message, so it must still raise rather than silently drop it."""
+    _, jinja_template, _, _ = construct_chat_template(
+        tokenizer = _SuccessFakeTokenizer(),
+        chat_template = _NO_SYSTEM_CHAT_TEMPLATE,
+        default_system_message = None,
+        extra_eos_tokens = ["</s>"],
+    )
+    with pytest.raises(RuntimeError, match = "Only user and assistant roles are supported!"):
+        _render(
+            jinja_template,
+            [
+                {"role": "system", "content": "Be terse."},
+                {"role": "user", "content": "Hi"},
+            ],
+        )
