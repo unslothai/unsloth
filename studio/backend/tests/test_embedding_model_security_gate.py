@@ -266,9 +266,8 @@ def test_clean_repo_saves_under_force(client, monkeypatch):
 
 
 def test_custom_model_saved_in_cache_casing(client, monkeypatch):
-    # A custom repo is persisted in the casing its local HF cache dir uses, so an
-    # offline exact-case SentenceTransformer load still finds it (baai/bge-m3 ->
-    # BAAI/bge-m3). force=True bypasses the verification gate to isolate this.
+    # A custom repo is persisted in its local HF cache casing so the offline exact-case
+    # ST load finds it (baai/bge-m3 -> BAAI/bge-m3). force=True isolates this from the gate.
     c, saved = client
     monkeypatch.setitem(sys.modules, "utils.security", _security_stub(blocked = False))
     import utils.models as _models
@@ -280,9 +279,8 @@ def test_custom_model_saved_in_cache_casing(client, monkeypatch):
 
 
 def test_local_path_model_is_not_casing_normalized(client, monkeypatch, tmp_path):
-    # A local directory (here an existing path) is loaded from disk. Rewriting it
-    # to a case-insensitive HF cache collision would stop resolving to that
-    # directory and be read as a Hub repo id, so normalization must be skipped.
+    # A local directory is loaded from disk; casing normalization must be skipped or it
+    # would resolve to a cache collision instead of the directory.
     c, saved = client
     monkeypatch.setitem(sys.modules, "utils.security", _security_stub(blocked = False))
     import utils.models as _models
@@ -299,11 +297,9 @@ def test_local_path_model_is_not_casing_normalized(client, monkeypatch, tmp_path
 
 
 def test_llama_backend_model_is_not_casing_normalized(monkeypatch):
-    # On the llama-server backend nothing loads through SentenceTransformer: the
-    # embedder derives a GGUF companion from this saved spelling via
-    # effective_gguf_repo() and fetches it with hf_hub_download, i.e. from the HUB
-    # cache. Rewriting to an ST_HOME spelling would point it at a GGUF repo that
-    # _hf_gguf_backend_error() never validated and that may be absent offline.
+    # On the llama-server backend nothing loads through SentenceTransformer: the embedder
+    # derives a GGUF companion from this spelling and fetches it from the HUB cache, so an
+    # ST_HOME rewrite would point at a GGUF repo _hf_gguf_backend_error() never validated.
     saved: dict = {}
     monkeypatch.setattr(settings, "default_embedding_model", lambda: "unsloth/default-embed")
     monkeypatch.setattr(settings, "validate_embedding_model", lambda v: v)
@@ -330,10 +326,8 @@ def test_llama_backend_model_is_not_casing_normalized(monkeypatch):
 
 
 def test_default_model_is_not_casing_normalized(client, monkeypatch):
-    # Submitting the exact default must NOT be run through cache-casing
-    # normalization: rewriting it would make set_rag_embedding_model()'s exact
-    # default comparison treat it as a custom override, so later default changes
-    # would stop applying. resolve_st_cached_repo_id_case must not be consulted.
+    # The exact default must NOT be casing-normalized: rewriting it would make
+    # set_rag_embedding_model()'s exact default comparison treat it as a custom override.
     c, saved = client
     import utils.models as _models
 

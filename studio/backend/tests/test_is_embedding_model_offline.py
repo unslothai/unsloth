@@ -20,8 +20,7 @@ if _BACKEND_DIR not in sys.path:
 
 
 def _maybe_stub(name: str, builder):
-    # Stub only if the real module is unavailable, so this file never shadows
-    # real packages for later tests in the same pytest process.
+    # Stub only if the real module is unavailable, so this file never shadows real packages.
     try:
         importlib.import_module(name)
     except ImportError:
@@ -51,8 +50,7 @@ def _clean_state(tmp_path, monkeypatch):
     mc._embedding_detection_cache.clear()
     monkeypatch.delenv("HF_HUB_OFFLINE", raising = False)
     monkeypatch.delenv("TRANSFORMERS_OFFLINE", raising = False)
-    # Point the persisted embedder-verdict store at a per-test Studio home so the
-    # cross-restart allowlist never leaks into another test or the real ~/.unsloth.
+    # Per-test Studio home so the persisted allowlist never leaks into another test.
     monkeypatch.delenv("STUDIO_HOME", raising = False)
     monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path / "_studio_home"))
     yield
@@ -67,11 +65,9 @@ def _repo(
     repo_id = "org/model",
     root = None,
 ):
-    """Build a real cache repo dir and point the ST cache root at it.
-
-    ``snapshots``: (commit, sentence_transformer) tuples. A snapshot is written
-    fully loadable (config + tokenizer + weights) so only the marker varies.
-    ``main_ref`` writes refs/main. Returns the snapshot dirs in the given order.
+    """Build a real cache repo dir and point the ST cache root at it. ``snapshots``:
+    (commit, sentence_transformer) tuples, each written fully loadable so only the marker
+    varies. ``main_ref`` writes refs/main. Returns the snapshot dirs in order.
     """
     cache_root = root if root is not None else tmp_path / "cache"
     cache_root.mkdir(parents = True, exist_ok = True)
@@ -127,9 +123,8 @@ def test_marker_none_when_not_cached(monkeypatch):
 
 
 def test_marker_judges_the_revision_refs_main_points_at(tmp_path, monkeypatch):
-    # The repo USED to be a sentence-transformers model (the old snapshot has
-    # modules.json) but the revision refs/main points at no longer is. The active
-    # revision must win; scanning any snapshot would wrongly say True.
+    # The old snapshot has modules.json but the active refs/main revision does not: the
+    # active revision must win, so scanning any snapshot would wrongly say True.
     _repo(tmp_path, monkeypatch, ("new", False), ("old", True), main_ref = "new")
     assert mc._embedding_marker_in_hf_cache("org/model") is False
 
@@ -140,9 +135,8 @@ def test_marker_true_when_refs_main_revision_is_st(tmp_path, monkeypatch):
 
 
 def test_marker_missing_ref_is_a_cache_miss(tmp_path, monkeypatch):
-    # With local_files_only=True huggingface_hub resolves the default revision
-    # THROUGH refs/main, so a snapshot dir alone is not discoverable. Accepting
-    # one here would pass validation and then fail at first indexing.
+    # local_files_only resolves the default revision THROUGH refs/main, so a snapshot dir
+    # alone is not discoverable and accepting one would fail at first indexing.
     _repo(tmp_path, monkeypatch, ("new", False), ("old", True))  # no refs/main
     assert mc._embedding_marker_in_hf_cache("org/model") is None
 
@@ -172,10 +166,9 @@ def test_marker_empty_ref_is_cache_miss(tmp_path, monkeypatch):
 
 
 def test_marker_scopes_to_the_repo_dir_the_loader_opens(tmp_path, monkeypatch):
-    # Two cache dirs differing only by case. The loader opens the one the
-    # settings route persists (exact case first, as resolve_st_cached_repo_id_case
-    # picks), so a complete model there must validate even when the OTHER variant
-    # holds a newer, non-ST snapshot -- judging across both would reject it.
+    # Two cache dirs differing only by case: the loader opens the one persisted (exact case
+    # first), so a complete model there must validate even when the OTHER variant holds a
+    # newer, non-ST snapshot -- judging across both would reject it.
     if not _case_sensitive_fs(tmp_path):
         pytest.skip("duplicate case variants need a case-sensitive filesystem")
     root = tmp_path / "cache"
@@ -212,9 +205,8 @@ def _st_snapshot(
 
 
 def test_st_probe_uses_sentence_transformers_home(tmp_path, monkeypatch):
-    # _get() builds SentenceTransformer without cache_folder, so with ST_HOME set
-    # that is the ONLY cache the load searches. The probe must follow it, or a
-    # model present there is called uncached and rejected with a 409 offline.
+    # With ST_HOME set that is the ONLY cache the load searches, so the probe must follow
+    # it or a model present there is called uncached and 409'd offline.
     hf_root, st_root = tmp_path / "hf", tmp_path / "st"
     hf_root.mkdir()
     _st_snapshot(st_root, "models--org--model")
@@ -236,9 +228,8 @@ def test_st_probe_ignores_hub_cache_when_st_home_is_set(tmp_path, monkeypatch):
 
 
 def test_gguf_probe_never_follows_st_home(tmp_path, monkeypatch):
-    # The GGUF path downloads with hf_hub_download and no cache_dir, so it uses
-    # the Hub cache. Letting its probe see ST_HOME would select a file the GGUF
-    # loader cannot find.
+    # The GGUF path uses the Hub cache (hf_hub_download, no cache_dir), so letting its probe
+    # see ST_HOME would select a file the GGUF loader cannot find.
     hf_root, st_root = tmp_path / "hf", tmp_path / "st"
     hf_root.mkdir()
     _st_snapshot(st_root, "models--org--model")
@@ -256,9 +247,8 @@ def test_st_probe_falls_back_to_hub_cache(tmp_path, monkeypatch):
 
 
 def test_marker_only_snapshot_is_not_loadable(tmp_path, monkeypatch):
-    # The online security preflight downloads modules.json on its own via
-    # hf_hub_download, and a partial download leaves it too. Accepting that
-    # offline passes validation and then fails on the first RAG load.
+    # The security preflight downloads modules.json on its own, and a partial download
+    # leaves it too, so accepting it offline would fail on the first RAG load.
     hf_root = tmp_path / "hf"
     _st_snapshot(hf_root, "models--org--model", loadable = False)
     _fake_hf_cache(monkeypatch, hf_root)
@@ -267,11 +257,9 @@ def test_marker_only_snapshot_is_not_loadable(tmp_path, monkeypatch):
 
 
 def test_marker_onnx_only_snapshot_is_not_loadable(tmp_path, monkeypatch):
-    # A snapshot with the marker and config but ONLY an ONNX export cached is not
-    # loadable: _get() builds SentenceTransformer with the default Torch backend
-    # (no backend="onnx"), which reads model.safetensors / pytorch_model.bin, so
-    # accepting the ONNX offline would pass validation and then fail on the first
-    # RAG load -- the same validate-then-fail as the marker-only case.
+    # Marker + config but ONLY an ONNX export is not loadable: the default Torch backend
+    # reads model.safetensors / pytorch_model.bin, so accepting the ONNX offline would fail
+    # at load.
     hf_root = tmp_path / "hf"
     repo = hf_root / "models--org--model"
     snap = repo / "snapshots" / "aaa"
@@ -280,8 +268,7 @@ def test_marker_onnx_only_snapshot_is_not_loadable(tmp_path, monkeypatch):
     (snap / "config.json").write_text("{}")
     (snap / "tokenizer.json").write_text("{}")  # isolate the failure to the weight format
     (snap / "model.onnx").write_bytes(b"\0")
-    # refs/main so the probe resolves this revision and reaches the weight check
-    # (without it the answer would be None -- a cache miss -- for a different reason).
+    # refs/main so the probe reaches the weight check (without it the answer is None).
     (repo / "refs").mkdir(parents = True)
     (repo / "refs" / "main").write_text("aaa")
     _fake_hf_cache(monkeypatch, hf_root)
@@ -290,18 +277,15 @@ def test_marker_onnx_only_snapshot_is_not_loadable(tmp_path, monkeypatch):
 
 
 def test_marker_rejects_weights_without_tokenizer(tmp_path, monkeypatch):
-    # A snapshot with modules.json + config + a complete weight set but NO tokenizer
-    # asset is not loadable: SentenceTransformer's Transformer module also builds an
-    # AutoTokenizer, which fails offline when tokenizer.json / tokenizer_config.json /
-    # a vocab is absent. Accepting it would pass validation and then fail at load.
+    # Marker + config + weights but NO tokenizer asset is not loadable: the Transformer
+    # module also builds an AutoTokenizer, which fails offline without a tokenizer asset.
     _cache_repo_with_files(tmp_path, monkeypatch, "model.safetensors", tokenizer = False)
     assert mc._embedding_marker_in_hf_cache("org/model") is False
 
 
 @pytest.mark.parametrize("tok_file", ["tokenizer_config.json", "vocab.txt", "spiece.model"])
 def test_marker_accepts_alternate_tokenizer_assets(tmp_path, monkeypatch, tok_file):
-    # The tokenizer check is a permissive union: any one recognized asset (fast
-    # tokenizer json, a WordPiece vocab, a SentencePiece model, ...) is enough, so a
+    # The tokenizer check is a permissive union: any one recognized asset is enough, so a
     # valid non-tokenizer.json layout is not wrongly rejected.
     _cache_repo_with_files(tmp_path, monkeypatch, "model.safetensors", tok_file, tokenizer = False)
     assert mc._embedding_marker_in_hf_cache("org/model") is True
@@ -314,8 +298,8 @@ def _cache_repo_with_files(
     commit = "aaa",
     tokenizer = True,
 ):
-    """A cache repo whose active snapshot holds modules.json + config + a tokenizer +
-    *files*. ``tokenizer=False`` omits the tokenizer asset (a partial download)."""
+    """Cache repo whose active snapshot holds modules.json + config + a tokenizer + *files*.
+    ``tokenizer=False`` omits the tokenizer asset."""
     hf_root = tmp_path / "hf"
     repo = hf_root / "models--org--model"
     snap = repo / "snapshots" / commit
@@ -335,11 +319,8 @@ def _cache_repo_with_files(
 
 
 def test_marker_rejects_non_base_weight_bins(tmp_path, monkeypatch):
-    # A partial cache carrying modules.json + config plus only a commonly published
-    # NON-weight .bin (training_args.bin) is not a loadable base model: the Torch
-    # backend needs model.safetensors / pytorch_model.bin, so accepting it would
-    # pass validation and then fail at first indexing. Adapter-only artifacts are
-    # rejected for the same reason.
+    # A NON-weight .bin (training_args.bin) or an adapter-only artifact is not a loadable
+    # base model: the Torch backend needs model.safetensors / pytorch_model.bin.
     _cache_repo_with_files(tmp_path, monkeypatch, "training_args.bin")
     assert mc._embedding_marker_in_hf_cache("org/model") is False
     _cache_repo_with_files(tmp_path / "b", monkeypatch, "adapter_model.safetensors")
@@ -363,11 +344,8 @@ def test_marker_rejects_non_base_weight_bins(tmp_path, monkeypatch):
     ],
 )
 def test_marker_rejects_incomplete_shard_set(tmp_path, monkeypatch, weights):
-    # A partially downloaded sharded model must NOT validate: SentenceTransformer's
-    # Torch backend needs every shard AND the index map at load time, so accepting an
-    # incomplete set (or a complete set missing its index) would pass offline
-    # validation and then fail at first indexing -- the same validate-then-fail this
-    # helper exists to prevent.
+    # A partially downloaded sharded model must NOT validate: the Torch backend needs every
+    # shard AND the index map, so an incomplete set (or a set missing its index) fails.
     _cache_repo_with_files(tmp_path, monkeypatch, *weights)
     assert mc._embedding_marker_in_hf_cache("org/model") is False
 
@@ -385,9 +363,8 @@ def test_marker_rejects_incomplete_shard_set(tmp_path, monkeypatch, weights):
     ],
 )
 def test_marker_accepts_recognized_torch_weights(tmp_path, monkeypatch, weights):
-    # The filename recognizer must not over-reject real base-model weights: single
-    # pytorch_model.bin, a complete sharded set with its index map, and weights that
-    # live inside a module directory all count as loadable.
+    # The recognizer must not over-reject real weights: single pytorch_model.bin, a complete
+    # sharded set with its index, and weights inside a module dir all count as loadable.
     _cache_repo_with_files(tmp_path, monkeypatch, *weights)
     assert mc._embedding_marker_in_hf_cache("org/model") is True
 
@@ -399,9 +376,8 @@ def _case_sensitive_fs(tmp_path) -> bool:
 
 
 def test_st_casing_resolves_against_st_home(tmp_path, monkeypatch):
-    # resolve_cached_repo_id_case scans only the Hub cache, so with ST_HOME set it
-    # would persist the requested lower-case id while the exact-case offline load
-    # looks for models--BAAI--bge-m3 in ST_HOME and misses it.
+    # resolve_cached_repo_id_case scans only the Hub cache, so with ST_HOME set it would
+    # persist the lower-case id while the exact-case offline load misses it in ST_HOME.
     if not _case_sensitive_fs(tmp_path):
         pytest.skip("casing only diverges on a case-sensitive filesystem")
     hf_root, st_root = tmp_path / "hf", tmp_path / "st"
@@ -433,8 +409,7 @@ def test_st_casing_noop_when_uncached(tmp_path, monkeypatch):
 
 
 def test_marker_never_raises_when_cache_mutates(monkeypatch):
-    # A snapshot vanishing mid-iteration (concurrent cached-model deletion)
-    # must read as not-cached, not propagate a 500 out of the routes.
+    # A snapshot vanishing mid-iteration must read as not-cached, not raise a 500.
     def _exploding_iter(repo):
         raise FileNotFoundError("snapshot removed underneath")
 
@@ -443,8 +418,7 @@ def test_marker_never_raises_when_cache_mutates(monkeypatch):
 
 
 def test_is_embedding_model_survives_cache_race_online(monkeypatch):
-    # With the cache probe failing, the online path must still resolve via the
-    # Hub instead of erroring out.
+    # With the cache probe failing, the online path must still resolve via the Hub.
     def _exploding_iter(repo):
         raise FileNotFoundError("snapshot removed underneath")
 
@@ -462,9 +436,8 @@ def test_is_embedding_model_survives_cache_race_online(monkeypatch):
 
 
 def test_offline_cached_st_detected_via_marker_no_network(tmp_path, monkeypatch):
-    # Offline: a downloaded sentence-transformers repo is classified from its
-    # modules.json marker with no model_info() network call that would hang on
-    # DNS retries (#6817).
+    # Offline: a downloaded sentence-transformers repo is classified from its modules.json
+    # marker with no model_info() network call that would hang on DNS retries (#6817).
     _repo(tmp_path, monkeypatch, ("aaa", True), main_ref = "aaa", repo_id = "unsloth/bge-small-en-v1.5")
     monkeypatch.setenv("HF_HUB_OFFLINE", "1")
     _fake_hf_model_info(monkeypatch, _no_network)
@@ -472,10 +445,8 @@ def test_offline_cached_st_detected_via_marker_no_network(tmp_path, monkeypatch)
 
 
 def test_online_defers_to_hub_over_stale_marker(tmp_path, monkeypatch):
-    # Online: the Hub is authoritative for the current revision. Even with a
-    # cached modules.json (the repo WAS an embedder), a Hub lookup that no longer
-    # reports embedding signals wins -- the stale local marker must not
-    # short-circuit model_info().
+    # Online: the Hub is authoritative. Even with a cached modules.json, a Hub lookup that
+    # no longer reports embedding signals wins -- the stale marker must not short-circuit it.
     _repo(tmp_path, monkeypatch, ("aaa", True), main_ref = "aaa")
     calls = []
 
@@ -489,10 +460,8 @@ def test_online_defers_to_hub_over_stale_marker(tmp_path, monkeypatch):
 
 
 def test_online_permanent_hub_error_ignores_stale_marker(tmp_path, monkeypatch):
-    # A permanent Hub error (deleted / gated / typo'd repo) is authoritative:
-    # even with a cached modules.json, validation must NOT pass on the stale
-    # marker -- return False so the settings route surfaces its 409, and the
-    # persisted model can't fail later when the loader refreshes from the Hub.
+    # A permanent Hub error (deleted / gated / typo'd repo) is authoritative: even with a
+    # cached modules.json, return False so the settings route surfaces its 409.
     _repo(tmp_path, monkeypatch, ("aaa", True), main_ref = "aaa")
 
     class RepositoryNotFoundError(Exception):
@@ -506,9 +475,8 @@ def test_online_permanent_hub_error_ignores_stale_marker(tmp_path, monkeypatch):
 
 
 def test_online_hub_failure_falls_back_to_marker_uncached(tmp_path, monkeypatch):
-    # A transient model_info() failure falls back to the local marker WITHOUT
-    # caching: the degraded result must not become sticky, so a later successful
-    # Hub lookup can still override it.
+    # A transient model_info() failure falls back to the local marker WITHOUT caching, so a
+    # later successful Hub lookup can still override the degraded result.
     _repo(tmp_path, monkeypatch, ("aaa", True), main_ref = "aaa", repo_id = "org/emb")
     _fake_hf_model_info(monkeypatch, _no_network)  # raises -> Hub "unreachable"
     assert mc.is_embedding_model("org/emb") is True  # marker fallback
@@ -516,10 +484,9 @@ def test_online_hub_failure_falls_back_to_marker_uncached(tmp_path, monkeypatch)
 
 
 def test_online_negative_does_not_block_later_offline_download(tmp_path, monkeypatch):
-    # An online Hub lookup authoritatively reports non-embedding and is memoized.
-    # The repo is then downloaded WITH modules.json and the session goes offline;
-    # the offline path re-probes the marker (never consulting the online memo),
-    # so the freshly downloaded embedder is detected instead of the stale False.
+    # An online lookup reports non-embedding and is memoized. The repo is then downloaded
+    # with modules.json and the session goes offline; the offline path re-probes the marker
+    # (never the memo), so the fresh embedder is detected instead of the stale False.
     _no_cache(monkeypatch)
 
     def _info(model_name, token = None):
@@ -536,13 +503,10 @@ def test_online_negative_does_not_block_later_offline_download(tmp_path, monkeyp
 
 
 def test_offline_retains_online_confirmed_positive(tmp_path, monkeypatch):
-    # A tag-only embedder (feature-extraction, no modules.json) is confirmed online
-    # and cached True, and its snapshot IS materialized locally.
-    # _hf_offline_if_dns_dead() then flips the process to offline mid-load; the
-    # offline path must RETAIN that positive because the files are present, not
-    # downgrade a model already verified this session. The marker alone reads False
-    # here (present but no modules.json), so retention rests on the memo plus a
-    # present active snapshot, not on the marker.
+    # A tag-only embedder (no modules.json) confirmed online and cached True, with its
+    # snapshot materialized. Flipped offline mid-load, the offline path must RETAIN the
+    # positive: the marker reads False, so retention rests on the memo plus a present
+    # snapshot, not the marker.
     _repo(tmp_path, monkeypatch, ("aaa", False), main_ref = "aaa", repo_id = "org/gte-modernbert")
 
     def _info(model_name, token = None):
@@ -557,11 +521,9 @@ def test_offline_retains_online_confirmed_positive(tmp_path, monkeypatch):
 
 
 def test_offline_metadata_only_positive_not_trusted_without_cache(monkeypatch):
-    # A positive from an online model_info() call (e.g. /check-embedding) proves
-    # only that the repo is tagged an embedder, not that any files were downloaded.
-    # With nothing materialized in the cache, the offline path must NOT trust that
-    # memo: saving the model would then fail the local_files_only RAG load at first
-    # indexing. So it returns False despite the cached True.
+    # An online positive proves only that the repo is tagged an embedder, not that files
+    # were downloaded. With nothing materialized, the offline path must NOT trust the memo
+    # (the local_files_only load would fail), so it returns False despite the cached True.
     _no_cache(monkeypatch)
 
     def _info(model_name, token = None):
@@ -578,12 +540,9 @@ def test_offline_metadata_only_positive_not_trusted_without_cache(monkeypatch):
 
 
 def test_offline_detects_persisted_tag_only_embedder_after_restart(tmp_path, monkeypatch):
-    # A tag-only embedder (feature-extraction, no modules.json) is confirmed online
-    # in one session, which durably records the verdict, and its snapshot is
-    # materialized on disk. After a RESTART (the session memo is gone) the process
-    # comes up offline: the marker alone reads False (present but no modules.json),
-    # so recognition rests on the persisted allowlist plus the present active
-    # snapshot -- the exact case the memo cannot cover across a restart.
+    # A tag-only embedder confirmed online durably records the verdict, snapshot
+    # materialized. After a RESTART (memo gone) the process comes up offline: the marker
+    # reads False, so recognition rests on the persisted allowlist plus the present snapshot.
     _repo(tmp_path, monkeypatch, ("aaa", False), main_ref = "aaa", repo_id = "org/gte-modernbert")
 
     def _info(model_name, token = None):
@@ -600,11 +559,9 @@ def test_offline_detects_persisted_tag_only_embedder_after_restart(tmp_path, mon
 
 
 def test_offline_persisted_verdict_not_trusted_when_uncached(tmp_path, monkeypatch):
-    # The persisted allowlist records only that the repo was tagged an embedder,
-    # not that its files are on disk. After a restart with NOTHING materialized in
-    # the cache, the offline path must NOT trust the persisted verdict: saving the
-    # model would then fail the local_files_only RAG load at first indexing. It is
-    # gated on the active snapshot being present, so an uncached repo returns False.
+    # The persisted allowlist records only the tag, not on-disk files. After a restart with
+    # NOTHING materialized, the offline path must NOT trust it (gated on the active snapshot
+    # being present), so an uncached repo returns False.
     _no_cache(monkeypatch)
 
     def _info(model_name, token = None):
@@ -622,12 +579,10 @@ def test_offline_persisted_verdict_not_trusted_when_uncached(tmp_path, monkeypat
 
 
 def test_offline_persisted_verdict_not_trusted_when_snapshot_partial(tmp_path, monkeypatch):
-    # A persisted verdict is trusted only when the active snapshot carries a COMPLETE
-    # weight set, not merely that it is materialized. Here the snapshot exists with a
-    # config but no weights (an interrupted download): _embedding_marker_in_hf_cache
-    # reads False (materialized, not None), so a bare "materialized" gate would wrongly
-    # return True and the local_files_only load would then fail. The weight gate must
-    # reject it.
+    # A persisted verdict is trusted only when the active snapshot carries a COMPLETE weight
+    # set, not merely that it is materialized. Here config but no weights (interrupted
+    # download): a bare "materialized" gate would wrongly return True, so the weight gate
+    # must reject it.
     cache_root = tmp_path / "cache"
     snap = cache_root / "models--org--partial" / "snapshots" / "aaa"
     snap.mkdir(parents = True)
@@ -652,10 +607,9 @@ def test_offline_persisted_verdict_not_trusted_when_snapshot_partial(tmp_path, m
 
 
 def test_offline_persisted_verdict_matches_across_casing(tmp_path, monkeypatch):
-    # The verdict is recorded under the online-request spelling but the settings route
-    # saves the cache-resolved spelling, so an exact-string lookup would miss it. A
-    # tag-only embedder verified online as baai/model, then looked up offline as the
-    # saved BAAI/model, must still be recognized: the allowlist is case-folded.
+    # The verdict is recorded under the request spelling but the settings route saves the
+    # cache-resolved one, so an exact-string lookup would miss it. Verified as baai/model,
+    # looked up as the saved BAAI/model, must still match: the allowlist is case-folded.
     _repo(tmp_path, monkeypatch, ("aaa", False), main_ref = "aaa", repo_id = "BAAI/model")
 
     def _info(model_name, token = None):
@@ -672,10 +626,8 @@ def test_offline_persisted_verdict_matches_across_casing(tmp_path, monkeypatch):
 
 
 def test_persist_embedder_concurrent_writes_keep_every_verdict(tmp_path, monkeypatch):
-    # Concurrent online confirmations must not drop each other's entry: the
-    # read-modify-write is serialized and each writer uses a per-thread temp file, so
-    # every model persisted from parallel threads survives (a lost verdict would go
-    # unrecognized offline after a restart).
+    # Concurrent confirmations must not drop each other's entry: serialized read-modify-write
+    # + per-thread temp files, so every model persisted from parallel threads survives.
     import threading
 
     names = [f"org/emb-{i}" for i in range(24)]
@@ -696,9 +648,8 @@ def test_persist_embedder_concurrent_writes_keep_every_verdict(tmp_path, monkeyp
 
 
 def test_persist_embedder_is_best_effort_when_home_unwritable(tmp_path, monkeypatch):
-    # Persistence is an optimization, never a correctness requirement: if the
-    # Studio home cannot be created/written, the online path must still return its
-    # verdict rather than raise. Point the home at a path blocked by a file.
+    # Persistence is an optimization: if the Studio home cannot be written, the online path
+    # must still return its verdict rather than raise. Point the home at a path blocked by a file.
     blocker = tmp_path / "blocker"
     blocker.write_text("not a dir")
     monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(blocker / "studio"))  # parent is a file
@@ -727,8 +678,8 @@ def test_offline_not_cached_returns_false_without_network(monkeypatch):
 
 
 def test_online_uncached_still_uses_network(monkeypatch):
-    # Not offline, not cached: the network model_info path must still run so an
-    # embedding model that lacks modules.json (feature-extraction tag) is caught.
+    # Not offline, not cached: the model_info path must still run so a feature-extraction
+    # embedder lacking modules.json is caught.
     _no_cache(monkeypatch)
     calls = []
 
@@ -742,9 +693,8 @@ def test_online_uncached_still_uses_network(monkeypatch):
 
 
 def test_offline_negative_is_not_cached_then_online_detects(monkeypatch):
-    # A tag-only embedder is not identifiable from modules.json. Offline returns
-    # False WITHOUT caching, so once the env var clears the online model_info
-    # lookup still runs and detects it -- the negative must not be sticky.
+    # A tag-only embedder is not identifiable from modules.json. Offline returns False
+    # WITHOUT caching, so once the env clears the online lookup still detects it.
     _no_cache(monkeypatch)
     calls = []
 

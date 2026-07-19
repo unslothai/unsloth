@@ -224,11 +224,9 @@ def test_st_encode_failure_without_llama_binary_reraises(monkeypatch):
 
 def test_get_resolves_default_casing_before_loading(monkeypatch):
     # _get() must resolve a repo id to the exact cache casing before constructing
-    # SentenceTransformer. A configured default whose spelling differs only by case
-    # from the cache dir is deliberately NOT persist-normalized by /settings (that
-    # would turn the default into an override), so without resolving here the offline
-    # local_files_only load would miss the case-sensitive cache dir and fail. Verify
-    # both the loader and the security gate receive the resolved name.
+    # SentenceTransformer: a default differing only by case is NOT persist-normalized by
+    # /settings, so without resolving here the offline load would miss the cache dir.
+    # Verify both the loader and the security gate receive the resolved name.
     import sys
     import types
 

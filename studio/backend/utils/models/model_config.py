@@ -1653,15 +1653,10 @@ def _hf_hub_cache_root() -> list[Path]:
 
 
 def _st_cache_roots() -> list[Path]:
-    """The cache root a SentenceTransformer load will ACTUALLY search.
-
-    ``_get()`` constructs SentenceTransformer without ``cache_folder``, so it uses
-    SENTENCE_TRANSFORMERS_HOME when that is set and the Hub cache otherwise --
-    one or the other, never both. Probing the union would let offline validation
-    pass on a repo cached only in the Hub cache while the loader then searched
-    ST_HOME and failed. Kept separate from the Hub-cache probe because the GGUF
-    path downloads with ``hf_hub_download`` and no ``cache_dir``, so it really
-    does use the Hub cache and must not be told about ST_HOME.
+    """Cache root a SentenceTransformer load actually searches: SENTENCE_TRANSFORMERS_HOME
+    if set, else the Hub cache -- one or the other, never both. Probing the union would
+    pass offline validation on a repo cached only in the other root. Kept separate from
+    the Hub-cache probe, which the GGUF path needs (it downloads via ``hf_hub_download``).
     """
     st_home = (os.environ.get("SENTENCE_TRANSFORMERS_HOME") or "").strip()
     if st_home:
@@ -1689,16 +1684,10 @@ def _iter_cache_snapshots_in(repo_id: str, roots: list[Path]):
 
 
 def resolve_st_cached_repo_id_case(repo_id: str) -> str:
-    """*repo_id* in the casing of its dir in the cache the ST loader will search.
-
-    ``resolve_cached_repo_id_case`` scans only the Hub cache, so with
-    SENTENCE_TRANSFORMERS_HOME set it would leave the requested spelling
-    unchanged -- and the offline ``local_files_only`` load, which is exact-case on
-    a case-sensitive filesystem, would then miss the differently cased dir that
-    detection had just accepted. Normalizes against the same roots detection uses.
-    Returns *repo_id* unchanged for a local path, a non-repo string, or when
-    nothing case-matching is cached; prefers an exact match before any variant and
-    tie-breaks variants deterministically.
+    """*repo_id* recased to match its dir in the cache the ST loader searches, so the
+    offline exact-case ``local_files_only`` load finds it. Unchanged for a local path, a
+    non-repo string, or when nothing case-matching is cached; prefers an exact match, then
+    a deterministic pick among case variants.
     """
     if is_local_path(repo_id) or "/" not in repo_id:
         return repo_id
@@ -1723,15 +1712,10 @@ def resolve_st_cached_repo_id_case(repo_id: str) -> str:
 
 
 def _st_cache_repo_dir(repo_id: str) -> Optional[Path]:
-    """The ONE cache repo dir the ST loader will open for *repo_id*, or None.
-
-    Uses the same selection rule as :func:`resolve_st_cached_repo_id_case` --
-    exact case first, then a deterministic pick among case variants -- because
-    that is the spelling the settings route persists and therefore the directory
-    the loader opens. Scoping to a single directory matters when duplicate case
-    variants exist: judging the repo by whichever variant happens to hold the
-    newest snapshot could reject a complete model in the directory that will
-    actually be loaded (or accept one from a directory that will not be).
+    """The ONE cache repo dir the ST loader opens for *repo_id*, or None. Same selection
+    as :func:`resolve_st_cached_repo_id_case` (exact case, then a deterministic pick).
+    Scoping to one dir matters with duplicate case variants: judging by whichever holds
+    the newest snapshot could reject the model in the dir actually loaded.
     """
     prefix = "models--"
     expected = f"{prefix}{repo_id.replace('/', '--')}"
@@ -1782,15 +1766,10 @@ def _iter_snapshots_of(repo_dirs: list[Path]):
 def _iter_hf_cache_snapshots(repo_id: str):
     """Yield HUB cache snapshot dirs for *repo_id*, newest first.
 
-    Deliberately the Hub cache ONLY. Its callers (the GGUF detectors) later
-    download with ``hf_hub_download`` and no ``cache_dir``, so that is the cache
-    their load actually uses; adding SENTENCE_TRANSFORMERS_HOME here would let
-    detection pick a file the GGUF loader cannot find. The Sentence-Transformers
-    probe is :func:`_st_cache_repo_dir`.
-
-    Empty if the root does not exist, the repo isn't cached, or it has no
-    snapshots. Repo name match is case-insensitive to handle casing drift between
-    download time and lookup.
+    Hub cache ONLY: its GGUF-detector callers download via ``hf_hub_download`` with no
+    ``cache_dir``, so that is the cache their load uses; the ST probe is
+    :func:`_st_cache_repo_dir`. Empty if the root or repo isn't cached. Match is
+    case-insensitive to handle casing drift between download and lookup.
     """
     yield from _iter_cache_snapshots_in(repo_id, _hf_hub_cache_root())
 
@@ -2107,41 +2086,33 @@ _embedding_detection_cache: Dict[tuple, bool] = {}
 
 
 def _persisted_embedders_path() -> Path:
-    """On-disk store of repo ids confirmed embedders via an online Hub lookup.
-
-    Lives under the resolved Studio home so it survives a restart: the session
-    memo (:data:`_embedding_detection_cache`) is lost on exit, so without this a
-    tag-only feature-extraction embedder -- one whose cached snapshot carries no
-    ``modules.json`` and so cannot be recognized from the cache alone -- would be
-    misclassified as non-embedding the first offline call after a restart.
+    """On-disk store of repo ids confirmed embedders online, under the Studio home so it
+    survives a restart. Without it a tag-only feature-extraction embedder (cached snapshot
+    has no ``modules.json``, so unrecognizable from the cache alone) would be misclassified
+    non-embedding the first offline call after the session memo is lost.
     """
     return _studio_root() / "embedding_verdicts.json"
 
 
-# Serializes the read-modify-write in _persist_embedder so two threads confirming
-# different embedders at once cannot each overwrite the file with a one-entry update
-# (a lost verdict) or collide on the temp file. Cross-process writers are inherently
-# best-effort -- os.replace stays atomic, and a dropped verdict is only an
-# optimization miss a later online re-confirmation heals.
+# Serializes the read-modify-write in _persist_embedder so concurrent confirmations
+# cannot lose a verdict or collide on the temp file. Cross-process writes are
+# best-effort: os.replace stays atomic, and a dropped verdict is only an optimization
+# miss a later online re-confirmation heals.
 _persist_lock = threading.Lock()
 
 
 def _verdict_key(model_name: str) -> str:
-    """Case-folded key for the embedder allowlist. The verdict is a property of the
-    repo, not its spelling: model_info() is queried under the requested casing while
-    the settings route saves the cache-resolved casing, so keying by the exact string
-    would miss the persisted positive after a restart (``baai/model`` recorded,
-    ``BAAI/model`` looked up). Repo ids are case-insensitive, so fold both sides."""
+    """Case-folded allowlist key: the verdict is a property of the repo, not its spelling.
+    model_info() is queried under the requested casing but the settings route saves the
+    cache-resolved casing, so an exact-string key would miss the persisted positive after a
+    restart. Repo ids are case-insensitive, so fold both sides."""
     return model_name.casefold()
 
 
 def _load_persisted_embedders() -> set:
     """Case-folded repo ids recorded as embedders in a prior session; empty set on any
-    error.
-
-    Best-effort and never raises: a missing, empty, corrupt, or non-list file
-    (and any read/decode error) reads as "nothing recorded" so callers fall back
-    to their normal cache-marker logic. Folding at load time also normalizes any
+    error (missing, empty, corrupt, or non-list file all read as "nothing recorded", so
+    callers fall back to their cache-marker logic). Never raises. Folding also normalizes
     mixed-case entries an older build may have written.
     """
     try:
@@ -2157,14 +2128,11 @@ def _load_persisted_embedders() -> set:
 def _persist_embedder(model_name: str) -> None:
     """Record *model_name* as an online-confirmed embedder, best-effort.
 
-    Only positive Hub verdicts are written (never a negative or a token), case-folded
-    so the lookup matches regardless of casing: the file is a durable allowlist the
-    offline branch consults, gated there on the active revision actually being
-    materialized on disk, so a stale entry for a since-deleted cache cannot resurrect
-    a False. The read-modify-write is serialized under ``_persist_lock`` and writes
-    through a per-thread temp file, so concurrent confirmations cannot drop each
-    other's entry or collide. Any failure (unwritable home, race) is swallowed --
-    persistence is an optimization, not a correctness requirement for the online path.
+    Only positive Hub verdicts are written, case-folded. The offline branch gates this
+    allowlist on the active revision being materialized on disk, so a stale entry cannot
+    resurrect a False. Serialized under ``_persist_lock`` through a per-thread temp file so
+    concurrent writers cannot drop an entry or collide. Any failure is swallowed --
+    persistence is an optimization, not a correctness requirement.
     """
     try:
         key = _verdict_key(model_name)
@@ -2184,33 +2152,23 @@ def _persist_embedder(model_name: str) -> None:
 
 
 def _known_embedder(model_name: str, cache_key: tuple) -> bool:
-    """True when *model_name* was confirmed an embedder online, this session or a
-    prior one -- the session memo (authoritative, token-scoped) OR the persisted
-    cross-restart allowlist (matched case-insensitively). Callers still gate this on a
-    materialized snapshot."""
+    """True when *model_name* was confirmed an embedder online -- the session memo or the
+    persisted cross-restart allowlist. Callers still gate this on a materialized snapshot."""
     if _embedding_detection_cache.get(cache_key) is True:
         return True
     return _verdict_key(model_name) in _load_persisted_embedders()
 
 
-# The base-model weight files the RAG loader's default backend consumes. _get()
-# constructs SentenceTransformer without backend="onnx"/"openvino", so it loads
-# through Torch: a single model.safetensors / pytorch_model.bin or their sharded
-# model-00001-of-000NN forms, at the snapshot root or inside a module dir
-# (0_Transformer/, 2_Dense/). Matched by NAME, not suffix: a bare ".safetensors"/
-# ".bin" match would accept the commonly published training_args.bin / optimizer.bin
-# or an adapter-only artifact -- files that carry a weight suffix but are not a
-# loadable base model -- and let a partial cache pass offline validation and then
-# fail on the first RAG load, the exact validate-then-fail this helper prevents.
+# Base-model weight files the default (Torch) SentenceTransformer backend consumes:
+# a single model.safetensors / pytorch_model.bin or their sharded -00001-of-000NN forms.
+# Matched by NAME, not suffix, so a training_args.bin / optimizer.bin or an adapter-only
+# artifact cannot let a partial cache pass offline validation and then fail on first load.
 _ST_WEIGHT_FILE_RE = re.compile(r"^(model|pytorch_model)(-\d+-of-\d+)?\.(safetensors|bin)$")
 _ST_SHARD_RE = re.compile(r"^(model|pytorch_model)-(\d+)-of-(\d+)\.(safetensors|bin)$")
 
-# A SentenceTransformer Transformer module loads its weights AND an AutoTokenizer,
-# so a snapshot with a complete weight set but no tokenizer asset still fails the
-# local_files_only load. Any ONE of these is enough to load some tokenizer -- kept a
-# permissive union (fast tokenizer, config, or a WordPiece/BPE/SentencePiece vocab)
-# so an unusual-but-valid layout is not rejected, only a genuinely tokenizer-less
-# partial download.
+# A Transformer module also loads an AutoTokenizer, so weights without a tokenizer asset
+# still fail the local_files_only load. Any ONE of these loads some tokenizer -- a
+# permissive union so only a genuinely tokenizer-less partial download is rejected.
 _ST_TOKENIZER_FILES = frozenset(
     {
         "tokenizer.json",
@@ -2226,19 +2184,14 @@ _ST_TOKENIZER_FILES = frozenset(
 
 
 def _dir_has_complete_torch_weights(names: set) -> bool:
-    """True when the filenames in ONE directory form a COMPLETE Torch base-model
-    weight set the default SentenceTransformer backend can load:
+    """True when the filenames in ONE dir form a COMPLETE Torch weight set:
 
     * a single ``model.safetensors`` / ``pytorch_model.bin``; or
-    * a full shard set -- a shard names its own total (``-00001-of-00002``), so
-      every index ``1..total`` for that (stem, ext, total) must be present AND its
-      ``model.safetensors.index.json`` / ``pytorch_model.bin.index.json`` map,
-      through which transformers discovers and wires the shards, must be present.
+    * a full shard set -- every index ``1..total`` (a shard names its own total,
+      ``-00001-of-00002``) plus its ``...index.json`` map.
 
-    A lone shard such as ``model-00001-of-00002.safetensors``, a full set missing
-    its index map, is NOT complete: the loader needs every shard and the index at
-    indexing time, so accepting a partial sharded download would validate and then
-    fail under local_files_only.
+    A lone shard or a shard set missing its index map is NOT complete: accepting a partial
+    sharded download would validate and then fail under local_files_only.
     """
     for stem in ("model", "pytorch_model"):
         for ext in ("safetensors", "bin"):
@@ -2257,17 +2210,13 @@ def _dir_has_complete_torch_weights(names: set) -> bool:
 
 
 def _snapshot_has_complete_weights(snap: Path) -> bool:
-    """True when *snap* is materialized with a config, a tokenizer asset, and a
-    COMPLETE Torch weight set the default SentenceTransformer backend can load --
-    the ``modules.json`` sentence-transformers marker aside.
+    """True when *snap* has a config, a tokenizer asset, and a COMPLETE Torch weight set
+    (the ``modules.json`` marker aside).
 
-    A tag-only feature-extraction embedder confirmed online has exactly this (config,
-    tokenizer, weights, no ``modules.json``) and SentenceTransformer's auto-model
-    fallback loads it, so an online-confirmed positive may be trusted for it offline.
-    A partial download -- config present but weights missing / an incomplete shard
-    set, or weights present but the tokenizer AutoTokenizer needs absent -- does NOT
-    satisfy this and must fail validation here rather than at first indexing, the
-    validate-then-fail this guards against.
+    A tag-only feature-extraction embedder confirmed online has exactly this and ST's
+    auto-model fallback loads it, so an online-confirmed positive may be trusted offline.
+    A partial download (weights missing, incomplete shard set, or no tokenizer) fails here
+    rather than at first indexing.
     """
     try:
         if not any(
@@ -2296,13 +2245,9 @@ def _snapshot_has_complete_weights(snap: Path) -> bool:
 def _snapshot_is_loadable_st_model(snap: Path) -> bool:
     """True when *snap* holds a sentence-transformers model that can actually load.
 
-    ``modules.json`` alone is not enough: the online security preflight downloads
-    exactly that one file via ``hf_hub_download``, and a partial download can
-    leave it behind too, so a snapshot can carry the marker while the weights and
-    config SentenceTransformer needs are absent. Accepting that offline would
-    pass validation and then fail on the first RAG load. Requires the marker plus
-    a config and a COMPLETE recognized Torch base-model weight set
-    (``_snapshot_has_complete_weights``).
+    ``modules.json`` alone is not enough: the security preflight downloads exactly that
+    file, and a partial download can leave it behind while weights/config are absent.
+    Requires the marker plus ``_snapshot_has_complete_weights``.
     """
     try:
         if not (snap / "modules.json").is_file():
@@ -2313,16 +2258,11 @@ def _snapshot_is_loadable_st_model(snap: Path) -> bool:
 
 
 def _active_snapshot_dir(repo_id: str) -> Optional[Path]:
-    """The materialized snapshot dir the offline ``local_files_only`` load resolves
-    for *repo_id*, or None.
-
-    Mirrors that resolution: the repo dir :func:`_st_cache_repo_dir` selects (the
-    casing the settings route persists and the loader opens), its ``refs/main``
-    commit (with ``local_files_only`` huggingface_hub resolves the default revision
-    THROUGH that ref, so a missing / empty / unreadable ref is a cache MISS, never
-    a reason to scan historical snapshots), and that commit's snapshot dir. None
-    when any of those is absent -- a cache miss the caller treats as not-cached.
-    Never raises: a cache mutating underneath (concurrent deletion) reads as None.
+    """The materialized snapshot dir the offline ``local_files_only`` load resolves for
+    *repo_id*, or None. Mirrors that resolution: the repo dir :func:`_st_cache_repo_dir`
+    selects, its ``refs/main`` commit (huggingface_hub resolves the default revision THROUGH
+    that ref, so a missing/empty/unreadable ref is a cache MISS, not a reason to scan
+    historical snapshots), and that commit's snapshot dir. Never raises.
     """
     try:
         repo_dir = _st_cache_repo_dir(repo_id)
@@ -2343,26 +2283,12 @@ def _active_snapshot_dir(repo_id: str) -> Optional[Path]:
 
 
 def _embedding_marker_in_hf_cache(repo_id: str) -> Optional[bool]:
-    """Sentence-transformers detection from the local cache, no network call.
-
-    Models exactly what an offline ``local_files_only=True`` load resolves, so a
-    True here means that load can succeed:
-
-    * one repo dir -- the one :func:`_st_cache_repo_dir` selects, i.e. the casing
-      the settings route persists and the loader opens;
-    * its ``refs/main``, because with ``local_files_only`` huggingface_hub
-      resolves the default revision THROUGH that ref. A snapshot directory alone
-      is not discoverable, so a missing, empty or unreadable ref is a cache MISS
-      rather than a reason to go scanning historical snapshots -- accepting one
-      would pass validation and then fail at first indexing;
-    * that revision's snapshot, which must be materialized and actually loadable
-      (marker plus config plus weights, not the bare ``modules.json`` the
-      security preflight fetches on its own).
-
-    True/False when the active revision is / is not a loadable
-    sentence-transformers snapshot, None when nothing usable is cached. Never
-    raises -- a cache mutating underneath (concurrent model deletion) reads as
-    not-cached so callers keep their normal fallback.
+    """Sentence-transformers detection from the local cache, no network call. Models what
+    an offline ``local_files_only`` load resolves (via :func:`_active_snapshot_dir`), so a
+    True means that load can succeed: the active ``refs/main`` snapshot must be materialized
+    and actually loadable (marker plus config plus weights, not the bare ``modules.json``
+    the security preflight fetches on its own). None when nothing usable is cached; never
+    raises.
     """
     snapshot = _active_snapshot_dir(repo_id)
     if snapshot is None:
@@ -2386,8 +2312,7 @@ def is_embedding_model(model_name: str, hf_token: Optional[str] = None) -> bool:
     """
     cache_key = (model_name, hf_token)
 
-    # Local paths: check for sentence-transformer marker (modules.json). This is
-    # authoritative for an explicit path, so memoize it.
+    # Local paths: the modules.json marker is authoritative for an explicit path, so memoize.
     if is_local_path(model_name):
         if cache_key in _embedding_detection_cache:
             return _embedding_detection_cache[cache_key]
@@ -2397,26 +2322,19 @@ def is_embedding_model(model_name: str, hf_token: Optional[str] = None) -> bool:
         return is_emb
 
     if _env_offline():
-        # Offline: the local HF cache is the only source -- a network call cannot
-        # succeed and would only hang on a DNS error and get retried (#6817). Re-probe
-        # the cache every call without consulting or populating the memo: a cached
-        # negative must not stick (a model downloaded later, or a tag-only embedder,
-        # could not be confirmed here), so a miss is not durable.
+        # Offline: the local HF cache is the only source -- a network call would only hang
+        # on DNS and get retried (#6817). Re-probe every call without consulting/populating
+        # the memo, so a negative never sticks (a model downloaded later must be seen).
         snapshot = _active_snapshot_dir(model_name)
         if snapshot is not None and _snapshot_is_loadable_st_model(snapshot):
-            return True  # a self-describing sentence-transformers snapshot (modules.json)
-        # Retain a positive confirmed online -- this session (memo) or a prior one
-        # (persisted allowlist) -- ONLY when the active snapshot is materialized WITH
-        # a complete, loadable weight set. A recorded True proves model_info() tagged
-        # the repo an embedder, not that its files are on disk (an online
-        # /check-embedding call records the verdict without downloading), so trusting
-        # it for an uncached or partially downloaded repo would save a model the
-        # local_files_only load then fails on. The weight gate (not the bare marker)
-        # is what still covers a downloaded tag-only feature-extraction embedder --
-        # weights present, no modules.json, which SentenceTransformer's auto-model
-        # fallback loads -- while rejecting a config-only or half-sharded snapshot,
-        # and it is the case that must survive a restart, not just the
-        # _hf_offline_if_dns_dead() mid-load flip.
+            return True  # self-describing sentence-transformers snapshot (modules.json)
+        # Trust a positive confirmed online (memo or persisted allowlist) ONLY when the
+        # active snapshot is materialized with a complete, loadable weight set. A recorded
+        # True proves model_info() tagged the repo an embedder, not that its files are on
+        # disk, so gating on the weights avoids saving a model the local_files_only load
+        # then fails on. The weight gate (not the bare marker) still covers a downloaded
+        # tag-only embedder (weights, no modules.json, loaded by ST's auto-model fallback)
+        # while rejecting a config-only or half-sharded snapshot.
         if (
             snapshot is not None
             and _known_embedder(model_name, cache_key)
@@ -2425,12 +2343,10 @@ def is_embedding_model(model_name: str, hf_token: Optional[str] = None) -> bool:
             return True
         return False
 
-    # Online: the Hub is authoritative for the current remote revision. The local
-    # cache marker reflects only the last-downloaded revision, which may lag the
-    # Hub (a repo can add or drop modules.json), so model_info() decides and the
-    # marker is used solely as a fallback when the Hub is unreachable. Only
-    # Hub-derived results are memoized, so a transient failure never poisons the
-    # cache and a later fresh download or successful lookup can override it.
+    # Online: the Hub is authoritative for the current revision; the local marker can lag
+    # it, so model_info() decides and the marker is only a fallback when the Hub is
+    # unreachable. Only Hub-derived results are memoized, so a transient failure never
+    # poisons the cache.
     if cache_key in _embedding_detection_cache:
         return _embedding_detection_cache[cache_key]
     try:
@@ -2448,9 +2364,8 @@ def is_embedding_model(model_name: str, hf_token: Optional[str] = None) -> bool:
 
         _embedding_detection_cache[cache_key] = is_emb
         if is_emb:
-            # Durably record the positive so a later offline session (after a
-            # restart, when the memo is gone) can still recognize a downloaded
-            # tag-only embedder, gated there on its snapshot being materialized.
+            # Durably record the positive so a later offline session (memo gone) can still
+            # recognize a downloaded tag-only embedder, gated on its snapshot.
             _persist_embedder(model_name)
             logger.info(
                 f"Model {model_name} detected as embedding model: "
@@ -2461,12 +2376,10 @@ def is_embedding_model(model_name: str, hf_token: Optional[str] = None) -> bool:
         return is_emb
 
     except Exception as e:
-        # A permanent Hub error (deleted / gated / bad revision / typo matching
-        # stale cache casing) is authoritative: the repo is not a usable
-        # embedding model, so return False and let the settings route surface its
-        # documented 409. Falling back to a cached modules.json here would wrongly
-        # pass validation for a repo the loader can no longer fetch. Matches the
-        # permanent-vs-transient split the nearby GGUF/vision detectors use.
+        # A permanent Hub error (deleted / gated / bad revision / typo) is authoritative:
+        # the repo is not a usable embedding model, so return False and let the settings
+        # route surface its 409. Falling back to a cached modules.json would wrongly pass a
+        # repo the loader can no longer fetch. Matches the nearby GGUF/vision detectors.
         if type(e).__name__ in (
             "RepositoryNotFoundError",
             "GatedRepoError",
@@ -2475,8 +2388,7 @@ def is_embedding_model(model_name: str, hf_token: Optional[str] = None) -> bool:
         ):
             logger.warning(f"Could not determine if {model_name} is embedding model: {e}")
             return False
-        # Transient / connectivity / 5xx failure: fall back to the local marker,
-        # uncached -- a degraded signal a later successful Hub call can override.
+        # Transient / 5xx failure: fall back to the local marker, uncached.
         marker = _embedding_marker_in_hf_cache(model_name)
         if marker is True:
             logger.info(

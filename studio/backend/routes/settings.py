@@ -413,11 +413,9 @@ def update_embedding_model(
     scan_st_pickle = (
         model != default_embedding_model() and not is_local_gguf and not _llama_backend_active()
     )
-    # Read the offline state ONCE for this request and reuse it: the module probe
-    # and the scan must agree, and _hf_offline_if_dns_dead() can flip the
-    # process-wide vars between two reads (a probe forced local-only can return no
-    # module roots, letting a flagged 0_Transformer/ pickle pass as a nested
-    # artifact while the scan was skipped on a different value).
+    # Read the offline state ONCE and reuse it: the module probe and the scan must agree,
+    # and _hf_offline_if_dns_dead() can flip the vars between two reads (a probe forced
+    # local-only returns no module roots, letting a flagged 0_Transformer/ pickle pass).
     from utils.utils import hf_env_offline
 
     local_only_load = hf_env_offline()
@@ -443,8 +441,7 @@ def update_embedding_model(
             )
         )
         # local_only_load: this gate covers the RAG embedder, whose loader pins
-        # SentenceTransformer to the local cache with the same predicate, so
-        # offline the scan can only stall on timeouts before failing open.
+        # SentenceTransformer to the local cache with the same predicate.
         if evaluate_file_security(
             model,
             hf_token = scan_token,
@@ -480,26 +477,20 @@ def update_embedding_model(
         gguf_error = _local_gguf_backend_error(model) or _hf_gguf_backend_error(model, hf_token)
         if gguf_error:
             raise HTTPException(status_code = 409, detail = gguf_error)
-    # Persist the casing the local HF cache actually uses: validation above
-    # accepts a case-insensitive cache hit, but the offline SentenceTransformer
-    # load resolves the cache by exact case, so store the cached spelling (a
-    # no-op when nothing case-matching is cached) to keep the model loadable.
-    # Resolved against the cache the ST loader itself searches (ST_HOME when set,
-    # else the Hub cache), so the persisted spelling is one the offline
-    # exact-case load can actually find. Three cases are deliberately left alone:
+    # Persist the exact cache casing: validation accepts a case-insensitive hit, but the
+    # offline ST load resolves the cache by exact case. Resolved against the cache the ST
+    # loader searches (ST_HOME if set, else the Hub cache). A no-op when nothing
+    # case-matching is cached. Three cases are left alone:
     #
-    #   * the default -- rewriting its casing would make the exact-string default
-    #     comparison in set_rag_embedding_model() treat it as a custom override,
-    #     so later changes to the configured default would stop applying;
-    #   * a local path -- a relative directory like "org/model" is loaded from
-    #     disk, and rewriting it to a case-insensitive cache collision
-    #     ("Org/model") would stop resolving to that directory;
-    #   * the llama-server backend -- it does not load through SentenceTransformer
-    #     at all. It derives a GGUF companion via effective_gguf_repo() from this
-    #     saved spelling and fetches it with hf_hub_download, i.e. from the HUB
-    #     cache. Normalizing to an ST_HOME spelling would change the derived repo
-    #     to one _hf_gguf_backend_error() never validated (BAAI/bge-m3-GGUF rather
-    #     than the checked baai/bge-m3-GGUF) and which may be absent offline.
+    #   * the default -- rewriting it would make set_rag_embedding_model()'s exact-string
+    #     default comparison treat it as a custom override, so later default changes stop
+    #     applying;
+    #   * a local path -- a directory like "org/model" is loaded from disk, and rewriting
+    #     to a cache collision ("Org/model") would stop resolving to it;
+    #   * the llama-server backend -- it does not load through SentenceTransformer; it
+    #     derives a GGUF companion via effective_gguf_repo() and fetches it from the HUB
+    #     cache, so an ST_HOME spelling would pick a repo _hf_gguf_backend_error() never
+    #     validated (BAAI/bge-m3-GGUF vs the checked baai/bge-m3-GGUF).
     if (
         model != default_embedding_model()
         and not is_local_path(model)

@@ -87,13 +87,11 @@ def _st_module_subdirs(name: str, token: str | None, local_only: bool) -> tuple[
     security scan: a flagged pickle directly under one must block. Returns () on any
     failure (no modules.json, offline, malformed) so the guard never bricks the embedder.
 
-    ``local_only`` MUST be the value the caller captured for the load, not a fresh
-    read of the environment. ``_hf_offline_if_dns_dead()`` flips the process-wide
-    offline vars and restores them, so re-reading here could force this probe
-    local-only, return () because modules.json is not cached, and leave the scan
-    with NO module load roots -- a flagged pickle under ``0_Transformer/`` would
-    then pass as an unreferenced nested artifact while the loader, using the
-    captured predicate, still fetched and deserialized it.
+    ``local_only`` MUST be the value the caller captured for the load, not a fresh env
+    read: ``_hf_offline_if_dns_dead()`` flips the offline vars and restores them, so
+    re-reading could force this probe local-only, return () (modules.json not cached), and
+    leave the scan with no module roots -- a flagged pickle under ``0_Transformer/`` would
+    then pass while the loader, using the captured predicate, still deserialized it.
     """
     try:
         import json
@@ -113,11 +111,10 @@ def _st_module_subdirs(name: str, token: str | None, local_only: bool) -> tuple[
             from huggingface_hub.utils import EntryNotFoundError
 
             try:
-                # local_files_only from the CAPTURED predicate: huggingface_hub
-                # honors only HF_HUB_OFFLINE natively, so an offline session would
-                # otherwise block on network timeouts here even though the cached
-                # snapshot already has modules.json -- but it must be the same
-                # value the load uses, never a fresh env read (see the docstring).
+                # local_files_only from the CAPTURED predicate (never a fresh env read;
+                # see the docstring): huggingface_hub honors only HF_HUB_OFFLINE, so an
+                # offline session would otherwise block on timeouts despite a cached
+                # modules.json.
                 local = hf_hub_download(
                     name,
                     "modules.json",
@@ -143,13 +140,11 @@ def _guard_model_security(name: str, local_only_load: bool) -> None:
     /settings gate (a name can also arrive via env/default); local paths and unreachable
     scans fail open inside evaluate_file_security. Never bricks the embedder on a gate error.
 
-    ``local_only_load`` MUST be the same value the caller passes to
-    SentenceTransformer as ``local_files_only`` -- it is what licenses skipping the
-    Hub scan, so it is taken as an argument rather than re-read from the
-    environment here. ``_hf_offline_if_dns_dead()`` mutates the process-wide
-    offline vars and restores them, so two separate reads can disagree: this
-    could skip the scan while the constructor then loaded with
-    ``local_files_only=False`` and fetched the unscanned repo.
+    ``local_only_load`` MUST be the same value the caller passes to SentenceTransformer as
+    ``local_files_only`` -- it is what licenses skipping the Hub scan, so it is an argument
+    rather than re-read here. ``_hf_offline_if_dns_dead()`` mutates the offline vars and
+    restores them, so two reads can disagree: this could skip the scan while the constructor
+    then loaded with ``local_files_only=False`` and fetched the unscanned repo.
     """
     try:
         from utils.security import evaluate_file_security, security_load_subdirs
@@ -194,14 +189,11 @@ def _get(model_name: str | None = None):
             from utils.utils import hf_env_offline
 
             device = _device()
-            # Resolve to the exact cache casing the offline local_files_only load
-            # needs. The /settings route persists that spelling for a custom override
-            # but deliberately leaves the configured default verbatim (rewriting it
-            # would turn the default into an override and break later default changes),
-            # so a default whose casing differs from the cache dir would otherwise
-            # miss it and fail offline. Resolve here at load time to cover the default
-            # too; a no-op for a local path or when nothing case-matching is cached,
-            # and idempotent for an override already normalized at persist time.
+            # Resolve to the exact cache casing the offline local_files_only load needs.
+            # The /settings route persists that spelling for a custom override but leaves
+            # the configured default verbatim (rewriting it would turn the default into an
+            # override), so resolve here at load time to cover the default too. A no-op for
+            # a local path or when nothing case-matching is cached.
             load_name = name
             from utils.paths import is_local_path
 
@@ -209,18 +201,15 @@ def _get(model_name: str | None = None):
                 from utils.models import resolve_st_cached_repo_id_case
                 load_name = resolve_st_cached_repo_id_case(load_name)
             logger.info("loading embedding model %s on %s", load_name, device)
-            # Read the offline state ONCE and use that single value for both the
-            # security gate and the loader. _hf_offline_if_dns_dead() mutates the
-            # process-wide offline vars and restores them on exit, so re-reading
-            # for the constructor could yield False after the guard had already
-            # skipped the Hub scan on True -- and the load would then fetch and
-            # deserialize the unscanned repo.
+            # Read the offline state ONCE for both the security gate and the loader.
+            # _hf_offline_if_dns_dead() mutates the offline vars and restores them, so
+            # re-reading for the constructor could yield False after the guard skipped the
+            # Hub scan on True -- and the load would then fetch the unscanned repo.
             local_only = hf_env_offline()
             _guard_model_security(load_name, local_only)
-            # Propagate the user's offline intent into the loader: SentenceTransformer
-            # performs its own Hub operations, and huggingface_hub honors only
-            # HF_HUB_OFFLINE, so a TRANSFORMERS_OFFLINE-only session would otherwise
-            # still fetch missing repo files over the network.
+            # Propagate offline intent into the loader: huggingface_hub honors only
+            # HF_HUB_OFFLINE, so a TRANSFORMERS_OFFLINE-only session would otherwise still
+            # fetch missing repo files.
             _model = SentenceTransformer(
                 load_name,
                 device = device,

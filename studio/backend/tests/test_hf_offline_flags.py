@@ -3,16 +3,11 @@
 
 """Effective-offline handling for the embedding preflight.
 
-``huggingface_hub`` honors only ``HF_HUB_OFFLINE``; ``TRANSFORMERS_OFFLINE``
-expresses the same user intent but does not itself stop a fetch. Studio treats
-either as offline (``hf_env_offline``) and makes that real by passing
-``local_files_only`` to the loader, which lets the metadata-only Hub security
-scan skip straight to its documented fail-open instead of burning both request
-timeouts on a session the user declared offline.
-
-That skip is only sound while the loader really is pinned to the local cache, so
-the coupling between the two is pinned here as an explicit invariant rather than
-left to a comment.
+``huggingface_hub`` honors only ``HF_HUB_OFFLINE``; ``TRANSFORMERS_OFFLINE`` expresses the
+same intent but does not stop a fetch. Studio treats either as offline (``hf_env_offline``)
+and makes it real by passing ``local_files_only`` to the loader, which lets the Hub security
+scan skip to its fail-open instead of burning both timeouts. That skip is sound only while
+the loader is pinned to the local cache, so the coupling is pinned here as an invariant.
 """
 
 from __future__ import annotations
@@ -30,8 +25,7 @@ if _BACKEND_DIR not in sys.path:
 
 
 def _maybe_stub(name: str, builder):
-    # Stub only if the real module is unavailable, so this file never shadows
-    # real packages for later tests in the same pytest process.
+    # Stub only if the real module is unavailable, so this file never shadows real packages.
     try:
         importlib.import_module(name)
     except ImportError:
@@ -104,10 +98,8 @@ def _fake_hub(monkeypatch, calls):
 
 @pytest.mark.parametrize("var", ["HF_HUB_OFFLINE", "TRANSFORMERS_OFFLINE"])
 def test_shared_gate_still_scans_when_offline_by_default(monkeypatch, var):
-    # THE important one. This gate is shared by every loader (training, MLX,
-    # export, ...), and most do NOT constrain their loaders to the local cache,
-    # so an offline-looking env var alone must never disable the malware scan --
-    # those paths can still fetch and deserialize an unscanned model.
+    # THE important one: the gate is shared by loaders that do NOT pin to the local cache,
+    # so an offline env var alone must never disable the malware scan.
     import utils.security.file_security as fs
 
     calls: list = []
@@ -118,8 +110,7 @@ def test_shared_gate_still_scans_when_offline_by_default(monkeypatch, var):
 
 
 def test_security_scan_short_circuits_for_a_local_only_caller(monkeypatch):
-    # A caller that guarantees a local-only load gets the Hub round-trip skipped
-    # instead of burning both request timeouts (10s + 20s) before failing open.
+    # A local-only caller gets the Hub round-trip skipped instead of burning both timeouts.
     import utils.security.file_security as fs
 
     calls: list = []
@@ -142,15 +133,10 @@ def _read_backend(rel: str) -> str:
 
 
 def test_embedding_loader_forces_local_only_when_offline():
-    """The invariant the RAG opt-in rests on.
-
-    core/rag/embeddings.py is allowed to pass local_only_load because its loader
-    is pinned to the local cache by the SAME value. It must be read ONCE and
-    shared: _hf_offline_if_dns_dead() mutates the process-wide offline vars and
-    restores them, so two separate hf_env_offline() reads can disagree and the
-    guard could skip the scan on True while the constructor then fetched the
-    unscanned repo with local_files_only=False. Checked at source level because
-    importing the loader drags in sentence_transformers/torch.
+    """The invariant the RAG opt-in rests on: embeddings.py may pass local_only_load
+    because its loader is pinned to the local cache by the SAME value, read ONCE and shared
+    (two hf_env_offline() reads can disagree since _hf_offline_if_dns_dead() flips the vars).
+    Checked at source level because importing the loader drags in sentence_transformers.
     """
     src = _read_backend("core/rag/embeddings.py")
     assert (
@@ -172,11 +158,9 @@ def test_embedding_loader_forces_local_only_when_offline():
 
 
 def test_only_the_rag_embedding_path_opts_into_the_bypass():
-    """No other loader may claim local-only without constraining its loader.
-
-    The MLX/inference, training and export gates call from_pretrained without a
-    local-only argument, so if one of them started passing local_only_load the
-    malware gate would be disabled for a path that can still fetch.
+    """No other loader may claim local-only without constraining its loader: the
+    MLX/inference, training and export gates call from_pretrained without a local-only
+    argument, so passing local_only_load there would disable the gate for a fetching path.
     """
     allowed = {"core/rag/embeddings.py", "routes/settings.py"}
     callers = [
