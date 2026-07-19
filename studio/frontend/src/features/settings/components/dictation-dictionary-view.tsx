@@ -72,7 +72,17 @@ export function DictationDictionaryView({ onBack }: { onBack: () => void }) {
             <Input
               value={entry}
               onChange={(e) => updateDictionaryEntry(index, e.target.value)}
-              onBlur={() => commitDictionaryEntry(index)}
+              // Tabbing to this row's remove button must not commit-splice the
+              // row first, which shifts indices and deletes the wrong entry.
+              onBlur={(e) => {
+                if (
+                  e.relatedTarget instanceof HTMLElement &&
+                  e.relatedTarget.dataset.removeIndex === String(index)
+                ) {
+                  return;
+                }
+                commitDictionaryEntry(index);
+              }}
               className="h-8 flex-1 text-sm"
               aria-label={`Dictionary entry ${index + 1}`}
             />
@@ -80,6 +90,7 @@ export function DictationDictionaryView({ onBack }: { onBack: () => void }) {
               variant="ghost"
               size="icon"
               className="size-8 shrink-0 text-muted-foreground hover:text-destructive"
+              data-remove-index={index}
               // Keep the click from blurring an empty input first, which would
               // commit-splice this row and make onClick delete the next one.
               onMouseDown={(e) => e.preventDefault()}

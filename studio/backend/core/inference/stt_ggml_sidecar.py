@@ -51,6 +51,7 @@ from core.inference.stt_sidecar import (
     _decode_audio_bounded,
     _known_whisper_languages,
     _TARGET_SAMPLE_RATE,
+    _training_active,
     normalize_whisper_language,
 )
 from utils.process_lifetime import adopt_pid, child_popen_kwargs, forget_pid
@@ -163,7 +164,14 @@ def find_whisper_server_binary() -> Optional[str]:
 
 
 def is_available() -> bool:
-    return find_whisper_server_binary() is not None
+    if find_whisper_server_binary() is None:
+        return False
+    try:
+        import av  # noqa: F401
+    except Exception:
+        # Decoding uploads needs PyAV; without it every transcription 501s.
+        return False
+    return True
 
 
 def ensure_engine_available() -> str:
@@ -344,6 +352,9 @@ class GgmlSttSidecar:
         self._idle_timer: Optional[threading.Timer] = None
         self._idle_generation = 0
         self._keep_alive_seconds = keep_alive_seconds
+        # Set while whisper-server is starting so training admission can account
+        # for the accelerator memory it is about to bind. Read without the lock.
+        self._loading = False
 
     @property
     def loaded_model(self) -> Optional[str]:
@@ -356,9 +367,9 @@ class GgmlSttSidecar:
             return "whisper.cpp" if self._process_alive() else None
 
     def is_loading(self) -> bool:
-        # Loads are fast (~1s mmap) and run inside the request that needs the
-        # model, so there is no separate visible "loading" phase.
-        return False
+        # True only while whisper-server is starting (may take seconds to bind
+        # its GPU backend); load() sets and clears the flag around that window.
+        return self._loading
 
     @property
     def keep_alive_seconds(self) -> float:
@@ -447,41 +458,43 @@ class GgmlSttSidecar:
             model_path = self._ensure_model_downloaded(model_id)
             self._release_locked()
             port = self._find_free_port()
+            command = [binary, "-m", model_path, "--host", "127.0.0.1", "--port", str(port)]
+            if _training_active():
+                # Keep whisper.cpp off the accelerator during training, matching
+                # the Transformers sidecar's CPU device choice, so a mid-training
+                # dictation cannot reclaim the VRAM training just freed.
+                command.append("--no-gpu")
             logger.info(
                 "Starting whisper-server for STT model %s on 127.0.0.1:%s",
                 model_id,
                 port,
             )
-            process = subprocess.Popen(
-                [
-                    binary,
-                    "-m",
-                    model_path,
-                    "--host",
-                    "127.0.0.1",
-                    "--port",
-                    str(port),
-                ],
-                stdout = subprocess.DEVNULL,
-                stderr = subprocess.DEVNULL,
-                stdin = subprocess.DEVNULL,
-                # Die with Studio (Linux PDEATHSIG, Windows job) so a crash
-                # never orphans a server still holding the model.
-                **child_popen_kwargs(),
-            )
-            adopt_pid(process.pid)  # terminate_all backstop for graceful exits
+            self._loading = True
             try:
-                self._wait_for_server(process, port)
-            except Exception:
-                if process.poll() is None:
-                    process.kill()
-                    process.wait(timeout = 10)
-                forget_pid(process.pid)
-                raise
-            self._process = process
-            self._port = port
-            self._model_id = model_id
-            self._schedule_idle_unload_locked()
+                process = subprocess.Popen(
+                    command,
+                    stdout = subprocess.DEVNULL,
+                    stderr = subprocess.DEVNULL,
+                    stdin = subprocess.DEVNULL,
+                    # Die with Studio (Linux PDEATHSIG, Windows job) so a crash
+                    # never orphans a server still holding the model.
+                    **child_popen_kwargs(),
+                )
+                adopt_pid(process.pid)  # terminate_all backstop for graceful exits
+                try:
+                    self._wait_for_server(process, port)
+                except Exception:
+                    if process.poll() is None:
+                        process.kill()
+                        process.wait(timeout = 10)
+                    forget_pid(process.pid)
+                    raise
+                self._process = process
+                self._port = port
+                self._model_id = model_id
+                self._schedule_idle_unload_locked()
+            finally:
+                self._loading = False
 
     @staticmethod
     def _wait_for_server(process: subprocess.Popen, port: int) -> None:
@@ -522,6 +535,9 @@ class GgmlSttSidecar:
             raise SttLanguageError(
                 f"Language '{language}' is not supported by STT model '{model_id}'."
             )
+        # Reject a missing model before decoding so a long clip cannot burn CPU
+        # only to 409, matching the Transformers sidecar's download preflight.
+        self._ensure_model_downloaded(model_id)
         decoded_audio = _decode_audio_bounded(audio)
         wav_bytes = _pcm_to_wav_bytes(decoded_audio)
         with self._lock:

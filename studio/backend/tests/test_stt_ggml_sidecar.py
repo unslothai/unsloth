@@ -201,6 +201,49 @@ def test_server_pid_is_tracked_for_parent_lifetime(monkeypatch):
     assert events == [("adopt", 4242), ("forget", 4242)]
 
 
+def test_training_forces_whisper_server_off_gpu(monkeypatch):
+    # Mirror the Transformers sidecar: keep whisper.cpp on CPU during training
+    # so a mid-training dictation cannot reclaim the VRAM training just freed.
+    _available(monkeypatch)
+    monkeypatch.setattr(ggml_module, "_cached_model_path", lambda model_id: "/tmp/ggml.bin")
+    commands: list[list[str]] = []
+
+    class FakeProcess:
+        pid = 4242
+
+        def __init__(self, command, *args, **kwargs):
+            commands.append(command)
+
+        def poll(self):
+            return None
+
+        def terminate(self):
+            pass
+
+        def wait(self, timeout = None):
+            return 0
+
+    monkeypatch.setattr(ggml_module.subprocess, "Popen", FakeProcess)
+    monkeypatch.setattr(ggml_module, "adopt_pid", lambda pid: None)
+    monkeypatch.setattr(ggml_module, "forget_pid", lambda pid: None)
+    monkeypatch.setattr(
+        GgmlSttSidecar, "_wait_for_server", staticmethod(lambda process, port: None)
+    )
+
+    monkeypatch.setattr(ggml_module, "_training_active", lambda: False)
+    idle = GgmlSttSidecar()
+    idle.load("small")
+    assert "--no-gpu" not in commands[0]
+    assert idle.is_loading() is False
+    idle.unload()
+
+    monkeypatch.setattr(ggml_module, "_training_active", lambda: True)
+    training = GgmlSttSidecar()
+    training.load("small")
+    assert "--no-gpu" in commands[1]
+    training.unload()
+
+
 class _FakeWhisperHandler(http.server.BaseHTTPRequestHandler):
     """Stands in for whisper-server's /inference endpoint."""
 
@@ -231,6 +274,7 @@ def fake_whisper_server():
 
 def test_transcribe_joins_segments_one_line(monkeypatch, fake_whisper_server):
     _available(monkeypatch)
+    monkeypatch.setattr(ggml_module, "_cached_model_path", lambda model_id: "/tmp/ggml.bin")
     sidecar = GgmlSttSidecar()
 
     def fake_load(model = None):
@@ -247,6 +291,7 @@ def test_transcribe_joins_segments_one_line(monkeypatch, fake_whisper_server):
 
 def test_transcribe_maps_bad_payload_to_decode_error(monkeypatch, fake_whisper_server):
     _available(monkeypatch)
+    monkeypatch.setattr(ggml_module, "_cached_model_path", lambda model_id: "/tmp/ggml.bin")
     monkeypatch.setattr(_FakeWhisperHandler, "response_text", None)
     sidecar = GgmlSttSidecar()
 
@@ -263,6 +308,7 @@ def test_transcribe_maps_bad_payload_to_decode_error(monkeypatch, fake_whisper_s
 
 def test_beam_size_matches_fast_flag(monkeypatch, fake_whisper_server):
     _available(monkeypatch)
+    monkeypatch.setattr(ggml_module, "_cached_model_path", lambda model_id: "/tmp/ggml.bin")
     seen: list[bytes] = []
 
     orig_post = _FakeWhisperHandler.do_POST

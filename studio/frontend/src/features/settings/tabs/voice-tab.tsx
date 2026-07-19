@@ -905,14 +905,10 @@ export function VoiceTab() {
                         variant="ghost"
                         size="sm"
                         className="h-7 px-2 text-xs"
-                        onClick={() => {
-                          setSttDownloadAvailability({
-                            repoId: sttRepoId,
-                            state: "checking",
-                          });
-                          // The status poll re-reads availability.
-                          setStatusNonce((nonce) => nonce + 1);
-                        }}
+                        disabled={sttDownloadStarting || downloadingThisModel}
+                        // Restart the download; the sidecar error is sticky
+                        // until a new start(), so re-polling alone never clears it.
+                        onClick={beginSttDownload}
                       >
                         {t("settings.voice.dictation.sttRetry")}
                       </Button>
