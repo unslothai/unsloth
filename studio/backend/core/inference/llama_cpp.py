@@ -1843,6 +1843,23 @@ def _llama_lib_dir(binary: str) -> Path:
     return resolved.parent
 
 
+def _lib_dir_has_ggml_backend(lib_dir: Path, backend: str) -> bool:
+    """True if ``lib_dir`` holds a ggml backend lib for ``backend`` (vulkan/cuda/hip/
+    cpu/base), matching the exact soname AND versioned variants (e.g.
+    ``libggml-vulkan.so.0``) shipped by distro/split-lib llama.cpp builds. Vulkan
+    detection and the CPU-only-build check share this so they agree on what counts as
+    a present backend (#7188)."""
+    stem = f"ggml-{backend}.dll" if sys.platform == "win32" else f"libggml-{backend}.so"
+    try:
+        return any(
+            f.name == stem or f.name.startswith(stem + ".")
+            for f in lib_dir.iterdir()
+            if f.is_file()
+        )
+    except OSError:
+        return False
+
+
 def _is_external_link(path: Path) -> bool:
     """True when ``path`` is a --with-llama-cpp-dir local link: a POSIX symlink
     or a Windows directory junction / reparse point. Such a link resolves into
@@ -2870,13 +2887,13 @@ class LlamaCppBackend:
         if not binary:
             return False
         lib_dir = _llama_lib_dir(binary)
-        if not (lib_dir / _vulkan_lib_filename()).is_file():
+        # Match versioned sonames too (libggml-vulkan.so.0), as distro/split-lib installs
+        # ship the runtime lib without the dev-only unversioned symlink; else a real Vulkan
+        # build is misread as CUDA and the --device Vulkan<i> pin is never emitted (#7188).
+        if not _lib_dir_has_ggml_backend(lib_dir, "vulkan"):
             return False
         for _backend in ("cuda", "hip"):
-            sibling = (
-                f"ggml-{_backend}.dll" if sys.platform == "win32" else f"libggml-{_backend}.so"
-            )
-            if (lib_dir / sibling).is_file():
+            if _lib_dir_has_ggml_backend(lib_dir, _backend):
                 return False
         return True
 
@@ -3138,27 +3155,10 @@ class LlamaCppBackend:
         lib_dir = _llama_lib_dir(binary)
         if not lib_dir or not lib_dir.is_dir():
             return False
-
-        def _lib(name):
-            return f"ggml-{name}.dll" if sys.platform == "win32" else f"libggml-{name}.so"
-
-        def _has_lib(name):
-            # Match the exact soname and versioned variants (e.g. libggml-cuda.so.0),
-            # as shipped by distro-packaged / split-lib llama.cpp builds (#7188).
-            stem = _lib(name)
-            try:
-                return any(
-                    f.name == stem or f.name.startswith(stem + ".")
-                    for f in lib_dir.iterdir()
-                    if f.is_file()
-                )
-            except OSError:
-                return False
-
-        if any(_has_lib(b) for b in ("vulkan", "cuda", "hip")):
+        if any(_lib_dir_has_ggml_backend(lib_dir, b) for b in ("vulkan", "cuda", "hip")):
             return False  # a GPU ggml backend is present -> the pin can be honored
         # No GPU lib: CPU-only only if a CPU/base ggml lib proves the split-lib layout (not a static build).
-        return any(_has_lib(b) for b in ("cpu", "base"))
+        return any(_lib_dir_has_ggml_backend(lib_dir, b) for b in ("cpu", "base"))
 
     def has_gpu_backend(self) -> bool:
         """True if a GPU probe finds any device: nvidia-smi/amd-smi (CUDA/ROCm) or a

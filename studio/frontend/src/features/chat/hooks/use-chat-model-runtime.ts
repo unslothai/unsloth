@@ -988,12 +988,8 @@ export function useChatModelRuntime() {
               loadedChatTemplateOverride: effectiveChatTemplateOverride,
               loadedIsMultimodal: isMultimodalResponse(loadResponse),
               loadedIsDiffusion: loadResponse.is_diffusion ?? false,
-              // Commit the residency the backend applied so the store stops
-              // reflecting the previous model's mode. Otherwise, after a switch
-              // (snapshot dropped to null) the store keeps the prior value until
-              // the next status hydration, so an immediate same-model Apply could
-              // resend a stale mode. Non-GGUF and auto loads report null here.
-              activeMemoryMode: loadResponse.gguf_memory_mode ?? null,
+              // activeMemoryMode is committed by loadedGpuMemoryFields (spread
+              // above) so every load path resets it uniformly; see its note.
               activeNativePathToken: nativePathToken ?? null,
             });
             // Unlock attach menus for capabilities the catalog entry lacked.

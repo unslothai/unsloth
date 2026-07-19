@@ -609,6 +609,7 @@ export function loadedGpuMemoryFields(resp: {
   n_layers?: number | null;
   n_moe_layers?: number;
   gpu_ids?: number[] | null;
+  gguf_memory_mode?: "auto" | "pinned" | "resident" | null;
 }) {
   // GPU-memory state is meaningful only for a GGUF chat load. A non-GGUF response
   // still carries gpu_memory_mode (its default "auto" is serialized), so gate on
@@ -632,6 +633,9 @@ export function loadedGpuMemoryFields(resp: {
       loadedSplitRatio: null,
       ggufLayerCount: null,
       moeLayerCount: null,
+      // Host-memory residency is meaningful only for GGUF; a non-GGUF load has
+      // no mode, so reset to null (see the GGUF branch's note below).
+      activeMemoryMode: resp.gguf_memory_mode ?? null,
     };
   }
   const mode = resp.gpu_memory_mode ?? "auto";
@@ -676,6 +680,13 @@ export function loadedGpuMemoryFields(resp: {
     // The picker reflects what loaded (the request sent the user's pick).
     selectedGpuIds: gpuIds,
     loadedGpuIds: gpuIds,
+    // Commit the residency the backend actually applied. GGUF host-memory
+    // residency is backend-owned (no UI editor); mirroring it here on every
+    // load path keeps activeMemoryMode from carrying a previous model's mode.
+    // Otherwise, after a switch (compare/auto/rollback load) the store keeps
+    // the prior value, so an immediate same-model Apply could resend a stale
+    // mode. Non-GGUF and auto loads report null, resetting it.
+    activeMemoryMode: resp.gguf_memory_mode ?? null,
     ...manualKnobs,
   };
 }
@@ -704,6 +715,10 @@ export function loadedGpuMemoryFieldsUnlessStaged<T extends object>(
       // so abandoning the stage cannot expose the previous model's limits.
       ggufLayerCount: fields.ggufLayerCount,
       moeLayerCount: fields.moeLayerCount,
+      // Residency is backend-owned with no editable knob, so it mirrors the
+      // model that actually loaded, not the open stage. Advance it with the
+      // baselines so a staged load can't leave a previous model's mode.
+      activeMemoryMode: fields.activeMemoryMode,
     };
   }
   return { ...fields, ...seedExtras };
