@@ -3488,9 +3488,7 @@ async def get_cached_model_path(
     """Absolute on-disk path of a cached repo or one of its GGUF variants."""
     if not _is_valid_repo_id(repo_id):
         raise HTTPException(status_code = 400, detail = "Invalid repo_id format")
-    path = await asyncio.to_thread(
-        _resolve_cached_model_path, repo_id, variant.strip() or None
-    )
+    path = await asyncio.to_thread(_resolve_cached_model_path, repo_id, variant.strip() or None)
     return {"path": str(path), "is_dir": path.is_dir()}
 
 
