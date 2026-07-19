@@ -54,6 +54,16 @@ def client(monkeypatch):
     monkeypatch.setattr(settings, "_resolves_as_local_gguf", lambda m: False)
     monkeypatch.setattr(settings, "get_rag_embedding_model", lambda: saved.get("model", ""))
     monkeypatch.setattr(settings, "get_stored_embedding_model", lambda: saved.get("model"))
+    monkeypatch.setattr(
+        settings,
+        "effective_gguf_repo",
+        lambda: f"{saved.get('model', 'unsloth/default-embed')}-GGUF",
+    )
+    monkeypatch.setattr(
+        settings,
+        "default_gguf_repo",
+        lambda: "unsloth/default-embed-GGUF",
+    )
 
     app = FastAPI()
     app.include_router(settings.router)
@@ -263,6 +273,13 @@ def test_clean_repo_saves_under_force(client, monkeypatch):
     r = c.put("/embedding-model", json = {"embedding_model": "acme/clean-embed", "force": True})
     assert r.status_code == 200
     assert saved.get("model") == "acme/clean-embed"
+    assert r.json() == {
+        "embedding_model": "acme/clean-embed",
+        "embedding_gguf_repo": "acme/clean-embed-GGUF",
+        "default_embedding_model": "unsloth/default-embed",
+        "default_embedding_gguf_repo": "unsloth/default-embed-GGUF",
+        "is_custom": True,
+    }
 
 
 def test_custom_model_saved_in_cache_casing(client, monkeypatch):
