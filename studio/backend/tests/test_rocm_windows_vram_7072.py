@@ -206,6 +206,18 @@ def test_match_adapter_reports_unknown_when_more_active_than_visible():
     assert hw._match_adapter_used_to_devices([40 * GB, 0.5 * GB], [8 * GB]) == [None]
 
 
+def test_match_adapter_reports_unknown_when_hidden_high_use_adapter_survives_filter():
+    # HIP_VISIBLE_DEVICES exposes a single idle 8 GiB card (10 MiB used) on a host
+    # that also has a hidden 48 GiB card busy at 40 GiB. The visible card's real
+    # 10 MiB sits below the 64 MiB noise floor and is dropped, leaving the hidden
+    # card's 40 GiB as the only survivor. That 40 GiB cannot fit the 8 GiB visible
+    # device, so it must belong to the hidden card: clamping it onto the visible
+    # device would fabricate a "fully used" reading. Report unknown instead.
+    assert hw._match_adapter_used_to_devices([40 * GB, 10 * MiB], [8 * GB]) == [None]
+    # Order of the counters must not matter.
+    assert hw._match_adapter_used_to_devices([10 * MiB, 40 * GB], [8 * GB]) == [None]
+
+
 def test_match_adapter_reports_unknown_when_usage_not_capacity_ordered():
     # 8 GiB card near full (7 GiB) beside a lightly used 48 GiB card (5 GiB). The
     # bigger usage (7) still fits the smaller card, so ranking cannot tell which

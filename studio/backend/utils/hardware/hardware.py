@@ -815,8 +815,13 @@ def _match_adapter_used_to_devices(
     if n == 0:
         return []
     useds = sorted(adapter_useds, reverse = True)
+    # More raw counters than visible devices means at least one adapter belongs to
+    # a GPU outside the visibility mask (or a non-GPU display adapter). Measured on
+    # the raw count *before* the noise filter, because a genuinely idle visible card
+    # can itself sit below the sub-threshold noise floor.
+    extra_adapters = len(useds) > n
     # Drop placeholder adapters only if they'd outnumber real devices.
-    if len(useds) > n:
+    if extra_adapters:
         non_trivial = [u for u in useds if u >= _ROCM_WIN_ADAPTER_MIN_BYTES]
         if len(non_trivial) > n:
             # More adapters are actively using VRAM than are visible here (a GPU
@@ -830,6 +835,17 @@ def _match_adapter_used_to_devices(
     # adapter counter, plus the capacity at that rank.
     ranked_useds = [useds[rank] if rank < len(useds) else 0.0 for rank in range(n)]
     ranked_totals = [device_totals[pos] for pos in ranked_positions]
+    # With hidden adapters present, a kept usage that exceeds its ranked visible
+    # capacity cannot belong to any visible card: it is a hidden, larger GPU whose
+    # counter survived the noise filter while a visible card's real (sub-threshold)
+    # usage was dropped as noise. Clamping it onto the smaller visible device would
+    # fabricate a "fully used" reading (e.g. a hidden 48 GiB card at 40 GiB shown as
+    # a visible 8 GiB card fully used while its true 10 MiB usage was filtered out),
+    # so report unknown rather than mis-assign the hidden card's usage.
+    if extra_adapters:
+        for rank in range(n):
+            if ranked_useds[rank] > ranked_totals[rank]:
+                return [None] * n
     # Ambiguous whenever a strictly larger usage would also fit the next
     # smaller-capacity device: those two values could be swapped without breaking
     # any capacity, so ranking cannot know which card actually holds which. No
