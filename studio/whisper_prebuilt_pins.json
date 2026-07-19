@@ -1,0 +1,12 @@
+{
+  "schema_version": 1,
+  "component": "whisper.cpp",
+  "comment": "Trust anchor for install_whisper_prebuilt.py: the reviewed release id plus the per-asset sha256 map for each prebuilt whisper-server bundle published by unslothai/whisper.cpp. To add a release: cut it in the fork, copy the manifest's per-asset sha256 into a new 'releases' entry, review the diff, and bump 'default_release_tag'. Until the first release is published and its digests are reviewed the assets map stays empty, so every asset fails closed (an unpinned override needs UNSLOTH_WHISPER_ALLOW_UNVERIFIED=1).",
+  "default_release_tag": "v1.9.1-unsloth.1",
+  "releases": {
+    "v1.9.1-unsloth.1": {
+      "upstream_tag": "v1.9.1",
+      "assets": {}
+    }
+  }
+}
