@@ -242,7 +242,10 @@ _HYBRID_WARNED: set = set()
 def _hybrid_packing_enabled() -> bool:
     # Read at call time so setting the flag after `import unsloth` still takes effect.
     return os.environ.get(_HYBRID_PACKING_ENV_VAR, "0").strip().lower() in {
-        "1", "true", "yes", "on",
+        "1",
+        "true",
+        "yes",
+        "on",
     }
 
 
@@ -251,7 +254,8 @@ def _hybrid_reject(reason: str) -> bool:
     if reason not in _HYBRID_WARNED:
         _HYBRID_WARNED.add(reason)
         _HYBRID_LOGGER.warning(
-            "Unsloth: hybrid linear-attention packing disabled (padded path): %s.", reason,
+            "Unsloth: hybrid linear-attention packing disabled (padded path): %s.",
+            reason,
         )
     return False
 
@@ -281,15 +285,21 @@ def _hybrid_varlen_kernels_available(gated_delta_modules) -> Optional[str]:
         return "no gated-delta modules found"
     for module in gated_delta_modules:
         conv = getattr(module, "_unsloth_varlen_orig_conv", None) or getattr(
-            module, "causal_conv1d_fn", None,
+            module,
+            "causal_conv1d_fn",
+            None,
         )
         scan = getattr(module, "_unsloth_varlen_orig_scan", None) or getattr(
-            module, "chunk_gated_delta_rule", None,
+            module,
+            "chunk_gated_delta_rule",
+            None,
         )
         if conv is None or scan is None:
             return "accelerated kernels missing (install causal_conv1d and fla)"
         if getattr(scan, "__name__", "").startswith("torch_") or getattr(
-            conv, "__name__", "",
+            conv,
+            "__name__",
+            "",
         ).startswith("torch_"):
             return "pure-torch kernel fallback in use"
         try:
@@ -322,10 +332,12 @@ def _varlen_from_position_ids(position_ids):
     starts = (row == 0).nonzero(as_tuple = False).flatten()
     if starts.numel() <= 1 or int(starts[0].item()) != 0:
         return None
-    cu_seqlens = torch.cat([
-        starts.to(torch.int32),
-        torch.tensor([total], dtype = torch.int32, device = row.device),
-    ])
+    cu_seqlens = torch.cat(
+        [
+            starts.to(torch.int32),
+            torch.tensor([total], dtype = torch.int32, device = row.device),
+        ]
+    )
     return _seq_idx_from_cu_seqlens(cu_seqlens, total)
 
 
@@ -340,10 +352,12 @@ def _seq_idx_from_cu_seqlens(cu_seqlens, total):
     if last > total:
         return None
     if last < total:  # trailing pad tokens -> one final segment
-        boundaries = torch.cat([
-            boundaries,
-            torch.tensor([total], dtype = torch.int32, device = boundaries.device),
-        ])
+        boundaries = torch.cat(
+            [
+                boundaries,
+                torch.tensor([total], dtype = torch.int32, device = boundaries.device),
+            ]
+        )
     lengths = boundaries[1:] - boundaries[:-1]
     if not bool((lengths > 0).all()):
         return None
@@ -394,8 +408,10 @@ def patch_hybrid_linear_attention_varlen(model) -> bool:
     gated_delta_modules = _iter_gated_delta_modules(model)
 
     # Idempotency: an already fully-patched model stays active without re-validation.
-    if getattr(model, "_unsloth_varlen_forward_wrapped", False) and gated_delta_modules and all(
-        getattr(m, "_unsloth_varlen_wrapped", False) for m in gated_delta_modules
+    if (
+        getattr(model, "_unsloth_varlen_forward_wrapped", False)
+        and gated_delta_modules
+        and all(getattr(m, "_unsloth_varlen_wrapped", False) for m in gated_delta_modules)
     ):
         return True
 
@@ -412,7 +428,12 @@ def patch_hybrid_linear_attention_varlen(model) -> bool:
         module._unsloth_varlen_orig_scan = scan_orig
 
         @wraps(conv_orig)
-        def conv_fn(*args, _orig = conv_orig, _module = module, **kwargs):
+        def conv_fn(
+            *args,
+            _orig = conv_orig,
+            _module = module,
+            **kwargs,
+        ):
             varlen = getattr(_module, "_unsloth_varlen", None)
             if varlen is not None:
                 _module._unsloth_varlen_conv_hit = True  # runtime dispatch handshake
@@ -421,7 +442,12 @@ def patch_hybrid_linear_attention_varlen(model) -> bool:
             return _orig(*args, **kwargs)
 
         @wraps(scan_orig)
-        def scan_fn(*args, _orig = scan_orig, _module = module, **kwargs):
+        def scan_fn(
+            *args,
+            _orig = scan_orig,
+            _module = module,
+            **kwargs,
+        ):
             varlen = getattr(_module, "_unsloth_varlen", None)
             if varlen is not None:
                 _module._unsloth_varlen_scan_hit = True
@@ -455,7 +481,9 @@ def patch_hybrid_linear_attention_varlen(model) -> bool:
             except Exception:
                 varlen = None
             first_pack = varlen is not None and not getattr(
-                model, "_unsloth_varlen_handshake_done", False,
+                model,
+                "_unsloth_varlen_handshake_done",
+                False,
             )
             for module in gated_delta_modules:
                 module._unsloth_varlen = varlen
@@ -472,7 +500,8 @@ def patch_hybrid_linear_attention_varlen(model) -> bool:
             if first_pack:
                 model._unsloth_varlen_handshake_done = True
                 missing = [
-                    type(m).__name__ for m in gated_delta_modules
+                    type(m).__name__
+                    for m in gated_delta_modules
                     if not (
                         getattr(m, "_unsloth_varlen_conv_hit", False)
                         and getattr(m, "_unsloth_varlen_scan_hit", False)
