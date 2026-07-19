@@ -5853,12 +5853,12 @@ def _bash_exec(
             base = f"Blocked command(s) for safety: {', '.join(sorted(blocked))}."
             if blocked & _NETWORK_BLOCKED_COMMANDS:
                 return (
-                    base + " Direct network commands are blocked in the "
-                    "terminal. Public files on allowlisted sites (such as "
-                    "github.com, huggingface.co, or pypi.org) can be downloaded "
-                    "from Python code instead; the user's own machine and other "
-                    "private or arbitrary hosts are not reachable, so for those "
-                    "ask the user to upload the files they want you to work with."
+                    base + " These download commands are blocked by name in "
+                    "the terminal. Public files on allowlisted sites (such as "
+                    "github.com, huggingface.co, or pypi.org) can be fetched "
+                    "from Python code instead. If you need files from another "
+                    "location, ask the user to place them in the working "
+                    "directory or give a path the sandbox can read."
                 )
             return base
     elif not _harden_parent_against_proc_env_leak():

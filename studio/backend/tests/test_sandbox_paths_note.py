@@ -95,3 +95,37 @@ def test_blocked_network_command_message_points_to_python_egress():
     assert "cannot reach other machines or remote hosts" not in msg
     assert "python" in msg
     assert "github.com" in msg
+
+
+def test_blocked_network_command_message_scopes_claim_to_the_command():
+    # The block is by command name; the terminal keeps its network namespace and
+    # does not block git/pip, so `git clone http://<private-host>/repo` can still
+    # reach a private host. The message must not assert the destination itself is
+    # unreachable, and must attribute the block to the command by name.
+    msg = _bash_exec("wget http://10.0.0.5/internal/repo.tar.gz").lower()
+    assert "by name" in msg
+    assert "not reachable" not in msg
+    assert "are not reachable" not in msg
+    assert "hosts are not reachable" not in msg
+
+
+def test_blocked_network_command_message_does_not_recommend_chat_upload():
+    # Chat attachments land in the RAG store, not the sandbox workdir, so telling
+    # the user to upload the file to chat is a dead end. The message must instead
+    # point at an accessible path or placing the file in the working directory.
+    msg = _bash_exec("curl https://raw.githubusercontent.com/foo/bar/main/x.py").lower()
+    assert "upload" not in msg
+    assert "working directory" in msg or "path the sandbox can read" in msg
+
+
+def test_code_execution_nudge_does_not_deny_local_file_access():
+    # On this no-Landlock branch the child runs on the host with only cwd set, so an
+    # exact local path the user supplies is readable. The code-execution nudge must
+    # frame the workdir as the default work location, not assert the user's own
+    # computer is inaccessible, and it must still allow an exact path.
+    from routes.inference import _TOOL_CODE_TIP
+
+    lowered = _TOOL_CODE_TIP.lower()
+    assert "cannot access the user's own computer" not in lowered
+    assert "default" in lowered and "location for your work" in lowered
+    assert "give an exact path" in lowered
