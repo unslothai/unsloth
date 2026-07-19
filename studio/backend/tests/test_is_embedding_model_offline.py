@@ -282,6 +282,49 @@ def test_marker_onnx_only_snapshot_is_not_loadable(tmp_path, monkeypatch):
     assert mc._embedding_marker_in_hf_cache("org/model") is False
 
 
+def _cache_repo_with_files(tmp_path, monkeypatch, *files, commit = "aaa"):
+    """A cache repo whose active snapshot holds modules.json + config + *files*."""
+    hf_root = tmp_path / "hf"
+    repo = hf_root / "models--org--model"
+    snap = repo / "snapshots" / commit
+    snap.mkdir(parents = True)
+    (snap / "modules.json").write_text("[]")
+    (snap / "config.json").write_text("{}")
+    for name in files:
+        target = snap / name
+        target.parent.mkdir(parents = True, exist_ok = True)
+        target.write_bytes(b"\0")
+    (repo / "refs").mkdir(parents = True)
+    (repo / "refs" / "main").write_text(commit)
+    _fake_hf_cache(monkeypatch, hf_root)
+    monkeypatch.delenv("SENTENCE_TRANSFORMERS_HOME", raising = False)
+
+
+def test_marker_rejects_non_base_weight_bins(tmp_path, monkeypatch):
+    # A partial cache carrying modules.json + config plus only a commonly published
+    # NON-weight .bin (training_args.bin) is not a loadable base model: the Torch
+    # backend needs model.safetensors / pytorch_model.bin, so accepting it would
+    # pass validation and then fail at first indexing. Adapter-only artifacts are
+    # rejected for the same reason.
+    _cache_repo_with_files(tmp_path, monkeypatch, "training_args.bin")
+    assert mc._embedding_marker_in_hf_cache("org/model") is False
+    _cache_repo_with_files(tmp_path / "b", monkeypatch, "adapter_model.safetensors")
+    assert mc._embedding_marker_in_hf_cache("org/model") is False
+
+
+@pytest.mark.parametrize("weights", [
+    ("pytorch_model.bin",),                                        # torch .bin
+    ("model-00001-of-00002.safetensors", "model-00002-of-00002.safetensors"),  # sharded
+    ("0_Transformer/model.safetensors",),                          # weight in a module dir
+])
+def test_marker_accepts_recognized_torch_weights(tmp_path, monkeypatch, weights):
+    # The filename recognizer must not over-reject real base-model weights: single
+    # pytorch_model.bin, sharded model-000NN-of-000NN.safetensors, and weights that
+    # live inside a module directory all count as loadable.
+    _cache_repo_with_files(tmp_path, monkeypatch, *weights)
+    assert mc._embedding_marker_in_hf_cache("org/model") is True
+
+
 def _case_sensitive_fs(tmp_path) -> bool:
     probe = tmp_path / "_CaseProbe"
     probe.mkdir()
@@ -425,12 +468,15 @@ def test_online_negative_does_not_block_later_offline_download(tmp_path, monkeyp
     assert mc.is_embedding_model("org/late-embedder") is True  # marker re-probed
 
 
-def test_offline_retains_online_confirmed_positive(monkeypatch):
-    # A tag-only embedder (feature-extraction, no modules.json) is confirmed
-    # online and cached True. _hf_offline_if_dns_dead() then flips the process to
-    # offline mid-load; the offline path must RETAIN that positive, not re-probe
-    # the absent marker and downgrade a model already verified this session.
-    _no_cache(monkeypatch)
+def test_offline_retains_online_confirmed_positive(tmp_path, monkeypatch):
+    # A tag-only embedder (feature-extraction, no modules.json) is confirmed online
+    # and cached True, and its snapshot IS materialized locally.
+    # _hf_offline_if_dns_dead() then flips the process to offline mid-load; the
+    # offline path must RETAIN that positive because the files are present, not
+    # downgrade a model already verified this session. The marker alone reads False
+    # here (present but no modules.json), so retention rests on the memo plus a
+    # present active snapshot, not on the marker.
+    _repo(tmp_path, monkeypatch, ("aaa", False), main_ref = "aaa", repo_id = "org/gte-modernbert")
 
     def _info(model_name, token = None):
         return types.SimpleNamespace(tags = ["feature-extraction"], pipeline_tag = None)
@@ -441,6 +487,25 @@ def test_offline_retains_online_confirmed_positive(monkeypatch):
     monkeypatch.setenv("HF_HUB_OFFLINE", "1")
     _fake_hf_model_info(monkeypatch, _no_network)  # offline must not hit network
     assert mc.is_embedding_model("org/gte-modernbert") is True  # positive retained
+
+
+def test_offline_metadata_only_positive_not_trusted_without_cache(monkeypatch):
+    # A positive from an online model_info() call (e.g. /check-embedding) proves
+    # only that the repo is tagged an embedder, not that any files were downloaded.
+    # With nothing materialized in the cache, the offline path must NOT trust that
+    # memo: saving the model would then fail the local_files_only RAG load at first
+    # indexing. So it returns False despite the cached True.
+    _no_cache(monkeypatch)
+
+    def _info(model_name, token = None):
+        return types.SimpleNamespace(tags = ["feature-extraction"], pipeline_tag = None)
+
+    _fake_hf_model_info(monkeypatch, _info)
+    assert mc.is_embedding_model("org/uncached-embedder") is True  # online: cached True (metadata only)
+
+    monkeypatch.setenv("HF_HUB_OFFLINE", "1")
+    _fake_hf_model_info(monkeypatch, _no_network)  # offline must not hit network
+    assert mc.is_embedding_model("org/uncached-embedder") is False  # not cached -> not trusted
 
 
 def test_offline_cached_non_st_returns_false_without_network(tmp_path, monkeypatch):
