@@ -124,6 +124,7 @@ function ParamSlider({
   displayValue,
   info,
   valueSize,
+  disabled,
 }: {
   label: string;
   value: number;
@@ -134,6 +135,7 @@ function ParamSlider({
   displayValue?: string;
   info?: ReactNode;
   valueSize?: number;
+  disabled?: boolean;
 }) {
   return (
     <div className="space-y-3.5">
@@ -154,6 +156,7 @@ function ParamSlider({
           ariaLabel={label}
           size={valueSize ?? 4}
           className="panel-number-input"
+          disabled={disabled}
         />
       </div>
       <Slider
@@ -163,6 +166,7 @@ function ParamSlider({
         value={[value]}
         onValueChange={([v]) => onChange(snapToStep(v, step, min, max))}
         className="panel-slider"
+        disabled={disabled}
       />
     </div>
   );

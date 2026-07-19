@@ -7,7 +7,7 @@ export {
   browseFolders,
   deleteCachedModel,
   deleteFineTunedModel,
-  fetchGgufContextLength,
+  fetchGgufStagedMetadata,
   getInferenceStatus,
   listGgufVariants,
   listLocalModels,
@@ -32,6 +32,9 @@ export { useChatRuntimeStore } from "./stores/chat-runtime-store";
 export {
   normalizeSpeculativeType,
   readPersistedSpeculativeType,
+  readPersistedGpuMemoryMode,
+  reconcilePersistedGpuIds,
+  GPU_LAYERS_AUTO,
 } from "./stores/chat-runtime-store";
 export {
   preferFullToolOutput,

@@ -2770,7 +2770,11 @@ async def get_gguf_variants(
             ],
             has_vision = response.has_vision,
             default_variant = response.default_variant,
-            context_length = _read_native_context_length(repo_id, is_local = local),
+            # The header walk reads tokenizer arrays on dense models (tens of
+            # ms per uncached file); keep it off the event loop.
+            context_length = await asyncio.to_thread(
+                _read_native_context_length, repo_id, is_local = local
+            ),
         )
     except HTTPException:
         raise

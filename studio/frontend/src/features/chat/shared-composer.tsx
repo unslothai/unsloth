@@ -89,6 +89,8 @@ import {
   useTransformersUpgradeDialogStore,
 } from "@/features/transformers-upgrade";
 import { loadModel, validateModel } from "./api/chat-api";
+import { resolveFitMaxSeqLength, resolveManualAutoCtxPin } from "./presets/preset-policy";
+import { ensureGpuDeviceCache } from "@/hooks/use-gpu-info";
 import {
   parseExternalModelId,
   providerTypeSupportsVision,
@@ -100,8 +102,11 @@ import {
   usePlusMenuPrefsStore,
 } from "./stores/plus-menu-prefs-store";
 import {
+  loadedGpuMemoryFieldsUnlessStaged,
   type ReasoningEffort,
+  reconcilePersistedGpuIds,
   resolveLoadedSpeculativeSettings,
+  persistGpuMemoryModeOnLoad,
   resolveSpeculativeSettingsForLoad,
   saveSpeculativeType,
   useChatRuntimeStore,
@@ -1056,10 +1061,32 @@ export function SharedComposer({
         return parts[parts.length - 1] || id;
       }
 
+      // Warm the device cache before the snapshot below reconciles the GPU
+      // pick: on a cold cache the reconcile passes a stale pick through.
+      if (store.selectedGpuIds != null) {
+        await ensureGpuDeviceCache();
+      }
+      // The GPU/offload knobs both compare loads must use, snapshotted at Send.
+      // ensureModelLoaded runs sequentially and the first load's response echo
+      // (loadedGpuMemoryFields) rewrites the live store -- a non-GGUF or Auto
+      // first model resets gpuLayers/nCpuMoe/split/pick to defaults -- so
+      // reading the store per load would hand model 2 the first model's echoed
+      // defaults instead of the settings the user pressed Send with.
+      const compareLoadKnobs = {
+        gpuMemoryMode: store.gpuMemoryMode,
+        gpuLayers: store.gpuLayers,
+        nCpuMoe: store.nCpuMoe,
+        splitRatio: store.splitRatio,
+        // Reconcile the pick against the GPUs present now, like the model-switch
+        // path: an early remember-restore can hold a stale cross-host pick that
+        // /load would reject (the device cache is populated by send time).
+        selectedGpuIds: reconcilePersistedGpuIds(store.selectedGpuIds),
+        tensorParallel: store.tensorParallel,
+        customContextLength: store.customContextLength,
+      };
       // Set when an accepted transformers install unloaded the active model
       // server-side; a later failure must then clear the stale checkpoint.
       let upgradeUnloadedActive = false;
-
       // Helper: load a model and update store checkpoint
       async function ensureModelLoaded(
         sel: CompareModelSelection,
@@ -1108,15 +1135,38 @@ export function SharedComposer({
         if (isAlreadyActive && !config && !loadedFromConfig) {
           return "ready";
         }
+        const targetIsGguf =
+          sel.id.toLowerCase().endsWith(".gguf") || sel.ggufVariant != null;
+        // Size validation exactly as the load below, so the training-guard
+        // preflight checks the footprint that actually loads (under Manual + Auto
+        // layers the load sends 0 / the pinned context, not raw maxSeqLength).
+        const compareMaxSeqLength = resolveFitMaxSeqLength(
+          targetIsGguf,
+          compareLoadKnobs.gpuMemoryMode,
+          compareLoadKnobs.gpuLayers,
+          // Prefer this pane's own saved context pin over the shared snapshot,
+          // and fall back to its per-pane effective context (a GGUF pane with no
+          // saved context loads at native, not the session maxSeqLength).
+          ownConfig.customContextLength ?? compareLoadKnobs.customContextLength,
+          effectiveMaxSeqLength,
+        );
         const validation = await validateModel({
           model_path: sel.id,
           hf_token: currentStore.hfToken || null,
-          max_seq_length: effectiveMaxSeqLength,
+          max_seq_length: compareMaxSeqLength,
           load_in_4bit: true,
           is_lora: sel.isLora,
           gguf_variant: sel.ggufVariant ?? null,
           trust_remote_code: loadTrustRemoteCode,
           chat_template_override: effectiveChatTemplateOverride,
+          // Scope the validate to the picked GPUs. GGUF-only, like the load
+          // below: a non-GGUF target must not inherit a hidden GGUF GPU pick.
+          ...(targetIsGguf
+            ? {
+                gpu_ids: compareLoadKnobs.selectedGpuIds ?? undefined,
+                gpu_memory_mode: compareLoadKnobs.gpuMemoryMode,
+              }
+            : {}),
         });
         // Upgrade dialog first (mirrors the primary load path).
         if (validation.requires_transformers_upgrade) {
@@ -1165,7 +1215,7 @@ export function SharedComposer({
         const resp = await loadModel({
           model_path: sel.id,
           hf_token: useChatRuntimeStore.getState().hfToken || null,
-          max_seq_length: effectiveMaxSeqLength,
+          max_seq_length: compareMaxSeqLength,
           load_in_4bit: true,
           is_lora: sel.isLora,
           gguf_variant: sel.ggufVariant ?? null,
@@ -1175,7 +1225,22 @@ export function SharedComposer({
           cache_type_kv: ownConfig.kvCacheDtype ?? null,
           speculative_type: effectiveSpeculativeType,
           spec_draft_n_max: effectiveSpecDraftNMax,
+          // Honor the Tensor Parallelism + GPU Memory choices on compare loads.
+          // GGUF-only, like the auto-load path: the picker is a GGUF control,
+          // so a non-GGUF target loads via HF auto-placement instead of being
+          // pinned to a leftover GGUF pick it can't even show. TP stays per-pane
+          // (a per-model-config field); the GPU Memory knobs use the Send-time
+          // snapshot shared by both panes.
           tensor_parallel: effectiveTensorParallel,
+          ...(targetIsGguf
+            ? {
+                gpu_memory_mode: compareLoadKnobs.gpuMemoryMode,
+                gpu_layers: compareLoadKnobs.gpuLayers,
+                n_cpu_moe: compareLoadKnobs.nCpuMoe,
+                tensor_split: compareLoadKnobs.splitRatio ?? undefined,
+                gpu_ids: compareLoadKnobs.selectedGpuIds ?? undefined,
+              }
+            : {}),
         });
         // Keep a compare pane's per-model speculative choice load-local: only
         // persist the global preference when it came from the global settings,
@@ -1183,6 +1248,9 @@ export function SharedComposer({
         if (ownConfig.speculativeType == null) {
           saveSpeculativeType(effectiveSpeculativeType);
         }
+        // Persist the GPU Memory mode on a non-diffusion GGUF compare-load too,
+        // so an applied manual choice survives a restart.
+        persistGpuMemoryModeOnLoad(resp, compareLoadKnobs.gpuMemoryMode);
         upgradeUnloadedActive = false;
         const store = useChatRuntimeStore.getState();
         store.setCheckpoint(
@@ -1192,6 +1260,17 @@ export function SharedComposer({
         store.setModelRequiresTrustRemoteCode(
           resp.requires_trust_remote_code ?? false,
         );
+        // Keep an explicit Manual+Auto context pin the load just applied (so a
+        // later Apply/Reset doesn't silently revert the model to auto-fit
+        // sizing), mirroring the interactive path's keepCustomCtx. Non-GGUF
+        // compare loads don't send the pin, so their baseline clears.
+        const keepCustomCtx = targetIsGguf
+          ? resolveManualAutoCtxPin(
+              compareLoadKnobs.gpuMemoryMode,
+              compareLoadKnobs.gpuLayers,
+              compareLoadKnobs.customContextLength,
+            )
+          : null;
         useChatRuntimeStore.setState({
           supportsReasoning: resp.supports_reasoning ?? false,
           reasoningAlwaysOn: resp.reasoning_always_on ?? false,
@@ -1205,6 +1284,17 @@ export function SharedComposer({
           defaultChatTemplate: resp.chat_template ?? null,
           chatTemplateOverride: effectiveChatTemplateOverride,
           loadedChatTemplateOverride: effectiveChatTemplateOverride,
+          // The context baseline this pane loaded with (see keepCustomCtx above),
+          // so a later Apply/Reset can't silently revert a Manual+Auto pin.
+          loadedCustomContextLength: keepCustomCtx,
+          // Adopt the load response's GPU-memory fields (mode / layers / MoE /
+          // split / pick, plus their loaded baselines) so the GPU controls
+          // round-trip. (The gguf context, customContextLength and native-path
+          // token/expiry clearing are set once in the shared tail below.)
+          ...loadedGpuMemoryFieldsUnlessStaged(resp),
+          // Drives the GPU Memory controls' diffusion gate; set alongside the
+          // GPU fields on every load path so the gate can't read stale.
+          loadedIsDiffusion: resp.is_diffusion ?? false,
           loadedIsMultimodal: isMultimodalResponse(resp),
           // Record the context this pane actually loaded with, mirroring the
           // single-model load path, so that when the last-loaded pane becomes
