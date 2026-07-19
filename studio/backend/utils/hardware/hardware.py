@@ -538,21 +538,33 @@ def _torch_get_physical_gpu_count() -> Optional[int]:
 
 
 def _torch_get_per_device_info(device_indices: list[int]) -> list[Dict[str, Any]]:
-    """Query torch for per-GPU name, total VRAM, and used VRAM."""
+    """Query torch for per-GPU name, total VRAM, and used VRAM.
+
+    ``used_gb`` is ``None`` when untrustworthy: Windows ROCm ``hipMemGetInfo``
+    reports ``free == total`` even with a model resident (ROCm/ROCm#1909), so a 0
+    there means "unknown", not "empty". ``total_gb`` stays authoritative.
+    """
     mod, _ = _torch_get_device_module()
     if mod is None:
         return []
 
+    # free==total is a Windows-ROCm-only quirk; other backends keep used = total - free.
+    _win_rocm = sys.platform == "win32" and IS_ROCM
     devices = []
     for ordinal, phys_idx in enumerate(device_indices):
         try:
             # torch ordinals are 0-based relative to CUDA_VISIBLE_DEVICES.
             props = mod.get_device_properties(ordinal)
             total_bytes = props.total_memory
+            used_bytes: Optional[int]
             # Prefer mem_get_info (system-wide) so auto-select sees other consumers.
             if hasattr(mod, "mem_get_info"):
                 free_bytes, total_bytes = mod.mem_get_info(ordinal)
                 used_bytes = total_bytes - free_bytes
+                # Windows ROCm free==total is the broken-API sentinel, not a proven
+                # idle GPU; mark used unknown so callers never show a bogus 0.
+                if _win_rocm and free_bytes == total_bytes:
+                    used_bytes = None
             else:
                 used_bytes = mod.memory_allocated(ordinal)
             devices.append(
@@ -561,7 +573,9 @@ def _torch_get_per_device_info(device_indices: list[int]) -> list[Dict[str, Any]
                     "visible_ordinal": ordinal,
                     "name": props.name,
                     "total_gb": round(total_bytes / (1024**3), 2),
-                    "used_gb": round(used_bytes / (1024**3), 2),
+                    "used_gb": round(used_bytes / (1024**3), 2)
+                    if used_bytes is not None
+                    else None,
                 }
             )
         except Exception as e:
@@ -724,20 +738,36 @@ def _rocm_linux_sysfs_vram_gb() -> tuple[Optional[float], Optional[float]]:
         return None, None
 
 
-def _rocm_windows_perf_counter_vram_gb() -> tuple[Optional[float], Optional[float]]:
-    """Query system-wide dedicated GPU VRAM via Windows Performance Counters.
+# ── Windows AMD/ROCm per-adapter VRAM (issue #7072) ──────────────────────────
+# amd-smi is disabled here and hipMemGetInfo reports free==total, so read used
+# from the "GPU Adapter Memory" perf counters (Task Manager's source), instanced
+# per adapter by LUID, and take each total from torch properties (the counter set
+# has no per-adapter total). This shows every GPU instead of summing all adapters
+# into one fake device with only GPU 0's total.
 
-    Same data source as Task Manager, so cross-process usage is accurate.
-    Works for any GPU vendor without amd-smi or nvidia-smi.
-    Returns (used_gb, total_gb) or (None, None) on failure.
+# Placeholder adapters (Basic Render Driver / idle iGPU) are dropped only when
+# they would outnumber the real torch devices.
+_ROCM_WIN_ADAPTER_MIN_BYTES = 64 * 1024 * 1024  # 64 MiB
+
+
+def _rocm_windows_perf_counter_vram_by_adapter() -> Optional[list[tuple[str, float]]]:
+    """Per-adapter dedicated VRAM usage on Windows via Performance Counters.
+
+    Enumerates each ``\\GPU Adapter Memory(<instance>)\\Dedicated Usage`` instance
+    (one per adapter, named by LUID) rather than summing them. Returns
+    ``[(instance_name, used_bytes)]``, or ``None`` when the counter is unavailable,
+    localized, or empty so callers fall back instead of reporting a wrong 0.
     """
     if platform.system() != "Windows":
-        return None, None
+        return None
     try:
+        # Emit "<InstanceName>|<CookedValue>" per sample, or a sentinel when the
+        # counter set is absent/localized so we return None (not a 0 sum).
         ps = (
             "$s=(Get-Counter '\\GPU Adapter Memory(*)\\Dedicated Usage'"
             " -ErrorAction SilentlyContinue).CounterSamples;"
-            "if($s){($s|Measure-Object CookedValue -Sum).Sum}else{-1}"
+            "if($s){$s|ForEach-Object{'{0}|{1}' -f $_.InstanceName,[int64]$_.CookedValue}}"
+            "else{'__NONE__'}"
         )
         r = subprocess.run(
             ["powershell", "-NoProfile", "-NonInteractive", "-Command", ps],
@@ -746,16 +776,132 @@ def _rocm_windows_perf_counter_vram_gb() -> tuple[Optional[float], Optional[floa
             timeout = 5,
         )
         if r.returncode != 0 or not r.stdout.strip():
-            return None, None
-        used_bytes = float(r.stdout.strip())
-        if used_bytes < 0:
-            return None, None
-        import torch as _torch
-
-        total_bytes = _torch.cuda.get_device_properties(0).total_memory
-        return round(used_bytes / (1024**3), 2), round(total_bytes / (1024**3), 2)
+            return None
+        adapters: list[tuple[str, float]] = []
+        for line in r.stdout.splitlines():
+            line = line.strip()
+            if not line or line == "__NONE__" or "|" not in line:
+                continue
+            instance, _, raw = line.rpartition("|")
+            try:
+                used = float(raw.strip())
+            except (ValueError, TypeError):
+                continue
+            if used < 0:
+                continue
+            adapters.append((instance.strip(), used))
+        return adapters or None
     except Exception:
-        return None, None
+        return None
+
+
+def _match_adapter_used_to_devices(
+    adapter_useds: list[float], device_totals: list[float]
+) -> list[Optional[float]]:
+    """Attribute per-adapter used bytes to torch devices (by index position).
+
+    Windows shares no key between LUID counter instances and torch ordinals, so
+    the largest usage pairs with the largest-capacity device (single-model /
+    size-proportional-shard case), clamped to that total. Unmatched devices get
+    ``None``. Returns a list aligned to ``device_totals``.
+    """
+    n = len(device_totals)
+    if n == 0:
+        return []
+    useds = sorted(adapter_useds, reverse = True)
+    # Drop placeholder adapters only if they'd outnumber real devices.
+    if len(useds) > n:
+        non_trivial = [u for u in useds if u >= _ROCM_WIN_ADAPTER_MIN_BYTES]
+        useds = (non_trivial or useds)[:n]
+    ranked_positions = sorted(range(n), key = lambda i: -device_totals[i])
+    assigned: list[Optional[float]] = [None] * n
+    for rank, pos in enumerate(ranked_positions):
+        if rank < len(useds):
+            assigned[pos] = min(useds[rank], device_totals[pos])
+    return assigned
+
+
+def _rocm_windows_per_device_vram(device_indices: list[int]) -> list[Dict[str, Any]]:
+    """Per-GPU VRAM on Windows AMD/ROCm: total from torch properties (reliable),
+    used from the per-adapter Dedicated Usage counter.
+
+    Returns ``{index, visible_ordinal, name, used_gb, total_gb}`` per visible GPU
+    (``used_gb`` may be ``None`` when the counter is unavailable), or ``[]`` when
+    torch can't enumerate devices so callers fall through to the torch last resort.
+    """
+    if platform.system() != "Windows":
+        return []
+    mod, _ = _torch_get_device_module()
+    if mod is None:
+        return []
+    # Totals/names from torch properties, not mem_get_info (its free==total quirk
+    # would zero used); totals stay correct regardless.
+    dev_meta: list[Dict[str, Any]] = []
+    for ordinal, phys_idx in enumerate(device_indices):
+        try:
+            props = mod.get_device_properties(ordinal)
+            dev_meta.append(
+                {
+                    "index": phys_idx,
+                    "visible_ordinal": ordinal,
+                    "name": props.name,
+                    "total_bytes": int(props.total_memory),
+                }
+            )
+        except Exception as e:
+            logger.debug("torch property probe failed for ordinal %d: %s", ordinal, e)
+    if not dev_meta:
+        return []
+
+    adapters = _rocm_windows_perf_counter_vram_by_adapter()
+    if adapters:
+        assigned = _match_adapter_used_to_devices(
+            [used for _, used in adapters],
+            [d["total_bytes"] for d in dev_meta],
+        )
+    else:
+        # Counter unavailable: show every GPU with a correct total, used unknown.
+        assigned = [None] * len(dev_meta)
+
+    devices: list[Dict[str, Any]] = []
+    for meta, used_bytes in zip(dev_meta, assigned):
+        total_gb = round(meta["total_bytes"] / (1024**3), 2)
+        used_gb = round(used_bytes / (1024**3), 2) if used_bytes is not None else None
+        devices.append(
+            {
+                "index": meta["index"],
+                "visible_ordinal": meta["visible_ordinal"],
+                "name": meta["name"],
+                "used_gb": used_gb,
+                "total_gb": total_gb,
+            }
+        )
+    return devices
+
+
+def _rocm_windows_device_payload_entry(
+    device: DeviceType, dev: Dict[str, Any], gpu_util_pct: Optional[float]
+) -> Dict[str, Any]:
+    """Build a ``get_gpu_utilization`` device entry from a per-device VRAM dict."""
+    total_gb = dev["total_gb"]
+    used_gb = dev["used_gb"]
+    return {
+        "available": True,
+        "backend": _backend_label(device),
+        "index": dev["index"],
+        "visible_ordinal": dev["visible_ordinal"],
+        "name": dev.get("name", "Unknown"),
+        "gpu_utilization_pct": gpu_util_pct,
+        "temperature_c": None,
+        "vram_used_gb": used_gb,
+        "vram_total_gb": total_gb,
+        "vram_utilization_pct": round((used_gb / total_gb) * 100, 1)
+        if total_gb and total_gb > 0 and used_gb is not None
+        else None,
+        "power_draw_w": None,
+        "power_limit_w": None,
+        "power_utilization_pct": None,
+    }
 
 
 def _gpu_utilization_payload(
@@ -821,30 +967,26 @@ def get_gpu_utilization() -> Dict[str, Any]:
                 index_kind = result.get("index_kind"),
             )
 
-        # Fallback Windows ROCm
+        # Fallback Windows ROCm: per-adapter VRAM attribution (issue #7072), so
+        # every visible GPU is shown instead of a sum collapsed onto one device.
         if IS_ROCM and platform.system() == "Windows":
-            _win_used, _win_total = _rocm_windows_perf_counter_vram_gb()
-            if _win_used is not None and _win_total is not None:
-                _win_util = _rocm_windows_perf_counter_gpu_util_pct()
+            _win_ids = _get_parent_visible_gpu_spec().get("numeric_ids")
+            if not _win_ids:
+                _win_ids = list(range(_torch_get_physical_gpu_count() or 0))
+            _win_devices = _rocm_windows_per_device_vram(_win_ids)
+            if _win_devices:
+                # A single visible GPU can own the aggregate 3D-engine utilization;
+                # across several GPUs the sum isn't per-device, so leave it unset.
+                _win_util = (
+                    _rocm_windows_perf_counter_gpu_util_pct()
+                    if len(_win_devices) == 1
+                    else None
+                )
                 return _gpu_utilization_payload(
                     device,
                     [
-                        {
-                            "available": True,
-                            "backend": _backend_label(device),
-                            "index": 0,
-                            "visible_ordinal": 0,
-                            "gpu_utilization_pct": _win_util,
-                            "temperature_c": None,
-                            "vram_used_gb": _win_used,
-                            "vram_total_gb": _win_total,
-                            "vram_utilization_pct": round((_win_used / _win_total) * 100, 1)
-                            if _win_total > 0
-                            else None,
-                            "power_draw_w": None,
-                            "power_limit_w": None,
-                            "power_utilization_pct": None,
-                        }
+                        _rocm_windows_device_payload_entry(device, _wd, _win_util)
+                        for _wd in _win_devices
                     ],
                 )
 
@@ -901,7 +1043,7 @@ def get_gpu_utilization() -> Dict[str, Any]:
                         "vram_used_gb": _used,
                         "vram_total_gb": _total,
                         "vram_utilization_pct": round((_used / _total) * 100, 1)
-                        if _total > 0
+                        if _total > 0 and _used is not None
                         else None,
                         "power_draw_w": None,
                         "power_limit_w": None,
@@ -995,9 +1137,11 @@ def _apply_unified_memory_correction(
     endpoints stay in sync on AMD iGPUs with unified memory.
     """
     torch_total_gb = torch_info["total_gb"]
+    torch_used_gb = torch_info.get("used_gb")
     smi_total_gb = device_metrics.get("vram_total_gb") or 0.0
-    if torch_total_gb > smi_total_gb:
-        torch_used_gb = torch_info["used_gb"]
+    # Skip when used is unknown (Windows-ROCm guard) so a None can't overwrite a
+    # good amd-smi figure.
+    if torch_used_gb is not None and torch_total_gb > smi_total_gb:
         device_metrics["vram_total_gb"] = torch_total_gb
         device_metrics["vram_used_gb"] = torch_used_gb
         device_metrics["vram_utilization_pct"] = (
@@ -1067,6 +1211,49 @@ def get_visible_gpu_utilization() -> Dict[str, Any]:
                 _reconcile_rocm_unified_memory(result, numeric_ids)
             return result
 
+        # Windows AMD/ROCm (issue #7072): the System tab's VRAM source. Without
+        # this branch the torch fallback below reports used==0 (free==total), so
+        # read per-adapter Dedicated Usage instead; total from torch properties.
+        if IS_ROCM and platform.system() == "Windows":
+            win_numeric_ids = parent_visible_spec.get("numeric_ids")
+            if win_numeric_ids:
+                win_ids = win_numeric_ids
+                win_index_kind = "physical"
+            else:
+                win_ids = list(range(_torch_get_physical_gpu_count() or 0))
+                win_index_kind = "relative"
+            win_devices = _rocm_windows_per_device_vram(win_ids)
+            if win_devices:
+                devices = []
+                for wd in win_devices:
+                    total = wd["total_gb"]
+                    used = wd["used_gb"]
+                    devices.append(
+                        {
+                            "index": wd["index"],
+                            "index_kind": win_index_kind,
+                            "visible_ordinal": wd["visible_ordinal"],
+                            "name": wd.get("name"),
+                            "gpu_utilization_pct": None,
+                            "temperature_c": None,
+                            "vram_used_gb": used,
+                            "vram_total_gb": total,
+                            "vram_utilization_pct": round((used / total) * 100, 1)
+                            if total and total > 0 and used is not None
+                            else None,
+                            "power_draw_w": None,
+                            "power_limit_w": None,
+                            "power_utilization_pct": None,
+                        }
+                    )
+                return {
+                    "available": True,
+                    "backend": _backend_label(device),
+                    "parent_visible_gpu_ids": win_numeric_ids or [],
+                    "devices": devices,
+                    "index_kind": win_index_kind,
+                }
+
     # Torch-based fallback for CUDA (nvidia-smi unavailable, AMD ROCm) and XPU (Intel)
     if device in (DeviceType.CUDA, DeviceType.XPU):
         parent_ids = get_parent_visible_gpu_ids()
@@ -1094,7 +1281,7 @@ def get_visible_gpu_utilization() -> Dict[str, Any]:
                         "vram_used_gb": used,
                         "vram_total_gb": total,
                         "vram_utilization_pct": round((used / total) * 100, 1)
-                        if total > 0
+                        if total > 0 and used is not None
                         else None,
                         "power_draw_w": None,
                         "power_limit_w": None,
