@@ -143,8 +143,8 @@ _BLOCKED_COMMANDS = (
     else _BLOCKED_COMMANDS_COMMON
 )
 
-# Blocked commands that reach the network / another machine; hitting one means
-# the model wants files the sandbox cannot reach, so we steer it to ask for an upload.
+# Blocked commands that reach the network / another machine; hitting one steers
+# the model to fetch via code or ask for an accessible path.
 _NETWORK_BLOCKED_COMMANDS = frozenset(
     {"curl", "wget", "nc", "ncat", "netcat", "socat", "ssh", "scp", "sftp", "rsync"}
 )
@@ -2949,16 +2949,12 @@ WEB_SEARCH_TOOL = {
     },
 }
 
-# Appended to the python/terminal descriptions: stop models writing to a
-# nonexistent /mnt/data or cd/grep-ing a guessed local path for a repo the
-# user only mentioned but never uploaded.
-# Split so the Bypass Permissions variant can drop the network-restriction
-# sentence: under bypass, _python_exec/_bash_exec skip the safety analysis and
-# the curl/wget blocklist (network policy is enforced only by that AST host check
-# and the bash blocklist -- there is no network namespace), so egress is not
-# limited to the allowlist and curl/wget work. Keeping the sentence there would
-# falsely tell a full-permissions session those downloads are unavailable and can
-# block a user-supplied remote resource.
+# Appended to python/terminal descriptions: stop models writing to /mnt/data or
+# guessing a local path for a repo the user mentioned but never uploaded.
+# Split so the Bypass Permissions variant can drop the network sentence: under
+# bypass, _python_exec/_bash_exec skip the safety analysis and curl/wget blocklist
+# (there is no network namespace), so egress works and claiming those downloads
+# are unavailable would falsely block a user-supplied remote resource.
 _SANDBOX_PATHS_NOTE_INTRO = (
     " The working directory is an isolated scratch space that may already hold "
     "files from earlier work in this conversation or project, plus anything you "
@@ -2984,13 +2980,13 @@ _SANDBOX_PATHS_NOTE_TAIL = (
     "you need are not here, ask the user to provide them or an exact path "
     "instead of guessing one."
 )
-# Default (sandboxed) note: steers the python tool at public sources and keeps
-# the curl/wget restriction (without overstating the host check as a hard wall).
+# Default (sandboxed) note: steers python at public sources, keeps the curl/wget
+# restriction without overstating the host check as a hard wall.
 _SANDBOX_PATHS_NOTE = (
     _SANDBOX_PATHS_NOTE_INTRO + _SANDBOX_PATHS_NOTE_NETWORK + _SANDBOX_PATHS_NOTE_TAIL
 )
-# Bypass Permissions variant: same guidance without the network-restriction
-# sentence that bypass removes (stays neutral rather than claiming egress works).
+# Bypass variant: same guidance minus the network sentence (stays neutral rather
+# than claiming egress works).
 _SANDBOX_PATHS_NOTE_BYPASS = _SANDBOX_PATHS_NOTE_INTRO + _SANDBOX_PATHS_NOTE_TAIL
 
 PYTHON_TOOL = {
@@ -3096,8 +3092,8 @@ ALL_TOOLS = [
 
 
 def _with_sandbox_note(tool: dict, note: str) -> dict:
-    """Shallow copy of a python/terminal tool spec with its sandbox-paths note
-    swapped for ``note`` (the default note is stripped first)."""
+    """Copy of a python/terminal tool spec with its sandbox-paths note swapped for
+    ``note`` (the default note is stripped first)."""
     fn = dict(tool["function"])
     base = fn["description"]
     if base.endswith(_SANDBOX_PATHS_NOTE):
@@ -3106,8 +3102,7 @@ def _with_sandbox_note(tool: dict, note: str) -> dict:
     return {**tool, "function": fn}
 
 
-# Bypass Permissions variants: descriptions omit the allowlist/curl/wget
-# restriction because that safety analysis and blocklist are skipped when the
+# Bypass variants: descriptions omit the curl/wget restriction, skipped when the
 # sandbox is disabled (disable_sandbox = bypass_permissions in the tool loops).
 PYTHON_TOOL_BYPASS = _with_sandbox_note(PYTHON_TOOL, _SANDBOX_PATHS_NOTE_BYPASS)
 TERMINAL_TOOL_BYPASS = _with_sandbox_note(TERMINAL_TOOL, _SANDBOX_PATHS_NOTE_BYPASS)
@@ -3118,10 +3113,8 @@ _BYPASS_TOOL_OVERRIDES = {
 
 
 def apply_bypass_tool_notes(tools: list[dict]) -> list[dict]:
-    """Return ``tools`` with the python/terminal specs swapped for their Bypass
-    Permissions variants (only their descriptions differ). Call this for a request
-    whose execution disables the sandbox so the note matches what the tools
-    actually enforce; a no-op for tool lists without python/terminal."""
+    """Return ``tools`` with python/terminal swapped for their Bypass variants
+    (only the description differs); no-op for lists without python/terminal."""
     swapped = False
     result: list[dict] = []
     for tool in tools:

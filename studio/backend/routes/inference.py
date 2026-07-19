@@ -2146,14 +2146,10 @@ def _permission_mode_confirm(payload) -> bool:
 def _sandbox_disabled(payload) -> bool:
     """Whether python/terminal execution actually runs unsandboxed for this request.
 
-    Both agent loops (llama_cpp.py and safetensors_agentic.py) normalize the
-    permissive switch the same way: permission_mode "full" is turned into
-    bypass_permissions=True, and an explicit bypass_permissions is turned into
-    permission_mode "full". Execution then passes disable_sandbox=bypass_permissions,
-    so "full" and bypass_permissions are equivalent and BOTH skip _check_code_safety
-    and the terminal curl/wget blocklist. The tool notes and action nudge must match
-    what executes, so they key off this effective flag rather than bypass_permissions
-    alone.
+    Both agent loops fold permission_mode "full" and bypass_permissions into the
+    same disable_sandbox flag, so both skip _check_code_safety and the curl/wget
+    blocklist. The tool notes and nudge key off this effective flag, not
+    bypass_permissions alone.
     """
     return bool(getattr(payload, "bypass_permissions", False)) or (
         getattr(payload, "permission_mode", None) == "full"
@@ -2430,9 +2426,8 @@ _TOOL_CODE_TIP = (
     "you need is not present, ask the user to provide it or give an exact path "
     "rather than running commands against a guessed one."
 )
-# Bypass Permissions variant: drops the "internet access is limited" clause,
-# which is false when the sandbox is disabled (curl/wget and arbitrary-host
-# requests work), while keeping the workdir-default framing.
+# Bypass variant: drops the "internet access is limited" clause (false when the
+# sandbox is disabled), keeping the workdir-default framing.
 _TOOL_CODE_TIP_BYPASS = (
     "Use code execution for math, calculations, data processing, or to parse "
     "and analyze information from tool results. It runs in a sandbox whose "
@@ -2523,10 +2518,8 @@ async def _select_request_tools(
     # Drop the RAG tool without a scope: nothing to search over.
     if not payload.rag_scope:
         tools = [t for t in tools if t["function"]["name"] != "search_knowledge_base"]
-    # A sandbox-disabled request (bypass_permissions, or permission_mode "full"
-    # which both loops normalize to bypass_permissions=True) runs python/terminal
-    # with disable_sandbox=True, so the descriptions must not claim the
-    # allowlist/curl-wget block that no longer applies at execution.
+    # A sandbox-disabled request runs python/terminal with disable_sandbox=True, so
+    # the descriptions must not claim the curl/wget block that no longer applies.
     if _sandbox_disabled(payload):
         tools = apply_bypass_tool_notes(tools)
     if mcp_allowed:
@@ -4306,12 +4299,10 @@ async def _load_model_impl(request: LoadRequest, fastapi_request: Request, curre
             # parse against a freshly-supplied first-class field.
             if request.llama_extra_args is None and llama_backend.extra_args:
                 source = llama_backend.extra_args_source
-                # Compare against the resolved variant, not the request
-                # field: callers commonly omit gguf_variant for local
-                # ``.gguf`` paths and HF auto-pick flows. ``config.gguf_
-                # variant`` is the variant load_model was actually
-                # invoked with (see the HF / local branches below), so
-                # both sides of the comparison key off the same string.
+                # Compare against the resolved variant, not the request field:
+                # callers commonly omit gguf_variant for local ``.gguf`` paths and
+                # HF auto-pick flows. ``config.gguf_variant`` is the variant
+                # load_model was actually invoked with, so both sides key off it.
                 resolved_variant = (config.gguf_variant or "").lower()
                 request_variant = (request.gguf_variant or "").lower()
                 stored_variant = (source[1] or "").lower() if source else ""
@@ -4333,15 +4324,12 @@ async def _load_model_impl(request: LoadRequest, fastapi_request: Request, curre
                     # inherit via "no opinion" semantics.
                     extra_llama_args = []
                 else:
-                    # Strip only the groups whose first-class field was set by
-                    # the caller, so an inherited --chat-template-file survives
-                    # an Apply that omits chat_template_override. A bundled family
-                    # template (e.g. the gemma-4 override) is an effective
-                    # first-class template setting even when the raw request
-                    # omits chat_template_override, so strip the inherited
-                    # --chat-template-file in that case too -- otherwise the stale
-                    # extra arg (appended last) shadows the bundled template while
-                    # Unsloth reports the bundled template's capabilities.
+                    # Strip only the groups whose first-class field the caller set,
+                    # so an inherited --chat-template-file survives an Apply that
+                    # omits chat_template_override. A bundled family template (e.g.
+                    # gemma-4) counts as first-class too, so strip the inherited
+                    # --chat-template-file then as well, else the stale arg (appended
+                    # last) shadows it while Unsloth reports its capabilities.
                     fields_set = getattr(request, "model_fields_set", set())
                     stripped = strip_shadowing_flags(
                         llama_backend.extra_args,
@@ -12599,9 +12587,8 @@ async def anthropic_messages(
             requested_studio_tools,
             payload.enabled_tools,
         )
-        # A sandbox-disabled request (bypass_permissions or permission_mode "full")
-        # runs unsandboxed, so drop the allowlist/curl-wget restriction from the
-        # python/terminal descriptions here too.
+        # A sandbox-disabled request runs unsandboxed, so drop the curl/wget
+        # restriction from the python/terminal descriptions here too.
         if _sandbox_disabled(payload):
             openai_tools = apply_bypass_tool_notes(openai_tools)
 

@@ -1,17 +1,12 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Accuracy guards for the sandbox-paths note appended to the python/terminal
-tool descriptions (#7242).
+"""Accuracy guards for the sandbox-paths note on the python/terminal tools (#7242).
 
-The note must not misdirect the model with claims that are false for the real
-sandbox: (1) the sandbox is not network-isolated -- the python tool should fetch
-from public hosts (github.com / huggingface.co / pypi.org), so it must not claim
-it "cannot reach ... remote hosts" at all, nor overstate the host check as a hard
-wall that makes private/arbitrary hosts impossible; (2) a project sandbox is a
-shared per-project directory, so a new thread can inherit files from prior
-threads -- the note must not claim the workdir "starts empty" or "persists only
-for this conversation".
+The note must not misdirect the model: (1) the sandbox is not network-isolated --
+the python tool fetches from public hosts, so it must not claim it "cannot reach
+remote hosts" nor overstate the host check as a hard wall; (2) a project sandbox
+is shared across threads, so it must not claim the workdir "starts empty".
 """
 
 from __future__ import annotations
@@ -37,14 +32,13 @@ from core.inference.tools import (
 
 def test_note_does_not_claim_full_network_isolation():
     lowered = _SANDBOX_PATHS_NOTE.lower()
-    # The old absolute claim is false for the python tool (it does reach egress).
+    # False for the python tool, which does reach egress.
     assert "cannot reach other machines or remote hosts" not in lowered
-    # It must not overstate the host check as an enforced hard boundary:
-    # _sandbox_preexec leaves networking on and the AST check only inspects
-    # literal hosts, so a dynamically built request to a private host still runs.
+    # Don't overstate the host check as a hard wall: networking stays on and the
+    # AST check only inspects literal hosts, so a dynamic private-host request runs.
     assert "only from a fixed allowlist" not in lowered
     assert "arbitrary addresses" not in lowered
-    # It should still steer to public sources so the model fetches valid URLs.
+    # Still steer to public sources so the model fetches valid URLs.
     assert "public sources" in lowered
     assert "github.com" in lowered and "huggingface.co" in lowered
     assert "private" in lowered
@@ -61,11 +55,8 @@ def test_note_does_not_claim_project_sandbox_starts_empty():
 
 def test_note_does_not_claim_local_files_are_inaccessible():
     lowered = _SANDBOX_PATHS_NOTE.lower()
-    # On a locally hosted Studio the child runs on the host with no filesystem
-    # isolation on this branch (Landlock is a separate change), and cat is an
-    # auto-safe terminal command, so an exact local path is readable; the note
-    # must not claim otherwise. It should frame the workdir as the default work
-    # location instead.
+    # No filesystem isolation on this branch, so an exact local path is readable;
+    # the note must frame the workdir as the default work location, not deny access.
     assert "cannot see the user's own computer" not in lowered
     assert "default location for your work" in lowered
 
@@ -76,10 +67,9 @@ def test_note_is_appended_to_both_tool_descriptions():
 
 
 def test_note_scopes_network_block_to_the_terminal_not_all_shell_commands():
-    # The terminal leaves the network namespace intact and does not block git/pip,
-    # so the note must not claim shell network is fully blocked; it names the
-    # commands that are blocked (curl / wget) and attributes the host allowlist to
-    # the python tool.
+    # The terminal keeps the network namespace and doesn't block git/pip, so the
+    # note names only the blocked commands (curl/wget) and puts the allowlist on the
+    # python tool rather than claiming shell network is fully blocked.
     lowered = _SANDBOX_PATHS_NOTE.lower()
     assert "shell network commands are blocked" not in lowered
     assert "curl" in lowered and "wget" in lowered
@@ -97,11 +87,9 @@ def test_note_distinguishes_attachments_from_sandbox_uploads():
 
 
 def test_blocked_network_command_message_gates_code_fallback_on_tool_availability():
-    # A blocked curl/wget must not tell the model the whole sandbox is offline, and
-    # must not name a specific tool (e.g. python) as the remedy: when only the
-    # terminal is enabled the python tool is absent from the schema, so an
-    # unconditional "fetch it from Python code" instruction invites an invalid tool
-    # call. The fallback is gated on a code-execution tool being enabled this turn.
+    # A blocked curl/wget must not claim the sandbox is offline, nor name a specific
+    # remedy tool (python may be absent from the schema -- an invalid call); the
+    # fallback is gated on a code-execution tool being enabled this turn.
     msg = _bash_exec("curl https://raw.githubusercontent.com/foo/bar/main/x.py").lower()
     assert "blocked command" in msg
     assert "cannot reach other machines or remote hosts" not in msg
@@ -111,10 +99,9 @@ def test_blocked_network_command_message_gates_code_fallback_on_tool_availabilit
 
 
 def test_blocked_network_command_message_scopes_claim_to_the_command():
-    # The block is by command name; the terminal keeps its network namespace and
-    # does not block git/pip, so `git clone http://<private-host>/repo` can still
-    # reach a private host. The message must not assert the destination itself is
-    # unreachable, and must attribute the block to the command by name.
+    # The block is by command name; the terminal keeps networking (git/pip work),
+    # so a private host is still reachable. The message must attribute the block to
+    # the command name, not assert the destination is unreachable.
     msg = _bash_exec("wget http://10.0.0.5/internal/repo.tar.gz").lower()
     assert "by name" in msg
     assert "not reachable" not in msg
@@ -123,18 +110,16 @@ def test_blocked_network_command_message_scopes_claim_to_the_command():
 
 
 def test_blocked_network_command_message_does_not_recommend_chat_upload():
-    # Chat attachments land in the RAG store, not the sandbox workdir, so telling
-    # the user to upload the file to chat is a dead end. The message must instead
-    # point at an accessible path or placing the file in the working directory.
+    # Chat attachments land in the RAG store, not the workdir, so "upload to chat"
+    # is a dead end; point at the working directory or an accessible path instead.
     msg = _bash_exec("curl https://raw.githubusercontent.com/foo/bar/main/x.py").lower()
     assert "upload" not in msg
     assert "working directory" in msg or "path the sandbox can read" in msg
 
 
 def test_bypass_note_drops_the_curl_wget_allowlist_restriction():
-    # Under Bypass Permissions _python_exec/_bash_exec skip the safety analysis and
-    # the curl/wget blocklist, so egress is not limited to the allowlist and those
-    # downloads work. The bypass note must not tell the model they are blocked.
+    # Under bypass, _python_exec/_bash_exec skip the safety analysis and curl/wget
+    # blocklist, so egress works; the bypass note must not call them blocked.
     lowered = _SANDBOX_PATHS_NOTE_BYPASS.lower()
     assert "curl" not in lowered and "wget" not in lowered
     assert "allowlist" not in lowered
@@ -142,8 +127,7 @@ def test_bypass_note_drops_the_curl_wget_allowlist_restriction():
     # It keeps the workdir-default framing and the "not a copy of the host" guard.
     assert "default location for your work" in lowered
     assert "do not assume files elsewhere on the host are already here" in lowered
-    # The bypass note is a strict prefix+suffix of the default note (only the
-    # network sentence is removed), so the rest of the guidance is unchanged.
+    # Bypass note is the default note minus only the network sentence.
     assert _SANDBOX_PATHS_NOTE_BYPASS != _SANDBOX_PATHS_NOTE
     assert "curl" in _SANDBOX_PATHS_NOTE.lower()
 
@@ -189,10 +173,9 @@ def test_bypass_code_execution_nudge_drops_the_limited_internet_claim():
 
 
 def test_code_execution_nudge_does_not_deny_local_file_access():
-    # On this no-Landlock branch the child runs on the host with only cwd set, so an
-    # exact local path the user supplies is readable. The code-execution nudge must
-    # frame the workdir as the default work location, not assert the user's own
-    # computer is inaccessible, and it must still allow an exact path.
+    # No filesystem isolation here, so an exact local path is readable; the nudge
+    # must frame the workdir as the default work location and still allow an exact
+    # path, not deny access to the user's computer.
     from routes.inference import _TOOL_CODE_TIP
 
     lowered = _TOOL_CODE_TIP.lower()
@@ -202,11 +185,9 @@ def test_code_execution_nudge_does_not_deny_local_file_access():
 
 
 def test_sandbox_disabled_treats_permission_mode_full_as_unsandboxed():
-    # Both agent loops fold permission_mode "full" into bypass_permissions=True and
-    # pass disable_sandbox=bypass_permissions at execution, so "full" runs python /
-    # terminal unsandboxed (skips _check_code_safety and the curl/wget blocklist).
-    # The tool notes and action nudge key off the effective flag so they always
-    # match what executes, even if the model-layer fold is ever refactored away.
+    # Both agent loops fold permission_mode "full" into disable_sandbox, so "full"
+    # runs python/terminal unsandboxed. _sandbox_disabled keys off the effective
+    # flag so the notes match what executes even if that fold is refactored away.
     from types import SimpleNamespace
 
     from routes.inference import _sandbox_disabled
@@ -215,8 +196,7 @@ def test_sandbox_disabled_treats_permission_mode_full_as_unsandboxed():
     assert (
         _sandbox_disabled(SimpleNamespace(bypass_permissions = True, permission_mode = "ask")) is True
     )
-    # "full" even without bypass set on the object -> still unsandboxed (decoupled
-    # from the model-layer fold, so the notes never overclaim a live restriction).
+    # "full" without bypass set -> still unsandboxed (decoupled from the fold).
     assert (
         _sandbox_disabled(SimpleNamespace(bypass_permissions = False, permission_mode = "full")) is True
     )
