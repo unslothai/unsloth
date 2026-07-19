@@ -1166,11 +1166,10 @@ def _wsl_shim_env(command: list, env: dict, unset_env: tuple) -> tuple[dict, tup
     wsl_env_bridge = _wsl_bridge_names(env, unset_env) if _wsl_windows_executable(command) else ()
     if not wsl_env_bridge:
         return env, wsl_env_bridge
-    # Bridge PWD so the Windows shim discovers its project root from the live working
-    # directory rather than a stale inherited Linux PWD. Only add PWD/p to WSLENV here;
-    # do NOT freeze env["PWD"], so a --no-launch recipe translates the shell's live PWD
-    # when it is eventually run, not the directory it was generated in. _launch applies
-    # the concrete cwd override for a direct launch.
+    # Bridge PWD so the Windows shim finds its project root from the live cwd, not a stale
+    # inherited Linux PWD. Add only PWD/p to WSLENV; do NOT freeze env["PWD"], so a
+    # --no-launch recipe translates the shell's live PWD when run, not when generated.
+    # _launch applies the concrete cwd override for a direct launch.
     return env, (*wsl_env_bridge, "PWD/p")
 
 
