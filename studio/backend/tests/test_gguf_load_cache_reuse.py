@@ -728,9 +728,11 @@ class TestLoadHubDownloadExclusion:
         source = (Path(__file__).resolve().parent.parent / "routes" / "inference.py").read_text()
         gguf_branch = source[source.index("if config.is_gguf:") :]
 
+        # Pass-through inheritance runs before the GGUF branch, so a carried
+        # --no-mmproj shapes the hub guard's companion requirement.
+        assert source.index("_resolve_inherited_extra_args(") < source.index("if config.is_gguf:")
         assert (
             gguf_branch.index("enter_context(gguf_load_in_flight")
-            < gguf_branch.index("if request.llama_extra_args is None")
             < gguf_branch.index("_hub_download_blocks_gguf_load")
             < gguf_branch.index("unsloth_backend.unload_model")
         )
