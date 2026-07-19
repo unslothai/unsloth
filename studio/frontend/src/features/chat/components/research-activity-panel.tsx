@@ -902,7 +902,10 @@ export function ResearchActivityPanel({
           </div>
         ) : null}
       </header>
-      <PlanReview key={`${runId}-${run.planRevision}`} runId={runId} />
+      {/* Key on runId only: keying on planRevision remounted PlanReview mid-approve
+          (updateResearchPlan bumps the revision), resetting local `pending` and
+          re-enabling "Start research" during the in-flight approve. */}
+      <PlanReview key={runId} runId={runId} />
       <div
         ref={viewportRef}
         role="log"
