@@ -1722,9 +1722,36 @@ def resolve_st_cached_repo_id_case(repo_id: str) -> str:
     return repo_id
 
 
-def _iter_st_cache_snapshots(repo_id: str):
-    """Snapshot dirs for *repo_id* in the cache the ST loader will search."""
-    yield from _iter_cache_snapshots_in(repo_id, _st_cache_roots())
+def _st_cache_repo_dir(repo_id: str) -> Optional[Path]:
+    """The ONE cache repo dir the ST loader will open for *repo_id*, or None.
+
+    Uses the same selection rule as :func:`resolve_st_cached_repo_id_case` --
+    exact case first, then a deterministic pick among case variants -- because
+    that is the spelling the settings route persists and therefore the directory
+    the loader opens. Scoping to a single directory matters when duplicate case
+    variants exist: judging the repo by whichever variant happens to hold the
+    newest snapshot could reject a complete model in the directory that will
+    actually be loaded (or accept one from a directory that will not be).
+    """
+    prefix = "models--"
+    expected = f"{prefix}{repo_id.replace('/', '--')}"
+    target = expected.lower()
+    variants: list[Path] = []
+    for cache_dir in _st_cache_roots():
+        try:
+            if not cache_dir.is_dir():
+                continue
+            exact = cache_dir / expected
+            if exact.is_dir():
+                return exact
+            for entry in cache_dir.iterdir():
+                if entry.is_dir() and entry.name.lower() == target:
+                    variants.append(entry)
+        except OSError:
+            continue
+    if variants:
+        return sorted(variants, key = lambda path: path.name)[0]
+    return None
 
 
 def _iter_snapshots_of(repo_dirs: list[Path]):
@@ -1759,7 +1786,7 @@ def _iter_hf_cache_snapshots(repo_id: str):
     download with ``hf_hub_download`` and no ``cache_dir``, so that is the cache
     their load actually uses; adding SENTENCE_TRANSFORMERS_HOME here would let
     detection pick a file the GGUF loader cannot find. The Sentence-Transformers
-    probe is :func:`_iter_st_cache_snapshots`.
+    probe is :func:`_st_cache_repo_dir`.
 
     Empty if the root does not exist, the repo isn't cached, or it has no
     snapshots. Repo name match is case-insensitive to handle casing drift between
@@ -2120,58 +2147,39 @@ def _snapshot_is_loadable_st_model(snap: Path) -> bool:
 def _embedding_marker_in_hf_cache(repo_id: str) -> Optional[bool]:
     """Sentence-transformers detection from the local cache, no network call.
 
-    Probes the cache the ST loader will actually search (see
-    :func:`_st_cache_roots`), so a hit here means the load can find it too.
-    True/False when the ACTIVE cached revision is / is not a LOADABLE
-    sentence-transformers snapshot -- marker plus config plus weights, not the
-    bare ``modules.json`` the security preflight may have fetched on its own --
-    and None when the repo is not in that cache (or the cache is unreadable). The revision ``refs/main`` resolves to is authoritative when
-    recorded: the cache keeps snapshots of older revisions, and a repo that
-    later stopped (or started) being a sentence-transformers model must be
-    judged by its current revision, not any historical one. Snapshots are only
-    scanned newest-first when no ref exists. Never raises -- a cache mutating
-    underneath (concurrent model deletion) reads as not-cached so callers keep
-    their normal fallback."""
+    Models exactly what an offline ``local_files_only=True`` load resolves, so a
+    True here means that load can succeed:
+
+    * one repo dir -- the one :func:`_st_cache_repo_dir` selects, i.e. the casing
+      the settings route persists and the loader opens;
+    * its ``refs/main``, because with ``local_files_only`` huggingface_hub
+      resolves the default revision THROUGH that ref. A snapshot directory alone
+      is not discoverable, so a missing, empty or unreadable ref is a cache MISS
+      rather than a reason to go scanning historical snapshots -- accepting one
+      would pass validation and then fail at first indexing;
+    * that revision's snapshot, which must be materialized and actually loadable
+      (marker plus config plus weights, not the bare ``modules.json`` the
+      security preflight fetches on its own).
+
+    True/False when the active revision is / is not a loadable
+    sentence-transformers snapshot, None when nothing usable is cached. Never
+    raises -- a cache mutating underneath (concurrent model deletion) reads as
+    not-cached so callers keep their normal fallback.
+    """
     try:
-        snapshots = list(_iter_st_cache_snapshots(repo_id))
-        if not snapshots:
+        repo_dir = _st_cache_repo_dir(repo_id)
+        if repo_dir is None:
             return None
-        # Prefer the snapshot refs/main points at (the active revision).
-        snapshots_dir = snapshots[0].parent
         try:
-            commit = (snapshots_dir.parent / "refs" / "main").read_text(encoding = "utf-8").strip()
-        except FileNotFoundError:
-            # No ref recorded at all: fall back to the newest-first scan.
-            commit = None
+            commit = (repo_dir / "refs" / "main").read_text(encoding = "utf-8").strip()
         except OSError:
-            # A ref exists but is unreadable (transient I/O error, restrictive
-            # permissions): the contract is that an unreadable cache reads as
-            # not-cached, so report a miss rather than scanning stale history --
-            # only a genuinely missing ref may enable the fallback scan.
-            return None
-        else:
-            if not commit:
-                # The ref file exists but is empty / whitespace (a partial write
-                # or an in-progress truncate-and-rewrite). The active revision is
-                # unknown, so this is a cache miss -- NOT a fall-through to stale
-                # history, which is the class of bug this helper avoids.
-                return None
-        if commit is not None:
-            # A ref is recorded, so it is authoritative. If its snapshot is not
-            # materialized (partial download / pruning) treat the repo as not
-            # cached (None) rather than scanning stale history -- the exact
-            # stale-cache class this helper avoids.
-            preferred = snapshots_dir / commit
-            if not preferred.is_dir():
-                return None
-            return _snapshot_is_loadable_st_model(preferred)
-        for snap in snapshots:
-            try:
-                if _snapshot_is_loadable_st_model(snap):
-                    return True
-            except OSError:
-                continue
-        return False
+            return None  # absent or unreadable: the loader cannot resolve it either
+        if not commit:
+            return None  # empty / whitespace: a partial write, revision unknown
+        snapshot = repo_dir / "snapshots" / commit
+        if not snapshot.is_dir():
+            return None  # ref recorded but not materialized (partial / pruned)
+        return _snapshot_is_loadable_st_model(snapshot)
     except Exception:
         return None
 

@@ -57,16 +57,21 @@ def _clean_state(monkeypatch):
 
 def _repo(
     tmp_path,
+    monkeypatch,
     *snapshots,
     main_ref = None,
+    repo_id = "org/model",
+    root = None,
 ):
-    """Fake HF cache repo dir: snapshots/<name>[/modules.json] (+ refs/main).
+    """Build a real cache repo dir and point the ST cache root at it.
 
-    ``snapshots``: (name, sentence_transformer) tuples, oldest last (the
-    iterator under test yields newest first, so pass them in that order).
-    Returns the snapshot dirs in the given order.
+    ``snapshots``: (commit, sentence_transformer) tuples. A snapshot is written
+    fully loadable (config + weights) so only the marker varies. ``main_ref``
+    writes refs/main. Returns the snapshot dirs in the given order.
     """
-    repo = tmp_path / "models--org--model"
+    cache_root = root if root is not None else tmp_path / "cache"
+    cache_root.mkdir(parents = True, exist_ok = True)
+    repo = cache_root / f"models--{repo_id.replace('/', '--')}"
     dirs = []
     for name, is_st in snapshots:
         d = repo / "snapshots" / name
@@ -80,7 +85,12 @@ def _repo(
         refs = repo / "refs"
         refs.mkdir(parents = True, exist_ok = True)
         (refs / "main").write_text(main_ref)
+    monkeypatch.setattr(mc, "_st_cache_roots", lambda: [cache_root])
     return dirs
+
+
+def _no_cache(monkeypatch):
+    monkeypatch.setattr(mc, "_st_cache_roots", lambda: [])
 
 
 def _fake_hf_model_info(monkeypatch, fn):
@@ -96,77 +106,78 @@ def _no_network(*a, **k):
 # ── _embedding_marker_in_hf_cache ──
 
 
-def test_marker_true_when_modules_json_present(tmp_path, monkeypatch):
-    snaps = _repo(tmp_path, ("aaa", True))
-    monkeypatch.setattr(mc, "_iter_st_cache_snapshots", lambda repo: iter(snaps))
-    assert mc._embedding_marker_in_hf_cache("org/emb") is True
+def test_marker_true_for_a_loadable_st_revision(tmp_path, monkeypatch):
+    _repo(tmp_path, monkeypatch, ("aaa", True), main_ref = "aaa")
+    assert mc._embedding_marker_in_hf_cache("org/model") is True
 
 
-def test_marker_false_when_cached_without_modules_json(tmp_path, monkeypatch):
-    snaps = _repo(tmp_path, ("aaa", False))
-    monkeypatch.setattr(mc, "_iter_st_cache_snapshots", lambda repo: iter(snaps))
-    assert mc._embedding_marker_in_hf_cache("org/llm") is False
+def test_marker_false_when_active_revision_is_not_st(tmp_path, monkeypatch):
+    _repo(tmp_path, monkeypatch, ("aaa", False), main_ref = "aaa")
+    assert mc._embedding_marker_in_hf_cache("org/model") is False
 
 
 def test_marker_none_when_not_cached(monkeypatch):
-    monkeypatch.setattr(mc, "_iter_st_cache_snapshots", lambda repo: iter(()))
-    assert mc._embedding_marker_in_hf_cache("org/llm") is None
+    _no_cache(monkeypatch)
+    assert mc._embedding_marker_in_hf_cache("org/model") is None
 
 
-def test_marker_prefers_refs_main_revision(tmp_path, monkeypatch):
-    # The repo USED to be a sentence-transformers model (old snapshot has
-    # modules.json) but the revision refs/main points at no longer is. The
-    # active revision must win: an any-snapshot scan would wrongly say True.
-    snaps = _repo(tmp_path, ("new", False), ("old", True), main_ref = "new")
-    monkeypatch.setattr(mc, "_iter_st_cache_snapshots", lambda repo: iter(snaps))
-    assert mc._embedding_marker_in_hf_cache("org/was-embedder") is False
+def test_marker_judges_the_revision_refs_main_points_at(tmp_path, monkeypatch):
+    # The repo USED to be a sentence-transformers model (the old snapshot has
+    # modules.json) but the revision refs/main points at no longer is. The active
+    # revision must win; scanning any snapshot would wrongly say True.
+    _repo(tmp_path, monkeypatch, ("new", False), ("old", True), main_ref = "new")
+    assert mc._embedding_marker_in_hf_cache("org/model") is False
 
 
-def test_marker_refs_main_st_revision_is_true(tmp_path, monkeypatch):
-    snaps = _repo(tmp_path, ("new", True), ("old", False), main_ref = "new")
-    monkeypatch.setattr(mc, "_iter_st_cache_snapshots", lambda repo: iter(snaps))
-    assert mc._embedding_marker_in_hf_cache("org/is-embedder") is True
+def test_marker_true_when_refs_main_revision_is_st(tmp_path, monkeypatch):
+    _repo(tmp_path, monkeypatch, ("new", True), ("old", False), main_ref = "new")
+    assert mc._embedding_marker_in_hf_cache("org/model") is True
 
 
-def test_marker_missing_ref_falls_back_to_snapshot_scan(tmp_path, monkeypatch):
-    # No refs/main recorded: keep the newest-first any-snapshot behavior.
-    snaps = _repo(tmp_path, ("new", False), ("old", True))
-    monkeypatch.setattr(mc, "_iter_st_cache_snapshots", lambda repo: iter(snaps))
-    assert mc._embedding_marker_in_hf_cache("org/no-ref") is True
+def test_marker_missing_ref_is_a_cache_miss(tmp_path, monkeypatch):
+    # With local_files_only=True huggingface_hub resolves the default revision
+    # THROUGH refs/main, so a snapshot dir alone is not discoverable. Accepting
+    # one here would pass validation and then fail at first indexing.
+    _repo(tmp_path, monkeypatch, ("new", False), ("old", True))  # no refs/main
+    assert mc._embedding_marker_in_hf_cache("org/model") is None
 
 
 def test_marker_ref_points_at_absent_snapshot_is_cache_miss(tmp_path, monkeypatch):
     # refs/main names a commit whose snapshot dir is absent (partial download /
-    # pruning). The recorded ref is authoritative, so this is a cache miss
-    # (None) -- NOT a fall-through to a stale historical snapshot that has
-    # modules.json.
-    snaps = _repo(tmp_path, ("old", True), main_ref = "missing_commit")
-    monkeypatch.setattr(mc, "_iter_st_cache_snapshots", lambda repo: iter(snaps))
-    assert mc._embedding_marker_in_hf_cache("org/partial") is None
+    # pruning): a miss, never a fall-through to a stale historical snapshot.
+    _repo(tmp_path, monkeypatch, ("old", True), main_ref = "missing_commit")
+    assert mc._embedding_marker_in_hf_cache("org/model") is None
 
 
 def test_marker_unreadable_ref_is_cache_miss(tmp_path, monkeypatch):
-    # refs/main exists but cannot be read (transient I/O error / restrictive
-    # permissions). Only a genuinely MISSING ref may enable the historical scan;
-    # an unreadable ref is a cache miss (None), never a fall-through to a stale
-    # snapshot that happens to carry modules.json.
-    snaps = _repo(tmp_path, ("old", True))
-    # Make refs/main a directory so read_text() raises IsADirectoryError -- an
-    # OSError that is NOT FileNotFoundError, i.e. "exists but unreadable".
-    refs_main = snaps[0].parent.parent / "refs" / "main"
+    # refs/main exists but cannot be read (transient I/O / restrictive
+    # permissions): the loader cannot resolve it either.
+    dirs = _repo(tmp_path, monkeypatch, ("old", True))
+    refs_main = dirs[0].parent.parent / "refs" / "main"
     refs_main.parent.mkdir(parents = True, exist_ok = True)
-    refs_main.mkdir()
-    monkeypatch.setattr(mc, "_iter_st_cache_snapshots", lambda repo: iter(snaps))
-    assert mc._embedding_marker_in_hf_cache("org/unreadable-ref") is None
+    refs_main.mkdir()  # a directory -> read_text raises IsADirectoryError
+    assert mc._embedding_marker_in_hf_cache("org/model") is None
 
 
 def test_marker_empty_ref_is_cache_miss(tmp_path, monkeypatch):
-    # refs/main exists but is empty / whitespace (a partial write or in-progress
-    # truncate-and-rewrite): the active revision is unknown, so this is a cache
-    # miss (None), NOT a fall-through to a stale snapshot that carries modules.json.
-    snaps = _repo(tmp_path, ("old", True), main_ref = "   \n")
-    monkeypatch.setattr(mc, "_iter_st_cache_snapshots", lambda repo: iter(snaps))
-    assert mc._embedding_marker_in_hf_cache("org/empty-ref") is None
+    # refs/main exists but is empty / whitespace (a partial write): the active
+    # revision is unknown.
+    _repo(tmp_path, monkeypatch, ("old", True), main_ref = "   \n")
+    assert mc._embedding_marker_in_hf_cache("org/model") is None
+
+
+def test_marker_scopes_to_the_repo_dir_the_loader_opens(tmp_path, monkeypatch):
+    # Two cache dirs differing only by case. The loader opens the one the
+    # settings route persists (exact case first, as resolve_st_cached_repo_id_case
+    # picks), so a complete model there must validate even when the OTHER variant
+    # holds a newer, non-ST snapshot -- judging across both would reject it.
+    if not _case_sensitive_fs(tmp_path):
+        pytest.skip("duplicate case variants need a case-sensitive filesystem")
+    root = tmp_path / "cache"
+    _repo(tmp_path, monkeypatch, ("aaa", True), main_ref = "aaa", repo_id = "baai/bge-m3", root = root)
+    # A newer variant that is NOT a sentence-transformers model.
+    _repo(tmp_path, monkeypatch, ("zzz", False), main_ref = "zzz", repo_id = "BAAI/bge-m3", root = root)
+    assert mc._embedding_marker_in_hf_cache("baai/bge-m3") is True
 
 
 def _fake_hf_cache(monkeypatch, root):
@@ -188,6 +199,9 @@ def _st_snapshot(
     if loadable:
         (snap / "config.json").write_text("{}")
         (snap / "model.safetensors").write_bytes(b"\0")
+    refs = root / repo_dir / "refs"
+    refs.mkdir(parents = True, exist_ok = True)
+    (refs / "main").write_text(commit)
     return snap
 
 
@@ -200,7 +214,7 @@ def test_st_probe_uses_sentence_transformers_home(tmp_path, monkeypatch):
     _st_snapshot(st_root, "models--org--model")
     _fake_hf_cache(monkeypatch, hf_root)
     monkeypatch.setenv("SENTENCE_TRANSFORMERS_HOME", str(st_root))
-    assert [p.name for p in mc._iter_st_cache_snapshots("org/model")] == ["aaa"]
+    assert mc._st_cache_repo_dir("org/model") == st_root / "models--org--model"
     assert mc._embedding_marker_in_hf_cache("org/model") is True
 
 
@@ -309,7 +323,7 @@ def test_marker_never_raises_when_cache_mutates(monkeypatch):
     def _exploding_iter(repo):
         raise FileNotFoundError("snapshot removed underneath")
 
-    monkeypatch.setattr(mc, "_iter_st_cache_snapshots", _exploding_iter)
+    monkeypatch.setattr(mc, "_st_cache_repo_dir", _exploding_iter)
     assert mc._embedding_marker_in_hf_cache("org/racing") is None
 
 
@@ -319,7 +333,7 @@ def test_is_embedding_model_survives_cache_race_online(monkeypatch):
     def _exploding_iter(repo):
         raise FileNotFoundError("snapshot removed underneath")
 
-    monkeypatch.setattr(mc, "_iter_st_cache_snapshots", _exploding_iter)
+    monkeypatch.setattr(mc, "_st_cache_repo_dir", _exploding_iter)
     _fake_hf_model_info(
         monkeypatch,
         lambda name, token = None: types.SimpleNamespace(
@@ -336,8 +350,7 @@ def test_offline_cached_st_detected_via_marker_no_network(tmp_path, monkeypatch)
     # Offline: a downloaded sentence-transformers repo is classified from its
     # modules.json marker with no model_info() network call that would hang on
     # DNS retries (#6817).
-    snaps = _repo(tmp_path, ("aaa", True))
-    monkeypatch.setattr(mc, "_iter_st_cache_snapshots", lambda repo: iter(snaps))
+    _repo(tmp_path, monkeypatch, ("aaa", True), main_ref = "aaa", repo_id = "unsloth/bge-small-en-v1.5")
     monkeypatch.setenv("HF_HUB_OFFLINE", "1")
     _fake_hf_model_info(monkeypatch, _no_network)
     assert mc.is_embedding_model("unsloth/bge-small-en-v1.5") is True
@@ -348,8 +361,7 @@ def test_online_defers_to_hub_over_stale_marker(tmp_path, monkeypatch):
     # cached modules.json (the repo WAS an embedder), a Hub lookup that no longer
     # reports embedding signals wins -- the stale local marker must not
     # short-circuit model_info().
-    snaps = _repo(tmp_path, ("aaa", True))
-    monkeypatch.setattr(mc, "_iter_st_cache_snapshots", lambda repo: iter(snaps))
+    _repo(tmp_path, monkeypatch, ("aaa", True), main_ref = "aaa")
     calls = []
 
     def _info(model_name, token = None):
@@ -366,8 +378,7 @@ def test_online_permanent_hub_error_ignores_stale_marker(tmp_path, monkeypatch):
     # even with a cached modules.json, validation must NOT pass on the stale
     # marker -- return False so the settings route surfaces its 409, and the
     # persisted model can't fail later when the loader refreshes from the Hub.
-    snaps = _repo(tmp_path, ("aaa", True))
-    monkeypatch.setattr(mc, "_iter_st_cache_snapshots", lambda repo: iter(snaps))
+    _repo(tmp_path, monkeypatch, ("aaa", True), main_ref = "aaa")
 
     class RepositoryNotFoundError(Exception):
         pass
@@ -383,8 +394,7 @@ def test_online_hub_failure_falls_back_to_marker_uncached(tmp_path, monkeypatch)
     # A transient model_info() failure falls back to the local marker WITHOUT
     # caching: the degraded result must not become sticky, so a later successful
     # Hub lookup can still override it.
-    snaps = _repo(tmp_path, ("aaa", True))
-    monkeypatch.setattr(mc, "_iter_st_cache_snapshots", lambda repo: iter(snaps))
+    _repo(tmp_path, monkeypatch, ("aaa", True), main_ref = "aaa", repo_id = "org/emb")
     _fake_hf_model_info(monkeypatch, _no_network)  # raises -> Hub "unreachable"
     assert mc.is_embedding_model("org/emb") is True  # marker fallback
     assert ("org/emb", None) not in mc._embedding_detection_cache  # not poisoned
@@ -395,7 +405,7 @@ def test_online_negative_does_not_block_later_offline_download(tmp_path, monkeyp
     # The repo is then downloaded WITH modules.json and the session goes offline;
     # the offline path re-probes the marker (never consulting the online memo),
     # so the freshly downloaded embedder is detected instead of the stale False.
-    monkeypatch.setattr(mc, "_iter_st_cache_snapshots", lambda repo: iter(()))
+    _no_cache(monkeypatch)
 
     def _info(model_name, token = None):
         return types.SimpleNamespace(tags = ["text-generation"], pipeline_tag = "text-generation")
@@ -405,8 +415,7 @@ def test_online_negative_does_not_block_later_offline_download(tmp_path, monkeyp
     assert mc._embedding_detection_cache[("org/late-embedder", None)] is False
 
     # Now the model is downloaded (marker appears) and the session goes offline.
-    snaps = _repo(tmp_path, ("aaa", True))
-    monkeypatch.setattr(mc, "_iter_st_cache_snapshots", lambda repo: iter(snaps))
+    _repo(tmp_path, monkeypatch, ("aaa", True), main_ref = "aaa", repo_id = "org/late-embedder")
     monkeypatch.setenv("HF_HUB_OFFLINE", "1")
     assert mc.is_embedding_model("org/late-embedder") is True  # marker re-probed
 
@@ -416,7 +425,7 @@ def test_offline_retains_online_confirmed_positive(monkeypatch):
     # online and cached True. _hf_offline_if_dns_dead() then flips the process to
     # offline mid-load; the offline path must RETAIN that positive, not re-probe
     # the absent marker and downgrade a model already verified this session.
-    monkeypatch.setattr(mc, "_iter_st_cache_snapshots", lambda repo: iter(()))
+    _no_cache(monkeypatch)
 
     def _info(model_name, token = None):
         return types.SimpleNamespace(tags = ["feature-extraction"], pipeline_tag = None)
@@ -430,15 +439,14 @@ def test_offline_retains_online_confirmed_positive(monkeypatch):
 
 
 def test_offline_cached_non_st_returns_false_without_network(tmp_path, monkeypatch):
-    snaps = _repo(tmp_path, ("aaa", False))
-    monkeypatch.setattr(mc, "_iter_st_cache_snapshots", lambda repo: iter(snaps))
+    _repo(tmp_path, monkeypatch, ("aaa", False), main_ref = "aaa")
     monkeypatch.setenv("HF_HUB_OFFLINE", "1")
     _fake_hf_model_info(monkeypatch, _no_network)
     assert mc.is_embedding_model("org/gemma-4-e4b") is False
 
 
 def test_offline_not_cached_returns_false_without_network(monkeypatch):
-    monkeypatch.setattr(mc, "_iter_st_cache_snapshots", lambda repo: iter(()))
+    _no_cache(monkeypatch)
     monkeypatch.setenv("HF_HUB_OFFLINE", "1")
     _fake_hf_model_info(monkeypatch, _no_network)
     assert mc.is_embedding_model("org/never-downloaded") is False
@@ -447,7 +455,7 @@ def test_offline_not_cached_returns_false_without_network(monkeypatch):
 def test_online_uncached_still_uses_network(monkeypatch):
     # Not offline, not cached: the network model_info path must still run so an
     # embedding model that lacks modules.json (feature-extraction tag) is caught.
-    monkeypatch.setattr(mc, "_iter_st_cache_snapshots", lambda repo: iter(()))
+    _no_cache(monkeypatch)
     calls = []
 
     def _info(model_name, token = None):
@@ -463,7 +471,7 @@ def test_offline_negative_is_not_cached_then_online_detects(monkeypatch):
     # A tag-only embedder is not identifiable from modules.json. Offline returns
     # False WITHOUT caching, so once the env var clears the online model_info
     # lookup still runs and detects it -- the negative must not be sticky.
-    monkeypatch.setattr(mc, "_iter_st_cache_snapshots", lambda repo: iter(()))
+    _no_cache(monkeypatch)
     calls = []
 
     def _info(model_name, token = None):
