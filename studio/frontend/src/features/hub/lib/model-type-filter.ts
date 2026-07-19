@@ -27,7 +27,7 @@ export const MODEL_TYPE_FILTER_OPTIONS: ReadonlyArray<{
   { value: "vision", label: "Vision" },
   { value: "audio", label: "Audio" },
   { value: "embedding", label: "Embeddings" },
-  { value: "diffusion", label: "Image to text" },
+  { value: "diffusion", label: "Image generation" },
 ];
 
 function rowName(row: CachedInventoryRow | LocalInventoryRow): string {

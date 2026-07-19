@@ -906,6 +906,7 @@ export function ModelsPage() {
         resourceType,
         deferredFormatFilter,
         deferredCapabilityFilter,
+        inventoryTypeFilter,
         effectiveSort,
         effectiveDirection,
         activeChannelId,
@@ -916,6 +917,7 @@ export function ModelsPage() {
       resourceType,
       deferredFormatFilter,
       deferredCapabilityFilter,
+      inventoryTypeFilter,
       effectiveSort,
       effectiveDirection,
       activeChannelId,
@@ -934,6 +936,7 @@ export function ModelsPage() {
       }
     } else {
       setDownloadedFormat("all");
+      setInventoryTypeFilter("all");
     }
     setCapabilityFilter("all");
   }, [isDiscoverTab, urlSection, navigate]);
@@ -1257,31 +1260,38 @@ export function ModelsPage() {
   );
 
   const catalogState = useMemo<ModelsCatalogState>(
-    () => ({
-      tab,
-      discoverRows: listRows,
-      cachedRows: filteredCachedRows,
-      localRows: filteredLocalRows,
-      selectedId,
-      isLoading,
-      downloadedReady,
-      inventoryError,
-      inventoryWarning,
-      query,
-      activeCheckpoint,
-      activeGgufVariant,
-      searchError,
-      online,
-      isDataset: isDatasetMode,
-      inventoryTokens,
-      scannedCount,
-      loadingIntentCount: discoverFetchIntent,
-      hasMore,
-      manualFetchAvailable: discoverManualFetchAvailable,
-      hasActiveFilters:
-        !isFeedMode &&
-        (deferredFormatFilter !== "all" || deferredCapabilityFilter !== "all"),
-    }),
+    () => {
+      const typeFilterActive =
+        !isDatasetMode && inventoryTypeFilter !== "all";
+      return {
+        tab,
+        discoverRows: listRows,
+        cachedRows: filteredCachedRows,
+        localRows: filteredLocalRows,
+        selectedId,
+        isLoading,
+        downloadedReady,
+        inventoryError,
+        inventoryWarning,
+        query,
+        activeCheckpoint,
+        activeGgufVariant,
+        searchError,
+        online,
+        isDataset: isDatasetMode,
+        inventoryTokens,
+        scannedCount,
+        loadingIntentCount: discoverFetchIntent,
+        hasMore,
+        manualFetchAvailable: discoverManualFetchAvailable,
+        hasActiveFilters:
+          !isFeedMode &&
+          (deferredFormatFilter !== "all" ||
+            deferredCapabilityFilter !== "all" ||
+            (tab === "downloaded" && typeFilterActive)),
+        typeFilterActive,
+      };
+    },
     [
       tab,
       isFeedMode,
@@ -1306,6 +1316,7 @@ export function ModelsPage() {
       discoverManualFetchAvailable,
       deferredFormatFilter,
       deferredCapabilityFilter,
+      inventoryTypeFilter,
     ],
   );
 
@@ -1442,10 +1453,12 @@ export function ModelsPage() {
     // split pane instead of dropping to their own row.
     const controls = (
       <div className="flex min-w-0 items-center gap-1.5">
-        <InventoryTypeFilterControl
-          value={inventoryTypeFilter}
-          onChange={setInventoryTypeFilter}
-        />
+        {!isDatasetMode && (
+          <InventoryTypeFilterControl
+            value={inventoryTypeFilter}
+            onChange={setInventoryTypeFilter}
+          />
+        )}
         <InventorySortControl
           value={inventorySort}
           onChange={setInventorySort}
@@ -1455,20 +1468,21 @@ export function ModelsPage() {
     return (
       <HubListHeader
         title="On device"
-        count={visibleCachedCount + visibleLocalCount}
+        count={filteredCachedRows.length + filteredLocalRows.length}
         view={allModelsView}
         onViewChange={setAllModelsView}
         actions={controls}
       />
     );
   }, [
-    visibleCachedCount,
-    visibleLocalCount,
+    filteredCachedRows,
+    filteredLocalRows,
     allModelsView,
     setAllModelsView,
     inventorySort,
     setInventorySort,
     inventoryTypeFilter,
+    isDatasetMode,
   ]);
 
   const detailOpen = urlModel !== null;

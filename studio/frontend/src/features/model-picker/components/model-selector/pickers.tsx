@@ -34,6 +34,8 @@ import {
   HubOptionMenu,
   TrainIcon,
   TransportConflictDialog,
+  invalidateGgufVariantsCache,
+  listGgufVariants as listGgufVariantsCached,
   useHubInfiniteScroll,
 } from "@/features/hub";
 import {
@@ -100,6 +102,7 @@ import {
   useModelLoadTimes,
 } from "./model-usage";
 import {
+  makePinRank,
   pinKey,
   pinnedQuantEntries,
   usePinnedModelsStore,
@@ -2074,21 +2077,22 @@ export function HubModelPicker({
       cached.has(entry.repoId),
     );
   }, [pinnedIds, sortedCachedGguf, formatFilter]);
-  const pinnedQuantValidationKey = useMemo(() => {
-    const cacheByRepo = new Map(
-      sortedCachedGguf.map((repo) => [repo.repo_id, repo]),
-    );
-    return pinnedQuantCandidates
-      .map((entry) => {
-        const cached = cacheByRepo.get(entry.repoId);
-        return `${pinKey(entry.repoId, entry.quant)}@${cached?.size_bytes ?? 0}:${cached?.last_modified ?? 0}`;
-      })
-      .join("\u0000");
-  }, [pinnedQuantCandidates, sortedCachedGguf]);
   const [pinnedQuantValidation, setPinnedQuantValidation] = useState<{
-    key: string;
+    validated: boolean;
     downloaded: ReadonlySet<string>;
-  }>({ key: "", downloaded: new Set() });
+  }>({ validated: false, downloaded: new Set() });
+  const prunePinnedQuantValidation = useCallback(
+    (repoId: string, quant: string) => {
+      const key = pinKey(repoId, quant);
+      setPinnedQuantValidation((prev) => {
+        if (!prev.downloaded.has(key)) return prev;
+        const downloaded = new Set(prev.downloaded);
+        downloaded.delete(key);
+        return { ...prev, downloaded };
+      });
+    },
+    [],
+  );
 
   useEffect(() => {
     let cancelled = false;
@@ -2100,7 +2104,11 @@ export function HubModelPicker({
     void Promise.all(
       repoIds.map(async (repoId) => {
         try {
-          const response = await listGgufVariants(repoId, hfToken || undefined);
+          const response = await listGgufVariantsCached(
+            repoId,
+            hfToken || undefined,
+            { preferLocalCache: true },
+          );
           return normalizeGgufVariantsResponse(response)
             .variants.filter((variant) => variant.downloaded === true)
             .map((variant) => pinKey(repoId, variant.quant));
@@ -2113,7 +2121,7 @@ export function HubModelPicker({
     ).then((groups) => {
       if (!cancelled) {
         setPinnedQuantValidation({
-          key: pinnedQuantValidationKey,
+          validated: true,
           downloaded: new Set(groups.flat()),
         });
       }
@@ -2122,13 +2130,13 @@ export function HubModelPicker({
     return () => {
       cancelled = true;
     };
-  }, [hfToken, pinnedQuantCandidates, pinnedQuantValidationKey]);
+  }, [hfToken, pinnedQuantCandidates]);
   const downloadedPinnedQuantKeys = useMemo<ReadonlySet<string>>(
     () =>
-      pinnedQuantValidation.key === pinnedQuantValidationKey
+      pinnedQuantValidation.validated
         ? pinnedQuantValidation.downloaded
         : new Set(),
-    [pinnedQuantValidation, pinnedQuantValidationKey],
+    [pinnedQuantValidation],
   );
 
   // Verified downloaded quants, in pin order and filtered by repo id or quant.
@@ -2147,6 +2155,24 @@ export function HubModelPicker({
       visibleCachedModelRows.filter((c) => pinnedSet.has(pinKey(c.repo_id))),
     [visibleCachedModelRows, pinnedSet],
   );
+
+  const pinnedRows = useMemo(() => {
+    const rank = makePinRank(pinnedIds);
+    const rows = [
+      ...pinnedQuants.map((entry) => ({
+        key: pinKey(entry.repoId, entry.quant),
+        entry,
+        model: null,
+      })),
+      ...pinnedCachedModelRows.map((model) => ({
+        key: pinKey(model.repo_id),
+        entry: null,
+        model,
+      })),
+    ];
+    rows.sort((a, b) => rank(a.key) - rank(b.key));
+    return rows;
+  }, [pinnedIds, pinnedQuants, pinnedCachedModelRows]);
 
   // Split downloaded models so non-Unsloth repos get their own "Other models"
   // section above Fine-tuned.
@@ -2276,16 +2302,13 @@ export function HubModelPicker({
       section === "downloaded" &&
       cachedReady &&
       !pinnedCollapsed &&
-      (pinnedQuants.length > 0 || pinnedCachedModelRows.length > 0)
+      pinnedRows.length > 0
     ) {
       keys.push(
-        ...pinnedQuants.map((entry) =>
-          makeModelOptionKey("pinned-quant", pinKey(entry.repoId, entry.quant)),
-        ),
-      );
-      keys.push(
-        ...pinnedCachedModelRows.map((model) =>
-          makeModelOptionKey("downloaded-model", model.repo_id),
+        ...pinnedRows.map((row) =>
+          row.entry
+            ? makeModelOptionKey("pinned-quant", row.key)
+            : makeModelOptionKey("downloaded-model", row.model.repo_id),
         ),
       );
     }
@@ -2381,8 +2404,7 @@ export function HubModelPicker({
     chatOnly,
     sortedCustomFolderModels,
     customFoldersCollapsed,
-    pinnedQuants,
-    pinnedCachedModelRows,
+    pinnedRows,
     pinnedCollapsed,
     downloadedCollapsed,
     fineTunedRows,
@@ -2555,6 +2577,7 @@ export function HubModelPicker({
   const showCustom = section === "downloaded";
   const showRecommendedSection = !showHfSection && section === "recommended";
   const downloadedEmpty =
+    pinnedRows.length === 0 &&
     visibleCachedGguf.length === 0 &&
     visibleCachedModelRows.length === 0 &&
     sortedLmStudio.length === 0 &&
@@ -2809,6 +2832,7 @@ export function HubModelPicker({
               disabled: deleteDisabled,
               onConfirm: async () => {
                 await deleteCachedModel(entry.repoId, entry.quant);
+                invalidateGgufVariantsCache(entry.repoId);
                 refreshCachedLists();
                 // The file is gone, so drop its pin too.
                 togglePinned(entry.repoId, entry.quant);
@@ -2867,6 +2891,8 @@ export function HubModelPicker({
               updateDisabled: loadedModelId === c.repo_id,
               onDelete: async (quant) => {
                 await deleteCachedModel(c.repo_id, quant);
+                invalidateGgufVariantsCache(c.repo_id);
+                prunePinnedQuantValidation(c.repo_id, quant);
                 refreshCachedLists();
               },
             }}
@@ -3120,9 +3146,7 @@ export function HubModelPicker({
                 {/* Pinned quants and models sit above the Unsloth heading so
               favorites are always first. Filtered by the query like the
               sections below. */}
-                {showDownloaded &&
-                (pinnedQuants.length > 0 ||
-                  pinnedCachedModelRows.length > 0) ? (
+                {showDownloaded && pinnedRows.length > 0 ? (
                   <>
                     <ListLabel
                       icon={
@@ -3133,9 +3157,12 @@ export function HubModelPicker({
                     >
                       Pinned
                     </ListLabel>
-                    {!pinnedCollapsed && pinnedQuants.map(renderPinnedQuantRow)}
                     {!pinnedCollapsed &&
-                      pinnedCachedModelRows.map(renderDownloadedModelRow)}
+                      pinnedRows.map((row) =>
+                        row.entry
+                          ? renderPinnedQuantRow(row.entry)
+                          : renderDownloadedModelRow(row.model),
+                      )}
                   </>
                 ) : null}
 
@@ -3145,10 +3172,7 @@ export function HubModelPicker({
                   unslothCachedModelRows.length > 0) ? (
                   <>
                     <ListLabel
-                      divider={
-                        pinnedQuants.length > 0 ||
-                        pinnedCachedModelRows.length > 0
-                      }
+                      divider={pinnedRows.length > 0}
                       collapsed={downloadedCollapsed}
                       onToggle={() => setDownloadedCollapsed((v) => !v)}
                       action={
@@ -3924,6 +3948,8 @@ export function HubModelPicker({
                                 variantActions={{
                                   onDelete: async (quant) => {
                                     await deleteCachedModel(id, quant);
+                                    invalidateGgufVariantsCache(id);
+                                    prunePinnedQuantValidation(id, quant);
                                     refreshCachedLists();
                                   },
                                 }}
@@ -4022,6 +4048,8 @@ export function HubModelPicker({
                               variantActions={{
                                 onDelete: async (quant) => {
                                   await deleteCachedModel(id, quant);
+                                  invalidateGgufVariantsCache(id);
+                                  prunePinnedQuantValidation(id, quant);
                                   refreshCachedLists();
                                 },
                               }}
@@ -4116,6 +4144,8 @@ export function HubModelPicker({
                                 variantActions={{
                                   onDelete: async (quant) => {
                                     await deleteCachedModel(id, quant);
+                                    invalidateGgufVariantsCache(id);
+                                    prunePinnedQuantValidation(id, quant);
                                     refreshCachedLists();
                                   },
                                 }}

@@ -23,6 +23,7 @@ export {
   deleteCachedDataset,
   deleteCachedModel,
   formatLocalUpdated,
+  invalidateGgufVariantsCache,
   listGgufVariants,
   listScanFolders,
   removeScanFolder,

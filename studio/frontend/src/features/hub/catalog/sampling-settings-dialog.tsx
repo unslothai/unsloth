@@ -22,7 +22,6 @@ import {
 } from "@/components/ui/tooltip";
 import {
   ParamSlider,
-  isExternalModelId,
   useChatModelRuntime,
   useChatRuntimeStore,
 } from "@/features/chat";
@@ -31,13 +30,14 @@ import {
   SidebarModelConfig,
   applyPerModelConfigToRuntime,
   currentRuntimePerModelConfig,
+  useActiveModelConfig,
 } from "@/features/model-picker";
 import { RetrievalSettingsSection } from "@/features/rag";
 import { toast } from "@/lib/toast";
 import { cn } from "@/lib/utils";
 import { Settings02Icon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
-import { type ReactNode, useCallback, useMemo, useState } from "react";
+import { type ReactNode, useCallback, useState } from "react";
 import { HubOptionMenu } from "./hub-option-menu";
 
 function SettingsSection({
@@ -101,49 +101,17 @@ export function SamplingSettingsButton({ className }: { className?: string }) {
   // Loaded model's per-model config (context length etc.), mirroring the chat
   // page's Run settings Model section.
   const { selectModel } = useChatModelRuntime();
-  const checkpoint = params.checkpoint;
   const modelLoading = useChatRuntimeStore((s) => s.modelLoading);
   const activeGgufVariant = useChatRuntimeStore((s) => s.activeGgufVariant);
   const ggufContextLength = useChatRuntimeStore((s) => s.ggufContextLength);
   const ggufNativeContextLength = useChatRuntimeStore(
     (s) => s.ggufNativeContextLength,
   );
-  const runtimeCustomContextLength = useChatRuntimeStore(
-    (s) => s.customContextLength,
-  );
-  const runtimeKvCacheDtype = useChatRuntimeStore((s) => s.kvCacheDtype);
-  const runtimeSpeculativeType = useChatRuntimeStore((s) => s.speculativeType);
-  const runtimeSpecDraftNMax = useChatRuntimeStore((s) => s.specDraftNMax);
-  const runtimeTensorParallel = useChatRuntimeStore((s) => s.tensorParallel);
-  const runtimeChatTemplateOverride = useChatRuntimeStore(
-    (s) => s.chatTemplateOverride,
-  );
-  const activeModelIsGguf =
-    activeGgufVariant != null ||
-    ggufContextLength != null ||
-    (checkpoint?.toLowerCase().endsWith(".gguf") ?? false);
-  const activeModelConfig = useMemo<PerModelConfig | null>(() => {
-    if (!checkpoint || isExternalModelId(checkpoint)) return null;
-    return {
-      customContextLength: runtimeCustomContextLength ?? null,
-      maxSeqLength: activeModelIsGguf ? null : params.maxSeqLength,
-      kvCacheDtype: runtimeKvCacheDtype ?? null,
-      speculativeType: runtimeSpeculativeType ?? "auto",
-      specDraftNMax: runtimeSpecDraftNMax ?? null,
-      tensorParallel: runtimeTensorParallel ?? false,
-      chatTemplateOverride: runtimeChatTemplateOverride ?? null,
-    };
-  }, [
+  const {
     checkpoint,
-    activeModelIsGguf,
-    params.maxSeqLength,
-    runtimeCustomContextLength,
-    runtimeKvCacheDtype,
-    runtimeSpeculativeType,
-    runtimeSpecDraftNMax,
-    runtimeTensorParallel,
-    runtimeChatTemplateOverride,
-  ]);
+    isGguf: activeModelIsGguf,
+    config: activeModelConfig,
+  } = useActiveModelConfig();
   const handleReloadActiveModel = useCallback(
     (config: PerModelConfig) => {
       const runtime = useChatRuntimeStore.getState();
@@ -261,7 +229,7 @@ export function SamplingSettingsButton({ className }: { className?: string }) {
             </DialogDescription>
           </DialogHeader>
           <div className="-mr-2 flex min-h-0 flex-col overflow-y-auto overflow-x-hidden pr-2 [scrollbar-width:thin]">
-            {activeModelConfig && !modelLoading && (
+            {checkpoint && activeModelConfig && !modelLoading && (
               <SettingsSection label="Model">
                 <SidebarModelConfig
                   modelId={checkpoint}

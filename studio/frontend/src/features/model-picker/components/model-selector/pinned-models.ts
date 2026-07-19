@@ -21,6 +21,13 @@ export interface PinnedQuantEntry {
   quant: string;
 }
 
+export function makePinRank(
+  pinned: readonly string[],
+): (key: string) => number {
+  const pinIndex = new Map(pinned.map((key, index) => [key, index]));
+  return (key) => pinIndex.get(key) ?? Number.MAX_SAFE_INTEGER;
+}
+
 /** The pinned GGUF quants, in pin order. Plain repo pins are excluded. */
 export function pinnedQuantEntries(pinned: string[]): PinnedQuantEntry[] {
   const out: PinnedQuantEntry[] = [];
@@ -72,3 +79,11 @@ export const usePinnedModelsStore = create<PinnedModelsState>((set) => ({
       return { pinned: next };
     }),
 }));
+
+if (typeof window !== "undefined") {
+  window.addEventListener("storage", (event) => {
+    if (event.key === KEY || event.key === null) {
+      usePinnedModelsStore.setState({ pinned: readPinned() });
+    }
+  });
+}

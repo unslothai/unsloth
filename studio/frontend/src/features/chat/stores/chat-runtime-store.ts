@@ -220,6 +220,11 @@ export type PendingImageEditReference = {
   openaiResponseId?: string;
   openaiReasoningItem?: unknown;
 };
+export type LoadingModelPick = {
+  id: string;
+  ggufVariant: string | null;
+  nativePathToken: string | null;
+};
 export type ReasoningEffort =
   | "none"
   | "minimal"
@@ -948,6 +953,7 @@ type ChatRuntimeStore = {
     cacheWriteTokens?: number;
   } | null;
   modelLoading: boolean;
+  loadingModelPick: LoadingModelPick | null;
   activeNativePathToken: string | null;
   // Wall-clock expiry (ms) of the active native path token. The desktop host
   // prunes file leases after a TTL, so a reload checks this to prompt
@@ -955,6 +961,8 @@ type ChatRuntimeStore = {
   activeNativePathExpiresAtMs: number | null;
   hydratePersistedSettings: () => Promise<void>;
   setModelLoading: (loading: boolean) => void;
+  setLoadingModelPick: (pick: LoadingModelPick | null) => void;
+  clearLoadingModelPick: (expected: LoadingModelPick) => void;
   setModelRequiresTrustRemoteCode: (required: boolean) => void;
   setParams: (params: InferenceParams) => void;
   setCustomPresets: (presets: Preset[]) => void;
@@ -1368,6 +1376,7 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
   pendingImageEditReference: null,
   contextUsage: null,
   modelLoading: false,
+  loadingModelPick: null,
   activeNativePathToken: null,
   activeNativePathExpiresAtMs: null,
   hydratePersistedSettings: async () => {
@@ -1408,6 +1417,20 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
     return settingsHydrationPromise;
   },
   setModelLoading: (loading) => set({ modelLoading: loading }),
+  setLoadingModelPick: (pick) => set({ loadingModelPick: pick }),
+  clearLoadingModelPick: (expected) =>
+    set((state) => {
+      const current = state.loadingModelPick;
+      if (
+        !current ||
+        current.id !== expected.id ||
+        current.ggufVariant !== expected.ggufVariant ||
+        current.nativePathToken !== expected.nativePathToken
+      ) {
+        return state;
+      }
+      return { loadingModelPick: null };
+    }),
   setModelRequiresTrustRemoteCode: (modelRequiresTrustRemoteCode) =>
     set({ modelRequiresTrustRemoteCode }),
   setParams: (params) =>

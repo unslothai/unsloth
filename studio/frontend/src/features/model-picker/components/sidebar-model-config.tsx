@@ -2,6 +2,7 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { useMemo } from "react";
+import { gpuFieldsSignature } from "../model-config/apply-per-model-config";
 import type { PerModelConfig } from "../model-config/per-model-config";
 import { ModelConfigPage } from "./model-config-page";
 import type { ModelPickTarget } from "./model-selector/types";
@@ -46,6 +47,7 @@ function configSignature(config: PerModelConfig): string {
     config.chatTemplateOverride == null
       ? ""
       : `${config.chatTemplateOverride.length}:${hashString(config.chatTemplateOverride)}`,
+    gpuFieldsSignature(config),
   ].join("|");
 }
 

@@ -13,6 +13,7 @@ import {
   type PerModelConfig,
   resolveInitialConfig,
   SidebarModelConfig,
+  useActiveModelConfig,
 } from "@/features/model-picker";
 import { ProjectComposer, Thread } from "@/components/assistant-ui/thread";
 import { CopyableErrorChip } from "@/components/ui/copyable-error-chip";
@@ -1454,58 +1455,13 @@ export function ChatPage({
     () => isExternalModelId(inferenceParams.checkpoint),
     [inferenceParams.checkpoint],
   );
-  const runtimeCustomContextLength = useChatRuntimeStore(
-    (s) => s.customContextLength,
-  );
-  const runtimeKvCacheDtype = useChatRuntimeStore((s) => s.kvCacheDtype);
-  const runtimeSpeculativeType = useChatRuntimeStore((s) => s.speculativeType);
-  const runtimeSpecDraftNMax = useChatRuntimeStore((s) => s.specDraftNMax);
-  const runtimeTensorParallel = useChatRuntimeStore((s) => s.tensorParallel);
-  const runtimeChatTemplateOverride = useChatRuntimeStore(
-    (s) => s.chatTemplateOverride,
-  );
-  const activeModelConfig = useMemo<PerModelConfig | null>(() => {
-    if (!inferenceParams.checkpoint || isExternalModel) return null;
-    const activeModelIsGguf =
-      activeGgufVariant != null ||
-      ggufContextLength != null ||
-      inferenceParams.checkpoint.toLowerCase().endsWith(".gguf");
-    return {
-      customContextLength: runtimeCustomContextLength ?? null,
-      maxSeqLength: activeModelIsGguf ? null : inferenceParams.maxSeqLength,
-      kvCacheDtype: runtimeKvCacheDtype ?? null,
-      speculativeType: runtimeSpeculativeType ?? "auto",
-      specDraftNMax: runtimeSpecDraftNMax ?? null,
-      tensorParallel: runtimeTensorParallel ?? false,
-      chatTemplateOverride: runtimeChatTemplateOverride ?? null,
-    };
-  }, [
-    inferenceParams.checkpoint,
-    inferenceParams.maxSeqLength,
-    isExternalModel,
-    activeGgufVariant,
-    ggufContextLength,
-    runtimeCustomContextLength,
-    runtimeKvCacheDtype,
-    runtimeSpeculativeType,
-    runtimeSpecDraftNMax,
-    runtimeTensorParallel,
-    runtimeChatTemplateOverride,
-  ]);
-  const activeModelIsGguf = useMemo(() => {
-    const checkpoint = inferenceParams.checkpoint;
-    if (!checkpoint || isExternalModel) return false;
-    return (
-      activeGgufVariant != null ||
-      ggufContextLength != null ||
-      checkpoint.toLowerCase().endsWith(".gguf")
-    );
-  }, [
-    inferenceParams.checkpoint,
-    isExternalModel,
-    activeGgufVariant,
-    ggufContextLength,
-  ]);
+  const {
+    checkpoint: runtimeCheckpoint,
+    isGguf: runtimeModelIsGguf,
+    config: activeModelConfig,
+  } = useActiveModelConfig();
+  const activeModelIsGguf =
+    runtimeCheckpoint != null && !isExternalModel && runtimeModelIsGguf;
   const activeModelIsLora = useMemo(() => {
     const checkpoint = inferenceParams.checkpoint;
     if (!checkpoint || isExternalModel) return false;

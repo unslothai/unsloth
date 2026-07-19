@@ -2,7 +2,11 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { Spinner } from "@/components/ui/spinner";
-import { pinKey, usePinnedModelsStore } from "@/features/model-picker";
+import {
+  makePinRank,
+  pinKey,
+  usePinnedModelsStore,
+} from "@/features/model-picker";
 import {
   CubeIcon,
   DownloadCircle02Icon,
@@ -11,7 +15,7 @@ import {
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import type { RefObject } from "react";
-import { useMemo } from "react";
+import { useLayoutEffect, useMemo, useState } from "react";
 import {
   inventoryRowMatches,
   scoreInventoryRow,
@@ -247,6 +251,8 @@ export function DownloadedList({
   downloadedReady,
   inventoryError,
   query,
+  typeFilterActive = false,
+  onClearFilters,
   scrollElement,
   columns = 1,
   activeCheckpoint,
@@ -265,6 +271,8 @@ export function DownloadedList({
   downloadedReady: boolean;
   inventoryError: boolean;
   query: string;
+  typeFilterActive?: boolean;
+  onClearFilters?: () => void;
   scrollElement: HTMLDivElement | null;
   columns?: number;
   activeCheckpoint: string | null;
@@ -288,10 +296,9 @@ export function DownloadedList({
     ];
     // Pinned rows order by pin recency (newest pin first), not the active
     // sort, so "Pin to top" puts the row exactly where the user expects.
-    const pinIndex = new Map(pinnedIds.map((key, index) => [key, index]));
+    const rank = makePinRank(pinnedIds);
     const pinRank = (item: InventoryItem) =>
-      (item.row.repoId ? pinIndex.get(pinKey(item.row.repoId)) : undefined) ??
-      Number.MAX_SAFE_INTEGER;
+      item.row.repoId ? rank(pinKey(item.row.repoId)) : Number.MAX_SAFE_INTEGER;
     if (inventoryTokens.length > 0) {
       return merged
         .map((item, index) => ({
@@ -339,6 +346,27 @@ export function DownloadedList({
   );
   const pinnedItems = inventoryItems.slice(0, pinnedCount);
   const unpinnedItems = inventoryItems.slice(pinnedCount);
+  const [virtualRowsWrapper, setVirtualRowsWrapper] =
+    useState<HTMLDivElement | null>(null);
+  const [scrollMargin, setScrollMargin] = useState(0);
+  useLayoutEffect(() => {
+    if (!virtualRowsWrapper || !scrollElement) return;
+    const measure = () => {
+      const margin = Math.max(
+        0,
+        Math.round(
+          virtualRowsWrapper.getBoundingClientRect().top -
+            scrollElement.getBoundingClientRect().top +
+            scrollElement.scrollTop,
+        ),
+      );
+      setScrollMargin((current) => (current === margin ? current : margin));
+    };
+    measure();
+    const observer = new ResizeObserver(measure);
+    observer.observe(virtualRowsWrapper.parentElement ?? scrollElement);
+    return () => observer.disconnect();
+  }, [virtualRowsWrapper, scrollElement]);
   const rowHeightPx = compact
     ? RESULT_SPLIT_ROW_HEIGHT_PX
     : RESULT_GRID_ROW_HEIGHT_PX;
@@ -377,6 +405,26 @@ export function DownloadedList({
   }
 
   if (cachedRows.length === 0 && localRows.length === 0) {
+    if (!query.trim() && typeFilterActive) {
+      return (
+        <EmptyState
+          icon={Search01Icon}
+          title="No matching models on device"
+          body="No downloaded or local model matches the selected type filter."
+          action={
+            onClearFilters && (
+              <button
+                type="button"
+                onClick={onClearFilters}
+                className="inline-flex h-8 items-center gap-1.5 rounded-full bg-transparent px-3 text-[12px] font-medium text-foreground transition-colors hover:bg-foreground/[0.04] dark:hover:bg-white/[0.05]"
+              >
+                Show all types
+              </button>
+            )
+          }
+        />
+      );
+    }
     return (
       <EmptyState
         icon={query.trim() ? Search01Icon : DownloadCircle02Icon}
@@ -432,15 +480,18 @@ export function DownloadedList({
           )}
         </>
       )}
-      <VirtualRows
-        items={unpinnedItems}
-        scrollElement={scrollElement}
-        columns={columns}
-        rowHeight={rowHeightPx}
-        cellHeight={cellHeightPx}
-        getKey={(item) => `${item.variant}-${item.row.id}`}
-        renderRow={renderInventoryRow}
-      />
+      <div ref={setVirtualRowsWrapper}>
+        <VirtualRows
+          items={unpinnedItems}
+          scrollElement={scrollElement}
+          scrollMargin={scrollMargin}
+          columns={columns}
+          rowHeight={rowHeightPx}
+          cellHeight={cellHeightPx}
+          getKey={(item) => `${item.variant}-${item.row.id}`}
+          renderRow={renderInventoryRow}
+        />
+      </div>
     </>
   );
 }

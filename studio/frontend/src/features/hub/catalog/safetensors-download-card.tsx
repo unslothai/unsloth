@@ -234,7 +234,8 @@ export function SafetensorsDownloadCard({
             <SamplingSettingsButton className="ml-0.5" />
             {/* Same 3-dots menu as GGUF, at repo level (no quant); pinning is
                 omitted in the run bar. Managed HF-cache repos only. */}
-            {isDownloaded && !/^([/\\~.]|[A-Za-z]:)/.test(repoId) && (
+            {(isDownloaded || (isPartial && !downloading)) &&
+              !/^([/\\~.]|[A-Za-z]:)/.test(repoId) && (
               <QuantOptionsMenu
                 repoId={repoId}
                 label={repoId}

@@ -39,6 +39,7 @@ import {
   resolveToolsEnabledOnLoad,
   saveSpeculativeType,
   useChatRuntimeStore,
+  type LoadingModelPick,
   type ReasoningEffort,
 } from "../stores/chat-runtime-store";
 import { clampReasoningEffortToLevels } from "../provider-capabilities";
@@ -351,6 +352,18 @@ export async function resyncInferenceStatusAfterServerModelChange(): Promise<voi
   await syncInferenceStatusToStore();
 }
 
+function pickOf(info: {
+  id: string;
+  ggufVariant?: string | null;
+  nativePathToken?: string | null;
+}): LoadingModelPick {
+  return {
+    id: info.id,
+    ggufVariant: info.ggufVariant ?? null,
+    nativePathToken: info.nativePathToken ?? null,
+  };
+}
+
 export function useChatModelRuntime() {
   const params = useChatRuntimeStore((state) => state.params);
   const models = useChatRuntimeStore((state) => state.models);
@@ -389,12 +402,16 @@ export function useChatModelRuntime() {
   }, []);
 
   const resetLoadingUi = useCallback(() => {
+    const inFlight = loadingModelRef.current;
     setLoadingModel(null);
     setLoadProgress(null);
     loadingModelRef.current = null;
     loadAbortRef.current = null;
     loadToastIdRef.current = null;
     setLoadToastDismissedState(false);
+    if (inFlight) {
+      useChatRuntimeStore.getState().clearLoadingModelPick(pickOf(inFlight));
+    }
     if (!cancelUnloadPendingRef.current) {
       useChatRuntimeStore.getState().setModelLoading(false);
     }
@@ -428,6 +445,7 @@ export function useChatModelRuntime() {
     loadAbortRef.current?.abort();
     loadAbortRef.current = null;
     loadingModelRef.current = null;
+    useChatRuntimeStore.getState().clearLoadingModelPick(pickOf(model));
     const tid = loadToastIdRef.current;
     loadToastIdRef.current = null;
     setLoadingModel(null);
@@ -489,7 +507,9 @@ export function useChatModelRuntime() {
       // supersession) and don't silently swallow the request: surface it so the
       // user knows to wait for, or cancel, the in-flight load. Centralized here so
       // every entry point is covered, not just the staged Load button.
-      const inFlightLoad = loadingModelRef.current;
+      const inFlightLoad =
+        loadingModelRef.current ??
+        useChatRuntimeStore.getState().loadingModelPick;
       if (inFlightLoad) {
         if (typeof selection !== "string" && selection.previousConfig) {
           applyPerModelConfigToRuntime(selection.previousConfig);
@@ -570,6 +590,7 @@ export function useChatModelRuntime() {
       };
       setLoadingModel(loadInfo);
       useChatRuntimeStore.getState().setModelLoading(true);
+      useChatRuntimeStore.getState().setLoadingModelPick(pickOf(loadInfo));
       setLoadProgress(
         isDownloaded || isCachedLora
           ? { percent: null, label: null, phase: "starting" }
@@ -1480,6 +1501,13 @@ export function useChatModelRuntime() {
 
   const ejectModel = useCallback(async (): Promise<boolean> => {
     if (!params.checkpoint) {
+      return false;
+    }
+    const runtime = useChatRuntimeStore.getState();
+    if (runtime.modelLoading || runtime.loadingModelPick) {
+      toast.info("A model is loading", {
+        description: "Wait for it to finish or cancel it first.",
+      });
       return false;
     }
     setModelsError(null);

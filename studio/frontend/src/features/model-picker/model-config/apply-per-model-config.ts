@@ -108,20 +108,20 @@ export function perModelConfigsEqual(
   );
 }
 
-// Compare the per-model GPU knobs with the same "absent == default" coalescing
-// the store applies: mode auto/absent, gpuLayers Auto (< 0) / absent, nCpuMoe
-// 0 / absent, and the GPU pick (null / absent = all GPUs).
+// Serialize the per-model GPU knobs with the same "absent == default"
+// coalescing the store applies: mode auto/absent, gpuLayers Auto (< 0) /
+// absent, nCpuMoe 0 / absent, and the GPU pick (null / absent = all GPUs).
+export function gpuFieldsSignature(config: PerModelConfig): string {
+  return [
+    config.gpuMemoryMode ?? "auto",
+    config.gpuLayers == null || config.gpuLayers < 0 ? -1 : config.gpuLayers,
+    config.nCpuMoe ?? 0,
+    config.selectedGpuIds == null
+      ? "all"
+      : [...config.selectedGpuIds].sort((a, b) => a - b).join(","),
+  ].join("|");
+}
+
 function gpuFieldsEqual(a: PerModelConfig, b: PerModelConfig): boolean {
-  const mode = (c: PerModelConfig) => c.gpuMemoryMode ?? "auto";
-  const layers = (c: PerModelConfig) =>
-    c.gpuLayers == null || c.gpuLayers < 0 ? -1 : c.gpuLayers;
-  const moe = (c: PerModelConfig) => c.nCpuMoe ?? 0;
-  const ids = (c: PerModelConfig) =>
-    c.selectedGpuIds == null ? "all" : [...c.selectedGpuIds].sort().join(",");
-  return (
-    mode(a) === mode(b) &&
-    layers(a) === layers(b) &&
-    moe(a) === moe(b) &&
-    ids(a) === ids(b)
-  );
+  return gpuFieldsSignature(a) === gpuFieldsSignature(b);
 }

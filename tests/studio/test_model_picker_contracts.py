@@ -87,3 +87,76 @@ def test_hidden_infra_model_needles_present():
     assert '"bge-small-en-v1.5"' in src
     assert '"ggml-org/models"' in src
     assert '"stories260k.gguf"' in src
+
+
+def test_diffusion_capability_labeled_image_generation():
+    """The diffusion capability detects image GENERATORS (FLUX, SDXL,
+    text-to-image tags); labeling it "Image to text" showed generators when
+    users asked for captioning models."""
+    for rel in (
+        "features/hub/lib/model-capabilities.ts",
+        "features/hub/lib/model-type-filter.ts",
+        "features/hub/lib/view-models.ts",
+    ):
+        src = _read(rel)
+        assert "Image to text" not in src, rel
+        assert "Image generation" in src, rel
+
+
+def test_active_model_config_round_trips_gpu_fields():
+    """The active model's config must carry the GPU Memory knobs (GGUF only) so
+    a sidebar/hub-gear reload cannot silently reset manual GPU settings, and
+    "Remember settings" cannot persist a GPU-less config over a saved one."""
+    src = _read("features/model-picker/hooks/use-active-model-config.ts")
+    for field in ("gpuMemoryMode", "gpuLayers", "nCpuMoe", "selectedGpuIds"):
+        assert field in src, field
+    assert "if (!isGguf)" in src and "return base" in src
+    for rel in (
+        "features/chat/chat-page.tsx",
+        "features/hub/catalog/sampling-settings-dialog.tsx",
+    ):
+        assert "useActiveModelConfig(" in _read(rel), rel
+    signature = _read("features/model-picker/components/sidebar-model-config.tsx")
+    assert "gpuFieldsSignature(config)" in signature
+    shared = _read("features/model-picker/model-config/apply-per-model-config.ts")
+    assert "export function gpuFieldsSignature" in shared
+
+
+def test_model_load_guard_is_cross_instance():
+    """The in-flight load guard must consult the shared store pick (not only the
+    per-hook ref) and ejectModel must refuse while any instance is loading:
+    three live useChatModelRuntime instances exist (chat page, hub page, hub
+    gear dialog)."""
+    src = _read("features/chat/hooks/use-chat-model-runtime.ts")
+    assert "useChatRuntimeStore.getState().loadingModelPick" in src
+    assert "clearLoadingModelPick" in src
+    eject_body = src.split("const ejectModel", 1)[1]
+    assert "loadingModelPick" in eject_body.split("ejectModel,", 1)[0]
+
+
+def test_partial_safetensors_download_keeps_delete_menu():
+    """A stopped partial safetensors download must keep its options menu (the
+    Delete affordance) like the GGUF card does, or partial downloads can only
+    be cleaned up by finishing or leaving them. During an ACTIVE download the
+    menu stays hidden (every item would be disabled: no Copy path while not
+    downloaded, no Delete while downloading, pin suppressed in the run bar)."""
+    src = _read("features/hub/catalog/safetensors-download-card.tsx")
+    assert "(isDownloaded || (isPartial && !downloading))" in src
+
+
+def test_pinned_validation_uses_cached_local_variant_listing():
+    """Pinned-quant validation must use the TTL-cached hub client with
+    preferLocalCache (downloaded-ness is local state) instead of one uncached
+    round-trip per pinned repo on every picker open."""
+    src = _read("features/model-picker/components/model-selector/pickers.tsx")
+    assert "listGgufVariantsCached(" in src
+    assert "preferLocalCache: true" in src
+    assert "invalidateGgufVariantsCache(" in src
+
+
+def test_downloaded_list_offsets_virtual_rows():
+    """The On Device virtualized list sits below the Pinned block in the same
+    scroll element, so it must pass its measured offset as scrollMargin or rows
+    past the overscan render blank."""
+    src = _read("features/hub/catalog/models-catalog-lists.tsx")
+    assert "scrollMargin={scrollMargin}" in src

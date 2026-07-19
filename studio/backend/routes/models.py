@@ -124,6 +124,7 @@ try:
         _pick_best_gguf,
         _extract_quant_label,
         _is_big_endian_gguf_path,
+        _is_mtp_drafter,
         is_audio_input_type,
     )
     from core.inference import get_inference_backend
@@ -156,6 +157,7 @@ except ImportError:
         _pick_best_gguf,
         _extract_quant_label,
         _is_big_endian_gguf_path,
+        _is_mtp_drafter,
         is_audio_input_type,
     )
     from core.inference import get_inference_backend
@@ -2612,12 +2614,6 @@ def _resolve_quant_gguf(repo_id: str, quant: str, is_local: bool) -> tuple[Optio
     Q8_0 weights). Never raises.
     """
     try:
-        from utils.models.model_config import (
-            _extract_quant_label,
-            _is_big_endian_gguf_path,
-            _is_mtp_drafter,
-        )
-
         if is_local:
             roots = [Path(repo_id)]
         else:
@@ -2634,25 +2630,19 @@ def _resolve_quant_gguf(repo_id: str, quant: str, is_local: bool) -> tuple[Optio
                     if snaps.is_dir():
                         roots.extend(s for s in snaps.iterdir() if s.is_dir())
 
-        want = quant.lower().replace("-", "").replace("_", "")
+        want = _normalized_quant_label(quant)
         best_total = 0
         best_first: Optional[str] = None
         for root in roots:
             matches: list[tuple[str, Path]] = []
             total = 0
             for f in _iter_gguf_paths(root):
-                if _is_mmproj_filename(f.name):
-                    continue
                 try:
                     rel = f.relative_to(root).as_posix()
                 except ValueError:
                     rel = f.name
-                if _is_mtp_drafter(rel):
-                    continue
-                q = _extract_quant_label(rel)
-                if _is_big_endian_gguf_path(rel, q):
-                    continue
-                if q.lower().replace("-", "").replace("_", "") != want:
+                q = _main_variant_gguf_label(rel)
+                if q is None or _normalized_quant_label(q) != want:
                     continue
                 try:
                     total += f.stat().st_size
@@ -3074,6 +3064,22 @@ def _is_main_gguf_filename(name: str) -> bool:
     return _is_gguf_filename(name) and not _is_mmproj_filename(name)
 
 
+def _main_variant_gguf_label(rel_path: str) -> Optional[str]:
+    name = rel_path.rsplit("/", 1)[-1]
+    if not _is_main_gguf_filename(name):
+        return None
+    if _is_mtp_drafter(rel_path):
+        return None
+    label = _extract_quant_label(rel_path)
+    if _is_big_endian_gguf_path(rel_path, label):
+        return None
+    return label
+
+
+def _normalized_quant_label(label: str) -> str:
+    return label.lower().replace("-", "").replace("_", "")
+
+
 def _repo_has_mmproj(repo_info) -> bool:
     """True if the repo ships a GGUF vision adapter (mmproj), so it can
     take image inputs. Cheap: scans already-listed file names only."""
@@ -3421,23 +3427,30 @@ def _resolve_cached_model_path(repo_id: str, variant: Optional[str]) -> Path:
         raise HTTPException(status_code = 404, detail = "Model not found in cache")
 
     if variant:
+        want = _normalized_quant_label(variant)
         matches = []
         for rev in target_repo.revisions:
+            snapshot = getattr(rev, "snapshot_path", None)
             for f in rev.files:
-                if not _is_main_gguf_filename(f.file_name):
-                    continue
-                if _extract_quant_label(f.file_name).lower() != variant.lower():
-                    continue
                 p = Path(f.file_path)
+                rel = f.file_name
+                if snapshot:
+                    try:
+                        rel = p.relative_to(snapshot).as_posix()
+                    except ValueError:
+                        pass
+                label = _main_variant_gguf_label(rel)
+                if label is None or _normalized_quant_label(label) != want:
+                    continue
                 if p.exists() or p.is_symlink():
-                    matches.append(p)
+                    matches.append((rel, p))
         if not matches:
             raise HTTPException(
                 status_code = 404,
                 detail = f"Variant {variant} not found in cache for {repo_id}",
             )
-        # Name-sorted so a sharded quant deterministically yields its first split.
-        return sorted(matches, key = lambda p: p.name.lower())[0]
+        # Path-sorted so a sharded quant deterministically yields its first split.
+        return sorted(matches, key = lambda m: m[0].lower())[0][1]
 
     # Whole repo: the newest revision's snapshot dir holds the visible files.
     revisions = sorted(
