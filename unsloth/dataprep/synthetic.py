@@ -300,9 +300,9 @@ class SyntheticDataKit:
             _wait = 1 if deadline is None else min(1, deadline - time.monotonic())
             if _wait <= 0:
                 break
-            if self.stdout_capture.wait_for_ready(timeout = _wait) or self.stderr_capture.wait_for_ready(
-                timeout = 0
-            ):
+            if self.stdout_capture.wait_for_ready(
+                timeout = _wait
+            ) or self.stderr_capture.wait_for_ready(timeout = 0):
                 ready = True
                 break
             if self.vllm_process.poll() is not None:
