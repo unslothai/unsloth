@@ -105,11 +105,19 @@ assert_eq "resolve-failure fallback wired" "yes" "$(grep -q 'TORCH_CONSTRAINT="\
 assert_eq "pin gated on SKIP_TORCH"        "yes" "$(grep -q 'if \[ "\$SKIP_TORCH" = false \]; then' "$INSTALL_SH" && echo yes)"
 # Every --default-index torch install path must go through the kept-release
 # helper (definition + default path + three ROCm-index fallbacks + two ROCm
-# repairs), so a pinned release missing from the index never aborts a rerun.
+# repairs + the flavor repair), so a pinned release missing from the index
+# never aborts a rerun.
 _helper_uses=$(grep -c '_install_torch_default_index' "$INSTALL_SH")
-assert_eq "kept-release helper used by all default-index paths" "yes" "$([ "$_helper_uses" -ge 7 ] && echo yes)"
+assert_eq "kept-release helper used by all default-index paths" "yes" "$([ "$_helper_uses" -ge 8 ] && echo yes)"
 _repair_uses=$(grep -c '_install_torch_default_index --force-reinstall' "$INSTALL_SH")
 assert_eq "ROCm repairs routed through the kept-release helper" "yes" "$([ "$_repair_uses" -ge 2 ] && echo yes)"
+# The wrong-flavor repair must use the helper too (it runs under set -e, so a
+# direct uv call with an unresolvable pin would abort the whole installer).
+assert_eq "flavor repair routed through the kept-release helper" "yes" "$(grep -q '_install_torch_default_index \\' "$INSTALL_SH" && grep -q -- '--reinstall-package torch --reinstall-package torchvision --reinstall-package torchaudio' "$INSTALL_SH" && echo yes)"
+# The kept-release install must pair the companions with the kept minor:
+# torchaudio no longer exact-pins torch, so unconstrained it resolves a newer
+# mismatched build (verified: torch==2.9.0 pulled torchaudio 2.11.0 on cu130).
+assert_eq "kept-release install pairs torchvision/torchaudio to the kept minor" "yes" "$(grep -q 'torchaudio==2.\${_itdi_minor}.\*' "$INSTALL_SH" && grep -q 'torchvision==0.\$((_itdi_minor + 15)).\*' "$INSTALL_SH" && echo yes)"
 # The Radeon direct-wheel path must also honor the pin: an exact-first kept-trio
 # attempt (exact patch, else the kept minor's newest patch, with paired
 # vision/audio) runs BEFORE the newest-trio search, and the newest-trio search
