@@ -247,13 +247,13 @@ const SingleContent = memo(function SingleContent({
     useState(false);
   const [isArtifactSurfaceVisible, setIsArtifactSurfaceVisible] =
     useState(false);
+  // Without a URL threadId the artifact must belong to the active thread.
   const showArtifactPanel = Boolean(
     artifact &&
       artifactSurface === "panel" &&
       (threadId
         ? !artifact.threadId || artifact.threadId === threadId
-        : Boolean(newThreadNonce) ||
-          Boolean(artifact.threadId && artifact.threadId === activeThreadId)),
+        : Boolean(artifact.threadId && artifact.threadId === activeThreadId)),
   );
 
   const artifactLayoutActive = showArtifactPanel || isArtifactPanelLayoutActive;
@@ -1773,10 +1773,8 @@ export function ChatPage({
 
   useEffect(() => {
     if (view.mode !== "single") return;
-    if (view.threadId || view.newThreadNonce || !selectedArtifact) return;
-    // view excludes __LOCALID_ threads (they fall through to mode:"single"
-    // with no threadId/nonce). Don't close a canvas whose thread is the
-    // active local thread.
+    if (view.threadId || !selectedArtifact) return;
+    // Close any canvas that doesn't belong to the active thread.
     if (
       selectedArtifact.threadId &&
       selectedArtifact.threadId === activeThreadId

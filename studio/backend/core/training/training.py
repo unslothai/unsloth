@@ -140,7 +140,7 @@ def should_use_mlx_training_backend(*, device: Optional[Any] = None) -> bool:
 
 
 def _build_training_worker_config(values: dict[str, Any]) -> dict[str, Any]:
-    """Build the normalized worker config shared by Studio and the CLI adapter."""
+    """Build the normalized worker config shared by Unsloth and the CLI adapter."""
     config = {
         "model_name": values["model_name"],
         "project_name": values.get("project_name"),
@@ -307,7 +307,7 @@ PLOT_HEIGHT = 3.5
 
 @dataclass
 class TrainingProgress:
-    """Shared training progress payload for Studio and backend-aware trainers."""
+    """Shared training progress payload for Unsloth and backend-aware trainers."""
 
     epoch: float = 0
     step: int = 0
@@ -328,7 +328,7 @@ class TrainingProgress:
 
 
 class _MLXTrainerAdapter:
-    """Adapts the legacy UnslothTrainer API to the shared Studio MLX worker path."""
+    """Adapts the legacy UnslothTrainer API to the shared Unsloth MLX worker path."""
 
     def __init__(self):
         self.model = None
@@ -774,6 +774,10 @@ class TrainingBackend:
         self._should_stop = False
         self._cancel_requested = False  # True only for stop(save=False)
 
+        # Throttled training-status logging to the server log (not one line/step).
+        self._last_progress_log_ts: float = 0.0
+        self._last_progress_log_step: int = -1
+
         # Training metrics (consumed by routes for SSE and /metrics)
         self.loss_history: list = []
         self.lr_history: list = []
@@ -956,6 +960,10 @@ class TrainingBackend:
             self._progress = TrainingProgress(
                 is_training = True, status_message = "Initializing training..."
             )
+            # Reset the progress-log throttle so the new run always logs its first step,
+            # even if it starts within 30s of a prior run whose last logged step matches.
+            self._last_progress_log_ts = 0.0
+            self._last_progress_log_step = -1
             self.loss_history.clear()
             self.lr_history.clear()
             self.step_history.clear()
@@ -1830,6 +1838,37 @@ class TrainingBackend:
             self._flush_metrics_to_db()
         elif db_action == "finalize":
             self._finalize_run_in_db(**db_action_kwargs)
+
+        if etype == "progress":
+            self._log_training_progress()
+
+    def _log_training_progress(self) -> None:
+        """One throttled training-status line to the server log (the per-step stream
+        still goes to the UI via SSE): first step, then at most every 30s, plus the
+        final step; resyncs on a new run. Runs on the pump thread."""
+        p = self._progress
+        step = int(p.step or 0)
+        if step <= 0:
+            return
+        total = int(p.total_steps or 0)
+        is_final = total > 0 and step >= total
+        prev = self._last_progress_log_step
+        if step == prev:
+            return
+        now = time.monotonic()
+        if prev >= 0 and step > prev and not is_final and (now - self._last_progress_log_ts) < 30.0:
+            return
+        self._last_progress_log_ts = now
+        self._last_progress_log_step = step
+        logger.info(
+            "training_progress",
+            step = step,
+            total_steps = total or None,
+            percent = int(step * 100 / total) if total > 0 else None,
+            loss = round(p.loss, 4) if p.loss is not None else None,
+            epoch = round(p.epoch, 2) if p.epoch is not None else None,
+            eta_s = int(p.eta_seconds) if p.eta_seconds else None,
+        )
 
     def _ensure_db_run_created(self) -> None:
         """Create the DB row if it doesn't exist yet. An in-progress flag lets only one

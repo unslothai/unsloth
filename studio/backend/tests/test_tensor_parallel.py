@@ -423,7 +423,7 @@ def test_runtime_recovery_fires_for_user_env_mtp(monkeypatch):
     # MTP driven by user extra_args / LLAMA_ARG_SPEC_TYPE leaves _speculative_type
     # unset, but the launch flag still gates recovery on (pass-through MTP).
     b = _recovery_backend()
-    b._speculative_type = None  # Studio stepped back; user/env owns the spec
+    b._speculative_type = None  # Unsloth stepped back; user/env owns the spec
     done = threading.Event()
     captured = {}
 

@@ -420,7 +420,7 @@ def test_ps_installers_gate_amd_smi_on_windows():
         assert (
             "UNSLOTH_SETUP_PYTHON" in text
         ), f"{ps.name} venv-internal check must seed the venv root from UNSLOTH_SETUP_PYTHON"
-        # A custom Studio home moves the venv off the default path; it must be
+        # A custom Unsloth home moves the venv off the default path; it must be
         # seeded too or its hipInfo escapes the filter and reopens the gate.
         assert (
             "UNSLOTH_STUDIO_HOME" in text
@@ -429,7 +429,7 @@ def test_ps_installers_gate_amd_smi_on_windows():
 
 @pytest.mark.parametrize("ps", [_INSTALL_PS1, _SETUP_PS1], ids = ["install.ps1", "setup.ps1"])
 def test_ps_venv_probe_expands_tilde_for_custom_studio_home(ps):
-    # The probe seeds the venv root from a custom Studio home; a ~\studio form
+    # The probe seeds the venv root from a custom Unsloth home; a ~\studio form
     # must expand to USERPROFILE like the canonical resolver, else GetFullPath
     # keeps the literal ~ (cwd-relative) and the hipInfo escapes the filter.
     text = ps.read_text(encoding = "utf-8")
@@ -439,7 +439,7 @@ def test_ps_venv_probe_expands_tilde_for_custom_studio_home(ps):
     block = text[i:j]
     assert "USERPROFILE" in block and ".Substring(1)" in block, (
         f"{ps.name}: the venv-internal probe must expand a leading ~ in the custom "
-        "Studio home before seeding the venv root (mirroring the canonical resolver)"
+        "Unsloth home before seeding the venv root (mirroring the canonical resolver)"
     )
     # The ~ expansion must be guarded on a non-empty USERPROFILE; otherwise
     # Join-Path $env:USERPROFILE throws on a service/SYSTEM account with no profile,

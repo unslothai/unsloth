@@ -4,7 +4,7 @@
 """Tests for the post-launch /props context readback.
 
 llama-server's memory-fit step or --parallel slot split can allocate less
-context than the requested -c while Studio keeps advertising the requested
+context than the requested -c while Unsloth keeps advertising the requested
 value; clients sized to it then die on exceed_context_size_error 400s.
 ``_reconcile_effective_ctx_with_server`` must adopt the server's real
 ``default_generation_settings.n_ctx`` whenever it is smaller.
@@ -223,7 +223,7 @@ _CAPS_NONE = {"supports_kv_unified": False, "supports_fit_ctx": False}
 
 def test_kv_unified_added_for_multi_slot():
     """Explicit --parallel N disables llama-server's auto-slots kv-unified
-    default, splitting -c into per-slot windows of -c/N; Studio must restore
+    default, splitting -c into per-slot windows of -c/N; Unsloth must restore
     the shared pool so one request can use the full advertised context."""
     flags = LlamaCppBackend._ctx_integrity_flags(4, False, False, 98304, 98304, _CAPS_ALL)
     assert "--kv-unified" in flags

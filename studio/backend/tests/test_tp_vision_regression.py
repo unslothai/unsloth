@@ -636,7 +636,7 @@ def _fallback_loaded_backend(layer_preserves_tensor_intent: bool) -> LlamaCppBac
 
 
 def test_tensor_off_echo_preserves_multi_gpu_fallback():
-    """The Studio UI always sends tensor_parallel and echoes the /load response's
+    """The Unsloth UI always sends tensor_parallel and echoes the /load response's
     resolved value, so after a fallback a ctx/settings reload carries tensor_parallel=
     false even though the user never changed it. That echo must NOT collapse the
     preserved multi-GPU placement -- it dedupes (Codex #6659)."""

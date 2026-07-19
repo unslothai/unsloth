@@ -79,6 +79,7 @@ import { McpComposerButton } from "@/features/chat/mcp-composer-button";
 import { getExternalReasoningCapabilities } from "@/features/chat/provider-capabilities";
 import { useRagToolDisabled } from "@/features/chat/hooks/use-rag-tool-disabled";
 import { BypassPermissionsMenuItem } from "@/features/chat/bypass-permissions-menu-item";
+import { PermissionModeComposerPill } from "@/features/chat/permission-mode-select";
 import { useChatRuntimeStore } from "@/features/chat/stores/chat-runtime-store";
 import { useExternalProvidersStore } from "@/features/chat/stores/external-providers-store";
 import { PROMPT_QUEUE_STOP_EVENT } from "@/features/chat/utils/prompt-queue-boundary";
@@ -96,9 +97,11 @@ import { ThreadDocumentsBar } from "@/features/rag/components/thread-documents-b
 import { KnowledgeBaseComposerButton } from "@/features/rag/components/knowledge-base-composer-button";
 import { DocumentPreviewMount } from "@/features/rag/components/document-preview-mount";
 import { useUserProfileStore } from "@/features/profile/stores/user-profile-store";
+import { useVoiceSettingsStore } from "@/features/settings/stores/voice-settings-store";
 import { applyQwenThinkingParams } from "@/features/chat/utils/qwen-params";
 import { isTauri } from "@/lib/api-base";
 import { copyToClipboard } from "@/lib/copy-to-clipboard";
+import { MicIcon } from "@/lib/mic-icon";
 import { toast } from "@/lib/toast";
 import { Tick02Icon } from "@/lib/tick-icon";
 import { cn } from "@/lib/utils";
@@ -131,7 +134,6 @@ import {
   Image03Icon,
   McpServerIcon,
   PencilRulerIcon,
-  ShieldBanIcon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { useNavigate } from "@tanstack/react-router";
@@ -150,6 +152,8 @@ import {
   RefreshCwIcon,
   SquareIcon,
   TerminalIcon,
+  Volume2Icon,
+  VolumeXIcon,
   XIcon,
 } from "lucide-react";
 import {
@@ -1322,7 +1326,9 @@ const ThreadWelcome: FC<{
 
   useEffect(() => {
     // Prefer the nickname; otherwise first name only. Blank falls back to none.
-    const name = nickname.trim() || (displayName.trim().split(/\s+/)[0] ?? "");
+    const raw = nickname.trim() || (displayName.trim().split(/\s+/)[0] ?? "");
+    // Cap very long names so the greeting stays on one line.
+    const name = raw.length > 20 ? `${raw.slice(0, 20)}…` : raw;
     setWelcome(buildWelcome(new Date().getHours(), name));
   }, [displayName, nickname]);
 
@@ -1428,11 +1434,13 @@ const Composer: FC<{
   const artifactsEnabled = useChatRuntimeStore((s) => s.artifactsEnabled);
   const mcpEnabledForChat = useChatRuntimeStore((s) => s.mcpEnabledForChat);
   const ragEnabled = useChatRuntimeStore((s) => s.ragEnabled);
-  const bypassPermissions = useChatRuntimeStore((s) => s.bypassPermissions);
-  // More than 4 pills: collapse to icons only. Search and Code always show;
+  const permissionMode = useChatRuntimeStore((s) => s.permissionMode);
+  // More than 4 pills: collapse to icons only. Search and Code always show; the
+  // permission pill shows in every mode except "off" (it renders null there);
   // Images, RAG, Canvas and MCP are conditional.
   const pillsCompact =
     2 +
+      (permissionMode !== "off" ? 1 : 0) +
       (ragEnabled ? 1 : 0) +
       (supportsBuiltinImageGeneration ? 1 : 0) +
       (artifactsEnabled ? 1 : 0) +
@@ -1550,8 +1558,7 @@ const Composer: FC<{
   }, [composerText, draftKey]);
   // Two-row layout shows once the input wraps or a tool is on. Tools can
   // pre-select before a model loads, so an active toggle expands it either way.
-  // Bypass permissions counts too: turning it on should drop the composer into
-  // the two-row layout immediately, same as Search/Code.
+  // Keep the composer expanded whenever the permission pill is visible.
   const composerExpanded =
     isMultiline ||
     hasAttachments ||
@@ -1562,7 +1569,7 @@ const Composer: FC<{
     ragEnabled ||
     artifactsEnabled ||
     mcpEnabledForChat ||
-    bypassPermissions;
+    permissionMode !== "off";
   // react-textarea-autosize re-measures only on value change or window resize,
   // not on the width swap from expanding, so it keeps the taller height and
   // leaves a stray blank row. Nudge a resize whenever input width changes.
@@ -1856,9 +1863,9 @@ const Composer: FC<{
           data-pill-compact={pillsCompact ? "true" : undefined}
         >
           <ComposerToolsMenu side={effectiveMenuSide} />
-          {/* Active-mode badge: always visible when bypass is on, even while
-              the pill row is collapsed (returns null when off). */}
-          <BypassPermissionsToggle />
+          {/* Permission-level pill: always visible, even while the pill row
+              is collapsed; opens the permission level dropdown. */}
+          <PermissionModeComposerPill side={effectiveMenuSide} />
           {composerExpanded ? (
             <>
               <WebSearchToggle />
@@ -1963,7 +1970,7 @@ function isNativeComposing(event: Event) {
 }
 
 // Fallback timeout for stuck IME composition. With Chrome on Windows against
-// a WSL-hosted Studio (issue #5546), `compositionend` never fires after the
+// a WSL-hosted Unsloth (issue #5546), `compositionend` never fires after the
 // candidate commits, so `composingRef` stays true and Send stays disabled.
 // Every compositionupdate / non-composing input resets the timer; only a true
 // gap-after-commit lets it fire. 2500ms is above a normal candidate-window
@@ -2115,19 +2122,6 @@ function useImeComposerInputHandlers({
   };
 }
 
-// Phosphor microphone. Inlined to avoid a new icon dependency.
-const MicIcon: FC<{ className?: string }> = ({ className }) => (
-  <svg
-    className={className}
-    viewBox="0 0 256 256"
-    fill="currentColor"
-    xmlns="http://www.w3.org/2000/svg"
-    aria-hidden={true}
-  >
-    <path d="M128,176a48.05,48.05,0,0,0,48-48V64a48,48,0,0,0-96,0v64A48.05,48.05,0,0,0,128,176ZM96,64a32,32,0,0,1,64,0v64a32,32,0,0,1-64,0Zm40,143.6V232a8,8,0,0,1-16,0V207.6A80.11,80.11,0,0,1,48,128a8,8,0,0,1,16,0,64,64,0,0,0,128,0,8,8,0,0,1,16,0A80.11,80.11,0,0,1,136,207.6Z" />
-  </svg>
-);
-
 // HugeIcons arrow-down-01 (stroke-standard): straight-line chevron.
 const ArrowDownStandardIcon: FC<{ className?: string }> = ({ className }) => (
   <svg
@@ -2278,6 +2272,7 @@ const ReasoningToggle: FC<{ side?: "top" | "bottom" }> = ({
             type="button"
             disabled={disabled}
             className="unsloth-thinking-pill"
+            data-pill-label="Thinking settings"
             data-active={activeLook ? "true" : "false"}
             aria-label={thinkEffortAriaLabel({
               modelLoaded,
@@ -2287,9 +2282,11 @@ const ReasoningToggle: FC<{ side?: "top" | "bottom" }> = ({
           >
             <ThinkIcon />
             {activeLook ? (
-              <span>{isEffort ? `Thinking · ${effortLabel}` : "Thinking"}</span>
+              <span className="unsloth-thinking-label">
+                {isEffort ? `Thinking · ${effortLabel}` : "Thinking"}
+              </span>
             ) : null}
-            <ArrowDownStandardIcon className="size-[15px]" />
+            <ArrowDownStandardIcon className="unsloth-thinking-caret size-[15px]" />
           </button>
         </DropdownMenuTrigger>
         <DropdownMenuContent
@@ -2321,7 +2318,13 @@ const ReasoningToggle: FC<{ side?: "top" | "bottom" }> = ({
                 </DropdownMenuItem>
               )}
               {effectiveReasoningEffortLevels
-                .filter((level) => level !== "none")
+                // 'none' is a real template level for models like Inkling
+                // (effort 0 = thinking off); show it as a pick unless the
+                // dedicated off item above already covers it.
+                .filter(
+                  (level) =>
+                    level !== "none" || !effectiveSupportsReasoningOff,
+                )
                 .map((level) => (
                   <DropdownMenuItem
                     key={level}
@@ -2429,6 +2432,7 @@ const ReasoningToggle: FC<{ side?: "top" | "bottom" }> = ({
         }
       }}
       className="unsloth-thinking-pill"
+      data-pill-label="Thinking"
       data-active={activeLook ? "true" : "false"}
       aria-label={thinkToggleAriaLabel({
         reasoningLockedOn,
@@ -2440,7 +2444,9 @@ const ReasoningToggle: FC<{ side?: "top" | "bottom" }> = ({
       <PillGlyph>
         <ThinkIcon />
       </PillGlyph>
-      {activeLook ? <span>Thinking</span> : null}
+      {activeLook ? (
+        <span className="unsloth-thinking-label">Thinking</span>
+      ) : null}
     </button>
   );
 };
@@ -2620,36 +2626,6 @@ const ArtifactsToggle: FC = () => {
   );
 };
 
-// Claude gold pill shown while Bypass permissions is on; click to turn it off.
-// Mirror of shared-composer's badge so both composers surface the state.
-const BypassPermissionsToggle: FC = () => {
-  const bypassPermissions = useChatRuntimeStore((s) => s.bypassPermissions);
-  const setBypassPermissions = useChatRuntimeStore(
-    (s) => s.setBypassPermissions,
-  );
-  if (!bypassPermissions) return null;
-  return (
-    <button
-      type="button"
-      onClick={() => setBypassPermissions(false)}
-      className="composer-pill-btn"
-      data-active="true"
-      data-variant="danger"
-      aria-label="Disable Bypass permissions"
-      title="Bypass permissions is on (no confirmation, no sandbox). Click to turn off."
-    >
-      <PillGlyph>
-        <HugeiconsIcon
-          icon={ShieldBanIcon}
-          strokeWidth={2}
-          className="size-[15px]"
-        />
-      </PillGlyph>
-      <span>Bypass permissions</span>
-    </button>
-  );
-};
-
 const ToolStatusDisplay: FC = () => {
   const toolStatus = useChatRuntimeStore((s) => s.toolStatus);
   const isThreadRunning = useAuiState(({ thread }) => thread.isRunning);
@@ -2733,6 +2709,7 @@ const ComposerToolsMenu: FC<{ side?: "top" | "bottom" }> = ({
   const setCodeToolsEnabled = useChatRuntimeStore((s) => s.setCodeToolsEnabled);
   const artifactsEnabled = useChatRuntimeStore((s) => s.artifactsEnabled);
   const setArtifactsEnabled = useChatRuntimeStore((s) => s.setArtifactsEnabled);
+  const showCanvasMenuItem = useChatRuntimeStore((s) => s.showCanvasMenuItem);
   const mcpEnabledForChat = useChatRuntimeStore((s) => s.mcpEnabledForChat);
   const setMcpEnabledForChat = useChatRuntimeStore(
     (s) => s.setMcpEnabledForChat,
@@ -2983,7 +2960,8 @@ const ComposerToolsMenu: FC<{ side?: "top" | "bottom" }> = ({
         </DropdownMenuSubContent>
       </DropdownMenuSub>
     ),
-    canvas: (
+    // Hidden by default; enabled from Settings > Chat > Canvas.
+    canvas: showCanvasMenuItem ? (
       <DropdownMenuItem
         className={artifactsEnabled ? "text-primary font-medium" : undefined}
         onSelect={() => setArtifactsEnabled(!artifactsEnabled)}
@@ -2994,7 +2972,7 @@ const ComposerToolsMenu: FC<{ side?: "top" | "bottom" }> = ({
           <HugeiconsIcon icon={Tick02Icon} strokeWidth={2} className="ml-auto" />
         ) : null}
       </DropdownMenuItem>
-    ),
+    ) : null,
     bypassPermissions: <BypassPermissionsMenuItem />,
     projects: (
       <DropdownMenuSub>
@@ -3480,8 +3458,18 @@ const ComposerRightControls: FC<{
 const MessageError: FC = () => {
   return (
     <MessagePrimitive.Error>
-      <ErrorPrimitive.Root className="aui-message-error-root mt-2 rounded-md bg-destructive/10 p-3 text-destructive text-sm dark:bg-destructive/5 dark:text-red-200">
-        <ErrorPrimitive.Message className="aui-message-error-message line-clamp-2" />
+      <ErrorPrimitive.Root className="aui-message-error-root mt-2 flex flex-wrap items-center gap-x-3 gap-y-2 rounded-md bg-destructive/10 p-3 text-destructive text-sm dark:bg-destructive/5 dark:text-red-200">
+        <ErrorPrimitive.Message className="aui-message-error-message line-clamp-2 min-w-0 flex-1" />
+        {/* Recovery path for interrupted/failed turns: regenerate in place. */}
+        <ActionBarPrimitive.Reload asChild={true}>
+          <button
+            type="button"
+            className="aui-message-error-retry inline-flex shrink-0 items-center gap-1.5 rounded-md border border-destructive/40 px-2.5 py-1 text-xs font-medium transition-colors hover:bg-destructive/15"
+          >
+            <RefreshCwIcon strokeWidth={1.75} className="size-3.5" />
+            Retry
+          </button>
+        </ActionBarPrimitive.Reload>
       </ErrorPrimitive.Root>
     </MessagePrimitive.Error>
   );
@@ -3572,9 +3560,6 @@ const AssistantMessage: FC = () => {
   const aui = useAui();
   const messageId = useAuiState(({ message }) => message.id);
   const messageContent = useAuiState(({ message }) => message.content);
-  const hasReasoningParts = useAuiState(({ message }) =>
-    message.parts.some((part) => part.type === "reasoning"),
-  );
   const incognito = useChatRuntimeStore((s) => s.incognito);
 
   // Use global store for editing state to ensure a single source of truth
@@ -3660,11 +3645,9 @@ const AssistantMessage: FC = () => {
           </div>
         ) : (
           <>
-            {!hasReasoningParts ? (
-              <div className="pointer-events-none relative h-0 min-w-0">
-                <MessageResponseModelBadge className="absolute -top-6 left-0 max-w-[min(22rem,100%)]" />
-              </div>
-            ) : null}
+            <div className="pointer-events-none relative h-0 min-w-0">
+              <MessageResponseModelBadge className="absolute -top-6 left-0 max-w-[min(22rem,100%)]" />
+            </div>
             <GeneratingIndicator />
             <CancelledIndicator />
             <DiffusionCanvas />
@@ -3824,8 +3807,33 @@ const DeleteMessageButton: FC = () => {
   const isRunning = useAuiState(({ thread }) => thread.isRunning);
 
   const handleDelete = async () => {
-    const remoteId = aui.threadListItem().getState().remoteId;
     const thread = aui.thread();
+    // Deleting a message, and for a user prompt its cascaded assistant replies,
+    // unmounts their only Stop reading control. Stop read-aloud first when the
+    // spoken message is among those removed. Read speech state at click time and
+    // guard the call, which throws if playback already ended.
+    const speakingId = thread.getState().speech?.messageId;
+    if (speakingId) {
+      const { messages } = thread.export();
+      const target = messages.find(({ message }) => message.id === messageId);
+      const removed = new Set<string>([messageId]);
+      if (target?.message.role === "user") {
+        for (const { parentId, message } of messages) {
+          if (parentId === messageId && message.role === "assistant") {
+            removed.add(message.id);
+          }
+        }
+      }
+      if (removed.has(speakingId)) {
+        try {
+          thread.stopSpeaking();
+        } catch {
+          // Playback ended between reading the state and stopping it.
+        }
+      }
+    }
+
+    const remoteId = aui.threadListItem().getState().remoteId;
     try {
       await deleteThreadMessage({
         thread: {
@@ -3910,11 +3918,15 @@ const EditAssistantMessageButton: FC = () => {
 const AssistantActionBar: FC = () => {
   const { forkMessage, forkDisabled } = useForkMessageAction();
   const [detailsOpen, setDetailsOpen] = useState(false);
+  const ttsEnabled = useVoiceSettingsStore((s) => s.ttsEnabled);
+  // hideWhenRunning is thread-level, so a new run would hide this bar and its
+  // only Stop reading control while read-aloud keeps playing; keep it shown.
+  const speaking = useAuiState(({ message }) => message.speech != null);
 
   return (
     <>
       <ActionBarPrimitive.Root
-        hideWhenRunning={true}
+        hideWhenRunning={!speaking}
         className="aui-assistant-action-bar-root col-start-3 row-start-2 flex items-center gap-1 text-chat-icon-fg [&_button:not([data-slot=message-timing-trigger])]:size-8 [&_button]:!rounded-full [&_button:hover]:bg-chat-icon-bg-hover [&_button:hover]:text-chat-icon-fg-hover"
       >
         <CopyButton />
@@ -3926,6 +3938,28 @@ const AssistantActionBar: FC = () => {
         </ActionBarPrimitive.Reload>
         <ForkCountBadge />
         <DeleteMessageButton />
+        {ttsEnabled && (
+          <MessagePrimitive.If speaking={false}>
+            <ActionBarPrimitive.Speak asChild={true}>
+              <TooltipIconButton tooltip="Read aloud" aria-label="Read aloud">
+                <Volume2Icon strokeWidth={1.75} className="size-icon" />
+              </TooltipIconButton>
+            </ActionBarPrimitive.Speak>
+          </MessagePrimitive.If>
+        )}
+        {/* Not gated on ttsEnabled: turning the setting off while a message
+            is being read aloud must not remove the only stop control. */}
+        <MessagePrimitive.If speaking={true}>
+          <ActionBarPrimitive.StopSpeaking asChild={true}>
+            <TooltipIconButton
+              tooltip="Stop reading"
+              aria-label="Stop reading"
+              className="text-destructive"
+            >
+              <VolumeXIcon strokeWidth={1.75} className="size-icon" />
+            </TooltipIconButton>
+          </ActionBarPrimitive.StopSpeaking>
+        </MessagePrimitive.If>
         <ActionBarMorePrimitive.Root>
           <ActionBarMorePrimitive.Trigger asChild={true}>
             <TooltipIconButton

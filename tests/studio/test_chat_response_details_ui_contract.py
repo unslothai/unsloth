@@ -44,7 +44,7 @@ def test_response_details_sheet_uses_unsloth_sheet_and_key_sections():
         assert f'label="{field}"' in src
 
 
-def test_response_model_chip_is_user_configurable_and_rendered_in_metadata_rows():
+def test_response_model_badge_is_user_configurable_and_rendered_once_per_message():
     prefs_src = CHAT_PREFS_TS.read_text()
     chat_tab_src = CHAT_TAB_TSX.read_text()
     thread_src = THREAD_TSX.read_text()
@@ -55,17 +55,24 @@ def test_response_model_chip_is_user_configurable_and_rendered_in_metadata_rows(
     assert "showResponseModel: saved?.showResponseModel ?? false" in prefs_src
     assert "Show response model" in chat_tab_src
     assert "setShowResponseModel" in chat_tab_src
-    assert "aui-response-model-badge inline-flex min-h-5" in DETAILS_TSX.read_text()
-    assert "leading-5" in DETAILS_TSX.read_text()
-    assert "group-hover/assistant-message:opacity-100" in DETAILS_TSX.read_text()
-    assert "MessageResponseModelBadge" in thread_src
-    assert "hasReasoningParts" in thread_src
+    details_src = DETAILS_TSX.read_text()
+    assert (
+        "aui-response-model-badge pointer-events-none relative inline-flex min-h-5" in details_src
+    )
+    assert "cursor-text select-text" in details_src
+    assert "leading-5" in details_src
+    assert "after:top-full after:h-1" in details_src
+    assert "hover:opacity-100" in details_src
+    assert "group-hover/assistant-message:opacity-100" in details_src
+    # Pointer events gated behind hover/focus so the hidden badge stays inert when idle.
+    assert "group-hover/assistant-message:pointer-events-auto" in details_src
+    assert "group-focus-within/assistant-message:pointer-events-auto" in details_src
+    assert thread_src.count("<MessageResponseModelBadge") == 1
+    assert "hasReasoningParts" not in thread_src
     assert "group/assistant-message aui-assistant-message-root" in thread_src
     assert "pointer-events-none relative h-0" in thread_src
-    assert "MessageResponseModelBadge" in reasoning_src
-    assert 'className="min-w-0 flex-none"' in reasoning_src
-    assert "hidden min-w-0 max-w-[12rem]" in reasoning_src
-    assert "group-hover/assistant-message:inline-flex" in reasoning_src
+    assert "MessageResponseModelBadge" not in reasoning_src
+    assert 'className="min-w-0 flex-1"' in reasoning_src
 
 
 def test_response_details_metadata_is_persisted_without_backend_schema_change():

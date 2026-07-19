@@ -377,9 +377,10 @@ class ExportOrchestrator:
 
             if rtype == "status":
                 message = resp.get("message", "")
-                logger.info("Export subprocess status: %s", message)
-                # Surface status in the live log panel for high-level progress.
+                # One structured export_progress line per phase (consolidated in the
+                # server log, like training/download progress); also shown live.
                 if message:
+                    logger.info("export_progress", phase = message)
                     self._append_log(
                         {
                             "stream": "status",
