@@ -81,7 +81,7 @@ def test_stall_timeout_honored_after_first_token(monkeypatch):
 
     # A server that emits one token then goes silent: every body read times out.
     # Each slice "waits" its full timeout of fake time before timing out.
-    def silent_read(max_bytes, timeout=None):
+    def silent_read(max_bytes, timeout = None):
         clock["t"] += timeout if timeout is not None else 0.0
         raise httpcore.ReadTimeout("slice timed out on silence")
 
@@ -99,7 +99,7 @@ def test_stall_timeout_honored_after_first_token(monkeypatch):
 
     # httpcore still passes the stale prefill timeout it snapshotted at body start.
     with pytest.raises(httpcore.ReadTimeout):
-        wrapped_read(65536, timeout=_PREFILL_TIMEOUT)
+        wrapped_read(65536, timeout = _PREFILL_TIMEOUT)
 
     # The wrapper must give up ~stall timeout after the last token, not after the
     # 20-minute prefill window. Allow slack for the final partial slice.
@@ -116,7 +116,7 @@ def test_prefill_timeout_used_when_no_live_override(monkeypatch):
     clock = {"t": 0.0}
     monkeypatch.setattr(llama_cpp_mod.time, "monotonic", lambda: clock["t"])
 
-    def silent_read(max_bytes, timeout=None):
+    def silent_read(max_bytes, timeout = None):
         clock["t"] += timeout if timeout is not None else 0.0
         raise httpcore.ReadTimeout("slice timed out on silence")
 
@@ -132,6 +132,6 @@ def test_prefill_timeout_used_when_no_live_override(monkeypatch):
     wrapped_read = _install(response, clock, stream)
 
     with pytest.raises(httpcore.ReadTimeout):
-        wrapped_read(65536, timeout=_PREFILL_TIMEOUT)
+        wrapped_read(65536, timeout = _PREFILL_TIMEOUT)
 
     assert clock["t"] >= _PREFILL_TIMEOUT * 0.9

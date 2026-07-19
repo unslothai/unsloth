@@ -9051,9 +9051,7 @@ class LlamaCppBackend:
                 ):
                     live = _live_read_timeout()
                     effective = live if live is not None else timeout
-                    deadline = (
-                        None if effective is None else time.monotonic() + effective
-                    )
+                    deadline = None if effective is None else time.monotonic() + effective
                     while True:
                         if cancel_event.is_set():
                             raise httpcore.ReadError("stream cancelled by user")
@@ -9139,9 +9137,7 @@ class LlamaCppBackend:
                     # cross-thread socket shutdown does not (Windows). Pass the
                     # response so the wrapper honors the live (post-first-token
                     # stall) read timeout, which httpcore otherwise snapshots.
-                    LlamaCppBackend._install_cancel_aware_read(
-                        client, cancel_event, response
-                    )
+                    LlamaCppBackend._install_cancel_aware_read(client, cancel_event, response)
                 if cancel_event is not None and cancel_event.is_set():
                     raise _LlamaStreamCancelled
                 yield response
