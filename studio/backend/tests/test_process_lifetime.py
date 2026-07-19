@@ -527,3 +527,67 @@ def test_zombie_child_counts_as_dead():
             os.waitpid(pid, 0)
         except OSError:
             pass
+
+
+# ── the sentinel thread is only started where it adds cover ──
+
+
+@pytest.mark.parametrize(
+    ("is_linux", "start_method", "expected"),
+    [
+        # Linux spawn/fork: PDEATHSIG already fires on the logical parent, so no
+        # thread -- it would still be alive when dataset.map(num_proc=...) forks,
+        # which Python 3.12+ warns can deadlock.
+        (True, "spawn", False),
+        (True, "fork", False),
+        # forkserver: the OS parent is the forkserver, so PDEATHSIG cannot see
+        # Studio dying and the watcher is the only cover.
+        (True, "forkserver", True),
+        # No PDEATHSIG off Linux at all.
+        (False, "spawn", True),
+        (False, "forkserver", True),
+    ],
+)
+def test_sentinel_watcher_scope(monkeypatch, is_linux, start_method, expected):
+    import multiprocessing
+
+    monkeypatch.setattr(pl, "_is_linux", lambda: is_linux)
+    monkeypatch.setattr(multiprocessing, "get_start_method", lambda allow_none = True: start_method)
+    assert pl._needs_sentinel_watcher() is expected
+
+
+def test_sentinel_watcher_is_kept_when_start_method_is_unknown(monkeypatch):
+    # Cannot tell what we are: keep the safety net rather than lose the cover.
+    import multiprocessing
+
+    def _boom(allow_none = True):
+        raise RuntimeError("no context")
+
+    monkeypatch.setattr(pl, "_is_linux", lambda: True)
+    monkeypatch.setattr(multiprocessing, "get_start_method", _boom)
+    assert pl._needs_sentinel_watcher() is True
+
+
+def test_bind_skips_the_thread_for_a_linux_spawn_worker(monkeypatch):
+    # The end-to-end contract: PDEATHSIG is still installed, the thread is not.
+    import multiprocessing
+
+    monkeypatch.setattr(pl, "_is_linux", lambda: True)
+    monkeypatch.setattr(multiprocessing, "get_start_method", lambda allow_none = True: "spawn")
+    installed, watched = [], []
+    monkeypatch.setattr(pl, "_pdeathsig_preexec", lambda ppid: installed.append(ppid))
+    monkeypatch.setattr(pl, "_watch_parent_sentinel", lambda: watched.append(1))
+    pl.bind_current_process_to_parent_lifetime()
+    assert installed and watched == []
+
+
+def test_bind_starts_the_thread_for_a_forkserver_worker(monkeypatch):
+    import multiprocessing
+
+    monkeypatch.setattr(pl, "_is_linux", lambda: True)
+    monkeypatch.setattr(multiprocessing, "get_start_method", lambda allow_none = True: "forkserver")
+    installed, watched = [], []
+    monkeypatch.setattr(pl, "_pdeathsig_preexec", lambda ppid: installed.append(ppid))
+    monkeypatch.setattr(pl, "_watch_parent_sentinel", lambda: watched.append(1))
+    pl.bind_current_process_to_parent_lifetime()
+    assert installed and watched == [1]

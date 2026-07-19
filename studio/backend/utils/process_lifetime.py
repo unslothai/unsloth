@@ -232,6 +232,28 @@ def _watch_parent_sentinel() -> None:
         pass
 
 
+def _needs_sentinel_watcher() -> bool:
+    """True when the sentinel thread is the ONLY cover for logical-parent death.
+
+    On Linux, PDEATHSIG already fires on the logical parent for spawn/fork
+    workers -- ``_spawn_parent_pid()`` resolves to that very process -- so the
+    watcher would add a thread for nothing. That matters because the thread is
+    still alive when the training worker later forces ``fork`` for
+    ``dataset.map(num_proc=...)``: Python 3.12+ warns that forking a
+    multi-threaded process may deadlock, and that is the normal training path.
+
+    It is still required for forkserver workers, whose OS parent is the
+    forkserver rather than Studio, and on platforms with no PDEATHSIG at all.
+    """
+    if not _is_linux():
+        return True
+    try:
+        import multiprocessing
+        return multiprocessing.get_start_method(allow_none = True) == "forkserver"
+    except Exception:
+        return True  # cannot tell: keep the safety net
+
+
 def bind_current_process_to_parent_lifetime() -> None:
     """Bind the CURRENT process to the death of the process that started it. For
     multiprocessing children, which cannot take a preexec_fn, so the parent
@@ -241,10 +263,15 @@ def bind_current_process_to_parent_lifetime() -> None:
     Two complementary mechanisms: PR_SET_PDEATHSIG (Linux) fires on OS-parent
     death, and the multiprocessing parent-sentinel watcher fires on LOGICAL
     parent (Studio) death -- needed for forkserver workers, whose OS parent is
-    the forkserver rather than Studio."""
+    the forkserver rather than Studio.
+
+    The watcher is started only where it actually adds cover (see
+    :func:`_needs_sentinel_watcher`), so a Linux spawn/fork training worker does
+    not carry a live thread into the ``dataset.map(num_proc=...)`` fork."""
     if _is_linux():
         _pdeathsig_preexec(_spawn_parent_pid())
-    _watch_parent_sentinel()
+    if _needs_sentinel_watcher():
+        _watch_parent_sentinel()
 
 
 def compose_preexec(existing: Optional[Callable[[], None]]) -> Optional[Callable[[], None]]:
