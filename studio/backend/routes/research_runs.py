@@ -122,10 +122,22 @@ def _sync_assistant(run: dict, text: str | None = None) -> None:
     )
 
 
+def _contains_sensitive_key(value: object) -> bool:
+    """Recursively test whether any (possibly nested) mapping key looks sensitive,
+    so credentials cannot be smuggled into a durable run via a nested dict."""
+    if isinstance(value, dict):
+        return any(
+            bool(_SENSITIVE_KEY.search(str(key))) or _contains_sensitive_key(item)
+            for key, item in value.items()
+        )
+    if isinstance(value, (list, tuple)):
+        return any(_contains_sensitive_key(item) for item in value)
+    return False
+
+
 def _sanitize_config(payload: CreateResearchRun, thread: dict) -> dict:
     request = dict(payload.inferenceRequest)
-    forbidden = [key for key in request if _SENSITIVE_KEY.search(str(key))]
-    if forbidden:
+    if _contains_sensitive_key(request):
         raise HTTPException(status_code = 400, detail = "Inference credentials cannot be persisted")
     if any(key in request for key in ("baseUrl", "endpoint", "provider", "tools", "enabledTools")):
         raise HTTPException(
@@ -192,7 +204,7 @@ def _sanitize_config(payload: CreateResearchRun, thread: dict) -> dict:
             "whole_doc",
         }
         unknown_rag = set(rag_scope) - allowed_rag
-        if unknown_rag or any(_SENSITIVE_KEY.search(str(key)) for key in rag_scope):
+        if unknown_rag or _contains_sensitive_key(rag_scope):
             raise HTTPException(status_code = 400, detail = "Unsupported or sensitive ragScope field")
     budgets = {
         "maxSteps": 12,

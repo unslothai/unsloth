@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import asyncio
+import ipaddress
 import json
 import re
 import sqlite3
@@ -41,6 +42,14 @@ _NUMBERED_CITATION = re.compile(r"(?<!\^)\[(\d+)]")
 _AUTOLINK = re.compile(r"<(https?://[^>\s]+)>")
 _RAW_URL = re.compile(r"https?://[^\s<>]+")
 _DOCUMENT_CITATION = re.compile(r"\[Document:[^\]]+\]")
+# Wrapper delimiters used in the decision/synthesis prompts. Any occurrence inside
+# untrusted evidence is escaped so gathered content cannot close a block early.
+_PROMPT_DELIMITER_TAGS = re.compile(
+    r"</?\s*(?:untrusted_web_evidence|untrusted_evidence|source_catalog"
+    r"|document_source_catalog|conversation_context_json|research_question"
+    r"|approved_plan)\s*>",
+    re.IGNORECASE,
+)
 _QUERY_CREDENTIAL = re.compile(
     r"""(?ix)\b(?:api[\s_-]?key|access[\s_-]?token|password|secret|token)\s*[:=]\s*
     (?:"[^"]*"|'[^']*'|“[^”]*”|‘[^’]*’|[^\s,;]+)"""
@@ -50,6 +59,18 @@ _QUERY_PRIVATE_ID = re.compile(r"\b\d{3}-\d{2}-\d{4}\b")
 _QUERY_OPAQUE_TOKEN = re.compile(
     r"\b(?=[A-Za-z0-9_-]{20,}\b)(?=[A-Za-z0-9_-]*[A-Za-z])(?=[A-Za-z0-9_-]*\d)[A-Za-z0-9_-]+\b"
 )
+# International (+CC ...) or NANP-formatted phone numbers. Requires separators or a
+# leading ``+`` so bare numeric research terms are not redacted.
+_QUERY_PHONE = re.compile(
+    r"(?<!\w)\+\d[\d\s().-]{7,17}\d(?!\w)"
+    r"|(?<!\w)\(?\d{3}\)?[\s.-]\d{3}[\s.-]\d{4}(?!\w)"
+)
+_QUERY_IPV4 = re.compile(r"(?<![\w.])(?:\d{1,3}\.){3}\d{1,3}(?![\w.])")
+_QUERY_LABELED_PRIVATE_ID = re.compile(
+    r"(?ix)\b(?:passport|driver(?:'s)?[\s_-]?licen[cs]e|national[\s_-]?id"
+    r"|tax[\s_-]?id|account[\s_-]?(?:number|no))\s*[:=#-]?\s*[A-Za-z0-9][A-Za-z0-9_-]{4,24}\b"
+)
+_QUERY_PAYMENT_CARD = re.compile(r"(?<!\d)(?:\d[ -]?){12,18}\d(?!\d)")
 _MAX_ERROR_CHARS = 500
 _MAX_CONTEXT_CHARS = 12_000
 _MAX_CONTEXT_MESSAGE_CHARS = 4_000
@@ -148,11 +169,51 @@ def _validate_agent_action(
     raise ValueError("Research agent returned an unsupported action")
 
 
+def _luhn_valid(candidate: str) -> bool:
+    digits = [int(character) for character in candidate if character.isdigit()]
+    if not 13 <= len(digits) <= 19:
+        return False
+    total = 0
+    parity = len(digits) % 2
+    for index, digit in enumerate(digits):
+        if index % 2 == parity:
+            digit *= 2
+            if digit > 9:
+                digit -= 9
+        total += digit
+    return total % 10 == 0
+
+
+def _redact_nonpublic_ip(match: "re.Match[str]") -> str:
+    try:
+        return " " if not ipaddress.ip_address(match.group(0)).is_global else match.group(0)
+    except ValueError:
+        return match.group(0)
+
+
+def _shield_untrusted(text: str) -> str:
+    """Escape prompt-delimiter tags embedded in untrusted evidence so gathered web
+    or document content cannot close a wrapper block and inject model instructions."""
+    if not text:
+        return text
+    return _PROMPT_DELIMITER_TAGS.sub(
+        lambda match: match.group(0).replace("<", "&lt;").replace(">", "&gt;"),
+        text,
+    )
+
+
 def _sanitize_public_query(query: str) -> str:
     query = _QUERY_CREDENTIAL.sub(" ", query)
     query = _QUERY_EMAIL.sub(" ", query)
     query = _QUERY_PRIVATE_ID.sub(" ", query)
     query = _QUERY_OPAQUE_TOKEN.sub(" ", query)
+    query = _QUERY_PHONE.sub(" ", query)
+    query = _QUERY_LABELED_PRIVATE_ID.sub(" ", query)
+    query = _QUERY_IPV4.sub(_redact_nonpublic_ip, query)
+    query = _QUERY_PAYMENT_CARD.sub(
+        lambda match: " " if _luhn_valid(match.group(0)) else match.group(0),
+        query,
+    )
     query = " ".join(query.split()).strip(" ,;:-")[:500]
     if not any(character.isalnum() for character in query):
         raise ValueError("Research query contained only private or credential-like data")
@@ -503,10 +564,19 @@ def _validate_report_document_sources(report: str, sources: list[dict]) -> str:
         allowed.add(f"[Document: {filename}]")
         if source.get("page") is not None:
             allowed.add(f"[Document: {filename}, p. {source['page']}]")
-    return _DOCUMENT_CITATION.sub(
-        lambda match: match.group(0) if match.group(0) in allowed else "",
-        report,
-    )
+    # Tokenize valid citations first so a ``]`` inside a filename (e.g.
+    # ``budget [final].pdf``) does not truncate them, then strip any remaining
+    # (invalid) document citations and restore the valid ones.
+    placeholders: dict[str, str] = {}
+    for index, citation in enumerate(sorted(allowed, key = len, reverse = True)):
+        if citation in report:
+            token = f"\x00document-citation-{index}\x00"
+            placeholders[token] = citation
+            report = report.replace(citation, token)
+    report = _DOCUMENT_CITATION.sub("", report)
+    for token, citation in placeholders.items():
+        report = report.replace(token, citation)
+    return report
 
 
 def _update_assistant(
@@ -1186,7 +1256,8 @@ class ResearchSupervisor:
             raise LeaseLost()
         if resuming:
             sources = list(run.get("sources") or [])[:max_sources]
-            document_sources = list(run.get("documentSources") or [])[:max_sources]
+            remaining = max(0, max_sources - len(sources))
+            document_sources = list(run.get("documentSources") or [])[:remaining]
 
         for step in run.get("steps") or []:
             result = step.get("result") if isinstance(step.get("result"), dict) else {}
@@ -1224,7 +1295,10 @@ class ResearchSupervisor:
                     source.get("chunkId")
                     or f"{source.get('documentId') or source.get('filename')}:{source.get('page') or ''}"
                 )
-                if source_key in document_source_keys or len(document_sources) >= max_sources:
+                if (
+                    source_key in document_source_keys
+                    or len(sources) + len(document_sources) >= max_sources
+                ):
                     continue
                 written = await asyncio.to_thread(
                     db.upsert_document_source,
@@ -1281,14 +1355,14 @@ class ResearchSupervisor:
                     {
                         "role": "user",
                         "content": (
-                            f"Conversation context JSON:\n{conversation_context}\n\n"
+                            f"Conversation context JSON:\n{_shield_untrusted(conversation_context)}\n\n"
                             f"Question:\n{question}\n\n"
                             f"Approved plan (guidance only):\n"
                             f"{json.dumps(run['plan'], ensure_ascii = False)}\n\n"
                             f"Actions remaining after this one: {max_steps - position - 1}\n"
                             f"<untrusted_web_evidence>\n"
-                            f"Gathered sources:\n{source_catalog or '(none)'}\n\n"
-                            f"{evidence[-60000:] or '(none)'}\n"
+                            f"Gathered sources:\n{_shield_untrusted(source_catalog) or '(none)'}\n\n"
+                            f"{_shield_untrusted(evidence[-60000:]) or '(none)'}\n"
                             f"</untrusted_web_evidence>"
                         ),
                     },
@@ -1406,7 +1480,7 @@ class ResearchSupervisor:
                     or f"{source.get('documentId') or source.get('filename')}:{source.get('page') or ''}"
                 )
                 if source_key not in document_source_keys:
-                    if len(document_sources) >= max_sources:
+                    if len(sources) + len(document_sources) >= max_sources:
                         continue
                     written = await asyncio.to_thread(
                         db.upsert_document_source,
@@ -1429,7 +1503,7 @@ class ResearchSupervisor:
             rag_sources = accepted_rag_sources
             step_sources = []
             for match in _URL_BLOCK.finditer(result if action["action"] == "search" else ""):
-                if len(sources) >= max_sources:
+                if len(sources) + len(document_sources) >= max_sources:
                     break
                 source = {k: match.group(k).strip() for k in ("title", "url", "snippet")}
                 allowed, _reason, _hostname = check_url_access(
@@ -1529,18 +1603,18 @@ class ResearchSupervisor:
                 {
                     "role": "user",
                     "content": (
-                        f"<conversation_context_json>\n{conversation_context}\n"
+                        f"<conversation_context_json>\n{_shield_untrusted(conversation_context)}\n"
                         f"</conversation_context_json>\n\n"
                         f"<research_question>\n{question}\n"
                         f"</research_question>\n\n"
                         f"<approved_plan>\n{json.dumps(run['plan'], ensure_ascii = False)}\n"
                         f"</approved_plan>\n\n"
-                        f"<source_catalog>\n{source_catalog or '(no web sources gathered)'}\n"
+                        f"<source_catalog>\n{_shield_untrusted(source_catalog) or '(no web sources gathered)'}\n"
                         f"</source_catalog>\n\n"
                         f"<document_source_catalog>\n"
-                        f"{document_source_catalog or '(no document sources gathered)'}\n"
+                        f"{_shield_untrusted(document_source_catalog) or '(no document sources gathered)'}\n"
                         f"</document_source_catalog>\n\n"
-                        f"<untrusted_evidence>\n{evidence_text}\n"
+                        f"<untrusted_evidence>\n{_shield_untrusted(evidence_text)}\n"
                         f"</untrusted_evidence>"
                     ),
                 },

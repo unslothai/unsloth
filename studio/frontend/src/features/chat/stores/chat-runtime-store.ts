@@ -1432,6 +1432,12 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
           nextMaxTokens = cap;
         }
       }
+      // Persist Deep Research off when switching to an external model so a refresh
+      // does not rehydrate it (the adapter requires a selected local model).
+      // Mirrors setIncognito / clearCheckpoint / the tool-mode setters.
+      if (isExternalModelId(modelId)) {
+        saveBool(CHAT_DEEP_RESEARCH_ENABLED_KEY, false);
+      }
       return {
         params: {
           ...state.params,
@@ -1748,7 +1754,12 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
   setWebFetchToolsEnabled: (webFetchToolsEnabled) =>
     set(() => {
       saveBool(CHAT_WEB_FETCH_TOOLS_ENABLED_KEY, webFetchToolsEnabled);
-      return { webFetchToolsEnabled };
+      // Deep Research is mutually exclusive with the tool modes; clearing it here
+      // mirrors the other mode setters so a persisted flag cannot leave both on.
+      if (webFetchToolsEnabled) saveBool(CHAT_DEEP_RESEARCH_ENABLED_KEY, false);
+      return webFetchToolsEnabled
+        ? { webFetchToolsEnabled, deepResearchEnabled: false }
+        : { webFetchToolsEnabled };
     }),
   setRagEnabled: (ragEnabled) => set(() => ({ ragEnabled })),
   setRagSource: (ragSource) =>

@@ -436,6 +436,7 @@ def test_health_response_reports_desktop_capability_fields(monkeypatch):
         "models_router": APIRouter(),
         "providers_router": APIRouter(),
         "rag_router": APIRouter(),
+        "research_runs_router": APIRouter(),
         "settings_router": settings_module.router,
         "training_history_router": APIRouter(),
         "training_router": APIRouter(),
