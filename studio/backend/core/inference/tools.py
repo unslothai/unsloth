@@ -2605,8 +2605,7 @@ _RENDER_HTML_COMPUTED_ASSIGNMENT_START_RE = re.compile(
     re.IGNORECASE | re.DOTALL,
 )
 _RENDER_HTML_COMPUTED_CALL_START_RE = re.compile(
-    r"(?:(?P<document>\bdocument)\s*)?\[\s*(?P<member>[^\]]+)\s*\]\s*"
-    r"(?:\?\.\s*)?\(",
+    r"(?:(?P<document>\bdocument)\s*)?\[\s*(?P<member>[^\]]+)\s*\]\s*(?:\?\.\s*)?\(",
     re.IGNORECASE | re.DOTALL,
 )
 _RENDER_HTML_REFLECT_SET_START_RE = re.compile(
