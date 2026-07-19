@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Comprehensive Studio chat UI test, run locally + in CI."""
+"""Comprehensive Unsloth chat UI test, run locally + in CI."""
 
 import json
 import os
@@ -156,10 +156,19 @@ with sync_playwright() as p:
         # pointer events and break Playwright's actionability check.
         reduced_motion = "reduce",
     )
-    # Hard-disable CSS view-transitions: Studio's theme toggle + sidebar
+    # Hard-disable CSS view-transitions: Unsloth's theme toggle + sidebar
     # collapse run startViewTransition() which can leave <html> intercepting
     # pointer events for a beat after each route swap. See _playwright_robust.py.
     install_view_transition_killer(ctx)
+    system_requests: list[str] = []
+    ctx.on(
+        "request",
+        lambda request: (
+            system_requests.append(request.url)
+            if request.url.split("?", 1)[0].endswith("/api/system")
+            else None
+        ),
+    )
     page = ctx.new_page()
     # 60s default (was 30s): macos-14 under --single-process Chromium is
     # slow enough that renders/webfonts/lazy routes routinely crowd 30s.
@@ -468,7 +477,7 @@ with sync_playwright() as p:
         fail(f"/api/inference/load returned {load_resp['status']}: {load_resp.get('body')!r}")
     info(f"loaded model: {(load_resp['body'] or {}).get('display_name')}")
 
-    # Studio caches model state in zustand; reload so the composer picks
+    # Unsloth caches model state in zustand; reload so the composer picks
     # up the loaded model.
     page.reload()
     composer = page.locator('textarea[aria-label="Message input"]')
@@ -484,7 +493,7 @@ with sync_playwright() as p:
     # (app-sidebar.tsx) -- as stable as anything in the codebase.
     picker_btn = page.locator('[data-tour="chat-model-selector"]').first
     if picker_btn.count() == 0:
-        # Fall back to text-based locators for older Studio builds.
+        # Fall back to text-based locators for older Unsloth builds.
         picker_btn = page.locator(
             'button:has-text("gemma-3-270m"), '
             'button:has-text("Gemma 3"), '
@@ -884,7 +893,7 @@ with sync_playwright() as p:
         if len(observed) < 3:
             soft_fail(f"theme toggle ran only {len(observed)} cycle(s), expected 3")
         # Don't strict-fail on both polarities: the runner's
-        # prefers-color-scheme + Studio's "system" default can collapse
+        # prefers-color-scheme + Unsloth's "system" default can collapse
         # to one polarity even when .dark toggles correctly. The 3-cycle
         # completion above is the real invariant.
         if light_seen and dark_seen:
@@ -1259,11 +1268,10 @@ with sync_playwright() as p:
     )
 
     # ─────────────────────────────────────────────────────
-    # 17. Shutdown via the account menu. The "Stop server" action
-    # POSTs /api/shutdown, swaps in the "Unsloth Studio has stopped"
-    # placeholder, and /api/health goes unreachable shortly after.
+    # 17. Persisted monitor auth boundary, then shutdown. A monitor left open
+    # must stay dormant on /login and resume after successful authentication.
     # ─────────────────────────────────────────────────────
-    step("Shutdown via account menu")
+    step("persisted monitor stays dormant on /login and resumes after auth")
     # Start fresh after the CLI rotation invalidates this browser session.
     # Stay in the SAME context: macOS Chromium runs --single-process, where
     # closing the last context kills the browser and a second context cannot
@@ -1273,6 +1281,13 @@ with sync_playwright() as p:
         ctx.clear_cookies()
     except Exception as exc:
         info(f"WARN clearing stale session cookies failed: {exc!r}")
+    robust_evaluate(
+        page,
+        """() => localStorage.setItem(
+            "unsloth_monitor_overlay",
+            JSON.stringify({ state: { isOpen: true, isMinimized: false }, version: 0 })
+        )""",
+    )
     # Auth tokens live in localStorage, and /login's guest guard redirects on
     # their mere presence, so drop them before navigating.
     try:
@@ -1291,6 +1306,7 @@ with sync_playwright() as p:
     except Exception:
         pass
     page = _fresh_page
+    login_system_request_count = len(system_requests)
 
     # Re-login with NEW2 for a valid /api/shutdown token. Route changes can
     # still abort or interrupt this navigation, so the field wait below is the
@@ -1311,6 +1327,14 @@ with sync_playwright() as p:
                 info(f"goto /login interrupted ({exc!r}); password-field wait will confirm /login")
             pw_field = page.locator("#password")
             pw_field.wait_for(state = "visible", timeout = 60_000)
+            page.keyboard.press("Control+,")
+            page.wait_for_timeout(5_500)
+            if len(system_requests) != login_system_request_count:
+                raise AssertionError(
+                    "persisted monitor requested /api/system while /login was active"
+                )
+            if "/login" not in page.url:
+                raise AssertionError(f"login route reloaded or redirected unexpectedly: {page.url}")
             pw_field.fill(NEW2)
             # Wait on the login POST so a transient 4xx/5xx is caught and retried
             # here, not swallowed until the out-of-loop composer wait.
@@ -1384,8 +1408,17 @@ with sync_playwright() as p:
     # merely-slow composer look like a broken login.
     composer = page.locator('textarea[aria-label="Message input"]')
     composer.wait_for(state = "visible", timeout = 60_000)
+    monitor_deadline = time.time() + 10
+    while len(system_requests) == login_system_request_count and time.time() < monitor_deadline:
+        page.wait_for_timeout(100)
+    if len(system_requests) == login_system_request_count:
+        fail("persisted monitor did not resume /api/system polling after login")
+    if page.get_by_role("dialog", name = re.compile(r"^Settings$")).count() != 0:
+        fail("settings shortcut on /login left the dialog open after authentication")
+    info("OK persisted monitor stayed dormant on /login and resumed after authentication")
     shoot("18-relogin-with-NEW2")
 
+    step("Shutdown via account menu")
     acct_btn = page.locator('button[aria-label$=" account menu"]').first
     if acct_btn.count() == 0:
         fail("account menu button missing -- can't reach Shutdown")

@@ -485,7 +485,7 @@ async def upload_dataset(
 
     # Stream to disk in chunks to avoid holding the whole file in memory. The
     # route-level cap gives a clear training-dataset error and avoids leaving
-    # oversized partial files in the Studio uploads directory.
+    # oversized partial files in the Unsloth uploads directory.
     upload_limit_bytes = get_upload_limit_bytes()
     total_bytes = 0
     upload_complete = False

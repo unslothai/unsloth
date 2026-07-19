@@ -1008,7 +1008,7 @@ def _install_bnb_windows_rocm() -> bool:
     # `hipinfo.exe` at import time to detect the GPU arch and logs a scary
     # (harmless) ERROR + WARNING on every import when it is missing. The venv
     # Scripts dir is on PATH only when the venv is activated, which neither
-    # Studio nor the installer's child processes ever do.
+    # Unsloth nor the installer's child processes ever do.
     _scripts_dir = os.path.dirname(sys.executable)
     if os.path.isfile(os.path.join(_scripts_dir, "hipInfo.exe")) and not shutil.which(
         "hipinfo.exe"
@@ -2318,7 +2318,7 @@ def install_python_stack() -> int:
         _progress("dependency overrides (skipped, no torch)")
     elif _rocm_windows_torch_installed or _installed_torch_is_windows_rocm():
         # No working Windows ROCm torchao build: it imports an absent c10d backend
-        # and crashes transformers.quantizers. Studio stubs it at runtime, so
+        # and crashes transformers.quantizers. Unsloth stubs it at runtime, so
         # installing it only ships a package that crashes on import -- skip it.
         _progress("dependency overrides (skipped, Windows ROCm)")
         _safe_print("   Windows ROCm -- skipping torchao (no working build; stubbed at runtime)")
@@ -2371,7 +2371,7 @@ def install_python_stack() -> int:
     #     "https://raw.githubusercontent.com/unslothai/unsloth/refs/heads/main/unsloth/save.py",
     # )
 
-    # 8. Studio dependencies
+    # 8. Unsloth dependencies
     _progress("studio deps")
     pip_install(
         "Installing studio dependencies",

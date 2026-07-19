@@ -9,7 +9,7 @@ import {
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { Spinner } from "@/components/ui/spinner";
-import { useTheme } from "next-themes";
+import { useTheme } from "@/features/settings/stores/theme-store";
 import { Toaster as Sonner, type ToasterProps } from "sonner";
 
 // Make toast text selectable. Sonner's onPointerDown calls setPointerCapture(),
@@ -33,9 +33,9 @@ const handleToastPointerDownCapture = (
 };
 
 const Toaster = ({ ...props }: ToasterProps) => {
-  // Use resolvedTheme so sonner's data-sonner-theme always matches the class
-  // next-themes puts on <html>; sonner-side "system" resolution can drift.
-  const { resolvedTheme } = useTheme();
+  // Use the resolved mode so sonner's data-sonner-theme always matches the
+  // class the theme store puts on <html>.
+  const { resolved } = useTheme();
 
   return (
     // display:contents adds no box; only carries the selection-fix handler.
@@ -45,7 +45,7 @@ const Toaster = ({ ...props }: ToasterProps) => {
       onPointerDownCapture={handleToastPointerDownCapture}
     >
       <Sonner
-        theme={(resolvedTheme as ToasterProps["theme"]) ?? "light"}
+        theme={resolved}
         className="toaster group"
         duration={5000}
         icons={{
@@ -90,7 +90,7 @@ const Toaster = ({ ...props }: ToasterProps) => {
             // Pin the close button inside the toast's top-right corner.
             // Sonner defaults to the left/outside edge, so keep the horizontal
             // override here and the top offset in index.css.
-            "--toast-close-button-start": "unset",
+            "--toast-close-button-start": "auto",
             "--toast-close-button-end": "8px",
             "--toast-close-button-transform": "none",
           } as React.CSSProperties

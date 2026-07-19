@@ -184,11 +184,12 @@ export function supportsRemoteModelCatalog(
   );
 }
 
-/** Presets that skip the API-key field (local servers with no auth by default). */
+/** Presets that hide the API-key field. Ollama is not skipped: Ollama cloud
+ * requires a key; local servers leave the optional field empty. */
 export function customPresetSkipsApiKeyField(
   providerType: string | null | undefined,
 ): boolean {
-  return providerType === "ollama" || providerType === "llama_cpp";
+  return providerType === "llama_cpp";
 }
 
 /** Catalog load plus optional manual model IDs. */

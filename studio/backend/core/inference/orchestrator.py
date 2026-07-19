@@ -59,7 +59,32 @@ class GenStreamError(str):
     "Error:" by checking isinstance(chunk, GenStreamError).
     """
 
-    __slots__ = ()
+    __slots__ = ("public",)
+
+    def __new__(
+        cls,
+        value,
+        *,
+        public: bool = False,
+    ):
+        obj = str.__new__(cls, value)
+        obj.public = bool(public)
+        return obj
+
+
+class GenStreamErrorRaised(RuntimeError):
+    """Internal exception form of ``GenStreamError`` for generator boundaries."""
+
+    __slots__ = ("public",)
+
+    def __init__(
+        self,
+        value,
+        *,
+        public: bool = False,
+    ):
+        super().__init__(value)
+        self.public = bool(public)
 
 
 class InferenceOrchestrator:
@@ -174,6 +199,21 @@ class InferenceOrchestrator:
 
     def _spawn_subprocess(self, config: dict) -> None:
         """Spawn a new inference subprocess."""
+        # Same recheck as the training/export spawns, REPAIR reservations only: a
+        # repair swaps without holding the lifecycle gate this load's caller owns,
+        # while an install cannot swap until this gate is released (and then its
+        # queued-load snapshot aborts it), so tolerating installs here lets the
+        # load win instead of failing both sides. Also covers the OpenAI
+        # auto-switch path, which enters _load_model_impl without route guards.
+        from utils.transformers_version import (
+            SidecarSwapInProgress,
+            sidecar_swap_kind,
+        )
+
+        if sidecar_swap_kind() == "repair":
+            raise SidecarSwapInProgress(
+                "A transformers repair is replacing the latest sidecar; retry when it completes."
+            )
         from utils.native_path_leases import (
             native_path_secret_removed_for_child_start,
             run_without_native_path_secret,
@@ -210,12 +250,24 @@ class InferenceOrchestrator:
         if self._cancel_event is not None:
             self._cancel_event.set()
 
-    def _shutdown_subprocess(self, timeout: float = 10.0) -> None:
-        """Gracefully shut down the inference subprocess."""
+    def is_worker_alive(self) -> bool:
+        """True while the inference subprocess is running, even with no model
+        active (a failed load can leave a live worker holding sidecar modules)."""
+        proc = self._proc
+        return proc is not None and proc.is_alive()
+
+    def _shutdown_subprocess(self, timeout: float = 10.0) -> bool:
+        """Gracefully shut down the inference subprocess.
+
+        Returns True only once the worker is confirmed dead. If it survives
+        terminate/kill (e.g. wedged in an uninterruptible CUDA syscall that outlives
+        SIGKILL) the live handle is KEPT, not nulled, so is_worker_alive() and the
+        pre-swap liveness guard can still observe the survivor instead of a cleared
+        handle and refuse the destructive sidecar swap."""
         self._stop_dispatcher()  # before killing subprocess
         if self._proc is None or not self._proc.is_alive():
             self._proc = None
-            return
+            return True
 
         # 1. Cancel any ongoing generation first (instant via mp.Event)
         self._cancel_generation()
@@ -252,12 +304,22 @@ class InferenceOrchestrator:
                 except Exception:
                     pass
 
+        if self._proc is not None and self._proc.is_alive():
+            # Survived SIGKILL (uninterruptible syscall): keep the handle so callers
+            # and the pre-swap guard see a live worker rather than a nulled one.
+            logger.error(
+                "Inference subprocess still alive after terminate/kill; "
+                "preserving its handle for the pre-swap liveness check"
+            )
+            return False
+
         self._proc = None
         self._cmd_queue = None
         self._resp_queue = None
         self._cancel_event = None
         self._drain_event = None
         logger.info("Inference subprocess shut down")
+        return True
 
     def _cleanup(self):
         """atexit handler."""
@@ -494,13 +556,19 @@ class InferenceOrchestrator:
         initial_resp_queue = self._resp_queue
         while True:
             if self._proc is not initial_proc or self._resp_queue is not initial_resp_queue:
-                yield GenStreamError(f"Error: {self._subprocess_crash_message(crash_context)}")
+                yield GenStreamError(
+                    f"Error: {self._subprocess_crash_message(crash_context)}",
+                    public = True,
+                )
                 return
             resp = read_one(read_timeout)
             if resp is None:
                 # Check subprocess health
                 if not self._ensure_subprocess_alive():
-                    yield GenStreamError(f"Error: {self._subprocess_crash_message(crash_context)}")
+                    yield GenStreamError(
+                        f"Error: {self._subprocess_crash_message(crash_context)}",
+                        public = True,
+                    )
                     return
                 continue
 
@@ -652,11 +720,11 @@ class InferenceOrchestrator:
         GPU work stays serialized; this only avoids orchestrator lock contention.
         """
         if not self._ensure_subprocess_alive():
-            yield GenStreamError("Error: Inference subprocess is not running")
+            yield GenStreamError("Error: Inference subprocess is not running", public = True)
             return
 
         if not self.active_model_name:
-            yield GenStreamError("Error: No active model")
+            yield GenStreamError("Error: No active model", public = True)
             return
         # Latch the target model so the recheck below can detect a switch that completed
         # between _start_dispatcher and mailbox registration (mirrors the locked path's
@@ -667,7 +735,7 @@ class InferenceOrchestrator:
         # so without this early-out a compare request would enqueue a generate on the
         # outgoing model and delay the switch.
         if self._unload_pending:
-            yield GenStreamError("Error: model is being unloaded")
+            yield GenStreamError("Error: model is being unloaded", public = True)
             return
 
         # Ensure the dispatcher runs. _start_dispatcher serializes concurrent starters under
@@ -739,7 +807,7 @@ class InferenceOrchestrator:
             # _stop_dispatcher joins the dispatcher, which itself takes that lock.
             if orphaned_dispatcher:
                 self._stop_dispatcher()
-            yield GenStreamError("Error: model is being unloaded")
+            yield GenStreamError("Error: model is being unloaded", public = True)
             return
 
         try:
@@ -882,6 +950,13 @@ class InferenceOrchestrator:
     # Public API — same interface as InferenceBackend
     # ------------------------------------------------------------------
 
+    # Monotonic count of PUBLISHED loads; lets the install route detect a load
+    # (including a same-model reload) that completed while it waited on the gate.
+    # Bumped when the load result is published, not at load start: a start-time
+    # bump is already visible when the installer snapshots mid-load, so the
+    # completed reload would look unchanged and get unloaded by the swap.
+    load_generation: int = 0
+
     def load_model(
         self,
         config,  # ModelConfig
@@ -935,13 +1010,36 @@ class InferenceOrchestrator:
             sub_config["resolved_gpu_ids"] = resolved_gpu_ids
             sub_config["gpu_selection"] = gpu_selection
 
+            # Recheck the sidecar reservation BEFORE tearing the old worker down,
+            # for REPAIRS only: an install holds this same lifecycle gate, so it
+            # cannot swap while this load runs, and its queued-load snapshot
+            # aborts it after this load publishes -- the load wins cleanly.
+            # Raising here (repair) keeps the current model loaded.
+            from utils.transformers_version import (
+                SidecarSwapInProgress,
+                sidecar_swap_kind,
+            )
+
+            if sidecar_swap_kind() == "repair":
+                raise SidecarSwapInProgress(
+                    "A transformers repair is replacing the latest sidecar; "
+                    "retry when it completes."
+                )
+
             # Always kill the existing subprocess and spawn fresh: reusing one
             # after unsloth patches torch internals breaks getsource on reload.
             if self._ensure_subprocess_alive():
                 self._cancel_generation()
                 time.sleep(0.3)
-                self._shutdown_subprocess()
-
+                if self._shutdown_subprocess() is False:
+                    # The worker survived terminate/kill (e.g. a wedged CUDA syscall that
+                    # outlives SIGKILL). Its handle is kept, so is_worker_alive() and the
+                    # pre-swap guard still see it; do not spawn a second worker over one
+                    # still holding GPU memory. Fail so the load can retry once it exits.
+                    raise RuntimeError(
+                        "The current inference worker did not exit and still holds GPU "
+                        "memory; not starting a new model over it. Retry shortly."
+                    )
             elif self._proc is not None:
                 self._shutdown_subprocess(timeout = 2)
 
@@ -1030,6 +1128,7 @@ class InferenceOrchestrator:
                         return False
                     model_info = resp.get("model_info", {})
                     self.active_model_name = model_info.get("identifier", model_name)
+                    self.load_generation += 1
                     # A load always spawns a fresh subprocess holding only this model, so
                     # mirror that. A lingering stale name would pass unload_model's "not in
                     # self.models" guard, and the worker's absent-name fallback would unload
@@ -1061,8 +1160,15 @@ class InferenceOrchestrator:
                     self.models.clear()
                     raise Exception(error)
 
-        except Exception:
+        except Exception as exc:
             self.loading_models.discard(model_name)
+            from utils.transformers_version import SidecarSwapInProgress
+
+            if isinstance(exc, SidecarSwapInProgress) and self._ensure_subprocess_alive():
+                # Raised before the old worker was torn down: the previous model
+                # is still live, so keep the mirrors (clearing them would let the
+                # installer treat the worker as inactive and kill it unreported).
+                raise
             self.active_model_name = None
             self.models.clear()
             raise
@@ -1293,12 +1399,15 @@ class InferenceOrchestrator:
         nudge_tool_calls: Optional[bool] = None,
         tool_call_timeout: int = 300,
         session_id: Optional[str] = None,
+        thread_id: Optional[str] = None,
         rag_scope: Optional[dict] = None,
         confirm_tool_calls: bool = False,
         bypass_permissions: bool = False,
+        permission_mode: Optional[str] = None,
         use_adapter: Optional[Union[bool, str]] = None,
         stats_holder: Optional[dict] = None,
         presence_penalty: float = 0.0,
+        reasoning_prefilled: bool = False,
         **_unused,
     ):
         """Run the safetensors agentic tool loop in the parent process,
@@ -1337,12 +1446,27 @@ class InferenceOrchestrator:
                 presence_penalty = presence_penalty,
             )
             if use_adapter is not None:
-                yield from self.generate_with_adapter_control(
+                stream = self.generate_with_adapter_control(
                     use_adapter = use_adapter,
                     **common_kwargs,
                 )
             else:
-                yield from self.generate_chat_response(**common_kwargs)
+                stream = self.generate_chat_response(**common_kwargs)
+            close_stream = False
+            try:
+                for chunk in stream:
+                    if isinstance(chunk, GenStreamError):
+                        close_stream = True
+                        raise GenStreamErrorRaised(str(chunk), public = chunk.public)
+                    yield chunk
+            finally:
+                if close_stream:
+                    close = getattr(stream, "close", None)
+                    if callable(close):
+                        try:
+                            close()
+                        except Exception:
+                            logger.debug("failed to close errored generation stream", exc_info = True)
 
         initial = list(messages)
         if system_prompt:
@@ -1359,9 +1483,12 @@ class InferenceOrchestrator:
             max_tool_iterations = max_tool_iterations,
             tool_call_timeout = tool_call_timeout,
             session_id = session_id,
+            thread_id = thread_id,
             rag_scope = rag_scope,
             confirm_tool_calls = confirm_tool_calls,
             bypass_permissions = bypass_permissions,
+            permission_mode = permission_mode,
+            reasoning_prefilled = reasoning_prefilled,
         )
 
     def generate_with_adapter_control(
@@ -1375,14 +1502,27 @@ class InferenceOrchestrator:
 
         Uses the dispatcher path (no _gen_lock) so compare-mode requests
         don't block each other; the subprocess serializes them via its
-        sequential command loop.
+        sequential command loop. Backend failures raise instead of becoming
+        assistant text.
         """
-        yield from self._generate_dispatched(
+        stream = self._generate_dispatched(
             use_adapter = use_adapter,
             cancel_event = cancel_event,
             stats_holder = stats_holder,
             **gen_kwargs,
         )
+        try:
+            for chunk in stream:
+                if isinstance(chunk, GenStreamError):
+                    # Preserve the public/operational flag so the route can surface
+                    # the real message (e.g. "model is being unloaded") instead of a
+                    # generic error. Mirrors the safetensors tool loop's _single_turn.
+                    raise GenStreamErrorRaised(str(chunk), public = chunk.public)
+                yield chunk
+        finally:
+            close = getattr(stream, "close", None)
+            if callable(close):
+                close()
 
     def _generate_inner(
         self,
@@ -1410,11 +1550,11 @@ class InferenceOrchestrator:
         readers don't consume each other's tokens off the shared resp_queue.
         """
         if not self._ensure_subprocess_alive():
-            yield GenStreamError("Error: Inference subprocess is not running")
+            yield GenStreamError("Error: Inference subprocess is not running", public = True)
             return
 
         if not self.active_model_name:
-            yield GenStreamError("Error: No active model")
+            yield GenStreamError("Error: No active model", public = True)
             return
         expected_model = self.active_model_name
 
@@ -1431,7 +1571,7 @@ class InferenceOrchestrator:
             # so we never generate on the wrong one.
             if self._unload_pending or self.active_model_name != expected_model:
                 # Won the lock handoff during a switch; don't start on the outgoing model.
-                yield GenStreamError("Error: model is being unloaded")
+                yield GenStreamError("Error: model is being unloaded", public = True)
                 return
             request_id = str(uuid.uuid4())
             image_b64 = self._pil_to_base64(image) if image is not None else None
@@ -1616,10 +1756,10 @@ class InferenceOrchestrator:
     ) -> Generator[str, None, None]:
         """Shared inner logic for audio input generation (Whisper + ASR)."""
         if not self._ensure_subprocess_alive():
-            yield GenStreamError("Error: Inference subprocess is not running")
+            yield GenStreamError("Error: Inference subprocess is not running", public = True)
             return
         if not self.active_model_name:
-            yield GenStreamError("Error: No active model")
+            yield GenStreamError("Error: No active model", public = True)
             return
         expected_model = self.active_model_name
 
@@ -1628,7 +1768,7 @@ class InferenceOrchestrator:
             # cleared or swapped the model while we waited.
             if self._unload_pending or self.active_model_name != expected_model:
                 # Won the lock handoff during a switch; don't start on the outgoing model.
-                yield GenStreamError("Error: model is being unloaded")
+                yield GenStreamError("Error: model is being unloaded", public = True)
                 return
             request_id = str(uuid.uuid4())
 

@@ -36,7 +36,7 @@ class TestIsIntegratedSignal:
     """hipDeviceProp_t.integrated wins when truthy; 0/absent never downgrades.
 
     Same universal gate PR #5988's UMA safetensors fast-load uses -- keeps
-    Studio's two unified-memory consumers on one signal."""
+    Unsloth's two unified-memory consumers on one signal."""
 
     def test_integrated_upgrades_unknown_apu(self) -> None:
         # gfx1103 Phoenix iGPU: outside the hardcoded arch set, but the
