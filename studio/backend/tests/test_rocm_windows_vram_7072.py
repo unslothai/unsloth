@@ -135,8 +135,19 @@ def test_system_tab_shows_per_gpu_used(win_rocm, monkeypatch):
     assert by_idx[0]["vram_total_gb"] == 48.0
     assert by_idx[0]["vram_used_gb"] == pytest.approx(40.0, abs = 0.01)  # not 0
     assert by_idx[1]["vram_total_gb"] == 8.0  # own total
-    assert by_idx[1]["vram_used_gb"] == pytest.approx(0.5, abs = 0.01)
-    assert all(d["vram_used_gb"] <= d["vram_total_gb"] for d in devices)
+    # The reporter's third counter (3 MiB "Basic Render Driver") makes this a
+    # hidden-adapter case: the noise filter could equally have dropped the visible
+    # 8 GiB card's real reading, so its 0.5 GiB survivor is not capacity-forced to
+    # that card (0.5 GiB fits it, but also fits a hidden adapter). Only the 40 GiB
+    # usage is forced -- it exceeds the 8 GiB card, so it can only be the 48 GiB
+    # card. The idle card reports Unknown rather than a possibly-fabricated 0.5 GiB.
+    assert by_idx[1]["vram_used_gb"] is None
+    assert by_idx[1]["vram_utilization_pct"] is None
+    assert all(
+        d["vram_used_gb"] <= d["vram_total_gb"]
+        for d in devices
+        if d["vram_used_gb"] is not None
+    )
 
 
 def test_gpu_utilization_does_not_collapse(win_rocm, monkeypatch):
@@ -252,6 +263,87 @@ def test_match_adapter_reports_unknown_when_usage_not_capacity_ordered():
     # But a capacity-forced assignment (usage exceeds the smaller card) is kept:
     # 40 GiB can only be the 48 GiB card, so it is not fabrication.
     assert hw._match_adapter_used_to_devices([40 * GB], [48 * GB, 8 * GB]) == [40 * GB, None]
+
+
+def test_match_adapter_reports_unknown_when_hidden_usage_fits_visible_card():
+    # Round-4 hole (Codex 3610843300): with a hidden adapter present, a survivor
+    # that merely *fits* a visible card must NOT be pinned onto it. Two visible
+    # cards at 48/8 GiB using 40 GiB / 10 MiB beside a hidden 6 GiB adapter: the
+    # 10 MiB drops below the noise floor and the hidden 6 GiB "fits" the idle 8 GiB
+    # card, so the old ranking fabricated [40, 6]. The 6 GiB is not capacity-forced
+    # onto the 8 GiB card (it also fits the hidden adapter), so that card must read
+    # Unknown. Only the 40 GiB usage is forced (it exceeds the 8 GiB card).
+    assert hw._match_adapter_used_to_devices([40 * GB, 10 * MiB, 6 * GB], [48 * GB, 8 * GB]) == [
+        40 * GB,
+        None,
+    ]
+    # Counter order must not matter.
+    assert hw._match_adapter_used_to_devices([6 * GB, 40 * GB, 10 * MiB], [48 * GB, 8 * GB]) == [
+        40 * GB,
+        None,
+    ]
+    # A single visible card with a hidden adapter can never be attributed: even a
+    # fitting survivor could be the hidden GPU's usage while the visible card is
+    # idle (its true reading filtered as noise).
+    assert hw._match_adapter_used_to_devices([6 * GB, 10 * MiB], [8 * GB]) == [None]
+
+
+def test_match_adapter_capacity_forced_matrix():
+    """Exhaustive hidden-adapter matrix: emit a value only when it is capacity-forced
+    AND the supra-threshold counters number exactly the visible devices.
+
+    The invariant: in the hidden-adapter branch (more raw counters than visible
+    devices) concrete values are emitted only when the supra-threshold counters
+    equal the visible-device count (every visible card has one real reading, the
+    extras were sub-threshold placeholders), and then only for a device whose ranked
+    usage strictly exceeds every smaller visible card's capacity. If any visible
+    card is idle (fewer supra-threshold counters than devices) a survivor could be
+    the hidden GPU's usage, so every device reports unknown; the smallest card and
+    any merely-fitting usage stay unknown too.
+    """
+    m = hw._match_adapter_used_to_devices
+    # -- exactly-n supra-threshold counters, capacity-forced survivors are kept - #
+    # The reporter shape (40 GiB loaded, 0.5 GiB idle-but-supra survivor, tiny
+    # placeholder): both visible cards have a real reading, so the extra 3 MiB was a
+    # placeholder. 40 GiB forced onto the 48 GiB card, 0.5 GiB not forced -> None.
+    assert m([40 * GB, 0.5 * GB, 3 * MiB], [48 * GB, 8 * GB]) == [40 * GB, None]
+    # Three visible cards all active (supra-threshold) + placeholder: 40 > 24 and
+    # 20 > 8, both forced; the 8 GiB card is not forced -> None.
+    assert m([40 * GB, 20 * GB, 5 * GB, 3 * MiB], [48 * GB, 24 * GB, 8 * GB]) == [
+        40 * GB,
+        20 * GB,
+        None,
+    ]
+    # -- fewer supra-threshold counters than visible cards -> all unknown ------ #
+    # A visible card is idle, so a lone large survivor could be the hidden GPU's:
+    # (Codex 3610843300 hardened further -- even the "forced" 40 is not attributable
+    # when the other visible card is idle rather than merely fitting.)
+    assert m([40 * GB, 3 * MiB, 3 * MiB], [48 * GB, 8 * GB]) == [None, None]
+    assert m([40 * GB, 10 * MiB, 10 * MiB], [48 * GB, 8 * GB]) == [None, None]
+    assert m([40 * GB, 20 * GB, 3 * MiB, 3 * MiB], [48 * GB, 24 * GB, 8 * GB]) == [
+        None,
+        None,
+        None,
+    ]
+    # Middle usage (6 GiB) fits both the 24 and 8 GiB cards, and only two cards are
+    # active for three visible -> not a bijection -> all unknown.
+    assert m([40 * GB, 6 * GB, 3 * MiB, 3 * MiB], [48 * GB, 24 * GB, 8 * GB]) == [
+        None,
+        None,
+        None,
+    ]
+    # -- hidden larger than every visible card -> all unknown ----------------- #
+    assert m([40 * GB, 10 * MiB], [8 * GB]) == [None]
+    assert m([48 * GB, 3 * MiB, 3 * MiB], [24 * GB, 8 * GB]) == [None, None]
+    # -- more active adapters than visible cards -> all unknown --------------- #
+    assert m([40 * GB, 7 * GB, 6 * GB, 3 * MiB], [48 * GB, 8 * GB]) == [None, None]
+    assert m([40 * GB, 7 * GB, 6 * GB, 3 * MiB, 3 * MiB], [48 * GB, 8 * GB]) == [None, None]
+    # -- every counter below the noise floor (placeholder fallback) -> unknown - #
+    assert m([50 * MiB, 10 * MiB], [8 * GB]) == [None]
+    assert m([50 * MiB, 10 * MiB, 5 * MiB], [48 * GB, 8 * GB]) == [None, None]
+    # -- equal-capacity cards with a hidden adapter: nothing is forced -------- #
+    assert m([40 * GB, 40 * GB, 3 * MiB], [48 * GB, 48 * GB]) == [None, None]
+    assert m([40 * GB, 30 * GB, 3 * MiB], [48 * GB, 48 * GB]) == [None, None]
 
 
 def test_perf_counter_parser_and_sentinel(monkeypatch):

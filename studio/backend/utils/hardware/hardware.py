@@ -800,62 +800,96 @@ def _match_adapter_used_to_devices(
 
     Windows shares no key between LUID counter instances and torch ordinals, so
     usage is paired with capacity: the largest usage goes to the largest device,
-    clamped to that total. That pairing is trustworthy only when it is the *only*
-    feasible one, i.e. capacity forces it (a usage larger than every smaller
-    device can sit on just one card). When a smaller-capacity device could
-    equally hold a strictly larger usage (e.g. an 8 GiB card near full beside a
-    lightly used 48 GiB card), the two values could be swapped without violating
-    any capacity, so the ranking is a guess. There is no verified LUID-to-torch
-    mapping to break the tie, and a wrong guess both mislabels the System tab and
-    feeds ``routes/training_vram.py`` a wrong per-index free value, so report
-    unknown (``None``) for every device rather than fabricate. Unmatched devices
-    get ``None``. Returns a list aligned to ``device_totals``.
+    clamped to that total. That pairing is trustworthy only when capacity *forces*
+    it (a usage larger than every smaller device can sit on just one card). When a
+    smaller-capacity device could equally hold a strictly larger usage (e.g. an
+    8 GiB card near full beside a lightly used 48 GiB card), the two values could
+    be swapped without violating any capacity, so the ranking is a guess. There is
+    no verified LUID-to-torch mapping to break the tie, and a wrong guess both
+    mislabels the System tab and feeds ``routes/training_vram.py`` a wrong
+    per-index free value, so report unknown (``None``) rather than fabricate.
+
+    When there are more raw counters than visible devices at least one adapter
+    belongs to a hidden GPU (outside the visibility mask) or a non-GPU display
+    adapter, and the sub-threshold noise filter may itself have dropped a
+    *visible* card's real reading. A surviving counter that merely *fits* a visible
+    card can actually be the hidden GPU's usage pinned onto an idle visible card
+    whose true (filtered) reading was tiny -- e.g. two visible cards at 48/8 GiB
+    using 40 GiB / 10 MiB beside a hidden 6 GiB adapter: the 10 MiB drops out and
+    the 6 GiB "fits" the 8 GiB card even though that card is idle. Worse, if BOTH
+    visible readings fall below the noise floor a lone large survivor could belong
+    to the hidden GPU entirely while both visible cards are idle. So in the
+    hidden-adapter case concrete values are emitted only when the supra-threshold
+    counters number EXACTLY the visible devices: then every visible card has one
+    real reading and the extras were sub-threshold placeholders, making a
+    capacity-ranked bijection plausible. When the supra-threshold counters are
+    fewer than the visible devices (a visible card is idle, so a survivor could be
+    the hidden device's) or more (a masked GPU is actively using VRAM), no counter
+    can be attributed, so every device reports unknown. Even in the exactly-n case a
+    value is emitted for a device ONLY when capacity forces it: the ranked usage
+    must exceed every smaller visible card's capacity, so no smaller visible card
+    could account for it (best-effort -- a contrived hidden-busy while a visible
+    card is idle can still mislead, but the common loaded-card case is correct). The
+    smallest visible card and any usage that merely fits report unknown. Unmatched
+    devices get ``None``. Returns a list aligned to ``device_totals``.
     """
     n = len(device_totals)
     if n == 0:
         return []
     useds = sorted(adapter_useds, reverse = True)
+    ranked_positions = sorted(range(n), key = lambda i: -device_totals[i])
+    ranked_totals = [device_totals[pos] for pos in ranked_positions]
+    assigned: list[Optional[float]]
     # More raw counters than visible devices means at least one adapter belongs to
     # a GPU outside the visibility mask (or a non-GPU display adapter). Measured on
     # the raw count *before* the noise filter, because a genuinely idle visible card
     # can itself sit below the sub-threshold noise floor.
-    extra_adapters = len(useds) > n
-    # Drop placeholder adapters only if they'd outnumber real devices.
-    if extra_adapters:
+    if len(useds) > n:
         non_trivial = [u for u in useds if u >= _ROCM_WIN_ADAPTER_MIN_BYTES]
-        if len(non_trivial) > n:
-            # More adapters are actively using VRAM than are visible here (a GPU
-            # outside the visibility mask, or an extra discrete adapter). Usage
-            # alone can't tell the visible set apart, so any pairing would
-            # fabricate values; report unknown rather than mis-assign.
+        if len(non_trivial) != n:
+            # Not a clean visible-set bijection, so no counter can be attributed to
+            # a specific visible card. With MORE supra-threshold counters than
+            # visible cards a GPU outside the visibility mask is actively using VRAM;
+            # with FEWER, at least one visible card is idle (its reading below the
+            # noise floor) and a surviving counter could be that hidden device's
+            # usage rather than the idle card's -- e.g. two visible 48/8 GiB cards
+            # both idle beside a hidden GPU using 40 GiB looks identical to the
+            # 48 GiB card loaded to 40 GiB, so pinning 40 onto a visible card would
+            # fabricate a reading. (This also subsumes the placeholder-only case
+            # where every counter is sub-threshold.) No LUID-to-ordinal mapping
+            # exists to break the tie, so report unknown rather than fabricate.
             return [None] * n
-        if not non_trivial:
-            # Every counter sits below the noise floor while an extra adapter is
-            # present (e.g. a "Basic Render Driver" placeholder alongside idle
-            # real GPUs). Falling back to the raw magnitude-sorted counters would
-            # attribute the placeholder's counter to a real GPU and drop a real
-            # card's reading, and with a single visible device the swap-ambiguity
-            # check below (which needs at least two ranks) cannot catch it. No
-            # LUID-to-ordinal mapping exists to tell the placeholder apart from a
-            # genuinely idle GPU, so report unknown rather than fabricate.
-            return [None] * n
-        useds = non_trivial[:n]
-    ranked_positions = sorted(range(n), key = lambda i: -device_totals[i])
-    # Usage per rank (largest usage to largest capacity), 0 for devices with no
-    # adapter counter, plus the capacity at that rank.
-    ranked_useds = [useds[rank] if rank < len(useds) else 0.0 for rank in range(n)]
-    ranked_totals = [device_totals[pos] for pos in ranked_positions]
-    # With hidden adapters present, a kept usage that exceeds its ranked visible
-    # capacity cannot belong to any visible card: it is a hidden, larger GPU whose
-    # counter survived the noise filter while a visible card's real (sub-threshold)
-    # usage was dropped as noise. Clamping it onto the smaller visible device would
-    # fabricate a "fully used" reading (e.g. a hidden 48 GiB card at 40 GiB shown as
-    # a visible 8 GiB card fully used while its true 10 MiB usage was filtered out),
-    # so report unknown rather than mis-assign the hidden card's usage.
-    if extra_adapters:
+        # Exactly n supra-threshold counters: the extra raw adapters were all
+        # sub-threshold placeholders and every visible card has one supra-threshold
+        # reading, so a capacity-ranked bijection is plausible. Emit a value only
+        # where capacity forces it (best-effort: a contrived hidden-busy while a
+        # visible card is idle can still mislead, but the common loaded-card case,
+        # which is what #7072 reports, is attributed correctly).
+        useds = non_trivial
+        ranked_useds = [useds[rank] for rank in range(n)]
+        # A kept usage that exceeds its own ranked visible capacity is a hidden,
+        # larger GPU whose counter outlived a visible card's filtered reading;
+        # clamping it onto the smaller visible card would fabricate a fully-used
+        # reading (a hidden 48 GiB card at 40 GiB shown as a visible 8 GiB card
+        # fully used), so report unknown for every device.
         for rank in range(n):
             if ranked_useds[rank] > ranked_totals[rank]:
                 return [None] * n
+        # Emit a value only where capacity forces the mapping: the ranked usage
+        # must strictly exceed the next-smaller (and thus every smaller) visible
+        # capacity, so it cannot be a smaller visible card's reading or a dropped
+        # sub-threshold one. The smallest card (no smaller capacity to exceed) and
+        # any usage that merely fits stay unknown. This keeps the classic single
+        # dominant-usage case (40 GiB across 48/8 GiB -> [40, None]) while refusing
+        # to pin a hidden adapter's fitting usage onto an idle visible card.
+        assigned = [None] * n
+        for rank, pos in enumerate(ranked_positions):
+            if rank + 1 < n and ranked_useds[rank] > ranked_totals[rank + 1]:
+                assigned[pos] = min(ranked_useds[rank], device_totals[pos])
+        return assigned
+    # No hidden adapters: every counter belongs to a visible card, so the capacity
+    # ranking has to be a permutation of the visible set.
+    ranked_useds = [useds[rank] if rank < len(useds) else 0.0 for rank in range(n)]
     # Ambiguous whenever a strictly larger usage would also fit the next
     # smaller-capacity device: those two values could be swapped without breaking
     # any capacity, so ranking cannot know which card actually holds which. No
@@ -864,7 +898,7 @@ def _match_adapter_used_to_devices(
         upper, lower = ranked_useds[rank], ranked_useds[rank + 1]
         if upper > lower and upper <= ranked_totals[rank + 1]:
             return [None] * n
-    assigned: list[Optional[float]] = [None] * n
+    assigned = [None] * n
     for rank, pos in enumerate(ranked_positions):
         if rank < len(useds):
             assigned[pos] = min(useds[rank], device_totals[pos])
