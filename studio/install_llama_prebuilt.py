@@ -6450,6 +6450,7 @@ def write_prebuilt_metadata(
     choice: AssetChoice,
     approved_checksums: ApprovedReleaseChecksums,
     prebuilt_fallback_used: bool,
+    force_cpu: bool = False,
 ) -> None:
     source_asset_name, source_sha256 = selected_source_archive_metadata(
         approved_checksums,
@@ -6474,9 +6475,10 @@ def write_prebuilt_metadata(
         "release_tag": release_tag,
         "published_repo": approved_checksums.repo,
         "asset": choice.name,
-        # Canonical backend (e.g. linux-cpu); lets the updater re-assert a forced-CPU
-        # build across updates (#7213).
-        "install_kind": choice.install_kind,
+        # Whether CPU was explicitly forced (--cpu-fallback). The updater re-asserts it
+        # so a deliberate CPU install is not re-routed to a GPU bundle (#7213); a natural
+        # CPU fallback stays False so it can still heal to GPU.
+        "force_cpu": force_cpu,
         "asset_sha256": choice.expected_sha256,
         "source": choice.source_label,
         # Binary-side repo/tag for non-fork sources (e.g. the ggml-org upstream
@@ -6749,6 +6751,7 @@ def validate_prebuilt_choice(
     approved_checksums: ApprovedReleaseChecksums,
     prebuilt_fallback_used: bool,
     quantized_path: Path,
+    force_cpu: bool = False,
 ) -> tuple[Path, Path]:
     source_repo, source_ref, source_archive, exact_source = preferred_source_archive(
         approved_checksums, llama_tag
@@ -6789,6 +6792,7 @@ def validate_prebuilt_choice(
         choice = choice,
         approved_checksums = approved_checksums,
         prebuilt_fallback_used = prebuilt_fallback_used,
+        force_cpu = force_cpu,
     )
     # Hashless external prebuilts are not in the approved-sha256
     # manifest and rely on the functional smoke test as their only integrity gate,
@@ -6831,6 +6835,7 @@ def validate_prebuilt_attempts(
     approved_checksums: ApprovedReleaseChecksums,
     initial_fallback_used: bool = False,
     existing_install_dir: Path | None = None,
+    force_cpu: bool = False,
 ) -> tuple[AssetChoice, Path, bool]:
     attempt_list = list(attempts)
     if not attempt_list:
@@ -6883,6 +6888,7 @@ def validate_prebuilt_attempts(
                 approved_checksums = approved_checksums,
                 prebuilt_fallback_used = tried_fallback,
                 quantized_path = quantized_path,
+                force_cpu = force_cpu,
             )
         except Exception as exc:
             remove_tree(staging_dir)
@@ -7115,6 +7121,7 @@ def install_prebuilt(
                             initial_fallback_used = release_index > 0,
                             # Skip is gated per-attempt inside, so pass the dir always.
                             existing_install_dir = install_dir,
+                            force_cpu = force_cpu,
                         )
                     except ExistingInstallSatisfied:
                         return

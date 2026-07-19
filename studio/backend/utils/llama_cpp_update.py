@@ -473,18 +473,13 @@ def _rocm_install_args(asset: Optional[str]) -> list[str]:
     return ["--has-rocm"]
 
 
-# CPU-only prebuilt kinds to re-assert with --cpu-fallback on update: the x86_64
-# (*-cpu) and arm64 (*-arm64) Linux/Windows bundles. macOS ignores it, so is omitted.
-_CPU_INSTALL_KINDS = ("linux-cpu", "windows-cpu", "linux-arm64", "windows-arm64")
-
-
 def _run_update(
     install_dir: Path,
     repo: str,
     asset: Optional[str],
     script: Path,
     pin_release_tag: Optional[str] = None,
-    install_kind: Optional[str] = None,
+    force_cpu: bool = False,
 ) -> None:
     """Worker: put the backend into a maintenance state, run the installer for
     the latest prebuilt, then refresh caches so the next load uses the new build.
@@ -528,11 +523,11 @@ def _run_update(
         if pin_release_tag:
             cmd.extend(["--published-release-tag", pin_release_tag])
         cmd.extend(_rocm_install_args(asset))
-        # Preserve a CPU install across updates, else detect_host on a GPU host
-        # re-routes to a GPU/Vulkan bundle and revives the crash (#7213). Keyed off
-        # install_kind, not the asset (Linux x64 CPU is bin-ubuntu-x64, arm64 is
-        # *-arm64); legacy markers without it keep #6097 heal-to-GPU.
-        if install_kind in _CPU_INSTALL_KINDS:
+        # Re-assert an explicitly forced CPU install (--cpu-fallback) so detect_host on a
+        # GPU host does not re-route to a GPU/Vulkan bundle and revive the crash (#7213).
+        # Only an explicit force is preserved: a natural CPU fallback (or a legacy marker
+        # without the flag) stays free to heal to a GPU bundle (#6097).
+        if force_cpu:
             cmd.append("--cpu-fallback")
         logger.info("llama update: installing", cmd = " ".join(cmd))
         # Stream progress lines into job["progress"].
@@ -683,7 +678,7 @@ def start_update() -> dict:
         repo = marker.get("published_repo") or DEFAULT_PUBLISHED_REPO
         from_tag = marker.get("tag") or marker.get("release_tag")
         asset = marker.get("asset")
-        install_kind = marker.get("install_kind")
+        force_cpu = bool(marker.get("force_cpu"))
         # Install exactly the release the banner offered: the installer's own
         # "latest" is commit-date ordered and can lag the published_at pick
         # above, reinstalling the current build in a loop (the #6219 class).
@@ -718,7 +713,8 @@ def start_update() -> dict:
         repo = (res or {}).get("repo") or DEFAULT_PUBLISHED_REPO
         from_tag = None
         asset = (res or {}).get("asset")
-        install_kind = (res or {}).get("install_kind")
+        # Source builds carry no forced-CPU marker, so nothing to preserve here.
+        force_cpu = False
         # No pin: source-build detection resolves via --resolve-prebuilt latest,
         # the same resolver the unpinned apply uses, so the two already agree.
         pin_release_tag = None
@@ -749,7 +745,7 @@ def start_update() -> dict:
 
     thread = threading.Thread(
         target = _run_update,
-        args = (install_dir, repo, asset, script, pin_release_tag, install_kind),
+        args = (install_dir, repo, asset, script, pin_release_tag, force_cpu),
         name = "llama-cpp-update",
         daemon = True,
     )

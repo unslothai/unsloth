@@ -83,7 +83,7 @@ def _write_install(
     repo: str = "unslothai/llama.cpp",
     asset: str | None = None,
     release_tag: str | None = None,
-    install_kind: str | None = None,
+    force_cpu: bool | None = None,
 ) -> str:
     """Create a fake prebuilt install and return the llama-server path."""
     bin_dir = dir_ / "build" / "bin"
@@ -100,8 +100,8 @@ def _write_install(
     }
     if asset is not None:
         marker["asset"] = asset
-    if install_kind is not None:
-        marker["install_kind"] = install_kind
+    if force_cpu is not None:
+        marker["force_cpu"] = force_cpu
     (dir_ / MARKER).write_text(json.dumps(marker))
     return str(binary)
 
@@ -497,27 +497,21 @@ def test_start_update_preserves_vulkan_via_env(monkeypatch, tmp_path):
 
 
 @pytest.mark.parametrize(
-    "install_kind, asset, expect_flag",
+    "force_cpu, expect_flag",
     [
-        ("linux-cpu", "llama-b9493-bin-ubuntu-x64.tar.gz", True),
-        ("windows-cpu", "llama-b9493-bin-win-cpu-x64.zip", True),
-        ("linux-arm64", "llama-b9493-bin-ubuntu-arm64.tar.gz", True),
-        ("windows-arm64", "llama-b9493-bin-win-cpu-arm64.zip", True),
-        ("linux-vulkan", "llama-b9493-bin-ubuntu-vulkan-x64.tar.gz", False),
-        ("linux-cuda", "llama-b9493-bin-ubuntu-cuda-x64.tar.gz", False),
-        # Legacy markers without install_kind keep the pre-#6097 heal-to-GPU behaviour
-        # (no forced --cpu-fallback); see test_install_cmd_ggml_cpu_marker_has_no_cpu_fallback.
-        (None, "llama-b9493-bin-ubuntu-x64.tar.gz", False),
+        # Explicitly forced CPU (--cpu-fallback) re-asserts the flag on update so
+        # detect_host on a GPU host cannot re-route and revive the crash (#7213).
+        (True, True),
+        # A natural CPU fallback (or a legacy marker without the flag) stays free to
+        # heal to a GPU bundle (#6097).
+        (False, False),
+        (None, False),
     ],
 )
-def test_start_update_cpu_fallback_preserved_by_kind(
-    monkeypatch, tmp_path, install_kind, asset, expect_flag
-):
-    # A CPU install (*-cpu or *-arm64) must re-assert --cpu-fallback on update, else
-    # detect_host on a GPU host re-routes and revives the crash (#7213). Keyed off
-    # install_kind; legacy markers without it stay heal-to-GPU (#6097).
+def test_start_update_cpu_fallback_preserved_by_flag(monkeypatch, tmp_path, force_cpu, expect_flag):
+    asset = "llama-b9493-bin-ubuntu-x64.tar.gz"
     install_dir = tmp_path / "llama.cpp"
-    binary = _write_install(install_dir, "b9493", asset = asset, install_kind = install_kind)
+    binary = _write_install(install_dir, "b9493", asset = asset, force_cpu = force_cpu)
     monkeypatch.setattr(upd, "_find_binary", lambda: binary)
     monkeypatch.setattr(upd, "_installer_script", lambda: tmp_path / "install_llama_prebuilt.py")
     monkeypatch.setattr(freshness, "_fetch_latest_release_tag", lambda repo, timeout = 5.0: "b9518")
@@ -526,7 +520,7 @@ def test_start_update_cpu_fallback_preserved_by_kind(
 
     def _on_start(cmd):
         captured["cmd"] = cmd
-        _write_install(install_dir, "b9518", asset = asset, install_kind = install_kind)
+        _write_install(install_dir, "b9518", asset = asset, force_cpu = force_cpu)
 
     _patch_installer_popen(monkeypatch, lines = ["installed\n"], on_start = _on_start)
 
