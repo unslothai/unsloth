@@ -393,9 +393,64 @@ def test_start_update_source_build_installs_prebuilt(monkeypatch, tmp_path):
     assert "--llama-tag" in cmd and "latest" in cmd
     assert cmd[cmd.index("--rocm-gfx") + 1] == "gfx110x"
     assert "--simple-policy" not in cmd and "--cpu-fallback" not in cmd
-    # No pin: source-build detection and the unpinned apply share the same
-    # "latest" resolver, so they already agree.
-    assert "--published-release-tag" not in cmd
+    # Pin to the release the host-aware resolver already picked, so a release
+    # published between resolve and the installer's own "latest" re-resolve
+    # cannot swap in an unconfirmed build (matches the marker path's pin).
+    assert "--published-release-tag" in cmd
+    assert cmd[cmd.index("--published-release-tag") + 1] == "b9585"
+
+
+def test_start_update_source_build_pins_resolver_release_tag(monkeypatch, tmp_path):
+    # The source-build apply must pin the installer to the release the host-aware
+    # resolver picked (res release_tag), not the display tag. For a fork-wrapper
+    # release the two differ ("v1.0" release vs "b9457" display); only the real
+    # release tag is a valid --published-release-tag and post-install anchor.
+    # Confirming the displayed tag must still proceed and pin the real release.
+    install_dir = tmp_path / "llama.cpp"
+    binary = install_dir / "build" / "bin" / "llama-server"
+    binary.parent.mkdir(parents = True)
+    binary.write_text("stub")  # no marker -> source-build path
+    monkeypatch.delenv("UNSLOTH_LLAMA_CPP_PATH", raising = False)
+    monkeypatch.setattr(upd, "_find_binary", lambda: str(binary))
+    monkeypatch.setattr(upd, "_installer_script", lambda: tmp_path / "install_llama_prebuilt.py")
+    monkeypatch.setattr(upd, "_installed_build_number", lambda b: 9000)  # behind b9457
+    _prebuilt(
+        monkeypatch,
+        repo = "unslothai/llama.cpp",
+        release_tag = "v1.0",
+        llama_tag = "b9457",
+        asset = "llama-b9457-bin-linux-x64.tar.gz",
+    )
+
+    captured = {}
+
+    class _Proc:
+        returncode = 0
+        stdout = "installed"
+        stderr = ""
+
+    def _fake_run(cmd, **kwargs):
+        return _Proc()
+
+    def _on_start(cmd):
+        captured["cmd"] = cmd
+        # Installer writes the marker for the pinned release (real tag v1.0).
+        _write_install(install_dir, "b9457", release_tag = "v1.0")
+
+    monkeypatch.setattr(upd.subprocess, "run", _fake_run)
+    _patch_installer_popen(monkeypatch, on_start = _on_start)
+
+    res = upd.start_update(expected_tag = "b9457")  # the displayed/confirmed tag
+    assert res["started"] is True, res
+    deadline = time.time() + 10
+    while time.time() < deadline:
+        if upd.get_update_status()["job"]["state"] in ("success", "error"):
+            break
+        time.sleep(0.05)
+    cmd = captured["cmd"]
+    assert "--published-release-tag" in cmd
+    assert cmd[cmd.index("--published-release-tag") + 1] == "v1.0"
+    assert upd.get_update_status()["job"]["state"] == "success"
 
 
 def test_start_update_happy_path(monkeypatch, tmp_path):

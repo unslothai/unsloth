@@ -712,9 +712,15 @@ def start_update(expected_tag: Optional[str] = None) -> dict:
         repo = (res or {}).get("repo") or DEFAULT_PUBLISHED_REPO
         from_tag = None
         asset = (res or {}).get("asset")
-        # No pin: source-build detection resolves via --resolve-prebuilt latest,
-        # the same resolver the unpinned apply uses, so the two already agree.
-        pin_release_tag = None
+        # Pin the installer to the exact release the host-aware resolver already
+        # picked (res release_tag, which is the real GitHub release tag and has
+        # any macOS walk-back already applied), so a release published between
+        # this resolve and the installer's own "latest" re-resolve cannot swap in
+        # an unconfirmed build. The pinned tag is host-compatible by construction,
+        # so pinning does not disable a needed walk-back (unlike the marker path);
+        # it also arms the post-install tag check in _run_update. Falls back to
+        # unpinned only if the resolver reported no release tag.
+        pin_release_tag = (res or {}).get("release_tag") or None
         resolved_tag = src.get("latest_tag")
 
     # Install exactly the build the caller confirmed. A release published in the
