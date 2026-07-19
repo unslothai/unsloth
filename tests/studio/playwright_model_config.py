@@ -195,9 +195,7 @@ with sync_playwright() as p:
 
     def read_configs() -> dict:
         """Return the parsed unsloth_model_configs map (or {} if absent/invalid)."""
-        raw = robust_evaluate(
-            page, "() => localStorage.getItem('unsloth_model_configs')"
-        )
+        raw = robust_evaluate(page, "() => localStorage.getItem('unsloth_model_configs')")
         if not raw:
             return {}
         try:
@@ -494,9 +492,7 @@ with sync_playwright() as p:
                 # (a) localStorage stored the distinctive context.
                 cfg = read_configs()
                 entries = config_entries(cfg)
-                got_ls = any(
-                    e.get("customContextLength") == DISTINCT_CTX for e in entries
-                )
+                got_ls = any(e.get("customContextLength") == DISTINCT_CTX for e in entries)
                 if got_ls:
                     info(f"OK persist(localStorage): customContextLength={DISTINCT_CTX} stored")
                 else:
@@ -571,8 +567,7 @@ with sync_playwright() as p:
             page.wait_for_timeout(1500)
         cfg = read_configs()
         pinned = any(
-            _as_int(e.get("customContextLength")) == DISTINCT_CTX
-            for e in config_entries(cfg)
+            _as_int(e.get("customContextLength")) == DISTINCT_CTX for e in config_entries(cfg)
         )
         if pinned:
             fail("Reset left the distinctive context pinned in unsloth_model_configs")
@@ -621,8 +616,7 @@ with sync_playwright() as p:
                 page.wait_for_timeout(1500)
             cfg = read_configs()
             has_adv = any(
-                e.get("tensorParallel") or e.get("kvCacheDtype")
-                for e in config_entries(cfg)
+                e.get("tensorParallel") or e.get("kvCacheDtype") for e in config_entries(cfg)
             )
             if toggled and has_adv:
                 info("OK advanced: tensorParallel/kvCacheDtype persisted")
@@ -669,8 +663,7 @@ with sync_playwright() as p:
         page.wait_for_timeout(800)
         cfg = read_configs()
         migrated = any(
-            e.get("customContextLength") == DISTINCT_CTX
-            or e.get("tensorParallel")
+            e.get("customContextLength") == DISTINCT_CTX or e.get("tensorParallel")
             for e in config_entries(cfg)
         )
         if migrated:

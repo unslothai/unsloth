@@ -59,17 +59,18 @@ def _pin_default_embedder(monkeypatch):
 # Infra-model hiding (the "infra models resurfaced in the picker" regression)  #
 # --------------------------------------------------------------------------- #
 
+
 @pytest.mark.parametrize(
     "value",
     [
-        "ggml-org/models",                              # the probe repo id
-        "unsloth/bge-small-en-v1.5",                    # the RAG embedder repo
-        "unsloth/bge-small-en-v1.5-GGUF",               # its GGUF companion
+        "ggml-org/models",  # the probe repo id
+        "unsloth/bge-small-en-v1.5",  # the RAG embedder repo
+        "unsloth/bge-small-en-v1.5-GGUF",  # its GGUF companion
         "/root/.cache/huggingface/hub/x/stories260K.gguf",  # probe on disk
-        "/root/.cache/x/Stories260K.GGUF",              # case-insensitive
-        r"C:\\models\\stories260K.gguf",                # windows-style path
-        "/opt/models/bge-small-en-v1.5",               # embedder basename folder
-        "/opt/models/bge-small-en-v1.5-Q8_0.gguf",     # suffixed local weight
+        "/root/.cache/x/Stories260K.GGUF",  # case-insensitive
+        r"C:\\models\\stories260K.gguf",  # windows-style path
+        "/opt/models/bge-small-en-v1.5",  # embedder basename folder
+        "/opt/models/bge-small-en-v1.5-Q8_0.gguf",  # suffixed local weight
     ],
 )
 def test_infra_models_are_hidden(value):
@@ -79,10 +80,10 @@ def test_infra_models_are_hidden(value):
 @pytest.mark.parametrize(
     "value",
     [
-        "unsloth/gemma-3-270m-it-GGUF",       # a normal small chat GGUF
-        "unsloth/Qwen3-0.6B",                 # a normal non-GGUF chat model
-        "user/stories260K-finetune-GGUF",     # repo id merely contains "stories260k"
-        "user/model-chat",                    # generic repo must not be hidden
+        "unsloth/gemma-3-270m-it-GGUF",  # a normal small chat GGUF
+        "unsloth/Qwen3-0.6B",  # a normal non-GGUF chat model
+        "user/stories260K-finetune-GGUF",  # repo id merely contains "stories260k"
+        "user/model-chat",  # generic repo must not be hidden
         "meta-llama/Llama-3.1-8B-Instruct",
     ],
 )
@@ -110,6 +111,7 @@ def test_hidden_model_matchers_expose_probe_needles():
 # HF token via header, query string only as a fallback (the token-leak fix)    #
 # --------------------------------------------------------------------------- #
 
+
 def test_get_hf_token_strips_and_returns():
     assert get_hf_token("  hf_abc ") == "hf_abc"
 
@@ -134,13 +136,16 @@ def test_header_token_wins_over_query():
 
 
 def test_query_token_is_fallback_when_header_absent():
-    resolved = models_route._normalize_hf_token(None) or models_route._normalize_hf_token("hf_query")
+    resolved = models_route._normalize_hf_token(None) or models_route._normalize_hf_token(
+        "hf_query"
+    )
     assert resolved == "hf_query"
 
 
 # --------------------------------------------------------------------------- #
 # Chat-template byte caps (the unbounded-template hardening)                    #
 # --------------------------------------------------------------------------- #
+
 
 def _load_request(**overrides):
     data = {"model_path": "unsloth/test-model-GGUF", "gguf_variant": "Q4_K_M"}
@@ -159,7 +164,10 @@ def test_nonblank_chat_template_override_preserved_verbatim():
 
 def test_chat_template_at_byte_limit_is_accepted():
     template = "a" * MAX_CHAT_TEMPLATE_BYTES  # exactly the limit, 1 byte/char
-    assert len(_load_request(chat_template_override = template).chat_template_override) == MAX_CHAT_TEMPLATE_BYTES
+    assert (
+        len(_load_request(chat_template_override = template).chat_template_override)
+        == MAX_CHAT_TEMPLATE_BYTES
+    )
 
 
 def test_chat_template_over_char_limit_is_rejected():
