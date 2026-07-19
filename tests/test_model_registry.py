@@ -1,5 +1,6 @@
 """Register each model set and check the registered ids exist on the HF Hub."""
 
+import os
 import subprocess
 import sys
 from dataclasses import dataclass
@@ -85,22 +86,39 @@ def test_importing_registry_does_not_register_models():
     """Importing the registry must not populate MODEL_REGISTRY on its own.
 
     ``_deepseek`` used to call ``register_deepseek_models(...)`` at module
-    scope, so merely importing ``unsloth.registry`` registered models (and hit
-    the hub) as an import side effect, unlike every other family which only
-    registers on demand. Run in a subprocess so the check is independent of any
+    scope, so merely importing ``unsloth.registry`` registered models as an
+    import side effect, unlike every other family which only registers on
+    demand. Run in a subprocess so the check is independent of any
     ``register_models()`` calls other tests make on the shared registry.
+
+    The child first imports this directory's ``conftest`` so it inherits the
+    same GPU-free harness the pytest session uses (device_type stubs plus
+    torch.cuda probe patches). Without it, ``import unsloth.registry`` raises
+    ``NotImplementedError`` from ``unsloth_zoo.device_type`` on no-accelerator
+    CI runners, so the child would exit non-zero and the test would fail even
+    though the registry fix itself is correct.
     """
+    tests_dir = os.path.dirname(os.path.abspath(__file__))
     result = subprocess.run(
         [
             sys.executable,
             "-c",
+            f"import sys; sys.path.insert(0, {tests_dir!r})\n"
+            "try:\n"
+            "    import conftest  # noqa: F401  GPU-free harness on no-accelerator runners\n"
+            "except Exception:\n"
+            "    pass\n"
             "import unsloth.registry\n"
             "from unsloth.registry.registry import MODEL_REGISTRY\n"
             "print('REGISTRY_SIZE', len(MODEL_REGISTRY))",
         ],
         capture_output = True,
         text = True,
-        check = True,
+        check = False,
+    )
+    assert result.returncode == 0, (
+        f"registry import subprocess exited {result.returncode}\n"
+        f"stdout:\n{result.stdout}\nstderr:\n{result.stderr}"
     )
     size_lines = [line for line in result.stdout.splitlines() if line.startswith("REGISTRY_SIZE")]
-    assert size_lines == ["REGISTRY_SIZE 0"], result.stdout
+    assert size_lines == ["REGISTRY_SIZE 0"], result.stdout + result.stderr
