@@ -56,6 +56,8 @@ import {
   ArrowRight02Icon,
   BadgeInfoIcon,
   ChefHatIcon,
+  CloudIcon,
+  CpuIcon,
   CursorInfo02Icon,
   DashboardCircleIcon,
   Delete02Icon,
@@ -68,7 +70,9 @@ import {
   Globe02Icon,
   HelpCircleIcon,
   Logout05Icon,
+  Message01Icon,
   MoreVerticalIcon,
+  PaintBrush02Icon,
   Search01Icon,
   PinIcon,
   PinOffIcon,
@@ -79,9 +83,9 @@ import {
   Settings02Icon,
   Sun03Icon,
   TestTube01Icon,
+  UserIcon,
   ZapIcon,
 } from "@hugeicons/core-free-icons";
-import { listStoredChatThreads } from "@/features/chat/utils/chat-history-storage";
 import {
   Tooltip,
   TooltipContent,
@@ -97,6 +101,7 @@ import {
   createChatProject,
   deleteChatProject,
   deleteChatItem,
+  listStoredChatThreads,
   moveChatItemToProject,
   renameChatItem,
   renameChatProject,
@@ -109,7 +114,10 @@ import {
   type ProjectRecord,
   type SidebarItem,
 } from "@/features/chat";
-import { useSettingsDialogStore } from "@/features/settings";
+import {
+  useAppearanceCustomStore,
+  useSettingsDialogStore,
+} from "@/features/settings";
 import { useEffectiveProfile, UserAvatar } from "@/features/profile";
 import { fetchDeviceType, usePlatformStore } from "@/config/env";
 import { clearAuthTokens, logout } from "@/features/auth";
@@ -161,6 +169,19 @@ function getTourId(pathname: string): string | null {
   if (pathname.startsWith("/chat")) return "chat";
   return null;
 }
+
+// Optional user-menu shortcuts that jump straight to a settings tab; the id
+// doubles as the settings dialog tab id.
+const SETTINGS_TAB_MENU_ITEMS: Record<
+  "profile" | "appearance" | "resources" | "chat" | "connections",
+  { icon: typeof ZapIcon; labelKey: TranslationKey }
+> = {
+  profile: { icon: UserIcon, labelKey: "settings.tabs.profile" },
+  appearance: { icon: PaintBrush02Icon, labelKey: "settings.tabs.appearance" },
+  resources: { icon: CpuIcon, labelKey: "settings.tabs.resources" },
+  chat: { icon: Message01Icon, labelKey: "settings.tabs.chat" },
+  connections: { icon: CloudIcon, labelKey: "settings.tabs.connections" },
+};
 
 // TestTube01Icon's last 2 paths are interior bubbles; slice to the first
 // 3 (outline + cap + liquid line) to drop them. Original export untouched.
@@ -290,6 +311,9 @@ function NavItem({
 export function AppSidebar() {
   const t = useT();
   const { isDark, toggleTheme, anchorRef } = useAnimatedThemeToggle();
+  const sidebarMenu = useAppearanceCustomStore(
+    (s) => s.customization.sidebarMenu,
+  );
   const [usesCustomTitlebar] = useState(shouldUseCustomWindowTitlebar);
   const [usesNativeMacTitlebar] = useState(shouldUseNativeMacWindowTitlebar);
   const { pathname, search } = useRouterState({
@@ -582,7 +606,14 @@ export function AppSidebar() {
   useEffect(() => {
     if (!pendingRename) return;
     const match = allChatItems.find((i) => i.id === pendingRename.id);
-    if (match && match.title === pendingRename.title) setPendingRename(null);
+    if (!match || match.title !== pendingRename.title) return;
+    queueMicrotask(() => {
+      setPendingRename((current) =>
+        current?.id === pendingRename.id && current.title === pendingRename.title
+          ? null
+          : current,
+      );
+    });
   }, [allChatItems, pendingRename]);
   const [creatingProject, setCreatingProject] = useState(false);
   const [projectNameDraft, setProjectNameDraft] = useState("");
@@ -679,12 +710,6 @@ export function AppSidebar() {
   const [confirmingDelete, setConfirmingDelete] =
     useState<DeleteTarget | null>(null);
   const [deleteProjectFiles, setDeleteProjectFiles] = useState(false);
-
-  useEffect(() => {
-    if (confirmingDelete?.kind !== "project") {
-      setDeleteProjectFiles(false);
-    }
-  }, [confirmingDelete]);
 
   async function commitDelete() {
     const target = confirmingDelete;
@@ -1067,7 +1092,7 @@ export function AppSidebar() {
                     <button
                       type="button"
                       onClick={togglePinned}
-                      className="inline-flex h-[33px] w-[32px] cursor-pointer items-center justify-center rounded-[10px] text-nav-icon-idle dark:text-nav-fg-muted transition-colors hover:bg-nav-surface-hover hover:text-black dark:hover:text-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                      className="inline-flex h-[33px] w-[32px] cursor-pointer items-center justify-center rounded-[10px] text-nav-icon-idle dark:text-nav-fg-muted transition-colors hover:bg-nav-surface-hover hover:text-black dark:hover:text-white focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
                       aria-label={t("shell.aria.closeSidebar")}
                     >
                       <HugeiconsIcon icon={LayoutAlignLeftIcon} strokeWidth={1.75} className="size-icon" />
@@ -1090,7 +1115,7 @@ export function AppSidebar() {
                     <button
                       type="button"
                       onClick={togglePinned}
-                      className="inline-flex h-[33px] w-[32px] cursor-pointer items-center justify-center rounded-[10px] text-nav-fg transition-colors hover:bg-nav-surface-hover hover:text-black dark:hover:text-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                      className="inline-flex h-[33px] w-[32px] cursor-pointer items-center justify-center rounded-[10px] text-nav-fg transition-colors hover:bg-nav-surface-hover hover:text-black dark:hover:text-white focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
                       aria-label={t("shell.aria.openSidebar")}
                     >
                       <HugeiconsIcon icon={LayoutAlignLeftIcon} strokeWidth={1.75} className="size-icon" />
@@ -1485,7 +1510,7 @@ export function AppSidebar() {
                     .openDialog("about", { scrollTarget: "about-updates" });
                   closeMobileIfOpen();
                 }}
-                className="flex h-[44px] w-full items-center gap-[9px] rounded-[14px] border border-border/60 bg-transparent px-2 py-[3px] text-left transition-colors hover:bg-nav-surface-hover focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring group-data-[collapsible=icon]:mx-auto group-data-[collapsible=icon]:h-[34px] group-data-[collapsible=icon]:w-[34px] group-data-[collapsible=icon]:justify-center group-data-[collapsible=icon]:gap-0 group-data-[collapsible=icon]:rounded-full group-data-[collapsible=icon]:p-0"
+                className="flex h-[44px] w-full items-center gap-[9px] rounded-[14px] border border-border/60 bg-transparent px-2 py-[3px] text-left transition-colors hover:bg-nav-surface-hover focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring group-data-[collapsible=icon]:mx-auto group-data-[collapsible=icon]:h-[34px] group-data-[collapsible=icon]:w-[34px] group-data-[collapsible=icon]:justify-center group-data-[collapsible=icon]:gap-0 group-data-[collapsible=icon]:rounded-full group-data-[collapsible=icon]:p-0"
               >
                 <span
                   aria-hidden="true"
@@ -1526,7 +1551,7 @@ export function AppSidebar() {
                 <SidebarMenuButton
                   size="lg"
                   aria-label={t("shell.accountMenu", { name: displayTitle })}
-                  className="sidebar-nav-btn !h-[44px] -my-[3px] gap-[9px] px-2 py-[3px] rounded-[14px] group-data-[collapsible=icon]:!size-[34px] group-data-[collapsible=icon]:!rounded-full group-data-[collapsible=icon]:!p-0 group-data-[collapsible=icon]:mx-auto group-data-[collapsible=icon]:justify-center"
+                  className="sidebar-nav-btn !h-[44px] -my-[3px] gap-[9px] pl-2 pr-[45px] py-[3px] rounded-[14px] group-data-[collapsible=icon]:!size-[34px] group-data-[collapsible=icon]:!rounded-full group-data-[collapsible=icon]:!p-0 group-data-[collapsible=icon]:mx-auto group-data-[collapsible=icon]:justify-center"
                 >
                   <div className="flex shrink-0 items-center">
                     <UserAvatar
@@ -1536,21 +1561,12 @@ export function AppSidebar() {
                       className="!size-[32px] group-data-[collapsible=icon]:!rounded-full"
                     />
                   </div>
-                  <div className="flex flex-col gap-px leading-tight group-data-[collapsible=icon]:hidden">
+                  {/* min-w-0 so long names truncate instead of overflowing;
+                      pr on the button reserves room for the settings cog */}
+                  <div className="flex min-w-0 flex-1 flex-col gap-px leading-tight group-data-[collapsible=icon]:hidden">
                     <span className="truncate font-heading text-[13.5px] tracking-[0.025em] dark:tracking-[0.04em] font-semibold text-nav-fg">{displayTitle}</span>
                     <span className="truncate text-[11.5px] tracking-nav text-muted-foreground">Unsloth</span>
                   </div>
-                  {/* settings cog (replaces the up/down chevron) */}
-                  <span
-                    aria-hidden="true"
-                    className="ml-auto flex size-[32px] shrink-0 items-center justify-center text-muted-foreground group-data-[collapsible=icon]:hidden"
-                  >
-                    <HugeiconsIcon
-                      icon={Settings02Icon}
-                      strokeWidth={1.5}
-                      className="!size-[18px]"
-                    />
-                  </span>
                 </SidebarMenuButton>
               </DropdownMenuTrigger>
               <DropdownMenuContent
@@ -1567,39 +1583,71 @@ export function AppSidebar() {
                     <span>{t("shell.navigation.settings")}</span>
                     <DropdownMenuShortcut>⌘,</DropdownMenuShortcut>
                   </DropdownMenuItem>
-                  <DropdownMenuItem
-                    onSelect={() => useSettingsDialogStore.getState().openDialog("api-keys")}
-                  >
-                    <HugeiconsIcon icon={Globe02Icon} strokeWidth={1.75} className="size-[18px]" />
-                    <span>{t("shell.navigation.api")}</span>
-                  </DropdownMenuItem>
-                  <DropdownMenuItem
-                    ref={anchorRef as React.Ref<HTMLDivElement>}
-                    onSelect={(e) => { e.preventDefault(); toggleTheme(); }}
-                  >
-                    {isDark ? <HugeiconsIcon icon={Sun03Icon} strokeWidth={1.75} className="size-icon" /> : <Moon strokeWidth={1.75} className="size-icon" />}
-                    <span>
-                      {isDark
-                        ? t("shell.navigation.lightMode")
-                        : t("shell.navigation.darkMode")}
-                    </span>
-                  </DropdownMenuItem>
-                  {getTourId(pathname) && (
-                    <DropdownMenuItem
-                      onSelect={() => {
-                        const tourId = getTourId(pathname);
-                        if (!tourId) return;
-                        window.dispatchEvent(
-                          new CustomEvent(TOUR_OPEN_EVENT, {
-                            detail: { id: tourId },
-                          }),
-                        );
-                      }}
-                    >
-                      <HugeiconsIcon icon={CursorInfo02Icon} strokeWidth={1.75} className="size-icon" />
-                      <span>{t("shell.navigation.guidedTour")}</span>
-                    </DropdownMenuItem>
-                  )}
+                  {/* Optional items follow the order and visibility set in
+                      Appearance settings; Settings above and the block after
+                      the separator are pinned. */}
+                  {sidebarMenu.map((item) => {
+                    if (!item.visible) return null;
+                    if (item.id === "api") {
+                      return (
+                        <DropdownMenuItem
+                          key={item.id}
+                          onSelect={() => useSettingsDialogStore.getState().openDialog("api-keys")}
+                        >
+                          <HugeiconsIcon icon={Globe02Icon} strokeWidth={1.75} className="size-[18px]" />
+                          <span>{t("shell.navigation.api")}</span>
+                        </DropdownMenuItem>
+                      );
+                    }
+                    if (item.id === "darkMode") {
+                      return (
+                        <DropdownMenuItem
+                          key={item.id}
+                          ref={anchorRef as React.Ref<HTMLDivElement>}
+                          onSelect={(e) => { e.preventDefault(); toggleTheme(); }}
+                        >
+                          {isDark ? <HugeiconsIcon icon={Sun03Icon} strokeWidth={1.75} className="size-icon" /> : <Moon strokeWidth={1.75} className="size-icon" />}
+                          <span>
+                            {isDark
+                              ? t("shell.navigation.lightMode")
+                              : t("shell.navigation.darkMode")}
+                          </span>
+                        </DropdownMenuItem>
+                      );
+                    }
+                    if (item.id === "guidedTour") {
+                      if (!getTourId(pathname)) return null;
+                      return (
+                        <DropdownMenuItem
+                          key={item.id}
+                          onSelect={() => {
+                            const tourId = getTourId(pathname);
+                            if (!tourId) return;
+                            window.dispatchEvent(
+                              new CustomEvent(TOUR_OPEN_EVENT, {
+                                detail: { id: tourId },
+                              }),
+                            );
+                          }}
+                        >
+                          <HugeiconsIcon icon={CursorInfo02Icon} strokeWidth={1.75} className="size-icon" />
+                          <span>{t("shell.navigation.guidedTour")}</span>
+                        </DropdownMenuItem>
+                      );
+                    }
+                    // Remaining ids are settings tabs shown by their tab name.
+                    const settingsTabId = item.id;
+                    const tab = SETTINGS_TAB_MENU_ITEMS[settingsTabId];
+                    return (
+                      <DropdownMenuItem
+                        key={item.id}
+                        onSelect={() => useSettingsDialogStore.getState().openDialog(settingsTabId)}
+                      >
+                        <HugeiconsIcon icon={tab.icon} strokeWidth={1.75} className="size-icon" />
+                        <span>{t(tab.labelKey)}</span>
+                      </DropdownMenuItem>
+                    );
+                  })}
                 </DropdownMenuGroup>
                 <DropdownMenuSeparator className="mx-1! my-2.5! h-0! border-t border-border/70 bg-transparent!" />
                 <DropdownMenuItem
@@ -1633,6 +1681,20 @@ export function AppSidebar() {
                 )}
               </DropdownMenuContent>
             </DropdownMenu>
+            {/* settings cog; sibling of the trigger (buttons cannot nest),
+                overlaid on the row's right edge, opens settings directly */}
+            <button
+              type="button"
+              aria-label={t("shell.navigation.settings")}
+              onClick={() => useSettingsDialogStore.getState().openDialog()}
+              className="absolute right-2 top-1/2 flex size-[32px] -translate-y-1/2 items-center justify-center rounded-full text-muted-foreground transition-colors hover:bg-black/10 hover:text-foreground dark:hover:bg-white/10 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring group-data-[collapsible=icon]:hidden"
+            >
+              <HugeiconsIcon
+                icon={Settings02Icon}
+                strokeWidth={1.5}
+                className="!size-[18px]"
+              />
+            </button>
           </SidebarMenuItem>
         </SidebarMenu>
       </SidebarFooter>

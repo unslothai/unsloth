@@ -990,7 +990,17 @@ class FastSentenceTransformer(FastModel):
             return None
 
     @staticmethod
-    def _create_transformer_module(model_name, model, tokenizer, max_seq_length, trust_remote_code):
+    def _create_transformer_module(
+        model_name,
+        model,
+        tokenizer,
+        max_seq_length,
+        trust_remote_code,
+        token = None,
+        cache_dir = None,
+        revision = None,
+        module_subfolder = "",
+    ):
         """Helper to create and configure a Transformer module."""
         from sentence_transformers.models import Transformer
 
@@ -1077,7 +1087,45 @@ class FastSentenceTransformer(FastModel):
                 elif "tokenizer_args" in transformer_init_params:
                     transformer_kwargs["tokenizer_args"] = trust_remote_code_kwargs.copy()
 
-                transformer_module = Transformer(model_name, **transformer_kwargs)
+                # Build via Transformer.load so the saved modality_config is honored: plain
+                # Transformer(...) makes ST 5.x infer a "message" modality for chat-template
+                # models (e.g. Qwen3-Embedding), chat-wrapping inputs and degrading embeddings
+                # (#6881). Only use .load when it resolves a Hub id (accepts the kwargs or
+                # **kwargs); legacy ST 3.x/4.x load(input_path) is local-only with no modality
+                # bug, so fall back to the constructor.
+                transformer_module = None
+                transformer_load = getattr(Transformer, "load", None)
+                has_modules_json = (
+                    FastSentenceTransformer._module_path(
+                        model_name, token, cache_dir = cache_dir, revision = revision
+                    )
+                    is not None
+                )
+                if callable(transformer_load) and has_modules_json:
+                    load_params = inspect.signature(transformer_load).parameters
+                    accepts_var_kw = any(
+                        p.kind is inspect.Parameter.VAR_KEYWORD for p in load_params.values()
+                    )
+                    hub_capable = accepts_var_kw or any(
+                        key in load_params for key in ("token", "cache_folder", "revision")
+                    )
+                    if hub_capable:
+                        load_kwargs = {
+                            "token": token,
+                            "cache_folder": cache_dir,
+                            "revision": revision,
+                            "trust_remote_code": trust_remote_code,
+                            **transformer_kwargs,
+                        }
+                        # Resolve config/tokenizer from the module's saved subfolder
+                        # (modules.json "path"), like stock ST; "" (root) is a no-op.
+                        if module_subfolder:
+                            load_kwargs["subfolder"] = module_subfolder
+                        if not accepts_var_kw:
+                            load_kwargs = {k: v for k, v in load_kwargs.items() if k in load_params}
+                        transformer_module = Transformer.load(model_name, **load_kwargs)
+                if transformer_module is None:
+                    transformer_module = Transformer(model_name, **transformer_kwargs)
             finally:
                 # Restore original Auto* loading immediately
                 AutoModel.from_pretrained = original_model_from_pretrained
@@ -1191,6 +1239,10 @@ class FastSentenceTransformer(FastModel):
                         tokenizer,
                         max_seq_length,
                         trust_remote_code,
+                        token,
+                        cache_dir,
+                        revision,
+                        module_subfolder = module_config.get("path") or "",
                     )
                     modules[name] = transformer_module
                 else:
@@ -1226,7 +1278,14 @@ class FastSentenceTransformer(FastModel):
         )
 
         transformer_module = FastSentenceTransformer._create_transformer_module(
-            model_name, model, tokenizer, max_seq_length, trust_remote_code
+            model_name,
+            model,
+            tokenizer,
+            max_seq_length,
+            trust_remote_code,
+            token,
+            cache_dir,
+            revision,
         )
         modules["0"] = transformer_module
 

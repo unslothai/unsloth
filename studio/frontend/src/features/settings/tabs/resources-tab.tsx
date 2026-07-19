@@ -32,7 +32,7 @@ function clampPercent(value: number | null | undefined): number {
 function usageIndicatorClass(percent: number): string {
   if (percent >= 90) return "bg-destructive";
   if (percent >= 70) return "bg-amber-500";
-  return "bg-primary";
+  return "bg-control-accent";
 }
 
 function usageTextClass(percent: number): string {

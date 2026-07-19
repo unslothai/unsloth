@@ -140,6 +140,27 @@ class ValidateModelRequest(BaseModel):
     )
 
 
+class TransformersUpgradeInfo(BaseModel):
+    """A model architecture no installed transformers ships, but a newer release does."""
+
+    model_type: str = Field(
+        ..., description = "config.json model_type unknown to every installed transformers"
+    )
+    pypi_version: Optional[str] = Field(
+        None, description = "Latest transformers release on PyPI at check time"
+    )
+    supported_in_pypi: bool = Field(
+        False,
+        description = "True if the latest PyPI release ships this model_type; Studio can "
+        "install it into a persistent sidecar after user consent.",
+    )
+    supported_in_main: bool = Field(
+        False,
+        description = "True if transformers GitHub main ships this model_type (dev-only; "
+        "not installable through Studio yet).",
+    )
+
+
 class ValidateModelResponse(BaseModel):
     """Result of model validation.
 
@@ -166,6 +187,48 @@ class ValidateModelResponse(BaseModel):
         None,
         description = "Native training context length, read from the GGUF header when the file "
         "is already downloaded locally; None for non-GGUF, gated, or not-yet-downloaded models.",
+    )
+    # Additive fields; the consuming consent dialog ships in a follow-up frontend PR.
+    requires_transformers_upgrade: bool = Field(
+        False,
+        description = "True when the model's architecture is unknown to every installed "
+        "transformers but a newer transformers ships it; the UI should offer the "
+        "install-latest-transformers consent dialog (or the dev-only notice).",
+    )
+    transformers_upgrade: Optional[TransformersUpgradeInfo] = Field(
+        None,
+        description = "Details for the transformers-upgrade dialog; set only when "
+        "requires_transformers_upgrade is true.",
+    )
+
+
+class InstallLatestTransformersRequest(BaseModel):
+    """Consented request to install the latest transformers release into a sidecar."""
+
+    version: str = Field(
+        ...,
+        min_length = 1,
+        max_length = 64,
+        description = "Exact transformers version to install; must match the current "
+        "latest PyPI release reported by /validate.",
+    )
+
+
+class InstallLatestTransformersResponse(BaseModel):
+    """Result of the consented latest-transformers sidecar install."""
+
+    success: bool = Field(..., description = "Whether the sidecar was provisioned")
+    version: str = Field(..., description = "The requested transformers version")
+    message: str = Field(..., description = "Human-readable result")
+    model_unloaded: bool = Field(
+        False,
+        description = "Whether the active chat model was unloaded before the swap "
+        "(reported even on failure, so the client can restore its state)",
+    )
+    latest_version: Optional[str] = Field(
+        None,
+        description = "On a version-mismatch failure: the release that superseded "
+        "the requested one, so the client can retry with it",
     )
 
 
@@ -632,6 +695,23 @@ class ThinkingConfig(BaseModel):
     type: Literal["disabled", "enabled"] = "disabled"
 
 
+# Recognized permission_mode values. The field accepts a plain string rather than
+# a Literal so an unrecognized value from a newer UI/client degrades to the
+# safest gate ("ask") instead of a 422; the tool loops apply the same unknown ->
+# ask fallback, so normalizing here keeps that forward-compat path reachable at
+# the API boundary. None stays unset ("behaves as 'ask'" without self-enabling
+# the confirm gate).
+_KNOWN_PERMISSION_MODES = ("ask", "auto", "off", "full")
+
+
+def _normalize_permission_mode(value: Any) -> Any:
+    if value is None:
+        return None
+    if value not in _KNOWN_PERMISSION_MODES:
+        return "ask"
+    return value
+
+
 class ChatCompletionRequest(BaseModel):
     """OpenAI-compatible chat completion request.
 
@@ -777,6 +857,19 @@ class ChatCompletionRequest(BaseModel):
         False,
         description = "[x-unsloth] Bypass Permissions: when true, skip the tool-call confirmation gate AND disable the python/terminal execution sandbox (safety checks, command blocklist, resource limits). Secret env vars are still stripped. Takes precedence over confirm_tool_calls.",
     )
+    permission_mode: Optional[str] = Field(
+        None,
+        description = (
+            "[x-unsloth] Permission level for local tool calls. 'ask' pauses every "
+            "call for approval; 'ask'/'auto' enable the confirmation gate on their "
+            "own (needs a streaming request to deliver prompts). 'auto' ('Approve for "
+            "me') only pauses calls detected as potentially unsafe (state-mutating "
+            "terminal/python/MCP calls); read-only calls run immediately, and the "
+            "sandbox stays on. 'full' is equivalent to bypass_permissions=true (no "
+            "confirmation, no sandbox). Unset behaves as 'ask'. An unrecognized value "
+            "(e.g. from a newer client) is treated as 'ask'."
+        ),
+    )
     auto_heal_tool_calls: Optional[bool] = Field(
         True,
         description = "[x-unsloth] Auto-detect and fix malformed tool calls from model output.",
@@ -814,6 +907,10 @@ class ChatCompletionRequest(BaseModel):
     session_id: Optional[str] = Field(
         None,
         description = "[x-unsloth] Session/thread ID for scoping tool execution sandbox.",
+    )
+    thread_id: Optional[str] = Field(
+        None,
+        description = "[x-unsloth] Conversation ID for scoping stateful tool sessions (e.g. stdio MCP); stays per-thread where session_id may be shared project-wide.",
     )
     rag_scope: Optional[dict] = Field(
         None,
@@ -1034,6 +1131,52 @@ class ChatCompletionRequest(BaseModel):
         """
         if self.thinking is not None and self.enable_thinking is None:
             self.enable_thinking = self.thinking.type == "enabled"
+        return self
+
+    @field_validator("permission_mode", mode = "before")
+    @classmethod
+    def _coerce_permission_mode(cls, value: Any) -> Any:
+        # Accept any string so an unknown mode degrades to 'ask' instead of a
+        # 422; mirrors the tool loops' unknown -> ask fallback.
+        return _normalize_permission_mode(value)
+
+    @model_validator(mode = "after")
+    def _fold_full_permission_into_bypass(self) -> "ChatCompletionRequest":
+        """permission_mode='full' is the documented equivalent of
+        bypass_permissions=true, so fold it in before any route guard reads
+        the flag (else a full request would trip the confirm-gate rejections)."""
+        if self.permission_mode == "full":
+            self.bypass_permissions = True
+        elif self.bypass_permissions:
+            # Legacy bypass callers map onto Full access (mirrors the tool loop).
+            self.permission_mode = "full"
+        elif self.permission_mode == "off":
+            # "Off" never prompts, so route guards must see confirm disabled.
+            self.confirm_tool_calls = False
+        elif (
+            self.permission_mode == "ask"
+            and self.confirm_tool_calls is None
+            and not (self.provider_id or self.provider_type)
+            and (self.enable_tools is True or bool(self.mcp_enabled))
+        ):
+            # "Ask" gates every call, so a direct API caller that omits the legacy
+            # confirm flag must still hit the confirmation gate for Studio's own
+            # tool loop. An explicit confirm_tool_calls=False wins over the mode
+            # (mirrors _permission_mode_confirm and the Anthropic pre-switch guard),
+            # so only self-enable when the flag is unset. Only self-enable when that
+            # loop is actually requested
+            # (enable_tools / mcp_enabled) -- the router enters the loop on those
+            # signals, not on enabled_tools alone (which merely filters which tools
+            # run). A plain client-tool passthrough (client-supplied `tools` that
+            # Studio does not execute) must route verbatim, and external-provider
+            # routing rejects confirm_tool_calls with tools, so skip the fold there.
+            #
+            # "auto" is deliberately NOT folded: it only prompts for a call the
+            # classifier flags, so leaving confirm_tool_calls unset lets the route's
+            # _confirm_gate_needs_stream apply the safe-only exception (a safe-only
+            # auto selection needs no stream) instead of an explicit-confirm forcing
+            # stream=true. The mode still drives the loop's per-call gate.
+            self.confirm_tool_calls = True
         return self
 
 
@@ -1533,12 +1676,41 @@ class AnthropicToolResultBlock(BaseModel):
     tool_use_id: str
     content: Union[str, list] = ""
 
+    @field_validator("content", mode = "before")
+    @classmethod
+    def _coerce_null_content(cls, v):
+        # Some clients send null content for an empty tool result; the str|list
+        # union would 400 on it, so treat null as "".
+        return "" if v is None else v
+
+
+# Block types the converter translates explicitly. Anything else (thinking /
+# redacted_thinking, a provider block a resumed session replays, or a future type)
+# is accepted as an unknown block and dropped by the converter, rather than 400-ing
+# the whole request on strict validation.
+_KNOWN_ANTHROPIC_BLOCK_TYPES = frozenset({"text", "image", "tool_use", "tool_result"})
+
+
+class AnthropicUnknownBlock(BaseModel):
+    type: str
+    model_config = {"extra": "allow"}
+
+    @field_validator("type")
+    @classmethod
+    def _only_unknown_types(cls, v):
+        # Known types parse as their typed models above (so a malformed known block
+        # still fails cleanly); this fallback only catches the rest.
+        if v in _KNOWN_ANTHROPIC_BLOCK_TYPES:
+            raise ValueError("known block type handled by its typed model")
+        return v
+
 
 AnthropicContentBlock = Union[
     AnthropicTextBlock,
     AnthropicImageBlock,
     AnthropicToolUseBlock,
     AnthropicToolResultBlock,
+    AnthropicUnknownBlock,
 ]
 
 
@@ -1583,6 +1755,40 @@ class AnthropicMessage(BaseModel):
     role: Literal["user", "assistant"]
     content: Union[str, list[AnthropicContentBlock]]
 
+    @model_validator(mode = "before")
+    @classmethod
+    def _normalize_content(cls, data):
+        # Role-aware leniency that never silently drops real user input:
+        #  - assistant: a resumed tool-only turn's null content -> "" (str|list would
+        #    400 on null; "" keeps the converter's `for block in content` safe).
+        #    Unknown blocks (thinking / future types) validate via
+        #    AnthropicUnknownBlock and are dropped by the converter.
+        #  - user: keep strict. Null user content stays None so str|list rejects it
+        #    (400) rather than forwarding an empty prompt; and reject block types the
+        #    converter cannot translate, since it silently skips unknown user blocks
+        #    -- a user turn made only of them would validate yet send no content
+        #    (silent data loss).
+        if not isinstance(data, dict):
+            return data
+        content = data.get("content")
+        if data.get("role") == "assistant":
+            # Coerce only an explicit null (resumed tool-only turn). A missing
+            # content key stays malformed so the required-field check still 400s.
+            if "content" in data and content is None:
+                return {**data, "content": ""}
+            return data
+        if isinstance(content, list):
+            for block in content:
+                btype = (
+                    block.get("type") if isinstance(block, dict) else getattr(block, "type", None)
+                )
+                # Guard the value: a non-string type is unsupported too, and a
+                # membership test on an unhashable value would raise TypeError
+                # (escaping as a 500 instead of a clean 400).
+                if not isinstance(btype, str) or btype not in _KNOWN_ANTHROPIC_BLOCK_TYPES:
+                    raise ValueError(f"unsupported content block type {btype!r} in a user message")
+        return data
+
 
 class AnthropicTool(BaseModel):
     # Client tools have input_schema; server tools may only have type/name.
@@ -1619,10 +1825,18 @@ class AnthropicMessagesRequest(BaseModel):
     enable_tools: Optional[bool] = None
     enabled_tools: Optional[list[str]] = None
     session_id: Optional[str] = None
+    thread_id: Optional[str] = Field(
+        None,
+        description = "[x-unsloth] Conversation ID for scoping stateful tool sessions (e.g. stdio MCP); stays per-thread where session_id may be shared project-wide.",
+    )
     cancel_id: Optional[str] = None
     bypass_permissions: Optional[bool] = Field(
         False,
         description = "[x-unsloth] Bypass Permissions: when true, disable the python/terminal execution sandbox (safety checks, command blocklist, resource limits) for server-side tool calls. Secret env vars are still stripped. Declared explicitly (not relied on via extra='allow') so omitted requests default to False instead of raising AttributeError.",
+    )
+    permission_mode: Optional[str] = Field(
+        None,
+        description = "[x-unsloth] Permission level for local tool calls: 'ask' pauses every call, 'auto' only pauses calls detected as potentially unsafe, 'off' never pauses (sandbox stays on), 'full' equals bypass_permissions=true. Unset behaves as 'ask'; an unrecognized value (e.g. from a newer client) is treated as 'ask'. Declared explicitly so omitted requests default to None instead of raising AttributeError.",
     )
     auto_heal_tool_calls: Optional[bool] = Field(
         True,
@@ -1664,6 +1878,27 @@ class AnthropicMessagesRequest(BaseModel):
         normalized["messages"] = normalized_messages
         normalized["system"] = _merge_anthropic_system(normalized.get("system"), system_additions)
         return normalized
+
+    @field_validator("permission_mode", mode = "before")
+    @classmethod
+    def _coerce_permission_mode(cls, value: Any) -> Any:
+        # Accept any string so an unknown mode degrades to 'ask' instead of a
+        # 422; mirrors the tool loops' unknown -> ask fallback.
+        return _normalize_permission_mode(value)
+
+    @model_validator(mode = "after")
+    def _fold_full_permission_into_bypass(self) -> "AnthropicMessagesRequest":
+        """permission_mode='full' equals bypass_permissions=true (mirrors the
+        Chat Completions request)."""
+        if self.permission_mode == "full":
+            self.bypass_permissions = True
+        elif self.bypass_permissions:
+            # Legacy bypass callers map onto Full access (mirrors the tool loop).
+            self.permission_mode = "full"
+        elif self.permission_mode == "off":
+            # "Off" never prompts, so route guards must see confirm disabled.
+            self.confirm_tool_calls = False
+        return self
 
 
 # ── Response models ────────────────────────────────────────────

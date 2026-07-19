@@ -527,6 +527,154 @@ case "$MODE" in
     echo "[claude] attribution A/B OK (suppressed HIT, header=1 MISS)"
     ;;
 
+  # ── resume: does a launched agent's session survive exit and resume? ────
+  # Unlike the other modes, this drives the real LAUNCH path (`unsloth start
+  # <agent> ...`, the interactive default), not the --no-launch recipe. That
+  # path relocates each agent's home to a throwaway temp dir wiped on exit, so
+  # a session cannot be resumed -- unless --persist routes it to the stable
+  # Unsloth agents dir instead. We run one headless turn per pass and check
+  # whether the turn left a session in a persistent store (deterministic, no
+  # reliance on the model recalling anything), for a baseline pass and a
+  # --persist pass, and assert the expected split for this agent.
+  resume)
+    CODEWORD="PLATYPUS7"
+    T1="Remember this codeword for later: ${CODEWORD}. Reply with just the word OK."
+    T2="What codeword did I ask you to remember? Reply with just that word."
+    WORK="$WORKDIR_BASE/${AGENT}-resume"
+
+    # STABLE_HOME: the stable dir that --no-launch (and --persist) relocate to.
+    # Read it from a --no-launch probe (which also writes the agent's config
+    # there). codex/pi relocate their whole home/HOME here; opencode/claude keep
+    # their session data in a fixed user dir, so STABLE_HOME stays empty for them.
+    parse_connect
+    case "$AGENT" in
+      codex)    STABLE_HOME="$(raw_env CODEX_HOME)" ;;
+      pi)       STABLE_HOME="$(raw_env HOME)" ;;
+      *)        STABLE_HOME="" ;;
+    esac
+
+    # The persistent stores a session would land in if it were NOT wiped. We
+    # count files here before/after each turn; a positive delta means the
+    # session persisted (is resumable), zero means it went to a wiped temp dir.
+    resume_tracked_dirs() {
+      case "$AGENT" in
+        codex)    printf '%s\n' "$HOME/.codex" ;;
+        opencode) printf '%s\n' "$HOME/.local/share/opencode" "$HOME/.config/opencode" ;;
+        claude)   printf '%s\n' "$HOME/.claude" ;;
+        pi)       printf '%s\n' "$HOME/.pi" ;;
+        *)        : ;;
+      esac
+      [ -n "$STABLE_HOME" ] && printf '%s\n' "$STABLE_HOME"
+    }
+    count_session_files() {
+      local total=0 d n
+      while IFS= read -r d; do
+        [ -n "$d" ] && [ -d "$d" ] || continue
+        n="$(find "$d" -type f 2>/dev/null | wc -l)"; total=$((total + n))
+      done < <(resume_tracked_dirs)
+      echo "$total"
+    }
+
+    # The headless first-turn subcommand per agent (mirrors file-edit's map),
+    # forwarded verbatim through the launch path as passthrough args.
+    set_t1_cmd() {
+      case "$AGENT" in
+        claude)   T1_CMD=("${CLAUDE_CONNECT_FLAGS[@]}" -p "$T1") ;;
+        codex)    T1_CMD=(exec "$T1") ;;
+        opencode) T1_CMD=(run "$T1") ;;
+        pi)       T1_CMD=(-p "$T1") ;;
+        *)        guide_fail "resume mode does not cover agent '$AGENT'" ;;
+      esac
+    }
+
+    # Run one headless turn through the launch path. $1=outfile, $2="" or
+    # "--persist", rest = the agent subcommand. --yolo auto-approves so no tool
+    # prompt can hang; --api-key attaches to the already-served CI model.
+    launch_turn() {
+      local out="$1" rflag="$2"; shift 2
+      local flag=(); [ -n "$rflag" ] && flag=("$rflag")
+      run_timed "$out" unsloth start "$AGENT" "${flag[@]}" --yolo \
+        --api-key "$UNSLOTH_API_KEY" "$@"
+      local rc=$?
+      redact "$out"
+      return "$rc"
+    }
+
+    # One pass: fresh work dir, one planting turn, set RESULT to PERSISTED/WIPED
+    # from the session-store delta. Runs in the main shell (not a command
+    # substitution) so a hang's guide_fail actually fails the job and the
+    # progress lines reach the CI log. $1 = "" (baseline) or "--persist".
+    RESULT=""
+    run_pass() {
+      local rflag="$1" label="baseline"
+      [ -n "$rflag" ] && label="resume"
+      rm -rf "$WORK"; mkdir -p "$WORK"
+      set_t1_cmd
+      local out="$LOGS_DIR/${AGENT}-resume-${label}.txt"
+      local before after rc
+      before="$(count_session_files)"
+      pushd "$WORK" >/dev/null || guide_fail "could not enter work dir $WORK"
+      launch_turn "$out" "$rflag" "${T1_CMD[@]}"; rc=$?
+      popd >/dev/null || true
+      after="$(count_session_files)"
+      echo "[$AGENT] ${label}: session files ${before} -> ${after} (rc=${rc})"
+      # The turn must succeed for the delta to mean anything: an agent that writes a
+      # session file then errors would otherwise be misread as PERSISTED. Mirror the
+      # file-edit mode and fail the pass on a non-zero launch (the flagship codex recall
+      # below stays WARN-only, driven by its own launch_turn calls).
+      [ "$rc" -eq 0 ] || { echo "[$AGENT] ${label} transcript (tail):"; tail -30 "$out" 2>/dev/null || true; \
+        guide_fail "resume ${label} turn for ${AGENT} exited non-zero (rc=${rc})"; }
+      if [ "$after" -gt "$before" ]; then RESULT="PERSISTED"; else RESULT="WIPED"; fi
+    }
+
+    run_pass ""; BASELINE="$RESULT"
+    # Only the temp-dir agents (codex/pi) need the --persist pass to prove the fix.
+    # opencode/claude persist either way, so the baseline already proves it and a
+    # second full CPU turn only risks a timeout; skip it for them.
+    case "$AGENT" in
+      codex|pi) run_pass "--persist"; RESUME="$RESULT" ;;
+      *)        RESUME="n/a (persists either way)" ;;
+    esac
+
+    # Expected: codex/pi relocate their whole home to the temp dir, so a plain
+    # launch is WIPED and only --persist PERSISTS. opencode/claude keep their
+    # session data in a fixed user dir, so the baseline already PERSISTS.
+    case "$AGENT" in
+      codex|pi)        EXPECT_BASELINE="WIPED" ;;
+      opencode|claude) EXPECT_BASELINE="PERSISTED" ;;
+    esac
+
+    echo "──────────────────────────────────────────────"
+    echo "[$AGENT] RESUME EXPERIMENT"
+    echo "  baseline (unsloth start ${AGENT}):                 ${BASELINE}  (expected ${EXPECT_BASELINE})"
+    echo "  with --persist (unsloth start ${AGENT} --persist): ${RESUME}"
+    echo "──────────────────────────────────────────────"
+
+    [ "$BASELINE" = "$EXPECT_BASELINE" ] \
+      || guide_fail "baseline resume behavior for ${AGENT} was ${BASELINE}, expected ${EXPECT_BASELINE}"
+    case "$AGENT" in
+      codex|pi)
+        [ "$RESUME" = "PERSISTED" ] \
+          || guide_fail "--persist did not persist ${AGENT}'s session (got ${RESUME}); the session dir is still not stable" ;;
+    esac
+
+    # Flagship behavioral proof (codex only, WARN-only): after a --persist plant,
+    # resume the session and check the model actually recalls the codeword. A
+    # miss is not a failure (the CI model is small); the mechanism gate above is
+    # the real assertion.
+    if [ "$AGENT" = "codex" ]; then
+      rm -rf "$WORK"; mkdir -p "$WORK"
+      ( cd "$WORK" && launch_turn "$LOGS_DIR/codex-resume-plant.txt" "--persist" exec "$T1" ) || true
+      ( cd "$WORK" && launch_turn "$LOGS_DIR/codex-resume-recall.txt" "--persist" exec resume --last "$T2" ) || true
+      if grep -q "$CODEWORD" "$LOGS_DIR/codex-resume-recall.txt" 2>/dev/null; then
+        echo "[codex] behavioral recall HIT: resumed session remembered ${CODEWORD}"
+      else
+        echo "::warning::[codex] behavioral recall MISS (small CI model); mechanism gate still passed"
+      fi
+    fi
+    echo "[$AGENT] resume OK"
+    ;;
+
   *)
     echo "agent-guides-drive.sh: unknown mode '$MODE'" >&2
     exit 2
