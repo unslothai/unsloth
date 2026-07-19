@@ -508,6 +508,9 @@ export type PendingModelSelection = {
   /** Native (drag-drop / picked-from-disk) GGUF: the path token used to read
    *  the header and to load. Absent for HF-repo models. */
   nativePathToken?: string;
+  /** Expiry for the native path token. Native tokens are short-lived grants,
+   *  not durable loaded-model identities. */
+  nativePathTokenExpiresAtMs?: number | null;
   /** Direct local .gguf file (custom folder / LM Studio): a GGUF source even
    *  though it carries neither an HF variant nor a native path token. */
   isGguf?: boolean;
@@ -535,11 +538,63 @@ export function hasGgufSource(x: {
   );
 }
 
+export function isNativePathTokenExpired(
+  expiresAtMs?: number | null,
+  now = Date.now(),
+): boolean {
+  return (
+    typeof expiresAtMs === "number" &&
+    Number.isFinite(expiresAtMs) &&
+    expiresAtMs <= now
+  );
+}
+
+export function hasUsableNativePathToken(x: {
+  nativePathToken?: string | null;
+  nativePathTokenExpiresAtMs?: number | null;
+}): boolean {
+  return (
+    typeof x.nativePathToken === "string" &&
+    x.nativePathToken.length > 0 &&
+    !isNativePathTokenExpired(x.nativePathTokenExpiresAtMs)
+  );
+}
+
+export function hasLoadedGgufSource(x: {
+  activeGgufVariant?: string | null;
+  activeNativePathToken?: string | null;
+  activeNativePathTokenExpiresAtMs?: number | null;
+  ggufContextLength?: number | null;
+  params: { checkpoint: string };
+}): boolean {
+  return (
+    x.activeGgufVariant != null ||
+    hasUsableNativePathToken({
+      nativePathToken: x.activeNativePathToken,
+      nativePathTokenExpiresAtMs: x.activeNativePathTokenExpiresAtMs,
+    }) ||
+    x.activeNativePathTokenExpiresAtMs != null ||
+    (isLocalModelPath(x.params.checkpoint) &&
+      x.params.checkpoint.toLowerCase().endsWith(".gguf")) ||
+    x.ggufContextLength != null
+  );
+}
+
 /** A local-disk model id: Unix absolute (/), relative (./ ../), tilde (~/),
  *  Windows drive (C:\) or UNC (\\server). Shared so the loader and the
  *  hub-repo predicate classify ids identically. */
 export function isLocalModelPath(id: string): boolean {
   return /^(\/|\.{1,2}[\\/]|~[\\/]|[A-Za-z]:[\\/]|\\\\)/.test(id);
+}
+
+function clearedLoadedGgufMetadata() {
+  return {
+    activeNativePathToken: null,
+    activeNativePathTokenExpiresAtMs: null,
+    ggufContextLength: null,
+    ggufMaxContextLength: null,
+    ggufNativeContextLength: null,
+  };
 }
 
 /** An uncached HF hub repo we can download as a full snapshot (non-GGUF
@@ -794,6 +849,7 @@ type ChatRuntimeStore = {
   } | null;
   modelLoading: boolean;
   activeNativePathToken: string | null;
+  activeNativePathTokenExpiresAtMs: number | null;
   hydratePersistedSettings: () => Promise<void>;
   setModelLoading: (loading: boolean) => void;
   setModelRequiresTrustRemoteCode: (required: boolean) => void;
@@ -1235,6 +1291,7 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
   contextUsage: null,
   modelLoading: false,
   activeNativePathToken: null,
+  activeNativePathTokenExpiresAtMs: null,
   hydratePersistedSettings: async () => {
     if (get().settingsHydrated) {
       return;
@@ -1285,11 +1342,17 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
       }
       // Mirror setCheckpoint: the local load path can mutate params.checkpoint
       // via setParams() before setCheckpoint runs, leaving stale per-turn
-      // counters under the new checkpoint.
+      // counters or GGUF identity metadata under the new checkpoint.
       const checkpointChanged = state.params.checkpoint !== params.checkpoint;
       return {
         params,
-        ...(checkpointChanged ? { contextUsage: null } : {}),
+        ...(checkpointChanged
+          ? {
+              contextUsage: null,
+              activeGgufVariant: null,
+              ...clearedLoadedGgufMetadata(),
+            }
+          : {}),
       };
     }),
   setCustomPresets: (customPresets) =>
@@ -1353,6 +1416,9 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
       // Clear stale per-turn usage on model change; the relaxed external-provider
       // render gate would otherwise show old counters until the next completion.
       const checkpointChanged = state.params.checkpoint !== modelId;
+      const nextGgufVariant = ggufVariant ?? null;
+      const loadedGgufSourceChanged =
+        checkpointChanged || state.activeGgufVariant !== nextGgufVariant;
       const pendingToClear =
         checkpointChanged && state.params.checkpoint
           ? state.pendingSelection
@@ -1385,8 +1451,9 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
           checkpoint: modelId,
           maxTokens: nextMaxTokens,
         },
-        activeGgufVariant: ggufVariant ?? null,
+        activeGgufVariant: nextGgufVariant,
         ...(checkpointChanged ? { contextUsage: null } : {}),
+        ...(loadedGgufSourceChanged ? clearedLoadedGgufMetadata() : {}),
         // Switching away from a loaded model (e.g. picking an external provider)
         // abandons any staged pick, so its Load button and edited knobs don't
         // linger over the newly active model. Same revert as abandonStagedModel.
@@ -1416,6 +1483,7 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
       },
       activeGgufVariant: null,
       activeNativePathToken: null,
+      activeNativePathTokenExpiresAtMs: null,
       pendingSelection: null,
       ggufContextLength: null,
       ggufMaxContextLength: null,

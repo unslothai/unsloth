@@ -30,6 +30,7 @@ import {
 import { formatEta, formatRate } from "../utils/format-transfer";
 import {
   isLocalModelPath,
+  isNativePathTokenExpired,
   pendingSelectionMatches,
   readPersistedSpeculativeType,
   resolveToolsEnabledOnLoad,
@@ -73,6 +74,7 @@ export type SelectedModelInput = {
   expectedBytes?: number;
   forceReload?: boolean;
   nativePathToken?: string;
+  nativePathTokenExpiresAtMs?: number | null;
   /** Direct local .gguf file (no HF variant / native token) — still a GGUF
    *  source, so the staging flow treats it as one. */
   isGguf?: boolean;
@@ -449,6 +451,10 @@ export function useChatModelRuntime() {
         typeof selection === "string" ? false : selection.forceReload ?? false;
       const nativePathToken =
         typeof selection === "string" ? undefined : selection.nativePathToken;
+      const nativePathTokenExpiresAtMs =
+        typeof selection === "string"
+          ? undefined
+          : selection.nativePathTokenExpiresAtMs;
       const explicitIsGguf =
         typeof selection === "string" ? undefined : selection.isGguf;
       const throwOnError =
@@ -500,6 +506,28 @@ export function useChatModelRuntime() {
         toast.info("Another model is already loading", {
           description: "Wait for it to finish or cancel it first.",
         });
+        return;
+      }
+
+      if (
+        nativePathToken &&
+        isNativePathTokenExpired(nativePathTokenExpiresAtMs)
+      ) {
+        const message =
+          "Local model selection expired. Pick or drop the .gguf file again to apply these settings.";
+        setModelsError(message);
+        setLastModelLoadError(message);
+        const store = useChatRuntimeStore.getState();
+        if (store.activeNativePathToken === nativePathToken) {
+          useChatRuntimeStore.setState({
+            activeNativePathToken: null,
+            activeNativePathTokenExpiresAtMs: nativePathTokenExpiresAtMs ?? null,
+          });
+        }
+        toast.error("Local model selection expired", {
+          description: "Pick or drop the .gguf file again, then retry.",
+        });
+        if (throwOnError) throw new Error(message);
         return;
       }
 
@@ -590,6 +618,8 @@ export function useChatModelRuntime() {
             stateBeforeUnload.modelRequiresTrustRemoteCode;
           const previousActiveNativePathToken =
             stateBeforeUnload.activeNativePathToken;
+          const previousActiveNativePathTokenExpiresAtMs =
+            stateBeforeUnload.activeNativePathTokenExpiresAtMs;
           // Snapshot the load settings at click time, before the awaits below
           // (validation, the trust dialog, unload). For a staged Load these knobs
           // stay editable and a sheet-close revert (abandonStagedModel) can fire
@@ -618,6 +648,7 @@ export function useChatModelRuntime() {
             const validateMaxSeqLength = resolveLoadMaxSeqLength({
               modelId,
               ggufVariant,
+              isGguf,
               customContextLength: loadCustomContextLength,
               ggufContextLength: loadGgufContextLength,
               currentCheckpoint,
@@ -848,6 +879,9 @@ export function useChatModelRuntime() {
               loadedIsMultimodal: isMultimodalResponse(loadResponse),
               loadedIsDiffusion: loadResponse.is_diffusion ?? false,
               activeNativePathToken: nativePathToken ?? null,
+              activeNativePathTokenExpiresAtMs: nativePathToken
+                ? (nativePathTokenExpiresAtMs ?? null)
+                : null,
             });
             // Unlock attach menus for capabilities the catalog entry lacked.
             syncModelCapabilities(modelId, loadResponse);
@@ -957,6 +991,10 @@ export function useChatModelRuntime() {
                 });
                 useChatRuntimeStore.setState({
                   activeNativePathToken: previousActiveNativePathToken ?? null,
+                  activeNativePathTokenExpiresAtMs:
+                    previousActiveNativePathToken
+                      ? (previousActiveNativePathTokenExpiresAtMs ?? null)
+                      : null,
                   loadedSpeculativeType: null,
                   loadedSpecDraftNMax: null,
                 });
