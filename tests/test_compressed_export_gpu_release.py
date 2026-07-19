@@ -143,11 +143,40 @@ def test_single_device_move_failure_restores_and_returns_none():
     assert model.moved_to == ["cpu", "cuda:0"]
 
 
-def test_cpu_or_disk_offloaded_map_is_left_alone(_fake_accelerate):
-    # accelerate is already offloading part of the model; removing hooks and
-    # re-dispatching could thrash, so leave it untouched.
+def test_cpu_spilled_map_still_releases_its_gpu_shards(_fake_accelerate):
+    # accelerate spilled one module to CPU, but the rest is still resident on the
+    # GPUs -- exactly the memory the subprocess/reload needs. Those weights are in
+    # host RAM already, so moving is safe and the GPU shards get reclaimed.
     ns = _load_helpers(_fake_torch(), _FakeLogger())
-    model = _FakeModel(device_map = {"model.embed": 0, "model.layers.9": "cpu"})
+    device_map = {"model.embed": 0, "model.layers.0": 1, "model.layers.9": "cpu"}
+    model = _FakeModel(device_map = device_map)
+
+    token = ns["_offload_model_for_quantize_subprocess"](model)
+
+    assert _fake_accelerate["removed"] == [model]
+    assert model.moved_to == ["cpu"]
+    assert token == ("dispatch", device_map)
+
+    ns["_restore_model_after_quantize_subprocess"](model, token)
+    assert _fake_accelerate["dispatched"] == [(model, device_map)]
+
+
+def test_disk_offloaded_map_is_left_alone(_fake_accelerate):
+    # disk/meta entries are NOT on the model: accelerate streams them from disk,
+    # so removing hooks and moving would try to materialize the whole checkpoint
+    # into RAM. Leave it untouched.
+    ns = _load_helpers(_fake_torch(), _FakeLogger())
+    model = _FakeModel(device_map = {"model.embed": 0, "model.layers.9": "disk"})
+    assert ns["_offload_model_for_quantize_subprocess"](model) is None
+    assert model.moved_to == []
+    assert _fake_accelerate["removed"] == []
+
+
+def test_all_cpu_map_is_left_alone(_fake_accelerate):
+    # Nothing on an accelerator: there is no GPU memory to reclaim, so do not
+    # churn the hooks.
+    ns = _load_helpers(_fake_torch(), _FakeLogger())
+    model = _FakeModel(device_map = {"model.embed": "cpu", "model.layers.0": "cpu"})
     assert ns["_offload_model_for_quantize_subprocess"](model) is None
     assert model.moved_to == []
     assert _fake_accelerate["removed"] == []
@@ -164,11 +193,29 @@ def test_single_device_model_keeps_plain_move():
     assert model.moved_to[-1] == "cuda:0"
 
 
-def test_quantized_model_is_never_moved():
+def test_quantized_model_is_released_when_the_stack_allows_it():
+    # The Studio export path loads 4-bit by DEFAULT, so skipping quantized models
+    # left a shard on every GPU while the subprocess/reload allocated another
+    # copy. Release them too where the move is accepted.
     ns = _load_helpers(_fake_torch(), _FakeLogger())
     model = _FakeModel(devices = ("cuda:0",), quantized = True)
+    token = ns["_offload_model_for_quantize_subprocess"](model)
+    assert token == ("device", "cuda:0")
+    assert model.moved_to == ["cpu"]
+
+
+def test_quantized_model_that_refuses_to_move_is_left_usable():
+    # transformers rejects .to() for some bitsandbytes builds, and that refusal
+    # raises before anything moves -- so the result must be exactly the old
+    # behaviour: no token, model untouched, no exception escaping.
+    ns = _load_helpers(_fake_torch(), _FakeLogger())
+
+    class _Refuses(_FakeModel):
+        def to(self, target):
+            raise ValueError("`.to` is not supported for 4-bit bitsandbytes models")
+
+    model = _Refuses(devices = ("cuda:0",), quantized = True)
     assert ns["_offload_model_for_quantize_subprocess"](model) is None
-    assert model.moved_to == []
 
 
 def test_no_cuda_is_noop_and_restore_none_is_noop():

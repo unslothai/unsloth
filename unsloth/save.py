@@ -4621,26 +4621,36 @@ def _offload_model_for_quantize_subprocess(model):
         ``hf_device_map``. A plain ``.to("cpu")`` is invalid on a dispatched
         model, which is why the old single-device-only move skipped these and
         left every GPU holding a full copy while the subprocess loaded another.
-        A map with non-GPU targets (cpu/disk offload) is left alone: accelerate
-        is already offloading those weights.
+        A map that spills to CPU is still released -- those weights are in host
+        RAM and the GPU-mapped modules are the ones worth reclaiming -- but a map
+        with disk/meta targets is left alone: accelerate keeps those parameters
+        off the model, so moving would try to materialize the whole checkpoint.
 
-    Quantized (bnb) models are never moved.
+    Quantized (bnb) models are attempted too rather than skipped outright: the
+    Studio export path loads 4-bit by DEFAULT, so skipping them left a quantized
+    shard on every GPU while the subprocess or the torchao reload allocated
+    another copy. transformers refuses ``.to()`` for some bitsandbytes builds, and
+    that refusal raises before anything moves, so the existing failure path simply
+    restores the model and returns None -- i.e. best-effort where the stack allows
+    it, and exactly the old behaviour where it does not.
     """
     try:
         _has_xpu = hasattr(torch, "xpu") and torch.xpu.is_available()
         if not ((torch.cuda.is_available() or _has_xpu) and hasattr(model, "parameters")):
             return None
-        if (
-            getattr(model, "is_loaded_in_4bit", False)
-            or getattr(model, "is_loaded_in_8bit", False)
-            or getattr(model, "is_quantized", False)
-        ):
-            return None
         device_map = getattr(model, "hf_device_map", None)
         if device_map:
-            targets = {str(v) for v in device_map.values()}
-            if not all(t.isdigit() or t.startswith(("cuda", "xpu")) for t in targets):
+            targets = {str(v).lower() for v in device_map.values()}
+            # cpu spill is fine to move -- those weights are already in host RAM.
+            # disk/meta is NOT: accelerate keeps those parameters off the model
+            # entirely, so removing the hooks and calling .to("cpu") would try to
+            # materialize the whole checkpoint into RAM (or move meta tensors).
+            if not all(
+                t.isdigit() or t.startswith(("cuda", "xpu")) or t == "cpu" for t in targets
+            ):
                 return None
+            if not any(t.isdigit() or t.startswith(("cuda", "xpu")) for t in targets):
+                return None  # nothing on an accelerator: no GPU memory to reclaim
             from accelerate.hooks import remove_hook_from_submodules
 
             remove_hook_from_submodules(model)
