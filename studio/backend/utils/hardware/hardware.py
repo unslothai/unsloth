@@ -573,9 +573,7 @@ def _torch_get_per_device_info(device_indices: list[int]) -> list[Dict[str, Any]
                     "visible_ordinal": ordinal,
                     "name": props.name,
                     "total_gb": round(total_bytes / (1024**3), 2),
-                    "used_gb": round(used_bytes / (1024**3), 2)
-                    if used_bytes is not None
-                    else None,
+                    "used_gb": round(used_bytes / (1024**3), 2) if used_bytes is not None else None,
                 }
             )
         except Exception as e:
@@ -978,9 +976,7 @@ def get_gpu_utilization() -> Dict[str, Any]:
                 # A single visible GPU can own the aggregate 3D-engine utilization;
                 # across several GPUs the sum isn't per-device, so leave it unset.
                 _win_util = (
-                    _rocm_windows_perf_counter_gpu_util_pct()
-                    if len(_win_devices) == 1
-                    else None
+                    _rocm_windows_perf_counter_gpu_util_pct() if len(_win_devices) == 1 else None
                 )
                 return _gpu_utilization_payload(
                     device,
