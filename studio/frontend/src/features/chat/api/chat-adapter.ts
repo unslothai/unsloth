@@ -2048,13 +2048,16 @@ export function createOpenAIStreamAdapter(
           inferenceRequest.reasoningEffort = runtime.reasoningEffort;
         }
         const researchProjectId = await resolveProjectId(resolvedThreadId);
+        const projectRagEnabled = researchProjectId
+          ? await projectHasSources(researchProjectId)
+          : false;
         const researchInstructions = await resolveChatInstructions(
           resolvedThreadId,
           params.systemPrompt,
           params.systemVariables,
         );
         const ragScope =
-          runtime.ragEnabled || researchProjectId
+          runtime.ragEnabled || projectRagEnabled
             ? runtime.ragEnabled && runtime.ragSource.type === "kb"
               ? {
                   kb_id: runtime.ragSource.kbId,
@@ -2067,7 +2070,7 @@ export function createOpenAIStreamAdapter(
                   ...(runtime.ragEnabled
                     ? { thread_id: resolvedThreadId }
                     : {}),
-                  ...(researchProjectId
+                  ...(projectRagEnabled && researchProjectId
                     ? { project_id: researchProjectId }
                     : {}),
                    default_top_k: runtime.ragTopK,

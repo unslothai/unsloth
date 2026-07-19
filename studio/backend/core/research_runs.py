@@ -57,7 +57,10 @@ _QUERY_CREDENTIAL = re.compile(
 _QUERY_EMAIL = re.compile(r"(?i)\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b")
 _QUERY_PRIVATE_ID = re.compile(r"\b\d{3}-\d{2}-\d{4}\b")
 _QUERY_OPAQUE_TOKEN = re.compile(
-    r"\b(?=[A-Za-z0-9_-]{20,}\b)(?=[A-Za-z0-9_-]*[A-Za-z])(?=[A-Za-z0-9_-]*\d)[A-Za-z0-9_-]+\b"
+    r"\b(?:eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}"
+    r"|sk-[A-Za-z0-9_-]{16,}|gh[pousr]_[A-Za-z0-9_]{20,}"
+    r"|github_pat_[A-Za-z0-9_]{20,}|xox[baprs]-[A-Za-z0-9-]{16,}"
+    r"|AKIA[A-Z0-9]{16})\b"
 )
 # International (+CC ...) or NANP-formatted phone numbers. Requires separators or a
 # leading ``+`` so bare numeric research terms are not redacted.
