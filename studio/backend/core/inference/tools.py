@@ -143,6 +143,12 @@ _BLOCKED_COMMANDS = (
     else _BLOCKED_COMMANDS_COMMON
 )
 
+# Blocked commands that reach the network / another machine; hitting one means
+# the model wants files the sandbox cannot reach, so we steer it to ask for an upload.
+_NETWORK_BLOCKED_COMMANDS = frozenset(
+    {"curl", "wget", "nc", "ncat", "netcat", "socat", "ssh", "scp", "sftp", "rsync"}
+)
+
 
 _SHELL_SEPARATORS = frozenset({";", "&&", "||", "|", "&", "\n", "(", ")", "`", "{", "}"})
 # Bash keywords starting a new command position (then $cmd, do $cmd, etc.).
@@ -2943,12 +2949,20 @@ WEB_SEARCH_TOOL = {
     },
 }
 
-# Appended to the python/terminal descriptions: models habitually write to
-# /mnt/data (a ChatGPT code-interpreter path), which does not exist here.
+# Appended to the python/terminal descriptions: stop models writing to a
+# nonexistent /mnt/data or cd/grep-ing a guessed local path for a repo the
+# user only mentioned but never uploaded.
 _SANDBOX_PATHS_NOTE = (
-    " Read and write files using relative paths in the current working "
-    "directory, which persists for this conversation; absolute paths like "
-    "/mnt/data or /tmp/outputs do not exist."
+    " The working directory is an isolated scratch space that starts empty "
+    "except for files created here or explicitly uploaded to this "
+    "conversation, and it persists only for this conversation. This sandbox "
+    "cannot reach other machines or remote hosts. A repository, folder, or "
+    "file the user refers to is not present here unless it was uploaded or "
+    "created in the sandbox, so do not assume a mentioned path exists or guess "
+    "where it lives. Read and write files using relative paths in the working "
+    "directory; absolute paths like /mnt/data or /tmp/outputs do not exist. If "
+    "the files you need are not here, ask the user to upload them or provide an "
+    "exact path instead of guessing one."
 )
 
 PYTHON_TOOL = {
@@ -5828,7 +5842,16 @@ def _bash_exec(
     if not disable_sandbox:
         blocked = _find_blocked_commands(command)
         if blocked:
-            return f"Blocked command(s) for safety: {', '.join(sorted(blocked))}"
+            base = f"Blocked command(s) for safety: {', '.join(sorted(blocked))}."
+            if blocked & _NETWORK_BLOCKED_COMMANDS:
+                return (
+                    base + " This sandbox cannot reach other machines or remote "
+                    "hosts over the network, so files that live on another "
+                    "machine are not accessible from here. Do not retry with "
+                    "other remote-access commands; ask the user to upload the "
+                    "files they want you to work with."
+                )
+            return base
     elif not _harden_parent_against_proc_env_leak():
         # Close the /proc/<parent>/environ secret-recovery path first; if it
         # cannot be applied, fail closed rather than leak the parent environ.
