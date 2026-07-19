@@ -212,11 +212,17 @@ def test_sandbox_disabled_treats_permission_mode_full_as_unsandboxed():
     from routes.inference import _sandbox_disabled
 
     # Explicit bypass -> unsandboxed.
-    assert _sandbox_disabled(SimpleNamespace(bypass_permissions=True, permission_mode="ask")) is True
+    assert (
+        _sandbox_disabled(SimpleNamespace(bypass_permissions = True, permission_mode = "ask")) is True
+    )
     # "full" even without bypass set on the object -> still unsandboxed (decoupled
     # from the model-layer fold, so the notes never overclaim a live restriction).
-    assert _sandbox_disabled(SimpleNamespace(bypass_permissions=False, permission_mode="full")) is True
+    assert (
+        _sandbox_disabled(SimpleNamespace(bypass_permissions = False, permission_mode = "full")) is True
+    )
     # A genuinely sandboxed request keeps the restrictive notes.
-    assert _sandbox_disabled(SimpleNamespace(bypass_permissions=False, permission_mode="ask")) is False
+    assert (
+        _sandbox_disabled(SimpleNamespace(bypass_permissions = False, permission_mode = "ask")) is False
+    )
     # Missing attributes must not raise (defensive getattr).
     assert _sandbox_disabled(SimpleNamespace()) is False
