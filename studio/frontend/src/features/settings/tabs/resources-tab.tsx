@@ -194,18 +194,31 @@ export function ResourcesTab() {
       (sum, device) => sum + (device.memory_total_gb ?? 0),
       0,
     );
-    const vramUsed = devices.reduce(
-      (sum, device) => sum + (device.vram_used_gb ?? 0),
-      0,
-    );
-    const vramFree = devices.reduce(
-      (sum, device) =>
-        sum +
-        (device.vram_free_gb ??
-          Math.max(0, (device.memory_total_gb ?? 0) - (device.vram_used_gb ?? 0))),
-      0,
-    );
-    const vramPercent = vramTotal > 0 ? (vramUsed / vramTotal) * 100 : 0;
+    // A device reports null usage when it is unknown (e.g. Windows ROCm perf
+    // counter unavailable). Treating null as 0 would fabricate a 0-used/full-free
+    // total, so surface the aggregate as unknown when any device is unknown.
+    const vramUsageKnown =
+      devices.length > 0 &&
+      devices.every((device) => isFiniteNumber(device.vram_used_gb));
+    const vramUsed = vramUsageKnown
+      ? devices.reduce((sum, device) => sum + (device.vram_used_gb ?? 0), 0)
+      : null;
+    const vramFree = vramUsageKnown
+      ? devices.reduce(
+          (sum, device) =>
+            sum +
+            (device.vram_free_gb ??
+              Math.max(
+                0,
+                (device.memory_total_gb ?? 0) - (device.vram_used_gb ?? 0),
+              )),
+          0,
+        )
+      : null;
+    const vramPercent =
+      vramUsageKnown && isFiniteNumber(vramUsed) && vramTotal > 0
+        ? (vramUsed / vramTotal) * 100
+        : 0;
 
     return {
       devices,
@@ -218,6 +231,7 @@ export function ResourcesTab() {
       vramUsed,
       vramFree,
       vramPercent,
+      vramUsageKnown,
     };
   }, [systemInfo]);
 
@@ -259,6 +273,7 @@ export function ResourcesTab() {
     : modelsFolderLoaded
       ? t("settings.resources.environment.unknown")
       : t("common.loading");
+  const unknownLabel = t("settings.resources.environment.unknown");
 
   return (
     <div className="flex flex-col gap-6">
@@ -327,14 +342,18 @@ export function ResourcesTab() {
             label={t("settings.resources.liveMonitor.vram")}
             value={
               hasGpu
-                ? `${formatGiB(metrics.vramUsed)} / ${formatGiB(metrics.vramTotal)}`
+                ? metrics.vramUsageKnown
+                  ? `${formatGiB(metrics.vramUsed)} / ${formatGiB(metrics.vramTotal)}`
+                  : `${unknownLabel} / ${formatGiB(metrics.vramTotal)}`
                 : t("settings.resources.liveMonitor.noGpu")
             }
             detail={
               hasGpu
-                ? t("settings.resources.liveMonitor.free", {
-                    value: formatGiB(metrics.vramFree),
-                  })
+                ? metrics.vramUsageKnown
+                  ? t("settings.resources.liveMonitor.free", {
+                      value: formatGiB(metrics.vramFree),
+                    })
+                  : unknownLabel
                 : backendLabel
             }
             percent={metrics.vramPercent}
@@ -346,13 +365,34 @@ export function ResourcesTab() {
         {hasGpu ? (
           metrics.devices.map((device, index) => {
             const ordinal = deviceOrdinal(device);
-            const total = device.memory_total_gb ?? 0;
-            const used = device.vram_used_gb ?? 0;
-            const free = device.vram_free_gb ?? Math.max(0, total - used);
+            // Preserve null (unknown, e.g. Windows ROCm perf counter
+            // unavailable): coercing to 0 would render a fabricated 0 used /
+            // full free instead of unknown.
+            const total = device.memory_total_gb ?? null;
+            const used = device.vram_used_gb ?? null;
+            const free =
+              device.vram_free_gb ??
+              (isFiniteNumber(total) && isFiniteNumber(used)
+                ? Math.max(0, total - used)
+                : null);
             const percent =
               device.vram_utilization_pct ??
-              (total > 0 ? (used / total) * 100 : null);
+              (isFiniteNumber(total) && total > 0 && isFiniteNumber(used)
+                ? (used / total) * 100
+                : null);
             const safePercent = clampPercent(percent);
+            const usedText = isFiniteNumber(used)
+              ? formatGiB(used)
+              : unknownLabel;
+            const freeText = isFiniteNumber(free)
+              ? formatGiB(free)
+              : unknownLabel;
+            const totalText = isFiniteNumber(total)
+              ? formatGiB(total)
+              : unknownLabel;
+            const percentText = isFiniteNumber(percent)
+              ? formatPercent(safePercent)
+              : unknownLabel;
             return (
               <div
                 key={`${device.index ?? index}-${device.name ?? "gpu"}`}
@@ -374,7 +414,7 @@ export function ResourcesTab() {
                   </div>
                   <div className="shrink-0 font-mono text-xs tabular-nums text-muted-foreground">
                     <span>
-                      {formatPercent(safePercent)}{" "}
+                      {percentText}{" "}
                       {t("settings.resources.gpu.vramUtilization")}
                     </span>
                   </div>
@@ -382,17 +422,17 @@ export function ResourcesTab() {
                 <div className="grid gap-1 text-xs text-muted-foreground sm:grid-cols-3 sm:gap-2">
                   <span className="min-w-0 truncate font-mono tabular-nums">
                     {t("settings.resources.gpu.used", {
-                      value: formatGiB(used),
+                      value: usedText,
                     })}
                   </span>
                   <span className="min-w-0 truncate font-mono tabular-nums sm:text-center">
                     {t("settings.resources.gpu.free", {
-                      value: formatGiB(free),
+                      value: freeText,
                     })}
                   </span>
                   <span className="min-w-0 truncate font-mono tabular-nums sm:text-right">
                     {t("settings.resources.gpu.total", {
-                      value: formatGiB(total),
+                      value: totalText,
                     })}
                   </span>
                 </div>
