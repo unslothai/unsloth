@@ -2968,11 +2968,10 @@ _SANDBOX_PATHS_NOTE_INTRO = (
     "host are already here."
 )
 _SANDBOX_PATHS_NOTE_NETWORK = (
-    " Internet access is limited: the python tool can fetch "
-    "only from a fixed allowlist of public sites (such as github.com, "
-    "huggingface.co, and pypi.org), not the user's own machines, private hosts, "
-    "or arbitrary addresses, and the terminal blocks direct download commands "
-    "like curl and wget."
+    " Internet access is limited: the python tool is intended to fetch "
+    "from public sources such as github.com, huggingface.co, and pypi.org "
+    "rather than the user's own machines or private hosts, and the terminal "
+    "blocks direct download commands like curl and wget."
 )
 _SANDBOX_PATHS_NOTE_TAIL = (
     " Documents the user attaches to the chat are retrieved "
@@ -2985,7 +2984,8 @@ _SANDBOX_PATHS_NOTE_TAIL = (
     "you need are not here, ask the user to provide them or an exact path "
     "instead of guessing one."
 )
-# Default (sandboxed) note: keeps the precise allowlist + curl/wget restriction.
+# Default (sandboxed) note: steers the python tool at public sources and keeps
+# the curl/wget restriction (without overstating the host check as a hard wall).
 _SANDBOX_PATHS_NOTE = (
     _SANDBOX_PATHS_NOTE_INTRO + _SANDBOX_PATHS_NOTE_NETWORK + _SANDBOX_PATHS_NOTE_TAIL
 )
@@ -5914,11 +5914,12 @@ def _bash_exec(
             if blocked & _NETWORK_BLOCKED_COMMANDS:
                 return (
                     base + " These download commands are blocked by name in "
-                    "the terminal. Public files on allowlisted sites (such as "
-                    "github.com, huggingface.co, or pypi.org) can be fetched "
-                    "from Python code instead. If you need files from another "
-                    "location, ask the user to place them in the working "
-                    "directory or give a path the sandbox can read."
+                    "the terminal. If a code-execution tool is enabled this "
+                    "turn, public files on sites such as github.com, "
+                    "huggingface.co, or pypi.org can be fetched from code "
+                    "instead. If you need files from another location, ask the "
+                    "user to place them in the working directory or give a path "
+                    "the sandbox can read."
                 )
             return base
     elif not _harden_parent_against_proc_env_leak():

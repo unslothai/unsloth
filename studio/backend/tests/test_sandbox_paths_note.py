@@ -5,9 +5,10 @@
 tool descriptions (#7242).
 
 The note must not misdirect the model with claims that are false for the real
-sandbox: (1) the sandbox is not network-isolated -- the python tool can reach an
-allowlist of public hosts (github.com / huggingface.co / pypi.org), so it must
-not claim it "cannot reach ... remote hosts" at all; (2) a project sandbox is a
+sandbox: (1) the sandbox is not network-isolated -- the python tool should fetch
+from public hosts (github.com / huggingface.co / pypi.org), so it must not claim
+it "cannot reach ... remote hosts" at all, nor overstate the host check as a hard
+wall that makes private/arbitrary hosts impossible; (2) a project sandbox is a
 shared per-project directory, so a new thread can inherit files from prior
 threads -- the note must not claim the workdir "starts empty" or "persists only
 for this conversation".
@@ -36,13 +37,17 @@ from core.inference.tools import (
 
 def test_note_does_not_claim_full_network_isolation():
     lowered = _SANDBOX_PATHS_NOTE.lower()
-    # The old absolute claim is false for the python tool (allowlisted egress).
+    # The old absolute claim is false for the python tool (it does reach egress).
     assert "cannot reach other machines or remote hosts" not in lowered
-    # It should instead scope the block to private/arbitrary hosts and name the
-    # allowlist so the model still fetches valid public URLs.
-    assert "allowlist" in lowered
+    # It must not overstate the host check as an enforced hard boundary:
+    # _sandbox_preexec leaves networking on and the AST check only inspects
+    # literal hosts, so a dynamically built request to a private host still runs.
+    assert "only from a fixed allowlist" not in lowered
+    assert "arbitrary addresses" not in lowered
+    # It should still steer to public sources so the model fetches valid URLs.
+    assert "public sources" in lowered
     assert "github.com" in lowered and "huggingface.co" in lowered
-    assert "arbitrary" in lowered or "private" in lowered
+    assert "private" in lowered
 
 
 def test_note_does_not_claim_project_sandbox_starts_empty():
@@ -78,7 +83,7 @@ def test_note_scopes_network_block_to_the_terminal_not_all_shell_commands():
     lowered = _SANDBOX_PATHS_NOTE.lower()
     assert "shell network commands are blocked" not in lowered
     assert "curl" in lowered and "wget" in lowered
-    assert "python tool can fetch" in lowered
+    assert "python tool is intended to fetch" in lowered
 
 
 def test_note_distinguishes_attachments_from_sandbox_uploads():
@@ -91,13 +96,17 @@ def test_note_distinguishes_attachments_from_sandbox_uploads():
     assert "attach" in lowered
 
 
-def test_blocked_network_command_message_points_to_python_egress():
-    # A blocked curl/wget must not tell the model the whole sandbox is offline: the
-    # python tool can still fetch allowlisted public hosts.
+def test_blocked_network_command_message_gates_code_fallback_on_tool_availability():
+    # A blocked curl/wget must not tell the model the whole sandbox is offline, and
+    # must not name a specific tool (e.g. python) as the remedy: when only the
+    # terminal is enabled the python tool is absent from the schema, so an
+    # unconditional "fetch it from Python code" instruction invites an invalid tool
+    # call. The fallback is gated on a code-execution tool being enabled this turn.
     msg = _bash_exec("curl https://raw.githubusercontent.com/foo/bar/main/x.py").lower()
     assert "blocked command" in msg
     assert "cannot reach other machines or remote hosts" not in msg
-    assert "python" in msg
+    assert "from python code instead" not in msg
+    assert "if a code-execution tool is enabled this turn" in msg
     assert "github.com" in msg
 
 
