@@ -76,19 +76,11 @@ export function LiveTrainingView(): ReactElement {
     })),
   );
 
-  // The Training Config popover must show the ACTIVE run's saved config, not
-  // the editable form store, which the user may have changed since starting
-  // the run (#6853). start_training() inserts the run row (with its config
-  // snapshot) BEFORE the pump can consume any event, precisely so it exists
-  // during model loading, and /status exposes the job id throughout those
-  // pre-step phases. So the job id alone is the readiness signal: gating on a
-  // first step or a terminal phase instead would leave a long
-  // configuring/loading/downloading run -- or one adopted from another client --
-  // showing the wrong config for minutes. The bounded retry below covers the
-  // narrow window where the row is not committed yet. Until it loads (or if the
-  // fetch fails) ProgressSection falls back to the form store. The fetched
-  // config is keyed by job id and filtered at render time, so no synchronous
-  // reset is needed.
+  // Show the ACTIVE run's saved config, not the editable form store the user may
+  // have changed since starting (#6853). start_training() commits the run row
+  // before the pump, so the job id alone gates the fetch; the bounded retry below
+  // covers the narrow uncommitted window, and until it loads ProgressSection falls
+  // back to the form store. The result is keyed by job id and filtered at render.
   const [fetchedRunConfig, setFetchedRunConfig] = useState<{
     jobId: string;
     override: RunConfigOverride | undefined;
@@ -118,12 +110,9 @@ export function LiveTrainingView(): ReactElement {
         });
       })
       .catch(() => {
-        // The row is inserted at start_training(), but a lookup issued in
-        // the same instant can still miss it, so this 404 is transient.
-        // Nothing else in the deps changes on failure, so without an explicit
-        // retry the effect would never run again for this job. Bounded, so a
-        // genuinely absent row cannot poll forever -- the form-store fallback
-        // simply stays in place once the budget is spent.
+        // A lookup racing the row commit can miss transiently; nothing else in
+        // the deps changes on failure, so retry explicitly. Bounded so a genuinely
+        // absent row falls back to the form store instead of polling forever.
         if (controller.signal.aborted || attempts >= RUN_CONFIG_FETCH_RETRIES) {
           return;
         }

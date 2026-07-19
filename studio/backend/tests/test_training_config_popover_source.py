@@ -26,9 +26,11 @@ def _read(rel: str) -> str:
 
 def test_progress_section_prefers_override_over_form_store():
     src = _read("sections/progress-section.tsx")
-    # The popover fields must key on the presence of the override, not on
-    # isHistorical -- a live view passing an override must win over the store.
-    assert "configOverride ? configOverride.epochs : config.epochs" in src
+    # Fields key on the override's presence, not isHistorical: a live view passing
+    # an override wins over the store; without one, live keeps the store while
+    # History shows blanks rather than unrelated live form values.
+    assert "const cfg = configOverride ?? (isHistorical ? undefined : config)" in src
+    assert "const cfgEpochs = cfg?.epochs" in src
     assert "isHistorical ? configOverride?.epochs" not in src
 
 
@@ -55,10 +57,10 @@ def test_live_view_fetches_as_soon_as_the_job_id_exists():
 
 
 def test_live_view_retries_the_transient_row_miss():
-    # The progress event that reveals the run is published before create_run
-    # commits, so the first fetch can 404. Nothing else in the effect deps
-    # changes on failure, so the retry has to be explicit -- and bounded, so a
-    # genuinely absent row falls back to the form store instead of polling.
+    # start_training() creates the row before the pump, but a lookup racing that
+    # commit can still 404. Nothing else in the effect deps changes on failure, so
+    # the retry must be explicit and bounded, else a genuinely absent row would
+    # poll forever instead of falling back to the form store.
     src = _read("live-training-view.tsx")
     assert "RUN_CONFIG_FETCH_RETRIES" in src
     assert "RUN_CONFIG_FETCH_RETRY_MS" in src

@@ -172,21 +172,20 @@ export function ProgressSection({
     ? data.currentGradNorm
     : (lastValue(data.gradNormHistory) ?? data.currentGradNorm);
 
-  // Prefer the run's saved config snapshot whenever one is available — the
-  // live Current Run view passes it too, so the popover can't drift to the
-  // editable form store while a run is in flight (#6853). The store remains
-  // the fallback until the run record has loaded.
-  const cfgEpochs = configOverride ? configOverride.epochs : config.epochs;
-  const cfgBatchSize = configOverride ? configOverride.batchSize : config.batchSize;
-  const cfgLearningRate = configOverride ? configOverride.learningRate : config.learningRate;
-  const cfgMaxSteps = configOverride ? configOverride.maxSteps : config.maxSteps;
-  const cfgContextLength = configOverride ? configOverride.contextLength : config.contextLength;
-  const cfgWarmupSteps = configOverride ? configOverride.warmupSteps : config.warmupSteps;
-  const cfgOptimizerType = configOverride ? configOverride.optimizerType : config.optimizerType;
-  const cfgLoraRank = configOverride ? configOverride.loraRank : config.loraRank;
-  const cfgLoraAlpha = configOverride ? configOverride.loraAlpha : config.loraAlpha;
-  const cfgLoraDropout = configOverride ? configOverride.loraDropout : config.loraDropout;
-  const cfgLoraVariant = configOverride ? configOverride.loraVariant : config.loraVariant;
+  // Prefer the run's saved snapshot when present (#6853). Live falls back to the
+  // editable form store until it loads; History shows blanks, never live form values.
+  const cfg = configOverride ?? (isHistorical ? undefined : config);
+  const cfgEpochs = cfg?.epochs;
+  const cfgBatchSize = cfg?.batchSize;
+  const cfgLearningRate = cfg?.learningRate;
+  const cfgMaxSteps = cfg?.maxSteps;
+  const cfgContextLength = cfg?.contextLength;
+  const cfgWarmupSteps = cfg?.warmupSteps;
+  const cfgOptimizerType = cfg?.optimizerType;
+  const cfgLoraRank = cfg?.loraRank;
+  const cfgLoraAlpha = cfg?.loraAlpha;
+  const cfgLoraDropout = cfg?.loraDropout;
+  const cfgLoraVariant = cfg?.loraVariant;
 
   const optimizerLabel =
     OPTIMIZER_OPTIONS.find((o) => o.value === cfgOptimizerType)?.label ??
