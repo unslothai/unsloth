@@ -14,15 +14,17 @@ import {
 import { Slider } from "@/components/ui/slider";
 import { Switch } from "@/components/ui/switch";
 import {
-  fetchGgufContextLength,
+  GPU_LAYERS_AUTO,
+  fetchGgufStagedMetadata,
   readPersistedSpeculativeType,
   useChatRuntimeStore,
 } from "@/features/chat";
+import { useGpuDevices } from "@/hooks/use-gpu-info";
 import { ChevronDownStandardIcon } from "@/lib/chevron-icons";
 import { toast } from "@/lib/toast";
 import { ArrowLeft01Icon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
-import { useEffect, useId, useState } from "react";
+import { type ReactNode, useEffect, useId, useState } from "react";
 import {
   useDefaultChatTemplate,
   useModelMaxPositionEmbeddings,
@@ -75,7 +77,11 @@ function hasNonDefaultAdvanced(config: PerModelConfig): boolean {
     (config.speculativeType ?? "auto") !== "auto" ||
     config.specDraftNMax != null ||
     config.tensorParallel ||
-    config.chatTemplateOverride != null
+    config.chatTemplateOverride != null ||
+    (config.gpuMemoryMode ?? "auto") !== "auto" ||
+    (config.gpuLayers != null && config.gpuLayers >= 0) ||
+    (config.nCpuMoe ?? 0) > 0 ||
+    config.selectedGpuIds != null
   );
 }
 
@@ -167,18 +173,227 @@ function clampMaxSeqLength(value: number, max: number): number {
   return Math.max(MAX_SEQ_LENGTH_MIN, Math.min(max, normalized));
 }
 
+function AdvancedGpuSlider({
+  label,
+  value,
+  min,
+  max,
+  onChange,
+  displayValue,
+  info,
+}: {
+  label: string;
+  value: number;
+  min: number;
+  max: number;
+  onChange: (value: number) => void;
+  displayValue?: string;
+  info?: ReactNode;
+}) {
+  return (
+    <div className="space-y-3">
+      <div className={ROW_CLASS}>
+        <div className="flex min-w-0 items-center gap-1.5">
+          <span className={LABEL_CLASS}>{label}</span>
+          {info && <InfoHint>{info}</InfoHint>}
+        </div>
+        <NumericValueInput
+          value={value}
+          min={min}
+          max={max}
+          step={1}
+          onChange={onChange}
+          displayValue={displayValue}
+          ariaLabel={label}
+          className={NUMBER_INPUT_CLASS}
+          size={8}
+        />
+      </div>
+      <Slider
+        min={min}
+        max={max}
+        step={1}
+        value={[value]}
+        onValueChange={([next]) => onChange(next)}
+        className="panel-slider"
+        aria-label={label}
+      />
+    </div>
+  );
+}
+
+// GPU Memory placement controls (mode / GPU Layers / MoE offload / GPU picker),
+// re-homed here from the chat settings sheet onto the per-model config. GGUF
+// only; the layer/MoE slider ceilings come from the GGUF header dims and the GPU
+// picker from the live device list. The per-GPU split ratio (--tensor-split) is
+// intentionally not persisted per model, so it is not exposed here.
+function GpuMemorySettings({
+  config,
+  update,
+  layerCount,
+  moeLayerCount,
+}: {
+  config: PerModelConfig;
+  update: (patch: Partial<PerModelConfig>) => void;
+  layerCount: number | null;
+  moeLayerCount: number | null;
+}) {
+  const gpuDevices = useGpuDevices();
+  const mode = config.gpuMemoryMode ?? "auto";
+  const isManual = mode === "manual";
+  const gpuLayers = config.gpuLayers ?? GPU_LAYERS_AUTO;
+  // Manual with the slider at Auto (leftmost): llama.cpp --fit owns the whole
+  // layout, so the MoE-offload knob doesn't apply.
+  const autoLayers = isManual && gpuLayers < 0;
+  // Ceiling = model layer count + 1 (llama.cpp counts the output layer as one
+  // more offloadable layer past the repeating blocks), else a safe fallback.
+  const gpuLayersMax = layerCount != null ? layerCount + 1 : 256;
+  const nCpuMoe = config.nCpuMoe ?? 0;
+  const moeLayersMax = moeLayerCount ?? 0;
+  const showMoeSlider = isManual && !autoLayers && moeLayersMax > 0;
+  const selectedGpuIds = config.selectedGpuIds ?? null;
+  // Only meaningful on multi-GPU, and only when the reported indices are
+  // physical (relative ordinals from a parent CUDA_VISIBLE_DEVICES mask can't be
+  // mapped back to pin a device). null = use all (auto).
+  const showGpuPicker =
+    gpuDevices.length > 1 && gpuDevices.every((d) => d.physicalIndex);
+  const isGpuChecked = (index: number) =>
+    selectedGpuIds === null || selectedGpuIds.includes(index);
+  const toggleGpu = (index: number) => {
+    const all = gpuDevices.map((d) => d.index);
+    const current = selectedGpuIds ?? all;
+    const next = current.includes(index)
+      ? current.filter((i) => i !== index)
+      : [...current, index].sort((a, b) => a - b);
+    if (next.length === 0) return; // keep at least one GPU selected
+    update({ selectedGpuIds: next.length === all.length ? null : next });
+  };
+  return (
+    <>
+      <div className={ROW_CLASS}>
+        <div className="flex min-w-0 items-center gap-1.5">
+          <span className={LABEL_CLASS}>GPU Memory</span>
+          <InfoHint>
+            <div className="flex flex-col gap-1.5">
+              <div>
+                <span className="font-medium">Default:</span> Unsloth fits the
+                model and context to your GPUs.
+              </div>
+              <div>
+                <span className="font-medium">Manual:</span> set GPU Layers
+                yourself. Leave it on Auto to let llama.cpp size the context and
+                offload overflow (including MoE experts) to RAM.
+              </div>
+            </div>
+          </InfoHint>
+        </div>
+        <Select
+          value={mode}
+          onValueChange={(v) =>
+            update({ gpuMemoryMode: v === "manual" ? "manual" : "auto" })
+          }
+        >
+          <SelectTrigger
+            animateRadius={false}
+            icon={ChevronDownStandardIcon}
+            iconClassName="size-3.5"
+            className={`w-[124px] shrink-0 ${SELECT_TRIGGER_CLASS}`}
+          >
+            <SelectValue />
+          </SelectTrigger>
+          <SelectContent className="menu-soft-surface ring-0 border-0 rounded-lg">
+            <SelectItem value="auto">Default</SelectItem>
+            <SelectItem value="manual">Manual</SelectItem>
+          </SelectContent>
+        </Select>
+      </div>
+      {isManual && (
+        <>
+          <AdvancedGpuSlider
+            label="GPU Layers"
+            value={Math.max(GPU_LAYERS_AUTO, Math.min(gpuLayers, gpuLayersMax))}
+            min={GPU_LAYERS_AUTO}
+            max={gpuLayersMax}
+            onChange={(v) => update({ gpuLayers: v })}
+            displayValue={autoLayers ? "Auto" : undefined}
+            info={
+              <>
+                Layers to keep on the GPU (--gpu-layers); the rest run on CPU.
+                Auto lets llama.cpp size the split (and the context) to fit VRAM.
+                At the maximum, the whole model is on the GPU.
+              </>
+            }
+          />
+          {showMoeSlider && (
+            <AdvancedGpuSlider
+              label="MoE Layers on CPU"
+              value={Math.min(nCpuMoe, moeLayersMax)}
+              min={0}
+              max={moeLayersMax}
+              onChange={(v) => update({ nCpuMoe: v })}
+              info={
+                <>
+                  Keep the experts of this many MoE layers on the CPU
+                  (--n-cpu-moe) to save VRAM. 0 = all experts on the GPU; at the
+                  maximum, all are on the CPU.
+                </>
+              }
+            />
+          )}
+        </>
+      )}
+      {showGpuPicker && (
+        <div className="space-y-2">
+          <div className="flex min-w-0 items-center gap-1.5">
+            <span className={LABEL_CLASS}>GPUs</span>
+            <InfoHint>
+              Which GPUs this model may use. Unchecked GPUs are hidden from
+              llama.cpp (CUDA_VISIBLE_DEVICES, or HIP_VISIBLE_DEVICES on ROCm).
+              Leave all checked to use every GPU.
+            </InfoHint>
+          </div>
+          <div className="flex flex-col gap-2">
+            {gpuDevices.map((d) => (
+              <div
+                key={d.index}
+                className="flex items-center justify-between gap-3"
+              >
+                <span className="min-w-0 truncate text-[12px] text-nav-fg/80">
+                  GPU {d.index}: {d.name}
+                  {d.memoryTotalGb
+                    ? ` · ${Math.round(d.memoryTotalGb)} GB`
+                    : ""}
+                </span>
+                <Switch
+                  className="panel-switch shrink-0"
+                  checked={isGpuChecked(d.index)}
+                  onCheckedChange={() => toggleGpu(d.index)}
+                />
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+    </>
+  );
+}
+
 function GgufAdvancedSettings({
   config,
   update,
   isMtp,
   speculativeFallback,
   onEditTemplate,
+  layerCount,
+  moeLayerCount,
 }: {
   config: PerModelConfig;
   update: (patch: Partial<PerModelConfig>) => void;
   isMtp: boolean;
   speculativeFallback: string;
   onEditTemplate: () => void;
+  layerCount: number | null;
+  moeLayerCount: number | null;
 }) {
   return (
     <>
@@ -301,6 +516,13 @@ function GgufAdvancedSettings({
         />
       </div>
 
+      <GpuMemorySettings
+        config={config}
+        update={update}
+        layerCount={layerCount}
+        moeLayerCount={moeLayerCount}
+      />
+
       <ChatTemplateSetting config={config} onEditTemplate={onEditTemplate} />
     </>
   );
@@ -387,50 +609,55 @@ export function ModelConfigPage({
   const update = (patch: Partial<PerModelConfig>) =>
     setConfig((current) => ({ ...current, ...patch }));
 
-  const contextFetchKey =
-    target.isGguf && target.meta.contextLength == null
-      ? `${target.id}\n${target.ggufVariant ?? ""}\n${hfToken || ""}`
-      : null;
-  const [fetchedContextLength, setFetchedContextLength] = useState<{
+  // Fetch the GGUF header dims (context + layer/MoE counts) for any GGUF target
+  // so the GPU Memory sliders can size themselves; the context is also used
+  // below when target.meta doesn't already carry it.
+  const contextFetchKey = target.isGguf
+    ? `${target.id}\n${target.ggufVariant ?? ""}\n${hfToken || ""}`
+    : null;
+  const [fetchedStagedDims, setFetchedStagedDims] = useState<{
     key: string;
-    value: number | null;
+    contextLength: number | null;
+    layerCount: number | null;
+    moeLayerCount: number | null;
   } | null>(null);
   useEffect(() => {
     if (contextFetchKey == null) {
       return;
     }
     let cancelled = false;
-    void fetchGgufContextLength({
+    void fetchGgufStagedMetadata({
       model_path: target.id,
       gguf_variant: target.ggufVariant ?? null,
       hf_token: hfToken || null,
     })
-      .then((contextLength) => {
+      .then((dims) => {
         if (!cancelled) {
-          setFetchedContextLength({
-            key: contextFetchKey,
-            value: contextLength,
-          });
+          setFetchedStagedDims({ key: contextFetchKey, ...dims });
         }
       })
       .catch(() => {
         if (!cancelled) {
-          setFetchedContextLength({ key: contextFetchKey, value: null });
+          setFetchedStagedDims({
+            key: contextFetchKey,
+            contextLength: null,
+            layerCount: null,
+            moeLayerCount: null,
+          });
         }
       });
     return () => {
       cancelled = true;
     };
   }, [contextFetchKey, target.id, target.ggufVariant, hfToken]);
+  const stagedDims =
+    fetchedStagedDims?.key === contextFetchKey ? fetchedStagedDims : null;
 
   const isMtp =
     config.speculativeType != null &&
     MTP_SPECULATIVE_TYPES.has(config.speculativeType);
   const nativeContextLength =
-    target.meta.contextLength ??
-    (fetchedContextLength?.key === contextFetchKey
-      ? fetchedContextLength.value
-      : null);
+    target.meta.contextLength ?? stagedDims?.contextLength ?? null;
   const activeLoadedContext =
     isActiveModel && target.isGguf ? loadedContextLength : null;
   const minContext = CONTEXT_LENGTH_MIN;
@@ -615,6 +842,8 @@ export function ModelConfigPage({
                 isMtp={isMtp}
                 speculativeFallback={speculativeFallback}
                 onEditTemplate={() => setTemplateOpen(true)}
+                layerCount={stagedDims?.layerCount ?? null}
+                moeLayerCount={stagedDims?.moeLayerCount ?? null}
               />
             )}
 

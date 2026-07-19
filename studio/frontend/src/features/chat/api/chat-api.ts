@@ -127,28 +127,38 @@ export async function validateModel(
       native_path_lease: payload.nativePathLease ?? null,
       hf_token: payload.hf_token,
       gguf_variant: payload.gguf_variant ?? null,
-      // Send the intended load settings so validate's VRAM check matches the
-      // follow-up /load and doesn't unload for a load /load would then reject.
+      // Intended load settings so validate's preflight matches the follow-up
+      // /load. Default placement is sized against the selected GPUs.
       max_seq_length: payload.max_seq_length,
       load_in_4bit: payload.load_in_4bit,
+      gpu_ids: payload.gpu_ids,
+      // Manual placement is an explicit override: Auto layers use llama.cpp
+      // --fit, while a pinned layer count is owned by the user. Tell validate
+      // so it applies the same training-guard policy as /load.
+      gpu_memory_mode: payload.gpu_memory_mode,
     }),
   });
   return parseJsonOrThrow<ValidateModelResponse>(response);
 }
 
 /**
- * Read a GGUF's native context length from its local header (no GPU load, no
- * download). Returns null when the file isn't downloaded yet, the model isn't a
- * GGUF, or it's gated. For a native (drag-drop / picked) file, pass
- * `nativePathToken` so the backend reads the granted local path. Used by the
- * deferred-load staging flow to fill the context slider before the single load.
+ * Read a GGUF's header dims (native context length, total layer count, MoE
+ * expert-layer count) from its local file (no GPU load, no download). All are
+ * null when the file isn't downloaded yet, the model isn't a GGUF, or it's
+ * gated. For a native (drag-drop / picked) file, pass `nativePathToken` so the
+ * backend reads the granted local path. Used by the deferred-load staging flow
+ * to size the context, GPU-layers and MoE sliders before the single load.
  */
-export async function fetchGgufContextLength(payload: {
+export async function fetchGgufStagedMetadata(payload: {
   model_path: string;
   gguf_variant?: string | null;
   hf_token?: string | null;
   nativePathToken?: string | null;
-}): Promise<number | null> {
+}): Promise<{
+  contextLength: number | null;
+  layerCount: number | null;
+  moeLayerCount: number | null;
+}> {
   let nativePathLease: string | null = null;
   if (payload.nativePathToken) {
     try {
@@ -156,8 +166,8 @@ export async function fetchGgufContextLength(payload: {
         await consumeNativePathToken(payload.nativePathToken, "validate-model")
       ).nativePathLease;
     } catch {
-      // Lease expired / revoked: degrade to no context (the load can re-mint).
-      return null;
+      // Lease expired / revoked: degrade to no metadata (the load can re-mint).
+      return { contextLength: null, layerCount: null, moeLayerCount: null };
     }
   }
   const response = await authFetch("/api/inference/validate", {
@@ -172,7 +182,11 @@ export async function fetchGgufContextLength(payload: {
     }),
   });
   const res = await parseJsonOrThrow<ValidateModelResponse>(response);
-  return res.context_length ?? null;
+  return {
+    contextLength: res.context_length ?? null,
+    layerCount: res.layer_count ?? null,
+    moeLayerCount: res.moe_layer_count ?? null,
+  };
 }
 
 export async function unloadModel(payload: UnloadModelRequest): Promise<void> {

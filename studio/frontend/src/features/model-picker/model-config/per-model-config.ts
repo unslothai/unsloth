@@ -17,6 +17,16 @@ export interface PerModelConfig {
   specDraftNMax: number | null;
   tensorParallel: boolean;
   chatTemplateOverride: string | null;
+  // GPU Memory controls (per-model, GGUF-only), optional so an older blob (or a
+  // build without them) still parses. gpuLayers/nCpuMoe are Manual-mode knobs;
+  // gpuMemoryMode "manual" is itself a non-default choice. A null selectedGpuIds
+  // is meaningful (all GPUs), so it is distinguished from absent. The per-GPU
+  // split ratio (--tensor-split) is deliberately NOT remembered: it is
+  // positionally bound to the exact GPU set/order and unvalidated.
+  gpuMemoryMode?: "auto" | "manual";
+  gpuLayers?: number;
+  nCpuMoe?: number;
+  selectedGpuIds?: number[] | null;
 }
 
 export const DEFAULT_PER_MODEL_CONFIG: PerModelConfig = {
@@ -72,7 +82,56 @@ const STORED_CONFIG_FIELDS = new Set([
   "specDraftNMax",
   "tensorParallel",
   "chatTemplateOverride",
+  "gpuMemoryMode",
+  "gpuLayers",
+  "nCpuMoe",
+  "selectedGpuIds",
 ]);
+
+// Manual-mode gpu_layers sentinel (mirrors the chat store's GPU_LAYERS_AUTO):
+// < 0 means "Auto" (hand layer sizing to llama.cpp --fit), the Manual default.
+const GPU_LAYERS_AUTO_SENTINEL = -1;
+
+function normalizeGpuFields(partial: RawConfig): {
+  gpuMemoryMode?: "auto" | "manual";
+  gpuLayers?: number;
+  nCpuMoe?: number;
+  selectedGpuIds?: number[] | null;
+} {
+  const out: {
+    gpuMemoryMode?: "auto" | "manual";
+    gpuLayers?: number;
+    nCpuMoe?: number;
+    selectedGpuIds?: number[] | null;
+  } = {};
+  if (partial.gpuMemoryMode === "auto" || partial.gpuMemoryMode === "manual") {
+    out.gpuMemoryMode = partial.gpuMemoryMode;
+  }
+  if (
+    typeof partial.gpuLayers === "number" &&
+    Number.isFinite(partial.gpuLayers)
+  ) {
+    out.gpuLayers = Math.trunc(partial.gpuLayers);
+  }
+  if (
+    typeof partial.nCpuMoe === "number" &&
+    Number.isFinite(partial.nCpuMoe) &&
+    partial.nCpuMoe >= 0
+  ) {
+    out.nCpuMoe = Math.trunc(partial.nCpuMoe);
+  }
+  if (partial.selectedGpuIds === null) {
+    out.selectedGpuIds = null;
+  } else if (
+    Array.isArray(partial.selectedGpuIds) &&
+    partial.selectedGpuIds.every(
+      (n) => typeof n === "number" && Number.isFinite(n),
+    )
+  ) {
+    out.selectedGpuIds = partial.selectedGpuIds.map((n) => Math.trunc(n));
+  }
+  return out;
+}
 
 function canonicalizeSpeculativeType(value: string): string | null {
   const s = value.trim().toLowerCase();
@@ -225,6 +284,20 @@ function legacyEntryToConfig(raw: Record<string, unknown>): PerModelConfig {
     tensorParallel:
       typeof raw.tensorParallel === "boolean" ? raw.tensorParallel : false,
     chatTemplateOverride: null,
+    // Carry the legacy GPU Memory knobs (older unsloth_load_settings blobs stored
+    // them here); normalizeGpuFields validates and drops anything malformed.
+    gpuMemoryMode:
+      raw.gpuMemoryMode === "auto" || raw.gpuMemoryMode === "manual"
+        ? raw.gpuMemoryMode
+        : undefined,
+    gpuLayers: typeof raw.gpuLayers === "number" ? raw.gpuLayers : undefined,
+    nCpuMoe: typeof raw.nCpuMoe === "number" ? raw.nCpuMoe : undefined,
+    selectedGpuIds:
+      raw.selectedGpuIds === null
+        ? null
+        : Array.isArray(raw.selectedGpuIds)
+          ? (raw.selectedGpuIds as number[])
+          : undefined,
   });
 }
 
@@ -387,6 +460,7 @@ function normalizeV1(partial: RawConfig): PerModelConfig {
       isChatTemplateWithinLimit(partial.chatTemplateOverride)
         ? partial.chatTemplateOverride
         : null,
+    ...normalizeGpuFields(partial),
   };
 }
 
@@ -518,7 +592,20 @@ export function isDefaultConfig(config: PerModelConfig): boolean {
     config.specDraftNMax == null &&
     Boolean(config.tensorParallel) ===
       Boolean(DEFAULT_PER_MODEL_CONFIG.tensorParallel) &&
-    (config.chatTemplateOverride ?? null) === null
+    (config.chatTemplateOverride ?? null) === null &&
+    gpuFieldsAtDefault(config)
+  );
+}
+
+// GPU knobs are "default" when the mode is Auto and the Manual knobs / GPU pick
+// carry no explicit choice: mode auto/absent, gpuLayers Auto (< 0) / absent,
+// nCpuMoe 0 / absent, and no picked GPU set (null / absent = all GPUs).
+function gpuFieldsAtDefault(config: PerModelConfig): boolean {
+  return (
+    (config.gpuMemoryMode ?? "auto") === "auto" &&
+    (config.gpuLayers == null || config.gpuLayers < 0) &&
+    (config.nCpuMoe == null || config.nCpuMoe === 0) &&
+    config.selectedGpuIds == null
   );
 }
 

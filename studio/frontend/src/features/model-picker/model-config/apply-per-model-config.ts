@@ -2,9 +2,12 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import {
+  GPU_LAYERS_AUTO,
   defaultInferenceParams,
   normalizeSpeculativeType,
+  readPersistedGpuMemoryMode,
   readPersistedSpeculativeType,
+  reconcilePersistedGpuIds,
   useChatRuntimeStore,
 } from "@/features/chat";
 import {
@@ -38,6 +41,19 @@ export function applyPerModelConfigToRuntime(config: PerModelConfig): void {
     specDraftNMax: config.specDraftNMax ?? null,
     tensorParallel: config.tensorParallel ?? false,
     chatTemplateOverride: cleanTemplate(config.chatTemplateOverride),
+    // GPU Memory knobs are per-model (GGUF-only). Absent = defaults; the mode is
+    // a standing preference so an absent mode falls back to the persisted one.
+    // The per-GPU split ratio is never remembered, so it always resets. The GPU
+    // pick is reconciled against the GPUs present now (a saved [1] on a 1-GPU
+    // host would otherwise be sent and rejected).
+    gpuMemoryMode: config.gpuMemoryMode ?? readPersistedGpuMemoryMode(),
+    gpuLayers: config.gpuLayers ?? GPU_LAYERS_AUTO,
+    nCpuMoe: config.nCpuMoe ?? 0,
+    splitRatio: null,
+    selectedGpuIds:
+      config.selectedGpuIds !== undefined
+        ? reconcilePersistedGpuIds(config.selectedGpuIds)
+        : null,
   });
 }
 
@@ -63,6 +79,13 @@ export function currentRuntimePerModelConfig(
     specDraftNMax: s.specDraftNMax ?? null,
     tensorParallel: s.tensorParallel ?? false,
     chatTemplateOverride: cleanTemplate(s.chatTemplateOverride),
+    // Snapshot the live GPU knobs too so a failed switch rolls the previous
+    // model's GPU Memory settings back (see applyPerModelConfigToRuntime). The
+    // split ratio is intentionally never remembered.
+    gpuMemoryMode: s.gpuMemoryMode,
+    gpuLayers: s.gpuLayers,
+    nCpuMoe: s.nCpuMoe,
+    selectedGpuIds: s.selectedGpuIds,
   };
 }
 
@@ -80,6 +103,25 @@ export function perModelConfigsEqual(
     (a.specDraftNMax ?? null) === (b.specDraftNMax ?? null) &&
     Boolean(a.tensorParallel) === Boolean(b.tensorParallel) &&
     cleanTemplate(a.chatTemplateOverride) ===
-      cleanTemplate(b.chatTemplateOverride)
+      cleanTemplate(b.chatTemplateOverride) &&
+    gpuFieldsEqual(a, b)
+  );
+}
+
+// Compare the per-model GPU knobs with the same "absent == default" coalescing
+// the store applies: mode auto/absent, gpuLayers Auto (< 0) / absent, nCpuMoe
+// 0 / absent, and the GPU pick (null / absent = all GPUs).
+function gpuFieldsEqual(a: PerModelConfig, b: PerModelConfig): boolean {
+  const mode = (c: PerModelConfig) => c.gpuMemoryMode ?? "auto";
+  const layers = (c: PerModelConfig) =>
+    c.gpuLayers == null || c.gpuLayers < 0 ? -1 : c.gpuLayers;
+  const moe = (c: PerModelConfig) => c.nCpuMoe ?? 0;
+  const ids = (c: PerModelConfig) =>
+    c.selectedGpuIds == null ? "all" : [...c.selectedGpuIds].sort().join(",");
+  return (
+    mode(a) === mode(b) &&
+    layers(a) === layers(b) &&
+    moe(a) === moe(b) &&
+    ids(a) === ids(b)
   );
 }
