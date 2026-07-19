@@ -201,7 +201,11 @@ def _build_index() -> dict[str, _LocalGgufEntry]:
             continue
         # Skip what Unsloth hides from its pickers (validation probe, RAG embed
         # weights): not chat models, so never an auto-switch target.
-        if _is_hidden_model(raw_id, getattr(info, "path", None)):
+        if _is_hidden_model(
+            raw_id,
+            getattr(info, "model_id", None),
+            getattr(info, "path", None),
+        ):
             continue
         # Advertise a client-facing alias, not an absolute filesystem path.
         loader_id = _advertised_loader_id(info)
