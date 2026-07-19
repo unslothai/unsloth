@@ -1828,6 +1828,29 @@ def test_hf_cache_scan_uses_gguf_partial_row_for_variant_state(monkeypatch, tmp_
     assert rows[0].capabilities.requires_variant is True
 
 
+def test_local_inventory_filters_custom_embedder_hf_cache_row(monkeypatch, tmp_path):
+    from core.rag import config as rag_config
+
+    monkeypatch.setattr(rag_config, "effective_embedding_model", lambda: "org/embedder")
+    monkeypatch.setattr(rag_config, "effective_gguf_repo", lambda: "org/embedder-GGUF")
+
+    def _row(repo_id: str):
+        repo_path = tmp_path / f"models--{repo_id.replace('/', '--')}"
+        return model_common._local_model_info(
+            scan_path = repo_path,
+            load_path = repo_path,
+            source = "hf_cache",
+            model_format = "safetensors",
+            model_id = repo_id,
+        )
+
+    rows = local_inventory._filter_hidden_models(
+        [_row("org/embedder"), _row("org/chat-model")]
+    )
+
+    assert [row.model_id for row in rows] == ["org/chat-model"]
+
+
 def test_model_download_job_helpers_preserve_idle_shape():
     key = downloads._download_job_key("Org/Model", None)
     status = downloads._job_status(key)

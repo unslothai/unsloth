@@ -103,9 +103,14 @@ function mergeInventoryHint(
   if (idx === -1) {
     return [...rows, seed];
   }
+  const serverRow = rows[idx];
   const merged = {
-    ...rows[idx],
-    ...seed,
+    ...serverRow,
+    // A completed hint may arrive before a partial server scan catches up. In
+    // that case keep the synthetic row non-runnable. A complete server row is
+    // already authoritative even when its runnable-weight size is smaller than
+    // the hint's full-snapshot byte count, so do not mark that merge optimistic.
+    ...(serverRow.partial ? seed : { optimistic: false }),
     size_bytes: Math.max(rowSizeBytes(rows[idx]), rowSizeBytes(seed)),
   };
   return [...rows.slice(0, idx), merged, ...rows.slice(idx + 1)];
