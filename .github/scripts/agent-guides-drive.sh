@@ -36,7 +36,6 @@ AGENT="${2:?usage: agent-guides-drive.sh <mode> <agent>}"
 # Determinism (seed/temp) is applied at the server level by
 # serve-unsloth-run.sh --extra; agents inherit it through the API.
 TIMEOUT="${AGENT_INVOKE_TIMEOUT:-180}"
-TIMEOUT="${TIMEOUT%s}"  # tolerate a trailing 's' (timeout(1) style) so the arithmetic and "${TIMEOUT}s" below stay valid
 # opencode is the slow outlier. Unlike the print-mode agents (claude -p, codex
 # exec) it runs a full turn AND a separate small_model call to name the session,
 # so one connection reply takes ~8 min on a CPU-served 4B -- right at the shared
@@ -44,7 +43,15 @@ TIMEOUT="${TIMEOUT%s}"  # tolerate a trailing 's' (timeout(1) style) so the arit
 # headroom (still well under the 40-min job budget); the fast agents keep the
 # tight cap that still catches a real headless-TTY hang.
 case "$AGENT" in
-  opencode) TIMEOUT=$(( TIMEOUT * 2 )) ;;
+  opencode)
+    # Double it, but only for a bare-integer seconds value. A GNU timeout(1)
+    # duration suffix (s/m/h/d, including floats like 0.5s) is left unchanged so
+    # the arithmetic never sees a non-number; timeout(1) parses it directly.
+    case "$TIMEOUT" in
+      *[!0-9]*) ;;
+      *) TIMEOUT=$(( TIMEOUT * 2 )) ;;
+    esac
+    ;;
 esac
 
 # Claude refuses --dangerously-skip-permissions outside a sandbox; the CI runner
