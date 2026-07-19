@@ -208,7 +208,6 @@ def _load_plain():
         model.for_training = lambda *a, **k: model.train()
     if not hasattr(model, "for_inference"):
         model.for_inference = lambda *a, **k: model.eval()
-    _guard_finite_logits(model)
     return model.to("cpu"), tok
 
 
@@ -265,6 +264,11 @@ def test_grpo_trains_on_cpu(tmp_path):
 
     assert GRPOTrainer.__name__ == "UnslothGRPOTrainer", "GRPO patch did not apply"
     model, tok = _load_plain()
+    # GRPO is the only canary that autoregressively samples completions, so it is
+    # the only one that can hit the non-finite-logits multinomial crash. Install
+    # the guard here (not in _load_plain) so the SFT/DPO canaries keep asserting
+    # against the model's true, unclamped outputs.
+    _guard_finite_logits(model)
     ds = Dataset.from_list([{"prompt": "hi there"}] * 4)
     cfg = GRPOConfig(
         output_dir = str(tmp_path / "ci_grpo"),
