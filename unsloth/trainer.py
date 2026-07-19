@@ -541,14 +541,11 @@ def _patch_sft_trainer_auto_packing(trl_module):
                 reason = "vision-language model"
             elif is_unsupported_model:
                 reason = f"unsupported model type(s): {', '.join(model_types)}"
-            max_len = (
-                getattr(config_arg, "max_seq_length", None)
-                or getattr(config_arg, "max_length", None)
+            max_len = getattr(config_arg, "max_seq_length", None) or getattr(
+                config_arg, "max_length", None
             )
             limit = (
-                f"the {max_len}-token max sequence length"
-                if max_len
-                else "the max sequence length"
+                f"the {max_len}-token max sequence length" if max_len else "the max sequence length"
             )
             message = (
                 f"Unsloth: Sample packing skipped ({reason} detected) even though "
