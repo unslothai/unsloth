@@ -87,6 +87,22 @@ def _names_gguf(model: str) -> bool:
     return "gguf" in re.split(r"[^a-z0-9]+", model.lower())
 
 
+def gguf_repo_for_embedding_model(model: str) -> str:
+    """GGUF repo for ``model``, honoring an explicit companion override."""
+    if "RAG_EMBED_GGUF_REPO" in os.environ:
+        return EMBED_GGUF_REPO
+    if model == DEFAULT_EMBEDDING_MODEL:
+        return EMBED_GGUF_REPO
+    if _names_gguf(model):
+        return model
+    return f"{model}-GGUF"
+
+
+def default_gguf_repo() -> str:
+    """GGUF companion for the env/default embedding model."""
+    return gguf_repo_for_embedding_model(EMBEDDING_MODEL)
+
+
 def effective_gguf_repo() -> str:
     """GGUF repo for the llama-server backend, tracking the effective model.
 
@@ -95,14 +111,7 @@ def effective_gguf_repo() -> str:
     ``-GGUF`` companion repo (the unsloth convention the default pair follows),
     or is used as-is when it already names a GGUF repo.
     """
-    if "RAG_EMBED_GGUF_REPO" in os.environ:
-        return EMBED_GGUF_REPO
-    model = effective_embedding_model()
-    if model == DEFAULT_EMBEDDING_MODEL:
-        return EMBED_GGUF_REPO
-    if _names_gguf(model):
-        return model
-    return f"{model}-GGUF"
+    return gguf_repo_for_embedding_model(effective_embedding_model())
 
 
 # llama-server backend only. F16 over Q8_0: faster (no per-block dequant for this
