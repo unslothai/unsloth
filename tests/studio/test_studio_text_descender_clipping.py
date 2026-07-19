@@ -1,4 +1,4 @@
-"""Regression guard: Studio text spans must not pair `leading-none` with
+"""Regression guard: Unsloth text spans must not pair `leading-none` with
 `truncate`, which clips glyph descenders (g, p, q, y, j) in visible labels.
 """
 

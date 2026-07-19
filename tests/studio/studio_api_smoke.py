@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""End-to-end Studio API & Auth HTTP integration tests against an externally-booted Studio."""
+"""End-to-end Unsloth API & Auth HTTP integration tests against an externally-booted Unsloth."""
 
 import json
 import os
@@ -571,7 +571,7 @@ EXPECTED_AUTH_ENDPOINTS = [
 for method, path in EXPECTED_AUTH_ENDPOINTS:
     if (method, path) in PUBLIC:
         continue
-    # Don't actually shut Studio down: an unauthenticated call must 401/403 before the trigger fires.
+    # Don't actually shut Unsloth down: an unauthenticated call must 401/403 before the trigger fires.
     if path == "/api/shutdown":
         code, _ = http(method, path)
         if code in (401, 403):
@@ -610,6 +610,6 @@ if _failed:
     sys.exit(1)
 _emit(
     "",
-    "PASS all Studio API & Auth assertions"
+    "PASS all Unsloth API & Auth assertions"
     + (f" ({len(_warned)} audit findings logged)" if _warned else ""),
 )

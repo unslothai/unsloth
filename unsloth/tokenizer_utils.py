@@ -1476,7 +1476,7 @@ def get_tokenizer_info(tokenizer) -> dict:
     """Return a concise diagnostic summary of a tokenizer instance.
 
     Collects key properties into a JSON-safe dict for logging, debugging, or the
-    Studio UI. Missing attributes fall back to ``None`` rather than raising.
+    Unsloth UI. Missing attributes fall back to ``None`` rather than raising.
 
     Example output::
 

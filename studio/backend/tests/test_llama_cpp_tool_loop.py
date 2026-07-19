@@ -122,7 +122,7 @@ def _structured_tool_call(tool_name: str, arguments: dict, call_id: str) -> list
 def test_structured_tool_call_after_visible_preface_is_executed(monkeypatch):
     """llama-server may emit content first and then native delta.tool_calls.
 
-    Studio must not drop that tool call after it has streamed the preface.
+    Unsloth must not drop that tool call after it has streamed the preface.
     """
 
     tool_call_id = "call_render_late"
