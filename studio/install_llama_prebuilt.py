@@ -5717,6 +5717,44 @@ def _wsl_system_rocm_lib_dirs() -> list[str]:
     return out
 
 
+def _bundled_hip_present(binary_dir: str) -> bool:
+    if not binary_dir:
+        return False
+    try:
+        return os.path.exists(os.path.join(str(binary_dir), "libggml-hip.so")) or os.path.exists(
+            os.path.join(str(binary_dir), "libggml-hip.so.0")
+        )
+    except OSError:
+        return False
+
+
+def _native_linux_system_rocm_lib_dirs(binary_dir: str = "") -> list[str]:
+    if sys.platform != "linux" or os.path.exists("/dev/dxg"):
+        return []
+    if not os.path.exists("/dev/kfd"):
+        return []
+    if not _bundled_hip_present(binary_dir):
+        return []
+    candidates = ["/opt/rocm"]
+    for var in ("HIP_PATH", "HIP_PATH_57", "ROCM_PATH"):
+        val = os.environ.get(var)
+        if val:
+            candidates.append(val)
+    out: list[str] = []
+    seen: set[str] = set()
+    for base in candidates:
+        for lib_sub in ("lib", "lib64"):
+            d = os.path.join(base, lib_sub)
+            if d in seen:
+                continue
+            seen.add(d)
+            if os.path.exists(os.path.join(d, "libhsa-runtime64.so")) or os.path.exists(
+                os.path.join(d, "libhsa-runtime64.so.1")
+            ):
+                out.append(d)
+    return out
+
+
 # Secrets a downloaded llama.cpp binary never needs; keep them out of binary_env().
 # The installer's own API calls read os.environ directly, so auth is unaffected.
 _SECRET_ENV_EXACT_NAMES = frozenset(
@@ -5877,6 +5915,11 @@ def binary_env(
         if _wsl_rocm:
             ld_dirs = [*_wsl_rocm, *ld_dirs]
             env.setdefault("HSA_ENABLE_DXG_DETECTION", "1")
+        # Native Linux AMD: system ROCm libs before the bundle's bundled HIP
+        # runtime, which can be incompatible with the host amdkfd driver.
+        _native_rocm = _native_linux_system_rocm_lib_dirs(str(binary_path.parent))
+        if _native_rocm:
+            ld_dirs = [*_native_rocm, *ld_dirs]
         existing = [part for part in env.get("LD_LIBRARY_PATH", "").split(os.pathsep) if part]
         env["LD_LIBRARY_PATH"] = os.pathsep.join(dedupe_existing_dirs([*ld_dirs, *existing]))
     elif host.is_macos:

@@ -247,6 +247,53 @@ def _wsl_system_rocm_lib_dirs() -> "list[str]":
     return out
 
 
+def _bundled_hip_present(binary_dir: str) -> bool:
+    """True when a prebuilt bundle ships its own HIP libraries."""
+    if not binary_dir:
+        return False
+    try:
+        return os.path.exists(os.path.join(str(binary_dir), "libggml-hip.so")) or os.path.exists(
+            os.path.join(str(binary_dir), "libggml-hip.so.0")
+        )
+    except OSError:
+        return False
+
+
+def _native_linux_system_rocm_lib_dirs(binary_dir: str = "") -> "list[str]":
+    """System ROCm lib dir(s) to load before a prebuilt's bundled HIP, on native Linux.
+
+    The bundled bare-metal HIP runtime can be incompatible with the host's
+    kernel driver (amdkfd) and crash inside hsa_init(); prepending the system
+    ROCm libs loads the matching libhsa-runtime64 / libamdhip64 while the
+    bundle still supplies libggml-hip / librocblas with GPU kernels.
+    No-op on WSL (handled by _wsl_system_rocm_lib_dirs) or non-Linux.
+    """
+    if sys.platform != "linux" or os.path.exists("/dev/dxg"):
+        return []
+    if not os.path.exists("/dev/kfd"):
+        return []
+    if not _bundled_hip_present(binary_dir):
+        return []
+    candidates = ["/opt/rocm"]
+    for var in ("HIP_PATH", "HIP_PATH_57", "ROCM_PATH"):
+        val = os.environ.get(var)
+        if val:
+            candidates.append(val)
+    out: "list[str]" = []
+    seen: "set[str]" = set()
+    for base in candidates:
+        for lib_sub in ("lib", "lib64"):
+            d = os.path.join(base, lib_sub)
+            if d in seen:
+                continue
+            seen.add(d)
+            if os.path.exists(os.path.join(d, "libhsa-runtime64.so")) or os.path.exists(
+                os.path.join(d, "libhsa-runtime64.so.1")
+            ):
+                out.append(d)
+    return out
+
+
 # Plan-without-action re-prompt state now lives in tool_call_parser (imported above).
 
 # Default max_tokens to the effective context when known. The floor is high
@@ -3592,6 +3639,9 @@ class LlamaCppBackend:
             lib_dirs.extend(_wsl_system_rocm_lib_dirs())
             if lib_dirs:
                 env.setdefault("HSA_ENABLE_DXG_DETECTION", "1")
+            # Native Linux AMD: system ROCm libs before the bundle's bundled HIP
+            # runtime, which can be incompatible with the host amdkfd driver.
+            lib_dirs.extend(_native_linux_system_rocm_lib_dirs(binary_dir))
             lib_dirs.append(binary_dir)
             _arch = platform.machine()  # x86_64, aarch64, etc.
 
