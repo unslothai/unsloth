@@ -130,9 +130,9 @@ async def start_training(
     try:
         logger.info(f"Starting training job with model: {request.model_name}")
 
-        # When Studio is driven as an inference API (API-key auth), refuse to start
+        # When Unsloth is driven as an inference API (API-key auth), refuse to start
         # training while a request is in flight: training frees VRAM by unloading
-        # the chat model, which would kill the stream. The Studio UI (session auth)
+        # the chat model, which would kill the stream. The Unsloth UI (session auth)
         # still starts training and coexists/frees VRAM as before. (A mixed UI+API
         # session is not yet special-cased.)
         if via_api_key is True:
@@ -142,7 +142,7 @@ async def start_training(
                     status_code = 409,
                     detail = (
                         "Cannot start training over the API while an inference request is in "
-                        "progress. Wait for it to finish, or start training from the Studio UI."
+                        "progress. Wait for it to finish, or start training from the Unsloth UI."
                     ),
                 )
 

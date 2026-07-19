@@ -219,7 +219,7 @@ fi
 echo "${ROCM_DIR}/lib" | $SUDO tee /etc/ld.so.conf.d/rocm.conf >/dev/null
 $SUDO ldconfig
 
-# ── Step 4: persist environment (system-wide so Studio's worker inherits it) ──
+# ── Step 4: persist environment (system-wide so Unsloth's worker inherits it) ──
 say "Persisting ROCm-on-WSL environment"
 _envfile="/etc/profile.d/unsloth-rocm-wsl.sh"
 $SUDO tee "$_envfile" >/dev/null <<EOF

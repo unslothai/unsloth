@@ -206,7 +206,7 @@ def chat(
     no_server: bool = typer.Option(
         False,
         "--no-server",
-        help = "Load the model in-process even if a Studio server is running.",
+        help = "Load the model in-process even if an Unsloth server is running.",
     ),
 ):
     """Start an interactive chat with a model (loads once, stays warm)."""
@@ -262,14 +262,14 @@ def chat(
         llama_extra_args = llama_extra_args,
     )
 
-    # Prefer a running Studio server: instant starts, model shared with the UI.
+    # Prefer a running Unsloth server: instant starts, model shared with the UI.
     chat_backend = (
         None if (no_server or is_mlx_distributed) else connect_studio_server(model, **load_opts)
     )
     server_mode = chat_backend is not None
     if server_mode and should_print:
         console.print(
-            "(Studio server connected — model stays warm after /exit)",
+            "(Unsloth server connected — model stays warm after /exit)",
             style = "bright_black",
         )
     else:

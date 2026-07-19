@@ -2047,7 +2047,7 @@ def get_chat_template(
         .replace("'assistant'", "'" + mapping["assistant"] + "'")
 
     if use_zoo_tokenizer_patch:
-        # Studio MLX avoids the model-utils tokenizer wrapper because that
+        # Unsloth MLX avoids the model-utils tokenizer wrapper because that
         # import path pulls in Torch/GPU-specific modules before MLX training.
         from unsloth_zoo.tokenizer_utils import patch_tokenizer
     else:

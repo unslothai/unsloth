@@ -11,7 +11,7 @@ subprocess and can be imported directly from .inference when needed.
 Public names are resolved lazily (PEP 562): importing this package -- or a
 dependency-light leaf like ``core.inference.chat_eos`` -- must NOT eagerly pull
 the orchestrator / llama_cpp import chain (httpx, subprocess plumbing, the ML
-backend and its Studio dependencies). Those load only when a public name is
+backend and its Unsloth dependencies). Those load only when a public name is
 actually accessed, so standalone helpers stay unit-testable without the full
 inference stack.
 """
