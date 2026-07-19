@@ -541,8 +541,24 @@ def _patch_sft_trainer_auto_packing(trl_module):
                 reason = "vision-language model"
             elif is_unsupported_model:
                 reason = f"unsupported model type(s): {', '.join(model_types)}"
-            message = f"Unsloth: Sample packing skipped ({reason} detected)."
-            print(message)
+            max_len = (
+                getattr(config_arg, "max_seq_length", None)
+                or getattr(config_arg, "max_length", None)
+            )
+            limit = (
+                f"the {max_len}-token max sequence length"
+                if max_len
+                else "the max sequence length"
+            )
+            message = (
+                f"Unsloth: Sample packing skipped ({reason} detected) even though "
+                f"packing=True was requested. Sequences longer than {limit} will be "
+                f"TRUNCATED rather than split into additional sequences, which can silently "
+                f"drop a large fraction of tokens from long samples. If your dataset has long "
+                f"documents (e.g. raw-text CPT), pre-split or pre-pack them before training to "
+                f"avoid data loss."
+            )
+            logger.warning(message)
 
         packing_active = False
         if _should_pack(config_arg) and not blocked:
