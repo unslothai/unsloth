@@ -1156,9 +1156,7 @@ def _get_cached_system_gpu_info(logger) -> dict[str, Any]:
             enriched_dev = dict(dev)
             enriched_dev["vram_used_gb"] = used_vram
             enriched_dev["vram_free_gb"] = (
-                round(total_vram - used_vram, 2)
-                if total_vram and used_vram is not None
-                else None
+                round(total_vram - used_vram, 2) if total_vram and used_vram is not None else None
             )
             enriched_dev["vram_utilization_pct"] = util.get("vram_utilization_pct")
             enriched_devices.append(enriched_dev)
