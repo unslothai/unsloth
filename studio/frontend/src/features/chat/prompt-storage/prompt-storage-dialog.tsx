@@ -582,6 +582,9 @@ function messageToPlainText(msg: {
     }
     if (!Array.isArray(blocks)) return;
     for (const b of blocks) {
+      if (!b || typeof b !== "object") {
+        continue;
+      }
       const block = b as Record<string, unknown>;
       if (block.type === "text" && typeof block.text === "string" && block.text) {
         parts.push(block.text);
