@@ -12,7 +12,7 @@
 
 set -e
 
-# Stop a Studio server via its PID file (written by install.sh's _spawn_terminal).
+# Stop an Unsloth server via its PID file (written by install.sh's _spawn_terminal).
 _kill_pid_file() {
     _pid_file="$1"
     [ -f "$_pid_file" ] || return 0
@@ -47,7 +47,7 @@ _pkill_studio() {
     command -v pkill >/dev/null 2>&1 || return 0
 
     # Scope fallback patterns to the install roots we are removing so a
-    # different Studio install (different UNSLOTH_STUDIO_HOME) is not touched.
+    # different Unsloth install (different UNSLOTH_STUDIO_HOME) is not touched.
     _kill_roots="$HOME/.unsloth/studio"
     _roots_from_conf=$(_custom_studio_roots 2>/dev/null || true)
     [ -n "$_roots_from_conf" ] && _kill_roots="$_kill_roots
@@ -89,7 +89,7 @@ _remove_path() {
     fi
 }
 
-# Accept as Studio root only if Studio sentinels exist (matches install.sh's
+# Accept as Unsloth root only if Unsloth sentinels exist (matches install.sh's
 # env-mode ownership guard at install.sh:1358-1361). A bare unsloth_studio/
 # directory is NOT enough -- require the install-time owner marker so a user
 # directory that happens to contain a folder named "unsloth_studio" is safe.
@@ -175,8 +175,8 @@ _custom_studio_roots() {
     _from_conf "$HOME/.local/share/unsloth/studio.conf"
 }
 
-# Remove $HOME/.local/bin/unsloth only if it's a Studio-managed symlink.
-# Studio's install.sh writes this as a symlink into the studio venv
+# Remove $HOME/.local/bin/unsloth only if it's an Unsloth-managed symlink.
+# Unsloth's install.sh writes this as a symlink into the studio venv
 # (install.sh: `ln -sfn "$VENV_DIR/bin/unsloth" "$_shim_path"`). A
 # pip-installed `unsloth` CLI is a regular file — leave it alone to avoid
 # wiping an unrelated install.
@@ -206,7 +206,7 @@ _custom_studio_roots | while IFS= read -r _custom_root; do
         continue
     fi
     if ! _is_studio_root "$_custom_root"; then
-        echo "  refusing to remove non-Studio path: $_custom_root" >&2
+        echo "  refusing to remove non-Unsloth path: $_custom_root" >&2
         continue
     fi
     _remove_path "$_custom_root"
@@ -234,7 +234,7 @@ _remove_path "$HOME/.unsloth/rocm-smoketest"
 # Drop ~/.unsloth only if now empty (rmdir refuses non-empty, so user content is kept).
 rmdir "$HOME/.unsloth" 2>/dev/null || true
 _remove_path "$HOME/.local/share/unsloth"
-# CLI shim: only the symlink Studio created, never a pip-installed file.
+# CLI shim: only the symlink Unsloth created, never a pip-installed file.
 _remove_cli_shim
 
 echo "Removing desktop shortcut and launcher lock..."

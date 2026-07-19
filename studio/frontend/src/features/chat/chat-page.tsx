@@ -247,13 +247,13 @@ const SingleContent = memo(function SingleContent({
     useState(false);
   const [isArtifactSurfaceVisible, setIsArtifactSurfaceVisible] =
     useState(false);
+  // Without a URL threadId the artifact must belong to the active thread.
   const showArtifactPanel = Boolean(
     artifact &&
       artifactSurface === "panel" &&
       (threadId
         ? !artifact.threadId || artifact.threadId === threadId
-        : Boolean(newThreadNonce) ||
-          Boolean(artifact.threadId && artifact.threadId === activeThreadId)),
+        : Boolean(artifact.threadId && artifact.threadId === activeThreadId)),
   );
 
   const artifactLayoutActive = showArtifactPanel || isArtifactPanelLayoutActive;
@@ -1445,9 +1445,11 @@ export function ChatPage({
   // were already seeded on stage, so keepSpeculative only when a config was
   // saved -- otherwise the standing speculative preference should win.
   autoLoadStagedRef.current = (pending) => {
-    const remembered = loadRememberedLoadSettings(
-      rememberedLoadSettingsKey(pending),
-    );
+    // Blobs are saved for GGUF picks only (the sheet gates on it), so don't
+    // let a legacy non-GGUF blob claim a seeded config here.
+    const remembered = hasGgufSource(pending)
+      ? loadRememberedLoadSettings(rememberedLoadSettingsKey(pending))
+      : null;
     void selectModel({
       ...pending,
       isDownloaded: true,
@@ -1771,10 +1773,8 @@ export function ChatPage({
 
   useEffect(() => {
     if (view.mode !== "single") return;
-    if (view.threadId || view.newThreadNonce || !selectedArtifact) return;
-    // view excludes __LOCALID_ threads (they fall through to mode:"single"
-    // with no threadId/nonce). Don't close a canvas whose thread is the
-    // active local thread.
+    if (view.threadId || !selectedArtifact) return;
+    // Close any canvas that doesn't belong to the active thread.
     if (
       selectedArtifact.threadId &&
       selectedArtifact.threadId === activeThreadId
@@ -2815,6 +2815,11 @@ export function ChatPage({
             selectModel({
               id: state.params.checkpoint,
               ggufVariant: state.activeGgufVariant ?? undefined,
+              // A native (drag-drop / picked) GGUF's checkpoint is only a display
+              // label, so the reload needs its path token to re-mint a lease --
+              // else applying the now-exposed GPU/context controls can't resolve
+              // the file. Null for non-native loads, which reload by id as before.
+              nativePathToken: state.activeNativePathToken ?? undefined,
               forceReload: true,
               isDownloaded: true,
               loadingDescription: "Reloading with updated chat template.",

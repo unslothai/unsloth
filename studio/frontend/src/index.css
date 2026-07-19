@@ -1467,7 +1467,9 @@ html[data-chat-font] .aui-root {
 	}
 
 	/* With more than 4 tools on, drop pill labels to icons only to cut clutter.
-	   Compare keeps its label via data-keep-label. */
+	   Compare and the bypass-permissions pill keep their labels via
+	   data-keep-label; the permission pill sits before the collapsed icons, so
+	   they line up to its right. */
 	[data-pill-compact="true"]
 		.composer-pill-btn:not([data-keep-label])
 		> span:not(.composer-pill-glyph) {
@@ -2597,7 +2599,7 @@ html[data-chat-font] .aui-root {
  * the documented WCAG outcome (motion is "minimised, not removed").
  *
  * .animate-spin and generated image loading dots are the exceptions: loading
- * indicators across Studio (tool execution loaders, sonner toasts, Tauri
+ * indicators across Unsloth (tool execution loaders, sonner toasts, Tauri
  * startup / update screens, the <Spinner /> primitive, and image generation
  * cards). Freezing them removes the only visual signal that work is in flight,
  * so they keep animating.

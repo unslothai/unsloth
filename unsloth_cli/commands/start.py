@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""`unsloth start` — launch a coding agent against a running Studio server."""
+"""`unsloth start` — launch a coding agent against a running Unsloth server."""
 
 import atexit
 import contextlib
@@ -35,7 +35,7 @@ from unsloth_cli._inference import (
 )
 
 start_app = typer.Typer(
-    help = "Start a coding agent against a running Studio server.",
+    help = "Start a coding agent against a running Unsloth server.",
     no_args_is_help = True,
     context_settings = {"help_option_names": ["-h", "--help"]},
 )
@@ -75,14 +75,14 @@ _CLAUDE_ENV_UNSET = ("ANTHROPIC_API_KEY", "CLAUDE_CODE_OAUTH_TOKEN")
 
 # Shared by every agent command; only the config/env/command differ.
 _MODEL_OPTION = typer.Option(
-    None, "--model", "-m", help = "Model for the agent; defaults to the one loaded in Studio."
+    None, "--model", "-m", help = "Model for the agent; defaults to the one loaded in Unsloth."
 )
 _KEY_OPTION = typer.Option(
     None,
     "--api-key",
     envvar = "UNSLOTH_API_KEY",
     help = (
-        "Studio API key. For a local Studio it is minted automatically and "
+        "Unsloth API key. For a local Unsloth it is minted automatically and "
         "remembered per server. For a remote server, pass one with --api-key "
         "(or UNSLOTH_API_KEY); it is remembered for next time."
     ),
@@ -96,7 +96,7 @@ _SERVE_OPTION = typer.Option(
     True,
     "--serve/--no-serve",
     help = (
-        "If no Studio server is running, auto-start one for --model and stop it when the "
+        "If no Unsloth server is running, auto-start one for --model and stop it when the "
         "agent exits. --no-serve keeps the old behavior of erroring out."
     ),
 )
@@ -347,7 +347,7 @@ def _shutdown_auto_served() -> None:
     global _auto_served_server
     server, _auto_served_server = _auto_served_server, None
     if server is not None and server.poll() is None:
-        typer.echo("Stopping the auto-started Studio server…")
+        typer.echo("Stopping the auto-started Unsloth server…")
         _shutdown_server(server)
 
 
@@ -381,7 +381,7 @@ def _start_studio_server(base: str, model: str, load: LoadOptions) -> subprocess
 
     log_path = Path(tempfile.gettempdir()) / f"unsloth-start-server-{os.getpid()}.log"
     typer.echo(
-        f"No Studio server at {base}. Starting one for {model} (loading the model can take a while)…"
+        f"No Unsloth server at {base}. Starting one for {model} (loading the model can take a while)…"
     )
     typer.echo(f"Server log: {log_path}")
     # 0600: the `unsloth run` banner in this log carries the minted sk-unsloth- key, and
@@ -408,16 +408,16 @@ def _start_studio_server(base: str, model: str, load: LoadOptions) -> subprocess
         if server.poll() is not None:
             tail = _log_tail(log_path)
             _shutdown_auto_served()
-            _fail(f"The Studio server stopped before it was ready. Last log lines:\n{tail}")
+            _fail(f"The Unsloth server stopped before it was ready. Last log lines:\n{tail}")
         # `unsloth run` prints the minted key only after the server is up AND the model is
         # loaded, so it is the fully-ready signal (same contract serve-unsloth-run.sh uses).
         if _studio_healthy(base) and "sk-unsloth-" in _log_tail(log_path, lines = 400):
-            typer.echo(f"Studio server ready at {base}.")
+            typer.echo(f"Unsloth server ready at {base}.")
             return server
         time.sleep(2.0)
     _shutdown_auto_served()
     _fail(
-        f"The Studio server didn't become ready within {_SERVER_START_TIMEOUT_S}s. See {log_path}."
+        f"The Unsloth server didn't become ready within {_SERVER_START_TIMEOUT_S}s. See {log_path}."
     )
 
 
@@ -463,7 +463,7 @@ def _require_studio(
         return expected, _start_studio_server(expected, model, load or LoadOptions())
     model_hint = "" if model else " Pass --model to have it start one for you, or"
     _fail(
-        f"No running Studio server found at {expected}.{model_hint} start one with "
+        f"No running Unsloth server found at {expected}.{model_hint} start one with "
         "`unsloth studio`, or point UNSLOTH_STUDIO_URL at a remote server."
     )
 
@@ -567,12 +567,12 @@ def _key_accepted(base: str, key: str) -> bool:
         if exc.code in (401, 403):
             return False
         _fail(
-            f"Studio server error while checking an API key ({exc.code}). "
+            f"Unsloth server error while checking an API key ({exc.code}). "
             "The server may be starting up or unhealthy; try again shortly."
         )
     except (urllib.error.URLError, TimeoutError) as exc:
         _fail(
-            "Couldn't reach the Studio server while checking an API key: "
+            "Couldn't reach the Unsloth server while checking an API key: "
             f"{getattr(exc, 'reason', None) or exc}"
         )
 
@@ -592,10 +592,10 @@ def _agent_api_key(
         # UNSLOTH_API_KEY meant for some other server must not fail the
         # launch: the loopback mint path below is guaranteed to work.
         # (An explicit key that the fresh server accepts, e.g. one persisted
-        # in this Studio home's auth db, is still honored above.)
+        # in this Unsloth home's auth db, is still honored above.)
 
     # Replay a key the user saved for *this exact* server first (scoped per base,
-    # so it only goes back there -- including a remote/SSH-tunnelled Studio whose
+    # so it only goes back there -- including a remote/SSH-tunnelled Unsloth whose
     # secret the local handshake can't match). Skip ones the server rejects.
     for key in _cached_keys(cache, base, "saved"):
         if _key_accepted(base, key):
@@ -608,15 +608,15 @@ def _agent_api_key(
     if not is_loopback_url(base):
         _fail(
             f"No saved API key for {base} and automatic minting only runs against "
-            "a local Studio. Create an API key in Studio → Settings → API and "
+            "a local Unsloth. Create an API key in Unsloth → Settings → API and "
             "pass it with --api-key (it is remembered per server), or set "
             "UNSLOTH_API_KEY."
         )
     if not verify_studio_identity(base):
         _fail(
-            f"Couldn't verify that {base} is your Studio (it may be running as a "
+            f"Couldn't verify that {base} is your Unsloth (it may be running as a "
             "different OS user, or another process took the port). Create an API "
-            "key in Studio → Settings → API and pass it with --api-key, or set "
+            "key in Unsloth → Settings → API and pass it with --api-key, or set "
             "UNSLOTH_API_KEY."
         )
 
@@ -630,8 +630,8 @@ def _agent_api_key(
     token = _studio_token()
     if token is None:
         _fail(
-            "Couldn't authenticate with the Studio server automatically. Create "
-            "an API key in Studio → Settings → API and pass it with --api-key, "
+            "Couldn't authenticate with the Unsloth server automatically. Create "
+            "an API key in Unsloth → Settings → API and pass it with --api-key, "
             "or set UNSLOTH_API_KEY."
         )
     key = _http_json(
@@ -664,7 +664,7 @@ def _is_hub_model_id(value: object) -> bool:
         return False
     # A hub id is exactly "namespace/name" over a restricted charset. Anything with
     # extra path segments (e.g. a server-side relative path such as
-    # models/Llama/Foo.gguf on a remote Studio) is not a hub id and must not be
+    # models/Llama/Foo.gguf on a remote Unsloth) is not a hub id and must not be
     # casefold-matched against a differently cased path on a case-sensitive
     # filesystem. This is host independent, unlike the existence probe below which
     # cannot see a path that only exists on the server.
@@ -690,8 +690,8 @@ def _model_id_matches(
     if actual == requested:
         return True
     # Case-insensitive matching is only safe when the local existence probe in
-    # _is_hub_model_id is authoritative, i.e. against a loopback Studio on this host.
-    # Against a remote Studio a two-segment string is indistinguishable from a
+    # _is_hub_model_id is authoritative, i.e. against a loopback Unsloth on this host.
+    # Against a remote Unsloth a two-segment string is indistinguishable from a
     # server-side relative path (e.g. Models/Foo vs models/foo), so casefolding it
     # could attach to the wrong model on a case-sensitive server; defer to an exact
     # match there and let the load endpoint resolve the requested path.
@@ -709,7 +709,7 @@ def _resolve_model(
     load: LoadOptions = LoadOptions(),
 ) -> dict:
     models = _loaded_models(base, key)
-    # Only casefold-match ids against a loopback Studio, where _is_hub_model_id's
+    # Only casefold-match ids against a loopback Unsloth, where _is_hub_model_id's
     # local existence probe can actually reject a server-side path; see the note there.
     allow_casefold = is_loopback_url(base)
     # /v1/models reports the model id but not the active GGUF variant or runtime load
@@ -741,7 +741,7 @@ def _resolve_model(
         typer.echo(
             f"Ensuring {requested} is loaded with the requested settings…"
             if load_has_overrides
-            else f"Loading {requested} on the Studio server (this can take a while)…"
+            else f"Loading {requested} on the Unsloth server (this can take a while)…"
         )
         # Mirror `unsloth run`'s load knobs; keep the default payload as just
         # model_path so a bare `--model` load is unchanged.
@@ -762,7 +762,7 @@ def _resolve_model(
             timeout = 3600,
             error = "Model load failed",
         )
-        # Studio registers the model under a canonical id (resolved identifier,
+        # Unsloth registers the model under a canonical id (resolved identifier,
         # casing) that /v1/models echoes but which may differ from the path we
         # passed; match on the id the load reports so we don't silently fall
         # through to models[0] and connect to a different loaded model.
@@ -783,22 +783,22 @@ def _resolve_model(
     if match is not None:
         return match
     if requested:
-        # We asked Studio to load it and it didn't surface in /v1/models; don't
+        # We asked Unsloth to load it and it didn't surface in /v1/models; don't
         # silently hand back an unrelated loaded model.
         _fail(
-            f"Studio didn't report '{requested}' as loaded. Double-check the model "
+            f"Unsloth didn't report '{requested}' as loaded. Double-check the model "
             "id, or load it from the model dropdown in the UI."
         )
     if not models:
         _fail(
-            "No model is loaded in Studio. Load one from the model dropdown in "
+            "No model is loaded in Unsloth. Load one from the model dropdown in "
             "the UI, or pass --model <hf-id-or-path> to load it from here."
         )
     return models[0]
 
 
 def _require_gguf_for_codex(base: str, key: str, model_id: str) -> None:
-    # Codex always streams, and Studio only streams /v1/responses from llama-server.
+    # Codex always streams, and Unsloth only streams /v1/responses from llama-server.
     try:
         status = _http_json("GET", f"{base}/api/inference/status", key)
     except urllib.error.HTTPError as exc:
@@ -901,7 +901,7 @@ def _codex_supports_model_catalog() -> bool:
 
 
 def _codex_model_catalog(model: dict) -> dict:
-    """Return conservative metadata for a Studio model unknown to Codex's built-in catalog."""
+    """Return conservative metadata for an Unsloth model unknown to Codex's built-in catalog."""
     model_id = model["id"]
     window = model.get("context_length") or model.get("max_context_length")
     entry = {
@@ -1216,7 +1216,7 @@ def _connect(
     # `--model org/name:QUANT` is shorthand for `--model org/name --gguf-variant QUANT`.
     # Split it before we match/serve so the attach path resolves against the already-loaded
     # `org/name` (listed without the suffix) instead of reloading a `:`-suffixed repo id --
-    # which Studio rejects and which would evict a model another session is using.
+    # which Unsloth rejects and which would evict a model another session is using.
     if model:
         repo, variant = _split_repo_variant(model)
         if variant:
@@ -1254,7 +1254,7 @@ def _run(
     # --no-launch recipes stay intact.
     if launch and clear_screen:
         click.clear()
-    typer.echo(f"Studio {base} · model {entry['id']}")
+    typer.echo(f"Unsloth {base} · model {entry['id']}")
     if not launch:
         env, wsl_env_bridge = _wsl_shim_env(command, env, unset_env)
         _print_env(env, command, unset_env = unset_env, wsl_env_bridge = wsl_env_bridge)
@@ -1320,7 +1320,7 @@ def write_openclaw_config(
         )
         return
     before = json.dumps(config, sort_keys = True)
-    # Studio is a generic OpenAI-compatible /v1 endpoint (the vLLM/LM Studio path).
+    # Unsloth is a generic OpenAI-compatible /v1 endpoint (the vLLM/LM Studio path).
     provider_model = {"id": model["id"], "name": model["id"]}
     window = model.get("context_length") or model.get("max_context_length")
     if window:
@@ -1584,14 +1584,14 @@ def write_pi_config(base: str, key: str, model: dict, path: Path) -> None:
         return
     before = json.dumps(config, sort_keys = True)
     # Pi reads custom providers from ~/.pi/agent/models.json (HOME-relocated for the
-    # session). Studio is a generic OpenAI-compatible /v1 endpoint, and the key lives
+    # session). Unsloth is a generic OpenAI-compatible /v1 endpoint, and the key lives
     # in the config rather than the env (matching openclaw/opencode).
     provider_model = {"id": model["id"]}
     window = model.get("context_length") or model.get("max_context_length")
     if window:
         window = int(window)
         # An unspecified model defaults to contextWindow 128000 / maxTokens 16384,
-        # far larger than a small Studio context, so Pi compacts too late and overflows
+        # far larger than a small Unsloth context, so Pi compacts too late and overflows
         # the server. Pin the real window and a sane output cap (mirrors OpenCode).
         provider_model["contextWindow"] = window
         provider_model["maxTokens"] = min(window // 4, 8192)
@@ -1620,7 +1620,7 @@ def claude(
     yolo: bool = _YOLO_OPTION,
     persist: bool = _PERSIST_OPTION,
 ):
-    """Point Claude Code at the running Studio server and start it."""
+    """Point Claude Code at the running Unsloth server and start it."""
     base, key, entry = _connect(
         api_key,
         model,
@@ -1704,7 +1704,7 @@ def codex(
     yolo: bool = _YOLO_OPTION,
     persist: bool = _PERSIST_OPTION,
 ):
-    """Point OpenAI Codex at the running Studio server and start it."""
+    """Point OpenAI Codex at the running Unsloth server and start it."""
     base, key, entry = _connect(
         api_key,
         model,
@@ -1748,7 +1748,7 @@ def openclaw(
     yolo: bool = _YOLO_OPTION,
     persist: bool = _PERSIST_OPTION,
 ):
-    """Point OpenClaw at the running Studio server and start it."""
+    """Point OpenClaw at the running Unsloth server and start it."""
     base, key, entry = _connect(
         api_key,
         model,
@@ -1805,7 +1805,7 @@ def opencode(
     yolo: bool = _YOLO_OPTION,
     persist: bool = _PERSIST_OPTION,
 ):
-    """Point OpenCode at the running Studio server and start it."""
+    """Point OpenCode at the running Unsloth server and start it."""
     base, key, entry = _connect(
         api_key,
         model,
@@ -1849,7 +1849,7 @@ def opencode(
         # setting them in the highest-priority inline overlay neutralizes any user allowlist
         # or denylist for the launch. It is session-only: it lives in OPENCODE_CONFIG_CONTENT
         # for this invocation and never touches the user's config files, so their normal
-        # `opencode` is unchanged; only this session is limited to the Studio provider.
+        # `opencode` is unchanged; only this session is limited to the Unsloth provider.
         # small_model is opencode's separate model for lightweight tasks; pin it to the
         # session model too, or a user/project small_model on another (now filtered)
         # provider would resolve a not-found error mid-session. The session serves one
@@ -1883,7 +1883,7 @@ def hermes(
     yolo: bool = _YOLO_OPTION,
     persist: bool = _PERSIST_OPTION,
 ):
-    """Point Hermes (Nous Research) at the running Studio server and start it."""
+    """Point Hermes (Nous Research) at the running Unsloth server and start it."""
     native_args = [*_yolo_command_flags("hermes", yolo), *ctx.args]
     command = ["hermes", *_hermes_resume_oneshot_args(native_args)]
     base, key, entry = _connect(
@@ -1916,7 +1916,7 @@ def pi(
     yolo: bool = _YOLO_OPTION,
     persist: bool = _PERSIST_OPTION,
 ):
-    """Point Pi (coding agent) at the running Studio server and start it."""
+    """Point Pi (coding agent) at the running Unsloth server and start it."""
     base, key, entry = _connect(
         api_key,
         model,
