@@ -691,15 +691,7 @@ export function ModelConfigPage({
             size="sm"
             className="h-8"
             disabled={atDefault}
-            onClick={() =>
-              setConfig({
-                ...DEFAULT_PER_MODEL_CONFIG,
-                customContextLength:
-                  target.isGguf && nativeContextLength != null
-                    ? nativeContextLength
-                    : null,
-              })
-            }
+            onClick={() => setConfig({ ...DEFAULT_PER_MODEL_CONFIG })}
           >
             Reset
           </Button>
