@@ -52,9 +52,7 @@ try:
     from routes import models as routes_models
     from utils.paths import path_utils
 except Exception as exc:
-    pytest.skip(
-        f"studio backend import unavailable: {exc}", allow_module_level = True
-    )
+    pytest.skip(f"studio backend import unavailable: {exc}", allow_module_level = True)
 
 _WINDOWS_PATH = r"\\wsl.localhost\Distro\cache\model.gguf"
 
@@ -99,9 +97,7 @@ def test_wsl_directory_opens_in_explorer(linux_host, spawned, monkeypatch, tmp_p
     assert spawned.popen == [["explorer.exe", _WINDOWS_PATH]]
 
 
-def test_wsl_without_interop_falls_back_to_xdg_open(
-    linux_host, spawned, monkeypatch, tmp_path
-):
+def test_wsl_without_interop_falls_back_to_xdg_open(linux_host, spawned, monkeypatch, tmp_path):
     monkeypatch.setattr(path_utils, "_IS_WSL", True)
     spawned.run_error = FileNotFoundError("wslpath")
     target = tmp_path / "model.gguf"
@@ -110,9 +106,7 @@ def test_wsl_without_interop_falls_back_to_xdg_open(
     assert spawned.popen == [["xdg-open", str(tmp_path)]]
 
 
-def test_wsl_empty_conversion_falls_back_to_xdg_open(
-    linux_host, spawned, monkeypatch, tmp_path
-):
+def test_wsl_empty_conversion_falls_back_to_xdg_open(linux_host, spawned, monkeypatch, tmp_path):
     monkeypatch.setattr(path_utils, "_IS_WSL", True)
 
     def empty_run(cmd, **kwargs):

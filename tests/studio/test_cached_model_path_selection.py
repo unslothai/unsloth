@@ -49,9 +49,7 @@ pytest.importorskip("huggingface_hub")
 try:
     from routes import models as routes_models
 except Exception as exc:
-    pytest.skip(
-        f"studio backend import unavailable: {exc}", allow_module_level = True
-    )
+    pytest.skip(f"studio backend import unavailable: {exc}", allow_module_level = True)
 
 
 def test_plain_quant_label_resolves():
@@ -59,9 +57,7 @@ def test_plain_quant_label_resolves():
 
 
 def test_mtp_drafter_in_subdir_is_excluded():
-    assert (
-        routes_models._main_variant_gguf_label("MTP/Model-Q8_0-MTP.gguf") is None
-    )
+    assert routes_models._main_variant_gguf_label("MTP/Model-Q8_0-MTP.gguf") is None
 
 
 def test_mtp_drafter_root_prefix_is_excluded():
@@ -73,10 +69,7 @@ def test_mmproj_adapter_is_excluded():
 
 
 def test_directory_layout_quant_resolves_from_parent_dir():
-    assert (
-        routes_models._main_variant_gguf_label("BF16/Model-00001-of-00002.gguf")
-        == "BF16"
-    )
+    assert routes_models._main_variant_gguf_label("BF16/Model-00001-of-00002.gguf") == "BF16"
 
 
 def test_big_endian_build_is_excluded():
@@ -89,6 +82,6 @@ def test_non_gguf_file_is_excluded():
 
 def test_normalized_quant_label_ignores_separators():
     assert routes_models._normalized_quant_label("UD-Q4_K_XL") == "udq4kxl"
-    assert routes_models._normalized_quant_label(
-        "Q8-0"
-    ) == routes_models._normalized_quant_label("Q8_0")
+    assert routes_models._normalized_quant_label("Q8-0") == routes_models._normalized_quant_label(
+        "Q8_0"
+    )
