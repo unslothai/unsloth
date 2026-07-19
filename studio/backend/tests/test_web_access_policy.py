@@ -165,7 +165,7 @@ def test_direct_fetch_rejects_blocked_host_before_dns(monkeypatch):
         "https://example.com/article",
         website_policy = ARXIV_ONLY,
     )
-    assert "Blocked by website access policy" in result
+    assert "Blocked: website access policy" in result
     assert resolved == []
 
 
@@ -188,5 +188,5 @@ def test_direct_fetch_rechecks_every_redirect_before_dns(monkeypatch):
         "https://arxiv.org/abs/1",
         website_policy = ARXIV_ONLY,
     )
-    assert "Blocked by website access policy: example.com" in result
+    assert "Blocked: website access policy disallows example.com" in result
     assert resolved == [("arxiv.org", 443)]

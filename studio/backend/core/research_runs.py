@@ -30,7 +30,7 @@ _URL_BLOCK = re.compile(
     r"Title:\s*(?P<title>[^\n]*)\nURL:\s*(?P<url>https?://[^\s]+)\nSnippet:\s*(?P<snippet>.*?)(?=\n\n---|\Z)",
     re.DOTALL,
 )
-_MARKDOWN_LINK = re.compile(r"\[([^\]]+)\]\((https?://[^)\s]+)\)")
+_MARKDOWN_LINK_START = re.compile(r"\[([^\]\n]+)\]\((https?://)")
 _SOURCES_HEADING = re.compile(
     r"^(?:#{1,6}\s+|\*\*)?"
     r"(?:Sources?|References?|Bibliography|Works\s+Cited|Source\s+List)"
@@ -387,6 +387,10 @@ def _split_rag_result(result: str) -> tuple[str, list[dict[str, Any]]]:
     return text.rstrip(), sources
 
 
+def _research_step_failed(web_result: str, rag_sources: list[dict]) -> bool:
+    return is_tool_error(web_result) and not rag_sources
+
+
 def _validate_report_sources(report: str, sources: list[dict]) -> str:
     """Canonicalize citations and remove model-authored source lists."""
     source_by_url = {
@@ -408,9 +412,69 @@ def _validate_report_sources(report: str, sources: list[dict]) -> str:
         placeholders[token] = f"[{title or url}]({url})"
         return token
 
-    def replace_link(match: re.Match) -> str:
-        label, url = match.group(1).strip(), match.group(2)
-        return citation(url) or label
+    def replace_markdown_links(text: str) -> str:
+        pieces = []
+        cursor = 0
+        while match := _MARKDOWN_LINK_START.search(text, cursor):
+            destination_start = match.start(2)
+            index = match.end(2)
+            depth = 0
+            escaped = False
+            close = None
+            destination_end = None
+            while index < len(text):
+                character = text[index]
+                if escaped:
+                    escaped = False
+                elif character == "\\":
+                    escaped = True
+                elif character.isspace():
+                    if depth != 0:
+                        break
+                    destination_end = index
+                    title_start = index
+                    while title_start < len(text) and text[title_start].isspace():
+                        title_start += 1
+                    if title_start < len(text) and text[title_start] in {'"', "'"}:
+                        quote = text[title_start]
+                        title_end = title_start + 1
+                        title_escaped = False
+                        while title_end < len(text):
+                            if title_escaped:
+                                title_escaped = False
+                            elif text[title_end] == "\\":
+                                title_escaped = True
+                            elif text[title_end] == quote:
+                                break
+                            title_end += 1
+                        if title_end >= len(text):
+                            break
+                        title_start = title_end + 1
+                        while title_start < len(text) and text[title_start].isspace():
+                            title_start += 1
+                    if title_start < len(text) and text[title_start] == ")":
+                        close = title_start
+                    break
+                elif character == "(":
+                    depth += 1
+                elif character == ")":
+                    if depth == 0:
+                        close = index
+                        destination_end = index
+                        break
+                    depth -= 1
+                index += 1
+            if close is None:
+                pieces.append(text[cursor : match.start()])
+                pieces.append(match.group(1).strip())
+                cursor = index
+                continue
+            url = text[destination_start:destination_end].replace(r"\(", "(").replace(r"\)", ")")
+            pieces.append(text[cursor : match.start()])
+            pieces.append(citation(url) or match.group(1).strip())
+            cursor = close + 1
+        pieces.append(text[cursor:])
+        return "".join(pieces)
 
     def replace_number(match: re.Match) -> str:
         index = int(match.group(1)) - 1
@@ -421,7 +485,7 @@ def _validate_report_sources(report: str, sources: list[dict]) -> str:
     def replace_autolink(match: re.Match) -> str:
         return citation(match.group(1)) or match.group(1)
 
-    validated = _MARKDOWN_LINK.sub(replace_link, report)
+    validated = replace_markdown_links(report)
     validated = _AUTOLINK.sub(replace_autolink, validated)
     validated = _NUMBERED_CITATION.sub(replace_number, validated)
     for url in sorted(source_urls, key = len, reverse = True):
@@ -1400,6 +1464,7 @@ class ResearchSupervisor:
                 f"Input: {argument}\nResult:\n{result[:12000]}"
             )
             tool_failed = is_tool_error(result)
+            step_failed = _research_step_failed(result, rag_sources)
             clean_result = strip_result_for_model(result)
             step_result = {
                 "action": action["action"],
@@ -1417,7 +1482,7 @@ class ResearchSupervisor:
                 position,
                 action["title"],
                 argument,
-                "failed" if tool_failed else "completed",
+                "failed" if step_failed else "completed",
                 step_result,
                 self.worker_id,
             )
@@ -1426,7 +1491,7 @@ class ResearchSupervisor:
                 db.append_worker_event,
                 run["id"],
                 self.worker_id,
-                "step.failed" if tool_failed else "step.completed",
+                "step.failed" if step_failed else "step.completed",
                 {
                     "position": position,
                     "stepPosition": position,
@@ -1434,7 +1499,7 @@ class ResearchSupervisor:
                     "action": action["action"],
                     "input": argument,
                     "sourceCount": len(step_sources) + len(rag_sources),
-                    **({"error": clean_result[:500]} if tool_failed else {}),
+                    **({"error": clean_result[:500]} if step_failed else {}),
                 },
             )
             await self._check_worker_write(run["id"], seq is not None)

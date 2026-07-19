@@ -749,6 +749,32 @@ def test_report_citations_are_limited_to_gathered_sources():
     assert "https://invalid.example/guess" not in validated
 
 
+def test_report_citations_preserve_balanced_parentheses_in_urls():
+    from core.research_runs import _validate_report_sources
+
+    url = "https://en.wikipedia.org/wiki/Function_(mathematics)"
+    validated = _validate_report_sources(
+        f"Supported [generic label]({url}).",
+        [{"url": url, "title": "Function (mathematics)"}],
+    )
+
+    assert f"[Function (mathematics)]({url})" in validated
+    assert (
+        _validate_report_sources(
+            f'With title [generic label]({url} "reference page").',
+            [{"url": url, "title": "Function (mathematics)"}],
+        )
+        == f"With title [Function (mathematics)]({url})."
+    )
+    assert (
+        _validate_report_sources(
+            f"Malformed [generic label]({url}",
+            [{"url": url, "title": "Function (mathematics)"}],
+        )
+        == "Malformed generic label"
+    )
+
+
 def test_report_citations_use_canonical_titles_without_model_sources_section():
     from core.research_runs import _validate_report_sources
 
@@ -871,6 +897,14 @@ def test_research_agent_actions_are_model_directed_and_url_bounded():
             {"action": "fetch", "url": "https://invented.example"},
             {"https://example.com"},
         )
+
+
+def test_rag_evidence_makes_failed_web_search_recoverable():
+    from core.research_runs import _research_step_failed
+
+    blocked = "Blocked: website access policy disallows example.com."
+    assert _research_step_failed(blocked, []) is True
+    assert _research_step_failed(blocked, [{"chunkId": "doc-1:0"}]) is False
 
 
 def test_research_budget_defaults_support_long_runs():

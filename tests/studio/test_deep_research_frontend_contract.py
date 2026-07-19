@@ -37,6 +37,7 @@ def test_research_api_is_isolated_and_cursor_based() -> None:
 
 def test_research_mode_is_single_chat_and_detaches_without_cancel() -> None:
     adapter = source("features/chat/api/chat-adapter.ts")
+    thread = source("components/assistant-ui/thread.tsx")
     assert "runtime.deepResearchEnabled" in adapter
     assert "!options.pairId" in adapter
     assert 'options.modelType === "base"' in adapter
@@ -61,6 +62,9 @@ def test_research_mode_is_single_chat_and_detaches_without_cancel() -> None:
     assert "signal: researchFollowController.signal" in adapter
     assert "beginExternalResearchFollow(" in adapter
     assert "ragScope" in adapter
+    submit = thread.split("const handleSubmit = useCallback", 1)[1].split("const stopQueue", 1)[0]
+    assert "if (isResearchActive)" in submit
+    assert "event.preventDefault()" in submit
     assert "runtime.ragEnabled\n                    ? { thread_id: resolvedThreadId }" in adapter
     create_block = adapter.split("createdRun = await createResearchRun({", 1)[1].split("});", 1)[0]
     assert "modelId:" not in create_block

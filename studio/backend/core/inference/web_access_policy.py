@@ -108,7 +108,7 @@ def check_url_access(url: str, policy: dict[str, Any] | None) -> tuple[bool, str
     except (TypeError, ValueError):
         return False, "Blocked: URL has an invalid hostname or port.", ""
     if not hostname_allowed(hostname, policy):
-        return False, f"Blocked by website access policy: {hostname}.", hostname
+        return False, f"Blocked: website access policy disallows {hostname}.", hostname
     return True, "", hostname
 
 

@@ -1454,6 +1454,16 @@ const Composer: FC<{
   const researchThreadClaimed = useResearchRunStore((state) =>
     researchThreadId ? Boolean(state.claimedThreadIds[researchThreadId]) : false,
   );
+  const activeResearchRun = useResearchRunStore((state) => {
+    const runId = researchThreadId
+      ? state.latestRunByThreadId[researchThreadId]
+      : undefined;
+    return runId ? state.sessions[runId]?.run : undefined;
+  });
+  const isResearchActive = Boolean(
+    activeResearchRun &&
+      !["completed", "failed", "cancelled"].includes(activeResearchRun.status),
+  );
   const hasResearchMessage = useAuiState(({ thread }) =>
     thread.messages.some((message) => {
       const custom = (
@@ -1778,6 +1788,10 @@ const Composer: FC<{
 
   const handleSubmit = useCallback(
     (event: Parameters<NonNullable<ComponentProps<"form">["onSubmit"]>>[0]) => {
+      if (isResearchActive) {
+        event.preventDefault();
+        return;
+      }
       if (disabled || shouldBlockSend()) {
         event.preventDefault();
         return;
@@ -1865,6 +1879,7 @@ const Composer: FC<{
       hasAttachments,
       hasPendingAudio,
       interceptSend,
+      isResearchActive,
       overlay,
       promptQueueActive,
       referenceThreadId,
