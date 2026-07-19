@@ -3,17 +3,12 @@
 
 """Regression test for the post-first-token stall timeout in the cancel-aware read.
 
-httpcore's ``HTTP11Connection._receive_response_body`` reads
-``request.extensions["timeout"]["read"]`` once when the body starts and reuses
-that value for every socket read. So when ``_iter_text_cancellable`` lowers the
-read timeout to the stall timeout after the first token, httpcore keeps the long
-prefill timeout and a one-token-then-silent server hangs for the full prefill
-window instead of raising after the stall timeout.
-
-The fix makes the cancel-aware read wrapper re-read the live extensions timeout
-per call. This exercises the wrapper's deadline logic with a fake clock and a
-fake always-silent stream (no live socket): the read must give up after the live
-stall timeout, not the stale prefill timeout passed in by httpcore.
+httpcore snapshots ``request.extensions["timeout"]["read"]`` once at body start,
+so when ``_iter_text_cancellable`` lowers the read timeout to the stall timeout
+after the first token, a one-token-then-silent server hangs for the full prefill
+window. The fix makes the wrapper re-read the live extensions timeout per call.
+Exercised with a fake clock and always-silent stream: the read must give up after
+the live stall timeout, not the stale prefill timeout passed in by httpcore.
 """
 
 from __future__ import annotations
@@ -51,7 +46,7 @@ class _Obj:
 
 def _install(response, clock, silent_stream):
     """Wire fake client/pool objects so _install_cancel_aware_read finds the
-    stream, patch the module clock, then return the wrapped stream.read."""
+    stream, then return the wrapped stream.read."""
     inner = _Obj()
     inner._network_stream = silent_stream
     connection = _Obj()
@@ -66,11 +61,10 @@ def _install(response, clock, silent_stream):
     cancel_event = threading.Event()  # never set: we test the stall path, not cancel
     sig = inspect.signature(LlamaCppBackend._install_cancel_aware_read)
     if "response" in sig.parameters:
-        # Fixed signature: the wrapper reads the live extensions timeout.
+        # Fixed signature: wrapper reads the live extensions timeout.
         LlamaCppBackend._install_cancel_aware_read(client, cancel_event, response)
     else:
-        # Pre-fix signature: no response, so the wrapper trusts httpcore's stale
-        # prefill timeout and the stall assertion below fails (proving the bug).
+        # Pre-fix signature: no response, so the stall assertion fails (proves the bug).
         LlamaCppBackend._install_cancel_aware_read(client, cancel_event)
     return silent_stream.read
 
@@ -79,8 +73,7 @@ def test_stall_timeout_honored_after_first_token(monkeypatch):
     clock = {"t": 0.0}
     monkeypatch.setattr(llama_cpp_mod.time, "monotonic", lambda: clock["t"])
 
-    # A server that emits one token then goes silent: every body read times out.
-    # Each slice "waits" its full timeout of fake time before timing out.
+    # One token then silence: every read times out, advancing fake time by its timeout.
     def silent_read(max_bytes, timeout = None):
         clock["t"] += timeout if timeout is not None else 0.0
         raise httpcore.ReadTimeout("slice timed out on silence")
@@ -88,8 +81,7 @@ def test_stall_timeout_honored_after_first_token(monkeypatch):
     stream = _Obj()
     stream.read = silent_read
 
-    # First token already seen: _iter_text_cancellable lowered the live read
-    # timeout to the stall timeout via response.request.extensions.
+    # First token seen: the live read timeout is lowered to the stall timeout.
     request = _Obj()
     request.extensions = {"timeout": {"read": _STALL_TIMEOUT}}
     response = _Obj()
@@ -101,8 +93,7 @@ def test_stall_timeout_honored_after_first_token(monkeypatch):
     with pytest.raises(httpcore.ReadTimeout):
         wrapped_read(65536, timeout = _PREFILL_TIMEOUT)
 
-    # The wrapper must give up ~stall timeout after the last token, not after the
-    # 20-minute prefill window. Allow slack for the final partial slice.
+    # Must give up ~stall timeout after the last token, not the prefill window.
     assert clock["t"] <= _STALL_TIMEOUT * 1.5, (
         f"stall timeout not honored: waited {clock['t']}s "
         f"(expected ~{_STALL_TIMEOUT}s, not {_PREFILL_TIMEOUT}s)"
@@ -111,8 +102,8 @@ def test_stall_timeout_honored_after_first_token(monkeypatch):
 
 
 def test_prefill_timeout_used_when_no_live_override(monkeypatch):
-    """Without a lowered live timeout, the wrapper still honors the passed
-    (prefill) timeout, so the normal first-token wait is unchanged."""
+    """Without a lowered live timeout, the wrapper honors the passed prefill
+    timeout, so the normal first-token wait is unchanged."""
     clock = {"t": 0.0}
     monkeypatch.setattr(llama_cpp_mod.time, "monotonic", lambda: clock["t"])
 
@@ -123,7 +114,7 @@ def test_prefill_timeout_used_when_no_live_override(monkeypatch):
     stream = _Obj()
     stream.read = silent_read
 
-    # No timeout extension set: wrapper falls back to httpcore's passed timeout.
+    # No timeout extension: wrapper falls back to httpcore's passed timeout.
     request = _Obj()
     request.extensions = {}
     response = _Obj()

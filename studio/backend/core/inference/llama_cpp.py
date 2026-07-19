@@ -9006,20 +9006,17 @@ class LlamaCppBackend:
     ) -> None:
         """Make the reader thread interrupt its own blocked recv() on cancel.
 
-        The watcher's cross-thread socket shutdown unblocks a parked recv() on
-        POSIX but is unreliable on Windows (Winsock does not dependably wake a
-        recv() in progress on another thread). Instead, wrap the httpcore
-        network stream so each read loops in short slices and polls cancel_event
-        between them: the reader interrupts itself, so cancel is portable and
-        works for plain and TLS streams. Slice timeouts are swallowed, so a
-        slow-but-alive stream is never torn down.
+        The watcher's cross-thread socket shutdown wakes a parked recv() on POSIX
+        but not reliably on Windows (Winsock). So wrap the httpcore network stream
+        to read in short slices and poll cancel_event between them: the reader
+        interrupts itself, portably and for plain or TLS streams. Slice timeouts
+        are swallowed so a slow-but-alive stream is never torn down.
 
-        httpcore's _receive_response_body snapshots request.extensions["timeout"]
-        ["read"] once when the body starts, so lowering it to the stall timeout
-        after the first token never reaches the socket read. When ``response`` is
-        given we re-read that live value per call and bound each read by it, so
-        the post-first-token stall timeout is honored instead of the long prefill
-        timeout."""
+        httpcore snapshots request.extensions["timeout"]["read"] once at body
+        start, so lowering it to the stall timeout after the first token never
+        reaches the socket. Given ``response`` we re-read that live value per call
+        and bound each read by it, honoring the post-first-token stall timeout
+        instead of the long prefill timeout."""
         import httpcore
 
         def _live_read_timeout() -> Optional[float]:
@@ -9067,7 +9064,7 @@ class LlamaCppBackend:
                         except httpcore.ReadTimeout:
                             if deadline is not None and time.monotonic() >= deadline:
                                 raise
-                            continue  # slice timed out on silence, keep the stream alive
+                            continue  # silence, not death: keep the stream alive
 
                 stream.read = read
                 stream._unsloth_cancel_wrapped = True
@@ -9133,10 +9130,9 @@ class LlamaCppBackend:
                 _response_ref[0] = response
                 if cancel_event is not None:
                     # Portable mid-stream cancel: the reader polls cancel itself,
-                    # so Stop interrupts a stalled read even where the watcher's
-                    # cross-thread socket shutdown does not (Windows). Pass the
-                    # response so the wrapper honors the live (post-first-token
-                    # stall) read timeout, which httpcore otherwise snapshots.
+                    # so Stop interrupts a stalled read where the watcher's socket
+                    # shutdown does not (Windows). Pass response so the wrapper
+                    # honors the live post-first-token stall timeout.
                     LlamaCppBackend._install_cancel_aware_read(client, cancel_event, response)
                 if cancel_event is not None and cancel_event.is_set():
                     raise _LlamaStreamCancelled
