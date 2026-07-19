@@ -55,6 +55,7 @@ export interface CachedInventoryRow {
   libraryName?: string | null;
   quantMethod?: string | null;
   liveDownload?: boolean;
+  optimistic?: boolean;
 }
 
 export interface LocalInventoryRow {

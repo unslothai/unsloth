@@ -59,17 +59,24 @@ def _safe_is_dir(path) -> bool:
         return False
 
 
-# Hub repo id shape ("owner/name", no leading separator); anything else is
-# treated as a local filesystem path.
-_HF_REPO_ID_RE = re.compile(r"^[A-Za-z0-9][\w.\-]*/[\w.\-]+$")
+# Shared with the hub inventory scans; keep the private aliases so existing
+# importers (core.inference.local_model_resolver, tests) stay valid.
+# ``_HF_REPO_ID_RE`` is the Hub repo id shape ("owner/name", no leading
+# separator); anything else is treated as a local filesystem path.
+from utils.hidden_models import (
+    _HF_REPO_ID_RE,
+    _safe_resolve,
+    is_hidden_model as _is_hidden_model,
+)
 
 
 def hidden_model_matchers() -> tuple[list[str], list[str]]:
     """Substring needles and exact resolved paths identifying infra models
     (the RAG embedder and the llama.cpp install validation probe) that pickers
-    hide. A local-path embedder is matched by exact resolved path only: a
-    generic basename like "model" must not substring-hide unrelated chat
-    models."""
+    hide. Served by the ``/api/hub/hidden-models`` endpoint so the frontend can
+    extend its static needles with the user's configured embedder. A local-path
+    embedder is matched by exact resolved path only: a generic basename like
+    "model" must not substring-hide unrelated chat models."""
     from core.rag import config as rag_config
 
     needles = [
@@ -91,35 +98,6 @@ def hidden_model_matchers() -> tuple[list[str], list[str]]:
             if resolved:
                 exact_paths.append(resolved.lower())
     return needles, exact_paths
-
-
-def _is_hidden_model(*values: str | None) -> bool:
-    """True if any id/path is the RAG embedding model (EMBEDDING_MODEL or
-    EMBED_GGUF_REPO basename) or the llama.cpp install validation probe
-    (ggml-org/models / stories260K), so pickers hide them (GGUF and non-GGUF).
-    None are usable chat models; the probe can be cached as a side effect of
-    installing the prebuilt llama-server and otherwise sorts smallest, so it
-    would be auto-selected."""
-    needles, exact_paths = hidden_model_matchers()
-    for v in values:
-        if not v:
-            continue
-        low = v.lower()
-        if any(n in low for n in needles):
-            return True
-        if exact_paths:
-            resolved = _safe_resolve(Path(v).expanduser())
-            if resolved and resolved.lower() in exact_paths:
-                return True
-    return False
-
-
-def _safe_resolve(path: Path) -> Optional[str]:
-    """resolve() to a string, or None when the path is inaccessible."""
-    try:
-        return str(path.resolve())
-    except OSError:
-        return None
 
 
 backend_path = Path(__file__).parent.parent.parent
@@ -861,7 +839,7 @@ def collect_local_models(models_root: Path) -> List[LocalModelInfo]:
         key = lambda item: (item.updated_at or 0),
         reverse = True,
     )
-    return [m for m in models if not _is_hidden_model(m.id, m.path)]
+    return [m for m in models if not _is_hidden_model(m.id, m.model_id, m.path)]
 
 
 @router.get("/local", response_model = LocalModelListResponse)

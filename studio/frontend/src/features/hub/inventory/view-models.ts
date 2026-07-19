@@ -177,6 +177,7 @@ export function buildCachedInventoryRow(
     format_variant?: string | null;
     capabilities?: BackendModelCapabilities | null;
     last_modified?: number | null;
+    optimistic?: boolean;
   },
   fallbackFormat: ModelInventoryFormat,
 ): CachedInventoryRow {
@@ -186,6 +187,15 @@ export function buildCachedInventoryRow(
   const inferredFromEndpoint =
     rawModelFormat === "unknown" && modelFormat !== "unknown";
   const requiresVariant = modelFormat === "gguf";
+  const capabilities = normalizeCapabilities(
+    inferredFromEndpoint ? null : row.capabilities,
+    modelFormat,
+    row.partial ?? false,
+    requiresVariant,
+  );
+  if (row.optimistic) {
+    capabilities.canChat = false;
+  }
   return {
     kind: "cache",
     id:
@@ -203,12 +213,7 @@ export function buildCachedInventoryRow(
       modelFormat,
     ),
     formatVariant: row.format_variant ?? null,
-    capabilities: normalizeCapabilities(
-      inferredFromEndpoint ? null : row.capabilities,
-      modelFormat,
-      row.partial ?? false,
-      requiresVariant,
-    ),
+    capabilities,
     bytes: row.size_bytes,
     cachePath: row.cache_path ?? null,
     lastModified:
@@ -223,6 +228,7 @@ export function buildCachedInventoryRow(
     tags: row.tags,
     libraryName: row.library_name ?? null,
     quantMethod: row.quant_method ?? null,
+    optimistic: row.optimistic,
   };
 }
 

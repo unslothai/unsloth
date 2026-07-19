@@ -61,6 +61,7 @@ import { useDiscoverSearch } from "./hooks/use-discover-search";
 import { useFeedWriteBack } from "./hooks/use-feed-write-back";
 import { useHubFeed } from "./hooks/use-hub-feed";
 import { useHubModelVram } from "./hooks/use-hub-model-vram";
+import { useHiddenEmbeddingModelIds } from "./hooks/use-hidden-embedding-models";
 import { useModelsSelection } from "./hooks/use-models-selection";
 import {
   CHANNEL_TO_SECTION,
@@ -71,7 +72,10 @@ import {
   SECTION_TO_CHANNEL,
   findChannel,
 } from "./lib/channels";
-import { isHiddenModelId } from "./lib/hidden-models";
+import {
+  isConfiguredHiddenModelId,
+  isHiddenModelId,
+} from "./lib/hidden-models";
 import { inventoryRowMatches, tokenizeQuery } from "./lib/inventory-search";
 import { resolveOwnerProviderLogo } from "./lib/provider-logos";
 import {
@@ -384,6 +388,7 @@ export function ModelsPage() {
     useState<ModelFormatFilter>("all");
   const isDiscoverTab = tab === "discover";
   const isDatasetMode = resourceType === "datasets";
+  const hiddenEmbeddingModelIds = useHiddenEmbeddingModelIds(!isDatasetMode);
   const urlSection = hubSearch.section ?? null;
   const isModelDiscover = isDiscoverTab && !isDatasetMode;
   const sectionChannelId: ChannelId | null = urlSection
@@ -698,6 +703,7 @@ export function ModelsPage() {
     return discoverRows.filter(
       (row) =>
         !isHiddenModelId(row.id) &&
+        !isConfiguredHiddenModelId(hiddenEmbeddingModelIds, row.id) &&
         // The default feed only shows models with a provider logo.
         (!isFeedMode ||
           resolveOwnerProviderLogo(row.owner, row.repo) !== null) &&
@@ -712,6 +718,7 @@ export function ModelsPage() {
     );
   }, [
     discoverRows,
+    hiddenEmbeddingModelIds,
     isDatasetMode,
     isFeedMode,
     effectiveDiscoverFormat,
@@ -737,7 +744,11 @@ export function ModelsPage() {
         effectiveCachedRows,
         effectiveLocalRows,
       )
-        .filter((row) => !isHiddenModelId(row.id))
+        .filter(
+          (row) =>
+            !isHiddenModelId(row.id) &&
+            !isConfiguredHiddenModelId(hiddenEmbeddingModelIds, row.id),
+        )
         .filter((row) => matchesFormat(row.result.isGguf, "gguf"))
         // Same fit filter as the main Discover list, so the feed carousel
         // honors the toggle too.
@@ -749,6 +760,7 @@ export function ModelsPage() {
         ),
     [
       hubFeed.trending.results,
+      hiddenEmbeddingModelIds,
       modelDiscoveryInventorySignature,
       fitOnDeviceOnly,
       gpu,
@@ -779,22 +791,29 @@ export function ModelsPage() {
     () => (isDiscoverTab ? [] : tokenizeQuery(deferredDebouncedQuery)),
     [isDiscoverTab, deferredDebouncedQuery],
   );
-  // Hide infra models (e.g. the RAG embedder bge-small-en-v1.5) from the On
-  // Device list like Discover, but reveal a row when a query matches it so the
-  // user can confirm it is already downloaded.
+  // Server cache rows already apply variant-aware infra hiding. Optimistic
+  // rows are not server-confirmed, so apply the client filter first.
   const isVisibleInventoryRow = useCallback(
-    (row: CachedInventoryRow | LocalInventoryRow) =>
-      // Local rows can have a null repoId and an id that is a hash rather than
-      // the file path/name, so also check path/title (the backend's
-      // _is_hidden_model checks the on-disk path for the same reason).
-      !isHiddenModelId(
-        row.id,
-        row.repoId,
-        row.kind !== "cache" ? row.path : undefined,
-        row.kind !== "cache" ? row.title : undefined,
-      ) ||
-      (inventoryTokens.length > 0 && inventoryRowMatches(row, inventoryTokens)),
-    [inventoryTokens],
+    (row: CachedInventoryRow | LocalInventoryRow) => {
+      if (row.kind === "cache") {
+        return (
+          !row.optimistic ||
+          (!isHiddenModelId(row.id, row.repoId, row.cachePath) &&
+            !isConfiguredHiddenModelId(
+              hiddenEmbeddingModelIds,
+              row.id,
+              row.repoId,
+              row.cachePath,
+            ))
+        );
+      }
+      // Local rows may lack a repo id, so also check path and title.
+      return (
+        !isHiddenModelId(row.id, row.repoId, row.path, row.title) ||
+        (inventoryTokens.length > 0 && inventoryRowMatches(row, inventoryTokens))
+      );
+    },
+    [hiddenEmbeddingModelIds, inventoryTokens],
   );
   // Format filter is a deliberate scope narrowing, so hard-filter it out. The
   // text query instead drives dim-not-filter on On Device (see ModelsCatalog) so

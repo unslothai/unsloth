@@ -3,11 +3,15 @@
 
 import { authFetch } from "@/features/auth";
 
-// Infra models hidden from every browse/preview list (Hub discover and the chat
-// model selector). Mirrors the backend `_is_hidden_model`: the RAG embedding
-// model and the llama.cpp validation probe are not usable chat models. Per-repo
-// file/download views are NOT filtered, so a reinstall still shows the model as
-// already downloaded.
+// Infra models hidden from browse/preview lists (Hub Discover, the chat model
+// selector, and local on-device rows). Mirrors the backend
+// `utils.hidden_models`: the RAG embedding model and the llama.cpp validation
+// probe are not usable chat models. Server-confirmed cache rows are trusted
+// because the backend applies variant-aware filtering. Optimistic cache rows
+// still use these needles until the server confirms them. The dynamic matchers
+// fetched from `/api/hub/hidden-models` extend the static needles with the
+// user's configured embedder. Per-repo views are not filtered, so reinstall
+// flows still show downloaded files.
 const HIDDEN_NEEDLES = [
   "bge-small-en-v1.5", // RAG embedder: unsloth/bge-small-en-v1.5[-GGUF]
   "ggml-org/models", // llama.cpp validation probe repo
@@ -52,7 +56,9 @@ export function isHiddenModelId(
   ...values: (string | null | undefined)[]
 ): boolean {
   return values.some((v) => {
-    if (!v) return false;
+    if (!v) {
+      return false;
+    }
     const lower = v.toLowerCase();
     return (
       HIDDEN_NEEDLES.some((needle) => lower.includes(needle)) ||
@@ -60,4 +66,14 @@ export function isHiddenModelId(
       dynamicExactPaths.includes(lower)
     );
   });
+}
+
+/** Exact-match configured infra repos without hiding similarly named models. */
+export function isConfiguredHiddenModelId(
+  configuredIds: ReadonlySet<string>,
+  ...values: (string | null | undefined)[]
+): boolean {
+  return values.some(
+    (value) => value != null && configuredIds.has(value.trim().toLowerCase()),
+  );
 }
