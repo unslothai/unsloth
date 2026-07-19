@@ -412,7 +412,7 @@ function TauriWrapper({ children }: { children: ReactNode }) {
       {desktopBooting ? (
         <div className="pointer-events-none fixed inset-x-0 bottom-5 z-[9999] flex justify-center px-4">
           <div className="absolute inset-x-4 bottom-16 mx-auto flex max-w-[520px] flex-col items-center gap-2 rounded-2xl border border-border/70 bg-background/95 px-6 py-5 text-center shadow-xl">
-            <div className="font-medium text-sm">Preparing Studio</div>
+            <div className="font-medium text-sm">Preparing Unsloth</div>
             <div className="text-muted-foreground text-xs">
               The local backend is ready. Signing in to your desktop session
               before loading chats.

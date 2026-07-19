@@ -37,7 +37,7 @@ def _checkpoint_sort_key(checkpoint_path: Path) -> tuple[int, int, str]:
 
 
 def _infer_base_model_from_history(checkpoint_dir: Path) -> Optional[str]:
-    """Best-effort base-model lookup using persisted Studio run metadata."""
+    """Best-effort base-model lookup using persisted Unsloth run metadata."""
     checkpoint_name = checkpoint_dir.name
     resolved_checkpoint_dir = str(checkpoint_dir.resolve())
 

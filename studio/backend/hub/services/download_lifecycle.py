@@ -76,7 +76,7 @@ def spawn_worker(
     env["HF_HUB_DISABLE_PROGRESS_BARS"] = "1"
     env["HF_HUB_DISABLE_TELEMETRY"] = "1"
     env["HF_HUB_DISABLE_XET"] = "0" if use_xet else "1"
-    # No token in Studio settings: fall back to the backend's own HF_TOKEN so
+    # No token in Unsloth settings: fall back to the backend's own HF_TOKEN so
     # private repos stay downloadable (needed while inkling repos are private).
     if not hf_token:
         hf_token = os.environ.get("HF_TOKEN") or None
