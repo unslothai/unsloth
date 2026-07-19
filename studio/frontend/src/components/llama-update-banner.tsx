@@ -2,6 +2,7 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { Button } from "@/components/ui/button";
+import { useLlamaUpdateConfirmGate } from "@/components/llama-update-confirm-dialog";
 import { resyncInferenceStatusAfterServerModelChange } from "@/features/chat";
 import { useLlamaUpdateCheck } from "@/hooks/use-llama-update-check";
 import { useShowLlamaUpdateBanner } from "@/hooks/use-llama-update-pref";
@@ -91,16 +92,23 @@ export function LlamaUpdateBanner({
       enabled,
       onReloadRequired: resyncInferenceStatusAfterServerModelChange,
     });
+  // Explicit accept/cancel prompt naming the exact build + host before the swap.
+  const { requestConfirm, dialog } = useLlamaUpdateConfirmGate();
 
   async function handleUpdate() {
-    const result = await apply();
+    const result = await apply(requestConfirm);
     if (result?.ok) {
-      const updatedTag = result.tag ?? status?.latest_tag ?? "the latest build";
+      const host = result.machine?.hostname;
+      const where = host ? ` on ${host}` : "";
+      const fromTag = result.fromTag ?? status?.installed_tag ?? "unknown";
+      const toTag = result.tag ?? status?.latest_tag ?? "the latest build";
       const reloadHint = result.reloadRequired
         ? " Reload your model to use it."
         : "";
-      toast.success(`llama.cpp updated to ${updatedTag}.${reloadHint}`);
-    } else if (result) {
+      toast.success(
+        `llama.cpp${where} updated ${fromTag} to ${toTag}.${reloadHint}`,
+      );
+    } else if (result && result.error !== "canceled") {
       toast.error(
         `llama.cpp update failed: ${result.error ?? "unknown error"}`,
       );
@@ -127,7 +135,7 @@ export function LlamaUpdateBanner({
   );
 
   // Avoid opacity/transform transitions; GPU layer churn can flash.
-  return show ? (
+  const banner = show ? (
     <div
       className={cn(
         positioned
@@ -229,4 +237,13 @@ export function LlamaUpdateBanner({
       </div>
     </div>
   ) : null;
+
+  // The confirm dialog renders unconditionally (inert until Update is clicked)
+  // so it survives the banner hiding once the swap begins.
+  return (
+    <>
+      {dialog}
+      {banner}
+    </>
+  );
 }

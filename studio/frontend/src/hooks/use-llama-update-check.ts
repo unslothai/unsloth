@@ -120,11 +120,39 @@ interface UseLlamaUpdateCheckOptions {
   onReloadRequired?: () => void;
 }
 
+export interface LlamaMachine {
+  hostname: string;
+  platform: string;
+}
+
+/** The pending swap a confirmation prompt describes: the exact build (from ->
+ *  to), the host it targets, and the single-use token that applies it. */
+export interface LlamaApplyTarget {
+  token: string;
+  machine: LlamaMachine | null;
+  fromTag: string | null;
+  toTag: string | null;
+}
+
 export interface LlamaApplyResult {
   ok: boolean;
+  // Post-swap build tag (the "to" version).
   tag?: string | null;
+  // Build the swap replaced (the "from" version).
+  fromTag?: string | null;
+  // Host the swap ran on, so the result can name which machine changed.
+  machine?: LlamaMachine | null;
   reloadRequired?: boolean | null;
   error?: string | null;
+}
+
+function parseMachine(value: unknown): LlamaMachine | null {
+  if (!value || typeof value !== "object") return null;
+  const m = value as Record<string, unknown>;
+  return {
+    hostname: typeof m.hostname === "string" ? m.hostname : "",
+    platform: typeof m.platform === "string" ? m.platform : "",
+  };
 }
 
 /** Tracks llama.cpp update visibility and apply progress. */
@@ -301,81 +329,121 @@ export function useLlamaUpdateCheck({
     }, SNOOZE_DELAY_MS);
   }, [surfaceIfAvailable]);
 
-  const apply = useCallback(async (): Promise<LlamaApplyResult> => {
-    if (applying) return { ok: false, error: "already running" };
-    setApplying(true);
-    setVisible(true);
-    let action: {
-      started?: boolean;
-      reason?: string | null;
-      message?: string | null;
-      job?: unknown;
-    } | null = null;
-    // Two-step apply: confirm to mint a single-use token bound to the offered
-    // build, then apply with it. A bare POST is refused with confirmation_required.
-    let confirmToken: string;
-    try {
-      const cres = await authFetch("/api/llama/update/confirm", { method: "POST" });
-      if (!cres.ok) {
-        setApplying(false);
-        return { ok: false, error: `HTTP ${cres.status}` };
-      }
-      const confirm = (await cres.json().catch(() => null)) as {
-        appliable?: boolean;
-        reason?: string | null;
-        confirm_token?: string | null;
-      } | null;
-      if (!confirm?.appliable || !confirm.confirm_token) {
-        setApplying(false);
-        return { ok: false, error: confirm?.reason ?? "update is not applicable" };
-      }
-      confirmToken = confirm.confirm_token;
-    } catch (e) {
-      setApplying(false);
-      return { ok: false, error: String(e) };
-    }
-    try {
-      const res = await authFetch("/api/llama/update", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ confirm_token: confirmToken }),
-      });
-      if (!res.ok) {
-        setApplying(false);
-        return { ok: false, error: `HTTP ${res.status}` };
-      }
+  const apply = useCallback(
+    async (
+      confirm: (target: LlamaApplyTarget) => boolean | Promise<boolean>,
+    ): Promise<LlamaApplyResult> => {
+      if (applying) return { ok: false, error: "already running" };
+
+      // Step 1: describe the pending swap. /confirm force-refreshes and mints a
+      // single-use token bound to the offered build, and reports the host + the
+      // from/to tags. No install starts here, so `applying` stays false while the
+      // confirmation prompt is open.
+      let target: LlamaApplyTarget;
       try {
-        action = await res.json();
-      } catch {
-        action = null;
+        const cres = await authFetch("/api/llama/update/confirm", {
+          method: "POST",
+        });
+        if (!cres.ok) return { ok: false, error: `HTTP ${cres.status}` };
+        const confirmResp = (await cres.json().catch(() => null)) as {
+          appliable?: boolean;
+          reason?: string | null;
+          confirm_token?: string | null;
+          machine?: unknown;
+          installed_tag?: string | null;
+          latest_tag?: string | null;
+        } | null;
+        if (!confirmResp?.appliable || !confirmResp.confirm_token) {
+          return {
+            ok: false,
+            error: confirmResp?.reason ?? "update is not applicable",
+          };
+        }
+        target = {
+          token: confirmResp.confirm_token,
+          machine: parseMachine(confirmResp.machine),
+          fromTag:
+            typeof confirmResp.installed_tag === "string"
+              ? confirmResp.installed_tag
+              : null,
+          toTag:
+            typeof confirmResp.latest_tag === "string"
+              ? confirmResp.latest_tag
+              : null,
+        };
+      } catch (e) {
+        return { ok: false, error: String(e) };
       }
-    } catch (e) {
-      setApplying(false);
-      return { ok: false, error: String(e) };
-    }
 
-    // Non-started jobs stay idle; already_running is tracked below.
-    if (
-      action &&
-      action.started === false &&
-      action.reason !== "already_running"
-    ) {
-      // A stale banner's click can land after another tab already applied the
-      // update (e.g. "up_to_date"): the response still carries that tab's
-      // completed job, so process reload_required here too, not just from the
-      // poll path -- otherwise this rejection silently drops it.
-      notifyReloadIfNeeded(parseJob(action.job));
-      setApplying(false);
+      // Step 2: require an explicit user confirmation of the exact build + host
+      // before the destructive binary swap. Declining aborts, untouched.
+      const accepted = await confirm(target);
+      if (!accepted) return { ok: false, error: "canceled" };
+
+      // Step 3: apply with the confirmed single-use token.
+      setApplying(true);
+      setVisible(true);
+      let action: {
+        started?: boolean;
+        reason?: string | null;
+        message?: string | null;
+        job?: unknown;
+      } | null = null;
+      try {
+        const res = await authFetch("/api/llama/update", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ confirm_token: target.token }),
+        });
+        if (!res.ok) {
+          setApplying(false);
+          return { ok: false, error: `HTTP ${res.status}` };
+        }
+        try {
+          action = await res.json();
+        } catch {
+          action = null;
+        }
+      } catch (e) {
+        setApplying(false);
+        return { ok: false, error: String(e) };
+      }
+
+      // Non-started jobs stay idle; already_running is tracked below.
+      if (
+        action &&
+        action.started === false &&
+        action.reason !== "already_running"
+      ) {
+        // A stale banner's click can land after another tab already applied the
+        // update (e.g. "up_to_date"): the response still carries that tab's
+        // completed job, so process reload_required here too, not just from the
+        // poll path -- otherwise this rejection silently drops it.
+        notifyReloadIfNeeded(parseJob(action.job));
+        setApplying(false);
+        return {
+          ok: false,
+          error: action.message ?? action.reason ?? "update was not started",
+          machine: target.machine,
+          fromTag: target.fromTag,
+          tag: target.toTag,
+        };
+      }
+
+      // Surface the confirmed host + from/to build alongside the job's post-swap
+      // tag, so the result can report what changed and where.
+      const polled = await new Promise<LlamaApplyResult>((resolve) =>
+        startJobPoll(resolve),
+      );
       return {
-        ok: false,
-        error: action.message ?? action.reason ?? "update was not started",
+        ...polled,
+        machine: target.machine,
+        fromTag: target.fromTag,
+        tag: polled.tag ?? target.toTag,
       };
-    }
-
-    return await new Promise<LlamaApplyResult>((resolve) =>
-      startJobPoll(resolve),
-    );
-  }, [applying, startJobPoll, notifyReloadIfNeeded]);
+    },
+    [applying, startJobPoll, notifyReloadIfNeeded],
+  );
 
   return {
     status: enabled ? status : null,

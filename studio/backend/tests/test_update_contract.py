@@ -88,7 +88,7 @@ def _install_stubs():
             "job": {"state": "idle"},
         }
 
-    def _default_start():
+    def _default_start(expected_tag = None):
         return {"started": True, "reason": None, "job": {"state": "running"}}
 
     lcu_mod.get_update_status = _default_status
@@ -148,10 +148,11 @@ def _reset(monkeypatch):
 
 
 def _track_start(monkeypatch):
-    calls = {"n": 0}
+    calls = {"n": 0, "expected_tags": []}
 
-    def _start():
+    def _start(expected_tag = None):
         calls["n"] += 1
+        calls["expected_tags"].append(expected_tag)
         return {"started": True, "reason": None, "job": {"state": "running"}}
 
     monkeypatch.setattr(rl, "start_update", _start)
@@ -215,6 +216,9 @@ def test_apply_with_confirmed_true_proceeds(monkeypatch):
     assert out.machine.hostname  # which machine
     assert out.latest_tag == "b9909"  # which version
     assert calls["n"] == 1
+    # The confirmed target is threaded into start_update so it installs exactly
+    # that build (and aborts if latest moved since this refresh).
+    assert calls["expected_tags"] == ["b9909"]
 
 
 def test_apply_with_valid_token_proceeds(monkeypatch):
@@ -324,6 +328,110 @@ def test_status_reports_machine():
     assert out.machine.hostname
     assert out.machine.platform
     assert out.latest_tag == "b9909"
+
+
+# --------------------------------------------------------------------------- #
+# start_update pins the confirmed target: a release that publishes in the gap
+# after confirmation must not be installed in place of the confirmed build.
+# --------------------------------------------------------------------------- #
+
+
+def _load_real_llama_cpp_update():
+    """Load the real utils.llama_cpp_update to exercise start_update's
+    confirmed-target guard directly. The module-level stubs shadow only
+    utils.llama_cpp_update, so this loads it under a private name (leaving that
+    stub in place for the handler tests) and its two real deps under their
+    production names."""
+
+    def _load(mod_name: str, filename: str):
+        spec = importlib.util.spec_from_file_location(
+            mod_name, str(_BACKEND / "utils" / filename)
+        )
+        mod = importlib.util.module_from_spec(spec)
+        sys.modules[mod_name] = mod
+        spec.loader.exec_module(mod)
+        return mod
+
+    for mod_name, filename in (
+        ("utils.llama_cpp_freshness", "llama_cpp_freshness.py"),
+        ("utils.process_lifetime", "process_lifetime.py"),
+    ):
+        if mod_name not in sys.modules:
+            _load(mod_name, filename)
+    return _load("real_llama_cpp_update", "llama_cpp_update.py")
+
+
+def _stub_marker_update(monkeypatch, lcu, *, resolved_latest: str):
+    """Route start_update down the marker branch with a fixed freshly-resolved
+    latest tag; no network, no real install-root probing."""
+    monkeypatch.setattr(lcu, "_find_binary", lambda: "/llama.cpp/build/bin/llama-server")
+    monkeypatch.setattr(lcu, "_active_install_is_local_link", lambda binary: False)
+    monkeypatch.setattr(
+        lcu,
+        "read_install_marker",
+        lambda binary: {
+            "tag": "b9860",
+            "published_repo": "unslothai/llama.cpp",
+            "asset": "cuda-x64.zip",
+        },
+    )
+    monkeypatch.setattr(
+        lcu, "_installer_script", lambda: Path("/fake/install_llama_prebuilt.py")
+    )
+    monkeypatch.setattr(lcu, "_install_dir_for", lambda binary: Path("/llama.cpp/build"))
+    monkeypatch.setattr(
+        lcu,
+        "get_update_status",
+        lambda force_refresh = False: {
+            "update_available": True,
+            "installed_tag": "b9860",
+            "latest_tag": resolved_latest,
+            "job": {"state": "idle"},
+        },
+    )
+
+
+def test_start_update_aborts_when_resolved_latest_differs_from_confirmed(monkeypatch):
+    # Operator confirmed b9909, but a newer b9910 publishes before the updater
+    # re-resolves latest. The confirmed target must win: abort, never install.
+    lcu = _load_real_llama_cpp_update()
+    lcu._reset_job_for_tests()
+    _stub_marker_update(monkeypatch, lcu, resolved_latest = "b9910")
+    installs = {"n": 0}
+    monkeypatch.setattr(
+        lcu, "_run_update", lambda *a, **k: installs.__setitem__("n", installs["n"] + 1)
+    )
+    out = lcu.start_update("b9909")
+    assert out["started"] is False
+    assert out["reason"] == "stale_target"
+    assert installs["n"] == 0  # never swapped to the unconfirmed b9910
+
+
+def test_start_update_proceeds_when_resolved_latest_matches_confirmed(monkeypatch):
+    # Confirmed target still matches the freshly-resolved latest: install it and
+    # pin the installer to exactly that build.
+    lcu = _load_real_llama_cpp_update()
+    lcu._reset_job_for_tests()
+    _stub_marker_update(monkeypatch, lcu, resolved_latest = "b9909")
+    spawned: dict = {}
+
+    class _CapturingThread:
+        def __init__(self, *, target = None, args = (), name = None, daemon = None):
+            spawned["args"] = args
+
+        def start(self):
+            spawned["started"] = True
+
+    monkeypatch.setattr(lcu.threading, "Thread", _CapturingThread)
+    out = lcu.start_update("b9909")
+    assert out["started"] is True
+    assert out["reason"] is None
+    assert spawned.get("started") is True
+    # args = (install_dir, repo, asset, script, pin_release_tag); the installer
+    # is pinned to exactly the confirmed build (a pin is disabled on macOS).
+    if sys.platform != "darwin":
+        assert spawned["args"][4] == "b9909"
+    lcu._reset_job_for_tests()
 
 
 # --------------------------------------------------------------------------- #

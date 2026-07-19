@@ -123,7 +123,7 @@ def test_status_handler_runs_off_event_loop(monkeypatch):
 def test_update_handler_runs_off_event_loop(monkeypatch):
     seen = {}
 
-    def fake_start():
+    def fake_start(expected_tag = None):
         seen["thread"] = threading.current_thread()
         return {"started": True, "reason": None, "job": {"state": "running"}}
 

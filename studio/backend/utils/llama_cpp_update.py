@@ -622,9 +622,15 @@ def _run_update(
                 pass
 
 
-def start_update() -> dict:
+def start_update(expected_tag: Optional[str] = None) -> dict:
     """Kick off a background update. Idempotent: a second call while one is
-    running returns the in-flight job rather than starting another."""
+    running returns the in-flight job rather than starting another.
+
+    ``expected_tag`` is the build the caller already confirmed. The updater
+    re-resolves "latest" itself, so a release published in the gap after
+    confirmation would move the target; when the freshly-resolved latest differs
+    from ``expected_tag`` this aborts rather than swapping to a build the caller
+    never confirmed. Left None, it behaves as before (no target pinning)."""
     binary = _find_binary()
     # Refuse to update a --with-llama-cpp-dir local link: installing a prebuilt
     # here would write through the link into the user's own checkout (or fail)
@@ -678,6 +684,7 @@ def start_update() -> dict:
         # (skipping too-new prebuilts); elsewhere an unusable latest now fails
         # the job loudly (retryable) instead of walking back.
         pin_release_tag = None if sys.platform == "darwin" else status.get("latest_tag")
+        resolved_tag = status.get("latest_tag")
     else:
         # Source build / custom path: only proceed when the same detection logic
         # would offer the update (prebuilt exists, install is behind, root is
@@ -708,6 +715,21 @@ def start_update() -> dict:
         # No pin: source-build detection resolves via --resolve-prebuilt latest,
         # the same resolver the unpinned apply uses, so the two already agree.
         pin_release_tag = None
+        resolved_tag = src.get("latest_tag")
+
+    # Install exactly the build the caller confirmed. A release published in the
+    # gap since confirmation moves the freshly-resolved latest above, so abort
+    # rather than swap to a build the caller never saw or confirmed.
+    if expected_tag is not None and resolved_tag != expected_tag:
+        return {
+            "started": False,
+            "reason": "stale_target",
+            "message": (
+                "The available llama.cpp build changed since it was confirmed. "
+                "Re-check for the update and confirm the new build before it runs."
+            ),
+            "job": get_update_status()["job"],
+        }
 
     if install_dir is None:
         return {

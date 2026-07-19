@@ -57,6 +57,7 @@ import { InfoHint } from "@/components/ui/info-hint";
 import { Tooltip, TooltipContent } from "@/components/ui/tooltip";
 import { useIsMobile } from "@/hooks/use-mobile";
 import { useLlamaUpdateCheck } from "@/hooks/use-llama-update-check";
+import { useLlamaUpdateConfirmGate } from "@/components/llama-update-confirm-dialog";
 import { cn } from "@/lib/utils";
 import {
   ArrowTurnBackwardIcon,
@@ -570,19 +571,28 @@ export function ChatSettingsPanel({
     enabled: mtpUpdatable,
     onReloadRequired: resyncInferenceStatusAfterServerModelChange,
   });
+  // Explicit accept/cancel prompt naming the exact build + host before the swap.
+  const {
+    requestConfirm: requestLlamaUpdateConfirm,
+    dialog: llamaUpdateConfirmDialog,
+  } = useLlamaUpdateConfirmGate();
   const handleMtpUpdate = useCallback(async () => {
-    const result = await applyLlamaUpdate();
+    const result = await applyLlamaUpdate(requestLlamaUpdateConfirm);
     if (result.ok) {
+      const host = result.machine?.hostname;
+      const where = host ? ` on ${host}` : "";
+      const fromTag = result.fromTag ?? llamaUpdateStatus?.installed_tag ?? "unknown";
+      const toTag = result.tag ?? llamaUpdateStatus?.latest_tag ?? "the latest build";
       const reloadHint = result.reloadRequired
         ? " Reload your model to enable MTP."
         : "";
       toast.success(
-        `llama.cpp updated to ${result.tag ?? "the latest build"}.${reloadHint}`,
+        `llama.cpp${where} updated ${fromTag} to ${toTag}.${reloadHint}`,
       );
-    } else {
+    } else if (result.error !== "canceled") {
       toast.error(`llama.cpp update failed: ${result.error ?? "unknown error"}`);
     }
-  }, [applyLlamaUpdate]);
+  }, [applyLlamaUpdate, requestLlamaUpdateConfirm, llamaUpdateStatus]);
   const specDraftNMax = useChatRuntimeStore((s) => s.specDraftNMax);
   const setSpecDraftNMax = useChatRuntimeStore((s) => s.setSpecDraftNMax);
   const loadedSpecDraftNMax = useChatRuntimeStore(
@@ -1887,6 +1897,7 @@ export function ChatSettingsPanel({
           </DialogFooter>
         </DialogContent>
       </Dialog>
+      {llamaUpdateConfirmDialog}
     </>
   );
 

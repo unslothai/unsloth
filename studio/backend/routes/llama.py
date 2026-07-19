@@ -296,7 +296,9 @@ async def llama_update(
             job = LlamaUpdateJob(**status.get("job", {})),
         )
 
-    action = await asyncio.to_thread(start_update)
+    # Pass the confirmed target so the updater installs exactly that build and
+    # aborts if latest moved between this refresh and its own (see start_update).
+    action = await asyncio.to_thread(start_update, target_tag)
     return LlamaUpdateActionResponse(
         machine = machine,
         installed_tag = installed_tag,
