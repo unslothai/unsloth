@@ -533,11 +533,13 @@ if [ "$_studio_home_canon" != "$_LEGACY_STUDIO_HOME" ]; then
 fi
 # Directory-local evidence Unsloth created "$1": only prebuilt-installer metadata
 # counts (UNSLOTH_PREBUILT_INFO.json for llama.cpp, UNSLOTH_NODE_PREBUILT_INFO.json
-# for Node), both written only by our installers. Mirrors the setup.ps1 Node guard.
-# A markerless source build stays strict since this runs right before an rm -rf.
+# for Node, UNSLOTH_WHISPER_PREBUILT_INFO.json for whisper.cpp), all written only
+# by our installers. Mirrors the setup.ps1 Node guard. A markerless source build
+# stays strict since this runs right before an rm -rf.
 _studio_owned_adoptable() {
     [ -f "$1/UNSLOTH_PREBUILT_INFO.json" ] && return 0
     [ -f "$1/UNSLOTH_NODE_PREBUILT_INFO.json" ] && return 0
+    [ -f "$1/UNSLOTH_WHISPER_PREBUILT_INFO.json" ] && return 0
     return 1
 }
 _assert_studio_owned_or_absent() {
@@ -1939,6 +1941,79 @@ if [ ! -L "$LLAMA_CPP_DIR" ] && {
         _studio_owned_adoptable "$LLAMA_CPP_DIR"
 }; then
     _remove_agent_instruction_files "$LLAMA_CPP_DIR"
+fi
+
+# ── whisper.cpp (local speech-to-text dictation engine) ──
+# Optional runtime for local dictation. Fail-open: any failure leaves the
+# Transformers STT engine and browser dictation working, so it never aborts
+# setup (unlike llama.cpp). Runs in 'unsloth studio update' too so the runtime
+# installs/refreshes without a compiler. Installs beside llama.cpp under the
+# same managed home the sidecar's _managed_whisper_cpp_dir() resolves.
+WHISPER_CPP_DIR="$UNSLOTH_HOME/whisper.cpp"
+if [ -n "${WHISPER_SERVER_PATH:-}" ] || [ -n "${UNSLOTH_WHISPER_CPP_PATH:-}" ]; then
+    verbose_substep "whisper.cpp: using a user-configured binary/dir; skipping managed install"
+elif [ "${UNSLOTH_SKIP_WHISPER_INSTALL:-0}" = "1" ]; then
+    verbose_substep "whisper.cpp: install skipped (UNSLOTH_SKIP_WHISPER_INSTALL=1)"
+else
+    if [ "$_STUDIO_HOME_IS_CUSTOM" = true ]; then
+        _assert_studio_owned_or_absent "$WHISPER_CPP_DIR" "whisper.cpp install"
+    fi
+    _WHISPER_CMD=(python "$SCRIPT_DIR/install_whisper_prebuilt.py" --install-dir "$WHISPER_CPP_DIR")
+    if [ -n "${UNSLOTH_WHISPER_RELEASE_TAG:-}" ]; then
+        _WHISPER_CMD+=(--published-release-tag "$UNSLOTH_WHISPER_RELEASE_TAG")
+    fi
+    if [ -n "${_setup_gfx:-}" ]; then
+        _WHISPER_CMD+=(--rocm-gfx "$_setup_gfx")
+    elif [ "$_setup_amd_detected" = true ]; then
+        _WHISPER_CMD+=(--has-rocm)
+    fi
+    _WHISPER_LOG="$(mktemp)"
+    set +e
+    if _is_verbose; then
+        "${_WHISPER_CMD[@]}" 2>&1 | tee "$_WHISPER_LOG"
+        _WHISPER_STATUS=${PIPESTATUS[0]}
+    else
+        "${_WHISPER_CMD[@]}" >"$_WHISPER_LOG" 2>&1
+        _WHISPER_STATUS=$?
+    fi
+    set -e
+    if [ "$_WHISPER_STATUS" -eq 0 ]; then
+        if grep -Fq "already matches" "$_WHISPER_LOG"; then
+            step "whisper.cpp" "prebuilt up to date"
+        else
+            step "whisper.cpp" "prebuilt installed"
+        fi
+        if [ "$_STUDIO_HOME_IS_CUSTOM" = true ] && [ -d "$WHISPER_CPP_DIR" ]; then
+            : > "$WHISPER_CPP_DIR/$_STUDIO_OWNED_MARKER" 2>/dev/null || true
+        fi
+        rm -f "$_WHISPER_LOG"
+    elif [ "$_WHISPER_STATUS" -eq 3 ]; then
+        # A warm dictation server holds the binary; keep the old install.
+        step "whisper.cpp" "install busy; keeping existing runtime" "$C_WARN"
+        rm -f "$_WHISPER_LOG"
+    else
+        # No usable prebuilt (fork release/pins not published yet, or unsupported
+        # host). A source build is opt-in (UNSLOTH_WHISPER_FORCE_COMPILE=1) so a
+        # toolchain host does not silently recompile whisper.cpp on every update
+        # while the prebuilt is unavailable; otherwise stay quiet -- Transformers
+        # STT and browser dictation remain the fallback.
+        rm -f "$_WHISPER_LOG"
+        _WHISPER_BUILD="$SCRIPT_DIR/../scripts/build_whisper_cpp.sh"
+        if [ "${UNSLOTH_WHISPER_FORCE_COMPILE:-0}" = "1" ] && [ -f "$_WHISPER_BUILD" ] \
+                && command -v cmake >/dev/null 2>&1 && command -v git >/dev/null 2>&1; then
+            substep "whisper.cpp prebuilt unavailable; building from source (UNSLOTH_WHISPER_FORCE_COMPILE=1)..."
+            if run_quiet_no_exit "whisper.cpp source build" sh "$_WHISPER_BUILD"; then
+                step "whisper.cpp" "source build installed"
+                if [ "$_STUDIO_HOME_IS_CUSTOM" = true ] && [ -d "$WHISPER_CPP_DIR" ]; then
+                    : > "$WHISPER_CPP_DIR/$_STUDIO_OWNED_MARKER" 2>/dev/null || true
+                fi
+            else
+                verbose_substep "whisper.cpp unavailable; local dictation uses Transformers STT"
+            fi
+        else
+            verbose_substep "whisper.cpp prebuilt unavailable; local dictation uses Transformers STT"
+        fi
+    fi
 fi
 
 # ── Footer ──
