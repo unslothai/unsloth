@@ -585,6 +585,12 @@ export const en = {
       archivedChats: "Archived chats",
       archivedChatsDescription: "View and manage chats you have archived.",
       manageAction: "Manage",
+      exportArchivedChats: "Export",
+      exportingArchivedChats: "Exporting...",
+      exportedOneArchivedChat: "Exported 1 archived chat",
+      exportedArchivedChatCount: "Exported {count} archived chats",
+      noArchivedChatsToExport: "No archived chats to export.",
+      failedToExportArchivedChats: "Failed to export archived chats",
       archiveAllChats: "Archive all chats",
       archiveAllChatsDescription:
         "Move every chat in Recents and Projects to the archive.",

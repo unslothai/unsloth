@@ -30,11 +30,13 @@ import {
   bulkExportConversationsByScope,
   clearAllChats,
   countAllChats,
+  downloadArchivedChatExport,
   downloadChatExport,
   exportFineTuneJsonl,
   importConversationsFromFile,
   useChatPreferencesStore,
   useChatRuntimeStore,
+  useChatSidebarItems,
 } from "@/features/chat";
 import { useT } from "@/i18n";
 import {
@@ -80,6 +82,9 @@ export function DataTab() {
   );
   const [count, setCount] = useState<number | null>(null);
   const [exporting, setExporting] = useState(false);
+  const [archivedExporting, setArchivedExporting] = useState(false);
+  // Gates the archived subpage Export button.
+  const { archivedItems } = useChatSidebarItems({ requireMessages: false });
   const [clearing, setClearing] = useState(false);
   const [archiving, setArchiving] = useState(false);
   const [fineTuneExporting, setFineTuneExporting] = useState(false);
@@ -144,6 +149,26 @@ export function DataTab() {
       await downloadChatExport();
     } finally {
       setExporting(false);
+    }
+  };
+
+  const handleExportArchived = async () => {
+    setArchivedExporting(true);
+    try {
+      const exported = await downloadArchivedChatExport();
+      toast.success(
+        exported === 0
+          ? t("settings.data.noArchivedChatsToExport")
+          : exported === 1
+            ? t("settings.data.exportedOneArchivedChat")
+            : t("settings.data.exportedArchivedChatCount", { count: exported }),
+      );
+    } catch (error) {
+      toast.error(t("settings.data.failedToExportArchivedChats"), {
+        description: error instanceof Error ? error.message : undefined,
+      });
+    } finally {
+      setArchivedExporting(false);
     }
   };
 
@@ -321,13 +346,37 @@ export function DataTab() {
             {t("settings.data.title")}
           </h1>
         </header>
-        <div className="flex flex-col gap-1">
-          <h2 className="text-sm font-semibold">
-            {t("settings.data.archivedChats")}
-          </h2>
-          <p className="text-xs text-muted-foreground">
-            {t("settings.data.archivedChatsDescription")}
-          </p>
+        <div className="flex items-start justify-between gap-4">
+          <div className="flex flex-col gap-1">
+            <h2 className="text-sm font-semibold">
+              {t("settings.data.archivedChats")}
+            </h2>
+            <p className="text-xs text-muted-foreground">
+              {t("settings.data.archivedChatsDescription")}
+            </p>
+          </div>
+          {archivedItems.length > 0 && (
+            <Button
+              variant="outline"
+              size="sm"
+              className="shrink-0"
+              onClick={handleExportArchived}
+              disabled={archivedExporting}
+            >
+              {archivedExporting ? (
+                <Spinner className="size-4" />
+              ) : (
+                <HugeiconsIcon
+                  icon={Download01Icon}
+                  strokeWidth={1.75}
+                  className="size-4"
+                />
+              )}
+              {archivedExporting
+                ? t("settings.data.exportingArchivedChats")
+                : t("settings.data.exportArchivedChats")}
+            </Button>
+          )}
         </div>
         <ArchivedChatsView />
       </div>
