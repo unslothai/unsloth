@@ -5924,12 +5924,26 @@ async def stt_download(
     is reported by /audio/stt/status.
     """
     from core.inference import stt_ggml_sidecar, stt_sidecar
-    from core.inference.stt_sidecar import SttModelIdError
+    from core.inference.stt_sidecar import (
+        SttModelCompatibilityError,
+        SttModelIdError,
+        validate_remote_model,
+    )
 
-    module = stt_ggml_sidecar if _resolve_stt_engine(payload.engine) == "gguf" else stt_sidecar
+    engine = _resolve_stt_engine(payload.engine)
+    module = stt_ggml_sidecar if engine == "gguf" else stt_sidecar
     try:
+        # The Transformers engine accepts arbitrary custom `owner/model` repos, so
+        # confirm the repo is a Whisper checkpoint (metadata-only, no weights) before
+        # snapshot_download pulls a possibly-large non-STT repository into the shared
+        # HF cache. Curated ids short-circuit; the GGUF engine only accepts curated
+        # ids (resolve_ggml_model_id rejects custom), so it needs no repo check.
+        if engine != "gguf":
+            await asyncio.to_thread(validate_remote_model, payload.model, hf_token)
         await asyncio.to_thread(module.start_model_download, payload.model, hf_token)
     except SttModelIdError as e:
+        raise HTTPException(status_code = 422, detail = str(e))
+    except SttModelCompatibilityError as e:
         raise HTTPException(status_code = 422, detail = str(e))
     return JSONResponse(content = module.download_status())
 
