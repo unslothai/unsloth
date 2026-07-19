@@ -14,6 +14,7 @@ import core.inference.stt_ggml_sidecar as ggml_module
 from core.inference.stt_ggml_sidecar import (
     DEFAULT_GGML_STT_MODEL,
     GGML_STT_MODELS,
+    GGML_STT_REPOS,
     GgmlSttSidecar,
     SttEngineUnavailableError,
     find_whisper_server_binary,
@@ -62,6 +63,14 @@ def test_custom_repo_ids_are_rejected():
 def test_curated_ids_mirror_transformers_sidecar():
     from core.inference.stt_sidecar import STT_MODELS
     assert list(GGML_STT_MODELS.keys()) == list(STT_MODELS.keys())
+
+
+def test_curated_filenames_match_repo_naming():
+    # unslothai/whisper-<id>-GGUF hosts whisper-<id>.bin; keep the download
+    # filename in lockstep with the repo so it resolves instead of 404ing.
+    for model_id, repo in GGML_STT_REPOS.items():
+        expected = repo.split("/", 1)[1].removesuffix("-GGUF") + ".bin"
+        assert GGML_STT_MODELS[model_id] == expected
 
 
 # ---------------------------------------------------------------------------

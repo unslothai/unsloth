@@ -69,11 +69,11 @@ GGML_STT_REPOS: dict[str, str] = {
     "large-v3": "unslothai/whisper-large-v3-GGUF",
 }
 GGML_STT_MODELS: dict[str, str] = {
-    "tiny": "ggml-tiny.bin",
-    "base": "ggml-base.bin",
-    "small": "ggml-small.bin",
-    "large-v3-turbo": "ggml-large-v3-turbo.bin",
-    "large-v3": "ggml-large-v3.bin",
+    "tiny": "whisper-tiny.bin",
+    "base": "whisper-base.bin",
+    "small": "whisper-small.bin",
+    "large-v3-turbo": "whisper-large-v3-turbo.bin",
+    "large-v3": "whisper-large-v3.bin",
 }
 DEFAULT_GGML_STT_MODEL = "small"
 
