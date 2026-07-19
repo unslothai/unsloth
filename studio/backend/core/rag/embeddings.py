@@ -39,7 +39,7 @@ _model = None
 _name: str | None = None
 
 
-# Studio device -> torch device string. Apple has no torch device -> CPU.
+# Unsloth device -> torch device string. Apple has no torch device -> CPU.
 _TORCH_DEVICE = {DeviceType.CUDA: "cuda", DeviceType.XPU: "xpu"}
 
 

@@ -8,6 +8,7 @@ instead of torch/transformers for model loading and generation.
 import json
 import os
 import threading
+from contextlib import contextmanager
 from typing import Optional, Generator
 from core.inference.message_content import content_to_text
 from core.inference.runtime_context import runtime_context_length
@@ -18,6 +19,63 @@ from core.inference.chat_template_helpers import (
 from loggers import get_logger
 
 logger = get_logger(__name__)
+
+
+def _mlx_adapter_modules(model):
+    """Return bypassable adapter entries and unsupported wrapper paths."""
+    adapters = []
+    unsupported = []
+    for path, module in model.named_modules():
+        if not path or not (hasattr(module, "lora_a") and hasattr(module, "lora_b")):
+            continue
+        base = getattr(module, "linear", None)
+        if base is None:
+            base = getattr(module, "embedding", None)
+        if base is None:
+            unsupported.append(path)
+        else:
+            adapters.append((path, module, base))
+    return adapters, unsupported
+
+
+@contextmanager
+def _temporary_mlx_adapter_state(model, use_adapter):
+    """Select base or adapter modules for one request, then restore the tree."""
+    if use_adapter is None:
+        yield
+        return
+    if isinstance(use_adapter, str):
+        raise NotImplementedError(
+            "Unsloth MLX: named adapter selection is not supported; use True for "
+            "the loaded adapter or False for the base model."
+        )
+    if use_adapter is not True and use_adapter is not False:
+        raise TypeError("Unsloth MLX: use_adapter must be None, True, False, or a string.")
+
+    adapters, unsupported = _mlx_adapter_modules(model)
+    if use_adapter is True:
+        if not adapters and not unsupported:
+            logger.warning("MLX adapter requested, but the active model has no adapter layers")
+        yield
+        return
+    if unsupported:
+        raise RuntimeError(
+            "Unsloth MLX: cannot disable adapter layers without their base modules: "
+            + ", ".join(unsupported[:5])
+        )
+    if not adapters:
+        yield
+        return
+
+    from mlx.utils import tree_unflatten
+
+    base_modules = tree_unflatten([(path, base) for path, _, base in adapters])
+    adapter_modules = tree_unflatten([(path, wrapper) for path, wrapper, _ in adapters])
+    try:
+        model.update_modules(base_modules)
+        yield
+    finally:
+        model.update_modules(adapter_modules)
 
 
 def _mlx_vlm_model_config(model):
@@ -508,6 +566,7 @@ class MLXInferenceBackend:
         reasoning_effort = None,
         preserve_thinking = None,
         presence_penalty = 0.0,
+        _adapter_state = None,
     ) -> Generator[str, None, None]:
         if self._model is None:
             raise RuntimeError("No model loaded")
@@ -552,6 +611,7 @@ class MLXInferenceBackend:
                 reasoning_effort = reasoning_effort,
                 preserve_thinking = preserve_thinking,
                 presence_penalty = presence_penalty,
+                _adapter_state = _adapter_state,
             )
         else:
             stream = self._generate_text(
@@ -568,6 +628,7 @@ class MLXInferenceBackend:
                 reasoning_effort = reasoning_effort,
                 preserve_thinking = preserve_thinking,
                 presence_penalty = presence_penalty,
+                _adapter_state = _adapter_state,
             )
         yield from stream
 
@@ -587,6 +648,7 @@ class MLXInferenceBackend:
         reasoning_effort = None,
         preserve_thinking = None,
         presence_penalty = 0.0,
+        _adapter_state = None,
     ):
         from mlx_lm import stream_generate
         from mlx_lm.sample_utils import make_sampler, make_logits_processors
@@ -635,10 +697,6 @@ class MLXInferenceBackend:
         think_prefix = detect_think_prefill(
             prompt, getattr(self._tokenizer, "all_special_tokens", None)
         )
-        # Emit it before the first token so the block renders during prefill.
-        if think_prefix:
-            yield think_prefix
-
         sampler = make_sampler(
             temp = temperature,
             top_p = top_p,
@@ -680,9 +738,12 @@ class MLXInferenceBackend:
             type(self._model).__name__,
             type(self._tokenizer).__name__,
         )
-        with self._generation_lock:
+        with self._generation_lock, _temporary_mlx_adapter_state(self._model, _adapter_state):
             final_response = None
             try:
+                # Enter request-scoped model state before yielding any response.
+                if think_prefix:
+                    yield think_prefix
                 gen_kwargs = dict(
                     prompt = prompt,
                     max_tokens = max_new_tokens,
@@ -749,6 +810,7 @@ class MLXInferenceBackend:
         reasoning_effort = None,
         preserve_thinking = None,
         presence_penalty = 0.0,
+        _adapter_state = None,
     ):
         from mlx_vlm import stream_generate as vlm_stream
 
@@ -852,9 +914,6 @@ class MLXInferenceBackend:
 
         # Re-emit an open <think> prefill from the prompt (see _generate_text).
         cumulative = detect_think_prefill(prompt, getattr(chat_target, "all_special_tokens", None))
-        # Emit it before the first token so the block renders during prefill.
-        if cumulative:
-            yield cumulative
         logger.info(
             "VLM generating: prompt_len=%d, has_image=%s",
             len(prompt),
@@ -891,9 +950,18 @@ class MLXInferenceBackend:
 
         def _stream_vlm_snapshots():
             nonlocal cumulative
-            with self._generation_lock:
+            # Hold the generation lock AND the request-scoped adapter state for the
+            # whole stream so Base-vs-LoRA compare mode honors use_adapter and the
+            # wrapper tree is restored on completion, cancellation, or close.
+            with self._generation_lock, _temporary_mlx_adapter_state(self._model, _adapter_state):
                 final_response = None
                 try:
+                    # Emit any prefilled <think> block before the first token so the
+                    # UI renders it during prefill, matching _generate_text. Done
+                    # inside the adapter context so an unsupported request raises
+                    # before any output escapes.
+                    if cumulative:
+                        yield cumulative
                     for response in vlm_stream(
                         self._model,
                         self._processor,
@@ -927,8 +995,11 @@ class MLXInferenceBackend:
         cancel_event = None,
         **gen_kwargs,
     ) -> Generator[str, None, None]:
-        # MLX LoRA adapter toggling not yet supported; generate normally
-        yield from self.generate_chat_response(cancel_event = cancel_event, **gen_kwargs)
+        yield from self.generate_chat_response(
+            cancel_event = cancel_event,
+            _adapter_state = use_adapter,
+            **gen_kwargs,
+        )
 
     def reset_generation_state(self):
         import mlx.core as mx

@@ -1,4 +1,4 @@
-"""Timeout policy checks for Studio's local llama-server path."""
+"""Timeout policy checks for Unsloth's local llama-server path."""
 
 from __future__ import annotations
 
