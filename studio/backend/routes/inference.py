@@ -20,6 +20,7 @@ from loggers import get_logger
 import asyncio
 import threading
 import weakref
+from contextlib import ExitStack
 
 
 import re as _re
@@ -28,6 +29,7 @@ import re as _re
 from utils.models import extract_model_size_b as _extract_model_size_b
 
 from utils.api_errors import openai_error_body, anthropic_error_body
+from core.inference.orchestrator import GenStreamError, GenStreamErrorRaised
 from core.inference.llama_admission import (
     LlamaAdmissionCancelled,
     LlamaAdmissionConfig,
@@ -210,6 +212,14 @@ def _friendly_error(exc: Exception) -> str:
     if template_msg:
         return f"An internal error occurred: {template_msg}"
     return "An internal error occurred"
+
+
+def _friendly_gen_stream_error(value) -> str:
+    """Return a client-safe message for typed local generation errors."""
+    text = str(value)
+    if getattr(value, "public", False):
+        return text
+    return safe_error_detail(RuntimeError(text), fallback = "An internal error occurred.")
 
 
 def _friendly_upstream_error(text: str) -> str:
@@ -998,6 +1008,7 @@ try:
     from core.inference.llama_server_args import (
         _effective_tensor_parallel,
         _tensor_parallel_matches_loaded,
+        extra_args_disable_mmproj,
         parse_split_mode_override,
         resolve_tensor_parallel,
         strip_shadowing_flags,
@@ -1035,6 +1046,7 @@ except ImportError:
     from core.inference.llama_server_args import (
         _effective_tensor_parallel,
         _tensor_parallel_matches_loaded,
+        extra_args_disable_mmproj,
         parse_split_mode_override,
         resolve_tensor_parallel,
         strip_shadowing_flags,
@@ -1915,16 +1927,57 @@ async def artifact_preview_frame(allow_network: bool = False):
 _BARE_JSON_NAME_MARKER_RE = _re.compile(r'\{\s*\\?"(?:name|function)\\?"\s*:')
 
 
-def _detect_safetensors_features(backend, chat_template: Optional[str]) -> dict:
+def _detect_safetensors_features(
+    backend,
+    chat_template: Optional[str],
+    tools = None,
+) -> dict:
     """Classify reasoning/tool capabilities via the GGUF classifier so flags
     match across backends. gpt-oss is overridden: Harmony routes reasoning and
     tools through tokenizer channels, not template markup."""
     model_id = getattr(backend, "active_model_name", None)
+    feature_template = chat_template
+    try:
+        from core.inference.chat_template_helpers import _selected_template_strings_from_value
+        selected_templates = _selected_template_strings_from_value(chat_template, tools)
+        if selected_templates:
+            feature_template = selected_templates[0]
+    except Exception:
+        logger.debug("safetensors_named_template_selection_failed", exc_info = True)
     flags = detect_reasoning_flags(
-        chat_template,
+        feature_template,
         model_identifier = model_id,
         log_source = "safetensors",
     )
+    if not flags.get("supports_reasoning"):
+        try:
+            from core.inference.chat_template_helpers import (
+                detect_reasoning_channel_markers_from_template,
+            )
+
+            templates = [chat_template]
+            models = getattr(backend, "models", None)
+            model_info = (
+                models.get(model_id, {})
+                if isinstance(models, dict) and model_id is not None
+                else {}
+            )
+            if isinstance(model_info, dict):
+                templates.extend(
+                    (
+                        model_info.get("native_chat_template"),
+                        (model_info.get("chat_template_info") or {}).get("template"),
+                    )
+                )
+            if any(
+                detect_reasoning_channel_markers_from_template(template, tools = tools) is not None
+                for template in templates
+            ):
+                flags["supports_reasoning"] = True
+                flags["reasoning_always_on"] = True
+                logger.info("safetensors: model always reasons (native channel markers)")
+        except Exception:
+            logger.debug("safetensors_native_reasoning_marker_check_failed", exc_info = True)
     # Markers any supported parser recognises (template advertises tools but
     # uses none -> drop the pill). Reuse the parser's own signal list so this
     # gate never drifts (a hand-maintained copy lost the DeepSeek variants);
@@ -1938,9 +1991,9 @@ def _detect_safetensors_features(backend, chat_template: Optional[str]) -> dict:
     )
     if (
         flags.get("supports_tools")
-        and chat_template
-        and not any(m in chat_template for m in _PARSER_MARKERS)
-        and not _BARE_JSON_NAME_MARKER_RE.search(chat_template)
+        and isinstance(feature_template, str)
+        and not any(m in feature_template for m in _PARSER_MARKERS)
+        and not _BARE_JSON_NAME_MARKER_RE.search(feature_template)
     ):
         logger.info(
             "safetensors: template advertises tools but uses an "
@@ -3968,6 +4021,7 @@ async def _load_model_impl(request: LoadRequest, fastapi_request: Request, curre
 
     native_grant_backed = False
     model_log_label = request.model_path
+    gguf_load_stack = ExitStack()
     try:
         # Validate user pass-through args up front so a managed-flag collision
         # returns 400 before any model work.
@@ -4187,15 +4241,9 @@ async def _load_model_impl(request: LoadRequest, fastapi_request: Request, curre
             llama_backend = get_llama_cpp_backend()
             unsloth_backend = get_inference_backend()
 
-            # Unload any active Unsloth model to free VRAM (off the event loop:
-            # unload takes _gen_lock and can wait on an in-flight stream).
-            if unsloth_backend.active_model_name:
-                logger.info(
-                    f"Unloading Unsloth model '{unsloth_backend.active_model_name}' before loading GGUF"
-                )
-                await asyncio.to_thread(
-                    unsloth_backend.unload_model, unsloth_backend.active_model_name
-                )
+            if config.gguf_hf_repo:
+                from core.inference.llama_cpp import gguf_load_in_flight
+                gguf_load_stack.enter_context(gguf_load_in_flight(config.gguf_hf_repo))
 
             # Inherit llama_extra_args from the previous load when the request
             # omits the field (the chat-settings Apply path doesn't round-trip
@@ -4274,6 +4322,38 @@ async def _load_model_impl(request: LoadRequest, fastapi_request: Request, curre
                                 "load (same model, shadow-stripped): %s",
                                 extra_llama_args,
                             )
+
+            # Block cache writes that would race the download manager. This runs
+            # after pass-through argument inheritance so a carried --no-mmproj
+            # changes the companion requirement exactly as it does for the load.
+            if config.gguf_hf_repo:
+                from core.inference.llama_cpp import _hub_download_blocks_gguf_load
+                if await asyncio.to_thread(
+                    _hub_download_blocks_gguf_load,
+                    config.gguf_hf_repo,
+                    config.gguf_variant,
+                    require_mmproj = bool(
+                        config.is_vision and not extra_args_disable_mmproj(extra_llama_args)
+                    ),
+                    hf_token = request.hf_token,
+                ):
+                    raise HTTPException(
+                        status_code = 409,
+                        detail = (
+                            f"'{model_log_label}' is currently being downloaded "
+                            "by the download manager. Wait for the download to "
+                            "finish (or cancel it), then load the model."
+                        ),
+                    )
+
+            # Unload any active Unsloth model only after every hub conflict check.
+            if unsloth_backend.active_model_name:
+                logger.info(
+                    f"Unloading Unsloth model '{unsloth_backend.active_model_name}' before loading GGUF"
+                )
+                await asyncio.to_thread(
+                    unsloth_backend.unload_model, unsloth_backend.active_model_name
+                )
 
             # Route to HF or local mode based on config. Run in a thread so the
             # event loop stays free for progress polling and other requests
@@ -4639,6 +4719,8 @@ async def _load_model_impl(request: LoadRequest, fastapi_request: Request, curre
         logger.error(f"Error loading model: {e}", exc_info = True)
         msg = _maybe_unsupported_message(redacted_msg)
         raise HTTPException(status_code = 500, detail = f"Failed to load model: {msg}")
+    finally:
+        gguf_load_stack.close()
 
 
 def _requires_trust_remote_code_for_model(
@@ -5392,6 +5474,10 @@ async def generate_stream(
                 if chunk is _DONE:
                     completed = True
                     break
+                if isinstance(chunk, GenStreamError):
+                    yield f"data: {json.dumps({'error': _friendly_gen_stream_error(chunk)})}\n\n"
+                    yield "data: [DONE]\n\n"
+                    return
                 yield f"data: {json.dumps({'content': chunk})}\n\n"
             if completed:
                 yield "data: [DONE]\n\n"
@@ -5405,6 +5491,7 @@ async def generate_stream(
             backend.reset_generation_state()
             logger.error(f"Error during generation: {e}", exc_info = True)
             yield f"data: {json.dumps({'error': _friendly_error(e)})}\n\n"
+            yield "data: [DONE]\n\n"
         finally:
             await _stop_local_disconnect_cancel_watcher(disconnect_watcher)
             if not completed and not cancel_event.is_set():
@@ -7028,6 +7115,13 @@ async def openai_chat_completions(
                             chunk_text = await asyncio.to_thread(next, gen, _DONE)
                             if chunk_text is _DONE:
                                 break
+                            if isinstance(chunk_text, GenStreamError):
+                                _msg = _friendly_gen_stream_error(chunk_text)
+                                api_monitor.fail(monitor_id, _msg)
+                                yield _openai_stream_error_sse(
+                                    {"error": {"message": _msg, "type": "server_error"}}
+                                )
+                                return
                             if chunk_text:
                                 api_monitor.append_reply(monitor_id, chunk_text)
                                 yield _chat_content_chunk(
@@ -7043,8 +7137,11 @@ async def openai_chat_completions(
                         raise
                     except Exception as e:
                         logger.error(f"Error during audio input streaming: {e}", exc_info = True)
-                        api_monitor.fail(monitor_id, _friendly_error(e))
-                        yield f"data: {json.dumps({'error': {'message': _friendly_error(e), 'type': 'server_error'}})}\n\n"
+                        _msg = _friendly_error(e)
+                        api_monitor.fail(monitor_id, _msg)
+                        yield _openai_stream_error_sse(
+                            {"error": {"message": _msg, "type": "server_error"}}
+                        )
                     finally:
                         await _stop_local_disconnect_cancel_watcher(disconnect_watcher)
                         _tracker.__exit__(None, None, None)
@@ -7061,7 +7158,15 @@ async def openai_chat_completions(
                 )
             else:
                 try:
-                    full_text = "".join(audio_input_generate())
+                    full_text = ""
+                    for chunk_text in audio_input_generate():
+                        if isinstance(chunk_text, GenStreamError):
+                            _msg = _friendly_gen_stream_error(chunk_text)
+                            api_monitor.fail(monitor_id, _msg)
+                            raise HTTPException(status_code = 500, detail = _msg)
+                        full_text += chunk_text
+                except HTTPException:
+                    raise
                 except Exception as e:
                     api_monitor.fail(monitor_id, _friendly_error(e))
                     raise
@@ -8605,19 +8710,33 @@ async def openai_chat_completions(
     # Classify capability flags from the loaded template.
     _sf_model_info = backend.models.get(backend.active_model_name, {})
     _sf_tpl = (_sf_model_info.get("chat_template_info") or {}).get("template")
-    _sf_features = _detect_safetensors_features(backend, _sf_tpl)
-
-    # GGUF parity: enable_thinking templates prefill an unclosed <think>; split into
-    # reasoning_content deltas so the UI renders the block for safetensors and MLX.
-    _sf_parse_think = bool(
-        _sf_features.get("supports_reasoning") or _sf_features.get("reasoning_always_on")
+    # Named templates may expose native reasoning only in their ``tool_use``
+    # branch. Use a truthy placeholder for Studio-managed tools, whose concrete
+    # schemas are selected below, and the request schemas for client passthrough.
+    _sf_server_tool_intent = bool(
+        _effective_enable_tools(payload) or _explicit_studio_tool_loop_requested(payload)
     )
-    # Prefilled-open only for prefill styles with thinking on; gpt-oss uses the normal mode.
-    _sf_reasoning_prefilled = _sf_reasoning_prefill_mode(
-        _sf_features,
-        payload.enable_thinking,
-        _sf_tpl,
-        reasoning_effort = payload.reasoning_effort,
+    _sf_template_tools = payload.tools if payload.tool_choice != "none" else None
+    if not _sf_template_tools and _sf_server_tool_intent:
+        _sf_template_tools = ({},)
+
+    def _sf_response_protocol(tools = None):
+        features = _detect_safetensors_features(backend, _sf_tpl, tools = tools)
+        parse_think = bool(
+            features.get("supports_reasoning") or features.get("reasoning_always_on")
+        )
+        reasoning_prefilled = _sf_reasoning_prefill_mode(
+            features,
+            payload.enable_thinking,
+            _sf_tpl,
+            reasoning_effort = payload.reasoning_effort,
+        )
+        return features, parse_think, reasoning_prefilled
+
+    # GGUF parity: split canonical <think> output into reasoning_content. The
+    # selected template branch must match whether this request renders tools.
+    _sf_features, _sf_parse_think, _sf_reasoning_prefilled = _sf_response_protocol(
+        _sf_template_tools
     )
 
     def _new_sf_reasoning_extractor():
@@ -8767,6 +8886,7 @@ async def openai_chat_completions(
                 permission_mode = payload.permission_mode,
                 use_adapter = payload.use_adapter,
                 stats_holder = _sf_stats_holder,
+                reasoning_prefilled = _sf_reasoning_prefilled,
             )
 
         _sf_tool_sentinel = object()
@@ -8826,6 +8946,18 @@ async def openai_chat_completions(
                     _sf_next_task = None
                     if event is _sf_tool_sentinel:
                         break
+                    if isinstance(event, GenStreamError):
+                        backend.reset_generation_state()
+                        _msg = _friendly_gen_stream_error(event)
+                        api_monitor.fail(monitor_id, _msg)
+                        yield _openai_stream_error_sse(
+                            {"error": {"message": _msg, "type": "server_error"}}
+                        )
+                        return
+                    if not isinstance(event, dict):
+                        raise RuntimeError(
+                            f"Invalid safetensors tool event: {type(event).__name__}"
+                        )
 
                     if event["type"] == "heartbeat":
                         # Tool-execution wrapper heartbeat -> SSE keepalive.
@@ -8913,6 +9045,11 @@ async def openai_chat_completions(
                 backend.reset_generation_state()
                 api_monitor.finish(monitor_id, "cancelled")
                 raise
+            except GenStreamErrorRaised as exc:
+                backend.reset_generation_state()
+                _msg = _friendly_gen_stream_error(exc)
+                api_monitor.fail(monitor_id, _msg)
+                yield _openai_stream_error_sse({"error": {"message": _msg, "type": "server_error"}})
             except Exception:
                 backend.reset_generation_state()
                 # Generic wire message; full trace stays in the log (CWE-209:
@@ -8962,6 +9099,15 @@ async def openai_chat_completions(
                 for event in gen:
                     if cancel_event.is_set():
                         break
+                    if isinstance(event, GenStreamError):
+                        raise HTTPException(
+                            status_code = 500,
+                            detail = _friendly_gen_stream_error(event),
+                        )
+                    if not isinstance(event, dict):
+                        raise RuntimeError(
+                            f"Invalid safetensors tool event: {type(event).__name__}"
+                        )
                     if event.get("type") == "content":
                         full_text = _strip_tool_xml_for_display(
                             event.get("text", ""),
@@ -9001,6 +9147,15 @@ async def openai_chat_completions(
             cancel_event.set()
             backend.reset_generation_state()
             api_monitor.finish(monitor_id, "cancelled")
+            raise
+        except GenStreamErrorRaised as exc:
+            backend.reset_generation_state()
+            _msg = _friendly_gen_stream_error(exc)
+            api_monitor.fail(monitor_id, _msg)
+            raise HTTPException(status_code = 500, detail = _msg)
+        except HTTPException as exc:
+            backend.reset_generation_state()
+            api_monitor.fail(monitor_id, str(exc.detail))
             raise
         except Exception:
             backend.reset_generation_state()
@@ -9088,6 +9243,12 @@ async def openai_chat_completions(
         else:
             gen_kwargs["tools"] = payload.tools
 
+    # The potential tool context above is needed before server/client routing is
+    # known. This standard path now has the exact schemas that will be rendered,
+    # so resolve reasoning parsing again to keep empty registries, forced-tool
+    # misses, and tool_choice="none" on the marker-free template branch.
+    _, _sf_parse_think, _sf_reasoning_prefilled = _sf_response_protocol(gen_kwargs.get("tools"))
+
     # Request-scoped usage/timings receptacle (filled at gen_done).
     stats_holder: dict = {}
 
@@ -9168,6 +9329,14 @@ async def openai_chat_completions(
                     _next_task = None
                     if cumulative is _DONE:
                         break
+                    if isinstance(cumulative, GenStreamError):
+                        backend.reset_generation_state()
+                        _msg = _friendly_gen_stream_error(cumulative)
+                        api_monitor.fail(monitor_id, _msg)
+                        yield _openai_stream_error_sse(
+                            {"error": {"message": _msg, "type": "server_error"}}
+                        )
+                        return
                     if await request.is_disconnected():
                         cancel_event.set()
                         backend.reset_generation_state()
@@ -9274,6 +9443,13 @@ async def openai_chat_completions(
                 backend.reset_generation_state()
                 api_monitor.finish(monitor_id, "cancelled")
                 raise
+            except GenStreamErrorRaised as exc:
+                # Adapter-controlled (compare-mode) backend failure. Honor the
+                # public flag so operational errors surface their real message.
+                backend.reset_generation_state()
+                _msg = _friendly_gen_stream_error(exc)
+                api_monitor.fail(monitor_id, _msg)
+                yield _openai_stream_error_sse({"error": {"message": _msg, "type": "server_error"}})
             except Exception as e:
                 backend.reset_generation_state()
                 logger.error(f"Error during OpenAI streaming: {e}", exc_info = True)
@@ -9317,6 +9493,11 @@ async def openai_chat_completions(
         try:
             full_text = ""
             for token in generate():
+                if isinstance(token, GenStreamError):
+                    backend.reset_generation_state()
+                    _msg = _friendly_gen_stream_error(token)
+                    api_monitor.fail(monitor_id, _msg)
+                    raise HTTPException(status_code = 500, detail = _msg)
                 full_text = token
 
             # Split prefilled <think> reasoning (GGUF parity); also covers MLX via
@@ -9415,6 +9596,15 @@ async def openai_chat_completions(
             api_monitor.finish(monitor_id)
             return _model_json_response(response)
 
+        except HTTPException:
+            raise
+        except GenStreamErrorRaised as exc:
+            # Adapter-controlled (compare-mode) backend failure. Honor the public
+            # flag so operational errors surface their real message.
+            backend.reset_generation_state()
+            _msg = _friendly_gen_stream_error(exc)
+            api_monitor.fail(monitor_id, _msg)
+            raise HTTPException(status_code = 500, detail = _msg)
         except Exception as e:
             backend.reset_generation_state()
             logger.error(f"Error during OpenAI completion: {e}", exc_info = True)

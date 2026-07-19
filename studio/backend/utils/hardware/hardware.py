@@ -49,6 +49,11 @@ logger = get_logger(__name__)
 # and spawn workers copy os.environ. setdefault so an explicit user override wins.
 os.environ.setdefault("CUDA_DEVICE_ORDER", "PCI_BUS_ID")
 
+# Studio workers can import MLX without importing unsloth first, so mirror the
+# package bootstrap here. Keep an explicit user value authoritative.
+if platform.system() == "Darwin" and platform.machine() == "arm64":
+    os.environ.setdefault("AGX_RELAX_CDM_CTXSTORE_TIMEOUT", "1")
+
 
 # ========== Device Enum ==========
 

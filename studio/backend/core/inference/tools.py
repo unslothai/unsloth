@@ -4194,14 +4194,18 @@ _MAX_PAGE_CHARS = 16000  # cap fetched page text (after HTML-to-MD conversion)
 # Raw download cap > _MAX_PAGE_CHARS since SSR pages embed large <head> sections
 # stripped during conversion; 512 KB still reaches article content.
 _MAX_FETCH_BYTES = 512 * 1024
+# PDF cross-reference data lives at EOF, so extraction needs the whole body.
+_MAX_PDF_FETCH_BYTES = 10 * 1024 * 1024
+_MAX_WEB_PDF_PAGES = 50
 # Control/undecodable chars, excluding text whitespace and ESC (for ANSI logs).
 # Binary when they exceed 12.5%, after allowing 16 minor encoding glitches.
 _BINARY_CHAR_RE = re.compile("[\\x00-\\x08\\x0b\\x0c\\x0e-\\x1a\\x1c-\\x1f\\x7f-\\x9f\\ufffd]")
 _MIN_BINARY_CHARS = 16
 _BINARY_CHAR_DIVISOR = 8
 # Common binary signatures that can otherwise look text-heavy when mislabeled.
+_PDF_MAGIC = b"%PDF-"
 _BINARY_MAGIC = (
-    b"%PDF-",  # PDF
+    _PDF_MAGIC,
     b"PK\x03\x04",  # zip / docx / xlsx / pptx / epub / jar
     b"\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1",  # OLE / legacy Office
     b"\x89PNG\r\n\x1a\n",  # PNG
@@ -4235,14 +4239,22 @@ def _looks_binary(text: str) -> bool:
     )
 
 
-def _has_binary_magic(data: bytes) -> bool:
-    """Whether a common binary signature follows optional BOM or whitespace."""
+def _magic_head(data: bytes) -> bytes:
     head = data[:1024].lstrip()
     for bom, _codec in _UNICODE_BOM_CODECS:
         if head.startswith(bom):
             head = head.removeprefix(bom).lstrip()
             break
-    return head.startswith(_BINARY_MAGIC)
+    return head
+
+
+def _has_pdf_magic(data: bytes) -> bool:
+    return _magic_head(data).startswith(_PDF_MAGIC)
+
+
+def _has_binary_magic(data: bytes) -> bool:
+    """Whether a common binary signature follows optional BOM or whitespace."""
+    return _magic_head(data).startswith(_BINARY_MAGIC)
 
 
 def _has_single_byte_text_evidence(data: bytes) -> bool:
@@ -4251,6 +4263,45 @@ def _has_single_byte_text_evidence(data: bytes) -> bool:
         return True
     ascii_text_bytes = sum(byte in _ASCII_TEXT_BYTES for byte in data)
     return ascii_text_bytes / len(data) >= _MIN_SINGLE_BYTE_ASCII_RATIO
+
+
+def _extract_pdf_text(data: bytes) -> str:
+    """Extract page-delimited text with the same parser used by RAG ingestion."""
+    from ..rag.parsers import parse_pdf_bytes
+
+    pages, total_pages = parse_pdf_bytes(data, max_pages = _MAX_WEB_PDF_PAGES)
+    page_limit_reached = total_pages > _MAX_WEB_PDF_PAGES
+    parts: list[str] = []
+    length = 0
+    text_limited = False
+    for page in pages:
+        page_text = page.text.strip()
+        if not page_text:
+            continue
+        section = f"## Page {page.page_number}\n\n{page_text}"
+        piece = ("\n\n" if parts else "") + section
+        remaining = _MAX_PAGE_CHARS - length
+        if len(piece) > remaining:
+            parts.append(piece[:remaining])
+            text_limited = True
+            break
+        parts.append(piece)
+        length += len(piece)
+
+    text = "".join(parts).rstrip()
+    if not text:
+        if page_limit_reached:
+            return f"(PDF contains no extractable text in the first {_MAX_WEB_PDF_PAGES} pages)"
+        return ""
+    limits = []
+    if text_limited:
+        limits.append(f"text limited to {_MAX_PAGE_CHARS:,} characters")
+    if page_limit_reached:
+        limits.append(f"page processing capped at {_MAX_WEB_PDF_PAGES} pages")
+    if limits:
+        marker = f"\n\n... (PDF extraction {'; '.join(limits)})"
+        text = text[: _MAX_PAGE_CHARS - len(marker)].rstrip() + marker
+    return text
 
 
 _USER_AGENTS = (
@@ -4648,29 +4699,71 @@ def _fetch_url_raw(
                     return reason2, "", ""
                 current_host = rp.hostname
                 continue
+
+            # get_content_type() defaults to "text/plain" when the header is
+            # absent (RFC 2045); report "" instead so callers can tell a missing
+            # header apart from a server that really declared text/plain.
+            if resp.headers.get("Content-Type") is None:
+                content_type = ""
+            else:
+                content_type = (resp.headers.get_content_type() or "").lower()
+
             # Success: read the capped body enforcing the budget between chunks
             # (see _read_capped_body), so a slow-drip server can't stretch a
             # single resp.read past the deadline.
+            declared_pdf = content_type == "application/pdf"
+            read_limit = _MAX_PDF_FETCH_BYTES + 1 if declared_pdf else max_bytes
             body_error, raw_bytes = _read_capped_body(
                 resp,
-                max_bytes,
+                read_limit,
                 timeout,
                 deadline,
                 cancel_event,
             )
             if body_error is not None:
                 return body_error, "", ""
+
+            # A missing or wrong PDF MIME type is common: once the initial text-sized
+            # read identifies PDF magic, finish the bounded download to reach the EOF xref.
+            if not declared_pdf and len(raw_bytes) == max_bytes and _has_pdf_magic(raw_bytes):
+                tail_error, tail = _read_capped_body(
+                    resp,
+                    _MAX_PDF_FETCH_BYTES - max_bytes + 1,
+                    timeout,
+                    deadline,
+                    cancel_event,
+                )
+                if tail_error is not None:
+                    return tail_error, "", ""
+                raw_bytes += tail
             break
         else:
             return "Failed to fetch URL: too many redirects.", "", ""
 
-        # get_content_type() defaults to "text/plain" when the header is
-        # absent (RFC 2045); report "" instead so callers can tell a missing
-        # header apart from a server that really declared text/plain.
-        if resp.headers.get("Content-Type") is None:
-            content_type = ""
-        else:
-            content_type = (resp.headers.get_content_type() or "").lower()
+        is_pdf = declared_pdf or _has_pdf_magic(raw_bytes)
+        if is_pdf:
+            if len(raw_bytes) > _MAX_PDF_FETCH_BYTES:
+                return (
+                    "(PDF content exceeds the download limit; not readable as text)",
+                    "",
+                    content_type,
+                )
+            budget_error = _fetch_budget_exceeded(deadline, cancel_event)
+            if budget_error is not None:
+                return budget_error, "", content_type
+            try:
+                pdf_text = _extract_pdf_text(raw_bytes)
+            except Exception as exc:
+                logger.debug("web PDF text extraction failed (%s)", type(exc).__name__)
+                return "(PDF content could not be read as text)", "", content_type
+            budget_error = _fetch_budget_exceeded(deadline, cancel_event)
+            if budget_error is not None:
+                return budget_error, "", content_type
+            if not pdf_text:
+                pdf_text = "(PDF contains no extractable text)"
+            # Report the true type even for a mislabeled body so the caller's "html"
+            # check routes the extracted text to the plain-text path, not html_to_markdown.
+            return None, pdf_text, "application/pdf"
 
         # Reject known-binary MIME types before decoding. Binary is returned as the
         # error string so the caller surfaces the placeholder, not replacement chars.
