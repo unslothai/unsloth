@@ -1221,19 +1221,28 @@ def _apply_unified_memory_correction(
     torch_total_gb = torch_info["total_gb"]
     torch_used_gb = torch_info.get("used_gb")
     smi_total_gb = device_metrics.get("vram_total_gb") or 0.0
-    # Skip when used is unknown (Windows-ROCm guard) so a None can't overwrite a
-    # good amd-smi figure.
-    if torch_used_gb is not None and torch_total_gb > smi_total_gb:
+    # torch sees the full unified (GTT) pool; amd-smi reports only the dedicated
+    # carve-out. Adopt torch's larger total independently of used: on Windows ROCm
+    # torch_used is None (the free==total sentinel) while its total stays
+    # authoritative, so gating the total on used would keep the small amd-smi
+    # carve-out and underreport the card's real capacity. Overwrite used only when
+    # torch's is known (else keep amd-smi's dedicated-usage figure) and recompute
+    # utilization against whatever used remains.
+    if torch_total_gb > smi_total_gb:
         device_metrics["vram_total_gb"] = torch_total_gb
-        device_metrics["vram_used_gb"] = torch_used_gb
+        if torch_used_gb is not None:
+            device_metrics["vram_used_gb"] = torch_used_gb
+        _used_for_pct = device_metrics.get("vram_used_gb")
         device_metrics["vram_utilization_pct"] = (
-            round((torch_used_gb / torch_total_gb) * 100, 1) if torch_total_gb > 0 else None
+            round((_used_for_pct / torch_total_gb) * 100, 1)
+            if torch_total_gb > 0 and _used_for_pct is not None
+            else None
         )
         logger.debug(
-            "ROCm unified memory: replaced amd-smi VRAM (%.2f GB) with "
-            "torch mem_get_info total (%.2f GB) for device %s",
-            smi_total_gb,
+            "ROCm unified memory: adopted torch mem_get_info total (%.2f GB) over "
+            "amd-smi (%.2f GB) for device %s",
             torch_total_gb,
+            smi_total_gb,
             torch_info.get("index"),
         )
 

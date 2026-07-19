@@ -354,3 +354,38 @@ def test_perf_counter_parser_and_sentinel(monkeypatch):
     assert parsed[0][0].startswith("luid_")
     monkeypatch.setattr(hw.subprocess, "run", _subprocess_run(adapter_output = "__NONE__\n"))
     assert hw._rocm_windows_perf_counter_vram_by_adapter() is None
+
+
+# ----------------------------------------------------------------------------- #
+# Unified-memory (Strix Halo APU) total reconciliation (Codex #7238)
+# ----------------------------------------------------------------------------- #
+def test_unified_memory_adopts_torch_total_even_when_used_unknown():
+    """On a Windows ROCm unified-memory APU, torch's used is None (the free==total
+    sentinel) while its total (the full GTT pool) stays authoritative. The
+    correction must still adopt that larger total instead of keeping amd-smi's
+    small dedicated carve-out, otherwise the card underreports its capacity;
+    only used stays at amd-smi's figure when torch's is unknown (Codex #7238)."""
+    metrics = {"vram_total_gb": 8.0, "vram_used_gb": 2.0, "vram_utilization_pct": 25.0}
+    hw._apply_unified_memory_correction(metrics, {"total_gb": 124.0, "used_gb": None, "index": 0})
+    assert metrics["vram_total_gb"] == 124.0  # full unified pool, not the 8 GB carve-out
+    assert metrics["vram_used_gb"] == 2.0  # amd-smi used preserved (torch's was None)
+    assert metrics["vram_utilization_pct"] == pytest.approx(round(2.0 / 124.0 * 100, 1))
+
+
+def test_unified_memory_overwrites_used_when_torch_used_known():
+    """When torch reports both a larger total and a known used, both are adopted
+    and utilization is recomputed against the corrected total (unchanged path)."""
+    metrics = {"vram_total_gb": 8.0, "vram_used_gb": 2.0, "vram_utilization_pct": 25.0}
+    hw._apply_unified_memory_correction(metrics, {"total_gb": 124.0, "used_gb": 40.0, "index": 0})
+    assert metrics["vram_total_gb"] == 124.0
+    assert metrics["vram_used_gb"] == 40.0
+    assert metrics["vram_utilization_pct"] == pytest.approx(round(40.0 / 124.0 * 100, 1))
+
+
+def test_unified_memory_no_op_when_torch_total_not_larger():
+    """A discrete GPU where torch total does not exceed amd-smi's is left untouched."""
+    metrics = {"vram_total_gb": 48.0, "vram_used_gb": 10.0, "vram_utilization_pct": 20.8}
+    hw._apply_unified_memory_correction(metrics, {"total_gb": 48.0, "used_gb": None, "index": 0})
+    assert metrics["vram_total_gb"] == 48.0
+    assert metrics["vram_used_gb"] == 10.0
+    assert metrics["vram_utilization_pct"] == 20.8
