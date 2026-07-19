@@ -13,9 +13,11 @@ import { HugeiconsIcon } from "@hugeicons/react";
 export function ModelLoadSettingsAction({
   ariaLabel,
   onConfigure,
+  className,
 }: {
   ariaLabel: string;
   onConfigure: () => void;
+  className?: string;
 }) {
   return (
     <Tooltip delayDuration={0}>
@@ -28,7 +30,8 @@ export function ModelLoadSettingsAction({
           }}
           aria-label={ariaLabel}
           className={cn(
-            "shrink-0 rounded-md p-1 text-muted-foreground/60 transition-colors hover:bg-muted hover:text-foreground",
+            "shrink-0 rounded-md p-1 text-muted-foreground/60 transition-colors hover:bg-black/5 hover:text-foreground dark:hover:bg-white/10",
+            className,
           )}
         >
           <HugeiconsIcon
