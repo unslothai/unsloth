@@ -113,7 +113,7 @@ export const ko = {
       showToken: "토큰 표시",
       tokenSaved: "토큰이 저장되었습니다",
       password: "비밀번호",
-      passwordDescription: "이 Studio 계정의 비밀번호를 변경합니다.",
+      passwordDescription: "이 Unsloth 계정의 비밀번호를 변경합니다.",
       passwordDialog: {
         trigger: "비밀번호 변경",
         title: "비밀번호 변경",
@@ -282,7 +282,7 @@ export const ko = {
     },
     resources: {
       title: "시스템",
-      description: "이 Studio 서버의 하드웨어와 저장소를 모니터링합니다.",
+      description: "이 Unsloth 서버의 하드웨어와 저장소를 모니터링합니다.",
       liveUpdates: "실시간 업데이트",
       floatingWindow: "플로팅 창",
       disableOverlay: "오버레이 비활성화",

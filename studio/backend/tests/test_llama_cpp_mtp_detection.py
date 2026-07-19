@@ -1014,7 +1014,7 @@ def test_already_in_target_state_2b_falls_back_to_ngram_below_threshold(monkeypa
     )
 
 
-# usage backfill from timings (Studio UI t/s widget fix).
+# usage backfill from timings (Unsloth UI t/s widget fix).
 
 
 def test_backfill_usage_from_timings_fills_when_completion_tokens_zero():
@@ -1606,7 +1606,7 @@ def test_reload_forced_mtp_bounces_auto_mla():
     )
 
 
-# ── Full named-repo resolver matrix (the shipping Studio families) ─────
+# ── Full named-repo resolver matrix (the shipping Unsloth families) ─────
 #
 # Locks auto / off / forced-mtp routing for every Qwen3.5 (MTP + plain) and
 # gemma-4 (regular + QAT) GGUF repo, including the giant MoEs that stay

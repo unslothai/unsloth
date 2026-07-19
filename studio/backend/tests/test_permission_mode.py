@@ -1668,7 +1668,7 @@ def test_unknown_permission_mode_normalizes_to_ask_on_request_models():
 
 def test_ask_auto_self_enable_confirm_on_chat_request():
     # "Ask" gates every call, so a direct /chat/completions caller that requests
-    # ask but omits the legacy confirm flag self-enables it when Studio's own tool
+    # ask but omits the legacy confirm flag self-enables it when Unsloth's own tool
     # loop is requested. Only the router's loop-entry signals count (enable_tools /
     # mcp_enabled); enabled_tools alone never starts the loop.
     for loop in ({"enable_tools": True}, {"mcp_enabled": True}):
@@ -1711,7 +1711,7 @@ def test_ask_auto_self_enable_confirm_on_chat_request():
         confirm_tool_calls = False,
     )
     assert req.confirm_tool_calls is False
-    # A plain client-tool passthrough (client-supplied tools that Studio does not
+    # A plain client-tool passthrough (client-supplied tools that Unsloth does not
     # execute) must NOT self-enable confirm, or the route rejects the passthrough.
     req = ChatCompletionRequest(
         messages = [{"role": "user", "content": "hi"}],

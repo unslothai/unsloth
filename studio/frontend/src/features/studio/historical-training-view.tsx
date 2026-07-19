@@ -8,6 +8,7 @@ import { parseBackendTrainingMethod } from "@/features/training/lib/training-met
 import { type ReactElement, useEffect, useState } from "react";
 import { ChartsSection } from "./sections/charts-section";
 import { ProgressSection } from "./sections/progress-section";
+import { mapRunConfigToOverride } from "./sections/run-config-override";
 import { translate, useT } from "@/i18n";
 
 type StudioT = ReturnType<typeof useT>;
@@ -147,25 +148,7 @@ export function HistoricalTrainingView({
   }
 
   const viewData = mapToViewData(detail, t);
-  const configOverride = detail.config
-    ? {
-        epochs: detail.config.num_epochs as number | undefined,
-        batchSize: detail.config.batch_size as number | undefined,
-        learningRate: detail.config.learning_rate as string | undefined,
-        maxSteps: detail.config.max_steps as number | undefined,
-        contextLength: detail.config.max_seq_length as number | undefined,
-        warmupSteps: detail.config.warmup_steps as number | undefined,
-        optimizerType: detail.config.optim as string | undefined,
-        loraRank: detail.config.lora_r as number | undefined,
-        loraAlpha: detail.config.lora_alpha as number | undefined,
-        loraDropout: detail.config.lora_dropout as number | undefined,
-        loraVariant: detail.config.use_rslora
-          ? "rslora"
-          : detail.config.use_loftq
-            ? "loftq"
-            : "lora",
-      }
-    : undefined;
+  const configOverride = mapRunConfigToOverride(detail.config);
 
   return (
     <div className="flex flex-col gap-6">

@@ -4,7 +4,7 @@
 """Sandbox-side compatibility shim for code-interpreter path conventions.
 
 Models habitually write to /mnt/data (or /mnt/outputs, /home/sandbox,
-/workspace), none of which exist in the Studio sandbox. This module sits on the
+/workspace), none of which exist in the Unsloth sandbox. This module sits on the
 sandbox subprocess PYTHONPATH (see ``tools._build_safe_env``), so it loads at
 interpreter startup in every sandboxed ``python`` run and any Python the
 ``terminal`` tool launches.

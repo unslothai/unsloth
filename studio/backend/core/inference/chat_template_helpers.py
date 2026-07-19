@@ -150,7 +150,7 @@ def _split_partial_marker(text: str, marker: str) -> tuple[str, str]:
 class ReasoningChannelNormalizer:
     """Incrementally convert one native reasoning channel to ``<think>``.
 
-    The parser follows mlx-vlm's streaming boundary behavior but emits Studio's
+    The parser follows mlx-vlm's streaming boundary behavior but emits Unsloth's
     established canonical text contract. Only the configured opening and
     closing markers are consumed; tool-call and other control markers remain
     available to downstream parsers.
