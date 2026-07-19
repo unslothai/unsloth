@@ -2,7 +2,9 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 // Per-model pre-load inference settings, persisted in localStorage so the load
-// dialog can offer "Remember settings for <model>".
+// dialog can offer "Remember settings for <model>". GGUF picks only: every
+// field is a llama.cpp load knob, so all save/restore call sites gate on
+// GGUF-ness (a non-GGUF blob would only snapshot leftover standing values).
 
 const KEY = "unsloth_load_settings";
 
@@ -12,14 +14,22 @@ export interface RememberedLoadSettings {
   speculativeType: string | null;
   specDraftNMax: number | null;
   tensorParallel: boolean;
+  // GPU Memory controls. Optional so an older blob (which lacked them) still
+  // parses, leaving the live knobs untouched on apply. The mode is kept with the
+  // manual knobs (gpuLayers/nCpuMoe are ignored outside Manual mode). A null
+  // selectedGpuIds is meaningful (all GPUs), so it's distinguished from absent.
+  // The per-GPU split ratio is deliberately NOT remembered: it's positionally
+  // bound to the exact GPU set/order and unvalidated, so it would mismatch.
+  gpuMemoryMode?: "auto" | "manual";
+  gpuLayers?: number;
+  nCpuMoe?: number;
+  selectedGpuIds?: number[] | null;
 }
 
-// Storage key for a pick's remembered settings. The remembered knobs are
-// VRAM-budget driven (context override, KV-cache dtype, tensor-parallel), so the
-// right values differ per quant. An HF repo collapses all its GGUF variants into
-// one `id`, so fold the variant in to scope settings per quant. Local .gguf
-// paths key by their file path (already file-specific); native drag-drop files
-// key by display label, so same-named files in different folders share an entry.
+// Storage key for a pick's remembered settings, scoped per quant (the VRAM-budget
+// knobs differ per quant). An HF repo collapses its GGUF variants into one `id`,
+// so fold the variant in. Local .gguf paths are already file-specific; native
+// drag-drop files key by display label, so same-named files share an entry.
 export function rememberedLoadSettingsKey(selection: {
   id: string;
   ggufVariant?: string | null;
