@@ -43,6 +43,28 @@ _TOKENIZER_CONFIG_PATHS = ("tokenizer_config.json", "LLM/tokenizer_config.json")
 _JINJA_TEMPLATE_PATHS = ("chat_template.jinja", "LLM/chat_template.jinja")
 _PROCESSOR_TEMPLATE_PATHS = ("chat_template.json", "LLM/chat_template.json")
 
+# Cap sidecar reads so a malformed or hostile metadata file cannot exhaust
+# memory before its extracted template is size-checked. The JSON envelope
+# (tokenizer_config.json / chat_template.json) is allowed to be larger than a
+# bare template because it also carries unrelated tokenizer metadata; the
+# extracted template is still bounded by MAX_CHAT_TEMPLATE_BYTES downstream.
+MAX_TEMPLATE_METADATA_BYTES = 4 * 1024 * 1024
+
+
+def _read_bounded_text(path: Path, limit: int) -> Optional[str]:
+    """Read at most `limit` bytes of UTF-8 text; None if larger or unreadable."""
+    try:
+        with path.open("rb") as f:
+            data = f.read(limit + 1)
+    except OSError:
+        return None
+    if len(data) > limit:
+        return None
+    try:
+        return data.decode("utf-8")
+    except UnicodeError:
+        return None
+
 
 def _leaf_inside_allowlist(path: Path, allow_roots: Optional[list[Path]]) -> bool:
     # Block symlinked children from escaping the validated directory
@@ -157,8 +179,11 @@ def _chat_template_from_processor_json(
         config_file = dir_path / rel
         if not config_file.exists() or not _leaf_inside_allowlist(config_file, allow_roots):
             continue
+        raw = _read_bounded_text(config_file, MAX_TEMPLATE_METADATA_BYTES)
+        if raw is None:
+            continue
         try:
-            payload = json.loads(config_file.read_text(encoding = "utf-8"))
+            payload = json.loads(raw)
         except Exception:
             continue
         template = _chat_template_from_processor_payload(payload)
@@ -177,8 +202,11 @@ def _chat_template_from_tokenizer_dir(
         config_file = dir_path / rel
         if not config_file.exists() or not _leaf_inside_allowlist(config_file, allow_roots):
             continue
+        raw = _read_bounded_text(config_file, MAX_TEMPLATE_METADATA_BYTES)
+        if raw is None:
+            continue
         try:
-            config = json.loads(config_file.read_text(encoding = "utf-8"))
+            config = json.loads(raw)
         except Exception:
             continue
         template = _chat_template_from_tokenizer_config(config)
@@ -335,7 +363,7 @@ def read_default_chat_template(
         def _download_text(rel: str) -> Optional[str]:
             try:
                 path = hf_hub_download(resolved, rel, token = hf_token)
-                return Path(path).read_text(encoding = "utf-8")
+                return _read_bounded_text(Path(path), MAX_TEMPLATE_METADATA_BYTES)
             except Exception:
                 return None
 

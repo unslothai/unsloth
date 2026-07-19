@@ -4,7 +4,9 @@
 import json
 
 from picker.service import (
+    MAX_TEMPLATE_METADATA_BYTES,
     _chat_template_from_dir,
+    _chat_template_from_processor_json,
     _chat_template_from_tokenizer_config,
     _chat_template_from_tokenizer_dir,
     _find_gguf_in_dir,
@@ -174,3 +176,29 @@ def test_read_default_chat_template_direct_gguf_falls_back_to_embedded(tmp_path,
     monkeypatch.setattr("picker.service.read_gguf_chat_template", lambda _path: "FROM_GGUF")
     # With no sidecar next to the file, the embedded GGUF template is the fallback.
     assert read_default_chat_template(str(gguf)) == "FROM_GGUF"
+
+
+def test_tokenizer_config_over_size_limit_is_skipped_not_parsed(tmp_path):
+    # An oversized tokenizer_config.json must be skipped before json.loads so a
+    # hostile sidecar cannot exhaust memory; no template is returned.
+    padding = "x" * (MAX_TEMPLATE_METADATA_BYTES + 1024)
+    (tmp_path / "tokenizer_config.json").write_text(
+        json.dumps({"chat_template": "HELLO", "_pad": padding}), encoding = "utf-8"
+    )
+    assert _chat_template_from_tokenizer_dir(tmp_path) is None
+
+
+def test_processor_json_over_size_limit_is_skipped_not_parsed(tmp_path):
+    padding = "x" * (MAX_TEMPLATE_METADATA_BYTES + 1024)
+    (tmp_path / "chat_template.json").write_text(
+        json.dumps({"default": "HELLO", "_pad": padding}), encoding = "utf-8"
+    )
+    assert _chat_template_from_processor_json(tmp_path) is None
+
+
+def test_tokenizer_config_at_size_limit_is_still_read(tmp_path):
+    # A normal-sized config is unaffected by the bound (regression guard).
+    (tmp_path / "tokenizer_config.json").write_text(
+        json.dumps({"chat_template": "FROM_CONFIG"}), encoding = "utf-8"
+    )
+    assert _chat_template_from_tokenizer_dir(tmp_path) == "FROM_CONFIG"
