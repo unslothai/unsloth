@@ -103,10 +103,19 @@ def main():
 
     env = dict(os.environ)
     env["UNSLOTH_NB_SHIM"] = "1"  # enable safe-install for the notebook's cells
+    # Per-run marker unless the caller pinned one: the shared default would leak
+    # this run's transformers pin into later or concurrent runs in the same
+    # container (their kernels would activate a stale sidecar). An empty marker
+    # reads as "no pin", so pre-creating it is safe.
+    marker = env.get("UNSLOTH_NB_TF_MARKER")
+    if not marker:
+        fd, marker = tempfile.mkstemp(prefix = ".unsloth-run-tfmarker-")
+        os.close(fd)
+        env["UNSLOTH_NB_TF_MARKER"] = marker
+        tmp_files.append(marker)
     # The pip/uv shim writes the marker; pre-seed it too so the kernel agrees.
     if want:
-        marker = env.get("UNSLOTH_NB_TF_MARKER", "/tmp/unsloth_nb/requested_transformers")
-        os.makedirs(os.path.dirname(marker), exist_ok = True)
+        os.makedirs(os.path.dirname(marker) or ".", exist_ok = True)
         open(marker, "w").write(want)
     if sidecar:
         env["PYTHONPATH"] = sidecar + os.pathsep + env.get("PYTHONPATH", "")

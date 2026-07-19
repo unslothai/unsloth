@@ -516,7 +516,10 @@ RUN /opt/unsloth-venv/bin/python /tmp/fetch_llama_prebuilt.py \
 ENV UNSLOTH_LLAMA_CPP_PATH=/opt/unsloth/llama.cpp
 
 WORKDIR /workspace
-RUN mkdir -p ${HF_HOME} ${TRITON_CACHE_DIR}
+# World-writable so `docker run --user <uid>` (documented non-root use) can
+# create notebooks and populate the default caches without a bind mount.
+RUN mkdir -p ${HF_HOME} ${TRITON_CACHE_DIR} \
+ && chmod -R a+rwX /workspace
 
 # ---------------------------------------------------------------------------
 # Per-notebook transformers version activation -- run unslothai/notebooks

@@ -297,8 +297,14 @@ class SyntheticDataKit:
         # timeout None/0 keeps the previous Event.wait(None): wait indefinitely
         # for readiness (large models / slow downloads). A positive value is a deadline.
         deadline = (time.monotonic() + timeout) if timeout else None
-        while deadline is None or time.monotonic() < deadline:
-            if self.stdout_capture.wait_for_ready(timeout = 1) or self.stderr_capture.wait_for_ready(
+        while True:
+            # Cap the final wait to the remaining budget so a fractional
+            # timeout stays a real deadline instead of overshooting by up
+            # to a full second.
+            _wait = 1 if deadline is None else min(1, deadline - time.monotonic())
+            if _wait <= 0:
+                break
+            if self.stdout_capture.wait_for_ready(timeout = _wait) or self.stderr_capture.wait_for_ready(
                 timeout = 0
             ):
                 ready = True
