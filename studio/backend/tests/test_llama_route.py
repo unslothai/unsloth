@@ -128,6 +128,9 @@ def test_update_handler_runs_off_event_loop(monkeypatch):
         return {"started": True, "reason": None, "job": {"state": "running"}}
 
     monkeypatch.setattr(rl, "start_update", fake_start)
-    out = asyncio.run(rl.llama_update(current_subject = "t"))
+    # The swap now needs explicit confirmation; confirm here so the off-loop path runs.
+    out = asyncio.run(
+        rl.llama_update(request = rl.LlamaUpdateRequest(confirmed = True), current_subject = "t")
+    )
     assert out.started is True
     assert seen["thread"] is not threading.main_thread()
