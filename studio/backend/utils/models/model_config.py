@@ -2188,11 +2188,14 @@ def _dir_has_complete_torch_weights(names: set) -> bool:
 
     * a single ``model.safetensors`` / ``pytorch_model.bin``; or
     * a full shard set -- a shard names its own total (``-00001-of-00002``), so
-      every index ``1..total`` for that (stem, ext, total) must be present.
+      every index ``1..total`` for that (stem, ext, total) must be present AND its
+      ``model.safetensors.index.json`` / ``pytorch_model.bin.index.json`` map,
+      through which transformers discovers and wires the shards, must be present.
 
-    A lone shard such as ``model-00001-of-00002.safetensors`` is NOT complete: the
-    loader needs the missing shard(s) at indexing time, so accepting a partially
-    downloaded sharded model would validate and then fail under local_files_only.
+    A lone shard such as ``model-00001-of-00002.safetensors``, a full set missing
+    its index map, is NOT complete: the loader needs every shard and the index at
+    indexing time, so accepting a partial sharded download would validate and then
+    fail under local_files_only.
     """
     for stem in ("model", "pytorch_model"):
         for ext in ("safetensors", "bin"):
@@ -2203,10 +2206,42 @@ def _dir_has_complete_torch_weights(names: set) -> bool:
         m = _ST_SHARD_RE.match(name)
         if m:
             shards.setdefault((m.group(1), m.group(4), int(m.group(3))), set()).add(int(m.group(2)))
-    for (_stem, _ext, total), indices in shards.items():
-        if total > 0 and indices == set(range(1, total + 1)):
+    for (stem, ext, total), indices in shards.items():
+        index_map = f"{stem}.{ext}.index.json"
+        if total > 0 and indices == set(range(1, total + 1)) and index_map in names:
             return True
     return False
+
+
+def _snapshot_has_complete_weights(snap: Path) -> bool:
+    """True when *snap* is materialized with a config and a COMPLETE Torch weight
+    set the default SentenceTransformer backend can load -- the ``modules.json``
+    sentence-transformers marker aside.
+
+    A tag-only feature-extraction embedder confirmed online has exactly this
+    (config plus weights, no ``modules.json``) and SentenceTransformer's auto-model
+    fallback loads it, so an online-confirmed positive may be trusted for it
+    offline. A partial download (config present but weights missing or an
+    incomplete shard set) does NOT satisfy this, so it must fail validation here
+    rather than at first indexing -- the validate-then-fail this guards against.
+    """
+    try:
+        if not any(
+            (snap / name).is_file() for name in ("config.json", "config_sentence_transformers.json")
+        ):
+            return False
+        by_dir: dict = {}
+        for path in snap.rglob("*"):
+            try:
+                if path.is_file() and (
+                    _ST_WEIGHT_FILE_RE.match(path.name) or path.name.endswith(".index.json")
+                ):
+                    by_dir.setdefault(path.parent, set()).add(path.name)
+            except OSError:
+                continue
+        return any(_dir_has_complete_torch_weights(names) for names in by_dir.values())
+    except OSError:
+        return False
 
 
 def _snapshot_is_loadable_st_model(snap: Path) -> bool:
@@ -2218,25 +2253,44 @@ def _snapshot_is_loadable_st_model(snap: Path) -> bool:
     config SentenceTransformer needs are absent. Accepting that offline would
     pass validation and then fail on the first RAG load. Requires the marker plus
     a config and a COMPLETE recognized Torch base-model weight set
-    (``_dir_has_complete_torch_weights``) in one directory of the snapshot.
+    (``_snapshot_has_complete_weights``).
     """
     try:
         if not (snap / "modules.json").is_file():
             return False
-        if not any(
-            (snap / name).is_file() for name in ("config.json", "config_sentence_transformers.json")
-        ):
-            return False
-        by_dir: dict = {}
-        for path in snap.rglob("*"):
-            try:
-                if path.is_file() and _ST_WEIGHT_FILE_RE.match(path.name):
-                    by_dir.setdefault(path.parent, set()).add(path.name)
-            except OSError:
-                continue
-        return any(_dir_has_complete_torch_weights(names) for names in by_dir.values())
+        return _snapshot_has_complete_weights(snap)
     except OSError:
         return False
+
+
+def _active_snapshot_dir(repo_id: str) -> Optional[Path]:
+    """The materialized snapshot dir the offline ``local_files_only`` load resolves
+    for *repo_id*, or None.
+
+    Mirrors that resolution: the repo dir :func:`_st_cache_repo_dir` selects (the
+    casing the settings route persists and the loader opens), its ``refs/main``
+    commit (with ``local_files_only`` huggingface_hub resolves the default revision
+    THROUGH that ref, so a missing / empty / unreadable ref is a cache MISS, never
+    a reason to scan historical snapshots), and that commit's snapshot dir. None
+    when any of those is absent -- a cache miss the caller treats as not-cached.
+    Never raises: a cache mutating underneath (concurrent deletion) reads as None.
+    """
+    try:
+        repo_dir = _st_cache_repo_dir(repo_id)
+        if repo_dir is None:
+            return None
+        try:
+            commit = (repo_dir / "refs" / "main").read_text(encoding = "utf-8").strip()
+        except OSError:
+            return None  # absent or unreadable: the loader cannot resolve it either
+        if not commit:
+            return None  # empty / whitespace: a partial write, revision unknown
+        snapshot = repo_dir / "snapshots" / commit
+        if not snapshot.is_dir():
+            return None  # ref recorded but not materialized (partial / pruned)
+        return snapshot
+    except Exception:
+        return None
 
 
 def _embedding_marker_in_hf_cache(repo_id: str) -> Optional[bool]:
@@ -2261,22 +2315,10 @@ def _embedding_marker_in_hf_cache(repo_id: str) -> Optional[bool]:
     raises -- a cache mutating underneath (concurrent model deletion) reads as
     not-cached so callers keep their normal fallback.
     """
-    try:
-        repo_dir = _st_cache_repo_dir(repo_id)
-        if repo_dir is None:
-            return None
-        try:
-            commit = (repo_dir / "refs" / "main").read_text(encoding = "utf-8").strip()
-        except OSError:
-            return None  # absent or unreadable: the loader cannot resolve it either
-        if not commit:
-            return None  # empty / whitespace: a partial write, revision unknown
-        snapshot = repo_dir / "snapshots" / commit
-        if not snapshot.is_dir():
-            return None  # ref recorded but not materialized (partial / pruned)
-        return _snapshot_is_loadable_st_model(snapshot)
-    except Exception:
+    snapshot = _active_snapshot_dir(repo_id)
+    if snapshot is None:
         return None
+    return _snapshot_is_loadable_st_model(snapshot)
 
 
 def is_embedding_model(model_name: str, hf_token: Optional[str] = None) -> bool:
@@ -2307,25 +2349,32 @@ def is_embedding_model(model_name: str, hf_token: Optional[str] = None) -> bool:
 
     if _env_offline():
         # Offline: the local HF cache is the only source -- a network call cannot
-        # succeed and would only hang on a DNS error and get retried (#6817).
-        # Re-probe the marker every call without consulting or populating the memo:
-        # a cached negative must not stick (a model downloaded later, or a tag-only
-        # embedder, could not be confirmed here), so a miss is not durable.
-        marker = _embedding_marker_in_hf_cache(model_name)
+        # succeed and would only hang on a DNS error and get retried (#6817). Re-probe
+        # the cache every call without consulting or populating the memo: a cached
+        # negative must not stick (a model downloaded later, or a tag-only embedder,
+        # could not be confirmed here), so a miss is not durable.
+        snapshot = _active_snapshot_dir(model_name)
+        if snapshot is not None and _snapshot_is_loadable_st_model(snapshot):
+            return True  # a self-describing sentence-transformers snapshot (modules.json)
         # Retain a positive confirmed online -- this session (memo) or a prior one
-        # (persisted allowlist) -- ONLY when the active revision is actually
-        # materialized locally (marker is not None). A recorded True proves
-        # model_info() tagged the repo an embedder, not that its files are on disk
-        # (an online /check-embedding call records the verdict without downloading),
-        # so trusting it for an uncached repo would save a model the local_files_only
-        # load then fails on. "not None" (not True) still covers a downloaded
-        # tag-only feature-extraction embedder whose snapshot is present but has no
-        # modules.json -- recognizable only from that recorded verdict, and the case
-        # that must survive a restart, not just the _hf_offline_if_dns_dead() mid-load
-        # flip.
-        if _known_embedder(model_name, cache_key) and marker is not None:
+        # (persisted allowlist) -- ONLY when the active snapshot is materialized WITH
+        # a complete, loadable weight set. A recorded True proves model_info() tagged
+        # the repo an embedder, not that its files are on disk (an online
+        # /check-embedding call records the verdict without downloading), so trusting
+        # it for an uncached or partially downloaded repo would save a model the
+        # local_files_only load then fails on. The weight gate (not the bare marker)
+        # is what still covers a downloaded tag-only feature-extraction embedder --
+        # weights present, no modules.json, which SentenceTransformer's auto-model
+        # fallback loads -- while rejecting a config-only or half-sharded snapshot,
+        # and it is the case that must survive a restart, not just the
+        # _hf_offline_if_dns_dead() mid-load flip.
+        if (
+            snapshot is not None
+            and _known_embedder(model_name, cache_key)
+            and _snapshot_has_complete_weights(snapshot)
+        ):
             return True
-        return marker is True
+        return False
 
     # Online: the Hub is authoritative for the current remote revision. The local
     # cache marker reflects only the last-downloaded revision, which may lag the

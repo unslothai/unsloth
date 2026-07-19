@@ -324,19 +324,25 @@ def test_marker_rejects_non_base_weight_bins(tmp_path, monkeypatch):
 @pytest.mark.parametrize(
     "weights",
     [
-        ("model-00001-of-00002.safetensors",),  # only shard 1 of 2 downloaded
-        ("model-00002-of-00003.bin",),  # a lone middle shard
-        (  # two shards present but the set claims three
+        ("model-00001-of-00002.safetensors", "model.safetensors.index.json"),  # shard 1 of 2
+        ("model-00002-of-00003.bin", "pytorch_model.bin.index.json"),  # a lone middle shard
+        (  # two shards + index but the set claims three
             "model-00001-of-00003.safetensors",
             "model-00002-of-00003.safetensors",
+            "model.safetensors.index.json",
+        ),
+        (  # a complete shard set WITHOUT the index map transformers loads it through
+            "model-00001-of-00002.safetensors",
+            "model-00002-of-00002.safetensors",
         ),
     ],
 )
 def test_marker_rejects_incomplete_shard_set(tmp_path, monkeypatch, weights):
     # A partially downloaded sharded model must NOT validate: SentenceTransformer's
-    # Torch backend needs every shard the index names at load time, so accepting an
-    # incomplete set would pass offline validation and then fail at first indexing --
-    # the same validate-then-fail this helper exists to prevent.
+    # Torch backend needs every shard AND the index map at load time, so accepting an
+    # incomplete set (or a complete set missing its index) would pass offline
+    # validation and then fail at first indexing -- the same validate-then-fail this
+    # helper exists to prevent.
     _cache_repo_with_files(tmp_path, monkeypatch, *weights)
     assert mc._embedding_marker_in_hf_cache("org/model") is False
 
@@ -345,13 +351,17 @@ def test_marker_rejects_incomplete_shard_set(tmp_path, monkeypatch, weights):
     "weights",
     [
         ("pytorch_model.bin",),  # torch .bin
-        ("model-00001-of-00002.safetensors", "model-00002-of-00002.safetensors"),  # sharded
+        (  # sharded: every index plus the index map
+            "model-00001-of-00002.safetensors",
+            "model-00002-of-00002.safetensors",
+            "model.safetensors.index.json",
+        ),
         ("0_Transformer/model.safetensors",),  # weight in a module dir
     ],
 )
 def test_marker_accepts_recognized_torch_weights(tmp_path, monkeypatch, weights):
     # The filename recognizer must not over-reject real base-model weights: single
-    # pytorch_model.bin, sharded model-000NN-of-000NN.safetensors, and weights that
+    # pytorch_model.bin, a complete sharded set with its index map, and weights that
     # live inside a module directory all count as loadable.
     _cache_repo_with_files(tmp_path, monkeypatch, *weights)
     assert mc._embedding_marker_in_hf_cache("org/model") is True
@@ -584,6 +594,36 @@ def test_offline_persisted_verdict_not_trusted_when_uncached(tmp_path, monkeypat
     monkeypatch.setenv("HF_HUB_OFFLINE", "1")
     _fake_hf_model_info(monkeypatch, _no_network)
     assert mc.is_embedding_model("org/uncached-embedder") is False  # nothing on disk -> not trusted
+
+
+def test_offline_persisted_verdict_not_trusted_when_snapshot_partial(tmp_path, monkeypatch):
+    # A persisted verdict is trusted only when the active snapshot carries a COMPLETE
+    # weight set, not merely that it is materialized. Here the snapshot exists with a
+    # config but no weights (an interrupted download): _embedding_marker_in_hf_cache
+    # reads False (materialized, not None), so a bare "materialized" gate would wrongly
+    # return True and the local_files_only load would then fail. The weight gate must
+    # reject it.
+    cache_root = tmp_path / "cache"
+    snap = cache_root / "models--org--partial" / "snapshots" / "aaa"
+    snap.mkdir(parents = True)
+    (snap / "config.json").write_text("{}")  # config only -- weights never finished
+    refs = cache_root / "models--org--partial" / "refs"
+    refs.mkdir(parents = True)
+    (refs / "main").write_text("aaa")
+    monkeypatch.setattr(mc, "_st_cache_roots", lambda: [cache_root])
+
+    def _info(model_name, token = None):
+        return types.SimpleNamespace(tags = ["feature-extraction"], pipeline_tag = None)
+
+    _fake_hf_model_info(monkeypatch, _info)
+    assert mc.is_embedding_model("org/partial") is True  # online: confirmed + persisted
+    assert "org/partial" in mc._load_persisted_embedders()
+    assert mc._embedding_marker_in_hf_cache("org/partial") is False  # materialized, not None
+
+    mc._embedding_detection_cache.clear()  # restart: memo lost, disk verdict remains
+    monkeypatch.setenv("HF_HUB_OFFLINE", "1")
+    _fake_hf_model_info(monkeypatch, _no_network)
+    assert mc.is_embedding_model("org/partial") is False  # partial snapshot -> not trusted
 
 
 def test_persist_embedder_is_best_effort_when_home_unwritable(tmp_path, monkeypatch):

@@ -194,7 +194,22 @@ def _get(model_name: str | None = None):
             from utils.utils import hf_env_offline
 
             device = _device()
-            logger.info("loading embedding model %s on %s", name, device)
+            # Resolve to the exact cache casing the offline local_files_only load
+            # needs. The /settings route persists that spelling for a custom override
+            # but deliberately leaves the configured default verbatim (rewriting it
+            # would turn the default into an override and break later default changes),
+            # so a default whose casing differs from the cache dir would otherwise
+            # miss it and fail offline. Resolve here at load time to cover the default
+            # too; a no-op for a local path or when nothing case-matching is cached,
+            # and idempotent for an override already normalized at persist time.
+            load_name = name
+            from utils.paths import is_local_path
+
+            if not is_local_path(load_name):
+                from utils.models import resolve_st_cached_repo_id_case
+
+                load_name = resolve_st_cached_repo_id_case(load_name)
+            logger.info("loading embedding model %s on %s", load_name, device)
             # Read the offline state ONCE and use that single value for both the
             # security gate and the loader. _hf_offline_if_dns_dead() mutates the
             # process-wide offline vars and restores them on exit, so re-reading
@@ -202,13 +217,13 @@ def _get(model_name: str | None = None):
             # skipped the Hub scan on True -- and the load would then fetch and
             # deserialize the unscanned repo.
             local_only = hf_env_offline()
-            _guard_model_security(name, local_only)
+            _guard_model_security(load_name, local_only)
             # Propagate the user's offline intent into the loader: SentenceTransformer
             # performs its own Hub operations, and huggingface_hub honors only
             # HF_HUB_OFFLINE, so a TRANSFORMERS_OFFLINE-only session would otherwise
             # still fetch missing repo files over the network.
             _model = SentenceTransformer(
-                name,
+                load_name,
                 device = device,
                 model_kwargs = dtype_kwargs("float16"),
                 local_files_only = local_only,

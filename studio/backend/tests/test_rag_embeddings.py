@@ -220,3 +220,44 @@ def test_st_encode_failure_without_llama_binary_reraises(monkeypatch):
     embeddings._reset_backend()
     with pytest.raises(RuntimeError, match = "CUDA error during encode"):
         embeddings.encode(["alpha", "beta"])
+
+
+def test_get_resolves_default_casing_before_loading(monkeypatch):
+    # _get() must resolve a repo id to the exact cache casing before constructing
+    # SentenceTransformer. A configured default whose spelling differs only by case
+    # from the cache dir is deliberately NOT persist-normalized by /settings (that
+    # would turn the default into an override), so without resolving here the offline
+    # local_files_only load would miss the case-sensitive cache dir and fail. Verify
+    # both the loader and the security gate receive the resolved name.
+    import sys
+    import types
+
+    captured = {}
+
+    class _FakeST:
+        def __init__(self, name, **kwargs):
+            captured["load_name"] = name
+            captured["local_files_only"] = kwargs.get("local_files_only")
+
+    fake_st = types.ModuleType("sentence_transformers")
+    fake_st.SentenceTransformer = _FakeST
+    monkeypatch.setitem(sys.modules, "sentence_transformers", fake_st)
+
+    monkeypatch.setattr(config, "effective_embedding_model", lambda: "baai/bge-m3")
+    monkeypatch.setattr(
+        "utils.models.resolve_st_cached_repo_id_case",
+        lambda repo_id: "BAAI/bge-m3" if repo_id == "baai/bge-m3" else repo_id,
+    )
+    monkeypatch.setattr(embeddings, "_device", lambda: "cpu")
+    monkeypatch.setattr(embeddings, "_install_torchao_stub_once", lambda: None)
+    guarded = {}
+    monkeypatch.setattr(
+        embeddings, "_guard_model_security", lambda name, local_only: guarded.update(name = name)
+    )
+
+    monkeypatch.setattr(embeddings, "_model", None, raising = False)
+    monkeypatch.setattr(embeddings, "_name", None, raising = False)
+    embeddings._get()
+
+    assert captured["load_name"] == "BAAI/bge-m3"  # resolved to the cache casing
+    assert guarded["name"] == "BAAI/bge-m3"  # gate scans the same resolved name
