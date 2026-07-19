@@ -161,6 +161,15 @@ def inference_lifecycle_gate():
     return _unload_gate()
 
 
+def acquire_inference_lifecycle_gate_nowait() -> bool:
+    """Try to claim the model-swap gate without waiting behind an active request."""
+    return _lifecycle_lock.acquire(blocking = False)
+
+
+def release_inference_lifecycle_gate() -> None:
+    _lifecycle_lock.release()
+
+
 def note_model_loaded() -> None:
     """Record a successful GGUF load: stamp activity and drop any reload stash so
     a manual load clears it synchronously, not only on the next idle poll."""
