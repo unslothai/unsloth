@@ -36,6 +36,15 @@ AGENT="${2:?usage: agent-guides-drive.sh <mode> <agent>}"
 # Determinism (seed/temp) is applied at the server level by
 # serve-unsloth-run.sh --extra; agents inherit it through the API.
 TIMEOUT="${AGENT_INVOKE_TIMEOUT:-180}"
+# opencode is the slow outlier. Unlike the print-mode agents (claude -p, codex
+# exec) it runs a full turn AND a separate small_model call to name the session,
+# so one connection reply takes ~8 min on a CPU-served 4B -- right at the shared
+# 600s cap, so the cell flaked when a run drifted past a ~480s success. Give it
+# headroom (still well under the 40-min job budget); the fast agents keep the
+# tight cap that still catches a real headless-TTY hang.
+case "$AGENT" in
+  opencode) TIMEOUT=$(( TIMEOUT * 2 )) ;;
+esac
 
 # Claude refuses --dangerously-skip-permissions outside a sandbox; the CI runner
 # IS the sandbox, so declare it (mirrors unslothai/scripts launcher.sh). Harmless
