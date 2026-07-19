@@ -125,7 +125,7 @@ def _run_amd_smi(*args: str, timeout: int = _AMD_SMI_DEFAULT_TIMEOUT) -> Optiona
         # amd-smi does not exist on Windows (neither Adrenalin nor the HIP SDK
         # ship a CLI) and can be absent on minimal Linux installs. Disable the
         # poller in one step instead of burning the 3-strike circuit breaker
-        # on guaranteed FileNotFoundError spawns. Studio's VRAM display falls
+        # on guaranteed FileNotFoundError spawns. Unsloth's VRAM display falls
         # back to torch mem_get_info.
         if not _amd_smi_disabled:
             logger.info(

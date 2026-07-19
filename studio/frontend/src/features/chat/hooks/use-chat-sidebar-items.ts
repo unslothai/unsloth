@@ -45,7 +45,7 @@ export function groupThreads(
 
   for (const t of threads) {
     // Coerce archived to a boolean before comparing. Legacy threads (from the
-    // older browser-only Studio, or any record predating the archived field)
+    // older browser-only Unsloth, or any record predating the archived field)
     // can have archived === undefined or null; a raw `!== archived` comparison
     // would drop those from BOTH the Recents (archived=false) and Archived
     // (archived=true) lists, hiding existing chats. Treat missing as false.

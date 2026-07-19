@@ -229,12 +229,12 @@ curl.exe ${base}/v1/chat/completions \`
 }
 
 // A second OpenAI call naming a different downloaded GGUF: with auto-switch on,
-// Studio loads it before serving, so the model field selects the served model.
+// Unsloth loads it before serving, so the model field selects the served model.
 function pythonSwitchDemo(): string {
   return `
 
 # "Switch model by request" is on: replace the model below with another GGUF you
-# have downloaded and Studio loads it before serving. Unknown names keep serving
+# have downloaded and Unsloth loads it before serving. Unknown names keep serving
 # the current model.
 response = client.chat.completions.create(
     model=${j(SWITCH_MODEL)},
@@ -349,7 +349,7 @@ function javascriptSwitchDemo(): string {
   return `
 
 // "Switch model by request" is on: replace the model below with another GGUF you
-// have downloaded and Studio loads it before serving. Unknown names keep serving
+// have downloaded and Unsloth loads it before serving. Unknown names keep serving
 // the current model.
 const switchResponse = await client.chat.completions.create({
   model: ${j(SWITCH_MODEL)},
@@ -512,7 +512,7 @@ export function UsageExamples({ apiKey }: { apiKey?: string | null }) {
     if (!localAgentDetection) {
       setDetectedAgents([]);
       // A previously auto-picked agent was only ever verified against the
-      // Studio backend's PATH, which is meaningless now that this panel no
+      // Unsloth backend's PATH, which is meaningless now that this panel no
       // longer targets a loopback base -- don't leave it selected, but
       // never touch a choice the user made by hand.
       if (!agentPickedByUserRef.current) {

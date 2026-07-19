@@ -105,7 +105,7 @@ class LoadRequest(BaseModel):
         description = (
             "Extra arguments forwarded verbatim to llama-server for GGUF models. "
             "One token per list entry, e.g. ['--top-k', '20', '--seed', '42']. "
-            "Studio-managed flags (model identity, port, context length, GPU placement, "
+            "Unsloth-managed flags (model identity, port, context length, GPU placement, "
             "auth, UI/server mode) are rejected. Ignored for non-GGUF models."
         ),
     )
@@ -177,13 +177,13 @@ class TransformersUpgradeInfo(BaseModel):
     )
     supported_in_pypi: bool = Field(
         False,
-        description = "True if the latest PyPI release ships this model_type; Studio can "
+        description = "True if the latest PyPI release ships this model_type; Unsloth can "
         "install it into a persistent sidecar after user consent.",
     )
     supported_in_main: bool = Field(
         False,
         description = "True if transformers GitHub main ships this model_type (dev-only; "
-        "not installable through Studio yet).",
+        "not installable through Unsloth yet).",
     )
 
 
@@ -559,7 +559,7 @@ class ImageContentPart(BaseModel):
 class InputDocumentContentPart(BaseModel):
     """Document (PDF / file) content part in a multimodal message.
 
-    Studio-normalised shape (file_data or file_url, plus optional filename/media_type).
+    Unsloth-normalised shape (file_data or file_url, plus optional filename/media_type).
     Mapped onto Anthropic ``document`` / OpenAI ``input_file`` for vision providers;
     dropped for non-vision providers.
     """
@@ -715,7 +715,7 @@ class ThinkingConfig(BaseModel):
     """Anthropic-compatible thinking/reasoning configuration.
     Use type='disabled' to turn off thinking, or type='enabled' to turn it on.
     Only type is read; extra fields (e.g. budget_tokens) are ignored, since
-    Studio sets provider thinking budgets itself.
+    Unsloth sets provider thinking budgets itself.
     """
 
     type: Literal["disabled", "enabled"] = "disabled"
@@ -774,7 +774,7 @@ class ChatCompletionRequest(BaseModel):
         None,
         description = (
             "OpenAI function-tool definitions. When provided without `enable_tools=true`, "
-            "Studio forwards the tools to the backend so the model returns structured "
+            "Unsloth forwards the tools to the backend so the model returns structured "
             "tool_calls for the client to execute (standard OpenAI function calling)."
         ),
     )
@@ -1186,7 +1186,7 @@ class ChatCompletionRequest(BaseModel):
             and (self.enable_tools is True or bool(self.mcp_enabled))
         ):
             # "Ask" gates every call, so a direct API caller that omits the legacy
-            # confirm flag must still hit the confirmation gate for Studio's own
+            # confirm flag must still hit the confirmation gate for Unsloth's own
             # tool loop. An explicit confirm_tool_calls=False wins over the mode
             # (mirrors _permission_mode_confirm and the Anthropic pre-switch guard),
             # so only self-enable when the flag is unset. Only self-enable when that
@@ -1194,7 +1194,7 @@ class ChatCompletionRequest(BaseModel):
             # (enable_tools / mcp_enabled) -- the router enters the loop on those
             # signals, not on enabled_tools alone (which merely filters which tools
             # run). A plain client-tool passthrough (client-supplied `tools` that
-            # Studio does not execute) must route verbatim, and external-provider
+            # Unsloth does not execute) must route verbatim, and external-provider
             # routing rejects confirm_tool_calls with tools, so skip the fold there.
             #
             # "auto" is deliberately NOT folded: it only prompts for a call the

@@ -115,7 +115,7 @@ export const es = {
       tokenSaved: "Token guardado",
       password: "Contraseña",
       passwordDescription:
-        "Cambia la contraseña de esta cuenta de Studio.",
+        "Cambia la contraseña de esta cuenta de Unsloth.",
       passwordDialog: {
         trigger: "Cambiar contraseña",
         title: "Cambiar contraseña",
@@ -294,7 +294,7 @@ export const es = {
     resources: {
       title: "Sistema",
       description:
-        "Monitorea el hardware y el almacenamiento de este servidor de Studio.",
+        "Monitorea el hardware y el almacenamiento de este servidor de Unsloth.",
       liveUpdates: "Actualizaciones en vivo",
       floatingWindow: "Ventana flotante",
       disableOverlay: "Desactivar superposición",

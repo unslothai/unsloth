@@ -5,6 +5,7 @@ export {
   DownloadProgressBar,
   cancelStagedModelDownload,
 } from "./download-manager";
+export { bumpInventoryVersion } from "./stores/inventory-events";
 export {
   getHfToken,
   mirrorHfTokenInto,

@@ -120,6 +120,11 @@ def test_is_hidden_model_hides_validation_probe_everywhere():
     assert models_route._is_hidden_model(
         None, "/hf/models--ggml-org--models/snapshots/abc/tinyllamas/stories260K.gguf"
     )
+    # A Windows-style snapshot path must match too, even on a POSIX interpreter
+    # (the filename check splits on both separators).
+    assert models_route._is_hidden_model(
+        r"C:\Users\u\.cache\huggingface\hub\models--ggml-org--models\snapshots\abc\tinyllamas\stories260K.gguf"
+    )
     assert not models_route._is_hidden_model("unsloth/gemma-3-270m-it-GGUF")
     # The exact-filename needle must not hide a real repo that merely
     # references stories260K in its name.
@@ -152,6 +157,138 @@ def test_is_hidden_model_hides_dictation_models(tmp_path):
     named_only.mkdir()
     (named_only / "config.json").write_text('{"model_type": "llama"}')
     assert not models_route._is_hidden_model("user/whisper-finetune", str(named_only))
+def test_is_hidden_model_matches_repo_ids_exactly(monkeypatch):
+    """A custom embedder with a generic basename is hidden by EXACT repo-id
+    match only, so unrelated cached repos that merely contain the basename stay
+    visible. Regression: substring basename matching hid real chat models like
+    ``user/model-chat`` from the On Device inventory."""
+    from core.rag import config as rag_config
+
+    monkeypatch.setattr(rag_config, "effective_embedding_model", lambda: "org/model")
+    monkeypatch.setattr(rag_config, "effective_gguf_repo", lambda: "org/model-GGUF")
+
+    # The exact embedder repo and its GGUF companion are hidden.
+    assert models_route._is_hidden_model("org/model")
+    assert models_route._is_hidden_model("org/model-GGUF")
+    # Unrelated repos that merely contain "model" must NOT be hidden.
+    assert not models_route._is_hidden_model("user/model-chat")
+    assert not models_route._is_hidden_model("org/model-instruct")
+    assert not models_route._is_hidden_model("acme/remodelled-chat")
+    # The validation probe stays hidden regardless of embedder config.
+    assert models_route._is_hidden_model("ggml-org/models")
+
+
+def test_is_hidden_model_matches_repo_derived_local_paths(monkeypatch):
+    """Match exact repo-derived cache and LM Studio paths."""
+    from core.rag import config as rag_config
+
+    monkeypatch.setattr(rag_config, "effective_embedding_model", lambda: "org/model")
+    monkeypatch.setattr(rag_config, "effective_gguf_repo", lambda: "org/model-GGUF")
+
+    assert models_route._is_hidden_model(
+        "/cache/models--org--model/snapshots/abc/model.safetensors"
+    )
+    assert models_route._is_hidden_model(
+        r"C:\Users\u\.cache\huggingface\hub\models--org--model-GGUF\snapshots\abc"
+    )
+    assert models_route._is_hidden_model("/lm-studio/org/model-GGUF/model-Q8_0.gguf")
+    assert not models_route._is_hidden_model("/lm-studio/user/model-chat/model-Q8_0.gguf")
+    assert not models_route._is_hidden_model("/cache/models--org--model-instruct")
+
+
+def test_is_hidden_model_prefers_existing_relative_path(monkeypatch, tmp_path):
+    """Prefer an existing relative path over repo-id syntax."""
+    from core.rag import config as rag_config
+
+    embedder = tmp_path / "models" / "embedder"
+    embedder.mkdir(parents = True)
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(rag_config, "effective_embedding_model", lambda: "models/embedder")
+    monkeypatch.setattr(rag_config, "effective_gguf_repo", lambda: "org/embedder-GGUF")
+
+    assert models_route._is_hidden_model(str(embedder))
+
+
+def test_is_hidden_model_keeps_stale_default_embedder_hidden(monkeypatch):
+    """Keep default embedders hidden after a settings change."""
+    from core.rag import config as rag_config
+
+    monkeypatch.setattr(rag_config, "effective_embedding_model", lambda: "org/custom")
+    monkeypatch.setattr(rag_config, "effective_gguf_repo", lambda: "org/custom-GGUF")
+
+    assert models_route._is_hidden_model("unsloth/bge-small-en-v1.5")
+    assert models_route._is_hidden_model("unsloth/bge-small-en-v1.5-GGUF")
+    assert models_route._is_hidden_model("/models/bge-small-en-v1.5")
+    assert models_route._is_hidden_model("/models/bge-small-en-v1.5-F16.gguf")
+    assert models_route._is_hidden_model(r"C:\models\bge-small-en-v1.5-Q8_0.gguf")
+    # Repo IDs still use exact matching, and similar local basenames must have
+    # a real separator after the static default name.
+    assert not models_route._is_hidden_model("user/bge-small-en-v1.5-chat")
+    assert not models_route._is_hidden_model("/models/bge-small-en-v1.50")
+
+
+def test_is_hidden_model_keeps_env_default_hidden_after_override(monkeypatch):
+    """A persisted override must not expose the deployment's env default."""
+    from core.rag import config as rag_config
+
+    monkeypatch.delenv("RAG_EMBED_GGUF_REPO", raising = False)
+    monkeypatch.setattr(rag_config, "EMBEDDING_MODEL", "org/env-default")
+    monkeypatch.setattr(rag_config, "effective_embedding_model", lambda: "org/custom")
+    monkeypatch.setattr(rag_config, "effective_gguf_repo", lambda: "org/custom-GGUF")
+
+    assert models_route._is_hidden_model("org/env-default")
+    assert models_route._is_hidden_model("org/env-default-GGUF")
+    assert models_route._is_hidden_model("org/custom")
+    assert models_route._is_hidden_model("org/custom-GGUF")
+    assert not models_route._is_hidden_model("org/env-default-chat")
+
+
+def test_hidden_models_importable_without_heavy_model_stack():
+    """The hub cache scanner imports ``is_hidden_model`` at module scope, so it
+    must not drag in ``utils/models/__init__`` (the model-config + checkpoint
+    stack). Verify in a clean interpreter that importing the helper touches
+    neither ``utils.models`` nor those heavy submodules, and still classifies
+    the probe."""
+    import os
+    import subprocess
+    import textwrap
+
+    backend = Path(__file__).resolve().parents[1]
+    code = textwrap.dedent(
+        """
+        import sys
+
+        class _Blocker:
+            _blocked = (
+                "utils.models",
+                "utils.models.model_config",
+                "utils.models.checkpoints",
+            )
+
+            def find_spec(self, name, path=None, target=None):
+                if name in self._blocked:
+                    raise ImportError("blocked heavy import: " + name)
+                return None
+
+        sys.meta_path.insert(0, _Blocker())
+        from utils.hidden_models import is_hidden_model
+
+        loaded = sorted(m for m in sys.modules if m.startswith("utils.models"))
+        assert not loaded, loaded
+        assert is_hidden_model("ggml-org/models") is True
+        assert is_hidden_model("unsloth/gemma-3-270m-it-GGUF") is False
+        print("HIDDEN_MODELS_IMPORT_OK")
+        """
+    )
+    env = dict(os.environ, PYTHONPATH = str(backend))
+    proc = subprocess.run(
+        [sys.executable, "-c", code],
+        capture_output = True,
+        text = True,
+        env = env,
+    )
+    assert proc.returncode == 0, proc.stderr
+    assert "HIDDEN_MODELS_IMPORT_OK" in proc.stdout
 
 
 def test_list_cached_gguf_hides_llama_validation_probe(monkeypatch, tmp_path):

@@ -116,7 +116,7 @@ LLAMA_SERVER_NOT_FOUND_DETAIL = (
 
 # llama-server can serve HTTP 200 while running a model entirely on CPU when a
 # GPU backend fails to init (#5807 / #5106 / #5830). Classify the startup log so
-# Studio can warn. Priority: explicit "offloaded N/M layers to GPU" counts
+# Unsloth can warn. Priority: explicit "offloaded N/M layers to GPU" counts
 # (authoritative), then GPU "model buffer size" lines (host-pinned _Host
 # excluded), then the "device_info:" device table (disconfirm only).
 _GPU_OFFLOAD_MARKERS = (
@@ -1363,7 +1363,7 @@ def _kv_bytes_per_elem(cache_type: Optional[str]) -> float:
 
 def _env_main_cache_type_for_budget(env: Optional[Mapping[str, str]] = None) -> Optional[str]:
     """Heavier of the inherited LLAMA_ARG_CACHE_TYPE_K/_V env types when it
-    exceeds the f16 default, else None. Studio emits --cache-type only for the
+    exceeds the f16 default, else None. Unsloth emits --cache-type only for the
     param/extras path, so a heavier env (f32) would otherwise reach the child
     unbudgeted; quantized env types stay over-reserved by f16 (-> None)."""
     e = os.environ if env is None else env
@@ -1682,7 +1682,7 @@ def _build_ngram_mod_flags(
     return []
 
 
-# Canonical Speculative Decoding modes exposed by the Studio chat UI.
+# Canonical Speculative Decoding modes exposed by the Unsloth chat UI.
 # Dropdown renders five (auto, mtp, ngram, mtp+ngram, off); the load API
 # also accepts legacy values the original Switch and external callers emit
 # (default, draft-mtp, ngram-mod, ngram-simple).
@@ -1731,7 +1731,7 @@ def _backfill_usage_from_timings(usage, timings):
     """Synthesize ``usage`` from llama-server's ``timings`` when the
     OpenAI-style usage block is missing or reports zero tokens.
 
-    The Studio chat UI computes generation t/s from
+    The Unsloth chat UI computes generation t/s from
     ``meta.usage.completion_tokens / totalStreamTime``. llama-server always
     populates ``timings.predicted_n`` (true decoded count) and
     ``timings.prompt_n``, but the final SSE chunk's ``usage`` can be absent
@@ -1804,7 +1804,7 @@ def _llama_lib_dir(binary: str) -> Path:
 def _is_external_link(path: Path) -> bool:
     """True when ``path`` is a --with-llama-cpp-dir local link: a POSIX symlink
     or a Windows directory junction / reparse point. Such a link resolves into
-    the user's own llama.cpp checkout, which Studio does not own."""
+    the user's own llama.cpp checkout, which Unsloth does not own."""
     try:
         if os.path.islink(path):
             return True
@@ -1960,7 +1960,7 @@ class LlamaCppBackend:
         # observes it (direct proxy endpoints, or nothing in flight).
         self._mtp_watchdog_thread: Optional[threading.Thread] = None
         self._mtp_watchdog_stop = threading.Event()
-        # True when the launch actually runs MTP+tensor (Studio- or user/env-driven);
+        # True when the launch actually runs MTP+tensor (Unsloth- or user/env-driven);
         # gates the probe, watchdog, and recovery so pass-through MTP is covered.
         self._mtp_runtime_fallback_active = False
         self._stdout_lines: list[str] = []
@@ -2353,7 +2353,7 @@ class LlamaCppBackend:
 
     @staticmethod
     def _resolved_studio_root_and_is_legacy() -> "tuple[Optional[Path], bool]":
-        """Resolve the Studio install root and classify it as the legacy
+        """Resolve the Unsloth install root and classify it as the legacy
         ~/.unsloth/studio root vs. a custom (env/venv-inferred) root.
 
         Returns (resolved_root, is_legacy). On any import/resolution failure the
@@ -3241,7 +3241,7 @@ class LlamaCppBackend:
                 return
             prev = curr
 
-    # Free-VRAM fraction at which Studio pins the GPU directly instead of
+    # Free-VRAM fraction at which Unsloth pins the GPU directly instead of
     # deferring to ``--fit on``. 3% headroom: the compute buffer is now modelled in
     # the fit, so this only guards fragmentation + multi-GPU per-device CUDA context
     # (~2-3%); kept >= 3% as a floor (0.90 dropped 91-94% fits to CPU offload, #5106).
@@ -3800,7 +3800,7 @@ class LlamaCppBackend:
             return total if total > 0 else None
         return draft_kv + weights + target_ctx_copy
 
-    _DEFAULT_N_UBATCH = 512  # llama.cpp --ubatch default; Studio does not override it
+    _DEFAULT_N_UBATCH = 512  # llama.cpp --ubatch default; Unsloth does not override it
     _COMPUTE_BUFFER_SAFETY = 1.15  # upper-bound margin on the compute-buffer estimate
     # Soft VRAM the modeled terms omit; charged to the fit budget on tight tiers (#6682).
     _CUDA_CONTEXT_RESERVE_BYTES = 320 * 1024 * 1024  # CUDA ctx + cuBLAS workspace (~330 MiB)
@@ -3940,7 +3940,7 @@ class LlamaCppBackend:
         n_ubatch: Optional[int] = None,
     ) -> tuple[Optional[list[int]], bool, int]:
         """Largest serving-slot count in [1, n_parallel) whose fully-on-GPU footprint fits,
-        so Studio keeps the model on GPU (-ngl -1) instead of --fit on, which offloads layers
+        so Unsloth keeps the model on GPU (-ngl -1) instead of --fit on, which offloads layers
         to host and collapses decode ~3x (oobabooga #6718). ``base_footprint_bytes`` is the
         slot-independent footprint (weights + soft overhead + MTP + context-linear compute,
         minus the folded compute buffer); each candidate re-adds the slot-sized compute buffer
@@ -4416,7 +4416,7 @@ class LlamaCppBackend:
                 ]
 
             # Otherwise hand off to the resolver (cache / bootstrap / transformers / HF). Diffusion models
-            # skip it: they do not use Studio's SWA pattern and the resolver can raise for them.
+            # skip it: they do not use Unsloth's SWA pattern and the resolver can raise for them.
             if (
                 self._sliding_window_pattern is None
                 and self._sliding_window
@@ -4536,7 +4536,7 @@ class LlamaCppBackend:
     ) -> bool:
         """Launch the OpenAI-compat diffusion shim (which drives the on-device
         visual decoder) and wait for health. Presents the same /v1 + /health
-        interface as llama-server, so the rest of Studio is unchanged.
+        interface as llama-server, so the rest of Unsloth is unchanged.
         """
         assets = self._find_diffusion_assets()
         if assets is None:
@@ -4608,7 +4608,7 @@ class LlamaCppBackend:
             logger.debug(f"Could not open diffusion runner log file: {e}")
 
         # The shim (and its visual server) die with this backend process, so a
-        # Studio crash/restart never orphans a GPU process.
+        # Unsloth crash/restart never orphans a GPU process.
         self._process = subprocess.Popen(
             cmd,
             stdout = subprocess.PIPE,
@@ -5242,7 +5242,7 @@ class LlamaCppBackend:
                 return (
                     f"'{arch}' is a diffusion (image-generation) GGUF, which "
                     "llama-server cannot run as a chat/completion model. Use "
-                    "Studio's Images page to generate with local diffusion "
+                    "Unsloth's Images page to generate with local diffusion "
                     "GGUFs such as FLUX and Qwen-Image."
                 )
             if is_ollama:
@@ -6103,7 +6103,7 @@ class LlamaCppBackend:
                         and not bool(mtp_draft_path)
                     )
                     # LLAMA_ARG_SPEC_TYPE only reaches the child when neither extras
-                    # nor Studio emit a spec flag (mode "off", no user --spec-type),
+                    # nor Unsloth emit a spec flag (mode "off", no user --spec-type),
                     # since _build_speculative_flags emits one for every other mode.
                     # Consult the env for the reserve only then, else a stale MTP env
                     # would over-reserve.
@@ -6112,7 +6112,7 @@ class LlamaCppBackend:
                         if (not _extra_args_set_spec_type(extra_args) and _mtp_canonical == "off")
                         else {}
                     )
-                    # Extras can run MTP even when Studio suppresses its own emission.
+                    # Extras can run MTP even when Unsloth suppresses its own emission.
                     _user_mtp_via_extras = _extra_args_requests_mtp(extra_args, env = _spec_env)
                     # A non-MTP model-based draft mode (draft-simple/draft-eagle3) in
                     # extras also loads a separate draft model that needs reserving;
@@ -6178,7 +6178,7 @@ class LlamaCppBackend:
                         _mtp_eff_n_max = 2 if gpus else 3
                     # Separate-drafter weights live on GPU (an embedded head is
                     # already in model_size). Size the drafter the launch loads, by
-                    # precedence: extras --model-draft (last-wins), else Studio's
+                    # precedence: extras --model-draft (last-wins), else Unsloth's
                     # emitted mtp_draft_path, else the env drafter. Sizing the wrong
                     # one would under-reserve and OOM.
                     _cli_draft_for_budget = _extra_args_mtp_draft_path(extra_args, env = {})
@@ -7097,12 +7097,12 @@ class LlamaCppBackend:
 
                 # Vulkan pins via --device (a cmd arg, unlike the env-based
                 # CUDA/ROCm pin below), emitted BEFORE user extras so llama.cpp's
-                # last-wins parsing lets a user --device override Studio's pick.
+                # last-wins parsing lets a user --device override Unsloth's pick.
                 if is_vulkan_backend and gpu_indices is not None:
                     cmd += LlamaCppBackend._vulkan_pin_args(gpu_indices)
 
                 # User pass-through args go last so llama.cpp's last-wins parsing
-                # lets the user override Studio's auto-set flags. Already
+                # lets the user override Unsloth's auto-set flags. Already
                 # validated by the route via validate_extra_args().
                 if extra_args:
                     cmd.extend(str(a) for a in extra_args)
@@ -7118,9 +7118,9 @@ class LlamaCppBackend:
                 if "--threads" not in cmd:
                     env.pop("LLAMA_ARG_THREADS", None)
 
-                # Reconcile the inherited LLAMA_ARG_* env with Studio's final
+                # Reconcile the inherited LLAMA_ARG_* env with Unsloth's final
                 # decision: stripping CLI extras on a tensor->layer downgrade
-                # can't remove env vars, so the child could run a mode/KV Studio
+                # can't remove env vars, so the child could run a mode/KV Unsloth
                 # didn't budget.
                 if not tensor_parallel:
                     # Layer split: clear a non-layer inherited split mode (and any
@@ -7130,7 +7130,7 @@ class LlamaCppBackend:
                         env.pop("LLAMA_ARG_SPLIT_MODE", None)
                         env.pop("LLAMA_ARG_TENSOR_SPLIT", None)
                 else:
-                    # Studio owns the tensor split: it emits --tensor-split when it
+                    # Unsloth owns the tensor split: it emits --tensor-split when it
                     # picks an uneven one (CLI wins) and nothing when an even split
                     # is safe. Clear any inherited LLAMA_ARG_TENSOR_SPLIT so the even
                     # case can't be overridden by a stale env (the layer branch above
@@ -7201,7 +7201,7 @@ class LlamaCppBackend:
                 # 'on') even when -ngl is explicit. That step has aborted on
                 # some ROCm hosts (ggml-cuda.cu ROCm error during worst-case
                 # estimation, e.g. MTP + mmproj models on gfx1151). When
-                # Studio's own VRAM math already placed the model
+                # Unsloth's own VRAM math already placed the model
                 # (use_fit=False), the step is redundant second-guessing --
                 # retry once with --fit off before declaring the load failed.
                 # Never retry when fit was requested (use_fit) or the caller
@@ -7284,7 +7284,7 @@ class LlamaCppBackend:
                             and _startup_crashed
                             and not _split_axis_crash
                         ):
-                            # We forced --fit off because Studio's (conservative) VRAM
+                            # We forced --fit off because Unsloth's (conservative) VRAM
                             # math placed the model fully on GPU. A startup crash here
                             # means that estimate was optimistic, so fall back to --fit
                             # on and let llama.cpp offload rather than fail the load.
@@ -7296,7 +7296,7 @@ class LlamaCppBackend:
                                 self._process.returncode,
                                 self._llama_log_path,
                             )
-                            # Flip Studio's own --fit off (added first, before any
+                            # Flip Unsloth's own --fit off (added first, before any
                             # user extra args) to on; a user's later --fit still wins
                             # by last-arg. Defensive: if absent, the default is already
                             # --fit on, so leave it.
@@ -7313,7 +7313,7 @@ class LlamaCppBackend:
                         ):
                             logger.warning(
                                 "llama-server crashed during startup (exit code %s) "
-                                "with the default memory-fit step enabled; Studio "
+                                "with the default memory-fit step enabled; Unsloth "
                                 "already verified the model fits, retrying once "
                                 "with --fit off. Crash log: %s",
                                 self._process.returncode,
@@ -7393,7 +7393,7 @@ class LlamaCppBackend:
                         cmd = _fa_cmd
                         healthy = _spawn_and_wait(_fa_cmd, label = "-noflash")
 
-                # MTP from Studio's spec flags or the user's (extra_args
+                # MTP from Unsloth's spec flags or the user's (extra_args
                 # --spec-type / LLAMA_ARG_SPEC_TYPE). The env reaches the child
                 # only when neither emits a spec flag, so consult it only then.
                 _launch_spec_env: Mapping[str, str] = (
@@ -7587,11 +7587,11 @@ class LlamaCppBackend:
                 if self._gpu_offload_active is False:
                     logger.warning(
                         "llama-server appears to have loaded the model entirely "
-                        "on CPU even though Studio detected at least one GPU. "
+                        "on CPU even though Unsloth detected at least one GPU. "
                         "This usually means the prebuilt binary's GPU backend "
                         "failed to load -- on Windows, cudart64_X.dll / "
                         "cublas64_X.dll could not be resolved. Reinstall the "
-                        "Studio llama.cpp prebuilt or install a matching CUDA "
+                        "Unsloth llama.cpp prebuilt or install a matching CUDA "
                         "toolkit (issue unslothai/unsloth#5106).",
                     )
 
@@ -7888,7 +7888,7 @@ class LlamaCppBackend:
                 logger.info(
                     "Auto: MLA embedded-MTP model detected; llama.cpp's MLA/DSA "
                     "MTP path is slower than no speculation, so using ngram-mod "
-                    "instead. Override via the Studio Speculative Decoding "
+                    "instead. Override via the Unsloth Speculative Decoding "
                     "dropdown or UNSLOTH_MLA_MTP_ENABLED=1."
                 )
                 _emit_ngram_mod()
@@ -7916,7 +7916,7 @@ class LlamaCppBackend:
                     f"MTP GGUF detected but model size {_mtp_size_b:.1f}B "
                     "is below the 3B speedup threshold; using ngram-mod "
                     "only (zero-VRAM, no draft head). Override via "
-                    "--spec-type or the Studio Speculative Decoding "
+                    "--spec-type or the Unsloth Speculative Decoding "
                     "dropdown."
                 )
                 _emit_ngram_mod()
@@ -8294,7 +8294,7 @@ class LlamaCppBackend:
     def _pid_parent_is_alive(pid: int) -> bool:
         """True if the recorded server's parent is still running, i.e. the server is
         NOT orphaned. Lets the cross-session reap kill only a true orphan (parent
-        gone) and never a live server owned by a running Studio, regardless of which
+        gone) and never a live server owned by a running Unsloth, regardless of which
         process performs the sweep. Biased toward "alive" on uncertainty so a live
         server is never mistakenly reaped."""
         try:
@@ -8334,9 +8334,9 @@ class LlamaCppBackend:
     @classmethod
     def _reap_recorded_pid(cls) -> int:
         """Kill the exact llama-server PID recorded at spawn, but only when it is a
-        genuine orphan -- its parent (the Studio that spawned it) is gone. This is
+        genuine orphan -- its parent (the Unsloth that spawned it) is gone. This is
         the cross-session backstop the parent-death reaper (Job Object /
-        PR_SET_PDEATHSIG) cannot cover: an orphan left by an already-dead Studio
+        PR_SET_PDEATHSIG) cannot cover: an orphan left by an already-dead Unsloth
         (macOS, a best-effort failure, or a pre-existing orphan). Path-independent,
         so it also catches an orphan the install-root match would miss.
 
@@ -8393,7 +8393,7 @@ class LlamaCppBackend:
         """Kill orphaned llama-server processes started by studio.
 
         Only kills processes whose resolved binary lives under a known
-        Studio install dir (or matches an exact env-var override), to avoid
+        Unsloth install dir (or matches an exact env-var override), to avoid
         terminating unrelated llama-server instances. Mirrors every location
         _find_llama_server_binary() can return, so orphans from any
         supported install path are cleaned up.
@@ -8413,7 +8413,7 @@ class LlamaCppBackend:
         try:
             # -- Build the ownership allowlist --------------------------------
             # exact_binaries -- env var overrides (exact path match).
-            # install_roots  -- Studio-owned dir trees (binary must be under one).
+            # install_roots  -- Unsloth-owned dir trees (binary must be under one).
             install_roots: list[Path] = []
 
             # Env-mode custom root (mirrors _find_llama_server_binary).
@@ -8423,7 +8423,7 @@ class LlamaCppBackend:
                 install_roots.append(_resolved_sr / "llama.cpp")
 
             # Primary install dir (default mode only). Env-mode skips this so a
-            # custom-root Studio can't kill a default-install Studio's server.
+            # custom-root Unsloth can't kill a default-install Unsloth's server.
             if not _is_custom_root:
                 install_roots.append(Path.home() / ".unsloth" / "llama.cpp")
 
@@ -8497,7 +8497,7 @@ class LlamaCppBackend:
                         if not is_ours:
                             continue
 
-                        # A live parent means a running Studio (or the user's
+                        # A live parent means a running Unsloth (or the user's
                         # shell) still owns it -- not an orphan.
                         if LlamaCppBackend._pid_parent_is_alive(proc.info["pid"]):
                             continue
@@ -8577,7 +8577,7 @@ class LlamaCppBackend:
     def _fit_off_retry_eligible(cmd: "list[str]", use_fit: bool) -> bool:
         """Whether a llama-server startup crash may be retried with --fit off.
 
-        Only when Studio's own VRAM math placed the model (use_fit=False)
+        Only when Unsloth's own VRAM math placed the model (use_fit=False)
         and nothing on the command line set the fit mode explicitly
         (-fit / --fit, space- or equals-form). --fit-ctx / --fit-target /
         -fitc / -fitt tune the fit step but do not select the mode, so
@@ -8821,7 +8821,7 @@ class LlamaCppBackend:
             return None
 
     def _reconcile_effective_ctx_with_server(self) -> None:
-        """Adopt the server's real ``n_ctx`` when it is below Studio's value.
+        """Adopt the server's real ``n_ctx`` when it is below Unsloth's value.
 
         Keeps ``context_length`` (load response, status route, passthrough
         ``max_tokens`` ceiling) honest; clients sized to the requested value

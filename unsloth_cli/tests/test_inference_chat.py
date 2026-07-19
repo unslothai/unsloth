@@ -372,7 +372,7 @@ def test_find_studio_server_none_when_not_running(monkeypatch):
 
 
 def test_find_studio_server_prefers_ipv4_loopback_for_localhost(monkeypatch):
-    # localhost resolving ::1-first must not hide a Studio bound to 127.0.0.1:
+    # localhost resolving ::1-first must not hide an Unsloth bound to 127.0.0.1:
     # discovery tries each loopback address and returns the one that answers.
     import socket
     import urllib.request

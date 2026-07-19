@@ -53,7 +53,7 @@ def get_resume_checkpoint_path(path_value: str) -> Optional[str]:
 def normalize_resume_output_dir(path_value: str) -> str:
     path = resolve_output_dir(path_value)
     if not _is_under_outputs(path):
-        raise ValueError("Resume checkpoint must be inside Studio outputs.")
+        raise ValueError("Resume checkpoint must be inside Unsloth outputs.")
     return str(path)
 
 

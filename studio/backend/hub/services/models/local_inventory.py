@@ -36,6 +36,7 @@ from hub.utils.paths import (
 )
 from hub.services.models import common as model_common
 from hub.services.models.ollama import scan_ollama_dir
+from utils.hidden_models import is_hidden_model
 
 logger = get_logger(__name__)
 _MAX_MODELS_PER_CUSTOM_FOLDER = 200
@@ -623,6 +624,20 @@ def _dedupe_local_models(local_models: List[LocalModelInfo]) -> list[LocalModelI
     )
 
 
+def _filter_hidden_models(local_models: List[LocalModelInfo]) -> list[LocalModelInfo]:
+    """Remove infrastructure-only models from the shared local inventory."""
+    visible: list[LocalModelInfo] = []
+    for model in local_models:
+        resolved_cache_path = (
+            hf_cache_scan.resolve_hf_cache_realpath(Path(model.path))
+            if model.source == "hf_cache"
+            else None
+        )
+        if not is_hidden_model(model.id, model.model_id, model.path, resolved_cache_path):
+            visible.append(model)
+    return visible
+
+
 async def list_local_models_response(models_dir: str = "./models") -> LocalModelListResponse:
     """List local model candidates from every supported on-device source."""
     hf_cache_dir = _resolve_hf_cache_dir()
@@ -653,7 +668,7 @@ async def list_local_models_response(models_dir: str = "./models") -> LocalModel
             ollama_dirs,
         )
         local_models += await _collect_models_from_custom_folders()
-        models = _dedupe_local_models(local_models)
+        models = _dedupe_local_models(_filter_hidden_models(local_models))
 
         return LocalModelListResponse(
             models_dir = str(models_root),
