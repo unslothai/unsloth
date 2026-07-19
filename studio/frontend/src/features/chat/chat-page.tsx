@@ -1111,9 +1111,17 @@ function ProjectLanding({
                               setRenameDraft(event.target.value)
                             }
                             onKeyDown={(event) => {
+                              // Ignore keydowns fired mid-IME-composition (CJK)
+                              // so a candidate-confirming Enter or candidate-
+                              // cancelling Escape does not commit/cancel the
+                              // rename. Guard before the key branch so Escape is
+                              // covered too (isComposing on WebKit, 229 on Chromium).
+                              if (
+                                event.nativeEvent.isComposing ||
+                                event.keyCode === 229
+                              )
+                                return;
                               if (event.key === "Enter") {
-                                if (event.nativeEvent.isComposing || event.keyCode === 229)
-                                  return;
                                 event.preventDefault();
                                 skipRenameBlurRef.current = true;
                                 void commitRename(item);
