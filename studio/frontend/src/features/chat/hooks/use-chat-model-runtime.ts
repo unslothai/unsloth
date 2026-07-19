@@ -593,6 +593,8 @@ export function useChatModelRuntime() {
             stateBeforeUnload.modelRequiresTrustRemoteCode;
           const previousActiveNativePathToken =
             stateBeforeUnload.activeNativePathToken;
+          const previousActiveNativePathExpiresAtMs =
+            stateBeforeUnload.activeNativePathExpiresAtMs;
           // Snapshot the load settings at click time, before the awaits below
           // (validation, the trust dialog, unload).
           const loadChatTemplateOverride = stateBeforeUnload.chatTemplateOverride;
@@ -957,6 +959,11 @@ export function useChatModelRuntime() {
                 });
                 useChatRuntimeStore.setState({
                   activeNativePathToken: previousActiveNativePathToken ?? null,
+                  // Restore the previous token's lease together with the token so a
+                  // rollback never pairs restored token A with failed load B's expiry.
+                  activeNativePathExpiresAtMs: previousActiveNativePathToken
+                    ? (previousActiveNativePathExpiresAtMs ?? null)
+                    : null,
                   speculativeType: stateBeforeUnload.loadedSpeculativeType ?? null,
                   loadedSpeculativeType: stateBeforeUnload.loadedSpeculativeType ?? null,
                   specDraftNMax: stateBeforeUnload.loadedSpecDraftNMax ?? null,

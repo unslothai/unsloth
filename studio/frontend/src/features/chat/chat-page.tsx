@@ -2172,6 +2172,7 @@ export function ChatPage({
           ggufMaxContextLength: null,
           ggufNativeContextLength: null,
           activeNativePathToken: null,
+          activeNativePathExpiresAtMs: null,
           // Clear previous-model counters, else the relaxed external-provider
           // render gate shows stale stats until the next completion.
           contextUsage: null,

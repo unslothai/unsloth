@@ -204,7 +204,9 @@ export function applyActiveModelStatusToStore(
     ggufContextLength: currentGgufContextLength,
     ggufMaxContextLength,
     ggufNativeContextLength,
-    ...(status.is_gguf ? {} : { activeNativePathToken: null }),
+    ...(status.is_gguf
+      ? {}
+      : { activeNativePathToken: null, activeNativePathExpiresAtMs: null }),
     modelRequiresTrustRemoteCode: status.requires_trust_remote_code ?? false,
     defaultChatTemplate: nextDefaultChatTemplate,
     loadedIsMultimodal: isMultimodalResponse(status),
