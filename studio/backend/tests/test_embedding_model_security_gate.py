@@ -311,6 +311,24 @@ def test_local_path_model_is_not_casing_normalized(client, monkeypatch, tmp_path
     assert saved.get("model") == str(local_dir)
 
 
+def test_casing_alias_of_the_default_is_stored_as_the_default(client, monkeypatch):
+    # Repo ids are case-insensitive, but set_rag_embedding_model() compares exact
+    # strings: persisting "Unsloth/default-embed" against a default of
+    # "unsloth/default-embed" would store a custom override, so later changes to the
+    # configured default would stop applying and the UI would show a custom selection.
+    c, saved = client
+    monkeypatch.setitem(sys.modules, "utils.security", _security_stub(blocked = False))
+    import utils.models as _models
+
+    def _must_not_run(m):
+        raise AssertionError("a casing alias of the default must not be ST-normalized")
+
+    monkeypatch.setattr(_models, "resolve_st_cached_repo_id_case", _must_not_run)
+    r = c.put("/embedding-model", json = {"embedding_model": "Unsloth/Default-Embed"})
+    assert r.status_code == 200
+    assert saved.get("model") == "unsloth/default-embed"  # the canonical default
+
+
 def test_llama_backend_model_is_not_casing_normalized(monkeypatch):
     # The llama backend fetches a GGUF companion from the HUB cache, so an ST_HOME recasing
     # could point at a GGUF repo _hf_gguf_backend_error() never validated.

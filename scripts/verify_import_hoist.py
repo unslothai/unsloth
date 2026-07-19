@@ -448,30 +448,48 @@ def _legb_chain(scope: Scope) -> list[Scope]:
 
 
 def _collect_dunder_all(tree: ast.Module) -> set[str]:
-    """Module-level ``__all__`` string entries (``= [...]``, ``+= [...]``, or an
-    annotated assign).
+    """The FINAL module-level ``__all__`` string entries (``= [...]``, ``+= [...]``, or
+    an annotated assign).
 
     A name listed in ``__all__`` is a public re-export, which is a real use of the
     import that binds it. ``__all__`` entries are string constants, not ``Name``
     loads, so the load-based use scan never sees them -- without this a package
     ``__init__`` that adds ``from .x import y`` purely to re-export ``y`` looks
     like an unused hoist and trips ``HOISTED-IMPORT-UNUSED``.
+
+    Only the final value counts, so assignments are replayed in order: a plain ``=``
+    REPLACES the list and ``+=`` extends it. Unioning every assignment instead would
+    let ``__all__ = ["y"]`` followed by ``__all__ = []`` still mark ``y`` used, so a
+    genuinely unused hoist would slip through.
     """
     names: set[str] = set()
     for node in tree.body:
         if isinstance(node, ast.Assign):
-            targets = node.targets
-        elif isinstance(node, (ast.AnnAssign, ast.AugAssign)):
-            targets = [node.target]
+            targets, replaces = node.targets, True
+        elif isinstance(node, ast.AnnAssign):
+            targets, replaces = [node.target], True
+        elif isinstance(node, ast.AugAssign):
+            targets, replaces = [node.target], False
         else:
             continue
         if not any(isinstance(t, ast.Name) and t.id == "__all__" for t in targets):
             continue
         value = node.value
-        if isinstance(value, (ast.List, ast.Tuple, ast.Set)):
+        entries: set[str] = set()
+        literal = isinstance(value, (ast.List, ast.Tuple, ast.Set))
+        if literal:
             for elt in value.elts:
                 if isinstance(elt, ast.Constant) and isinstance(elt.value, str):
-                    names.add(elt.value)
+                    entries.add(elt.value)
+        if replaces:
+            if not literal:
+                # Rebound to something we cannot read statically (a call, a name, a
+                # comprehension). Its contents are unknown, so keep what we had rather
+                # than claim the list is empty and flag real re-exports as unused.
+                continue
+            names = entries
+        else:
+            names |= entries
     return names
 
 
@@ -757,6 +775,27 @@ _SELF_TESTS = {
         'from pkg import a\n__all__ = ["a"]\n',
         'from pkg import a\nfrom pkg import b\n__all__ = ["a"]\n',
         "BLOCKER",
+    ),
+    "reassigned_all_drops_the_reexport": (
+        # only the FINAL __all__ exports anything: a later plain "=" REPLACES the list,
+        # so b is not re-exported and its import is a genuine unused hoist. Unioning
+        # every assignment would have marked it used and let this through.
+        'from pkg import a\n__all__ = ["a"]\n',
+        'from pkg import a\nfrom pkg import b\n__all__ = ["a", "b"]\n__all__ = ["a"]\n',
+        "BLOCKER",
+    ),
+    "augmented_all_extends_the_reexport": (
+        # "+=" extends rather than replaces, so b IS re-exported -> must not block
+        'from pkg import a\n__all__ = ["a"]\n',
+        'from pkg import a\nfrom pkg import b\n__all__ = ["a"]\n__all__ += ["b"]\n',
+        None,
+    ),
+    "unreadable_all_keeps_earlier_reexports": (
+        # rebound to something not statically readable: contents unknown, so keep what
+        # we had rather than flag a real re-export as unused
+        'from pkg import a\n__all__ = ["a"]\n',
+        'from pkg import a\nfrom pkg import b\n__all__ = ["a", "b"]\n__all__ = sorted(__all__)\n',
+        None,
     ),
 }
 

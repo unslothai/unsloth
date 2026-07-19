@@ -271,11 +271,22 @@ def test_marker_rejects_weights_without_tokenizer(tmp_path, monkeypatch):
     assert mc._embedding_marker_in_hf_cache("org/model") is False
 
 
-@pytest.mark.parametrize("tok_file", ["tokenizer_config.json", "vocab.txt", "spiece.model"])
+@pytest.mark.parametrize("tok_file", ["tokenizer.json", "vocab.txt", "spiece.model"])
 def test_marker_accepts_alternate_tokenizer_assets(tmp_path, monkeypatch, tok_file):
-    # Permissive union: any one recognized tokenizer asset suffices.
+    # Permissive union: any one recognized tokenizer ARTIFACT suffices.
     _cache_repo_with_files(tmp_path, monkeypatch, "model.safetensors", tok_file, tokenizer = False)
     assert mc._embedding_marker_in_hf_cache("org/model") is True
+
+
+def test_marker_rejects_tokenizer_config_without_a_vocabulary(tmp_path, monkeypatch):
+    # tokenizer_config.json only DESCRIBES a tokenizer. Without vocab.txt /
+    # vocab.json+merges.txt / tokenizer.json, AutoTokenizer.from_pretrained(
+    # local_files_only=True) fails for common BERT/GPT-style models -- so accepting
+    # it would validate the save and fail at first indexing.
+    _cache_repo_with_files(
+        tmp_path, monkeypatch, "model.safetensors", "tokenizer_config.json", tokenizer = False
+    )
+    assert mc._embedding_marker_in_hf_cache("org/model") is False
 
 
 def _cache_repo_with_files(
@@ -596,6 +607,61 @@ def test_offline_persisted_verdict_matches_across_casing(tmp_path, monkeypatch):
     assert mc.is_embedding_model("BAAI/model") is True
 
 
+def _tag_only_repo(
+    tmp_path,
+    monkeypatch,
+    commit,
+    repo_id = "org/emb",
+):
+    """A complete, loadable snapshot with NO modules.json -- the tag-only embedder shape,
+    which the marker cannot recognize, so detection falls through to the recorded verdict."""
+    hf_root = tmp_path / "hf"
+    repo = hf_root / f"models--{repo_id.replace('/', '--')}"
+    snap = repo / "snapshots" / commit
+    snap.mkdir(parents = True)
+    (snap / "config.json").write_text("{}")
+    (snap / "tokenizer.json").write_text("{}")
+    (snap / "model.safetensors").write_bytes(b"\0")
+    (repo / "refs").mkdir(parents = True)
+    (repo / "refs" / "main").write_text(commit)
+    _fake_hf_cache(monkeypatch, hf_root)
+    monkeypatch.delenv("SENTENCE_TRANSFORMERS_HOME", raising = False)
+
+
+def test_online_verdict_still_applies_at_the_confirmed_revision(tmp_path, monkeypatch):
+    # Control for the test below: same shape, matching revision -> still trusted.
+    monkeypatch.setattr(mc, "_load_persisted_embedders", lambda: {"org/emb": "commit_a"})
+    monkeypatch.setattr(mc, "_persist_embedder", lambda name, commit: None)
+    _tag_only_repo(tmp_path, monkeypatch, "commit_a")
+    monkeypatch.setenv("HF_HUB_OFFLINE", "1")
+    assert mc.is_embedding_model("org/emb") is True
+
+
+def test_online_verdict_stops_applying_when_the_revision_advances(tmp_path, monkeypatch):
+    # A verdict records that the Hub tagged ONE revision an embedder. Once refs/main
+    # advances -- e.g. to a complete but non-embedding Transformer snapshot -- the old
+    # positive says nothing about what would now load, so the offline path must not
+    # accept it without force and let RAG silently load a non-embedder.
+    monkeypatch.setattr(mc, "_load_persisted_embedders", lambda: {"org/emb": "commit_a"})
+    monkeypatch.setattr(mc, "_persist_embedder", lambda name, commit: None)
+    _tag_only_repo(tmp_path, monkeypatch, "commit_b")  # refs/main moved on
+    monkeypatch.setenv("HF_HUB_OFFLINE", "1")
+    assert mc.is_embedding_model("org/emb") is False
+
+
+def test_verdict_without_a_revision_is_pinned_to_the_one_it_meets(tmp_path, monkeypatch):
+    # Confirmed online before the repo was cached, so there was no revision to record.
+    # The first revision observed afterwards is the one it was about: trust it, and pin
+    # it so a LATER advance is caught.
+    pinned: dict = {}
+    monkeypatch.setattr(mc, "_load_persisted_embedders", lambda: {"org/emb": None})
+    monkeypatch.setattr(mc, "_persist_embedder", lambda name, commit: pinned.update({name: commit}))
+    _tag_only_repo(tmp_path, monkeypatch, "first_commit")
+    monkeypatch.setenv("HF_HUB_OFFLINE", "1")
+    assert mc.is_embedding_model("org/emb") is True
+    assert pinned == {"org/emb": "first_commit"}
+
+
 def test_persist_embedder_concurrent_writes_keep_every_verdict(tmp_path, monkeypatch):
     # Concurrent confirmations must not drop entries: serialized writes + per-thread temp files.
     import threading
@@ -605,7 +671,7 @@ def test_persist_embedder_concurrent_writes_keep_every_verdict(tmp_path, monkeyp
 
     def _writer(name):
         barrier.wait()
-        mc._persist_embedder(name)
+        mc._persist_embedder(name, "aaa")
 
     threads = [threading.Thread(target = _writer, args = (n,)) for n in names]
     for t in threads:
@@ -614,7 +680,7 @@ def test_persist_embedder_concurrent_writes_keep_every_verdict(tmp_path, monkeyp
         t.join()
 
     persisted = mc._load_persisted_embedders()
-    assert {n.casefold() for n in names} <= persisted
+    assert {n.casefold() for n in names} <= set(persisted)
 
 
 def test_persist_embedder_is_best_effort_when_home_unwritable(tmp_path, monkeypatch):
@@ -630,7 +696,7 @@ def test_persist_embedder_is_best_effort_when_home_unwritable(tmp_path, monkeypa
 
     _fake_hf_model_info(monkeypatch, _info)
     assert mc.is_embedding_model("org/emb") is True
-    assert mc._load_persisted_embedders() == set()
+    assert mc._load_persisted_embedders() == {}
 
 
 def test_offline_cached_non_st_returns_false_without_network(tmp_path, monkeypatch):

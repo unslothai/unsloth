@@ -406,6 +406,15 @@ def update_embedding_model(
             log = logger,
         ) from exc
     hf_token = (payload.hf_token or "").strip() or None
+    # Repo ids are case-insensitive, so a casing-only alias of the default IS the
+    # default. Canonicalize before any comparison: set_rag_embedding_model() and the
+    # gates below all compare exact strings, so leaving the alias in place would run
+    # the verification/scan for a custom model AND persist an override, after which
+    # later changes to the configured default would stop applying and the UI would
+    # report a custom selection.
+    _default_model = default_embedding_model()
+    if not is_local_path(model) and model.casefold() == _default_model.casefold():
+        model = _default_model
     # The env/default model needs no verification; saving it is a no-op override.
     # A local GGUF on the llama-server backend is accepted as-is: it is exactly
     # what the backend loads, and HF metadata cannot verify a local path.
@@ -415,9 +424,7 @@ def update_embedding_model(
     # (inert) from effective_gguf_repo(), so scanning the ST repo's pickle here would
     # wrongly reject a custom repo whose GGUF companion is clean; the GGUF availability
     # checks below cover that path instead.
-    scan_st_pickle = (
-        model != default_embedding_model() and not is_local_gguf and not _llama_backend_active()
-    )
+    scan_st_pickle = model != _default_model and not is_local_gguf and not _llama_backend_active()
     # Read the offline state ONCE: the module probe and the scan must agree, and
     # _hf_offline_if_dns_dead() can flip the vars between two reads.
     from utils.utils import hf_env_offline
@@ -461,7 +468,7 @@ def update_embedding_model(
                     "cannot be used as the embedding model."
                 ),
             )
-    if model != default_embedding_model() and not payload.force and not is_local_gguf:
+    if model != _default_model and not payload.force and not is_local_gguf:
         from core.rag import config as rag_config
 
         # A GGUF-named repo on the llama-server backend is loaded from its .gguf
@@ -485,16 +492,13 @@ def update_embedding_model(
     # offline ST load resolves the cache by exact case (against ST_HOME if set, else the Hub
     # cache). No-op when nothing case-matching is cached. Three cases are left alone:
     #
-    #   * the default -- rewriting it would make set_rag_embedding_model()'s exact-string
-    #     default comparison treat it as an override, so later default changes stop applying;
+    #   * the default, including a casing-only alias of it -- rewriting it would make
+    #     set_rag_embedding_model()'s exact-string default comparison treat it as an
+    #     override, so later default changes stop applying;
     #   * a local path -- loaded from disk; a cache-collision recasing would stop resolving to it;
     #   * the llama-server backend -- loads a GGUF companion from the HUB cache, so an ST_HOME
     #     spelling could pick a repo _hf_gguf_backend_error() never validated.
-    if (
-        model != default_embedding_model()
-        and not is_local_path(model)
-        and not _llama_backend_active()
-    ):
+    if model != _default_model and not is_local_path(model) and not _llama_backend_active():
         model = resolve_st_cached_repo_id_case(model)
     set_rag_embedding_model(model)
     logger.info(

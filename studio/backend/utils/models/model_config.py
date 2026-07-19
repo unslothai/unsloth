@@ -2073,6 +2073,10 @@ def download_gguf_file(
 
 # Cache embedding detection per session to avoid repeated HF API calls
 _embedding_detection_cache: Dict[tuple, bool] = {}
+# refs/main commit a positive verdict was confirmed AT (None when the repo was not
+# cached then). A verdict says the Hub tagged THAT revision an embedder, so it must
+# not be trusted once the active revision moves on.
+_embedding_verdict_commit: Dict[tuple, Optional[str]] = {}
 
 
 def _persisted_embedders_path() -> Path:
@@ -2095,47 +2099,77 @@ def _verdict_key(model_name: str) -> str:
     return model_name.casefold()
 
 
-def _load_persisted_embedders() -> set:
-    """Case-folded repo ids recorded as embedders in a prior session; empty set on any
-    error (missing / empty / corrupt read as "nothing recorded"). Never raises."""
+def _load_persisted_embedders() -> dict:
+    """Case-folded repo id -> the refs/main commit the verdict was confirmed at (None when
+    unknown). Empty on any error (missing / empty / corrupt read as "nothing recorded").
+    A legacy list file is read as ids with an unknown revision. Never raises."""
     try:
         with open(_persisted_embedders_path(), encoding = "utf-8") as fh:
             data = json.load(fh)
-        if isinstance(data, list):
-            return {_verdict_key(name) for name in data if isinstance(name, str)}
+        if isinstance(data, dict):
+            return {
+                _verdict_key(name): (commit if isinstance(commit, str) and commit else None)
+                for name, commit in data.items()
+                if isinstance(name, str)
+            }
+        if isinstance(data, list):  # pre-revision-pinning format
+            return {_verdict_key(name): None for name in data if isinstance(name, str)}
     except Exception:
         pass
-    return set()
+    return {}
 
 
-def _persist_embedder(model_name: str) -> None:
-    """Record *model_name* as an online-confirmed embedder, best-effort. Positive Hub
-    verdicts only, case-folded, serialized under ``_persist_lock`` via a per-thread temp
-    file. Any failure is swallowed -- persistence is an optimization, not a correctness
-    requirement."""
+def _persist_embedder(model_name: str, commit: Optional[str]) -> None:
+    """Record *model_name* as an online-confirmed embedder AT *commit*, best-effort.
+    Positive Hub verdicts only, case-folded, serialized under ``_persist_lock`` via a
+    per-thread temp file. Any failure is swallowed -- persistence is an optimization, not a
+    correctness requirement."""
     try:
         key = _verdict_key(model_name)
         with _persist_lock:
             current = _load_persisted_embedders()
-            if key in current:
+            if current.get(key) == commit and key in current:
                 return
-            current.add(key)
+            current[key] = commit
             path = _persisted_embedders_path()
             path.parent.mkdir(parents = True, exist_ok = True)
             tmp = path.with_name(path.name + f".{os.getpid()}.{threading.get_ident()}.tmp")
             with open(tmp, "w", encoding = "utf-8") as fh:
-                json.dump(sorted(current), fh)
+                json.dump(current, fh, sort_keys = True)
             os.replace(tmp, path)
     except Exception as e:
         logger.debug(f"Could not persist embedder verdict for {model_name}: {e}")
 
 
-def _known_embedder(model_name: str, cache_key: tuple) -> bool:
-    """True when *model_name* was confirmed an embedder online (session memo or persisted
-    allowlist). Callers still gate this on a materialized snapshot."""
+def _known_embedder(model_name: str, cache_key: tuple, active_commit: Optional[str]) -> bool:
+    """True when *model_name* was confirmed an embedder online FOR THE ACTIVE REVISION.
+
+    A verdict records that the Hub tagged one particular revision an embedder. If
+    ``refs/main`` has since advanced -- say to a complete but non-embedding Transformer
+    snapshot -- the recorded positive says nothing about the revision that would now load,
+    so it is not trusted and the caller falls through to re-verification.
+
+    A verdict confirmed before the repo was cached has no revision to compare; the first
+    revision observed afterwards is the one it was about, so it is trusted and PINNED here,
+    which is what lets a later advance be caught. Callers still gate on a materialized
+    snapshot.
+    """
+    known, recorded = False, None
     if _embedding_detection_cache.get(cache_key) is True:
+        known, recorded = True, _embedding_verdict_commit.get(cache_key)
+    else:
+        persisted = _load_persisted_embedders()
+        key = _verdict_key(model_name)
+        if key in persisted:
+            known, recorded = True, persisted[key]
+    if not known:
+        return False
+    if recorded is None:
+        if active_commit is not None:
+            _embedding_verdict_commit[cache_key] = active_commit
+            _persist_embedder(model_name, active_commit)
         return True
-    return _verdict_key(model_name) in _load_persisted_embedders()
+    return recorded == active_commit
 
 
 # Base-model weight files the default Torch SentenceTransformer backend consumes:
@@ -2147,10 +2181,14 @@ _ST_SHARD_RE = re.compile(r"^(model|pytorch_model)-(\d+)-of-(\d+)\.(safetensors|
 # A Transformer module also loads an AutoTokenizer, so weights without any tokenizer asset
 # fail the local_files_only load. Any ONE of these suffices -- a permissive union, so only
 # a genuinely tokenizer-less partial download is rejected.
+# Real tokenizer ARTIFACTS -- a serialized tokenizer or its vocabulary. Note that
+# tokenizer_config.json is deliberately absent: it only DESCRIBES a tokenizer, so a
+# snapshot carrying it without vocab.txt / vocab.json+merges.txt / tokenizer.json
+# still fails AutoTokenizer.from_pretrained(local_files_only=True) for common
+# BERT/GPT-style models -- validating here and failing at first indexing.
 _ST_TOKENIZER_FILES = frozenset(
     {
         "tokenizer.json",
-        "tokenizer_config.json",
         "tokenizer.model",
         "vocab.txt",
         "vocab.json",
@@ -2223,6 +2261,20 @@ def _snapshot_is_loadable_st_model(snap: Path) -> bool:
         return False
 
 
+def _active_commit(repo_id: str) -> Optional[str]:
+    """The commit ``refs/main`` resolves to for *repo_id*, or None when not cached /
+    unreadable. This is the revision an offline load would use, so it is what an
+    online verdict has to be pinned to."""
+    try:
+        repo_dir = _st_cache_repo_dir(repo_id)
+        if repo_dir is None:
+            return None
+        commit = (repo_dir / "refs" / "main").read_text(encoding = "utf-8").strip()
+        return commit or None
+    except Exception:
+        return None
+
+
 def _active_snapshot_dir(repo_id: str) -> Optional[Path]:
     """The materialized snapshot dir the offline ``local_files_only`` load resolves for
     *repo_id*, or None. Mirrors that resolution: the :func:`_st_cache_repo_dir` repo dir, its
@@ -2290,6 +2342,7 @@ def is_embedding_model(model_name: str, hf_token: Optional[str] = None) -> bool:
         snapshot = _active_snapshot_dir(model_name)
         if snapshot is not None and _snapshot_is_loadable_st_model(snapshot):
             return True
+        active_commit = _active_commit(model_name)
         # Trust an online-confirmed positive (memo or persisted allowlist) only when the
         # active snapshot has a complete weight set: a recorded True proves the Hub tagged it
         # an embedder, not that its files are on disk. The weight gate covers a downloaded
@@ -2297,7 +2350,7 @@ def is_embedding_model(model_name: str, hf_token: Optional[str] = None) -> bool:
         # snapshot.
         if (
             snapshot is not None
-            and _known_embedder(model_name, cache_key)
+            and _known_embedder(model_name, cache_key, active_commit)
             and _snapshot_has_complete_weights(snapshot)
         ):
             return True
@@ -2323,8 +2376,11 @@ def is_embedding_model(model_name: str, hf_token: Optional[str] = None) -> bool:
         _embedding_detection_cache[cache_key] = is_emb
         if is_emb:
             # Durably record the positive so a later offline session can recognize a
-            # downloaded tag-only embedder.
-            _persist_embedder(model_name)
+            # downloaded tag-only embedder -- pinned to the revision it was confirmed at,
+            # so it stops applying once refs/main advances.
+            confirmed_at = _active_commit(model_name)
+            _embedding_verdict_commit[cache_key] = confirmed_at
+            _persist_embedder(model_name, confirmed_at)
             logger.info(
                 f"Model {model_name} detected as embedding model: "
                 f"pipeline_tag={pipeline_tag}, "
