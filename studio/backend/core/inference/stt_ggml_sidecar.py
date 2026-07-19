@@ -27,6 +27,7 @@ from __future__ import annotations
 import io
 import json
 import os
+import re
 import shutil
 import socket
 import subprocess
@@ -147,20 +148,27 @@ def find_whisper_server_binary() -> Optional[str]:
     env_path = os.environ.get("WHISPER_SERVER_PATH")
     if env_path:
         p = Path(env_path)
-        if p.is_file():
+        if _is_runnable(p):
             return str(p)
 
     custom_dir = os.environ.get("UNSLOTH_WHISPER_CPP_PATH")
     if custom_dir:
         for p in _layout_candidates(Path(custom_dir)):
-            if p.is_file():
+            if _is_runnable(p):
                 return str(p)
 
     for p in _layout_candidates(_managed_whisper_cpp_dir()):
-        if p.is_file():
+        if _is_runnable(p):
             return str(p)
 
     return shutil.which(binary_name)
+
+
+def _is_runnable(p: Path) -> bool:
+    """A real whisper-server is an executable file. On Windows os.access(X_OK) is
+    effectively an existence check; on Unix it rejects a non-executable stub so a
+    half-written or wrong-mode file is not mistaken for the server."""
+    return p.is_file() and (sys.platform == "win32" or os.access(p, os.X_OK))
 
 
 def is_available() -> bool:
@@ -182,6 +190,115 @@ def ensure_engine_available() -> str:
             "`unsloth studio update` to install it."
         )
     return binary
+
+
+# ---------------------------------------------------------------------------
+# whisper-server child-process environment
+# ---------------------------------------------------------------------------
+# A prebuilt whisper-server co-locates its shared libs (libwhisper, libggml-*,
+# and for GPU bundles the HIP/Vulkan backends) beside the binary under an
+# $ORIGIN / @loader_path rpath. We still prepend the binary dir to the loader
+# path as a backstop (and for hosts whose loader ignores the rpath), and scrub
+# secret-bearing vars the downloaded binary never needs (models load via -m; the
+# parent process keeps its own env for HF downloads). On WSL2 ROCm the system
+# HIP libs go first: a bundle's bare-metal HIP cannot drive /dev/dxg and
+# segfaults, so the WSL-capable libamdhip64/librocdxg must win while the bundle
+# still supplies libggml-hip/librocblas. Mirrors install_llama_prebuilt.py's
+# binary_env(); kept local so the sidecar need not import the installer CLI.
+# (The CUDA-from-PyTorch runtime_line lib discovery lands when CUDA bundles ship;
+# CPU/Metal P0 bundles are static and ROCm/Vulkan bundles are self-contained.)
+
+_STT_SECRET_ENV_EXACT = frozenset({
+    "HF_TOKEN", "HUGGING_FACE_HUB_TOKEN", "GH_TOKEN", "GITHUB_TOKEN",
+    "WANDB_API_KEY", "OPENAI_API_KEY", "ANTHROPIC_API_KEY", "AWS_ACCESS_KEY_ID",
+    "AWS_SECRET_ACCESS_KEY", "AWS_SESSION_TOKEN", "GOOGLE_APPLICATION_CREDENTIALS",
+    "AZURE_CLIENT_SECRET", "KUBECONFIG", "SSH_AUTH_SOCK",
+})
+# Case-insensitive substring markers for names we do not enumerate (no bare "KEY").
+_STT_SECRET_ENV_MARKERS = (
+    "TOKEN", "SECRET", "PASSWORD", "PASSWD", "PASSPHRASE", "CREDENTIAL",
+    "PRIVATE_KEY", "API_KEY",
+)
+# Proxy / index URLs embed creds in their value; the offline server never needs them.
+_STT_SECRET_ENV_URL_NAMES = frozenset({
+    "HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "FTP_PROXY", "RSYNC_PROXY",
+    "PIP_INDEX_URL", "PIP_EXTRA_INDEX_URL", "UV_INDEX_URL", "UV_DEFAULT_INDEX",
+    "UV_EXTRA_INDEX_URL",
+})
+# Also drop values with URL userinfo creds (scheme://user:secret@host).
+_STT_URL_USERINFO_RE = re.compile(r"://[^/@\s]+@")
+
+
+def _stt_is_secret_env_name(name: str) -> bool:
+    upper = name.upper()
+    return (
+        upper in _STT_SECRET_ENV_EXACT
+        or upper in _STT_SECRET_ENV_URL_NAMES
+        or any(marker in upper for marker in _STT_SECRET_ENV_MARKERS)
+    )
+
+
+def _wsl_system_rocm_lib_dirs() -> list[str]:
+    """System ROCm lib dir(s) to load before a bundle's HIP on WSL2. Strict no-op
+    off WSL (needs /dev/dxg, a "microsoft" /proc/version, and a librocdxg)."""
+    try:
+        if not os.path.exists("/dev/dxg"):
+            return []
+        with open("/proc/version", encoding = "utf-8", errors = "replace") as fh:
+            if "microsoft" not in fh.read().lower():
+                return []
+    except OSError:
+        return []
+    dirs: list[str] = []
+    for d in ("/opt/rocm/lib", "/opt/rocm/lib64"):
+        if os.path.exists(os.path.join(d, "librocdxg.so")) or os.path.exists(
+            os.path.join(d, "librocdxg.so.1")
+        ):
+            dirs.append(d)
+    return dirs
+
+
+def _dedupe_existing_dirs(paths: list[str]) -> list[str]:
+    seen: set[str] = set()
+    out: list[str] = []
+    for raw in paths:
+        if not raw:
+            continue
+        try:
+            p = Path(raw).expanduser()
+            if not p.is_dir():
+                continue
+            resolved = str(p.resolve())
+        except (OSError, ValueError):
+            continue
+        if resolved not in seen:
+            seen.add(resolved)
+            out.append(resolved)
+    return out
+
+
+def _whisper_server_child_env(binary: str) -> dict[str, str]:
+    """Env for the whisper-server subprocess: secrets scrubbed, co-located libs on
+    the loader path, WSL system HIP first on WSL2 ROCm."""
+    env = {
+        k: v
+        for k, v in os.environ.items()
+        if not _stt_is_secret_env_name(k) and not _STT_URL_USERINFO_RE.search(v or "")
+    }
+    bin_dir = str(Path(binary).parent)
+    if sys.platform == "win32":
+        var, lead = "PATH", [bin_dir]
+    elif sys.platform == "darwin":
+        var, lead = "DYLD_LIBRARY_PATH", [bin_dir]
+    else:
+        var, lead = "LD_LIBRARY_PATH", [bin_dir]
+        wsl_rocm = _wsl_system_rocm_lib_dirs()
+        if wsl_rocm:
+            lead = [*wsl_rocm, bin_dir]
+            env.setdefault("HSA_ENABLE_DXG_DETECTION", "1")
+    existing = [p for p in env.get(var, "").split(os.pathsep) if p]
+    env[var] = os.pathsep.join(_dedupe_existing_dirs([*lead, *existing]))
+    return env
 
 
 # ---------------------------------------------------------------------------
@@ -476,6 +593,9 @@ class GgmlSttSidecar:
                     stdout = subprocess.DEVNULL,
                     stderr = subprocess.DEVNULL,
                     stdin = subprocess.DEVNULL,
+                    # Co-located GPU libs on the loader path (WSL system HIP first),
+                    # secrets scrubbed from the downloaded binary's env.
+                    env = _whisper_server_child_env(binary),
                     # Die with Studio (Linux PDEATHSIG, Windows job) so a crash
                     # never orphans a server still holding the model.
                     **child_popen_kwargs(),

@@ -155,11 +155,20 @@ def _has_usable_nvidia() -> bool:
 
 def _detect_rocm_gfx() -> tuple[bool, str | None]:
     """Best-effort ROCm detection returning (has_rocm, gfx_target). Never raises."""
+    # WSL2 ROCDXG: rocminfo enumerates the GPU over /dev/dxg only when
+    # HSA_ENABLE_DXG_DETECTION=1 (a no-op on bare metal), and can live only under
+    # /opt/rocm/bin (its profile.d PATH drop-in reaches login shells only). Probe
+    # accordingly or a WSL ROCm host is misdetected as CPU-only. Mirrors
+    # install_llama_prebuilt.py's WSL detection.
+    dxg_env = {**os.environ}
+    dxg_env.setdefault("HSA_ENABLE_DXG_DETECTION", "1")
     for tool, args in (
         ("rocminfo", []),
         ("amd-smi", ["static", "--asic"]),
     ):
         binary = shutil.which(tool)
+        if not binary and tool == "rocminfo" and os.access("/opt/rocm/bin/rocminfo", os.X_OK):
+            binary = "/opt/rocm/bin/rocminfo"
         if not binary:
             continue
         try:
@@ -168,6 +177,7 @@ def _detect_rocm_gfx() -> tuple[bool, str | None]:
                 capture_output = True,
                 text = True,
                 timeout = 10,
+                env = dxg_env if tool == "rocminfo" else None,
                 **_windows_hidden_kwargs(),
             )
         except (OSError, ValueError, subprocess.SubprocessError):
@@ -176,11 +186,18 @@ def _detect_rocm_gfx() -> tuple[bool, str | None]:
             continue
         for line in result.stdout.splitlines():
             token = line.strip().lower()
-            if "gfx" in token:
-                for word in token.replace(":", " ").replace("\t", " ").split():
-                    if word.startswith("gfx") and len(word) > 3:
-                        return True, word
-                return True, None
+            if "gfx" not in token:
+                continue
+            for word in token.replace(":", " ").replace("\t", " ").split():
+                # Real GPU ISA id: gfx<nonzero><alnum...> (gfx908, gfx90a, gfx1100).
+                # Skip the CPU agent (gfx000) and generic ISA lines (gfx11-generic).
+                if (
+                    word.startswith("gfx")
+                    and len(word) > 3
+                    and word[3] != "0"
+                    and word[3:].isalnum()
+                ):
+                    return True, word
     return False, None
 
 

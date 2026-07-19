@@ -4,6 +4,8 @@
 import http.server
 import io
 import json
+import os
+import sys
 import threading
 import wave
 
@@ -81,6 +83,7 @@ def test_curated_filenames_match_repo_naming():
 def test_env_binary_override_wins(monkeypatch, tmp_path):
     binary = tmp_path / "whisper-server"
     binary.write_text("#!/bin/sh\n")
+    binary.chmod(0o755)  # find_whisper_server_binary requires an executable
     monkeypatch.setenv("WHISPER_SERVER_PATH", str(binary))
     assert find_whisper_server_binary() == str(binary)
 
@@ -91,6 +94,7 @@ def test_env_dir_override_scans_layouts(monkeypatch, tmp_path):
     build_bin.mkdir(parents = True)
     binary = build_bin / "whisper-server"
     binary.write_text("#!/bin/sh\n")
+    binary.chmod(0o755)  # find_whisper_server_binary requires an executable
     monkeypatch.setenv("UNSLOTH_WHISPER_CPP_PATH", str(tmp_path))
     assert find_whisper_server_binary() == str(binary)
 
@@ -104,6 +108,59 @@ def test_missing_binary_reports_unavailable(monkeypatch, tmp_path):
     assert not ggml_module.is_available()
     with pytest.raises(SttEngineUnavailableError):
         ggml_module.ensure_engine_available()
+
+
+def test_non_executable_binary_is_not_runnable(monkeypatch, tmp_path):
+    if sys.platform == "win32":
+        pytest.skip("X_OK is an existence check on Windows")
+    binary = tmp_path / "whisper-server"
+    binary.write_text("#!/bin/sh\n")  # written but not chmod +x
+    monkeypatch.setenv("WHISPER_SERVER_PATH", str(binary))
+    monkeypatch.setattr(ggml_module.shutil, "which", lambda name: None)
+    assert find_whisper_server_binary() is None
+
+
+# ---------------------------------------------------------------------------
+# whisper-server child-process environment
+# ---------------------------------------------------------------------------
+
+
+def _loader_path_var() -> str:
+    return {"win32": "PATH", "darwin": "DYLD_LIBRARY_PATH"}.get(
+        sys.platform, "LD_LIBRARY_PATH"
+    )
+
+
+def test_child_env_scrubs_secrets_and_adds_lib_dir(monkeypatch, tmp_path):
+    monkeypatch.setenv("HF_TOKEN", "secret-token")       # exact name
+    monkeypatch.setenv("MY_API_KEY", "nope")             # marker substring
+    monkeypatch.setenv("HTTPS_PROXY", "http://u:p@px:8080")  # url-name
+    monkeypatch.setenv("SOME_REMOTE", "https://u:pw@host/repo")  # url-userinfo value
+    monkeypatch.setenv("STT_KEEPME", "keep")             # benign
+    binary = tmp_path / "whisper-server"
+    binary.write_text("#!/bin/sh\n")
+    env = ggml_module._whisper_server_child_env(str(binary))
+    for scrubbed in ("HF_TOKEN", "MY_API_KEY", "HTTPS_PROXY", "SOME_REMOTE"):
+        assert scrubbed not in env
+    assert env.get("STT_KEEPME") == "keep"
+    assert str(tmp_path.resolve()) in env[_loader_path_var()].split(os.pathsep)
+
+
+def test_child_env_wsl_rocm_prepends_system_hip(monkeypatch, tmp_path):
+    if sys.platform != "linux":
+        pytest.skip("WSL ROCm library precedence is Linux-only")
+    rocm = tmp_path / "rocm-lib"
+    rocm.mkdir()
+    bindir = tmp_path / "bin"
+    bindir.mkdir()
+    binary = bindir / "whisper-server"
+    binary.write_text("#!/bin/sh\n")
+    monkeypatch.setattr(ggml_module, "_wsl_system_rocm_lib_dirs", lambda: [str(rocm)])
+    env = ggml_module._whisper_server_child_env(str(binary))
+    parts = env["LD_LIBRARY_PATH"].split(os.pathsep)
+    assert parts[0] == str(rocm.resolve())          # system HIP wins
+    assert str(bindir.resolve()) in parts           # bundle libs still present
+    assert env.get("HSA_ENABLE_DXG_DETECTION") == "1"
 
 
 def test_engine_unavailable_is_stt_unavailable():

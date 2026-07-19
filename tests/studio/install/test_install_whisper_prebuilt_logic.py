@@ -115,6 +115,35 @@ def test_detect_host_unsupported(monkeypatch, system, machine):
         M.detect_host()
 
 
+def test_detect_rocm_gfx_wsl_env_and_skips_cpu_agent(monkeypatch):
+    # rocminfo lists the CPU agent (gfx000) before the real GPU (gfx1100); the
+    # probe must skip gfx000 and pick gfx1100, and pass HSA_ENABLE_DXG_DETECTION
+    # so a WSL /dev/dxg host enumerates at all.
+    rocminfo_out = "  Name:  gfx000\n  Marketing: CPU\n  Name:  gfx1100\n"
+    captured = {}
+
+    def fake_run(cmd, *a, **kw):
+        captured["env"] = kw.get("env")
+        return types.SimpleNamespace(returncode = 0, stdout = rocminfo_out, stderr = "")
+
+    monkeypatch.setattr(M.shutil, "which", lambda name: "/usr/bin/rocminfo" if name == "rocminfo" else None)
+    monkeypatch.setattr(M.subprocess, "run", fake_run)
+    has_rocm, gfx = M._detect_rocm_gfx()
+    assert (has_rocm, gfx) == (True, "gfx1100")
+    assert captured["env"]["HSA_ENABLE_DXG_DETECTION"] == "1"
+
+
+def test_detect_rocm_gfx_cpu_only_returns_false(monkeypatch):
+    # Only the CPU agent + a generic ISA line: no real GPU -> not ROCm.
+    out = "  Name:  gfx000\n  Name:  gfx11-generic\n"
+    monkeypatch.setattr(M.shutil, "which", lambda name: "/usr/bin/rocminfo" if name == "rocminfo" else None)
+    monkeypatch.setattr(
+        M.subprocess, "run",
+        lambda *a, **kw: types.SimpleNamespace(returncode = 0, stdout = out, stderr = ""),
+    )
+    assert M._detect_rocm_gfx() == (False, None)
+
+
 # ── Backend override + auto-detect ──
 def test_auto_detect_backend_prefers_metal_on_apple_silicon():
     assert M.auto_detect_backend(_host("macos", "arm64")) == "metal"
