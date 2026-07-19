@@ -3371,11 +3371,14 @@ if ($LocalLlamaCppLinked) {
         if ($env:UNSLOTH_LLAMA_RELEASE_TAG) {
             $prebuiltArgs += @("--published-release-tag", $env:UNSLOTH_LLAMA_RELEASE_TAG)
         }
-        # UNSLOTH_LLAMA_CPP_BACKEND: "auto" (default) or "cpu" -- forces the CPU-only
-        # prebuilt, bypassing Vulkan/CUDA/ROCm selection. Fixes Intel iGPU Vulkan
-        # crashes (#7213).
-        if ($env:UNSLOTH_LLAMA_CPP_BACKEND -eq "cpu") {
+        # UNSLOTH_LLAMA_CPP_BACKEND=cpu forces the CPU-only prebuilt (case-insensitive
+        # and whitespace-trimmed), bypassing Vulkan/CUDA/ROCm. Fixes Intel iGPU Vulkan
+        # crashes (#7213). Maps to install_llama_prebuilt.py --cpu-fallback.
+        $llamaBackend = "$($env:UNSLOTH_LLAMA_CPP_BACKEND)".Trim().ToLowerInvariant()
+        if ($llamaBackend -eq "cpu") {
             $prebuiltArgs += "--cpu-fallback"
+        } elseif ($llamaBackend -and $llamaBackend -ne "auto") {
+            Write-Host "[WARN] Ignoring UNSLOTH_LLAMA_CPP_BACKEND='$($env:UNSLOTH_LLAMA_CPP_BACKEND)' (expected 'auto' or 'cpu')" -ForegroundColor Yellow
         }
         $prevEAPPrebuilt = $ErrorActionPreference
         $ErrorActionPreference = "Continue"
