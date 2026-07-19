@@ -1664,10 +1664,62 @@ def _recompute_chat_thread_updated_at(conn: sqlite3.Connection, thread_id: str) 
     )
 
 
-def upsert_chat_message(message: dict) -> dict:
+def _research_message_ids(conn: sqlite3.Connection, thread_id: str) -> set[str]:
+    return {
+        str(message_id)
+        for row in conn.execute(
+            "SELECT user_message_id, assistant_message_id FROM research_runs WHERE thread_id = ?",
+            (thread_id,),
+        ).fetchall()
+        for message_id in row
+        if message_id is not None
+    }
+
+
+def _research_message_would_change(
+    conn: sqlite3.Connection, thread_id: str, message: dict
+) -> bool:
+    row = conn.execute(
+        "SELECT parent_id, role, content_json, metadata_json "
+        "FROM chat_messages WHERE thread_id = ? AND id = ?",
+        (thread_id, str(message["id"])),
+    ).fetchone()
+    if row is None:
+        return False
+
+    def canon(value: object) -> str | None:
+        return json.dumps(value, sort_keys=True) if value is not None else None
+
+    return (
+        canon(message.get("content", [])) != canon(json.loads(row["content_json"] or "[]"))
+        or canon(message.get("metadata"))
+        != canon(json.loads(row["metadata_json"]) if row["metadata_json"] else None)
+        or (message.get("parentId") or None) != (row["parent_id"] or None)
+        or str(message.get("role")) != str(row["role"])
+    )
+
+
+def _guard_research_messages(
+    conn: sqlite3.Connection, thread_id: str, messages: list[dict]
+) -> None:
+    protected = _research_message_ids(conn, thread_id)
+    if not protected:
+        return
+    for message in messages:
+        if str(message["id"]) in protected and _research_message_would_change(
+            conn, thread_id, message
+        ):
+            raise ChatMessageProtectedError(
+                "Research prompts and responses are server-managed and cannot be edited"
+            )
+
+
+def upsert_chat_message(message: dict, *, allow_research_update: bool = False) -> dict:
     conn = get_connection()
     try:
         conn.execute("BEGIN IMMEDIATE")
+        if not allow_research_update:
+            _guard_research_messages(conn, message["threadId"], [message])
         _raise_if_chat_message_thread_conflicts(
             conn,
             message["threadId"],
@@ -1716,10 +1768,14 @@ def sync_chat_messages(
     thread_id: str,
     messages: list[dict],
     prune_missing: bool = False,
+    *,
+    allow_research_update: bool = False,
 ) -> list[dict]:
     conn = get_connection()
     try:
         conn.execute("BEGIN IMMEDIATE")
+        if not allow_research_update:
+            _guard_research_messages(conn, thread_id, messages)
         _raise_if_chat_message_thread_conflicts(
             conn,
             thread_id,
@@ -1762,17 +1818,7 @@ def sync_chat_messages(
                 ).fetchall()
             }
             removed_ids = existing_ids - survivor_ids
-            research_message_ids = {
-                str(message_id)
-                for row in conn.execute(
-                    """SELECT user_message_id, assistant_message_id
-                       FROM research_runs WHERE thread_id = ?""",
-                    (thread_id,),
-                ).fetchall()
-                for message_id in row
-                if message_id is not None
-            }
-            if removed_ids & research_message_ids:
+            if removed_ids & _research_message_ids(conn, thread_id):
                 raise ChatMessageProtectedError(
                     "Research prompts and responses cannot be deleted from their original thread"
                 )

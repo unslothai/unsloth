@@ -65,6 +65,10 @@ _QUERY_PHONE = re.compile(
     r"(?<!\w)\+\d[\d\s().-]{7,17}\d(?!\w)|(?<!\w)\(?\d{3}\)?[\s.-]\d{3}[\s.-]\d{4}(?!\w)"
 )
 _QUERY_IPV4 = re.compile(r"(?<![\w.])(?:\d{1,3}\.){3}\d{1,3}(?![\w.])")
+_QUERY_IPV6 = re.compile(
+    r"(?<![0-9A-Fa-f:])\[?(?:[0-9A-Fa-f]{0,4}:){2,}[0-9A-Fa-f.]*(?:%[A-Za-z0-9_.-]+)?\]?"
+    r"(?![0-9A-Fa-f:])"
+)
 _QUERY_LABELED_PRIVATE_ID = re.compile(
     r"(?ix)\b(?:passport|driver(?:'s)?[\s_-]?licen[cs]e|national[\s_-]?id"
     r"|tax[\s_-]?id|account[\s_-]?(?:number|no))\s*[:=#-]?\s*[A-Za-z0-9][A-Za-z0-9_-]{4,24}\b"
@@ -190,6 +194,34 @@ def _redact_nonpublic_ip(match: "re.Match[str]") -> str:
         return match.group(0)
 
 
+def _redact_nonpublic_ipv6(match: "re.Match[str]") -> str:
+    # Strip brackets and any zone id before validating; redact non-global addresses.
+    candidate = match.group(0).strip("[]").split("%", 1)[0]
+    try:
+        return " " if not ipaddress.ip_address(candidate).is_global else match.group(0)
+    except ValueError:
+        return match.group(0)
+
+
+def _escape_link_destination(url: str) -> str:
+    # Escape an unbalanced ")" so a source URL cannot close the citation and inject a link.
+    out: list[str] = []
+    depth = 0
+    for char in url:
+        if char == "\\":
+            out.append("\\\\")
+        elif char == "(":
+            depth += 1
+            out.append(char)
+        elif char == ")" and depth == 0:
+            out.append("\\)")
+        else:
+            if char == ")":
+                depth -= 1
+            out.append(char)
+    return "".join(out)
+
+
 def _shield_untrusted(text: str) -> str:
     """Escape prompt-delimiter tags embedded in untrusted evidence so gathered web
     or document content cannot close a wrapper block and inject model instructions."""
@@ -209,6 +241,7 @@ def _sanitize_public_query(query: str) -> str:
     query = _QUERY_PHONE.sub(" ", query)
     query = _QUERY_LABELED_PRIVATE_ID.sub(" ", query)
     query = _QUERY_IPV4.sub(_redact_nonpublic_ip, query)
+    query = _QUERY_IPV6.sub(_redact_nonpublic_ipv6, query)
     query = _QUERY_PAYMENT_CARD.sub(
         lambda match: " " if _luhn_valid(match.group(0)) else match.group(0),
         query,
@@ -469,7 +502,7 @@ def _validate_report_sources(report: str, sources: list[dict]) -> str:
             return None
         title = str(source.get("title") or url).replace("[", "").replace("]", "").strip()
         token = f"\x00research-citation-{len(placeholders)}\x00"
-        placeholders[token] = f"[{title or url}]({url})"
+        placeholders[token] = f"[{title or url}]({_escape_link_destination(url)})"
         return token
 
     def replace_markdown_links(text: str) -> str:
@@ -545,12 +578,18 @@ def _validate_report_sources(report: str, sources: list[dict]) -> str:
     def replace_autolink(match: re.Match) -> str:
         return citation(match.group(1)) or match.group(1)
 
+    def replace_raw_url(match: re.Match) -> str:
+        # Cite whole source URLs; drop other raw URLs. Whole-match avoids prefix collisions.
+        raw = match.group(0)
+        core = raw.rstrip(".,;:!?")
+        if core in source_by_url:
+            return (citation(core) or core) + raw[len(core):]
+        return ""
+
     validated = replace_markdown_links(report)
     validated = _AUTOLINK.sub(replace_autolink, validated)
     validated = _NUMBERED_CITATION.sub(replace_number, validated)
-    for url in sorted(source_urls, key = len, reverse = True):
-        validated = validated.replace(url, citation(url) or url)
-    validated = _RAW_URL.sub("", validated)
+    validated = _RAW_URL.sub(replace_raw_url, validated)
     for token, link in placeholders.items():
         validated = validated.replace(token, link)
     return validated.strip()
@@ -606,7 +645,9 @@ def _update_assistant(
     retained = [
         part
         for part in content
-        if not isinstance(part, dict) or part.get("type") not in replaced_types
+        if not isinstance(part, dict)
+        or part.get("type") not in replaced_types
+        or part.get("researchRunId") not in (None, run["id"])
     ]
     if reasoning:
         retained.append({"type": "reasoning", "text": reasoning, "researchRunId": run["id"]})
@@ -642,7 +683,8 @@ def _update_assistant(
             "attachments": existing.get("attachments"),
             "metadata": metadata,
             "createdAt": existing.get("createdAt") or db.now_ms(),
-        }
+        },
+        allow_research_update = True,
     )
 
 
@@ -1545,7 +1587,7 @@ class ResearchSupervisor:
                 "sourceCount": len(step_sources) + len(rag_sources),
                 "sourceUrls": [source["url"] for source in step_sources],
                 "evidenceSources": rag_sources,
-                **({"excerpt": clean_result[:2000]} if action["action"] == "fetch" else {}),
+                **({"excerpt": clean_result[:12000]} if action["action"] == "fetch" else {}),
                 **({"error": clean_result[:500]} if tool_failed else {}),
             }
             await self._check_active(run["id"])

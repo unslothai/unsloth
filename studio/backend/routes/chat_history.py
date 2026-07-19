@@ -422,7 +422,7 @@ async def save_thread_message(
         raise HTTPException(status_code = 404, detail = f"Thread {thread_id} not found")
     try:
         return ChatMessage(**upsert_chat_message(payload.model_dump()))
-    except ChatMessageConflictError as exc:
+    except (ChatMessageConflictError, ChatMessageProtectedError) as exc:
         raise log_and_http_error(
             exc,
             409,

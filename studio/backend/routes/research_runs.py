@@ -22,7 +22,13 @@ from storage import research_runs_db as db
 from storage.studio_db import get_chat_message, get_chat_thread, upsert_chat_message
 
 router = APIRouter()
-_SENSITIVE_KEY = re.compile(r"^(?:api.?key|secret|token|authorization|password)$", re.IGNORECASE)
+_SENSITIVE_KEY_EXACT = {
+    "authorization", "password", "secret", "token", "apikey", "credential", "credentials",
+}
+_SENSITIVE_KEY_SUFFIXES = (
+    "apikey", "accesskey", "accesstoken", "authtoken", "bearertoken",
+    "clientsecret", "privatekey", "refreshtoken", "sessiontoken",
+)
 _MAX_PLAN_STEPS = 30
 _DELTA_ONLY_EVENTS = {"reasoning.updated", "report.updated"}
 
@@ -118,8 +124,15 @@ def _sync_assistant(run: dict, text: str | None = None) -> None:
             **message,
             "content": content,
             "metadata": metadata,
-        }
+        },
+        allow_research_update = True,
     )
+
+
+def _is_sensitive_key(key: object) -> bool:
+    # Match after stripping separators/case so openaiApiKey, access_token, clientSecret all hit.
+    normalized = re.sub(r"[^a-z0-9]", "", str(key).casefold())
+    return normalized in _SENSITIVE_KEY_EXACT or normalized.endswith(_SENSITIVE_KEY_SUFFIXES)
 
 
 def _contains_sensitive_key(value: object) -> bool:
@@ -127,7 +140,7 @@ def _contains_sensitive_key(value: object) -> bool:
     so credentials cannot be smuggled into a durable run via a nested dict."""
     if isinstance(value, dict):
         return any(
-            bool(_SENSITIVE_KEY.search(str(key))) or _contains_sensitive_key(item)
+            _is_sensitive_key(key) or _contains_sensitive_key(item)
             for key, item in value.items()
         )
     if isinstance(value, (list, tuple)):

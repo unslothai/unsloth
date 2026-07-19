@@ -135,7 +135,9 @@ def website_policy_prompt(policy: dict[str, Any] | None) -> str:
 
 def scope_search_query(query: str, policy: dict[str, Any] | None) -> str:
     allowed = normalize_website_policy(policy)["allowedDomains"]
-    if not allowed or len(allowed) > 8:
+    if not allowed:
         return query
-    site_filter = " OR ".join(f"site:{domain}" for domain in allowed)
+    # Cap the site: filter (search engines limit OR operators) instead of dropping scoping
+    # entirely for large allow lists, which returned unrelated results that all got filtered out.
+    site_filter = " OR ".join(f"site:{domain}" for domain in allowed[:8])
     return f"{query} ({site_filter})"

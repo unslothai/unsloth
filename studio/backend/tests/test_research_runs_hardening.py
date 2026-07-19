@@ -6,11 +6,13 @@
 import pytest
 
 from core.research_runs import (
+    _escape_link_destination,
     _sanitize_public_query,
     _shield_untrusted,
     _validate_report_document_sources,
+    _validate_report_sources,
 )
-from routes.research_runs import CreateResearchRun, _sanitize_config
+from routes.research_runs import CreateResearchRun, _is_sensitive_key, _sanitize_config
 
 
 def test_sanitize_query_redacts_payment_card():
@@ -84,3 +86,43 @@ def test_sanitize_config_rejects_nested_rag_scope_secret():
     payload = _make_payload(ragScope = {"kb_id": {"token": "rag-secret"}})
     with pytest.raises(Exception):
         _sanitize_config(payload, {"modelId": "m"})
+
+
+def test_sensitive_key_matches_prefixed_and_camelcase_variants():
+    for key in (
+        "apiKey", "openaiApiKey", "accessToken", "access_token",
+        "clientSecret", "refreshToken", "authorization",
+    ):
+        assert _is_sensitive_key(key), key
+    # Ordinary request fields must not be flagged, so normal runs still validate.
+    for key in ("model", "temperature", "maxTokens", "project_id", "top_k"):
+        assert not _is_sensitive_key(key), key
+
+
+def test_sanitize_query_redacts_nonpublic_ipv6_but_keeps_public():
+    assert "fd00" not in _sanitize_public_query("inspect fd00::dead:beef service health")
+    assert "fe80" not in _sanitize_public_query("connect to fe80::1%eth0 gateway now")
+    assert "2606:4700:4700::1111" in _sanitize_public_query(
+        "what runs on 2606:4700:4700::1111 dns"
+    )
+
+
+def test_escape_link_destination_escapes_only_unbalanced_paren():
+    assert _escape_link_destination("https://x.co/a)evil") == "https://x.co/a\\)evil"
+    # Balanced parentheses (e.g. Wikipedia-style URLs) stay literal.
+    assert _escape_link_destination("https://x.co/Foo_(bar)") == "https://x.co/Foo_(bar)"
+
+
+def test_citation_injection_cannot_open_second_link():
+    url = "https://allowed.example/a)evil"
+    out = _validate_report_sources(f"See {url} now.", [{"url": url, "title": "Allowed"}])
+    assert "a\\)evil" in out
+
+
+def test_raw_url_citation_does_not_collide_on_prefix():
+    sources = [{"url": "https://ex.com/report", "title": "Report"}]
+    out = _validate_report_sources(
+        "See https://ex.com/report and https://ex.com/report-attack now.", sources
+    )
+    assert "[Report](https://ex.com/report)" in out
+    assert "/report)-attack" not in out

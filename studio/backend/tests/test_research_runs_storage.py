@@ -540,6 +540,40 @@ def test_pruning_rejects_deleting_research_turn_messages(research_home, removed_
     assert research_db.get_run("run-1") is not None
     assert research_db.has_thread_claim("thread-1") is True
     assert studio_db.get_chat_message("thread-1", "user-1") is not None
+
+
+def test_sync_rejects_editing_research_message_but_allows_noop(research_home):
+    _create()
+    unchanged = studio_db.list_chat_messages("thread-1")
+    # Re-syncing identical content is a no-op and must still be allowed.
+    studio_db.sync_chat_messages("thread-1", unchanged)
+    edited = [
+        {**message, "content": [{"type": "text", "text": "HIJACKED"}]}
+        if message["id"] == "user-1"
+        else message
+        for message in unchanged
+    ]
+    with pytest.raises(studio_db.ChatMessageProtectedError, match = "server-managed"):
+        studio_db.sync_chat_messages("thread-1", edited)
+    assert studio_db.get_chat_message("thread-1", "user-1")["content"] == [
+        {"type": "text", "text": "What changed?"}
+    ]
+
+
+def test_upsert_rejects_client_edit_but_allows_internal_writer(research_home):
+    _create()
+    original = studio_db.get_chat_message("thread-1", "user-1")
+    with pytest.raises(studio_db.ChatMessageProtectedError, match = "server-managed"):
+        studio_db.upsert_chat_message(
+            {**original, "content": [{"type": "text", "text": "client edit"}]}
+        )
+    studio_db.upsert_chat_message(
+        {**original, "content": [{"type": "text", "text": "server update"}]},
+        allow_research_update = True,
+    )
+    assert studio_db.get_chat_message("thread-1", "user-1")["content"] == [
+        {"type": "text", "text": "server update"}
+    ]
     assert studio_db.get_chat_message("thread-1", "assistant-1") is not None
 
 
@@ -1746,7 +1780,8 @@ def test_update_assistant_replaces_report_parts_without_duplication(research_hom
             ],
             "metadata": {"researchRunId": "run-1"},
             "createdAt": 3,
-        }
+        },
+        allow_research_update = True,
     )
     run = research_db.get_run("run-1")
     source = {"url": "https://new.example", "title": "New", "snippet": "Evidence"}
