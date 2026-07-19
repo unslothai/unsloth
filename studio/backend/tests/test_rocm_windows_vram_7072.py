@@ -144,9 +144,7 @@ def test_system_tab_shows_per_gpu_used(win_rocm, monkeypatch):
     assert by_idx[1]["vram_used_gb"] is None
     assert by_idx[1]["vram_utilization_pct"] is None
     assert all(
-        d["vram_used_gb"] <= d["vram_total_gb"]
-        for d in devices
-        if d["vram_used_gb"] is not None
+        d["vram_used_gb"] <= d["vram_total_gb"] for d in devices if d["vram_used_gb"] is not None
     )
 
 
