@@ -5,19 +5,19 @@
 # studio-mac-update-smoke.yml. Verifies that on the FREE
 # windows-latest runner:
 #
-#   1. install.ps1 --local --no-torch installs Studio AND auto-fetches
+#   1. install.ps1 --local --no-torch installs Unsloth AND auto-fetches
 #      the prebuilt llama.cpp Windows binary (app-<tag>-windows-x64-cpu
 #      from unslothai/llama.cpp). Hitting the source-build fallback is
-#      treated as an Unsloth bug -- Studio must always pick the
+#      treated as an Unsloth bug -- Unsloth must always pick the
 #      prebuilt on Windows.
 #   2. unsloth studio update --local is idempotent. Two consecutive
 #      runs both report "prebuilt up to date and validated", no
 #      source-build fallback. The CLI's _find_setup_script picks
 #      setup.ps1 on Windows automatically.
-#   3. The installed Studio still boots and /api/health returns
+#   3. The installed Unsloth still boots and /api/health returns
 #      healthy after the update path.
 
-name: Windows Studio Update CI
+name: Windows Unsloth Update CI
 
 on:
   pull_request:
@@ -45,7 +45,7 @@ permissions:
 
 jobs:
   update-idempotency:
-    name: Studio Updating Tests
+    name: Unsloth Updating Tests
     runs-on: windows-latest
     timeout-minutes: 30
     defaults:
@@ -53,7 +53,7 @@ jobs:
         shell: bash
     env:
       # Force UTF-8 for stdio (Windows defaults to cp1252; hf
-      # download / Studio CLI print "✓" checkmarks and crash
+      # download / Unsloth CLI print "✓" checkmarks and crash
       # otherwise).
       PYTHONIOENCODING: utf-8
       PYTHONUTF8: '1'
@@ -90,7 +90,7 @@ jobs:
         #     reuses the existing Node with no download.
         #
         # (2) Defender. windows-latest's real-time scan opens / hashes
-        #     every file Studio writes during install (Vite output =
+        #     every file Unsloth writes during install (Vite output =
         #     thousands of small chunks, uv pip = wheel-extraction =
         #     thousands of small files). The latency dominates the
         #     200 s frontend build and the 90 s deps install. Adding
@@ -109,7 +109,7 @@ jobs:
           # setup.ps1 line 1281-1296's mtime-based "is the frontend
           # stale?" check into "up to date, skip rebuild", because the
           # newly-created dist's mtime is younger than every source
-          # file. Studio then boots with an empty dist and 500s on
+          # file. Unsloth then boots with an empty dist and 500s on
           # GET / with FileNotFoundError: dist\index.html. See run
           # 25546676715 / job 74984469728.
           # Add-MpPreference accepts paths that do not yet exist; the
@@ -129,7 +129,7 @@ jobs:
             }
           }
 
-      - name: Install Studio (--local, --no-torch)
+      - name: Install Unsloth (--local, --no-torch)
         shell: pwsh
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -168,7 +168,7 @@ jobs:
           echo "install.ps1 installed the Windows prebuilt llama.cpp:"
           cat "$INFO"
 
-      - name: Add Studio shim to GITHUB_PATH
+      - name: Add Unsloth shim to GITHUB_PATH
         run: |
           SHIM_DIR=~/.unsloth/studio/bin
           if [ ! -f "$SHIM_DIR/unsloth.exe" ]; then
@@ -212,7 +212,7 @@ jobs:
           grep -qE "prebuilt up to date and validated|prebuilt installed and validated" logs/update2.log
           echo "second update was clean"
 
-      - name: Boot Studio briefly to confirm the install is still usable
+      - name: Boot Unsloth briefly to confirm the install is still usable
         run: |
           mkdir -p logs
           UNSLOTH_API_ONLY=1 unsloth studio -H 127.0.0.1 -p 18891 \
@@ -239,13 +239,13 @@ jobs:
             sleep 1
           done
           if [ -z "$HEALTHY" ]; then
-            echo "Studio failed to come up after \`update\`"
+            echo "Unsloth failed to come up after \`update\`"
             tail -200 logs/studio.log
             kill "$PID" 2>/dev/null || true
             exit 1
           fi
           kill "$PID" 2>/dev/null || true
-          echo "post-update Studio /api/health OK"
+          echo "post-update Unsloth /api/health OK"
 
       - name: Uninstall and verify clean
         # Round-trip through scripts/uninstall.ps1 against the default

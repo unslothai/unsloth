@@ -897,7 +897,7 @@ class TestHfOfflineIfDnsDead:
             assert "HF_HUB_OFFLINE" not in os.environ
 
     def test_user_set_hf_hub_offline_is_preserved(self, dns, clean_offline_env, monkeypatch):
-        # User explicitly set offline before launching Studio.
+        # User explicitly set offline before launching Unsloth.
         monkeypatch.setenv("HF_HUB_OFFLINE", "1")
         dns.fail()
         with _hf_offline_if_dns_dead() as did_set:

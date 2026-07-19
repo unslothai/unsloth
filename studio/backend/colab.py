@@ -129,7 +129,7 @@ def start_cloudflare_tunnel(port: int) -> "str | None":
         logger.warning(
             "Cloudflare link not started: the admin account still has its temporary "
             "bootstrap password, which is exposed to anyone who can load the page. "
-            "Open Studio in this tab, log in and change the admin password, then re-run "
+            "Open Unsloth in this tab, log in and change the admin password, then re-run "
             "start(cloudflare=True) to get the shareable link."
         )
         return None
@@ -203,7 +203,7 @@ def _shareable_link_html(cloudflare_url: str) -> str:
                    display: flex; align-items: center; gap: 12px;">
             <img src="https://github.com/unslothai/unsloth/raw/main/studio/frontend/public/unsloth-gem.png"
                  height="48" style="display:block;">
-            Shareable Studio Link is Ready!
+            Shareable Unsloth Link is Ready!
         </h2>
         <a href="{cloudflare_url}" onclick="var w=window.open(this.href,'_blank');if(!w){{return true;}}return false;"
            style="display: inline-flex; align-items: center; gap: 10px; padding: 14px 28px;
@@ -223,7 +223,7 @@ def _shareable_link_html(cloudflare_url: str) -> str:
 
 
 def _show_and_embed(port: int, *, cloudflare_url: "str | None" = None):
-    """Render the Studio header + iframe for *port*, with a shareable-link card above
+    """Render the Unsloth header + iframe for *port*, with a shareable-link card above
     when *cloudflare_url* is set. Falls back to serve_kernel_port_as_iframe."""
     url = get_colab_url(port)
     logger.info(f"🌐 Unsloth Studio URL: {url}")
@@ -281,7 +281,7 @@ def start(port: int = 8888, *, cloudflare: bool = False):
     Args:
         port: Port to bind/serve on.
         cloudflare: Opt in to a shareable Cloudflare HTTPS link reachable from any
-            device (default OFF). It exposes Studio's login page beyond Colab, so it
+            device (default OFF). It exposes Unsloth's login page beyond Colab, so it
             stays an explicit opt-in; the default shows only the in-tab proxy iframe.
 
     Usage:
@@ -292,10 +292,10 @@ def start(port: int = 8888, *, cloudflare: bool = False):
 
     logger.info("🦥 Starting Unsloth Studio...")
 
-    # Fast path: Studio already running (cell re-run). Re-launching would collide on
+    # Fast path: Unsloth already running (cell re-run). Re-launching would collide on
     # the port, so just re-show the link and iframe.
     if _is_studio_healthy(port):
-        logger.info(f"   Studio is already running on port {port} — reusing existing server.")
+        logger.info(f"   Unsloth is already running on port {port} — reusing existing server.")
         # try/finally: tear the tunnel down even if interrupted mid-start/render.
         try:
             cf_url = start_cloudflare_tunnel(port) if cloudflare else None

@@ -5,7 +5,7 @@
 
 With llama-server's default context-shift behavior, the UI cannot tell the user
 the KV cache was rotated -- earlier turns silently vanish from the conversation.
-The Studio backend always passes ``--no-context-shift`` so the server returns a
+The Unsloth backend always passes ``--no-context-shift`` so the server returns a
 clean error instead, and the chat adapter can point the user at the
 ``Context Length`` input in the settings panel.
 

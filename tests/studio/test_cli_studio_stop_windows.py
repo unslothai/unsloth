@@ -5,7 +5,7 @@
 
 `stop` once used `os.kill(pid, 0)`, which raises WinError 87 on Windows before
 reaching taskkill; the fix adds cross-platform `_pid_alive` (tasklist on Windows,
-signal-0 elsewhere). AST + mock-only; no real processes, no Studio deps imported.
+signal-0 elsewhere). AST + mock-only; no real processes, no Unsloth deps imported.
 """
 
 import ast

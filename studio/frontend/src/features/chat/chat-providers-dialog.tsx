@@ -244,8 +244,8 @@ export function ChatProvidersSettings({
     (s) => s.setConnectionsEnabled,
   );
   const isCustomProvider = isCustomProviderType(providerType);
-  // Local presets (Ollama, llama.cpp) never use API keys — hide the field.
-  // vLLM may optionally use a bearer token on secured deployments.
+  // llama.cpp hides the key field. Ollama and vLLM show an optional key:
+  // Ollama cloud and secured vLLM need one; local servers leave it empty.
   const showApiKeyField = !customPresetSkipsApiKeyField(providerType);
   const showReasoningToggle = supportsProviderReasoningToggle(providerType);
 
