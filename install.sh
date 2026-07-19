@@ -472,11 +472,13 @@ _on_install_exit() {
         _restore_studio_venv_replacement
     fi
     [ -n "${_UV_OVERRIDE_TMPDIR:-}" ] && rm -rf "$_UV_OVERRIDE_TMPDIR" 2>/dev/null || true
+    [ -n "${_UNSLOTH_TORCH_OVERRIDES:-}" ] && rm -f "$_UNSLOTH_TORCH_OVERRIDES" 2>/dev/null || true
     exit "$_status"
 }
-# Empty so an inherited value can never reach the trap's rm; only a temp dir
-# this script creates below (Apple Silicon, spaced path) is ever removed.
+# Empty so an inherited value never reaches the trap's rm; only temp paths this
+# script creates below (spaced-path dir, torch-trio overrides) are removed.
 _UV_OVERRIDE_TMPDIR=""
+_UNSLOTH_TORCH_OVERRIDES=""
 trap _on_install_exit EXIT
 
 # ── Helper: download a URL to a file (supports curl and wget) ──
@@ -1821,6 +1823,8 @@ tauri_log "STEP" "Creating virtual environment"
 mkdir -p "$STUDIO_HOME"
 
 _MIGRATED=false
+# Empty so an inherited value can never masquerade as a probed torch version.
+_PREV_TORCH_VER=""
 
 if [ -x "$VENV_DIR/bin/python" ]; then
     # why: matching guard to the .venv branch below -- in env-mode
@@ -1838,6 +1842,12 @@ if [ -x "$VENV_DIR/bin/python" ]; then
         echo "       Move it aside or choose an empty UNSLOTH_STUDIO_HOME." >&2
         exit 1
     fi
+    # Record the existing venv's torch BEFORE the replacement moves it aside: a re-run
+    # rebuilds the venv for clean state, but must keep the torch release the user
+    # already has (see _previous_torch_pin below). Last line only: sitecustomize or
+    # import-hook noise on stdout must not corrupt the version.
+    _PREV_TORCH_VER=$("$VENV_DIR/bin/python" -c \
+        "import torch; print(torch.__version__)" 2>/dev/null | tail -n 1 || true)
     # New layout already exists — replace only after preserving rollback copy.
     substep "preserving existing environment for rollback..."
     _start_studio_venv_replacement "$VENV_DIR"
@@ -2187,6 +2197,98 @@ _torch_flavor_tag() {
     esac
 }
 
+# Whether release base $1 (X.Y[.Z...]) falls inside constraint window $2
+# ("torch>=A.B[.C],<D.E.F"). Compares at major.minor granularity, which is exact
+# for the windows this script uses (ceilings are always X.Y.0); a non-.0 ceiling
+# would only make this conservative (excludes the whole ceiling minor). Anything
+# unparseable answers "no" so the caller fails toward the supported range.
+_torch_release_in_window() {
+    _trw_con="$2"
+    case "$_trw_con" in
+        "torch>="*",<"*) ;;
+        *) echo "no"; return ;;
+    esac
+    _trw_floor="${_trw_con#torch>=}"; _trw_floor="${_trw_floor%%,*}"
+    _trw_ceil="${_trw_con##*,<}"
+    _v_maj="${1%%.*}";          _v_rest="${1#*.}";          _v_min="${_v_rest%%.*}"
+    _f_maj="${_trw_floor%%.*}"; _f_rest="${_trw_floor#*.}"; _f_min="${_f_rest%%.*}"
+    _c_maj="${_trw_ceil%%.*}";  _c_rest="${_trw_ceil#*.}";  _c_min="${_c_rest%%.*}"
+    for _trw_n in "$_v_maj" "$_v_min" "$_f_maj" "$_f_min" "$_c_maj" "$_c_min"; do
+        case "$_trw_n" in ''|*[!0-9]*) echo "no"; return ;; esac
+    done
+    if [ "$_v_maj" -gt "$_f_maj" ] || { [ "$_v_maj" -eq "$_f_maj" ] && [ "$_v_min" -ge "$_f_min" ]; }; then
+        if [ "$_v_maj" -lt "$_c_maj" ] || { [ "$_v_maj" -eq "$_c_maj" ] && [ "$_v_min" -lt "$_c_min" ]; }; then
+            echo "yes"
+            return
+        fi
+    fi
+    echo "no"
+}
+
+# Keep the previous venv's torch on a re-run: echo "torch==X.Y.Z" when the probed
+# version ($1) is inside the active constraint window ($2), else "". The RELEASE is kept
+# regardless of flavor tag; the pin installs from the freshly chosen index, so flavor
+# follows the machine (cpu <-> cuda, cu126 -> cu130, PyPI bare -> +cu130) while the
+# release follows the user. Gating on flavor was wrong: a PyPI torch reports a BARE
+# version (on Linux the PyPI wheel IS CUDA), misclassified "cpu", so a healthy 2.10 on a
+# cu130 host was moved to 2.11. Per-leaf floors still win (rocm7.2 / gfx >=2.11 for the
+# Strix _grouped_mm fix, out-of-window manual installs) and are never pinned; the caller's
+# _PREV_FALLBACK_CONSTRAINT installs the newest supported release when the index lacks the
+# exact one. Opt out with UNSLOTH_TORCH_UPGRADE=1.
+_previous_torch_pin() {
+    _ptp_ver="$1"
+    _ptp_con="$2"
+    [ -n "$_ptp_ver" ] || { echo ""; return; }
+    [ "${UNSLOTH_TORCH_UPGRADE:-0}" = "1" ] && { echo ""; return; }
+    _ptp_base="${_ptp_ver%%+*}"
+    # Base must be a plain numeric release (X.Y[.Z]); probe noise and
+    # nightly/dev/source builds (2.11.0.dev20250704, 2.9.0a0) must never
+    # become a pin -- no stable index carries them, so pinning would only
+    # print "keeping it" and then burn a doomed resolve before falling back.
+    case "$_ptp_base" in
+        *[!0-9.]* | *..* | .* | *.) echo ""; return ;;
+        [0-9]*.[0-9]*) ;;
+        *) echo ""; return ;;
+    esac
+    [ "$(_torch_release_in_window "$_ptp_base" "$_ptp_con")" = "yes" ] || { echo ""; return; }
+    echo "torch==$_ptp_base"
+}
+
+# Install torch from TORCH_INDEX_URL honoring a kept-release pin: with _PREV_TORCH_PIN
+# set, TORCH_CONSTRAINT is the exact previous release; fall back to the supported range
+# if the index lacks it (pruned mirror) rather than failing. Used by every --default-index
+# path (NVIDIA cu*, AMD rocm/gfx fallbacks, cpu/mac, ROCm repairs) so preservation is
+# uniform. Extra args (e.g. --force-reinstall) are passed through to uv.
+_install_torch_default_index() {
+    if [ -n "$_PREV_TORCH_PIN" ]; then
+        # Pair the companions with the kept torch minor: torchaudio no longer
+        # exact-pins torch in its metadata, so leaving it unconstrained resolves
+        # a newer mismatched build (a kept torch 2.9.0 pulled torchaudio 2.11.0).
+        _itdi_base="${_PREV_TORCH_PIN#torch==}"
+        _itdi_minor="${_itdi_base#*.}"
+        _itdi_minor="${_itdi_minor%%.*}"
+        _itdi_tv="torchvision"
+        _itdi_ta="torchaudio"
+        case "$_itdi_base" in
+            2.*)
+                _itdi_tv="torchvision==0.$((_itdi_minor + 15)).*"
+                _itdi_ta="torchaudio==2.${_itdi_minor}.*"
+                ;;
+        esac
+        if ! run_install_cmd_retry "install PyTorch (kept release)" uv pip install --python "$_VENV_PY" "$TORCH_CONSTRAINT" "$_itdi_tv" "$_itdi_ta" \
+            --default-index "$TORCH_INDEX_URL" "$@"; then
+            substep "[WARN] $_PREV_TORCH_PIN is not installable from $TORCH_INDEX_URL -- installing the newest supported release instead" "$C_WARN"
+            TORCH_CONSTRAINT="$_PREV_FALLBACK_CONSTRAINT"
+            _PREV_TORCH_PIN=""
+            run_install_cmd_retry "install PyTorch" uv pip install --python "$_VENV_PY" "$TORCH_CONSTRAINT" torchvision torchaudio \
+                --default-index "$TORCH_INDEX_URL" "$@"
+        fi
+    else
+        run_install_cmd_retry "install PyTorch" uv pip install --python "$_VENV_PY" "$TORCH_CONSTRAINT" torchvision torchaudio \
+            --default-index "$TORCH_INDEX_URL" "$@"
+    fi
+}
+
 # Expected tag from the index leaf ($1): cuXXX / cpu / rocm (rocmX.Y and gfx* ->
 # rocm). Empty on an unknown leaf (odd mirror) so the repair safely no-ops.
 _expected_torch_flavor_tag() {
@@ -2478,10 +2580,15 @@ case "$_torch_index_leaf" in
     *)          export UNSLOTH_TORCH_BACKEND="cuda" ;;
 esac
 
-# rocm7.2 ships torch 2.11.0 -- adjust the constraint to allow it.
-# All other ROCm tags and CUDA stay within <2.11.0.
-case "$TORCH_INDEX_URL" in
-    */rocm7.2) TORCH_CONSTRAINT="torch>=2.11.0,<2.12.0" ;;
+# rocm7.2 and the CUDA cu12x/cu13x indexes now ship torch 2.11.x, so widen the
+# ceiling to <2.12.0 (matches the base image and _CUDA_TORCH_PKG_SPEC in
+# studio/install_python_stack.py). Keep the >=2.4 floor so an older CUDA index
+# (e.g. cu118) still resolves. Match on _torch_index_leaf, not the full URL, so
+# a mirror whose base path contains cu*/rocm7.2 but resolves to a cpu/older-rocm
+# leaf keeps the default <2.11.0.
+case "$_torch_index_leaf" in
+    rocm7.2)  TORCH_CONSTRAINT="torch>=2.11.0,<2.12.0" ;;
+    cu[0-9]*) TORCH_CONSTRAINT="torch>=2.4,<2.12.0" ;;
 esac
 
 # Auto-detect GPU for AMD ROCm based
@@ -2568,6 +2675,23 @@ case "$TORCH_INDEX_URL" in
         fi
         ;;
 esac
+# Re-run over an existing install: keep the previous venv's torch RELEASE; the fresh
+# index above supplies the right flavor for this machine. Evaluated HERE, after every
+# index/constraint decision including the Strix reroute, so the window checked is the
+# final one and a raised floor (rocm7.2 / Strix gfx) rejects an older release.
+# _PREV_FALLBACK_CONSTRAINT keeps the range so the install can fall back when the exact
+# release is not on the chosen index (mirrors may prune old wheels). Skipped for --no-torch.
+_PREV_TORCH_PIN=""
+_PREV_FALLBACK_CONSTRAINT="$TORCH_CONSTRAINT"
+if [ "$SKIP_TORCH" = false ]; then
+    _prev_pin=$(_previous_torch_pin "$_PREV_TORCH_VER" "$TORCH_CONSTRAINT")
+    if [ -n "$_prev_pin" ]; then
+        _PREV_TORCH_PIN="$_prev_pin"
+        TORCH_CONSTRAINT="$_prev_pin"
+        substep "existing install has torch $_PREV_TORCH_VER -- keeping it (set UNSLOTH_TORCH_UPGRADE=1 to get the newest release)"
+    fi
+fi
+
 _TAURI_TORCH_INDEX_FAMILY=$(_tauri_torch_index_family "$TORCH_INDEX_URL")
 if [ "$_amd_gpu_radeon" = true ] && [ "$SKIP_TORCH" = false ]; then
     _TAURI_TORCH_INDEX_FAMILY="radeon"
@@ -2705,6 +2829,43 @@ esac
 # ── Install unsloth directly into the venv (no activation needed) ──
 tauri_log "STEP" "Installing PyTorch"
 _VENV_PY="$VENV_DIR/bin/python"
+
+# A released unsloth wheel can pin an older torch (unsloth 2026.7.2 declares
+# torch<2.11.0); a with-deps PyPI resolve then downgrades the whole trio,
+# swapping the pinned +cuXXX/+rocm build for PyPI's default. The flavor guard
+# below misses this (PyPI's torch 2.10 default is itself cu128-flavored), so
+# freeze the trio via uv --overrides (overrides replace dependency requirements
+# during resolution) while unsloth's other deps resolve normally. Sets
+# _UNSLOTH_TORCH_OVERRIDES from the trio in the venv; every with-deps unsloth
+# install (migrated and fresh) must call this before resolving and rm it after.
+_build_unsloth_torch_overrides() {
+    _UNSLOTH_TORCH_OVERRIDES=""
+    [ "$SKIP_TORCH" = false ] || return 0
+    _torch_trio_pins=$("$_VENV_PY" -c "
+from importlib.metadata import version, PackageNotFoundError
+for _p in ('torch', 'torchvision', 'torchaudio'):
+    try:
+        print(_p + '==' + version(_p))
+    except PackageNotFoundError:
+        pass
+" 2>/dev/null) || _torch_trio_pins=""
+    case "$_torch_trio_pins" in
+        torch==*)
+            _UNSLOTH_TORCH_OVERRIDES=$(mktemp)
+            printf '%s\n' "$_torch_trio_pins" > "$_UNSLOTH_TORCH_OVERRIDES"
+            # The CLI --overrides flag replaces any UV_OVERRIDE env file (same
+            # uv setting; macOS arm64 exports one here), so fold its pins in.
+            # awk, not cat: it drops inherited torch-trio lines (uv intersects
+            # duplicate overrides, so a conflicting pin would make resolution
+            # unsatisfiable) and newline-terminates the last line so an
+            # unterminated file cannot join two requirements into one.
+            for _ov_file in ${UV_OVERRIDE:-}; do
+                [ -f "$_ov_file" ] && awk '!/^[[:space:]]*torch(vision|audio)?([[:space:]<>=!~;@[]|$)/' "$_ov_file" >> "$_UNSLOTH_TORCH_OVERRIDES"
+            done
+            ;;
+    esac
+}
+
 if [ "$_MIGRATED" = true ]; then
     # Migrated env: force-reinstall unsloth+unsloth-zoo to ensure clean state
     # in the new venv location, while preserving existing torch/CUDA
@@ -2729,9 +2890,13 @@ if [ "$_MIGRATED" = true ]; then
     else
         # Pin mlx-lm away from 0.31.3 here too: a curl-piped migration has no
         # overrides file, so UV_OVERRIDE is unset and this positional is the only cover.
+        _build_unsloth_torch_overrides
         run_install_cmd_retry "install unsloth (migrated)" uv pip install --python "$_VENV_PY" \
+            ${_UNSLOTH_TORCH_OVERRIDES:+--overrides "$_UNSLOTH_TORCH_OVERRIDES"} \
             --reinstall-package unsloth --reinstall-package unsloth-zoo \
             "unsloth>=2026.7.3" "unsloth-zoo>=2026.7.3" ${_MLX_LM_EXCLUDE_ARG:-}
+        [ -n "$_UNSLOTH_TORCH_OVERRIDES" ] && rm -f "$_UNSLOTH_TORCH_OVERRIDES"
+        _UNSLOTH_TORCH_OVERRIDES=""
     fi
     if [ "$STUDIO_LOCAL_INSTALL" = true ]; then
         substep "overlaying local repo (editable)..."
@@ -2752,10 +2917,7 @@ if [ "$_MIGRATED" = true ]; then
                 _has_hip=$("$_VENV_PY" -c "import torch; print(getattr(torch.version,'hip','') or '')" 2>/dev/null || true)
                 if [ -z "$_has_hip" ]; then
                     substep "repairing ROCm torch (overwritten by dependency resolution)..."
-                    run_install_cmd_retry "repair ROCm torch" uv pip install --python "$_VENV_PY" \
-                        "$TORCH_CONSTRAINT" torchvision torchaudio \
-                        --default-index "$TORCH_INDEX_URL" \
-                        --force-reinstall
+                    _install_torch_default_index --force-reinstall
                 fi
                 ;;
         esac
@@ -2820,7 +2982,42 @@ elif [ -n "$TORCH_INDEX_URL" ]; then
                 _ta_ver=$(_extract_version "$_ta_whl" "torchaudio")
 
                 _radeon_versions_match=false
-                if [ -n "$_torch_ver" ] && [ -n "$_tv_ver" ] && [ -n "$_ta_ver" ]; then
+                # Kept release (_PREV_TORCH_PIN) wins here too: pick its exact
+                # patch (else the newest patch of its minor) plus the paired
+                # vision/audio wheels. Any gap falls back to the newest-trio
+                # search below, mirroring _install_torch_default_index, so a
+                # rerun never drifts to another release nor below the kept one.
+                if [ -n "$_PREV_TORCH_PIN" ]; then
+                    _prev_kept_base="${_PREV_TORCH_PIN#torch==}"
+                    _prev_kept_minor="${_prev_kept_base#*.}"
+                    _prev_kept_minor="${_prev_kept_minor%%.*}"
+                    case "$_prev_kept_minor" in
+                        ''|*[!0-9]*) ;;
+                        *)
+                            _kept_torch=$(_pick_radeon_wheel "torch" "${_prev_kept_base}" 2>/dev/null) || _kept_torch=""
+                            [ -z "$_kept_torch" ] && { _kept_torch=$(_pick_radeon_wheel "torch" "2.${_prev_kept_minor}." 2>/dev/null) || _kept_torch=""; }
+                            _kept_tv=$(_pick_radeon_wheel "torchvision" "0.$((_prev_kept_minor + 15))." 2>/dev/null) || _kept_tv=""
+                            _kept_ta=$(_pick_radeon_wheel "torchaudio" "2.${_prev_kept_minor}." 2>/dev/null) || _kept_ta=""
+                            if [ -n "$_kept_torch" ] && [ -n "$_kept_tv" ] && [ -n "$_kept_ta" ]; then
+                                _torch_whl=$_kept_torch
+                                _tv_whl=$_kept_tv
+                                _ta_whl=$_kept_ta
+                                _tri_whl=""
+                                _radeon_versions_match=true
+                                # Say so when the listing pruned the exact patch
+                                # and a same-series build is installed instead.
+                                case "$(printf '%s' "${_kept_torch##*/}" | sed 's/%2[Bb]/+/g')" in
+                                    "torch-${_prev_kept_base}"[+-]*) ;;
+                                    *) substep "kept release ${_prev_kept_base} is not in the Radeon listing -- installing the closest 2.${_prev_kept_minor} series build instead" ;;
+                                esac
+                            else
+                                substep "[WARN] Radeon repo lacks a complete wheel set for kept $_PREV_TORCH_PIN -- installing the newest compatible set instead" "$C_WARN"
+                            fi
+                            ;;
+                    esac
+                fi
+                if [ "$_radeon_versions_match" != true ] && \
+                   [ -n "$_torch_ver" ] && [ -n "$_tv_ver" ] && [ -n "$_ta_ver" ]; then
                     _torch_minor=${_torch_ver#*.}
                     _ta_minor=${_ta_ver#*.}
                     _tv_minor=${_tv_ver#*.}
@@ -2878,9 +3075,7 @@ elif [ -n "$TORCH_INDEX_URL" ]; then
                 if [ -z "$_torch_whl" ] || [ -z "$_tv_whl" ] || [ -z "$_ta_whl" ] || \
                    [ "$_radeon_versions_match" != true ]; then
                     substep "[WARN] Radeon repo lacks a compatible wheel set for this Python; falling back to ROCm index ($TORCH_INDEX_URL)" "$C_WARN"
-                    run_install_cmd_retry "install PyTorch" uv pip install --python "$_VENV_PY" \
-                        "$TORCH_CONSTRAINT" torchvision torchaudio \
-                        --default-index "$TORCH_INDEX_URL"
+                    _install_torch_default_index
                 else
                     substep "installing PyTorch from Radeon repo (${_RADEON_BASE_URL})..."
                     # Pass explicit wheel URLs so the matched trio is
@@ -2901,20 +3096,15 @@ elif [ -n "$TORCH_INDEX_URL" ]; then
                 fi
             else
                 substep "[WARN] Radeon repo unavailable; falling back to ROCm index ($TORCH_INDEX_URL)" "$C_WARN"
-                run_install_cmd_retry "install PyTorch" uv pip install --python "$_VENV_PY" \
-                    "$TORCH_CONSTRAINT" torchvision torchaudio \
-                    --default-index "$TORCH_INDEX_URL"
+                _install_torch_default_index
             fi
         else
             substep "[WARN] Radeon GPU detected but could not detect full ROCm version; falling back to ROCm index" "$C_WARN"
-            run_install_cmd_retry "install PyTorch" uv pip install --python "$_VENV_PY" \
-                "$TORCH_CONSTRAINT" torchvision torchaudio \
-                --default-index "$TORCH_INDEX_URL"
+            _install_torch_default_index
         fi
     else
         substep "installing PyTorch ($TORCH_INDEX_URL)..."
-        run_install_cmd_retry "install PyTorch" uv pip install --python "$_VENV_PY" "$TORCH_CONSTRAINT" torchvision torchaudio \
-            --default-index "$TORCH_INDEX_URL"
+        _install_torch_default_index
     fi
     # AMD ROCm: install bitsandbytes (once, after torch, for all ROCm paths).
     # Gate on SKIP_TORCH=false so a user running with --no-torch on a ROCm
@@ -2927,9 +3117,10 @@ elif [ -n "$TORCH_INDEX_URL" ]; then
                 ;;
         esac
     fi
-    # Fresh: Step 2 - install unsloth, preserving pre-installed torch
+    # Fresh: Step 2 - install unsloth, preserving the torch Step 1 installed
     tauri_log "STEP" "Installing Unsloth"
     substep "installing unsloth (this may take a few minutes)..."
+    _build_unsloth_torch_overrides
     if [ "$SKIP_TORCH" = true ]; then
         # No-torch: install unsloth + unsloth-zoo with --no-deps, then
         # runtime deps (typer, safetensors, transformers, etc.) with --no-deps.
@@ -2953,6 +3144,7 @@ elif [ -n "$TORCH_INDEX_URL" ]; then
         fi
     elif [ "$STUDIO_LOCAL_INSTALL" = true ]; then
         run_install_cmd_retry "install unsloth (local)" uv pip install --python "$_VENV_PY" \
+            ${_UNSLOTH_TORCH_OVERRIDES:+--overrides "$_UNSLOTH_TORCH_OVERRIDES"} \
             --upgrade-package unsloth "unsloth>=2026.7.3" "unsloth-zoo>=2026.7.3"
         substep "overlaying local repo (editable)..."
         run_install_cmd "overlay local repo" uv pip install --python "$_VENV_PY" -e "$_REPO_ROOT" --no-deps
@@ -2962,8 +3154,11 @@ elif [ -n "$TORCH_INDEX_URL" ]; then
             "unsloth-zoo @ git+https://github.com/unslothai/unsloth-zoo"
     else
         run_install_cmd_retry "install unsloth" uv pip install --python "$_VENV_PY" \
+            ${_UNSLOTH_TORCH_OVERRIDES:+--overrides "$_UNSLOTH_TORCH_OVERRIDES"} \
             --upgrade-package unsloth -- "$PACKAGE_NAME" ${_MLX_LM_EXCLUDE_ARG:-}
     fi
+    [ -n "$_UNSLOTH_TORCH_OVERRIDES" ] && rm -f "$_UNSLOTH_TORCH_OVERRIDES"
+    _UNSLOTH_TORCH_OVERRIDES=""
     # AMD ROCm: repair torch if the unsloth/unsloth-zoo install pulled in
     # CUDA torch from PyPI, overwriting the ROCm wheels installed in Step 1.
     if [ "$SKIP_TORCH" = false ]; then
@@ -2972,10 +3167,7 @@ elif [ -n "$TORCH_INDEX_URL" ]; then
                 _has_hip=$("$_VENV_PY" -c "import torch; print(getattr(torch.version,'hip','') or '')" 2>/dev/null || true)
                 if [ -z "$_has_hip" ]; then
                     substep "repairing ROCm torch (overwritten by dependency resolution)..."
-                    run_install_cmd_retry "repair ROCm torch" uv pip install --python "$_VENV_PY" \
-                        "$TORCH_CONSTRAINT" torchvision torchaudio \
-                        --default-index "$TORCH_INDEX_URL" \
-                        --force-reinstall
+                    _install_torch_default_index --force-reinstall
                 fi
                 ;;
         esac
@@ -3014,9 +3206,7 @@ if [ "$SKIP_TORCH" = false ] && [ -n "${TORCH_INDEX_URL:-}" ]; then
         if [ -n "$_installed_torch_tag" ] && [ "$_installed_torch_tag" != "$_expected_torch_tag" ] \
            && [ "$(_torch_index_repairable "$TORCH_INDEX_URL")" = "yes" ]; then
             substep "PyTorch flavor mismatch (installed $_installed_torch_tag, need $_expected_torch_tag) -- reinstalling correct build..."
-            run_install_cmd "reinstall PyTorch ($_expected_torch_tag)" uv pip install --python "$_VENV_PY" \
-                "$TORCH_CONSTRAINT" torchvision torchaudio \
-                --default-index "$TORCH_INDEX_URL" \
+            _install_torch_default_index \
                 --reinstall-package torch --reinstall-package torchvision --reinstall-package torchaudio
             _installed_torch_ver=$("$_VENV_PY" -c "import torch; print(torch.__version__)" 2>/dev/null || true)
             _installed_torch_tag=""

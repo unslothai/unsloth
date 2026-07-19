@@ -50,9 +50,11 @@ _CACHE_MAX_ENTRIES = 4096
 # keyed by (file cache key, wanted key). None = key absent / file unreadable.
 _BOOL_CACHE: Dict[Tuple[_CacheKey, str], Optional[bool]] = {}
 
-# Native training context length (``{arch}.context_length``). None = absent /
-# unreadable. Lets the UI show the real context ceiling before a model loads.
-_CONTEXT_CACHE: Dict[_CacheKey, Optional[int]] = {}
+# GGUF header dims for the staged/deferred-load UI: context_length, layer_count
+# (block_count), and moe_layer_count (block_count minus leading dense layers; 0
+# if not MoE). One cached pass fills all three so the staged sheet can size every
+# slider before the model loads. None = unreadable / not a GGUF.
+_DIMS_CACHE: Dict[_CacheKey, Optional[Dict[str, Optional[int]]]] = {}
 
 
 def _cache_key(path: str) -> Optional[_CacheKey]:
@@ -142,32 +144,45 @@ def _parse_gguf_header(path: str) -> Optional[Dict[str, str]]:
     return out
 
 
-def read_gguf_context_length(path: str) -> Optional[int]:
-    """Return the GGUF's native training context length (``{arch}.context_length``),
-    or ``None`` if missing/unreadable/not a GGUF. Cached by (path, mtime, size).
-    Lets the UI populate the context slider before the model is loaded."""
+def read_gguf_staged_dims(path: str) -> Optional[Dict[str, Optional[int]]]:
+    """GGUF header dims for the staged-load UI in one cached pass:
+    ``{"context_length", "layer_count", "moe_layer_count"}``. Each may be None
+    when absent (moe_layer_count is 0 for a dense model). Returns ``None`` if not
+    a GGUF / unreadable. Cached by (path, mtime, size). Lets the staged sheet size
+    the context, GPU-layers and MoE sliders before the model loads."""
     key = _cache_key(path)
     if key is None:
         return None
     with _CACHE_LOCK:
-        if key in _CONTEXT_CACHE:
-            return _CONTEXT_CACHE[key]
-    result = _parse_gguf_context_length(path)
+        if key in _DIMS_CACHE:
+            return _DIMS_CACHE[key]
+    result = _parse_gguf_staged_dims(path)
     with _CACHE_LOCK:
-        while len(_CONTEXT_CACHE) >= _CACHE_MAX_ENTRIES:
+        while len(_DIMS_CACHE) >= _CACHE_MAX_ENTRIES:
             try:
-                _CONTEXT_CACHE.pop(next(iter(_CONTEXT_CACHE)))
+                _DIMS_CACHE.pop(next(iter(_DIMS_CACHE)))
             except StopIteration:
                 break
-        _CONTEXT_CACHE[key] = result
+        _DIMS_CACHE[key] = result
     return result
 
 
-def _parse_gguf_context_length(path: str) -> Optional[int]:
-    # The context key is architecture-namespaced (``llama.context_length`` etc.),
-    # so we learn the key only after reading ``general.architecture``. GGUF writes
-    # general.* before arch.* keys, matching the loader's own parser.
-    ctx_key: Optional[str] = None
+def read_gguf_context_length(path: str) -> Optional[int]:
+    """Native training context length (``{arch}.context_length``), or ``None``.
+    Thin accessor over read_gguf_staged_dims."""
+    dims = read_gguf_staged_dims(path)
+    return dims["context_length"] if dims else None
+
+
+def _parse_gguf_arch_uints(path: str, wanted_suffixes: frozenset[str]) -> Optional[Dict[str, int]]:
+    """Walk a GGUF header once and return the requested architecture-namespaced
+    uint (vtype 4/10) keys, e.g. ``{"block_count": 32}``. Keys are
+    ``{arch}.<suffix>``; the arch is learned from ``general.architecture`` (GGUF
+    writes general.* before arch.* keys, matching the loader's own parser).
+    Returns ``None`` if not a GGUF / unreadable, else a dict (possibly empty or
+    partial when some keys are absent)."""
+    arch: Optional[str] = None
+    found: Dict[str, int] = {}
     try:
         with open(path, "rb") as f:
             head = f.read(24)
@@ -204,28 +219,68 @@ def _parse_gguf_context_length(path: str) -> Optional[int]:
                         sbytes = f.read(slen)
                         if len(sbytes) < slen:
                             break
-                        ctx_key = f"{sbytes.decode('utf-8', 'replace')}.context_length"
-                    elif ctx_key is not None and key == ctx_key and vtype in (4, 10):
+                        arch = sbytes.decode("utf-8", "replace")
+                    elif (
+                        arch is not None
+                        and vtype in (4, 10)
+                        and key.startswith(f"{arch}.")
+                        and key[len(arch) + 1 :] in wanted_suffixes
+                    ):
                         width = 4 if vtype == 4 else 8
                         n_bytes = f.read(width)
                         if len(n_bytes) < width:
                             break
-                        value = struct.unpack("<I" if vtype == 4 else "<Q", n_bytes)[0]
-                        # A real context length is positive; treat 0/garbage as
-                        # absent so the UI never builds a slider with max < min.
-                        return value if value > 0 else None
+                        found[key[len(arch) + 1 :]] = struct.unpack(
+                            "<I" if vtype == 4 else "<Q", n_bytes
+                        )[0]
+                        if len(found) == len(wanted_suffixes):
+                            break
                     else:
                         if not _skip_gguf_value(f, vtype):
                             break
                 except (struct.error, UnicodeDecodeError):
                     break
     except OSError as e:
-        logger.debug(f"read_gguf_context_length: cannot open {path}: {e}")
+        logger.debug(f"_parse_gguf_arch_uints: cannot open {path}: {e}")
         return None
     except Exception as e:
-        logger.debug(f"read_gguf_context_length: parse failure on {path}: {e}")
+        logger.debug(f"_parse_gguf_arch_uints: parse failure on {path}: {e}")
         return None
-    return None
+    return found
+
+
+def _parse_gguf_staged_dims(path: str) -> Optional[Dict[str, Optional[int]]]:
+    vals = _parse_gguf_arch_uints(
+        path,
+        frozenset(
+            {
+                "context_length",
+                "block_count",
+                "expert_count",
+                "leading_dense_block_count",
+            }
+        ),
+    )
+    if vals is None:
+        return None
+    ctx = vals.get("context_length")
+    block = vals.get("block_count")
+    # A real context/layer count is positive; treat 0/garbage as absent so the
+    # UI never builds a slider with max < min.
+    context_length = ctx if ctx and ctx > 0 else None
+    layer_count = block if block and block > 0 else None
+    # MoE layer count = block_count - leading dense layers, only when experts
+    # exist; else 0 (dense -> slider hidden). Mirrors n_moe_layers in
+    # core/inference/llama_cpp.py.
+    if not vals.get("expert_count") or not block:
+        moe_layer_count: Optional[int] = 0
+    else:
+        moe_layer_count = max(0, block - (vals.get("leading_dense_block_count") or 0))
+    return {
+        "context_length": context_length,
+        "layer_count": layer_count,
+        "moe_layer_count": moe_layer_count,
+    }
 
 
 # Strings (8) and arrays (9) are handled inline.
