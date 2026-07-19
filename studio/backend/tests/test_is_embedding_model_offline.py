@@ -47,10 +47,14 @@ import utils.models.model_config as mc  # noqa: E402
 
 
 @pytest.fixture(autouse = True)
-def _clean_state(monkeypatch):
+def _clean_state(tmp_path, monkeypatch):
     mc._embedding_detection_cache.clear()
     monkeypatch.delenv("HF_HUB_OFFLINE", raising = False)
     monkeypatch.delenv("TRANSFORMERS_OFFLINE", raising = False)
+    # Point the persisted embedder-verdict store at a per-test Studio home so the
+    # cross-restart allowlist never leaks into another test or the real ~/.unsloth.
+    monkeypatch.delenv("STUDIO_HOME", raising = False)
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path / "_studio_home"))
     yield
     mc._embedding_detection_cache.clear()
 
@@ -320,6 +324,26 @@ def test_marker_rejects_non_base_weight_bins(tmp_path, monkeypatch):
 @pytest.mark.parametrize(
     "weights",
     [
+        ("model-00001-of-00002.safetensors",),  # only shard 1 of 2 downloaded
+        ("model-00002-of-00003.bin",),  # a lone middle shard
+        (  # two shards present but the set claims three
+            "model-00001-of-00003.safetensors",
+            "model-00002-of-00003.safetensors",
+        ),
+    ],
+)
+def test_marker_rejects_incomplete_shard_set(tmp_path, monkeypatch, weights):
+    # A partially downloaded sharded model must NOT validate: SentenceTransformer's
+    # Torch backend needs every shard the index names at load time, so accepting an
+    # incomplete set would pass offline validation and then fail at first indexing --
+    # the same validate-then-fail this helper exists to prevent.
+    _cache_repo_with_files(tmp_path, monkeypatch, *weights)
+    assert mc._embedding_marker_in_hf_cache("org/model") is False
+
+
+@pytest.mark.parametrize(
+    "weights",
+    [
         ("pytorch_model.bin",),  # torch .bin
         ("model-00001-of-00002.safetensors", "model-00002-of-00002.safetensors"),  # sharded
         ("0_Transformer/model.safetensors",),  # weight in a module dir
@@ -516,6 +540,67 @@ def test_offline_metadata_only_positive_not_trusted_without_cache(monkeypatch):
     monkeypatch.setenv("HF_HUB_OFFLINE", "1")
     _fake_hf_model_info(monkeypatch, _no_network)  # offline must not hit network
     assert mc.is_embedding_model("org/uncached-embedder") is False  # not cached -> not trusted
+
+
+def test_offline_detects_persisted_tag_only_embedder_after_restart(tmp_path, monkeypatch):
+    # A tag-only embedder (feature-extraction, no modules.json) is confirmed online
+    # in one session, which durably records the verdict, and its snapshot is
+    # materialized on disk. After a RESTART (the session memo is gone) the process
+    # comes up offline: the marker alone reads False (present but no modules.json),
+    # so recognition rests on the persisted allowlist plus the present active
+    # snapshot -- the exact case the memo cannot cover across a restart.
+    _repo(tmp_path, monkeypatch, ("aaa", False), main_ref = "aaa", repo_id = "org/gte-modernbert")
+
+    def _info(model_name, token = None):
+        return types.SimpleNamespace(tags = ["feature-extraction"], pipeline_tag = None)
+
+    _fake_hf_model_info(monkeypatch, _info)
+    assert mc.is_embedding_model("org/gte-modernbert") is True  # online: confirmed + persisted
+    assert "org/gte-modernbert" in mc._load_persisted_embedders()  # written to disk
+
+    mc._embedding_detection_cache.clear()  # simulate a process restart: memo lost
+    monkeypatch.setenv("HF_HUB_OFFLINE", "1")
+    _fake_hf_model_info(monkeypatch, _no_network)  # offline must not hit network
+    assert mc.is_embedding_model("org/gte-modernbert") is True  # recovered from disk
+
+
+def test_offline_persisted_verdict_not_trusted_when_uncached(tmp_path, monkeypatch):
+    # The persisted allowlist records only that the repo was tagged an embedder,
+    # not that its files are on disk. After a restart with NOTHING materialized in
+    # the cache, the offline path must NOT trust the persisted verdict: saving the
+    # model would then fail the local_files_only RAG load at first indexing. It is
+    # gated on the active snapshot being present, so an uncached repo returns False.
+    _no_cache(monkeypatch)
+
+    def _info(model_name, token = None):
+        return types.SimpleNamespace(tags = ["feature-extraction"], pipeline_tag = None)
+
+    _fake_hf_model_info(monkeypatch, _info)
+    assert mc.is_embedding_model("org/uncached-embedder") is True  # online: confirmed + persisted
+    assert "org/uncached-embedder" in mc._load_persisted_embedders()
+
+    mc._embedding_detection_cache.clear()  # restart: memo lost, disk verdict remains
+    _no_cache(monkeypatch)
+    monkeypatch.setenv("HF_HUB_OFFLINE", "1")
+    _fake_hf_model_info(monkeypatch, _no_network)
+    assert mc.is_embedding_model("org/uncached-embedder") is False  # nothing on disk -> not trusted
+
+
+def test_persist_embedder_is_best_effort_when_home_unwritable(tmp_path, monkeypatch):
+    # Persistence is an optimization, never a correctness requirement: if the
+    # Studio home cannot be created/written, the online path must still return its
+    # verdict rather than raise. Point the home at a path blocked by a file.
+    blocker = tmp_path / "blocker"
+    blocker.write_text("not a dir")
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(blocker / "studio"))  # parent is a file
+    _no_cache(monkeypatch)
+
+    def _info(model_name, token = None):
+        return types.SimpleNamespace(tags = ["feature-extraction"], pipeline_tag = None)
+
+    _fake_hf_model_info(monkeypatch, _info)
+    assert mc.is_embedding_model("org/emb") is True  # no exception despite unwritable home
+    assert mc._load_persisted_embedders() == set()  # nothing recorded, silently
 
 
 def test_offline_cached_non_st_returns_false_without_network(tmp_path, monkeypatch):

@@ -2106,6 +2106,69 @@ def download_gguf_file(
 _embedding_detection_cache: Dict[tuple, bool] = {}
 
 
+def _persisted_embedders_path() -> Path:
+    """On-disk store of repo ids confirmed embedders via an online Hub lookup.
+
+    Lives under the resolved Studio home so it survives a restart: the session
+    memo (:data:`_embedding_detection_cache`) is lost on exit, so without this a
+    tag-only feature-extraction embedder -- one whose cached snapshot carries no
+    ``modules.json`` and so cannot be recognized from the cache alone -- would be
+    misclassified as non-embedding the first offline call after a restart.
+    """
+    return _studio_root() / "embedding_verdicts.json"
+
+
+def _load_persisted_embedders() -> set:
+    """Repo ids recorded as embedders in a prior session; empty set on any error.
+
+    Best-effort and never raises: a missing, empty, corrupt, or non-list file
+    (and any read/decode error) reads as "nothing recorded" so callers fall back
+    to their normal cache-marker logic.
+    """
+    try:
+        with open(_persisted_embedders_path(), encoding = "utf-8") as fh:
+            data = json.load(fh)
+        if isinstance(data, list):
+            return {name for name in data if isinstance(name, str)}
+    except Exception:
+        pass
+    return set()
+
+
+def _persist_embedder(model_name: str) -> None:
+    """Record *model_name* as an online-confirmed embedder, best-effort.
+
+    Only positive Hub verdicts are written (never a negative or a token): the
+    file is a durable allowlist the offline branch consults, gated there on the
+    active revision actually being materialized on disk, so a stale entry for a
+    since-deleted cache cannot resurrect a False. Any failure (unwritable home,
+    race) is swallowed -- persistence is an optimization, not a correctness
+    requirement for the online path that calls it.
+    """
+    try:
+        current = _load_persisted_embedders()
+        if model_name in current:
+            return
+        current.add(model_name)
+        path = _persisted_embedders_path()
+        path.parent.mkdir(parents = True, exist_ok = True)
+        tmp = path.with_name(path.name + f".{os.getpid()}.tmp")
+        with open(tmp, "w", encoding = "utf-8") as fh:
+            json.dump(sorted(current), fh)
+        os.replace(tmp, path)
+    except Exception as e:
+        logger.debug(f"Could not persist embedder verdict for {model_name}: {e}")
+
+
+def _known_embedder(model_name: str, cache_key: tuple) -> bool:
+    """True when *model_name* was confirmed an embedder online, this session or a
+    prior one -- the session memo (authoritative, token-scoped) OR the persisted
+    cross-restart allowlist. Callers still gate this on a materialized snapshot."""
+    if _embedding_detection_cache.get(cache_key) is True:
+        return True
+    return model_name in _load_persisted_embedders()
+
+
 # The base-model weight files the RAG loader's default backend consumes. _get()
 # constructs SentenceTransformer without backend="onnx"/"openvino", so it loads
 # through Torch: a single model.safetensors / pytorch_model.bin or their sharded
@@ -2116,6 +2179,34 @@ _embedding_detection_cache: Dict[tuple, bool] = {}
 # loadable base model -- and let a partial cache pass offline validation and then
 # fail on the first RAG load, the exact validate-then-fail this helper prevents.
 _ST_WEIGHT_FILE_RE = re.compile(r"^(model|pytorch_model)(-\d+-of-\d+)?\.(safetensors|bin)$")
+_ST_SHARD_RE = re.compile(r"^(model|pytorch_model)-(\d+)-of-(\d+)\.(safetensors|bin)$")
+
+
+def _dir_has_complete_torch_weights(names: set) -> bool:
+    """True when the filenames in ONE directory form a COMPLETE Torch base-model
+    weight set the default SentenceTransformer backend can load:
+
+    * a single ``model.safetensors`` / ``pytorch_model.bin``; or
+    * a full shard set -- a shard names its own total (``-00001-of-00002``), so
+      every index ``1..total`` for that (stem, ext, total) must be present.
+
+    A lone shard such as ``model-00001-of-00002.safetensors`` is NOT complete: the
+    loader needs the missing shard(s) at indexing time, so accepting a partially
+    downloaded sharded model would validate and then fail under local_files_only.
+    """
+    for stem in ("model", "pytorch_model"):
+        for ext in ("safetensors", "bin"):
+            if f"{stem}.{ext}" in names:
+                return True
+    shards: dict = {}
+    for name in names:
+        m = _ST_SHARD_RE.match(name)
+        if m:
+            shards.setdefault((m.group(1), m.group(4), int(m.group(3))), set()).add(int(m.group(2)))
+    for (_stem, _ext, total), indices in shards.items():
+        if total > 0 and indices == set(range(1, total + 1)):
+            return True
+    return False
 
 
 def _snapshot_is_loadable_st_model(snap: Path) -> bool:
@@ -2126,8 +2217,8 @@ def _snapshot_is_loadable_st_model(snap: Path) -> bool:
     leave it behind too, so a snapshot can carry the marker while the weights and
     config SentenceTransformer needs are absent. Accepting that offline would
     pass validation and then fail on the first RAG load. Requires the marker plus
-    a config and at least one recognized Torch base-model weight file
-    (``_ST_WEIGHT_FILE_RE``) somewhere in the snapshot.
+    a config and a COMPLETE recognized Torch base-model weight set
+    (``_dir_has_complete_torch_weights``) in one directory of the snapshot.
     """
     try:
         if not (snap / "modules.json").is_file():
@@ -2136,13 +2227,14 @@ def _snapshot_is_loadable_st_model(snap: Path) -> bool:
             (snap / name).is_file() for name in ("config.json", "config_sentence_transformers.json")
         ):
             return False
+        by_dir: dict = {}
         for path in snap.rglob("*"):
             try:
                 if path.is_file() and _ST_WEIGHT_FILE_RE.match(path.name):
-                    return True
+                    by_dir.setdefault(path.parent, set()).add(path.name)
             except OSError:
                 continue
-        return False
+        return any(_dir_has_complete_torch_weights(names) for names in by_dir.values())
     except OSError:
         return False
 
@@ -2220,16 +2312,18 @@ def is_embedding_model(model_name: str, hf_token: Optional[str] = None) -> bool:
         # a cached negative must not stick (a model downloaded later, or a tag-only
         # embedder, could not be confirmed here), so a miss is not durable.
         marker = _embedding_marker_in_hf_cache(model_name)
-        # Retain a positive confirmed online this session ONLY when the active
-        # revision is actually materialized locally (marker is not None). A cached
-        # True proves model_info() tagged the repo an embedder, not that its files
-        # are on disk -- an online /check-embedding call populates this process-wide
-        # memo without downloading -- so trusting it for an uncached repo would save
-        # a model the local_files_only load then fails on. "not None" (not True)
-        # still covers a downloaded tag-only feature-extraction embedder whose
-        # snapshot is present but has no modules.json: the _hf_offline_if_dns_dead()
-        # mid-load flip case that must NOT be downgraded.
-        if _embedding_detection_cache.get(cache_key) is True and marker is not None:
+        # Retain a positive confirmed online -- this session (memo) or a prior one
+        # (persisted allowlist) -- ONLY when the active revision is actually
+        # materialized locally (marker is not None). A recorded True proves
+        # model_info() tagged the repo an embedder, not that its files are on disk
+        # (an online /check-embedding call records the verdict without downloading),
+        # so trusting it for an uncached repo would save a model the local_files_only
+        # load then fails on. "not None" (not True) still covers a downloaded
+        # tag-only feature-extraction embedder whose snapshot is present but has no
+        # modules.json -- recognizable only from that recorded verdict, and the case
+        # that must survive a restart, not just the _hf_offline_if_dns_dead() mid-load
+        # flip.
+        if _known_embedder(model_name, cache_key) and marker is not None:
             return True
         return marker is True
 
@@ -2256,6 +2350,10 @@ def is_embedding_model(model_name: str, hf_token: Optional[str] = None) -> bool:
 
         _embedding_detection_cache[cache_key] = is_emb
         if is_emb:
+            # Durably record the positive so a later offline session (after a
+            # restart, when the memo is gone) can still recognize a downloaded
+            # tag-only embedder, gated there on its snapshot being materialized.
+            _persist_embedder(model_name)
             logger.info(
                 f"Model {model_name} detected as embedding model: "
                 f"pipeline_tag={pipeline_tag}, "
