@@ -99,7 +99,12 @@ def _fake_stt_sidecar(
     return sidecar
 
 
-def _fake_ggml_sidecar(*, model = None, device = None, loading = False):
+def _fake_ggml_sidecar(
+    *,
+    model = None,
+    device = None,
+    loading = False,
+):
     ggml = SimpleNamespace(
         loaded_model = model,
         device = device,
