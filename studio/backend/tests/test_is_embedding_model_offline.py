@@ -282,7 +282,12 @@ def test_marker_onnx_only_snapshot_is_not_loadable(tmp_path, monkeypatch):
     assert mc._embedding_marker_in_hf_cache("org/model") is False
 
 
-def _cache_repo_with_files(tmp_path, monkeypatch, *files, commit = "aaa"):
+def _cache_repo_with_files(
+    tmp_path,
+    monkeypatch,
+    *files,
+    commit = "aaa",
+):
     """A cache repo whose active snapshot holds modules.json + config + *files*."""
     hf_root = tmp_path / "hf"
     repo = hf_root / "models--org--model"
@@ -312,11 +317,14 @@ def test_marker_rejects_non_base_weight_bins(tmp_path, monkeypatch):
     assert mc._embedding_marker_in_hf_cache("org/model") is False
 
 
-@pytest.mark.parametrize("weights", [
-    ("pytorch_model.bin",),                                        # torch .bin
-    ("model-00001-of-00002.safetensors", "model-00002-of-00002.safetensors"),  # sharded
-    ("0_Transformer/model.safetensors",),                          # weight in a module dir
-])
+@pytest.mark.parametrize(
+    "weights",
+    [
+        ("pytorch_model.bin",),  # torch .bin
+        ("model-00001-of-00002.safetensors", "model-00002-of-00002.safetensors"),  # sharded
+        ("0_Transformer/model.safetensors",),  # weight in a module dir
+    ],
+)
 def test_marker_accepts_recognized_torch_weights(tmp_path, monkeypatch, weights):
     # The filename recognizer must not over-reject real base-model weights: single
     # pytorch_model.bin, sharded model-000NN-of-000NN.safetensors, and weights that
@@ -501,7 +509,9 @@ def test_offline_metadata_only_positive_not_trusted_without_cache(monkeypatch):
         return types.SimpleNamespace(tags = ["feature-extraction"], pipeline_tag = None)
 
     _fake_hf_model_info(monkeypatch, _info)
-    assert mc.is_embedding_model("org/uncached-embedder") is True  # online: cached True (metadata only)
+    assert (
+        mc.is_embedding_model("org/uncached-embedder") is True
+    )  # online: cached True (metadata only)
 
     monkeypatch.setenv("HF_HUB_OFFLINE", "1")
     _fake_hf_model_info(monkeypatch, _no_network)  # offline must not hit network
