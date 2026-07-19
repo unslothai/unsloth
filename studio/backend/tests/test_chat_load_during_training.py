@@ -234,14 +234,42 @@ class TestCanLoadGGUF(_GpuCacheResetMixin, unittest.TestCase):
         self.assertFalse(blocked)
         self.assertEqual(blocked_info["usable_gb"], 10.0)
 
-    def test_single_device_refuses_unresolved_token(self):
+    def test_single_device_unresolved_token_sizes_against_pool(self):
+        # A non-numeric device token (a CUDA UUID / MIG handle) can't map to a
+        # free-VRAM index. Rather than falsely block, size against the whole
+        # visible pool: here GPU 0 has 80 GB free for a 20 GB model -> allow.
         ok, info, _ = self._run(
             devices = _devices((0, 80, 0)),
             required_override = 20.0,
             single_device_gpu = "GPU-uuid",
         )
+        self.assertTrue(ok)
+        self.assertEqual(info["mode"], "single_device")
+        self.assertNotIn("reason", info)
+
+    def test_single_device_unresolved_token_refuses_when_pool_full(self):
+        # Same UUID fallback, but the visible pool is nearly full (2 GB free for
+        # a 20 GB model) -> the sizing check still refuses (default-deny), just
+        # not on an unresolved-token technicality.
+        ok, info, _ = self._run(
+            devices = _devices((0, 80, 78)),
+            required_override = 20.0,
+            single_device_gpu = "GPU-uuid",
+        )
         self.assertFalse(ok)
-        self.assertEqual(info["reason"], "unresolved_gpu_id")
+        self.assertNotEqual(info.get("reason"), "unresolved_gpu_id")
+
+    def test_single_device_cpu_token_allows(self):
+        # An empty device token = a CPU-only single-device runner (CPU diffusion
+        # GGUF): it uses no GPU VRAM, so it never threatens training -> allow
+        # regardless of how full the GPUs are.
+        ok, info, _ = self._run(
+            devices = _devices((0, 80, 78)),
+            required_override = 20.0,
+            single_device_gpu = "",
+        )
+        self.assertTrue(ok)
+        self.assertEqual(info["reason"], "cpu_only")
 
     def test_estimate_unavailable_refuses(self):
         # No override and the estimator can't size it -> default-deny.

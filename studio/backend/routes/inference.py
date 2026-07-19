@@ -3237,7 +3237,14 @@ def _request_matches_loaded_settings(
             )
         ):
             return False
-    _req_gpu_ids = sorted(request.gpu_ids) if request.gpu_ids else None
+    # A changed GPU pick must reload. The diffusion runner collapses a multi-GPU
+    # request to its single lowest device (it drives one device only), so the
+    # backend records just that device; compare the request the same way, or a
+    # multi-GPU pick that resolves to the same device needlessly reloads.
+    if llama_backend.is_diffusion:
+        _req_gpu_ids = [sorted(request.gpu_ids)[0]] if request.gpu_ids else None
+    else:
+        _req_gpu_ids = sorted(request.gpu_ids) if request.gpu_ids else None
     if _req_gpu_ids != llama_backend.gpu_ids:
         return False
     # Preserved tensor->layer fallback (both report tensor=off, so the check above

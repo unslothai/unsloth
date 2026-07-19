@@ -640,6 +640,34 @@ def test_gpu_ids_reload_detection_is_order_insensitive():
     assert _target_state_gpu_ids(backend, None) is False
 
 
+def test_gpu_ids_reload_detection_collapses_diffusion_to_single_device():
+    # The diffusion runner drives only its single lowest device, so the backend
+    # records [lowest]. A later multi-GPU request that still resolves to that
+    # same lowest device must dedupe (no needless reload); a request whose lowest
+    # device moves, or that drops the pick, must reload.
+    backend = _loaded_backend("auto")
+    backend._is_diffusion = True
+    backend._gpu_ids = [1]  # loaded on the lowest of an earlier [3, 1] pick
+    assert _target_state_gpu_ids(backend, [3, 1]) is True
+    assert _target_state_gpu_ids(backend, [1]) is True
+    # Lowest device changes (2, not 1) -> reload.
+    assert _target_state_gpu_ids(backend, [3, 2]) is False
+    # Dropping the pick (auto) -> reload.
+    assert _target_state_gpu_ids(backend, None) is False
+
+
+def test_route_matches_loaded_settings_collapses_diffusion_gpu_ids():
+    # The route-level reload dedupe mirrors the backend: for a loaded diffusion
+    # model it compares the request against the single recorded device, not the
+    # full requested list, or a same-device multi-GPU pick reloads needlessly.
+    route_src = (Path(_BACKEND_DIR) / "routes" / "inference.py").read_text(encoding = "utf-8")
+    match_impl = route_src[route_src.index("def _request_matches_loaded_settings") :]
+    guard = match_impl.index("if llama_backend.is_diffusion:")
+    collapse = match_impl.index("[sorted(request.gpu_ids)[0]] if request.gpu_ids else None")
+    compare = match_impl.index("if _req_gpu_ids != llama_backend.gpu_ids:")
+    assert guard < collapse < compare
+
+
 # ── Manual tensor split: child enumeration pinned to the picker's order ──────
 
 

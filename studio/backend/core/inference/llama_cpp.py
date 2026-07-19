@@ -8503,8 +8503,15 @@ class LlamaCppBackend:
             ):
                 return False
         # A changed GPU pick must reload (compare order-insensitively; None/[]
-        # both mean automatic).
-        if (self._gpu_ids or None) != (sorted(gpu_ids) if gpu_ids else None):
+        # both mean automatic). The diffusion runner collapses a multi-GPU pick
+        # to its single lowest device, so self._gpu_ids holds just that device;
+        # normalize the request the same way, or a multi-GPU pick that resolves
+        # to the same device needlessly reloads.
+        if self._is_diffusion:
+            requested_gpu_pick = [sorted(gpu_ids)[0]] if gpu_ids else None
+        else:
+            requested_gpu_pick = sorted(gpu_ids) if gpu_ids else None
+        if (self._gpu_ids or None) != requested_gpu_pick:
             return False
 
         # Compare on the canonical requested mode. With --spec-type in

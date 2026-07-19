@@ -268,16 +268,24 @@ def can_load_chat_during_training(
 
         free_by_index = _free_vram_by_index(get_visible_gpu_utilization().get("devices", []))
         if single_device_gpu is not None:
+            token = str(single_device_gpu).strip()
+            if not token:
+                # Empty token = a CPU-only single-device runner (e.g. a CPU
+                # diffusion GGUF): it uses no GPU VRAM, so it never threatens
+                # active training and can always load.
+                return True, {"mode": "single_device", "reason": "cpu_only"}
             try:
-                selected_gpu = int(single_device_gpu)
+                selected_gpu = int(token)
                 if selected_gpu < 0:
                     raise ValueError
             except (TypeError, ValueError):
-                return False, {
-                    "mode": "single_device",
-                    "reason": "unresolved_gpu_id",
-                }
-            free_vals = [free_by_index.get(selected_gpu, 0.0)]
+                # A non-numeric device token (e.g. a CUDA UUID / MIG handle)
+                # can't be mapped to a free-VRAM index; rather than reject the
+                # load, size it against the whole visible pool like the GGUF
+                # guard below so a resolvable device isn't falsely blocked.
+                free_vals = list(free_by_index.values())
+            else:
+                free_vals = [free_by_index.get(selected_gpu, 0.0)]
         elif requested_gpu_ids:
             # Invalid ids -> load_model 400s first, so don't block; missing id = 0.
             try:
