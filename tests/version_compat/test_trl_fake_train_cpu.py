@@ -158,6 +158,36 @@ except Exception:
 _MODEL = "hf-internal-testing/tiny-random-LlamaForCausalLM"
 
 
+def _guard_finite_logits(model):
+    """Keep the LM head logits finite so GRPO sampling can't crash.
+
+    ``test_grpo_trains_on_cpu`` samples completions from a tiny, *untrained*
+    random model on CPU. Driven autoregressively -- and nudged by the fake
+    reward's optimizer step between the two train steps -- such a model can emit
+    non-finite logits, so ``torch.multinomial`` inside ``generate()``
+    intermittently raises "probability tensor contains either `inf`, `nan` or
+    element < 0". That is a well-known nondeterministic sampling failure, not an
+    Unsloth/TRL regression: the Trainer already fixes the seed, but CPU reduction
+    order is not bit-reproducible, so the blow-up still surfaces every so often.
+
+    Sanitize the logits to a finite, bounded range (out of place, so autograd
+    stays valid) before they reach the sampler. This test asserts the train loop
+    runs end to end, not the (deliberately meaningless) numerics, so bounding the
+    logits changes nothing it checks while making the run reliable.
+    """
+    def _finite_logits_hook(_module, _inputs, output):
+        logits = getattr(output, "logits", None)
+        if logits is None:
+            return output
+        output.logits = torch.nan_to_num(
+            logits, nan = 0.0, posinf = 30.0, neginf = -30.0,
+        ).clamp(-30.0, 30.0)
+        return output
+
+    model.register_forward_hook(_finite_logits_hook)
+    return model
+
+
 def _load_plain():
     """Tiny plain HF model + tokenizer on CPU. Skips (not fails) if the model
     cannot be fetched -- that is a network/hub issue, not an unsloth regression."""
@@ -177,6 +207,7 @@ def _load_plain():
         model.for_training = lambda *a, **k: model.train()
     if not hasattr(model, "for_inference"):
         model.for_inference = lambda *a, **k: model.eval()
+    _guard_finite_logits(model)
     return model.to("cpu"), tok
 
 
