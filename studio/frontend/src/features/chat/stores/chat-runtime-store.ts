@@ -606,7 +606,7 @@ export function loadedGpuMemoryFields(resp: {
   n_layers?: number | null;
   n_moe_layers?: number;
   gpu_ids?: number[] | null;
-  requested_gpu_ids?: number[] | null;
+  gguf_memory_mode?: "auto" | "pinned" | "resident" | null;
 }) {
   // GPU-memory state is meaningful only for a GGUF chat load. A non-GGUF response
   // still carries gpu_memory_mode (its default "auto" is serialized), so gate on
@@ -630,6 +630,9 @@ export function loadedGpuMemoryFields(resp: {
       loadedSplitRatio: null,
       ggufLayerCount: null,
       moeLayerCount: null,
+      // Host-memory residency is meaningful only for GGUF; a non-GGUF load has
+      // no mode, so reset to null (see the GGUF branch's note below).
+      activeMemoryMode: resp.gguf_memory_mode ?? null,
     };
   }
   const mode = resp.gpu_memory_mode ?? "auto";
@@ -676,11 +679,85 @@ export function loadedGpuMemoryFields(resp: {
     // The picker reflects the requested placement pool, not a fitted subset.
     selectedGpuIds: gpuIds,
     loadedGpuIds: gpuIds,
+    // Commit the residency the backend actually applied. GGUF host-memory
+    // residency is backend-owned (no UI editor); mirroring it here on every
+    // load path keeps activeMemoryMode from carrying a previous model's mode.
+    // Otherwise, after a switch (compare/auto/rollback load) the store keeps
+    // the prior value, so an immediate same-model Apply could resend a stale
+    // mode. Non-GGUF and auto loads report null, resetting it.
+    activeMemoryMode: resp.gguf_memory_mode ?? null,
     ...manualKnobs,
   };
 }
 
-/** A pick is a GGUF: HF variant, native file, or a direct local .gguf. */
+/** loadedGpuMemoryFields (plus any seedExtras), unless a staged pick is open.
+ *
+ * With a staged pick open (the load fired mid-staging), preserve its editable
+ * GPU knobs and seedExtras, but still advance every loaded baseline. Otherwise
+ * cancelling the stage restores its edits onto the newly loaded model. The
+ * status reseed cannot repair that while pendingSelection holds it off.
+ */
+export function loadedGpuMemoryFieldsUnlessStaged<T extends object>(
+  resp: Parameters<typeof loadedGpuMemoryFields>[0],
+  seedExtras?: T,
+) {
+  const fields = loadedGpuMemoryFields(resp);
+  if (useChatRuntimeStore.getState().pendingSelection != null) {
+    return {
+      loadedGpuMemoryMode: fields.loadedGpuMemoryMode,
+      loadedGpuLayers: fields.loadedGpuLayers,
+      loadedNCpuMoe: fields.loadedNCpuMoe,
+      loadedSplitRatio: fields.loadedSplitRatio,
+      loadedGpuIds: fields.loadedGpuIds,
+      // These are metadata ceilings for the model that actually loaded, not
+      // editable values from the open stage. Advance them with the baselines
+      // so abandoning the stage cannot expose the previous model's limits.
+      ggufLayerCount: fields.ggufLayerCount,
+      moeLayerCount: fields.moeLayerCount,
+      // Residency is backend-owned with no editable knob, so it mirrors the
+      // model that actually loaded, not the open stage. Advance it with the
+      // baselines so a staged load can't leave a previous model's mode.
+      activeMemoryMode: fields.activeMemoryMode,
+    };
+  }
+  return { ...fields, ...seedExtras };
+}
+
+/** A local model staged for a deferred load (see `pendingSelection`). Shape is
+ *  a subset of the load hook's `SelectedModelInput`, structurally assignable. */
+export type PendingModelSelection = {
+  id: string;
+  isLora?: boolean;
+  ggufVariant?: string;
+  isDownloaded?: boolean;
+  expectedBytes?: number;
+  /** Native (drag-drop / picked-from-disk) GGUF: the path token used to read
+   *  the header and to load. Absent for HF-repo models. */
+  nativePathToken?: string;
+  /** Direct local .gguf file (custom folder / LM Studio): a GGUF source even
+   *  though it carries neither an HF variant nor a native path token. */
+  isGguf?: boolean;
+  /** Native context length read from the GGUF header once the file is local.
+   *  Scoped here (not the shared `ggufContextLength`) so a staged model's
+   *  metadata never pollutes the currently-loaded model's context display. */
+  contextLength?: number | null;
+  /** Total layer count (GGUF block_count); the manual gpu-layers ceiling is
+   * this + 1 (llama.cpp counts the output layer as offloadable too);
+   *  scoped here like contextLength. */
+  layerCount?: number | null;
+  /** MoE expert-layer count from the GGUF header (manual --n-cpu-moe ceiling);
+   *  0 for dense models, scoped here like contextLength. */
+  moeLayerCount?: number | null;
+  /** "Load on selection" on + un-cached GGUF: download via the manager (global
+   *  indicator) without opening the sheet, then load once the download finishes. */
+  autoLoad?: boolean;
+  /** Uncached non-GGUF HF repo: download the full snapshot via the manager
+   *  (variant null) the same way GGUF picks download a variant. */
+  isHubRepo?: boolean;
+};
+
+/** A pick is a GGUF (HF variant, native file, or a direct local .gguf) and so
+ *  has pre-load options worth staging. Works on a selection or a staged pick. */
 export function hasGgufSource(x: {
   ggufVariant?: string;
   nativePathToken?: string;

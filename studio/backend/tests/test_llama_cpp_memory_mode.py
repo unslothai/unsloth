@@ -850,6 +850,43 @@ def test_backend_lacks_gpu_lib_detection(tmp_path):
         assert LlamaCppBackend._backend_lacks_gpu_lib(binary) is True
 
 
+def test_is_vulkan_backend_matches_versioned_soname(tmp_path):
+    """_is_vulkan_backend matches versioned Vulkan sonames (libggml-vulkan.so.0) too, so a
+    distro/split-lib Vulkan install without the dev-only unversioned symlink is still detected
+    as Vulkan; otherwise the route treats Vulkan ordinals as CUDA ids and never emits the
+    --device Vulkan<i> pin (#7188). Shares the matcher with _backend_lacks_gpu_lib."""
+    ext = "dll" if sys.platform == "win32" else "so"
+    pre = "" if sys.platform == "win32" else "lib"
+    binary = str(tmp_path / "llama-server")
+    (tmp_path / "llama-server").write_bytes(b"x")
+    counter = {"n": 0}
+
+    def _dir(*files):
+        counter["n"] += 1
+        d = tmp_path / f"vkdir_{counter['n']}"
+        d.mkdir()
+        for f in files:
+            (d / f).write_bytes(b"x")
+        return d
+
+    # Versioned-only Vulkan lib (no unversioned symlink) -> detected as Vulkan.
+    with patch("core.inference.llama_cpp._llama_lib_dir", return_value = _dir(f"{pre}ggml-vulkan.{ext}.0")):
+        assert LlamaCppBackend._is_vulkan_backend(binary) is True
+    # Unversioned Vulkan lib -> still detected (regression).
+    with patch("core.inference.llama_cpp._llama_lib_dir", return_value = _dir(f"{pre}ggml-vulkan.{ext}")):
+        assert LlamaCppBackend._is_vulkan_backend(binary) is True
+    # A CUDA/HIP sibling (versioned or not) means a multi-backend build -> defer to that backend.
+    for sib in (f"{pre}ggml-cuda.{ext}", f"{pre}ggml-hip.{ext}.0"):
+        with patch(
+            "core.inference.llama_cpp._llama_lib_dir",
+            return_value = _dir(f"{pre}ggml-vulkan.{ext}.0", sib),
+        ):
+            assert LlamaCppBackend._is_vulkan_backend(binary) is False
+    # No Vulkan lib at all -> not a Vulkan build.
+    with patch("core.inference.llama_cpp._llama_lib_dir", return_value = _dir(f"{pre}ggml-cpu.{ext}")):
+        assert LlamaCppBackend._is_vulkan_backend(binary) is False
+
+
 def test_empty_non_cuda_probe_rejects_gpu_ids_even_with_stray_mask():
     """On a Metal/SYCL/CPU (non-CUDA) backend the launcher's CUDA_VISIBLE_DEVICES is
     ignored (SYCL keys off ONEAPI_DEVICE_SELECTOR, Metal off none), so an empty probe
