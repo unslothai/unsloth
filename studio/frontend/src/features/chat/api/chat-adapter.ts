@@ -68,7 +68,6 @@ import { isMultimodalResponse } from "../types/api";
 import type {
   GgufVariantDetail,
   OpenAIChatCompletionsRequest,
-  ValidateModelResponse,
   OpenAIChatMessage,
   OpenAIMessageContent,
   OpenAIReasoningContentPart,
@@ -1466,13 +1465,6 @@ function isAutoLoadableGgufVariant(variant: GgufVariantDetail | null): boolean {
   return !hasBigEndianGgufMarker(filename, variant.quant);
 }
 
-function isAutoLoadChatCapable(validation: ValidateModelResponse): boolean {
-  if (validation.audio_type === "whisper") {
-    return false;
-  }
-  return validation.is_audio !== true;
-}
-
 async function autoLoadSmallestModel(): Promise<{
   loaded: boolean;
   blockedByTrustRemoteCode: boolean;
@@ -1497,7 +1489,6 @@ async function autoLoadSmallestModel(): Promise<{
   let blockedByTrustRemoteCode = false;
   let hadNonTrustFailure = false;
   let loadAttempts = 0;
-  let skippedForCapability = false;
   const skippedAutoLoadCandidates = new Set<string>();
 
   async function canAutoLoad(payload: {
@@ -1533,8 +1524,8 @@ async function autoLoadSmallestModel(): Promise<{
       hadNonTrustFailure = true;
       return false;
     }
-    if (!isAutoLoadChatCapable(validation)) {
-      skippedForCapability = true;
+    // Older backends omit this additive field, so keep their existing behavior.
+    if (validation.is_chat_capable === false) {
       return false;
     }
     return true;

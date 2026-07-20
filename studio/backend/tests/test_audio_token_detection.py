@@ -6,7 +6,16 @@
 
 from __future__ import annotations
 
-from utils.models.model_config import _AUDIO_TOKEN_PATTERNS, is_audio_input_type
+from unittest.mock import patch
+
+import pytest
+from transformers import AutoConfig
+
+from utils.models.model_config import (
+    _AUDIO_TOKEN_PATTERNS,
+    _classify_audio_capability,
+    is_audio_input_type,
+)
 
 
 def _classify(tokens: list[str]) -> str | None:
@@ -41,3 +50,38 @@ def test_audio_vlm_and_whisper_accept_audio_input():
 
 def test_non_audio_tokens_classify_none():
     assert _classify(["<bos>", "<eos>", "<pad>"]) is None
+
+
+@pytest.mark.parametrize(
+    "model_type", ["qwen2_audio", "qwen2_5_omni", "qwen3_omni_moe", "granite_speech"]
+)
+def test_audio_input_chat_overrides_overlapping_csm_tokens(model_type):
+    config = AutoConfig.for_model(model_type)
+    with patch("utils.models.model_config.load_model_config", return_value = config):
+        assert _classify_audio_capability("org/model", "csm") == ("audio_vlm", True, True)
+
+
+@pytest.mark.parametrize(
+    "model_type",
+    ["wav2vec2", "hubert", "speecht5", "bark", "clap", "encodec", "dac", "mimi", "xcodec"],
+)
+def test_registry_audio_only_models_are_not_chat_capable_without_tokens(model_type):
+    with patch(
+        "utils.models.model_config.load_model_config",
+        return_value = AutoConfig.for_model(model_type),
+    ):
+        assert _classify_audio_capability("org/model", None) == (None, False, False)
+
+
+def test_text_model_remains_chat_capable():
+    with patch(
+        "utils.models.model_config.load_model_config",
+        return_value = AutoConfig.for_model("llama"),
+    ):
+        assert _classify_audio_capability("org/model", None) == (None, False, True)
+
+
+@pytest.mark.parametrize("audio_type", ["csm", "whisper", "snac"])
+def test_audio_metadata_rejects_non_chat_model_when_config_is_missing(audio_type):
+    with patch("utils.models.model_config.load_model_config", side_effect = OSError("missing")):
+        assert _classify_audio_capability("org/model", audio_type)[2] is False

@@ -5230,6 +5230,7 @@ async def validate_model(
             is_audio = getattr(config, "is_audio", False),
             audio_type = getattr(config, "audio_type", None),
             has_audio_input = getattr(config, "has_audio_input", False),
+            is_chat_capable = getattr(config, "is_chat_capable", True),
             requires_trust_remote_code = requires_trust_remote_code,
             requires_security_review = requires_security_review,
             context_length = context_length,

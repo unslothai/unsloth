@@ -230,6 +230,19 @@ class TestLocalGgufVisionDetection:
         assert config.gguf_mmproj_file == str(mmproj.resolve())
         mock_subprocess.assert_not_called()
 
+    @patch("utils.models.model_config.load_model_config", side_effect = OSError("missing config"))
+    @patch("utils.models.model_config.detect_audio_type", return_value = "csm")
+    def test_local_csm_gguf_is_not_chat_capable(self, _detect_audio, _load_config, tmp_path):
+        model = tmp_path / "csm-Q4_K_M.gguf"
+        model.write_bytes(b"")
+
+        config = ModelConfig.from_ui_selection(str(model), None)
+
+        assert config is not None
+        assert config.audio_type == "csm"
+        assert config.is_audio is True
+        assert config.is_chat_capable is False
+
 
 # ---------------------------------------------------------------------------
 # Remote GGUF audio capability path

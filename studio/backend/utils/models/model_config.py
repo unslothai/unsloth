@@ -539,7 +539,7 @@ _FALLBACK_AUDIO_MODEL_TYPES = frozenset({"csm", "whisper"})
 
 
 def _build_detection_sets():
-    """Return (vlm_model_types, vlm_class_names, audio_model_types) from the
+    """Return vision/audio model-type sets from the
     installed transformers registry, unioned with the curated repo-code VLM
     set. Reads only static name dicts -- no model is loaded, no code runs.
     Falls back to curated/hardcoded values if transformers is unavailable.
@@ -567,18 +567,38 @@ def _build_detection_sets():
         ):
             audio_types |= set(_names(attr))
         audio_types |= set(_FALLBACK_AUDIO_MODEL_TYPES)
+        audio_chat_types = set(_names("MODEL_FOR_SEQ_TO_SEQ_CAUSAL_LM_MAPPING_NAMES"))
 
-        return frozenset(vlm_types), frozenset(vlm_classes), frozenset(audio_types)
+        return (
+            frozenset(vlm_types),
+            frozenset(vlm_classes),
+            frozenset(audio_types),
+            frozenset(audio_chat_types),
+        )
     except Exception as exc:  # pragma: no cover - defensive
         logger.warning("Could not build detection sets from transformers: %s", exc)
         return (
             frozenset(_CURATED_REMOTE_VLM_TYPES),
             frozenset(),
             frozenset(_FALLBACK_AUDIO_MODEL_TYPES),
+            frozenset(),
         )
 
 
-_VLM_MODEL_TYPES, _VLM_CLASS_NAMES, _AUDIO_ONLY_MODEL_TYPES = _build_detection_sets()
+(
+    _VLM_MODEL_TYPES,
+    _VLM_CLASS_NAMES,
+    _AUDIO_ONLY_MODEL_TYPES,
+    _AUDIO_CHAT_MODEL_TYPES,
+) = _build_detection_sets()
+_NON_CHAT_AUDIO_MODEL_TYPES = _AUDIO_ONLY_MODEL_TYPES | {
+    "clap",
+    "dac",
+    "encodec",
+    "mimi",
+    "snac",
+    "xcodec",
+}
 
 # Pre-computed .venv_t5 paths and backend dir for subprocess version switching.
 # Vision check uses the Gemma 4 5.5 sidecar for existing Gemma 4 architectures.
@@ -974,7 +994,8 @@ def _is_vision_model_uncached(
 
 
 VALID_AUDIO_TYPES = ("snac", "csm", "bicodec", "dac", "whisper", "audio_vlm")
-GGUF_TTS_AUDIO_TYPES = ("snac", "bicodec", "dac")
+GGUF_TTS_AUDIO_TYPES = ("snac", "csm", "bicodec", "dac")
+_NON_CHAT_AUDIO_TYPES = frozenset(VALID_AUDIO_TYPES) - {"audio_vlm"}
 
 # Keyed like the vision cache by (name, token, local_files_only) so an unauthenticated
 # or offline miss cannot poison a later authenticated / online lookup.
@@ -1134,6 +1155,43 @@ def _detect_audio_from_tokenizer(
 def is_audio_input_type(audio_type: Optional[str]) -> bool:
     """True if an audio_type accepts audio input: whisper (ASR), audio_vlm (Gemma3n)."""
     return audio_type in ("whisper", "audio_vlm")
+
+
+def _classify_audio_capability(
+    model_name: str,
+    audio_type: Optional[str],
+    hf_token: Optional[str] = None,
+) -> Tuple[Optional[str], bool, bool]:
+    """Return (audio_type, has_audio_input, is_chat_capable)."""
+    audio_chat = False
+    audio_only = False
+    try:
+        config = load_model_config(model_name, use_auth = True, token = hf_token)
+        model_type = getattr(config, "model_type", None)
+        thinker = getattr(config, "thinker_config", None)
+        audio_chat = (
+            thinker is not None
+            and getattr(thinker, "audio_config", None) is not None
+            and getattr(thinker, "text_config", None) is not None
+        ) or (
+            model_type in _AUDIO_CHAT_MODEL_TYPES
+            and getattr(config, "text_config", None) is not None
+            and (
+                getattr(config, "audio_config", None) is not None
+                or getattr(config, "encoder_config", None) is not None
+            )
+        )
+        audio_only = model_type in _NON_CHAT_AUDIO_MODEL_TYPES
+    except Exception as exc:
+        logger.debug("Could not classify audio capability for '%s': %s", model_name, exc)
+
+    if audio_chat:
+        return "audio_vlm", True, True
+    return (
+        audio_type,
+        is_audio_input_type(audio_type),
+        not audio_only and audio_type not in _NON_CHAT_AUDIO_TYPES,
+    )
 
 
 def _is_mmproj(filename: str) -> bool:
@@ -2548,6 +2606,7 @@ class ModelConfig:
     is_audio: bool = False  # TTS audio model?
     audio_type: Optional[str] = None  # Audio codec type: 'snac', 'csm', 'bicodec', 'dac'
     has_audio_input: bool = False  # Accepts audio input (ASR/speech understanding)
+    is_chat_capable: bool = True  # Suitable for automatic loading into chat?
     gguf_file: Optional[str] = None  # Full path to the .gguf file (local mode)
     gguf_mmproj_file: Optional[str] = None  # Full path to the mmproj .gguf file (vision projection)
     gguf_mtp_file: Optional[str] = None  # Full path to the separate MTP drafter (local mode)
@@ -2670,12 +2729,14 @@ class ModelConfig:
                 # Is this a vision/audio model, per export metadata?
                 base_is_vision = False
                 gguf_audio_type = None
+                capability_model = path
                 meta_path = gguf_dir / "export_metadata.json"
                 if meta_path.exists():
                     try:
                         meta = json.loads(meta_path.read_text())
                         base = meta.get("base_model")
                         if base:
+                            capability_model = base
                             if is_vision_model(base, hf_token = hf_token):
                                 base_is_vision = True
                                 logger.info(f"GGUF base model '{base}' is a vision model")
@@ -2686,6 +2747,9 @@ class ModelConfig:
                     gguf_audio_type = detect_audio_type(
                         path, hf_token = hf_token, local_files_only = True
                     )
+                gguf_audio_type, has_audio_in, is_chat_capable = _classify_audio_capability(
+                    capability_model, gguf_audio_type, hf_token
+                )
 
                 # Direct file selections may point into a quant subdir while
                 # mmproj-*.gguf lives at the snapshot root.
@@ -2713,7 +2777,8 @@ class ModelConfig:
                     is_gguf = True,
                     is_audio = gguf_audio_type in GGUF_TTS_AUDIO_TYPES,
                     audio_type = gguf_audio_type,
-                    has_audio_input = is_audio_input_type(gguf_audio_type),
+                    has_audio_input = has_audio_in,
+                    is_chat_capable = is_chat_capable,
                     gguf_file = gguf_file,
                     gguf_mmproj_file = mmproj_file,
                     gguf_mtp_file = mtp_file,
@@ -2747,6 +2812,9 @@ class ModelConfig:
                         variant = "Q4_K_M"  # Fallback — llama-server's own default
 
                 gguf_audio_type = detect_audio_type(identifier, hf_token = hf_token)
+                gguf_audio_type, has_audio_in, is_chat_capable = _classify_audio_capability(
+                    identifier, gguf_audio_type, hf_token
+                )
                 display_name = f"{identifier.split('/')[-1]} ({variant})"
                 logger.info(
                     f"Detected remote GGUF repo '{identifier}', "
@@ -2763,7 +2831,8 @@ class ModelConfig:
                     is_gguf = True,
                     is_audio = gguf_audio_type in GGUF_TTS_AUDIO_TYPES,
                     audio_type = gguf_audio_type,
-                    has_audio_input = is_audio_input_type(gguf_audio_type),
+                    has_audio_input = has_audio_in,
+                    is_chat_capable = is_chat_capable,
                     gguf_file = None,
                     gguf_hf_repo = identifier,
                     gguf_variant = variant,
@@ -2831,7 +2900,9 @@ class ModelConfig:
 
         vision = is_vision_model(check_model, hf_token = hf_token)
         audio_type_val = detect_audio_type(check_model, hf_token = hf_token)
-        has_audio_in = is_audio_input_type(audio_type_val)
+        audio_type_val, has_audio_in, is_chat_capable = _classify_audio_capability(
+            check_model, audio_type_val, hf_token
+        )
 
         display_name = Path(path).name if is_local else identifier.split("/")[-1]
 
@@ -2846,6 +2917,7 @@ class ModelConfig:
             is_audio = audio_type_val is not None and audio_type_val != "audio_vlm",
             audio_type = audio_type_val,
             has_audio_input = has_audio_in,
+            is_chat_capable = is_chat_capable,
             base_model = base_model,
         )
 

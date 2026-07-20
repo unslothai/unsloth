@@ -103,6 +103,7 @@ def _drive_validate(monkeypatch, *, is_gguf: bool):
         is_gguf = is_gguf,
         is_lora = False,
         is_vision = False,
+        is_chat_capable = False,
         gguf_file = None,
     )
     monkeypatch.setattr(inf.ModelConfig, "from_identifier", staticmethod(lambda **_kw: config))
@@ -120,6 +121,7 @@ def test_selected_gguf_variant_skips_trc_and_security_review(monkeypatch):
     # GGUF loads via llama.cpp: auto_map and root pickles are inert, so neither gate fires.
     resp = _drive_validate(monkeypatch, is_gguf = True)
     assert resp.is_gguf is True
+    assert resp.is_chat_capable is False
     assert resp.requires_trust_remote_code is False
     assert resp.requires_security_review is False
 
