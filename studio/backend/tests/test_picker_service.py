@@ -223,3 +223,49 @@ def test_remote_template_over_size_limit_is_skipped_before_download(monkeypatch)
     monkeypatch.setattr(huggingface_hub.HfApi, "get_paths_info", _fake_get_paths_info)
 
     assert read_default_chat_template("org/oversized-model") is None
+
+
+def test_remote_oversized_jinja_falls_through_to_tokenizer_template(tmp_path, monkeypatch):
+    # A raw chat_template.jinja between the response cap (MAX_CHAT_TEMPLATE_BYTES)
+    # and the download bound (MAX_TEMPLATE_METADATA_BYTES) must not be returned:
+    # the route drops any over-cap template, so returning it would leave the
+    # caller with no template even though a valid smaller tokenizer_config.json
+    # exists. The remote path must skip the oversized Jinja and fall through,
+    # mirroring the local _chat_template_from_jinja_file size gate.
+    import huggingface_hub
+    from picker.schemas import MAX_CHAT_TEMPLATE_BYTES
+
+    big_jinja = tmp_path / "chat_template.jinja"
+    big_jinja.write_text("{{ x }}" * (MAX_CHAT_TEMPLATE_BYTES // 4), encoding = "utf-8")
+    assert MAX_CHAT_TEMPLATE_BYTES < big_jinja.stat().st_size < MAX_TEMPLATE_METADATA_BYTES
+    tokenizer_config = tmp_path / "tokenizer_config.json"
+    tokenizer_config.write_text(
+        json.dumps({"chat_template": "SMALL_TEMPLATE"}), encoding = "utf-8"
+    )
+    files = {
+        "chat_template.jinja": big_jinja,
+        "tokenizer_config.json": tokenizer_config,
+    }
+
+    monkeypatch.setattr("picker.service.resolve_cached_repo_id_case", lambda name: name)
+    monkeypatch.setattr("picker.service.iter_hf_cache_snapshots", lambda resolved: [])
+
+    def _fake_download(repo_id, rel, **kwargs):
+        target = files.get(rel)
+        if target is None:
+            raise FileNotFoundError(rel)
+        return str(target)
+
+    def _fake_get_paths_info(self, repo_id, paths, **kwargs):
+        return [
+            SimpleNamespace(
+                path = p,
+                size = files[p].stat().st_size if p in files else 0,
+            )
+            for p in paths
+        ]
+
+    monkeypatch.setattr(huggingface_hub, "hf_hub_download", _fake_download)
+    monkeypatch.setattr(huggingface_hub.HfApi, "get_paths_info", _fake_get_paths_info)
+
+    assert read_default_chat_template("org/big-jinja-model") == "SMALL_TEMPLATE"

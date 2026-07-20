@@ -391,8 +391,18 @@ def read_default_chat_template(
 
         for rel in _JINJA_TEMPLATE_PATHS:
             template = _download_text(rel)
-            if template and template.strip():
-                return template
+            if not template or not template.strip():
+                continue
+            # A raw Jinja sidecar whose whole content is the template must fit the
+            # response cap the route enforces; the local path skips oversized
+            # .jinja files too (see _chat_template_from_jinja_file). Downloading
+            # is still bounded at MAX_TEMPLATE_METADATA_BYTES so a large JSON that
+            # merely embeds a small template can be extracted below, but an
+            # over-cap Jinja is dropped so the search falls through to the
+            # tokenizer/processor template instead of returning a dead value.
+            if len(template.encode("utf-8")) > MAX_CHAT_TEMPLATE_BYTES:
+                continue
+            return template
 
         for rel in _TOKENIZER_CONFIG_PATHS:
             raw = _download_text(rel)
