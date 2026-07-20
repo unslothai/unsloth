@@ -5559,22 +5559,60 @@ _ALLOWED_ABS_PATHS = frozenset(
 )
 
 
-def _paths_outside_workdir(command: str, workdir: str) -> list[str]:
-    """Best-effort keyword scan for path arguments in ``command`` that resolve
-    outside ``workdir``.
+def _sensitive_prefixes() -> tuple[str, ...]:
+    """Realpath'd system roots holding host config, credentials, other users'
+    files or kernel state. Reads under these (outside the workdir) are blocked;
+    ephemeral scratch like /tmp and $TMPDIR is deliberately not listed."""
+    roots = ["/etc", "/root", "/home", "/proc", "/sys", "/boot"]
+    try:
+        home = os.path.expanduser("~")
+        if home and home != "~":
+            roots.append(home)
+    except (OSError, ValueError, KeyError):
+        pass
+    resolved: list[str] = []
+    for r in roots:
+        try:
+            rp = os.path.realpath(r)
+        except (OSError, ValueError):
+            continue
+        if rp and rp != os.sep:
+            resolved.append(rp)
+    return tuple(dict.fromkeys(resolved))
 
-    A lightweight, additive defence-in-depth check: it only inspects literal
-    path-like tokens (absolute ``/`` or ``~`` paths and explicit relative paths
-    containing ``/``) and reports the ones whose ``realpath`` escapes the
-    session workdir. It is not the real boundary (the kernel-level filesystem
-    sandbox is) and fails open on anything it cannot parse. Returns the escaping
-    resolved paths (deduped, order-preserving); empty means nothing to block.
+
+_SENSITIVE_PREFIXES = _sensitive_prefixes()
+
+
+def _is_sensitive_outside_workdir(abs_path: str, workdir: str) -> bool:
+    """True when ``abs_path`` resolves under a sensitive system prefix and is not
+    inside the session workdir."""
+    if not _is_outside_workdir(abs_path, workdir):
+        return False
+    try:
+        rp = os.path.realpath(abs_path)
+    except (OSError, ValueError):
+        return False
+    return any(rp == p or rp.startswith(p + os.sep) for p in _SENSITIVE_PREFIXES)
+
+
+def _sensitive_paths(command: str, workdir: str) -> list[str]:
+    """Best-effort keyword scan for path arguments in ``command`` that resolve to
+    a sensitive out-of-workdir location (host config, credentials, other users'
+    files, kernel state).
+
+    A lightweight, additive defence-in-depth check: it inspects literal path-like
+    tokens (absolute ``/`` or ``~`` paths and explicit relative paths containing
+    ``/``) and reports those landing under a sensitive prefix while outside the
+    session workdir. Ephemeral scratch (/tmp, $TMPDIR) and neutral paths are
+    allowed; the kernel-level filesystem sandbox is the real boundary. Fails open
+    on anything it cannot parse. Returns the blocked realpaths (deduped, ordered).
     """
     try:
         tokens = shlex.split(command, posix = True)
     except ValueError:
         return []
-    outside: list[str] = []
+    blocked: list[str] = []
     seen: set[str] = set()
     for token in tokens:
         tok = _REDIR_PREFIX_RE.sub("", token)
@@ -5582,7 +5620,7 @@ def _paths_outside_workdir(command: str, workdir: str) -> list[str]:
             # flags and URLs are not local filesystem paths
             continue
         if tok.startswith("~"):
-            candidate = os.path.join(workdir, tok[1:].lstrip("/\\") or ".")
+            candidate = os.path.expanduser(tok)
         elif tok.startswith("/"):
             if tok in _ALLOWED_ABS_PATHS:
                 continue
@@ -5591,12 +5629,12 @@ def _paths_outside_workdir(command: str, workdir: str) -> list[str]:
             candidate = os.path.join(workdir, tok)
         else:
             continue
-        if _is_outside_workdir(candidate, workdir):
+        if _is_sensitive_outside_workdir(candidate, workdir):
             resolved = os.path.realpath(candidate)
             if resolved not in seen:
                 seen.add(resolved)
-                outside.append(resolved)
-    return outside
+                blocked.append(resolved)
+    return blocked
 
 
 def _missing_path_hint(output: str, workdir: str | None = None) -> str:
@@ -5886,14 +5924,15 @@ def _bash_exec(
         blocked = _find_blocked_commands(command)
         if blocked:
             return f"Blocked command(s) for safety: {', '.join(sorted(blocked))}"
-        # Defence in depth: reject obvious file arguments that resolve outside
-        # the session workdir (bypass sessions skip this along with the
-        # blocklist above).
-        outside = _paths_outside_workdir(command, _get_workdir(session_id))
-        if outside:
+        # Defence in depth: reject file arguments that resolve to a sensitive
+        # location (host config, credentials, other users' files, kernel state)
+        # outside the session workdir. Ephemeral scratch like /tmp is allowed,
+        # and bypass sessions skip this along with the blocklist above.
+        sensitive = _sensitive_paths(command, _get_workdir(session_id))
+        if sensitive:
             return (
-                "Blocked for safety: path(s) outside the sandbox working "
-                f"directory: {', '.join(outside)}. Read and write files with "
+                "Blocked for safety: protected path(s) outside the sandbox working "
+                f"directory: {', '.join(sensitive)}. Read and write files with "
                 "relative paths in the working directory instead."
             )
     elif not _harden_parent_against_proc_env_leak():
