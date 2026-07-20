@@ -192,6 +192,9 @@ def test_bash_blocklist_enforced_when_sandboxed(captured_popen):
         'timeout 1 env -i python -c "import boto3"',
         'find . -exec env -i python -c "import boto3" ;',
         "bash <<'EOF'\npython -S -c \"import boto3\"\nEOF",
+        "python <<'PY'\nimport subprocess\nsubprocess.run(['python','-S','-c','import boto3'])\nPY",
+        'python \\\n-S -c "import boto3"',
+        'env -uPYTHONPATH python -c "import boto3"',
         (
             "python -c \"import os,subprocess; os.environ.pop('PYTHONPATH',None); "
             "os.environ['UNSLOTH_STUDIO_SANDBOXED']='0'; "
@@ -213,6 +216,8 @@ def test_bash_blocks_python_startup_guard_bypasses(captured_popen, command):
         "echo python -S",
         "python -c \"print('-S')\"",
         "python -c \"import subprocess; subprocess.run(['python','-c','print(1)'])\"",
+        "python <<'PY'\nprint(1)\nPY",
+        'python \\\n-c "print(1)"',
     ],
 )
 def test_bash_allows_python_without_startup_guard_bypass(captured_popen, command):

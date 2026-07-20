@@ -276,6 +276,46 @@ def _shell_command_with_unquoted_newlines_as_separators(command: str) -> str:
     return "".join(out)
 
 
+def _shell_command_without_line_continuations(command: str) -> str:
+    if "\\\n" not in command and "\\\r" not in command:
+        return command
+    out: list[str] = []
+    quote: str | None = None
+    escaped = False
+    index = 0
+    while index < len(command):
+        char = command[index]
+        if escaped:
+            if char in "\r\n" and quote != "'":
+                escaped = False
+                if char == "\r" and index + 1 < len(command) and command[index + 1] == "\n":
+                    index += 1
+                index += 1
+                continue
+            out.append("\\")
+            out.append(char)
+            escaped = False
+            index += 1
+            continue
+        if char == "\\":
+            escaped = True
+            index += 1
+            continue
+        if char == "'" and quote is None:
+            quote = "'"
+        elif char == "'" and quote == "'":
+            quote = None
+        elif char == '"' and quote is None:
+            quote = '"'
+        elif char == '"' and quote == '"':
+            quote = None
+        out.append(char)
+        index += 1
+    if escaped:
+        out.append("\\")
+    return "".join(out)
+
+
 def _segment_python_index(segment: list[str]) -> int | None:
     command_index = 0
     while command_index < len(segment) and _ASSIGNMENT_RE.match(segment[command_index]):
@@ -334,6 +374,9 @@ def _segment_mutates_sandbox_python_env(segment: list[str], python_index: int) -
                 return True
         if lowered.startswith("--unset="):
             if token.split("=", 1)[1].upper() in _SANDBOX_PYTHON_ENV_VARS:
+                return True
+        if lowered.startswith("-u") and lowered != "-u" and not lowered.startswith("--"):
+            if token[2:].upper() in _SANDBOX_PYTHON_ENV_VARS:
                 return True
         if lowered in {"-u", "--unset"} and index + 1 < len(before_python):
             if before_python[index + 1].upper() in _SANDBOX_PYTHON_ENV_VARS:
@@ -442,11 +485,11 @@ def _shell_command_substitutions(command: str) -> list[str]:
 _HEREDOC_START_RE = re.compile(r"<<-?\s*(?P<quote>['\"]?)(?P<name>[A-Za-z_][A-Za-z0-9_]*)")
 
 
-def _shell_here_doc_payloads(command: str) -> tuple[list[str], bool]:
+def _shell_here_doc_entries(command: str) -> tuple[list[tuple[str, str]], bool]:
     if "<<" not in command:
         return [], False
     lines = command.splitlines()
-    payloads: list[str] = []
+    entries: list[tuple[str, str]] = []
     malformed = False
     index = 0
     while index < len(lines):
@@ -471,10 +514,10 @@ def _shell_here_doc_payloads(command: str) -> tuple[list[str], bool]:
             if body_end >= len(lines):
                 malformed = True
                 continue
-            payloads.append("\n".join(lines[body_start:body_end]))
+            entries.append((line[: match.start()], "\n".join(lines[body_start:body_end])))
             index = max(index, body_end)
         index += 1
-    return payloads, malformed
+    return entries, malformed
 
 
 _SHELL_EXPANSION_TOKEN_RE = re.compile(
@@ -513,6 +556,27 @@ def _python_inline_payload(arguments: list[str]) -> str | None:
         if argument in {"-W", "-X", "--check-hash-based-pycs"}:
             skip_next = True
     return None
+
+
+def _python_reads_program_from_stdin(arguments: list[str]) -> bool:
+    skip_next = False
+    for argument in arguments:
+        if skip_next:
+            skip_next = False
+            continue
+        if argument == "-c" or argument.startswith("-c"):
+            return False
+        if argument == "-m":
+            return False
+        if argument == "--":
+            return False
+        if argument == "-":
+            return True
+        if not argument.startswith("-"):
+            return False
+        if argument in {"-W", "-X", "--check-hash-based-pycs"}:
+            skip_next = True
+    return True
 
 
 def _static_python_command_argument(node: ast.AST) -> str | None:
@@ -575,6 +639,36 @@ def _python_payload_mutates_sandbox_env(node: ast.AST, os_aliases: set[str]) -> 
     return False
 
 
+def _python_payload_child_env_taints_guard(node: ast.Call, os_aliases: set[str]) -> bool:
+    env_node = None
+    for keyword in node.keywords or []:
+        if keyword.arg == "env":
+            env_node = keyword.value
+            break
+    if env_node is None:
+        return False
+    if isinstance(env_node, ast.Constant) and env_node.value is None:
+        return False
+    if (
+        isinstance(env_node, ast.Attribute)
+        and env_node.attr == "environ"
+        and isinstance(env_node.value, ast.Name)
+        and env_node.value.id in os_aliases
+    ):
+        return False
+    if (
+        isinstance(env_node, ast.Call)
+        and isinstance(env_node.func, ast.Attribute)
+        and env_node.func.attr == "copy"
+        and isinstance(env_node.func.value, ast.Attribute)
+        and env_node.func.value.attr == "environ"
+        and isinstance(env_node.func.value.value, ast.Name)
+        and env_node.func.value.value.id in os_aliases
+    ):
+        return False
+    return True
+
+
 def _python_payload_launches_startup_bypass(
     code: str,
     depth: int,
@@ -626,7 +720,9 @@ def _python_payload_launches_startup_bypass(
             continue
         nested = _static_python_command_argument(command_node)
         if nested is not None and _sandbox_python_startup_bypasses_guard(
-            nested, depth + 1, environment_tainted
+            nested,
+            depth + 1,
+            environment_tainted or _python_payload_child_env_taints_guard(node, os_aliases),
         ):
             return True
     return False
@@ -652,13 +748,35 @@ def _sandbox_python_startup_bypasses_guard(
     """Detect terminal-launched Python that suppresses the sandbox sitecustomize guard."""
     if depth > 4:
         return True
-    payloads, malformed_here_doc = _shell_here_doc_payloads(command)
+    here_doc_entries, malformed_here_doc = _shell_here_doc_entries(command)
     if malformed_here_doc:
         return True
-    for payload in payloads:
+    for opener, payload in here_doc_entries:
+        opener_command = _shell_command_with_unquoted_newlines_as_separators(
+            _shell_command_without_line_continuations(opener)
+        )
+        for segment in _shell_command_segments(opener_command):
+            python_index = _segment_python_index(segment)
+            if python_index is None:
+                continue
+            if _segment_python_launch_bypasses_guard(
+                segment, python_index, environment_tainted, depth
+            ):
+                return True
+            arguments = segment[python_index + 1 :]
+            if _python_inline_payload(arguments) is None and _python_reads_program_from_stdin(
+                arguments
+            ):
+                if _python_payload_launches_startup_bypass(
+                    payload, depth + 1, environment_tainted
+                ):
+                    return True
+        # Preserve the previous fail-safe for nested shell bodies.
         if _sandbox_python_startup_bypasses_guard(payload, depth + 1, environment_tainted):
             return True
-    command = _shell_command_with_unquoted_newlines_as_separators(command)
+    command = _shell_command_with_unquoted_newlines_as_separators(
+        _shell_command_without_line_continuations(command)
+    )
     for nested in _shell_command_substitutions(command):
         if _sandbox_python_startup_bypasses_guard(nested, depth + 1, environment_tainted):
             return True
@@ -2970,6 +3088,14 @@ _RENDER_HTML_MARKUP_CALL_START_RE = re.compile(
     r"\s*(?:\?\.\s*)?\(",
     re.IGNORECASE,
 )
+_RENDER_HTML_MARKUP_INDIRECT_CALL_START_RE = re.compile(
+    r"(?:\.\s*(?P<insert>insertAdjacentHTML)|"
+    r"\.\s*(?P<contextual>createContextualFragment)|"
+    r"\bdocument\s*(?:(?:\?\.\s*|\.\s*)open\s*\([^()]*\)\s*)?"
+    r"\s*(?:\?\.\s*|\.\s*)(?P<write>write|writeln))"
+    r"\s*(?:\?\.\s*|\.\s*)(?P<wrapper>call|apply)\s*(?:\?\.\s*)?\(",
+    re.IGNORECASE,
+)
 _RENDER_HTML_COMPUTED_ASSIGNMENT_START_RE = re.compile(
     r"\[\s*(?P<member>[^\]]+)\s*\]\s*(?:\+=|&&=|\|\|=|\?\?=|=(?!=))",
     re.IGNORECASE | re.DOTALL,
@@ -2993,11 +3119,19 @@ _RENDER_HTML_WITH_BLOCK_RE = re.compile(
     r"\bwith\s*\((?:[^()]|\([^()]*\))*\)\s*\{(?P<body>[^{}]*)\}",
     re.IGNORECASE | re.DOTALL,
 )
+_RENDER_HTML_WITH_STATEMENT_RE = re.compile(
+    r"\bwith\s*\((?:[^()]|\([^()]*\))*\)\s*(?!\{)(?P<body>[^;\n\r<{}]*)",
+    re.IGNORECASE | re.DOTALL,
+)
 _RENDER_HTML_BARE_PROPERTY_ASSIGNMENT_START_RE = re.compile(
     r"(?<![.$A-Za-z0-9_])"
     r"(?P<attr>src|href|srcset|action|formaction|poster|data|ping|srcdoc|innerHTML|outerHTML)"
     r"\s*(?:\+=|&&=|\|\|=|\?\?=|=(?!=))",
     re.IGNORECASE,
+)
+_RENDER_HTML_OBJECT_COMPUTED_PROPERTY_START_RE = re.compile(
+    r"\[\s*(?P<member>[^\]]+)\s*\]\s*:\s*",
+    re.IGNORECASE | re.DOTALL,
 )
 _RENDER_HTML_OBJECT_PROPERTY_START_RE = re.compile(
     r"(?P<quote>['\"]?)(?P<member>src|href|srcset|action|formaction|poster|data|ping|"
@@ -3373,6 +3507,44 @@ def _render_html_markup_call_reaches_network(arguments: list[str], method: str, 
     return markup is None or _render_html_code_reaches_network(markup, depth + 1)
 
 
+def _js_array_literal_items(expression: str) -> list[str] | None:
+    expression = expression.strip()
+    if len(expression) < 2 or not expression.startswith("[") or not expression.endswith("]"):
+        return None
+    inner = expression[1:-1]
+    if not inner.strip():
+        return []
+    return _js_call_arguments(f"({inner})", 1)
+
+
+def _render_html_indirect_markup_call_reaches_network(
+    arguments: list[str], method: str, wrapper: str, depth: int
+) -> bool:
+    if wrapper == "call":
+        if not arguments:
+            return False
+        return _render_html_markup_call_reaches_network(arguments[1:], method, depth)
+    if wrapper == "apply":
+        if len(arguments) < 2:
+            return False
+        applied = _js_array_literal_items(arguments[1])
+        if applied is None:
+            return True
+        return _render_html_markup_call_reaches_network(applied, method, depth)
+    return False
+
+
+def _render_html_with_body_reaches_network(body: str, depth: int) -> bool:
+    for assignment in _RENDER_HTML_BARE_PROPERTY_ASSIGNMENT_START_RE.finditer(body):
+        prefix = body[max(0, assignment.start() - 12) : assignment.start()]
+        if re.search(r"\b(?:const|let|var)\s+$", prefix, re.IGNORECASE):
+            continue
+        value = _static_js_assignment_string(body[assignment.end() :])
+        if _render_html_assigned_member_reaches_network(assignment.group("attr"), value, depth):
+            return True
+    return False
+
+
 def _render_html_computed_network_access(code: str, depth: int = 0) -> bool:
     aliases = _render_html_static_js_name_aliases(code)
     for match in _RENDER_HTML_GLOBAL_BRACKET_RE.finditer(code):
@@ -3424,6 +3596,18 @@ def _render_html_computed_network_access(code: str, depth: int = 0) -> bool:
             match.group("insert") or match.group("contextual") or match.group("write")
         ).lower()
         if _render_html_markup_call_reaches_network(arguments, method, depth):
+            return True
+
+    for match in _RENDER_HTML_MARKUP_INDIRECT_CALL_START_RE.finditer(code):
+        arguments = _js_call_arguments(code, match.end())
+        if arguments is None:
+            return True
+        method = (
+            match.group("insert") or match.group("contextual") or match.group("write")
+        ).lower()
+        if _render_html_indirect_markup_call_reaches_network(
+            arguments, method, match.group("wrapper").lower(), depth
+        ):
             return True
 
     for match in _RENDER_HTML_DESTRUCTURING_ASSIGNMENT_START_RE.finditer(code):
@@ -3492,15 +3676,21 @@ def _render_html_computed_network_access(code: str, depth: int = 0) -> bool:
                     property_match.group("member"), value, depth
                 ):
                     return True
+            for property_match in _RENDER_HTML_OBJECT_COMPUTED_PROPERTY_START_RE.finditer(source):
+                member = _render_html_resolve_member(property_match.group("member"), aliases)
+                value = _static_js_assignment_string(source[property_match.end() :])
+                if member is None:
+                    if _render_html_value_reaches_network_without_member(value, depth):
+                        return True
+                    continue
+                if _render_html_assigned_member_reaches_network(member, value, depth):
+                    return True
     for match in _RENDER_HTML_WITH_BLOCK_RE.finditer(code):
-        body = match.group("body")
-        for assignment in _RENDER_HTML_BARE_PROPERTY_ASSIGNMENT_START_RE.finditer(body):
-            prefix = body[max(0, assignment.start() - 12) : assignment.start()]
-            if re.search(r"\b(?:const|let|var)\s+$", prefix, re.IGNORECASE):
-                continue
-            value = _static_js_assignment_string(body[assignment.end() :])
-            if _render_html_assigned_member_reaches_network(assignment.group("attr"), value, depth):
-                return True
+        if _render_html_with_body_reaches_network(match.group("body"), depth):
+            return True
+    for match in _RENDER_HTML_WITH_STATEMENT_RE.finditer(code):
+        if _render_html_with_body_reaches_network(match.group("body"), depth):
+            return True
     return False
 
 
@@ -6639,6 +6829,11 @@ def _check_code_safety(code: str) -> str | None:
 
     Returns an error message string if the code is unsafe, or None if OK.
     """
+    if _python_payload_launches_startup_bypass(code, 0):
+        return (
+            "Error: unsafe code detected (Python child process cannot disable "
+            "the Studio runtime guard). Please remove unsafe patterns from your code."
+        )
     safe, info = _check_signal_escape_patterns(code)
     if not safe:
         # Let SyntaxError from ast.parse through so the subprocess produces a

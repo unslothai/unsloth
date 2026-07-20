@@ -951,6 +951,34 @@ def test_python_classifier(code, unsafe):
     assert is_potentially_unsafe_tool_call("python", {"code": code}) is unsafe
 
 
+def test_python_runtime_safety_blocks_child_startup_guard_bypass():
+    from core.inference.tools import _check_code_safety
+
+    assert _check_code_safety("import subprocess\nsubprocess.run(['python','-c','print(1)'])") is None
+    assert (
+        _check_code_safety(
+            "import os, subprocess\n"
+            "subprocess.run(['python','-c','print(1)'], env=os.environ.copy())"
+        )
+        is None
+    )
+    assert "runtime guard" in (
+        _check_code_safety("import subprocess\nsubprocess.run(['python','-S','-c','print(1)'])")
+        or ""
+    )
+    assert "runtime guard" in (
+        _check_code_safety("import subprocess\nsubprocess.run(['python','-c','print(1)'], env={})")
+        or ""
+    )
+    assert "runtime guard" in (
+        _check_code_safety(
+            "import os, subprocess\nos.environ.pop('PYTHONPATH', None)\n"
+            "subprocess.run(['python','-c','print(1)'])"
+        )
+        or ""
+    )
+
+
 def test_builtin_readonly_tools_are_safe():
     assert is_potentially_unsafe_tool_call("web_search", {"query": "hi"}) is False
     assert is_potentially_unsafe_tool_call("search_knowledge_base", {}) is False
@@ -1101,6 +1129,13 @@ def test_render_html_gated_only_when_networked():
     assert rh("<script>Reflect.set(img,'src','https://evil/x')</script>") is True
     assert rh("<script>Object.assign(img,{src:'https://evil/x'})</script>") is True
     assert rh("<script>Object.assign(frame,{'srcdoc':'<img src=https://evil/x>'})</script>") is True
+    assert rh("<script>Object.assign(new Image(), {['src']: 'https://evil/x'})</script>") is True
+    assert rh("<script>Object.assign(new Image(), {['src']: './local.png'})</script>") is False
+    assert rh("<script>Object.assign(new Image(), {[key]: 'https://evil/x'})</script>") is True
+    assert (
+        rh("<script>const key='title'; Object.assign(new Image(), {[key]: 'https://evil/x'})</script>")
+        is False
+    )
     assert rh("<script>img['src']='./local.png'</script>") is False
     assert rh("<script>img['setAttribute']('src','./local.png')</script>") is False
     assert rh("<script>Reflect.set(obj,'title','https://evil/x')</script>") is False
@@ -1111,6 +1146,23 @@ def test_render_html_gated_only_when_networked():
     assert rh("<script>node.outerHTML='<script>fetch(1)<\\/script>'</script>") is True
     assert rh("<script>node.insertAdjacentHTML('beforeend','<img src=/api/x>')</script>") is True
     assert rh("<script>document.write('<img sr','c=https://evil/x>')</script>") is True
+    assert rh("<script>document.write.call(document, '<img src=https://evil/x>')</script>") is True
+    assert rh("<script>document.write.call(document, '<p>Local</p>')</script>") is False
+    assert (
+        rh("<script>node.insertAdjacentHTML.apply(node, ['beforeend', '<img src=https://evil/x>'])</script>")
+        is True
+    )
+    assert (
+        rh("<script>node.insertAdjacentHTML.apply(node, ['beforeend', '<p>Local</p>'])</script>")
+        is False
+    )
+    assert (
+        rh(
+            "<script>document.createRange().createContextualFragment.call("
+            "document.createRange(), '<img src=https://evil/x>')</script>"
+        )
+        is True
+    )
     assert rh("<script>document.writeln('<p>Local</p>')</script>") is False
     assert rh("<script>writer.write('<img src=https://evil/x>')</script>") is False
     # Optional-chained computed document.write still recurses into the markup.
@@ -1163,6 +1215,9 @@ def test_render_html_gated_only_when_networked():
     assert rh("<script>with(new Image()){src='https://evil/x'}</script>") is True
     assert rh("<script>with(new Image()){src='./local.png'}</script>") is False
     assert rh("<script>with(obj){let src='https://evil/x'}</script>") is False
+    assert rh("<script>with(new Image()) src='https://evil/x'</script>") is True
+    assert rh("<script>with(new Image()) src='./local.png'</script>") is False
+    assert rh("<script>with(obj) let src='https://evil/x'</script>") is False
     # A computed bracket key spliced from string fragments on a global host object.
     assert rh("<script>window['fet'+'ch']('https://attacker.example')</script>") is True
     assert rh("<script>self['open' + '']('https://x')</script>") is True
