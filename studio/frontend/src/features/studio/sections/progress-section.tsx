@@ -28,6 +28,7 @@ import {
 } from "@/features/training";
 import { getTrainingMethodLabel } from "@/features/training/lib/training-methods";
 import type { TrainingViewData } from "@/features/training";
+import type { RunConfigOverride } from "./run-config-override";
 import { useGpuUtilization } from "@/hooks";
 import type { GpuUtilization } from "@/hooks/use-gpu-utilization";
 import { cn } from "@/lib/utils";
@@ -81,19 +82,7 @@ function configRow(
 interface ProgressSectionProps {
   data: TrainingViewData;
   isHistorical?: boolean;
-  configOverride?: {
-    epochs?: number;
-    batchSize?: number;
-    learningRate?: string;
-    maxSteps?: number;
-    contextLength?: number;
-    warmupSteps?: number;
-    optimizerType?: string;
-    loraRank?: number;
-    loraAlpha?: number;
-    loraDropout?: number;
-    loraVariant?: string;
-  };
+  configOverride?: RunConfigOverride;
 }
 
 export function ProgressSection({
@@ -183,17 +172,20 @@ export function ProgressSection({
     ? data.currentGradNorm
     : (lastValue(data.gradNormHistory) ?? data.currentGradNorm);
 
-  const cfgEpochs = isHistorical ? configOverride?.epochs : config.epochs;
-  const cfgBatchSize = isHistorical ? configOverride?.batchSize : config.batchSize;
-  const cfgLearningRate = isHistorical ? configOverride?.learningRate : config.learningRate;
-  const cfgMaxSteps = isHistorical ? configOverride?.maxSteps : config.maxSteps;
-  const cfgContextLength = isHistorical ? configOverride?.contextLength : config.contextLength;
-  const cfgWarmupSteps = isHistorical ? configOverride?.warmupSteps : config.warmupSteps;
-  const cfgOptimizerType = isHistorical ? configOverride?.optimizerType : config.optimizerType;
-  const cfgLoraRank = isHistorical ? configOverride?.loraRank : config.loraRank;
-  const cfgLoraAlpha = isHistorical ? configOverride?.loraAlpha : config.loraAlpha;
-  const cfgLoraDropout = isHistorical ? configOverride?.loraDropout : config.loraDropout;
-  const cfgLoraVariant = isHistorical ? configOverride?.loraVariant : config.loraVariant;
+  // Prefer the run's saved snapshot when present (#6853). Live falls back to the
+  // editable form store until it loads; History shows blanks, never live form values.
+  const cfg = configOverride ?? (isHistorical ? undefined : config);
+  const cfgEpochs = cfg?.epochs;
+  const cfgBatchSize = cfg?.batchSize;
+  const cfgLearningRate = cfg?.learningRate;
+  const cfgMaxSteps = cfg?.maxSteps;
+  const cfgContextLength = cfg?.contextLength;
+  const cfgWarmupSteps = cfg?.warmupSteps;
+  const cfgOptimizerType = cfg?.optimizerType;
+  const cfgLoraRank = cfg?.loraRank;
+  const cfgLoraAlpha = cfg?.loraAlpha;
+  const cfgLoraDropout = cfg?.loraDropout;
+  const cfgLoraVariant = cfg?.loraVariant;
 
   const optimizerLabel =
     OPTIMIZER_OPTIONS.find((o) => o.value === cfgOptimizerType)?.label ??

@@ -322,7 +322,7 @@ function Write-CudaDriverToolkitMismatch {
     $driverMajor = $DriverMaxCuda.Split('.')[0]
     substep "CUDA Toolkit $ToolkitVersion is a major-version mismatch: toolkit major $toolkitMajor exceeds driver CUDA major $driverMajor ($DriverMaxCuda)." $Color
     substep "Update the NVIDIA GPU driver to run CUDA Toolkit $ToolkitVersion, or install a CUDA $driverMajor.x toolkit." $Color
-    substep "Or let Studio use the prebuilt CUDA bundle; it does not need the local toolkit." $Color
+    substep "Or let Unsloth use the prebuilt CUDA bundle; it does not need the local toolkit." $Color
 }
 
 # Detect CUDA Compute Capability via nvidia-smi.
@@ -937,13 +937,13 @@ function Show-NpmRegistryHint {
     Write-Host ""
     step "frontend" "registry.npmjs.org looks blocked (corporate firewall/proxy?)" "Yellow"
     if ($mirror) {
-        substep "Studio pins the public npm registry; your mirror is being ignored."
+        substep "Unsloth pins the public npm registry; your mirror is being ignored."
         substep "Detected a registry in your npm config:"
         substep "  $mirror"
-        substep "Re-run pointing Studio at it:"
+        substep "Re-run pointing Unsloth at it:"
         substep "  `$env:UNSLOTH_NPM_REGISTRY='$mirror'; .\install.ps1 --local"
     } else {
-        substep "If you use a private mirror/proxy, point Studio at it and re-run:"
+        substep "If you use a private mirror/proxy, point Unsloth at it and re-run:"
         substep "  `$env:UNSLOTH_NPM_REGISTRY='https://your-mirror.example/api/npm/'; .\install.ps1 --local"
     }
     substep "(min-release-age and save-exact stay enforced.)"
@@ -1070,7 +1070,7 @@ if (-not $HasNvidiaSmi) {
 }
 # ── Helper: run amd-smi without triggering a UAC elevation prompt ──
 # amd-smi on Windows auto-elevates to read GPU/APU memory, surfacing a confusing
-# DiskPart UAC prompt mid-install (Studio backend amd.py hits the same). RunAsInvoker
+# DiskPart UAC prompt mid-install (Unsloth backend amd.py hits the same). RunAsInvoker
 # forces it (and helpers it spawns) to run un-elevated; on failure the WMI name ->
 # gfx fallback still resolves the arch.
 function Invoke-AmdSmiNoElevate {
@@ -1132,7 +1132,7 @@ if (-not $HasNvidiaSmi) {
         if ([string]::IsNullOrWhiteSpace($HipinfoPath)) { return $false }
         # VenvDir/VIRTUAL_ENV can be unset this early (the update flow probes before
         # VenvDir is set), so also derive the venv from the setup python + default
-        # Studio home, else the venv hipInfo isn't caught.
+        # Unsloth home, else the venv hipInfo isn't caught.
         $venvRoots = @()
         if ($env:VIRTUAL_ENV) { $venvRoots += $env:VIRTUAL_ENV }
         $vd = Get-Variable -Name VenvDir -ValueOnly -ErrorAction SilentlyContinue
@@ -1141,7 +1141,7 @@ if (-not $HasNvidiaSmi) {
             try { $venvRoots += (Split-Path -Parent (Split-Path -Parent $env:UNSLOTH_SETUP_PYTHON)) } catch {}
         }
         if ($env:USERPROFILE) { $venvRoots += (Join-Path $env:USERPROFILE ".unsloth\studio\unsloth_studio") }
-        # A custom Studio home (UNSLOTH_STUDIO_HOME / STUDIO_HOME alias) moves the
+        # A custom Unsloth home (UNSLOTH_STUDIO_HOME / STUDIO_HOME alias) moves the
         # venv off the default path; seed it too or its hipInfo escapes the filter.
         $studioHomeEnv = if (-not [string]::IsNullOrWhiteSpace($env:UNSLOTH_STUDIO_HOME)) { $env:UNSLOTH_STUDIO_HOME.Trim() } elseif (-not [string]::IsNullOrWhiteSpace($env:STUDIO_HOME)) { $env:STUDIO_HOME.Trim() } else { $null }
         if ($studioHomeEnv) {
@@ -1860,7 +1860,7 @@ $SysNpmVersion = ""
 $NodeSource = $null
 
 if (-not $IsPipInstall) {
-    # Put Node beside the Studio root. OXC can still need npm when the
+    # Put Node beside the Unsloth root. OXC can still need npm when the
     # frontend build is skipped.
     if (-not [string]::IsNullOrWhiteSpace($env:UNSLOTH_STUDIO_HOME)) { $NodeOverride = $env:UNSLOTH_STUDIO_HOME.Trim() }
     elseif (-not [string]::IsNullOrWhiteSpace($env:STUDIO_HOME)) { $NodeOverride = $env:STUDIO_HOME.Trim() }
@@ -2137,17 +2137,17 @@ if ($NeedNodeForSetup) {
             step "frontend" "skipped (no suitable Node; system left untouched)" "Yellow"
         }
         $NeedFrontendBuild = $false
-        substep "found Node='$SysNodeVersion' npm='$SysNpmVersion'; Studio needs Node >=20.19/22.12/23 and npm >= 11" "Yellow"
+        substep "found Node='$SysNodeVersion' npm='$SysNpmVersion'; Unsloth needs Node >=20.19/22.12/23 and npm >= 11" "Yellow"
         substep "install a suitable Node + npm, or unset UNSLOTH_SKIP_NODE_INSTALL to let Unsloth manage an isolated Node" "Yellow"
     } elseif ($NodeSource -eq "bundled") {
         New-Item -ItemType Directory -Force -Path $NodeParent -ErrorAction SilentlyContinue | Out-Null
-        # Minimal ownership guard for a custom-home dir (the full Studio-owned
+        # Minimal ownership guard for a custom-home dir (the full Unsloth-owned
         # helpers are defined later); never os.replace over a user-owned dir.
         if ($NodeOverride -and (Test-Path -LiteralPath $NodeDir -PathType Container)) {
             $nodeOwnedMarker = Join-Path $NodeDir ".unsloth-studio-owned"
             $nodeMeta = Join-Path $NodeDir "UNSLOTH_NODE_PREBUILT_INFO.json"
             if (-not (Test-Path -LiteralPath $nodeOwnedMarker) -and -not (Test-Path -LiteralPath $nodeMeta)) {
-                Write-Host "[ERROR] $NodeDir already exists and is not a Studio-owned Node install." -ForegroundColor Red
+                Write-Host "[ERROR] $NodeDir already exists and is not an Unsloth-owned Node install." -ForegroundColor Red
                 Write-Host "        Move it aside or choose an empty UNSLOTH_STUDIO_HOME before re-running." -ForegroundColor Yellow
                 exit 1
             }
@@ -2160,7 +2160,7 @@ if ($NeedNodeForSetup) {
         $nodeExit = $LASTEXITCODE
         if ($nodeExit -eq 3) {
             Write-Host $nodeOut -ForegroundColor DarkGray
-            step "node" "install blocked by another active Studio install" "Red"
+            step "node" "install blocked by another active Unsloth install" "Red"
             exit 3
         } elseif ($nodeExit -ne 0) {
             Write-Host $nodeOut -ForegroundColor DarkGray
@@ -2486,7 +2486,7 @@ if (Test-Path -LiteralPath $LegacyStudioHome -PathType Container) {
     $LegacyStudioHome = (Resolve-Path -LiteralPath $LegacyStudioHome).Path
 }
 $StudioHomeIsCustom = ($_studioHomeCanon -ne $LegacyStudioHome)
-# Directory-local evidence that Studio created $Path, used to adopt a custom-home
+# Directory-local evidence that Unsloth created $Path, used to adopt a custom-home
 # llama.cpp predating the .unsloth-studio-owned marker (see setup.sh). Only the
 # prebuilt UNSLOTH_PREBUILT_INFO.json counts; source builds are indistinguishable
 # from a user clone on Windows and stay under the strict guard.
@@ -2506,7 +2506,7 @@ function Assert-StudioOwnedOrAbsent {
             Mark-StudioOwned $Path
             return
         }
-        Write-Host "[ERROR] $Path already exists and is not marked as a Studio-owned $Label." -ForegroundColor Red
+        Write-Host "[ERROR] $Path already exists and is not marked as an Unsloth-owned $Label." -ForegroundColor Red
         Write-Host "        Move it aside or choose an empty UNSLOTH_STUDIO_HOME before re-running." -ForegroundColor Yellow
         exit 1
     }
@@ -2576,7 +2576,7 @@ if ((Test-Path -LiteralPath $VenvDir -PathType Container) -and -not $NoTorchMode
         $reason = if ($installedTorchTag) { "torch $installedTorchTag != required $expectedTorchTag" } else { "torch could not be imported" }
         if ($InstallerManagedSetup) {
             substep "Stale venv detected ($reason)." "Yellow"
-            Write-Host "   [ERROR] The existing Studio environment needs repair." -ForegroundColor Red
+            Write-Host "   [ERROR] The existing Unsloth environment needs repair." -ForegroundColor Red
             Write-Host "           Re-run install.ps1 so it can replace the environment safely with rollback." -ForegroundColor Yellow
             exit 1
         }
@@ -2598,7 +2598,7 @@ if ((Test-Path -LiteralPath $VenvDir -PathType Container) -and -not $NoTorchMode
             Remove-Item -LiteralPath $VenvDir -Recurse -Force -ErrorAction Stop
         } catch {
             Write-Host "   [ERROR] Could not remove stale venv: $($_.Exception.Message)" -ForegroundColor Red
-            Write-Host "           Close any running Studio/Python processes and re-run setup." -ForegroundColor Red
+            Write-Host "           Close any running Unsloth/Python processes and re-run setup." -ForegroundColor Red
             exit 1
         }
     }
@@ -2764,7 +2764,7 @@ if ($script:UnslothVerbose) {
 # The CUDA tag is chosen based on the driver's max supported CUDA version.
 
 # Triton/inductor filenames are long and can hit Windows MAX_PATH (260). With long
-# paths on, cache under Studio home; else use a short drive-root dir for headroom.
+# paths on, cache under Unsloth home; else use a short drive-root dir for headroom.
 if ($LongPathsEnabled) {
     $TorchCacheDir = Join-Path $StudioHome "TORCHINDUCTOR_CACHE_DIR"
 } else {
@@ -2793,7 +2793,7 @@ $ROCmIndexUrl = $null
 # Install AMD ROCm PyTorch wheels when ROCm is confirmed OR a gfx arch is known
 # (name-inferred on Adrenalin-only hosts). The per-arch wheels bundle the runtime
 # (rocm-sdk-libraries-<gfx>), so torch.cuda.is_available() is True without a HIP
-# SDK -- which flips Studio out of chat-only (CHAT_ONLY) and enables Train/Export.
+# SDK -- which flips Unsloth out of chat-only (CHAT_ONLY) and enables Train/Export.
 # Gating on $HasROCm alone left Strix Halo / Radeon 8060S on CPU torch; a failed
 # ROCm install still falls back to CPU below, so this is safe.
 if (($HasROCm -or $ROCmGfxArch) -and $CuTag -eq "cpu") {
@@ -3231,7 +3231,7 @@ if ($LocalLlamaCppSrc) {
     # Reusing a local dir disables both the prebuilt download and the source
     # build, so a runnable llama-server.exe must already be present. Accept any
     # layout LlamaCppBackend._layout_candidates() resolves (root-level, build\bin,
-    # or build\bin\Release) so the flag never rejects a tree Studio could run.
+    # or build\bin\Release) so the flag never rejects a tree Unsloth could run.
     $LocalLlamaServerFound = $false
     foreach ($_cand in @(
             (Join-Path $ResolvedLocal "llama-server.exe"),
@@ -3253,7 +3253,7 @@ if ($LocalLlamaCppSrc) {
         }
     } else {
         # Fail clearly rather than junction an unbuilt or wrong-platform checkout
-        # and leave Studio with no usable binary.
+        # and leave Unsloth with no usable binary.
         if (-not $LocalLlamaServerFound) {
             step "llama.cpp" "no llama-server.exe under $ResolvedLocal (looked for .\llama-server.exe, .\build\bin and .\build\bin\Release) -- build llama.cpp there first, or drop --with-llama-cpp-dir" "Red"
             exit 1
@@ -3281,7 +3281,7 @@ if ($LocalLlamaCppSrc) {
             # prebuilt path's active-process handling and stop with a clear message.
             if (Test-Path -LiteralPath $LlamaCppDir) {
                 step "llama.cpp" "install blocked by active llama.cpp process" "Yellow"
-                substep "Close Studio or other llama.cpp users and retry" "Yellow"
+                substep "Close Unsloth or other llama.cpp users and retry" "Yellow"
                 exit 3
             }
         }
@@ -3414,7 +3414,7 @@ if ($LocalLlamaCppLinked) {
             if (Test-Path -LiteralPath $LlamaCppDir) {
                 substep "Existing install was restored" "Yellow"
             }
-            substep "Close Studio or other llama.cpp users and retry" "Yellow"
+            substep "Close Unsloth or other llama.cpp users and retry" "Yellow"
             exit 3
         } else {
             step "llama.cpp" "prebuilt install failed (continuing)" "Yellow"
@@ -4003,7 +4003,7 @@ if ($LocalLlamaCppLinked) {
     }
 
     # -- Step E: Build the DiffusionGemma visual server (optional, best-effort) --
-    # An example target present on llama.cpp PR #24423; lets Studio serve
+    # An example target present on llama.cpp PR #24423; lets Unsloth serve
     # DiffusionGemma GGUFs without DG_VISUAL_BIN. No-op when not configured.
     if ($BuildOk) {
         $null = cmake --build $BuildDir --config Release --target llama-diffusion-gemma-visual-server -j $NumCpu 2>&1 | Out-String

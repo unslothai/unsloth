@@ -8,5 +8,5 @@
 - Preserve interpolation variables exactly, for example `{count}`, `{model}`, and `{provider}`.
 - Keep product and technical names unchanged unless there is an established localized name, for example `Unsloth Studio`, `LoRA`, `GGUF`, and `Hugging Face`.
 - Keep translation changes small and reviewable. Prefer separate commits for runtime changes, UI migration, and locale text.
-- When adding user-facing Studio UI text, add the English message key first and add non-English overrides only when the translation is clear.
+- When adding user-facing Unsloth UI text, add the English message key first and add non-English overrides only when the translation is clear.
 - Run `npx tsx src/i18n/check-parity.ts` before committing to ensure there are no shape mismatches or placeholder discrepancies in the non-English overlays.
