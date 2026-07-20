@@ -6,7 +6,8 @@
   </picture></a>
 </h1>
 <h3 align="center" style="margin: 0; margin-top: 0;">
-Unsloth Studio lets you run and train models locally.
+Unsloth Studio lets you run and train models locally.<br>
+<a href="https://unsloth.ai/docs/basics/api">Connect your local models to any agent: Claude Code, Codex, Hermes, and more.</a>
 </h3>
 
 <p align="center">
@@ -43,7 +44,8 @@ Unsloth Studio (Beta) lets you run and train text, [audio](https://unsloth.ai/do
 * **Export models**: [Save or export](https://unsloth.ai/docs/new/studio/export) models to GGUF, 16-bit safetensors and other formats.
 * **Tool calling**: Support for [self-healing tool calling](https://unsloth.ai/docs/new/studio/chat#auto-healing-tool-calling) and web search
 * **[Code execution](https://unsloth.ai/docs/new/studio/chat#code-execution)**: lets LLMs test code in Claude artifacts and sandbox environments
-* **[API inference endpoint](https://unsloth.ai/docs/basics/api)**: Deploy and run local LLMs in Claude Code, Codex tools with Unsloth
+* **[OpenAI- and Anthropic-compatible APIs](https://unsloth.ai/docs/basics/api)**: Serve local models to any compatible client or SDK, with streaming, tool calling and vision support.
+* **[Connect local models to agents](https://unsloth.ai/docs/basics/api)**: Run `unsloth start <agent>` for Claude Code, Codex, Hermes, OpenCode, OpenClaw, Pi and more.
 * [Auto set inference settings](https://unsloth.ai/docs/new/studio/chat#auto-parameter-tuning) and customize chat templates.
 * We work directly with teams behind [gpt-oss](https://docs.unsloth.ai/new/gpt-oss-how-to-run-and-fine-tune#unsloth-fixes-for-gpt-oss), [Qwen3](https://www.reddit.com/r/LocalLLaMA/comments/1kaodxu/qwen3_unsloth_dynamic_ggufs_128k_context_bug_fixes/), [Llama 4](https://github.com/ggml-org/llama.cpp/pull/12889), [Mistral](https://huggingface.co/mistralai/Mistral-Medium-3.5-128B/discussions/18), [Gemma 1-3](https://news.ycombinator.com/item?id=39671146), and [Phi-4](https://unsloth.ai/blog/phi4), where we’ve fixed bugs that improve model accuracy.
 * Chat with images, audio, PDFs, code, DOCX and more. [Connect API providers](https://unsloth.ai/docs/integrations/connections) (OpenAI, Anthropic) or servers (vLLM, Ollama).
@@ -150,7 +152,7 @@ Read our [guide](https://unsloth.ai/docs/get-started/fine-tuning-llms-guide). Ad
 ## 🦥 Unsloth News
 - **Connections**: Connect any API provider (OpenAI, Anthropic) or server (vLLM, Ollama). [Guide](https://unsloth.ai/docs/integrations/connections)
 - **MTP**: Run Qwen3.6 MTP in Unsloth. MTP settings are autoset specific to your hardware. [Guide](https://unsloth.ai/docs/models/qwen3.6#mtp-guide)
-- **API inference endpoint**: Deploy and run local LLMs in Claude Code, Codex tools. [Guide](https://unsloth.ai/docs/basics/api)
+- **`unsloth start`**: Connect local models to Claude Code, Codex, Hermes, OpenCode, OpenClaw, Pi and more through Unsloth's OpenAI- and Anthropic-compatible APIs. [Guide](https://unsloth.ai/docs/basics/api)
 - **Qwen3.6**: Qwen3.6-35B-A3B can now be trained and run in Unsloth Studio. [Blog](https://unsloth.ai/docs/models/qwen3.6)
 - **Gemma 4**: Run and train Google’s new models directly in Unsloth. [Blog](https://unsloth.ai/docs/models/gemma-4)
 - **Introducing Unsloth Studio**: our new web UI for running and training LLMs. [Blog](https://unsloth.ai/docs/new/studio)
