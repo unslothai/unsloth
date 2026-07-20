@@ -2462,7 +2462,9 @@ def _router_dir_is_loadable(dir_path: Path) -> bool:
     (validated through :func:`_module_dir_is_loadable`, so nested routers and every child type are
     covered) and at least one embedding-producing child. ``Router.load()`` reads this config and
     loads each child from its subdir, so a Router directory needs no Transformer weights of its own.
-    Never raises."""
+    A child reference is a subdir name, so a normalized child path always resolves DEEPER; a
+    self-referential entry (a ``types`` key of ``"."`` -> the same dir) is rejected so a malformed
+    ``router_config.json`` cannot recurse forever -- this function never raises."""
     try:
         config = json.loads((dir_path / _ST_ROUTER_CONFIG_FILE).read_text(encoding = "utf-8"))
     except (OSError, ValueError):
@@ -2478,7 +2480,10 @@ def _router_dir_is_loadable(dir_path: Path) -> bool:
         rel = str(model_id or "").strip().strip("/")
         if not child_cls or not rel or ".." in Path(rel).parts:
             return False  # malformed / traversing child reference
-        if not _module_dir_is_loadable(child_cls, False, dir_path / rel):
+        child_dir = dir_path / rel
+        if child_dir == dir_path:
+            return False  # self-referential child (e.g. "."): would recurse until RecursionError
+        if not _module_dir_is_loadable(child_cls, False, child_dir):
             return False
         if child_cls not in _ST_STRUCTURAL_MODULE_NAMES:
             saw_content_module = True

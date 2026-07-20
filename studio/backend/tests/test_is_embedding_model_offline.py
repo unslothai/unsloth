@@ -663,6 +663,28 @@ def test_marker_rejects_subfolder_router_with_incomplete_child(tmp_path, monkeyp
     assert mc._embedding_marker_in_hf_cache(_ROUTER_REPO) is False
 
 
+def test_marker_rejects_self_referential_router_without_recursing(tmp_path, monkeypatch):
+    # A malformed router_config.json whose types names "." (the Router's own dir) as a Router child
+    # must be rejected, not recursed into forever: the child path resolves back to the same dir, so
+    # without the self-reference guard _router_dir_is_loadable would re-enter until RecursionError
+    # and turn is_embedding_model into a 500. It must instead return False gracefully (never raise).
+    hf_root = tmp_path / "hf"
+    repo = hf_root / "models--org--self-router"
+    snap = repo / "snapshots" / "aaa"
+    snap.mkdir(parents = True)
+    (snap / "modules.json").write_text(
+        _modules_json(("0", "", "sentence_transformers.models.Router"))
+    )
+    (snap / "router_config.json").write_text(
+        json.dumps({"types": {".": "sentence_transformers.models.Router"}})
+    )
+    (repo / "refs").mkdir(parents = True)
+    (repo / "refs" / "main").write_text("aaa")
+    _fake_hf_cache(monkeypatch, hf_root)
+    monkeypatch.delenv("SENTENCE_TRANSFORMERS_HOME", raising = False)
+    assert mc._embedding_marker_in_hf_cache("org/self-router") is False
+
+
 # ── StaticEmbedding models (model2vec / static-retrieval) built from modules.json ──
 
 
