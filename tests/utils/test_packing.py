@@ -424,9 +424,9 @@ def _hybrid_model_with_gdn(gdn_forward):
 
 
 def test_patch_hybrid_varlen_no_dispatch_aborts(monkeypatch):
-    # Unsloth wraps each module forward, so dispatch cannot be proven statically; it is
-    # verified at runtime. A mixer that never calls self.<kernel> installs the shim, but
-    # the first packed forward aborts (both boundary kernels are load-bearing).
+    # Dispatch is verified at runtime, not statically. A mixer that never calls
+    # self.<kernel> installs the shim, but the first packed forward aborts (both
+    # boundary kernels are load-bearing).
     monkeypatch.setenv("UNSLOTH_EXPERIMENTAL_HYBRID_PACKING", "1")
     model = _hybrid_model_with_gdn(lambda self, hidden_states, **kw: hidden_states)
     assert patch_hybrid_linear_attention_varlen(model) is True  # kernels valid -> installs
@@ -1117,10 +1117,9 @@ def test_packing_sdpa(tmp_path):
 
 
 # fmt: off
-# Named to match the unsloth_zoo helper (sft_trainer_prepare_dataset sources it by name
-# and renames "def sft_prepare_dataset" -> "def _prepare_dataset"). Deliberately OMITS the
-# "All Unsloth Zoo code licensed under LGPLv3" header to emulate a newer, compatible Zoo
-# whose header moved (the dependency is only lower-bounded). Never executed; source only.
+# Named to match the unsloth_zoo helper (sourced by name, "def sft_prepare_dataset" ->
+# "def _prepare_dataset"). Deliberately OMITS the "licensed under LGPLv3" header to
+# emulate a newer Zoo whose header moved (dependency is only lower-bounded). Source only.
 def sft_prepare_dataset(
     self, dataset, processing_class, args, packing, formatting_func, dataset_text_field
 ):
@@ -1143,10 +1142,10 @@ def sft_prepare_dataset(
 
 
 def test_wrapped_packing_injection_is_drift_resistant(monkeypatch):
-    # Regression: the setup block used to anchor on the Zoo license comment, so a header
-    # change made it a silent no-op while the truncation/pack edits still referenced its
-    # variables -> NameError on every SFT dataset prep. It must now install via the
-    # signature and precede the references, and the pack edit must reuse the guarded
+    # Regression: the setup used to anchor on the Zoo license comment, so a header
+    # change silently no-op'd it while the truncation/pack edits still referenced its
+    # variables -> NameError on every SFT prep. It must now install via the signature
+    # before those references, and the pack edit must reuse the guarded
     # _unsloth_pack_has_strategy instead of re-calling _inspect.signature(pack_dataset).
     import ast
     import textwrap

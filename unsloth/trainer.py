@@ -103,9 +103,9 @@ PADDING_FREE_BLOCKLIST = {
     "gpt_oss",  # - gpt_oss: Uses Flex Attention which doesn't handle padding_free correctly
 }
 # Hybrid linear-attention / state-space models (Qwen3.5, Qwen3-Next, ...) carry a
-# recurrent gated-delta state plus a causal conv1d. Sample packing / padding-free
-# flattens the batch, so those ops leak state across sequence boundaries. Detected
-# structurally by _is_hybrid_linear_attention_model rather than by model name.
+# recurrent gated-delta state plus a causal conv1d that leak across sequence
+# boundaries once packing flattens the batch. Detected structurally by
+# _is_hybrid_linear_attention_model, not by model name.
 
 
 def _should_pack(config) -> bool:
@@ -278,7 +278,7 @@ def _resolve_string_model_config(model_name, config_arg):
 
         init_kwargs = getattr(config_arg, "model_init_kwargs", None) or {}
         # why: forward auth + cache args too. Dropping token/use_auth_token made a
-        # private hybrid resolve as None (config load fails) -> treated as non-hybrid ->
+        # private hybrid fail to load (resolve as None) -> treated as non-hybrid ->
         # packing enabled without the shim even though TRL later loads it with the token.
         forward = {
             key: init_kwargs[key]
@@ -293,10 +293,10 @@ def _resolve_string_model_config(model_name, config_arg):
             )
             if key in init_kwargs
         }
-        # why: TRL also merges the top-level args.trust_remote_code into the load via
-        # model_init_kwargs.setdefault(...) before create_model_from_path, so honor it
-        # here (model_init_kwargs wins) or a remote-code hybrid set with the common
-        # SFTConfig(trust_remote_code=True) resolves as None and skips the guard.
+        # why: TRL merges top-level args.trust_remote_code into the load via setdefault
+        # before create_model_from_path, so honor it here (model_init_kwargs wins), else
+        # a remote-code hybrid with SFTConfig(trust_remote_code=True) resolves as None
+        # and skips the guard.
         top_level_trust_remote_code = getattr(config_arg, "trust_remote_code", None)
         if top_level_trust_remote_code is not None:
             forward.setdefault("trust_remote_code", top_level_trust_remote_code)
@@ -703,11 +703,11 @@ def _patch_sft_trainer_auto_packing(trl_module):
                 else model
             )
             is_hybrid = _is_hybrid_linear_attention_model(hybrid_target)
-            # Hybrid linear-attention models corrupt packed batches unless the gated-delta
-            # conv + scan reset at sequence boundaries. Enable the experimental varlen shim
-            # (flag + kernels) so packing stays correct; otherwise keep them blocked. A
-            # string model (patched only after init) and TRL's chunked-loss forward bypass
-            # both leave the shim off, so hybrid packing falls back to the padded path.
+            # Hybrid models corrupt packed batches unless the gated-delta conv + scan
+            # reset at sequence boundaries. Enable the experimental varlen shim (flag +
+            # kernels) so packing stays correct, else keep them blocked. A string model
+            # (patched only after init) and TRL's chunked-loss forward bypass both leave
+            # the shim off, so hybrid packing falls back to the padded path.
             if (
                 is_hybrid
                 and not isinstance(model, str)

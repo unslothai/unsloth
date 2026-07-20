@@ -463,11 +463,11 @@ def _require_replace(
 ):
     """str.replace that never silently no-ops a load-bearing source edit.
 
-    Plain str.replace returns the source unchanged when the anchor is absent, so an
-    anchor that drifts in a supported newer TRL / unsloth_zoo would silently skip the
-    edit while later edits still reference helper variables it was meant to introduce
-    (NameError at runtime). Fail loudly for a required edit, or warn once and skip for an
-    optional one, so a drifted source can never corrupt the patched function silently.
+    Plain str.replace returns the source unchanged when the anchor is absent, so a
+    drifted anchor in a newer TRL / unsloth_zoo would skip the edit while later edits
+    still reference helper variables it should have introduced (NameError at runtime).
+    Fail loudly for a required edit, warn once and skip for an optional one, so a
+    drifted source can never corrupt the patched function silently.
     """
     if old not in function:
         detail = f" ({where})" if where else ""
@@ -500,12 +500,11 @@ def sft_trainer_prepare_dataset(function_name, function):
         if matched:
             # Use fast version!
             function = inspect.getsource(fast_sft_prepare_dataset)
-            # why: install the wrapped-packing setup (and the `_inspect` import it uses)
-            # at the function signature -- a structural anchor that always exists --
-            # instead of the unsloth_zoo license-comment line, which is only lower-bounded
-            # and a newer Zoo may move or drop it. Anchoring there let the setup silently
-            # no-op while the edits below still referenced its variables, NameError-ing
-            # every SFT dataset preparation. Fail loudly if even the signature is missing.
+            # why: anchor the wrapped-packing setup on the function signature -- a
+            # structural anchor that always exists -- not the unsloth_zoo license comment,
+            # which is only lower-bounded and a newer Zoo may move or drop. Anchoring there
+            # let the setup silently no-op while edits below referenced its variables,
+            # NameError-ing every SFT dataset prep. Fail loudly if the signature is missing.
             function, _n_setup = re.subn(
                 r"(def sft_prepare_dataset\s*\(.*?\)\s*(?:->[^:\n]*)?:[ \t]*\n)",
                 lambda match: match.group(1) + _WRAPPED_PACKING_SETUP,

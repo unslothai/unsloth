@@ -224,16 +224,14 @@ def enable_padding_free_metadata(model, trainer):
 # --- Experimental: correct packing / padding-free for hybrid linear-attention ---
 # Qwen3.5 / Qwen3-Next mix a gated-delta recurrence with a causal conv1d. Packing
 # flattens the batch, and both ops leak state across sequence boundaries unless we
-# pass seq_idx (conv) and cu_seqlens (scan). Both accelerated kernels support this;
-# the pure-torch fallbacks do not, so we fail closed. Gated behind an env flag.
+# pass seq_idx (conv) and cu_seqlens (scan). Only the accelerated kernels accept
+# these, so we fail closed on the pure-torch fallbacks. Gated behind an env flag.
 #
-# The shim overrides only the training/prefill kernels self.causal_conv1d_fn /
-# self.chunk_gated_delta_rule per module; the decode kernels (causal_conv1d_update /
-# recurrent_gated_delta_rule) are left untouched so generation is unaffected. It
-# targets the standard Trainer forward-then-backward loop (recompute-safe under
-# gradient checkpointing) and never fires for cached forwards. Following the
-# import_fixes.py house style: feature-detect (never version-detect), fail closed,
-# idempotent, and emit one deduped diagnostic when it declines to activate.
+# Overrides only the per-module prefill kernels (causal_conv1d_fn /
+# chunk_gated_delta_rule), leaving decode untouched so generation is unaffected.
+# Recompute-safe under gradient checkpointing; never fires for cached forwards.
+# Feature-detect (never version-detect), fail closed, idempotent, one deduped
+# diagnostic when it declines to activate.
 _HYBRID_PACKING_ENV_VAR = "UNSLOTH_EXPERIMENTAL_HYBRID_PACKING"
 _HYBRID_LOGGER = logging.getLogger("unsloth.hybrid_packing")
 _HYBRID_WARNED: set = set()
@@ -273,14 +271,14 @@ def _iter_gated_delta_modules(model):
 
 def _hybrid_varlen_kernels_available(gated_delta_modules) -> Optional[str]:
     """None if every module can use the accelerated varlen path, else a short
-    reason string. All modules are validated before any are mutated. Signatures
-    are read off the captured originals when the module is already wrapped.
+    reason string. All modules are validated before any are mutated; signatures
+    are read off the captured originals when already wrapped.
 
     Dispatch (the mixer actually calling self.causal_conv1d_fn /
-    self.chunk_gated_delta_rule) is verified at RUNTIME by the handshake in the
-    forward wrapper, not statically: Unsloth wraps each module forward with a
-    compile-disable shim, so inspect.getsource sees only that wrapper, and every
-    supported transformers release dispatches through the instance attribute."""
+    self.chunk_gated_delta_rule) is verified at RUNTIME by the forward-wrapper
+    handshake, not statically: Unsloth's compile-disable shim hides it from
+    inspect.getsource, and every supported transformers release dispatches
+    through the instance attribute."""
     if not gated_delta_modules:
         return "no gated-delta modules found"
     for module in gated_delta_modules:
@@ -314,12 +312,11 @@ def _hybrid_varlen_kernels_available(gated_delta_modules) -> Optional[str]:
 
 def _varlen_from_position_ids(position_ids):
     """(cu_seqlens int32[n+1], seq_idx int32[1,T]) for a flattened padding-free
-    batch, else None. Padding-free position_ids reset to 0 at each sequence start.
-    Only a validated single-row pack is accepted; a normal batch or single
-    sequence returns None (a no-op). This is the fallback used only when the
-    authoritative packed_seq_lengths is absent; it assumes right-packed reset
-    position_ids and would mis-segment a left-padded row (leading zeros read as
-    segment starts), which is why packed_seq_lengths is always preferred."""
+    batch, else None. Padding-free position_ids reset to 0 at each sequence start;
+    accepts only a validated single-row pack (normal batch or single sequence ->
+    None). Fallback used only when packed_seq_lengths is absent: it assumes
+    right-packed reset position_ids and would mis-segment a left-padded row, which
+    is why packed_seq_lengths is always preferred."""
     if position_ids is None:
         return None
     pos = position_ids
@@ -388,7 +385,7 @@ def _hybrid_varlen_metadata(kwargs):
         return None
     psl = kwargs.get("packed_seq_lengths")
     if psl is not None and getattr(psl, "numel", lambda: 1)() > 0:  # skip empty (no max())
-        info = get_packed_info_from_kwargs(kwargs, device)  # authoritative packed_seq_lengths
+        info = get_packed_info_from_kwargs(kwargs, device)
         if info is not None:
             _, cu_seqlens, _ = info
             built = _seq_idx_from_cu_seqlens(cu_seqlens, total)
@@ -460,10 +457,9 @@ def patch_hybrid_linear_attention_varlen(model) -> bool:
         module._unsloth_varlen = None
         module._unsloth_varlen_wrapped = True
 
-    # Refresh the boundary stash on the outermost forward (runs once per step,
-    # outside gradient-checkpoint recompute, so it stays valid for recomputed inner
-    # forwards of the same batch). position_ids / use_cache are read from both
-    # positional and keyword args via the bound signature.
+    # Refresh the boundary stash on the outermost forward (once per step, outside
+    # gradient-checkpoint recompute, so it stays valid for recomputed inner
+    # forwards). Read from both positional and keyword args via the bound signature.
     if not getattr(model, "_unsloth_varlen_forward_wrapped", False):
         forward_orig = model.forward
         try:
@@ -491,12 +487,12 @@ def patch_hybrid_linear_attention_varlen(model) -> bool:
                     module._unsloth_varlen_conv_hit = False
                     module._unsloth_varlen_scan_hit = False
             out = forward_orig(*args, **kwargs)
-            # Runtime dispatch handshake: on the first real packed forward, confirm BOTH
-            # boundary kernels ran for EVERY gated-delta module. Both seq_idx (conv) and
-            # cu_seqlens (scan) are load-bearing, so a partial or absent dispatch (a future
-            # version that stops routing through self.<kernel>) leaves cross-sequence
-            # contamination. The batch is already flattened, so there is no padded recovery
-            # here: abort before loss/backward rather than train on corrupted data.
+            # Runtime dispatch handshake: on the first packed forward, confirm BOTH
+            # boundary kernels ran for EVERY module. seq_idx (conv) and cu_seqlens
+            # (scan) are both load-bearing, so a partial/absent dispatch (a future
+            # version no longer routing through self.<kernel>) leaves cross-sequence
+            # contamination. The batch is already flattened with no padded recovery,
+            # so abort before loss/backward rather than train on corrupted data.
             if first_pack:
                 model._unsloth_varlen_handshake_done = True
                 missing = [
