@@ -535,8 +535,8 @@ _CURATED_REMOTE_VLM_TYPES = frozenset(
     }
 )
 
-# Fallbacks used only if the transformers registry import fails.
-_FALLBACK_AUDIO_MODEL_TYPES = frozenset({"csm", "whisper"})
+# Fallbacks for model families that may be newer than the installed transformers.
+_FALLBACK_AUDIO_MODEL_TYPES = frozenset({"csm", "qwen3_asr", "whisper"})
 
 
 def _build_detection_sets():
@@ -600,6 +600,7 @@ _NON_CHAT_AUDIO_MODEL_TYPES = _AUDIO_ONLY_MODEL_TYPES | {
     "snac",
     "xcodec",
 }
+_AUDIO_CHAT_THINKER_MODEL_TYPES = frozenset({"qwen2_5_omni", "qwen3_omni_moe"})
 
 # Pre-computed .venv_t5 paths and backend dir for subprocess version switching.
 # Vision check uses the Gemma 4 5.5 sidecar for existing Gemma 4 architectures.
@@ -627,6 +628,27 @@ def _is_vlm(config) -> bool:
         or any(isinstance(x, str) and x.endswith(_VLM_ARCH_SUFFIXES) for x in architectures)
         or model_type in _VLM_MODEL_TYPES
     )
+
+
+def _raw_config_model_type(model_name: str, hf_token: Optional[str] = None) -> Optional[str]:
+    """Read model_type without requiring installed Transformers support."""
+    try:
+        if is_local_path(model_name):
+            config_path = Path(normalize_path(model_name)).expanduser() / "config.json"
+        else:
+            from huggingface_hub import hf_hub_download
+            config_path = Path(
+                hf_hub_download(
+                    repo_id = model_name,
+                    filename = "config.json",
+                    token = hf_token,
+                )
+            )
+        model_type = json.loads(config_path.read_text()).get("model_type")
+        return model_type if isinstance(model_type, str) else None
+    except Exception as exc:
+        logger.debug("Could not read raw model_type for '%s': %s", model_name, exc)
+        return None
 
 
 def _raw_config_has_vision_config(
@@ -994,7 +1016,7 @@ def _is_vision_model_uncached(
         return None
 
 
-VALID_AUDIO_TYPES = ("snac", "csm", "bicodec", "dac", "whisper", "audio_vlm")
+VALID_AUDIO_TYPES = ("snac", "csm", "bicodec", "dac", "whisper", "audio_vlm", "asr")
 GGUF_TTS_AUDIO_TYPES = ("snac", "csm", "bicodec", "dac")
 _NON_CHAT_AUDIO_TYPES = frozenset(VALID_AUDIO_TYPES) - {"audio_vlm"}
 
@@ -1002,7 +1024,7 @@ _NON_CHAT_AUDIO_TYPES = frozenset(VALID_AUDIO_TYPES) - {"audio_vlm"}
 # or offline miss cannot poison a later authenticated / online lookup.
 _audio_detection_cache: Dict[Tuple[str, Optional[str], bool], Optional[str]] = {}
 
-# Tokenizer token patterns → audio_type (all 6 types from tokenizer_config.json)
+# Tokenizer token patterns → audio_type (codec, Whisper, and audio-VLM signatures)
 _AUDIO_TOKEN_PATTERNS = {
     "csm": lambda tokens: "<|AUDIO|>" in tokens and "<|audio_eos|>" in tokens,
     "whisper": lambda tokens: "<|startoftranscript|>" in tokens,
@@ -1015,7 +1037,7 @@ _AUDIO_TOKEN_PATTERNS = {
         and "<|text_start|>" in tokens
         and "<|text_end|>" in tokens
     ),
-    "snac": lambda tokens: (sum(1 for t in tokens if t.startswith("<custom_token_")) > 10000),
+    "snac": lambda tokens: sum(1 for t in tokens if t.startswith("<custom_token_")) > 10000,
 }
 
 
@@ -1027,8 +1049,7 @@ def detect_audio_type(
     """Detect if a model is an audio model and return its type.
 
     Works for any model via tokenizer_config.json special tokens.
-    Returns an audio_type string ('snac', 'csm', 'bicodec', 'dac', 'whisper',
-    'audio_vlm') or None.
+    Returns a tokenizer-derived audio_type string or None.
 
     When local_files_only is True (offline export) the remote HuggingFace fetch
     is skipped so detection never blocks on a network read; only the local HF
@@ -1154,8 +1175,8 @@ def _detect_audio_from_tokenizer(
 
 
 def is_audio_input_type(audio_type: Optional[str]) -> bool:
-    """True if an audio_type accepts audio input: whisper (ASR), audio_vlm (Gemma3n)."""
-    return audio_type in ("whisper", "audio_vlm")
+    """True for speech-recognition and conversational audio-input types."""
+    return audio_type in ("whisper", "audio_vlm", "asr")
 
 
 def _classify_audio_capability(
@@ -1178,7 +1199,8 @@ def _classify_audio_capability(
         model_type = getattr(config, "model_type", None)
         thinker = getattr(config, "thinker_config", None)
         audio_chat = (
-            thinker is not None
+            model_type in _AUDIO_CHAT_THINKER_MODEL_TYPES
+            and thinker is not None
             and getattr(thinker, "audio_config", None) is not None
             and getattr(thinker, "text_config", None) is not None
         ) or (
@@ -1192,6 +1214,8 @@ def _classify_audio_capability(
         audio_only = model_type in _NON_CHAT_AUDIO_MODEL_TYPES
     except Exception as exc:
         logger.debug("Could not classify audio capability for '%s': %s", model_name, exc)
+        model_type = _raw_config_model_type(model_name, hf_token)
+        audio_only = model_type in _NON_CHAT_AUDIO_MODEL_TYPES
 
     if audio_chat:
         return "audio_vlm", True, True
@@ -2756,6 +2780,8 @@ class ModelConfig:
                 if mmproj_file:
                     gguf_is_vision = True
                     logger.info(f"Detected mmproj for vision: {mmproj_file}")
+                    if gguf_audio_type is None:
+                        gguf_audio_type = detect_gguf_audio_type(mmproj_file)
                 elif base_is_vision:
                     logger.warning(f"Base model is vision but no mmproj file found in {gguf_dir}")
 
@@ -2797,6 +2823,8 @@ class ModelConfig:
                     LLAMA_SERVER_NOT_FOUND_DETAIL,
                     LlamaCppBackend,
                     LlamaServerNotFoundError,
+                    _companion_snapshot_sibling,
+                    _pick_mmproj,
                     cached_gguf_for_load,
                 )
 
@@ -2823,6 +2851,10 @@ class ModelConfig:
                 )
                 if cached_gguf:
                     embedded_audio_type = detect_gguf_audio_type(cached_gguf)
+                    if embedded_audio_type is None:
+                        cached_mmproj = _companion_snapshot_sibling(cached_gguf, _pick_mmproj)
+                        if cached_mmproj:
+                            embedded_audio_type = detect_gguf_audio_type(cached_mmproj)
                     gguf_audio_type = embedded_audio_type
                 gguf_audio_type, has_audio_in, is_chat_capable = _classify_audio_capability(
                     identifier,

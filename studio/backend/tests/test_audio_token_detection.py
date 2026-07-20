@@ -6,12 +6,14 @@
 
 from __future__ import annotations
 
+from types import SimpleNamespace
 from unittest.mock import patch
 
 import pytest
 from transformers import AutoConfig
 
 from utils.models.model_config import (
+    ModelConfig,
     _AUDIO_TOKEN_PATTERNS,
     _classify_audio_capability,
     is_audio_input_type,
@@ -82,6 +84,27 @@ def test_structured_model_type_controls_chat_capability(model_type, audio_type, 
         return_value = AutoConfig.for_model(model_type),
     ):
         assert _classify_audio_capability("org/model", audio_type) == expected
+
+
+def test_asr_thinker_config_is_not_chat_capable():
+    thinker = SimpleNamespace(audio_config = object(), text_config = object())
+    config = SimpleNamespace(model_type = "qwen3_asr", thinker_config = thinker)
+    with patch("utils.models.model_config.load_model_config", return_value = config):
+        assert _classify_audio_capability("org/model", None) == (None, False, False)
+
+
+def test_unknown_asr_config_uses_raw_model_type(tmp_path):
+    (tmp_path / "config.json").write_text('{"model_type": "qwen3_asr"}')
+    with patch("utils.models.model_config.load_model_config", side_effect = ValueError("unknown")):
+        config = ModelConfig.from_identifier(str(tmp_path))
+
+    assert config is not None
+    assert (
+        config.audio_type,
+        config.is_audio,
+        config.has_audio_input,
+        config.is_chat_capable,
+    ) == (None, False, False, False)
 
 
 @pytest.mark.parametrize("audio_type", ["csm", "whisper", "snac"])

@@ -105,7 +105,7 @@ def _skip_gguf_probe_value(f, vtype: int) -> bool:
 
 
 def detect_gguf_audio_type(path: str) -> Optional[str]:
-    """Detect known audio token signatures from an embedded GGUF vocabulary.
+    """Detect known audio signatures from bounded GGUF metadata.
 
     Keeps only bounded marker state rather than materialising the vocabulary.
     Missing, malformed, oversized, or ambiguous metadata returns ``None``.
@@ -124,6 +124,10 @@ def detect_gguf_audio_type(path: str) -> Optional[str]:
     found = set()
     bicodec = False
     csm_identity = False
+    asr_identity = False
+    has_audio_encoder = False
+    has_vision_encoder = False
+    audio_projector_type = None
     custom_tokens = 0
     total_bytes = 0
     try:
@@ -147,7 +151,12 @@ def detect_gguf_audio_type(path: str) -> Optional[str]:
                 if len(vtype_bytes) < 4:
                     return None
                 vtype = struct.unpack("<I", vtype_bytes)[0]
-                if key in {"general.architecture", "general.name", "general.basename"}:
+                if key in {
+                    "general.architecture",
+                    "general.name",
+                    "general.basename",
+                    "clip.audio.projector_type",
+                }:
                     if vtype != 8:
                         return None
                     slen_bytes = f.read(8)
@@ -159,7 +168,23 @@ def detect_gguf_audio_type(path: str) -> Optional[str]:
                     value = f.read(slen)
                     if len(value) < slen or f.tell() > 1 << 26:
                         return None
-                    csm_identity = csm_identity or b"csm" in value.lower()
+                    identity = value.lower().replace(b"-", b"_").replace(b" ", b"_")
+                    if key == "clip.audio.projector_type":
+                        audio_projector_type = identity
+                        continue
+                    csm_identity = csm_identity or b"csm" in identity
+                    asr_identity = asr_identity or b"qwen3_asr" in identity
+                    continue
+                if key in {"clip.has_audio_encoder", "clip.has_vision_encoder"}:
+                    if vtype != 7:
+                        return None
+                    value = f.read(1)
+                    if len(value) != 1 or f.tell() > 1 << 26:
+                        return None
+                    if key == "clip.has_audio_encoder":
+                        has_audio_encoder = value != b"\x00"
+                    else:
+                        has_vision_encoder = value != b"\x00"
                     continue
                 if key != "tokenizer.ggml.tokens":
                     if not _skip_gguf_probe_value(f, vtype):
@@ -195,6 +220,10 @@ def detect_gguf_audio_type(path: str) -> Optional[str]:
         logger.debug(f"detect_gguf_audio_type: cannot parse {path}: {e}")
         return None
 
+    if asr_identity or (
+        has_audio_encoder and not has_vision_encoder and audio_projector_type == b"qwen3a"
+    ):
+        return "asr"
     if csm_identity and {b"<|AUDIO|>", b"<|audio_eos|>"} <= found:
         return "csm"
     if b"<|startoftranscript|>" in found:

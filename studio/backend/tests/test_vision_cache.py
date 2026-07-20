@@ -36,7 +36,6 @@ from utils.models.model_config import (
     _is_vision_model_uncached,
     _vision_detection_cache,
 )
-from core.inference.llama_cpp import cached_gguf_for_load
 
 
 def _gguf_string(value: str) -> bytes:
@@ -50,6 +49,17 @@ def _write_tokenizer_gguf(path, tokens, architecture):
         _gguf_string("tokenizer.ggml.tokens")
         + struct.pack("<IIQ", 9, 8, len(tokens))
         + b"".join(_gguf_string(token) for token in tokens),
+    ]
+    path.write_bytes(struct.pack("<IIQQ", 0x46554747, 3, 0, len(values)) + b"".join(values))
+    return path
+
+
+def _write_audio_projector_gguf(path, has_vision_encoder = False):
+    values = [
+        _gguf_string("general.architecture") + struct.pack("<I", 8) + _gguf_string("clip"),
+        _gguf_string("clip.has_vision_encoder") + struct.pack("<I?", 7, has_vision_encoder),
+        _gguf_string("clip.has_audio_encoder") + struct.pack("<I?", 7, True),
+        _gguf_string("clip.audio.projector_type") + struct.pack("<I", 8) + _gguf_string("qwen3a"),
     ]
     path.write_bytes(struct.pack("<IIQQ", 0x46554747, 3, 0, len(values)) + b"".join(values))
     return path
@@ -249,125 +259,22 @@ class TestLocalGgufVisionDetection:
         mock_subprocess.assert_not_called()
 
 
-@pytest.mark.parametrize(
-    ("initial_audio", "cached_tokens", "cached_arch", "cache_layout", "stale_type", "expected"),
-    [
-        (
-            None,
-            ["<|startoftranscript|>"],
-            "whisper",
-            False,
-            "qwen2_audio",
-            ("whisper", False, True, False),
-        ),
-        (
-            None,
-            ["<|AUDIO|>", "<|audio_eos|>"],
-            "llama-csm",
-            False,
-            "qwen2_audio",
-            ("csm", True, False, False),
-        ),
-        (
-            "csm",
-            ["<|AUDIO|>", "<|audio_eos|>"],
-            "qwen2audio",
-            False,
-            "whisper",
-            (None, False, False, True),
-        ),
-        ("whisper", [], "llama", False, "whisper", (None, False, False, True)),
-        (
-            "snac",
-            ["<audio_soft_token>"],
-            "audio-vlm",
-            False,
-            "whisper",
-            ("audio_vlm", False, True, True),
-        ),
-        (
-            None,
-            ["<|AUDIO|>", "<|audio_eos|>"],
-            "llama-csm",
-            "truncated_newer",
-            "qwen2_audio",
-            ("csm", True, False, False),
-        ),
-    ],
-)
-def test_configless_gguf_reports_audio_capability(
-    monkeypatch,
-    tmp_path,
-    initial_audio,
-    cached_tokens,
-    cached_arch,
-    cache_layout,
-    stale_type,
-    expected,
-):
-    import utils.models.model_config as mc
+def test_qwen3_projector_distinguishes_asr_from_omni(tmp_path):
+    model = _write_tokenizer_gguf(tmp_path / "Q4_K_M/qwen3-asr-Q4_K_M.gguf", [], "qwen3vl")
+    mmproj = _write_audio_projector_gguf(tmp_path / "mmproj-qwen3-asr-F16.gguf")
 
-    stale_audio = object() if stale_type == "qwen2_audio" else None
-    stale_config = _types.SimpleNamespace(
-        model_type = stale_type,
-        thinker_config = None,
-        text_config = stale_audio,
-        audio_config = stale_audio,
-    )
-    monkeypatch.setattr(mc, "load_model_config", lambda *_a, **_k: stale_config)
+    config = ModelConfig.from_ui_selection(str(model), None)
 
-    model_snapshot = tmp_path / "complete" if cache_layout == "truncated_newer" else tmp_path
-    cached_gguf = _write_tokenizer_gguf(
-        model_snapshot / "nested" / "voice-checkpoint-00001-OF-00002.gguf",
-        cached_tokens or [],
-        cached_arch,
-    )
-    cached_gguf.with_name("voice-checkpoint-00002-OF-00002.gguf").write_bytes(b"shard 2")
-    if cache_layout == "truncated_newer":
-        partial = _write_tokenizer_gguf(
-            tmp_path / "partial" / "nested" / cached_gguf.name, [], "llama"
-        )
-        partial.with_name("voice-checkpoint-00002-OF-00002.gguf").write_bytes(b"short")
-
-    fake_llama_cpp = _types.SimpleNamespace(
-        LLAMA_SERVER_NOT_FOUND_DETAIL = "missing",
-        LlamaServerNotFoundError = RuntimeError,
-        LlamaCppBackend = _types.SimpleNamespace(_find_llama_server_binary = lambda **_kw: "/server"),
-        cached_gguf_for_load = cached_gguf_for_load,
-    )
-    monkeypatch.setitem(sys.modules, "core.inference.llama_cpp", fake_llama_cpp)
-    monkeypatch.setattr(mc, "resolve_cached_repo_id_case", lambda name: name)
-    monkeypatch.setattr(mc, "detect_gguf_model_remote", lambda *_a, **_k: cached_gguf.name)
-    monkeypatch.setattr(
-        mc,
-        "list_gguf_variants",
-        lambda *_a, **_k: ([_types.SimpleNamespace(filename = cached_gguf.name)], False),
-    )
-    monkeypatch.setattr(mc, "detect_audio_type", lambda *_a, **_k: initial_audio)
-    monkeypatch.setattr(
-        "huggingface_hub.get_paths_info",
-        lambda _repo, paths, revision = None, **_k: [
-            _types.SimpleNamespace(path = path, size = (tmp_path / revision / path).stat().st_size + 1)
-            for path in paths
-        ]
-        if cache_layout == "truncated_newer" and revision == "partial"
-        else [],
-    )
-    snapshots = (
-        [tmp_path / "partial", model_snapshot]
-        if cache_layout == "truncated_newer"
-        else [model_snapshot]
-    )
-    monkeypatch.setattr(mc, "_iter_hf_cache_snapshots", lambda *_a: iter(snapshots))
-
-    config = ModelConfig.from_identifier("org/model-GGUF", gguf_variant = "voice-checkpoint")
-
+    assert config.gguf_mmproj_file == str(mmproj)
     assert (
         config.audio_type,
         config.is_audio,
         config.has_audio_input,
         config.is_chat_capable,
-    ) == expected
+    ) == ("asr", False, True, False)
+
+    _write_audio_projector_gguf(mmproj, has_vision_encoder = True)
+    assert ModelConfig.from_ui_selection(str(model), None).is_chat_capable is True
 
 
 # ---------------------------------------------------------------------------

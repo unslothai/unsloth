@@ -444,13 +444,14 @@ class TestLoadReusesCachedCopy:
         main_blob.write_bytes(b"main")
         mmproj_blob.write_bytes(b"mmproj")
         try:
-            (snap / MAIN).symlink_to(main_blob)
+            (snap / "Q4_K_M").mkdir()
+            (snap / "Q4_K_M" / MAIN).symlink_to(main_blob)
             (snap / "mmproj-F16.gguf").symlink_to(mmproj_blob)
         except OSError as exc:
             pytest.skip(f"symlinks unavailable: {exc}")
 
         with patch("huggingface_hub.list_repo_files", _fail_download):
-            out = backend._download_mmproj(hf_repo = REPO, near_path = str(snap / MAIN))
+            out = backend._download_mmproj(hf_repo = REPO, near_path = str(snap / "Q4_K_M" / MAIN))
 
         assert out == str(snap / "mmproj-F16.gguf")
 
