@@ -5602,11 +5602,13 @@ def _sensitive_paths(command: str, workdir: str) -> list[str]:
     files, kernel state).
 
     A lightweight, additive defence-in-depth check: it inspects literal path-like
-    tokens (absolute ``/`` or ``~`` paths and explicit relative paths containing
-    ``/``) and reports those landing under a sensitive prefix while outside the
-    session workdir. Ephemeral scratch (/tmp, $TMPDIR) and neutral paths are
-    allowed; the kernel-level filesystem sandbox is the real boundary. Fails open
-    on anything it cannot parse. Returns the blocked realpaths (deduped, ordered).
+    tokens (absolute ``/`` or ``~`` paths, explicit relative paths, an option's
+    attached ``--flag=/path`` value, and ``$HOME``/``${VAR}`` references) and
+    reports those landing under a sensitive prefix while outside the session
+    workdir. Ephemeral scratch (/tmp, $TMPDIR) and neutral paths are allowed; the
+    kernel-level filesystem sandbox is the real boundary, so this is best effort
+    (no full shell expansion, command substitution, globbing or Windows paths).
+    Fails open on anything it cannot parse. Returns blocked realpaths (deduped).
     """
     try:
         tokens = shlex.split(command, posix = True)
@@ -5615,10 +5617,27 @@ def _sensitive_paths(command: str, workdir: str) -> list[str]:
     blocked: list[str] = []
     seen: set[str] = set()
     for token in tokens:
-        tok = _REDIR_PREFIX_RE.sub("", token)
-        if not tok or tok.startswith("-") or "://" in tok:
-            # flags and URLs are not local filesystem paths
+        # Strip a leading shell redirection operator glued to the path (>, >>,
+        # 2>, 2>>, &>, &>>, <) so e.g. 2>>/etc/x and &>/etc/x are still checked.
+        tok = re.sub(r"^[0-9&]*[<>]+", "", token)
+        if not tok:
             continue
+        if tok.startswith("-"):
+            # An option carrying a path value: --file=/etc/x, -o=/etc/x, -o/etc/x.
+            if "=" in tok:
+                tok = tok.split("=", 1)[1]
+            elif "/" in tok:
+                tok = tok[tok.index("/"):]
+            else:
+                continue  # a bare flag carries no path
+            if not tok:
+                continue
+        if "://" in tok:
+            continue
+        # Best-effort env expansion so $HOME / ${VAR} paths are checked; this is
+        # not a full shell (no command substitution or globbing).
+        if "$" in tok:
+            tok = os.path.expandvars(tok)
         if tok.startswith("~"):
             candidate = os.path.expanduser(tok)
         elif tok.startswith("/"):

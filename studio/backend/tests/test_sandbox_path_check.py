@@ -64,6 +64,30 @@ def test_traversal_into_sensitive_prefix_is_flagged(tmp_path):
     assert _sensitive_paths("grep secret /etc/shadow", wd) == ["/etc/shadow"]
 
 
+def test_option_attached_path_value_is_flagged(tmp_path):
+    wd = str(tmp_path)
+    # --flag=/path and glued short options carry a path the plain flag skip missed.
+    assert _sensitive_paths("grep x --file=/etc/shadow", wd) == ["/etc/shadow"]
+    assert _sensitive_paths("tool -o/etc/passwd", wd) == ["/etc/passwd"]
+    # A neutral attached value stays allowed.
+    assert _sensitive_paths("tool --out=/tmp/ok.txt", wd) == []
+
+
+def test_env_var_paths_are_expanded(tmp_path, monkeypatch):
+    wd = str(tmp_path)
+    monkeypatch.setenv("NB_SECRET_DIR", "/etc")
+    assert _sensitive_paths("cat $NB_SECRET_DIR/shadow", wd) == ["/etc/shadow"]
+    assert _sensitive_paths("cat ${NB_SECRET_DIR}/shadow", wd) == ["/etc/shadow"]
+
+
+def test_glued_ampersand_redirection_is_flagged(tmp_path):
+    wd = str(tmp_path)
+    # &> (stdout+stderr) glued to a sensitive target is stripped and checked.
+    assert _sensitive_paths("prog &>/etc/motd", wd) == ["/etc/motd"]
+    # Numeric-fd redirection to a device stays allowed.
+    assert _sensitive_paths("prog 2>>/dev/null", wd) == []
+
+
 def test_normal_commands_and_devices_are_untouched(tmp_path):
     wd = str(tmp_path)
     assert _sensitive_paths("echo hello", wd) == []
