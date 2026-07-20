@@ -42,6 +42,7 @@ import {
   PencilEdit02Icon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
+import { isDownloadCancelled } from "@/lib/native-files";
 import { toast } from "sonner";
 import { useChatRuntimeStore } from "./stores/chat-runtime-store";
 import type { ChatView } from "./types";
@@ -136,8 +137,10 @@ export function ThreadSidebar({
       for (const id of ids) {
         await fn(id);
       }
-    } catch {
-      toast.error("Export failed.");
+    } catch (error) {
+      if (!isDownloadCancelled(error)) {
+        toast.error("Export failed.");
+      }
     }
   }
 
@@ -164,8 +167,10 @@ export function ThreadSidebar({
       } else {
         await exportBulkConversationsSeparate(ids, fmt, basename);
       }
-    } catch {
-      toast.error("Export failed.");
+    } catch (error) {
+      if (!isDownloadCancelled(error)) {
+        toast.error("Export failed.");
+      }
     }
   }
 

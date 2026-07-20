@@ -41,7 +41,7 @@ import {
 import { useT } from "@/i18n";
 
 import { isTauri } from "@/lib/api-base";
-import { pickNativeChatImport } from "@/lib/native-files";
+import { isDownloadCancelled, pickNativeChatImport } from "@/lib/native-files";
 import {
   ChevronDownStandardIcon,
   ChevronRightStandardIcon,
@@ -151,9 +151,11 @@ export function DataTab() {
     try {
       await downloadChatExport();
     } catch (error) {
-      toast.error("Could not export chats", {
-        description: error instanceof Error ? error.message : String(error),
-      });
+      if (!isDownloadCancelled(error)) {
+        toast.error("Could not export chats", {
+          description: error instanceof Error ? error.message : String(error),
+        });
+      }
     } finally {
       setExporting(false);
     }
@@ -171,9 +173,11 @@ export function DataTab() {
             : t("settings.data.exportedArchivedChatCount", { count: exported }),
       );
     } catch (error) {
-      toast.error(t("settings.data.failedToExportArchivedChats"), {
-        description: error instanceof Error ? error.message : undefined,
-      });
+      if (!isDownloadCancelled(error)) {
+        toast.error(t("settings.data.failedToExportArchivedChats"), {
+          description: error instanceof Error ? error.message : undefined,
+        });
+      }
     } finally {
       setArchivedExporting(false);
     }
@@ -244,9 +248,11 @@ export function DataTab() {
     try {
       await exportFineTuneJsonl(fineTuneFormat);
     } catch (error) {
-      toast.error(t("settings.data.fineTuneExportFailed"), {
-        description: error instanceof Error ? error.message : undefined,
-      });
+      if (!isDownloadCancelled(error)) {
+        toast.error(t("settings.data.fineTuneExportFailed"), {
+          description: error instanceof Error ? error.message : undefined,
+        });
+      }
     } finally {
       setFineTuneExporting(false);
     }

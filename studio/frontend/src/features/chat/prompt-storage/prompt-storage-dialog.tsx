@@ -10,7 +10,7 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
-import { downloadFile } from "@/lib/native-files";
+import { downloadFile, isDownloadCancelled } from "@/lib/native-files";
 
 import { cn } from "@/lib/utils";
 import { Search01Icon } from "@hugeicons/core-free-icons";
@@ -73,17 +73,11 @@ function sanitizeFilename(name: string): string {
 }
 
 async function downloadBlob(
-  content: string | Blob,
+  content: string | Blob | Uint8Array,
   filename: string,
   mimeType: string,
 ): Promise<void> {
-  try {
-    await downloadFile(content, filename, mimeType);
-  } catch (error) {
-    toast.error("Could not save export.", {
-      description: error instanceof Error ? error.message : String(error),
-    });
-  }
+  return downloadFile(content, filename, mimeType);
 }
 
 function csvEscape(val: string): string {
@@ -516,11 +510,7 @@ export async function exportBulkConversationsSeparate(
   if (Object.keys(files).length === 0) { toast.info("No exportable content."); return; }
 
   const zipped = zipSync(files);
-  await downloadBlob(
-    new Blob([zipped], { type: "application/zip" }),
-    `${basename}.zip`,
-    "application/zip",
-  );
+  await downloadBlob(zipped, `${basename}.zip`, "application/zip");
 }
 
 // Scope-level bulk export shared by the sidebar Recents menu and
@@ -548,8 +538,10 @@ export async function bulkExportConversationsByScope(
     } else {
       await exportBulkConversationsSeparate(ids, format, basename);
     }
-  } catch {
-    toast.error("Export failed.");
+  } catch (error) {
+    if (!isDownloadCancelled(error)) {
+      toast.error("Export failed.");
+    }
   }
 }
 
@@ -1281,26 +1273,26 @@ function ExportModal({
   }, [csvAvailable]);
 
   const handleExport = useCallback(async () => {
-    if (ctx.kind === "prompt") {
-      if (scope === "training") await exportPromptTrainingJsonl(ctx.entry);
-      else if (format === "csv") await exportPromptCsv(ctx.entry);
-      else await exportPromptJsonl(ctx.entry);
-    } else if (ctx.kind === "list") {
-      if (scope === "training") await exportListTrainingJsonl(ctx.entry);
-      else if (format === "csv") await exportListCsv(ctx.entry);
-      else await exportListJsonl(ctx.entry);
-    } else {
-      const { tab, prompts, lists } = ctx;
-      if (scope === "training") {
-        if (tab === "prompts") {
-          if (prompts.length === 0) { toast.info("No prompts to export"); return; }
-          await exportPromptsTrainingJsonl(prompts);
-        } else {
-          if (lists.length === 0) { toast.info("No prompt lists to export"); return; }
-          await exportListsTrainingJsonl(lists);
-        }
+    try {
+      if (ctx.kind === "prompt") {
+        if (scope === "training") await exportPromptTrainingJsonl(ctx.entry);
+        else if (format === "csv") await exportPromptCsv(ctx.entry);
+        else await exportPromptJsonl(ctx.entry);
+      } else if (ctx.kind === "list") {
+        if (scope === "training") await exportListTrainingJsonl(ctx.entry);
+        else if (format === "csv") await exportListCsv(ctx.entry);
+        else await exportListJsonl(ctx.entry);
       } else {
-        if (tab === "prompts") {
+        const { tab, prompts, lists } = ctx;
+        if (scope === "training") {
+          if (tab === "prompts") {
+            if (prompts.length === 0) { toast.info("No prompts to export"); return; }
+            await exportPromptsTrainingJsonl(prompts);
+          } else {
+            if (lists.length === 0) { toast.info("No prompt lists to export"); return; }
+            await exportListsTrainingJsonl(lists);
+          }
+        } else if (tab === "prompts") {
           if (prompts.length === 0) { toast.info("No prompts to export"); return; }
           if (format === "csv") await exportAllPromptsCsv(prompts);
           else await exportAllPromptsJsonl(prompts);
@@ -1310,8 +1302,14 @@ function ExportModal({
           else await exportAllListsJsonl(lists);
         }
       }
+      onClose();
+    } catch (error) {
+      if (!isDownloadCancelled(error)) {
+        toast.error("Could not save export.", {
+          description: error instanceof Error ? error.message : String(error),
+        });
+      }
     }
-    onClose();
   }, [ctx, scope, format, onClose]);
 
   const singleLabel =

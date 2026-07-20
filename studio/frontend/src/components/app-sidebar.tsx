@@ -136,6 +136,7 @@ import {
 import type { TrainingRunSummary } from "@/features/training";
 import { useExportRuntimeStore } from "@/features/export";
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { isDownloadCancelled } from "@/lib/native-files";
 import { toast } from "@/lib/toast";
 import { ShutdownDialog } from "@/components/shutdown-dialog";
 import { translate, useT, type TranslationKey } from "@/i18n";
@@ -960,8 +961,10 @@ export function AppSidebar() {
                         for (const id of ids) {
                           await exportConversationByFormat(id, format);
                         }
-                      } catch {
-                        toast.error("Export failed.");
+                      } catch (error) {
+                        if (!isDownloadCancelled(error)) {
+                          toast.error("Export failed.");
+                        }
                       }
                     }}
                   >

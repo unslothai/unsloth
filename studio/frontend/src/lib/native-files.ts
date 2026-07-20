@@ -4,6 +4,16 @@
 import { isTauri } from "@/lib/api-base";
 
 const NATIVE_FILE_NAME_HEADER = "x-unsloth-default-name";
+export class DownloadCancelledError extends Error {
+  constructor() {
+    super("Save cancelled.");
+    this.name = "DownloadCancelledError";
+  }
+}
+
+export function isDownloadCancelled(error: unknown): boolean {
+  return error instanceof DownloadCancelledError;
+}
 
 function encodeNativeFilename(filename: string): string {
   const bytes = new TextEncoder().encode(filename);
@@ -32,29 +42,38 @@ function browserDownload(blob: Blob, filename: string): void {
 
 /** Save through a native chooser in Tauri and retain normal downloads on web. */
 export async function downloadFile(
-  content: string | Blob,
+  content: string | Blob | Uint8Array,
   filename: string,
   mimeType = "application/octet-stream",
-): Promise<boolean> {
-  const blob =
-    content instanceof Blob ? content : new Blob([content], { type: mimeType });
-
+): Promise<void> {
   if (isTauri) {
     const { invoke } = await import("@tauri-apps/api/core");
     const bytes =
       typeof content === "string"
         ? new TextEncoder().encode(content)
-        : new Uint8Array(await content.arrayBuffer());
+        : content instanceof Blob
+          ? new Uint8Array(await content.arrayBuffer())
+          : content;
     const savedPath = await invoke<string | null>("save_native_file", bytes, {
       headers: {
         [NATIVE_FILE_NAME_HEADER]: encodeNativeFilename(filename),
       },
     });
-    return savedPath !== null;
+    if (savedPath === null) {
+      throw new DownloadCancelledError();
+    }
+    return;
   }
 
+  const browserContent =
+    content instanceof Uint8Array ? Uint8Array.from(content).buffer : content;
+  const blob =
+    browserContent instanceof Blob
+      ? browserContent
+      : new Blob([browserContent], { type: mimeType });
+
   browserDownload(blob, filename);
-  return true;
+  return;
 }
 
 /** Open the bounded native chat-import picker. Cancellation returns null. */

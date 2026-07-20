@@ -51,9 +51,12 @@ async function showSetupWindow(isCurrent: WindowLayoutGuard): Promise<void> {
   const { getCurrentWindow, LogicalSize } = await import(
     "@tauri-apps/api/window"
   );
+  const { invoke } = await import("@tauri-apps/api/core");
   if (!isCurrent()) return;
 
   const win = getCurrentWindow();
+  await invoke("reset_app_window_layout_initialized");
+  if (!isCurrent()) return;
   await win.setResizable(false);
   if (!isCurrent()) return;
   await win.setSize(new LogicalSize(SETUP_WINDOW_WIDTH, SETUP_WINDOW_HEIGHT));

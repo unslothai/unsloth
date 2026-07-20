@@ -199,6 +199,7 @@ fn main() {
         .invoke_handler(tauri::generate_handler![
             app_layout::has_initialized_app_window_layout,
             app_layout::mark_app_window_layout_initialized,
+            app_layout::reset_app_window_layout_initialized,
             commands::check_install_status,
             commands::desktop_preflight,
             commands::start_install,

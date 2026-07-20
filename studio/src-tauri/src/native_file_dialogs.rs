@@ -2,7 +2,7 @@ use base64::{engine::general_purpose::STANDARD as BASE64, Engine as _};
 
 use serde::Serialize;
 use std::fs::{self, File};
-use std::io::Read;
+use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use tauri::{AppHandle, WebviewWindow};
 use tauri_plugin_dialog::DialogExt;
@@ -66,8 +66,30 @@ fn save_selected_file(
     let Some(path) = selected_path else {
         return Ok(None);
     };
-    fs::write(&path, content)
+    let parent = path
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+        .unwrap_or_else(|| Path::new("."));
+    let mut builder = tempfile::Builder::new();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let permissions = fs::metadata(&path)
+            .map(|metadata| metadata.permissions())
+            .unwrap_or_else(|_| fs::Permissions::from_mode(0o666));
+        builder.permissions(permissions);
+    }
+    let mut temporary = builder
+        .prefix(".unsloth-export-")
+        .tempfile_in(parent)
+        .map_err(|error| format!("Failed to prepare {}: {error}", path.display()))?;
+    temporary
+        .write_all(content)
+        .and_then(|()| temporary.as_file().sync_all())
         .map_err(|error| format!("Failed to save {}: {error}", path.display()))?;
+    temporary
+        .persist(&path)
+        .map_err(|error| format!("Failed to save {}: {}", path.display(), error.error))?;
     let file_name = path
         .file_name()
         .and_then(|name| name.to_str())
@@ -122,8 +144,8 @@ fn read_selected_import(
     let name = path
         .file_name()
         .and_then(|name| name.to_str())
-        .unwrap_or("chat-import")
-        .to_string();
+        .map(str::to_string)
+        .unwrap_or_else(|| format!("chat-import.{extension}"));
     Ok(Some(NativeImportedFile { name, content }))
 }
 
@@ -209,8 +231,11 @@ mod tests {
 
     #[test]
     fn writes_text_and_binary_exactly() {
+        // Overwriting must stage the new content before replacing the destination.
         let text_path = temp_path("text").with_extension("json");
         let binary_path = temp_path("binary").with_extension("zip");
+
+        fs::write(&text_path, b"previous export").unwrap();
         save_selected_file(Some(text_path.clone()), b"{\"ok\":true}").unwrap();
         save_selected_file(Some(binary_path.clone()), &[0, 1, 2, 255]).unwrap();
         assert_eq!(fs::read(&text_path).unwrap(), b"{\"ok\":true}");
@@ -265,6 +290,21 @@ mod tests {
             .contains("UTF-8"));
         let _ = fs::remove_file(oversized);
         let _ = fs::remove_file(invalid);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn non_utf8_import_name_preserves_csv_extension() {
+        use std::ffi::OsString;
+        use std::os::unix::ffi::OsStringExt;
+
+        let path = std::env::temp_dir().join(OsString::from_vec(vec![
+            b'u', b'n', b's', b'l', b'o', b't', b'h', 0xff, b'.', b'c', b's', b'v',
+        ]));
+        fs::write(&path, "role,content\nuser,hello\n").unwrap();
+        let imported = read_selected_import(Some(path.clone())).unwrap().unwrap();
+        assert_eq!(imported.name, "chat-import.csv");
+        let _ = fs::remove_file(path);
     }
 
     #[test]

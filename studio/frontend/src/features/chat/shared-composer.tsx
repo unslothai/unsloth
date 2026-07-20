@@ -36,6 +36,7 @@ import {
 } from "@/features/settings/stores/voice-settings-store";
 import { AUDIO_ACCEPT, MAX_AUDIO_SIZE, fileToBase64 } from "@/lib/audio-utils";
 import { isTauri } from "@/lib/api-base";
+import { isDownloadCancelled } from "@/lib/native-files";
 import { isMultimodalResponse } from "./types/api";
 import { getImageInputUnavailableReason } from "./utils/image-input-support";
 import { useAui } from "@assistant-ui/react";
@@ -1504,7 +1505,9 @@ export function SharedComposer({
                   for (const id of exportThreadIds) {
                     await fn(id);
                   }
-                })().catch(() => toast.error("Export failed."));
+                })().catch((error) => {
+                  if (!isDownloadCancelled(error)) toast.error("Export failed.");
+                });
               }}
             >
               {label}
