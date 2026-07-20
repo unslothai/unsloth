@@ -2208,7 +2208,13 @@ def grpo_trainer_compute_loss(function_name, function):
         _logits_to_keep = logits_to_keep
 
         get_logps_func = (
-            lambda model, input_ids, attention_mask, logits_to_keep, batch_size = None, compute_entropy = False, compute_efficient = False: (
+            lambda model,
+            input_ids,
+            attention_mask,
+            logits_to_keep,
+            batch_size = None,
+            compute_entropy = False,
+            compute_efficient = False: (
                 self._get_per_token_logps(
                     model, input_ids, attention_mask, logits_to_keep, compute_efficient
                 )
