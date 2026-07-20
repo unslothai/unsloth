@@ -474,6 +474,41 @@ def _all_mutator_entries(method: str, args: list) -> tuple[set[str], bool]:
     return entries, False  # unknown mutator or dynamic arg -> opaque
 
 
+def _stmt_binds_all(node: ast.AST) -> bool:
+    """True when *node* is a statement that BINDS or MUTATES ``__all__`` -- an assignment /
+    annotated-assign / augmented-assign whose target names ``__all__`` (directly or nested in a
+    destructuring / item / attr target), or an ``__all__.<method>(...)`` expression call."""
+    if isinstance(node, ast.Assign):
+        targets = node.targets
+    elif isinstance(node, (ast.AnnAssign, ast.AugAssign)):
+        targets = [node.target]
+    elif isinstance(node, ast.Expr):
+        call = node.value
+        return (
+            isinstance(call, ast.Call)
+            and isinstance(call.func, ast.Attribute)
+            and isinstance(call.func.value, ast.Name)
+            and call.func.value.id == "__all__"
+        )
+    else:
+        return False
+    return any(
+        isinstance(sub, ast.Name) and sub.id == "__all__" for t in targets for sub in ast.walk(t)
+    )
+
+
+def _all_bound_outside_module_body(tree: ast.Module) -> bool:
+    """True when ``__all__`` is bound / mutated anywhere OTHER than a top-level module statement --
+    inside a module-level ``if`` / ``try`` / ``for`` / ``while`` / ``with`` / ``match`` (a
+    conditional whose final value cannot be replayed statically), or inside a nested scope. The
+    caller then marks ``__all__`` opaque, so a conditionally-added re-export is not mistaken for an
+    unused hoist. Only ever ADDS opacity, so it cannot create a false blocker."""
+    top_level = {id(node) for node in tree.body}
+    return any(
+        id(node) not in top_level and _stmt_binds_all(node) for node in ast.walk(tree)
+    )
+
+
 def _collect_dunder_all(tree: ast.Module) -> tuple[set[str], bool]:
     """The FINAL module-level ``__all__`` string entries plus an ``opaque`` flag
     (``= [...]``, ``+= [...]``, or an annotated assign).
@@ -502,6 +537,8 @@ def _collect_dunder_all(tree: ast.Module) -> tuple[set[str], bool]:
     ``__all__`` method call (``insert``/``remove``/...) is opaque. ``__all__`` bound only
     through a destructuring target (``__all__, meta = [...], v``) or an item/attr target
     is opaque too -- its value cannot be mapped statically, so the set is not exhaustive.
+    ``__all__`` bound / mutated in a module-level ``if`` / ``try`` / loop / ``with`` / ``match`` (or
+    a deeper scope) is opaque -- a conditional value cannot be replayed from ``tree.body`` alone.
     """
     names: set[str] = set()
     opaque = False
@@ -562,6 +599,10 @@ def _collect_dunder_all(tree: ast.Module) -> tuple[set[str], bool]:
             # extend adds names we cannot see.
             names |= entries
             opaque = opaque or not readable
+    if _all_bound_outside_module_body(tree):
+        # A conditional / nested `__all__` mutation (module-level if/try/for/while/with/match, or a
+        # deeper scope) is not in the replayed top-level sequence, so its contribution is unknown.
+        opaque = True
     return names, opaque
 
 
@@ -890,6 +931,14 @@ _SELF_TESTS = {
         # flagged as an unused hoist (mirrors the unreadable "+=" case)
         'from pkg import a\n__all__, meta = ["a"], 1\n',
         'from pkg import a\nfrom pkg import b\n__all__, meta = ["a", "b"], 1\n',
+        None,
+    ),
+    "conditional_all_mutation_is_opaque_keeps_reexport": (
+        # __all__ extended inside a module-level `if` is NOT in the replayed top-level sequence,
+        # so the final value is unknown -> opaque: a re-export added only there must not be flagged
+        # as an unused hoist (the collector previously scanned only tree.body and missed it)
+        'from pkg import a\n__all__ = ["a"]\n',
+        'from pkg import a\nfrom pkg import b\n__all__ = ["a"]\nif True:\n    __all__ += ["b"]\n',
         None,
     ),
     "readable_reassign_resets_opacity": (
