@@ -747,6 +747,45 @@ def test_split_pin_mirrors_hip_mask_on_rocm(monkeypatch):
     assert "ROCR_VISIBLE_DEVICES" not in env
 
 
+def _rocm_torch_stub(monkeypatch):
+    torch_stub = _types.ModuleType("torch")
+    torch_stub.version = _types.SimpleNamespace(hip = "6.0")
+    monkeypatch.setitem(sys.modules, "torch", torch_stub)
+
+
+def test_subset_pin_masks_via_rocr_on_rocm(monkeypatch):
+    # A GPU-subset pin must exclude the rest at the ROCr/HSA layer: HIP masking
+    # still enumerates every agent first, which segfaults the build on an
+    # unsupported deselected GPU (e.g. a gfx1103 iGPU under a gfx110X prebuilt).
+    # ROCR drops it at the driver layer; only one mask is set (HIP cleared).
+    _rocm_torch_stub(monkeypatch)
+    env = {"HIP_VISIBLE_DEVICES": "9"}  # stale/inherited HIP mask must not survive
+    LlamaCppBackend._emit_child_gpu_visibility(env, "0", prefer_rocr = True)
+    assert env["ROCR_VISIBLE_DEVICES"] == "0"
+    assert env["CUDA_VISIBLE_DEVICES"] == "0"
+    assert "HIP_VISIBLE_DEVICES" not in env
+
+
+def test_subset_pin_default_still_uses_hip_and_clears_rocr(monkeypatch):
+    # Without prefer_rocr the masking is unchanged: HIP narrows, inherited ROCR
+    # is cleared so the two can't double-mask.
+    _rocm_torch_stub(monkeypatch)
+    env = {"ROCR_VISIBLE_DEVICES": "0,1"}
+    LlamaCppBackend._emit_child_gpu_visibility(env, "1")
+    assert env["HIP_VISIBLE_DEVICES"] == "1"
+    assert "ROCR_VISIBLE_DEVICES" not in env
+
+
+def test_cpu_only_pin_keeps_hip_even_with_prefer_rocr(monkeypatch):
+    # The CPU-only sentinel never routes through ROCR (no portable "hide all"
+    # spelling); it hides every GPU via HIP.
+    _rocm_torch_stub(monkeypatch)
+    env = {}
+    LlamaCppBackend._emit_child_gpu_visibility(env, "-1", prefer_rocr = True)
+    assert env["HIP_VISIBLE_DEVICES"] == "-1"
+    assert "ROCR_VISIBLE_DEVICES" not in env
+
+
 # ── Diffusion single-device selection ───────────────────────────────────────
 
 

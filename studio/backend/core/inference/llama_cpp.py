@@ -2882,20 +2882,37 @@ class LlamaCppBackend:
             return None
 
     @staticmethod
-    def _emit_child_gpu_visibility(env: dict, pinned: str) -> None:
-        """Write the child's GPU visibility mask (CUDA, plus the HIP mirror on
-        ROCm, where narrowing only CUDA_VISIBLE_DEVICES leaves an AMD child
-        seeing the full set). Do NOT also set ROCR_VISIBLE_DEVICES: ROCR and HIP
-        mask at different layers, so the same indices apply twice -- ROCR reduces
-        and re-indexes from 0, then a non-zero HIP pin points out of range, HIP
-        enumerates 0 devices, and llama.cpp falls back to CPU. The HIP mask alone
-        narrows correctly; clear any inherited ROCR mask so it can't double up."""
+    def _emit_child_gpu_visibility(env: dict, pinned: str, *, prefer_rocr: bool = False) -> None:
+        """Write the child's GPU visibility mask (CUDA, plus the ROCm mirror on
+        AMD, where narrowing only CUDA_VISIBLE_DEVICES leaves an AMD child seeing
+        the full set).
+
+        Default ROCm masking uses HIP_VISIBLE_DEVICES and clears any inherited
+        ROCR mask so the two can't apply twice: ROCR reduces and re-indexes from
+        0, then a non-zero HIP pin points out of range, HIP enumerates 0 devices,
+        and llama.cpp falls back to CPU. The HIP mask alone narrows correctly.
+
+        prefer_rocr masks via ROCR_VISIBLE_DEVICES (the ROCr/HSA layer) instead,
+        clearing HIP. Selecting a SUBSET of GPUs must exclude the rest at the HSA
+        layer: a HIP mask still lets the HSA runtime ENUMERATE every GPU agent
+        before it filters, and that enumeration SEGFAULTS at startup on a GPU the
+        build has no kernels for (e.g. a gfx1103 iGPU alongside a gfx110X-only
+        prebuilt) -- before llama-server logs a line, so it surfaces only as a
+        bare signal. ROCR drops the device at the driver layer so it is never
+        touched. Exactly one layer is masked (HIP cleared) so there is no
+        double-mask, and the pinned ids are physical driver ids -- what ROCR
+        consumes. The CPU-only sentinel ("-1") never routes through ROCR (which
+        has no portable "hide everything" spelling); it keeps the HIP mask."""
         env["CUDA_VISIBLE_DEVICES"] = pinned
         try:
             import torch as _torch
             if getattr(_torch.version, "hip", None) is not None:
-                env["HIP_VISIBLE_DEVICES"] = pinned
-                env.pop("ROCR_VISIBLE_DEVICES", None)
+                if prefer_rocr and pinned != "-1":
+                    env["ROCR_VISIBLE_DEVICES"] = pinned
+                    env.pop("HIP_VISIBLE_DEVICES", None)
+                else:
+                    env["HIP_VISIBLE_DEVICES"] = pinned
+                    env.pop("ROCR_VISIBLE_DEVICES", None)
         except Exception as e:
             logger.debug("Failed to set ROCm visibility env vars for child: %s", e)
 
@@ -7684,7 +7701,14 @@ class LlamaCppBackend:
                     # default FASTEST_FIRST order (#5025).
                     if gpu_ids:
                         env["CUDA_DEVICE_ORDER"] = "PCI_BUS_ID"
-                    self._emit_child_gpu_visibility(env, ",".join(str(i) for i in gpu_indices))
+                    # Mask the selection at the ROCr/HSA layer on AMD: HIP-only
+                    # masking still enumerates every GPU agent first, which
+                    # segfaults llama-server before it logs when a deselected GPU
+                    # is unsupported by the build (e.g. a gfx1103 iGPU under a
+                    # gfx110X prebuilt). ROCR excludes it so it is never touched.
+                    self._emit_child_gpu_visibility(
+                        env, ",".join(str(i) for i in gpu_indices), prefer_rocr = True
+                    )
                 elif manual_tensor_split_emitted and not is_vulkan_backend:
                     # A manual per-GPU ratio across ALL GPUs (no explicit pick, so
                     # no CUDA_VISIBLE_DEVICES mask above): the UI built the
@@ -8046,6 +8070,20 @@ class LlamaCppBackend:
                             # an OS-killed text-only retry still gets the OOM message.
                             _retry_rc = self._process.poll() if self._process is not None else None
                             self._kill_process()
+                            # If the text-only retry ALSO hard-crashed (a signal, not
+                            # OOM/timeout), the vision projector was never the cause:
+                            # llama-server is faulting during GPU/driver init. Say so
+                            # -- with the ROCm fix -- instead of blaming the mmproj.
+                            if self._is_signal_crash(_retry_rc):
+                                raise RuntimeError(
+                                    "llama-server crashed at startup on both the vision "
+                                    "and text-only attempts -- a GPU driver/runtime "
+                                    "initialization crash, not a model or vision-projector "
+                                    "problem. This often means an unsupported secondary "
+                                    "GPU; on AMD/ROCm, hide it with ROCR_VISIBLE_DEVICES "
+                                    "(e.g. ROCR_VISIBLE_DEVICES=0 exposes only the first "
+                                    "GPU) before launching Unsloth Studio."
+                                )
                             raise RuntimeError(
                                 "Vision projector incompatible with this llama.cpp "
                                 "build, and the text-only retry also failed: "
