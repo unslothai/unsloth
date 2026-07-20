@@ -191,7 +191,7 @@ def test_bash_blocklist_enforced_when_sandboxed(captured_popen):
         'echo ok\npython -S -c "import boto3"',
         'timeout 1 env -i python -c "import boto3"',
         'find . -exec env -i python -c "import boto3" ;',
-        'bash <<\'EOF\'\npython -S -c "import boto3"\nEOF',
+        "bash <<'EOF'\npython -S -c \"import boto3\"\nEOF",
         (
             "python -c \"import os,subprocess; os.environ.pop('PYTHONPATH',None); "
             "os.environ['UNSLOTH_STUDIO_SANDBOXED']='0'; "

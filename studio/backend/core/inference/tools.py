@@ -576,7 +576,9 @@ def _python_payload_mutates_sandbox_env(node: ast.AST, os_aliases: set[str]) -> 
 
 
 def _python_payload_launches_startup_bypass(
-    code: str, depth: int, environment_tainted: bool = False
+    code: str,
+    depth: int,
+    environment_tainted: bool = False,
 ) -> bool:
     if depth > 4:
         return True
@@ -643,7 +645,9 @@ def _segment_python_launch_bypasses_guard(
 
 
 def _sandbox_python_startup_bypasses_guard(
-    command: str, depth: int = 0, environment_tainted: bool = False
+    command: str,
+    depth: int = 0,
+    environment_tainted: bool = False,
 ) -> bool:
     """Detect terminal-launched Python that suppresses the sandbox sitecustomize guard."""
     if depth > 4:
@@ -3495,9 +3499,7 @@ def _render_html_computed_network_access(code: str, depth: int = 0) -> bool:
             if re.search(r"\b(?:const|let|var)\s+$", prefix, re.IGNORECASE):
                 continue
             value = _static_js_assignment_string(body[assignment.end() :])
-            if _render_html_assigned_member_reaches_network(
-                assignment.group("attr"), value, depth
-            ):
+            if _render_html_assigned_member_reaches_network(assignment.group("attr"), value, depth):
                 return True
     return False
 
