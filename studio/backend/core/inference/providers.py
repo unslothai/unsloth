@@ -333,6 +333,38 @@ PROVIDER_REGISTRY: dict[str, dict[str, Any]] = {
         "notes": "Unified gateway to 300+ models across all major providers. HTTP-Referer and X-Title headers sent for attribution.",
         "model_list_mode": "curated",
     },
+    "orcarouter": {
+        "display_name": "OrcaRouter",
+        "base_url": "https://api.orcarouter.ai/v1",
+        # Curated picker list (locked, not live /models): the `auto` router
+        # plus one flagship per upstream. Full catalog at
+        # https://www.orcarouter.ai/models.
+        "default_models": [
+            "orcarouter/auto",
+            "openai/gpt-5.5",
+            "google/gemini-3.5-flash",
+            "anthropic/claude-opus-4.8",
+            "grok/grok-4.3",
+            "deepseek/deepseek-v4-pro",
+            "minimax/minimax-m2.7",
+            "qwen/qwen3.7-max",
+        ],
+        "supports_streaming": True,
+        "supports_vision": True,
+        "supports_tool_calling": True,
+        "auth_header": "Authorization",
+        "auth_prefix": "Bearer ",
+        "extra_headers": {
+            "HTTP-Referer": "https://unsloth.ai",
+            "X-Title": "Unsloth Studio",
+        },
+        "notes": (
+            "Meta-router: one OpenAI-compatible key for models across major "
+            "providers. `orcarouter/auto` picks an upstream per request. "
+            "HTTP-Referer and X-Title headers sent for attribution."
+        ),
+        "model_list_mode": "curated",
+    },
 }
 
 

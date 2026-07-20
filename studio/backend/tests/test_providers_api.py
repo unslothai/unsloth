@@ -51,6 +51,7 @@ _PROVIDER_CONFIGS: dict[str, tuple[str, str]] = {
     "mistral": ("MISTRAL_API_KEY", "mistral-small-2506"),
     "gemini": ("GEMINI_API_KEY", "gemini-3-flash-preview"),
     "openrouter": ("OPENROUTER_API_KEY", "openai/gpt-4o-mini"),
+    "orcarouter": ("ORCAROUTER_API_KEY", "orcarouter/auto"),
     "anthropic": ("ANTHROPIC_API_KEY", "claude-haiku-4-5"),
     "deepseek": ("DEEPSEEK_API_KEY", "deepseek-chat"),
     "huggingface": ("HUGGINGFACE_API_KEY", "meta-llama/Llama-3.3-70B-Instruct"),
@@ -243,7 +244,7 @@ class TestRegistry:
         )
         assert resp.status_code == 200, f"Registry failed: {resp.text}"
         providers = resp.json()
-        assert len(providers) == 9, f"Expected 9 providers, got {len(providers)}: {providers}"
+        assert len(providers) == 10, f"Expected 10 providers, got {len(providers)}: {providers}"
         print(f"\n  {'Provider':<12} {'Base URL'}")
         print(f"  {'-'*12} {'-'*45}")
         for p in providers:
@@ -476,7 +477,7 @@ _VISION_PARAMS = [
         ),
     )
     for ptype, (_, model) in _PROVIDER_CONFIGS.items()
-    if ptype in {"openai", "mistral", "gemini", "anthropic", "openrouter"}
+    if ptype in {"openai", "mistral", "gemini", "anthropic", "openrouter", "orcarouter"}
 ]
 
 

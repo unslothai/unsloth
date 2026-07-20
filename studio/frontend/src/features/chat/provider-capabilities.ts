@@ -131,14 +131,16 @@ export function getExternalMaxOutputTokens(
   if (!providerType || !modelId) return EXTERNAL_MAX_OUTPUT_TOKENS;
   const normalized = modelId.trim().toLowerCase();
   if (!normalized) return EXTERNAL_MAX_OUTPUT_TOKENS;
+  // OpenRouter and OrcaRouter ids are namespaced (`provider/model`).
+  const isRouterNamespace =
+    providerType === "openrouter" || providerType === "orcarouter";
   const stripped =
-    providerType === "openrouter" && normalized.includes("/")
+    isRouterNamespace && normalized.includes("/")
       ? normalized.split("/").slice(-1)[0]
       : normalized;
-  const effectiveProvider =
-    providerType === "openrouter"
-      ? _inferProviderFromOpenrouterId(normalized) ?? providerType
-      : providerType;
+  const effectiveProvider = isRouterNamespace
+    ? _inferProviderFromOpenrouterId(normalized) ?? providerType
+    : providerType;
   for (const entry of EXTERNAL_MAX_OUTPUT_TOKENS_BY_MODEL) {
     if (entry.providerType !== effectiveProvider) continue;
     if (entry.prefixes.some((prefix) => stripped.startsWith(prefix))) {
@@ -548,6 +550,10 @@ const PROVIDER_CAPABILITIES: Record<string, ProviderCapabilities> = {
   // OpenRouter silently drops params the target model does not support, so we
   // surface every knob and let the gateway handle the per-model fan-out.
   openrouter: ALL_SUPPORTED,
+  // OrcaRouter forwards sampling params verbatim to heterogeneous upstreams
+  // (some of which 400 on params they do not support), so surface only the
+  // OpenAI-compat base knobs instead of every slider.
+  orcarouter: OPENAI_COMPAT_BASE,
   // Local OpenAI-compat connections go through the OpenAI backend path, but
   // vLLM/Ollama/llama.cpp users often want top_k/min_p/repetition controls, so
   // be permissive.

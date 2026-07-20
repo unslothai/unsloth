@@ -20,6 +20,7 @@ const PROVIDER_LOGO_EXT: Record<string, "svg" | "png" | "jpg"> = {
   kimi: "jpg",
   qwen: "png",
   openrouter: "svg",
+  orcarouter: "png",
   vllm: "svg",
   ollama: "svg",
   llama_cpp: "svg",
