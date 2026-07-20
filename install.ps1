@@ -2420,6 +2420,13 @@ exit 0
         }
     }
 
+    $installedPackageVersion = (& $VenvPython -c "from importlib.metadata import version; import sys; print(version(sys.argv[1]))" $PackageName 2>$null | Out-String).Trim()
+    if ($LASTEXITCODE -eq 0 -and $installedPackageVersion) {
+        step $PackageName "$installedPackageVersion installed"
+    } else {
+        substep "[WARN] installed $PackageName version could not be determined" "Yellow"
+    }
+
     # ── Enforce the installed torch flavor matches the detected GPU build ──
     # PEP 440 ignores the +cpu/+cuXXX/+rocm local label in a version range, so uv
     # keeps a stale torch==X+cpu against a CUDA index and setup.ps1 then loops on
