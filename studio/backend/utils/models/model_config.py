@@ -1682,29 +1682,26 @@ def _iter_cache_snapshots_in(repo_id: str, roots: list[Path]):
 
 
 def resolve_st_cached_repo_id_case(repo_id: str) -> str:
-    """*repo_id* recased to match its cache dir so the offline exact-case
-    ``local_files_only`` load finds it; unchanged for a local path, non-repo, or nothing
-    cached (exact match, then a deterministic pick among case variants)."""
-    if is_local_path(repo_id) or "/" not in repo_id:
+    """*repo_id* recased (and org-qualified) to match the cache dir the ST loader actually
+    opens, so the offline exact-case ``local_files_only`` load finds it; unchanged for a local
+    path or nothing cached.
+
+    Resolved through :func:`_st_cache_repo_dir`, which already follows the loader's short-name
+    alias: a slashless name like ``all-minilm-l6-v2`` is rewritten to
+    ``sentence-transformers/<name>`` and looked up CASE-SENSITIVELY, so it must map to the
+    canonical ``sentence-transformers/all-MiniLM-L6-v2`` cache dir rather than being persisted
+    verbatim and missing that lookup. A slashed name recases the same way (exact-case dir
+    preferred, else a deterministic case variant)."""
+    if is_local_path(repo_id):
+        return repo_id
+    repo_dir = _st_cache_repo_dir(repo_id)
+    if repo_dir is None:
         return repo_id
     prefix = "models--"
-    expected = f"{prefix}{repo_id.replace('/', '--')}"
-    target = expected.lower()
-    variants: list[str] = []
-    for cache_dir in _st_cache_roots():
-        try:
-            if not cache_dir.is_dir():
-                continue
-            if (cache_dir / expected).is_dir():
-                return repo_id
-            for entry in cache_dir.iterdir():
-                if entry.is_dir() and entry.name.lower() == target:
-                    variants.append(entry.name)
-        except OSError:
-            continue
-    if variants:
-        return sorted(variants)[0][len(prefix) :].replace("--", "/")
-    return repo_id
+    name = repo_dir.name
+    if not name.startswith(prefix):
+        return repo_id
+    return name[len(prefix) :].replace("--", "/")
 
 
 def _st_repo_id_candidates(repo_id: str) -> list[str]:
@@ -2431,12 +2428,26 @@ def is_embedding_model(model_name: str, hf_token: Optional[str] = None) -> bool:
         ):
             logger.warning(f"Could not determine if {model_name} is embedding model: {e}")
             return False
-        # Transient / 5xx failure: fall back to the local marker, uncached.
+        # Transient / 5xx failure: fall back to the local cache, uncached. Mirror the offline
+        # branch so the two agree on a downloaded tag-only embedder (no modules.json): accept a
+        # complete cached snapshot whose embedder verdict is pinned to the active revision, not
+        # only one that carries a modules.json marker.
         marker = _embedding_marker_in_hf_cache(model_name)
         if marker is True:
             logger.info(
                 f"Model {model_name} detected as embedding model via HF cache "
                 f"(modules.json) after Hub lookup failed: {e}"
+            )
+            return True
+        snapshot = _active_snapshot_dir(model_name)
+        if (
+            snapshot is not None
+            and _known_embedder(model_name, cache_key, _active_commit(model_name))
+            and _snapshot_has_complete_weights(snapshot)
+        ):
+            logger.info(
+                f"Model {model_name} recognized as a previously-verified embedding model "
+                f"from the local cache after Hub lookup failed: {e}"
             )
             return True
         logger.warning(f"Could not determine if {model_name} is embedding model: {e}")

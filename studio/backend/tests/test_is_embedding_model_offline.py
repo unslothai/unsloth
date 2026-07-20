@@ -450,6 +450,22 @@ def test_st_casing_noop_when_uncached(tmp_path, monkeypatch):
     assert mc.resolve_st_cached_repo_id_case("org/not-cached") == "org/not-cached"
 
 
+def test_st_casing_recases_a_slashless_alias_to_the_org_dir(tmp_path, monkeypatch):
+    # The loader rewrites a slashless short name to sentence-transformers/<name> and looks it
+    # up CASE-SENSITIVELY, so a differently-cased alias must resolve to the canonical org cache
+    # dir; returning it verbatim makes the exact-case offline load miss a genuinely cached model.
+    if not _case_sensitive_fs(tmp_path):
+        pytest.skip("casing only diverges on a case-sensitive filesystem")
+    hf_root = tmp_path / "hf"
+    (hf_root / "models--sentence-transformers--all-MiniLM-L6-v2").mkdir(parents = True)
+    _fake_hf_cache(monkeypatch, hf_root)
+    monkeypatch.delenv("SENTENCE_TRANSFORMERS_HOME", raising = False)
+    assert (
+        mc.resolve_st_cached_repo_id_case("all-minilm-l6-v2")
+        == "sentence-transformers/all-MiniLM-L6-v2"
+    )
+
+
 def test_marker_never_raises_when_cache_mutates(monkeypatch):
     # A snapshot vanishing mid-iteration must read as not-cached, not raise a 500.
     def _exploding_iter(repo):
@@ -590,6 +606,24 @@ def test_offline_detects_persisted_tag_only_embedder_after_restart(tmp_path, mon
     mc._embedding_detection_cache.clear()  # simulate a restart: memo lost
     monkeypatch.setenv("HF_HUB_OFFLINE", "1")
     _fake_hf_model_info(monkeypatch, _no_network)
+    assert mc.is_embedding_model("org/gte-modernbert") is True
+
+
+def test_transient_hub_failure_accepts_a_pinned_tag_only_embedder(tmp_path, monkeypatch):
+    # Symmetry with the offline branch: on a TRANSIENT Hub failure (offline env NOT set) a
+    # downloaded tag-only embedder (no modules.json) whose verdict is pinned to the active
+    # revision must still be recognized, just as the offline branch recognizes it -- otherwise
+    # a flaky network reclassifies the same cache the offline path accepts.
+    _repo(tmp_path, monkeypatch, ("aaa", False), main_ref = "aaa", repo_id = "org/gte-modernbert")
+
+    def _info(model_name, token = None):
+        return types.SimpleNamespace(tags = ["feature-extraction"], pipeline_tag = None, sha = "aaa")
+
+    _fake_hf_model_info(monkeypatch, _info)
+    assert mc.is_embedding_model("org/gte-modernbert") is True  # online confirm + persist
+
+    mc._embedding_detection_cache.clear()  # force the next call past the memo
+    _fake_hf_model_info(monkeypatch, _no_network)  # a non-permanent error -> transient branch
     assert mc.is_embedding_model("org/gte-modernbert") is True
 
 
