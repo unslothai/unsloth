@@ -1058,7 +1058,6 @@ let _localDirCache: LocalModelInfo[] = [];
 let _customFolderCache: LocalModelInfo[] = [];
 let _scanFoldersCache: ScanFolderInfo[] = [];
 let _onDeviceCachesReady = false;
-let _onDeviceCachesSettled = false;
 let _cachedGgufRequestVersion = 0;
 let _cachedModelsRequestVersion = 0;
 let _localModelsRequestVersion = 0;
@@ -1465,11 +1464,7 @@ export function HubModelPicker({
     useState<CachedGgufRepo[]>(_cachedGgufCache);
   const [cachedModels, setCachedModels] =
     useState<CachedModelRepo[]>(_cachedModelsCache);
-  const hasFineTunedModels = loraModels.length > 0;
-  const alreadyCached =
-    _onDeviceCachesReady ||
-    hasDownloadedModels() ||
-    (_onDeviceCachesSettled && hasFineTunedModels);
+  const alreadyCached = _onDeviceCachesReady || hasDownloadedModels();
   const [cachedReady, setCachedReady] = useState(alreadyCached);
   const [updateConflictKey, setUpdateConflictKey] = useState<string | null>(
     null,
@@ -1513,10 +1508,7 @@ export function HubModelPicker({
       setCustomFolderModels(_customFolderCache);
       setCachedReady(
         (ready) =>
-          ready ||
-          _onDeviceCachesReady ||
-          hasDownloadedModels() ||
-          (_onDeviceCachesSettled && hasFineTunedModels),
+          ready || _onDeviceCachesReady || hasDownloadedModels(),
       );
     };
     _onDeviceCacheListeners.add(syncModuleCaches);
@@ -1524,7 +1516,7 @@ export function HubModelPicker({
     return () => {
       _onDeviceCacheListeners.delete(syncModuleCaches);
     };
-  }, [hasFineTunedModels]);
+  }, []);
 
   // Custom scan folders management
   const [scanFolders, setScanFolders] =
@@ -1754,7 +1746,6 @@ export function HubModelPicker({
       ) {
         _onDeviceCachesReady = true;
       }
-      _onDeviceCachesSettled = true;
       notifyOnDeviceCachesChanged();
       setCachedReady(true);
     });
