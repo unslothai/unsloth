@@ -9384,9 +9384,9 @@ class LlamaCppBackend:
         # If the GGUF or a sidecar was swapped on disk while the original weights
         # stayed mapped, the live KV belongs to the old weights but a reload would
         # load the new file. Persisting it would let restore misapply stale KV.
-        if (
-            self._slot_loaded_identity is not None
-            and self._slot_loaded_identity != (gguf_stat, launch)
+        if self._slot_loaded_identity is not None and self._slot_loaded_identity != (
+            gguf_stat,
+            launch,
         ):
             logger.debug("Skipping slot save: model files changed on disk since load")
             return None
