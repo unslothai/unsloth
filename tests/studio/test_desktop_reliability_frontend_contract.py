@@ -31,15 +31,15 @@ def test_file_actions_route_through_native_commands_only_in_tauri():
     assert 'invoke<NativeChatImport | null>("pick_native_chat_import")' in helper
     assert "if (isTauri)" in helper
     assert 'document.createElement("a")' in helper
-    assert 'downloadFile(' in history
-    assert 'downloadFile(' in prompt_storage
+    assert "downloadFile(" in history
+    assert "downloadFile(" in prompt_storage
     assert "pickNativeChatImport" in chat_tab
     assert "if (!isTauri)" in chat_tab
     # Browser builds retain the existing hidden-input route.
     assert 'type="file"' in chat_tab
     assert 'accept=".jsonl,.ndjson,.csv"' in chat_tab
 
-    native_dialogs = NATIVE_DIALOGS.read_text(encoding="utf-8")
+    native_dialogs = NATIVE_DIALOGS.read_text(encoding = "utf-8")
     assert 'CHAT_IMPORT_EXTENSIONS: &[&str] = &["jsonl", "ndjson", "csv"]' in native_dialogs
     assert "InvokeBody::Raw" in native_dialogs
 
@@ -50,7 +50,6 @@ def test_full_app_layout_uses_its_own_initialized_marker():
     assert 'invoke<boolean>("has_initialized_app_window_layout")' in source
     assert 'invoke("mark_app_window_layout_initialized")' in source
     assert "hasInitializedAppLayout && hasSavedState" in source
-
 
 
 def test_expanded_titlebar_button_and_corner_match_sidebar_edge():
