@@ -90,8 +90,8 @@ function MetricTile({
   label: string;
   value: string;
   detail: string;
-  // null means usage is unknown (e.g. Windows ROCm perf counter unavailable);
-  // show a dash and an empty bar rather than a fabricated 0%.
+  // null = usage unknown (e.g. Windows ROCm perf counter): show a dash and
+  // empty bar rather than a fabricated 0%.
   percent: number | null;
 }) {
   const percentKnown = isFiniteNumber(percent);
@@ -197,9 +197,8 @@ export function ResourcesTab() {
       (sum, device) => sum + (device.memory_total_gb ?? 0),
       0,
     );
-    // null usage = unknown (e.g. Windows ROCm perf counter unavailable); treating
-    // it as 0 fabricates a 0-used/full-free total, so mark the aggregate unknown
-    // when any device is unknown.
+    // null usage = unknown (e.g. Windows ROCm perf counter): treating it as 0
+    // fabricates a 0-used total, so the aggregate is unknown if any device is.
     const vramUsageKnown =
       devices.length > 0 &&
       devices.every((device) => isFiniteNumber(device.vram_used_gb));
@@ -368,8 +367,8 @@ export function ResourcesTab() {
         {hasGpu ? (
           metrics.devices.map((device, index) => {
             const ordinal = deviceOrdinal(device);
-            // Preserve null (unknown, e.g. Windows ROCm perf counter unavailable);
-            // coercing to 0 would render a fabricated 0 used / full free.
+            // Preserve null (unknown, e.g. Windows ROCm perf counter); coercing
+            // to 0 would render a fabricated 0 used / full free.
             const total = device.memory_total_gb ?? null;
             const used = device.vram_used_gb ?? null;
             const free =

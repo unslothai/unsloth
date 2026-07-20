@@ -135,9 +135,8 @@ def test_system_tab_shows_per_gpu_used(win_rocm, monkeypatch):
     assert by_idx[0]["vram_total_gb"] == 48.0
     assert by_idx[0]["vram_used_gb"] == pytest.approx(40.0, abs = 0.01)  # not 0
     assert by_idx[1]["vram_total_gb"] == 8.0  # own total
-    # The 3 MiB "Basic Render Driver" counter makes this a hidden-adapter case, so
-    # the idle card's 0.5 GiB is not capacity-forced (it also fits a hidden adapter).
-    # Only the 40 GiB is forced onto the 48 GiB card; the idle card reads Unknown.
+    # The 3 MiB Basic Render Driver counter makes this a hidden-adapter case: only
+    # the 40 GiB is forced onto the 48 GiB card; the idle card reads Unknown.
     assert by_idx[1]["vram_used_gb"] is None
     assert by_idx[1]["vram_utilization_pct"] is None
     assert all(
@@ -213,18 +212,16 @@ def test_match_adapter_reports_unknown_when_more_active_than_visible():
 
 
 def test_match_adapter_reports_unknown_when_hidden_high_use_adapter_survives_filter():
-    # Idle visible 8 GiB card (10 MiB, filtered as noise) beside a hidden 48 GiB
-    # card at 40 GiB. The 40 GiB survivor can't fit the 8 GiB device, so clamping
-    # it there would fabricate a fully-used reading. Report unknown.
+    # Idle 8 GiB card (10 MiB noise) beside a hidden 48 GiB card at 40 GiB: the
+    # 40 GiB can't fit the 8 GiB device, so clamping there would fabricate. Unknown.
     assert hw._match_adapter_used_to_devices([40 * GB, 10 * MiB], [8 * GB]) == [None]
     # Order of the counters must not matter.
     assert hw._match_adapter_used_to_devices([10 * MiB, 40 * GB], [8 * GB]) == [None]
 
 
 def test_match_adapter_reports_unknown_for_placeholder_fallback():
-    # Idle GPUs (every counter below the 64 MiB floor) plus a placeholder counter.
-    # No LUID-to-ordinal mapping distinguishes the placeholder from an idle GPU, so
-    # report unknown rather than fabricate.
+    # Every counter below the 64 MiB floor plus a placeholder: no LUID-to-ordinal
+    # mapping tells placeholder from idle GPU, so report unknown, not fabricate.
     # Single visible 8 GiB card idle (10 MiB) beside a 50 MiB placeholder counter.
     assert hw._match_adapter_used_to_devices([50 * MiB, 10 * MiB], [8 * GB]) == [None]
     # Order of the counters must not matter.
@@ -237,9 +234,8 @@ def test_match_adapter_reports_unknown_for_placeholder_fallback():
 
 
 def test_match_adapter_reports_unknown_when_usage_not_capacity_ordered():
-    # 8 GiB card near full (7 GiB) beside a lightly used 48 GiB card (5 GiB). The
-    # bigger usage still fits the smaller card, so both [8<-7, 48<-5] and
-    # [8<-5, 48<-7] are feasible; without a verified mapping, report unknown.
+    # 8 GiB card at 7 GiB beside a 48 GiB card at 5 GiB: the bigger usage still fits
+    # the smaller card, so both pairings are feasible -> unknown.
     assert hw._match_adapter_used_to_devices([7 * GB, 5 * GB], [8 * GB, 48 * GB]) == [None, None]
     # Device order must not matter (same physical situation, ordinals flipped).
     assert hw._match_adapter_used_to_devices([7 * GB, 5 * GB], [48 * GB, 8 * GB]) == [None, None]
@@ -253,10 +249,9 @@ def test_match_adapter_reports_unknown_when_usage_not_capacity_ordered():
 
 
 def test_match_adapter_reports_unknown_when_hidden_usage_fits_visible_card():
-    # With a hidden adapter present, a survivor that merely *fits* a visible card
-    # must NOT be pinned onto it. Two visible cards (48/8 GiB) at 40 GiB / 10 MiB
-    # beside a hidden 6 GiB adapter: the 6 GiB fits the idle 8 GiB card but isn't
-    # capacity-forced, so that card reads Unknown; only 40 GiB is forced.
+    # A survivor that merely *fits* a visible card must not be pinned onto it. Two
+    # cards (48/8 GiB) at 40 GiB / 10 MiB beside a hidden 6 GiB adapter: the 6 GiB
+    # fits the idle 8 GiB card but isn't forced -> Unknown; only 40 GiB is forced.
     assert hw._match_adapter_used_to_devices([40 * GB, 10 * MiB, 6 * GB], [48 * GB, 8 * GB]) == [
         40 * GB,
         None,

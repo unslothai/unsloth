@@ -736,12 +736,10 @@ def _rocm_linux_sysfs_vram_gb() -> tuple[Optional[float], Optional[float]]:
 
 # ── Windows AMD/ROCm per-adapter VRAM (issue #7072) ──────────────────────────
 # amd-smi is disabled and hipMemGetInfo reports free==total, so read used from the
-# per-LUID "GPU Adapter Memory" perf counters (Task Manager's source) and take each
-# total from torch properties. Shows every GPU instead of summing all adapters into
-# one fake device with GPU 0's total.
-
-# Placeholder adapters (Basic Render Driver / idle iGPU) are dropped only when they
-# would outnumber the real torch devices.
+# per-LUID "GPU Adapter Memory" perf counters and take each total from torch, so
+# every GPU shows instead of one fake device with GPU 0's total.
+# Placeholder adapters (Basic Render Driver / idle iGPU) drop only when they would
+# outnumber the real torch devices.
 _ROCM_WIN_ADAPTER_MIN_BYTES = 64 * 1024 * 1024  # 64 MiB
 
 
@@ -792,24 +790,16 @@ def _match_adapter_used_to_devices(
 ) -> list[Optional[float]]:
     """Attribute per-adapter used bytes to torch devices by capacity ranking.
 
-    Windows shares no key between LUID counter instances and torch ordinals, so
-    the largest usage is paired with the largest device and clamped to its total.
-    That pairing is trusted only when capacity *forces* it (a usage exceeding every
-    smaller device fits only one card). If a smaller device could equally hold a
-    strictly larger usage, the two could be swapped without violating capacity, so
-    without a verified LUID-to-torch mapping the ranking is a guess; a wrong guess
-    mislabels the System tab and feeds ``routes/training_vram.py`` a wrong per-index
-    free, so report unknown (``None``) rather than fabricate.
+    Windows shares no key between LUID counters and torch ordinals, so usages are
+    ranked against device totals and each is trusted only when capacity *forces* it
+    (it exceeds every smaller device); an ambiguous ranking reports unknown
+    (``None``) rather than fabricate a per-index free.
 
-    More raw counters than visible devices means a hidden GPU (outside the mask) or
-    a display adapter is present, and the noise filter may have dropped a visible
-    card's real reading, so a survivor that merely *fits* a visible card could be
-    the hidden GPU's usage pinned onto an idle card. Values are therefore emitted
-    only when the supra-threshold counters number EXACTLY the visible devices (every
-    card has one real reading, the extras were placeholders) AND capacity forces the
-    mapping; otherwise every device reports unknown. Best-effort: a hidden-busy card
-    beside an idle visible one can still mislead, but the common loaded-card case
-    (#7072) is correct. Returns a list aligned to ``device_totals``.
+    Extra counters mean a hidden/display adapter, and the noise filter may have
+    dropped a real reading, so values are emitted only when the supra-threshold
+    counters number EXACTLY the visible devices AND capacity forces the mapping;
+    otherwise every device is unknown. Best-effort but correct for the common
+    loaded-card case (#7072). Returns a list aligned to ``device_totals``.
     """
     n = len(device_totals)
     if n == 0:
@@ -818,28 +808,25 @@ def _match_adapter_used_to_devices(
     ranked_positions = sorted(range(n), key = lambda i: -device_totals[i])
     ranked_totals = [device_totals[pos] for pos in ranked_positions]
     assigned: list[Optional[float]]
-    # More raw counters than visible devices -> a hidden/display adapter is present.
-    # Measured before the noise filter, since an idle visible card can sit below it.
+    # More counters than devices -> a hidden/display adapter (check before noise filter).
     if len(useds) > n:
         non_trivial = [u for u in useds if u >= _ROCM_WIN_ADAPTER_MIN_BYTES]
         if len(non_trivial) != n:
-            # Not a clean visible-set bijection: more supra-threshold counters than
-            # cards means a masked GPU is busy; fewer means a visible card is idle
-            # and a survivor could be the hidden device's. Either way no counter can
-            # be attributed to a specific card, so report unknown.
+            # Not a clean bijection (a masked GPU is busy or a visible card idle):
+            # no counter maps to a specific card, so report unknown.
             return [None] * n
-        # Exactly n supra-threshold counters: the extras were placeholders and every
-        # card has one reading, so a capacity-ranked bijection is plausible.
+        # Exactly n supra-threshold counters: extras were placeholders, so a
+        # capacity-ranked bijection is plausible.
         useds = non_trivial
         ranked_useds = [useds[rank] for rank in range(n)]
-        # A usage exceeding its own ranked capacity is a hidden larger GPU; clamping
-        # it onto the smaller visible card would fabricate a fully-used reading.
+        # A usage above its ranked capacity is a hidden larger GPU; clamping onto the
+        # smaller card would fabricate a fully-used reading.
         for rank in range(n):
             if ranked_useds[rank] > ranked_totals[rank]:
                 return [None] * n
-        # Capacity forces the mapping only when the ranked usage exceeds the
-        # next-smaller (thus every smaller) capacity. The smallest card and any
-        # merely-fitting usage stay unknown. Keeps 40 GiB over 48/8 GiB -> [40, None].
+        # Capacity forces the mapping only when the usage exceeds the next-smaller
+        # capacity; the smallest card and merely-fitting usages stay unknown.
+        # Keeps 40 GiB over 48/8 GiB -> [40, None].
         assigned = [None] * n
         for rank, pos in enumerate(ranked_positions):
             if rank + 1 < n and ranked_useds[rank] > ranked_totals[rank + 1]:
