@@ -544,29 +544,6 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
         _mark_chat_attachment_inventory_clean(conn)
     conn.commit()
 
-    conn.execute(
-        """
-        CREATE TABLE IF NOT EXISTS usage_events (
-            id TEXT NOT NULL PRIMARY KEY,
-            ts INTEGER NOT NULL,
-            model TEXT NOT NULL,
-            source TEXT NOT NULL,
-            provider TEXT,
-            prompt_tokens INTEGER NOT NULL DEFAULT 0,
-            completion_tokens INTEGER NOT NULL DEFAULT 0,
-            total_tokens INTEGER NOT NULL DEFAULT 0,
-            endpoint TEXT,
-            status TEXT NOT NULL,
-            session_id TEXT
-        )
-        """
-    )
-    conn.execute("CREATE INDEX IF NOT EXISTS idx_usage_events_ts ON usage_events(ts)")
-    conn.execute("CREATE INDEX IF NOT EXISTS idx_usage_events_model_ts ON usage_events(model, ts)")
-    conn.execute(
-        "CREATE INDEX IF NOT EXISTS idx_usage_events_source_ts ON usage_events(source, ts)"
-    )
-
 
 def _prompt_entry_from_row(row: sqlite3.Row) -> dict:
     return {
