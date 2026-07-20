@@ -22,7 +22,9 @@ export function Navbar() {
     );
   }
   return (
-    <header className="absolute top-0 inset-x-0 z-40 h-[48px] pointer-events-none">
+    // Above the z-40 chat header, which is opaque and would paint over the
+    // trigger; still below the z-50 dialog/sheet layer.
+    <header className="absolute top-0 inset-x-0 z-45 h-[48px] pointer-events-none">
       <div className="flex h-full items-start pt-[11px] pl-2">
         <SidebarTrigger className="pointer-events-auto !size-[34px]" />
       </div>
