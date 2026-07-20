@@ -383,3 +383,96 @@ def test_restore_transport_error_stops_early(monkeypatch, tmp_path):
         {"slots": [{"id": 0, "filename": "a.bin"}, {"id": 1, "filename": "b.bin"}]}
     )
     assert len(calls) == 1
+
+
+def test_save_deletes_orphan_on_malformed_response(monkeypatch, tmp_path):
+    # A 200 that writes a file but returns a non-numeric counter must be cleaned
+    # up like any other save failure, not left orphaned holding chat KV.
+    backend = _resume_backend(tmp_path)
+    _fake_disk(monkeypatch)
+
+    def fake_post(url, **kwargs):
+        (tmp_path / kwargs["json"]["filename"]).write_bytes(b"chat-kv")
+        return _Resp(200, {"n_saved": "not-an-int"})
+
+    monkeypatch.setattr(llama_cpp.httpx, "post", fake_post, raising = False)
+    assert backend.save_slots_for_resume() is None
+    assert list(tmp_path.glob("resume-*.bin")) == []
+
+
+def test_save_deletes_orphan_on_non_dict_response(monkeypatch, tmp_path):
+    backend = _resume_backend(tmp_path)
+    _fake_disk(monkeypatch)
+
+    def fake_post(url, **kwargs):
+        (tmp_path / kwargs["json"]["filename"]).write_bytes(b"chat-kv")
+        return _Resp(200, ["unexpected", "list"])
+
+    monkeypatch.setattr(llama_cpp.httpx, "post", fake_post, raising = False)
+    assert backend.save_slots_for_resume() is None
+    assert list(tmp_path.glob("resume-*.bin")) == []
+
+
+def test_save_cap_uses_actual_file_size_not_reported_bytes(monkeypatch, tmp_path):
+    # A binary under-reporting n_written must not slip past the disk cap: the
+    # cap is enforced against the bytes actually on disk.
+    backend = _resume_backend(tmp_path)
+    _fake_disk(monkeypatch)
+    monkeypatch.setattr(llama_cpp, "_SLOT_SAVE_MAX_BYTES", 150)
+
+    def fake_post(url, **kwargs):
+        (tmp_path / kwargs["json"]["filename"]).write_bytes(b"x" * 200)
+        return _Resp(200, {"n_saved": 5, "n_written": 1})  # under-reported
+
+    monkeypatch.setattr(llama_cpp.httpx, "post", fake_post, raising = False)
+    assert backend.save_slots_for_resume() is None  # 200 real bytes > 150 cap
+    assert list(tmp_path.glob("resume-*.bin")) == []
+
+
+def test_save_skipped_when_estimate_exceeds_cap(monkeypatch, tmp_path):
+    # An estimate over the cap skips before writing any slot at all.
+    backend = _resume_backend(tmp_path)
+    backend._estimate_kv_cache_bytes = lambda *a, **k: 1 << 40
+    monkeypatch.setattr(llama_cpp, "_SLOT_SAVE_MAX_BYTES", 1 << 20)
+    _fake_disk(monkeypatch)
+    monkeypatch.setattr(
+        llama_cpp.httpx,
+        "post",
+        lambda *a, **k: (_ for _ in ()).throw(AssertionError),
+        raising = False,
+    )
+    assert backend.save_slots_for_resume() is None
+
+
+def test_save_skipped_when_model_file_changed_since_load(monkeypatch, tmp_path):
+    # The GGUF/sidecars were swapped on disk after the server loaded them, so the
+    # live KV belongs to the old weights: refuse to persist it (no POST at all).
+    backend = _resume_backend(tmp_path)
+    backend._slot_loaded_identity = ((("stale", 0),), ())  # != current identity
+    _fake_disk(monkeypatch)
+    monkeypatch.setattr(
+        llama_cpp.httpx,
+        "post",
+        lambda *a, **k: (_ for _ in ()).throw(AssertionError),
+        raising = False,
+    )
+    assert backend.save_slots_for_resume() is None
+
+
+def test_save_proceeds_when_load_identity_matches(monkeypatch, tmp_path):
+    # Matching load-time snapshot: the save runs normally.
+    backend = _resume_backend(tmp_path)
+    backend._slot_loaded_identity = (
+        backend._gguf_file_identity(backend._gguf_path),
+        backend._slot_launch_fingerprint(),
+    )
+    _fake_disk(monkeypatch)
+
+    def fake_post(url, **kwargs):
+        (tmp_path / kwargs["json"]["filename"]).write_bytes(b"kv")
+        return _Resp(200, {"n_saved": 5, "n_written": 2})
+
+    monkeypatch.setattr(llama_cpp.httpx, "post", fake_post, raising = False)
+    manifest = backend.save_slots_for_resume()
+    assert manifest is not None
+    assert [e["id"] for e in manifest["slots"]] == [0]

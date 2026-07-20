@@ -446,6 +446,17 @@ try:
 except ValueError:
     _SLOT_SAVE_MAX_BYTES = 10 << 30
 
+# The idle loop holds the lifecycle gate across a slot save, so a newly arriving
+# request waits on the in-flight save's HTTP call. Bound it (was 120s) so a slow
+# or stuck save can't stall the next request for minutes; best-effort save just
+# falls back to a plain unload. Override with UNSLOTH_SLOT_SAVE_TIMEOUT (seconds).
+try:
+    _SLOT_SAVE_HTTP_TIMEOUT = float(os.environ.get("UNSLOTH_SLOT_SAVE_TIMEOUT") or 30.0)
+except ValueError:
+    _SLOT_SAVE_HTTP_TIMEOUT = 30.0
+if _SLOT_SAVE_HTTP_TIMEOUT <= 0:
+    _SLOT_SAVE_HTTP_TIMEOUT = 30.0
+
 
 def _swa_cache_path() -> Path:
     home = os.environ.get("UNSLOTH_STUDIO_HOME") or os.environ.get("STUDIO_HOME")
@@ -1700,6 +1711,9 @@ class LlamaCppBackend:
         self._api_key: Optional[str] = None
         self._slot_save_dir: Optional[str] = None
         self._slot_save_binary: Optional[tuple[str, int]] = None
+        # (gguf_identity, launch_fingerprint) snapshotted at load, so a later slot
+        # save can tell whether the model files were swapped on disk since load.
+        self._slot_loaded_identity: Optional[tuple] = None
         self._prompt_cache_disabled: bool = False
         # True once a probe has completed; cleared on transient failure.
         self._is_audio: bool = False
@@ -7396,6 +7410,15 @@ class LlamaCppBackend:
 
             if not self._healthy:
                 return False
+            # Snapshot the files the server actually loaded. If a GGUF shard or a
+            # LoRA/control-vector sidecar is swapped on disk afterwards while the
+            # old weights stay mapped, save_slots_for_resume() compares against
+            # this and refuses to persist KV that a reload could misapply.
+            if self._slot_save_dir:
+                self._slot_loaded_identity = (
+                    self._gguf_file_identity(self._gguf_path),
+                    self._slot_launch_fingerprint(),
+                )
             return True
 
     def _build_speculative_flags(
@@ -7874,6 +7897,7 @@ class LlamaCppBackend:
             self._reset_effective_parallel_slots()
             self._slot_save_dir = None
             self._slot_save_binary = None
+            self._slot_loaded_identity = None
             self._prompt_cache_disabled = False
             self._chat_template = None
             self._chat_template_override = None
@@ -8484,12 +8508,31 @@ class LlamaCppBackend:
         gguf_stat = self._gguf_file_identity(self._gguf_path)
         if gguf_stat is None:
             return None
+        launch = self._slot_launch_fingerprint()
+        # If the GGUF or a sidecar was swapped on disk while the original weights
+        # stayed mapped, the live KV belongs to the old weights but a reload would
+        # load the new file. Persisting it would let restore misapply stale KV.
+        if (
+            self._slot_loaded_identity is not None
+            and self._slot_loaded_identity != (gguf_stat, launch)
+        ):
+            logger.debug("Skipping slot save: model files changed on disk since load")
+            return None
         try:
             estimate = self._estimate_kv_cache_bytes(
                 self._effective_context_length or self._context_length or 0,
                 self._cache_type_kv,
                 n_parallel = self.effective_parallel_slots,
             )
+            # Skip before writing anything when the estimate alone blows the cap,
+            # rather than fully writing a slot and discarding it afterwards.
+            if estimate > _SLOT_SAVE_MAX_BYTES:
+                logger.debug(
+                    "Skipping slot save: estimated %d bytes exceeds cap %d",
+                    estimate,
+                    _SLOT_SAVE_MAX_BYTES,
+                )
+                return None
             if shutil.disk_usage(save_dir).free < estimate + (1 << 30):
                 logger.debug("Skipping slot save: insufficient free disk")
                 return None
@@ -8510,7 +8553,7 @@ class LlamaCppBackend:
                     params = {"action": "save"},
                     json = {"filename": filename},
                     headers = self._auth_headers,
-                    timeout = 120.0,
+                    timeout = _SLOT_SAVE_HTTP_TIMEOUT,
                     trust_env = False,
                 )
             except Exception as e:
@@ -8525,19 +8568,27 @@ class LlamaCppBackend:
                 continue
             try:
                 body = resp.json()
-            except Exception:
-                body = {}
-            n_saved = int(body.get("n_saved") or 0)
+                if not isinstance(body, dict):
+                    raise ValueError("slot save response was not a JSON object")
+                n_saved = int(body.get("n_saved") or 0)
+            except Exception as e:
+                # A 200 that still wrote a file but returns a malformed body must
+                # clean up like the transport/HTTP error paths above, or the file
+                # (which holds chat KV) is orphaned until the next startup sweep.
+                logger.debug(f"slot {slot} save returned an invalid response: {e}")
+                with contextlib.suppress(OSError):
+                    path.unlink()
+                continue
             if n_saved <= 0:
                 with contextlib.suppress(OSError):
                     path.unlink()
                 continue
-            n_written = int(body.get("n_written") or 0)
-            if n_written <= 0:
-                try:
-                    n_written = path.stat().st_size
-                except OSError:
-                    n_written = 0
+            # Account by the bytes actually on disk, not the server-reported
+            # count, so the cap holds even if a custom binary under-reports.
+            try:
+                n_written = path.stat().st_size
+            except OSError:
+                n_written = 0
             total_bytes += n_written
             entries.append({"id": slot, "filename": filename, "n_saved": n_saved})
             if total_bytes > _SLOT_SAVE_MAX_BYTES:
@@ -8559,7 +8610,7 @@ class LlamaCppBackend:
             "binary": self._slot_save_binary,
             "gguf": str(self._gguf_path),
             "gguf_stat": gguf_stat,
-            "launch": self._slot_launch_fingerprint(),
+            "launch": launch,
             "slots": entries,
         }
 
@@ -8573,7 +8624,7 @@ class LlamaCppBackend:
                     params = {"action": "restore"},
                     json = {"filename": str(entry["filename"])},
                     headers = self._auth_headers,
-                    timeout = 120.0,
+                    timeout = _SLOT_SAVE_HTTP_TIMEOUT,
                     trust_env = False,
                 )
             except Exception as e:
