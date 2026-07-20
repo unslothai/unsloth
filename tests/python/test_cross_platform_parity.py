@@ -411,9 +411,9 @@ class TestKnown211SetParity:
         dropped its exact torch pin from the wheel metadata, so a bare companion
         beside a capped torch can resolve a mismatched build."""
         text = INSTALL_PS1.read_text(encoding = "utf-8")
-        assert '$_pinTorchSpec = "torch>=2.4,<2.12.0"' in text, (
-            "install.ps1 default install must use the torch 2.11 line (<2.12.0)"
-        )
+        assert (
+            '$_pinTorchSpec = "torch>=2.4,<2.12.0"' in text
+        ), "install.ps1 default install must use the torch 2.11 line (<2.12.0)"
         assert (
             '$_pinVisionSpec = "torchvision>=0.19,<0.27.0"' in text
         ), "install.ps1 must pair torchvision <0.27.0 with torch <2.12"
@@ -421,12 +421,12 @@ class TestKnown211SetParity:
             '$_pinAudioSpec = "torchaudio>=2.4,<2.12.0"' in text
         ), "install.ps1 must pair torchaudio <2.12.0 with torch <2.12"
         # No stale 2.10-line default remains anywhere in the Windows installer.
-        assert '"torch>=2.4,<2.11.0"' not in text, (
-            "install.ps1 must not retain a <2.11.0 default torch range"
-        )
+        assert (
+            '"torch>=2.4,<2.11.0"' not in text
+        ), "install.ps1 must not retain a <2.11.0 default torch range"
         # The bounded trio must actually be passed to the install command.
         assert re.search(
-            r'\$_pinTorchSpec \$_pinVisionSpec \$_pinAudioSpec --default-index \$TorchIndexUrl',
+            r"\$_pinTorchSpec \$_pinVisionSpec \$_pinAudioSpec --default-index \$TorchIndexUrl",
             text,
         ), "install.ps1 pinned install must pass the bounded trio specs to uv"
 
