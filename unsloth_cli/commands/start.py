@@ -192,7 +192,7 @@ _OPENCODE_NATIVE_AUTO_MIN_VERSION = (1, 17, 12)
 
 
 def _opencode_supports_native_auto() -> bool:
-    executable = shutil.which("opencode")
+    executable = _which_with_install_dirs("opencode")
     if executable is None:
         # No local binary: a --no-launch recipe may run elsewhere, and _run installs the
         # current release on launch -- either way assume native --auto is available.
@@ -916,7 +916,7 @@ def _claude_settings_overlay(model_id: str) -> str:
 def _claude_version() -> Optional[tuple]:
     # None = no local `claude` (a --no-launch printout for another machine; assume a
     # current build). An unparseable version is treated as too old for the new flags.
-    executable = shutil.which("claude")
+    executable = _which_with_install_dirs("claude")
     if executable is None:
         return None
     try:
@@ -973,7 +973,7 @@ _CODEX_MODEL_CATALOG_MIN_VERSION = (0, 110, 0)
 
 
 def _codex_supports_model_catalog() -> bool:
-    executable = shutil.which("codex")
+    executable = _which_with_install_dirs("codex")
     if executable is None:
         # A --no-launch recipe may be copied to another machine; assume a current Codex.
         return True
@@ -1226,6 +1226,23 @@ def _augment_path_with_install_dirs() -> None:
     ]
     if additions:
         os.environ["PATH"] = os.pathsep.join([current, *additions] if current else additions)
+
+
+def _which_with_install_dirs(name: str) -> Optional[str]:
+    # shutil.which(name), but searching the known agent install dirs too, so a version probe
+    # resolves the same binary _launch() will (it augments PATH before it runs). Without this an
+    # agent present only in ~/.local/bin / %APPDATA%\npm is missed, wrongly assumed current, and
+    # launched with flags an older build rejects. PATH is restored afterward: only _launch()
+    # should persist the augmentation for the child process.
+    original = os.environ.get("PATH")
+    _augment_path_with_install_dirs()
+    try:
+        return shutil.which(name)
+    finally:
+        if original is None:
+            os.environ.pop("PATH", None)
+        else:
+            os.environ["PATH"] = original
 
 
 def _install_source(install_hint: str) -> Optional[str]:

@@ -61,6 +61,31 @@ def _fake_claude(monkeypatch, version_output: str) -> None:
     )
 
 
+def _path_aware_which(binaries: dict):
+    # A shutil.which fake that resolves a name only when its directory is on PATH at call time.
+    # Lets a test prove a version probe augments PATH before resolving: an agent present only in
+    # an install dir (~/.local/bin, %APPDATA%\npm) must still be found and version-checked.
+    def _which(name):
+        directory = binaries.get(name)
+        if directory is None:
+            return None
+        entries = os.environ.get("PATH", "").split(os.pathsep)
+        # os.path.join (not Path()) so this works when a test has flipped os.name to "nt": under
+        # a simulated os.name, pathlib would build the non-native flavour and raise.
+        return os.path.join(str(directory), name) if str(directory) in entries else None
+
+    return _which
+
+
+def _simulate_windows(monkeypatch) -> None:
+    # Exercise the `os.name == "nt"` branch on any host. Flipping os.name alone makes pathlib
+    # pick the non-native flavour (WindowsPath on POSIX, PosixPath on Windows) when a Path is
+    # constructed, which raises; pin Path to the host-native class (captured before the flip)
+    # so the branch logic runs without that crash. Keeps these tests green on Linux/Mac/WSL too.
+    monkeypatch.setattr(start, "Path", type(Path()))
+    monkeypatch.setattr(start.os, "name", "nt")
+
+
 def test_claude_flags_passed_to_supported_claude(monkeypatch):
     _fake_claude(monkeypatch, "2.1.98 (Claude Code)\n")
     assert start._claude_flags(MODEL["id"]) == [
@@ -344,7 +369,7 @@ def test_augment_path_skips_missing_and_duplicate_dirs(monkeypatch, tmp_path):
 def test_augment_path_adds_npm_global_bin_on_windows(monkeypatch, tmp_path):
     # npm -g shims (codex/opencode/pi) land in %APPDATA%\npm on Windows; add it so a freshly
     # installed npm agent resolves even when that dir isn't on PATH yet.
-    monkeypatch.setattr(start.os, "name", "nt")
+    _simulate_windows(monkeypatch)
     monkeypatch.setattr(start.Path, "home", lambda: tmp_path)  # no ~/.local/bin created
     npm_dir = tmp_path / "Roaming" / "npm"
     npm_dir.mkdir(parents = True)
@@ -352,6 +377,98 @@ def test_augment_path_adds_npm_global_bin_on_windows(monkeypatch, tmp_path):
     monkeypatch.setenv("PATH", str(tmp_path / "existing"))
     start._augment_path_with_install_dirs()
     assert str(npm_dir) in os.environ["PATH"].split(os.pathsep)
+
+
+def test_which_with_install_dirs_finds_agent_and_restores_path(monkeypatch, tmp_path):
+    # The probe helper resolves against the augmented PATH but must NOT persist it: only
+    # _launch() should mutate PATH for the child process. Here `claude` is only in ~/.local/bin.
+    local_bin = tmp_path / ".local" / "bin"
+    local_bin.mkdir(parents = True)
+    monkeypatch.setattr(start.Path, "home", lambda: tmp_path)
+    monkeypatch.setenv("APPDATA", str(tmp_path / "no-appdata"))  # skip the npm candidate
+    original = str(tmp_path / "existing")
+    monkeypatch.setenv("PATH", original)  # local_bin NOT on PATH yet
+    monkeypatch.setattr(start.shutil, "which", _path_aware_which({"claude": local_bin}))
+    assert start._which_with_install_dirs("claude") == str(local_bin / "claude")
+    assert os.environ["PATH"] == original  # restored, no global pollution
+
+
+def test_claude_flags_probes_old_agent_only_in_install_dir(monkeypatch, tmp_path):
+    # Regression: the version probe must augment PATH before resolving, so an OLD claude present
+    # only in ~/.local/bin (not yet on PATH) is detected as old and the unsupported flags are
+    # dropped -- the same binary _launch() will run. Before the fix the probe saw no binary,
+    # assumed a current build, and emitted flags the old claude rejects.
+    local_bin = tmp_path / ".local" / "bin"
+    local_bin.mkdir(parents = True)
+    monkeypatch.setattr(start.Path, "home", lambda: tmp_path)
+    monkeypatch.setenv("APPDATA", str(tmp_path / "no-appdata"))
+    monkeypatch.setenv("PATH", str(tmp_path / "existing"))
+    monkeypatch.setattr(start.shutil, "which", _path_aware_which({"claude": local_bin}))
+    monkeypatch.setattr(
+        start.subprocess, "run", lambda *a, **k: SimpleNamespace(stdout = "2.0.14 (Claude Code)\n")
+    )
+    assert start._claude_flags(MODEL["id"]) == []
+
+
+def test_claude_flags_detects_supported_agent_only_in_install_dir(monkeypatch, tmp_path):
+    # The counterpart: a SUPPORTED claude present only in ~/.local/bin is now resolved and gets
+    # the flags, instead of being missed and (coincidentally) also assumed current.
+    local_bin = tmp_path / ".local" / "bin"
+    local_bin.mkdir(parents = True)
+    monkeypatch.setattr(start.Path, "home", lambda: tmp_path)
+    monkeypatch.setenv("APPDATA", str(tmp_path / "no-appdata"))
+    monkeypatch.setenv("PATH", str(tmp_path / "existing"))
+    monkeypatch.setattr(start.shutil, "which", _path_aware_which({"claude": local_bin}))
+    monkeypatch.setattr(
+        start.subprocess, "run", lambda *a, **k: SimpleNamespace(stdout = "2.1.98 (Claude Code)\n")
+    )
+    assert start._claude_flags(MODEL["id"]) == [
+        "--exclude-dynamic-system-prompt-sections",
+        "--settings",
+        start._claude_settings_overlay(MODEL["id"]),
+    ]
+
+
+def test_claude_flags_probes_npm_install_dir_on_windows(monkeypatch, tmp_path):
+    # npm -g shims land in %APPDATA%\npm on Windows; an old claude there (not on PATH) must still
+    # be version-checked so the unsupported flags are dropped.
+    _simulate_windows(monkeypatch)
+    monkeypatch.setattr(start.Path, "home", lambda: tmp_path)  # no ~/.local/bin created
+    npm_dir = tmp_path / "Roaming" / "npm"
+    npm_dir.mkdir(parents = True)
+    monkeypatch.setenv("APPDATA", str(tmp_path / "Roaming"))
+    monkeypatch.setenv("PATH", str(tmp_path / "existing"))
+    monkeypatch.setattr(start.shutil, "which", _path_aware_which({"claude": npm_dir}))
+    monkeypatch.setattr(
+        start.subprocess, "run", lambda *a, **k: SimpleNamespace(stdout = "2.0.14 (Claude Code)\n")
+    )
+    assert start._claude_flags(MODEL["id"]) == []
+
+
+def test_codex_catalog_probes_old_codex_only_in_install_dir(monkeypatch, tmp_path):
+    # Same ordering fix for codex: an old codex present only in an install dir is detected so the
+    # model-catalog config is omitted (the old binary can't consume it).
+    local_bin = tmp_path / ".local" / "bin"
+    local_bin.mkdir(parents = True)
+    monkeypatch.setattr(start.Path, "home", lambda: tmp_path)
+    monkeypatch.setenv("APPDATA", str(tmp_path / "no-appdata"))
+    monkeypatch.setenv("PATH", str(tmp_path / "existing"))
+    monkeypatch.setattr(start.shutil, "which", _path_aware_which({"codex": local_bin}))
+    monkeypatch.setattr(start.subprocess, "check_output", lambda *a, **k: "codex-cli 0.109.0")
+    assert start._codex_supports_model_catalog() is False
+
+
+def test_opencode_native_auto_probes_old_opencode_only_in_install_dir(monkeypatch, tmp_path):
+    # Same ordering fix for opencode: an old opencode present only in an install dir is detected
+    # so native --auto is not assumed (the old binary rejects it).
+    local_bin = tmp_path / ".local" / "bin"
+    local_bin.mkdir(parents = True)
+    monkeypatch.setattr(start.Path, "home", lambda: tmp_path)
+    monkeypatch.setenv("APPDATA", str(tmp_path / "no-appdata"))
+    monkeypatch.setenv("PATH", str(tmp_path / "existing"))
+    monkeypatch.setattr(start.shutil, "which", _path_aware_which({"opencode": local_bin}))
+    monkeypatch.setattr(start.subprocess, "check_output", lambda *a, **k: "1.17.11")
+    assert start._opencode_supports_native_auto() is False
 
 
 def test_install_agent_declined_returns_none(monkeypatch):
