@@ -1920,6 +1920,10 @@ class LlamaCppBackend:
         self._tensor_split: Optional[List[float]] = None
         # User-picked physical GPU indices (None = automatic selection).
         self._gpu_ids: Optional[List[int]] = None
+        # RAW requested GPU pin, before the fit narrowed it. self._gpu_ids records the
+        # EFFECTIVE (fit-narrowed) pin for /status; dedupe compares this raw value so a
+        # [0, 1] narrowed to [0] and re-sent as [0, 1] still matches (#7239).
+        self._requested_gpu_ids: Optional[List[int]] = None
         # Layer load kept multi-GPU only to honor a downgraded tensor request, so a
         # later explicit tensor-off reloads instead of deduping to it (#6659).
         self._layer_preserves_tensor_intent: bool = False
@@ -2384,6 +2388,13 @@ class LlamaCppBackend:
     def gpu_ids(self) -> Optional[List[int]]:
         """User-picked physical GPU indices, or None for automatic selection."""
         return self._gpu_ids
+
+    @property
+    def requested_gpu_ids(self) -> Optional[List[int]]:
+        """RAW requested GPU pin (before the fit narrowed it), or None for auto.
+        gpu_ids echoes the EFFECTIVE pin for /status; dedupe compares this raw one so a
+        narrowed-then-re-sent pick matches rather than needlessly reloading (#7239)."""
+        return self._requested_gpu_ids
 
     @property
     def n_layers(self) -> Optional[int]:
@@ -4857,11 +4868,13 @@ class LlamaCppBackend:
         # the unload reset) so /status doesn't misreport TP and an identical
         # re-Apply doesn't reload against stale tensor-parallel state.
         self._tensor_parallel = False
-        # Record only the single device the runner actually uses (the lowest
-        # selected GPU, chosen above) -- not the whole pick. The diffusion runner
-        # is single-device, so echoing a multi-GPU list would misreport placement
-        # in /status and let a re-Apply dedup against GPUs the runner never used.
+        # The single-device runner records only the lowest selected GPU (chosen
+        # above), not the whole pick, and clears any explicit pin from a prior
+        # chat load; a multi-GPU list would misreport placement and mis-dedup.
         self._gpu_ids = [sorted(gpu_ids)[0]] if gpu_ids else None
+        # Keep the raw-pin record in sync so a stale value can't leak (diffusion
+        # dedupe still compares the collapsed effective pin, not this) (#7239).
+        self._requested_gpu_ids = sorted(int(x) for x in gpu_ids) if gpu_ids else None
         if hf_variant:
             self._hf_variant = hf_variant
         elif gguf_path:
@@ -5956,6 +5969,8 @@ class LlamaCppBackend:
         gpu_layers: int = -1,
         n_cpu_moe: int = 0,
         tensor_split: Optional[List[float]] = None,
+        # Explicit physical GPU selection (issue #7164). None/[] = auto-select;
+        # when set, restricts llama-server to exactly these GPUs.
         gpu_ids: Optional[List[int]] = None,
         n_threads: Optional[int] = None,
         n_gpu_layers: Optional[int] = None,  # caller compat, unused
@@ -6053,14 +6068,31 @@ class LlamaCppBackend:
 
             self._cancel_event.clear()
 
-            # ── Phase 1: kill old process (under lock, fast) ──────────
-            with self._lock:
-                self._kill_process()
-
             # Resolve llama-server now but defer a not-found error: a block-diffusion
             # GGUF uses the diffusion runner, and its arch is only known after the header.
             binary = self._find_llama_server_binary()
             is_vulkan_backend = self._is_vulkan_backend(binary)
+
+            # ── Vulkan-ordinal preflight (BEFORE the Phase 1 kill) ────────
+            # An explicit Vulkan pin the ggml probe never enumerated cannot be honored.
+            # Validate it ABOVE the kill so an invalid selection leaves the live model
+            # untouched: CUDA ids are range-checked at the route, but Vulkan ordinals are
+            # not, so a stale gpu_ids=[99] used to kill the server then 400, leaving
+            # nothing running (#7239). _get_gpu_memory needs only the binary (safe pre-
+            # download) and reuses the later fit's issubset logic. Guarded on a found
+            # Vulkan build + a pin so a deferred not-found stays deferred for diffusion.
+            if is_vulkan_backend and gpu_ids and binary:
+                _pf_wanted = {int(x) for x in gpu_ids}
+                _pf_probed = {g[0] for g in self._get_gpu_memory(binary)}
+                if not _pf_wanted.issubset(_pf_probed):
+                    raise ValueError(
+                        f"Requested Vulkan GPU ordinal(s) {sorted(_pf_wanted)} not "
+                        f"present. Available Vulkan devices: {sorted(_pf_probed)}."
+                    )
+
+            # ── Phase 1: kill old process (under lock, fast) ──────────
+            with self._lock:
+                self._kill_process()
 
             # ── Phase 2: download (NO lock held, so cancel can proceed) ──
             # mtp_draft_path arrives set for local Gemma loads (detected
@@ -6133,6 +6165,20 @@ class LlamaCppBackend:
             # Block-diffusion GGUFs (DiffusionGemma) cannot run on llama-server;
             # serve them with the diffusion runner (same OpenAI-compat interface).
             if self._is_diffusion:
+                # The diffusion runner pins its child by CUDA visibility mask, so a
+                # ggml Vulkan ordinal cannot be honored (wrong GPU / CPU fallback). The
+                # route's _classify_diffusion_gguf rejects this up front for every LOCAL
+                # and cached-header GGUF (no kill); this covers only the residual it
+                # cannot classify pre-load -- a REMOTE uncached GGUF whose arch is first
+                # known here, after the Phase 1 kill. Reject rather than mis-pin (#7239).
+                if is_vulkan_backend and gpu_ids:
+                    raise ValueError(
+                        "GPU selection (gpu_ids) is not supported for a DiffusionGemma "
+                        "GGUF on a Vulkan llama.cpp build: the diffusion runner selects "
+                        "its device by CUDA physical index, which has no defined mapping "
+                        "to ggml Vulkan device ordinals. Omit gpu_ids to use the default "
+                        "device."
+                    )
                 # Not a tensor/layer GGUF: clear any preserved-fallback flag from a
                 # prior load (this path skips the command builder that clears it).
                 self._layer_preserves_tensor_intent = False
@@ -6353,6 +6399,12 @@ class LlamaCppBackend:
                 # Layer-fallback min GPUs; raised below on a tensor downgrade. Bound
                 # before the try so the --fit-on except path still has it (no UnboundLocal).
                 _layer_min_gpus = 1
+                # An explicit Vulkan ordinal absent from the ggml probe cannot be
+                # honored; flag it in the fit and reject after the try (raising inside
+                # would be swallowed into the --fit-on fallback). Bound before the try.
+                _vulkan_explicit_unmatched = False
+                _vulkan_requested_ids: list[int] = []
+                _vulkan_available_ordinals: list[int] = []
                 try:
                     gguf_size = self._get_gguf_size_bytes(model_path)
                     # Include GPU-loaded mmproj in the fit budget (#5825).
@@ -6365,6 +6417,28 @@ class LlamaCppBackend:
                     # Pass binary so a Vulkan build probes ggml's Vulkan ordinals.
                     _gpu_mem = self._get_gpu_memory(binary)
                     gpus = [(idx, free) for idx, free, _t in _gpu_mem]
+                    # Restrict the fit (and thus the layer plan + pin env) to the
+                    # selected GPUs; fail-open if none match so a stale UI choice
+                    # can't strand the load on CPU (issue #7164).
+                    if gpu_ids:
+                        # A Vulkan build indexes by ggml ordinal. An explicit ordinal
+                        # absent from the probe can't be pinned, so reject after the try
+                        # rather than fail-open onto a device the user didn't pick.
+                        _wanted_ids = {int(x) for x in gpu_ids}
+                        # Reject if ANY requested ordinal is absent, not only when none
+                        # match: [0, 99] against {0, 1} silently drops 99. Comparing the
+                        # full requested set (before filter narrows) still lets the fitter
+                        # pick a valid subset later -- that is narrowing, not absence.
+                        _probed_ordinals = {g[0] for g in gpus}
+                        if is_vulkan_backend and not _wanted_ids.issubset(_probed_ordinals):
+                            _vulkan_explicit_unmatched = True
+                            _vulkan_requested_ids = sorted(_wanted_ids)
+                            _vulkan_available_ordinals = sorted(_probed_ordinals)
+                        # Restrict the probed pool to the selection; fail-open (keep the
+                        # full pool) if none match so a stale UI choice can't strand the
+                        # load on CPU (issue #7164).
+                        _sel_gpus = [g for g in gpus if g[0] in _wanted_ids]
+                        gpus = _sel_gpus if _sel_gpus else gpus
                     total_by_idx = {idx: total for idx, _f, total in _gpu_mem}
                     # GPU picker: restrict every mode to the chosen devices, so
                     # auto selection only considers them and manual mask to
@@ -7191,6 +7265,17 @@ class LlamaCppBackend:
                     tp_tensor_split = None
                     effective_ctx = requested_ctx  # fall back to original
 
+                # An unenumerated explicit Vulkan ordinal can't be pinned; fail loudly
+                # instead of fitting onto an unselected device. Clear the raw selection
+                # the early state-publish recorded so it never leaks into gpu_ids (#7239).
+                if _vulkan_explicit_unmatched:
+                    self._gpu_ids = None
+                    self._requested_gpu_ids = None
+                    raise ValueError(
+                        f"Requested Vulkan GPU ordinal(s) {_vulkan_requested_ids} not "
+                        f"present. Available Vulkan devices: {_vulkan_available_ordinals}."
+                    )
+
                 # GPU picker: when no narrower subset was chosen (manual, or
                 # a failed/file-size selection), pin the whole picked set so the
                 # model can't spill onto an unpicked GPU.
@@ -7537,11 +7622,45 @@ class LlamaCppBackend:
                             ", ".join(unsupported_cache_flags),
                         )
 
-                # Vulkan pins via --device (a cmd arg, unlike the env-based
-                # CUDA/ROCm pin below), emitted BEFORE user extras so llama.cpp's
-                # last-wins parsing lets a user --device override Unsloth's pick.
-                if is_vulkan_backend and gpu_indices is not None:
-                    cmd += LlamaCppBackend._vulkan_pin_args(gpu_indices)
+                # Vulkan pins via --device (a cmd arg), before user extras so a user
+                # --device wins. Fall back to raw ids when the fit did not narrow.
+                _vulkan_pin_ids = gpu_indices if gpu_indices is not None else (gpu_ids or None)
+
+                # Record the pin actually applied (fit-narrowed gpu_indices, else the raw
+                # request) for the keep-warm loop, dedupe, and /status, so an explicit
+                # [0, 1] narrowed to [0] records [0] and /status never echoes an ordinal
+                # the child never saw. Auto selection (no gpu_ids) stays None (#7239).
+                if is_vulkan_backend:
+                    # Only record an EXPLICIT Vulkan pin: an auto pick still narrows +
+                    # pins below, but recording it would misreport an explicit pin and
+                    # make dedupe miss the loaded server; mirrors the CUDA/ROCm branch.
+                    self._gpu_ids = (
+                        sorted(int(x) for x in _vulkan_pin_ids)
+                        if (gpu_ids and _vulkan_pin_ids)
+                        else None
+                    )
+                elif gpu_ids:
+                    # Physical pin: the fit-selected subset when the fit ran, else the raw
+                    # user selection so an explicit choice is honoured even when the fit
+                    # could not size the model.
+                    _effective_pin_ids = (
+                        [int(x) for x in gpu_indices]
+                        if gpu_indices is not None
+                        else [int(x) for x in gpu_ids]
+                    )
+                    self._gpu_ids = (
+                        sorted(int(x) for x in _effective_pin_ids) if _effective_pin_ids else None
+                    )
+                else:
+                    self._gpu_ids = None
+
+                # Also record the RAW requested pin (before the fit narrowed it). Load
+                # dedupe compares this so a [0, 1] narrowed to [0] and re-sent as [0, 1]
+                # still matches, while /status keeps echoing the effective pin (#7239).
+                self._requested_gpu_ids = sorted(int(x) for x in gpu_ids) if gpu_ids else None
+
+                if is_vulkan_backend and _vulkan_pin_ids is not None:
+                    cmd += LlamaCppBackend._vulkan_pin_args(_vulkan_pin_ids)
 
                 # User pass-through args go last so llama.cpp's last-wins parsing
                 # lets the user override Unsloth's auto-set flags. Already
@@ -7610,10 +7729,10 @@ class LlamaCppBackend:
                         f"Data-center GPU detected: applied DC llama.cpp env tuning (multi_gpu={multi_gpu})"
                     )
 
-                # Pin to selected GPU(s). On ROCm, narrowing only
-                # CUDA_VISIBLE_DEVICES leaves an AMD child seeing the full set, so
-                # set HIP_VISIBLE_DEVICES too. Vulkan is pinned via --device
-                # (above), not here.
+                # Pin to selected GPU(s) (issue #7164; resolved above into gpu_indices).
+                # On ROCm, narrowing only CUDA_VISIBLE_DEVICES leaves the AMD child
+                # seeing the full set, so set HIP_VISIBLE_DEVICES too. Vulkan is pinned
+                # via --device (above), not here.
                 # A deliberate zero-offload load with no GPU companions runs
                 # entirely on CPU, yet a visible CUDA device still costs the child
                 # ~0.5 GB (context + compute scratch) that the CPU-only
@@ -8443,6 +8562,17 @@ class LlamaCppBackend:
             return False
         if (self._model_identifier or "").lower() != (model_identifier or "").lower():
             return False
+        # Explicit GPU pin (issue #7164): toggling it changes the launch command /
+        # child env, so a duplicate /load that flips it must reload. The diffusion
+        # runner collapses a multi-GPU pick, so comparing raw-vs-recorded would always
+        # mismatch; skip it for diffusion (the GPU pick is still compared, collapsed,
+        # below), mirroring routes/inference.py (#7239).
+        if not self._is_diffusion:
+            _req_gpu_ids = sorted(int(x) for x in gpu_ids) if gpu_ids else None
+            # Compare the RAW requested pin, not the fit-narrowed self._gpu_ids, so a
+            # [0, 1] narrowed to [0] and re-sent as [0, 1] still dedupes (#7239).
+            if _req_gpu_ids != (getattr(self, "_requested_gpu_ids", None) or None):
+                return False
         # Direct-file loads pass hf_variant=None while the backend stores an
         # extracted filename label; compare paths to keep the guard symmetric.
         if gguf_path is not None and self._gguf_path:
@@ -8513,10 +8643,14 @@ class LlamaCppBackend:
         # to the same device needlessly reloads.
         if self._is_diffusion:
             requested_gpu_pick = [sorted(gpu_ids)[0]] if gpu_ids else None
+            if (self._gpu_ids or None) != requested_gpu_pick:
+                return False
         else:
+            # Compare the raw requested pin (not the fit-narrowed self._gpu_ids) so a
+            # narrowed-then-re-sent pick still dedupes; consistent with above (#7239).
             requested_gpu_pick = sorted(gpu_ids) if gpu_ids else None
-        if (self._gpu_ids or None) != requested_gpu_pick:
-            return False
+            if (getattr(self, "_requested_gpu_ids", None) or None) != requested_gpu_pick:
+                return False
 
         # Compare on the canonical requested mode. With --spec-type in
         # extra_args the backend stores None; mirror that here.
@@ -8700,12 +8834,15 @@ class LlamaCppBackend:
             self._supports_preserve_thinking = False
             self._supports_tools = False
             self._cache_type_kv = None
+            # GPU-pin state describes the active runner only; clear it so an explicit
+            # pin never leaks into the next (or diffusion) runner.
+            self._gpu_ids = None
+            self._requested_gpu_ids = None
             self._tensor_parallel = False
             self._gpu_memory_mode = "auto"
             self._gpu_layers = -1
             self._n_cpu_moe = 0
             self._tensor_split = None
-            self._gpu_ids = None
             self._layer_preserves_tensor_intent = False
             self._speculative_type = None
             self._requested_spec_mode = None
