@@ -49,13 +49,22 @@ _HERMES_PROVIDER = "unsloth"
 # the wizard's global API-key/model prompts would block the launch and point the
 # user at a different (global) provider than the one Unsloth just configured.
 # Both installers expose a skip flag: `-SkipSetup` (PowerShell) and
-# `--skip-setup` (POSIX; passed to the piped script via `bash -s --`).
+# `--skip-setup` (POSIX; passed to the piped script via `bash -s --`). Pin both
+# the fetched script and the repository checkout it performs to the same full
+# commit so a later change to either upstream branch cannot silently replace
+# code that Unsloth executes with the user's privileges.
+_HERMES_INSTALL_COMMIT = "f1af945f6c576eccb126fa955edc9be258b33020"
+_HERMES_INSTALL_BASE = (
+    "https://raw.githubusercontent.com/NousResearch/hermes-agent/"
+    f"{_HERMES_INSTALL_COMMIT}/scripts"
+)
 _HERMES_WINDOWS_INSTALL_HINT = (
-    "& ([scriptblock]::Create((irm https://hermes-agent.nousresearch.com/install.ps1))) -SkipSetup"
+    f"& ([scriptblock]::Create((irm {_HERMES_INSTALL_BASE}/install.ps1)))"
+    f" -SkipSetup -Commit {_HERMES_INSTALL_COMMIT}"
 )
 _HERMES_POSIX_INSTALL_HINT = (
-    "curl -fsSL https://raw.githubusercontent.com/NousResearch/hermes-agent"
-    "/main/scripts/install.sh | bash -s -- --skip-setup"
+    f"curl -fsSL {_HERMES_INSTALL_BASE}/install.sh | bash -s --"
+    f" --skip-setup --commit {_HERMES_INSTALL_COMMIT}"
 )
 # Hermes refuses to initialize when the model window is under 64,000 tokens; its
 # error message points at the model.context_length / auxiliary.compression
@@ -1199,6 +1208,16 @@ def _install_source(install_hint: str) -> Optional[str]:
     return match.group(0) if match else None
 
 
+def _pinned_raw_github_commit(source: str) -> Optional[str]:
+    """Return the immutable full commit in a raw GitHub URL, if present."""
+    match = re.match(
+        r"^https://raw\.githubusercontent\.com/[^/]+/[^/]+/([0-9a-f]{40})/",
+        source,
+        flags = re.IGNORECASE,
+    )
+    return match.group(1).lower() if match else None
+
+
 def _install_agent(name: str, install_hint: str) -> Optional[str]:
     # Missing agent under --launch: offer to run its documented install command, then
     # re-resolve it on PATH. Consent-based (we never auto-run a remote install script
@@ -1212,12 +1231,27 @@ def _install_agent(name: str, install_hint: str) -> Optional[str]:
     # and nothing checks a signature or hash on the fetched content. Naming the source
     # turns a blind "yes" into informed consent.
     source = _install_source(install_hint)
-    warning = (
-        f"This will download and RUN a script from {source} with your privileges"
-        if source
-        else f"This will RUN `{install_hint}` with your privileges"
-    )
-    typer.secho(f"{warning}; there is no signature or hash check.", fg = "yellow", err = True)
+    if source:
+        pinned_commit = _pinned_raw_github_commit(source)
+        if pinned_commit:
+            warning = (
+                "Security warning: This will download and execute a third-party script "
+                f"from {source} with your privileges. Unsloth pins this content to "
+                f"immutable upstream commit {pinned_commit}, but does not independently "
+                "verify or sandbox it. Continue only if you trust this source and commit."
+            )
+        else:
+            warning = (
+                "Security warning: This will download and execute an unverified third-party "
+                f"script from {source} with your privileges. Unsloth does not pin or verify "
+                "the downloaded content. Continue only if you trust this source."
+            )
+    else:
+        warning = (
+            f"This will RUN `{install_hint}` with your privileges; "
+            "there is no signature or hash check."
+        )
+    typer.secho(warning, fg = "yellow", err = True)
     if not typer.confirm(f"Install `{name}` now with `{install_hint}`?", default = False):
         return None
     # Run each hint through the shell it is written for: PowerShell (irm | iex, or npm)
