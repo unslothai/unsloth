@@ -138,26 +138,54 @@ def test_local_only_load_fails_closed_offline_never_hitting_the_hub(monkeypatch,
 
     # A pickle beside a bare ADAPTER (not a base weight) still loads the pickle -> blocked:
     # from_pretrained cannot use adapter_model.safetensors as the base checkpoint.
-    assert _evaluate(_snap("adapter", {
-        "pytorch_model.bin": b"\0", "adapter_model.safetensors": b"\0",
-    })) is True
+    assert (
+        _evaluate(
+            _snap(
+                "adapter",
+                {
+                    "pytorch_model.bin": b"\0",
+                    "adapter_model.safetensors": b"\0",
+                },
+            )
+        )
+        is True
+    )
 
     # A pickle beside a lone ORPHAN shard (no index) still loads the pickle -> blocked:
     # a sharded safetensors load needs the index the loader reads to locate every shard.
-    assert _evaluate(_snap("orphan", {
-        "pytorch_model.bin": b"\0", "model-00001-of-00002.safetensors": b"\0",
-    })) is True
+    assert (
+        _evaluate(
+            _snap(
+                "orphan",
+                {
+                    "pytorch_model.bin": b"\0",
+                    "model-00001-of-00002.safetensors": b"\0",
+                },
+            )
+        )
+        is True
+    )
 
     # A COMPLETE indexed safetensors shard set is what the loader picks instead of the
     # pickle -> allowed.
-    index = '{"weight_map": {"a": "model-00001-of-00002.safetensors", ' \
-            '"b": "model-00002-of-00002.safetensors"}}'
-    assert _evaluate(_snap("sharded", {
-        "pytorch_model.bin": b"\0",
-        "model-00001-of-00002.safetensors": b"\0",
-        "model-00002-of-00002.safetensors": b"\0",
-        "model.safetensors.index.json": index,
-    })) is False
+    index = (
+        '{"weight_map": {"a": "model-00001-of-00002.safetensors", '
+        '"b": "model-00002-of-00002.safetensors"}}'
+    )
+    assert (
+        _evaluate(
+            _snap(
+                "sharded",
+                {
+                    "pytorch_model.bin": b"\0",
+                    "model-00001-of-00002.safetensors": b"\0",
+                    "model-00002-of-00002.safetensors": b"\0",
+                    "model.safetensors.index.json": index,
+                },
+            )
+        )
+        is False
+    )
 
 
 def test_security_scan_runs_when_online(monkeypatch):

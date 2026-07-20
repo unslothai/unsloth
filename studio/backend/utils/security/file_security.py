@@ -261,7 +261,9 @@ def _safetensors_index_complete(index_path, present_lower: set) -> bool:
     import json
 
     try:
-        weight_map = (json.loads(index_path.read_text(encoding = "utf-8")) or {}).get("weight_map") or {}
+        weight_map = (json.loads(index_path.read_text(encoding = "utf-8")) or {}).get(
+            "weight_map"
+        ) or {}
     except (OSError, ValueError):
         return False  # unreadable index -> not a usable safetensors set -> keep the pickle blocked
     shards = {str(shard).rsplit("/", 1)[-1].lower() for shard in weight_map.values()}

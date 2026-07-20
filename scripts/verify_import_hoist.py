@@ -542,8 +542,10 @@ def _analyze(src: str):
     # exhaustive, so credit EVERY module import rather than risk flagging a
     # dynamically-exported hoist as unused.
     _all_names, _all_opaque = _collect_dunder_all(tree)
-    _reexported = module_imports.values() if _all_opaque else (
-        _bs for _n in _all_names if (_bs := module_imports.get(_n))
+    _reexported = (
+        module_imports.values()
+        if _all_opaque
+        else (_bs for _n in _all_names if (_bs := module_imports.get(_n)))
     )
     for _bs in _reexported:
         targets_by_scope.setdefault(module.qualname, set()).update(
