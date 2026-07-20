@@ -167,6 +167,30 @@ def test_model_default_hooks_do_not_reset_state_in_effect():
     assert "setFetched(null)" not in src
 
 
+def test_variant_expander_refreshes_after_delete():
+    """Deleting a downloaded quant from an expanded repo that still has other
+    cached quants must bump the expander refresh key, or the deleted quant stays
+    shown as downloaded and clickable and tries to reload the removed file."""
+    src = _read("features/model-picker/components/model-selector/pickers.tsx")
+    del_confirm = re.search(
+        r"await onDeleteVariant\(v\.quant\);.*?setRefreshKey\(\(key\) => key \+ 1\)",
+        src,
+        re.S,
+    )
+    assert del_confirm, "delete onConfirm must bump refreshKey after a successful delete"
+
+
+def test_local_picker_rows_require_chat_capability():
+    """Local inventory rows can be classified non-chat (canChat false, e.g. a
+    folder with only config.json). The picker must filter those out, or selecting
+    one loads a weightless path; toLocalModelInfo drops capabilities so the memo
+    is the only place the guard can live."""
+    src = _read("features/model-picker/inventory/use-chat-picker-inventory.ts")
+    memo = re.search(r"const localModels = useMemo\(.*?\[inventory\.localRows\]", src, re.S)
+    assert memo, "localModels memo not found"
+    assert "row.capabilities.canChat" in memo.group(0)
+
+
 def test_native_picked_gguf_template_read_through_lease():
     """A native (picked / drag-drop) GGUF's path lives only in its signed lease,
     and the picker chat-template GET has no lease plumbing, so the default
@@ -283,6 +307,20 @@ def test_reset_max_seq_length_falls_back_to_app_default():
     assert "clampMaxSeqLength(DEFAULT_MAX_SEQ_LENGTH, nativeMaxSeqLength)" in src
     # The buggy runtime-seeded fallback must not come back.
     assert "clampMaxSeqLength(initialMaxSeqLength" not in src
+
+
+def test_reset_persists_null_max_length_and_substitutes_only_for_load():
+    """The persisted per-model record must keep config.maxSeqLength (null after
+    Reset) so isDefaultConfig can clear a remembered override; the concrete
+    fallback is substituted only into the load request, not the saved record."""
+    src = _read("features/model-picker/components/model-config-page.tsx")
+    # Load-only substitution of the resolved value.
+    assert "maxSeqLength: maxSeqLengthValue" in src
+    assert "const loadConfig" in src
+    # The persisted record is loaded via onRun(loadConfig), and save uses the
+    # untouched runtimeConfig (so a reset/default config stays default).
+    assert "onRun(loadConfig)" in src
+    assert "savePerModelConfig(" in src
 
 
 def test_default_gpu_mode_clears_manual_knobs():

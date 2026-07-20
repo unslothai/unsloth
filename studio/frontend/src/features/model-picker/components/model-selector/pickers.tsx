@@ -1140,6 +1140,10 @@ function GgufVariantExpander({
                             if (pinnedKeys.includes(pinKey(repoId, v.quant))) {
                               togglePinnedQuant(repoId, v.quant);
                             }
+                            // Re-fetch this expander's variants so the deleted
+                            // quant stops showing as downloaded (and clickable to
+                            // reload) while the repo still has other cached quants.
+                            setRefreshKey((key) => key + 1);
                           },
                         }
                       : undefined

@@ -745,14 +745,19 @@ export function ModelConfigPage({
     config.gpuLayers >= 0 &&
     config.customContextLength == null &&
     activeLoadedContext != null;
+  // Persisted record: keep config as-is (a default / just-reset non-GGUF model
+  // keeps maxSeqLength null) so isDefaultConfig can still recognise it and clear
+  // a remembered override instead of pinning the app-default value.
   const runtimeConfig = target.isGguf
     ? pinFixedLayerContext
       ? { ...config, customContextLength: activeLoadedContext }
       : config
-    : {
-        ...config,
-        maxSeqLength: maxSeqLengthValue,
-      };
+    : config;
+  // Load request: the model needs a concrete max length, so substitute the
+  // resolved fallback here only, never in the persisted runtimeConfig.
+  const loadConfig = target.isGguf
+    ? runtimeConfig
+    : { ...runtimeConfig, maxSeqLength: maxSeqLengthValue };
   const rememberChanged = remember !== savedRemember;
   const persistenceOnly = isActiveModel && atBaseline && rememberChanged;
   const primaryActionLabel = persistenceOnly
@@ -795,7 +800,7 @@ export function ModelConfigPage({
     if (saveFailed) {
       toast.error("Couldn't save these settings, loading with them anyway.");
     }
-    onRun(runtimeConfig);
+    onRun(loadConfig);
   };
 
   return (

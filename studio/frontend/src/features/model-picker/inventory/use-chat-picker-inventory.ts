@@ -102,6 +102,11 @@ export function useChatPickerInventory(
         .filter(
           (row) =>
             PICKER_LOCAL_SOURCES.has(row.source) &&
+            // Skip non-chat rows (e.g. a folder with only config.json is
+            // classified "unknown" -> canChat false); selecting one would try to
+            // load a weightless path. toLocalModelInfo drops capabilities, so
+            // this is the only place the guard can live.
+            row.capabilities.canChat &&
             !isHiddenModelId(row.modelId, row.repoId, row.path),
         )
         .map(toLocalModelInfo),
