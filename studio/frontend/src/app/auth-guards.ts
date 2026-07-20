@@ -23,19 +23,47 @@ interface AuthStatus {
   requires_password_change: boolean;
 }
 
+const AUTH_STATUS_TTL_MS = 30_000;
+let authStatusCheckedAt = 0;
+let authStatusRequest: Promise<AuthStatus> | null = null;
+
+function hasFreshAuthStatus(): boolean {
+  return (
+    authStatusCheckedAt !== 0 &&
+    Date.now() - authStatusCheckedAt < AUTH_STATUS_TTL_MS
+  );
+}
+
 async function fetchAuthStatus(): Promise<AuthStatus> {
-  try {
-    const res = await fetch(apiUrl("/api/auth/status"));
-    if (!res.ok) return { initialized: true, requires_password_change: mustChangePassword() };
-    const status = (await res.json()) as AuthStatus;
-    // Server truth wins; keep localStorage in sync both ways.
-    if (status.requires_password_change !== mustChangePassword()) {
-      setMustChangePassword(status.requires_password_change);
+  if (authStatusRequest) return authStatusRequest;
+
+  const request = (async () => {
+    try {
+      const res = await fetch(apiUrl("/api/auth/status"));
+      if (!res.ok) {
+        return {
+          initialized: true,
+          requires_password_change: mustChangePassword(),
+        };
+      }
+      const status = (await res.json()) as AuthStatus;
+      authStatusCheckedAt = Date.now();
+      // Server truth wins; keep localStorage in sync both ways.
+      if (status.requires_password_change !== mustChangePassword()) {
+        setMustChangePassword(status.requires_password_change);
+      }
+      return status;
+    } catch {
+      return {
+        initialized: true,
+        requires_password_change: mustChangePassword(),
+      };
     }
-    return status;
-  } catch {
-    return { initialized: true, requires_password_change: mustChangePassword() };
-  }
+  })().finally(() => {
+    authStatusRequest = null;
+  });
+  authStatusRequest = request;
+  return request;
 }
 
 function authRedirect(to: "/login" | "/change-password"): never {
@@ -49,9 +77,9 @@ export async function requireAuth(): Promise<void> {
   }
 
   if (await hasActiveSession()) {
-    // Protected API responses handle expired tokens and server-side password
-    // changes. Only reconcile with the server when the local flag requires it.
-    if (mustChangePassword()) {
+    // Reconcile periodically so local-only routes cannot outlive a server-side
+    // password-change requirement, while nearby route switches stay local.
+    if (mustChangePassword() || !hasFreshAuthStatus()) {
       const { requires_password_change } = await fetchAuthStatus();
       if (requires_password_change || mustChangePassword()) {
         authRedirect("/change-password");

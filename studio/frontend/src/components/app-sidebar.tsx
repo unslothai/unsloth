@@ -295,8 +295,8 @@ function NavItem({
           tooltip={tooltip ?? label}
           disabled={disabled}
           onClick={onClick}
-          onPointerEnter={onIntent}
-          onFocus={onIntent}
+          onPointerEnter={disabled ? undefined : onIntent}
+          onFocus={disabled ? undefined : onIntent}
           isActive={active}
           data-tour={dataTour}
           className="sidebar-nav-btn h-[33px] rounded-full gap-[8.5px] pl-3 pr-2.5 font-medium group-data-[collapsible=icon]:px-2.5 group-data-[collapsible=icon]:!w-[32px] group-data-[collapsible=icon]:mx-auto"
