@@ -2895,13 +2895,36 @@ if ($ROCmIndexUrl) {
     if ($ROCmTorchSpec -ne "torch") {
         substep "  enforcing $ROCmTorchSpec $ROCmVisionSpec $ROCmAudioSpec (known _grouped_mm bug in older wheels)" "Cyan"
     }
-    if ($script:UnslothVerbose) {
-        Fast-Install $ROCmTorchSpec $ROCmVisionSpec $ROCmAudioSpec --force-reinstall --index-url $ROCmIndexUrl | ForEach-Object { Redact-InstallOutput "$_" } | Out-Host
-        $torchInstallExit = $LASTEXITCODE
-        $output = ""
-    } else {
-        $output = Fast-Install $ROCmTorchSpec $ROCmVisionSpec $ROCmAudioSpec --force-reinstall --index-url $ROCmIndexUrl | Out-String
-        $torchInstallExit = $LASTEXITCODE
+    # Release preservation (twin of install.sh's _previous_torch_pin): install.ps1 exports the previous
+    # venv's exact torch RELEASE via UNSLOTH_KEPT_TORCH. Substitute the kept trio unless it conflicts with
+    # a >=2.11 floor already enforced in $ROCmTorchSpec (a kept minor < 11 keeps the floor). On a failed
+    # install, restore the computed specs and retry once. Absent the env var (direct 'studio update'),
+    # nothing changes and the loop runs exactly once.
+    $_rocmKeptActive = $false
+    $_rocmOrigTorch = $ROCmTorchSpec; $_rocmOrigVision = $ROCmVisionSpec; $_rocmOrigAudio = $ROCmAudioSpec
+    if ($env:UNSLOTH_KEPT_TORCH -match '^\d+\.\d+(\.\d+)?$') {
+        $_keptMinor = [int](($env:UNSLOTH_KEPT_TORCH -split '\.')[1])
+        if (-not ($ROCmTorchSpec -match 'torch>=2\.11' -and $_keptMinor -lt 11)) {
+            $ROCmTorchSpec  = "torch==$($env:UNSLOTH_KEPT_TORCH)"
+            $ROCmVisionSpec = "torchvision==0.$($_keptMinor + 15).*"
+            $ROCmAudioSpec  = "torchaudio==2.$($_keptMinor).*"
+            $_rocmKeptActive = $true
+        }
+    }
+    while ($true) {
+        if ($script:UnslothVerbose) {
+            Fast-Install $ROCmTorchSpec $ROCmVisionSpec $ROCmAudioSpec --force-reinstall --index-url $ROCmIndexUrl | ForEach-Object { Redact-InstallOutput "$_" } | Out-Host
+            $torchInstallExit = $LASTEXITCODE
+            $output = ""
+        } else {
+            $output = Fast-Install $ROCmTorchSpec $ROCmVisionSpec $ROCmAudioSpec --force-reinstall --index-url $ROCmIndexUrl | Out-String
+            $torchInstallExit = $LASTEXITCODE
+        }
+        if ($torchInstallExit -eq 0 -or -not $_rocmKeptActive) { break }
+        substep "[WARN] torch==$($env:UNSLOTH_KEPT_TORCH) not installable on this ROCm index -- using the supported release" "Yellow"
+        $ROCmTorchSpec = $_rocmOrigTorch; $ROCmVisionSpec = $_rocmOrigVision; $ROCmAudioSpec = $_rocmOrigAudio
+        Remove-Item Env:UNSLOTH_KEPT_TORCH -ErrorAction SilentlyContinue
+        $_rocmKeptActive = $false
     }
     if ($torchInstallExit -ne 0) {
         Write-Host "[WARN] AMD ROCm PyTorch install failed -- falling back to CPU" -ForegroundColor Yellow
@@ -2931,13 +2954,32 @@ if (-not $ROCmIndexUrl -and ($CuTag -eq "cpu" -or $ROCmCpuFallback)) {
         $cpuVisionSpec = "torchvision>=0.19,<0.27.0"
         $cpuAudioSpec  = "torchaudio>=2.4,<2.12.0"
     }
-    if ($script:UnslothVerbose) {
-        Fast-Install $cpuTorchSpec $cpuVisionSpec $cpuAudioSpec @cpuForce --index-url $TorchInstallIndexUrl | ForEach-Object { Redact-InstallOutput "$_" } | Out-Host
-        $torchInstallExit = $LASTEXITCODE
-        $output = ""
-    } else {
-        $output = Fast-Install $cpuTorchSpec $cpuVisionSpec $cpuAudioSpec @cpuForce --index-url $TorchInstallIndexUrl | Out-String
-        $torchInstallExit = $LASTEXITCODE
+    # Release preservation: keep install.ps1's exported torch RELEASE (UNSLOTH_KEPT_TORCH) -- a kept
+    # release from the /cpu index resolves the correct cpu-flavor build. On a failed install, restore the
+    # computed specs and retry once. Absent the env var, nothing changes and the loop runs exactly once.
+    $_cpuKeptActive = $false
+    $_cpuOrigTorch = $cpuTorchSpec; $_cpuOrigVision = $cpuVisionSpec; $_cpuOrigAudio = $cpuAudioSpec
+    if ($env:UNSLOTH_KEPT_TORCH -match '^\d+\.\d+(\.\d+)?$') {
+        $_keptMinor = [int](($env:UNSLOTH_KEPT_TORCH -split '\.')[1])
+        $cpuTorchSpec  = "torch==$($env:UNSLOTH_KEPT_TORCH)"
+        $cpuVisionSpec = "torchvision==0.$($_keptMinor + 15).*"
+        $cpuAudioSpec  = "torchaudio==2.$($_keptMinor).*"
+        $_cpuKeptActive = $true
+    }
+    while ($true) {
+        if ($script:UnslothVerbose) {
+            Fast-Install $cpuTorchSpec $cpuVisionSpec $cpuAudioSpec @cpuForce --index-url $TorchInstallIndexUrl | ForEach-Object { Redact-InstallOutput "$_" } | Out-Host
+            $torchInstallExit = $LASTEXITCODE
+            $output = ""
+        } else {
+            $output = Fast-Install $cpuTorchSpec $cpuVisionSpec $cpuAudioSpec @cpuForce --index-url $TorchInstallIndexUrl | Out-String
+            $torchInstallExit = $LASTEXITCODE
+        }
+        if ($torchInstallExit -eq 0 -or -not $_cpuKeptActive) { break }
+        substep "[WARN] torch==$($env:UNSLOTH_KEPT_TORCH) not installable from the CPU index -- using the supported release" "Yellow"
+        $cpuTorchSpec = $_cpuOrigTorch; $cpuVisionSpec = $_cpuOrigVision; $cpuAudioSpec = $_cpuOrigAudio
+        Remove-Item Env:UNSLOTH_KEPT_TORCH -ErrorAction SilentlyContinue
+        $_cpuKeptActive = $false
     }
     if ($torchInstallExit -ne 0) {
         Write-Host "[FAILED] PyTorch install failed (exit code $torchInstallExit)" -ForegroundColor Red
@@ -2961,13 +3003,32 @@ if (-not $ROCmIndexUrl -and ($CuTag -eq "cpu" -or $ROCmCpuFallback)) {
         $cudaVisionSpec = "torchvision>=0.19,<0.26.0"
         $cudaAudioSpec = "torchaudio>=2.4,<2.11.0"
     }
-    if ($script:UnslothVerbose) {
-        Fast-Install $cudaTorchSpec $cudaVisionSpec $cudaAudioSpec @cudaForce --index-url $TorchInstallIndexUrl | ForEach-Object { Redact-InstallOutput "$_" } | Out-Host
-        $torchInstallExit = $LASTEXITCODE
-        $output = ""
-    } else {
-        $output = Fast-Install $cudaTorchSpec $cudaVisionSpec $cudaAudioSpec @cudaForce --index-url $TorchInstallIndexUrl | Out-String
-        $torchInstallExit = $LASTEXITCODE
+    # Release preservation: keep install.ps1's exported torch RELEASE (UNSLOTH_KEPT_TORCH) so a re-run
+    # reinstalls the same CUDA build (+cuXXX follows this index). On a failed install, restore the computed
+    # specs and retry once. Absent the env var (direct 'studio update'), nothing changes; loop runs once.
+    $_cudaKeptActive = $false
+    $_cudaOrigTorch = $cudaTorchSpec; $_cudaOrigVision = $cudaVisionSpec; $_cudaOrigAudio = $cudaAudioSpec
+    if ($env:UNSLOTH_KEPT_TORCH -match '^\d+\.\d+(\.\d+)?$') {
+        $_keptMinor = [int](($env:UNSLOTH_KEPT_TORCH -split '\.')[1])
+        $cudaTorchSpec = "torch==$($env:UNSLOTH_KEPT_TORCH)"
+        $cudaVisionSpec = "torchvision==0.$($_keptMinor + 15).*"
+        $cudaAudioSpec = "torchaudio==2.$($_keptMinor).*"
+        $_cudaKeptActive = $true
+    }
+    while ($true) {
+        if ($script:UnslothVerbose) {
+            Fast-Install $cudaTorchSpec $cudaVisionSpec $cudaAudioSpec @cudaForce --index-url $TorchInstallIndexUrl | ForEach-Object { Redact-InstallOutput "$_" } | Out-Host
+            $torchInstallExit = $LASTEXITCODE
+            $output = ""
+        } else {
+            $output = Fast-Install $cudaTorchSpec $cudaVisionSpec $cudaAudioSpec @cudaForce --index-url $TorchInstallIndexUrl | Out-String
+            $torchInstallExit = $LASTEXITCODE
+        }
+        if ($torchInstallExit -eq 0 -or -not $_cudaKeptActive) { break }
+        substep "[WARN] torch==$($env:UNSLOTH_KEPT_TORCH) not installable from this CUDA index -- using the supported release" "Yellow"
+        $cudaTorchSpec = $_cudaOrigTorch; $cudaVisionSpec = $_cudaOrigVision; $cudaAudioSpec = $_cudaOrigAudio
+        Remove-Item Env:UNSLOTH_KEPT_TORCH -ErrorAction SilentlyContinue
+        $_cudaKeptActive = $false
     }
     if ($torchInstallExit -ne 0) {
         Write-Host "[FAILED] PyTorch CUDA install failed (exit code $torchInstallExit)" -ForegroundColor Red

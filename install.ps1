@@ -1330,6 +1330,37 @@ exit 0
         $script:StudioVenvRollbackDir = $null
     }
 
+    # Raw torch.__version__ from $PythonExe's venv (last non-empty stdout line), or $null.
+    # Bounded ProcessStartInfo probe (async-drain both streams, 30s timeout, kill on hang) so a
+    # wedged "import torch" can't stall the installer; feeds Get-InstalledTorchTag and the torch
+    # release-preservation decision (twin of install.sh's _PREV_TORCH_VER probe / _previous_torch_pin).
+    function Get-InstalledTorchVersionRaw {
+        param([string]$PythonExe)
+        if (-not $PythonExe -or -not (Test-Path -LiteralPath $PythonExe)) { return $null }
+        try {
+            $psi = New-Object System.Diagnostics.ProcessStartInfo
+            $psi.FileName = $PythonExe
+            $psi.Arguments = '-c "import torch; print(torch.__version__)"'
+            $psi.RedirectStandardOutput = $true
+            $psi.RedirectStandardError = $true
+            $psi.UseShellExecute = $false
+            $psi.CreateNoWindow = $true
+            $proc = [System.Diagnostics.Process]::Start($psi)
+            # Drain BOTH streams async before WaitForExit: a synchronous ReadToEnd() would block on a wedged "import torch", and an undrained stderr would deadlock a child flooding the pipe buffer. A truly hung probe still hits the 30s timeout.
+            $outTask = $proc.StandardOutput.ReadToEndAsync()
+            $errTask = $proc.StandardError.ReadToEndAsync()
+            $finished = $proc.WaitForExit(30000)
+            if (-not $finished) { try { $proc.Kill() } catch {}; return $null }
+            $out = $outTask.GetAwaiter().GetResult()
+            [void]$errTask.GetAwaiter().GetResult()
+            if ($proc.ExitCode -ne 0) { return $null }
+            # Last non-empty line only, so stdout noise before the version can't corrupt the pin.
+            $lines = @($out -split "`r?`n" | ForEach-Object { $_.Trim() } | Where-Object { $_ -ne "" })
+            if ($lines.Count -eq 0) { return $null }
+            return $lines[-1]
+        } catch { return $null }
+    }
+
     if (Test-Path -LiteralPath $VenvPython) {
         # env-mode: $StudioHome is a user-chosen workspace, so refuse to nuke an existing venv lacking Unsloth sentinels (-PathType Leaf rejects a directory at the sentinel path; accept the in-VENV ownership marker so partial-install retries aren't blocked).
         if (
@@ -1341,6 +1372,14 @@ exit 0
             Write-Host "[ERROR] $VenvDir already exists but does not look like an Unsloth Studio install." -ForegroundColor Red
             Write-Host "        Move it aside or choose an empty UNSLOTH_STUDIO_HOME." -ForegroundColor Yellow
             throw "Refusing to delete non-Unsloth venv at $VenvDir"
+        }
+        # Record the existing venv's torch RELEASE BEFORE the rollback move (see Get-PreviousTorchPin);
+        # a re-run then keeps that release rather than silently jumping torch versions. Opt out with
+        # UNSLOTH_TORCH_UPGRADE=1. Only the new-layout replace probes; the legacy-migration branches
+        # reuse the venv, so torch survives naturally and needs no pin.
+        $script:PrevTorchVer = ""
+        if (-not $SkipTorch) {
+            $script:PrevTorchVer = Get-InstalledTorchVersionRaw -PythonExe $VenvPython
         }
         # New layout already exists -- replace only after preserving rollback copy.
         substep "preserving existing environment for rollback..."
@@ -1876,29 +1915,73 @@ exit 0
         return $null
     }
 
-    # Installed torch flavor tag in $PythonExe's venv, or $null if absent. Uses ProcessStartInfo (not &) so stderr doesn't trip $ErrorActionPreference.
+    # Installed torch flavor tag in $PythonExe's venv, or $null if absent. Reuses the bounded raw probe.
     function Get-InstalledTorchTag {
         param([string]$PythonExe)
-        if (-not $PythonExe -or -not (Test-Path -LiteralPath $PythonExe)) { return $null }
+        $v = Get-InstalledTorchVersionRaw -PythonExe $PythonExe
+        if (-not $v) { return $null }
+        return ConvertTo-TorchFlavorTag $v
+    }
+
+    # ── Torch release preservation (twin of install.sh's _previous_torch_pin, PR 7250): keep the
+    # previous venv's torch RELEASE across a re-run when it falls inside the freshly chosen constraint
+    # window; flavor follows the new index. Opt out with UNSLOTH_TORCH_UPGRADE=1. ──
+
+    # Parse a probed torch.__version__ into a normalized stable release, or $null.
+    # Strips ONLY the +local tag; anchored numeric match so dev/rc/alpha/garbage never pin.
+    function ConvertTo-TorchNumericRelease {
+        param([string]$TorchVersion)
+        if ([string]::IsNullOrWhiteSpace($TorchVersion)) { return $null }
+        $publicBase = ($TorchVersion.Trim() -split '\+', 2)[0]
+        if ($publicBase -notmatch '^(\d+)\.(\d+)(?:\.(\d+))?$') { return $null }
         try {
-            $psi = New-Object System.Diagnostics.ProcessStartInfo
-            $psi.FileName = $PythonExe
-            $psi.Arguments = '-c "import torch; print(torch.__version__)"'
-            $psi.RedirectStandardOutput = $true
-            $psi.RedirectStandardError = $true
-            $psi.UseShellExecute = $false
-            $psi.CreateNoWindow = $true
-            $proc = [System.Diagnostics.Process]::Start($psi)
-            # Drain BOTH streams async before WaitForExit: a synchronous ReadToEnd() would block on a wedged "import torch", and an undrained stderr would deadlock a child flooding the pipe buffer. A truly hung probe still hits the 30s timeout.
-            $outTask = $proc.StandardOutput.ReadToEndAsync()
-            $errTask = $proc.StandardError.ReadToEndAsync()
-            $finished = $proc.WaitForExit(30000)
-            if (-not $finished) { try { $proc.Kill() } catch {}; return $null }
-            $torchVer = $outTask.GetAwaiter().GetResult().Trim()
-            [void]$errTask.GetAwaiter().GetResult()
-            if ($proc.ExitCode -ne 0 -or -not $torchVer) { return $null }
-            return ConvertTo-TorchFlavorTag $torchVer
+            $major = [int]$Matches[1]; $minor = [int]$Matches[2]
+            if ($Matches[3]) { $patch = [int]$Matches[3] } else { $patch = 0 }
+            $normalized = New-Object System.Version($major, $minor, $patch)
         } catch { return $null }
+        return [pscustomobject]@{
+            PublicBase = $publicBase; Major = $major; Minor = $minor; Patch = $patch; Version = $normalized
+        }
+    }
+
+    # True when a release falls inside a "torch>=A,<B" range. Fails closed on any
+    # other constraint shape (exact pins, bare torch) -- preservation then defers.
+    function Test-TorchReleaseInWindow {
+        param(
+            [Parameter(Mandatory = $true)]$Release,
+            [Parameter(Mandatory = $true)][string]$Constraint
+        )
+        if ($Constraint -notmatch '^torch>=(\d+(?:\.\d+){0,2}),<(\d+(?:\.\d+){0,2})$') { return $false }
+        $floor = ConvertTo-TorchNumericRelease $Matches[1]
+        $ceiling = ConvertTo-TorchNumericRelease $Matches[2]
+        if (-not $floor -or -not $ceiling) { return $false }
+        return ($Release.Version -ge $floor.Version -and $Release.Version -lt $ceiling.Version)
+    }
+
+    # The kept-release trio for a previously installed torch, or $null when nothing
+    # should be kept (no/unstable version, UNSLOTH_TORCH_UPGRADE=1, outside the final
+    # route window -- a raised ROCm floor correctly rejects an older release).
+    # Exact-release pin, matching install.sh's _previous_torch_pin; companions pair
+    # to the kept minor (torchaudio no longer exact-pins torch).
+    function Get-PreviousTorchPin {
+        param(
+            [string]$TorchVersion,
+            # Named -Constraint (like Test-TorchReleaseInWindow): the Windows port keeps no shell-style
+            # constraint variable, and its structural tests forbid that token appearing in install.ps1.
+            [Parameter(Mandatory = $true)][string]$Constraint
+        )
+        if ($env:UNSLOTH_TORCH_UPGRADE -eq '1') { return $null }
+        $release = ConvertTo-TorchNumericRelease $TorchVersion
+        if (-not $release) { return $null }
+        if (-not (Test-TorchReleaseInWindow -Release $release -Constraint $Constraint)) { return $null }
+        if ($release.Major -ne 2) { return $null }
+        $visionMinor = $release.Minor + 15
+        return [pscustomobject]@{
+            Release    = $release
+            TorchSpec  = "torch==$($release.PublicBase)"
+            VisionSpec = "torchvision==0.$visionMinor.*"
+            AudioSpec  = "torchaudio==2.$($release.Minor).*"
+        }
     }
 
     # An explicit pin is authoritative: the AMD ROCm reroute below must not rewrite it (e.g. a deliberate cpu pin on an AMD host).
@@ -2018,6 +2101,22 @@ exit 0
         return $installed
     }
 
+    # ── Freeze the installed torch trio for the with-deps unsloth install (twin of install.sh's
+    # _build_unsloth_torch_overrides): a released unsloth wheel can pin an older torch, and a
+    # with-deps resolve then downgrades the pinned +cuXXX/+rocm trio. Return a temp uv --overrides
+    # file pinning torch/torchvision/torchaudio to their installed versions, or $null when torch is
+    # absent (--no-torch) so the caller installs unchanged. Caller removes the file afterwards. ──
+    function New-UnslothTorchOverridesFile {
+        param([string]$PythonExe)
+        if ($SkipTorch) { return $null }
+        $pins = & $PythonExe -c "from importlib.metadata import version, PackageNotFoundError`nfor _p in ('torch', 'torchvision', 'torchaudio'):`n    try:`n        print(_p + '==' + version(_p))`n    except PackageNotFoundError:`n        pass" 2>$null
+        $lines = @($pins | Where-Object { $_ -match '^torch' })
+        if ($lines.Count -eq 0 -or $lines[0] -notmatch '^torch==') { return $null }
+        $f = [System.IO.Path]::GetTempFileName()
+        Set-Content -LiteralPath $f -Value ($lines -join "`n") -Encoding ascii
+        return $f
+    }
+
     if ($_Migrated) {
         # Migrated env: force-reinstall unsloth+unsloth-zoo for a clean state, preserving existing torch/CUDA unless the flavor repair below re-lands it.
         Write-TauriLog "STEP" "Installing unsloth"
@@ -2057,6 +2156,35 @@ exit 0
             }
         }
     } elseif ($TorchIndexUrl -or $ROCmIndexUrl) {
+        # Leaf-gated bounded trio, HOISTED so the release-preservation decision below can use it as the
+        # default route window: torchaudio 2.11 dropped its torch pin, so a bare companion can drift from
+        # a capped torch. cu<digits> families ship torch 2.11.x (paired triton-windows 3.6) so the ceiling
+        # widens to <2.12; other leaves keep the 2.10 line. Mirrors install.sh and _CUDA_TORCH_PKG_SPEC.
+        $_idxLeaf = (($TorchIndexUrl -split '[?#]', 2)[0].TrimEnd('/') -split '/')[-1].ToLowerInvariant()
+        if ($_idxLeaf -match '^cu[0-9]+$') {
+            $_pinTorchSpec = "torch>=2.4,<2.12.0"
+            $_pinVisionSpec = "torchvision>=0.19,<0.27.0"
+            $_pinAudioSpec = "torchaudio>=2.4,<2.12.0"
+        } else {
+            $_pinTorchSpec = "torch>=2.4,<2.11.0"
+            $_pinVisionSpec = "torchvision>=0.19,<0.26.0"
+            $_pinAudioSpec = "torchaudio>=2.4,<2.11.0"
+        }
+        # Release preservation (twin of install.sh's _PREV_TORCH_PIN decision): evaluated after every
+        # index/floor choice, incl. the ROCm reroute, so a raised floor rejects an older release. The
+        # route window is the leaf-gated CUDA trio by default; the ROCm path uses its floor (or the
+        # torch>=2.4,<2.11.0 range the ROCm->CPU fallback installs). The kept release is exported for
+        # setup.ps1 (UNSLOTH_KEPT_TORCH) and cleared after setup runs.
+        $script:PrevTorchPin = $null
+        if (-not $SkipTorch -and $script:PrevTorchVer) {
+            $_routeWindow = $_pinTorchSpec
+            if ($ROCmIndexUrl) { if ($ROCmTorchFloor) { $_routeWindow = $ROCmTorchFloor } else { $_routeWindow = "torch>=2.4,<2.11.0" } }
+            $script:PrevTorchPin = Get-PreviousTorchPin -TorchVersion $script:PrevTorchVer -Constraint $_routeWindow
+            if ($script:PrevTorchPin) {
+                $env:UNSLOTH_KEPT_TORCH = $script:PrevTorchPin.Release.PublicBase
+                substep "existing install has torch $script:PrevTorchVer -- keeping it (set UNSLOTH_TORCH_UPGRADE=1 to get the newest release)"
+            }
+        }
         if ($SkipTorch) {
             substep "skipping PyTorch (--no-torch flag set)." "Yellow"
         } elseif ($ROCmIndexUrl) {
@@ -2066,12 +2194,24 @@ exit 0
             # Pin companions to match $torchSpec; bare names can resolve an ABI-incompatible torchvision/torchaudio on AMD's per-arch index.
             $visionSpec = if ($PinnedRocmVisionSpec) { $PinnedRocmVisionSpec } elseif ($ROCmGfxArch -and $torchvisionFloorMap -and $torchvisionFloorMap.ContainsKey($ROCmGfxArch)) { $torchvisionFloorMap[$ROCmGfxArch] } else { "torchvision" }
             $audioSpec = if ($PinnedRocmAudioSpec) { $PinnedRocmAudioSpec } elseif ($ROCmGfxArch -and $torchaudioFloorMap -and $torchaudioFloorMap.ContainsKey($ROCmGfxArch)) { $torchaudioFloorMap[$ROCmGfxArch] } else { "torchaudio" }
-            $torchInstallExit = Invoke-InstallCommandRetry -Label "install PyTorch (AMD ROCm)" { uv pip install --python $VenvPython --force-reinstall --default-index $ROCmIndexUrl $torchSpec $visionSpec $audioSpec }
+            # Kept-release attempt first (pin already vetted against the ROCm floor); companions follow the kept minor.
+            if ($script:PrevTorchPin) {
+                $_keptTorch = $script:PrevTorchPin.TorchSpec; $_keptVision = $script:PrevTorchPin.VisionSpec; $_keptAudio = $script:PrevTorchPin.AudioSpec
+                $torchInstallExit = Invoke-InstallCommandRetry -Label "install PyTorch (kept release)" { uv pip install --python $VenvPython --force-reinstall $_keptTorch $_keptVision $_keptAudio --default-index $ROCmIndexUrl }
+                if ($torchInstallExit -ne 0) {
+                    substep "[WARN] $_keptTorch is not installable from $(Remove-IndexUrlCredentials $ROCmIndexUrl) -- installing the newest supported release instead" "Yellow"
+                    $script:PrevTorchPin = $null
+                    Remove-Item Env:UNSLOTH_KEPT_TORCH -ErrorAction SilentlyContinue
+                }
+            }
+            if (-not $script:PrevTorchPin) {
+                $torchInstallExit = Invoke-InstallCommandRetry -Label "install PyTorch (AMD ROCm)" { uv pip install --python $VenvPython --force-reinstall --default-index $ROCmIndexUrl $torchSpec $visionSpec $audioSpec }
+            }
             if ($torchInstallExit -ne 0) {
                 # Transient AMD-index failure: fall back to a CPU base (Unsloth setup retries ROCm). Explicit CPU index -- for a pinned ROCm index $TorchIndexUrl IS the ROCm mirror, so reusing it would just retry it.
                 $CpuFallbackIndexUrl = if ($env:UNSLOTH_PYTORCH_MIRROR) { "$($env:UNSLOTH_PYTORCH_MIRROR.TrimEnd('/'))/cpu" } else { "https://download.pytorch.org/whl/cpu" }
                 substep "ROCm PyTorch install failed (exit $torchInstallExit); using a CPU base, Unsloth setup retries ROCm." "Yellow"
-                # --force-reinstall: a failed ROCm install can leave an unpinned ROCm torch that still satisfies the CPU torch>= range, so without it uv would keep the ROCm build and only swap companions -- a mismatched venv the flavor-repair block won't fix.
+                # --force-reinstall: a failed ROCm install can leave an unpinned ROCm torch that still satisfies the CPU torch>= range, so without it uv would keep the ROCm build and only swap companions -- a mismatched venv the flavor-repair block won't fix. (No kept-release attempt: the ROCm attempts above always resolve or clear $script:PrevTorchPin first, so a pin never reaches this CPU base.)
                 $torchInstallExit = Invoke-InstallCommandRetry -Label "install PyTorch (CPU fallback)" { uv pip install --python $VenvPython --force-reinstall "torch>=2.4,<2.11.0" "torchvision>=0.19,<0.26.0" "torchaudio>=2.4,<2.11.0" --default-index $CpuFallbackIndexUrl }
                 if ($torchInstallExit -ne 0) {
                     Write-Host "[ERROR] Failed to install PyTorch (ROCm and CPU base both failed, exit code $torchInstallExit)" -ForegroundColor Red
@@ -2084,18 +2224,19 @@ exit 0
         } else {
             Write-TauriLog "STEP" "Installing PyTorch"
             substep "installing PyTorch ($(Remove-IndexUrlCredentials $TorchIndexUrl))..."
-            # Bounded trio on every index: torchaudio 2.11 dropped its torch pin, so a bare companion can drift from a capped torch. cu<digits> families ship torch 2.11.x (paired triton-windows 3.6) so the ceiling widens to <2.12; other leaves keep the 2.10 line. Mirrors install.sh and _CUDA_TORCH_PKG_SPEC.
-            $_idxLeaf = (($TorchIndexUrl -split '[?#]', 2)[0].TrimEnd('/') -split '/')[-1].ToLowerInvariant()
-            if ($_idxLeaf -match '^cu[0-9]+$') {
-                $_pinTorchSpec = "torch>=2.4,<2.12.0"
-                $_pinVisionSpec = "torchvision>=0.19,<0.27.0"
-                $_pinAudioSpec = "torchaudio>=2.4,<2.12.0"
-            } else {
-                $_pinTorchSpec = "torch>=2.4,<2.11.0"
-                $_pinVisionSpec = "torchvision>=0.19,<0.26.0"
-                $_pinAudioSpec = "torchaudio>=2.4,<2.11.0"
+            # Kept-release attempt first (pin vetted against the leaf-gated route window); companions follow the kept minor. Range install (the hoisted bounded trio) runs when there is no pin or the kept attempt failed.
+            if ($script:PrevTorchPin) {
+                $_keptTorch = $script:PrevTorchPin.TorchSpec; $_keptVision = $script:PrevTorchPin.VisionSpec; $_keptAudio = $script:PrevTorchPin.AudioSpec
+                $torchInstallExit = Invoke-InstallCommandRetry -Label "install PyTorch (kept release)" { uv pip install --python $VenvPython $_keptTorch $_keptVision $_keptAudio --default-index $TorchIndexUrl }
+                if ($torchInstallExit -ne 0) {
+                    substep "[WARN] $_keptTorch is not installable from $(Remove-IndexUrlCredentials $TorchIndexUrl) -- installing the newest supported release instead" "Yellow"
+                    $script:PrevTorchPin = $null
+                    Remove-Item Env:UNSLOTH_KEPT_TORCH -ErrorAction SilentlyContinue
+                }
             }
-            $torchInstallExit = Invoke-InstallCommandRetry -Label "install PyTorch" { uv pip install --python $VenvPython $_pinTorchSpec $_pinVisionSpec $_pinAudioSpec --default-index $TorchIndexUrl }
+            if (-not $script:PrevTorchPin) {
+                $torchInstallExit = Invoke-InstallCommandRetry -Label "install PyTorch" { uv pip install --python $VenvPython $_pinTorchSpec $_pinVisionSpec $_pinAudioSpec --default-index $TorchIndexUrl }
+            }
             if ($torchInstallExit -ne 0) {
                 Write-Host "[ERROR] Failed to install PyTorch (exit code $torchInstallExit)" -ForegroundColor Red
                 return (Exit-InstallFailure "Failed to install PyTorch (exit code $torchInstallExit)" $torchInstallExit)
@@ -2118,9 +2259,25 @@ exit 0
                 }
             }
         } elseif ($StudioLocalInstall) {
-            $baseInstallExit = Invoke-InstallCommandRetry -Label "install unsloth (local)" { uv pip install --python $VenvPython --upgrade-package unsloth "unsloth>=2026.7.3" "unsloth-zoo>=2026.7.3" }
+            # Freeze the installed torch trio so this with-deps resolve can't downgrade the pinned +cuXXX/+rocm build (twin of install.sh's _build_unsloth_torch_overrides).
+            $script:TorchOverridesFile = New-UnslothTorchOverridesFile -PythonExe $VenvPython
+            if ($script:TorchOverridesFile) {
+                $baseInstallExit = Invoke-InstallCommandRetry -Label "install unsloth (local)" { uv pip install --python $VenvPython --upgrade-package unsloth --overrides $script:TorchOverridesFile "unsloth>=2026.7.3" "unsloth-zoo>=2026.7.3" }
+                Remove-Item -LiteralPath $script:TorchOverridesFile -Force -ErrorAction SilentlyContinue
+                $script:TorchOverridesFile = $null
+            } else {
+                $baseInstallExit = Invoke-InstallCommandRetry -Label "install unsloth (local)" { uv pip install --python $VenvPython --upgrade-package unsloth "unsloth>=2026.7.3" "unsloth-zoo>=2026.7.3" }
+            }
         } else {
-            $baseInstallExit = Invoke-InstallCommandRetry -Label "install unsloth" { uv pip install --python $VenvPython --upgrade-package unsloth -- "$PackageName" }
+            # Freeze the installed torch trio (see above) so the with-deps unsloth resolve can't strip the +cuXXX/+rocm suffix.
+            $script:TorchOverridesFile = New-UnslothTorchOverridesFile -PythonExe $VenvPython
+            if ($script:TorchOverridesFile) {
+                $baseInstallExit = Invoke-InstallCommandRetry -Label "install unsloth" { uv pip install --python $VenvPython --upgrade-package unsloth --overrides $script:TorchOverridesFile -- "$PackageName" }
+                Remove-Item -LiteralPath $script:TorchOverridesFile -Force -ErrorAction SilentlyContinue
+                $script:TorchOverridesFile = $null
+            } else {
+                $baseInstallExit = Invoke-InstallCommandRetry -Label "install unsloth" { uv pip install --python $VenvPython --upgrade-package unsloth -- "$PackageName" }
+            }
         }
         if ($baseInstallExit -ne 0) {
             Write-Host "[ERROR] Failed to install unsloth (exit code $baseInstallExit)" -ForegroundColor Red
@@ -2184,8 +2341,22 @@ exit 0
                     # Pin companions like the fresh ROCm path (bare names can pull an ABI-incompatible torchvision/torchaudio from the per-arch index).
                     $visionSpec = if ($PinnedRocmVisionSpec) { $PinnedRocmVisionSpec } elseif ($ROCmGfxArch -and $torchvisionFloorMap -and $torchvisionFloorMap.ContainsKey($ROCmGfxArch)) { $torchvisionFloorMap[$ROCmGfxArch] } else { "torchvision" }
                     $audioSpec = if ($PinnedRocmAudioSpec) { $PinnedRocmAudioSpec } elseif ($ROCmGfxArch -and $torchaudioFloorMap -and $torchaudioFloorMap.ContainsKey($ROCmGfxArch)) { $torchaudioFloorMap[$ROCmGfxArch] } else { "torchaudio" }
+                    # Kept-release substitution (twin of install.sh's _install_torch_default_index honoring _PREV_TORCH_PIN): honor the preserved torch when the pin survived the E-decision (already floor-vetted); restore the range specs and retry if it isn't installable here.
+                    $_rocmKept = $false
+                    if ($script:PrevTorchPin) {
+                        $_origRocmSpec = $rocmSpec; $_origVisionSpec = $visionSpec; $_origAudioSpec = $audioSpec
+                        $rocmSpec = $script:PrevTorchPin.TorchSpec; $visionSpec = $script:PrevTorchPin.VisionSpec; $audioSpec = $script:PrevTorchPin.AudioSpec
+                        $_rocmKept = $true
+                    }
                     substep "PyTorch flavor mismatch (installed $installedTorchTag, need ROCm) -- reinstalling correct build..." "Yellow"
                     $torchFixExit = Invoke-InstallCommand { uv pip install --python $VenvPython --force-reinstall --default-index $ROCmIndexUrl $rocmSpec $visionSpec $audioSpec }
+                    if ($torchFixExit -ne 0 -and $_rocmKept) {
+                        substep "[WARN] $rocmSpec is not installable from $(Remove-IndexUrlCredentials $ROCmIndexUrl) -- installing the newest supported release instead" "Yellow"
+                        $rocmSpec = $_origRocmSpec; $visionSpec = $_origVisionSpec; $audioSpec = $_origAudioSpec
+                        $script:PrevTorchPin = $null
+                        Remove-Item Env:UNSLOTH_KEPT_TORCH -ErrorAction SilentlyContinue
+                        $torchFixExit = Invoke-InstallCommand { uv pip install --python $VenvPython --force-reinstall --default-index $ROCmIndexUrl $rocmSpec $visionSpec $audioSpec }
+                    }
                     if ($torchFixExit -ne 0) {
                         Write-Host "[ERROR] Failed to reinstall PyTorch with the correct ROCm build (exit code $torchFixExit)" -ForegroundColor Red
                         return (Exit-InstallFailure "Failed to reinstall PyTorch (ROCm) (exit code $torchFixExit)" $torchFixExit)
@@ -2199,8 +2370,22 @@ exit 0
                     } else {
                         $_fixTorchSpec = "torch>=2.4,<2.11.0"; $_fixVisionSpec = "torchvision>=0.19,<0.26.0"; $_fixAudioSpec = "torchaudio>=2.4,<2.11.0"
                     }
+                    # Kept-release substitution (twin of install.sh's _install_torch_default_index honoring _PREV_TORCH_PIN): honor the preserved torch when the pin survived the E-decision; restore the range specs and retry if it isn't installable here. The --reinstall-package triplet stays on both attempts.
+                    $_cudaKept = $false
+                    if ($script:PrevTorchPin) {
+                        $_origFixTorchSpec = $_fixTorchSpec; $_origFixVisionSpec = $_fixVisionSpec; $_origFixAudioSpec = $_fixAudioSpec
+                        $_fixTorchSpec = $script:PrevTorchPin.TorchSpec; $_fixVisionSpec = $script:PrevTorchPin.VisionSpec; $_fixAudioSpec = $script:PrevTorchPin.AudioSpec
+                        $_cudaKept = $true
+                    }
                     substep "PyTorch flavor mismatch (installed $installedTorchTag, need $expectedTorchTag) -- reinstalling correct build..." "Yellow"
                     $torchFixExit = Invoke-InstallCommand { uv pip install --python $VenvPython $_fixTorchSpec $_fixVisionSpec $_fixAudioSpec --default-index $TorchIndexUrl --reinstall-package torch --reinstall-package torchvision --reinstall-package torchaudio }
+                    if ($torchFixExit -ne 0 -and $_cudaKept) {
+                        substep "[WARN] $_fixTorchSpec is not installable from $(Remove-IndexUrlCredentials $TorchIndexUrl) -- installing the newest supported release instead" "Yellow"
+                        $_fixTorchSpec = $_origFixTorchSpec; $_fixVisionSpec = $_origFixVisionSpec; $_fixAudioSpec = $_origFixAudioSpec
+                        $script:PrevTorchPin = $null
+                        Remove-Item Env:UNSLOTH_KEPT_TORCH -ErrorAction SilentlyContinue
+                        $torchFixExit = Invoke-InstallCommand { uv pip install --python $VenvPython $_fixTorchSpec $_fixVisionSpec $_fixAudioSpec --default-index $TorchIndexUrl --reinstall-package torch --reinstall-package torchvision --reinstall-package torchaudio }
+                    }
                     if ($torchFixExit -ne 0) {
                         Write-Host "[ERROR] Failed to reinstall PyTorch with the correct CUDA build (exit code $torchFixExit)" -ForegroundColor Red
                         return (Exit-InstallFailure "Failed to reinstall PyTorch ($expectedTorchTag) (exit code $torchFixExit)" $torchFixExit)
@@ -2317,6 +2502,18 @@ exit 0
         Remove-Item Env:UNSLOTH_INSTALL_ROLLBACK_MANAGED -ErrorAction SilentlyContinue
         Remove-Item Env:UNSLOTH_SETUP_PYTHON -ErrorAction SilentlyContinue
     }
+    # Release-preservation handoff done: setup.ps1 has consumed UNSLOTH_KEPT_TORCH (if any). Clear it so a
+    # later 'studio update' in the same session doesn't re-pin an old release, and warn (never abort) if the
+    # kept torch series changed out from under us during setup.
+    if ($script:PrevTorchPin) {
+        $_keptSeries = "$($script:PrevTorchPin.Release.Major).$($script:PrevTorchPin.Release.Minor)"
+        $_nowVer = Get-InstalledTorchVersionRaw -PythonExe $VenvPython
+        $_nowRelease = ConvertTo-TorchNumericRelease $_nowVer
+        if ($_nowRelease -and "$($_nowRelease.Major).$($_nowRelease.Minor)" -ne $_keptSeries) {
+            Write-Host "[WARN] kept torch $($script:PrevTorchVer) but the environment now has torch $_nowVer" -ForegroundColor Red
+        }
+    }
+    Remove-Item Env:UNSLOTH_KEPT_TORCH -ErrorAction SilentlyContinue
     if ($setupExit -ne 0) {
         Write-Host "[ERROR] unsloth studio setup failed (exit code $setupExit)" -ForegroundColor Red
         return (Exit-InstallFailure "unsloth studio setup failed (exit code $setupExit)" $setupExit)
