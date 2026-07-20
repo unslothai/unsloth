@@ -295,7 +295,25 @@ def test_smart_chunk_text_single_chunk_no_eos_returns_plain_list():
     return True
 
 
+def test_load_from_file_skips_non_object_json_lines():
+    """Non-object .jsonl lines (valid JSON, not dicts) are skipped, not fatal."""
+    # "context" contains "text", ["text"] holds it, 42 isn't iterable -- each
+    # would reach data[field] and raise TypeError without the isinstance guard.
+    with tempfile.NamedTemporaryFile("w", suffix = ".jsonl", delete = False) as f:
+        f.write('"context"\n["text", "x"]\n42\n{"text": "keep this"}\n')
+        path = f.name
+    try:
+        text = RawTextDataLoader(None)._read_file_by_format(path, "json_lines")
+        assert text == "keep this", text
+    finally:
+        os.unlink(path)
+
+    print("test_load_from_file_skips_non_object_json_lines passed")
+    return True
+
+
 if __name__ == "__main__":
     success = test_raw_text_loader()
     success = test_smart_chunk_text_single_chunk_no_eos_returns_plain_list() and success
+    success = test_load_from_file_skips_non_object_json_lines() and success
     sys.exit(0 if success else 1)

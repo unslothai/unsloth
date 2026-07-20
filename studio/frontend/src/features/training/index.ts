@@ -22,6 +22,7 @@ export {
   getTrainingRunDisplayTitle,
   getTrainingRunModelSubtitle,
 } from "./lib/run-display";
+export { parseBackendTrainingMethod } from "./lib/training-methods";
 export { useTrainingHistorySidebarItems } from "./hooks/use-training-history-sidebar";
 export { useTrainingRuntimeLifecycle } from "./hooks/use-training-runtime-lifecycle";
 export { useTrainingCompletionWatch } from "./hooks/use-training-completion-watch";

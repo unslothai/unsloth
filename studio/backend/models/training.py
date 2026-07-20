@@ -446,7 +446,7 @@ class TrainingStartRequest(BaseModel):
     random_seed: int = Field(
         3407,
         description = (
-            "Random seed; matches the Studio backend / MLX worker default "
+            "Random seed; matches the Unsloth backend / MLX worker default "
             "and unsloth's historical recommended value."
         ),
     )

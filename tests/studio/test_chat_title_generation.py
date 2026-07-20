@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-"""Regression checks for Studio chat title generation context."""
+"""Regression checks for Unsloth chat title generation context."""
 
 from __future__ import annotations
 

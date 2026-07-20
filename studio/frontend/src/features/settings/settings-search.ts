@@ -85,12 +85,19 @@ export const SETTINGS_SEARCH_INDEX: Record<SettingsTab, TranslationKey[]> = {
     "settings.chat.artifacts.title",
     "settings.chat.artifacts.collapseHtmlBlocks",
     "settings.chat.artifacts.allowNetworkAccess",
-    "settings.chat.data",
+    "settings.chat.modelDisclaimer",
+  ],
+  // Chat data management moved to the Data tab; keep these rows findable there.
+  data: [
+    "settings.data.fineTuneExport",
+    "settings.data.archivedChats",
+    "settings.data.archiveAllChats",
+    "settings.data.confirmBeforeDeleting",
+    "settings.data.uploadedFiles",
+    "settings.chat.exportHistory",
     "settings.chat.exportConversations",
     "settings.chat.importChats",
     "settings.chat.clearAllChats",
-    "settings.chat.exportHistory",
-    "settings.chat.modelDisclaimer",
   ],
   "api-keys": [
     "settings.apiKeys.title",

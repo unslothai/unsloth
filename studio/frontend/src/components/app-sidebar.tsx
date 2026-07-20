@@ -973,10 +973,10 @@ export function AppSidebar() {
                   </DropdownMenuItem>
                 ))}
                 <DropdownMenuSeparator />
-                {/* Bulk export and import live in Settings -> Chat -> Data. */}
+                {/* Bulk export and import live in Settings -> Data. */}
                 <DropdownMenuItem
                   onSelect={() =>
-                    useSettingsDialogStore.getState().openDialog("chat")
+                    useSettingsDialogStore.getState().openDialog("data")
                   }
                 >
                   Export all chats…

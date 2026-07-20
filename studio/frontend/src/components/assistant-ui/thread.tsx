@@ -1434,13 +1434,10 @@ const Composer: FC<{
   const artifactsEnabled = useChatRuntimeStore((s) => s.artifactsEnabled);
   const mcpEnabledForChat = useChatRuntimeStore((s) => s.mcpEnabledForChat);
   const ragEnabled = useChatRuntimeStore((s) => s.ragEnabled);
-  const permissionMode = useChatRuntimeStore((s) => s.permissionMode);
-  // More than 4 pills: collapse to icons only. Search and Code always show; the
-  // permission pill shows in every mode except "off" (it renders null there);
-  // Images, RAG, Canvas and MCP are conditional.
+  // More than 4 pills: collapse to icons only. Search, Code, and permissions
+  // always show; Images, RAG, Canvas and MCP are conditional.
   const pillsCompact =
-    2 +
-      (permissionMode !== "off" ? 1 : 0) +
+    3 +
       (ragEnabled ? 1 : 0) +
       (supportsBuiltinImageGeneration ? 1 : 0) +
       (artifactsEnabled ? 1 : 0) +
@@ -1556,20 +1553,6 @@ const Composer: FC<{
     const t = setTimeout(() => writeComposerDraft(draftKey, composerText), 300);
     return () => clearTimeout(t);
   }, [composerText, draftKey]);
-  // Two-row layout shows once the input wraps or a tool is on. Tools can
-  // pre-select before a model loads, so an active toggle expands it either way.
-  // Keep the composer expanded whenever the permission pill is visible.
-  const composerExpanded =
-    isMultiline ||
-    hasAttachments ||
-    hasPendingAudio ||
-    toolsEnabled ||
-    codeToolsEnabled ||
-    imageToolsEnabled ||
-    ragEnabled ||
-    artifactsEnabled ||
-    mcpEnabledForChat ||
-    permissionMode !== "off";
   // react-textarea-autosize re-measures only on value change or window resize,
   // not on the width swap from expanding, so it keeps the taller height and
   // leaves a stray blank row. Nudge a resize whenever input width changes.
@@ -1856,27 +1839,25 @@ const Composer: FC<{
       <ToolStatusDisplay />
       <div
         className="unsloth-composer-line"
-        data-expanded={composerExpanded ? "true" : "false"}
+        // The permission pill is always visible, so keep the two-row layout
+        // expanded and leave the primary tool toggles accessible in every mode.
+        data-expanded="true"
       >
         <div
           className="unsloth-composer-left"
           data-pill-compact={pillsCompact ? "true" : undefined}
         >
           <ComposerToolsMenu side={effectiveMenuSide} />
-          {/* Permission-level pill: always visible, even while the pill row
-              is collapsed; opens the permission level dropdown. */}
+          {/* Permission-level pill: always visible and opens the permission
+              level dropdown. */}
           <PermissionModeComposerPill side={effectiveMenuSide} />
-          {composerExpanded ? (
-            <>
-              <WebSearchToggle />
-              <CodeToolsToggle />
-              <ImagesToggle />
-              <KnowledgeBaseComposerButton side={effectiveMenuSide} />
-              {artifactsEnabled ? <ArtifactsToggle /> : null}
-              {mcpEnabledForChat ? (
-                <McpComposerButton side={effectiveMenuSide} />
-              ) : null}
-            </>
+          <WebSearchToggle />
+          <CodeToolsToggle />
+          <ImagesToggle />
+          <KnowledgeBaseComposerButton side={effectiveMenuSide} />
+          {artifactsEnabled ? <ArtifactsToggle /> : null}
+          {mcpEnabledForChat ? (
+            <McpComposerButton side={effectiveMenuSide} />
           ) : null}
         </div>
         <ComposerPrimitive.Input
@@ -1970,7 +1951,7 @@ function isNativeComposing(event: Event) {
 }
 
 // Fallback timeout for stuck IME composition. With Chrome on Windows against
-// a WSL-hosted Studio (issue #5546), `compositionend` never fires after the
+// a WSL-hosted Unsloth (issue #5546), `compositionend` never fires after the
 // candidate commits, so `composingRef` stays true and Send stays disabled.
 // Every compositionupdate / non-composing input resets the timer; only a true
 // gap-after-commit lets it fire. 2500ms is above a normal candidate-window

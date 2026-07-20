@@ -59,59 +59,12 @@ def _safe_is_dir(path) -> bool:
         return False
 
 
-# Hub repo id shape ("owner/name", no leading separator); anything else is
-# treated as a local filesystem path.
-_HF_REPO_ID_RE = re.compile(r"^[A-Za-z0-9][\w.\-]*/[\w.\-]+$")
-
-
-def _is_hidden_model(*values: str | None) -> bool:
-    """True if any id/path is the RAG embedding model (EMBEDDING_MODEL or
-    EMBED_GGUF_REPO basename) or the llama.cpp install validation probe
-    (ggml-org/models / stories260K), so pickers hide them (GGUF and non-GGUF).
-    None are usable chat models; the probe can be cached as a side effect of
-    installing the prebuilt llama-server and otherwise sorts smallest, so it
-    would be auto-selected. A local-path embedder is matched by exact resolved
-    path only: a generic basename like "model" must not substring-hide
-    unrelated chat models."""
-    from core.rag import config as rag_config
-
-    needles = [
-        # The validation probe's repo (matches the cached repo id) and its exact
-        # filename (matches the on-disk path). The filename carries the .gguf so
-        # it does not hide unrelated repos like ``user/stories260K-finetune-GGUF``.
-        "ggml-org/models",
-        "stories260k.gguf",
-    ]
-    exact_paths: list[str] = []
-    for model in (
-        rag_config.effective_embedding_model(),
-        rag_config.effective_gguf_repo(),
-    ):
-        if _HF_REPO_ID_RE.match(model):
-            needles.append(model.split("/")[-1].lower())
-        else:
-            resolved = _safe_resolve(Path(model).expanduser())
-            if resolved:
-                exact_paths.append(resolved.lower())
-    for v in values:
-        if not v:
-            continue
-        low = v.lower()
-        if any(n in low for n in needles):
-            return True
-        if exact_paths:
-            resolved = _safe_resolve(Path(v).expanduser())
-            if resolved and resolved.lower() in exact_paths:
-                return True
-    return False
-
-
-def _safe_resolve(path: Path) -> Optional[str]:
-    """resolve() to a string, or None when the path is inaccessible."""
-    try:
-        return str(path.resolve())
-    except OSError:
-        return None
+# Shared with the hub inventory scans; keep the private aliases so existing
+# importers (core.inference.local_model_resolver, tests) stay valid.
+from utils.hidden_models import (
+    _safe_resolve,
+    is_hidden_model as _is_hidden_model,
+)
 
 
 backend_path = Path(__file__).parent.parent.parent
@@ -544,7 +497,7 @@ def _ollama_links_dir(ollama_dir: Path) -> Optional[Path]:
     """Return a writable directory for Ollama ``.gguf`` symlinks.
 
     Prefers ``<ollama_dir>/.studio_links/`` so links sit next to their
-    blobs; falls back to a per-ollama-dir namespace under Studio's cache
+    blobs; falls back to a per-ollama-dir namespace under Unsloth's cache
     when the models dir is read-only (common for system installs).
     """
     from utils.paths.storage_roots import cache_root
@@ -555,7 +508,7 @@ def _ollama_links_dir(ollama_dir: Path) -> Optional[Path]:
         return primary
     except OSError as e:
         logger.debug(
-            "Ollama dir %s not writable for .studio_links (%s); falling back to Studio cache",
+            "Ollama dir %s not writable for .studio_links (%s); falling back to Unsloth cache",
             ollama_dir,
             e,
         )
@@ -594,7 +547,7 @@ def _scan_ollama_dir(ollama_dir: Path, limit: Optional[int] = None) -> List[Loca
     model, keyed by a short hash of the manifest path, so
     ``detect_mmproj_file`` only sees that model's projector). Links are
     symlinks when possible, else hardlinks; the link dir is
-    ``.studio_links/`` when writable, else Studio's cache.
+    ``.studio_links/`` when writable, else Unsloth's cache.
     """
     manifests_root = ollama_dir / "manifests"
     if not manifests_root.is_dir():
@@ -853,7 +806,7 @@ def collect_local_models(models_root: Path) -> List[LocalModelInfo]:
         key = lambda item: (item.updated_at or 0),
         reverse = True,
     )
-    return [m for m in models if not _is_hidden_model(m.id, m.path)]
+    return [m for m in models if not _is_hidden_model(m.id, m.model_id, m.path)]
 
 
 @router.get("/local", response_model = LocalModelListResponse)
@@ -1194,7 +1147,7 @@ def _build_browse_allowlist(
     """Return the root directories the folder browser may walk.
 
     The same list seeds the sidebar suggestion chips, so chip targets are
-    always reachable. Roots: HOME, resolved HF cache dirs, Studio's
+    always reachable. Roots: HOME, resolved HF cache dirs, Unsloth's
     outputs/exports/studio root, registered scan folders, and well-known
     local-LLM dirs (LM Studio, Ollama, ``~/models``); each added only if
     it resolves to a real directory.
@@ -1486,7 +1439,7 @@ def browse_folders(
             "Directory to list. If omitted, defaults to the current user's "
             "home directory. Tilde (`~`) and relative paths are expanded. "
             "Must resolve inside the allowlist of browseable roots (HOME, "
-            "HF cache, Studio dirs, registered scan folders, well-known "
+            "HF cache, Unsloth dirs, registered scan folders, well-known "
             "model dirs)."
         ),
     ),
@@ -2251,15 +2204,15 @@ async def delete_finetuned_model(
     gguf_variant: Optional[str] = Body(None),
     current_subject: str = Depends(get_current_subject),
 ):
-    """Delete a Studio-trained or exported model from disk.
+    """Delete an Unsloth-trained or exported model from disk.
 
-    Only paths under Studio's outputs/exports roots are accepted.
+    Only paths under Unsloth's outputs/exports roots are accepted.
     Exported GGUF entries can delete one quant variant at a time.
     """
     if source not in {"training", "exported"}:
         raise HTTPException(
             status_code = 400,
-            detail = "Only trained or exported Studio models can be deleted",
+            detail = "Only trained or exported Unsloth models can be deleted",
         )
 
     if not model_path or not model_path.strip():
@@ -2291,14 +2244,14 @@ async def delete_finetuned_model(
         if not _is_path_under_lexically(delete_path, allowed_root):
             raise HTTPException(
                 status_code = 400,
-                detail = "Model path is outside Studio storage",
+                detail = "Model path is outside Unsloth storage",
             )
         if export_type == "gguf" and gguf_variant:
             target_path = delete_path.resolve()
             if not _is_path_under(target_path, allowed_root):
                 raise HTTPException(
                     status_code = 400,
-                    detail = "Model path is outside Studio storage",
+                    detail = "Model path is outside Unsloth storage",
                 )
         else:
             target_path = delete_path
@@ -2311,7 +2264,7 @@ async def delete_finetuned_model(
     if should_check_resolved_path and not _is_path_under(target_path, allowed_root):
         raise HTTPException(
             status_code = 400,
-            detail = "Model path is outside Studio storage",
+            detail = "Model path is outside Unsloth storage",
         )
     if target_path == allowed_root:
         raise HTTPException(
@@ -2778,7 +2731,11 @@ async def get_gguf_variants(
             ],
             has_vision = response.has_vision,
             default_variant = response.default_variant,
-            context_length = _read_native_context_length(repo_id, is_local = local),
+            # The header walk reads tokenizer arrays on dense models (tens of
+            # ms per uncached file); keep it off the event loop.
+            context_length = await asyncio.to_thread(
+                _read_native_context_length, repo_id, is_local = local
+            ),
         )
     except HTTPException:
         raise
@@ -3456,7 +3413,7 @@ _EXPORT_SIZE_CACHE: dict[str, tuple[int, int, str]] = {}
 
 
 def _is_sizable_local_path(model: str) -> bool:
-    """True only for local paths under a Studio data root.
+    """True only for local paths under an Unsloth data root.
 
     Containment is decided lexically (no filesystem access) before the path is
     touched, then the path is symlink-resolved and re-checked so a symlink
