@@ -373,11 +373,15 @@ def free_chat_models_for_training(reason: str) -> List[str]:
 
 
 def free_stt_model_for_training(reason: str) -> List[str]:
-    """Unload the dictation model before training. Never raises."""
+    """Unload the dictation model(s) before training. Never raises.
+
+    The Transformers and GGUF sidecars are freed under independent exception
+    boundaries so a failure unloading one backend never skips freeing the other
+    (both can hold accelerator memory at once after an engine switch).
+    """
+    freed: List[str] = []
     try:
         from core.inference.stt_sidecar import get_stt_sidecar
-
-        freed: List[str] = []
         sidecar = get_stt_sidecar()
         if sidecar.is_loading() and sidecar.cancel_pending_load():
             logger.info("Cancelling STT model load for training (%s)", reason)
@@ -396,10 +400,13 @@ def free_stt_model_for_training(reason: str) -> List[str]:
                 logger.info("Unloading STT model '%s' for training (%s)", model, reason)
                 sidecar.unload()
                 freed.append(f"stt:{model}")
-        # Check the GGUF sidecar even after a cancelled Transformers load; both
-        # engines can hold memory at once (engine switch or direct load calls).
-        from core.inference.stt_ggml_sidecar import get_ggml_stt_sidecar
+    except Exception as e:
+        logger.warning("Could not unload Transformers STT model: %s", e)
 
+    # Check the GGUF sidecar even after a cancelled/failed Transformers unload;
+    # both engines can hold memory at once (engine switch or direct load calls).
+    try:
+        from core.inference.stt_ggml_sidecar import get_ggml_stt_sidecar
         ggml = get_ggml_stt_sidecar()
         if ggml.is_loading() and ggml.cancel_pending_load():
             logger.info("Cancelling GGUF STT model load for training (%s)", reason)
@@ -416,10 +423,10 @@ def free_stt_model_for_training(reason: str) -> List[str]:
                 logger.info("Unloading GGUF STT model '%s' for training (%s)", ggml_model, reason)
                 ggml.unload()
                 freed.append(f"stt:{ggml_model}")
-        return freed
     except Exception as e:
-        logger.warning("Could not unload STT model: %s", e)
-        return []
+        logger.warning("Could not unload GGUF STT model: %s", e)
+
+    return freed
 
 
 def coordinate_models_for_training(

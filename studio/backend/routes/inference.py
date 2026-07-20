@@ -6029,9 +6029,25 @@ async def stt_unload(
     if engine is None:
         engines = ["transformers", "gguf"]
     else:
-        engines = [_resolve_stt_engine(engine)]
+        # Resolve through the serving resolver, not the plain normalizer: a
+        # "gguf" pick on a host without whisper-server is actually served by the
+        # Transformers fallback, so unloading must target that same engine or the
+        # resident model is never freed.
+        engines = [_resolve_serving_stt_engine(engine)]
+    # Attempt every engine even if one raises, so a failure unloading one backend
+    # never skips freeing the other (both can be resident after an engine switch).
+    failed: list[str] = []
     for name in engines:
-        await asyncio.to_thread(_stt_sidecar_for(name).unload)
+        try:
+            await asyncio.to_thread(_stt_sidecar_for(name).unload)
+        except Exception as exc:  # noqa: BLE001 - report after attempting all engines
+            logger.warning("Failed to unload STT engine '%s': %s", name, exc)
+            failed.append(name)
+    if failed:
+        raise HTTPException(
+            status_code = 500,
+            detail = f"Failed to unload STT engine(s): {', '.join(failed)}",
+        )
     return JSONResponse(content = {"loaded_model": None, "device": None})
 
 

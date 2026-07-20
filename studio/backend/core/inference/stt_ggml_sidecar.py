@@ -366,13 +366,17 @@ class GgmlSttSidecar:
 
     @property
     def loaded_model(self) -> Optional[str]:
-        with self._lock:
-            return self._model_id if self._process_alive() else None
+        # Lock-free status read, mirroring the Transformers sidecar
+        # (stt_sidecar.py). transcribe() holds self._lock across the whole
+        # inference call (up to _TRANSCRIBE_TIMEOUT_SECONDS), and /audio/stt
+        # status polls plus training admission must not block behind it. The
+        # reads are single-attribute (GIL-atomic) and Popen.poll() is guarded by
+        # subprocess's own _waitpid_lock, so a concurrent unload is safe.
+        return self._model_id if self._process_alive() else None
 
     @property
     def device(self) -> Optional[str]:
-        with self._lock:
-            return "whisper.cpp" if self._process_alive() else None
+        return "whisper.cpp" if self._process_alive() else None
 
     def is_loading(self) -> bool:
         # True only while whisper-server is starting (may take seconds to bind

@@ -33,8 +33,11 @@ _DEFAULT_EMBEDDING_REPO_IDS = {
 # remain exact-match-only.
 _DEFAULT_EMBEDDING_PATH_BASENAMES = {"bge-small-en-v1.5"}
 # Curated Whisper dictation checkpoints. They are STT models, never chat models,
-# so the chat model inventory and pickers hide them (the safetensors repos and
-# their GGUF companions). Custom Whisper checkpoints are caught by config below.
+# so the chat model inventory and pickers hide them: the Transformers safetensors
+# repos (unsloth/whisper-*) and their whisper.cpp GGUF companions served by the
+# GGUF dictation engine (unslothai/whisper-*-GGUF). Custom Whisper checkpoints are
+# caught by config below, but the GGUF companions carry a raw .bin (no whisper
+# config.json), so they must be listed here by id or they leak into chat pickers.
 _HIDDEN_STT_REPO_IDS = frozenset(
     {
         "unsloth/whisper-tiny",
@@ -42,6 +45,11 @@ _HIDDEN_STT_REPO_IDS = frozenset(
         "unsloth/whisper-small",
         "unsloth/whisper-large-v3-turbo",
         "unsloth/whisper-large-v3",
+        "unslothai/whisper-tiny-GGUF",
+        "unslothai/whisper-base-GGUF",
+        "unslothai/whisper-small-GGUF",
+        "unslothai/whisper-large-v3-turbo-GGUF",
+        "unslothai/whisper-large-v3-GGUF",
     }
 )
 
