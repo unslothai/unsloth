@@ -14,6 +14,7 @@ from __future__ import annotations
 import os
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -51,6 +52,8 @@ try:
 except Exception as exc:
     pytest.skip(f"studio backend import unavailable: {exc}", allow_module_level = True)
 
+from fastapi import HTTPException
+
 
 def test_plain_quant_label_resolves():
     assert routes_models._main_variant_gguf_label("Model-Q8_0.gguf") == "Q8_0"
@@ -85,3 +88,83 @@ def test_normalized_quant_label_ignores_separators():
     assert routes_models._normalized_quant_label("Q8-0") == routes_models._normalized_quant_label(
         "Q8_0"
     )
+
+
+def _revision(snapshot: Path, last_modified: float, names: list[str]) -> SimpleNamespace:
+    files = []
+    for name in names:
+        path = snapshot / name
+        path.parent.mkdir(parents = True, exist_ok = True)
+        path.write_text("gguf")
+        files.append(SimpleNamespace(file_name = name, file_path = path))
+    return SimpleNamespace(
+        snapshot_path = snapshot, last_modified = last_modified, files = files
+    )
+
+
+def _patch_cache(monkeypatch, tmp_path: Path, revisions: list[SimpleNamespace]) -> None:
+    repo = SimpleNamespace(
+        repo_id = "Org/Repo",
+        repo_type = "model",
+        repo_path = tmp_path,
+        revisions = revisions,
+    )
+    monkeypatch.setattr(
+        routes_models, "_all_hf_cache_scans", lambda: [SimpleNamespace(repos = [repo])]
+    )
+
+
+@pytest.mark.parametrize("newest_first", [True, False])
+def test_variant_resolves_from_newest_revision(monkeypatch, tmp_path, newest_first):
+    old = _revision(tmp_path / "snapshots" / "aaa", 1_000.0, ["Model-Q4_K_M.gguf"])
+    new = _revision(tmp_path / "snapshots" / "bbb", 2_000.0, ["Model-Q4_K_M.gguf"])
+    _patch_cache(monkeypatch, tmp_path, [new, old] if newest_first else [old, new])
+    resolved = routes_models._resolve_cached_model_path("Org/Repo", "Q4_K_M")
+    assert resolved == tmp_path / "snapshots" / "bbb" / "Model-Q4_K_M.gguf"
+
+
+def test_sharded_variant_resolves_first_split(monkeypatch, tmp_path):
+    rev = _revision(
+        tmp_path / "snapshots" / "aaa",
+        1_000.0,
+        ["Model-Q4_K_M-00002-of-00002.gguf", "Model-Q4_K_M-00001-of-00002.gguf"],
+    )
+    _patch_cache(monkeypatch, tmp_path, [rev])
+    resolved = routes_models._resolve_cached_model_path("Org/Repo", "Q4_K_M")
+    assert resolved.name == "Model-Q4_K_M-00001-of-00002.gguf"
+
+
+def test_variant_only_in_older_revision_resolves(monkeypatch, tmp_path):
+    old = _revision(tmp_path / "snapshots" / "aaa", 1_000.0, ["Model-Q4_K_M.gguf"])
+    new = _revision(tmp_path / "snapshots" / "bbb", 2_000.0, ["Model-Q8_0.gguf"])
+    _patch_cache(monkeypatch, tmp_path, [new, old])
+    resolved = routes_models._resolve_cached_model_path("Org/Repo", "Q4_K_M")
+    assert resolved == tmp_path / "snapshots" / "aaa" / "Model-Q4_K_M.gguf"
+
+
+def test_missing_newest_file_falls_back_to_older_revision(monkeypatch, tmp_path):
+    old = _revision(tmp_path / "snapshots" / "aaa", 1_000.0, ["Model-Q4_K_M.gguf"])
+    new_snapshot = tmp_path / "snapshots" / "bbb"
+    new_snapshot.mkdir(parents = True)
+    new = SimpleNamespace(
+        snapshot_path = new_snapshot,
+        last_modified = 2_000.0,
+        files = [
+            SimpleNamespace(
+                file_name = "Model-Q4_K_M.gguf",
+                file_path = new_snapshot / "Model-Q4_K_M.gguf",
+            )
+        ],
+    )
+    _patch_cache(monkeypatch, tmp_path, [new, old])
+    resolved = routes_models._resolve_cached_model_path("Org/Repo", "Q4_K_M")
+    assert resolved == tmp_path / "snapshots" / "aaa" / "Model-Q4_K_M.gguf"
+
+
+def test_unknown_variant_raises_404(monkeypatch, tmp_path):
+    rev = _revision(tmp_path / "snapshots" / "aaa", 1_000.0, ["Model-Q8_0.gguf"])
+    _patch_cache(monkeypatch, tmp_path, [rev])
+    with pytest.raises(HTTPException) as excinfo:
+        routes_models._resolve_cached_model_path("Org/Repo", "Q4_K_M")
+    assert excinfo.value.status_code == 404
+    assert "Q4_K_M" in excinfo.value.detail

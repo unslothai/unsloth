@@ -70,13 +70,14 @@ from utils.hidden_models import (
 )
 
 
-def hidden_model_matchers() -> tuple[list[str], list[str]]:
-    """Substring needles and exact resolved paths identifying infra models
-    (the RAG embedder and the llama.cpp install validation probe) that pickers
-    hide. Served by the ``/api/hub/hidden-models`` endpoint so the frontend can
-    extend its static needles with the user's configured embedder. A local-path
-    embedder is matched by exact resolved path only: a generic basename like
-    "model" must not substring-hide unrelated chat models."""
+def hidden_model_matchers() -> tuple[list[str], list[str], list[str]]:
+    """Substring needles, exact repo ids, and exact resolved paths identifying
+    infra models (the RAG embedder and the llama.cpp install validation probe)
+    that pickers hide. Served by the ``/api/hub/hidden-models`` endpoint. A
+    configured HF-repo embedder is published as its exact lowercased repo id
+    (mirroring ``utils.hidden_models.is_hidden_model``) and a local-path
+    embedder as its exact resolved path only: a generic basename like "model"
+    must not substring-hide unrelated chat models."""
     from core.rag import config as rag_config
 
     needles = [
@@ -86,18 +87,19 @@ def hidden_model_matchers() -> tuple[list[str], list[str]]:
         "ggml-org/models",
         "stories260k.gguf",
     ]
+    exact_ids: list[str] = []
     exact_paths: list[str] = []
     for model in (
         rag_config.effective_embedding_model(),
         rag_config.effective_gguf_repo(),
     ):
         if _HF_REPO_ID_RE.match(model):
-            needles.append(model.split("/")[-1].lower())
+            exact_ids.append(model.lower())
         else:
             resolved = _safe_resolve(Path(model).expanduser())
             if resolved:
                 exact_paths.append(resolved.lower())
-    return needles, exact_paths
+    return needles, exact_ids, exact_paths
 
 
 backend_path = Path(__file__).parent.parent.parent
@@ -3428,9 +3430,14 @@ def _resolve_cached_model_path(repo_id: str, variant: Optional[str]) -> Path:
 
     if variant:
         want = _normalized_quant_label(variant)
-        matches = []
-        for rev in target_repo.revisions:
+        candidate_revisions = sorted(
+            target_repo.revisions,
+            key = lambda rev: getattr(rev, "last_modified", 0) or 0,
+            reverse = True,
+        )
+        for rev in candidate_revisions:
             snapshot = getattr(rev, "snapshot_path", None)
+            matches = []
             for f in rev.files:
                 p = Path(f.file_path)
                 rel = f.file_name
@@ -3444,13 +3451,13 @@ def _resolve_cached_model_path(repo_id: str, variant: Optional[str]) -> Path:
                     continue
                 if p.exists() or p.is_symlink():
                     matches.append((rel, p))
-        if not matches:
-            raise HTTPException(
-                status_code = 404,
-                detail = f"Variant {variant} not found in cache for {repo_id}",
-            )
-        # Path-sorted so a sharded quant deterministically yields its first split.
-        return sorted(matches, key = lambda m: m[0].lower())[0][1]
+            if matches:
+                # Path-sorted so a sharded quant deterministically yields its first split.
+                return sorted(matches, key = lambda m: m[0].lower())[0][1]
+        raise HTTPException(
+            status_code = 404,
+            detail = f"Variant {variant} not found in cache for {repo_id}",
+        )
 
     # Whole repo: the newest revision's snapshot dir holds the visible files.
     revisions = sorted(

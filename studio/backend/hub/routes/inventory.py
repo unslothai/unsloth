@@ -221,8 +221,10 @@ async def list_hidden_models(current_subject: str = Depends(get_current_subject)
 
     from routes.models import hidden_model_matchers
 
-    needles, exact_paths = await asyncio.to_thread(hidden_model_matchers)
-    return HiddenModelsResponse(needles = needles, exact_paths = exact_paths)
+    needles, exact_ids, exact_paths = await asyncio.to_thread(hidden_model_matchers)
+    return HiddenModelsResponse(
+        needles = needles, exact_ids = exact_ids, exact_paths = exact_paths
+    )
 
 
 @router.delete(

@@ -9,9 +9,9 @@ import { authFetch } from "@/features/auth";
 // probe are not usable chat models. Server-confirmed cache rows are trusted
 // because the backend applies variant-aware filtering. Optimistic cache rows
 // still use these needles until the server confirms them. The dynamic matchers
-// fetched from `/api/hub/hidden-models` extend the static needles with the
-// user's configured embedder. Per-repo views are not filtered, so reinstall
-// flows still show downloaded files.
+// fetched from `/api/hub/hidden-models` add the user's configured embedder as
+// exact repo ids and exact resolved paths, never substring needles. Per-repo
+// views are not filtered, so reinstall flows still show downloaded files.
 const HIDDEN_NEEDLES = [
   "bge-small-en-v1.5", // RAG embedder: unsloth/bge-small-en-v1.5[-GGUF]
   "ggml-org/models", // llama.cpp validation probe repo
@@ -19,6 +19,7 @@ const HIDDEN_NEEDLES = [
 ];
 
 let dynamicNeedles: readonly string[] = [];
+let dynamicExactIds: readonly string[] = [];
 let dynamicExactPaths: readonly string[] = [];
 let matchersFetch: Promise<void> | null = null;
 
@@ -40,9 +41,11 @@ export function ensureHiddenModelMatchers(): Promise<void> {
       }
       const data = (await response.json()) as {
         needles?: unknown;
+        exact_ids?: unknown;
         exact_paths?: unknown;
       };
       dynamicNeedles = toLowerStrings(data.needles);
+      dynamicExactIds = toLowerStrings(data.exact_ids);
       dynamicExactPaths = toLowerStrings(data.exact_paths);
     } catch {
       matchersFetch = null;
@@ -63,6 +66,7 @@ export function isHiddenModelId(
     return (
       HIDDEN_NEEDLES.some((needle) => lower.includes(needle)) ||
       dynamicNeedles.some((needle) => lower.includes(needle)) ||
+      dynamicExactIds.includes(lower) ||
       dynamicExactPaths.includes(lower)
     );
   });

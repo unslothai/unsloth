@@ -98,13 +98,24 @@ def test_is_hidden_model_ignores_empty_values():
 
 
 def test_hidden_model_matchers_expose_probe_needles():
-    needles, _exact = models_route.hidden_model_matchers()
+    needles, exact_ids, _exact_paths = models_route.hidden_model_matchers()
     lowered = [n.lower() for n in needles]
     assert "ggml-org/models" in lowered
     assert "stories260k.gguf" in lowered
-    # The default embedder's basename is exposed so the frontend can extend its
-    # static needle list with the user's configured embedder.
-    assert "bge-small-en-v1.5" in lowered
+    # The configured embedder is exposed as an exact repo id, never as a
+    # basename needle that would substring-hide unrelated chat models.
+    assert "bge-small-en-v1.5" not in lowered
+    assert "unsloth/bge-small-en-v1.5" in exact_ids
+
+
+def test_hidden_model_matchers_custom_repo_publishes_exact_ids(monkeypatch):
+    monkeypatch.setattr(rag_config, "effective_embedding_model", lambda: "org/model")
+    monkeypatch.setattr(rag_config, "effective_gguf_repo", lambda: "org/model-GGUF")
+    needles, exact_ids, exact_paths = models_route.hidden_model_matchers()
+    assert needles == ["ggml-org/models", "stories260k.gguf"]
+    assert "org/model" in exact_ids
+    assert "org/model-gguf" in exact_ids
+    assert exact_paths == []
 
 
 # --------------------------------------------------------------------------- #

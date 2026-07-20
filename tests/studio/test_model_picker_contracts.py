@@ -89,6 +89,15 @@ def test_hidden_infra_model_needles_present():
     assert '"stories260k.gguf"' in src
 
 
+def test_hidden_models_dynamic_exact_ids_wired():
+    """The configured embedder arrives from /api/hub/hidden-models as exact
+    repo ids; a substring needle would let a generic basename like "model"
+    hide unrelated chat models."""
+    src = _read("features/hub/lib/hidden-models.ts")
+    assert "toLowerStrings(data.exact_ids)" in src
+    assert "dynamicExactIds.includes(lower)" in src
+
+
 def test_diffusion_capability_labeled_image_generation():
     """The diffusion capability detects image GENERATORS (FLUX, SDXL,
     text-to-image tags); labeling it "Image to text" showed generators when

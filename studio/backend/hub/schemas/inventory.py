@@ -192,6 +192,7 @@ class CachedModelsResponse(BaseModel):
 
 class HiddenModelsResponse(BaseModel):
     needles: List[str] = Field(default_factory = list)
+    exact_ids: List[str] = Field(default_factory = list)
     exact_paths: List[str] = Field(default_factory = list)
 
 
