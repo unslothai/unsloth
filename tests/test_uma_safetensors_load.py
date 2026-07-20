@@ -218,8 +218,8 @@ def test_low_memory_falls_back_to_direct_move(uma, force_uma, monkeypatch, tiny_
     force_uma(True)
     fake_mu = _install_fake_modeling_utils(monkeypatch, safetensors.safe_open)
     uma.patch_unified_memory_safetensors_load()
-    # Simulate the clone OOMing (transient CPU doubling on a constrained UMA
-    # box): the wrapper must fall back to the direct move and still succeed.
+    # Clone OOMs (transient CPU doubling on a constrained UMA box): the wrapper
+    # must fall back to the direct move and still succeed.
     real_clone = torch.Tensor.clone
 
     def _oom_clone(self, *a, **k):
