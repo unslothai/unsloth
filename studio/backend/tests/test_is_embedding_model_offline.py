@@ -1564,7 +1564,13 @@ def test_marker_rejects_root_wordembeddings_without_tokenizer(tmp_path, monkeypa
 _ROOT_STATIC = "org/root-staticembedding"
 
 
-def _root_staticembedding_repo(tmp_path, monkeypatch, *, include_weights = True, commit = "aaa"):
+def _root_staticembedding_repo(
+    tmp_path,
+    monkeypatch,
+    *,
+    include_weights = True,
+    commit = "aaa",
+):
     """A StaticEmbedding model whose StaticEmbedding module is saved at the ROOT path "" (save_in_root
     =True). The root holds config_sentence_transformers.json + tokenizer.json + weights and NO module
     config. StaticEmbedding already passes the pristine is_root Transformer check because it ships a
@@ -1608,7 +1614,13 @@ def test_marker_rejects_root_staticembedding_without_weights(tmp_path, monkeypat
 _CLIP = "org/clip"
 
 
-def _clip_repo(tmp_path, monkeypatch, *, complete, commit = "aaa"):
+def _clip_repo(
+    tmp_path,
+    monkeypatch,
+    *,
+    complete,
+    commit = "aaa",
+):
     """A SentenceTransformer whose modules.json declares a CLIPModel at 0_CLIPModel. CLIPModel(load)
     -> Transformer.__init__ reads AutoConfig + AutoModel.from_pretrained (weights) + AutoProcessor
     (processor/tokenizer), so a config-only dir is NOT loadable. complete=False writes only
@@ -1670,7 +1682,11 @@ def _sparse_static_repo(
     mod.mkdir(parents = True)
     (snap / "modules.json").write_text(
         _modules_json(
-            ("0", "0_SparseStaticEmbedding", "sentence_transformers.sparse_encoder.models.SparseStaticEmbedding")
+            (
+                "0",
+                "0_SparseStaticEmbedding",
+                "sentence_transformers.sparse_encoder.models.SparseStaticEmbedding",
+            )
         )
     )
     (snap / "config_sentence_transformers.json").write_text("{}")
@@ -1713,7 +1729,13 @@ def test_marker_rejects_sparse_static_embedding_without_tokenizer(tmp_path, monk
 # ── #7218 P4: a PRESENT but empty / malformed modules.json is not a loadable ST model ──
 
 
-def _root_weights_snapshot(tmp_path, monkeypatch, modules_body, *, repo_id = "org/present-modules"):
+def _root_weights_snapshot(
+    tmp_path,
+    monkeypatch,
+    modules_body,
+    *,
+    repo_id = "org/present-modules",
+):
     """A snapshot with a COMPLETE root weight set (config + tokenizer + weights) and a modules.json
     whose raw body is ``modules_body``. Lets a test assert that a present-but-empty / malformed
     modules.json is not loadable even though the root weights are complete."""

@@ -504,9 +504,7 @@ def _all_bound_outside_module_body(tree: ast.Module) -> bool:
     caller then marks ``__all__`` opaque, so a conditionally-added re-export is not mistaken for an
     unused hoist. Only ever ADDS opacity, so it cannot create a false blocker."""
     top_level = {id(node) for node in tree.body}
-    return any(
-        id(node) not in top_level and _stmt_binds_all(node) for node in ast.walk(tree)
-    )
+    return any(id(node) not in top_level and _stmt_binds_all(node) for node in ast.walk(tree))
 
 
 def _collect_dunder_all(tree: ast.Module) -> tuple[set[str], bool]:

@@ -606,7 +606,11 @@ def test_online_indexed_shard_paths_canonicalize_weight_map_traversal(monkeypatc
     index_file = tmp_path / "pytorch_model.bin.index.json"
     index_file.write_text('{"weight_map": {"w": "sub/../evil/pytorch_model.bin"}}')
 
-    def _download(model_name, filename, token = None):
+    def _download(
+        model_name,
+        filename,
+        token = None,
+    ):
         if filename == "pytorch_model.bin.index.json":
             return str(index_file)
         raise _EntryNotFound()
