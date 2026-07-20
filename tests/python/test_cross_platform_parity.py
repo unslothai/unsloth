@@ -490,9 +490,13 @@ class TestPinnedRocmLeafDigitParity:
         assert (
             "_is_pip_rocm_family_leaf" in text
         ), "install.sh must define/use _is_pip_rocm_family_leaf for the exact rocm gate"
+        # gfx needs a following digit: gfx-private / gfxfoo are custom verbatim pins.
         assert re.search(
+            r'case "\$1" in\n\s*gfx\[0-9\]\*\) return 0', text
+        ), "install.sh _is_pip_rocm_family_leaf must treat only gfx<digit>* as a family"
+        assert not re.search(
             r'case "\$1" in\n\s*gfx\*\) return 0', text
-        ), "install.sh _is_pip_rocm_family_leaf must treat gfx* as a family"
+        ), "install.sh _is_pip_rocm_family_leaf must not family-match a bare gfx* glob"
 
     def test_stack_py_pip_rocm_family_requires_digit(self):
         text = STACK_PY.read_text(encoding = "utf-8")

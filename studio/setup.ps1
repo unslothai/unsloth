@@ -505,7 +505,8 @@ function Test-CudaFamilyLeaf {
 function Test-PipRocmFamilyLeaf {
     param([string]$Leaf)
     if ([string]::IsNullOrWhiteSpace($Leaf)) { return $false }
-    return ($Leaf -like 'gfx*') -or ($Leaf -match '^rocm[0-9]+(\.[0-9]+)?$')
+    # gfx must be followed by a digit (an architecture leaf); gfx-private is custom.
+    return ($Leaf -match '^gfx[0-9]') -or ($Leaf -match '^rocm[0-9]+(\.[0-9]+)?$')
 }
 
 # Stale-venv ROCm comparison for a pinned gfx*/rocm* index. Returns @{ Expected; Installed } so

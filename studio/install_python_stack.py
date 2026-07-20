@@ -1138,7 +1138,9 @@ def _is_pip_rocm_family_leaf(leaf: str) -> bool:
     rocm7.2-private) starts with "rocm" but is a custom pin the verbatim path owns, so
     match EXACTLY. Mirrors install.sh / setup.ps1.
     """
-    return bool(re.fullmatch(r"rocm\d+(?:\.\d+)?", leaf)) or leaf.startswith("gfx")
+    # gfx must be followed by a digit (gfx90a, gfx1151, gfx120X-all): a gfx-prefixed
+    # custom leaf (gfx-private) is a verbatim pin, like rocm7.2-private.
+    return bool(re.fullmatch(r"rocm\d+(?:\.\d+)?", leaf)) or bool(re.match(r"gfx\d", leaf))
 
 
 def _explicit_rocm_torch_index_url() -> "str | None":
@@ -1531,10 +1533,15 @@ def _ensure_rocm_torch() -> None:
         return
 
     if IS_WINDOWS:
-        if _has_usable_nvidia_gpu():
+        # An explicit ROCm-family pin commits to ROCm wheels regardless of the visible
+        # GPU and overrides the public per-arch index (mirrors the Linux pin handling
+        # below): after a pinned setup.ps1 install fails to CPU, this repair must retry
+        # the PINNED index, not repo.amd.com.
+        _win_rocm_pin = _explicit_rocm_torch_index_url()
+        if _win_rocm_pin is None and _has_usable_nvidia_gpu():
             return
         gfx_arch = _detect_windows_gfx_arch()
-        if not gfx_arch:
+        if not gfx_arch and _win_rocm_pin is None:
             return  # no AMD GPU visible via hipinfo
         # Probe whether torch already links against HIP.
         _torch_already_rocm = False
@@ -1559,12 +1566,12 @@ def _ensure_rocm_torch() -> None:
         except (OSError, subprocess.TimeoutExpired):
             pass
         if not _torch_already_rocm:
-            index_url = _windows_rocm_index_url(gfx_arch)
+            index_url = _win_rocm_pin or _windows_rocm_index_url(gfx_arch)
             if index_url is None:
                 print(f"   No AMD Windows torch index for GPU arch {gfx_arch} -- skipping")
                 return
             print(
-                f"   {gfx_arch} (Windows) -- installing torch from "
+                f"   {gfx_arch or 'pinned ROCm index'} (Windows) -- installing torch from "
                 f"{_strip_index_url_credentials(index_url)}"
             )
             # Pin companions for the arches install.ps1/setup.ps1 pin (gfx120X / Strix)
@@ -1576,7 +1583,7 @@ def _ensure_rocm_torch() -> None:
             # --force-reinstall resolves before uninstalling, so a failed index keeps the
             # existing build intact; let the user retry.
             if not pip_install_try(
-                f"ROCm torch (Windows, {gfx_arch})",
+                f"ROCm torch (Windows, {gfx_arch or 'pinned'})",
                 "--force-reinstall",
                 "--index-url",
                 index_url,
@@ -1586,7 +1593,7 @@ def _ensure_rocm_torch() -> None:
                 constrain = False,
             ):
                 print(
-                    f"   Warning: AMD Windows ROCm torch install failed for {gfx_arch}; "
+                    f"   Warning: AMD Windows ROCm torch install failed for {gfx_arch or 'the pinned index'}; "
                     "keeping the existing torch build. Re-run 'unsloth studio update' "
                     "later to retry ROCm."
                 )

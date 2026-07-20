@@ -2294,11 +2294,12 @@ _torch_index_url_leaf() {
 }
 
 # True (exit 0) when a lowercased leaf is an EXACT pip ROCm family: rocm<digits>[.<digits>]
-# or a gfx leaf. A leaf that merely STARTS with rocm (rocm-rel-7.2.1, rocm7.2-private) is a
-# custom verbatim pin. Matches re.fullmatch(rocm\d+(?:\.\d+)?) in the py / ps1 sides.
+# or a gfx ARCHITECTURE leaf (gfx followed by a digit: gfx90a, gfx1151, gfx120x-all). A leaf
+# that merely starts with rocm/gfx (rocm7.2-private, gfx-private) is a custom verbatim pin.
+# Matches the py / ps1 sides.
 _is_pip_rocm_family_leaf() {
     case "$1" in
-        gfx*) return 0 ;;
+        gfx[0-9]*) return 0 ;;
         rocm[0-9]*)
             # Exact rocm<digits>[.<digits>]: both major and minor must be non-empty all-digits
             # (rocm7., rocm7.2.1, rocm7.2-private are all custom pins, not a family).

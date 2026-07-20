@@ -2068,7 +2068,8 @@ exit 0
         if ($leaf -match '^cu\d+$') { return $leaf }
         if ($leaf -eq 'cpu')        { return 'cpu' }
         if ($leaf -match '^rocm')   { return 'rocm' }
-        if ($leaf -match '^gfx')    { return 'rocm' }
+        # gfx must be followed by a digit (an architecture leaf); gfx-private is custom.
+        if ($leaf -match '^gfx[0-9]') { return 'rocm' }
         return $null
     }
 
@@ -2189,7 +2190,7 @@ exit 0
             $PinnedRocmVisionSpec = "torchvision>=0.26.0,<0.27.0"
             $PinnedRocmAudioSpec = "torchaudio>=2.11.0,<2.12.0"
             substep "pinned ROCm index ($_pinLeaf) -- enforcing $ROCmTorchFloor" "Cyan"
-        } elseif ($_pinLeaf -like 'gfx*' -or $_pinLeaf -match '^rocm[0-9]+(\.[0-9]+)?$') {
+        } elseif ($_pinLeaf -match '^gfx[0-9]' -or $_pinLeaf -match '^rocm[0-9]+(\.[0-9]+)?$') {
             # Other gfx / older rocm (<=7.1) ship torch <2.11; route via the ROCm path with
             # bare specs. Only EXACT rocm<digits>/gfx* are families; a suffixed leaf is verbatim.
             $ROCmIndexUrl = $TorchIndexUrl
