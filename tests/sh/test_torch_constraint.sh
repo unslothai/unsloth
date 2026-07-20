@@ -108,13 +108,21 @@ assert_eq "\$TORCH_CONSTRAINT used in pip install" "yes" "$_has_var"
 _hardcoded=$(grep -c '"torch>=2.4,<2.11.0"' "$INSTALL_SH" || true)
 assert_eq "hardcoded torch>=2.4 appears exactly once" "1" "$_hardcoded"
 
-# A pinned custom/unknown-leaf index must bound the companions like the Python
-# custom-index repair spec, not leave them bare. Structural: the bounded assignments
-# exist AND are gated on a custom (empty) flavor tag.
+# Companions must be bounded to torch's window everywhere: the <2.11 bound appears
+# twice (default assignments + the pinned custom-leaf block), never bare. torchaudio
+# 2.11 dropped its exact torch pin, so a bare companion next to a <2.11-capped torch
+# resolves a mismatched 2.11 build.
 _count=$(grep -c 'TORCHVISION_CONSTRAINT="torchvision>=0.19,<0.26.0"' "$INSTALL_SH" || true)
-assert_eq "custom-leaf pin bounds torchvision (<0.26)" "1" "$_count"
+assert_eq "torchvision bounded (<0.26) at default + custom-leaf" "2" "$_count"
 _count=$(grep -c 'TORCHAUDIO_CONSTRAINT="torchaudio>=2.4,<2.11.0"' "$INSTALL_SH" || true)
-assert_eq "custom-leaf pin bounds torchaudio (<2.11)" "1" "$_count"
+assert_eq "torchaudio bounded (<2.11) at default + custom-leaf" "2" "$_count"
+_count=$(grep -c 'TORCHVISION_CONSTRAINT="torchvision"$' "$INSTALL_SH" || true)
+assert_eq "no bare torchvision companion remains" "0" "$_count"
+_count=$(grep -c 'TORCHAUDIO_CONSTRAINT="torchaudio"$' "$INSTALL_SH" || true)
+assert_eq "no bare torchaudio companion remains" "0" "$_count"
+# The cu* widen must carry the companions with it (torch <2.12 with torchaudio <2.11
+# would cap a mismatched pair the other way).
+assert_eq "cu widen pairs torchaudio (<2.12)" "1" "$(grep -c 'TORCHAUDIO_CONSTRAINT="torchaudio>=2.4,<2.12.0"' "$INSTALL_SH" || true)"
 _gated=$(grep -c '_expected_torch_flavor_tag "$TORCH_INDEX_URL"' "$INSTALL_SH" || true)
 _has_gate=$([ "$_gated" -ge 1 ] && echo "yes" || echo "no")
 assert_eq "custom-companion bound gated on empty flavor tag" "yes" "$_has_gate"

@@ -1674,6 +1674,10 @@ _maybe_reroute_strixhalo_to_2404() {
     # Forward explicit ROCm-bootstrap consent (e.g. Tauri) so the child auto-enables the
     # GPU instead of falling back to the desktop-app prompt path.
     [ "${UNSLOTH_ROCM_WSL_AUTO:-0}" = "1" ] && _rr_exports="$_rr_exports; export UNSLOTH_ROCM_WSL_AUTO=1"
+    # Forward a pinned torch index into the rerouted distro; dropping it would
+    # silently revert the child install to auto-detection.
+    [ -n "${UNSLOTH_TORCH_INDEX_URL:-}" ] && _rr_exports="$_rr_exports; export UNSLOTH_TORCH_INDEX_URL=$(_rr_q "$UNSLOTH_TORCH_INDEX_URL")"
+    [ -n "${UNSLOTH_TORCH_INDEX_FAMILY:-}" ] && _rr_exports="$_rr_exports; export UNSLOTH_TORCH_INDEX_FAMILY=$(_rr_q "$UNSLOTH_TORCH_INDEX_FAMILY")"
     [ "$_SKIP_AUTOSTART" = true ] && _rr_exports="$_rr_exports; export UNSLOTH_SKIP_AUTOSTART=1"
     _rr_args=""
     [ "$PACKAGE_NAME" != "unsloth" ] && _rr_args="$_rr_args --package $(_rr_q "$PACKAGE_NAME")"
@@ -2039,12 +2043,15 @@ if [ "$SKIP_TORCH" = false ] && [ "$OS" = "macos" ] && [ "$_ARCH" = "arm64" ]; t
         TORCH_CONSTRAINT="torch>=2.6,<2.11.0"
     fi
 fi
-# Companion (torchvision/torchaudio) constraints. Bare by default (the pytorch.org
-# cu*/cpu/rocmX.Y indexes are curated for an ABI-consistent trio); pinned only for the
-# torch-2.11 AMD paths (rocm7.2 / per-gfx / Strix), where AMD publishes each wheel
-# independently and can ship a 2.12-built companion.
-TORCHVISION_CONSTRAINT="torchvision"
-TORCHAUDIO_CONSTRAINT="torchaudio"
+# Companion (torchvision/torchaudio) constraints, bounded to torch's window.
+# torchaudio 2.11 dropped its exact torch pin, so a bare companion next to a
+# <2.11-capped torch resolves torchaudio 2.11 (verified: cpu leaf installed
+# torch 2.10.0+cpu with torchaudio 2.11.0+cpu). torchvision still exact-pins
+# torch and self-corrects, but is bounded for symmetry. Widened alongside the
+# cu* torch window below; the torch-2.11 AMD paths (rocm7.2 / per-gfx / Strix)
+# pin their own trio.
+TORCHVISION_CONSTRAINT="torchvision>=0.19,<0.26.0"
+TORCHAUDIO_CONSTRAINT="torchaudio>=2.4,<2.11.0"
 
 # ── Resolve repo root (for --local installs) ──
 _REPO_ROOT="$(cd "$(dirname "$0" 2>/dev/null || echo ".")" && pwd)"
@@ -2763,9 +2770,12 @@ case "$_torch_index_leaf" in
         TORCHAUDIO_CONSTRAINT="torchaudio>=2.11.0,<2.12.0"
         ;;
     # CUDA cu12x/cu13x indexes ship torch 2.11.x: widen the ceiling to <2.12.0 (matches
-    # _CUDA_TORCH_PKG_SPEC). Keep the >=2.4 floor so cu118 still resolves; companions stay
-    # bare (a cu-family index bounds its own resolution).
-    cu[0-9]*) TORCH_CONSTRAINT="torch>=2.4,<2.12.0" ;;
+    # _CUDA_TORCH_PKG_SPEC) and widen the companions with it so the trio stays paired.
+    cu[0-9]*)
+        TORCH_CONSTRAINT="torch>=2.4,<2.12.0"
+        TORCHVISION_CONSTRAINT="torchvision>=0.19,<0.27.0"
+        TORCHAUDIO_CONSTRAINT="torchaudio>=2.4,<2.12.0"
+        ;;
 esac
 
 # A pinned custom/unknown-leaf index (/simple, /current, /cu128-private) has no curated
