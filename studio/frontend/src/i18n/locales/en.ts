@@ -182,7 +182,7 @@ export const en = {
         "Used to load gated models and push artifacts.",
       hideToken: "Hide token",
       showToken: "Show token",
-      tokenSaved: "Token saved",
+      tokenValidated: "Token validated",
       password: "Password",
       passwordDescription: "Change the password for this Unsloth account.",
       passwordDialog: {

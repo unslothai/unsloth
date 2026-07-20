@@ -223,12 +223,13 @@ export function GeneralTab() {
     setHfToken("");
   };
 
-  // Show an "accepted" tick once a non-empty token has been committed to the
-  // store and the field still matches it (i.e. not mid-edit). Gives the user
-  // feedback that a pasted token was saved.
-  const tokenSaved =
+  // Only show the success tick for the currently displayed token after the
+  // authenticated validation endpoint has confirmed it. A saved token alone
+  // may still be malformed, expired, or revoked.
+  const tokenIsCurrent =
     draftToken.trim().length > 0 && draftToken.trim() === (hfToken ?? "");
   const tokenValidation = useHfTokenValidation(hfToken ?? "");
+  const tokenValidated = tokenIsCurrent && tokenValidation.isValid === true;
 
   useEffect(() => {
     let cancelled = false;
@@ -520,16 +521,16 @@ export function GeneralTab() {
                   onBlur={commitToken}
                   className={cn(
                     "h-8 w-full font-mono text-xs",
-                    tokenSaved ? "pr-14" : "pr-8",
+                    tokenValidated ? "pr-14" : "pr-8",
                   )}
                 />
-                {tokenSaved ? (
+                {tokenValidated ? (
                   // Decorative: pointer-events-none lets clicks reach the input
                   // underneath so the field still focuses anywhere.
                   <span
                     className="pointer-events-none absolute right-7 top-1/2 flex size-5 -translate-y-1/2 items-center justify-center text-emerald-600 duration-150 animate-in fade-in zoom-in dark:text-emerald-500"
                     role="img"
-                    aria-label={t("settings.general.tokenSaved")}
+                    aria-label={t("settings.general.tokenValidated")}
                   >
                     <Check className="size-4" strokeWidth={2.5} />
                   </span>
