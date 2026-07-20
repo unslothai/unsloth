@@ -239,9 +239,7 @@ def test_remote_oversized_jinja_falls_through_to_tokenizer_template(tmp_path, mo
     big_jinja.write_text("{{ x }}" * (MAX_CHAT_TEMPLATE_BYTES // 4), encoding = "utf-8")
     assert MAX_CHAT_TEMPLATE_BYTES < big_jinja.stat().st_size < MAX_TEMPLATE_METADATA_BYTES
     tokenizer_config = tmp_path / "tokenizer_config.json"
-    tokenizer_config.write_text(
-        json.dumps({"chat_template": "SMALL_TEMPLATE"}), encoding = "utf-8"
-    )
+    tokenizer_config.write_text(json.dumps({"chat_template": "SMALL_TEMPLATE"}), encoding = "utf-8")
     files = {
         "chat_template.jinja": big_jinja,
         "tokenizer_config.json": tokenizer_config,
