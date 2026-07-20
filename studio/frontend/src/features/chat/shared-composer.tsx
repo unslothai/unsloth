@@ -80,6 +80,7 @@ import { NewProjectDialog } from "./components/new-project-dialog";
 import { useChatProjects } from "./hooks/use-chat-projects";
 import { confirmRemoteCodeIfNeeded } from "@/features/security";
 import {
+  DEFAULT_MAX_SEQ_LENGTH,
   normalizeMaxSeqLength,
   resolveInitialConfig,
   type PerModelConfig,
@@ -1044,7 +1045,6 @@ export function SharedComposer({
     // Generalized compare: load each model before dispatching to its side
     if (isGeneralizedCompare) {
       const store = useChatRuntimeStore.getState();
-      const maxSeqLength = store.params.maxSeqLength;
       const trustRemoteCode = store.params.trustRemoteCode ?? false;
       const fallbackTensorParallel = store.tensorParallel;
       const specSettings = resolveSpeculativeSettingsForLoad({
@@ -1103,10 +1103,14 @@ export function SharedComposer({
         const isGgufLoad =
           (sel.ggufVariant ?? null) != null ||
           sel.id.toLowerCase().endsWith(".gguf");
+        // A non-GGUF pane with no saved maxSeqLength must fall back to the app
+        // default, not the active model's shared runtime snapshot: comparing a
+        // saved 128K model against an unconfigured one would otherwise load the
+        // latter at 128K (risking OOM) instead of its own default.
         const effectiveMaxSeqLength =
           ownConfig.customContextLength ??
           normalizeMaxSeqLength(ownConfig.maxSeqLength) ??
-          (isGgufLoad ? 0 : maxSeqLength);
+          (isGgufLoad ? 0 : DEFAULT_MAX_SEQ_LENGTH);
         const effectiveChatTemplateOverride = cleanCompareChatTemplate(
           ownConfig.chatTemplateOverride,
         );

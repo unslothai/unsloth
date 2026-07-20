@@ -323,6 +323,52 @@ def test_reset_persists_null_max_length_and_substitutes_only_for_load():
     assert "savePerModelConfig(" in src
 
 
+def test_reset_enabled_for_explicit_context_pin_at_native():
+    """An explicit customContextLength that equals the native ceiling is still a
+    user override, so contextAtDefault must require customContextLength == null.
+    The buggy form treated `contextValue === native` alone as default, wedging
+    the Reset button disabled for a deliberate pin-to-native."""
+    src = " ".join(
+        _read("features/model-picker/components/model-config-page.tsx").split()
+    )
+    assert (
+        "const contextAtDefault = !target.isGguf || "
+        "(config.customContextLength == null && "
+        "(nativeContextLength == null || contextValue === nativeContextLength));"
+        in src
+    )
+    # The old form that ignored an explicit pin equal to native must not return.
+    assert (
+        "(nativeContextLength == null ? config.customContextLength == null : "
+        "contextValue === nativeContextLength)" not in src
+    )
+    # The app-default constant is the single source of truth (imported, not local).
+    assert "DEFAULT_MAX_SEQ_LENGTH," in src
+    assert "const DEFAULT_MAX_SEQ_LENGTH = 4096" not in src
+
+
+def test_compare_pane_non_gguf_falls_back_to_app_default():
+    """A non-GGUF compare pane with no saved maxSeqLength must fall back to the
+    shared app default, not the active model's runtime snapshot; otherwise an
+    unconfigured pane inherits a saved 128K neighbor's context and can OOM."""
+    per_model = _read(
+        "features/model-picker/model-config/per-model-config.ts"
+    )
+    assert "export const DEFAULT_MAX_SEQ_LENGTH = 4096;" in per_model
+    barrel = _read("features/model-picker/index.ts")
+    assert "DEFAULT_MAX_SEQ_LENGTH," in barrel
+    src = " ".join(_read("features/chat/shared-composer.tsx").split())
+    assert "DEFAULT_MAX_SEQ_LENGTH," in src
+    assert (
+        "const effectiveMaxSeqLength = ownConfig.customContextLength ?? "
+        "normalizeMaxSeqLength(ownConfig.maxSeqLength) ?? "
+        "(isGgufLoad ? 0 : DEFAULT_MAX_SEQ_LENGTH);" in src
+    )
+    # The buggy fallback to the active model's shared runtime value must not return.
+    assert "(isGgufLoad ? 0 : maxSeqLength)" not in src
+    assert "const maxSeqLength = store.params.maxSeqLength;" not in src
+
+
 def test_default_gpu_mode_clears_manual_knobs():
     """Switching GPU Memory back to Default must clear the Manual-only knobs
     (gpuLayers/nCpuMoe/selectedGpuIds); otherwise a remembered config keeps stale

@@ -32,6 +32,7 @@ export {
   perModelConfigsEqual,
 } from "./model-config/apply-per-model-config";
 export {
+  DEFAULT_MAX_SEQ_LENGTH,
   normalizeMaxSeqLength,
   type PerModelConfig,
   resolveInitialConfig,

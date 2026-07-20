@@ -32,6 +32,7 @@ import {
 import { perModelConfigsEqual } from "../model-config/apply-per-model-config";
 import {
   CONTEXT_LENGTH_MIN,
+  DEFAULT_MAX_SEQ_LENGTH,
   DEFAULT_PER_MODEL_CONFIG,
   KV_CACHE_DTYPES,
   MAX_SEQ_LENGTH_MAX,
@@ -62,11 +63,6 @@ const SELECT_TRIGGER_CLASS = `grid h-8 min-w-0 grid-cols-[minmax(0,1fr)_auto] it
 const NUMBER_INPUT_CLASS = `h-8 w-[92px] ${CONTROL_SURFACE} pl-3 pr-2 py-0 text-right text-[13px] font-medium text-nav-fg outline-none focus-visible:ring-0`;
 
 const KV_CACHE_DTYPE_DEFAULT = "f16";
-// App-default max sequence length used when a non-GGUF model has no explicit
-// override (a fresh model, or after Reset). Reset must fall back to this, never
-// to the active model's loaded runtime value, so an active model's remembered
-// max-length override can actually be cleared.
-const DEFAULT_MAX_SEQ_LENGTH = 4096;
 const SPECULATIVE_TYPE_LABELS: Record<(typeof SPECULATIVE_TYPES)[number], string> =
   {
     auto: "Auto",
@@ -711,11 +707,14 @@ export function ModelConfigPage({
     update({ customContextLength: v });
   const baseline = loadedConfig ?? DEFAULT_PER_MODEL_CONFIG;
   const atBaseline = perModelConfigsEqual(config, baseline);
+  // An explicit customContextLength that happens to equal the native ceiling is
+  // still a user override (not a default), so Reset must stay enabled for it. It
+  // only counts as "at default" when there is no override at all AND the shown
+  // context matches native (or the model exposes no native context length).
   const contextAtDefault =
     !target.isGguf ||
-    (nativeContextLength == null
-      ? config.customContextLength == null
-      : contextValue === nativeContextLength);
+    (config.customContextLength == null &&
+      (nativeContextLength == null || contextValue === nativeContextLength));
   const atDefault =
     contextAtDefault &&
     perModelConfigsEqual(

@@ -42,6 +42,12 @@ export const DEFAULT_PER_MODEL_CONFIG: PerModelConfig = {
 export const MAX_SEQ_LENGTH_MIN = 128;
 export const MAX_SEQ_LENGTH_MAX = 1048576;
 export const MAX_SEQ_LENGTH_STEP = 128;
+// App-default max sequence length for a non-GGUF model with no explicit
+// override (a fresh model, after Reset, or an unconfigured compare pane). Both
+// the single-model config and the compare path fall back to this rather than an
+// active model's runtime value, so an unconfigured pane never inherits another
+// model's larger context and OOMs.
+export const DEFAULT_MAX_SEQ_LENGTH = 4096;
 export const CONTEXT_LENGTH_MIN = 128;
 
 export const KV_CACHE_DTYPES = ["bf16", "q8_0", "q5_1", "q4_1"] as const;
