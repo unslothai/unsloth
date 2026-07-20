@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-__version__ = "2026.6.9"
+__version__ = "2026.7.3"
 
 __all__ = [
     "SUPPORTS_BFLOAT16",
@@ -83,8 +83,12 @@ __all__ = [
     "verify_fp8_support_if_applicable",
     "_get_inference_mode_context_manager",
     "hf_login",
+    "maybe_prefetch_hf_snapshot",
     "is_moe_model",
     "get_moe_target_parameters",
+    "get_moe_target_modules",
+    "warn_if_zoo_cannot_merge_moe_experts",
+    "_select_moe_detection_targets",
     "make_fast_generate_wrapper",
     "_mark_unsloth_disable_data_parallel",
     "_patch_transformers_trainer_data_parallel",
@@ -420,9 +424,23 @@ def apply_unsloth_gradient_checkpointing(use_gradient_checkpointing, max_seq_len
 # access on some GPU architectures (B200). Falls back to eager safely.
 _FLEX_EXCLUDED_MODELS = ("gpt_oss", "mllama", "nemotron_h", "modernbert")
 _FLEX_PREFERRED_MODELS = ("gemma3", "gemma3_text", "shieldgemma2")
-_SDPA_EXCLUDED_MODELS = ("gpt_oss",)
-_FLASH_EXCLUDED_MODELS = ("gpt_oss",)
-_EAGER_ONLY_PREFIXES = ("gemma3n",)
+_SDPA_EXCLUDED_MODELS = ("gpt_oss", "deepseek_v4")
+# The loader (loader.py) forces supports_sdpa=False for these because their bundled
+# SDPA modules are wrong. Kept here, not in loader.py, so _is_sdpa_excluded can honor
+# them without a loader -> _utils import cycle (loader.py already imports from _utils
+# and re-exports this name for callers like sentence_transformer.py). Entries are matched
+# as substrings against a comma-joined model_types string ending in a comma, so "gemma3,"
+# matches a distinct "gemma3" entry but not "gemma3n", and "gemma3_text" matches the
+# EmbeddingGemma text model.
+DISABLE_SDPA_MODEL_NAMES = [
+    "gemma3,",  # Add comma bc gemma3 will match gemma3n
+    "gemma3_text",  # Gemma3TextModel (EmbeddingGemma) - substring match, keep underscore
+    "gpt_oss",
+]
+_FLASH_EXCLUDED_MODELS = ("gpt_oss", "deepseek_v4")
+# deepseek_v4's custom attention is sdpa/flash-incompatible; force eager, and
+# excluded above so an explicit sdpa/flash request cannot re-enable the crash.
+_EAGER_ONLY_PREFIXES = ("gemma3n", "deepseek_v4")
 _FLASH_ATTENTION_MAX_HEAD_DIM = 256
 _FLASH_ATTENTION_DISABLED_WARNED = set()
 
@@ -431,8 +449,23 @@ def _is_flex_excluded(model_type):
     return model_type in _FLEX_EXCLUDED_MODELS
 
 
+def _is_sdpa_disabled_by_name(model_type):
+    # Mirror the loader's DISABLE_SDPA_MODEL_NAMES check: loader.py builds
+    # model_types_all = ",".join(model_types) + "," and tests `name in model_types_all`.
+    # Rebuild the same trailing-comma form for a single model_type so the match is
+    # identical (e.g. "gemma3," matches "gemma3" but not "gemma3n", and "gemma3_text"
+    # still matches "gemma3_text").
+    model_types_all = model_type.lower() + ","
+    return any(name.lower() in model_types_all for name in DISABLE_SDPA_MODEL_NAMES)
+
+
 def _is_sdpa_excluded(model_type):
-    return model_type in _SDPA_EXCLUDED_MODELS
+    # SDPA is known-broken for these models, so an explicit sdpa request must not
+    # re-enable it. Two sources: _SDPA_EXCLUDED_MODELS (resolver-level, e.g. gpt_oss)
+    # and DISABLE_SDPA_MODEL_NAMES (loader-level, e.g. gemma3 / gemma3_text, which the
+    # loader also forces to supports_sdpa=False).
+    lowered = model_type.lower()
+    return lowered in _SDPA_EXCLUDED_MODELS or _is_sdpa_disabled_by_name(lowered)
 
 
 def _is_flash_excluded(model_type):
@@ -608,6 +641,12 @@ def _disable_flash_attention_if_needed(
     if disable_reason is None:
         return attn_implementation
 
+    # Only an implementation passed by the caller counts as an explicit request.
+    # Values read from the config are synthesized by the loaders (the language path
+    # seeds the config with attn_implementation="sdpa") or come from Transformers
+    # defaults, so they must not be treated as a deliberate user choice.
+    explicit_request = attn_implementation
+
     requested_attn_implementation = attn_implementation
     if requested_attn_implementation is None:
         requested_attn_implementation = _config_get(config, "_attn_implementation", None)
@@ -616,6 +655,20 @@ def _disable_flash_attention_if_needed(
 
     if requested_attn_implementation == "eager":
         return _set_attn_impl(config, "eager")
+
+    model_type = _config_get(config, "model_type", "")
+
+    # The disable reason is flash-specific: honor an explicit non-flash request from
+    # the caller instead of downgrading it. SDPA is honored unless the model's SDPA is
+    # known-broken - _SDPA_EXCLUDED_MODELS (e.g. gpt_oss) or DISABLE_SDPA_MODEL_NAMES
+    # (e.g. gemma3 / gemma3_text); flex_attention
+    # is honored only when it is actually usable, since supports_flex_attention already
+    # rejects the excluded/broken/unavailable configs. This keeps an explicit request
+    # from selecting a backend the repo marks as wrong.
+    if explicit_request == "sdpa" and not _is_sdpa_excluded(model_type.lower()):
+        return _set_attn_impl(config, "sdpa")
+    if explicit_request == "flex_attention" and supports_flex_attention:
+        return _set_attn_impl(config, "flex_attention")
 
     if supports_sdpa:
         fallback_attn_implementation = "sdpa"
@@ -629,7 +682,6 @@ def _disable_flash_attention_if_needed(
             if _is_flash_attention_requested(requested_attn_implementation)
             else "flash_attention_2"
         )
-        model_type = _config_get(config, "model_type", "")
         warning_key = (
             model_type,
             logged_attn_implementation,
@@ -843,7 +895,19 @@ def resolve_attention_implementation(
         final_attn_impl = requested_attn_implementation
         _set_attn_impl(config, final_attn_impl)
 
-    if not supports_sdpa and final_attn_impl == "sdpa":
+    # A caller who explicitly passes requested_attn_implementation="sdpa" keeps it even
+    # on a conservatively unsupported model, mirroring _disable_flash_attention_if_needed
+    # which honors an explicit sdpa request. The exception is a model whose SDPA is
+    # known-broken - _SDPA_EXCLUDED_MODELS (e.g. gpt_oss) or DISABLE_SDPA_MODEL_NAMES
+    # (e.g. gemma3 / gemma3_text, which the loader also forces to supports_sdpa=False):
+    # an explicit request must not re-enable it, so it still downgrades to eager, just
+    # like flex falls back for _FLEX_EXCLUDED_MODELS. A synthesized/default sdpa
+    # (requested is None, so the value came from the model resolution above or the
+    # config) also downgrades.
+    honor_explicit_sdpa = requested_attn_implementation == "sdpa" and not _is_sdpa_excluded(
+        model_type
+    )
+    if not supports_sdpa and final_attn_impl == "sdpa" and not honor_explicit_sdpa:
         print(
             f"Unsloth: {(model_type_name or 'model').title()} does not support SDPA - switching to fast eager."
         )
@@ -903,6 +967,411 @@ warnings.filterwarnings(action = "ignore", category = UserWarning, module = "bit
 logging.getLogger("transformers.tokenization_utils_base").setLevel(logging.CRITICAL + 1)
 
 TORCHAO_MSG = "Error: torchao not found, please install with `pip install torchao`"
+
+
+# Artifacts a Transformers/PEFT load never reads (ONNX/TF/Flax/CoreML/GGUF/training state), skipped
+# when prewarming so a mixed-format repo is not pulled in full.
+_PREFETCH_IGNORE_PATTERNS = (
+    "*.onnx",
+    "onnx/*",
+    "*.h5",
+    "*.msgpack",
+    "*.tflite",
+    "coreml/*",
+    "*.mlpackage/*",
+    "*.mlmodel",
+    "*.gguf",
+    # Training / checkpoint formats from_pretrained never reads.
+    "*.pt",
+    "*.pth",
+    "*.ckpt",
+    "optimizer.*",
+    "scheduler.*",
+    "rng_state*",
+    "trainer_state.json",
+    "events.out.tfevents*",
+    "checkpoint-*/*",
+)
+
+
+# Repo-root tokenizer / config / processor files from_pretrained reads from root even when weights
+# load from a subfolder. Exact names (no wildcard) so they match only root-level files.
+_ROOT_AUX_PREFETCH_PATTERNS = (
+    "config.json",
+    "generation_config.json",
+    "tokenizer_config.json",
+    "tokenizer.json",
+    "tokenizer.model",
+    "special_tokens_map.json",
+    "added_tokens.json",
+    "vocab.json",
+    "vocab.txt",
+    "merges.txt",
+    "spiece.model",
+    # More VOCAB_FILES_NAMES the slow tokenizer may fetch (DeBERTa-v2, Whisper, Mistral, XLM-R/mBART, Marian, FSMT/XLM, GPT-2).
+    "spm.model",
+    "normalizer.json",
+    "tokenizer.model.v3",
+    "sentencepiece.bpe.model",
+    "source.spm",
+    "target.spm",
+    "bpe.codes",
+    "vocab.bpe",
+    # More VOCAB_FILES_NAMES (RemBERT, FSMT) a distinct-tokenizer-repo warm must cache too.
+    "sentencepiece.model",
+    "vocab-src.json",
+    "vocab-tgt.json",
+    "chat_template.jinja",
+    "chat_template.json",
+    # chat_template="<name>" fetches additional_chat_templates/<name>.jinja.
+    "additional_chat_templates/*.jinja",
+    "preprocessor_config.json",
+    "processor_config.json",
+    "video_preprocessor_config.json",  # Qwen2.5-VL-style video processors
+    # trust_remote_code auto_map can name any module, so warm every *.py (tiny; none in a non-remote repo).
+    "*.py",
+    "*.tiktoken",  # tiktoken vocab (e.g. Qwen's qwen.tiktoken)
+)
+
+
+# Files a PEFT adapter load reads: config + weights (glob covers sharded adapters). Any merged
+# full-model weights the repo also ships match none of these.
+_ADAPTER_PREFETCH_PATTERNS = (
+    "adapter_config.json",
+    "adapter_model*",
+)
+
+
+# Weight files in a SUBDIRECTORY. A bare root load reads only root weights, so ignoring these drops
+# alternate-precision/experimental dirs (fp16/, experimental/). "*/*" spans "/" (HF fnmatch), so nested
+# weights match while root "model.safetensors" is kept. Only applied when weights_at_root (diffusion
+# keeps weights in subfolders).
+_SUBDIR_WEIGHT_IGNORE_PATTERNS = (
+    "*/*.safetensors",
+    "*/*.bin",
+    "*/*.h5",
+    "*/*.msgpack",
+    "*/*.pt",
+    "*/*.pth",
+)
+
+
+def _in_requested_load_scope(filename, subfolder):
+    """True if *filename* is in the location being loaded (*subfolder*, else root). Scopes the ".bin is
+    redundant when safetensors exist" test so a .bin-only subfolder keeps its .bin."""
+    filename = filename.replace("\\", "/")
+    if isinstance(subfolder, str) and subfolder.strip("/"):
+        return filename.startswith(subfolder.strip("/") + "/")
+    return "/" not in filename  # root load: no directory component
+
+
+# .safetensors training-state files that are NOT model weights (e.g. optimizer.safetensors next to a
+# real pytorch_model.bin); counting them as "model safetensors present" would drop the needed .bin.
+_NON_MODEL_WEIGHT_STEMS = frozenset(
+    {
+        "optimizer",
+        "scheduler",
+        "scaler",
+        "rng_state",
+        "training_args",
+    }
+)
+
+
+def _is_model_weight_safetensors(filename):
+    """True if *filename* is a model-weights safetensors, not a PEFT adapter/sidecar
+    (adapter_model.safetensors) or trainer-state (optimizer.safetensors). Only a real one proves the
+    .bin redundant; counting a sidecar would wrongly drop the needed .bin (fetched then without Xet fallback)."""
+    name = filename.replace("\\", "/").rsplit("/", 1)[-1]
+    if not name.endswith((".safetensors", ".safetensors.index.json")):
+        return False
+    if name.startswith("adapter_"):
+        return False
+    # Stem before first dot: "optimizer.safetensors" -> "optimizer" (real shards kept); rng_state via prefix.
+    stem = name.split(".", 1)[0].lower()
+    if stem in _NON_MODEL_WEIGHT_STEMS or stem.startswith("rng_state"):
+        return False
+    return True
+
+
+def _is_canonical_variant_model_weight_safetensors(filename, variant):
+    """True for a canonical model-weights safetensors carrying the requested *variant*, in the forms
+    transformers reads (single, either numbered-shard layout, or the index). Strict (base must be
+    "model"): a sidecar like consolidated.<variant>.safetensors does not prove the variant .bin redundant."""
+    base = filename.replace("\\", "/").rsplit("/", 1)[-1]
+    v = re.escape(variant)
+    return bool(
+        re.match(
+            rf"^(?:model\.{v}\.safetensors"
+            rf"|model\.{v}-\d{{5}}-of-\d{{5}}\.safetensors"
+            rf"|model-\d{{5}}-of-\d{{5}}\.{v}\.safetensors"
+            rf"|model\.safetensors\.index\.{v}\.json)$",
+            base,
+        )
+    )
+
+
+_CANONICAL_MODEL_WEIGHT_SAFETENSORS_RE = re.compile(
+    r"^(?:model\.safetensors|model-\d{5}-of-\d{5}\.safetensors|model\.safetensors\.index\.json)$"
+)
+
+
+def _is_canonical_model_weight_safetensors(filename):
+    """True for a canonical (non-variant) model-weights safetensors a default load reads (model.safetensors,
+    a numbered shard, or the index). Strict: an unrecognized name keeps both formats, so a variant-only
+    safetensors + pytorch_model.bin repo never has its .bin dropped for a no-variant load."""
+    name = filename.replace("\\", "/").rsplit("/", 1)[-1]
+    return bool(_CANONICAL_MODEL_WEIGHT_SAFETENSORS_RE.match(name))
+
+
+def _adapter_repo_has_safetensors(
+    model_name,
+    *,
+    token = None,
+    revision = None,
+):
+    """Best-effort: does the adapter repo ship a root safetensors adapter weight (making the .bin
+    redundant)? Scoped to root adapter_model* files; any failure returns False."""
+    try:
+        from huggingface_hub import HfApi
+        siblings = HfApi().model_info(model_name, revision = revision, token = token).siblings or []
+        return any(
+            "/" not in sibling.rfilename.replace("\\", "/")  # root only
+            and sibling.rfilename.startswith("adapter_model")
+            and sibling.rfilename.endswith(".safetensors")
+            for sibling in siblings
+        )
+    except Exception:
+        return False
+
+
+def _prefetch_ignore_patterns(
+    model_name,
+    *,
+    token = None,
+    revision = None,
+    subfolder = None,
+    use_safetensors = None,
+    from_tf = False,
+    from_flax = False,
+    variant = None,
+    weights_at_root = False,
+):
+    """ignore_patterns for the prewarm snapshot: the static skip list, minus the checkpoint guard when
+    loading from a checkpoint-* subfolder, minus the weight format the load will not read. use_safetensors
+    is a format allowlist (True -> skip *.bin, False -> skip *.safetensors); auto (None) skips *.bin only
+    when in-scope safetensors are shipped. from_tf/from_flax keep *.h5/*.msgpack.
+
+    Suppressed for a whole multi-component snapshot (weights_at_root=False, no subfolder: ST/diffusers
+    repos with per-subfolder weights, each in its own format), since "*" spans "/" so dropping "*.bin"
+    would strip a module's only weight."""
+    # Keep checkpoint-*/* under a checkpoint-* subfolder; keep *.h5 / *.msgpack under from_tf/flax.
+    ignore_patterns = [
+        pattern
+        for pattern in _PREFETCH_IGNORE_PATTERNS
+        if not (
+            (
+                pattern == "checkpoint-*/*"
+                and isinstance(subfolder, str)
+                and subfolder.startswith("checkpoint-")
+            )
+            or (from_tf and pattern == "*.h5")
+            or (from_flax and pattern == "*.msgpack")
+        )
+    ]
+    # Drop the format the load will not read (the other doubles the download); skipped for a whole
+    # multi-component snapshot (see docstring).
+    whole_multi_component = not weights_at_root and not (
+        isinstance(subfolder, str) and subfolder.strip("/")
+    )
+    if whole_multi_component:
+        pass
+    elif from_tf or from_flax:
+        # TF / Flax loads never read the PyTorch formats; drop safetensors and .bin.
+        ignore_patterns.extend(
+            (
+                "*.safetensors",
+                "*.safetensors.index.json",
+                "*.bin",
+                "*.bin.index.json",
+            )
+        )
+    elif use_safetensors is True:
+        # Explicit safetensors: load never reads .bin (no model_info call needed).
+        ignore_patterns.extend(("*.bin", "*.bin.index.json"))
+    elif use_safetensors is False:
+        # Explicit .bin: load never reads safetensors.
+        ignore_patterns.extend(("*.safetensors", "*.safetensors.index.json"))
+    else:
+        # Auto: skip .bin only once in-scope safetensors are confirmed (best-effort; any failure keeps both).
+        try:
+            from huggingface_hub import HfApi
+
+            siblings = (
+                HfApi()
+                .model_info(
+                    model_name,
+                    revision = revision,
+                    token = token,
+                )
+                .siblings
+                or []
+            )
+            # Count only in-scope model-weights safetensors (not adapters/sidecars): variant-matching if
+            # a variant is requested, else canonical, proving the .bin redundant.
+            has_safetensors = any(
+                _is_model_weight_safetensors(sibling.rfilename)
+                and _in_requested_load_scope(sibling.rfilename, subfolder)
+                and (
+                    _is_canonical_variant_model_weight_safetensors(sibling.rfilename, variant)
+                    if variant
+                    else _is_canonical_model_weight_safetensors(sibling.rfilename)
+                )
+                for sibling in siblings
+            )
+            if has_safetensors:
+                ignore_patterns.extend(("*.bin", "*.bin.index.json"))
+        except Exception:
+            pass
+    return ignore_patterns
+
+
+def maybe_prefetch_hf_snapshot(
+    model_name,
+    token = None,
+    *,
+    revision = None,
+    cache_dir = None,
+    local_files_only = False,
+    fast_inference = False,
+    subfolder = None,
+    force_download = False,
+    use_safetensors = None,
+    from_tf = False,
+    from_flax = False,
+    tokenizer_only = False,
+    adapter_only = False,
+    weights_at_root = False,
+    variant = None,
+    gguf_file = None,
+):
+    """Warm the HF cache for a remote repo before the in-process load.
+
+    Xet can hang on a blob with no progress or exception, and a blocked native Xet thread cannot be
+    killed in-process. So pull the snapshot first in a killable subprocess that falls back Xet -> HTTP
+    on a stall (unsloth_zoo.hf_xet_fallback), making from_pretrained a cache hit.
+
+    Returns True iff warmed (caller can clear force_download), else False (skipped: local/offline/
+    local_files_only/fast_inference/old unsloth_zoo, or failed). Only a both-transports-stalled
+    DownloadStallError is raised; other failures are left for from_pretrained to surface.
+    """
+    try:
+        from unsloth_zoo.hf_xet_fallback import (
+            snapshot_download_with_xet_fallback,
+            DownloadStallError,
+        )
+    except Exception:
+        return False  # older unsloth_zoo without the helper: load normally
+
+    if not isinstance(model_name, str) or not model_name:
+        return False
+    # Local path: nothing to download. Expand ~ first (os.path.exists does not).
+    model_path = os.path.expanduser(model_name)
+    if os.path.isdir(model_path) or os.path.exists(model_path):
+        return False
+    # Looks local but not yet on disk (e.g. an uncreated output dir): not a Hub repo id, so leave it
+    # for from_pretrained rather than download it.
+    if (
+        os.path.isabs(model_path)
+        or model_name.startswith(("~", "./", "../", ".\\", "..\\"))
+        or "\\" in model_name
+    ):
+        return False
+    if local_files_only:  # cache-only: never reach out
+        return False
+    if any(
+        os.environ.get(flag, "0").lower() in ("1", "true", "yes", "on")
+        for flag in ("HF_HUB_OFFLINE", "TRANSFORMERS_OFFLINE")
+    ):
+        return False
+    if fast_inference:  # vLLM has its own download path
+        return False
+
+    # tokenizer-only / adapter-only warms allow-list exact files below, so the weight-format ignore
+    # list (and its auto-branch model_info call) is skipped.
+    ignore_patterns = (
+        None
+        if tokenizer_only or adapter_only or gguf_file
+        else _prefetch_ignore_patterns(
+            model_name,
+            token = token,
+            revision = revision,
+            subfolder = subfolder,
+            use_safetensors = use_safetensors,
+            from_tf = from_tf,
+            from_flax = from_flax,
+            variant = variant,
+            weights_at_root = weights_at_root,
+        )
+    )
+    # Narrow the warm to what the load reads (skip extra checkpoints/precisions); every branch still warms
+    # root tokenizer/config/custom-code so those never fall in-process.
+    allow_patterns = None
+    if gguf_file:
+        # gguf_file=NAME reads exactly that GGUF, but the static ignore list drops *.gguf; so warm just
+        # that file (plus root aux), under <subfolder>/ if set.
+        _gguf_path = (
+            f"{subfolder.strip('/')}/{gguf_file}"
+            if isinstance(subfolder, str) and subfolder.strip("/")
+            else gguf_file
+        )
+        allow_patterns = [_gguf_path, *_ROOT_AUX_PREFETCH_PATTERNS]
+    elif tokenizer_only:
+        # A distinct tokenizer repo: warm only tokenizer / config / vocab files, never its weights.
+        allow_patterns = list(_ROOT_AUX_PREFETCH_PATTERNS)
+    elif adapter_only:
+        # A PEFT adapter load reads only adapter_config.json + adapter_model.* (plus root aux), not any
+        # merged weights the repo may also publish.
+        allow_patterns = [*_ADAPTER_PREFETCH_PATTERNS, *_ROOT_AUX_PREFETCH_PATTERNS]
+        # PeftModel reads one format (safetensors when present): explicit use_safetensors wins, else
+        # prefer safetensors when shipped (best-effort; any failure keeps both).
+        if use_safetensors is False:
+            ignore_patterns = [
+                "adapter_model*.safetensors",
+                "adapter_model*.safetensors.index.json",
+            ]
+        elif use_safetensors is True or _adapter_repo_has_safetensors(
+            model_name, token = token, revision = revision
+        ):
+            ignore_patterns = ["adapter_model*.bin", "adapter_model*.bin.index.json"]
+    elif isinstance(subfolder, str) and subfolder.strip("/"):
+        # subfolder=X: load resolves every weight under X/, so warm that subfolder (plus root aux).
+        allow_patterns = [f"{subfolder.strip('/')}/*", *_ROOT_AUX_PREFETCH_PATTERNS]
+    elif weights_at_root:
+        # A bare load reads only root weights: drop subdir weights (fp16/, checkpoint dirs) while keeping
+        # subdir configs. Diffusion leaves weights_at_root False.
+        ignore_patterns = [*(ignore_patterns or []), *_SUBDIR_WEIGHT_IGNORE_PATTERNS]
+    try:
+        snapshot_download_with_xet_fallback(
+            model_name,
+            token = token,
+            revision = revision,
+            cache_dir = cache_dir,
+            allow_patterns = allow_patterns,
+            ignore_patterns = ignore_patterns,
+            force_download = force_download,
+            variant = variant,
+        )
+        return True
+    except DownloadStallError:
+        # Both transports stalled: surface a clear network error, not a silent in-process hang.
+        raise
+    except Exception as exception:
+        logger.warning_once(
+            f"Unsloth: Could not pre-download {model_name} "
+            f"({type(exception).__name__}: {exception}); continuing with the normal load."
+        )
+        return False
 
 
 # Ignore logging messages
@@ -2369,6 +2838,7 @@ def patch_llama_rope_scaling(
                 dim = self.head_dim,
                 max_position_embeddings=self.max_position_embeddings,
                 base=self.rope_theta,
+                config=self.config,
             )
         elif scaling_type == "longrope":
             self.rotary_emb = {longrope_rope_function}(
@@ -3507,8 +3977,25 @@ def _moe_target_set_from_string(target_modules: str) -> set[str]:
         return {target_modules}
 
     is_regex = re.search(r"[*+?()[\]{}|\\^$]", target_modules) is not None
-    targets_mlp = "mlp" in target_modules or "ffn" in target_modules
-    if is_regex and "proj" in target_modules and targets_mlp:
+    # Key detection on the mlp/ffn/experts path segment (absent from an
+    # attention-only regex), never on q/k/v/o leaves alone.
+    targets_mlp_path = any(
+        tag in target_modules for tag in ("mlp", "ffn", "feed_forward", "experts")
+    )
+    if not is_regex or not targets_mlp_path:
+        return set()
+    # Explicit expert leaves scope the target set to exactly those leaves.
+    named = {name for name in _MOE_BROAD_MLP_TARGETS if name in target_modules}
+    if named:
+        return named
+    # A generic projection under an mlp path (e.g. ".*mlp.*proj"): any proj
+    # occurrence that is not an attention leaf name.
+    if re.search(r"(?<![qkvo]_)(?<!out_)(?<!in_)proj", target_modules):
+        return set(_MOE_BROAD_MLP_TARGETS)
+    # The auto regex on fused-expert models lists only attention Linears as
+    # leaves; its mlp tag block is the remaining MLP-intent signal. A regex
+    # like "(mlp|self_attn).(q_proj|o_proj)" has neither and stays attention-only.
+    if "mlp|feed_forward|ffn|dense" in target_modules:
         return set(_MOE_BROAD_MLP_TARGETS)
 
     return set()
@@ -3577,13 +4064,17 @@ def get_moe_target_parameters(model, target_modules = None) -> Optional[List[str
         alternate_name = "experts.down_proj",
     )
 
-    # gate_up_proj combines both gate_proj and up_proj in MoE
-    # Also match "gate_up_proj" directly since users may specify the fused name
+    # gate_up_proj combines gate_proj and up_proj; also match the fused name directly.
+    # Only target a fused expert Parameter that exists: per-expert Linear layouts
+    # (e.g. gpt-oss bnb-4bit) have no fused Parameter and are handled by
+    # get_moe_target_modules, so skip them rather than pass PEFT a dead path.
     if "gate_proj" in target_set or "up_proj" in target_set or "gate_up_proj" in target_set:
-        moe_params.append(gate_up_name)
+        if _moe_parameter_exists(model, gate_up_name):
+            moe_params.append(gate_up_name)
 
     if "down_proj" in target_set:
-        moe_params.append(down_name)
+        if _moe_parameter_exists(model, down_name):
+            moe_params.append(down_name)
 
     if moe_params:
         print(
@@ -3592,6 +4083,136 @@ def get_moe_target_parameters(model, target_modules = None) -> Optional[List[str
         return moe_params
 
     return None
+
+
+def _moe_parameter_exists(model, name: str) -> bool:
+    """True if ``name`` is an exact suffix of some parameter path on the model."""
+    if not hasattr(model, "named_parameters"):
+        return False
+    try:
+        for parameter_name, _ in model.named_parameters():
+            if parameter_name == name or parameter_name.endswith("." + name):
+                return True
+    except Exception:
+        return False
+    return False
+
+
+def get_moe_target_modules(model, target_modules = None) -> List[str]:
+    """Per-expert ``target_modules`` suffixes for MoE models whose experts are stored
+    as per-expert ``nn.Linear`` ModuleLists rather than fused nn.Parameters.
+
+    gpt-oss bnb-4bit is the canonical case (mlp.experts.gate_up_projs.<i> /
+    down_projs.<i> as Linear4bit): no fused Parameter, and the plain
+    gate/up/down_proj leaves do not match, so LoRA skips them. Returning the
+    per-expert suffixes makes PEFT attach via ordinary suffix matching (the
+    module-LoRA counterpart of get_moe_target_parameters). Returns [] for non-MoE,
+    fused-parameter MoEs, an absent per-expert layout, or a request that omits the
+    MLP experts (so an attention-only run does not train experts).
+    """
+    if not is_moe_model(model):
+        return []
+    if target_modules is None:
+        return []
+    if isinstance(target_modules, str):
+        target_set = _moe_target_set_from_string(target_modules)
+    else:
+        target_set = {
+            target
+            for target in target_modules or ()
+            if (isinstance(target, str) and "." not in target and target in _MOE_BROAD_MLP_TARGETS)
+        }
+    if not (target_set & _MOE_BROAD_MLP_TARGETS):
+        return []
+
+    if not hasattr(model, "named_modules"):
+        return []
+
+    # Scope the returned suffixes to the requested projection leaves, matching
+    # get_moe_target_parameters: gate_proj/up_proj/gate_up_proj map to the fused
+    # gate_up ModuleList (e.g. gate_up_projs); down_proj maps to the down ModuleList
+    # (e.g. down_projs). A down-only (or gate/up-only) request must not pull in the
+    # other projection.
+    want_gate_up = bool(target_set & {"gate_proj", "up_proj", "gate_up_proj"})
+    want_down = "down_proj" in target_set
+
+    targets = set()
+    for name, module in model.named_modules():
+        if not isinstance(module, torch.nn.ModuleList) or len(module) == 0:
+            continue
+        parent, _, leaf = name.rpartition(".")
+        # ModuleList directly under an ``experts`` container, holding only Linear
+        # leaves (bnb Linear4bit / Linear8bitLt subclass nn.Linear). After PEFT has
+        # wrapped the experts the child is a LoRA layer whose ``base_layer`` is the
+        # Linear, so accept that too (keeps this idempotent across a re-wrapped model).
+        if not parent.endswith("experts"):
+            continue
+        if not all(
+            isinstance(child, torch.nn.Linear)
+            or isinstance(getattr(child, "base_layer", None), torch.nn.Linear)
+            for child in module
+        ):
+            continue
+        # Honor the requested subset: classify the ModuleList by projection role.
+        leaf_lower = leaf.lower()
+        is_down = "down" in leaf_lower
+        is_gate_up = (not is_down) and ("gate" in leaf_lower or "up" in leaf_lower)
+        if is_down and not want_down:
+            continue
+        if is_gate_up and not want_gate_up:
+            continue
+        # One entry per expert index; ``leaf.<i>`` matches expert i in every layer.
+        for expert_index in range(len(module)):
+            targets.add(f"{leaf}.{expert_index}")
+
+    return sorted(targets)
+
+
+def warn_if_zoo_cannot_merge_moe_experts():
+    """Warn once when the installed unsloth_zoo cannot fold per-expert Linear MoE LoRA
+    into a merged_16bit checkpoint. Older zoo releases keep the fused gate_up_proj /
+    down_proj tensors and drop the per-expert gate_up_projs.<i> / down_projs.<i> deltas,
+    so save_pretrained_merged("merged_16bit") would silently lose the expert training
+    (the LoRA adapter itself still saves and reloads correctly)."""
+    try:
+        from unsloth_zoo import saving_utils as _saving_utils
+
+        # _fold_perexpert_lora_into_fused is the helper that folds these experts.
+        if hasattr(_saving_utils, "_fold_perexpert_lora_into_fused"):
+            return
+    except Exception:
+        return  # cannot introspect zoo -> stay quiet rather than false-alarm
+    logger.warning_once(
+        "Unsloth: the installed unsloth_zoo will not fold these per-expert experts into "
+        "a merged_16bit checkpoint, so save_pretrained_merged('merged_16bit') would drop "
+        "the expert LoRA. Upgrade unsloth_zoo to merge them; saving the LoRA adapter is "
+        "unaffected."
+    )
+
+
+def _select_moe_detection_targets(
+    original_target_modules,
+    scoped_target_modules,
+    finetune_mlp_modules = True,
+    finetune_language_layers = True,
+):
+    """Pick what get_moe_target_parameters keys expert detection on.
+
+    Prefer the caller's ORIGINAL explicit leaf list over the scoped regex so an
+    attention-only request is not pushed into the experts by get_peft_regex's
+    ``mlp|feed_forward|ffn|dense`` component block (which the string fallback
+    cannot tell apart from a fused-expert auto regex).
+
+    But only when the MLP and language families are BOTH still in scope. If the
+    caller scoped MLP or language OFF (``finetune_mlp_modules=False`` or
+    ``finetune_language_layers=False``) the scoped regex already drops the MoE
+    experts, and reusing the original list -- which may still name gate/up/down
+    leaves -- would wrongly re-introduce them. In that case honor the scoped
+    result so the frozen-MLP / vision-only request is respected.
+    """
+    if original_target_modules is not None and finetune_mlp_modules and finetune_language_layers:
+        return original_target_modules
+    return scoped_target_modules
 
 
 def make_fast_generate_wrapper(original_generate):

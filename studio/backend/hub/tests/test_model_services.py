@@ -36,6 +36,20 @@ from hub.utils import (
 from hub.workers import hf_download
 
 
+@pytest.fixture(autouse = True)
+def _denylist_inert(monkeypatch):
+    # The browse tests here exercise allowlist containment, symlink safety and
+    # the sensitive-name filter, not the system-directory denylist (which has
+    # its own suite in tests/test_browse_denylist.py). On macOS tmp_path
+    # resolves under /private/var, a denied prefix, so _resolve_browse_target
+    # would 403 the fixture dirs before that logic runs. Keep the denylist inert
+    # so these assertions hold on every platform. folder_browser binds
+    # is_denied_system_path at import, so patch it on that module, not on
+    # scan_folders. The "rejects" cases still 403 via the allowlist/sensitive
+    # checks, and the non-browse tests never call it.
+    monkeypatch.setattr(folder_browser, "is_denied_system_path", lambda _p: False)
+
+
 def _repo(repo_id: str, files: list[SimpleNamespace], repo_path: Path):
     return SimpleNamespace(
         repo_id = repo_id,
@@ -105,6 +119,10 @@ def test_repo_id_validation_accepts_hf_repo_id_contract(repo_id):
     assert paths.is_valid_repo_id(repo_id)
 
 
+def test_repo_id_validation_accepts_max_length_namespaced_repo():
+    assert paths.is_valid_repo_id(f"{'a' * 96}/{'b' * 96}")
+
+
 @pytest.mark.parametrize(
     "repo_id",
     [
@@ -119,6 +137,48 @@ def test_repo_id_validation_accepts_hf_repo_id_contract(repo_id):
 )
 def test_repo_id_validation_rejects_unsafe_or_invalid_ids(repo_id):
     assert not paths.is_valid_repo_id(repo_id)
+
+
+def test_download_state_preserves_readable_keys_when_safe(monkeypatch, tmp_path):
+    monkeypatch.setattr(state_dir, "cache_root", lambda: tmp_path)
+
+    path = state_dir.marker_path("model", "Owner/Repo", "Q4_K_M")
+
+    assert path is not None
+    assert path.name == "models--owner--repo--variant--q4_k_m.json"
+
+
+@pytest.mark.parametrize("variant", ["bad variant with spaces", "q" * 64])
+def test_download_state_bounds_long_repo_variant_filenames(monkeypatch, tmp_path, variant):
+    monkeypatch.setattr(state_dir, "cache_root", lambda: tmp_path)
+    repo_id = f"{'a' * 96}/{'b' * 96}"
+
+    assert paths.is_valid_repo_id(repo_id)
+    assert download_manifest.write_cancel_marker("model", repo_id, variant, "http")
+    assert download_manifest.write_manifest(
+        "model",
+        repo_id,
+        variant,
+        [download_manifest.ExpectedFile(path = "model.gguf", size = 1)],
+        "http",
+    )
+
+    marker_path = state_dir.marker_path("model", repo_id, variant)
+    manifest_path = state_dir.manifest_path("model", repo_id, variant)
+
+    assert marker_path is not None
+    assert manifest_path is not None
+    assert "--sha256-" in marker_path.name
+    assert len(marker_path.name.encode("utf-8")) <= 255
+    assert len(f".{marker_path.name}.tmp-00000000".encode("utf-8")) <= 255
+    assert download_manifest.has_cancel_marker("model", repo_id, variant)
+    assert download_manifest.read_manifest("model", repo_id, variant) is not None
+    assert list(download_manifest.iter_variant_markers("model", repo_id)) == [
+        (variant, marker_path)
+    ]
+    assert list(download_manifest.iter_variant_manifests("model", repo_id)) == [
+        (variant, manifest_path)
+    ]
 
 
 class _RecordingLogger:
@@ -168,17 +228,46 @@ def test_resolve_browse_target_rejects_sensitive_dir(tmp_path):
     assert exc_info.value.status_code == 403
 
 
+def test_resolve_browse_target_rejects_sensitive_root(tmp_path):
+    ssh = tmp_path / "home" / ".ssh"
+    ssh.mkdir(parents = True)
+
+    with pytest.raises(HTTPException) as exc_info:
+        folder_browser._resolve_browse_target(str(ssh), [ssh])
+
+    assert exc_info.value.status_code == 403
+
+
 def test_browse_folders_hides_sensitive_dirs(monkeypatch, tmp_path):
     home = tmp_path / "home"
     (home / ".ssh").mkdir(parents = True)
     (home / "models").mkdir()
-    monkeypatch.setattr(folder_browser, "_build_browse_allowlist", lambda: [home])
+    # Accept and ignore the optional (media_roots, drive_roots) args the caller now passes.
+    monkeypatch.setattr(folder_browser, "_build_browse_allowlist", lambda *_a, **_k: [home])
 
     response = folder_browser.browse_folders_response(str(home), show_hidden = True)
 
     names = {entry.name for entry in response.entries}
     assert "models" in names
     assert ".ssh" not in names
+
+
+def test_browse_allowlist_includes_linux_run_media_mounts(monkeypatch, tmp_path):
+    home = tmp_path / "home"
+    media_root = tmp_path / "run" / "media" / "dspofu" / "nvmeB"
+    model_dir = media_root / "modelsAI" / "gguf" / "qwen3.6"
+    home.mkdir()
+    model_dir.mkdir(parents = True)
+    monkeypatch.setattr(folder_browser.Path, "home", lambda: home)
+    monkeypatch.setattr(folder_browser, "linux_run_media_mount_roots", lambda: [media_root])
+    monkeypatch.setattr(folder_browser, "_resolve_hf_cache_dir", lambda: tmp_path / "missing-hf")
+    monkeypatch.setattr(scan_folders, "list_scan_folders", lambda: [])
+    monkeypatch.setattr(folder_browser, "well_known_model_dirs", lambda: [])
+
+    allowlist = folder_browser._build_browse_allowlist()
+
+    assert media_root.resolve() in allowlist
+    assert folder_browser._resolve_browse_target(str(model_dir), allowlist) == model_dir.resolve()
 
 
 def test_get_models_folder_response_creates_and_returns_dir(monkeypatch, tmp_path):
@@ -348,6 +437,287 @@ def test_cached_gguf_scan_includes_variant_state_without_completed_gguf(monkeypa
     assert row["size_bytes"] == 4096
     assert row["partial"] is True
     assert row["capabilities"]["requires_variant"] is True
+
+
+def test_cached_gguf_scan_hides_infra_repos_without_user_downloads(monkeypatch, tmp_path):
+    probe = _repo(
+        "ggml-org/models",
+        [_file("tinyllamas/stories260K.gguf", 1_200_000)],
+        tmp_path / "probe",
+    )
+    embedder = _repo(
+        "unsloth/bge-small-en-v1.5-GGUF",
+        [_file("bge-small-en-v1.5-f16.gguf", 60_000_000)],
+        tmp_path / "embedder",
+    )
+    chat = _repo("Org/Chat-GGUF", [_file("Q4_K_M.gguf", 100)], tmp_path / "chat")
+    monkeypatch.setattr(
+        cache_inventory,
+        "all_hf_cache_scans",
+        lambda: [SimpleNamespace(repos = [probe, embedder, chat])],
+    )
+    monkeypatch.setattr(
+        cache_inventory.hf_cache_scan,
+        "is_gguf_repo_partial",
+        lambda _repo_id, _path: False,
+    )
+
+    result = {"cached": cache_inventory._scan_cached_gguf()}
+
+    assert [row["repo_id"] for row in result["cached"]] == ["Org/Chat-GGUF"]
+
+
+def test_cached_gguf_scan_keeps_infra_repo_with_user_downloaded_variant(monkeypatch, tmp_path):
+    monkeypatch.setattr(state_dir, "cache_root", lambda: tmp_path / "state")
+    embedder = _repo(
+        "unsloth/bge-small-en-v1.5-GGUF",
+        [
+            _file("bge-small-en-v1.5-f16.gguf", 60_000_000),
+            _file("bge-small-en-v1.5-Q8_0.gguf", 35_000_000),
+        ],
+        tmp_path / "embedder",
+    )
+    # Variant manifests only exist for user Hub downloads, not auto-downloads.
+    assert download_manifest.write_manifest(
+        "model",
+        "unsloth/bge-small-en-v1.5-GGUF",
+        "Q8_0",
+        [download_manifest.ExpectedFile(path = "bge-small-en-v1.5-Q8_0.gguf", size = 35_000_000)],
+        "http",
+    )
+    monkeypatch.setattr(
+        cache_inventory,
+        "all_hf_cache_scans",
+        lambda: [SimpleNamespace(repos = [embedder])],
+    )
+    monkeypatch.setattr(
+        cache_inventory.hf_cache_scan,
+        "is_gguf_repo_partial",
+        lambda _repo_id, _path: False,
+    )
+
+    result = {"cached": cache_inventory._scan_cached_gguf()}
+
+    assert [row["repo_id"] for row in result["cached"]] == ["unsloth/bge-small-en-v1.5-GGUF"]
+    assert result["cached"][0]["capabilities"]["can_chat"] is False
+
+
+def test_cached_models_scan_hides_non_gguf_embedder(monkeypatch, tmp_path):
+    embedder_path = tmp_path / "hub" / "models--unsloth--bge-small-en-v1.5"
+    embedder_path.mkdir(parents = True)
+    embedder = _repo(
+        "unsloth/bge-small-en-v1.5",
+        [_file("config.json", 12), _file("model.safetensors", 130_000_000)],
+        embedder_path,
+    )
+    chat_path = tmp_path / "hub" / "models--Org--Chat"
+    chat_path.mkdir(parents = True)
+    chat = _repo(
+        "Org/Chat",
+        [_file("config.json", 12), _file("model.safetensors", 100)],
+        chat_path,
+    )
+    monkeypatch.setattr(
+        cache_inventory,
+        "all_hf_cache_scans",
+        lambda: [SimpleNamespace(repos = [embedder, chat])],
+    )
+    monkeypatch.setattr(
+        cache_inventory.hf_cache_scan,
+        "is_snapshot_partial",
+        lambda _kind, _repo_id, _path: False,
+    )
+
+    result = {"cached": cache_inventory._scan_cached_models()}
+
+    assert [row["repo_id"] for row in result["cached"]] == ["Org/Chat"]
+
+
+def test_cached_scans_hide_embedders_configured_by_cache_path(monkeypatch, tmp_path):
+    from core.rag import config as rag_config
+
+    gguf_path = tmp_path / "hub" / "models--Org--PathEmbedder-GGUF"
+    gguf_path.mkdir(parents = True)
+    gguf = _repo(
+        "Org/PathEmbedder-GGUF",
+        [_file("model-F16.gguf", 60_000_000)],
+        gguf_path,
+    )
+    model_path = tmp_path / "hub" / "models--Org--PathEmbedder"
+    model_path.mkdir(parents = True)
+    model = _repo(
+        "Org/PathEmbedder",
+        [_file("config.json", 12), _file("model.safetensors", 130_000_000)],
+        model_path,
+    )
+    monkeypatch.setattr(
+        rag_config,
+        "effective_embedding_model",
+        lambda: str(model_path),
+    )
+    monkeypatch.setattr(
+        rag_config,
+        "effective_gguf_repo",
+        lambda: str(gguf_path),
+    )
+    monkeypatch.setattr(
+        cache_inventory,
+        "all_hf_cache_scans",
+        lambda: [SimpleNamespace(repos = [gguf, model])],
+    )
+    monkeypatch.setattr(
+        cache_inventory.hf_cache_scan,
+        "is_gguf_repo_partial",
+        lambda _repo_id, _path: False,
+    )
+    monkeypatch.setattr(
+        cache_inventory.hf_cache_scan,
+        "is_snapshot_partial",
+        lambda _kind, _repo_id, _path: False,
+    )
+
+    assert cache_inventory._scan_cached_gguf() == []
+    assert cache_inventory._scan_cached_models() == []
+
+
+def test_cached_scans_hide_embedders_configured_by_snapshot_path(monkeypatch, tmp_path):
+    from core.rag import config as rag_config
+
+    gguf_path = tmp_path / "hub" / "models--Org--SnapshotEmbedder-GGUF"
+    gguf_snapshot = gguf_path / "snapshots" / "gguf-revision"
+    gguf_snapshot.mkdir(parents = True)
+    gguf = _repo(
+        "Org/SnapshotEmbedder-GGUF",
+        [_file("model-F16.gguf", 60_000_000)],
+        gguf_path,
+    )
+    model_path = tmp_path / "hub" / "models--Org--SnapshotEmbedder"
+    model_snapshot = model_path / "snapshots" / "model-revision"
+    model_snapshot.mkdir(parents = True)
+    model = _repo(
+        "Org/SnapshotEmbedder",
+        [_file("config.json", 12), _file("model.safetensors", 130_000_000)],
+        model_path,
+    )
+    monkeypatch.setattr(
+        rag_config,
+        "effective_embedding_model",
+        lambda: str(model_snapshot),
+    )
+    monkeypatch.setattr(
+        rag_config,
+        "effective_gguf_repo",
+        lambda: str(gguf_snapshot),
+    )
+    monkeypatch.setattr(
+        cache_inventory,
+        "all_hf_cache_scans",
+        lambda: [SimpleNamespace(repos = [gguf, model])],
+    )
+
+    def _resolve_snapshot(repo_path):
+        return str(
+            {
+                gguf_path: gguf_snapshot,
+                model_path: model_snapshot,
+            }.get(Path(repo_path), Path(repo_path))
+        )
+
+    monkeypatch.setattr(
+        cache_inventory.hf_cache_scan,
+        "resolve_hf_cache_realpath",
+        _resolve_snapshot,
+    )
+    monkeypatch.setattr(
+        cache_inventory.hf_cache_scan,
+        "is_gguf_repo_partial",
+        lambda _repo_id, _path: False,
+    )
+    monkeypatch.setattr(
+        cache_inventory.hf_cache_scan,
+        "is_snapshot_partial",
+        lambda _kind, _repo_id, _path: False,
+    )
+
+    assert cache_inventory._scan_cached_gguf() == []
+    assert cache_inventory._scan_cached_models() == []
+
+
+def test_cached_models_scan_keeps_unrelated_repo_with_custom_generic_embedder(
+    monkeypatch, tmp_path
+):
+    # A custom embedder with a generic basename ("org/model") must be hidden by
+    # EXACT repo-id match only. An unrelated cached chat model whose id merely
+    # contains "model" (e.g. "user/model-chat") must stay on device: substring
+    # basename matching used to drop real chat models from the inventory.
+    from core.rag import config as rag_config
+
+    monkeypatch.setattr(rag_config, "effective_embedding_model", lambda: "org/model")
+    monkeypatch.setattr(rag_config, "effective_gguf_repo", lambda: "org/model-GGUF")
+
+    def _model_repo(repo_id: str):
+        path = tmp_path / "hub" / f"models--{repo_id.replace('/', '--')}"
+        path.mkdir(parents = True)
+        return _repo(
+            repo_id,
+            [_file("config.json", 12), _file("model.safetensors", 100)],
+            path,
+        )
+
+    embedder = _model_repo("org/model")
+    chat = _model_repo("user/model-chat")
+    monkeypatch.setattr(
+        cache_inventory,
+        "all_hf_cache_scans",
+        lambda: [SimpleNamespace(repos = [embedder, chat])],
+    )
+    monkeypatch.setattr(
+        cache_inventory.hf_cache_scan,
+        "is_snapshot_partial",
+        lambda _kind, _repo_id, _path: False,
+    )
+
+    result = {"cached": cache_inventory._scan_cached_models()}
+
+    assert [row["repo_id"] for row in result["cached"]] == ["user/model-chat"]
+
+
+def test_cached_scans_hide_stale_default_embedder_after_custom_setting(monkeypatch, tmp_path):
+    from core.rag import config as rag_config
+
+    monkeypatch.setattr(rag_config, "effective_embedding_model", lambda: "org/custom")
+    monkeypatch.setattr(rag_config, "effective_gguf_repo", lambda: "org/custom-GGUF")
+
+    gguf = _repo(
+        "unsloth/bge-small-en-v1.5-GGUF",
+        [_file("bge-small-en-v1.5-f16.gguf", 60_000_000)],
+        tmp_path / "default-gguf",
+    )
+    weights_path = tmp_path / "hub" / "models--unsloth--bge-small-en-v1.5"
+    weights_path.mkdir(parents = True)
+    weights = _repo(
+        "unsloth/bge-small-en-v1.5",
+        [_file("config.json", 12), _file("model.safetensors", 130_000_000)],
+        weights_path,
+    )
+    monkeypatch.setattr(
+        cache_inventory,
+        "all_hf_cache_scans",
+        lambda: [SimpleNamespace(repos = [gguf, weights])],
+    )
+    monkeypatch.setattr(
+        cache_inventory.hf_cache_scan,
+        "is_gguf_repo_partial",
+        lambda _repo_id, _path: False,
+    )
+    monkeypatch.setattr(
+        cache_inventory.hf_cache_scan,
+        "is_snapshot_partial",
+        lambda _kind, _repo_id, _path: False,
+    )
+
+    assert cache_inventory._scan_cached_gguf() == []
+    assert cache_inventory._scan_cached_models() == []
 
 
 def test_gguf_variant_requirements_include_split_files_and_preferred_mmproj():
@@ -1519,6 +1889,63 @@ def test_hf_cache_scan_uses_gguf_partial_row_for_variant_state(monkeypatch, tmp_
     assert rows[0].partial is True
     assert rows[0].size_bytes == 8192
     assert rows[0].capabilities.requires_variant is True
+
+
+def test_local_inventory_filters_custom_embedder_hf_cache_row(monkeypatch, tmp_path):
+    from core.rag import config as rag_config
+
+    monkeypatch.setattr(rag_config, "effective_embedding_model", lambda: "org/embedder")
+    monkeypatch.setattr(rag_config, "effective_gguf_repo", lambda: "org/embedder-GGUF")
+
+    def _row(repo_id: str):
+        repo_path = tmp_path / f"models--{repo_id.replace('/', '--')}"
+        return model_common._local_model_info(
+            scan_path = repo_path,
+            load_path = repo_path,
+            source = "hf_cache",
+            model_format = "safetensors",
+            model_id = repo_id,
+        )
+
+    rows = local_inventory._filter_hidden_models([_row("org/embedder"), _row("org/chat-model")])
+
+    assert [row.model_id for row in rows] == ["org/chat-model"]
+
+
+def test_local_inventory_filters_embedder_configured_by_snapshot_path(monkeypatch, tmp_path):
+    from core.rag import config as rag_config
+
+    embedder_path = tmp_path / "hub" / "models--org--embedder"
+    embedder_snapshot = embedder_path / "snapshots" / "revision"
+    embedder_snapshot.mkdir(parents = True)
+    chat_path = tmp_path / "hub" / "models--org--chat-model"
+    chat_path.mkdir(parents = True)
+    monkeypatch.setattr(
+        rag_config,
+        "effective_embedding_model",
+        lambda: str(embedder_snapshot),
+    )
+    monkeypatch.setattr(rag_config, "effective_gguf_repo", lambda: "org/embedder-GGUF")
+    monkeypatch.setattr(
+        local_inventory.hf_cache_scan,
+        "resolve_hf_cache_realpath",
+        lambda path: str(embedder_snapshot) if Path(path) == embedder_path else str(path),
+    )
+
+    def _row(repo_id: str, repo_path: Path):
+        return model_common._local_model_info(
+            scan_path = repo_path,
+            load_path = repo_path,
+            source = "hf_cache",
+            model_format = "safetensors",
+            model_id = repo_id,
+        )
+
+    rows = local_inventory._filter_hidden_models(
+        [_row("org/embedder", embedder_path), _row("org/chat-model", chat_path)]
+    )
+
+    assert [row.model_id for row in rows] == ["org/chat-model"]
 
 
 def test_model_download_job_helpers_preserve_idle_shape():

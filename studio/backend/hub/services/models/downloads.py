@@ -60,6 +60,30 @@ def _job_status(
     return DownloadJobStatus(state = state, error = error, generation = generation)
 
 
+def _load_in_flight(repo_id: str) -> bool:
+    try:
+        from core.inference.llama_cpp import hf_gguf_load_in_flight
+        return hf_gguf_load_in_flight(repo_id)
+    except Exception:
+        return False
+
+
+def _load_in_flight_error(repo_id: str) -> HTTPException:
+    return HTTPException(
+        status_code = 409,
+        detail = (
+            f"A model load for '{repo_id}' is in progress and may be "
+            "downloading it. Wait for the load to finish (or cancel it), "
+            "then start the download."
+        ),
+    )
+
+
+def _reject_if_load_in_flight(repo_id: str) -> None:
+    if _load_in_flight(repo_id):
+        raise _load_in_flight_error(repo_id)
+
+
 def _spawn_download_worker(
     repo_id: str,
     variant: Optional[str],
@@ -88,6 +112,9 @@ async def download_model_response(body: DownloadModelRequest, hf_token: Optional
         )
     # Canonicalize so two different-cased paste-ins share one job + cache dir.
     repo_id = await asyncio.to_thread(resolve_cached_repo_id_case, repo_id, repo_type = "model")
+
+    # Avoid concurrent writers to the same HF cache files.
+    _reject_if_load_in_flight(repo_id)
 
     variant = (body.gguf_variant or "").strip() or None
     if variant is not None and not _is_valid_gguf_variant(variant):
@@ -147,9 +174,12 @@ async def download_model_response(body: DownloadModelRequest, hf_token: Optional
         blob_hashes = variant_blob_hashes,
         progress_blob_hashes = variant_progress_blob_hashes,
         completed_baseline_bytes = completed_baseline_bytes,
+        admission_check = lambda: not _load_in_flight(repo_id),
     )
     generation = _registry.current_generation(key)
     if not claimed:
+        if claim_state == "admission_blocked":
+            raise _load_in_flight_error(repo_id)
         # claim_state is the blocking job's state. The client can attach only
         # when the blocker is this key's own in-flight job (adoptable); a
         # cross-variant conflict or in-progress delete is not accepted.

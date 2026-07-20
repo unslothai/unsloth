@@ -41,6 +41,7 @@ export const en = {
       recipes: "Recipes",
       export: "Export",
       recents: "Recents",
+      noChatsYet: "No chats yet",
       settings: "Settings",
       api: "API",
       lightMode: "Light Mode",
@@ -87,6 +88,8 @@ export const en = {
       title: "Settings",
       description: "Manage your Unsloth preferences.",
       closeAriaLabel: "Close settings",
+      searchPlaceholder: "Search settings…",
+      searchNoResults: "No settings found.",
     },
     tabs: {
       general: "General",
@@ -94,9 +97,80 @@ export const en = {
       appearance: "Appearance",
       resources: "System",
       chat: "Chat",
+      voice: "Voice",
       connections: "Connections",
       apiKeys: "API",
       about: "About",
+    },
+    voice: {
+      title: "Voice",
+      description: "Microphone, dictation, and read-aloud",
+      dictation: {
+        sectionTitle: "Dictation",
+        microphoneLabel: "Microphone",
+        microphoneDescription: "Used for dictation",
+        microphoneFallbackHint:
+          "Used for dictation. Falls back to the system default if the browser speech engine cannot use this device",
+        microphoneGrantDescription: "Allow mic access to show device names",
+        allowMicrophone: "Allow microphone",
+        micAccessBlocked:
+          "Microphone access was blocked. Allow microphone access for this Unsloth page, then try again.",
+        micAccessUnsupported:
+          "Microphone access is not supported in this browser or context.",
+        micOpenFailed:
+          "Could not open the selected microphone. Check permissions or pick another device.",
+        systemDefault: "System default",
+        savedMicDisconnected: "Saved microphone (not connected)",
+        languageLabel: "Dictation language",
+        languageDescription: "Language to recognize",
+        languageAuto: "Auto (browser language)",
+        testLabel: "Test dictation",
+        testDescription: "Speak to check your mic and settings",
+        startTest: "Start test",
+        stopTest: "Stop test",
+        listening: "Listening…",
+        testSaved: "Saved to recent dictations",
+        notSupported: "Not supported in this browser",
+      },
+      dictionary: {
+        sectionTitle: "Dictation dictionary",
+        sectionDescription:
+          "Apply the spelling entered here when dictation recognizes the same words or phrase",
+        addEntry: "Add entry",
+      },
+      recents: {
+        sectionTitle: "Recent dictations",
+        sectionDescription:
+          "Your recent dictations will appear here so you can recover text",
+        empty: "No dictations yet",
+        copied: "Copied to clipboard",
+        copyFailed: "Could not copy to clipboard",
+        clear: "Clear recent dictations",
+      },
+      readAloud: {
+        sectionTitle: "Read aloud",
+        buttonLabel: "Read aloud button",
+        buttonDescription: "Show on assistant responses",
+        engineLabel: "TTS engine",
+        engineSystemDescription: "Built-in device voices",
+        engineStudioDescription: "Uses the loaded audio model (e.g. Orpheus)",
+        engineSystem: "System voices",
+        engineStudio: "Load TTS model",
+        modelLabel: "TTS model",
+        modelDescription:
+          "Load an audio model from the model selector (e.g. Orpheus TTS)",
+        voiceLabel: "Voice",
+        voiceDescription: "Best voices on this device",
+        speedLabel: "Speed",
+        pitchLabel: "Pitch",
+        volumeLabel: "Volume",
+        previewLabel: "Preview voice",
+        previewDescription: "Play a short sample",
+        previewAction: "Preview",
+        stopAction: "Stop",
+        ttsLabel: "Text to speech",
+        notSupported: "Not supported in this browser",
+      },
     },
     general: {
       title: "General",
@@ -109,7 +183,7 @@ export const en = {
       showToken: "Show token",
       tokenSaved: "Token saved",
       password: "Password",
-      passwordDescription: "Change the password for this Studio account.",
+      passwordDescription: "Change the password for this Unsloth account.",
       passwordDialog: {
         trigger: "Change password",
         title: "Change password",
@@ -150,14 +224,17 @@ export const en = {
           "When an OpenAI-compatible request names a different downloaded GGUF, load it before serving. Off by default; unknown names keep serving the loaded model.",
         idleUnload: "Idle auto-unload",
         idleUnloadDescription:
-          "Unload the model after this many idle seconds to free VRAM; the next request reloads it. 0 keeps it loaded.",
+          "Unload the model after this many idle seconds to free VRAM; the next request reloads it. 0 keeps it loaded. Minimum 60 seconds.",
         idleNeedsEnable:
           "Turn on Switch model by request so an unloaded model reloads on next use.",
         idleActiveViaEnv:
           "Idle auto-unload is active via the UNSLOTH_MODEL_IDLE_TTL environment variable.",
         loadError: "Failed to load model auto-switch settings.",
         saveError: "Failed to save model auto-switch settings.",
-        idleError: "Enter a whole number of seconds (0 or more).",
+        idleError: "Enter 0 to keep the model loaded, or at least 60 seconds.",
+        keepKv: "Keep chat context across idle unload",
+        keepKvDescription:
+          "Save the model's KV cache to disk before an idle unload and restore it on reload, so resumed chats skip re-reading their history. Chat context is written to disk (up to 10 GB) until it is restored or cleaned up.",
       },
       previewSharing: {
         sectionTitle: "Preview sharing",
@@ -177,6 +254,12 @@ export const en = {
         revokeConfirmAction: "Revoke all links",
         revoked: "All preview links revoked",
         revokeError: "Couldn't revoke preview links",
+      },
+      permissions: {
+        sectionTitle: "Permissions",
+        bypassLabel: "Bypass permissions",
+        bypassDescription:
+          "How Unsloth approves chat tool calls (terminal, python, web, MCP) before they run. Full access disables approvals and the code sandbox.",
       },
       notifications: {
         sectionTitle: "Notifications",
@@ -241,7 +324,11 @@ export const en = {
       avatarShape: "Profile picture shape",
       avatarShapeCircle: "Circle",
       avatarShapeRounded: "Rounded",
-      chooseSloth: "Or pick a sloth",
+      greetingSloth: "Sloth in greeting",
+      greetingSlothDescription: "Show the sloth in the chat greeting.",
+      chooseSloth: "Or pick a sloth profile picture",
+      noPicture: "No profile picture",
+      noneLabel: "None",
       nameSaved: "Profile name saved",
       namePersistErrorTitle: "Could not persist profile name",
       namePersistErrorDescription:
@@ -264,10 +351,97 @@ export const en = {
         light: "Light",
         dark: "Dark",
       },
+      palette: {
+        label: "Color palette",
+        description: "Colors used across Unsloth, in light and dark mode.",
+        standard: "Standard",
+        classic: "Classic",
+        minimal: "Minimal",
+      },
+      custom: {
+        reset: "Reset",
+        resetAll: "Reset customization",
+        preferencesTitle: "Preferences",
+        colors: {
+          lightGroup: "Light theme",
+          darkGroup: "Dark theme",
+          accent: "Accent",
+          background: "Background",
+          foreground: "Foreground",
+        },
+        fontDefault: "Default",
+        fontBundledGroup: "Built-in",
+        fontImportedGroup: "Imported",
+        fontDeviceGroup: "On this device",
+        fontFolderGroup: "From folder",
+        fontDeviceLoading: "Looking for device fonts…",
+        fontSearch: "Search fonts…",
+        fontNoResults: "No fonts found.",
+        colorPicker: {
+          hue: "Hue",
+          hex: "Hex color",
+          eyedropper: "Pick a color from the screen",
+        },
+        uiFont: {
+          label: "UI font",
+        },
+        headingFont: {
+          label: "Heading font",
+        },
+        chatFont: {
+          label: "Chat font",
+        },
+        codeFont: {
+          label: "Code font",
+        },
+        importFont: {
+          upload: "Upload",
+          scanFolder: "Select folder",
+          alreadyAvailable:
+            "This font is already available, so the existing copy is used.",
+          folderNoFonts: "No font files found in that folder.",
+          remove: "Remove",
+          errorInvalidType:
+            "Unsupported file type. Use .woff2, .woff, .ttf, or .otf.",
+          errorTooLarge: "Font file is too large (max 1.5 MB).",
+          errorLimit: "You can import up to 3 fonts.",
+          errorStorageFull: "Not enough local storage for this font. Remove an imported font first.",
+          errorFailed: "Could not load this font file.",
+        },
+        uiFontSize: {
+          label: "UI font size",
+          description: "Adjust the base size used for the Unsloth UI.",
+        },
+        codeFontSize: {
+          label: "Code font size",
+          description: "Adjust the base size used for code.",
+        },
+        fontSmoothing: {
+          label: "Font smoothing",
+          description: "Use smoothed font anti-aliasing.",
+        },
+        contrast: {
+          label: "Contrast",
+          description: "Strength of borders and secondary text.",
+        },
+        reduceMotion: {
+          label: "Reduce motion",
+          description: "Reduce animations or match your system.",
+          system: "System",
+          on: "On",
+          off: "Off",
+        },
+        pointerCursors: {
+          label: "Use pointer cursors",
+          description:
+            "Change the cursor to a pointer when hovering over interactive elements.",
+        },
+      },
       language: {
         title: "Language",
         label: "Display language",
         description: "The language used by Unsloth.",
+        autoDetect: "Auto detect",
       },
       layout: {
         title: "Layout",
@@ -275,10 +449,17 @@ export const en = {
         compactSidebarDescription:
           "Keep the sidebar expanded instead of collapsing to icons.",
       },
+      sidebarMenu: {
+        title: "Sidebar menu",
+        description:
+          "Show, hide, and reorder items in the sidebar profile menu. Settings, Help, Log out, and Shutdown stay fixed.",
+        darkModeToggle: "Dark mode toggle",
+        dragToReorder: "Drag to reorder",
+      },
     },
     resources: {
       title: "System",
-      description: "Monitor this Studio server's hardware and storage.",
+      description: "Monitor this Unsloth server's hardware and storage.",
       liveUpdates: "Live updates",
       floatingWindow: "Floating window",
       disableOverlay: "Disable overlay",
@@ -408,7 +589,6 @@ export const en = {
       description: "Access Unsloth via the OpenAI-compatible API.",
       readDocs: "Read the API docs",
       noAccess: "No API access yet.",
-      newBadge: "New",
       accessTokens: "Access tokens",
       loadError: "Couldn't load API access.",
       createError: "Couldn't create access token.",
@@ -443,7 +623,10 @@ export const en = {
       codingAgents: "Coding agents",
       codingAgentsHint:
         "Launch a coding agent against this server. It uses the loaded model; a local server mints an API key automatically, a remote one includes it in the command.",
-      codingAgentsSwap: "Swap claude for codex, openclaw, opencode, hermes, or pi.",
+      codingAgentsSwap:
+        "Swap claude for codex, openclaw, opencode, hermes, or pi.",
+      codingAgentDetected: "Installed on this machine",
+      codingAgentsDetectedHint: "Detected on this machine: {agents}.",
       relativeNever: "never",
       relativeJustNow: "just now",
       relativeHoursAgo: "{count}h ago",

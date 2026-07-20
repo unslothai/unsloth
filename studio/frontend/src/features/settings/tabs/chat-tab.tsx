@@ -53,7 +53,10 @@ import { useEffect, useRef, useState } from "react";
 import type { ReactNode } from "react";
 import { ArchivedChatsDialog } from "../components/archived-chats-dialog";
 import { SettingsRow } from "../components/settings-row";
-import { SettingsSection } from "../components/settings-section";
+import {
+  SettingsGroupDivider,
+  SettingsSection,
+} from "../components/settings-section";
 import { useSettingsDialogStore } from "../stores/settings-dialog-store";
 
 // Adjustable "+" menu items shown in settings, in display order. Icons mirror
@@ -170,6 +173,14 @@ export function ChatTab() {
   }, [archivedChatsRequested, consumeArchivedChatsRequest]);
   const [exporting, setExporting] = useState(false);
   const [clearing, setClearing] = useState(false);
+  const autoTitle = useChatRuntimeStore((state) => state.autoTitle);
+  const setAutoTitle = useChatRuntimeStore((state) => state.setAutoTitle);
+  const showCanvasMenuItem = useChatRuntimeStore(
+    (state) => state.showCanvasMenuItem,
+  );
+  const setShowCanvasMenuItem = useChatRuntimeStore(
+    (state) => state.setShowCanvasMenuItem,
+  );
   const collapseHtmlArtifacts = useChatRuntimeStore(
     (state) => state.collapseHtmlArtifacts,
   );
@@ -212,6 +223,12 @@ export function ChatTab() {
   );
   const setShowModelDisclaimer = useChatPreferencesStore(
     (state) => state.setShowModelDisclaimer,
+  );
+  const showResponseModel = useChatPreferencesStore(
+    (state) => state.showResponseModel,
+  );
+  const setShowResponseModel = useChatPreferencesStore(
+    (state) => state.setShowResponseModel,
   );
 
   useEffect(() => {
@@ -397,12 +414,20 @@ export function ChatTab() {
       >
         {PLUS_MENU_SETTINGS.map((item) => (
           <SettingsRow key={item.id} label={item.label} icon={item.icon}>
+            {/* Canvas toggles menu visibility; the rest toggle pin placement. */}
             <Switch
-              checked={plusPins[item.id]}
-              onCheckedChange={() => togglePlusPin(item.id)}
+              checked={
+                item.id === "canvas" ? showCanvasMenuItem : plusPins[item.id]
+              }
+              onCheckedChange={
+                item.id === "canvas"
+                  ? setShowCanvasMenuItem
+                  : () => togglePlusPin(item.id)
+              }
             />
           </SettingsRow>
         ))}
+        <SettingsGroupDivider />
         <SettingsRow
           label={t("settings.chat.modelDisclaimer")}
           description={t("settings.chat.modelDisclaimerDescription")}
@@ -411,6 +436,24 @@ export function ChatTab() {
             checked={showModelDisclaimer}
             onCheckedChange={setShowModelDisclaimer}
           />
+        </SettingsRow>
+        <SettingsRow
+          label="Show response model"
+          description="Show model metadata in assistant responses."
+        >
+          <Switch
+            checked={showResponseModel}
+            onCheckedChange={setShowResponseModel}
+          />
+        </SettingsRow>
+      </SettingsSection>
+
+      <SettingsSection title={t("settings.general.chatDefaults")}>
+        <SettingsRow
+          label={t("settings.general.autoTitleNewChats")}
+          description={t("settings.general.autoTitleNewChatsDescription")}
+        >
+          <Switch checked={autoTitle} onCheckedChange={setAutoTitle} />
         </SettingsRow>
       </SettingsSection>
 
@@ -565,8 +608,6 @@ export function ChatTab() {
 
         <SettingsRow
           destructive={true}
-          // divide-y already draws the row separator; drop the extra border.
-          className="border-t-0 mt-0 pt-3"
           label={t("settings.chat.clearAllChats")}
           description={
             count === null

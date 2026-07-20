@@ -37,6 +37,13 @@ from hub.services.models.common import (
     _runtime_for_format,
 )
 
+# Imported at module scope (not inside the per-repo scan loop) so a broken
+# import surfaces at startup instead of silently emptying the inventory: the
+# scan loop swallows per-repo exceptions and would drop every repo. Lives under
+# ``utils`` (not ``utils.models``) to avoid the eager model-config/checkpoint
+# imports in ``utils/models/__init__.py``.
+from utils.hidden_models import is_hidden_model
+
 logger = get_logger(__name__)
 
 _repo_size_cache: "OrderedDict[tuple[str, str, str], tuple[int, frozenset[str], float]]" = (
@@ -48,6 +55,10 @@ _REPO_SIZE_POS_TTL = 60.0
 _REPO_SIZE_NEG_TTL = 60.0
 _MODEL_METADATA_TIMEOUT_SECONDS = 5.0
 _repo_size_cache_lock = threading.Lock()
+
+# Identity for a cached file with no HF blob (Windows without Developer Mode: hf
+# moves the blob into snapshots/ and leaves blobs/ empty).
+_LOCAL_SIZE_IDENTITY_PREFIX = "size:"
 
 
 def get_repo_snapshot_metadata_cached(
@@ -135,23 +146,52 @@ def _cached_repo_file_name(file_obj) -> str:
     return str(getattr(file_obj, "file_name", "")).replace("\\", "/")
 
 
+def _is_real_cache_blob(blob: Optional[Path], repo_dir: Optional[Path]) -> bool:
+    """True only for a real cache blob at ``<repo_dir>/blobs/<etag>``.
+
+    A no-symlink ``snapshots/`` file (name is the filename, not an etag) or a
+    repo's own ``blobs/`` subdir is not the cache blob store.
+    """
+    if blob is None or repo_dir is None:
+        return False
+    try:
+        return blob.parent.resolve(strict = False) == (repo_dir / "blobs").resolve(strict = False)
+    except OSError:
+        return False
+
+
+def _cached_blob_hash(blob_path, repo_path = None) -> Optional[str]:
+    """The cache blob hash (etag) for a cached file, or None when there is no blob.
+
+    Only a real blob under the repo's ``blobs/`` dir has name == hash; a moved
+    no-symlink ``snapshots/`` file is "no blob", so the caller uses a size identity.
+    """
+    path = Path(blob_path)
+    repo_dir = Path(repo_path) if repo_path is not None else None
+    return path.name if _is_real_cache_blob(path, repo_dir) else None
+
+
+def local_size_identity(size: int) -> str:
+    """Identity for a cached file whose blob hash is unknowable: its size.
+
+    Re-hashing multi-GB GGUFs on the inventory hot path is not viable, and a
+    ``size:`` token never collides with a hex hash.
+    """
+    return f"{_LOCAL_SIZE_IDENTITY_PREFIX}{int(size)}"
+
+
 def _repo_gguf_blob_map(repo_info, *, include_companions: bool = False) -> dict[str, set[str]]:
     """Map each cached GGUF file's repo-relative name to the SET of its local
-    blob hashes across all cached revisions.
+    identities across all revisions.
 
-    HF names each local cache blob FILE by the file's etag (lfs.sha256 else
-    blob_id), so a local file's blob hash == ``Path(blob_path).name``. An updated
-    repo keeps BOTH the old and new revision snapshots until HF garbage-collects
-    them, so the same file resolves to several blobs; collecting them ALL (not
-    just the first one seen, since ``repo_info.revisions`` is a frozenset and
-    yields them in arbitrary order) lets the remote-vs-local diff treat the file
-    as current when the remote (``main``) blob is present in any cached revision.
-    Mirrors the ``cached_blob_ids`` membership test in routes/models.py.
-
-    By default this keeps the historical MAIN-GGUF-only behavior. GGUF update
-    checks opt into companions so a shared mmproj/MTP blob can be compared too.
+    An identity is the file's blob hash, or a size identity when the cache holds no
+    blob (Windows without Developer Mode). BOTH old and new revision blobs are kept
+    (a set), so the diff treats the file as current when the remote ``main`` blob is
+    in any cached revision. Main GGUF only by default; update checks opt into
+    companions to compare a shared mmproj/MTP blob too.
     """
     blob_map: dict[str, set[str]] = {}
+    repo_path = getattr(repo_info, "repo_path", None)
     for revision in repo_info.revisions:
         for f in revision.files:
             if include_companions:
@@ -163,7 +203,13 @@ def _repo_gguf_blob_map(repo_info, *, include_companions: bool = False) -> dict[
             if not blob_path:
                 continue
             name = _cached_repo_file_name(f)
-            blob_map.setdefault(name, set()).add(Path(blob_path).name)
+            identity = _cached_blob_hash(blob_path, repo_path)
+            if identity is None:
+                size = int(getattr(f, "size_on_disk", 0) or 0)
+                if size <= 0:
+                    continue
+                identity = local_size_identity(size)
+            blob_map.setdefault(name, set()).add(identity)
     return blob_map
 
 
@@ -204,6 +250,13 @@ def invalidate_hf_cache_scans() -> None:
     hf_cache_scan.invalidate_hf_cache_scans()
 
 
+def _is_hidden_infra_repo(*values: str | None) -> bool:
+    """True for infra-only repos (the RAG embedder and the llama.cpp install
+    validation probe) that are cached as a side effect of Studio itself and are
+    not usable chat models."""
+    return is_hidden_model(*values)
+
+
 def _scan_cached_gguf() -> list[dict]:
     """Synchronous HF-cache disk walk for GGUF repos; runs in a worker thread."""
     cache_scans = all_hf_cache_scans()
@@ -215,13 +268,24 @@ def _scan_cached_gguf() -> list[dict]:
                 if str(repo_info.repo_type) != "model":
                     continue
                 repo_id = repo_info.repo_id
+                repo_path = Path(repo_info.repo_path)
+                snapshot_path = _cached_model_snapshot_path(repo_path)
                 total_size = _repo_gguf_size_bytes(repo_info)
                 has_variant_state, variant_state_size = _gguf_variant_state_summary(repo_id)
+                is_hidden_infra = _is_hidden_infra_repo(
+                    repo_id,
+                    str(repo_path),
+                    str(snapshot_path) if snapshot_path is not None else None,
+                )
+                # Hide infra repos unless the user downloaded a variant via
+                # the Hub; variant state only exists for user downloads.
+                if is_hidden_infra and not has_variant_state:
+                    continue
                 if total_size == 0 and not has_variant_state:
                     continue
                 partial = hf_cache_scan.is_gguf_repo_partial(
                     repo_id,
-                    Path(repo_info.repo_path),
+                    repo_path,
                 )
                 if total_size == 0 and not partial:
                     continue
@@ -244,6 +308,9 @@ def _scan_cached_gguf() -> list[dict]:
                         requires_variant = True,
                     )
                 )
+                # Visible infra variants remain management-only.
+                if is_hidden_infra:
+                    row["capabilities"]["can_chat"] = False
                 if _prefer_cache_row(row, existing):
                     seen_lower[key] = row
             except Exception as e:
@@ -436,6 +503,15 @@ def _scan_cached_models() -> list[dict]:
                 if str(repo_info.repo_type) != "model":
                     continue
                 repo_id = repo_info.repo_id
+                repo_path = Path(repo_info.repo_path)
+                snapshot_path = _cached_model_snapshot_path(repo_path)
+                # The non-GGUF embedder has no variant downloads; always hide.
+                if _is_hidden_infra_repo(
+                    repo_id,
+                    str(repo_path),
+                    str(snapshot_path) if snapshot_path is not None else None,
+                ):
+                    continue
                 has_main_gguf = _repo_has_gguf_files(repo_info)
                 payload = _repo_non_gguf_model_payload(repo_info)
                 if payload.size_bytes == 0:
@@ -447,7 +523,6 @@ def _scan_cached_models() -> list[dict]:
                     continue
                 key = repo_id.lower()
                 existing = seen_lower.get(key)
-                repo_path = Path(repo_info.repo_path)
                 snapshot_partial = hf_cache_scan.is_snapshot_partial(
                     "model",
                     repo_id,

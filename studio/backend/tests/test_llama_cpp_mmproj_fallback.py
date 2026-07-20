@@ -222,7 +222,7 @@ class TestFlashAttnOff:
         assert _flash_off(["llama-server", "-fa=on"]) == ["llama-server", "-fa=off"]
 
     def test_flips_every_occurrence_last_wins(self):
-        # extra_args can re-enable FA after Studio's flag; llama.cpp is last-wins,
+        # extra_args can re-enable FA after Unsloth's flag; llama.cpp is last-wins,
         # so one leftover 'on' would re-crash the retry. Every enable must flip.
         cmd = ["llama-server", "--flash-attn", "on", "--mmproj", "/p", "--flash-attn", "on"]
         out = _flash_off(cmd)
@@ -234,7 +234,7 @@ class TestFlashAttnOff:
         assert _flash_off(["llama-server", "--flash-attn=off"]) is None
 
     def test_none_when_user_off_wins_last(self):
-        # User appended 'off' after Studio's 'on'; effective (last-wins) is off,
+        # User appended 'off' after Unsloth's 'on'; effective (last-wins) is off,
         # so there is nothing to retry.
         assert _flash_off(["llama-server", "--flash-attn", "on", "--flash-attn", "off"]) is None
 

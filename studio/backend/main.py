@@ -19,7 +19,7 @@ os.environ["PYTHONWARNINGS"] = "ignore"
 
 # Pin GPU index ordering to PCI bus id before any torch import creates a CUDA
 # context. Without this, torch/CUDA default to FASTEST_FIRST while nvidia-smi
-# (and Studio's VRAM probes) use PCI-bus order, so a GPU index chosen from
+# (and Unsloth's VRAM probes) use PCI-bus order, so a GPU index chosen from
 # nvidia-smi data can resolve to a different physical card via
 # CUDA_VISIBLE_DEVICES. setdefault so an explicit user override wins. See
 # utils/hardware/hardware.py for the full rationale; set here too so the entry
@@ -93,7 +93,7 @@ if sys.platform == "win32":
     # ── Windows AMD ROCm: make hipInfo.exe resolvable for subprocess probes ──
     # bitsandbytes' get_rocm_gpu_arch() runs `hipinfo.exe` via PATH at import
     # time; the AMD torch wheel ships it in the venv Scripts dir, which is on
-    # PATH only when the venv is activated -- Studio launches python directly.
+    # PATH only when the venv is activated -- Unsloth launches python directly.
     # Without this, every bitsandbytes import logs a scary (but harmless)
     # "Could not detect ROCm GPU architecture: [WinError 2]" ERROR + WARNING.
     # Gated on the file existing: only AMD ROCm wheels ship hipInfo.exe, so
@@ -158,6 +158,14 @@ if sys.platform == "win32":
                 "Windows ROCm: set BNB_ROCM_VERSION=%s (from installed BNB wheel)",
                 _bnb_rocm_ver_final,
             )
+
+    # Setting BNB_ROCM_VERSION makes bitsandbytes log a benign override notice on
+    # import; drop only that record so real errors and mismatch warnings show.
+    if os.environ.get("BNB_ROCM_VERSION"):
+        import logging as _logging
+        _logging.getLogger("bitsandbytes.cextension").addFilter(
+            lambda _r: "environment variable detected" not in _r.getMessage()
+        )
 
 # ── WSL AMD Strix Halo (gfx1151): enable ROCDXG before any torch import ──────
 # In WSL the AMD GPU is reached via the ROCDXG bridge (librocdxg.so over
@@ -226,6 +234,7 @@ if _STUDIO_ROOT_RESOLVED != _LEGACY_STUDIO_ROOT:
 os.environ.setdefault("UNSLOTH_IS_PRESENT", "1")
 
 import hashlib
+import ipaddress
 import mimetypes
 import re as _re
 import shutil
@@ -243,7 +252,7 @@ def _read_studio_install_id() -> str:
 
     Returns "" when absent or not a 64-char lowercase-hex token; then
     /api/health emits "" and the launcher accepts any healthy backend.
-    Carries no install-path info (matters when Studio runs -H 0.0.0.0)."""
+    Carries no install-path info (matters when Unsloth runs -H 0.0.0.0)."""
     try:
         token = (_STUDIO_ROOT_RESOLVED / "share" / "studio_install_id").read_text().strip()
     except (OSError, ValueError):
@@ -527,8 +536,9 @@ async def lifespan(app: FastAPI):
     # driver's system-memory spill threshold and cost ~18% generation throughput.
 
     # Idle auto-unload loop (no-op unless the OpenAI auto-unload TTL is set).
-    from core.inference.llama_keepwarm import idle_unload_loop
+    from core.inference.llama_keepwarm import idle_unload_loop, sweep_slot_save_dir
 
+    sweep_slot_save_dir()
     app.state.idle_unload_task = asyncio.create_task(idle_unload_loop())
 
     # Initialize RSA key pair for API key encryption (external providers).
@@ -540,8 +550,12 @@ async def lifespan(app: FastAPI):
         (_time.perf_counter() - _lifespan_started) * 1000,
     )
 
+    # run_server's pre-bind gate sets suppress_bootstrap_injection when a public
+    # URL is about to serve with the default credential active: never (re)capture
+    # the bootstrap password into app.state, or the HTML would hand it out.
+    _suppress_bootstrap = getattr(app.state, "suppress_bootstrap_injection", False)
     if storage.ensure_default_admin():
-        bootstrap_pw = storage.get_bootstrap_password()
+        bootstrap_pw = None if _suppress_bootstrap else storage.get_bootstrap_password()
         app.state.bootstrap_password = bootstrap_pw
 
         bootstrap_path = storage.DB_PATH.parent / ".bootstrap_password"
@@ -549,10 +563,12 @@ async def lifespan(app: FastAPI):
         print("DEFAULT ADMIN ACCOUNT CREATED")
         print(f"    username: {storage.DEFAULT_ADMIN_USERNAME}")
         print(f"    password saved to: {bootstrap_path}")
-        print("    Open the Studio UI to sign in and change it.")
+        print("    Open the Unsloth UI to sign in and change it.")
         print("=" * 60 + "\n")
     else:
-        app.state.bootstrap_password = storage.get_bootstrap_password()
+        app.state.bootstrap_password = (
+            None if _suppress_bootstrap else storage.get_bootstrap_password()
+        )
 
     _lifespan_log.info(
         "lifespan startup completed in %.1fms",
@@ -585,6 +601,22 @@ app = FastAPI(
     description = "Backend API for Unsloth UI - Training and Model Management",
     lifespan = lifespan,
 )
+
+# The MCP surface is opt-in because it can start GPU jobs and write model
+# artifacts. Mount it only when explicitly enabled by the Unsloth process.
+if os.environ.get("UNSLOTH_STUDIO_ENABLE_MCP") == "1":
+    from fastmcp.utilities.lifespan import combine_lifespans
+
+    from mcp_server import BearerTokenMiddleware, create_studio_mcp
+
+    _studio_mcp_app = create_studio_mcp().http_app(path = "/")
+    _studio_mcp_lifespan = _studio_mcp_app.lifespan
+    _mcp_token = os.environ.get("UNSLOTH_STUDIO_MCP_TOKEN")
+    if not _mcp_token:
+        raise RuntimeError("UNSLOTH_STUDIO_MCP_TOKEN is required when MCP is enabled")
+    _studio_mcp_app = BearerTokenMiddleware(_studio_mcp_app, _mcp_token)
+    app.router.lifespan_context = combine_lifespans(lifespan, _studio_mcp_lifespan)
+    app.mount("/mcp", _studio_mcp_app)
 
 from loggers.config import LogConfig
 from loggers.handlers import LoggingMiddleware
@@ -726,6 +758,7 @@ _BODY_PROTECTED_PREFIXES = (
     "/api/settings",
     "/api/train",
     "/api/export",
+    "/mcp",
 )
 _DATASET_UPLOAD_PASSTHROUGH_PREFIX = "/api/datasets/upload"
 _DATA_RECIPE_UNSTRUCTURED_UPLOAD_PASSTHROUGH_PREFIX = (
@@ -930,7 +963,7 @@ app.include_router(training_router, prefix = "/api/train", tags = ["training"])
 app.include_router(models_router, prefix = "/api/models", tags = ["models"])
 app.include_router(chat_history_router, prefix = "/api/chat", tags = ["chat"])
 app.include_router(inference_router, prefix = "/api/inference", tags = ["inference"])
-# Studio-only inference endpoints (cancel, etc.) are NOT exposed on the /v1
+# Unsloth-only inference endpoints (cancel, etc.) are NOT exposed on the /v1
 # OpenAI-compat prefix below.
 app.include_router(inference_studio_router, prefix = "/api/inference", tags = ["inference"])
 
@@ -1037,7 +1070,7 @@ def studio_install_source(_current_subject: str = Depends(get_current_subject)):
 
 @app.get("/api/studio/update-status")
 def studio_update_status(_current_subject: str = Depends(get_current_subject)):
-    """Return source-aware manual update status for browser-served Studio."""
+    """Return source-aware manual update status for browser-served Unsloth."""
     return get_studio_update_status(UNSLOTH_VERSION)
 
 
@@ -1113,9 +1146,23 @@ def _get_cached_system_gpu_info(logger) -> dict[str, Any]:
             enriched_dev["vram_utilization_pct"] = util.get("vram_utilization_pct")
             enriched_devices.append(enriched_dev)
 
+        # Whether GGUF loads accept an explicit gpu_ids pick: /load and
+        # /validate 400 picks on XPU hosts (no visibility mask speaks torch-xpu
+        # ordinals) and on Vulkan-only builds (--device pins ggml's own
+        # ordinals), so the picker must not offer them.
+        try:
+            from core.inference.llama_cpp import LlamaCppBackend
+            from utils.hardware import DeviceType, get_device
+            gpu_ids_supported = (
+                get_device() != DeviceType.XPU and not LlamaCppBackend._is_vulkan_backend()
+            )
+        except Exception as e:
+            logger.debug(f"Could not resolve gpu_ids support: {e}")
+            gpu_ids_supported = True
         gpu_info = {
             "available": visibility_info.get("available", False),
             "devices": enriched_devices,
+            "gguf_gpu_ids_supported": gpu_ids_supported,
         }
         _system_gpu_cache = (time.monotonic(), gpu_info)
         return gpu_info
@@ -1344,6 +1391,61 @@ def _canonical_origin(scheme: str, netloc: str) -> Optional[tuple[str, str, int]
     return (scheme, host, port)
 
 
+def _is_loopback_ip(host: Optional[str]) -> bool:
+    """Return whether ``host`` is a loopback IP, including IPv4-mapped IPv6."""
+    if not host or "%" in host:  # a scope id (::1%eth0) is never a plain loopback
+        return False
+    try:
+        ip = ipaddress.ip_address(host)
+    except (TypeError, ValueError):
+        return False
+    mapped = getattr(ip, "ipv4_mapped", None)
+    return ip.is_loopback or (mapped is not None and mapped.is_loopback)
+
+
+# A loopback peer carrying any of these is a proxy/tunnel relaying a remote
+# client, so the peer is the proxy, not the caller: cloudflared sets
+# cf-connecting-ip, reverse proxies set the rest (uvicorn only consumes
+# x-forwarded-for, so the others survive to here).
+_PROXIED_CLIENT_HEADERS = (
+    "cf-connecting-ip",
+    "forwarded",
+    "x-forwarded-for",
+    "x-forwarded-host",
+    "x-real-ip",
+)
+
+
+def _host_header_is_loopback(host_header: Optional[str]) -> bool:
+    """Loopback/localhost check on the raw Host header.
+
+    Reads the header directly so a malformed or absent Host cannot fall back to
+    ``request.url.hostname``'s (loopback) ASGI server address.
+    """
+    if not host_header:
+        return False
+    host = host_header.strip()
+    if host.startswith("["):  # [IPv6] or [IPv6]:port
+        end = host.find("]")
+        if end == -1 or (host[end + 1 :] and not host[end + 1 :].startswith(":")):
+            return False  # unclosed bracket or junk after ] (e.g. [::1]evil)
+        host = host[1:end]
+    elif host.count(":") == 1:  # host:port
+        host = host.split(":", 1)[0]
+    host = host.lower().rstrip(".")
+    return host == "localhost" or _is_loopback_ip(host)
+
+
+def _is_local_bootstrap_request(request: Request) -> bool:
+    """Allow bootstrap injection only through a direct loopback authority."""
+    client = request.client
+    if client is None or not _is_loopback_ip(client.host):
+        return False
+    if any(request.headers.get(h) is not None for h in _PROXIED_CLIENT_HEADERS):
+        return False
+    return _host_header_is_loopback(request.headers.get("host"))
+
+
 def _is_same_origin_request(request: Request) -> bool:
     """True when Origin is missing or matches request's scheme://host:port.
 
@@ -1379,6 +1481,17 @@ def _is_same_origin_request(request: Request) -> bool:
     return origin_canon == self_canon
 
 
+def _should_inject_bootstrap(request: Request) -> bool:
+    """Whether to embed the seeded bootstrap password in index.html."""
+    if not _is_same_origin_request(request):
+        return False
+    if _IS_COLAB:
+        # Single-user notebook proxy: allow autofill, but never a public
+        # shareable tunnel (a Colab Cloudflare link sets cf-connecting-ip).
+        return request.headers.get("cf-connecting-ip") is None
+    return _is_local_bootstrap_request(request)
+
+
 def setup_frontend(app: FastAPI, build_path: Path):
     """Mount frontend static files (optional)"""
     if not build_path.exists():
@@ -1391,8 +1504,10 @@ def setup_frontend(app: FastAPI, build_path: Path):
     def _build_index_response(request: Request) -> Response:
         content = (build_path / "index.html").read_bytes()
         content = _strip_crossorigin(content)
-        # Bootstrap pw is same-origin only; Vary: Origin keeps caches honest.
-        if _is_same_origin_request(request):
+        # Bootstrap pw goes only to a same-origin, direct-loopback client (or
+        # Colab's single-user notebook proxy): a wildcard bind must not serve it
+        # in-page to a LAN or proxied peer. Vary: Origin keeps caches honest.
+        if _should_inject_bootstrap(request):
             content, nonce = _inject_bootstrap(content, app)
         else:
             nonce = None

@@ -2,7 +2,7 @@
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 """Cloudflare tunnel start gate, incl. --secure on loopback. Imports run.py
-directly, so run under the Studio venv."""
+directly, so run under the Unsloth venv."""
 
 from __future__ import annotations
 
@@ -21,7 +21,7 @@ from run import _cloudflare_tunnel_should_start as should_start  # noqa: E402
 @pytest.mark.parametrize(
     "cloudflare,host,secure,api_only,is_colab,expected",
     [
-        # Non-secure wildcard binds tunnel by default.
+        # Non-secure wildcard binds tunnel only when --cloudflare is passed (True).
         (True, "0.0.0.0", False, False, False, True),
         (True, "::", False, False, False, True),
         (True, "127.0.0.1", False, False, False, False),
@@ -33,6 +33,10 @@ from run import _cloudflare_tunnel_should_start as should_start  # noqa: E402
         (False, "0.0.0.0", False, False, False, False),
         (False, "::", False, False, False, False),
         (False, "127.0.0.1", True, False, False, False),
+        # Unset (None, no flag) behaves as off for non-secure binds.
+        (None, "0.0.0.0", False, False, False, False),
+        (None, "::", False, False, False, False),
+        (None, "127.0.0.1", False, False, False, False),
         # Non-secure api-only never tunnels (Tauri).
         (True, "0.0.0.0", False, True, False, False),
         (True, "::", False, True, False, False),
@@ -155,11 +159,12 @@ def test_startup_output_emits_disabled_notice(capsys, monkeypatch):
 
 
 def test_run_server_rejects_secure_without_cloudflare():
-    # Direct backend callers (not just the CLI) must reject the contradictory combo.
+    # Direct backend callers (not just the CLI) must reject the contradictory
+    # combo: --secure asks for the tunnel, --no-cloudflare (cloudflare=False) forbids it.
     import run
     with pytest.raises(SystemExit) as exc:
         run.run_server(secure = True, cloudflare = False)
-    assert "A secure Cloudflare link is not allowed" in str(exc.value)
+    assert "do not combine it with --no-cloudflare" in str(exc.value)
 
 
 def test_failclosed_message_present_in_source():

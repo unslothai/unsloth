@@ -13,6 +13,7 @@ mp.Queue, and exits on shutdown or unload. Pattern follows core/training/worker.
 from __future__ import annotations
 
 import base64
+import json
 from loggers import get_logger
 import os
 import queue as _queue
@@ -25,6 +26,9 @@ from typing import Any
 
 logger = get_logger(__name__)
 from utils.hardware import apply_gpu_ids
+
+_SHARE_OBJECT_MAX_BYTES = 1 << 20
+_SHARE_OBJECT_ERROR_SIZE = -1
 
 # studio/backend root, prepended to sys.path so the spawned subprocess can
 # import the utils/core packages.
@@ -73,6 +77,17 @@ def _send_response(resp_queue: Any, response: dict) -> None:
         resp_queue.put(response)
     except (OSError, ValueError) as exc:
         logger.error("Failed to send response: %s", exc)
+
+
+def _encode_share_object(obj: Any) -> bytes:
+    data = json.dumps(obj, separators = (",", ":"), ensure_ascii = False).encode("utf-8")
+    if len(data) > _SHARE_OBJECT_MAX_BYTES:
+        raise ValueError("Distributed object share payload is too large")
+    return data
+
+
+def _decode_share_object(data: Any) -> Any:
+    return json.loads(bytes(data.tolist()).decode("utf-8"))
 
 
 def _clean_token(value: str | None) -> str | None:
@@ -276,6 +291,18 @@ def _handle_load(backend, config: dict, resp_queue: Any) -> None:
         hf_token = _clean_token(config.get("hf_token"))
         load_in_4bit = _resolve_lora_4bit(mc, config.get("load_in_4bit", True))
 
+        # Latest-transformers sidecar models load 16-bit: bnb 4-bit feeds quantized
+        # expert weights into unvalidated paths (e.g. grouped-MoE torch._grouped_mm).
+        if load_in_4bit:
+            from utils.transformers_version import latest_tier_active_for
+            if latest_tier_active_for(config["model_name"], hf_token):
+                load_in_4bit = False
+                logger.info(
+                    "Latest-transformers sidecar active for %s - forcing a 16-bit "
+                    "load (4-bit is disabled for brand-new architectures)",
+                    config["model_name"],
+                )
+
         trust_remote_code = config.get("trust_remote_code", False)
         if not trust_remote_code and _needs_nemotron_trust(config["model_name"], hf_token = hf_token):
             trust_remote_code = True
@@ -329,14 +356,18 @@ def _handle_load(backend, config: dict, resp_queue: Any) -> None:
             xet_disabled = os.environ.get("HF_HUB_DISABLE_XET") == "1",
         )
         try:
-            success = backend.load_model(
-                config = mc,
-                max_seq_length = config.get("max_seq_length", 2048),
-                load_in_4bit = load_in_4bit,
-                hf_token = hf_token,
-                trust_remote_code = trust_remote_code,
-                gpu_ids = config.get("resolved_gpu_ids"),
-            )
+            load_kwargs = {
+                "config": mc,
+                "max_seq_length": config.get("max_seq_length", 2048),
+                "load_in_4bit": load_in_4bit,
+                "hf_token": hf_token,
+                "trust_remote_code": trust_remote_code,
+                "gpu_ids": config.get("resolved_gpu_ids"),
+            }
+            if getattr(backend, "device", None) == "mlx":
+                load_kwargs["parallel_mode"] = config.get("mlx_parallel_mode")
+                load_kwargs["distributed_group"] = config.get("_mlx_distributed_group")
+            success = backend.load_model(**load_kwargs)
         finally:
             heartbeat_stop.set()
 
@@ -406,6 +437,32 @@ def _handle_load(backend, config: dict, resp_queue: Any) -> None:
         )
 
 
+def _drain_skip_generate(cmd: dict, resp_queue: Any, drain_event) -> bool:
+    """Skip a generate queued behind a cancelled one during an unload.
+
+    The parent sets ``drain_event`` for the whole unload. Because the parent's
+    per-token ``cancel_event`` is cleared at the start of every generate, a cancel
+    set while this generate was still queued would otherwise be lost when it is
+    dequeued. If the drain is in effect, emit an immediate (empty) ``gen_done`` so
+    the parent's stream/mailbox drains fast and the switch stays fast, and report
+    the generate was skipped so the caller does not clear the cancel or run it.
+    """
+    if drain_event is None or not drain_event.is_set():
+        return False
+    request_id = cmd.get("request_id", "")
+    logger.info("Skipping generate for request %s: unload draining", request_id)
+    _send_response(
+        resp_queue,
+        {
+            "type": "gen_done",
+            "request_id": request_id,
+            "cancelled": True,
+            "stats": None,
+        },
+    )
+    return True
+
+
 def _handle_generate(backend, cmd: dict, resp_queue: Any, cancel_event) -> None:
     """Handle a generate command: stream tokens back via resp_queue.
 
@@ -431,6 +488,7 @@ def _handle_generate(backend, cmd: dict, resp_queue: Any, cancel_event) -> None:
             "min_p": cmd.get("min_p", 0.0),
             "max_new_tokens": cmd.get("max_new_tokens", 256),
             "repetition_penalty": cmd.get("repetition_penalty", 1.0),
+            "presence_penalty": cmd.get("presence_penalty", 0.0),
             "cancel_event": cancel_event,
         }
 
@@ -455,20 +513,25 @@ def _handle_generate(backend, cmd: dict, resp_queue: Any, cancel_event) -> None:
 
         logger.info("Starting text generation for request_id=%s", request_id)
 
-        for cumulative_text in generator:
-            # cancel_event is an mp.Event — checked instantly, no queue polling.
-            if cancel_event.is_set():
-                logger.info("Generation cancelled for request %s", request_id)
-                break
+        try:
+            for cumulative_text in generator:
+                # cancel_event is an mp.Event — checked instantly, no queue polling.
+                if cancel_event.is_set():
+                    logger.info("Generation cancelled for request %s", request_id)
+                    break
 
-            _send_response(
-                resp_queue,
-                {
-                    "type": "token",
-                    "request_id": request_id,
-                    "text": cumulative_text,
-                },
-            )
+                _send_response(
+                    resp_queue,
+                    {
+                        "type": "token",
+                        "request_id": request_id,
+                        "text": cumulative_text,
+                    },
+                )
+        finally:
+            close = getattr(generator, "close", None)
+            if callable(close):
+                close()
 
         _send_response(
             resp_queue,
@@ -487,6 +550,67 @@ def _handle_generate(backend, cmd: dict, resp_queue: Any, cancel_event) -> None:
             resp_queue,
             {
                 "type": "gen_error",
+                "request_id": request_id,
+                "error": str(exc),
+                "stack": traceback.format_exc(limit = 20),
+            },
+        )
+
+
+def _handle_share_object(backend, cmd: dict, resp_queue: Any) -> None:
+    """Share a small Python object across MLX distributed ranks."""
+    request_id = cmd.get("request_id", "")
+    group = getattr(backend, "_distributed_group", None)
+    rank = int(getattr(backend, "_distributed_rank", 0) or 0)
+    world_size = int(getattr(backend, "_distributed_world_size", 1) or 1)
+    obj = cmd.get("object")
+
+    try:
+        if group is None or world_size <= 1:
+            shared = obj
+        else:
+            import mlx.core as mx
+            if rank == 0:
+                if obj is None:
+                    mx.eval(mx.distributed.all_sum(mx.array(0), group = group))
+                    shared = None
+                else:
+                    try:
+                        data = mx.array(_encode_share_object(obj), dtype = mx.uint8)
+                    except Exception:
+                        mx.eval(
+                            mx.distributed.all_sum(
+                                mx.array(_SHARE_OBJECT_ERROR_SIZE),
+                                group = group,
+                            )
+                        )
+                        raise
+                    mx.eval(mx.distributed.all_sum(mx.array(data.size), group = group))
+                    mx.eval(mx.distributed.all_sum(data, group = group))
+                    shared = obj
+            else:
+                size = int(mx.distributed.all_sum(mx.array(0), group = group).item())
+                if size == _SHARE_OBJECT_ERROR_SIZE:
+                    raise RuntimeError("Failed to share distributed object")
+                if size == 0:
+                    shared = None
+                else:
+                    data = mx.zeros(size, dtype = mx.uint8)
+                    data = mx.distributed.all_sum(data, group = group)
+                    shared = _decode_share_object(data)
+        _send_response(
+            resp_queue,
+            {
+                "type": "shared",
+                "request_id": request_id,
+                "object": shared,
+            },
+        )
+    except Exception as exc:
+        _send_response(
+            resp_queue,
+            {
+                "type": "share_error",
                 "request_id": request_id,
                 "error": str(exc),
                 "stack": traceback.format_exc(limit = 20),
@@ -632,7 +756,14 @@ def _handle_unload(backend, cmd: dict, resp_queue: Any) -> None:
         )
 
 
-def run_inference_process(*, cmd_queue: Any, resp_queue: Any, cancel_event, config: dict) -> None:
+def run_inference_process(
+    *,
+    cmd_queue: Any,
+    resp_queue: Any,
+    cancel_event,
+    config: dict,
+    drain_event = None,
+) -> None:
     """Subprocess entrypoint. Persistent — runs the command loop until shutdown.
 
     Args:
@@ -640,6 +771,10 @@ def run_inference_process(*, cmd_queue: Any, resp_queue: Any, cancel_event, conf
         resp_queue: mp.Queue for sending responses to parent.
         cancel_event: mp.Event the parent sets to cancel generation.
         config: Initial configuration dict with model info.
+        drain_event: mp.Event the parent sets for the duration of an unload. Unlike
+            cancel_event (cleared at the start of every generate), it is never cleared
+            here, so a generate still queued behind a cancelled one is skipped rather
+            than run — the cancel survives the queue handoff.
     """
     os.environ["TOKENIZERS_PARALLELISM"] = "false"
     os.environ["PYTHONWARNINGS"] = "ignore"  # Suppress warnings at C-level before imports
@@ -682,9 +817,29 @@ def run_inference_process(*, cmd_queue: Any, resp_queue: Any, cancel_event, conf
                 exc,
             )
         try:
-            from core.inference.mlx_inference import MLXInferenceBackend
+            from core.inference.mlx_inference import MLXInferenceBackend, _init_mlx_distributed
 
             backend = MLXInferenceBackend()
+            if config.get("mlx_distributed"):
+                group, rank, size = _init_mlx_distributed()
+                config["_mlx_distributed_group"] = group
+                if size <= 1:
+                    # A singleton group (MLX built without distributed support,
+                    # or an invalid launch env/hostfile) would leave nonzero ranks
+                    # looping forever on share_distributed_object. Fail the load
+                    # instead of silently continuing without sharding.
+                    raise RuntimeError(
+                        "MLX distributed launch requested but initialized a singleton "
+                        "group (size 1). Ensure the installed MLX has distributed "
+                        "support and the launch environment/hostfile is valid, or run "
+                        "without distributed."
+                    )
+                logger.info(
+                    "MLX distributed initialized in worker: rank=%s size=%s mode=%s",
+                    rank,
+                    size,
+                    config.get("mlx_parallel_mode"),
+                )
             _send_response(
                 resp_queue,
                 {"type": "status", "message": "Loading model..."},
@@ -715,8 +870,19 @@ def run_inference_process(*, cmd_queue: Any, resp_queue: Any, cancel_event, conf
             cmd_type = cmd.get("type", "")
             try:
                 if cmd_type == "generate":
+                    if _drain_skip_generate(cmd, resp_queue, drain_event):
+                        continue
                     cancel_event.clear()
+                    # Re-check the drain after clearing: the parent sets drain_event
+                    # then cancel_event for an unload, so if that pair landed between
+                    # the check above and this clear, the clear just erased the unload's
+                    # cancel. Skip here so the outgoing model is not run to completion,
+                    # which would stall the switch until the dispatcher idle-timeout.
+                    if _drain_skip_generate(cmd, resp_queue, drain_event):
+                        continue
                     _handle_generate(backend, cmd, resp_queue, cancel_event)
+                elif cmd_type == "share_object":
+                    _handle_share_object(backend, cmd, resp_queue)
                 elif cmd_type == "load":
                     if backend.active_model_name:
                         backend.unload_model(backend.active_model_name)
@@ -757,7 +923,31 @@ def run_inference_process(*, cmd_queue: Any, resp_queue: Any, cancel_event, conf
                 )
         return
 
-    # ── Resolve the effective base once, before activation/gates/install (no ML import) ──
+    # ── Windows: check Triton availability ──
+    # Placed ahead of the torchao stub below (which imports torch on win32 to detect ROCm),
+    # matching the training and export workers' gate-then-stub ordering.
+    if sys.platform == "win32":
+        try:
+            import triton  # noqa: F401
+            logger.info("Triton available — torch.compile enabled")
+        except ImportError:
+            os.environ["TORCHDYNAMO_DISABLE"] = "1"
+            logger.warning(
+                "Triton not found on Windows — torch.compile disabled. "
+                'Install for better performance: pip install "triton-windows<3.7"'
+            )
+
+    # ── Stub torchao on Windows ROCm before ANY transformers import ──
+    # Must precede every path that pulls transformers, not just the ML imports in section 2:
+    # a local LoRA adapter with no recorded base reaches transformers here via
+    # _resolve_base_model -> utils.models. See core/_torchao_stub.py; no-op off Windows ROCm.
+    from core._torchao_stub import install_torchao_windows_rocm_stub
+
+    install_torchao_windows_rocm_stub()
+
+    # ── Resolve the effective base once, before activation/gates/install ──
+    # No ML import on the common path; a local adapter with no recorded base pulls
+    # transformers via utils.models, which is why the stub above precedes this.
     # A remote LoRA's base is in its Hub adapter_config.json (else surfaced only by ModelConfig
     # after import). _lora_base is set only for a genuine adapter, never a full fine-tune's base.
     import json as _json
@@ -795,19 +985,7 @@ def run_inference_process(*, cmd_queue: Any, resp_queue: Any, cancel_event, conf
         )
         return
 
-    # ── 1b. Windows: check Triton availability (must precede import torch) ──
-    if sys.platform == "win32":
-        try:
-            import triton  # noqa: F401
-            logger.info("Triton available — torch.compile enabled")
-        except ImportError:
-            os.environ["TORCHDYNAMO_DISABLE"] = "1"
-            logger.warning(
-                "Triton not found on Windows — torch.compile disabled. "
-                'Install for better performance: pip install "triton-windows<3.7"'
-            )
-
-    # ── 1c. Security gates, then SSM/Mamba kernels, BEFORE importing transformers ──
+    # ── 1b. Security gates, then SSM/Mamba kernels, BEFORE importing transformers ──
     # transformers snapshots its optional-backend gates at import, so a hybrid model's kernels
     # must be installed before the import below ("mamba-ssm is required" otherwise). The gates
     # are metadata-only, so run them first and refuse a blocked model before any native build.
@@ -918,8 +1096,20 @@ def run_inference_process(*, cmd_queue: Any, resp_queue: Any, cancel_event, conf
 
         try:
             if cmd_type == "generate":
+                if _drain_skip_generate(cmd, resp_queue, drain_event):
+                    continue
                 cancel_event.clear()
+                # Re-check the drain after clearing: the parent sets drain_event then
+                # cancel_event for an unload, so if that pair landed between the check
+                # above and this clear, the clear just erased the unload's cancel. Skip
+                # here so the outgoing model is not run to completion, which would stall
+                # the switch until the dispatcher idle-timeout tears the subprocess down.
+                if _drain_skip_generate(cmd, resp_queue, drain_event):
+                    continue
                 _handle_generate(backend, cmd, resp_queue, cancel_event)
+
+            elif cmd_type == "share_object":
+                _handle_share_object(backend, cmd, resp_queue)
 
             elif cmd_type == "load":
                 if backend.active_model_name:

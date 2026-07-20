@@ -6,9 +6,13 @@ from typing import List, Optional
 import typer
 
 from unsloth_cli._inference import (
+    collect_stream,
     configure_quiet_logging,
     connect_studio_server,
     load_chat_backend,
+    mlx_distributed_info,
+    mlx_distributed_uses_mpi,
+    raise_on_streamed_error,
     stream_to_stdout,
 )
 
@@ -36,7 +40,8 @@ def inference(
         "--tensor-parallel/--no-tensor-parallel",
         help = (
             "Split a GGUF across GPUs by tensor (--split-mode tensor) instead "
-            "of by layer. Ignored for non-GGUF models."
+            "of by layer. Under non-MPI mlx.launch, select MLX tensor "
+            "parallel mode instead of pipeline mode."
         ),
     ),
     llama_extra_args: Optional[List[str]] = typer.Option(
@@ -62,15 +67,27 @@ def inference(
     no_server: bool = typer.Option(
         False,
         "--no-server",
-        help = "Load the model in-process even if a Studio server is running.",
+        help = "Load the model in-process even if an Unsloth server is running.",
     ),
 ):
     """Run a single inference using the specified model."""
     if not verbose:
         configure_quiet_logging()
 
-    # A running Studio server keeps the model warm between runs, which is
-    # exactly what a one-shot command wants.
+    is_mlx_distributed, rank, _world_size = mlx_distributed_info()
+    if is_mlx_distributed and mlx_distributed_uses_mpi():
+        if rank == 0:
+            typer.echo(
+                "Distributed `unsloth inference` with MPI is not supported by "
+                "the current subprocess backend. Use a non-MPI MLX launcher "
+                "backend such as ring/JACCL for now.",
+                err = True,
+            )
+        raise typer.Exit(code = 1)
+
+    # A running Unsloth server keeps the model warm between runs. Under
+    # mlx.launch, every rank must enter the local MLX path instead of rank 0
+    # alone talking to a server.
     load_opts = dict(
         hf_token = hf_token,
         max_seq_length = max_seq_length,
@@ -78,7 +95,9 @@ def inference(
         tensor_parallel = tensor_parallel,
         llama_extra_args = llama_extra_args,
     )
-    chat_backend = None if no_server else connect_studio_server(model, **load_opts)
+    chat_backend = (
+        None if (no_server or is_mlx_distributed) else connect_studio_server(model, **load_opts)
+    )
     if chat_backend is None:
         chat_backend = load_chat_backend(model, **load_opts)
     try:
@@ -92,7 +111,23 @@ def inference(
             repetition_penalty = repetition_penalty,
             enable_thinking = think,
         )
-        typer.echo("Assistant:")
-        stream_to_stdout(stream, show_thinking = think)
+        if is_mlx_distributed:
+            stream = raise_on_streamed_error(stream)
+        if rank == 0:
+            typer.echo("Assistant:")
+            try:
+                stream_to_stdout(stream, show_thinking = think)
+            except RuntimeError as exc:
+                if not is_mlx_distributed:
+                    raise
+                typer.echo(f"Error: {exc}", err = True)
+                raise typer.Exit(code = 1)
+        else:
+            try:
+                collect_stream(stream, show_thinking = think)
+            except RuntimeError:
+                if not is_mlx_distributed:
+                    raise
+                raise typer.Exit(code = 1)
     finally:
         chat_backend.close()

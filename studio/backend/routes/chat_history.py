@@ -56,6 +56,7 @@ class ChatThread(BaseModel):
     projectId: Optional[str] = None
     archived: bool = False
     createdAt: int
+    updatedAt: Optional[int] = None
     openaiCodeExecContainerId: Optional[str] = None
     anthropicCodeExecContainerId: Optional[str] = None
     forkedFromThreadId: Optional[str] = None
@@ -70,6 +71,7 @@ class ChatThreadPatch(BaseModel):
     projectId: Optional[str] = None
     archived: Optional[bool] = None
     createdAt: Optional[int] = None
+    updatedAt: Optional[int] = None
     openaiCodeExecContainerId: Optional[str] = None
     anthropicCodeExecContainerId: Optional[str] = None
 
@@ -177,6 +179,7 @@ class ChatSettingsPayload(BaseModel):
     collapseHtmlArtifacts: Optional[bool] = None
     allowArtifactNetworkAccess: Optional[bool] = None
     autoHealToolCalls: Optional[bool] = None
+    nudgeToolCalls: Optional[bool] = None
     maxToolCallsPerMessage: Optional[int] = Field(default = None, ge = 1)
     toolCallTimeout: Optional[int] = Field(default = None, ge = 1)
 
@@ -251,7 +254,7 @@ async def patch_thread(
     current_subject: str = Depends(get_current_subject),
 ):
     patch = payload.model_dump(exclude_unset = True)
-    for field in ("title", "modelType", "modelId", "archived", "createdAt"):
+    for field in ("title", "modelType", "modelId", "archived", "createdAt", "updatedAt"):
         if field in patch and patch[field] is None:
             raise HTTPException(status_code = 400, detail = f"{field} cannot be null")
     if patch.get("projectId") and get_chat_project(patch["projectId"]) is None:
