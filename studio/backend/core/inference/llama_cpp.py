@@ -2882,7 +2882,12 @@ class LlamaCppBackend:
             return None
 
     @staticmethod
-    def _emit_child_gpu_visibility(env: dict, pinned: str, *, prefer_rocr: bool = False) -> None:
+    def _emit_child_gpu_visibility(
+        env: dict,
+        pinned: str,
+        *,
+        prefer_rocr: bool = False,
+    ) -> None:
         """Write the child's GPU visibility mask (CUDA, plus the ROCm mirror on
         AMD, where narrowing only CUDA_VISIBLE_DEVICES leaves an AMD child seeing
         the full set).
