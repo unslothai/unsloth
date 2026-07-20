@@ -486,6 +486,49 @@ def test_wrapped_packing_preserves_overlength_tokens(monkeypatch, legacy_api):
     assert all(len(input_ids) <= args.max_length for input_ids in packed_ids)
 
 
+# Named to match the unsloth_zoo helper: sft_trainer_prepare_dataset sources it by
+# name and renames "def sft_prepare_dataset" -> "def _prepare_dataset". This fixture
+# deliberately omits the "All Unsloth Zoo code licensed under LGPLv3" header to emulate
+# a newer, compatible Zoo whose header moved (the dependency is only lower-bounded).
+def sft_prepare_dataset(
+    self, dataset, processing_class, args, packing, formatting_func, dataset_text_field
+):
+    do_truncation = True
+    # Mirror the Zoo call so the "truncation = do_truncation," injection anchor
+    # survives formatting (a bare tuple assignment gets rewritten to a paren form).
+    dataset = processing_class(
+        dataset,
+        truncation = do_truncation,
+    )
+    return dataset
+
+
+def test_wrapped_packing_setup_survives_missing_zoo_header(monkeypatch):
+    # Regression: the wrapped-packing setup used to anchor on the Zoo license comment,
+    # so a header change made it a no-op while the truncation reference still landed,
+    # NameError-ing every SFT dataset preparation. It must now install via the
+    # signature and always precede the reference.
+    import ast
+    import textwrap
+    import unsloth.models.rl_replacements as rlr
+
+    monkeypatch.setitem(rlr.RL_REPLACEMENTS, "sft_prepare_dataset", sft_prepare_dataset)
+
+    source = (
+        "def _prepare_dataset(self, dataset, processing_class, args, packing, "
+        "formatting_func, dataset_text_field):\n    return dataset\n"
+    )
+    patched = rlr.sft_trainer_prepare_dataset("_prepare_dataset", source)
+
+    assert "_unsloth_wrapped_packing = packing" in patched
+    assert "import inspect as _inspect" in patched
+    assert "not _unsloth_wrapped_packing" in patched
+    assert patched.index("_unsloth_wrapped_packing = packing") < patched.index(
+        "truncation = do_truncation and not _unsloth_wrapped_packing"
+    )
+    ast.parse(textwrap.dedent(patched))
+
+
 class _DummyChild(torch.nn.Module):
     def __init__(self):
         super().__init__()
