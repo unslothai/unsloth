@@ -483,6 +483,43 @@ def test_marker_rejects_wordembeddings_without_weights(tmp_path, monkeypatch):
     assert mc._embedding_marker_in_hf_cache(_GLOVE) is False
 
 
+def _we_dense_repo(tmp_path, monkeypatch, commit = "aaa"):
+    # WordEmbeddings + Pooling + a Dense projection module, with the Dense weights ABSENT.
+    hf_root = tmp_path / "hf"
+    repo = hf_root / "models--org--we-dense"
+    snap = repo / "snapshots" / commit
+    (snap / "0_WordEmbeddings").mkdir(parents = True)
+    (snap / "modules.json").write_text(
+        _modules_json(
+            ("0", "0_WordEmbeddings", "sentence_transformers.models.WordEmbeddings"),
+            ("1", "1_Pooling", "sentence_transformers.models.Pooling"),
+            ("2", "2_Dense", "sentence_transformers.models.Dense"),
+        )
+    )
+    (snap / "config_sentence_transformers.json").write_text("{}")
+    (snap / "0_WordEmbeddings" / "wordembedding_config.json").write_text("{}")
+    (snap / "0_WordEmbeddings" / "model.safetensors").write_bytes(b"\0")
+    (snap / "1_Pooling").mkdir(parents = True)
+    (snap / "1_Pooling" / "config.json").write_text("{}")
+    (snap / "2_Dense").mkdir(parents = True)
+    (snap / "2_Dense" / "config.json").write_text("{}")  # config present, weights absent
+    (repo / "refs").mkdir(parents = True)
+    (repo / "refs" / "main").write_text(commit)
+    _fake_hf_cache(monkeypatch, hf_root)
+    monkeypatch.delenv("SENTENCE_TRANSFORMERS_HOME", raising = False)
+    return snap
+
+
+def test_marker_requires_weights_for_a_dense_module(tmp_path, monkeypatch):
+    # Dense / CNN / LSTM.load() hard-load model.safetensors / pytorch_model.bin (no fallback), so
+    # a Dense module dir with only its config would fail the offline load and must NOT validate;
+    # adding the weights makes the model loadable.
+    snap = _we_dense_repo(tmp_path, monkeypatch)
+    assert mc._embedding_marker_in_hf_cache("org/we-dense") is False
+    (snap / "2_Dense" / "model.safetensors").write_bytes(b"\0")
+    assert mc._embedding_marker_in_hf_cache("org/we-dense") is True
+
+
 def test_marker_accepts_complete_bow_model(tmp_path, monkeypatch):
     # A BoW module keeps its vocab in config.json and writes NO weight file; a complete cache is
     # still loadable via BoW.load(config.json), so it must validate.

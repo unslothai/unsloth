@@ -2297,17 +2297,25 @@ def _dir_file_names(dir_path: Path) -> set:
         return set()
 
 
+# Non-Transformer modules whose ST ``load()`` reads a weight file. Each does
+# ``load_safetensors(model.safetensors)`` else ``torch.load(pytorch_model.bin)`` with no
+# fallback, so it needs its module config AND a complete Torch weight set -- a config alone
+# would validate here and then raise FileNotFoundError at load. ``Pooling`` / ``BoW`` /
+# ``Normalize`` read no weights (BoW keeps its data in config.json), so a config suffices.
+_ST_WEIGHTED_MODULE_NAMES = frozenset({"wordembeddings", "dense", "cnn", "lstm"})
+
+
 def _module_dir_is_loadable(cls: str, is_root: bool, dir_path: Path) -> bool:
     """True when *dir_path* carries the files the sentence-transformers module class *cls*
     reads in its own ``load()`` (see sentence_transformers/models/*.py):
 
     * a root / ``Transformer`` module is a full HF load root (config + tokenizer + weights);
     * ``Normalize`` reads nothing;
-    * ``WordEmbeddings`` hard-loads ``model.safetensors`` / ``pytorch_model.bin`` (no fallback),
-      so it needs its ``wordembedding_config.json`` AND a complete weight set;
-    * every other module (``BoW``, ``Pooling``, ``Dense``, ``CNN``, ``LSTM`` ...) reads a
-      mandatory ``config.json`` / ``*_config.json`` from its directory (its weights, when used,
-      are optional there), so a present module config is the load requirement."""
+    * a WEIGHTED module (``WordEmbeddings`` / ``Dense`` / ``CNN`` / ``LSTM``) needs its module
+      config AND a complete Torch weight set (its ``load()`` hard-loads ``model.safetensors`` /
+      ``pytorch_model.bin``);
+    * every other module (``BoW``, ``Pooling`` ...) reads only a ``config.json`` / ``*_config``,
+      so a present module config is the load requirement."""
     if is_root or "transformer" in cls:
         return _dir_is_transformer_load_root(_dir_file_names(dir_path))
     if cls == "normalize":
@@ -2315,7 +2323,7 @@ def _module_dir_is_loadable(cls: str, is_root: bool, dir_path: Path) -> bool:
     names = _dir_file_names(dir_path)
     if not any(name == "config.json" or name.endswith("_config.json") for name in names):
         return False
-    if cls == "wordembeddings":
+    if cls in _ST_WEIGHTED_MODULE_NAMES:
         return _dir_has_complete_torch_weights(names)
     return True
 
