@@ -192,11 +192,20 @@ def test_partial_safetensors_download_keeps_delete_menu():
 def test_pinned_validation_uses_cached_local_variant_listing():
     """Pinned-quant validation must use the TTL-cached hub client with
     preferLocalCache (downloaded-ness is local state) instead of one uncached
-    round-trip per pinned repo on every picker open."""
+    round-trip per pinned repo on every picker open. Picker deletes must go
+    through the hub inventory client, whose delete invalidates both the
+    variants TTL cache and the server-side HF cache scan (the legacy
+    /api/models/delete-cached route invalidates neither, so a post-delete
+    inventory refresh would resurrect the deleted row until the scan TTL)."""
     src = _read("features/model-picker/components/model-selector/pickers.tsx")
     assert "listGgufVariantsCached(" in src
     assert "preferLocalCache: true" in src
-    assert "invalidateGgufVariantsCache(" in src
+    assert re.search(r'import \{[^}]*\bdeleteCachedModel\b[^}]*\} from "@/features/hub"', src)
+    hub_api = _read("features/hub/inventory/api.ts")
+    delete_fn = hub_api.split("export async function deleteCachedModel", 1)[1]
+    delete_fn = delete_fn.split("export ", 1)[0]
+    assert "invalidateGgufVariantsCache(" in delete_fn
+    assert "bumpInventoryVersion(" in delete_fn
 
 
 def test_downloaded_list_offsets_virtual_rows():

@@ -1138,9 +1138,9 @@ export function SharedComposer({
           ownConfig.selectedGpuIds !== undefined
             ? reconcilePersistedGpuIds(ownConfig.selectedGpuIds)
             : compareLoadKnobs.selectedGpuIds;
-        const effectiveCustomContextLength =
-          ownConfig.customContextLength ??
-          compareLoadKnobs.customContextLength;
+        const effectiveCustomContextLength = ownRemembered
+          ? ownConfig.customContextLength
+          : compareLoadKnobs.customContextLength;
         let loadTrustRemoteCode = trustRemoteCode;
         let approvedRemoteCodeFingerprint: string | null = null;
         const isAlreadyActive =

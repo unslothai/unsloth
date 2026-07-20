@@ -14,7 +14,6 @@ import { ApiProviderLogo } from "@/features/chat";
 import {
   type ScanFolderInfo,
   addScanFolder,
-  deleteCachedModel,
   deleteFineTunedModel,
   listGgufVariants,
   listRecommendedFolders,
@@ -34,7 +33,7 @@ import {
   HubOptionMenu,
   TrainIcon,
   TransportConflictDialog,
-  invalidateGgufVariantsCache,
+  deleteCachedModel,
   listGgufVariants as listGgufVariantsCached,
   useHubInfiniteScroll,
 } from "@/features/hub";
@@ -822,6 +821,7 @@ function GgufVariantExpander({
         isDownloaded: isLocalPath ? true : downloaded,
         expectedBytes: sizeBytes,
         contextLength: isAvailable ? nativeContext : undefined,
+        isGguf: true,
       });
     },
     [repoId, isLocalPath, onSelect, sourceOverride, nativeContext],
@@ -2832,8 +2832,11 @@ export function HubModelPicker({
               successMessage: `Deleted ${entry.repoId} ${entry.quant}`,
               disabled: deleteDisabled,
               onConfirm: async () => {
-                await deleteCachedModel(entry.repoId, entry.quant);
-                invalidateGgufVariantsCache(entry.repoId);
+                await deleteCachedModel(
+                  entry.repoId,
+                  entry.quant,
+                  hfToken || undefined,
+                );
                 refreshCachedLists();
                 // The file is gone, so drop its pin too.
                 togglePinned(entry.repoId, entry.quant);
@@ -2891,8 +2894,7 @@ export function HubModelPicker({
                 updateGgufVariant(c.repo_id, quant, expectedBytes),
               updateDisabled: loadedModelId === c.repo_id,
               onDelete: async (quant) => {
-                await deleteCachedModel(c.repo_id, quant);
-                invalidateGgufVariantsCache(c.repo_id);
+                await deleteCachedModel(c.repo_id, quant, hfToken || undefined);
                 prunePinnedQuantValidation(c.repo_id, quant);
                 refreshCachedLists();
               },
@@ -2964,7 +2966,7 @@ export function HubModelPicker({
             successMessage: `Deleted ${c.repo_id}`,
             disabled: deleteDisabled,
             onConfirm: async () => {
-              await deleteCachedModel(c.repo_id);
+              await deleteCachedModel(c.repo_id, undefined, hfToken || undefined);
               if (pinnedSet.has(pinKey(c.repo_id))) {
                 togglePinned(c.repo_id);
               }
@@ -3948,8 +3950,11 @@ export function HubModelPicker({
                                 }
                                 variantActions={{
                                   onDelete: async (quant) => {
-                                    await deleteCachedModel(id, quant);
-                                    invalidateGgufVariantsCache(id);
+                                    await deleteCachedModel(
+                                      id,
+                                      quant,
+                                      hfToken || undefined,
+                                    );
                                     prunePinnedQuantValidation(id, quant);
                                     refreshCachedLists();
                                   },
@@ -4048,8 +4053,11 @@ export function HubModelPicker({
                               }
                               variantActions={{
                                 onDelete: async (quant) => {
-                                  await deleteCachedModel(id, quant);
-                                  invalidateGgufVariantsCache(id);
+                                  await deleteCachedModel(
+                                    id,
+                                    quant,
+                                    hfToken || undefined,
+                                  );
                                   prunePinnedQuantValidation(id, quant);
                                   refreshCachedLists();
                                 },
@@ -4144,8 +4152,11 @@ export function HubModelPicker({
                                 }
                                 variantActions={{
                                   onDelete: async (quant) => {
-                                    await deleteCachedModel(id, quant);
-                                    invalidateGgufVariantsCache(id);
+                                    await deleteCachedModel(
+                                      id,
+                                      quant,
+                                      hfToken || undefined,
+                                    );
                                     prunePinnedQuantValidation(id, quant);
                                     refreshCachedLists();
                                   },

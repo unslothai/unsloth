@@ -540,7 +540,11 @@ export function useChatModelRuntime() {
       // native model intents only grant .gguf files), but its id is a display
       // label that need not end in ".gguf" -- without this, Manual + Auto
       // layers would pin the UI context instead of letting --fit size it.
-      const isGguf = explicitIsGguf ?? model?.isGguf ?? nativePathToken != null;
+      const isGguf =
+        explicitIsGguf ??
+        (ggufVariant != null ||
+          nativePathToken != null ||
+          model?.isGguf === true);
       const loraIsAdapter = lora?.exportType === "lora";
       const isLora =
         explicitIsLora ?? model?.isLora ?? loraIsAdapter ?? false;

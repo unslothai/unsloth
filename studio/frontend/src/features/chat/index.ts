@@ -5,7 +5,6 @@ export { ChatPage, validateChatSearch, type ChatSearch } from "./chat-page";
 export {
   addScanFolder,
   browseFolders,
-  deleteCachedModel,
   deleteFineTunedModel,
   fetchGgufStagedMetadata,
   getCachedModelPath,
