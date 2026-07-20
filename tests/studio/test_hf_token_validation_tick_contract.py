@@ -9,7 +9,7 @@ VALIDATION_HOOK = REPO / "studio/frontend/src/hooks/use-hf-token-validation.ts"
 
 
 def test_success_tick_requires_the_current_token_to_be_validated():
-    source = GENERAL_TAB.read_text(encoding="utf-8")
+    source = GENERAL_TAB.read_text(encoding = "utf-8")
 
     assert "tokenIsCurrent && tokenValidation.isValid === true" in source
     assert 'tokenValidated ? "pr-14" : "pr-8"' in source
@@ -19,7 +19,7 @@ def test_success_tick_requires_the_current_token_to_be_validated():
 
 
 def test_validation_result_must_belong_to_the_current_normalized_token():
-    source = VALIDATION_HOOK.read_text(encoding="utf-8")
+    source = VALIDATION_HOOK.read_text(encoding = "utf-8")
 
     assert "const normalizedToken = token.trim()" in source
     assert "useDebouncedValue(normalizedToken, 500)" in source
