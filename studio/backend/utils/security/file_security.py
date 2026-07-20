@@ -284,8 +284,11 @@ _SAFETENSORS_BASE_UNSHARDED = ("model.safetensors", "pytorch_model.safetensors")
 _SAFETENSORS_BASE_INDEX = ("model.safetensors.index.json", "pytorch_model.safetensors.index.json")
 
 
-def _safetensors_index_complete(index_path, present_lower: set) -> bool:
-    """True when every shard the safetensors index maps is present in the same directory."""
+def _safetensors_index_complete(index_path) -> bool:
+    """True when every shard the safetensors index maps is present, resolved RELATIVE TO the
+    index's own directory -- a ``weight_map`` value may name a subdirectory
+    (``weights/model-00001-of-00002.safetensors``), so comparing basenames alone would miss a
+    complete set and wrongly treat the inert safetensors as absent."""
     import json
 
     try:
@@ -294,8 +297,17 @@ def _safetensors_index_complete(index_path, present_lower: set) -> bool:
         ) or {}
     except (OSError, ValueError):
         return False  # unreadable index -> not a usable safetensors set -> keep the pickle blocked
-    shards = {str(shard).rsplit("/", 1)[-1].lower() for shard in weight_map.values()}
-    return bool(shards) and shards <= present_lower
+    shards = {_normalize_repo_path(str(shard)) for shard in weight_map.values()}
+    if not shards:
+        return False
+    base = index_path.parent
+    for shard_rel in shards:
+        try:
+            if not base.joinpath(*shard_rel.split("/")).is_file():
+                return False
+        except OSError:
+            return False
+    return True
 
 
 def _dir_has_loadable_safetensors(files: dict) -> bool:
@@ -304,10 +316,9 @@ def _dir_has_loadable_safetensors(files: dict) -> bool:
     complete indexed shard set. A bare adapter or an orphan shard does not qualify."""
     if any(name in files for name in _SAFETENSORS_BASE_UNSHARDED):
         return True
-    present_lower = set(files)
     for index_name in _SAFETENSORS_BASE_INDEX:
         index_path = files.get(index_name)
-        if index_path is not None and _safetensors_index_complete(index_path, present_lower):
+        if index_path is not None and _safetensors_index_complete(index_path):
             return True
     return False
 

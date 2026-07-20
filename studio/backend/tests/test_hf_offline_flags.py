@@ -261,6 +261,21 @@ def test_local_only_load_fails_closed_offline_never_hitting_the_hub(monkeypatch,
     (idxsafe / "sharded" / "pytorch_model-00001-of-00002.bin").write_bytes(b"\0")
     assert _evaluate(idxsafe) is False
 
+    # A complete safetensors shard set that a safetensors index names in a SUBDIR covers a legacy
+    # pytorch_model.bin: the loader reads the inert safetensors, so this must be allowed (the
+    # index shards resolve relative to the index dir, not by basename).
+    stsub = tmp_path / "stsub" / "aaa"
+    (stsub / "weights").mkdir(parents = True)
+    (stsub / "config.json").write_bytes(b"{}")
+    (stsub / "pytorch_model.bin").write_bytes(b"\0")
+    (stsub / "model.safetensors.index.json").write_text(
+        '{"weight_map": {"a": "weights/model-00001-of-00002.safetensors", '
+        '"b": "weights/model-00002-of-00002.safetensors"}}'
+    )
+    (stsub / "weights" / "model-00001-of-00002.safetensors").write_bytes(b"\0")
+    (stsub / "weights" / "model-00002-of-00002.safetensors").write_bytes(b"\0")
+    assert _evaluate(stsub) is False
+
 
 def test_security_scan_runs_when_online(monkeypatch):
     import utils.security.file_security as fs
