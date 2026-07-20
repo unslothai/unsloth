@@ -2015,6 +2015,56 @@ def pip_install(
             temp_req.unlink(missing_ok = True)
 
 
+def _eval_extra_requirements(local_repo: str) -> list:
+    """The [eval] extra's third-party requirements from the checkout's pyproject.
+
+    Self-referential entries (``unsloth[huggingface]``) are dropped: the local
+    checkout is already overlaid with --no-deps and must not be re-resolved
+    from PyPI over the editable install.
+    """
+    try:
+        import tomllib
+
+        with open(Path(local_repo) / "pyproject.toml", "rb") as fh:
+            data = tomllib.load(fh)
+        requirements = data["project"]["optional-dependencies"]["eval"]
+        if isinstance(requirements, list):
+            filtered = [
+                requirement
+                for requirement in requirements
+                if re.split(r"[\[<>=!~; ]", str(requirement).strip(), maxsplit = 1)[0].lower()
+                != "unsloth"
+            ]
+            if filtered:
+                return filtered
+    except Exception:
+        pass
+    # fallback mirrors the pin in pyproject.toml
+    return ["lm_eval>=0.4.4"]
+
+
+def _install_eval_extra(*, package_name: str, local_repo: str) -> None:
+    """Install pyproject.toml's [eval] extra (lm-eval-harness for `unsloth eval`)."""
+    if NO_TORCH or package_name != "unsloth":
+        return
+    _progress("eval extra")
+    if local_repo:
+        # the checkout is overlaid with --no-deps so the torch/CUDA stack is
+        # not re-resolved; a full `-e repo[eval]` install would resolve the
+        # base deps again, so install only the extra's own packages
+        pip_install(
+            "Installing unsloth[eval] extra",
+            "--no-cache-dir",
+            *_eval_extra_requirements(local_repo),
+        )
+    else:
+        pip_install(
+            "Installing unsloth[eval] extra",
+            "--no-cache-dir",
+            "unsloth[eval]",
+        )
+
+
 def download_file(url: str, dest: Path) -> None:
     """Download a file using urllib (no curl dependency)."""
     urllib.request.urlretrieve(url, dest)
@@ -2070,6 +2120,8 @@ def install_python_stack() -> int:
         base_total += 1  # ROCm torch check (line 1526) -- all non-macOS platforms
         if not IS_WINDOWS:
             base_total += 2  # flash-attn (line 1620) + ROCm torch final (line 1705) -- Linux only
+    if not NO_TORCH and package_name == "unsloth":
+        base_total += 1  # pyproject.toml [eval] extra
     _TOTAL = (base_total - 1) if skip_base else base_total
 
     # 1. Try uv for faster installs (before pip upgrade -- uv venvs don't
@@ -2291,6 +2343,8 @@ def install_python_stack() -> int:
                 " " * 8,
                 "Manual install may be required. See: https://docs.unsloth.ai/get-started/install-and-update/amd",
             )
+
+    _install_eval_extra(package_name = package_name, local_repo = local_repo)
 
     # 3. Extra dependencies
     _progress("unsloth extras")

@@ -107,6 +107,10 @@ windows = [
 base = [
     "unsloth[huggingface]",
 ]
+eval = [
+    "unsloth[huggingface]",
+    "lm_eval>=0.4.4",
+]
 cu118only = [
     "xformers @ https://download.pytorch.org/whl/cu118/xformers-0.0.22.post7%2Bcu118-cp39-cp39-manylinux2014_x86_64.whl ; python_version=='3.9' and ('linux' in sys_platform)",
     "xformers @ https://download.pytorch.org/whl/cu118/xformers-0.0.22.post7%2Bcu118-cp310-cp310-manylinux2014_x86_64.whl ; python_version=='3.10' and ('linux' in sys_platform)",
