@@ -516,9 +516,8 @@ def test_connect_claude_no_launch_windows_shim_from_wsl_prints_wslenv(
     assert "export ANTHROPIC_API_KEY=" in result.output
     assert "export CLAUDE_CODE_OAUTH_TOKEN=" in result.output
     assert "export WSLENV=" in result.output
-    # PWD must NOT be frozen into the recipe: WSLENV PWD/p translates the shell's live
-    # PWD at run time, so a recipe pasted later from another directory still resolves the
-    # correct project root. A literal export would pin the generation-time directory.
+    # PWD must NOT be frozen into the recipe (no `export PWD=`): WSLENV PWD/p translates the
+    # shell's live PWD at run time, so a recipe reused from another dir resolves the project root.
     assert "export PWD=" not in result.output
     assert "PWD/p" in result.output
     assert "ANTHROPIC_AUTH_TOKEN" in result.output
