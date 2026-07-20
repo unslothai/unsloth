@@ -787,7 +787,11 @@ def test_online_defers_to_hub_over_stale_marker(tmp_path, monkeypatch):
     _repo(tmp_path, monkeypatch, ("aaa", True), main_ref = "aaa")
     calls = []
 
-    def _info(model_name, token = None, **kwargs):
+    def _info(
+        model_name,
+        token = None,
+        **kwargs,
+    ):
         calls.append(model_name)
         return types.SimpleNamespace(tags = ["text-generation"], pipeline_tag = "text-generation")
 
@@ -804,7 +808,11 @@ def test_online_permanent_hub_error_ignores_stale_marker(tmp_path, monkeypatch):
     class RepositoryNotFoundError(Exception):
         pass
 
-    def _info(model_name, token = None, **kwargs):
+    def _info(
+        model_name,
+        token = None,
+        **kwargs,
+    ):
         raise RepositoryNotFoundError("404 not found")
 
     _fake_hf_model_info(monkeypatch, _info)
@@ -827,7 +835,11 @@ def test_online_model_info_is_bounded_and_falls_back_on_dns_death(tmp_path, monk
     _repo(tmp_path, monkeypatch, ("aaa", True), main_ref = "aaa", repo_id = "org/emb")
     calls = []
 
-    def _info(model_name, token = None, **kwargs):
+    def _info(
+        model_name,
+        token = None,
+        **kwargs,
+    ):
         calls.append(kwargs.get("timeout"))
         raise OSError("Temporary failure in name resolution")  # getaddrinfo / DNS-dead
 
@@ -844,7 +856,11 @@ def test_online_negative_does_not_block_later_offline_download(tmp_path, monkeyp
     # re-probes the marker, never the memo.
     _no_cache(monkeypatch)
 
-    def _info(model_name, token = None, **kwargs):
+    def _info(
+        model_name,
+        token = None,
+        **kwargs,
+    ):
         return types.SimpleNamespace(tags = ["text-generation"], pipeline_tag = "text-generation")
 
     _fake_hf_model_info(monkeypatch, _info)
@@ -862,7 +878,11 @@ def test_offline_retains_online_confirmed_positive(tmp_path, monkeypatch):
     # must retain the positive via the memo + present snapshot, since the marker reads False.
     _repo(tmp_path, monkeypatch, ("aaa", False), main_ref = "aaa", repo_id = "org/gte-modernbert")
 
-    def _info(model_name, token = None, **kwargs):
+    def _info(
+        model_name,
+        token = None,
+        **kwargs,
+    ):
         return types.SimpleNamespace(tags = ["feature-extraction"], pipeline_tag = None, sha = "aaa")
 
     _fake_hf_model_info(monkeypatch, _info)
@@ -878,7 +898,11 @@ def test_offline_metadata_only_positive_not_trusted_without_cache(monkeypatch):
     # fail, so the memo must NOT be trusted.
     _no_cache(monkeypatch)
 
-    def _info(model_name, token = None, **kwargs):
+    def _info(
+        model_name,
+        token = None,
+        **kwargs,
+    ):
         return types.SimpleNamespace(tags = ["feature-extraction"], pipeline_tag = None, sha = "aaa")
 
     _fake_hf_model_info(monkeypatch, _info)
@@ -894,7 +918,11 @@ def test_offline_detects_persisted_tag_only_embedder_after_restart(tmp_path, mon
     # offline recognition rests on the persisted allowlist + present snapshot.
     _repo(tmp_path, monkeypatch, ("aaa", False), main_ref = "aaa", repo_id = "org/gte-modernbert")
 
-    def _info(model_name, token = None, **kwargs):
+    def _info(
+        model_name,
+        token = None,
+        **kwargs,
+    ):
         return types.SimpleNamespace(tags = ["feature-extraction"], pipeline_tag = None, sha = "aaa")
 
     _fake_hf_model_info(monkeypatch, _info)
@@ -914,7 +942,11 @@ def test_transient_hub_failure_accepts_a_pinned_tag_only_embedder(tmp_path, monk
     # a flaky network reclassifies the same cache the offline path accepts.
     _repo(tmp_path, monkeypatch, ("aaa", False), main_ref = "aaa", repo_id = "org/gte-modernbert")
 
-    def _info(model_name, token = None, **kwargs):
+    def _info(
+        model_name,
+        token = None,
+        **kwargs,
+    ):
         return types.SimpleNamespace(tags = ["feature-extraction"], pipeline_tag = None, sha = "aaa")
 
     _fake_hf_model_info(monkeypatch, _info)
@@ -930,7 +962,11 @@ def test_offline_persisted_verdict_not_trusted_when_uncached(tmp_path, monkeypat
     # it must NOT be trusted.
     _no_cache(monkeypatch)
 
-    def _info(model_name, token = None, **kwargs):
+    def _info(
+        model_name,
+        token = None,
+        **kwargs,
+    ):
         return types.SimpleNamespace(tags = ["feature-extraction"], pipeline_tag = None, sha = "aaa")
 
     _fake_hf_model_info(monkeypatch, _info)
@@ -956,7 +992,11 @@ def test_offline_persisted_verdict_not_trusted_when_snapshot_partial(tmp_path, m
     (refs / "main").write_text("aaa")
     monkeypatch.setattr(mc, "_st_cache_roots", lambda: [cache_root])
 
-    def _info(model_name, token = None, **kwargs):
+    def _info(
+        model_name,
+        token = None,
+        **kwargs,
+    ):
         return types.SimpleNamespace(tags = ["feature-extraction"], pipeline_tag = None, sha = "aaa")
 
     _fake_hf_model_info(monkeypatch, _info)
@@ -975,7 +1015,11 @@ def test_offline_persisted_verdict_matches_across_casing(tmp_path, monkeypatch):
     # still match a differently-cased lookup.
     _repo(tmp_path, monkeypatch, ("aaa", False), main_ref = "aaa", repo_id = "BAAI/model")
 
-    def _info(model_name, token = None, **kwargs):
+    def _info(
+        model_name,
+        token = None,
+        **kwargs,
+    ):
         return types.SimpleNamespace(tags = ["feature-extraction"], pipeline_tag = None, sha = "aaa")
 
     _fake_hf_model_info(monkeypatch, _info)
@@ -1050,7 +1094,11 @@ def test_verdict_pins_the_hub_revision_not_the_cached_one(tmp_path, monkeypatch)
     )
     _tag_only_repo(tmp_path, monkeypatch, "stale_local_commit")
 
-    def _info(model_name, token = None, **kwargs):
+    def _info(
+        model_name,
+        token = None,
+        **kwargs,
+    ):
         return types.SimpleNamespace(
             tags = ["feature-extraction"], pipeline_tag = None, sha = "hub_head_commit"
         )
@@ -1095,7 +1143,11 @@ def test_persist_embedder_is_best_effort_when_home_unwritable(tmp_path, monkeypa
     monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(blocker / "studio"))
     _no_cache(monkeypatch)
 
-    def _info(model_name, token = None, **kwargs):
+    def _info(
+        model_name,
+        token = None,
+        **kwargs,
+    ):
         return types.SimpleNamespace(tags = ["feature-extraction"], pipeline_tag = None, sha = "aaa")
 
     _fake_hf_model_info(monkeypatch, _info)
@@ -1122,7 +1174,11 @@ def test_online_uncached_still_uses_network(monkeypatch):
     _no_cache(monkeypatch)
     calls = []
 
-    def _info(model_name, token = None, **kwargs):
+    def _info(
+        model_name,
+        token = None,
+        **kwargs,
+    ):
         calls.append(model_name)
         return types.SimpleNamespace(tags = ["feature-extraction"], pipeline_tag = None, sha = "aaa")
 
@@ -1137,7 +1193,11 @@ def test_offline_negative_is_not_cached_then_online_detects(monkeypatch):
     _no_cache(monkeypatch)
     calls = []
 
-    def _info(model_name, token = None, **kwargs):
+    def _info(
+        model_name,
+        token = None,
+        **kwargs,
+    ):
         calls.append(model_name)
         return types.SimpleNamespace(tags = ["feature-extraction"], pipeline_tag = None, sha = "aaa")
 

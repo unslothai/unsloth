@@ -2354,9 +2354,8 @@ def _module_dir_is_loadable(cls: str, is_root: bool, dir_path: Path) -> bool:
     names = _dir_file_names(dir_path)
     if cls == "staticembedding":
         # No config on disk: recognized by the tokenizer + weights its load() actually reads.
-        return (
-            _ST_STATIC_EMBEDDING_TOKENIZER_FILE in names
-            and _dir_has_complete_torch_weights(names)
+        return _ST_STATIC_EMBEDDING_TOKENIZER_FILE in names and _dir_has_complete_torch_weights(
+            names
         )
     if not any(name == "config.json" or name.endswith("_config.json") for name in names):
         return False
