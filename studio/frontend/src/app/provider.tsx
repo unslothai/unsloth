@@ -98,18 +98,20 @@ async function applyAppWindowLayout(
   if (!isCurrent()) return;
 
   const win = getCurrentWindow();
-  // Decide first-launch vs restore from the on-disk state file BEFORE touching the
-  // window. Probing the window after restoreStateCurrent is unreliable: on GTK,
-  // set_size on a hidden window is deferred until show(), so innerSize() reads a
-  // stale value and a baseline fallback would overwrite the queued restore. On
-  // macOS the same probe works, hence the inconsistency between prior iterations.
-  const hasSavedState = await invoke<boolean>("has_saved_window_state");
+  // Setup-window activity may create plugin state before the full app is ever
+  // shown, so use a dedicated full-app marker to decide whether restoration is
+  // appropriate. Keep checking plugin state so a missing/corrupt state file
+  // falls back to a monitor-safe centered layout.
+  const [hasInitializedAppLayout, hasSavedState] = await Promise.all([
+    invoke<boolean>("has_initialized_app_window_layout"),
+    invoke<boolean>("has_saved_window_state"),
+  ]);
   if (!isCurrent()) return;
 
   await win.setResizable(true);
   if (!isCurrent()) return;
 
-  if (hasSavedState) {
+  if (hasInitializedAppLayout && hasSavedState) {
     // Subsequent launch: plugin restores size/position/maximized, with built-in
     // off-screen protection for positions saved on a now-disconnected display.
     await restoreStateCurrent(
@@ -144,6 +146,9 @@ async function applyAppWindowLayout(
   });
   if (!isCurrent()) return;
   await enforceMinimumWindowSize(win, LogicalSize, isCurrent);
+
+  if (!isCurrent()) return;
+  await invoke("mark_app_window_layout_initialized");
 }
 
 async function showWindowFallback(): Promise<void> {

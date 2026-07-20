@@ -10,6 +10,8 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
+import { downloadFile } from "@/lib/native-files";
+
 import { cn } from "@/lib/utils";
 import { Search01Icon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
@@ -70,16 +72,16 @@ function sanitizeFilename(name: string): string {
   return name.replace(/[\\/:*?"<>|]/g, "_").slice(0, 80) || "export";
 }
 
-function downloadBlob(content: string | Blob, filename: string, mimeType: string): void {
-  const blob = content instanceof Blob ? content : new Blob([content], { type: mimeType });
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement("a");
-  a.href = url;
-  a.download = filename;
-  document.body.appendChild(a);
-  a.click();
-  document.body.removeChild(a);
-  URL.revokeObjectURL(url);
+function downloadBlob(
+  content: string | Blob,
+  filename: string,
+  mimeType: string,
+): void {
+  void downloadFile(content, filename, mimeType).catch((error) => {
+    toast.error("Could not save export.", {
+      description: error instanceof Error ? error.message : String(error),
+    });
+  });
 }
 
 function csvEscape(val: string): string {
