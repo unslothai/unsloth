@@ -412,6 +412,7 @@ def _wordembeddings_repo(
     *,
     weight_file = "model.safetensors",
     include_weights = True,
+    include_tokenizer = True,
     commit = "aaa",
     repo_id = "sentence-transformers/average_word_embeddings_glove.6B.300d",
 ):
@@ -434,7 +435,10 @@ def _wordembeddings_repo(
     )
     (snap / "config_sentence_transformers.json").write_text("{}")
     (snap / "0_WordEmbeddings" / "wordembedding_config.json").write_text("{}")
-    (snap / "0_WordEmbeddings" / "whitespacetokenizer_config.json").write_text("{}")
+    if include_tokenizer:
+        # WhitespaceTokenizer.load() reads this from the module dir (WordEmbeddings.load ->
+        # tokenizer_class.load(dir)); see sentence_transformers/models/tokenizer/*.py.
+        (snap / "0_WordEmbeddings" / "whitespacetokenizer_config.json").write_text("{}")
     if include_weights:
         (snap / "0_WordEmbeddings" / weight_file).write_bytes(b"\0")
     (snap / "1_Pooling").mkdir(parents = True)
@@ -483,6 +487,101 @@ def test_marker_rejects_wordembeddings_without_weights(tmp_path, monkeypatch):
     assert mc._embedding_marker_in_hf_cache(_GLOVE) is False
 
 
+@pytest.mark.parametrize(
+    "tok_file",
+    [
+        "whitespacetokenizer_config.json",  # WhitespaceTokenizer.load reads this
+        "phrasetokenizer_config.json",  # PhraseTokenizer.load reads this
+        "tokenizer.json",  # transformers-backed wrapper: shared HF tokenizer asset
+        "vocab.txt",
+    ],
+)
+def test_marker_requires_a_tokenizer_for_wordembeddings(tmp_path, monkeypatch, tok_file):
+    # WordEmbeddings.load() calls its configured tokenizer_class.load(dir) from the module dir, so
+    # a module with wordembedding_config.json + weights but NO tokenizer artifact would validate
+    # on the config+weights path and then fail at tokenizer_class.load() -- it must NOT validate.
+    # Restoring any recognized tokenizer artifact makes it loadable (#7218).
+    snap = _wordembeddings_repo(tmp_path, monkeypatch, include_tokenizer = False)
+    assert mc._embedding_marker_in_hf_cache(_GLOVE) is False
+    (snap / "0_WordEmbeddings" / tok_file).write_text("{}")
+    assert mc._embedding_marker_in_hf_cache(_GLOVE) is True
+
+
+# ── StaticEmbedding models (model2vec / static-retrieval) built from modules.json ──
+
+
+_STATIC = "sentence-transformers/static-retrieval-mrl-en-v1"
+
+
+def _staticembedding_repo(
+    tmp_path,
+    monkeypatch,
+    *,
+    weight_file = "model.safetensors",
+    include_weights = True,
+    include_tokenizer = True,
+    commit = "aaa",
+    repo_id = _STATIC,
+):
+    """A cached SentenceTransformer StaticEmbedding model mirroring the real on-disk layout of
+    ``sentence-transformers/static-retrieval-mrl-en-v1``: a root ``modules.json`` +
+    ``config_sentence_transformers.json`` and a ``0_StaticEmbedding`` module dir holding just
+    ``tokenizer.json`` + ``model.safetensors`` -- exactly what ``StaticEmbedding.load()`` reads,
+    which writes NO config. It carries NO HF/module ``config.json``, so the config-gated
+    non-Transformer path alone misclassifies it and the settings route 409s it offline (#7218)."""
+    hf_root = tmp_path / "hf"
+    repo = hf_root / f"models--{repo_id.replace('/', '--')}"
+    snap = repo / "snapshots" / commit
+    (snap / "0_StaticEmbedding").mkdir(parents = True)
+    (snap / "modules.json").write_text(
+        _modules_json(
+            ("0", "0_StaticEmbedding", "sentence_transformers.models.StaticEmbedding"),
+        )
+    )
+    (snap / "config_sentence_transformers.json").write_text("{}")
+    if include_tokenizer:
+        (snap / "0_StaticEmbedding" / "tokenizer.json").write_text("{}")
+    if include_weights:
+        (snap / "0_StaticEmbedding" / weight_file).write_bytes(b"\0")
+    (repo / "refs").mkdir(parents = True)
+    (repo / "refs" / "main").write_text(commit)
+    _fake_hf_cache(monkeypatch, hf_root)
+    monkeypatch.delenv("SENTENCE_TRANSFORMERS_HOME", raising = False)
+    return snap
+
+
+@pytest.mark.parametrize("weight_file", ["model.safetensors", "pytorch_model.bin"])
+def test_marker_accepts_complete_staticembedding_model(tmp_path, monkeypatch, weight_file):
+    # A fully-cached StaticEmbedding model (0_StaticEmbedding/ with tokenizer.json + weights, NO
+    # config) loads offline via modules.json -> StaticEmbedding.load(), so it must be recognized
+    # even though it carries none of the Transformer-shaped config the other path requires (#7218).
+    _staticembedding_repo(tmp_path, monkeypatch, weight_file = weight_file)
+    assert mc._embedding_marker_in_hf_cache(_STATIC) is True
+
+
+def test_marker_rejects_staticembedding_without_weights(tmp_path, monkeypatch):
+    # StaticEmbedding.load() hard-reads model.safetensors / pytorch_model.bin, so a tokenizer-only
+    # module dir (weights pruned) would fail the offline load and must NOT validate.
+    _staticembedding_repo(tmp_path, monkeypatch, include_weights = False)
+    assert mc._embedding_marker_in_hf_cache(_STATIC) is False
+
+
+def test_marker_rejects_staticembedding_without_tokenizer(tmp_path, monkeypatch):
+    # StaticEmbedding.load() hard-reads tokenizer.json (Tokenizer.from_file), so a weights-only
+    # module dir would fail the offline load and must NOT validate.
+    _staticembedding_repo(tmp_path, monkeypatch, include_tokenizer = False)
+    assert mc._embedding_marker_in_hf_cache(_STATIC) is False
+
+
+def test_offline_staticembedding_is_embedding_without_network(tmp_path, monkeypatch):
+    # End to end: the offline settings path must not 409 a cached StaticEmbedding model, with no
+    # model_info() network call.
+    _staticembedding_repo(tmp_path, monkeypatch)
+    monkeypatch.setenv("HF_HUB_OFFLINE", "1")
+    _fake_hf_model_info(monkeypatch, _no_network)
+    assert mc.is_embedding_model(_STATIC) is True
+
+
 def _we_dense_repo(
     tmp_path,
     monkeypatch,
@@ -502,6 +601,9 @@ def _we_dense_repo(
     )
     (snap / "config_sentence_transformers.json").write_text("{}")
     (snap / "0_WordEmbeddings" / "wordembedding_config.json").write_text("{}")
+    # WordEmbeddings.load() rebuilds its tokenizer from the module dir, so a complete module
+    # carries this too; the variable under test here is the Dense module's weights.
+    (snap / "0_WordEmbeddings" / "whitespacetokenizer_config.json").write_text("{}")
     (snap / "0_WordEmbeddings" / "model.safetensors").write_bytes(b"\0")
     (snap / "1_Pooling").mkdir(parents = True)
     (snap / "1_Pooling" / "config.json").write_text("{}")
@@ -660,7 +762,7 @@ def test_is_embedding_model_survives_cache_race_online(monkeypatch):
     monkeypatch.setattr(mc, "_st_cache_repo_dir", _exploding_iter)
     _fake_hf_model_info(
         monkeypatch,
-        lambda name, token = None: types.SimpleNamespace(
+        lambda name, token = None, **kwargs: types.SimpleNamespace(
             tags = ["sentence-transformers"], pipeline_tag = None
         ),
     )
@@ -685,7 +787,7 @@ def test_online_defers_to_hub_over_stale_marker(tmp_path, monkeypatch):
     _repo(tmp_path, monkeypatch, ("aaa", True), main_ref = "aaa")
     calls = []
 
-    def _info(model_name, token = None):
+    def _info(model_name, token = None, **kwargs):
         calls.append(model_name)
         return types.SimpleNamespace(tags = ["text-generation"], pipeline_tag = "text-generation")
 
@@ -702,7 +804,7 @@ def test_online_permanent_hub_error_ignores_stale_marker(tmp_path, monkeypatch):
     class RepositoryNotFoundError(Exception):
         pass
 
-    def _info(model_name, token = None):
+    def _info(model_name, token = None, **kwargs):
         raise RepositoryNotFoundError("404 not found")
 
     _fake_hf_model_info(monkeypatch, _info)
@@ -718,12 +820,31 @@ def test_online_hub_failure_falls_back_to_marker_uncached(tmp_path, monkeypatch)
     assert ("org/emb", None) not in mc._embedding_detection_cache
 
 
+def test_online_model_info_is_bounded_and_falls_back_on_dns_death(tmp_path, monkeypatch):
+    # #6817: with NEITHER offline env set, a dead / renamed network must not hang model_info()
+    # indefinitely. The call is made with a BOUNDED timeout and, when it raises a network error,
+    # a CACHED embedder still resolves via the transient fallback -- no real network needed.
+    _repo(tmp_path, monkeypatch, ("aaa", True), main_ref = "aaa", repo_id = "org/emb")
+    calls = []
+
+    def _info(model_name, token = None, **kwargs):
+        calls.append(kwargs.get("timeout"))
+        raise OSError("Temporary failure in name resolution")  # getaddrinfo / DNS-dead
+
+    _fake_hf_model_info(monkeypatch, _info)
+    assert mc.is_embedding_model("org/emb") is True  # transient fallback -> cached marker
+    assert len(calls) == 1  # model_info WAS attempted, exactly once (no retry storm)
+    timeout = calls[0]
+    # A bounded, positive timeout was passed so a dead network fails fast instead of hanging.
+    assert isinstance(timeout, (int, float)) and 0 < timeout <= 60
+
+
 def test_online_negative_does_not_block_later_offline_download(tmp_path, monkeypatch):
     # A memoized online negative must not block a later offline detection: the offline path
     # re-probes the marker, never the memo.
     _no_cache(monkeypatch)
 
-    def _info(model_name, token = None):
+    def _info(model_name, token = None, **kwargs):
         return types.SimpleNamespace(tags = ["text-generation"], pipeline_tag = "text-generation")
 
     _fake_hf_model_info(monkeypatch, _info)
@@ -741,7 +862,7 @@ def test_offline_retains_online_confirmed_positive(tmp_path, monkeypatch):
     # must retain the positive via the memo + present snapshot, since the marker reads False.
     _repo(tmp_path, monkeypatch, ("aaa", False), main_ref = "aaa", repo_id = "org/gte-modernbert")
 
-    def _info(model_name, token = None):
+    def _info(model_name, token = None, **kwargs):
         return types.SimpleNamespace(tags = ["feature-extraction"], pipeline_tag = None, sha = "aaa")
 
     _fake_hf_model_info(monkeypatch, _info)
@@ -757,7 +878,7 @@ def test_offline_metadata_only_positive_not_trusted_without_cache(monkeypatch):
     # fail, so the memo must NOT be trusted.
     _no_cache(monkeypatch)
 
-    def _info(model_name, token = None):
+    def _info(model_name, token = None, **kwargs):
         return types.SimpleNamespace(tags = ["feature-extraction"], pipeline_tag = None, sha = "aaa")
 
     _fake_hf_model_info(monkeypatch, _info)
@@ -773,7 +894,7 @@ def test_offline_detects_persisted_tag_only_embedder_after_restart(tmp_path, mon
     # offline recognition rests on the persisted allowlist + present snapshot.
     _repo(tmp_path, monkeypatch, ("aaa", False), main_ref = "aaa", repo_id = "org/gte-modernbert")
 
-    def _info(model_name, token = None):
+    def _info(model_name, token = None, **kwargs):
         return types.SimpleNamespace(tags = ["feature-extraction"], pipeline_tag = None, sha = "aaa")
 
     _fake_hf_model_info(monkeypatch, _info)
@@ -793,7 +914,7 @@ def test_transient_hub_failure_accepts_a_pinned_tag_only_embedder(tmp_path, monk
     # a flaky network reclassifies the same cache the offline path accepts.
     _repo(tmp_path, monkeypatch, ("aaa", False), main_ref = "aaa", repo_id = "org/gte-modernbert")
 
-    def _info(model_name, token = None):
+    def _info(model_name, token = None, **kwargs):
         return types.SimpleNamespace(tags = ["feature-extraction"], pipeline_tag = None, sha = "aaa")
 
     _fake_hf_model_info(monkeypatch, _info)
@@ -809,7 +930,7 @@ def test_offline_persisted_verdict_not_trusted_when_uncached(tmp_path, monkeypat
     # it must NOT be trusted.
     _no_cache(monkeypatch)
 
-    def _info(model_name, token = None):
+    def _info(model_name, token = None, **kwargs):
         return types.SimpleNamespace(tags = ["feature-extraction"], pipeline_tag = None, sha = "aaa")
 
     _fake_hf_model_info(monkeypatch, _info)
@@ -835,7 +956,7 @@ def test_offline_persisted_verdict_not_trusted_when_snapshot_partial(tmp_path, m
     (refs / "main").write_text("aaa")
     monkeypatch.setattr(mc, "_st_cache_roots", lambda: [cache_root])
 
-    def _info(model_name, token = None):
+    def _info(model_name, token = None, **kwargs):
         return types.SimpleNamespace(tags = ["feature-extraction"], pipeline_tag = None, sha = "aaa")
 
     _fake_hf_model_info(monkeypatch, _info)
@@ -854,7 +975,7 @@ def test_offline_persisted_verdict_matches_across_casing(tmp_path, monkeypatch):
     # still match a differently-cased lookup.
     _repo(tmp_path, monkeypatch, ("aaa", False), main_ref = "aaa", repo_id = "BAAI/model")
 
-    def _info(model_name, token = None):
+    def _info(model_name, token = None, **kwargs):
         return types.SimpleNamespace(tags = ["feature-extraction"], pipeline_tag = None, sha = "aaa")
 
     _fake_hf_model_info(monkeypatch, _info)
@@ -929,7 +1050,7 @@ def test_verdict_pins_the_hub_revision_not_the_cached_one(tmp_path, monkeypatch)
     )
     _tag_only_repo(tmp_path, monkeypatch, "stale_local_commit")
 
-    def _info(model_name, token = None):
+    def _info(model_name, token = None, **kwargs):
         return types.SimpleNamespace(
             tags = ["feature-extraction"], pipeline_tag = None, sha = "hub_head_commit"
         )
@@ -974,7 +1095,7 @@ def test_persist_embedder_is_best_effort_when_home_unwritable(tmp_path, monkeypa
     monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(blocker / "studio"))
     _no_cache(monkeypatch)
 
-    def _info(model_name, token = None):
+    def _info(model_name, token = None, **kwargs):
         return types.SimpleNamespace(tags = ["feature-extraction"], pipeline_tag = None, sha = "aaa")
 
     _fake_hf_model_info(monkeypatch, _info)
@@ -1001,7 +1122,7 @@ def test_online_uncached_still_uses_network(monkeypatch):
     _no_cache(monkeypatch)
     calls = []
 
-    def _info(model_name, token = None):
+    def _info(model_name, token = None, **kwargs):
         calls.append(model_name)
         return types.SimpleNamespace(tags = ["feature-extraction"], pipeline_tag = None, sha = "aaa")
 
@@ -1016,7 +1137,7 @@ def test_offline_negative_is_not_cached_then_online_detects(monkeypatch):
     _no_cache(monkeypatch)
     calls = []
 
-    def _info(model_name, token = None):
+    def _info(model_name, token = None, **kwargs):
         calls.append(model_name)
         return types.SimpleNamespace(tags = ["feature-extraction"], pipeline_tag = None, sha = "aaa")
 

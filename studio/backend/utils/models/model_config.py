@@ -2304,6 +2304,35 @@ def _dir_file_names(dir_path: Path) -> set:
 # ``Normalize`` read no weights (BoW keeps its data in config.json), so a config suffices.
 _ST_WEIGHTED_MODULE_NAMES = frozenset({"wordembeddings", "dense", "cnn", "lstm"})
 
+# ``StaticEmbedding.load()`` (sentence_transformers/models/StaticEmbedding.py) reads a
+# ``tokenizer.json`` via ``Tokenizer.from_file`` and then ``model.safetensors`` else
+# ``pytorch_model.bin`` -- ``save()`` emits ONLY those two files and NO config. So a
+# ``StaticEmbedding`` module placed in its own subdir (e.g.
+# ``sentence-transformers/static-retrieval-mrl-en-v1`` -> ``0_StaticEmbedding/`` holding just
+# ``tokenizer.json`` + ``model.safetensors``) is a WEIGHTED content module recognized by that
+# tokenizer plus a complete Torch weight set, NOT by a module config. (A model2vec-style
+# StaticEmbedding at the root path ``.`` ships a ``config.json`` and already validates via the
+# root / Transformer load-root path.)
+_ST_STATIC_EMBEDDING_TOKENIZER_FILE = "tokenizer.json"
+
+# ``WordEmbeddings.load()`` rebuilds its tokenizer by calling the configured
+# ``tokenizer_class.load(dir)`` from the SAME module dir: ``WhitespaceTokenizer`` /
+# ``PhraseTokenizer`` read a ``<class>_config.json`` (see sentence_transformers/models/
+# tokenizer/*.py); a transformers-backed wrapper (newer sentence-transformers) reads the shared
+# HF tokenizer assets instead. So a WordEmbeddings dir needs a tokenizer artifact ON TOP of its
+# ``wordembedding_config.json`` + weights, else it validates on the config+weights path and then
+# fails at ``tokenizer_class.load()``. ``Dense`` / ``CNN`` / ``LSTM`` read no tokenizer.
+_ST_WORD_TOKENIZER_CONFIG_FILES = frozenset(
+    {"whitespacetokenizer_config.json", "phrasetokenizer_config.json"}
+)
+
+
+def _names_have_word_embeddings_tokenizer(names: set) -> bool:
+    """True when *names* supply the tokenizer ``WordEmbeddings.load()`` rebuilds from the module
+    dir: a ``WhitespaceTokenizer`` / ``PhraseTokenizer`` ``*_config.json`` (its own ``load()``
+    reads it), or a shared HF tokenizer asset for a transformers-backed wrapper."""
+    return bool(names & _ST_WORD_TOKENIZER_CONFIG_FILES) or _names_have_tokenizer(names)
+
 
 def _module_dir_is_loadable(cls: str, is_root: bool, dir_path: Path) -> bool:
     """True when *dir_path* carries the files the sentence-transformers module class *cls*
@@ -2311,9 +2340,11 @@ def _module_dir_is_loadable(cls: str, is_root: bool, dir_path: Path) -> bool:
 
     * a root / ``Transformer`` module is a full HF load root (config + tokenizer + weights);
     * ``Normalize`` reads nothing;
+    * ``StaticEmbedding`` reads a ``tokenizer.json`` + a complete Torch weight set and NO config;
     * a WEIGHTED module (``WordEmbeddings`` / ``Dense`` / ``CNN`` / ``LSTM``) needs its module
       config AND a complete Torch weight set (its ``load()`` hard-loads ``model.safetensors`` /
-      ``pytorch_model.bin``);
+      ``pytorch_model.bin``); ``WordEmbeddings`` additionally rebuilds a tokenizer from the dir,
+      so it also needs a tokenizer artifact;
     * every other module (``BoW``, ``Pooling`` ...) reads only a ``config.json`` / ``*_config``,
       so a present module config is the load requirement."""
     if is_root or "transformer" in cls:
@@ -2321,10 +2352,20 @@ def _module_dir_is_loadable(cls: str, is_root: bool, dir_path: Path) -> bool:
     if cls == "normalize":
         return True
     names = _dir_file_names(dir_path)
+    if cls == "staticembedding":
+        # No config on disk: recognized by the tokenizer + weights its load() actually reads.
+        return (
+            _ST_STATIC_EMBEDDING_TOKENIZER_FILE in names
+            and _dir_has_complete_torch_weights(names)
+        )
     if not any(name == "config.json" or name.endswith("_config.json") for name in names):
         return False
     if cls in _ST_WEIGHTED_MODULE_NAMES:
-        return _dir_has_complete_torch_weights(names)
+        if not _dir_has_complete_torch_weights(names):
+            return False
+        if cls == "wordembeddings":
+            return _names_have_word_embeddings_tokenizer(names)
+        return True
     return True
 
 
@@ -2437,6 +2478,20 @@ def _embedding_marker_in_hf_cache(repo_id: str) -> Optional[bool]:
     return _snapshot_is_loadable_st_model(snapshot)
 
 
+# Bounded metadata fetch for the ONLINE branch (#6817). With NEITHER HF_HUB_OFFLINE nor
+# TRANSFORMERS_OFFLINE set, an unbounded model_info() can hang on connect / DNS retries when the
+# network is dead or the Hub is unreachable -- the #6817 symptom for users who never set an
+# offline flag. Cap the call (mirrors utils/security/file_security's bounded model_info fetch,
+# _REQUEST_TIMEOUT=10 / _RETRY_TIMEOUT=20) so an unreachable Hub raises FAST and the transient-
+# failure handler below resolves a cached model, WITHOUT surrendering the Hub-authoritative
+# verdict when the Hub IS reachable (metadata answers well inside this window, so a reachable Hub
+# still wins). CAVEAT: huggingface_hub forwards timeout to requests' get(..., timeout=...), which
+# bounds the connect + read; a stalled DNS getaddrinfo() can still block past it on some
+# resolvers, so this NARROWS -- but does not fully close -- the hang window. HF_HUB_OFFLINE
+# remains the only hard guarantee.
+_HUB_MODEL_INFO_TIMEOUT = 15.0
+
+
 def is_embedding_model(model_name: str, hf_token: Optional[str] = None) -> bool:
     """Detect embedding/sentence-transformer models via HF metadata.
 
@@ -2489,7 +2544,7 @@ def is_embedding_model(model_name: str, hf_token: Optional[str] = None) -> bool:
     try:
         from huggingface_hub import model_info as hf_model_info
 
-        info = hf_model_info(model_name, token = hf_token)
+        info = hf_model_info(model_name, token = hf_token, timeout = _HUB_MODEL_INFO_TIMEOUT)
         tags = set(info.tags or [])
         pipeline_tag = info.pipeline_tag or ""
 
