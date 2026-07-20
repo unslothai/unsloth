@@ -97,9 +97,7 @@ def _revision(snapshot: Path, last_modified: float, names: list[str]) -> SimpleN
         path.parent.mkdir(parents = True, exist_ok = True)
         path.write_text("gguf")
         files.append(SimpleNamespace(file_name = name, file_path = path))
-    return SimpleNamespace(
-        snapshot_path = snapshot, last_modified = last_modified, files = files
-    )
+    return SimpleNamespace(snapshot_path = snapshot, last_modified = last_modified, files = files)
 
 
 def _patch_cache(monkeypatch, tmp_path: Path, revisions: list[SimpleNamespace]) -> None:
