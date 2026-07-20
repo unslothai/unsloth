@@ -27,6 +27,7 @@ on:
       # The Playwright test files themselves -- a PR that ONLY edits
       # the test must still trigger UI CI.
       - 'tests/studio/**'
+      - '.github/scripts/run-studio-permission-browser.sh'
       - '.github/workflows/studio-ui-smoke.yml'
   push:
     branches: [main, pip]
@@ -107,13 +108,10 @@ jobs:
           set -o pipefail
           bash install.sh --local --no-torch 2>&1 | tee logs/install.log
 
-      - name: Install Playwright + Chromium
+      - name: Install Playwright browsers
         run: |
           pip install 'playwright>=1.45'
-          # --with-deps installs the OS-level runtime libs Chromium
-          # needs (libnss3, libxkbcommon, etc.). About 30 s on a
-          # warm runner.
-          python -m playwright install --with-deps chromium
+          python -m playwright install --with-deps chromium firefox webkit
 
       - name: Reset auth + boot Unsloth
         run: |
@@ -181,6 +179,12 @@ jobs:
         run: |
           kill "${STUDIO_PID}" 2>/dev/null || true
           sleep 2
+
+      - name: Cross-browser permission controls
+        run: |
+          bash .github/scripts/run-studio-permission-browser.sh 18893 firefox
+          bash .github/scripts/run-studio-permission-browser.sh 18893 webkit
+          bash .github/scripts/run-studio-permission-browser.sh 18893 chromium chrome
 
       # The chat UI test ends by clicking the Shutdown menuitem, which
       # leaves the server dead. The extra UI test (Compare / Recipes /
@@ -346,7 +350,9 @@ jobs:
             logs/install.log
             logs/server-logs/
             logs/playwright
+            logs/playwright-permissions-*
             logs/playwright_extra
             logs/playwright_modelcfg
             logs/playwright_ime
+            logs/studio-permissions-*.log
           retention-days: 7

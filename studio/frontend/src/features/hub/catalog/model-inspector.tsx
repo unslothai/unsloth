@@ -59,6 +59,13 @@ import { ModelReadme } from "./model-readme";
 import { OwnerAvatar } from "./owner-avatar";
 import { AccessChip, CapabilityPill } from "./shared";
 
+// HF pipeline_tag values authoritative for embedding-only repos; capability
+// labels (code/vision/audio) can leak onto them via name or tags.
+const EMBEDDING_PIPELINE_TAGS: ReadonlySet<string> = new Set([
+  "feature-extraction",
+  "sentence-similarity",
+]);
+
 function ViewRepositoryButton({
   repoId,
   isDataset,
@@ -535,11 +542,27 @@ export const ModelInspector = memo(function ModelInspector({
     ? formatCompact(model.totalParams)
     : "N/A";
   const unslothSupported = unslothSupport.status !== "unsupported";
+  // Embedding-only non-GGUF repos have no generative head, so keep them out of
+  // the Run gate. Prefer the pipeline tag, else the capability heuristic.
+  const isEmbeddingOnly =
+    !model.isGguf &&
+    model.capabilities.some((c) => c.key === "embedding") &&
+    (EMBEDDING_PIPELINE_TAGS.has(model.pipelineTag?.toLowerCase() ?? "") ||
+      !model.capabilities.some(
+        (c) =>
+          c.key === "conversational" ||
+          c.key === "tools" ||
+          c.key === "reasoning" ||
+          c.key === "code" ||
+          c.key === "vision" ||
+          c.key === "audio",
+      ));
   // Chat-only hosts (no supported GPU / usable MLX) run inference only through
   // llama.cpp, so only GGUF is loadable.
   const canRunModel =
     !isDataset &&
     (model.runtimeCapabilities?.canChat ?? true) &&
+    !isEmbeddingOnly &&
     (model.isGguf || (!chatOnly && unslothSupported));
   const canTrainModel =
     !isDataset &&

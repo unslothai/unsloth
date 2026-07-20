@@ -12,18 +12,12 @@ import {
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
 import {
-  Dialog,
-  DialogContent,
-  DialogHeader,
-  DialogTitle,
-} from "@/components/ui/dialog";
-import {
+  type SidebarItem,
   deleteChatItem,
   unarchiveChatItem,
   useChatPreferencesStore,
   useChatRuntimeStore,
   useChatSidebarItems,
-  type SidebarItem,
 } from "@/features/chat";
 import { toast } from "@/lib/toast";
 import { ArchiveRestoreIcon, Delete02Icon } from "@hugeicons/core-free-icons";
@@ -40,13 +34,7 @@ function formatCreatedAt(ms: number): string {
   });
 }
 
-export function ArchivedChatsDialog({
-  open,
-  onOpenChange,
-}: {
-  open: boolean;
-  onOpenChange: (open: boolean) => void;
-}) {
+export function ArchivedChatsView() {
   const { archivedItems } = useChatSidebarItems({ requireMessages: false });
   const navigate = useNavigate();
   const closeSettings = useSettingsDialogStore((s) => s.closeDialog);
@@ -74,7 +62,6 @@ export function ArchivedChatsDialog({
       search:
         item.type === "single" ? { thread: item.id } : { compare: item.id },
     });
-    onOpenChange(false);
     closeSettings();
   }
 
@@ -114,72 +101,66 @@ export function ArchivedChatsDialog({
   }
 
   return (
-    <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="max-w-2xl">
-        <DialogHeader>
-          <DialogTitle>Archived chats</DialogTitle>
-        </DialogHeader>
-
-        {archivedItems.length === 0 ? (
-          <p className="py-8 text-center text-sm text-muted-foreground">
-            No archived chats.
-          </p>
-        ) : (
-          <div className="max-h-[60vh] overflow-y-auto">
-            <div className="flex items-center gap-4 border-b border-border/60 px-1 pb-2 text-xs font-semibold text-foreground">
-              <span className="flex-1">Name</span>
-              <span className="w-32 shrink-0">Date created</span>
-              <span className="w-16 shrink-0" />
-            </div>
-            {archivedItems.map((item) => (
-              <div
-                key={item.id}
-                className="group flex items-center gap-4 border-b border-border/40 px-1 py-2.5 text-sm last:border-0"
+    <div className="flex flex-col gap-4">
+      {archivedItems.length === 0 ? (
+        <p className="py-8 text-center text-sm text-muted-foreground">
+          No archived chats.
+        </p>
+      ) : (
+        <div>
+          <div className="flex items-center gap-4 border-b border-border/60 px-1 pb-2 text-xs font-semibold text-foreground">
+            <span className="flex-1">Name</span>
+            <span className="w-32 shrink-0">Date created</span>
+            <span className="w-16 shrink-0" />
+          </div>
+          {archivedItems.map((item) => (
+            <div
+              key={item.id}
+              className="group flex items-center gap-4 border-b border-border/40 px-1 py-2.5 text-sm last:border-0"
+            >
+              <button
+                type="button"
+                onClick={() => openChat(item)}
+                className="min-w-0 flex-1 truncate text-left text-primary hover:underline"
+                title={item.title}
               >
+                {item.title}
+              </button>
+              <span className="w-32 shrink-0 text-muted-foreground tabular-nums">
+                {formatCreatedAt(item.createdAt)}
+              </span>
+              <span className="flex w-16 shrink-0 items-center justify-end gap-1">
                 <button
                   type="button"
-                  onClick={() => openChat(item)}
-                  className="min-w-0 flex-1 truncate text-left text-primary hover:underline"
-                  title={item.title}
+                  onClick={() => void handleUnarchive(item)}
+                  aria-label="Unarchive chat"
+                  title="Unarchive"
+                  className="inline-flex size-7 items-center justify-center rounded-full text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
                 >
-                  {item.title}
+                  <HugeiconsIcon
+                    icon={ArchiveRestoreIcon}
+                    strokeWidth={1.75}
+                    className="size-4"
+                  />
                 </button>
-                <span className="w-32 shrink-0 text-muted-foreground tabular-nums">
-                  {formatCreatedAt(item.createdAt)}
-                </span>
-                <span className="flex w-16 shrink-0 items-center justify-end gap-1">
-                  <button
-                    type="button"
-                    onClick={() => void handleUnarchive(item)}
-                    aria-label="Unarchive chat"
-                    title="Unarchive"
-                    className="inline-flex size-7 items-center justify-center rounded-full text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
-                  >
-                    <HugeiconsIcon
-                      icon={ArchiveRestoreIcon}
-                      strokeWidth={1.75}
-                      className="size-4"
-                    />
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => requestDelete(item)}
-                    aria-label="Delete chat"
-                    title="Delete"
-                    className="inline-flex size-7 items-center justify-center rounded-full text-muted-foreground transition-colors hover:bg-destructive/10 hover:text-destructive"
-                  >
-                    <HugeiconsIcon
-                      icon={Delete02Icon}
-                      strokeWidth={1.75}
-                      className="size-4"
-                    />
-                  </button>
-                </span>
-              </div>
-            ))}
-          </div>
-        )}
-      </DialogContent>
+                <button
+                  type="button"
+                  onClick={() => requestDelete(item)}
+                  aria-label="Delete chat"
+                  title="Delete"
+                  className="inline-flex size-7 items-center justify-center rounded-full text-muted-foreground transition-colors hover:bg-destructive/10 hover:text-destructive"
+                >
+                  <HugeiconsIcon
+                    icon={Delete02Icon}
+                    strokeWidth={1.75}
+                    className="size-4"
+                  />
+                </button>
+              </span>
+            </div>
+          ))}
+        </div>
+      )}
 
       <AlertDialog
         open={confirmingDelete !== null}
@@ -213,6 +194,6 @@ export function ArchivedChatsDialog({
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>
-    </Dialog>
+    </div>
   );
 }

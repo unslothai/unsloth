@@ -5,10 +5,13 @@ export { ChatPage, validateChatSearch, type ChatSearch } from "./chat-page";
 export {
   addScanFolder,
   browseFolders,
+  deleteChatAttachment,
   deleteFineTunedModel,
+  fetchChatAttachmentBlob,
   fetchGgufStagedMetadata,
   getCachedModelPath,
   getInferenceStatus,
+  listChatAttachments,
   listGgufVariants,
   listLocalModels,
   listRecommendedFolders,
@@ -19,6 +22,8 @@ export {
   type BrowseFoldersResponse,
   type CachedGgufRepo,
   type CachedModelRepo,
+  type ChatAttachmentPage,
+  type ChatAttachmentRecord,
   type LocalModelInfo,
   type ScanFolderInfo,
 } from "./api/chat-api";
@@ -32,6 +37,8 @@ export {
 } from "./chat-settings-sheet";
 export { useChatRuntimeStore } from "./stores/chat-runtime-store";
 export {
+  CHAT_RAG_CAPTION_KEY,
+  CHAT_RAG_OCR_KEY,
   normalizeSpeculativeType,
   readPersistedSpeculativeType,
   readPersistedGpuMemoryMode,
@@ -69,12 +76,16 @@ export { setTrainingCompareHandoff } from "./lib/training-compare-handoff";
 export type { ProjectRecord } from "./types";
 export { clearAllChats, countAllChats } from "./utils/clear-all-chats";
 export { listStoredChatThreads } from "./utils/chat-history-storage";
+export { emitChatAttachmentDeleted } from "./utils/chat-attachment-events";
 export { ArtifactCard } from "./artifacts/artifact-card";
 export {
   useChatArtifactsStore,
   useSelectedChatArtifact,
 } from "./artifacts/store";
-export { downloadChatExport } from "./utils/export-chat-history";
+export {
+  downloadArchivedChatExport,
+  downloadChatExport,
+} from "./utils/export-chat-history";
 export {
   clearNewChatDraft,
   composerDraftKey,
@@ -83,10 +94,14 @@ export {
 } from "./utils/composer-draft";
 export {
   EXPORT_FORMATS_LIST,
+  buildFineTuneJsonl,
   bulkExportConversationsByScope,
+  exportFineTuneJsonl,
   importConversationsFromFile,
+  type FineTuneFormat,
 } from "./prompt-storage/prompt-storage-dialog";
 export {
+  archiveAllChatItems,
   archiveChatItem,
   deleteChatItem,
   renameChatItem,

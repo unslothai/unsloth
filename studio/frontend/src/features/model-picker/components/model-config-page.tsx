@@ -252,6 +252,8 @@ function GpuMemorySettings({
   const moeLayersMax = moeLayerCount ?? 0;
   const showMoeSlider = isManual && !autoLayers && moeLayersMax > 0;
   const selectedGpuIds = config.selectedGpuIds ?? null;
+  const singleGpuInUse =
+    (selectedGpuIds ?? gpuDevices.map((device) => device.index)).length <= 1;
   // Only meaningful on multi-GPU, and only when the reported indices are
   // physical (relative ordinals from a parent CUDA_VISIBLE_DEVICES mask can't be
   // mapped back to pin a device). null = use all (auto).
@@ -362,7 +364,8 @@ function GpuMemorySettings({
             <InfoHint>
               Which GPUs this model may use. Unchecked GPUs are hidden from
               llama.cpp (CUDA_VISIBLE_DEVICES, or HIP_VISIBLE_DEVICES on ROCm).
-              Leave all checked to use every GPU.
+              Leave all checked to use every GPU. At least one GPU must stay
+              selected.
             </InfoHint>
           </div>
           <div className="flex flex-col gap-2">
@@ -381,6 +384,7 @@ function GpuMemorySettings({
                   className="panel-switch shrink-0"
                   checked={isGpuChecked(d.index)}
                   onCheckedChange={() => toggleGpu(d.index)}
+                  disabled={isGpuChecked(d.index) && singleGpuInUse}
                 />
               </div>
             ))}
