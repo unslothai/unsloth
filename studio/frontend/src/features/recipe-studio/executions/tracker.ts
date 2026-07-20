@@ -6,6 +6,7 @@ import {
   getRecipeJobAnalysis,
   getRecipeJobDataset,
   getRecipeJobStatus,
+  RecipeApiError,
   streamRecipeJobEvents,
 } from "../api";
 import type {
@@ -226,6 +227,16 @@ export async function trackRecipeExecution({
   } catch (error) {
     const terminal = isTerminalStatus(lastStatus);
     if (!terminal) {
+      if (!notify && error instanceof RecipeApiError && error.status === 404) {
+        latestExecution = {
+          ...latestExecution,
+          status: "error",
+          error: "This run belonged to a previous backend session and can no longer be resumed.",
+          finishedAt: Date.now(),
+        };
+        onUpsert(latestExecution);
+        return { success: false, terminal: true };
+      }
       const message = toErrorMessage(error, `${label} failed.`);
       latestExecution = {
         ...latestExecution,

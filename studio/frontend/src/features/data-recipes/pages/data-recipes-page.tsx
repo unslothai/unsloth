@@ -25,6 +25,11 @@ import {
   EmptyTitle,
 } from "@/components/ui/empty";
 import { ShineBorder } from "@/components/ui/shine-border";
+import { readLegacyRecipeExecutions } from "@/features/recipe-studio";
+import {
+  LegacyImportCoordinator,
+  UserAssetApiError,
+} from "@/features/user-assets";
 import { ChevronDownStandardIcon } from "@/lib/chevron-icons";
 import { toastError } from "@/shared/toast";
 import {
@@ -43,6 +48,7 @@ import { HugeiconsIcon } from "@hugeicons/react";
 import { useNavigate } from "@tanstack/react-router";
 import type { ReactElement } from "react";
 import { useEffect, useState } from "react";
+import { readLegacyRecipes } from "../data/legacy-recipes-db";
 import {
   createRecipeDraft,
   createRecipeFromLearningRecipe,
@@ -314,23 +320,21 @@ function LearningRecipeCards({
 
 export function DataRecipesPage(): ReactElement {
   const navigate = useNavigate();
-  const { recipes, ready } = useRecipes();
+  const { recipes, ready, error, refresh } = useRecipes();
   const [creatingRecipe, setCreatingRecipe] = useState(false);
-  const [learningDialogOpen, setLearningDialogOpen] = useState(false);
+  const [learningDialogOpen, setLearningDialogOpen] = useState(
+    () => sessionStorage.getItem(OPEN_LEARNING_RECIPES_ON_ARRIVAL_KEY) === "1",
+  );
   const [loadingTemplateId, setLoadingTemplateId] = useState<string | null>(
     null,
   );
 
   useEffect(() => {
-    if (sessionStorage.getItem(OPEN_LEARNING_RECIPES_ON_ARRIVAL_KEY) !== "1") {
-      return;
-    }
     sessionStorage.removeItem(OPEN_LEARNING_RECIPES_ON_ARRIVAL_KEY);
-    setLearningDialogOpen(true);
   }, []);
 
   async function openNewRecipe(): Promise<void> {
-    if (creatingRecipe || loadingTemplateId) {
+    if (!ready || error || creatingRecipe || loadingTemplateId) {
       return;
     }
     setCreatingRecipe(true);
@@ -341,13 +345,18 @@ export function DataRecipesPage(): ReactElement {
         to: "/data-recipes/$recipeId",
         params: { recipeId: recipe.id },
       });
+    } catch (caught) {
+      toastError(
+        "Failed to create recipe.",
+        caught instanceof Error ? caught.message : undefined,
+      );
     } finally {
       setCreatingRecipe(false);
     }
   }
 
   async function openLearningRecipe(template: TemplateCard): Promise<void> {
-    if (creatingRecipe || loadingTemplateId) {
+    if (!ready || error || creatingRecipe || loadingTemplateId) {
       return;
     }
     if (!template.learningRecipeId) {
@@ -392,11 +401,31 @@ export function DataRecipesPage(): ReactElement {
     }).catch(() => undefined);
   }
 
-  async function handleDeleteRecipe(recipeId: string): Promise<void> {
-    await deleteRecipe(recipeId);
+  async function handleDeleteRecipe(
+    recipe: (typeof recipes)[number],
+  ): Promise<void> {
+    try {
+      await deleteRecipe(recipe.id, recipe.revision);
+    } catch (caught) {
+      refresh();
+      if (caught instanceof UserAssetApiError && caught.status === 409) {
+        toastError(
+          "Recipe changed before it could be deleted",
+          "The recipe list was refreshed. Review the latest version, then delete it again if you still want to remove it.",
+        );
+        return;
+      }
+      toastError(
+        "Failed to delete recipe",
+        caught instanceof Error
+          ? caught.message
+          : "The recipe list was refreshed. Please try again.",
+      );
+    }
   }
 
-  const isBusy = creatingRecipe || Boolean(loadingTemplateId);
+  const isBusy =
+    !ready || error !== null || creatingRecipe || Boolean(loadingTemplateId);
 
   return (
     <div className="min-h-[calc(100dvh-var(--studio-titlebar-height,0px))] bg-background">
@@ -442,7 +471,27 @@ export function DataRecipesPage(): ReactElement {
           </DropdownMenu>
         </div>
 
-        {ready ? (
+        {error ? (
+          <div
+            className="mt-8 rounded-2xl border border-destructive/30 bg-card px-6 py-10 text-center"
+            role="alert"
+          >
+            <p className="text-sm font-medium text-foreground">
+              Couldn't load recipes
+            </p>
+            <p className="mx-auto mt-1 max-w-xl text-xs text-muted-foreground">
+              {error.message}
+            </p>
+            <Button
+              type="button"
+              variant="outline"
+              className="mt-5"
+              onClick={refresh}
+            >
+              Try Again
+            </Button>
+          </div>
+        ) : ready ? (
           recipes.length === 0 ? (
             <Empty className="mt-8 border border-dashed border-border/70 dark:border-none">
               <EmptyHeader>
@@ -513,7 +562,7 @@ export function DataRecipesPage(): ReactElement {
                     size="icon"
                     className="size-8"
                     onClick={() => {
-                      handleDeleteRecipe(recipe.id).catch(() => undefined);
+                      handleDeleteRecipe(recipe).catch(() => undefined);
                     }}
                     aria-label={`Delete ${recipe.name}`}
                   >
@@ -554,6 +603,11 @@ export function DataRecipesPage(): ReactElement {
           />
         </DialogContent>
       </Dialog>
+      <LegacyImportCoordinator
+        onImported={refresh}
+        readRecipes={readLegacyRecipes}
+        readExecutions={readLegacyRecipeExecutions}
+      />
     </div>
   );
 }

@@ -10,15 +10,22 @@ from datetime import datetime, timedelta, timezone
 from typing import Any, Optional
 from urllib.parse import urlparse
 
-from fastapi import APIRouter, HTTPException, Query, Request
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import ValidationError
+
+from auth.authentication import get_current_subject
 
 from core.data_recipe.huggingface import (
     RecipeDatasetPublishError,
     publish_recipe_dataset,
 )
 from core.data_recipe.jobs import get_job_manager
+from core.data_recipe.jobs.constants import (
+    EVENT_JOB_CANCELLED,
+    EVENT_JOB_COMPLETED,
+    EVENT_JOB_ERROR,
+)
 from loggers import get_logger
 from models.data_recipe import (
     JobCreateResponse,
@@ -375,7 +382,11 @@ def _normalize_run_name(value: Any) -> str | None:
 
 
 @router.post("/jobs", response_class = JSONResponse, response_model = JobCreateResponse)
-def create_job(payload: RecipePayload, request: Request):
+def create_job(
+    payload: RecipePayload,
+    request: Request,
+    current_subject: str = Depends(get_current_subject),
+):
     recipe = payload.recipe
     if not recipe.get("columns"):
         raise HTTPException(status_code = 400, detail = "Recipe must include columns.")
@@ -422,6 +433,7 @@ def create_job(payload: RecipePayload, request: Request):
     try:
         mgr = get_job_manager()
         job_id = mgr.start(
+            owner_subject = current_subject,
             recipe = recipe,
             run = run,
             internal_api_key_id = internal_api_key_id,
@@ -464,36 +476,37 @@ def _revoke_internal_api_key_safe(key_id: int) -> None:
 
 
 @router.get("/jobs/{job_id}/status")
-def job_status(job_id: str):
+def job_status(job_id: str, current_subject: str = Depends(get_current_subject)):
     mgr = get_job_manager()
-    state = mgr.get_status(job_id)
+    state = mgr.get_status(job_id, current_subject)
     if state is None:
         raise HTTPException(status_code = 404, detail = "job not found")
     return state
 
 
 @router.get("/jobs/current")
-def current_job():
+def current_job(current_subject: str = Depends(get_current_subject)):
+    """Return owner details or a detail-free busy signal."""
     mgr = get_job_manager()
-    state = mgr.get_current_status()
+    state = mgr.get_current_status(current_subject)
     if state is None:
         raise HTTPException(status_code = 404, detail = "no job")
     return state
 
 
 @router.post("/jobs/{job_id}/cancel")
-def cancel_job(job_id: str):
+def cancel_job(job_id: str, current_subject: str = Depends(get_current_subject)):
     mgr = get_job_manager()
-    ok = mgr.cancel(job_id)
+    ok = mgr.cancel(job_id, current_subject)
     if not ok:
         raise HTTPException(status_code = 404, detail = "job not found")
-    return mgr.get_status(job_id)
+    return mgr.get_status(job_id, current_subject)
 
 
 @router.get("/jobs/{job_id}/analysis")
-def job_analysis(job_id: str):
+def job_analysis(job_id: str, current_subject: str = Depends(get_current_subject)):
     mgr = get_job_manager()
-    analysis = mgr.get_analysis(job_id)
+    analysis = mgr.get_analysis(job_id, current_subject)
     if analysis is None:
         raise HTTPException(status_code = 404, detail = "analysis not ready")
     return analysis
@@ -504,9 +517,10 @@ def job_dataset(
     job_id: str,
     limit: int = Query(default = 20, ge = 1, le = 500),
     offset: int = Query(default = 0, ge = 0),
+    current_subject: str = Depends(get_current_subject),
 ):
     mgr = get_job_manager()
-    result = mgr.get_dataset(job_id, limit = limit, offset = offset)
+    result = mgr.get_dataset(job_id, current_subject, limit = limit, offset = offset)
     if result is None:
         raise HTTPException(status_code = 404, detail = "dataset not ready")
     if "error" in result:
@@ -524,30 +538,34 @@ def job_dataset(
     response_class = JSONResponse,
     response_model = PublishDatasetResponse,
 )
-def publish_job_dataset(job_id: str, payload: PublishDatasetRequest):
+def publish_job_dataset(
+    job_id: str,
+    payload: PublishDatasetRequest,
+    current_subject: str = Depends(get_current_subject),
+):
     repo_id = payload.repo_id.strip()
     description = payload.description.strip()
     hf_token = payload.hf_token.strip() if isinstance(payload.hf_token, str) else None
-    artifact_path = (
-        payload.artifact_path.strip() if isinstance(payload.artifact_path, str) else None
-    )
-
     if not repo_id:
         raise HTTPException(status_code = 400, detail = "repo_id is required")
     if not description:
         raise HTTPException(status_code = 400, detail = "description is required")
 
     mgr = get_job_manager()
-    status = mgr.get_status(job_id)
-    if status is not None:
-        if status.get("status") != "completed" or status.get("execution_type") != "full":
-            raise HTTPException(
-                status_code = 409,
-                detail = "Only completed full runs can be published.",
-            )
-        status_artifact = status.get("artifact_path")
-        if isinstance(status_artifact, str) and status_artifact.strip():
-            artifact_path = status_artifact.strip()
+    status = mgr.get_status(job_id, current_subject)
+    if status is None:
+        raise HTTPException(status_code = 404, detail = "job not found")
+    if status.get("status") != "completed" or status.get("execution_type") != "full":
+        raise HTTPException(
+            status_code = 409,
+            detail = "Only completed full runs can be published.",
+        )
+    status_artifact = status.get("artifact_path")
+    artifact_path = (
+        status_artifact.strip()
+        if isinstance(status_artifact, str) and status_artifact.strip()
+        else None
+    )
 
     if not artifact_path:
         raise HTTPException(
@@ -588,7 +606,11 @@ def publish_job_dataset(job_id: str, payload: PublishDatasetRequest):
 
 
 @router.get("/jobs/{job_id}/events")
-async def job_events(request: Request, job_id: str):
+async def job_events(
+    request: Request,
+    job_id: str,
+    current_subject: str = Depends(get_current_subject),
+):
     mgr = get_job_manager()
     last_id = request.headers.get("last-event-id")
     after_seq: int | None = None
@@ -605,7 +627,7 @@ async def job_events(request: Request, job_id: str):
         except (TypeError, ValueError):
             pass
 
-    sub = mgr.subscribe(job_id, after_seq = after_seq)
+    sub = mgr.subscribe(job_id, current_subject, after_seq = after_seq)
     if sub is None:
         raise HTTPException(status_code = 404, detail = "job not found")
 
@@ -613,14 +635,26 @@ async def job_events(request: Request, job_id: str):
         try:
             for event in sub.replay:
                 yield sub.format_sse(event)
+                if event.get("type") in {
+                    EVENT_JOB_CANCELLED,
+                    EVENT_JOB_COMPLETED,
+                    EVENT_JOB_ERROR,
+                }:
+                    return
 
             while True:
-                if await request.is_disconnected():
+                if sub.closed or await request.is_disconnected():
                     break
                 event = await sub.next_event(timeout_sec = 1.0)
                 if event is None:
                     continue
                 yield sub.format_sse(event)
+                if event.get("type") in {
+                    EVENT_JOB_CANCELLED,
+                    EVENT_JOB_COMPLETED,
+                    EVENT_JOB_ERROR,
+                }:
+                    return
         finally:
             mgr.unsubscribe(sub)
 

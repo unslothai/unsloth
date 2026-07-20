@@ -1,10 +1,19 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { getAuthSubjectKey, subscribeAuthSubject } from "@/features/auth";
 import { getInferenceStatus, loadModel } from "@/features/chat";
 import { toast } from "@/lib/toast";
 import { toastError } from "@/shared/toast";
-import { useCallback, useEffect, useState } from "react";
+import {
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+  useSyncExternalStore,
+} from "react";
 import { useShallow } from "zustand/react/shallow";
 import {
   cancelRecipeJob,
@@ -27,7 +36,8 @@ import {
 } from "../executions/execution-helpers";
 import {
   findResumableExecution,
-  loadSortedRecipeExecutions,
+  hydrateCompletedFullExecutionDataset,
+  loadSortedRecipeExecutionPage,
 } from "../executions/hydration";
 import {
   buildExecutionPayload,
@@ -45,6 +55,36 @@ import type {
 } from "../utils/payload/types";
 
 const GGUF_MODEL_PATTERN = /gguf/i;
+
+type ExecutionHistoryOwner = {
+  subjectKey: string;
+  recipeId: string;
+  generation: number;
+  lifecycle: object;
+};
+
+type ExecutionHistoryState = {
+  owner: ExecutionHistoryOwner | null;
+  cursor: string | null;
+  loadingOlder: boolean;
+};
+
+function sameExecutionHistoryOwner(
+  left: ExecutionHistoryOwner | null,
+  right: ExecutionHistoryOwner,
+): boolean {
+  return Boolean(
+    left === right &&
+      left &&
+      left.subjectKey === right.subjectKey &&
+      left.recipeId === right.recipeId &&
+      left.generation === right.generation,
+  );
+}
+
+function getServerAuthSubjectKey(): string {
+  return "anonymous";
+}
 
 function collectUsedLlmModelAliases(payload: RecipePayload): Set<string> {
   const columns = Array.isArray(payload.recipe.columns)
@@ -442,6 +482,8 @@ type UseRecipeExecutionsResult = {
   previewLoading: boolean;
   fullLoading: boolean;
   executions: RecipeExecutionRecord[];
+  hasOlderExecutions: boolean;
+  olderExecutionsLoading: boolean;
   selectedExecutionId: string | null;
   setSelectedExecutionId: (id: string) => void;
   openRunDialog: (kind: RecipeExecutionKind) => void;
@@ -456,6 +498,7 @@ type UseRecipeExecutionsResult = {
   runPreview: () => Promise<boolean>;
   runFull: () => Promise<boolean>;
   cancelExecution: (id: string) => Promise<void>;
+  loadOlderExecutions: () => Promise<void>;
   loadExecutionDatasetPage: (id: string, page: number) => Promise<void>;
 };
 
@@ -487,7 +530,21 @@ export function useRecipeExecutions({
   onExecutionStart,
   onPreviewSuccess,
 }: UseRecipeExecutionsParams): UseRecipeExecutionsResult {
+  const authSubjectKey = useSyncExternalStore(
+    subscribeAuthSubject,
+    getAuthSubjectKey,
+    getServerAuthSubjectKey,
+  );
   const [validateLoading, setValidateLoading] = useState(false);
+  const [executionHistory, setExecutionHistory] =
+    useState<ExecutionHistoryState>({
+      owner: null,
+      cursor: null,
+      loadingOlder: false,
+    });
+  const historyGenerationRef = useRef(0);
+  const olderHistoryRequestRef = useRef<object | null>(null);
+  const datasetHydrationRequestsRef = useRef(new Set<string>());
   const [validateResult, setValidateResult] = useState<{
     valid: boolean;
     errors: string[];
@@ -515,6 +572,7 @@ export function useRecipeExecutions({
     setPreviewLoading,
     setFullLoading,
     setExecutions,
+    mergeExecutions,
     upsertExecution,
     selectExecution,
     resetForRecipe,
@@ -541,6 +599,7 @@ export function useRecipeExecutions({
       setPreviewLoading: state.setPreviewLoading,
       setFullLoading: state.setFullLoading,
       setExecutions: state.setExecutions,
+      mergeExecutions: state.mergeExecutions,
       upsertExecution: state.upsertExecution,
       selectExecution: state.selectExecution,
       resetForRecipe: state.resetForRecipe,
@@ -548,60 +607,181 @@ export function useRecipeExecutions({
   );
   const payloadErrorMessage = payloadResult.errors[0] ?? "Invalid payload.";
 
-  const upsertAndPersist = useCallback(
-    (record: RecipeExecutionRecord): void => {
+  const historyLifecycle = useMemo(
+    () => ({
+      subjectKey: authSubjectKey,
+      recipeId,
+      initialRunRows,
+      onPreviewSuccess,
+      resetForRecipe,
+      setExecutions,
+      setPreviewRows,
+      setRunErrors,
+      upsertExecution,
+    }),
+    [
+      authSubjectKey,
+      initialRunRows,
+      onPreviewSuccess,
+      recipeId,
+      resetForRecipe,
+      setExecutions,
+      setPreviewRows,
+      setRunErrors,
+      upsertExecution,
+    ],
+  );
+  const historyLifecycleRef = useRef(historyLifecycle);
+  useLayoutEffect(() => {
+    historyLifecycleRef.current = historyLifecycle;
+  }, [historyLifecycle]);
+  const activeExecutionHistory =
+    executionHistory.owner?.lifecycle === historyLifecycle
+      ? executionHistory
+      : null;
+  const executionHistoryCursor = activeExecutionHistory?.cursor ?? null;
+  const olderExecutionsLoading = activeExecutionHistory?.loadingOlder ?? false;
+  const visibleExecutions = activeExecutionHistory ? executions : [];
+  const visibleSelectedExecutionId = activeExecutionHistory
+    ? selectedExecutionId
+    : null;
+
+  const isExecutionOwnerActive = useCallback(
+    (owner: ExecutionHistoryOwner): boolean =>
+      historyGenerationRef.current === owner.generation &&
+      getAuthSubjectKey() === owner.subjectKey &&
+      historyLifecycleRef.current === owner.lifecycle,
+    [],
+  );
+
+  const upsertAndPersistForOwner = useCallback(
+    (owner: ExecutionHistoryOwner, record: RecipeExecutionRecord): void => {
+      if (
+        !isExecutionOwnerActive(owner) ||
+        record.recipeId !== owner.recipeId
+      ) {
+        return;
+      }
       const normalizedRecord = withExecutionDefaults(record);
       upsertExecution(normalizedRecord);
-      saveRecipeExecution(normalizedRecord).catch((error) => {
+      saveRecipeExecution(normalizedRecord, {
+        subjectKey: owner.subjectKey,
+        recipeId: owner.recipeId,
+        generation: owner.generation,
+        isCurrent: () => isExecutionOwnerActive(owner),
+      }).catch((error) => {
         // biome-ignore lint/suspicious/noConsole: background persistence failures should not interrupt the UI
         console.error("Save recipe execution failed:", error);
       });
     },
-    [upsertExecution],
+    [isExecutionOwnerActive, upsertExecution],
   );
 
   useEffect(() => {
     let cancelled = false;
+    const owner: ExecutionHistoryOwner = {
+      subjectKey: historyLifecycle.subjectKey,
+      recipeId: historyLifecycle.recipeId,
+      generation: historyGenerationRef.current + 1,
+      lifecycle: historyLifecycle,
+    };
+    historyGenerationRef.current = owner.generation;
+    olderHistoryRequestRef.current = null;
+    const datasetHydrationRequests = datasetHydrationRequestsRef.current;
+    datasetHydrationRequests.clear();
 
-    resetForRecipe();
+    const isActive = (): boolean =>
+      !cancelled &&
+      historyGenerationRef.current === owner.generation &&
+      getAuthSubjectKey() === owner.subjectKey &&
+      historyLifecycleRef.current === owner.lifecycle;
+
+    historyLifecycle.resetForRecipe();
 
     // Seed previewRows from the recipe's original run.rows (the loaded JSON, not
     // the rebuilt payload, which hardcodes 5). Templates ship a suggested preview
     // size (e.g. GitHub Support Bot: 10); honor it so users don't see a surprise 5.
     if (
-      typeof initialRunRows === "number" &&
-      Number.isFinite(initialRunRows) &&
-      initialRunRows > 0 &&
-      initialRunRows !== 5
+      typeof historyLifecycle.initialRunRows === "number" &&
+      Number.isFinite(historyLifecycle.initialRunRows) &&
+      historyLifecycle.initialRunRows > 0 &&
+      historyLifecycle.initialRunRows !== 5
     ) {
-      setPreviewRows(Math.floor(initialRunRows));
+      historyLifecycle.setPreviewRows(
+        Math.floor(historyLifecycle.initialRunRows),
+      );
     }
 
     async function hydrate(): Promise<void> {
       try {
-        const records = await loadSortedRecipeExecutions(recipeId);
-        if (cancelled) {
+        const page = await loadSortedRecipeExecutionPage(owner.recipeId);
+        if (!isActive()) {
           return;
         }
 
-        setExecutions(records);
-        const resumable = findResumableExecution(records);
+        historyLifecycle.setExecutions(page.executions);
+        setExecutionHistory({
+          owner,
+          cursor: page.nextCursor,
+          loadingOlder: false,
+        });
+        const initiallySelected = page.executions[0];
+        if (
+          initiallySelected?.kind === "full" &&
+          initiallySelected.status === "completed" &&
+          initiallySelected.jobId
+        ) {
+          const requestKey = `${owner.generation}:${initiallySelected.id}`;
+          datasetHydrationRequests.add(requestKey);
+          void hydrateCompletedFullExecutionDataset(initiallySelected)
+            .then((hydrated) => {
+              if (
+                isActive() &&
+                useRecipeExecutionsStore.getState().selectedExecutionId ===
+                  initiallySelected.id
+              ) {
+                // Hydrating memory-only pages
+                // must not persist metadata.
+                historyLifecycle.upsertExecution(hydrated);
+              }
+            })
+            .catch((error) => {
+              if (isActive()) {
+                // biome-ignore lint/suspicious/noConsole: hydration failure is a non-blocking diagnostic
+                console.error("Load execution dataset page failed:", error);
+              }
+            })
+            .finally(() => {
+              datasetHydrationRequests.delete(requestKey);
+            });
+        }
+        const resumable = findResumableExecution(page.executions);
         if (!resumable?.jobId) {
           return;
         }
 
-        trackRecipeExecution({
+        void trackRecipeExecution({
           label: executionLabel(resumable.kind),
           kind: resumable.kind,
           rows: resumable.rows,
           jobId: resumable.jobId,
           initialExecution: resumable,
           notify: false,
-          onUpsert: upsertAndPersist,
-          onSetPreviewErrors: setRunErrors,
-          onPreviewSuccess,
+          onUpsert: (record) => {
+            if (isActive()) upsertAndPersistForOwner(owner, record);
+          },
+          onSetPreviewErrors: (errors) => {
+            if (isActive()) historyLifecycle.setRunErrors(errors);
+          },
+          onPreviewSuccess: () => {
+            if (isActive()) historyLifecycle.onPreviewSuccess?.();
+          },
         });
       } catch (error) {
+        if (!isActive()) return;
+        // Keep the cleared owner store active so outages neither hide new runs nor expose stale data.
+        historyLifecycle.setExecutions([]);
+        setExecutionHistory({ owner, cursor: null, loadingOlder: false });
         // biome-ignore lint/suspicious/noConsole: hydration failures are non-blocking diagnostics
         console.error("Load recipe executions failed:", error);
       }
@@ -611,16 +791,70 @@ export function useRecipeExecutions({
 
     return () => {
       cancelled = true;
+      if (historyGenerationRef.current === owner.generation) {
+        historyGenerationRef.current += 1;
+      }
+      olderHistoryRequestRef.current = null;
+      datasetHydrationRequests.clear();
     };
+  }, [historyLifecycle, upsertAndPersistForOwner]);
+
+  const loadOlderExecutions = useCallback(async (): Promise<void> => {
+    const owner = activeExecutionHistory?.owner;
+    if (
+      !owner ||
+      !executionHistoryCursor ||
+      olderExecutionsLoading ||
+      olderHistoryRequestRef.current
+    ) {
+      return;
+    }
+    const cursor = executionHistoryCursor;
+    const request = {};
+    olderHistoryRequestRef.current = request;
+    const isActive = (): boolean =>
+      historyGenerationRef.current === owner.generation &&
+      getAuthSubjectKey() === owner.subjectKey &&
+      historyLifecycleRef.current === owner.lifecycle;
+    setExecutionHistory((current) =>
+      sameExecutionHistoryOwner(current.owner, owner)
+        ? { ...current, loadingOlder: true }
+        : current,
+    );
+    try {
+      const page = await loadSortedRecipeExecutionPage(owner.recipeId, cursor);
+      if (!isActive()) {
+        return;
+      }
+      mergeExecutions(page.executions);
+      setExecutionHistory((current) =>
+        sameExecutionHistoryOwner(current.owner, owner)
+          ? { ...current, cursor: page.nextCursor }
+          : current,
+      );
+    } catch (error) {
+      if (!isActive()) return;
+      toastError(
+        "Could not load older runs",
+        toErrorMessage(error, "Execution history could not be loaded."),
+      );
+    } finally {
+      if (olderHistoryRequestRef.current === request) {
+        olderHistoryRequestRef.current = null;
+        if (isActive()) {
+          setExecutionHistory((current) =>
+            sameExecutionHistoryOwner(current.owner, owner)
+              ? { ...current, loadingOlder: false }
+              : current,
+          );
+        }
+      }
+    }
   }, [
-    initialRunRows,
-    onPreviewSuccess,
-    recipeId,
-    resetForRecipe,
-    setExecutions,
-    setPreviewRows,
-    setRunErrors,
-    upsertAndPersist,
+    activeExecutionHistory,
+    executionHistoryCursor,
+    mergeExecutions,
+    olderExecutionsLoading,
   ]);
 
   const readPayload = useCallback((): RecipePayload | null => {
@@ -651,6 +885,20 @@ export function useRecipeExecutions({
       restorePrevious?: (() => Promise<void>) | null;
     }): Promise<boolean> => {
       const { kind, payload, rows, settings, runName, restorePrevious } = input;
+      const owner = activeExecutionHistory?.owner;
+      if (!owner || !isExecutionOwnerActive(owner)) {
+        toastError(
+          "Runs are still loading",
+          "Wait for this recipe's run history to finish loading and try again.",
+        );
+        return false;
+      }
+      const ownedUpsert = (record: RecipeExecutionRecord): void => {
+        upsertAndPersistForOwner(owner, record);
+      };
+      const setOwnedRunErrors = (errors: string[]): void => {
+        if (isExecutionOwnerActive(owner)) setRunErrors(errors);
+      };
       const setLoading =
         kind === "preview" ? setPreviewLoading : setFullLoading;
       const label = executionLabel(kind);
@@ -664,7 +912,7 @@ export function useRecipeExecutions({
         runName,
       });
 
-      upsertAndPersist(baseExecution);
+      ownedUpsert(baseExecution);
       onExecutionStart?.();
       setRunDialogOpen(false);
 
@@ -678,13 +926,15 @@ export function useRecipeExecutions({
           settings,
           runName,
         });
-        const createdJob = await createRecipeJob(jobPayload);
+        const createdJob = await createRecipeJob(jobPayload, {
+          expectedSubjectKey: owner.subjectKey,
+        });
         jobCreated = true;
         const executionWithJob = {
           ...baseExecution,
           jobId: createdJob.job_id,
         };
-        upsertAndPersist(executionWithJob);
+        ownedUpsert(executionWithJob);
 
         const tracked = await trackRecipeExecution({
           label,
@@ -693,22 +943,26 @@ export function useRecipeExecutions({
           jobId: createdJob.job_id,
           initialExecution: executionWithJob,
           notify: true,
-          onUpsert: upsertAndPersist,
-          onSetPreviewErrors: setRunErrors,
-          onPreviewSuccess,
+          onUpsert: ownedUpsert,
+          onSetPreviewErrors: setOwnedRunErrors,
+          onPreviewSuccess: () => {
+            if (isExecutionOwnerActive(owner)) onPreviewSuccess?.();
+          },
         });
         shouldRestorePrevious = tracked.terminal;
         return tracked.success;
       } catch (error) {
         const message = toErrorMessage(error, `${label} request failed.`);
-        upsertAndPersist({
-          ...baseExecution,
-          status: "error",
-          error: message,
-          finishedAt: Date.now(),
-        });
-        setRunErrors([message]);
-        toastError(`${label} failed`, message);
+        if (isExecutionOwnerActive(owner)) {
+          ownedUpsert({
+            ...baseExecution,
+            status: "error",
+            error: message,
+            finishedAt: Date.now(),
+          });
+          setRunErrors([message]);
+          toastError(`${label} failed`, message);
+        }
         if (!jobCreated) {
           shouldRestorePrevious = true;
         }
@@ -717,11 +971,13 @@ export function useRecipeExecutions({
         if (shouldRestorePrevious && restorePrevious) {
           await restorePrevious();
         }
-        setLoading(false);
+        if (isExecutionOwnerActive(owner)) setLoading(false);
       }
     },
     [
+      activeExecutionHistory,
       currentSignature,
+      isExecutionOwnerActive,
       onExecutionStart,
       onPreviewSuccess,
       recipeId,
@@ -729,7 +985,7 @@ export function useRecipeExecutions({
       setPreviewLoading,
       setRunDialogOpen,
       setRunErrors,
-      upsertAndPersist,
+      upsertAndPersistForOwner,
     ],
   );
 
@@ -964,29 +1220,50 @@ export function useRecipeExecutions({
 
   const cancelExecution = useCallback(
     async (id: string): Promise<void> => {
-      const execution = executions.find((entry) => entry.id === id);
-      if (!execution?.jobId) {
+      const owner = activeExecutionHistory?.owner;
+      const execution = owner
+        ? executions.find((entry) => entry.id === id)
+        : undefined;
+      if (
+        !owner ||
+        !isExecutionOwnerActive(owner) ||
+        execution?.recipeId !== owner.recipeId ||
+        !execution.jobId
+      ) {
         return;
       }
       try {
         await cancelRecipeJob(execution.jobId);
-        upsertAndPersist({
+        upsertAndPersistForOwner(owner, {
           ...execution,
           status: "cancelling",
         });
       } catch (error) {
-        const message = toErrorMessage(error, "Could not cancel execution.");
-        toastError("Cancel failed", message);
+        if (isExecutionOwnerActive(owner)) {
+          const message = toErrorMessage(error, "Could not cancel execution.");
+          toastError("Cancel failed", message);
+        }
       }
     },
-    [executions, upsertAndPersist],
+    [
+      activeExecutionHistory,
+      executions,
+      isExecutionOwnerActive,
+      upsertAndPersistForOwner,
+    ],
   );
 
   const loadExecutionDatasetPage = useCallback(
     async (id: string, page: number): Promise<void> => {
-      const execution = executions.find((entry) => entry.id === id);
+      const owner = activeExecutionHistory?.owner;
+      const execution = owner
+        ? executions.find((entry) => entry.id === id)
+        : undefined;
       if (
+        !owner ||
+        !isExecutionOwnerActive(owner) ||
         !execution ||
+        execution.recipeId !== owner.recipeId ||
         execution.kind !== "full" ||
         !execution.jobId ||
         page < 1
@@ -1006,25 +1283,76 @@ export function useRecipeExecutions({
           typeof response.total === "number"
             ? response.total
             : execution.datasetTotal;
-        upsertAndPersist({
+        upsertAndPersistForOwner(owner, {
           ...execution,
           dataset,
           datasetTotal: total,
           datasetPage: page,
         });
       } catch (error) {
-        const message = toErrorMessage(error, "Could not load dataset page.");
-        toastError("Dataset page failed", message);
+        if (isExecutionOwnerActive(owner)) {
+          const message = toErrorMessage(error, "Could not load dataset page.");
+          toastError("Dataset page failed", message);
+        }
       }
     },
-    [executions, upsertAndPersist],
+    [
+      activeExecutionHistory,
+      executions,
+      isExecutionOwnerActive,
+      upsertAndPersistForOwner,
+    ],
   );
 
   const setSelectedExecutionId = useCallback(
     (id: string): void => {
       selectExecution(id);
+      const owner = activeExecutionHistory?.owner;
+      const execution = owner
+        ? executions.find((entry) => entry.id === id)
+        : undefined;
+      const requestKey = owner ? `${owner.generation}:${id}` : id;
+      if (
+        !owner ||
+        !execution ||
+        execution.kind !== "full" ||
+        execution.status !== "completed" ||
+        !execution.jobId ||
+        execution.dataset.length > 0 ||
+        datasetHydrationRequestsRef.current.has(requestKey)
+      ) {
+        return;
+      }
+
+      datasetHydrationRequestsRef.current.add(requestKey);
+      void hydrateCompletedFullExecutionDataset(execution)
+        .then((hydrated) => {
+          const stillActive =
+            historyGenerationRef.current === owner.generation &&
+            getAuthSubjectKey() === owner.subjectKey &&
+            useRecipeExecutionsStore.getState().selectedExecutionId === id;
+          if (stillActive) {
+            // Hydrating memory-only pages
+            // must not persist metadata.
+            upsertExecution(hydrated);
+          }
+        })
+        .catch((error) => {
+          if (
+            historyGenerationRef.current === owner.generation &&
+            getAuthSubjectKey() === owner.subjectKey
+          ) {
+            toastError(
+              "Dataset page failed",
+              toErrorMessage(error, "Could not load dataset page."),
+            );
+          }
+        })
+        .finally(() => {
+          datasetHydrationRequestsRef.current.delete(requestKey);
+        });
     },
-    [selectExecution],
+    [activeExecutionHistory, executions, selectExecution, upsertExecution],
   );
 
   return {
@@ -1043,8 +1371,10 @@ export function useRecipeExecutions({
     setRunSettings,
     previewLoading,
     fullLoading,
-    executions,
-    selectedExecutionId,
+    executions: visibleExecutions,
+    hasOlderExecutions: executionHistoryCursor !== null,
+    olderExecutionsLoading,
+    selectedExecutionId: visibleSelectedExecutionId,
     setSelectedExecutionId,
     openRunDialog,
     runFromDialog,
@@ -1054,6 +1384,7 @@ export function useRecipeExecutions({
     runPreview,
     runFull,
     cancelExecution,
+    loadOlderExecutions,
     loadExecutionDatasetPage,
   };
 }

@@ -104,4 +104,38 @@ export type RecipeExecutionRecord = {
   // biome-ignore lint/style/useNamingConvention: api schema
   processor_artifacts: Record<string, unknown> | null;
   error: string | null;
+  /** CAS metadata only; large run data stays in memory. */
+  revision?: number;
+  updatedAt?: number;
+};
+
+export type RecipeExecutionMetadata = Pick<
+  RecipeExecutionRecord,
+  | "id"
+  | "recipeId"
+  | "jobId"
+  | "kind"
+  | "run_name"
+  | "status"
+  | "rows"
+  | "recipeSignature"
+  | "stage"
+  | "current_column"
+  | "completed_columns"
+  | "progress"
+  | "column_progress"
+  | "batch"
+  | "source_progress"
+  | "model_usage"
+  | "lastEventId"
+  | "datasetTotal"
+  | "analysis"
+  | "error"
+  | "createdAt"
+  | "finishedAt"
+>;
+
+export type PersistedRecipeExecution = RecipeExecutionMetadata & {
+  revision: number;
+  updatedAt: number;
 };

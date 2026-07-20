@@ -3,10 +3,17 @@
 
 export { LoginPage } from "./login-page";
 export { ChangePasswordPage } from "./change-password-page";
-export { authFetch, logout, refreshSession } from "./api";
+export {
+  authFetch,
+  AuthSubjectChangedError,
+  logout,
+  refreshSession,
+  type AuthFetchGuard,
+} from "./api";
 export {
   clearAuthTokens,
   getAuthToken,
+  getAuthSubjectKey,
   getPostAuthRoute,
   hasAuthToken,
   hasRefreshToken,
@@ -16,6 +23,7 @@ export {
   resetOnboardingDone,
   setMustChangePassword,
   storeAuthTokens,
+  subscribeAuthSubject,
 } from "./session";
 export {
   clearTauriAuthFailure,

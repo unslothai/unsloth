@@ -11,7 +11,7 @@ import time
 import uuid
 from pathlib import Path
 from collections import deque
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any
 
 import multiprocessing as mp
@@ -92,12 +92,35 @@ def _source_progress_status(job: Job) -> dict[str, Any] | None:
 
 @dataclass
 class Subscription:
+    job_id: str
+    owner_subject: str
     replay: list[dict]
     _q: queue.Queue
     _next_id: int = 0
+    _closed: threading.Event = field(default_factory = threading.Event)
+
+    @property
+    def closed(self) -> bool:
+        return self._closed.is_set()
+
+    def close(self) -> None:
+        """Close this stream before another generation emits."""
+        self._closed.set()
+
+    def put_event(self, event: dict) -> bool:
+        if self.closed:
+            return False
+        try:
+            self._q.put_nowait(event)
+            return True
+        except queue.Full:
+            self.close()
+            return False
 
     async def next_event(self, *, timeout_sec: float) -> dict | None:
         """Wait for next event (SSE), w/ timeout so we can check disconnects."""
+        if self.closed:
+            return None
         try:
             return await asyncio.to_thread(self._q.get, True, timeout_sec)
         except queue.Empty:
@@ -114,6 +137,14 @@ class Subscription:
         return (f"id: {event_id}\n" f"event: {event_type}\n" f"data: {body}\n\n").encode("utf-8")
 
 
+@dataclass(frozen = True)
+class JobGeneration:
+    """Identity of one installed job generation."""
+
+    job_id: str
+    owner_subject: str
+
+
 class JobManager:
     def __init__(self) -> None:
         """Single-job runner (in-mem). Simple on purpose, not a whole platform."""
@@ -122,13 +153,18 @@ class JobManager:
         self._proc: mp.Process | None = None
         self._mp_q: Any | None = None
         self._events: deque[dict] = deque(maxlen = 5000)
-        self._subs: list[queue.Queue] = []
+        self._subs: list[Subscription] = []
         self._pump_thread: threading.Thread | None = None
         self._seq: int = 0
+
+    def _has_blocking_job_locked(self) -> bool:
+        """Check process-global admission while holding ``_lock``."""
+        return self._proc is not None and self._proc.is_alive()
 
     def start(
         self,
         *,
+        owner_subject: str,
         recipe: dict,
         run: dict,
         internal_api_key_id: int | None = None,
@@ -139,6 +175,9 @@ class JobManager:
         minted by the route layer; revoked on terminal state so the key's
         live window is no longer than the run.
         """
+        if not isinstance(owner_subject, str) or not owner_subject:
+            raise ValueError("owner_subject must be a non-empty string")
+
         llm_columns = recipe.get("columns") or []
         llm_column_count = 0
         if isinstance(llm_columns, list):
@@ -152,11 +191,22 @@ class JobManager:
             llm_column_count = 1
 
         with self._lock:
-            if self._proc is not None and self._proc.is_alive():
+            if self._has_blocking_job_locked():
                 raise RuntimeError("job already running")
 
+            # Retire old SSE streams before replacement;
+            # they cannot see another owner's events.
+            for subscription in self._subs:
+                subscription.close()
+            self._subs.clear()
+
             job_id = uuid.uuid4().hex
-            self._job = Job(job_id = job_id, status = "pending", started_at = time.time())
+            self._job = Job(
+                job_id = job_id,
+                owner_subject = owner_subject,
+                status = "pending",
+                started_at = time.time(),
+            )
             self._job.progress_columns_total = llm_column_count
             self._job.source_progress_estimated_total = _github_source_estimated_total(recipe)
             self._job.internal_api_key_id = internal_api_key_id
@@ -185,31 +235,57 @@ class JobManager:
 
             self._mp_q = mp_q
             self._proc = proc
+            generation = JobGeneration(job_id = job_id, owner_subject = owner_subject)
+            prepared = self._prepare_event_locked(
+                generation,
+                {"type": EVENT_JOB_ENQUEUED, "ts": time.time(), "job_id": job_id},
+            )
             self._pump_thread = threading.Thread(target = self._pump_loop, daemon = True)
             self._pump_thread.start()
 
-            self._emit({"type": EVENT_JOB_ENQUEUED, "ts": time.time(), "job_id": job_id})
-            return job_id
+        self._fanout_prepared(prepared)
+        return job_id
 
-    def cancel(self, job_id: str) -> bool:
+    def cancel(self, job_id: str, owner_subject: str) -> bool:
         """Hard stop. We terminate the subprocess. Quick + reliable."""
+        prepared: tuple[tuple[Subscription, ...], dict] | None = None
+        proc: mp.Process | None = None
         with self._lock:
-            if self._job is None or self._job.job_id != job_id:
+            if (
+                self._job is None
+                or self._job.job_id != job_id
+                or self._job.owner_subject != owner_subject
+            ):
                 return False
             if self._proc is None or not self._proc.is_alive():
                 return True
             self._job.status = "cancelling"
-            self._emit({"type": EVENT_JOB_CANCELLING, "ts": time.time(), "job_id": job_id})
+            generation = JobGeneration(
+                job_id = self._job.job_id,
+                owner_subject = self._job.owner_subject,
+            )
+            prepared = self._prepare_event_locked(
+                generation,
+                {"type": EVENT_JOB_CANCELLING, "ts": time.time(), "job_id": job_id},
+            )
+            proc = self._proc
+
+        self._fanout_prepared(prepared)
+        if proc is not None:
             try:
-                self._proc.terminate()
+                proc.terminate()
             except (AttributeError, OSError):
                 pass
-            return True
+        return True
 
-    def get_status(self, job_id: str) -> dict | None:
+    def get_status(self, job_id: str, owner_subject: str) -> dict | None:
         """UI-friendly structured snapshot; an alternative to SSE."""
         with self._lock:
-            if self._job is None or self._job.job_id != job_id:
+            if (
+                self._job is None
+                or self._job.job_id != job_id
+                or self._job.owner_subject != owner_subject
+            ):
                 return None
             job = self._job
             return {
@@ -267,35 +343,51 @@ class JobManager:
                 "finished_at": job.finished_at,
             }
 
-    def get_current_status(self) -> dict | None:
-        """Single-job convenience (last/current)."""
-        job_id = self.get_current_job_id()
-        if job_id is None:
-            return None
-        return self.get_status(job_id)
+    def get_current_status(self, owner_subject: str) -> dict | None:
+        """Return owner details; other owners see only the busy bit used for 409 admission."""
+        with self._lock:
+            if self._job is None:
+                return None
+            if self._job.owner_subject != owner_subject:
+                if self._has_blocking_job_locked():
+                    return {"busy": True}
+                return None
+            job_id = self._job.job_id
+        return self.get_status(job_id, owner_subject)
 
-    def get_current_job_id(self) -> str | None:
+    def get_current_job_id(self, owner_subject: str) -> str | None:
         """Return current job_id (or None)."""
         with self._lock:
-            return None if self._job is None else self._job.job_id
+            if self._job is None or self._job.owner_subject != owner_subject:
+                return None
+            return self._job.job_id
 
-    def get_analysis(self, job_id: str) -> dict | None:
+    def get_analysis(self, job_id: str, owner_subject: str) -> dict | None:
         """Final profiling output (only after job completes)."""
         with self._lock:
-            if self._job is None or self._job.job_id != job_id:
+            if (
+                self._job is None
+                or self._job.job_id != job_id
+                or self._job.owner_subject != owner_subject
+            ):
                 return None
             return self._job.analysis
 
     def get_dataset(
         self,
         job_id: str,
+        owner_subject: str,
         *,
         limit: int,
         offset: int = 0,
     ) -> dict[str, Any] | None:
         """Load dataset page (offset + limit) and include total rows."""
         with self._lock:
-            if self._job is None or self._job.job_id != job_id:
+            if (
+                self._job is None
+                or self._job.job_id != job_id
+                or self._job.owner_subject != owner_subject
+            ):
                 return None
             in_memory_dataset = self._job.dataset
             artifact_path = self._job.artifact_path
@@ -388,39 +480,108 @@ class JobManager:
     def subscribe(
         self,
         job_id: str,
+        owner_subject: str,
         *,
         after_seq: int | None = None,
     ) -> Subscription | None:
         """SSE subscribe: get replay buffer + live events stream."""
         with self._lock:
-            if self._job is None or self._job.job_id != job_id:
+            if (
+                self._job is None
+                or self._job.job_id != job_id
+                or self._job.owner_subject != owner_subject
+            ):
                 return None
             q: queue.Queue = queue.Queue(maxsize = 2000)
-            self._subs.append(q)
             if after_seq is None:
                 replay = list(self._events)
             else:
                 replay = [e for e in self._events if int(e.get("seq") or 0) > after_seq]
-            return Subscription(replay = replay, _q = q)
+            subscription = Subscription(
+                job_id = job_id,
+                owner_subject = owner_subject,
+                replay = replay,
+                _q = q,
+            )
+            self._subs.append(subscription)
+            return subscription
 
     def unsubscribe(self, sub: Subscription) -> None:
         """Drop SSE subscriber (client disconnected)."""
         with self._lock:
-            self._subs = [q for q in self._subs if q is not sub._q]
+            sub.close()
+            self._subs = [subscription for subscription in self._subs if subscription is not sub]
+
+    def _prepare_event_locked(
+        self, generation: JobGeneration, event: dict
+    ) -> tuple[tuple[Subscription, ...], dict] | None:
+        """Record events for the installed generation; enqueue after unlocking."""
+        current = self._job
+        if (
+            current is None
+            or current.job_id != generation.job_id
+            or current.owner_subject != generation.owner_subject
+        ):
+            return None
+
+        published = dict(event)
+        published["job_id"] = generation.job_id
+        self._seq += 1
+        published["seq"] = self._seq
+        self._events.append(published)
+
+        matching: list[Subscription] = []
+        retained: list[Subscription] = []
+        for subscription in self._subs:
+            if (
+                subscription.job_id == generation.job_id
+                and subscription.owner_subject == generation.owner_subject
+                and not subscription.closed
+            ):
+                matching.append(subscription)
+                retained.append(subscription)
+            else:
+                subscription.close()
+        self._subs = retained
+        return tuple(matching), published
+
+    def _fanout_prepared(self, prepared: tuple[tuple[Subscription, ...], dict] | None) -> None:
+        """Deliver a prepared event after unlocking."""
+        if prepared is None:
+            return
+        subscriptions, event = prepared
+        failed = [
+            subscription for subscription in subscriptions if not subscription.put_event(event)
+        ]
+        if not failed:
+            return
+        with self._lock:
+            self._subs = [subscription for subscription in self._subs if subscription not in failed]
+
+    def _emit_for_generation(self, job: Job | JobGeneration, event: dict) -> bool:
+        """Publish only for the installed generation."""
+        generation = (
+            job
+            if isinstance(job, JobGeneration)
+            else JobGeneration(job_id = job.job_id, owner_subject = job.owner_subject)
+        )
+        with self._lock:
+            prepared = self._prepare_event_locked(generation, event)
+        self._fanout_prepared(prepared)
+        return prepared is not None
 
     def _emit(self, event: dict) -> None:
-        """Broadcast event to replay buffer + all subscribers."""
-        self._seq += 1
-        event["seq"] = self._seq
-        self._events.append(event)
-        stale: list[queue.Queue] = []
-        for q in self._subs:
-            try:
-                q.put_nowait(event)
-            except queue.Full:
-                stale.append(q)
-        if stale:
-            self._subs = [q for q in self._subs if q not in stale]
+        """Bind compatibility events to the current generation."""
+        with self._lock:
+            current = self._job
+            if current is None:
+                return
+            generation = JobGeneration(
+                job_id = current.job_id,
+                owner_subject = current.owner_subject,
+            )
+            prepared = self._prepare_event_locked(generation, event)
+        self._fanout_prepared(prepared)
 
     def _snapshot(self) -> tuple[Job, mp.Process, Any] | None:
         """Grab pointers for the pump loop (avoid holding lock too long)."""
@@ -498,13 +659,23 @@ class JobManager:
                 for e in self._drain_queue(mp_q):
                     self._safe_handle_event(job, e)
 
-                retired_job: Job | None = None
+                # Revoke the dead generation's credential even if replacement wins the lock.
+                retired_job: Job | None = job
+                prepared: tuple[tuple[Subscription, ...], dict] | None = None
                 with self._lock:
-                    if self._job and self._job.status in {
-                        "pending",
-                        "active",
-                        "cancelling",
-                    }:
+                    if (
+                        self._job
+                        and self._job.job_id == job.job_id
+                        and self._job.owner_subject == job.owner_subject
+                        and self._proc is proc
+                        and self._mp_q is mp_q
+                        and self._job.status
+                        in {
+                            "pending",
+                            "active",
+                            "cancelling",
+                        }
+                    ):
                         if self._job.status == "cancelling":
                             self._job.status = "cancelled"
                         else:
@@ -516,14 +687,20 @@ class JobManager:
                             if self._job.status == "cancelled"
                             else EVENT_JOB_ERROR
                         )
-                        self._emit(
+                        generation = JobGeneration(
+                            job_id = self._job.job_id,
+                            owner_subject = self._job.owner_subject,
+                        )
+                        prepared = self._prepare_event_locked(
+                            generation,
                             {
                                 "type": event_type,
                                 "ts": time.time(),
                                 "job_id": self._job.job_id,
-                            }
+                            },
                         )
                         retired_job = self._job
+                self._fanout_prepared(prepared)
                 if retired_job is not None:
                     self._retire_workflow_key(retired_job)
             except Exception:
@@ -536,8 +713,14 @@ class JobManager:
         msg = event.get("message") if et == "log" else None
 
         terminal = False
+        prepared: tuple[tuple[Subscription, ...], dict] | None = None
         with self._lock:
-            if self._job is None or self._job.job_id != job.job_id:
+            generation = JobGeneration(job_id = job.job_id, owner_subject = job.owner_subject)
+            if (
+                self._job is None
+                or self._job.job_id != generation.job_id
+                or self._job.owner_subject != generation.owner_subject
+            ):
                 return
             if et == EVENT_JOB_STARTED:
                 self._job.status = "active"
@@ -566,10 +749,12 @@ class JobManager:
                 if upd:
                     apply_update(self._job, upd)
 
+            prepared = self._prepare_event_locked(generation, event)
+
+        self._fanout_prepared(prepared)
+
         if terminal:
             self._retire_workflow_key(job)
-
-        self._emit(event)
 
     def _retire_workflow_key(self, job: Job) -> None:
         """Revoke the workflow-scoped sk-unsloth-* key, if one was minted.

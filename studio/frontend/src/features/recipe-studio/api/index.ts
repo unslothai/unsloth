@@ -9,6 +9,19 @@ import {
 
 const DEFAULT_BASE = "/api/data-recipe";
 
+export class RecipeApiError extends Error {
+  readonly status: number;
+
+  constructor(
+    status: number,
+    message: string,
+  ) {
+    super(message);
+    this.name = "RecipeApiError";
+    this.status = status;
+  }
+}
+
 export const DATA_DESIGNER_API_BASE =
   import.meta.env.VITE_DATA_DESIGNER_API ?? DEFAULT_BASE;
 
@@ -22,7 +35,6 @@ export type PublishRecipeJobRequest = {
   description: string;
   hf_token?: string | null;
   private?: boolean;
-  artifact_path?: string | null;
 };
 
 export type PublishRecipeJobResponse = {
@@ -100,6 +112,8 @@ export type JobStatusResponse = {
   dataset_rows?: number | null;
   // biome-ignore lint/style/useNamingConvention: api schema
   artifact_path?: string | null;
+  // biome-ignore lint/style/useNamingConvention: api schema
+  execution_type?: "preview" | "full" | null;
   // biome-ignore lint/style/useNamingConvention: api schema
   started_at?: number | null;
   // biome-ignore lint/style/useNamingConvention: api schema
@@ -225,14 +239,24 @@ async function parseErrorResponse(response: Response): Promise<string> {
   }
 }
 
-async function postJson<T>(path: string, payload: unknown): Promise<T> {
-  const response = await authFetch(`${DATA_DESIGNER_API_BASE}${path}`, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
+async function postJson<T>(
+  path: string,
+  payload: unknown,
+  options: { expectedSubjectKey?: string } = {},
+): Promise<T> {
+  const response = await authFetch(
+    `${DATA_DESIGNER_API_BASE}${path}`,
+    {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify(payload),
     },
-    body: JSON.stringify(payload),
-  });
+    options.expectedSubjectKey
+      ? { expectedSubjectKey: options.expectedSubjectKey }
+      : undefined,
+  );
 
   if (!response.ok) {
     throw new Error(await parseErrorResponse(response));
@@ -244,7 +268,7 @@ async function postJson<T>(path: string, payload: unknown): Promise<T> {
 async function getJson<T>(path: string): Promise<T> {
   const response = await authFetch(`${DATA_DESIGNER_API_BASE}${path}`);
   if (!response.ok) {
-    throw new Error(await parseErrorResponse(response));
+    throw new RecipeApiError(response.status, await parseErrorResponse(response));
   }
   return response.json();
 }
@@ -297,8 +321,9 @@ export async function validateRecipe(
 
 export async function createRecipeJob(
   payload: unknown,
+  options: { expectedSubjectKey?: string } = {},
 ): Promise<JobCreateResponse> {
-  return postJson<JobCreateResponse>("/jobs", payload);
+  return postJson<JobCreateResponse>("/jobs", payload, options);
 }
 
 export async function getRecipeJobStatus(

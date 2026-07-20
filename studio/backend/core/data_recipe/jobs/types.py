@@ -68,6 +68,8 @@ class ModelUsage:
 @dataclass
 class Job:
     job_id: str
+    # Default preserves parser fixtures; JobManager.start always sets the owner.
+    owner_subject: str = ""
     status: JobStatus = "created"
     stage: str | None = None
     current_column: str | None = None

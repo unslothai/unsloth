@@ -59,12 +59,33 @@ def _wait_until(predicate, timeout = 5.0):
 def _manager_with_active_job():
     m = JobManager.__new__(JobManager)
     m._lock = threading.Lock()
-    job = Job(job_id = "job-test")
+    m._subs = []
+    m._events = []
+    m._seq = 0
+    job = Job(job_id = "job-test", owner_subject = "owner-a")
     job.status = "active"
     m._job = job
     m._proc = _FakeProc(alive = True)
     m._mp_q = _ScriptedQueue([])
     return m
+
+
+def test_replaced_dead_generation_still_retires_its_workflow_key(monkeypatch):
+    manager = _manager_with_active_job()
+    old_job = manager._job
+    manager._proc._alive = False
+    retired = []
+
+    def replace_during_drain(_queue):
+        manager._job = Job(job_id = "job-new", owner_subject = "owner-b")
+        manager._proc = _FakeProc(alive = True)
+        manager._mp_q = _ScriptedQueue([])
+        return []
+
+    monkeypatch.setattr(manager, "_drain_queue", replace_during_drain)
+    monkeypatch.setattr(manager, "_retire_workflow_key", retired.append)
+    manager._pump_loop()
+    assert retired == [old_job]
 
 
 def test_pump_survives_handler_exception_and_still_finalizes(monkeypatch):
@@ -150,3 +171,28 @@ def test_pump_finalizes_when_read_keeps_raising_on_dead_worker(monkeypatch):
     assert not pump.is_alive(), "pump must finalize a dead worker even when reads keep raising"
     assert m._job.status == "error"
     assert retired and retired[0] is m._job
+
+
+def test_current_status_exposes_only_global_busy_state_to_non_owner():
+    manager = _manager_with_active_job()
+
+    owner_status = manager.get_current_status("owner-a")
+    assert owner_status is not None
+    assert owner_status["job_id"] == "job-test"
+
+    # Other accounts see only the global busy bit, never job details or controls.
+    assert manager.get_current_status("owner-b") == {"busy": True}
+    assert manager.get_status("job-test", "owner-b") is None
+    assert manager.cancel("job-test", "owner-b") is False
+    assert manager._proc.is_alive()
+
+
+def test_current_status_does_not_report_busy_for_non_blocking_old_job():
+    manager = _manager_with_active_job()
+    manager._proc._alive = False
+    manager._job.status = "completed"
+
+    assert manager.get_current_status("owner-b") is None
+    owner_status = manager.get_current_status("owner-a")
+    assert owner_status is not None
+    assert owner_status["status"] == "completed"

@@ -54,6 +54,7 @@ type RecipeExecutionsState = {
   setPreviewLoading: (loading: boolean) => void;
   setFullLoading: (loading: boolean) => void;
   setExecutions: (records: RecipeExecutionRecord[]) => void;
+  mergeExecutions: (records: RecipeExecutionRecord[]) => void;
   upsertExecution: (record: RecipeExecutionRecord) => void;
   selectExecution: (id: string | null) => void;
   resetForRecipe: () => void;
@@ -125,6 +126,18 @@ export const useRecipeExecutionsStore = create<RecipeExecutionsState>((set) => (
         executions: normalized,
         selectedExecutionId: normalized[0]?.id ?? null,
       };
+    }),
+  mergeExecutions: (records) =>
+    set((state) => {
+      const byId = new Map(
+        state.executions.map((record) => [record.id, record]),
+      );
+      for (const record of records) {
+        if (!byId.has(record.id)) {
+          byId.set(record.id, withExecutionDefaults(record));
+        }
+      }
+      return { executions: sortExecutions([...byId.values()]) };
     }),
   upsertExecution: (record) =>
     set((state) => {

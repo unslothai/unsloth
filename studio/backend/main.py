@@ -306,6 +306,7 @@ from routes import (
     rag_router,
     training_history_router,
     training_router,
+    user_assets_router,
 )
 from routes.llama import router as llama_router
 from routes.preview import router as preview_router
@@ -757,6 +758,7 @@ from utils.upload_limits import (  # noqa: E402
 )
 
 _BODY_PROTECTED_PREFIXES = (
+    "/api/user-assets",
     "/v1/chat/completions",
     "/v1/completions",
     "/p/",
@@ -986,6 +988,7 @@ app.include_router(mcp_servers_router, prefix = "/api/mcp/servers", tags = ["mcp
 app.include_router(prompts_router, prefix = "/api/prompts", tags = ["prompts"])
 app.include_router(datasets_router, prefix = "/api/datasets", tags = ["datasets"])
 app.include_router(data_recipe_router, prefix = "/api/data-recipe", tags = ["data-recipe"])
+app.include_router(user_assets_router, prefix = "/api/user-assets", tags = ["user-assets"])
 app.include_router(llama_router, prefix = "/api/llama", tags = ["llama"])
 app.include_router(export_router, prefix = "/api/export", tags = ["export"])
 app.include_router(rag_router, prefix = "/api/rag", tags = ["rag"])

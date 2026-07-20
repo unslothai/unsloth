@@ -94,11 +94,15 @@ export type PersistRecipeInput = {
   id: string | null;
   name: string;
   payload: RecipePayload;
+  revision?: number;
 };
 
 export type PersistRecipeResult = {
   id: string;
   updatedAt: number;
+  revision: number;
+  payload: RecipePayload;
+  removedCredentialPaths: string[];
 };
 
 export type RecipeStudioPageProps = {
@@ -106,6 +110,7 @@ export type RecipeStudioPageProps = {
   initialRecipeName: string;
   initialPayload: RecipePayload;
   initialSavedAt: number;
+  initialRevision: number;
   onPersistRecipe: (input: PersistRecipeInput) => Promise<PersistRecipeResult>;
 };
 
@@ -114,6 +119,7 @@ export function RecipeStudioPage({
   initialRecipeName,
   initialPayload,
   initialSavedAt,
+  initialRevision,
   onPersistRecipe,
 }: RecipeStudioPageProps): ReactElement {
   const {
@@ -349,6 +355,8 @@ export function RecipeStudioPage({
     fullLoading,
     currentSignature,
     executions,
+    hasOlderExecutions,
+    olderExecutionsLoading,
     selectedExecutionId,
     setSelectedExecutionId,
     persistRecipe,
@@ -358,6 +366,7 @@ export function RecipeStudioPage({
     validateLoading,
     validateResult,
     cancelExecution,
+    loadOlderExecutions,
     loadExecutionDatasetPage,
     runPreview,
     runFull,
@@ -368,6 +377,7 @@ export function RecipeStudioPage({
     initialRecipeName,
     initialPayload,
     initialSavedAt,
+    initialRevision,
     payloadResult,
     onPersistRecipe,
     resetRecipe,
@@ -821,9 +831,14 @@ export function RecipeStudioPage({
                 executions={executions}
                 selectedExecutionId={selectedExecutionId}
                 currentSignature={currentSignature}
+                hasOlderExecutions={hasOlderExecutions}
+                olderExecutionsLoading={olderExecutionsLoading}
                 onSelectExecution={setSelectedExecutionId}
                 onCancelExecution={(executionId) => {
                   void cancelExecution(executionId);
+                }}
+                onLoadOlderExecutions={() => {
+                  void loadOlderExecutions();
                 }}
                 onLoadDatasetPage={(executionId, page) => {
                   void loadExecutionDatasetPage(executionId, page);

@@ -391,6 +391,77 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
     conn.execute(
         "CREATE INDEX IF NOT EXISTS idx_prompt_lists_created_at ON prompt_lists(created_at)"
     )
+    # Account assets share studio.db.
+    # Migration stays additive so tombstones and import ledger survive restarts.
+    # Owner identity never comes from JSON.
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS data_recipes (
+            owner_subject TEXT NOT NULL CHECK(length(owner_subject) > 0),
+            id TEXT NOT NULL CHECK(length(id) BETWEEN 1 AND 128),
+            name TEXT NOT NULL CHECK(length(name) BETWEEN 1 AND 200),
+            payload_json TEXT NOT NULL
+                CHECK(length(CAST(payload_json AS BLOB)) <= 1048576),
+            learning_recipe_id TEXT,
+            learning_recipe_title TEXT,
+            revision INTEGER NOT NULL CHECK(revision >= 1),
+            created_at INTEGER NOT NULL CHECK(created_at >= 0),
+            updated_at INTEGER NOT NULL CHECK(updated_at >= created_at),
+            deleted_at INTEGER CHECK(deleted_at IS NULL OR deleted_at >= created_at),
+            PRIMARY KEY (owner_subject, id)
+        ) WITHOUT ROWID
+        """
+    )
+    conn.execute(
+        """
+        CREATE INDEX IF NOT EXISTS idx_data_recipes_owner_active_updated
+        ON data_recipes(owner_subject, deleted_at, updated_at DESC)
+        """
+    )
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS data_recipe_executions (
+            owner_subject TEXT NOT NULL CHECK(length(owner_subject) > 0),
+            id TEXT NOT NULL CHECK(length(id) BETWEEN 1 AND 128),
+            recipe_id TEXT NOT NULL CHECK(length(recipe_id) BETWEEN 1 AND 128),
+            metadata_json TEXT NOT NULL
+                CHECK(length(CAST(metadata_json AS BLOB)) <= 262144),
+            revision INTEGER NOT NULL CHECK(revision >= 1),
+            created_at INTEGER NOT NULL CHECK(created_at >= 0),
+            updated_at INTEGER NOT NULL CHECK(updated_at >= created_at),
+            finished_at INTEGER CHECK(finished_at IS NULL OR finished_at >= created_at),
+            PRIMARY KEY (owner_subject, id),
+            FOREIGN KEY (owner_subject, recipe_id)
+                REFERENCES data_recipes(owner_subject, id)
+        ) WITHOUT ROWID
+        """
+    )
+    conn.execute(
+        """
+        CREATE INDEX IF NOT EXISTS idx_recipe_executions_owner_recipe_created
+        ON data_recipe_executions(owner_subject, recipe_id, created_at DESC)
+        """
+    )
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS user_asset_legacy_imports (
+            owner_subject TEXT NOT NULL CHECK(length(owner_subject) > 0),
+            source TEXT NOT NULL CHECK(length(source) > 0),
+            entity_kind TEXT NOT NULL
+                CHECK(entity_kind IN ('recipe', 'execution')),
+            legacy_id TEXT NOT NULL CHECK(length(legacy_id) BETWEEN 1 AND 128),
+            outcome TEXT NOT NULL CHECK(
+                outcome IN (
+                    'imported', 'already_imported', 'redacted', 'id_retired',
+                    'rejected', 'missing_parent'
+                )
+            ),
+            reason TEXT,
+            imported_at INTEGER NOT NULL CHECK(imported_at >= 0),
+            PRIMARY KEY (owner_subject, source, entity_kind, legacy_id)
+        ) WITHOUT ROWID
+        """
+    )
 
 
 def _prompt_entry_from_row(row: sqlite3.Row) -> dict:

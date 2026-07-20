@@ -10,6 +10,13 @@ export const ONBOARDING_DONE_KEY = "unsloth_onboarding_done";
 export const AUTH_MUST_CHANGE_PASSWORD_KEY = "unsloth_auth_must_change_password";
 
 type PostAuthRoute = "/change-password" | "/chat";
+type AuthSubjectListener = () => void;
+
+const authSubjectListeners = new Set<AuthSubjectListener>();
+
+function notifyAuthSubjectChanged(): void {
+  for (const listener of authSubjectListeners) listener();
+}
 
 function canUseStorage(): boolean {
   return typeof window !== "undefined";
@@ -30,6 +37,38 @@ export function getAuthToken(): string | null {
   return localStorage.getItem(AUTH_TOKEN_KEY);
 }
 
+export function getAuthSubjectKey(): string {
+  const token = getAuthToken();
+  if (!token) return "anonymous";
+  try {
+    const encoded = token.split(".")[1];
+    if (!encoded) return `token:${token}`;
+    const normalized = encoded.replace(/-/g, "+").replace(/_/g, "/");
+    const payload = JSON.parse(
+      atob(normalized.padEnd(Math.ceil(normalized.length / 4) * 4, "=")),
+    ) as { sub?: unknown };
+    return typeof payload.sub === "string" && payload.sub
+      ? `subject:${payload.sub}`
+      : `token:${token}`;
+  } catch {
+    return `token:${token}`;
+  }
+}
+
+export function subscribeAuthSubject(
+  listener: AuthSubjectListener,
+): () => void {
+  authSubjectListeners.add(listener);
+  const handleStorage = (event: StorageEvent): void => {
+    if (event.key === AUTH_TOKEN_KEY || event.key === null) listener();
+  };
+  if (canUseStorage()) window.addEventListener("storage", handleStorage);
+  return () => {
+    authSubjectListeners.delete(listener);
+    if (canUseStorage()) window.removeEventListener("storage", handleStorage);
+  };
+}
+
 export function getRefreshToken(): string | null {
   if (!canUseStorage()) return null;
   return localStorage.getItem(AUTH_REFRESH_TOKEN_KEY);
@@ -45,6 +84,7 @@ export function storeAuthTokens(
   if (!canUseStorage()) return;
   localStorage.setItem(AUTH_TOKEN_KEY, accessToken);
   localStorage.setItem(AUTH_REFRESH_TOKEN_KEY, refreshToken);
+  notifyAuthSubjectChanged();
 }
 
 export function clearAuthTokens(): void {
@@ -52,6 +92,7 @@ export function clearAuthTokens(): void {
   localStorage.removeItem(AUTH_TOKEN_KEY);
   localStorage.removeItem(AUTH_REFRESH_TOKEN_KEY);
   localStorage.removeItem(AUTH_MUST_CHANGE_PASSWORD_KEY);
+  notifyAuthSubjectChanged();
 }
 
 // Flag stored as key presence (constant "1" or absence), not a derived boolean,

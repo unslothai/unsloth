@@ -29,7 +29,6 @@ type PublishExecutionDialogProps = {
     description: string;
     hf_token?: string | null;
     private: boolean;
-    artifact_path?: string | null;
   }) => Promise<{ url: string }>;
 };
 
@@ -104,7 +103,8 @@ export function PublishExecutionDialog({
   const canSubmit =
     !publishing &&
     Boolean(execution?.jobId) &&
-    Boolean(execution?.artifact_path) &&
+    execution?.kind === "full" &&
+    execution.status === "completed" &&
     repoId.trim().length > 0 &&
     description.trim().length > 0;
 
@@ -133,7 +133,6 @@ export function PublishExecutionDialog({
         description: description.trim(),
         hf_token: hfToken.trim() || null,
         private: privateRepo,
-        artifact_path: execution.artifact_path,
       });
       setPublishedUrl(result.url);
       toastSuccess("Dataset published");
