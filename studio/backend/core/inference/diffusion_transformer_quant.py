@@ -419,6 +419,7 @@ def make_filter_fn(
     exclude_name_tokens: tuple[str, ...] = (),
     *,
     require_bf16: bool = False,
+    require_divisible: int = 0,
 ):
     """A torchao ``quantize_`` filter keeping only FLOP-heavy linears: nn.Linear with in/out
     features >= ``min_features`` AND whose fqn contains no ``exclude_name_tokens`` (int8 uses
@@ -426,7 +427,13 @@ def make_filter_fn(
 
     ``require_bf16`` also skips any non-bf16 Linear: fp8/mxfp8/nvfp4 assert a bf16 input weight,
     so one non-bf16 Linear (e.g. the fp32 layers Wan/Hunyuan DiTs keep) otherwise raises and
-    aborts the ENTIRE pass, leaving the module dense. int8 tolerates non-bf16, so leaves this off."""
+    aborts the ENTIRE pass, leaving the module dense. int8 tolerates non-bf16, so leaves this off.
+
+    ``require_divisible`` (0 disables) skips any Linear whose in/out features are not multiples
+    of it: the fp8/fp4 scaled_mm hardware GEMM requires 16-aligned dims and the 32-wide MX block
+    scaling cannot tile a ragged dim, so one non-conforming Linear would otherwise crash the
+    first real matmul AFTER the quantise pass succeeded (the smoke probe only proves an aligned
+    GEMM runs). Leaving such a layer bf16 costs ~nothing."""
 
     def filter_fn(module: Any, fqn: str = "") -> bool:
         try:
@@ -440,6 +447,10 @@ def make_filter_fn(
         if in_features is None or out_features is None:
             return False
         if in_features < min_features or out_features < min_features:
+            return False
+        if require_divisible and (
+            in_features % require_divisible or out_features % require_divisible
+        ):
             return False
         if exclude_name_tokens:
             name = fqn.lower() if fqn else ""
@@ -489,6 +500,11 @@ def quantize_transformer(
         # only: NOT part of exclude_tokens_for_scheme, whose list is baked into prequant
         # checkpoint metadata (adding it there would reject every existing checkpoint).
         exclude = exclude_tokens_for_scheme(scheme, family) + ("lora_",)
+        # GEMM tiling floors per scheme (see make_filter_fn): scaled_mm needs 16-aligned dims
+        # (fp8/nvfp4), MX block scaling needs 32. int8's _int_mm has no such floor and keeps
+        # the historical filter -- and DiT dims are 16/32-divisible in practice, so existing
+        # prequant checkpoints quantise the same layer set as before.
+        divisible = {TQ_FP8: 16, TQ_NVFP4: 16, TQ_MXFP8: 32}.get(scheme, 0)
         quantize_(
             transformer,
             _make_quant_config(scheme, fast_accum = fast_accum),
@@ -496,6 +512,7 @@ def quantize_transformer(
                 min_features,
                 exclude_name_tokens = exclude,
                 require_bf16 = scheme in _REQUIRE_BF16_SCHEMES,
+                require_divisible = divisible,
             ),
         )
         # Runtime-only diagnostic marker.
