@@ -63,32 +63,44 @@ def _fake_claude(monkeypatch, version_output: str) -> None:
 
 def test_claude_flags_passed_to_supported_claude(monkeypatch):
     _fake_claude(monkeypatch, "2.1.98 (Claude Code)\n")
-    assert start._claude_flags() == [
+    assert start._claude_flags(MODEL["id"]) == [
         "--exclude-dynamic-system-prompt-sections",
         "--settings",
-        start._CLAUDE_SETTINGS_OVERLAY,
+        start._claude_settings_overlay(MODEL["id"]),
     ]
 
 
 def test_claude_flags_skipped_on_old_claude(monkeypatch):
     _fake_claude(monkeypatch, "2.0.14 (Claude Code)\n")
-    assert start._claude_flags() == []
+    assert start._claude_flags(MODEL["id"]) == []
 
 
 def test_claude_flags_skipped_on_unparseable_version(monkeypatch):
     _fake_claude(monkeypatch, "weird build string\n")
-    assert start._claude_flags() == []
+    assert start._claude_flags(MODEL["id"]) == []
 
 
 def test_claude_flags_detected_when_version_not_first_token(monkeypatch):
     # The X.Y.Z is pulled from anywhere in the output, so a format change (version not
     # the first token) doesn't silently drop the optimization flags.
     _fake_claude(monkeypatch, "claude version 2.1.98\n")
-    assert start._claude_flags() == [
+    assert start._claude_flags(MODEL["id"]) == [
         "--exclude-dynamic-system-prompt-sections",
         "--settings",
-        start._CLAUDE_SETTINGS_OVERLAY,
+        start._claude_settings_overlay(MODEL["id"]),
     ]
+
+
+def test_claude_settings_overlay_pins_served_model():
+    # The session overlay must pin availableModels to the served model: a user's allowlist
+    # in ~/.claude/settings.json otherwise rejects the Unsloth --model ("restricted by your
+    # organization's settings"), and no env var can bypass it. The override must be a
+    # NON-EMPTY array to take effect (an empty [] is ignored and the user's list still
+    # applies), so it lists exactly this model, for this session only.
+    overlay = json.loads(start._claude_settings_overlay(MODEL["id"]))
+    assert overlay["availableModels"] == [MODEL["id"]]
+    # The attribution-header suppression is preserved alongside it.
+    assert overlay["env"]["CLAUDE_CODE_ATTRIBUTION_HEADER"] == "0"
 
 
 def test_install_agent_prompts_then_installs(monkeypatch):
@@ -126,7 +138,52 @@ def test_install_agent_uses_powershell_on_windows(monkeypatch):
     executable = start._install_agent("hermes", install_hint)
 
     assert executable == r"C:\Users\samle\bin\hermes.exe"
-    assert ran == [["powershell", "-NoProfile", "-Command", install_hint]]
+    # -ExecutionPolicy Bypass (process-scoped) lets npm's npm.ps1 wrapper and irm|iex
+    # scripts run even when the machine policy is the Windows default Restricted.
+    assert ran == [
+        ["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", install_hint]
+    ]
+
+
+def test_install_agent_windows_failure_hints_execution_policy(monkeypatch, capsys):
+    # A failed install on Windows points the user at the per-user execution-policy fix:
+    # our subprocess bypasses the policy, but their own shell may still block npm.ps1
+    # (PSSecurityException) when they run the install by hand.
+    monkeypatch.setattr(start.os, "name", "nt")
+    monkeypatch.setattr(start.sys, "stdin", SimpleNamespace(isatty = lambda: True))
+    monkeypatch.setattr(start.typer, "confirm", lambda *a, **k: True)
+    monkeypatch.setattr(
+        start.subprocess,
+        "run",
+        lambda *a, **k: SimpleNamespace(returncode = 1),
+    )
+    monkeypatch.setattr(start.shutil, "which", lambda _: None)
+
+    with pytest.raises(start.typer.Exit):
+        start._install_agent("codex", "npm install -g @openai/codex")
+
+    err = capsys.readouterr().err
+    assert "Install command failed" in err
+    assert "Set-ExecutionPolicy -Scope CurrentUser -ExecutionPolicy RemoteSigned" in err
+
+
+def test_install_agent_posix_failure_omits_execution_policy_hint(monkeypatch, capsys):
+    # The execution-policy hint is Windows-only; a POSIX install failure must not mention it.
+    monkeypatch.setattr(start.os, "name", "posix")
+    monkeypatch.setattr(start.sys, "stdin", SimpleNamespace(isatty = lambda: True))
+    monkeypatch.setattr(start.typer, "confirm", lambda *a, **k: True)
+    monkeypatch.setattr(
+        start.subprocess,
+        "run",
+        lambda *a, **k: SimpleNamespace(returncode = 1),
+    )
+
+    with pytest.raises(start.typer.Exit):
+        start._install_agent("codex", "npm install -g @openai/codex")
+
+    err = capsys.readouterr().err
+    assert "Install command failed" in err
+    assert "Set-ExecutionPolicy" not in err
 
 
 def test_install_agent_warns_remote_installer_is_unverified_third_party(monkeypatch, capsys):
@@ -252,6 +309,49 @@ def test_refresh_windows_path_merges_registry_hives(monkeypatch):
         r"C:\Users\me\hermes\bin",
         r"C:\Windows\System32",
     ]
+
+
+def test_augment_path_adds_existing_local_bin(monkeypatch, tmp_path):
+    # Claude's installer drops its binary in ~/.local/bin but only *suggests* adding it to
+    # PATH, so Unsloth appends it in-process to resolve the freshly installed agent.
+    local_bin = tmp_path / ".local" / "bin"
+    local_bin.mkdir(parents = True)
+    monkeypatch.setattr(start.Path, "home", lambda: tmp_path)
+    monkeypatch.setenv("APPDATA", str(tmp_path / "no-appdata"))  # skip the npm candidate
+    monkeypatch.setenv("PATH", str(tmp_path / "existing"))
+    start._augment_path_with_install_dirs()
+    entries = os.environ["PATH"].split(os.pathsep)
+    assert str(local_bin) in entries
+    # Appended (lowest precedence), so it never shadows an existing PATH entry.
+    assert entries[-1] == str(local_bin)
+
+
+def test_augment_path_skips_missing_and_duplicate_dirs(monkeypatch, tmp_path):
+    # A non-existent ~/.local/bin is not added; an already-present one is not duplicated.
+    monkeypatch.setattr(start.Path, "home", lambda: tmp_path)  # no .local/bin created yet
+    monkeypatch.setenv("APPDATA", str(tmp_path / "no-appdata"))  # skip the npm candidate
+    monkeypatch.setenv("PATH", str(tmp_path / "existing"))
+    start._augment_path_with_install_dirs()
+    assert os.environ["PATH"] == str(tmp_path / "existing")
+
+    local_bin = tmp_path / ".local" / "bin"
+    local_bin.mkdir(parents = True)
+    monkeypatch.setenv("PATH", os.pathsep.join([str(tmp_path / "existing"), str(local_bin)]))
+    start._augment_path_with_install_dirs()
+    assert os.environ["PATH"].split(os.pathsep).count(str(local_bin)) == 1
+
+
+def test_augment_path_adds_npm_global_bin_on_windows(monkeypatch, tmp_path):
+    # npm -g shims (codex/opencode/pi) land in %APPDATA%\npm on Windows; add it so a freshly
+    # installed npm agent resolves even when that dir isn't on PATH yet.
+    monkeypatch.setattr(start.os, "name", "nt")
+    monkeypatch.setattr(start.Path, "home", lambda: tmp_path)  # no ~/.local/bin created
+    npm_dir = tmp_path / "Roaming" / "npm"
+    npm_dir.mkdir(parents = True)
+    monkeypatch.setenv("APPDATA", str(tmp_path / "Roaming"))
+    monkeypatch.setenv("PATH", str(tmp_path / "existing"))
+    start._augment_path_with_install_dirs()
+    assert str(npm_dir) in os.environ["PATH"].split(os.pathsep)
 
 
 def test_install_agent_declined_returns_none(monkeypatch):
@@ -451,7 +551,7 @@ def test_connect_claude_launch_scrubs_conflicting_auth_env(fake_studio, monkeypa
     monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-anthropic-stale")
     monkeypatch.setenv("CLAUDE_CODE_OAUTH_TOKEN", "oauth-stale")
     monkeypatch.setattr(start.shutil, "which", lambda _: "/usr/local/bin/claude")
-    monkeypatch.setattr(start, "_claude_flags", lambda: [])
+    monkeypatch.setattr(start, "_claude_flags", lambda *a, **k: [])
 
     def run(command, env):
         captured["command"] = command
@@ -486,7 +586,7 @@ def test_connect_claude_windows_shim_from_wsl_bridges_env(fake_studio, monkeypat
     monkeypatch.setattr(
         start.shutil, "which", lambda _: "/mnt/c/Users/samle/AppData/Roaming/npm/claude"
     )
-    monkeypatch.setattr(start, "_claude_flags", lambda: [])
+    monkeypatch.setattr(start, "_claude_flags", lambda *a, **k: [])
 
     def run(command, env):
         captured["command"] = command
@@ -2175,8 +2275,9 @@ def test_powershell_quote_single_quotes_json():
     # keeps the embedded double quotes literal (list2cmdline's backslashes would not).
     assert start._powershell_quote("--settings") == "--settings"
     assert start._powershell_quote("unsloth/gemma-4-26B") == "unsloth/gemma-4-26B"
-    quoted = start._powershell_quote(start._CLAUDE_SETTINGS_OVERLAY)
-    assert quoted == "'" + start._CLAUDE_SETTINGS_OVERLAY + "'"
+    overlay = start._claude_settings_overlay("unsloth/gemma-4-26B")
+    quoted = start._powershell_quote(overlay)
+    assert quoted == "'" + overlay + "'"
     assert "\\" not in quoted  # no cmd.exe backslash escaping
     assert start._powershell_quote("a'b") == "'a''b'"  # embedded quote doubled
 
@@ -2811,7 +2912,7 @@ def test_claude_launch_does_not_clear(fake_studio, monkeypatch):
     calls = []
     monkeypatch.setattr(start.click, "clear", lambda: calls.append("clear"))
     monkeypatch.setattr(start.shutil, "which", lambda _: "/usr/local/bin/claude")
-    monkeypatch.setattr(start, "_claude_flags", lambda: [])
+    monkeypatch.setattr(start, "_claude_flags", lambda *a, **k: [])
     monkeypatch.setattr(start.subprocess, "run", lambda command, env: SimpleNamespace(returncode = 0))
     result = CliRunner().invoke(start.start_app, ["claude"])
     assert result.exit_code == 0, result.output
@@ -2988,7 +3089,7 @@ def test_persist_bare_opencode_launch_has_no_resume_token(fake_studio, monkeypat
 
 def test_persist_bare_claude_launch_has_no_resume_token(fake_studio, monkeypatch):
     monkeypatch.setattr(start.shutil, "which", lambda _: "/usr/local/bin/claude")
-    monkeypatch.setattr(start, "_claude_flags", lambda: [])
+    monkeypatch.setattr(start, "_claude_flags", lambda *a, **k: [])
     captured = _capture_launch(monkeypatch, ["claude", "--persist"])
     assert "--continue" not in captured["command"]
     assert captured["command"][1:] == ["--model", MODEL["id"]]
@@ -3152,7 +3253,7 @@ def test_native_resume_flag_passes_through_unchanged(fake_studio, monkeypatch):
     # `--resume <id>` (e.g. `unsloth start claude --resume <guid>`) still flows
     # through to the agent verbatim and is not swallowed as an Unsloth option.
     monkeypatch.setattr(start.shutil, "which", lambda _: "/usr/local/bin/claude")
-    monkeypatch.setattr(start, "_claude_flags", lambda: [])
+    monkeypatch.setattr(start, "_claude_flags", lambda *a, **k: [])
     captured = _capture_launch(monkeypatch, ["claude", "--resume", "some-session-guid"])
     assert captured["command"][-2:] == ["--resume", "some-session-guid"]
     # Unsloth never auto-appends its own resume token when the user drives resume.

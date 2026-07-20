@@ -826,7 +826,7 @@ def _resolve_model(
     )
     if requested and match is None:
         typer.echo(
-            f"Ensuring {requested} is loaded with the requested settings…"
+            f"Loading {requested} - please wait…"
             if load_has_overrides
             else f"Loading {requested} on the Unsloth server (this can take a while)…"
         )
@@ -902,11 +902,15 @@ def _require_gguf_for_codex(base: str, key: str, model_id: str) -> None:
 
 
 _DYNAMIC_SECTIONS_FLAG = "--exclude-dynamic-system-prompt-sections"
-# Session overlay applied via `claude --settings`; suppresses the attribution header
-# for THIS run only (no ~/.claude write) so llama.cpp KV-cache reuse is preserved. It
-# reinforces the CLAUDE_CODE_ATTRIBUTION_HEADER env var on builds that read the setting
-# only from settings.json.
-_CLAUDE_SETTINGS_OVERLAY = '{"env":{"CLAUDE_CODE_ATTRIBUTION_HEADER":"0"}}'
+
+
+def _claude_settings_overlay(model_id: str) -> str:
+    # Session-only `claude --settings` overlay (command-line tier, no ~/.claude write):
+    # suppress the attribution header, and pin availableModels to the served model so a
+    # user allowlist can't reject it. The pin must be non-empty; [] is ignored.
+    return json.dumps(
+        {"env": {"CLAUDE_CODE_ATTRIBUTION_HEADER": "0"}, "availableModels": [model_id]}
+    )
 
 
 def _claude_version() -> Optional[tuple]:
@@ -929,16 +933,14 @@ def _claude_version() -> Optional[tuple]:
         return (0,)
 
 
-def _claude_flags() -> list:
-    # Both knobs preserve llama.cpp KV-cache reuse: --exclude-dynamic-system-prompt-sections
-    # moves per-session context out of the system prompt, and --settings suppresses the
-    # attribution header for this session only (no persistent ~/.claude write; the env var
-    # sets it too). Claude Code < 2.1.98 aborts on unknown flags, so gate on the version;
-    # no local binary means a printout for another machine, so assume a current build.
+def _claude_flags(model_id: str) -> list:
+    # KV-cache-preserving flags: move per-session context out of the system prompt and pass
+    # the session overlay. claude < 2.1.98 rejects unknown flags; no local binary means a
+    # printout for another machine, so assume a current build.
     version = _claude_version()
     if version is not None and version < (2, 1, 98):
         return []
-    return [_DYNAMIC_SECTIONS_FLAG, "--settings", _CLAUDE_SETTINGS_OVERLAY]
+    return [_DYNAMIC_SECTIONS_FLAG, "--settings", _claude_settings_overlay(model_id)]
 
 
 def _merge_codex_config(existing: str, base: str) -> str:
@@ -1202,6 +1204,30 @@ def _refresh_windows_path() -> None:
         os.environ["PATH"] = os.pathsep.join(entries)
 
 
+def _augment_path_with_install_dirs() -> None:
+    # Append known install dirs to PATH so a freshly installed agent resolves without a new
+    # shell: some installers write the binary but not PATH (claude drops ~/.local/bin and
+    # only prints a note; npm -g shims land in %APPDATA%\npm). Appended, so precedence holds.
+    try:
+        home = Path.home()
+    except (RuntimeError, OSError):
+        return
+    candidates = [home / ".local" / "bin"]
+    if os.name == "nt":
+        appdata = os.environ.get("APPDATA")
+        if appdata:
+            candidates.append(Path(appdata) / "npm")
+    current = os.environ.get("PATH", "")
+    seen = {os.path.normcase(entry) for entry in current.split(os.pathsep) if entry}
+    additions = [
+        str(directory)
+        for directory in candidates
+        if directory.is_dir() and os.path.normcase(str(directory)) not in seen
+    ]
+    if additions:
+        os.environ["PATH"] = os.pathsep.join([current, *additions] if current else additions)
+
+
 def _install_source(install_hint: str) -> Optional[str]:
     """The first http(s) URL an install hint fetches, or None (e.g. an npm install)."""
     match = re.search(r"https?://[^\s'\")]+", install_hint)
@@ -1254,17 +1280,30 @@ def _install_agent(name: str, install_hint: str) -> Optional[str]:
     typer.secho(warning, fg = "yellow", err = True)
     if not typer.confirm(f"Install `{name}` now with `{install_hint}`?", default = False):
         return None
-    # Run each hint through the shell it is written for: PowerShell (irm | iex, or npm)
-    # on Windows, /bin/sh (curl | bash, or npm) everywhere else.
+    # Run each hint through its shell: PowerShell on Windows, /bin/sh elsewhere.
+    # -ExecutionPolicy Bypass is process-scoped (nothing persistent) so npm's npm.ps1 and
+    # irm | iex run under the Windows default Restricted policy instead of failing with a
+    # PSSecurityException.
     if os.name == "nt":
-        install_command = ["powershell", "-NoProfile", "-Command", install_hint]
+        install_command = [
+            "powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", install_hint,
+        ]
     else:
         install_command = ["/bin/sh", "-c", install_hint]
     if subprocess.run(install_command).returncode != 0:
-        _fail(f"Install command failed. Run it yourself, then re-run: {install_hint}")
-    # The installer just wrote PATH to the registry (Windows); pull it into this
-    # process so the freshly installed agent resolves without a shell restart.
+        message = f"Install command failed. Run it yourself, then re-run: {install_hint}"
+        if os.name == "nt":
+            # A hand-run retry can still hit the policy; point at the one-time per-user fix.
+            message += (
+                "\nIf it fails because running scripts is disabled (PSSecurityException), "
+                "allow local scripts for your user, then retry:\n"
+                "  Set-ExecutionPolicy -Scope CurrentUser -ExecutionPolicy RemoteSigned"
+            )
+        _fail(message)
+    # Resolve the freshly installed agent without a shell restart: pull registry PATH
+    # (Windows) plus well-known install dirs the installer may not have added to PATH.
     _refresh_windows_path()
+    _augment_path_with_install_dirs()
     executable = shutil.which(name)
     if executable is None:
         _fail(
@@ -1290,6 +1329,9 @@ def _launch(
     install_hint: str,
     unset_env: tuple = (),
 ) -> NoReturn:
+    # Resolve well-known install dirs (e.g. ~/.local/bin) first, so an already-installed
+    # agent not yet on PATH is found instead of prompting a needless reinstall.
+    _augment_path_with_install_dirs()
     executable = shutil.which(command[0]) or _install_agent(command[0], install_hint)
     if executable is None:
         _fail(f"`{command[0]}` not found on PATH. Install it with: {install_hint}")
@@ -1780,7 +1822,7 @@ def claude(
         "claude",
         "--model",
         model_id,
-        *_claude_flags(),
+        *_claude_flags(model_id),
         *_yolo_command_flags("claude", yolo),
         *ctx.args,
     ]
