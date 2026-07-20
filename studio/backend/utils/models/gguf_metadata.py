@@ -91,6 +91,130 @@ def read_gguf_general_metadata(path: str) -> Optional[Dict[str, str]]:
     return result
 
 
+def _skip_gguf_probe_value(f, vtype: int) -> bool:
+    """Bound work and bytes while skipping metadata in capability probes."""
+    if vtype == 9:
+        array_pos = f.tell()
+        array_head = f.read(12)
+        if len(array_head) < 12 or struct.unpack("<IQ", array_head)[1] > 1 << 18:
+            return False
+        f.seek(array_pos)
+    if not _skip_gguf_value(f, vtype):
+        return False
+    return f.tell() <= min(1 << 26, os.fstat(f.fileno()).st_size)
+
+
+def detect_gguf_audio_type(path: str) -> Optional[str]:
+    """Detect known audio token signatures from an embedded GGUF vocabulary.
+
+    Keeps only bounded marker state rather than materialising the vocabulary.
+    Missing, malformed, oversized, or ambiguous metadata returns ``None``.
+    """
+    exact_markers = {
+        b"<|AUDIO|>",
+        b"<|audio_eos|>",
+        b"<|startoftranscript|>",
+        b"<audio_soft_token>",
+        b"<|audio|>",
+        b"<|audio_start|>",
+        b"<|audio_end|>",
+        b"<|text_start|>",
+        b"<|text_end|>",
+    }
+    found = set()
+    bicodec = False
+    csm_identity = False
+    custom_tokens = 0
+    total_bytes = 0
+    try:
+        with open(path, "rb") as f:
+            head = f.read(24)
+            if len(head) < 24:
+                return None
+            magic, _version, _tcount, kv_count = struct.unpack("<IIQQ", head)
+            if magic != _GGUF_MAGIC or kv_count > 1 << 16:
+                return None
+
+            for _ in range(kv_count):
+                klen_bytes = f.read(8)
+                if len(klen_bytes) < 8:
+                    return None
+                klen = struct.unpack("<Q", klen_bytes)[0]
+                if klen > 1 << 20:
+                    return None
+                key = f.read(klen).decode("utf-8", "replace")
+                vtype_bytes = f.read(4)
+                if len(vtype_bytes) < 4:
+                    return None
+                vtype = struct.unpack("<I", vtype_bytes)[0]
+                if key in {"general.architecture", "general.name", "general.basename"}:
+                    if vtype != 8:
+                        return None
+                    slen_bytes = f.read(8)
+                    if len(slen_bytes) < 8:
+                        return None
+                    slen = struct.unpack("<Q", slen_bytes)[0]
+                    if slen > 1 << 20:
+                        return None
+                    value = f.read(slen)
+                    if len(value) < slen or f.tell() > 1 << 26:
+                        return None
+                    csm_identity = csm_identity or b"csm" in value.lower()
+                    continue
+                if key != "tokenizer.ggml.tokens":
+                    if not _skip_gguf_probe_value(f, vtype):
+                        return None
+                    continue
+                if vtype != 9:
+                    return None
+                array_head = f.read(12)
+                if len(array_head) < 12:
+                    return None
+                element_type, count = struct.unpack("<IQ", array_head)
+                if element_type != 8 or count > 1 << 20:
+                    return None
+                for _ in range(count):
+                    slen_bytes = f.read(8)
+                    if len(slen_bytes) < 8:
+                        return None
+                    slen = struct.unpack("<Q", slen_bytes)[0]
+                    total_bytes += 8 + slen
+                    if slen > 1 << 20 or total_bytes > 1 << 26:
+                        return None
+                    value = f.read(slen)
+                    if len(value) < slen:
+                        return None
+                    if value in exact_markers:
+                        found.add(value)
+                    if value.startswith(b"<|bicodec_"):
+                        bicodec = True
+                    if value.startswith(b"<custom_token_"):
+                        custom_tokens += 1
+                continue
+    except (OSError, struct.error, UnicodeDecodeError) as e:
+        logger.debug(f"detect_gguf_audio_type: cannot parse {path}: {e}")
+        return None
+
+    if csm_identity and {b"<|AUDIO|>", b"<|audio_eos|>"} <= found:
+        return "csm"
+    if b"<|startoftranscript|>" in found:
+        return "whisper"
+    if b"<audio_soft_token>" in found or b"<|audio|>" in found:
+        return "audio_vlm"
+    if bicodec:
+        return "bicodec"
+    if {
+        b"<|audio_start|>",
+        b"<|audio_end|>",
+        b"<|text_start|>",
+        b"<|text_end|>",
+    } <= found:
+        return "dac"
+    if custom_tokens > 10000:
+        return "snac"
+    return None
+
+
 def _parse_gguf_header(path: str) -> Optional[Dict[str, str]]:
     out: Dict[str, str] = {}
     try:

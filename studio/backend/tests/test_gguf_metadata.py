@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Iterable, Mapping
 
 from utils.models.gguf_metadata import (
+    detect_gguf_audio_type,
     is_mmproj_by_metadata,
     pairing_score,
     read_gguf_context_length,
@@ -277,6 +278,13 @@ def test_skips_unrelated_fields_without_breaking(tmp_path: Path):
     )
     meta = read_gguf_general_metadata(str(p))
     assert meta == {"general.basename": "Foo"}
+
+
+def test_audio_detection_rejects_trailing_truncated_metadata(tmp_path: Path):
+    token_array = struct.pack("<IIQ", _VTYPE_ARRAY, _VTYPE_STRING, 1) + _enc_string("<|startoftranscript|>")
+    trailing = _enc_string("general.description") + struct.pack("<IQ", _VTYPE_STRING, 100)
+    (path := tmp_path / "truncated.gguf").write_bytes(struct.pack("<IIQQ", _GGUF_MAGIC, 3, 0, 2) + _enc_string("tokenizer.ggml.tokens") + token_array + trailing)
+    assert detect_gguf_audio_type(str(path)) is None
 
 
 def test_metadata_is_cached(tmp_path: Path):

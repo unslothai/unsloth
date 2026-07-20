@@ -18,6 +18,7 @@ from utils.paths import (
 )
 from utils.utils import without_hf_auth
 from utils.models.gguf_metadata import (
+    detect_gguf_audio_type,
     is_mmproj_by_metadata,
     pairing_score,
     read_gguf_general_metadata,
@@ -1161,8 +1162,15 @@ def _classify_audio_capability(
     model_name: str,
     audio_type: Optional[str],
     hf_token: Optional[str] = None,
+    inspect_model_config: bool = True,
 ) -> Tuple[Optional[str], bool, bool]:
     """Return (audio_type, has_audio_input, is_chat_capable)."""
+    if not inspect_model_config:
+        return (
+            audio_type,
+            is_audio_input_type(audio_type),
+            audio_type not in _NON_CHAT_AUDIO_TYPES,
+        )
     audio_chat = False
     audio_only = False
     try:
@@ -2728,28 +2736,18 @@ class ModelConfig:
 
                 # Is this a vision/audio model, per export metadata?
                 base_is_vision = False
-                gguf_audio_type = None
-                capability_model = path
                 meta_path = gguf_dir / "export_metadata.json"
                 if meta_path.exists():
                     try:
                         meta = json.loads(meta_path.read_text())
                         base = meta.get("base_model")
                         if base:
-                            capability_model = base
                             if is_vision_model(base, hf_token = hf_token):
                                 base_is_vision = True
                                 logger.info(f"GGUF base model '{base}' is a vision model")
-                            gguf_audio_type = detect_audio_type(base, hf_token = hf_token)
                     except Exception as e:
                         logger.debug(f"Could not read export metadata: {e}")
-                if gguf_audio_type is None:
-                    gguf_audio_type = detect_audio_type(
-                        path, hf_token = hf_token, local_files_only = True
-                    )
-                gguf_audio_type, has_audio_in, is_chat_capable = _classify_audio_capability(
-                    capability_model, gguf_audio_type, hf_token
-                )
+                gguf_audio_type = detect_gguf_audio_type(gguf_file)
 
                 # Direct file selections may point into a quant subdir while
                 # mmproj-*.gguf lives at the snapshot root.
@@ -2760,6 +2758,10 @@ class ModelConfig:
                     logger.info(f"Detected mmproj for vision: {mmproj_file}")
                 elif base_is_vision:
                     logger.warning(f"Base model is vision but no mmproj file found in {gguf_dir}")
+
+                gguf_audio_type, has_audio_in, is_chat_capable = _classify_audio_capability(
+                    path, gguf_audio_type, hf_token, inspect_model_config = False
+                )
 
                 # Separate MTP drafter sibling (Gemma 4), mirroring mmproj.
                 mtp_file = detect_mtp_file(gguf_file, search_root = companion_root)
@@ -2795,6 +2797,7 @@ class ModelConfig:
                     LLAMA_SERVER_NOT_FOUND_DETAIL,
                     LlamaCppBackend,
                     LlamaServerNotFoundError,
+                    cached_gguf_for_load,
                 )
 
                 if not LlamaCppBackend._find_llama_server_binary(include_denied = True):
@@ -2812,8 +2815,20 @@ class ModelConfig:
                         variant = "Q4_K_M"  # Fallback — llama-server's own default
 
                 gguf_audio_type = detect_audio_type(identifier, hf_token = hf_token)
+                cached_gguf = cached_gguf_for_load(
+                    identifier,
+                    variant,
+                    verify_sizes = True,
+                    hf_token = hf_token,
+                )
+                if cached_gguf:
+                    embedded_audio_type = detect_gguf_audio_type(cached_gguf)
+                    gguf_audio_type = embedded_audio_type
                 gguf_audio_type, has_audio_in, is_chat_capable = _classify_audio_capability(
-                    identifier, gguf_audio_type, hf_token
+                    identifier,
+                    gguf_audio_type,
+                    hf_token,
+                    inspect_model_config = cached_gguf is None,
                 )
                 display_name = f"{identifier.split('/')[-1]} ({variant})"
                 logger.info(
