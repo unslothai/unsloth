@@ -62,8 +62,8 @@ def test_windows_version_reporter_uses_distribution_metadata():
             "-NonInteractive",
             "-Command",
             (
-                "function step { param($Label, $Value) Write-Output \"$Label $Value\" }; "
-                "function substep { param($Message, $Color) Write-Output \"WARN $Message\" }; "
+                'function step { param($Label, $Value) Write-Output "$Label $Value" }; '
+                'function substep { param($Message, $Color) Write-Output "WARN $Message" }; '
                 f"$VenvPython = '{sys.executable}'; $PackageName = 'pytest'; "
                 f"{reporter}"
             ),
