@@ -197,9 +197,9 @@ export function ResourcesTab() {
       (sum, device) => sum + (device.memory_total_gb ?? 0),
       0,
     );
-    // A device reports null usage when it is unknown (e.g. Windows ROCm perf
-    // counter unavailable). Treating null as 0 would fabricate a 0-used/full-free
-    // total, so surface the aggregate as unknown when any device is unknown.
+    // null usage = unknown (e.g. Windows ROCm perf counter unavailable); treating
+    // it as 0 fabricates a 0-used/full-free total, so mark the aggregate unknown
+    // when any device is unknown.
     const vramUsageKnown =
       devices.length > 0 &&
       devices.every((device) => isFiniteNumber(device.vram_used_gb));
@@ -368,9 +368,8 @@ export function ResourcesTab() {
         {hasGpu ? (
           metrics.devices.map((device, index) => {
             const ordinal = deviceOrdinal(device);
-            // Preserve null (unknown, e.g. Windows ROCm perf counter
-            // unavailable): coercing to 0 would render a fabricated 0 used /
-            // full free instead of unknown.
+            // Preserve null (unknown, e.g. Windows ROCm perf counter unavailable);
+            // coercing to 0 would render a fabricated 0 used / full free.
             const total = device.memory_total_gb ?? null;
             const used = device.vram_used_gb ?? null;
             const free =

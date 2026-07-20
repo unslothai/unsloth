@@ -135,12 +135,9 @@ def test_system_tab_shows_per_gpu_used(win_rocm, monkeypatch):
     assert by_idx[0]["vram_total_gb"] == 48.0
     assert by_idx[0]["vram_used_gb"] == pytest.approx(40.0, abs = 0.01)  # not 0
     assert by_idx[1]["vram_total_gb"] == 8.0  # own total
-    # The reporter's third counter (3 MiB "Basic Render Driver") makes this a
-    # hidden-adapter case: the noise filter could equally have dropped the visible
-    # 8 GiB card's real reading, so its 0.5 GiB survivor is not capacity-forced to
-    # that card (0.5 GiB fits it, but also fits a hidden adapter). Only the 40 GiB
-    # usage is forced -- it exceeds the 8 GiB card, so it can only be the 48 GiB
-    # card. The idle card reports Unknown rather than a possibly-fabricated 0.5 GiB.
+    # The 3 MiB "Basic Render Driver" counter makes this a hidden-adapter case, so
+    # the idle card's 0.5 GiB is not capacity-forced (it also fits a hidden adapter).
+    # Only the 40 GiB is forced onto the 48 GiB card; the idle card reads Unknown.
     assert by_idx[1]["vram_used_gb"] is None
     assert by_idx[1]["vram_utilization_pct"] is None
     assert all(
@@ -216,24 +213,18 @@ def test_match_adapter_reports_unknown_when_more_active_than_visible():
 
 
 def test_match_adapter_reports_unknown_when_hidden_high_use_adapter_survives_filter():
-    # HIP_VISIBLE_DEVICES exposes a single idle 8 GiB card (10 MiB used) on a host
-    # that also has a hidden 48 GiB card busy at 40 GiB. The visible card's real
-    # 10 MiB sits below the 64 MiB noise floor and is dropped, leaving the hidden
-    # card's 40 GiB as the only survivor. That 40 GiB cannot fit the 8 GiB visible
-    # device, so it must belong to the hidden card: clamping it onto the visible
-    # device would fabricate a "fully used" reading. Report unknown instead.
+    # Idle visible 8 GiB card (10 MiB, filtered as noise) beside a hidden 48 GiB
+    # card at 40 GiB. The 40 GiB survivor can't fit the 8 GiB device, so clamping
+    # it there would fabricate a fully-used reading. Report unknown.
     assert hw._match_adapter_used_to_devices([40 * GB, 10 * MiB], [8 * GB]) == [None]
     # Order of the counters must not matter.
     assert hw._match_adapter_used_to_devices([10 * MiB, 40 * GB], [8 * GB]) == [None]
 
 
 def test_match_adapter_reports_unknown_for_placeholder_fallback():
-    # Idle real GPUs (every counter below the 64 MiB noise floor) plus a Windows
-    # "Basic Render Driver" placeholder counter. non_trivial is empty, so the old
-    # `non_trivial or useds` fallback attributed a raw sub-threshold counter to a
-    # real GPU (and, with a single visible device, escaped the swap-ambiguity
-    # check). With no LUID-to-ordinal mapping the placeholder is indistinguishable
-    # from an idle GPU, so report unknown rather than fabricate.
+    # Idle GPUs (every counter below the 64 MiB floor) plus a placeholder counter.
+    # No LUID-to-ordinal mapping distinguishes the placeholder from an idle GPU, so
+    # report unknown rather than fabricate.
     # Single visible 8 GiB card idle (10 MiB) beside a 50 MiB placeholder counter.
     assert hw._match_adapter_used_to_devices([50 * MiB, 10 * MiB], [8 * GB]) == [None]
     # Order of the counters must not matter.
@@ -247,10 +238,8 @@ def test_match_adapter_reports_unknown_for_placeholder_fallback():
 
 def test_match_adapter_reports_unknown_when_usage_not_capacity_ordered():
     # 8 GiB card near full (7 GiB) beside a lightly used 48 GiB card (5 GiB). The
-    # bigger usage (7) still fits the smaller card, so ranking cannot tell which
-    # LUID is which torch ordinal: both [8<-7, 48<-5] and [8<-5, 48<-7] are
-    # feasible. Without a verified mapping, report unknown rather than swap the
-    # per-index values that routes/training_vram.py consumes.
+    # bigger usage still fits the smaller card, so both [8<-7, 48<-5] and
+    # [8<-5, 48<-7] are feasible; without a verified mapping, report unknown.
     assert hw._match_adapter_used_to_devices([7 * GB, 5 * GB], [8 * GB, 48 * GB]) == [None, None]
     # Device order must not matter (same physical situation, ordinals flipped).
     assert hw._match_adapter_used_to_devices([7 * GB, 5 * GB], [48 * GB, 8 * GB]) == [None, None]
@@ -264,13 +253,10 @@ def test_match_adapter_reports_unknown_when_usage_not_capacity_ordered():
 
 
 def test_match_adapter_reports_unknown_when_hidden_usage_fits_visible_card():
-    # Round-4 hole (Codex 3610843300): with a hidden adapter present, a survivor
-    # that merely *fits* a visible card must NOT be pinned onto it. Two visible
-    # cards at 48/8 GiB using 40 GiB / 10 MiB beside a hidden 6 GiB adapter: the
-    # 10 MiB drops below the noise floor and the hidden 6 GiB "fits" the idle 8 GiB
-    # card, so the old ranking fabricated [40, 6]. The 6 GiB is not capacity-forced
-    # onto the 8 GiB card (it also fits the hidden adapter), so that card must read
-    # Unknown. Only the 40 GiB usage is forced (it exceeds the 8 GiB card).
+    # With a hidden adapter present, a survivor that merely *fits* a visible card
+    # must NOT be pinned onto it. Two visible cards (48/8 GiB) at 40 GiB / 10 MiB
+    # beside a hidden 6 GiB adapter: the 6 GiB fits the idle 8 GiB card but isn't
+    # capacity-forced, so that card reads Unknown; only 40 GiB is forced.
     assert hw._match_adapter_used_to_devices([40 * GB, 10 * MiB, 6 * GB], [48 * GB, 8 * GB]) == [
         40 * GB,
         None,
@@ -280,30 +266,23 @@ def test_match_adapter_reports_unknown_when_hidden_usage_fits_visible_card():
         40 * GB,
         None,
     ]
-    # A single visible card with a hidden adapter can never be attributed: even a
-    # fitting survivor could be the hidden GPU's usage while the visible card is
-    # idle (its true reading filtered as noise).
+    # A single visible card with a hidden adapter is never attributable: a fitting
+    # survivor could be the hidden GPU's while the visible card is idle.
     assert hw._match_adapter_used_to_devices([6 * GB, 10 * MiB], [8 * GB]) == [None]
 
 
 def test_match_adapter_capacity_forced_matrix():
-    """Exhaustive hidden-adapter matrix: emit a value only when it is capacity-forced
-    AND the supra-threshold counters number exactly the visible devices.
+    """Exhaustive hidden-adapter matrix for the capacity-forced rule.
 
-    The invariant: in the hidden-adapter branch (more raw counters than visible
-    devices) concrete values are emitted only when the supra-threshold counters
-    equal the visible-device count (every visible card has one real reading, the
-    extras were sub-threshold placeholders), and then only for a device whose ranked
-    usage strictly exceeds every smaller visible card's capacity. If any visible
-    card is idle (fewer supra-threshold counters than devices) a survivor could be
-    the hidden GPU's usage, so every device reports unknown; the smallest card and
-    any merely-fitting usage stay unknown too.
+    A value is emitted only when the supra-threshold counters number exactly the
+    visible devices AND a device's ranked usage strictly exceeds every smaller
+    card's capacity. Otherwise (a visible card idle, a merely-fitting usage, or the
+    smallest card) every device reports unknown.
     """
     m = hw._match_adapter_used_to_devices
     # -- exactly-n supra-threshold counters, capacity-forced survivors are kept - #
-    # The reporter shape (40 GiB loaded, 0.5 GiB idle-but-supra survivor, tiny
-    # placeholder): both visible cards have a real reading, so the extra 3 MiB was a
-    # placeholder. 40 GiB forced onto the 48 GiB card, 0.5 GiB not forced -> None.
+    # Both visible cards have a real reading (the 3 MiB is a placeholder): 40 GiB
+    # forced onto the 48 GiB card, 0.5 GiB not forced -> None.
     assert m([40 * GB, 0.5 * GB, 3 * MiB], [48 * GB, 8 * GB]) == [40 * GB, None]
     # Three visible cards all active (supra-threshold) + placeholder: 40 > 24 and
     # 20 > 8, both forced; the 8 GiB card is not forced -> None.
@@ -313,9 +292,7 @@ def test_match_adapter_capacity_forced_matrix():
         None,
     ]
     # -- fewer supra-threshold counters than visible cards -> all unknown ------ #
-    # A visible card is idle, so a lone large survivor could be the hidden GPU's:
-    # (Codex 3610843300 hardened further -- even the "forced" 40 is not attributable
-    # when the other visible card is idle rather than merely fitting.)
+    # A visible card is idle, so even a "forced" 40 could be the hidden GPU's.
     assert m([40 * GB, 3 * MiB, 3 * MiB], [48 * GB, 8 * GB]) == [None, None]
     assert m([40 * GB, 10 * MiB, 10 * MiB], [48 * GB, 8 * GB]) == [None, None]
     assert m([40 * GB, 20 * GB, 3 * MiB, 3 * MiB], [48 * GB, 24 * GB, 8 * GB]) == [
@@ -360,11 +337,9 @@ def test_perf_counter_parser_and_sentinel(monkeypatch):
 # Unified-memory (Strix Halo APU) total reconciliation (Codex #7238)
 # ----------------------------------------------------------------------------- #
 def test_unified_memory_adopts_torch_total_even_when_used_unknown():
-    """On a Windows ROCm unified-memory APU, torch's used is None (the free==total
-    sentinel) while its total (the full GTT pool) stays authoritative. The
-    correction must still adopt that larger total instead of keeping amd-smi's
-    small dedicated carve-out, otherwise the card underreports its capacity;
-    only used stays at amd-smi's figure when torch's is unknown (Codex #7238)."""
+    """Windows ROCm unified-memory APU: torch's used is None but its total (the full
+    GTT pool) is authoritative. The correction must still adopt the larger total;
+    used stays at amd-smi's figure when torch's is unknown."""
     metrics = {"vram_total_gb": 8.0, "vram_used_gb": 2.0, "vram_utilization_pct": 25.0}
     hw._apply_unified_memory_correction(metrics, {"total_gb": 124.0, "used_gb": None, "index": 0})
     assert metrics["vram_total_gb"] == 124.0  # full unified pool, not the 8 GB carve-out

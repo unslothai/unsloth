@@ -70,9 +70,9 @@ export function FloatingMonitor() {
     (sum, device) => sum + (device.memory_total_gb ?? 0),
     0,
   );
-  // A device reports null usage when it is unknown (e.g. Windows ROCm perf
-  // counter unavailable). Treating null as 0 would fabricate a 0-used/full-free
-  // readout, so surface the aggregate as unknown when any device is unknown.
+  // null usage = unknown (e.g. Windows ROCm perf counter unavailable); treating
+  // it as 0 fabricates a 0-used/full-free readout, so mark the aggregate unknown
+  // when any device is unknown.
   const vramUsageKnown =
     devices.length > 0 &&
     devices.every((device) => Number.isFinite(device.vram_used_gb));

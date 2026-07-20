@@ -540,15 +540,14 @@ def _torch_get_physical_gpu_count() -> Optional[int]:
 def _torch_get_per_device_info(device_indices: list[int]) -> list[Dict[str, Any]]:
     """Query torch for per-GPU name, total VRAM, and used VRAM.
 
-    ``used_gb`` is ``None`` when untrustworthy: Windows ROCm ``hipMemGetInfo``
-    reports ``free == total`` even with a model resident (ROCm/ROCm#1909), so a 0
-    there means "unknown", not "empty". ``total_gb`` stays authoritative.
+    ``used_gb`` is ``None`` on Windows ROCm when ``hipMemGetInfo`` reports
+    ``free == total`` (ROCm/ROCm#1909): that 0 means unknown, not empty.
     """
     mod, _ = _torch_get_device_module()
     if mod is None:
         return []
 
-    # free==total is a Windows-ROCm-only quirk; other backends keep used = total - free.
+    # free==total is a Windows-ROCm-only quirk.
     _win_rocm = sys.platform == "win32" and IS_ROCM
     devices = []
     for ordinal, phys_idx in enumerate(device_indices):
@@ -561,8 +560,7 @@ def _torch_get_per_device_info(device_indices: list[int]) -> list[Dict[str, Any]
             if hasattr(mod, "mem_get_info"):
                 free_bytes, total_bytes = mod.mem_get_info(ordinal)
                 used_bytes = total_bytes - free_bytes
-                # Windows ROCm free==total is the broken-API sentinel, not a proven
-                # idle GPU; mark used unknown so callers never show a bogus 0.
+                # free==total is the broken-API sentinel, not an idle GPU.
                 if _win_rocm and free_bytes == total_bytes:
                     used_bytes = None
             else:
@@ -737,30 +735,26 @@ def _rocm_linux_sysfs_vram_gb() -> tuple[Optional[float], Optional[float]]:
 
 
 # ── Windows AMD/ROCm per-adapter VRAM (issue #7072) ──────────────────────────
-# amd-smi is disabled here and hipMemGetInfo reports free==total, so read used
-# from the "GPU Adapter Memory" perf counters (Task Manager's source), instanced
-# per adapter by LUID, and take each total from torch properties (the counter set
-# has no per-adapter total). This shows every GPU instead of summing all adapters
-# into one fake device with only GPU 0's total.
+# amd-smi is disabled and hipMemGetInfo reports free==total, so read used from the
+# per-LUID "GPU Adapter Memory" perf counters (Task Manager's source) and take each
+# total from torch properties. Shows every GPU instead of summing all adapters into
+# one fake device with GPU 0's total.
 
-# Placeholder adapters (Basic Render Driver / idle iGPU) are dropped only when
-# they would outnumber the real torch devices.
+# Placeholder adapters (Basic Render Driver / idle iGPU) are dropped only when they
+# would outnumber the real torch devices.
 _ROCM_WIN_ADAPTER_MIN_BYTES = 64 * 1024 * 1024  # 64 MiB
 
 
 def _rocm_windows_perf_counter_vram_by_adapter() -> Optional[list[tuple[str, float]]]:
     """Per-adapter dedicated VRAM usage on Windows via Performance Counters.
 
-    Enumerates each ``\\GPU Adapter Memory(<instance>)\\Dedicated Usage`` instance
-    (one per adapter, named by LUID) rather than summing them. Returns
-    ``[(instance_name, used_bytes)]``, or ``None`` when the counter is unavailable,
-    localized, or empty so callers fall back instead of reporting a wrong 0.
+    Returns ``[(instance_name, used_bytes)]`` (one per LUID-named adapter), or
+    ``None`` when the counter is unavailable/localized/empty so callers fall back.
     """
     if platform.system() != "Windows":
         return None
     try:
-        # Emit "<InstanceName>|<CookedValue>" per sample, or a sentinel when the
-        # counter set is absent/localized so we return None (not a 0 sum).
+        # Emit "<InstanceName>|<CookedValue>" per sample, or a __NONE__ sentinel.
         ps = (
             "$s=(Get-Counter '\\GPU Adapter Memory(*)\\Dedicated Usage'"
             " -ErrorAction SilentlyContinue).CounterSamples;"
@@ -796,42 +790,26 @@ def _rocm_windows_perf_counter_vram_by_adapter() -> Optional[list[tuple[str, flo
 def _match_adapter_used_to_devices(
     adapter_useds: list[float], device_totals: list[float]
 ) -> list[Optional[float]]:
-    """Attribute per-adapter used bytes to torch devices (by capacity ranking).
+    """Attribute per-adapter used bytes to torch devices by capacity ranking.
 
     Windows shares no key between LUID counter instances and torch ordinals, so
-    usage is paired with capacity: the largest usage goes to the largest device,
-    clamped to that total. That pairing is trustworthy only when capacity *forces*
-    it (a usage larger than every smaller device can sit on just one card). When a
-    smaller-capacity device could equally hold a strictly larger usage (e.g. an
-    8 GiB card near full beside a lightly used 48 GiB card), the two values could
-    be swapped without violating any capacity, so the ranking is a guess. There is
-    no verified LUID-to-torch mapping to break the tie, and a wrong guess both
-    mislabels the System tab and feeds ``routes/training_vram.py`` a wrong
-    per-index free value, so report unknown (``None``) rather than fabricate.
+    the largest usage is paired with the largest device and clamped to its total.
+    That pairing is trusted only when capacity *forces* it (a usage exceeding every
+    smaller device fits only one card). If a smaller device could equally hold a
+    strictly larger usage, the two could be swapped without violating capacity, so
+    without a verified LUID-to-torch mapping the ranking is a guess; a wrong guess
+    mislabels the System tab and feeds ``routes/training_vram.py`` a wrong per-index
+    free, so report unknown (``None``) rather than fabricate.
 
-    When there are more raw counters than visible devices at least one adapter
-    belongs to a hidden GPU (outside the visibility mask) or a non-GPU display
-    adapter, and the sub-threshold noise filter may itself have dropped a
-    *visible* card's real reading. A surviving counter that merely *fits* a visible
-    card can actually be the hidden GPU's usage pinned onto an idle visible card
-    whose true (filtered) reading was tiny -- e.g. two visible cards at 48/8 GiB
-    using 40 GiB / 10 MiB beside a hidden 6 GiB adapter: the 10 MiB drops out and
-    the 6 GiB "fits" the 8 GiB card even though that card is idle. Worse, if BOTH
-    visible readings fall below the noise floor a lone large survivor could belong
-    to the hidden GPU entirely while both visible cards are idle. So in the
-    hidden-adapter case concrete values are emitted only when the supra-threshold
-    counters number EXACTLY the visible devices: then every visible card has one
-    real reading and the extras were sub-threshold placeholders, making a
-    capacity-ranked bijection plausible. When the supra-threshold counters are
-    fewer than the visible devices (a visible card is idle, so a survivor could be
-    the hidden device's) or more (a masked GPU is actively using VRAM), no counter
-    can be attributed, so every device reports unknown. Even in the exactly-n case a
-    value is emitted for a device ONLY when capacity forces it: the ranked usage
-    must exceed every smaller visible card's capacity, so no smaller visible card
-    could account for it (best-effort -- a contrived hidden-busy while a visible
-    card is idle can still mislead, but the common loaded-card case is correct). The
-    smallest visible card and any usage that merely fits report unknown. Unmatched
-    devices get ``None``. Returns a list aligned to ``device_totals``.
+    More raw counters than visible devices means a hidden GPU (outside the mask) or
+    a display adapter is present, and the noise filter may have dropped a visible
+    card's real reading, so a survivor that merely *fits* a visible card could be
+    the hidden GPU's usage pinned onto an idle card. Values are therefore emitted
+    only when the supra-threshold counters number EXACTLY the visible devices (every
+    card has one real reading, the extras were placeholders) AND capacity forces the
+    mapping; otherwise every device reports unknown. Best-effort: a hidden-busy card
+    beside an idle visible one can still mislead, but the common loaded-card case
+    (#7072) is correct. Returns a list aligned to ``device_totals``.
     """
     n = len(device_totals)
     if n == 0:
@@ -840,60 +818,37 @@ def _match_adapter_used_to_devices(
     ranked_positions = sorted(range(n), key = lambda i: -device_totals[i])
     ranked_totals = [device_totals[pos] for pos in ranked_positions]
     assigned: list[Optional[float]]
-    # More raw counters than visible devices means at least one adapter belongs to
-    # a GPU outside the visibility mask (or a non-GPU display adapter). Measured on
-    # the raw count *before* the noise filter, because a genuinely idle visible card
-    # can itself sit below the sub-threshold noise floor.
+    # More raw counters than visible devices -> a hidden/display adapter is present.
+    # Measured before the noise filter, since an idle visible card can sit below it.
     if len(useds) > n:
         non_trivial = [u for u in useds if u >= _ROCM_WIN_ADAPTER_MIN_BYTES]
         if len(non_trivial) != n:
-            # Not a clean visible-set bijection, so no counter can be attributed to
-            # a specific visible card. With MORE supra-threshold counters than
-            # visible cards a GPU outside the visibility mask is actively using VRAM;
-            # with FEWER, at least one visible card is idle (its reading below the
-            # noise floor) and a surviving counter could be that hidden device's
-            # usage rather than the idle card's -- e.g. two visible 48/8 GiB cards
-            # both idle beside a hidden GPU using 40 GiB looks identical to the
-            # 48 GiB card loaded to 40 GiB, so pinning 40 onto a visible card would
-            # fabricate a reading. (This also subsumes the placeholder-only case
-            # where every counter is sub-threshold.) No LUID-to-ordinal mapping
-            # exists to break the tie, so report unknown rather than fabricate.
+            # Not a clean visible-set bijection: more supra-threshold counters than
+            # cards means a masked GPU is busy; fewer means a visible card is idle
+            # and a survivor could be the hidden device's. Either way no counter can
+            # be attributed to a specific card, so report unknown.
             return [None] * n
-        # Exactly n supra-threshold counters: the extra raw adapters were all
-        # sub-threshold placeholders and every visible card has one supra-threshold
-        # reading, so a capacity-ranked bijection is plausible. Emit a value only
-        # where capacity forces it (best-effort: a contrived hidden-busy while a
-        # visible card is idle can still mislead, but the common loaded-card case,
-        # which is what #7072 reports, is attributed correctly).
+        # Exactly n supra-threshold counters: the extras were placeholders and every
+        # card has one reading, so a capacity-ranked bijection is plausible.
         useds = non_trivial
         ranked_useds = [useds[rank] for rank in range(n)]
-        # A kept usage that exceeds its own ranked visible capacity is a hidden,
-        # larger GPU whose counter outlived a visible card's filtered reading;
-        # clamping it onto the smaller visible card would fabricate a fully-used
-        # reading (a hidden 48 GiB card at 40 GiB shown as a visible 8 GiB card
-        # fully used), so report unknown for every device.
+        # A usage exceeding its own ranked capacity is a hidden larger GPU; clamping
+        # it onto the smaller visible card would fabricate a fully-used reading.
         for rank in range(n):
             if ranked_useds[rank] > ranked_totals[rank]:
                 return [None] * n
-        # Emit a value only where capacity forces the mapping: the ranked usage
-        # must strictly exceed the next-smaller (and thus every smaller) visible
-        # capacity, so it cannot be a smaller visible card's reading or a dropped
-        # sub-threshold one. The smallest card (no smaller capacity to exceed) and
-        # any usage that merely fits stay unknown. This keeps the classic single
-        # dominant-usage case (40 GiB across 48/8 GiB -> [40, None]) while refusing
-        # to pin a hidden adapter's fitting usage onto an idle visible card.
+        # Capacity forces the mapping only when the ranked usage exceeds the
+        # next-smaller (thus every smaller) capacity. The smallest card and any
+        # merely-fitting usage stay unknown. Keeps 40 GiB over 48/8 GiB -> [40, None].
         assigned = [None] * n
         for rank, pos in enumerate(ranked_positions):
             if rank + 1 < n and ranked_useds[rank] > ranked_totals[rank + 1]:
                 assigned[pos] = min(ranked_useds[rank], device_totals[pos])
         return assigned
-    # No hidden adapters: every counter belongs to a visible card, so the capacity
-    # ranking has to be a permutation of the visible set.
+    # No hidden adapters: every counter is a visible card, so ranking is a permutation.
     ranked_useds = [useds[rank] if rank < len(useds) else 0.0 for rank in range(n)]
-    # Ambiguous whenever a strictly larger usage would also fit the next
-    # smaller-capacity device: those two values could be swapped without breaking
-    # any capacity, so ranking cannot know which card actually holds which. No
-    # verified LUID->ordinal mapping exists to resolve it -> report unknown.
+    # Ambiguous if a strictly larger usage also fits the next smaller card: the two
+    # could be swapped without breaking capacity, so ranking can't tell them apart.
     for rank in range(n - 1):
         upper, lower = ranked_useds[rank], ranked_useds[rank + 1]
         if upper > lower and upper <= ranked_totals[rank + 1]:
@@ -918,8 +873,7 @@ def _rocm_windows_per_device_vram(device_indices: list[int]) -> list[Dict[str, A
     mod, _ = _torch_get_device_module()
     if mod is None:
         return []
-    # Totals/names from torch properties, not mem_get_info (its free==total quirk
-    # would zero used); totals stay correct regardless.
+    # Totals/names from torch properties (mem_get_info's free==total quirk zeroes used).
     dev_meta: list[Dict[str, Any]] = []
     for ordinal, phys_idx in enumerate(device_indices):
         try:
@@ -1221,13 +1175,10 @@ def _apply_unified_memory_correction(
     torch_total_gb = torch_info["total_gb"]
     torch_used_gb = torch_info.get("used_gb")
     smi_total_gb = device_metrics.get("vram_total_gb") or 0.0
-    # torch sees the full unified (GTT) pool; amd-smi reports only the dedicated
-    # carve-out. Adopt torch's larger total independently of used: on Windows ROCm
-    # torch_used is None (the free==total sentinel) while its total stays
-    # authoritative, so gating the total on used would keep the small amd-smi
-    # carve-out and underreport the card's real capacity. Overwrite used only when
-    # torch's is known (else keep amd-smi's dedicated-usage figure) and recompute
-    # utilization against whatever used remains.
+    # torch sees the full unified (GTT) pool; amd-smi only the dedicated carve-out.
+    # Adopt torch's larger total regardless of used: on Windows ROCm torch_used is
+    # None (free==total sentinel) but its total stays authoritative. Overwrite used
+    # only when torch's is known, then recompute utilization against whatever remains.
     if torch_total_gb > smi_total_gb:
         device_metrics["vram_total_gb"] = torch_total_gb
         if torch_used_gb is not None:
@@ -1302,9 +1253,9 @@ def get_visible_gpu_utilization() -> Dict[str, Any]:
                 _reconcile_rocm_unified_memory(result, numeric_ids)
             return result
 
-        # Windows AMD/ROCm (issue #7072): the System tab's VRAM source. Without
-        # this branch the torch fallback below reports used==0 (free==total), so
-        # read per-adapter Dedicated Usage instead; total from torch properties.
+        # Windows AMD/ROCm (issue #7072): the System tab's VRAM source. The torch
+        # fallback below would report used==0 (free==total), so read per-adapter
+        # Dedicated Usage instead; total from torch properties.
         if IS_ROCM and platform.system() == "Windows":
             win_numeric_ids = parent_visible_spec.get("numeric_ids")
             if win_numeric_ids:
