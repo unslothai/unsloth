@@ -195,13 +195,30 @@ def test_local_only_load_fails_closed_offline_never_hitting_the_hub(monkeypatch,
     (stray / "archive" / "pytorch_model.bin").write_bytes(b"\0")
     assert _evaluate(stray) is False
 
-    # A pickle in a real MODULE load root (a subdir with config.json) and no safetensors
-    # there is a live vector -> blocked.
+    # A pickle in a real MODULE load root (a modules.json-declared Transformer subdir) and no
+    # safetensors there is a live vector -> blocked.
     modroot = tmp_path / "modroot" / "aaa"
     (modroot / "0_Transformer").mkdir(parents = True)
+    (modroot / "modules.json").write_text(
+        '[{"idx": 0, "name": "0_Transformer", "path": "0_Transformer", '
+        '"type": "sentence_transformers.models.Transformer"}]'
+    )
     (modroot / "0_Transformer" / "config.json").write_bytes(b"{}")
     (modroot / "0_Transformer" / "pytorch_model.bin").write_bytes(b"\0")
     assert _evaluate(modroot) is True
+
+    # An UNREFERENCED nested checkpoint (its own config.json + pickle) is NOT a load root: no
+    # modules.json / router_config declares it and from_pretrained never descends into it, so it
+    # must not block a model the loader reads from a clean safetensors root -- matching the online
+    # scan, which ignores the same unindexed subdir pickle. A stray config.json does not make a
+    # subdir a load root.
+    unref = tmp_path / "unref" / "aaa"
+    (unref / "checkpoint-500").mkdir(parents = True)
+    (unref / "config.json").write_bytes(b"{}")
+    (unref / "model.safetensors").write_bytes(b"\0")
+    (unref / "checkpoint-500" / "config.json").write_bytes(b"{}")
+    (unref / "checkpoint-500" / "pytorch_model.bin").write_bytes(b"\0")
+    assert _evaluate(unref) is False
 
     # A pickle in a modules.json-declared module dir WITHOUT a config.json (a WordEmbeddings
     # module: wordembedding_config.json + pytorch_model.bin) is still deserialized by the ST

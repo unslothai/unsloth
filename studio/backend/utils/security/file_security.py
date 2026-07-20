@@ -422,9 +422,13 @@ def _cached_pickle_weight_files(snap, load_subdirs = ()) -> list:
     hits: set = set()
     for directory, names in by_dir_pickle.items():
         files = by_dir_files.get(directory, {})
-        # A pickle is deserialized only at a load root (a declared module dir, load subdir, the
-        # snapshot root, or a plain from_pretrained root with config.json). Elsewhere it is unread.
-        if directory not in roots and "config.json" not in files:
+        # A pickle is deserialized only at an actual load root: the snapshot root, a declared
+        # modules.json / load_subdirs dir, or a Router child (all resolved by _st_load_roots).
+        # A stray config.json in an UNREFERENCED subdir (a nested checkpoint-500/ or archive/)
+        # does NOT make it a load root -- from_pretrained never descends into it and the ST load
+        # opens only declared modules -- so it must not block, matching the online scan which
+        # ignores the same unindexed subdir pickle.
+        if directory not in roots:
             continue
         base = [n for n in names if _PICKLE_WEIGHT_RE.match(n.lower())]
         if base and not _dir_has_loadable_safetensors(files):
