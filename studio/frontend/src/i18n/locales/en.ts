@@ -224,14 +224,17 @@ export const en = {
           "When an OpenAI-compatible request names a different downloaded GGUF, load it before serving. Off by default; unknown names keep serving the loaded model.",
         idleUnload: "Idle auto-unload",
         idleUnloadDescription:
-          "Unload the model after this many idle seconds to free VRAM; the next request reloads it. 0 keeps it loaded.",
+          "Unload the model after this many idle seconds to free VRAM; the next request reloads it. 0 keeps it loaded. Minimum 60 seconds.",
         idleNeedsEnable:
           "Turn on Switch model by request so an unloaded model reloads on next use.",
         idleActiveViaEnv:
           "Idle auto-unload is active via the UNSLOTH_MODEL_IDLE_TTL environment variable.",
         loadError: "Failed to load model auto-switch settings.",
         saveError: "Failed to save model auto-switch settings.",
-        idleError: "Enter a whole number of seconds (0 or more).",
+        idleError: "Enter 0 to keep the model loaded, or at least 60 seconds.",
+        keepKv: "Keep chat context across idle unload",
+        keepKvDescription:
+          "Save the model's KV cache to disk before an idle unload and restore it on reload, so resumed chats skip re-reading their history. Chat context is written to disk (up to 10 GB) until it is restored or cleaned up.",
       },
       previewSharing: {
         sectionTitle: "Preview sharing",

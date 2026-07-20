@@ -258,15 +258,27 @@ def test_watchdog_no_op_when_worker_superseded(monkeypatch):
 def test_new_run_gets_its_own_watchdog(monkeypatch):
     # A stale watchdog sleeping on an old proc must not stop a new run's stop from
     # creating its own watcher.
-    monkeypatch.setitem(_G, "_STOP_GRACE_S", 100.0)
-    monkeypatch.setitem(_G, "_STOP_TIMEOUT_S", 100.0)
     b = TrainingBackend()
-    _record_force_terminate(monkeypatch, b)
+    started = []
+    release = threading.Event()
+
+    def _blocked_watchdog(
+        target_proc,
+        cancel,
+        watched_job_id = None,
+    ):
+        started.append(target_proc)
+        # No timeout: the finally always releases this, so a superseded watchdog stays
+        # alive through the assertions regardless of load; as a daemon it can't hang exit.
+        release.wait()
+
+    monkeypatch.setattr(b, "_stop_watchdog_loop", _blocked_watchdog)
 
     old_proc = _FakeProc(alive = True)
     b._proc = old_proc
     b._start_stop_watchdog(cancel = False)
     first_wd = b._stop_watchdog
+    assert _wait_until(lambda: started == [old_proc])
 
     # New run: fresh worker replaces the handle; its stop must get a new watcher
     # even though the old (superseded) watchdog is still alive.
@@ -276,12 +288,12 @@ def test_new_run_gets_its_own_watchdog(monkeypatch):
     second_wd = b._stop_watchdog
 
     try:
+        assert _wait_until(lambda: started == [old_proc, new_proc])
         assert first_wd.is_alive()
         assert second_wd is not first_wd, "a new run must get its own watchdog"
         assert b._stop_watchdog_proc is new_proc
     finally:
-        old_proc._alive = False
-        new_proc._alive = False
+        release.set()
         first_wd.join(timeout = 5)
         second_wd.join(timeout = 5)
 

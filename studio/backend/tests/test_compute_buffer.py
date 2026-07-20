@@ -152,7 +152,7 @@ class TestFallback:
 
 
 class TestParallel1Default:
-    """At Studio's default --parallel 1 the buffer is negligible in pipeline."""
+    """At Unsloth's default --parallel 1 the buffer is negligible in pipeline."""
 
     def test_default_n_parallel(self):
         est = _backend()._estimate_compute_buffer_bytes() / MIB

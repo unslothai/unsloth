@@ -215,3 +215,135 @@ def test_s6_reasoning_effort_none_disables_prefill_for_enable_thinking_effort():
     swallowed = _replay_sf_reasoning_stream(events, prefilled = True)
     assert swallowed["visible"] == ""
     assert swallowed["reasoning"] == "The capital of France is Paris."
+
+
+def test_native_reasoning_streamer_selected_and_errors_raise():
+    import threading
+    import pytest
+
+    torch = pytest.importorskip("torch")
+    inf = pytest.importorskip("core.inference.inference")
+
+    class Batch(dict):
+        def to(self, _device):
+            return self
+
+    class Tok:
+        chat_template = "<|channel>thought\n...<channel|>"
+        all_special_tokens = []
+        eos_token_id = 1
+        pad_token_id = None
+        pieces = {10: "<|channel>thought\n", 11: "r", 12: "<channel|>", 13: "a"}
+
+        def __call__(self, *_args, **_kwargs):
+            return Batch({"input_ids": torch.zeros((1, 1), dtype = torch.long)})
+
+        def decode(self, ids, **_kwargs):
+            return "".join(self.pieces.get(int(token_id), "") for token_id in ids)
+
+    class Model:
+        device = "cpu"
+        generation_config = type("Cfg", (), {"eos_token_id": 1})()
+        config = generation_config
+
+        def __init__(self, fail = False):
+            self.fail = fail
+            self.kwargs = None
+
+        def generate(self, **kwargs):
+            self.kwargs = kwargs
+            streamer = kwargs["streamer"]
+            streamer.put(torch.zeros((1, 1), dtype = torch.long))
+            for token_id in [10, 11, 12, 13]:
+                streamer.put(torch.tensor([token_id]))
+                if self.fail:
+                    raise RuntimeError("boom")
+
+    backend = inf.InferenceBackend.__new__(inf.InferenceBackend)
+    backend.active_model_name = "gemma-test"
+    backend._generation_lock = threading.Lock()
+    backend.models = {"gemma-test": {"model": Model(), "tokenizer": Tok()}}
+
+    assert list(backend.generate_stream("prompt", max_new_tokens = 4))[-1] == "<think>r</think>a"
+
+    backend.models["gemma-test"]["model"] = Model(fail = True)
+
+    with pytest.raises(inf._GenerationThreadError, match = "boom"):
+        list(backend.generate_stream("prompt", max_new_tokens = 4))
+
+
+def test_text_only_vlm_fallback_resolves_native_markers_off():
+    import threading
+    import pytest
+
+    torch = pytest.importorskip("torch")
+    inf = pytest.importorskip("core.inference.inference")
+
+    class Batch(dict):
+        def to(self, _device):
+            return self
+
+    class Tokenizer:
+        all_special_tokens = []
+        eos_token_id = 1
+        pad_token_id = None
+
+        def __call__(self, *_args, **_kwargs):
+            return Batch({"input_ids": torch.zeros((1, 1), dtype = torch.long)})
+
+    class Processor:
+        chat_template = "<|channel>thought\n...<channel|>"
+        tokenizer = Tokenizer()
+
+    class Model:
+        device = "cpu"
+        generation_config = type("Cfg", (), {"eos_token_id": 1})()
+        config = generation_config
+
+        def generate(self, **_kwargs):
+            return None
+
+    class EmptyStreamer:
+        def __next__(self):
+            raise StopIteration
+
+        def end(self):
+            return None
+
+    captured = {}
+    backend = inf.InferenceBackend.__new__(inf.InferenceBackend)
+    backend.active_model_name = "vision-test"
+    backend._generation_lock = threading.Lock()
+    backend.models = {
+        "vision-test": {
+            "model": Model(),
+            "processor": Processor(),
+            "tokenizer": Processor(),
+        }
+    }
+    backend.format_chat_prompt = lambda *_args, **_kwargs: "manual text-only prompt"
+
+    def make_streamer(*_args, **kwargs):
+        captured.update(kwargs)
+        return EmptyStreamer()
+
+    backend._make_text_streamer = make_streamer
+
+    assert (
+        list(
+            backend._generate_vision_response(
+                messages = [{"role": "user", "content": "hello"}],
+                system_prompt = "",
+                image = None,
+                temperature = 0.7,
+                top_p = 0.9,
+                top_k = 40,
+                min_p = 0.0,
+                max_new_tokens = 1,
+                repetition_penalty = 1.0,
+            )
+        )
+        == []
+    )
+    assert captured["reasoning_channel_markers"] is None
+    assert captured["reasoning_channel_markers_resolved"] is True

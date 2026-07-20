@@ -140,7 +140,7 @@ def should_use_mlx_training_backend(*, device: Optional[Any] = None) -> bool:
 
 
 def _build_training_worker_config(values: dict[str, Any]) -> dict[str, Any]:
-    """Build the normalized worker config shared by Studio and the CLI adapter."""
+    """Build the normalized worker config shared by Unsloth and the CLI adapter."""
     config = {
         "model_name": values["model_name"],
         "project_name": values.get("project_name"),
@@ -307,7 +307,7 @@ PLOT_HEIGHT = 3.5
 
 @dataclass
 class TrainingProgress:
-    """Shared training progress payload for Studio and backend-aware trainers."""
+    """Shared training progress payload for Unsloth and backend-aware trainers."""
 
     epoch: float = 0
     step: int = 0
@@ -328,7 +328,7 @@ class TrainingProgress:
 
 
 class _MLXTrainerAdapter:
-    """Adapts the legacy UnslothTrainer API to the shared Studio MLX worker path."""
+    """Adapts the legacy UnslothTrainer API to the shared Unsloth MLX worker path."""
 
     def __init__(self):
         self.model = None
