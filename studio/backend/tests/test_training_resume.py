@@ -28,6 +28,18 @@ def _load_resume_module():
 resume = _load_resume_module()
 
 
+def test_resume_request_accepts_sanitized_null_target_modules():
+    from models.training import TrainingStartRequest
+    request = TrainingStartRequest(
+        model_name = "unsloth/Qwen3-0.6B",
+        training_type = "Full Finetuning",
+        format_type = "alpaca",
+        target_modules = None,
+    )
+
+    assert request.target_modules == []
+
+
 def _write_checkpoint(out: Path, step: int) -> Path:
     checkpoint = out / f"checkpoint-{step}"
     checkpoint.mkdir(parents = True, exist_ok = True)
