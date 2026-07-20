@@ -416,14 +416,14 @@ export function ChatSettingsPanel({
   const loadedEffectiveContext = customContextLength ?? ggufContextLength;
   const showSpecFallback =
     !isExternalModel &&
-    isLoadedGguf &&
+    isGguf &&
     specFallbackReason != null &&
     (speculativeType === "auto" ||
       speculativeType === "mtp" ||
       speculativeType === "mtp+ngram");
   const showContextVramWarning =
     !isExternalModel &&
-    isLoadedGguf &&
+    isGguf &&
     ggufMaxContextLength != null &&
     loadedEffectiveContext != null &&
     loadedEffectiveContext > ggufMaxContextLength;

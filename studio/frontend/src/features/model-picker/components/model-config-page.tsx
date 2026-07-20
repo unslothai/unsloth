@@ -714,8 +714,22 @@ export function ModelConfigPage({
     normalizeMaxSeqLength(config.maxSeqLength) ??
     clampMaxSeqLength(initialMaxSeqLength, nativeMaxSeqLength);
   const maxSeqLengthMax = Math.max(nativeMaxSeqLength, maxSeqLengthValue);
+  // An already-loaded GGUF that was auto-fit below native shows activeLoadedContext
+  // while customContextLength stays null. If the user fixes GPU Layers (Manual)
+  // and remembers, pin that shown context so a later fresh load keeps the fitted
+  // placement instead of sending native/0 for fixed layers and recreating the OOM
+  // the same-model reload workaround avoids.
+  const pinFixedLayerContext =
+    target.isGguf &&
+    config.gpuMemoryMode === "manual" &&
+    config.gpuLayers != null &&
+    config.gpuLayers >= 0 &&
+    config.customContextLength == null &&
+    activeLoadedContext != null;
   const runtimeConfig = target.isGguf
-    ? config
+    ? pinFixedLayerContext
+      ? { ...config, customContextLength: activeLoadedContext }
+      : config
     : {
         ...config,
         maxSeqLength: maxSeqLengthValue,

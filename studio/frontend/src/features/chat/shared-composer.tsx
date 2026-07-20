@@ -1138,9 +1138,13 @@ export function SharedComposer({
           ownConfig.selectedGpuIds !== undefined
             ? reconcilePersistedGpuIds(ownConfig.selectedGpuIds)
             : compareLoadKnobs.selectedGpuIds;
-        const effectiveCustomContextLength = ownRemembered
-          ? ownConfig.customContextLength
-          : compareLoadKnobs.customContextLength;
+        // A pane's context comes from its own config only: a saved pin, or null
+        // (Auto/native) when it has no saved context. It must not inherit the
+        // active model's shared snapshot -- resolveFitMaxSeqLength would treat
+        // that as an explicit pin and load this pane at the other model's
+        // context (changing VRAM/results or OOMing), contradicting the
+        // Auto/native its settings show and the single-model load path.
+        const effectiveCustomContextLength = ownConfig.customContextLength;
         let loadTrustRemoteCode = trustRemoteCode;
         let approvedRemoteCodeFingerprint: string | null = null;
         const isAlreadyActive =

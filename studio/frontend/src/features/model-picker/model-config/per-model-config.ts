@@ -100,8 +100,11 @@ function normalizeGpuFields(partial: RawConfig): {
     nCpuMoe?: number;
     selectedGpuIds?: number[] | null;
   } = {};
-  if (partial.gpuMemoryMode === "auto" || partial.gpuMemoryMode === "manual") {
-    out.gpuMemoryMode = partial.gpuMemoryMode;
+  // "auto" is the follow-global default; only "manual" is a real per-model
+  // override. Persisting "auto" would pin the model and stop it following later
+  // changes to the global GPU Memory preference, so drop it here.
+  if (partial.gpuMemoryMode === "manual") {
+    out.gpuMemoryMode = "manual";
   }
   if (
     typeof partial.gpuLayers === "number" &&
@@ -134,8 +137,11 @@ function canonicalizeSpeculativeType(value: string): string | null {
   if (!s) {
     return null;
   }
+  // "auto"/"default" is the follow-global sentinel; canonicalize it to null (the
+  // stored default) so it is never persisted as a per-model override and later
+  // changes to the global speculative-decoding preference keep applying.
   if (s === "auto" || s === "default") {
-    return "auto";
+    return null;
   }
   if (s === "off") {
     return "off";
