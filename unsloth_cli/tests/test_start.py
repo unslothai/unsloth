@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import shlex
 import sys
 import urllib.error
@@ -128,7 +129,7 @@ def test_install_agent_uses_powershell_on_windows(monkeypatch):
     assert ran == [["powershell", "-NoProfile", "-Command", install_hint]]
 
 
-def test_install_agent_warns_and_names_remote_source(monkeypatch, capsys):
+def test_install_agent_warns_remote_installer_is_unverified_third_party(monkeypatch, capsys):
     # Before the confirm, a remote installer must name the URL it fetches so the
     # user consents to a specific source rather than blindly accepting.
     monkeypatch.setattr(start.os, "name", "nt")
@@ -137,9 +138,23 @@ def test_install_agent_warns_and_names_remote_source(monkeypatch, capsys):
     hint = "& ([scriptblock]::Create((irm https://hermes-agent.nousresearch.com/install.ps1))) -SkipSetup"
     assert start._install_agent("hermes", hint) is None
     err = capsys.readouterr().err
+    assert "Security warning" in err
+    assert "unverified third-party script" in err
     assert "https://hermes-agent.nousresearch.com/install.ps1" in err
-    assert "download and RUN" in err
-    assert "signature or hash" in err
+    assert "Unsloth does not pin or verify the downloaded content" in err
+    assert "Continue only if you trust this source" in err
+
+
+def test_install_agent_reports_immutable_remote_installer_pin(monkeypatch, capsys):
+    monkeypatch.setattr(start.os, "name", "posix")
+    monkeypatch.setattr(start.sys, "stdin", SimpleNamespace(isatty = lambda: True))
+    monkeypatch.setattr(start.typer, "confirm", lambda *a, **k: False)
+    assert start._install_agent("hermes", start._HERMES_POSIX_INSTALL_HINT) is None
+    err = capsys.readouterr().err
+    assert start._HERMES_INSTALL_COMMIT in err
+    assert "immutable upstream commit" in err
+    assert "does not independently verify or sandbox it" in err
+    assert "does not pin or verify" not in err
 
 
 def test_install_agent_warns_for_package_installer(monkeypatch, capsys):
@@ -160,8 +175,8 @@ def test_hermes_install_hint_is_windows_native_on_windows(monkeypatch):
     # Scriptblock form so `-SkipSetup` reaches the installer and the interactive
     # setup wizard is skipped during the unattended `unsloth start hermes` run.
     assert start._hermes_install_hint() == (
-        "& ([scriptblock]::Create((irm https://hermes-agent.nousresearch.com/install.ps1)))"
-        " -SkipSetup"
+        f"& ([scriptblock]::Create((irm {start._HERMES_INSTALL_BASE}/install.ps1)))"
+        f" -SkipSetup -Commit {start._HERMES_INSTALL_COMMIT}"
     )
 
 
@@ -170,9 +185,18 @@ def test_hermes_install_hint_is_bash_on_posix(monkeypatch):
 
     # `bash -s -- --skip-setup` forwards the skip flag to the piped installer.
     assert start._hermes_install_hint() == (
-        "curl -fsSL https://raw.githubusercontent.com/NousResearch/hermes-agent"
-        "/main/scripts/install.sh | bash -s -- --skip-setup"
+        f"curl -fsSL {start._HERMES_INSTALL_BASE}/install.sh | bash -s --"
+        f" --skip-setup --commit {start._HERMES_INSTALL_COMMIT}"
     )
+
+
+def test_hermes_install_hints_pin_script_and_checkout_to_full_commit():
+    commit = start._HERMES_INSTALL_COMMIT
+    assert re.fullmatch(r"[0-9a-f]{40}", commit)
+    for hint in (start._HERMES_WINDOWS_INSTALL_HINT, start._HERMES_POSIX_INSTALL_HINT):
+        assert hint.count(commit) == 2
+        assert "/main/" not in hint
+        assert "hermes-agent.nousresearch.com" not in hint
 
 
 def test_refresh_windows_path_noop_off_windows(monkeypatch):
