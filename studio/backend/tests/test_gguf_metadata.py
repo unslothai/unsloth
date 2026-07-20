@@ -10,6 +10,8 @@ import struct
 from pathlib import Path
 from typing import Iterable, Mapping
 
+import pytest
+
 from utils.models.gguf_metadata import (
     detect_gguf_audio_type,
     is_mmproj_by_metadata,
@@ -292,6 +294,19 @@ def test_audio_detection_rejects_trailing_truncated_metadata(tmp_path: Path):
         + trailing
     )
     assert detect_gguf_audio_type(str(path)) is None
+
+
+@pytest.mark.parametrize(("has_vision", "expected"), [(False, "asr"), (True, None), (None, None)])
+def test_qwen3_audio_projector_distinguishes_asr_from_omni(tmp_path: Path, has_vision, expected):
+    extra_bools = {"clip.has_audio_encoder": True}
+    if has_vision is not None:
+        extra_bools["clip.has_vision_encoder"] = has_vision
+    path = _write_synthetic_gguf(
+        tmp_path / "mmproj.gguf",
+        {"general.architecture": "clip", "clip.audio.projector_type": "qwen3a"},
+        extra_bools = extra_bools,
+    )
+    assert detect_gguf_audio_type(str(path)) == expected
 
 
 def test_metadata_is_cached(tmp_path: Path):

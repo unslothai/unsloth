@@ -22,6 +22,7 @@ from utils.models.gguf_metadata import (
     is_mmproj_by_metadata,
     pairing_score,
     read_gguf_general_metadata,
+    read_mmproj_audio_capability,
 )
 import structlog
 from loggers import get_logger
@@ -594,13 +595,26 @@ def _build_detection_sets():
 ) = _build_detection_sets()
 _NON_CHAT_AUDIO_MODEL_TYPES = _AUDIO_ONLY_MODEL_TYPES | {
     "clap",
+    "clvp",
     "dac",
     "encodec",
+    "gemma3n_audio",
+    "jukebox",
     "mimi",
+    "parakeet_encoder",
+    "qwen2_audio_encoder",
     "snac",
+    "speech_to_text_2",
+    "univnet",
+    "voxtral_encoder",
     "xcodec",
 }
 _AUDIO_CHAT_THINKER_MODEL_TYPES = frozenset({"qwen2_5_omni", "qwen3_omni_moe"})
+_AUDIO_CHAT_RAW_MODEL_TYPES = _AUDIO_CHAT_THINKER_MODEL_TYPES | {
+    "granite_speech",
+    "qwen2_audio",
+    "voxtral",
+}
 
 # Pre-computed .venv_t5 paths and backend dir for subprocess version switching.
 # Vision check uses the Gemma 4 5.5 sidecar for existing Gemma 4 architectures.
@@ -1184,6 +1198,7 @@ def _classify_audio_capability(
     audio_type: Optional[str],
     hf_token: Optional[str] = None,
     inspect_model_config: bool = True,
+    fallback_audio_type: Optional[str] = None,
 ) -> Tuple[Optional[str], bool, bool]:
     """Return (audio_type, has_audio_input, is_chat_capable)."""
     if not inspect_model_config:
@@ -1194,9 +1209,11 @@ def _classify_audio_capability(
         )
     audio_chat = False
     audio_only = False
+    config_resolved = False
     try:
         config = load_model_config(model_name, use_auth = True, token = hf_token)
         model_type = getattr(config, "model_type", None)
+        config_resolved = model_type is not None
         thinker = getattr(config, "thinker_config", None)
         audio_chat = (
             model_type in _AUDIO_CHAT_THINKER_MODEL_TYPES
@@ -1215,10 +1232,16 @@ def _classify_audio_capability(
     except Exception as exc:
         logger.debug("Could not classify audio capability for '%s': %s", model_name, exc)
         model_type = _raw_config_model_type(model_name, hf_token)
+        config_resolved = (
+            model_type in _AUDIO_CHAT_RAW_MODEL_TYPES or model_type in _NON_CHAT_AUDIO_MODEL_TYPES
+        )
+        audio_chat = model_type in _AUDIO_CHAT_RAW_MODEL_TYPES
         audio_only = model_type in _NON_CHAT_AUDIO_MODEL_TYPES
 
     if audio_chat:
         return "audio_vlm", True, True
+    if audio_type is None and not config_resolved:
+        audio_type = fallback_audio_type
     return (
         audio_type,
         is_audio_input_type(audio_type),
@@ -2823,8 +2846,10 @@ class ModelConfig:
                     LLAMA_SERVER_NOT_FOUND_DETAIL,
                     LlamaCppBackend,
                     LlamaServerNotFoundError,
+                    _cached_companion_for_repo,
                     _companion_snapshot_sibling,
                     _pick_mmproj,
+                    _probe_dns_dead,
                     cached_gguf_for_load,
                 )
 
@@ -2842,25 +2867,58 @@ class ModelConfig:
                     else:
                         variant = "Q4_K_M"  # Fallback — llama-server's own default
 
-                gguf_audio_type = detect_audio_type(identifier, hf_token = hf_token)
                 cached_gguf = cached_gguf_for_load(
                     identifier,
                     variant,
                     verify_sizes = True,
                     hf_token = hf_token,
                 )
+                inspect_model_config = cached_gguf is None
+                fallback_audio_type = None
                 if cached_gguf:
                     embedded_audio_type = detect_gguf_audio_type(cached_gguf)
-                    if embedded_audio_type is None:
+                    if embedded_audio_type is None and has_vision:
                         cached_mmproj = _companion_snapshot_sibling(cached_gguf, _pick_mmproj)
-                        if cached_mmproj:
+                        offline = False
+                        if cached_mmproj is None:
+                            offline = _env_offline()
+                            offline = offline or (
+                                "HF_HUB_OFFLINE" not in os.environ and _probe_dns_dead()
+                            )
+                            if offline:
+                                cached_mmproj = _cached_companion_for_repo(
+                                    identifier, cached_gguf, _pick_mmproj
+                                )
+                            else:
+                                inspect_model_config = True
+                                fallback_mmproj = _cached_companion_for_repo(
+                                    identifier,
+                                    cached_gguf,
+                                    _pick_mmproj,
+                                    current_ref_only = True,
+                                )
+                                if fallback_mmproj and mmproj_matches_model_family(
+                                    cached_gguf, fallback_mmproj
+                                ):
+                                    fallback_audio_type = detect_gguf_audio_type(fallback_mmproj)
+                        if cached_mmproj and mmproj_matches_model_family(
+                            cached_gguf, cached_mmproj
+                        ):
                             embedded_audio_type = detect_gguf_audio_type(cached_mmproj)
+                            if (
+                                embedded_audio_type is None
+                                and read_mmproj_audio_capability(cached_mmproj) is True
+                            ):
+                                inspect_model_config = True
                     gguf_audio_type = embedded_audio_type
+                else:
+                    gguf_audio_type = detect_audio_type(identifier, hf_token = hf_token)
                 gguf_audio_type, has_audio_in, is_chat_capable = _classify_audio_capability(
                     identifier,
                     gguf_audio_type,
                     hf_token,
-                    inspect_model_config = cached_gguf is None,
+                    inspect_model_config = inspect_model_config,
+                    fallback_audio_type = fallback_audio_type,
                 )
                 display_name = f"{identifier.split('/')[-1]} ({variant})"
                 logger.info(

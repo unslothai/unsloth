@@ -74,6 +74,7 @@ from core.inference.llama_cpp import (
     gguf_load_in_flight,
     hf_gguf_load_in_flight,
 )
+from utils.models.model_config import ModelConfig
 
 
 REPO = "unsloth/gemma-test-GGUF"
@@ -454,6 +455,90 @@ class TestLoadReusesCachedCopy:
             out = backend._download_mmproj(hf_repo = REPO, near_path = str(snap / "Q4_K_M" / MAIN))
 
         assert out == str(snap / "mmproj-F16.gguf")
+
+    def test_cross_snapshot_projector_controls_cached_validation(self, hf_cache, monkeypatch):
+        requested_repo = REPO.lower()
+        main = _build_cache(hf_cache, REPO, {MAIN: 4}, snapshot_sha = "a" * 40)
+        projector = _build_cache(hf_cache, REPO, {"mmproj-F16.gguf": 2}, snapshot_sha = "b" * 40)
+        same_snapshot_mmproj = main / "mmproj-F16.gguf"
+        same_snapshot_mmproj.write_bytes(b"mmproj")
+
+        def chat_capable():
+            return ModelConfig.from_identifier(requested_repo, gguf_variant = VARIANT).is_chat_capable
+
+        with (
+            patch.object(LlamaCppBackend, "_find_llama_server_binary", return_value = "/server"),
+            patch(
+                "utils.models.model_config.resolve_cached_repo_id_case",
+                side_effect = lambda repo: repo,
+            ),
+            patch("utils.models.model_config.detect_gguf_model_remote", return_value = MAIN),
+            patch("utils.models.model_config.list_gguf_variants", return_value = ([], True)),
+            patch("core.inference.llama_cpp.cached_gguf_for_load", return_value = str(main / MAIN)),
+            patch("core.inference.llama_cpp._probe_dns_dead", return_value = True) as mock_dns,
+            patch(
+                "utils.models.model_config.detect_gguf_audio_type",
+                side_effect = lambda path: (
+                    "asr" if "mmproj" in path and path != str(same_snapshot_mmproj) else None
+                ),
+            ),
+            patch("utils.models.model_config.read_mmproj_audio_capability", return_value = True),
+            patch(
+                "utils.models.model_config.detect_audio_type",
+                side_effect = AssertionError("cached validation must not probe the tokenizer"),
+            ),
+            patch(
+                "utils.models.model_config.load_model_config",
+                return_value = _types.SimpleNamespace(
+                    model_type = "qwen3_asr",
+                    thinker_config = _types.SimpleNamespace(
+                        audio_config = object(), text_config = object()
+                    ),
+                ),
+            ),
+        ):
+            assert chat_capable() is False
+            mock_dns.assert_not_called()
+            same_snapshot_mmproj.unlink()
+
+            monkeypatch.setenv("HF_HUB_OFFLINE", "0")
+            with patch(
+                "utils.models.model_config.load_model_config", side_effect = OSError("missing")
+            ):
+                for model_type in ("qwen2_audio", "qwen3_omni_moe", "granite_speech", "voxtral"):
+                    with patch(
+                        "utils.models.model_config._raw_config_model_type",
+                        return_value = model_type,
+                    ):
+                        assert chat_capable()
+                refs = projector.parent.parent / "refs"
+                refs.mkdir()
+                (refs / "main").write_text(projector.name)
+                _build_cache(
+                    hf_cache,
+                    REPO,
+                    {"mmproj-old-F16.gguf": 2},
+                    snapshot_sha = "c" * 40,
+                )
+                with patch(
+                    "utils.models.model_config._raw_config_model_type",
+                    return_value = "future_audio",
+                ):
+                    assert chat_capable() is False
+            monkeypatch.delenv("HF_HUB_OFFLINE")
+
+            assert chat_capable() is False
+            with patch("utils.models.model_config.list_gguf_variants", return_value = ([], False)):
+                assert chat_capable() is True
+
+            with (
+                patch("core.inference.llama_cpp._probe_dns_dead", return_value = False),
+                patch(
+                    "utils.models.model_config.detect_gguf_audio_type",
+                    side_effect = lambda path: "audio_vlm" if "mmproj" in path else None,
+                ),
+            ):
+                assert chat_capable() is False
 
     def test_companion_does_not_download_during_hub_job(self, hf_cache):
         backend = LlamaCppBackend()

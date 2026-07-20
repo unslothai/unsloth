@@ -13,7 +13,6 @@ pattern used by ``detect_audio_type()``. These tests verify:
 * Exceptions that fall back to False are cached.
 """
 
-import struct
 import sys
 import types as _types
 from pathlib import Path
@@ -36,33 +35,6 @@ from utils.models.model_config import (
     _is_vision_model_uncached,
     _vision_detection_cache,
 )
-
-
-def _gguf_string(value: str) -> bytes:
-    return struct.pack("<Q", len(encoded := value.encode())) + encoded
-
-
-def _write_tokenizer_gguf(path, tokens, architecture):
-    path.parent.mkdir(parents = True, exist_ok = True)
-    values = [
-        _gguf_string("general.architecture") + struct.pack("<I", 8) + _gguf_string(architecture),
-        _gguf_string("tokenizer.ggml.tokens")
-        + struct.pack("<IIQ", 9, 8, len(tokens))
-        + b"".join(_gguf_string(token) for token in tokens),
-    ]
-    path.write_bytes(struct.pack("<IIQQ", 0x46554747, 3, 0, len(values)) + b"".join(values))
-    return path
-
-
-def _write_audio_projector_gguf(path, has_vision_encoder = False):
-    values = [
-        _gguf_string("general.architecture") + struct.pack("<I", 8) + _gguf_string("clip"),
-        _gguf_string("clip.has_vision_encoder") + struct.pack("<I?", 7, has_vision_encoder),
-        _gguf_string("clip.has_audio_encoder") + struct.pack("<I?", 7, True),
-        _gguf_string("clip.audio.projector_type") + struct.pack("<I", 8) + _gguf_string("qwen3a"),
-    ]
-    path.write_bytes(struct.pack("<IIQQ", 0x46554747, 3, 0, len(values)) + b"".join(values))
-    return path
 
 
 # Helpers
@@ -257,24 +229,6 @@ class TestLocalGgufVisionDetection:
         assert config.is_vision is True
         assert config.gguf_mmproj_file == str(mmproj.resolve())
         mock_subprocess.assert_not_called()
-
-
-def test_qwen3_projector_distinguishes_asr_from_omni(tmp_path):
-    model = _write_tokenizer_gguf(tmp_path / "Q4_K_M/qwen3-asr-Q4_K_M.gguf", [], "qwen3vl")
-    mmproj = _write_audio_projector_gguf(tmp_path / "mmproj-qwen3-asr-F16.gguf")
-
-    config = ModelConfig.from_ui_selection(str(model), None)
-
-    assert config.gguf_mmproj_file == str(mmproj)
-    assert (
-        config.audio_type,
-        config.is_audio,
-        config.has_audio_input,
-        config.is_chat_capable,
-    ) == ("asr", False, True, False)
-
-    _write_audio_projector_gguf(mmproj, has_vision_encoder = True)
-    assert ModelConfig.from_ui_selection(str(model), None).is_chat_capable is True
 
 
 # ---------------------------------------------------------------------------

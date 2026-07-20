@@ -1196,6 +1196,45 @@ def _companion_snapshot_sibling(
     return str(candidate) if candidate.is_file() else None
 
 
+def _cached_companion_for_repo(
+    hf_repo: str,
+    near_path: str,
+    pick: Callable[[list[str]], Optional[str]],
+    *,
+    current_ref_only: bool = False,
+) -> Optional[str]:
+    """Find a cached companion, preferring the main GGUF's snapshot."""
+    cached = _companion_snapshot_sibling(near_path, pick)
+    if cached:
+        return cached
+    try:
+        from utils.models.model_config import _iter_hf_cache_snapshots
+
+        near_snapshot = _snapshot_dir_of(near_path)
+        snapshots = [snap for snap in _iter_hf_cache_snapshots(hf_repo) if snap != near_snapshot]
+        if current_ref_only:
+            from huggingface_hub import try_to_load_from_cache
+
+            hf_repo = _resolve_repo_id_casing(hf_repo)
+            candidates = sorted(
+                {filename for snap in snapshots for filename in _gguf_snapshot_files(snap)}
+            )
+            while (sibling := pick(candidates)) is not None:
+                current = try_to_load_from_cache(hf_repo, sibling)
+                if isinstance(current, str) and Path(current).is_file():
+                    return current
+                candidates.remove(sibling)
+            return None
+        for snap in snapshots:
+            sibling = pick(_gguf_snapshot_files(snap))
+            if sibling:
+                if (candidate := snap / sibling).is_file():
+                    return str(candidate)
+    except Exception as e:
+        logger.debug("Cached companion lookup failed for %s: %s", hf_repo, e)
+    return None
+
+
 def _pick_mmproj(candidates: list[str]) -> Optional[str]:
     mmproj_files = sorted(
         f for f in candidates if f.lower().endswith(".gguf") and "mmproj" in Path(f).name.lower()

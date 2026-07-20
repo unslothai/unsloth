@@ -126,7 +126,7 @@ def detect_gguf_audio_type(path: str) -> Optional[str]:
     csm_identity = False
     asr_identity = False
     has_audio_encoder = False
-    has_vision_encoder = False
+    has_vision_encoder: Optional[bool] = None
     audio_projector_type = None
     custom_tokens = 0
     total_bytes = 0
@@ -221,7 +221,7 @@ def detect_gguf_audio_type(path: str) -> Optional[str]:
         return None
 
     if asr_identity or (
-        has_audio_encoder and not has_vision_encoder and audio_projector_type == b"qwen3a"
+        has_audio_encoder and has_vision_encoder is False and audio_projector_type == b"qwen3a"
     ):
         return "asr"
     if csm_identity and {b"<|AUDIO|>", b"<|audio_eos|>"} <= found:
