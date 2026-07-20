@@ -1553,17 +1553,24 @@ export function HubModelPicker({
     let ggufResult: Awaited<ReturnType<typeof listCachedGguf>> | undefined;
     let modelsResult: Awaited<ReturnType<typeof listCachedModels>> | undefined;
     let localResult: Awaited<ReturnType<typeof listLocalModels>> | undefined;
+    let released = false;
 
     const ggufRequest = listCachedGguf().then(
-      (value) => { ggufResult = value; },
+      (value) => { if (!released) ggufResult = value; },
       () => {},
     );
     const modelsRequest = listCachedModels(hfToken || undefined).then(
-      (value) => { modelsResult = value; },
+      (value) => { if (!released) modelsResult = value; },
       () => {},
     );
     const localRequest = listLocalModels().then(
-      (value) => { localResult = value; },
+      (value) => {
+        localResult = value;
+        if (released && localRequestVersion === _localModelsRequestVersion) {
+          if (ggufResult !== undefined && modelsResult !== undefined) _onDeviceCachesReady = true;
+          applyLocalModels(value);
+        }
+      },
       () => {},
     );
     const isCurrent = () =>
@@ -1573,9 +1580,9 @@ export function HubModelPicker({
     const publish = (invalidate = false) => {
       if (!isCurrent()) return;
       if (invalidate) {
+        released = true;
         ++_cachedGgufRequestVersion;
         ++_cachedModelsRequestVersion;
-        ++_localModelsRequestVersion;
       }
       if (ggufResult !== undefined) {
         _cachedGgufCache = ggufResult;
@@ -1586,19 +1593,12 @@ export function HubModelPicker({
         setCachedModels(modelsResult);
       }
       if (localResult !== undefined) applyLocalModels(localResult);
-      if (
-        ggufResult !== undefined &&
-        modelsResult !== undefined &&
-        localResult !== undefined
-      ) {
+      if (ggufResult !== undefined && modelsResult !== undefined && localResult !== undefined) {
         _onDeviceCachesReady = true;
       }
       notifyOnDeviceCachesChanged(true);
     };
-    const timeout = window.setTimeout(
-      () => publish(true),
-      ON_DEVICE_CACHE_TIMEOUT_MS,
-    );
+    const timeout = window.setTimeout(() => publish(true), ON_DEVICE_CACHE_TIMEOUT_MS);
     void Promise.all([ggufRequest, modelsRequest, localRequest]).then(() => {
       window.clearTimeout(timeout);
       publish();
@@ -1606,10 +1606,7 @@ export function HubModelPicker({
   }, [applyLocalModels, hfToken]);
 
   const refreshLocalModelsList = useCallback(() => {
-    if (!_onDeviceCachesReady && !hasDownloadedModels()) {
-      refreshColdOnDeviceCaches();
-      return;
-    }
+    if (!_onDeviceCachesReady && !hasDownloadedModels()) return refreshColdOnDeviceCaches();
     const requestVersion = ++_localModelsRequestVersion;
     listLocalModels()
       .then((res) => {
@@ -1697,10 +1694,7 @@ export function HubModelPicker({
   );
 
   const refreshCachedLists = useCallback(() => {
-    if (!_onDeviceCachesReady && !hasDownloadedModels()) {
-      refreshColdOnDeviceCaches();
-      return;
-    }
+    if (!_onDeviceCachesReady && !hasDownloadedModels()) return refreshColdOnDeviceCaches();
     const ggufRequestVersion = ++_cachedGgufRequestVersion;
     listCachedGguf()
       .then((v) => {
@@ -1774,11 +1768,12 @@ export function HubModelPicker({
     const ggufRequestVersion = ++_cachedGgufRequestVersion;
     const modelsRequestVersion = ++_cachedModelsRequestVersion;
     const localRequestVersion = ++_localModelsRequestVersion;
+    const localRequest = listLocalModels();
 
     void Promise.allSettled([
       bounded(listCachedGguf(controller.signal)),
       bounded(listCachedModels(hfToken || undefined, controller.signal)),
-      bounded(listLocalModels(controller.signal)),
+      bounded(localRequest),
     ]).then(([ggufResult, modelsResult, localResult]) => {
       window.clearTimeout(timeout);
       if (cancelled) return;
@@ -1802,6 +1797,13 @@ export function HubModelPicker({
       }
       if (localResult.status === "fulfilled" && localIsCurrent) {
         applyLocalModels(localResult.value);
+      }
+      if (localResult.status === "rejected" && controller.signal.aborted) {
+        void localRequest.then((value) => {
+          if (cancelled || localRequestVersion !== _localModelsRequestVersion) return;
+          if (ggufResult.status === "fulfilled" && modelsResult.status === "fulfilled") _onDeviceCachesReady = true;
+          applyLocalModels(value);
+        }).catch(() => {});
       }
       const snapshotIsCurrent =
         ggufIsCurrent && modelsAreCurrent && localIsCurrent;
