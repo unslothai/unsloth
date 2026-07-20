@@ -8,16 +8,16 @@ import {
   useChatModelRuntime,
   useChatRuntimeStore,
 } from "@/features/chat";
-import { useHubInventory } from "@/features/hub";
+import { useHubInventory } from "./inventory";
 import type {
   HfModelSearchChannel,
   HfSortDirection,
   HfSortKey,
-} from "@/features/hub";
+} from "./hooks/use-hub-model-search";
 import { useOnlineStatus } from "@/features/hub";
 import { useHubInfiniteScroll } from "@/features/hub";
-import { ggufVariantsMatch, modelIdsMatch } from "@/features/hub";
-import { hfApiToken, useHfTokenStore } from "@/features/hub";
+import { ggufVariantsMatch, modelIdsMatch } from "./lib/model-identity";
+import { hfApiToken, useHfTokenStore } from "./stores/hf-token-store";
 import {
   applyModelLoadConfigToRuntime,
   currentRuntimePerModelConfig,

@@ -3415,23 +3415,20 @@ def _resolve_cached_model_path(repo_id: str, variant: Optional[str]) -> Path:
     from the HF cache scan only, so callers can't probe arbitrary paths."""
     cache_scans = _all_hf_cache_scans()
 
-    target_repo = None
+    matching_repos = []
     for hf_cache in cache_scans:
         for repo_info in hf_cache.repos:
             if repo_info.repo_type != "model":
                 continue
             if repo_info.repo_id.lower() == repo_id.lower():
-                target_repo = repo_info
-                break
-        if target_repo is not None:
-            break
-    if target_repo is None:
+                matching_repos.append(repo_info)
+    if not matching_repos:
         raise HTTPException(status_code = 404, detail = "Model not found in cache")
 
     if variant:
         want = _normalized_quant_label(variant)
         candidate_revisions = sorted(
-            target_repo.revisions,
+            (rev for repo_info in matching_repos for rev in repo_info.revisions),
             key = lambda rev: getattr(rev, "last_modified", 0) or 0,
             reverse = True,
         )
@@ -3458,6 +3455,27 @@ def _resolve_cached_model_path(repo_id: str, variant: Optional[str]) -> Path:
             status_code = 404,
             detail = f"Variant {variant} not found in cache for {repo_id}",
         )
+
+    def repo_size(repo_info) -> int:
+        gguf_size = _repo_gguf_size_bytes(repo_info)
+        if gguf_size > 0:
+            return gguf_size
+        return sum(
+            (getattr(f, "size_on_disk", None) or 0)
+            for rev in repo_info.revisions
+            for f in rev.files
+        )
+
+    def repo_last_modified(repo_info) -> float:
+        return max(
+            (getattr(rev, "last_modified", 0) or 0 for rev in repo_info.revisions),
+            default = 0,
+        )
+
+    target_repo = max(
+        matching_repos,
+        key = lambda repo_info: (repo_size(repo_info), repo_last_modified(repo_info)),
+    )
 
     # Whole repo: the newest revision's snapshot dir holds the visible files.
     revisions = sorted(

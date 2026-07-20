@@ -551,6 +551,9 @@ export function ModelConfigPage({
   const isActiveModel = loadedConfig != null;
   const runtimeMaxSeqLength = useChatRuntimeStore((s) => s.params.maxSeqLength);
   const hfToken = useChatRuntimeStore((s) => s.hfToken);
+  const activeNativePathToken = useChatRuntimeStore(
+    (s) => s.activeNativePathToken,
+  );
   const loadedDefaultChatTemplate = useChatRuntimeStore(
     (s) => s.defaultChatTemplate,
   );
@@ -609,11 +612,14 @@ export function ModelConfigPage({
   const update = (patch: Partial<PerModelConfig>) =>
     setConfig((current) => ({ ...current, ...patch }));
 
+  const nativePathToken =
+    target.meta.nativePathToken ??
+    (isActiveModel ? activeNativePathToken : null);
   // Fetch the GGUF header dims (context + layer/MoE counts) for any GGUF target
   // so the GPU Memory sliders can size themselves; the context is also used
   // below when target.meta doesn't already carry it.
   const contextFetchKey = target.isGguf
-    ? `${target.id}\n${target.ggufVariant ?? ""}\n${hfToken || ""}`
+    ? `${target.id}\n${target.ggufVariant ?? ""}\n${hfToken || ""}\n${nativePathToken ?? ""}`
     : null;
   const [fetchedStagedDims, setFetchedStagedDims] = useState<{
     key: string;
@@ -630,6 +636,7 @@ export function ModelConfigPage({
       model_path: target.id,
       gguf_variant: target.ggufVariant ?? null,
       hf_token: hfToken || null,
+      nativePathToken,
     })
       .then((dims) => {
         if (!cancelled) {
@@ -649,7 +656,13 @@ export function ModelConfigPage({
     return () => {
       cancelled = true;
     };
-  }, [contextFetchKey, target.id, target.ggufVariant, hfToken]);
+  }, [
+    contextFetchKey,
+    target.id,
+    target.ggufVariant,
+    hfToken,
+    nativePathToken,
+  ]);
   const stagedDims =
     fetchedStagedDims?.key === contextFetchKey ? fetchedStagedDims : null;
 

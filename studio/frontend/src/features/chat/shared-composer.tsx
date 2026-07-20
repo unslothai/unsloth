@@ -102,7 +102,7 @@ import {
   usePlusMenuPrefsStore,
 } from "./stores/plus-menu-prefs-store";
 import {
-  loadedGpuMemoryFieldsUnlessStaged,
+  loadedGpuMemoryFields,
   type ReasoningEffort,
   reconcilePersistedGpuIds,
   resolveLoadedSpeculativeSettings,
@@ -1081,7 +1081,6 @@ export function SharedComposer({
         // path: an early remember-restore can hold a stale cross-host pick that
         // /load would reject (the device cache is populated by send time).
         selectedGpuIds: reconcilePersistedGpuIds(store.selectedGpuIds),
-        tensorParallel: store.tensorParallel,
         customContextLength: store.customContextLength,
       };
       // Set when an accepted transformers install unloaded the active model
@@ -1126,6 +1125,22 @@ export function SharedComposer({
         const effectiveTensorParallel = ownRemembered
           ? ownConfig.tensorParallel
           : fallbackTensorParallel;
+        if (ownConfig.selectedGpuIds != null) {
+          await ensureGpuDeviceCache();
+        }
+        const effectiveGpuMemoryMode =
+          ownConfig.gpuMemoryMode ?? compareLoadKnobs.gpuMemoryMode;
+        const effectiveGpuLayers =
+          ownConfig.gpuLayers ?? compareLoadKnobs.gpuLayers;
+        const effectiveNCpuMoe =
+          ownConfig.nCpuMoe ?? compareLoadKnobs.nCpuMoe;
+        const effectiveSelectedGpuIds =
+          ownConfig.selectedGpuIds !== undefined
+            ? reconcilePersistedGpuIds(ownConfig.selectedGpuIds)
+            : compareLoadKnobs.selectedGpuIds;
+        const effectiveCustomContextLength =
+          ownConfig.customContextLength ??
+          compareLoadKnobs.customContextLength;
         let loadTrustRemoteCode = trustRemoteCode;
         let approvedRemoteCodeFingerprint: string | null = null;
         const isAlreadyActive =
@@ -1142,12 +1157,12 @@ export function SharedComposer({
         // layers the load sends 0 / the pinned context, not raw maxSeqLength).
         const compareMaxSeqLength = resolveFitMaxSeqLength(
           targetIsGguf,
-          compareLoadKnobs.gpuMemoryMode,
-          compareLoadKnobs.gpuLayers,
+          effectiveGpuMemoryMode,
+          effectiveGpuLayers,
           // Prefer this pane's own saved context pin over the shared snapshot,
           // and fall back to its per-pane effective context (a GGUF pane with no
           // saved context loads at native, not the session maxSeqLength).
-          ownConfig.customContextLength ?? compareLoadKnobs.customContextLength,
+          effectiveCustomContextLength,
           effectiveMaxSeqLength,
         );
         const validation = await validateModel({
@@ -1163,8 +1178,8 @@ export function SharedComposer({
           // below: a non-GGUF target must not inherit a hidden GGUF GPU pick.
           ...(targetIsGguf
             ? {
-                gpu_ids: compareLoadKnobs.selectedGpuIds ?? undefined,
-                gpu_memory_mode: compareLoadKnobs.gpuMemoryMode,
+                gpu_ids: effectiveSelectedGpuIds ?? undefined,
+                gpu_memory_mode: effectiveGpuMemoryMode,
               }
             : {}),
         });
@@ -1225,20 +1240,14 @@ export function SharedComposer({
           cache_type_kv: ownConfig.kvCacheDtype ?? null,
           speculative_type: effectiveSpeculativeType,
           spec_draft_n_max: effectiveSpecDraftNMax,
-          // Honor the Tensor Parallelism + GPU Memory choices on compare loads.
-          // GGUF-only, like the auto-load path: the picker is a GGUF control,
-          // so a non-GGUF target loads via HF auto-placement instead of being
-          // pinned to a leftover GGUF pick it can't even show. TP stays per-pane
-          // (a per-model-config field); the GPU Memory knobs use the Send-time
-          // snapshot shared by both panes.
           tensor_parallel: effectiveTensorParallel,
           ...(targetIsGguf
             ? {
-                gpu_memory_mode: compareLoadKnobs.gpuMemoryMode,
-                gpu_layers: compareLoadKnobs.gpuLayers,
-                n_cpu_moe: compareLoadKnobs.nCpuMoe,
+                gpu_memory_mode: effectiveGpuMemoryMode,
+                gpu_layers: effectiveGpuLayers,
+                n_cpu_moe: effectiveNCpuMoe,
                 tensor_split: compareLoadKnobs.splitRatio ?? undefined,
-                gpu_ids: compareLoadKnobs.selectedGpuIds ?? undefined,
+                gpu_ids: effectiveSelectedGpuIds ?? undefined,
               }
             : {}),
         });
@@ -1250,7 +1259,7 @@ export function SharedComposer({
         }
         // Persist the GPU Memory mode on a non-diffusion GGUF compare-load too,
         // so an applied manual choice survives a restart.
-        persistGpuMemoryModeOnLoad(resp, compareLoadKnobs.gpuMemoryMode);
+        persistGpuMemoryModeOnLoad(resp, effectiveGpuMemoryMode);
         upgradeUnloadedActive = false;
         const store = useChatRuntimeStore.getState();
         store.setCheckpoint(
@@ -1266,9 +1275,9 @@ export function SharedComposer({
         // compare loads don't send the pin, so their baseline clears.
         const keepCustomCtx = targetIsGguf
           ? resolveManualAutoCtxPin(
-              compareLoadKnobs.gpuMemoryMode,
-              compareLoadKnobs.gpuLayers,
-              compareLoadKnobs.customContextLength,
+              effectiveGpuMemoryMode,
+              effectiveGpuLayers,
+              effectiveCustomContextLength,
             )
           : null;
         useChatRuntimeStore.setState({
@@ -1291,7 +1300,7 @@ export function SharedComposer({
           // split / pick, plus their loaded baselines) so the GPU controls
           // round-trip. (The gguf context, customContextLength and native-path
           // token/expiry clearing are set once in the shared tail below.)
-          ...loadedGpuMemoryFieldsUnlessStaged(resp),
+          ...loadedGpuMemoryFields(resp),
           // Drives the GPU Memory controls' diffusion gate; set alongside the
           // GPU fields on every load path so the gate can't read stale.
           loadedIsDiffusion: resp.is_diffusion ?? false,
@@ -1301,7 +1310,7 @@ export function SharedComposer({
           // the active model the settings UI and any subsequent reload or save
           // use its context instead of the previous/default one.
           customContextLength: isGgufLoad
-            ? (ownConfig.customContextLength ?? null)
+            ? (ownConfig.customContextLength ?? keepCustomCtx)
             : null,
           ggufContextLength: resp.is_gguf ? (resp.context_length ?? null) : null,
           ggufNativeContextLength: resp.is_gguf

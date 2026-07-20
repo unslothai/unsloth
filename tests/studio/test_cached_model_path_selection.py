@@ -90,13 +90,25 @@ def test_normalized_quant_label_ignores_separators():
     )
 
 
-def _revision(snapshot: Path, last_modified: float, names: list[str]) -> SimpleNamespace:
+def _revision(
+    snapshot: Path,
+    last_modified: float,
+    names: list[str],
+    size_on_disk: int = 4,
+) -> SimpleNamespace:
     files = []
     for name in names:
         path = snapshot / name
         path.parent.mkdir(parents = True, exist_ok = True)
-        path.write_text("gguf")
-        files.append(SimpleNamespace(file_name = name, file_path = path))
+        path.write_bytes(b"x" * size_on_disk)
+        files.append(
+            SimpleNamespace(
+                file_name = name,
+                file_path = path,
+                blob_path = path,
+                size_on_disk = size_on_disk,
+            )
+        )
     return SimpleNamespace(snapshot_path = snapshot, last_modified = last_modified, files = files)
 
 
@@ -109,6 +121,23 @@ def _patch_cache(monkeypatch, tmp_path: Path, revisions: list[SimpleNamespace]) 
     )
     monkeypatch.setattr(
         routes_models, "_all_hf_cache_scans", lambda: [SimpleNamespace(repos = [repo])]
+    )
+
+
+def _repo(root: Path, revisions: list[SimpleNamespace]) -> SimpleNamespace:
+    return SimpleNamespace(
+        repo_id = "Org/Repo",
+        repo_type = "model",
+        repo_path = root,
+        revisions = revisions,
+    )
+
+
+def _patch_caches(monkeypatch, repos: list[SimpleNamespace]) -> None:
+    monkeypatch.setattr(
+        routes_models,
+        "_all_hf_cache_scans",
+        lambda: [SimpleNamespace(repos = [repo]) for repo in repos],
     )
 
 
@@ -157,6 +186,50 @@ def test_missing_newest_file_falls_back_to_older_revision(monkeypatch, tmp_path)
     _patch_cache(monkeypatch, tmp_path, [new, old])
     resolved = routes_models._resolve_cached_model_path("Org/Repo", "Q4_K_M")
     assert resolved == tmp_path / "snapshots" / "aaa" / "Model-Q4_K_M.gguf"
+
+
+def test_variant_resolves_across_all_cache_roots(monkeypatch, tmp_path):
+    first_root = tmp_path / "active"
+    second_root = tmp_path / "default"
+    old = _revision(
+        first_root / "snapshots" / "aaa",
+        1_000.0,
+        ["Model-Q4_K_M.gguf"],
+    )
+    new = _revision(
+        second_root / "snapshots" / "bbb",
+        2_000.0,
+        ["Model-Q4_K_M.gguf"],
+    )
+    _patch_caches(
+        monkeypatch,
+        [_repo(first_root, [old]), _repo(second_root, [new])],
+    )
+    resolved = routes_models._resolve_cached_model_path("Org/Repo", "Q4_K_M")
+    assert resolved == second_root / "snapshots" / "bbb" / "Model-Q4_K_M.gguf"
+
+
+def test_repo_path_matches_largest_visible_cache_entry(monkeypatch, tmp_path):
+    first_root = tmp_path / "active"
+    second_root = tmp_path / "default"
+    small = _revision(
+        first_root / "snapshots" / "aaa",
+        2_000.0,
+        ["Model-Q8_0.gguf"],
+        size_on_disk = 4,
+    )
+    large = _revision(
+        second_root / "snapshots" / "bbb",
+        1_000.0,
+        ["Model-Q8_0.gguf"],
+        size_on_disk = 8,
+    )
+    _patch_caches(
+        monkeypatch,
+        [_repo(first_root, [small]), _repo(second_root, [large])],
+    )
+    resolved = routes_models._resolve_cached_model_path("Org/Repo", None)
+    assert resolved == second_root / "snapshots" / "bbb"
 
 
 def test_unknown_variant_raises_404(monkeypatch, tmp_path):

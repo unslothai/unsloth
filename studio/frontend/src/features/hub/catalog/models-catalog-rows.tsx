@@ -13,15 +13,15 @@ import {
   formatLocalUpdated,
   listGgufVariants,
   useGgufVariantsCacheVersion,
-} from "@/features/hub";
+} from "../inventory";
 import {
   classifyUnslothSupport,
   formatBytes,
   formatRelativeShort,
   ggufVariantDisplayLabel,
-  modelIdsMatch,
   useHfTokenStore,
 } from "@/features/hub";
+import { modelIdsMatch } from "../lib/model-identity";
 import {
   ModelRowMenu,
   pinKey,

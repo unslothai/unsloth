@@ -66,7 +66,6 @@ export function useDefaultChatTemplate(
     if (cacheKey == null || !modelId || templateCache.has(cacheKey)) {
       return;
     }
-    setFetched(null);
     const controller = new AbortController();
     fetchDefaultChatTemplate(modelId, ggufVariant, token, controller.signal)
       .then((template) => {
@@ -133,7 +132,6 @@ export function useModelMaxPositionEmbeddings(
     if (cacheKey == null || !modelId || maxPositionCache.has(cacheKey)) {
       return;
     }
-    setFetched(null);
     const controller = new AbortController();
     fetchModelMaxPositionEmbeddings(modelId, token, controller.signal)
       .then((maxPositionEmbeddings) => {

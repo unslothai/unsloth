@@ -31,15 +31,6 @@ export {
   type InferenceParams,
   type Preset,
 } from "./chat-settings-sheet";
-export {
-  BUILTIN_PRESETS,
-  BUILTIN_PRESET_NAMES,
-  applyPresetParams,
-  getBuiltinVariantName,
-  getOrderedPresets,
-  getPresetSource,
-  toPresetParams,
-} from "./presets/preset-policy";
 export { useChatRuntimeStore } from "./stores/chat-runtime-store";
 export {
   normalizeSpeculativeType,

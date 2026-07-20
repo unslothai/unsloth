@@ -2,37 +2,27 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 export {
-  cancelModelDownload,
   downloadManager,
   jobKeyOf,
   subscribeJobListeners,
   useDownloadManagerStore,
-  type TransportConflictInfo,
 } from "./download-manager";
 export {
   useHubInventory,
   type CachedInventoryRow,
   type GgufVariantDetail,
-  type HubInventory,
-  type HubInventoryKind,
-  type InventoryRow,
   type LocalInventoryRow,
   type LocalSource,
   type ScanFolderInfo,
   addScanFolder,
-  deleteCachedDataset,
   deleteCachedModel,
-  formatLocalUpdated,
   invalidateGgufVariantsCache,
   listGgufVariants,
   listScanFolders,
   removeScanFolder,
-  useGgufVariantsCacheVersion,
 } from "./inventory";
 export {
   type HfModelResult,
-  type HfModelSearchChannel,
-  type HfSortDirection,
   type HfSortKey,
   useHubModelSearch,
 } from "./hooks/use-hub-model-search";
@@ -41,7 +31,6 @@ export { useHubInfiniteScroll } from "./hooks/use-hub-infinite-scroll";
 export { bumpInventoryVersion } from "./stores/inventory-events";
 export {
   getHfToken,
-  hfApiToken,
   mirrorHfTokenInto,
   useHfTokenStore,
 } from "./stores/hf-token-store";
@@ -50,7 +39,6 @@ export { looksLikeLocalPath } from "./lib/local-path";
 export { hubTokenHeader } from "./lib/hub-token-header";
 export {
   ggufVariantsMatch,
-  modelIdsMatch,
   normalizeGgufVariantIdentity,
   normalizeModelIdentity,
 } from "./lib/model-identity";

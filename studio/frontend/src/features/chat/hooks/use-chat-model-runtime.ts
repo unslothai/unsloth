@@ -32,7 +32,6 @@ import {
   GPU_LAYERS_AUTO,
   isLocalModelPath,
   loadedGpuMemoryFields,
-  loadedGpuMemoryFieldsUnlessStaged,
   persistGpuMemoryModeOnLoad,
   readPersistedSpeculativeType,
   reconcilePersistedGpuIds,
@@ -1134,22 +1133,12 @@ export function useChatModelRuntime() {
                   loadedKvCacheDtype: rollbackResponse.cache_type_kv ?? null,
                   loadedChatTemplateOverride:
                     stateBeforeUnload.loadedChatTemplateOverride,
-                  // Re-baseline the GPU knobs from the rolled-back load's own
-                  // response (the shared seeding every load path uses): the
-                  // refresh() below can't do it, since the status reseed is
-                  // gated off while modelLoading is still true. A failed staged
-                  // Load stays staged for retry, so the staged hold applies.
-                  ...loadedGpuMemoryFieldsUnlessStaged(rollbackResponse, {
-                    tensorParallel: rollbackResponse.tensor_parallel ?? false,
-                    loadedTensorParallel:
-                      rollbackResponse.tensor_parallel ?? false,
-                    // refresh() is held while modelLoading remains true, so
-                    // restore the rolled-back model's context pin directly.
-                    customContextLength:
-                      stateBeforeUnload.loadedCustomContextLength,
-                  }),
+                  ...loadedGpuMemoryFields(rollbackResponse),
+                  tensorParallel: rollbackResponse.tensor_parallel ?? false,
                   loadedTensorParallel:
                     rollbackResponse.tensor_parallel ?? false,
+                  customContextLength:
+                    stateBeforeUnload.loadedCustomContextLength,
                   loadedCustomContextLength:
                     stateBeforeUnload.loadedCustomContextLength,
                 });

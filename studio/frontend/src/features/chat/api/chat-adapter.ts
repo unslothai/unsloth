@@ -43,7 +43,7 @@ import {
   type PendingImageEditReference,
   type RagAutoInject,
   GPU_LAYERS_AUTO,
-  loadedGpuMemoryFieldsUnlessStaged,
+  loadedGpuMemoryFields,
   reconcilePersistedGpuIds,
   resolveLoadedSpeculativeSettings,
   resolveSpeculativeSettingsForLoad,
@@ -1691,9 +1691,7 @@ async function autoLoadSmallestModel(): Promise<{
         loadedKvCacheDtype: loadResp.cache_type_kv ?? null,
         tensorParallel: loadResp.tensor_parallel ?? false,
         loadedTensorParallel: loadResp.tensor_parallel ?? false,
-        ...loadedGpuMemoryFieldsUnlessStaged(loadResp, {
-          customContextLength: keepCustomCtx,
-        }),
+        ...loadedGpuMemoryFields(loadResp),
         loadedCustomContextLength: keepCustomCtx,
         defaultChatTemplate: loadResp.chat_template ?? null,
         chatTemplateOverride: effectiveChatTemplateOverride,
@@ -1720,7 +1718,7 @@ async function autoLoadSmallestModel(): Promise<{
         loadedTensorParallel: loadResp.tensor_parallel ?? false,
         // Non-GGUF response: clears any stale GPU baseline a prior manual-GPU
         // GGUF load left, matching the interactive/status sibling load paths.
-        ...loadedGpuMemoryFieldsUnlessStaged(loadResp),
+        ...loadedGpuMemoryFields(loadResp),
         defaultChatTemplate: loadResp.chat_template ?? null,
         chatTemplateOverride: effectiveChatTemplateOverride,
         loadedChatTemplateOverride: effectiveChatTemplateOverride,
@@ -1989,7 +1987,7 @@ async function autoLoadSmallestModel(): Promise<{
         loadedKvCacheDtype: loadResp.cache_type_kv ?? null,
         tensorParallel: loadResp.tensor_parallel ?? false,
         loadedTensorParallel: loadResp.tensor_parallel ?? false,
-        ...loadedGpuMemoryFieldsUnlessStaged(loadResp),
+        ...loadedGpuMemoryFields(loadResp),
         // Drives the GPU Memory controls' diffusion gate; set alongside the
         // GPU fields on every load path so the gate can't read stale.
         loadedIsDiffusion: loadResp.is_diffusion ?? false,

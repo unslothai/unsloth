@@ -88,10 +88,6 @@ const STORED_CONFIG_FIELDS = new Set([
   "selectedGpuIds",
 ]);
 
-// Manual-mode gpu_layers sentinel (mirrors the chat store's GPU_LAYERS_AUTO):
-// < 0 means "Auto" (hand layer sizing to llama.cpp --fit), the Manual default.
-const GPU_LAYERS_AUTO_SENTINEL = -1;
-
 function normalizeGpuFields(partial: RawConfig): {
   gpuMemoryMode?: "auto" | "manual";
   gpuLayers?: number;

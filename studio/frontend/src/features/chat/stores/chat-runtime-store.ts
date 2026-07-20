@@ -676,16 +676,6 @@ export function loadedGpuMemoryFields(resp: {
   };
 }
 
-/** loadedGpuMemoryFields plus any seedExtras. (The per-model-config load flow
- *  loads directly rather than through a staged/pending selection, so there is no
- *  in-progress stage to preserve edits for.) */
-export function loadedGpuMemoryFieldsUnlessStaged<T extends object>(
-  resp: Parameters<typeof loadedGpuMemoryFields>[0],
-  seedExtras?: T,
-) {
-  return { ...loadedGpuMemoryFields(resp), ...seedExtras };
-}
-
 /** A pick is a GGUF: HF variant, native file, or a direct local .gguf. */
 export function hasGgufSource(x: {
   ggufVariant?: string;

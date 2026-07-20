@@ -3,7 +3,6 @@
 
 export { ModelSelector } from "./components/model-selector";
 export { FolderBrowser } from "./components/model-selector/folder-browser";
-export { ModelDeleteAction } from "./components/model-selector/model-delete-action";
 export { ModelRowMenu } from "./components/model-selector/model-row-menu";
 export {
   makePinRank,
@@ -17,7 +16,6 @@ export {
 } from "./components/numeric-value-input";
 export { SidebarModelConfig } from "./components/sidebar-model-config";
 export {
-  type ActiveModelConfigState,
   useActiveModelConfig,
 } from "./hooks/use-active-model-config";
 export type {

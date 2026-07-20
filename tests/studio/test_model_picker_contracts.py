@@ -131,6 +131,35 @@ def test_active_model_config_round_trips_gpu_fields():
     assert "export function gpuFieldsSignature" in shared
 
 
+def test_compare_load_uses_each_models_gpu_config():
+    src = _read("features/chat/shared-composer.tsx")
+    assert "ownConfig.gpuMemoryMode ?? compareLoadKnobs.gpuMemoryMode" in src
+    assert "ownConfig.gpuLayers ?? compareLoadKnobs.gpuLayers" in src
+    assert "ownConfig.nCpuMoe ?? compareLoadKnobs.nCpuMoe" in src
+    assert "if (ownConfig.selectedGpuIds != null)" in src
+    assert "reconcilePersistedGpuIds(ownConfig.selectedGpuIds)" in src
+    for field in (
+        "gpu_memory_mode: effectiveGpuMemoryMode",
+        "gpu_layers: effectiveGpuLayers",
+        "n_cpu_moe: effectiveNCpuMoe",
+        "gpu_ids: effectiveSelectedGpuIds ?? undefined",
+    ):
+        assert field in src
+
+
+def test_active_native_gguf_metadata_uses_path_token():
+    src = _read("features/model-picker/components/model-config-page.tsx")
+    assert "(isActiveModel ? activeNativePathToken : null)" in src
+    assert "target.meta.nativePathToken ??" in src
+    assert "nativePathToken," in src
+    assert '${nativePathToken ?? ""}' in src
+
+
+def test_model_default_hooks_do_not_reset_state_in_effect():
+    src = _read("features/model-picker/hooks/use-model-defaults.ts")
+    assert "setFetched(null)" not in src
+
+
 def test_model_load_guard_is_cross_instance():
     """The in-flight load guard must consult the shared store pick (not only the
     per-hook ref) and ejectModel must refuse while any instance is loading:
