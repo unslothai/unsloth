@@ -2377,11 +2377,22 @@ def _names_have_word_embeddings_tokenizer(names: set) -> bool:
     return bool(names & _ST_WORD_TOKENIZER_CONFIG_FILES) or _names_have_tokenizer(names)
 
 
+# ``Router.load()`` (a.k.a. the legacy ``Asym``) reads ``router_config.json`` and loads each child
+# sub-module from its OWN subdir named there; it carries no Transformer weights of its own, so a
+# root Router without root config/tokenizer/weights is still loadable when its children are. The
+# children are declared only in this config (never the top-level modules.json).
+_ST_ROUTER_MODULE_NAMES = frozenset({"router", "asym"})
+_ST_ROUTER_CONFIG_FILE = "router_config.json"
+
+
 def _module_dir_is_loadable(cls: str, is_root: bool, dir_path: Path) -> bool:
     """True when *dir_path* carries the files the sentence-transformers module class *cls*
     reads in its own ``load()`` (see sentence_transformers/models/*.py):
 
-    * a root / ``Transformer`` module is a full HF load root (config + tokenizer + weights);
+    * a ``Transformer`` module (or a plain root with no recognized ST module class) is a full HF
+      load root (config + tokenizer + weights);
+    * a ``Router`` / ``Asym`` reads ``router_config.json`` and loads its declared children, so it
+      is loadable when those children are -- even at the root, where it has no weights of its own;
     * ``Normalize`` reads nothing;
     * ``StaticEmbedding`` reads a ``tokenizer.json`` + a complete Torch weight set and NO config;
     * a WEIGHTED module (``WordEmbeddings`` / ``Dense`` / ``CNN`` / ``LSTM``) needs its module
@@ -2390,7 +2401,11 @@ def _module_dir_is_loadable(cls: str, is_root: bool, dir_path: Path) -> bool:
       so it also needs a tokenizer artifact;
     * every other module (``BoW``, ``Pooling`` ...) reads only a ``config.json`` / ``*_config``,
       so a present module config is the load requirement."""
-    if is_root or "transformer" in cls:
+    if "transformer" in cls:
+        return _dir_is_transformer_load_root(_dir_file_names(dir_path))
+    if cls in _ST_ROUTER_MODULE_NAMES:
+        return _router_dir_is_loadable(dir_path)
+    if is_root:
         return _dir_is_transformer_load_root(_dir_file_names(dir_path))
     if cls == "normalize":
         return True
@@ -2409,6 +2424,36 @@ def _module_dir_is_loadable(cls: str, is_root: bool, dir_path: Path) -> bool:
             return _names_have_word_embeddings_tokenizer(names)
         return True
     return True
+
+
+def _router_dir_is_loadable(dir_path: Path) -> bool:
+    """True when *dir_path* holds a loadable sentence-transformers ``Router`` (legacy ``Asym``):
+    a readable ``router_config.json`` whose ``types`` maps each child ``{route}_{idx}_{ClassName}``
+    to a module class, with every child subdir carrying the files that child's own ``load()`` reads
+    (validated through :func:`_module_dir_is_loadable`, so nested routers and every child type are
+    covered) and at least one embedding-producing child. ``Router.load()`` reads this config and
+    loads each child from its subdir, so a Router directory needs no Transformer weights of its own.
+    Never raises."""
+    try:
+        config = json.loads((dir_path / _ST_ROUTER_CONFIG_FILE).read_text(encoding = "utf-8"))
+    except (OSError, ValueError):
+        return False
+    if not isinstance(config, dict):
+        return False
+    types = config.get("types")
+    if not isinstance(types, dict) or not types:
+        return False
+    saw_content_module = False
+    for model_id, module_type in types.items():
+        child_cls = str(module_type or "").rsplit(".", 1)[-1].strip().lower()
+        rel = str(model_id or "").strip().strip("/")
+        if not child_cls or not rel or ".." in Path(rel).parts:
+            return False  # malformed / traversing child reference
+        if not _module_dir_is_loadable(child_cls, False, dir_path / rel):
+            return False
+        if child_cls not in _ST_STRUCTURAL_MODULE_NAMES:
+            saw_content_module = True
+    return saw_content_module
 
 
 def _snapshot_modules_all_loadable(snap: Path) -> bool:

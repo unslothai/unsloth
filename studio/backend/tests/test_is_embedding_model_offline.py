@@ -576,6 +576,93 @@ def test_marker_requires_a_tokenizer_for_wordembeddings(tmp_path, monkeypatch, t
     assert mc._embedding_marker_in_hf_cache(_GLOVE) is True
 
 
+# ── Router / Asym models (asymmetric query/document, sparse encoders) built from modules.json ──
+
+
+_ROUTER_REPO = "sentence-transformers/router-asym-demo"
+
+
+def _router_repo(
+    tmp_path,
+    monkeypatch,
+    *,
+    root_path = "",
+    complete = True,
+    commit = "aaa",
+    repo_id = _ROUTER_REPO,
+):
+    """A cached SentenceTransformer Router (legacy Asym) model. The top-level modules.json declares
+    ONLY the Router (at ``root_path``); ``router_config.json`` declares the child sub-modules in its
+    ``types`` map and each child lives in its own subdir. The Router carries NO config / tokenizer /
+    weights of its own -- ``Router.load()`` reads router_config.json and loads each child from its
+    subdir -- so the Transformer-shaped root check alone misclassifies it (#7218). ``complete=False``
+    strips the Transformer child's weights so the load would fail."""
+    hf_root = tmp_path / "hf"
+    repo = hf_root / f"models--{repo_id.replace('/', '--')}"
+    snap = repo / "snapshots" / commit
+    snap.mkdir(parents = True)
+    router_dir = snap if root_path in ("", ".") else snap / root_path
+    router_dir.mkdir(parents = True, exist_ok = True)
+    (snap / "modules.json").write_text(
+        _modules_json(("0", root_path, "sentence_transformers.models.Router"))
+    )
+    (router_dir / "router_config.json").write_text(
+        json.dumps(
+            {
+                "types": {
+                    "query_0_Transformer": "sentence_transformers.models.Transformer",
+                    "query_1_Pooling": "sentence_transformers.models.Pooling",
+                },
+                "structure": {"query": ["query_0_Transformer", "query_1_Pooling"]},
+                "parameters": {},
+            }
+        )
+    )
+    transformer = router_dir / "query_0_Transformer"
+    transformer.mkdir(parents = True)
+    (transformer / "config.json").write_text("{}")
+    (transformer / "tokenizer.json").write_text("{}")
+    if complete:
+        (transformer / "model.safetensors").write_bytes(b"\0")
+    pooling = router_dir / "query_1_Pooling"
+    pooling.mkdir(parents = True)
+    (pooling / "config.json").write_text("{}")
+    (repo / "refs").mkdir(parents = True)
+    (repo / "refs" / "main").write_text(commit)
+    _fake_hf_cache(monkeypatch, hf_root)
+    monkeypatch.delenv("SENTENCE_TRANSFORMERS_HOME", raising = False)
+    return snap
+
+
+def test_marker_accepts_root_router_model(tmp_path, monkeypatch):
+    # A root Router (Asym): modules.json declares only the Router at the empty root path, and it
+    # loads via router_config.json + child subdirs with no root weights of its own. It must be
+    # recognized offline instead of being held to Transformer root requirements (#7218).
+    _router_repo(tmp_path, monkeypatch)
+    assert mc._embedding_marker_in_hf_cache(_ROUTER_REPO) is True
+
+
+def test_marker_rejects_root_router_with_incomplete_child(tmp_path, monkeypatch):
+    # Control: the Router's Transformer child is missing its weights, so Router.load() would fail
+    # -> must NOT validate.
+    _router_repo(tmp_path, monkeypatch, complete = False)
+    assert mc._embedding_marker_in_hf_cache(_ROUTER_REPO) is False
+
+
+def test_marker_accepts_router_in_declared_subfolder(tmp_path, monkeypatch):
+    # The Router can sit in a declared subfolder; validation must follow router_config.json from
+    # that dir, not the snapshot root.
+    _router_repo(tmp_path, monkeypatch, root_path = "2_Router")
+    assert mc._embedding_marker_in_hf_cache(_ROUTER_REPO) is True
+
+
+def test_marker_rejects_subfolder_router_with_incomplete_child(tmp_path, monkeypatch):
+    # A Router (in a declared subfolder) whose child weights are missing must not validate: the
+    # check validates the router's declared children, not merely that router_config.json exists.
+    _router_repo(tmp_path, monkeypatch, root_path = "2_Router", complete = False)
+    assert mc._embedding_marker_in_hf_cache(_ROUTER_REPO) is False
+
+
 # ── StaticEmbedding models (model2vec / static-retrieval) built from modules.json ──
 
 
