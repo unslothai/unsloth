@@ -48,13 +48,6 @@ fn has_legacy_full_app_state(config_dir: &Path, state_file_name: &str) -> bool {
     if width < MIN_REASONABLE_WINDOW_WIDTH || height < MIN_REASONABLE_WINDOW_HEIGHT {
         return false;
     }
-    if main
-        .get("maximized")
-        .and_then(serde_json::Value::as_bool)
-        .unwrap_or(false)
-    {
-        return true;
-    }
 
     !is_setup_window_size(width, height)
 }
@@ -82,8 +75,7 @@ fn app_config_dir(app: &tauri::AppHandle) -> Result<PathBuf, String> {
 }
 
 /// Returns whether a full-app layout has previously completed. Legacy state is
-/// migrated unless it matches the fixed setup-window size at any display scale;
-/// maximized state always came from full-app mode.
+/// migrated unless it matches the fixed setup-window size at any display scale.
 #[tauri::command]
 pub fn has_initialized_app_window_layout(
     window: WebviewWindow,
@@ -164,7 +156,7 @@ mod tests {
             r#"{"main":{"width":1520,"height":1120,"maximized":true}}"#,
         )
         .unwrap();
-        assert!(has_legacy_full_app_state(&dir, state_file));
+        assert!(!has_legacy_full_app_state(&dir, state_file));
         let _ = fs::remove_dir_all(dir);
     }
 
