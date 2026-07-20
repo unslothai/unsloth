@@ -2426,8 +2426,7 @@ _TOOL_CODE_TIP = (
     "you need is not present, ask the user to provide it or give an exact path "
     "rather than running commands against a guessed one."
 )
-# Bypass variant: drops the "internet access is limited" clause (false when the
-# sandbox is disabled), keeping the workdir-default framing.
+# Bypass variant: drops the "internet access is limited" clause, keeps the workdir-default framing.
 _TOOL_CODE_TIP_BYPASS = (
     "Use code execution for math, calculations, data processing, or to parse "
     "and analyze information from tool results. It runs in a sandbox whose "
@@ -2518,8 +2517,7 @@ async def _select_request_tools(
     # Drop the RAG tool without a scope: nothing to search over.
     if not payload.rag_scope:
         tools = [t for t in tools if t["function"]["name"] != "search_knowledge_base"]
-    # A sandbox-disabled request runs python/terminal with disable_sandbox=True, so
-    # the descriptions must not claim the curl/wget block that no longer applies.
+    # Sandbox-disabled: descriptions must not claim the curl/wget block that no longer applies.
     if _sandbox_disabled(payload):
         tools = apply_bypass_tool_notes(tools)
     if mcp_allowed:
@@ -12878,8 +12876,7 @@ async def anthropic_messages(
             requested_studio_tools,
             payload.enabled_tools,
         )
-        # A sandbox-disabled request runs unsandboxed, so drop the curl/wget
-        # restriction from the python/terminal descriptions here too.
+        # Sandbox-disabled: drop the curl/wget restriction from the descriptions here too.
         if _sandbox_disabled(payload):
             openai_tools = apply_bypass_tool_notes(openai_tools)
 

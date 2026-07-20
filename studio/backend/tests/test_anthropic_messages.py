@@ -174,8 +174,7 @@ class TestToolActionNudge:
         assert _build_tool_action_nudge(tools = [], model_name = "Llama-3.1-8B-Instruct") == ""
 
     def test_code_tip_does_not_name_a_disabled_sibling_code_tool(self):
-        # has_code fires for either python or terminal, so the code tip must stay
-        # tool-neutral: enabling one must never name the other as available.
+        # has_code fires for either python or terminal, so the code tip must stay tool-neutral (never name the sibling).
         py_only = _build_tool_action_nudge(
             tools = [{"type": "function", "function": {"name": "python"}}],
             model_name = "Llama-3.1-8B-Instruct",

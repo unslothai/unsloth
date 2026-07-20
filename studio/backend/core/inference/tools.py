@@ -143,8 +143,7 @@ _BLOCKED_COMMANDS = (
     else _BLOCKED_COMMANDS_COMMON
 )
 
-# Blocked commands that reach the network / another machine; hitting one steers
-# the model to fetch via code or ask for an accessible path.
+# Network/remote-reaching commands; blocking one steers the model to fetch via code or ask for a path.
 _NETWORK_BLOCKED_COMMANDS = frozenset(
     {"curl", "wget", "nc", "ncat", "netcat", "socat", "ssh", "scp", "sftp", "rsync"}
 )
@@ -2949,12 +2948,10 @@ WEB_SEARCH_TOOL = {
     },
 }
 
-# Appended to python/terminal descriptions: stop models writing to /mnt/data or
-# guessing a local path for a repo the user mentioned but never uploaded.
-# Split so the Bypass Permissions variant can drop the network sentence: under
-# bypass, _python_exec/_bash_exec skip the safety analysis and curl/wget blocklist
-# (there is no network namespace), so egress works and claiming those downloads
-# are unavailable would falsely block a user-supplied remote resource.
+# Appended to python/terminal descriptions to stop models writing to /mnt/data or
+# guessing a local path. Split so the Bypass variant can drop the network sentence:
+# under bypass egress works, so claiming downloads are unavailable would wrongly
+# block a user-supplied remote resource.
 _SANDBOX_PATHS_NOTE_INTRO = (
     " The working directory is an isolated scratch space that may already hold "
     "files from earlier work in this conversation or project, plus anything you "
@@ -2980,13 +2977,11 @@ _SANDBOX_PATHS_NOTE_TAIL = (
     "you need are not here, ask the user to provide them or an exact path "
     "instead of guessing one."
 )
-# Default (sandboxed) note: steers python at public sources, keeps the curl/wget
-# restriction without overstating the host check as a hard wall.
+# Default (sandboxed) note: steers python at public sources, keeps the curl/wget restriction.
 _SANDBOX_PATHS_NOTE = (
     _SANDBOX_PATHS_NOTE_INTRO + _SANDBOX_PATHS_NOTE_NETWORK + _SANDBOX_PATHS_NOTE_TAIL
 )
-# Bypass variant: same guidance minus the network sentence (stays neutral rather
-# than claiming egress works).
+# Bypass variant: same guidance minus the network sentence.
 _SANDBOX_PATHS_NOTE_BYPASS = _SANDBOX_PATHS_NOTE_INTRO + _SANDBOX_PATHS_NOTE_TAIL
 
 PYTHON_TOOL = {
@@ -3102,8 +3097,7 @@ def _with_sandbox_note(tool: dict, note: str) -> dict:
     return {**tool, "function": fn}
 
 
-# Bypass variants: descriptions omit the curl/wget restriction, skipped when the
-# sandbox is disabled (disable_sandbox = bypass_permissions in the tool loops).
+# Bypass variants: descriptions omit the curl/wget restriction, used when the sandbox is disabled.
 PYTHON_TOOL_BYPASS = _with_sandbox_note(PYTHON_TOOL, _SANDBOX_PATHS_NOTE_BYPASS)
 TERMINAL_TOOL_BYPASS = _with_sandbox_note(TERMINAL_TOOL, _SANDBOX_PATHS_NOTE_BYPASS)
 _BYPASS_TOOL_OVERRIDES = {

@@ -55,8 +55,7 @@ def test_note_does_not_claim_project_sandbox_starts_empty():
 
 def test_note_does_not_claim_local_files_are_inaccessible():
     lowered = _SANDBOX_PATHS_NOTE.lower()
-    # No filesystem isolation on this branch, so an exact local path is readable;
-    # the note must frame the workdir as the default work location, not deny access.
+    # No filesystem isolation here, so the note frames the workdir as the default work location, not a denial of access.
     assert "cannot see the user's own computer" not in lowered
     assert "default location for your work" in lowered
 
@@ -67,9 +66,8 @@ def test_note_is_appended_to_both_tool_descriptions():
 
 
 def test_note_scopes_network_block_to_the_terminal_not_all_shell_commands():
-    # The terminal keeps the network namespace and doesn't block git/pip, so the
-    # note names only the blocked commands (curl/wget) and puts the allowlist on the
-    # python tool rather than claiming shell network is fully blocked.
+    # Terminal keeps networking (git/pip work), so the note names only curl/wget and
+    # puts the allowlist on the python tool, not on all shell network.
     lowered = _SANDBOX_PATHS_NOTE.lower()
     assert "shell network commands are blocked" not in lowered
     assert "curl" in lowered and "wget" in lowered
@@ -87,9 +85,8 @@ def test_note_distinguishes_attachments_from_sandbox_uploads():
 
 
 def test_blocked_network_command_message_gates_code_fallback_on_tool_availability():
-    # A blocked curl/wget must not claim the sandbox is offline, nor name a specific
-    # remedy tool (python may be absent from the schema -- an invalid call); the
-    # fallback is gated on a code-execution tool being enabled this turn.
+    # A blocked curl/wget must not claim the sandbox is offline nor name a specific remedy
+    # tool (python may be absent); the fallback is gated on a code tool being enabled this turn.
     msg = _bash_exec("curl https://raw.githubusercontent.com/foo/bar/main/x.py").lower()
     assert "blocked command" in msg
     assert "cannot reach other machines or remote hosts" not in msg
@@ -99,9 +96,8 @@ def test_blocked_network_command_message_gates_code_fallback_on_tool_availabilit
 
 
 def test_blocked_network_command_message_scopes_claim_to_the_command():
-    # The block is by command name; the terminal keeps networking (git/pip work),
-    # so a private host is still reachable. The message must attribute the block to
-    # the command name, not assert the destination is unreachable.
+    # The block is by command name and the terminal keeps networking (a private host is still
+    # reachable), so the message must attribute the block to the name, not call the host unreachable.
     msg = _bash_exec("wget http://10.0.0.5/internal/repo.tar.gz").lower()
     assert "by name" in msg
     assert "not reachable" not in msg
@@ -173,9 +169,8 @@ def test_bypass_code_execution_nudge_drops_the_limited_internet_claim():
 
 
 def test_code_execution_nudge_does_not_deny_local_file_access():
-    # No filesystem isolation here, so an exact local path is readable; the nudge
-    # must frame the workdir as the default work location and still allow an exact
-    # path, not deny access to the user's computer.
+    # No filesystem isolation here, so the nudge frames the workdir as the default work
+    # location and still allows an exact path, rather than denying access.
     from routes.inference import _TOOL_CODE_TIP
 
     lowered = _TOOL_CODE_TIP.lower()
@@ -185,9 +180,8 @@ def test_code_execution_nudge_does_not_deny_local_file_access():
 
 
 def test_sandbox_disabled_treats_permission_mode_full_as_unsandboxed():
-    # Both agent loops fold permission_mode "full" into disable_sandbox, so "full"
-    # runs python/terminal unsandboxed. _sandbox_disabled keys off the effective
-    # flag so the notes match what executes even if that fold is refactored away.
+    # Both agent loops fold permission_mode "full" into disable_sandbox, so "full" runs
+    # unsandboxed. _sandbox_disabled keys off the effective flag, not just the fold.
     from types import SimpleNamespace
 
     from routes.inference import _sandbox_disabled
