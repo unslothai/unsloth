@@ -27,8 +27,13 @@ WD = "/work/session"
 ENV = {"HOME": "/home/u"}
 
 
-def _status(raw, wd=WD, env=ENV, pathmod=posixpath):
-    return s.classify_path(raw, wd, env, pathmod=pathmod)[0]
+def _status(
+    raw,
+    wd = WD,
+    env = ENV,
+    pathmod = posixpath,
+):
+    return s.classify_path(raw, wd, env, pathmod = pathmod)[0]
 
 
 # --- classify_path: posix ---
@@ -51,7 +56,10 @@ def test_traversal_escape_vs_inside():
 
 
 def test_prefix_sibling_is_not_inside():
-    assert s.classify_path("/work/session_evil/x", "/work/session", ENV, pathmod=posixpath)[0] == "outside"
+    assert (
+        s.classify_path("/work/session_evil/x", "/work/session", ENV, pathmod = posixpath)[0]
+        == "outside"
+    )
 
 
 def test_temp_roots_inside():
@@ -59,7 +67,7 @@ def test_temp_roots_inside():
     assert _status("/tmp/scratch") == "inside"
     assert _status("/var/tmp/x") == "inside"
     env = {"HOME": "/home/u", "TMPDIR": "/work/session/tmp"}
-    assert s.classify_path("/work/session/tmp/scratch", WD, env, pathmod=posixpath)[0] == "inside"
+    assert s.classify_path("/work/session/tmp/scratch", WD, env, pathmod = posixpath)[0] == "inside"
 
 
 def test_remap_prefix_absence_gated(monkeypatch):
@@ -75,16 +83,16 @@ def test_remap_prefix_absence_gated(monkeypatch):
 
 
 def test_home_and_var_expansion_shell():
-    assert _status("~/notes") == "outside"          # ~ -> /home/u (shell expand)
+    assert _status("~/notes") == "outside"  # ~ -> /home/u (shell expand)
     assert _status("$HOME/notes") == "outside"
-    assert _status("$MISSING/x", env={}) == "unknown"
+    assert _status("$MISSING/x", env = {}) == "unknown"
 
 
 # --- classify_path: windows via ntpath injection ---
 
 
-def _wstatus(raw, wd="C:\\work\\sess"):
-    return s.classify_path(raw, wd, {"USERPROFILE": "C:\\Users\\u"}, pathmod=ntpath)[0]
+def _wstatus(raw, wd = "C:\\work\\sess"):
+    return s.classify_path(raw, wd, {"USERPROFILE": "C:\\Users\\u"}, pathmod = ntpath)[0]
 
 
 def test_windows_inside_other_drive_and_system():
@@ -130,14 +138,19 @@ def test_scan_shell_multi_command_and_pipe():
 
 def test_scan_shell_var_url_dev():
     # $PATH expands to a pathsep-joined list, not a single path -> not flagged.
-    assert s.scan_shell("echo $PATH", WD, {"HOME": "/home/u", "PATH": "/usr/bin:/bin"}, posixpath) == []
+    assert (
+        s.scan_shell("echo $PATH", WD, {"HOME": "/home/u", "PATH": "/usr/bin:/bin"}, posixpath)
+        == []
+    )
     assert s.scan_shell("git clone https://github.com/a/b", WD, ENV, posixpath) == []
     assert s.scan_shell("cat $HOME/.ssh/id_rsa", WD, ENV, posixpath) == ["$HOME/.ssh/id_rsa"]
 
 
 def test_scan_shell_windows_backslash_path():
     # Windows: posix=False tokenization keeps the backslash path intact for ntpath.
-    assert s.scan_shell("type C:\\Windows\\win.ini", "C:\\work\\sess", {}, ntpath) == ["C:\\Windows\\win.ini"]
+    assert s.scan_shell("type C:\\Windows\\win.ini", "C:\\work\\sess", {}, ntpath) == [
+        "C:\\Windows\\win.ini"
+    ]
 
 
 # --- scan_python ---
@@ -146,7 +159,9 @@ def test_scan_shell_windows_backslash_path():
 def test_scan_python_flags_literal_outside(tmp_path):
     wd = str(tmp_path)
     assert s.scan_python("open('/etc/passwd')", wd, ENV, posixpath) == ["/etc/passwd"]
-    assert s.scan_python("import shutil\nshutil.copy('a', '/usr/x')", wd, ENV, posixpath) == ["/usr/x"]
+    assert s.scan_python("import shutil\nshutil.copy('a', '/usr/x')", wd, ENV, posixpath) == [
+        "/usr/x"
+    ]
     assert s.scan_python("open('data.csv')", wd, ENV, posixpath) == []
 
 
@@ -191,22 +206,20 @@ def test_static_screen_enabled_switch():
 
 def test_bash_exec_blocks_outside_read():
     from core.inference.tools import _bash_exec
-
-    msg = _bash_exec("cat /etc/hostname", session_id="static-block")
+    msg = _bash_exec("cat /etc/hostname", session_id = "static-block")
     assert "outside the sandbox working directory" in msg
 
 
 def test_bash_exec_glued_redirect_blocked():
     from core.inference.tools import _bash_exec
-
-    msg = _bash_exec("cat</etc/hostname", session_id="static-glued")
+    msg = _bash_exec("cat</etc/hostname", session_id = "static-glued")
     assert "outside the sandbox working directory" in msg
 
 
 def test_bash_exec_allows_normal_command():
     from core.inference.tools import _bash_exec
 
-    msg = _bash_exec("echo hello", session_id="static-ok")
+    msg = _bash_exec("echo hello", session_id = "static-ok")
     assert "outside the sandbox working directory" not in msg
     assert "hello" in msg
 
@@ -219,20 +232,18 @@ def test_blocked_command_never_spawns(monkeypatch):
     monkeypatch.setattr(
         t.subprocess, "Popen", lambda *a, **k: (calls.append(1), real_popen(*a, **k))[1]
     )
-    msg = t._bash_exec("cat /etc/hostname", session_id="never-spawn")
+    msg = t._bash_exec("cat /etc/hostname", session_id = "never-spawn")
     assert "outside the sandbox working directory" in msg
     assert calls == []  # blocked before any Popen
 
 
 def test_python_exec_blocks_outside_write():
     from core.inference.tools import _python_exec
-
-    msg = _python_exec("open('/usr/x_evil', 'w')", session_id="py-block")
+    msg = _python_exec("open('/usr/x_evil', 'w')", session_id = "py-block")
     assert "outside the sandbox working directory" in msg
 
 
 def test_bypass_permissions_skips_static_screen():
     from core.inference.tools import _bash_exec
-
-    msg = _bash_exec("cat /etc/hostname", session_id="static-bypass", disable_sandbox=True)
+    msg = _bash_exec("cat /etc/hostname", session_id = "static-bypass", disable_sandbox = True)
     assert "outside the sandbox working directory" not in msg

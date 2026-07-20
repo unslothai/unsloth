@@ -41,8 +41,17 @@ _REMAP_PREFIXES = ("/mnt/data", "/mnt/outputs", "/home/sandbox", "/workspace", "
 
 # Stream devices that are always safe argument / redirection targets.
 _DEV_ALLOWED = frozenset(
-    {"/dev/null", "/dev/zero", "/dev/full", "/dev/random", "/dev/urandom",
-     "/dev/tty", "/dev/stdin", "/dev/stdout", "/dev/stderr"}
+    {
+        "/dev/null",
+        "/dev/zero",
+        "/dev/full",
+        "/dev/random",
+        "/dev/urandom",
+        "/dev/tty",
+        "/dev/stdin",
+        "/dev/stdout",
+        "/dev/stderr",
+    }
 )
 
 # Only an explicit OFF disables the screen; unset / auto / on keep it on.
@@ -66,11 +75,10 @@ def host_pathmod():
     """Return the path module matching the host: ``ntpath`` on Windows else
     ``posixpath``."""
     import sys
-
     return ntpath if sys.platform == "win32" else posixpath
 
 
-def static_screen_enabled(env=None) -> bool:
+def static_screen_enabled(env = None) -> bool:
     """True unless the sandbox FS confinement switch is explicitly set to off."""
     raw = (os.environ if env is None else env).get(_DISABLE_ENV)
     return raw is None or raw.strip().lower() not in _OFF_VALUES
@@ -94,7 +102,7 @@ def _expand(raw: str, child_env) -> "str | None":
         val = child_env.get(m.group(1) or m.group(2))
         if val is None or os.pathsep in val:
             return None
-        out.append(s[pos:m.start()])
+        out.append(s[pos : m.start()])
         out.append(val)
         pos = m.end()
     out.append(s[pos:])
@@ -166,7 +174,12 @@ def _allowed_roots(workdir: str, child_env):
 
 
 def classify_path(
-    raw: str, workdir: str, child_env, *, pathmod, expand: bool = True
+    raw: str,
+    workdir: str,
+    child_env,
+    *,
+    pathmod,
+    expand: bool = True,
 ) -> "tuple[str, str | None]":
     """Return ``(status, resolved)`` where status is "inside" | "outside" |
     "unknown" and resolved is the normalized path (None when unknown). ``expand`` is
@@ -220,7 +233,7 @@ def _strip_redirect(token: str) -> "str | None":
     m = _REDIR_RE.match(token)
     if not m:
         return token
-    rest = token[m.end():]
+    rest = token[m.end() :]
     return rest or None
 
 
@@ -231,7 +244,7 @@ def _shell_tokens(command: str, pathmod) -> "list[str]":
     surrounding quotes stripped. Malformed quoting yields no tokens (allowed)."""
     if pathmod is ntpath:
         try:
-            tokens = shlex.split(command, posix=False)
+            tokens = shlex.split(command, posix = False)
         except ValueError:
             return []
         out = []
@@ -240,7 +253,7 @@ def _shell_tokens(command: str, pathmod) -> "list[str]":
                 t = t[1:-1]
             out.append(t)
         return out
-    lexer = shlex.shlex(command, posix=True, punctuation_chars="|&;()<>")
+    lexer = shlex.shlex(command, posix = True, punctuation_chars = "|&;()<>")
     lexer.whitespace_split = True
     lexer.commenters = ""
     try:
@@ -281,7 +294,7 @@ def scan_shell(command: str, workdir: str, child_env, pathmod) -> "list[str]":
             continue
         if "://" in path or not _pathlike(path, pathmod):
             continue
-        status, _ = classify_path(path, workdir, child_env, pathmod=pathmod, expand=True)
+        status, _ = classify_path(path, workdir, child_env, pathmod = pathmod, expand = True)
         if status == "outside":
             out.append(path)
     return out
@@ -297,7 +310,7 @@ def scan_python(code: str, workdir: str, child_env, pathmod) -> "list[str]":
         lit = m.group(1) if m.group(1) is not None else m.group(2)
         if not lit or "://" in lit or not _pathlike(lit, pathmod):
             continue
-        status, resolved = classify_path(lit, workdir, child_env, pathmod=pathmod, expand=False)
+        status, resolved = classify_path(lit, workdir, child_env, pathmod = pathmod, expand = False)
         if status == "outside" and _python_reachable(resolved, pathmod):
             out.append(lit)
     return out

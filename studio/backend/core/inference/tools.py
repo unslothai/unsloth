@@ -5693,7 +5693,9 @@ def _python_exec(
         # shares the disable_sandbox bypass and the FS confinement env switch.
         if static_screen_enabled():
             _wd = _get_workdir(session_id)
-            static_error = check_static_fs("python", code, _wd, _build_safe_env(_wd), host_pathmod())
+            static_error = check_static_fs(
+                "python", code, _wd, _build_safe_env(_wd), host_pathmod()
+            )
             if static_error:
                 return static_error
     elif not _harden_parent_against_proc_env_leak():
@@ -5845,7 +5847,9 @@ def _bash_exec(
         # shares the disable_sandbox bypass and the FS confinement env switch.
         if static_screen_enabled():
             _wd = _get_workdir(session_id)
-            static_error = check_static_fs("shell", command, _wd, _build_safe_env(_wd), host_pathmod())
+            static_error = check_static_fs(
+                "shell", command, _wd, _build_safe_env(_wd), host_pathmod()
+            )
             if static_error:
                 return static_error
     elif not _harden_parent_against_proc_env_leak():
