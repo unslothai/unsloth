@@ -2999,9 +2999,9 @@ if (-not $ROCmIndexUrl -and ($CuTag -eq "cpu" -or $ROCmCpuFallback)) {
     $cudaVisionSpec = "torchvision"
     $cudaAudioSpec = "torchaudio"
     if ($TorchIndexPinned -and -not (Test-CudaFamilyLeaf $CuTag)) {
-        $cudaTorchSpec = "torch>=2.4,<2.11.0"
-        $cudaVisionSpec = "torchvision>=0.19,<0.26.0"
-        $cudaAudioSpec = "torchaudio>=2.4,<2.11.0"
+        $cudaTorchSpec = "torch>=2.4,<2.12.0"
+        $cudaVisionSpec = "torchvision>=0.19,<0.27.0"
+        $cudaAudioSpec = "torchaudio>=2.4,<2.12.0"
     }
     # Release preservation: keep install.ps1's exported torch RELEASE (UNSLOTH_KEPT_TORCH) so a re-run
     # reinstalls the same CUDA build (+cuXXX follows this index). On a failed install, restore the computed

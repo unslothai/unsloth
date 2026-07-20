@@ -2156,29 +2156,21 @@ exit 0
             }
         }
     } elseif ($TorchIndexUrl -or $ROCmIndexUrl) {
-        # Leaf-gated bounded trio, HOISTED so the release-preservation decision below can use it as the
-        # default route window: torchaudio 2.11 dropped its torch pin, so a bare companion can drift from
-        # a capped torch. cu<digits> families ship torch 2.11.x (paired triton-windows 3.6) so the ceiling
-        # widens to <2.12; other leaves keep the 2.10 line. Mirrors install.sh and _CUDA_TORCH_PKG_SPEC.
-        $_idxLeaf = (($TorchIndexUrl -split '[?#]', 2)[0].TrimEnd('/') -split '/')[-1].ToLowerInvariant()
-        if ($_idxLeaf -match '^cu[0-9]+$') {
-            $_pinTorchSpec = "torch>=2.4,<2.12.0"
-            $_pinVisionSpec = "torchvision>=0.19,<0.27.0"
-            $_pinAudioSpec = "torchaudio>=2.4,<2.12.0"
-        } else {
-            $_pinTorchSpec = "torch>=2.4,<2.11.0"
-            $_pinVisionSpec = "torchvision>=0.19,<0.26.0"
-            $_pinAudioSpec = "torchaudio>=2.4,<2.11.0"
-        }
+        # Bounded default trio (torch 2.11 line; wheels verified on cpu + cu126/cu128/cu130 for
+        # win_amd64 with paired triton-windows 3.6), HOISTED so the release-preservation decision
+        # below can use it as the default route window. torchaudio 2.11 dropped its torch pin, so a
+        # bare companion can drift from a capped torch. Bump the three ceilings together with
+        # install.sh's _TORCH_CEILING trio and the repair/fallback sites below (2 more literals).
+        $_pinTorchSpec = "torch>=2.4,<2.12.0"
+        $_pinVisionSpec = "torchvision>=0.19,<0.27.0"
+        $_pinAudioSpec = "torchaudio>=2.4,<2.12.0"
         # Release preservation (twin of install.sh's _PREV_TORCH_PIN decision): evaluated after every
         # index/floor choice, incl. the ROCm reroute, so a raised floor rejects an older release. The
-        # route window is the leaf-gated CUDA trio by default; the ROCm path uses its floor (or the
-        # torch>=2.4,<2.11.0 range the ROCm->CPU fallback installs). The kept release is exported for
-        # setup.ps1 (UNSLOTH_KEPT_TORCH) and cleared after setup runs.
+        # kept release is exported for setup.ps1 (UNSLOTH_KEPT_TORCH) and cleared after setup runs.
         $script:PrevTorchPin = $null
         if (-not $SkipTorch -and $script:PrevTorchVer) {
             $_routeWindow = $_pinTorchSpec
-            if ($ROCmIndexUrl) { if ($ROCmTorchFloor) { $_routeWindow = $ROCmTorchFloor } else { $_routeWindow = "torch>=2.4,<2.11.0" } }
+            if ($ROCmIndexUrl -and $ROCmTorchFloor) { $_routeWindow = $ROCmTorchFloor }
             $script:PrevTorchPin = Get-PreviousTorchPin -TorchVersion $script:PrevTorchVer -Constraint $_routeWindow
             if ($script:PrevTorchPin) {
                 $env:UNSLOTH_KEPT_TORCH = $script:PrevTorchPin.Release.PublicBase
@@ -2212,7 +2204,7 @@ exit 0
                 $CpuFallbackIndexUrl = if ($env:UNSLOTH_PYTORCH_MIRROR) { "$($env:UNSLOTH_PYTORCH_MIRROR.TrimEnd('/'))/cpu" } else { "https://download.pytorch.org/whl/cpu" }
                 substep "ROCm PyTorch install failed (exit $torchInstallExit); using a CPU base, Unsloth setup retries ROCm." "Yellow"
                 # --force-reinstall: a failed ROCm install can leave an unpinned ROCm torch that still satisfies the CPU torch>= range, so without it uv would keep the ROCm build and only swap companions -- a mismatched venv the flavor-repair block won't fix. (No kept-release attempt: the ROCm attempts above always resolve or clear $script:PrevTorchPin first, so a pin never reaches this CPU base.)
-                $torchInstallExit = Invoke-InstallCommandRetry -Label "install PyTorch (CPU fallback)" { uv pip install --python $VenvPython --force-reinstall "torch>=2.4,<2.11.0" "torchvision>=0.19,<0.26.0" "torchaudio>=2.4,<2.11.0" --default-index $CpuFallbackIndexUrl }
+                $torchInstallExit = Invoke-InstallCommandRetry -Label "install PyTorch (CPU fallback)" { uv pip install --python $VenvPython --force-reinstall "torch>=2.4,<2.12.0" "torchvision>=0.19,<0.27.0" "torchaudio>=2.4,<2.12.0" --default-index $CpuFallbackIndexUrl }
                 if ($torchInstallExit -ne 0) {
                     Write-Host "[ERROR] Failed to install PyTorch (ROCm and CPU base both failed, exit code $torchInstallExit)" -ForegroundColor Red
                     return (Exit-InstallFailure "Failed to install PyTorch (exit code $torchInstallExit)" $torchInstallExit)
@@ -2363,13 +2355,8 @@ exit 0
                     }
                     $installedTorchTag = Get-InstalledTorchTag -PythonExe $VenvPython
                 } elseif ($expectedTorchTag -ne 'rocm') {
-                    # CUDA: stale +cpu (or wrong cuXXX) against a CUDA index -> reinstall triplet. Same leaf-gated ceiling as the install above: cu* serves 2.11.
-                    $_fixLeaf = (($TorchIndexUrl -split '[?#]', 2)[0].TrimEnd('/') -split '/')[-1].ToLowerInvariant()
-                    if ($_fixLeaf -match '^cu[0-9]+$') {
-                        $_fixTorchSpec = "torch>=2.4,<2.12.0"; $_fixVisionSpec = "torchvision>=0.19,<0.27.0"; $_fixAudioSpec = "torchaudio>=2.4,<2.12.0"
-                    } else {
-                        $_fixTorchSpec = "torch>=2.4,<2.11.0"; $_fixVisionSpec = "torchvision>=0.19,<0.26.0"; $_fixAudioSpec = "torchaudio>=2.4,<2.11.0"
-                    }
+                    # CUDA: stale +cpu (or wrong cuXXX) against a CUDA index -> reinstall triplet with the default 2.11-line trio (ceiling bump site, see the hoisted trio above).
+                    $_fixTorchSpec = "torch>=2.4,<2.12.0"; $_fixVisionSpec = "torchvision>=0.19,<0.27.0"; $_fixAudioSpec = "torchaudio>=2.4,<2.12.0"
                     # Kept-release substitution (twin of install.sh's _install_torch_default_index honoring _PREV_TORCH_PIN): honor the preserved torch when the pin survived the E-decision; restore the range specs and retry if it isn't installable here. The --reinstall-package triplet stays on both attempts.
                     $_cudaKept = $false
                     if ($script:PrevTorchPin) {

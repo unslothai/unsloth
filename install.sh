@@ -1888,18 +1888,24 @@ if [ -x "$VENV_DIR/bin/python" ]; then
     substep "${VENV_DIR}"
 fi
 
+# Supported torch line: the default range admits torch 2.11 (wheels verified on
+# cpu/cu126/cu128/cu130/rocm7.1+/mac arm64). Bump the three ceilings together
+# when the next torch minor is validated; curated ROCm floors below stay literal.
+_TORCH_CEILING="2.12.0"
+_TORCHVISION_CEILING="0.27.0"
+_TORCHAUDIO_CEILING="2.12.0"
 # Default torch constraint; tightened for Python 3.13+ on arm64 macOS (torch <2.6 has no cp313 macOS arm64 wheels).
-TORCH_CONSTRAINT="torch>=2.4,<2.11.0"
+TORCH_CONSTRAINT="torch>=2.4,<${_TORCH_CEILING}"
 if [ "$SKIP_TORCH" = false ] && [ "$OS" = "macos" ] && [ "$_ARCH" = "arm64" ]; then
     _PY_MINOR=$("$VENV_DIR/bin/python" -c \
         "import sys; print(sys.version_info.minor)" 2>/dev/null || echo "0")
     if [ "$_PY_MINOR" -ge 13 ] 2>/dev/null; then
-        TORCH_CONSTRAINT="torch>=2.6,<2.11.0"
+        TORCH_CONSTRAINT="torch>=2.6,<${_TORCH_CEILING}"
     fi
 fi
-# Companion constraints bounded to torch's window: torchaudio 2.11 dropped its torch pin, so a bare companion beside a <2.11 torch resolves 2.11.
-TORCHVISION_CONSTRAINT="torchvision>=0.19,<0.26.0"
-TORCHAUDIO_CONSTRAINT="torchaudio>=2.4,<2.11.0"
+# Companion constraints bounded to torch's window: torchaudio 2.11 dropped its torch pin, so a bare companion can drift from a capped torch.
+TORCHVISION_CONSTRAINT="torchvision>=0.19,<${_TORCHVISION_CEILING}"
+TORCHAUDIO_CONSTRAINT="torchaudio>=2.4,<${_TORCHAUDIO_CEILING}"
 
 # ── Resolve repo root (for --local installs) ──
 _REPO_ROOT="$(cd "$(dirname "$0" 2>/dev/null || echo ".")" && pwd)"
@@ -2480,26 +2486,14 @@ else
 fi
 
 # rocm7.2 and the per-gfx indexes (Strix _grouped_mm fix) ship torch 2.11.0: raise the floor and pin companions; match the FINAL leaf only.
+# (cu*/cpu/custom leaves all use the default <2.12 trio above.)
 case "$_torch_index_leaf" in
     rocm7.2|gfx120x-all|gfx1151|gfx1150)
         TORCH_CONSTRAINT="torch>=2.11.0,<2.12.0"
         TORCHVISION_CONSTRAINT="torchvision>=0.26.0,<0.27.0"
         TORCHAUDIO_CONSTRAINT="torchaudio>=2.11.0,<2.12.0"
         ;;
-    # CUDA cu12x/cu13x indexes ship torch 2.11.x: widen the trio ceiling to <2.12.0.
-    cu[0-9]*)
-        TORCH_CONSTRAINT="torch>=2.4,<2.12.0"
-        TORCHVISION_CONSTRAINT="torchvision>=0.19,<0.27.0"
-        TORCHAUDIO_CONSTRAINT="torchaudio>=2.4,<2.12.0"
-        ;;
 esac
-
-# A pinned custom/unknown-leaf index has no curated companion set: bound the companions to the same <2.11 range the Python path pins.
-if [ "$_torch_index_pinned" = true ] && \
-   [ -z "$(_expected_torch_flavor_tag "$TORCH_INDEX_URL")" ]; then
-    TORCHVISION_CONSTRAINT="torchvision>=0.19,<0.26.0"
-    TORCHAUDIO_CONSTRAINT="torchaudio>=2.4,<2.11.0"
-fi
 
 # Detect a Radeon card (*/rocm* index + rocminfo "Marketing Name:.*Radeon"); skipped when the index is pinned.
 _amd_gpu_radeon=false
