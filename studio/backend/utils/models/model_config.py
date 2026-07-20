@@ -2340,12 +2340,41 @@ def _dir_file_names(dir_path: Path) -> set:
         return set()
 
 
-# Non-Transformer modules whose ST ``load()`` reads a weight file. Each does
-# ``load_safetensors(model.safetensors)`` else ``torch.load(pytorch_model.bin)`` with no
-# fallback, so it needs its module config AND a complete Torch weight set -- a config alone
-# would validate here and then raise FileNotFoundError at load. ``Pooling`` / ``BoW`` /
-# ``Normalize`` read no weights (BoW keeps its data in config.json), so a config suffices.
-_ST_WEIGHTED_MODULE_NAMES = frozenset({"wordembeddings", "dense", "cnn", "lstm"})
+# Non-Transformer sentence-transformers modules whose ``load()`` HARD-loads a serialized Torch
+# weight set: each ends in ``Module.load_torch_weights`` (sentence_transformers/base/modules/
+# module.py), which loads ``model.safetensors`` else ``pytorch_model.bin`` and RAISES
+# ``ValueError`` ("Could not find 'model.safetensors' or 'pytorch_model.bin' ...") when NEITHER
+# exists. So each needs its module config AND a complete Torch weight set -- a config alone would
+# pass offline validation here and then 409 at the local-only load (#7218 P2). Enumerated from the
+# sentence-transformers v5 source; each cite is the ``file:line`` of the ``load_torch_weights``
+# call in that class's ``load()``:
+#   * WordEmbeddings        sentence_transformer/modules/word_embeddings.py:141  (+ tokenizer, below)
+#   * Dense                 base/modules/dense.py:124
+#   * CNN                   sentence_transformer/modules/cnn.py:90               (cnn_config.json)
+#   * LSTM                  sentence_transformer/modules/lstm.py:96              (lstm_config.json)
+#   * LayerNorm             sentence_transformer/modules/layer_norm.py:52
+#   * WeightedLayerPooling  sentence_transformer/modules/weighted_layer_pooling.py:74
+#   * SparseAutoEncoder     sparse_encoder/modules/sparse_auto_encoder.py:226
+# All ship a ``config.json`` / ``*_config.json`` (LayerNorm / WeightedLayerPooling /
+# SparseAutoEncoder inherit the default ``config_file_name = "config.json"``), so they pass the
+# config-presence gate above. Deliberately EXCLUDED (their ``load()`` reads no weight file):
+# ``Pooling`` / ``SpladePooling`` / ``Normalize`` / ``Dropout`` read nothing; ``BoW`` /
+# ``WordWeights`` keep their data in ``config.json`` and reconstruct it on the config-only base
+# ``Module.load()`` (their ``save()`` writes weights, but ``load()`` never reads them).
+# ``StaticEmbedding`` (no config: tokenizer + weights) is handled by its own branch above, and
+# ``SparseStaticEmbedding`` is only CONDITIONALLY weighted (its ``load()`` skips the weight file
+# when ``config.json`` names an ``idf.json`` ``path``), so neither is listed here.
+_ST_WEIGHTED_MODULE_NAMES = frozenset(
+    {
+        "wordembeddings",
+        "dense",
+        "cnn",
+        "lstm",
+        "layernorm",
+        "weightedlayerpooling",
+        "sparseautoencoder",
+    }
+)
 
 # ``StaticEmbedding.load()`` (sentence_transformers/models/StaticEmbedding.py) reads a
 # ``tokenizer.json`` via ``Tokenizer.from_file`` and then ``model.safetensors`` else
@@ -2464,13 +2493,18 @@ def _snapshot_modules_all_loadable(snap: Path) -> bool:
     ``local_files_only`` load builds these from ``modules.json`` by calling
     ``module_class.load(path)`` per declared module.
 
-    Additive and conservative: it only ever ACCEPTS (the caller OR-s it with the Transformer
-    check) and never rejects, so it cannot regress the Transformer path. It validates only when
-    ``modules.json`` parses as a non-empty list AND every declared module's ``path`` directory
-    carries the files that module's own ``load()`` reads -- so a bare / pruned cache (empty
-    ``modules.json``, a missing module directory, a WordEmbeddings module with its weights
-    stripped) does not validate. It also requires at least one embedding-producing module, so a
-    degenerate Pooling/Normalize-only list is rejected. Never raises."""
+    When ``modules.json`` declares a non-empty list this is the AUTHORITATIVE snapshot check:
+    :func:`_snapshot_is_loadable_st_model` calls it INSTEAD of the Transformer-shaped
+    :func:`_snapshot_has_complete_weights`, because the load builds EVERY declared module and one
+    complete ``0_Transformer`` must NOT vouch for a sibling module (e.g. ``LayerNorm`` /
+    ``WeightedLayerPooling`` / ``Dense``) whose serialized weights are missing (#7218 P2). It
+    validates only when ``modules.json`` parses as a non-empty list AND every declared module's
+    ``path`` directory carries the files that module's own ``load()`` reads -- so a bare / pruned
+    cache (empty ``modules.json``, a missing module directory, a weight-bearing module with its
+    weights stripped) does not validate. It also requires at least one embedding-producing module,
+    so a degenerate Pooling/Normalize-only list is rejected. Behaviour-preserving for a WELL-FORMED
+    complete snapshot (every declared module has its files, so acceptance is unchanged). Never
+    raises."""
     try:
         modules = json.loads((snap / "modules.json").read_text(encoding = "utf-8"))
     except (OSError, ValueError):
@@ -2500,17 +2534,44 @@ def _snapshot_modules_all_loadable(snap: Path) -> bool:
     return saw_content_module
 
 
+def _modules_json_declares_modules(snap: Path) -> bool:
+    """True when *snap*'s ``modules.json`` parses as a NON-EMPTY list of module entries.
+
+    ``modules.json`` is authoritative about what a SentenceTransformer load builds: when it
+    declares one or more modules the loader calls ``module_class.load(path)`` for EVERY one, so
+    the whole declared set must be loadable. An empty list / a non-list / an unreadable file
+    declares nothing usable -- the load then reads the snapshot root as a plain Transformer -- so
+    the caller falls back to the Transformer-shaped weight check. Never raises."""
+    try:
+        modules = json.loads((snap / "modules.json").read_text(encoding = "utf-8"))
+    except (OSError, ValueError):
+        return False
+    return isinstance(modules, list) and len(modules) > 0
+
+
 def _snapshot_is_loadable_st_model(snap: Path) -> bool:
     """True when *snap* holds a loadable sentence-transformers model. ``modules.json`` alone
-    is insufficient -- the security preflight downloads exactly that file, so require the
-    marker plus a complete load: a Transformer-shaped weight set
-    (:func:`_snapshot_has_complete_weights`), OR a complete non-Transformer module set such as
-    ``0_WordEmbeddings`` / ``BoW`` (:func:`_snapshot_modules_all_loadable`), which carries none
-    of the Transformer config/tokenizer/weights the first check requires."""
+    is insufficient -- the security preflight downloads exactly that file, so require the marker
+    plus a complete load.
+
+    ``modules.json`` is authoritative about what the loader builds. When it declares a non-empty
+    list of modules, a SentenceTransformer load builds EVERY one, so the whole declared set must
+    be loadable (:func:`_snapshot_modules_all_loadable`): a complete ``0_Transformer`` must NOT
+    vouch for a sibling module (e.g. ``LayerNorm`` / ``WeightedLayerPooling`` / ``Dense``) whose
+    serialized weights are missing -- that snapshot passes offline validation and then 409s at
+    the local-only load (#7218 P2). Only when ``modules.json`` declares nothing usable (an empty
+    list / not a list / unreadable) does the load read the snapshot ROOT as a plain Transformer,
+    so fall back to the Transformer-shaped weight set (:func:`_snapshot_has_complete_weights`),
+    which also covers the plain ``from_pretrained`` root layout. Behaviour-preserving for a
+    WELL-FORMED complete snapshot -- a normal download has every declared module's weights, so
+    acceptance is unchanged; only a snapshot with a genuinely incomplete declared module is now
+    rejected."""
     try:
         if not (snap / "modules.json").is_file():
             return False
-        return _snapshot_has_complete_weights(snap) or _snapshot_modules_all_loadable(snap)
+        if _modules_json_declares_modules(snap):
+            return _snapshot_modules_all_loadable(snap)
+        return _snapshot_has_complete_weights(snap)
     except OSError:
         return False
 

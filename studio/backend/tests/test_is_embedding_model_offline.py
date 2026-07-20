@@ -782,6 +782,100 @@ def test_marker_requires_weights_for_a_dense_module(tmp_path, monkeypatch):
     assert mc._embedding_marker_in_hf_cache("org/we-dense") is True
 
 
+# ── a complete Transformer must not vouch for a weightless declared sibling module (#7218 P2) ──
+
+
+_TF_PLUS = "org/transformer-plus-module"
+
+
+def _transformer_plus_module_repo(
+    tmp_path,
+    monkeypatch,
+    *,
+    module_dir,
+    module_type,
+    include_module_weights,
+    commit = "aaa",
+    repo_id = _TF_PLUS,
+):
+    """A cached SentenceTransformer whose modules.json declares a COMPLETE ``0_Transformer`` load
+    root (config + tokenizer + weights) PLUS a second weight-bearing module (``LayerNorm`` /
+    ``WeightedLayerPooling`` / ``Dense``) that always carries its ``config.json`` and, only when
+    ``include_module_weights``, its ``model.safetensors``. A SentenceTransformer load builds EVERY
+    declared module -- each of these modules' ``load()`` ends in ``load_torch_weights``, which
+    RAISES without a weight file -- so a weightless sibling must fail offline validation even
+    though the Transformer alone is complete."""
+    hf_root = tmp_path / "hf"
+    repo = hf_root / f"models--{repo_id.replace('/', '--')}"
+    snap = repo / "snapshots" / commit
+    transformer = snap / "0_Transformer"
+    transformer.mkdir(parents = True)
+    (transformer / "config.json").write_text("{}")
+    (transformer / "tokenizer.json").write_text("{}")
+    (transformer / "model.safetensors").write_bytes(b"\0")
+    module = snap / module_dir
+    module.mkdir(parents = True)
+    (module / "config.json").write_text("{}")
+    if include_module_weights:
+        (module / "model.safetensors").write_bytes(b"\0")
+    (snap / "modules.json").write_text(
+        _modules_json(
+            ("0", "0_Transformer", "sentence_transformers.models.Transformer"),
+            ("1", module_dir, module_type),
+        )
+    )
+    (repo / "refs").mkdir(parents = True)
+    (repo / "refs" / "main").write_text(commit)
+    _fake_hf_cache(monkeypatch, hf_root)
+    monkeypatch.delenv("SENTENCE_TRANSFORMERS_HOME", raising = False)
+    return snap
+
+
+_TF_SIBLING_MODULES = [
+    ("1_LayerNorm", "sentence_transformers.models.LayerNorm"),
+    ("1_WeightedLayerPooling", "sentence_transformers.models.WeightedLayerPooling"),
+    ("1_Dense", "sentence_transformers.models.Dense"),
+]
+
+
+@pytest.mark.parametrize(("module_dir", "module_type"), _TF_SIBLING_MODULES)
+def test_marker_rejects_complete_transformer_with_weightless_sibling(
+    tmp_path, monkeypatch, module_dir, module_type
+):
+    # #7218 P2: a snapshot with a complete 0_Transformer AND a declared sibling module whose
+    # weights are missing must NOT validate -- the old `_snapshot_has_complete_weights(...) OR
+    # _snapshot_modules_all_loadable(...)` accepted it on the Transformer alone and then 409'd at
+    # the local-only load. LayerNorm / WeightedLayerPooling / Dense.load() each end in
+    # load_torch_weights (raises ValueError without model.safetensors/pytorch_model.bin). Dense
+    # was ALREADY a recognized weight-bearing module, so its case proves the or-short-circuit fix
+    # independently of the newly-added module names.
+    _transformer_plus_module_repo(
+        tmp_path,
+        monkeypatch,
+        module_dir = module_dir,
+        module_type = module_type,
+        include_module_weights = False,
+    )
+    assert mc._embedding_marker_in_hf_cache(_TF_PLUS) is False
+
+
+@pytest.mark.parametrize(("module_dir", "module_type"), _TF_SIBLING_MODULES)
+def test_marker_accepts_complete_transformer_with_complete_sibling(
+    tmp_path, monkeypatch, module_dir, module_type
+):
+    # Companion to the rejection above: once the sibling module carries its weights the whole
+    # declared set is loadable, so a WELL-FORMED complete snapshot must still validate -- the fix
+    # only stops accepting a genuinely incomplete declared module, it does not over-reject.
+    _transformer_plus_module_repo(
+        tmp_path,
+        monkeypatch,
+        module_dir = module_dir,
+        module_type = module_type,
+        include_module_weights = True,
+    )
+    assert mc._embedding_marker_in_hf_cache(_TF_PLUS) is True
+
+
 def test_marker_accepts_complete_bow_model(tmp_path, monkeypatch):
     # A BoW module keeps its vocab in config.json and writes NO weight file; a complete cache is
     # still loadable via BoW.load(config.json), so it must validate.
