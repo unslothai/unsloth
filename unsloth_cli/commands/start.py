@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""`unsloth start` — launch a coding agent against a running Studio server."""
+"""`unsloth start` — launch a coding agent against a running Unsloth server."""
 
 import atexit
 import contextlib
@@ -35,7 +35,7 @@ from unsloth_cli._inference import (
 )
 
 start_app = typer.Typer(
-    help = "Start a coding agent against a running Studio server.",
+    help = "Start a coding agent against a running Unsloth server.",
     no_args_is_help = True,
     context_settings = {"help_option_names": ["-h", "--help"]},
 )
@@ -49,13 +49,22 @@ _HERMES_PROVIDER = "unsloth"
 # the wizard's global API-key/model prompts would block the launch and point the
 # user at a different (global) provider than the one Unsloth just configured.
 # Both installers expose a skip flag: `-SkipSetup` (PowerShell) and
-# `--skip-setup` (POSIX; passed to the piped script via `bash -s --`).
+# `--skip-setup` (POSIX; passed to the piped script via `bash -s --`). Pin both
+# the fetched script and the repository checkout it performs to the same full
+# commit so a later change to either upstream branch cannot silently replace
+# code that Unsloth executes with the user's privileges.
+_HERMES_INSTALL_COMMIT = "f1af945f6c576eccb126fa955edc9be258b33020"
+_HERMES_INSTALL_BASE = (
+    "https://raw.githubusercontent.com/NousResearch/hermes-agent/"
+    f"{_HERMES_INSTALL_COMMIT}/scripts"
+)
 _HERMES_WINDOWS_INSTALL_HINT = (
-    "& ([scriptblock]::Create((irm https://hermes-agent.nousresearch.com/install.ps1))) -SkipSetup"
+    f"& ([scriptblock]::Create((irm {_HERMES_INSTALL_BASE}/install.ps1)))"
+    f" -SkipSetup -Commit {_HERMES_INSTALL_COMMIT}"
 )
 _HERMES_POSIX_INSTALL_HINT = (
-    "curl -fsSL https://raw.githubusercontent.com/NousResearch/hermes-agent"
-    "/main/scripts/install.sh | bash -s -- --skip-setup"
+    f"curl -fsSL {_HERMES_INSTALL_BASE}/install.sh | bash -s --"
+    f" --skip-setup --commit {_HERMES_INSTALL_COMMIT}"
 )
 # Hermes refuses to initialize when the model window is under 64,000 tokens; its
 # error message points at the model.context_length / auxiliary.compression
@@ -75,14 +84,14 @@ _CLAUDE_ENV_UNSET = ("ANTHROPIC_API_KEY", "CLAUDE_CODE_OAUTH_TOKEN")
 
 # Shared by every agent command; only the config/env/command differ.
 _MODEL_OPTION = typer.Option(
-    None, "--model", "-m", help = "Model for the agent; defaults to the one loaded in Studio."
+    None, "--model", "-m", help = "Model for the agent; defaults to the one loaded in Unsloth."
 )
 _KEY_OPTION = typer.Option(
     None,
     "--api-key",
     envvar = "UNSLOTH_API_KEY",
     help = (
-        "Studio API key. For a local Studio it is minted automatically and "
+        "Unsloth API key. For a local Unsloth it is minted automatically and "
         "remembered per server. For a remote server, pass one with --api-key "
         "(or UNSLOTH_API_KEY); it is remembered for next time."
     ),
@@ -96,7 +105,7 @@ _SERVE_OPTION = typer.Option(
     True,
     "--serve/--no-serve",
     help = (
-        "If no Studio server is running, auto-start one for --model and stop it when the "
+        "If no Unsloth server is running, auto-start one for --model and stop it when the "
         "agent exits. --no-serve keeps the old behavior of erroring out."
     ),
 )
@@ -149,8 +158,8 @@ _PERSIST_OPTION = typer.Option(
     ),
 )
 
-# Per-agent CLI flag for "run tools without prompting". opencode and openclaw have no
-# such flag (config only) and are handled in their config writers, so they are absent.
+# Per-agent CLI flag for "run tools without prompting". OpenCode (native --auto is
+# command-scoped, handled below) and OpenClaw (config-only) are absent from this prefix map.
 _YOLO_COMMAND_FLAGS = {
     "claude": ["--dangerously-skip-permissions"],
     "codex": ["--dangerously-bypass-approvals-and-sandbox"],
@@ -166,8 +175,123 @@ def _yolo_command_flags(agent: str, yolo: bool) -> list:
     return _YOLO_COMMAND_FLAGS.get(agent, []) if yolo else []
 
 
+# Subcommands that reject --auto (OpenCode exposes it only on the default TUI and `run`),
+# so `opencode serve --auto` is never emitted. Includes console/generate, hidden from
+# `opencode --help` but still registered. Unknown first positionals are TUI paths -> --auto.
+_OPENCODE_NON_AUTO_SUBCOMMANDS = frozenset(
+    "completion acp mcp attach debug providers auth agent upgrade uninstall serve web "
+    "models stats export import github pr session plugin plug db console generate".split()
+)
+_OPENCODE_GLOBAL_BOOLEAN_OPTIONS = frozenset(
+    "-h --help -v --version --print-logs --pure --mdns".split()
+)
+_OPENCODE_GLOBAL_VALUE_OPTIONS = frozenset(
+    "--log-level --port --hostname --mdns-domain --cors".split()
+)
+_OPENCODE_NATIVE_AUTO_MIN_VERSION = (1, 17, 12)
+
+
+def _opencode_supports_native_auto() -> bool:
+    executable = shutil.which("opencode")
+    if executable is None:
+        # No local binary: a --no-launch recipe may run elsewhere, and _run installs the
+        # current release on launch -- either way assume native --auto is available.
+        return True
+    try:
+        output = subprocess.check_output(
+            [executable, "--version"],
+            text = True,
+            timeout = 10,
+            stderr = subprocess.DEVNULL,
+        )
+    except Exception:
+        return False
+    match = re.search(r"(\d+)\.(\d+)\.(\d+)", output)
+    return bool(match) and tuple(int(part) for part in match.groups()) >= (
+        _OPENCODE_NATIVE_AUTO_MIN_VERSION
+    )
+
+
+def _opencode_subcommand(args: list[str]) -> Optional[str]:
+    """Return an explicit OpenCode subcommand after supported global options."""
+    index = 0
+    while index < len(args):
+        arg = args[index]
+        if arg == "--":
+            return None
+        if arg in _OPENCODE_GLOBAL_BOOLEAN_OPTIONS:
+            index += 1
+            continue
+        if arg in _OPENCODE_GLOBAL_VALUE_OPTIONS:
+            index += 2
+            continue
+        if any(arg.startswith(f"{option}=") for option in _OPENCODE_GLOBAL_VALUE_OPTIONS):
+            index += 1
+            continue
+        # A non-global option (e.g. --session) is a TUI flag; stop before its value is
+        # mistaken for a subcommand.
+        if arg.startswith("-"):
+            return None
+        return arg
+    return None
+
+
+def _opencode_native_auto_args(args: list[str], yolo: bool) -> tuple[list[str], bool]:
+    """Add OpenCode's native --auto when the selected command supports it."""
+    routed = list(args)
+    if not yolo:
+        return routed, False
+    if _opencode_subcommand(routed) in _OPENCODE_NON_AUTO_SUBCOMMANDS:
+        return routed, False
+    separator = routed.index("--") if "--" in routed else len(routed)
+    # --mini's runMini TUI forces auto=false and never forwards --auto, so appending it is
+    # useless; fall back to the config permission block so --yolo still auto-approves.
+    if any(arg == "--mini" or arg.startswith("--mini=") for arg in routed[:separator]):
+        return routed, False
+    if "--auto" not in routed[:separator]:
+        routed.insert(separator, "--auto")
+    return routed, True
+
+
 def _hermes_install_hint() -> str:
     return _HERMES_WINDOWS_INSTALL_HINT if os.name == "nt" else _HERMES_POSIX_INSTALL_HINT
+
+
+def _hermes_resume_oneshot_args(args: list[str]) -> list[str]:
+    """Route resumed one-shot prompts through Hermes' session-aware chat command."""
+    has_resume = any(
+        arg in ("--resume", "-r", "--continue", "-c")
+        or arg.startswith(("--resume=", "--continue="))
+        or (len(arg) > 2 and arg.startswith(("-r", "-c")))
+        for arg in args
+    )
+    if not has_resume:
+        return args
+
+    rewritten = list(args)
+    for index, arg in enumerate(rewritten):
+        if arg in ("-z", "--oneshot"):
+            rewritten[index] = "-q"
+        elif len(arg) > 2 and arg.startswith("-z"):
+            # argparse accepts attached short-option values (`-zPROMPT` and
+            # `-z=PROMPT`); preserve the value byte-for-byte when switching to -q.
+            rewritten[index] = f"-q{arg[2:]}"
+        elif arg.startswith("--oneshot="):
+            rewritten[index] = f"--query={arg.partition('=')[2]}"
+        else:
+            continue
+        if any(item == "--usage-file" or item.startswith("--usage-file=") for item in args):
+            raise typer.BadParameter(
+                "Hermes cannot resume a one-shot session with --usage-file; remove that option."
+            )
+        prefix = ["chat", "-Q"]
+        if "--yolo" not in rewritten:
+            prefix.append("--yolo")
+        if "--accept-hooks" not in rewritten:
+            prefix.append("--accept-hooks")
+        rewritten = prefix + rewritten
+        return rewritten
+    return args
 
 
 class LoadOptions(NamedTuple):
@@ -310,7 +434,7 @@ def _shutdown_auto_served() -> None:
     global _auto_served_server
     server, _auto_served_server = _auto_served_server, None
     if server is not None and server.poll() is None:
-        typer.echo("Stopping the auto-started Studio server…")
+        typer.echo("Stopping the auto-started Unsloth server…")
         _shutdown_server(server)
 
 
@@ -344,7 +468,7 @@ def _start_studio_server(base: str, model: str, load: LoadOptions) -> subprocess
 
     log_path = Path(tempfile.gettempdir()) / f"unsloth-start-server-{os.getpid()}.log"
     typer.echo(
-        f"No Studio server at {base}. Starting one for {model} (loading the model can take a while)…"
+        f"No Unsloth server at {base}. Starting one for {model} (loading the model can take a while)…"
     )
     typer.echo(f"Server log: {log_path}")
     # 0600: the `unsloth run` banner in this log carries the minted sk-unsloth- key, and
@@ -371,16 +495,16 @@ def _start_studio_server(base: str, model: str, load: LoadOptions) -> subprocess
         if server.poll() is not None:
             tail = _log_tail(log_path)
             _shutdown_auto_served()
-            _fail(f"The Studio server stopped before it was ready. Last log lines:\n{tail}")
+            _fail(f"The Unsloth server stopped before it was ready. Last log lines:\n{tail}")
         # `unsloth run` prints the minted key only after the server is up AND the model is
         # loaded, so it is the fully-ready signal (same contract serve-unsloth-run.sh uses).
         if _studio_healthy(base) and "sk-unsloth-" in _log_tail(log_path, lines = 400):
-            typer.echo(f"Studio server ready at {base}.")
+            typer.echo(f"Unsloth server ready at {base}.")
             return server
         time.sleep(2.0)
     _shutdown_auto_served()
     _fail(
-        f"The Studio server didn't become ready within {_SERVER_START_TIMEOUT_S}s. See {log_path}."
+        f"The Unsloth server didn't become ready within {_SERVER_START_TIMEOUT_S}s. See {log_path}."
     )
 
 
@@ -426,7 +550,7 @@ def _require_studio(
         return expected, _start_studio_server(expected, model, load or LoadOptions())
     model_hint = "" if model else " Pass --model to have it start one for you, or"
     _fail(
-        f"No running Studio server found at {expected}.{model_hint} start one with "
+        f"No running Unsloth server found at {expected}.{model_hint} start one with "
         "`unsloth studio`, or point UNSLOTH_STUDIO_URL at a remote server."
     )
 
@@ -530,12 +654,12 @@ def _key_accepted(base: str, key: str) -> bool:
         if exc.code in (401, 403):
             return False
         _fail(
-            f"Studio server error while checking an API key ({exc.code}). "
+            f"Unsloth server error while checking an API key ({exc.code}). "
             "The server may be starting up or unhealthy; try again shortly."
         )
     except (urllib.error.URLError, TimeoutError) as exc:
         _fail(
-            "Couldn't reach the Studio server while checking an API key: "
+            "Couldn't reach the Unsloth server while checking an API key: "
             f"{getattr(exc, 'reason', None) or exc}"
         )
 
@@ -555,10 +679,10 @@ def _agent_api_key(
         # UNSLOTH_API_KEY meant for some other server must not fail the
         # launch: the loopback mint path below is guaranteed to work.
         # (An explicit key that the fresh server accepts, e.g. one persisted
-        # in this Studio home's auth db, is still honored above.)
+        # in this Unsloth home's auth db, is still honored above.)
 
     # Replay a key the user saved for *this exact* server first (scoped per base,
-    # so it only goes back there -- including a remote/SSH-tunnelled Studio whose
+    # so it only goes back there -- including a remote/SSH-tunnelled Unsloth whose
     # secret the local handshake can't match). Skip ones the server rejects.
     for key in _cached_keys(cache, base, "saved"):
         if _key_accepted(base, key):
@@ -571,15 +695,15 @@ def _agent_api_key(
     if not is_loopback_url(base):
         _fail(
             f"No saved API key for {base} and automatic minting only runs against "
-            "a local Studio. Create an API key in Studio → Settings → API and "
+            "a local Unsloth. Create an API key in Unsloth → Settings → API and "
             "pass it with --api-key (it is remembered per server), or set "
             "UNSLOTH_API_KEY."
         )
     if not verify_studio_identity(base):
         _fail(
-            f"Couldn't verify that {base} is your Studio (it may be running as a "
+            f"Couldn't verify that {base} is your Unsloth (it may be running as a "
             "different OS user, or another process took the port). Create an API "
-            "key in Studio → Settings → API and pass it with --api-key, or set "
+            "key in Unsloth → Settings → API and pass it with --api-key, or set "
             "UNSLOTH_API_KEY."
         )
 
@@ -593,8 +717,8 @@ def _agent_api_key(
     token = _studio_token()
     if token is None:
         _fail(
-            "Couldn't authenticate with the Studio server automatically. Create "
-            "an API key in Studio → Settings → API and pass it with --api-key, "
+            "Couldn't authenticate with the Unsloth server automatically. Create "
+            "an API key in Unsloth → Settings → API and pass it with --api-key, "
             "or set UNSLOTH_API_KEY."
         )
     key = _http_json(
@@ -627,7 +751,7 @@ def _is_hub_model_id(value: object) -> bool:
         return False
     # A hub id is exactly "namespace/name" over a restricted charset. Anything with
     # extra path segments (e.g. a server-side relative path such as
-    # models/Llama/Foo.gguf on a remote Studio) is not a hub id and must not be
+    # models/Llama/Foo.gguf on a remote Unsloth) is not a hub id and must not be
     # casefold-matched against a differently cased path on a case-sensitive
     # filesystem. This is host independent, unlike the existence probe below which
     # cannot see a path that only exists on the server.
@@ -653,8 +777,8 @@ def _model_id_matches(
     if actual == requested:
         return True
     # Case-insensitive matching is only safe when the local existence probe in
-    # _is_hub_model_id is authoritative, i.e. against a loopback Studio on this host.
-    # Against a remote Studio a two-segment string is indistinguishable from a
+    # _is_hub_model_id is authoritative, i.e. against a loopback Unsloth on this host.
+    # Against a remote Unsloth a two-segment string is indistinguishable from a
     # server-side relative path (e.g. Models/Foo vs models/foo), so casefolding it
     # could attach to the wrong model on a case-sensitive server; defer to an exact
     # match there and let the load endpoint resolve the requested path.
@@ -672,7 +796,7 @@ def _resolve_model(
     load: LoadOptions = LoadOptions(),
 ) -> dict:
     models = _loaded_models(base, key)
-    # Only casefold-match ids against a loopback Studio, where _is_hub_model_id's
+    # Only casefold-match ids against a loopback Unsloth, where _is_hub_model_id's
     # local existence probe can actually reject a server-side path; see the note there.
     allow_casefold = is_loopback_url(base)
     # /v1/models reports the model id but not the active GGUF variant or runtime load
@@ -704,7 +828,7 @@ def _resolve_model(
         typer.echo(
             f"Ensuring {requested} is loaded with the requested settings…"
             if load_has_overrides
-            else f"Loading {requested} on the Studio server (this can take a while)…"
+            else f"Loading {requested} on the Unsloth server (this can take a while)…"
         )
         # Mirror `unsloth run`'s load knobs; keep the default payload as just
         # model_path so a bare `--model` load is unchanged.
@@ -725,7 +849,7 @@ def _resolve_model(
             timeout = 3600,
             error = "Model load failed",
         )
-        # Studio registers the model under a canonical id (resolved identifier,
+        # Unsloth registers the model under a canonical id (resolved identifier,
         # casing) that /v1/models echoes but which may differ from the path we
         # passed; match on the id the load reports so we don't silently fall
         # through to models[0] and connect to a different loaded model.
@@ -746,22 +870,22 @@ def _resolve_model(
     if match is not None:
         return match
     if requested:
-        # We asked Studio to load it and it didn't surface in /v1/models; don't
+        # We asked Unsloth to load it and it didn't surface in /v1/models; don't
         # silently hand back an unrelated loaded model.
         _fail(
-            f"Studio didn't report '{requested}' as loaded. Double-check the model "
+            f"Unsloth didn't report '{requested}' as loaded. Double-check the model "
             "id, or load it from the model dropdown in the UI."
         )
     if not models:
         _fail(
-            "No model is loaded in Studio. Load one from the model dropdown in "
+            "No model is loaded in Unsloth. Load one from the model dropdown in "
             "the UI, or pass --model <hf-id-or-path> to load it from here."
         )
     return models[0]
 
 
 def _require_gguf_for_codex(base: str, key: str, model_id: str) -> None:
-    # Codex always streams, and Studio only streams /v1/responses from llama-server.
+    # Codex always streams, and Unsloth only streams /v1/responses from llama-server.
     try:
         status = _http_json("GET", f"{base}/api/inference/status", key)
     except urllib.error.HTTPError as exc:
@@ -840,6 +964,60 @@ def _merge_codex_config(existing: str, base: str) -> str:
     )
 
 
+# Keep custom-model behavior aligned with Codex's own unknown-model fallback. This
+# Apache-2.0 prompt is copied from openai/codex rust-v0.144.0 models-manager/prompt.md.
+_CODEX_FALLBACK_PROMPT = Path(__file__).parent.parent / "codex_fallback_prompt.md"
+_CODEX_MODEL_CATALOG_MIN_VERSION = (0, 110, 0)
+
+
+def _codex_supports_model_catalog() -> bool:
+    executable = shutil.which("codex")
+    if executable is None:
+        # A --no-launch recipe may be copied to another machine; assume a current Codex.
+        return True
+    try:
+        output = subprocess.check_output(
+            [executable, "--version"], text = True, timeout = 10, stderr = subprocess.DEVNULL
+        )
+    except Exception:
+        return False
+    match = re.search(r"(\d+)\.(\d+)\.(\d+)", output)
+    return bool(match) and tuple(int(part) for part in match.groups()) >= (
+        _CODEX_MODEL_CATALOG_MIN_VERSION
+    )
+
+
+def _codex_model_catalog(model: dict) -> dict:
+    """Return conservative metadata for an Unsloth model unknown to Codex's built-in catalog."""
+    model_id = model["id"]
+    window = model.get("context_length") or model.get("max_context_length")
+    entry = {
+        "slug": model_id,
+        "display_name": model_id,
+        "description": "Model served by Unsloth Studio",
+        "supported_reasoning_levels": [],
+        "shell_type": "default",
+        "visibility": "none",
+        "supported_in_api": True,
+        "priority": 99,
+        "availability_nux": None,
+        "upgrade": None,
+        "base_instructions": _CODEX_FALLBACK_PROMPT.read_text(encoding = "utf-8"),
+        "supports_reasoning_summaries": False,
+        "supports_reasoning_summary_parameter": False,
+        "support_verbosity": False,
+        "default_verbosity": None,
+        "apply_patch_tool_type": None,
+        "truncation_policy": {"mode": "bytes", "limit": 10_000},
+        "supports_parallel_tool_calls": False,
+        "experimental_supported_tools": [],
+    }
+    if window:
+        entry["context_window"] = int(window)
+        entry["max_context_window"] = int(window)
+    return {"models": [entry]}
+
+
 def write_codex_config(base: str, model: dict, home: Path) -> None:
     home.mkdir(parents = True, exist_ok = True)
 
@@ -857,6 +1035,16 @@ def write_codex_config(base: str, model: dict, home: Path) -> None:
         f'model_provider = "{_CODEX_PROFILE}"\n'
         f"model = {json.dumps(model['id'])}\n"
     )
+    if _codex_supports_model_catalog() and _CODEX_FALLBACK_PROMPT.is_file():
+        catalog = home / "model-catalog.json"
+        catalog_text = json.dumps(_codex_model_catalog(model), indent = 2) + "\n"
+        if not catalog.exists() or catalog.read_text(encoding = "utf-8") != catalog_text:
+            catalog.write_text(catalog_text, encoding = "utf-8")
+            typer.echo(f"Updated {catalog}")
+        # Resolve relative to the profile file. This also survives WSL launching a Windows
+        # Codex binary, where a Linux absolute path inside TOML would not be usable.
+        profile_text += f"model_catalog_json = {json.dumps(catalog.name)}\n"
+
     window = model.get("context_length") or model.get("max_context_length")
     if window:
         profile_text += f"model_context_window = {int(window)}\n"
@@ -873,6 +1061,16 @@ def _wsl_windows_executable(command: list) -> Optional[str]:
     if executable and executable.startswith("/mnt/"):
         return executable
     return None
+
+
+def _wsl_windows_path(path: Path) -> str:
+    try:
+        translated = subprocess.check_output(["wslpath", "-w", str(path)], text = True).strip()
+    except (OSError, subprocess.CalledProcessError) as exc:
+        _fail(f"Could not translate WSL path {path}: {exc}")
+    if not translated:
+        _fail(f"Could not translate WSL path {path}")
+    return translated
 
 
 def _looks_like_path(value: str) -> bool:
@@ -1010,6 +1208,16 @@ def _install_source(install_hint: str) -> Optional[str]:
     return match.group(0) if match else None
 
 
+def _pinned_raw_github_commit(source: str) -> Optional[str]:
+    """Return the immutable full commit in a raw GitHub URL, if present."""
+    match = re.match(
+        r"^https://raw\.githubusercontent\.com/[^/]+/[^/]+/([0-9a-f]{40})/",
+        source,
+        flags = re.IGNORECASE,
+    )
+    return match.group(1).lower() if match else None
+
+
 def _install_agent(name: str, install_hint: str) -> Optional[str]:
     # Missing agent under --launch: offer to run its documented install command, then
     # re-resolve it on PATH. Consent-based (we never auto-run a remote install script
@@ -1023,12 +1231,27 @@ def _install_agent(name: str, install_hint: str) -> Optional[str]:
     # and nothing checks a signature or hash on the fetched content. Naming the source
     # turns a blind "yes" into informed consent.
     source = _install_source(install_hint)
-    warning = (
-        f"This will download and RUN a script from {source} with your privileges"
-        if source
-        else f"This will RUN `{install_hint}` with your privileges"
-    )
-    typer.secho(f"{warning}; there is no signature or hash check.", fg = "yellow", err = True)
+    if source:
+        pinned_commit = _pinned_raw_github_commit(source)
+        if pinned_commit:
+            warning = (
+                "Security warning: This will download and execute a third-party script "
+                f"from {source} with your privileges. Unsloth pins this content to "
+                f"immutable upstream commit {pinned_commit}, but does not independently "
+                "verify or sandbox it. Continue only if you trust this source and commit."
+            )
+        else:
+            warning = (
+                "Security warning: This will download and execute an unverified third-party "
+                f"script from {source} with your privileges. Unsloth does not pin or verify "
+                "the downloaded content. Continue only if you trust this source."
+            )
+    else:
+        warning = (
+            f"This will RUN `{install_hint}` with your privileges; "
+            "there is no signature or hash check."
+        )
+    typer.secho(warning, fg = "yellow", err = True)
     if not typer.confirm(f"Install `{name}` now with `{install_hint}`?", default = False):
         return None
     # Run each hint through the shell it is written for: PowerShell (irm | iex, or npm)
@@ -1051,6 +1274,16 @@ def _install_agent(name: str, install_hint: str) -> Optional[str]:
     return executable
 
 
+def _wsl_shim_env(command: list, env: dict, unset_env: tuple) -> tuple[dict, tuple]:
+    wsl_env_bridge = _wsl_bridge_names(env, unset_env) if _wsl_windows_executable(command) else ()
+    if not wsl_env_bridge:
+        return env, wsl_env_bridge
+    # Bridge PWD via WSLENV (PWD/p) so the Windows shim finds its project root from the
+    # live cwd, not a stale inherited Linux PWD. Don't freeze env["PWD"]: a --no-launch
+    # recipe must translate the live PWD when run, not when generated; _launch overrides it.
+    return env, (*wsl_env_bridge, "PWD/p")
+
+
 def _launch(
     command: list,
     env: dict,
@@ -1060,9 +1293,11 @@ def _launch(
     executable = shutil.which(command[0]) or _install_agent(command[0], install_hint)
     if executable is None:
         _fail(f"`{command[0]}` not found on PATH. Install it with: {install_hint}")
-    wsl_env_bridge = _wsl_bridge_names(env, unset_env) if _wsl_windows_executable(command) else ()
+    env, wsl_env_bridge = _wsl_shim_env(command, env, unset_env)
     child_env = dict(os.environ)
     if wsl_env_bridge:
+        # Override stale inherited PWD with the real cwd so the shim resolves the project root.
+        env = {**env, "PWD": os.getcwd()}
         child_env["WSLENV"] = _merge_wslenv(child_env.get("WSLENV", ""), wsl_env_bridge)
         for name in unset_env:
             child_env[name] = ""
@@ -1091,7 +1326,7 @@ def _connect(
     # `--model org/name:QUANT` is shorthand for `--model org/name --gguf-variant QUANT`.
     # Split it before we match/serve so the attach path resolves against the already-loaded
     # `org/name` (listed without the suffix) instead of reloading a `:`-suffixed repo id --
-    # which Studio rejects and which would evict a model another session is using.
+    # which Unsloth rejects and which would evict a model another session is using.
     if model:
         repo, variant = _split_repo_variant(model)
         if variant:
@@ -1129,9 +1364,9 @@ def _run(
     # --no-launch recipes stay intact.
     if launch and clear_screen:
         click.clear()
-    typer.echo(f"Studio {base} · model {entry['id']}")
-    wsl_env_bridge = _wsl_bridge_names(env, unset_env) if _wsl_windows_executable(command) else ()
+    typer.echo(f"Unsloth {base} · model {entry['id']}")
     if not launch:
+        env, wsl_env_bridge = _wsl_shim_env(command, env, unset_env)
         _print_env(env, command, unset_env = unset_env, wsl_env_bridge = wsl_env_bridge)
         return
     try:
@@ -1184,6 +1419,7 @@ def write_openclaw_config(
     model: dict,
     path: Path,
     yolo: bool = False,
+    workspace_path: Optional[str] = None,
 ) -> None:
     config = _read_json_object(path)
     if config is None:
@@ -1194,7 +1430,7 @@ def write_openclaw_config(
         )
         return
     before = json.dumps(config, sort_keys = True)
-    # Studio is a generic OpenAI-compatible /v1 endpoint (the vLLM/LM Studio path).
+    # Unsloth is a generic OpenAI-compatible /v1 endpoint (the vLLM/LM Studio path).
     provider_model = {"id": model["id"], "name": model["id"]}
     window = model.get("context_length") or model.get("max_context_length")
     if window:
@@ -1208,8 +1444,23 @@ def write_openclaw_config(
         "models": [provider_model],
     }
     # Pin a default model, else OpenClaw drops into its setup agent ("no models available").
-    defaults = _subdict(_subdict(config, "agents"), "defaults")
+    agents = _subdict(config, "agents")
+    defaults = _subdict(agents, "defaults")
     _subdict(defaults, "model")["primary"] = f"unsloth/{model['id']}"
+    # OPENCLAW_STATE_DIR does not relocate the workspace. Keep it beside the managed
+    # config so ephemeral launches avoid ~/.openclaw and persisted sessions retain it.
+    workspace = path.parent / "workspace"
+    workspace.mkdir(parents = True, exist_ok = True, mode = 0o700)
+    defaults["workspace"] = workspace_path or str(workspace)
+    # Per-agent paths override agents.defaults.workspace and OPENCLAW_STATE_DIR. This
+    # config is itself an isolated Unsloth copy, so remove stale explicit paths and let
+    # OpenClaw resolve every listed agent beneath the managed defaults/state directory.
+    agent_list = agents.get("list")
+    if isinstance(agent_list, list):
+        for agent_config in agent_list:
+            if isinstance(agent_config, dict):
+                agent_config.pop("workspace", None)
+                agent_config.pop("agentDir", None)
     # Unauthenticated loopback gateway: without auth.mode=none the client won't open
     # the websocket. The daemon must still be started separately (`openclaw gateway`).
     gateway = _subdict(config, "gateway")
@@ -1338,10 +1589,12 @@ def write_opencode_config(
         compaction["reserved"] = max(1, window // 10)
     tools = ("edit", "bash", "webfetch")
     if yolo:
-        # OpenCode has no --yolo flag; auto-approve is the config `permission` block
-        # (singular). Allow the prompting tools so tool calls don't block on the TUI. This
-        # rides inline (OPENCODE_CONFIG_CONTENT) so --yolo works even over a project config.
+        # Fallback for commands without native --auto and for the append-safe bare
+        # --no-launch command (subcommand unknown yet). Rides inline (OPENCODE_CONFIG_CONTENT)
+        # so it wins over a project config. TUI and `run` launches use --auto and call here
+        # with yolo=False, letting OpenCode preserve explicit deny rules.
         session_permission = {t: "allow" for t in tools}
+        session_permission["external_directory"] = {"*": "allow"}
         config["permission"] = dict(session_permission)
     else:
         # Undo only what --yolo wrote: our yolo sets an explicit per-tool "allow" for these
@@ -1358,6 +1611,8 @@ def write_opencode_config(
             for tool in tools:
                 if permission.get(tool) == "allow":
                     permission[tool] = "ask"
+            if permission.get("external_directory") == {"*": "allow"}:
+                permission["external_directory"] = {"*": "ask"}
     if json.dumps(config, sort_keys = True) != before:
         _write_private_json(path, config)
         typer.echo(f"Updated {path}")
@@ -1439,14 +1694,14 @@ def write_pi_config(base: str, key: str, model: dict, path: Path) -> None:
         return
     before = json.dumps(config, sort_keys = True)
     # Pi reads custom providers from ~/.pi/agent/models.json (HOME-relocated for the
-    # session). Studio is a generic OpenAI-compatible /v1 endpoint, and the key lives
+    # session). Unsloth is a generic OpenAI-compatible /v1 endpoint, and the key lives
     # in the config rather than the env (matching openclaw/opencode).
     provider_model = {"id": model["id"]}
     window = model.get("context_length") or model.get("max_context_length")
     if window:
         window = int(window)
         # An unspecified model defaults to contextWindow 128000 / maxTokens 16384,
-        # far larger than a small Studio context, so Pi compacts too late and overflows
+        # far larger than a small Unsloth context, so Pi compacts too late and overflows
         # the server. Pin the real window and a sane output cap (mirrors OpenCode).
         provider_model["contextWindow"] = window
         provider_model["maxTokens"] = min(window // 4, 8192)
@@ -1475,7 +1730,7 @@ def claude(
     yolo: bool = _YOLO_OPTION,
     persist: bool = _PERSIST_OPTION,
 ):
-    """Point Claude Code at the running Studio server and start it."""
+    """Point Claude Code at the running Unsloth server and start it."""
     base, key, entry = _connect(
         api_key,
         model,
@@ -1559,7 +1814,7 @@ def codex(
     yolo: bool = _YOLO_OPTION,
     persist: bool = _PERSIST_OPTION,
 ):
-    """Point OpenAI Codex at the running Studio server and start it."""
+    """Point OpenAI Codex at the running Unsloth server and start it."""
     base, key, entry = _connect(
         api_key,
         model,
@@ -1603,7 +1858,7 @@ def openclaw(
     yolo: bool = _YOLO_OPTION,
     persist: bool = _PERSIST_OPTION,
 ):
-    """Point OpenClaw at the running Studio server and start it."""
+    """Point OpenClaw at the running Unsloth server and start it."""
     base, key, entry = _connect(
         api_key,
         model,
@@ -1629,8 +1884,18 @@ def openclaw(
     )
     with _session_config("openclaw", launch, persist = persist) as cfg:
         config_path = cfg / "openclaw.json"
+        workspace_path = None
+        if _wsl_windows_executable(command):
+            workspace_path = _wsl_windows_path(cfg / "workspace")
         # key lives in the config, not the env; --yolo writes the exec policy here too.
-        write_openclaw_config(base, key, entry, config_path, yolo = yolo)
+        write_openclaw_config(
+            base,
+            key,
+            entry,
+            config_path,
+            yolo = yolo,
+            workspace_path = workspace_path,
+        )
         # Scope both config and state so OpenClaw never touches the user's ~/.openclaw.
         env = {"OPENCLAW_CONFIG_PATH": str(config_path), "OPENCLAW_STATE_DIR": str(cfg)}
         _run(base, entry, env, command, launch = launch, install_hint = install_hint)
@@ -1650,7 +1915,7 @@ def opencode(
     yolo: bool = _YOLO_OPTION,
     persist: bool = _PERSIST_OPTION,
 ):
-    """Point OpenCode at the running Studio server and start it."""
+    """Point OpenCode at the running Unsloth server and start it."""
     base, key, entry = _connect(
         api_key,
         model,
@@ -1666,11 +1931,20 @@ def opencode(
     # --no-launch, where the printed command is consumed by drivers that append a
     # subcommand such as `run <prompt>`; a leading --model would land before that
     # subcommand and break it. Those paths rely on the inline pin instead.
+    native_auto = False
+    route_native_auto = yolo and _opencode_supports_native_auto()
     if ctx.args:
-        command = ["opencode", *ctx.args]
+        opencode_args, native_auto = _opencode_native_auto_args(list(ctx.args), route_native_auto)
+        command = ["opencode", *opencode_args]
     elif launch:
-        command = ["opencode", "--model", opencode_model]
+        opencode_args, native_auto = _opencode_native_auto_args(
+            ["--model", opencode_model],
+            route_native_auto,
+        )
+        command = ["opencode", *opencode_args]
     else:
+        # Append-safe base: `opencode --auto run ...` parses as the TUI with a project
+        # "run", not the run subcommand. Command unknown here, so keep the config fallback.
         command = ["opencode"]
     # opencode keeps sessions in ~/.local/share/opencode (never relocated), so resume
     # already survives exit; reopen the last one by passing `opencode --continue` through.
@@ -1679,12 +1953,18 @@ def opencode(
         # OPENCODE_CONFIG is an overlay (loaded between the user's global and project
         # configs), so this adds the Unsloth provider/model for the session without
         # changing the user's default model. Key lives in the config, not the env.
-        session_permission = write_opencode_config(base, key, entry, config_path, yolo = yolo)
+        session_permission = write_opencode_config(
+            base,
+            key,
+            entry,
+            config_path,
+            yolo = yolo and not native_auto,
+        )
         # A project's own opencode.json outranks OPENCODE_CONFIG, so the session model pin
         # would silently lose to a repo config. Carry it in OPENCODE_CONFIG_CONTENT, which
         # outranks project config; the API key stays in the private file, never the env.
-        # Only --yolo carries a permission here (its allow must win over a project config);
-        # a non-yolo session returns no permission, so the project's own rules are honored.
+        # Only the config fallback carries a permission. Native --auto omits it (auto-approve
+        # asks, keep explicit denies); a non-yolo session omits it too, honoring project rules.
         # opencode filters every provider (a config-defined custom one included) through
         # its enabled_providers allowlist and disabled_providers denylist, and a model pin
         # does not bypass that gate -- a filtered provider resolves to ModelNotFoundError.
@@ -1694,7 +1974,7 @@ def opencode(
         # setting them in the highest-priority inline overlay neutralizes any user allowlist
         # or denylist for the launch. It is session-only: it lives in OPENCODE_CONFIG_CONTENT
         # for this invocation and never touches the user's config files, so their normal
-        # `opencode` is unchanged; only this session is limited to the Studio provider.
+        # `opencode` is unchanged; only this session is limited to the Unsloth provider.
         # small_model is opencode's separate model for lightweight tasks; pin it to the
         # session model too, or a user/project small_model on another (now filtered)
         # provider would resolve a not-found error mid-session. The session serves one
@@ -1728,7 +2008,9 @@ def hermes(
     yolo: bool = _YOLO_OPTION,
     persist: bool = _PERSIST_OPTION,
 ):
-    """Point Hermes (Nous Research) at the running Studio server and start it."""
+    """Point Hermes (Nous Research) at the running Unsloth server and start it."""
+    native_args = [*_yolo_command_flags("hermes", yolo), *ctx.args]
+    command = ["hermes", *_hermes_resume_oneshot_args(native_args)]
     base, key, entry = _connect(
         api_key,
         model,
@@ -1736,7 +2018,6 @@ def hermes(
         serve = serve,
         launch = launch,
     )
-    command = ["hermes", *_yolo_command_flags("hermes", yolo), *ctx.args]
     install_hint = _hermes_install_hint()
     with _session_config("hermes", launch, persist = persist) as home:
         # HERMES_HOME relocates hermes' whole home dir (config.yaml, sessions, state)
@@ -1760,7 +2041,7 @@ def pi(
     yolo: bool = _YOLO_OPTION,
     persist: bool = _PERSIST_OPTION,
 ):
-    """Point Pi (coding agent) at the running Studio server and start it."""
+    """Point Pi (coding agent) at the running Unsloth server and start it."""
     base, key, entry = _connect(
         api_key,
         model,

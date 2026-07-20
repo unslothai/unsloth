@@ -101,7 +101,8 @@
 	h3,
 	[data-slot="dialog-title"],
 	[data-slot="alert-dialog-title"] {
-		font-family: "Hellix", "Space Grotesk Variable", var(--font-sans) !important;
+		/* Via the token so the heading-font setting applies here too. */
+		font-family: var(--font-heading) !important;
 		font-weight: 500 !important;
 	}
 }
@@ -164,14 +165,22 @@
 	--secondary-foreground: oklch(0.2868 0.0649 159.9823);
 	--muted: oklch(0.9702 0 0);
 	--muted-foreground: oklch(0.5486 0 0);
-	--accent: oklch(0.9596 0.0275 167.8295);
-	--accent-foreground: oklch(0.2868 0.0649 159.9823);
+	/* Hover/active washes are neutral grey (matches the sidebar), not the
+	   brand green; green stays on primary controls only. */
+	--accent: #ececec;
+	--accent-foreground: #262626;
 	--destructive: oklch(0.6368 0.2078 25.3313);
 	/* Bypass permissions accent: bright, saturated yellow (not dark gold). */
 	--bypass: #c99d00;
 	--border: oklch(0.9208 0.0101 164.8536);
 	--input: oklch(0.9208 0.0101 164.8536);
-	--ring: #17b88b;
+	--ring: #262626;
+	/* Focus and selection indicators: the element's own border, darker.
+	   Derived from the live border/foreground tokens so every palette and
+	   mode gets the right shade from these definitions. Focus/hover uses the
+	   soft shade; selected state uses the deeper one (still never black). */
+	--ring-soft: color-mix(in srgb, var(--foreground) 22%, var(--border));
+	--ring-select: color-mix(in srgb, var(--foreground) 48%, var(--border));
 	--chart-1: #17b88b;
 	--chart-2: oklch(0.694 0.1395 136.6059);
 	--chart-3: oklch(0.7014 0.1193 197.5897);
@@ -184,10 +193,10 @@
 	--sidebar-foreground: oklch(0.1281 0.0179 169.2764);
 	--sidebar-primary: #17b88b;
 	--sidebar-primary-foreground: oklch(1 0 0);
-	--sidebar-accent: oklch(0.96 0.0279 166.55);
-	--sidebar-accent-foreground: oklch(0.2868 0.0649 159.9823);
+	--sidebar-accent: #ececec;
+	--sidebar-accent-foreground: #262626;
 	--sidebar-border: #f2f2f2;
-	--sidebar-ring: #17b88b;
+	--sidebar-ring: #262626;
 	--destructive-foreground: oklch(1 0 0);
 	--font-sans: "Inter Variable", ui-sans-serif, sans-serif, system-ui;
 	--font-heading: "Hellix", "Space Grotesk Variable", var(--font-sans);
@@ -258,6 +267,18 @@
 	--chat-icon-fg-hover: var(--foreground);
 	--chat-icon-bg-hover: #ededec;
 
+	/* Control accent: switches, "New" badges, notification-style chips.
+	   Follows the brand accent by default; palettes that keep their primary
+	   neutral (Classic) override this so small controls still get a hue.
+	   References resolve at use, so .dark's --primary flows through. */
+	--control-accent: var(--primary);
+	--control-accent-foreground: var(--primary-foreground);
+
+	/* Status color for meaning-carrying marks (verified badges, token
+	   indicators). Pinned to the brand green in every palette and mode so
+	   the signal never changes with the theme. */
+	--verified: #17b88b;
+
 	/* Standard interactive-icon size for nav, menus, action bars, and
 	   in-message code-block actions. Sized one step above body text so
 	   icons read as minimally larger than adjacent labels (~14px text).
@@ -271,48 +292,48 @@
 }
 
 .dark {
-	/* Exact palette from apps/studio/index_chat.html mockup. Using hex so the
-	   rendered surface matches the mockup pixel-for-pixel — OKLCH conversion
-	   drifted ~3% darker and shifted the neutral hue. */
-	/* Slightly darker than --sidebar so the sidebar reads as its own surface. */
-	--background: #1a1b1e;
-	--foreground: #ececee;
-	--card: #2d2e32;
-	--card-foreground: #ececee;
-	--popover: #2d2e32;
-	--popover-foreground: #ececee;
+	/* Dark surfaces shared by ALL palettes: #181818 page, elevated #1f1f1f
+	   sidebar, #212121 cards. Palette dark blocks override only accent
+	   tokens so dark mode stays consistent across themes. */
+	--background: #181818;
+	--foreground: #ececec;
+	--card: #212121;
+	--card-foreground: #ececec;
+	--popover: #212121;
+	--popover-foreground: #ececec;
 	--primary: #17b88b;
 	--primary-foreground: oklch(1 0 0);
-	--secondary: #2e3035;
-	--secondary-foreground: #ececee;
-	--muted: #2e3035;
-	--muted-foreground: #999999;
+	--secondary: #242424;
+	--secondary-foreground: #ececec;
+	--muted: #242424;
+	--muted-foreground: #9b9b9b;
 	/* One step lighter than --popover so menu item hover reads clearly. */
-	--accent: #3a3d43;
-	--accent-foreground: #ececee;
+	--accent: #2e2e2e;
+	--accent-foreground: #ececec;
 	--destructive: oklch(0.6368 0.2078 25.3313);
 	/* Bypass permissions accent: bright, saturated neon yellow on dark. */
 	--bypass: #ffd60a;
 	/* --border / --input one step lighter than --muted so outlines and form
 	   borders stay visible on muted surfaces (right config panel, export
 	   tiles, quant chips) and keep subtle contrast on card. */
-	--border: #3a3d42;
-	--input: #3a3d42;
-	--ring: #17b88b;
+	--border: #303030;
+	--input: #303030;
+	--ring: #ececec;
 	--chart-1: oklch(0.7511 0.1407 166.2284);
 	--chart-2: oklch(0.75 0.14 136.5572);
 	--chart-3: oklch(0.7554 0.1285 197.339);
 	--chart-4: oklch(0.7503 0.1199 346.7805);
 	--chart-5: oklch(0.799 0.1196 84.6633);
-	/* A step lighter than --background; the tone difference is the separator. */
-	--sidebar: #1f2023;
-	--sidebar-foreground: #ececee;
+	/* Elevated a step lighter than --background; the tone difference is
+	   the separator. */
+	--sidebar: #1f1f1f;
+	--sidebar-foreground: #ececec;
 	--sidebar-primary: #17b88b;
 	--sidebar-primary-foreground: oklch(1 0 0);
-	--sidebar-accent: #2e3035;
-	--sidebar-accent-foreground: #ececee;
-	--sidebar-border: #2d2e32;
-	--sidebar-ring: #17b88b;
+	--sidebar-accent: #2a2a2a;
+	--sidebar-accent-foreground: #ececec;
+	--sidebar-border: #2a2a2a;
+	--sidebar-ring: #ececec;
 	--destructive-foreground: oklch(1 0 0);
 	/* Match light's radius so every rounded-* element is the same in both themes. */
 	--radius: 1.1rem;
@@ -336,21 +357,23 @@
 	--shadow-xl: 0px 0px 0px 0px hsl(0 0% 0% / 0), 0px 8px 10px 0px hsl(0 0% 0% / 0);
 	--shadow-2xl: 0px 0px 0px 0px hsl(0 0% 0% / 0);
 
-	--nav-fg: #c7c7c4;
-	--nav-fg-muted: #96979b;
-	--nav-surface-hover: #2e3035;
+	--nav-fg: #c9c9c9;
+	--nav-fg-muted: #969696;
+	--nav-surface-hover: #2a2a2a;
 	--nav-icon-idle: #5c5c5c;
-	--nav-beta-border: #3a3c3f;
-	--panel-surface-hover: #3a3c42;
+	--nav-beta-border: #333333;
+	--panel-surface-hover: #333333;
 	/* Right-side chat-parameters panel: matches the chat content
 	   surface in both themes — distinction from the left sidebar
-	   (#18181a, the deepest surface) is handled by the left border
-	   alone. Tracks `--background` so any future tweaks to the chat
-	   surface flow through automatically. */
+	   is handled by the left border alone. Tracks `--background` so
+	   any future tweaks to the chat surface flow through
+	   automatically. */
 	--panel-surface: var(--background);
 	--panel-surface-fg: var(--foreground);
-	--panel-input-surface: #2a2b2e;
-	--panel-input-surface-hover: #34373c;
+	/* Translucent white so the same fill reads correctly on the #181818
+	   page AND on #212121 cards/dialogs. */
+	--panel-input-surface: rgba(255, 255, 255, 0.07);
+	--panel-input-surface-hover: rgba(255, 255, 255, 0.11);
 	/* Soft neutral gray for muted text and sliders. Pure-ish #ababab
 	   reads as quiet on the dark panel without going colored. */
 	--panel-surface-fg-muted: #ababab;
@@ -362,13 +385,296 @@
 	   hover restores full --foreground for affordance. */
 	--chat-icon-fg: #d8d8d8;
 	--chat-icon-fg-hover: var(--foreground);
-	--chat-icon-bg-hover: #2d2e32;
+	--chat-icon-bg-hover: #2a2a2a;
+}
+
+/* ---------------------------------------------------------------------------
+   Color palettes.
+
+   The palette is a second theming dimension, orthogonal to light/dark. It is
+   carried on <html> as `data-palette` (managed by theme-store.ts alongside the
+   light/dark class):
+
+     (no attribute)            → Standard: the signature Unsloth green.
+     data-palette="classic"    → Classic: neutral grays with a calm blue
+                                 accent; enterprise-safe.
+     data-palette="minimal"    → Minimal: strictly black, white, and gray.
+
+   Each palette overrides only color tokens; typography, radii, spacing, and
+   shadows are inherited from the base :root/.dark blocks so layout is
+   identical across palettes. Light blocks are scoped with :not(.dark) so the
+   base .dark block always wins the mode dimension. */
+
+/* -------------------------------- Classic --------------------------------
+   White content and the standard white sidebar in light, shared dark
+   surfaces in dark, neutral gray hovers, and blue (#339cff) as the accent. */
+:root[data-palette="classic"]:not(.dark) {
+	--background: #ffffff;
+	--foreground: #1a1c1f;
+	--card: #ffffff;
+	--card-foreground: #1a1c1f;
+	--popover: #ffffff;
+	--popover-foreground: #1a1c1f;
+	/* Neutral black primary; blue is reserved for small controls via
+	   --control-accent (toggles, badges, focus rings). */
+	--primary: #0d0d0d;
+	--primary-foreground: #ffffff;
+	--control-accent: #339cff;
+	--control-accent-foreground: #ffffff;
+	--secondary: #f5f5f5;
+	--secondary-foreground: #1a1c1f;
+	--muted: #f7f7f7;
+	--muted-foreground: #8f8f8f;
+	--accent: #ececec;
+	--accent-foreground: #1a1c1f;
+	--bypass: #9a7b1e;
+	--border: #e6e6e6;
+	--input: #e6e6e6;
+	--ring: #1a1c1f;
+	--chart-1: #339cff;
+	--chart-2: #8fa3b8;
+	--chart-3: #0f6fd6;
+	--chart-4: #b8c4d0;
+	--chart-5: #5b7189;
+	/* Same as the standard palette; the sidebar surface does not change
+	   with the palette. */
+	--sidebar: #ffffff;
+	--sidebar-foreground: #1a1c1f;
+	--sidebar-primary: #0d0d0d;
+	--sidebar-primary-foreground: #ffffff;
+	--sidebar-accent: #ececec;
+	--sidebar-accent-foreground: #1a1c1f;
+	--sidebar-border: #f2f2f2;
+	--sidebar-ring: #1a1c1f;
+
+	--nav-fg: #2d2f31;
+	--nav-fg-muted: #8f8f8f;
+	--nav-surface-hover: #ececec;
+	--nav-icon-idle: #8f8f8f;
+	--nav-beta-border: #e0e0e0;
+	--panel-surface-hover: #ececec;
+	--panel-input-surface: #f4f4f4;
+	--panel-input-surface-hover: #ededed;
+	--panel-surface-fg-muted: #7a7c7e;
+	--panel-slider-fg: #9b9d9f;
+	--chat-icon-fg: #5d5f61;
+	--chat-icon-bg-hover: #ececec;
+}
+
+/* Dark surfaces come from the shared base .dark block; Classic only swaps
+   the accents: neutral (white) buttons, blue on small controls via
+   --control-accent. */
+:root[data-palette="classic"].dark {
+	--primary: #ececec;
+	--primary-foreground: #0d0d0d;
+	--control-accent: #4dabff;
+	--control-accent-foreground: #ffffff;
+	--bypass: #d9b40b;
+	--ring: #ececec;
+	--chart-1: #4dabff;
+	--chart-2: #8ab6de;
+	--chart-3: #1f7fe8;
+	--chart-4: #b3d4f5;
+	--chart-5: #6d87a3;
+	--sidebar-primary: #ececec;
+	--sidebar-primary-foreground: #0d0d0d;
+	--sidebar-ring: #ececec;
+}
+
+/* -------------------------------- Minimal -------------------------------- */
+:root[data-palette="minimal"]:not(.dark) {
+	--background: #ffffff;
+	--foreground: #171717;
+	--card: #ffffff;
+	--card-foreground: #171717;
+	--popover: #ffffff;
+	--popover-foreground: #171717;
+	--primary: #171717;
+	--primary-foreground: #ffffff;
+	--secondary: #f5f5f5;
+	--secondary-foreground: #262626;
+	--muted: #f5f5f5;
+	--muted-foreground: #6f6f6f;
+	--accent: #ebebeb;
+	--accent-foreground: #171717;
+	--bypass: #6f6f6f;
+	--border: #e2e2e2;
+	--input: #e2e2e2;
+	--ring: #171717;
+	--chart-1: #171717;
+	--chart-2: #4d4d4d;
+	--chart-3: #7a7a7a;
+	--chart-4: #a6a6a6;
+	--chart-5: #d1d1d1;
+	/* White sidebar on white content; the border alone is the separator. */
+	--sidebar: #ffffff;
+	--sidebar-foreground: #171717;
+	--sidebar-primary: #171717;
+	--sidebar-primary-foreground: #ffffff;
+	--sidebar-accent: #ebebeb;
+	--sidebar-accent-foreground: #171717;
+	--sidebar-border: #e8e8e8;
+	--sidebar-ring: #171717;
+
+	--nav-fg: #333333;
+	--nav-fg-muted: #8a8a8a;
+	--nav-surface-hover: #efefef;
+	--nav-icon-idle: #8f8f8f;
+	--nav-beta-border: #dddddd;
+	--panel-surface-hover: #ececec;
+	--panel-input-surface: #f4f4f4;
+	--panel-input-surface-hover: #ededed;
+	--panel-surface-fg-muted: #757575;
+	--panel-slider-fg: #9b9b9b;
+	--chat-icon-fg: #555555;
+	--chat-icon-bg-hover: #ececec;
+}
+
+/* Dark surfaces come from the shared base .dark block; Minimal only swaps
+   the accents to pure monochrome (white buttons, gray chart ramp). */
+:root[data-palette="minimal"].dark {
+	--primary: #ededed;
+	--primary-foreground: #111111;
+	--bypass: #9c9c9c;
+	--ring: #ededed;
+	--chart-1: #ededed;
+	--chart-2: #bdbdbd;
+	--chart-3: #8f8f8f;
+	--chart-4: #616161;
+	--chart-5: #3d3d3d;
+	--sidebar-primary: #ededed;
+	--sidebar-primary-foreground: #111111;
+	--sidebar-ring: #ededed;
+}
+
+/* ---------------------------------------------------------------------------
+   Appearance customization hooks (Settings → Appearance).
+
+   Every rule below is gated on a class or data attribute that
+   appearance-custom-store.ts toggles on <html>. With no customization active,
+   none of these selectors match and the stylesheet behaves exactly as stock.
+   Custom colors/fonts are applied as inline CSS variables on <html> (inline
+   wins over every :root/.dark/palette block), so they need no rules here. */
+
+/* Contrast slider: remap border and muted-text tokens by mixing their base
+   values toward the foreground (higher contrast) or background (lower).
+   --input mirrors --border in every palette, so it serves as the untouched
+   base for --border; --panel-surface-fg-muted is the closest stable base for
+   --muted-foreground. --contrast-mix / --contrast-target are set inline. */
+html[data-contrast-adjust] {
+	--border: color-mix(in oklab, var(--input), var(--contrast-target) var(--contrast-mix));
+	--sidebar-border: color-mix(in oklab, var(--input), var(--contrast-target) var(--contrast-mix));
+	--muted-foreground: color-mix(
+		in oklab,
+		var(--panel-surface-fg-muted),
+		var(--contrast-target) var(--contrast-mix)
+	);
+}
+
+/* Code font size: only overrides when the user sets an explicit size, so the
+   per-element Tailwind sizes stay authoritative by default. */
+html[data-code-font-size] :is(pre, code, kbd, samp) {
+	font-size: var(--custom-code-font-size) !important;
+}
+
+/* Pointer cursors: hand cursor over interactive elements. */
+html.pointer-cursors
+	:is(
+		button:not(:disabled),
+		[role="button"],
+		a[href],
+		select,
+		summary,
+		[role="tab"],
+		[role="menuitem"],
+		[role="option"],
+		[role="switch"],
+		[role="checkbox"],
+		input[type="checkbox"],
+		input[type="radio"],
+		input[type="range"],
+		label[for]
+	) {
+	cursor: pointer;
+}
+
+/* Force reduced motion: collapses CSS animations/transitions app-wide.
+   JS-driven springs are handled separately via MotionConfig in the provider. */
+html.force-reduced-motion *,
+html.force-reduced-motion *::before,
+html.force-reduced-motion *::after {
+	animation-duration: 0.01ms !important;
+	animation-iteration-count: 1 !important;
+	transition-duration: 0.01ms !important;
+	scroll-behavior: auto !important;
+}
+
+/* Same loader exceptions as the OS-level media block below: freezing
+   spinners removes the only signal that work is in flight. */
+html.force-reduced-motion .animate-spin {
+	animation-duration: 1.5s !important;
+	animation-iteration-count: infinite !important;
+}
+html.force-reduced-motion .generated-image-loading-dot {
+	animation-duration: 1850ms !important;
+	animation-iteration-count: infinite !important;
+}
+html.force-reduced-motion .loading-bar-slide {
+	animation-duration: 1.3s !important;
+	animation-iteration-count: infinite !important;
+}
+html.force-reduced-motion .unsloth-composer-plus svg {
+	transition-duration: 250ms !important;
+}
+
+/* Font smoothing toggle: back to the browser's subpixel default. */
+html.no-font-smoothing body {
+	-webkit-font-smoothing: auto;
+	-moz-osx-font-smoothing: auto;
+}
+
+/* Chat font: only applies while a custom chat font is set. Elements with
+   explicit font utilities (headings, code) keep their own families. */
+html[data-chat-font] .aui-root {
+	font-family: var(--custom-chat-font);
+}
+
+/* Palette cards: the active ring keys off html[data-palette] so it swaps
+   in the same style pass that swaps the color tokens. Driving it from
+   React state paints one frame late while the whole page recalculates,
+   which briefly leaves the ring on the previous card. */
+.palette-card:hover {
+	border-color: var(--ring-soft);
+}
+:root:not([data-palette]) .palette-card[data-palette-value="standard"],
+:root[data-palette="classic"] .palette-card[data-palette-value="classic"],
+:root[data-palette="minimal"] .palette-card[data-palette-value="minimal"] {
+	/* Selection keeps the card's own border weight, only darker. */
+	border-color: var(--ring-select);
+}
+
+/* Settings search: brief highlight on the row a result jumped to. */
+.settings-search-hit {
+	animation: settings-search-hit 1.6s ease-out;
+	border-radius: 12px;
+}
+@keyframes settings-search-hit {
+	0%,
+	35% {
+		background-color: var(--accent);
+	}
+	100% {
+		background-color: transparent;
+	}
 }
 
 @theme inline {
-	--font-sans: "Inter Variable", ui-sans-serif, sans-serif, system-ui;
-	--font-heading: "Hellix", "Space Grotesk Variable", var(--font-sans);
-	--color-sidebar-ring: var(--sidebar-ring);
+	/* Reference the :root tokens instead of literal stacks so the runtime
+	   font overrides (Settings > Appearance) reach every font-* utility. */
+	--font-sans: var(--font-sans);
+	--font-heading: var(--font-heading);
+	--color-verified: var(--verified);
+	--color-sidebar-ring: var(--ring-soft);
 	--color-sidebar-border: var(--sidebar-border);
 	--color-sidebar-accent-foreground: var(--sidebar-accent-foreground);
 	--color-sidebar-accent: var(--sidebar-accent);
@@ -382,7 +688,11 @@
 	--color-chart-2: var(--chart-2);
 	--color-chart-1: var(--chart-1);
 	--color-code-block: #181818;
-	--color-ring: var(--ring);
+	/* Tailwind ring/border/outline "ring" utilities are focus indicators
+	   across the app, so they map to the soft derived shade; persistent
+	   selection styling uses ring-strong (the raw --ring). */
+	--color-ring: var(--ring-soft);
+	--color-ring-strong: var(--ring-select);
 	--color-input: var(--input);
 	--color-border: var(--border);
 	--color-destructive: var(--destructive);
@@ -395,6 +705,8 @@
 	--color-secondary: var(--secondary);
 	--color-primary-foreground: var(--primary-foreground);
 	--color-primary: var(--primary);
+	--color-control-accent: var(--control-accent);
+	--color-control-accent-foreground: var(--control-accent-foreground);
 	--color-popover-foreground: var(--popover-foreground);
 	--color-popover: var(--popover);
 	--color-card-foreground: var(--card-foreground);
@@ -408,8 +720,8 @@
 	--radius-2xl: calc(var(--radius) + 8px);
 	--radius-3xl: calc(var(--radius) + 12px);
 	--radius-4xl: calc(var(--radius) + 16px);
-	--font-mono: JetBrains Mono, monospace;
-	--font-serif: Source Serif 4, serif;
+	--font-mono: var(--font-mono);
+	--font-serif: var(--font-serif);
 	--radius: 1.1rem;
 	--tracking-tighter: 0em;
 	--tracking-tight: 0em;
@@ -444,6 +756,8 @@
 	--color-panel-surface: var(--panel-surface);
 	--color-panel-surface-fg: var(--panel-surface-fg);
 	--color-panel-surface-fg-muted: var(--panel-surface-fg-muted);
+	--color-panel-input-surface: var(--panel-input-surface);
+	--color-panel-input-surface-hover: var(--panel-input-surface-hover);
 	--color-chat-icon-fg: var(--chat-icon-fg);
 	--color-chat-icon-fg-hover: var(--chat-icon-fg-hover);
 	--color-chat-icon-bg-hover: var(--chat-icon-bg-hover);
@@ -537,6 +851,26 @@
 		margin-right: 0 !important;
 	}
 
+	/* Firefox makes scrollable containers keyboard focusable; swap the 3px
+	   UA outline for the app's soft 1px indicator. :where keeps specificity
+	   at zero so interactive components keep their own focus styles. */
+	:where(div, main, section, aside, ul, ol):focus-visible {
+		outline: 1px solid var(--ring-soft);
+		outline-offset: -1px;
+	}
+
+	/* Number fields use the shared grey stepper instead of native spinners. */
+	input[type="number"] {
+		appearance: textfield;
+		-moz-appearance: textfield;
+	}
+
+	input[type="number"]::-webkit-inner-spin-button,
+	input[type="number"]::-webkit-outer-spin-button {
+		-webkit-appearance: none;
+		margin: 0;
+	}
+
 	h1,
 	h2,
 	h3,
@@ -567,7 +901,7 @@
 	}
 
 	.nav-icon-btn {
-		@apply inline-flex h-7 w-7 items-center justify-center rounded-full transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring;
+		@apply inline-flex h-7 w-7 items-center justify-center rounded-full transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring;
 	}
 
 	/* Standard icon size — drives every nav/menu/action-bar icon
@@ -632,7 +966,7 @@
 	   alignment, but width is tighter so the small chevron glyph reads
 	   as a compact control rather than a full-size icon button. */
 	.aui-branch-chevron-btn {
-		@apply inline-flex h-8 w-6 cursor-pointer items-center justify-center rounded-full p-0 text-chat-icon-fg transition-colors hover:bg-chat-icon-bg-hover hover:text-chat-icon-fg-hover focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-30 disabled:hover:bg-transparent;
+		@apply inline-flex h-8 w-6 cursor-pointer items-center justify-center rounded-full p-0 text-chat-icon-fg transition-colors hover:bg-chat-icon-bg-hover hover:text-chat-icon-fg-hover focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-30 disabled:hover:bg-transparent;
 	}
 	.sidebar-row-action:hover .sidebar-row-action-glyph,
 	.sidebar-row-action[data-state="open"] .sidebar-row-action-glyph {
@@ -662,30 +996,46 @@
 		color: #9aa0a6;
 		letter-spacing: 0;
 	}
-	/* Neutral panel input surface — sidesteps the green cast on
-	   `--input` / `--border` (both have a small chroma at hue ~165 in
-	   light mode). Same value drives the preset input pill, the system
-	   prompt button, and the chat-template textarea so all three read
-	   as one quiet gray family, matching the focused-edit-number tint. */
+	/* Panel input fields. Light mode matches the settings fields: white
+	   fill with a subtle border. Dark mode keeps the borderless
+	   translucent surface shared with the rest of the panel. */
 	.panel-input-group {
 		@apply !h-9 min-h-9 min-w-0 items-stretch gap-0 rounded-full pr-0 transition-colors focus-within:ring-0 focus-within:shadow-none;
-		border: 0 !important;
-		background-color: var(--panel-input-surface);
+		border: 1px solid var(--border) !important;
+		background-color: var(--background);
 	}
 	.panel-input-group:has([data-slot="input-group-control"]:focus-visible) {
-		border: 0 !important;
+		border-color: var(--ring-soft) !important;
 		box-shadow: none;
 	}
-
-	/* Neutral surface for the larger panel text containers — system
-	   prompt preview button and chat-template textarea — so they share
-	   the same gray as the preset input pill and don't pick up the
-	   theme's slight green-cast `--input`. */
-	.panel-text-surface {
-		@apply rounded-[20px] border-0 transition-colors;
+	.dark .panel-input-group,
+	.dark .panel-input-group:has([data-slot="input-group-control"]:focus-visible) {
+		border: 0 !important;
 		background-color: var(--panel-input-surface);
 	}
-	.panel-text-surface:hover {
+
+	/* Larger panel text containers (system prompt preview button and
+	   chat-template textarea) share the same treatment. */
+	.panel-text-surface {
+		@apply rounded-[20px] transition-colors;
+		border: 1px solid var(--border);
+		background-color: var(--background);
+	}
+	.dark .panel-text-surface {
+		border-color: transparent;
+		background-color: var(--panel-input-surface);
+	}
+	.dark .panel-text-surface:hover {
+		border-color: transparent;
+		background-color: var(--panel-input-surface-hover);
+	}
+	/* Typing/clicking into the box darkens its border (dark mode surfaces are
+	   borderless, so the brighter hover fill marks focus there). */
+	.panel-text-surface:focus-within {
+		border-color: var(--ring-soft);
+	}
+	.dark .panel-text-surface:focus-within {
+		border-color: transparent;
 		background-color: var(--panel-input-surface-hover);
 	}
 
@@ -1059,6 +1409,7 @@
 
 	.chat-composer-surface {
 		@apply relative flex w-full flex-col rounded-[32px] bg-background dark:bg-card px-1 pt-2 outline-none transition-shadow;
+		container-type: inline-size;
 		font-family: var(--font-sans);
 		background-clip: padding-box;
 		background-color: #ffffff;
@@ -1092,6 +1443,15 @@
 	.composer-pill-btn[data-active="true"] {
 		color: var(--primary);
 	}
+	/* Permission-level pill: higher-contrast grey than the resting pills so
+	   the active level stays legible (darker in light mode, lighter in dark).
+	   Full access keeps the danger yellow below. */
+	.composer-pill-btn.composer-pill-permissions:not([data-variant="danger"]) {
+		color: color-mix(in oklab, var(--foreground) 60%, transparent);
+	}
+	.dark .composer-pill-btn.composer-pill-permissions:not([data-variant="danger"]) {
+		color: color-mix(in oklab, var(--foreground) 72%, transparent);
+	}
 	/* Bypass permissions badge: bright yellow text, no resting fill; the
 	   rounded hover pill picks up the yellow accent like other toggles. */
 	.composer-pill-btn[data-variant="danger"] {
@@ -1107,7 +1467,9 @@
 	}
 
 	/* With more than 4 tools on, drop pill labels to icons only to cut clutter.
-	   Compare keeps its label via data-keep-label. */
+	   Compare and the bypass-permissions pill keep their labels via
+	   data-keep-label; the permission pill sits before the collapsed icons, so
+	   they line up to its right. */
 	[data-pill-compact="true"]
 		.composer-pill-btn:not([data-keep-label])
 		> span:not(.composer-pill-glyph) {
@@ -1210,6 +1572,7 @@
 	/* Pill composer; own classes so compare-mode keeps its stacked layout. */
 	.unsloth-composer-surface {
 		@apply relative flex w-full flex-col rounded-[32px] bg-background dark:bg-card px-3 py-3 outline-none transition-shadow;
+		container-type: inline-size;
 		font-family: var(--font-sans);
 		background-clip: padding-box;
 		background-color: #ffffff;
@@ -1321,7 +1684,7 @@
 	.unsloth-thinking-pill:focus-visible,
 	.unsloth-composer-plus:focus-visible {
 		outline: none;
-		box-shadow: 0 0 0 2px color-mix(in oklab, var(--ring) 45%, transparent);
+		box-shadow: 0 0 0 1px var(--ring-soft);
 	}
 
 	/* Clickable controls never show the browser's blue outline (Radix re-focuses
@@ -1335,17 +1698,33 @@
 	[role="button"]:focus {
 		outline: none !important;
 	}
-	button:focus:not(:focus-visible),
+	/* Pressed controls are exempt: their ring marks SELECTION, and the just
+	   clicked control is exactly the one holding mouse focus. */
+	button:focus:not(:focus-visible):not([aria-pressed="true"]),
 	a:focus:not(:focus-visible),
 	summary:focus:not(:focus-visible),
-	[role="button"]:focus:not(:focus-visible) {
+	[role="button"]:focus:not(:focus-visible):not([aria-pressed="true"]) {
 		--tw-ring-shadow: 0 0 #0000 !important;
 		--tw-ring-offset-shadow: 0 0 #0000 !important;
 	}
 
-	/* Set Hellix explicitly; .aui-thread-root resets --font-heading to sans. */
+	/* The greeting is a heading: it follows the user's heading font and
+	   defaults to Hellix. Restored on the element because the base h1 rule
+	   reads --font-heading with !important and .aui-thread-root resets
+	   that var to sans for chat prose. */
 	.unsloth-welcome-title {
-		font-family: "Hellix", "Space Grotesk Variable", var(--font-sans);
+		--font-heading: var(
+			--custom-heading-font,
+			"Hellix",
+			"Space Grotesk Variable",
+			var(--font-sans)
+		);
+		font-family: var(
+			--custom-heading-font,
+			"Hellix",
+			"Space Grotesk Variable",
+			var(--font-sans)
+		);
 		font-weight: 500;
 	}
 
@@ -1367,6 +1746,28 @@
 		/* See .unsloth-composer-plus: re-enable pointer-events on the open trigger. */
 		pointer-events: auto;
 		cursor: pointer;
+	}
+
+	/* Keep Thinking on the control row in narrow split layouts. */
+	@container (max-width: 36rem) {
+		.unsloth-thinking-pill {
+			@apply size-8 justify-center gap-0 px-0;
+			min-height: 2rem;
+		}
+
+		.unsloth-thinking-label,
+		.unsloth-thinking-caret {
+			display: none;
+		}
+
+		.unsloth-thinking-pill[data-pill-label] {
+			position: relative;
+		}
+
+		.unsloth-thinking-pill[data-pill-label]:not([data-state="open"]):hover::after {
+			content: attr(data-pill-label);
+			@apply pointer-events-none absolute bottom-[calc(100%+6px)] left-1/2 z-50 -translate-x-1/2 rounded-full bg-black px-2.5 py-1.5 text-[11px] font-medium leading-snug whitespace-nowrap text-white shadow-md;
+		}
 	}
 
 	/* Smaller tick for selected Thinking options. */
@@ -1518,7 +1919,7 @@
 	}
 
 	@media (prefers-reduced-motion: reduce) {
-		.chat-artifact-pop-surface {
+		html:not(.force-motion) .chat-artifact-pop-surface {
 			transition: none;
 			transform: none;
 		}
@@ -1649,13 +2050,9 @@
 		}
 	}
 
-	/* Fine-tuning Studio: equal default height, expandable when needed (md+) */
+	/* Fine-tuning Studio: equal minimum card height, grows with content (md+) */
 	.min-h-studio-config-column {
 		@apply md:min-h-[520px];
-	}
-
-	.h-studio-config-column {
-		@apply md:h-[520px];
 	}
 
 	[data-streamdown="unordered-list"] {
@@ -1775,14 +2172,15 @@
 		margin-bottom: 0 !important;
 	}
 
-	/* Keep monospace for code fences and inline code (not KaTeX). */
+	/* Keep monospace for code fences and inline code (not KaTeX). The custom
+	   Code font (--custom-code-font) overrides when set, else Fira Code. */
 	.aui-thread-root [data-streamdown="code-block"] pre,
 	.aui-thread-root [data-streamdown="code-block"] code {
-		font-family: "Fira Code", ui-monospace, monospace;
+		font-family: var(--custom-code-font, "Fira Code", ui-monospace, monospace);
 	}
 
 	.aui-thread-root :where(p, li, td, th, blockquote, h1, h2, h3, h4, h5, h6) code {
-		font-family: "Fira Code", ui-monospace, monospace;
+		font-family: var(--custom-code-font, "Fira Code", ui-monospace, monospace);
 	}
 
 	/* Align fenced code blocks with the main chat column even when nested in lists. */
@@ -2201,39 +2599,41 @@
  * the documented WCAG outcome (motion is "minimised, not removed").
  *
  * .animate-spin and generated image loading dots are the exceptions: loading
- * indicators across Studio (tool execution loaders, sonner toasts, Tauri
+ * indicators across Unsloth (tool execution loaders, sonner toasts, Tauri
  * startup / update screens, the <Spinner /> primitive, and image generation
  * cards). Freezing them removes the only visual signal that work is in flight,
  * so they keep animating.
  */
 @media (prefers-reduced-motion: reduce) {
-	*,
-	*::before,
-	*::after {
+	/* html.force-motion (Reduce motion set to Off) opts back out of the
+	   OS preference, so these rules only apply without it. */
+	html:not(.force-motion) *,
+	html:not(.force-motion) *::before,
+	html:not(.force-motion) *::after {
 		animation-duration: 0.01ms !important;
 		animation-iteration-count: 1 !important;
 		transition-duration: 0.01ms !important;
 		scroll-behavior: auto !important;
 	}
 
-	.animate-spin {
+	html:not(.force-motion) .animate-spin {
 		animation-duration: 1.5s !important;
 		animation-iteration-count: infinite !important;
 	}
 
-	.generated-image-loading-dot {
+	html:not(.force-motion) .generated-image-loading-dot {
 		animation-duration: 1850ms !important;
 		animation-iteration-count: infinite !important;
 	}
 
-	.loading-bar-slide {
+	html:not(.force-motion) .loading-bar-slide {
 		animation-duration: 1.3s !important;
 		animation-iteration-count: infinite !important;
 	}
 
 	/* Keep the plus/x morph animating under reduced motion (small rotation,
 	   like the spinners above). */
-	.unsloth-composer-plus svg {
+	html:not(.force-motion) .unsloth-composer-plus svg {
 		transition-duration: 250ms !important;
 	}
 }

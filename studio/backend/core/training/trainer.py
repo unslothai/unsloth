@@ -11,8 +11,10 @@ import os
 import sys
 import types
 
-# Prevent tokenizer parallelism deadlocks when datasets forks.
-os.environ["TOKENIZERS_PARALLELISM"] = "false"
+# Off on Linux so datasets' forked map() workers can't deadlock. On spawn platforms
+# (Windows/macOS) map() runs in-process, so keep the fast tokenizer's Rust threads on
+# (the only parallelism single-process tokenize gets; off makes prep run serially).
+os.environ["TOKENIZERS_PARALLELISM"] = "true" if sys.platform in ("win32", "darwin") else "false"
 
 # Make compiled cache modules importable by any subprocess. On spawn platforms
 # (Windows/macOS) spawned dataset.map() workers re-import top-level modules, and
@@ -70,7 +72,7 @@ from core.inference.llama_cpp import _hf_offline_if_dns_dead
 from utils.models import is_vision_model, detect_audio_type
 from utils.models.model_config import _env_offline
 from utils.datasets import format_and_template_dataset
-from utils.datasets import MODEL_TO_TEMPLATE_MAPPER, TEMPLATE_TO_RESPONSES_MAPPER
+from utils.datasets.completion_masking import apply_completion_masking
 from utils.datasets.iterable import is_streaming_dataset as detect_streaming_dataset
 from utils.datasets.raw_text import prepare_raw_text_dataset, resolve_column_names
 from utils.paths import (
@@ -795,7 +797,7 @@ class UnslothTrainer:
                 )
                 logger.info("Loaded text model")
 
-            raise_if_offloaded(self.model, device_map, "Studio training")
+            raise_if_offloaded(self.model, device_map, "Unsloth training")
 
             if self.should_stop:
                 return False
@@ -931,7 +933,7 @@ class UnslothTrainer:
                     use_gradient_checkpointing = "unsloth"
                 elif use_gradient_checkpointing in ("true", "1", "yes"):
                     use_gradient_checkpointing = True
-                elif use_gradient_checkpointing in ("false", "0", "no"):
+                elif use_gradient_checkpointing in ("false", "0", "no", "none", "off"):
                     use_gradient_checkpointing = False
                 else:
                     # Invalid value -> "unsloth"
@@ -3423,15 +3425,19 @@ class UnslothTrainer:
                     logger.info(
                         f"CPT: using UnslothTrainer with embedding_learning_rate={embedding_lr}\n"
                     )
+                    cpt_args = _UnslothTrainingArguments(
+                        embedding_learning_rate = embedding_lr,
+                        **config_args,
+                    )
+                    if config_args.get("packing", False):
+                        cpt_args.packing_strategy = "wrapped"
+                        logger.info("CPT packing strategy: wrapped\n")
                     trainer_kwargs = {
                         "model": self.model,
                         "tokenizer": sft_tokenizer,
                         "train_dataset": dataset["dataset"],
                         "data_collator": data_collator,
-                        "args": _UnslothTrainingArguments(
-                            embedding_learning_rate = embedding_lr,
-                            **config_args,
-                        ),
+                        "args": cpt_args,
                     }
                     if eval_dataset is not None:
                         trainer_kwargs["eval_dataset"] = eval_dataset
@@ -3455,8 +3461,6 @@ class UnslothTrainer:
 
             # ========== TRAIN ON RESPONSES ONLY ==========
             # Raw-text datasets always train on all tokens.
-            instruction_part = None
-            response_part = None
             is_cpt = training_args.get("is_cpt", False)
             train_on_responses_enabled = (
                 False
@@ -3473,113 +3477,93 @@ class UnslothTrainer:
 
             # DeepSeek OCR handles this internally in its collator, so skip
             # Audio VLM handles label masking in its collator, so skip
+            # Markers auto-detected from the chat template first, manual table
+            # as fallback; gpt-oss stays on its manual markers. See
+            # apply_completion_masking.
             if (
                 train_on_responses_enabled
                 and not self.is_audio_vlm
                 and not self.is_audio
                 and not (is_deepseek_ocr or dataset_final_format == "alpaca")
             ):
-                try:
-                    logger.info("Configuring train on responses only...\n")
+                from unsloth.chat_templates import train_on_responses_only
 
-                    # Template mapping for this model
-                    model_name_lower = self.model_name.lower()
+                logger.info("Configuring train on responses only...\n")
 
-                    if model_name_lower in MODEL_TO_TEMPLATE_MAPPER:
-                        template_name = MODEL_TO_TEMPLATE_MAPPER[model_name_lower]
-                        logger.info(f"Detected template: {template_name}\n")
+                def _notify(level, message):
+                    if level == "warning":
+                        logger.warning(message)
+                    else:
+                        logger.info(f"{message}\n")
 
-                        if template_name in TEMPLATE_TO_RESPONSES_MAPPER:
-                            instruction_part = TEMPLATE_TO_RESPONSES_MAPPER[template_name][
-                                "instruction"
-                            ]
-                            response_part = TEMPLATE_TO_RESPONSES_MAPPER[template_name]["response"]
+                # No try/except: the helper handles detection failures and
+                # double misses itself, so an exception here is a real masking
+                # failure that must fail the run, not silently train on full
+                # sequences.
+                self.trainer, masking_applied = apply_completion_masking(
+                    self.trainer,
+                    self.model_name,
+                    train_on_responses_only,
+                    num_proc = config_args["dataset_num_proc"],
+                    notify = _notify,
+                )
 
-                            logger.info(f"Instruction marker: {instruction_part[:50]}...\n")
-                            logger.info(f"Response marker: {response_part[:50]}...\n")
+                if not masking_applied:
+                    train_on_responses_enabled = False
+
+                if masking_applied:
+                    try:
+                        # ── Safety net: check if all samples were filtered out ──
+                        # train_on_responses_only masks non-response tokens with -100; a
+                        # row becomes all -100 (Unsloth drops it) when the response
+                        # template is not found in the formatted text. Usually a
+                        # dataset/template mismatch (already-formatted data, or 'Train on
+                        # completions' on data that doesn't match the model's chat
+                        # template); only sometimes max_seq_length truncating the response
+                        # away. Skip this len()-based check for streaming.
+                        if detect_streaming_dataset(self.trainer.train_dataset):
+                            logger.info("Skipping post-filter length check for streaming dataset\n")
                         else:
-                            logger.info(
-                                f"No response mapping found for template: {template_name}\n"
+                            filtered_len = len(self.trainer.train_dataset)
+                            original_dataset_obj = (
+                                dataset["dataset"] if isinstance(dataset, dict) else dataset
                             )
-                            train_on_responses_enabled = False
-                    else:
-                        logger.info(f"No template mapping found for model: {self.model_name}\n")
-                        train_on_responses_enabled = False
-
-                except Exception as e:
-                    logger.warning(f"Could not configure train on responses: {e}")
-                    train_on_responses_enabled = False
-
-            # Apply train on responses only if we have valid parts
-            if (
-                train_on_responses_enabled
-                and instruction_part
-                and response_part
-                and not self.is_audio_vlm
-                and not self.is_audio
-                and not (is_deepseek_ocr or dataset_final_format == "alpaca")
-            ):
-                try:
-                    from unsloth.chat_templates import train_on_responses_only
-
-                    self.trainer = train_on_responses_only(
-                        self.trainer,
-                        instruction_part = instruction_part,
-                        response_part = response_part,
-                        num_proc = config_args["dataset_num_proc"],
-                    )
-                    logger.info("Train on responses only configured successfully\n")
-
-                    # ── Safety net: check if all samples were filtered out ──
-                    # train_on_responses_only masks non-response tokens with -100;
-                    # a row becomes all -100 (and Unsloth drops it) when the response
-                    # template is not found in the formatted text. That is usually a
-                    # dataset/template mismatch (already-formatted data, or 'Train on
-                    # completions' applied to data that doesn't match the model's chat
-                    # template), and only sometimes max_seq_length truncating the
-                    # response away. Skip this len()-based check for streaming.
-                    if detect_streaming_dataset(self.trainer.train_dataset):
-                        logger.info("Skipping post-filter length check for streaming dataset\n")
-                    else:
-                        filtered_len = len(self.trainer.train_dataset)
-                        original_dataset_obj = (
-                            dataset["dataset"] if isinstance(dataset, dict) else dataset
-                        )
-                        original_len = len(original_dataset_obj)
-                        dropped = original_len - filtered_len
-                        drop_pct = round(100 * dropped / original_len, 1) if original_len > 0 else 0
-
-                        if filtered_len == 0 or drop_pct > 30:
-                            max_seq = training_args.get("max_seq_length", 2048)
-                            error_msg = (
-                                f"{dropped}/{original_len} samples ({drop_pct}%) were "
-                                f"dropped after applying 'Train on completions': after "
-                                f"masking, those rows had no trainable response tokens "
-                                f"left. The usual cause is that this model's response "
-                                f"template was not found in the formatted samples, so "
-                                f"every token was masked out. That typically means the "
-                                f"dataset is already formatted, or its structure does "
-                                f"not match the model's chat template, so 'Train on "
-                                f"completions' should be turned off for this dataset. "
-                                f"Less commonly, a max_seq_length ({max_seq}) shorter "
-                                f"than the prompt can truncate the response away; only "
-                                f"raise it if your samples are actually longer than that."
+                            original_len = len(original_dataset_obj)
+                            dropped = original_len - filtered_len
+                            drop_pct = (
+                                round(100 * dropped / original_len, 1) if original_len > 0 else 0
                             )
-                            logger.error(error_msg)
-                            self._update_progress(error = error_msg, is_training = False)
-                            return
 
-                        if dropped > 0:
-                            logger.info(
-                                f"⚠️ {dropped}/{original_len} samples "
-                                f"({drop_pct}%) were dropped (all labels "
-                                f"masked). {filtered_len} samples remain.\n"
-                            )
-                        logger.info(f"Post-filter dataset size: {filtered_len} samples\n")
+                            if filtered_len == 0 or drop_pct > 30:
+                                max_seq = training_args.get("max_seq_length", 2048)
+                                error_msg = (
+                                    f"{dropped}/{original_len} samples ({drop_pct}%) were "
+                                    f"dropped after applying 'Train on completions': after "
+                                    f"masking, those rows had no trainable response tokens "
+                                    f"left. The usual cause is that this model's response "
+                                    f"template was not found in the formatted samples, so "
+                                    f"every token was masked out. That typically means the "
+                                    f"dataset is already formatted, or its structure does "
+                                    f"not match the model's chat template, so 'Train on "
+                                    f"completions' should be turned off for this dataset. "
+                                    f"Less commonly, a max_seq_length ({max_seq}) shorter "
+                                    f"than the prompt can truncate the response away; only "
+                                    f"raise it if your samples are actually longer than that."
+                                )
+                                logger.error(error_msg)
+                                self._update_progress(error = error_msg, is_training = False)
+                                return
 
-                except Exception as e:
-                    logger.warning(f"Failed to apply train on responses only: {e}")
-                    train_on_responses_enabled = False
+                            if dropped > 0:
+                                logger.info(
+                                    f"⚠️ {dropped}/{original_len} samples "
+                                    f"({drop_pct}%) were dropped (all labels "
+                                    f"masked). {filtered_len} samples remain.\n"
+                                )
+                            logger.info(f"Post-filter dataset size: {filtered_len} samples\n")
+
+                    except Exception as e:
+                        logger.warning(f"Post-masking dataset size check failed: {e}")
             else:
                 if train_on_responses_enabled and is_deepseek_ocr:
                     logger.info("Train on responses handled by DeepSeek OCR collator\n")

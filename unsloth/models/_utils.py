@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-__version__ = "2026.7.2"
+__version__ = "2026.7.3"
 
 __all__ = [
     "SUPPORTS_BFLOAT16",
@@ -424,7 +424,7 @@ def apply_unsloth_gradient_checkpointing(use_gradient_checkpointing, max_seq_len
 # access on some GPU architectures (B200). Falls back to eager safely.
 _FLEX_EXCLUDED_MODELS = ("gpt_oss", "mllama", "nemotron_h", "modernbert")
 _FLEX_PREFERRED_MODELS = ("gemma3", "gemma3_text", "shieldgemma2")
-_SDPA_EXCLUDED_MODELS = ("gpt_oss",)
+_SDPA_EXCLUDED_MODELS = ("gpt_oss", "deepseek_v4")
 # The loader (loader.py) forces supports_sdpa=False for these because their bundled
 # SDPA modules are wrong. Kept here, not in loader.py, so _is_sdpa_excluded can honor
 # them without a loader -> _utils import cycle (loader.py already imports from _utils
@@ -437,8 +437,10 @@ DISABLE_SDPA_MODEL_NAMES = [
     "gemma3_text",  # Gemma3TextModel (EmbeddingGemma) - substring match, keep underscore
     "gpt_oss",
 ]
-_FLASH_EXCLUDED_MODELS = ("gpt_oss",)
-_EAGER_ONLY_PREFIXES = ("gemma3n",)
+_FLASH_EXCLUDED_MODELS = ("gpt_oss", "deepseek_v4")
+# deepseek_v4's custom attention is sdpa/flash-incompatible; force eager, and
+# excluded above so an explicit sdpa/flash request cannot re-enable the crash.
+_EAGER_ONLY_PREFIXES = ("gemma3n", "deepseek_v4")
 _FLASH_ATTENTION_MAX_HEAD_DIM = 256
 _FLASH_ATTENTION_DISABLED_WARNED = set()
 

@@ -459,7 +459,7 @@ function ModelRow({
       }}
       onClick={onClick}
       className={cn(
-        "flex w-full items-center gap-2 rounded-full px-2 py-1.5 text-left text-sm transition-colors hover:bg-[#ececec] focus-visible:bg-[#ececec] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/45 dark:hover:bg-[var(--sidebar-accent)] dark:focus-visible:bg-[var(--sidebar-accent)]",
+        "flex w-full items-center gap-2 rounded-full px-2 py-1.5 text-left text-sm transition-colors hover:bg-[#ececec] focus-visible:bg-[#ececec] focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring dark:hover:bg-[var(--sidebar-accent)] dark:focus-visible:bg-[var(--sidebar-accent)]",
         selected && "bg-[#ececec] dark:bg-[var(--sidebar-accent)]",
         className,
       )}
@@ -935,7 +935,7 @@ function GgufVariantExpander({
                 handleVariantClick(v.quant, v.downloaded, expectedBytes)
               }
               className={cn(
-                "flex min-w-0 flex-1 items-center justify-between gap-2 rounded-full px-2 py-1 text-left text-sm transition-colors hover:bg-[#ececec] focus-visible:bg-[#ececec] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/45 dark:hover:bg-[var(--sidebar-accent)] dark:focus-visible:bg-[var(--sidebar-accent)]",
+                "flex min-w-0 flex-1 items-center justify-between gap-2 rounded-full px-2 py-1 text-left text-sm transition-colors hover:bg-[#ececec] focus-visible:bg-[#ececec] focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring dark:hover:bg-[var(--sidebar-accent)] dark:focus-visible:bg-[var(--sidebar-accent)]",
               )}
             >
               <span className="min-w-0 flex-1 truncate font-mono text-xs">
@@ -1685,7 +1685,7 @@ export function HubModelPicker({
   const deviceType = usePlatformStore((s) => s.deviceType);
   const isMac = deviceType === "mac";
 
-  // Drop models Studio can't run for chat (diffusion / image / video / etc.)
+  // Drop models Unsloth can't run for chat (diffusion / image / video / etc.)
   // using the Hub's classifier on the tags the listing already carries.
   const isChatSupported = useCallback(
     (r: HfModelResult) =>
@@ -1736,7 +1736,7 @@ export function HubModelPicker({
     let rows = recommendedSearch.results
       .filter((r) => !isHiddenModelId(r.id))
       .filter((r) => !isMobileVariant(r.id));
-    // Drop models Studio can't run for chat (diffusion / image / video / etc.).
+    // Drop models Unsloth can't run for chat (diffusion / image / video / etc.).
     rows = rows.filter(isChatSupported);
     // With no explicit format, show the device-recommended formats (GGUF, plus
     // MLX on Mac). When the user picks a format, honor it instead so Safetensors
@@ -1874,7 +1874,7 @@ export function HubModelPicker({
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [lmStudioModels, downloadedSort, formatFilter, loadTimes, localQuery],
   );
-  // Local ./models entries. Chat-only Studio runs GGUF (any host) and MLX (Mac
+  // Local ./models entries. Chat-only Unsloth runs GGUF (any host) and MLX (Mac
   // only), so raw checkpoints there are hidden (mirrors the cached non-GGUF
   // rule). An MLX build a Mac user dropped in ./models stays selectable.
   const sortedLocalDir = useMemo(

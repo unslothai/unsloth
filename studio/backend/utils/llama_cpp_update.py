@@ -82,7 +82,7 @@ def _utcnow() -> str:
 
 def _find_binary() -> Optional[str]:
     """Locate the active llama-server binary via the inference backend's own
-    resolver, so update targets exactly what Studio runs. Lazy import keeps the
+    resolver, so update targets exactly what Unsloth runs. Lazy import keeps the
     heavy inference module off this module's import path."""
     try:
         from core.inference.llama_cpp import LlamaCppBackend
@@ -109,7 +109,7 @@ def _installer_script() -> Optional[Path]:
     """Locate install_llama_prebuilt.py. Honours UNSLOTH_LLAMA_INSTALLER, then
     searches up from this file for both ``<root>/install_llama_prebuilt.py`` and
     ``<root>/studio/install_llama_prebuilt.py`` so it works in the dev tree and
-    in an installed Studio layout."""
+    in an installed Unsloth layout."""
     env = os.environ.get("UNSLOTH_LLAMA_INSTALLER")
     if env and Path(env).is_file():
         return Path(env)
@@ -227,7 +227,7 @@ def _is_under(path: Path, root: Path) -> bool:
 
 
 def _llama_install_root(binary: Optional[str]) -> Optional[Path]:
-    """The Studio-managed llama.cpp root the active binary lives under, or None
+    """The Unsloth-managed llama.cpp root the active binary lives under, or None
     when the binary is unmanaged. Installing anywhere the active binary is not
     would not replace what _find_llama_server_binary runs (which prefers a pinned
     LLAMA_SERVER_PATH, then UNSLOTH_LLAMA_CPP_PATH, then a llama.cpp tree), so we
@@ -327,7 +327,7 @@ def _source_build_status(binary: str, *, force_refresh: bool) -> Optional[dict]:
 def _is_external_link(path: Optional[Path]) -> bool:
     """True when ``path`` is a --with-llama-cpp-dir local link: a POSIX symlink
     or a Windows directory junction / reparse point. Such a link resolves into
-    the user's own llama.cpp checkout, so Studio must never auto-update it."""
+    the user's own llama.cpp checkout, so Unsloth must never auto-update it."""
     if path is None:
         return False
     try:
@@ -473,9 +473,18 @@ def _rocm_install_args(asset: Optional[str]) -> list[str]:
     return ["--has-rocm"]
 
 
-def _run_update(install_dir: Path, repo: str, asset: Optional[str], script: Path) -> None:
+def _run_update(
+    install_dir: Path,
+    repo: str,
+    asset: Optional[str],
+    script: Path,
+    pin_release_tag: Optional[str] = None,
+) -> None:
     """Worker: put the backend into a maintenance state, run the installer for
-    the latest prebuilt, then refresh caches so the next load uses the new build."""
+    the latest prebuilt, then refresh caches so the next load uses the new build.
+
+    pin_release_tag pins the installer to that exact published release instead
+    of letting it re-resolve "latest" itself (see start_update for why)."""
     backend = None
     model_was_active = False
     try:
@@ -510,6 +519,8 @@ def _run_update(install_dir: Path, repo: str, asset: Optional[str], script: Path
             "--published-repo",
             repo,
         ]
+        if pin_release_tag:
+            cmd.extend(["--published-release-tag", pin_release_tag])
         cmd.extend(_rocm_install_args(asset))
         logger.info("llama update: installing", cmd = " ".join(cmd))
         # Stream progress lines into job["progress"].
@@ -569,6 +580,16 @@ def _run_update(install_dir: Path, repo: str, asset: Optional[str], script: Path
         new_marker = read_install_marker(_find_binary())
         new_tag = (new_marker or {}).get("release_tag") or (new_marker or {}).get("tag")
 
+        # Pinned install must land on that exact release; a same-repo mismatch
+        # means the pin was ignored (Vulkan/Intel reroute to another repo is fine).
+        if (
+            pin_release_tag
+            and new_tag
+            and (new_marker or {}).get("published_repo") == repo
+            and new_tag != pin_release_tag
+        ):
+            raise RuntimeError(f"pinned release {pin_release_tag} but installer produced {new_tag}")
+
         with _job_lock:
             _job.update(
                 state = _JOB_SUCCESS,
@@ -614,7 +635,7 @@ def start_update() -> dict:
             "reason": "local_link",
             "message": (
                 "llama.cpp is a local directory linked with --with-llama-cpp-dir; "
-                "Studio won't replace it. Update your own llama.cpp checkout instead."
+                "Unsloth won't replace it. Update your own llama.cpp checkout instead."
             ),
             "job": get_update_status()["job"],
         }
@@ -650,6 +671,13 @@ def start_update() -> dict:
         repo = marker.get("published_repo") or DEFAULT_PUBLISHED_REPO
         from_tag = marker.get("tag") or marker.get("release_tag")
         asset = marker.get("asset")
+        # Install exactly the release the banner offered: the installer's own
+        # "latest" is commit-date ordered and can lag the published_at pick
+        # above, reinstalling the current build in a loop (the #6219 class).
+        # Not on macOS, which needs the older-release walk-back a pin disables
+        # (skipping too-new prebuilts); elsewhere an unusable latest now fails
+        # the job loudly (retryable) instead of walking back.
+        pin_release_tag = None if sys.platform == "darwin" else status.get("latest_tag")
     else:
         # Source build / custom path: only proceed when the same detection logic
         # would offer the update (prebuilt exists, install is behind, root is
@@ -677,6 +705,9 @@ def start_update() -> dict:
         repo = (res or {}).get("repo") or DEFAULT_PUBLISHED_REPO
         from_tag = None
         asset = (res or {}).get("asset")
+        # No pin: source-build detection resolves via --resolve-prebuilt latest,
+        # the same resolver the unpinned apply uses, so the two already agree.
+        pin_release_tag = None
 
     if install_dir is None:
         return {
@@ -704,7 +735,7 @@ def start_update() -> dict:
 
     thread = threading.Thread(
         target = _run_update,
-        args = (install_dir, repo, asset, script),
+        args = (install_dir, repo, asset, script, pin_release_tag),
         name = "llama-cpp-update",
         daemon = True,
     )

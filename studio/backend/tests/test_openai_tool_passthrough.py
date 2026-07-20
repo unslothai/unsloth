@@ -30,6 +30,15 @@ from core.inference.anthropic_compat import (
     anthropic_tool_choice_to_openai,
 )
 from core.inference.api_monitor import ApiMonitor
+from core.inference.llama_admission import (
+    ADMISSION_KEEPALIVE_INTERVAL_ENV,
+    ADMISSION_MAX_QUEUE_ENV,
+    ADMISSION_QUEUE_TIMEOUT_ENV,
+    LlamaAdmissionCancelled,
+    LlamaAdmissionConfig,
+    get_llama_admission_queue,
+    reset_llama_admission_queues,
+)
 from routes.inference import (
     _aclose_stream_resources,
     _build_chat_request,
@@ -50,13 +59,17 @@ from routes.inference import (
     _monitor_openai_sse_event,
     _normalize_openai_passthrough_sse_line,
     _openai_compat_stream_stall_timeout,
+    _openai_llama_admission_capacity,
     _openai_messages_for_gguf_chat,
     _openai_passthrough_sse_line_terminal_state,
     _openai_passthrough_upstream_headers,
     _openai_passthrough_non_streaming,
     _openai_passthrough_stream,
+    _responses_stream,
     _openai_stream_error_sse,
     _openai_stream_usage_chunk,
+    _openai_admission_wait_stream_chunks,
+    _wait_for_openai_admission_non_streaming,
     _proxy_to_external_provider,
     _SameTaskStreamingResponse,
     _OPENAI_COMPAT_STREAM_STALL_TIMEOUT_ENV,
@@ -66,6 +79,13 @@ from routes.inference import (
     openai_chat_completions,
 )
 from state.tool_policy import reset_tool_policy, set_tool_policy
+
+
+@pytest.fixture(autouse = True)
+def _reset_admission_queues():
+    reset_llama_admission_queues()
+    yield
+    reset_llama_admission_queues()
 
 
 def test_aclose_stream_resources_attempts_remaining_closes_after_cancel():
@@ -99,7 +119,7 @@ class TestFriendlyUpstreamError:
         raw = '{"error":{"code":400,"message":"Failed to initialize samplers: failed to parse grammar","type":"invalid_request_error"}}'
         msg = _friendly_upstream_error(raw)
         assert "failed to parse grammar" not in msg  # raw body is not surfaced verbatim
-        assert "tool-calling grammar" in msg and "Update Studio" in msg
+        assert "tool-calling grammar" in msg and "Update Unsloth" in msg
 
     def test_failed_to_initialize_samplers_alone_matches(self):
         assert "tool-calling grammar" in _friendly_upstream_error("Failed to initialize samplers")
@@ -242,7 +262,7 @@ class TestChatMessageToolRoles:
 
     def test_tool_empty_content_accepted(self):
         # Empty tool output (mkdir, git add, ...) is routine in agentic loops;
-        # OpenAI and llama-server both accept it, so Studio must not 400.
+        # OpenAI and llama-server both accept it, so Unsloth must not 400.
         msg = ChatMessage(role = "tool", tool_call_id = "call_1", content = "")
         assert msg.content == ""
 
@@ -380,7 +400,7 @@ class TestChatCompletionRequestToolFields:
         assert req.session_id == "abc"
 
     def test_stream_defaults_false_matching_openai_spec(self):
-        # OpenAI defaults `stream` to false. Studio used to default true,
+        # OpenAI defaults `stream` to false. Unsloth used to default true,
         # breaking naive curl/.NET clients (#5047) that omit it. Pin the fix.
         req = self._make()
         assert req.stream is False
@@ -644,7 +664,7 @@ class TestChatCompletionRequestToolFields:
                 raise AssertionError("client tools must use passthrough")
 
             def generate_chat_completion_with_tools(self, **_kwargs):
-                raise AssertionError("Studio tool loop must stay disabled")
+                raise AssertionError("Unsloth tool loop must stay disabled")
 
         async def fake_passthrough(llama_backend, payload, model_name, **kwargs):
             captured["body"] = inference_route._build_openai_passthrough_body(
@@ -686,10 +706,164 @@ class TestChatCompletionRequestToolFields:
         assert entry["status"] == "completed"
         assert monitor.active_count() == 0
 
+    def test_permission_mode_does_not_reject_client_tool_passthrough(self, monkeypatch):
+        # A non-streaming client-tool passthrough (client tools, no Unsloth tool
+        # loop) that also carries permission_mode "ask"/"auto" must reach the
+        # provider passthrough, not the confirm-without-stream guard: the
+        # validator leaves confirm_tool_calls unset for passthrough, and a bare
+        # permission_mode only gates Unsloth's own local tool loop. An explicit
+        # confirm_tool_calls=True still forces the local-confirm rejection.
+        # The pre-switch guard only runs when an automatic load may run, so force
+        # that predicate on to exercise it against a resident passthrough backend.
+        import routes.inference as inference_route
+
+        class _GGUFBackend:
+            is_loaded = True
+            model_identifier = "test-gguf"
+            supports_tools = False
+            supports_tool_passthrough = True
+            is_vision = False
+            _is_audio = False
+            context_length = 4096
+            base_url = "http://llama.permission-passthrough.test"
+            _request_reasoning_kwargs = lambda *_args, **_kwargs: None
+
+            def generate_chat_completion(self, **_kwargs):
+                raise AssertionError("client tools must use passthrough")
+
+            def generate_chat_completion_with_tools(self, **_kwargs):
+                raise AssertionError("Unsloth tool loop must stay disabled")
+
+        async def fake_passthrough(llama_backend, payload, model_name, **kwargs):
+            inference_route.api_monitor.finish(kwargs.get("monitor_id"))
+            return inference_route.JSONResponse({"ok": True, "model": model_name})
+
+        client_tools = [
+            {
+                "type": "function",
+                "function": {"name": "lookup", "parameters": {"type": "object"}},
+            }
+        ]
+
+        def _setup(policy = None):
+            reset_tool_policy()
+            if policy is not None:
+                set_tool_policy(policy)
+            monkeypatch.setattr(inference_route, "_automatic_model_load_may_run", lambda: True)
+            monkeypatch.setattr(inference_route, "api_monitor", ApiMonitor(max_entries = 3))
+            monkeypatch.setattr(
+                inference_route, "_openai_passthrough_non_streaming", fake_passthrough
+            )
+            return self._v1_client(monkeypatch, _GGUFBackend())
+
+        # A process --enable-tools policy must not turn a client-tool passthrough
+        # into an Unsloth local loop, so a policy of None or True both keep the
+        # passthrough (the guard mirrors _explicit_studio_tool_loop_requested).
+        for policy in (None, True):
+            for mode in ("ask", "auto"):
+                client = _setup(policy)
+                resp = client.post(
+                    "/v1/chat/completions",
+                    json = {
+                        "messages": [{"role": "user", "content": "use client tool"}],
+                        "tools": client_tools,
+                        "permission_mode": mode,
+                        "stream": False,
+                    },
+                )
+                assert resp.status_code == 200, resp.text
+                assert resp.json()["ok"] is True
+
+        # A JSON-schema response_format is guided-decoding passthrough, not a local
+        # tool loop, so a --enable-tools policy must not 400 a non-streaming ask/auto
+        # structured-output request under the confirm guard.
+        for mode in ("ask", "auto"):
+            client = _setup(True)
+            resp = client.post(
+                "/v1/chat/completions",
+                json = {
+                    "messages": [{"role": "user", "content": "give me json"}],
+                    "response_format": {
+                        "type": "json_schema",
+                        "json_schema": {"name": "s", "schema": {"type": "object"}},
+                    },
+                    "permission_mode": mode,
+                    "stream": False,
+                },
+            )
+            assert resp.status_code == 200, resp.text
+            assert resp.json()["ok"] is True
+
+        # An explicit confirm_tool_calls=True with client tools and no stream is
+        # still a confirm-without-stream request and must be rejected up front.
+        client = _setup()
+        resp = client.post(
+            "/v1/chat/completions",
+            json = {
+                "messages": [{"role": "user", "content": "use client tool"}],
+                "tools": client_tools,
+                "confirm_tool_calls": True,
+                "stream": False,
+            },
+        )
+        assert resp.status_code == 400
+        assert "requires stream=true" in resp.json()["error"]["message"]
+
+    def test_permission_mode_policy_forced_local_loop_rejected_before_switch(self, monkeypatch):
+        # A process --enable-tools policy forces Unsloth's own tool loop on even
+        # when the request omits enable_tools and carries no client tools. A
+        # non-streaming ask/auto request is then confirm-gated with no stream to
+        # prompt on, so it must 400 at the pre-switch guard -- before
+        # _maybe_auto_switch_model runs -- rather than evicting the resident model
+        # and 400ing only at the per-backend check.
+        import routes.inference as inference_route
+
+        class _GGUFBackend:
+            is_loaded = True
+            model_identifier = "test-gguf"
+            supports_tools = True
+            supports_tool_passthrough = True
+            is_vision = False
+            _is_audio = False
+            context_length = 4096
+            base_url = "http://llama.policy-forced.test"
+            _request_reasoning_kwargs = lambda *_args, **_kwargs: None
+
+        switch_calls = []
+
+        async def _no_switch(*_args, **_kwargs):
+            switch_calls.append(1)
+
+        def _setup():
+            reset_tool_policy()
+            set_tool_policy(True)
+            monkeypatch.setattr(inference_route, "_automatic_model_load_may_run", lambda: True)
+            monkeypatch.setattr(inference_route, "api_monitor", ApiMonitor(max_entries = 3))
+            monkeypatch.setattr(inference_route, "_maybe_auto_switch_model", _no_switch)
+            return self._v1_client(monkeypatch, _GGUFBackend())
+
+        try:
+            for mode in ("ask", "auto"):
+                switch_calls.clear()
+                client = _setup()
+                resp = client.post(
+                    "/v1/chat/completions",
+                    json = {
+                        "messages": [{"role": "user", "content": "hi"}],
+                        "permission_mode": mode,
+                        "stream": False,
+                    },
+                )
+                assert resp.status_code == 400, resp.text
+                assert "requires stream=true" in resp.json()["error"]["message"]
+                assert switch_calls == [], "guard must reject before the auto-switch"
+        finally:
+            reset_tool_policy()
+
     def test_enable_tools_on_non_tool_backend_keeps_client_tools_on_passthrough(self, monkeypatch):
         # DiffusionGemma forces supports_tools off while passthrough stays
         # available (#6851): enable_tools=True must not steal client tools
-        # from the passthrough into a Studio tool loop that cannot run.
+        # from the passthrough into an Unsloth tool loop that cannot run.
         import routes.inference as inference_route
 
         captured = {}
@@ -709,7 +883,7 @@ class TestChatCompletionRequestToolFields:
                 raise AssertionError("client tools must use passthrough")
 
             def generate_chat_completion_with_tools(self, **_kwargs):
-                raise AssertionError("Studio tool loop cannot run on a non-tool backend")
+                raise AssertionError("Unsloth tool loop cannot run on a non-tool backend")
 
         async def fake_passthrough(llama_backend, payload, model_name, **kwargs):
             captured["body"] = inference_route._build_openai_passthrough_body(
@@ -880,7 +1054,7 @@ class TestChatCompletionRequestToolFields:
         monkeypatch.setattr(
             inference_route,
             "_detect_safetensors_features",
-            lambda backend, chat_template: {"supports_tools": True},
+            lambda backend, chat_template, tools = None: {"supports_tools": True},
         )
         monitor = ApiMonitor(max_entries = 3)
         monkeypatch.setattr(inference_route, "api_monitor", monitor)
@@ -1337,6 +1511,80 @@ class TestOpenAICompatibilityHelpers:
 
         assert headers["Authorization"] == "Bearer secret"
         assert headers["Connection"] == "close"
+
+    def test_openai_admission_capacity_prefers_backend_effective_slots(self):
+        request = SimpleNamespace(
+            app = SimpleNamespace(state = SimpleNamespace(llama_parallel_slots = 1))
+        )
+        backend = SimpleNamespace(effective_parallel_slots = 3)
+
+        assert _openai_llama_admission_capacity(request, backend) == 3
+
+    @pytest.mark.parametrize("backend_value", [None, 0, -1, "not-an-int"])
+    def test_openai_admission_capacity_falls_back_to_app_state(self, backend_value):
+        request = SimpleNamespace(
+            app = SimpleNamespace(state = SimpleNamespace(llama_parallel_slots = 2))
+        )
+        backend = SimpleNamespace(effective_parallel_slots = backend_value)
+
+        assert _openai_llama_admission_capacity(request, backend) == 2
+
+    def test_openai_admission_capacity_falls_back_to_one_without_request(self):
+        assert _openai_llama_admission_capacity(None, SimpleNamespace()) == 1
+
+    def test_openai_admission_non_streaming_exits_invalidated_waiter(self):
+        async def _run():
+            queue = get_llama_admission_queue("http://llama.invalidated.test")
+            blocker = queue.reserve(capacity = 1, config = LlamaAdmissionConfig()).lease_nowait()
+            assert blocker is not None
+            reservation = queue.reserve(capacity = 1, config = LlamaAdmissionConfig())
+            assert reservation._waiter is not None
+
+            reservation._waiter.future.cancel()
+
+            with pytest.raises(LlamaAdmissionCancelled):
+                await asyncio.wait_for(
+                    _wait_for_openai_admission_non_streaming(
+                        reservation,
+                        LlamaAdmissionConfig(),
+                        request = None,
+                        cancel_event = None,
+                    ),
+                    timeout = 0.1,
+                )
+
+            blocker.release()
+            snapshot = queue.snapshot()
+            assert snapshot.active == 0
+            assert snapshot.queued == 0
+
+        asyncio.run(_run())
+
+    def test_openai_admission_stream_exits_invalidated_waiter(self):
+        async def _run():
+            queue = get_llama_admission_queue("http://llama.invalidated.stream.test")
+            blocker = queue.reserve(capacity = 1, config = LlamaAdmissionConfig()).lease_nowait()
+            assert blocker is not None
+            reservation = queue.reserve(capacity = 1, config = LlamaAdmissionConfig())
+            assert reservation._waiter is not None
+
+            reservation._waiter.future.cancel()
+
+            chunks = _openai_admission_wait_stream_chunks(
+                reservation,
+                LlamaAdmissionConfig(),
+                request = None,
+                cancel_event = None,
+            )
+            with pytest.raises(LlamaAdmissionCancelled):
+                await asyncio.wait_for(chunks.__anext__(), timeout = 0.1)
+
+            blocker.release()
+            snapshot = queue.snapshot()
+            assert snapshot.active == 0
+            assert snapshot.queued == 0
+
+        asyncio.run(_run())
 
     def test_openai_compat_stream_stall_timeout_uses_default(self, monkeypatch):
         monkeypatch.delenv(_OPENAI_COMPAT_STREAM_STALL_TIMEOUT_ENV, raising = False)
@@ -1993,6 +2241,335 @@ class TestGgufVisionToolRouting:
         [entry] = result.monitor.snapshot()
         assert entry["reply"] == "visible"
 
+    def test_standard_gguf_stream_queued_request_sends_keepalive_before_generation(
+        self, monkeypatch
+    ):
+        async def _run():
+            import routes.inference as inf_mod
+
+            class Request(self._Request):
+                app = SimpleNamespace(state = SimpleNamespace(llama_parallel_slots = 1))
+
+            def _generate(**_kwargs):
+                raise AssertionError("standard GGUF generation must not start while queued")
+
+            backend = SimpleNamespace(
+                is_loaded = True,
+                is_vision = False,
+                supports_tools = False,
+                supports_reasoning = True,
+                reasoning_always_on = True,
+                _is_audio = False,
+                model_identifier = "test-gguf",
+                context_length = 4096,
+                base_url = "http://llama.standard.test",
+                effective_parallel_slots = 1,
+                generate_chat_completion = _generate,
+            )
+            monitor = ApiMonitor(max_entries = 3)
+            monkeypatch.setenv(ADMISSION_KEEPALIVE_INTERVAL_ENV, "0.01")
+            monkeypatch.setattr(inf_mod, "api_monitor", monitor)
+            monkeypatch.setattr(inf_mod, "get_llama_cpp_backend", lambda: backend)
+
+            queue = get_llama_admission_queue("http://llama.standard.test")
+            blocker = queue.reserve(capacity = 1, config = LlamaAdmissionConfig()).lease_nowait()
+            assert blocker is not None
+
+            payload = ChatCompletionRequest(
+                model = "default",
+                messages = [{"role": "user", "content": "hi"}],
+                stream = True,
+            )
+            response = await openai_chat_completions(
+                payload,
+                request = Request(),
+                current_subject = "test",
+            )
+            iterator = response.body_iterator
+            try:
+                chunk = await asyncio.wait_for(iterator.__anext__(), timeout = 0.2)
+                assert chunk == ": keep-alive\n\n"
+                snapshot = queue.snapshot()
+                assert snapshot.active == 1
+                assert snapshot.queued == 1
+            finally:
+                aclose = getattr(iterator, "aclose", None)
+                if aclose is not None:
+                    await aclose()
+                blocker.release()
+
+            snapshot = queue.snapshot()
+            assert snapshot.active == 0
+            assert snapshot.queued == 0
+            [entry] = monitor.snapshot()
+            assert entry["status"] == "cancelled"
+            assert monitor.active_count() == 0
+
+        asyncio.run(_run())
+
+    def test_standard_gguf_stream_close_after_first_chunk_cleans_tracker(self, monkeypatch):
+        async def _run():
+            import routes.inference as inf_mod
+
+            cancel_id = "standard-stream-close-cleanup"
+
+            def _generate(**_kwargs):
+                yield "visible"
+
+            backend = SimpleNamespace(
+                is_loaded = True,
+                is_vision = False,
+                supports_tools = False,
+                supports_reasoning = True,
+                reasoning_always_on = True,
+                _is_audio = False,
+                model_identifier = "test-gguf",
+                context_length = 4096,
+                base_url = "http://llama.standard.test",
+                effective_parallel_slots = 1,
+                generate_chat_completion = _generate,
+            )
+            monitor = ApiMonitor(max_entries = 3)
+            monkeypatch.setattr(inf_mod, "api_monitor", monitor)
+            monkeypatch.setattr(inf_mod, "get_llama_cpp_backend", lambda: backend)
+
+            payload = ChatCompletionRequest(
+                model = "default",
+                messages = [{"role": "user", "content": "hi"}],
+                stream = True,
+                cancel_id = cancel_id,
+            )
+            response = await openai_chat_completions(
+                payload,
+                request = self._Request(),
+                current_subject = "test",
+            )
+            iterator = response.body_iterator
+            assert cancel_id in inf_mod._CANCEL_REGISTRY
+            await asyncio.wait_for(iterator.__anext__(), timeout = 0.2)
+            aclose = getattr(iterator, "aclose", None)
+            assert aclose is not None
+            await aclose()
+
+            assert cancel_id not in inf_mod._CANCEL_REGISTRY
+            assert get_llama_admission_queue("http://llama.standard.test").snapshot().active == 0
+
+        asyncio.run(_run())
+
+    def test_standard_gguf_stream_task_cancel_after_first_chunk_finalizes_monitor(
+        self, monkeypatch
+    ):
+        async def _run():
+            import routes.inference as inf_mod
+
+            started = threading.Event()
+            released = threading.Event()
+
+            def _generate(**kwargs):
+                cancel_event = kwargs["cancel_event"]
+                started.set()
+                while not cancel_event.is_set():
+                    time.sleep(0.005)
+                released.set()
+                yield from ()
+
+            backend = SimpleNamespace(
+                is_loaded = True,
+                is_vision = False,
+                supports_tools = False,
+                supports_reasoning = True,
+                reasoning_always_on = True,
+                _is_audio = False,
+                model_identifier = "test-gguf",
+                context_length = 4096,
+                base_url = "http://llama.standard.test",
+                effective_parallel_slots = 1,
+                generate_chat_completion = _generate,
+            )
+            monitor = ApiMonitor(max_entries = 3)
+            monkeypatch.setattr(inf_mod, "api_monitor", monitor)
+            monkeypatch.setattr(inf_mod, "get_llama_cpp_backend", lambda: backend)
+
+            payload = ChatCompletionRequest(
+                model = "default",
+                messages = [{"role": "user", "content": "hi"}],
+                stream = True,
+            )
+            response = await openai_chat_completions(
+                payload,
+                request = self._Request(),
+                current_subject = "test",
+            )
+            iterator = response.body_iterator
+            assert await asyncio.wait_for(iterator.__anext__(), timeout = 0.2)
+            pending = asyncio.create_task(iterator.__anext__())
+            assert await asyncio.to_thread(started.wait, 1.0)
+
+            await asyncio.sleep(0)
+            pending.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await asyncio.wait_for(pending, timeout = 1.0)
+
+            assert released.is_set()
+            [entry] = monitor.snapshot()
+            assert entry["status"] == "cancelled"
+            assert monitor.active_count() == 0
+            assert get_llama_admission_queue("http://llama.standard.test").snapshot().active == 0
+
+        asyncio.run(_run())
+
+    def test_gguf_tool_stream_queued_request_sends_keepalive_before_generation(self, monkeypatch):
+        async def _run():
+            import routes.inference as inf_mod
+
+            class Request(self._Request):
+                app = SimpleNamespace(state = SimpleNamespace(llama_parallel_slots = 1))
+
+            async def fake_select_tools(*_args, **_kwargs):
+                return [
+                    {
+                        "type": "function",
+                        "function": {
+                            "name": "lookup",
+                            "parameters": {"type": "object", "properties": {}},
+                        },
+                    }
+                ]
+
+            def _generate(**_kwargs):
+                raise AssertionError("GGUF tool loop must not start while queued")
+
+            backend = SimpleNamespace(
+                is_loaded = True,
+                is_vision = False,
+                supports_tools = True,
+                supports_reasoning = True,
+                reasoning_always_on = True,
+                _is_audio = False,
+                model_identifier = "test-gguf",
+                context_length = 4096,
+                base_url = "http://llama.tool.test",
+                effective_parallel_slots = 1,
+                generate_chat_completion = lambda **_kwargs: "unused",
+                generate_chat_completion_with_tools = _generate,
+            )
+            monitor = ApiMonitor(max_entries = 3)
+            monkeypatch.setenv(ADMISSION_KEEPALIVE_INTERVAL_ENV, "0.01")
+            monkeypatch.setattr(inf_mod, "api_monitor", monitor)
+            monkeypatch.setattr(inf_mod, "get_llama_cpp_backend", lambda: backend)
+            monkeypatch.setattr(inf_mod, "_select_request_tools", fake_select_tools)
+
+            queue = get_llama_admission_queue("http://llama.tool.test")
+            blocker = queue.reserve(capacity = 1, config = LlamaAdmissionConfig()).lease_nowait()
+            assert blocker is not None
+
+            payload = ChatCompletionRequest(
+                model = "default",
+                messages = [{"role": "user", "content": "hi"}],
+                enable_tools = True,
+                stream = True,
+            )
+            response = await openai_chat_completions(
+                payload,
+                request = Request(),
+                current_subject = "test",
+            )
+            iterator = response.body_iterator
+            try:
+                chunk = await asyncio.wait_for(iterator.__anext__(), timeout = 0.2)
+                assert chunk == ": keep-alive\n\n"
+                snapshot = queue.snapshot()
+                assert snapshot.active == 1
+                assert snapshot.queued == 1
+            finally:
+                aclose = getattr(iterator, "aclose", None)
+                if aclose is not None:
+                    await aclose()
+                blocker.release()
+
+            snapshot = queue.snapshot()
+            assert snapshot.active == 0
+            assert snapshot.queued == 0
+            [entry] = monitor.snapshot()
+            assert entry["status"] == "cancelled"
+            assert monitor.active_count() == 0
+
+        asyncio.run(_run())
+
+    def test_gguf_tool_stream_task_cancel_after_first_chunk_finalizes_monitor(self, monkeypatch):
+        async def _run():
+            import routes.inference as inf_mod
+
+            async def fake_select_tools(*_args, **_kwargs):
+                return [
+                    {
+                        "type": "function",
+                        "function": {
+                            "name": "lookup",
+                            "parameters": {"type": "object", "properties": {}},
+                        },
+                    }
+                ]
+
+            started = threading.Event()
+            released = threading.Event()
+
+            def _tools(**kwargs):
+                cancel_event = kwargs["cancel_event"]
+                started.set()
+                while not cancel_event.is_set():
+                    time.sleep(0.005)
+                released.set()
+                yield from ()
+
+            backend = SimpleNamespace(
+                is_loaded = True,
+                is_vision = False,
+                supports_tools = True,
+                supports_reasoning = True,
+                reasoning_always_on = True,
+                _is_audio = False,
+                model_identifier = "test-gguf",
+                context_length = 4096,
+                base_url = "http://llama.tool.test",
+                effective_parallel_slots = 1,
+                generate_chat_completion = lambda **_kwargs: "unused",
+                generate_chat_completion_with_tools = _tools,
+            )
+            monitor = ApiMonitor(max_entries = 3)
+            monkeypatch.setattr(inf_mod, "api_monitor", monitor)
+            monkeypatch.setattr(inf_mod, "get_llama_cpp_backend", lambda: backend)
+            monkeypatch.setattr(inf_mod, "_select_request_tools", fake_select_tools)
+
+            payload = ChatCompletionRequest(
+                model = "default",
+                messages = [{"role": "user", "content": "hi"}],
+                enable_tools = True,
+                stream = True,
+            )
+            response = await openai_chat_completions(
+                payload,
+                request = self._Request(),
+                current_subject = "test",
+            )
+            iterator = response.body_iterator
+            assert await asyncio.wait_for(iterator.__anext__(), timeout = 0.2)
+            pending = asyncio.create_task(iterator.__anext__())
+            assert await asyncio.to_thread(started.wait, 1.0)
+
+            await asyncio.sleep(0)
+            pending.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await asyncio.wait_for(pending, timeout = 1.0)
+
+            assert released.is_set()
+            [entry] = monitor.snapshot()
+            assert entry["status"] == "cancelled"
+            assert monitor.active_count() == 0
+            assert get_llama_admission_queue("http://llama.tool.test").snapshot().active == 0
+
+        asyncio.run(_run())
+
     def test_global_enable_tools_does_not_preempt_response_format_passthrough(self, monkeypatch):
         import routes.inference as inf_mod
 
@@ -2004,7 +2581,7 @@ class TestGgufVisionToolRouting:
             raise AssertionError("plain GGUF path should not be used")
 
         def _tools(**_kwargs):
-            raise AssertionError("Studio tool loop should not steal response_format")
+            raise AssertionError("Unsloth tool loop should not steal response_format")
 
         backend = SimpleNamespace(
             is_loaded = True,
@@ -2077,7 +2654,7 @@ class TestGgufVisionToolRouting:
             raise AssertionError("plain GGUF path should not be used")
 
         def _tools(**_kwargs):
-            raise AssertionError("Studio tool loop should not replace client tools")
+            raise AssertionError("Unsloth tool loop should not replace client tools")
 
         backend = SimpleNamespace(
             is_loaded = True,
@@ -2149,7 +2726,7 @@ class TestGgufVisionToolRouting:
             yield "plain response"
 
         def _tools(**_kwargs):
-            raise AssertionError("tool_choice='none' must not start Studio's tool loop")
+            raise AssertionError("tool_choice='none' must not start Unsloth's tool loop")
 
         backend = SimpleNamespace(
             is_loaded = True,
@@ -2203,7 +2780,7 @@ class TestGgufVisionToolRouting:
             raise AssertionError("plain GGUF path should not be used")
 
         def _tools(**_kwargs):
-            raise AssertionError("enabled_tools alone must not start Studio's tool loop")
+            raise AssertionError("enabled_tools alone must not start Unsloth's tool loop")
 
         backend = SimpleNamespace(
             is_loaded = True,
@@ -2267,7 +2844,7 @@ class TestGgufVisionToolRouting:
             raise AssertionError("plain GGUF path should not be used")
 
         def _tools(**_kwargs):
-            raise AssertionError("enabled_tools alone must not start Studio's tool loop")
+            raise AssertionError("enabled_tools alone must not start Unsloth's tool loop")
 
         backend = SimpleNamespace(
             is_loaded = True,
@@ -2433,6 +3010,313 @@ class TestGgufVisionToolRouting:
         assert message["reasoning_content"] == "plan"
         [entry] = result.monitor.snapshot()
         assert entry["reply"] == "visible"
+
+    def test_standard_gguf_non_streaming_admission_timeout_before_generation(self, monkeypatch):
+        async def _run():
+            import routes.inference as inf_mod
+
+            class Request(self._Request):
+                app = SimpleNamespace(state = SimpleNamespace(llama_parallel_slots = 1))
+
+            def _generate(**_kwargs):
+                raise AssertionError("standard GGUF generation must not start while queued")
+
+            backend = SimpleNamespace(
+                is_loaded = True,
+                is_vision = False,
+                supports_tools = False,
+                _is_audio = False,
+                model_identifier = "test-gguf",
+                context_length = 4096,
+                base_url = "http://llama.standard.test",
+                effective_parallel_slots = 1,
+                generate_chat_completion = _generate,
+            )
+            monitor = ApiMonitor(max_entries = 3)
+            monkeypatch.setenv(ADMISSION_QUEUE_TIMEOUT_ENV, "0.01")
+            monkeypatch.setattr(inf_mod, "api_monitor", monitor)
+            monkeypatch.setattr(inf_mod, "get_llama_cpp_backend", lambda: backend)
+
+            queue = get_llama_admission_queue("http://llama.standard.test")
+            blocker = queue.reserve(capacity = 1, config = LlamaAdmissionConfig()).lease_nowait()
+            assert blocker is not None
+
+            payload = ChatCompletionRequest(
+                model = "default",
+                messages = [{"role": "user", "content": "hi"}],
+            )
+            try:
+                with pytest.raises(HTTPException) as exc:
+                    await openai_chat_completions(
+                        payload,
+                        request = Request(),
+                        current_subject = "test",
+                    )
+                assert exc.value.status_code == 503
+            finally:
+                blocker.release()
+
+            snapshot = queue.snapshot()
+            assert snapshot.active == 0
+            assert snapshot.queued == 0
+
+        asyncio.run(_run())
+
+    def test_standard_gguf_non_streaming_cancel_id_stops_queued_request_before_generation(
+        self, monkeypatch
+    ):
+        async def _run():
+            import routes.inference as inf_mod
+
+            class Request(self._Request):
+                app = SimpleNamespace(state = SimpleNamespace(llama_parallel_slots = 1))
+
+            def _generate(**_kwargs):
+                raise AssertionError("standard GGUF generation must not start after cancel_id")
+
+            backend = SimpleNamespace(
+                is_loaded = True,
+                is_vision = False,
+                supports_tools = False,
+                _is_audio = False,
+                model_identifier = "test-gguf",
+                context_length = 4096,
+                base_url = "http://llama.standard.test",
+                effective_parallel_slots = 1,
+                generate_chat_completion = _generate,
+            )
+            monitor = ApiMonitor(max_entries = 3)
+            monkeypatch.setattr(inf_mod, "api_monitor", monitor)
+            monkeypatch.setattr(inf_mod, "get_llama_cpp_backend", lambda: backend)
+
+            queue = get_llama_admission_queue("http://llama.standard.test")
+            blocker = queue.reserve(capacity = 1, config = LlamaAdmissionConfig()).lease_nowait()
+            assert blocker is not None
+
+            cancel_id = "standard-nonstream-admission-cancel"
+            payload = ChatCompletionRequest(
+                model = "default",
+                messages = [{"role": "user", "content": "hi"}],
+                cancel_id = cancel_id,
+            )
+            task = asyncio.create_task(
+                openai_chat_completions(
+                    payload,
+                    request = Request(),
+                    current_subject = "test",
+                )
+            )
+            try:
+                for _ in range(50):
+                    if cancel_id in inf_mod._CANCEL_REGISTRY:
+                        break
+                    await asyncio.sleep(0.01)
+                assert cancel_id in inf_mod._CANCEL_REGISTRY
+                assert inf_mod._cancel_by_cancel_id_or_stash(cancel_id) == 1
+                with pytest.raises(HTTPException) as exc:
+                    await asyncio.wait_for(task, timeout = 0.5)
+                assert exc.value.status_code == 499
+            finally:
+                if not task.done():
+                    task.cancel()
+                    with pytest.raises(asyncio.CancelledError):
+                        await task
+                blocker.release()
+
+            assert cancel_id not in inf_mod._CANCEL_REGISTRY
+            snapshot = queue.snapshot()
+            assert snapshot.active == 0
+            assert snapshot.queued == 0
+            [entry] = monitor.snapshot()
+            assert entry["status"] == "cancelled"
+            assert monitor.active_count() == 0
+
+        asyncio.run(_run())
+
+    def test_standard_gguf_non_streaming_admission_task_cancel_cleans_tracker_and_slot(
+        self, monkeypatch
+    ):
+        async def _run():
+            import routes.inference as inf_mod
+
+            cancel_id = "standard-nonstream-task-cancel"
+
+            async def fake_wait(*_args, **_kwargs):
+                raise asyncio.CancelledError()
+
+            def _generate(**_kwargs):
+                raise AssertionError("standard GGUF generation must not start after task cancel")
+
+            backend = SimpleNamespace(
+                is_loaded = True,
+                is_vision = False,
+                supports_tools = False,
+                _is_audio = False,
+                model_identifier = "test-gguf",
+                context_length = 4096,
+                base_url = "http://llama.standard.test",
+                effective_parallel_slots = 1,
+                generate_chat_completion = _generate,
+            )
+            monitor = ApiMonitor(max_entries = 3)
+            monkeypatch.setattr(inf_mod, "api_monitor", monitor)
+            monkeypatch.setattr(inf_mod, "get_llama_cpp_backend", lambda: backend)
+            monkeypatch.setattr(
+                inf_mod,
+                "_wait_for_openai_admission_non_streaming",
+                fake_wait,
+            )
+
+            payload = ChatCompletionRequest(
+                model = "default",
+                messages = [{"role": "user", "content": "hi"}],
+                cancel_id = cancel_id,
+            )
+            with pytest.raises(asyncio.CancelledError):
+                await openai_chat_completions(
+                    payload,
+                    request = self._Request(),
+                    current_subject = "test",
+                )
+
+            assert cancel_id not in inf_mod._CANCEL_REGISTRY
+            assert get_llama_admission_queue("http://llama.standard.test").snapshot().active == 0
+
+        asyncio.run(_run())
+
+    def test_gguf_tool_non_streaming_admission_timeout_before_generation(self, monkeypatch):
+        async def _run():
+            import routes.inference as inf_mod
+
+            class Request(self._Request):
+                app = SimpleNamespace(state = SimpleNamespace(llama_parallel_slots = 1))
+
+            async def fake_select_tools(*_args, **_kwargs):
+                return [
+                    {
+                        "type": "function",
+                        "function": {
+                            "name": "lookup",
+                            "parameters": {"type": "object", "properties": {}},
+                        },
+                    }
+                ]
+
+            def _generate(**_kwargs):
+                raise AssertionError("GGUF tool loop must not start while queued")
+
+            backend = SimpleNamespace(
+                is_loaded = True,
+                is_vision = False,
+                supports_tools = True,
+                _is_audio = False,
+                model_identifier = "test-gguf",
+                context_length = 4096,
+                base_url = "http://llama.tool.test",
+                effective_parallel_slots = 1,
+                generate_chat_completion = lambda **_kwargs: "unused",
+                generate_chat_completion_with_tools = _generate,
+            )
+            monitor = ApiMonitor(max_entries = 3)
+            monkeypatch.setenv(ADMISSION_QUEUE_TIMEOUT_ENV, "0.01")
+            monkeypatch.setattr(inf_mod, "api_monitor", monitor)
+            monkeypatch.setattr(inf_mod, "get_llama_cpp_backend", lambda: backend)
+            monkeypatch.setattr(inf_mod, "_select_request_tools", fake_select_tools)
+
+            queue = get_llama_admission_queue("http://llama.tool.test")
+            blocker = queue.reserve(capacity = 1, config = LlamaAdmissionConfig()).lease_nowait()
+            assert blocker is not None
+
+            payload = ChatCompletionRequest(
+                model = "default",
+                messages = [{"role": "user", "content": "hi"}],
+                enable_tools = True,
+            )
+            try:
+                with pytest.raises(HTTPException) as exc:
+                    await openai_chat_completions(
+                        payload,
+                        request = Request(),
+                        current_subject = "test",
+                    )
+                assert exc.value.status_code == 503
+            finally:
+                blocker.release()
+
+            snapshot = queue.snapshot()
+            assert snapshot.active == 0
+            assert snapshot.queued == 0
+
+        asyncio.run(_run())
+
+    def test_gguf_tool_non_streaming_cancel_drains_worker_before_releasing_slot(self, monkeypatch):
+        async def _run():
+            import routes.inference as inf_mod
+
+            async def fake_select_tools(*_args, **_kwargs):
+                return [
+                    {
+                        "type": "function",
+                        "function": {
+                            "name": "lookup",
+                            "parameters": {"type": "object", "properties": {}},
+                        },
+                    }
+                ]
+
+            started = threading.Event()
+            released = threading.Event()
+
+            def _tools(**kwargs):
+                cancel_event = kwargs["cancel_event"]
+                started.set()
+                while not cancel_event.is_set():
+                    time.sleep(0.005)
+                released.set()
+                yield from ()
+
+            backend = SimpleNamespace(
+                is_loaded = True,
+                is_vision = False,
+                supports_tools = True,
+                _is_audio = False,
+                model_identifier = "test-gguf",
+                context_length = 4096,
+                base_url = "http://llama.tool.test",
+                effective_parallel_slots = 1,
+                generate_chat_completion = lambda **_kwargs: "unused",
+                generate_chat_completion_with_tools = _tools,
+            )
+            monitor = ApiMonitor(max_entries = 3)
+            monkeypatch.setattr(inf_mod, "api_monitor", monitor)
+            monkeypatch.setattr(inf_mod, "get_llama_cpp_backend", lambda: backend)
+            monkeypatch.setattr(inf_mod, "_select_request_tools", fake_select_tools)
+
+            payload = ChatCompletionRequest(
+                model = "default",
+                messages = [{"role": "user", "content": "hi"}],
+                enable_tools = True,
+            )
+            task = asyncio.create_task(
+                openai_chat_completions(
+                    payload,
+                    request = self._Request(),
+                    current_subject = "test",
+                )
+            )
+            assert await asyncio.to_thread(started.wait, 1.0)
+
+            task.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await asyncio.wait_for(task, timeout = 1.0)
+
+            assert released.is_set()
+            assert get_llama_admission_queue("http://llama.tool.test").snapshot().active == 0
+            [entry] = monitor.snapshot()
+            assert entry["status"] == "cancelled"
+            assert monitor.active_count() == 0
+
+        asyncio.run(_run())
 
     def test_non_streaming_gguf_n_records_all_monitor_replies(self, monkeypatch):
         import routes.inference as inf_mod
@@ -4086,6 +4970,270 @@ class TestApiMonitorProviderAndCompletionStreams:
 
         asyncio.run(_run())
 
+    def test_passthrough_stream_immediate_task_cancel_releases_admission_and_tracker(
+        self, monkeypatch
+    ):
+        async def _run():
+            import routes.inference as inf_mod
+
+            async def fake_cancel_check(*_args, **_kwargs):
+                raise asyncio.CancelledError()
+
+            cancel_id = "passthrough-stream-immediate-task-cancel"
+            monitor = ApiMonitor(max_entries = 3)
+            monkeypatch.setattr(inf_mod, "api_monitor", monitor)
+            monkeypatch.setattr(
+                inf_mod,
+                "_raise_if_openai_admission_cancelled",
+                fake_cancel_check,
+            )
+            payload = ChatCompletionRequest(
+                model = "default",
+                messages = [ChatMessage(role = "user", content = "hi")],
+                stream = True,
+                cancel_id = cancel_id,
+            )
+            backend = SimpleNamespace(
+                base_url = "http://llama.test",
+                context_length = 4096,
+                effective_parallel_slots = 1,
+                _request_reasoning_kwargs = lambda *_args, **_kwargs: None,
+            )
+            monitor_id = monitor.start(
+                endpoint = "/v1/chat/completions",
+                method = "POST",
+                model = "gguf",
+                prompt = "hi",
+            )
+
+            with pytest.raises(asyncio.CancelledError):
+                await _openai_passthrough_stream(
+                    self._Request(),
+                    threading.Event(),
+                    backend,
+                    payload,
+                    "gguf",
+                    "chatcmpl-test",
+                    monitor_id = monitor_id,
+                )
+
+            assert cancel_id not in inf_mod._CANCEL_REGISTRY
+            assert get_llama_admission_queue("http://llama.test").snapshot().active == 0
+            [entry] = monitor.snapshot()
+            assert entry["status"] == "cancelled"
+            assert monitor.active_count() == 0
+
+        asyncio.run(_run())
+
+    def test_passthrough_stream_queued_cancel_before_inner_first_chunk_runs_cleanup(
+        self, monkeypatch
+    ):
+        async def _run():
+            import routes.inference as inf_mod
+
+            class Request(self._Request):
+                app = SimpleNamespace(state = SimpleNamespace(llama_parallel_slots = 1))
+
+            body_holder = {}
+            cleanup_called = threading.Event()
+
+            async def fake_admitted(*_args, admission_lease, tracker, **_kwargs):
+                async def cleanup():
+                    admission_lease.release()
+                    tracker.__exit__(None, None, None)
+                    cleanup_called.set()
+
+                class BlockingBody:
+                    def __init__(self):
+                        self.started = threading.Event()
+                        self.closed = False
+
+                    def __aiter__(self):
+                        return self
+
+                    async def __anext__(self):
+                        self.started.set()
+                        await asyncio.sleep(3600)
+                        raise StopAsyncIteration
+
+                    async def aclose(self):
+                        self.closed = True
+                        await cleanup()
+
+                body = BlockingBody()
+                body_holder["body"] = body
+                return _SameTaskStreamingResponse(
+                    body,
+                    media_type = "text/event-stream",
+                    unstarted_cleanup = cleanup,
+                )
+
+            monkeypatch.setenv(ADMISSION_KEEPALIVE_INTERVAL_ENV, "0.01")
+            monkeypatch.setattr(
+                inf_mod,
+                "_openai_passthrough_stream_admitted",
+                fake_admitted,
+            )
+
+            queue = get_llama_admission_queue("http://llama.test")
+            blocker = queue.reserve(capacity = 1, config = LlamaAdmissionConfig()).lease_nowait()
+            assert blocker is not None
+
+            cancel_id = "queued-inner-unstarted-cleanup"
+            payload = ChatCompletionRequest(
+                model = "default",
+                messages = [ChatMessage(role = "user", content = "hi")],
+                stream = True,
+                cancel_id = cancel_id,
+            )
+            response = await _openai_passthrough_stream(
+                Request(),
+                threading.Event(),
+                SimpleNamespace(
+                    base_url = "http://llama.test",
+                    context_length = 4096,
+                    effective_parallel_slots = 1,
+                    _request_reasoning_kwargs = lambda *_args, **_kwargs: None,
+                ),
+                payload,
+                "gguf",
+                "chatcmpl-test",
+            )
+            iterator = response.body_iterator
+            try:
+                chunk = await asyncio.wait_for(iterator.__anext__(), timeout = 0.2)
+                assert chunk == ": keep-alive\n\n"
+                assert cancel_id in inf_mod._CANCEL_REGISTRY
+
+                blocker.release()
+                pending = asyncio.create_task(iterator.__anext__())
+                for _ in range(100):
+                    if "body" in body_holder:
+                        break
+                    await asyncio.sleep(0.01)
+                body = body_holder["body"]
+                assert await asyncio.to_thread(body.started.wait, 1.0)
+
+                pending.cancel()
+                with pytest.raises(asyncio.CancelledError):
+                    await asyncio.wait_for(pending, timeout = 1.0)
+            finally:
+                aclose = getattr(iterator, "aclose", None)
+                if aclose is not None:
+                    await aclose()
+                blocker.release()
+
+            assert body_holder["body"].closed
+            assert cleanup_called.is_set()
+            assert cancel_id not in inf_mod._CANCEL_REGISTRY
+            assert queue.snapshot().active == 0
+
+        asyncio.run(_run())
+
+    def test_passthrough_stream_queued_cancel_after_inner_first_chunk_finalizes_monitor(
+        self, monkeypatch
+    ):
+        async def _run():
+            import routes.inference as inf_mod
+
+            class Request(self._Request):
+                app = SimpleNamespace(state = SimpleNamespace(llama_parallel_slots = 1))
+
+            async def fake_admitted(
+                *_args,
+                monitor_id = None,
+                admission_lease,
+                tracker,
+                **_kwargs,
+            ):
+                async def cleanup():
+                    admission_lease.release()
+                    tracker.__exit__(None, None, None)
+
+                async def body():
+                    try:
+                        yield 'data: {"choices":[{"delta":{"content":"hello"}}]}\n\n'
+                        await asyncio.sleep(3600)
+                    except asyncio.CancelledError:
+                        inf_mod.api_monitor.finish(monitor_id, "cancelled")
+                        raise
+                    finally:
+                        await cleanup()
+
+                return _SameTaskStreamingResponse(
+                    body(),
+                    media_type = "text/event-stream",
+                    unstarted_cleanup = cleanup,
+                )
+
+            monitor = ApiMonitor(max_entries = 3)
+            monkeypatch.setenv(ADMISSION_KEEPALIVE_INTERVAL_ENV, "0.01")
+            monkeypatch.setattr(inf_mod, "api_monitor", monitor)
+            monkeypatch.setattr(
+                inf_mod,
+                "_openai_passthrough_stream_admitted",
+                fake_admitted,
+            )
+            monitor_id = monitor.start(
+                endpoint = "/v1/chat/completions",
+                method = "POST",
+                model = "gguf",
+                prompt = "hi",
+            )
+
+            queue = get_llama_admission_queue("http://llama.test")
+            blocker = queue.reserve(capacity = 1, config = LlamaAdmissionConfig()).lease_nowait()
+            assert blocker is not None
+
+            cancel_id = "queued-inner-cancel-monitor"
+            payload = ChatCompletionRequest(
+                model = "default",
+                messages = [ChatMessage(role = "user", content = "hi")],
+                stream = True,
+                cancel_id = cancel_id,
+            )
+            response = await _openai_passthrough_stream(
+                Request(),
+                threading.Event(),
+                SimpleNamespace(
+                    base_url = "http://llama.test",
+                    context_length = 4096,
+                    effective_parallel_slots = 1,
+                    _request_reasoning_kwargs = lambda *_args, **_kwargs: None,
+                ),
+                payload,
+                "gguf",
+                "chatcmpl-test",
+                monitor_id = monitor_id,
+            )
+            iterator = response.body_iterator
+            try:
+                chunk = await asyncio.wait_for(iterator.__anext__(), timeout = 0.2)
+                assert chunk == ": keep-alive\n\n"
+
+                blocker.release()
+                first = await asyncio.wait_for(iterator.__anext__(), timeout = 0.2)
+                assert "hello" in first
+
+                pending = asyncio.create_task(iterator.__anext__())
+                await asyncio.sleep(0)
+                pending.cancel()
+                with pytest.raises(asyncio.CancelledError):
+                    await asyncio.wait_for(pending, timeout = 1.0)
+            finally:
+                aclose = getattr(iterator, "aclose", None)
+                if aclose is not None:
+                    await aclose()
+                blocker.release()
+
+            assert cancel_id not in inf_mod._CANCEL_REGISTRY
+            assert queue.snapshot().active == 0
+            [entry] = monitor.snapshot()
+            assert entry["status"] == "cancelled"
+            assert monitor.active_count() == 0
+
+        asyncio.run(_run())
+
     def test_passthrough_stream_synthesizes_missing_finish_reason(self, monkeypatch):
         async def _run():
             result = await self._run_passthrough_stream(
@@ -4186,6 +5334,292 @@ class TestApiMonitorProviderAndCompletionStreams:
             assert "data: [DONE]" in result.body
             assert "}\n\ndata: [DONE]\n\n" in result.body
             assert "}\ndata: [DONE]\n\n" not in result.body
+
+        asyncio.run(_run())
+
+    def test_passthrough_stream_queued_request_sends_keepalive_before_upstream(self, monkeypatch):
+        async def _run():
+            import routes.inference as inf_mod
+
+            class Request:
+                app = SimpleNamespace(state = SimpleNamespace(llama_parallel_slots = 1))
+                url = SimpleNamespace(path = "/v1/chat/completions")
+
+                async def is_disconnected(self):
+                    return False
+
+            async def fail_admitted(*_args, **_kwargs):
+                raise AssertionError("upstream must not start while request is queued")
+
+            monitor = ApiMonitor(max_entries = 3)
+            monkeypatch.setenv(ADMISSION_KEEPALIVE_INTERVAL_ENV, "0.01")
+            monkeypatch.setattr(inf_mod, "api_monitor", monitor)
+            monkeypatch.setattr(inf_mod, "_openai_passthrough_stream_admitted", fail_admitted)
+            monitor_id = monitor.start(
+                endpoint = "/v1/chat/completions",
+                method = "POST",
+                model = "gguf",
+                prompt = "hi",
+            )
+
+            queue = get_llama_admission_queue("http://llama.test")
+            blocker = queue.reserve(capacity = 1, config = LlamaAdmissionConfig()).lease_nowait()
+            assert blocker is not None
+
+            payload = ChatCompletionRequest(
+                model = "default",
+                messages = [ChatMessage(role = "user", content = "hi")],
+                stream = True,
+            )
+            response = await _openai_passthrough_stream(
+                Request(),
+                threading.Event(),
+                SimpleNamespace(
+                    base_url = "http://llama.test",
+                    effective_parallel_slots = 1,
+                    context_length = 4096,
+                    _request_reasoning_kwargs = lambda *_args, **_kwargs: None,
+                ),
+                payload,
+                "gguf",
+                "chatcmpl-test",
+                monitor_id = monitor_id,
+            )
+            iterator = response.body_iterator
+            try:
+                chunk = await asyncio.wait_for(iterator.__anext__(), timeout = 0.2)
+                assert chunk == ": keep-alive\n\n"
+                snapshot = queue.snapshot()
+                assert snapshot.active == 1
+                assert snapshot.queued == 1
+            finally:
+                aclose = getattr(iterator, "aclose", None)
+                if aclose is not None:
+                    await aclose()
+                blocker.release()
+
+            snapshot = queue.snapshot()
+            assert snapshot.active == 0
+            assert snapshot.queued == 0
+            [entry] = monitor.snapshot()
+            assert entry["status"] == "cancelled"
+            assert monitor.active_count() == 0
+
+        asyncio.run(_run())
+
+    def test_passthrough_non_streaming_admission_timeout_before_upstream(self, monkeypatch):
+        async def _run():
+            import routes.inference as inf_mod
+
+            class Request:
+                app = SimpleNamespace(state = SimpleNamespace(llama_parallel_slots = 1))
+                url = SimpleNamespace(path = "/v1/chat/completions")
+
+                async def is_disconnected(self):
+                    return False
+
+            async def fail_upstream(*_args, **_kwargs):
+                raise AssertionError("upstream must not start while request is queued")
+
+            monkeypatch.setenv(ADMISSION_QUEUE_TIMEOUT_ENV, "0.01")
+            monkeypatch.setattr(
+                inf_mod,
+                "_openai_passthrough_non_streaming_upstream",
+                fail_upstream,
+            )
+
+            queue = get_llama_admission_queue("http://llama.test")
+            blocker = queue.reserve(capacity = 1, config = LlamaAdmissionConfig()).lease_nowait()
+            assert blocker is not None
+
+            payload = ChatCompletionRequest(
+                model = "default",
+                messages = [ChatMessage(role = "user", content = "hi")],
+            )
+            try:
+                with pytest.raises(HTTPException) as exc:
+                    await _openai_passthrough_non_streaming(
+                        SimpleNamespace(
+                            base_url = "http://llama.test",
+                            effective_parallel_slots = 1,
+                            context_length = 4096,
+                            _request_reasoning_kwargs = lambda *_args, **_kwargs: None,
+                        ),
+                        payload,
+                        "gguf",
+                        request = Request(),
+                        cancel_event = threading.Event(),
+                    )
+                assert exc.value.status_code == 503
+            finally:
+                blocker.release()
+
+            snapshot = queue.snapshot()
+            assert snapshot.active == 0
+            assert snapshot.queued == 0
+
+        asyncio.run(_run())
+
+    def test_passthrough_non_streaming_admission_queue_full_before_upstream(self, monkeypatch):
+        async def _run():
+            import routes.inference as inf_mod
+
+            class Request:
+                app = SimpleNamespace(state = SimpleNamespace(llama_parallel_slots = 1))
+                url = SimpleNamespace(path = "/v1/chat/completions")
+
+                async def is_disconnected(self):
+                    return False
+
+            async def fail_upstream(*_args, **_kwargs):
+                raise AssertionError("upstream must not start when admission queue is full")
+
+            monkeypatch.setenv(ADMISSION_MAX_QUEUE_ENV, "1")
+            monkeypatch.setattr(
+                inf_mod,
+                "_openai_passthrough_non_streaming_upstream",
+                fail_upstream,
+            )
+
+            queue = get_llama_admission_queue("http://llama.test")
+            blocker = queue.reserve(
+                capacity = 1,
+                config = LlamaAdmissionConfig(max_queue = 1),
+            ).lease_nowait()
+            queued = queue.reserve(capacity = 1, config = LlamaAdmissionConfig(max_queue = 1))
+            assert blocker is not None
+            assert queued.lease_nowait() is None
+
+            payload = ChatCompletionRequest(
+                model = "default",
+                messages = [ChatMessage(role = "user", content = "hi")],
+            )
+            try:
+                with pytest.raises(HTTPException) as exc:
+                    await _openai_passthrough_non_streaming(
+                        SimpleNamespace(
+                            base_url = "http://llama.test",
+                            effective_parallel_slots = 1,
+                            context_length = 4096,
+                            _request_reasoning_kwargs = lambda *_args, **_kwargs: None,
+                        ),
+                        payload,
+                        "gguf",
+                        request = Request(),
+                        cancel_event = threading.Event(),
+                    )
+                assert exc.value.status_code == 429
+            finally:
+                queued.cancel()
+                blocker.release()
+
+            snapshot = queue.snapshot()
+            assert snapshot.active == 0
+            assert snapshot.queued == 0
+
+        asyncio.run(_run())
+
+    def test_passthrough_non_streaming_immediate_cancel_stops_before_upstream(self, monkeypatch):
+        async def _run():
+            import routes.inference as inf_mod
+
+            async def fail_upstream(*_args, **_kwargs):
+                raise AssertionError("upstream must not start after client cancellation")
+
+            monkeypatch.setattr(
+                inf_mod,
+                "_openai_passthrough_non_streaming_upstream",
+                fail_upstream,
+            )
+
+            cancel_event = threading.Event()
+            cancel_event.set()
+            monitor = ApiMonitor(max_entries = 3)
+            monkeypatch.setattr(inf_mod, "api_monitor", monitor)
+            monitor_id = monitor.start(
+                endpoint = "/v1/chat/completions",
+                method = "POST",
+                model = "gguf",
+                prompt = "hi",
+            )
+            payload = ChatCompletionRequest(
+                model = "default",
+                messages = [ChatMessage(role = "user", content = "hi")],
+            )
+
+            with pytest.raises(HTTPException) as exc:
+                await _openai_passthrough_non_streaming(
+                    SimpleNamespace(
+                        base_url = "http://llama.test",
+                        effective_parallel_slots = 1,
+                        context_length = 4096,
+                        _request_reasoning_kwargs = lambda *_args, **_kwargs: None,
+                    ),
+                    payload,
+                    "gguf",
+                    monitor_id = monitor_id,
+                    cancel_event = cancel_event,
+                )
+
+            assert exc.value.status_code == 499
+            assert get_llama_admission_queue("http://llama.test").snapshot().active == 0
+            [entry] = monitor.snapshot()
+            assert entry["status"] == "cancelled"
+            assert monitor.active_count() == 0
+
+        asyncio.run(_run())
+
+    def test_passthrough_non_streaming_admission_task_cancel_finalizes_monitor(self, monkeypatch):
+        async def _run():
+            import routes.inference as inf_mod
+
+            async def fake_wait(*_args, **_kwargs):
+                raise asyncio.CancelledError()
+
+            async def fail_upstream(*_args, **_kwargs):
+                raise AssertionError("upstream must not start after admission task cancel")
+
+            monitor = ApiMonitor(max_entries = 3)
+            monkeypatch.setattr(inf_mod, "api_monitor", monitor)
+            monkeypatch.setattr(
+                inf_mod,
+                "_wait_for_openai_admission_non_streaming",
+                fake_wait,
+            )
+            monkeypatch.setattr(
+                inf_mod,
+                "_openai_passthrough_non_streaming_upstream",
+                fail_upstream,
+            )
+            monitor_id = monitor.start(
+                endpoint = "/v1/chat/completions",
+                method = "POST",
+                model = "gguf",
+                prompt = "hi",
+            )
+            payload = ChatCompletionRequest(
+                model = "default",
+                messages = [ChatMessage(role = "user", content = "hi")],
+            )
+
+            with pytest.raises(asyncio.CancelledError):
+                await _openai_passthrough_non_streaming(
+                    SimpleNamespace(
+                        base_url = "http://llama.test",
+                        effective_parallel_slots = 1,
+                        context_length = 4096,
+                        _request_reasoning_kwargs = lambda *_args, **_kwargs: None,
+                    ),
+                    payload,
+                    "gguf",
+                    monitor_id = monitor_id,
+                    cancel_event = threading.Event(),
+                )
+
+            assert get_llama_admission_queue("http://llama.test").snapshot().active == 0
+            [entry] = monitor.snapshot()
+            assert entry["status"] == "cancelled"
+            assert monitor.active_count() == 0
 
         asyncio.run(_run())
 
@@ -5186,6 +6620,29 @@ class TestApiMonitorAudioInput:
             assert entry["reply"] == "hello world"
             assert monitor.active_count() == 0
 
+            def failing_chunks():
+                yield "partial"
+                raise RuntimeError("generation failed")
+
+            self._patch_audio_backend(monkeypatch, failing_chunks())
+            error_monitor = ApiMonitor(max_entries = 3)
+            monkeypatch.setattr(inf_mod, "api_monitor", error_monitor)
+            error_response = await openai_chat_completions(
+                payload,
+                request = request,
+                current_subject = "test",
+            )
+            error_chunks = [
+                chunk.decode() if isinstance(chunk, bytes) else chunk
+                async for chunk in error_response.body_iterator
+            ]
+
+            assert '"type": "server_error"' in error_chunks[-1]
+            assert error_chunks[-1].endswith("data: [DONE]\n\n")
+            [error_entry] = error_monitor.snapshot()
+            assert error_entry["status"] == "error"
+            assert error_monitor.active_count() == 0
+
         asyncio.run(_run())
 
     def test_non_gguf_tts_auto_route_records_monitor(self, monkeypatch):
@@ -5381,6 +6838,15 @@ class TestApiMonitorAudioInput:
 class TestResponsesChatTemplateKwargs:
     _messages = [ChatMessage(role = "user", content = "What is 100 - 67?")]
 
+    class _Request:
+        app = SimpleNamespace(state = SimpleNamespace(llama_parallel_slots = 1))
+        state = SimpleNamespace()
+        url = SimpleNamespace(path = "/v1/responses")
+        method = "POST"
+
+        async def is_disconnected(self):
+            return False
+
     def test_enable_thinking_lifted_from_extra_body(self):
         payload = ResponsesRequest(
             model = "qwen-local",
@@ -5412,6 +6878,113 @@ class TestResponsesChatTemplateKwargs:
         )
         chat_req = _build_chat_request(payload, self._messages, stream = False)
         assert chat_req.enable_thinking is None
+
+    def test_responses_stream_queued_request_sends_keepalive_before_upstream(self, monkeypatch):
+        async def _run():
+            import routes.inference as inf_mod
+
+            async def fail_send(*_args, **_kwargs):
+                raise AssertionError("responses upstream must not start while queued")
+
+            backend = SimpleNamespace(
+                is_loaded = True,
+                is_vision = False,
+                base_url = "http://llama.responses.test",
+                context_length = 4096,
+                effective_parallel_slots = 1,
+                _request_reasoning_kwargs = lambda *_args, **_kwargs: None,
+            )
+            monitor = ApiMonitor(max_entries = 3)
+            monkeypatch.setenv(ADMISSION_KEEPALIVE_INTERVAL_ENV, "0.01")
+            monkeypatch.setattr(inf_mod, "api_monitor", monitor)
+            monkeypatch.setattr(inf_mod, "get_llama_cpp_backend", lambda: backend)
+            monkeypatch.setattr(inf_mod, "_send_stream_with_preheader_cancel", fail_send)
+
+            queue = get_llama_admission_queue("http://llama.responses.test")
+            blocker = queue.reserve(capacity = 1, config = LlamaAdmissionConfig()).lease_nowait()
+            assert blocker is not None
+            monitor_id = monitor.start(
+                endpoint = "/v1/responses",
+                method = "POST",
+                model = "qwen-local",
+                prompt = "hi",
+            )
+            payload = ResponsesRequest(model = "qwen-local", input = "hi", stream = True)
+
+            response = await _responses_stream(
+                payload,
+                [ChatMessage(role = "user", content = "hi")],
+                self._Request(),
+                monitor_id,
+            )
+            iterator = response.body_iterator
+            try:
+                chunk = await asyncio.wait_for(iterator.__anext__(), timeout = 0.2)
+                assert chunk == ": keep-alive\n\n"
+                snapshot = queue.snapshot()
+                assert snapshot.active == 1
+                assert snapshot.queued == 1
+            finally:
+                aclose = getattr(iterator, "aclose", None)
+                if aclose is not None:
+                    await aclose()
+                blocker.release()
+
+            snapshot = queue.snapshot()
+            assert snapshot.active == 0
+            assert snapshot.queued == 0
+            [entry] = monitor.snapshot()
+            assert entry["status"] == "cancelled"
+            assert monitor.active_count() == 0
+
+        asyncio.run(_run())
+
+    def test_responses_stream_cancel_after_created_finalizes_monitor_and_slot(self, monkeypatch):
+        async def _run():
+            import routes.inference as inf_mod
+
+            async def fail_send(*_args, **_kwargs):
+                raise AssertionError("responses upstream must not start after created cancel")
+
+            backend = SimpleNamespace(
+                is_loaded = True,
+                is_vision = False,
+                base_url = "http://llama.responses.test",
+                context_length = 4096,
+                effective_parallel_slots = 1,
+                _request_reasoning_kwargs = lambda *_args, **_kwargs: None,
+            )
+            monitor = ApiMonitor(max_entries = 3)
+            monkeypatch.setattr(inf_mod, "api_monitor", monitor)
+            monkeypatch.setattr(inf_mod, "get_llama_cpp_backend", lambda: backend)
+            monkeypatch.setattr(inf_mod, "_send_stream_with_preheader_cancel", fail_send)
+            monitor_id = monitor.start(
+                endpoint = "/v1/responses",
+                method = "POST",
+                model = "qwen-local",
+                prompt = "hi",
+            )
+            payload = ResponsesRequest(model = "qwen-local", input = "hi", stream = True)
+
+            response = await _responses_stream(
+                payload,
+                [ChatMessage(role = "user", content = "hi")],
+                self._Request(),
+                monitor_id,
+            )
+            iterator = response.body_iterator
+            first = await asyncio.wait_for(iterator.__anext__(), timeout = 0.2)
+            assert "event: response.created" in first
+
+            with pytest.raises(asyncio.CancelledError):
+                await iterator.athrow(asyncio.CancelledError())
+
+            assert get_llama_admission_queue("http://llama.responses.test").snapshot().active == 0
+            [entry] = monitor.snapshot()
+            assert entry["status"] == "cancelled"
+            assert monitor.active_count() == 0
+
+        asyncio.run(_run())
 
 
 # =====================================================================
