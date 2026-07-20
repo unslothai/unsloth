@@ -114,7 +114,6 @@ def _st_module_subdirs(name: str, token: str | None, local_only: bool) -> tuple[
         if is_local_path(name):
             from pathlib import Path
             from utils.paths import normalize_path
-
             local_root = Path(normalize_path(name)).expanduser()
 
         def _read_repo_json(rel: str):

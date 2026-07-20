@@ -472,7 +472,14 @@ def test_st_module_subdirs_expands_root_router_children(tmp_path):
 
     (tmp_path / "modules.json").write_text(
         json.dumps(
-            [{"idx": 0, "name": "0", "path": "", "type": "sentence_transformers.models.Router.Router"}]
+            [
+                {
+                    "idx": 0,
+                    "name": "0",
+                    "path": "",
+                    "type": "sentence_transformers.models.Router.Router",
+                }
+            ]
         )
     )
     (tmp_path / "router_config.json").write_text(
@@ -499,7 +506,12 @@ def test_st_module_subdirs_expands_nested_router_children(tmp_path):
         json.dumps(
             [
                 {"idx": 0, "name": "0", "path": "0_Transformer", "type": "..."},
-                {"idx": 1, "name": "1", "path": "1_Router", "type": "sentence_transformers.models.Asym.Asym"},
+                {
+                    "idx": 1,
+                    "name": "1",
+                    "path": "1_Router",
+                    "type": "sentence_transformers.models.Asym.Asym",
+                },
             ]
         )
     )
@@ -535,7 +547,16 @@ def test_st_module_subdirs_drops_traversing_router_child(tmp_path):
     import core.rag.embeddings as embeddings
 
     (tmp_path / "modules.json").write_text(
-        json.dumps([{"idx": 0, "name": "0", "path": "", "type": "sentence_transformers.models.Router.Router"}])
+        json.dumps(
+            [
+                {
+                    "idx": 0,
+                    "name": "0",
+                    "path": "",
+                    "type": "sentence_transformers.models.Router.Router",
+                }
+            ]
+        )
     )
     (tmp_path / "router_config.json").write_text(
         json.dumps({"types": {"../evil": "...", "query_0_WordEmbeddings": "..."}})
@@ -553,7 +574,16 @@ def test_st_module_subdirs_router_expansion_over_hub(monkeypatch, tmp_path):
     import core.rag.embeddings as embeddings
 
     (tmp_path / "modules.json").write_text(
-        json.dumps([{"idx": 0, "name": "0", "path": "", "type": "sentence_transformers.models.Router.Router"}])
+        json.dumps(
+            [
+                {
+                    "idx": 0,
+                    "name": "0",
+                    "path": "",
+                    "type": "sentence_transformers.models.Router.Router",
+                }
+            ]
+        )
     )
     (tmp_path / "router_config.json").write_text(
         json.dumps({"types": {"query_0_WordEmbeddings": "..."}})
@@ -563,7 +593,6 @@ def test_st_module_subdirs_router_expansion_over_hub(monkeypatch, tmp_path):
         p = tmp_path / filename
         if not p.is_file():
             from huggingface_hub.utils import EntryNotFoundError
-
             raise EntryNotFoundError(f"no {filename}")
         return str(p)
 
