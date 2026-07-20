@@ -1291,6 +1291,13 @@ export function ChatSettingsPanel({
                     </Select>
                   </div>
                 </div>
+                {(kvCacheDtype === "q4_1" || kvCacheDtype === "q5_0" || kvCacheDtype === "q5_1") && (
+                  <p className="text-[11px] text-amber-500">
+                    May lack GPU acceleration on this build and fall back to
+                    CPU, causing high CPU load. q8_0 is a safer quantized
+                    option.
+                  </p>
+                )}
                 {isGguf && (
                   <>
                 <div className="flex items-center justify-between gap-3">

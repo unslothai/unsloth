@@ -1390,6 +1390,29 @@ def _kv_bytes_per_elem(cache_type: Optional[str]) -> float:
     }.get((cache_type or "f16").strip().lower(), 2.0)
 
 
+# K-quant KV cache types without a CUDA dequant kernel in mainline llama.cpp;
+# a GPU-offloaded run silently falls back to the CPU reference path for KV
+# ops, which can dominate decode latency. q8_0/q4_0/iq4_nl are GPU-accelerated.
+_GPU_UNACCELERATED_CACHE_TYPES = frozenset({"q4_1", "q5_0", "q5_1"})
+
+
+def _kv_cache_gpu_fallback_warning(
+    cache_type_kv: Optional[str], gpu_present: bool
+) -> Optional[str]:
+    """Hedged warning when a GPU launch requests a KV cache type that may lack
+    a CUDA kernel and fall back to CPU, or None when no warning applies."""
+    if not gpu_present:
+        return None
+    normalized = (cache_type_kv or "").strip().lower()
+    if normalized not in _GPU_UNACCELERATED_CACHE_TYPES:
+        return None
+    return (
+        f"KV cache type {normalized} may lack GPU acceleration on this "
+        "llama.cpp build and fall back to CPU, causing high CPU load. "
+        "q8_0 is a safer quantized option."
+    )
+
+
 def _env_main_cache_type_for_budget(env: Optional[Mapping[str, str]] = None) -> Optional[str]:
     """Heavier of the inherited LLAMA_ARG_CACHE_TYPE_K/_V env types when it
     exceeds the f16 default, else None. Unsloth emits --cache-type only for the
@@ -7442,6 +7465,9 @@ class LlamaCppBackend:
                     )
                     self._cache_type_kv = cache_type_kv
                     logger.info(f"KV cache type: {cache_type_kv}")
+                    gpu_fallback_warning = _kv_cache_gpu_fallback_warning(cache_type_kv, bool(gpus))
+                    if gpu_fallback_warning:
+                        logger.warning(gpu_fallback_warning)
                 else:
                     # An env-only type is left inherited (untouched) so an
                     # asymmetric K/V env reaches the child as set.
