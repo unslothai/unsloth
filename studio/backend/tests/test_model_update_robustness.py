@@ -682,3 +682,31 @@ def test_reclaim_replaced_gguf_variant_keeps_no_symlink_current_file(monkeypatch
     assert snap.exists() is True  # the current file must survive
     assert result["removed_snapshots"] == 0
     assert result["deleted_blobs"] == 0
+
+
+def _mmproj_repo(*file_names: str):
+    return SimpleNamespace(
+        revisions = [
+            SimpleNamespace(
+                files = [SimpleNamespace(file_name = n) for n in file_names]
+            )
+        ]
+    )
+
+
+def test_repo_has_mmproj_requires_gguf_projector():
+    # A non-GGUF sidecar whose name merely contains "mmproj" must NOT mark the
+    # repo vision-capable; the runtime's projector detection is GGUF-only.
+    assert (
+        CI._repo_has_mmproj(_mmproj_repo("model-Q4_K_M.gguf", "mmproj_config.json"))
+        is False
+    )
+    assert (
+        CI._repo_has_mmproj(_mmproj_repo("model-Q4_K_M.gguf", "README-mmproj.md"))
+        is False
+    )
+    # A real GGUF projector still marks the repo vision-capable.
+    assert (
+        CI._repo_has_mmproj(_mmproj_repo("model-Q4_K_M.gguf", "mmproj-F16.gguf"))
+        is True
+    )

@@ -358,9 +358,33 @@ def read_default_chat_template(
         logger.debug("Could not read cached chat template for %s: %s", resolved, exc)
 
     try:
-        from huggingface_hub import hf_hub_download
+        from huggingface_hub import HfApi, hf_hub_download
+
+        _api = HfApi()
+
+        def _remote_exceeds_cap(rel: str) -> bool:
+            # Best-effort: skip the download when the remote file's advertised size
+            # already exceeds the cap, so a maliciously large sidecar is never
+            # fetched and retained in full (the local-file path is size-gated too).
+            try:
+                infos = _api.get_paths_info(
+                    resolved, [rel], repo_type = "model", token = hf_token
+                )
+            except Exception:
+                return False
+            for info in infos:
+                size = getattr(info, "size", None)
+                if (
+                    getattr(info, "path", None) == rel
+                    and isinstance(size, int)
+                    and size > MAX_TEMPLATE_METADATA_BYTES
+                ):
+                    return True
+            return False
 
         def _download_text(rel: str) -> Optional[str]:
+            if _remote_exceeds_cap(rel):
+                return None
             try:
                 path = hf_hub_download(resolved, rel, token = hf_token)
                 return _read_bounded_text(Path(path), MAX_TEMPLATE_METADATA_BYTES)

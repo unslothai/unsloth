@@ -2,6 +2,7 @@
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import json
+from types import SimpleNamespace
 
 from picker.service import (
     MAX_TEMPLATE_METADATA_BYTES,
@@ -202,3 +203,26 @@ def test_tokenizer_config_at_size_limit_is_still_read(tmp_path):
         json.dumps({"chat_template": "FROM_CONFIG"}), encoding = "utf-8"
     )
     assert _chat_template_from_tokenizer_dir(tmp_path) == "FROM_CONFIG"
+
+
+def test_remote_template_over_size_limit_is_skipped_before_download(monkeypatch):
+    # An uncached Hub repo whose template file is larger than the cap must be
+    # skipped via the remote size pre-check, never fully downloaded/cached.
+    import huggingface_hub
+
+    monkeypatch.setattr("picker.service.resolve_cached_repo_id_case", lambda name: name)
+    monkeypatch.setattr("picker.service.iter_hf_cache_snapshots", lambda resolved: [])
+
+    def _fail_download(*args, **kwargs):
+        raise AssertionError("oversized remote template must not be downloaded")
+
+    def _fake_get_paths_info(self, repo_id, paths, **kwargs):
+        return [
+            SimpleNamespace(path = p, size = MAX_TEMPLATE_METADATA_BYTES + 1)
+            for p in paths
+        ]
+
+    monkeypatch.setattr(huggingface_hub, "hf_hub_download", _fail_download)
+    monkeypatch.setattr(huggingface_hub.HfApi, "get_paths_info", _fake_get_paths_info)
+
+    assert read_default_chat_template("org/oversized-model") is None

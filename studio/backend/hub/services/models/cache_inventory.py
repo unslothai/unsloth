@@ -156,8 +156,13 @@ def _repo_gguf_last_modified(repo_info) -> float:
 
 
 def _repo_has_mmproj(repo_info) -> bool:
+    # An mmproj file only makes a repo vision-capable when it is an actual GGUF
+    # projector; a non-GGUF sidecar (e.g. mmproj_config.json) does not, and the
+    # runtime's projector detection is GGUF-only.
     return any(
-        _is_mmproj_filename(f.file_name) for revision in repo_info.revisions for f in revision.files
+        _is_gguf_filename(f.file_name) and _is_mmproj_filename(f.file_name)
+        for revision in repo_info.revisions
+        for f in revision.files
     )
 
 
