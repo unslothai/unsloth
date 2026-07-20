@@ -1770,9 +1770,11 @@ if [ -x "$VENV_DIR/bin/python" ]; then
         echo "       Move it aside or choose an empty UNSLOTH_STUDIO_HOME." >&2
         exit 1
     fi
-    # Record the existing venv's torch BEFORE replacement (see _previous_torch_pin); last line only so stdout noise can't corrupt it.
-    _PREV_TORCH_VER=$("$VENV_DIR/bin/python" -c \
-        "import torch; print(torch.__version__)" 2>/dev/null | tail -n 1 || true)
+    # Record the existing venv's torch BEFORE replacement (see _previous_torch_pin); last line
+    # only so stdout noise can't corrupt it. Reads dist metadata instead of importing torch (a
+    # wedged CUDA/ROCm driver can hang the import indefinitely) and bounds the interpreter run.
+    _PREV_TORCH_VER=$(_run_bounded "$VENV_DIR/bin/python" -c \
+        "import importlib.metadata as m; print(m.version('torch'))" 2>/dev/null | tail -n 1 || true)
     substep "preserving existing environment for rollback..."
     _start_studio_venv_replacement "$VENV_DIR"
 elif [ "$_STUDIO_HOME_REDIRECT" != "env" ] && [ -x "$STUDIO_HOME/.venv/bin/python" ]; then

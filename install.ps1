@@ -2112,6 +2112,17 @@ exit 0
         $pins = & $PythonExe -c "from importlib.metadata import version, PackageNotFoundError`nfor _p in ('torch', 'torchvision', 'torchaudio'):`n    try:`n        print(_p + '==' + version(_p))`n    except PackageNotFoundError:`n        pass" 2>$null
         $lines = @($pins | Where-Object { $_ -match '^torch' })
         if ($lines.Count -eq 0 -or $lines[0] -notmatch '^torch==') { return $null }
+        # --overrides replaces any UV_OVERRIDE env file, so fold caller-supplied
+        # override files in (minus their torch-trio lines) like install.sh does.
+        if ($env:UV_OVERRIDE) {
+            foreach ($ovFile in ($env:UV_OVERRIDE -split '\s+' | Where-Object { $_ })) {
+                if (Test-Path -LiteralPath $ovFile -PathType Leaf) {
+                    $lines += @(Get-Content -LiteralPath $ovFile | Where-Object {
+                        $_ -notmatch '^\s*torch(vision|audio)?([\s<>=!~;@[]|$)'
+                    })
+                }
+            }
+        }
         $f = [System.IO.Path]::GetTempFileName()
         Set-Content -LiteralPath $f -Value ($lines -join "`n") -Encoding ascii
         return $f
@@ -2168,6 +2179,9 @@ exit 0
         # index/floor choice, incl. the ROCm reroute, so a raised floor rejects an older release. The
         # kept release is exported for setup.ps1 (UNSLOTH_KEPT_TORCH) and cleared after setup runs.
         $script:PrevTorchPin = $null
+        # Internal handoff variable: always clear an inherited value first (an interrupted
+        # earlier run can leak a stale pin into setup.ps1) and set it only on a fresh decision.
+        Remove-Item Env:UNSLOTH_KEPT_TORCH -ErrorAction SilentlyContinue
         if (-not $SkipTorch -and $script:PrevTorchVer) {
             $_routeWindow = $_pinTorchSpec
             if ($ROCmIndexUrl -and $ROCmTorchFloor) { $_routeWindow = $ROCmTorchFloor }
