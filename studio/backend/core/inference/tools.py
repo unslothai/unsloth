@@ -41,6 +41,11 @@ from core.inference.mcp_client import (
     record_probe_failure,
     stdio_mcp_enabled,
 )
+from core.inference.sandbox_static_fs import (
+    check_static_fs,
+    host_pathmod,
+    static_screen_enabled,
+)
 from storage import mcp_servers_db
 
 from loggers import get_logger
@@ -5684,6 +5689,13 @@ def _python_exec(
         error = _check_code_safety(code)
         if error:
             return error
+        # Portable, best-effort string screen for out-of-workdir filesystem access;
+        # shares the disable_sandbox bypass and the FS confinement env switch.
+        if static_screen_enabled():
+            _wd = _get_workdir(session_id)
+            static_error = check_static_fs("python", code, _wd, _build_safe_env(_wd), host_pathmod())
+            if static_error:
+                return static_error
     elif not _harden_parent_against_proc_env_leak():
         # Close the /proc/<parent>/environ secret-recovery path first; if it
         # cannot be applied, fail closed rather than leak the parent environ.
@@ -5829,6 +5841,13 @@ def _bash_exec(
         blocked = _find_blocked_commands(command)
         if blocked:
             return f"Blocked command(s) for safety: {', '.join(sorted(blocked))}"
+        # Portable, best-effort string screen for out-of-workdir filesystem access;
+        # shares the disable_sandbox bypass and the FS confinement env switch.
+        if static_screen_enabled():
+            _wd = _get_workdir(session_id)
+            static_error = check_static_fs("shell", command, _wd, _build_safe_env(_wd), host_pathmod())
+            if static_error:
+                return static_error
     elif not _harden_parent_against_proc_env_leak():
         # Close the /proc/<parent>/environ secret-recovery path first; if it
         # cannot be applied, fail closed rather than leak the parent environ.
