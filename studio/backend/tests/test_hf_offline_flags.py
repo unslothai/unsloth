@@ -285,8 +285,7 @@ def test_local_only_load_fails_closed_offline_never_hitting_the_hub(monkeypatch,
     (router / "query_0_WordEmbeddings").mkdir(parents = True)
     (router / "document_0_Transformer").mkdir(parents = True)
     (router / "modules.json").write_text(
-        '[{"idx": 0, "name": "0", "path": "", '
-        '"type": "sentence_transformers.models.Router"}]'
+        '[{"idx": 0, "name": "0", "path": "", "type": "sentence_transformers.models.Router"}]'
     )
     (router / "router_config.json").write_text(
         '{"types": {"query_0_WordEmbeddings": '
@@ -307,12 +306,10 @@ def test_local_only_load_fails_closed_offline_never_hitting_the_hub(monkeypatch,
     routersafe = tmp_path / "routersafe" / "aaa"
     (routersafe / "query_0_WordEmbeddings").mkdir(parents = True)
     (routersafe / "modules.json").write_text(
-        '[{"idx": 0, "name": "0", "path": "", '
-        '"type": "sentence_transformers.models.Router"}]'
+        '[{"idx": 0, "name": "0", "path": "", "type": "sentence_transformers.models.Router"}]'
     )
     (routersafe / "router_config.json").write_text(
-        '{"types": {"query_0_WordEmbeddings": '
-        '"sentence_transformers.models.WordEmbeddings"}}'
+        '{"types": {"query_0_WordEmbeddings": "sentence_transformers.models.WordEmbeddings"}}'
     )
     (routersafe / "query_0_WordEmbeddings" / "wordembedding_config.json").write_bytes(b"{}")
     (routersafe / "query_0_WordEmbeddings" / "pytorch_model.bin").write_bytes(b"\0")
@@ -328,8 +325,7 @@ def test_local_only_load_fails_closed_offline_never_hitting_the_hub(monkeypatch,
         '"type": "sentence_transformers.models.Router"}]'
     )
     (routersub / "1_Router" / "router_config.json").write_text(
-        '{"types": {"query_0_WordEmbeddings": '
-        '"sentence_transformers.models.WordEmbeddings"}}'
+        '{"types": {"query_0_WordEmbeddings": "sentence_transformers.models.WordEmbeddings"}}'
     )
     (routersub / "1_Router" / "query_0_WordEmbeddings" / "wordembedding_config.json").write_bytes(
         b"{}"
