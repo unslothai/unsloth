@@ -65,6 +65,7 @@ def _safe_is_dir(path) -> bool:
 # separator); anything else is treated as a local filesystem path.
 from utils.hidden_models import (
     _HF_REPO_ID_RE,
+    _existing_resolved_path,
     _safe_resolve,
     is_hidden_model as _is_hidden_model,
 )
@@ -93,7 +94,13 @@ def hidden_model_matchers() -> tuple[list[str], list[str], list[str]]:
         rag_config.effective_embedding_model(),
         rag_config.effective_gguf_repo(),
     ):
-        if _HF_REPO_ID_RE.match(model):
+        # Resolve an existing local path before the repo-id regex, mirroring
+        # utils.hidden_models.is_hidden_model: a local embedder shaped like
+        # "models/embedder" is an exact path, not a Hub repo id.
+        existing_path = _existing_resolved_path(model)
+        if existing_path:
+            exact_paths.append(existing_path.lower())
+        elif _HF_REPO_ID_RE.match(model):
             exact_ids.append(model.lower())
         else:
             resolved = _safe_resolve(Path(model).expanduser())
@@ -840,7 +847,7 @@ def collect_local_models(models_root: Path) -> List[LocalModelInfo]:
 
     models = sorted(
         deduped.values(),
-        key = lambda item: (item.updated_at or 0),
+        key = lambda item: item.updated_at or 0,
         reverse = True,
     )
     return [m for m in models if not _is_hidden_model(m.id, m.model_id, m.path)]

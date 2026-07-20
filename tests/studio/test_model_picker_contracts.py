@@ -66,9 +66,9 @@ def test_rollback_restores_native_lease_expiry_with_token():
     (which would look non-expiring and skip the expiry guard)."""
     src = _read("features/chat/hooks/use-chat-model-runtime.ts")
     assert "previousActiveNativePathExpiresAtMs" in src
-    assert re.search(
-        r"activeNativePathExpiresAtMs:\s*previousActiveNativePathToken", src
-    ), "rollback must restore the expiry alongside the token"
+    assert re.search(r"activeNativePathExpiresAtMs:\s*previousActiveNativePathToken", src), (
+        "rollback must restore the expiry alongside the token"
+    )
 
 
 def test_default_caches_keyed_on_inventory_version():
@@ -256,3 +256,14 @@ def test_compare_pane_context_from_own_config_only():
     src = _read("features/chat/shared-composer.tsx")
     assert "const effectiveCustomContextLength = ownConfig.customContextLength;" in src
     assert "compareLoadKnobs.customContextLength" not in src
+
+
+def test_default_gpu_mode_clears_manual_knobs():
+    """Switching GPU Memory back to Default must clear the Manual-only knobs
+    (gpuLayers/nCpuMoe/selectedGpuIds); otherwise a remembered config keeps stale
+    pins that a later load re-applies when the global preference is Manual."""
+    src = _read("features/model-picker/components/model-config-page.tsx")
+    assert 'gpuMemoryMode: "auto",' in src
+    assert "gpuLayers: undefined," in src
+    assert "nCpuMoe: undefined," in src
+    assert "selectedGpuIds: undefined," in src

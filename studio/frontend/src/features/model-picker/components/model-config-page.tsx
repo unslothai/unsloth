@@ -290,7 +290,20 @@ function GpuMemorySettings({
         <Select
           value={mode}
           onValueChange={(v) =>
-            update({ gpuMemoryMode: v === "manual" ? "manual" : "auto" })
+            // Returning to Default must clear the Manual-only knobs; otherwise a
+            // remembered config keeps stale gpuLayers/nCpuMoe/GPU pick that a
+            // later load re-applies whenever the standing GPU preference is
+            // Manual, despite the page showing Default.
+            update(
+              v === "manual"
+                ? { gpuMemoryMode: "manual" }
+                : {
+                    gpuMemoryMode: "auto",
+                    gpuLayers: undefined,
+                    nCpuMoe: undefined,
+                    selectedGpuIds: undefined,
+                  },
+            )
           }
         >
           <SelectTrigger

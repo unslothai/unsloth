@@ -118,6 +118,20 @@ def test_hidden_model_matchers_custom_repo_publishes_exact_ids(monkeypatch):
     assert exact_paths == []
 
 
+def test_hidden_model_matchers_local_owner_name_path_is_exact_path(monkeypatch, tmp_path):
+    # A local embedder shaped like owner/name that exists on disk must be an
+    # exact resolved path, not a Hub repo id (mirroring is_hidden_model), so the
+    # local row stays hidden instead of showing as a chat model.
+    (tmp_path / "models" / "embedder").mkdir(parents = True)
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(rag_config, "effective_embedding_model", lambda: "models/embedder")
+    monkeypatch.setattr(rag_config, "effective_gguf_repo", lambda: "ggml-org/models")
+    _needles, exact_ids, exact_paths = models_route.hidden_model_matchers()
+    resolved = str((tmp_path / "models" / "embedder").resolve()).lower()
+    assert resolved in exact_paths
+    assert "models/embedder" not in exact_ids
+
+
 # --------------------------------------------------------------------------- #
 # HF token via header, query string only as a fallback (the token-leak fix)    #
 # --------------------------------------------------------------------------- #
