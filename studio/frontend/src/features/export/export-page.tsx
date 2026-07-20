@@ -48,7 +48,6 @@ import { prepareHfTokenForUse } from "@/features/hf-auth";
 import { GuidedTour, useGuidedTourController } from "@/features/tour";
 import {
   type LocalModelInfo,
-  listLocalModels,
   useTrainingConfigStore,
 } from "@/features/training";
 import { useDebouncedValue, useHfTokenValidation } from "@/hooks";
@@ -67,7 +66,6 @@ import { useSearch } from "@tanstack/react-router";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useShallow } from "zustand/react/shallow";
 import type { ModelCheckpoints } from "./api/export-api";
-import { fetchCheckpoints } from "./api/export-api";
 import { ExportRunPanel } from "./components/export-run-panel";
 import { MethodPicker } from "./components/method-picker";
 import { QuantPicker } from "./components/quant-picker";
@@ -84,6 +82,12 @@ import {
 } from "./constants";
 import { useExportSizeEstimate } from "./hooks/use-export-size-estimate";
 import {
+  getCachedCheckpoints,
+  getCachedLocalModels,
+  refreshCheckpoints,
+  refreshLocalModels,
+} from "./export-navigation-cache";
+import {
   isExportPanelActive,
   useExportRuntimeStore,
 } from "./stores/export-runtime-store";
@@ -94,39 +98,6 @@ const SEARCH_INPUT_REASONS = new Set([
   "input-paste",
   "input-clear",
 ]);
-
-let cachedCheckpoints: ModelCheckpoints[] | null = null;
-let checkpointsRequest: Promise<ModelCheckpoints[]> | null = null;
-let cachedLocalModels: LocalModelInfo[] | null = null;
-let localModelsRequest: Promise<LocalModelInfo[]> | null = null;
-
-function refreshCheckpoints(): Promise<ModelCheckpoints[]> {
-  if (checkpointsRequest) return checkpointsRequest;
-  const request = fetchCheckpoints()
-    .then((data) => {
-      cachedCheckpoints = data.models;
-      return data.models;
-    })
-    .finally(() => {
-      checkpointsRequest = null;
-    });
-  checkpointsRequest = request;
-  return request;
-}
-
-function refreshLocalModels(): Promise<LocalModelInfo[]> {
-  if (localModelsRequest) return localModelsRequest;
-  const request = listLocalModels()
-    .then((models) => {
-      cachedLocalModels = models;
-      return models;
-    })
-    .finally(() => {
-      localModelsRequest = null;
-    });
-  localModelsRequest = request;
-  return request;
-}
 
 // GGUF LoRA output float types (Q8_0 first / default). Q8_0 falls back to F16 per tensor for dims
 // not divisible by the block size (32); no "auto" - the choice is explicit.
@@ -206,10 +177,10 @@ export function ExportPage() {
 
   // ---- API-driven checkpoint state ----
   const [models, setModels] = useState<ModelCheckpoints[]>(
-    () => cachedCheckpoints ?? [],
+    () => getCachedCheckpoints() ?? [],
   );
   const [loadingCheckpoints, setLoadingCheckpoints] = useState(
-    cachedCheckpoints === null,
+    getCachedCheckpoints() === null,
   );
   const [checkpointError, setCheckpointError] = useState<string | null>(null);
 
@@ -223,10 +194,10 @@ export function ExportPage() {
   );
   const [localModelInput, setLocalModelInput] = useState("");
   const [localModels, setLocalModels] = useState<LocalModelInfo[]>(
-    () => cachedLocalModels ?? [],
+    () => getCachedLocalModels() ?? [],
   );
   const [isLoadingLocalModels, setIsLoadingLocalModels] = useState(
-    cachedLocalModels === null,
+    getCachedLocalModels() === null,
   );
   const [localModelsError, setLocalModelsError] = useState<string | null>(null);
   const debouncedModelQuery = useDebouncedValue(modelInput);
@@ -336,7 +307,7 @@ export function ExportPage() {
   // ---- Fetch checkpoints on mount ----
   useEffect(() => {
     let cancelled = false;
-    const hadCache = cachedCheckpoints !== null;
+    const hadCache = getCachedCheckpoints() !== null;
     refreshCheckpoints()
       .then((models) => {
         if (!cancelled) {
@@ -384,7 +355,7 @@ export function ExportPage() {
   // ---- Fetch local models for direct export ----
   useEffect(() => {
     let cancelled = false;
-    const hadCache = cachedLocalModels !== null;
+    const hadCache = getCachedLocalModels() !== null;
     void refreshLocalModels()
       .then((models) => {
         if (cancelled) return;

@@ -261,6 +261,10 @@ function createNavigationNonce(): string {
   return `${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
 }
 
+function preloadSilently(request: Promise<unknown>): void {
+  void request.catch(() => undefined);
+}
+
 function NavItem({
   icon,
   label,
@@ -1229,7 +1233,7 @@ export function AppSidebar() {
                   closeMobileIfOpen();
                 }}
                 onIntent={() => {
-                  void router.preloadRoute({ to: "/projects" });
+                  preloadSilently(router.preloadRoute({ to: "/projects" }));
                 }}
                 className="group/projects-item relative"
               >
@@ -1261,6 +1265,9 @@ export function AppSidebar() {
                   navigate({ to: "/hub" });
                   closeMobileIfOpen();
                 }}
+                onIntent={() => {
+                  preloadSilently(router.preloadRoute({ to: "/hub" }));
+                }}
               />
               {/* Train has a labelled section when expanded; plain icon here only when collapsed. */}
               <NavItem
@@ -1276,6 +1283,9 @@ export function AppSidebar() {
                   if (chatOnly) return;
                   navigate({ to: "/studio" });
                   closeMobileIfOpen();
+                }}
+                onIntent={() => {
+                  preloadSilently(router.preloadRoute({ to: "/studio" }));
                 }}
                 className="hidden group-data-[collapsible=icon]:block"
               />
@@ -1306,6 +1316,9 @@ export function AppSidebar() {
                       navigate({ to: "/studio" });
                       closeMobileIfOpen();
                     }}
+                    onIntent={() => {
+                      preloadSilently(router.preloadRoute({ to: "/studio" }));
+                    }}
                   />
                   <NavItem
                     icon={ChefHatIcon}
@@ -1314,6 +1327,16 @@ export function AppSidebar() {
                     onClick={() => {
                       navigate({ to: "/data-recipes" });
                       closeMobileIfOpen();
+                    }}
+                    onIntent={() => {
+                      preloadSilently(
+                        router.preloadRoute({ to: "/data-recipes" }),
+                      );
+                      preloadSilently(
+                        import("@/features/data-recipes").then((module) =>
+                          module.preloadRecipes(),
+                        ),
+                      );
                     }}
                   />
                   <NavItem
@@ -1324,6 +1347,14 @@ export function AppSidebar() {
                     onClick={() => {
                       navigate({ to: "/export" });
                       closeMobileIfOpen();
+                    }}
+                    onIntent={() => {
+                      preloadSilently(router.preloadRoute({ to: "/export" }));
+                      preloadSilently(
+                        import(
+                          "@/features/export/export-navigation-cache"
+                        ).then((module) => module.preloadExportData()),
+                      );
                     }}
                   />
                 </SidebarMenu>

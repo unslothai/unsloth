@@ -289,6 +289,7 @@ from fastapi import Depends, FastAPI, HTTPException, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse, HTMLResponse, Response
+from starlette.middleware.gzip import GZipMiddleware
 from pathlib import Path
 from datetime import datetime
 
@@ -1509,6 +1510,18 @@ def _should_inject_bootstrap(request: Request) -> bool:
     return _is_local_bootstrap_request(request)
 
 
+_IMMUTABLE_ASSET_CACHE_CONTROL = "public, max-age=31536000, immutable"
+
+
+class ImmutableStaticFiles(StaticFiles):
+    """Serve Vite's content-hashed assets without browser revalidation."""
+
+    def file_response(self, full_path, stat_result, scope, status_code = 200):
+        response = super().file_response(full_path, stat_result, scope, status_code)
+        response.headers["Cache-Control"] = _IMMUTABLE_ASSET_CACHE_CONTROL
+        return response
+
+
 def setup_frontend(app: FastAPI, build_path: Path):
     """Mount frontend static files (optional)"""
     if not build_path.exists():
@@ -1516,7 +1529,12 @@ def setup_frontend(app: FastAPI, build_path: Path):
 
     assets_dir = build_path / "assets"
     if assets_dir.exists():
-        app.mount("/assets", StaticFiles(directory = assets_dir), name = "assets")
+        assets_app = GZipMiddleware(
+            ImmutableStaticFiles(directory = assets_dir),
+            minimum_size = 1024,
+            compresslevel = 6,
+        )
+        app.mount("/assets", assets_app, name = "assets")
 
     def _build_index_response(request: Request) -> Response:
         content = (build_path / "index.html").read_bytes()
