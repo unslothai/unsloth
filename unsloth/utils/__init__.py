@@ -19,7 +19,6 @@ from .packing import (
     enable_padding_free_metadata,
     enable_sample_packing,
     mark_allow_overlength,
-    patch_hybrid_linear_attention_varlen,
 )
 from .attention_dispatch import (
     AttentionConfig,
@@ -38,7 +37,6 @@ __all__ = [
     "enable_sample_packing",
     "enable_padding_free_metadata",
     "mark_allow_overlength",
-    "patch_hybrid_linear_attention_varlen",
     "AttentionConfig",
     "AttentionContext",
     "FLASH_VARLEN",

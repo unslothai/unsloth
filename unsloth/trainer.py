@@ -31,8 +31,8 @@ from unsloth.utils import (
     configure_sample_packing,
     enable_padding_free_metadata,
     enable_sample_packing,
-    patch_hybrid_linear_attention_varlen,
 )
+from unsloth.utils.packing import patch_hybrid_linear_attention_varlen
 from unsloth_zoo.training_utils import (
     unsloth_train as _unsloth_train,
 )
