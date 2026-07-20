@@ -95,6 +95,39 @@ const SEARCH_INPUT_REASONS = new Set([
   "input-clear",
 ]);
 
+let cachedCheckpoints: ModelCheckpoints[] | null = null;
+let checkpointsRequest: Promise<ModelCheckpoints[]> | null = null;
+let cachedLocalModels: LocalModelInfo[] | null = null;
+let localModelsRequest: Promise<LocalModelInfo[]> | null = null;
+
+function refreshCheckpoints(): Promise<ModelCheckpoints[]> {
+  if (checkpointsRequest) return checkpointsRequest;
+  const request = fetchCheckpoints()
+    .then((data) => {
+      cachedCheckpoints = data.models;
+      return data.models;
+    })
+    .finally(() => {
+      checkpointsRequest = null;
+    });
+  checkpointsRequest = request;
+  return request;
+}
+
+function refreshLocalModels(): Promise<LocalModelInfo[]> {
+  if (localModelsRequest) return localModelsRequest;
+  const request = listLocalModels()
+    .then((models) => {
+      cachedLocalModels = models;
+      return models;
+    })
+    .finally(() => {
+      localModelsRequest = null;
+    });
+  localModelsRequest = request;
+  return request;
+}
+
 // GGUF LoRA output float types (Q8_0 first / default). Q8_0 falls back to F16 per tensor for dims
 // not divisible by the block size (32); no "auto" - the choice is explicit.
 const LORA_GGUF_OUTTYPES = ["q8_0", "f16", "bf16", "f32"] as const;
@@ -172,8 +205,12 @@ export function ExportPage() {
   );
 
   // ---- API-driven checkpoint state ----
-  const [models, setModels] = useState<ModelCheckpoints[]>([]);
-  const [loadingCheckpoints, setLoadingCheckpoints] = useState(true);
+  const [models, setModels] = useState<ModelCheckpoints[]>(
+    () => cachedCheckpoints ?? [],
+  );
+  const [loadingCheckpoints, setLoadingCheckpoints] = useState(
+    cachedCheckpoints === null,
+  );
   const [checkpointError, setCheckpointError] = useState<string | null>(null);
 
   const [selectedModelIdx, setSelectedModelIdx] = useState<string | null>(null);
@@ -185,8 +222,12 @@ export function ExportPage() {
     null,
   );
   const [localModelInput, setLocalModelInput] = useState("");
-  const [localModels, setLocalModels] = useState<LocalModelInfo[]>([]);
-  const [isLoadingLocalModels, setIsLoadingLocalModels] = useState(true);
+  const [localModels, setLocalModels] = useState<LocalModelInfo[]>(
+    () => cachedLocalModels ?? [],
+  );
+  const [isLoadingLocalModels, setIsLoadingLocalModels] = useState(
+    cachedLocalModels === null,
+  );
   const [localModelsError, setLocalModelsError] = useState<string | null>(null);
   const debouncedModelQuery = useDebouncedValue(modelInput);
   const debouncedHfToken = useDebouncedValue(hfToken, 500);
@@ -295,16 +336,15 @@ export function ExportPage() {
   // ---- Fetch checkpoints on mount ----
   useEffect(() => {
     let cancelled = false;
-    setLoadingCheckpoints(true);
-    setCheckpointError(null);
-    fetchCheckpoints()
-      .then((data) => {
+    const hadCache = cachedCheckpoints !== null;
+    refreshCheckpoints()
+      .then((models) => {
         if (!cancelled) {
-          setModels(data.models);
+          setModels(models);
         }
       })
       .catch((err) => {
-        if (!cancelled) {
+        if (!cancelled && !hadCache) {
           setCheckpointError(
             err instanceof Error ? err.message : "Failed to load checkpoints",
           );
@@ -343,14 +383,15 @@ export function ExportPage() {
 
   // ---- Fetch local models for direct export ----
   useEffect(() => {
-    const controller = new AbortController();
-    void listLocalModels(controller.signal)
+    let cancelled = false;
+    const hadCache = cachedLocalModels !== null;
+    void refreshLocalModels()
       .then((models) => {
-        if (controller.signal.aborted) return;
+        if (cancelled) return;
         setLocalModels(models);
       })
       .catch((error) => {
-        if (controller.signal.aborted) return;
+        if (cancelled || hadCache) return;
         setLocalModelsError(
           error instanceof Error
             ? error.message
@@ -358,10 +399,12 @@ export function ExportPage() {
         );
       })
       .finally(() => {
-        if (controller.signal.aborted) return;
+        if (cancelled) return;
         setIsLoadingLocalModels(false);
       });
-    return () => controller.abort();
+    return () => {
+      cancelled = true;
+    };
   }, []);
 
   // ---- Derived state ----

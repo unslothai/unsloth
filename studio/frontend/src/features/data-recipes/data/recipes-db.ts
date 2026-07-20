@@ -16,6 +16,8 @@ db.version(1).stores({
 });
 
 const recentRecipeCache = new Map<string, RecipeRecord>();
+let cachedRecipeList: RecipeRecord[] = [];
+let recipeListReady = false;
 
 export function listRecipes(): Promise<RecipeRecord[]> {
   return db.recipes.orderBy("updatedAt").reverse().toArray();
@@ -55,12 +57,21 @@ export async function saveRecipe(
   };
   await db.recipes.put(record);
   writeRecipeCache(record);
+  if (recipeListReady) {
+    cachedRecipeList = [
+      record,
+      ...cachedRecipeList.filter((recipe) => recipe.id !== record.id),
+    ].sort((a, b) => b.updatedAt - a.updatedAt);
+  }
   return record;
 }
 
 export async function deleteRecipe(id: string): Promise<void> {
   await db.recipes.delete(id);
   recentRecipeCache.delete(id);
+  if (recipeListReady) {
+    cachedRecipeList = cachedRecipeList.filter((recipe) => recipe.id !== id);
+  }
 }
 
 export function createRecipeDraft(): Promise<RecipeRecord> {
@@ -87,8 +98,8 @@ export function useRecipes(): {
   recipes: RecipeRecord[];
   ready: boolean;
 } {
-  const [recipes, setRecipes] = useState<RecipeRecord[]>([]);
-  const [ready, setReady] = useState(false);
+  const [recipes, setRecipes] = useState<RecipeRecord[]>(cachedRecipeList);
+  const [ready, setReady] = useState(recipeListReady);
 
   useEffect(() => {
     const sub = liveQuery(() => listRecipes()).subscribe({
@@ -96,11 +107,14 @@ export function useRecipes(): {
         for (const recipe of value) {
           writeRecipeCache(recipe);
         }
+        cachedRecipeList = value;
+        recipeListReady = true;
         setRecipes(value);
         setReady(true);
       },
       error: (error) => {
         console.error("data-recipes liveQuery:", error);
+        recipeListReady = true;
         setReady(true);
       },
     });

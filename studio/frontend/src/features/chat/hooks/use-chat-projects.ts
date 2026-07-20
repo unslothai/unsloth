@@ -2,7 +2,7 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { useEffect, useState } from "react";
-import { CHAT_HISTORY_UPDATED_EVENT } from "../api/chat-api";
+import { CHAT_PROJECTS_UPDATED_EVENT } from "../api/chat-api";
 import type { ProjectRecord } from "../types";
 import {
   createStoredChatProject,
@@ -15,32 +15,59 @@ import {
 import type { SidebarItem } from "./use-chat-sidebar-items";
 
 let cachedProjects: ProjectRecord[] = [];
+let projectsLoaded = false;
+let projectsRequest: Promise<ProjectRecord[]> | null = null;
+let projectsRefreshPending = false;
+let lastProjectsUpdateEvent: Event | null = null;
+
+function loadProjects(force = false): Promise<ProjectRecord[]> {
+  if (projectsRequest) {
+    if (force) projectsRefreshPending = true;
+    return projectsRequest;
+  }
+  if (!force && projectsLoaded) {
+    return Promise.resolve(cachedProjects);
+  }
+
+  async function run(): Promise<ProjectRecord[]> {
+    do {
+      projectsRefreshPending = false;
+      try {
+        const next = await listStoredChatProjects({ includeArchived: false });
+        cachedProjects = Array.isArray(next) ? next : [];
+        projectsLoaded = true;
+      } catch (error) {
+        if (!isExpectedBackgroundChatStorageError(error)) throw error;
+      }
+    } while (projectsRefreshPending);
+    return cachedProjects;
+  }
+
+  const request = run().finally(() => {
+    projectsRequest = null;
+  });
+  projectsRequest = request;
+  return request;
+}
 
 export function useChatProjects(): {
   projects: ProjectRecord[];
   isLoading: boolean;
   hasLoaded: boolean;
 } {
-  // Stay null-safe even if the cache was poisoned by a bad response.
-  const cached = Array.isArray(cachedProjects) ? cachedProjects : [];
-  const [projects, setProjects] = useState<ProjectRecord[]>(cached);
-  const [isLoading, setIsLoading] = useState(cached.length === 0);
-  const [hasLoaded, setHasLoaded] = useState(cached.length > 0);
+  const [projects, setProjects] = useState(cachedProjects);
+  const [isLoading, setIsLoading] = useState(!projectsLoaded);
+  const [hasLoaded, setHasLoaded] = useState(projectsLoaded);
 
   useEffect(() => {
     let cancelled = false;
 
-    async function load() {
+    async function refresh(force = false, joinPending = false) {
+      if (!force && !joinPending && projectsLoaded) return;
       if (!cancelled) setIsLoading(true);
       try {
-        const next = await listStoredChatProjects({ includeArchived: false });
-        cachedProjects = Array.isArray(next) ? next : [];
-        if (!cancelled) setProjects(cachedProjects);
-      } catch (error) {
-        if (isExpectedBackgroundChatStorageError(error)) {
-          return;
-        }
-        if (!cancelled) throw error;
+        const next = await loadProjects(force);
+        if (!cancelled) setProjects(next);
       } finally {
         if (!cancelled) {
           setHasLoaded(true);
@@ -49,15 +76,16 @@ export function useChatProjects(): {
       }
     }
 
-    const onHistoryUpdated = () => {
-      void load();
+    const onProjectsUpdated = (event: Event) => {
+      const force = event !== lastProjectsUpdateEvent;
+      lastProjectsUpdateEvent = event;
+      void refresh(force, true);
     };
-
-    void load();
-    window.addEventListener(CHAT_HISTORY_UPDATED_EVENT, onHistoryUpdated);
+    void refresh();
+    window.addEventListener(CHAT_PROJECTS_UPDATED_EVENT, onProjectsUpdated);
     return () => {
       cancelled = true;
-      window.removeEventListener(CHAT_HISTORY_UPDATED_EVENT, onHistoryUpdated);
+      window.removeEventListener(CHAT_PROJECTS_UPDATED_EVENT, onProjectsUpdated);
     };
   }, []);
 

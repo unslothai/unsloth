@@ -49,12 +49,17 @@ export async function requireAuth(): Promise<void> {
   }
 
   if (await hasActiveSession()) {
-    const { requires_password_change } = await fetchAuthStatus();
-    if (requires_password_change || mustChangePassword()) {
-      authRedirect("/change-password");
+    // Protected API responses handle expired tokens and server-side password
+    // changes. Only reconcile with the server when the local flag requires it.
+    if (mustChangePassword()) {
+      const { requires_password_change } = await fetchAuthStatus();
+      if (requires_password_change || mustChangePassword()) {
+        authRedirect("/change-password");
+      }
     }
     return;
   }
+
   const status = await fetchAuthStatus();
   if (status.requires_password_change || mustChangePassword()) {
     authRedirect("/change-password");

@@ -93,7 +93,12 @@ import {
 import { Tooltip as TooltipPrimitive } from "radix-ui";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { ChevronDown, Moon } from "lucide-react";
-import { Link, useNavigate, useRouterState } from "@tanstack/react-router";
+import {
+  Link,
+  useNavigate,
+  useRouter,
+  useRouterState,
+} from "@tanstack/react-router";
 import {
   archiveChatItem,
   ChatSearchDialog,
@@ -267,6 +272,7 @@ function NavItem({
   className,
   spinner,
   tooltip,
+  onIntent,
 }: {
   icon: typeof ZapIcon;
   label: string;
@@ -277,6 +283,7 @@ function NavItem({
   dataTour?: string;
   className?: string;
   spinner?: boolean;
+  onIntent?: () => void;
   // Overrides the hover tooltip (defaults to `label`). Used to explain why a
   // disabled item (e.g. Train/Export on a chat-only host) is greyed out.
   tooltip?: string;
@@ -288,6 +295,8 @@ function NavItem({
           tooltip={tooltip ?? label}
           disabled={disabled}
           onClick={onClick}
+          onPointerEnter={onIntent}
+          onFocus={onIntent}
           isActive={active}
           data-tour={dataTour}
           className="sidebar-nav-btn h-[33px] rounded-full gap-[8.5px] pl-3 pr-2.5 font-medium group-data-[collapsible=icon]:px-2.5 group-data-[collapsible=icon]:!w-[32px] group-data-[collapsible=icon]:mx-auto"
@@ -324,6 +333,7 @@ export function AppSidebar() {
   });
   const { togglePinned, isMobile, setOpenMobile } = useSidebar();
   const navigate = useNavigate();
+  const router = useRouter();
 
   // Web update detection: `webUpdate` is non-null only when the installed
   // (PyPI) version is behind the latest release, so the card is hidden by
@@ -1217,6 +1227,9 @@ export function AppSidebar() {
                 onClick={() => {
                   navigate({ to: "/projects" });
                   closeMobileIfOpen();
+                }}
+                onIntent={() => {
+                  void router.preloadRoute({ to: "/projects" });
                 }}
                 className="group/projects-item relative"
               >
