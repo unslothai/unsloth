@@ -252,6 +252,28 @@ _PICKLE_WEIGHT_RE = re.compile(
 # own safetensors preference: adapter_model.safetensors is loaded in place of the pickle.
 _ADAPTER_PICKLE_RE = re.compile(r"^adapter_model\.(bin|pt|pth|ckpt|pkl|pickle)$")
 
+# Suffixes a from_pretrained load deserializes as a pickle (the RCE vector). Used for shards a
+# weight-index maps, which are model weights regardless of their exact filename.
+_PICKLE_SUFFIXES = frozenset({".bin", ".pt", ".pth", ".ckpt", ".pkl", ".pickle"})
+
+# Root pickle weight-index. Its weight_map can point shards into SUBDIRECTORIES; from_pretrained
+# follows the map and deserializes them wherever they live.
+_PICKLE_INDEX_FILE = "pytorch_model.bin.index.json"
+
+
+def _index_weight_map_values(index_path) -> set:
+    """Repo-relative shard paths a weight-index maps (its ``weight_map`` values), or empty on
+    an unreadable / malformed index."""
+    import json
+
+    try:
+        weight_map = (json.loads(index_path.read_text(encoding = "utf-8")) or {}).get(
+            "weight_map"
+        ) or {}
+    except (OSError, ValueError):
+        return set()
+    return {_normalize_repo_path(str(shard)) for shard in weight_map.values()}
+
 
 # A from_pretrained load prefers safetensors over a pickle ONLY when the directory holds a
 # safetensors weight it can actually load in its place: an unsharded base file, or an index
@@ -357,6 +379,24 @@ def _cached_pickle_weight_files(snap, load_subdirs = ()) -> list:
         adapter = [n for n in names if _ADAPTER_PICKLE_RE.match(n.lower())]
         if adapter and "adapter_config.json" in files and "adapter_model.safetensors" not in files:
             hits.update(adapter)
+    # A load-root pickle index (pytorch_model.bin.index.json) can map shards into SUBDIRECTORIES
+    # that are not themselves load roots; from_pretrained follows the map and deserializes them,
+    # so include those referenced pickle shards (unless a loadable base safetensors at the index
+    # root covers the base weights). Mirrors the online _indexed_shard_paths scan, read from disk.
+    for root_dir in roots:
+        files = by_dir_files.get(root_dir, {})
+        index_path = files.get(_PICKLE_INDEX_FILE)
+        if index_path is None or _dir_has_loadable_safetensors(files):
+            continue
+        for shard_rel in _index_weight_map_values(index_path):
+            if _file_suffix(shard_rel) not in _PICKLE_SUFFIXES:
+                continue
+            shard = root_dir.joinpath(*shard_rel.split("/"))
+            try:
+                if shard.is_file():
+                    hits.add(shard_rel)
+            except OSError:
+                continue
     return sorted(hits)
 
 

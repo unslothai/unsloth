@@ -236,6 +236,31 @@ def test_local_only_load_fails_closed_offline_never_hitting_the_hub(monkeypatch,
     (adsafe / "adapter_model.safetensors").write_bytes(b"\0")
     assert _evaluate(adsafe) is False
 
+    # A root pickle index whose weight_map points shards into a SUBDIR: from_pretrained follows
+    # the index and deserializes them, so they must be scanned even though the subdir is not a
+    # load root of its own (no config.json).
+    idxsub = tmp_path / "idxsub" / "aaa"
+    (idxsub / "sharded").mkdir(parents = True)
+    (idxsub / "config.json").write_bytes(b"{}")
+    (idxsub / "pytorch_model.bin.index.json").write_text(
+        '{"weight_map": {"a": "sharded/pytorch_model-00001-of-00002.bin", '
+        '"b": "sharded/pytorch_model-00002-of-00002.bin"}}'
+    )
+    (idxsub / "sharded" / "pytorch_model-00001-of-00002.bin").write_bytes(b"\0")
+    (idxsub / "sharded" / "pytorch_model-00002-of-00002.bin").write_bytes(b"\0")
+    assert _evaluate(idxsub) is True
+
+    # Those subdir shards are covered when a loadable base safetensors sits at the index root.
+    idxsafe = tmp_path / "idxsafe" / "aaa"
+    (idxsafe / "sharded").mkdir(parents = True)
+    (idxsafe / "config.json").write_bytes(b"{}")
+    (idxsafe / "model.safetensors").write_bytes(b"\0")
+    (idxsafe / "pytorch_model.bin.index.json").write_text(
+        '{"weight_map": {"a": "sharded/pytorch_model-00001-of-00002.bin"}}'
+    )
+    (idxsafe / "sharded" / "pytorch_model-00001-of-00002.bin").write_bytes(b"\0")
+    assert _evaluate(idxsafe) is False
+
 
 def test_security_scan_runs_when_online(monkeypatch):
     import utils.security.file_security as fs

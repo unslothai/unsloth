@@ -447,6 +447,29 @@ def _legb_chain(scope: Scope) -> list[Scope]:
 # ---------------------------------------------------------------- analysis
 
 
+def _all_mutator_entries(method: str, args: list) -> tuple[set[str], bool]:
+    """String entries a ``__all__.<method>(args)`` call adds, and whether it was fully
+    readable. ``append(x)`` adds one string constant; ``extend([...])`` adds a list literal's
+    string constants. A dynamic arg, or any other mutator (``insert``/``remove``/...), is not
+    statically readable -> caller marks the export set opaque."""
+    entries: set[str] = set()
+    if method == "append" and len(args) == 1:
+        arg = args[0]
+        if isinstance(arg, ast.Constant) and isinstance(arg.value, str):
+            entries.add(arg.value)
+            return entries, True
+        return entries, False
+    if method == "extend" and len(args) == 1 and isinstance(args[0], (ast.List, ast.Tuple, ast.Set)):
+        readable = True
+        for elt in args[0].elts:
+            if isinstance(elt, ast.Constant) and isinstance(elt.value, str):
+                entries.add(elt.value)
+            else:
+                readable = False
+        return entries, readable
+    return entries, False  # unknown mutator or dynamic arg -> opaque
+
+
 def _collect_dunder_all(tree: ast.Module) -> tuple[set[str], bool]:
     """The FINAL module-level ``__all__`` string entries plus an ``opaque`` flag
     (``= [...]``, ``+= [...]``, or an annotated assign).
@@ -470,11 +493,27 @@ def _collect_dunder_all(tree: ast.Module) -> tuple[set[str], bool]:
     replacing ``=`` resets opacity (it discards the prior list AND any prior dynamic
     part), so a later readable ``__all__ = [...]`` clears an earlier opaque ``+=``; an
     ``+=`` extends, so prior opacity persists. A bare ``__all__: list[str]`` annotation
-    has no runtime value and is skipped entirely.
+    has no runtime value and is skipped entirely. ``__all__.append("X")`` /
+    ``.extend([...])`` are runtime extenders read the same way as ``+=``; any other
+    ``__all__`` method call (``insert``/``remove``/...) is opaque.
     """
     names: set[str] = set()
     opaque = False
     for node in tree.body:
+        if isinstance(node, ast.Expr):
+            # __all__.append("X") / .extend([...]) / other mutators: a runtime EXTEND of the
+            # export list, never a replace. Read append/extend string args; anything else opaque.
+            call = node.value
+            if (
+                isinstance(call, ast.Call)
+                and isinstance(call.func, ast.Attribute)
+                and isinstance(call.func.value, ast.Name)
+                and call.func.value.id == "__all__"
+            ):
+                entries, readable = _all_mutator_entries(call.func.attr, call.args)
+                names |= entries
+                opaque = opaque or not readable
+            continue
         if isinstance(node, ast.Assign):
             targets, replaces = node.targets, True
         elif isinstance(node, ast.AnnAssign):
@@ -841,6 +880,24 @@ _SELF_TESTS = {
         # not treated as an unreadable assignment, so a new unused hoist is still caught
         "from pkg import a\n__all__: list[str]\n",
         "from pkg import a\nfrom pkg import b\n__all__: list[str]\n",
+        "BLOCKER",
+    ),
+    "all_append_reexport_is_used": (
+        # __all__.append("b") re-exports b -> must not flag the hoisted import as unused
+        'from pkg import a\n__all__ = ["a"]\n',
+        'from pkg import a\nfrom pkg import b\n__all__ = ["a"]\n__all__.append("b")\n',
+        None,
+    ),
+    "all_extend_reexport_is_used": (
+        # __all__.extend(["b"]) re-exports b as well
+        'from pkg import a\n__all__ = ["a"]\n',
+        'from pkg import a\nfrom pkg import b\n__all__ = ["a"]\n__all__.extend(["b"])\n',
+        None,
+    ),
+    "all_append_unrelated_still_blocks": (
+        # a readable append of a DIFFERENT name does not credit an unrelated unused hoist
+        'from pkg import a\n__all__ = ["a"]\n',
+        'from pkg import a\nfrom pkg import b\n__all__ = ["a"]\n__all__.append("a")\n',
         "BLOCKER",
     ),
 }
