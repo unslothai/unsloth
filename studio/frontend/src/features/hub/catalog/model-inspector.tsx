@@ -59,9 +59,8 @@ import { ModelReadme } from "./model-readme";
 import { OwnerAvatar } from "./owner-avatar";
 import { AccessChip, CapabilityPill } from "./shared";
 
-// HF pipeline_tag values for embedding/feature-extraction repos with no
-// generative head. Authoritative for the Run gate: capability labels like
-// code/vision/audio can leak onto embedding repos from their name or tags.
+// HF pipeline_tag values authoritative for embedding-only repos; capability
+// labels (code/vision/audio) can leak onto them via name or tags.
 const EMBEDDING_PIPELINE_TAGS: ReadonlySet<string> = new Set([
   "feature-extraction",
   "sentence-similarity",
@@ -539,9 +538,8 @@ export const ModelInspector = memo(function ModelInspector({
     ? formatCompact(model.totalParams)
     : "N/A";
   const unslothSupported = unslothSupport.status !== "unsupported";
-  // Embedding-only non-GGUF repos classify as supported but have no generative
-  // head, so a chat load dead-ends. Keep them out of the Run gate: an embedding
-  // pipeline tag is authoritative, else fall back to the capability heuristic.
+  // Embedding-only non-GGUF repos have no generative head, so keep them out of
+  // the Run gate. Prefer the pipeline tag, else the capability heuristic.
   const isEmbeddingOnly =
     !model.isGguf &&
     model.capabilities.some((c) => c.key === "embedding") &&
