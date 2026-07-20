@@ -2256,8 +2256,43 @@ def _dir_is_transformer_load_root(names: set) -> bool:
     return _dir_has_complete_torch_weights(names)
 
 
+def _declared_load_root_dirs(snap: Path) -> set:
+    """The directories a load actually opens as a Transformer/plain-HF load root for *snap*:
+    the snapshot ROOT plus every module ``path`` declared in ``modules.json``.
+
+    ``modules.json`` is authoritative about WHERE a SentenceTransformer load reads from -- it
+    calls ``module_class.load(path)`` for each declared module, NOT for an arbitrary complete
+    directory that happens to sit in the snapshot. So the Transformer-shaped completeness check
+    must only judge these roots: a complete directory at an UNDECLARED path is never opened by
+    the loader and must not vouch for a snapshot whose declared modules are incomplete.
+
+    When ``modules.json`` is absent / unreadable / not a list (a plain ``from_pretrained``
+    model, or the tag-only embedder shape whose weights live at the root), the load reads the
+    snapshot root, so return just ``{snap}``. Mirrors the path resolution in
+    :func:`_snapshot_modules_all_loadable` (empty / ``.`` -> the root; a ``..`` component is
+    rejected as it would resolve outside the snapshot). Never raises."""
+    roots = {snap}
+    try:
+        modules = json.loads((snap / "modules.json").read_text(encoding = "utf-8"))
+    except (OSError, ValueError):
+        return roots
+    if not isinstance(modules, list):
+        return roots
+    for module in modules:
+        if not isinstance(module, dict):
+            continue
+        raw_path = str(module.get("path") or "").strip()
+        if raw_path in ("", "."):
+            continue  # the root, already included
+        rel = raw_path.strip("/")
+        if not rel or ".." in Path(rel).parts:
+            continue  # never resolve a module path outside the snapshot
+        roots.add(snap / rel)
+    return roots
+
+
 def _snapshot_has_complete_weights(snap: Path) -> bool:
-    """True when some LOAD ROOT inside *snap* is complete: a config, a tokenizer and a
+    """True when some DECLARED LOAD ROOT inside *snap* is complete: a config, a tokenizer and a
     COMPLETE Torch weight set, all in the SAME directory.
 
     Co-location is the point. ``modules.json`` can send SentenceTransformer at a module
@@ -2265,12 +2300,20 @@ def _snapshot_has_complete_weights(snap: Path) -> bool:
     config at the root, a tokenizer elsewhere and ``0_Transformer/model.safetensors`` but no
     ``0_Transformer/config.json`` would pass a scattered any-of check and then fail the
     local-only load. Per-directory covers both layouts: a plain HF model has all three at
-    the root, an ST model inside its Transformer module dir."""
+    the root, an ST model inside its Transformer module dir.
+
+    The candidate directories are restricted to the roots a load actually opens
+    (:func:`_declared_load_root_dirs`): the snapshot root plus each ``modules.json`` module
+    ``path``. A complete Transformer sitting at some UNDECLARED path (e.g. a stray copy the
+    loader never reads) must NOT validate a snapshot whose declared modules are incomplete.
+    For a well-formed snapshot -- a normal download / ``save_pretrained`` places its complete
+    files only at the root or a declared module path -- this yields the identical verdict."""
     try:
+        candidate_dirs = _declared_load_root_dirs(snap)
         by_dir: dict = {}
         for path in snap.rglob("*"):
             try:
-                if path.is_file():
+                if path.is_file() and path.parent in candidate_dirs:
                     by_dir.setdefault(path.parent, set()).add(path.name)
             except OSError:
                 continue

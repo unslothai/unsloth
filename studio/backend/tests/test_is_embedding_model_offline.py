@@ -298,12 +298,18 @@ def _cache_repo_with_files(
     tokenizer = True,
 ):
     """Cache repo whose active snapshot holds modules.json + config + a tokenizer + *files*.
-    ``tokenizer=False`` omits the tokenizer asset."""
+    ``tokenizer=False`` omits the tokenizer asset.
+
+    When a file lives under a subdirectory, ``modules.json`` DECLARES that subdir as a
+    Transformer module path -- the real SentenceTransformer layout, where each module is loaded
+    FROM its declared path. A complete directory at an UNDECLARED path is never opened by the
+    loader, so an ``[]`` modules.json next to files in ``0_Transformer/`` would be an
+    unrealistic snapshot (#7218). Root-level files need no declaration: a plain load reads the
+    snapshot root, which is always a candidate."""
     hf_root = tmp_path / "hf"
     repo = hf_root / "models--org--model"
     snap = repo / "snapshots" / commit
     snap.mkdir(parents = True)
-    (snap / "modules.json").write_text("[]")
     (snap / "config.json").write_text("{}")
     if tokenizer:
         (snap / "tokenizer.json").write_text("{}")
@@ -311,6 +317,22 @@ def _cache_repo_with_files(
         target = snap / name
         target.parent.mkdir(parents = True, exist_ok = True)
         target.write_bytes(b"\0")
+    module_dirs = []
+    for name in files:
+        parent = Path(name).parent.as_posix()
+        if parent not in ("", ".") and parent not in module_dirs:
+            module_dirs.append(parent)
+    if module_dirs:
+        (snap / "modules.json").write_text(
+            _modules_json(
+                *(
+                    (str(i), path, "sentence_transformers.models.Transformer")
+                    for i, path in enumerate(module_dirs)
+                )
+            )
+        )
+    else:
+        (snap / "modules.json").write_text("[]")
     (repo / "refs").mkdir(parents = True)
     (repo / "refs" / "main").write_text(commit)
     _fake_hf_cache(monkeypatch, hf_root)
@@ -375,6 +397,53 @@ def test_marker_rejects_weights_split_from_their_config(tmp_path, monkeypatch):
     # cache: a scattered any-of check would pass it and the local-only load would fail.
     _cache_repo_with_files(tmp_path, monkeypatch, "0_Transformer/model.safetensors")
     assert mc._embedding_marker_in_hf_cache("org/model") is False
+
+
+def test_marker_rejects_complete_dir_at_an_undeclared_path(tmp_path, monkeypatch):
+    # modules.json declares 0_Transformer, so the ST load opens THAT directory. Here it is
+    # incomplete (config only) while a complete config+tokenizer+weights load root sits at an
+    # UNDECLARED sibling dir (stray_complete/) the loader never opens. Judging any complete
+    # directory would accept this snapshot and then 409 at the first local_files_only load, so
+    # it must be restricted to the declared load roots and read as NOT loadable (#7218 P2).
+    hf_root = tmp_path / "hf"
+    repo = hf_root / "models--org--model"
+    snap = repo / "snapshots" / "aaa"
+    (snap / "0_Transformer").mkdir(parents = True)
+    (snap / "modules.json").write_text(
+        _modules_json(("0", "0_Transformer", "sentence_transformers.models.Transformer"))
+    )
+    (snap / "0_Transformer" / "config.json").write_text("{}")  # declared root, incomplete
+    stray = snap / "stray_complete"  # complete Transformer at an UNDECLARED path
+    stray.mkdir(parents = True)
+    (stray / "config.json").write_text("{}")
+    (stray / "tokenizer.json").write_text("{}")
+    (stray / "model.safetensors").write_bytes(b"\0")
+    (repo / "refs").mkdir(parents = True)
+    (repo / "refs" / "main").write_text("aaa")
+    _fake_hf_cache(monkeypatch, hf_root)
+    monkeypatch.delenv("SENTENCE_TRANSFORMERS_HOME", raising = False)
+    assert mc._embedding_marker_in_hf_cache("org/model") is False
+
+
+def test_marker_accepts_complete_dir_at_the_declared_module_path(tmp_path, monkeypatch):
+    # Companion to the rejection above: when the complete config+tokenizer+weights sit at the
+    # DECLARED module path (0_Transformer/), the loader opens exactly that directory, so a
+    # normal Transformer model must still be recognized (#7218 P2).
+    hf_root = tmp_path / "hf"
+    repo = hf_root / "models--org--model"
+    snap = repo / "snapshots" / "aaa"
+    (snap / "0_Transformer").mkdir(parents = True)
+    (snap / "modules.json").write_text(
+        _modules_json(("0", "0_Transformer", "sentence_transformers.models.Transformer"))
+    )
+    (snap / "0_Transformer" / "config.json").write_text("{}")
+    (snap / "0_Transformer" / "tokenizer.json").write_text("{}")
+    (snap / "0_Transformer" / "model.safetensors").write_bytes(b"\0")
+    (repo / "refs").mkdir(parents = True)
+    (repo / "refs" / "main").write_text("aaa")
+    _fake_hf_cache(monkeypatch, hf_root)
+    monkeypatch.delenv("SENTENCE_TRANSFORMERS_HOME", raising = False)
+    assert mc._embedding_marker_in_hf_cache("org/model") is True
 
 
 @pytest.mark.parametrize(
