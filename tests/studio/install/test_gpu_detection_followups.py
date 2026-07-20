@@ -265,9 +265,8 @@ class TestSetupShHardening:
         assert wrapped, "compute_cap probe must be wrapped in _setup_run_smi (timeout-bounded)"
 
     def test_driver_version_probe_timeout_wrapped(self, setup_src):
-        # The probe resolves nvidia-smi explicitly (root WSL shells drop
-        # /usr/lib/wsl/lib from PATH) and must still go through the timeout
-        # wrapper with the resolved path.
+        # The probe resolves nvidia-smi explicitly (root WSL shells drop /usr/lib/wsl/lib
+        # from PATH) and must still go through the timeout wrapper with the resolved path.
         start = setup_src.find("_cuda_driver_max_version()")
         end = setup_src.find("\n}", start)
         body = setup_src[start:end]

@@ -275,10 +275,9 @@ _setup_cvd_hides_nvidia() {
 # via CUDA_VISIBLE_DEVICES=""/-1 counts as NOT usable (matches
 # install_llama_prebuilt.py has_usable_nvidia), so the AMD probes still run
 # and a mixed host steered to its AMD card keeps the ROCm route.
-# nvidia-smi resolver: on WSL2 GPU-PV the binary lives ONLY in
-# /usr/lib/wsl/lib, which root login shells drop from PATH (/etc/profile
-# resets it), and /proc/driver/nvidia is not populated under the dxg driver --
-# so bare `command -v nvidia-smi` misses real GPUs on the flagship WoA path.
+# nvidia-smi resolver: on WSL2 GPU-PV the binary lives ONLY in /usr/lib/wsl/lib,
+# which root login shells drop from PATH, so bare `command -v nvidia-smi` misses
+# real GPUs on the flagship WoA path.
 _resolve_nvsmi() {
     command -v nvidia-smi 2>/dev/null && return 0
     [ -x /usr/lib/wsl/lib/nvidia-smi ] && { echo /usr/lib/wsl/lib/nvidia-smi; return 0; }
@@ -1191,9 +1190,9 @@ LLAMA_CPP_DIR="$UNSLOTH_HOME/llama.cpp"
 LLAMA_SERVER_BIN="$LLAMA_CPP_DIR/build/bin/llama-server"
 _NEED_LLAMA_SOURCE_BUILD=false
 _LLAMA_CPP_DEGRADED=false
-# Deferred != degraded: on WSL2 aarch64+NVIDIA install.ps1 builds the CUDA server
-# in the background, so an absent server is success -- must not trip the arm64
-# CPU-prebuilt last-resort or exit 1.
+# Deferred != degraded: on WSL2 aarch64+NVIDIA install.ps1 builds the CUDA server in
+# the background, so an absent server is success -- must not trip the arm64 CPU-prebuilt
+# last-resort or exit 1.
 _LLAMA_CPP_DEFERRED=false
 _LLAMA_FORCE_COMPILE="${UNSLOTH_LLAMA_FORCE_COMPILE:-0}"
 _REQUESTED_LLAMA_TAG="${UNSLOTH_LLAMA_TAG:-${_DEFAULT_LLAMA_TAG}}"
@@ -1430,13 +1429,11 @@ if [ "$_NEED_LLAMA_SOURCE_BUILD" = true ] && \
 fi
 
 # ── WSL2 aarch64 + NVIDIA, no nvcc yet: defer to the background CUDA build ──
-# install.ps1 builds the CUDA llama-server in the background AND signals that by
-# exporting UNSLOTH_WSL_LLAMA_DEFERRED=1 into this install. ONLY defer when that
-# flag is set: a direct in-WSL `unsloth studio update` has no background builder,
-# so deferring there would report "CUDA build running in background" while nothing
-# builds -- hiding a no-server state. Without the flag we fall through to section 9
-# (a slow CPU server, still better than a phantom background build). With nvcc we
-# fall through too; opted out (UNSLOTH_NO_LLAMA_CUDA=1) the CPU build is the only server.
+# install.ps1 builds the CUDA llama-server in the background and signals it via
+# UNSLOTH_WSL_LLAMA_DEFERRED=1. ONLY defer when that flag is set: a direct in-WSL
+# `unsloth studio update` has no background builder, so deferring there would claim
+# "CUDA build running in background" while nothing builds. Without the flag (or with
+# nvcc) we fall through to a slow CPU server; opted out the CPU build is the only server.
 if [ "$_NEED_LLAMA_SOURCE_BUILD" = true ] \
         && [ "${UNSLOTH_WSL_LLAMA_DEFERRED:-0}" = "1" ] \
         && [ "$_LLAMA_FORCE_COMPILE" != "1" ] \
@@ -1457,10 +1454,9 @@ if [ "$_NEED_LLAMA_SOURCE_BUILD" = true ] \
 fi
 
 # ── Native Linux aarch64 + NVIDIA, no nvcc yet: skip the CPU build too ──
-# The aarch64+NVIDIA provision block below installs the CUDA toolkit and does
-# the only build this host needs; a CPU source build first would burn minutes
-# (and thermal headroom on Spark-class machines) on a binary the CUDA rebuild
-# replaces in the same run. Provision failure still cascades to the
+# The provision block below installs the CUDA toolkit and does the only build this host
+# needs; a CPU source build first would burn minutes (and thermal headroom on Spark-class
+# machines) on a binary the CUDA rebuild replaces. Provision failure still cascades to the
 # CPU-prebuilt last resort via _LLAMA_CPP_DEGRADED, so no-server states surface.
 if [ "$_NEED_LLAMA_SOURCE_BUILD" = true ] \
         && [ "$_LLAMA_FORCE_COMPILE" != "1" ] \
@@ -1749,10 +1745,9 @@ else
                     fi
 
                     if [ "$_CUDA_TOOLKIT_ALLOWED" = true ]; then
-                        # glibc >= 2.41 + CUDA < 13.3: rsqrt/rsqrtf header clash fails
-                        # every .cu -> CPU fallback; only fix is CUDA >= 13.3. Diagnostic
-                        # only (never changes flags or aborts), against the final _NVCC_VER
-                        # (after the driver-compat swap above).
+                        # glibc >= 2.41 + CUDA < 13.3: rsqrt/rsqrtf header clash fails every
+                        # .cu -> CPU fallback; only fix is CUDA >= 13.3. Diagnostic only (never
+                        # changes flags), against the final _NVCC_VER (post driver-compat swap).
                         _GLIBC_VER="$(getconf GNU_LIBC_VERSION 2>/dev/null | awk '{print $2}')" || _GLIBC_VER=""
                         if [ -n "$_GLIBC_VER" ]; then
                             _GLIBC_MAJ="${_GLIBC_VER%%.*}"; _GLIBC_MIN="${_GLIBC_VER#*.}"; _GLIBC_MIN="${_GLIBC_MIN%%.*}"
@@ -1891,15 +1886,12 @@ else
             substep "$_BUILD_DESC..."
 
             NCPU=$(nproc 2>/dev/null || sysctl -n hw.ncpu 2>/dev/null || echo 4)
-            # Thermal cap for the aarch64 + NVIDIA foreground CUDA build. A full
-            # -j(nproc) nvcc compile draws enough sustained power to trip a
-            # thermal shutdown on the lightly-cooled NVIDIA-ARM boxes this path
-            # targets (DGX Spark / GB10, N1X "RTX Spark" laptops) -- the same
-            # reason provision_llama_cuda.sh caps its background build. Mirror
-            # that cap here (this foreground build only runs when no prebuilt was
-            # available and a CUDA toolkit is already present): ~half the cores,
-            # also bounded by ~1.5 GB/nvcc job. Other platforms keep full
-            # -j(nproc); override on any host with UNSLOTH_LLAMA_BUILD_JOBS=N.
+            # Thermal cap for the aarch64 + NVIDIA foreground CUDA build. A full -j(nproc)
+            # nvcc compile can trip a thermal shutdown on the lightly-cooled NVIDIA-ARM boxes
+            # this targets (DGX Spark / GB10, N1X "RTX Spark") -- same reason
+            # provision_llama_cuda.sh caps its background build. Mirror it here: ~half the
+            # cores, also bounded by ~1.5 GB/nvcc job. Other platforms keep full -j(nproc);
+            # override anywhere with UNSLOTH_LLAMA_BUILD_JOBS=N.
             if { [ "$_HOST_MACHINE" = "aarch64" ] || [ "$_HOST_MACHINE" = "arm64" ]; } \
                     && [ "${GPU_BACKEND:-}" = "cuda" ]; then
                 if [ -n "${UNSLOTH_LLAMA_BUILD_JOBS:-}" ] && [ "${UNSLOTH_LLAMA_BUILD_JOBS}" -ge 1 ] 2>/dev/null; then
@@ -2013,20 +2005,17 @@ fi  # end _SKIP_GGUF_BUILD check
 
 # ── aarch64 + NVIDIA (DGX Spark / GB10 / N1X "RTX Spark"): provision a CUDA
 #    llama.cpp when the source build above could not (no CUDA toolkit found) ──
-# No aarch64+CUDA prebuilt exists and a fresh Spark ships only driver + nvidia-smi,
-# so the build above fell back to CPU; mirror the Windows/WSL fix
-# (provision_llama_cuda.sh) for native Linux. Best-effort: provision always exits
-# 0, and on failure the prior CPU/degraded state stands.
+# No aarch64+CUDA prebuilt exists and a fresh Spark ships only driver + nvidia-smi, so the
+# build above fell back to CPU; mirror the Windows/WSL fix (provision_llama_cuda.sh) for
+# native Linux. Best-effort: on failure the prior CPU/degraded state stands.
 # CUDA detection covers both layouts: monolithic (libggml-cuda in ldd) and split
-# (dlopen-ed libggml-cuda.so* beside the binary, missed by ldd). Its presence is
-# the signal -- CPU-only builds ship no libggml-cuda.so.
+# (dlopen-ed libggml-cuda.so* beside the binary, missed by ldd). CPU-only builds ship none.
 _have_cuda_llama_server() {
     [ -x "$LLAMA_SERVER_BIN" ] || return 1
     ldd "$LLAMA_SERVER_BIN" 2>/dev/null | grep -qi 'libggml-cuda' && return 0
-    # Split-.so builds on this path come from provision_llama_cuda.sh, which stamps
-    # .unsloth-cuda-ok only after its final CUDA check. Requiring the stamp keeps
-    # the interrupted-relink state (new .so + old CPU server) provisioning instead
-    # of being reported as ready.
+    # Split-.so builds here come from provision_llama_cuda.sh, which stamps
+    # .unsloth-cuda-ok only after its final CUDA check. Requiring the stamp keeps an
+    # interrupted-relink state (new .so + old CPU server) provisioning, not "ready".
     _stamp="$(dirname "$LLAMA_SERVER_BIN")/.unsloth-cuda-ok"
     for _so in "$(dirname "$LLAMA_SERVER_BIN")"/libggml-cuda.so*; do
         [ -e "$_so" ] && [ -e "$_stamp" ] && return 0
@@ -2044,10 +2033,9 @@ if [ "$_HOST_SYSTEM" = "Linux" ] \
         && [ "$_LOCAL_LLAMA_CPP_LINKED" != true ] \
         && ! _have_cuda_llama_server; then
     # Under WSL this runs ONLY for a DIRECT `install.sh` run: install.ps1 sets
-    # UNSLOTH_WSL_LLAMA_DEFERRED=1 and builds in the background; a direct run has
-    # no background builder, so provision here.
-    # Resolve provision_llama_cuda.sh: beside setup.sh, then local-dev repo, else
-    # fetch from GitHub (so `curl | sh` works on an older wheel without it).
+    # UNSLOTH_WSL_LLAMA_DEFERRED=1 and builds in the background; a direct run has none.
+    # Resolve provision_llama_cuda.sh: beside setup.sh, then local-dev repo, else fetch
+    # from GitHub (so `curl | sh` works on an older wheel without it).
     _PROV_SH=""
     if [ -f "$SCRIPT_DIR/scripts/provision_llama_cuda.sh" ]; then
         _PROV_SH="$SCRIPT_DIR/scripts/provision_llama_cuda.sh"
@@ -2069,7 +2057,7 @@ if [ "$_HOST_SYSTEM" = "Linux" ] \
             step "llama.cpp" "CUDA llama-server ready (aarch64 + NVIDIA)"
             _LLAMA_CPP_DEGRADED=false
             # Claim ownership of the fresh $LLAMA_CPP_DIR, else the next custom-STUDIO_HOME
-            # run's _assert_studio_owned_or_absent aborts on it.
+            # run's _assert_studio_owned_or_absent aborts.
             if [ "$_STUDIO_HOME_IS_CUSTOM" = true ]; then
                 : > "$LLAMA_CPP_DIR/$_STUDIO_OWNED_MARKER" 2>/dev/null || true
             fi
@@ -2077,15 +2065,14 @@ if [ "$_HOST_SYSTEM" = "Linux" ] \
             substep "CUDA build unavailable; keeping existing (CPU) llama-server" "$C_WARN"
         else
             substep "CUDA build unavailable and no llama-server present; see $LLAMA_CPP_DIR build output" "$C_WARN"
-            # No server at all: mark degraded so the arm64 CPU-prebuilt last resort
-            # and the failure exit fire instead of reporting a working install.
+            # No server at all: mark degraded so the arm64 CPU-prebuilt last resort and
+            # the failure exit fire instead of reporting a working install.
             _LLAMA_CPP_DEGRADED=true
         fi
     else
-        # Provisioner unreachable (not packaged and the GitHub fetch failed). The
-        # native deferral above may have skipped the CPU source build expecting
-        # this block to build; without a server that must surface as degraded so
-        # the CPU-prebuilt last resort fires instead of reporting success.
+        # Provisioner unreachable (not packaged and the GitHub fetch failed). The native
+        # deferral above may have skipped the CPU source build expecting this block; without
+        # a server, surface degraded so the CPU-prebuilt last resort fires, not success.
         substep "CUDA provision script unavailable (offline?); cannot build CUDA llama.cpp" "$C_WARN"
         [ -f "$LLAMA_SERVER_BIN" ] || _LLAMA_CPP_DEGRADED=true
     fi
@@ -2169,13 +2156,11 @@ else
 fi
 echo ""
 
-# Core install (venv + torch + Studio deps) is complete here; only the
-# optional llama.cpp engine can still be missing. Stamp that fact BEFORE the
-# tolerated nonzero exit below: install.ps1's WSL fallback cannot tell that
-# exit apart from a real mid-install failure at the process level, so it
-# removes this file before the run and requires it to exist afterwards --
-# otherwise its torch/CLI probes can pass on a stale venv from a previous
-# install. Removed by scripts/uninstall.sh with the rest of ~/.unsloth.
+# Core install (venv + torch + Studio deps) is complete here; only the optional llama.cpp
+# engine can still be missing. Stamp that BEFORE the tolerated nonzero exit below:
+# install.ps1's WSL fallback can't tell that exit from a real mid-install failure, so it
+# removes this file before the run and requires it afterwards -- else its torch/CLI probes
+# could pass on a stale venv. Removed by scripts/uninstall.sh with the rest of ~/.unsloth.
 mkdir -p "$HOME/.unsloth" 2>/dev/null || true
 : > "$HOME/.unsloth/.install-ok" 2>/dev/null || true
 

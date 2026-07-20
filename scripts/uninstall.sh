@@ -212,22 +212,17 @@ _custom_studio_roots | while IFS= read -r _custom_root; do
     _remove_path "$_custom_root"
 done
 _remove_path "$HOME/.unsloth/studio"
-# Stop a detached CUDA llama.cpp build BEFORE deleting its tree: _pkill_studio
-# only matches Studio roots, and a live cmake/nvcc under ~/.unsloth/llama.cpp
-# would keep burning CPU/thermals, recreate build/ files between the rm and the
-# rmdir, and leave a partial tree. TERM first, then KILL after the same grace
-# _pkill_studio uses.
+# Stop a detached CUDA llama.cpp build BEFORE deleting its tree: _pkill_studio only
+# matches Studio roots, and a live cmake/nvcc under ~/.unsloth/llama.cpp would recreate
+# build/ files between the rm and the rmdir. TERM first, then KILL after the same grace.
 if command -v pkill >/dev/null 2>&1; then
     _llama_re=$(_pkill_escape "$HOME/.unsloth/llama.cpp")
-    # Signal the whole process GROUP of each match, not just the matching PID:
-    # the provisioner cds into the tree before `cmake --build build`, so cmake/
-    # make children carry relative argv that no pattern can match, and killing
-    # only the wrapper orphans them mid-build. Group kill sweeps the tree; PID
-    # kill remains the fallback when pgid is unreadable or shared with init.
-    # Never group-kill our own group: in a non-interactive session (no job
-    # control) a lingering provisioner can share the uninstaller's pgid, and
-    # kill(-pgid) would TERM this script and its caller mid-cleanup. Fall back
-    # to the PID plus its direct children in that case.
+    # Signal the whole process GROUP of each match: the provisioner cds into the tree
+    # before `cmake --build build`, so cmake/make children carry relative argv no pattern
+    # matches, and killing only the wrapper orphans them. PID kill is the fallback when
+    # pgid is unreadable or shared. Never group-kill our own group: a lingering provisioner
+    # in a non-interactive session can share our pgid, and kill(-pgid) would TERM this
+    # script mid-cleanup; fall back to the PID plus its direct children then.
     _self_pgid=$(ps -o pgid= -p $$ 2>/dev/null | tr -d '[:space:]')
     _kill_llama_build() {
         _sig="$1"
@@ -354,10 +349,9 @@ case "$_os" in
                         }
                     }
                     # Remove the WoA WSL-fallback native shim/launcher dir
-                    # (%LOCALAPPDATA%\Unsloth) + its PATH entry that install.ps1
-                    # created, so a WSL-side bash uninstall is complete. Only when THIS
-                    # distro owns the fallback (wsl-distro.txt) -- else uninstalling a
-                    # different distro would break the still-installed shim.
+                    # (%LOCALAPPDATA%\Unsloth) + its PATH entry, so a WSL-side bash uninstall
+                    # is complete. Only when THIS distro owns the fallback (wsl-distro.txt),
+                    # else uninstalling a different distro breaks the still-installed shim.
                     $ud = if ($env:LOCALAPPDATA) { Join-Path $env:LOCALAPPDATA "Unsloth" } else { $null };
                     $owner = $null;
                     if ($ud) { $of = Join-Path $ud "wsl-distro.txt"; if (Test-Path -LiteralPath $of) { $owner = (Get-Content -LiteralPath $of | Select-Object -First 1).Trim() } }
@@ -365,9 +359,9 @@ case "$_os" in
                         $shim = (Join-Path $ud "bin").TrimEnd("\","/");
                         $up = [Environment]::GetEnvironmentVariable("Path","User");
                         if ($up) { [Environment]::SetEnvironmentVariable("Path", (($up -split ";" | Where-Object { $_ -and ($_.TrimEnd("\","/") -ine $shim) }) -join ";"), "User") }
-                        # The WoA-fallback shortcuts target powershell.exe + launch-studio-wsl.ps1
-                        # (not wsl.exe), so the sweep above keeps them; remove them here before
-                        # their launcher dir is deleted or they would dangle.
+                        # WoA-fallback shortcuts target powershell.exe + launch-studio-wsl.ps1
+                        # (not wsl.exe), so the sweep above keeps them; remove them here
+                        # before their launcher dir is deleted or they would dangle.
                         foreach ($d in $dirs) {
                             if (-not $d -or -not (Test-Path -LiteralPath $d)) { continue }
                             $l = Join-Path $d "Unsloth Studio.lnk";
@@ -392,9 +386,9 @@ case "$_os" in
                         if ((-not $iconInUse) -and (Test-Path -LiteralPath $ico)) { Remove-Item -LiteralPath $ico -Force -ErrorAction SilentlyContinue }
                         if ((Test-Path -LiteralPath $iconDir) -and -not (Get-ChildItem -LiteralPath $iconDir -Force -ErrorAction SilentlyContinue)) { Remove-Item -LiteralPath $iconDir -Recurse -Force -ErrorAction SilentlyContinue }
                     }
-                    # install.sh also writes the WSL shortcut icon to the Windows
-                    # profile (%USERPROFILE%\.unsloth\unsloth.ico) because the WoA
-                    # icon broker cannot read AppData\Local; clean it the same way.
+                    # install.sh also writes the WSL shortcut icon to the Windows profile
+                    # (%USERPROFILE%\.unsloth\unsloth.ico) since the WoA icon broker cannot
+                    # read AppData\Local; clean it the same way.
                     if (-not [string]::IsNullOrWhiteSpace($env:USERPROFILE)) {
                         $pIconDir = Join-Path $env:USERPROFILE ".unsloth";
                         $pIco = Join-Path $pIconDir "unsloth.ico";

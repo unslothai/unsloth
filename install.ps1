@@ -97,11 +97,9 @@ function Install-UnslothStudio {
         if ($TauriMode) {
             exit $Code
         }
-        # -File ignores $LASTEXITCODE on plain return, so `exit` carries the code; under
-        # `irm | iex` (no $PSCommandPath) `exit` would kill the user's shell. There, set
-        # the var for callers that check it, then raise a terminating error: interactive
-        # shells survive a throw and just print it, while `-Command "irm ... | iex"`
-        # automation exits 1 (a plain return would report success on fatal errors).
+        # -File: `exit` carries the code. Under `irm | iex` (no $PSCommandPath) `exit`
+        # would kill the user's shell, so set the var then throw: interactive shells
+        # survive it, `-Command "irm ... | iex"` automation exits 1 (return would look OK).
         if ($PSCommandPath) {
             exit $Code
         }
@@ -2059,13 +2057,13 @@ exit 0
     $TorchIndexUrl = Get-TorchIndexUrl
 
     # ===== Windows-on-ARM + NVIDIA GPU -> automatic WSL2 fallback (N1X "RTX Spark" / DGX Spark-class) =====
-    # win_arm64 has no CUDA PyTorch/Triton wheel, so run the Linux installer inside WSL2 (full GPU) plus a
-    # Windows `unsloth` shim forwarding into it; x86_64 / ARM64-without-NVIDIA unaffected, and the probe
-    # below keeps the native install if a win_arm64 CUDA wheel ever ships.
+    # win_arm64 has no CUDA PyTorch/Triton wheel, so run the Linux installer inside WSL2 (full
+    # GPU) plus a Windows `unsloth` shim into it; x86_64 / ARM64-without-NVIDIA unaffected, and
+    # the probe below keeps the native install if a win_arm64 CUDA wheel ever ships.
     # Opt out: UNSLOTH_NO_WSL_FALLBACK=1; pick distro with UNSLOTH_WSL_DISTRO.
     try { $_winArm64 = ([System.Runtime.InteropServices.RuntimeInformation]::OSArchitecture.ToString() -ieq 'Arm64') } catch { $_winArm64 = $false }
-    # x64-emulated PS on ARM reports X64/AMD64; Win32_Processor.Architecture (12=ARM64) and machine-level
-    # PROCESSOR_ARCHITECTURE read the true arch. Only ever turns $_winArm64 ON.
+    # x64-emulated PS on ARM reports X64/AMD64; Win32_Processor.Architecture (12=ARM64) and
+    # machine-level PROCESSOR_ARCHITECTURE read the true arch. Only ever turns $_winArm64 ON.
     if (-not $_winArm64) {
         try { if ((@(Get-CimInstance Win32_Processor -ErrorAction Stop))[0].Architecture -eq 12) { $_winArm64 = $true } } catch {}
     }
@@ -2078,17 +2076,16 @@ exit 0
     $_nativeCudaTorchOk = $false
     if ($_winArm64 -and $HasNvidiaSmi -and (-not $SkipTorch)) {
         # uv resolves for the interpreter's platform tags, so an x64-emulated venv
-        # python resolves the existing win_amd64 CUDA wheels and would "prove" a
-        # native wheel WoA can't actually use. Only a real win_arm64 interpreter
-        # can prove a win_arm64 CUDA wheel; anything else keeps the WSL fallback.
+        # python would match the win_amd64 CUDA wheels WoA can't use. Only a real
+        # win_arm64 interpreter proves a win_arm64 CUDA wheel; else keep the WSL fallback.
         $_pyArch = ""
         try { $_pyArch = (& $VenvPython -c "import platform; print(platform.machine())" 2>$null | Select-Object -First 1) } catch {}
         if ("$_pyArch" -imatch 'ARM64') {
-            # Probe the SAME spec as the real install ("torch>=2.4,<2.11.0"); a bare `torch` probe could
-            # match an out-of-range wheel, skipping WSL only to fail the real pinned install.
+            # Probe the real install's exact spec; a bare `torch` could match an
+            # out-of-range wheel, skipping WSL only to fail the real pinned install.
             $prevEapProbe = $ErrorActionPreference; $ErrorActionPreference = "Continue"
-            # --reinstall: an installed (e.g. CPU-only) torch mustn't satisfy the probe -- it must prove
-            # a native win_arm64 CUDA wheel exists on the index.
+            # --reinstall: an installed (e.g. CPU-only) torch mustn't satisfy the probe;
+            # it must prove a native win_arm64 CUDA wheel exists on the index.
             $global:LASTEXITCODE = -1
             try {
                 & uv pip install --python $VenvPython --dry-run --reinstall "torch>=2.4,<2.11.0" --default-index $TorchIndexUrl *> $null
@@ -2101,34 +2098,33 @@ exit 0
         step "wsl" "Windows on ARM + NVIDIA, native CUDA unavailable -- routing GPU setup through WSL2"
         substep "no win_arm64 CUDA PyTorch/Triton yet; WSL2 delivers full GPU (DGX Spark / RTX Spark path)." "Yellow"
 
-        # The Tauri desktop app launches its backend from a Windows venv (resolve_backend_binary), not
-        # WSL, so a WSL-only install would start nothing -- send those users to the CLI installer.
+        # The Tauri desktop app launches its backend from a Windows venv, not WSL, so a
+        # WSL-only install would start nothing -- send those users to the CLI installer.
         if ($TauriMode) {
-            # A prior native Studio venv was already rolled aside (Start-StudioVenvRollback,
-            # ~L1444) before we got here; restore it so rejecting this path doesn't orphan
-            # the user's working install. No-op when nothing was rolled aside.
+            # A prior native Studio venv was rolled aside (Start-StudioVenvRollback) before
+            # here; restore it so rejecting this path doesn't orphan the user's working
+            # install. No-op when nothing was rolled aside.
             Restore-StudioVenvRollback
             return (Exit-InstallFailure "Windows-on-ARM + NVIDIA GPU needs the WSL2 GPU install, which the desktop app can't launch yet. Install from PowerShell instead:  irm https://unsloth.ai/install.ps1 | iex" 1)
         }
 
-        # --local installs the Windows checkout editably (uv pip install -e $RepoRoot) on the native
-        # path, but the WSL tunnel installs from PyPI / a git ref and never mounts $RepoRoot -- so a
-        # --local run here would silently install the published package inside WSL and report success.
-        # Reject it and point at the supported pre-merge mechanism (push the branch + UNSLOTH_INSTALL_REF).
+        # --local installs the Windows checkout editably, but the WSL tunnel installs from
+        # PyPI / a git ref and never mounts $RepoRoot -- so --local here would silently
+        # install the published package in WSL and report success. Reject it and point at
+        # the supported pre-merge mechanism (push the branch + UNSLOTH_INSTALL_REF).
         if ($StudioLocalInstall) {
             Restore-StudioVenvRollback   # see TauriMode note above: don't orphan a rolled-aside venv
             return (Exit-InstallFailure "--local can't be honored on Windows-on-ARM + NVIDIA: the GPU install runs inside WSL2 and installs from a published/git ref, not this Windows checkout. For pre-merge testing, push your branch and set UNSLOTH_INSTALL_REF, e.g.:  `$env:UNSLOTH_INSTALL_REF='<branch>'; irm https://unsloth.ai/install.ps1 | iex" 1)
         }
-        # A custom Studio root (UNSLOTH_STUDIO_HOME / STUDIO_HOME) only applies to the native Windows
-        # layout; the WoA GPU install lives inside WSL at /root/.unsloth and the shim/verification paths
-        # are fixed there. Don't pretend to honor it -- warn so the user isn't misled into thinking Studio
-        # landed at their custom path (the uninstaller still cleans the WSL install regardless).
+        # A custom Studio root only applies to the native Windows layout; the WoA GPU
+        # install lives in WSL at /root/.unsloth with fixed shim/verification paths. Warn
+        # rather than pretend to honor it (the uninstaller still cleans the WSL install).
         if ($envOverride) {
             substep "note: $envOverrideVar='$envOverride' is not used for the Windows-on-ARM WSL install -- Studio installs inside WSL at /root/.unsloth." "Yellow"
         }
-        # --with-llama-cpp-dir names a Windows-side llama.cpp, but this install runs
-        # llama.cpp inside WSL2 and would silently ignore the user's explicit binary
-        # choice. Reject like --local and point at the supported WSL-side pins.
+        # --with-llama-cpp-dir names a Windows-side llama.cpp, but this install runs it
+        # inside WSL2 and would silently ignore the choice. Reject like --local and point
+        # at the supported WSL-side pins.
         if ($WithLlamaCppDir -or $env:UNSLOTH_LOCAL_LLAMA_CPP_DIR) {
             Restore-StudioVenvRollback
             return (Exit-InstallFailure "--with-llama-cpp-dir / UNSLOTH_LOCAL_LLAMA_CPP_DIR can't be honored on Windows-on-ARM + NVIDIA: llama.cpp runs inside WSL2 and can't use a Windows path. Remove it, or pin the WSL-side build with UNSLOTH_LLAMA_TAG or UNSLOTH_LLAMA_PR instead." 1)
@@ -2153,15 +2149,14 @@ exit 0
                 substep "in an ADMINISTRATOR PowerShell run:   wsl --install" "Cyan"
                 substep "reboot, then re-run:                 irm https://unsloth.ai/install.ps1 | iex" "Cyan"
             }
-            # Deferred until reboot: signal not-complete through Exit-InstallFailure
-            # (restores the rolled-aside venv, exits 1 for -File, throws under iex so
-            # -Command automation cannot see a deferred setup as success).
+            # Deferred until reboot: fail via Exit-InstallFailure so automation can't
+            # read a deferred setup as success (restores venv, exits 1 / throws).
             return (Exit-InstallFailure "WSL setup deferred: enable WSL2 and reboot, then re-run the installer")
         }
 
         $distro = if ($env:UNSLOTH_WSL_DISTRO) { $env:UNSLOTH_WSL_DISTRO } else { "Ubuntu-24.04" }
-        # For cmd-context uses (.cmd shim, copy-paste hints): wsl.exe rejects a QUOTED space-free name
-        # (WSL_E_DISTRO_NOT_FOUND on 2.x) but splits a bare spaced one after -d, so quote ONLY when spaced.
+        # For cmd-context uses (.cmd shim, hints): wsl.exe rejects a QUOTED space-free name
+        # but splits a bare spaced one after -d, so quote ONLY when spaced.
         $_distroArg = if ($distro -match '\s') { '"' + $distro + '"' } else { $distro }
         # Detect the distro by exit code (encoding-proof; wsl --list emits UTF-16 that PS mis-parses).
         $haveDistro = $false
@@ -2169,15 +2164,14 @@ exit 0
         try { & wsl.exe -d $distro -- true *> $null; if ($LASTEXITCODE -eq 0) { $haveDistro = $true } } catch {}
         if (-not $haveDistro) {
             substep "installing WSL distro '$distro' (first time only)..." "Cyan"
-            # New distros install at the global default WSL version; force 2 so a WSL1-default
-            # host doesn't get a GPU-less distro (would fail only at torch.cuda).
+            # Force version 2 so a WSL1-default host doesn't get a GPU-less distro
+            # (would fail only at torch.cuda).
             $global:LASTEXITCODE = -1
             try { & wsl.exe --set-default-version 2 *> $null } catch {}
             try { & wsl.exe --install -d $distro --no-launch } catch {}
         }
-        # Verify WSL2 for pre-existing AND freshly installed distros: set-default-version
-        # can fail silently (old WSL builds), leaving a fresh WSL1 distro that would only
-        # fail at the final torch.cuda check. Detect from inside (encoding-proof, unlike
+        # Verify WSL2 (set-default-version can fail silently on old builds, leaving a WSL1
+        # distro that only fails at torch.cuda). Detect from inside (encoding-proof, unlike
         # UTF-16 `wsl -l -v`) and convert in place -- `wsl --set-version` preserves files.
         $_wsl2Probe = 'grep -qiE ''microsoft-standard|WSL2'' /proc/version 2>/dev/null || test -e /usr/lib/wsl/lib/libcuda.so'
         $_isWsl2 = $false
@@ -2196,75 +2190,62 @@ exit 0
             substep "'$distro' converted to WSL2." "Green"
         }
         substep "installing Unsloth Studio inside WSL '$distro' with full GPU (this downloads PyTorch)..." "Cyan"
-        # Non-main ref: fetch + export THAT ref so the WSL venv gets the branch's setup.sh + patches
-        # (else install.sh pulls PyPI unsloth). main == plain unsloth.ai/install.sh.
+        # Non-main ref: fetch + export THAT ref so the WSL venv gets the branch's setup.sh
+        # + patches (else install.sh pulls PyPI unsloth). main == plain install.sh.
         $_instRef = Get-UnslothInstallRef
-        # The ref is spliced into the inner `bash -lc` twice (an `export` and a raw GitHub URL), so a
-        # hand-set UNSLOTH_INSTALL_REF containing shell metacharacters (`;`, `&`, `'`, spaces) would
-        # break/inject the command. git refs can't contain those anyway; enforce a strict allow-list
-        # (letters, digits, `.` `_` `/` `-`) and reject loudly rather than silently mangle the install.
+        # The ref is spliced into the inner `bash -lc` twice, so shell metacharacters would
+        # inject. git refs can't contain those anyway; enforce a strict allow-list and
+        # reject loudly rather than silently mangle the install.
         if ($_instRef -ne 'main' -and ($_instRef -notmatch '^[A-Za-z0-9][A-Za-z0-9._/-]*$')) {
             Restore-StudioVenvRollback   # see TauriMode note above: don't orphan a rolled-aside venv
             return (Exit-InstallFailure "UNSLOTH_INSTALL_REF='$_instRef' is not a valid git ref (allowed: letters, digits, '.', '_', '/', '-'). Set it to a real branch or tag name." 1)
         }
-        # UNSLOTH_WSL_LLAMA_DEFERRED=1: setup.sh skips its foreground CUDA llama.cpp build since we build it
-        # in the background. apt stderr stays visible (only stdout -> /dev/null) so failures are diagnosable.
-        # Forward UNSLOTH_NO_LLAMA_CUDA into WSL: it also skips the dispatch below, so unforwarded setup.sh
-        # would defer to a background builder that never starts (no llama-server).
+        # UNSLOTH_WSL_LLAMA_DEFERRED=1: setup.sh skips its foreground CUDA llama.cpp build;
+        # we build it in the background. apt stderr stays visible so failures are diagnosable.
+        # Forward UNSLOTH_NO_LLAMA_CUDA (it also skips the dispatch below, so unforwarded
+        # setup.sh would defer to a background builder that never starts).
         $_fwdEnv = ''
         if ($env:UNSLOTH_NO_LLAMA_CUDA -eq '1') { $_fwdEnv = 'export UNSLOTH_NO_LLAMA_CUDA=1; ' }
-        # Forward a user Python pin (install.sh reads UNSLOTH_PYTHON, but Windows env vars don't cross
-        # into WSL unless bridged). Numeric-only guard (e.g. 3.12) prevents injection.
+        # Forward a user Python pin (Windows env vars don't cross into WSL unless bridged).
+        # Numeric-only guard (e.g. 3.12) prevents injection.
         if ($env:UNSLOTH_PYTHON -and ($env:UNSLOTH_PYTHON -match '^[0-9][0-9.]*$')) { $_fwdEnv += "export UNSLOTH_PYTHON=$($env:UNSLOTH_PYTHON); " }
-        # Forward a custom PyTorch wheel mirror. install.sh reads UNSLOTH_PYTORCH_MIRROR (get_torch_index_url)
-        # but, like the other Windows env vars, it doesn't cross into WSL -- so a mirror-required / restricted-
-        # network install would silently fall back to download.pytorch.org inside the distro even though the
-        # outer installer honored the mirror. Strict http(s)-URL allow-list (no shell metachars) + single-quote
-        # so the value can't break out of the bash -lc string.
+        # Forward a custom PyTorch wheel mirror (doesn't cross into WSL, so a restricted-
+        # network install would silently fall back to download.pytorch.org). Strict http(s)
+        # allow-list + single-quote so the value can't break out of the bash -lc string.
         if ($env:UNSLOTH_PYTORCH_MIRROR -and ($env:UNSLOTH_PYTORCH_MIRROR -match '^https?://[A-Za-z0-9._~:/?#@%+=&-]+$')) {
             $_fwdEnv += "export UNSLOTH_PYTORCH_MIRROR='$($env:UNSLOTH_PYTORCH_MIRROR)'; "
         }
-        # Forward the npm mirror the same way: setup.sh threads UNSLOTH_NPM_REGISTRY
-        # into every npm/bun install, and on mirror-required networks the WSL
-        # frontend/OXC steps would otherwise hit registry.npmjs.org and fail the
-        # install. Same strict http(s) allow-list + single-quote as above.
+        # Forward the npm mirror the same way (else the WSL frontend/OXC steps hit
+        # registry.npmjs.org and fail on mirror-required networks). Same allow-list as above.
         if ($env:UNSLOTH_NPM_REGISTRY -and ($env:UNSLOTH_NPM_REGISTRY -match '^https?://[A-Za-z0-9._~:/?#@%+=&-]+$')) {
             $_fwdEnv += "export UNSLOTH_NPM_REGISTRY='$($env:UNSLOTH_NPM_REGISTRY)'; "
         }
-        # Forward an explicit UNSLOTH_PYTHON pin: Windows env vars do not cross into
-        # WSL, so without this the inner install.sh silently built the venv on its
-        # default Python while the installer reported success. Strict version shape
-        # so the splice into bash -lc cannot break out; the default stays install.sh's.
+        # Forward an explicit UNSLOTH_PYTHON pin (env vars don't cross into WSL, so without
+        # this install.sh silently built the venv on its default Python). Strict version
+        # shape so the splice into bash -lc can't break out; default stays install.sh's.
         if ($env:UNSLOTH_PYTHON -and ($env:UNSLOTH_PYTHON -match '^\d+\.\d+(\.\d+)?$')) {
             $_fwdEnv += "export UNSLOTH_PYTHON='$($env:UNSLOTH_PYTHON)'; "
         }
-        # install.ps1 owns the WoA shortcut (one canonical "Unsloth Studio.lnk" with a
-        # %USERPROFILE%\.unsloth icon that renders on WoA). Tell install.sh to skip its own
-        # WSL .lnk so we don't get a duplicate whose %LOCALAPPDATA% icon renders blank.
-        # Persist the skip as a marker file too: `unsloth studio update` reruns
-        # install.sh --shortcuts-only through the wsl.exe shim, which carries no env,
-        # so without the marker the first update would recreate the duplicate .lnk.
-        # Clear the completion stamp from any previous install: setup.sh rewrites
-        # it only after the core venv + Studio deps finish, and the post-run gate
-        # below requires it, so a run that dies mid-install can no longer coast on
-        # a stale venv passing the torch/CLI probes.
+        # install.ps1 owns the WoA shortcut; tell install.sh to skip its own WSL .lnk so we
+        # don't get a duplicate whose %LOCALAPPDATA% icon renders blank. Persist a marker
+        # too: `unsloth studio update` reruns install.sh through the wsl.exe shim (no env),
+        # so without it the first update recreates the duplicate .lnk.
+        # Clear any previous completion stamp: setup.sh rewrites it only after the core venv
+        # + Studio deps finish and the post-run gate below requires it, so a run that dies
+        # mid-install can no longer coast on a stale venv passing the torch/CLI probes.
         $_fwdEnv += 'export UNSLOTH_SKIP_WSL_WINDOWS_SHORTCUT=1; mkdir -p /root/.unsloth; touch /root/.unsloth/.skip-wsl-windows-shortcut; rm -f /root/.unsloth/.install-ok; '
-        # Root login shells reset PATH via /etc/profile and can drop /usr/lib/wsl/lib,
-        # the only nvidia-smi location under WSL2 GPU-PV; without it install.sh's GPU
-        # detection picks CPU torch wheels and the torch.cuda probe then fails the
-        # whole install. Appended (not prepended) so a PATH nvidia-smi still wins.
+        # Root login shells reset PATH and can drop /usr/lib/wsl/lib, the only nvidia-smi
+        # location under WSL2 GPU-PV; without it install.sh picks CPU torch wheels and the
+        # torch.cuda probe fails. Appended (not prepended) so a PATH nvidia-smi still wins.
         $_fwdEnv += 'export PATH="$PATH:/usr/lib/wsl/lib"; '
-        # Forward a non-default --package into the WSL install (already validated
-        # against ^[a-zA-Z0-9][a-zA-Z0-9._-]*$ at parse time, so splicing is safe);
+        # Forward a non-default --package (validated at parse time, so splicing is safe);
         # previously it was silently dropped and the user got stock unsloth.
         $_shArgs = ''
         if ($PackageName -ne 'unsloth') { $_shArgs = ' --package ' + $PackageName }
-        # Download to a file instead of `curl | sh`: a failed download feeds sh an
-        # empty stdin (exit 0), and on a rerun the stale venv then passes the torch
-        # probe below, reporting success without the installer ever running. Exit 86
-        # is the "download failed, installer never ran" sentinel checked after the
-        # run. /root/.unsloth already exists (skip-marker mkdir above) and the file
-        # is removed with it on uninstall.
+        # Download to a file instead of `curl | sh`: a failed download feeds sh empty
+        # stdin (exit 0) and a rerun's stale venv then passes the torch probe, faking
+        # success without the installer running. Exit 86 is the "download failed" sentinel
+        # checked after the run. /root/.unsloth exists already and is removed on uninstall.
         if ($_instRef -eq 'main') {
             $wslInstall = $_fwdEnv + 'export DEBIAN_FRONTEND=noninteractive UNSLOTH_WSL_LLAMA_DEFERRED=1; apt-get update -y >/dev/null; apt-get install -y build-essential cmake git curl pciutils libcurl4-openssl-dev >/dev/null; curl -fsSL https://unsloth.ai/install.sh -o /root/.unsloth/unsloth-install.sh || exit 86; sh /root/.unsloth/unsloth-install.sh' + $_shArgs
         } else {
@@ -2282,15 +2263,14 @@ exit 0
             $ErrorActionPreference = $prevEapWsl
         }
         Write-Host ""
-        # Sentinel from the download step above: the installer never ran, so the
-        # probes below would only re-validate a stale venv from a previous install.
+        # Download sentinel: the installer never ran, so the probes below would only
+        # re-validate a stale venv from a previous install.
         if ($wslRc -eq 86) {
             step "wsl" "could not download install.sh inside WSL (network or bad ref) -- the installer never ran." "Yellow"
-            # Exit-InstallFailure restores the rollback and fails the process in every
-            # invocation mode (exit for -File, throw for iex/-Command automation).
+            # Exit-InstallFailure restores the rollback and fails in every invocation mode.
             return (Exit-InstallFailure "could not download install.sh inside WSL; the installer never ran")
         }
-        # $wslRc can be non-zero from the llama.cpp prebuilt step even on success, so verify torch.cuda directly.
+        # $wslRc can be non-zero from the llama.cpp step even on success; verify torch.cuda directly.
         $torchOk = $false
         $prevEapChk = $ErrorActionPreference
         $ErrorActionPreference = "Continue"
@@ -2300,10 +2280,9 @@ exit 0
             & wsl.exe -d $distro --cd /root -u root -- /root/.unsloth/studio/unsloth_studio/bin/python -c "import torch,sys; sys.exit(0 if torch.cuda.is_available() else 3)" *> $null
             $torchOk = ($LASTEXITCODE -eq 0)
         } catch {} finally { $ErrorActionPreference = $prevEapChk }
-        # torch.cuda alone isn't success: install.sh can exit after PyTorch but before the `unsloth`
-        # package/console script (e.g. a transient `uv pip install unsloth`), and $wslRc can't tell
-        # (it also goes non-zero on the optional llama prebuilt step). Verify the exact binary the shim
-        # execs exists -- else we'd write a dangling shim and report a broken install as success.
+        # torch.cuda alone isn't success: install.sh can exit after PyTorch but before the
+        # `unsloth` console script, and $wslRc can't tell. Verify the exact binary the shim
+        # execs exists -- else we'd write a dangling shim and report a broken install as OK.
         if ($torchOk) {
             $prevEapCli = $ErrorActionPreference; $ErrorActionPreference = "Continue"
             $global:LASTEXITCODE = -1
@@ -2314,12 +2293,10 @@ exit 0
                 $torchOk = $false
             }
         }
-        # Require the completion stamp setup.sh writes after the core venv +
-        # Studio deps finish (cleared above before the run). torch + CLI alone
-        # can both come from a stale venv left by a PREVIOUS install while this
-        # run's installer died mid-way; the tolerated nonzero $wslRc (optional
-        # llama.cpp step) makes that indistinguishable by exit code. Existence
-        # only, no mtime compare: WSL and Windows clocks can skew.
+        # Require the completion stamp setup.sh writes after the core venv + Studio deps
+        # finish (cleared before the run). torch + CLI alone can both come from a stale
+        # PREVIOUS install while this run died mid-way, which the tolerated nonzero $wslRc
+        # can't distinguish. Existence only, no mtime: WSL/Windows clocks can skew.
         if ($torchOk) {
             $prevEapStamp = $ErrorActionPreference; $ErrorActionPreference = "Continue"
             $global:LASTEXITCODE = -1
@@ -2330,9 +2307,9 @@ exit 0
                 $torchOk = $false
             }
         }
-        # Self-heal web-server deps: a cut-short install.sh "studio deps" step leaves torch + unsloth but
-        # no fastapi/uvicorn/structlog/starlette (`unsloth studio` dies). Reinstall them unpinned (no
-        # huggingface-hub/transformers/datasets) so the verified GPU torch stack stays intact.
+        # Self-heal web-server deps: a cut-short "studio deps" step leaves torch + unsloth
+        # but no fastapi/uvicorn/structlog/starlette (`unsloth studio` dies). Reinstall them
+        # unpinned (no hf-hub/transformers/datasets) so the verified GPU torch stack stays.
         if ($torchOk) {
             $_studioPy = "/root/.unsloth/studio/unsloth_studio/bin/python"
             $_serverOk = $false
@@ -2343,9 +2320,9 @@ exit 0
             } catch {} finally { $ErrorActionPreference = $prevEapS }
             if (-not $_serverOk) {
                 substep "Studio web-server deps incomplete (install.sh step cut short) -- installing them now..." "Cyan"
-                # studio.txt minus the huggingface-hub pin; uv preferred, pip fallback. Bare names only:
-                # `>=` would become a redirection through PowerShell -> wsl.exe -> bash -lc, and latest-of-each
-                # satisfies the studio.txt minimums anyway.
+                # studio.txt minus the hf-hub pin; uv preferred, pip fallback. Bare names
+                # only: `>=` would become a redirection through PS -> wsl.exe -> bash -lc,
+                # and latest-of-each satisfies the studio.txt minimums anyway.
                 $_deps = 'typer fastapi uvicorn matplotlib pandas nest_asyncio pyjwt easydict addict structlog diceware ddgs cryptography httpx fastmcp sqlite-vec pymupdf python-docx'
                 $_repair = 'PY=/root/.unsloth/studio/unsloth_studio/bin/python; UV="$(command -v uv 2>/dev/null || echo /root/.local/bin/uv)"; if [ -x "$UV" ] || command -v uv >/dev/null 2>&1; then "$UV" pip install --python "$PY" ' + $_deps + '; else "$PY" -m pip install ' + $_deps + '; fi'
                 $prevEapR = $ErrorActionPreference; $ErrorActionPreference = "Continue"
@@ -2357,16 +2334,15 @@ exit 0
                 } catch {} finally { $ErrorActionPreference = $prevEapS2 }
                 if ($_serverOk) { substep "Studio web-server deps installed." "Green" }
                 else {
-                    # The missing set includes typer, so even the plain unsloth CLI
-                    # dies; creating shims and reporting success over that state
-                    # advertises commands that cannot run. Route to the failure
-                    # path (rollback + non-zero), like the CLI-missing case above.
+                    # The missing set includes typer, so even the plain unsloth CLI dies;
+                    # reporting success would advertise commands that can't run. Route to
+                    # the failure path, like the CLI-missing case above.
                     substep "Studio server deps missing and the repair failed -- not reporting success over a broken install." "Yellow"
                     $torchOk = $false
                 }
             }
-            # The uv-managed venv ships no `pip`, but unsloth-zoo's check_pip() finds `uv pip` only
-            # when uv is on PATH. Seed pip so `save_pretrained_gguf` works regardless.
+            # The uv-managed venv ships no `pip`, but unsloth-zoo's check_pip() finds `uv
+            # pip` only when uv is on PATH. Seed pip so `save_pretrained_gguf` works regardless.
             $prevEapP = $ErrorActionPreference; $ErrorActionPreference = "Continue"
             try {
                 & wsl.exe -d $distro --cd /root -u root -- $_studioPy -m pip --version *> $null
@@ -2377,8 +2353,8 @@ exit 0
         }
         if ($torchOk) {
             step "done" "Unsloth Studio installed in WSL '$distro' -- GPU ready (torch.cuda available)." "Green"
-            # Native Windows `unsloth` shim forwards every `unsloth ...` into the WSL GPU env so the user
-            # never touches WSL. WSL2 forwards 127.0.0.1, so http://localhost:8888 opens in Windows.
+            # Native Windows `unsloth` shim forwards every `unsloth ...` into the WSL GPU
+            # env. WSL2 forwards 127.0.0.1, so http://localhost:8888 opens in Windows.
             try {
                 $shimDir = Join-Path $env:LOCALAPPDATA "Unsloth\bin"
                 New-Item -ItemType Directory -Force -Path $shimDir *> $null
@@ -2388,19 +2364,16 @@ exit 0
                     "wsl.exe -d $_distroArg -u root -- /root/.unsloth/studio/unsloth_studio/bin/unsloth %*"
                 )
                 Set-Content -LiteralPath (Join-Path $shimDir "unsloth.cmd") -Value $shimLines -Encoding ASCII
-                # Record the distro so the uninstaller can clean a custom UNSLOTH_WSL_DISTRO install
-                # without the env var set.
+                # Record the distro so the uninstaller can clean a custom
+                # UNSLOTH_WSL_DISTRO install without the env var set.
                 try { Set-Content -LiteralPath (Join-Path (Split-Path $shimDir -Parent) "wsl-distro.txt") -Value $distro -Encoding ASCII } catch {}
-                # PREPEND (not append): a previous NATIVE install prepended
-                # %USERPROFILE%\.unsloth\studio\bin (unsloth.exe) to user PATH,
-                # and that exe outlives the venv this fallback just rolled aside
-                # -- an appended shim would lose to the dead native launcher in
-                # every new terminal. Add-ToUserPath de-dupes and hoists.
+                # PREPEND (not append): a previous NATIVE install prepended its
+                # unsloth.exe to user PATH, and that exe outlives the rolled-aside venv --
+                # an appended shim would lose to the dead launcher. Add-ToUserPath de-dupes.
                 $null = Add-ToUserPath -Directory $shimDir -Position 'Prepend'
                 $env:Path = $shimDir + ";" + $env:Path.TrimStart(';')
-                # Drop the dead default-root native shim outright when the venv
-                # binary it launches is gone (custom-root shims are left alone;
-                # the PATH prepend above already outranks them).
+                # Drop the dead default-root native shim when the venv binary it launches
+                # is gone (custom-root shims are left alone; the PATH prepend outranks them).
                 try {
                     $staleNativeShim = Join-Path $env:USERPROFILE ".unsloth\studio\bin\unsloth.exe"
                     $staleNativeTarget = Join-Path $env:USERPROFILE ".unsloth\studio\unsloth_studio\Scripts\unsloth.exe"
@@ -2423,13 +2396,11 @@ exit 0
                 $L = @(
                     '$ErrorActionPreference = "SilentlyContinue"',
                     ('$distro = "' + $distro + '"'),
-                    # Port 8888 may already be taken on the Windows side (Jupyter, a
-                    # second Studio): Studio inside WSL would bind a different port
-                    # while the poll below waits on 8888 forever and the browser
-                    # never opens. Scan the same 8888..8908 window the native
-                    # launcher uses (Find-FreeLaunchPort) and pass the winner via
-                    # -p. WSL2 localhost forwarding mirrors the WSL port onto
-                    # Windows, so probing with a Windows-side TcpListener is valid.
+                    # Port 8888 may be taken on the Windows side (Jupyter, a second
+                    # Studio): WSL Studio would bind another port while the poll waits on
+                    # 8888 forever. Scan the same 8888..8908 window the native launcher uses
+                    # and pass the winner via -p. WSL2 mirrors the port onto Windows, so a
+                    # Windows-side TcpListener probe is valid.
                     '$port = 0',
                     'foreach ($p in 8888..8908) { $l = $null; try { $l = [System.Net.Sockets.TcpListener]::new([System.Net.IPAddress]::Any, $p); $l.Start(); $port = $p } catch {} finally { if ($l) { try { $l.Stop() } catch {} } }; if ($port) { break } }',
                     'if (-not $port) { Write-Host "No free port in 8888-8908; close one of the apps using them and relaunch."; Start-Sleep 10; exit 1 }',
@@ -2438,13 +2409,13 @@ exit 0
                     'wsl.exe -d $distro --cd /root -u root -- bash -lic "unsloth studio -p $port"'
                 )
                 Set-Content -LiteralPath $launcher -Value $L -Encoding UTF8
-                # Icon must live OUTSIDE %LOCALAPPDATA%: on WoA the sandboxed icon broker can't read a .ico
-                # under AppData\Local, so the shortcut renders BLANK; under the user profile it renders
-                # fine (verified on N1X). Only the icon moves.
+                # Icon must live OUTSIDE %LOCALAPPDATA%: on WoA the sandboxed icon broker
+                # can't read a .ico under AppData\Local, so the shortcut renders BLANK;
+                # under the user profile it renders fine (verified on N1X). Only the icon moves.
                 $iconDir = Join-Path $env:USERPROFILE ".unsloth"
                 New-Item -ItemType Directory -Force -Path $iconDir *> $null
                 $icon = Join-Path $iconDir "unsloth.ico"
-                # Prefer the bundled icon, else download from GitHub. Validate the ICO header (00 00 01 00)
+                # Prefer the bundled icon, else download. Validate the ICO header (00 00 01 00)
                 # before attaching, so a partial/HTML-404 download never makes a blank icon.
                 $bundledIcon = $null
                 if ($PSScriptRoot -and $PSScriptRoot.Trim()) { $bundledIcon = Join-Path $PSScriptRoot "studio\frontend\public\unsloth.ico" }
@@ -2475,15 +2446,15 @@ exit 0
                     $sc.Save()
                 }
                 step "shortcuts" "created Desktop + Start Menu shortcuts (launch WSL Studio + open browser)" "Green"
-                # Nudge Explorer: clear+rebuild icon cache, per-.lnk SHCNE_UPDATEITEM, global
-                # SHCNE_ASSOCCHANGED. (The real WoA blank-icon cause was the icon path, fixed above.)
+                # Nudge Explorer: clear icon cache, per-.lnk SHCNE_UPDATEITEM, global
+                # SHCNE_ASSOCCHANGED. (The real WoA blank-icon cause was the icon path.)
                 try { & "$env:SystemRoot\System32\ie4uinit.exe" -ClearIconCache 2>$null } catch {}
                 try { & "$env:SystemRoot\System32\ie4uinit.exe" -show 2>$null } catch {}
                 try {
                     if (-not ("UnslothShell.Notify" -as [type])) {
                         Add-Type -Namespace UnslothShell -Name Notify -MemberDefinition '[System.Runtime.InteropServices.DllImport("shell32.dll", CharSet = System.Runtime.InteropServices.CharSet.Unicode)] public static extern void SHChangeNotify(int eventId, uint flags, string item1, System.IntPtr item2);'
                     }
-                    # SHCNE_UPDATEITEM (0x00002000), SHCNF_PATHW (0x0005): the global notify alone often misses existing .lnks.
+                    # SHCNE_UPDATEITEM (0x00002000), SHCNF_PATHW (0x0005): global notify alone often misses existing .lnks.
                     foreach ($lnk in $lnks) { try { [UnslothShell.Notify]::SHChangeNotify(0x00002000, 0x0005, $lnk, [System.IntPtr]::Zero) } catch {} }
                     # SHCNE_ASSOCCHANGED (0x08000000), SHCNF_IDLIST (0): flush global icon associations.
                     [UnslothShell.Notify]::SHChangeNotify(0x08000000, 0, $null, [System.IntPtr]::Zero)
@@ -2491,23 +2462,22 @@ exit 0
             } catch {
                 substep "(could not create shortcuts: $($_.Exception.Message))" "Yellow"
             }
-            # GGUF *inference* needs a CUDA llama-server (no aarch64+CUDA prebuilt), so build one into
-            # ~/.unsloth/llama.cpp in the BACKGROUND. Best-effort; opt out: UNSLOTH_NO_LLAMA_CUDA=1.
+            # GGUF *inference* needs a CUDA llama-server (no aarch64+CUDA prebuilt), so build
+            # one into ~/.unsloth/llama.cpp in the BACKGROUND. Opt out: UNSLOTH_NO_LLAMA_CUDA=1.
             if ($env:UNSLOTH_NO_LLAMA_CUDA -ne '1') {
                 $prevEapL = $ErrorActionPreference; $ErrorActionPreference = "Continue"
                 try {
                     $_llamaUrl = "https://raw.githubusercontent.com/unslothai/unsloth/$(Get-UnslothInstallRef)/studio/scripts/provision_llama_cuda.sh"
-                    # Step 1: fetch the provision script + write a runner (base64 to dodge quoting layers).
-                    # The runner restores PATH (non-login shells miss /usr/lib/wsl/lib nvidia-smi, so provision
-                    # early-exits) and exports the env knobs below (Windows env vars don't cross into WSL). A
-                    # runner FILE lets the detached launcher pass only space-free args, avoiding Start-Process
-                    # mis-splitting `bash -lc <str>`.
+                    # Step 1: fetch the provision script + write a runner (base64 to dodge
+                    # quoting layers). The runner restores PATH (non-login shells miss the
+                    # /usr/lib/wsl/lib nvidia-smi) and exports the env knobs below. A runner
+                    # FILE lets the detached launcher pass only space-free args, avoiding
+                    # Start-Process mis-splitting `bash -lc <str>`.
                     $_pathLine = 'export PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/usr/lib/wsl/lib:$PATH"' + "`n"
                     $_jobsLine = if ($env:UNSLOTH_LLAMA_BUILD_JOBS) { "export UNSLOTH_LLAMA_BUILD_JOBS=$($env:UNSLOTH_LLAMA_BUILD_JOBS)`n" } else { "" }
-                    # Bridge UNSLOTH_LLAMA_TAG / UNSLOTH_LLAMA_PR pins into WSL, else the deferred build
-                    # ignores them. sh-single-quoted since tags/PRs are simple tokens.
-                    # Same allow-lists as the other forwarded knobs: a quote in the
-                    # value would break out of the single-quoted export in the runner.
+                    # Bridge UNSLOTH_LLAMA_TAG / UNSLOTH_LLAMA_PR pins into WSL, else the
+                    # deferred build ignores them. Same allow-lists as the other forwarded
+                    # knobs so a quote can't break out of the single-quoted export.
                     $_tagLine = if ($env:UNSLOTH_LLAMA_TAG -and ($env:UNSLOTH_LLAMA_TAG -match '^[A-Za-z0-9][A-Za-z0-9._/-]*$')) { "export UNSLOTH_LLAMA_TAG='$($env:UNSLOTH_LLAMA_TAG)'`n" } else { "" }
                     $_prLine = if ($env:UNSLOTH_LLAMA_PR -and ($env:UNSLOTH_LLAMA_PR -match '^\d+$')) { "export UNSLOTH_LLAMA_PR='$($env:UNSLOTH_LLAMA_PR)'`n" } else { "" }
                     $_runner = "#!/usr/bin/env bash`n" + $_pathLine + $_jobsLine + $_tagLine + $_prLine + "exec bash /root/.unsloth/provision_llama_cuda.sh > /root/.unsloth/llama_cuda_build.log 2>&1`n"
@@ -2515,10 +2485,10 @@ exit 0
                     $_fetchCmd = 'mkdir -p /root/.unsloth; if curl -fsSL "' + $_llamaUrl + '" -o /root/.unsloth/provision_llama_cuda.sh && [ -s /root/.unsloth/provision_llama_cuda.sh ]; then chmod +x /root/.unsloth/provision_llama_cuda.sh; echo ' + $_runnerB64 + ' | base64 -d > /root/.unsloth/run_llama_build.sh; chmod +x /root/.unsloth/run_llama_build.sh; echo PROV_FETCHED; else echo PROV_NOSCRIPT; fi'
                     $_fetchOut = & wsl.exe -d $distro --cd /root -u root -- bash -lc $_fetchCmd 2>$null
                     if ("$_fetchOut" -match 'PROV_FETCHED') {
-                        # Step 2: a detached Windows-side wsl.exe keeps the WSL VM up for the whole build
-                        # (a WSL-side `nohup &` dies when the launching session exits). PS 5.1 Start-Process
-                        # joins -ArgumentList WITHOUT quoting, so pass $_distroArg (pre-quoted only when
-                        # spaced); all other tokens are space-free.
+                        # Step 2: a detached Windows-side wsl.exe keeps the WSL VM up for the
+                        # whole build (a WSL-side `nohup &` dies when the session exits). PS 5.1
+                        # Start-Process joins -ArgumentList WITHOUT quoting, so pass $_distroArg
+                        # (pre-quoted only when spaced); other tokens are space-free.
                         Start-Process -WindowStyle Hidden -FilePath 'wsl.exe' -ArgumentList @('-d', $_distroArg, '--cd', '/root', '-u', 'root', '--', 'bash', '/root/.unsloth/run_llama_build.sh') | Out-Null
                         step "llama.cpp" "building CUDA llama.cpp for GGUF inference in the background (a few min); log: ~/.unsloth/llama_cuda_build.log" "Green"
                     } else {
@@ -2531,20 +2501,17 @@ exit 0
             substep "retry, or launch manually:  wsl -d $_distroArg -u root -- bash -lic 'unsloth studio -p 8888'" "Cyan"
         }
         if ($torchOk) {
-            # Success: the Windows venv is vestigial (everything runs in WSL), so drop the
-            # rolled-aside previous-venv backup instead of orphaning it. EXCEPT for a
-            # custom UNSLOTH_STUDIO_HOME: the installer told the user above that their
-            # custom root is not used by the WSL install, so deleting the venv that
-            # lived there would contradict that disclaimer -- put it back instead
-            # (the WSL shim does not depend on the Windows venv).
+            # Success: the Windows venv is vestigial (all runs in WSL), so drop the
+            # rolled-aside backup instead of orphaning it. EXCEPT a custom
+            # UNSLOTH_STUDIO_HOME: we told the user their custom root isn't used by the WSL
+            # install, so restore its venv rather than delete it (the shim doesn't need it).
             if ($envOverride) { Restore-StudioVenvRollback } else { Complete-StudioVenvRollback }
             substep "GPU training + GGUF export run inside WSL. (GGUF *inference* additionally needs a CUDA llama.cpp build.)" "Yellow"
             $global:LASTEXITCODE = 0
             return
         }
-        # Failed (torch.cuda unavailable): Exit-InstallFailure restores the rolled-aside
-        # venv and fails the process in every invocation mode, so iex/-Command
-        # automation cannot read this as success.
+        # Failed (torch.cuda unavailable): Exit-InstallFailure restores the venv and fails
+        # in every invocation mode, so automation cannot read this as success.
         return (Exit-InstallFailure "WSL Studio install did not finish cleanly (torch.cuda not detected; inner exit $wslRc)")
     }
 

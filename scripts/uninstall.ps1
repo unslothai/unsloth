@@ -16,11 +16,10 @@ function Uninstall-UnslothStudio {
     function _Step { param([string]$Msg) Write-Host $Msg }
     function _Substep { param([string]$Msg, [string]$Color = "Gray") Write-Host "  $Msg" -ForegroundColor $Color }
 
-    # True host architecture, mirroring install.ps1's WSL-fallback gate: an
-    # x64-emulated PowerShell on ARM64 reports AMD64 in PROCESSOR_ARCHITECTURE,
-    # which made the legacy marker-less WSL cleanup below skip exactly the
-    # machines the fallback installed on. Each probe only ever turns the answer
-    # ON; Win32_Processor.Architecture 12 = ARM64.
+    # True host architecture, mirroring install.ps1's WSL-fallback gate: x64-emulated
+    # PowerShell on ARM64 reports AMD64, which made the legacy marker-less WSL cleanup
+    # skip the machines the fallback installed on. Each probe only turns the answer ON;
+    # Win32_Processor.Architecture 12 = ARM64.
     function _IsArm64Host {
         $arm = $false
         try { $arm = ([System.Runtime.InteropServices.RuntimeInformation]::OSArchitecture.ToString() -ieq 'Arm64') } catch { }
@@ -419,12 +418,10 @@ function Uninstall-UnslothStudio {
     }
 
     # ── Remove desktop and Start Menu shortcuts ──
-    # Canonical name is "Unsloth Studio.lnk". Distro-suffixed names
-    # ("Unsloth Studio (WSL - <distro>).lnk") belong to per-distro WSL installs, which
-    # the WSL-fallback section below only cleans for evidenced distros (env var,
-    # wsl-distro.txt marker, or the legacy ARM64 probe) -- scope this sweep to the
-    # same set so a surviving WSL install keeps its launcher. Anything that is not a
-    # live wsl.exe launcher (pre-release leftovers) is still swept.
+    # Canonical name is "Unsloth Studio.lnk". Distro-suffixed names belong to per-distro
+    # WSL installs, which the section below only cleans for evidenced distros (env var,
+    # wsl-distro.txt, or legacy ARM64 probe) -- scope this sweep to the same set so a
+    # surviving WSL install keeps its launcher. Non-wsl.exe launchers are still swept.
     _Step "Removing desktop and Start Menu shortcuts..."
     $_scCands = @()
     if ($env:UNSLOTH_WSL_DISTRO) { $_scCands += $env:UNSLOTH_WSL_DISTRO }
@@ -455,8 +452,8 @@ function Uninstall-UnslothStudio {
                     $_sc = $_scWs.CreateShortcut($_.FullName)
                     if ("$($_sc.TargetPath) $($_sc.Arguments)" -match "wsl\.exe") {
                         $_scD = $null
-                        # install.sh quotes spaced distro names (-d "Ubuntu Preview"), so match a
-                        # full quoted token first; a naive [^"\s]+ would truncate at the space.
+                        # install.sh quotes spaced distro names, so match a full quoted
+                        # token first; a naive [^"\s]+ would truncate at the space.
                         if ($_sc.Arguments -match '-d\s+(?:"([^"]+)"|(\S+))') {
                             $_scD = if ($Matches[1]) { $Matches[1] } else { $Matches[2] }
                         }
@@ -543,11 +540,11 @@ function Uninstall-UnslothStudio {
 
     # ── Windows-on-Arm WSL-fallback artifacts ──
     # The ARM64+NVIDIA fallback puts Studio in WSL plus a native shim + launcher under
-    # %LOCALAPPDATA%\Unsloth (not "Unsloth Studio") with a PATH entry -- none caught above.
+    # %LOCALAPPDATA%\Unsloth with a PATH entry -- none caught above.
     _Step "Removing WSL-fallback artifacts (shim, launcher, PATH entry, WSL install)..."
     $unslothDir = if ($env:LOCALAPPDATA) { Join-Path $env:LOCALAPPDATA "Unsloth" } else { $null }
-    # wsl-distro.txt records a custom UNSLOTH_WSL_DISTRO install so it's cleanable without the env
-    # var set; read it BEFORE the directory is removed below.
+    # wsl-distro.txt records a custom UNSLOTH_WSL_DISTRO install so it's cleanable without
+    # the env var set; read it BEFORE the directory is removed below.
     $_recordedDistro = $null
     if ($unslothDir) {
         try {
@@ -580,10 +577,9 @@ function Uninstall-UnslothStudio {
         _RemovePath $unslothDir
     }
     # The WoA shortcut icon lives under the user profile (icon broker can't read
-    # AppData\Local). The shortcut sweep above deliberately keeps launchers for
-    # WSL installs it has no evidence for; those .lnks point at this icon, so
-    # only remove it when no Unsloth shortcut survives anywhere (mirrors the
-    # _drop_shared_icon_if_unused guard on the WSL-side uninstaller).
+    # AppData\Local). The sweep above keeps launchers for WSL installs it has no evidence
+    # for, and those .lnks point at this icon, so only remove it when no Unsloth shortcut
+    # survives anywhere (mirrors _drop_shared_icon_if_unused on the WSL-side uninstaller).
     if ($env:USERPROFILE) {
         $_icoInUse = $false
         foreach ($_icoDir in $shortcutDirs) {
@@ -594,33 +590,30 @@ function Uninstall-UnslothStudio {
         }
         if (-not $_icoInUse) { _RemovePath (Join-Path $env:USERPROFILE ".unsloth\unsloth.ico") }
     }
-    # The empty-dir sweep of ~/.unsloth above ran BEFORE this icon removal, so on a WoA install
-    # the still-present unsloth.ico kept ~/.unsloth non-empty then and it was skipped -- leaving an
-    # empty ~/.unsloth behind. Re-attempt now that the icon (the last default-mode child) is gone.
+    # The ~/.unsloth empty-dir sweep above ran BEFORE this icon removal, so the still-present
+    # unsloth.ico kept it non-empty and it was skipped. Re-attempt now that the icon (the
+    # last default-mode child) is gone.
     if ($defaultUnslothHome -and (Test-Path -LiteralPath $defaultUnslothHome) -and
         -not (Get-ChildItem -LiteralPath $defaultUnslothHome -Force -ErrorAction SilentlyContinue)) {
         _RemovePath $defaultUnslothHome
     }
-    # Remove the Studio install inside each WSL distro (the real GPU install + any CUDA llama.cpp build).
+    # Remove the Studio install inside each WSL distro (GPU install + any CUDA llama.cpp build).
     if (Get-Command wsl.exe -ErrorAction SilentlyContinue) {
         try {
-            # Probe candidates by exit code ('' = default distro) since `wsl --list` emits UTF-16 PS
-            # mis-parses. Kills run BEFORE rm: a live CUDA build (cmake/nvcc under
-            # /root/.unsloth/llama.cpp) would otherwise keep burning CPU/GPU and recreate files after
-            # the rm. Each matched PID's whole process GROUP is signalled (cmake --build children carry
-            # relative argv no pattern can match), guarded against this shell's own pgid, plus direct
-            # children via pkill -P; this shell cannot self-match (its argv carries an extra backslash
-            # and the [h]-bracket in the pkill pattern). Scope STRICTLY to /root (the fallback's
-            # install dir); /home/*/.unsloth may be another user's. The 8888 kill only targets a
-            # listener whose process cmdline is under /root/.unsloth (Studio's bind), so an unrelated
-            # service on 8888 -- Jupyter et al. default to it -- is NOT killed; it's also gated on an
-            # Unsloth install having existed. /proc cmdline greps still work after kills since they
-            # read process state, not files.
+            # Probe candidates by exit code ('' = default distro) since `wsl --list` emits
+            # UTF-16 PS mis-parses. Kills run BEFORE rm so a live CUDA build (cmake/nvcc under
+            # /root/.unsloth/llama.cpp) can't recreate files after the rm. Each matched PID's
+            # whole process GROUP is signalled (cmake children carry relative argv), guarded
+            # against this shell's pgid, plus direct children via pkill -P; this shell can't
+            # self-match (extra backslash + [h]-bracket). Scope STRICTLY to /root; /home/*
+            # may be another user's. The 8888 kill only targets a listener whose cmdline is
+            # under /root/.unsloth, so an unrelated service on 8888 isn't killed, and is gated
+            # on an Unsloth install having existed. /proc greps still work after kills.
             $_clean = '_had=0; if [ -d /root/.unsloth ] || [ -L /root/.local/bin/unsloth ]; then _had=1; fi; _mypg=$(ps -o pgid= -p $$ 2>/dev/null | tr -d " "); for _p in $(pgrep -f ''/root/\.unslot[h]/'' 2>/dev/null); do _pg=$(ps -o pgid= -p $_p 2>/dev/null | tr -d " "); case "$_pg" in ""|0|1|"$_mypg") pkill -9 -P $_p 2>/dev/null; kill -9 $_p 2>/dev/null ;; *) kill -9 -- -$_pg 2>/dev/null || kill -9 $_p 2>/dev/null ;; esac; done; if [ $_had -eq 1 ]; then for _p in $(fuser 8888/tcp 2>/dev/null); do grep -qa /root/\.unsloth/ /proc/$_p/cmdline 2>/dev/null && kill -9 $_p 2>/dev/null; done; fi; rm -rf /root/.unsloth /root/llama-cuda /root/provision_llama_cuda.sh /root/llama_cuda_build.log 2>/dev/null; rm -f /root/.local/bin/unsloth 2>/dev/null; true'
-            # Clean only distros with evidence of a fallback install: the wsl-distro.txt marker or an
-            # explicit UNSLOTH_WSL_DISTRO. The broad candidate probe is only for legacy marker-less
-            # installs (ARM64 only); on x86 it would delete distros this installer never touched
-            # (e.g. a ROCm-on-WSL Studio under /root).
+            # Clean only distros with fallback-install evidence: wsl-distro.txt or an
+            # explicit UNSLOTH_WSL_DISTRO. The broad candidate probe is only for legacy
+            # marker-less installs (ARM64 only); on x86 it would delete distros this
+            # installer never touched (e.g. a ROCm-on-WSL Studio under /root).
             $_cands = @()
             if ($env:UNSLOTH_WSL_DISTRO) { $_cands += $env:UNSLOTH_WSL_DISTRO }
             if ($_recordedDistro) { $_cands += $_recordedDistro }
@@ -653,8 +646,8 @@ function Uninstall-UnslothStudio {
         Write-Host "  `$env:UNSLOTH_STUDIO_HOME = 'C:\your\path'; irm https://raw.githubusercontent.com/unslothai/unsloth/main/scripts/uninstall.ps1 | iex"
     }
 
-    # The distro probes leave a failing $LASTEXITCODE; reset so success exits 0. Set the var
-    # rather than `exit 0` so `irm ... | iex` doesn't terminate the caller's shell.
+    # The distro probes leave a failing $LASTEXITCODE; reset so success exits 0. Set the
+    # var rather than `exit 0` so `irm ... | iex` doesn't terminate the caller's shell.
     $global:LASTEXITCODE = 0
 }
 

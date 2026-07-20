@@ -3025,9 +3025,9 @@ def detect_host() -> HostInfo:
 
     nvidia_smi = shutil.which("nvidia-smi")
     if not nvidia_smi:
-        # Root WSL sessions drop /usr/lib/wsl/lib (the only nvidia-smi home
-        # under WSL2 GPU-PV) from PATH, which would misroute an ARM NVIDIA WSL
-        # host to the CPU prebuilt; mirror setup.sh's resolver order.
+        # Root WSL sessions drop /usr/lib/wsl/lib (the only nvidia-smi home under
+        # WSL2 GPU-PV) from PATH, misrouting an ARM NVIDIA WSL host to the CPU
+        # prebuilt; mirror setup.sh's resolver order.
         for _cand in ("/usr/lib/wsl/lib/nvidia-smi", "/usr/bin/nvidia-smi"):
             if os.access(_cand, os.X_OK):
                 nvidia_smi = _cand
