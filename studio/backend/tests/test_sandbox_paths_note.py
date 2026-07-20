@@ -161,10 +161,14 @@ def test_bypass_code_execution_nudge_drops_the_limited_internet_claim():
 
     lowered = _TOOL_CODE_TIP_BYPASS.lower()
     assert "internet access is limited" not in lowered
+    # Bypass disables the safety analysis, blocklist and rlimits, so the nudge must
+    # not describe execution as sandboxed (only the isolated workdir survives).
+    assert "in a sandbox" not in lowered
     # Keeps the workdir-default framing and the exact-path guidance.
     assert "default" in lowered and "location for your work" in lowered
     assert "give an exact path" in lowered
-    # The default nudge still carries the restriction for sandboxed sessions.
+    # The default (sandboxed) nudge still runs in a sandbox and keeps the restriction.
+    assert "in a sandbox" in _TOOL_CODE_TIP.lower()
     assert "internet access is limited" in _TOOL_CODE_TIP.lower()
 
 

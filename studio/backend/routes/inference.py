@@ -2426,17 +2426,18 @@ _TOOL_CODE_TIP = (
     "you need is not present, ask the user to provide it or give an exact path "
     "rather than running commands against a guessed one."
 )
-# Bypass variant: drops the "internet access is limited" clause, keeps the workdir-default framing.
+# Bypass variant: bypass disables the sandbox, so this drops both the "internet
+# access is limited" clause and the "runs in a sandbox" framing; it keeps the
+# accurate isolated-scratch workdir-default guidance.
 _TOOL_CODE_TIP_BYPASS = (
     "Use code execution for math, calculations, data processing, or to parse "
-    "and analyze information from tool results. It runs in a sandbox whose "
-    "working directory is an isolated scratch space that is the default "
-    "location for your work and may already hold files from earlier work; it "
-    "is not a copy of the user's computer, so do not assume a file, folder, or "
-    "repository the user mentions is already present. List the working "
-    "directory to see what is there; if what you need is not present, ask the "
-    "user to provide it or give an exact path rather than running commands "
-    "against a guessed one."
+    "and analyze information from tool results. Its working directory is an "
+    "isolated scratch space that is the default location for your work and may "
+    "already hold files from earlier work; it is not a copy of the user's "
+    "computer, so do not assume a file, folder, or repository the user mentions "
+    "is already present. List the working directory to see what is there; if "
+    "what you need is not present, ask the user to provide it or give an exact "
+    "path rather than running commands against a guessed one."
 )
 _TOOL_ARTIFACT_TIP = (
     "For HTML, CSS, or JavaScript canvas requests, call render_html once when "
