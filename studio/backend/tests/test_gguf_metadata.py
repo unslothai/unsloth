@@ -281,16 +281,9 @@ def test_skips_unrelated_fields_without_breaking(tmp_path: Path):
 
 
 def test_audio_detection_rejects_trailing_truncated_metadata(tmp_path: Path):
-    token_array = struct.pack("<IIQ", _VTYPE_ARRAY, _VTYPE_STRING, 1) + _enc_string(
-        "<|startoftranscript|>"
-    )
+    token_array = struct.pack("<IIQ", _VTYPE_ARRAY, _VTYPE_STRING, 1) + _enc_string("<|startoftranscript|>")
     trailing = _enc_string("general.description") + struct.pack("<IQ", _VTYPE_STRING, 100)
-    (path := tmp_path / "truncated.gguf").write_bytes(
-        struct.pack("<IIQQ", _GGUF_MAGIC, 3, 0, 2)
-        + _enc_string("tokenizer.ggml.tokens")
-        + token_array
-        + trailing
-    )
+    (path := tmp_path / "truncated.gguf").write_bytes(struct.pack("<IIQQ", _GGUF_MAGIC, 3, 0, 2) + _enc_string("tokenizer.ggml.tokens") + token_array + trailing)
     assert detect_gguf_audio_type(str(path)) is None
 
 
