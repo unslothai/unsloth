@@ -99,6 +99,7 @@ export const en = {
       chat: "Chat",
       voice: "Voice",
       connections: "Connections",
+      data: "Data",
       apiKeys: "API",
       about: "About",
     },
@@ -511,7 +512,7 @@ export const en = {
     },
     chat: {
       title: "Chat",
-      description: "Manage chat history stored on this device.",
+      description: "Customize how chat behaves on this device.",
       modelDisclaimer: "Show model disclaimer",
       modelDisclaimerDescription:
         'Show "LLMs can make mistakes" under the chat box.',
@@ -579,6 +580,53 @@ export const en = {
       storageClearFailed:
         "A storage clear failed; {count} chats may remain. Please retry.",
       failedToClearChats: "Failed to clear chats",
+    },
+    data: {
+      title: "Data",
+      description:
+        "Manage chat history and uploaded files stored on this device.",
+      archivedChats: "Archived chats",
+      archivedChatsDescription: "View and manage chats you have archived.",
+      manageAction: "Manage",
+      exportArchivedChats: "Export",
+      exportingArchivedChats: "Exporting...",
+      exportedOneArchivedChat: "Exported 1 archived chat",
+      exportedArchivedChatCount: "Exported {count} archived chats",
+      noArchivedChatsToExport: "No archived chats to export.",
+      failedToExportArchivedChats: "Failed to export archived chats",
+      archiveAllChats: "Archive all chats",
+      archiveAllChatsDescription:
+        "Move every chat in Recents and Projects to the archive.",
+      noChatsToArchive: "No chats to archive.",
+      archiveAllAction: "Archive all",
+      archivingAction: "Archiving...",
+      archiveAllChatsTitle: "Archive all chats?",
+      archiveAllChatsConfirmDescription:
+        "Moves every chat on this device to the archive. Archived chats stay available and can be unarchived at any time.",
+      archivedAllChats: "Archived all chats",
+      archivedOneChat: "Archived 1 chat",
+      archivedChatCount: "Archived {count} chats",
+      failedToArchiveChats: "Failed to archive chats",
+      confirmBeforeDeleting: "Confirm before deleting",
+      confirmBeforeDeletingDescription:
+        "Ask for confirmation before a chat is deleted. Turn off to delete instantly.",
+      filesSection: "Files",
+      uploadedFiles: "Uploaded files",
+      uploadedFilesDescription:
+        "View and manage files uploaded to chats, projects, and knowledge bases.",
+      fineTuneExport: "Use chats as training data",
+      fineTuneExportDescription:
+        "Create a fine-tuning JSONL dataset from your chats. Load it in Train, refine in Recipes, or export it.",
+      fineTuneExportAction: "Export JSONL",
+      fineTuneRunAction: "Run",
+      fineTuneExportingAction: "Exporting...",
+      fineTuneOpenRecipesAction: "Open in Recipes",
+      fineTuneOpeningRecipesAction: "Opening...",
+      fineTuneTrainAction: "Load in Train tab",
+      fineTuneTrainingAction: "Loading...",
+      fineTuneExportFailed: "Failed to export training data",
+      fineTuneRecipeFailed: "Failed to open chats in Recipes",
+      fineTuneTrainFailed: "Failed to load dataset in the Train tab",
     },
     connections: {
       title: "Connections",

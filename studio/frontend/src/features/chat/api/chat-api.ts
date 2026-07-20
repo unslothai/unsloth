@@ -2,7 +2,11 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { authFetch } from "@/features/auth";
+// These helpers are deliberately API-layer-only and are not part of their
+// features' React-facing public barrels.
+// eslint-disable-next-line no-restricted-imports
 import { hubTokenHeader } from "@/features/hub/lib/hub-token-header";
+// eslint-disable-next-line no-restricted-imports
 import { consumeNativePathToken } from "@/features/native-intents/api";
 import { formatFastApiDetail } from "@/lib/format-fastapi-error";
 import type {
@@ -435,6 +439,73 @@ export async function listChatThreads(
   // Always hand back an array: an older or misbehaving backend may omit the
   // field or send a non-array, which would crash list consumers.
   return Array.isArray(data.threads) ? data.threads : [];
+}
+
+/** One chat message attachment, as listed for the settings uploaded-files view. */
+export interface ChatAttachmentRecord {
+  id: string;
+  messageId: string;
+  threadId: string;
+  pairId?: string | null;
+  threadTitle?: string | null;
+  name: string;
+  type?: string | null;
+  contentType?: string | null;
+  sizeBytes?: number | null;
+  createdAt?: number | null;
+}
+
+export interface ChatAttachmentPage {
+  attachments: ChatAttachmentRecord[];
+  nextOffset: number | null;
+}
+
+export async function listChatAttachments(
+  offset = 0,
+  limit = 50,
+): Promise<ChatAttachmentPage> {
+  const params = new URLSearchParams({
+    limit: String(limit),
+    offset: String(offset),
+  });
+  const response = await authFetch(`/api/chat/attachments?${params}`);
+  const data = await parseJsonOrThrow<{
+    attachments: ChatAttachmentRecord[];
+    nextOffset: number | null;
+  }>(response);
+  return {
+    attachments: Array.isArray(data.attachments) ? data.attachments : [],
+    nextOffset:
+      typeof data.nextOffset === "number" && Number.isFinite(data.nextOffset)
+        ? data.nextOffset
+        : null,
+  };
+}
+
+/** Stored attachment content (image bytes or extracted text) as a Blob. */
+export async function fetchChatAttachmentBlob(
+  messageId: string,
+  attachmentId: string,
+): Promise<Blob> {
+  const response = await authFetch(
+    `/api/chat/attachments/${encodeURIComponent(messageId)}/${encodeURIComponent(attachmentId)}/file`,
+  );
+  if (!response.ok) {
+    const body = await response.json().catch(() => null);
+    throw new Error(parseErrorText(response.status, body));
+  }
+  return response.blob();
+}
+
+export async function deleteChatAttachment(
+  messageId: string,
+  attachmentId: string,
+): Promise<void> {
+  const response = await authFetch(
+    `/api/chat/attachments/${encodeURIComponent(messageId)}/${encodeURIComponent(attachmentId)}`,
+    { method: "DELETE" },
+  );
+  await parseJsonOrThrow<{ ok: boolean }>(response);
 }
 
 export async function getChatThread(
@@ -960,7 +1031,8 @@ export async function* streamChatCompletions(
           parsed.type === "reasoning_summary"
         ) {
           yield {
-            _reasoningDurationMs: (parsed as { duration_ms?: number }).duration_ms,
+            _reasoningDurationMs: (parsed as { duration_ms?: number })
+              .duration_ms,
           } as unknown as OpenAIChatChunk;
           separatorIndex = buffer.search(/\r?\n\r?\n/);
           continue;
