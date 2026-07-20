@@ -218,6 +218,7 @@ class TestTorchIndexOverrideParity:
         m = re.search(r"def _ensure_cuda_torch\(\).*?(?=\ndef )", text, re.DOTALL)
         assert m, "could not locate _ensure_cuda_torch"
         body = m.group(0)
+        # The CVD hide-gate return must be guarded by the CUDA-pin flag.
         assert "_cuda_pinned" in body, (
             "_ensure_cuda_torch should compute a CUDA-pin flag so the pin can "
             "override the CVD hide gate"
@@ -238,9 +239,29 @@ class TestTorchIndexOverrideParity:
             "not a bare torch/torchvision/torchaudio trio"
         )
 
+    def test_verbatim_update_pins_supported_torch_range(self):
+        # The unknown-family verbatim UPDATE must keep the SAME torch<2.11.0 ceiling a fresh
+        # install applies, not the wider cu* ceiling (<2.12.0).
+        text = STACK_PY.read_text(encoding = "utf-8")
+        m = re.search(r"def _ensure_verbatim_torch_index\(\).*?(?=\ndef )", text, re.DOTALL)
+        assert m, "could not locate _ensure_verbatim_torch_index"
+        assert "_CUSTOM_INDEX_TORCH_PKG_SPEC" in m.group(0), (
+            "_ensure_verbatim_torch_index should install the bounded "
+            "_CUSTOM_INDEX_TORCH_PKG_SPEC trio (torch<2.11.0, matching the fresh "
+            "unknown-leaf bound), not _CUDA_TORCH_PKG_SPEC (<2.12.0) or a bare trio"
+        )
+        # The custom-index spec must cap torch below 2.11 to mirror install.sh's
+        # default TORCH_CONSTRAINT for an unknown leaf.
+        spec = re.search(r"_CUSTOM_INDEX_TORCH_PKG_SPEC[^(]*\(\s*(.*?)\)", text, re.DOTALL)
+        assert spec and '"torch>=2.4,<2.11.0"' in spec.group(1), (
+            "_CUSTOM_INDEX_TORCH_PKG_SPEC must pin torch>=2.4,<2.11.0 (the fresh "
+            "unknown-leaf ceiling)"
+        )
+
     def test_setup_ps1_stale_check_gates_rocm_on_supported_arch(self):
-        # The stale check must expect ROCm torch only for arches the install path maps to a
-        # repo.amd.com index; expecting "rocm" for an unmapped arch marks a good CPU venv stale.
+        # The stale-venv check must expect ROCm torch only for arches the install path maps
+        # to a repo.amd.com index; expecting "rocm" for an unmapped arch (which installs CPU
+        # torch) marks a correct CPU venv stale every update.
         text = SETUP_PS1.read_text(encoding = "utf-8")
         assert "_rocmWheelArches" in text, (
             "setup.ps1 stale check should restrict the ROCm expected-tag to the "
@@ -329,8 +350,8 @@ class TestCudaLeafDigitParity:
 
     def test_install_sh_backend_export_requires_cu_digit(self):
         text = INSTALL_SH.read_text(encoding = "utf-8")
-        # Brand CUDA only on cu[0-9]*; a bare catch-all *) -> cuda would mis-brand
-        # /current, /custom pins and skip ROCm repair on AMD hosts.
+        # The backend export must brand CUDA only on cu[0-9]*; a bare catch-all *) -> cuda
+        # would mis-brand /current, /custom pins and skip ROCm repair on AMD hosts.
         assert re.search(
             r'cu\[0-9\]\*\)\s*export UNSLOTH_TORCH_BACKEND="cuda"', text
         ), "install.sh backend export must brand cuda only on cu[0-9]*"
@@ -347,6 +368,135 @@ class TestCudaLeafDigitParity:
             r"_torch_index_leaf=\$\(printf '%s' \"\$_torch_index_leaf\" \| tr '\[:upper:\]' '\[:lower:\]'\)",
             text,
         ), "install.sh must lowercase _torch_index_leaf before the gfx/rocm/cu case matches"
+
+
+class TestTorchIndexMarkerParity:
+    """All four installers must agree on the torch-index marker (PR #6692):
+    the same filename, the same write points, and the same read helpers."""
+
+    MARKER = ".unsloth-torch-index"
+
+    def test_all_installers_use_same_marker_filename(self):
+        # The exact marker filename must appear in every installer so bash / py /
+        # ps write and read the same per-venv path.
+        for path, label in (
+            (INSTALL_SH, "install.sh"),
+            (INSTALL_PS1, "install.ps1"),
+            (SETUP_PS1, "setup.ps1"),
+            (STACK_PY, "install_python_stack.py"),
+        ):
+            text = path.read_text(encoding = "utf-8")
+            assert self.MARKER in text, f"{label} must reference the marker '{self.MARKER}'"
+
+    def test_all_installers_write_the_marker(self):
+        # install.sh + PowerShell use a _write_torch_index_marker / Write-TorchIndexMarker
+        # helper; the Python stack calls _write_torch_index_marker at its install sites.
+        assert "_write_torch_index_marker" in INSTALL_SH.read_text(encoding = "utf-8")
+        assert "Write-TorchIndexMarker" in INSTALL_PS1.read_text(encoding = "utf-8")
+        assert "Write-TorchIndexMarker" in SETUP_PS1.read_text(encoding = "utf-8")
+        assert "_write_torch_index_marker" in STACK_PY.read_text(encoding = "utf-8")
+
+    def test_setup_ps1_and_python_read_the_marker(self):
+        # The repair/update side (setup.ps1 stale check, python _ensure_rocm_torch)
+        # must READ the marker to make the exact pin-change decision.
+        assert "Read-TorchIndexMarker" in SETUP_PS1.read_text(encoding = "utf-8")
+        assert "Test-MarkerPinMismatch" in SETUP_PS1.read_text(encoding = "utf-8")
+        stack = STACK_PY.read_text(encoding = "utf-8")
+        assert "_read_torch_index_marker" in stack
+        assert "_marker_pin_mismatch" in stack
+
+    def test_all_installers_normalize_index_url(self):
+        # The exact-compare normalization (trim, strip trailing slash, lowercase
+        # leaf) must exist in every language so the compare is identical.
+        assert "_normalize_index_url" in INSTALL_SH.read_text(encoding = "utf-8")
+        assert "Get-NormalizedIndexUrl" in SETUP_PS1.read_text(encoding = "utf-8")
+        assert "_normalize_index_url" in STACK_PY.read_text(encoding = "utf-8")
+
+    def test_marker_written_atomically(self):
+        # bash uses a temp file + mv; PowerShell a temp file + Move-Item; Python
+        # tempfile + os.replace. Confirm the atomic-write intent in each.
+        assert re.search(r"mv -f \"\$_wm_tmp\"", INSTALL_SH.read_text(encoding = "utf-8"))
+        for ps in (INSTALL_PS1, SETUP_PS1):
+            assert "Move-Item" in ps.read_text(encoding = "utf-8")
+        assert "os.replace" in STACK_PY.read_text(encoding = "utf-8")
+
+    def test_all_writers_strip_credentials_before_persisting(self):
+        """An authenticated pin (https://user:token@mirror/...) must not persist
+        its credentials in the per-venv marker (mode 0644 under a default POSIX
+        umask). Every writer strips userinfo before writing; every normalizer
+        strips it before comparing, so an OLD cred-bearing marker still compares
+        equal to the same pin (backward compatibility, no reinstall loop)."""
+        sh = INSTALL_SH.read_text(encoding = "utf-8")
+        assert "_strip_index_url_credentials()" in sh
+        assert (
+            '_wm_url=$(_strip_index_url_credentials "$_wm_url")' in sh
+        ), "install.sh _write_torch_index_marker must strip credentials"
+        assert (
+            '_n_url=$(_strip_index_url_credentials "$_n_url")' in sh
+        ), "install.sh _normalize_index_url must strip credentials"
+        for path in (INSTALL_PS1, SETUP_PS1):
+            text = path.read_text(encoding = "utf-8")
+            assert "function Remove-IndexUrlCredentials" in text, path.name
+            assert (
+                "Remove-IndexUrlCredentials $IndexUrl.Trim()" in text
+            ), f"{path.name} Write-TorchIndexMarker must strip credentials"
+        setup = SETUP_PS1.read_text(encoding = "utf-8")
+        assert (
+            "(Remove-IndexUrlCredentials $Url.Trim()).TrimEnd('/')" in setup
+        ), "setup.ps1 Get-NormalizedIndexUrl must strip credentials"
+        stack = STACK_PY.read_text(encoding = "utf-8")
+        assert "def _strip_index_url_credentials" in stack
+        assert (
+            'payload = _strip_index_url_credentials(index_url.strip()) + "\\n"' in stack
+        ), "install_python_stack.py _write_torch_index_marker must strip credentials"
+        assert (
+            "url = _strip_index_url_credentials(url)" in stack
+        ), "install_python_stack.py _normalize_index_url must strip credentials"
+
+    def test_all_credential_strippers_drop_query_and_fragment(self):
+        """The credential stripper feeding the marker writer and the logged repair
+        messages must drop a query/fragment token, not just user:pass@ userinfo: a
+        private feed can carry its auth token as .../simple?token=SECRET, which would
+        otherwise persist in the world-readable marker and print in substep output.
+        All four implementations drop it before building the sanitized URL."""
+        sh = INSTALL_SH.read_text(encoding = "utf-8")
+        assert (
+            '_sic_rest="${_sic_rest%%\\?*}"' in sh and '_sic_rest="${_sic_rest%%#*}"' in sh
+        ), "install.sh _strip_index_url_credentials must drop query/fragment"
+        for path in (INSTALL_PS1, SETUP_PS1):
+            text = path.read_text(encoding = "utf-8")
+            assert (
+                "$rest.IndexOfAny([char[]]('?', '#'))" in text
+            ), f"{path.name} Remove-IndexUrlCredentials must drop query/fragment"
+        stack = STACK_PY.read_text(encoding = "utf-8")
+        assert (
+            'rest = rest.split("?", 1)[0].split("#", 1)[0]' in stack
+        ), "install_python_stack.py _strip_index_url_credentials must drop query/fragment"
+
+    def test_all_installers_drop_query_before_leaf_classification(self):
+        """A token-authenticated index URL (.../cu128?token=x) must classify as the
+        cu128 family in every installer: the raw last-path-segment leaf keeps the
+        query attached, which passes the cu prefix check but can never equal the
+        installed cu128 tag, forcing a multi-GB reinstall on every update."""
+        sh = INSTALL_SH.read_text(encoding = "utf-8")
+        assert "_torch_index_url_leaf()" in sh
+        # The top-level backend-branding leaf strips query + fragment first.
+        assert (
+            '_torch_index_leaf="${TORCH_INDEX_URL%%\\?*}"' in sh
+        ), "install.sh backend-branding leaf must drop the query string first"
+        setup = SETUP_PS1.read_text(encoding = "utf-8")
+        assert (
+            "($Url -split '[?#]', 2)[0]" in setup
+        ), "setup.ps1 Get-TorchIndexLeaf must drop query/fragment first"
+        ps1 = INSTALL_PS1.read_text(encoding = "utf-8")
+        assert (
+            "-split '[?#]', 2" in ps1
+        ), "install.ps1 leaf classification must drop query/fragment first"
+        stack = STACK_PY.read_text(encoding = "utf-8")
+        assert "def _torch_index_leaf" in stack
+        assert (
+            'url.split("?", 1)[0].split("#", 1)[0]' in stack
+        ), "install_python_stack.py _torch_index_leaf must drop query/fragment first"
 
 
 class TestKnown211SetParity:
@@ -405,11 +555,10 @@ class TestKnown211SetParity:
             ), f"{label} floor gate must not use the unanchored ^rocm(\\d+)\\.(\\d+) prefix"
 
     def test_install_ps1_bounds_unknown_leaf_pinned_torch(self):
-        """install.ps1's pinned-torch install must bound BOTH companions on EVERY
-        index, cu<digits> families included: torchaudio 2.11 dropped its exact torch
-        pin from the wheel metadata, so a bare companion beside torch<2.11 can
-        resolve a mismatched 2.11.0 build (Codex P2, then unconditional per the
-        torchaudio 2.11 unpinning)."""
+        """install.ps1's custom (non-cu-family) pinned-torch install must bound BOTH
+        companions, not just torch: a private mirror serving newer torchvision/torchaudio
+        must not pull a companion built for a newer torch ABI while the marker records the
+        pin as applied. A cu<digits> family index keeps bare companions (Codex P2)."""
         text = INSTALL_PS1.read_text(encoding = "utf-8")
         assert (
             '$_pinVisionSpec = "torchvision>=0.19,<0.26.0"' in text
@@ -417,10 +566,10 @@ class TestKnown211SetParity:
         assert (
             '$_pinAudioSpec = "torchaudio>=2.4,<2.11.0"' in text
         ), "install.ps1 custom-pin install must bound torchaudio (>=2.4,<2.11.0)"
-        # No cu-family exemption: the bounds apply unconditionally.
+        # Gated on the leaf NOT being a cu<digits> family (a cu index bounds itself).
         assert (
-            "$_pinCuLeaf" not in text
-        ), "install.ps1 must bound companions on every index (no cu-family exemption)"
+            "$_pinCuLeaf -notmatch '^cu[0-9]+$'" in text
+        ), "install.ps1 must bound companions only for a non-cu-family (custom) pin"
         # The bounded companions must actually be passed to the install command.
         assert re.search(
             r'"torch>=2\.4,<2\.11\.0" \$_pinVisionSpec \$_pinAudioSpec --default-index \$TorchIndexUrl',
@@ -504,6 +653,48 @@ class TestPinnedRocmLeafDigitParity:
             're.match(r"^rocm\\d"' not in text
         ), "install_python_stack.py must not gate a family on an unanchored re.match(^rocm\\d)"
 
+    def test_normalize_family_leaf_digit_gates_rocm(self):
+        """_normalize_family_leaf lowercases only true family leaves. rocm7.2 / cu128
+        are families (lowercased), but rocm-Current / rocm-rel-7.2.1 / cu128-private AND
+        a suffixed rocm7.2-private keep their case so a custom-index leaf is not falsely
+        matched equal (URL paths can be case-sensitive). All three installers match the
+        rocm family EXACTLY (not a ^rocm[0-9] prefix) and match the cu leaf EXACTLY."""
+        sh = INSTALL_SH.read_text(encoding = "utf-8")
+        assert '_is_pip_rocm_family_leaf "$_l_low"' in sh, (
+            "install.sh _normalize_family_leaf must gate rocm via the exact-match "
+            "_is_pip_rocm_family_leaf helper (not a rocm[0-9]* glob)"
+        )
+        # cu is exact: the leaf is a family only when stripping "cu" leaves all digits.
+        assert '"${_l_low#cu}"' in sh, (
+            "install.sh _normalize_family_leaf must match cu EXACTLY (strip cu, require "
+            "an all-digit remainder) so cu128-private stays a custom leaf"
+        )
+        setup = SETUP_PS1.read_text(encoding = "utf-8")
+        assert "(Test-PipRocmFamilyLeaf $low)" in setup, (
+            "setup.ps1 Get-NormalizedFamilyLeaf must gate rocm via the exact-match "
+            "Test-PipRocmFamilyLeaf helper (not a ^(rocm[0-9]|gfx) prefix)"
+        )
+        assert (
+            "-match '^cu[0-9]+$'" in setup
+        ), "setup.ps1 Get-NormalizedFamilyLeaf must match cu EXACTLY (^cu[0-9]+$)"
+        stack = STACK_PY.read_text(encoding = "utf-8")
+        assert re.search(
+            r'fullmatch\(r"rocm\[0-9\]\+\(\?:\\\.\[0-9\]\+\)\?", low\)', stack
+        ), "install_python_stack.py _normalize_family_leaf must fullmatch rocm[0-9]+(?:\\.[0-9]+)?"
+        assert re.search(
+            r'r"cu\[0-9\]\+"', stack
+        ), "install_python_stack.py _normalize_family_leaf must fullmatch cu[0-9]+"
+
+    def test_setup_ps1_marker_compare_is_case_sensitive(self):
+        """Test-MarkerPinMismatch must use -cne, not -ne: normalization preserves
+        unknown-leaf case, so a case-only custom-index change (/Simple -> /simple)
+        is a real mismatch that PowerShell's case-insensitive -ne would miss."""
+        text = SETUP_PS1.read_text(encoding = "utf-8")
+        assert "(Get-NormalizedIndexUrl $PinUrl) -cne (Get-NormalizedIndexUrl $marker)" in text, (
+            "setup.ps1 Test-MarkerPinMismatch must compare normalized URLs with -cne "
+            "(case-sensitive) so a case-only custom-index change triggers reinstall"
+        )
+
     def test_install_sh_rocm_side_effects_digit_gated(self):
         """The AMD bitsandbytes + 'repair ROCm torch' side effects must fire only on
         an EXACT ROCm family (rocm7.2/gfx*), not a bare */rocm* whole-URL glob nor a
@@ -522,12 +713,191 @@ class TestPinnedRocmLeafDigitParity:
         ), "install.sh must not gate _install_bnb_rocm on a bare */rocm* whole-URL glob"
 
 
+class TestFirstCustomPinAppliedWithoutMarker:
+    """An explicitly-set custom (unknown-family) UNSLOTH_TORCH_INDEX_URL must be
+    applied on the FIRST `studio update` of a venv that predates the marker feature.
+    Such a venv has no .unsloth-torch-index marker, so the marker compare returns
+    None/$null and the version-tag heuristics cannot judge an unknown leaf; without
+    treating "no marker" as "apply verbatim once", the explicit pin would be silently
+    ignored until a marker happened to exist. The verbatim reinstall writes the
+    marker, so every later update is a no-op (marker == pin)."""
+
+    def test_stack_py_applies_pin_when_marker_absent(self):
+        text = STACK_PY.read_text(encoding = "utf-8")
+        body = text[text.find("def _ensure_verbatim_torch_index") :]
+        body = body[: body.find("\ndef _record_torch_index_pin_baseline")]
+        # The short-circuit must be "already this exact pin" (False), NOT the old
+        # "is not True", which also bailed on a None (no-marker) result.
+        assert "if _mismatch is False:" in body, (
+            "_ensure_verbatim_torch_index must reinstall on an absent marker (None), "
+            "returning early only when the marker already records this exact pin (False)"
+        )
+        assert "if _mismatch is not True:" not in body, (
+            "_ensure_verbatim_torch_index must no longer skip the reinstall when the "
+            "marker is absent (None)"
+        )
+
+    def test_setup_sh_forces_stack_pass_only_when_pin_needs_applying(self):
+        """On Linux `studio update` runs setup.sh, which skips install_python_stack.py (the
+        only place the marker-driven torch reinstall lives) when unsloth is current. setup.sh
+        must force the pass for an explicit pin, but only when not yet applied (via the
+        --torch-pin-needs-apply probe), so an already-applied pin keeps the fast path."""
+        setup_sh = REPO_ROOT / "studio" / "setup.sh"
+        text = setup_sh.read_text(encoding = "utf-8")
+        assert (
+            '[ -n "${UNSLOTH_TORCH_INDEX_URL:-}${UNSLOTH_TORCH_INDEX_FAMILY:-}" ]' in text
+        ), "setup.sh must gate the pin-apply pass on the pin env vars"
+        assert "--torch-pin-needs-apply" in text, (
+            "setup.sh must probe install_python_stack.py --torch-pin-needs-apply so the "
+            "expensive pass runs only when the marker does not already record the pin"
+        )
+        assert '[ "$_PIN_NEEDS_APPLY" != 1 ]' in text, (
+            "setup.sh must keep the fast path only on an explicit exit 1 (already applied) "
+            "and fail safe (run the pass) on exit 0 or a probe error"
+        )
+        # Under `set -euo pipefail` the probe's exit 1 (already-applied) must be absorbed
+        # with `|| _PIN_NEEDS_APPLY=$?`, else it aborts the update before the capture.
+        assert "|| _PIN_NEEDS_APPLY=$?" in text, (
+            "setup.sh must capture the probe exit with `|| _PIN_NEEDS_APPLY=$?` so a "
+            "nonzero probe result does not kill the script under set -e"
+        )
+
+    def test_stack_py_exposes_torch_pin_needs_apply_probe(self):
+        """install_python_stack.py must answer the setup.sh/setup.ps1 probe: exit 0 when a
+        pin is set and the marker doesn't match OR the torch flavor drifted; exit 1 otherwise.
+        Reusing the Python normalization keeps the shell side from drifting from it."""
+        text = STACK_PY.read_text(encoding = "utf-8")
+        assert (
+            '"--torch-pin-needs-apply" in sys.argv' in text
+        ), "install_python_stack.py must handle the --torch-pin-needs-apply query"
+        assert (
+            "def _torch_pin_needs_apply()" in text
+        ), "the probe decision must live in a testable _torch_pin_needs_apply() helper"
+        assert "_marker_pin_mismatch(pin) is not False" in text, (
+            "the probe must report 'needs apply' when the marker differs (True) or is absent "
+            "(None), and only reach the flavor check when it already matches (False)"
+        )
+        assert "_torch_flavor_matches_pin(pin, flavor) is False" in text, (
+            "the probe must also force the pass when a known-family pin's installed flavor "
+            "drifted (clobbered), which the marker (last install source) cannot detect"
+        )
+
+    def test_setup_ps1_probes_pin_needs_apply_in_fast_path(self):
+        """setup.ps1 must apply the same probe in its fast 'up to date' path for parity, so
+        a known-family pin on a marker-less venv records its baseline (breaking the loop)."""
+        text = SETUP_PS1.read_text(encoding = "utf-8")
+        assert (
+            "--torch-pin-needs-apply" in text
+        ), "setup.ps1 fast path must probe install_python_stack.py --torch-pin-needs-apply"
+        assert (
+            "$env:UNSLOTH_TORCH_INDEX_URL -or $env:UNSLOTH_TORCH_INDEX_FAMILY" in text
+        ), "setup.ps1 must gate the probe on the pin env vars"
+
+    def test_stack_py_records_pin_baseline_after_ensures(self):
+        """The update torch-ensure sequence must record a pin baseline so a known-family
+        pin on a marker-less venv (no reinstall needed) still writes the marker once --
+        otherwise setup.sh/setup.ps1 would re-run the pass on every update forever."""
+        text = STACK_PY.read_text(encoding = "utf-8")
+        assert (
+            "def _record_torch_index_pin_baseline" in text
+        ), "install_python_stack.py must define _record_torch_index_pin_baseline"
+        # It must run right after _ensure_verbatim_torch_index in every ensure block
+        # (step 2b + the step-13 final blocks), whatever the indent level.
+        assert (
+            len(
+                re.findall(
+                    r"_ensure_verbatim_torch_index\(\)\n\s+_record_torch_index_pin_baseline\(\)",
+                    text,
+                )
+            )
+            >= 2
+        ), (
+            "_record_torch_index_pin_baseline must be called after the verbatim helper in "
+            "every update torch-ensure block"
+        )
+
+    def test_stack_py_captures_verbatim_baseline_before_core_step(self):
+        """The verbatim custom-pin baseline must be captured BEFORE the core package step
+        (# 3), which can re-resolve and clobber a custom-pinned torch. If it ran after,
+        the step-2b verbatim pass would record the already-clobbered trio as the baseline
+        for a matching marker and the final pass would see no drift (round-11 P2)."""
+        text = STACK_PY.read_text(encoding = "utf-8")
+        cap_idx = text.find("_capture_verbatim_baseline()\n")
+        step3_idx = text.find("# 3. Core packages")
+        assert cap_idx != -1, "install_python_stack.py must call _capture_verbatim_baseline()"
+        assert step3_idx != -1, "the core package step (# 3) must exist"
+        assert cap_idx < step3_idx, (
+            "_capture_verbatim_baseline() must run BEFORE the core package step that can "
+            "clobber a custom-pinned torch, or the pre-clobber baseline is lost"
+        )
+
+    def test_stack_py_final_repair_covers_windows_and_macos_arm(self):
+        """The step-13 final torch repair runs the full cuda/rocm/cpu family sequence on
+        Linux only, but a custom (unknown-family) pin also needs its verbatim drift
+        repair on Windows (a dependency step can clobber the pin step 2b applied) and
+        macOS ARM (step 2b is skipped there, so this is where the pin is first applied).
+        The Windows/macOS-ARM branch must run the verbatim helper without the Linux-only
+        family repair."""
+        text = STACK_PY.read_text(encoding = "utf-8")
+        assert "elif IS_WINDOWS or IS_MAC_ARM:" in text, (
+            "the step-13 final repair must have a Windows/macOS-ARM branch so a custom "
+            "pin is repaired/applied there, not only on Linux"
+        )
+        # A KNOWN-family pin also needs a repair on Windows: a later dependency step can
+        # clobber it and _ensure_{cuda,rocm,cpu}_torch self-skip there, so the branch must
+        # call _ensure_pinned_known_family_torch.
+        _win_start = text.find("elif IS_WINDOWS or IS_MAC_ARM:")
+        win_branch = text[_win_start : text.find("# 14.", _win_start)]
+        assert "_ensure_pinned_known_family_torch()" in win_branch, (
+            "the Windows/macOS-ARM branch must repair a clobbered known-family pin "
+            "via _ensure_pinned_known_family_torch (the family helpers no-op on Windows)"
+        )
+        # An explicit rocm/gfx pin's wheel can be clobbered too. That repair is OWNED by
+        # _ensure_pinned_known_family_torch (reinstalls from the PINNED url), NOT
+        # _ensure_rocm_torch's Windows path (auto-detects the arch via hipinfo, wrong for a
+        # private pin, and returns early on a headless box), so the branch must NOT call it.
+        assert "_ensure_rocm_torch()" not in win_branch, (
+            "the Windows/macOS-ARM final branch must not auto-detect the ROCm index via "
+            "_ensure_rocm_torch; an explicit rocm/gfx pin is repaired from the pinned URL "
+            "by _ensure_pinned_known_family_torch"
+        )
+        # _ensure_pinned_known_family_torch must own Windows rocm/gfx pins: gate ROCm via
+        # the pin leaf and reinstall from the explicit pin, never an auto-detected index.
+        _pinned_start = text.find("def _ensure_pinned_known_family_torch(")
+        pinned_fn = text[_pinned_start : text.find("\ndef ", _pinned_start + 1)]
+        assert "_is_win_rocm = IS_WINDOWS and _is_pip_rocm_family_leaf(leaf)" in pinned_fn, (
+            "_ensure_pinned_known_family_torch must handle a Windows rocm/gfx pin from the "
+            "explicit pin URL (round-7 item 2), gated on IS_WINDOWS + a pip rocm leaf"
+        )
+        assert '"--index-url",' in pinned_fn and "pin," in pinned_fn, (
+            "_ensure_pinned_known_family_torch must reinstall the trio from the explicit "
+            "pin URL (--index-url pin), not an auto-detected arch index"
+        )
+
+    def test_setup_ps1_forces_reinstall_when_marker_absent(self):
+        text = SETUP_PS1.read_text(encoding = "utf-8")
+        # The unknown-family else branch must promote a null marker to an in-place
+        # force-reinstall (PinChangedForceReinstall), NOT a wipe ($shouldRebuild).
+        assert (
+            "if ($null -eq $_markerMismatch) { $script:PinChangedForceReinstall = $true }" in text
+        ), (
+            "setup.ps1 must set PinChangedForceReinstall for an unknown-family pin on a "
+            "marker-less venv so the torch block reinstalls from $PinnedTorchIndexUrl in place"
+        )
+        # Guard: the unknown-leaf branch must not trigger the venv wipe path.
+        else_branch = text[text.find("PEP 503 mirror ending in /simple") :][:900]
+        assert "$shouldRebuild = $true" not in else_branch, (
+            "setup.ps1 unknown-family branch must repair in place (PinChangedForceReinstall), "
+            "not wipe the venv ($shouldRebuild), which would strand a direct studio update"
+        )
+
+
 class TestPinnedIndexClearsUvEnvParity:
     """Every installer must neutralise the uv index env vars for a pinned torch
     install (#6898). uv treats the default index (--index-url / --default-index) as
     lowest priority, so an inherited UV_INDEX / UV_EXTRA_INDEX_URL mirror would win
     under uv's first-index strategy and pull torch from the wrong index -- after
-    which the pinned wheel index is silently never used."""
+    which the torch-index marker records a wheel index that was never used."""
 
     UV_VARS = ("UV_DEFAULT_INDEX", "UV_INDEX_URL", "UV_INDEX", "UV_EXTRA_INDEX_URL")
 
@@ -655,10 +1025,10 @@ class TestPinnedIndexClearsUvEnvParity:
         CUDA branch; install.ps1's fresh pinned install, install.sh, and the Python
         verbatim path bound the WHOLE trio, so the Windows update path must too -- a
         private mirror serving newer torch OR newer companions must not lift the venv
-        above the supported range under the pin."""
+        above the supported range while the marker records the pin as applied."""
         text = SETUP_PS1.read_text(encoding = "utf-8")
-        # The custom-leaf branch bounds torch AND both companions (parity with the
-        # other installers' custom-pin trio bounds), gated on a non-cu-family leaf.
+        # The custom-leaf branch bounds torch AND both companions (parity with
+        # _CUSTOM_INDEX_TORCH_PKG_SPEC), gated on a non-cu-family leaf.
         for spec in (
             '$cudaTorchSpec = "torch>=2.4,<2.11.0"',
             '$cudaVisionSpec = "torchvision>=0.19,<0.26.0"',
@@ -672,40 +1042,12 @@ class TestPinnedIndexClearsUvEnvParity:
             "Fast-Install $cudaTorchSpec $cudaVisionSpec $cudaAudioSpec" in text
         ), "setup.ps1's CUDA branch must install via the bounded spec variables"
 
-    def test_setup_ps1_bounds_pinned_cpu_torch(self):
-        """setup.ps1's CPU branch must bound the trio under an explicit pin (parity with
-        _CPU_TORCH_PKG_SPEC): the /cpu index serves newer torch, and _ensure_cpu_torch
-        keeps any CPU build, so a bare pinned trio could land an unsupported version.
-        An unpinned CPU host keeps the bare trio (pre-pin behavior unchanged)."""
-        text = SETUP_PS1.read_text(encoding = "utf-8")
-        for spec in (
-            '$cpuTorchSpec  = "torch>=2.4,<2.12.0"',
-            '$cpuVisionSpec = "torchvision>=0.19,<0.27.0"',
-            '$cpuAudioSpec  = "torchaudio>=2.4,<2.12.0"',
-        ):
-            assert spec in text, f"setup.ps1 must bound the pinned CPU trio: {spec}"
-        assert (
-            "if ($TorchIndexPinned) {" in text
-        ), "the CPU trio bounds must be gated on an explicit pin"
-        assert (
-            "Fast-Install $cpuTorchSpec $cpuVisionSpec $cpuAudioSpec @cpuForce" in text
-        ), "setup.ps1's CPU branch must install via the spec variables"
-        # The ceilings mirror the Python repair spec exactly.
-        stack = STACK_PY.read_text(encoding = "utf-8")
-        spec_block = re.search(r"_CUDA_TORCH_PKG_SPEC[^(]*\(\s*(.*?)\)", stack, re.DOTALL)
-        assert spec_block and '"torch>=2.4,<2.12.0"' in spec_block.group(1), (
-            "_CPU_TORCH_PKG_SPEC (via _CUDA_TORCH_PKG_SPEC) must keep the torch<2.12 "
-            "ceiling the setup.ps1 pinned CPU branch mirrors"
-        )
-
     def test_setup_ps1_stale_check_requires_rocm_digit(self):
-        """The stale-venv check must use the same EXACT rocm/gfx gate as the install
+        """The marker stale check must use the same EXACT rocm/gfx gate as the install
         selection (Test-PipRocmFamilyLeaf), or a custom rocm-* / suffixed rocm7.2-private
         leaf is stale-compared as a family and force-reinstalls on every studio update."""
         text = SETUP_PS1.read_text(encoding = "utf-8")
-        anchor = text.find("$_pinLeaf = Get-TorchIndexLeaf $_pinnedIdx")
-        assert anchor >= 0, "setup.ps1 stale check must classify the pinned leaf"
-        stale = text[anchor:][:2500]
+        stale = text[text.find("Get-RocmPinStaleTags -PinLeaf") - 2500 :][:2500]
         assert (
             "Test-PipRocmFamilyLeaf" in stale
         ), "setup.ps1 stale check must gate rocm leaves via the exact Test-PipRocmFamilyLeaf"
