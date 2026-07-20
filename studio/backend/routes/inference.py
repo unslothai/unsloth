@@ -4710,7 +4710,7 @@ async def _load_model_impl(request: LoadRequest, fastapi_request: Request, curre
             # Clear any idle-unload reload stash now, not only on the next poll.
             from core.inference.llama_keepwarm import note_model_loaded
 
-            note_model_loaded()
+            await asyncio.to_thread(note_model_loaded, llama_backend)
             # A plain load advertises its own identifier; auto-switch overwrites
             # this with the repo id right after _load_model_impl returns.
             llama_backend._openai_advertised_id = None

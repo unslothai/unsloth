@@ -232,6 +232,9 @@ export const en = {
         loadError: "Failed to load model auto-switch settings.",
         saveError: "Failed to save model auto-switch settings.",
         idleError: "Enter 0 to keep the model loaded, or at least 60 seconds.",
+        keepKv: "Keep chat context across idle unload",
+        keepKvDescription:
+          "Save the model's KV cache to disk before an idle unload and restore it on reload, so resumed chats skip re-reading their history. Chat context is written to disk (up to 10 GB) until it is restored or cleaned up.",
       },
       previewSharing: {
         sectionTitle: "Preview sharing",
