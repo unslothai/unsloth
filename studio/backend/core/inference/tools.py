@@ -143,11 +143,6 @@ _BLOCKED_COMMANDS = (
     else _BLOCKED_COMMANDS_COMMON
 )
 
-# Network/remote-reaching commands; blocking one steers the model to fetch via code or ask for a path.
-_NETWORK_BLOCKED_COMMANDS = frozenset(
-    {"curl", "wget", "nc", "ncat", "netcat", "socat", "ssh", "scp", "sftp", "rsync"}
-)
-
 
 _SHELL_SEPARATORS = frozenset({";", "&&", "||", "|", "&", "\n", "(", ")", "`", "{", "}"})
 # Bash keywords starting a new command position (then $cmd, do $cmd, etc.).
@@ -2948,41 +2943,13 @@ WEB_SEARCH_TOOL = {
     },
 }
 
-# Appended to python/terminal descriptions to stop models writing to /mnt/data or
-# guessing a local path. Split so the Bypass variant can drop the network sentence:
-# under bypass egress works, so claiming downloads are unavailable would wrongly
-# block a user-supplied remote resource.
-_SANDBOX_PATHS_NOTE_INTRO = (
-    " The working directory is an isolated scratch space that may already hold "
-    "files from earlier work in this conversation or project, plus anything you "
-    "create here; it persists across this conversation and, for a project, "
-    "across the project's threads. It is the default location for your work, not "
-    "a copy of the user's own computer, so do not assume files elsewhere on the "
-    "host are already here."
-)
-_SANDBOX_PATHS_NOTE_NETWORK = (
-    " Internet access is limited: the python tool is intended to fetch "
-    "from public sources such as github.com, huggingface.co, and pypi.org "
-    "rather than the user's own machines or private hosts, and the terminal "
-    "blocks direct download commands like curl and wget."
-)
-_SANDBOX_PATHS_NOTE_TAIL = (
-    " Documents the user attaches to the chat are retrieved "
-    "separately and are not listed here. A repository, folder, or file the user "
-    "refers to is not present here unless you created it here or it is already "
-    "part of this project, so list the working directory to see what is "
-    "available rather than assuming a mentioned path exists or guessing where it "
-    "lives. Read and write files using relative paths in the working directory; "
-    "absolute paths like /mnt/data or /tmp/outputs do not exist. If the files "
-    "you need are not here, ask the user to provide them or an exact path "
-    "instead of guessing one."
-)
-# Default (sandboxed) note: steers python at public sources, keeps the curl/wget restriction.
+# Appended to the python/terminal descriptions: models habitually write to
+# /mnt/data (a ChatGPT code-interpreter path), which does not exist here.
 _SANDBOX_PATHS_NOTE = (
-    _SANDBOX_PATHS_NOTE_INTRO + _SANDBOX_PATHS_NOTE_NETWORK + _SANDBOX_PATHS_NOTE_TAIL
+    " Read and write files using relative paths in the current working "
+    "directory, which persists for this conversation; absolute paths like "
+    "/mnt/data or /tmp/outputs do not exist."
 )
-# Bypass variant: same guidance minus the network sentence.
-_SANDBOX_PATHS_NOTE_BYPASS = _SANDBOX_PATHS_NOTE_INTRO + _SANDBOX_PATHS_NOTE_TAIL
 
 PYTHON_TOOL = {
     "type": "function",
@@ -3084,42 +3051,6 @@ ALL_TOOLS = [
     RENDER_HTML_TOOL,
     SEARCH_KNOWLEDGE_BASE_TOOL,
 ]
-
-
-def _with_sandbox_note(tool: dict, note: str) -> dict:
-    """Copy of a python/terminal tool spec with its sandbox-paths note swapped for
-    ``note`` (the default note is stripped first)."""
-    fn = dict(tool["function"])
-    base = fn["description"]
-    if base.endswith(_SANDBOX_PATHS_NOTE):
-        base = base[: -len(_SANDBOX_PATHS_NOTE)]
-    fn["description"] = base + note
-    return {**tool, "function": fn}
-
-
-# Bypass variants: descriptions omit the curl/wget restriction, used when the sandbox is disabled.
-PYTHON_TOOL_BYPASS = _with_sandbox_note(PYTHON_TOOL, _SANDBOX_PATHS_NOTE_BYPASS)
-TERMINAL_TOOL_BYPASS = _with_sandbox_note(TERMINAL_TOOL, _SANDBOX_PATHS_NOTE_BYPASS)
-_BYPASS_TOOL_OVERRIDES = {
-    "python": PYTHON_TOOL_BYPASS,
-    "terminal": TERMINAL_TOOL_BYPASS,
-}
-
-
-def apply_bypass_tool_notes(tools: list[dict]) -> list[dict]:
-    """Return ``tools`` with python/terminal swapped for their Bypass variants
-    (only the description differs); no-op for lists without python/terminal."""
-    swapped = False
-    result: list[dict] = []
-    for tool in tools:
-        name = (tool.get("function") or {}).get("name") if isinstance(tool, dict) else None
-        override = _BYPASS_TOOL_OVERRIDES.get(name)
-        if override is not None:
-            result.append(override)
-            swapped = True
-        else:
-            result.append(tool)
-    return result if swapped else tools
 
 
 # OpenAI's function.name regex; MCP names that violate it would 400 the whole
@@ -5611,6 +5542,63 @@ def _is_outside_workdir(abs_path: str, workdir: str | None = None) -> bool:
     return rp != root and not rp.startswith(root + os.sep)
 
 
+# Device paths that shell redirection and common tooling rely on; they are not
+# filesystem escapes, so the out-of-workdir scan skips them.
+_ALLOWED_ABS_PATHS = frozenset(
+    {
+        "/dev/null",
+        "/dev/zero",
+        "/dev/full",
+        "/dev/tty",
+        "/dev/stdin",
+        "/dev/stdout",
+        "/dev/stderr",
+        "/dev/random",
+        "/dev/urandom",
+    }
+)
+
+
+def _paths_outside_workdir(command: str, workdir: str) -> list[str]:
+    """Best-effort keyword scan for path arguments in ``command`` that resolve
+    outside ``workdir``.
+
+    A lightweight, additive defence-in-depth check: it only inspects literal
+    path-like tokens (absolute ``/`` or ``~`` paths and explicit relative paths
+    containing ``/``) and reports the ones whose ``realpath`` escapes the
+    session workdir. It is not the real boundary (the kernel-level filesystem
+    sandbox is) and fails open on anything it cannot parse. Returns the escaping
+    resolved paths (deduped, order-preserving); empty means nothing to block.
+    """
+    try:
+        tokens = shlex.split(command, posix = True)
+    except ValueError:
+        return []
+    outside: list[str] = []
+    seen: set[str] = set()
+    for token in tokens:
+        tok = _REDIR_PREFIX_RE.sub("", token)
+        if not tok or tok.startswith("-") or "://" in tok:
+            # flags and URLs are not local filesystem paths
+            continue
+        if tok.startswith("~"):
+            candidate = os.path.join(workdir, tok[1:].lstrip("/\\") or ".")
+        elif tok.startswith("/"):
+            if tok in _ALLOWED_ABS_PATHS:
+                continue
+            candidate = tok
+        elif "/" in tok:
+            candidate = os.path.join(workdir, tok)
+        else:
+            continue
+        if _is_outside_workdir(candidate, workdir):
+            resolved = os.path.realpath(candidate)
+            if resolved not in seen:
+                seen.add(resolved)
+                outside.append(resolved)
+    return outside
+
+
 def _missing_path_hint(output: str, workdir: str | None = None) -> str:
     """Model-visible healing when an execution fails on an absolute path missing
     in the sandbox (a code-interpreter habit path, or one invented from the CWD).
@@ -5897,18 +5885,17 @@ def _bash_exec(
     if not disable_sandbox:
         blocked = _find_blocked_commands(command)
         if blocked:
-            base = f"Blocked command(s) for safety: {', '.join(sorted(blocked))}."
-            if blocked & _NETWORK_BLOCKED_COMMANDS:
-                return (
-                    base + " These download commands are blocked by name in "
-                    "the terminal. If a code-execution tool is enabled this "
-                    "turn, public files on sites such as github.com, "
-                    "huggingface.co, or pypi.org can be fetched from code "
-                    "instead. If you need files from another location, ask the "
-                    "user to place them in the working directory or give a path "
-                    "the sandbox can read."
-                )
-            return base
+            return f"Blocked command(s) for safety: {', '.join(sorted(blocked))}"
+        # Defence in depth: reject obvious file arguments that resolve outside
+        # the session workdir (bypass sessions skip this along with the
+        # blocklist above).
+        outside = _paths_outside_workdir(command, _get_workdir(session_id))
+        if outside:
+            return (
+                "Blocked for safety: path(s) outside the sandbox working "
+                f"directory: {', '.join(outside)}. Read and write files with "
+                "relative paths in the working directory instead."
+            )
     elif not _harden_parent_against_proc_env_leak():
         # Close the /proc/<parent>/environ secret-recovery path first; if it
         # cannot be applied, fail closed rather than leak the parent environ.

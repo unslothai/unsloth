@@ -2143,19 +2143,6 @@ def _permission_mode_confirm(payload) -> bool:
     return bool(getattr(payload, "stream", False))
 
 
-def _sandbox_disabled(payload) -> bool:
-    """Whether python/terminal execution actually runs unsandboxed for this request.
-
-    Both agent loops fold permission_mode "full" and bypass_permissions into the
-    same disable_sandbox flag, so both skip _check_code_safety and the curl/wget
-    blocklist. The tool notes and nudge key off this effective flag, not
-    bypass_permissions alone.
-    """
-    return bool(getattr(payload, "bypass_permissions", False)) or (
-        getattr(payload, "permission_mode", None) == "full"
-    )
-
-
 def _confirm_gate_needs_stream(payload) -> bool:
     """Whether Unsloth's local tool-loop confirm gate still requires stream=true.
 
@@ -2417,27 +2404,7 @@ _TOOL_WEB_EXPANDED_TIP = (
 )
 _TOOL_CODE_TIP = (
     "Use code execution for math, calculations, data processing, or to parse "
-    "and analyze information from tool results. It runs in a sandbox whose "
-    "working directory is an isolated scratch space that is the default "
-    "location for your work and may already hold files from earlier work; it "
-    "is not a copy of the user's computer, and its internet access is limited, "
-    "so do not assume a file, folder, or repository the user mentions is "
-    "already present. List the working directory to see what is there; if what "
-    "you need is not present, ask the user to provide it or give an exact path "
-    "rather than running commands against a guessed one."
-)
-# Bypass variant: bypass disables the sandbox, so this drops both the "internet
-# access is limited" clause and the "runs in a sandbox" framing; it keeps the
-# accurate isolated-scratch workdir-default guidance.
-_TOOL_CODE_TIP_BYPASS = (
-    "Use code execution for math, calculations, data processing, or to parse "
-    "and analyze information from tool results. Its working directory is an "
-    "isolated scratch space that is the default location for your work and may "
-    "already hold files from earlier work; it is not a copy of the user's "
-    "computer, so do not assume a file, folder, or repository the user mentions "
-    "is already present. List the working directory to see what is there; if "
-    "what you need is not present, ask the user to provide it or give an exact "
-    "path rather than running commands against a guessed one."
+    "and analyze information from tool results."
 )
 _TOOL_ARTIFACT_TIP = (
     "For HTML, CSS, or JavaScript canvas requests, call render_html once when "
@@ -2448,12 +2415,7 @@ _TOOL_ARTIFACT_TIP = (
 )
 
 
-def _build_tool_action_nudge(
-    *,
-    tools: list[dict],
-    model_name: str,
-    disable_sandbox: bool = False,
-) -> str:
+def _build_tool_action_nudge(*, tools: list[dict], model_name: str) -> str:
     tool_names = {
         (tool.get("function") or {}).get("name")
         for tool in tools
@@ -2471,7 +2433,7 @@ def _build_tool_action_nudge(
     if has_web:
         tool_tip_parts.append(_TOOL_WEB_COMPACT_TIP if compact_web_tip else _TOOL_WEB_EXPANDED_TIP)
     if has_code:
-        tool_tip_parts.append(_TOOL_CODE_TIP_BYPASS if disable_sandbox else _TOOL_CODE_TIP)
+        tool_tip_parts.append(_TOOL_CODE_TIP)
     if has_artifact:
         tool_tip_parts.append(_TOOL_ARTIFACT_TIP)
     return (
@@ -2501,11 +2463,7 @@ async def _select_request_tools(
     retrieval scope, then enabled MCP tools appended. An empty result means the
     caller should skip the tool loop, so a model-emitted built-in call can't
     piggy-back on the empty allow-list."""
-    from core.inference.tools import (
-        ALL_TOOLS,
-        apply_bypass_tool_notes,
-        get_enabled_mcp_tools,
-    )
+    from core.inference.tools import ALL_TOOLS, get_enabled_mcp_tools
 
     if not tools_on:
         # MCP-only request: skip built-ins, leave room for MCP tools.
@@ -2518,9 +2476,6 @@ async def _select_request_tools(
     # Drop the RAG tool without a scope: nothing to search over.
     if not payload.rag_scope:
         tools = [t for t in tools if t["function"]["name"] != "search_knowledge_base"]
-    # Sandbox-disabled: descriptions must not claim the curl/wget block that no longer applies.
-    if _sandbox_disabled(payload):
-        tools = apply_bypass_tool_notes(tools)
     if mcp_allowed:
         tools = tools + await get_enabled_mcp_tools()
     return tools
@@ -4755,7 +4710,7 @@ async def _load_model_impl(request: LoadRequest, fastapi_request: Request, curre
             # Clear any idle-unload reload stash now, not only on the next poll.
             from core.inference.llama_keepwarm import note_model_loaded
 
-            note_model_loaded()
+            await asyncio.to_thread(note_model_loaded, llama_backend)
             # A plain load advertises its own identifier; auto-switch overwrites
             # this with the repo id right after _load_model_impl returns.
             llama_backend._openai_advertised_id = None
@@ -7797,7 +7752,6 @@ async def openai_chat_completions(
             _nudge = _build_tool_action_nudge(
                 tools = tools_to_use,
                 model_name = model_name,
-                disable_sandbox = _sandbox_disabled(payload),
             )
 
             # Nudge the model to ground in attached documents instead of memory.
@@ -9148,7 +9102,6 @@ async def openai_chat_completions(
         _sf_nudge = _build_tool_action_nudge(
             tools = _sf_tools_to_use,
             model_name = model_name,
-            disable_sandbox = _sandbox_disabled(payload),
         )
 
         # RAG nudge, mirroring the GGUF path.
@@ -12866,7 +12819,7 @@ async def anthropic_messages(
                     err_type = "invalid_request_error",
                 ),
             )
-        from core.inference.tools import ALL_TOOLS, apply_bypass_tool_notes
+        from core.inference.tools import ALL_TOOLS
 
         # ask/auto (and an omitted mode selecting a gate-needing terminal/python
         # tool) were already rejected before the auto-switch above, so an invalid
@@ -12877,15 +12830,11 @@ async def anthropic_messages(
             requested_studio_tools,
             payload.enabled_tools,
         )
-        # Sandbox-disabled: drop the curl/wget restriction from the descriptions here too.
-        if _sandbox_disabled(payload):
-            openai_tools = apply_bypass_tool_notes(openai_tools)
 
         # Build tool-use system prompt nudge (same logic as /chat/completions)
         _nudge = _build_tool_action_nudge(
             tools = openai_tools,
             model_name = model_name,
-            disable_sandbox = _sandbox_disabled(payload),
         )
 
         if _nudge:
