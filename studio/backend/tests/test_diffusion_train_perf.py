@@ -149,7 +149,8 @@ def test_gather_sigmas_matches_search_based_gather():
     step_indices = [(schedule_timesteps == t).nonzero().item() for t in timesteps]
     assert step_indices == indices.tolist()
 
-    sigma = _gather_sigmas(sched, indices, "cpu", torch.float32, 4)
+    # _gather_sigmas takes the sigma TABLE (identity here: no flow shift), not the scheduler.
+    sigma = _gather_sigmas(sched.sigmas, indices, "cpu", torch.float32, 4)
     assert sigma.ndim == 4
     expected = sched.sigmas[step_indices].flatten()
     while expected.ndim < 4:

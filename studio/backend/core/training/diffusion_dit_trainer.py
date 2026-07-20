@@ -58,6 +58,11 @@ from core.training.diffusion_train_common import (
     repo_is_prequantized,
     resolve_train_steps,
 )
+from core.training.diffusion_train_extras import (
+    LoRAEMA,
+    PersistentConditioningCache,
+    save_ema_adapter,
+)
 
 # Per-family LoRA target modules (attention projections). FLUX / Qwen double-stream blocks
 # also carry added-kv projections; Z-Image is single-stream. Architecture-specific, so kept
@@ -244,6 +249,11 @@ def _bnb_4bit_config():
         load_in_4bit = True,
         bnb_4bit_quant_type = "nf4",
         bnb_4bit_compute_dtype = torch.bfloat16,
+        # Double quantization compresses the per-block absmax scales with a second 8-bit
+        # pass: ~0.4 bits/param off the frozen base at no fidelity cost (the scales are
+        # metadata, not weights), which matters most on the 20B+ DiTs where the nf4 base
+        # dominates VRAM.
+        bnb_4bit_use_double_quant = True,
     )
 
 
@@ -349,16 +359,34 @@ def _fp8_module_filter(mod, fqn: str) -> bool:
     return mod.in_features % 16 == 0 and mod.out_features % 16 == 0
 
 
+def _fp8_training_config():
+    """The float8 training config: per-ROW (rowwise) scaling when this torchao build ships
+    the recipe, else the tensorwise default. The DiT families carry extreme activation
+    outliers (Z-Image MLP activations peak near 6.6e4, the same range that forced per-row
+    scaling in the inference quant layer): one tensor-wide dynamic scale pushes normal
+    values (~1-30) below fp8 resolution, so the frozen base's forward -- the signal the
+    LoRA regresses against -- degrades. Per-row scaling confines each outlier to its own
+    token/channel. The tensorwise fallback keeps pad_inner_dim so a non-16-aligned inner
+    dim never aborts the scaled_mm (the rowwise recipe manages its own padding rules and
+    rejects the knob, hence the split)."""
+    from torchao.float8 import Float8LinearConfig
+
+    try:
+        return Float8LinearConfig.from_recipe_name("rowwise")
+    except Exception:  # noqa: BLE001 -- older torchao without the rowwise recipe
+        return Float8LinearConfig(pad_inner_dim = True)
+
+
 def _apply_fp8_training(transformer, on_event) -> bool:
     """Convert the frozen base linears to torchao float8 training compute (dynamic scaling;
     weights stay bf16 in memory). Applied AFTER add_adapter so the filter can exclude the
     LoRA modules. Never fatal: on any failure the run continues in bf16 with a warning."""
     try:
-        from torchao.float8 import Float8LinearConfig, convert_to_float8_training
+        from torchao.float8 import convert_to_float8_training
         convert_to_float8_training(
             transformer,
             module_filter_fn = _fp8_module_filter,
-            config = Float8LinearConfig(pad_inner_dim = True),
+            config = _fp8_training_config(),
         )
         return True
     except Exception as exc:  # noqa: BLE001 -- fp8 is an optimisation, never fatal
@@ -1261,17 +1289,23 @@ def _load_pixel_tensor_planned(path, resolution, center_crop, u_left, u_top, fli
     return _to_unit_tensor(img)
 
 
-def _build_latent_cache(spec, vae, image_paths, cfg, device, weight_dtype, on_event, check_stop):
+def _build_latent_cache(
+    spec, vae, image_paths, cfg, device, weight_dtype, on_event, check_stop,
+    pcache = None, plan = None,
+):
     """Precompute the per-image latent posterior cache: for each planned crop/flip variant,
     encode once and store the affine (A, B) pair on CPU (pinned when possible) in fp32. The
     stats stay fp32 so the per-step sample happens in fp32 and only the RESULT is cast to
     weight_dtype, matching the in-loop path (encode fp32 -> sample/normalise fp32 ->
     .to(weight_dtype)); fp32 doubles the cache RAM over bf16 but the cache is tiny (a handful
-    of latents per image). Returns None if the build was interrupted by a stop request."""
+    of latents per image). ``pcache`` (a PersistentConditioningCache) serves hits from disk
+    and receives every fresh encode, so the next run of the same config starts warm.
+    Returns None if the build was interrupted by a stop request."""
 
-    plan = _plan_cache_variants(
-        len(image_paths), cfg.cache_variants, cfg.center_crop, cfg.random_flip, cfg.seed
-    )
+    if plan is None:
+        plan = _plan_cache_variants(
+            len(image_paths), cfg.cache_variants, cfg.center_crop, cfg.random_flip, cfg.seed
+        )
 
     def _hold(t):
         if t is None:
@@ -1294,14 +1328,24 @@ def _build_latent_cache(spec, vae, image_paths, cfg, device, weight_dtype, on_ev
     for i, path in enumerate(image_paths):
         variants = []
         for u_left, u_top, flip in plan[i]:
-            px = (
-                _load_pixel_tensor_planned(
-                    path, cfg.resolution, cfg.center_crop, u_left, u_top, flip
+            key = pcache.latent_key(path, (u_left, u_top, flip)) if pcache is not None else None
+            entry = pcache.get(key) if key is not None else None
+            if entry is not None:
+                a, b = entry
+            else:
+                px = (
+                    _load_pixel_tensor_planned(
+                        path, cfg.resolution, cfg.center_crop, u_left, u_top, flip
+                    )
+                    .unsqueeze(0)
+                    .to(device)
                 )
-                .unsqueeze(0)
-                .to(device)
-            )
-            a, b = spec.encode_latent_stats(vae, px)
+                a, b = spec.encode_latent_stats(vae, px)
+                if key is not None:
+                    try:
+                        pcache.put(key, (a, b))
+                    except Exception:  # noqa: BLE001 -- disk-full etc.: the run still trains
+                        pass
             a, b = _hold(a), _hold(b)
             if not forced and not gated:
                 # Size-gate the automatic cache off the first REAL encoded variant, before
@@ -1332,6 +1376,81 @@ def _build_latent_cache(spec, vae, image_paths, cfg, device, weight_dtype, on_ev
         if check_stop():
             return None
     return cache
+
+
+def _encode_prompts_cached(spec, pipe, to_encode, device, pcache):
+    """Encode captions, serving hits from the persistent cache and writing misses back.
+    The returned list is aligned with ``to_encode``; without a cache this is exactly
+    ``spec.encode_prompts``. The cached tuples are the family's own CPU embed tuples
+    (dtype preserved by safetensors), so a hit is identical to a fresh encode."""
+    if pcache is None:
+        return spec.encode_prompts(pipe, to_encode, device)
+    hits: dict = {}
+    misses = []
+    for cap in to_encode:
+        entry = pcache.get(pcache.text_key(cap))
+        if entry is None:
+            misses.append(cap)
+        else:
+            hits[cap] = entry
+    if misses:
+        for cap, emb in zip(misses, spec.encode_prompts(pipe, misses, device)):
+            hits[cap] = emb
+            try:
+                pcache.put(pcache.text_key(cap), emb)
+            except Exception:  # noqa: BLE001 -- disk-full etc.: the run still trains
+                pass
+    return [hits[cap] for cap in to_encode]
+
+
+def _load_warm_conditioning(pcache, image_paths, plan, to_encode, device):
+    """Load the FULL conditioning set (caption embeds + latent posterior stats) from the
+    persistent cache. Returns (caption_embeds, latent_cache) on a complete hit, else
+    (None, None) so the caller takes the cold path -- any missing/corrupt entry, and also
+    an in-memory holding that would blow the host budget (the cold path re-decides that
+    with the VAE resident and can fall back to per-step encoding). On success the VAE and
+    text encoders are never loaded."""
+    embeds = []
+    for cap in to_encode:
+        entry = pcache.get(pcache.text_key(cap))
+        if entry is None:
+            return None, None
+        embeds.append(entry)
+
+    def _hold(t):
+        if t is None:
+            return None
+        import torch  # noqa: F401 -- pin_memory needs torch initialised
+
+        t = t.contiguous()
+        if device == "cuda":
+            try:
+                t = t.pin_memory()
+            except RuntimeError:
+                pass
+        return t
+
+    forced = _latent_cache_forced()
+    total_variants = sum(len(v) for v in plan)
+    gated = False
+    cache: list[list[tuple]] = []
+    for i, path in enumerate(image_paths):
+        variants = []
+        for variant in plan[i]:
+            entry = pcache.get(pcache.latent_key(path, variant))
+            if entry is None:
+                return None, None
+            a, b = entry
+            if not forced and not gated:
+                per_variant = a.numel() * a.element_size()
+                if b is not None:
+                    per_variant += b.numel() * b.element_size()
+                if _latent_cache_over_budget(per_variant, total_variants):
+                    return None, None
+                gated = True
+            variants.append((_hold(a), _hold(b)))
+        cache.append(variants)
+    return {cap: emb for cap, emb in zip(to_encode, embeds)}, cache
 
 
 def _sample_cached_latents(cache, idxs, variant_rng, device, weight_dtype):
@@ -1535,60 +1654,88 @@ def _train_dit(cfg, spec, pairs, rng, device, weight_dtype, on_event, _check_sto
     use_lora_targets = _select_lora_targets(cfg.lora_target_modules, spec.lora_targets)
     out_dir = Path(cfg.output_dir).expanduser()
 
-    # Phase 1: conditioning only. The pipeline loads WITHOUT its transformer, so the text
-    # encoders + VAE never share VRAM with the multi-GB denoiser.
-    pipe, vae = spec.load_conditioners(cfg, device, weight_dtype)
-
-    # Precompute all caption embeddings, then free the (large) text encoder(s): captions are
-    # constant and the encoders are frozen, so this is exact and the biggest memory win.
+    # Phase 0: the persistent conditioning cache (opt-in via cond_cache_dir). When every
+    # planned latent variant AND every caption embedding is already on disk, the run is
+    # "warm": the VAE and the multi-GB text encoders are never loaded at all.
     image_paths = [p for p, _ in pairs]
     captions = [c for _, c in pairs]
     uniq = sorted(set(captions))
     # CFG dropout swaps a sample's conditioning for the empty prompt, so its embedding must
-    # be precomputed alongside the captions (the encoders are freed right after this).
+    # be precomputed alongside the captions (the encoders are freed right after encoding).
     cfg_dropout = float(getattr(cfg, "cfg_dropout", 0.0) or 0.0)
     to_encode = uniq + ([""] if cfg_dropout > 0 and "" not in uniq else [])
-    encoded = spec.encode_prompts(pipe, to_encode, device)
-    caption_embeds = {cap: emb for cap, emb in zip(to_encode, encoded)}
-    _free_text_encoders(pipe)
-    gc.collect()
-    if device == "cuda":
-        torch.cuda.empty_cache()
-
-    # Phase 2: the VAE latent cache, then free the VAE too (see module docstring: the cache
-    # keeps the posterior affine parameters, so per-step sampling noise is preserved).
     use_cache = cfg.cache_latents and os.environ.get(
         "UNSLOTH_DIFFUSION_NO_LATENT_CACHE", ""
     ) not in ("1", "true")
+    pcache = None
+    if getattr(cfg, "cond_cache_dir", None):
+        try:
+            pcache = PersistentConditioningCache(cfg.cond_cache_dir, spec.family, cfg.resolution)
+        except Exception as exc:  # noqa: BLE001 -- the cache is an optimisation, never fatal
+            _emit(on_event, "warning", message = f"conditioning cache disabled: {exc}")
+    # The crop/flip variant plan is seed-deterministic, so the persistent keys are stable
+    # across runs of the same config and the warm check can run before anything loads.
+    plan = _plan_cache_variants(
+        len(image_paths), cfg.cache_variants, cfg.center_crop, cfg.random_flip, cfg.seed
+    )
+
+    pipe = None
+    vae = None
+    caption_embeds = None
     latent_cache = None
-    if use_cache:
-        latent_cache = _build_latent_cache(
-            spec, vae, image_paths, cfg, device, weight_dtype, on_event, _check_stop
+    if pcache is not None and use_cache:
+        caption_embeds, latent_cache = _load_warm_conditioning(
+            pcache, image_paths, plan, to_encode, device
         )
-        if latent_cache is LATENT_CACHE_OVER_BUDGET:
-            # The estimated cache exceeded the host-memory budget; keep the VAE resident and
-            # fall through to the in-loop encode path (latent_cache stays None).
-            latent_cache = None
-        elif latent_cache is None:  # stopped during the cache build; nothing trained yet
-            _emit(
-                on_event,
-                "complete",
-                output_dir = str(out_dir),
-                lora_path = None,
-                stopped = True,
-                steps_run = 0,
+        if caption_embeds is not None:
+            _emit(on_event, "preparing", stage = "cache_latents",
+                  done = len(image_paths), total = len(image_paths))
+    if caption_embeds is None:
+        # Phase 1 (cold): conditioning only. The pipeline loads WITHOUT its transformer, so
+        # the text encoders + VAE never share VRAM with the multi-GB denoiser. Caption
+        # embeddings are precomputed once and the (large) encoders freed: captions are
+        # constant and the encoders frozen, so this is exact and the biggest memory win.
+        latent_cache = None
+        pipe, vae = spec.load_conditioners(cfg, device, weight_dtype)
+        encoded = _encode_prompts_cached(spec, pipe, to_encode, device, pcache)
+        caption_embeds = {cap: emb for cap, emb in zip(to_encode, encoded)}
+        _free_text_encoders(pipe)
+        gc.collect()
+        if device == "cuda":
+            torch.cuda.empty_cache()
+
+        # Phase 2: the VAE latent cache, then free the VAE too (see module docstring: the
+        # cache keeps the posterior affine parameters, so per-step sampling noise is
+        # preserved).
+        if use_cache:
+            latent_cache = _build_latent_cache(
+                spec, vae, image_paths, cfg, device, weight_dtype, on_event, _check_stop,
+                pcache = pcache, plan = plan,
             )
-            return str(out_dir)
-        else:
-            try:
-                pipe.vae = None
-            except Exception:  # noqa: BLE001 -- a pipeline without a settable vae keeps it
-                pass
-            del vae
-            vae = None
-            gc.collect()
-            if device == "cuda":
-                torch.cuda.empty_cache()
+            if latent_cache is LATENT_CACHE_OVER_BUDGET:
+                # The estimated cache exceeded the host-memory budget; keep the VAE resident
+                # and fall through to the in-loop encode path (latent_cache stays None).
+                latent_cache = None
+            elif latent_cache is None:  # stopped during the cache build; nothing trained yet
+                _emit(
+                    on_event,
+                    "complete",
+                    output_dir = str(out_dir),
+                    lora_path = None,
+                    stopped = True,
+                    steps_run = 0,
+                )
+                return str(out_dir)
+    if latent_cache is not None and vae is not None:
+        try:
+            pipe.vae = None
+        except Exception:  # noqa: BLE001 -- a pipeline without a settable vae keeps it
+            pass
+        del vae
+        vae = None
+        gc.collect()
+        if device == "cuda":
+            torch.cuda.empty_cache()
     # Variant picks use their own stream so the training loop's index/noise draws stay on
     # the same seed-deterministic sequence whether or not the cache is enabled.
     variant_rng = random.Random(cfg.seed + 1)
@@ -1632,6 +1779,12 @@ def _train_dit(cfg, spec, pairs, rng, device, weight_dtype, on_event, _check_sto
         base_precision = "bf16"
     if base_precision == "mxfp8" and not _apply_mxfp8_training(transformer, on_event):
         base_precision = "bf16"
+
+    # LoRA EMA (opt-in via cfg.ema_decay > 0): shadows ONLY the trainable adapter params
+    # (megabytes, not the base's gigabytes), initialised after the precision conversions so
+    # the shadows track the final fp32 param objects. Exported as a second adapter under
+    # <output_dir>/ema at save time.
+    ema = LoRAEMA(transformer, decay = cfg.ema_decay) if getattr(cfg, "ema_decay", 0.0) else None
 
     compiled = _maybe_compile_transformer(
         transformer, cfg, base_is_bnb, device, on_event, base_precision
@@ -1763,6 +1916,8 @@ def _train_dit(cfg, spec, pairs, rng, device, weight_dtype, on_event, _check_sto
             grad_norm = float(torch.nn.utils.clip_grad_norm_(lora_params, cfg.max_grad_norm))
         optimizer.step()
         lr_sched.step()
+        if ema is not None:
+            ema.update(transformer)
 
         running_loss += step_loss
         done = opt_step + 1
@@ -1797,17 +1952,24 @@ def _train_dit(cfg, spec, pairs, rng, device, weight_dtype, on_event, _check_sto
 
     lora_path: Optional[str] = None
     catalog_path: Optional[str] = None
+    ema_path: Optional[str] = None
     if not (stopped and not _save_on_stop()):
         out_dir.mkdir(parents = True, exist_ok = True)
         layers = get_peft_model_state_dict(transformer)
         spec.save(pipe, str(out_dir), layers)
         lora_path = str(out_dir / DEFAULT_LORA_FILENAME)
         catalog_path = _publish_to_lora_catalog(lora_path, cfg)
+        if ema is not None and ema.updates > 0:
+            try:
+                ema_path = save_ema_adapter(ema, transformer, spec.save, str(out_dir))
+            except Exception as exc:  # noqa: BLE001 -- the primary adapter is already saved
+                _emit(on_event, "warning", message = f"EMA adapter save failed: {exc}")
     _emit(
         on_event,
         "complete",
         output_dir = str(out_dir),
         lora_path = lora_path,
+        ema_path = ema_path,
         catalog_path = catalog_path,
         family = cfg.resolved_family,
         base_model = cfg.base_model,

@@ -495,6 +495,17 @@ class DiffusionLoraConfig:
     # noise itself is preserved (see the DiT trainer docstring).
     cache_latents: bool = True
     cache_variants: int = 4
+    # Persistent on-disk conditioning cache directory (DiT trainer only). None (default)
+    # keeps the in-memory-only behavior; a configured directory turns the cache on: latent
+    # posterior stats and caption embeddings persist as safetensors keyed by content hash +
+    # family + resolution, and a fully warm cache skips loading the VAE and the multi-GB
+    # text encoders entirely on the next run.
+    cond_cache_dir: Optional[str] = None
+    # LoRA EMA decay (DiT trainer only). 0.0 (default) disables it; > 0 keeps an
+    # exponential moving average of the trainable LoRA params (warmup-ramped so short runs
+    # still absorb the trajectory) and exports it as a second adapter under
+    # ``<output_dir>/ema`` next to the primary one.
+    ema_decay: float = 0.0
     # Regional torch.compile of the transformer blocks: "off" | "on" | "auto" (auto turns
     # it on only for a dense, non-bitsandbytes base where it is a clean win).
     compile_transformer: str = "auto"
@@ -565,6 +576,18 @@ class DiffusionLoraConfig:
             )
         if not 1 <= int(self.cache_variants) <= 16:
             raise ValueError("cache_variants must be between 1 and 16")
+        try:
+            ema_decay = float(self.ema_decay or 0.0)
+        except (TypeError, ValueError) as exc:
+            raise ValueError(f"ema_decay must be a number, got {self.ema_decay!r}") from exc
+        # decay = 1.0 would freeze the shadow at its init forever; the EMA update is
+        # shadow * decay + param * (1 - decay), so valid decays live in [0, 1).
+        if not 0.0 <= ema_decay < 1.0:
+            raise ValueError("ema_decay must be in [0, 1); 0 disables the EMA adapter")
+        # A blank cond_cache_dir (the Studio default when unset) means "off", not cwd.
+        cond_cache_dir = (
+            str(self.cond_cache_dir).strip() if self.cond_cache_dir is not None else ""
+        ) or None
         compile_transformer = str(self.compile_transformer or "auto").strip().lower()
         if compile_transformer not in ("off", "on", "auto"):
             raise ValueError("compile_transformer must be one of off / on / auto")
@@ -653,6 +676,8 @@ class DiffusionLoraConfig:
             hf_token = token or None,
             num_epochs = int(self.num_epochs),
             cache_variants = int(self.cache_variants),
+            cond_cache_dir = cond_cache_dir,
+            ema_decay = ema_decay,
             compile_transformer = compile_transformer,
             base_precision = base_precision,
             flow_shift = flow_shift,
