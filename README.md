@@ -12,6 +12,7 @@ Unsloth Studio lets you run and train models locally.<br>
 
 <p align="center">
   <a href="#-features">Features</a> •
+  <a href="#-unsloth-news">News</a> •
   <a href="#-install">Quickstart</a> •
   <a href="#-free-notebooks">Notebooks</a> •
   <a href="https://unsloth.ai/docs">Documentation</a>
@@ -40,21 +41,23 @@ irm https://unsloth.ai/install.ps1 | iex
 Unsloth Studio (Beta) lets you run and train text, [audio](https://unsloth.ai/docs/basics/text-to-speech-tts-fine-tuning), [embedding](https://unsloth.ai/docs/new/embedding-finetuning), [vision](https://unsloth.ai/docs/basics/vision-fine-tuning) models on Windows, Linux and macOS.
 
 ### Inference
-* **Search + download + run models** including GGUF, LoRA adapters, safetensors
-* **Export models**: [Save or export](https://unsloth.ai/docs/new/studio/export) models to GGUF, 16-bit safetensors and other formats.
-* **Tool calling**: Support for [self-healing tool calling](https://unsloth.ai/docs/new/studio/chat#auto-healing-tool-calling) and web search
-* **[Code execution](https://unsloth.ai/docs/new/studio/chat#code-execution)**: lets LLMs test code in Claude artifacts and sandbox environments
-* **[OpenAI- and Anthropic-compatible APIs](https://unsloth.ai/docs/basics/api)**: Serve local models to any compatible client or SDK, with streaming, tool calling and vision support.
-* **[Connect local models to agents](https://unsloth.ai/docs/basics/api)**: Run `unsloth start <agent>` for Claude Code, Codex, Hermes, OpenCode, OpenClaw, Pi and more.
-* [Auto set inference settings](https://unsloth.ai/docs/new/studio/chat#auto-parameter-tuning) and customize chat templates.
+* **Run models locally and privately**: Search, download and run GGUF, safetensors and LoRA adapters on macOS, Windows, Linux or WSL. Local models can run [100% offline](https://unsloth.ai/docs/new/studio#privacy-first-secure).
+* **Compare models side by side**: Use [Model Arena](https://unsloth.ai/docs/new/studio/chat#model-arena) to compare a base model with its fine-tune, or any two models with the same prompt.
+* **Build agents with tools**: Use [self-healing tool calling](https://unsloth.ai/docs/new/studio/chat#auto-healing-tool-calling), advanced web search, [code execution](https://unsloth.ai/docs/new/studio/chat#code-execution) and [MCP servers](https://unsloth.ai/docs/basics/mcp).
+* **OpenAI- and Anthropic-compatible APIs**: Serve local models through [`/v1/chat/completions`, `/v1/responses` and `/v1/messages`](https://unsloth.ai/docs/basics/api), with streaming, tool calling and vision support.
+* **Connect local models to agents**: Run [`unsloth start <agent>`](https://unsloth.ai/docs/basics/api) for Claude Code, Codex, Hermes, OpenCode, OpenClaw, Pi and more.
+* **Multimodal chat and external providers**: Chat with images, audio, PDFs, code, DOCX and more. [Connect API providers](https://unsloth.ai/docs/integrations/connections) (OpenAI, Anthropic) or servers (vLLM, Ollama).
+* **Automatic model setup**: [Auto-tune inference settings](https://unsloth.ai/docs/new/studio/chat#auto-parameter-tuning), customize chat templates and control GPU memory usage.
+* **Export models**: [Save or export](https://unsloth.ai/docs/new/studio/export) models to GGUF, 16-bit safetensors and other formats for llama.cpp, vLLM, Ollama, LM Studio and more.
 * We work directly with teams behind [gpt-oss](https://docs.unsloth.ai/new/gpt-oss-how-to-run-and-fine-tune#unsloth-fixes-for-gpt-oss), [Qwen3](https://www.reddit.com/r/LocalLLaMA/comments/1kaodxu/qwen3_unsloth_dynamic_ggufs_128k_context_bug_fixes/), [Llama 4](https://github.com/ggml-org/llama.cpp/pull/12889), [Mistral](https://huggingface.co/mistralai/Mistral-Medium-3.5-128B/discussions/18), [Gemma 1-3](https://news.ycombinator.com/item?id=39671146), and [Phi-4](https://unsloth.ai/blog/phi4), where we’ve fixed bugs that improve model accuracy.
-* Chat with images, audio, PDFs, code, DOCX and more. [Connect API providers](https://unsloth.ai/docs/integrations/connections) (OpenAI, Anthropic) or servers (vLLM, Ollama).
 ### Training
 * Train and RL **500+ models** up to **2x faster** with up to **70% less VRAM**, with no accuracy loss.
-* Custom Triton and mathematical **kernels**. See some collabs we did with [PyTorch](https://unsloth.ai/docs/get-started/reinforcement-learning-rl-guide/fp8-reinforcement-learning) and [Hugging Face](https://unsloth.ai/docs/new/faster-moe).
+* Train [MoE models up to **12x faster** with **35% less VRAM**](https://unsloth.ai/docs/new/faster-moe), including DeepSeek, GLM, Qwen and gpt-oss.
 * **Data Recipes**: [Auto-create datasets](https://unsloth.ai/docs/new/studio/data-recipe) from **PDF, CSV, DOCX** etc. Edit data in a visual-node workflow.
-* **[Reinforcement Learning](https://unsloth.ai/docs/get-started/reinforcement-learning-rl-guide)** (RL): The most efficient [RL](https://unsloth.ai/docs/get-started/reinforcement-learning-rl-guide) library, using **80% less VRAM** for GRPO, [FP8](https://unsloth.ai/docs/get-started/reinforcement-learning-rl-guide/fp8-reinforcement-learning) etc.
-* Supports full fine-tuning, RL, pretraining, 4-bit, 16-bit and, FP8 training.
+* **[Reinforcement Learning](https://unsloth.ai/docs/get-started/reinforcement-learning-rl-guide)**: Use **80% less VRAM** for GRPO, including [FP8](https://unsloth.ai/docs/get-started/reinforcement-learning-rl-guide/fp8-reinforcement-learning), vision-language RL and [7x longer contexts](https://unsloth.ai/docs/new/grpo-long-context).
+* **Efficient long-context training**: [3x faster training with 30% less VRAM](https://unsloth.ai/docs/new/3x-faster-training-packing) through padding-free packing, with [500K+ context training](https://unsloth.ai/docs/blog/500k-context-length-fine-tuning) demonstrated on a single 80GB GPU.
+* Supports full fine-tuning, LoRA/QLoRA, RL, pretraining, 4-bit, 16-bit and FP8 training.
+* Custom Triton and mathematical **kernels**. See some collabs we did with [PyTorch](https://unsloth.ai/docs/get-started/reinforcement-learning-rl-guide/fp8-reinforcement-learning) and [Hugging Face](https://unsloth.ai/docs/new/faster-moe).
 * **Observability**: Monitor training live, track loss and GPU usage and customize graphs.
 * [Multi-GPU](https://unsloth.ai/docs/basics/multi-gpu-training-with-unsloth) training is supported, with major improvements coming soon.
 
@@ -68,6 +71,7 @@ Unsloth Studio (Beta) works on **Windows, Linux, WSL** and **macOS**.
 * **NVIDIA:** Training works on RTX 30/40/50, Blackwell, DGX Spark, Station and more
 * **macOS:** Training, MLX and GGUF inference are ALL supported.
 * **AMD:** Chat + Data works. Train with [Unsloth Core](#unsloth-core-code-based). Unsloth Studio support is out soon.
+* **Vulkan:** GGUF inference is supported on [compatible GPUs, including Intel GPUs](https://github.com/unslothai/unsloth/pull/5819).
 * **Multi-GPU:** Available now, with a major upgrade on the way
 
 #### macOS, Linux, WSL:
@@ -150,13 +154,15 @@ Read our [guide](https://unsloth.ai/docs/get-started/fine-tuning-llms-guide). Ad
 - See detailed documentation for Unsloth [here](https://unsloth.ai/docs)
 
 ## 🦥 Unsloth News
-- **Connections**: Connect any API provider (OpenAI, Anthropic) or server (vLLM, Ollama). [Guide](https://unsloth.ai/docs/integrations/connections)
-- **MTP**: Run Qwen3.6 MTP in Unsloth. MTP settings are autoset specific to your hardware. [Guide](https://unsloth.ai/docs/models/qwen3.6#mtp-guide)
-- **`unsloth start`**: Connect local models to Claude Code, Codex, Hermes, OpenCode, OpenClaw, Pi and more through Unsloth's OpenAI- and Anthropic-compatible APIs. [Guide](https://unsloth.ai/docs/basics/api)
-- **Qwen3.6**: Qwen3.6-35B-A3B can now be trained and run in Unsloth Studio. [Blog](https://unsloth.ai/docs/models/qwen3.6)
-- **Gemma 4**: Run and train Google’s new models directly in Unsloth. [Blog](https://unsloth.ai/docs/models/gemma-4)
+- **Local models for any agent**: Use `unsloth start` with Claude Code, Codex, Hermes, OpenCode, OpenClaw, Pi and more through Unsloth's OpenAI- and Anthropic-compatible APIs. [Guide](https://unsloth.ai/docs/basics/api)
+- **GLM-5.2**: Run Z.ai's 744B-parameter, 1M-context open model locally with Unsloth Dynamic GGUFs. [Guide](https://unsloth.ai/docs/models/glm-5.2)
+- **DeepSeek-V4**: Run DeepSeek-V4-Flash locally with corrected multi-turn and tool-calling behavior. [Guide](https://unsloth.ai/docs/models/deepseek-v4)
+- **DiffusionGemma**: Run and fine-tune Google's diffusion language model with 1.8x faster inference in Unsloth Studio. [Guide](https://unsloth.ai/docs/models/diffusiongemma)
+- **Qwen3.6**: Run and train Qwen3.6 with MTP for 1.4-2.2x faster inference and NVFP4 quants for supported GPUs. [Guide](https://unsloth.ai/docs/models/qwen3.6)
+- **Gemma 4**: Run and train Gemma 4 text, image and audio models with QAT, MTP, GGUF and MLX support. [Guide](https://unsloth.ai/docs/models/gemma-4)
+- **MCP servers**: Connect local models to files, apps, databases and external tools through Model Context Protocol. [Guide](https://unsloth.ai/docs/basics/mcp)
+- **Connections**: Mix local models with API providers (OpenAI, Anthropic) or servers (vLLM, Ollama) in the same interface. [Guide](https://unsloth.ai/docs/integrations/connections)
 - **Introducing Unsloth Studio**: our new web UI for running and training LLMs. [Blog](https://unsloth.ai/docs/new/studio)
-- **Qwen3.5** - 0.8B, 2B, 4B, 9B, 27B, 35-A3B, 112B-A10B are now supported. [Guide + notebooks](https://unsloth.ai/docs/models/qwen3.5/fine-tune)
 - Train **MoE LLMs 12x faster** with 35% less VRAM - DeepSeek, GLM, Qwen and gpt-oss. [Blog](https://unsloth.ai/docs/new/faster-moe)
 - **Embedding models**: Unsloth now supports ~1.8-3.3x faster embedding fine-tuning. [Blog](https://unsloth.ai/docs/new/embedding-finetuning) • [Notebooks](https://unsloth.ai/docs/get-started/unsloth-notebooks#embedding-models)
 - New **7x longer context RL** vs. all other setups, via our new batching algorithms. [Blog](https://unsloth.ai/docs/new/grpo-long-context)
