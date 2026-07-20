@@ -462,6 +462,116 @@ def test_st_module_subdirs_swallows_errors(monkeypatch):
     assert embeddings._st_module_subdirs("acme/no-such-repo-xyz", None, False) == ()
 
 
+def test_st_module_subdirs_expands_root_router_children(tmp_path):
+    # A Router saved in root (path "") declares its child sub-modules only in
+    # router_config.json; Router.load() deserializes each from its own subdir, so those subdirs
+    # are load roots too. The scan must scope them or a flagged child pickle
+    # (query_0_WordEmbeddings/pytorch_model.bin) slips through as an unreferenced nested shard.
+    import json
+    import core.rag.embeddings as embeddings
+
+    (tmp_path / "modules.json").write_text(
+        json.dumps(
+            [{"idx": 0, "name": "0", "path": "", "type": "sentence_transformers.models.Router.Router"}]
+        )
+    )
+    (tmp_path / "router_config.json").write_text(
+        json.dumps(
+            {
+                "types": {
+                    "query_0_WordEmbeddings": "sentence_transformers.models.WordEmbeddings.WordEmbeddings",
+                    "document_0_Transformer": "sentence_transformers.models.Transformer.Transformer",
+                }
+            }
+        )
+    )
+    subdirs = embeddings._st_module_subdirs(str(tmp_path), None, False)
+    assert "query_0_WordEmbeddings" in subdirs
+    assert "document_0_Transformer" in subdirs
+
+
+def test_st_module_subdirs_expands_nested_router_children(tmp_path):
+    # A Router nested at a module path prefixes its children with that path.
+    import json
+    import core.rag.embeddings as embeddings
+
+    (tmp_path / "modules.json").write_text(
+        json.dumps(
+            [
+                {"idx": 0, "name": "0", "path": "0_Transformer", "type": "..."},
+                {"idx": 1, "name": "1", "path": "1_Router", "type": "sentence_transformers.models.Asym.Asym"},
+            ]
+        )
+    )
+    (tmp_path / "1_Router").mkdir()
+    (tmp_path / "1_Router" / "router_config.json").write_text(
+        json.dumps({"types": {"query_0_WordEmbeddings": "..."}})
+    )
+    subdirs = embeddings._st_module_subdirs(str(tmp_path), None, False)
+    assert "0_Transformer" in subdirs
+    assert "1_Router/query_0_WordEmbeddings" in subdirs
+
+
+def test_st_module_subdirs_ignores_router_config_without_router_module(tmp_path):
+    # A stray router_config.json is read ONLY for a Router-typed module, so a plain embedder
+    # neither expands children nor pays the extra fetch.
+    import json
+    import core.rag.embeddings as embeddings
+
+    (tmp_path / "modules.json").write_text(
+        json.dumps([{"idx": 0, "name": "0", "path": "0_Transformer", "type": "..."}])
+    )
+    (tmp_path / "router_config.json").write_text(
+        json.dumps({"types": {"query_0_WordEmbeddings": "..."}})
+    )
+    subdirs = embeddings._st_module_subdirs(str(tmp_path), None, False)
+    assert subdirs == ("0_Transformer",)
+
+
+def test_st_module_subdirs_drops_traversing_router_child(tmp_path):
+    # A malicious router_config.json child that traverses out of the repo (../evil) is dropped,
+    # matching the offline gate; a legitimate sibling is still scoped.
+    import json
+    import core.rag.embeddings as embeddings
+
+    (tmp_path / "modules.json").write_text(
+        json.dumps([{"idx": 0, "name": "0", "path": "", "type": "sentence_transformers.models.Router.Router"}])
+    )
+    (tmp_path / "router_config.json").write_text(
+        json.dumps({"types": {"../evil": "...", "query_0_WordEmbeddings": "..."}})
+    )
+    subdirs = embeddings._st_module_subdirs(str(tmp_path), None, False)
+    assert "query_0_WordEmbeddings" in subdirs
+    assert not any(".." in s for s in subdirs)
+
+
+def test_st_module_subdirs_router_expansion_over_hub(monkeypatch, tmp_path):
+    # The Hub (non-local) path expands Router children symmetrically: hf_hub_download serves
+    # modules.json then the Router's router_config.json.
+    import json
+    import huggingface_hub
+    import core.rag.embeddings as embeddings
+
+    (tmp_path / "modules.json").write_text(
+        json.dumps([{"idx": 0, "name": "0", "path": "", "type": "sentence_transformers.models.Router.Router"}])
+    )
+    (tmp_path / "router_config.json").write_text(
+        json.dumps({"types": {"query_0_WordEmbeddings": "..."}})
+    )
+
+    def _fake_download(repo_id, filename, **kwargs):
+        p = tmp_path / filename
+        if not p.is_file():
+            from huggingface_hub.utils import EntryNotFoundError
+
+            raise EntryNotFoundError(f"no {filename}")
+        return str(p)
+
+    monkeypatch.setattr(huggingface_hub, "hf_hub_download", _fake_download)
+    subdirs = embeddings._st_module_subdirs("acme/router-embed", None, False)
+    assert "query_0_WordEmbeddings" in subdirs
+
+
 def test_security_block_is_not_swallowed_by_llama_fallback(monkeypatch):
     # The ST encode fallback must re-raise a security block, not swap to llama-server.
     import core.rag.embeddings as embeddings

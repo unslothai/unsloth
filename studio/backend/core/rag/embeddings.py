@@ -81,11 +81,23 @@ def _ambient_hf_token() -> str | None:
 
 
 def _st_module_subdirs(name: str, token: str | None, local_only: bool) -> tuple[str, ...]:
-    """The module directories a SentenceTransformer load reads weights from, taken from
-    the repo's ``modules.json`` (each module's non-empty ``path``, e.g. ``0_Transformer``).
-    ST deserializes ``pytorch_model.bin`` from these dirs, so they are load roots for the
-    security scan: a flagged pickle directly under one must block. Returns () on any
-    failure (no modules.json, offline, malformed) so the guard never bricks the embedder.
+    """The module directories a SentenceTransformer load reads weights from, so the online
+    security scan scopes them as load roots (a flagged pickle directly under one must block).
+    Two sources, both repo-controlled:
+
+    * each module's non-empty ``path`` in ``modules.json`` (e.g. ``0_Transformer``), from which
+      ST deserializes ``pytorch_model.bin``;
+    * the child sub-modules of any ``Router`` (legacy ``Asym``) module. A Router declares its
+      children only in ``router_config.json`` (``types`` maps ``{route}_{idx}_{ClassName}`` ->
+      class), NOT in ``modules.json``, and ``Router.load()`` deserializes each from its own
+      subdir -- so a flagged pickle in a child (``query_0_WordEmbeddings/pytorch_model.bin``) is
+      a load root too. This mirrors the offline gate's ``_router_child_dirs`` expansion; without
+      it the online scan would drop that child pickle as an unreferenced nested shard while the
+      loader still deserialized it. The config is read only for a Router-typed module, so a plain
+      embedder pays no extra fetch.
+
+    Returns () on any failure (no modules.json, offline, malformed) so the guard never bricks the
+    embedder. A traversing declared path (``0/../evil``) is dropped, matching the offline gate.
 
     ``local_only`` MUST be the value the caller captured for the load, not a fresh env read
     (``_hf_offline_if_dns_dead()`` flips the offline vars mid-load): re-reading could force
@@ -94,38 +106,77 @@ def _st_module_subdirs(name: str, token: str | None, local_only: bool) -> tuple[
     """
     try:
         import json
+        import posixpath
 
         from utils.paths import is_local_path
 
+        local_root = None
         if is_local_path(name):
             from pathlib import Path
             from utils.paths import normalize_path
 
-            path = Path(normalize_path(name)).expanduser() / "modules.json"
-            if not path.is_file():
-                return ()
-            data = json.loads(path.read_text())
-        else:
-            from huggingface_hub import hf_hub_download
-            from huggingface_hub.utils import EntryNotFoundError
+            local_root = Path(normalize_path(name)).expanduser()
 
+        def _read_repo_json(rel: str):
+            """Parse a repo-relative JSON file (local dir or Hub download honoring
+            ``local_only``), or None when missing / malformed / unreachable."""
             try:
-                # CAPTURED predicate, never a fresh env read (see docstring); hf honors only
-                # HF_HUB_OFFLINE, so offline would otherwise block on timeouts.
-                local = hf_hub_download(
-                    name,
-                    "modules.json",
-                    token = token or None,
-                    local_files_only = local_only,
-                )
-            except EntryNotFoundError:
-                return ()
-            data = json.loads(open(local).read())
+                if local_root is not None:
+                    path = local_root.joinpath(*rel.split("/"))
+                    if not path.is_file():
+                        return None
+                    return json.loads(path.read_text())
+                from huggingface_hub import hf_hub_download
+                from huggingface_hub.utils import EntryNotFoundError
+
+                try:
+                    # CAPTURED predicate, never a fresh env read (see docstring); hf honors only
+                    # HF_HUB_OFFLINE, so offline would otherwise block on timeouts.
+                    local = hf_hub_download(
+                        name, rel, token = token or None, local_files_only = local_only
+                    )
+                except EntryNotFoundError:
+                    return None
+                return json.loads(open(local).read())
+            except Exception:
+                return None
+
+        def _safe_subdir(rel) -> str | None:
+            """Canonical repo-relative subdir (``""`` = root), or None if it escapes the repo.
+            Mirrors the offline gate so a traversing declared path cannot read or scope a
+            directory outside the repo."""
+            norm = posixpath.normpath(str(rel).strip().strip("/"))
+            if norm in ("", "."):
+                return ""
+            if norm == ".." or norm.startswith("../"):
+                return None
+            return norm
+
+        data = _read_repo_json("modules.json")
+        if not isinstance(data, list):
+            return ()
         subdirs = []
-        for module in data or ():
-            sub = str((module or {}).get("path", "")).strip().strip("/")
+        for module in data:
+            if not isinstance(module, dict):
+                continue
+            sub = str(module.get("path", "")).strip().strip("/")
             if sub:
                 subdirs.append(sub)
+            # Only a Router/Asym module hides load roots in router_config.json; the read is
+            # scoped to it so a plain embedder incurs no extra fetch.
+            if str(module.get("type", "")).rsplit(".", 1)[-1].lower() not in ("router", "asym"):
+                continue
+            prefix = _safe_subdir(sub)
+            if prefix is None:
+                continue
+            cfg = _read_repo_json(posixpath.join(prefix, "router_config.json"))
+            types = cfg.get("types") if isinstance(cfg, dict) else None
+            if not isinstance(types, dict):
+                continue
+            for model_id in types:
+                child = _safe_subdir(model_id)
+                if child:
+                    subdirs.append(posixpath.join(prefix, child))
         return tuple(dict.fromkeys(subdirs))
     except Exception:
         return ()
