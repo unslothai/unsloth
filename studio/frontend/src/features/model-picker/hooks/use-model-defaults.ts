@@ -50,12 +50,16 @@ export function useDefaultChatTemplate(
   modelId: string | null,
   ggufVariant: string | null | undefined,
   enabled: boolean,
+  nativePathToken?: string | null,
 ): DefaultChatTemplateState {
   const token = useHfTokenStore((s) => s.token);
   const inventoryVersion = useInventoryVersion();
+  // The native token is part of the identity: a picked GGUF resolves its
+  // template through the lease, not the model id, so two picks of the same
+  // basename must not share a cache entry.
   const cacheKey =
     enabled && modelId
-      ? `${modelId}::${ggufVariant ?? ""}::${token}::${inventoryVersion}`
+      ? `${modelId}::${ggufVariant ?? ""}::${token}::${inventoryVersion}::${nativePathToken ?? ""}`
       : null;
   const [fetched, setFetched] = useState<{
     key: string;
@@ -67,7 +71,13 @@ export function useDefaultChatTemplate(
       return;
     }
     const controller = new AbortController();
-    fetchDefaultChatTemplate(modelId, ggufVariant, token, controller.signal)
+    fetchDefaultChatTemplate(
+      modelId,
+      ggufVariant,
+      token,
+      controller.signal,
+      nativePathToken,
+    )
       .then((template) => {
         if (controller.signal.aborted) {
           return;
@@ -97,7 +107,7 @@ export function useDefaultChatTemplate(
       });
 
     return () => controller.abort();
-  }, [cacheKey, modelId, ggufVariant, token]);
+  }, [cacheKey, modelId, ggufVariant, token, nativePathToken]);
 
   if (cacheKey == null) {
     return { template: null, loading: false, error: null };

@@ -604,10 +604,14 @@ export function ModelConfigPage({
   const [showAdvanced, setShowAdvanced] = useState(() =>
     hasNonDefaultAdvanced(config),
   );
+  const nativePathToken =
+    target.meta.nativePathToken ??
+    (isActiveModel ? activeNativePathToken : null);
   const templateDefaults = useDefaultChatTemplate(
     target.id,
     target.ggufVariant,
     templateOpen,
+    nativePathToken,
   );
   const modelMaxPosition = useModelMaxPositionEmbeddings(
     target.id,
@@ -625,9 +629,6 @@ export function ModelConfigPage({
   const update = (patch: Partial<PerModelConfig>) =>
     setConfig((current) => ({ ...current, ...patch }));
 
-  const nativePathToken =
-    target.meta.nativePathToken ??
-    (isActiveModel ? activeNativePathToken : null);
   // Fetch the GGUF header dims (context + layer/MoE counts) for any GGUF target
   // so the GPU Memory sliders can size themselves; the context is also used
   // below when target.meta doesn't already carry it.

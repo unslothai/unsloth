@@ -167,6 +167,22 @@ def test_model_default_hooks_do_not_reset_state_in_effect():
     assert "setFetched(null)" not in src
 
 
+def test_native_picked_gguf_template_read_through_lease():
+    """A native (picked / drag-drop) GGUF's path lives only in its signed lease,
+    and the picker chat-template GET has no lease plumbing, so the default
+    template must be read through the lease-aware validate probe: mint a
+    validate-model lease and post include_chat_template. The native token also
+    has to reach the fetch (threaded through the hook) and be part of the cache
+    key so two picks of the same basename don't share a template."""
+    api = _read("features/model-picker/api/templates.ts")
+    assert 'consumeNativePathToken(nativePathToken, "validate-model")' in api
+    assert "include_chat_template: true" in api
+    assert "/api/inference/validate" in api
+    hook = _read("features/model-picker/hooks/use-model-defaults.ts")
+    assert "nativePathToken," in hook
+    assert '${nativePathToken ?? ""}' in hook
+
+
 def test_model_load_guard_is_cross_instance():
     """The in-flight load guard must consult the shared store pick (not only the
     per-hook ref) and ejectModel must refuse while any instance is loading:
