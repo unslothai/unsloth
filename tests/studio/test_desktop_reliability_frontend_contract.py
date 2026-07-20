@@ -50,11 +50,11 @@ def test_file_actions_route_through_native_commands_only_in_tauri():
 
 
 def test_chat_exports_await_native_saves_and_markdown_uses_shared_helper():
-    app_sidebar = APP_SIDEBAR.read_text(encoding="utf-8")
-    prompt_storage = PROMPT_STORAGE.read_text(encoding="utf-8")
-    thread = THREAD.read_text(encoding="utf-8")
-    thread_sidebar = THREAD_SIDEBAR.read_text(encoding="utf-8")
-    shared_composer = SHARED_COMPOSER.read_text(encoding="utf-8")
+    app_sidebar = APP_SIDEBAR.read_text(encoding = "utf-8")
+    prompt_storage = PROMPT_STORAGE.read_text(encoding = "utf-8")
+    thread = THREAD.read_text(encoding = "utf-8")
+    thread_sidebar = THREAD_SIDEBAR.read_text(encoding = "utf-8")
+    shared_composer = SHARED_COMPOSER.read_text(encoding = "utf-8")
 
     assert "async function downloadBlob(" in prompt_storage
     assert "const handleExport = useCallback(async () =>" in prompt_storage
