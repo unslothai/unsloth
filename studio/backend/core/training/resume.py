@@ -9,8 +9,6 @@ import zipfile
 from pathlib import Path
 from typing import Optional
 
-from safetensors import SafetensorError, safe_open
-
 from utils.paths import outputs_root, resolve_output_dir
 
 
@@ -51,8 +49,15 @@ def _valid_state_file(path: Path, require_tensor: bool = True) -> bool:
         if not path.is_file() or path.stat().st_size == 0:
             return False
         if path.suffix == ".safetensors":
-            with safe_open(str(path), framework = "np") as state:
-                return bool(state.keys())
+            try:
+                from safetensors import SafetensorError, safe_open
+            except ImportError:
+                return False
+            try:
+                with safe_open(str(path), framework = "np") as state:
+                    return bool(state.keys())
+            except SafetensorError:
+                return False
         if path.suffix in {".bin", ".pt"}:
             with zipfile.ZipFile(path) as state:
                 names = state.namelist()
@@ -70,7 +75,7 @@ def _valid_state_file(path: Path, require_tensor: bool = True) -> bool:
                     and (not require_tensor or any(name.startswith(data_prefix) for name in names))
                 )
         return True
-    except (OSError, ValueError, SafetensorError, zipfile.BadZipFile):
+    except (OSError, ValueError, zipfile.BadZipFile):
         return False
 
 
