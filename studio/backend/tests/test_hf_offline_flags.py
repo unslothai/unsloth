@@ -117,21 +117,47 @@ def test_local_only_load_fails_closed_offline_never_hitting_the_hub(monkeypatch,
     calls: list = []
     _fake_hub(monkeypatch, calls)
 
-    safe = tmp_path / "safe" / "aaa"
-    safe.mkdir(parents = True)
-    (safe / "model.safetensors").write_bytes(b"\0")
-    monkeypatch.setattr(mc, "_active_snapshot_dir", lambda name: safe)
-    allowed = fs.evaluate_file_security("org/model", None, local_only_load = True)
-    assert calls == [], "a local-only load must not hit the Hub"
-    assert allowed.blocked is False  # safetensors cache is inert
+    def _evaluate(dir_path):
+        monkeypatch.setattr(mc, "_active_snapshot_dir", lambda name: dir_path)
+        decision = fs.evaluate_file_security("org/model", None, local_only_load = True)
+        assert calls == [], "a local-only load must not hit the Hub"
+        return decision.blocked
 
-    bad = tmp_path / "bad" / "aaa"
-    bad.mkdir(parents = True)
-    (bad / "pytorch_model.bin").write_bytes(b"\0")
-    monkeypatch.setattr(mc, "_active_snapshot_dir", lambda name: bad)
-    blocked = fs.evaluate_file_security("org/model", None, local_only_load = True)
-    assert calls == [], "still no Hub call when blocking"
-    assert blocked.blocked is True  # unscanned cached pickle -> fail closed
+    def _snap(name, files: dict):
+        d = tmp_path / name / "aaa"
+        d.mkdir(parents = True)
+        for fname, body in files.items():
+            (d / fname).write_bytes(body if isinstance(body, bytes) else body.encode())
+        return d
+
+    # A genuinely inert (unsharded safetensors) cache is allowed.
+    assert _evaluate(_snap("safe", {"model.safetensors": b"\0"})) is False
+
+    # A cached pickle weight with no loadable safetensors alternative is blocked.
+    assert _evaluate(_snap("bad", {"pytorch_model.bin": b"\0"})) is True
+
+    # A pickle beside a bare ADAPTER (not a base weight) still loads the pickle -> blocked:
+    # from_pretrained cannot use adapter_model.safetensors as the base checkpoint.
+    assert _evaluate(_snap("adapter", {
+        "pytorch_model.bin": b"\0", "adapter_model.safetensors": b"\0",
+    })) is True
+
+    # A pickle beside a lone ORPHAN shard (no index) still loads the pickle -> blocked:
+    # a sharded safetensors load needs the index the loader reads to locate every shard.
+    assert _evaluate(_snap("orphan", {
+        "pytorch_model.bin": b"\0", "model-00001-of-00002.safetensors": b"\0",
+    })) is True
+
+    # A COMPLETE indexed safetensors shard set is what the loader picks instead of the
+    # pickle -> allowed.
+    index = '{"weight_map": {"a": "model-00001-of-00002.safetensors", ' \
+            '"b": "model-00002-of-00002.safetensors"}}'
+    assert _evaluate(_snap("sharded", {
+        "pytorch_model.bin": b"\0",
+        "model-00001-of-00002.safetensors": b"\0",
+        "model-00002-of-00002.safetensors": b"\0",
+        "model.safetensors.index.json": index,
+    })) is False
 
 
 def test_security_scan_runs_when_online(monkeypatch):

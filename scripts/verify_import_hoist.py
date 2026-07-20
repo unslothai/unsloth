@@ -447,9 +447,9 @@ def _legb_chain(scope: Scope) -> list[Scope]:
 # ---------------------------------------------------------------- analysis
 
 
-def _collect_dunder_all(tree: ast.Module) -> set[str]:
-    """The FINAL module-level ``__all__`` string entries (``= [...]``, ``+= [...]``, or
-    an annotated assign).
+def _collect_dunder_all(tree: ast.Module) -> tuple[set[str], bool]:
+    """The FINAL module-level ``__all__`` string entries plus an ``opaque`` flag
+    (``= [...]``, ``+= [...]``, or an annotated assign).
 
     A name listed in ``__all__`` is a public re-export, which is a real use of the
     import that binds it. ``__all__`` entries are string constants, not ``Name``
@@ -461,8 +461,16 @@ def _collect_dunder_all(tree: ast.Module) -> set[str]:
     REPLACES the list and ``+=`` extends it. Unioning every assignment instead would
     let ``__all__ = ["y"]`` followed by ``__all__ = []`` still mark ``y`` used, so a
     genuinely unused hoist would slip through.
+
+    ``opaque`` is True when ``__all__`` is rebound OR extended by a value we cannot read
+    statically (a call, a name, a comprehension, a spread). The static entry set is then
+    not known to be exhaustive, so the caller must NOT treat a name's absence from it as
+    proof the import is unexported -- a re-export supplied dynamically
+    (``__all__ += _exports()``) would otherwise trip ``HOISTED-IMPORT-UNUSED``. An
+    unreadable ``=`` and an unreadable ``+=`` set it alike, so the two stay consistent.
     """
     names: set[str] = set()
+    opaque = False
     for node in tree.body:
         if isinstance(node, ast.Assign):
             targets, replaces = node.targets, True
@@ -476,21 +484,25 @@ def _collect_dunder_all(tree: ast.Module) -> set[str]:
             continue
         value = node.value
         entries: set[str] = set()
-        literal = isinstance(value, (ast.List, ast.Tuple, ast.Set))
-        if literal:
+        readable = True  # every element is a statically-known string constant
+        if isinstance(value, (ast.List, ast.Tuple, ast.Set)):
             for elt in value.elts:
                 if isinstance(elt, ast.Constant) and isinstance(elt.value, str):
                     entries.add(elt.value)
+                else:
+                    readable = False  # a spread / computed element: unknown extra exports
+        else:
+            readable = False  # a call, a name, a comprehension: contents unknown
+        if not readable:
+            # Contents partly/wholly unknown. Keep the names we can see, but mark the set
+            # non-exhaustive so the caller preserves uncertainty rather than flagging a
+            # dynamically-supplied re-export as unused. Applies to both `=` and `+=`.
+            opaque = True
         if replaces:
-            if not literal:
-                # Rebound to something we cannot read statically (a call, a name, a
-                # comprehension). Its contents are unknown, so keep what we had rather
-                # than claim the list is empty and flag real re-exports as unused.
-                continue
             names = entries
         else:
             names |= entries
-    return names
+    return names, opaque
 
 
 def _analyze(src: str):
@@ -525,13 +537,18 @@ def _analyze(src: str):
     # Re-exports count as uses: a name listed in module-level __all__ that is bound
     # by a module import is deliberately exported, not a dangling hoist. Fold its
     # targets into the used set so HOISTED-IMPORT-UNUSED does not fire on a
-    # legitimately-added `from .x import y` in a package __init__.
-    for _n in _collect_dunder_all(tree):
-        _bs = module_imports.get(_n)
-        if _bs:
-            targets_by_scope.setdefault(module.qualname, set()).update(
-                x.target for x in _bs if x.target
-            )
+    # legitimately-added `from .x import y` in a package __init__. When __all__ is
+    # opaque (a dynamically-computed part), the static list is not known to be
+    # exhaustive, so credit EVERY module import rather than risk flagging a
+    # dynamically-exported hoist as unused.
+    _all_names, _all_opaque = _collect_dunder_all(tree)
+    _reexported = module_imports.values() if _all_opaque else (
+        _bs for _n in _all_names if (_bs := module_imports.get(_n))
+    )
+    for _bs in _reexported:
+        targets_by_scope.setdefault(module.qualname, set()).update(
+            x.target for x in _bs if x.target
+        )
     module_dup = {
         n
         for n, bs in module.bindings.items()
@@ -795,6 +812,14 @@ _SELF_TESTS = {
         # we had rather than flag a real re-export as unused
         'from pkg import a\n__all__ = ["a"]\n',
         'from pkg import a\nfrom pkg import b\n__all__ = ["a", "b"]\n__all__ = sorted(__all__)\n',
+        None,
+    ),
+    "unreadable_augmented_all_keeps_the_reexport": (
+        # "+=" extended by a value we cannot read statically: the augmented contents are
+        # unknown, so a dynamically-supplied re-export must not be flagged as unused
+        # (mirrors the unreadable "=" case, which also preserves uncertainty)
+        'from pkg import a\n__all__ = ["a"]\n',
+        'from pkg import a\nfrom pkg import b\n__all__ = ["a"]\n__all__ += sorted(["b"])\n',
         None,
     ),
 }

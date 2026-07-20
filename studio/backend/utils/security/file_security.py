@@ -247,21 +247,56 @@ _PICKLE_WEIGHT_RE = re.compile(
 )
 
 
+# A from_pretrained load prefers safetensors over a pickle ONLY when the directory holds a
+# safetensors weight it can actually load in its place: an unsharded base file, or an index
+# whose every referenced shard is present. A bare adapter (``adapter_model.safetensors``) or
+# an orphan shard with no index is NOT a loadable base weight -- the loader falls back to and
+# deserializes the pickle, which therefore stays the live RCE vector.
+_SAFETENSORS_BASE_UNSHARDED = ("model.safetensors", "pytorch_model.safetensors")
+_SAFETENSORS_BASE_INDEX = ("model.safetensors.index.json", "pytorch_model.safetensors.index.json")
+
+
+def _safetensors_index_complete(index_path, present_lower: set) -> bool:
+    """True when every shard the safetensors index maps is present in the same directory."""
+    import json
+
+    try:
+        weight_map = (json.loads(index_path.read_text(encoding = "utf-8")) or {}).get("weight_map") or {}
+    except (OSError, ValueError):
+        return False  # unreadable index -> not a usable safetensors set -> keep the pickle blocked
+    shards = {str(shard).rsplit("/", 1)[-1].lower() for shard in weight_map.values()}
+    return bool(shards) and shards <= present_lower
+
+
+def _dir_has_loadable_safetensors(files: dict) -> bool:
+    """True when *files* (lower-name -> Path for one directory) hold a safetensors weight a
+    from_pretrained load will read INSTEAD of a pickle sibling: an unsharded base file, or a
+    complete indexed shard set. A bare adapter or an orphan shard does not qualify."""
+    if any(name in files for name in _SAFETENSORS_BASE_UNSHARDED):
+        return True
+    present_lower = set(files)
+    for index_name in _SAFETENSORS_BASE_INDEX:
+        index_path = files.get(index_name)
+        if index_path is not None and _safetensors_index_complete(index_path, present_lower):
+            return True
+    return False
+
+
 def _cached_pickle_weight_files(snap) -> list:
-    """Base-model pickle weight files in the snapshot's module dirs that have NO safetensors
-    alternative -- i.e. the pickles a from_pretrained load actually deserializes. A dir
-    holding ``model.safetensors`` loads that (inert) and ignores any pickle sibling."""
+    """Base-model pickle weight files in the snapshot's module dirs with NO loadable safetensors
+    alternative -- i.e. the pickles a from_pretrained load actually deserializes. A dir is
+    covered only by a safetensors weight the loader would pick instead (unsharded base file or
+    a complete indexed shard set); a bare adapter or an orphan shard leaves the pickle live."""
     by_dir_pickle: dict = {}
-    dirs_with_safetensors: set = set()
+    by_dir_files: dict = {}  # directory -> {lower-name: Path}
     try:
         for path in snap.rglob("*"):
             try:
                 if not path.is_file():
                     continue
                 low = path.name.lower()
-                if low.endswith(".safetensors"):
-                    dirs_with_safetensors.add(path.parent)
-                elif _PICKLE_WEIGHT_RE.match(low):
+                by_dir_files.setdefault(path.parent, {})[low] = path
+                if _PICKLE_WEIGHT_RE.match(low):
                     by_dir_pickle.setdefault(path.parent, []).append(path.name)
             except OSError:
                 continue
@@ -269,7 +304,7 @@ def _cached_pickle_weight_files(snap) -> list:
         return []
     hits: set = set()
     for directory, names in by_dir_pickle.items():
-        if directory not in dirs_with_safetensors:
+        if not _dir_has_loadable_safetensors(by_dir_files.get(directory, {})):
             hits.update(names)
     return sorted(hits)
 
