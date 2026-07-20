@@ -110,7 +110,7 @@ const PLUS_MENU_SETTINGS: {
   },
   {
     id: "bypassPermissions",
-    label: "Bypass permissions",
+    label: "Tool permissions",
     icon: (
       <HugeiconsIcon
         icon={ShieldBanIcon}
