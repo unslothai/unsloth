@@ -334,13 +334,17 @@ interface LocalModelListResponse {
   models: LocalModelInfo[];
 }
 
-export async function listLocalModels(): Promise<LocalModelListResponse> {
-  const response = await authFetch("/api/models/local");
+export async function listLocalModels(
+  signal?: AbortSignal,
+): Promise<LocalModelListResponse> {
+  const response = await authFetch("/api/models/local", { signal });
   return parseJsonOrThrow<LocalModelListResponse>(response);
 }
 
-export async function listCachedGguf(): Promise<CachedGgufRepo[]> {
-  const response = await authFetch("/api/models/cached-gguf");
+export async function listCachedGguf(
+  signal?: AbortSignal,
+): Promise<CachedGgufRepo[]> {
+  const response = await authFetch("/api/models/cached-gguf", { signal });
   const data = await parseJsonOrThrow<{ cached: CachedGgufRepo[] }>(response);
   return data.cached;
 }
@@ -355,9 +359,11 @@ export interface CachedModelRepo {
 
 export async function listCachedModels(
   hfToken?: string | null,
+  signal?: AbortSignal,
 ): Promise<CachedModelRepo[]> {
   const response = await authFetch("/api/models/cached-models", {
     headers: hubTokenHeader(hfToken),
+    signal,
   });
   const data = await parseJsonOrThrow<{ cached: CachedModelRepo[] }>(response);
   return data.cached;
