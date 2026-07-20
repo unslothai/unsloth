@@ -2151,7 +2151,7 @@ def end_sidecar_swap() -> None:
 
 def sidecar_swap_in_progress() -> bool:
     """True while a .venv_t5_latest install or repair holds the reservation,
-    in this process or any other Studio process (lock file)."""
+    in this process or any other Unsloth process (lock file)."""
     return sidecar_swap_kind() is not None
 
 

@@ -59,7 +59,32 @@ class GenStreamError(str):
     "Error:" by checking isinstance(chunk, GenStreamError).
     """
 
-    __slots__ = ()
+    __slots__ = ("public",)
+
+    def __new__(
+        cls,
+        value,
+        *,
+        public: bool = False,
+    ):
+        obj = str.__new__(cls, value)
+        obj.public = bool(public)
+        return obj
+
+
+class GenStreamErrorRaised(RuntimeError):
+    """Internal exception form of ``GenStreamError`` for generator boundaries."""
+
+    __slots__ = ("public",)
+
+    def __init__(
+        self,
+        value,
+        *,
+        public: bool = False,
+    ):
+        super().__init__(value)
+        self.public = bool(public)
 
 
 class InferenceOrchestrator:
@@ -531,13 +556,19 @@ class InferenceOrchestrator:
         initial_resp_queue = self._resp_queue
         while True:
             if self._proc is not initial_proc or self._resp_queue is not initial_resp_queue:
-                yield GenStreamError(f"Error: {self._subprocess_crash_message(crash_context)}")
+                yield GenStreamError(
+                    f"Error: {self._subprocess_crash_message(crash_context)}",
+                    public = True,
+                )
                 return
             resp = read_one(read_timeout)
             if resp is None:
                 # Check subprocess health
                 if not self._ensure_subprocess_alive():
-                    yield GenStreamError(f"Error: {self._subprocess_crash_message(crash_context)}")
+                    yield GenStreamError(
+                        f"Error: {self._subprocess_crash_message(crash_context)}",
+                        public = True,
+                    )
                     return
                 continue
 
@@ -689,11 +720,11 @@ class InferenceOrchestrator:
         GPU work stays serialized; this only avoids orchestrator lock contention.
         """
         if not self._ensure_subprocess_alive():
-            yield GenStreamError("Error: Inference subprocess is not running")
+            yield GenStreamError("Error: Inference subprocess is not running", public = True)
             return
 
         if not self.active_model_name:
-            yield GenStreamError("Error: No active model")
+            yield GenStreamError("Error: No active model", public = True)
             return
         # Latch the target model so the recheck below can detect a switch that completed
         # between _start_dispatcher and mailbox registration (mirrors the locked path's
@@ -704,7 +735,7 @@ class InferenceOrchestrator:
         # so without this early-out a compare request would enqueue a generate on the
         # outgoing model and delay the switch.
         if self._unload_pending:
-            yield GenStreamError("Error: model is being unloaded")
+            yield GenStreamError("Error: model is being unloaded", public = True)
             return
 
         # Ensure the dispatcher runs. _start_dispatcher serializes concurrent starters under
@@ -776,7 +807,7 @@ class InferenceOrchestrator:
             # _stop_dispatcher joins the dispatcher, which itself takes that lock.
             if orphaned_dispatcher:
                 self._stop_dispatcher()
-            yield GenStreamError("Error: model is being unloaded")
+            yield GenStreamError("Error: model is being unloaded", public = True)
             return
 
         try:
@@ -1376,6 +1407,7 @@ class InferenceOrchestrator:
         use_adapter: Optional[Union[bool, str]] = None,
         stats_holder: Optional[dict] = None,
         presence_penalty: float = 0.0,
+        reasoning_prefilled: bool = False,
         **_unused,
     ):
         """Run the safetensors agentic tool loop in the parent process,
@@ -1414,12 +1446,27 @@ class InferenceOrchestrator:
                 presence_penalty = presence_penalty,
             )
             if use_adapter is not None:
-                yield from self.generate_with_adapter_control(
+                stream = self.generate_with_adapter_control(
                     use_adapter = use_adapter,
                     **common_kwargs,
                 )
             else:
-                yield from self.generate_chat_response(**common_kwargs)
+                stream = self.generate_chat_response(**common_kwargs)
+            close_stream = False
+            try:
+                for chunk in stream:
+                    if isinstance(chunk, GenStreamError):
+                        close_stream = True
+                        raise GenStreamErrorRaised(str(chunk), public = chunk.public)
+                    yield chunk
+            finally:
+                if close_stream:
+                    close = getattr(stream, "close", None)
+                    if callable(close):
+                        try:
+                            close()
+                        except Exception:
+                            logger.debug("failed to close errored generation stream", exc_info = True)
 
         initial = list(messages)
         if system_prompt:
@@ -1441,6 +1488,7 @@ class InferenceOrchestrator:
             confirm_tool_calls = confirm_tool_calls,
             bypass_permissions = bypass_permissions,
             permission_mode = permission_mode,
+            reasoning_prefilled = reasoning_prefilled,
         )
 
     def generate_with_adapter_control(
@@ -1454,14 +1502,27 @@ class InferenceOrchestrator:
 
         Uses the dispatcher path (no _gen_lock) so compare-mode requests
         don't block each other; the subprocess serializes them via its
-        sequential command loop.
+        sequential command loop. Backend failures raise instead of becoming
+        assistant text.
         """
-        yield from self._generate_dispatched(
+        stream = self._generate_dispatched(
             use_adapter = use_adapter,
             cancel_event = cancel_event,
             stats_holder = stats_holder,
             **gen_kwargs,
         )
+        try:
+            for chunk in stream:
+                if isinstance(chunk, GenStreamError):
+                    # Preserve the public/operational flag so the route can surface
+                    # the real message (e.g. "model is being unloaded") instead of a
+                    # generic error. Mirrors the safetensors tool loop's _single_turn.
+                    raise GenStreamErrorRaised(str(chunk), public = chunk.public)
+                yield chunk
+        finally:
+            close = getattr(stream, "close", None)
+            if callable(close):
+                close()
 
     def _generate_inner(
         self,
@@ -1489,11 +1550,11 @@ class InferenceOrchestrator:
         readers don't consume each other's tokens off the shared resp_queue.
         """
         if not self._ensure_subprocess_alive():
-            yield GenStreamError("Error: Inference subprocess is not running")
+            yield GenStreamError("Error: Inference subprocess is not running", public = True)
             return
 
         if not self.active_model_name:
-            yield GenStreamError("Error: No active model")
+            yield GenStreamError("Error: No active model", public = True)
             return
         expected_model = self.active_model_name
 
@@ -1510,7 +1571,7 @@ class InferenceOrchestrator:
             # so we never generate on the wrong one.
             if self._unload_pending or self.active_model_name != expected_model:
                 # Won the lock handoff during a switch; don't start on the outgoing model.
-                yield GenStreamError("Error: model is being unloaded")
+                yield GenStreamError("Error: model is being unloaded", public = True)
                 return
             request_id = str(uuid.uuid4())
             image_b64 = self._pil_to_base64(image) if image is not None else None
@@ -1695,10 +1756,10 @@ class InferenceOrchestrator:
     ) -> Generator[str, None, None]:
         """Shared inner logic for audio input generation (Whisper + ASR)."""
         if not self._ensure_subprocess_alive():
-            yield GenStreamError("Error: Inference subprocess is not running")
+            yield GenStreamError("Error: Inference subprocess is not running", public = True)
             return
         if not self.active_model_name:
-            yield GenStreamError("Error: No active model")
+            yield GenStreamError("Error: No active model", public = True)
             return
         expected_model = self.active_model_name
 
@@ -1707,7 +1768,7 @@ class InferenceOrchestrator:
             # cleared or swapped the model while we waited.
             if self._unload_pending or self.active_model_name != expected_model:
                 # Won the lock handoff during a switch; don't start on the outgoing model.
-                yield GenStreamError("Error: model is being unloaded")
+                yield GenStreamError("Error: model is being unloaded", public = True)
                 return
             request_id = str(uuid.uuid4())
 

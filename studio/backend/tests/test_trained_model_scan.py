@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Tests for Studio trained-model discovery used by Chat."""
+"""Tests for Unsloth trained-model discovery used by Chat."""
 
 import json
 from pathlib import Path

@@ -62,7 +62,7 @@ _INFERENCE_SUFFIXES = (
     "/messages/count_tokens",  # counts via the loaded tokenizer; protect like /messages
     "/embeddings",
     "/responses",
-    "/generate/stream",  # Studio's own streaming route on the same llama-server
+    "/generate/stream",  # Unsloth's own streaming route on the same llama-server
     "/audio/generate",  # direct GGUF TTS; can outlive the idle TTL
 )
 

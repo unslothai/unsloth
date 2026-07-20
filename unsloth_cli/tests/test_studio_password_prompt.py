@@ -885,7 +885,7 @@ def test_run_non_tty_deletes_bootstrap_password_file(monkeypatch, tmp_path):
 
 def test_run_missing_frontend_exits_before_stripping_bootstrap(monkeypatch, tmp_path):
     # Regression (item B / reviewer finding 4): `unsloth studio run` serves the
-    # same Studio UI and strips the seeded password on a headless public launch,
+    # same Unsloth UI and strips the seeded password on a headless public launch,
     # so a missing frontend dist must abort BEFORE the strip -- the same lockout
     # guard as `unsloth studio`, not just `studio run`'s model-load residual.
     import typer as _typer
@@ -1104,7 +1104,7 @@ def test_cli_update_password_truncates_locked_bootstrap_after_change(monkeypatch
 
 
 def test_reset_password_fails_closed_when_db_cannot_be_deleted(monkeypatch, tmp_path):
-    # If auth.db cannot be removed (running Studio / Windows lock, read-only dir),
+    # If auth.db cannot be removed (running Unsloth / Windows lock, read-only dir),
     # reset must abort BEFORE touching the credential files -- deleting them while
     # an un-resettable must_change_password=1 DB survives would lock a
     # forgotten-password reset out with no recovery credential.

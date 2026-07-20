@@ -1418,7 +1418,7 @@ class TestNormalizeAnthropicOpenAIImages:
 
 
 # =====================================================================
-# Studio-tool alias detection (/v1/messages tool routing)
+# Unsloth-tool alias detection (/v1/messages tool routing)
 # =====================================================================
 
 
@@ -1436,7 +1436,7 @@ class TestAnthropicRequestedStudioTools:
 
     def test_client_tool_named_python_is_not_misclassified(self):
         # input_schema is the client-tool discriminator; its presence must
-        # prevent the name from being treated as a Studio alias.
+        # prevent the name from being treated as an Unsloth alias.
         tools = [
             {
                 "name": "python",
@@ -1747,9 +1747,9 @@ class TestAnthropicMessagesToolRouting:
         assert "name" in exc.value.detail
 
     def test_alias_named_client_tool_without_schema_rejected_with_400(self, monkeypatch):
-        # Regression: a typo'd client tool whose name collides with a Studio
+        # Regression: a typo'd client tool whose name collides with an Unsloth
         # alias (e.g. a custom "python" tool missing input_schema) must
-        # surface a 400, not silently switch into Studio's built-in python
+        # surface a 400, not silently switch into Unsloth's built-in python
         # execution.
         _mock_backend(monkeypatch)
         payload = _basic_payload(tools = [{"name": "python"}])
@@ -1770,7 +1770,7 @@ class TestAnthropicMessagesToolRouting:
 
     def test_disable_tools_policy_overrides_server_tool_alias(self, monkeypatch):
         # CLI `unsloth run --disable-tools` sets policy=False. A request with
-        # a Studio server-tool alias must NOT enter the agentic loop then.
+        # an Unsloth server-tool alias must NOT enter the agentic loop then.
         backend = _mock_backend(monkeypatch)
         set_tool_policy(False)
         payload = _basic_payload(

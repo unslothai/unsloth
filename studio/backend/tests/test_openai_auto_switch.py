@@ -784,7 +784,7 @@ def test_v1_models_retrieve_is_case_insensitive(monkeypatch):
 
 def test_index_excludes_hidden_models(tmp_path, monkeypatch):
     # The llama.cpp validation probe and RAG embedding weights are hidden from
-    # Studio's pickers; they must never become auto-switch targets.
+    # Unsloth's pickers; they must never become auto-switch targets.
     from types import SimpleNamespace
     import routes.models as models_route
 
@@ -792,6 +792,10 @@ def test_index_excludes_hidden_models(tmp_path, monkeypatch):
     normal.write_bytes(b"x" * 32)
     probe = tmp_path / "stories260K.gguf"  # llama.cpp install-validation probe
     probe.write_bytes(b"x" * 32)
+    embedder = tmp_path / "embedding-Q8_0.gguf"
+    embedder.write_bytes(b"x" * 32)
+    local_default_embedder = tmp_path / "bge-small-en-v1.5-F16.gguf"
+    local_default_embedder.write_bytes(b"x" * 32)
 
     def _info(mid, path):
         return SimpleNamespace(id = mid, path = str(path), model_id = mid, display_name = mid)
@@ -799,7 +803,22 @@ def test_index_excludes_hidden_models(tmp_path, monkeypatch):
     monkeypatch.setattr(
         models_route,
         "_scan_models_dir",
-        lambda *a, **k: [_info("org/Normal-GGUF", normal), _info("ggml-org/models", probe)],
+        lambda *a, **k: [
+            _info("org/Normal-GGUF", normal),
+            _info("ggml-org/models", probe),
+            SimpleNamespace(
+                id = str(embedder),
+                path = str(embedder),
+                model_id = "unsloth/bge-small-en-v1.5-GGUF",
+                display_name = "embedding-Q8_0",
+            ),
+            SimpleNamespace(
+                id = str(local_default_embedder),
+                path = str(local_default_embedder),
+                model_id = None,
+                display_name = local_default_embedder.name,
+            ),
+        ],
     )
     monkeypatch.setattr(models_route, "_scan_hf_cache", lambda *a, **k: [])
     monkeypatch.setattr(models_route, "_resolve_hf_cache_dir", lambda: tmp_path)
@@ -808,6 +827,8 @@ def test_index_excludes_hidden_models(tmp_path, monkeypatch):
     index = resolver._index()
     assert "org/normal-gguf" in index  # keys are normalized to lowercase
     assert "ggml-org/models" not in index
+    assert "unsloth/bge-small-en-v1.5-gguf" not in index
+    assert str(local_default_embedder).lower() not in index
     # And the hidden probe cannot be auto-switched to by name.
     resolver._scan = (0.0, {})
     assert resolver.resolve_local_gguf("ggml-org/models") is None
@@ -1704,11 +1725,11 @@ def test_env_idle_ttl_standalone_when_no_stored_value(monkeypatch):
 def test_stored_idle_value_overrides_env_and_stays_gated(monkeypatch):
     # An explicit stored value wins over the env default and remains gated on the
     # auto-switch toggle.
-    store = {settings.AUTO_UNLOAD_IDLE_SETTING_KEY: 30}
+    store = {settings.AUTO_UNLOAD_IDLE_SETTING_KEY: 90}
     monkeypatch.setattr(settings, "_cached_setting", lambda k, d = None: store.get(k, d))
     monkeypatch.setenv("UNSLOTH_MODEL_IDLE_TTL", "600")
     monkeypatch.setattr(settings, "get_openai_auto_switch_enabled", lambda: True)
-    assert settings.get_auto_unload_idle_seconds() == 30  # stored wins, not env
+    assert settings.get_auto_unload_idle_seconds() == 90  # stored wins, not env
     monkeypatch.setattr(settings, "get_openai_auto_switch_enabled", lambda: False)
     assert settings.get_auto_unload_idle_seconds() == 0  # explicit value still gated off
 
@@ -1824,6 +1845,8 @@ def test_index_advertises_alias_not_filesystem_path(tmp_path, monkeypatch):
     # host path in /v1/models, yet the model stays resolvable by that path too.
     from types import SimpleNamespace
     import routes.models as models_route
+    from storage import studio_db
+    import utils.paths as paths
 
     gguf = tmp_path / "model-Q4_K_M.gguf"
     gguf.write_bytes(b"x" * 32)
@@ -1837,6 +1860,8 @@ def test_index_advertises_alias_not_filesystem_path(tmp_path, monkeypatch):
     monkeypatch.setattr(models_route, "_scan_hf_cache", lambda *a, **k: [])
     monkeypatch.setattr(models_route, "_resolve_hf_cache_dir", lambda: tmp_path)
     monkeypatch.setattr(models_route, "_is_hidden_model", lambda *a, **k: False)
+    monkeypatch.setattr(paths, "lmstudio_model_dirs", lambda: [])
+    monkeypatch.setattr(studio_db, "list_scan_folders", lambda: [])
     resolver._scan = (0.0, {})
 
     # The advertised id is the alias, never the absolute path.
@@ -3680,3 +3705,53 @@ def test_restore_matches_gguf_realpath_across_naming(tmp_path):
     kw.restore_kv_resume(backend, manifest)
     assert len(restored) == 1  # names differ, file identical: restore ran
     assert not state_file.exists()
+
+
+def test_setter_rejects_idle_below_floor(monkeypatch):
+    import storage.studio_db as db
+
+    writes = []
+    monkeypatch.setattr(db, "upsert_app_settings", lambda m: writes.append(dict(m)))
+    settings._cache.clear()
+
+    with pytest.raises(ValueError, match = "at least 60"):
+        settings.set_openai_auto_switch(True, 30)
+    assert writes == []  # rejected before any persist
+    # 0 (off) and >= 60 pass through unchanged.
+    assert settings.set_openai_auto_switch(True, 0)[1] == 0
+    assert settings.set_openai_auto_switch(True, 60)[1] == 60
+    assert settings.set_openai_auto_switch(True, 3600)[1] == 3600
+
+
+def test_put_route_rejects_idle_below_floor():
+    import routes.settings as settings_route
+    from fastapi import HTTPException
+
+    payload = settings_route.OpenAIAutoSwitchPayload(enabled = True, auto_unload_idle_seconds = 30)
+    with pytest.raises(HTTPException) as excinfo:
+        settings_route.update_openai_auto_switch(payload, "tester")
+    assert excinfo.value.status_code == 400
+
+
+def test_stored_legacy_idle_below_floor_is_clamped(monkeypatch):
+    # Values persisted before the floor existed are raised to it on read, for
+    # both the effective TTL and the value the settings UI displays.
+    store = {settings.AUTO_UNLOAD_IDLE_SETTING_KEY: 5}
+    monkeypatch.setattr(settings, "_cached_setting", lambda k, d = None: store.get(k, d))
+    monkeypatch.setattr(settings, "get_openai_auto_switch_enabled", lambda: True)
+    assert settings.get_auto_unload_idle_seconds() == 60
+    assert settings.get_stored_auto_unload_idle_seconds() == 60
+    store[settings.AUTO_UNLOAD_IDLE_SETTING_KEY] = 90
+    assert settings.get_auto_unload_idle_seconds() == 90
+
+
+def test_env_idle_below_floor_is_clamped(monkeypatch):
+    monkeypatch.setattr(settings, "_cached_setting", lambda k, d = None: d)
+    monkeypatch.setenv(settings.MODEL_IDLE_TTL_ENV_VAR, "5")
+    assert settings.get_auto_unload_idle_seconds() == 60
+    monkeypatch.setenv(settings.MODEL_IDLE_TTL_ENV_VAR, "0")
+    assert settings.get_auto_unload_idle_seconds() == 0
+    monkeypatch.setenv(settings.MODEL_IDLE_TTL_ENV_VAR, "600")
+    assert settings.get_auto_unload_idle_seconds() == 600
+    monkeypatch.delenv(settings.MODEL_IDLE_TTL_ENV_VAR)
+    assert settings.get_auto_unload_idle_seconds() == 0

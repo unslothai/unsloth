@@ -191,7 +191,7 @@ fn reject_sensitive_artifact(path: &Path) -> Result<(), String> {
         "\\pid",
     ] {
         if lowered.contains(needle) {
-            return Err("Sensitive Studio state cannot be registered as an artifact.".to_string());
+            return Err("Sensitive Unsloth state cannot be registered as an artifact.".to_string());
         }
     }
     if let Some(ext) = path.extension().and_then(|ext| ext.to_str()) {

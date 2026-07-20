@@ -360,7 +360,7 @@ class TestRuntimePatterns:
             install_kind = "windows-hip",
         )
         patterns = runtime_patterns_for_choice(choice)
-        # Narrowed from "*.exe" to the two binaries Studio actually invokes.
+        # Narrowed from "*.exe" to the two binaries Unsloth actually invokes.
         assert "llama-server.exe" in patterns
         assert "llama-quantize.exe" in patterns
         assert "*.dll" in patterns
@@ -378,7 +378,7 @@ class TestRuntimePatterns:
         assert "lib*.dylib" in patterns
 
     def test_diffusion_visual_server_kept(self):
-        # The DiffusionGemma visual-server must survive the prune so Studio can
+        # The DiffusionGemma visual-server must survive the prune so Unsloth can
         # serve DiffusionGemma GGUFs natively.
         for kind, name in (
             ("linux-cuda", "llama-diffusion-gemma-visual-server"),

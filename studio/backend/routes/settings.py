@@ -10,6 +10,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from auth.authentication import get_current_subject
 from auth.storage import rotate_preview_link_secret
+from core.rag.config import default_gguf_repo, effective_gguf_repo
 from loggers import get_logger
 from utils.utils import safe_error_detail, log_and_http_error
 from utils.personalization_settings import (
@@ -274,14 +275,18 @@ class EmbeddingModelPayload(BaseModel):
 
 class EmbeddingModelResponse(BaseModel):
     embedding_model: str
+    embedding_gguf_repo: str
     default_embedding_model: str
+    default_embedding_gguf_repo: str
     is_custom: bool
 
 
 def _embedding_model_response() -> EmbeddingModelResponse:
     return EmbeddingModelResponse(
         embedding_model = get_rag_embedding_model(),
+        embedding_gguf_repo = effective_gguf_repo(),
         default_embedding_model = default_embedding_model(),
+        default_embedding_gguf_repo = default_gguf_repo(),
         is_custom = get_stored_embedding_model() is not None,
     )
 

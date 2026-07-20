@@ -14,6 +14,9 @@ import {
 import { SettingsRow } from "./settings-row";
 import { SettingsSection } from "./settings-section";
 
+// Mirrors MIN_AUTO_UNLOAD_IDLE_SECONDS in the backend settings store.
+const MIN_IDLE_SECONDS = 60;
+
 export function ModelAutoSwitchSection() {
   const t = useT();
   const [settings, setSettings] = useState<OpenAIAutoSwitchSettings | null>(
@@ -45,13 +48,16 @@ export function ModelAutoSwitchSection() {
     };
   }, [t]);
 
-  // Parse the idle-seconds draft to a non-negative integer; empty/invalid -> null.
+  // Parse the idle-seconds draft: 0 (off) or >= MIN_IDLE_SECONDS; else null.
   const parseIdleSeconds = (): number | null => {
     if (!draftIdleSeconds.trim()) {
       return null;
     }
     const parsed = Number(draftIdleSeconds);
-    return Number.isInteger(parsed) && parsed >= 0 ? parsed : null;
+    if (!Number.isInteger(parsed)) {
+      return null;
+    }
+    return parsed === 0 || parsed >= MIN_IDLE_SECONDS ? parsed : null;
   };
 
   const persist = async (

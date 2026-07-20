@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-# Three end-to-end smoke jobs that boot a freshly-installed Studio and
+# Three end-to-end smoke jobs that boot a freshly-installed Unsloth and
 # exercise the surfaces real users hit through the OpenAI / Anthropic
 # SDKs and curl. Each job picks the smallest model that exercises the
 # behaviour under test, primes a model cache via actions/cache, and
@@ -108,7 +108,7 @@ jobs:
           path: hf-cache
           key: ${{ runner.os }}-hf-${{ env.GGUF_REPO }}-${{ env.GGUF_VARIANT }}-v2
 
-      - name: Install Studio (--local, --no-torch)
+      - name: Install Unsloth (--local, --no-torch)
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           # Withheld on PR: this step runs checked-out PR code; public GGUF still downloads.
@@ -124,7 +124,7 @@ jobs:
       - name: Install OpenAI + Anthropic Python SDKs
         run: pip install 'openai>=1.50' 'anthropic>=0.40'
 
-      - name: Reset auth + boot Studio (API-only)
+      - name: Reset auth + boot Unsloth (API-only)
         run: |
           unsloth studio reset-password
           mkdir -p logs
@@ -141,7 +141,7 @@ jobs:
             fi
             sleep 1
           done
-          echo "Studio did not become healthy in 180s"
+          echo "Unsloth did not become healthy in 180s"
           tail -200 logs/studio.log
           exit 1
 
@@ -228,11 +228,11 @@ jobs:
               return replies
 
           def run_anthropic():
-              # Two SDK quirks vs. Studio:
+              # Two SDK quirks vs. Unsloth:
               #   1. base_url must NOT include /v1 -- the SDK appends
               #      /v1/messages itself; otherwise the request hits
               #      /v1/v1/messages and 405s.
-              #   2. The SDK sends `x-api-key` by default, but Studio's
+              #   2. The SDK sends `x-api-key` by default, but Unsloth's
               #      auth layer is HTTPBearer-only. Override via
               #      default_headers so Authorization: Bearer ... is
               #      sent instead.
@@ -283,7 +283,7 @@ jobs:
               print(f"[{label}] OK -- 4 turns, run1 == run2, history grounded")
           PY
 
-      - name: Stop Studio
+      - name: Stop Unsloth
         if: always()
         run: |
           kill "${STUDIO_PID}" 2>/dev/null || true
@@ -363,7 +363,7 @@ jobs:
           path: gguf-cache
           key: ${{ runner.os }}-gguf-${{ env.GGUF_REPO }}-${{ env.GGUF_FILE }}-v1
 
-      - name: Install Studio (--local, --no-torch)
+      - name: Install Unsloth (--local, --no-torch)
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           # Withheld on PR: this step runs checked-out PR code; public GGUF still downloads.
@@ -376,7 +376,7 @@ jobs:
       - name: Assert llama.cpp loads on this macOS
         run: bash .github/scripts/assert-llama-loads.sh
 
-      - name: Reset auth + boot Studio (API-only, default tool policy)
+      - name: Reset auth + boot Unsloth (API-only, default tool policy)
         # We deliberately use the API-only mode rather than
         # `unsloth studio run` because the latter calls
         # `set_tool_policy(...)` with a resolved bool: on loopback the
@@ -478,7 +478,7 @@ jobs:
               call with enable_tools=true must use this helper.
 
               A shared CI runner can stall the stream transport (the
-              connection opening, or a mid-stream read) even when Studio
+              connection opening, or a mid-stream read) even when Unsloth
               is healthy, so harden the read three ways: retry a stall
               once with a fresh request capped at 300s; return any text
               already streamed before a stall (a stall on the trailing
@@ -574,11 +574,11 @@ jobs:
           assert status == 200, f"tool call status {status}: {data}"
           choice = data["choices"][0]
           tool_calls = (choice.get("message") or {}).get("tool_calls") or []
-          # Studio's contract: when tool_choice='required', llama.cpp's
+          # Unsloth's contract: when tool_choice='required', llama.cpp's
           # grammar should force a tool_calls payload. On Mac that
           # contract is sometimes broken by the underlying quant; the
           # PASS path is "tool_calls present + correct schema", the
-          # WARN path documents Studio still returned 200 with a
+          # WARN path documents Unsloth still returned 200 with a
           # well-formed choices[] envelope.
           if tool_calls:
               tc = tool_calls[0]
@@ -660,7 +660,7 @@ jobs:
               print(f"[tools] WARN web_search probe failed (non-blocking): {exc}")
 
           # ── 4. Thinking on / off ─────────────────────────────────────
-          # Studio strips think blocks from message.content for tools-mode
+          # Unsloth strips think blocks from message.content for tools-mode
           # responses, so we toggle plain chat (no enable_tools) and look
           # at the surfaced reasoning_content / message.thinking field.
           def thinking_call(enable):
@@ -678,7 +678,7 @@ jobs:
               }, timeout = 180)
               assert status == 200
               msg = data["choices"][0]["message"]
-              # Studio surfaces thinking via reasoning_content (OpenAI
+              # Unsloth surfaces thinking via reasoning_content (OpenAI
               # extension). Fall back to inline <think> markers for
               # robustness across template versions.
               raw = (msg.get("content") or "") + (msg.get("reasoning_content") or "")
@@ -704,7 +704,7 @@ jobs:
           print(f"[tools] PASS thinking on/off (on={len(on_text)} chars, off={len(off_text)} chars)")
           PY
 
-      - name: Stop Studio
+      - name: Stop Unsloth
         if: always()
         run: |
           kill "${STUDIO_PID}" 2>/dev/null || true
@@ -810,7 +810,7 @@ jobs:
           path: gguf-cache
           key: ${{ runner.os }}-gguf-${{ env.GGUF_REPO }}-${{ env.GGUF_FILE }}-${{ env.MMPROJ_FILE }}-v2
 
-      - name: Install Studio (--local, --no-torch)
+      - name: Install Unsloth (--local, --no-torch)
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           # Withheld on PR: this step runs checked-out PR code; public GGUF still downloads.
@@ -826,7 +826,7 @@ jobs:
       - name: Install OpenAI + Anthropic Python SDKs
         run: pip install 'openai>=1.50' 'anthropic>=0.40'
 
-      - name: Reset auth + boot Studio (API-only)
+      - name: Reset auth + boot Unsloth (API-only)
         # See Job 2's comment: API-only mode keeps tool_policy=None so
         # response_format requests aren't routed through the agentic
         # tool loop.
@@ -929,13 +929,13 @@ jobs:
           # llama.cpp's HTTP server supports OpenAI-compatible JSON
           # mode: `response_format: {"type": "json_object"}` constrains
           # the model to emit syntactically-valid JSON. We use raw HTTP
-          # rather than the OpenAI SDK so that the field shape Studio
+          # rather than the OpenAI SDK so that the field shape Unsloth
           # forwards to llama-server is unambiguous (the SDK rewrites
           # response_format depending on which variant it recognises).
           # We deliberately do NOT pass a strict JSON schema -- on
           # small Gemma-4 quants the GBNF-from-schema path occasionally
           # produces empty output, and JSON mode is the surface we care
-          # about exposing through Studio.
+          # about exposing through Unsloth.
           status, data = post("/v1/chat/completions", {
               "model":         "default",
               "messages":      [
@@ -1007,7 +1007,7 @@ jobs:
               )
 
           # ── 2. OpenAI image_url (data URI base64) ───────────────────
-          # 64x64 solid-red PNG. stb_image (used by Studio's image
+          # 64x64 solid-red PNG. stb_image (used by Unsloth's image
           # normaliser at routes/inference.py:3410) rejects 4x4 or
           # smaller PNGs as truncated, so we go up to 64x64 -- still
           # tiny in token cost. The assertion is loose: any non-empty
@@ -1023,11 +1023,11 @@ jobs:
           # The Mac prebuilt llama.cpp server has a known crash when
           # processing image inputs alongside the gemma-4-E2B mmproj
           # (server disconnects mid-completion). This is upstream
-          # llama.cpp behaviour, not Studio. Wrap both SDK calls in
+          # llama.cpp behaviour, not Unsloth. Wrap both SDK calls in
           # try/except so an upstream crash registers as a WARN rather
-          # than failing the whole job. Studio's contract (OpenAI/
+          # than failing the whole job. Unsloth's contract (OpenAI/
           # Anthropic image fields are accepted and forwarded) is
-          # validated by the request body Studio constructs, not by
+          # validated by the request body Unsloth constructs, not by
           # whether llama.cpp can decode it on Mac Metal.
           client = OpenAI(base_url = f"{BASE}/v1", api_key = KEY)
           try:
@@ -1053,14 +1053,14 @@ jobs:
           except Exception as exc:
               print(
                   f"[image/openai] WARN image_url SDK call raised: {type(exc).__name__}: "
-                  f"{exc}. Likely upstream llama.cpp Mac+vision crash, NOT a Studio "
-                  f"regression. Studio successfully forwarded the request."
+                  f"{exc}. Likely upstream llama.cpp Mac+vision crash, NOT an Unsloth "
+                  f"regression. Unsloth successfully forwarded the request."
               )
 
           # ── 3. Anthropic source/base64 image ────────────────────────
-          # Two SDK quirks vs. Studio: base_url must NOT include /v1
+          # Two SDK quirks vs. Unsloth: base_url must NOT include /v1
           # (the SDK appends it itself; otherwise /v1/v1/messages -> 405),
-          # and Studio's auth is HTTPBearer-only so the SDK's default
+          # and Unsloth's auth is HTTPBearer-only so the SDK's default
           # x-api-key header is ignored -- send Authorization: Bearer
           # via default_headers.
           anthropic = Anthropic(
@@ -1099,11 +1099,11 @@ jobs:
               print(
                   f"[image/anthropic] WARN anthropic image SDK call raised: "
                   f"{type(exc).__name__}: {exc}. Likely upstream llama.cpp Mac+vision "
-                  f"crash, NOT a Studio regression."
+                  f"crash, NOT an Unsloth regression."
               )
           PY
 
-      - name: Stop Studio
+      - name: Stop Unsloth
         if: always()
         run: |
           kill "${STUDIO_PID}" 2>/dev/null || true

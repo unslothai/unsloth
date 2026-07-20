@@ -3,10 +3,10 @@
 
 """Boundary validator for user-supplied llama-server pass-through args.
 
-Reject only flags Studio manages (model identity, auth, network, parallel
+Reject only flags Unsloth manages (model identity, auth, network, parallel
 slots). Everything else (sampling, ``-c``, ``-ngl``, ``--flash-attn``,
 ``--cache-type-*``, ``--spec-*``, ``--jinja``, ...) is appended after
-Studio's auto-set flags so llama.cpp's last-wins parser lets the user override.
+Unsloth's auto-set flags so llama.cpp's last-wins parser lets the user override.
 
 Ref: https://github.com/ggml-org/llama.cpp/blob/master/tools/server/README.md
 """
@@ -22,12 +22,12 @@ _DENYLIST_GROUPS: tuple[frozenset[str], ...] = (
     # Parallel slots: owned by typer --parallel; a pass-through would desync
     # app.state.llama_parallel_slots from llama-server.
     frozenset({"-np", "--parallel", "--n-parallel"}),
-    # Model identity: Studio resolves it from LoadRequest; a second -m would
-    # load a different model than Studio thinks it loaded.
+    # Model identity: Unsloth resolves it from LoadRequest; a second -m would
+    # load a different model than Unsloth thinks it loaded.
     frozenset({"-m", "--model"}),
-    # Public model id: Studio sets a sanitized --alias so the OpenAI API never
+    # Public model id: Unsloth sets a sanitized --alias so the OpenAI API never
     # exposes the local .gguf path. A user-supplied alias is appended after
-    # Studio's and, with llama.cpp's last-wins parsing, would reintroduce the
+    # Unsloth's and, with llama.cpp's last-wins parsing, would reintroduce the
     # path leak this is meant to prevent.
     frozenset({"-a", "--alias"}),
     frozenset({"-mu", "--model-url"}),
@@ -39,14 +39,14 @@ _DENYLIST_GROUPS: tuple[frozenset[str], ...] = (
     frozenset({"-hft", "--hf-token"}),
     frozenset({"-mm", "--mmproj"}),
     frozenset({"-mmu", "--mmproj-url"}),
-    # Networking: Studio binds + proxies; retargeting orphans the proxy.
+    # Networking: Unsloth binds + proxies; retargeting orphans the proxy.
     frozenset({"--host"}),
     frozenset({"--port"}),
     frozenset({"--path"}),
     frozenset({"--api-prefix"}),
     frozenset({"--reuse-port"}),
-    # Auth / TLS: Studio terminates auth; upstream --api-key / TLS shadows
-    # Studio's key and breaks the proxy hop.
+    # Auth / TLS: Unsloth terminates auth; upstream --api-key / TLS shadows
+    # Unsloth's key and breaks the proxy hop.
     frozenset({"--api-key"}),
     frozenset({"--api-key-file"}),
     frozenset({"--ssl-key-file"}),
@@ -64,11 +64,11 @@ _DENYLIST_GROUPS: tuple[frozenset[str], ...] = (
     frozenset({"--models-max"}),
     frozenset({"--models-autoload", "--no-models-autoload"}),
     # Server-mode flips: --embedding / --rerank restrict llama-server to
-    # those endpoints, breaking Studio's /v1/chat/completions hop.
+    # those endpoints, breaking Unsloth's /v1/chat/completions hop.
     frozenset({"--embedding", "--embeddings"}),
     frozenset({"--rerank", "--reranking"}),
     # llama-server's own built-in tools flag would silently stack on top of
-    # Studio's --enable-tools / --disable-tools policy resolver.
+    # Unsloth's --enable-tools / --disable-tools policy resolver.
     frozenset({"--tools"}),
     # Slot-state dir: Studio owns it for KV persistence across idle unload.
     frozenset({"--slot-save-path"}),
@@ -122,7 +122,7 @@ def validate_extra_args(args: Optional[Iterable[str]]) -> list[str]:
 
 
 def is_managed_flag(flag: str) -> bool:
-    """True if ``flag`` is Studio-managed. Normalises via ``_flag_name`` so
+    """True if ``flag`` is Unsloth-managed. Normalises via ``_flag_name`` so
     `-np8` / `--parallel=8` classify like the canonical tokens."""
     normalised = _flag_name(flag)
     return normalised is not None and normalised in _DENYLIST
@@ -144,7 +144,7 @@ _SPEC_FLAGS: frozenset[str] = frozenset(
         "--draft-min",
         "--draft-max",
         # MTP path (llama.cpp #22673). The drafter selectors (local --model-draft
-        # and HF --spec-draft-hf aliases) are Studio-managed since the separate-
+        # and HF --spec-draft-hf aliases) are Unsloth-managed since the separate-
         # drafter support (Gemma 4): an inherited copy must not last-wins-override
         # the auto-detected drafter. Explicit extras for the current load are never
         # stripped. The per-drafter tuning knobs (--spec-draft-type-*, -ngld,
@@ -181,25 +181,38 @@ _TEMPLATE_FLAGS: frozenset[str] = frozenset(
 # (--split-mode tensor). Pass-through stays allowed so users keep the
 # row/none/layer modes the toggle doesn't expose, but it's stripped on
 # inherit and reconciled into the round-tripped tensor_parallel state.
-# --tensor-split is coupled to the split mode and is stripped with it: Studio
+# --tensor-split is coupled to the split mode and is stripped with it: Unsloth
 # owns the tensor-mode split ratios, so an inherited/stale --tensor-split must
-# not last-wins-override Studio's computed asymmetric split.
+# not last-wins-override Unsloth's computed asymmetric split.
 _SPLIT_MODE_FLAGS: frozenset[str] = frozenset({"-sm", "--split-mode"})
 _TENSOR_SPLIT_FLAGS: frozenset[str] = frozenset({"-ts", "--tensor-split"})
 _SPLIT_SHADOWING_FLAGS: frozenset[str] = _SPLIT_MODE_FLAGS | _TENSOR_SPLIT_FLAGS
+
+# GPU-offload flags. Stripped only when the GPU Memory mode owns offload
+# (manual emits --fit / --gpu-layers / --n-cpu-moe); in auto, a user's
+# inherited -ngl is respected (the offload_overridden path), so this group is
+# opt-in, not default. Layer flags are shared with llama_cpp's override
+# detection; the MoE flags are strip-only (manual's --n-cpu-moe slider owns them).
+_LAYER_OFFLOAD_FLAGS: frozenset[str] = frozenset(
+    {"-ngl", "--gpu-layers", "--n-gpu-layers", "-fit", "--fit"}
+)
+_MOE_OFFLOAD_FLAGS: frozenset[str] = frozenset({"-ncmoe", "--n-cpu-moe", "-cmoe", "--cpu-moe"})
+_OFFLOAD_SHADOWING_FLAGS: frozenset[str] = _LAYER_OFFLOAD_FLAGS | _MOE_OFFLOAD_FLAGS
 
 _SHADOWING_FLAGS: frozenset[str] = (
     _CONTEXT_FLAGS | _CACHE_FLAGS | _SPEC_FLAGS | _TEMPLATE_FLAGS | _SPLIT_SHADOWING_FLAGS
 )
 
 # Shadowing flags that take no value -- strip the flag only, not the next token.
-_BOOLEAN_SHADOWING_FLAGS: frozenset[str] = frozenset({"--spec-default", "--jinja", "--no-jinja"})
+_BOOLEAN_SHADOWING_FLAGS: frozenset[str] = frozenset(
+    {"--spec-default", "--jinja", "--no-jinja", "-cmoe", "--cpu-moe"}
+)
 
 
 def parse_ctx_override(args: Optional[Iterable[str]]) -> Optional[int]:
     """Return the last user-supplied ``-c`` / ``--ctx-size`` value.
 
-    Mirrors llama.cpp's last-wins parsing for the one numeric knob Studio's
+    Mirrors llama.cpp's last-wins parsing for the one numeric knob Unsloth's
     load-time fit logic needs.
     """
     if not args:
@@ -288,7 +301,7 @@ def parse_cache_override(args: Optional[Iterable[str]]) -> Optional[str]:
     Mirrors parse_ctx_override but for cache type. Recognises both -ctk
     (key) and -ctv (value). When both flags appear, returns the last-wins
     value, treating key and value cache flags as the same setting because
-    Studio's KV estimate has a single cache_type_kv knob.
+    Unsloth's KV estimate has a single cache_type_kv knob.
     """
     return _last_flag_value(args, _CACHE_FLAGS)
 
@@ -343,7 +356,7 @@ def resolve_tensor_parallel(args: Optional[Iterable[str]], fallback_tensor_paral
 
 
 def _env_split_mode_is_tensor(env: Optional[Mapping[str, str]] = None) -> bool:
-    """True when the inherited LLAMA_ARG_SPLIT_MODE env selects tensor. Studio
+    """True when the inherited LLAMA_ARG_SPLIT_MODE env selects tensor. Unsloth
     emits --split-mode only on its tensor branch, so a tensor env on the layer
     path would run the child tensor-parallel unbudgeted; this flips the budget
     to tensor. Only tensor is heavier, so other modes are ignored."""
@@ -426,14 +439,22 @@ def strip_shadowing_flags(
     strip_spec: bool = True,
     strip_template: bool = True,
     strip_split_mode: bool = True,
+    strip_tensor_split: bool = False,
+    strip_offload: bool = False,
 ) -> list[str]:
-    """Strip flags that shadow first-class Studio settings.
+    """Strip flags that shadow first-class Unsloth settings.
 
     Used when inheriting a previous load's ``llama_extra_args`` so an
     inherited `-c 4096` can't override the current `max_seq_length`
     (same for cache / spec / template / split-mode). Each ``strip_*``
     toggle controls one group; the route only strips groups whose
     first-class field the caller actually supplied.
+
+    ``strip_split_mode`` removes both ``--split-mode`` and the coupled
+    ``--tensor-split`` (the Tensor Parallelism toggle owns the whole split).
+    ``strip_tensor_split`` removes ``--tensor-split`` *alone*, so manual mode can
+    replace an inherited per-GPU ratio while leaving the user's ``--split-mode``
+    row/none/layer choice intact.
     """
     shadowing: set[str] = set()
     if strip_context:
@@ -446,6 +467,10 @@ def strip_shadowing_flags(
         shadowing |= _TEMPLATE_FLAGS
     if strip_split_mode:
         shadowing |= _SPLIT_SHADOWING_FLAGS
+    if strip_tensor_split:
+        shadowing |= _TENSOR_SPLIT_FLAGS
+    if strip_offload:
+        shadowing |= _OFFLOAD_SHADOWING_FLAGS
 
     tokens = [str(a) for a in (args or [])]
     out: list[str] = []

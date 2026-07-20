@@ -36,7 +36,7 @@ def _infer_studio_home_from_venv() -> Path | None:
 
 
 def studio_root() -> Path:
-    """Studio install root.
+    """Unsloth install root.
 
     Priority: UNSLOTH_STUDIO_HOME, then STUDIO_HOME alias, then sys.prefix
     inference, then legacy ~/.unsloth/studio. UNSLOTH_STUDIO_HOME wins if
@@ -67,7 +67,7 @@ def llama_slot_cache_root() -> Path:
 
 
 def studio_bin_root() -> Path:
-    """Dir for Studio-managed executables (the `unsloth` shim, downloaded tools like cloudflared)."""
+    """Dir for Unsloth-managed executables (the `unsloth` shim, downloaded tools like cloudflared)."""
     return studio_root() / "bin"
 
 
@@ -448,7 +448,7 @@ def resolve_export_write_dir(path_value: str | None = None) -> Path:
 
     Unlike :func:`resolve_export_dir`, this function passes absolute
     paths through as-is so users can target a different drive when
-    their Studio install lives on a constrained system volume
+    their Unsloth install lives on a constrained system volume
     (see :gh-issue:`6082`). Used only by the export write path.
     """
     if not path_value or not str(path_value).strip():
