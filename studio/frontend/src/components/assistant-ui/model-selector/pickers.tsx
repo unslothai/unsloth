@@ -1057,7 +1057,10 @@ let _lmStudioCache: LocalModelInfo[] = [];
 let _localDirCache: LocalModelInfo[] = [];
 let _customFolderCache: LocalModelInfo[] = [];
 let _scanFoldersCache: ScanFolderInfo[] = [];
-let _downloadedCachesReady = false;
+let _onDeviceCachesReady = false;
+let _onDeviceCachesSettled = false;
+
+const ON_DEVICE_CACHE_TIMEOUT_MS = 30_000;
 
 /** True when any on-device model (downloaded GGUF, cached repo, LM Studio, or
  * custom-folder model) is known. Reads the module caches, which persist across
@@ -1455,9 +1458,9 @@ export function HubModelPicker({
   const [cachedModels, setCachedModels] =
     useState<CachedModelRepo[]>(_cachedModelsCache);
   const alreadyCached =
-    _downloadedCachesReady ||
-    _cachedGgufCache.length > 0 ||
-    _cachedModelsCache.length > 0;
+    _onDeviceCachesReady ||
+    hasDownloadedModels() ||
+    (_onDeviceCachesSettled && loraModels.length > 0);
   const [cachedReady, setCachedReady] = useState(alreadyCached);
   const [updateConflictKey, setUpdateConflictKey] = useState<string | null>(
     null,
@@ -1502,23 +1505,28 @@ export function HubModelPicker({
   const [showFolderBrowser, setShowFolderBrowser] = useState(false);
   const [recommendedFolders, setRecommendedFolders] = useState<string[]>([]);
 
+  const applyLocalModels = useCallback(
+    (res: Awaited<ReturnType<typeof listLocalModels>>) => {
+      const lm = sortLmStudio(
+        res.models.filter((m) => m.source === "lmstudio"),
+      );
+      _lmStudioCache = lm;
+      setLmStudioModels(lm);
+      const ld = res.models.filter((m) => m.source === "models_dir");
+      _localDirCache = ld;
+      setLocalDirModels(ld);
+      const cf = res.models.filter((m) => m.source === "custom");
+      _customFolderCache = cf;
+      setCustomFolderModels(cf);
+    },
+    [],
+  );
+
   const refreshLocalModelsList = useCallback(() => {
     listLocalModels()
-      .then((res) => {
-        const lm = sortLmStudio(
-          res.models.filter((m) => m.source === "lmstudio"),
-        );
-        _lmStudioCache = lm;
-        setLmStudioModels(lm);
-        const ld = res.models.filter((m) => m.source === "models_dir");
-        _localDirCache = ld;
-        setLocalDirModels(ld);
-        const cf = res.models.filter((m) => m.source === "custom");
-        _customFolderCache = cf;
-        setCustomFolderModels(cf);
-      })
+      .then(applyLocalModels)
       .catch(() => {});
-  }, []);
+  }, [applyLocalModels]);
 
   const refreshScanFolders = useCallback(() => {
     listScanFolders()
@@ -1638,39 +1646,66 @@ export function HubModelPicker({
   );
 
   useEffect(() => {
-    // Always refresh LM Studio + custom folder models (not gated by alreadyCached).
-    refreshLocalModelsList();
     refreshScanFolders();
     listRecommendedFolders()
       .then(setRecommendedFolders)
       .catch(() => {});
 
-    // Always refetch cached GGUF/model lists. The module-level caches render
-    // instantly with stale data (no spinner flash), but newly downloaded
-    // repos need a fresh backend hit. cachedReady=alreadyCached initially,
-    // so the background refresh is invisible when we already had data.
-    let done = 0;
-    const check = () => {
-      if (++done >= 2) {
-        _downloadedCachesReady = true;
-        setCachedReady(true);
+    // Publish downloaded and local rows as one bounded snapshot. Existing data
+    // stays visible during background refreshes, and a failed source keeps its
+    // last successful cache instead of clearing or durably marking it ready.
+    const controller = new AbortController();
+    const timeout = window.setTimeout(
+      () => controller.abort(),
+      ON_DEVICE_CACHE_TIMEOUT_MS,
+    );
+    const aborted = new Promise<never>((_, reject) => {
+      controller.signal.addEventListener(
+        "abort",
+        () => reject(controller.signal.reason),
+        { once: true },
+      );
+    });
+    const bounded = <T,>(request: Promise<T>) =>
+      Promise.race([request, aborted]);
+    let cancelled = false;
+
+    void Promise.allSettled([
+      bounded(listCachedGguf(controller.signal)),
+      bounded(listCachedModels(hfToken || undefined, controller.signal)),
+      bounded(listLocalModels(controller.signal)),
+    ]).then(([ggufResult, modelsResult, localResult]) => {
+      window.clearTimeout(timeout);
+      if (cancelled) return;
+
+      if (ggufResult.status === "fulfilled") {
+        _cachedGgufCache = ggufResult.value;
+        setCachedGguf(ggufResult.value);
       }
+      if (modelsResult.status === "fulfilled") {
+        _cachedModelsCache = modelsResult.value;
+        setCachedModels(modelsResult.value);
+      }
+      if (localResult.status === "fulfilled") {
+        applyLocalModels(localResult.value);
+      }
+      if (
+        ggufResult.status === "fulfilled" &&
+        modelsResult.status === "fulfilled" &&
+        localResult.status === "fulfilled"
+      ) {
+        _onDeviceCachesReady = true;
+      }
+      _onDeviceCachesSettled = true;
+      setCachedReady(true);
+    });
+
+    return () => {
+      cancelled = true;
+      window.clearTimeout(timeout);
+      controller.abort();
     };
-    listCachedGguf()
-      .then((v) => {
-        _cachedGgufCache = v;
-        setCachedGguf(v);
-      })
-      .catch(() => {})
-      .finally(check);
-    listCachedModels(hfToken || undefined)
-      .then((v) => {
-        _cachedModelsCache = v;
-        setCachedModels(v);
-      })
-      .catch(() => {})
-      .finally(check);
-  }, [hfToken, refreshLocalModelsList, refreshScanFolders]);
+  }, [applyLocalModels, hfToken, refreshScanFolders]);
 
   // Hide downloaded models from the recommended list. Case-insensitive
   // since the HF cache lowercases repo IDs.
@@ -2343,7 +2378,7 @@ export function HubModelPicker({
   const showDownloaded = section === "downloaded";
   const showCustom = section === "downloaded";
   const showRecommendedSection = !showHfSection && section === "recommended";
-  const onDeviceCacheLoading = showDownloaded && !cachedReady && !showHfSection;
+  const onDeviceCacheLoading = showDownloaded && !cachedReady;
   const downloadedEmpty =
     visibleCachedGguf.length === 0 &&
     visibleCachedModelRows.length === 0 &&
@@ -2755,6 +2790,7 @@ export function HubModelPicker({
 
               {/* Downloaded (Unsloth) stays visible (filtered) while searching. */}
               {showDownloaded &&
+              cachedReady &&
               (unslothCachedGguf.length > 0 ||
                 unslothCachedModelRows.length > 0) ? (
                 <>
@@ -2844,7 +2880,7 @@ export function HubModelPicker({
 
               {/* Other models: non-Unsloth downloads, grouped just above
               Fine-tuned. Shown only when such models exist. */}
-              {showDownloaded && hasOtherModels ? (
+              {showDownloaded && cachedReady && hasOtherModels ? (
                 <div ref={otherModelsSectionRef}>
                   <ListLabel
                     divider={true}
