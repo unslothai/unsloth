@@ -40,17 +40,19 @@ irm https://unsloth.ai/install.ps1 | iex
 Unsloth Studio (Beta) lets you run and train text, [audio](https://unsloth.ai/docs/basics/text-to-speech-tts-fine-tuning), [embedding](https://unsloth.ai/docs/new/embedding-finetuning), [vision](https://unsloth.ai/docs/basics/vision-fine-tuning) models on Windows, Linux and macOS.
 
 ### Inference
-* **Search + download + run models** including GGUF, LoRA adapters and safetensors.
+* **Search + download + run models** including GGUF, LoRA adapters, safetensors
+* **Export models**: [Save or export](https://unsloth.ai/docs/new/studio/export) models to GGUF, 16-bit safetensors and other formats.
+* **Tool calling**: Support for [self-healing tool calling](https://unsloth.ai/docs/new/studio/chat#auto-healing-tool-calling) and web search
+* **[Code execution](https://unsloth.ai/docs/new/studio/chat#code-execution)**: lets LLMs test code in Claude artifacts and sandbox environments
+* **[API inference endpoint](https://unsloth.ai/docs/basics/api)**: Deploy and run local LLMs in Claude Code, Codex tools with Unsloth
+* [Auto set inference settings](https://unsloth.ai/docs/new/studio/chat#auto-parameter-tuning) and customize chat templates.
+* We work directly with teams behind [gpt-oss](https://docs.unsloth.ai/new/gpt-oss-how-to-run-and-fine-tune#unsloth-fixes-for-gpt-oss), [Qwen3](https://www.reddit.com/r/LocalLLaMA/comments/1kaodxu/qwen3_unsloth_dynamic_ggufs_128k_context_bug_fixes/), [Llama 4](https://github.com/ggml-org/llama.cpp/pull/12889), [Mistral](https://huggingface.co/mistralai/Mistral-Medium-3.5-128B/discussions/18), [Gemma 1-3](https://news.ycombinator.com/item?id=39671146), and [Phi-4](https://unsloth.ai/blog/phi4), where we’ve fixed bugs that improve model accuracy.
+* Chat with images, audio, PDFs, code, DOCX and more. [Connect API providers](https://unsloth.ai/docs/integrations/connections) (OpenAI, Anthropic) or servers (vLLM, Ollama).
 * [**Compare any two models**](https://unsloth.ai/docs/new/studio/chat#model-arena) side by side with the same prompt.
-* **Tools:** Self-healing tool calling, web/PDF search, code execution and MCP servers.
-* [**OpenAI/Anthropic-compatible APIs**](https://unsloth.ai/docs/basics/api): Use `unsloth start` with Claude Code, Codex, Hermes and more.
-* Chat with images, audio, PDFs, code, DOCX and more.
-* [Connect API providers](https://unsloth.ai/docs/integrations/connections) including OpenAI, Anthropic, vLLM and Ollama.
-* Auto-set inference settings, customize chat templates and control GPU memory.
-* Control GGUF hardware: Choose GPUs/layers, offload MoE experts, use multi-GPU or Tensor Parallelism.
-* The opt-in MCP control endpoint lets AI clients manage models, training, recipes and exports.
-* [**Export models**](https://unsloth.ai/docs/new/studio/export) to GGUF, safetensors and more.
-* We work directly with teams behind gpt-oss, Qwen3, Llama 4, Mistral, Gemma 1-3 and Phi-4, where we’ve fixed bugs that improve model accuracy.
+* **OpenAI/Anthropic-compatible APIs** work with Claude Code, Codex, Hermes and more through `unsloth start`.
+* **Web/PDF search** can read PDF papers, manuals and other PDF results.
+* **GGUF hardware controls**: Choose GPUs/layers, offload MoE experts, use multi-GPU or Tensor Parallelism.
+* The opt-in **MCP control endpoint** lets AI clients manage models, training, recipes and exports.
 ### Training
 * Train and RL **500+ models** up to **2x faster** with **70% less VRAM**; MoE up to **12x faster**.
 * Train and run RL on [AMD GPUs](https://unsloth.ai/docs/get-started/install/amd) across Windows, WSL and Linux.
