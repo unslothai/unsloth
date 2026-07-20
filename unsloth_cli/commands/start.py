@@ -149,8 +149,8 @@ _PERSIST_OPTION = typer.Option(
     ),
 )
 
-# Per-agent CLI flag for "run tools without prompting". opencode and openclaw have no
-# such flag (config only) and are handled in their config writers, so they are absent.
+# Per-agent CLI flag for "run tools without prompting". OpenCode (native --auto is
+# command-scoped, handled below) and OpenClaw (config-only) are absent from this prefix map.
 _YOLO_COMMAND_FLAGS = {
     "claude": ["--dangerously-skip-permissions"],
     "codex": ["--dangerously-bypass-approvals-and-sandbox"],
@@ -164,6 +164,84 @@ _YOLO_COMMAND_FLAGS = {
 def _yolo_command_flags(agent: str, yolo: bool) -> list:
     # .get so a config-based agent (or a typo) yields no flag instead of a KeyError.
     return _YOLO_COMMAND_FLAGS.get(agent, []) if yolo else []
+
+
+# Subcommands that reject --auto (OpenCode exposes it only on the default TUI and `run`),
+# so `opencode serve --auto` is never emitted. Includes console/generate, hidden from
+# `opencode --help` but still registered. Unknown first positionals are TUI paths -> --auto.
+_OPENCODE_NON_AUTO_SUBCOMMANDS = frozenset(
+    "completion acp mcp attach debug providers auth agent upgrade uninstall serve web "
+    "models stats export import github pr session plugin plug db console generate".split()
+)
+_OPENCODE_GLOBAL_BOOLEAN_OPTIONS = frozenset(
+    "-h --help -v --version --print-logs --pure --mdns".split()
+)
+_OPENCODE_GLOBAL_VALUE_OPTIONS = frozenset(
+    "--log-level --port --hostname --mdns-domain --cors".split()
+)
+_OPENCODE_NATIVE_AUTO_MIN_VERSION = (1, 17, 12)
+
+
+def _opencode_supports_native_auto() -> bool:
+    executable = shutil.which("opencode")
+    if executable is None:
+        # No local binary: a --no-launch recipe may run elsewhere, and _run installs the
+        # current release on launch -- either way assume native --auto is available.
+        return True
+    try:
+        output = subprocess.check_output(
+            [executable, "--version"],
+            text = True,
+            timeout = 10,
+            stderr = subprocess.DEVNULL,
+        )
+    except Exception:
+        return False
+    match = re.search(r"(\d+)\.(\d+)\.(\d+)", output)
+    return bool(match) and tuple(int(part) for part in match.groups()) >= (
+        _OPENCODE_NATIVE_AUTO_MIN_VERSION
+    )
+
+
+def _opencode_subcommand(args: list[str]) -> Optional[str]:
+    """Return an explicit OpenCode subcommand after supported global options."""
+    index = 0
+    while index < len(args):
+        arg = args[index]
+        if arg == "--":
+            return None
+        if arg in _OPENCODE_GLOBAL_BOOLEAN_OPTIONS:
+            index += 1
+            continue
+        if arg in _OPENCODE_GLOBAL_VALUE_OPTIONS:
+            index += 2
+            continue
+        if any(arg.startswith(f"{option}=") for option in _OPENCODE_GLOBAL_VALUE_OPTIONS):
+            index += 1
+            continue
+        # A non-global option (e.g. --session) is a TUI flag; stop before its value is
+        # mistaken for a subcommand.
+        if arg.startswith("-"):
+            return None
+        return arg
+    return None
+
+
+def _opencode_native_auto_args(args: list[str], yolo: bool) -> tuple[list[str], bool]:
+    """Add OpenCode's native --auto when the selected command supports it."""
+    routed = list(args)
+    if not yolo:
+        return routed, False
+    if _opencode_subcommand(routed) in _OPENCODE_NON_AUTO_SUBCOMMANDS:
+        return routed, False
+    separator = routed.index("--") if "--" in routed else len(routed)
+    # --mini's runMini TUI forces auto=false and never forwards --auto, so appending it is
+    # useless; fall back to the config permission block so --yolo still auto-approves.
+    if any(arg == "--mini" or arg.startswith("--mini=") for arg in routed[:separator]):
+        return routed, False
+    if "--auto" not in routed[:separator]:
+        routed.insert(separator, "--auto")
+    return routed, True
 
 
 def _hermes_install_hint() -> str:
@@ -1465,10 +1543,10 @@ def write_opencode_config(
         compaction["reserved"] = max(1, window // 10)
     tools = ("edit", "bash", "webfetch")
     if yolo:
-        # OpenCode has no --yolo flag; auto-approve is the config `permission` block
-        # (singular). Allow the prompting tools and paths outside the launch directory so
-        # tool calls don't block on the TUI. This rides inline (OPENCODE_CONFIG_CONTENT) so
-        # --yolo works even over a project config.
+        # Fallback for commands without native --auto and for the append-safe bare
+        # --no-launch command (subcommand unknown yet). Rides inline (OPENCODE_CONFIG_CONTENT)
+        # so it wins over a project config. TUI and `run` launches use --auto and call here
+        # with yolo=False, letting OpenCode preserve explicit deny rules.
         session_permission = {t: "allow" for t in tools}
         session_permission["external_directory"] = {"*": "allow"}
         config["permission"] = dict(session_permission)
@@ -1807,11 +1885,20 @@ def opencode(
     # --no-launch, where the printed command is consumed by drivers that append a
     # subcommand such as `run <prompt>`; a leading --model would land before that
     # subcommand and break it. Those paths rely on the inline pin instead.
+    native_auto = False
+    route_native_auto = yolo and _opencode_supports_native_auto()
     if ctx.args:
-        command = ["opencode", *ctx.args]
+        opencode_args, native_auto = _opencode_native_auto_args(list(ctx.args), route_native_auto)
+        command = ["opencode", *opencode_args]
     elif launch:
-        command = ["opencode", "--model", opencode_model]
+        opencode_args, native_auto = _opencode_native_auto_args(
+            ["--model", opencode_model],
+            route_native_auto,
+        )
+        command = ["opencode", *opencode_args]
     else:
+        # Append-safe base: `opencode --auto run ...` parses as the TUI with a project
+        # "run", not the run subcommand. Command unknown here, so keep the config fallback.
         command = ["opencode"]
     # opencode keeps sessions in ~/.local/share/opencode (never relocated), so resume
     # already survives exit; reopen the last one by passing `opencode --continue` through.
@@ -1820,12 +1907,18 @@ def opencode(
         # OPENCODE_CONFIG is an overlay (loaded between the user's global and project
         # configs), so this adds the Unsloth provider/model for the session without
         # changing the user's default model. Key lives in the config, not the env.
-        session_permission = write_opencode_config(base, key, entry, config_path, yolo = yolo)
+        session_permission = write_opencode_config(
+            base,
+            key,
+            entry,
+            config_path,
+            yolo = yolo and not native_auto,
+        )
         # A project's own opencode.json outranks OPENCODE_CONFIG, so the session model pin
         # would silently lose to a repo config. Carry it in OPENCODE_CONFIG_CONTENT, which
         # outranks project config; the API key stays in the private file, never the env.
-        # Only --yolo carries a permission here (its allow must win over a project config);
-        # a non-yolo session returns no permission, so the project's own rules are honored.
+        # Only the config fallback carries a permission. Native --auto omits it (auto-approve
+        # asks, keep explicit denies); a non-yolo session omits it too, honoring project rules.
         # opencode filters every provider (a config-defined custom one included) through
         # its enabled_providers allowlist and disabled_providers denylist, and a model pin
         # does not bypass that gate -- a filtered provider resolves to ModelNotFoundError.

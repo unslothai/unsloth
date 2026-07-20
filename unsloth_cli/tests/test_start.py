@@ -2190,12 +2190,188 @@ def test_yolo_aliases_are_interchangeable(fake_studio, alias):
     assert "--dangerously-bypass-approvals-and-sandbox" in codex.output
     assert "--dangerously-skip-permissions" not in codex.output
 
+    opencode = CliRunner().invoke(
+        start.start_app,
+        ["opencode", alias, "--no-launch", "run", "hello"],
+    )
+    assert opencode.exit_code == 0, opencode.output
+    assert _launch_command(opencode.output) == ["opencode", "run", "hello", "--auto"]
+    assert "permission" not in _opencode_inline_config(opencode.output)
 
-def test_yolo_opencode_writes_permission_block(fake_studio, tmp_path):
+
+def test_yolo_opencode_bare_no_launch_uses_permission_fallback(fake_studio, tmp_path):
+    # A bare --no-launch recipe stays append-safe (callers add a subcommand later);
+    # `opencode --auto run ...` would select the TUI, not `run`, so keep the config fallback.
     result = CliRunner().invoke(start.start_app, ["opencode", "--yolo", "--no-launch"])
     assert result.exit_code == 0, result.output
     config = json.loads((tmp_path / "agents" / "opencode" / "opencode.json").read_text())
     assert config["permission"] == {
+        "edit": "allow",
+        "bash": "allow",
+        "webfetch": "allow",
+        "external_directory": {"*": "allow"},
+    }
+
+
+def test_yolo_opencode_run_uses_native_auto(fake_studio):
+    result = CliRunner().invoke(
+        start.start_app,
+        ["opencode", "--yolo", "--no-launch", "run", "hello"],
+    )
+    assert result.exit_code == 0, result.output
+    command = _launch_command(result.output)
+    assert command == ["opencode", "run", "hello", "--auto"]
+    assert "permission" not in _opencode_inline_config(result.output)
+
+
+def test_yolo_opencode_tui_resume_uses_native_auto(fake_studio):
+    result = CliRunner().invoke(
+        start.start_app,
+        ["opencode", "--yolo", "--no-launch", "--session", "sid"],
+    )
+    assert result.exit_code == 0, result.output
+    command = _launch_command(result.output)
+    assert command == ["opencode", "--session", "sid", "--auto"]
+    assert "permission" not in _opencode_inline_config(result.output)
+
+
+def test_no_yolo_opencode_run_omits_native_auto(fake_studio):
+    result = CliRunner().invoke(
+        start.start_app,
+        ["opencode", "--no-launch", "run", "hello"],
+    )
+    assert result.exit_code == 0, result.output
+    assert _launch_command(result.output) == ["opencode", "run", "hello"]
+    assert "permission" not in _opencode_inline_config(result.output)
+
+
+def test_yolo_opencode_bare_launch_uses_native_auto(fake_studio, monkeypatch):
+    monkeypatch.setattr(start.shutil, "which", lambda _: "/usr/local/bin/opencode")
+    monkeypatch.setattr(start, "_opencode_supports_native_auto", lambda: True)
+    captured = _capture_launch(monkeypatch, ["opencode", "--yolo"])
+    assert captured["command"][1:] == [
+        "--model",
+        f"{start._OPENCODE_PROVIDER}/{MODEL['id']}",
+        "--auto",
+    ]
+    assert "permission" not in json.loads(captured["env"]["OPENCODE_CONFIG_CONTENT"])
+
+
+def test_yolo_opencode_native_auto_clears_prior_config_fallback(fake_studio, tmp_path):
+    fallback = CliRunner().invoke(
+        start.start_app,
+        ["opencode", "--yolo", "--no-launch"],
+    )
+    assert fallback.exit_code == 0, fallback.output
+
+    native = CliRunner().invoke(
+        start.start_app,
+        ["opencode", "--yolo", "--no-launch", "run", "hello"],
+    )
+    assert native.exit_code == 0, native.output
+    assert _launch_command(native.output) == ["opencode", "run", "hello", "--auto"]
+    assert "permission" not in _opencode_inline_config(native.output)
+    config = json.loads((tmp_path / "agents" / "opencode" / "opencode.json").read_text())
+    assert config["permission"] == {
+        "edit": "ask",
+        "bash": "ask",
+        "webfetch": "ask",
+        "external_directory": {"*": "ask"},
+    }
+
+
+@pytest.mark.parametrize(
+    ("version", "expected"),
+    [
+        ("1.17.11", False),
+        ("1.17.12", True),
+        ("opencode 1.18.2", True),
+        ("development build", False),
+    ],
+)
+def test_opencode_native_auto_version_gate(monkeypatch, version, expected):
+    monkeypatch.setattr(start.shutil, "which", lambda _: "/usr/local/bin/opencode")
+    monkeypatch.setattr(start.subprocess, "check_output", lambda *args, **kwargs: version)
+    assert start._opencode_supports_native_auto() is expected
+
+
+def test_opencode_native_auto_assumes_current_without_local_binary(monkeypatch):
+    monkeypatch.setattr(start.shutil, "which", lambda _: None)
+    assert start._opencode_supports_native_auto() is True
+
+
+def test_yolo_opencode_old_version_uses_config_fallback(fake_studio, monkeypatch):
+    monkeypatch.setattr(start.shutil, "which", lambda _: "/usr/local/bin/opencode")
+    monkeypatch.setattr(start.subprocess, "check_output", lambda *args, **kwargs: "1.17.11")
+    result = CliRunner().invoke(
+        start.start_app,
+        ["opencode", "--yolo", "--no-launch", "run", "hello"],
+    )
+    assert result.exit_code == 0, result.output
+    assert _launch_command(result.output) == ["opencode", "run", "hello"]
+    assert _opencode_inline_config(result.output)["permission"] == {
+        "edit": "allow",
+        "bash": "allow",
+        "webfetch": "allow",
+        "external_directory": {"*": "allow"},
+    }
+
+
+@pytest.mark.parametrize(
+    ("args", "expected", "native"),
+    [
+        ([], ["--auto"], True),
+        (["run", "hello"], ["run", "hello", "--auto"], True),
+        (
+            ["run", "hello", "--", "--literal"],
+            ["run", "hello", "--auto", "--", "--literal"],
+            True,
+        ),
+        (["--print-logs", "run", "hello"], ["--print-logs", "run", "hello", "--auto"], True),
+        (["--session", "serve"], ["--session", "serve", "--auto"], True),
+        (["serve"], ["serve"], False),
+        (["--print-logs", "serve"], ["--print-logs", "serve"], False),
+        (["run", "--auto", "hello"], ["run", "--auto", "hello"], True),
+        # Hidden commands that reject --auto fall back like the visible utility ones.
+        (["generate"], ["generate"], False),
+        (["console", "login"], ["console", "login"], False),
+        # --mini ignores --auto (runMini forces auto=false), so use the config fallback.
+        (["--mini"], ["--mini"], False),
+        (["--session", "sid", "--mini"], ["--session", "sid", "--mini"], False),
+    ],
+)
+def test_opencode_native_auto_args(args, expected, native):
+    assert start._opencode_native_auto_args(args, True) == (expected, native)
+    assert start._opencode_native_auto_args(args, False) == (args, False)
+
+
+def test_yolo_opencode_non_agent_subcommand_uses_config_fallback(fake_studio):
+    result = CliRunner().invoke(
+        start.start_app,
+        ["opencode", "--yolo", "--no-launch", "serve"],
+    )
+    assert result.exit_code == 0, result.output
+    command = _launch_command(result.output)
+    assert command == ["opencode", "serve"]
+    assert _opencode_inline_config(result.output)["permission"] == {
+        "edit": "allow",
+        "bash": "allow",
+        "webfetch": "allow",
+        "external_directory": {"*": "allow"},
+    }
+
+
+@pytest.mark.parametrize("passthrough", (["generate"], ["console", "login"], ["--mini"]))
+def test_yolo_opencode_no_auto_command_uses_config_fallback(fake_studio, passthrough):
+    # generate/console are hidden and reject --auto, --mini ignores it: none get --auto,
+    # all keep the config permission fallback.
+    result = CliRunner().invoke(
+        start.start_app,
+        ["opencode", "--yolo", "--no-launch", *passthrough],
+    )
+    assert result.exit_code == 0, result.output
+    assert _launch_command(result.output) == ["opencode", *passthrough]
+    assert _opencode_inline_config(result.output)["permission"] == {
         "edit": "allow",
         "bash": "allow",
         "webfetch": "allow",
@@ -2549,15 +2725,16 @@ def test_openclaw_non_yolo_preserves_full_mode(tmp_path):
 
 
 def test_yolo_command_flags_unmapped_agent_is_empty():
-    # Config-based agents (and any typo) must yield no flag, not a KeyError.
+    # Placement-aware/config-based agents (and any typo) must yield no prefix flag.
     assert start._yolo_command_flags("opencode", True) == []
     assert start._yolo_command_flags("openclaw", True) == []
     assert start._yolo_command_flags("claude", True) == ["--dangerously-skip-permissions"]
     assert start._yolo_command_flags("claude", False) == []
 
 
-def test_yolo_config_agents_add_no_command_flag(fake_studio):
-    # opencode/openclaw auto-approve is config-only; nothing should leak onto argv.
+def test_yolo_config_fallbacks_add_no_legacy_command_flag(fake_studio):
+    # OpenClaw is config-only; OpenCode's append-safe bare recipe uses its config fallback.
+    # Neither should leak a legacy yolo/dangerous alias onto argv.
     for agent in ("opencode", "openclaw"):
         result = CliRunner().invoke(start.start_app, [agent, "--yolo", "--no-launch"])
         assert result.exit_code == 0, result.output
