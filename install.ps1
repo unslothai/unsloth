@@ -53,7 +53,8 @@ function Install-UnslothStudio {
         param([string]$TorchIndexUrl)
         if ($SkipTorch) { return "none" }
         if ([string]::IsNullOrWhiteSpace($TorchIndexUrl)) { return "none" }
-        $leaf = ($TorchIndexUrl.TrimEnd('/') -split '/')[-1].ToLowerInvariant()
+        # Drop query/fragment first so a token-authenticated pin classifies by family.
+        $leaf = (($TorchIndexUrl -split '[?#]', 2)[0].TrimEnd('/') -split '/')[-1].ToLowerInvariant()
         if (@("cpu", "cu118", "cu124", "cu126", "cu128", "cu130") -contains $leaf) { return $leaf }
         if ($leaf -match '^rocm[0-9]+\.[0-9]+$') { return $leaf }
         return "auto"
@@ -62,7 +63,8 @@ function Install-UnslothStudio {
     function Get-TauriGpuBranch {
         param([string]$TorchIndexFamily)
         if ($SkipTorch) { return "no_torch" }
-        if ($TorchIndexFamily -like "cu*") { return "cuda" }
+        # Require a digit after "cu" so /current or /custom isn't branded CUDA (parity ^cu[0-9]).
+        if ($TorchIndexFamily -match '^cu[0-9]') { return "cuda" }
         if ($TorchIndexFamily -like "rocm*") { return "rocm" }
         if ($TorchIndexFamily -eq "cpu") { return "cpu" }
         return "unknown"
@@ -467,22 +469,35 @@ function Install-UnslothStudio {
         }
     }
 
+    # Redact index-URL credentials (userinfo + ?query= + #fragment) from captured installer
+    # output before printing on failure; uv/pip errors echo the failing --index-url verbatim.
+    # Mirrors the other installers. Verbose mode streams uncaptured, so it isn't redacted.
+    function Redact-InstallOutput {
+        param([string]$Text)
+        if (-not $Text) { return $Text }
+        $Text = $Text -replace '(https?://)[^/@\s`]+@', '$1<redacted>@'
+        $Text = $Text -replace '([?&][^=\s&`]+)=[^&#\s`]+', '$1=<redacted>'
+        # A #token=... fragment is as sensitive as a query; URL-anchored.
+        return $Text -replace '(https?://[^\s`#]+)#[^\s`]+', '$1#<redacted>'
+    }
+
     # Run native commands quietly by default to match install.sh behavior.
     # Full command output is shown only when --verbose / UNSLOTH_VERBOSE=1.
     function Invoke-InstallCommand {
         param(
             [Parameter(Mandatory = $true)][ScriptBlock]$Command
         )
-        # Installer-pinned index installs (torch) must beat an inherited uv mirror
-        # (#6898): when the command pins an index, clear every uv index env var so
-        # it wins, then restore in finally. Other installs keep the user's mirror.
+        # Installer-pinned index installs (torch) must beat an inherited uv mirror (#6898):
+        # for --default-index, clear the uv index env vars (restore in finally) and set
+        # UV_NO_CONFIG=1 so a uv.toml/pyproject index can't outrank the CLI pin (uv 0.10).
         $savedUvIndex = $null
         if ($Command.ToString() -match '--default-index') {
             $savedUvIndex = @{}
-            foreach ($n in 'UV_DEFAULT_INDEX', 'UV_INDEX_URL', 'UV_INDEX', 'UV_EXTRA_INDEX_URL') {
+            foreach ($n in 'UV_DEFAULT_INDEX', 'UV_INDEX_URL', 'UV_INDEX', 'UV_EXTRA_INDEX_URL', 'UV_TORCH_BACKEND', 'UV_FIND_LINKS', 'UV_CONFIG_FILE', 'UV_NO_CONFIG') {
                 $savedUvIndex[$n] = [Environment]::GetEnvironmentVariable($n)
                 Remove-Item "Env:$n" -ErrorAction SilentlyContinue
             }
+            $env:UV_NO_CONFIG = '1'
         }
         $prevEap = $ErrorActionPreference
         $ErrorActionPreference = "Continue"
@@ -493,17 +508,23 @@ function Install-UnslothStudio {
                 # Merge stderr into stdout so progress/warning output stays visible
                 # without flipping $? on successful native commands (PS 5.1 treats
                 # stderr records as errors that set $? = $false even on exit code 0).
-                & $Command 2>&1 | Out-Host
+                # Redact per record: uv echoes index URLs (credentials and all) in
+                # its errors, and verbose mode must not bypass the quiet path's
+                # redaction. ForEach-Object/Out-Host leave $LASTEXITCODE untouched.
+                & $Command 2>&1 | ForEach-Object { Redact-InstallOutput "$_" } | Out-Host
             } else {
                 $output = & $Command 2>&1 | Out-String
                 if ($LASTEXITCODE -ne 0) {
-                    Write-Host $output -ForegroundColor Red
+                    Write-Host (Redact-InstallOutput $output) -ForegroundColor Red
                 }
             }
             return [int]$LASTEXITCODE
         } finally {
             $ErrorActionPreference = $prevEap
-            if ($savedUvIndex) { foreach ($n in $savedUvIndex.Keys) { if ($null -ne $savedUvIndex[$n]) { Set-Item "Env:$n" $savedUvIndex[$n] } } }
+            if ($savedUvIndex) {
+                Remove-Item "Env:UV_NO_CONFIG" -ErrorAction SilentlyContinue
+                foreach ($n in $savedUvIndex.Keys) { if ($null -ne $savedUvIndex[$n]) { Set-Item "Env:$n" $savedUvIndex[$n] } }
+            }
         }
     }
 
@@ -1960,10 +1981,31 @@ exit 0
     # On an AMD GPU (no NVIDIA), surface the optional WSL-ROCm driver hint.
     if (-not $HasNvidiaSmi -and ($ROCmGfxArch -or $ROCmGpuLabel)) { Show-AmdWslDriverHint }
 
+    # Trim trailing slashes from the URL PATH only, preserving ?query / #fragment: a whole-URL
+    # TrimEnd corrupts a token ending in "/", a single strip leaves .../cu128// empty. Shared.
+    function Trim-IndexPathSlashes {
+        param([string]$Url)
+        $value = $Url.Trim()
+        $idx = $value.IndexOfAny([char[]]@('?', '#'))
+        if ($idx -lt 0) {
+            return $value.TrimEnd('/')
+        }
+        return $value.Substring(0, $idx).TrimEnd('/') + $value.Substring($idx)
+    }
+
     # ── Choose the correct PyTorch index URL based on driver CUDA version ──
     # Mirrors Get-PytorchCudaTag in setup.ps1.
     function Get-TorchIndexUrl {
         $baseUrl = if ($env:UNSLOTH_PYTORCH_MIRROR) { $env:UNSLOTH_PYTORCH_MIRROR.TrimEnd('/') } else { "https://download.pytorch.org/whl" }
+        # Explicit pin -- skip ALL GPU probing (headless / CI / cross-install).
+        # UNSLOTH_TORCH_INDEX_URL wins (full URL, verbatim); _FAMILY is the leaf appended
+        # to the mirror base. Matches install.sh / install_python_stack.py.
+        if (-not [string]::IsNullOrWhiteSpace($env:UNSLOTH_TORCH_INDEX_URL)) {
+            return (Trim-IndexPathSlashes $env:UNSLOTH_TORCH_INDEX_URL)
+        }
+        if (-not [string]::IsNullOrWhiteSpace($env:UNSLOTH_TORCH_INDEX_FAMILY)) {
+            return "$baseUrl/$($env:UNSLOTH_TORCH_INDEX_FAMILY.Trim().Trim('/'))"
+        }
         if (-not $NvidiaSmiExe) { return "$baseUrl/cpu" }
         try {
             $output = Invoke-NvidiaSmiBounded $NvidiaSmiExe
@@ -1984,6 +2026,25 @@ exit 0
         return "$baseUrl/cu126"
     }
 
+    # Strip userinfo AND query/fragment so an authenticated pin never leaks. Shared with
+    # _strip_index_url_credentials (install.sh / py / setup.ps1).
+    function Remove-IndexUrlCredentials {
+        param([string]$Url)
+        $sep = $Url.IndexOf('://')
+        if ($sep -lt 0) { return $Url }
+        $scheme = $Url.Substring(0, $sep)
+        $rest = $Url.Substring($sep + 3)
+        # Drop query / fragment (may hold auth tokens).
+        $q = $rest.IndexOfAny([char[]]('?', '#'))
+        if ($q -ge 0) { $rest = $rest.Substring(0, $q) }
+        $slash = $rest.IndexOf('/')
+        $authority = if ($slash -ge 0) { $rest.Substring(0, $slash) } else { $rest }
+        $at = $authority.LastIndexOf('@')
+        $host_ = if ($at -ge 0) { $authority.Substring($at + 1) } else { $authority }
+        if ($slash -ge 0) { return "${scheme}://${host_}$($rest.Substring($slash))" }
+        return "${scheme}://${host_}"
+    }
+
     # ── Torch flavor helpers (to repair a stale CPU / wrong-CUDA wheel) ──
     # torch.__version__ -> flavor tag (cuXXX / rocm / cpu); untagged wheel = cpu,
     # matching setup.ps1's stale-venv parse.
@@ -2002,11 +2063,13 @@ exit 0
         param([string]$TorchIndexUrl, [string]$ROCmIndexUrl)
         if (-not [string]::IsNullOrWhiteSpace($ROCmIndexUrl)) { return 'rocm' }
         if ([string]::IsNullOrWhiteSpace($TorchIndexUrl)) { return $null }
-        $leaf = ($TorchIndexUrl.TrimEnd('/') -split '/')[-1].ToLowerInvariant()
+        # Drop query/fragment first so .../cu128?token=x classifies as cu128 (else it reinstalls every run).
+        $leaf = (($TorchIndexUrl -split '[?#]', 2)[0].TrimEnd('/') -split '/')[-1].ToLowerInvariant()
         if ($leaf -match '^cu\d+$') { return $leaf }
         if ($leaf -eq 'cpu')        { return 'cpu' }
         if ($leaf -match '^rocm')   { return 'rocm' }
-        if ($leaf -match '^gfx')    { return 'rocm' }
+        # gfx must be followed by a digit (an architecture leaf); gfx-private is custom.
+        if ($leaf -match '^gfx[0-9]') { return 'rocm' }
         return $null
     }
 
@@ -2041,6 +2104,10 @@ exit 0
         } catch { return $null }
     }
 
+    # An explicit pin is authoritative: the AMD ROCm reroute below must not rewrite it
+    # (e.g. a deliberate cpu pin on an AMD host).
+    $TorchIndexPinned = (-not [string]::IsNullOrWhiteSpace($env:UNSLOTH_TORCH_INDEX_URL)) -or `
+                        (-not [string]::IsNullOrWhiteSpace($env:UNSLOTH_TORCH_INDEX_FAMILY))
     $TorchIndexUrl = Get-TorchIndexUrl
 
     # ── GPU arch → newest compatible Windows ROCm wheel release ──
@@ -2052,7 +2119,9 @@ exit 0
     # Override with UNSLOTH_ROCM_WINDOWS_MIRROR for air-gapped / mirror installs.
     $ROCmIndexUrl = $null
     $ROCmTorchFloor = $null
-    if (($HasROCm -or $ROCmGfxArch) -and $TorchIndexUrl -like "*/cpu" -and -not $SkipTorch) {
+    $PinnedRocmVisionSpec = $null
+    $PinnedRocmAudioSpec = $null
+    if (-not $TorchIndexPinned -and ($HasROCm -or $ROCmGfxArch) -and $TorchIndexUrl -like "*/cpu" -and -not $SkipTorch) {
         $amdIndexBase = if ($env:UNSLOTH_ROCM_WINDOWS_MIRROR) { $env:UNSLOTH_ROCM_WINDOWS_MIRROR.TrimEnd('/') } else { "https://repo.amd.com/rocm/whl" }
         $archFamilyMap = @{
             "gfx1201" = "gfx120X-all"; "gfx1200" = "gfx120X-all"  # RDNA 4
@@ -2099,6 +2168,32 @@ exit 0
             substep "AMD GPU ($ROCmGfxArch) not in supported arch list -- falling back to CPU-only PyTorch" "Yellow"
         } else {
             substep "AMD GPU detected but arch unknown -- falling back to CPU-only PyTorch" "Yellow"
+        }
+    }
+
+    # A gfx*/rocm pin skips the auto-reroute above, but the generic CPU/CUDA install below
+    # would use torch>=2.4,<2.11 and pull a known-bad wheel on the gfx115x/gfx120x/rocm>=7.2
+    # indexes (the _grouped_mm bug). Route a pinned ROCm index through the ROCm path.
+    if ($TorchIndexPinned -and -not $ROCmIndexUrl -and -not $SkipTorch) {
+        $_pinLeaf = (($TorchIndexUrl -split '[?#]', 2)[0].TrimEnd('/') -split '/')[-1].ToLower()
+        $_pinRocm211 = $false
+        # Anchor ($) so a suffixed custom leaf (rocm7.2-private) falls through to verbatim.
+        if ($_pinLeaf -match '^rocm(\d+)\.(\d+)$') {
+            # Only KNOWN-2.11 rocm (rocm7.2) gets the floor. Matches Test-RocmKnown211Version.
+            $_pinRocm211 = ([int]$Matches[1] -eq 7 -and [int]$Matches[2] -eq 2)
+        }
+        # Only the 2.11-allowlist gfx arches need the floor; others publish <2.11 and stay bare.
+        $_pinGfx211 = @('gfx120x-all', 'gfx1151', 'gfx1150') -contains $_pinLeaf
+        if ($_pinGfx211 -or $_pinRocm211) {
+            $ROCmIndexUrl = $TorchIndexUrl
+            $ROCmTorchFloor = "torch>=2.11.0,<2.12.0"
+            $PinnedRocmVisionSpec = "torchvision>=0.26.0,<0.27.0"
+            $PinnedRocmAudioSpec = "torchaudio>=2.11.0,<2.12.0"
+            substep "pinned ROCm index ($_pinLeaf) -- enforcing $ROCmTorchFloor" "Cyan"
+        } elseif ($_pinLeaf -match '^gfx[0-9]' -or $_pinLeaf -match '^rocm[0-9]+(\.[0-9]+)?$') {
+            # Other gfx / older rocm (<=7.1) ship torch <2.11; route via the ROCm path with
+            # bare specs. Only EXACT rocm<digits>/gfx* are families; a suffixed leaf is verbatim.
+            $ROCmIndexUrl = $TorchIndexUrl
         }
     }
 
@@ -2164,8 +2259,8 @@ exit 0
     }
 
     if ($_Migrated) {
-        # Migrated env: force-reinstall unsloth+unsloth-zoo to ensure clean state
-        # in the new venv location, while preserving existing torch/CUDA
+        # Migrated env: force-reinstall unsloth+unsloth-zoo for a clean state, preserving
+        # existing torch/CUDA unless the flavor repair below re-lands it.
         Write-TauriLog "STEP" "Installing unsloth"
         substep "upgrading unsloth in migrated environment..."
         if ($SkipTorch) {
@@ -2210,22 +2305,24 @@ exit 0
             substep "skipping PyTorch (--no-torch flag set)." "Yellow"
         } elseif ($ROCmIndexUrl) {
             Write-TauriLog "STEP" "Installing PyTorch (AMD ROCm Windows)"
-            substep "installing PyTorch from $ROCmIndexUrl..."
+            substep "installing PyTorch from $(Remove-IndexUrlCredentials $ROCmIndexUrl)..."
             $torchSpec = if ($ROCmTorchFloor) { $ROCmTorchFloor } else { "torch" }
             # Pin the companions to match $torchSpec; bare names can resolve an
             # ABI-incompatible torchvision/torchaudio on AMD's per-arch index.
-            $visionSpec = if ($ROCmGfxArch -and $torchvisionFloorMap.ContainsKey($ROCmGfxArch)) { $torchvisionFloorMap[$ROCmGfxArch] } else { "torchvision" }
-            $audioSpec = if ($ROCmGfxArch -and $torchaudioFloorMap.ContainsKey($ROCmGfxArch)) { $torchaudioFloorMap[$ROCmGfxArch] } else { "torchaudio" }
+            $visionSpec = if ($PinnedRocmVisionSpec) { $PinnedRocmVisionSpec } elseif ($ROCmGfxArch -and $torchvisionFloorMap -and $torchvisionFloorMap.ContainsKey($ROCmGfxArch)) { $torchvisionFloorMap[$ROCmGfxArch] } else { "torchvision" }
+            $audioSpec = if ($PinnedRocmAudioSpec) { $PinnedRocmAudioSpec } elseif ($ROCmGfxArch -and $torchaudioFloorMap -and $torchaudioFloorMap.ContainsKey($ROCmGfxArch)) { $torchaudioFloorMap[$ROCmGfxArch] } else { "torchaudio" }
             $torchInstallExit = Invoke-InstallCommandRetry -Label "install PyTorch (AMD ROCm)" { uv pip install --python $VenvPython --force-reinstall --default-index $ROCmIndexUrl $torchSpec $visionSpec $audioSpec }
             if ($torchInstallExit -ne 0) {
-                # Transient AMD-index failure: fall back to a CPU base so the install
-                # still completes; Unsloth setup retries ROCm afterwards.
+                # Transient AMD-index failure: fall back to a CPU base (Unsloth setup retries
+                # ROCm). Use an explicit CPU index -- for a pinned ROCm index $TorchIndexUrl IS
+                # the ROCm mirror, so reusing it would just retry it.
+                $CpuFallbackIndexUrl = if ($env:UNSLOTH_PYTORCH_MIRROR) { "$($env:UNSLOTH_PYTORCH_MIRROR.TrimEnd('/'))/cpu" } else { "https://download.pytorch.org/whl/cpu" }
                 substep "ROCm PyTorch install failed (exit $torchInstallExit); using a CPU base, Unsloth setup retries ROCm." "Yellow"
                 # --force-reinstall: a failed ROCm install can leave an unpinned ROCm
                 # torch (e.g. 2.10.0+rocm on gfx110X/gfx90a) that still satisfies the CPU
                 # torch>= range, so without it uv would keep the ROCm build and only swap
                 # the companions -- a mismatched venv the flavor-repair block won't fix.
-                $torchInstallExit = Invoke-InstallCommandRetry -Label "install PyTorch (CPU fallback)" { uv pip install --python $VenvPython --force-reinstall "torch>=2.4,<2.11.0" torchvision torchaudio --default-index $TorchIndexUrl }
+                $torchInstallExit = Invoke-InstallCommandRetry -Label "install PyTorch (CPU fallback)" { uv pip install --python $VenvPython --force-reinstall "torch>=2.4,<2.11.0" "torchvision>=0.19,<0.26.0" "torchaudio>=2.4,<2.11.0" --default-index $CpuFallbackIndexUrl }
                 if ($torchInstallExit -ne 0) {
                     Write-Host "[ERROR] Failed to install PyTorch (ROCm and CPU base both failed, exit code $torchInstallExit)" -ForegroundColor Red
                     return (Exit-InstallFailure "Failed to install PyTorch (exit code $torchInstallExit)" $torchInstallExit)
@@ -2238,8 +2335,14 @@ exit 0
             }
         } else {
             Write-TauriLog "STEP" "Installing PyTorch"
-            substep "installing PyTorch ($TorchIndexUrl)..."
-            $torchInstallExit = Invoke-InstallCommandRetry -Label "install PyTorch" { uv pip install --python $VenvPython "torch>=2.4,<2.11.0" torchvision torchaudio --default-index $TorchIndexUrl }
+            substep "installing PyTorch ($(Remove-IndexUrlCredentials $TorchIndexUrl))..."
+            # Bound the companions to the capped torch on EVERY index, cu<digits>
+            # families included: torchaudio 2.11 dropped its exact torch pin from
+            # the wheel metadata, so a bare companion next to torch<2.11 can
+            # resolve a mismatched 2.11.0 build. Mirrors install.sh.
+            $_pinVisionSpec = "torchvision>=0.19,<0.26.0"
+            $_pinAudioSpec = "torchaudio>=2.4,<2.11.0"
+            $torchInstallExit = Invoke-InstallCommandRetry -Label "install PyTorch" { uv pip install --python $VenvPython "torch>=2.4,<2.11.0" $_pinVisionSpec $_pinAudioSpec --default-index $TorchIndexUrl }
             if ($torchInstallExit -ne 0) {
                 Write-Host "[ERROR] Failed to install PyTorch (exit code $torchInstallExit)" -ForegroundColor Red
                 return (Exit-InstallFailure "Failed to install PyTorch (exit code $torchInstallExit)" $torchInstallExit)
@@ -2335,8 +2438,8 @@ exit 0
                     $rocmSpec = if ($ROCmTorchFloor) { $ROCmTorchFloor } else { "torch" }
                     # Pin companions like the fresh ROCm path (bare names can pull an
                     # ABI-incompatible torchvision/torchaudio from the per-arch index).
-                    $visionSpec = if ($ROCmGfxArch -and $torchvisionFloorMap.ContainsKey($ROCmGfxArch)) { $torchvisionFloorMap[$ROCmGfxArch] } else { "torchvision" }
-                    $audioSpec = if ($ROCmGfxArch -and $torchaudioFloorMap.ContainsKey($ROCmGfxArch)) { $torchaudioFloorMap[$ROCmGfxArch] } else { "torchaudio" }
+                    $visionSpec = if ($PinnedRocmVisionSpec) { $PinnedRocmVisionSpec } elseif ($ROCmGfxArch -and $torchvisionFloorMap -and $torchvisionFloorMap.ContainsKey($ROCmGfxArch)) { $torchvisionFloorMap[$ROCmGfxArch] } else { "torchvision" }
+                    $audioSpec = if ($PinnedRocmAudioSpec) { $PinnedRocmAudioSpec } elseif ($ROCmGfxArch -and $torchaudioFloorMap -and $torchaudioFloorMap.ContainsKey($ROCmGfxArch)) { $torchaudioFloorMap[$ROCmGfxArch] } else { "torchaudio" }
                     substep "PyTorch flavor mismatch (installed $installedTorchTag, need ROCm) -- reinstalling correct build..." "Yellow"
                     $torchFixExit = Invoke-InstallCommand { uv pip install --python $VenvPython --force-reinstall --default-index $ROCmIndexUrl $rocmSpec $visionSpec $audioSpec }
                     if ($torchFixExit -ne 0) {
@@ -2347,7 +2450,7 @@ exit 0
                 } elseif ($expectedTorchTag -ne 'rocm') {
                     # CUDA: stale +cpu (or wrong cuXXX) against a CUDA index -> reinstall triplet.
                     substep "PyTorch flavor mismatch (installed $installedTorchTag, need $expectedTorchTag) -- reinstalling correct build..." "Yellow"
-                    $torchFixExit = Invoke-InstallCommand { uv pip install --python $VenvPython "torch>=2.4,<2.11.0" torchvision torchaudio --default-index $TorchIndexUrl --reinstall-package torch --reinstall-package torchvision --reinstall-package torchaudio }
+                    $torchFixExit = Invoke-InstallCommand { uv pip install --python $VenvPython "torch>=2.4,<2.11.0" "torchvision>=0.19,<0.26.0" "torchaudio>=2.4,<2.11.0" --default-index $TorchIndexUrl --reinstall-package torch --reinstall-package torchvision --reinstall-package torchaudio }
                     if ($torchFixExit -ne 0) {
                         Write-Host "[ERROR] Failed to reinstall PyTorch with the correct CUDA build (exit code $torchFixExit)" -ForegroundColor Red
                         return (Exit-InstallFailure "Failed to reinstall PyTorch ($expectedTorchTag) (exit code $torchFixExit)" $torchFixExit)
