@@ -244,10 +244,7 @@ def test_auto_defaults_not_persisted_as_overrides():
     model stops following later changes to the global preference."""
     src = _read("features/model-picker/model-config/per-model-config.ts")
     assert 'if (partial.gpuMemoryMode === "manual") {' in src
-    assert (
-        'partial.gpuMemoryMode === "auto" || partial.gpuMemoryMode === "manual"'
-        not in src
-    )
+    assert 'partial.gpuMemoryMode === "auto" || partial.gpuMemoryMode === "manual"' not in src
     spec = re.search(r'if \(s === "auto" \|\| s === "default"\) \{\s*return ([^;]+);', src)
     assert spec and spec.group(1).strip() == "null"
 
