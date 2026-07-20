@@ -476,3 +476,19 @@ def test_save_proceeds_when_load_identity_matches(monkeypatch, tmp_path):
     manifest = backend.save_slots_for_resume()
     assert manifest is not None
     assert [e["id"] for e in manifest["slots"]] == [0]
+
+
+def test_save_skipped_when_estimate_unavailable_and_low_disk(monkeypatch, tmp_path):
+    # A 0 estimate means metadata was insufficient, not a zero-byte cache: the save
+    # must demand room for the whole cap, not just 1 GiB, on a low-disk host.
+    backend = _resume_backend(tmp_path)
+    backend._estimate_kv_cache_bytes = lambda *a, **k: 0  # metadata unavailable
+    monkeypatch.setattr(llama_cpp, "_SLOT_SAVE_MAX_BYTES", 8 << 30)  # 8 GiB cap
+    _fake_disk(monkeypatch, free = 2 << 30)  # 2 GiB free < 8 + 1 GiB required
+    monkeypatch.setattr(
+        llama_cpp.httpx,
+        "post",
+        lambda *a, **k: (_ for _ in ()).throw(AssertionError),
+        raising = False,
+    )
+    assert backend.save_slots_for_resume() is None

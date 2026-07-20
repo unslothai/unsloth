@@ -9405,7 +9405,11 @@ class LlamaCppBackend:
                     _SLOT_SAVE_MAX_BYTES,
                 )
                 return None
-            if shutil.disk_usage(save_dir).free < estimate + (1 << 30):
+            # A 0 estimate means metadata was insufficient, not a zero-byte cache:
+            # a slot can still be many GiB, so demand room for the whole cap before
+            # trusting the post-write check.
+            required = (estimate if estimate > 0 else _SLOT_SAVE_MAX_BYTES) + (1 << 30)
+            if shutil.disk_usage(save_dir).free < required:
                 logger.debug("Skipping slot save: insufficient free disk")
                 return None
         except Exception:
