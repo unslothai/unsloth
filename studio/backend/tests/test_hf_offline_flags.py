@@ -187,6 +187,22 @@ def test_local_only_load_fails_closed_offline_never_hitting_the_hub(monkeypatch,
         is False
     )
 
+    # A stray pickle in a NON-load subdir (no config.json) is never deserialized by
+    # from_pretrained, so it must not block -- matching the online scan's load-path scope.
+    stray = tmp_path / "stray" / "aaa"
+    (stray / "archive").mkdir(parents = True)
+    (stray / "model.safetensors").write_bytes(b"\0")
+    (stray / "archive" / "pytorch_model.bin").write_bytes(b"\0")
+    assert _evaluate(stray) is False
+
+    # A pickle in a real MODULE load root (a subdir with config.json) and no safetensors
+    # there is a live vector -> blocked.
+    modroot = tmp_path / "modroot" / "aaa"
+    (modroot / "0_Transformer").mkdir(parents = True)
+    (modroot / "0_Transformer" / "config.json").write_bytes(b"{}")
+    (modroot / "0_Transformer" / "pytorch_model.bin").write_bytes(b"\0")
+    assert _evaluate(modroot) is True
+
 
 def test_security_scan_runs_when_online(monkeypatch):
     import utils.security.file_security as fs

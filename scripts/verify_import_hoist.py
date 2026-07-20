@@ -462,12 +462,15 @@ def _collect_dunder_all(tree: ast.Module) -> tuple[set[str], bool]:
     let ``__all__ = ["y"]`` followed by ``__all__ = []`` still mark ``y`` used, so a
     genuinely unused hoist would slip through.
 
-    ``opaque`` is True when ``__all__`` is rebound OR extended by a value we cannot read
-    statically (a call, a name, a comprehension, a spread). The static entry set is then
-    not known to be exhaustive, so the caller must NOT treat a name's absence from it as
+    ``opaque`` is True when the FINAL ``__all__`` value is not statically exhaustive:
+    it is rebound or extended by a value we cannot read (a call, name, comprehension,
+    spread). The caller must then NOT treat a name's absence from the static set as
     proof the import is unexported -- a re-export supplied dynamically
-    (``__all__ += _exports()``) would otherwise trip ``HOISTED-IMPORT-UNUSED``. An
-    unreadable ``=`` and an unreadable ``+=`` set it alike, so the two stay consistent.
+    (``__all__ += _exports()``) would otherwise trip ``HOISTED-IMPORT-UNUSED``. A
+    replacing ``=`` resets opacity (it discards the prior list AND any prior dynamic
+    part), so a later readable ``__all__ = [...]`` clears an earlier opaque ``+=``; an
+    ``+=`` extends, so prior opacity persists. A bare ``__all__: list[str]`` annotation
+    has no runtime value and is skipped entirely.
     """
     names: set[str] = set()
     opaque = False
@@ -475,6 +478,8 @@ def _collect_dunder_all(tree: ast.Module) -> tuple[set[str], bool]:
         if isinstance(node, ast.Assign):
             targets, replaces = node.targets, True
         elif isinstance(node, ast.AnnAssign):
+            if node.value is None:
+                continue  # bare `__all__: list[str]` annotation: no runtime value
             targets, replaces = [node.target], True
         elif isinstance(node, ast.AugAssign):
             targets, replaces = [node.target], False
@@ -493,15 +498,15 @@ def _collect_dunder_all(tree: ast.Module) -> tuple[set[str], bool]:
                     readable = False  # a spread / computed element: unknown extra exports
         else:
             readable = False  # a call, a name, a comprehension: contents unknown
-        if not readable:
-            # Contents partly/wholly unknown. Keep the names we can see, but mark the set
-            # non-exhaustive so the caller preserves uncertainty rather than flagging a
-            # dynamically-supplied re-export as unused. Applies to both `=` and `+=`.
-            opaque = True
         if replaces:
-            names = entries
+            # A replace discards the prior list and its opacity: an unreadable rebind
+            # is opaque, a readable one is fully known again.
+            names, opaque = entries, not readable
         else:
+            # An extend keeps the prior list, so prior opacity persists; an unreadable
+            # extend adds names we cannot see.
             names |= entries
+            opaque = opaque or not readable
     return names, opaque
 
 
@@ -823,6 +828,20 @@ _SELF_TESTS = {
         'from pkg import a\n__all__ = ["a"]\n',
         'from pkg import a\nfrom pkg import b\n__all__ = ["a"]\n__all__ += sorted(["b"])\n',
         None,
+    ),
+    "readable_reassign_resets_opacity": (
+        # an opaque "+=" then a readable replacing "=": the final __all__ is empty, so a
+        # hoisted unused import is a genuine bad hoist -- the reset must un-stick opacity
+        'from pkg import a\n__all__ = ["a"]\n',
+        'from pkg import a\nfrom pkg import b\n__all__ += sorted(["x"])\n__all__ = []\n',
+        "BLOCKER",
+    ),
+    "annotation_only_all_is_not_opaque": (
+        # a bare `__all__: list[str]` annotation has no runtime value: it must be skipped,
+        # not treated as an unreadable assignment, so a new unused hoist is still caught
+        "from pkg import a\n__all__: list[str]\n",
+        "from pkg import a\nfrom pkg import b\n__all__: list[str]\n",
+        "BLOCKER",
     ),
 }
 

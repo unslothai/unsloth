@@ -285,10 +285,13 @@ def _dir_has_loadable_safetensors(files: dict) -> bool:
 
 
 def _cached_pickle_weight_files(snap) -> list:
-    """Base-model pickle weight files in the snapshot's module dirs with NO loadable safetensors
-    alternative -- i.e. the pickles a from_pretrained load actually deserializes. A dir is
-    covered only by a safetensors weight the loader would pick instead (unsharded base file or
-    a complete indexed shard set); a bare adapter or an orphan shard leaves the pickle live."""
+    """Base-model pickle weight files a from_pretrained load actually deserializes: at a real
+    load root (the snapshot root, or a subdir that is itself a load root -- it holds a
+    ``config.json``) and with NO loadable safetensors alternative there. A stray pickle in a
+    non-load subdir (``archive/``, ``nemo/``) that no load opens is not a vector, matching the
+    online scan's load-path scoping. A dir is covered by a safetensors weight the loader would
+    pick instead (unsharded base file or a complete indexed shard set); a bare adapter or an
+    orphan shard leaves the pickle live."""
     by_dir_pickle: dict = {}
     by_dir_files: dict = {}  # directory -> {lower-name: Path}
     try:
@@ -306,7 +309,12 @@ def _cached_pickle_weight_files(snap) -> list:
         return []
     hits: set = set()
     for directory, names in by_dir_pickle.items():
-        if not _dir_has_loadable_safetensors(by_dir_files.get(directory, {})):
+        files = by_dir_files.get(directory, {})
+        # from_pretrained deserializes a pickle only at a load root: the snapshot root, or a
+        # subdir that is itself a load root (has config.json). A pickle elsewhere is unread.
+        if directory != snap and "config.json" not in files:
+            continue
+        if not _dir_has_loadable_safetensors(files):
             hits.update(names)
     return sorted(hits)
 
