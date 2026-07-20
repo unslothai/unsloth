@@ -435,3 +435,186 @@ def test_only_the_rag_embedding_path_opts_into_the_bypass():
             f"{rel} passes local_only_load but does not pin its loader to the "
             "local cache; that would disable the malware gate for a fetching path"
         )
+
+
+# ── FIX 1: the safetensors CREDIT is case-SENSITIVE and only credits names the loader loads ──
+#
+# The offline gate skips a pickle only when a safetensors weight the loader reads INSTEAD is
+# present. transformers (SAFE_WEIGHTS_NAME) and sentence-transformers (Module.load_torch_weights)
+# both look up the EXACT name ``model.safetensors`` (then its index); on a case-sensitive
+# filesystem a mixed-case decoy is NOT that file, so the loader falls back to the pickle. Folding
+# the decoy's name into the credit (or crediting a name the loader never loads) fails OPEN.
+
+
+def _snap_dir(tmp_path, name: str, files: dict):
+    d = tmp_path / name / "aaa"
+    d.mkdir(parents = True)
+    for fname, body in files.items():
+        (d / fname).write_bytes(body if isinstance(body, bytes) else body.encode())
+    return d
+
+
+def _offline_blocked(monkeypatch, snap) -> bool:
+    """Run the offline (local-only) gate against a prebuilt cache snapshot, asserting it never
+    reaches the Hub, and return whether the load is blocked."""
+    import utils.models.model_config as mc
+    import utils.security.file_security as fs
+
+    calls: list = []
+    _fake_hub(monkeypatch, calls)
+    monkeypatch.setattr(mc, "_active_snapshot_dir", lambda name: snap)
+    decision = fs.evaluate_file_security("org/model", None, local_only_load = True)
+    assert calls == [], "a local-only load must not hit the Hub"
+    return decision.blocked
+
+
+def test_offline_mixed_case_base_safetensors_does_not_credit_pickle(monkeypatch, tmp_path):
+    # ``Model.SafeTensors`` is not the exact ``model.safetensors`` the loader reads, so it cannot
+    # vouch for a live ``pytorch_model.bin`` -- the loader deserializes the pickle -> BLOCKED.
+    snap = _snap_dir(
+        tmp_path, "mixedbase", {"Model.SafeTensors": b"\0", "pytorch_model.bin": b"\0"}
+    )
+    assert _offline_blocked(monkeypatch, snap) is True
+
+
+def test_offline_exact_case_base_safetensors_credits_pickle(monkeypatch, tmp_path):
+    # Control: the exact ``model.safetensors`` is what the loader reads instead of the pickle.
+    snap = _snap_dir(
+        tmp_path, "exactbase", {"model.safetensors": b"\0", "pytorch_model.bin": b"\0"}
+    )
+    assert _offline_blocked(monkeypatch, snap) is False
+
+
+def test_offline_pytorch_model_safetensors_decoy_does_not_credit(monkeypatch, tmp_path):
+    # transformers/ST never look up ``pytorch_model.safetensors``; an inert file of that name
+    # must not vouch for the live ``pytorch_model.bin`` -> BLOCKED.
+    snap = _snap_dir(
+        tmp_path, "decoy", {"pytorch_model.safetensors": b"\0", "pytorch_model.bin": b"\0"}
+    )
+    assert _offline_blocked(monkeypatch, snap) is True
+
+
+def test_offline_mixed_case_adapter_safetensors_does_not_credit(monkeypatch, tmp_path):
+    # ``Adapter_Model.SafeTensors`` is not the exact ``adapter_model.safetensors`` PEFT loads,
+    # so the live ``adapter_model.bin`` stays a separate RCE vector -> BLOCKED (an inert
+    # safetensors base does not cover the adapter pickle).
+    snap = _snap_dir(
+        tmp_path,
+        "mixedadapter",
+        {
+            "config.json": b"{}",
+            "model.safetensors": b"\0",
+            "adapter_config.json": b"{}",
+            "adapter_model.bin": b"\0",
+            "Adapter_Model.SafeTensors": b"\0",
+        },
+    )
+    assert _offline_blocked(monkeypatch, snap) is True
+
+
+def test_offline_exact_case_adapter_safetensors_credits(monkeypatch, tmp_path):
+    # Control: the exact ``adapter_model.safetensors`` covers the adapter pickle -> allowed.
+    snap = _snap_dir(
+        tmp_path,
+        "exactadapter",
+        {
+            "config.json": b"{}",
+            "model.safetensors": b"\0",
+            "adapter_config.json": b"{}",
+            "adapter_model.bin": b"\0",
+            "adapter_model.safetensors": b"\0",
+        },
+    )
+    assert _offline_blocked(monkeypatch, snap) is False
+
+
+# ── FIX 2: the ONLINE scan canonicalizes repo-controlled ``..`` paths, matching the offline gate ──
+#
+# The offline gate resolves a traversing declared path / weight_map shard (``0/../evil`` ->
+# ``evil``) so a pickle the loader deserializes there is blocked. The online scan compares the
+# Hub's CANONICAL flagged path against repo-controlled load-subdirs (a ``modules.json`` module
+# ``path`` the RAG guard unions in) and ``weight_map`` shards; without collapsing ``..`` the raw
+# ``0/../evil`` never matches ``evil/...`` and the flagged pickle slips through.
+
+
+def test_online_load_subdir_prefixes_are_canonicalized():
+    import utils.security.file_security as fs
+
+    assert fs._index_prefixes(("0/../evil",)) == ("", "evil/")
+    assert fs._load_relative_path("evil/pytorch_model.bin", ("0/../evil",)) == "pytorch_model.bin"
+    # A non-traversing subdir is unchanged.
+    assert fs._load_relative_path("LLM/pytorch_model.bin", ("LLM",)) == "pytorch_model.bin"
+    # An escaping subdir (leading ..) is dropped -- it can never name a repo file.
+    assert fs._load_relative_path("evil/x.bin", ("../evil",)) == "evil/x.bin"
+
+
+def test_online_scan_blocks_flagged_pickle_under_traversing_module_subdir(monkeypatch):
+    # A repo-controlled ``modules.json`` path ``0/../evil`` reaches the online scan (unioned in
+    # by the RAG guard). The loader resolves it to ``evil/`` and deserializes
+    # ``evil/pytorch_model.bin``; the gate must scope the canonical dir and block it root-level.
+    import utils.security.file_security as fs
+
+    monkeypatch.setattr(
+        fs,
+        "_fetch_security_status",
+        lambda name, token: {
+            "filesWithIssues": [{"path": "evil/pytorch_model.bin", "level": "unsafe"}]
+        },
+    )
+    # Definitive "no weight index" -> a missed shard is SKIPPED (allowed) on the pristine gate;
+    # the fix instead treats evil/ as a load root so the pickle is root-level and blocks.
+    monkeypatch.setattr(fs, "_indexed_shard_paths", lambda *a, **k: set())
+    decision = fs.evaluate_file_security(
+        "org/model", None, load_subdirs = ("0/../evil",), local_only_load = False
+    )
+    assert decision.blocked is True
+
+
+def test_online_scan_blocks_flagged_pickle_under_plain_module_subdir(monkeypatch):
+    # Control: a non-traversing declared subdir still blocks a flagged pickle directly under it.
+    import utils.security.file_security as fs
+
+    monkeypatch.setattr(
+        fs,
+        "_fetch_security_status",
+        lambda name, token: {
+            "filesWithIssues": [{"path": "0_Transformer/pytorch_model.bin", "level": "unsafe"}]
+        },
+    )
+    monkeypatch.setattr(fs, "_indexed_shard_paths", lambda *a, **k: set())
+    decision = fs.evaluate_file_security(
+        "org/model", None, load_subdirs = ("0_Transformer",), local_only_load = False
+    )
+    assert decision.blocked is True
+
+
+def test_online_indexed_shard_paths_canonicalize_weight_map_traversal(monkeypatch, tmp_path):
+    # A repo-controlled ``weight_map`` shard that traverses (``sub/../evil/pytorch_model.bin``)
+    # must be recorded at the canonical ``evil/pytorch_model.bin`` the Hub reports for the
+    # flagged file, so the online maybe-shard check matches it and blocks the load.
+    import utils.security.file_security as fs
+
+    fake = types.ModuleType("huggingface_hub")
+    fake_utils = types.ModuleType("huggingface_hub.utils")
+
+    class _EntryNotFound(Exception):
+        pass
+
+    fake_utils.EntryNotFoundError = _EntryNotFound
+    fake.utils = fake_utils
+
+    index_file = tmp_path / "pytorch_model.bin.index.json"
+    index_file.write_text('{"weight_map": {"w": "sub/../evil/pytorch_model.bin"}}')
+
+    def _download(model_name, filename, token = None):
+        if filename == "pytorch_model.bin.index.json":
+            return str(index_file)
+        raise _EntryNotFound()
+
+    fake.hf_hub_download = _download
+    monkeypatch.setitem(sys.modules, "huggingface_hub", fake)
+    monkeypatch.setitem(sys.modules, "huggingface_hub.utils", fake_utils)
+
+    paths = fs._indexed_shard_paths("org/model", None)
+    assert "evil/pytorch_model.bin" in paths
+    assert "sub/../evil/pytorch_model.bin" not in paths

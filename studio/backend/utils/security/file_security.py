@@ -93,22 +93,31 @@ def _normalize_repo_path(path: str) -> str:
     return p
 
 
-def _canonical_load_dir(base, rel: str):
-    """``base`` / ``rel`` with ``.`` / ``..`` components collapsed lexically (no filesystem
-    access), or None when ``rel`` is empty, the base itself, or escapes ``base``.
+def _canonical_rel(rel: str):
+    """A repo-relative path with ``.`` / ``..`` components collapsed lexically (no filesystem
+    access), or None when it is empty, the repo root, or escapes the root (a leading ``..``
+    after normalization).
 
-    A ``modules.json`` / ``router_config.json`` / load-subdir path is repo-controlled.
-    SentenceTransformer resolves an entry such as ``0/../evil`` to ``evil/`` and deserializes
-    ``evil/pytorch_model.bin``, so the offline gate must scope that SAME normalized directory:
-    the raw ``base / "0/../evil"`` never equals the ``base / "evil"`` that ``rglob`` yields, so a
-    pickle there would slip the gate. A path that escapes ``base`` (a leading ``..`` after
-    normalization) is rejected -- a legitimate declared module path never traverses upward."""
+    A ``modules.json`` / ``router_config.json`` / load-subdir / ``weight_map`` entry is
+    repo-controlled. The loader resolves an entry such as ``0/../evil`` to ``evil/`` and
+    deserializes ``evil/pytorch_model.bin`` -- the offline gate already scopes that SAME
+    normalized directory (via :func:`_canonical_load_dir`) and the ONLINE scan must agree, or
+    the raw ``0/../evil`` never equals the canonical ``evil/...`` the Hub reports for the
+    flagged file and the pickle slips the gate. A legitimate declared path never traverses
+    upward, so an escaping path is rejected."""
     import posixpath
 
     norm = posixpath.normpath(_normalize_repo_path(rel).strip("/"))
     if norm in ("", ".") or norm == ".." or norm.startswith("../"):
         return None
-    return base / norm
+    return norm
+
+
+def _canonical_load_dir(base, rel: str):
+    """``base`` / ``rel`` with ``.`` / ``..`` collapsed lexically, or None when ``rel`` is
+    empty, the base itself, or escapes ``base``. String form: :func:`_canonical_rel`."""
+    norm = _canonical_rel(rel)
+    return None if norm is None else base / norm
 
 
 def _file_suffix(path: str) -> str:
@@ -122,19 +131,27 @@ def _load_relative_path(norm: str, load_subdirs) -> str:
     snapshot SUBDIRECTORY (Spark-TTS / BiCodec load ``<snapshot>/LLM``), where a file
     directly under the subdir is root-level, not nested. Strips the matching load-subdir
     prefix, or returns ``norm`` unchanged when it is not under one.
+
+    A load-subdir is repo-controlled (the RAG guard unions in each ``modules.json`` module
+    ``path``), so it is canonicalized (``0/../evil`` -> ``evil``) to match the canonical repo
+    path the Hub reports for a flagged file -- the raw ``0/../evil`` would never prefix
+    ``evil/pytorch_model.bin`` and the file would slip through as an unreferenced nested shard,
+    though the offline gate (which canonicalizes the same path) blocks it.
     """
     for subdir in load_subdirs or ():
-        prefix = _normalize_repo_path(subdir).strip("/")
+        prefix = _canonical_rel(subdir)
         if prefix and norm.startswith(prefix + "/"):
             return norm[len(prefix) + 1 :]
     return norm
 
 
 def _index_prefixes(load_subdirs) -> tuple:
-    """Prefixes to look for weight-index files under: repo root plus each load subdir."""
+    """Prefixes to look for weight-index files under: repo root plus each load subdir. Each
+    subdir is canonicalized (see :func:`_load_relative_path`) so a traversing declared path
+    resolves to the same directory offline and online."""
     prefixes = [""]
     for subdir in load_subdirs or ():
-        p = _normalize_repo_path(subdir).strip("/")
+        p = _canonical_rel(subdir)
         if p:
             prefixes.append(p + "/")
     return tuple(prefixes)
@@ -178,7 +195,14 @@ def _indexed_shard_paths(
                     # weight_map paths are relative to the index file's directory.
                     if prefix and not shard_norm.startswith(prefix):
                         shard_norm = prefix + shard_norm
-                    paths.add(shard_norm)
+                    # Collapse . / .. (a repo-controlled weight_map may traverse, e.g.
+                    # "sub/../evil/pytorch_model.bin") so the recorded path is the canonical
+                    # one the Hub reports for the flagged shard -- mirrors the offline gate,
+                    # which resolves the same traversal on disk. An escaping shard (leading
+                    # ..) can never name a repo file, so drop it.
+                    shard_canon = _canonical_rel(shard_norm)
+                    if shard_canon is not None:
+                        paths.add(shard_canon)
             except Exception:
                 inconclusive = True
     # Any transient failure -> inconclusive (the shard could be listed only by the index
@@ -304,8 +328,14 @@ def _index_weight_map_values(index_path) -> set:
 # whose every referenced shard is present. A bare adapter (``adapter_model.safetensors``) or
 # an orphan shard with no index is NOT a loadable base weight -- the loader falls back to and
 # deserializes the pickle, which therefore stays the live RCE vector.
-_SAFETENSORS_BASE_UNSHARDED = ("model.safetensors", "pytorch_model.safetensors")
-_SAFETENSORS_BASE_INDEX = ("model.safetensors.index.json", "pytorch_model.safetensors.index.json")
+#
+# Only the EXACT names the loader resolves count. transformers' SAFE_WEIGHTS_NAME /
+# SAFE_WEIGHTS_INDEX_NAME and sentence-transformers' Module.load_torch_weights both look up
+# ``model.safetensors`` (then its index); neither ever looks up ``pytorch_model.safetensors``,
+# so crediting that name would let a repo shipping an inert ``pytorch_model.safetensors`` decoy
+# beside a live ``pytorch_model.bin`` pass unblocked while the loader deserialized the pickle.
+_SAFETENSORS_BASE_UNSHARDED = ("model.safetensors",)
+_SAFETENSORS_BASE_INDEX = ("model.safetensors.index.json",)
 
 
 def _safetensors_index_complete(index_path) -> bool:
@@ -334,14 +364,30 @@ def _safetensors_index_complete(index_path) -> bool:
     return True
 
 
+def _exact_named(files: dict, name: str):
+    """The Path in *files* (lower-name -> Path for one directory) whose REAL basename is
+    exactly *name* (case-sensitive), or None. A safetensors CREDIT must match the loader's
+    exact lookup: transformers / sentence-transformers request ``model.safetensors`` verbatim,
+    so on a case-sensitive filesystem (the Studio default) a mixed-case ``Model.SafeTensors``
+    decoy is NOT the file the loader reads -- it falls back to and deserializes the pickle. The
+    lower-name key would fold the decoy in and fail OPEN, so credit is decided by ``Path.name``.
+    """
+    for path in files.values():
+        if path.name == name:
+            return path
+    return None
+
+
 def _dir_has_loadable_safetensors(files: dict) -> bool:
     """True when *files* (lower-name -> Path for one directory) hold a safetensors weight a
     from_pretrained load will read INSTEAD of a pickle sibling: an unsharded base file, or a
-    complete indexed shard set. A bare adapter or an orphan shard does not qualify."""
-    if any(name in files for name in _SAFETENSORS_BASE_UNSHARDED):
+    complete indexed shard set. A bare adapter or an orphan shard does not qualify. The
+    safetensors credit is case-SENSITIVE (see :func:`_exact_named`) so a mis-cased decoy the
+    loader would skip cannot vouch for a live pickle."""
+    if any(_exact_named(files, name) is not None for name in _SAFETENSORS_BASE_UNSHARDED):
         return True
     for index_name in _SAFETENSORS_BASE_INDEX:
-        index_path = files.get(index_name)
+        index_path = _exact_named(files, index_name)
         if index_path is not None and _safetensors_index_complete(index_path):
             return True
     return False
@@ -453,8 +499,15 @@ def _cached_pickle_weight_files(snap, load_subdirs = ()) -> list:
             hits.update(base)
         # An adapter pickle is deserialized only when from_pretrained auto-detects the adapter
         # (adapter_config.json present) and there is no adapter_model.safetensors to load instead.
+        # The safetensors credit is case-SENSITIVE (a mixed-case Adapter_Model.SafeTensors decoy
+        # is not the file PEFT loads), so it is matched by real basename; the config presence
+        # stays case-insensitive (over-blocking a mis-cased adapter is the safe direction).
         adapter = [n for n in names if _ADAPTER_PICKLE_RE.match(n.lower())]
-        if adapter and "adapter_config.json" in files and "adapter_model.safetensors" not in files:
+        if (
+            adapter
+            and "adapter_config.json" in files
+            and _exact_named(files, "adapter_model.safetensors") is None
+        ):
             hits.update(adapter)
     # A load-root pickle index (pytorch_model.bin.index.json) can map shards into SUBDIRECTORIES
     # that are not themselves load roots; from_pretrained follows the map and deserializes them,
