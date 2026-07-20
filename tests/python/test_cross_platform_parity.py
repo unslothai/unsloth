@@ -417,15 +417,23 @@ class TestKnown211SetParity:
         assert (
             '$_pinAudioSpec = "torchaudio>=2.4,<2.11.0"' in text
         ), "install.ps1 custom-pin install must bound torchaudio (>=2.4,<2.11.0)"
-        # No cu-family exemption: the bounds apply unconditionally.
+        # cu<digits> leaves widen the whole trio to the torch 2.11 line (<2.12),
+        # matching install.sh's cu[0-9]* widen and _CUDA_TORCH_PKG_SPEC; other
+        # leaves keep the 2.10 line. The trio stays bounded on every index.
+        assert '$_pinTorchSpec = "torch>=2.4,<2.12.0"' in text, (
+            "install.ps1 must widen torch to <2.12.0 on cu<digits> index leaves"
+        )
         assert (
-            "$_pinCuLeaf" not in text
-        ), "install.ps1 must bound companions on every index (no cu-family exemption)"
-        # The bounded companions must actually be passed to the install command.
+            '$_pinVisionSpec = "torchvision>=0.19,<0.27.0"' in text
+        ), "install.ps1 cu-leaf install must pair torchvision <0.27.0 with torch <2.12"
+        assert (
+            '$_pinAudioSpec = "torchaudio>=2.4,<2.12.0"' in text
+        ), "install.ps1 cu-leaf install must pair torchaudio <2.12.0 with torch <2.12"
+        # The bounded trio must actually be passed to the install command.
         assert re.search(
-            r'"torch>=2\.4,<2\.11\.0" \$_pinVisionSpec \$_pinAudioSpec --default-index \$TorchIndexUrl',
+            r'\$_pinTorchSpec \$_pinVisionSpec \$_pinAudioSpec --default-index \$TorchIndexUrl',
             text,
-        ), "install.ps1 custom-pin install must pass the bounded companion specs to uv"
+        ), "install.ps1 pinned install must pass the bounded trio specs to uv"
 
     def test_gfx_allowlist_matches_across_installers(self):
         # The gfx 2.11 allowlist {gfx120x-all, gfx1151, gfx1150} must appear in each.

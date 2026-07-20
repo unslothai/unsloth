@@ -2336,13 +2336,22 @@ exit 0
         } else {
             Write-TauriLog "STEP" "Installing PyTorch"
             substep "installing PyTorch ($(Remove-IndexUrlCredentials $TorchIndexUrl))..."
-            # Bound the companions to the capped torch on EVERY index, cu<digits>
-            # families included: torchaudio 2.11 dropped its exact torch pin from
-            # the wheel metadata, so a bare companion next to torch<2.11 can
-            # resolve a mismatched 2.11.0 build. Mirrors install.sh.
-            $_pinVisionSpec = "torchvision>=0.19,<0.26.0"
-            $_pinAudioSpec = "torchaudio>=2.4,<2.11.0"
-            $torchInstallExit = Invoke-InstallCommandRetry -Label "install PyTorch" { uv pip install --python $VenvPython "torch>=2.4,<2.11.0" $_pinVisionSpec $_pinAudioSpec --default-index $TorchIndexUrl }
+            # Bounded trio on every index (torchaudio 2.11 dropped its exact torch
+            # pin, so a bare companion can drift from a capped torch). cu<digits>
+            # families ship torch 2.11.x with paired triton-windows 3.6, so the
+            # ceiling widens to <2.12 there; other leaves keep the 2.10 line.
+            # Mirrors install.sh and _CUDA_TORCH_PKG_SPEC.
+            $_idxLeaf = (($TorchIndexUrl -split '[?#]', 2)[0].TrimEnd('/') -split '/')[-1].ToLowerInvariant()
+            if ($_idxLeaf -match '^cu[0-9]+$') {
+                $_pinTorchSpec = "torch>=2.4,<2.12.0"
+                $_pinVisionSpec = "torchvision>=0.19,<0.27.0"
+                $_pinAudioSpec = "torchaudio>=2.4,<2.12.0"
+            } else {
+                $_pinTorchSpec = "torch>=2.4,<2.11.0"
+                $_pinVisionSpec = "torchvision>=0.19,<0.26.0"
+                $_pinAudioSpec = "torchaudio>=2.4,<2.11.0"
+            }
+            $torchInstallExit = Invoke-InstallCommandRetry -Label "install PyTorch" { uv pip install --python $VenvPython $_pinTorchSpec $_pinVisionSpec $_pinAudioSpec --default-index $TorchIndexUrl }
             if ($torchInstallExit -ne 0) {
                 Write-Host "[ERROR] Failed to install PyTorch (exit code $torchInstallExit)" -ForegroundColor Red
                 return (Exit-InstallFailure "Failed to install PyTorch (exit code $torchInstallExit)" $torchInstallExit)
@@ -2449,8 +2458,15 @@ exit 0
                     $installedTorchTag = Get-InstalledTorchTag -PythonExe $VenvPython
                 } elseif ($expectedTorchTag -ne 'rocm') {
                     # CUDA: stale +cpu (or wrong cuXXX) against a CUDA index -> reinstall triplet.
+                    # Same leaf-gated ceiling as the install above: cu* serves 2.11.
+                    $_fixLeaf = (($TorchIndexUrl -split '[?#]', 2)[0].TrimEnd('/') -split '/')[-1].ToLowerInvariant()
+                    if ($_fixLeaf -match '^cu[0-9]+$') {
+                        $_fixTorchSpec = "torch>=2.4,<2.12.0"; $_fixVisionSpec = "torchvision>=0.19,<0.27.0"; $_fixAudioSpec = "torchaudio>=2.4,<2.12.0"
+                    } else {
+                        $_fixTorchSpec = "torch>=2.4,<2.11.0"; $_fixVisionSpec = "torchvision>=0.19,<0.26.0"; $_fixAudioSpec = "torchaudio>=2.4,<2.11.0"
+                    }
                     substep "PyTorch flavor mismatch (installed $installedTorchTag, need $expectedTorchTag) -- reinstalling correct build..." "Yellow"
-                    $torchFixExit = Invoke-InstallCommand { uv pip install --python $VenvPython "torch>=2.4,<2.11.0" "torchvision>=0.19,<0.26.0" "torchaudio>=2.4,<2.11.0" --default-index $TorchIndexUrl --reinstall-package torch --reinstall-package torchvision --reinstall-package torchaudio }
+                    $torchFixExit = Invoke-InstallCommand { uv pip install --python $VenvPython $_fixTorchSpec $_fixVisionSpec $_fixAudioSpec --default-index $TorchIndexUrl --reinstall-package torch --reinstall-package torchvision --reinstall-package torchaudio }
                     if ($torchFixExit -ne 0) {
                         Write-Host "[ERROR] Failed to reinstall PyTorch with the correct CUDA build (exit code $torchFixExit)" -ForegroundColor Red
                         return (Exit-InstallFailure "Failed to reinstall PyTorch ($expectedTorchTag) (exit code $torchFixExit)" $torchFixExit)
