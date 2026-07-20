@@ -248,22 +248,72 @@ class TestLocalGgufVisionDetection:
         assert config.gguf_mmproj_file == str(mmproj.resolve())
         mock_subprocess.assert_not_called()
 
-@pytest.mark.parametrize(("initial_audio", "cached_tokens", "cached_arch", "cache_layout", "stale_type", "expected"), [
-        (None, ["<|startoftranscript|>"], "whisper", False, "qwen2_audio", ("whisper", False, True, False)),
-        (None, ["<|AUDIO|>", "<|audio_eos|>"], "llama-csm", False, "qwen2_audio", ("csm", True, False, False)),
-        ("csm", ["<|AUDIO|>", "<|audio_eos|>"], "qwen2audio", False, "whisper", (None, False, False, True)),
+
+@pytest.mark.parametrize(
+    ("initial_audio", "cached_tokens", "cached_arch", "cache_layout", "stale_type", "expected"),
+    [
+        (
+            None,
+            ["<|startoftranscript|>"],
+            "whisper",
+            False,
+            "qwen2_audio",
+            ("whisper", False, True, False),
+        ),
+        (
+            None,
+            ["<|AUDIO|>", "<|audio_eos|>"],
+            "llama-csm",
+            False,
+            "qwen2_audio",
+            ("csm", True, False, False),
+        ),
+        (
+            "csm",
+            ["<|AUDIO|>", "<|audio_eos|>"],
+            "qwen2audio",
+            False,
+            "whisper",
+            (None, False, False, True),
+        ),
         ("whisper", [], "llama", False, "whisper", (None, False, False, True)),
-        ("snac", ["<audio_soft_token>"], "audio-vlm", False, "whisper", ("audio_vlm", False, True, True)),
-        (None, ["<|AUDIO|>", "<|audio_eos|>"], "llama-csm", "truncated_newer", "qwen2_audio", ("csm", True, False, False)),
+        (
+            "snac",
+            ["<audio_soft_token>"],
+            "audio-vlm",
+            False,
+            "whisper",
+            ("audio_vlm", False, True, True),
+        ),
+        (
+            None,
+            ["<|AUDIO|>", "<|audio_eos|>"],
+            "llama-csm",
+            "truncated_newer",
+            "qwen2_audio",
+            ("csm", True, False, False),
+        ),
     ],
 )
 def test_configless_gguf_reports_audio_capability(
-    monkeypatch, tmp_path, initial_audio, cached_tokens, cached_arch, cache_layout, stale_type, expected,
+    monkeypatch,
+    tmp_path,
+    initial_audio,
+    cached_tokens,
+    cached_arch,
+    cache_layout,
+    stale_type,
+    expected,
 ):
     import utils.models.model_config as mc
 
     stale_audio = object() if stale_type == "qwen2_audio" else None
-    stale_config = _types.SimpleNamespace(model_type = stale_type, thinker_config = None, text_config = stale_audio, audio_config = stale_audio)
+    stale_config = _types.SimpleNamespace(
+        model_type = stale_type,
+        thinker_config = None,
+        text_config = stale_audio,
+        audio_config = stale_audio,
+    )
     monkeypatch.setattr(mc, "load_model_config", lambda *_a, **_k: stale_config)
 
     model_snapshot = tmp_path / "complete" if cache_layout == "truncated_newer" else tmp_path
@@ -288,20 +338,36 @@ def test_configless_gguf_reports_audio_capability(
     monkeypatch.setitem(sys.modules, "core.inference.llama_cpp", fake_llama_cpp)
     monkeypatch.setattr(mc, "resolve_cached_repo_id_case", lambda name: name)
     monkeypatch.setattr(mc, "detect_gguf_model_remote", lambda *_a, **_k: cached_gguf.name)
-    monkeypatch.setattr(mc, "list_gguf_variants", lambda *_a, **_k: ([_types.SimpleNamespace(filename = cached_gguf.name)], False))
+    monkeypatch.setattr(
+        mc,
+        "list_gguf_variants",
+        lambda *_a, **_k: ([_types.SimpleNamespace(filename = cached_gguf.name)], False),
+    )
     monkeypatch.setattr(mc, "detect_audio_type", lambda *_a, **_k: initial_audio)
-    monkeypatch.setattr("huggingface_hub.get_paths_info", lambda _repo, paths, revision = None, **_k: [
-        _types.SimpleNamespace(path = path, size = (tmp_path / revision / path).stat().st_size + 1) for path in paths
-    ] if cache_layout == "truncated_newer" and revision == "partial" else [])
+    monkeypatch.setattr(
+        "huggingface_hub.get_paths_info",
+        lambda _repo, paths, revision = None, **_k: [
+            _types.SimpleNamespace(path = path, size = (tmp_path / revision / path).stat().st_size + 1)
+            for path in paths
+        ]
+        if cache_layout == "truncated_newer" and revision == "partial"
+        else [],
+    )
     snapshots = (
-        [tmp_path / "partial", model_snapshot] if cache_layout == "truncated_newer"
+        [tmp_path / "partial", model_snapshot]
+        if cache_layout == "truncated_newer"
         else [model_snapshot]
     )
     monkeypatch.setattr(mc, "_iter_hf_cache_snapshots", lambda *_a: iter(snapshots))
 
     config = ModelConfig.from_identifier("org/model-GGUF", gguf_variant = "voice-checkpoint")
 
-    assert (config.audio_type, config.is_audio, config.has_audio_input, config.is_chat_capable) == expected
+    assert (
+        config.audio_type,
+        config.is_audio,
+        config.has_audio_input,
+        config.is_chat_capable,
+    ) == expected
 
 
 # ---------------------------------------------------------------------------
