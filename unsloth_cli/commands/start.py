@@ -1274,6 +1274,16 @@ def _install_agent(name: str, install_hint: str) -> Optional[str]:
     return executable
 
 
+def _wsl_shim_env(command: list, env: dict, unset_env: tuple) -> tuple[dict, tuple]:
+    wsl_env_bridge = _wsl_bridge_names(env, unset_env) if _wsl_windows_executable(command) else ()
+    if not wsl_env_bridge:
+        return env, wsl_env_bridge
+    # Bridge PWD via WSLENV (PWD/p) so the Windows shim finds its project root from the
+    # live cwd, not a stale inherited Linux PWD. Don't freeze env["PWD"]: a --no-launch
+    # recipe must translate the live PWD when run, not when generated; _launch overrides it.
+    return env, (*wsl_env_bridge, "PWD/p")
+
+
 def _launch(
     command: list,
     env: dict,
@@ -1283,9 +1293,11 @@ def _launch(
     executable = shutil.which(command[0]) or _install_agent(command[0], install_hint)
     if executable is None:
         _fail(f"`{command[0]}` not found on PATH. Install it with: {install_hint}")
-    wsl_env_bridge = _wsl_bridge_names(env, unset_env) if _wsl_windows_executable(command) else ()
+    env, wsl_env_bridge = _wsl_shim_env(command, env, unset_env)
     child_env = dict(os.environ)
     if wsl_env_bridge:
+        # Override stale inherited PWD with the real cwd so the shim resolves the project root.
+        env = {**env, "PWD": os.getcwd()}
         child_env["WSLENV"] = _merge_wslenv(child_env.get("WSLENV", ""), wsl_env_bridge)
         for name in unset_env:
             child_env[name] = ""
@@ -1353,8 +1365,8 @@ def _run(
     if launch and clear_screen:
         click.clear()
     typer.echo(f"Unsloth {base} · model {entry['id']}")
-    wsl_env_bridge = _wsl_bridge_names(env, unset_env) if _wsl_windows_executable(command) else ()
     if not launch:
+        env, wsl_env_bridge = _wsl_shim_env(command, env, unset_env)
         _print_env(env, command, unset_env = unset_env, wsl_env_bridge = wsl_env_bridge)
         return
     try:
