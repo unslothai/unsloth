@@ -112,3 +112,25 @@ def test_raw_token_is_not_retained(monkeypatch):
 
     assert token not in repr(validation._cache)
     assert token not in repr(validation._attempts)
+
+
+def test_unexpected_remote_exception_releases_singleflight(monkeypatch):
+    calls = 0
+    monkeypatch.setattr(validation, "_INFLIGHT_WAIT_SECONDS", 0.0)
+
+    def _check(_token):
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            raise RuntimeError("unexpected failure")
+        return validation.TokenValidationResult(status = "valid")
+
+    monkeypatch.setattr(validation, "_check_remote", _check)
+
+    with pytest.raises(RuntimeError, match = "unexpected failure"):
+        validation.validate_hf_token("hf_test", rate_key = "user:ip")
+
+    result = validation.validate_hf_token("hf_test", rate_key = "user:ip")
+    assert result.status == "valid"
+    assert calls == 2
+    assert validation._inflight == {}

@@ -145,44 +145,46 @@ def validate_hf_token(token: str, *, rate_key: str) -> TokenValidationResult:
     if not normalized:
         return TokenValidationResult(status = "invalid")
     token_fingerprint = _fingerprint(normalized)
+    owner_event: threading.Event | None = None
 
-    while True:
+    try:
+        while True:
+            now = time.monotonic()
+            with _lock:
+                cached = _cached_locked(token_fingerprint, now)
+                if cached is not None:
+                    return cached
+                waiting = _inflight.get(token_fingerprint)
+                if waiting is None:
+                    limited = _reserve_attempt_locked(rate_key, now)
+                    if limited is not None:
+                        return limited
+                    owner_event = threading.Event()
+                    _inflight[token_fingerprint] = owner_event
+                    break
+            if not waiting.wait(_INFLIGHT_WAIT_SECONDS):
+                return TokenValidationResult(status = "unavailable")
+
+        result = _check_remote(normalized)
         now = time.monotonic()
+        ttl = (
+            _CACHE_TTL_SECONDS
+            if result.status in ("valid", "invalid")
+            else max(_TEMPORARY_CACHE_TTL_SECONDS, float(result.retry_after_seconds or 0))
+        )
         with _lock:
-            cached = _cached_locked(token_fingerprint, now)
-            if cached is not None:
-                return cached
-            waiting = _inflight.get(token_fingerprint)
-            if waiting is None:
-                limited = _reserve_attempt_locked(rate_key, now)
-                if limited is not None:
-                    return limited
-                waiting = threading.Event()
-                _inflight[token_fingerprint] = waiting
-                owner = True
-            else:
-                owner = False
-        if owner:
-            break
-        if not waiting.wait(_INFLIGHT_WAIT_SECONDS):
-            return TokenValidationResult(status = "unavailable")
-
-    result = _check_remote(normalized)
-    now = time.monotonic()
-    ttl = (
-        _CACHE_TTL_SECONDS
-        if result.status in ("valid", "invalid")
-        else max(_TEMPORARY_CACHE_TTL_SECONDS, float(result.retry_after_seconds or 0))
-    )
-    with _lock:
-        if len(_cache) >= _MAX_CACHE_ENTRIES:
-            _prune_locked(now)
-        if len(_cache) < _MAX_CACHE_ENTRIES:
-            _cache[token_fingerprint] = (now + ttl, result)
-        event = _inflight.pop(token_fingerprint, None)
-        if event is not None:
-            event.set()
-    return result
+            if len(_cache) >= _MAX_CACHE_ENTRIES:
+                _prune_locked(now)
+            if len(_cache) < _MAX_CACHE_ENTRIES:
+                _cache[token_fingerprint] = (now + ttl, result)
+        return result
+    finally:
+        if owner_event is not None:
+            with _lock:
+                event = _inflight.get(token_fingerprint)
+                if event is owner_event:
+                    _inflight.pop(token_fingerprint, None)
+                    event.set()
 
 
 def reset_hf_token_validation_state() -> None:

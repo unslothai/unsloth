@@ -29,7 +29,13 @@ export async function prepareHfTokenForUse(
     return { proceed: true, token: null };
   }
 
-  const validation = await validateHfToken(normalized);
+  let validation;
+  try {
+    validation = await validateHfToken(normalized);
+  } catch {
+    // Validation is advisory. Let the real operation retain its own error.
+    return { proceed: true, token: normalized };
+  }
   if (validation.status !== "invalid") {
     // A connectivity failure or rate limit cannot prove that a token is bad.
     // Let the real operation proceed and retain its repository-specific error.
