@@ -2,12 +2,11 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { useCallback, useEffect, useRef, useState } from "react";
-import { useChatRuntimeStore } from "@/features/chat";
-
 import {
   CHAT_RAG_CAPTION_KEY,
   CHAT_RAG_OCR_KEY,
-} from "@/features/chat/stores/chat-runtime-store";
+  useChatRuntimeStore,
+} from "@/features/chat";
 import { toast } from "@/lib/toast";
 import {
   deleteDocument,
@@ -60,9 +59,7 @@ export function useRagDocuments(
     if (ids.size === 0) return false;
     const docs = documentsRef.current.filter((d) => ids.has(d.id));
     if (docs.length === 0) return false; // sig tracked but doc gone -> allow re-upload
-    return docs.some(
-      (d) => d.status !== "completed" || (d.numChunks ?? 0) > 0,
-    );
+    return docs.some((d) => d.status !== "completed" || (d.numChunks ?? 0) > 0);
   }, []);
   // True while upload() runs, so the scope-change effect can tell a real switch
   // from lazy thread materialization mid-upload (which must not reset).
@@ -80,9 +77,7 @@ export function useRagDocuments(
   const patchDoc = useCallback(
     (documentId: string, patch: Partial<TrackedDocument>) => {
       setDocuments((rows) =>
-        rows.map((row) =>
-          row.id === documentId ? { ...row, ...patch } : row,
-        ),
+        rows.map((row) => (row.id === documentId ? { ...row, ...patch } : row)),
       );
     },
     [],
@@ -176,49 +171,61 @@ export function useRagDocuments(
     [patchDoc],
   );
 
-  const refresh = useCallback(async (opts?: { quiet?: boolean }) => {
-    if (!scope) return;
-    if (!opts?.quiet) setLoading(true);
-    try {
-      // Merge server truth with local progress so a refresh mid-index keeps a
-      // live "running %" chip. Failed docs hidden (toast warned at upload).
-      const rows = (await lister()).filter((row) => row.status !== "failed");
-      setDocuments((prev) => {
-        const merged = rows.map((row) => {
-          const tracked = prev.find((p) => p.id === row.id);
-          return tracked && tracked.progress != null && row.status !== "completed"
-            ? { ...row, progress: tracked.progress }
-            : row;
+  const refresh = useCallback(
+    async (opts?: { quiet?: boolean }) => {
+      if (!scope) return;
+      if (!opts?.quiet) setLoading(true);
+      try {
+        // Merge server truth with local progress so a refresh mid-index keeps a
+        // live "running %" chip. Failed docs hidden (toast warned at upload).
+        const rows = (await lister()).filter((row) => row.status !== "failed");
+        setDocuments((prev) => {
+          const merged = rows.map((row) => {
+            const tracked = prev.find((p) => p.id === row.id);
+            return tracked &&
+              tracked.progress != null &&
+              row.status !== "completed"
+              ? { ...row, progress: tracked.progress }
+              : row;
+          });
+          // Keep optimistic chips (not yet listed) so a refresh racing an upload
+          // can't make them vanish.
+          const serverIds = new Set(rows.map((row) => row.id));
+          const pendingLocal = prev.filter(
+            (row) => row.id.startsWith("pending_") && !serverIds.has(row.id),
+          );
+          return [...merged, ...pendingLocal];
         });
-        // Keep optimistic chips (not yet listed) so a refresh racing an upload
-        // can't make them vanish.
-        const serverIds = new Set(rows.map((row) => row.id));
-        const pendingLocal = prev.filter(
-          (row) => row.id.startsWith("pending_") && !serverIds.has(row.id),
-        );
-        return [...merged, ...pendingLocal];
-      });
-    } catch (err) {
-      toast.error("Failed to load documents", {
-        description: err instanceof Error ? err.message : String(err),
-      });
-    } finally {
-      if (!opts?.quiet) setLoading(false);
-    }
-  }, [scope, lister]);
+      } catch (err) {
+        toast.error("Failed to load documents", {
+          description: err instanceof Error ? err.message : String(err),
+        });
+      } finally {
+        if (!opts?.quiet) setLoading(false);
+      }
+    },
+    [scope, lister],
+  );
 
   // A real switch (thread/KB swap) resets + reloads; first acquiring a scope just
   // loads. Skip both during materialization mid-upload (scope null -> new thread
   // while upload() runs) so we don't abort tracking or wipe optimistic chips.
   useEffect(() => {
+    const jobs = trackedJobs.current;
     const prev = prevScopeKeyRef.current;
     prevScopeKeyRef.current = scopeKey;
     if (prev !== null && prev !== scopeKey) {
-      for (const controller of trackedJobs.current.values()) controller.abort();
-      trackedJobs.current.clear();
+      for (const controller of jobs.values()) controller.abort();
+      jobs.clear();
       sigByDocId.current.clear();
+      // Scope changes intentionally clear the old scope before fetching the new
+      // one. Keep this synchronous so React StrictMode's setup/cleanup replay
+      // cannot cancel the only refresh after prevScopeKeyRef has advanced.
       setDocuments([]);
-      if (scope) void refresh();
+      if (scope) {
+        // eslint-disable-next-line react-hooks/set-state-in-effect
+        void refresh();
+      }
     } else if (prev === null && scope && !uploadInFlightRef.current) {
       void refresh();
     }
@@ -226,8 +233,8 @@ export function useRagDocuments(
       // Preserve in-flight tracking when cleanup is the materialization flip,
       // not a real switch/unmount.
       if (uploadInFlightRef.current) return;
-      for (const controller of trackedJobs.current.values()) controller.abort();
-      trackedJobs.current.clear();
+      for (const controller of jobs.values()) controller.abort();
+      jobs.clear();
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [scopeKey]);
@@ -260,21 +267,41 @@ export function useRagDocuments(
         // otherwise backend env defaults own the ingest policy.
         const state = useChatRuntimeStore.getState();
         const hasLocal = (key: string) =>
-          typeof window !== "undefined" && window.localStorage.getItem(key) !== null;
-        const ocr = hasLocal(CHAT_RAG_OCR_KEY) ? state.ragOcrScanned : undefined;
+          typeof window !== "undefined" &&
+          window.localStorage.getItem(key) !== null;
+        const ocr = hasLocal(CHAT_RAG_OCR_KEY)
+          ? state.ragOcrScanned
+          : undefined;
         const caption = hasLocal(CHAT_RAG_CAPTION_KEY)
           ? state.ragCaptionFigures
           : undefined;
         const result =
           activeScope.type === "kb"
-            ? await uploadKnowledgeBaseDocument(activeScope.kbId, file, ocr, caption)
+            ? await uploadKnowledgeBaseDocument(
+                activeScope.kbId,
+                file,
+                ocr,
+                caption,
+              )
             : activeScope.type === "project"
-              ? await uploadProjectDocument(activeScope.projectId, file, ocr, caption)
-              : await uploadThreadDocument(activeScope.threadId, file, ocr, caption);
+              ? await uploadProjectDocument(
+                  activeScope.projectId,
+                  file,
+                  ocr,
+                  caption,
+                )
+              : await uploadThreadDocument(
+                  activeScope.threadId,
+                  file,
+                  ocr,
+                  caption,
+                );
         sigByDocId.current.set(result.documentId, fileSignature(file));
         if (seenIds.has(result.documentId)) {
           setDocuments((rows) => rows.filter((row) => row.id !== tempId));
-          toast.info(`${result.filename || file.name} is already indexed - skipping`);
+          toast.info(
+            `${result.filename || file.name} is already indexed - skipping`,
+          );
           return;
         }
         seenIds.add(result.documentId);
@@ -341,7 +368,9 @@ export function useRagDocuments(
         ]);
 
         const resolved =
-          overrideScope instanceof Promise ? await overrideScope : overrideScope;
+          overrideScope instanceof Promise
+            ? await overrideScope
+            : overrideScope;
         const activeScope = resolved ?? scope;
         if (!activeScope) {
           // Materialization failed: drop the chips so they don't hang "pending".
@@ -377,7 +406,10 @@ export function useRagDocuments(
       const prevSig = sigByDocId.current.get(documentId);
       sigByDocId.current.delete(documentId);
       try {
-        await deleteDocument(documentId);
+        await deleteDocument(
+          documentId,
+          scope?.type === "project" ? scope.projectId : undefined,
+        );
       } catch (err) {
         setDocuments(prev);
         if (prevSig !== undefined) sigByDocId.current.set(documentId, prevSig);
@@ -386,7 +418,7 @@ export function useRagDocuments(
         });
       }
     },
-    [documents],
+    [documents, scope],
   );
 
   return { documents, loading, uploading, refresh, upload, remove };

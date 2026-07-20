@@ -3,7 +3,7 @@
 
 """Tests for the server session log + native-crash capture in run.py.
 
-Field regression: Studio "terminates without a warning" -- a native crash in
+Field regression: Unsloth "terminates without a warning" -- a native crash in
 the GPU runtime kills the process with no Python traceback, and a desktop-
 shortcut console closes before anything can be read. The server must tee its
 console output to disk and aim faulthandler at the same file so even hard

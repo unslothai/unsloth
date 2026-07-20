@@ -19,7 +19,7 @@ os.environ["PYTHONWARNINGS"] = "ignore"
 
 # Pin GPU index ordering to PCI bus id before any torch import creates a CUDA
 # context. Without this, torch/CUDA default to FASTEST_FIRST while nvidia-smi
-# (and Studio's VRAM probes) use PCI-bus order, so a GPU index chosen from
+# (and Unsloth's VRAM probes) use PCI-bus order, so a GPU index chosen from
 # nvidia-smi data can resolve to a different physical card via
 # CUDA_VISIBLE_DEVICES. setdefault so an explicit user override wins. See
 # utils/hardware/hardware.py for the full rationale; set here too so the entry
@@ -93,7 +93,7 @@ if sys.platform == "win32":
     # ── Windows AMD ROCm: make hipInfo.exe resolvable for subprocess probes ──
     # bitsandbytes' get_rocm_gpu_arch() runs `hipinfo.exe` via PATH at import
     # time; the AMD torch wheel ships it in the venv Scripts dir, which is on
-    # PATH only when the venv is activated -- Studio launches python directly.
+    # PATH only when the venv is activated -- Unsloth launches python directly.
     # Without this, every bitsandbytes import logs a scary (but harmless)
     # "Could not detect ROCm GPU architecture: [WinError 2]" ERROR + WARNING.
     # Gated on the file existing: only AMD ROCm wheels ship hipInfo.exe, so
@@ -252,7 +252,7 @@ def _read_studio_install_id() -> str:
 
     Returns "" when absent or not a 64-char lowercase-hex token; then
     /api/health emits "" and the launcher accepts any healthy backend.
-    Carries no install-path info (matters when Studio runs -H 0.0.0.0)."""
+    Carries no install-path info (matters when Unsloth runs -H 0.0.0.0)."""
     try:
         token = (_STUDIO_ROOT_RESOLVED / "share" / "studio_install_id").read_text().strip()
     except (OSError, ValueError):
@@ -312,6 +312,7 @@ from routes.preview import router as preview_router
 from hub.routes import (
     inventory_router as hub_inventory_router,
     datasets_router as hub_datasets_router,
+    token_router as hub_token_router,
 )
 from hub.schemas.downloads import TransportCapabilities
 from hub.utils.download_registry import (
@@ -547,8 +548,9 @@ async def lifespan(app: FastAPI):
     threading.Thread(target = _warm_rag_embedder, daemon = True, name = "rag-embedder-warm").start()
 
     # Idle auto-unload loop (no-op unless the OpenAI auto-unload TTL is set).
-    from core.inference.llama_keepwarm import idle_unload_loop
+    from core.inference.llama_keepwarm import idle_unload_loop, sweep_slot_save_dir
 
+    sweep_slot_save_dir()
     app.state.idle_unload_task = asyncio.create_task(idle_unload_loop())
 
     # Initialize RSA key pair for API key encryption (external providers).
@@ -573,7 +575,7 @@ async def lifespan(app: FastAPI):
         print("DEFAULT ADMIN ACCOUNT CREATED")
         print(f"    username: {storage.DEFAULT_ADMIN_USERNAME}")
         print(f"    password saved to: {bootstrap_path}")
-        print("    Open the Studio UI to sign in and change it.")
+        print("    Open the Unsloth UI to sign in and change it.")
         print("=" * 60 + "\n")
     else:
         app.state.bootstrap_password = (
@@ -611,6 +613,22 @@ app = FastAPI(
     description = "Backend API for Unsloth UI - Training and Model Management",
     lifespan = lifespan,
 )
+
+# The MCP surface is opt-in because it can start GPU jobs and write model
+# artifacts. Mount it only when explicitly enabled by the Unsloth process.
+if os.environ.get("UNSLOTH_STUDIO_ENABLE_MCP") == "1":
+    from fastmcp.utilities.lifespan import combine_lifespans
+
+    from mcp_server import BearerTokenMiddleware, create_studio_mcp
+
+    _studio_mcp_app = create_studio_mcp().http_app(path = "/")
+    _studio_mcp_lifespan = _studio_mcp_app.lifespan
+    _mcp_token = os.environ.get("UNSLOTH_STUDIO_MCP_TOKEN")
+    if not _mcp_token:
+        raise RuntimeError("UNSLOTH_STUDIO_MCP_TOKEN is required when MCP is enabled")
+    _studio_mcp_app = BearerTokenMiddleware(_studio_mcp_app, _mcp_token)
+    app.router.lifespan_context = combine_lifespans(lifespan, _studio_mcp_lifespan)
+    app.mount("/mcp", _studio_mcp_app)
 
 from loggers.config import LogConfig
 from loggers.handlers import LoggingMiddleware
@@ -752,6 +770,7 @@ _BODY_PROTECTED_PREFIXES = (
     "/api/settings",
     "/api/train",
     "/api/export",
+    "/mcp",
 )
 _DATASET_UPLOAD_PASSTHROUGH_PREFIX = "/api/datasets/upload"
 _DATA_RECIPE_UNSTRUCTURED_UPLOAD_PASSTHROUGH_PREFIX = (
@@ -956,7 +975,7 @@ app.include_router(training_router, prefix = "/api/train", tags = ["training"])
 app.include_router(models_router, prefix = "/api/models", tags = ["models"])
 app.include_router(chat_history_router, prefix = "/api/chat", tags = ["chat"])
 app.include_router(inference_router, prefix = "/api/inference", tags = ["inference"])
-# Studio-only inference endpoints (cancel, etc.) are NOT exposed on the /v1
+# Unsloth-only inference endpoints (cancel, etc.) are NOT exposed on the /v1
 # OpenAI-compat prefix below.
 app.include_router(inference_studio_router, prefix = "/api/inference", tags = ["inference"])
 
@@ -975,6 +994,7 @@ app.include_router(rag_router, prefix = "/api/rag", tags = ["rag"])
 app.include_router(training_history_router, prefix = "/api/train", tags = ["training-history"])
 app.include_router(hub_inventory_router, prefix = "/api/hub", tags = ["hub"])
 app.include_router(hub_datasets_router, prefix = "/api/hub/datasets", tags = ["hub"])
+app.include_router(hub_token_router, prefix = "/api/hub", tags = ["hub"])
 
 # Re-wrap client-error responses on the /v1/* surface into OpenAI/Anthropic
 # error envelopes; non-/v1 paths keep FastAPI's default {"detail": ...} shape.
@@ -1063,7 +1083,7 @@ def studio_install_source(_current_subject: str = Depends(get_current_subject)):
 
 @app.get("/api/studio/update-status")
 def studio_update_status(_current_subject: str = Depends(get_current_subject)):
-    """Return source-aware manual update status for browser-served Studio."""
+    """Return source-aware manual update status for browser-served Unsloth."""
     return get_studio_update_status(UNSLOTH_VERSION)
 
 
@@ -1131,17 +1151,35 @@ def _get_cached_system_gpu_info(logger) -> dict[str, Any]:
             util = util_devices.get(idx, {})
 
             total_vram = util.get("vram_total_gb") or dev.get("memory_total_gb") or 0
-            used_vram = util.get("vram_used_gb") or 0
+            # Keep None (usage unknown, e.g. Windows ROCm perf counter) so the UI
+            # shows unknown, not a fabricated 0 used / full free.
+            used_vram = util.get("vram_used_gb")
 
             enriched_dev = dict(dev)
             enriched_dev["vram_used_gb"] = used_vram
-            enriched_dev["vram_free_gb"] = round(total_vram - used_vram, 2) if total_vram else 0
+            enriched_dev["vram_free_gb"] = (
+                round(total_vram - used_vram, 2) if total_vram and used_vram is not None else None
+            )
             enriched_dev["vram_utilization_pct"] = util.get("vram_utilization_pct")
             enriched_devices.append(enriched_dev)
 
+        # Whether GGUF loads accept an explicit gpu_ids pick: /load and
+        # /validate 400 picks on XPU hosts (no visibility mask speaks torch-xpu
+        # ordinals) and on Vulkan-only builds (--device pins ggml's own
+        # ordinals), so the picker must not offer them.
+        try:
+            from core.inference.llama_cpp import LlamaCppBackend
+            from utils.hardware import DeviceType, get_device
+            gpu_ids_supported = (
+                get_device() != DeviceType.XPU and not LlamaCppBackend._is_vulkan_backend()
+            )
+        except Exception as e:
+            logger.debug(f"Could not resolve gpu_ids support: {e}")
+            gpu_ids_supported = True
         gpu_info = {
             "available": visibility_info.get("available", False),
             "devices": enriched_devices,
+            "gguf_gpu_ids_supported": gpu_ids_supported,
         }
         _system_gpu_cache = (time.monotonic(), gpu_info)
         return gpu_info

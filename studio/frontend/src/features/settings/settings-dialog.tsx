@@ -15,6 +15,7 @@ import {
   Cancel01Icon,
   CloudIcon,
   CpuIcon,
+  DatabaseSettingIcon,
   Globe02Icon,
   HelpCircleIcon,
   Message01Icon,
@@ -43,6 +44,7 @@ import { ApiKeysTab } from "./tabs/api-keys-tab";
 import { AppearanceTab } from "./tabs/appearance-tab";
 import { ChatTab } from "./tabs/chat-tab";
 import { ConnectionsTab } from "./tabs/connections-tab";
+import { DataTab } from "./tabs/data-tab";
 import { GeneralTab } from "./tabs/general-tab";
 import { ProfileTab } from "./tabs/profile-tab";
 import { ResourcesTab } from "./tabs/resources-tab";
@@ -93,6 +95,12 @@ const TABS: TabDef[] = [
     iconComponent: MicIcon,
     badgeKey: "common.new",
   },
+  {
+    id: "data",
+    labelKey: "settings.tabs.data",
+    icon: DatabaseSettingIcon,
+    badgeKey: "common.new",
+  },
   { id: "about", labelKey: "settings.tabs.about", icon: HelpCircleIcon },
 ];
 
@@ -112,6 +120,8 @@ function renderTab(tab: SettingsTab) {
       return <VoiceTab />;
     case "connections":
       return <ConnectionsTab />;
+    case "data":
+      return <DataTab />;
     case "api-keys":
       return <ApiKeysTab />;
     case "about":
@@ -210,6 +220,7 @@ export function SettingsDialog() {
     chat: null,
     voice: null,
     connections: null,
+    data: null,
     "api-keys": null,
     about: null,
   });
@@ -253,7 +264,8 @@ export function SettingsDialog() {
           <DialogDescription className="sr-only">
             {t("settings.dialog.description")}
           </DialogDescription>
-          <div className="flex h-full min-h-0 max-sm:flex-col">
+          {/* Keep tab content from expanding the dialog grid. */}
+          <div className="flex h-full min-h-0 min-w-0 w-full max-sm:flex-col">
             <aside className="font-heading flex w-[248px] shrink-0 flex-col border-r border-sidebar-border bg-muted/20 p-2 dark:border-r-0 max-sm:w-full max-sm:border-r-0 max-sm:border-b max-sm:border-sidebar-border">
               <div className="relative mx-1 mt-3 mb-2 max-sm:hidden">
                 <HugeiconsIcon
