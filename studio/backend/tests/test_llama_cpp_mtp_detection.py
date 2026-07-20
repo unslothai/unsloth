@@ -345,7 +345,9 @@ def test_windows_full_offload_flags_use_current_llama_server_args():
     stale_checkpoint_flag = "--checkpoint-" + "every-n-tokens"
     assert '"--cache-ram"' in src
     assert '"--ctx-checkpoints"' in src
-    assert '"--no-cache-prompt"' in src
+    # Prompt caching stays on (in-VRAM prefix reuse); #5692 only needed the host-RAM
+    # checkpoints (--cache-ram / --ctx-checkpoints) disabled, not prompt reuse.
+    assert '"--no-cache-prompt"' not in src
     assert stale_checkpoint_flag not in src
 
 
