@@ -16,6 +16,8 @@ import {
   type ChatSearch,
 } from "@/features/chat";
 import { RemoteCodeConsentDialog } from "@/features/security";
+import { HfTokenWarningDialog } from "@/features/hf-auth";
+import { TransformersUpgradeDialog } from "@/features/transformers-upgrade";
 import { useTrainingUnloadGuard } from "@/features/training";
 import { useExportRuntimeLifecycle } from "@/features/export";
 import { hasAuthToken } from "@/features/auth";
@@ -229,7 +231,9 @@ function RootLayout() {
     <AppProvider>
       <PersonalizationSyncMount />
       {!isAuthFlowRoute && <SettingsDialog />}
+      <HfTokenWarningDialog />
       <RemoteCodeConsentDialog />
+      <TransformersUpgradeDialog />
       {hideNavbar ? (
         <main className="flex-1 pt-[var(--studio-hidden-route-top-inset,0px)] [--studio-titlebar-height:var(--studio-hidden-route-top-inset,0px)]">
           <Suspense fallback={<RouteFallback />}>

@@ -2,6 +2,7 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 export { SettingsDialog } from "./settings-dialog";
+export { loadEmbeddingModelSettings } from "./api/embedding-model";
 export {
   loadPersonalization,
   savePersonalization,

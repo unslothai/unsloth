@@ -97,9 +97,81 @@ export const en = {
       appearance: "Appearance",
       resources: "System",
       chat: "Chat",
+      voice: "Voice",
       connections: "Connections",
+      data: "Data",
       apiKeys: "API",
       about: "About",
+    },
+    voice: {
+      title: "Voice",
+      description: "Microphone, dictation, and read-aloud",
+      dictation: {
+        sectionTitle: "Dictation",
+        microphoneLabel: "Microphone",
+        microphoneDescription: "Used for dictation",
+        microphoneFallbackHint:
+          "Used for dictation. Falls back to the system default if the browser speech engine cannot use this device",
+        microphoneGrantDescription: "Allow mic access to show device names",
+        allowMicrophone: "Allow microphone",
+        micAccessBlocked:
+          "Microphone access was blocked. Allow microphone access for this Unsloth page, then try again.",
+        micAccessUnsupported:
+          "Microphone access is not supported in this browser or context.",
+        micOpenFailed:
+          "Could not open the selected microphone. Check permissions or pick another device.",
+        systemDefault: "System default",
+        savedMicDisconnected: "Saved microphone (not connected)",
+        languageLabel: "Dictation language",
+        languageDescription: "Language to recognize",
+        languageAuto: "Auto (browser language)",
+        testLabel: "Test dictation",
+        testDescription: "Speak to check your mic and settings",
+        startTest: "Start test",
+        stopTest: "Stop test",
+        listening: "Listening…",
+        testSaved: "Saved to recent dictations",
+        notSupported: "Not supported in this browser",
+      },
+      dictionary: {
+        sectionTitle: "Dictation dictionary",
+        sectionDescription:
+          "Apply the spelling entered here when dictation recognizes the same words or phrase",
+        addEntry: "Add entry",
+      },
+      recents: {
+        sectionTitle: "Recent dictations",
+        sectionDescription:
+          "Your recent dictations will appear here so you can recover text",
+        empty: "No dictations yet",
+        copied: "Copied to clipboard",
+        copyFailed: "Could not copy to clipboard",
+        clear: "Clear recent dictations",
+      },
+      readAloud: {
+        sectionTitle: "Read aloud",
+        buttonLabel: "Read aloud button",
+        buttonDescription: "Show on assistant responses",
+        engineLabel: "TTS engine",
+        engineSystemDescription: "Built-in device voices",
+        engineStudioDescription: "Uses the loaded audio model (e.g. Orpheus)",
+        engineSystem: "System voices",
+        engineStudio: "Load TTS model",
+        modelLabel: "TTS model",
+        modelDescription:
+          "Load an audio model from the model selector (e.g. Orpheus TTS)",
+        voiceLabel: "Voice",
+        voiceDescription: "Best voices on this device",
+        speedLabel: "Speed",
+        pitchLabel: "Pitch",
+        volumeLabel: "Volume",
+        previewLabel: "Preview voice",
+        previewDescription: "Play a short sample",
+        previewAction: "Preview",
+        stopAction: "Stop",
+        ttsLabel: "Text to speech",
+        notSupported: "Not supported in this browser",
+      },
     },
     general: {
       title: "General",
@@ -153,14 +225,17 @@ export const en = {
           "When an OpenAI-compatible request names a different downloaded GGUF, load it before serving. Off by default; unknown names keep serving the loaded model.",
         idleUnload: "Idle auto-unload",
         idleUnloadDescription:
-          "Unload the model after this many idle seconds to free VRAM; the next request reloads it. 0 keeps it loaded.",
+          "Unload the model after this many idle seconds to free VRAM; the next request reloads it. 0 keeps it loaded. Minimum 60 seconds.",
         idleNeedsEnable:
           "Turn on Switch model by request so an unloaded model reloads on next use.",
         idleActiveViaEnv:
           "Idle auto-unload is active via the UNSLOTH_MODEL_IDLE_TTL environment variable.",
         loadError: "Failed to load model auto-switch settings.",
         saveError: "Failed to save model auto-switch settings.",
-        idleError: "Enter a whole number of seconds (0 or more).",
+        idleError: "Enter 0 to keep the model loaded, or at least 60 seconds.",
+        keepKv: "Keep chat context across idle unload",
+        keepKvDescription:
+          "Save the model's KV cache to disk before an idle unload and restore it on reload, so resumed chats skip re-reading their history. Chat context is written to disk (up to 10 GB) until it is restored or cleaned up.",
       },
       previewSharing: {
         sectionTitle: "Preview sharing",
@@ -180,6 +255,12 @@ export const en = {
         revokeConfirmAction: "Revoke all links",
         revoked: "All preview links revoked",
         revokeError: "Couldn't revoke preview links",
+      },
+      permissions: {
+        sectionTitle: "Permissions",
+        bypassLabel: "Tool permissions",
+        bypassDescription:
+          "How Unsloth approves chat tool calls (terminal, python, web, MCP) before they run. Full access disables approvals and the code sandbox.",
       },
       notifications: {
         sectionTitle: "Notifications",
@@ -340,11 +421,6 @@ export const en = {
           label: "Font smoothing",
           description: "Use smoothed font anti-aliasing.",
         },
-        edgeFades: {
-          label: "Edge fades",
-          description:
-            "Fade content at panel edges. Off shows a thin divider line instead.",
-        },
         contrast: {
           label: "Contrast",
           description: "Strength of borders and secondary text.",
@@ -436,7 +512,7 @@ export const en = {
     },
     chat: {
       title: "Chat",
-      description: "Manage chat history stored on this device.",
+      description: "Customize how chat behaves on this device.",
       modelDisclaimer: "Show model disclaimer",
       modelDisclaimerDescription:
         'Show "LLMs can make mistakes" under the chat box.',
@@ -505,6 +581,53 @@ export const en = {
         "A storage clear failed; {count} chats may remain. Please retry.",
       failedToClearChats: "Failed to clear chats",
     },
+    data: {
+      title: "Data",
+      description:
+        "Manage chat history and uploaded files stored on this device.",
+      archivedChats: "Archived chats",
+      archivedChatsDescription: "View and manage chats you have archived.",
+      manageAction: "Manage",
+      exportArchivedChats: "Export",
+      exportingArchivedChats: "Exporting...",
+      exportedOneArchivedChat: "Exported 1 archived chat",
+      exportedArchivedChatCount: "Exported {count} archived chats",
+      noArchivedChatsToExport: "No archived chats to export.",
+      failedToExportArchivedChats: "Failed to export archived chats",
+      archiveAllChats: "Archive all chats",
+      archiveAllChatsDescription:
+        "Move every chat in Recents and Projects to the archive.",
+      noChatsToArchive: "No chats to archive.",
+      archiveAllAction: "Archive all",
+      archivingAction: "Archiving...",
+      archiveAllChatsTitle: "Archive all chats?",
+      archiveAllChatsConfirmDescription:
+        "Moves every chat on this device to the archive. Archived chats stay available and can be unarchived at any time.",
+      archivedAllChats: "Archived all chats",
+      archivedOneChat: "Archived 1 chat",
+      archivedChatCount: "Archived {count} chats",
+      failedToArchiveChats: "Failed to archive chats",
+      confirmBeforeDeleting: "Confirm before deleting",
+      confirmBeforeDeletingDescription:
+        "Ask for confirmation before a chat is deleted. Turn off to delete instantly.",
+      filesSection: "Files",
+      uploadedFiles: "Uploaded files",
+      uploadedFilesDescription:
+        "View and manage files uploaded to chats, projects, and knowledge bases.",
+      fineTuneExport: "Use chats as training data",
+      fineTuneExportDescription:
+        "Create a fine-tuning JSONL dataset from your chats. Load it in Train, refine in Recipes, or export it.",
+      fineTuneExportAction: "Export JSONL",
+      fineTuneRunAction: "Run",
+      fineTuneExportingAction: "Exporting...",
+      fineTuneOpenRecipesAction: "Open in Recipes",
+      fineTuneOpeningRecipesAction: "Opening...",
+      fineTuneTrainAction: "Load in Train tab",
+      fineTuneTrainingAction: "Loading...",
+      fineTuneExportFailed: "Failed to export training data",
+      fineTuneRecipeFailed: "Failed to open chats in Recipes",
+      fineTuneTrainFailed: "Failed to load dataset in the Train tab",
+    },
     connections: {
       title: "Connections",
       description: "Manage providers and external connections.",
@@ -548,7 +671,8 @@ export const en = {
       codingAgents: "Coding agents",
       codingAgentsHint:
         "Launch a coding agent against this server. It uses the loaded model; a local server mints an API key automatically, a remote one includes it in the command.",
-      codingAgentsSwap: "Swap claude for codex, openclaw, opencode, hermes, or pi.",
+      codingAgentsSwap:
+        "Swap claude for codex, openclaw, opencode, hermes, or pi.",
       codingAgentDetected: "Installed on this machine",
       codingAgentsDetectedHint: "Detected on this machine: {agents}.",
       relativeNever: "never",

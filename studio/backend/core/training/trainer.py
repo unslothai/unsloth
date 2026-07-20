@@ -11,8 +11,10 @@ import os
 import sys
 import types
 
-# Prevent tokenizer parallelism deadlocks when datasets forks.
-os.environ["TOKENIZERS_PARALLELISM"] = "false"
+# Off on Linux so datasets' forked map() workers can't deadlock. On spawn platforms
+# (Windows/macOS) map() runs in-process, so keep the fast tokenizer's Rust threads on
+# (the only parallelism single-process tokenize gets; off makes prep run serially).
+os.environ["TOKENIZERS_PARALLELISM"] = "true" if sys.platform in ("win32", "darwin") else "false"
 
 # Make compiled cache modules importable by any subprocess. On spawn platforms
 # (Windows/macOS) spawned dataset.map() workers re-import top-level modules, and
@@ -795,7 +797,7 @@ class UnslothTrainer:
                 )
                 logger.info("Loaded text model")
 
-            raise_if_offloaded(self.model, device_map, "Studio training")
+            raise_if_offloaded(self.model, device_map, "Unsloth training")
 
             if self.should_stop:
                 return False
@@ -931,7 +933,7 @@ class UnslothTrainer:
                     use_gradient_checkpointing = "unsloth"
                 elif use_gradient_checkpointing in ("true", "1", "yes"):
                     use_gradient_checkpointing = True
-                elif use_gradient_checkpointing in ("false", "0", "no"):
+                elif use_gradient_checkpointing in ("false", "0", "no", "none", "off"):
                     use_gradient_checkpointing = False
                 else:
                     # Invalid value -> "unsloth"
@@ -3423,15 +3425,19 @@ class UnslothTrainer:
                     logger.info(
                         f"CPT: using UnslothTrainer with embedding_learning_rate={embedding_lr}\n"
                     )
+                    cpt_args = _UnslothTrainingArguments(
+                        embedding_learning_rate = embedding_lr,
+                        **config_args,
+                    )
+                    if config_args.get("packing", False):
+                        cpt_args.packing_strategy = "wrapped"
+                        logger.info("CPT packing strategy: wrapped\n")
                     trainer_kwargs = {
                         "model": self.model,
                         "tokenizer": sft_tokenizer,
                         "train_dataset": dataset["dataset"],
                         "data_collator": data_collator,
-                        "args": _UnslothTrainingArguments(
-                            embedding_learning_rate = embedding_lr,
-                            **config_args,
-                        ),
+                        "args": cpt_args,
                     }
                     if eval_dataset is not None:
                         trainer_kwargs["eval_dataset"] = eval_dataset

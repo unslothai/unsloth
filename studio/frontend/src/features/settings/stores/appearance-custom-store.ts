@@ -111,8 +111,6 @@ export type AppearanceCustomization = {
   reduceMotion: ReduceMotionSetting;
   /** true = the app default (antialiased). */
   fontSmoothing: boolean;
-  /** true = content dissolves at panel edges; false = thin divider lines. */
-  edgeFades: boolean;
   /** Order and visibility of the optional sidebar profile menu items. */
   sidebarMenu: SidebarMenuItemPref[];
 };
@@ -136,7 +134,6 @@ export const DEFAULT_CUSTOMIZATION: AppearanceCustomization = {
   pointerCursors: false,
   reduceMotion: "system",
   fontSmoothing: true,
-  edgeFades: true,
   sidebarMenu: SIDEBAR_MENU_ITEM_IDS.map((id) => ({
     id,
     visible: SIDEBAR_MENU_DEFAULT_VISIBLE[id],
@@ -275,7 +272,6 @@ export function sanitizeCustomization(value: unknown): AppearanceCustomization {
         ? source.reduceMotion
         : "system",
     fontSmoothing: source.fontSmoothing !== false,
-    edgeFades: source.edgeFades !== false,
     sidebarMenu: sanitizeSidebarMenu(source.sidebarMenu),
   };
 }
@@ -548,9 +544,6 @@ export function applyCustomizationToDocument(
   // the media rules in index.css skip html.force-motion.
   el.classList.toggle("force-motion", c.reduceMotion === "off");
   el.classList.toggle("no-font-smoothing", !c.fontSmoothing);
-  // Off swaps the scroll-edge dissolves for thin divider lines (index.css
-  // and hub.css key their fade rules off this class).
-  el.classList.toggle("no-edge-fades", !c.edgeFades);
 }
 
 /**

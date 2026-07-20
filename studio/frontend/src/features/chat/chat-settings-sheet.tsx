@@ -6,16 +6,6 @@ import {
   AlertDescription,
   AlertTitle,
 } from "@/components/ui/alert";
-import {
-  AlertDialog,
-  AlertDialogAction,
-  AlertDialogCancel,
-  AlertDialogContent,
-  AlertDialogDescription,
-  AlertDialogFooter,
-  AlertDialogHeader,
-  AlertDialogTitle,
-} from "@/components/ui/alert-dialog";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
 import {
@@ -65,6 +55,7 @@ import { Switch } from "@/components/ui/switch";
 import { Textarea } from "@/components/ui/textarea";
 import { InfoHint } from "@/components/ui/info-hint";
 import { Tooltip, TooltipContent } from "@/components/ui/tooltip";
+import { useGpuDevices } from "@/hooks/use-gpu-info";
 import { useIsMobile } from "@/hooks/use-mobile";
 import { useLlamaUpdateCheck } from "@/hooks/use-llama-update-check";
 import { cn } from "@/lib/utils";
@@ -81,6 +72,7 @@ import { Fragment, type ReactNode } from "react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { toast } from "@/lib/toast";
 import { OpenAICodeExecSection } from "./components/openai-code-exec-section";
+import { PermissionModeDropdown } from "./permission-mode-select";
 import { resyncInferenceStatusAfterServerModelChange } from "./hooks/use-chat-model-runtime";
 import {
   type ExternalProviderConfig,
@@ -108,8 +100,11 @@ import {
   providerSupportsFastMode,
 } from "./provider-capabilities";
 import {
+  GPU_LAYERS_AUTO,
+  distributeByWeight,
   isPendingGguf,
   pendingSelectionMatches,
+  rebalanceSplit,
   useChatRuntimeStore,
 } from "./stores/chat-runtime-store";
 import { RetrievalSettingsSection } from "@/features/rag/components/retrieval-settings-section";
@@ -259,6 +254,7 @@ function ParamSlider({
   displayValue,
   info,
   valueSize,
+  disabled,
 }: {
   label: string;
   value: number;
@@ -269,6 +265,7 @@ function ParamSlider({
   displayValue?: string;
   info?: ReactNode;
   valueSize?: number;
+  disabled?: boolean;
 }) {
   return (
     <div className="space-y-3.5">
@@ -288,6 +285,7 @@ function ParamSlider({
           displayValue={displayValue}
           ariaLabel={label}
           size={valueSize ?? 4}
+          disabled={disabled}
         />
       </div>
       <Slider
@@ -297,6 +295,7 @@ function ParamSlider({
         value={[value]}
         onValueChange={([v]) => onChange(snapToStep(v, step, min, max))}
         className="panel-slider"
+        disabled={disabled}
       />
     </div>
   );
@@ -549,8 +548,17 @@ export function ChatSettingsPanel({
     const base = slash >= 0 ? id.slice(slash + 1) : id;
     return base || id;
   })();
+  const activeNativePathToken = useChatRuntimeStore(
+    (s) => s.activeNativePathToken,
+  );
+  const loadedGgufContextLength = useChatRuntimeStore((s) => s.ggufContextLength);
+  // A GGUF loaded from a native path / direct .gguf has no HF variant, so key
+  // off the same signal the status hydration uses -- variant OR native token OR
+  // a GGUF context -- else the GPU Memory controls hide for a loaded local GGUF.
   const isLoadedGguf =
-    useChatRuntimeStore((s) => s.activeGgufVariant) != null;
+    useChatRuntimeStore((s) => s.activeGgufVariant) != null ||
+    activeNativePathToken != null ||
+    loadedGgufContextLength != null;
   // While a pick is staged the sheet configures *that* model, so its GGUF-ness
   // (not the currently loaded model's) decides whether the GGUF-only controls
   // show. Otherwise a staged non-GGUF Hub repo would inherit the loaded GGUF's
@@ -616,6 +624,25 @@ export function ChatSettingsPanel({
   const loadedTensorParallel = useChatRuntimeStore(
     (s) => s.loadedTensorParallel,
   );
+  const gpuMemoryMode = useChatRuntimeStore((s) => s.gpuMemoryMode);
+  const setGpuMemoryMode = useChatRuntimeStore((s) => s.setGpuMemoryMode);
+  const loadedGpuMemoryMode = useChatRuntimeStore((s) => s.loadedGpuMemoryMode);
+  const loadedIsDiffusion = useChatRuntimeStore((s) => s.loadedIsDiffusion);
+  const gpuLayers = useChatRuntimeStore((s) => s.gpuLayers);
+  const setGpuLayers = useChatRuntimeStore((s) => s.setGpuLayers);
+  const loadedGpuLayers = useChatRuntimeStore((s) => s.loadedGpuLayers);
+  const nCpuMoe = useChatRuntimeStore((s) => s.nCpuMoe);
+  const setNCpuMoe = useChatRuntimeStore((s) => s.setNCpuMoe);
+  const loadedNCpuMoe = useChatRuntimeStore((s) => s.loadedNCpuMoe);
+  const splitRatio = useChatRuntimeStore((s) => s.splitRatio);
+  const setSplitRatio = useChatRuntimeStore((s) => s.setSplitRatio);
+  const loadedSplitRatio = useChatRuntimeStore((s) => s.loadedSplitRatio);
+  const ggufLayerCount = useChatRuntimeStore((s) => s.ggufLayerCount);
+  const moeLayerCount = useChatRuntimeStore((s) => s.moeLayerCount);
+  const selectedGpuIds = useChatRuntimeStore((s) => s.selectedGpuIds);
+  const setSelectedGpuIds = useChatRuntimeStore((s) => s.setSelectedGpuIds);
+  const loadedGpuIds = useChatRuntimeStore((s) => s.loadedGpuIds);
+  const gpuDevices = useGpuDevices();
   const chatTemplateOverride = useChatRuntimeStore(
     (s) => s.chatTemplateOverride,
   );
@@ -623,6 +650,9 @@ export function ChatSettingsPanel({
     (s) => s.loadedChatTemplateOverride,
   );
   const customContextLength = useChatRuntimeStore((s) => s.customContextLength);
+  const loadedCustomContextLength = useChatRuntimeStore(
+    (s) => s.loadedCustomContextLength,
+  );
   const setCustomContextLength = useChatRuntimeStore(
     (s) => s.setCustomContextLength,
   );
@@ -650,10 +680,14 @@ export function ChatSettingsPanel({
     : null;
   useEffect(() => {
     if (!pendingKey) return;
-    const saved = loadRememberedLoadSettings(pendingKey);
+    // GGUF-only, like the stageOrLoad / Hub restore paths: every remembered
+    // field is a llama.cpp knob, so a non-GGUF pick has nothing to restore --
+    // and applying its blob would clobber the standing gpuMemoryMode with a
+    // stale snapshot (the save on Load below is gated the same way).
+    const saved = pendingIsGguf ? loadRememberedLoadSettings(pendingKey) : null;
     setRemember(saved != null);
     if (saved) applyRememberedLoadSettings(saved);
-  }, [pendingKey, applyRememberedLoadSettings]);
+  }, [pendingKey, pendingIsGguf, applyRememberedLoadSettings]);
   // While staging, the sheet reflects the STAGED model, so its header context
   // takes precedence over the loaded model's (which may differ or be larger).
   const baseContext = pendingIsGguf ? stagedContextLength : ggufContextLength;
@@ -670,15 +704,132 @@ export function ChatSettingsPanel({
   const ctxDisplayValue = customContextLength ?? baseContext ?? "";
   const ctxMaxValue = baseNativeContext ?? baseContext ?? null;
   const kvDirty = kvCacheDtype !== loadedKvCacheDtype;
-  const ctxDirty = customContextLength !== null;
+  const ctxDirty = customContextLength !== loadedCustomContextLength;
   const specDirty = speculativeType !== loadedSpeculativeType;
   const specDraftDirty = specDraftNMax !== loadedSpecDraftNMax;
   const tpDirty = tensorParallel !== (loadedTensorParallel ?? false);
+  // A loaded diffusion GGUF runs mode-agnostic (pins all layers on one GPU,
+  // ignores --fit/--gpu-layers), so the GPU Memory mode + manual controls don't
+  // apply -- hide them and don't let the preserved standing mode read as dirty.
+  // The GPU picker still applies (diffusion pins the chosen device). A staged pick
+  // keeps the controls (a pending pick's diffusion-ness isn't known until load).
+  const gpuModeApplies =
+    isGguf && (pendingSelection != null || !loadedIsDiffusion);
+  const gpuDirty =
+    gpuModeApplies && gpuMemoryMode !== (loadedGpuMemoryMode ?? "auto");
+  const isManual = gpuModeApplies && gpuMemoryMode === "manual";
+  // Manual with the GPU Layers slider at "Auto" (leftmost): --fit owns the whole
+  // layout, so the offload knobs (MoE, split, TP) don't apply.
+  const autoLayers = isManual && gpuLayers < 0;
+  // GPUs actually in use: the picked subset, or all visible when none picked.
+  const gpusInUse = selectedGpuIds ?? gpuDevices.map((d) => d.index);
+  // The picker must keep one GPU selected.
+  const singleGpuInUse = gpusInUse.length <= 1;
+  // TP needs at least two GPUs because tensor split is a no-op on one and may
+  // abort. Auto layers hides TP because --fit aborts under --split-mode tensor.
+  const tpDisabled = singleGpuInUse;
+  // Manual gpu-layers ceiling = model layer count + 1 (else a safe fallback):
+  // llama.cpp counts the output layer as one more offloadable layer past the
+  // repeating blocks ("offloaded 33/33" needs -ngl 33 on a 32-block model), so
+  // the slider max must reach it or full offload is unreachable. While staging,
+  // use the staged model's layer count (read from its header).
+  const stagedLayerCount = pendingSelection?.layerCount ?? null;
+  const modelLayerCount = pendingIsGguf ? stagedLayerCount : ggufLayerCount;
+  const gpuLayersMax = modelLayerCount != null ? modelLayerCount + 1 : 256;
+  // MoE-offload slider: shown only for MoE models, capped at their MoE-layer
+  // count. While staging, use the staged model's count (read from its header);
+  // otherwise the loaded model's.
+  const stagedMoeLayerCount = pendingSelection?.moeLayerCount ?? null;
+  const moeLayersMax = pendingIsGguf
+    ? (stagedMoeLayerCount ?? 0)
+    : (moeLayerCount ?? 0);
+  const showMoeSlider = isManual && !autoLayers && moeLayersMax > 0;
+  // gpuLayers always counts; MoE only with an explicit layer count (see above).
+  const manualDirty =
+    isManual &&
+    (gpuLayers !== loadedGpuLayers ||
+      (!autoLayers && nCpuMoe !== (loadedNCpuMoe ?? 0)));
+  // GPU picker: only meaningful on multi-GPU, and only when the reported
+  // indices are physical (relative ordinals from a parent CUDA_VISIBLE_DEVICES
+  // mask can't be mapped back to pin a device). null = use all (auto).
+  const showGpuPicker =
+    isGguf &&
+    gpuDevices.length > 1 &&
+    gpuDevices.every((d) => d.physicalIndex);
+  const isGpuChecked = (index: number) =>
+    selectedGpuIds === null || selectedGpuIds.includes(index);
+  const toggleGpu = (index: number) => {
+    const all = gpuDevices.map((d) => d.index);
+    const current = selectedGpuIds ?? all;
+    const next = current.includes(index)
+      ? current.filter((i) => i !== index)
+      : [...current, index].sort((a, b) => a - b);
+    if (next.length === 0) return; // keep at least one GPU selected
+    setSelectedGpuIds(next.length === all.length ? null : next);
+    // The per-GPU split is positional, so any change to the set of GPUs in use
+    // invalidates it: drop it (the sliders fall back to the VRAM-weighted
+    // default). TP needs 2+ GPUs, so disable it when only one remains.
+    setSplitRatio(null);
+    if (next.length <= 1) {
+      setTensorParallel(false);
+    }
+  };
+  const gpuIdsKey = (ids: number[] | null) => (ids === null ? "auto" : ids.join(","));
+  const gpuIdsDirty = gpuIdsKey(selectedGpuIds) !== gpuIdsKey(loadedGpuIds);
+  // Per-GPU layer split (--tensor-split): manual + 2+ GPUs in use. One slider
+  // per GPU, each a layer count; together they sum to the GPU Layers total.
+  const showSplitRatio =
+    isManual && !autoLayers && showGpuPicker && gpusInUse.length > 1;
+  // The total the per-GPU counts sum to (the GPU Layers slider value); 0 under
+  // Auto, where the split is hidden. The devices behind the GPUs in use, for
+  // labels + the VRAM-weighted default.
+  const splitTotal = Math.max(0, Math.min(gpuLayers, gpuLayersMax));
+  const gpusInUseDevices = gpusInUse.map(
+    (i) => gpuDevices.find((d) => d.index === i) ?? null,
+  );
+  // Displayed per-GPU counts. splitRatio is a stable reference balance (only a
+  // slider edit changes it), rescaled to the current total; deriving rather than
+  // mutating it on GPU Layers changes keeps the balance intact when the total
+  // passes through low values or Auto. No saved split: free-VRAM-weighted default
+  // (llama.cpp's unset default splits by free VRAM, so the first edit starts from
+  // the default's placement, not a total-VRAM ratio that can land layers on a
+  // busy GPU). A genuine 0 (a full GPU) is a real weight, not missing data: the
+  // probe's no-data case degrades to the total server-side, and an all-zero list
+  // falls back to an even split in distributeByWeight. Not yet sent.
+  const splitCounts =
+    splitRatio && splitRatio.length === gpusInUse.length
+      ? distributeByWeight(splitTotal, splitRatio)
+      : distributeByWeight(
+          splitTotal,
+          gpusInUseDevices.map((d) => d?.memoryFreeGb ?? d?.memoryTotalGb ?? 1),
+        );
+  const setSplitCount = (k: number, v: number) =>
+    setSplitRatio(rebalanceSplit(splitTotal, splitCounts, k, v));
+  const splitRatioDirty =
+    isManual &&
+    !autoLayers &&
+    JSON.stringify(splitRatio ?? null) !== JSON.stringify(loadedSplitRatio ?? null);
+  // Auto-fit context (Manual + Auto layers): <= 0 means "Auto" (--fit sizes it);
+  // a positive value pins it. Surface the length --fit chose once it's loaded.
+  const fitCtxAuto = autoLayers && (customContextLength ?? 0) <= 0;
+  const loadedAutoLayers =
+    loadedGpuMemoryMode === "manual" && (loadedGpuLayers ?? GPU_LAYERS_AUTO) < 0;
+  const fitResolvedCtx =
+    fitCtxAuto && loadedAutoLayers ? ggufContextLength : null;
   // A saved chat-template override is a reload-time setting too, so surface
   // Apply for a template-only edit (otherwise it could never be applied).
   const templateDirty = chatTemplateOverride !== loadedChatTemplateOverride;
   const modelSettingsDirty =
-    kvDirty || ctxDirty || specDirty || specDraftDirty || tpDirty || templateDirty;
+    kvDirty ||
+    ctxDirty ||
+    specDirty ||
+    specDraftDirty ||
+    tpDirty ||
+    gpuDirty ||
+    manualDirty ||
+    gpuIdsDirty ||
+    splitRatioDirty ||
+    templateDirty;
   const [presetNameInput, setPresetNameInput] = useState(activePreset);
   const [systemPromptEditorOpen, setSystemPromptEditorOpen] = useState(false);
   const [systemPromptDraft, setSystemPromptDraft] = useState("");
@@ -989,7 +1140,64 @@ export function ChatSettingsPanel({
             )}
             {isGguf && (
               <>
-                {showContextControl && (
+                {showContextControl && (autoLayers ? (
+                  <div className="space-y-3.5">
+                    <div className="flex items-center justify-between gap-3">
+                      <div className="flex min-w-0 items-center gap-1.5">
+                        <span className="min-w-0 text-[13px] font-medium leading-[1.25] tracking-nav text-nav-fg">
+                          Context Length
+                        </span>
+                        <InfoHint>
+                          Auto: llama.cpp's --fit sizes the context to fit VRAM.
+                          Set a length to pin it instead -- --fit then optimizes
+                          GPU layer offload around it. The length --fit chose
+                          shows here after loading.
+                        </InfoHint>
+                      </div>
+                      <NumericValueInput
+                        value={fitCtxAuto ? 0 : (customContextLength ?? 0)}
+                        displayValue={fitCtxAuto ? "Auto" : undefined}
+                        min={0}
+                        max={ctxMaxValue ?? undefined}
+                        step={1}
+                        onChange={(v) => {
+                          setCustomContextLength(v > 0 ? v : null);
+                        }}
+                        ariaLabel="Context Length"
+                        size={8}
+                        disabled={modelControlsDisabled}
+                      />
+                    </div>
+                    <Slider
+                      min={0}
+                      max={ctxMaxValue ?? 4096}
+                      step={1024}
+                      value={[
+                        fitCtxAuto
+                          ? 0
+                          : Math.min(
+                              customContextLength ?? 0,
+                              ctxMaxValue ?? 4096,
+                            ),
+                      ]}
+                      onValueChange={([v]) => {
+                        // Far-left snaps to Auto; otherwise to the nearest 1024.
+                        if (v < 512) {
+                          setCustomContextLength(null);
+                        } else {
+                          setCustomContextLength(Math.round(v / 1024) * 1024);
+                        }
+                      }}
+                      className="panel-slider"
+                      disabled={modelControlsDisabled}
+                    />
+                    {fitResolvedCtx != null && (
+                      <p className="text-[11px] text-nav-fg/40">
+                        llama.cpp loaded {fitResolvedCtx.toLocaleString()} tokens.
+                      </p>
+                    )}
+                  </div>
+                ) : (
                 <div className="space-y-3.5">
                   <div className="flex items-center justify-between gap-3">
                     <span className="min-w-0 text-[13px] font-medium leading-[1.25] tracking-nav text-nav-fg">
@@ -1045,7 +1253,7 @@ export function ChatSettingsPanel({
                       </p>
                     )}
                 </div>
-                )}
+                ))}
                 <div className="flex items-center justify-between gap-3">
                   <div className="flex min-w-0 items-center gap-1.5">
                     <span className="min-w-0 text-[13px] font-medium leading-[1.25] tracking-nav text-nav-fg">
@@ -1200,6 +1408,166 @@ export function ChatSettingsPanel({
                 )}
                   </>
                 )}
+                {gpuModeApplies && (
+                <div className="flex items-center justify-between gap-3">
+                  <div className="flex min-w-0 items-center gap-1.5">
+                    <span className="min-w-0 text-[13px] font-medium leading-[1.25] tracking-nav text-nav-fg">
+                      GPU Memory
+                    </span>
+                    <InfoHint>
+                      <div className="flex flex-col gap-1.5">
+                        <div>
+                          <span className="font-medium">Default:</span> Unsloth
+                          fits the model and context to your GPUs.
+                        </div>
+                        <div>
+                          <span className="font-medium">Manual:</span> set GPU
+                          Layers yourself. Leave it on Auto to let llama.cpp size
+                          the context and offload overflow (including MoE experts)
+                          to RAM.
+                        </div>
+                      </div>
+                    </InfoHint>
+                  </div>
+                  <div className="flex shrink-0 items-center gap-1.5">
+                    <Select
+                      value={gpuMemoryMode}
+                      onValueChange={(v) => {
+                        setGpuMemoryMode(v as "auto" | "manual");
+                      }}
+                      // An in-flight staged load already snapshotted its
+                      // settings, so edits here could not apply -- disable like
+                      // the sibling context/KV/spec controls.
+                      disabled={modelControlsDisabled}
+                    >
+                      <SelectTrigger
+                        animateRadius={false}
+                        icon={ChevronDownStandardIcon}
+                        iconClassName="size-3.5"
+                        className="grid h-7 w-[136px] min-w-0 grid-cols-[minmax(0,1fr)_auto] items-center gap-1 rounded-full border-transparent bg-black/[0.04] dark:bg-white/[0.05] hover:bg-black/[0.06] dark:hover:bg-white/[0.1] pl-3 pr-2 py-0 text-[13px]! font-medium text-nav-fg focus-visible:ring-0 focus-visible:border-transparent [&_[data-slot=select-value]]:min-w-0 [&_[data-slot=select-value]]:truncate [&>svg]:shrink-0"
+                        data-test-id="gpu-memory-mode-select"
+                      >
+                        <SelectValue />
+                      </SelectTrigger>
+                      <SelectContent className="menu-soft-surface ring-0 border-0 rounded-lg">
+                        <SelectItem value="auto">Default</SelectItem>
+                        <SelectItem value="manual">Manual</SelectItem>
+                      </SelectContent>
+                    </Select>
+                  </div>
+                </div>
+                )}
+                {isManual && (
+                  <>
+                    <ParamSlider
+                      label="GPU Layers"
+                      value={Math.max(GPU_LAYERS_AUTO, Math.min(gpuLayers, gpuLayersMax))}
+                      min={GPU_LAYERS_AUTO}
+                      max={gpuLayersMax}
+                      step={1}
+                      onChange={setGpuLayers}
+                      disabled={modelControlsDisabled}
+                      displayValue={autoLayers ? "Auto" : undefined}
+                      valueSize={6}
+                      info={
+                        <>
+                          Layers to keep on the GPU (--gpu-layers); the rest run
+                          on CPU. Auto lets llama.cpp size the split (and the
+                          context) to fit VRAM. At the maximum, the whole model
+                          is on the GPU.
+                        </>
+                      }
+                    />
+                    {showMoeSlider && (
+                      <ParamSlider
+                        label="MoE Layers on CPU"
+                        value={Math.min(nCpuMoe, moeLayersMax)}
+                        min={0}
+                        max={moeLayersMax}
+                        step={1}
+                        onChange={setNCpuMoe}
+                        disabled={modelControlsDisabled}
+                        valueSize={6}
+                        info={
+                          <>
+                            Keep the experts of this many MoE layers on the CPU
+                            (--n-cpu-moe) to save VRAM. 0 = all experts on the
+                            GPU; at the maximum, all are on the CPU.
+                          </>
+                        }
+                      />
+                    )}
+                    {showSplitRatio && (
+                      <div className="space-y-3.5">
+                        <div className="flex min-w-0 items-center gap-1.5">
+                          <span className="min-w-0 text-[13px] font-medium leading-[1.25] tracking-nav text-nav-fg">
+                            Layers per GPU
+                          </span>
+                          <InfoHint>
+                            Splits GPU Layers across GPUs (--tensor-split).
+                            Without Tensor Parallelism each value is the layer
+                            count on that GPU; with it, every GPU holds a slice
+                            of each layer, so the values are only a ratio.
+                          </InfoHint>
+                        </div>
+                        {gpusInUseDevices.map((d, k) => (
+                          <ParamSlider
+                            key={d?.index ?? k}
+                            label={`GPU ${d?.index ?? k}`}
+                            value={Math.min(splitCounts[k] ?? 0, splitTotal)}
+                            min={0}
+                            max={splitTotal}
+                            step={1}
+                            onChange={(v) => setSplitCount(k, v)}
+                            valueSize={6}
+                            disabled={modelControlsDisabled}
+                          />
+                        ))}
+                      </div>
+                    )}
+                  </>
+                )}
+                {showGpuPicker && (
+                  <div className="space-y-2">
+                    <div className="flex min-w-0 items-center gap-1.5">
+                      <span className="min-w-0 text-[13px] font-medium leading-[1.25] tracking-nav text-nav-fg">
+                        GPUs
+                      </span>
+                      <InfoHint>
+                        Which GPUs this model may use. Unchecked GPUs are hidden
+                        from llama.cpp (CUDA_VISIBLE_DEVICES, or
+                        HIP_VISIBLE_DEVICES on ROCm). Leave all checked to use
+                        every GPU. At least one GPU must stay selected.
+                      </InfoHint>
+                    </div>
+                    <div className="flex flex-col gap-2">
+                      {gpuDevices.map((d) => (
+                        <div
+                          key={d.index}
+                          className="flex items-center justify-between gap-3"
+                        >
+                          <span className="min-w-0 truncate text-[12px] text-nav-fg/80">
+                            GPU {d.index}: {d.name}
+                            {d.memoryTotalGb
+                              ? ` · ${Math.round(d.memoryTotalGb)} GB`
+                              : ""}
+                          </span>
+                          <Switch
+                            className="panel-switch shrink-0"
+                            checked={isGpuChecked(d.index)}
+                            onCheckedChange={() => toggleGpu(d.index)}
+                            data-test-id={`gpu-pick-${d.index}`}
+                            disabled={
+                              modelControlsDisabled ||
+                              (isGpuChecked(d.index) && singleGpuInUse)
+                            }
+                          />
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
+                {gpuModeApplies && !autoLayers && (
                 <div className="flex items-center justify-between gap-3">
                   <div className="flex min-w-0 items-center gap-1.5">
                     <span className="min-w-0 text-[13px] font-medium leading-[1.25] tracking-nav text-nav-fg">
@@ -1215,10 +1583,11 @@ export function ChatSettingsPanel({
                     className="panel-switch shrink-0"
                     checked={tensorParallel}
                     onCheckedChange={setTensorParallel}
-                    disabled={modelControlsDisabled}
+                    disabled={tpDisabled || modelControlsDisabled}
                     data-test-id="tensor-parallel-switch"
                   />
                 </div>
+                )}
               </>
             )}
             {/* No persistent "enable custom code" toggle: it is consented per model
@@ -1237,14 +1606,21 @@ export function ChatSettingsPanel({
                     {Math.round((stagedDownloadFraction ?? 0) * 100)}%
                   </p>
                 )}
-                <label className="flex cursor-pointer items-center gap-2 pb-1.5 text-[12px] text-muted-foreground">
-                  <Checkbox
-                    className="size-3.5 rounded-full [&_[data-slot=checkbox-indicator]_svg]:size-2.5"
-                    checked={remember}
-                    onCheckedChange={(v) => setRemember(v === true)}
-                  />
-                  Remember settings next time
-                </label>
+                {/* GGUF picks only: a non-GGUF pick shows none of the load
+                    knobs the blob captures, so there is nothing to remember. */}
+                {pendingIsGguf && (
+                  <label className="flex cursor-pointer items-center gap-2 pb-1.5 text-[12px] text-muted-foreground">
+                    <Checkbox
+                      className="size-3.5 rounded-full [&_[data-slot=checkbox-indicator]_svg]:size-2.5"
+                      checked={remember}
+                      onCheckedChange={(v) => setRemember(v === true)}
+                      // The save/clear already ran in the Load click handler, so
+                      // a mid-load toggle could not apply -- lock it like the knobs.
+                      disabled={modelControlsDisabled}
+                    />
+                    Remember settings next time
+                  </label>
+                )}
                 {stagedLoading ? (
                   // Mid-load: nothing to load or abandon until it settles, so disable.
                   <Button
@@ -1264,9 +1640,10 @@ export function ChatSettingsPanel({
                         // Persist (or clear) this model's load knobs before loading.
                         // Context is stored as the override (null = auto), never the
                         // resolved native value, so restoring can't force an OOM.
-                        const pid = pendingSelection
-                          ? rememberedLoadSettingsKey(pendingSelection)
-                          : null;
+                        // GGUF-only, like the restore effect: saving for a
+                        // non-GGUF pick would snapshot leftover standing values
+                        // its hidden controls never showed.
+                        const pid = pendingIsGguf ? pendingKey : null;
                         if (pid) {
                           if (remember) {
                             saveRememberedLoadSettings(pid, {
@@ -1275,6 +1652,10 @@ export function ChatSettingsPanel({
                               speculativeType,
                               specDraftNMax,
                               tensorParallel,
+                              gpuMemoryMode,
+                              gpuLayers,
+                              nCpuMoe,
+                              selectedGpuIds,
                             });
                           } else {
                             clearRememberedLoadSettings(pid);
@@ -1328,7 +1709,11 @@ export function ChatSettingsPanel({
                 </Button>
               </div>
             ) : null}
-            <ChatTemplateFields />
+            {/* The template override is a load-time knob too (applied on the next
+                reload) and the in-flight load already snapshotted it, so lock its
+                editors like the sibling controls -- a mid-load save would be
+                silently clobbered by the load response despite its toast. */}
+            <ChatTemplateFields disabled={modelControlsDisabled} />
           </div>
         </CollapsibleSection>
         )}
@@ -2037,9 +2422,8 @@ function NudgeToolCallsToggle() {
 }
 
 function ConfirmToolCallsToggle() {
-  const confirmToolCalls = useChatRuntimeStore((s) => s.confirmToolCalls);
   const setConfirmToolCalls = useChatRuntimeStore((s) => s.setConfirmToolCalls);
-  const bypassPermissions = useChatRuntimeStore((s) => s.bypassPermissions);
+  const permissionMode = useChatRuntimeStore((s) => s.permissionMode);
 
   return (
     <div className="flex items-center justify-between gap-3">
@@ -2049,90 +2433,55 @@ function ConfirmToolCallsToggle() {
             Confirm tool calls
           </span>
           <InfoHint>
-            When on, local Studio tool calls pause for your approval before they
-            run. Provider-hosted tools are not gated here.
+            When on, every local Unsloth tool call pauses for your approval
+            before it runs (the "Ask for approval" level). When off, tool calls
+            run without prompts inside the sandbox (the "Run automatically"
+            level).
+            Provider-hosted tools are not gated here.
           </InfoHint>
         </div>
-        {bypassPermissions ? (
+        {permissionMode === "full" ? (
           <span className="text-[11px] text-muted-foreground">
-            Overridden by Bypass permissions
+            Overridden by Full access
           </span>
         ) : null}
       </div>
       <Switch
         className="panel-switch"
-        checked={confirmToolCalls && !bypassPermissions}
+        checked={permissionMode === "ask"}
         onCheckedChange={setConfirmToolCalls}
-        disabled={bypassPermissions}
+        disabled={permissionMode === "full"}
       />
     </div>
   );
 }
 
 function BypassPermissionsToggle() {
-  const bypassPermissions = useChatRuntimeStore((s) => s.bypassPermissions);
-  const setBypassPermissions = useChatRuntimeStore(
-    (s) => s.setBypassPermissions,
-  );
-  const [dialogOpen, setDialogOpen] = useState(false);
+  const permissionMode = useChatRuntimeStore((s) => s.permissionMode);
 
   return (
-    <div className="flex flex-col gap-1.5">
-      <div className="flex items-center justify-between gap-3">
-        <div className="flex min-w-0 items-center gap-1.5">
-          <span className="min-w-0 text-[13px] font-medium leading-[1.25] tracking-nav text-nav-fg">
-            Bypass permissions
-          </span>
-          <InfoHint>
-            Dangerous. Runs every tool call with no confirmation and disables
-            the python/terminal sandbox. Environment secrets are stripped, but
-            code can still read files and credentials on your machine.
-          </InfoHint>
-        </div>
-        <Switch
-          className="panel-switch"
-          checked={bypassPermissions}
-          onCheckedChange={(next) => {
-            if (next) setDialogOpen(true);
-            else setBypassPermissions(false);
-          }}
-        />
+    <div className="flex flex-col gap-2">
+      <div className="flex min-w-0 items-center gap-1.5">
+        <span className="whitespace-nowrap text-[13px] font-medium leading-[1.25] tracking-nav text-nav-fg">
+          Tool permissions
+        </span>
+        <InfoHint>
+          Choose how Unsloth approves tool calls before they run. Full access
+          disables confirmations and the code sandbox.
+        </InfoHint>
       </div>
-      {bypassPermissions ? (
+      {/* Full width, styled like the panel selects/preset input. */}
+      <PermissionModeDropdown triggerClassName="h-9 w-full justify-between rounded-full border-0 bg-[var(--panel-input-surface)] px-3.5 text-[13px] font-medium text-nav-fg shadow-none hover:bg-[var(--panel-input-surface)]" />
+      {permissionMode === "full" ? (
         <span className="text-[11px] text-bypass">
           Tool calls run with no confirmation and no sandbox.
         </span>
       ) : null}
-      <AlertDialog open={dialogOpen} onOpenChange={setDialogOpen}>
-        <AlertDialogContent size="sm">
-          <AlertDialogHeader>
-            <AlertDialogTitle>Enable Bypass permissions?</AlertDialogTitle>
-            <AlertDialogDescription>
-              Bypass permissions is dangerous since the AI model might delete,
-              corrupt your machine, and or cause real world damage to you or the
-              world - only accept if you are certain
-            </AlertDialogDescription>
-          </AlertDialogHeader>
-          <AlertDialogFooter>
-            <AlertDialogCancel>Cancel</AlertDialogCancel>
-            <AlertDialogAction
-              variant="destructive"
-              className="!bg-destructive !text-destructive-foreground hover:!bg-destructive/90"
-              onClick={() => {
-                setBypassPermissions(true);
-                setDialogOpen(false);
-              }}
-            >
-              I understand
-            </AlertDialogAction>
-          </AlertDialogFooter>
-        </AlertDialogContent>
-      </AlertDialog>
     </div>
   );
 }
 
-function ChatTemplateFields() {
+function ChatTemplateFields({ disabled = false }: { disabled?: boolean }) {
   const defaultTemplate = useChatRuntimeStore((s) => s.defaultChatTemplate);
   const override = useChatRuntimeStore((s) => s.chatTemplateOverride);
   const setOverride = useChatRuntimeStore((s) => s.setChatTemplateOverride);
@@ -2166,7 +2515,8 @@ function ChatTemplateFields() {
         <button
           type="button"
           onClick={openEditor}
-          className="cursor-pointer text-left text-[13px] font-medium tracking-nav text-nav-fg"
+          disabled={disabled}
+          className="cursor-pointer text-left text-[13px] font-medium tracking-nav text-nav-fg disabled:pointer-events-none disabled:opacity-50"
         >
           Chat Template
         </button>
@@ -2177,7 +2527,8 @@ function ChatTemplateFields() {
                 <button
                   type="button"
                   onClick={() => setOverride(null)}
-                  className="nav-icon-btn text-nav-icon-idle hover:bg-panel-surface-hover hover:text-black dark:hover:text-white"
+                  disabled={disabled}
+                  className="nav-icon-btn text-nav-icon-idle hover:bg-panel-surface-hover hover:text-black dark:hover:text-white disabled:pointer-events-none disabled:opacity-50"
                   aria-label="Revert chat template"
                 >
                   <HugeiconsIcon
@@ -2201,7 +2552,8 @@ function ChatTemplateFields() {
               <button
                 type="button"
                 onClick={openEditor}
-                className="nav-icon-btn text-nav-icon-idle hover:bg-panel-surface-hover hover:text-black dark:hover:text-white"
+                disabled={disabled}
+                className="nav-icon-btn text-nav-icon-idle hover:bg-panel-surface-hover hover:text-black dark:hover:text-white disabled:pointer-events-none disabled:opacity-50"
                 aria-label="Edit chat template"
               >
                 <HugeiconsIcon
@@ -2264,7 +2616,13 @@ function ChatTemplateFields() {
               >
                 Cancel
               </Button>
-              <Button type="button" onClick={saveEditor} disabled={!draftDirty}>
+              {/* Also locked mid-load: an autoLoad can start with this dialog
+                  already open, and a save then would be silently clobbered. */}
+              <Button
+                type="button"
+                onClick={saveEditor}
+                disabled={!draftDirty || disabled}
+              >
                 Save
               </Button>
             </div>

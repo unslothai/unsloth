@@ -291,6 +291,18 @@ def _handle_load(backend, config: dict, resp_queue: Any) -> None:
         hf_token = _clean_token(config.get("hf_token"))
         load_in_4bit = _resolve_lora_4bit(mc, config.get("load_in_4bit", True))
 
+        # Latest-transformers sidecar models load 16-bit: bnb 4-bit feeds quantized
+        # expert weights into unvalidated paths (e.g. grouped-MoE torch._grouped_mm).
+        if load_in_4bit:
+            from utils.transformers_version import latest_tier_active_for
+            if latest_tier_active_for(config["model_name"], hf_token):
+                load_in_4bit = False
+                logger.info(
+                    "Latest-transformers sidecar active for %s - forcing a 16-bit "
+                    "load (4-bit is disabled for brand-new architectures)",
+                    config["model_name"],
+                )
+
         trust_remote_code = config.get("trust_remote_code", False)
         if not trust_remote_code and _needs_nemotron_trust(config["model_name"], hf_token = hf_token):
             trust_remote_code = True
@@ -501,20 +513,25 @@ def _handle_generate(backend, cmd: dict, resp_queue: Any, cancel_event) -> None:
 
         logger.info("Starting text generation for request_id=%s", request_id)
 
-        for cumulative_text in generator:
-            # cancel_event is an mp.Event — checked instantly, no queue polling.
-            if cancel_event.is_set():
-                logger.info("Generation cancelled for request %s", request_id)
-                break
+        try:
+            for cumulative_text in generator:
+                # cancel_event is an mp.Event — checked instantly, no queue polling.
+                if cancel_event.is_set():
+                    logger.info("Generation cancelled for request %s", request_id)
+                    break
 
-            _send_response(
-                resp_queue,
-                {
-                    "type": "token",
-                    "request_id": request_id,
-                    "text": cumulative_text,
-                },
-            )
+                _send_response(
+                    resp_queue,
+                    {
+                        "type": "token",
+                        "request_id": request_id,
+                        "text": cumulative_text,
+                    },
+                )
+        finally:
+            close = getattr(generator, "close", None)
+            if callable(close):
+                close()
 
         _send_response(
             resp_queue,

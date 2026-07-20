@@ -7,6 +7,7 @@
 import { TooltipIconButton } from "@/components/assistant-ui/tooltip-icon-button";
 import {
   Dialog,
+  DialogClose,
   DialogContent,
   DialogTitle,
   DialogTrigger,
@@ -24,15 +25,10 @@ import {
   useAui,
   useAuiState,
 } from "@assistant-ui/react";
-import { File02Icon } from "@hugeicons/core-free-icons";
+import { AudioWave01Icon, File02Icon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { PlusIcon, XIcon } from "lucide-react";
-import {
-  type FC,
-  type PropsWithChildren,
-  useEffect,
-  useState,
-} from "react";
+import { type FC, type PropsWithChildren, useEffect, useState } from "react";
 import { useShallow } from "zustand/shallow";
 
 const useFileSrc = (file: File | undefined): string | undefined => {
@@ -83,7 +79,7 @@ const AttachmentPreview: FC<AttachmentPreviewProps> = ({ src }) => {
       src={src}
       alt="Preview"
       className={cn(
-        "block h-auto max-h-[80vh] w-auto max-w-full object-contain",
+        "block h-auto max-h-[90dvh] w-auto max-w-[92vw] object-contain",
         isLoaded
           ? "aui-attachment-preview-image-loaded"
           : "aui-attachment-preview-image-loading invisible",
@@ -108,21 +104,43 @@ const AttachmentPreviewDialog: FC<PropsWithChildren> = ({ children }) => {
       >
         {children}
       </DialogTrigger>
-      <DialogContent className="aui-attachment-preview-dialog-content p-2 sm:max-w-3xl [&>button]:rounded-full [&>button]:bg-foreground/60 [&>button]:p-1 [&>button]:opacity-100 [&>button]:ring-0! [&_svg]:text-background [&>button]:hover:[&_svg]:text-destructive">
+      {/* Chrome-free lightbox: the image floats on the dimmed backdrop with
+          no dialog panel, and the close button sits in the screen corner. */}
+      <DialogContent
+        overlayClassName="bg-black/70"
+        className="aui-attachment-preview-dialog-content top-0 left-0 grid h-dvh w-screen max-w-none translate-x-0 translate-y-0 place-items-center rounded-none border-0 bg-transparent p-0 shadow-none ring-0 sm:max-w-none [&>button]:fixed [&>button]:top-4 [&>button]:right-4 [&>button]:z-20 [&>button]:size-9 [&>button]:rounded-full [&>button]:bg-transparent [&>button]:text-white [&>button]:opacity-100 [&>button]:ring-0! [&>button]:hover:bg-white/25 [&>button]:hover:text-white [&_svg]:text-white"
+      >
         <DialogTitle className="aui-sr-only sr-only">
           Image Attachment Preview
         </DialogTitle>
-        <div className="aui-attachment-preview relative mx-auto flex max-h-[80dvh] w-full items-center justify-center overflow-hidden bg-background">
-          <AttachmentPreview src={src} />
+        {/* Clicking the backdrop (anywhere off the image) closes the preview. */}
+        <DialogClose asChild={true}>
+          <div aria-hidden="true" className="absolute inset-0" />
+        </DialogClose>
+        <div className="aui-attachment-preview pointer-events-none relative z-10 flex items-center justify-center">
+          <span className="pointer-events-auto">
+            <AttachmentPreview src={src} />
+          </span>
         </div>
       </DialogContent>
     </Dialog>
   );
 };
 
+const AUDIO_ATTACHMENT_RE = /\.(wav|mp3|m4a|ogg|oga|flac|webm|mp4|aac)$/i;
+
+const isAudioAttachment = (name: string | undefined, contentType: string) =>
+  /^audio\//i.test(contentType) || AUDIO_ATTACHMENT_RE.test(name ?? "");
+
 const AttachmentThumb: FC = () => {
   const src = useAttachmentSrc();
   const name = useAuiState(({ attachment }) => attachment.name);
+  const contentType = useAuiState(
+    ({ attachment }) =>
+      (attachment as { file?: File }).file?.type ??
+      (attachment as { contentType?: string }).contentType ??
+      "",
+  );
 
   if (src) {
     return (
@@ -137,7 +155,7 @@ const AttachmentThumb: FC = () => {
   return (
     <div className="flex h-full w-full items-center justify-center">
       <HugeiconsIcon
-        icon={File02Icon}
+        icon={isAudioAttachment(name, contentType) ? AudioWave01Icon : File02Icon}
         strokeWidth={2}
         className="size-6 text-muted-foreground"
       />
@@ -159,7 +177,12 @@ const AttachmentUI: FC = () => {
       case "document":
         return "Document";
       case "file":
-        return "File";
+        return isAudioAttachment(
+          attachment.name,
+          (attachment as { file?: File }).file?.type ?? "",
+        )
+          ? "Audio"
+          : "File";
       default:
         throw new Error(`Unknown attachment type: ${type as string}`);
     }

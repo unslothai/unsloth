@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: AGPL-3.0-only
-"""Studio hardware dispatch matrix: spoofs platform/torch/mlx per PROFILES to exercise CUDA/ROCm/XPU/MLX/CPU paths without real hardware."""
+"""Unsloth hardware dispatch matrix: spoofs platform/torch/mlx per PROFILES to exercise CUDA/ROCm/XPU/MLX/CPU paths without real hardware."""
 
 from __future__ import annotations
 
@@ -31,9 +31,9 @@ class HardwareProfile:
     mps_available: bool  # torch.backends.mps.is_available() value
 
     expect_is_mlx: bool  # unsloth._IS_MLX
-    expect_device_type: str  # Studio DeviceType (uppercased name: "CUDA"/"XPU"/"MLX"/"CPU")
-    expect_is_rocm: bool  # Studio IS_ROCM
-    expect_apple_silicon: bool  # Studio is_apple_silicon()
+    expect_device_type: str  # Unsloth DeviceType (uppercased name: "CUDA"/"XPU"/"MLX"/"CPU")
+    expect_is_rocm: bool  # Unsloth IS_ROCM
+    expect_apple_silicon: bool  # Unsloth is_apple_silicon()
     extra_notes: str = ""
 
 
@@ -66,7 +66,7 @@ PROFILES = [
         expect_is_rocm = True,
         expect_apple_silicon = False,
         extra_notes = "PyTorch ROCm reuses torch.cuda.* over HIP; "
-        "Studio still uses DeviceType.CUDA but flips IS_ROCM=True.",
+        "Unsloth still uses DeviceType.CUDA but flips IS_ROCM=True.",
     ),
     HardwareProfile(
         name = "intel_xpu",
@@ -154,7 +154,7 @@ def spoof_hardware(monkeypatch):
         import platform
         import torch
 
-        # platform spoof (used by both the unsloth gate and Studio's helpers)
+        # platform spoof (used by both the unsloth gate and Unsloth's helpers)
         monkeypatch.setattr(platform, "system", lambda: profile.system)
         monkeypatch.setattr(platform, "machine", lambda: profile.machine)
 
@@ -227,7 +227,7 @@ def spoof_hardware(monkeypatch):
 
             monkeypatch.setattr(importlib.util, "find_spec", _no_mlx)
 
-            # Studio's _has_mlx() does `import mlx.core`, not find_spec; block it
+            # Unsloth's _has_mlx() does `import mlx.core`, not find_spec; block it
             # with a meta_path finder that raises ImportError for mlx.*.
             class _BlockMLXFinder:
                 def find_spec(
@@ -266,7 +266,7 @@ def _evaluate_unsloth_is_mlx_gate() -> bool:
 
 
 def _import_studio_hardware_module():
-    """Lazy-load Studio's hardware module under the bare-imports layout."""
+    """Lazy-load Unsloth's hardware module under the bare-imports layout."""
     if str(STUDIO_BACKEND) not in sys.path:
         sys.path.insert(0, str(STUDIO_BACKEND))
     # Fresh import so detect_hardware re-runs under the current spoofs.
@@ -290,7 +290,7 @@ def test_unsloth_is_mlx_gate_matches_profile(profile, spoof_hardware):
 
 @pytest.mark.parametrize("profile", PROFILES, ids = PROFILE_IDS)
 def test_studio_detect_hardware_matches_profile(profile, spoof_hardware):
-    """Studio's detect_hardware() routes to the right DeviceType per profile."""
+    """Unsloth's detect_hardware() routes to the right DeviceType per profile."""
     spoof_hardware(profile)
     hw = _import_studio_hardware_module()
     detected = hw.detect_hardware()
@@ -306,7 +306,7 @@ def test_studio_detect_hardware_matches_profile(profile, spoof_hardware):
 
 @pytest.mark.parametrize("profile", PROFILES, ids = PROFILE_IDS)
 def test_studio_is_apple_silicon_matches_profile(profile, spoof_hardware):
-    """Studio's is_apple_silicon() helper agrees with platform spoof."""
+    """Unsloth's is_apple_silicon() helper agrees with platform spoof."""
     spoof_hardware(profile)
     hw = _import_studio_hardware_module()
     assert hw.is_apple_silicon() is profile.expect_apple_silicon, (
