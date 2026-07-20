@@ -33,6 +33,19 @@ from typing import Any, Optional
 from core import tool_healing as _tool_healing
 
 
+# C0 (keep tab/newline/return/ESC), C1, and U+FFFD: never valid in chat/tool output. MTP/
+# speculative GGUF byte-fallback surfaces as U+FFFD (ggml-org/llama.cpp#25618). Same class as
+# tools._BINARY_CHAR_RE.
+_DISPLAY_CONTROL_CHAR_RE = re.compile("[\x00-\x08\x0b\x0c\x0e-\x1a\x1c-\x1f\x7f-\x9f�]")
+
+
+def sanitize_control_chars(text: str) -> str:
+    """Drop control chars and U+FFFD from ``text``, keeping ``\\t`` ``\\n`` ``\\r`` and ESC."""
+    if not text:
+        return text
+    return _DISPLAY_CONTROL_CHAR_RE.sub("", text)
+
+
 # Flip the streaming buffer STREAMING->DRAINING so partial markup never leaks.
 TOOL_XML_SIGNALS = (
     "<tool_call>",
@@ -118,7 +131,34 @@ _TOOL_ALL_PATS = _TOOL_CLOSED_PATS + [
         re.DOTALL,
     ),
     # Gemma wrapper-less ``call:NAME{...}`` is handled by ``_strip_gemma_wrapperless_calls`` (enabled-name gate).
+    # Trailing orphan-close runs are handled by _strip_trailing_orphan_close_run.
 ]
+
+_ORPHAN_CLOSE_TOKENS = ("</tool_call>", "</parameter>", "</function>", "</param>", "<tool_call|>")
+_ORPHAN_SENTINELS = ("</tool_call>", "<tool_call|>")
+
+
+def _strip_trailing_orphan_close_run(text: str) -> str:
+    """Strip a trailing whitespace-separated run of tool close tags, but only when it
+    carries a </tool_call> or <tool_call|> sentinel (a drained/U+FFFD-mangled opener leaves
+    the close to leak); a lone </function> or </parameter> is kept as likely code/XML.
+    Linear scan, so no regex backtracking."""
+    i = len(text)
+    while i > 0 and text[i - 1].isspace():
+        i -= 1
+    run_start = i
+    has_sentinel = False
+    while True:
+        matched = next((t for t in _ORPHAN_CLOSE_TOKENS if text.endswith(t, 0, i)), None)
+        if matched is None:
+            break
+        if matched in _ORPHAN_SENTINELS:
+            has_sentinel = True
+        i -= len(matched)
+        run_start = i
+        while i > 0 and text[i - 1].isspace():
+            i -= 1
+    return text[:run_start] if has_sentinel else text
 
 
 TOOL_ERROR_PREFIXES = (
@@ -281,6 +321,23 @@ _KIMI_CALL_BEGIN = "<|tool_call_begin|>"
 _KIMI_ARG_BEGIN = "<|tool_call_argument_begin|>"
 _KIMI_CALL_END = "<|tool_call_end|>"
 _KIMI_ID_RE = re.compile(r"^(?:functions\.)?([\w\.\-]+)(?::(\d+))?$")
+
+# Kimi and DeepSeek end-of-turn closers are back-to-back special tokens; a drained/U+FFFD-
+# mangled opener leaves them to leak as a trailing orphan. Never legit prose, so they join the
+# ``<tool_call|>``-style sentinel set. Extended here (not the tuple defs above) since these
+# consts are defined later.
+_ORPHAN_CLOSE_TOKENS = _ORPHAN_CLOSE_TOKENS + (
+    _KIMI_CALL_END,
+    _KIMI_SECTION_END,
+    _DEEPSEEK_CALL_END,
+    _DEEPSEEK_END,
+)
+_ORPHAN_SENTINELS = _ORPHAN_SENTINELS + (
+    _KIMI_CALL_END,
+    _KIMI_SECTION_END,
+    _DEEPSEEK_CALL_END,
+    _DEEPSEEK_END,
+)
 
 # Gemma 4: ``<|tool_call>call:NAME{...}<tool_call|>``, ``<|"|>`` wraps strings.
 _GEMMA_TC_RE = re.compile(r"<\|tool_call>\s*call\s*:\s*([\w\.\-]+)\s*\{")
@@ -618,6 +675,8 @@ def strip_tool_markup(
     prose is kept (mirrors the parser gate): the bare reasoning-rehearsal ``name[ARGS]{...}``
     and the markerless Gemma ``call:NAME{...}`` strip. ``None`` strips every closed call.
     """
+    # Scrub U+FFFD / control chars first, so a mangled opener cannot leave its close unmatched.
+    text = sanitize_control_chars(text)
     if final:
         # Drop a leading Magistral ``[THINK]...[/THINK]`` at end-of-turn; its bracket
         # form is not the ``<think>`` the reasoning channel renders.
@@ -643,6 +702,8 @@ def strip_tool_markup(
         for pat in pats:
             seg = pat.sub("", seg)
         if seg_final:
+            # Trailing orphan closes whose opener was drained or U+FFFD-mangled upstream.
+            seg = _strip_trailing_orphan_close_run(seg)
             # Drop a trailing partial bare rehearsal (``name[ARGS]`` with a truncated or absent
             # body) the balanced scan cannot close; gated so prose ``foo[ARGS] ...`` survives.
             seg = _tool_healing.apply_tool_strip_patterns(

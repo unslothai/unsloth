@@ -52,10 +52,12 @@ from core.inference.tool_call_parser import (
     _strip_gemma_wrapperless_calls,
     _strip_glm_calls,
     _strip_mistral_closed_calls,
+    _strip_trailing_orphan_close_run,
     TOOL_XML_SIGNALS as _SHARED_TOOL_XML_SIGNALS,
     RAG_MAX_SEARCHES_PER_TURN,
     RAG_SEARCH_CAP_NUDGE,
     parse_tool_calls_from_text as _shared_parse_tool_calls_from_text,
+    sanitize_control_chars as _sanitize_control_chars,
     strip_leading_bare_json_call,
     strip_llama3_leading_sentinels,
     strip_tool_markup as _shared_strip_tool_markup,
@@ -9428,6 +9430,9 @@ class LlamaCppBackend:
             )
 
         def _strip_tool_markup_streaming(text: str, *, force: bool = False) -> str:
+            # Scrub U+FFFD / control chars first, so a mangled opener cannot leave its close
+            # unmatched and byte-fallback garbage never leaks; mirrors strip_tool_markup.
+            text = _sanitize_control_chars(text)
             if not (auto_heal_tool_calls or force):
                 return text
 
@@ -9448,6 +9453,9 @@ class LlamaCppBackend:
                 for pat in pats:
                     seg = pat.sub("", seg)
                 if is_last:
+                    # Trailing orphan closes (drained/U+FFFD-mangled opener); orphan-strip before
+                    # rehearsal-tail to match strip_tool_markup(final=True).
+                    seg = _strip_trailing_orphan_close_run(seg)
                     seg = apply_tool_strip_patterns(
                         seg, [_REHEARSAL_TAIL_STRIP_RE], enabled_tool_names = _enabled_names_gate
                     )

@@ -33,6 +33,7 @@ from core.inference.tool_call_parser import (
     _strip_glm_calls,
     _strip_mistral_closed_calls,
     _strip_mistral_reasoning,
+    _strip_trailing_orphan_close_run,
     BUDGET_EXHAUSTED_NUDGE,
     MAX_ACT_REPROMPTS,
     RAG_MAX_SEARCHES_PER_TURN,
@@ -41,6 +42,7 @@ from core.inference.tool_call_parser import (
     is_short_intent_without_action,
     parse_tool_calls_from_text,
     reprompt_to_act_message,
+    sanitize_control_chars,
     strip_leading_bare_json_call,
     strip_llama3_leading_sentinels,
     strip_tool_markup,
@@ -255,6 +257,9 @@ def strip_tool_markup_streaming(
     not be deleted, else the cumulative text shrinks then regrows). ``enabled_tool_names``
     keeps an inactive-name ``foo[ARGS]{..}`` / ``call:NAME{..}`` example visible (it is prose,
     not a call), matching the parse / detection active-tool gate."""
+    # Scrub U+FFFD / control chars first, so a mangled opener cannot leave its close unmatched
+    # and byte-fallback garbage never leaks into streamed display; mirrors strip_tool_markup.
+    text = sanitize_control_chars(text)
     if not (auto_heal_tool_calls or tool_protocol_active):
         return text
 
@@ -278,6 +283,9 @@ def strip_tool_markup_streaming(
         for pat in pats:
             seg = pat.sub("", seg)
         if is_last:
+            # Trailing orphan closes (drained/U+FFFD-mangled opener); orphan-strip before
+            # rehearsal-tail to match strip_tool_markup(final=True).
+            seg = _strip_trailing_orphan_close_run(seg)
             seg = apply_tool_strip_patterns(
                 seg, [_REHEARSAL_TAIL_STRIP_RE], enabled_tool_names = enabled_tool_names
             )
