@@ -550,6 +550,11 @@ def test_stop_without_save_creates_missing_row_before_signal(monkeypatch):
     assert [run["id"] for run in recs["created"]] == ["job_missing"]
     assert b._stop_queue.get_nowait() == {"type": "stop", "save": False}
 
+    b._cancel_requested = b._should_stop = False
+    sys.modules["storage.studio_db"].mark_run_cancel_requested = lambda _run_id: False
+    assert b.stop_training(save = False) is False
+    assert not b._cancel_requested and b._stop_queue.empty()
+
     new_queue = queue.Queue()
     b.current_job_id, b._db_run_created = "job_old", True
     b._cancel_requested = b._should_stop = False

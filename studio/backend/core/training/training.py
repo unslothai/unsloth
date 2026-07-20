@@ -1043,6 +1043,8 @@ class TrainingBackend:
                         self._ensure_db_run_created()
                         with self._lock:
                             if not mark_run_cancel_requested(run_id):
+                                if self._db_run_created:
+                                    return False
                                 raise RuntimeError(
                                     "Training run disappeared before cancellation persisted"
                                 )

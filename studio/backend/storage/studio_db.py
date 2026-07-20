@@ -775,11 +775,14 @@ def update_run_output_dir(id: str, output_dir: Optional[str]) -> None:
 
 
 def mark_run_cancel_requested(id: str) -> bool:
-    """Clear resume/export state for the exact run, including a terminal teardown race."""
+    """Clear resume/export state only while the exact run is still active."""
     conn = get_connection()
     try:
         cursor = conn.execute(
-            "UPDATE training_runs SET output_dir = NULL, resume_blocked = 1 WHERE id = ?",
+            """
+            UPDATE training_runs SET output_dir = NULL, resume_blocked = 1
+            WHERE id = ? AND status = 'running'
+            """,
             (id,),
         )
         conn.commit()

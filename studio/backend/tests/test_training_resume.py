@@ -180,7 +180,7 @@ def test_checkpoint_discovery_skips_malformed_newest(monkeypatch, tmp_path):
     assert resume.get_resume_checkpoint_path(str(out)) == str(valid)
 
 
-def test_finish_run_does_not_erase_persisted_output_dir(monkeypatch, tmp_path):
+def test_completed_run_keeps_output_dir_and_rejects_stale_cancel(monkeypatch, tmp_path):
     from storage import studio_db
 
     monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path))
@@ -197,20 +197,20 @@ def test_finish_run_does_not_erase_persisted_output_dir(monkeypatch, tmp_path):
     studio_db.update_run_output_dir("r", "/out/x")
     studio_db.finish_run(
         id = "r",
-        status = "error",
+        status = "completed",
         ended_at = "t",
         final_step = 2,
         final_loss = None,
         duration_seconds = 1,
         loss_sparkline = "[]",
-        output_dir = None,
-        error_message = "killed",
+        output_dir = "/out/x",
+        error_message = None,
     )
 
     assert studio_db.get_run("r")["output_dir"] == "/out/x"
-    assert studio_db.mark_run_cancel_requested("r") is True
-    assert studio_db.get_run("r")["output_dir"] is None
-    assert studio_db.get_run("r")["resume_blocked"] == 1
+    assert studio_db.mark_run_cancel_requested("r") is False
+    assert studio_db.get_run("r")["output_dir"] == "/out/x"
+    assert studio_db.get_run("r")["resume_blocked"] == 0
 
 
 def test_finish_run_clears_output_dir_for_stop_without_save(monkeypatch, tmp_path):

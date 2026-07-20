@@ -525,7 +525,10 @@ async def stop_training(
                 status = "idle", message = "No training job is currently running"
             )
 
-        backend.stop_training(save = body.save)
+        if not backend.stop_training(save = body.save):
+            return TrainingStopResponse(
+                status = "idle", message = "No training job is currently running"
+            )
 
         return TrainingStopResponse(
             status = "stopped",
