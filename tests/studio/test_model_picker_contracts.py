@@ -214,3 +214,48 @@ def test_downloaded_list_offsets_virtual_rows():
     past the overscan render blank."""
     src = _read("features/hub/catalog/models-catalog-lists.tsx")
     assert "scrollMargin={scrollMargin}" in src
+
+
+def test_local_gguf_diagnostics_gate_on_broad_is_gguf():
+    """The MTP fallback note and the context/VRAM warning must gate on the broad
+    isGguf (variant, loaded gguf context, or .gguf suffix), not the variant-only
+    isLoadedGguf, so direct-file and custom-folder GGUF loads keep those
+    diagnostics."""
+    src = _read("features/chat/chat-settings-sheet.tsx")
+    spec = re.search(r"const showSpecFallback =.*?;", src, re.S)
+    vram = re.search(r"const showContextVramWarning =.*?;", src, re.S)
+    assert spec and "isGguf &&" in spec.group(0) and "isLoadedGguf" not in spec.group(0)
+    assert vram and "isGguf &&" in vram.group(0) and "isLoadedGguf" not in vram.group(0)
+
+
+def test_fixed_layer_gguf_pins_displayed_context():
+    """An already-loaded auto-fit GGUF saved with Manual fixed GPU layers must
+    pin the shown context, so a later fresh load keeps the fitted placement
+    instead of sending native/0 and recreating the OOM."""
+    src = _read("features/model-picker/components/model-config-page.tsx")
+    assert "const pinFixedLayerContext =" in src
+    assert 'config.gpuMemoryMode === "manual"' in src
+    assert "customContextLength: activeLoadedContext" in src
+
+
+def test_auto_defaults_not_persisted_as_overrides():
+    """Auto GPU memory mode and Auto/default speculative type are follow-global
+    defaults; normalization must not persist them as per-model overrides, else a
+    model stops following later changes to the global preference."""
+    src = _read("features/model-picker/model-config/per-model-config.ts")
+    assert 'if (partial.gpuMemoryMode === "manual") {' in src
+    assert (
+        'partial.gpuMemoryMode === "auto" || partial.gpuMemoryMode === "manual"'
+        not in src
+    )
+    spec = re.search(r'if \(s === "auto" \|\| s === "default"\) \{\s*return ([^;]+);', src)
+    assert spec and spec.group(1).strip() == "null"
+
+
+def test_compare_pane_context_from_own_config_only():
+    """A compare pane's context comes from its own config only (a saved pin, else
+    null for Auto/native); it must not inherit the active model's shared snapshot,
+    which resolveFitMaxSeqLength would treat as an explicit pin (VRAM/OOM)."""
+    src = _read("features/chat/shared-composer.tsx")
+    assert "const effectiveCustomContextLength = ownConfig.customContextLength;" in src
+    assert "compareLoadKnobs.customContextLength" not in src
