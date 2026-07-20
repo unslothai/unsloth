@@ -247,15 +247,25 @@ def get_trainer(family: str) -> Callable[..., str]:
 # Families absent here fall back to the DiffusionLoraConfig defaults.
 FAMILY_TRAIN_DEFAULTS: dict[str, dict[str, Any]] = {
     "sdxl": {"lora_rank": 16, "learning_rate": 1e-4, "resolution": 1024},
-    "flux.1": {"lora_rank": 16, "learning_rate": 1e-4, "resolution": 512},
-    "qwen-image": {"lora_rank": 16, "learning_rate": 5e-5, "resolution": 512},
+    # Warmup defaults: a short LR ramp keeps the first adapter updates from overshooting on
+    # the big flow-matching DiTs (whose logit-normal timestep draw concentrates loss mass
+    # mid-schedule); the small warmups below are scaled for Studio's short-run step budgets.
+    "flux.1": {"lora_rank": 16, "learning_rate": 1e-4, "resolution": 512, "lr_warmup_steps": 20},
+    "qwen-image": {
+        "lora_rank": 16, "learning_rate": 5e-5, "resolution": 512, "lr_warmup_steps": 20,
+    },
     "z-image": {"lora_rank": 16, "learning_rate": 1e-4, "resolution": 768},
     # The Krea 2 authors' recommended starting point (their DreamBooth script defaults):
     # rank/alpha 32, lr 3e-4, 512px.
     "krea-2": {"lora_rank": 32, "learning_rate": 3e-4, "resolution": 512},
-    # The upstream FLUX.2 DreamBooth references default to rank 16 / lr 1e-4.
-    "flux.2-klein": {"lora_rank": 16, "learning_rate": 1e-4, "resolution": 512},
-    "flux.2-dev": {"lora_rank": 16, "learning_rate": 1e-4, "resolution": 512},
+    # The upstream FLUX.2 DreamBooth references default to rank 16 / lr 1e-4; FLUX.2's
+    # uniform timestep draw benefits most from a warmup ramp.
+    "flux.2-klein": {
+        "lora_rank": 16, "learning_rate": 1e-4, "resolution": 512, "lr_warmup_steps": 20,
+    },
+    "flux.2-dev": {
+        "lora_rank": 16, "learning_rate": 1e-4, "resolution": 512, "lr_warmup_steps": 20,
+    },
 }
 
 
@@ -496,6 +506,19 @@ class DiffusionLoraConfig:
     # "fp8" (torchao float8 training on the frozen linears, Ada/Hopper/Blackwell + compile), or
     # "auto" (by free VRAM + GPU class). Non-nf4 modes need a dense base repo. SDXL ignores it.
     base_precision: str = "nf4"
+    # Training-time timestep shift applied to the flow-matching sigma draw. None resolves
+    # per family in normalized(): "auto" for qwen-image (reproduce the family's inference
+    # sigma distribution: the scheduler's exponential time_shift at mu = max_shift, then the
+    # shift_terminal stretch), 1.0 (identity, the historical behavior) for every other
+    # family. A numeric value applies the standard linear shift s*u/(1+(s-1)*u); 1.0 is a
+    # no-op. "auto" on a family without dynamic shifting falls back to identity.
+    flow_shift: Optional[Any] = None  # float | "auto" | None
+    # Per-sample probability of replacing the caption conditioning with the empty prompt
+    # (classifier-free-guidance dropout). 0.0 (default) disables it entirely.
+    cfg_dropout: float = 0.0
+    # Per-sample loss weighting over the drawn timestep: "none" (default, unweighted MSE)
+    # or "bell" (bsmntw-style Gaussian bell centered mid-schedule, normalized to mean 1).
+    weighting_scheme: str = "none"
     # How often to emit a progress event (in optimizer steps).
     log_every: int = 1
     # Optional explicit family override ("sdxl" / "flux.1" / ...); None = detect from base_model.
@@ -576,6 +599,34 @@ class DiffusionLoraConfig:
                     f"{resolved_family}: its activations exceed fp8's range and corrupt the "
                     f"trained result. Use 'nf4', 'int8', 'bf16', or 'auto'."
                 )
+        # flow_shift: None resolves to the family default ("auto" only for qwen-image, whose
+        # scheduler skips its static shift under use_dynamic_shifting and would otherwise
+        # train on unshifted uniform sigmas); an explicit value is validated and kept.
+        flow_shift = self.flow_shift
+        if flow_shift is None:
+            flow_shift = "auto" if resolved_family == "qwen-image" else 1.0
+        if isinstance(flow_shift, str):
+            flow_shift = flow_shift.strip().lower()
+            if flow_shift != "auto":
+                try:
+                    flow_shift = float(flow_shift)
+                except ValueError as exc:
+                    raise ValueError(
+                        f"flow_shift must be a positive number or 'auto', got {self.flow_shift!r}"
+                    ) from exc
+        if not isinstance(flow_shift, str):
+            flow_shift = float(flow_shift)
+            if flow_shift <= 0:
+                raise ValueError("flow_shift must be > 0 (1.0 disables the shift), or 'auto'")
+        try:
+            cfg_dropout = float(self.cfg_dropout or 0.0)
+        except (TypeError, ValueError) as exc:
+            raise ValueError(f"cfg_dropout must be a number, got {self.cfg_dropout!r}") from exc
+        if not 0.0 <= cfg_dropout <= 1.0:
+            raise ValueError("cfg_dropout must be between 0 and 1")
+        weighting_scheme = str(self.weighting_scheme or "none").strip().lower()
+        if weighting_scheme not in ("none", "bell"):
+            raise ValueError("weighting_scheme must be one of none / bell")
         # A zero/negative gamma would zero out (or invert) the min-SNR weight and
         # silently train on a degenerate loss; None is the documented disable.
         if self.snr_gamma is not None and float(self.snr_gamma) <= 0:
@@ -604,6 +655,9 @@ class DiffusionLoraConfig:
             cache_variants = int(self.cache_variants),
             compile_transformer = compile_transformer,
             base_precision = base_precision,
+            flow_shift = flow_shift,
+            cfg_dropout = cfg_dropout,
+            weighting_scheme = weighting_scheme,
             resolved_family = resolved_family,
         )
 

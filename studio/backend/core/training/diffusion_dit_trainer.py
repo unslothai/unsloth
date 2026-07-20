@@ -27,6 +27,7 @@ optimizer state and the frozen 4-bit base sit in VRAM during the loop.
 from __future__ import annotations
 
 import gc
+import math
 import os
 import random
 import time
@@ -146,15 +147,60 @@ class _FamilySpec:
 
 
 # ── shared flow-matching helpers ──────────────────────────────────────────────
-def _gather_sigmas(scheduler, indices, device, dtype, n_dim):
+def _gather_sigmas(sigma_table, indices, device, dtype, n_dim):
     """Gather per-sample sigmas for schedule ``indices`` and broadcast to ``n_dim``.
     Index-based (no per-item search): ``indices`` are the positions ``_sample_timesteps``
-    drew from ``scheduler.timesteps``, and ``scheduler.sigmas`` is aligned with it, so this
-    returns exactly what the diffusers ``get_sigmas`` timestep-matching helper would."""
-    sigma = scheduler.sigmas[indices].to(device = device, dtype = dtype).flatten()
+    drew from ``scheduler.timesteps``, and ``sigma_table`` (the scheduler's own sigmas, or
+    the shifted copy from ``_training_sigma_table``) is aligned with it, so the identity
+    table returns exactly what the diffusers ``get_sigmas`` helper would."""
+    sigma = sigma_table[indices].to(device = device, dtype = dtype).flatten()
     while sigma.ndim < n_dim:
         sigma = sigma.unsqueeze(-1)
     return sigma
+
+
+def _training_sigma_table(scheduler, flow_shift):
+    """The sigma table training draws index into, per ``cfg.flow_shift``.
+
+    ``1.0`` (every non-Qwen family's default) returns ``scheduler.sigmas`` unchanged: the
+    historical behavior, correct for the families whose schedule already matches training
+    convention. ``"auto"`` (the qwen-image default) reproduces the family's INFERENCE sigma
+    distribution, which the scheduler never bakes into ``sigmas`` when
+    ``use_dynamic_shifting`` is true (the static ``shift`` at init is skipped, so Qwen-Image
+    otherwise trains on unshifted uniform sigmas): apply the scheduler's own ``time_shift``
+    at mu = ``max_shift`` (Qwen pins base_shift = max_shift = log 3, so the inference mu is
+    constant at every resolution) followed by its ``stretch_shift_to_terminal`` -- using the
+    scheduler's methods keeps the transform faithful across diffusers versions. A numeric
+    value applies the standard linear shift s*u/(1+(s-1)*u) (musubi/kohya style
+    discrete_flow_shift)."""
+    sigmas = scheduler.sigmas
+    if flow_shift == "auto":
+        sc = scheduler.config
+        if not getattr(sc, "use_dynamic_shifting", False):
+            return sigmas  # static-shift family: its init already baked the shift in
+        mu = float(getattr(sc, "max_shift", None) or math.log(3.0))
+        shifted = scheduler.time_shift(mu, 1.0, sigmas)
+        if getattr(sc, "shift_terminal", None):
+            # The stretch scales off the table's own final sigma, so it must see the full
+            # descending schedule (as it does at inference set_timesteps), never a batch.
+            shifted = scheduler.stretch_shift_to_terminal(shifted)
+        return shifted
+    s = float(flow_shift)
+    if s == 1.0:
+        return sigmas
+    return s * sigmas / (1.0 + (s - 1.0) * sigmas)
+
+
+def _bell_loss_weights(num_train_timesteps):
+    """bsmntw-style bell loss-weight table over the training schedule: a Gaussian bell
+    centered mid-schedule, floored at 0 and normalized to mean 1 (so the expected loss
+    scale is unchanged). Indexed by round(sigma * num_train_timesteps)."""
+    import torch
+    steps = num_train_timesteps
+    t = torch.arange(steps, dtype = torch.float32)
+    w = torch.exp(-2.0 * ((t - steps / 2) / steps) ** 2)
+    w = w - w.min()
+    return w * (steps / w.sum())
 
 
 def _sample_timesteps(scheduler, batch_size, device):
@@ -1498,8 +1544,12 @@ def _train_dit(cfg, spec, pairs, rng, device, weight_dtype, on_event, _check_sto
     image_paths = [p for p, _ in pairs]
     captions = [c for _, c in pairs]
     uniq = sorted(set(captions))
-    encoded = spec.encode_prompts(pipe, uniq, device)
-    caption_embeds = {cap: emb for cap, emb in zip(uniq, encoded)}
+    # CFG dropout swaps a sample's conditioning for the empty prompt, so its embedding must
+    # be precomputed alongside the captions (the encoders are freed right after this).
+    cfg_dropout = float(getattr(cfg, "cfg_dropout", 0.0) or 0.0)
+    to_encode = uniq + ([""] if cfg_dropout > 0 and "" not in uniq else [])
+    encoded = spec.encode_prompts(pipe, to_encode, device)
+    caption_embeds = {cap: emb for cap, emb in zip(to_encode, encoded)}
     _free_text_encoders(pipe)
     gc.collect()
     if device == "cuda":
@@ -1596,6 +1646,19 @@ def _train_dit(cfg, spec, pairs, rng, device, weight_dtype, on_event, _check_sto
     scheduler = FlowMatchEulerDiscreteScheduler.from_pretrained(
         cfg.base_model, subfolder = "scheduler", token = cfg.hf_token
     )
+    # Timestep-shift + loss-weighting setup (see _training_sigma_table). getattr defaults
+    # keep an un-normalized config (tests, direct callers) on the historical behavior.
+    flow_shift = getattr(cfg, "flow_shift", None)
+    if flow_shift is None:
+        flow_shift = "auto" if spec.family == "qwen-image" else 1.0
+    sigma_table = _training_sigma_table(scheduler, flow_shift)
+    shift_active = sigma_table is not scheduler.sigmas
+    num_train_ts = scheduler.config.num_train_timesteps
+    bell_weights = (
+        _bell_loss_weights(num_train_ts).to(device)
+        if str(getattr(cfg, "weighting_scheme", "none") or "none") == "bell"
+        else None
+    )
     # The LR schedule advances once per optimizer update, so warmup/decay are counted in
     # optimizer steps (matching the SDXL trainer; multiplying by the accumulation factor would
     # stretch warmup past the run and never reach the decay).
@@ -1652,11 +1715,24 @@ def _train_dit(cfg, spec, pairs, rng, device, weight_dtype, on_event, _check_sto
 
             noise = torch.randn_like(latents)
             timesteps, t_indices = _sample_timesteps(scheduler, latents.shape[0], device)
-            sigmas = _gather_sigmas(scheduler, t_indices, device, weight_dtype, latents.ndim)
+            sigmas = _gather_sigmas(sigma_table, t_indices, device, weight_dtype, latents.ndim)
+            if shift_active:
+                # The model's timestep conditioning must follow the shifted sigma (the
+                # scheduler convention is timestep = sigma * num_train_timesteps). Gather
+                # in fp32 from the table so bf16 rounding never skews the conditioning.
+                timesteps = (
+                    sigma_table[t_indices].to(device = device, dtype = torch.float32).flatten()
+                    * num_train_ts
+                )
             noisy = (1.0 - sigmas) * latents + sigmas * noise
 
             embeds = spec.collate(
-                [caption_embeds[captions[i]] for i in idxs],
+                [
+                    caption_embeds[""]
+                    if cfg_dropout > 0 and rng.random() < cfg_dropout
+                    else caption_embeds[captions[i]]
+                    for i in idxs
+                ],
                 device,
                 weight_dtype,
                 pad_to = qwen_pad_to,
@@ -1666,7 +1742,17 @@ def _train_dit(cfg, spec, pairs, rng, device, weight_dtype, on_event, _check_sto
                     transformer, noisy, timesteps, sigmas, embeds, cfg, device, weight_dtype
                 )
                 target = noise - latents
-                loss = F.mse_loss(model_pred.float(), target.float(), reduction = "mean")
+                if bell_weights is None:
+                    loss = F.mse_loss(model_pred.float(), target.float(), reduction = "mean")
+                else:
+                    per = F.mse_loss(model_pred.float(), target.float(), reduction = "none")
+                    w_idx = (
+                        (sigmas.flatten().float() * num_train_ts)
+                        .long()
+                        .clamp(0, num_train_ts - 1)
+                    )
+                    w = bell_weights[w_idx].view(-1, *([1] * (per.ndim - 1)))
+                    loss = (per * w).mean()
             (loss / cfg.gradient_accumulation_steps).backward()
             step_loss += float(loss.detach()) / cfg.gradient_accumulation_steps
 
