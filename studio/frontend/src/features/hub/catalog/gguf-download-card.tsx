@@ -85,7 +85,6 @@ import {
   GgufDownloadStatusCard,
   GgufDownloadingFallbackCard,
 } from "./gguf-status-cards";
-import { SamplingSettingsButton } from "./sampling-settings-dialog";
 import { useDeleteConfirmAction } from "./use-delete-confirm-action";
 import { useDownloadCardState } from "./use-download-card-state";
 import { useGgufVariantFetchState } from "./use-gguf-variant-fetch-state";
@@ -995,8 +994,7 @@ export function GgufDownloadCard({
           </PopoverContent>
         </Popover>
 
-        {/* Gear before the 3-dots menu. */}
-        <SamplingSettingsButton className="ml-0.5" />
+        {/* TODO: inference settings gear hidden for now, work on it in a future PR. */}
         {/* Options only resolve managed HF-cache repos, so skip local paths;
             they also only apply to quants actually on disk. */}
         {selected &&

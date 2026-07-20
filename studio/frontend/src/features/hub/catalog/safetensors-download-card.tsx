@@ -36,7 +36,6 @@ import {
   DownloadCard,
 } from "./download-card";
 import { QuantOptionsMenu } from "./gguf-download-card";
-import { SamplingSettingsButton } from "./sampling-settings-dialog";
 import { useCardDelete } from "./use-card-delete";
 import { useDownloadCardState } from "./use-download-card-state";
 
@@ -230,8 +229,7 @@ export function SafetensorsDownloadCard({
             )}
           </span>
           <div className="ml-auto flex items-center gap-0.5">
-            {/* Gear before the 3-dots menu. */}
-            <SamplingSettingsButton className="ml-0.5" />
+            {/* TODO: inference settings gear hidden for now, work on it in a future PR. */}
             {/* Same 3-dots menu as GGUF, at repo level (no quant); pinning is
                 omitted in the run bar. Managed HF-cache repos only. */}
             {(isDownloaded || (isPartial && !downloading)) &&
