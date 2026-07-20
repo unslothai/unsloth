@@ -217,10 +217,7 @@ def test_remote_template_over_size_limit_is_skipped_before_download(monkeypatch)
         raise AssertionError("oversized remote template must not be downloaded")
 
     def _fake_get_paths_info(self, repo_id, paths, **kwargs):
-        return [
-            SimpleNamespace(path = p, size = MAX_TEMPLATE_METADATA_BYTES + 1)
-            for p in paths
-        ]
+        return [SimpleNamespace(path = p, size = MAX_TEMPLATE_METADATA_BYTES + 1) for p in paths]
 
     monkeypatch.setattr(huggingface_hub, "hf_hub_download", _fail_download)
     monkeypatch.setattr(huggingface_hub.HfApi, "get_paths_info", _fake_get_paths_info)

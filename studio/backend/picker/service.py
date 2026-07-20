@@ -367,9 +367,7 @@ def read_default_chat_template(
             # already exceeds the cap, so a maliciously large sidecar is never
             # fetched and retained in full (the local-file path is size-gated too).
             try:
-                infos = _api.get_paths_info(
-                    resolved, [rel], repo_type = "model", token = hf_token
-                )
+                infos = _api.get_paths_info(resolved, [rel], repo_type = "model", token = hf_token)
             except Exception:
                 return False
             for info in infos:
