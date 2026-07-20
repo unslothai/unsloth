@@ -350,6 +350,34 @@ def test_local_only_load_fails_closed_offline_never_hitting_the_hub(monkeypatch,
     (routersub / "1_Router" / "query_0_WordEmbeddings" / "pytorch_model.bin").write_bytes(b"\0")
     assert _evaluate(routersub) is True
 
+    # A modules.json declaring a TRAVERSING module path ("0/../evil") is resolved by the ST loader
+    # to evil/, which it deserializes; the gate must scope the NORMALIZED dir and block
+    # evil/pytorch_model.bin -- recording the raw snap/"0/../evil" (which never equals the real
+    # snap/evil rglob yields) would let a malicious repo slip a pickle past the offline gate.
+    trav = tmp_path / "trav" / "aaa"
+    (trav / "evil").mkdir(parents = True)
+    (trav / "modules.json").write_text(
+        '[{"idx": 0, "name": "m", "path": "0/../evil", '
+        '"type": "sentence_transformers.models.WordEmbeddings"}]'
+    )
+    (trav / "evil" / "wordembedding_config.json").write_bytes(b"{}")
+    (trav / "evil" / "pytorch_model.bin").write_bytes(b"\0")
+    assert _evaluate(trav) is True
+
+    # The same traversal through a Router child path ("0/../evil") must also be normalized and
+    # blocked, not skipped for containing "..".
+    rtrav = tmp_path / "rtrav" / "aaa"
+    (rtrav / "evil").mkdir(parents = True)
+    (rtrav / "modules.json").write_text(
+        '[{"idx": 0, "name": "0", "path": "", "type": "sentence_transformers.models.Router"}]'
+    )
+    (rtrav / "router_config.json").write_text(
+        '{"types": {"0/../evil": "sentence_transformers.models.WordEmbeddings"}}'
+    )
+    (rtrav / "evil" / "wordembedding_config.json").write_bytes(b"{}")
+    (rtrav / "evil" / "pytorch_model.bin").write_bytes(b"\0")
+    assert _evaluate(rtrav) is True
+
 
 def test_security_scan_runs_when_online(monkeypatch):
     import utils.security.file_security as fs

@@ -93,6 +93,24 @@ def _normalize_repo_path(path: str) -> str:
     return p
 
 
+def _canonical_load_dir(base, rel: str):
+    """``base`` / ``rel`` with ``.`` / ``..`` components collapsed lexically (no filesystem
+    access), or None when ``rel`` is empty, the base itself, or escapes ``base``.
+
+    A ``modules.json`` / ``router_config.json`` / load-subdir path is repo-controlled.
+    SentenceTransformer resolves an entry such as ``0/../evil`` to ``evil/`` and deserializes
+    ``evil/pytorch_model.bin``, so the offline gate must scope that SAME normalized directory:
+    the raw ``base / "0/../evil"`` never equals the ``base / "evil"`` that ``rglob`` yields, so a
+    pickle there would slip the gate. A path that escapes ``base`` (a leading ``..`` after
+    normalization) is rejected -- a legitimate declared module path never traverses upward."""
+    import posixpath
+
+    norm = posixpath.normpath(_normalize_repo_path(rel).strip("/"))
+    if norm in ("", ".") or norm == ".." or norm.startswith("../"):
+        return None
+    return base / norm
+
+
 def _file_suffix(path: str) -> str:
     """Lowercase ``.ext`` of the basename, or ``""`` if none."""
     base = _normalize_repo_path(path).rsplit("/", 1)[-1]
@@ -349,9 +367,9 @@ def _router_child_dirs(root) -> set:
     children: set = set()
     if isinstance(types, dict):
         for model_id in types:
-            rel = _normalize_repo_path(str(model_id)).strip("/")
-            if rel and ".." not in rel.split("/"):
-                children.add(root / rel)
+            child = _canonical_load_dir(root, str(model_id))
+            if child is not None:
+                children.add(child)
     return children
 
 
@@ -363,9 +381,9 @@ def _st_load_roots(snap, load_subdirs = ()) -> set:
     still deserialized and must be treated as a load root."""
     roots = {snap}
     for subdir in load_subdirs or ():
-        rel = _normalize_repo_path(str(subdir)).strip("/")
-        if rel:
-            roots.add(snap / rel)
+        root = _canonical_load_dir(snap, str(subdir))
+        if root is not None:
+            roots.add(root)
     try:
         import json
         modules = json.loads((snap / "modules.json").read_text(encoding = "utf-8"))
@@ -374,9 +392,9 @@ def _st_load_roots(snap, load_subdirs = ()) -> set:
     if isinstance(modules, list):
         for module in modules:
             if isinstance(module, dict):
-                rel = _normalize_repo_path(str(module.get("path") or "")).strip("/")
-                if rel:
-                    roots.add(snap / rel)
+                root = _canonical_load_dir(snap, str(module.get("path") or ""))
+                if root is not None:
+                    roots.add(root)
     # A Router/Asym module declares its child sub-modules in router_config.json, not modules.json,
     # and Router.load() deserializes each child's weights from its own subdir. Treat those child
     # dirs as load roots too so a pickle in a config.json-less child (e.g.
