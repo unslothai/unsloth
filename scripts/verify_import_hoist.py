@@ -459,7 +459,11 @@ def _all_mutator_entries(method: str, args: list) -> tuple[set[str], bool]:
             entries.add(arg.value)
             return entries, True
         return entries, False
-    if method == "extend" and len(args) == 1 and isinstance(args[0], (ast.List, ast.Tuple, ast.Set)):
+    if (
+        method == "extend"
+        and len(args) == 1
+        and isinstance(args[0], (ast.List, ast.Tuple, ast.Set))
+    ):
         readable = True
         for elt in args[0].elts:
             if isinstance(elt, ast.Constant) and isinstance(elt.value, str):
