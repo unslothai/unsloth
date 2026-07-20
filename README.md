@@ -40,7 +40,7 @@ irm https://unsloth.ai/install.ps1 | iex
 Unsloth Studio (Beta) lets you run and train text, [audio](https://unsloth.ai/docs/basics/text-to-speech-tts-fine-tuning), [embedding](https://unsloth.ai/docs/new/embedding-finetuning), [vision](https://unsloth.ai/docs/basics/vision-fine-tuning) models on Windows, Linux and macOS.
 
 ### Inference
-* **Search + download + run models** including GGUF, LoRA adapters and safetensors [100% offline](https://unsloth.ai/docs/new/studio#privacy-first-secure).
+* **Search + download + run models** including GGUF, LoRA adapters and safetensors.
 * [**Compare any two models**](https://unsloth.ai/docs/new/studio/chat#model-arena) side by side with the same prompt.
 * **Tools:** [Self-healing tool calling](https://unsloth.ai/docs/new/studio/chat#auto-healing-tool-calling), web/PDF search, [code execution](https://unsloth.ai/docs/new/studio/chat#code-execution) and [MCP servers](https://unsloth.ai/docs/basics/mcp).
 * [**OpenAI/Anthropic-compatible APIs**](https://unsloth.ai/docs/basics/api): Use `unsloth start` with Claude Code, Codex, Hermes and more.
