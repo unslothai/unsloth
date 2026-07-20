@@ -730,9 +730,12 @@ class TestLoadHubDownloadExclusion:
 
         # The gguf_load_in_flight marker must be entered before the hub-download
         # guard and the unload so a concurrent load can't race the download
-        # manager. The llama_extra_args inheritance that used to sit between the
-        # marker and the guard now runs in _guard_chat_load_against_training, ahead
-        # of the GGUF branch, so it is no longer a landmark inside this slice.
+        # manager. The llama_extra_args inheritance moved out of the branch into
+        # _resolve_inherited_extra_args, which must still run BEFORE it: the
+        # inherited value (e.g. a carried --no-mmproj) shapes the guard's
+        # require_mmproj. Anchor on the call form so the assertion pins the
+        # endpoint's call site, not the function definition.
+        assert source.index("= _resolve_inherited_extra_args(") < source.index("if config.is_gguf:")
         assert (
             gguf_branch.index("enter_context(gguf_load_in_flight")
             < gguf_branch.index("_hub_download_blocks_gguf_load")
