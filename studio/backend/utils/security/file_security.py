@@ -260,6 +260,12 @@ _PICKLE_SUFFIXES = frozenset({".bin", ".pt", ".pth", ".ckpt", ".pkl", ".pickle"}
 # follows the map and deserializes them wherever they live.
 _PICKLE_INDEX_FILE = "pytorch_model.bin.index.json"
 
+# SentenceTransformer Router (a.k.a. the legacy Asym) config. It declares the router's child
+# sub-modules in its ``types`` map ({route}_{idx}_{ClassName} -> module class) and is the ONLY
+# place they are declared -- the top-level modules.json lists just the Router. Router.load()
+# deserializes each child from its own subdir, so those subdirs are load roots too.
+_ROUTER_CONFIG_FILE = "router_config.json"
+
 
 def _index_weight_map_values(index_path) -> set:
     """Repo-relative shard paths a weight-index maps (its ``weight_map`` values), or empty on
@@ -323,6 +329,32 @@ def _dir_has_loadable_safetensors(files: dict) -> bool:
     return False
 
 
+def _router_child_dirs(root) -> set:
+    """Child sub-module directories a SentenceTransformer ``Router`` (legacy ``Asym``) at *root*
+    deserializes. A Router declares its children only in ``router_config.json`` (``types`` maps
+    ``{route}_{idx}_{ClassName}`` -> module class), NOT in the top-level ``modules.json``, and
+    ``Router.load()`` calls ``module_class.load(subfolder=model_id)`` on each. A child such as
+    ``query_0_WordEmbeddings/`` holds ``wordembedding_config.json`` + ``pytorch_model.bin`` and no
+    ``config.json``, so its pickle is still deserialized and its dir must be a load root. Returns
+    an empty set when there is no readable router config."""
+    import json
+
+    try:
+        config = json.loads((root / _ROUTER_CONFIG_FILE).read_text(encoding = "utf-8"))
+    except (OSError, ValueError):
+        return set()
+    if not isinstance(config, dict):
+        return set()
+    types = config.get("types")
+    children: set = set()
+    if isinstance(types, dict):
+        for model_id in types:
+            rel = _normalize_repo_path(str(model_id)).strip("/")
+            if rel and ".." not in rel.split("/"):
+                children.add(root / rel)
+    return children
+
+
 def _st_load_roots(snap, load_subdirs = ()) -> set:
     """Directories a load opens ``from_pretrained`` on: the snapshot root, every module path
     ``modules.json`` declares, and each passed-in ``load_subdirs`` entry. A SentenceTransformer
@@ -338,13 +370,25 @@ def _st_load_roots(snap, load_subdirs = ()) -> set:
         import json
         modules = json.loads((snap / "modules.json").read_text(encoding = "utf-8"))
     except (OSError, ValueError):
-        return roots
+        modules = None
     if isinstance(modules, list):
         for module in modules:
             if isinstance(module, dict):
                 rel = _normalize_repo_path(str(module.get("path") or "")).strip("/")
                 if rel:
                     roots.add(snap / rel)
+    # A Router/Asym module declares its child sub-modules in router_config.json, not modules.json,
+    # and Router.load() deserializes each child's weights from its own subdir. Treat those child
+    # dirs as load roots too so a pickle in a config.json-less child (e.g.
+    # query_0_WordEmbeddings/pytorch_model.bin) is scanned. Bounded BFS: every child is a strict
+    # subpath and a visited set stops any cycle; scanning extra dirs only tightens the gate.
+    pending = list(roots)
+    while pending:
+        current = pending.pop()
+        for child in _router_child_dirs(current):
+            if child not in roots:
+                roots.add(child)
+                pending.append(child)
     return roots
 
 

@@ -276,6 +276,67 @@ def test_local_only_load_fails_closed_offline_never_hitting_the_hub(monkeypatch,
     (stsub / "weights" / "model-00002-of-00002.safetensors").write_bytes(b"\0")
     assert _evaluate(stsub) is False
 
+    # A SentenceTransformer Router (legacy Asym) declares its child sub-modules ONLY in
+    # router_config.json (never the top-level modules.json), and Router.load() deserializes each
+    # child's weights from its own subdir. A config.json-less child (query_0_WordEmbeddings:
+    # wordembedding_config.json + pytorch_model.bin, no safetensors) is a live pickle vector and
+    # must be scanned -> blocked, not skipped for lacking a config.json or a modules.json entry.
+    router = tmp_path / "router" / "aaa"
+    (router / "query_0_WordEmbeddings").mkdir(parents = True)
+    (router / "document_0_Transformer").mkdir(parents = True)
+    (router / "modules.json").write_text(
+        '[{"idx": 0, "name": "0", "path": "", '
+        '"type": "sentence_transformers.models.Router"}]'
+    )
+    (router / "router_config.json").write_text(
+        '{"types": {"query_0_WordEmbeddings": '
+        '"sentence_transformers.models.WordEmbeddings", '
+        '"document_0_Transformer": "sentence_transformers.models.Transformer"}, '
+        '"structure": {"query": ["query_0_WordEmbeddings"], '
+        '"document": ["document_0_Transformer"]}, "parameters": {}}'
+    )
+    (router / "query_0_WordEmbeddings" / "wordembedding_config.json").write_bytes(b"{}")
+    (router / "query_0_WordEmbeddings" / "pytorch_model.bin").write_bytes(b"\0")
+    (router / "document_0_Transformer" / "config.json").write_bytes(b"{}")
+    (router / "document_0_Transformer" / "model.safetensors").write_bytes(b"\0")
+    assert _evaluate(router) is True
+
+    # The same Router whose child ships model.safetensors beside the pickle is inert: the child is
+    # scoped as a load root, but the loader reads the safetensors it prefers -> allowed (the fix
+    # scopes the child without over-blocking a genuinely safe one).
+    routersafe = tmp_path / "routersafe" / "aaa"
+    (routersafe / "query_0_WordEmbeddings").mkdir(parents = True)
+    (routersafe / "modules.json").write_text(
+        '[{"idx": 0, "name": "0", "path": "", '
+        '"type": "sentence_transformers.models.Router"}]'
+    )
+    (routersafe / "router_config.json").write_text(
+        '{"types": {"query_0_WordEmbeddings": '
+        '"sentence_transformers.models.WordEmbeddings"}}'
+    )
+    (routersafe / "query_0_WordEmbeddings" / "wordembedding_config.json").write_bytes(b"{}")
+    (routersafe / "query_0_WordEmbeddings" / "pytorch_model.bin").write_bytes(b"\0")
+    (routersafe / "query_0_WordEmbeddings" / "model.safetensors").write_bytes(b"\0")
+    assert _evaluate(routersafe) is False
+
+    # The Router can itself sit in a modules.json-declared subfolder; the child scan must follow
+    # router_config.json from THAT dir, not only the snapshot root.
+    routersub = tmp_path / "routersub" / "aaa"
+    (routersub / "1_Router" / "query_0_WordEmbeddings").mkdir(parents = True)
+    (routersub / "modules.json").write_text(
+        '[{"idx": 0, "name": "1_Router", "path": "1_Router", '
+        '"type": "sentence_transformers.models.Router"}]'
+    )
+    (routersub / "1_Router" / "router_config.json").write_text(
+        '{"types": {"query_0_WordEmbeddings": '
+        '"sentence_transformers.models.WordEmbeddings"}}'
+    )
+    (routersub / "1_Router" / "query_0_WordEmbeddings" / "wordembedding_config.json").write_bytes(
+        b"{}"
+    )
+    (routersub / "1_Router" / "query_0_WordEmbeddings" / "pytorch_model.bin").write_bytes(b"\0")
+    assert _evaluate(routersub) is True
+
 
 def test_security_scan_runs_when_online(monkeypatch):
     import utils.security.file_security as fs
