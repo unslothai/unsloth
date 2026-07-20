@@ -172,9 +172,17 @@ if [ -f "$STATE" ] && [ "${UNSLOTH_KEEP_DELETED_NOTEBOOKS:-0}" != "1" ]; then
 fi
 
 # 2) Best-effort GitHub refresh -- only when upstream has advanced. Edits win.
+# Detached: the local populate above already ran, and the refresh can spend up
+# to 2x TIMEOUT on ls-remote + clone when offline, which must not delay
+# container startup. The child re-enters past phase 1 (hash state makes it a
+# no-op) and the flag keeps it from forking again.
 [ "${UNSLOTH_SKIP_NOTEBOOK_REFRESH:-0}" = "1" ] && exit 0
 command -v git >/dev/null 2>&1 || exit 0
 command -v sha256sum >/dev/null 2>&1 || exit 0
+if [ "${UNSLOTH_NB_REFRESH_CHILD:-0}" != "1" ]; then
+    UNSLOTH_NB_REFRESH_CHILD=1 "$0" >/dev/null 2>&1 &
+    exit 0
+fi
 
 last="$(cat "$SYNCED" 2>/dev/null || true)"
 remote="$(timeout "$TIMEOUT" git ls-remote "$REMOTE" HEAD 2>/dev/null | cut -f1)"
