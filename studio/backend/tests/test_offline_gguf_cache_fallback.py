@@ -1084,7 +1084,7 @@ class TestListLocalGgufVariantsSubdir:
         target.write_bytes(b"\0" * 20)
 
         out = _find_local_gguf_by_variant(str(tmp_path), "Q4_K_M")
-        assert out == str(target.resolve())
+        assert out == str(target.absolute())
 
     def test_find_local_gguf_by_variant_skips_big_endian_only_match(self, tmp_path):
         from utils.models.model_config import _find_local_gguf_by_variant
@@ -1093,6 +1093,40 @@ class TestListLocalGgufVariantsSubdir:
         (tmp_path / "model-Q4_K_M-be.gguf").write_bytes(b"\0" * 10)
 
         assert _find_local_gguf_by_variant(str(tmp_path), "Q4_K_M") is None
+
+    def test_find_local_gguf_by_variant_keeps_split_symlink_name(self, tmp_path):
+        from utils.models.model_config import _find_local_gguf_by_variant
+
+        blobs = tmp_path / "blobs"
+        blobs.mkdir()
+        snap = tmp_path / "snapshots" / "rev" / "BF16"
+        snap.mkdir(parents = True)
+        (tmp_path / "snapshots" / "rev" / "config.json").write_text("{}")
+        for i, sha in enumerate(("aa" * 32, "bb" * 32), start = 1):
+            (blobs / sha).write_bytes(b"\0" * 10)
+            (snap / f"model-BF16-0000{i}-of-00002.gguf").symlink_to(blobs / sha)
+
+        out = _find_local_gguf_by_variant(str(tmp_path / "snapshots" / "rev"), "BF16")
+        assert out is not None
+        assert Path(out).name == "model-BF16-00001-of-00002.gguf"
+
+    def test_detect_gguf_model_keeps_split_symlink_name(self, tmp_path):
+        from utils.models.model_config import detect_gguf_model
+
+        blobs = tmp_path / "blobs"
+        blobs.mkdir()
+        snap = tmp_path / "snapshots" / "rev"
+        snap.mkdir(parents = True)
+        for i, sha in enumerate(("cc" * 32, "dd" * 32), start = 1):
+            (blobs / sha).write_bytes(b"\0" * 10)
+            (snap / f"model-BF16-0000{i}-of-00002.gguf").symlink_to(blobs / sha)
+
+        out = detect_gguf_model(str(snap))
+        assert out is not None
+        assert Path(out).name in {
+            "model-BF16-00001-of-00002.gguf",
+            "model-BF16-00002-of-00002.gguf",
+        }
 
     def test_model_config_variant_ignores_big_endian_sibling(self, tmp_path):
         from utils.models.model_config import ModelConfig

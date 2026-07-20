@@ -1452,7 +1452,8 @@ def detect_gguf_model(path: str) -> Optional[str]:
             gguf_files.append(f)
         gguf_files.sort(key = lambda f: f.stat().st_size, reverse = True)
         if gguf_files:
-            return str(gguf_files[0].resolve())
+            # Preserve symlink names so llama.cpp can find sibling split-GGUF shards.
+            return str(gguf_files[0].absolute())
 
     return None
 
@@ -1879,7 +1880,7 @@ def _find_local_gguf_by_variant(directory: str, variant: str) -> Optional[str]:
     For sharded GGUFs (multiple files sharing a quant label), returns the
     first shard (sorted by name), which is what ``llama-server -m`` expects.
 
-    Returns the resolved absolute path, or ``None`` if no match.
+    Returns the absolute path, or ``None`` if no match.
     """
     p = _resolve_gguf_dir(Path(directory))
     if p is None:
@@ -1900,7 +1901,8 @@ def _find_local_gguf_by_variant(directory: str, variant: str) -> Optional[str]:
         matches.append(f)
     matches.sort()
     if matches:
-        return str(matches[0].resolve())
+        # Do not resolve HF cache symlinks: llama.cpp uses shard names to find siblings.
+        return str(matches[0].absolute())
     return None
 
 
