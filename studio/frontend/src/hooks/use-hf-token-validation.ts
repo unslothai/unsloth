@@ -2,7 +2,7 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { validateHfToken } from "@/features/hf-auth";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useDebouncedValue } from "./use-debounced-value";
 
 export interface HfTokenValidationState {
@@ -15,6 +15,15 @@ const INITIAL: HfTokenValidationState = {
   isValid: null,
   error: null,
   isChecking: false,
+};
+
+interface CompletedValidation extends HfTokenValidationState {
+  token: string;
+}
+
+const NO_COMPLETED_VALIDATION: CompletedValidation = {
+  ...INITIAL,
+  token: "",
 };
 
 // Current user access tokens contain 34 characters after the hf_ prefix.
@@ -31,66 +40,73 @@ export function useHfTokenValidation(token: string): HfTokenValidationState {
     token.trim().replace(/^["']+|["']+$/g, ""),
     500,
   );
-  const [state, setState] = useState<HfTokenValidationState>(INITIAL);
+  const [completed, setCompleted] = useState<CompletedValidation>(
+    NO_COMPLETED_VALIDATION,
+  );
   const versionRef = useRef(0);
+  const shouldValidate = COMPLETE_HF_TOKEN.test(debouncedToken);
 
-  const runCheck = useCallback(async (t: string) => {
-    if (!t) {
-      setState({ isValid: null, error: null, isChecking: false });
+  useEffect(() => {
+    if (!shouldValidate) {
+      versionRef.current += 1;
       return;
     }
-
-    const v = ++versionRef.current;
-    setState((prev) => ({ ...prev, isChecking: true, error: null }));
-
-    try {
-      const result = await validateHfToken(t);
-      if (versionRef.current !== v) return;
-      if (result.status === "valid") {
-        setState({ isValid: true, error: null, isChecking: false });
-      } else if (result.status === "invalid") {
-        setState({
-          isValid: false,
-          error: "invalid or expired token",
-          isChecking: false,
-        });
-      } else if (result.status === "rate_limited") {
-        const wait = result.retryAfterSeconds
-          ? ` Try again in about ${Math.ceil(result.retryAfterSeconds / 60)} minute(s).`
-          : " Try again later.";
-        setState({
-          isValid: null,
-          error: `Token verification is rate limited.${wait}`,
-          isChecking: false,
-        });
-      } else {
-        setState({
+    const version = ++versionRef.current;
+    void validateHfToken(debouncedToken).then(
+      (result) => {
+        if (versionRef.current !== version) return;
+        if (result.status === "valid") {
+          setCompleted({
+            token: debouncedToken,
+            isValid: true,
+            error: null,
+            isChecking: false,
+          });
+        } else if (result.status === "invalid") {
+          setCompleted({
+            token: debouncedToken,
+            isValid: false,
+            error: "invalid or expired token",
+            isChecking: false,
+          });
+        } else if (result.status === "rate_limited") {
+          const wait = result.retryAfterSeconds
+            ? ` Try again in about ${Math.ceil(result.retryAfterSeconds / 60)} minute(s).`
+            : " Try again later.";
+          setCompleted({
+            token: debouncedToken,
+            isValid: null,
+            error: `Token verification is rate limited.${wait}`,
+            isChecking: false,
+          });
+        } else {
+          setCompleted({
+            token: debouncedToken,
+            isValid: null,
+            error: "Could not verify the token. Check your connection and try again.",
+            isChecking: false,
+          });
+        }
+      },
+      () => {
+        if (versionRef.current !== version) return;
+        setCompleted({
+          token: debouncedToken,
           isValid: null,
           error: "Could not verify the token. Check your connection and try again.",
           isChecking: false,
         });
-      }
-    } catch {
-      if (versionRef.current !== v) return;
-      setState({
-        isValid: null,
-        error: "Could not verify the token. Check your connection and try again.",
-        isChecking: false,
-      });
-    }
-  }, []);
+      },
+    );
+  }, [debouncedToken, shouldValidate]);
 
-  useEffect(() => {
-    if (!debouncedToken) {
-      setState(INITIAL);
-      return;
-    }
-    if (!COMPLETE_HF_TOKEN.test(debouncedToken)) {
-      setState(INITIAL);
-      return;
-    }
-    runCheck(debouncedToken);
-  }, [debouncedToken, runCheck]);
-
-  return state;
+  if (!shouldValidate) return INITIAL;
+  if (completed.token !== debouncedToken) {
+    return { isValid: null, error: null, isChecking: true };
+  }
+  return {
+    isValid: completed.isValid,
+    error: completed.error,
+    isChecking: false,
+  };
 }
