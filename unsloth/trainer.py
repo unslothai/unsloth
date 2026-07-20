@@ -17,6 +17,7 @@ import os
 import psutil
 import warnings
 from dataclasses import dataclass, field
+from types import SimpleNamespace
 from typing import Optional, List
 from functools import wraps
 
@@ -266,6 +267,39 @@ def _is_hybrid_linear_attention_model(model) -> bool:
         if has_recurrent and hasattr(module, "conv1d"):
             return True
     return False
+
+
+def _resolve_string_model_config(model_name, config_arg):
+    """TRL materializes a string ``model=`` inside ``__init__``; resolve its config
+    up front so the packing guards run before the dataset is packed. Best-effort:
+    returns None if the config cannot be loaded."""
+    try:
+        from transformers import AutoConfig
+
+        init_kwargs = getattr(config_arg, "model_init_kwargs", None) or {}
+        forward = {
+            key: init_kwargs[key]
+            for key in ("trust_remote_code", "revision", "subfolder")
+            if key in init_kwargs
+        }
+        return AutoConfig.from_pretrained(model_name, **forward)
+    except Exception:
+        return None
+
+
+def _chunked_loss_bypasses_forward(config) -> bool:
+    """TRL's default ``loss_type="chunked_nll"`` patches the model forward and calls
+    the backbone directly, so a forward wrapper never runs. Detect it so hybrid
+    packing stays on the padded path instead of silently skipping the varlen shim."""
+    try:
+        import trl.trainer.sft_trainer as _sft_trainer
+    except Exception:
+        return False
+    if not hasattr(_sft_trainer, "_patch_chunked_ce_lm_head"):
+        return False  # TRL has no chunked-CE path -> forward is not bypassed
+    if getattr(config, "use_liger_kernel", False):
+        return False  # liger forces loss_type="nll" -> normal forward
+    return getattr(config, "loss_type", None) in (None, "chunked_nll")
 
 
 # Unsloth gradient accumulation fix:
@@ -633,19 +667,34 @@ def _patch_sft_trainer_auto_packing(trl_module):
         is_vlm = False
         is_unsupported_model = False
         is_hybrid = False
+        is_encoder_decoder = False
         hybrid_varlen_active = False
         if model is not None:
             model_config = getattr(model, "config", None)
+            if model_config is None and isinstance(model, str):
+                # TRL builds a string model inside __init__; resolve its config now.
+                model_config = _resolve_string_model_config(model, config_arg)
             if model_config is not None:
                 model_types = get_transformers_model_type(model_config)
                 is_unsupported_model = any(x in PADDING_FREE_BLOCKLIST for x in model_types)
                 is_vlm = _is_vlm_config(model_config, model_types)
-            is_hybrid = _is_hybrid_linear_attention_model(model)
-            if is_hybrid:
-                # Hybrid linear-attention models corrupt packed batches unless the
-                # gated-delta conv + scan reset at sequence boundaries. Enable the
-                # experimental varlen shim (flag + kernels) so packing stays correct;
-                # otherwise keep them blocked.
+                is_encoder_decoder = bool(getattr(model_config, "is_encoder_decoder", False))
+            hybrid_target = (
+                SimpleNamespace(config = model_config)
+                if isinstance(model, str) and model_config is not None
+                else model
+            )
+            is_hybrid = _is_hybrid_linear_attention_model(hybrid_target)
+            # Hybrid linear-attention models corrupt packed batches unless the gated-delta
+            # conv + scan reset at sequence boundaries. Enable the experimental varlen shim
+            # (flag + kernels) so packing stays correct; otherwise keep them blocked. A
+            # string model (patched only after init) and TRL's chunked-loss forward bypass
+            # both leave the shim off, so hybrid packing falls back to the padded path.
+            if (
+                is_hybrid
+                and not isinstance(model, str)
+                and not _chunked_loss_bypasses_forward(config_arg)
+            ):
                 try:
                     hybrid_varlen_active = patch_hybrid_linear_attention_varlen(model)
                 except Exception:
@@ -675,6 +724,7 @@ def _patch_sft_trainer_auto_packing(trl_module):
             or is_auto_processor_vlm
             or is_vision_dataset
             or is_unsupported_model
+            or is_encoder_decoder
             or (is_hybrid and not hybrid_varlen_active)
             or (
                 os.environ.get("UNSLOTH_RETURN_LOGITS", "0") == "1"
@@ -695,6 +745,8 @@ def _patch_sft_trainer_auto_packing(trl_module):
                 reason = "vision-language model with auto processor"
             elif is_vision_dataset:
                 reason = "vision dataset"
+            elif is_encoder_decoder:
+                reason = "encoder-decoder model"
             elif is_hybrid and not hybrid_varlen_active:
                 reason = "hybrid linear-attention model"
             elif is_unsupported_model:

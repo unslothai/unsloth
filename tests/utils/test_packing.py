@@ -568,27 +568,99 @@ def test_vlm_without_processing_class_still_disables_packing():
         ("t5", "T5ForConditionalGeneration"),
         ("bart", "BartForConditionalGeneration"),
         ("whisper", "WhisperForConditionalGeneration"),
-        ("csm", "CsmForConditionalGeneration"),
     ),
 )
-def test_nonvision_conditional_generation_keeps_packing(model_type, architecture):
+def test_encoder_decoder_disables_packing(model_type, architecture):
+    # Text-only encoder-decoder models are not VLMs, but their bidirectional encoder
+    # attends across concatenated samples once padding-free drops attention_mask.
     fake_trainer = _patch_fake_sft_trainer()
     config = SimpleNamespace(packing = True, padding_free = None, remove_unused_columns = True)
     model = SimpleNamespace(
-        config = SimpleNamespace(model_type = model_type, architectures = [architecture]),
+        config = SimpleNamespace(
+            model_type = model_type,
+            architectures = [architecture],
+            is_encoder_decoder = True,
+        ),
         max_seq_length = 16,
     )
 
-    trainer = fake_trainer(
-        model,
-        config,
-        None,
-        Dataset.from_dict({"text": ["text-only sample"]}),
+    trainer = fake_trainer(model, config, None, Dataset.from_dict({"text": ["text-only sample"]}))
+
+    assert config.packing is False
+    assert config.padding_free is False
+
+
+def test_decoder_only_conditional_generation_keeps_packing():
+    # CSM is decoder-only despite the ForConditionalGeneration name -> packing stays on.
+    fake_trainer = _patch_fake_sft_trainer()
+    config = SimpleNamespace(packing = True, padding_free = None, remove_unused_columns = True)
+    model = SimpleNamespace(
+        config = SimpleNamespace(
+            model_type = "csm",
+            architectures = ["CsmForConditionalGeneration"],
+            is_encoder_decoder = False,
+        ),
+        max_seq_length = 16,
     )
+
+    trainer = fake_trainer(model, config, None, Dataset.from_dict({"text": ["text-only sample"]}))
 
     assert config.packing is True
     assert config.padding_free is True
     assert trainer.model._unsloth_allow_packed_overlength is True
+
+
+def _hybrid_trainer_model():
+    return SimpleNamespace(
+        config = SimpleNamespace(
+            model_type = "qwen3_next",
+            architectures = ["Qwen3NextForCausalLM"],
+            layer_types = ["linear_attention", "full_attention"],
+        ),
+        max_seq_length = 16,
+    )
+
+
+def test_hybrid_varlen_active_enables_packing(monkeypatch):
+    # Baseline: shim active + no forward bypass -> hybrid packing is allowed.
+    monkeypatch.setattr(trainer_module, "_chunked_loss_bypasses_forward", lambda config: False)
+    monkeypatch.setattr(trainer_module, "patch_hybrid_linear_attention_varlen", lambda model: True)
+    fake_trainer = _patch_fake_sft_trainer()
+    config = SimpleNamespace(packing = True, padding_free = None, remove_unused_columns = True)
+    fake_trainer(_hybrid_trainer_model(), config, None, Dataset.from_dict({"text": ["x"]}))
+    assert config.packing is True
+    assert config.padding_free is True
+
+
+def test_hybrid_chunked_loss_stays_on_padded_path(monkeypatch):
+    # TRL's chunked-loss forward bypass leaves the varlen shim off -> block packing.
+    monkeypatch.setattr(trainer_module, "_chunked_loss_bypasses_forward", lambda config: True)
+    monkeypatch.setattr(trainer_module, "patch_hybrid_linear_attention_varlen", lambda model: True)
+    fake_trainer = _patch_fake_sft_trainer()
+    config = SimpleNamespace(packing = True, padding_free = None, remove_unused_columns = True)
+    fake_trainer(_hybrid_trainer_model(), config, None, Dataset.from_dict({"text": ["x"]}))
+    assert config.packing is False
+    assert config.padding_free is False
+
+
+def test_string_hybrid_model_disables_packing(monkeypatch):
+    # A string model= is materialized after init; a hybrid string is blocked because the
+    # shim cannot patch a not-yet-built model.
+    monkeypatch.setattr(
+        trainer_module,
+        "_resolve_string_model_config",
+        lambda name, cfg: SimpleNamespace(
+            model_type = "qwen3_next",
+            architectures = ["Qwen3NextForCausalLM"],
+            layer_types = ["linear_attention", "full_attention"],
+        ),
+    )
+    monkeypatch.setattr(trainer_module, "patch_hybrid_linear_attention_varlen", lambda model: True)
+    fake_trainer = _patch_fake_sft_trainer()
+    config = SimpleNamespace(packing = True, padding_free = None, remove_unused_columns = True)
+    fake_trainer("Qwen/Qwen3-Next-80B-A3B", config, None, Dataset.from_dict({"text": ["x"]}))
+    assert config.packing is False
+    assert config.padding_free is False
 
 
 def test_vlm_vision_dataset_still_disables_packing():
