@@ -10,7 +10,7 @@ REPO = Path(__file__).resolve().parents[2]
 FRONTEND = REPO / "studio/frontend/src"
 NATIVE_FILES = FRONTEND / "lib/native-files.ts"
 CHAT_EXPORT = FRONTEND / "features/chat/utils/export-chat-history.ts"
-CHAT_TAB = FRONTEND / "features/settings/tabs/chat-tab.tsx"
+DATA_TAB = FRONTEND / "features/settings/tabs/data-tab.tsx"
 PROMPT_STORAGE = FRONTEND / "features/chat/prompt-storage/prompt-storage-dialog.tsx"
 
 APP_SIDEBAR = FRONTEND / "components/app-sidebar.tsx"
@@ -27,7 +27,7 @@ APP_PROVIDER = FRONTEND / "app/provider.tsx"
 def test_file_actions_route_through_native_commands_only_in_tauri():
     helper = NATIVE_FILES.read_text(encoding = "utf-8")
     history = CHAT_EXPORT.read_text(encoding = "utf-8")
-    chat_tab = CHAT_TAB.read_text(encoding = "utf-8")
+    data_tab = DATA_TAB.read_text(encoding = "utf-8")
     prompt_storage = PROMPT_STORAGE.read_text(encoding = "utf-8")
 
     assert 'invoke<string | null>("save_native_file", bytes, {' in helper
@@ -38,11 +38,11 @@ def test_file_actions_route_through_native_commands_only_in_tauri():
     assert 'document.createElement("a")' in helper
     assert "downloadFile(" in history
     assert "downloadFile(" in prompt_storage
-    assert "pickNativeChatImport" in chat_tab
-    assert "if (!isTauri)" in chat_tab
+    assert "pickNativeChatImport" in data_tab
+    assert "if (!isTauri)" in data_tab
     # Browser builds retain the existing hidden-input route.
-    assert 'type="file"' in chat_tab
-    assert 'accept=".jsonl,.ndjson,.csv"' in chat_tab
+    assert 'type="file"' in data_tab
+    assert 'accept=".jsonl,.ndjson,.csv"' in data_tab
 
     native_dialogs = NATIVE_DIALOGS.read_text(encoding = "utf-8")
     assert 'CHAT_IMPORT_EXTENSIONS: &[&str] = &["jsonl", "ndjson", "csv"]' in native_dialogs

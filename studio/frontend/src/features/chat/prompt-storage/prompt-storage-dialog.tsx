@@ -761,7 +761,7 @@ export async function exportFineTuneJsonl(
     return 0;
   }
   const suffix = format === "openai" ? "" : `-${format}`;
-  downloadBlob(
+  await downloadBlob(
     lines.join("\n"),
     `chat-finetune${suffix}-${exportTs()}.jsonl`,
     "application/x-ndjson",

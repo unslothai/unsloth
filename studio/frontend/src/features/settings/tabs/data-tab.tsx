@@ -198,7 +198,6 @@ export function DataTab() {
     }
   };
 
-
   const handleImportClick = async () => {
     if (!isTauri) {
       importInputRef.current?.click();
