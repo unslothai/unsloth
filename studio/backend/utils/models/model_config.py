@@ -2241,19 +2241,99 @@ def _dir_has_complete_torch_weights(names: set) -> bool:
     return False
 
 
+# Weight-index files a ``from_pretrained`` / sentence-transformers load follows to locate sharded
+# weights. Its ``weight_map`` is AUTHORITATIVE about which shards the load reads, so every mapped
+# shard must be present -- the ``model-*-of-*`` FILENAME numbering above is only a proxy for it.
+# All (stem, ext) combinations of the base weight set are listed so a ``pytorch_model.bin`` shard
+# set is validated the same way as a ``model.safetensors`` one.
+_ST_WEIGHT_INDEX_FILES = (
+    "model.safetensors.index.json",
+    "model.bin.index.json",
+    "pytorch_model.safetensors.index.json",
+    "pytorch_model.bin.index.json",
+)
+
+
+def _index_weight_set_complete(index_path: Path) -> Optional[bool]:
+    """Parse a weight-index and confirm every shard its ``weight_map`` references is present,
+    resolved RELATIVE TO the index's own directory (a ``weight_map`` value may name a
+    subdirectory, e.g. ``weights/model-00001-of-00002.safetensors``). Mirrors
+    ``utils/security/file_security._safetensors_index_complete`` on the classification side (#7218
+    P5) so a snapshot with a sharded index but a MISSING shard is rejected instead of validated
+    then 409'd at the local_files_only load.
+
+    Returns True when every mapped shard is present, False when the index parses but its shard set
+    is empty or incomplete, and None when the index is unreadable / not valid JSON / has no
+    ``weight_map`` (a stub or partial write) so the caller can fall back to the filename-numbering
+    heuristic. Never raises."""
+    try:
+        data = json.loads(index_path.read_text(encoding = "utf-8"))
+    except (OSError, ValueError):
+        return None
+    weight_map = data.get("weight_map") if isinstance(data, dict) else None
+    if not isinstance(weight_map, dict):
+        return None
+    shards = set()
+    for shard in weight_map.values():
+        rel = str(shard).strip().replace("\\", "/")
+        while rel.startswith("./"):
+            rel = rel[2:]
+        rel = rel.lstrip("/")
+        if rel:
+            shards.add(rel)
+    if not shards:
+        return None
+    base = index_path.parent
+    for shard_rel in shards:
+        try:
+            if not base.joinpath(*shard_rel.split("/")).is_file():
+                return False
+        except OSError:
+            return False
+    return True
+
+
+def _dir_weight_set_is_complete(dir_path: Path, names: set) -> bool:
+    """True when *dir_path* (whose direct file basenames are *names*) holds a COMPLETE Torch weight
+    set the way a load reads it: a single unsharded ``model.safetensors`` / ``pytorch_model.bin``;
+    or, when a weight-index is present AND parseable, every shard its ``weight_map`` references
+    (authoritative, resolved relative to *dir_path*, subdirectory values included); else the
+    filename-numbering shard heuristic (:func:`_dir_has_complete_torch_weights`) as a fallback for
+    an unreadable / stub index. Never raises."""
+    # 1. An unsharded base weight is always sufficient.
+    for stem in ("model", "pytorch_model"):
+        for ext in ("safetensors", "bin"):
+            if f"{stem}.{ext}" in names:
+                return True
+    # 2. A present, parseable weight-index is authoritative: require every mapped shard present.
+    saw_parseable_index = False
+    for index_name in _ST_WEIGHT_INDEX_FILES:
+        if index_name in names:
+            verdict = _index_weight_set_complete(dir_path / index_name)
+            if verdict is True:
+                return True
+            if verdict is False:
+                saw_parseable_index = True
+    if saw_parseable_index:
+        return False  # a mapped shard is missing -> the local_files_only load would fail
+    # 3. Fallback: numbering heuristic on basenames (unreadable / stub index, or no index at all).
+    return _dir_has_complete_torch_weights(names)
+
+
 _ST_CONFIG_FILES = ("config.json", "config_sentence_transformers.json")
 
 
-def _dir_is_transformer_load_root(names: set) -> bool:
-    """True when one directory's files (*names*) form a COMPLETE Transformer / plain-HF load
-    root: an ST/HF config, a usable tokenizer and a complete Torch weight set, all co-located.
-    This is the shape ``modules.json`` sends a Transformer module (or a bare from_pretrained)
-    at -- the per-directory unit the snapshot checks share."""
+def _dir_is_transformer_load_root(dir_path: Path, names: set) -> bool:
+    """True when one directory's files (*names*, taken from *dir_path*) form a COMPLETE Transformer
+    / plain-HF load root: an ST/HF config, a usable tokenizer and a complete Torch weight set, all
+    co-located. This is the shape ``modules.json`` sends a Transformer module (or a bare
+    from_pretrained) at -- the per-directory unit the snapshot checks share. *dir_path* is threaded
+    through so a sharded weight-index is validated against its ``weight_map`` (#7218 P5)."""
     if not any(cfg in names for cfg in _ST_CONFIG_FILES):
         return False
     if not _names_have_tokenizer(names):
         return False
-    return _dir_has_complete_torch_weights(names)
+    return _dir_weight_set_is_complete(dir_path, names)
 
 
 def _declared_load_root_dirs(snap: Path) -> set:
@@ -2317,8 +2397,8 @@ def _snapshot_has_complete_weights(snap: Path) -> bool:
                     by_dir.setdefault(path.parent, set()).add(path.name)
             except OSError:
                 continue
-        for names in by_dir.values():
-            if _dir_is_transformer_load_root(names):
+        for dir_path, names in by_dir.items():
+            if _dir_is_transformer_load_root(dir_path, names):
                 return True
         return False
     except OSError:
@@ -2356,8 +2436,8 @@ def _dir_file_names(dir_path: Path) -> set:
 #   * WeightedLayerPooling  sentence_transformer/modules/weighted_layer_pooling.py:74
 #   * SparseAutoEncoder     sparse_encoder/modules/sparse_auto_encoder.py:226
 # All ship a ``config.json`` / ``*_config.json`` (LayerNorm / WeightedLayerPooling /
-# SparseAutoEncoder inherit the default ``config_file_name = "config.json"``), so they pass the
-# config-presence gate above. Deliberately EXCLUDED (their ``load()`` reads no weight file):
+# SparseAutoEncoder inherit the default ``config_file_name = "config.json"``), so they satisfy the
+# module-config gate in their branch. Deliberately EXCLUDED (their ``load()`` reads no weight file):
 # ``Pooling`` / ``SpladePooling`` / ``Normalize`` / ``Dropout`` read nothing; ``BoW`` /
 # ``WordWeights`` keep their data in ``config.json`` and reconstruct it on the config-only base
 # ``Module.load()`` (their ``save()`` writes weights, but ``load()`` never reads them).
@@ -2413,46 +2493,102 @@ def _names_have_word_embeddings_tokenizer(names: set) -> bool:
 _ST_ROUTER_MODULE_NAMES = frozenset({"router", "asym"})
 _ST_ROUTER_CONFIG_FILE = "router_config.json"
 
+# Transformer-SHAPED module classes: sentence-transformers loads each as a full HF model with a
+# tokenizer/processor, so a directory needs config + tokenizer/processor + weights (a Transformer
+# load root), not a config alone. ``CLIPModel(Transformer)`` (sentence_transformer/modules/
+# clip_model.py:11) -- its ``load()`` calls ``Transformer._load_init_kwargs`` then
+# ``Transformer.__init__``, which reads ``AutoConfig`` + ``AutoModel.from_pretrained`` (weights) +
+# ``AutoProcessor.from_pretrained`` (processor/tokenizer) (base/modules/transformer.py:654-674), so
+# a config-only CLIP dir validates offline then 409s at the local-only load (#7218 P3). Classes
+# whose name already contains ``transformer`` (``Transformer`` / ``MLMTransformer``) route through
+# the same check without being listed here.
+_ST_TRANSFORMER_SHAPED_MODULE_NAMES = frozenset({"clipmodel"})
+
+# ``SparseStaticEmbedding.load()`` (sparse_encoder/modules/sparse_static_embedding.py:157-226) reads
+# a tokenizer (``AutoTokenizer.from_pretrained``, line 193) and then EITHER, when ``config.json``
+# names a ``.json`` ``path``, an IDF json via ``from_json`` -> ``load_file_path(..., "idf.json")``
+# (line 131-141, NO weight file) OR a complete Torch weight set via ``load_torch_weights``
+# (line 217, RAISES without ``model.safetensors`` / ``pytorch_model.bin``). So it is CONDITIONALLY
+# weight-bearing -- adding it to ``_ST_WEIGHTED_MODULE_NAMES`` would wrongly require weights for the
+# idf.json variant -- and gets its own branch requiring tokenizer + (idf data OR weights) (#7218 P3).
+_ST_SPARSE_IDF_DATA_FILE = "idf.json"
+
+# Sentence-transformers module classes whose ``load()`` reads ONLY a config file (no weights, no
+# tokenizer): a present module config is their sole load requirement. From the v5 source:
+# ``Pooling`` / ``SpladePooling`` / ``Dropout`` read config only; ``BoW`` / ``WordWeights`` keep
+# their vocab/weights INSIDE ``config.json`` and reconstruct it on the config-only base
+# ``Module.load()`` (their ``save()`` writes a weight file, but ``load()`` never reads it).
+_ST_CONFIG_ONLY_MODULE_NAMES = frozenset(
+    {"pooling", "spladepooling", "dropout", "bow", "wordweights"}
+)
+
+
+def _dir_has_module_config(names: set) -> bool:
+    """True when *names* hold a module config (``config.json`` or any ``*_config.json``)."""
+    return any(name == "config.json" or name.endswith("_config.json") for name in names)
+
 
 def _module_dir_is_loadable(cls: str, is_root: bool, dir_path: Path) -> bool:
     """True when *dir_path* carries the files the sentence-transformers module class *cls*
-    reads in its own ``load()`` (see sentence_transformers/models/*.py):
+    reads in its own ``load()`` (see sentence_transformers/{base,sentence_transformer,sparse_encoder}
+    /modules/*.py). Dispatch is on *cls* FIRST, BEFORE any root-Transformer fallback: a module with
+    ``save_in_root = True`` (every ``InputModule`` -- ``WordEmbeddings`` / ``StaticEmbedding`` /
+    ``SparseStaticEmbedding`` / ``Transformer`` / ``Router`` ...) is saved at the snapshot ROOT
+    (path ``""``; base/model.py:661-666), so a declared non-Transformer root module must be judged by
+    ITS OWN ``load()``, not held to Transformer root requirements it never writes (#7218 P1):
 
-    * a ``Transformer`` module (or a plain root with no recognized ST module class) is a full HF
-      load root (config + tokenizer + weights);
+    * a ``Transformer`` / ``MLMTransformer`` / ``CLIPModel`` module is a full HF load root
+      (config + tokenizer/processor + weights), at the root or in a subdir;
     * a ``Router`` / ``Asym`` reads ``router_config.json`` and loads its declared children, so it
       is loadable when those children are -- even at the root, where it has no weights of its own;
     * ``Normalize`` reads nothing;
     * ``StaticEmbedding`` reads a ``tokenizer.json`` + a complete Torch weight set and NO config;
-    * a WEIGHTED module (``WordEmbeddings`` / ``Dense`` / ``CNN`` / ``LSTM``) needs its module
-      config AND a complete Torch weight set (its ``load()`` hard-loads ``model.safetensors`` /
-      ``pytorch_model.bin``); ``WordEmbeddings`` additionally rebuilds a tokenizer from the dir,
-      so it also needs a tokenizer artifact;
-    * every other module (``BoW``, ``Pooling`` ...) reads only a ``config.json`` / ``*_config``,
-      so a present module config is the load requirement."""
-    if "transformer" in cls:
-        return _dir_is_transformer_load_root(_dir_file_names(dir_path))
+    * ``SparseStaticEmbedding`` reads a tokenizer + EITHER an ``idf.json`` OR a complete Torch weight
+      set (conditionally weight-bearing);
+    * a WEIGHTED module (``WordEmbeddings`` / ``Dense`` / ``CNN`` / ``LSTM`` / ``LayerNorm`` /
+      ``WeightedLayerPooling`` / ``SparseAutoEncoder``) needs its module config AND a complete Torch
+      weight set (its ``load()`` hard-loads ``model.safetensors`` / ``pytorch_model.bin``);
+      ``WordEmbeddings`` additionally rebuilds a tokenizer from the dir, so it also needs a tokenizer;
+    * a recognized config-only module (``BoW`` / ``Pooling`` / ``Dropout`` / ``WordWeights`` /
+      ``SpladePooling``) reads only a config, so a present module config is the load requirement;
+    * an UNRECOGNIZED / absent class falls back to the plain-``from_pretrained`` load root at the
+      snapshot root (config + tokenizer + weights), else the lenient config-only requirement in a
+      declared subdir (preserves prior behaviour for module classes not enumerated here)."""
+    names = _dir_file_names(dir_path)
+    # Transformer-shaped: a full HF load root (config + tokenizer/processor + weights), root or subdir.
+    if "transformer" in cls or cls in _ST_TRANSFORMER_SHAPED_MODULE_NAMES:
+        return _dir_is_transformer_load_root(dir_path, names)
+    # Router / Asym: loadable when its router_config.json children are (no weights of its own).
     if cls in _ST_ROUTER_MODULE_NAMES:
         return _router_dir_is_loadable(dir_path)
-    if is_root:
-        return _dir_is_transformer_load_root(_dir_file_names(dir_path))
+    # Normalize reads nothing.
     if cls == "normalize":
         return True
-    names = _dir_file_names(dir_path)
+    # StaticEmbedding: a tokenizer.json + a complete Torch weight set, and NO config file.
     if cls == "staticembedding":
-        # No config on disk: recognized by the tokenizer + weights its load() actually reads.
-        return _ST_STATIC_EMBEDDING_TOKENIZER_FILE in names and _dir_has_complete_torch_weights(
-            names
+        return _ST_STATIC_EMBEDDING_TOKENIZER_FILE in names and _dir_weight_set_is_complete(
+            dir_path, names
         )
-    if not any(name == "config.json" or name.endswith("_config.json") for name in names):
-        return False
+    # SparseStaticEmbedding: a tokenizer + (an idf.json OR a complete Torch weight set).
+    if cls == "sparsestaticembedding":
+        if not _names_have_tokenizer(names):
+            return False
+        return _ST_SPARSE_IDF_DATA_FILE in names or _dir_weight_set_is_complete(dir_path, names)
+    # A weighted non-Transformer module: its module config AND a complete Torch weight set.
     if cls in _ST_WEIGHTED_MODULE_NAMES:
-        if not _dir_has_complete_torch_weights(names):
+        if not _dir_has_module_config(names) or not _dir_weight_set_is_complete(dir_path, names):
             return False
         if cls == "wordembeddings":
             return _names_have_word_embeddings_tokenizer(names)
         return True
-    return True
+    # A recognized config-only module: a present module config is the load requirement.
+    if cls in _ST_CONFIG_ONLY_MODULE_NAMES:
+        return _dir_has_module_config(names)
+    # Unrecognized / absent class: the plain from_pretrained load root at the snapshot root, else the
+    # lenient config-only requirement in a declared subdir.
+    if is_root:
+        return _dir_is_transformer_load_root(dir_path, names)
+    return _dir_has_module_config(names)
 
 
 def _router_dir_is_loadable(dir_path: Path) -> bool:
@@ -2545,8 +2681,9 @@ def _modules_json_declares_modules(snap: Path) -> bool:
     ``modules.json`` is authoritative about what a SentenceTransformer load builds: when it
     declares one or more modules the loader calls ``module_class.load(path)`` for EVERY one, so
     the whole declared set must be loadable. An empty list / a non-list / an unreadable file
-    declares nothing usable -- the load then reads the snapshot root as a plain Transformer -- so
-    the caller falls back to the Transformer-shaped weight check. Never raises."""
+    declares nothing usable, and (because ``modules.json`` is PRESENT) the load does NOT fall back
+    to a root Transformer -- an empty list builds zero modules and a malformed file raises -- so the
+    caller reads such a snapshot as not loadable. Never raises."""
     try:
         modules = json.loads((snap / "modules.json").read_text(encoding = "utf-8"))
     except (OSError, ValueError):
@@ -2564,19 +2701,26 @@ def _snapshot_is_loadable_st_model(snap: Path) -> bool:
     be loadable (:func:`_snapshot_modules_all_loadable`): a complete ``0_Transformer`` must NOT
     vouch for a sibling module (e.g. ``LayerNorm`` / ``WeightedLayerPooling`` / ``Dense``) whose
     serialized weights are missing -- that snapshot passes offline validation and then 409s at
-    the local-only load (#7218 P2). Only when ``modules.json`` declares nothing usable (an empty
-    list / not a list / unreadable) does the load read the snapshot ROOT as a plain Transformer,
-    so fall back to the Transformer-shaped weight set (:func:`_snapshot_has_complete_weights`),
-    which also covers the plain ``from_pretrained`` root layout. Behaviour-preserving for a
-    WELL-FORMED complete snapshot -- a normal download has every declared module's weights, so
-    acceptance is unchanged; only a snapshot with a genuinely incomplete declared module is now
-    rejected."""
+    the local-only load (#7218 P2).
+
+    A PRESENT ``modules.json`` that declares nothing usable (an empty list / not a list) or is
+    malformed is NOT a loadable model and does NOT fall back to a root Transformer: with
+    ``modules.json`` present the loader takes ``base/model.py`` ``_load_config_modules``, which
+    ``json.load``s the file (a malformed body RAISES) and iterates the list (an empty list builds
+    ZERO modules); the plain-Transformer fallback (``_load_default_modules``) is reached ONLY when
+    ``modules.json`` is ABSENT (``_load_modules`` -> ``modules_json_path is None``). So the earlier
+    fall-through to :func:`_snapshot_has_complete_weights` here was a false positive -- a snapshot
+    with a stub/empty ``modules.json`` but complete root weights was accepted and then 409'd at the
+    local-only load (#7218 P4). The plain ``from_pretrained`` root (a tag-only embedder with NO
+    ``modules.json``) is classified elsewhere in :func:`is_embedding_model` via the recorded verdict
+    plus :func:`_snapshot_has_complete_weights`, so restricting this marker check to a real declared
+    module set does not regress it."""
     try:
         if not (snap / "modules.json").is_file():
             return False
         if _modules_json_declares_modules(snap):
             return _snapshot_modules_all_loadable(snap)
-        return _snapshot_has_complete_weights(snap)
+        return False
     except OSError:
         return False
 

@@ -46,6 +46,19 @@ _maybe_stub("structlog", _build_structlog_stub)
 import utils.models.model_config as mc  # noqa: E402
 
 
+# A realistic modules.json for a snapshot whose config + tokenizer + weights sit at the ROOT: a
+# single Transformer declared at path "" -- exactly how SentenceTransformer saves the first module
+# when its save_in_root is True (base/model.py:661-666). SentenceTransformer treats the PRESENCE of
+# modules.json as the ST marker but builds ZERO modules from an empty "[]" list and NEVER falls back
+# to a root Transformer while modules.json is present (base/model.py _load_config_modules), so an
+# "[]" body is an UNREALISTIC, unloadable snapshot (#7218 P4). Declaring the real root Transformer
+# keeps these fixtures asserting a genuinely loadable model while the root files remain the single
+# gating load root the tests exercise.
+_ROOT_TRANSFORMER_MODULES = json.dumps(
+    [{"idx": 0, "name": "0", "path": "", "type": "sentence_transformers.models.Transformer"}]
+)
+
+
 @pytest.fixture(autouse = True)
 def _clean_state(tmp_path, monkeypatch):
     mc._embedding_detection_cache.clear()
@@ -81,7 +94,7 @@ def _repo(
         (d / "tokenizer.json").write_text("{}")
         (d / "model.safetensors").write_bytes(b"\0")
         if is_st:
-            (d / "modules.json").write_text("[]")
+            (d / "modules.json").write_text(_ROOT_TRANSFORMER_MODULES)
         dirs.append(d)
     if main_ref is not None:
         refs = repo / "refs"
@@ -189,7 +202,7 @@ def _st_snapshot(
 ):
     snap = root / repo_dir / "snapshots" / commit
     snap.mkdir(parents = True)
-    (snap / "modules.json").write_text("[]")
+    (snap / "modules.json").write_text(_ROOT_TRANSFORMER_MODULES)
     if loadable:
         (snap / "config.json").write_text("{}")
         (snap / "tokenizer.json").write_text("{}")
@@ -304,8 +317,9 @@ def _cache_repo_with_files(
     Transformer module path -- the real SentenceTransformer layout, where each module is loaded
     FROM its declared path. A complete directory at an UNDECLARED path is never opened by the
     loader, so an ``[]`` modules.json next to files in ``0_Transformer/`` would be an
-    unrealistic snapshot (#7218). Root-level files need no declaration: a plain load reads the
-    snapshot root, which is always a candidate."""
+    unrealistic snapshot (#7218). Root-level files declare a single Transformer at path ``""`` --
+    the save_in_root layout a plain load reads from the snapshot root -- rather than an empty
+    ``[]`` list, which builds ZERO modules and is not a loadable ST model (#7218 P4)."""
     hf_root = tmp_path / "hf"
     repo = hf_root / "models--org--model"
     snap = repo / "snapshots" / commit
@@ -332,7 +346,7 @@ def _cache_repo_with_files(
             )
         )
     else:
-        (snap / "modules.json").write_text("[]")
+        (snap / "modules.json").write_text(_ROOT_TRANSFORMER_MODULES)
     (repo / "refs").mkdir(parents = True)
     (repo / "refs" / "main").write_text(commit)
     _fake_hf_cache(monkeypatch, hf_root)
@@ -1483,3 +1497,351 @@ def test_offline_negative_is_not_cached_then_online_detects(monkeypatch):
     monkeypatch.delenv("HF_HUB_OFFLINE", raising = False)
     assert mc.is_embedding_model("org/gte-modernbert") is True
     assert calls == ["org/gte-modernbert"]
+
+
+# ── #7218 P1: a save_in_root=True module declared at the snapshot root path "" ──
+
+
+_ROOT_WE = "org/root-wordembeddings"
+
+
+def _root_wordembeddings_repo(
+    tmp_path,
+    monkeypatch,
+    *,
+    include_tokenizer = True,
+    commit = "aaa",
+    repo_id = _ROOT_WE,
+):
+    """A WordEmbeddings model whose WordEmbeddings module is the FIRST module, saved at the ROOT
+    path "" -- the save_in_root=True layout (WordEmbeddings inherits InputModule.save_in_root=True;
+    SentenceTransformer.save writes the first such module at the root, base/model.py:661-666). The
+    root holds config_sentence_transformers.json + wordembedding_config.json + a whitespace-tokenizer
+    config + embedding weights, with a 1_Pooling subdir and NO HF config.json / tokenizer.json.
+    WordEmbeddings.load() reads exactly those files, but the Transformer-shaped root check fails on
+    the tokenizer, so the pristine `if is_root: _dir_is_transformer_load_root(...)` returned False and
+    the offline settings route 409'd it (#7218 P1). include_tokenizer=False prunes the tokenizer."""
+    hf_root = tmp_path / "hf"
+    repo = hf_root / f"models--{repo_id.replace('/', '--')}"
+    snap = repo / "snapshots" / commit
+    (snap / "1_Pooling").mkdir(parents = True)
+    (snap / "modules.json").write_text(
+        _modules_json(
+            ("0", "", "sentence_transformers.models.WordEmbeddings"),
+            ("1", "1_Pooling", "sentence_transformers.models.Pooling"),
+        )
+    )
+    (snap / "config_sentence_transformers.json").write_text("{}")
+    (snap / "wordembedding_config.json").write_text("{}")
+    if include_tokenizer:
+        (snap / "whitespacetokenizer_config.json").write_text("{}")
+    (snap / "model.safetensors").write_bytes(b"\0")
+    (snap / "1_Pooling" / "config.json").write_text("{}")
+    (repo / "refs").mkdir(parents = True)
+    (repo / "refs" / "main").write_text(commit)
+    _fake_hf_cache(monkeypatch, hf_root)
+    monkeypatch.delenv("SENTENCE_TRANSFORMERS_HOME", raising = False)
+    return snap
+
+
+def test_marker_accepts_root_wordembeddings_model(tmp_path, monkeypatch):
+    # A modern WordEmbeddings model saves its first module at the root path "" (save_in_root=True),
+    # so the WE files (wordembedding_config.json + whitespacetokenizer_config.json + weights) live at
+    # the root with NO HF config.json / tokenizer.json. Its WordEmbeddings.load() reads exactly those
+    # files, so it must be recognized -- the pristine code held the root to Transformer requirements
+    # (a usable HF tokenizer) it never saves and returned False, so #6817 recurred (#7218 P1).
+    _root_wordembeddings_repo(tmp_path, monkeypatch)
+    assert mc._embedding_marker_in_hf_cache(_ROOT_WE) is True
+
+
+def test_marker_rejects_root_wordembeddings_without_tokenizer(tmp_path, monkeypatch):
+    # Control: strip the whitespace-tokenizer config -> WordEmbeddings.load() would fail at
+    # tokenizer_class.load(dir), so the root module is not loadable.
+    _root_wordembeddings_repo(tmp_path, monkeypatch, include_tokenizer = False)
+    assert mc._embedding_marker_in_hf_cache(_ROOT_WE) is False
+
+
+_ROOT_STATIC = "org/root-staticembedding"
+
+
+def _root_staticembedding_repo(tmp_path, monkeypatch, *, include_weights = True, commit = "aaa"):
+    """A StaticEmbedding model whose StaticEmbedding module is saved at the ROOT path "" (save_in_root
+    =True). The root holds config_sentence_transformers.json + tokenizer.json + weights and NO module
+    config. StaticEmbedding already passes the pristine is_root Transformer check because it ships a
+    tokenizer.json + config_sentence_transformers.json + weights; dispatching StaticEmbedding through
+    its own branch BEFORE the root fallback must keep it loadable (#7218 P1)."""
+    hf_root = tmp_path / "hf"
+    repo = hf_root / f"models--{_ROOT_STATIC.replace('/', '--')}"
+    snap = repo / "snapshots" / commit
+    snap.mkdir(parents = True)
+    (snap / "modules.json").write_text(
+        _modules_json(("0", "", "sentence_transformers.models.StaticEmbedding"))
+    )
+    (snap / "config_sentence_transformers.json").write_text("{}")
+    (snap / "tokenizer.json").write_text("{}")
+    if include_weights:
+        (snap / "model.safetensors").write_bytes(b"\0")
+    (repo / "refs").mkdir(parents = True)
+    (repo / "refs" / "main").write_text(commit)
+    _fake_hf_cache(monkeypatch, hf_root)
+    monkeypatch.delenv("SENTENCE_TRANSFORMERS_HOME", raising = False)
+    return snap
+
+
+def test_marker_accepts_root_staticembedding_model(tmp_path, monkeypatch):
+    # A root StaticEmbedding (tokenizer.json + weights, NO config) must stay loadable once dispatch
+    # is on the class before the is_root Transformer fallback (#7218 P1).
+    _root_staticembedding_repo(tmp_path, monkeypatch)
+    assert mc._embedding_marker_in_hf_cache(_ROOT_STATIC) is True
+
+
+def test_marker_rejects_root_staticembedding_without_weights(tmp_path, monkeypatch):
+    # The class branch still enforces StaticEmbedding.load()'s requirements: a root StaticEmbedding
+    # with its weights pruned (tokenizer + config_sentence_transformers.json only) is not loadable.
+    _root_staticembedding_repo(tmp_path, monkeypatch, include_weights = False)
+    assert mc._embedding_marker_in_hf_cache(_ROOT_STATIC) is False
+
+
+# ── #7218 P3: CLIPModel is a full HF model + processor, not config-only ──
+
+
+_CLIP = "org/clip"
+
+
+def _clip_repo(tmp_path, monkeypatch, *, complete, commit = "aaa"):
+    """A SentenceTransformer whose modules.json declares a CLIPModel at 0_CLIPModel. CLIPModel(load)
+    -> Transformer.__init__ reads AutoConfig + AutoModel.from_pretrained (weights) + AutoProcessor
+    (processor/tokenizer), so a config-only dir is NOT loadable. complete=False writes only
+    config.json (no processor/tokenizer asset, no weights)."""
+    hf_root = tmp_path / "hf"
+    repo = hf_root / f"models--{_CLIP.replace('/', '--')}"
+    snap = repo / "snapshots" / commit
+    (snap / "0_CLIPModel").mkdir(parents = True)
+    (snap / "modules.json").write_text(
+        _modules_json(("0", "0_CLIPModel", "sentence_transformers.models.CLIPModel"))
+    )
+    (snap / "config_sentence_transformers.json").write_text("{}")
+    (snap / "0_CLIPModel" / "config.json").write_text("{}")
+    if complete:
+        (snap / "0_CLIPModel" / "tokenizer.json").write_text("{}")  # AutoProcessor asset
+        (snap / "0_CLIPModel" / "model.safetensors").write_bytes(b"\0")
+    (repo / "refs").mkdir(parents = True)
+    (repo / "refs" / "main").write_text(commit)
+    _fake_hf_cache(monkeypatch, hf_root)
+    monkeypatch.delenv("SENTENCE_TRANSFORMERS_HOME", raising = False)
+
+
+def test_marker_rejects_config_only_clip_module(tmp_path, monkeypatch):
+    # #7218 P3: CLIPModel.load() loads a full HF model + processor, so a config-only CLIP module (no
+    # processor/tokenizer asset, no weights) is NOT loadable. Pristine routed clipmodel to the
+    # generic config-only `return True` and accepted it, then 409'd at the local-only load.
+    _clip_repo(tmp_path, monkeypatch, complete = False)
+    assert mc._embedding_marker_in_hf_cache(_CLIP) is False
+
+
+def test_marker_accepts_complete_clip_module(tmp_path, monkeypatch):
+    # Companion: config + processor/tokenizer + weights make the CLIP module a loadable HF load root.
+    _clip_repo(tmp_path, monkeypatch, complete = True)
+    assert mc._embedding_marker_in_hf_cache(_CLIP) is True
+
+
+# ── #7218 P3: SparseStaticEmbedding is CONDITIONALLY weight-bearing (idf.json OR weights) ──
+
+
+_SPARSE_STATIC = "org/sparse-static"
+
+
+def _sparse_static_repo(
+    tmp_path,
+    monkeypatch,
+    *,
+    payload,
+    include_tokenizer = True,
+    commit = "aaa",
+):
+    """A SparseEncoder whose modules.json declares a SparseStaticEmbedding at 0_SparseStaticEmbedding.
+    Its load() reads a tokenizer (AutoTokenizer.from_pretrained) + EITHER an idf.json (from_json
+    branch, NO weights) OR a complete Torch weight set (load_torch_weights). ``payload`` selects what
+    backs it: "idf" (idf.json), "weights" (model.safetensors) or "none" (neither)."""
+    hf_root = tmp_path / "hf"
+    repo = hf_root / f"models--{_SPARSE_STATIC.replace('/', '--')}"
+    snap = repo / "snapshots" / commit
+    mod = snap / "0_SparseStaticEmbedding"
+    mod.mkdir(parents = True)
+    (snap / "modules.json").write_text(
+        _modules_json(
+            ("0", "0_SparseStaticEmbedding", "sentence_transformers.sparse_encoder.models.SparseStaticEmbedding")
+        )
+    )
+    (snap / "config_sentence_transformers.json").write_text("{}")
+    (mod / "config.json").write_text("{}")
+    if include_tokenizer:
+        (mod / "tokenizer.json").write_text("{}")
+    if payload == "idf":
+        (mod / "idf.json").write_text("{}")
+    elif payload == "weights":
+        (mod / "model.safetensors").write_bytes(b"\0")
+    (repo / "refs").mkdir(parents = True)
+    (repo / "refs" / "main").write_text(commit)
+    _fake_hf_cache(monkeypatch, hf_root)
+    monkeypatch.delenv("SENTENCE_TRANSFORMERS_HOME", raising = False)
+
+
+@pytest.mark.parametrize("payload", ["idf", "weights"])
+def test_marker_accepts_sparse_static_embedding_variants(tmp_path, monkeypatch, payload):
+    # Both complete variants are loadable: the idf.json (from_json) variant has NO model weights, so
+    # requiring weights would wrongly reject it; the weights variant loads via load_torch_weights.
+    _sparse_static_repo(tmp_path, monkeypatch, payload = payload)
+    assert mc._embedding_marker_in_hf_cache(_SPARSE_STATIC) is True
+
+
+def test_marker_rejects_config_only_sparse_static_embedding(tmp_path, monkeypatch):
+    # #7218 P3: a SparseStaticEmbedding with a tokenizer but NEITHER idf.json NOR weights has no
+    # payload (load_torch_weights raises), so it is not loadable. Pristine hit the generic config-only
+    # `return True` and accepted it.
+    _sparse_static_repo(tmp_path, monkeypatch, payload = "none")
+    assert mc._embedding_marker_in_hf_cache(_SPARSE_STATIC) is False
+
+
+def test_marker_rejects_sparse_static_embedding_without_tokenizer(tmp_path, monkeypatch):
+    # AutoTokenizer.from_pretrained is unconditional in SparseStaticEmbedding.load(), so an idf.json +
+    # config WITHOUT any tokenizer asset is not loadable -- pristine accepted it on the config alone.
+    _sparse_static_repo(tmp_path, monkeypatch, payload = "idf", include_tokenizer = False)
+    assert mc._embedding_marker_in_hf_cache(_SPARSE_STATIC) is False
+
+
+# ── #7218 P4: a PRESENT but empty / malformed modules.json is not a loadable ST model ──
+
+
+def _root_weights_snapshot(tmp_path, monkeypatch, modules_body, *, repo_id = "org/present-modules"):
+    """A snapshot with a COMPLETE root weight set (config + tokenizer + weights) and a modules.json
+    whose raw body is ``modules_body``. Lets a test assert that a present-but-empty / malformed
+    modules.json is not loadable even though the root weights are complete."""
+    hf_root = tmp_path / "hf"
+    repo = hf_root / f"models--{repo_id.replace('/', '--')}"
+    snap = repo / "snapshots" / "aaa"
+    snap.mkdir(parents = True)
+    (snap / "modules.json").write_text(modules_body)
+    (snap / "config.json").write_text("{}")
+    (snap / "tokenizer.json").write_text("{}")
+    (snap / "model.safetensors").write_bytes(b"\0")
+    (repo / "refs").mkdir(parents = True)
+    (repo / "refs" / "main").write_text("aaa")
+    _fake_hf_cache(monkeypatch, hf_root)
+    monkeypatch.delenv("SENTENCE_TRANSFORMERS_HOME", raising = False)
+    return repo_id
+
+
+def test_marker_empty_modules_json_is_not_loadable(tmp_path, monkeypatch):
+    # #7218 P4: an empty "[]" modules.json builds ZERO modules (base/model.py _load_config_modules
+    # iterates the list) and NEVER falls back to a root Transformer while modules.json is present, so
+    # a complete root weight set does NOT make it loadable. Pristine fell back to
+    # _snapshot_has_complete_weights and accepted it, then 409'd at the local-only load.
+    repo_id = _root_weights_snapshot(tmp_path, monkeypatch, "[]")
+    assert mc._embedding_marker_in_hf_cache(repo_id) is False
+
+
+def test_marker_malformed_modules_json_is_not_loadable(tmp_path, monkeypatch):
+    # A malformed modules.json RAISES in json.load during _load_config_modules, so the load fails; it
+    # must NOT fall back to the root Transformer weight set (#7218 P4). Pristine accepted it via the
+    # _snapshot_has_complete_weights fall-through.
+    repo_id = _root_weights_snapshot(tmp_path, monkeypatch, "{ not valid json")
+    assert mc._embedding_marker_in_hf_cache(repo_id) is False
+
+
+def test_marker_non_list_modules_json_is_not_loadable(tmp_path, monkeypatch):
+    # A modules.json that parses but is not a list declares nothing the loader can build.
+    repo_id = _root_weights_snapshot(tmp_path, monkeypatch, '{"modules": []}')
+    assert mc._embedding_marker_in_hf_cache(repo_id) is False
+
+
+# ── #7218 P5: a sharded weight-index must have every mapped shard present ──
+
+
+_SHARDED = "org/sharded"
+
+
+def _sharded_transformer_repo(
+    tmp_path,
+    monkeypatch,
+    *,
+    weight_map,
+    present_shards,
+    module_path = "0_Transformer",
+    commit = "aaa",
+):
+    """A SentenceTransformer with a Transformer declared at ``module_path`` holding config +
+    tokenizer + a model.safetensors.index.json whose ``weight_map`` is the given dict, plus
+    ``present_shards`` written to disk (paths relative to the module dir). Lets a test reference a
+    shard the index maps but leave it absent, or place shards in a subdirectory."""
+    hf_root = tmp_path / "hf"
+    repo = hf_root / f"models--{_SHARDED.replace('/', '--')}"
+    snap = repo / "snapshots" / commit
+    mod = snap / module_path
+    mod.mkdir(parents = True)
+    (snap / "modules.json").write_text(
+        _modules_json(("0", module_path, "sentence_transformers.models.Transformer"))
+    )
+    (snap / "config_sentence_transformers.json").write_text("{}")
+    (mod / "config.json").write_text("{}")
+    (mod / "tokenizer.json").write_text("{}")
+    (mod / "model.safetensors.index.json").write_text(json.dumps({"weight_map": weight_map}))
+    for shard_rel in present_shards:
+        target = mod / Path(shard_rel)
+        target.parent.mkdir(parents = True, exist_ok = True)
+        target.write_bytes(b"\0")
+    (repo / "refs").mkdir(parents = True)
+    (repo / "refs" / "main").write_text(commit)
+    _fake_hf_cache(monkeypatch, hf_root)
+    monkeypatch.delenv("SENTENCE_TRANSFORMERS_HOME", raising = False)
+
+
+def test_marker_rejects_sharded_index_with_a_missing_mapped_shard(tmp_path, monkeypatch):
+    # #7218 P5: the index's weight_map is authoritative. It maps two numbered shards (present) AND a
+    # third shard that is MISSING, so the shard set is incomplete. The pristine filename-numbering
+    # heuristic saw the complete {1,2} set + the index FILE and accepted it; parsing the weight_map
+    # rejects the incomplete set, mirroring file_security._safetensors_index_complete.
+    _sharded_transformer_repo(
+        tmp_path,
+        monkeypatch,
+        weight_map = {
+            "a": "model-00001-of-00002.safetensors",
+            "b": "model-00002-of-00002.safetensors",
+            "c": "model-extra.safetensors",
+        },
+        present_shards = ["model-00001-of-00002.safetensors", "model-00002-of-00002.safetensors"],
+    )
+    assert mc._embedding_marker_in_hf_cache(_SHARDED) is False
+
+
+def test_marker_accepts_sharded_index_with_subdir_shards(tmp_path, monkeypatch):
+    # #7218 P5: a weight_map value may name a subdirectory. Every mapped shard present under weights/
+    # -> loadable. Pristine inspected only the module dir's basenames (the shards live in a subdir, so
+    # it found no numbered shards) and wrongly rejected the complete set (a false negative -> #6817).
+    _sharded_transformer_repo(
+        tmp_path,
+        monkeypatch,
+        weight_map = {
+            "a": "weights/model-00001-of-00002.safetensors",
+            "b": "weights/model-00002-of-00002.safetensors",
+        },
+        present_shards = [
+            "weights/model-00001-of-00002.safetensors",
+            "weights/model-00002-of-00002.safetensors",
+        ],
+    )
+    assert mc._embedding_marker_in_hf_cache(_SHARDED) is True
+
+
+def test_marker_accepts_sharded_index_with_all_mapped_shards(tmp_path, monkeypatch):
+    # Companion: a complete uniform shard set the weight_map maps -> loadable.
+    _sharded_transformer_repo(
+        tmp_path,
+        monkeypatch,
+        weight_map = {
+            "a": "model-00001-of-00002.safetensors",
+            "b": "model-00002-of-00002.safetensors",
+        },
+        present_shards = ["model-00001-of-00002.safetensors", "model-00002-of-00002.safetensors"],
+    )
+    assert mc._embedding_marker_in_hf_cache(_SHARDED) is True
