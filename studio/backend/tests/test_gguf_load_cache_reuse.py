@@ -731,8 +731,8 @@ class TestLoadHubDownloadExclusion:
         # The gguf_load_in_flight marker must be entered before the hub-download
         # guard and the unload so a concurrent load can't race the download
         # manager. The llama_extra_args inheritance that used to sit between the
-        # marker and the guard now runs ahead of the GGUF branch, so it is no
-        # longer a landmark inside this slice.
+        # marker and the guard now runs in _guard_chat_load_against_training, ahead
+        # of the GGUF branch, so it is no longer a landmark inside this slice.
         assert (
             gguf_branch.index("enter_context(gguf_load_in_flight")
             < gguf_branch.index("_hub_download_blocks_gguf_load")
