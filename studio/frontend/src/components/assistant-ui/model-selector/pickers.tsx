@@ -47,7 +47,7 @@ import {
 import { useOnlineStatus } from "@/features/hub/hooks/use-online-status";
 import { isHiddenModelId } from "@/features/hub/lib/hidden-models";
 import { classifyUnslothSupport } from "@/features/hub/lib/unsloth-support";
-import { useHfTokenStore } from "@/features/hub/stores/hf-token-store";
+import { hfApiToken, useHfTokenStore } from "@/features/hub/stores/hf-token-store";
 import {
   downloadManager,
   jobKeyOf,
@@ -1411,7 +1411,8 @@ export function HubModelPicker({
   // Shared Hub search stack (the same hooks the Hub page uses) so the picker
   // and Hub run one implementation. Scoped to unsloth like the old listing.
   const online = useOnlineStatus();
-  const accessToken = hfToken || undefined;
+  // Sanitize to anonymous on a malformed token, matching the Hub page.
+  const accessToken = hfApiToken(hfToken);
   // Recommended section: a live unsloth listing sorted by the dropdown. The
   // same sort drives the search results so the dropdown works while searching.
   const [recommendedSort, setRecommendedSort] =
