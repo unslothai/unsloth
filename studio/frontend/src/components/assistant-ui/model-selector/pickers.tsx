@@ -1170,6 +1170,17 @@ let _lmStudioCache: LocalModelInfo[] = [];
 let _localDirCache: LocalModelInfo[] = [];
 let _customFolderCache: LocalModelInfo[] = [];
 let _scanFoldersCache: ScanFolderInfo[] = [];
+let _onDeviceCachesReady = false;
+let _cachedGgufRequestVersion = 0;
+let _cachedModelsRequestVersion = 0;
+let _localModelsRequestVersion = 0;
+const _onDeviceCacheListeners = new Set<(settled?: boolean) => void>();
+
+const ON_DEVICE_CACHE_TIMEOUT_MS = 30_000;
+
+function notifyOnDeviceCachesChanged(settled = false): void {
+  for (const listener of _onDeviceCacheListeners) listener(settled);
+}
 
 /** True when any on-device model (downloaded GGUF, cached repo, LM Studio, or
  * custom-folder model) is known. Reads the module caches, which persist across
@@ -1569,8 +1580,7 @@ export function HubModelPicker({
     useState<CachedGgufRepo[]>(_cachedGgufCache);
   const [cachedModels, setCachedModels] =
     useState<CachedModelRepo[]>(_cachedModelsCache);
-  const alreadyCached =
-    _cachedGgufCache.length > 0 || _cachedModelsCache.length > 0;
+  const alreadyCached = _onDeviceCachesReady || hasDownloadedModels();
   const [cachedReady, setCachedReady] = useState(alreadyCached);
   const [updateConflictKey, setUpdateConflictKey] = useState<string | null>(
     null,
@@ -1605,6 +1615,25 @@ export function HubModelPicker({
   const [customFolderModels, setCustomFolderModels] =
     useState<LocalModelInfo[]>(_customFolderCache);
 
+  useEffect(() => {
+    const syncModuleCaches = (settled = false) => {
+      setCachedGguf(_cachedGgufCache);
+      setCachedModels(_cachedModelsCache);
+      setLmStudioModels(_lmStudioCache);
+      setLocalDirModels(_localDirCache);
+      setCustomFolderModels(_customFolderCache);
+      setCachedReady(
+        (ready) =>
+          ready || settled || _onDeviceCachesReady || hasDownloadedModels(),
+      );
+    };
+    _onDeviceCacheListeners.add(syncModuleCaches);
+    syncModuleCaches();
+    return () => {
+      _onDeviceCacheListeners.delete(syncModuleCaches);
+    };
+  }, []);
+
   // Custom scan folders management
   const [scanFolders, setScanFolders] =
     useState<ScanFolderInfo[]>(_scanFoldersCache);
@@ -1615,23 +1644,94 @@ export function HubModelPicker({
   const [showFolderBrowser, setShowFolderBrowser] = useState(false);
   const [recommendedFolders, setRecommendedFolders] = useState<string[]>([]);
 
+  const applyLocalModels = useCallback(
+    (res: Awaited<ReturnType<typeof listLocalModels>>) => {
+      const lm = sortLmStudio(
+        res.models.filter((m) => m.source === "lmstudio"),
+      );
+      _lmStudioCache = lm;
+      setLmStudioModels(lm);
+      const ld = res.models.filter((m) => m.source === "models_dir");
+      _localDirCache = ld;
+      setLocalDirModels(ld);
+      const cf = res.models.filter((m) => m.source === "custom");
+      _customFolderCache = cf;
+      setCustomFolderModels(cf);
+      notifyOnDeviceCachesChanged();
+    },
+    [],
+  );
+
+  const refreshColdOnDeviceCaches = useCallback(() => {
+    const ggufRequestVersion = ++_cachedGgufRequestVersion;
+    const modelsRequestVersion = ++_cachedModelsRequestVersion;
+    const localRequestVersion = ++_localModelsRequestVersion;
+    let ggufResult: Awaited<ReturnType<typeof listCachedGguf>> | undefined;
+    let modelsResult: Awaited<ReturnType<typeof listCachedModels>> | undefined;
+    let localResult: Awaited<ReturnType<typeof listLocalModels>> | undefined;
+    let released = false;
+
+    const ggufRequest = listCachedGguf().then(
+      (value) => { if (!released) ggufResult = value; },
+      () => {},
+    );
+    const modelsRequest = listCachedModels(hfToken || undefined).then(
+      (value) => { if (!released) modelsResult = value; },
+      () => {},
+    );
+    const localRequest = listLocalModels().then(
+      (value) => {
+        localResult = value;
+        if (released && localRequestVersion === _localModelsRequestVersion) {
+          if (ggufResult !== undefined && modelsResult !== undefined) _onDeviceCachesReady = true;
+          applyLocalModels(value);
+        }
+      },
+      () => {},
+    );
+    const isCurrent = () =>
+      ggufRequestVersion === _cachedGgufRequestVersion &&
+      modelsRequestVersion === _cachedModelsRequestVersion &&
+      localRequestVersion === _localModelsRequestVersion;
+    const publish = (invalidate = false) => {
+      if (!isCurrent()) return;
+      if (invalidate) {
+        released = true;
+        ++_cachedGgufRequestVersion;
+        ++_cachedModelsRequestVersion;
+      }
+      if (ggufResult !== undefined) {
+        _cachedGgufCache = ggufResult;
+        setCachedGguf(ggufResult);
+      }
+      if (modelsResult !== undefined) {
+        _cachedModelsCache = modelsResult;
+        setCachedModels(modelsResult);
+      }
+      if (localResult !== undefined) applyLocalModels(localResult);
+      if (ggufResult !== undefined && modelsResult !== undefined && localResult !== undefined) {
+        _onDeviceCachesReady = true;
+      }
+      notifyOnDeviceCachesChanged(true);
+    };
+    const timeout = window.setTimeout(() => publish(true), ON_DEVICE_CACHE_TIMEOUT_MS);
+    void Promise.all([ggufRequest, modelsRequest, localRequest]).then(() => {
+      window.clearTimeout(timeout);
+      publish();
+    });
+  }, [applyLocalModels, hfToken]);
+
   const refreshLocalModelsList = useCallback(() => {
+    if (!_onDeviceCachesReady && !hasDownloadedModels()) return refreshColdOnDeviceCaches();
+    const requestVersion = ++_localModelsRequestVersion;
     listLocalModels()
       .then((res) => {
-        const lm = sortLmStudio(
-          res.models.filter((m) => m.source === "lmstudio"),
-        );
-        _lmStudioCache = lm;
-        setLmStudioModels(lm);
-        const ld = res.models.filter((m) => m.source === "models_dir");
-        _localDirCache = ld;
-        setLocalDirModels(ld);
-        const cf = res.models.filter((m) => m.source === "custom");
-        _customFolderCache = cf;
-        setCustomFolderModels(cf);
+        if (requestVersion === _localModelsRequestVersion) {
+          applyLocalModels(res);
+        }
       })
       .catch(() => {});
-  }, []);
+  }, [applyLocalModels, refreshColdOnDeviceCaches]);
 
   const refreshScanFolders = useCallback(() => {
     listScanFolders()
@@ -1710,20 +1810,27 @@ export function HubModelPicker({
   );
 
   const refreshCachedLists = useCallback(() => {
+    if (!_onDeviceCachesReady && !hasDownloadedModels()) return refreshColdOnDeviceCaches();
+    const ggufRequestVersion = ++_cachedGgufRequestVersion;
     listCachedGguf()
       .then((v) => {
+        if (ggufRequestVersion !== _cachedGgufRequestVersion) return;
         _cachedGgufCache = v;
         setCachedGguf(v);
+        notifyOnDeviceCachesChanged();
       })
       .catch(() => {});
+    const modelsRequestVersion = ++_cachedModelsRequestVersion;
     listCachedModels(hfToken || undefined)
       .then((v) => {
+        if (modelsRequestVersion !== _cachedModelsRequestVersion) return;
         _cachedModelsCache = v;
         setCachedModels(v);
+        notifyOnDeviceCachesChanged();
       })
       .catch(() => {});
     refreshLocalModelsList();
-  }, [hfToken, refreshLocalModelsList]);
+  }, [hfToken, refreshColdOnDeviceCaches, refreshLocalModelsList]);
 
   // Updates run as managed downloads (Downloads panel: progress + Cancel), not a blocking
   // call. The worker pulls only changed blobs, so the cached copy stays usable until done.
@@ -1751,36 +1858,100 @@ export function HubModelPicker({
   );
 
   useEffect(() => {
-    // Always refresh LM Studio + custom folder models (not gated by alreadyCached).
-    refreshLocalModelsList();
     refreshScanFolders();
     listRecommendedFolders()
       .then(setRecommendedFolders)
       .catch(() => {});
 
-    // Always refetch cached GGUF/model lists. The module-level caches render
-    // instantly with stale data (no spinner flash), but newly downloaded
-    // repos need a fresh backend hit. cachedReady=alreadyCached initially,
-    // so the background refresh is invisible when we already had data.
-    let done = 0;
-    const check = () => {
-      if (++done >= 2) setCachedReady(true);
+    // Publish downloaded and local rows as one bounded snapshot. Existing data
+    // stays visible during background refreshes, and a failed source keeps its
+    // last successful cache instead of clearing or durably marking it ready.
+    const controller = new AbortController();
+    const timeout = window.setTimeout(
+      () => controller.abort(),
+      ON_DEVICE_CACHE_TIMEOUT_MS,
+    );
+    const aborted = new Promise<never>((_, reject) => {
+      controller.signal.addEventListener(
+        "abort",
+        () => reject(controller.signal.reason),
+        { once: true },
+      );
+    });
+    const bounded = <T,>(request: Promise<T>) =>
+      Promise.race([request, aborted]);
+    let cancelled = false;
+    const ggufRequestVersion = ++_cachedGgufRequestVersion;
+    const modelsRequestVersion = ++_cachedModelsRequestVersion;
+    const localRequestVersion = ++_localModelsRequestVersion;
+    const localRequest = listLocalModels();
+
+    void Promise.allSettled([
+      bounded(listCachedGguf(controller.signal)),
+      bounded(listCachedModels(hfToken || undefined, controller.signal)),
+      bounded(localRequest),
+    ]).then(([ggufResult, modelsResult, localResult]) => {
+      window.clearTimeout(timeout);
+      if (cancelled) return;
+
+      const ggufIsCurrent =
+        ggufRequestVersion === _cachedGgufRequestVersion;
+      const modelsAreCurrent =
+        modelsRequestVersion === _cachedModelsRequestVersion;
+      const localIsCurrent =
+        localRequestVersion === _localModelsRequestVersion;
+
+      if (ggufResult.status === "fulfilled" && ggufIsCurrent) {
+        _cachedGgufCache = ggufResult.value;
+        setCachedGguf(ggufResult.value);
+        notifyOnDeviceCachesChanged();
+      }
+      if (modelsResult.status === "fulfilled" && modelsAreCurrent) {
+        _cachedModelsCache = modelsResult.value;
+        setCachedModels(modelsResult.value);
+        notifyOnDeviceCachesChanged();
+      }
+      if (localResult.status === "fulfilled" && localIsCurrent) {
+        applyLocalModels(localResult.value);
+      }
+      if (localResult.status === "rejected" && controller.signal.aborted) {
+        void localRequest.then((value) => {
+          if (cancelled || localRequestVersion !== _localModelsRequestVersion) return;
+          if (ggufResult.status === "fulfilled" && modelsResult.status === "fulfilled") _onDeviceCachesReady = true;
+          applyLocalModels(value);
+        }).catch(() => {});
+      }
+      const snapshotIsCurrent =
+        ggufIsCurrent && modelsAreCurrent && localIsCurrent;
+      if (
+        ggufResult.status === "fulfilled" &&
+        modelsResult.status === "fulfilled" &&
+        localResult.status === "fulfilled" &&
+        snapshotIsCurrent
+      ) {
+        _onDeviceCachesReady = true;
+      }
+      notifyOnDeviceCachesChanged(snapshotIsCurrent);
+    });
+
+    return () => {
+      cancelled = true;
+      window.clearTimeout(timeout);
+      controller.abort();
+      queueMicrotask(() => {
+        if (
+          ggufRequestVersion === _cachedGgufRequestVersion &&
+          modelsRequestVersion === _cachedModelsRequestVersion &&
+          localRequestVersion === _localModelsRequestVersion
+        ) {
+          ++_cachedGgufRequestVersion;
+          ++_cachedModelsRequestVersion;
+          ++_localModelsRequestVersion;
+          notifyOnDeviceCachesChanged(true);
+        }
+      });
     };
-    listCachedGguf()
-      .then((v) => {
-        _cachedGgufCache = v;
-        setCachedGguf(v);
-      })
-      .catch(() => {})
-      .finally(check);
-    listCachedModels(hfToken || undefined)
-      .then((v) => {
-        _cachedModelsCache = v;
-        setCachedModels(v);
-      })
-      .catch(() => {})
-      .finally(check);
-  }, [hfToken, refreshLocalModelsList, refreshScanFolders]);
+  }, [applyLocalModels, hfToken, refreshScanFolders]);
 
   // Hide downloaded models from the recommended list. Case-insensitive
   // since the HF cache lowercases repo IDs.
@@ -2371,12 +2542,12 @@ export function HubModelPicker({
     }
 
     // Fine-tuned models sit below downloaded, above custom folders.
-    if (section === "downloaded" && !fineTunedCollapsed) {
+    if (section === "downloaded" && cachedReady && !fineTunedCollapsed) {
       keys.push(...fineTunedRows.map((m) => makeModelOptionKey("lora", m.id)));
     }
 
     // Custom folders sit right below the downloaded models on On Device.
-    if (section === "downloaded" && !customFoldersCollapsed) {
+    if (section === "downloaded" && cachedReady && !customFoldersCollapsed) {
       keys.push(
         ...sortedCustomFolderModels.map((model) =>
           makeModelOptionKey("custom-folder", model.id),
@@ -2384,7 +2555,7 @@ export function HubModelPicker({
       );
     }
 
-    if (section === "downloaded" && !lmStudioCollapsed) {
+    if (section === "downloaded" && cachedReady && !lmStudioCollapsed) {
       keys.push(
         ...sortedLmStudio.map((model) =>
           makeModelOptionKey("lm-studio", model.id),
@@ -2392,7 +2563,7 @@ export function HubModelPicker({
       );
     }
 
-    if (section === "downloaded" && !localDirCollapsed) {
+    if (section === "downloaded" && cachedReady && !localDirCollapsed) {
       keys.push(
         ...sortedLocalDir.map((model) =>
           makeModelOptionKey("local-dir", model.id),
@@ -2585,6 +2756,7 @@ export function HubModelPicker({
   const showDownloaded = section === "downloaded";
   const showCustom = section === "downloaded";
   const showRecommendedSection = !showHfSection && section === "recommended";
+  const onDeviceCacheLoading = showDownloaded && !cachedReady;
   const downloadedEmpty =
     visibleCachedGguf.length === 0 &&
     visibleCachedModelRows.length === 0 &&
@@ -3135,11 +3307,8 @@ export function HubModelPicker({
             )
           ) : (
             <>
-              {/* First-load spinner only when nothing cached is shown yet. */}
-              {showDownloaded &&
-              !cachedReady &&
-              !showHfSection &&
-              downloadedEmpty ? (
+              {/* First-load spinner while downloaded/local scans are resolving. */}
+              {onDeviceCacheLoading ? (
                 <div className="flex items-center gap-2 px-5 py-3">
                   <Spinner className="size-3 text-muted-foreground" />
                   <span className="text-xs text-muted-foreground">
@@ -3185,6 +3354,7 @@ export function HubModelPicker({
 
               {/* Downloaded (Unsloth) stays visible (filtered) while searching. */}
               {showDownloaded &&
+              cachedReady &&
               (unslothCachedGguf.length > 0 ||
                 unslothCachedModelRows.length > 0) ? (
                 <>
@@ -3278,7 +3448,7 @@ export function HubModelPicker({
 
               {/* Other models: non-Unsloth downloads, grouped just above
               Fine-tuned. Shown only when such models exist. */}
-              {showDownloaded && hasOtherModels ? (
+              {showDownloaded && cachedReady && hasOtherModels ? (
                 <div ref={otherModelsSectionRef}>
                   <ListLabel
                     divider={true}
@@ -3297,10 +3467,9 @@ export function HubModelPicker({
                 </div>
               ) : null}
 
-              {/* Fine-tuned models: a section above Custom Folders. Always shown on
-              On Device so the train shortcut always has a target, with an empty
-              state when none exist. */}
-              {section === "downloaded" ? (
+              {/* Fine-tuned models: shown after the On Device scans resolve so
+              downloaded sections do not reorder during startup. */}
+              {section === "downloaded" && cachedReady ? (
                 <>
                   <div
                     ref={fineTunedSectionRef}
@@ -3348,7 +3517,7 @@ export function HubModelPicker({
                 </>
               ) : null}
 
-              {showCustom ? (
+              {showCustom && cachedReady ? (
                 <>
                   <div
                     ref={customFolderSectionRef}
@@ -3664,7 +3833,9 @@ export function HubModelPicker({
                 </>
               ) : null}
 
-              {section === "downloaded" && sortedLmStudio.length > 0 ? (
+              {section === "downloaded" &&
+              cachedReady &&
+              sortedLmStudio.length > 0 ? (
                 <>
                   <ListLabel
                     divider={true}
@@ -3758,7 +3929,9 @@ export function HubModelPicker({
                 </>
               ) : null}
 
-              {section === "downloaded" && sortedLocalDir.length > 0 ? (
+              {section === "downloaded" &&
+              cachedReady &&
+              sortedLocalDir.length > 0 ? (
                 <>
                   <ListLabel
                     divider={true}
