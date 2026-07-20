@@ -499,7 +499,9 @@ def _collect_dunder_all(tree: ast.Module) -> tuple[set[str], bool]:
     ``+=`` extends, so prior opacity persists. A bare ``__all__: list[str]`` annotation
     has no runtime value and is skipped entirely. ``__all__.append("X")`` /
     ``.extend([...])`` are runtime extenders read the same way as ``+=``; any other
-    ``__all__`` method call (``insert``/``remove``/...) is opaque.
+    ``__all__`` method call (``insert``/``remove``/...) is opaque. ``__all__`` bound only
+    through a destructuring target (``__all__, meta = [...], v``) or an item/attr target
+    is opaque too -- its value cannot be mapped statically, so the set is not exhaustive.
     """
     names: set[str] = set()
     opaque = False
@@ -528,7 +530,17 @@ def _collect_dunder_all(tree: ast.Module) -> tuple[set[str], bool]:
             targets, replaces = [node.target], False
         else:
             continue
+        # A direct `__all__ = [...]` / `+= [...]` target lets us read the value below. `__all__`
+        # reached only through a destructuring target (`__all__, meta = [...], v` -> an ast.Tuple)
+        # or an item/attr target cannot be mapped to its value statically, so mark the export set
+        # opaque instead of silently missing the binding and false-positiving HOISTED-IMPORT-UNUSED.
         if not any(isinstance(t, ast.Name) and t.id == "__all__" for t in targets):
+            if any(
+                isinstance(sub, ast.Name) and sub.id == "__all__"
+                for t in targets
+                for sub in ast.walk(t)
+            ):
+                opaque = True
             continue
         value = node.value
         entries: set[str] = set()
@@ -870,6 +882,14 @@ _SELF_TESTS = {
         # (mirrors the unreadable "=" case, which also preserves uncertainty)
         'from pkg import a\n__all__ = ["a"]\n',
         'from pkg import a\nfrom pkg import b\n__all__ = ["a"]\n__all__ += sorted(["b"])\n',
+        None,
+    ),
+    "destructured_all_is_opaque_keeps_reexport": (
+        # __all__ bound only through a tuple-unpacking target cannot be mapped to its value
+        # statically, so it is opaque: a new import re-exported only through it must not be
+        # flagged as an unused hoist (mirrors the unreadable "+=" case)
+        'from pkg import a\n__all__, meta = ["a"], 1\n',
+        'from pkg import a\nfrom pkg import b\n__all__, meta = ["a", "b"], 1\n',
         None,
     ),
     "readable_reassign_resets_opacity": (
