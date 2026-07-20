@@ -91,6 +91,7 @@ import {
   providerTypeSupportsVision,
 } from "./external-providers";
 import { useExternalProvidersStore } from "./stores/external-providers-store";
+import { useIsMobile } from "@/hooks/use-mobile";
 import {
   PLUS_MENU_ORDER,
   type PlusMenuItemId,
@@ -790,15 +791,17 @@ export function SharedComposer({
   const ragDisabled = modelLoaded && (isExternalModel || !supportsTools);
   const showRagPill = !isExternalModel;
   // Above 4 pills, collapse to icons only. Compare, Search, Code, and
-  // permissions always show; the rest are conditional.
-  const pillsCompact =
+  // permissions always show; the rest are conditional. Narrow viewports
+  // collapse too: the labelled row is wider than a phone-width composer.
+  const isMobile = useIsMobile();
+  const pillCount =
     4 +
-      (showImagePill ? 1 : 0) +
-      (showRagPill && ragEnabled ? 1 : 0) +
-      (showWebFetchPill ? 1 : 0) +
-      (artifactsEnabled ? 1 : 0) +
-      (mcpEnabledForChat ? 1 : 0) >
-    4;
+    (showImagePill ? 1 : 0) +
+    (showRagPill && ragEnabled ? 1 : 0) +
+    (showWebFetchPill ? 1 : 0) +
+    (artifactsEnabled ? 1 : 0) +
+    (mcpEnabledForChat ? 1 : 0);
+  const pillsCompact = isMobile || pillCount > 4;
   // Backwards-compatible alias for call sites still referencing
   // `toolsDisabled` (rare; both pills used it before).
   const toolsDisabled = codeDisabled;

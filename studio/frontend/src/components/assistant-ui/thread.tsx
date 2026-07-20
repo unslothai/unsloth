@@ -175,6 +175,7 @@ import {
 } from "react";
 import { create } from "zustand";
 import { extractTaggedText, updateThreadMessage } from "@/features/chat/utils/update-thread-message";
+import { useIsMobile } from "@/hooks/use-mobile";
 
 // True while a file is dragged anywhere over the chat page, so the composer
 // can show its "Drop files here" affordance.
@@ -1435,14 +1436,16 @@ const Composer: FC<{
   const mcpEnabledForChat = useChatRuntimeStore((s) => s.mcpEnabledForChat);
   const ragEnabled = useChatRuntimeStore((s) => s.ragEnabled);
   // More than 4 pills: collapse to icons only. Search, Code, and permissions
-  // always show; Images, RAG, Canvas and MCP are conditional.
-  const pillsCompact =
+  // always show; Images, RAG, Canvas and MCP are conditional. Narrow viewports
+  // collapse too: the labelled row is wider than a phone-width composer.
+  const isMobile = useIsMobile();
+  const pillCount =
     3 +
-      (ragEnabled ? 1 : 0) +
-      (supportsBuiltinImageGeneration ? 1 : 0) +
-      (artifactsEnabled ? 1 : 0) +
-      (mcpEnabledForChat ? 1 : 0) >
-    4;
+    (ragEnabled ? 1 : 0) +
+    (supportsBuiltinImageGeneration ? 1 : 0) +
+    (artifactsEnabled ? 1 : 0) +
+    (mcpEnabledForChat ? 1 : 0);
+  const pillsCompact = isMobile || pillCount > 4;
   const activeThreadId = useChatRuntimeStore((s) => s.activeThreadId);
   const setPendingImageEditReference = useChatRuntimeStore(
     (s) => s.setPendingImageEditReference,
