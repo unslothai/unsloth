@@ -1138,6 +1138,31 @@ def test_render_html_gated_only_when_networked():
     assert rh("<script>[img.src] = ['./local.png']</script>") is False
     assert rh("<script>({src: img.src} = {src:'https://evil/x'})</script>") is True
     assert rh("<script>({src: img.src} = {src:'./local.png'})</script>") is False
+    assert rh("<script>const k='src'; img[k]='https://evil/x'</script>") is True
+    assert rh("<script>const k='src'; img[k]='./local.png'</script>") is False
+    assert rh("<script>const k='title'; img[k]='https://evil/x'</script>") is False
+    assert rh("<script>img[k]='https://evil/x'</script>") is True
+    assert (
+        rh(
+            "<script>frame.setAttribute(name, "
+            "'data:text/html;base64,PGltZyBzcmM9aHR0cHM6Ly9ldmlsL3g+')</script>"
+        )
+        is True
+    )
+    assert (
+        rh("<script>frame.setAttribute(name, 'data:image/png;base64,iVBORw0KGgo=')</script>")
+        is False
+    )
+    assert (
+        rh(
+            "<script>const name='src'; frame.setAttribute(name, "
+            "'data:text/html;base64,PGltZyBzcmM9aHR0cHM6Ly9ldmlsL3g+')</script>"
+        )
+        is True
+    )
+    assert rh("<script>with(new Image()){src='https://evil/x'}</script>") is True
+    assert rh("<script>with(new Image()){src='./local.png'}</script>") is False
+    assert rh("<script>with(obj){let src='https://evil/x'}</script>") is False
     # A computed bracket key spliced from string fragments on a global host object.
     assert rh("<script>window['fet'+'ch']('https://attacker.example')</script>") is True
     assert rh("<script>self['open' + '']('https://x')</script>") is True

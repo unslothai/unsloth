@@ -539,6 +539,32 @@ class TestSandboxEnvIsolation:
         assert result.returncode != 0
         assert "Blocked: low-level network module 'httpcore'" in result.stderr
 
+    def test_runtime_import_guard_blocks_aliased_httpcore_origin(self, tmp_path):
+        from core.inference.tools import _build_safe_env
+
+        code = (
+            "import importlib.machinery, importlib.util, sys\n"
+            "spec = importlib.machinery.PathFinder.find_spec('httpcore')\n"
+            "alias = importlib.util.spec_from_file_location(\n"
+            "    'hc', spec.origin,\n"
+            "    submodule_search_locations=list(spec.submodule_search_locations or []),\n"
+            ")\n"
+            "module = importlib.util.module_from_spec(alias)\n"
+            "sys.modules['hc'] = module\n"
+            "alias.loader.exec_module(module)\n"
+            "module.request('GET', 'http://127.0.0.1:9')\n"
+        )
+        result = subprocess.run(
+            [sys.executable, "-c", code],
+            cwd = tmp_path,
+            env = _build_safe_env(str(tmp_path)),
+            capture_output = True,
+            text = True,
+            check = False,
+        )
+        assert result.returncode != 0
+        assert "Blocked: low-level network module 'httpcore'" in result.stderr
+
     def test_runtime_import_guard_blocks_httpcore_context_flag_tampering(self, tmp_path):
         from core.inference.tools import _build_safe_env
 

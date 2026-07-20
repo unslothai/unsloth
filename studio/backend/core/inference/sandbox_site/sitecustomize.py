@@ -89,6 +89,23 @@ def _path_is_in_roots(filename, roots):
         return False
 
 
+def _blocked_network_module_origin(filename):
+    if not isinstance(filename, str) or filename.startswith("<"):
+        return None
+    try:
+        path = os.path.realpath(filename)
+        for root in _TRUSTED_LIBRARY_ROOTS:
+            if os.path.commonpath((root, path)) != root:
+                continue
+            relative = os.path.relpath(path, root).replace("\\", "/")
+            package = relative.split("/", 1)[0].removesuffix(".py")
+            if package in _BLOCKED_NETWORK_MODULES or package in _DIRECT_BLOCKED_NETWORK_MODULES:
+                return package
+    except (OSError, ValueError):
+        return None
+    return None
+
+
 def _frame_uses_trusted_package(frame, package):
     module_name = frame.f_globals.get("__name__", "")
     if not isinstance(module_name, str):
@@ -160,6 +177,15 @@ def _blocked_network_module(fullname):
     if not isinstance(fullname, str):
         return None
     root = fullname.split(".", 1)[0]
+    if root in _BLOCKED_NETWORK_MODULES:
+        return root
+    if root in _DIRECT_BLOCKED_NETWORK_MODULES and _sandbox_code_requested_import():
+        return root
+    return None
+
+
+def _blocked_network_loader_origin(filename):
+    root = _blocked_network_module_origin(filename)
     if root in _BLOCKED_NETWORK_MODULES:
         return root
     if root in _DIRECT_BLOCKED_NETWORK_MODULES and _sandbox_code_requested_import():
@@ -383,22 +409,52 @@ def _guarded_import_module(name, package = None):
 
 def _guard_legacy_source_loader():
     cls = importlib.machinery.SourceFileLoader
-    original = getattr(cls, "load_module", None)
-    if not callable(original) or getattr(original, "_unsloth_network_guard", False):
-        return
+    original_load_module = getattr(cls, "load_module", None)
+    original_exec_module = getattr(cls, "exec_module", None)
 
-    def guarded(self, *args, **kwargs):
-        fullname = args[0] if args else kwargs.get("fullname", getattr(self, "name", None))
+    def blocked_loader_root(self, fullname = None):
         root = _blocked_network_module(fullname)
-        if root is not None:
-            _raise_blocked_network_module(root)
-        return original(self, *args, **kwargs)
+        if root is None:
+            root = _blocked_network_loader_origin(getattr(self, "path", None))
+        return root
 
-    guarded._unsloth_network_guard = True
-    guarded.__name__ = getattr(original, "__name__", "load_module")
-    guarded.__qualname__ = getattr(original, "__qualname__", guarded.__name__)
-    guarded.__doc__ = getattr(original, "__doc__", None)
-    cls.load_module = guarded
+    if callable(original_load_module) and not getattr(
+        original_load_module, "_unsloth_network_guard", False
+    ):
+
+        def guarded_load_module(self, *args, **kwargs):
+            fullname = args[0] if args else kwargs.get("fullname", getattr(self, "name", None))
+            root = blocked_loader_root(self, fullname)
+            if root is not None:
+                _raise_blocked_network_module(root)
+            return original_load_module(self, *args, **kwargs)
+
+        guarded_load_module._unsloth_network_guard = True
+        guarded_load_module.__name__ = getattr(original_load_module, "__name__", "load_module")
+        guarded_load_module.__qualname__ = getattr(
+            original_load_module, "__qualname__", guarded_load_module.__name__
+        )
+        guarded_load_module.__doc__ = getattr(original_load_module, "__doc__", None)
+        cls.load_module = guarded_load_module
+
+    if callable(original_exec_module) and not getattr(
+        original_exec_module, "_unsloth_network_guard", False
+    ):
+
+        def guarded_exec_module(self, module):
+            fullname = getattr(module, "__name__", getattr(self, "name", None))
+            root = blocked_loader_root(self, fullname)
+            if root is not None:
+                _raise_blocked_network_module(root)
+            return original_exec_module(self, module)
+
+        guarded_exec_module._unsloth_network_guard = True
+        guarded_exec_module.__name__ = getattr(original_exec_module, "__name__", "exec_module")
+        guarded_exec_module.__qualname__ = getattr(
+            original_exec_module, "__qualname__", guarded_exec_module.__name__
+        )
+        guarded_exec_module.__doc__ = getattr(original_exec_module, "__doc__", None)
+        cls.exec_module = guarded_exec_module
 
 
 def _make_network_guard_audit():
@@ -419,6 +475,34 @@ def _make_network_guard_audit():
         raise ModuleNotFoundError(
             f"Blocked: low-level network module {root!r} is unavailable in sandboxed code"
         )
+
+    def blocked_origin(filename):
+        if not isinstance(filename, str) or filename.startswith("<"):
+            return None
+        try:
+            path = realpath(filename)
+            for root in trusted_roots:
+                if commonpath((root, path)) != root:
+                    continue
+                relative = relpath(path, root).replace("\\", "/")
+                package = relative.split("/", 1)[0].removesuffix(".py")
+                if package in blocked or package in direct_blocked:
+                    return package
+        except (OSError, ValueError):
+            return None
+        return None
+
+    def blocked_origin_in_stack(skip):
+        try:
+            frame = getframe(skip)
+        except ValueError:
+            return None
+        while frame is not None:
+            root = blocked_origin(frame.f_code.co_filename)
+            if root is not None:
+                return root
+            frame = frame.f_back
+        return None
 
     def frame_uses_package(frame, package):
         module_name = frame.f_globals.get("__name__", "")
@@ -496,6 +580,9 @@ def _make_network_guard_audit():
             return
         if httpcore_network_active():
             return
+        root = blocked_origin_in_stack(2)
+        if root is not None:
+            blocked_error(root)
         if (
             package_in_stack("httpcore", 2)
             or package_in_stack("anyio", 2)

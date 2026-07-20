@@ -239,6 +239,43 @@ def _shell_command_segments(command: str) -> list[list[str]]:
     return [segment for segment in segments if segment]
 
 
+def _shell_command_with_unquoted_newlines_as_separators(command: str) -> str:
+    if "\n" not in command and "\r" not in command:
+        return command
+    out: list[str] = []
+    quote: str | None = None
+    escaped = False
+    index = 0
+    while index < len(command):
+        char = command[index]
+        if escaped:
+            out.append(char)
+            escaped = False
+            index += 1
+            continue
+        if char == "\\":
+            out.append(char)
+            escaped = True
+            index += 1
+            continue
+        if char == "'" and quote is None:
+            quote = "'"
+        elif char == "'" and quote == "'":
+            quote = None
+        elif char == '"' and quote is None:
+            quote = '"'
+        elif char == '"' and quote == '"':
+            quote = None
+        if char in "\r\n" and quote is None:
+            out.append(" ; ")
+            if char == "\r" and index + 1 < len(command) and command[index + 1] == "\n":
+                index += 1
+        else:
+            out.append(char)
+        index += 1
+    return "".join(out)
+
+
 def _segment_python_index(segment: list[str]) -> int | None:
     command_index = 0
     while command_index < len(segment) and _ASSIGNMENT_RE.match(segment[command_index]):
@@ -290,7 +327,10 @@ def _segment_mutates_sandbox_python_env(segment: list[str], python_index: int) -
             return True
         lowered = token.lower()
         if lowered in {"-i", "--ignore-environment"} and before_python:
-            if os.path.basename(before_python[0]).lower() == "env":
+            if any(
+                os.path.basename(candidate.replace("\\", "/")).lower() == "env"
+                for candidate in before_python[:index]
+            ):
                 return True
         if lowered.startswith("--unset="):
             if token.split("=", 1)[1].upper() in _SANDBOX_PYTHON_ENV_VARS:
@@ -399,6 +439,44 @@ def _shell_command_substitutions(command: str) -> list[str]:
     return substitutions
 
 
+_HEREDOC_START_RE = re.compile(r"<<-?\s*(?P<quote>['\"]?)(?P<name>[A-Za-z_][A-Za-z0-9_]*)")
+
+
+def _shell_here_doc_payloads(command: str) -> tuple[list[str], bool]:
+    if "<<" not in command:
+        return [], False
+    lines = command.splitlines()
+    payloads: list[str] = []
+    malformed = False
+    index = 0
+    while index < len(lines):
+        line = lines[index]
+        matches = list(_HEREDOC_START_RE.finditer(line))
+        if not matches:
+            index += 1
+            continue
+        for match in matches:
+            quote = match.group("quote")
+            delimiter = match.group("name")
+            end = match.end()
+            if quote and (end >= len(line) or line[end] != quote):
+                continue
+            body_start = index + 1
+            body_end = body_start
+            while body_end < len(lines):
+                candidate = lines[body_end]
+                if candidate == delimiter or candidate.lstrip("\t") == delimiter:
+                    break
+                body_end += 1
+            if body_end >= len(lines):
+                malformed = True
+                continue
+            payloads.append("\n".join(lines[body_start:body_end]))
+            index = max(index, body_end)
+        index += 1
+    return payloads, malformed
+
+
 _SHELL_EXPANSION_TOKEN_RE = re.compile(
     r"\$(?:[A-Za-z_][A-Za-z0-9_]*|\{[^}]*\}|[0-9#?*$!@_-])|%[A-Za-z_][A-Za-z0-9_]*%"
 )
@@ -450,7 +528,56 @@ def _static_python_command_argument(node: ast.AST) -> str | None:
     return None
 
 
-def _python_payload_launches_startup_bypass(code: str, depth: int) -> bool:
+def _python_env_key(node: ast.AST) -> str | None:
+    if isinstance(node, ast.Constant) and isinstance(node.value, str):
+        return node.value.upper()
+    return None
+
+
+def _python_payload_mutates_sandbox_env(node: ast.AST, os_aliases: set[str]) -> bool:
+    def is_os_environ(candidate: ast.AST) -> bool:
+        return (
+            isinstance(candidate, ast.Attribute)
+            and candidate.attr == "environ"
+            and isinstance(candidate.value, ast.Name)
+            and candidate.value.id in os_aliases
+        )
+
+    if isinstance(node, (ast.Assign, ast.AnnAssign, ast.AugAssign)):
+        targets = node.targets if isinstance(node, ast.Assign) else [node.target]
+        for target in targets:
+            if isinstance(target, ast.Subscript) and is_os_environ(target.value):
+                key = _python_env_key(target.slice)
+                if key is None or key in _SANDBOX_PYTHON_ENV_VARS:
+                    return True
+    if isinstance(node, ast.Delete):
+        for target in node.targets:
+            if isinstance(target, ast.Subscript) and is_os_environ(target.value):
+                key = _python_env_key(target.slice)
+                if key is None or key in _SANDBOX_PYTHON_ENV_VARS:
+                    return True
+    if not isinstance(node, ast.Call):
+        return False
+    if isinstance(node.func, ast.Attribute):
+        if is_os_environ(node.func.value):
+            if node.func.attr in {"clear", "popitem"}:
+                return True
+            if node.func.attr in {"pop", "setdefault", "update", "__delitem__", "__setitem__"}:
+                key = _python_env_key(node.args[0]) if node.args else None
+                return key is None or key in _SANDBOX_PYTHON_ENV_VARS
+        if (
+            isinstance(node.func.value, ast.Name)
+            and node.func.value.id in os_aliases
+            and node.func.attr in {"putenv", "unsetenv"}
+        ):
+            key = _python_env_key(node.args[0]) if node.args else None
+            return key is None or key in _SANDBOX_PYTHON_ENV_VARS
+    return False
+
+
+def _python_payload_launches_startup_bypass(
+    code: str, depth: int, environment_tainted: bool = False
+) -> bool:
     if depth > 4:
         return True
     try:
@@ -472,28 +599,34 @@ def _python_payload_launches_startup_bypass(code: str, depth: int) -> bool:
                 for alias in node.names:
                     if alias.name in _PYTHON_CHILD_LAUNCHERS:
                         launcher_aliases.add(alias.asname or alias.name)
-        elif isinstance(node, ast.Call):
-            command_node = None
-            if isinstance(node.func, ast.Name) and node.func.id in launcher_aliases:
+        if _python_payload_mutates_sandbox_env(node, os_aliases):
+            environment_tainted = True
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call):
+            continue
+        command_node = None
+        if isinstance(node.func, ast.Name) and node.func.id in launcher_aliases:
+            command_node = node.args[0] if node.args else None
+        elif isinstance(node.func, ast.Attribute):
+            if (
+                isinstance(node.func.value, ast.Name)
+                and node.func.value.id in subprocess_aliases
+                and node.func.attr in _PYTHON_CHILD_LAUNCHERS
+            ):
                 command_node = node.args[0] if node.args else None
-            elif isinstance(node.func, ast.Attribute):
-                if (
-                    isinstance(node.func.value, ast.Name)
-                    and node.func.value.id in subprocess_aliases
-                    and node.func.attr in _PYTHON_CHILD_LAUNCHERS
-                ):
-                    command_node = node.args[0] if node.args else None
-                elif (
-                    isinstance(node.func.value, ast.Name)
-                    and node.func.value.id in os_aliases
-                    and node.func.attr in {"system", "popen"}
-                ):
-                    command_node = node.args[0] if node.args else None
-            if command_node is None:
-                continue
-            nested = _static_python_command_argument(command_node)
-            if nested is not None and _sandbox_python_startup_bypasses_guard(nested, depth + 1):
-                return True
+            elif (
+                isinstance(node.func.value, ast.Name)
+                and node.func.value.id in os_aliases
+                and node.func.attr in {"system", "popen"}
+            ):
+                command_node = node.args[0] if node.args else None
+        if command_node is None:
+            continue
+        nested = _static_python_command_argument(command_node)
+        if nested is not None and _sandbox_python_startup_bypasses_guard(
+            nested, depth + 1, environment_tainted
+        ):
+            return True
     return False
 
 
@@ -509,14 +642,22 @@ def _segment_python_launch_bypasses_guard(
     return payload is not None and _python_payload_launches_startup_bypass(payload, depth + 1)
 
 
-def _sandbox_python_startup_bypasses_guard(command: str, depth: int = 0) -> bool:
+def _sandbox_python_startup_bypasses_guard(
+    command: str, depth: int = 0, environment_tainted: bool = False
+) -> bool:
     """Detect terminal-launched Python that suppresses the sandbox sitecustomize guard."""
     if depth > 4:
         return True
-    for nested in _shell_command_substitutions(command):
-        if _sandbox_python_startup_bypasses_guard(nested, depth + 1):
+    payloads, malformed_here_doc = _shell_here_doc_payloads(command)
+    if malformed_here_doc:
+        return True
+    for payload in payloads:
+        if _sandbox_python_startup_bypasses_guard(payload, depth + 1, environment_tainted):
             return True
-    environment_tainted = False
+    command = _shell_command_with_unquoted_newlines_as_separators(command)
+    for nested in _shell_command_substitutions(command):
+        if _sandbox_python_startup_bypasses_guard(nested, depth + 1, environment_tainted):
+            return True
     shell_names = {"bash", "cmd", "cmd.exe", "dash", "fish", "ksh", "sh", "zsh"}
     for segment in _shell_command_segments(command):
         first = os.path.basename(segment[0].replace("\\", "/")).lower()
@@ -540,17 +681,23 @@ def _sandbox_python_startup_bypasses_guard(command: str, depth: int = 0) -> bool
                     nested = segment[index + 1]
                     if _segment_mutates_sandbox_python_env(segment, shell_index):
                         nested = f"PYTHONPATH=; {nested}"
-                    if _sandbox_python_startup_bypasses_guard(nested, depth + 1):
+                    if _sandbox_python_startup_bypasses_guard(
+                        nested, depth + 1, environment_tainted
+                    ):
                         return True
                     break
             break
         if first == "env":
             for index, token in enumerate(segment):
                 if token in {"-S", "--split-string"} and index + 1 < len(segment):
-                    if _sandbox_python_startup_bypasses_guard(segment[index + 1], depth + 1):
+                    if _sandbox_python_startup_bypasses_guard(
+                        segment[index + 1], depth + 1, environment_tainted
+                    ):
                         return True
                 elif token.startswith("--split-string="):
-                    if _sandbox_python_startup_bypasses_guard(token.split("=", 1)[1], depth + 1):
+                    if _sandbox_python_startup_bypasses_guard(
+                        token.split("=", 1)[1], depth + 1, environment_tainted
+                    ):
                         return True
         expanded_segment = _segment_with_shell_expansions_split(segment)
         if expanded_segment:
@@ -2834,6 +2981,20 @@ _RENDER_HTML_REFLECT_SET_START_RE = re.compile(
 _RENDER_HTML_OBJECT_ASSIGN_START_RE = re.compile(
     r"\bObject\s*\.\s*assign\s*(?:\?\.\s*)?\(", re.IGNORECASE
 )
+_RENDER_HTML_JS_STATIC_NAME_START_RE = re.compile(
+    r"\b(?:const|let|var)\s+(?P<name>[A-Za-z_$][A-Za-z0-9_$]*)\s*=\s*",
+    re.IGNORECASE,
+)
+_RENDER_HTML_WITH_BLOCK_RE = re.compile(
+    r"\bwith\s*\((?:[^()]|\([^()]*\))*\)\s*\{(?P<body>[^{}]*)\}",
+    re.IGNORECASE | re.DOTALL,
+)
+_RENDER_HTML_BARE_PROPERTY_ASSIGNMENT_START_RE = re.compile(
+    r"(?<![.$A-Za-z0-9_])"
+    r"(?P<attr>src|href|srcset|action|formaction|poster|data|ping|srcdoc|innerHTML|outerHTML)"
+    r"\s*(?:\+=|&&=|\|\|=|\?\?=|=(?!=))",
+    re.IGNORECASE,
+)
 _RENDER_HTML_OBJECT_PROPERTY_START_RE = re.compile(
     r"(?P<quote>['\"]?)(?P<member>src|href|srcset|action|formaction|poster|data|ping|"
     r"srcdoc|innerHTML|outerHTML)(?P=quote)\s*:\s*",
@@ -2996,6 +3157,25 @@ def _static_js_assignment_string(expression: str) -> str | None:
     return None
 
 
+def _render_html_static_js_name_aliases(code: str) -> dict[str, str]:
+    aliases: dict[str, str] = {}
+    for match in _RENDER_HTML_JS_STATIC_NAME_START_RE.finditer(code):
+        value = _static_js_assignment_string(code[match.end() :])
+        if value is not None:
+            aliases[match.group("name")] = value
+    return aliases
+
+
+def _render_html_resolve_member(expression: str, aliases: dict[str, str]) -> str | None:
+    member = _static_js_string(expression)
+    if member is not None:
+        return member
+    name = expression.strip()
+    if re.fullmatch(r"[A-Za-z_$][A-Za-z0-9_$]*", name):
+        return aliases.get(name)
+    return None
+
+
 def _render_html_data_document_reaches_network(value: str, depth: int) -> bool:
     """Inspect executable document payloads embedded in data: URLs."""
     if not value.lower().startswith("data:"):
@@ -3146,21 +3326,30 @@ def _render_html_assigned_member_reaches_network(
     return False
 
 
-def _render_html_set_attribute_arguments(arguments: list[str], method: str, depth: int) -> bool:
+def _render_html_value_reaches_network_without_member(value: str | None, depth: int) -> bool:
+    if value is None:
+        return True
+    value = value.lstrip()
+    return bool(
+        _RENDER_HTML_URL_LIST_NETWORK_RE.search(value)
+        or _render_html_data_document_reaches_network(value, depth)
+        or _render_html_code_reaches_network(value, depth + 1)
+    )
+
+
+def _render_html_set_attribute_arguments(
+    arguments: list[str], method: str, depth: int, aliases: dict[str, str]
+) -> bool:
     if method == "setattributens":
         name_index, value_index = 1, 2
     else:
         name_index, value_index = 0, 1
     if len(arguments) <= value_index:
         return False
-    name = _static_js_string(arguments[name_index])
+    name = _render_html_resolve_member(arguments[name_index], aliases)
     value = _static_js_string(arguments[value_index])
     if name is None:
-        return bool(
-            value is None
-            or _RENDER_HTML_URL_LIST_NETWORK_RE.search(value.lstrip())
-            or _render_html_code_reaches_network(value, depth + 1)
-        )
+        return _render_html_value_reaches_network_without_member(value, depth)
     name = name.lower().rsplit(":", 1)[-1]
     return _render_html_assigned_member_reaches_network(name, value, depth)
 
@@ -3181,9 +3370,10 @@ def _render_html_markup_call_reaches_network(arguments: list[str], method: str, 
 
 
 def _render_html_computed_network_access(code: str, depth: int = 0) -> bool:
+    aliases = _render_html_static_js_name_aliases(code)
     for match in _RENDER_HTML_GLOBAL_BRACKET_RE.finditer(code):
         expression = match.group(1)
-        member = _static_js_string(expression)
+        member = _render_html_resolve_member(expression, aliases)
         if member is not None:
             if member.lower() in _RENDER_HTML_NETWORK_MEMBERS:
                 return True
@@ -3202,7 +3392,9 @@ def _render_html_computed_network_access(code: str, depth: int = 0) -> bool:
         arguments = _js_call_arguments(code, match.end())
         if arguments is None:
             return True
-        if _render_html_set_attribute_arguments(arguments, match.group("method").lower(), depth):
+        if _render_html_set_attribute_arguments(
+            arguments, match.group("method").lower(), depth, aliases
+        ):
             return True
 
     for match in _RENDER_HTML_PROPERTY_ASSIGNMENT_START_RE.finditer(code):
@@ -3240,15 +3432,20 @@ def _render_html_computed_network_access(code: str, depth: int = 0) -> bool:
             return True
 
     for match in _RENDER_HTML_COMPUTED_ASSIGNMENT_START_RE.finditer(code):
-        member = _static_js_string(match.group("member"))
-        if member is None:
-            continue
         value = _static_js_assignment_string(code[match.end() :])
+        member_expression = match.group("member")
+        member = _render_html_resolve_member(member_expression, aliases)
+        if member is None:
+            if "." in member_expression:
+                continue
+            if _render_html_value_reaches_network_without_member(value, depth):
+                return True
+            continue
         if _render_html_assigned_member_reaches_network(member, value, depth):
             return True
 
     for match in _RENDER_HTML_COMPUTED_CALL_START_RE.finditer(code):
-        method = _static_js_string(match.group("member"))
+        method = _render_html_resolve_member(match.group("member"), aliases)
         if method is None:
             continue
         method = method.lower()
@@ -3256,7 +3453,7 @@ def _render_html_computed_network_access(code: str, depth: int = 0) -> bool:
         if arguments is None:
             return True
         if method in {"setattribute", "setattributens"}:
-            if _render_html_set_attribute_arguments(arguments, method, depth):
+            if _render_html_set_attribute_arguments(arguments, method, depth, aliases):
                 return True
         elif method == "insertadjacenthtml" or (
             method in {"write", "writeln"} and match.group("document")
@@ -3270,8 +3467,11 @@ def _render_html_computed_network_access(code: str, depth: int = 0) -> bool:
             return True
         if len(arguments) < 3:
             continue
-        member = _static_js_string(arguments[1])
+        member = _render_html_resolve_member(arguments[1], aliases)
         if member is None:
+            value = _static_js_string(arguments[2])
+            if _render_html_value_reaches_network_without_member(value, depth):
+                return True
             continue
         value = _static_js_string(arguments[2])
         if _render_html_assigned_member_reaches_network(member, value, depth):
@@ -3288,6 +3488,17 @@ def _render_html_computed_network_access(code: str, depth: int = 0) -> bool:
                     property_match.group("member"), value, depth
                 ):
                     return True
+    for match in _RENDER_HTML_WITH_BLOCK_RE.finditer(code):
+        body = match.group("body")
+        for assignment in _RENDER_HTML_BARE_PROPERTY_ASSIGNMENT_START_RE.finditer(body):
+            prefix = body[max(0, assignment.start() - 12) : assignment.start()]
+            if re.search(r"\b(?:const|let|var)\s+$", prefix, re.IGNORECASE):
+                continue
+            value = _static_js_assignment_string(body[assignment.end() :])
+            if _render_html_assigned_member_reaches_network(
+                assignment.group("attr"), value, depth
+            ):
+                return True
     return False
 
 
