@@ -70,7 +70,5 @@ def test_bash_exec_allows_normal_command():
 
 def test_bypass_skips_the_out_of_workdir_block():
     # Bypass Permissions skips the blocklist and this check alike.
-    msg = _bash_exec(
-        "cat /etc/hostname", session_id = "pathcheck-bypass", disable_sandbox = True
-    )
+    msg = _bash_exec("cat /etc/hostname", session_id = "pathcheck-bypass", disable_sandbox = True)
     assert "outside the sandbox working directory" not in msg
