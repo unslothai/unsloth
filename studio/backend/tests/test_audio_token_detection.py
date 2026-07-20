@@ -11,7 +11,11 @@ from unittest.mock import patch
 import pytest
 from transformers import AutoConfig
 
-from utils.models.model_config import _AUDIO_TOKEN_PATTERNS, _classify_audio_capability, is_audio_input_type
+from utils.models.model_config import (
+    _AUDIO_TOKEN_PATTERNS,
+    _classify_audio_capability,
+    is_audio_input_type,
+)
 
 
 def _classify(tokens: list[str]) -> str | None:
@@ -48,9 +52,27 @@ def test_non_audio_tokens_classify_none():
     assert _classify(["<bos>", "<eos>", "<pad>"]) is None
 
 
-@pytest.mark.parametrize(("model_type", "audio_type", "expected"), [
-        *((name, "csm", ("audio_vlm", True, True)) for name in ("qwen2_audio", "qwen2_5_omni", "qwen3_omni_moe", "granite_speech")),
-        *((name, None, (None, False, False)) for name in ("wav2vec2", "hubert", "speecht5", "bark", "clap", "encodec", "dac", "mimi", "xcodec")),
+@pytest.mark.parametrize(
+    ("model_type", "audio_type", "expected"),
+    [
+        *(
+            (name, "csm", ("audio_vlm", True, True))
+            for name in ("qwen2_audio", "qwen2_5_omni", "qwen3_omni_moe", "granite_speech")
+        ),
+        *(
+            (name, None, (None, False, False))
+            for name in (
+                "wav2vec2",
+                "hubert",
+                "speecht5",
+                "bark",
+                "clap",
+                "encodec",
+                "dac",
+                "mimi",
+                "xcodec",
+            )
+        ),
         ("llama", None, (None, False, True)),
     ],
 )
