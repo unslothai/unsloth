@@ -365,7 +365,7 @@ def test_finalize_after_escalation_clears_state(monkeypatch):
 
     assert b._proc is None, "the wedged handle must be dropped so is_training_active clears"
     assert b._progress.is_training is False
-    assert b._progress.status_message == "Training stopped."
+    assert "valid current-step checkpoint" in b._progress.status_message
     assert finstop and finstop[0][0] == "job_c", "the captured run must be finalized by id"
     assert b.is_training_active() is False
 
@@ -531,6 +531,7 @@ def _install_fake_db(monkeypatch):
         recs["insert_ids"].append(job_id),
     )
     fake_db.update_run_progress = lambda **kw: recs["progress_ids"].append(kw.get("id"))
+    fake_db.mark_run_cancel_requested = lambda _run_id: True
     fake_storage.studio_db = fake_db
     monkeypatch.setitem(sys.modules, "storage", fake_storage)
     monkeypatch.setitem(sys.modules, "storage.studio_db", fake_db)
@@ -540,9 +541,43 @@ def _install_fake_db(monkeypatch):
     return recs
 
 
+def test_stop_without_save_creates_missing_row_before_signal(monkeypatch):
+    recs = _install_fake_db(monkeypatch)
+    b = TrainingBackend()
+    b.current_job_id, b._db_config = "job_missing", {"model_name": "m"}
+    b._stop_queue = queue.Queue()
+    assert b.stop_training(save = False) is True
+    assert [run["id"] for run in recs["created"]] == ["job_missing"]
+    assert b._stop_queue.get_nowait() == {"type": "stop", "save": False}
+
+    new_queue = queue.Queue()
+    b.current_job_id, b._db_run_created = "job_old", True
+    b._cancel_requested = b._should_stop = False
+
+    def _supersede(_run_id):
+        b.current_job_id = "job_new"
+        b._stop_queue = new_queue
+        return True
+
+    sys.modules["storage.studio_db"].mark_run_cancel_requested = _supersede
+    assert b.stop_training(save = False) is False
+    assert not b._cancel_requested and new_queue.empty()
+
+
 def test_finalize_run_in_db_single_winner_under_concurrency(monkeypatch):
     # The watchdog and pump can both finalize; only one call may reach finish_run.
     recs = _install_fake_db(monkeypatch)
+    monkeypatch.setitem(_G, "_DB_FINALIZE_RETRY_S", 0.0)
+    attempts = 0
+
+    def flaky_finish(**kw):
+        nonlocal attempts
+        attempts += 1
+        if attempts < 3:
+            raise RuntimeError("database is locked")
+        recs["finished"].append(kw)
+
+    sys.modules["storage.studio_db"].finish_run = flaky_finish
     b = TrainingBackend()
     b.current_job_id = "job_x"
     b._db_run_created = True
@@ -561,6 +596,7 @@ def test_finalize_run_in_db_single_winner_under_concurrency(monkeypatch):
         t.join(timeout = 5)
 
     assert len(recs["finished"]) == 1, f"finalize must run once, got {len(recs['finished'])}"
+    assert attempts == 3
     assert b._run_finalized is True
 
 
@@ -668,7 +704,13 @@ def test_ensure_db_run_created_publishes_only_after_insert(monkeypatch):
     monkeypatch.setitem(sys.modules, "storage", fake_storage)
     monkeypatch.setitem(sys.modules, "storage.studio_db", fake_db)
 
-    b._ensure_db_run_created()
+    b._run_intent_lock.acquire()
+    creator = threading.Thread(target = b._ensure_db_run_created)
+    creator.start()
+    time.sleep(0.02)
+    assert b._db_create_in_progress is False
+    b._run_intent_lock.release()
+    creator.join(timeout = 5)
 
     assert observed["flag_during_create"] is False, "flag must not be published before insert"
     assert observed["in_progress_during_create"] is True
@@ -740,6 +782,7 @@ def test_escalation_finalizes_watched_run_by_id_end_to_end(monkeypatch):
     b = TrainingBackend()
     b.current_job_id = "job_old"
     b._db_run_created = True
+    b._should_stop = True
     b._proc = _FakeProc(alive = False)
     b._progress.is_training = True
     b._progress.step = 42
@@ -748,7 +791,8 @@ def test_escalation_finalizes_watched_run_by_id_end_to_end(monkeypatch):
     b._finalize_stopped_after_escalation(target_proc = b._proc, watched_job_id = "job_old")
 
     assert [f["id"] for f in recs["finished"]] == ["job_old"], "must finish the captured run by id"
-    assert recs["finished"][0]["status"] == "stopped"
+    assert recs["finished"][0]["status"] == "error"
+    assert recs["finished"][0]["resume_blocked"] is True
     assert recs["insert_ids"] == ["job_old"], "buffered metrics must land on the captured run"
     assert b._metric_buffer == [], "the captured batch must be drained"
 

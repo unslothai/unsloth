@@ -587,16 +587,43 @@ def create_run(
     config_json: str,
     started_at: str,
     total_steps: Optional[int],
+    *,
+    output_dir: Optional[str] = None,
+    cancel_requested: bool = False,
+    resumed_from_run_id: Optional[str] = None,
 ) -> None:
     conn = get_connection()
     try:
         conn.execute(
             """
-            INSERT INTO training_runs (id, model_name, dataset_name, config_json, started_at, total_steps)
-            VALUES (?, ?, ?, ?, ?, ?)
+            INSERT INTO training_runs (
+                id, model_name, dataset_name, config_json, started_at, total_steps,
+                output_dir, resume_blocked
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
             """,
-            (id, model_name, dataset_name, config_json, started_at, total_steps),
+            (
+                id,
+                model_name,
+                dataset_name,
+                config_json,
+                started_at,
+                total_steps,
+                None if cancel_requested else output_dir,
+                int(cancel_requested),
+            ),
         )
+        if resumed_from_run_id:
+            claimed = conn.execute(
+                """
+                UPDATE training_runs SET resume_blocked = 1
+                WHERE id = ? AND status IN ('stopped', 'error')
+                  AND output_dir = ? AND resume_blocked = 0
+                """,
+                (resumed_from_run_id, output_dir),
+            )
+            if claimed.rowcount != 1:
+                raise RuntimeError("Resume source is no longer available")
         conn.commit()
     finally:
         conn.close()
@@ -650,14 +677,14 @@ def finish_run(
             SET status = ?, ended_at = ?, final_step = ?, final_loss = ?,
                 duration_seconds = ?, loss_sparkline = ?,
                 output_dir = CASE
-                    WHEN ? = 1 THEN NULL
+                    WHEN resume_blocked = 1 OR ? = 1 THEN NULL
                     WHEN ? IS NOT NULL THEN ?
                     WHEN ? IN ('error', 'stopped') THEN output_dir
                     ELSE NULL
                 END,
                 error_message = ?,
-                resume_blocked = ?
-            WHERE id = ?
+                resume_blocked = CASE WHEN resume_blocked = 1 OR ? = 1 THEN 1 ELSE ? END
+            WHERE id = ? AND status = 'running'
             """,
             (
                 status,
@@ -671,6 +698,7 @@ def finish_run(
                 output_dir,
                 status,
                 error_message,
+                int(clear_output_dir),
                 int(resume_blocked),
                 id,
             ),
@@ -735,10 +763,27 @@ def update_run_output_dir(id: str, output_dir: Optional[str]) -> None:
     conn = get_connection()
     try:
         conn.execute(
-            "UPDATE training_runs SET output_dir = ? WHERE id = ?",
+            """
+            UPDATE training_runs SET output_dir = ?
+            WHERE id = ? AND status = 'running' AND resume_blocked = 0
+            """,
             (output_dir, id),
         )
         conn.commit()
+    finally:
+        conn.close()
+
+
+def mark_run_cancel_requested(id: str) -> bool:
+    """Clear resume/export state for the exact run, including a terminal teardown race."""
+    conn = get_connection()
+    try:
+        cursor = conn.execute(
+            "UPDATE training_runs SET output_dir = NULL, resume_blocked = 1 WHERE id = ?",
+            (id,),
+        )
+        conn.commit()
+        return cursor.rowcount > 0
     finally:
         conn.close()
 
@@ -944,8 +989,12 @@ def cleanup_orphaned_runs() -> None:
         conn.execute(
             """
             UPDATE training_runs
-            SET status = 'error',
-                error_message = 'Server restarted during training',
+            SET status = CASE WHEN resume_blocked = 1 THEN 'stopped' ELSE 'error' END,
+                error_message = CASE
+                    WHEN resume_blocked = 1 THEN NULL
+                    ELSE 'Server restarted during training'
+                END,
+                output_dir = CASE WHEN resume_blocked = 1 THEN NULL ELSE output_dir END,
                 ended_at = ?
             WHERE status = 'running'
             """,

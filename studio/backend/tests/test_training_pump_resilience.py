@@ -333,7 +333,7 @@ def test_interrupted_cancel_clears_in_memory_output_dir(monkeypatch):
     assert finalized.get("clear_output_dir") is True
 
 
-def test_interrupted_stop_and_save_keeps_in_memory_output_dir(monkeypatch):
+def test_worker_exit_reuses_terminal_stop_save_error(monkeypatch):
     b = TrainingBackend()
     finalized: dict = {}
     monkeypatch.setattr(b, "_ensure_db_run_created", lambda: None)
@@ -345,13 +345,23 @@ def test_interrupted_stop_and_save_keeps_in_memory_output_dir(monkeypatch):
     b._should_stop = True
     b._cancel_requested = False
     b._output_dir = "/out/x"
+    b.current_job_id = "job-x"
+    b._terminal_finalize_payload = {
+        "status": "error",
+        "error_message": "checkpoint failed",
+        "output_dir": "/out/x",
+        "clear_output_dir": False,
+        "resume_blocked": True,
+        "expected_job_id": "job-x",
+    }
 
     b._pump_loop()
 
     assert b._output_dir == "/out/x"
-    assert finalized.get("status") == "stopped"
+    assert finalized.get("status") == "error"
     assert finalized.get("output_dir") == "/out/x"
     assert finalized.get("clear_output_dir") is False
+    assert finalized.get("resume_blocked") is True
 
 
 def test_dead_worker_crash_preserves_output_dir(monkeypatch):

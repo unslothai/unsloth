@@ -196,6 +196,7 @@ async def start_training(
                 request.local_eval_datasets, "Local eval dataset"
             )
         resume_output_dir: Optional[str] = None
+        resume_run: Optional[dict] = None
         if request.resume_from_checkpoint:
             try:
                 resume_output_dir = normalize_resume_output_dir(request.resume_from_checkpoint)
@@ -458,7 +459,10 @@ async def start_training(
 
         try:
             success = backend.start_training(
-                job_id = job_id, before_spawn = _free_vram_for_training, **training_kwargs
+                job_id = job_id,
+                before_spawn = _free_vram_for_training,
+                resume_source_run_id = resume_run["id"] if resume_run else None,
+                **training_kwargs,
             )
         except SidecarSwapInProgress as exc:
             # Expected loss of the race against a sidecar install: a retryable

@@ -3345,21 +3345,13 @@ def _emit_output_dir(event_queue: Any, output_dir: str) -> None:
         pass
 
 
-def _mlx_output_has_resume_checkpoint(output_dir) -> bool:
-    path = Path(output_dir)
-    if (path / "trainer_state.json").is_file():
-        return True
-    return any(
-        (child / "trainer_state.json").is_file()
-        for child in path.glob("checkpoint-*")
-        if child.is_dir()
-    )
-
-
 def _mlx_has_checkpoint_at_step(output_dir, step: int) -> bool:
     if step <= 0:
         return False
-    return (Path(output_dir) / f"checkpoint-{step}" / "trainer_state.json").is_file()
+    from core.training.resume import is_resume_checkpoint_valid
+    return is_resume_checkpoint_valid(
+        Path(output_dir) / f"checkpoint-{step}", expected_step = step, backend = "mlx"
+    )
 
 
 def _write_mlx_stop_checkpoint(trainer, optimizer, output_dir) -> bool:
