@@ -1689,7 +1689,7 @@ export function SharedComposer({
       />
       <div className="composer-action-wrapper">
         <div
-          className="flex items-center gap-0.5"
+          className="flex min-w-0 flex-wrap items-center gap-0.5"
           data-pill-compact={pillsCompact ? "true" : undefined}
         >
           <input
