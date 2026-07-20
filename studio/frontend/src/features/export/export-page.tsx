@@ -724,11 +724,13 @@ export function ExportPage() {
     if (sourceMode === "checkpoint" && !selectedCp) return;
     const checkpointPath = selectedCp?.path ?? null;
 
-    const preparedToken = await prepareHfTokenForUse(hfToken);
+    const pushToHub = destination === "hub";
+    const preparedToken = await prepareHfTokenForUse(hfToken, {
+      allowAnonymous: !pushToHub,
+    });
     if (!preparedToken.proceed) return;
     const actionHfToken = preparedToken.token ?? "";
 
-    const pushToHub = destination === "hub";
     const repoId =
       pushToHub && hfUsername && modelName
         ? `${hfUsername}/${modelName}`

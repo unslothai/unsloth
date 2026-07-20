@@ -10,22 +10,24 @@ let pendingResolver: Resolver | null = null;
 
 interface HfTokenWarningStore {
   open: boolean;
-  requestDecision: () => Promise<HfTokenWarningDecision>;
+  allowAnonymous: boolean;
+  requestDecision: (allowAnonymous: boolean) => Promise<HfTokenWarningDecision>;
   resolve: (decision: HfTokenWarningDecision) => void;
 }
 
 export const useHfTokenWarningStore = create<HfTokenWarningStore>((set) => ({
   open: false,
-  requestDecision: () =>
+  allowAnonymous: true,
+  requestDecision: (allowAnonymous) =>
     new Promise<HfTokenWarningDecision>((resolve) => {
       pendingResolver?.("cancel");
       pendingResolver = resolve;
-      set({ open: true });
+      set({ open: true, allowAnonymous });
     }),
   resolve: (decision) => {
     const resolver = pendingResolver;
     pendingResolver = null;
-    set({ open: false });
+    set({ open: false, allowAnonymous: true });
     resolver?.(decision);
   },
 }));

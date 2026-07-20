@@ -13,7 +13,7 @@ from dataclasses import dataclass
 from typing import Literal
 
 from huggingface_hub import HfApi
-from huggingface_hub.errors import HfHubHTTPError
+from huggingface_hub.utils import build_hf_headers, get_session
 
 
 TokenValidationStatus = Literal["valid", "invalid", "rate_limited", "unavailable"]
@@ -32,6 +32,7 @@ _TEMPORARY_CACHE_TTL_SECONDS = 15.0
 _MAX_BUCKETS = 4096
 _MAX_CACHE_ENTRIES = 4096
 _INFLIGHT_WAIT_SECONDS = 30.0
+_REMOTE_TIMEOUT_SECONDS = 10.0
 
 _attempts: dict[str, deque[float]] = {}
 _cache: dict[str, tuple[float, TokenValidationResult]] = {}
@@ -95,8 +96,7 @@ def _reserve_attempt_locked(rate_key: str, now: float) -> TokenValidationResult 
     return None
 
 
-def _http_status(exc: HfHubHTTPError) -> int | None:
-    response = getattr(exc, "response", None)
+def _http_status(response: object | None) -> int | None:
     status = getattr(response, "status_code", None)
     try:
         return int(status) if status is not None else None
@@ -104,8 +104,7 @@ def _http_status(exc: HfHubHTTPError) -> int | None:
         return None
 
 
-def _remote_retry_after(exc: HfHubHTTPError) -> int | None:
-    response = getattr(exc, "response", None)
+def _remote_retry_after(response: object | None) -> int | None:
     headers = getattr(response, "headers", None)
     if not headers:
         return None
@@ -116,22 +115,34 @@ def _remote_retry_after(exc: HfHubHTTPError) -> int | None:
         return None
 
 
-def _check_remote(token: str) -> TokenValidationResult:
-    try:
-        HfApi().whoami(token = token)
+def _classify_response(response: object | None) -> TokenValidationResult:
+    status = _http_status(response)
+    if status is not None and 200 <= status < 300:
         return TokenValidationResult(status = "valid")
-    except HfHubHTTPError as exc:
-        status = _http_status(exc)
-        if status == 401:
-            return TokenValidationResult(status = "invalid")
-        if status == 429:
-            return TokenValidationResult(
-                status = "rate_limited",
-                retry_after_seconds = _remote_retry_after(exc),
-            )
-        return TokenValidationResult(status = "unavailable")
-    except Exception:
-        return TokenValidationResult(status = "unavailable")
+    if status == 401:
+        return TokenValidationResult(status = "invalid")
+    if status == 429:
+        return TokenValidationResult(
+            status = "rate_limited",
+            retry_after_seconds = _remote_retry_after(response),
+        )
+    return TokenValidationResult(status = "unavailable")
+
+
+def _check_remote(token: str) -> TokenValidationResult:
+    api = HfApi()
+    try:
+        # HfApi.whoami has no timeout parameter in the pinned Hub client.
+        # Use its session and headers against the same whoami endpoint.
+        response = get_session().get(
+            f"{api.endpoint}/api/whoami-v2",
+            headers = build_hf_headers(token = token),
+            timeout = _REMOTE_TIMEOUT_SECONDS,
+        )
+    except Exception as exc:
+        # huggingface-hub 0.36.x can wrap a 401 as requests.HTTPError.
+        return _classify_response(getattr(exc, "response", None))
+    return _classify_response(response)
 
 
 def validate_hf_token(token: str, *, rate_key: str) -> TokenValidationResult:

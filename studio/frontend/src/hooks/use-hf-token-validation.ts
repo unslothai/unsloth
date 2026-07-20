@@ -17,6 +17,11 @@ const INITIAL: HfTokenValidationState = {
   isChecking: false,
 };
 
+// Current user access tokens contain 34 characters after the hf_ prefix.
+// Action-time validation still accepts legacy shapes without spending quota
+// on every intermediate value typed into a live form field.
+const COMPLETE_HF_TOKEN = /^hf_[A-Za-z0-9]{34}$/;
+
 /**
  * Validates the HF token via the whoami-v2 API, debounced to avoid excessive
  * requests while typing. isValid is null until checked.
@@ -77,6 +82,10 @@ export function useHfTokenValidation(token: string): HfTokenValidationState {
 
   useEffect(() => {
     if (!debouncedToken) {
+      setState(INITIAL);
+      return;
+    }
+    if (!COMPLETE_HF_TOKEN.test(debouncedToken)) {
       setState(INITIAL);
       return;
     }

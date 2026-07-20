@@ -10,7 +10,6 @@ import sys
 
 import httpx
 import pytest
-from huggingface_hub.errors import HfHubHTTPError
 
 
 _BACKEND_DIR = str(Path(__file__).resolve().parent.parent)
@@ -81,7 +80,7 @@ def test_window_rolls_forward(monkeypatch):
 
 @pytest.mark.parametrize(
     ("status_code", "expected"),
-    [(401, "invalid"), (429, "rate_limited"), (500, "unavailable")],
+    [(200, "valid"), (401, "invalid"), (429, "rate_limited"), (500, "unavailable")],
 )
 def test_remote_status_classification(monkeypatch, status_code, expected):
     response = httpx.Response(
@@ -90,15 +89,45 @@ def test_remote_status_classification(monkeypatch, status_code, expected):
         headers = {"Retry-After": "42"} if status_code == 429 else None,
     )
 
-    class _Api:
-        def whoami(self, *, token):
-            raise HfHubHTTPError("failed", response = response)
+    class _Session:
+        def get(self, url, *, headers, timeout):
+            assert url == "https://huggingface.co/api/whoami-v2"
+            assert headers["authorization"] == "Bearer hf_test"
+            assert timeout == validation._REMOTE_TIMEOUT_SECONDS
+            return response
 
-    monkeypatch.setattr(validation, "HfApi", _Api)
+    monkeypatch.setattr(validation, "get_session", lambda: _Session())
     result = validation._check_remote("hf_test")
     assert result.status == expected
     if status_code == 429:
         assert result.retry_after_seconds == 42
+
+
+def test_wrapped_http_401_is_invalid(monkeypatch):
+    response = httpx.Response(
+        401,
+        request = httpx.Request("GET", "https://huggingface.co/api/whoami-v2"),
+    )
+
+    class _Session:
+        def get(self, _url, **_kwargs):
+            error = RuntimeError("Invalid user token.")
+            error.response = response
+            raise error
+
+    monkeypatch.setattr(validation, "get_session", lambda: _Session())
+    assert validation._check_remote("hf_test").status == "invalid"
+
+
+def test_remote_timeout_is_bounded_and_unavailable(monkeypatch):
+    class _Session:
+        def get(self, _url, *, headers, timeout):
+            assert headers["authorization"] == "Bearer hf_test"
+            assert timeout == validation._REMOTE_TIMEOUT_SECONDS
+            raise TimeoutError("timed out")
+
+    monkeypatch.setattr(validation, "get_session", lambda: _Session())
+    assert validation._check_remote("hf_test").status == "unavailable"
 
 
 def test_raw_token_is_not_retained(monkeypatch):

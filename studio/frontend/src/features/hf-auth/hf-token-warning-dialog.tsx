@@ -17,6 +17,9 @@ import { useHfTokenWarningStore } from "./store";
 
 export function HfTokenWarningDialog() {
   const open = useHfTokenWarningStore((state) => state.open);
+  const allowAnonymous = useHfTokenWarningStore(
+    (state) => state.allowAnonymous,
+  );
   const resolve = useHfTokenWarningStore((state) => state.resolve);
 
   return (
@@ -35,9 +38,9 @@ export function HfTokenWarningDialog() {
             <div className="space-y-1 text-left">
               <AlertDialogTitle>Hugging Face token is invalid</AlertDialogTitle>
               <AlertDialogDescription>
-                Hugging Face rejected the saved token. Replace it to access
-                private or gated repositories, or continue without it for public
-                and fully downloaded models.
+                {allowAnonymous
+                  ? "Hugging Face rejected the saved token. Replace it to access private or gated repositories, or continue without it for public and fully downloaded models."
+                  : "Hugging Face rejected the saved token. Replace it before uploading to the Hub."}
               </AlertDialogDescription>
             </div>
           </div>
@@ -47,9 +50,11 @@ export function HfTokenWarningDialog() {
             Cancel
           </AlertDialogCancel>
           <div className="flex flex-col-reverse gap-2 sm:flex-row">
-            <Button variant="outline" onClick={() => resolve("anonymous")}>
-              Continue without token
-            </Button>
+            {allowAnonymous ? (
+              <Button variant="outline" onClick={() => resolve("anonymous")}>
+                Continue without token
+              </Button>
+            ) : null}
             <AlertDialogAction onClick={() => resolve("replace")}>
               Replace token
             </AlertDialogAction>

@@ -15,6 +15,10 @@ export interface PreparedHfToken {
   token: string | null;
 }
 
+interface PrepareHfTokenOptions {
+  allowAnonymous?: boolean;
+}
+
 // A caller can retain the pre-dialog payload while the shared store is cleared.
 // Remember that one-session choice so a follow-up /load does not prompt again
 // after its preceding /validate already continued anonymously.
@@ -22,10 +26,12 @@ const anonymousForSession = new Set<string>();
 
 export async function prepareHfTokenForUse(
   token: string | null | undefined,
+  options: PrepareHfTokenOptions = {},
 ): Promise<PreparedHfToken> {
   const normalized = token?.trim() ?? "";
   if (!normalized) return { proceed: true, token: null };
-  if (anonymousForSession.has(normalized)) {
+  const allowAnonymous = options.allowAnonymous ?? true;
+  if (allowAnonymous && anonymousForSession.has(normalized)) {
     return { proceed: true, token: null };
   }
 
@@ -42,7 +48,9 @@ export async function prepareHfTokenForUse(
     return { proceed: true, token: normalized };
   }
 
-  const decision = await useHfTokenWarningStore.getState().requestDecision();
+  const decision = await useHfTokenWarningStore
+    .getState()
+    .requestDecision(allowAnonymous);
   if (decision === "anonymous") {
     anonymousForSession.add(normalized);
     useHfTokenStore.getState().clearToken();
