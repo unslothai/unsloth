@@ -5627,7 +5627,7 @@ def _sensitive_paths(command: str, workdir: str) -> list[str]:
             if "=" in tok:
                 tok = tok.split("=", 1)[1]
             elif "/" in tok:
-                tok = tok[tok.index("/"):]
+                tok = tok[tok.index("/") :]
             else:
                 continue  # a bare flag carries no path
             if not tok:
