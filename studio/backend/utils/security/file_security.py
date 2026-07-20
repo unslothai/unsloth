@@ -284,14 +284,40 @@ def _dir_has_loadable_safetensors(files: dict) -> bool:
     return False
 
 
-def _cached_pickle_weight_files(snap) -> list:
+def _st_load_roots(snap, load_subdirs = ()) -> set:
+    """Directories a load opens ``from_pretrained`` on: the snapshot root, every module path
+    ``modules.json`` declares, and each passed-in ``load_subdirs`` entry. A SentenceTransformer
+    module can load from a directory without ``config.json`` -- e.g. a ``0_WordEmbeddings/``
+    module with ``wordembedding_config.json`` + ``pytorch_model.bin`` -- so a pickle there is
+    still deserialized and must be treated as a load root."""
+    roots = {snap}
+    for subdir in load_subdirs or ():
+        rel = _normalize_repo_path(str(subdir)).strip("/")
+        if rel:
+            roots.add(snap / rel)
+    try:
+        import json
+        modules = json.loads((snap / "modules.json").read_text(encoding = "utf-8"))
+    except (OSError, ValueError):
+        return roots
+    if isinstance(modules, list):
+        for module in modules:
+            if isinstance(module, dict):
+                rel = _normalize_repo_path(str(module.get("path") or "")).strip("/")
+                if rel:
+                    roots.add(snap / rel)
+    return roots
+
+
+def _cached_pickle_weight_files(snap, load_subdirs = ()) -> list:
     """Base-model pickle weight files a from_pretrained load actually deserializes: at a real
-    load root (the snapshot root, or a subdir that is itself a load root -- it holds a
-    ``config.json``) and with NO loadable safetensors alternative there. A stray pickle in a
-    non-load subdir (``archive/``, ``nemo/``) that no load opens is not a vector, matching the
-    online scan's load-path scoping. A dir is covered by a safetensors weight the loader would
-    pick instead (unsharded base file or a complete indexed shard set); a bare adapter or an
-    orphan shard leaves the pickle live."""
+    load root and with NO loadable safetensors alternative there. A load root is the snapshot
+    root, a directory ``modules.json`` / ``load_subdirs`` declares, or a plain from_pretrained
+    root (holds ``config.json``). A stray pickle in a non-load subdir (``archive/``, ``nemo/``)
+    that no load opens is not a vector, matching the online scan's load-path scoping. A dir is
+    covered by a safetensors weight the loader would pick instead (unsharded base file or a
+    complete indexed shard set); a bare adapter or an orphan shard leaves the pickle live."""
+    roots = _st_load_roots(snap, load_subdirs)
     by_dir_pickle: dict = {}
     by_dir_files: dict = {}  # directory -> {lower-name: Path}
     try:
@@ -310,16 +336,16 @@ def _cached_pickle_weight_files(snap) -> list:
     hits: set = set()
     for directory, names in by_dir_pickle.items():
         files = by_dir_files.get(directory, {})
-        # from_pretrained deserializes a pickle only at a load root: the snapshot root, or a
-        # subdir that is itself a load root (has config.json). A pickle elsewhere is unread.
-        if directory != snap and "config.json" not in files:
+        # A pickle is deserialized only at a load root (a declared module dir, load subdir, the
+        # snapshot root, or a plain from_pretrained root with config.json). Elsewhere it is unread.
+        if directory not in roots and "config.json" not in files:
             continue
         if not _dir_has_loadable_safetensors(files):
             hits.update(names)
     return sorted(hits)
 
 
-def _evaluate_local_only(model_name: str) -> "FileSecurityDecision":
+def _evaluate_local_only(model_name: str, load_subdirs = ()) -> "FileSecurityDecision":
     """Fail-CLOSED security decision for an offline (local_files_only) load.
 
     The Hub scan cannot be fetched offline, so instead of failing OPEN we inspect the cached
@@ -337,7 +363,7 @@ def _evaluate_local_only(model_name: str) -> "FileSecurityDecision":
     if snap is None:
         return FileSecurityDecision(model_name, False, reason = "offline; nothing cached to scan")
 
-    pickles = _cached_pickle_weight_files(snap)
+    pickles = _cached_pickle_weight_files(snap, load_subdirs)
     if not pickles:
         return FileSecurityDecision(
             model_name, False, reason = "offline; cached weights are pickle-free (inert)"
@@ -431,7 +457,7 @@ def evaluate_file_security(
     # An offline (local-only) load cannot fetch the Hub scan: fail CLOSED against the cache
     # instead of skipping the gate, so an unscanned cached pickle cannot deserialize.
     if local_only_load:
-        return _evaluate_local_only(model_name)
+        return _evaluate_local_only(model_name, load_subdirs)
 
     status = _fetch_security_status(model_name, hf_token)
     if not isinstance(status, dict):

@@ -203,6 +203,19 @@ def test_local_only_load_fails_closed_offline_never_hitting_the_hub(monkeypatch,
     (modroot / "0_Transformer" / "pytorch_model.bin").write_bytes(b"\0")
     assert _evaluate(modroot) is True
 
+    # A pickle in a modules.json-declared module dir WITHOUT a config.json (a WordEmbeddings
+    # module: wordembedding_config.json + pytorch_model.bin) is still deserialized by the ST
+    # loader, so it must be scanned -> blocked, not skipped for lacking config.json.
+    we = tmp_path / "wordemb" / "aaa"
+    (we / "0_WordEmbeddings").mkdir(parents = True)
+    (we / "modules.json").write_text(
+        '[{"idx": 0, "name": "0_WordEmbeddings", "path": "0_WordEmbeddings", '
+        '"type": "sentence_transformers.models.WordEmbeddings"}]'
+    )
+    (we / "0_WordEmbeddings" / "wordembedding_config.json").write_bytes(b"{}")
+    (we / "0_WordEmbeddings" / "pytorch_model.bin").write_bytes(b"\0")
+    assert _evaluate(we) is True
+
 
 def test_security_scan_runs_when_online(monkeypatch):
     import utils.security.file_security as fs
