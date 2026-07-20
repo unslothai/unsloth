@@ -280,9 +280,7 @@ def test_reset_max_seq_length_falls_back_to_app_default():
     runtime snapshot, or a remembered/active override can never be cleared."""
     src = _read("features/model-picker/components/model-config-page.tsx")
     # The null fallback resolves to the app-default constant, not a runtime value.
-    assert (
-        "clampMaxSeqLength(DEFAULT_MAX_SEQ_LENGTH, nativeMaxSeqLength)" in src
-    )
+    assert "clampMaxSeqLength(DEFAULT_MAX_SEQ_LENGTH, nativeMaxSeqLength)" in src
     # The buggy runtime-seeded fallback must not come back.
     assert "clampMaxSeqLength(initialMaxSeqLength" not in src
 
