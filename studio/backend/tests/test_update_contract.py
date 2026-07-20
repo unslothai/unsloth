@@ -30,6 +30,19 @@ pytest.importorskip("fastapi")
 _HERE = Path(__file__).resolve().parent
 _BACKEND = _HERE.parent
 
+# Stub modules _install_stubs writes into the shared sys.modules, tracked so they
+# are restored after the route loads and a regression test can assert none leak
+# into the rest of the one-process backend suite.
+_INSTALLED_STUBS: dict[str, types.ModuleType] = {}
+_STUBBED_KEYS = (
+    "auth",
+    "auth.authentication",
+    "loggers",
+    "utils",
+    "utils.llama_cpp_update",
+    "utils.update_confirm",
+)
+
 
 def _install_stubs():
     """Stub packages so routes/llama.py imports cleanly, plus the real update_confirm."""
@@ -67,6 +80,7 @@ def _install_stubs():
         utils_pkg = types.ModuleType("utils")
         utils_pkg.__path__ = []
         sys.modules["utils"] = utils_pkg
+        _INSTALLED_STUBS["utils"] = utils_pkg
 
     lcu_mod = types.ModuleType("utils.llama_cpp_update")
 
@@ -105,10 +119,16 @@ def _install_stubs():
         ("utils.llama_cpp_update", lcu_mod),
         ("utils.update_confirm", uc_mod),
     ):
+        _INSTALLED_STUBS[name] = mod
         sys.modules[name] = mod
     return uc_mod
 
 
+# Snapshot the real modules before installing the collection-time stubs, then
+# restore them once the route has bound its stubbed imports. Leaving the stubs in
+# sys.modules poisons the shared process: a bare ``auth`` package and a NopLogger
+# break every later test that imports the real auth/loggers/utils modules.
+_saved_modules = {name: sys.modules.get(name) for name in _STUBBED_KEYS}
 _uc = _install_stubs()
 
 
@@ -123,6 +143,13 @@ def _load_route():
 
 
 rl = _load_route()
+
+# rl now holds its stub references; put the real modules back so nothing leaks.
+for _name, _orig in _saved_modules.items():
+    if _orig is None:
+        sys.modules.pop(_name, None)
+    else:
+        sys.modules[_name] = _orig
 
 
 @pytest.fixture(autouse = True)
@@ -489,3 +516,12 @@ def test_http_local_and_remote_behave_identically(monkeypatch):
     remote = client.post("/api/llama/update", headers = remote_h, json = {"confirmed": True})
     assert local.json()["started"] == remote.json()["started"] == True
     assert calls["n"] == 2  # both proceeded; location was never the gate
+
+
+def test_collection_stubs_do_not_leak_into_sys_modules():
+    # Regression: the collection-time stubs (bare auth package, NopLogger loggers,
+    # default update fns) must be removed from sys.modules after the route loads.
+    # Leaving them poisons the one-process backend suite -- every later test that
+    # imports the real auth/loggers/utils modules fails with "unknown location".
+    for name, stub in _INSTALLED_STUBS.items():
+        assert sys.modules.get(name) is not stub, f"{name} stub leaked into sys.modules"
