@@ -53,6 +53,7 @@ Unsloth Studio (Beta) lets you run and train text, [audio](https://unsloth.ai/do
 * We work directly with teams behind [gpt-oss](https://docs.unsloth.ai/new/gpt-oss-how-to-run-and-fine-tune#unsloth-fixes-for-gpt-oss), [Qwen3](https://www.reddit.com/r/LocalLLaMA/comments/1kaodxu/qwen3_unsloth_dynamic_ggufs_128k_context_bug_fixes/), [Llama 4](https://github.com/ggml-org/llama.cpp/pull/12889), [Mistral](https://huggingface.co/mistralai/Mistral-Medium-3.5-128B/discussions/18), [Gemma 1-3](https://news.ycombinator.com/item?id=39671146), and [Phi-4](https://unsloth.ai/blog/phi4), where we’ve fixed bugs that improve model accuracy.
 ### Training
 * Train and RL **500+ models** up to **2x faster** with **70% less VRAM**; [MoE up to **12x faster**](https://unsloth.ai/docs/new/faster-moe).
+* Train and run RL on [AMD GPUs](https://unsloth.ai/docs/get-started/install/amd) across Windows, WSL and Linux.
 * **Data Recipes**: [Auto-create datasets](https://unsloth.ai/docs/new/studio/data-recipe) from **PDF, CSV, DOCX** etc. Edit data in a visual-node workflow.
 * **[Reinforcement Learning](https://unsloth.ai/docs/get-started/reinforcement-learning-rl-guide)** uses **80% less VRAM** for GRPO, FP8 and vision RL, with [7x longer contexts](https://unsloth.ai/docs/new/grpo-long-context).
 * [**Long-context training**](https://unsloth.ai/docs/new/3x-faster-training-packing): **3x faster**, 30% less VRAM and [500K+ context](https://unsloth.ai/docs/blog/500k-context-length-fine-tuning).
