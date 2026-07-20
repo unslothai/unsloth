@@ -62,6 +62,11 @@ const SELECT_TRIGGER_CLASS = `grid h-8 min-w-0 grid-cols-[minmax(0,1fr)_auto] it
 const NUMBER_INPUT_CLASS = `h-8 w-[92px] ${CONTROL_SURFACE} pl-3 pr-2 py-0 text-right text-[13px] font-medium text-nav-fg outline-none focus-visible:ring-0`;
 
 const KV_CACHE_DTYPE_DEFAULT = "f16";
+// App-default max sequence length used when a non-GGUF model has no explicit
+// override (a fresh model, or after Reset). Reset must fall back to this, never
+// to the active model's loaded runtime value, so an active model's remembered
+// max-length override can actually be cleared.
+const DEFAULT_MAX_SEQ_LENGTH = 4096;
 const SPECULATIVE_TYPE_LABELS: Record<(typeof SPECULATIVE_TYPES)[number], string> =
   {
     auto: "Auto",
@@ -566,7 +571,6 @@ export function ModelConfigPage({
 }: ModelConfigPageProps) {
   const rememberId = useId();
   const isActiveModel = loadedConfig != null;
-  const runtimeMaxSeqLength = useChatRuntimeStore((s) => s.params.maxSeqLength);
   const hfToken = useChatRuntimeStore((s) => s.hfToken);
   const activeNativePathToken = useChatRuntimeStore(
     (s) => s.activeNativePathToken,
@@ -576,13 +580,6 @@ export function ModelConfigPage({
   );
   const loadedMaxContextLength = useChatRuntimeStore(
     (s) => s.ggufMaxContextLength,
-  );
-  // Only the active model seeds its max sequence length from the loaded
-  // runtime params. A different, unloaded model with no saved config seeds the
-  // app default instead, so opening its settings and loading does not inherit
-  // the currently loaded model's context.
-  const [initialMaxSeqLength] = useState(() =>
-    isActiveModel ? (normalizeMaxSeqLength(runtimeMaxSeqLength) ?? 4096) : 4096,
   );
   const resolveInitial = () => {
     const resolved = resolveInitialConfig(target.id, target.ggufVariant);
@@ -728,9 +725,13 @@ export function ModelConfigPage({
   const nativeMaxSeqLength =
     floorMaxSeqLength(modelMaxPosition.maxPositionEmbeddings) ??
     MAX_SEQ_LENGTH_MAX;
+  // A non-GGUF active model seeds config.maxSeqLength from its loaded value, so
+  // the initial view still shows the running context. Once that is cleared
+  // (Reset sets it to null), fall back to the app default rather than the loaded
+  // runtime value, otherwise a remembered/active override can never be cleared.
   const maxSeqLengthValue =
     normalizeMaxSeqLength(config.maxSeqLength) ??
-    clampMaxSeqLength(initialMaxSeqLength, nativeMaxSeqLength);
+    clampMaxSeqLength(DEFAULT_MAX_SEQ_LENGTH, nativeMaxSeqLength);
   const maxSeqLengthMax = Math.max(nativeMaxSeqLength, maxSeqLengthValue);
   // An already-loaded GGUF that was auto-fit below native shows activeLoadedContext
   // while customContextLength stays null. If the user fixes GPU Layers (Manual)
