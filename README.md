@@ -41,23 +41,22 @@ irm https://unsloth.ai/install.ps1 | iex
 Unsloth Studio (Beta) lets you run and train text, [audio](https://unsloth.ai/docs/basics/text-to-speech-tts-fine-tuning), [embedding](https://unsloth.ai/docs/new/embedding-finetuning), [vision](https://unsloth.ai/docs/basics/vision-fine-tuning) models on Windows, Linux and macOS.
 
 ### Inference
-* **Run models locally and privately**: Search, download and run GGUF, safetensors and LoRA adapters on macOS, Windows, Linux or WSL. Local models can run [100% offline](https://unsloth.ai/docs/new/studio#privacy-first-secure).
-* **Compare models side by side**: Use [Model Arena](https://unsloth.ai/docs/new/studio/chat#model-arena) to compare a base model with its fine-tune, or any two models with the same prompt.
-* **Build agents with tools**: Use [self-healing tool calling](https://unsloth.ai/docs/new/studio/chat#auto-healing-tool-calling), advanced web search, [code execution](https://unsloth.ai/docs/new/studio/chat#code-execution) and [MCP servers](https://unsloth.ai/docs/basics/mcp).
-* **OpenAI- and Anthropic-compatible APIs**: Serve local models through [`/v1/chat/completions`, `/v1/responses` and `/v1/messages`](https://unsloth.ai/docs/basics/api), with streaming, tool calling and vision support.
-* **Connect local models to agents**: Run [`unsloth start <agent>`](https://unsloth.ai/docs/basics/api) for Claude Code, Codex, Hermes, OpenCode, OpenClaw, Pi and more.
-* **Multimodal chat and external providers**: Chat with images, audio, PDFs, code, DOCX and more. [Connect API providers](https://unsloth.ai/docs/integrations/connections) (OpenAI, Anthropic) or servers (vLLM, Ollama).
-* **Automatic model setup**: [Auto-tune inference settings](https://unsloth.ai/docs/new/studio/chat#auto-parameter-tuning), customize chat templates and control GPU memory usage.
-* **Export models**: [Save or export](https://unsloth.ai/docs/new/studio/export) models to GGUF, 16-bit safetensors and other formats for llama.cpp, vLLM, Ollama, LM Studio and more.
+* **Run models locally**: Search + download + run GGUF, LoRA adapters and safetensors [100% offline](https://unsloth.ai/docs/new/studio#privacy-first-secure).
+* **Model Arena**: [Compare any two models](https://unsloth.ai/docs/new/studio/chat#model-arena) side by side with the same prompt.
+* **Tools**: [Self-healing tool calling](https://unsloth.ai/docs/new/studio/chat#auto-healing-tool-calling), web search, [code execution](https://unsloth.ai/docs/new/studio/chat#code-execution) and [MCP servers](https://unsloth.ai/docs/basics/mcp).
+* **OpenAI/Anthropic APIs**: Use [`unsloth start`](https://unsloth.ai/docs/basics/api) with Claude Code, Codex, Hermes and more.
+* **Multimodal chat**: Images, audio, PDFs, code, DOCX and more.
+* **Connections**: Add [OpenAI, Anthropic](https://unsloth.ai/docs/integrations/connections), vLLM, Ollama and other providers.
+* **Auto setup**: [Inference settings](https://unsloth.ai/docs/new/studio/chat#auto-parameter-tuning), chat templates and GPU memory controls.
+* **Export models**: [Save to GGUF, safetensors and more](https://unsloth.ai/docs/new/studio/export).
 * We work directly with teams behind [gpt-oss](https://docs.unsloth.ai/new/gpt-oss-how-to-run-and-fine-tune#unsloth-fixes-for-gpt-oss), [Qwen3](https://www.reddit.com/r/LocalLLaMA/comments/1kaodxu/qwen3_unsloth_dynamic_ggufs_128k_context_bug_fixes/), [Llama 4](https://github.com/ggml-org/llama.cpp/pull/12889), [Mistral](https://huggingface.co/mistralai/Mistral-Medium-3.5-128B/discussions/18), [Gemma 1-3](https://news.ycombinator.com/item?id=39671146), and [Phi-4](https://unsloth.ai/blog/phi4), where we’ve fixed bugs that improve model accuracy.
 ### Training
-* Train and RL **500+ models** up to **2x faster** with up to **70% less VRAM**, with no accuracy loss.
-* Train [MoE models up to **12x faster** with **35% less VRAM**](https://unsloth.ai/docs/new/faster-moe), including DeepSeek, GLM, Qwen and gpt-oss.
+* **Fast training**: 500+ models up to **2x faster** with **70% less VRAM**; [MoE up to 12x faster](https://unsloth.ai/docs/new/faster-moe).
 * **Data Recipes**: [Auto-create datasets](https://unsloth.ai/docs/new/studio/data-recipe) from **PDF, CSV, DOCX** etc. Edit data in a visual-node workflow.
-* **[Reinforcement Learning](https://unsloth.ai/docs/get-started/reinforcement-learning-rl-guide)**: Use **80% less VRAM** for GRPO, including [FP8](https://unsloth.ai/docs/get-started/reinforcement-learning-rl-guide/fp8-reinforcement-learning), vision-language RL and [7x longer contexts](https://unsloth.ai/docs/new/grpo-long-context).
-* **Efficient long-context training**: [3x faster training with 30% less VRAM](https://unsloth.ai/docs/new/3x-faster-training-packing) through padding-free packing, with [500K+ context training](https://unsloth.ai/docs/blog/500k-context-length-fine-tuning) demonstrated on a single 80GB GPU.
-* Supports full fine-tuning, LoRA/QLoRA, RL, pretraining, 4-bit, 16-bit and FP8 training.
-* Custom Triton and mathematical **kernels**. See some collabs we did with [PyTorch](https://unsloth.ai/docs/get-started/reinforcement-learning-rl-guide/fp8-reinforcement-learning) and [Hugging Face](https://unsloth.ai/docs/new/faster-moe).
+* **[Reinforcement Learning](https://unsloth.ai/docs/get-started/reinforcement-learning-rl-guide)**: **80% less VRAM** for GRPO, FP8 and vision RL, with [7x longer contexts](https://unsloth.ai/docs/new/grpo-long-context).
+* **Long context**: [3x faster, 30% less VRAM](https://unsloth.ai/docs/new/3x-faster-training-packing) and [500K+ context](https://unsloth.ai/docs/blog/500k-context-length-fine-tuning).
+* **All training modes**: LoRA/QLoRA, full fine-tuning, RL, pretraining, 4-bit, 16-bit and FP8.
+* Custom Triton and mathematical **kernels** built with [PyTorch](https://unsloth.ai/docs/get-started/reinforcement-learning-rl-guide/fp8-reinforcement-learning) and [Hugging Face](https://unsloth.ai/docs/new/faster-moe).
 * **Observability**: Monitor training live, track loss and GPU usage and customize graphs.
 * [Multi-GPU](https://unsloth.ai/docs/basics/multi-gpu-training-with-unsloth) training is supported, with major improvements coming soon.
 
