@@ -2318,7 +2318,7 @@ exit 0
                 # torch (e.g. 2.10.0+rocm on gfx110X/gfx90a) that still satisfies the CPU
                 # torch>= range, so without it uv would keep the ROCm build and only swap
                 # the companions -- a mismatched venv the flavor-repair block won't fix.
-                $torchInstallExit = Invoke-InstallCommandRetry -Label "install PyTorch (CPU fallback)" { uv pip install --python $VenvPython --force-reinstall "torch>=2.4,<2.11.0" torchvision torchaudio --default-index $CpuFallbackIndexUrl }
+                $torchInstallExit = Invoke-InstallCommandRetry -Label "install PyTorch (CPU fallback)" { uv pip install --python $VenvPython --force-reinstall "torch>=2.4,<2.11.0" "torchvision>=0.19,<0.26.0" "torchaudio>=2.4,<2.11.0" --default-index $CpuFallbackIndexUrl }
                 if ($torchInstallExit -ne 0) {
                     Write-Host "[ERROR] Failed to install PyTorch (ROCm and CPU base both failed, exit code $torchInstallExit)" -ForegroundColor Red
                     return (Exit-InstallFailure "Failed to install PyTorch (exit code $torchInstallExit)" $torchInstallExit)
@@ -2332,16 +2332,12 @@ exit 0
         } else {
             Write-TauriLog "STEP" "Installing PyTorch"
             substep "installing PyTorch ($(Remove-IndexUrlCredentials $TorchIndexUrl))..."
-            # Bound the companions for a CUSTOM pin so a private mirror can't pull an ABI-newer
-            # companion against the capped torch; a cu<digits> family index bounds its own
-            # resolution and keeps bare companions. Mirrors setup.ps1 (Test-CudaFamilyLeaf).
-            $_pinCuLeaf = (($TorchIndexUrl -split '[?#]', 2)[0].TrimEnd('/') -split '/')[-1].ToLower()
-            $_pinVisionSpec = "torchvision"
-            $_pinAudioSpec = "torchaudio"
-            if ($_pinCuLeaf -notmatch '^cu[0-9]+$') {
-                $_pinVisionSpec = "torchvision>=0.19,<0.26.0"
-                $_pinAudioSpec = "torchaudio>=2.4,<2.11.0"
-            }
+            # Bound the companions to the capped torch on EVERY index, cu<digits>
+            # families included: torchaudio 2.11 dropped its exact torch pin from
+            # the wheel metadata, so a bare companion next to torch<2.11 can
+            # resolve a mismatched 2.11.0 build. Mirrors install.sh.
+            $_pinVisionSpec = "torchvision>=0.19,<0.26.0"
+            $_pinAudioSpec = "torchaudio>=2.4,<2.11.0"
             $torchInstallExit = Invoke-InstallCommandRetry -Label "install PyTorch" { uv pip install --python $VenvPython "torch>=2.4,<2.11.0" $_pinVisionSpec $_pinAudioSpec --default-index $TorchIndexUrl }
             if ($torchInstallExit -ne 0) {
                 Write-Host "[ERROR] Failed to install PyTorch (exit code $torchInstallExit)" -ForegroundColor Red
@@ -2450,7 +2446,7 @@ exit 0
                 } elseif ($expectedTorchTag -ne 'rocm') {
                     # CUDA: stale +cpu (or wrong cuXXX) against a CUDA index -> reinstall triplet.
                     substep "PyTorch flavor mismatch (installed $installedTorchTag, need $expectedTorchTag) -- reinstalling correct build..." "Yellow"
-                    $torchFixExit = Invoke-InstallCommand { uv pip install --python $VenvPython "torch>=2.4,<2.11.0" torchvision torchaudio --default-index $TorchIndexUrl --reinstall-package torch --reinstall-package torchvision --reinstall-package torchaudio }
+                    $torchFixExit = Invoke-InstallCommand { uv pip install --python $VenvPython "torch>=2.4,<2.11.0" "torchvision>=0.19,<0.26.0" "torchaudio>=2.4,<2.11.0" --default-index $TorchIndexUrl --reinstall-package torch --reinstall-package torchvision --reinstall-package torchaudio }
                     if ($torchFixExit -ne 0) {
                         Write-Host "[ERROR] Failed to reinstall PyTorch with the correct CUDA build (exit code $torchFixExit)" -ForegroundColor Red
                         return (Exit-InstallFailure "Failed to reinstall PyTorch ($expectedTorchTag) (exit code $torchFixExit)" $torchFixExit)

@@ -2389,7 +2389,8 @@ def pip_install_try(
     if result.returncode == 0:
         return True
     if VERBOSE and result.stdout:
-        print(result.stdout.decode(errors = "replace"))
+        # pip/uv echo index URLs (credentials included) in failure output.
+        print(_redact_install_output(result.stdout))
     return False
 
 

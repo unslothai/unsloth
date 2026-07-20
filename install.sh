@@ -201,8 +201,16 @@ run_install_cmd() {
         *" --default-index "*) set -- env -u UV_DEFAULT_INDEX -u UV_INDEX_URL -u UV_INDEX -u UV_EXTRA_INDEX_URL -u UV_TORCH_BACKEND -u UV_FIND_LINKS -u UV_CONFIG_FILE UV_NO_CONFIG=1 "$@" ;;
     esac
     if _is_verbose; then
-        "$@" && return 0
-        _rc=$?
+        # Stream through the redactor: uv echoes index URLs (credentials and
+        # all) in its errors, and verbose mode previously bypassed the
+        # redaction the quiet path applies. The rc file preserves the
+        # command's exit code across the pipe without relying on pipefail
+        # (this script runs under plain sh).
+        _rcf=$(mktemp)
+        { "$@" 2>&1; printf '%s' "$?" > "$_rcf"; } | _redact_install_output
+        _rc=$(cat "$_rcf" 2>/dev/null || echo 1)
+        rm -f "$_rcf"
+        [ "${_rc:-1}" -eq 0 ] 2>/dev/null && return 0
         step "error" "$_label failed (exit code $_rc)" "$C_ERR" >&2
         return "$_rc"
     fi
@@ -1613,6 +1621,12 @@ _has_usable_nvidia_gpu() {
 # the STUDIO_HOME mkdir/venv so the origin distro is untouched.
 _maybe_reroute_strixhalo_to_2404() {
     [ "${OS:-}" = "wsl" ] || return 0
+    # An explicit index pin skips every GPU-driven reroute (same contract as
+    # the later Radeon/Strix guard): the pin is honored in THIS distro rather
+    # than probing the GPU and switching distributions. Whitespace-only
+    # overrides do not gate (parity with get_torch_index_url).
+    _rr_pin=$(printf '%s' "${UNSLOTH_TORCH_INDEX_URL:-}${UNSLOTH_TORCH_INDEX_FAMILY:-}" | tr -d '[:space:]')
+    [ -n "$_rr_pin" ] && return 0
     [ "${SKIP_TORCH:-false}" = "false" ] || return 0
     [ "${UNSLOTH_SKIP_ROCM_WSL_SETUP:-0}" = "1" ] && return 0
     [ "${UNSLOTH_WSL_REROUTED:-0}" = "1" ] && return 0
@@ -2384,7 +2398,7 @@ _install_torch_default_index() {
         esac
         if ! run_install_cmd_retry "install PyTorch (kept release)" uv pip install --python "$_VENV_PY" "$TORCH_CONSTRAINT" "$_itdi_tv" "$_itdi_ta" \
             --default-index "$TORCH_INDEX_URL" "$@"; then
-            substep "[WARN] $_PREV_TORCH_PIN is not installable from $TORCH_INDEX_URL -- installing the newest supported release instead" "$C_WARN"
+            substep "[WARN] $_PREV_TORCH_PIN is not installable from $(_strip_index_url_credentials "$TORCH_INDEX_URL") -- installing the newest supported release instead" "$C_WARN"
             TORCH_CONSTRAINT="$_PREV_FALLBACK_CONSTRAINT"
             _PREV_TORCH_PIN=""
             run_install_cmd_retry "install PyTorch" uv pip install --python "$_VENV_PY" "$TORCH_CONSTRAINT" "$TORCHVISION_CONSTRAINT" "$TORCHAUDIO_CONSTRAINT" \
