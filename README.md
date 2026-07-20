@@ -41,21 +41,21 @@ irm https://unsloth.ai/install.ps1 | iex
 Unsloth Studio (Beta) lets you run and train text, [audio](https://unsloth.ai/docs/basics/text-to-speech-tts-fine-tuning), [embedding](https://unsloth.ai/docs/new/embedding-finetuning), [vision](https://unsloth.ai/docs/basics/vision-fine-tuning) models on Windows, Linux and macOS.
 
 ### Inference
-* **Run models locally**: Search + download + run GGUF, LoRA adapters and safetensors [100% offline](https://unsloth.ai/docs/new/studio#privacy-first-secure).
-* **Model Arena**: [Compare any two models](https://unsloth.ai/docs/new/studio/chat#model-arena) side by side with the same prompt.
-* **Tools**: [Self-healing tool calling](https://unsloth.ai/docs/new/studio/chat#auto-healing-tool-calling), web search, [code execution](https://unsloth.ai/docs/new/studio/chat#code-execution) and [MCP servers](https://unsloth.ai/docs/basics/mcp).
-* **OpenAI/Anthropic APIs**: Use [`unsloth start`](https://unsloth.ai/docs/basics/api) with Claude Code, Codex, Hermes and more.
-* **Multimodal chat**: Images, audio, PDFs, code, DOCX and more.
-* **Connections**: Add [OpenAI, Anthropic](https://unsloth.ai/docs/integrations/connections), vLLM, Ollama and other providers.
-* **Auto setup**: [Inference settings](https://unsloth.ai/docs/new/studio/chat#auto-parameter-tuning), chat templates and GPU memory controls.
-* **Export models**: [Save to GGUF, safetensors and more](https://unsloth.ai/docs/new/studio/export).
+* **Search + download + run models** including GGUF, LoRA adapters and safetensors [100% offline](https://unsloth.ai/docs/new/studio#privacy-first-secure).
+* [**Compare any two models**](https://unsloth.ai/docs/new/studio/chat#model-arena) side by side with the same prompt.
+* **Tools:** [Self-healing tool calling](https://unsloth.ai/docs/new/studio/chat#auto-healing-tool-calling), web search, [code execution](https://unsloth.ai/docs/new/studio/chat#code-execution) and [MCP servers](https://unsloth.ai/docs/basics/mcp).
+* [**OpenAI/Anthropic-compatible APIs**](https://unsloth.ai/docs/basics/api): Use `unsloth start` with Claude Code, Codex, Hermes and more.
+* Chat with images, audio, PDFs, code, DOCX and more.
+* [Connect API providers](https://unsloth.ai/docs/integrations/connections) including OpenAI, Anthropic, vLLM and Ollama.
+* [Auto-set inference settings](https://unsloth.ai/docs/new/studio/chat#auto-parameter-tuning), customize chat templates and control GPU memory.
+* [**Export models**](https://unsloth.ai/docs/new/studio/export) to GGUF, safetensors and more.
 * We work directly with teams behind [gpt-oss](https://docs.unsloth.ai/new/gpt-oss-how-to-run-and-fine-tune#unsloth-fixes-for-gpt-oss), [Qwen3](https://www.reddit.com/r/LocalLLaMA/comments/1kaodxu/qwen3_unsloth_dynamic_ggufs_128k_context_bug_fixes/), [Llama 4](https://github.com/ggml-org/llama.cpp/pull/12889), [Mistral](https://huggingface.co/mistralai/Mistral-Medium-3.5-128B/discussions/18), [Gemma 1-3](https://news.ycombinator.com/item?id=39671146), and [Phi-4](https://unsloth.ai/blog/phi4), where we’ve fixed bugs that improve model accuracy.
 ### Training
-* **Fast training**: 500+ models up to **2x faster** with **70% less VRAM**; [MoE up to 12x faster](https://unsloth.ai/docs/new/faster-moe).
+* Train and RL **500+ models** up to **2x faster** with **70% less VRAM**; [MoE up to **12x faster**](https://unsloth.ai/docs/new/faster-moe).
 * **Data Recipes**: [Auto-create datasets](https://unsloth.ai/docs/new/studio/data-recipe) from **PDF, CSV, DOCX** etc. Edit data in a visual-node workflow.
-* **[Reinforcement Learning](https://unsloth.ai/docs/get-started/reinforcement-learning-rl-guide)**: **80% less VRAM** for GRPO, FP8 and vision RL, with [7x longer contexts](https://unsloth.ai/docs/new/grpo-long-context).
-* **Long context**: [3x faster, 30% less VRAM](https://unsloth.ai/docs/new/3x-faster-training-packing) and [500K+ context](https://unsloth.ai/docs/blog/500k-context-length-fine-tuning).
-* **All training modes**: LoRA/QLoRA, full fine-tuning, RL, pretraining, 4-bit, 16-bit and FP8.
+* **[Reinforcement Learning](https://unsloth.ai/docs/get-started/reinforcement-learning-rl-guide)** uses **80% less VRAM** for GRPO, FP8 and vision RL, with [7x longer contexts](https://unsloth.ai/docs/new/grpo-long-context).
+* [**Long-context training**](https://unsloth.ai/docs/new/3x-faster-training-packing): **3x faster**, 30% less VRAM and [500K+ context](https://unsloth.ai/docs/blog/500k-context-length-fine-tuning).
+* Supports LoRA/QLoRA, full fine-tuning, RL, pretraining, 4-bit, 16-bit and FP8.
 * Custom Triton and mathematical **kernels** built with [PyTorch](https://unsloth.ai/docs/get-started/reinforcement-learning-rl-guide/fp8-reinforcement-learning) and [Hugging Face](https://unsloth.ai/docs/new/faster-moe).
 * **Observability**: Monitor training live, track loss and GPU usage and customize graphs.
 * [Multi-GPU](https://unsloth.ai/docs/basics/multi-gpu-training-with-unsloth) training is supported, with major improvements coming soon.
