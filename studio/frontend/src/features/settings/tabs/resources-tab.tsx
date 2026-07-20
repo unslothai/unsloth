@@ -32,7 +32,7 @@ function clampPercent(value: number | null | undefined): number {
 function usageIndicatorClass(percent: number): string {
   if (percent >= 90) return "bg-destructive";
   if (percent >= 70) return "bg-amber-500";
-  return "bg-primary";
+  return "bg-control-accent";
 }
 
 function usageTextClass(percent: number): string {
@@ -45,6 +45,15 @@ function formatGb(value: number | null | undefined): string {
   const safe = isFiniteNumber(value) ? Math.max(0, value) : 0;
   const digits = safe >= 10 ? 1 : 2;
   return `${safe.toFixed(digits)} GB`;
+}
+
+// RAM/VRAM come from the backend in binary units (bytes / 1024**3), matching
+// nvidia-smi and PyTorch, so label those readouts GiB. Disk stays on formatGb
+// because the backend reports disk in decimal GB (bytes / 1e9).
+function formatGiB(value: number | null | undefined): string {
+  const safe = isFiniteNumber(value) ? Math.max(0, value) : 0;
+  const digits = safe >= 10 ? 1 : 2;
+  return `${safe.toFixed(digits)} GiB`;
 }
 
 function formatMb(value: number | null | undefined): string {
@@ -300,9 +309,9 @@ export function ResourcesTab() {
           />
           <MetricTile
             label={t("settings.resources.liveMonitor.ram")}
-            value={`${formatGb(metrics.ramUsed)} / ${formatGb(metrics.ramTotal)}`}
+            value={`${formatGiB(metrics.ramUsed)} / ${formatGiB(metrics.ramTotal)}`}
             detail={t("settings.resources.liveMonitor.free", {
-              value: formatGb(systemInfo.memory?.available_gb),
+              value: formatGiB(systemInfo.memory?.available_gb),
             })}
             percent={systemInfo.memory?.percent_used ?? 0}
           />
@@ -318,13 +327,13 @@ export function ResourcesTab() {
             label={t("settings.resources.liveMonitor.vram")}
             value={
               hasGpu
-                ? `${formatGb(metrics.vramUsed)} / ${formatGb(metrics.vramTotal)}`
+                ? `${formatGiB(metrics.vramUsed)} / ${formatGiB(metrics.vramTotal)}`
                 : t("settings.resources.liveMonitor.noGpu")
             }
             detail={
               hasGpu
                 ? t("settings.resources.liveMonitor.free", {
-                    value: formatGb(metrics.vramFree),
+                    value: formatGiB(metrics.vramFree),
                   })
                 : backendLabel
             }
@@ -373,17 +382,17 @@ export function ResourcesTab() {
                 <div className="grid gap-1 text-xs text-muted-foreground sm:grid-cols-3 sm:gap-2">
                   <span className="min-w-0 truncate font-mono tabular-nums">
                     {t("settings.resources.gpu.used", {
-                      value: formatGb(used),
+                      value: formatGiB(used),
                     })}
                   </span>
                   <span className="min-w-0 truncate font-mono tabular-nums sm:text-center">
                     {t("settings.resources.gpu.free", {
-                      value: formatGb(free),
+                      value: formatGiB(free),
                     })}
                   </span>
                   <span className="min-w-0 truncate font-mono tabular-nums sm:text-right">
                     {t("settings.resources.gpu.total", {
-                      value: formatGb(total),
+                      value: formatGiB(total),
                     })}
                   </span>
                 </div>

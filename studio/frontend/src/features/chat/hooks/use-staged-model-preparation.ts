@@ -7,7 +7,7 @@ import { useRepoDownload } from "@/features/hub/download-manager/use-repo-downlo
 import type { DownloadJob } from "@/features/hub/download-manager/use-repo-download";
 import { useLatestRef } from "@/features/hub/hooks/use-latest-ref";
 
-import { fetchGgufContextLength } from "../api/chat-api";
+import { fetchGgufStagedMetadata } from "../api/chat-api";
 import {
   isPendingGguf,
   pendingSelectionMatches,
@@ -46,8 +46,16 @@ export function useStagedModelPreparation(opts?: {
   const pendingDownloaded = useChatRuntimeStore(
     (s) => s.pendingSelection?.isDownloaded ?? false,
   );
-  const pendingHasContext = useChatRuntimeStore(
-    (s) => s.pendingSelection?.contextLength != null,
+  // "Already probed" must key off layerCount / moeLayerCount, which only the
+  // full header probe fills (it sets all three together, so either is a
+  // reliable marker). contextLength alone can be list-seeded from
+  // /gguf-variants, which returns no layer/MoE counts -- treating it as
+  // complete would skip the probe and leave the GPU Layers slider at its 256
+  // fallback and the MoE slider hidden until the model loads.
+  const pendingHasMetadata = useChatRuntimeStore(
+    (s) =>
+      s.pendingSelection?.layerCount != null ||
+      s.pendingSelection?.moeLayerCount != null,
   );
   const setPendingSelection = useChatRuntimeStore((s) => s.setPendingSelection);
   const onAutoLoadRef = useLatestRef(opts?.onAutoLoad);
@@ -69,25 +77,31 @@ export function useStagedModelPreparation(opts?: {
     if (!current?.id || !isPendingGguf(current)) return;
     const { id, ggufVariant, nativePathToken } = current;
     try {
-      const contextLength = await fetchGgufContextLength({
-        model_path: id,
-        gguf_variant: ggufVariant,
-        hf_token: useChatRuntimeStore.getState().hfToken || null,
-        nativePathToken,
-      });
+      const { contextLength, layerCount, moeLayerCount } =
+        await fetchGgufStagedMetadata({
+          model_path: id,
+          gguf_variant: ggufVariant,
+          hf_token: useChatRuntimeStore.getState().hfToken || null,
+          nativePathToken,
+        });
       // Apply only if the same model is still staged (the user may have switched
       // picks or loaded/cancelled while the request was in flight).
       const latest = useChatRuntimeStore.getState().pendingSelection;
       if (
         latest &&
-        contextLength != null &&
-        pendingSelectionMatches(latest, { id, ggufVariant, nativePathToken })
+        pendingSelectionMatches(latest, { id, ggufVariant, nativePathToken }) &&
+        (contextLength != null || layerCount != null || moeLayerCount != null)
       ) {
-        setPendingSelection({ ...latest, contextLength });
+        setPendingSelection({
+          ...latest,
+          contextLength,
+          layerCount,
+          moeLayerCount,
+        });
       }
     } catch {
-      // Leave contextLength null: the context slider stays hidden and the user
-      // can still load (context fills in from the load response afterwards).
+      // Leave metadata null: the context/MoE sliders stay hidden and the user
+      // can still load (they fill in from the load response afterwards).
     }
   }, [setPendingSelection]);
 
@@ -125,7 +139,7 @@ export function useStagedModelPreparation(opts?: {
     if (
       !pendingId ||
       (!pendingIsGguf && !pendingIsHubRepo) ||
-      pendingHasContext
+      pendingHasMetadata
     ) {
       return;
     }
@@ -146,7 +160,7 @@ export function useStagedModelPreparation(opts?: {
     pendingIsGguf,
     pendingIsHubRepo,
     pendingDownloaded,
-    pendingHasContext,
+    pendingHasMetadata,
     startDownloadRef,
     fetchMetadataRef,
   ]);

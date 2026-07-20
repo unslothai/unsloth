@@ -181,15 +181,20 @@ def is_valid_repo_id(repo_id: str) -> bool:
     """Validate Hugging Face ``repo_name`` or ``namespace/repo_name`` IDs."""
     if not repo_id or repo_id != repo_id.strip():
         return False
-    if len(repo_id) > _MAX_REPO_ID_LENGTH or repo_id.endswith(".git"):
+    if repo_id.endswith(".git"):
         return False
     if "--" in repo_id or ".." in repo_id:
         return False
     segments = repo_id.split("/")
     if len(segments) not in (1, 2):
         return False
+    # Match huggingface_hub.validate_repo_id: the 96-char limit applies per
+    # segment (repo name / namespace), not to the whole "namespace/repo_name"
+    # string, so long-but-valid repo names are not falsely rejected.
     return all(
-        segment not in ("", ".", "..") and _VALID_REPO_ID_SEGMENT.fullmatch(segment) is not None
+        segment not in ("", ".", "..")
+        and len(segment) <= _MAX_REPO_ID_LENGTH
+        and _VALID_REPO_ID_SEGMENT.fullmatch(segment) is not None
         for segment in segments
     )
 

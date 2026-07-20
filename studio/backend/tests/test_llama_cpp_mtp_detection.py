@@ -741,6 +741,25 @@ def test_probe_reports_windows_cache_flags_absent_for_older_binary(tmp_path):
     assert caps["supports_no_cache_prompt"] is False
 
 
+@_NEEDS_BASH
+def test_probe_detects_slot_save_path(tmp_path):
+    fake = _make_fake_llama_server(
+        tmp_path / "llama-server",
+        "--slot-save-path PATH  path to save slot kv cache\n--threads N\n",
+    )
+    _clear_caps_cache()
+    caps = LlamaCppBackend.probe_server_capabilities(str(fake))
+    assert caps["supports_slot_save"] is True
+
+
+@_NEEDS_BASH
+def test_probe_reports_slot_save_absent_for_older_binary(tmp_path):
+    fake = _make_fake_llama_server(tmp_path / "llama-server", "--threads N\n")
+    _clear_caps_cache()
+    caps = LlamaCppBackend.probe_server_capabilities(str(fake))
+    assert caps["supports_slot_save"] is False
+
+
 def test_build_ngram_mod_flags_new():
     flags = _build_ngram_mod_flags({"ngram_mod_flavor": "new"})
     assert flags == [
@@ -1014,7 +1033,7 @@ def test_already_in_target_state_2b_falls_back_to_ngram_below_threshold(monkeypa
     )
 
 
-# usage backfill from timings (Studio UI t/s widget fix).
+# usage backfill from timings (Unsloth UI t/s widget fix).
 
 
 def test_backfill_usage_from_timings_fills_when_completion_tokens_zero():
@@ -1606,7 +1625,7 @@ def test_reload_forced_mtp_bounces_auto_mla():
     )
 
 
-# ── Full named-repo resolver matrix (the shipping Studio families) ─────
+# ── Full named-repo resolver matrix (the shipping Unsloth families) ─────
 #
 # Locks auto / off / forced-mtp routing for every Qwen3.5 (MTP + plain) and
 # gemma-4 (regular + QAT) GGUF repo, including the giant MoEs that stay

@@ -64,7 +64,7 @@ class LoadRequest(BaseModel):
     )
     gpu_ids: Optional[List[int]] = Field(
         None,
-        description = "Physical GPU indices to use, for example [0, 1]. Omit or pass [] to use automatic selection. Explicit gpu_ids are unsupported when the parent CUDA_VISIBLE_DEVICES uses UUID/MIG entries. Not supported for GGUF models.",
+        description = "Physical GPU indices to use, for example [0, 1]. Omit or pass [] to use automatic selection. Explicit gpu_ids are unsupported when the parent CUDA_VISIBLE_DEVICES uses UUID/MIG entries. For GGUF models the picked devices are pinned via CUDA/HIP_VISIBLE_DEVICES.",
     )
     speculative_type: Optional[str] = Field(
         None,
@@ -100,12 +100,72 @@ class LoadRequest(BaseModel):
             "No effect on a single GPU. Ignored for non-GGUF models."
         ),
     )
+    gpu_memory_mode: Literal["auto", "manual"] = Field(
+        "auto",
+        description = (
+            "GPU memory strategy for GGUF models. 'auto' (default): Unsloth "
+            "selects GPUs and caps context to fit VRAM. 'manual': you own the "
+            "offload. Leave gpu_layers at -1 (Auto) to hand memory management to "
+            "llama.cpp's --fit (no device masking, no context auto-reduce, no "
+            "gpu-layer/tensor-split planning); set gpu_layers >= 0 to pin layers "
+            "and n_cpu_moe yourself (--fit off), with tensor_parallel still "
+            "applying (split by free VRAM unless tensor_split is set, no planner). "
+            "Ignored for non-GGUF."
+        ),
+    )
+    gpu_layers: int = Field(
+        -1,
+        ge = -1,
+        description = (
+            "Manual mode only: number of layers to offload to the GPU "
+            "(--gpu-layers, with --fit off). A value >= the model's layer count "
+            "offloads all of them. -1 = Auto: hand layer + context sizing to "
+            "llama.cpp's --fit. Ignored unless gpu_memory_mode is 'manual'."
+        ),
+    )
+    n_cpu_moe: int = Field(
+        0,
+        ge = 0,
+        description = (
+            "Manual mode only: keep the first N MoE expert layers on the CPU "
+            "(--n-cpu-moe) to save VRAM on MoE models. 0 = none, N = number of "
+            "MoE layers offloaded (the backend offsets past any leading dense "
+            "layers). Ignored unless gpu_memory_mode is 'manual' with gpu_layers >= 0."
+        ),
+    )
+    tensor_split: Optional[List[float]] = Field(
+        None,
+        description = (
+            "Manual mode only: relative share of the model per GPU (--tensor-split), "
+            "in the order of the GPUs in use, e.g. [2, 1] for 2:1. Omit it to let "
+            "llama.cpp use its default, which splits by free VRAM. Any list given is "
+            "passed through as-is, so send [1, 1] to force an even split. Ignored "
+            "unless gpu_memory_mode is 'manual' with gpu_layers >= 0."
+        ),
+    )
+
+    @field_validator("tensor_split")
+    @classmethod
+    def _reject_degenerate_tensor_split(cls, value: Optional[List[float]]) -> Optional[List[float]]:
+        # A negative / non-finite / all-zero split is silently dropped at launch
+        # (stored as None) yet still compared raw in the reload dedupe, so an
+        # identical Apply reloads forever. Reject it up front; [] = no split.
+        if not value:
+            return value
+        import math
+
+        if any((not math.isfinite(v)) or v < 0 for v in value):
+            raise ValueError("tensor_split entries must be finite and non-negative")
+        if sum(value) <= 0:
+            raise ValueError("tensor_split must have a positive total")
+        return value
+
     llama_extra_args: Optional[List[str]] = Field(
         None,
         description = (
             "Extra arguments forwarded verbatim to llama-server for GGUF models. "
             "One token per list entry, e.g. ['--top-k', '20', '--seed', '42']. "
-            "Studio-managed flags (model identity, port, context length, GPU placement, "
+            "Unsloth-managed flags (model identity, port, context length, GPU placement, "
             "auth, UI/server mode) are rejected. Ignored for non-GGUF models."
         ),
     )
@@ -133,10 +193,39 @@ class ValidateModelRequest(BaseModel):
     max_seq_length: int = Field(0, ge = 0, le = 1048576)
     load_in_4bit: bool = Field(True)
     gpu_ids: Optional[List[int]] = Field(None)
+    gpu_memory_mode: Literal["auto", "manual"] = Field(
+        "auto",
+        description = (
+            "GGUF GPU-memory strategy intended for the follow-up load. Manual "
+            "placement bypasses the training coexistence estimate: Auto layers "
+            "delegate fitting to llama.cpp, while explicit layers are user-owned."
+        ),
+    )
     include_context_length: bool = Field(
         False,
         description = "Also read the native context length from the local GGUF header. "
         "Opt-in so the normal load preflight doesn't pay for a cache scan it doesn't need.",
+    )
+
+
+class TransformersUpgradeInfo(BaseModel):
+    """A model architecture no installed transformers ships, but a newer release does."""
+
+    model_type: str = Field(
+        ..., description = "config.json model_type unknown to every installed transformers"
+    )
+    pypi_version: Optional[str] = Field(
+        None, description = "Latest transformers release on PyPI at check time"
+    )
+    supported_in_pypi: bool = Field(
+        False,
+        description = "True if the latest PyPI release ships this model_type; Unsloth can "
+        "install it into a persistent sidecar after user consent.",
+    )
+    supported_in_main: bool = Field(
+        False,
+        description = "True if transformers GitHub main ships this model_type (dev-only; "
+        "not installable through Unsloth yet).",
     )
 
 
@@ -170,6 +259,58 @@ class ValidateModelResponse(BaseModel):
         description = "Native training context length, read from the GGUF header when the file "
         "is already downloaded locally; None for non-GGUF, gated, or not-yet-downloaded models.",
     )
+    layer_count: Optional[int] = Field(
+        None,
+        description = "Total layer count (GGUF block_count), the manual gpu-layers ceiling, read "
+        "from the header alongside context_length; None when not read.",
+    )
+    moe_layer_count: Optional[int] = Field(
+        None,
+        description = "MoE expert-layer count (the manual --n-cpu-moe ceiling), read from the GGUF "
+        "header alongside context_length; 0 for dense models, None when not read.",
+    )
+    # Additive fields; the consuming consent dialog ships in a follow-up frontend PR.
+    requires_transformers_upgrade: bool = Field(
+        False,
+        description = "True when the model's architecture is unknown to every installed "
+        "transformers but a newer transformers ships it; the UI should offer the "
+        "install-latest-transformers consent dialog (or the dev-only notice).",
+    )
+    transformers_upgrade: Optional[TransformersUpgradeInfo] = Field(
+        None,
+        description = "Details for the transformers-upgrade dialog; set only when "
+        "requires_transformers_upgrade is true.",
+    )
+
+
+class InstallLatestTransformersRequest(BaseModel):
+    """Consented request to install the latest transformers release into a sidecar."""
+
+    version: str = Field(
+        ...,
+        min_length = 1,
+        max_length = 64,
+        description = "Exact transformers version to install; must match the current "
+        "latest PyPI release reported by /validate.",
+    )
+
+
+class InstallLatestTransformersResponse(BaseModel):
+    """Result of the consented latest-transformers sidecar install."""
+
+    success: bool = Field(..., description = "Whether the sidecar was provisioned")
+    version: str = Field(..., description = "The requested transformers version")
+    message: str = Field(..., description = "Human-readable result")
+    model_unloaded: bool = Field(
+        False,
+        description = "Whether the active chat model was unloaded before the swap "
+        "(reported even on failure, so the client can restore its state)",
+    )
+    latest_version: Optional[str] = Field(
+        None,
+        description = "On a version-mismatch failure: the release that superseded "
+        "the requested one, so the client can retry with it",
+    )
 
 
 class GenerateRequest(BaseModel):
@@ -180,6 +321,7 @@ class GenerateRequest(BaseModel):
     temperature: float = Field(0.6, ge = 0.0, le = 2.0, description = "Sampling temperature")
     top_p: float = Field(0.95, ge = 0.0, le = 1.0, description = "Top-p sampling")
     top_k: int = Field(20, ge = -1, le = 100, description = "Top-k sampling")
+    min_p: float = Field(0.0, ge = 0.0, le = 1.0, description = "Min-p sampling")
     max_new_tokens: int = Field(2048, ge = 1, le = 4096, description = "Maximum tokens to generate")
     repetition_penalty: float = Field(1.0, ge = 1.0, le = 2.0, description = "Repetition penalty")
     presence_penalty: float = Field(0.0, ge = 0.0, le = 2.0, description = "Presence penalty")
@@ -271,6 +413,34 @@ class LoadResponse(BaseModel):
     tensor_parallel: bool = Field(
         False,
         description = "Whether tensor-parallel split (--split-mode tensor) is active.",
+    )
+    gpu_memory_mode: Literal["auto", "manual"] = Field(
+        "auto",
+        description = "Active GPU memory strategy ('auto' or 'manual').",
+    )
+    gpu_layers: int = Field(
+        -1,
+        description = "Manual mode: requested --gpu-layers value (-1 = Auto/--fit, or when not manual).",
+    )
+    n_cpu_moe: int = Field(
+        0,
+        description = "Manual mode: MoE expert layers pinned to CPU (--n-cpu-moe); 0 = none.",
+    )
+    tensor_split: Optional[List[float]] = Field(
+        None,
+        description = "Manual mode: relative model share per GPU (--tensor-split); None = default (split by free VRAM).",
+    )
+    n_layers: Optional[int] = Field(
+        None,
+        description = "Model's layer count (GGUF block_count), for the manual gpu-layers ceiling.",
+    )
+    n_moe_layers: int = Field(
+        0,
+        description = "Model's MoE expert-layer count (the n_cpu_moe ceiling); 0 if not an MoE model.",
+    )
+    gpu_ids: Optional[List[int]] = Field(
+        None,
+        description = "Physical GPU indices the model is pinned to, or None for automatic selection.",
     )
 
 
@@ -400,6 +570,42 @@ class InferenceStatusResponse(BaseModel):
         False,
         description = "Whether tensor-parallel split (--split-mode tensor) is active.",
     )
+    gpu_memory_mode: Literal["auto", "manual"] = Field(
+        "auto",
+        description = "Active GPU memory strategy ('auto' or 'manual').",
+    )
+    gpu_layers: int = Field(
+        -1,
+        description = "Manual mode: requested --gpu-layers value (-1 = Auto/--fit, or when not manual).",
+    )
+    n_cpu_moe: int = Field(
+        0,
+        description = "Manual mode: MoE expert layers pinned to CPU (--n-cpu-moe); 0 = none.",
+    )
+    tensor_split: Optional[List[float]] = Field(
+        None,
+        description = "Manual mode: relative model share per GPU (--tensor-split); None = default (split by free VRAM).",
+    )
+    requested_context_length: Optional[int] = Field(
+        None,
+        description = (
+            "The n_ctx the active GGUF load was invoked with (0 = Auto). Lets the "
+            "UI re-seed a Manual + Auto-layers context pin on hydration, where "
+            "context_length only exposes the resolved value. None for non-GGUF."
+        ),
+    )
+    n_layers: Optional[int] = Field(
+        None,
+        description = "Model's layer count (GGUF block_count), for the manual gpu-layers ceiling.",
+    )
+    n_moe_layers: int = Field(
+        0,
+        description = "Model's MoE expert-layer count (the n_cpu_moe ceiling); 0 if not an MoE model.",
+    )
+    gpu_ids: Optional[List[int]] = Field(
+        None,
+        description = "Physical GPU indices the model is pinned to, or None for automatic selection.",
+    )
     llama_cpp_supports_mtp: bool = Field(
         True,
         description = (
@@ -472,7 +678,7 @@ class ImageContentPart(BaseModel):
 class InputDocumentContentPart(BaseModel):
     """Document (PDF / file) content part in a multimodal message.
 
-    Studio-normalised shape (file_data or file_url, plus optional filename/media_type).
+    Unsloth-normalised shape (file_data or file_url, plus optional filename/media_type).
     Mapped onto Anthropic ``document`` / OpenAI ``input_file`` for vision providers;
     dropped for non-vision providers.
     """
@@ -628,10 +834,27 @@ class ThinkingConfig(BaseModel):
     """Anthropic-compatible thinking/reasoning configuration.
     Use type='disabled' to turn off thinking, or type='enabled' to turn it on.
     Only type is read; extra fields (e.g. budget_tokens) are ignored, since
-    Studio sets provider thinking budgets itself.
+    Unsloth sets provider thinking budgets itself.
     """
 
     type: Literal["disabled", "enabled"] = "disabled"
+
+
+# Recognized permission_mode values. The field accepts a plain string rather than
+# a Literal so an unrecognized value from a newer UI/client degrades to the
+# safest gate ("ask") instead of a 422; the tool loops apply the same unknown ->
+# ask fallback, so normalizing here keeps that forward-compat path reachable at
+# the API boundary. None stays unset ("behaves as 'ask'" without self-enabling
+# the confirm gate).
+_KNOWN_PERMISSION_MODES = ("ask", "auto", "off", "full")
+
+
+def _normalize_permission_mode(value: Any) -> Any:
+    if value is None:
+        return None
+    if value not in _KNOWN_PERMISSION_MODES:
+        return "ask"
+    return value
 
 
 class ChatCompletionRequest(BaseModel):
@@ -670,7 +893,7 @@ class ChatCompletionRequest(BaseModel):
         None,
         description = (
             "OpenAI function-tool definitions. When provided without `enable_tools=true`, "
-            "Studio forwards the tools to the backend so the model returns structured "
+            "Unsloth forwards the tools to the backend so the model returns structured "
             "tool_calls for the client to execute (standard OpenAI function calling)."
         ),
     )
@@ -779,9 +1002,32 @@ class ChatCompletionRequest(BaseModel):
         False,
         description = "[x-unsloth] Bypass Permissions: when true, skip the tool-call confirmation gate AND disable the python/terminal execution sandbox (safety checks, command blocklist, resource limits). Secret env vars are still stripped. Takes precedence over confirm_tool_calls.",
     )
+    permission_mode: Optional[str] = Field(
+        None,
+        description = (
+            "[x-unsloth] Permission level for local tool calls. 'ask' pauses every "
+            "call for approval; 'ask'/'auto' enable the confirmation gate on their "
+            "own (needs a streaming request to deliver prompts). 'auto' ('Approve for "
+            "me') only pauses calls detected as potentially unsafe (state-mutating "
+            "terminal/python/MCP calls); read-only calls run immediately, and the "
+            "sandbox stays on. 'full' is equivalent to bypass_permissions=true (no "
+            "confirmation, no sandbox). Unset behaves as 'ask'. An unrecognized value "
+            "(e.g. from a newer client) is treated as 'ask'."
+        ),
+    )
     auto_heal_tool_calls: Optional[bool] = Field(
         True,
         description = "[x-unsloth] Auto-detect and fix malformed tool calls from model output.",
+    )
+    nudge_tool_calls: Optional[bool] = Field(
+        None,
+        description = (
+            "[x-unsloth] Opt-in, non-streaming client-tool passthrough only: when the "
+            "model emitted a tool signal that healing could not repair, retry ONCE with "
+            "a short nudge appended (the retry shares the full prompt prefix, so the "
+            "server's KV cache is reused). Default off; UNSLOTH_TOOL_CALL_NUDGE=1 flips "
+            "the process default."
+        ),
     )
     context_overflow: Optional[Literal["error", "truncate_middle"]] = Field(
         None,
@@ -806,6 +1052,10 @@ class ChatCompletionRequest(BaseModel):
     session_id: Optional[str] = Field(
         None,
         description = "[x-unsloth] Session/thread ID for scoping tool execution sandbox.",
+    )
+    thread_id: Optional[str] = Field(
+        None,
+        description = "[x-unsloth] Conversation ID for scoping stateful tool sessions (e.g. stdio MCP); stays per-thread where session_id may be shared project-wide.",
     )
     rag_scope: Optional[dict] = Field(
         None,
@@ -1028,6 +1278,52 @@ class ChatCompletionRequest(BaseModel):
             self.enable_thinking = self.thinking.type == "enabled"
         return self
 
+    @field_validator("permission_mode", mode = "before")
+    @classmethod
+    def _coerce_permission_mode(cls, value: Any) -> Any:
+        # Accept any string so an unknown mode degrades to 'ask' instead of a
+        # 422; mirrors the tool loops' unknown -> ask fallback.
+        return _normalize_permission_mode(value)
+
+    @model_validator(mode = "after")
+    def _fold_full_permission_into_bypass(self) -> "ChatCompletionRequest":
+        """permission_mode='full' is the documented equivalent of
+        bypass_permissions=true, so fold it in before any route guard reads
+        the flag (else a full request would trip the confirm-gate rejections)."""
+        if self.permission_mode == "full":
+            self.bypass_permissions = True
+        elif self.bypass_permissions:
+            # Legacy bypass callers map onto Full access (mirrors the tool loop).
+            self.permission_mode = "full"
+        elif self.permission_mode == "off":
+            # "Off" never prompts, so route guards must see confirm disabled.
+            self.confirm_tool_calls = False
+        elif (
+            self.permission_mode == "ask"
+            and self.confirm_tool_calls is None
+            and not (self.provider_id or self.provider_type)
+            and (self.enable_tools is True or bool(self.mcp_enabled))
+        ):
+            # "Ask" gates every call, so a direct API caller that omits the legacy
+            # confirm flag must still hit the confirmation gate for Unsloth's own
+            # tool loop. An explicit confirm_tool_calls=False wins over the mode
+            # (mirrors _permission_mode_confirm and the Anthropic pre-switch guard),
+            # so only self-enable when the flag is unset. Only self-enable when that
+            # loop is actually requested
+            # (enable_tools / mcp_enabled) -- the router enters the loop on those
+            # signals, not on enabled_tools alone (which merely filters which tools
+            # run). A plain client-tool passthrough (client-supplied `tools` that
+            # Unsloth does not execute) must route verbatim, and external-provider
+            # routing rejects confirm_tool_calls with tools, so skip the fold there.
+            #
+            # "auto" is deliberately NOT folded: it only prompts for a call the
+            # classifier flags, so leaving confirm_tool_calls unset lets the route's
+            # _confirm_gate_needs_stream apply the safe-only exception (a safe-only
+            # auto selection needs no stream) instead of an explicit-confirm forcing
+            # stream=true. The mode still drives the loop's per-call gate.
+            self.confirm_tool_calls = True
+        return self
+
 
 class ToolConfirmRequest(BaseModel):
     session_id: Optional[str] = None
@@ -1139,7 +1435,8 @@ class CompletionMessage(BaseModel):
     """The assistant's complete response message."""
 
     role: Literal["assistant"] = "assistant"
-    content: str
+    # ``None`` on a pure tool-call turn (OpenAI content=null); string otherwise.
+    content: Optional[str] = None
     refusal: Optional[str] = None
     reasoning_content: Optional[str] = None
     tool_calls: Optional[list[dict]] = None
@@ -1524,12 +1821,41 @@ class AnthropicToolResultBlock(BaseModel):
     tool_use_id: str
     content: Union[str, list] = ""
 
+    @field_validator("content", mode = "before")
+    @classmethod
+    def _coerce_null_content(cls, v):
+        # Some clients send null content for an empty tool result; the str|list
+        # union would 400 on it, so treat null as "".
+        return "" if v is None else v
+
+
+# Block types the converter translates explicitly. Anything else (thinking /
+# redacted_thinking, a provider block a resumed session replays, or a future type)
+# is accepted as an unknown block and dropped by the converter, rather than 400-ing
+# the whole request on strict validation.
+_KNOWN_ANTHROPIC_BLOCK_TYPES = frozenset({"text", "image", "tool_use", "tool_result"})
+
+
+class AnthropicUnknownBlock(BaseModel):
+    type: str
+    model_config = {"extra": "allow"}
+
+    @field_validator("type")
+    @classmethod
+    def _only_unknown_types(cls, v):
+        # Known types parse as their typed models above (so a malformed known block
+        # still fails cleanly); this fallback only catches the rest.
+        if v in _KNOWN_ANTHROPIC_BLOCK_TYPES:
+            raise ValueError("known block type handled by its typed model")
+        return v
+
 
 AnthropicContentBlock = Union[
     AnthropicTextBlock,
     AnthropicImageBlock,
     AnthropicToolUseBlock,
     AnthropicToolResultBlock,
+    AnthropicUnknownBlock,
 ]
 
 
@@ -1574,6 +1900,40 @@ class AnthropicMessage(BaseModel):
     role: Literal["user", "assistant"]
     content: Union[str, list[AnthropicContentBlock]]
 
+    @model_validator(mode = "before")
+    @classmethod
+    def _normalize_content(cls, data):
+        # Role-aware leniency that never silently drops real user input:
+        #  - assistant: a resumed tool-only turn's null content -> "" (str|list would
+        #    400 on null; "" keeps the converter's `for block in content` safe).
+        #    Unknown blocks (thinking / future types) validate via
+        #    AnthropicUnknownBlock and are dropped by the converter.
+        #  - user: keep strict. Null user content stays None so str|list rejects it
+        #    (400) rather than forwarding an empty prompt; and reject block types the
+        #    converter cannot translate, since it silently skips unknown user blocks
+        #    -- a user turn made only of them would validate yet send no content
+        #    (silent data loss).
+        if not isinstance(data, dict):
+            return data
+        content = data.get("content")
+        if data.get("role") == "assistant":
+            # Coerce only an explicit null (resumed tool-only turn). A missing
+            # content key stays malformed so the required-field check still 400s.
+            if "content" in data and content is None:
+                return {**data, "content": ""}
+            return data
+        if isinstance(content, list):
+            for block in content:
+                btype = (
+                    block.get("type") if isinstance(block, dict) else getattr(block, "type", None)
+                )
+                # Guard the value: a non-string type is unsupported too, and a
+                # membership test on an unhashable value would raise TypeError
+                # (escaping as a 500 instead of a clean 400).
+                if not isinstance(btype, str) or btype not in _KNOWN_ANTHROPIC_BLOCK_TYPES:
+                    raise ValueError(f"unsupported content block type {btype!r} in a user message")
+        return data
+
 
 class AnthropicTool(BaseModel):
     # Client tools have input_schema; server tools may only have type/name.
@@ -1610,10 +1970,26 @@ class AnthropicMessagesRequest(BaseModel):
     enable_tools: Optional[bool] = None
     enabled_tools: Optional[list[str]] = None
     session_id: Optional[str] = None
+    thread_id: Optional[str] = Field(
+        None,
+        description = "[x-unsloth] Conversation ID for scoping stateful tool sessions (e.g. stdio MCP); stays per-thread where session_id may be shared project-wide.",
+    )
     cancel_id: Optional[str] = None
     bypass_permissions: Optional[bool] = Field(
         False,
         description = "[x-unsloth] Bypass Permissions: when true, disable the python/terminal execution sandbox (safety checks, command blocklist, resource limits) for server-side tool calls. Secret env vars are still stripped. Declared explicitly (not relied on via extra='allow') so omitted requests default to False instead of raising AttributeError.",
+    )
+    permission_mode: Optional[str] = Field(
+        None,
+        description = "[x-unsloth] Permission level for local tool calls: 'ask' pauses every call, 'auto' only pauses calls detected as potentially unsafe, 'off' never pauses (sandbox stays on), 'full' equals bypass_permissions=true. Unset behaves as 'ask'; an unrecognized value (e.g. from a newer client) is treated as 'ask'. Declared explicitly so omitted requests default to None instead of raising AttributeError.",
+    )
+    auto_heal_tool_calls: Optional[bool] = Field(
+        True,
+        description = "[x-unsloth] Auto-detect and fix malformed tool calls from model output (mirrors the Chat Completions field; applies to the client-tool passthrough).",
+    )
+    nudge_tool_calls: Optional[bool] = Field(
+        None,
+        description = "[x-unsloth] Opt-in, non-streaming only: retry once with a nudge when the model emitted a tool signal healing could not repair (mirrors the Chat Completions field).",
     )
     model_config = {"extra": "allow"}
 
@@ -1647,6 +2023,27 @@ class AnthropicMessagesRequest(BaseModel):
         normalized["messages"] = normalized_messages
         normalized["system"] = _merge_anthropic_system(normalized.get("system"), system_additions)
         return normalized
+
+    @field_validator("permission_mode", mode = "before")
+    @classmethod
+    def _coerce_permission_mode(cls, value: Any) -> Any:
+        # Accept any string so an unknown mode degrades to 'ask' instead of a
+        # 422; mirrors the tool loops' unknown -> ask fallback.
+        return _normalize_permission_mode(value)
+
+    @model_validator(mode = "after")
+    def _fold_full_permission_into_bypass(self) -> "AnthropicMessagesRequest":
+        """permission_mode='full' equals bypass_permissions=true (mirrors the
+        Chat Completions request)."""
+        if self.permission_mode == "full":
+            self.bypass_permissions = True
+        elif self.bypass_permissions:
+            # Legacy bypass callers map onto Full access (mirrors the tool loop).
+            self.permission_mode = "full"
+        elif self.permission_mode == "off":
+            # "Off" never prompts, so route guards must see confirm disabled.
+            self.confirm_tool_calls = False
+        return self
 
 
 # ── Response models ────────────────────────────────────────────

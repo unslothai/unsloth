@@ -37,10 +37,15 @@ from ._utils import (
     _get_text_only_config,
     _is_family_text_decoder,
     _apply_text_only_key_mapping,
+    _select_moe_detection_targets,
     set_task_config_attr,
 )
 from ._utils import *
-from .loader_utils import _exclude_rope_inv_freq_from_ddp, _get_fp8_mode_and_check_settings
+from .loader_utils import (
+    _exclude_rope_inv_freq_from_ddp,
+    _get_fp8_mode_and_check_settings,
+    _restore_dropped_fp8_scales,
+)
 from ..save import patch_saving_functions
 from ..models.loader_utils import is_distributed
 from unsloth_zoo.gradient_checkpointing import (
@@ -551,6 +556,7 @@ def _construct_vlm_processor_fallback(
     model_type,
     token,
     trust_remote_code,
+    cache_dir = None,
     local_files_only = False,
 ):
     """Build a VLM processor manually when AutoProcessor.from_pretrained fails (some VLMs
@@ -568,6 +574,7 @@ def _construct_vlm_processor_fallback(
             tokenizer_name,
             token = token,
             trust_remote_code = trust_remote_code,
+            cache_dir = cache_dir,
             local_files_only = local_files_only,
         )
         # Load tokenizer via PreTrainedTokenizerFast (bypasses tokenizer_class check)
@@ -576,6 +583,7 @@ def _construct_vlm_processor_fallback(
             padding_side = "left",
             token = token,
             trust_remote_code = trust_remote_code,
+            cache_dir = cache_dir,
             local_files_only = local_files_only,
         )
         # Read tokenizer_config.json for special tokens: prefer the local file (offline
@@ -601,6 +609,7 @@ def _construct_vlm_processor_fallback(
                     tokenizer_name,
                     "tokenizer_config.json",
                     token = token,
+                    cache_dir = cache_dir,
                     local_files_only = local_files_only,
                 )
                 with open(config_path, "r", encoding = "utf-8") as f:
@@ -632,6 +641,7 @@ def _construct_vlm_processor_fallback(
                     tokenizer_name,
                     token = token,
                     trust_remote_code = trust_remote_code,
+                    cache_dir = cache_dir,
                     local_files_only = local_files_only,
                 )
                 proc_class_name = PROCESSOR_MAPPING_NAMES.get(config.model_type)
@@ -729,7 +739,7 @@ class FastBaseModel:
 
         if unsloth_vllm_standby and os.environ.get("UNSLOTH_VLLM_STANDBY", "0") != "1":
             raise RuntimeError(
-                "Unsloth: UNSLOTH_VLLM_STANDBY is True, but UNSLOTH_VLLM_STANDBY is not set to 1!"
+                "Unsloth: `unsloth_vllm_standby` is True, but environment variable `UNSLOTH_VLLM_STANDBY` is not set to 1!"
             )
 
         if model_types is None:
@@ -872,6 +882,9 @@ class FastBaseModel:
         # For debugging - we use a download counter to see if environments are not breaking or if HF is down
         get_statistics(kwargs.get("local_files_only", False))
 
+        # The base + tokenizer prefetch runs AFTER the load-mode validation below, so an invalid
+        # load_in_* combination fails without first downloading a snapshot.
+
         if dtype is None:
             dtype = torch.float16 if not SUPPORTS_BFLOAT16 else torch.bfloat16
         elif os.environ.get("UNSLOTH_FORCE_FLOAT32", "0") == "1":
@@ -968,6 +981,53 @@ class FastBaseModel:
             raise RuntimeError(
                 "Unsloth: Can only load in 4bit or 8bit or 16bit, not a combination!"
             )
+
+        # Prefetch the repo (killable child) so the in-process load below is a cache hit. vLLM owns the
+        # weight download only when actually available; if fast_inference was requested but vLLM is
+        # missing, the load falls through in-process, so weights must still be warmed here.
+        _vllm_owns_weights = fast_inference and is_vLLM_available()
+        _prefetched = maybe_prefetch_hf_snapshot(
+            model_name,
+            token = token,
+            revision = kwargs.get("revision"),
+            cache_dir = kwargs.get("cache_dir"),
+            local_files_only = kwargs.get("local_files_only", False),
+            fast_inference = _vllm_owns_weights,
+            subfolder = kwargs.get("subfolder"),
+            force_download = kwargs.get("force_download", False),
+            use_safetensors = kwargs.get("use_safetensors"),
+            from_tf = kwargs.get("from_tf", False),
+            from_flax = kwargs.get("from_flax", False),
+            # Bare load reads only ROOT weights; skip subdir weights. Ignored when a subfolder is set.
+            weights_at_root = True,
+            variant = kwargs.get("variant"),  # forward so the warm keeps the variant .bin
+            gguf_file = kwargs.get(
+                "gguf_file"
+            ),  # forward so the warm fetches the GGUF (else ignored)
+        )
+        # Child did the forced download; clear the flag so the load reuses the warm cache.
+        if _prefetched and kwargs.get("force_download", False):
+            kwargs["force_download"] = False
+
+        # Warm a SEPARATE tokenizer repo only (model_name is covered above). Not model_name here: this
+        # runs before fast_inference_setup may remap the repo, so it would warm the wrong one.
+        _tokenizer_repo = (
+            tokenizer_name if (isinstance(tokenizer_name, str) and tokenizer_name) else model_name
+        )
+        _warm_tokenizer_repo = (
+            isinstance(_tokenizer_repo, str)
+            and bool(_tokenizer_repo)
+            and _tokenizer_repo != model_name
+        )
+        if _warm_tokenizer_repo:
+            maybe_prefetch_hf_snapshot(
+                _tokenizer_repo,
+                token = token,
+                cache_dir = kwargs.get("cache_dir"),
+                local_files_only = kwargs.get("local_files_only", False),
+                tokenizer_only = True,
+            )
+
         _skip_modules = SKIP_QUANTIZATION_MODULES.copy()
         # Nemotron-H uses 'mixer' (not 'mamba') for Mamba layers.
         # Mamba fused kernels pass out_proj.weight directly to F.linear,
@@ -1136,6 +1196,17 @@ class FastBaseModel:
                     offload_embedding = offload_embedding,
                     fast_inference = fast_inference,
                 )
+                # Re-apply block-fp8 weight_scale_inv tensors transformers dropped on load (#6200).
+                _restore_dropped_fp8_scales(
+                    model,
+                    model_name,
+                    local_files_only = local_files_only,
+                    token = token,
+                    revision = kwargs.get("revision"),
+                    subfolder = kwargs.get("subfolder"),
+                    cache_dir = kwargs.get("cache_dir"),
+                    variant = kwargs.get("variant"),
+                )
                 if hasattr(model, "generate"):
                     model.fast_generate = make_fast_generate_wrapper(model.generate)
                     model.fast_generate_batches = error_out_no_vllm
@@ -1278,6 +1349,18 @@ class FastBaseModel:
         # Counteract saved tokenizers
         tokenizer_name = model_name if tokenizer_name is None else tokenizer_name
 
+        # On the vLLM path the tokenizer warm was deferred (fast_inference_setup may remap model_name).
+        # Warm the now-final tokenizer repo so the load below hits the cache (a cached/local repo is a no-op).
+        if _vllm_owns_weights and isinstance(tokenizer_name, str) and tokenizer_name:
+            maybe_prefetch_hf_snapshot(
+                tokenizer_name,
+                token = token,
+                revision = kwargs.get("revision"),
+                cache_dir = kwargs.get("cache_dir"),
+                local_files_only = kwargs.get("local_files_only", False),
+                tokenizer_only = True,
+            )
+
         # Fix _Unsloth_Patched_ prefix in local config files from old saves (issue #4085)
         if os.path.isdir(tokenizer_name):
             import json as _json
@@ -1315,6 +1398,7 @@ class FastBaseModel:
                         language = whisper_language,
                         task = whisper_task,
                         trust_remote_code = trust_remote_code,
+                        cache_dir = kwargs.get("cache_dir"),
                         local_files_only = lfo,
                     )
                 except Exception as _e:
@@ -1327,6 +1411,7 @@ class FastBaseModel:
                         padding_side = "left",
                         token = token,
                         trust_remote_code = trust_remote_code,
+                        cache_dir = kwargs.get("cache_dir"),
                         local_files_only = lfo,
                     )
                 except Exception as _e:
@@ -1337,6 +1422,7 @@ class FastBaseModel:
                             padding_side = "left",
                             token = token,
                             trust_remote_code = trust_remote_code,
+                            cache_dir = kwargs.get("cache_dir"),
                             local_files_only = lfo,
                         )
                     except Exception:
@@ -1355,6 +1441,7 @@ class FastBaseModel:
                         model_type_arch,
                         token,
                         trust_remote_code,
+                        cache_dir = kwargs.get("cache_dir"),
                         local_files_only = lfo,
                     )
                 except Exception as _fe:
@@ -1440,6 +1527,7 @@ class FastBaseModel:
                     padding_side = "left",
                     token = token,
                     trust_remote_code = trust_remote_code,
+                    cache_dir = kwargs.get("cache_dir"),
                     local_files_only = local_files_only,
                 )
                 model, _fallback_tok = patch_tokenizer(model, _fallback_tok)
@@ -1469,6 +1557,7 @@ class FastBaseModel:
                         padding_side = "left",
                         token = token,
                         trust_remote_code = trust_remote_code,
+                        cache_dir = kwargs.get("cache_dir"),
                         local_files_only = lfo,
                     )
                 except Exception:
@@ -1478,6 +1567,7 @@ class FastBaseModel:
                         padding_side = "left",
                         token = token,
                         trust_remote_code = trust_remote_code,
+                        cache_dir = kwargs.get("cache_dir"),
                         local_files_only = lfo,
                     )
 
@@ -1629,6 +1719,16 @@ class FastBaseModel:
             )
         else:
             _audio_kwargs = {}
+        # Remember the caller's ORIGINAL explicit leaf list for MoE expert
+        # detection. When an explicit list is routed through get_peft_regex for
+        # family scoping below, the generated regex carries get_peft_regex's full
+        # "mlp|feed_forward|ffn|dense" component block even when the caller named
+        # only attention leaves (q/k/v/o_proj). Keying expert detection on that
+        # regex would train the experts for an attention-only request. The
+        # original list carries the true leaf intent, so use it for MoE detection;
+        # only the auto (None / "all-linear") path relies on the regex, whose mlp
+        # block is the sole remaining MLP-intent signal on fused-expert models.
+        _moe_detect_target = target_modules if type(target_modules) in (list, tuple) else None
         if target_modules is None or target_modules == "all-linear":
             target_modules = get_peft_regex(
                 model,
@@ -1706,9 +1806,50 @@ class FastBaseModel:
             loftq_config, lora_dropout, bias, init_lora_weights, model
         )
 
-        # Auto-detect MoE models and populate target_parameters for expert layers
+        # Auto-detect MoE models and populate target_parameters for expert layers.
+        # Prefer the caller's ORIGINAL explicit leaf list over the scoped regex so an
+        # attention-only request does not train experts via get_peft_regex's mlp block,
+        # but only when MLP and language families are both still in scope. If the caller
+        # scoped MLP or language OFF (finetune_mlp_modules / finetune_language_layers
+        # False), the scoped regex already dropped the experts, so honor it instead of
+        # re-introducing the original list's gate/up/down leaves.
         if target_parameters is None:
-            target_parameters = get_moe_target_parameters(model, target_modules)
+            _moe_targets = _select_moe_detection_targets(
+                _moe_detect_target,
+                target_modules,
+                finetune_mlp_modules = finetune_mlp_modules,
+                finetune_language_layers = finetune_language_layers,
+            )
+            target_parameters = get_moe_target_parameters(model, _moe_targets)
+
+        # Per-expert Linear expert layouts (e.g. gpt-oss bnb-4bit) target experts via
+        # target_modules, not fused Parameters. Extend either form PEFT accepts: a leaf
+        # list (explicit) or a regex string (auto / all-linear / scoped). No-op otherwise.
+        _moe_module_detect = _select_moe_detection_targets(
+            _moe_detect_target,
+            target_modules,
+            finetune_mlp_modules = finetune_mlp_modules,
+            finetune_language_layers = finetune_language_layers,
+        )
+        _moe_module_targets = get_moe_target_modules(model, _moe_module_detect)
+        if _moe_module_targets:
+            if isinstance(target_modules, (list, tuple)):
+                target_modules = list(target_modules) + [
+                    target for target in _moe_module_targets if target not in target_modules
+                ]
+            elif isinstance(target_modules, str):
+                _expert_leaves = sorted({t.rsplit(".", 1)[0] for t in _moe_module_targets})
+                _expert_alt = (
+                    r".*\.experts\.(?:"
+                    + "|".join(re.escape(leaf) for leaf in _expert_leaves)
+                    + r")\.\d+"
+                )
+                target_modules = f"(?:{target_modules})|(?:{_expert_alt})"
+            print(
+                f"Unsloth: Detected MoE model with per-expert Linear experts. "
+                f"Enabling LoRA on {len(_moe_module_targets)} expert projection modules."
+            )
+            warn_if_zoo_cannot_merge_moe_experts()
 
         if finetune_last_n_layers is not None and layers_to_transform is None:
             _total_layers = _get_total_transformer_layers(model)
@@ -1873,6 +2014,11 @@ class FastBaseModel:
             float32_mixed_precision = float32_mixed_precision,
             patch_modules_to_save = True,
         )
+        # Persist the configured GC mode so the trainer restores it verbatim.
+        # for_inference() clears the module flags (GRPO does this every generation
+        # step), and a plain TrainingArguments defaults gradient_checkpointing=False,
+        # which would otherwise silently disable this setting at train time (#4735).
+        model._unsloth_gradient_checkpointing = use_gradient_checkpointing
 
         # Gemma3N audio conformer processes variable-length audio tensors
         # that cause stride mismatches in AOT autograd compiled backward
@@ -2202,3 +2348,16 @@ def check_dataset_for_missing_videos(
         warnings.warn(error_msg, stacklevel = 2)
 
     return missing
+
+
+# Auto-enable grouped-GEMM MoE (transformers<5 ModuleList experts); see llama.py.
+try:
+    from unsloth_zoo.temporary_patches.moe_grouped_modulelist import wrap_loader_for_grouped_moe
+    FastBaseModel.from_pretrained = staticmethod(
+        wrap_loader_for_grouped_moe(FastBaseModel.from_pretrained)
+    )
+    FastBaseModel.get_peft_model = staticmethod(
+        wrap_loader_for_grouped_moe(FastBaseModel.get_peft_model)
+    )
+except Exception:
+    pass

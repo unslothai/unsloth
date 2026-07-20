@@ -1929,6 +1929,9 @@ def get_chat_template(
             string_vocab = tokenizer._tokenizer.to_str()
 
             skipped = 0
+            # Only mirror applied mappings into the spm model; a skipped one would
+            # rename a piece the JSON never changed and desync the two.
+            applied_mapping = {}
             for old_token, new_token in token_mapping.items():
                 old_count = string_vocab.count(f'"{old_token}"')
                 new_count = string_vocab.count(f'"{new_token}"')
@@ -1939,6 +1942,7 @@ def get_chat_template(
                     raise RuntimeError(f"{old_token} was not part of the tokenizer!")
                 else:
                     string_vocab = string_vocab.replace(f'"{old_token}"', f'"{new_token}"')
+                    applied_mapping[old_token] = new_token
                 pass
             pass
 
@@ -1973,7 +1977,7 @@ def get_chat_template(
 
                 # Must fix the sentence piece tokenizer since there's no tokenizer.model file!
                 from .tokenizer_utils import fix_sentencepiece_tokenizer
-                tokenizer = fix_sentencepiece_tokenizer(tokenizer, new_tokenizer, token_mapping,)
+                tokenizer = fix_sentencepiece_tokenizer(tokenizer, new_tokenizer, applied_mapping,)
             else:
                 pass
 
@@ -1997,8 +2001,11 @@ def get_chat_template(
                 string_vocab = string_vocab.replace(old_eos_token, temporary_stop_token)
                 string_vocab = string_vocab.replace(stop_word, old_eos_token)
                 string_vocab = string_vocab.replace(temporary_stop_token, stop_word)
+                # JSON swapped both, so swap both here too; a one-way map leaves two stop_word pieces.
+                sentencepiece_mapping = { old_eos_token : stop_word, stop_word : old_eos_token, }
             else:
                 string_vocab = string_vocab.replace(old_eos_token, stop_word)
+                sentencepiece_mapping = { old_eos_token : stop_word, }
             pass
             new_tokenizer = tokenizer._tokenizer.from_str(string_vocab)
 
@@ -2017,9 +2024,8 @@ def get_chat_template(
             )
 
             # Must fix the sentence piece tokenizer since there's no tokenizer.model file!
-            token_mapping = { old_eos_token : stop_word, }
             from .tokenizer_utils import fix_sentencepiece_tokenizer
-            tokenizer = fix_sentencepiece_tokenizer(tokenizer, new_tokenizer, token_mapping,)
+            tokenizer = fix_sentencepiece_tokenizer(tokenizer, new_tokenizer, sentencepiece_mapping,)
         pass
 
     else:
@@ -2041,7 +2047,7 @@ def get_chat_template(
         .replace("'assistant'", "'" + mapping["assistant"] + "'")
 
     if use_zoo_tokenizer_patch:
-        # Studio MLX avoids the model-utils tokenizer wrapper because that
+        # Unsloth MLX avoids the model-utils tokenizer wrapper because that
         # import path pulls in Torch/GPU-specific modules before MLX training.
         from unsloth_zoo.tokenizer_utils import patch_tokenizer
     else:
@@ -2103,8 +2109,9 @@ def get_chat_template(
 
 def remove_special_tokens(tokenizer, prompt):
     # Removes double BOS token
-    if prompt.startswith(tokenizer.bos_token):
-        prompt = prompt[len(tokenizer.bos_token):]
+    bos_token = getattr(tokenizer, "bos_token", None)
+    if bos_token is not None and prompt.startswith(bos_token):
+        prompt = prompt[len(bos_token):]
     return prompt
 
 
@@ -2185,7 +2192,16 @@ def _create_formatter(possible_columns, final_optional_prompts, user_column_name
 
         texts = []
         for row_idx in range(n_rows):
-            row_values = {column: examples[column][row_idx] for column in columns}
+            # Coerce missing (None) columns to "" so they do not render as the
+            # literal string "None" in the emitted text. In a [[...]] block only
+            # the first column gates the block, so a later column can still be
+            # None here; required columns can be None too. Coercing at the source
+            # covers both; since None is now "", the gate below only needs to
+            # test for "" (an empty first column still drops the block).
+            row_values = {
+                column: ("" if (value := examples[column][row_idx]) is None else value)
+                for column in columns
+            }
             formatter_values = {}
 
             for formatter_template in formatter_templates:
@@ -2196,7 +2212,7 @@ def _create_formatter(possible_columns, final_optional_prompts, user_column_name
                     continue
 
                 _, optional_name, prompt, needed_columns = formatter_template
-                if row_values[needed_columns[0]] not in (None, ""):
+                if row_values[needed_columns[0]] != "":
                     prompt_values = {column: row_values[column] for column in needed_columns}
                     formatter_values[optional_name] = prompt.format(**prompt_values)
                 else:
@@ -2634,6 +2650,12 @@ extra_eos_tokens = None,
                 modelfile += '\nSYSTEM "' + default_system_message + '"'
             partial_system += "{% else %}"\
                 "{{ '" + full_system + "' }}"\
+                "{% set loop_messages = messages %}"\
+            "{% endif %}"
+        elif "{SYSTEM}" in system_part:
+            # Only bind loop_messages when the template can render a caller system
+            # message. A static prefix with no {SYSTEM} must still raise, not drop it.
+            partial_system += "{% else %}"\
                 "{% set loop_messages = messages %}"\
             "{% endif %}"
         else:

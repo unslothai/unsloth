@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Comprehensive Studio chat UI test, run locally + in CI."""
+"""Comprehensive Unsloth chat UI test, run locally + in CI."""
 
 import json
 import os
@@ -156,10 +156,19 @@ with sync_playwright() as p:
         # pointer events and break Playwright's actionability check.
         reduced_motion = "reduce",
     )
-    # Hard-disable CSS view-transitions: Studio's theme toggle + sidebar
+    # Hard-disable CSS view-transitions: Unsloth's theme toggle + sidebar
     # collapse run startViewTransition() which can leave <html> intercepting
     # pointer events for a beat after each route swap. See _playwright_robust.py.
     install_view_transition_killer(ctx)
+    system_requests: list[str] = []
+    ctx.on(
+        "request",
+        lambda request: (
+            system_requests.append(request.url)
+            if request.url.split("?", 1)[0].endswith("/api/system")
+            else None
+        ),
+    )
     page = ctx.new_page()
     # 60s default (was 30s): macos-14 under --single-process Chromium is
     # slow enough that renders/webfonts/lazy routes routinely crowd 30s.
@@ -380,6 +389,18 @@ with sync_playwright() as p:
                 fail(f"/api/auth/refresh wedged: {refresh_resp['error']!r}")
             refresh = refresh_resp.get("body") or {}
             token = (refresh or {}).get("access_token")
+            next_refresh_token = (refresh or {}).get("refresh_token")
+            if token and next_refresh_token:
+                robust_evaluate(
+                    page,
+                    """([accessToken, refreshToken]) => {
+                        localStorage.setItem('unsloth_auth_token', accessToken);
+                        localStorage.setItem('unsloth_auth_refresh_token', refreshToken);
+                    }""",
+                    [token, next_refresh_token],
+                )
+            elif token:
+                fail("/api/auth/refresh returned access_token but no refresh_token")
     if not token:
         fail("could not obtain auth token after change-password")
 
@@ -456,7 +477,7 @@ with sync_playwright() as p:
         fail(f"/api/inference/load returned {load_resp['status']}: {load_resp.get('body')!r}")
     info(f"loaded model: {(load_resp['body'] or {}).get('display_name')}")
 
-    # Studio caches model state in zustand; reload so the composer picks
+    # Unsloth caches model state in zustand; reload so the composer picks
     # up the loaded model.
     page.reload()
     composer = page.locator('textarea[aria-label="Message input"]')
@@ -472,7 +493,7 @@ with sync_playwright() as p:
     # (app-sidebar.tsx) -- as stable as anything in the codebase.
     picker_btn = page.locator('[data-tour="chat-model-selector"]').first
     if picker_btn.count() == 0:
-        # Fall back to text-based locators for older Studio builds.
+        # Fall back to text-based locators for older Unsloth builds.
         picker_btn = page.locator(
             'button:has-text("gemma-3-270m"), '
             'button:has-text("Gemma 3"), '
@@ -872,7 +893,7 @@ with sync_playwright() as p:
         if len(observed) < 3:
             soft_fail(f"theme toggle ran only {len(observed)} cycle(s), expected 3")
         # Don't strict-fail on both polarities: the runner's
-        # prefers-color-scheme + Studio's "system" default can collapse
+        # prefers-color-scheme + Unsloth's "system" default can collapse
         # to one polarity even when .dark toggles correctly. The 3-cycle
         # completion above is the real invariant.
         if light_seen and dark_seen:
@@ -1169,6 +1190,13 @@ with sync_playwright() as p:
         fail(f"curl login returned no access_token: {login_body!r}")
     info("CLI obtained an access token")
 
+    browser_refresh_token = robust_evaluate(
+        page,
+        "() => localStorage.getItem('unsloth_auth_refresh_token')",
+    )
+    if not browser_refresh_token:
+        fail("browser refresh token missing before CLI rotation")
+
     change_proc = subprocess.run(
         [
             "curl",
@@ -1203,47 +1231,194 @@ with sync_playwright() as p:
 
     # /change-password revoked refresh tokens server-side (auth.py), so
     # the browser's /api/auth/refresh must now fail.
-    refresh_after = evaluate_fetch(
-        page,
-        f"{BASE}/api/auth/refresh",
-        method = "POST",
-        timeout_ms = FETCH_TIMEOUT_MS,
+    refresh_proc = subprocess.run(
+        [
+            "curl",
+            "-sS",
+            "-o",
+            os.devnull,
+            "-w",
+            "%{http_code}",
+            "-X",
+            "POST",
+            f"{BASE}/api/auth/refresh",
+            "-H",
+            "Content-Type: application/json",
+            "-d",
+            json.dumps({"refresh_token": browser_refresh_token}),
+        ],
+        capture_output = True,
+        text = True,
+        timeout = 15,
     )
-    if refresh_after.get("error"):
-        fail(f"/api/auth/refresh wedged: {refresh_after['error']!r}")
-    if refresh_after["status"] == 200:
+    if refresh_proc.returncode != 0:
+        fail(
+            f"curl refresh-token check failed: rc={refresh_proc.returncode} "
+            f"stderr={refresh_proc.stderr!r} stdout={refresh_proc.stdout!r}"
+        )
+    try:
+        refresh_status = int(refresh_proc.stdout.strip())
+    except ValueError:
+        fail(f"curl refresh-token check returned invalid status: " f"{refresh_proc.stdout!r}")
+    if refresh_status == 200:
         fail(f"/api/auth/refresh should fail after CLI rotation; got 200")
     info(
-        f"OK browser /api/auth/refresh now {refresh_after['status']} "
+        f"OK browser /api/auth/refresh now {refresh_status} "
         "(refresh token revoked) -- old studio session can no longer renew"
     )
 
     # ─────────────────────────────────────────────────────
-    # 17. Shutdown via the account menu. The "Stop server" action
-    # POSTs /api/shutdown, swaps in the "Unsloth Studio has stopped"
-    # placeholder, and /api/health goes unreachable shortly after.
+    # 17. Persisted monitor auth boundary, then shutdown. A monitor left open
+    # must stay dormant on /login and resume after successful authentication.
     # ─────────────────────────────────────────────────────
-    step("Shutdown via account menu")
-    # Re-login with NEW2 for a valid /api/shutdown token (CLI rotation
-    # invalidated the old one). The stale token can make the SPA auth guard
-    # abort this goto with ERR_ABORTED, or redirect to the same /login URL
-    # ("interrupted by another navigation"); resolve on domcontentloaded and
-    # tolerate either -- the pw-field wait below confirms we are on /login.
-    _tolerated_nav = ("ERR_ABORTED", "interrupted by another navigation")
+    step("persisted monitor stays dormant on /login and resumes after auth")
+    # Start fresh after the CLI rotation invalidates this browser session.
+    # Stay in the SAME context: macOS Chromium runs --single-process, where
+    # closing the last context kills the browser and a second context cannot
+    # be created. Open the new page before closing the old one; the context
+    # init script covers the new page.
     try:
-        page.goto(f"{BASE}/login", wait_until = "domcontentloaded", timeout = 60_000)
+        ctx.clear_cookies()
     except Exception as exc:
-        if not any(t in str(exc) for t in _tolerated_nav):
-            raise
-        info(f"goto /login interrupted ({exc!r}); password-field wait will confirm /login")
-    pw_field = page.locator("#password")
-    pw_field.wait_for(state = "visible", timeout = 60_000)
-    pw_field.fill(NEW2)
-    page.locator('button[type="submit"]').click()
+        info(f"WARN clearing stale session cookies failed: {exc!r}")
+    robust_evaluate(
+        page,
+        """() => localStorage.setItem(
+            "unsloth_monitor_overlay",
+            JSON.stringify({ state: { isOpen: true, isMinimized: false }, version: 0 })
+        )""",
+    )
+    # Auth tokens live in localStorage, and /login's guest guard redirects on
+    # their mere presence, so drop them before navigating.
+    try:
+        page.evaluate(
+            "['unsloth_auth_token', 'unsloth_auth_refresh_token']"
+            ".forEach((key) => localStorage.removeItem(key))"
+        )
+    except Exception as exc:
+        info(f"WARN clearing stale auth tokens failed: {exc!r}")
+    _fresh_page = ctx.new_page()
+    _fresh_page.set_default_timeout(60_000)
+    _fresh_page.on("pageerror", lambda e: page_errors.append(str(e)))
+    _fresh_page.on("console", _on_console)
+    try:
+        page.close()
+    except Exception:
+        pass
+    page = _fresh_page
+    login_system_request_count = len(system_requests)
+
+    # Re-login with NEW2 for a valid /api/shutdown token. Route changes can
+    # still abort or interrupt this navigation, so the field wait below is the
+    # final confirmation that we reached /login.
+    _tolerated_nav = ("ERR_ABORTED", "interrupted by another navigation")
+    # A slow CI runner can make this re-login navigation time out even with the
+    # server healthy, so retry the whole goto/wait/fill/submit sequence (mirrors
+    # the change-password retry above). wait_for_health is a diagnostic pre-gate.
+    wait_for_health(BASE, timeout = 30.0, info = info)
+    relogin_err: Exception | None = None
+    for _relogin_attempt in range(3):
+        try:
+            try:
+                page.goto(f"{BASE}/login", wait_until = "domcontentloaded", timeout = 60_000)
+            except Exception as exc:
+                if not any(t in str(exc) for t in _tolerated_nav):
+                    raise
+                info(f"goto /login interrupted ({exc!r}); password-field wait will confirm /login")
+            pw_field = page.locator("#password")
+            pw_field.wait_for(state = "visible", timeout = 60_000)
+            page.keyboard.press("Control+,")
+            page.wait_for_timeout(5_500)
+            if len(system_requests) != login_system_request_count:
+                raise AssertionError(
+                    "persisted monitor requested /api/system while /login was active"
+                )
+            if "/login" not in page.url:
+                raise AssertionError(f"login route reloaded or redirected unexpectedly: {page.url}")
+            pw_field.fill(NEW2)
+            # Wait on the login POST so a transient 4xx/5xx is caught and retried
+            # here, not swallowed until the out-of-loop composer wait.
+            status, _ = click_and_wait_for_response(
+                page,
+                url_substr = "/api/auth/login",
+                method = "POST",
+                do_click = lambda: page.locator('button[type="submit"]').click(),
+                timeout_ms = 30_000,
+                info = lambda m: print(f"[ui]   {m}", flush = True),
+            )
+            if status is not None and status >= 400:
+                raise AssertionError(
+                    f"login POST returned {status}; see console_errors={console_errors[:1]!r}"
+                )
+            relogin_err = None
+            break
+        except Exception as e:
+            relogin_err = e
+            try:
+                cur_url = page.url
+            except Exception:
+                cur_url = "<page closed>"
+            print(
+                f"[ui]   re-login attempt {_relogin_attempt + 1} failed: "
+                f"{type(e).__name__}: {str(e)[:200]}; page.url={cur_url}; "
+                f"page_errors={len(page_errors)} console_errors={len(console_errors)}",
+                flush = True,
+            )
+            if console_errors:
+                print(
+                    f"[ui]   first console.error: {console_errors[0][:200]!r}",
+                    flush = True,
+                )
+            if page_errors:
+                print(f"[ui]   first pageerror:    {page_errors[0][:200]!r}", flush = True)
+            try:
+                shoot(f"18-relogin-attempt-{_relogin_attempt + 1}-fail")
+            except Exception:
+                pass
+            if _relogin_attempt < 2:
+                # ERR_NO_BUFFER_SPACE needs the OS to recover socket
+                # buffers; back off 5s then 15s before retrying.
+                if "ERR_NO_BUFFER_SPACE" in str(e):
+                    backoff_s = 5 if _relogin_attempt == 0 else 15
+                    print(
+                        f"[ui]   ENOBUFS detected; sleeping {backoff_s}s "
+                        f"before retry to let OS recover socket buffers...",
+                        flush = True,
+                    )
+                    time.sleep(backoff_s)
+                # Replace the page if it died; otherwise next iteration's
+                # page.goto() handles the reload.
+                old_page = page
+                page = recover_or_replace_page(
+                    page,
+                    ctx,
+                    default_timeout_ms = 60_000,
+                    info = lambda m: print(f"[ui]   recovery: {m}", flush = True),
+                )
+                # A freshly created replacement page loses the pageerror/console
+                # listeners; re-attach so error tracking survives recovery.
+                if page is not old_page:
+                    page.on("pageerror", lambda e: page_errors.append(str(e)))
+                    page.on("console", _on_console)
+    if relogin_err is not None:
+        raise relogin_err
+    # Composer mount confirms the rotated session is authenticated. Kept OUTSIDE the
+    # retry: the loop breaks right after submit, so we never re-goto /login once login
+    # has set tokens -- that would hit the guest guard, redirect to /chat, and make a
+    # merely-slow composer look like a broken login.
     composer = page.locator('textarea[aria-label="Message input"]')
     composer.wait_for(state = "visible", timeout = 60_000)
+    monitor_deadline = time.time() + 10
+    while len(system_requests) == login_system_request_count and time.time() < monitor_deadline:
+        page.wait_for_timeout(100)
+    if len(system_requests) == login_system_request_count:
+        fail("persisted monitor did not resume /api/system polling after login")
+    if page.get_by_role("dialog", name = re.compile(r"^Settings$")).count() != 0:
+        fail("settings shortcut on /login left the dialog open after authentication")
+    info("OK persisted monitor stayed dormant on /login and resumed after authentication")
     shoot("18-relogin-with-NEW2")
 
+    step("Shutdown via account menu")
     acct_btn = page.locator('button[aria-label$=" account menu"]').first
     if acct_btn.count() == 0:
         fail("account menu button missing -- can't reach Shutdown")

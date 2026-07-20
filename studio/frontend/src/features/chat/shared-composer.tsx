@@ -8,6 +8,7 @@ import {
 } from "@/components/assistant-ui/think-aria-label";
 import { Button } from "@/components/ui/button";
 import { BulbIcon } from "@/lib/bulb-icon";
+import { MicIcon } from "@/lib/mic-icon";
 import { Tick02Icon } from "@/lib/tick-icon";
 import { cn } from "@/lib/utils";
 import {
@@ -22,6 +23,17 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { applyQwenThinkingParams } from "@/features/chat/utils/qwen-params";
+import {
+  describeMediaError,
+  describeSpeechError,
+  isMissingDeviceError,
+} from "@/features/chat/adapters/studio-web-speech-dictation-adapter";
+import {
+  applyDictationDictionary,
+  recordRecentDictation,
+  resolveDictationLanguage,
+  useVoiceSettingsStore,
+} from "@/features/settings/stores/voice-settings-store";
 import { AUDIO_ACCEPT, MAX_AUDIO_SIZE, fileToBase64 } from "@/lib/audio-utils";
 import { isTauri } from "@/lib/api-base";
 import { isMultimodalResponse } from "./types/api";
@@ -48,7 +60,6 @@ import {
   Image03Icon,
   McpServerIcon,
   PencilRulerIcon,
-  ShieldBanIcon,
 } from "@hugeicons/core-free-icons";
 import { useNavigate } from "@tanstack/react-router";
 import { HugeiconsIcon } from "@hugeicons/react";
@@ -62,12 +73,19 @@ import {
 import { listPromptEntries, type PromptEntry } from "./api/prompts-api";
 import { McpComposerButton } from "./mcp-composer-button";
 import { BypassPermissionsMenuItem } from "./bypass-permissions-menu-item";
+import { PermissionModeComposerPill } from "./permission-mode-select";
 import { reasoningCapsFromLoad } from "./lib/apply-inference-status-to-store";
 import { KnowledgeBaseComposerButton } from "@/features/rag/components/knowledge-base-composer-button";
 import { NewProjectDialog } from "./components/new-project-dialog";
 import { useChatProjects } from "./hooks/use-chat-projects";
 import { confirmRemoteCodeIfNeeded } from "@/features/security";
+import {
+  confirmTransformersUpgradeIfNeeded,
+  useTransformersUpgradeDialogStore,
+} from "@/features/transformers-upgrade";
 import { loadModel, validateModel } from "./api/chat-api";
+import { resolveFitMaxSeqLength, resolveManualAutoCtxPin } from "./presets/preset-policy";
+import { ensureGpuDeviceCache } from "@/hooks/use-gpu-info";
 import {
   parseExternalModelId,
   providerTypeSupportsVision,
@@ -79,8 +97,11 @@ import {
   usePlusMenuPrefsStore,
 } from "./stores/plus-menu-prefs-store";
 import {
+  loadedGpuMemoryFieldsUnlessStaged,
   type ReasoningEffort,
+  reconcilePersistedGpuIds,
   resolveLoadedSpeculativeSettings,
+  persistGpuMemoryModeOnLoad,
   resolveSpeculativeSettingsForLoad,
   saveSpeculativeType,
   useChatRuntimeStore,
@@ -144,18 +165,6 @@ const ArrowDownStandardIcon: FC<{ className?: string }> = ({ className }) => (
   </svg>
 );
 
-const MicIcon: FC<{ className?: string }> = ({ className }) => (
-  <svg
-    className={className}
-    viewBox="0 0 256 256"
-    fill="currentColor"
-    xmlns="http://www.w3.org/2000/svg"
-    aria-hidden={true}
-  >
-    <path d="M128,176a48.05,48.05,0,0,0,48-48V64a48,48,0,0,0-96,0v64A48.05,48.05,0,0,0,128,176ZM96,64a32,32,0,0,1,64,0v64a32,32,0,0,1-64,0Zm40,143.6V232a8,8,0,0,1-16,0V207.6A80.11,80.11,0,0,1,48,128a8,8,0,0,1,16,0,64,64,0,0,0,128,0,8,8,0,0,1,16,0A80.11,80.11,0,0,1,136,207.6Z" />
-  </svg>
-);
-
 function isNativeComposing(event: Event) {
   return "isComposing" in event && (event as InputEvent).isComposing === true;
 }
@@ -210,7 +219,17 @@ function useDictation(
   const [isDictating, setIsDictating] = useState(false);
   const recognitionRef = useRef<SpeechRecognition | null>(null);
 
-  const start = useCallback(() => {
+  const streamRef = useRef<MediaStream | null>(null);
+  const startingRef = useRef(false);
+  // Guards the getUserMedia await so a mic opened after unmount is released.
+  const disposedRef = useRef(false);
+
+  const releaseStream = useCallback(() => {
+    streamRef.current?.getTracks().forEach((track) => track.stop());
+    streamRef.current = null;
+  }, []);
+
+  const start = useCallback(async () => {
     const SpeechRecognitionAPI =
       typeof window !== "undefined" &&
       (window.SpeechRecognition ??
@@ -222,43 +241,136 @@ function useDictation(
     if (!SpeechRecognitionAPI) {
       return;
     }
+    if (startingRef.current || recognitionRef.current) return;
+    startingRef.current = true;
+
+    // Open the microphone chosen in Voice settings, matching the main chat
+    // adapter, so Compare dictation honors the same device selection.
+    let audioTrack: MediaStreamTrack | undefined;
+    const { micDeviceId } = useVoiceSettingsStore.getState();
+    if (navigator.mediaDevices?.getUserMedia) {
+      try {
+        let stream: MediaStream;
+        try {
+          stream = await navigator.mediaDevices.getUserMedia({
+            audio:
+              micDeviceId && micDeviceId !== "default"
+                ? { deviceId: { exact: micDeviceId } }
+                : true,
+          });
+        } catch (error) {
+          // Saved mic may be unplugged; fall back to the default device.
+          if (micDeviceId !== "default" && isMissingDeviceError(error)) {
+            stream = await navigator.mediaDevices.getUserMedia({
+              audio: true,
+            });
+          } else {
+            throw error;
+          }
+        }
+        streamRef.current = stream;
+        audioTrack = stream.getAudioTracks()[0];
+      } catch (error) {
+        // Permission/security failure: report it and stop instead of silently
+        // recording from a different default device, matching the main adapter.
+        startingRef.current = false;
+        releaseStream();
+        setIsDictating(false);
+        toast.error(describeMediaError(error));
+        return;
+      }
+    }
+
+    if (disposedRef.current) {
+      releaseStream();
+      startingRef.current = false;
+      return;
+    }
+
     const recognition = new SpeechRecognitionAPI() as SpeechRecognition;
     recognition.continuous = true;
     recognition.interimResults = true;
-    recognition.lang = "en-US";
+    recognition.lang = resolveDictationLanguage();
+    let sessionTranscript = "";
     recognition.onresult = (event: SpeechRecognitionEvent) => {
-      const last = event.resultIndex;
-      const result = event.results[last];
-      if (!result?.isFinal) return;
-      const transcript = result[0]?.transcript?.trim();
-      if (transcript) {
+      // Iterate every result from resultIndex; a single event can carry more
+      // than one finalized phrase and dropping the rest loses dictated words.
+      for (let i = event.resultIndex; i < event.results.length; i++) {
+        const result = event.results[i];
+        if (!result?.isFinal) continue;
+        const transcript = applyDictationDictionary(
+          result[0]?.transcript?.trim() ?? "",
+        );
+        if (!transcript) continue;
+        sessionTranscript = sessionTranscript
+          ? `${sessionTranscript} ${transcript}`
+          : transcript;
         setText((prev) => (prev ? `${prev} ${transcript}` : transcript));
       }
     };
-    recognition.onerror = () => {
+    recognition.onerror = (event) => {
+      // Report speech-service failures like the main adapter; aborted is a
+      // normal stop, not an error.
+      const errorEvent = event as SpeechRecognitionErrorEvent;
+      if (errorEvent.error !== "aborted") {
+        toast.error(describeSpeechError(errorEvent.error, errorEvent.message));
+      }
       setIsDictating(false);
     };
     recognition.onend = () => {
-      setIsDictating(false);
+      // A stop()+immediate restart can install a new recognizer before this
+      // old one ends; only tear down shared refs when we are still current.
+      if (recognitionRef.current === recognition) {
+        releaseStream();
+        recognitionRef.current = null;
+        setIsDictating(false);
+      }
+      if (sessionTranscript) {
+        recordRecentDictation(sessionTranscript);
+        sessionTranscript = "";
+      }
     };
-    recognition.start();
+    try {
+      if (audioTrack) {
+        try {
+          recognition.start(audioTrack);
+        } catch {
+          // No start(track) overload: recognition captures from the default
+          // device, so release the selected-device stream.
+          releaseStream();
+          recognition.start();
+        }
+      } else {
+        recognition.start();
+      }
+    } catch {
+      startingRef.current = false;
+      releaseStream();
+      return;
+    }
     recognitionRef.current = recognition;
+    startingRef.current = false;
     setIsDictating(true);
-  }, [setText]);
+  }, [setText, releaseStream]);
 
   const stop = useCallback(() => {
     if (recognitionRef.current) {
       recognitionRef.current.stop();
       recognitionRef.current = null;
     }
+    releaseStream();
     setIsDictating(false);
-  }, []);
+  }, [releaseStream]);
 
   useEffect(() => {
+    disposedRef.current = false;
     return () => {
+      disposedRef.current = true;
       if (recognitionRef.current) {
         recognitionRef.current.abort();
       }
+      streamRef.current?.getTracks().forEach((track) => track.stop());
+      streamRef.current = null;
     };
   }, []);
 
@@ -506,6 +618,8 @@ export function SharedComposer({
   );
   const artifactsEnabled = useChatRuntimeStore((s) => s.artifactsEnabled);
   const setArtifactsEnabled = useChatRuntimeStore((s) => s.setArtifactsEnabled);
+  const showCanvasMenuItem = useChatRuntimeStore((s) => s.showCanvasMenuItem);
+  const permissionMode = useChatRuntimeStore((s) => s.permissionMode);
   const mcpEnabledForChat = useChatRuntimeStore((s) => s.mcpEnabledForChat);
   const setMcpEnabledForChat = useChatRuntimeStore(
     (s) => s.setMcpEnabledForChat,
@@ -524,10 +638,6 @@ export function SharedComposer({
   );
   const setWebFetchToolsEnabled = useChatRuntimeStore(
     (s) => s.setWebFetchToolsEnabled,
-  );
-  const bypassPermissions = useChatRuntimeStore((s) => s.bypassPermissions);
-  const setBypassPermissions = useChatRuntimeStore(
-    (s) => s.setBypassPermissions,
   );
   const ragEnabled = useChatRuntimeStore((s) => s.ragEnabled);
   const setRagEnabled = useChatRuntimeStore((s) => s.setRagEnabled);
@@ -681,9 +791,12 @@ export function SharedComposer({
   const ragDisabled = modelLoaded && (isExternalModel || !supportsTools);
   const showRagPill = !isExternalModel;
   // Above 4 pills, collapse to icons only to cut clutter. Compare, Search and
-  // Code always show; the rest are conditional.
+  // Code always show; the permission pill shows in every mode except "off"
+  // (it renders null there); the rest are conditional.
+  const permissionPillVisible = permissionMode !== "off";
   const pillsCompact =
     3 +
+      (permissionPillVisible ? 1 : 0) +
       (showImagePill ? 1 : 0) +
       (showRagPill && ragEnabled && !ragDisabled ? 1 : 0) +
       (showWebFetchPill ? 1 : 0) +
@@ -929,6 +1042,32 @@ export function SharedComposer({
         return parts[parts.length - 1] || id;
       }
 
+      // Warm the device cache before the snapshot below reconciles the GPU
+      // pick: on a cold cache the reconcile passes a stale pick through.
+      if (store.selectedGpuIds != null) {
+        await ensureGpuDeviceCache();
+      }
+      // The GPU/offload knobs both compare loads must use, snapshotted at Send.
+      // ensureModelLoaded runs sequentially and the first load's response echo
+      // (loadedGpuMemoryFields) rewrites the live store -- a non-GGUF or Auto
+      // first model resets gpuLayers/nCpuMoe/split/pick to defaults -- so
+      // reading the store per load would hand model 2 the first model's echoed
+      // defaults instead of the settings the user pressed Send with.
+      const compareLoadKnobs = {
+        gpuMemoryMode: store.gpuMemoryMode,
+        gpuLayers: store.gpuLayers,
+        nCpuMoe: store.nCpuMoe,
+        splitRatio: store.splitRatio,
+        // Reconcile the pick against the GPUs present now, like the model-switch
+        // path: an early remember-restore can hold a stale cross-host pick that
+        // /load would reject (the device cache is populated by send time).
+        selectedGpuIds: reconcilePersistedGpuIds(store.selectedGpuIds),
+        tensorParallel: store.tensorParallel,
+        customContextLength: store.customContextLength,
+      };
+      // Set when an accepted transformers install unloaded the active model
+      // server-side; a later failure must then clear the stale checkpoint.
+      let upgradeUnloadedActive = false;
       // Helper: load a model and update store checkpoint
       async function ensureModelLoaded(
         sel: CompareModelSelection,
@@ -945,16 +1084,61 @@ export function SharedComposer({
         if (isAlreadyActive) {
           return "ready";
         }
+        const targetIsGguf =
+          sel.id.toLowerCase().endsWith(".gguf") || sel.ggufVariant != null;
+        // Size validation exactly as the load below, so the training-guard
+        // preflight checks the footprint that actually loads (under Manual + Auto
+        // layers the load sends 0 / the pinned context, not raw maxSeqLength).
+        const compareMaxSeqLength = resolveFitMaxSeqLength(
+          targetIsGguf,
+          compareLoadKnobs.gpuMemoryMode,
+          compareLoadKnobs.gpuLayers,
+          compareLoadKnobs.customContextLength,
+          maxSeqLength,
+        );
         const validation = await validateModel({
           model_path: sel.id,
           hf_token: currentStore.hfToken || null,
-          max_seq_length: maxSeqLength,
+          max_seq_length: compareMaxSeqLength,
           load_in_4bit: true,
           is_lora: sel.isLora,
           gguf_variant: sel.ggufVariant ?? null,
           trust_remote_code: loadTrustRemoteCode,
           chat_template_override: effectiveChatTemplateOverride,
+          // Scope the validate to the picked GPUs. GGUF-only, like the load
+          // below: a non-GGUF target must not inherit a hidden GGUF GPU pick.
+          ...(targetIsGguf
+            ? {
+                gpu_ids: compareLoadKnobs.selectedGpuIds ?? undefined,
+                gpu_memory_mode: compareLoadKnobs.gpuMemoryMode,
+              }
+            : {}),
         });
+        // Upgrade dialog first (mirrors the primary load path).
+        if (validation.requires_transformers_upgrade) {
+          const upgraded = await confirmTransformersUpgradeIfNeeded({
+            modelName: sel.id,
+            upgrade: validation.transformers_upgrade,
+            // No installable release: custom-code models may fall back to the trust_remote_code gate below.
+            trustRemoteCodeFallback: validation.requires_trust_remote_code,
+          });
+          // The install unloads the active model before the swap (even when the
+          // swap then fails); if a later gate cancels or the load fails, the UI
+          // must stop pointing at that unloaded model.
+          if (
+            useTransformersUpgradeDialogStore
+              .getState()
+              .consumeServerUnloadedChat()
+            && currentStore.params.checkpoint
+          ) {
+            upgradeUnloadedActive = true;
+          }
+          if (!upgraded) {
+            throw new Error(
+              `${modelDisplayName(sel.id)} needs a newer transformers release to load.`,
+            );
+          }
+        }
         if (
           validation.requires_trust_remote_code ||
           validation.requires_security_review
@@ -977,7 +1161,7 @@ export function SharedComposer({
         const resp = await loadModel({
           model_path: sel.id,
           hf_token: useChatRuntimeStore.getState().hfToken || null,
-          max_seq_length: maxSeqLength,
+          max_seq_length: compareMaxSeqLength,
           load_in_4bit: true,
           is_lora: sel.isLora,
           gguf_variant: sel.ggufVariant ?? null,
@@ -986,10 +1170,26 @@ export function SharedComposer({
           chat_template_override: effectiveChatTemplateOverride,
           speculative_type: specSettings.speculativeType,
           spec_draft_n_max: specSettings.specDraftNMax,
-          // Honor the Tensor Parallelism toggle on compare loads too.
-          tensor_parallel: currentStore.tensorParallel,
+          // Honor the Tensor Parallelism + GPU Memory choices on compare loads.
+          // GGUF-only, like the auto-load path: the picker is a GGUF control,
+          // so a non-GGUF target loads via HF auto-placement instead of being
+          // pinned to a leftover GGUF pick it can't even show.
+          tensor_parallel: compareLoadKnobs.tensorParallel,
+          ...(targetIsGguf
+            ? {
+                gpu_memory_mode: compareLoadKnobs.gpuMemoryMode,
+                gpu_layers: compareLoadKnobs.gpuLayers,
+                n_cpu_moe: compareLoadKnobs.nCpuMoe,
+                tensor_split: compareLoadKnobs.splitRatio ?? undefined,
+                gpu_ids: compareLoadKnobs.selectedGpuIds ?? undefined,
+              }
+            : {}),
         });
         saveSpeculativeType(specSettings.speculativeType);
+        // Persist the GPU Memory mode on a non-diffusion GGUF compare-load too,
+        // so an applied manual choice survives a restart.
+        persistGpuMemoryModeOnLoad(resp, compareLoadKnobs.gpuMemoryMode);
+        upgradeUnloadedActive = false;
         const store = useChatRuntimeStore.getState();
         store.setCheckpoint(
           resp.model,
@@ -998,6 +1198,17 @@ export function SharedComposer({
         store.setModelRequiresTrustRemoteCode(
           resp.requires_trust_remote_code ?? false,
         );
+        // Keep an explicit Manual+Auto context pin the load just applied (so a
+        // later Apply/Reset doesn't silently revert the model to auto-fit
+        // sizing), mirroring the interactive path's keepCustomCtx. Non-GGUF
+        // compare loads don't send the pin, so their baseline clears.
+        const keepCustomCtx = targetIsGguf
+          ? resolveManualAutoCtxPin(
+              compareLoadKnobs.gpuMemoryMode,
+              compareLoadKnobs.gpuLayers,
+              compareLoadKnobs.customContextLength,
+            )
+          : null;
         useChatRuntimeStore.setState({
           supportsReasoning: resp.supports_reasoning ?? false,
           reasoningAlwaysOn: resp.reasoning_always_on ?? false,
@@ -1006,6 +1217,32 @@ export function SharedComposer({
           supportsTools: resp.supports_tools ?? false,
           tensorParallel: resp.tensor_parallel ?? false,
           loadedTensorParallel: resp.tensor_parallel ?? false,
+          customContextLength: keepCustomCtx,
+          loadedCustomContextLength: keepCustomCtx,
+          // Seed the loaded GGUF context (interactive/auto-load parity): the
+          // settings sheet keys the GGUF GPU controls off it for a direct .gguf
+          // with no variant, and a later Apply reads it as the resolved context.
+          ...(targetIsGguf
+            ? {
+                ggufContextLength: resp.context_length ?? 131072,
+                ggufMaxContextLength:
+                  resp.max_context_length ?? resp.context_length ?? 131072,
+                ggufNativeContextLength: resp.native_context_length ?? null,
+              }
+            : { ggufContextLength: null }),
+          // Compare loads resolve by id (HF repo / local path), never through a
+          // native-path lease, so a token left by a previously loaded native
+          // GGUF is stale here -- isLoadedGguf keys off it, and a stale token
+          // would dress a non-GGUF compare load in GGUF controls. Mirror the
+          // interactive path, which writes it on every load success.
+          activeNativePathToken: null,
+          // Held under an open staged pick: setCheckpoint preserves a stage on
+          // the empty->active transition, so a compare load can complete with
+          // staged GPU edits still on screen.
+          ...loadedGpuMemoryFieldsUnlessStaged(resp),
+          // Drives the GPU Memory controls' diffusion gate; set alongside the
+          // GPU fields on every load path so the gate can't read stale.
+          loadedIsDiffusion: resp.is_diffusion ?? false,
           loadedIsMultimodal: isMultimodalResponse(resp),
           ...resolveLoadedSpeculativeSettings(resp),
         });
@@ -1097,6 +1334,11 @@ export function SharedComposer({
         toast.success("Compare complete", { id: toastId, duration: 2000 });
       } catch (err) {
         compareStepSucceededRef.current = false;
+        // The install already unloaded the previously active model; drop the
+        // checkpoint so the UI does not keep pointing at an unloaded model.
+        if (upgradeUnloadedActive) {
+          useChatRuntimeStore.getState().clearCheckpoint();
+        }
         toast.error("Compare failed", {
           id: toastId,
           description: err instanceof Error ? err.message : "Unknown error",
@@ -1269,7 +1511,8 @@ export function SharedComposer({
         </DropdownMenuSubContent>
       </DropdownMenuSub>
     ),
-    canvas: (
+    // Hidden by default; enabled from Settings > Chat > Canvas.
+    canvas: showCanvasMenuItem ? (
       <DropdownMenuItem
         className={artifactsEnabled ? "text-primary font-medium" : undefined}
         onSelect={() => setArtifactsEnabled(!artifactsEnabled)}
@@ -1280,7 +1523,7 @@ export function SharedComposer({
           <HugeiconsIcon icon={Tick02Icon} strokeWidth={2} className="ml-auto" />
         ) : null}
       </DropdownMenuItem>
-    ),
+    ) : null,
     bypassPermissions: <BypassPermissionsMenuItem />,
     projects: (
       <DropdownMenuSub>
@@ -1617,29 +1860,10 @@ export function SharedComposer({
             </PillGlyph>
             <span>Compare</span>
           </button>
-          {/* Bypass sits immediately after Compare and ahead of every other
-              tool pill (Search, Code, ...) so the active danger state reads
-              first; only Compare outranks it. */}
-          {bypassPermissions && (
-            <button
-              type="button"
-              onClick={() => setBypassPermissions(false)}
-              className="composer-pill-btn"
-              data-active="true"
-              data-variant="danger"
-              aria-label="Disable Bypass permissions"
-              title="Bypass permissions is on (no confirmation, no sandbox). Click to turn off."
-            >
-              <PillGlyph>
-                <HugeiconsIcon
-                  icon={ShieldBanIcon}
-                  strokeWidth={2}
-                  className="size-[15px]"
-                />
-              </PillGlyph>
-              <span>Bypass permissions</span>
-            </button>
-          )}
+          {/* Permission-level pill sits immediately after Compare and ahead
+              of every other tool pill (Search, Code, ...) so the Full access
+              danger state reads first; only Compare outranks it. */}
+          <PermissionModeComposerPill side="top" />
           <button
             type="button"
             disabled={searchDisabled}
@@ -1767,6 +1991,7 @@ export function SharedComposer({
                     type="button"
                     disabled={reasoningDisabled}
                     className="unsloth-thinking-pill"
+                    data-pill-label="Thinking settings"
                     data-active={thinkingActiveLook ? "true" : "false"}
                     aria-label={thinkEffortAriaLabel({
                       modelLoaded,
@@ -1776,7 +2001,7 @@ export function SharedComposer({
                   >
                     <BulbIcon className="size-[15.5px]" />
                     {thinkingActiveLook ? (
-                      <span>
+                      <span className="unsloth-thinking-label">
                         {isEffort
                           ? `Thinking · ${formatReasoningEffortLabel(
                               reasoningEffort,
@@ -1785,7 +2010,7 @@ export function SharedComposer({
                           : "Thinking"}
                       </span>
                     ) : null}
-                    <ArrowDownStandardIcon className="size-[15px]" />
+                    <ArrowDownStandardIcon className="unsloth-thinking-caret size-[15px]" />
                   </button>
                 </DropdownMenuTrigger>
                 <DropdownMenuContent
@@ -1932,6 +2157,7 @@ export function SharedComposer({
                   }
                 }}
                 className="unsloth-thinking-pill"
+                data-pill-label="Thinking"
                 data-active={thinkingActiveLook ? "true" : "false"}
                 aria-label={thinkToggleAriaLabel({
                   reasoningLockedOn,
@@ -1943,7 +2169,9 @@ export function SharedComposer({
                 <PillGlyph>
                   <BulbIcon className="size-[15.5px]" />
                 </PillGlyph>
-                {thinkingActiveLook ? <span>Thinking</span> : null}
+                {thinkingActiveLook ? (
+                  <span className="unsloth-thinking-label">Thinking</span>
+                ) : null}
               </button>
             )
           ) : null}

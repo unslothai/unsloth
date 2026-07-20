@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Studio extra-UI Playwright test: Compare tab, Recipes editor, /export, /studio, Settings tabs."""
+"""Unsloth extra-UI Playwright test: Compare tab, Recipes editor, /export, /studio, Settings tabs."""
 
 import json
 import os
@@ -90,11 +90,11 @@ with sync_playwright() as p:
     )
     install_view_transition_killer(ctx)
     page = ctx.new_page()
-    # 60s default for slow macos-14 --single-process Chromium (second Studio boot of the job).
+    # 60s default for slow macos-14 --single-process Chromium (second Unsloth boot of the job).
     page.set_default_timeout(60_000)
     page_errors = []
 
-    # Filter out known-benign React errors (timing artefacts on slow CI runners, not Studio bugs);
+    # Filter out known-benign React errors (timing artefacts on slow CI runners, not Unsloth bugs);
     # shared base list lives in _playwright_robust.BENIGN_PAGE_ERROR_PATTERNS.
     def _on_pageerror(e):
         msg = str(e)
@@ -256,7 +256,7 @@ with sync_playwright() as p:
     composer = page.locator('textarea[aria-label="Message input"]')
     composer.wait_for(state = "visible", timeout = 60_000)
 
-    # Detect chat-only mode (/api/health.chat_only): in chat-only mode /studio + /export redirect to /chat.
+    # Detect chat-only mode (/api/health.chat_only): /studio redirects to /chat while /export stays reachable and self-gated.
     health_resp = evaluate_fetch(
         page,
         f"{BASE}/api/health",
@@ -404,15 +404,19 @@ with sync_playwright() as p:
     # ─────────────────────────────────────────────────────
     # 3. Export route.
     # ─────────────────────────────────────────────────────
-    step(f"Export route ({'chat-only redirect' if chat_only else 'form fields'})")
+    step(f"Export route ({'chat-only self-gated' if chat_only else 'form fields'})")
     page.goto(f"{BASE}/export")
     page.wait_for_timeout(1500)
     shoot("07-export")
     if chat_only:
-        if "/export" in page.url:
-            soft_fail(f"chat-only mode should redirect /export -> /chat; url={page.url}")
+        if "/export" not in page.url:
+            soft_fail(f"chat-only mode should keep /export reachable; url={page.url}")
         else:
-            info(f"OK chat-only redirected /export -> {page.url}")
+            unavailable = page.get_by_text(re.compile(r"Export unavailable", re.I)).first
+            if unavailable.count() == 0:
+                soft_fail("chat-only /export did not show the export unavailable gate")
+            else:
+                info("OK chat-only /export rendered the unavailable gate")
     else:
         # Non-chat-only: verify the export-cta button + HF token field.
         cta = page.locator('[data-tour="export-cta"]').first
@@ -447,9 +451,9 @@ with sync_playwright() as p:
             )
 
     # ─────────────────────────────────────────────────────
-    # 4. Studio training route.
+    # 4. Unsloth training route.
     # ─────────────────────────────────────────────────────
-    step(f"Studio route ({'chat-only redirect' if chat_only else 'tabs + sections'})")
+    step(f"Unsloth route ({'chat-only redirect' if chat_only else 'tabs + sections'})")
     page.goto(f"{BASE}/studio")
     page.wait_for_timeout(1500)
     shoot("08-studio")

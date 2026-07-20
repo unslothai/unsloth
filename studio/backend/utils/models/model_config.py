@@ -698,6 +698,25 @@ if backend_dir not in sys.path:
 try:
     from transformers import AutoConfig
 
+    # Union the ACTIVE sidecar's registry into the inlined parent-process sets
+    # so architectures only the sidecar knows still classify correctly.
+    try:
+        from transformers.models.auto import modeling_auto as _ma
+        for _attr in ("MODEL_FOR_IMAGE_TEXT_TO_TEXT_MAPPING_NAMES",
+                      "MODEL_FOR_VISION_2_SEQ_MAPPING_NAMES"):
+            _d = dict(getattr(_ma, _attr, None) or {})
+            _VLM_MODEL_TYPES |= set(_d)
+            _VLM_CLASS_NAMES |= set(_d.values())
+        for _attr in ("MODEL_FOR_CTC_MAPPING_NAMES",
+                      "MODEL_FOR_SPEECH_SEQ_2_SEQ_MAPPING_NAMES",
+                      "MODEL_FOR_AUDIO_CLASSIFICATION_MAPPING_NAMES",
+                      "MODEL_FOR_TEXT_TO_WAVEFORM_MAPPING_NAMES",
+                      "MODEL_FOR_TEXT_TO_SPECTROGRAM_MAPPING_NAMES",
+                      "MODEL_FOR_AUDIO_XVECTOR_MAPPING_NAMES"):
+            _AUDIO_ONLY_MODEL_TYPES |= set(dict(getattr(_ma, _attr, None) or {}))
+    except Exception:
+        pass
+
     # Capability detection never executes model repo code.
     kwargs = {"trust_remote_code": False}
     if token:
@@ -727,13 +746,23 @@ def _is_vision_model_subprocess(model_name: str, hf_token: Optional[str] = None)
     """
     token_arg = hf_token or ""
 
+    # Latest-only architectures need the latest sidecar for AutoConfig;
+    # other tiers keep the 5.5 sidecar.
+    sidecar_dir = _VENV_T5_DIR
+    try:
+        from utils.transformers_version import _VENV_T5_LATEST_DIR, get_transformers_tier
+        if get_transformers_tier(model_name, hf_token, probe = False) == "latest":
+            sidecar_dir = _VENV_T5_LATEST_DIR
+    except Exception:
+        pass
+
     try:
         result = subprocess.run(
             [
                 sys.executable,
                 "-c",
                 _VISION_CHECK_SCRIPT,
-                _VENV_T5_DIR,
+                sidecar_dir,
                 _BACKEND_DIR,
                 model_name,
                 token_arg,
@@ -876,6 +905,17 @@ def _is_vision_model_uncached(
         model_name, hf_token = hf_token, local_files_only = local_files_only
     )
     if raw is not None:
+        if raw is False and not local_files_only:
+            # Raw heuristics predate latest-only architectures; on the latest tier,
+            # trust that sidecar's AutoConfig probe over the heuristic False. An
+            # inconclusive probe (sidecar mid-repair, timeout) is transient: return
+            # None so the heuristic False is not cached and the model is re-probed.
+            try:
+                from utils.transformers_version import get_transformers_tier
+                if get_transformers_tier(model_name, hf_token, probe = False) == "latest":
+                    return _is_vision_model_subprocess(model_name, hf_token = hf_token)
+            except Exception:
+                pass
         return raw
 
     # Raw read failed transiently: fall back to AutoConfig (remote code DISABLED), via a
@@ -1618,36 +1658,60 @@ def _iter_hf_cache_snapshots(repo_id: str):
 
     cache_dir = Path(hf_constants.HF_HUB_CACHE)
     target = f"models--{repo_id.replace('/', '--')}".lower()
-    repo_dir: Optional[Path] = None
+    repo_dirs: list[Path] = []
     try:
         if not cache_dir.is_dir():
             return
         for entry in cache_dir.iterdir():
             if entry.is_dir() and entry.name.lower() == target:
-                repo_dir = entry
-                break
+                repo_dirs.append(entry)
     except OSError:
         return
-    if repo_dir is None:
+    if not repo_dirs:
         return
 
-    snapshots = repo_dir / "snapshots"
-    try:
-        if not snapshots.is_dir():
-            return
-        snap_dirs = [s for s in snapshots.iterdir() if s.is_dir()]
-    except OSError:
+    snap_dirs: list[Path] = []
+    for repo_dir in repo_dirs:
+        snapshots = repo_dir / "snapshots"
+        try:
+            if snapshots.is_dir():
+                for snap_dir in snapshots.iterdir():
+                    try:
+                        if snap_dir.is_dir():
+                            snap_dirs.append(snap_dir)
+                    except OSError:
+                        continue
+        except OSError:
+            continue
+    if not snap_dirs:
         return
-    snap_dirs.sort(key = lambda s: s.stat().st_mtime, reverse = True)
-    yield from snap_dirs
+    snap_dirs_with_mtime = []
+    for snap_dir in snap_dirs:
+        try:
+            snap_dirs_with_mtime.append((snap_dir.stat().st_mtime, snap_dir))
+        except OSError:
+            continue
+    snap_dirs_with_mtime.sort(key = lambda item: item[0], reverse = True)
+    yield from (snap_dir for _, snap_dir in snap_dirs_with_mtime)
 
 
 def _list_gguf_variants_from_hf_cache(repo_id: str) -> Optional[tuple[list[GgufVariantInfo], bool]]:
-    """Variants from the local HF cache snapshot, or None if not cached."""
+    """Variants from the local HF cache snapshot, or None if not cached.
+
+    A newer snapshot can hold only a companion file (for example a vision
+    projector fetched on demand) while the quant files live in an older
+    snapshot. Returning the first snapshot that merely reports a vision flag
+    would shadow those real variants, so keep scanning older snapshots for
+    actual variants and carry the vision flag across snapshots.
+    """
+    any_vision = False
     for snap in _iter_hf_cache_snapshots(repo_id):
         variants, has_vision = list_local_gguf_variants(str(snap))
-        if variants or has_vision:
-            return variants, has_vision
+        any_vision = any_vision or has_vision
+        if variants:
+            return variants, any_vision
+    if any_vision:
+        return [], True
     return None
 
 
@@ -2020,7 +2084,7 @@ def _has_model_weight_files(model_dir: Path) -> bool:
 
 
 def _detect_training_output_type(model_dir: Path) -> Optional[str]:
-    """Classify a Studio training output as LoRA or full finetune."""
+    """Classify an Unsloth training output as LoRA or full finetune."""
     adapter_config = model_dir / "adapter_config.json"
     adapter_model = model_dir / "adapter_model.safetensors"
     if adapter_config.exists() or adapter_model.exists():
@@ -2042,7 +2106,7 @@ def _looks_like_lora_adapter(model_dir: Path) -> bool:
 
 
 def scan_trained_models(outputs_dir: str = str(outputs_root())) -> List[Tuple[str, str, str]]:
-    """Scan outputs folder for trained Studio models.
+    """Scan outputs folder for trained Unsloth models.
 
     Returns:
         List of (display_name, model_path, model_type), where model_type is

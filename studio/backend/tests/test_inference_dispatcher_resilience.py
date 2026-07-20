@@ -112,7 +112,7 @@ def test_route_llama_streaming_async_clients_disable_proxy_env():
             continue
         calls.append(node)
 
-    assert len(calls) == 4
+    assert len(calls) == 5
     for call in calls:
         assert any(
             kw.arg == "trust_env" and isinstance(kw.value, ast.Constant) and kw.value.value is False

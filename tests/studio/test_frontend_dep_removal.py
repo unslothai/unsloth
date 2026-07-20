@@ -37,10 +37,11 @@ class Case:
 CASES: list[Case] = [
     Case(
         "C1",
-        "removing next-themes breaks 2 src imports",
+        "removing next-themes is a no-op: replaced by the custom theme store, "
+        "no longer a declared dep or src import",
         ["next-themes"],
-        "FAIL",
-        ["next-themes"],
+        "PASS",
+        [],
     ),
     Case(
         "C2",
@@ -85,10 +86,11 @@ CASES: list[Case] = [
     ),
     Case(
         "C8",
-        "multi-remove with mixed safety: next-themes + @huggingface/hub + dexie all unsafe",
+        "multi-remove with mixed safety: next-themes is now a no-op (removed), "
+        "@huggingface/hub + dexie still unsafe",
         ["next-themes", "@huggingface/hub", "dexie"],
         "FAIL",
-        ["next-themes", "@huggingface/hub", "dexie"],
+        ["@huggingface/hub", "dexie"],
     ),
     Case(
         "C9",

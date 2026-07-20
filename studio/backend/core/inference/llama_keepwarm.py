@@ -15,6 +15,7 @@ import asyncio
 import contextlib
 import threading
 import time
+from pathlib import Path
 
 from loggers import get_logger
 
@@ -30,6 +31,8 @@ _last_active = time.monotonic()
 # otherwise 503 against an empty backend can reload it (set on unload, cleared on
 # reload). Storing the quant means the reload restores the exact freed variant.
 _last_unloaded_model = None
+# Slot KV manifest saved by the idle unload; whoever pops it owns deleting its files.
+_kv_resume = None
 # Guards inflight bumps against the idle-check-then-unload race, and blocks new
 # inference from starting mid-swap. Process-wide, not per-loop: the backend slot is
 # shared across every event loop in the process, so a per-loop gate would let a
@@ -59,7 +62,7 @@ _INFERENCE_SUFFIXES = (
     "/messages/count_tokens",  # counts via the loaded tokenizer; protect like /messages
     "/embeddings",
     "/responses",
-    "/generate/stream",  # Studio's own streaming route on the same llama-server
+    "/generate/stream",  # Unsloth's own streaming route on the same llama-server
     "/audio/generate",  # direct GGUF TTS; can outlive the idle TTL
 )
 
@@ -161,11 +164,17 @@ def inference_lifecycle_gate():
     return _unload_gate()
 
 
-def note_model_loaded() -> None:
-    """Record a successful GGUF load: stamp activity and drop any reload stash so
-    a manual load clears it synchronously, not only on the next idle poll."""
+def note_model_loaded(backend = None) -> None:
+    """Stamp activity and synchronously drop any reload stash."""
     _note_activity()
+    resume = take_kv_resume()
     _set_last_unloaded(None)
+    if resume is None:
+        return
+    if backend is not None:
+        restore_kv_resume(backend, resume)
+    else:
+        _delete_resume_files(resume)
 
 
 def note_model_unloaded() -> None:
@@ -182,9 +191,81 @@ def get_last_unloaded_model():
 
 
 def _set_last_unloaded(value) -> None:
-    global _last_unloaded_model
+    global _last_unloaded_model, _kv_resume
+    stale = None
     with _lock:
         _last_unloaded_model = value
+        if value is None and _kv_resume is not None:
+            stale, _kv_resume = _kv_resume, None
+    if stale:
+        _delete_resume_files(stale)
+
+
+def _delete_resume_files(manifest) -> None:
+    try:
+        base = Path(manifest.get("dir") or "")
+        for entry in manifest.get("slots") or []:
+            with contextlib.suppress(OSError):
+                (base / str(entry.get("filename"))).unlink()
+    except Exception:
+        pass
+
+
+def _set_kv_resume(value) -> None:
+    global _kv_resume
+    stale = None
+    with _lock:
+        if _kv_resume is not None and _kv_resume is not value:
+            stale = _kv_resume
+        _kv_resume = value
+    if stale:
+        _delete_resume_files(stale)
+
+
+def take_kv_resume():
+    global _kv_resume
+    with _lock:
+        manifest, _kv_resume = _kv_resume, None
+        return manifest
+
+
+def purge_kv_resume() -> None:
+    resume = take_kv_resume()
+    if resume:
+        _delete_resume_files(resume)
+
+
+def restore_kv_resume(backend, manifest) -> None:
+    try:
+        gguf = manifest.get("gguf")
+        binary = manifest.get("binary")
+        current = getattr(backend, "_gguf_path", None)
+        same_gguf = bool(gguf and current) and Path(current).resolve() == Path(gguf).resolve()
+        if same_gguf:
+            # Same path is not enough: shards may have been rewritten meanwhile.
+            identity = getattr(backend, "_gguf_file_identity", None)
+            same_gguf = callable(identity) and identity(current) == manifest.get("gguf_stat")
+        if same_gguf:
+            # Nor the same file: launch overrides can invalidate KV numerics.
+            fingerprint = getattr(backend, "_slot_launch_fingerprint", None)
+            same_gguf = callable(fingerprint) and manifest.get("launch") == fingerprint()
+        if same_gguf and binary and binary == getattr(backend, "_slot_save_binary", None):
+            logger.info("Restoring saved slot KV onto the reloaded model")
+            backend.restore_slots_for_resume(manifest)
+    except Exception as exc:
+        logger.debug("slot restore after reload failed: %s", exc)
+    finally:
+        _delete_resume_files(manifest)
+
+
+def sweep_slot_save_dir() -> None:
+    try:
+        from utils.paths.storage_roots import llama_slot_cache_root
+        for path in llama_slot_cache_root().glob("resume-*.bin"):
+            with contextlib.suppress(OSError):
+                path.unlink()
+    except Exception:
+        pass
 
 
 class LlamaKeepWarmMiddleware:
@@ -266,7 +347,10 @@ def _loaded_identity(backend):
 
 async def idle_unload_loop(poll_seconds: float = 15.0) -> None:
     """Unload the loaded GGUF once idle past the configured TTL. Inert when off."""
-    from utils.openai_auto_switch_settings import get_auto_unload_idle_seconds
+    from utils.openai_auto_switch_settings import (
+        get_auto_unload_idle_seconds,
+        get_auto_unload_keep_kv,
+    )
 
     seen_model = None
     while True:
@@ -281,17 +365,47 @@ async def idle_unload_loop(poll_seconds: float = 15.0) -> None:
             # Track by (id, variant): a (re)loaded model -- including the same repo
             # at a different quant -- counts as activity so it survives one TTL
             # before its first request (loads bypass the activity middleware).
-            current = _loaded_identity(backend)
-            if current != seen_model:
-                seen_model = current
-                if current is not None:
-                    _note_activity()
-                    _set_last_unloaded(None)  # a model is loaded; drop stale stash
             async with _unload_gate():
+                # Purging the stash mid-reload would race the restore.
+                current = _loaded_identity(backend)
+                if current != seen_model:
+                    seen_model = current
+                    if current is not None:
+                        _note_activity()
+                        _set_last_unloaded(None)  # a model is loaded; drop stale stash
                 if backend.is_loaded and _is_idle(ttl):
                     freed = _loaded_identity(backend)
-                    await asyncio.to_thread(backend.unload_model)
+                    manifest = None
+                    if get_auto_unload_keep_kv():
+                        try:
+                            manifest = await asyncio.to_thread(
+                                backend.save_slots_for_resume,
+                                lambda: not _is_idle(ttl),
+                            )
+                        except Exception as exc:
+                            logger.debug("slot save before idle unload failed: %s", exc)
+                    # Re-read settings: the save can outlive a settings change.
+                    ttl = get_auto_unload_idle_seconds()
+                    if ttl <= 0 or not _is_idle(ttl):
+                        if manifest:
+                            _delete_resume_files(manifest)
+                        continue
+                    if manifest and not get_auto_unload_keep_kv():
+                        _delete_resume_files(manifest)
+                        manifest = None
+                    try:
+                        await asyncio.to_thread(backend.unload_model)
+                    except Exception:
+                        # Failed unload means nothing will stash the manifest.
+                        if manifest:
+                            _delete_resume_files(manifest)
+                        raise
                     _set_last_unloaded(freed)  # let an alias request reload it
+                    if manifest and freed:
+                        _set_kv_resume({"identity": freed, **manifest})
+                        logger.info("Idle auto-unload: saved slot KV for restore on reload")
+                    elif manifest:
+                        _delete_resume_files(manifest)
                     logger.info("Idle auto-unload: freed GGUF after %ss idle", ttl)
                     seen_model = None
         except Exception as exc:

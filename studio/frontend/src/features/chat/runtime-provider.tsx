@@ -22,7 +22,6 @@ import {
   unstable_useRemoteThreadListRuntime as useRemoteThreadListRuntime,
 } from "@assistant-ui/react";
 import { createAssistantStream } from "assistant-stream";
-import mammoth from "mammoth";
 import {
   type ReactElement,
   type ReactNode,
@@ -33,8 +32,8 @@ import {
   useMemo,
   useRef,
 } from "react";
-import { extractText, getDocumentProxy } from "unpdf";
 import { toast } from "sonner";
+import { StudioSpeechSynthesisAdapter } from "./adapters/studio-speech-synthesis-adapter";
 import { StudioWebSpeechDictationAdapter } from "./adapters/studio-web-speech-dictation-adapter";
 import {
   ThreadAutosaveHandle,
@@ -55,6 +54,7 @@ import {
 } from "./open-document";
 import { AudioAttachmentAdapter } from "./audio-attachment-adapter";
 import { useChatRuntimeStore } from "./stores/chat-runtime-store";
+import { ToolPaneScopeContext, toolPaneScope } from "./tool-output-scope";
 import type { MessageRecord, ModelType, ThreadRecord } from "./types";
 import {
   deleteStoredChatThreads,
@@ -79,6 +79,7 @@ const pendingRunStartReadyByMessageId = new Map<string, Promise<void>>();
 
 type TitleResponse = {
   choices?: Array<{
+    finish_reason?: string | null;
     message?: {
       content?: string;
     };
@@ -181,7 +182,10 @@ class PDFAttachmentAdapter implements AttachmentAdapter {
   }
 
   async send(attachment: PendingAttachment): Promise<CompleteAttachment> {
-    const buffer = new Uint8Array(await attachment.file.arrayBuffer());
+    const [{ extractText, getDocumentProxy }, buffer] = await Promise.all([
+      import("unpdf"),
+      attachment.file.arrayBuffer().then((bytes) => new Uint8Array(bytes)),
+    ]);
     const pdf = await getDocumentProxy(buffer);
     const { text } = await extractText(pdf, { mergePages: true });
     return {
@@ -298,7 +302,10 @@ class DocxAttachmentAdapter implements AttachmentAdapter {
   }
 
   async send(attachment: PendingAttachment): Promise<CompleteAttachment> {
-    const arrayBuffer = await attachment.file.arrayBuffer();
+    const [{ default: mammoth }, arrayBuffer] = await Promise.all([
+      import("mammoth"),
+      attachment.file.arrayBuffer(),
+    ]);
     const { value } = await mammoth.extractRawText({ arrayBuffer });
     return {
       id: attachment.id,
@@ -470,6 +477,8 @@ async function generateTitleWithModel(payload: {
       max_tokens: 24,
       top_k: 20,
       repetition_penalty: 1.0,
+      enable_thinking: false,
+      reasoning_effort: "none",
       messages: [
         {
           role: "system",
@@ -485,8 +494,10 @@ async function generateTitleWithModel(payload: {
     .json()
     .catch(() => null)) as TitleResponse | null;
   if (!response.ok) return null;
-  const raw: string | undefined = body?.choices?.[0]?.message?.content;
-  if (!raw) return null;
+  const choice = body?.choices?.[0];
+  if (choice?.finish_reason === "length") return null;
+  const raw: string | undefined = choice?.message?.content;
+  if (!raw || /<\/?think>/i.test(raw)) return null;
   return normalizeTitle(raw);
 }
 
@@ -1024,6 +1035,13 @@ function useStudioRuntimeAdapters(
         : undefined,
     [],
   );
+  const speech = useMemo(
+    () =>
+      StudioSpeechSynthesisAdapter.isSupported()
+        ? new StudioSpeechSynthesisAdapter()
+        : undefined,
+    [],
+  );
   const attachments = useMemo(
     () =>
       new CompositeAttachmentAdapter([
@@ -1038,8 +1056,8 @@ function useStudioRuntimeAdapters(
     [],
   );
   const adapters = useMemo(
-    () => ({ history, dictation, attachments }),
-    [history, dictation, attachments],
+    () => ({ history, dictation, speech, attachments }),
+    [history, dictation, speech, attachments],
   );
 
   return adapters;
@@ -1330,26 +1348,33 @@ export function ChatRuntimeProvider({
 
   return (
     <AssistantRuntimeProvider runtime={runtime} aui={aui}>
-      <ActiveThreadSync
-        enabled={
-          modelType === "base" && !pairId && !newThreadNonce && !initialThreadId
-        }
-      />
-      <ThreadBackendAutosave modelType={modelType} pairId={pairId} />
-      <CancelRegistrar />
-      {initialThreadId && (
-        <ThreadAutoSwitch
-          threadId={initialThreadId}
-          syncActiveThreadId={syncActiveThreadId}
+      {/* Pane identity for the tool-output store maps: the adapter prefixes its
+          keys with this scope so concurrent panes with colliding tool ids
+          ("call_0") can't bleed live output into each other's cards. */}
+      <ToolPaneScopeContext.Provider value={toolPaneScope(modelType, pairId)}>
+        <ActiveThreadSync
+          enabled={
+            modelType === "base" &&
+            !pairId &&
+            !newThreadNonce &&
+            !initialThreadId
+          }
         />
-      )}
-      {!initialThreadId && newThreadNonce && (
-        <ThreadNewChatSwitch nonce={newThreadNonce} />
-      )}
-      {/* The view stays mounted (only CSS-hidden by RootLayout) while off-route
-          so assistant-ui keeps the run attached and the stream alive. Unmounting
-          it here aborts the in-flight generation. */}
-      {children}
+        <ThreadBackendAutosave modelType={modelType} pairId={pairId} />
+        <CancelRegistrar />
+        {initialThreadId && (
+          <ThreadAutoSwitch
+            threadId={initialThreadId}
+            syncActiveThreadId={syncActiveThreadId}
+          />
+        )}
+        {!initialThreadId && newThreadNonce && (
+          <ThreadNewChatSwitch nonce={newThreadNonce} />
+        )}
+        {/* The view stays mounted (only CSS-hidden) while off-route so the run
+            stays attached and the stream alive; unmounting aborts generation. */}
+        {children}
+      </ToolPaneScopeContext.Provider>
     </AssistantRuntimeProvider>
   );
 }

@@ -46,6 +46,33 @@ router = APIRouter()
 logger = get_logger(__name__)
 
 
+def _ensure_export_supported() -> None:
+    """Reject a mutating export request up front (HTTP 400) when the host can't export.
+
+    Keeps the backend authoritative even if a client bypasses the UI gate. Read-only endpoints
+    (scan/status/logs) are intentionally NOT gated so the Export page can still render the reason.
+    Also refuses (409) while a latest-transformers install is swapping .venv_t5_latest: an
+    export worker spawned mid-swap could activate a half-replaced sidecar.
+    """
+    from utils.transformers_latest import is_install_in_progress
+
+    if is_install_in_progress():
+        raise HTTPException(
+            status_code = 409,
+            detail = "A transformers installation is in progress. Retry when it completes.",
+        )
+
+    from utils.hardware import export_capability
+
+    cap = export_capability()
+    if not cap.get("export_supported", True):
+        raise HTTPException(
+            status_code = 400,
+            detail = cap.get("export_unsupported_message")
+            or "Export is not supported on this platform.",
+        )
+
+
 @router.post("/load-checkpoint", response_model = ExportOperationResponse)
 async def load_checkpoint(
     request: LoadCheckpointRequest, current_subject: str = Depends(get_current_subject)
@@ -58,6 +85,7 @@ async def load_checkpoint(
     a clear error instead of tearing down the user's other running workloads.
     """
     try:
+        _ensure_export_supported()
         backend = get_export_backend()
         # Run in a worker thread (spawns and waits on a subprocess, can take
         # minutes) so the event loop stays free to serve the live log SSE stream.
@@ -79,6 +107,11 @@ async def load_checkpoint(
     except HTTPException:
         raise
     except Exception as e:
+        from utils.transformers_version import SidecarSwapInProgress
+
+        if isinstance(e, SidecarSwapInProgress):
+            # Expected loss of the race against a sidecar install: retryable 409.
+            raise HTTPException(status_code = 409, detail = str(e))
         logger.error(f"Error loading checkpoint: {e}", exc_info = True)
         raise HTTPException(
             status_code = 500,
@@ -266,6 +299,7 @@ async def export_merged_model(
     Wraps ExportBackend.export_merged_model.
     """
     try:
+        _ensure_export_supported()
         backend = get_export_backend()
         success, message, output_path = await asyncio.to_thread(
             backend.export_merged_model,
@@ -275,6 +309,7 @@ async def export_merged_model(
             repo_id = request.repo_id,
             hf_token = request.hf_token,
             private = request.private,
+            compressed_method = request.compressed_method,
         )
 
         if not success:
@@ -288,6 +323,11 @@ async def export_merged_model(
     except HTTPException:
         raise
     except Exception as e:
+        from utils.transformers_version import SidecarSwapInProgress
+
+        if isinstance(e, SidecarSwapInProgress):
+            # Expected loss of the race against a sidecar install: retryable 409.
+            raise HTTPException(status_code = 409, detail = str(e))
         logger.error(f"Error exporting merged model: {e}", exc_info = True)
         raise HTTPException(
             status_code = 500,
@@ -304,6 +344,7 @@ async def export_base_model(
     Wraps ExportBackend.export_base_model.
     """
     try:
+        _ensure_export_supported()
         backend = get_export_backend()
         success, message, output_path = await asyncio.to_thread(
             backend.export_base_model,
@@ -326,6 +367,11 @@ async def export_base_model(
     except HTTPException:
         raise
     except Exception as e:
+        from utils.transformers_version import SidecarSwapInProgress
+
+        if isinstance(e, SidecarSwapInProgress):
+            # Expected loss of the race against a sidecar install: retryable 409.
+            raise HTTPException(status_code = 409, detail = str(e))
         logger.error(f"Error exporting base model: {e}", exc_info = True)
         raise HTTPException(
             status_code = 500,
@@ -342,6 +388,7 @@ async def export_gguf(
     Wraps ExportBackend.export_gguf.
     """
     try:
+        _ensure_export_supported()
         backend = get_export_backend()
         # A custom path wins; otherwise the imatrix toggle requests the upstream auto-download.
         imatrix_file = request.imatrix_path or (True if request.imatrix else None)
@@ -366,6 +413,11 @@ async def export_gguf(
     except HTTPException:
         raise
     except Exception as e:
+        from utils.transformers_version import SidecarSwapInProgress
+
+        if isinstance(e, SidecarSwapInProgress):
+            # Expected loss of the race against a sidecar install: retryable 409.
+            raise HTTPException(status_code = 409, detail = str(e))
         logger.error(f"Error exporting GGUF model: {e}", exc_info = True)
         raise HTTPException(
             status_code = 500,
@@ -382,6 +434,7 @@ async def export_lora_adapter(
     Wraps ExportBackend.export_lora_adapter.
     """
     try:
+        _ensure_export_supported()
         backend = get_export_backend()
         success, message, output_path = await asyncio.to_thread(
             backend.export_lora_adapter,
@@ -390,6 +443,8 @@ async def export_lora_adapter(
             repo_id = request.repo_id,
             hf_token = request.hf_token,
             private = request.private,
+            gguf = request.gguf,
+            gguf_outtype = request.gguf_outtype,
         )
 
         if not success:
@@ -403,6 +458,11 @@ async def export_lora_adapter(
     except HTTPException:
         raise
     except Exception as e:
+        from utils.transformers_version import SidecarSwapInProgress
+
+        if isinstance(e, SidecarSwapInProgress):
+            # Expected loss of the race against a sidecar install: retryable 409.
+            raise HTTPException(status_code = 409, detail = str(e))
         logger.error(f"Error exporting LoRA adapter: {e}", exc_info = True)
         raise HTTPException(
             status_code = 500,

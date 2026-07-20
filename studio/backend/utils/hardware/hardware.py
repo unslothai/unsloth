@@ -37,7 +37,7 @@ logger = get_logger(__name__)
 
 # ── GPU index ordering ──────────────────────────────────────────────────────
 # CUDA defaults to CUDA_DEVICE_ORDER=FASTEST_FIRST, numbering GPUs by compute
-# performance. nvidia-smi -- and every free-VRAM probe in Studio -- numbers GPUs
+# performance. nvidia-smi -- and every free-VRAM probe in Unsloth -- numbers GPUs
 # by PCI bus id instead. On a mixed-GPU host (e.g. an RTX 5090 alongside an RTX
 # PRO 6000) the two orderings disagree, so an index picked from nvidia-smi data
 # ("the emptiest card is GPU 1") gets written into CUDA_VISIBLE_DEVICES and then
@@ -48,6 +48,11 @@ logger = get_logger(__name__)
 # at context creation) and inherited by child processes, since the llama-server
 # and spawn workers copy os.environ. setdefault so an explicit user override wins.
 os.environ.setdefault("CUDA_DEVICE_ORDER", "PCI_BUS_ID")
+
+# Unsloth workers can import MLX without importing unsloth first, so mirror the
+# package bootstrap here. Keep an explicit user value authoritative.
+if platform.system() == "Darwin" and platform.machine() == "arm64":
+    os.environ.setdefault("AGX_RELAX_CDM_CTXSTORE_TIMEOUT", "1")
 
 
 # ========== Device Enum ==========
@@ -112,7 +117,7 @@ def _has_mlx() -> bool:
 
 
 def _has_usable_mlx_stack() -> bool:
-    """True only when the FULL Studio MLX training/export stack is usable
+    """True only when the FULL Unsloth MLX training/export stack is usable
     (mlx + mlx-lm + mlx-vlm at the minimum versions unsloth-zoo requires), not
     just a bare ``import mlx.core``. A backtracked/old mlx-vlm still imports but
     breaks VLM Train/Export, so the training gate must match the self-heal's own
@@ -261,6 +266,49 @@ def get_device() -> DeviceType:
     if DEVICE is None:
         detect_hardware()
     return DEVICE
+
+
+def export_capability() -> dict:
+    """Whether model export can run here, with a torch-aware reason when it cannot.
+
+    Export runs through Unsloth, which hard-requires an accelerator (it calls ``torch.cuda`` at
+    import and has no CPU path), so it is supported iff ``get_device() in {CUDA, XPU, MLX}``. The
+    reason distinguishes a --no-torch install from a bare-CPU host. Safe to call without torch.
+
+    Returns {export_supported, export_unsupported_reason, export_unsupported_message}.
+    """
+    if get_device() in (DeviceType.CUDA, DeviceType.XPU, DeviceType.MLX):
+        return {
+            "export_supported": True,
+            "export_unsupported_reason": None,
+            "export_unsupported_message": None,
+        }
+    # No accelerator: name the blocker. Apple Silicon first -- its path is MLX, so "install PyTorch"
+    # would be wrong advice on a Mac even when torch is also absent.
+    if is_apple_silicon():
+        reason = "mlx_unavailable"
+        message = (
+            "Export on Apple Silicon requires the MLX stack, which is unavailable or too old. Run "
+            "`unsloth studio update` to restore MLX and enable export."
+        )
+    elif not _has_torch():
+        reason = "pytorch_not_installed"
+        message = (
+            "PyTorch is not installed. Model export requires PyTorch with a supported accelerator "
+            "(NVIDIA, AMD, or Intel GPU) or Apple Silicon (MLX). Install PyTorch to enable export."
+        )
+    else:
+        reason = "no_accelerator"
+        message = (
+            "Export requires an NVIDIA, AMD, or Intel GPU, or Apple Silicon (MLX). No supported "
+            "accelerator was found on this host. (PyTorch is installed, but Unsloth cannot export "
+            "on CPU only.)"
+        )
+    return {
+        "export_supported": False,
+        "export_unsupported_reason": reason,
+        "export_unsupported_message": message,
+    }
 
 
 def clear_gpu_cache():

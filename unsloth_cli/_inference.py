@@ -4,9 +4,11 @@
 """Model loading and streaming shared by `inference` and `chat`."""
 
 import asyncio
+import json
 import os
 import re
 import sys
+from contextlib import contextmanager, redirect_stderr, redirect_stdout
 from pathlib import Path
 from typing import List, Optional
 
@@ -14,10 +16,18 @@ import typer
 
 _THINK_OPEN = "<think>"
 _THINK_BLOCK = re.compile(rf"{re.escape(_THINK_OPEN)}.*?</think>", re.DOTALL)
+_STREAMED_ERROR_PREFIX = "Error: "
 
-# Cloudflare (in front of remote Studio proxies like RunPod) 403s the default
+# Cloudflare (in front of remote Unsloth proxies like RunPod) 403s the default
 # "Python-urllib/X.Y" User-Agent as a bot; send a real one on every request.
 _USER_AGENT = "unsloth-cli"
+_MPI_ENV_PAIRS = (
+    ("OMPI_COMM_WORLD_RANK", "OMPI_COMM_WORLD_SIZE"),
+    ("PMI_RANK", "PMI_SIZE"),
+    ("PMIX_RANK", "PMIX_SIZE"),
+    ("MPI_RANK", "MPI_WORLD_SIZE"),
+    ("MV2_COMM_WORLD_RANK", "MV2_COMM_WORLD_SIZE"),
+)
 
 # Built lazily; urllib stays function-local to match this module.
 _no_redirect_opener = None
@@ -26,7 +36,7 @@ _no_redirect_opener = None
 def urlopen_no_redirect(request, timeout):
     """urlopen that errors on any redirect: following a 3xx would send a bearer
     token (or accept an identity proof) to a base we never vetted, letting a port
-    squatter relay a real Studio's response."""
+    squatter relay a real Unsloth's response."""
     global _no_redirect_opener
     if _no_redirect_opener is None:
         import urllib.error
@@ -59,6 +69,108 @@ def configure_quiet_logging() -> None:
     level = getattr(logging, level_name, logging.WARNING)
     structlog.configure(wrapper_class = structlog.make_filtering_bound_logger(level))
     os.environ.setdefault("HF_HUB_DISABLE_PROGRESS_BARS", "1")
+
+
+def _parse_nonnegative_int(value: Optional[str]) -> Optional[int]:
+    if value is None:
+        return None
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError):
+        return None
+    return parsed if parsed >= 0 else None
+
+
+def _first_mpi_env_pair() -> tuple[Optional[int], Optional[int]]:
+    for rank_name, size_name in _MPI_ENV_PAIRS:
+        rank = _parse_nonnegative_int(os.environ.get(rank_name))
+        world_size = _parse_nonnegative_int(os.environ.get(size_name))
+        if rank is not None and world_size is not None and world_size > 1 and rank < world_size:
+            return rank, world_size
+    return None, None
+
+
+def _json_rank_count_from_env(name: str) -> Optional[int]:
+    value = os.environ.get(name)
+    if not value:
+        return None
+    try:
+        if value.lstrip().startswith(("[", "{")):
+            data = json.loads(value)
+        else:
+            with open(value, "r") as f:
+                data = json.load(f)
+    except (OSError, json.JSONDecodeError):
+        return None
+    if isinstance(data, list):
+        return len(data)
+    if isinstance(data, dict) and isinstance(data.get("hosts"), list):
+        return len(data["hosts"])
+    return None
+
+
+def mlx_distributed_info() -> tuple[bool, int, Optional[int]]:
+    """Return launch-context metadata without initializing MLX distributed."""
+    rank = _parse_nonnegative_int(os.environ.get("MLX_RANK"))
+    world_size = _parse_nonnegative_int(os.environ.get("MLX_WORLD_SIZE"))
+    if rank is not None:
+        if (
+            world_size is not None
+            and world_size > 1
+            and rank < world_size
+            and os.environ.get("NCCL_HOST_IP")
+            and os.environ.get("NCCL_PORT")
+        ):
+            return True, rank, world_size
+        inferred_size = _json_rank_count_from_env("MLX_HOSTFILE")
+        if inferred_size is not None and inferred_size > 1 and rank < inferred_size:
+            return True, rank, inferred_size
+        inferred_size = _json_rank_count_from_env("MLX_IBV_DEVICES")
+        if (
+            inferred_size is not None
+            and inferred_size > 1
+            and rank < inferred_size
+            and os.environ.get("MLX_JACCL_COORDINATOR")
+        ):
+            return True, rank, inferred_size
+        return False, 0, None
+
+    mpi_rank, mpi_world_size = _first_mpi_env_pair()
+    return mpi_rank is not None, mpi_rank or 0, mpi_world_size
+
+
+def mlx_distributed_uses_mpi() -> bool:
+    """Whether the current distributed context was launched through MPI."""
+    return (
+        _parse_nonnegative_int(os.environ.get("MLX_RANK")) is None
+        and _first_mpi_env_pair()[0] is not None
+    )
+
+
+@contextmanager
+def quiet_if_nonzero_mlx_rank():
+    """Silence parent and child-process stdout/stderr on nonzero ranks."""
+    if mlx_distributed_info()[1] == 0:
+        yield
+        return
+
+    sys.stdout.flush()
+    sys.stderr.flush()
+    saved_stdout_fd = os.dup(1)
+    saved_stderr_fd = os.dup(2)
+    with open(os.devnull, "w") as devnull:
+        try:
+            os.dup2(devnull.fileno(), 1)
+            os.dup2(devnull.fileno(), 2)
+            with redirect_stdout(devnull), redirect_stderr(devnull):
+                yield
+        finally:
+            sys.stdout.flush()
+            sys.stderr.flush()
+            os.dup2(saved_stdout_fd, 1)
+            os.dup2(saved_stderr_fd, 2)
+            os.close(saved_stdout_fd)
+            os.close(saved_stderr_fd)
 
 
 def visible_text(text: str, show_thinking: bool) -> str:
@@ -118,6 +230,21 @@ def collect_stream(stream, show_thinking: bool) -> str:
         if isinstance(chunk, str):
             raw = chunk
     return visible_text(raw, show_thinking)
+
+
+def raise_on_streamed_error(stream):
+    # Match real backend errors by type (GenStreamError), not the "Error:" text
+    # prefix, so a completion whose text opens with "Error:" is not misread as a
+    # failure that aborts a distributed run.
+    try:
+        ensure_studio_backend_path()
+        from core.inference.orchestrator import GenStreamError
+    except Exception:
+        GenStreamError = None
+    for chunk in stream:
+        if GenStreamError is not None and isinstance(chunk, GenStreamError):
+            raise RuntimeError(str(chunk)[len(_STREAMED_ERROR_PREFIX) :].strip() or "Unknown error")
+        yield chunk
 
 
 def render_columns(
@@ -199,6 +326,19 @@ class ChatBackend:
                 self._backend._shutdown_subprocess(timeout = 2.0)
         except Exception:
             pass
+
+    def share_distributed_object(
+        self,
+        obj,
+        *,
+        timeout = 300.0,
+    ):
+        if self._kind != "unsloth" or not hasattr(self._backend, "share_distributed_object"):
+            raise RuntimeError(
+                "Distributed MLX chat requires the Unsloth MLX backend; "
+                f"backend '{self._kind}' cannot broadcast chat turns."
+            )
+        return self._backend.share_distributed_object(obj, timeout = timeout)
 
 
 def resolve_model_config(model: str, *, hf_token: Optional[str]):
@@ -293,36 +433,59 @@ def load_chat_backend(
     fresh_backend uses a private orchestrator so a second model (compare's
     base column) can run alongside the main one.
     """
-    if model_config is None:
-        model_config = resolve_model_config(model, hf_token = hf_token)
+    with quiet_if_nonzero_mlx_rank():
+        is_mlx_distributed, rank, _world_size = mlx_distributed_info()
+        if model_config is None:
+            model_config = resolve_model_config(model, hf_token = hf_token)
 
-    typer.echo(f"Loading {model}", err = True)
+        if is_mlx_distributed and model_config.is_gguf:
+            if rank == 0:
+                typer.echo(
+                    "Distributed MLX inference does not support GGUF/llama.cpp models. "
+                    "Use a non-GGUF MLX model under mlx.launch, or run GGUF without "
+                    "mlx.launch.",
+                    err = True,
+                )
+            raise typer.Exit(code = 1)
 
-    if model_config.is_gguf:
-        return _load_gguf_backend(
-            model_config,
-            hf_token = hf_token,
-            max_seq_length = max_seq_length,
-            tensor_parallel = tensor_parallel,
-            llama_extra_args = llama_extra_args,
-        )
+        if rank == 0:
+            typer.echo(f"Loading {model}", err = True)
 
-    if fresh_backend:
-        ensure_studio_backend_path()
-        from core.inference import InferenceOrchestrator
-        backend = InferenceOrchestrator()
-    else:
-        ensure_studio_backend_path()
-        from core.inference import get_inference_backend
-        backend = get_inference_backend()
-    if not backend.load_model(
-        config = model_config,
-        max_seq_length = max_seq_length,
-        load_in_4bit = load_in_4bit,
-        hf_token = hf_token,
-    ):
-        typer.echo("Model load failed", err = True)
-        raise typer.Exit(code = 1)
+        if model_config.is_gguf:
+            return _load_gguf_backend(
+                model_config,
+                hf_token = hf_token,
+                max_seq_length = max_seq_length,
+                tensor_parallel = tensor_parallel,
+                llama_extra_args = llama_extra_args,
+            )
+
+        if fresh_backend:
+            ensure_studio_backend_path()
+            from core.inference import InferenceOrchestrator
+            backend = InferenceOrchestrator()
+        else:
+            ensure_studio_backend_path()
+            from core.inference import get_inference_backend
+            backend = get_inference_backend()
+        try:
+            loaded = backend.load_model(
+                config = model_config,
+                max_seq_length = max_seq_length,
+                load_in_4bit = load_in_4bit,
+                hf_token = hf_token,
+                tensor_parallel = tensor_parallel,
+                mlx_distributed = is_mlx_distributed,
+            )
+        except Exception as exc:
+            if not is_mlx_distributed:
+                raise
+            if rank == 0:
+                typer.echo(str(exc) or "Model load failed", err = True)
+            raise typer.Exit(code = 1)
+        if not loaded:
+            typer.echo("Model load failed", err = True)
+            raise typer.Exit(code = 1)
     return ChatBackend("unsloth", backend)
 
 
@@ -377,7 +540,7 @@ def find_studio_server(timeout: float = 3.0) -> Optional[str]:
 def is_loopback_url(base: str) -> bool:
     """True only when *base* resolves to loopback. find_studio_server() trusts a
     base after only a health probe, so credentials are auto-sent only to loopback
-    (a local Studio or an SSH tunnel on 127.0.0.1), the targets the auto flows mean."""
+    (a local Unsloth or an SSH tunnel on 127.0.0.1), the targets the auto flows mean."""
     from urllib.parse import urlparse
 
     host = (urlparse(base).hostname or "").lower()
@@ -391,7 +554,7 @@ def is_loopback_url(base: str) -> bool:
 
 
 def verify_studio_identity(base: str, timeout: float = 3.0) -> bool:
-    """Confirm `base` is really this machine's Studio before sending a secret.
+    """Confirm `base` is really this machine's Unsloth before sending a secret.
 
     Send a random nonce to /api/auth/identity and check the returned HMAC against
     the one computed from the local same-user secret; an endpoint without that
@@ -415,7 +578,7 @@ def verify_studio_identity(base: str, timeout: float = 3.0) -> bool:
     port = parsed.port or (443 if parsed.scheme == "https" else 80)
     # Resolve to one concrete address and talk to *that* address, then bind the
     # proof to (address, port). A name like localhost can resolve to a squatter on
-    # ::1 while the real Studio is on 127.0.0.1; connecting to the resolved IP and
+    # ::1 while the real Unsloth is on 127.0.0.1; connecting to the resolved IP and
     # binding to it means a proof relayed from a different address/port won't match.
     try:
         ip = socket.getaddrinfo(host, port, type = socket.SOCK_STREAM)[0][4][0]
@@ -429,7 +592,7 @@ def verify_studio_identity(base: str, timeout: float = 3.0) -> bool:
         headers = {"User-Agent": _USER_AGENT, "Host": parsed.netloc},
     )
     try:
-        # No redirects: a 302 could relay a real Studio's proof (see urlopen_no_redirect).
+        # No redirects: a 302 could relay a real Unsloth's proof (see urlopen_no_redirect).
         # Cap the read: the server is still unverified, so don't trust its length.
         with urlopen_no_redirect(request, timeout = timeout) as response:
             proof = json.loads(response.read(65536).decode() or "{}").get("proof")
@@ -460,7 +623,7 @@ def _studio_token() -> Optional[str]:
 
 
 class HttpChatBackend:
-    """Chat against a running Studio server over its OpenAI-compatible API.
+    """Chat against a running Unsloth server over its OpenAI-compatible API.
 
     close() leaves the model loaded on purpose — the next session (or the
     UI) starts instantly.
@@ -503,7 +666,7 @@ class HttpChatBackend:
         tensor_parallel: bool = False,
         llama_extra_args: Optional[List[str]] = None,
     ) -> None:
-        typer.echo(f"Loading {model} on the Studio server", err = True)
+        typer.echo(f"Loading {model} on the Unsloth server", err = True)
         payload = {
             "model_path": model,
             "hf_token": hf_token,
@@ -606,7 +769,7 @@ def connect_studio_server(
     tensor_parallel: bool = False,
     llama_extra_args: Optional[List[str]] = None,
 ):
-    """Backend on a running Studio server, or None (caller loads locally)."""
+    """Backend on a running Unsloth server, or None (caller loads locally)."""
     base_url = find_studio_server()
     if not base_url:
         return None
@@ -619,20 +782,20 @@ def connect_studio_server(
         if not explicit:
             return None
         typer.echo(
-            f"Can't attach to the Studio server at {base_url}: {reason} Run Studio "
+            f"Can't attach to the Unsloth server at {base_url}: {reason} Run Unsloth "
             "on this machine, or unset UNSLOTH_STUDIO_URL to load the model locally.",
             err = True,
         )
         raise typer.Exit(code = 1)
 
     # Only hand the self-issued JWT (signed with the local secret) to loopback: a
-    # remote URL is unverified and a real remote Studio would reject it anyway.
+    # remote URL is unverified and a real remote Unsloth would reject it anyway.
     if not is_loopback_url(base_url):
         return _refuse(
-            "it isn't a local Studio, so a self-issued token can't "
+            "it isn't a local Unsloth, so a self-issued token can't "
             "authenticate to it and must not be sent to it."
         )
-    # Confirm the loopback responder is really our Studio (not a port squatter).
+    # Confirm the loopback responder is really our Unsloth (not a port squatter).
     if not verify_studio_identity(base_url):
         return _refuse(
             "its identity couldn't be verified (it may be running as a "
@@ -640,7 +803,7 @@ def connect_studio_server(
         )
     token = _studio_token()
     if not token:
-        return _refuse("couldn't self-issue a Studio token (is Studio set up here?).")
+        return _refuse("couldn't self-issue an Unsloth token (is Unsloth set up here?).")
     backend = HttpChatBackend(base_url, token)
     backend.ensure_loaded(
         model,
