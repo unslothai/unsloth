@@ -216,6 +216,26 @@ def test_local_only_load_fails_closed_offline_never_hitting_the_hub(monkeypatch,
     (we / "0_WordEmbeddings" / "pytorch_model.bin").write_bytes(b"\0")
     assert _evaluate(we) is True
 
+    # A PEFT adapter pickle is a SEPARATE vector: from_pretrained auto-detects adapter_config.json
+    # and deserializes adapter_model.bin ON TOP of the base, so an inert safetensors base does not
+    # cover it -> blocked.
+    adbin = tmp_path / "adapterbin" / "aaa"
+    adbin.mkdir(parents = True)
+    (adbin / "config.json").write_bytes(b"{}")
+    (adbin / "model.safetensors").write_bytes(b"\0")
+    (adbin / "adapter_config.json").write_bytes(b"{}")
+    (adbin / "adapter_model.bin").write_bytes(b"\0")
+    assert _evaluate(adbin) is True
+
+    # The same adapter shipped as safetensors is inert -> allowed.
+    adsafe = tmp_path / "adaptersafe" / "aaa"
+    adsafe.mkdir(parents = True)
+    (adsafe / "config.json").write_bytes(b"{}")
+    (adsafe / "model.safetensors").write_bytes(b"\0")
+    (adsafe / "adapter_config.json").write_bytes(b"{}")
+    (adsafe / "adapter_model.safetensors").write_bytes(b"\0")
+    assert _evaluate(adsafe) is False
+
 
 def test_security_scan_runs_when_online(monkeypatch):
     import utils.security.file_security as fs

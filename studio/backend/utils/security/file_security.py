@@ -246,6 +246,12 @@ _PICKLE_WEIGHT_RE = re.compile(
     r"^(model|pytorch_model)(-\d+-of-\d+)?\.(bin|pt|pth|ckpt|pkl|pickle)$"
 )
 
+# PEFT adapter pickle weights. from_pretrained auto-detects an adapter_config.json in the load
+# root and deserializes the adapter weights on top of the base model, so an adapter pickle is a
+# SEPARATE RCE vector from the base weights -- a safetensors base does not cover it. It has its
+# own safetensors preference: adapter_model.safetensors is loaded in place of the pickle.
+_ADAPTER_PICKLE_RE = re.compile(r"^adapter_model\.(bin|pt|pth|ckpt|pkl|pickle)$")
+
 
 # A from_pretrained load prefers safetensors over a pickle ONLY when the directory holds a
 # safetensors weight it can actually load in its place: an unsharded base file, or an index
@@ -310,13 +316,16 @@ def _st_load_roots(snap, load_subdirs = ()) -> set:
 
 
 def _cached_pickle_weight_files(snap, load_subdirs = ()) -> list:
-    """Base-model pickle weight files a from_pretrained load actually deserializes: at a real
-    load root and with NO loadable safetensors alternative there. A load root is the snapshot
-    root, a directory ``modules.json`` / ``load_subdirs`` declares, or a plain from_pretrained
-    root (holds ``config.json``). A stray pickle in a non-load subdir (``archive/``, ``nemo/``)
-    that no load opens is not a vector, matching the online scan's load-path scoping. A dir is
-    covered by a safetensors weight the loader would pick instead (unsharded base file or a
-    complete indexed shard set); a bare adapter or an orphan shard leaves the pickle live."""
+    """Pickle weight files a from_pretrained load actually deserializes: at a real load root and
+    with NO loadable safetensors alternative there. A load root is the snapshot root, a directory
+    ``modules.json`` / ``load_subdirs`` declares, or a plain from_pretrained root (holds
+    ``config.json``). A stray pickle in a non-load subdir (``archive/``, ``nemo/``) that no load
+    opens is not a vector, matching the online scan's load-path scoping. Two weight classes are
+    scoped independently: a BASE pickle (``pytorch_model.bin`` ...) is covered by a loadable base
+    safetensors the loader picks instead; a PEFT ADAPTER pickle (``adapter_model.bin``), which
+    from_pretrained auto-loads when ``adapter_config.json`` is present, is covered only by
+    ``adapter_model.safetensors`` -- a safetensors base does NOT cover it. A bare adapter or an
+    orphan shard leaves its pickle live."""
     roots = _st_load_roots(snap, load_subdirs)
     by_dir_pickle: dict = {}
     by_dir_files: dict = {}  # directory -> {lower-name: Path}
@@ -327,7 +336,7 @@ def _cached_pickle_weight_files(snap, load_subdirs = ()) -> list:
                     continue
                 low = path.name.lower()
                 by_dir_files.setdefault(path.parent, {})[low] = path
-                if _PICKLE_WEIGHT_RE.match(low):
+                if _PICKLE_WEIGHT_RE.match(low) or _ADAPTER_PICKLE_RE.match(low):
                     by_dir_pickle.setdefault(path.parent, []).append(path.name)
             except OSError:
                 continue
@@ -340,8 +349,14 @@ def _cached_pickle_weight_files(snap, load_subdirs = ()) -> list:
         # snapshot root, or a plain from_pretrained root with config.json). Elsewhere it is unread.
         if directory not in roots and "config.json" not in files:
             continue
-        if not _dir_has_loadable_safetensors(files):
-            hits.update(names)
+        base = [n for n in names if _PICKLE_WEIGHT_RE.match(n.lower())]
+        if base and not _dir_has_loadable_safetensors(files):
+            hits.update(base)
+        # An adapter pickle is deserialized only when from_pretrained auto-detects the adapter
+        # (adapter_config.json present) and there is no adapter_model.safetensors to load instead.
+        adapter = [n for n in names if _ADAPTER_PICKLE_RE.match(n.lower())]
+        if adapter and "adapter_config.json" in files and "adapter_model.safetensors" not in files:
+            hits.update(adapter)
     return sorted(hits)
 
 
