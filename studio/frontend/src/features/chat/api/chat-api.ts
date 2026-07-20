@@ -2,6 +2,7 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { authFetch } from "@/features/auth";
+import { prepareHfTokenForUse } from "@/features/hf-auth";
 // These helpers are deliberately API-layer-only and are not part of their
 // features' React-facing public barrels.
 // eslint-disable-next-line no-restricted-imports
@@ -108,11 +109,14 @@ export async function getApiMonitorEntry(id: string): Promise<ApiMonitorEntry> {
 export async function loadModel(
   payload: LoadModelRequest,
 ): Promise<LoadModelResponse> {
+  const preparedToken = await prepareHfTokenForUse(payload.hf_token);
+  if (!preparedToken.proceed) throw new Error("Model load cancelled.");
   const response = await authFetch("/api/inference/load", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
       ...payload,
+      hf_token: preparedToken.token,
       native_path_lease: payload.nativePathLease ?? null,
       nativePathLease: undefined,
     }),
@@ -123,13 +127,15 @@ export async function loadModel(
 export async function validateModel(
   payload: LoadModelRequest,
 ): Promise<ValidateModelResponse> {
+  const preparedToken = await prepareHfTokenForUse(payload.hf_token);
+  if (!preparedToken.proceed) throw new Error("Model load cancelled.");
   const response = await authFetch("/api/inference/validate", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
       model_path: payload.model_path,
       native_path_lease: payload.nativePathLease ?? null,
-      hf_token: payload.hf_token,
+      hf_token: preparedToken.token,
       gguf_variant: payload.gguf_variant ?? null,
       // Intended load settings so validate's preflight matches the follow-up
       // /load. Default placement is sized against the selected GPUs.

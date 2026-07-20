@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-import { whoAmI } from "@huggingface/hub";
+import { validateHfToken } from "@/features/hf-auth";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useDebouncedValue } from "./use-debounced-value";
 
@@ -39,14 +39,37 @@ export function useHfTokenValidation(token: string): HfTokenValidationState {
     setState((prev) => ({ ...prev, isChecking: true, error: null }));
 
     try {
-      await whoAmI({ accessToken: t });
+      const result = await validateHfToken(t);
       if (versionRef.current !== v) return;
-      setState({ isValid: true, error: null, isChecking: false });
+      if (result.status === "valid") {
+        setState({ isValid: true, error: null, isChecking: false });
+      } else if (result.status === "invalid") {
+        setState({
+          isValid: false,
+          error: "invalid or expired token",
+          isChecking: false,
+        });
+      } else if (result.status === "rate_limited") {
+        const wait = result.retryAfterSeconds
+          ? ` Try again in about ${Math.ceil(result.retryAfterSeconds / 60)} minute(s).`
+          : " Try again later.";
+        setState({
+          isValid: null,
+          error: `Token verification is rate limited.${wait}`,
+          isChecking: false,
+        });
+      } else {
+        setState({
+          isValid: null,
+          error: "Could not verify the token. Check your connection and try again.",
+          isChecking: false,
+        });
+      }
     } catch {
       if (versionRef.current !== v) return;
       setState({
-        isValid: false,
-        error: "invalid or expired token",
+        isValid: null,
+        error: "Could not verify the token. Check your connection and try again.",
         isChecking: false,
       });
     }

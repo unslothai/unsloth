@@ -44,6 +44,7 @@ import {
 import { usePlatformStore } from "@/config/env";
 import { useHubModelSearch } from "@/features/hub/hooks/use-hub-model-search";
 import { confirmRemoteCodeIfNeeded } from "@/features/security";
+import { prepareHfTokenForUse } from "@/features/hf-auth";
 import { GuidedTour, useGuidedTourController } from "@/features/tour";
 import {
   type LocalModelInfo,
@@ -723,12 +724,16 @@ export function ExportPage() {
     if (sourceMode === "checkpoint" && !selectedCp) return;
     const checkpointPath = selectedCp?.path ?? null;
 
+    const preparedToken = await prepareHfTokenForUse(hfToken);
+    if (!preparedToken.proceed) return;
+    const actionHfToken = preparedToken.token ?? "";
+
     const pushToHub = destination === "hub";
     const repoId =
       pushToHub && hfUsername && modelName
         ? `${hfUsername}/${modelName}`
         : undefined;
-    const token = pushToHub && hfToken ? hfToken : undefined;
+    const token = pushToHub && actionHfToken ? actionHfToken : undefined;
     // The GGUF method with the LoRA target reuses the LoRA-adapter export path.
     const effectiveMethod: ExportMethod = ggufAsLora ? "lora" : exportMethod;
     const emitLoraGguf =
@@ -747,7 +752,7 @@ export function ExportPage() {
     if (sourceMode !== "checkpoint") {
       const remoteCodeOk = await confirmRemoteCodeIfNeeded({
         modelName: source,
-        hfToken: hfToken || null,
+        hfToken: actionHfToken || null,
         // An HF source can need trust_remote_code via its YAML default with no
         // auto_map to review; signal it so a YAML-only model does not export
         // with it false.
@@ -767,7 +772,7 @@ export function ExportPage() {
       modelSource,
       trustRemoteCode,
       approvedRemoteCodeFingerprint,
-      loadToken: hfToken || null,
+      loadToken: actionHfToken || null,
       exportMethod: effectiveMethod,
       isAdapter: adapterExport,
       quantLevels,
