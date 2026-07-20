@@ -362,15 +362,14 @@ _LIST_MUTATORS = frozenset({"append", "extend", "insert"})
 
 def _has_flag_literal(node: ast.AST) -> bool:
     return any(
-        isinstance(n, ast.Constant) and n.value == _NO_CACHE_PROMPT_FLAG
-        for n in ast.walk(node)
+        isinstance(n, ast.Constant) and n.value == _NO_CACHE_PROMPT_FLAG for n in ast.walk(node)
     )
 
 
 def _no_cache_prompt_injections(source: str, filename: str) -> list[tuple[str, int]]:
     """(file, lineno) for each spot adding --no-cache-prompt to a list."""
     hits: list[tuple[str, int]] = []
-    for node in ast.walk(ast.parse(source, filename=filename)):
+    for node in ast.walk(ast.parse(source, filename = filename)):
         # cmd.append/extend/insert(... flag ...) or cmd += [... flag ...]
         if (
             isinstance(node, ast.Call)
@@ -392,9 +391,7 @@ def test_unsloth_never_injects_no_cache_prompt_into_any_command():
     violations: list[tuple[str, int]] = []
     for path in files:
         try:
-            violations += _no_cache_prompt_injections(
-                path.read_text(encoding="utf-8"), str(path)
-            )
+            violations += _no_cache_prompt_injections(path.read_text(encoding = "utf-8"), str(path))
         except (OSError, UnicodeDecodeError, SyntaxError):
             continue
     assert files, "no backend source files were scanned"
