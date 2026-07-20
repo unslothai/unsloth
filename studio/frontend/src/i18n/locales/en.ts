@@ -258,7 +258,7 @@ export const en = {
       },
       permissions: {
         sectionTitle: "Permissions",
-        bypassLabel: "Bypass permissions",
+        bypassLabel: "Tool permissions",
         bypassDescription:
           "How Unsloth approves chat tool calls (terminal, python, web, MCP) before they run. Full access disables approvals and the code sandbox.",
       },
