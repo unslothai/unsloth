@@ -15,8 +15,10 @@ Policy:
   * Block whenever ``filesWithIssues`` lists a non-``safe`` level, regardless of
     ``scansDone`` (often false even for clean repos). Unknown/future levels fail
     CLOSED (block) so Hub schema drift cannot silently allow a bad verdict; only a
-    small allowlist of clean / not-yet-scanned levels is non-blocking. The sole
-    fail-open path is an unavailable status (missing field / offline / error).
+    small allowlist of clean / not-yet-scanned levels is non-blocking. An
+    unavailable status (missing field / error) fails open, but an explicit
+    local-only (offline) load fails CLOSED against the cached files instead: an
+    unscanned cached pickle is blocked, a pickle-free (safetensors) cache allowed.
   * Scope to the load-path RCE vector: a root-level (or load-subdir-level),
     code-executing file. Inert formats (safetensors / gguf / config / text) and
     subdirectory pickles that no root weight-index references are NOT loaded, so
@@ -29,6 +31,7 @@ Policy:
     scanned so a repo cannot dodge the gate by suffixing its name.
 """
 
+import re
 from dataclasses import dataclass, field
 from typing import Optional
 
@@ -236,29 +239,88 @@ def _load_scan_target(model_name: str, load_subdirs: tuple) -> tuple:
     return model_name, load_subdirs
 
 
-def _fetch_security_status(
-    model_name: str,
-    hf_token: Optional[str],
-    local_only_load: bool = False,
-):
+# Pickle weight formats a from_pretrained load deserializes (the RCE vector); safetensors
+# and gguf are inert. Matched by base-model NAME so training_args.bin / optimizer.pt (not
+# loaded as model weights) do not trip the offline gate.
+_PICKLE_WEIGHT_RE = re.compile(
+    r"^(model|pytorch_model)(-\d+-of-\d+)?\.(bin|pt|pth|ckpt|pkl|pickle)$"
+)
+
+
+def _cached_pickle_weight_files(snap) -> list:
+    """Base-model pickle weight files in the snapshot's module dirs that have NO safetensors
+    alternative -- i.e. the pickles a from_pretrained load actually deserializes. A dir
+    holding ``model.safetensors`` loads that (inert) and ignores any pickle sibling."""
+    by_dir_pickle: dict = {}
+    dirs_with_safetensors: set = set()
+    try:
+        for path in snap.rglob("*"):
+            try:
+                if not path.is_file():
+                    continue
+                low = path.name.lower()
+                if low.endswith(".safetensors"):
+                    dirs_with_safetensors.add(path.parent)
+                elif _PICKLE_WEIGHT_RE.match(low):
+                    by_dir_pickle.setdefault(path.parent, []).append(path.name)
+            except OSError:
+                continue
+    except OSError:
+        return []
+    hits: set = set()
+    for directory, names in by_dir_pickle.items():
+        if directory not in dirs_with_safetensors:
+            hits.update(names)
+    return sorted(hits)
+
+
+def _evaluate_local_only(model_name: str) -> "FileSecurityDecision":
+    """Fail-CLOSED security decision for an offline (local_files_only) load.
+
+    The Hub scan cannot be fetched offline, so instead of failing OPEN we inspect the cached
+    files we already have: block the actual RCE vector -- a pickle weight the load
+    deserializes -- and allow only a pickle-free cache (safetensors / gguf are inert). A
+    previously-scanned pickle model must be reloaded online once to pass, or shipped as
+    safetensors. Nothing cached means there is nothing to deserialize, so it is not blocked
+    (the load fails downstream on its own, which is not a security event).
+    """
+    try:
+        from utils.models.model_config import _active_snapshot_dir
+        snap = _active_snapshot_dir(model_name)
+    except Exception:
+        snap = None
+    if snap is None:
+        return FileSecurityDecision(model_name, False, reason = "offline; nothing cached to scan")
+
+    pickles = _cached_pickle_weight_files(snap)
+    if not pickles:
+        return FileSecurityDecision(
+            model_name, False, reason = "offline; cached weights are pickle-free (inert)"
+        )
+
+    names = ", ".join(pickles)
+    logger.warning(
+        "Blocking offline load of '%s': cached pickle weights cannot be security-scanned "
+        "offline (%s). Reconnect once to scan, or use safetensors weights.",
+        model_name,
+        names,
+    )
+    return FileSecurityDecision(
+        model_name,
+        True,
+        unsafe_files = [{"path": p, "level": "unscanned"} for p in pickles],
+        reason = (
+            "offline: cached pickle weights are unscanned and cannot be verified; "
+            f"reconnect once to scan, or use safetensors weights ({names})"
+        ),
+    )
+
+
+def _fetch_security_status(model_name: str, hf_token: Optional[str]):
     """``security_repo_status`` (a dict) or None if unavailable. Hub metadata only;
     retries once on a transient error, then returns None so the caller fails open.
-
-    ``local_only_load`` is an explicit promise from the caller that the load it is
-    gating cannot reach the Hub. See :func:`evaluate_file_security`.
     """
     from huggingface_hub import model_info as hf_model_info
-
-    # Skip only when the CALLER guarantees a local-only load -- deliberately not keyed off
-    # hf_env_offline(): this gate is shared by every loader (training, MLX, export, ...) and
-    # most do not pass local_files_only, so an offline-looking session could still fetch an
-    # unscanned model. The bypass must be opted into.
-    if local_only_load:
-        logger.debug(
-            "HF security scan skipped for '%s': caller loads local-only; failing open.",
-            model_name,
-        )
-        return None
 
     token_arg = hf_token if hf_token else False
     last_exc = None
@@ -300,10 +362,12 @@ def evaluate_file_security(
     for Spark-TTS / BiCodec, loading ``<snapshot>/LLM``): a flagged file directly under one
     is root-level there and blocks, and an index inside it is honored when scoping shards.
 
-    ``local_only_load`` lets a caller skip the Hub round-trip when it GUARANTEES the load
-    cannot fetch (e.g. the RAG embedder, which passes ``local_files_only`` to
-    SentenceTransformer from the same predicate). Pass it only with that guarantee; claiming
-    local-only while the loader can still fetch disables the gate. Default False.
+    ``local_only_load`` marks a load the caller GUARANTEES cannot fetch (e.g. the RAG
+    embedder, which passes ``local_files_only`` to SentenceTransformer from the same
+    predicate). It cannot reach the Hub scan, so it is evaluated fail-CLOSED against the
+    cached files (:func:`_evaluate_local_only`): a cached pickle weight is blocked, a
+    pickle-free (safetensors) cache is allowed. Pass it only with that guarantee; claiming
+    local-only while the loader can still fetch changes gate semantics. Default False.
     """
     # Scan the repo the load actually fetches, not the literal alias (which 404s and
     # fails open): the Spark-TTS "<parent>/LLM" alias is really unsloth/<parent> from LLM/.
@@ -319,7 +383,12 @@ def evaluate_file_security(
         # Cannot classify the path -> do not block on that account.
         return FileSecurityDecision(model_name, False, reason = "path check failed; not blocked")
 
-    status = _fetch_security_status(model_name, hf_token, local_only_load)
+    # An offline (local-only) load cannot fetch the Hub scan: fail CLOSED against the cache
+    # instead of skipping the gate, so an unscanned cached pickle cannot deserialize.
+    if local_only_load:
+        return _evaluate_local_only(model_name)
+
+    status = _fetch_security_status(model_name, hf_token)
     if not isinstance(status, dict):
         return FileSecurityDecision(
             model_name, False, reason = "scan unavailable; allowed (fail-open)"

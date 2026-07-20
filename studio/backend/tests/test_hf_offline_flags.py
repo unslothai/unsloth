@@ -108,13 +108,30 @@ def test_shared_gate_still_scans_when_offline_by_default(monkeypatch, var):
     assert calls, f"{var} alone must NOT bypass the shared malware gate"
 
 
-def test_security_scan_short_circuits_for_a_local_only_caller(monkeypatch):
+def test_local_only_load_fails_closed_offline_never_hitting_the_hub(monkeypatch, tmp_path):
+    # A local-only (offline) load never hits the Hub; it is evaluated fail-CLOSED against the
+    # cached files: a pickle-free (safetensors) cache is allowed, a cached pickle is blocked.
+    import utils.models.model_config as mc
     import utils.security.file_security as fs
 
     calls: list = []
     _fake_hub(monkeypatch, calls)
-    assert fs._fetch_security_status("org/model", None, True) is None
-    assert calls == [], "a local-only caller must not hit the Hub"
+
+    safe = tmp_path / "safe" / "aaa"
+    safe.mkdir(parents = True)
+    (safe / "model.safetensors").write_bytes(b"\0")
+    monkeypatch.setattr(mc, "_active_snapshot_dir", lambda name: safe)
+    allowed = fs.evaluate_file_security("org/model", None, local_only_load = True)
+    assert calls == [], "a local-only load must not hit the Hub"
+    assert allowed.blocked is False  # safetensors cache is inert
+
+    bad = tmp_path / "bad" / "aaa"
+    bad.mkdir(parents = True)
+    (bad / "pytorch_model.bin").write_bytes(b"\0")
+    monkeypatch.setattr(mc, "_active_snapshot_dir", lambda name: bad)
+    blocked = fs.evaluate_file_security("org/model", None, local_only_load = True)
+    assert calls == [], "still no Hub call when blocking"
+    assert blocked.blocked is True  # unscanned cached pickle -> fail closed
 
 
 def test_security_scan_runs_when_online(monkeypatch):
