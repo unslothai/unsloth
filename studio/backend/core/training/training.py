@@ -1042,6 +1042,12 @@ class TrainingBackend:
 
                         self._ensure_db_run_created()
                         with self._lock:
+                            terminal_payload = self._terminal_finalize_payload
+                            if (
+                                terminal_payload
+                                and terminal_payload.get("expected_job_id") == run_id
+                            ):
+                                return False
                             if not mark_run_cancel_requested(run_id):
                                 if self._db_run_created:
                                     return False
