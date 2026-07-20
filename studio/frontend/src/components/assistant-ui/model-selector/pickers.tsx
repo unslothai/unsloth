@@ -1059,8 +1059,16 @@ let _customFolderCache: LocalModelInfo[] = [];
 let _scanFoldersCache: ScanFolderInfo[] = [];
 let _onDeviceCachesReady = false;
 let _onDeviceCachesSettled = false;
+let _cachedGgufRequestVersion = 0;
+let _cachedModelsRequestVersion = 0;
+let _localModelsRequestVersion = 0;
+const _onDeviceCacheListeners = new Set<() => void>();
 
 const ON_DEVICE_CACHE_TIMEOUT_MS = 30_000;
+
+function notifyOnDeviceCachesChanged(): void {
+  for (const listener of _onDeviceCacheListeners) listener();
+}
 
 /** True when any on-device model (downloaded GGUF, cached repo, LM Studio, or
  * custom-folder model) is known. Reads the module caches, which persist across
@@ -1457,10 +1465,11 @@ export function HubModelPicker({
     useState<CachedGgufRepo[]>(_cachedGgufCache);
   const [cachedModels, setCachedModels] =
     useState<CachedModelRepo[]>(_cachedModelsCache);
+  const hasFineTunedModels = loraModels.length > 0;
   const alreadyCached =
     _onDeviceCachesReady ||
     hasDownloadedModels() ||
-    (_onDeviceCachesSettled && loraModels.length > 0);
+    (_onDeviceCachesSettled && hasFineTunedModels);
   const [cachedReady, setCachedReady] = useState(alreadyCached);
   const [updateConflictKey, setUpdateConflictKey] = useState<string | null>(
     null,
@@ -1495,6 +1504,28 @@ export function HubModelPicker({
   const [customFolderModels, setCustomFolderModels] =
     useState<LocalModelInfo[]>(_customFolderCache);
 
+  useEffect(() => {
+    const syncModuleCaches = () => {
+      setCachedGguf(_cachedGgufCache);
+      setCachedModels(_cachedModelsCache);
+      setLmStudioModels(_lmStudioCache);
+      setLocalDirModels(_localDirCache);
+      setCustomFolderModels(_customFolderCache);
+      setCachedReady(
+        (ready) =>
+          ready ||
+          _onDeviceCachesReady ||
+          hasDownloadedModels() ||
+          (_onDeviceCachesSettled && hasFineTunedModels),
+      );
+    };
+    _onDeviceCacheListeners.add(syncModuleCaches);
+    syncModuleCaches();
+    return () => {
+      _onDeviceCacheListeners.delete(syncModuleCaches);
+    };
+  }, [hasFineTunedModels]);
+
   // Custom scan folders management
   const [scanFolders, setScanFolders] =
     useState<ScanFolderInfo[]>(_scanFoldersCache);
@@ -1518,13 +1549,19 @@ export function HubModelPicker({
       const cf = res.models.filter((m) => m.source === "custom");
       _customFolderCache = cf;
       setCustomFolderModels(cf);
+      notifyOnDeviceCachesChanged();
     },
     [],
   );
 
   const refreshLocalModelsList = useCallback(() => {
+    const requestVersion = ++_localModelsRequestVersion;
     listLocalModels()
-      .then(applyLocalModels)
+      .then((res) => {
+        if (requestVersion === _localModelsRequestVersion) {
+          applyLocalModels(res);
+        }
+      })
       .catch(() => {});
   }, [applyLocalModels]);
 
@@ -1605,16 +1642,22 @@ export function HubModelPicker({
   );
 
   const refreshCachedLists = useCallback(() => {
+    const ggufRequestVersion = ++_cachedGgufRequestVersion;
     listCachedGguf()
       .then((v) => {
+        if (ggufRequestVersion !== _cachedGgufRequestVersion) return;
         _cachedGgufCache = v;
         setCachedGguf(v);
+        notifyOnDeviceCachesChanged();
       })
       .catch(() => {});
+    const modelsRequestVersion = ++_cachedModelsRequestVersion;
     listCachedModels(hfToken || undefined)
       .then((v) => {
+        if (modelsRequestVersion !== _cachedModelsRequestVersion) return;
         _cachedModelsCache = v;
         setCachedModels(v);
+        notifyOnDeviceCachesChanged();
       })
       .catch(() => {});
     refreshLocalModelsList();
@@ -1669,6 +1712,9 @@ export function HubModelPicker({
     const bounded = <T,>(request: Promise<T>) =>
       Promise.race([request, aborted]);
     let cancelled = false;
+    const ggufRequestVersion = ++_cachedGgufRequestVersion;
+    const modelsRequestVersion = ++_cachedModelsRequestVersion;
+    const localRequestVersion = ++_localModelsRequestVersion;
 
     void Promise.allSettled([
       bounded(listCachedGguf(controller.signal)),
@@ -1678,25 +1724,38 @@ export function HubModelPicker({
       window.clearTimeout(timeout);
       if (cancelled) return;
 
-      if (ggufResult.status === "fulfilled") {
+      const ggufIsCurrent =
+        ggufRequestVersion === _cachedGgufRequestVersion;
+      const modelsAreCurrent =
+        modelsRequestVersion === _cachedModelsRequestVersion;
+      const localIsCurrent =
+        localRequestVersion === _localModelsRequestVersion;
+
+      if (ggufResult.status === "fulfilled" && ggufIsCurrent) {
         _cachedGgufCache = ggufResult.value;
         setCachedGguf(ggufResult.value);
+        notifyOnDeviceCachesChanged();
       }
-      if (modelsResult.status === "fulfilled") {
+      if (modelsResult.status === "fulfilled" && modelsAreCurrent) {
         _cachedModelsCache = modelsResult.value;
         setCachedModels(modelsResult.value);
+        notifyOnDeviceCachesChanged();
       }
-      if (localResult.status === "fulfilled") {
+      if (localResult.status === "fulfilled" && localIsCurrent) {
         applyLocalModels(localResult.value);
       }
       if (
         ggufResult.status === "fulfilled" &&
         modelsResult.status === "fulfilled" &&
-        localResult.status === "fulfilled"
+        localResult.status === "fulfilled" &&
+        ggufIsCurrent &&
+        modelsAreCurrent &&
+        localIsCurrent
       ) {
         _onDeviceCachesReady = true;
       }
       _onDeviceCachesSettled = true;
+      notifyOnDeviceCachesChanged();
       setCachedReady(true);
     });
 
