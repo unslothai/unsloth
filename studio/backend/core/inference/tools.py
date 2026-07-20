@@ -767,9 +767,7 @@ def _sandbox_python_startup_bypasses_guard(
             if _python_inline_payload(arguments) is None and _python_reads_program_from_stdin(
                 arguments
             ):
-                if _python_payload_launches_startup_bypass(
-                    payload, depth + 1, environment_tainted
-                ):
+                if _python_payload_launches_startup_bypass(payload, depth + 1, environment_tainted):
                     return True
         # Preserve the previous fail-safe for nested shell bodies.
         if _sandbox_python_startup_bypasses_guard(payload, depth + 1, environment_tainted):

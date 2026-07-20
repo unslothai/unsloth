@@ -954,7 +954,9 @@ def test_python_classifier(code, unsafe):
 def test_python_runtime_safety_blocks_child_startup_guard_bypass():
     from core.inference.tools import _check_code_safety
 
-    assert _check_code_safety("import subprocess\nsubprocess.run(['python','-c','print(1)'])") is None
+    assert (
+        _check_code_safety("import subprocess\nsubprocess.run(['python','-c','print(1)'])") is None
+    )
     assert (
         _check_code_safety(
             "import os, subprocess\n"
@@ -1133,7 +1135,9 @@ def test_render_html_gated_only_when_networked():
     assert rh("<script>Object.assign(new Image(), {['src']: './local.png'})</script>") is False
     assert rh("<script>Object.assign(new Image(), {[key]: 'https://evil/x'})</script>") is True
     assert (
-        rh("<script>const key='title'; Object.assign(new Image(), {[key]: 'https://evil/x'})</script>")
+        rh(
+            "<script>const key='title'; Object.assign(new Image(), {[key]: 'https://evil/x'})</script>"
+        )
         is False
     )
     assert rh("<script>img['src']='./local.png'</script>") is False
@@ -1149,7 +1153,9 @@ def test_render_html_gated_only_when_networked():
     assert rh("<script>document.write.call(document, '<img src=https://evil/x>')</script>") is True
     assert rh("<script>document.write.call(document, '<p>Local</p>')</script>") is False
     assert (
-        rh("<script>node.insertAdjacentHTML.apply(node, ['beforeend', '<img src=https://evil/x>'])</script>")
+        rh(
+            "<script>node.insertAdjacentHTML.apply(node, ['beforeend', '<img src=https://evil/x>'])</script>"
+        )
         is True
     )
     assert (
