@@ -471,6 +471,37 @@ def test_opencode_native_auto_probes_old_opencode_only_in_install_dir(monkeypatc
     assert start._opencode_supports_native_auto() is False
 
 
+def test_augment_path_preserves_defpath_when_path_unset(monkeypatch, tmp_path):
+    # PATH unset: shutil.which() and exec*p* fall back to os.defpath (e.g. /bin:/usr/bin), so the
+    # augmentation must keep those default dirs instead of collapsing to just the install dir
+    # (which would hide a system-installed agent and strip the launched child's normal PATH).
+    local_bin = tmp_path / ".local" / "bin"
+    local_bin.mkdir(parents = True)
+    monkeypatch.setattr(start.Path, "home", lambda: tmp_path)
+    monkeypatch.setenv("APPDATA", str(tmp_path / "no-appdata"))
+    monkeypatch.delenv("PATH", raising = False)
+    start._augment_path_with_install_dirs()
+    entries = os.environ["PATH"].split(os.pathsep)
+    for default_dir in os.defpath.split(os.pathsep):
+        if default_dir:
+            assert default_dir in entries
+    assert str(local_bin) in entries
+
+
+def test_which_with_install_dirs_keeps_defpath_when_path_unset(monkeypatch, tmp_path):
+    # With PATH unset, a system agent on os.defpath (e.g. /usr/bin) must still resolve; the
+    # install-dir augmentation must not drop the default search path. PATH is restored to unset.
+    local_bin = tmp_path / ".local" / "bin"
+    local_bin.mkdir(parents = True)
+    monkeypatch.setattr(start.Path, "home", lambda: tmp_path)
+    monkeypatch.setenv("APPDATA", str(tmp_path / "no-appdata"))
+    monkeypatch.delenv("PATH", raising = False)
+    sysdir = next(part for part in reversed(os.defpath.split(os.pathsep)) if part)
+    monkeypatch.setattr(start.shutil, "which", _path_aware_which({"claude": Path(sysdir)}))
+    assert start._which_with_install_dirs("claude") == os.path.join(sysdir, "claude")
+    assert "PATH" not in os.environ
+
+
 def test_install_agent_declined_returns_none(monkeypatch):
     # TTY + no: never runs anything; caller falls back to the print-hint failure.
     monkeypatch.setattr(start.sys, "stdin", SimpleNamespace(isatty = lambda: True))

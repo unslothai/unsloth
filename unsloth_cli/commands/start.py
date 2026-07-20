@@ -1217,7 +1217,13 @@ def _augment_path_with_install_dirs() -> None:
         appdata = os.environ.get("APPDATA")
         if appdata:
             candidates.append(Path(appdata) / "npm")
-    current = os.environ.get("PATH", "")
+    current = os.environ.get("PATH")
+    if current is None:
+        # PATH unset: shutil.which() and exec*p* fall back to os.defpath (e.g. /bin:/usr/bin), so
+        # keep that default instead of collapsing to just the install dirs (which would hide a
+        # system-installed agent and strip the launched child's normal PATH). An explicitly empty
+        # PATH is left as-is: like shutil.which, it means "search nothing", not os.defpath.
+        current = os.defpath
     seen = {os.path.normcase(entry) for entry in current.split(os.pathsep) if entry}
     additions = [
         str(directory)
