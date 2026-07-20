@@ -957,9 +957,9 @@ export function AppSidebar() {
                         const ids = item.type === "single"
                           ? [item.id]
                           : (await listStoredChatThreads({ pairId: item.id })).map((t) => t.id);
-                        await Promise.all(
-                          ids.map((id) => exportConversationByFormat(id, format)),
-                        );
+                        for (const id of ids) {
+                          await exportConversationByFormat(id, format);
+                        }
                       } catch {
                         toast.error("Export failed.");
                       }

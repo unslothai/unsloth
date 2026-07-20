@@ -11,6 +11,8 @@ const SETUP_WINDOW_HEIGHT: f64 = 560.0;
 const MIN_REASONABLE_WINDOW_WIDTH: u64 = 320;
 const MIN_REASONABLE_WINDOW_HEIGHT: u64 = 240;
 
+const SETUP_SIZE_TOLERANCE_PX: f64 = 2.0;
+
 fn marker_path(config_dir: &Path) -> PathBuf {
     config_dir.join(APP_LAYOUT_MARKER_FILE)
 }
@@ -18,11 +20,16 @@ fn marker_path(config_dir: &Path) -> PathBuf {
 fn is_initialized(config_dir: &Path) -> bool {
     marker_path(config_dir).is_file()
 }
-fn has_legacy_full_app_state(
-    config_dir: &Path,
-    state_file_name: &str,
-    current_scale_factor: f64,
-) -> bool {
+fn is_setup_window_size(width: u64, height: u64) -> bool {
+    // Window-state persists physical dimensions but not their source scale.
+    let width_scale = width as f64 / SETUP_WINDOW_WIDTH;
+    let height_scale = height as f64 / SETUP_WINDOW_HEIGHT;
+    let scale_tolerance = SETUP_SIZE_TOLERANCE_PX / SETUP_WINDOW_WIDTH
+        + SETUP_SIZE_TOLERANCE_PX / SETUP_WINDOW_HEIGHT;
+    (width_scale - height_scale).abs() <= scale_tolerance
+}
+
+fn has_legacy_full_app_state(config_dir: &Path, state_file_name: &str) -> bool {
     let Ok(contents) = fs::read(config_dir.join(state_file_name)) else {
         return false;
     };
@@ -49,11 +56,7 @@ fn has_legacy_full_app_state(
         return true;
     }
 
-    let expected_setup_width = SETUP_WINDOW_WIDTH * current_scale_factor;
-    let expected_setup_height = SETUP_WINDOW_HEIGHT * current_scale_factor;
-    let is_setup_size = (width as f64 - expected_setup_width).abs() <= 2.0
-        && (height as f64 - expected_setup_height).abs() <= 2.0;
-    !is_setup_size
+    !is_setup_window_size(width, height)
 }
 
 fn mark_initialized(config_dir: &Path) -> Result<(), String> {
@@ -79,7 +82,7 @@ fn app_config_dir(app: &tauri::AppHandle) -> Result<PathBuf, String> {
 }
 
 /// Returns whether a full-app layout has previously completed. Legacy state is
-/// migrated unless it matches the fixed setup-window size at the current scale;
+/// migrated unless it matches the fixed setup-window size at any display scale;
 /// maximized state always came from full-app mode.
 #[tauri::command]
 pub fn has_initialized_app_window_layout(
@@ -88,9 +91,7 @@ pub fn has_initialized_app_window_layout(
 ) -> Result<bool, String> {
     crate::native_intents::ensure_main_window(&window)?;
     let config_dir = app_config_dir(&app)?;
-    let scale_factor = window.scale_factor().unwrap_or(1.0);
-    Ok(is_initialized(&config_dir)
-        || has_legacy_full_app_state(&config_dir, &app.filename(), scale_factor))
+    Ok(is_initialized(&config_dir) || has_legacy_full_app_state(&config_dir, &app.filename()))
 }
 
 /// Persist only after the caller has successfully sized/centered or restored,
@@ -140,27 +141,30 @@ mod tests {
     }
 
     #[test]
-    fn legacy_full_app_state_is_migrated_but_setup_state_is_not() {
+    fn legacy_full_app_state_is_migrated_but_setup_state_at_any_scale_is_not() {
         let dir = temp_dir("legacy-plugin-state");
         fs::create_dir_all(&dir).unwrap();
         let state_file = ".window-state.json";
         let state_path = dir.join(state_file);
 
         fs::write(&state_path, r#"{"main":{"width":1200,"height":800}}"#).unwrap();
-        assert!(has_legacy_full_app_state(&dir, state_file, 1.0));
+        assert!(has_legacy_full_app_state(&dir, state_file));
 
         fs::write(&state_path, r#"{"main":{"width":760,"height":560}}"#).unwrap();
-        assert!(!has_legacy_full_app_state(&dir, state_file, 1.0));
+        assert!(!has_legacy_full_app_state(&dir, state_file));
+
+        fs::write(&state_path, r#"{"main":{"width":950,"height":700}}"#).unwrap();
+        assert!(!has_legacy_full_app_state(&dir, state_file));
 
         fs::write(&state_path, r#"{"main":{"width":1520,"height":1120}}"#).unwrap();
-        assert!(!has_legacy_full_app_state(&dir, state_file, 2.0));
+        assert!(!has_legacy_full_app_state(&dir, state_file));
 
         fs::write(
             &state_path,
             r#"{"main":{"width":1520,"height":1120,"maximized":true}}"#,
         )
         .unwrap();
-        assert!(has_legacy_full_app_state(&dir, state_file, 2.0));
+        assert!(has_legacy_full_app_state(&dir, state_file));
         let _ = fs::remove_dir_all(dir);
     }
 
@@ -170,7 +174,7 @@ mod tests {
         fs::create_dir_all(&dir).unwrap();
         fs::write(dir.join(".window-state.json"), b"{}").unwrap();
         assert!(!is_initialized(&dir));
-        assert!(!has_legacy_full_app_state(&dir, ".window-state.json", 1.0));
+        assert!(!has_legacy_full_app_state(&dir, ".window-state.json"));
         let _ = fs::remove_dir_all(dir);
     }
 }

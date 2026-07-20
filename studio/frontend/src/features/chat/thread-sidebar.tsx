@@ -133,7 +133,9 @@ export function ThreadSidebar({
   ) {
     try {
       const ids = await getThreadIdsForItem(item);
-      await Promise.all(ids.map((id) => fn(id)));
+      for (const id of ids) {
+        await fn(id);
+      }
     } catch {
       toast.error("Export failed.");
     }

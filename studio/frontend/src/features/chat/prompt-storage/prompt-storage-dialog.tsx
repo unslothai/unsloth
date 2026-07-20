@@ -72,77 +72,79 @@ function sanitizeFilename(name: string): string {
   return name.replace(/[\\/:*?"<>|]/g, "_").slice(0, 80) || "export";
 }
 
-function downloadBlob(
+async function downloadBlob(
   content: string | Blob,
   filename: string,
   mimeType: string,
-): void {
-  void downloadFile(content, filename, mimeType).catch((error) => {
+): Promise<void> {
+  try {
+    await downloadFile(content, filename, mimeType);
+  } catch (error) {
     toast.error("Could not save export.", {
       description: error instanceof Error ? error.message : String(error),
     });
-  });
+  }
 }
 
 function csvEscape(val: string): string {
   return `"${val.replace(/"/g, '""')}"`;
 }
 
-function exportPromptJsonl(entry: PromptEntry): void {
-  downloadBlob(
+function exportPromptJsonl(entry: PromptEntry): Promise<void> {
+  return downloadBlob(
     JSON.stringify({ name: entry.name, text: entry.text }),
     `${sanitizeFilename(entry.name)}.jsonl`,
     "application/x-ndjson",
   );
 }
 
-function exportPromptCsv(entry: PromptEntry): void {
-  downloadBlob(
+function exportPromptCsv(entry: PromptEntry): Promise<void> {
+  return downloadBlob(
     `name,text\n${csvEscape(entry.name)},${csvEscape(entry.text)}`,
     `${sanitizeFilename(entry.name)}.csv`,
     "text/csv",
   );
 }
 
-function exportAllPromptsJsonl(entries: PromptEntry[]): void {
+function exportAllPromptsJsonl(entries: PromptEntry[]): Promise<void> {
   const lines = entries.map((e) => JSON.stringify({ name: e.name, text: e.text })).join("\n");
-  downloadBlob(lines, "prompts.jsonl", "application/x-ndjson");
+  return downloadBlob(lines, "prompts.jsonl", "application/x-ndjson");
 }
 
-function exportAllPromptsCsv(entries: PromptEntry[]): void {
+function exportAllPromptsCsv(entries: PromptEntry[]): Promise<void> {
   const rows = entries.map((e) => `${csvEscape(e.name)},${csvEscape(e.text)}`).join("\n");
-  downloadBlob(`name,text\n${rows}`, "prompts.csv", "text/csv");
+  return downloadBlob(`name,text\n${rows}`, "prompts.csv", "text/csv");
 }
 
-function exportListJsonl(entry: PromptListEntry): void {
-  downloadBlob(
+function exportListJsonl(entry: PromptListEntry): Promise<void> {
+  return downloadBlob(
     JSON.stringify({ name: entry.name, items: entry.items }),
     `${sanitizeFilename(entry.name)}.jsonl`,
     "application/x-ndjson",
   );
 }
 
-function exportAllListsJsonl(entries: PromptListEntry[]): void {
+function exportAllListsJsonl(entries: PromptListEntry[]): Promise<void> {
   const lines = entries.map((e) => JSON.stringify({ name: e.name, items: e.items })).join("\n");
-  downloadBlob(lines, "prompt-lists.jsonl", "application/x-ndjson");
+  return downloadBlob(lines, "prompt-lists.jsonl", "application/x-ndjson");
 }
 
-function exportListCsv(entry: PromptListEntry): void {
+function exportListCsv(entry: PromptListEntry): Promise<void> {
   const rows = entry.items
     .map((text, i) => `${csvEscape(entry.name)},${i + 1},${csvEscape(text)}`)
     .join("\n");
-  downloadBlob(
+  return downloadBlob(
     `list_name,order,prompt_text\n${rows}`,
     `${sanitizeFilename(entry.name)}.csv`,
     "text/csv",
   );
 }
 
-function exportAllListsCsv(entries: PromptListEntry[]): void {
+function exportAllListsCsv(entries: PromptListEntry[]): Promise<void> {
   const rows = entries
     .flatMap((e) => e.items.map((text, i) => `${csvEscape(e.name)},${i + 1},${csvEscape(text)}`))
     .join("\n");
-  downloadBlob(`list_name,order,prompt_text\n${rows}`, "prompt-lists.csv", "text/csv");
+  return downloadBlob(`list_name,order,prompt_text\n${rows}`, "prompt-lists.csv", "text/csv");
 }
 
 function contentBlocksToText(content: unknown): string {
@@ -365,7 +367,7 @@ export async function exportConversationShareGPT(threadId: string): Promise<void
   }
 
   if (conversations.length === 0) { toast.info("No exportable content."); return; }
-  downloadBlob(
+  await downloadBlob(
     JSON.stringify({ conversations }),
     "conversation-" + exportTs() + ".jsonl",
     "application/x-ndjson",
@@ -380,7 +382,7 @@ export async function exportConversationRawJsonl(threadId: string): Promise<void
 
   const oaiMsgs: OAIMessage[] = messages.flatMap((msg) => messageToOpenAI(msg));
   if (oaiMsgs.length === 0) { toast.info("No exportable content."); return; }
-  downloadBlob(
+  await downloadBlob(
     JSON.stringify({ messages: oaiMsgs }),
     "conversation-" + exportTs() + ".jsonl",
     "application/x-ndjson",
@@ -399,7 +401,11 @@ export async function exportConversationCsv(threadId: string): Promise<void> {
   }
 
   if (rows.length <= 1) { toast.info("No exportable content."); return; }
-  downloadBlob(rows.join("\n"), "conversation-" + exportTs() + ".csv", "text/csv");
+  await downloadBlob(
+    rows.join("\n"),
+    "conversation-" + exportTs() + ".csv",
+    "text/csv",
+  );
 }
 
 export type ConvExportFormat = "jsonl-raw" | "csv" | "sharegpt";
@@ -481,7 +487,11 @@ export async function exportBulkConversationsMerged(
     ? header + "\n" + parts.join("\n")
     : parts.join("\n");
 
-  downloadBlob(body, `${basename}.${exportExt(format)}`, exportMime(format));
+  await downloadBlob(
+    body,
+    `${basename}.${exportExt(format)}`,
+    exportMime(format),
+  );
 }
 
 export async function exportBulkConversationsSeparate(
@@ -506,7 +516,7 @@ export async function exportBulkConversationsSeparate(
   if (Object.keys(files).length === 0) { toast.info("No exportable content."); return; }
 
   const zipped = zipSync(files);
-  downloadBlob(
+  await downloadBlob(
     new Blob([zipped], { type: "application/zip" }),
     `${basename}.zip`,
     "application/zip",
@@ -994,21 +1004,21 @@ export async function importConversationsFromFile(
 
 // ShareGPT training exports: prompt → one record (human turn + empty gpt slot);
 // list → one multi-turn record, each item a human turn.
-function exportPromptTrainingJsonl(entry: PromptEntry): void {
+function exportPromptTrainingJsonl(entry: PromptEntry): Promise<void> {
   const record = {
     conversations: [
       { from: "human", value: entry.text },
       { from: "gpt", value: "" },
     ],
   };
-  downloadBlob(
+  return downloadBlob(
     JSON.stringify(record),
     `${sanitizeFilename(entry.name)}-training.jsonl`,
     "application/x-ndjson",
   );
 }
 
-function exportPromptsTrainingJsonl(entries: PromptEntry[]): void {
+function exportPromptsTrainingJsonl(entries: PromptEntry[]): Promise<void> {
   const lines = entries
     .map((e) =>
       JSON.stringify({
@@ -1019,22 +1029,22 @@ function exportPromptsTrainingJsonl(entries: PromptEntry[]): void {
       }),
     )
     .join("\n");
-  downloadBlob(lines, "prompts-training.jsonl", "application/x-ndjson");
+  return downloadBlob(lines, "prompts-training.jsonl", "application/x-ndjson");
 }
 
-function exportListTrainingJsonl(entry: PromptListEntry): void {
+function exportListTrainingJsonl(entry: PromptListEntry): Promise<void> {
   const conversations = entry.items.flatMap((text) => [
     { from: "human", value: text },
     { from: "gpt", value: "" },
   ]);
-  downloadBlob(
+  return downloadBlob(
     JSON.stringify({ conversations }),
     `${sanitizeFilename(entry.name)}-training.jsonl`,
     "application/x-ndjson",
   );
 }
 
-function exportListsTrainingJsonl(entries: PromptListEntry[]): void {
+function exportListsTrainingJsonl(entries: PromptListEntry[]): Promise<void> {
   const lines = entries
     .map((e) => {
       const conversations = e.items.flatMap((text) => [
@@ -1044,7 +1054,7 @@ function exportListsTrainingJsonl(entries: PromptListEntry[]): void {
       return JSON.stringify({ conversations });
     })
     .join("\n");
-  downloadBlob(lines, "prompt-lists-training.jsonl", "application/x-ndjson");
+  return downloadBlob(lines, "prompt-lists-training.jsonl", "application/x-ndjson");
 }
 
 // RFC 4180 CSV parser: handles quoted fields with embedded newlines/commas.
@@ -1270,34 +1280,34 @@ function ExportModal({
     if (!csvAvailable) setFormat("jsonl");
   }, [csvAvailable]);
 
-  const handleExport = useCallback(() => {
+  const handleExport = useCallback(async () => {
     if (ctx.kind === "prompt") {
-      if (scope === "training") exportPromptTrainingJsonl(ctx.entry);
-      else if (format === "csv") exportPromptCsv(ctx.entry);
-      else exportPromptJsonl(ctx.entry);
+      if (scope === "training") await exportPromptTrainingJsonl(ctx.entry);
+      else if (format === "csv") await exportPromptCsv(ctx.entry);
+      else await exportPromptJsonl(ctx.entry);
     } else if (ctx.kind === "list") {
-      if (scope === "training") exportListTrainingJsonl(ctx.entry);
-      else if (format === "csv") exportListCsv(ctx.entry);
-      else exportListJsonl(ctx.entry);
+      if (scope === "training") await exportListTrainingJsonl(ctx.entry);
+      else if (format === "csv") await exportListCsv(ctx.entry);
+      else await exportListJsonl(ctx.entry);
     } else {
       const { tab, prompts, lists } = ctx;
       if (scope === "training") {
         if (tab === "prompts") {
           if (prompts.length === 0) { toast.info("No prompts to export"); return; }
-          exportPromptsTrainingJsonl(prompts);
+          await exportPromptsTrainingJsonl(prompts);
         } else {
           if (lists.length === 0) { toast.info("No prompt lists to export"); return; }
-          exportListsTrainingJsonl(lists);
+          await exportListsTrainingJsonl(lists);
         }
       } else {
         if (tab === "prompts") {
           if (prompts.length === 0) { toast.info("No prompts to export"); return; }
-          if (format === "csv") exportAllPromptsCsv(prompts);
-          else exportAllPromptsJsonl(prompts);
+          if (format === "csv") await exportAllPromptsCsv(prompts);
+          else await exportAllPromptsJsonl(prompts);
         } else {
           if (lists.length === 0) { toast.info("No prompt lists to export"); return; }
-          if (format === "csv") exportAllListsCsv(lists);
-          else exportAllListsJsonl(lists);
+          if (format === "csv") await exportAllListsCsv(lists);
+          else await exportAllListsJsonl(lists);
         }
       }
     }

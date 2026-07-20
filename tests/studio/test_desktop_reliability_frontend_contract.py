@@ -12,6 +12,11 @@ NATIVE_FILES = FRONTEND / "lib/native-files.ts"
 CHAT_EXPORT = FRONTEND / "features/chat/utils/export-chat-history.ts"
 CHAT_TAB = FRONTEND / "features/settings/tabs/chat-tab.tsx"
 PROMPT_STORAGE = FRONTEND / "features/chat/prompt-storage/prompt-storage-dialog.tsx"
+
+APP_SIDEBAR = FRONTEND / "components/app-sidebar.tsx"
+THREAD = FRONTEND / "components/assistant-ui/thread.tsx"
+THREAD_SIDEBAR = FRONTEND / "features/chat/thread-sidebar.tsx"
+SHARED_COMPOSER = FRONTEND / "features/chat/shared-composer.tsx"
 TITLEBAR = FRONTEND / "components/tauri/window-titlebar.tsx"
 NATIVE_DIALOGS = REPO / "studio/src-tauri/src/native_file_dialogs.rs"
 
@@ -42,6 +47,28 @@ def test_file_actions_route_through_native_commands_only_in_tauri():
     native_dialogs = NATIVE_DIALOGS.read_text(encoding = "utf-8")
     assert 'CHAT_IMPORT_EXTENSIONS: &[&str] = &["jsonl", "ndjson", "csv"]' in native_dialogs
     assert "InvokeBody::Raw" in native_dialogs
+
+
+def test_chat_exports_await_native_saves_and_markdown_uses_shared_helper():
+    app_sidebar = APP_SIDEBAR.read_text(encoding="utf-8")
+    prompt_storage = PROMPT_STORAGE.read_text(encoding="utf-8")
+    thread = THREAD.read_text(encoding="utf-8")
+    thread_sidebar = THREAD_SIDEBAR.read_text(encoding="utf-8")
+    shared_composer = SHARED_COMPOSER.read_text(encoding="utf-8")
+
+    assert "async function downloadBlob(" in prompt_storage
+    assert "const handleExport = useCallback(async () =>" in prompt_storage
+    assert prompt_storage.count("await export") >= 12
+    assert "await Promise.all(" not in app_sidebar
+    assert "for (const id of ids)" in app_sidebar
+    assert prompt_storage.count("await downloadBlob(") >= 5
+    assert "Promise.all(ids.map((id) => fn(id)))" not in thread_sidebar
+    assert "for (const id of ids)" in thread_sidebar
+    assert "Promise.all(exportThreadIds.map((id) => fn(id)))" not in shared_composer
+    assert "for (const id of exportThreadIds)" in shared_composer
+    assert "onExport={exportMessageMarkdown}" in thread
+    assert '"text/markdown"' in thread
+    assert "downloadFile(" in thread
 
 
 def test_full_app_layout_uses_its_own_initialized_marker():

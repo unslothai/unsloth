@@ -45,10 +45,11 @@ fn save_filter(file_name: &str) -> (&'static str, Vec<&'static str>) {
         Some("json") => ("JSON", vec!["json"]),
         Some("jsonl") | Some("ndjson") => ("JSON Lines", vec!["jsonl", "ndjson"]),
         Some("csv") => ("CSV", vec!["csv"]),
+        Some("md") | Some("markdown") => ("Markdown", vec!["md", "markdown"]),
         Some("zip") => ("ZIP archive", vec!["zip"]),
         _ => (
             "Export files",
-            vec!["json", "jsonl", "ndjson", "csv", "zip"],
+            vec!["json", "jsonl", "ndjson", "csv", "md", "markdown", "zip"],
         ),
     }
 }
@@ -216,6 +217,14 @@ mod tests {
         assert_eq!(fs::read(&binary_path).unwrap(), [0, 1, 2, 255]);
         let _ = fs::remove_file(text_path);
         let _ = fs::remove_file(binary_path);
+    }
+
+    #[test]
+    fn markdown_exports_use_a_markdown_save_filter() {
+        assert_eq!(
+            save_filter("message.md"),
+            ("Markdown", vec!["md", "markdown"])
+        );
     }
 
     #[test]
