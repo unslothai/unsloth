@@ -3830,7 +3830,11 @@ class TestWslRerouteNvidiaGuard:
         source = _INSTALL_SH_PATH.read_text(encoding = "utf-8")
         start = source.find("_maybe_reroute_strixhalo_to_2404()")
         assert start != -1
-        body = source[start : start + 1200]
+        # Slice the WHOLE function body (to its closing brace at column 0), not a
+        # fixed-length window: preamble growth must not push the signals out of view.
+        end = source.find("\n}", start)
+        assert end != -1
+        body = source[start:end]
         nv = body.find("_has_usable_nvidia_gpu")
         wmi = body.find("_wsl_amd_gpu_name")
         assert nv != -1, "reroute must consult _has_usable_nvidia_gpu before deciding to reroute"

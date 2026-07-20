@@ -407,10 +407,11 @@ class TestKnown211SetParity:
             ), f"{label} floor gate must not use the unanchored ^rocm(\\d+)\\.(\\d+) prefix"
 
     def test_install_ps1_bounds_unknown_leaf_pinned_torch(self):
-        """install.ps1's custom (non-cu-family) pinned-torch install must bound BOTH
-        companions, not just torch: a private mirror serving newer torchvision/torchaudio
-        must not pull a companion built for a newer torch ABI under the pin.
-        A cu<digits> family index keeps bare companions (Codex P2)."""
+        """install.ps1's pinned-torch install must bound BOTH companions on EVERY
+        index, cu<digits> families included: torchaudio 2.11 dropped its exact torch
+        pin from the wheel metadata, so a bare companion beside torch<2.11 can
+        resolve a mismatched 2.11.0 build (Codex P2, then unconditional per the
+        torchaudio 2.11 unpinning)."""
         text = INSTALL_PS1.read_text(encoding = "utf-8")
         assert (
             '$_pinVisionSpec = "torchvision>=0.19,<0.26.0"' in text
@@ -418,10 +419,10 @@ class TestKnown211SetParity:
         assert (
             '$_pinAudioSpec = "torchaudio>=2.4,<2.11.0"' in text
         ), "install.ps1 custom-pin install must bound torchaudio (>=2.4,<2.11.0)"
-        # Gated on the leaf NOT being a cu<digits> family (a cu index bounds itself).
+        # No cu-family exemption: the bounds apply unconditionally.
         assert (
-            "$_pinCuLeaf -notmatch '^cu[0-9]+$'" in text
-        ), "install.ps1 must bound companions only for a non-cu-family (custom) pin"
+            "$_pinCuLeaf" not in text
+        ), "install.ps1 must bound companions on every index (no cu-family exemption)"
         # The bounded companions must actually be passed to the install command.
         assert re.search(
             r'"torch>=2\.4,<2\.11\.0" \$_pinVisionSpec \$_pinAudioSpec --default-index \$TorchIndexUrl',

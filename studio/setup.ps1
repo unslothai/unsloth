@@ -969,7 +969,10 @@ function Invoke-SetupCommand {
             # Merge stderr into stdout so progress/warning output stays visible
             # without flipping $? on successful native commands (PS 5.1 treats
             # stderr records as errors that set $? = $false even on exit code 0).
-            & $Command 2>&1 | Out-Host
+            # Redact per record: uv/pip echo index URLs (credentials and all) in
+            # their errors, and verbose mode must not bypass the quiet path's
+            # redaction. ForEach-Object/Out-Host leave $LASTEXITCODE untouched.
+            & $Command 2>&1 | ForEach-Object { Redact-InstallOutput "$_" } | Out-Host
         } else {
             $output = & $Command 2>&1 | Out-String
             if ($LASTEXITCODE -ne 0) {
@@ -3145,7 +3148,7 @@ if ($ROCmIndexUrl) {
         substep "  enforcing $ROCmTorchSpec $ROCmVisionSpec $ROCmAudioSpec (known _grouped_mm bug in older wheels)" "Cyan"
     }
     if ($script:UnslothVerbose) {
-        Fast-Install $ROCmTorchSpec $ROCmVisionSpec $ROCmAudioSpec --force-reinstall --index-url $ROCmIndexUrl
+        Fast-Install $ROCmTorchSpec $ROCmVisionSpec $ROCmAudioSpec --force-reinstall --index-url $ROCmIndexUrl | ForEach-Object { Redact-InstallOutput "$_" } | Out-Host
         $torchInstallExit = $LASTEXITCODE
         $output = ""
     } else {
@@ -3186,7 +3189,7 @@ if (-not $ROCmIndexUrl -and ($CuTag -eq "cpu" -or $ROCmCpuFallback)) {
         $cpuAudioSpec  = "torchaudio>=2.4,<2.12.0"
     }
     if ($script:UnslothVerbose) {
-        Fast-Install $cpuTorchSpec $cpuVisionSpec $cpuAudioSpec @cpuForce --index-url $TorchInstallIndexUrl
+        Fast-Install $cpuTorchSpec $cpuVisionSpec $cpuAudioSpec @cpuForce --index-url $TorchInstallIndexUrl | ForEach-Object { Redact-InstallOutput "$_" } | Out-Host
         $torchInstallExit = $LASTEXITCODE
         $output = ""
     } else {
@@ -3218,7 +3221,7 @@ if (-not $ROCmIndexUrl -and ($CuTag -eq "cpu" -or $ROCmCpuFallback)) {
         $cudaAudioSpec = "torchaudio>=2.4,<2.11.0"
     }
     if ($script:UnslothVerbose) {
-        Fast-Install $cudaTorchSpec $cudaVisionSpec $cudaAudioSpec @cudaForce --index-url $TorchInstallIndexUrl
+        Fast-Install $cudaTorchSpec $cudaVisionSpec $cudaAudioSpec @cudaForce --index-url $TorchInstallIndexUrl | ForEach-Object { Redact-InstallOutput "$_" } | Out-Host
         $torchInstallExit = $LASTEXITCODE
         $output = ""
     } else {

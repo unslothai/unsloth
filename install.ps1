@@ -508,7 +508,10 @@ function Install-UnslothStudio {
                 # Merge stderr into stdout so progress/warning output stays visible
                 # without flipping $? on successful native commands (PS 5.1 treats
                 # stderr records as errors that set $? = $false even on exit code 0).
-                & $Command 2>&1 | Out-Host
+                # Redact per record: uv echoes index URLs (credentials and all) in
+                # its errors, and verbose mode must not bypass the quiet path's
+                # redaction. ForEach-Object/Out-Host leave $LASTEXITCODE untouched.
+                & $Command 2>&1 | ForEach-Object { Redact-InstallOutput "$_" } | Out-Host
             } else {
                 $output = & $Command 2>&1 | Out-String
                 if ($LASTEXITCODE -ne 0) {
