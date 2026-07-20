@@ -2200,9 +2200,8 @@ def test_yolo_aliases_are_interchangeable(fake_studio, alias):
 
 
 def test_yolo_opencode_bare_no_launch_uses_permission_fallback(fake_studio, tmp_path):
-    # A bare --no-launch recipe must remain append-safe because callers add their own
-    # subcommand later. `opencode --auto run ...` selects the default TUI instead of
-    # `run`, so this unknown-command case keeps the config fallback.
+    # A bare --no-launch recipe stays append-safe (callers add a subcommand later);
+    # `opencode --auto run ...` would select the TUI, not `run`, so keep the config fallback.
     result = CliRunner().invoke(start.start_app, ["opencode", "--yolo", "--no-launch"])
     assert result.exit_code == 0, result.output
     config = json.loads((tmp_path / "agents" / "opencode" / "opencode.json").read_text())
