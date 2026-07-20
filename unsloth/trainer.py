@@ -277,9 +277,20 @@ def _resolve_string_model_config(model_name, config_arg):
         from transformers import AutoConfig
 
         init_kwargs = getattr(config_arg, "model_init_kwargs", None) or {}
+        # why: forward auth + cache args too. Dropping token/use_auth_token made a
+        # private hybrid resolve as None (config load fails) -> treated as non-hybrid ->
+        # packing enabled without the shim even though TRL later loads it with the token.
         forward = {
             key: init_kwargs[key]
-            for key in ("trust_remote_code", "revision", "subfolder")
+            for key in (
+                "trust_remote_code",
+                "revision",
+                "subfolder",
+                "token",
+                "use_auth_token",
+                "cache_dir",
+                "code_revision",
+            )
             if key in init_kwargs
         }
         return AutoConfig.from_pretrained(model_name, **forward)

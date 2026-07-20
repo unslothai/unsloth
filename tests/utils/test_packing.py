@@ -1111,3 +1111,102 @@ def test_packing_sdpa(tmp_path):
 
     if hasattr(trainer, "accelerator"):
         trainer.accelerator.free_memory()
+
+
+# --- wrapped-packing source-injection robustness (reviewer.py / fork findings) --------
+
+
+# fmt: off
+# Named to match the unsloth_zoo helper (sft_trainer_prepare_dataset sources it by name
+# and renames "def sft_prepare_dataset" -> "def _prepare_dataset"). Deliberately OMITS the
+# "All Unsloth Zoo code licensed under LGPLv3" header to emulate a newer, compatible Zoo
+# whose header moved (the dependency is only lower-bounded). Never executed; source only.
+def sft_prepare_dataset(
+    self, dataset, processing_class, args, packing, formatting_func, dataset_text_field
+):
+    do_truncation = True
+    max_seq_length = 4
+    used_column_names = ["text"]
+    map_kwargs = {}
+    dataset = processing_class(dataset, truncation = do_truncation,)
+    if do_truncation and max_seq_length > 0:
+        pass
+    if packing:
+        dataset = pack_dataset(
+            dataset.select_columns(used_column_names),
+            max_seq_length,
+            getattr(args, "packing_strategy", "bfd"),
+            map_kwargs,
+        )
+    return dataset
+# fmt: on
+
+
+def test_wrapped_packing_injection_is_drift_resistant(monkeypatch):
+    # Regression: the setup block used to anchor on the Zoo license comment, so a header
+    # change made it a silent no-op while the truncation/pack edits still referenced its
+    # variables -> NameError on every SFT dataset prep. It must now install via the
+    # signature and precede the references, and the pack edit must reuse the guarded
+    # _unsloth_pack_has_strategy instead of re-calling _inspect.signature(pack_dataset).
+    import ast
+    import textwrap
+    import unsloth.models.rl_replacements as rlr
+
+    monkeypatch.setitem(rlr.RL_REPLACEMENTS, "sft_prepare_dataset", sft_prepare_dataset)
+
+    source = (
+        "def _prepare_dataset(self, dataset, processing_class, args, packing, "
+        "formatting_func, dataset_text_field):\n    return dataset\n"
+    )
+    patched = rlr.sft_trainer_prepare_dataset("_prepare_dataset", source)
+
+    # setup installed despite the missing header, and before it is referenced
+    assert "_unsloth_wrapped_packing = packing" in patched
+    assert "import inspect as _inspect" in patched
+    assert patched.index("_unsloth_wrapped_packing = packing") < patched.index(
+        "truncation = do_truncation and not _unsloth_wrapped_packing"
+    )
+    # the pack edit reuses the guarded flag (signature inspected exactly once, in setup)
+    assert "if _unsloth_pack_has_strategy:" in patched
+    assert patched.count("_inspect.signature(pack_dataset)") == 1
+    ast.parse(textwrap.dedent(patched))
+
+
+def test_require_replace_raises_on_missing_anchor():
+    from unsloth.models.rl_replacements import _require_replace
+
+    assert _require_replace("abc", "b", "B") == "aBc"
+    with pytest.raises(RuntimeError):
+        _require_replace("abc", "z", "Z", where = "unit test")
+    # an optional edit warns once and returns the source unchanged (no dangling ref)
+    assert _require_replace("abc", "z", "Z", required = False, where = "optional") == "abc"
+
+
+def test_resolve_string_model_config_forwards_token(monkeypatch):
+    import transformers
+
+    captured = {}
+
+    class _FakeAutoConfig:
+        @staticmethod
+        def from_pretrained(name, **kwargs):
+            captured.update(kwargs)
+            return SimpleNamespace(is_encoder_decoder = False)
+
+    monkeypatch.setattr(transformers, "AutoConfig", _FakeAutoConfig)
+
+    config_arg = SimpleNamespace(
+        model_init_kwargs = {
+            "token": "hf_secret",
+            "trust_remote_code": True,
+            "cache_dir": "/tmp/cache",
+            "torch_dtype": "bfloat16",  # not a config arg -> must NOT be forwarded
+        }
+    )
+    result = trainer_module._resolve_string_model_config("org/private-hybrid", config_arg)
+
+    assert result is not None
+    assert captured.get("token") == "hf_secret"
+    assert captured.get("trust_remote_code") is True
+    assert captured.get("cache_dir") == "/tmp/cache"
+    assert "torch_dtype" not in captured
