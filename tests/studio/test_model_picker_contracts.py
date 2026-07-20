@@ -66,9 +66,9 @@ def test_rollback_restores_native_lease_expiry_with_token():
     (which would look non-expiring and skip the expiry guard)."""
     src = _read("features/chat/hooks/use-chat-model-runtime.ts")
     assert "previousActiveNativePathExpiresAtMs" in src
-    assert re.search(r"activeNativePathExpiresAtMs:\s*previousActiveNativePathToken", src), (
-        "rollback must restore the expiry alongside the token"
-    )
+    assert re.search(
+        r"activeNativePathExpiresAtMs:\s*previousActiveNativePathToken", src
+    ), "rollback must restore the expiry alongside the token"
 
 
 def test_default_caches_keyed_on_inventory_version():
