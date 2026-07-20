@@ -40,8 +40,8 @@ try:
 except ImportError:
     FileLock = None
     FileLockTimeout = None
-from pathlib import Path
-from typing import Any, Iterable, Iterator
+from pathlib import Path, PurePosixPath
+from typing import Any, Iterable, Iterator, Literal
 
 
 EXIT_SUCCESS = 0
@@ -405,6 +405,10 @@ class InstallReleasePlan:
 
 
 class PrebuiltFallback(RuntimeError):
+    pass
+
+
+class ValidationLaunchUnavailable(RuntimeError):
     pass
 
 
@@ -2813,7 +2817,18 @@ def resolve_source_build_plan(
     )
 
 
-def run_capture(
+def _subprocess_failure(command: list[str], exc: BaseException) -> PrebuiltFallback:
+    name = command[0] if command else "subprocess"
+    if isinstance(exc, FileNotFoundError):
+        return PrebuiltFallback(f"{name} was not found")
+    if isinstance(exc, PermissionError):
+        return PrebuiltFallback(f"{name} was not executable")
+    if isinstance(exc, subprocess.TimeoutExpired):
+        return PrebuiltFallback(f"{name} timed out after {exc.timeout} seconds")
+    return PrebuiltFallback(f"{name} launch failed: {exc}")
+
+
+def _run_subprocess_capture(
     command: list[str],
     *,
     timeout: int = 30,
@@ -2829,19 +2844,32 @@ def run_capture(
         and os.path.basename(command[0]).lower().startswith("amd-smi")
     ):
         env = {**(os.environ if env is None else env), "__COMPAT_LAYER": "RunAsInvoker"}
-    result = subprocess.run(
-        command,
-        capture_output = True,
-        text = True,
-        timeout = timeout,
-        env = env,
-        **windows_hidden_subprocess_kwargs(),
-    )
+    try:
+        result = subprocess.run(
+            command,
+            capture_output = True,
+            text = True,
+            timeout = timeout,
+            env = env,
+            **windows_hidden_subprocess_kwargs(),
+        )
+    except (FileNotFoundError, PermissionError, subprocess.TimeoutExpired) as exc:
+        raise _subprocess_failure(command, exc) from exc
     if check and result.returncode != 0:
         raise subprocess.CalledProcessError(
             result.returncode, command, result.stdout, result.stderr
         )
     return result
+
+
+def run_capture(
+    command: list[str],
+    *,
+    timeout: int = 30,
+    check: bool = False,
+    env: dict[str, str] | None = None,
+) -> subprocess.CompletedProcess[str]:
+    return _run_subprocess_capture(command, timeout = timeout, check = check, env = env)
 
 
 def _pick_rocm_gfx_target(out: str) -> str | None:
@@ -3853,13 +3881,7 @@ def _detect_host_rocm_version() -> tuple[int, int] | None:
     hipconfig = shutil.which("hipconfig")
     if hipconfig:
         try:
-            result = subprocess.run(
-                [hipconfig, "--version"],
-                stdout = subprocess.PIPE,
-                stderr = subprocess.DEVNULL,
-                text = True,
-                timeout = 5,
-            )
+            result = run_capture([hipconfig, "--version"], timeout = 5)
             if result.returncode == 0:
                 raw = (result.stdout or "").strip().split("\n")[0]
                 parts = raw.split(".")
@@ -3881,13 +3903,7 @@ def _detect_host_rocm_version() -> tuple[int, int] | None:
         if not _exe:
             continue
         try:
-            _result = subprocess.run(
-                [_exe, *_cmd[1:]],
-                stdout = subprocess.PIPE,
-                stderr = subprocess.DEVNULL,
-                text = True,
-                timeout = 5,
-            )
+            _result = run_capture([_exe, *_cmd[1:]], timeout = 5)
         except Exception:
             continue
         if _result.returncode != 0 or not _result.stdout.strip():
@@ -5340,14 +5356,848 @@ def dedupe_existing_dirs(paths: Iterable[str | Path]) -> list[str]:
     return unique
 
 
-def linux_missing_libraries(binary_path: Path, *, env: dict[str, str] | None = None) -> list[str]:
-    try:
-        result = run_capture(["ldd", str(binary_path)], timeout = 20, env = env)
-    except Exception:
-        return []
+_VALIDATION_LAUNCH_RUN = "run"
+_VALIDATION_LAUNCH_SKIP = "skip"
+_VALIDATION_LAUNCH_FALLBACK = "fallback"
+_VALIDATION_PURPOSE_LDD = "ldd"
+_VALIDATION_PURPOSE_QUANTIZE = "quantize"
+_VALIDATION_PURPOSE_SERVER = "server"
+_VALIDATION_NETWORK_POLICY_DIRECT = "direct"
+_VALIDATION_NETWORK_POLICY_SANDBOX = "sandbox_loopback_only"
+_LINUX_LDD_PROBE_OK = "ok"
+_LINUX_LDD_PROBE_SKIPPED = "skipped"
+_LINUX_LDD_PROBE_ERROR = "error"
+_VALIDATION_SERVER_PROBE_MODE_HOST = "host_loopback_http"
+_VALIDATION_SERVER_PROBE_MODE_IN_SANDBOX = "sandbox_loopback_http"
+_LINUX_SERVER_VALIDATION_HELPER_TIMEOUT_SECONDS = 60
+_LINUX_SERVER_VALIDATION_HELPER_SHUTDOWN_SECONDS = 5
+_LINUX_SERVER_VALIDATION_HELPER_CAPTURE_TIMEOUT_SECONDS = (
+    _LINUX_SERVER_VALIDATION_HELPER_TIMEOUT_SECONDS
+    + (2 * _LINUX_SERVER_VALIDATION_HELPER_SHUTDOWN_SECONDS)
+)
 
+
+@dataclass(frozen = True)
+class _ValidationLaunchPlan:
+    command: list[str]
+    env: dict[str, str]
+    action: str
+    purpose: str
+    sandbox_kind: str | None = None
+    reason: str | None = None
+    payload_command: list[str] | None = None
+    payload_env: dict[str, str] | None = None
+    network_policy: str | None = None
+    server_probe_mode: str | None = None
+
+    @property
+    def is_runnable(self) -> bool:
+        return self.action == _VALIDATION_LAUNCH_RUN
+
+    @property
+    def is_skipped(self) -> bool:
+        return self.action == _VALIDATION_LAUNCH_SKIP
+
+    @property
+    def is_fallback(self) -> bool:
+        return self.action == _VALIDATION_LAUNCH_FALLBACK
+
+
+@dataclass(frozen = True)
+class LinuxLibraryProbeResult:
+    status: Literal["ok", "skipped", "error"]
+    missing: list[str]
+    output: str = ""
+    reason: str | None = None
+
+
+def _resolve_command_path(command: str) -> str | None:
+    resolved = shutil.which(command)
+    if resolved is None:
+        return None
+    return str(Path(resolved).resolve())
+
+
+def _resolve_existing_path(path: str | Path) -> Path:
+    candidate = Path(path)
+    try:
+        return candidate.resolve(strict = True)
+    except Exception:
+        return candidate
+
+
+def _resolve_sandbox_command(command: list[str]) -> list[str]:
+    if not command:
+        return []
+    resolved_command = list(command)
+    command_path = Path(resolved_command[0])
+    if command_path.is_absolute():
+        resolved_command[0] = str(_resolve_existing_path(command_path))
+        return resolved_command
+    resolved_path = _resolve_command_path(resolved_command[0])
+    if resolved_path is not None:
+        resolved_command[0] = resolved_path
+    return resolved_command
+
+
+def _binary_is_setuid_root(path: str | Path) -> bool:
+    try:
+        stat_result = os.stat(path)
+    except OSError:
+        return False
+    return stat_result.st_uid == 0 and bool(stat_result.st_mode & stat.S_ISUID)
+
+
+_bwrap_sandbox_capability: dict[str, bool] = {}
+_LINUX_DYNAMIC_LOADER_ENV_VARS = (
+    "LD_LIBRARY_PATH",
+    "LD_PRELOAD",
+    "LD_AUDIT",
+    "LD_DEBUG",
+    "LD_ORIGIN_PATH",
+)
+
+
+def _bwrap_can_sandbox(bwrap_path: str) -> bool:
+    # A present bwrap is not always usable: where unprivileged user namespaces are
+    # restricted (Ubuntu >= 23.10 AppArmor default, nested/unprivileged containers,
+    # hardened cloud VMs) a non-setuid bwrap fails to set up its uid map or loopback.
+    # Probe once and cache so a broken sandbox degrades like an absent one instead of
+    # failing every prebuilt validation and forcing a source build.
+    cached = _bwrap_sandbox_capability.get(bwrap_path)
+    if cached is not None:
+        return cached
+    ok = False
+    try:
+        result = run_capture(
+            [
+                bwrap_path,
+                "--ro-bind",
+                "/",
+                "/",
+                "--unshare-all",
+                "--die-with-parent",
+                _resolve_command_path("true") or "/bin/true",
+            ],
+            env = _linux_validation_launcher_env({}),
+            timeout = 20,
+        )
+        ok = result.returncode == 0
+    except Exception:
+        ok = False
+    _bwrap_sandbox_capability[bwrap_path] = ok
+    return ok
+
+
+def _append_existing_bwrap_bind(
+    args: list[str], *, source: str | Path, readonly: bool, seen: set[str]
+) -> None:
+    path = Path(source)
+    if not path.exists():
+        return
+    key = str(path)
+    if key in seen:
+        return
+    seen.add(key)
+    args.extend(
+        [
+            "--ro-bind" if readonly else "--bind",
+            key,
+            key,
+        ]
+    )
+
+
+_SANDBOX_LIBRARY_DIR_NAMES = frozenset({"lib", "lib64"})
+
+
+def _is_broad_sandbox_library_path(path: str | Path, *, require_library_dir: bool = False) -> bool:
+    candidate = Path(path)
+    resolved = _resolve_existing_path(candidate)
+    if not candidate.is_absolute() and not str(candidate).startswith(("/", "\\")):
+        return True
+    if len(resolved.parts) <= 2:
+        return True
+    if len(resolved.parts) <= 3 and resolved.parts[1].lower() in {"home", "users"}:
+        return True
+    if require_library_dir:
+        if resolved.name.lower() not in _SANDBOX_LIBRARY_DIR_NAMES:
+            return True
+    try:
+        if resolved == Path.home().resolve():
+            return True
+    except Exception:
+        pass
+    return False
+
+
+def _sandbox_library_path_targets(
+    env: dict[str, str],
+    key: str,
+    *,
+    require_library_dir: bool = False,
+) -> list[Path]:
+    return [
+        _resolve_existing_path(Path(part))
+        for part in env.get(key, "").split(os.pathsep)
+        if part
+        and not _is_broad_sandbox_library_path(part, require_library_dir = require_library_dir)
+    ]
+
+
+def _linux_validation_launcher_env(payload_env: dict[str, str]) -> dict[str, str]:
+    env = scrubbed_environ()
+    for key in (*payload_env, *_LINUX_DYNAMIC_LOADER_ENV_VARS):
+        env.pop(key, None)
+    # Keep a stable base command search path.
+    env["PATH"] = "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+    return env
+
+
+def _linux_validation_setenv_args(payload_env: dict[str, str]) -> list[str]:
+    args: list[str] = []
+    for key, value in sorted(payload_env.items()):
+        args.extend(["--setenv", key, value])
+    return args
+
+
+def _drop_server_gpu_layers(command: list[str]) -> list[str]:
+    trimmed: list[str] = []
+    index = 0
+    while index < len(command):
+        arg = command[index]
+        if arg == "--n-gpu-layers" and index + 1 < len(command):
+            index += 2
+            continue
+        trimmed.append(arg)
+        index += 1
+    return trimmed
+
+
+def _extract_loopback_port(command: list[str]) -> int:
+    for index, arg in enumerate(command):
+        if arg != "--port":
+            continue
+        if index + 1 >= len(command):
+            break
+        try:
+            return int(command[index + 1])
+        except ValueError:
+            break
+    return 0
+
+
+def _linux_validation_server_probe_command(
+    server_command: list[str],
+    payload_env: dict[str, str],
+    *,
+    timeout: int = _LINUX_SERVER_VALIDATION_HELPER_TIMEOUT_SECONDS,
+) -> list[str]:
+    for candidate in ("/usr/bin/python3", "/usr/bin/python"):
+        if Path(candidate).exists():
+            python = candidate
+            break
+    else:
+        python = shutil.which("python3") or shutil.which("python")
+    if python is None:
+        raise RuntimeError("No python interpreter available for in-sandbox server probe")
+
+    probe_script = textwrap.dedent(
+        f"""
+        import os
+        import subprocess
+        import sys
+        import tempfile
+        import time
+        import urllib.error
+        import urllib.request
+
+        command = {json.dumps(server_command)}
+        payload_env = {json.dumps(payload_env)}
+        body = b'{{"prompt":"a","n_predict":1}}'
+        timeout = {int(timeout)}
+        deadline = time.time() + timeout
+
+        def read_tail(path, max_lines = 80):
+            try:
+                with open(path, "r", encoding = "utf-8", errors = "replace") as handle:
+                    return handle.read().splitlines()[-max_lines:]
+            except Exception:
+                return []
+
+        log_fd, log_path = tempfile.mkstemp(prefix = "unsloth-server-validate-", suffix = ".log")
+        os.close(log_fd)
+
+        port = 0
+        for index, arg in enumerate(command):
+            if arg == "--port" and index + 1 < len(command):
+                try:
+                    port = int(command[index + 1])
+                except ValueError:
+                    port = 0
+                break
+        if port <= 0:
+            print("failed: missing --port for sandboxed llama-server probe")
+            raise SystemExit(1)
+
+        try:
+            with open(log_path, "w", encoding = "utf-8", errors = "replace") as log_handle:
+                server_env = dict(os.environ)
+                server_env.update(payload_env)
+                process = subprocess.Popen(
+                    command,
+                    stdout = log_handle,
+                    stderr = subprocess.STDOUT,
+                    text = True,
+                    env = server_env,
+                )
+                request = urllib.request.Request(
+                    "http://127.0.0.1:%d/completion" % port,
+                    data = body,
+                    headers = {{"Content-Type": "application/json"}},
+                    method = "POST",
+                )
+                while time.time() < deadline:
+                    if process.poll() is not None:
+                        print("server exited before completion probe, code=%s" % process.returncode)
+                        for line in read_tail(log_path):
+                            print(line)
+                        raise SystemExit(process.returncode if process.returncode else 1)
+                    try:
+                        with urllib.request.urlopen(request, timeout = 5) as response:
+                            _ = response.read(32)
+                            if response.status == 200:
+                                process.terminate()
+                                try:
+                                    process.wait(timeout = 5)
+                                except subprocess.TimeoutExpired:
+                                    process.kill()
+                                print("server validation probe succeeded for port=%s" % port)
+                                for line in read_tail(log_path):
+                                    print(line)
+                                raise SystemExit(0)
+                            print("server returned HTTP %s" % response.status)
+                    except urllib.error.HTTPError as exc:
+                        print("server returned HTTP %s" % exc.code)
+                        _ = exc.read()
+                    except Exception:
+                        pass
+                    time.sleep(0.25)
+
+            print("server validation timed out waiting for loopback response on port=%s" % port)
+            for line in read_tail(log_path):
+                print(line)
+            raise SystemExit(1)
+        finally:
+            if "process" in locals() and process.poll() is None:
+                process.terminate()
+                try:
+                    process.wait(timeout = 5)
+                except subprocess.TimeoutExpired:
+                    process.kill()
+                    process.wait(timeout = 5)
+            os.unlink(log_path)
+        """
+    )
+    return [python, "-c", probe_script]
+
+
+def _linux_validation_bwrap_prefix(
+    command: list[str],
+    *,
+    binary_path: Path,
+    install_dir: Path,
+    purpose: str,
+    adapter_path: str,
+    payload_env: dict[str, str],
+    payload_command: list[str] | None = None,
+    enable_gpu_layers: bool = False,
+    gpu_backend: Literal["cuda", "rocm"] | None = None,
+) -> list[str]:
+    runtime_home = isolated_runtime_home()
+    command_path = _resolve_existing_path(command[0])
+
+    write_targets = {
+        str(Path(runtime_home)),
+    }
+    readonly_targets: list[str | Path] = [
+        install_dir,
+        binary_path.parent,
+        command_path.parent,
+        "/bin",
+        "/lib",
+        "/lib64",
+        "/usr/bin",
+        "/usr/lib",
+        "/usr/lib64",
+        "/etc/ld.so.cache",
+        "/etc/ld.so.conf",
+        "/etc/ld.so.conf.d",
+    ]
+    if command_path.parent.name == "bin":
+        readonly_targets.extend(
+            [
+                command_path.parent.parent / "lib",
+                command_path.parent.parent / "lib64",
+            ]
+        )
+    if Path("/nix/store") in command_path.parents:
+        readonly_targets.append("/nix/store")
+    readonly_targets.extend(_sandbox_library_path_targets(payload_env, "LD_LIBRARY_PATH"))
+    server_command = payload_command or command
+
+    if purpose == _VALIDATION_PURPOSE_QUANTIZE and len(command) >= 3:
+        readonly_targets.append(Path(command[1]).parent)
+        write_targets.add(str(Path(command[2]).parent))
+    elif (
+        purpose == _VALIDATION_PURPOSE_SERVER
+        and len(server_command) >= 3
+        and server_command[1] == "-m"
+    ):
+        readonly_targets.append(Path(server_command[2]).parent)
+
+    enable_gpu_devices = (
+        purpose == _VALIDATION_PURPOSE_SERVER
+        and enable_gpu_layers
+        and gpu_backend in {"cuda", "rocm"}
+    )
+    args = [adapter_path]
+    if enable_gpu_devices:
+        args.extend(
+            [
+                "--unshare-cgroup-try",
+                "--unshare-ipc",
+                "--unshare-net",
+                "--unshare-pid",
+                "--unshare-uts",
+            ]
+        )
+    else:
+        args.append("--unshare-all")
+    args.extend(
+        [
+            "--die-with-parent",
+            "--new-session",
+            "--perms",
+            "1777",
+            "--tmpfs",
+            "/tmp",
+            "--proc",
+            "/proc",
+            "--dev",
+            "/dev",
+            "--setenv",
+            "HOME",
+            runtime_home,
+        ]
+    )
+    is_server_helper = payload_command is not None and purpose == _VALIDATION_PURPOSE_SERVER
+    if not is_server_helper:
+        args.extend(_linux_validation_setenv_args(payload_env))
+
+    seen: set[str] = set()
+    if enable_gpu_devices:
+        dev_nodes: list[str] = []
+        readonly_gpu_targets = [
+            "/sys/class/drm",
+            "/sys/bus/pci",
+            "/sys/dev/char",
+            "/sys/devices",
+            "/etc/vulkan",
+            "/usr/share/vulkan",
+        ]
+        if gpu_backend == "cuda":
+            dev_nodes.extend(
+                [
+                    "/dev/nvidiactl",
+                    "/dev/nvidia-modeset",
+                    "/dev/nvidia-uvm",
+                    "/dev/nvidia-uvm-tools",
+                ]
+            )
+            for path in Path("/dev").glob("nvidia*"):
+                if re.match(r"^nvidia[0-9]+$", path.name):
+                    dev_nodes.append(str(path))
+            dev_nodes.extend(str(path) for path in Path("/dev/nvidia-caps").glob("nvidia-cap*"))
+            readonly_gpu_targets.append("/proc/driver/nvidia")
+            readonly_gpu_targets.append("/proc/driver/nvidia/capabilities")
+        elif gpu_backend == "rocm":
+            dev_nodes.extend(["/dev/kfd", "/dev/dxg"])
+            dev_nodes.extend(str(node) for node in Path("/dev/dri").glob("card*"))
+            dev_nodes.extend(str(node) for node in Path("/dev/dri").glob("renderD*"))
+
+        for node in dev_nodes:
+            node_path = Path(node)
+            if str(node_path) in seen:
+                continue
+            if not node_path.exists():
+                continue
+            seen.add(str(node_path))
+            args.extend(["--dev-bind-try", str(node_path), str(node_path)])
+
+        readonly_targets.extend(readonly_gpu_targets)
+    for target in readonly_targets:
+        target_path = Path(target)
+        if str(target_path) in write_targets:
+            continue
+        _append_existing_bwrap_bind(args, source = target_path, readonly = True, seen = seen)
+    for target in sorted(write_targets):
+        _append_existing_bwrap_bind(args, source = target, readonly = False, seen = seen)
+    return args
+
+
+def _sandbox_profile_path_literals(path: str | Path) -> list[str]:
+    raw_path = Path(path)
+    candidates: list[Path] = [raw_path]
+    try:
+        resolved = raw_path.resolve()
+    except Exception:
+        resolved = raw_path
+    if resolved not in candidates:
+        candidates.append(resolved)
+    literals: list[str] = []
+    seen: set[str] = set()
+    for candidate in candidates:
+        text = str(candidate)
+        if text in seen:
+            continue
+        seen.add(text)
+        literals.append(text.replace("\\", "\\\\").replace('"', '\\"'))
+    return literals
+
+
+def _macos_validation_sandbox_prefix(
+    command: list[str],
+    *,
+    binary_path: Path,
+    install_dir: Path,
+    purpose: str,
+    env: dict[str, str],
+    adapter_path: str,
+) -> list[str]:
+    runtime_home = Path(isolated_runtime_home())
+    read_targets: list[str | Path] = [
+        "/bin",
+        "/usr/bin",
+        "/usr/lib",
+        "/System",
+        "/System/Library/Frameworks",
+        "/System/Library",
+        install_dir,
+        binary_path.parent,
+        runtime_home,
+    ]
+    read_targets.extend(
+        _sandbox_library_path_targets(env, "DYLD_LIBRARY_PATH", require_library_dir = True)
+    )
+    write_targets: list[str | Path] = [runtime_home]
+    if purpose == _VALIDATION_PURPOSE_QUANTIZE and len(command) >= 3:
+        read_targets.append(Path(command[1]).parent)
+        write_targets.append(Path(command[2]).parent)
+    elif purpose == _VALIDATION_PURPOSE_SERVER and len(command) >= 3 and command[1] == "-m":
+        read_targets.append(Path(command[2]).parent)
+
+    exec_targets: list[str | Path] = [
+        "/bin",
+        "/usr/bin",
+        "/usr/lib",
+        "/System",
+        "/System/Library",
+        binary_path.parent,
+    ]
+    executable_map_targets: list[str | Path] = [
+        "/usr/lib",
+        "/System",
+        "/System/Library",
+        install_dir,
+        binary_path.parent,
+    ]
+    executable_map_targets.extend(
+        _sandbox_library_path_targets(env, "DYLD_LIBRARY_PATH", require_library_dir = True)
+    )
+    profile_parts = [
+        "(version 1)",
+        "(deny default)",
+        '(import "bsd.sb")',
+        "(allow process-exec",
+    ]
+    for target in exec_targets:
+        for literal in _sandbox_profile_path_literals(target):
+            profile_parts.append(f'(subpath "{literal}")')
+    profile_parts.append(")")
+    profile_parts.append("(allow file-map-executable")
+    for target in executable_map_targets:
+        for literal in _sandbox_profile_path_literals(target):
+            profile_parts.append(f'(subpath "{literal}")')
+    profile_parts.append(")")
+    profile_parts.append("(allow file-read*")
+    for target in read_targets:
+        for literal in _sandbox_profile_path_literals(target):
+            if literal == "/":
+                profile_parts.append(f'(literal "{literal}")')
+            else:
+                profile_parts.append(f'(subpath "{literal}")')
+    profile_parts.append(")")
+    profile_parts.append("(allow file-write*")
+    for target in write_targets:
+        for literal in _sandbox_profile_path_literals(target):
+            profile_parts.append(f'(subpath "{literal}")')
+    profile_parts.append(")")
+    if purpose == _VALIDATION_PURPOSE_SERVER:
+        server_port = _extract_loopback_port(command)
+        if server_port > 0:
+            profile_parts.append(f'(allow network* (local ip "localhost:{server_port}"))')
+            profile_parts.append(f'(allow network* (remote ip "localhost:{server_port}"))')
+    profile = "".join(profile_parts)
+    return [
+        adapter_path,
+        "-p",
+        profile,
+    ]
+
+
+def _host_is_linux(host: HostInfo | None = None) -> bool:
+    if host is not None:
+        return host.is_linux
+    return platform.system() == "Linux"
+
+
+def _host_is_macos(host: HostInfo | None = None) -> bool:
+    if host is not None:
+        return host.is_macos
+    return platform.system() == "Darwin"
+
+
+def _host_is_windows(host: HostInfo | None = None) -> bool:
+    if host is not None:
+        return host.is_windows
+    return platform.system() == "Windows"
+
+
+def build_validation_sandbox_plan(
+    command: list[str],
+    *,
+    binary_path: Path,
+    install_dir: Path,
+    purpose: str,
+    env: dict[str, str],
+    enable_gpu_layers: bool = False,
+    gpu_backend: Literal["cuda", "rocm"] | None = None,
+    host: HostInfo | None = None,
+    runtime_line: str | None = None,
+) -> _ValidationLaunchPlan:
+    launcher_env = (
+        _linux_validation_launcher_env(env) if _host_is_linux(host) else scrubbed_environ()
+    )
+    if _host_is_linux(host):
+        bwrap_path = _resolve_command_path("bwrap")
+        if bwrap_path is not None and _bwrap_can_sandbox(bwrap_path):
+            payload_command = _resolve_sandbox_command(command)
+            if (
+                purpose == _VALIDATION_PURPOSE_SERVER
+                and enable_gpu_layers
+                and gpu_backend in {"cuda", "rocm"}
+                and not _binary_is_setuid_root(bwrap_path)
+            ):
+                # Non-setuid bwrap needs a user namespace, which drops the host's
+                # supplementary GPU device groups. Keep the loopback-only sandbox
+                # and validate the bundle on the CPU path instead.
+                payload_command = _drop_server_gpu_layers(payload_command)
+                enable_gpu_layers = False
+                gpu_backend = None
+            network_policy = _VALIDATION_NETWORK_POLICY_SANDBOX
+            server_probe_mode = (
+                _VALIDATION_SERVER_PROBE_MODE_IN_SANDBOX
+                if purpose == _VALIDATION_PURPOSE_SERVER
+                else None
+            )
+            launch_command = payload_command
+            if purpose == _VALIDATION_PURPOSE_SERVER:
+                try:
+                    launch_command = _resolve_sandbox_command(
+                        _linux_validation_server_probe_command(
+                            payload_command,
+                            env,
+                            timeout = _LINUX_SERVER_VALIDATION_HELPER_TIMEOUT_SECONDS,
+                        )
+                    )
+                except RuntimeError as exc:
+                    return _ValidationLaunchPlan(
+                        command = payload_command,
+                        env = launcher_env,
+                        action = _VALIDATION_LAUNCH_FALLBACK,
+                        purpose = purpose,
+                        reason = str(exc),
+                        payload_command = payload_command,
+                        payload_env = env,
+                        network_policy = network_policy,
+                        server_probe_mode = _VALIDATION_SERVER_PROBE_MODE_IN_SANDBOX,
+                        sandbox_kind = "linux_bwrap",
+                    )
+            adapter_command = _linux_validation_bwrap_prefix(
+                launch_command,
+                binary_path = binary_path,
+                install_dir = install_dir,
+                purpose = purpose,
+                adapter_path = bwrap_path,
+                payload_env = env,
+                payload_command = payload_command,
+                enable_gpu_layers = enable_gpu_layers,
+                gpu_backend = gpu_backend,
+            )
+            return _ValidationLaunchPlan(
+                command = [
+                    *adapter_command,
+                    *launch_command,
+                ],
+                env = launcher_env,
+                action = _VALIDATION_LAUNCH_RUN,
+                purpose = purpose,
+                sandbox_kind = "linux_bwrap",
+                payload_command = payload_command,
+                payload_env = env,
+                network_policy = network_policy,
+                server_probe_mode = server_probe_mode,
+            )
+        if purpose == _VALIDATION_PURPOSE_LDD:
+            return _ValidationLaunchPlan(
+                command = command,
+                env = launcher_env,
+                action = _VALIDATION_LAUNCH_SKIP,
+                purpose = purpose,
+                sandbox_kind = "linux_bwrap",
+                reason = "No Linux sandbox adapter was available; skip ldd probe",
+            )
+        return _ValidationLaunchPlan(
+            command = command,
+            env = launcher_env,
+            action = _VALIDATION_LAUNCH_SKIP,
+            purpose = purpose,
+            sandbox_kind = "linux_bwrap",
+            reason = "No Linux sandbox adapter was available; skip downloaded-binary validation",
+            payload_command = command,
+            payload_env = env,
+            network_policy = None,
+            server_probe_mode = None,
+        )
+
+    if _host_is_macos(host):
+        sandbox_exec_path = _resolve_command_path("sandbox-exec")
+        if sandbox_exec_path is not None:
+            network_policy = (
+                _VALIDATION_NETWORK_POLICY_SANDBOX
+                if purpose == _VALIDATION_PURPOSE_SERVER
+                else _VALIDATION_NETWORK_POLICY_DIRECT
+            )
+            launch_command = command
+            return _ValidationLaunchPlan(
+                command = [
+                    *_macos_validation_sandbox_prefix(
+                        command,
+                        binary_path = binary_path,
+                        install_dir = install_dir,
+                        purpose = purpose,
+                        env = env,
+                        adapter_path = sandbox_exec_path,
+                    ),
+                    "/usr/bin/env",
+                    "-i",
+                    *[f"{name}={value}" for name, value in sorted(env.items())],
+                    *launch_command,
+                ],
+                env = launcher_env,
+                action = _VALIDATION_LAUNCH_RUN,
+                purpose = purpose,
+                sandbox_kind = "macos_sandbox_exec",
+                payload_command = launch_command,
+                payload_env = env,
+                network_policy = network_policy,
+                server_probe_mode = _VALIDATION_SERVER_PROBE_MODE_HOST,
+            )
+        return _ValidationLaunchPlan(
+            command = command,
+            env = launcher_env,
+            action = _VALIDATION_LAUNCH_FALLBACK,
+            purpose = purpose,
+            reason = "No macOS sandbox-exec adapter was available for downloaded-binary validation",
+            payload_command = command,
+            payload_env = env,
+            sandbox_kind = "macos_sandbox_exec",
+            network_policy = _VALIDATION_NETWORK_POLICY_DIRECT
+            if purpose == _VALIDATION_PURPOSE_SERVER
+            else _VALIDATION_NETWORK_POLICY_DIRECT,
+            server_probe_mode = _VALIDATION_SERVER_PROBE_MODE_HOST,
+        )
+
+    if _host_is_windows(host):
+        return _ValidationLaunchPlan(
+            command = command,
+            env = env,
+            action = _VALIDATION_LAUNCH_RUN,
+            purpose = purpose,
+            sandbox_kind = "windows_direct_validation",
+            reason = "Running validation directly on Windows host",
+            payload_command = command,
+            payload_env = env,
+            network_policy = _VALIDATION_NETWORK_POLICY_DIRECT,
+            server_probe_mode = _VALIDATION_SERVER_PROBE_MODE_HOST,
+        )
+
+    return _ValidationLaunchPlan(
+        command = command,
+        env = env,
+        action = _VALIDATION_LAUNCH_FALLBACK,
+        purpose = purpose,
+        reason = f"Unsupported platform for validation sandboxing: {platform.system()}",
+    )
+
+
+def _unavailable_validation_launch(plan: _ValidationLaunchPlan) -> ValidationLaunchUnavailable:
+    reason = plan.reason or f"{plan.purpose} launch was skipped by sandbox policy"
+    return ValidationLaunchUnavailable(reason)
+
+
+def _run_validation_launch(
+    plan: _ValidationLaunchPlan,
+    *,
+    timeout: int | None = None,
+    stdout = None,
+    popen: bool = False,
+) -> subprocess.CompletedProcess[str] | subprocess.Popen[str]:
+    if plan.is_skipped:
+        raise _unavailable_validation_launch(plan)
+    if plan.is_fallback:
+        if plan.reason is None:
+            raise PrebuiltFallback("validation launch skipped due to missing sandbox")
+        raise PrebuiltFallback(plan.reason)
+    if popen:
+        try:
+            return subprocess.Popen(
+                plan.command,
+                stdout = stdout,
+                stderr = subprocess.STDOUT,
+                text = True,
+                env = plan.env,
+                **windows_hidden_subprocess_kwargs(),
+            )
+        except (FileNotFoundError, PermissionError) as exc:
+            raise _subprocess_failure(plan.command, exc) from exc
+    if timeout is None:
+        raise ValueError("timeout is required for captured validation launches")
+    return run_capture(plan.command, timeout = timeout, env = plan.env)
+
+
+def _run_validation_capture(
+    plan: _ValidationLaunchPlan, *, timeout: int
+) -> subprocess.CompletedProcess[str]:
+    result = _run_validation_launch(plan, timeout = timeout)
+    assert isinstance(result, subprocess.CompletedProcess)
+    return result
+
+
+def _parse_ldd_missing_libraries(output: str) -> list[str]:
     missing: list[str] = []
-    for line in (result.stdout + result.stderr).splitlines():
+    for line in output.splitlines():
         line = line.strip()
         if "=> not found" not in line:
             continue
@@ -5355,6 +6205,97 @@ def linux_missing_libraries(binary_path: Path, *, env: dict[str, str] | None = N
         if library and library not in missing:
             missing.append(library)
     return missing
+
+
+def _ldd_output_is_static_binary(output: str) -> bool:
+    return "not a dynamic executable" in output.lower()
+
+
+def _run_validation_ldd_probe(binary_path: Path, *, env: dict[str, str]) -> LinuxLibraryProbeResult:
+    ldd_path = shutil.which("ldd")
+    if ldd_path is None:
+        return LinuxLibraryProbeResult(
+            status = _LINUX_LDD_PROBE_SKIPPED,
+            missing = [],
+            reason = "ldd executable was not found",
+        )
+    plan = build_validation_sandbox_plan(
+        [ldd_path, str(binary_path)],
+        binary_path = binary_path,
+        install_dir = binary_path.parent,
+        purpose = _VALIDATION_PURPOSE_LDD,
+        env = env,
+    )
+    if plan.is_skipped:
+        return LinuxLibraryProbeResult(
+            status = _LINUX_LDD_PROBE_SKIPPED,
+            missing = [],
+            reason = "ldd probe was skipped by validation policy",
+        )
+    if plan.is_fallback:
+        return LinuxLibraryProbeResult(
+            status = _LINUX_LDD_PROBE_SKIPPED,
+            missing = [],
+            reason = plan.reason or "ldd probe did not run",
+        )
+    try:
+        result = _run_validation_capture(plan, timeout = 20)
+    except Exception as exc:
+        return LinuxLibraryProbeResult(
+            status = _LINUX_LDD_PROBE_ERROR,
+            missing = [],
+            reason = f"ldd probe failed: {exc}",
+        )
+    if result.returncode != 0:
+        reason = result.stdout if result.stdout else ""
+        stderr = result.stderr if result.stderr else ""
+        if stderr:
+            reason = f"{reason} {stderr}" if reason else stderr
+        if _ldd_output_is_static_binary(reason):
+            return LinuxLibraryProbeResult(
+                status = _LINUX_LDD_PROBE_OK,
+                missing = [],
+                reason = "static executable",
+                output = result.stdout + result.stderr,
+            )
+        if not reason:
+            reason = "ldd probe failed"
+        return LinuxLibraryProbeResult(
+            status = _LINUX_LDD_PROBE_ERROR,
+            missing = [],
+            reason = reason.strip(),
+            output = result.stdout + result.stderr,
+        )
+    output = result.stdout + result.stderr
+    return LinuxLibraryProbeResult(
+        status = _LINUX_LDD_PROBE_OK,
+        missing = _parse_ldd_missing_libraries(output),
+        output = output,
+    )
+
+
+def _run_validation_popen(
+    plan: _ValidationLaunchPlan,
+    *,
+    stdout,
+    timeout: int | None = None,  # kept for parity with current validate_server call shape
+) -> subprocess.Popen[str]:
+    process = _run_validation_launch(plan, stdout = stdout, popen = True)
+    return process  # type: ignore[return-value]
+
+
+def linux_missing_libraries(binary_path: Path, *, env: dict[str, str] | None = None) -> list[str]:
+    if env is None:
+        env = scrubbed_environ()
+    try:
+        probe_output = _run_validation_ldd_probe(binary_path, env = env)
+    except Exception:
+        return []
+    if probe_output.status != _LINUX_LDD_PROBE_OK:
+        return []
+    if not probe_output.output:
+        return []
+    return probe_output.missing
 
 
 def python_runtime_dirs() -> list[str]:
@@ -5421,7 +6362,12 @@ def ldconfig_runtime_dirs(required_libraries: Iterable[str]) -> list[str]:
 
 def linux_runtime_dirs(binary_path: Path) -> list[str]:
     # ldd may execute the binary, so probe it with a secret-free env.
-    missing = linux_missing_libraries(binary_path, env = scrubbed_environ())
+    probe_result = _run_validation_ldd_probe(binary_path, env = scrubbed_environ())
+    if probe_result.status != _LINUX_LDD_PROBE_OK:
+        if probe_result.reason:
+            log(f"Skipping Linux runtime dirs probe because {probe_result.reason}")
+        return []
+    missing = probe_result.missing
     if not missing:
         return []
     return linux_runtime_dirs_for_required_libraries(missing)
@@ -5603,7 +6549,11 @@ def preflight_macos_installed_binaries(
 
 
 def preflight_linux_installed_binaries(
-    binaries: Iterable[Path], install_dir: Path, host: HostInfo
+    binaries: Iterable[Path],
+    install_dir: Path,
+    host: HostInfo,
+    *,
+    allow_skipped_probe: bool = True,
 ) -> None:
     if not host.is_linux:
         return
@@ -5611,7 +6561,25 @@ def preflight_linux_installed_binaries(
     issues: list[str] = []
     for binary_path in binaries:
         env = binary_env(binary_path, install_dir, host)
-        missing = linux_missing_libraries(binary_path, env = env)
+        probe_result = _run_validation_ldd_probe(binary_path, env = env)
+        if probe_result.status == _LINUX_LDD_PROBE_ERROR:
+            raise PrebuiltFallback(
+                f"linux extracted binary ldd probe errored for {binary_path.name}: "
+                f"{probe_result.reason}"
+            )
+        if probe_result.status == _LINUX_LDD_PROBE_SKIPPED:
+            if allow_skipped_probe:
+                log(
+                    f"linux extracted binary ldd probe skipped for {binary_path.name}"
+                    + (f": {probe_result.reason}" if probe_result.reason else "")
+                )
+                continue
+            issues.append(
+                f"{binary_path.name}: linux ldd probe skipped"
+                + (f" ({probe_result.reason})" if probe_result.reason else "")
+            )
+            continue
+        missing = probe_result.missing
         if not missing:
             continue
         runtime_dirs = [part for part in env.get("LD_LIBRARY_PATH", "").split(os.pathsep) if part]
@@ -5821,6 +6789,13 @@ _CI_COMMAND_FILE_VARS = (
     "GITHUB_STEP_SUMMARY",
     "BASH_ENV",
 )
+# Python-first sandbox helpers must not inherit host import roots.
+_PYTHON_IMPORT_POINTER_VARS = (
+    "PYTHONHOME",
+    "PYTHONPATH",
+)
+_LD_ALLOWED_ENV_NAMES = frozenset({"LD_LIBRARY_PATH"})
+_DYLD_ALLOWED_ENV_NAMES = frozenset({"DYLD_LIBRARY_PATH"})
 
 _isolated_runtime_home_dir: str | None = None
 
@@ -5846,8 +6821,18 @@ def scrubbed_environ() -> dict[str, str]:
     # Windows rebuilds the profile from %HOMEDRIVE%%HOMEPATH% (no-op pair on POSIX).
     drive, tail = os.path.splitdrive(runtime_home)
     env["HOMEDRIVE"], env["HOMEPATH"] = drive, tail or runtime_home
-    for pointer in (*_CREDENTIAL_FILE_POINTER_VARS, *_CI_COMMAND_FILE_VARS):
+    for pointer in (
+        *_CREDENTIAL_FILE_POINTER_VARS,
+        *_CI_COMMAND_FILE_VARS,
+        *_PYTHON_IMPORT_POINTER_VARS,
+    ):
         env.pop(pointer, None)
+    for key in tuple(env):
+        if key.upper().startswith("LD_") and key.upper() not in _LD_ALLOWED_ENV_NAMES:
+            env.pop(key, None)
+            continue
+        if key.upper().startswith("DYLD_") and key.upper() not in _DYLD_ALLOWED_ENV_NAMES:
+            env.pop(key, None)
     return env
 
 
@@ -5877,11 +6862,19 @@ def binary_env(
         if _wsl_rocm:
             ld_dirs = [*_wsl_rocm, *ld_dirs]
             env.setdefault("HSA_ENABLE_DXG_DETECTION", "1")
-        existing = [part for part in env.get("LD_LIBRARY_PATH", "").split(os.pathsep) if part]
+        existing = [
+            str(_resolve_existing_path(Path(part)))
+            for part in env.get("LD_LIBRARY_PATH", "").split(os.pathsep)
+            if part and not _is_broad_sandbox_library_path(part)
+        ]
         env["LD_LIBRARY_PATH"] = os.pathsep.join(dedupe_existing_dirs([*ld_dirs, *existing]))
     elif host.is_macos:
         dyld_dirs = [str(binary_path.parent), str(install_dir)]
-        existing = [part for part in env.get("DYLD_LIBRARY_PATH", "").split(os.pathsep) if part]
+        existing = [
+            str(_resolve_existing_path(Path(part)))
+            for part in env.get("DYLD_LIBRARY_PATH", "").split(os.pathsep)
+            if part and not _is_broad_sandbox_library_path(part, require_library_dir = True)
+        ]
         env["DYLD_LIBRARY_PATH"] = os.pathsep.join(dedupe_existing_dirs([*dyld_dirs, *existing]))
     return env
 
@@ -5894,16 +6887,25 @@ def validate_quantize(
     host: HostInfo,
     *,
     runtime_line: str | None = None,
+    require_launch: bool = False,
 ) -> None:
-    command = [str(quantize_path), str(probe_path), str(quantized_path), "Q6_K", "2"]
-    result = subprocess.run(
-        command,
-        capture_output = True,
-        text = True,
-        timeout = 120,
-        env = binary_env(quantize_path, install_dir, host, runtime_line = runtime_line),
-        **windows_hidden_subprocess_kwargs(),
+    env = binary_env(quantize_path, install_dir, host, runtime_line = runtime_line)
+    plan = build_validation_sandbox_plan(
+        [str(quantize_path), str(probe_path), str(quantized_path), "Q6_K", "2"],
+        binary_path = quantize_path,
+        install_dir = install_dir,
+        host = host,
+        runtime_line = runtime_line,
+        purpose = _VALIDATION_PURPOSE_QUANTIZE,
+        env = env,
     )
+    try:
+        result = _run_validation_capture(plan, timeout = 120)
+    except ValidationLaunchUnavailable as exc:
+        if require_launch:
+            raise PrebuiltFallback(f"llama-quantize validation unavailable: {exc}") from exc
+        log(f"llama-quantize validation skipped: {exc}")
+        return
     if result.returncode != 0 or not quantized_path.exists() or quantized_path.stat().st_size == 0:
         combined = result.stdout + ("\n" + result.stderr if result.stderr else "")
         # Backstop for prebuilts the static minos scan could not read: a dyld
@@ -5925,10 +6927,13 @@ def validate_server(
     *,
     runtime_line: str | None = None,
     install_kind: str | None = None,
+    require_launch: bool = False,
 ) -> None:
     last_failure: PrebuiltFallback | None = None
+    gpu_backend: Literal["cuda", "rocm"] | None = None
     for port_attempt in range(1, SERVER_PORT_BIND_ATTEMPTS + 1):
         port = free_local_port()
+        env = binary_env(server_path, install_dir, host, runtime_line = runtime_line)
         command = [
             str(server_path),
             "-m",
@@ -5964,20 +6969,65 @@ def validate_server(
             "windows-hip",
             "windows-vulkan",
             "windows-rocm",
-            "macos-arm64",
         }
         if install_kind is not None:
             _enable_gpu_layers = install_kind in _gpu_kinds
+            if install_kind in {"linux-cuda", "linux-arm64-cuda"}:
+                gpu_backend = "cuda"
+            elif install_kind == "linux-rocm":
+                gpu_backend = "rocm"
         else:
             # Older call sites that don't pass install_kind: keep ROCm
             # hosts in the GPU-validation path so an AMD-only Linux host
             # is exercised against the actual hardware rather than the
-            # CPU fallback. NVIDIA and macOS-arm64 are already covered.
-            _enable_gpu_layers = (
-                host.has_usable_nvidia or host.has_rocm or (host.is_macos and host.is_arm64)
-            )
+            # CPU fallback. NVIDIA stays covered here.
+            _enable_gpu_layers = host.has_usable_nvidia or host.has_rocm
+            if host.is_linux and host.has_usable_nvidia:
+                gpu_backend = "cuda"
+            elif host.is_linux and host.has_rocm:
+                gpu_backend = "rocm"
         if _enable_gpu_layers:
             command.extend(["--n-gpu-layers", "1"])
+        plan = build_validation_sandbox_plan(
+            command,
+            binary_path = server_path,
+            install_dir = install_dir,
+            host = host,
+            runtime_line = runtime_line,
+            purpose = _VALIDATION_PURPOSE_SERVER,
+            env = env,
+            enable_gpu_layers = _enable_gpu_layers,
+            gpu_backend = gpu_backend,
+        )
+        if plan.server_probe_mode == _VALIDATION_SERVER_PROBE_MODE_IN_SANDBOX:
+            started_at = time.time()
+            try:
+                result = _run_validation_capture(
+                    plan,
+                    timeout = _LINUX_SERVER_VALIDATION_HELPER_CAPTURE_TIMEOUT_SECONDS,
+                )
+            except ValidationLaunchUnavailable as exc:
+                if require_launch:
+                    raise PrebuiltFallback(f"llama-server validation unavailable: {exc}") from exc
+                log(f"llama-server validation skipped: {exc}")
+                return
+            output = (result.stdout or "") + (result.stderr or "")
+            if result.returncode == 0:
+                return
+            exited_quickly = (time.time() - started_at) <= SERVER_BIND_RETRY_WINDOW_SECONDS
+            failure = PrebuiltFallback("llama-server validation failed inside sandbox:\n" + output)
+            if port_attempt < SERVER_PORT_BIND_ATTEMPTS and is_retryable_server_bind_error(
+                RuntimeError(output),
+                output,
+                exited_quickly = exited_quickly,
+            ):
+                log(
+                    f"llama-server startup hit a port race on {port}; retrying with a fresh port "
+                    f"({port_attempt}/{SERVER_PORT_BIND_ATTEMPTS})"
+                )
+                last_failure = failure
+                continue
+            raise failure
 
         log_fd, log_name = tempfile.mkstemp(prefix = "llama-server-", suffix = ".log")
         os.close(log_fd)
@@ -5985,14 +7035,18 @@ def validate_server(
         process: subprocess.Popen[str] | None = None
         try:
             with log_path.open("w", encoding = "utf-8", errors = "replace") as log_handle:
-                process = subprocess.Popen(
-                    command,
-                    stdout = log_handle,
-                    stderr = subprocess.STDOUT,
-                    text = True,
-                    env = binary_env(server_path, install_dir, host, runtime_line = runtime_line),
-                    **windows_hidden_subprocess_kwargs(),
-                )
+                try:
+                    process = _run_validation_popen(
+                        plan,
+                        stdout = log_handle,
+                    )
+                except ValidationLaunchUnavailable as exc:
+                    if require_launch:
+                        raise PrebuiltFallback(
+                            f"llama-server validation unavailable: {exc}"
+                        ) from exc
+                    log(f"llama-server validation skipped: {exc}")
+                    return
                 deadline = time.time() + 60
                 startup_started = time.time()
                 response_body = ""
@@ -6109,10 +7163,15 @@ def collect_system_report(host: HostInfo, choice: AssetChoice | None, install_di
         server_binary = install_dir / "llama-server"
         if server_binary.exists():
             server_env = binary_env(server_binary, install_dir, host)
-            lines.append(
-                "linux_missing_libs="
-                + (",".join(linux_missing_libraries(server_binary, env = server_env)) or "none")
-            )
+            ldd_probe = _run_validation_ldd_probe(server_binary, env = server_env)
+            lines.append("linux_missing_libs_probe=" + ldd_probe.status)
+            if ldd_probe.reason:
+                lines.append("linux_missing_libs_probe_reason=" + ldd_probe.reason)
+            if ldd_probe.status == _LINUX_LDD_PROBE_OK:
+                lines.append(
+                    "linux_missing_libs="
+                    + (",".join(ldd_probe.missing) if ldd_probe.missing else "none")
+                )
             lines.append(
                 "linux_runtime_dirs="
                 + (
@@ -6127,9 +7186,11 @@ def collect_system_report(host: HostInfo, choice: AssetChoice | None, install_di
                 )
             )
             try:
-                ldd = run_capture(["ldd", str(server_binary)], timeout = 20, env = server_env)
-                lines.append("ldd llama-server:")
-                lines.append((ldd.stdout + ldd.stderr).strip())
+                if ldd_probe.status == _LINUX_LDD_PROBE_OK:
+                    lines.append("ldd llama-server:")
+                    lines.append((ldd_probe.output or "none").strip())
+                else:
+                    lines.append("ldd llama-server: skipped")
             except Exception as exc:
                 lines.append(f"ldd error: {exc}")
     elif host.is_windows:
@@ -6682,6 +7743,7 @@ def existing_install_matches_choice(
                 [runtime_dir / "llama-server", runtime_dir / "llama-quantize"],
                 install_dir,
                 host,
+                allow_skipped_probe = True,
             )
         except Exception:
             return False
@@ -6794,7 +7856,8 @@ def validate_prebuilt_choice(
     # costing minutes on Blackwell sm_100 -- is gated behind
     # _RUN_STAGED_PREBUILT_VALIDATION, disabled for now. The check and the
     # source-build fallback it triggers are kept intact; flip the flag to restore it.
-    if choice.expected_sha256 is None or _RUN_STAGED_PREBUILT_VALIDATION:
+    smoke_validation_required = choice.expected_sha256 is None
+    if smoke_validation_required or _RUN_STAGED_PREBUILT_VALIDATION:
         validate_quantize(
             quantize_path,
             probe_path,
@@ -6802,6 +7865,7 @@ def validate_prebuilt_choice(
             install_dir,
             host,
             runtime_line = choice.runtime_line,
+            require_launch = smoke_validation_required,
         )
         validate_server(
             server_path,
@@ -6810,8 +7874,9 @@ def validate_prebuilt_choice(
             install_dir,
             runtime_line = choice.runtime_line,
             install_kind = choice.install_kind,
+            require_launch = smoke_validation_required,
         )
-        log(f"staged prebuilt validation succeeded for {choice.name}")
+        log(f"staged prebuilt validation completed for {choice.name}")
     return server_path, quantize_path
 
 
