@@ -1286,7 +1286,12 @@ def _install_agent(name: str, install_hint: str) -> Optional[str]:
     # PSSecurityException.
     if os.name == "nt":
         install_command = [
-            "powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", install_hint,
+            "powershell",
+            "-NoProfile",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-Command",
+            install_hint,
         ]
     else:
         install_command = ["/bin/sh", "-c", install_hint]
