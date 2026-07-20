@@ -293,6 +293,13 @@ def _resolve_string_model_config(model_name, config_arg):
             )
             if key in init_kwargs
         }
+        # why: TRL also merges the top-level args.trust_remote_code into the load via
+        # model_init_kwargs.setdefault(...) before create_model_from_path, so honor it
+        # here (model_init_kwargs wins) or a remote-code hybrid set with the common
+        # SFTConfig(trust_remote_code=True) resolves as None and skips the guard.
+        top_level_trust_remote_code = getattr(config_arg, "trust_remote_code", None)
+        if top_level_trust_remote_code is not None:
+            forward.setdefault("trust_remote_code", top_level_trust_remote_code)
         return AutoConfig.from_pretrained(model_name, **forward)
     except Exception:
         return None

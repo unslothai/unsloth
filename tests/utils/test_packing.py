@@ -1210,3 +1210,30 @@ def test_resolve_string_model_config_forwards_token(monkeypatch):
     assert captured.get("trust_remote_code") is True
     assert captured.get("cache_dir") == "/tmp/cache"
     assert "torch_dtype" not in captured
+
+
+def test_resolve_string_model_config_merges_top_level_trust_remote_code(monkeypatch):
+    import transformers
+
+    captured = {}
+
+    class _FakeAutoConfig:
+        @staticmethod
+        def from_pretrained(name, **kwargs):
+            captured.update(kwargs)
+            return SimpleNamespace(is_encoder_decoder = False)
+
+    monkeypatch.setattr(transformers, "AutoConfig", _FakeAutoConfig)
+
+    # SFTConfig(trust_remote_code=True) with no model_init_kwargs entry is honored
+    config_arg = SimpleNamespace(model_init_kwargs = {}, trust_remote_code = True)
+    trainer_module._resolve_string_model_config("org/remote-hybrid", config_arg)
+    assert captured.get("trust_remote_code") is True
+
+    # model_init_kwargs wins over the top-level flag (mirrors TRL's setdefault)
+    captured.clear()
+    config_arg = SimpleNamespace(
+        model_init_kwargs = {"trust_remote_code": False}, trust_remote_code = True
+    )
+    trainer_module._resolve_string_model_config("org/remote-hybrid", config_arg)
+    assert captured.get("trust_remote_code") is False
