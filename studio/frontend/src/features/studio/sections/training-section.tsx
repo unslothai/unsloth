@@ -15,6 +15,8 @@ import {
   serializeConfigToYaml,
   useTrainingActions,
   useTrainingConfigStore,
+  useTrainingQueueStore,
+  useTrainingRuntimeStore,
   validateTrainingConfig,
 } from "@/features/training";
 import {
@@ -22,6 +24,7 @@ import {
   ChartAverageIcon,
   CleanIcon,
   CloudUploadIcon,
+  PlayListAddIcon,
   Rocket01Icon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
@@ -45,7 +48,25 @@ export function TrainingSection() {
     loss: { label: t("studio.charts.loss"), color: "#3b82f6" },
   } satisfies ChartConfig;
   const store = useTrainingConfigStore();
-  const { isStarting, startError, startTrainingRun } = useTrainingActions();
+  const { isStarting, isEnqueueing, startError, startTrainingRun, enqueueTrainingRun } =
+    useTrainingActions();
+  const isTrainingRunning = useTrainingRuntimeStore((s) => s.isTrainingRunning);
+  const pendingCount = useTrainingQueueStore((s) => s.pendingCount);
+  const maxPending = useTrainingQueueStore((s) => s.maxPending);
+  const activeQueueJobId = useTrainingQueueStore((s) => s.activeJobId);
+  const queuePaused = useTrainingQueueStore((s) => s.paused);
+  const hasHydratedQueue = useTrainingQueueStore((s) => s.hasHydrated);
+  // Until the first queue snapshot arrives, prefer enqueueing over a direct
+  // start: a persisted queue may exist. A claimed item is no longer pending,
+  // but must still keep new work behind it while its runtime status catches up.
+  // Paused queues accept runs without starting them.
+  const isQueueMode =
+    !hasHydratedQueue ||
+    queuePaused ||
+    isTrainingRunning ||
+    activeQueueJobId !== null ||
+    pendingCount > 0;
+  const isQueueFull = pendingCount >= maxPending;
   const isLoadingModel = store.isLoadingModelDefaults || store.isCheckingVision;
   const isModelCapabilitiesSettled = !!store.selectedModel && !isLoadingModel;
   const isIncompatible =
@@ -171,22 +192,48 @@ export function TrainingSection() {
           </div>
         </div>
 
-        {/* Start/Stop */}
-        <Button
-          data-tour="studio-start"
-          className="w-full cursor-pointer bg-primary text-primary-foreground hover:bg-primary/90"
-          onClick={() => void startTrainingRun()}
-          disabled={isStarting || isIncompatible || store.isCheckingDataset || isLoadingModel || !configValidation.ok}
-        >
-          <HugeiconsIcon icon={Rocket01Icon} className="size-4" />
-          {isStarting
-            ? t("studio.training.starting")
-            : isLoadingModel
-              ? t("studio.training.loadingModel")
-              : store.isCheckingDataset
-                ? t("studio.training.checkingDataset")
-                : t("studio.training.startTraining")}
-        </Button>
+        {/* Start / Add to Queue */}
+        {isQueueMode ? (
+          <Button
+            data-tour="studio-start"
+            className="w-full cursor-pointer bg-primary text-primary-foreground hover:bg-primary/90"
+            onClick={() => void enqueueTrainingRun()}
+            disabled={
+              isEnqueueing ||
+              isQueueFull ||
+              isIncompatible ||
+              store.isCheckingDataset ||
+              isLoadingModel ||
+              !configValidation.ok
+            }
+          >
+            <HugeiconsIcon icon={PlayListAddIcon} className="size-4" />
+            {isEnqueueing
+              ? t("studio.training.queue.adding")
+              : isQueueFull
+                ? t("studio.training.queue.queueFull")
+                : t("studio.training.queue.addToQueue", {
+                    count: String(pendingCount),
+                    max: String(maxPending),
+                  })}
+          </Button>
+        ) : (
+          <Button
+            data-tour="studio-start"
+            className="w-full cursor-pointer bg-primary text-primary-foreground hover:bg-primary/90"
+            onClick={() => void startTrainingRun()}
+            disabled={isStarting || isIncompatible || store.isCheckingDataset || isLoadingModel || !configValidation.ok}
+          >
+            <HugeiconsIcon icon={Rocket01Icon} className="size-4" />
+            {isStarting
+              ? t("studio.training.starting")
+              : isLoadingModel
+                ? t("studio.training.loadingModel")
+                : store.isCheckingDataset
+                  ? t("studio.training.checkingDataset")
+                  : t("studio.training.startTraining")}
+          </Button>
+        )}
         {startError && (
           <p className="text-xs text-red-500 leading-relaxed">{startError}</p>
         )}

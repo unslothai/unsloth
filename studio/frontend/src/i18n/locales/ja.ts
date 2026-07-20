@@ -862,6 +862,40 @@ export const ja = {
       milestone: "マイルストーン",
       halfwayDone: "半分完了しました。トレーニングの進捗が 50% を超えました。",
       doneNextStep: "トレーニングが完了しました。次のステップ: ベースモデルとファインチューニング後の出力を比較します。",
+      queue: {
+        title: "トレーニングキュー",
+        description:
+          "キューに入れた実行は順番に実行されます。キューを一時停止すると、開始せずに実行を並べておけます。",
+        buttonLabel: "キュー",
+        addToQueue: "キューに追加 ({count}/{max})",
+        adding: "追加中...",
+        queueFull: "キューが満杯です",
+        queueFullNote:
+          "キューが満杯です。項目を削除するか、現在のジョブの完了をお待ちください。",
+        empty: "キューにジョブはまだありません。",
+        pausedNote:
+          "キューは一時停止中です。実行を追加できますが、再開するまで新しいジョブは開始されません。",
+        restartBanner:
+          "再起動後、{count} 件のキュー済みトレーニングジョブが一時停止しています。続行するにはキューを再開してください。",
+        resume: "再開",
+        pause: "一時停止",
+        dismiss: "閉じる",
+        moveUp: "上へ移動",
+        moveDown: "下へ移動",
+        remove: "キューから削除",
+        runsNext: "次に実行",
+        runningNow: "現在実行中",
+        recentlyFinished: "最近完了",
+        pendingCount: "{count} 件待機中",
+        configureHint:
+          "「設定」タブから実行を追加できます。実行中またはキューの一時停止中は、開始ボタンが「キューに追加」に変わります。",
+        statusPending: "待機中",
+        statusRunning: "実行中",
+        statusSkipped: "スキップ",
+        statusCompleted: "完了",
+        statusFailed: "失敗",
+        statusStopped: "停止",
+      },
     },
     history: {
       title: "履歴",

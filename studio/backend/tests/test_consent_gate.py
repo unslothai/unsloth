@@ -630,7 +630,8 @@ class TestStructuredFindingsForDialog:
             "core/training/training.py",
             "core/inference/orchestrator.py",
             "core/export/orchestrator.py",
-            "routes/training.py",
+            # /start's kwargs construction lives in the shared launch module.
+            "core/training/launch.py",
             "routes/inference.py",
             "routes/export.py",
         ],

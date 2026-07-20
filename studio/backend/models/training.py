@@ -540,6 +540,49 @@ class TrainingJobResponse(BaseModel):
     error: Optional[str] = Field(None, description = "Error details if status is 'error'")
 
 
+class TrainingQueueItem(BaseModel):
+    """One training queue entry. Deliberately excludes the stored request
+    payload, which may carry credentials (hf_token)."""
+
+    id: str = Field(..., description = "Queue item identifier")
+    position: int = Field(..., description = "Sort key within the queue")
+    status: Literal["pending", "starting", "running", "done", "skipped"] = Field(
+        ..., description = "Queue item lifecycle state"
+    )
+    model_name: str = Field(..., description = "Model the queued run trains")
+    dataset_summary: str = Field(..., description = "Short dataset label for display")
+    project_name: Optional[str] = Field(
+        None, description = "Project the queued run logs under, for display"
+    )
+    job_id: Optional[str] = Field(None, description = "training_runs id once launched")
+    result_status: Optional[str] = Field(
+        None, description = "Final run status (completed/error/stopped) for done items"
+    )
+    error_message: Optional[str] = Field(None, description = "Skip reason or run error")
+    created_at: str = Field(..., description = "Enqueue timestamp (ISO 8601)")
+    started_at: Optional[str] = Field(None, description = "Launch timestamp (ISO 8601)")
+    finished_at: Optional[str] = Field(None, description = "Terminal timestamp (ISO 8601)")
+
+
+class TrainingQueueStateResponse(BaseModel):
+    paused: bool = Field(..., description = "True when the runner won't launch new jobs")
+    paused_reason: Optional[Literal["restart", "user"]] = Field(
+        None, description = "Why the queue is paused"
+    )
+    pending_count: int = Field(..., description = "Number of pending items")
+    max_pending: int = Field(..., description = "Cap on pending items")
+    active_job_id: Optional[str] = Field(
+        None, description = "training_runs id of the currently running job, if any"
+    )
+    items: list[TrainingQueueItem] = Field(
+        ..., description = "Active items in position order plus recent finished items"
+    )
+
+
+class TrainingQueueMoveRequest(BaseModel):
+    direction: Literal["up", "down"] = Field(..., description = "Reorder direction")
+
+
 class TrainingStatus(BaseModel):
     """Current training job status - works for streaming or polling"""
 

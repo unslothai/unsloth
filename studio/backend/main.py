@@ -305,6 +305,7 @@ from routes import (
     providers_router,
     rag_router,
     training_history_router,
+    training_queue_router,
     training_router,
 )
 from routes.llama import router as llama_router
@@ -516,6 +517,15 @@ async def lifespan(app: FastAPI):
     except Exception as _mlx_exc:
         import structlog as _structlog
         _structlog.get_logger(__name__).debug("mlx autorepair skipped: %s", _mlx_exc)
+
+    # Reconcile queued rows before marking unfinished runs as orphaned: a run
+    # can have completed just before restart while its queue row is still
+    # marked running.
+    try:
+        from core.training.queue import get_training_queue_manager
+        get_training_queue_manager().restore_on_startup()
+    except Exception as exc:
+        _lifespan_log.warning("training queue restore failed at startup: %s", exc)
 
     # Reap workers/runs orphaned by a previous crash before new work starts.
     try:
@@ -991,6 +1001,7 @@ app.include_router(llama_router, prefix = "/api/llama", tags = ["llama"])
 app.include_router(export_router, prefix = "/api/export", tags = ["export"])
 app.include_router(rag_router, prefix = "/api/rag", tags = ["rag"])
 app.include_router(training_history_router, prefix = "/api/train", tags = ["training-history"])
+app.include_router(training_queue_router, prefix = "/api/train", tags = ["training-queue"])
 app.include_router(hub_inventory_router, prefix = "/api/hub", tags = ["hub"])
 app.include_router(hub_datasets_router, prefix = "/api/hub/datasets", tags = ["hub"])
 

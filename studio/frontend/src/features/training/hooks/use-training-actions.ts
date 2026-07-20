@@ -3,18 +3,20 @@
 
 import { primeNativeNotificationPermission } from "@/lib/native-notifications";
 import { confirmRemoteCodeIfNeeded } from "@/features/security";
-import { useCallback } from "react";
+import { useCallback, useState } from "react";
 import { toast } from "@/lib/toast";
 import { checkDatasetFormat } from "../api/datasets-api";
 import { emitTrainingRunsChanged } from "../events";
 import { getTrainingRun } from "../api/history-api";
 import { buildTrainingStartPayload } from "../api/mappers";
+import { enqueueTrainingJob, getQueueState } from "../api/queue-api";
 import { resetTraining, startTraining, stopTraining } from "../api/train-api";
 import { isRawTextDatasetFormat } from "../lib/training-methods";
 import { syncTrainingRuntimeFromBackend } from "../lib/sync-runtime";
 import { validateTrainingConfig } from "../lib/validation";
 import { useDatasetPreviewDialogStore } from "../stores/dataset-preview-dialog-store";
 import { useTrainingConfigStore } from "../stores/training-config-store";
+import { useTrainingQueueStore } from "../stores/training-queue-store";
 import { useTrainingRuntimeStore } from "../stores/training-runtime-store";
 import type { TrainingStartRequest } from "../types/api";
 import type { TrainingConfigState } from "../types/config";
@@ -41,30 +43,47 @@ function normalizeTrainingStartError(message: string): string {
 export function useTrainingActions() {
   const isStarting = useTrainingRuntimeStore((state) => state.isStarting);
   const startError = useTrainingRuntimeStore((state) => state.startError);
+  const [isEnqueueing, setIsEnqueueing] = useState(false);
 
-  const startTrainingRun = useCallback(async (): Promise<boolean> => {
-    const config = useTrainingConfigStore.getState();
-    const runtimeStore = useTrainingRuntimeStore.getState();
-    const dialogStore = useDatasetPreviewDialogStore.getState();
+  // Shared pre-flight for starting or enqueueing a run. markStarting drives
+  // the start-overlay state; enqueueing skips it.
+  const prepareTrainingStartPayload = useCallback(
+    async (options?: {
+      markStarting?: boolean;
+      intent?: "start" | "enqueue";
+    }): Promise<TrainingStartRequest | null> => {
+      const markStarting = options?.markStarting ?? true;
+      const intent = options?.intent ?? "start";
+      const config = useTrainingConfigStore.getState();
+      const runtimeStore = useTrainingRuntimeStore.getState();
+      const dialogStore = useDatasetPreviewDialogStore.getState();
 
-    runtimeStore.setStartError(null);
-    const validation = validateTrainingConfig(config);
-    if (!validation.ok) {
-      runtimeStore.setStartError(validation.message);
-      return false;
-    }
+      runtimeStore.setStartError(null);
+      const validation = validateTrainingConfig(config);
+      if (!validation.ok) {
+        runtimeStore.setStartError(validation.message);
+        return null;
+      }
 
-    primeNativeNotificationPermission().catch(() => undefined);
+      primeNativeNotificationPermission().catch(() => undefined);
 
-    runtimeStore.setStartResources(
-      config.selectedModel ?? null,
-      getHfDatasetName(config),
-      false,
-      config.projectName || "",
-    );
-    runtimeStore.setStarting(true);
+      if (markStarting) {
+        runtimeStore.setStartResources(
+          config.selectedModel ?? null,
+          getHfDatasetName(config),
+          false,
+          config.projectName || "",
+        );
+        runtimeStore.setStarting(true);
+      }
 
-    try {
+      const abortPrepare = (): null => {
+        if (markStarting) {
+          runtimeStore.setStarting(false);
+        }
+        return null;
+      };
+
       const datasetName = getDatasetName(config);
       let isVlm = config.isVisionModel && config.isDatasetImage === true;
 
@@ -121,16 +140,15 @@ export function useTrainingActions() {
             useTrainingConfigStore.getState().setDatasetManualMapping(hint);
           }
 
-          runtimeStore.setStarting(false);
-          dialogStore.openMapping(check);
-          return false;
+          dialogStore.openMapping(check, intent);
+          return abortPrepare();
         }
       }
 
-      // Abort if cancel was requested during dataset check
-      if (useTrainingRuntimeStore.getState().stopRequested) {
-        runtimeStore.setStarting(false);
-        return false;
+      // Abort if cancel was requested during the dataset check. Start flow
+      // only: mid-run, stopRequested refers to the running job.
+      if (markStarting && useTrainingRuntimeStore.getState().stopRequested) {
+        return abortPrepare();
       }
 
       // Consent gate for the selected model's custom (auto_map) code.
@@ -146,13 +164,28 @@ export function useTrainingActions() {
             }),
         });
         if (!remoteCodeOk) {
-          runtimeStore.setStarting(false);
-          return false;
+          return abortPrepare();
         }
       }
 
       // Re-read config after potential store updates from dataset check
-      const payload = buildTrainingStartPayload(useTrainingConfigStore.getState());
+      return buildTrainingStartPayload(useTrainingConfigStore.getState());
+    },
+    [],
+  );
+
+  const startTrainingRun = useCallback(async (): Promise<boolean> => {
+    const runtimeStore = useTrainingRuntimeStore.getState();
+
+    try {
+      const payload = await prepareTrainingStartPayload({
+        markStarting: true,
+        intent: "start",
+      });
+      if (!payload) {
+        return false;
+      }
+
       runtimeStore.setStartResources(
         payload.model_name,
         payload.hf_dataset,
@@ -181,7 +214,42 @@ export function useTrainingActions() {
       runtimeStore.setStarting(false);
       return false;
     }
-  }, []);
+  }, [prepareTrainingStartPayload]);
+
+  const enqueueTrainingRun = useCallback(async (): Promise<boolean> => {
+    const runtimeStore = useTrainingRuntimeStore.getState();
+    setIsEnqueueing(true);
+
+    try {
+      const payload = await prepareTrainingStartPayload({
+        markStarting: false,
+        intent: "enqueue",
+      });
+      if (!payload) {
+        return false;
+      }
+
+      const item = await enqueueTrainingJob(payload);
+      toast.success("Added to queue", {
+        description: `${item.model_name} · ${item.dataset_summary}`,
+      });
+      try {
+        useTrainingQueueStore.getState().applyState(await getQueueState());
+      } catch {
+        // queue poll heals shortly
+      }
+      return true;
+    } catch (error) {
+      const rawMessage =
+        error instanceof Error ? error.message : "Failed to add to queue";
+      const safeMessage = normalizeTrainingStartError(rawMessage);
+      runtimeStore.setStartError(safeMessage);
+      toast.error("Couldn't add to queue", { description: safeMessage });
+      return false;
+    } finally {
+      setIsEnqueueing(false);
+    }
+  }, [prepareTrainingStartPayload]);
 
   const stopTrainingRun = useCallback(async (save = true): Promise<boolean> => {
     const runtimeStore = useTrainingRuntimeStore.getState();
@@ -190,6 +258,12 @@ export function useTrainingActions() {
     try {
       await stopTraining(save);
       await syncTrainingRuntimeFromBackend();
+      const queue = useTrainingQueueStore.getState();
+      if (!queue.paused && queue.pendingCount > 0) {
+        toast.info("Queue continues with the next job", {
+          description: "Pause or clear the queue to stop everything.",
+        });
+      }
       return true;
     } catch (error) {
       const message =
@@ -296,8 +370,10 @@ export function useTrainingActions() {
 
   return {
     isStarting,
+    isEnqueueing,
     startError,
     startTrainingRun,
+    enqueueTrainingRun,
     resumeTrainingRunFromHistory,
     stopTrainingRun,
     dismissTrainingRun,

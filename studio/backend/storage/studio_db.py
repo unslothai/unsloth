@@ -217,6 +217,42 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
         """
     )
     conn.execute("CREATE INDEX IF NOT EXISTS idx_metrics_run_id ON training_metrics(run_id)")
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS training_queue (
+            id TEXT NOT NULL PRIMARY KEY,
+            position INTEGER NOT NULL,
+            status TEXT NOT NULL DEFAULT 'pending',
+            request_json TEXT NOT NULL,
+            model_name TEXT NOT NULL,
+            dataset_summary TEXT NOT NULL,
+            subject TEXT,
+            job_id TEXT,
+            result_status TEXT,
+            error_message TEXT,
+            created_at TEXT NOT NULL,
+            started_at TEXT,
+            finished_at TEXT,
+            via_api_key INTEGER NOT NULL DEFAULT 0
+        )
+        """
+    )
+    queue_cols = {row[1] for row in conn.execute("PRAGMA table_info(training_queue)").fetchall()}
+    if "via_api_key" not in queue_cols:
+        conn.execute("ALTER TABLE training_queue ADD COLUMN via_api_key INTEGER NOT NULL DEFAULT 0")
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_training_queue_status_position"
+        " ON training_queue(status, position)"
+    )
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS training_queue_state (
+            id INTEGER PRIMARY KEY CHECK (id = 1),
+            paused INTEGER NOT NULL DEFAULT 0,
+            paused_reason TEXT
+        )
+        """
+    )
     # Windows: COLLATE NOCASE so C:\Models and c:\models dedup. Elsewhere keep
     # case-sensitive BINARY so /Models and /models stay distinct.
     collation = "COLLATE NOCASE" if platform.system() == "Windows" else ""
@@ -1072,6 +1108,262 @@ def cleanup_orphaned_runs() -> None:
             WHERE status = 'running'
             """,
             (datetime.now(timezone.utc).isoformat(),),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+# Training queue. request_json may contain credentials (hf_token) and must
+# never be returned by API routes; terminal transitions overwrite it with a
+# redacted copy via update_queue_item_status(request_json=...).
+
+QUEUE_ACTIVE_STATUSES = ("pending", "starting", "running")
+QUEUE_FINISHED_STATUSES = ("done", "skipped")
+
+
+def enqueue_queue_item(
+    id: str,
+    request_json: str,
+    model_name: str,
+    dataset_summary: str,
+    subject: Optional[str],
+    via_api_key: bool = False,
+    max_pending: Optional[int] = None,
+) -> Optional[dict]:
+    """Insert a pending queue item; returns None if max_pending is reached.
+
+    BEGIN IMMEDIATE serializes writers so the cap check and the insert are one
+    atomic step under concurrent enqueue requests.
+    """
+    now = datetime.now(timezone.utc).isoformat()
+    conn = get_connection()
+    try:
+        conn.execute("BEGIN IMMEDIATE")
+        if max_pending is not None:
+            pending = conn.execute(
+                "SELECT COUNT(*) FROM training_queue WHERE status = 'pending'"
+            ).fetchone()[0]
+            if int(pending) >= max_pending:
+                conn.rollback()
+                return None
+        position = int(
+            conn.execute("SELECT COALESCE(MAX(position), 0) + 10 FROM training_queue").fetchone()[0]
+        )
+        conn.execute(
+            """
+            INSERT INTO training_queue
+                (id, position, status, request_json, model_name, dataset_summary,
+                 subject, via_api_key, created_at)
+            VALUES (?, ?, 'pending', ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                id,
+                position,
+                request_json,
+                model_name,
+                dataset_summary,
+                subject,
+                1 if via_api_key else 0,
+                now,
+            ),
+        )
+        conn.commit()
+        row = conn.execute("SELECT * FROM training_queue WHERE id = ?", (id,)).fetchone()
+        return dict(row)
+    finally:
+        conn.close()
+
+
+def list_queue_items(statuses: Iterable[str] = QUEUE_ACTIVE_STATUSES) -> list[dict]:
+    # Rows include request_json — callers must not expose it.
+    statuses = tuple(statuses)
+    placeholders = ", ".join("?" for _ in statuses)
+    conn = get_connection()
+    try:
+        rows = conn.execute(
+            f"SELECT * FROM training_queue WHERE status IN ({placeholders}) ORDER BY position",
+            statuses,
+        ).fetchall()
+        return [dict(row) for row in rows]
+    finally:
+        conn.close()
+
+
+def list_finished_queue_items(limit: int = 10) -> list[dict]:
+    conn = get_connection()
+    try:
+        rows = conn.execute(
+            """
+            SELECT * FROM training_queue
+            WHERE status IN ('done', 'skipped')
+            ORDER BY finished_at DESC
+            LIMIT ?
+            """,
+            (limit,),
+        ).fetchall()
+        return [dict(row) for row in rows]
+    finally:
+        conn.close()
+
+
+def count_pending_queue_items() -> int:
+    conn = get_connection()
+    try:
+        row = conn.execute(
+            "SELECT COUNT(*) FROM training_queue WHERE status = 'pending'"
+        ).fetchone()
+        return int(row[0])
+    finally:
+        conn.close()
+
+
+def next_pending_queue_item() -> Optional[dict]:
+    conn = get_connection()
+    try:
+        row = conn.execute(
+            "SELECT * FROM training_queue WHERE status = 'pending' ORDER BY position LIMIT 1"
+        ).fetchone()
+        return dict(row) if row is not None else None
+    finally:
+        conn.close()
+
+
+def get_queue_item(item_id: str) -> Optional[dict]:
+    conn = get_connection()
+    try:
+        row = conn.execute("SELECT * FROM training_queue WHERE id = ?", (item_id,)).fetchone()
+        return dict(row) if row is not None else None
+    finally:
+        conn.close()
+
+
+def delete_queue_item_if_pending(item_id: str) -> bool:
+    conn = get_connection()
+    try:
+        cur = conn.execute(
+            "DELETE FROM training_queue WHERE id = ? AND status = 'pending'", (item_id,)
+        )
+        conn.commit()
+        return cur.rowcount > 0
+    finally:
+        conn.close()
+
+
+def move_queue_item(item_id: str, direction: str) -> bool:
+    if direction not in ("up", "down"):
+        raise ValueError(f"direction must be 'up' or 'down', got {direction!r}")
+    conn = get_connection()
+    try:
+        # BEGIN IMMEDIATE takes the write lock before the position reads, so
+        # overlapping moves serialize instead of both swapping against the same
+        # stale positions (which could leave two rows sharing one position).
+        conn.execute("BEGIN IMMEDIATE")
+        item = conn.execute(
+            "SELECT id, position, status FROM training_queue WHERE id = ?", (item_id,)
+        ).fetchone()
+        if item is None or item["status"] != "pending":
+            conn.rollback()
+            return False
+        if direction == "up":
+            neighbor = conn.execute(
+                """
+                SELECT id, position FROM training_queue
+                WHERE status = 'pending' AND position < ?
+                ORDER BY position DESC LIMIT 1
+                """,
+                (item["position"],),
+            ).fetchone()
+        else:
+            neighbor = conn.execute(
+                """
+                SELECT id, position FROM training_queue
+                WHERE status = 'pending' AND position > ?
+                ORDER BY position ASC LIMIT 1
+                """,
+                (item["position"],),
+            ).fetchone()
+        if neighbor is None:
+            conn.rollback()
+            return False
+        conn.execute(
+            "UPDATE training_queue SET position = ? WHERE id = ?",
+            (neighbor["position"], item["id"]),
+        )
+        conn.execute(
+            "UPDATE training_queue SET position = ? WHERE id = ?",
+            (item["position"], neighbor["id"]),
+        )
+        conn.commit()
+        return True
+    finally:
+        conn.close()
+
+
+def update_queue_item_status(
+    item_id: str,
+    status: str,
+    *,
+    expected_status: Optional[str] = None,
+    job_id: Optional[str] = None,
+    error_message: Optional[str] = None,
+    result_status: Optional[str] = None,
+    started_at: Optional[str] = None,
+    finished_at: Optional[str] = None,
+    request_json: Optional[str] = None,
+) -> bool:
+    sets = ["status = ?"]
+    params: list = [status]
+    for column, value in (
+        ("job_id", job_id),
+        ("error_message", error_message),
+        ("result_status", result_status),
+        ("started_at", started_at),
+        ("finished_at", finished_at),
+        ("request_json", request_json),
+    ):
+        if value is not None:
+            sets.append(f"{column} = ?")
+            params.append(value)
+    sql = f"UPDATE training_queue SET {', '.join(sets)} WHERE id = ?"
+    params.append(item_id)
+    if expected_status is not None:
+        sql += " AND status = ?"
+        params.append(expected_status)
+    conn = get_connection()
+    try:
+        cur = conn.execute(sql, params)
+        conn.commit()
+        return cur.rowcount > 0
+    finally:
+        conn.close()
+
+
+def get_queue_paused() -> tuple[bool, Optional[str]]:
+    conn = get_connection()
+    try:
+        row = conn.execute(
+            "SELECT paused, paused_reason FROM training_queue_state WHERE id = 1"
+        ).fetchone()
+        if row is None:
+            return (False, None)
+        return (bool(row["paused"]), row["paused_reason"])
+    finally:
+        conn.close()
+
+
+def set_queue_paused(paused: bool, reason: Optional[str] = None) -> None:
+    conn = get_connection()
+    try:
+        conn.execute(
+            """
+            INSERT INTO training_queue_state (id, paused, paused_reason)
+            VALUES (1, ?, ?)
+            ON CONFLICT(id) DO UPDATE SET
+                paused = excluded.paused,
+                paused_reason = excluded.paused_reason
+            """,
+            (1 if paused else 0, reason if paused else None),
         )
         conn.commit()
     finally:

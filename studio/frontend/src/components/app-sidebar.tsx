@@ -131,6 +131,7 @@ import {
   renameTrainingRun,
   useTrainingCompletionWatch,
   useTrainingHistorySidebarItems,
+  useTrainingQueue,
   useTrainingRuntimeStore,
 } from "@/features/training";
 import type { TrainingRunSummary } from "@/features/training";
@@ -482,6 +483,9 @@ export function AppSidebar() {
   // The Train-page status poll doesn't run off-route; keep state fresh so the spinner
   // clears even if a run finishes while the user is on another tab.
   useTrainingCompletionWatch();
+  // Queue starts can occur after leaving Studio, before the runtime knows a
+  // job is active. Keep queue discovery mounted with the app shell.
+  useTrainingQueue();
 
   // Recompute bottom-fade on mount and whenever list height can change
   // (items load, sections toggle, route switch) - onScroll never fires for

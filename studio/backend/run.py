@@ -799,7 +799,16 @@ def _graceful_shutdown(server = None):
     except Exception as e:
         logger.warning("Error shutting down export subprocess: %s", e)
 
-    # 4. Clean up training subprocess (if active).
+    # 4. Stop queued launches before terminating training. A terminal training
+    # callback wakes this runner, so stopping it first prevents it from
+    # spawning the next pending job during process teardown.
+    try:
+        from core.training.queue import get_training_queue_manager
+        get_training_queue_manager().stop_runner()
+    except Exception as e:
+        logger.warning("Error stopping training queue runner: %s", e)
+
+    # 5. Clean up training subprocess (if active).
     try:
         from core.training.training import _training_backend
         if _training_backend is not None:
@@ -807,7 +816,7 @@ def _graceful_shutdown(server = None):
     except Exception as e:
         logger.warning("Error shutting down training subprocess: %s", e)
 
-    # 5. Kill llama-server subprocess (if loaded).
+    # 6. Kill llama-server subprocess (if loaded).
     try:
         from routes.inference import _llama_cpp_backend
         if _llama_cpp_backend is not None:
@@ -815,14 +824,14 @@ def _graceful_shutdown(server = None):
     except Exception as e:
         logger.warning("Error shutting down llama-server: %s", e)
 
-    # 6. Stop the Cloudflare tunnel (if started).
+    # 7. Stop the Cloudflare tunnel (if started).
     try:
         from cloudflare_tunnel import stop_studio_tunnel
         stop_studio_tunnel()
     except Exception as e:
         logger.warning("Error stopping Cloudflare tunnel: %s", e)
 
-    # 7. Backstop sweep for any adopted child the steps above missed.
+    # 8. Backstop sweep for any adopted child the steps above missed.
     try:
         from utils.process_lifetime import terminate_all
         terminate_all()

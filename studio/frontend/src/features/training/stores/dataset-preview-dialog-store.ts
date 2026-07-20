@@ -5,16 +5,18 @@ import { create } from "zustand";
 import type { CheckFormatResponse } from "../types/datasets";
 
 export type DatasetPreviewDialogMode = "preview" | "mapping";
+export type TrainingStartIntent = "start" | "enqueue";
 
 type DatasetPreviewDialogState = {
   open: boolean;
   mode: DatasetPreviewDialogMode;
   initialData: CheckFormatResponse | null;
+  startIntent: TrainingStartIntent;
 };
 
 type DatasetPreviewDialogActions = {
   openPreview: () => void;
-  openMapping: (data: CheckFormatResponse) => void;
+  openMapping: (data: CheckFormatResponse, intent: TrainingStartIntent) => void;
   close: () => void;
 };
 
@@ -22,6 +24,7 @@ const initialState: DatasetPreviewDialogState = {
   open: false,
   mode: "preview",
   initialData: null,
+  startIntent: "start",
 };
 
 export const useDatasetPreviewDialogStore = create<
@@ -30,7 +33,7 @@ export const useDatasetPreviewDialogStore = create<
   ...initialState,
 
   openPreview: () => set({ open: true, mode: "preview", initialData: null }),
-  openMapping: (data) => set({ open: true, mode: "mapping", initialData: data }),
-  close: () => set({ open: false, initialData: null, mode: "preview" }),
+  openMapping: (data, intent) =>
+    set({ open: true, mode: "mapping", initialData: data, startIntent: intent }),
+  close: () => set({ open: false, initialData: null, mode: "preview", startIntent: "start" }),
 }));
-
