@@ -1061,12 +1061,12 @@ let _onDeviceCachesReady = false;
 let _cachedGgufRequestVersion = 0;
 let _cachedModelsRequestVersion = 0;
 let _localModelsRequestVersion = 0;
-const _onDeviceCacheListeners = new Set<() => void>();
+const _onDeviceCacheListeners = new Set<(settled?: boolean) => void>();
 
 const ON_DEVICE_CACHE_TIMEOUT_MS = 30_000;
 
-function notifyOnDeviceCachesChanged(): void {
-  for (const listener of _onDeviceCacheListeners) listener();
+function notifyOnDeviceCachesChanged(settled = false): void {
+  for (const listener of _onDeviceCacheListeners) listener(settled);
 }
 
 /** True when any on-device model (downloaded GGUF, cached repo, LM Studio, or
@@ -1500,7 +1500,7 @@ export function HubModelPicker({
     useState<LocalModelInfo[]>(_customFolderCache);
 
   useEffect(() => {
-    const syncModuleCaches = () => {
+    const syncModuleCaches = (settled = false) => {
       setCachedGguf(_cachedGgufCache);
       setCachedModels(_cachedModelsCache);
       setLmStudioModels(_lmStudioCache);
@@ -1508,7 +1508,7 @@ export function HubModelPicker({
       setCustomFolderModels(_customFolderCache);
       setCachedReady(
         (ready) =>
-          ready || _onDeviceCachesReady || hasDownloadedModels(),
+          ready || settled || _onDeviceCachesReady || hasDownloadedModels(),
       );
     };
     _onDeviceCacheListeners.add(syncModuleCaches);
@@ -1546,7 +1546,70 @@ export function HubModelPicker({
     [],
   );
 
+  const refreshColdOnDeviceCaches = useCallback(() => {
+    const ggufRequestVersion = ++_cachedGgufRequestVersion;
+    const modelsRequestVersion = ++_cachedModelsRequestVersion;
+    const localRequestVersion = ++_localModelsRequestVersion;
+    let ggufResult: Awaited<ReturnType<typeof listCachedGguf>> | undefined;
+    let modelsResult: Awaited<ReturnType<typeof listCachedModels>> | undefined;
+    let localResult: Awaited<ReturnType<typeof listLocalModels>> | undefined;
+
+    const ggufRequest = listCachedGguf().then(
+      (value) => { ggufResult = value; },
+      () => {},
+    );
+    const modelsRequest = listCachedModels(hfToken || undefined).then(
+      (value) => { modelsResult = value; },
+      () => {},
+    );
+    const localRequest = listLocalModels().then(
+      (value) => { localResult = value; },
+      () => {},
+    );
+    const isCurrent = () =>
+      ggufRequestVersion === _cachedGgufRequestVersion &&
+      modelsRequestVersion === _cachedModelsRequestVersion &&
+      localRequestVersion === _localModelsRequestVersion;
+    const publish = (invalidate = false) => {
+      if (!isCurrent()) return;
+      if (invalidate) {
+        ++_cachedGgufRequestVersion;
+        ++_cachedModelsRequestVersion;
+        ++_localModelsRequestVersion;
+      }
+      if (ggufResult !== undefined) {
+        _cachedGgufCache = ggufResult;
+        setCachedGguf(ggufResult);
+      }
+      if (modelsResult !== undefined) {
+        _cachedModelsCache = modelsResult;
+        setCachedModels(modelsResult);
+      }
+      if (localResult !== undefined) applyLocalModels(localResult);
+      if (
+        ggufResult !== undefined &&
+        modelsResult !== undefined &&
+        localResult !== undefined
+      ) {
+        _onDeviceCachesReady = true;
+      }
+      notifyOnDeviceCachesChanged(true);
+    };
+    const timeout = window.setTimeout(
+      () => publish(true),
+      ON_DEVICE_CACHE_TIMEOUT_MS,
+    );
+    void Promise.all([ggufRequest, modelsRequest, localRequest]).then(() => {
+      window.clearTimeout(timeout);
+      publish();
+    });
+  }, [applyLocalModels, hfToken]);
+
   const refreshLocalModelsList = useCallback(() => {
+    if (!_onDeviceCachesReady && !hasDownloadedModels()) {
+      refreshColdOnDeviceCaches();
+      return;
+    }
     const requestVersion = ++_localModelsRequestVersion;
     listLocalModels()
       .then((res) => {
@@ -1555,7 +1618,7 @@ export function HubModelPicker({
         }
       })
       .catch(() => {});
-  }, [applyLocalModels]);
+  }, [applyLocalModels, refreshColdOnDeviceCaches]);
 
   const refreshScanFolders = useCallback(() => {
     listScanFolders()
@@ -1634,6 +1697,10 @@ export function HubModelPicker({
   );
 
   const refreshCachedLists = useCallback(() => {
+    if (!_onDeviceCachesReady && !hasDownloadedModels()) {
+      refreshColdOnDeviceCaches();
+      return;
+    }
     const ggufRequestVersion = ++_cachedGgufRequestVersion;
     listCachedGguf()
       .then((v) => {
@@ -1653,7 +1720,7 @@ export function HubModelPicker({
       })
       .catch(() => {});
     refreshLocalModelsList();
-  }, [hfToken, refreshLocalModelsList]);
+  }, [hfToken, refreshColdOnDeviceCaches, refreshLocalModelsList]);
 
   // Updates run as managed downloads (Downloads panel: progress + Cancel), not a blocking
   // call. The worker pulls only changed blobs, so the cached copy stays usable until done.
@@ -1736,24 +1803,35 @@ export function HubModelPicker({
       if (localResult.status === "fulfilled" && localIsCurrent) {
         applyLocalModels(localResult.value);
       }
+      const snapshotIsCurrent =
+        ggufIsCurrent && modelsAreCurrent && localIsCurrent;
       if (
         ggufResult.status === "fulfilled" &&
         modelsResult.status === "fulfilled" &&
         localResult.status === "fulfilled" &&
-        ggufIsCurrent &&
-        modelsAreCurrent &&
-        localIsCurrent
+        snapshotIsCurrent
       ) {
         _onDeviceCachesReady = true;
       }
-      notifyOnDeviceCachesChanged();
-      setCachedReady(true);
+      notifyOnDeviceCachesChanged(snapshotIsCurrent);
     });
 
     return () => {
       cancelled = true;
       window.clearTimeout(timeout);
       controller.abort();
+      queueMicrotask(() => {
+        if (
+          ggufRequestVersion === _cachedGgufRequestVersion &&
+          modelsRequestVersion === _cachedModelsRequestVersion &&
+          localRequestVersion === _localModelsRequestVersion
+        ) {
+          ++_cachedGgufRequestVersion;
+          ++_cachedModelsRequestVersion;
+          ++_localModelsRequestVersion;
+          notifyOnDeviceCachesChanged(true);
+        }
+      });
     };
   }, [applyLocalModels, hfToken, refreshScanFolders]);
 
