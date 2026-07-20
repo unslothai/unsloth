@@ -98,6 +98,13 @@ def test_hidden_models_dynamic_exact_ids_wired():
     assert "dynamicExactIds.includes(lower)" in src
 
 
+def test_hidden_model_matchers_refresh_with_inventory_version():
+    src = _read("features/hub/lib/hidden-models.ts")
+    assert "const version = getInventoryVersion()" in src
+    assert "matchersFetchVersion === version" in src
+    assert "getInventoryVersion() !== version" in src
+
+
 def test_diffusion_capability_labeled_image_generation():
     """The diffusion capability detects image GENERATORS (FLUX, SDXL,
     text-to-image tags); labeling it "Image to text" showed generators when

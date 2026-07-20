@@ -2,6 +2,7 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { authFetch } from "@/features/auth";
+import { getInventoryVersion } from "../stores/inventory-events";
 
 // Infra models hidden from browse/preview lists (Hub Discover, the chat model
 // selector, and local on-device rows). Mirrors the backend
@@ -22,6 +23,7 @@ let dynamicNeedles: readonly string[] = [];
 let dynamicExactIds: readonly string[] = [];
 let dynamicExactPaths: readonly string[] = [];
 let matchersFetch: Promise<void> | null = null;
+let matchersFetchVersion = -1;
 
 function toLowerStrings(value: unknown): string[] {
   if (!Array.isArray(value)) {
@@ -33,7 +35,12 @@ function toLowerStrings(value: unknown): string[] {
 }
 
 export function ensureHiddenModelMatchers(): Promise<void> {
-  matchersFetch ??= (async () => {
+  const version = getInventoryVersion();
+  if (matchersFetch && matchersFetchVersion === version) {
+    return matchersFetch;
+  }
+  matchersFetchVersion = version;
+  matchersFetch = (async () => {
     try {
       const response = await authFetch("/api/hub/hidden-models");
       if (!response.ok) {
@@ -44,11 +51,22 @@ export function ensureHiddenModelMatchers(): Promise<void> {
         exact_ids?: unknown;
         exact_paths?: unknown;
       };
+      if (
+        getInventoryVersion() !== version ||
+        matchersFetchVersion !== version
+      ) {
+        return;
+      }
       dynamicNeedles = toLowerStrings(data.needles);
       dynamicExactIds = toLowerStrings(data.exact_ids);
       dynamicExactPaths = toLowerStrings(data.exact_paths);
     } catch {
-      matchersFetch = null;
+      if (
+        getInventoryVersion() === version &&
+        matchersFetchVersion === version
+      ) {
+        matchersFetch = null;
+      }
     }
   })();
   return matchersFetch;
