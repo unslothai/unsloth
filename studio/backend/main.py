@@ -1516,7 +1516,13 @@ _IMMUTABLE_ASSET_CACHE_CONTROL = "public, max-age=31536000, immutable"
 class ImmutableStaticFiles(StaticFiles):
     """Serve Vite's content-hashed assets without browser revalidation."""
 
-    def file_response(self, full_path, stat_result, scope, status_code = 200):
+    def file_response(
+        self,
+        full_path,
+        stat_result,
+        scope,
+        status_code = 200,
+    ):
         response = super().file_response(full_path, stat_result, scope, status_code)
         response.headers["Cache-Control"] = _IMMUTABLE_ASSET_CACHE_CONTROL
         return response

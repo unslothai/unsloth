@@ -492,9 +492,7 @@ class TestFrontendAssets:
         assert response.status_code == 200
         assert response.content == content
         assert response.headers["content-encoding"] == "gzip"
-        assert response.headers["cache-control"] == (
-            main_module._IMMUTABLE_ASSET_CACHE_CONTROL
-        )
+        assert response.headers["cache-control"] == (main_module._IMMUTABLE_ASSET_CACHE_CONTROL)
         assert "accept-encoding" in response.headers["vary"].lower()
 
     def test_asset_revalidation_keeps_immutable_cache_header(self, tmp_path, main_module):
@@ -514,9 +512,7 @@ class TestFrontendAssets:
         )
 
         assert response.status_code == 304
-        assert response.headers["cache-control"] == (
-            main_module._IMMUTABLE_ASSET_CACHE_CONTROL
-        )
+        assert response.headers["cache-control"] == (main_module._IMMUTABLE_ASSET_CACHE_CONTROL)
 
 
 # /api/health auth gate
