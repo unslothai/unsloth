@@ -42,11 +42,13 @@ Unsloth Studio (Beta) lets you run and train text, [audio](https://unsloth.ai/do
 ### Inference
 * **Search + download + run models** including GGUF, LoRA adapters and safetensors [100% offline](https://unsloth.ai/docs/new/studio#privacy-first-secure).
 * [**Compare any two models**](https://unsloth.ai/docs/new/studio/chat#model-arena) side by side with the same prompt.
-* **Tools:** [Self-healing tool calling](https://unsloth.ai/docs/new/studio/chat#auto-healing-tool-calling), web search, [code execution](https://unsloth.ai/docs/new/studio/chat#code-execution) and [MCP servers](https://unsloth.ai/docs/basics/mcp).
+* **Tools:** [Self-healing tool calling](https://unsloth.ai/docs/new/studio/chat#auto-healing-tool-calling), web/PDF search, [code execution](https://unsloth.ai/docs/new/studio/chat#code-execution) and [MCP servers](https://unsloth.ai/docs/basics/mcp).
 * [**OpenAI/Anthropic-compatible APIs**](https://unsloth.ai/docs/basics/api): Use `unsloth start` with Claude Code, Codex, Hermes and more.
 * Chat with images, audio, PDFs, code, DOCX and more.
 * [Connect API providers](https://unsloth.ai/docs/integrations/connections) including OpenAI, Anthropic, vLLM and Ollama.
 * [Auto-set inference settings](https://unsloth.ai/docs/new/studio/chat#auto-parameter-tuning), customize chat templates and control GPU memory.
+* [Control GGUF hardware](https://github.com/unslothai/unsloth/pull/6414): Choose GPUs/layers, offload MoE experts, use multi-GPU or Tensor Parallelism.
+* The opt-in [MCP control endpoint](https://github.com/unslothai/unsloth/pull/7191) lets AI clients manage models, training, recipes and exports.
 * [**Export models**](https://unsloth.ai/docs/new/studio/export) to GGUF, safetensors and more.
 * We work directly with teams behind [gpt-oss](https://docs.unsloth.ai/new/gpt-oss-how-to-run-and-fine-tune#unsloth-fixes-for-gpt-oss), [Qwen3](https://www.reddit.com/r/LocalLLaMA/comments/1kaodxu/qwen3_unsloth_dynamic_ggufs_128k_context_bug_fixes/), [Llama 4](https://github.com/ggml-org/llama.cpp/pull/12889), [Mistral](https://huggingface.co/mistralai/Mistral-Medium-3.5-128B/discussions/18), [Gemma 1-3](https://news.ycombinator.com/item?id=39671146), and [Phi-4](https://unsloth.ai/blog/phi4), where we’ve fixed bugs that improve model accuracy.
 ### Training
@@ -89,7 +91,7 @@ Unsloth Studio (Beta) works on **Windows, Linux, WSL** and **macOS**.
 * **CPU:** Supported for Chat and Data Recipes currently
 * **NVIDIA:** Training works on RTX 30/40/50, Blackwell, DGX Spark, Station and more
 * **macOS:** Training, MLX and GGUF inference are ALL supported.
-* **AMD:** Chat + Data works. Train with [Unsloth Core](#unsloth-core-code-based). Unsloth Studio support is out soon.
+* **AMD:** Training, RL, chat and deployment work on Windows, WSL and Linux. [Read the AMD guide](https://unsloth.ai/docs/get-started/install/amd).
 * **Vulkan:** GGUF inference is supported on [compatible GPUs, including Intel GPUs](https://github.com/unslothai/unsloth/pull/5819).
 * **Multi-GPU:** Available now, with a major upgrade on the way
 
@@ -173,7 +175,12 @@ Read our [guide](https://unsloth.ai/docs/get-started/fine-tuning-llms-guide). Ad
 - See detailed documentation for Unsloth [here](https://unsloth.ai/docs)
 
 ## 🦥 Unsloth News
+- **AMD training**: Train, run RL, chat and deploy on AMD GPUs across Windows, WSL and Linux. [Guide](https://unsloth.ai/docs/get-started/install/amd)
+- **GGUF hardware controls**: Choose GPU/layer placement, offload MoE experts and use multi-GPU or Tensor Parallelism. [#6414](https://github.com/unslothai/unsloth/pull/6414)
 - **Local models for any agent**: Use `unsloth start` with Claude Code, Codex, Hermes, OpenCode, OpenClaw, Pi and more through Unsloth's OpenAI- and Anthropic-compatible APIs. [Guide](https://unsloth.ai/docs/basics/api)
+- **MCP control endpoint**: Let compatible clients manage models, training, recipes, checkpoints and exports. [#7191](https://github.com/unslothai/unsloth/pull/7191)
+- **Local inference reliability**: Resume long chats faster, recover stalled downloads and reuse existing GGUF files. [#7204](https://github.com/unslothai/unsloth/pull/7204) • [#6858](https://github.com/unslothai/unsloth/pull/6858) • [#7209](https://github.com/unslothai/unsloth/pull/7209)
+- **New models**: [Qwen-AgentWorld](https://huggingface.co/unsloth/Qwen-AgentWorld-35B-A3B-GGUF), [Ornith](https://huggingface.co/unsloth/models?search=ornith), [Kimi K2.7 Code](https://unsloth.ai/docs/models/kimi-k2.7-code) and [MiniMax M3](https://unsloth.ai/docs/models/minimax-m3)
 - **GLM-5.2**: Run Z.ai's 744B-parameter, 1M-context open model locally with Unsloth Dynamic GGUFs. [Guide](https://unsloth.ai/docs/models/glm-5.2)
 - **DeepSeek-V4**: Run DeepSeek-V4-Flash locally with corrected multi-turn and tool-calling behavior. [Guide](https://unsloth.ai/docs/models/deepseek-v4)
 - **DiffusionGemma**: Run and fine-tune Google's diffusion language model with 1.8x faster inference in Unsloth Studio. [Guide](https://unsloth.ai/docs/models/diffusiongemma)
