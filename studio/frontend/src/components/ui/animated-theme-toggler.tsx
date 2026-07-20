@@ -35,6 +35,7 @@ export function useAnimatedThemeToggle(duration = 400) {
     // otherwise queue up and land as invisible back-and-forth flips, so the
     // theme looks stuck until an odd number of clicks gets through.
     if (inFlightRef.current) return
+    const anchorRect = anchorRef.current?.getBoundingClientRect() ?? null
 
     const applyTheme = () => {
       flushSync(() => {
@@ -58,9 +59,8 @@ export function useAnimatedThemeToggle(duration = 400) {
       const transition = document.startViewTransition(applyTheme)
       await transition.ready
 
-      const anchor = anchorRef.current
-      if (anchor) {
-        const { top, left, width, height } = anchor.getBoundingClientRect()
+      if (anchorRect) {
+        const { top, left, width, height } = anchorRect
         const x = left + width / 2
         const y = top + height / 2
         const maxRadius = Math.hypot(

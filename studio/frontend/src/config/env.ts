@@ -31,8 +31,7 @@ interface PlatformState {
   isChatOnly: () => boolean;
 }
 
-// Client-side fallback when backend isn't ready yet.
-function detectLocalPlatform(): DeviceType {
+export function detectLocalPlatform(): DeviceType {
   if (typeof navigator === "undefined") return "linux";
   const platform = navigator.platform.toLowerCase();
   const ua = navigator.userAgent.toLowerCase();
