@@ -2244,6 +2244,18 @@ def _dir_has_complete_torch_weights(names: set) -> bool:
 _ST_CONFIG_FILES = ("config.json", "config_sentence_transformers.json")
 
 
+def _dir_is_transformer_load_root(names: set) -> bool:
+    """True when one directory's files (*names*) form a COMPLETE Transformer / plain-HF load
+    root: an ST/HF config, a usable tokenizer and a complete Torch weight set, all co-located.
+    This is the shape ``modules.json`` sends a Transformer module (or a bare from_pretrained)
+    at -- the per-directory unit the snapshot checks share."""
+    if not any(cfg in names for cfg in _ST_CONFIG_FILES):
+        return False
+    if not _names_have_tokenizer(names):
+        return False
+    return _dir_has_complete_torch_weights(names)
+
+
 def _snapshot_has_complete_weights(snap: Path) -> bool:
     """True when some LOAD ROOT inside *snap* is complete: a config, a tokenizer and a
     COMPLETE Torch weight set, all in the SAME directory.
@@ -2263,25 +2275,106 @@ def _snapshot_has_complete_weights(snap: Path) -> bool:
             except OSError:
                 continue
         for names in by_dir.values():
-            if not any(cfg in names for cfg in _ST_CONFIG_FILES):
-                continue
-            if not _names_have_tokenizer(names):
-                continue
-            if _dir_has_complete_torch_weights(names):
+            if _dir_is_transformer_load_root(names):
                 return True
         return False
     except OSError:
         return False
 
 
+# Sentence-transformers modules whose ST ``load()`` reads no embedding payload of their own --
+# a ``modules.json`` listing ONLY these has no source of embeddings, so it is not a loadable
+# model on its own and must not validate the non-Transformer acceptance path below.
+_ST_STRUCTURAL_MODULE_NAMES = frozenset({"pooling", "normalize"})
+
+
+def _dir_file_names(dir_path: Path) -> set:
+    """The file basenames directly in *dir_path* (not recursive), or an empty set when the
+    directory is absent / unreadable / not a directory. Never raises."""
+    try:
+        return {entry.name for entry in dir_path.iterdir() if entry.is_file()}
+    except OSError:
+        return set()
+
+
+def _module_dir_is_loadable(cls: str, is_root: bool, dir_path: Path) -> bool:
+    """True when *dir_path* carries the files the sentence-transformers module class *cls*
+    reads in its own ``load()`` (see sentence_transformers/models/*.py):
+
+    * a root / ``Transformer`` module is a full HF load root (config + tokenizer + weights);
+    * ``Normalize`` reads nothing;
+    * ``WordEmbeddings`` hard-loads ``model.safetensors`` / ``pytorch_model.bin`` (no fallback),
+      so it needs its ``wordembedding_config.json`` AND a complete weight set;
+    * every other module (``BoW``, ``Pooling``, ``Dense``, ``CNN``, ``LSTM`` ...) reads a
+      mandatory ``config.json`` / ``*_config.json`` from its directory (its weights, when used,
+      are optional there), so a present module config is the load requirement."""
+    if is_root or "transformer" in cls:
+        return _dir_is_transformer_load_root(_dir_file_names(dir_path))
+    if cls == "normalize":
+        return True
+    names = _dir_file_names(dir_path)
+    if not any(name == "config.json" or name.endswith("_config.json") for name in names):
+        return False
+    if cls == "wordembeddings":
+        return _dir_has_complete_torch_weights(names)
+    return True
+
+
+def _snapshot_modules_all_loadable(snap: Path) -> bool:
+    """True when *snap* is a COMPLETE non-Transformer sentence-transformers model that the
+    Transformer-shaped :func:`_snapshot_has_complete_weights` misses -- e.g. one built from a
+    ``0_WordEmbeddings`` module (``wordembedding_config.json`` + embedding weights, no HF
+    ``config.json`` / tokenizer) or ``BoW`` (vocab in ``config.json``). The offline
+    ``local_files_only`` load builds these from ``modules.json`` by calling
+    ``module_class.load(path)`` per declared module.
+
+    Additive and conservative: it only ever ACCEPTS (the caller OR-s it with the Transformer
+    check) and never rejects, so it cannot regress the Transformer path. It validates only when
+    ``modules.json`` parses as a non-empty list AND every declared module's ``path`` directory
+    carries the files that module's own ``load()`` reads -- so a bare / pruned cache (empty
+    ``modules.json``, a missing module directory, a WordEmbeddings module with its weights
+    stripped) does not validate. It also requires at least one embedding-producing module, so a
+    degenerate Pooling/Normalize-only list is rejected. Never raises."""
+    try:
+        modules = json.loads((snap / "modules.json").read_text(encoding = "utf-8"))
+    except (OSError, ValueError):
+        return False
+    if not isinstance(modules, list) or not modules:
+        return False
+    saw_content_module = False
+    for module in modules:
+        if not isinstance(module, dict):
+            return False
+        cls = str(module.get("type") or "").rsplit(".", 1)[-1].strip().lower()
+        if not cls:
+            return False
+        raw_path = str(module.get("path") or "").strip()
+        is_root = raw_path in ("", ".")
+        if is_root:
+            dir_path = snap
+        else:
+            rel = raw_path.strip("/")
+            if not rel or ".." in Path(rel).parts:
+                return False  # never resolve a module path outside the snapshot
+            dir_path = snap / rel
+        if not _module_dir_is_loadable(cls, is_root, dir_path):
+            return False
+        if is_root or cls not in _ST_STRUCTURAL_MODULE_NAMES:
+            saw_content_module = True
+    return saw_content_module
+
+
 def _snapshot_is_loadable_st_model(snap: Path) -> bool:
     """True when *snap* holds a loadable sentence-transformers model. ``modules.json`` alone
     is insufficient -- the security preflight downloads exactly that file, so require the
-    marker plus ``_snapshot_has_complete_weights``."""
+    marker plus a complete load: a Transformer-shaped weight set
+    (:func:`_snapshot_has_complete_weights`), OR a complete non-Transformer module set such as
+    ``0_WordEmbeddings`` / ``BoW`` (:func:`_snapshot_modules_all_loadable`), which carries none
+    of the Transformer config/tokenizer/weights the first check requires."""
     try:
         if not (snap / "modules.json").is_file():
             return False
-        return _snapshot_has_complete_weights(snap)
+        return _snapshot_has_complete_weights(snap) or _snapshot_modules_all_loadable(snap)
     except OSError:
         return False
 

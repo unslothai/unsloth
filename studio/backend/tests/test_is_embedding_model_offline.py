@@ -8,6 +8,7 @@ that hangs on DNS retries when offline (#6817)."""
 from __future__ import annotations
 
 import importlib
+import json
 import sys
 import types
 from pathlib import Path
@@ -390,6 +391,141 @@ def test_marker_requires_both_bpe_tokenizer_files(tmp_path, monkeypatch, tok_fil
     # AutoTokenizer.from_pretrained(local_files_only=True) at first indexing.
     _cache_repo_with_files(tmp_path, monkeypatch, "model.safetensors", *tok_files, tokenizer = False)
     assert mc._embedding_marker_in_hf_cache("org/model") is expected
+
+
+# ── non-Transformer ST models (WordEmbeddings / BoW) built from modules.json ──
+
+
+def _modules_json(*modules):
+    """A modules.json body from (name, path, type) triples, in declared order."""
+    return json.dumps(
+        [
+            {"idx": i, "name": name, "path": path, "type": mtype}
+            for i, (name, path, mtype) in enumerate(modules)
+        ]
+    )
+
+
+def _wordembeddings_repo(
+    tmp_path,
+    monkeypatch,
+    *,
+    weight_file = "model.safetensors",
+    include_weights = True,
+    commit = "aaa",
+    repo_id = "sentence-transformers/average_word_embeddings_glove.6B.300d",
+):
+    """A cached SentenceTransformer WordEmbeddings model mirroring the real on-disk layout of
+    ``sentence-transformers/average_word_embeddings_glove.6B.300d``: a root ``modules.json`` +
+    ``config_sentence_transformers.json``, a ``0_WordEmbeddings`` module dir holding
+    ``wordembedding_config.json`` (+ a whitespace-tokenizer config + embedding weights) and a
+    ``1_Pooling`` module dir holding ``config.json``. It carries NO HF ``config.json`` /
+    tokenizer, so the Transformer-shaped weight check alone misclassifies it as non-embedding
+    and the settings route 409s it (#7218)."""
+    hf_root = tmp_path / "hf"
+    repo = hf_root / f"models--{repo_id.replace('/', '--')}"
+    snap = repo / "snapshots" / commit
+    (snap / "0_WordEmbeddings").mkdir(parents = True)
+    (snap / "modules.json").write_text(
+        _modules_json(
+            ("0", "0_WordEmbeddings", "sentence_transformers.models.WordEmbeddings"),
+            ("1", "1_Pooling", "sentence_transformers.models.Pooling"),
+        )
+    )
+    (snap / "config_sentence_transformers.json").write_text("{}")
+    (snap / "0_WordEmbeddings" / "wordembedding_config.json").write_text("{}")
+    (snap / "0_WordEmbeddings" / "whitespacetokenizer_config.json").write_text("{}")
+    if include_weights:
+        (snap / "0_WordEmbeddings" / weight_file).write_bytes(b"\0")
+    (snap / "1_Pooling").mkdir(parents = True)
+    (snap / "1_Pooling" / "config.json").write_text("{}")
+    (repo / "refs").mkdir(parents = True)
+    (repo / "refs" / "main").write_text(commit)
+    _fake_hf_cache(monkeypatch, hf_root)
+    monkeypatch.delenv("SENTENCE_TRANSFORMERS_HOME", raising = False)
+    return snap
+
+
+_GLOVE = "sentence-transformers/average_word_embeddings_glove.6B.300d"
+
+
+@pytest.mark.parametrize("weight_file", ["model.safetensors", "pytorch_model.bin"])
+def test_marker_accepts_complete_wordembeddings_model(tmp_path, monkeypatch, weight_file):
+    # A fully-cached WordEmbeddings model (glove-style: no HF config.json / tokenizer) loads
+    # offline via modules.json -> WordEmbeddings.load(), so it must be recognized as an
+    # embedding model even though it carries none of the Transformer-shaped assets (#7218).
+    _wordembeddings_repo(tmp_path, monkeypatch, weight_file = weight_file)
+    assert mc._embedding_marker_in_hf_cache(_GLOVE) is True
+
+
+def test_offline_wordembeddings_is_embedding_without_network(tmp_path, monkeypatch):
+    # End to end: the offline settings path must not 409 a cached WordEmbeddings model, with no
+    # model_info() network call.
+    _wordembeddings_repo(tmp_path, monkeypatch)
+    monkeypatch.setenv("HF_HUB_OFFLINE", "1")
+    _fake_hf_model_info(monkeypatch, _no_network)
+    assert mc.is_embedding_model(_GLOVE) is True
+
+
+def test_marker_rejects_wordembeddings_module_dir_empty(tmp_path, monkeypatch):
+    # Control: modules.json declares 0_WordEmbeddings but the dir holds no files (never
+    # materialized / pruned). The offline load would fail, so this must NOT validate.
+    snap = _wordembeddings_repo(tmp_path, monkeypatch)
+    for child in (snap / "0_WordEmbeddings").iterdir():
+        child.unlink()
+    assert mc._embedding_marker_in_hf_cache(_GLOVE) is False
+
+
+def test_marker_rejects_wordembeddings_without_weights(tmp_path, monkeypatch):
+    # WordEmbeddings.load() hard-loads model.safetensors / pytorch_model.bin (no fallback), so a
+    # config-only module dir (weights pruned) would fail the load and must NOT validate.
+    _wordembeddings_repo(tmp_path, monkeypatch, include_weights = False)
+    assert mc._embedding_marker_in_hf_cache(_GLOVE) is False
+
+
+def test_marker_accepts_complete_bow_model(tmp_path, monkeypatch):
+    # A BoW module keeps its vocab in config.json and writes NO weight file; a complete cache is
+    # still loadable via BoW.load(config.json), so it must validate.
+    hf_root = tmp_path / "hf"
+    repo = hf_root / "models--org--bow"
+    snap = repo / "snapshots" / "aaa"
+    (snap / "0_BoW").mkdir(parents = True)
+    (snap / "modules.json").write_text(
+        _modules_json(
+            ("0", "0_BoW", "sentence_transformers.models.BoW"),
+            ("1", "1_Pooling", "sentence_transformers.models.Pooling"),
+        )
+    )
+    (snap / "config_sentence_transformers.json").write_text("{}")
+    (snap / "0_BoW" / "config.json").write_text('{"vocab": ["a", "b"]}')
+    (snap / "1_Pooling").mkdir(parents = True)
+    (snap / "1_Pooling" / "config.json").write_text("{}")
+    (repo / "refs").mkdir(parents = True)
+    (repo / "refs" / "main").write_text("aaa")
+    _fake_hf_cache(monkeypatch, hf_root)
+    monkeypatch.delenv("SENTENCE_TRANSFORMERS_HOME", raising = False)
+    assert mc._embedding_marker_in_hf_cache("org/bow") is True
+
+
+def test_marker_rejects_structural_only_module_list(tmp_path, monkeypatch):
+    # A degenerate modules.json with only structural modules (Pooling / Normalize) has no source
+    # of embeddings and must NOT validate on the non-Transformer path.
+    hf_root = tmp_path / "hf"
+    repo = hf_root / "models--org--degenerate"
+    snap = repo / "snapshots" / "aaa"
+    (snap / "1_Pooling").mkdir(parents = True)
+    (snap / "modules.json").write_text(
+        _modules_json(
+            ("0", "1_Pooling", "sentence_transformers.models.Pooling"),
+            ("1", "2_Normalize", "sentence_transformers.models.Normalize"),
+        )
+    )
+    (snap / "1_Pooling" / "config.json").write_text("{}")
+    (repo / "refs").mkdir(parents = True)
+    (repo / "refs" / "main").write_text("aaa")
+    _fake_hf_cache(monkeypatch, hf_root)
+    monkeypatch.delenv("SENTENCE_TRANSFORMERS_HOME", raising = False)
+    assert mc._embedding_marker_in_hf_cache("org/degenerate") is False
 
 
 def test_short_name_resolves_through_the_sentence_transformers_org(tmp_path, monkeypatch):
