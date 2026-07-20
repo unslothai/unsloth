@@ -483,7 +483,11 @@ def test_marker_rejects_wordembeddings_without_weights(tmp_path, monkeypatch):
     assert mc._embedding_marker_in_hf_cache(_GLOVE) is False
 
 
-def _we_dense_repo(tmp_path, monkeypatch, commit = "aaa"):
+def _we_dense_repo(
+    tmp_path,
+    monkeypatch,
+    commit = "aaa",
+):
     # WordEmbeddings + Pooling + a Dense projection module, with the Dense weights ABSENT.
     hf_root = tmp_path / "hf"
     repo = hf_root / "models--org--we-dense"
