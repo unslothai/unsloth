@@ -276,17 +276,13 @@ def dpo_trainer_vision_signature_columns(function_name, function):
     _extra_columns = "".join(f'                "{_k}",\n' for _k in _DPO_VISION_KEYS)
     new_function = function.replace(
         '                "image_sizes",\n                "token_type_ids",\n',
-        f'                "image_sizes",\n'
-        f"{_extra_columns}"
-        f'                "token_type_ids",\n',
+        f'                "image_sizes",\n{_extra_columns}                "token_type_ids",\n',
     )
     if new_function != function:
         return new_function
     return function.replace(
         '                "image_sizes",\n                "ref_chosen_logps",\n',
-        f'                "image_sizes",\n'
-        f"{_extra_columns}"
-        f'                "ref_chosen_logps",\n',
+        f'                "image_sizes",\n{_extra_columns}                "ref_chosen_logps",\n',
     )
 
 
@@ -441,6 +437,52 @@ RL_FUNCTIONS["dpo_trainer"].append(dpo_trainer_compute_loss_liger)
 RL_EXTRA_ARGS["dpo_trainer"].append(dpo_trainer_data_collator_vision_keys)
 
 
+_WRAPPED_PACKING_SETUP = (
+    "    import inspect as _inspect\n"
+    "    try:\n"
+    '        _unsloth_pack_has_strategy = "strategy" in _inspect.signature(pack_dataset).parameters\n'
+    "    except Exception:\n"
+    "        _unsloth_pack_has_strategy = True\n"
+    "    _unsloth_wrapped_packing = packing and (\n"
+    '        getattr(args, "packing_strategy", None) == "wrapped"\n'
+    "        or not _unsloth_pack_has_strategy\n"
+    "    )\n"
+)
+
+_WARNED_MISSING_ANCHORS = set()
+
+
+def _require_replace(
+    function,
+    old,
+    new,
+    *,
+    count = 1,
+    required = True,
+    where = "",
+):
+    """str.replace that never silently no-ops a load-bearing source edit.
+
+    Plain str.replace returns the source unchanged when the anchor is absent, so a
+    drifted anchor in a newer TRL / unsloth_zoo would skip the edit while later edits
+    still reference helper variables it should have introduced (NameError at runtime).
+    Fail loudly for a required edit, warn once and skip for an optional one, so a
+    drifted source can never corrupt the patched function silently.
+    """
+    if old not in function:
+        detail = f" ({where})" if where else ""
+        if required:
+            raise RuntimeError(
+                f"Unsloth: source anchor not found{detail}; the patched function is out "
+                "of sync with this TRL / unsloth_zoo version. Please file a bug report."
+            )
+        if where not in _WARNED_MISSING_ANCHORS:
+            _WARNED_MISSING_ANCHORS.add(where)
+            logger.warning(f"Unsloth: skipped an optional source edit{detail} (anchor not found).")
+        return function
+    return function.replace(old, new, count)
+
+
 # Fix tokenizer double BOS
 def sft_trainer_prepare_dataset(function_name, function):
     if function_name != "_prepare_non_packed_dataloader" and function_name != "_prepare_dataset":
@@ -458,6 +500,58 @@ def sft_trainer_prepare_dataset(function_name, function):
         if matched:
             # Use fast version!
             function = inspect.getsource(fast_sft_prepare_dataset)
+            # why: anchor the wrapped-packing setup on the function signature -- a
+            # structural anchor that always exists -- not the unsloth_zoo license comment,
+            # which is only lower-bounded and a newer Zoo may move or drop. Anchoring there
+            # let the setup silently no-op while edits below referenced its variables,
+            # NameError-ing every SFT dataset prep. Fail loudly if the signature is missing.
+            function, _n_setup = re.subn(
+                r"(def sft_prepare_dataset\s*\(.*?\)\s*(?:->[^:\n]*)?:[ \t]*\n)",
+                lambda match: match.group(1) + _WRAPPED_PACKING_SETUP,
+                function,
+                count = 1,
+                flags = re.DOTALL,
+            )
+            if _n_setup != 1:
+                raise RuntimeError(
+                    "Unsloth: failed to install wrapped-packing support into "
+                    "sft_prepare_dataset (signature not found); please file a bug report."
+                )
+            # why: route each edit through _require_replace so a drifted anchor fails
+            # loudly instead of leaving a dangling reference to the setup variables.
+            function = _require_replace(
+                function,
+                "truncation = do_truncation,",
+                "truncation = do_truncation and not _unsloth_wrapped_packing,",
+                where = "sft_prepare_dataset truncation flag",
+            )
+            function = _require_replace(
+                function,
+                "if do_truncation and max_seq_length > 0:",
+                "if do_truncation and not _unsloth_wrapped_packing and max_seq_length > 0:",
+                where = "sft_prepare_dataset truncation guard",
+            )
+            # why: reuse the guarded _unsloth_pack_has_strategy from the setup instead of
+            # re-calling _inspect.signature(pack_dataset) here -- the setup wraps that call
+            # in try/except, so a non-introspectable pack_dataset must not crash here.
+            function = _require_replace(
+                function,
+                """dataset = pack_dataset(
+            dataset.select_columns(used_column_names),
+            max_seq_length,
+            getattr(args, "packing_strategy", "bfd"),
+            map_kwargs,
+        )""",
+                """_pack_kwargs = {"map_kwargs": map_kwargs}
+        if _unsloth_pack_has_strategy:
+            _pack_kwargs["strategy"] = getattr(args, "packing_strategy", "bfd")
+        dataset = pack_dataset(
+            dataset.select_columns(used_column_names),
+            max_seq_length,
+            **_pack_kwargs,
+        )""",
+                where = "sft_prepare_dataset pack_dataset call",
+            )
             function = function.split("\n")
             function = "\n".join(" " * 4 + x for x in function)
             function = function.replace("def sft_prepare_dataset", "def _prepare_dataset")
@@ -2120,19 +2214,21 @@ def grpo_trainer_compute_loss(function_name, function):
             logits_to_keep,
             batch_size = None,
             compute_entropy = False,
-            compute_efficient = False: self._get_per_token_logps(
-                model, input_ids, attention_mask, logits_to_keep, compute_efficient
+            compute_efficient = False: (
+                self._get_per_token_logps(
+                    model, input_ids, attention_mask, logits_to_keep, compute_efficient
+                )
+                if hasattr(self, "_get_per_token_logps")
+                else self._get_per_token_logps_and_entropies(
+                    model,
+                    input_ids,
+                    attention_mask,
+                    logits_to_keep,
+                    batch_size,
+                    compute_entropy,
+                    compute_efficient,
+                )[0]
             )
-            if hasattr(self, "_get_per_token_logps")
-            else self._get_per_token_logps_and_entropies(
-                model,
-                input_ids,
-                attention_mask,
-                logits_to_keep,
-                batch_size,
-                compute_entropy,
-                compute_efficient,
-            )[0]
         )  # logps
 
         per_token_logps = get_logps_func(
