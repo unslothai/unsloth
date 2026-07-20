@@ -328,14 +328,11 @@ def test_reset_enabled_for_explicit_context_pin_at_native():
     user override, so contextAtDefault must require customContextLength == null.
     The buggy form treated `contextValue === native` alone as default, wedging
     the Reset button disabled for a deliberate pin-to-native."""
-    src = " ".join(
-        _read("features/model-picker/components/model-config-page.tsx").split()
-    )
+    src = " ".join(_read("features/model-picker/components/model-config-page.tsx").split())
     assert (
         "const contextAtDefault = !target.isGguf || "
         "(config.customContextLength == null && "
-        "(nativeContextLength == null || contextValue === nativeContextLength));"
-        in src
+        "(nativeContextLength == null || contextValue === nativeContextLength));" in src
     )
     # The old form that ignored an explicit pin equal to native must not return.
     assert (
@@ -351,9 +348,7 @@ def test_compare_pane_non_gguf_falls_back_to_app_default():
     """A non-GGUF compare pane with no saved maxSeqLength must fall back to the
     shared app default, not the active model's runtime snapshot; otherwise an
     unconfigured pane inherits a saved 128K neighbor's context and can OOM."""
-    per_model = _read(
-        "features/model-picker/model-config/per-model-config.ts"
-    )
+    per_model = _read("features/model-picker/model-config/per-model-config.ts")
     assert "export const DEFAULT_MAX_SEQ_LENGTH = 4096;" in per_model
     barrel = _read("features/model-picker/index.ts")
     assert "DEFAULT_MAX_SEQ_LENGTH," in barrel
