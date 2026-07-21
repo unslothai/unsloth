@@ -4013,6 +4013,8 @@ def _reject_diffusion_memory_mode(config: ModelConfig, memory_mode: Optional[str
     they agree and a placement /load will reject isn't validated post-unload (#7188).
     gpu_ids for diffusion is handled by the runner (collapsed to a single device), so
     only the host-memory mode is rejected here."""
+    if not config.is_gguf:
+        return
     if LlamaCppBackend._canonical_memory_mode(memory_mode) is None:
         return
     if _classify_diffusion_gguf(config) is True:
@@ -4530,15 +4532,19 @@ async def _load_model_impl(request: LoadRequest, fastapi_request: Request, curre
         # GGUF supports gpu_ids: validate the pick up front (before the training
         # guard) so a bad pick is a clean 400, not masked by a VRAM 409. Rejects
         # negative / out-of-range / duplicate ids and UUID/MIG parents. XPU hosts
-        # are rejected outright: the picker's indices are torch-xpu ordinals neither
-        # applicator speaks (CUDA/HIP masks don't apply, the Vulkan --device pin
-        # uses ggml's own Vulkan ordinals), so a pick could land on the wrong device.
+        # are rejected outright unless the llama.cpp build is Vulkan, in which case
+        # the Vulkan ordinal namespace is the intended target and the picker's
+        # torch-xpu ordinals don't apply; allow it through so the later Vulkan
+        # branch can validate/pin via --device Vulkan<i> (#7188).
         if config.is_gguf and effective_gpu_ids is not None:
             from utils.hardware import DeviceType, get_device
             from utils.hardware.hardware import resolve_requested_gpu_ids
             from core.inference.llama_cpp import _extra_args_draft_device_pin
 
-            if get_device() == DeviceType.XPU:
+            _llama_backend = get_llama_cpp_backend()
+            _gguf_vulkan_build = await asyncio.to_thread(_llama_backend.is_vulkan_build)
+
+            if get_device() == DeviceType.XPU and not _gguf_vulkan_build:
                 raise HTTPException(
                     status_code = 400,
                     detail = (
@@ -4587,8 +4593,6 @@ async def _load_model_impl(request: LoadRequest, fastapi_request: Request, curre
             # CUDA_VISIBLE_DEVICES), so defer to the backend probe even on a CUDA-visible
             # host, else the CUDA resolver would 400 a valid Vulkan id under a CUDA/HIP
             # mask (#7188). Otherwise keep the CUDA physical-ID resolver (#6414).
-            _llama_backend = get_llama_cpp_backend()
-            _gguf_vulkan_build = await asyncio.to_thread(_llama_backend.is_vulkan_build)
             if get_device() == DeviceType.CUDA and not _gguf_vulkan_build:
                 # The CUDA resolver only validates the physical-ID mask; it can't tell the
                 # llama.cpp build is CPU-only. A CPU-only build ignores CUDA_VISIBLE_DEVICES,
@@ -5216,14 +5220,17 @@ async def validate_model(
         effective_gpu_ids = request.gpu_ids if request.gpu_ids else None
         # Mirror /load: GGUF supports gpu_ids, so validate the pick (a bad one is
         # a clean 400) before the guard sizes the model against training VRAM.
-        # XPU-host picks are rejected like /load (no defined mapping from the
-        # picker's torch-xpu ordinals to the launcher's device spaces).
+        # XPU-host picks are rejected unless the llama.cpp build is Vulkan, in
+        # which case the Vulkan ordinal namespace is the intended target (#7188).
         if config.is_gguf and effective_gpu_ids is not None:
             from utils.hardware import DeviceType, get_device
             from utils.hardware.hardware import resolve_requested_gpu_ids
             from core.inference.llama_cpp import _extra_args_draft_device_pin
 
-            if get_device() == DeviceType.XPU:
+            _loaded_llama = get_llama_cpp_backend()
+            _gguf_vulkan_build = await asyncio.to_thread(_loaded_llama.is_vulkan_build)
+
+            if get_device() == DeviceType.XPU and not _gguf_vulkan_build:
                 raise HTTPException(
                     status_code = 400,
                     detail = (
@@ -5236,7 +5243,6 @@ async def validate_model(
             # stored --spec-draft-device naming a real GPU would escape the new gpu_ids
             # pin. ValidateModelRequest carries no llama_extra_args, so only the
             # inherited backend extras are checkable here (#7188).
-            _loaded_llama = get_llama_cpp_backend()
             if _loaded_llama.is_loaded and _loaded_llama.extra_args:
                 source = _loaded_llama.extra_args_source
                 resolved_variant = (config.gguf_variant or "").lower()
@@ -5263,7 +5269,6 @@ async def validate_model(
                         )
             # A Vulkan build treats gpu_ids as Vulkan ordinals, so defer to the backend
             # probe even on a CUDA-visible host; otherwise keep the CUDA resolver (#6414/#7188).
-            _gguf_vulkan_build = await asyncio.to_thread(_loaded_llama.is_vulkan_build)
             if get_device() == DeviceType.CUDA and not _gguf_vulkan_build:
                 # A CPU-only llama.cpp build ignores CUDA_VISIBLE_DEVICES; the CUDA resolver
                 # can't see that, so reject a pin it would silently run on CPU (mirrors /load
