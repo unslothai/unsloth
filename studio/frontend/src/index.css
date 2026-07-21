@@ -636,11 +636,13 @@ html.no-font-smoothing body {
 /* Chat text weight compensation. FreeType (Linux) rasterizes Inter's 410
    weight visibly heavier than macOS CoreText does under the app's antialiased
    smoothing (the design reference), so chat text renders one step lighter
-   there. Scoped to the default chat font (a custom font is the user's own
-   rendering choice) and tied to the Font smoothing toggle, so turning that
-   off restores native platform rendering. Chat message roots consume the
-   token via [font-weight:var(--chat-font-weight,410)]. */
-html.render-linux:not(.no-font-smoothing):not([data-chat-font]) {
+   there. Calibrated for Inter only, so any custom font that reaches chat
+   opts out: a dedicated chat font (data-chat-font) or a custom interface
+   font (data-ui-font), which cascades into chat via --font-sans. Tied to
+   the Font smoothing toggle, so turning that off restores native platform
+   rendering. Chat message roots consume the token via
+   [font-weight:var(--chat-font-weight,410)]. */
+html.render-linux:not(.no-font-smoothing):not([data-chat-font]):not([data-ui-font]) {
 	--chat-font-weight: 350;
 }
 

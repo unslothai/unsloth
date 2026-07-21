@@ -479,6 +479,11 @@ export function applyCustomizationToDocument(
     "--font-sans",
     c.uiFont ? `"${c.uiFont}", ${DEFAULT_SANS_STACK}` : null,
   );
+  // A custom interface font cascades into chat text (message roots set no
+  // family of their own), so index.css keys the Linux chat-weight
+  // compensation off this marker too: the compensation is calibrated for
+  // Inter only.
+  el.toggleAttribute("data-ui-font", Boolean(c.uiFont));
   setVar(
     "--font-heading",
     c.headingFont ? `"${c.headingFont}", ${DEFAULT_HEADING_STACK}` : null,
