@@ -1432,7 +1432,9 @@ def test_dir_weight_set_pickle_behind_bad_safetensors_index_is_incomplete(tmp_pa
     # index and fails instead of falling back to the bin.
     (tmp_path / "pytorch_model.bin").write_bytes(b"\0")
     (tmp_path / "model.safetensors.index.json").write_text(
-        json.dumps({"weight_map": {"w": "model-00001-of-00002.safetensors"}})  # a mapped shard absent
+        json.dumps(
+            {"weight_map": {"w": "model-00001-of-00002.safetensors"}}
+        )  # a mapped shard absent
     )
     names = {p.name for p in tmp_path.iterdir()}
     assert mc._dir_weight_set_is_complete(tmp_path, names) is False

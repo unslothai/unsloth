@@ -295,7 +295,11 @@ def test_sharded_index_credited_in_clip_and_mlm_submodules(home, tmp_path, monke
     index = json.dumps({"weight_map": {"w": "model-00001-of-00001.safetensors"}})
     for path, mtype, commit in (
         ("0_CLIPModel", "sentence_transformers.models.CLIPModel.CLIPModel", "cclip"),
-        ("0_MLM", "sentence_transformers.sparse_encoder.models.MLMTransformer.MLMTransformer", "cmlm"),
+        (
+            "0_MLM",
+            "sentence_transformers.sparse_encoder.models.MLMTransformer.MLMTransformer",
+            "cmlm",
+        ),
     ):
         snap = _snap(
             tmp_path,
@@ -319,7 +323,12 @@ def test_root_non_transformer_module_pickle_blocks_despite_shard_index(home, tmp
         tmp_path,
         {
             "modules.json": json.dumps(
-                [{"path": "", "type": "sentence_transformers.models.StaticEmbedding.StaticEmbedding"}]
+                [
+                    {
+                        "path": "",
+                        "type": "sentence_transformers.models.StaticEmbedding.StaticEmbedding",
+                    }
+                ]
             ),
             "pytorch_model.bin": b"pickle",
             "model.safetensors.index.json": index,
@@ -337,7 +346,12 @@ def test_escaping_module_path_blocks(home, tmp_path, monkeypatch):
         tmp_path,
         {
             "modules.json": json.dumps(
-                [{"path": "../evil", "type": "sentence_transformers.models.Transformer.Transformer"}]
+                [
+                    {
+                        "path": "../evil",
+                        "type": "sentence_transformers.models.Transformer.Transformer",
+                    }
+                ]
             ),
             "model.safetensors": b"\0",
         },
