@@ -804,7 +804,15 @@ export function AppSidebar() {
         await deleteChatProject(target.project.id, {
           deleteFiles: shouldDeleteProjectFiles,
         });
-        if (activeProjectId === target.project.id) {
+        // activeProjectId is only the ?project= param; on a thread-only URL the
+        // project is resolved from the thread into the runtime store, so check
+        // that too or we strand the user on a now-deleted thread.
+        const runtimeProjectId =
+          useChatRuntimeStore.getState().activeProjectId;
+        if (
+          activeProjectId === target.project.id ||
+          runtimeProjectId === target.project.id
+        ) {
           useChatRuntimeStore.getState().setActiveProjectId(null);
           navigate({ to: "/chat", search: { new: createNavigationNonce() } });
         }
