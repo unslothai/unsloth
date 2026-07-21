@@ -1203,9 +1203,7 @@ def run_safetensors_tool_loop(
             )
             if needs_confirm and permission_mode == "auto":
                 from core.inference.tools import is_high_risk_tool_call
-                needs_confirm = is_high_risk_tool_call(
-                    decision.tool_name, decision.arguments
-                )
+                needs_confirm = is_high_risk_tool_call(decision.tool_name, decision.arguments)
             approval_id = new_approval_id() if needs_confirm else ""
             decision_slot = begin_tool_decision(session_id, approval_id) if needs_confirm else None
             start_event = decision.tool_start_event()

@@ -2505,17 +2505,50 @@ def is_potentially_unsafe_tool_call(name: str, arguments: dict) -> bool:
 _HIGH_RISK_COMMANDS = frozenset(
     {
         # privilege escalation
-        "sudo", "su", "doas", "pkexec",
+        "sudo",
+        "su",
+        "doas",
+        "pkexec",
         # destructive filesystem / storage devices (mkfs* matched by prefix)
-        "rm", "rmdir", "shred", "dd", "wipefs", "fdisk", "parted",
-        "blkdiscard", "chattr", "truncate",
+        "rm",
+        "rmdir",
+        "shred",
+        "dd",
+        "wipefs",
+        "fdisk",
+        "parted",
+        "blkdiscard",
+        "chattr",
+        "truncate",
         # accounts / persistence / system services
-        "crontab", "systemctl", "service", "useradd", "userdel", "usermod",
-        "groupadd", "groupdel", "passwd", "chpasswd", "visudo", "chsh",
+        "crontab",
+        "systemctl",
+        "service",
+        "useradd",
+        "userdel",
+        "usermod",
+        "groupadd",
+        "groupdel",
+        "passwd",
+        "chpasswd",
+        "visudo",
+        "chsh",
         # firewall / mounts
-        "iptables", "ip6tables", "nft", "ufw", "mount", "umount",
+        "iptables",
+        "ip6tables",
+        "nft",
+        "ufw",
+        "mount",
+        "umount",
         # remote exec / raw network transfer
-        "ssh", "scp", "sftp", "telnet", "nc", "ncat", "netcat", "socat",
+        "ssh",
+        "scp",
+        "sftp",
+        "telnet",
+        "nc",
+        "ncat",
+        "netcat",
+        "socat",
     }
 )
 # Recursive-permission commands are high risk only with a recursive flag
@@ -2531,8 +2564,16 @@ _HIGH_RISK_FIND_FLAGS = frozenset({"-delete"})
 # curl/wget flags that send local data out (exfiltration surface).
 _NET_UPLOAD_FLAGS = frozenset(
     {
-        "-d", "--data", "--data-ascii", "--data-binary", "--data-raw",
-        "--data-urlencode", "-F", "--form", "-T", "--upload-file",
+        "-d",
+        "--data",
+        "--data-ascii",
+        "--data-binary",
+        "--data-raw",
+        "--data-urlencode",
+        "-F",
+        "--form",
+        "-T",
+        "--upload-file",
     }
 )
 # curl/wget output piped straight into an interpreter is remote code execution.
@@ -2556,7 +2597,7 @@ def _command_is_network_exec_or_exfil(command: str) -> bool:
     if "<(" in command:  # bash <(curl ...) process substitution
         return True
     try:
-        tokens = shlex.split(command.replace("\n", " "), posix=True)
+        tokens = shlex.split(command.replace("\n", " "), posix = True)
     except ValueError:
         return True
     return any(t.split("=", 1)[0] in _NET_UPLOAD_FLAGS for t in tokens)
@@ -2581,7 +2622,7 @@ def _terminal_is_high_risk(command: str) -> bool:
     expanded = _expand_shell_assignments(_expand_param_defaults(normalized))
     for text in {normalized, expanded}:
         try:
-            lexer = shlex.shlex(text, posix=True, punctuation_chars=";&|()")
+            lexer = shlex.shlex(text, posix = True, punctuation_chars = ";&|()")
             lexer.whitespace_split = True
             tokens = list(lexer)
         except ValueError:

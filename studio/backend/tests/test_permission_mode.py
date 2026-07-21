@@ -432,7 +432,9 @@ def test_high_risk_dispatcher_non_terminal():
     # MCP: a credential-noun tool or a sensitive-path argument prompts, but an
     # ordinary mutating MCP call (create/delete) runs in auto.
     assert is_high_risk_tool_call(f"{MCP_TOOL_PREFIX}vault__read_secret", {"name": "db"}) is True
-    assert is_high_risk_tool_call(f"{MCP_TOOL_PREFIX}fs__read_file", {"path": "/etc/passwd"}) is True
+    assert (
+        is_high_risk_tool_call(f"{MCP_TOOL_PREFIX}fs__read_file", {"path": "/etc/passwd"}) is True
+    )
     assert is_high_risk_tool_call(f"{MCP_TOOL_PREFIX}gh__create_issue", {"title": "x"}) is False
     assert is_high_risk_tool_call(f"{MCP_TOOL_PREFIX}gh__list_issues", {}) is False
 
