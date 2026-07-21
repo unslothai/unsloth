@@ -45,6 +45,7 @@ import { Spinner } from "@/components/ui/spinner";
 import { Switch } from "@/components/ui/switch";
 import { useAnimatedThemeToggle } from "@/components/ui/animated-theme-toggler";
 import {
+  getClientPlatform,
   shouldUseCustomWindowTitlebar,
   shouldUseNativeMacWindowTitlebar,
 } from "@/components/tauri/window-titlebar";
@@ -330,6 +331,8 @@ export function AppSidebar() {
   );
   const [usesCustomTitlebar] = useState(shouldUseCustomWindowTitlebar);
   const [usesNativeMacTitlebar] = useState(shouldUseNativeMacWindowTitlebar);
+  // Mac uses Cmd, others use Ctrl. Not Tauri-gated, so it's right on web too.
+  const [isMacPlatform] = useState(() => getClientPlatform().includes("mac"));
   const { pathname, search } = useRouterState({
     select: (s) => ({
       pathname: s.location.pathname,
@@ -1100,10 +1103,11 @@ export function AppSidebar() {
                     side="bottom"
                     sideOffset={6}
                     className="tooltip-compact flex items-center gap-1.5"
+                    hidden={isMobile}
                   >
                     {t("shell.navigation.search")}
                     <kbd className="rounded bg-black/10 px-1 py-px text-[10px] font-medium leading-none dark:bg-white/15">
-                      ⌘K
+                      {isMacPlatform ? "⌘K" : "Ctrl+K"}
                     </kbd>
                   </TooltipContent>
                 </Tooltip>
