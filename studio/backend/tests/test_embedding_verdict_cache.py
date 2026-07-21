@@ -399,6 +399,54 @@ def test_get_does_not_record_on_gate_error(home, monkeypatch):
     assert _drive_get(monkeypatch, None, offline = False) == {}
 
 
+def _drive_get_capturing_st(monkeypatch, st_factory, *, offline):
+    """Drive ``_get`` with a caller-supplied SentenceTransformer factory (to probe the exact
+    kwargs the constructor receives). Returns nothing; the factory records what it needs."""
+    fake_st = types.ModuleType("sentence_transformers")
+    fake_st.SentenceTransformer = st_factory
+    monkeypatch.setitem(sys.modules, "sentence_transformers", fake_st)
+    monkeypatch.setattr(config, "effective_embedding_model", lambda: "org/model")
+    monkeypatch.setattr(embeddings, "_device", lambda: "cpu")
+    monkeypatch.setattr(embeddings, "_install_torchao_stub_once", lambda: None)
+    monkeypatch.setattr("utils.models.resolve_st_cached_repo_id_case", lambda r: r)
+    monkeypatch.setattr("utils.utils.hf_env_offline", lambda: offline)
+    monkeypatch.setattr(
+        embeddings, "_guard_model_security", lambda name, lo: fs.FileSecurityDecision("org/model", False)
+    )
+    monkeypatch.setattr(embeddings, "_record_embedding_verdict_safe", lambda n, c: None)
+    monkeypatch.setattr(embeddings, "_model", None, raising = False)
+    monkeypatch.setattr(embeddings, "_name", None, raising = False)
+    embeddings._get()
+
+
+def test_get_online_omits_local_files_only_for_old_st(home, monkeypatch):
+    # pyproject pins no minimum sentence-transformers, and older releases lack the
+    # local_files_only constructor arg. An ONLINE warm must not forward it, or such an install
+    # raises TypeError on every embedder load. The strict-signature factory (no **kwargs) raises
+    # exactly that if the kwarg is passed.
+    seen = {}
+
+    def _old_st(name, *, device, model_kwargs):
+        seen["called"] = True
+        return object()
+
+    _drive_get_capturing_st(monkeypatch, _old_st, offline = False)
+    assert seen.get("called") is True
+
+
+def test_get_offline_still_passes_local_files_only(home, monkeypatch):
+    # Offline (the new capability) still forwards local_files_only=True, so a modern install
+    # loads purely from cache.
+    seen = {}
+
+    def _st(name, **k):
+        seen.update(k)
+        return object()
+
+    _drive_get_capturing_st(monkeypatch, _st, offline = True)
+    assert seen.get("local_files_only") is True
+
+
 # ── guard fails CLOSED offline on a gate error ───────────────────────
 
 

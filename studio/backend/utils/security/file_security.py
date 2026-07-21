@@ -149,12 +149,21 @@ def _load_relative_path(norm: str, load_subdirs) -> str:
     path the Hub reports for a flagged file -- the raw ``0/../evil`` would never prefix
     ``evil/pytorch_model.bin`` and the file would slip through as an unreferenced nested shard,
     though the offline gate (which canonicalizes the same path) blocks it.
+
+    The DEEPEST matching load-subdir wins: a nested Router emits both its own dir and its child
+    (``0_Router`` and ``0_Router/query_0_WordEmbeddings``), and ``Router.load()`` deserializes the
+    child pickle directly. Stripping only the parent prefix would leave ``query_0_WordEmbeddings/...``
+    looking like an unreferenced nested shard (allowed); stripping the longest matching prefix makes
+    the child pickle root-level under its own load root and blocks.
     """
+    best = norm
+    best_len = -1
     for subdir in load_subdirs or ():
         prefix = _canonical_rel(subdir)
-        if prefix and norm.startswith(prefix + "/"):
-            return norm[len(prefix) + 1 :]
-    return norm
+        if prefix and norm.startswith(prefix + "/") and len(prefix) > best_len:
+            best = norm[len(prefix) + 1 :]
+            best_len = len(prefix)
+    return best
 
 
 def _index_prefixes(load_subdirs) -> tuple:

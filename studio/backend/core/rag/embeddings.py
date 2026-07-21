@@ -304,12 +304,19 @@ def _get(model_name: str | None = None):
             decision = _guard_model_security(load_name, local_only)
             # huggingface_hub honors only HF_HUB_OFFLINE, so a TRANSFORMERS_OFFLINE-only
             # session would otherwise still fetch missing repo files.
-            _model = SentenceTransformer(
-                load_name,
-                device = device,
-                model_kwargs = dtype_kwargs("float16"),
-                local_files_only = local_only,
-            )
+            #
+            # pyproject sets no lower bound on sentence-transformers and the
+            # ``local_files_only`` constructor arg is absent on older releases, so pass it
+            # ONLY when we actually need an offline load. Online (local_only False) then never
+            # forwards it -- an old install warms the Hub-backed embedder exactly as before,
+            # while offline (the new capability) still requires a version that supports it.
+            st_kwargs = {
+                "device": device,
+                "model_kwargs": dtype_kwargs("float16"),
+            }
+            if local_only:
+                st_kwargs["local_files_only"] = True
+            _model = SentenceTransformer(load_name, **st_kwargs)
             _name = name
             # An ONLINE load that HF definitively scanned clean is now fully cached: record the
             # verdict (outside the lock, so hashing stays off the hot path) so a later offline
