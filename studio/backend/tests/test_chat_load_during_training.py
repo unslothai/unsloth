@@ -1001,6 +1001,8 @@ class TestValidateRefusesDuringTraining(unittest.TestCase):
             is_loaded = True,
             model_identifier = "x.gguf",
             extra_args = ["--spec-draft-device", "CUDA1"],
+            extra_args_source = ("x.gguf", None),
+            is_vulkan_build = lambda: False,
         )
         captured = []
         with (
@@ -1224,7 +1226,12 @@ class TestLoadModelGuardIntegration(unittest.TestCase):
         inf = SimpleNamespace(active_model_name = None)
         inf.unload_model = MagicMock()
         inf._shutdown_subprocess = MagicMock()
-        llama = SimpleNamespace(is_loaded = False, model_identifier = None, hf_variant = None)
+        llama = SimpleNamespace(
+            is_loaded = False,
+            model_identifier = None,
+            hf_variant = None,
+            is_vulkan_build = lambda: False,
+        )
         llama.unload_model = MagicMock()
         cfg = SimpleNamespace(
             is_gguf = True,
@@ -1294,6 +1301,8 @@ class TestLoadModelGuardIntegration(unittest.TestCase):
             model_identifier = "x.gguf",
             hf_variant = None,
             extra_args = ["--spec-draft-device", "CUDA1"],
+            extra_args_source = ("x.gguf", None),
+            is_vulkan_build = lambda: False,
         )
         llama.unload_model = MagicMock()
         cfg = SimpleNamespace(
