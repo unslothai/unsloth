@@ -2188,6 +2188,64 @@ def _pid_start_identity(pid: int) -> str:
             return data[data.rfind(b")") + 2 :].split()[19].decode()
         except (OSError, IndexError):
             return ""
+    if sys.platform == "win32":
+        try:
+            import ctypes
+            from ctypes import wintypes
+
+            kernel32 = ctypes.WinDLL("kernel32", use_last_error = True)
+            open_process = kernel32.OpenProcess
+            open_process.argtypes = (wintypes.DWORD, wintypes.BOOL, wintypes.DWORD)
+            open_process.restype = wintypes.HANDLE
+            get_process_times = kernel32.GetProcessTimes
+            get_process_times.argtypes = (
+                wintypes.HANDLE,
+                ctypes.POINTER(wintypes.FILETIME),
+                ctypes.POINTER(wintypes.FILETIME),
+                ctypes.POINTER(wintypes.FILETIME),
+                ctypes.POINTER(wintypes.FILETIME),
+            )
+            get_process_times.restype = wintypes.BOOL
+            close_handle = kernel32.CloseHandle
+            close_handle.argtypes = (wintypes.HANDLE,)
+            close_handle.restype = wintypes.BOOL
+
+            handle = open_process(0x1000, False, pid)  # PROCESS_QUERY_LIMITED_INFORMATION
+            if not handle:
+                return ""
+            try:
+                created = wintypes.FILETIME()
+                exited = wintypes.FILETIME()
+                kernel = wintypes.FILETIME()
+                user = wintypes.FILETIME()
+                if not get_process_times(
+                    handle,
+                    ctypes.byref(created),
+                    ctypes.byref(exited),
+                    ctypes.byref(kernel),
+                    ctypes.byref(user),
+                ):
+                    return ""
+                return str((created.dwHighDateTime << 32) | created.dwLowDateTime)
+            finally:
+                close_handle(handle)
+        except Exception:
+            return ""
+    if sys.platform == "darwin":
+        try:
+            env = os.environ.copy()
+            env["LC_ALL"] = "C"
+            env["TZ"] = "UTC"
+            result = subprocess.run(
+                ["/bin/ps", "-o", "lstart=", "-p", str(pid)],
+                capture_output = True,
+                text = True,
+                timeout = 10,
+                env = env,
+            )
+            return " ".join(result.stdout.split()) if result.returncode == 0 else ""
+        except Exception:
+            return ""
     try:
         import psutil
         return str(psutil.Process(pid).create_time())

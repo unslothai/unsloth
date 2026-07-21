@@ -183,7 +183,7 @@ def test_backend_pidfile_records_process_start_identity(tmp_path):
     assert pid_file.read_text() == "4242:123.5"
 
 
-@pytest.mark.parametrize("source", [_SOURCE, _BACKEND_RUN_SOURCE])
+@pytest.mark.parametrize("source", [_SOURCE, _BACKEND_RUN_SOURCE], ids = ["cli", "backend"])
 def test_pid_start_identity_linux_uses_proc_token_with_psutil_installed(monkeypatch, source):
     """Linux identity must not change with psutil availability between start and stop."""
     proc_tail = [b"S"] + [b"0"] * 18 + [b"98765"] + [b"0"] * 4
@@ -200,7 +200,7 @@ def test_pid_start_identity_linux_uses_proc_token_with_psutil_installed(monkeypa
     assert ns["_pid_start_identity"](4242) == "98765"
 
 
-@pytest.mark.parametrize("source", [_SOURCE, _BACKEND_RUN_SOURCE])
+@pytest.mark.parametrize("source", [_SOURCE, _BACKEND_RUN_SOURCE], ids = ["cli", "backend"])
 def test_pid_start_identity_linux_does_not_fall_back_to_psutil(monkeypatch, source):
     """An unreadable /proc must produce no token, never a dependency-specific format."""
     fake_psutil = types.SimpleNamespace(
@@ -216,6 +216,81 @@ def test_pid_start_identity_linux_does_not_fall_back_to_psutil(monkeypatch, sour
     exec(_func_source("_pid_start_identity", source), ns)
 
     assert ns["_pid_start_identity"](4242) == ""
+
+
+class _FakeCtypesFunction:
+    def __init__(self, callback):
+        self.callback = callback
+        self.argtypes = None
+        self.restype = None
+
+    def __call__(self, *args):
+        return self.callback(*args)
+
+
+@pytest.mark.parametrize("source", [_SOURCE, _BACKEND_RUN_SOURCE], ids = ["cli", "backend"])
+def test_pid_start_identity_windows_uses_native_creation_time(monkeypatch, source):
+    """The outer CLI must verify Studio without needing its venv's psutil package."""
+    closed = []
+
+    class FileTime:
+        dwLowDateTime = 0
+        dwHighDateTime = 0
+
+    def get_process_times(_handle, created, _exited, _kernel, _user):
+        created._obj.dwLowDateTime = 123
+        created._obj.dwHighDateTime = 2
+        return True
+
+    kernel32 = types.SimpleNamespace(
+        OpenProcess = _FakeCtypesFunction(lambda *_args: 99),
+        GetProcessTimes = _FakeCtypesFunction(get_process_times),
+        CloseHandle = _FakeCtypesFunction(lambda handle: closed.append(handle) or True),
+    )
+    wintypes = types.ModuleType("ctypes.wintypes")
+    wintypes.DWORD = int
+    wintypes.BOOL = int
+    wintypes.HANDLE = int
+    wintypes.FILETIME = FileTime
+    ctypes = types.ModuleType("ctypes")
+    ctypes.wintypes = wintypes
+    ctypes.WinDLL = lambda *_args, **_kwargs: kernel32
+    ctypes.POINTER = lambda value: value
+    ctypes.byref = lambda value: types.SimpleNamespace(_obj = value)
+    monkeypatch.setitem(sys.modules, "ctypes", ctypes)
+    monkeypatch.setitem(sys.modules, "ctypes.wintypes", wintypes)
+
+    ns = {"sys": types.SimpleNamespace(platform = "win32")}
+    exec(_func_source("_pid_start_identity", source), ns)
+
+    assert ns["_pid_start_identity"](4242) == str((2 << 32) | 123)
+    assert closed == [99]
+
+
+@pytest.mark.parametrize("source", [_SOURCE, _BACKEND_RUN_SOURCE], ids = ["cli", "backend"])
+def test_pid_start_identity_macos_uses_native_ps_timestamp(source):
+    """macOS start/stop environments use the same locale-stable native token."""
+    calls = []
+
+    def fake_run(command, **kwargs):
+        calls.append((command, kwargs))
+        return types.SimpleNamespace(
+            returncode = 0,
+            stdout = "  Tue   Jul 21 16:07:02 2026  \n",
+        )
+
+    ns = {
+        "os": os,
+        "subprocess": types.SimpleNamespace(run = fake_run),
+        "sys": types.SimpleNamespace(platform = "darwin"),
+    }
+    exec(_func_source("_pid_start_identity", source), ns)
+
+    assert ns["_pid_start_identity"](4242) == "Tue Jul 21 16:07:02 2026"
+    command, kwargs = calls[0]
+    assert command == ["/bin/ps", "-o", "lstart=", "-p", "4242"]
+    assert kwargs["env"]["LC_ALL"] == "C"
+    assert kwargs["env"]["TZ"] == "UTC"
 
 
 # ── Behavioral: the POSIX signal-0 branch (skip on Windows runners) ───────────
