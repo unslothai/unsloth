@@ -4154,7 +4154,6 @@ def _maybe_unsupported_message(msg: str) -> str:
 
 def _raise_if_sidecar_swap_in_progress() -> None:
     from utils.transformers_version import sidecar_swap_in_progress
-
     if sidecar_swap_in_progress():
         raise HTTPException(
             status_code = 409,
@@ -4182,6 +4181,7 @@ async def load_model(
     # install can reserve while this request queues on the gate, so the pre-gate
     # check alone is only a fast path.
     from core.inference.llama_keepwarm import inference_lifecycle_gate
+
     _raise_if_sidecar_swap_in_progress()
     # Hold the lifecycle gate across the load so idle auto-unload can't unload the
     # model mid-load. Auto-switch calls _load_model_impl directly since it already
