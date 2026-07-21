@@ -2013,6 +2013,9 @@ def test_offline_gguf_variants_never_queries_hub(monkeypatch, tmp_path):
     monkeypatch.delenv("HF_HUB_OFFLINE")
     asyncio.run(gguf_variants.get_gguf_variants_response("Org/Offline", prefer_local_cache = True))
     hub_probe.assert_not_called()
+    monkeypatch.setattr("huggingface_hub.HfApi.model_info", Mock(side_effect = OSError("offline")))
+    gguf.list_gguf_variants("Org/Offline")
+    hub_probe.assert_not_called()
 
 
 def test_cancel_worker_leaves_exited_process_to_watcher():

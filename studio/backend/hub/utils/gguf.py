@@ -449,7 +449,7 @@ def list_gguf_variants(
             "EntryNotFoundError",
         ):
             raise
-        cached = list_gguf_variants_from_hf_cache(repo_id, hf_token)
+        cached = list_gguf_variants_from_hf_cache(repo_id, hf_token, offline = True)
         if cached is not None:
             logger.warning(
                 "HF API unreachable for %s (%s); using local cache snapshot.",

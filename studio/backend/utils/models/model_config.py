@@ -1809,7 +1809,10 @@ def _iter_hf_cache_snapshots(repo_id: str):
 
 
 def _list_gguf_variants_from_hf_cache(
-    repo_id: str, hf_token: Optional[str] = None
+    repo_id: str,
+    hf_token: Optional[str] = None,
+    *,
+    offline: bool = False,
 ) -> Optional[tuple[list[GgufVariantInfo], bool]]:
     """Variants from the local HF cache snapshot, or None if not cached.
 
@@ -1832,7 +1835,7 @@ def _list_gguf_variants_from_hf_cache(
                     cached_path := cached_gguf_for_load(
                         repo_id,
                         variant.quant,
-                        verify_sizes = not _env_offline(),
+                        verify_sizes = not (offline or _env_offline()),
                         hf_token = hf_token,
                     )
                 )
@@ -1878,7 +1881,7 @@ def list_gguf_variants(
         ):
             raise
         # API failed transiently; fall back to local snapshot if fully downloaded.
-        cached = _list_gguf_variants_from_hf_cache(repo_id, hf_token)
+        cached = _list_gguf_variants_from_hf_cache(repo_id, hf_token, offline = True)
         if cached is not None:
             logger.warning(
                 "HF API unreachable for %s (%s); using local cache snapshot.",
