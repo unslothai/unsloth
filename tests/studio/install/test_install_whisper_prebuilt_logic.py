@@ -98,6 +98,18 @@ def _manifest(
     }
 
 
+@pytest.fixture(autouse = True)
+def _default_detected_runtime(monkeypatch):
+    """CUDA selection intersects the driver lines with an on-disk runtime scan.
+    Default that scan to "both majors present" so the SM/driver matrix is
+    deterministic on any test host; on-disk-gating tests override it."""
+    monkeypatch.setattr(
+        M._runtime_libs,
+        "detected_cuda_runtime_lines",
+        lambda *, is_windows: ["cuda13", "cuda12"],
+    )
+
+
 # ── Host detection ──
 @pytest.mark.parametrize(
     "system,machine,exp_os,exp_arch,exp_ext",
@@ -359,6 +371,39 @@ def test_cuda_multi_gpu_requires_single_covering_artifact():
         M.select_artifact(_cuda_manifest(), host, "cuda")["asset"]
         == "whisper-linux-x64-cuda13-portable.tar.gz"
     )
+
+
+def test_cuda_on_disk_runtime_gates_the_line(monkeypatch):
+    # B200 under a CUDA-13 driver, but only cuda12 runtime libs on disk (e.g.
+    # torch-cuda12): the bundles don't ship libcudart/libcublas, so the cuda13
+    # line is unusable and selection must fall to cuda12-newer.
+    monkeypatch.setattr(
+        M._runtime_libs, "detected_cuda_runtime_lines", lambda *, is_windows: ["cuda12"]
+    )
+    host = _host(
+        "linux",
+        "x64",
+        has_usable_nvidia = True,
+        compute_caps = ("10.0",),
+        driver_cuda_version = (13, 0),
+    )
+    assert (
+        M.select_artifact(_cuda_manifest(), host, "cuda")["asset"]
+        == "whisper-linux-x64-cuda12-newer.tar.gz"
+    )
+
+
+def test_cuda_no_on_disk_runtime_returns_none(monkeypatch):
+    # No CUDA runtime libraries anywhere -> no usable line -> None (CPU fallback).
+    monkeypatch.setattr(M._runtime_libs, "detected_cuda_runtime_lines", lambda *, is_windows: [])
+    host = _host(
+        "linux",
+        "x64",
+        has_usable_nvidia = True,
+        compute_caps = ("10.0",),
+        driver_cuda_version = (13, 0),
+    )
+    assert M.select_artifact(_cuda_manifest(), host, "cuda") is None
 
 
 def test_cuda_selection_stable_under_manifest_shuffle():

@@ -163,6 +163,22 @@ def test_unknown_caps_only_portable():
     assert attempts and all(a.coverage_class == "portable" for a in attempts)
 
 
+def test_detected_runtime_lines_gate_selection():
+    # B200 under a cuda13 driver but only cuda12 runtime libs on disk: the cuda13
+    # line is unusable (bundles don't ship the runtime) -> cuda12-newer.
+    log: list[str] = []
+    attempts = sel.select_cuda_attempts(
+        list(_ALL), ["100"], (13, 0), None, log, detected_runtime_lines = ["cuda12"]
+    )
+    assert attempts[0].asset == "cuda12-newer"
+    # No CUDA runtime on disk at all -> no usable line.
+    log = []
+    assert (
+        sel.select_cuda_attempts(list(_ALL), ["100"], (13, 0), None, log, detected_runtime_lines = [])
+        == []
+    )
+
+
 # ── ROCm ──
 def test_match_rocm_exact_mapped_and_family_token():
     cands = [

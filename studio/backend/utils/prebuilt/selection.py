@@ -293,20 +293,42 @@ def select_cuda_attempts(
     driver_cuda_version: tuple[int, int] | None,
     torch_runtime_line: str | None,
     log: list[str],
+    *,
+    detected_runtime_lines: list[str] | None = None,
 ) -> list[SelArtifact]:
-    """Ordered CUDA bundle attempts for this host, best first. Runtime lines the
-    driver supports are ordered newest-first, then a Blackwell host prefers the
-    highest CUDA-major line that natively covers its SMs, else torch's reported
-    line is moved to the front. Empty when no line is driver-compatible (caller
-    then decides its own fallback -- CPU for whisper)."""
-    runtime_lines = compatible_runtime_lines_for_driver(driver_cuda_version)
+    """Ordered CUDA bundle attempts for this host, best first.
+
+    A runtime line is usable only when the driver supports it AND the matching
+    CUDA runtime libraries are actually present on disk -- the bundles do not ship
+    libcudart/libcublas, so a cuda13 bundle needs cuda13 runtime libs even under a
+    cuda13 driver. When `detected_runtime_lines` (on-disk scan) is given, it is
+    intersected with the driver-compatible lines, mirroring
+    install_llama_prebuilt.py; when None (detection unavailable), the driver
+    lines are used alone. Lines are ordered newest-first, then a Blackwell host
+    prefers the highest CUDA-major line that natively covers its SMs, else torch's
+    reported line is moved to the front. Empty when no line is usable (caller then
+    decides its own fallback -- CPU for whisper)."""
+    driver_lines = compatible_runtime_lines_for_driver(driver_cuda_version)
     log.append(f"cuda_selection: detected_sms={','.join(host_sms) if host_sms else 'unknown'}")
     log.append(
         "cuda_selection: driver_runtime_lines="
+        + (",".join(driver_lines) if driver_lines else "none")
+    )
+    if detected_runtime_lines is not None:
+        log.append(
+            "cuda_selection: detected_runtime_lines="
+            + (",".join(detected_runtime_lines) if detected_runtime_lines else "none")
+        )
+        # Preserve the detected (newest-first) order, keep only driver-compatible.
+        runtime_lines = [line for line in detected_runtime_lines if line in driver_lines]
+    else:
+        runtime_lines = list(driver_lines)
+    log.append(
+        "cuda_selection: compatible_runtime_lines="
         + (",".join(runtime_lines) if runtime_lines else "none")
     )
     if not runtime_lines:
-        log.append("cuda_selection: no CUDA runtime line compatible with the driver")
+        log.append("cuda_selection: no usable CUDA runtime line (driver + on-disk runtime)")
         return []
 
     ordered = list(runtime_lines)

@@ -74,6 +74,7 @@ _STUDIO_DIR = os.path.dirname(os.path.abspath(__file__))
 if _STUDIO_DIR not in sys.path:
     sys.path.insert(0, _STUDIO_DIR)
 
+from backend.utils.prebuilt import runtime_libs as _runtime_libs  # noqa: E402
 from backend.utils.prebuilt import selection as _sel  # noqa: E402
 from backend.utils.prebuilt.hosts import (  # noqa: E402
     detect_nvidia_caps,
@@ -450,12 +451,17 @@ def select_artifact(
     sel_candidates = [_sel.SelArtifact.from_manifest(artifact) for artifact in candidates]
     log_lines: list[str] = []
     if backend == "cuda":
+        # The CUDA bundles do not ship libcudart/libcublas; a runtime line is only
+        # usable when its runtime libraries are on disk (same as llama). Intersect
+        # the on-disk scan with the driver-compatible lines.
+        detected = _runtime_libs.detected_cuda_runtime_lines(is_windows = host.is_windows)
         attempts = _sel.select_cuda_attempts(
             sel_candidates,
             _sel.normalize_compute_caps(host.compute_caps),
             host.driver_cuda_version,
             host.torch_runtime_line,
             log_lines,
+            detected_runtime_lines = detected,
         )
         chosen = attempts[0] if attempts else None
     else:  # rocm
