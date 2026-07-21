@@ -108,7 +108,11 @@ def _is_model_directory_for_scan(path: Path, *, entry_limit: int | None) -> bool
 def _is_scan_leaf_dir(path: Path, *, entry_limit: int | None) -> bool:
     if _is_model_directory_for_scan(path, entry_limit = entry_limit):
         return True
-    probe = entry_limit if entry_limit is not None else _MODEL_SIGNAL_PROBE_LIMIT
+    # Probe the same window the parent scan uses to emit a model directory
+    # (_has_immediate_model_signal), so a directory the parent would not emit is
+    # never pruned here. A wider window could prune a directory that is never
+    # emitted, dropping the model from every scan.
+    probe = _MODEL_SIGNAL_PROBE_LIMIT
     try:
         for index, entry in enumerate(path.iterdir(), start = 1):
             if index > probe:
@@ -600,34 +604,48 @@ def iter_recursive_scan_dirs(
 
     Directories the parent scan already classifies as models (config plus weights,
     or a main GGUF file) are not yielded and are never descended into.
-    Symlinks are never followed; depth and visited-entry caps bound the walk."""
+    Symlinks are never followed; depth and visited-entry caps bound the walk.
+
+    Uses ``os.scandir`` and stops reading a directory once the entry cap is hit,
+    so a flat folder with a very large number of files never materializes the
+    whole listing before the cap applies."""
     base_depth = len(folder_path.parts)
     visited = 0
-    for dirpath, dirnames, _filenames in os.walk(folder_path, topdown = True, followlinks = False):
-        current = Path(dirpath)
-        depth = len(current.parts) - base_depth
-        if entry_limit is not None:
-            visited += len(_filenames)
-        if depth >= max_depth or (entry_limit is not None and visited > entry_limit):
-            dirnames[:] = []
+    stack: list[Path] = [folder_path]
+    while stack:
+        current = stack.pop()
+        if len(current.parts) - base_depth >= max_depth:
             continue
-        keep: list[str] = []
-        for name in sorted(dirnames):
-            visited += 1
-            if entry_limit is not None and visited > entry_limit:
-                break
-            if name.startswith(".") or name == "ollama_links":
-                continue
-            child = current / name
-            try:
-                if child.is_symlink() or _is_scan_leaf_dir(child, entry_limit = entry_limit):
+        try:
+            scanner = os.scandir(current)
+        except OSError:
+            continue
+        children: list[Path] = []
+        with scanner:
+            for entry in scanner:
+                if entry_limit is not None:
+                    visited += 1
+                    if visited > entry_limit:
+                        break
+                name = entry.name
+                if name.startswith(".") or name == "ollama_links":
                     continue
-            except OSError:
-                continue
-            keep.append(name)
-        dirnames[:] = keep
-        for name in keep:
-            yield current / name
+                try:
+                    # Never follow symlinks: an is_dir that does not follow them
+                    # treats a symlinked directory as a non-directory and skips it.
+                    if not entry.is_dir(follow_symlinks = False):
+                        continue
+                    child = Path(entry.path)
+                    if _is_scan_leaf_dir(child, entry_limit = entry_limit):
+                        continue
+                except OSError:
+                    continue
+                children.append(child)
+        # Yield each directory's children in a stable order (only the kept
+        # sub-directories are sorted, never the full listing).
+        for child in sorted(children):
+            yield child
+            stack.append(child)
 
 
 def _scan_custom_folder(folder_path: Path, recursive: bool = False) -> List[LocalModelInfo]:

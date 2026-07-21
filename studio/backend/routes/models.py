@@ -335,6 +335,9 @@ def _scan_models_dir(
             ),
         ]
 
+    # Directories and standalone .gguf files are handled in a single pass so each
+    # entry is counted against entry_limit exactly once; a separate glob pass would
+    # count a top-level .gguf again and could drop it once the cap is reached.
     found: List[LocalModelInfo] = []
     visited = 0
     for child in models_dir.iterdir():
@@ -344,23 +347,41 @@ def _scan_models_dir(
         if entry_limit is not None and visited > entry_limit:
             break
         try:
-            if not child.is_dir():
+            is_dir = child.is_dir()
+            is_gguf_file = (
+                not is_dir
+                and child.suffix.lower() == ".gguf"
+                and child.is_file()
+            )
+            if not is_dir and not is_gguf_file:
                 continue
-            has_gguf = any(child.glob("*.gguf"))
-            has_non_gguf_weights = _has_non_gguf_weights(child)
-            has_config = (child / "config.json").exists() or (
-                child / "adapter_config.json"
-            ).exists()
-            has_model_files = has_gguf or has_non_gguf_weights or has_config
+            if is_dir:
+                has_gguf = any(child.glob("*.gguf"))
+                has_non_gguf_weights = _has_non_gguf_weights(child)
+                has_config = (child / "config.json").exists() or (
+                    child / "adapter_config.json"
+                ).exists()
+                if not (has_gguf or has_non_gguf_weights or has_config):
+                    continue
         except OSError:
             # Skip unreadable children rather than failing the scan.
-            continue
-        if not has_model_files:
             continue
         try:
             updated_at = child.stat().st_mtime
         except OSError:
             updated_at = None
+        if is_gguf_file:
+            found.append(
+                LocalModelInfo(
+                    id = str(child),
+                    display_name = child.stem,
+                    path = str(child),
+                    source = "models_dir",
+                    model_format = "gguf",
+                    updated_at = updated_at,
+                ),
+            )
+            continue
         # A folder whose only weights are .gguf is GGUF-format even when it also
         # ships a config.json (common for HF GGUF repos); such folders often lack
         # a -GGUF suffix, so surface the format for the UI's GGUF classification.
@@ -375,29 +396,6 @@ def _scan_models_dir(
                 updated_at = updated_at,
             ),
         )
-    # Also scan standalone .gguf files in the models directory.
-    if limit is None or len(found) < limit:
-        for gguf_file in models_dir.glob("*.gguf"):
-            if limit is not None and len(found) >= limit:
-                break
-            visited += 1
-            if entry_limit is not None and visited > entry_limit:
-                break
-            if gguf_file.is_file():
-                try:
-                    updated_at = gguf_file.stat().st_mtime
-                except OSError:
-                    updated_at = None
-                found.append(
-                    LocalModelInfo(
-                        id = str(gguf_file),
-                        display_name = gguf_file.stem,
-                        path = str(gguf_file),
-                        source = "models_dir",
-                        model_format = "gguf",
-                        updated_at = updated_at,
-                    ),
-                )
 
     return found
 

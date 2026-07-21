@@ -330,3 +330,18 @@ def test_schema_migrates_existing_table(tmp_path, monkeypatch):
     monkeypatch.setattr(scan_folders, "_schema_ready", False)
     listed_again = scan_folders.list_scan_folders()
     assert listed_again[0]["recursive"] == 0
+
+
+def test_recursive_scan_descends_through_file_heavy_dirs(tmp_path):
+    # A directory padded with many files must still be descended into to reach a
+    # nested model. Guards the scandir walker (which counts files toward the cap)
+    # against regressing the file-heavy case.
+    padded = tmp_path / "padded"
+    padded.mkdir()
+    for i in range(50):
+        (padded / f"note{i:03d}.txt").write_text("x")
+    _make_model_dir(padded / "nested" / "model-z")
+
+    recursive = local_inventory._scan_custom_folder(tmp_path, recursive = True)
+
+    assert "model-z" in {m.display_name for m in recursive}
