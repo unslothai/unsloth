@@ -106,6 +106,13 @@ API_KEY_PBKDF2_SALT_KEY = "api_key_pbkdf2_salt"
 DESKTOP_SECRET_HASH_KEY = "desktop_secret_hash"
 DESKTOP_SECRET_CREATED_AT_KEY = "desktop_secret_created_at"
 PBKDF2_ITERATIONS = 100_000
+_START_API_KEY_MARKER_ENV = "_UNSLOTH_START_API_KEY_MARKER"
+
+
+def _consume_start_api_key_marker_env() -> bool:
+    """Consume the one-shot readiness marker passed across a Studio re-exec."""
+    return os.environ.pop(_START_API_KEY_MARKER_ENV, None) == "1"
+
 
 # __file__ is unsloth_cli/commands/studio.py -- two parents up is the package root
 # (either site-packages or the repo root for editable installs).
@@ -1792,6 +1799,12 @@ def run(
         unsloth studio run --model some-model --chat-template-file /path/to/tpl.jinja
         unsloth studio run --model unsloth/Qwen3-27B-GGUF --gguf-variant Q8_0 --tensor-parallel
     """
+    # A newer outer CLI can re-exec into an older Studio venv. Pass this
+    # internal signal through the environment so an older child ignores it
+    # instead of treating an unknown CLI option as a llama-server argument.
+    inherited_start_api_key_marker = _consume_start_api_key_marker_env()
+    start_api_key_marker = start_api_key_marker or inherited_start_api_key_marker
+
     # Back-compat: --not-secure is a deprecated alias for --no-secure.
     secure = _resolve_secure(secure, not_secure)
     extra_llama_args: List[str] = list(ctx.args) if ctx.args else []
@@ -1991,23 +2004,28 @@ def run(
             args.append("--no-cloudflare")
         args.append("--secure" if secure else "--no-secure")
         args.append("--tensor-parallel" if tensor_parallel else "--no-tensor-parallel")
-        if start_api_key_marker:
-            args.append("--start-api-key-marker")
         if verbose:
             args.append("--verbose")
         # llama-server pass-through extras → child ctx.args → load payload.
         if extra_llama_args:
             args.extend(extra_llama_args)
 
-        if sys.platform == "win32":
-            proc = subprocess.Popen(args)
-            try:
-                rc = proc.wait()
-            except KeyboardInterrupt:
-                rc = proc.wait()
-            raise typer.Exit(rc)
-        else:
-            os.execvp(str(studio_bin), args)
+        if start_api_key_marker:
+            os.environ[_START_API_KEY_MARKER_ENV] = "1"
+        try:
+            if sys.platform == "win32":
+                proc = subprocess.Popen(args)
+                try:
+                    rc = proc.wait()
+                except KeyboardInterrupt:
+                    rc = proc.wait()
+                raise typer.Exit(rc)
+            else:
+                os.execvp(str(studio_bin), args)
+        finally:
+            # execvp does not return on success. Restore the parent environment
+            # after Windows waits for the child, or if launch fails.
+            os.environ.pop(_START_API_KEY_MARKER_ENV, None)
 
     # ── 2. Start server (always suppress built-in banner) ─────────────
     run_mod = _load_run_module()
