@@ -2030,10 +2030,8 @@ exit 0
     # _strip_index_url_credentials (install.sh / py / setup.ps1).
     function Remove-IndexUrlCredentials {
         param([string]$Url)
-        # URL parsing must be culture-invariant. On non-English Windows locales
-        # (e.g. th-TH), culture-aware IndexOf can mis-locate punctuation-only
-        # markers like "://", corrupting scheme/authority and crashing on
-        # Substring (issue #7279). Always use Ordinal comparison here.
+        # Ordinal, not culture-aware: on non-English locales (e.g. th-TH) linguistic
+        # IndexOf treats "://" as ignorable, mis-locates it, and crashes Substring (issue #7279).
         $sep = $Url.IndexOf('://', [System.StringComparison]::Ordinal)
         if ($sep -lt 0) { return $Url }
         $scheme = $Url.Substring(0, $sep)
