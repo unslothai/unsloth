@@ -4637,7 +4637,9 @@ async def _load_model_impl(
                 # Diffusion GGUF models bypass llama-server (the diffusion runner
                 # handles gpu_ids via --gpu/DG_GPU), so the llama.cpp GPU-lib
                 # check is irrelevant for them (#7188).
-                if _classify_diffusion_gguf(config) is not True and await asyncio.to_thread(_llama_backend._backend_lacks_gpu_lib):
+                if _classify_diffusion_gguf(config) is not True and await asyncio.to_thread(
+                    _llama_backend._backend_lacks_gpu_lib
+                ):
                     raise HTTPException(
                         status_code = 400,
                         detail = (
@@ -5324,7 +5326,9 @@ async def validate_model(
                 # can't see that, so reject a pin it would silently run on CPU (mirrors /load
                 # and the non-CUDA resolvable check). Diffusion GGUF models bypass
                 # llama-server, so the llama.cpp GPU-lib check is irrelevant (#7188).
-                if _classify_diffusion_gguf(config) is not True and await asyncio.to_thread(_loaded_llama._backend_lacks_gpu_lib):
+                if _classify_diffusion_gguf(config) is not True and await asyncio.to_thread(
+                    _loaded_llama._backend_lacks_gpu_lib
+                ):
                     raise HTTPException(
                         status_code = 400,
                         detail = (
