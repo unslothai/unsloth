@@ -738,7 +738,6 @@ def _pid_start_identity(pid: int) -> str:
             return ""
     try:
         import psutil
-
         return str(psutil.Process(pid).create_time())
     except Exception:
         pass
