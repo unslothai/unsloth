@@ -572,7 +572,6 @@ class TestChatLoadGuardRoute(unittest.TestCase):
         # so the readable header wins over the name and the memory-placement feature is not
         # rejected on a false name match. Header-before-name fallback (#7188).
         import tempfile
-
         class _Probe:
             is_diffusion = False
             _architecture = "llama"
