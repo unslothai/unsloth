@@ -34,13 +34,18 @@ MODULES_JSON = (
 def _modules_json(*paths):
     """A modules.json listing one Transformer module per ``path`` (a load root)."""
     import json
-
     return json.dumps(
         [
-            {"idx": i, "name": str(i), "path": p, "type": "sentence_transformers.models.Transformer"}
+            {
+                "idx": i,
+                "name": str(i),
+                "path": p,
+                "type": "sentence_transformers.models.Transformer",
+            }
             for i, p in enumerate(paths)
         ]
     )
+
 
 _COMMIT = "0123456789abcdef0123456789abcdef01234567"
 

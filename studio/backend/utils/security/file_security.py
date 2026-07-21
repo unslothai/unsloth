@@ -298,7 +298,6 @@ def _st_load_roots(snapshot: Path) -> list:
     roots = [snapshot]
     try:
         import json
-
         modules = json.loads((snapshot / "modules.json").read_text())
     except (OSError, ValueError):
         return roots  # no / invalid modules.json -> the snapshot root is the only load root
