@@ -1081,27 +1081,54 @@ export function AppSidebar() {
                   </span>
                 </Link>
               )}
-              {!isMobile && (
+              <div className="flex items-center gap-0.5">
                 <Tooltip>
                   <TooltipPrimitive.Trigger asChild>
                     <button
                       type="button"
-                      onClick={togglePinned}
+                      onClick={() => {
+                        useChatSearchStore.getState().open();
+                        closeMobileIfOpen();
+                      }}
                       className="inline-flex h-[33px] w-[32px] cursor-pointer items-center justify-center rounded-[10px] text-nav-icon-idle dark:text-nav-fg-muted transition-colors hover:bg-nav-surface-hover hover:text-black dark:hover:text-white focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
-                      aria-label={t("shell.aria.closeSidebar")}
+                      aria-label={t("shell.navigation.search")}
                     >
-                      <HugeiconsIcon icon={LayoutAlignLeftIcon} strokeWidth={1.75} className="size-icon" />
+                      <HugeiconsIcon icon={Search01Icon} strokeWidth={1.75} className="size-icon" />
                     </button>
                   </TooltipPrimitive.Trigger>
                   <TooltipContent
                     side="bottom"
                     sideOffset={6}
-                    className="tooltip-compact"
+                    className="tooltip-compact flex items-center gap-1.5"
                   >
-                    {t("shell.aria.closeSidebar")}
+                    {t("shell.navigation.search")}
+                    <kbd className="rounded bg-black/10 px-1 py-px text-[10px] font-medium leading-none dark:bg-white/15">
+                      ⌘K
+                    </kbd>
                   </TooltipContent>
                 </Tooltip>
-              )}
+                {!isMobile && (
+                  <Tooltip>
+                    <TooltipPrimitive.Trigger asChild>
+                      <button
+                        type="button"
+                        onClick={togglePinned}
+                        className="inline-flex h-[33px] w-[32px] cursor-pointer items-center justify-center rounded-[10px] text-nav-icon-idle dark:text-nav-fg-muted transition-colors hover:bg-nav-surface-hover hover:text-black dark:hover:text-white focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+                        aria-label={t("shell.aria.closeSidebar")}
+                      >
+                        <HugeiconsIcon icon={LayoutAlignLeftIcon} strokeWidth={1.75} className="size-icon" />
+                      </button>
+                    </TooltipPrimitive.Trigger>
+                    <TooltipContent
+                      side="bottom"
+                      sideOffset={6}
+                      className="tooltip-compact"
+                    >
+                      {t("shell.aria.closeSidebar")}
+                    </TooltipContent>
+                  </Tooltip>
+                )}
+              </div>
             </div>
             {!isMobile && (
               <div className="relative z-10 hidden group-data-[collapsible=icon]:flex h-[33px] items-center justify-center w-full">
@@ -1133,8 +1160,10 @@ export function AppSidebar() {
       {/* Uniform pl-1.5 pr-2 keeps every hover pill the same width, inset from the edge. */}
       <SidebarGroup
         className={cn(
-          "group-data-[collapsible=icon]:px-0 pl-1.5 pr-2 pb-px shrink-0",
+          "group-data-[collapsible=icon]:px-0 pl-1.5 pr-2 shrink-0 transition-[padding]",
           showCompactMacBrand ? "pt-0" : "pt-[9px]",
+          // Scrolled: New Chat is pinned, give a little gap below it.
+          scrolled ? "pb-[5px]" : "pb-px",
         )}
       >
         <SidebarGroupContent>
@@ -1167,10 +1196,13 @@ export function AppSidebar() {
                 openNewChat(null);
               }}
             />
+            {/* Search now lives in the header; keep this row only for the
+                collapsed rail, where no header button shows. */}
             <NavItem
               icon={Search01Icon}
               label={t("shell.navigation.search")}
               active={false}
+              className="hidden group-data-[collapsible=icon]:block"
               onClick={() => {
                 useChatSearchStore.getState().open();
                 closeMobileIfOpen();
