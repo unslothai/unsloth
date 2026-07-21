@@ -373,3 +373,38 @@ def test_default_gpu_mode_clears_manual_knobs():
     assert "gpuLayers: undefined," in src
     assert "nCpuMoe: undefined," in src
     assert "selectedGpuIds: undefined," in src
+
+
+def test_legacy_migration_is_idempotent_and_non_destructive():
+    """The v1->v2 localStorage migration (unsloth_load_settings ->
+    unsloth_model_configs) is invoked on every store read, so it must be
+    idempotent: repeated reads, browser reloads, and Studio restarts must never
+    re-migrate, duplicate records, or overwrite a newer per-model config. This
+    was the class of regression that reverted the predecessor PR, so pin all
+    three idempotency layers at source level; dropping any of them reddens here.
+    """
+    raw = _read("features/model-picker/model-config/per-model-config.ts")
+    src = " ".join(raw.split())
+    # Migration runs from readMap (every store read triggers it), which is
+    # exactly why it must be safe to attempt repeatedly.
+    assert (
+        "function readMap(): StoredMap { migrateLegacyLoadSettingsOnce(); "
+        "return readMapRaw(); }" in src
+    )
+    # Layer 1: in-memory once-per-session guard (checked at entry, set before
+    # any work) so repeated readMap() calls in one session migrate at most once.
+    assert "let legacyMigrationChecked = false;" in src
+    assert "if (legacyMigrationChecked || !canUseStorage()) {" in src
+    assert "legacyMigrationChecked = true;" in src
+    # Layer 2: persistent cross-session flag so a completed migration is never
+    # redone after a reload/restart. It must be set in every terminal branch
+    # (malformed legacy data, nothing to migrate, and after a successful write);
+    # a failed quota write deliberately leaves it unset so the next session
+    # retries. Three set-sites encode exactly that.
+    assert 'const LEGACY_MIGRATION_FLAG = "unsloth_model_configs_migrated";' in src
+    assert "if (localStorage.getItem(LEGACY_MIGRATION_FLAG)) {" in src
+    assert src.count('localStorage.setItem(LEGACY_MIGRATION_FLAG, "1");') >= 3
+    # Layer 3: non-overwriting merge - an existing (or default) key is skipped,
+    # so even a forced re-run cannot duplicate or clobber a config the user
+    # already has.
+    assert "if (isDefaultConfig(migrated) || Object.hasOwn(map, key)) {" in src

@@ -632,9 +632,14 @@ with sync_playwright() as p:
         runtime_warn(f"advanced-persist check errored: {e}")
 
     # ─────────────────────────────────────────────────────
-    # 5. Legacy migration (best-effort, never gates).
+    # 5. Legacy migration is idempotent (gates in CI via soft_fail).
+    #    Seed a pre-feature unsloth_load_settings store, confirm it migrates
+    #    once with the value preserved, then reload AGAIN with a fresh legacy
+    #    seed still present and confirm the migration does not re-run, duplicate,
+    #    or clobber. Re-running the migration on every reload was the regression
+    #    class that reverted the predecessor PR, so this must gate.
     # ─────────────────────────────────────────────────────
-    step("legacy unsloth_load_settings migrates to unsloth_model_configs")
+    step("legacy unsloth_load_settings migrates once and stays idempotent")
     try:
         legacy_key = f"{GGUF_REPO}::{GGUF_VARIANT}"
         legacy = {
@@ -661,21 +666,71 @@ with sync_playwright() as p:
         popover = open_picker()
         open_config(popover, MODEL_HINT)
         page.wait_for_timeout(800)
-        cfg = read_configs()
-        migrated = any(
-            e.get("customContextLength") == DISTINCT_CTX or e.get("tensorParallel")
-            for e in config_entries(cfg)
+        cfg_first = read_configs()
+        migrated_ctx = any(
+            e.get("customContextLength") == DISTINCT_CTX
+            for e in config_entries(cfg_first)
         )
-        if migrated:
-            info("OK migration: legacy store migrated into unsloth_model_configs")
+        if migrated_ctx:
+            info(f"OK migration: legacy context {DISTINCT_CTX} preserved after migrating")
         else:
-            runtime_warn(
-                f"legacy migration not observed (unsloth_model_configs={json.dumps(cfg)[:400]})"
+            soft_fail(
+                f"legacy context {DISTINCT_CTX} not migrated into unsloth_model_configs "
+                f"(got {json.dumps(cfg_first)[:400]})"
             )
+        flag_first = robust_evaluate(
+            page, "() => localStorage.getItem('unsloth_model_configs_migrated')"
+        )
+        if flag_first != "1":
+            soft_fail(f"migration flag not set after migrating (got {flag_first!r})")
         shoot("09-after-migration")
         close_picker()
+
+        # Idempotency: a second reload, with a DIFFERENT legacy entry freshly
+        # seeded, must not re-run the migration (the persistent flag blocks it),
+        # so the new legacy key must not leak in, no entry duplicates, and the
+        # already-migrated value is untouched. Compare the stored key sets.
+        if migrated_ctx:
+            probe_key = "unsloth/__idem_probe__::Q4_K_M"
+            robust_evaluate(
+                page,
+                "(seed) => {"
+                "  localStorage.setItem('unsloth_load_settings', JSON.stringify(seed));"
+                "  return true;"
+                "}",
+                arg = {probe_key: {"contextLength": DISTINCT_CTX + 2048, "tensorParallel": True}},
+            )
+            page.reload()
+            composer.wait_for(state = "visible", timeout = 60_000)
+            popover = open_picker()
+            open_config(popover, MODEL_HINT)
+            page.wait_for_timeout(800)
+            cfg_second = read_configs()
+            keys_first = set(cfg_first.keys())
+            keys_second = set(cfg_second.keys())
+            new_keys = keys_second - keys_first
+            still_has_ctx = any(
+                e.get("customContextLength") == DISTINCT_CTX
+                for e in config_entries(cfg_second)
+            )
+            if new_keys:
+                soft_fail(
+                    "legacy migration re-ran on a second reload (persistent flag "
+                    f"ignored): new keys {sorted(new_keys)}"
+                )
+            elif keys_second != keys_first:
+                soft_fail(
+                    "legacy migration dropped entries on a second reload: "
+                    f"{sorted(keys_first)} -> {sorted(keys_second)}"
+                )
+            elif not still_has_ctx:
+                soft_fail("legacy migration clobbered the migrated context on a second reload")
+            else:
+                info("OK migration idempotent: second reload did not re-migrate, duplicate, or clobber")
+            shoot("10-after-second-reload")
+            close_picker()
     except Exception as e:
-        runtime_warn(f"migration check errored: {e}")
+        soft_fail(f"migration idempotency check errored: {e}")
 
     # ─────────────────────────────────────────────────────
     if page_errors:
