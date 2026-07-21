@@ -668,8 +668,7 @@ with sync_playwright() as p:
         page.wait_for_timeout(800)
         cfg_first = read_configs()
         migrated_ctx = any(
-            e.get("customContextLength") == DISTINCT_CTX
-            for e in config_entries(cfg_first)
+            e.get("customContextLength") == DISTINCT_CTX for e in config_entries(cfg_first)
         )
         if migrated_ctx:
             info(f"OK migration: legacy context {DISTINCT_CTX} preserved after migrating")
@@ -710,8 +709,7 @@ with sync_playwright() as p:
             keys_second = set(cfg_second.keys())
             new_keys = keys_second - keys_first
             still_has_ctx = any(
-                e.get("customContextLength") == DISTINCT_CTX
-                for e in config_entries(cfg_second)
+                e.get("customContextLength") == DISTINCT_CTX for e in config_entries(cfg_second)
             )
             if new_keys:
                 soft_fail(
@@ -726,7 +724,9 @@ with sync_playwright() as p:
             elif not still_has_ctx:
                 soft_fail("legacy migration clobbered the migrated context on a second reload")
             else:
-                info("OK migration idempotent: second reload did not re-migrate, duplicate, or clobber")
+                info(
+                    "OK migration idempotent: second reload did not re-migrate, duplicate, or clobber"
+                )
             shoot("10-after-second-reload")
             close_picker()
     except Exception as e:
