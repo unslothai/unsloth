@@ -10,11 +10,10 @@ assert that, offline:
     the Hub (``model_info`` patched to raise if reached);
   * the file-security gate fails CLOSED on an unscanned pickle weight with no safetensors
     alternative, and allows an inert (safetensors/gguf) cache;
-  * the embedder forces ``HF_HUB_OFFLINE`` around the SentenceTransformer load.
+  * the embedder threads ``local_files_only`` into the SentenceTransformer load.
 Online behavior is unchanged: a bounded ``model_info`` timeout with a local-cache fallback.
 """
 
-import os
 import sys
 import types
 from pathlib import Path
@@ -156,6 +155,42 @@ def test_snapshot_dir_none_when_snapshot_missing(hf_cache):
     (repo_dir / "refs").mkdir(parents = True)
     (repo_dir / "refs" / "main").write_text("deadbeef")  # no snapshots/deadbeef dir
     assert hf_cache_snapshot_dir("org/broken") is None
+
+
+def test_snapshot_dir_expands_env_vars_in_cache_path(tmp_path, monkeypatch):
+    # HF_HUB_CACHE with an unexpanded $VAR must resolve to the same place the loader uses.
+    real = tmp_path / "hub"
+    real.mkdir()
+    monkeypatch.setenv("MY_HF_CACHE", str(real))
+    monkeypatch.setenv("HF_HUB_CACHE", "$MY_HF_CACHE")
+    monkeypatch.delenv("HF_HOME", raising = False)
+    monkeypatch.delenv("SENTENCE_TRANSFORMERS_HOME", raising = False)
+    snapshot = _make_cache(real, "org/emb", {"modules.json": MODULES_JSON})
+    assert hf_cache_snapshot_dir("org/emb") == snapshot
+
+
+def test_snapshot_dir_uses_sentence_transformers_home(tmp_path, monkeypatch):
+    # SentenceTransformer uses SENTENCE_TRANSFORMERS_HOME as its cache_folder, so the gate must
+    # inspect it too.
+    st_home = tmp_path / "st_home"
+    st_home.mkdir()
+    monkeypatch.setenv("SENTENCE_TRANSFORMERS_HOME", str(st_home))
+    monkeypatch.delenv("HF_HUB_CACHE", raising = False)
+    monkeypatch.delenv("HF_HOME", raising = False)
+    snapshot = _make_cache(st_home, "org/emb", {"modules.json": MODULES_JSON})
+    assert hf_cache_snapshot_dir("org/emb") == snapshot
+
+
+def test_gate_blocks_pickle_in_sentence_transformers_home(tmp_path, monkeypatch):
+    # A pickle cached under SENTENCE_TRANSFORMERS_HOME must still fail closed offline.
+    st_home = tmp_path / "st_home"
+    st_home.mkdir()
+    monkeypatch.setenv("SENTENCE_TRANSFORMERS_HOME", str(st_home))
+    monkeypatch.delenv("HF_HUB_CACHE", raising = False)
+    monkeypatch.delenv("HF_HOME", raising = False)
+    _make_cache(st_home, "org/pk", {"config.json": "{}", "pytorch_model.bin": "x"})
+    with _no_network():
+        assert evaluate_file_security("org/pk", local_only_load = True).blocked is True
 
 
 # ── is_embedding_model: offline (no network) ─────────────────────
@@ -374,30 +409,22 @@ def test_guard_offline_allows_safetensors(hf_cache):
 
 def _install_fake_sentence_transformers(monkeypatch, captured):
     class FakeSentenceTransformer:
-        def __init__(
-            self,
-            name,
-            *,
-            device = None,
-            model_kwargs = None,
-            **kw,
-        ):
+        def __init__(self, name, *, device = None, model_kwargs = None, local_files_only = False, **kw):
             captured["name"] = name
             captured["device"] = device
-            # Snapshot the env the load actually sees, to prove the offline force is active.
-            captured["hf_hub_offline"] = os.environ.get("HF_HUB_OFFLINE")
+            captured["local_files_only"] = local_files_only
 
     module = types.ModuleType("sentence_transformers")
     module.SentenceTransformer = FakeSentenceTransformer
     monkeypatch.setitem(sys.modules, "sentence_transformers", module)
 
 
-def test_get_offline_forces_hub_offline_during_load(hf_cache, monkeypatch):
+def test_get_offline_threads_local_files_only(hf_cache, monkeypatch):
     from core.rag import embeddings
 
     _make_cache(hf_cache, "org/st", {"modules.json": MODULES_JSON, "model.safetensors": "x"})
-    # TRANSFORMERS_OFFLINE only (huggingface_hub ignores it) -> the load must still be forced
-    # local via HF_HUB_OFFLINE, which works on any sentence-transformers version.
+    # TRANSFORMERS_OFFLINE only: local_files_only is passed per-call so the load is cache-only
+    # regardless of the process-wide (import-frozen) HF_HUB_OFFLINE constant.
     monkeypatch.setenv("TRANSFORMERS_OFFLINE", "1")
     monkeypatch.delenv("HF_HUB_OFFLINE", raising = False)
     monkeypatch.setattr(embeddings, "_model", None, raising = False)
@@ -409,11 +436,10 @@ def test_get_offline_forces_hub_offline_during_load(hf_cache, monkeypatch):
     with _no_network():
         embeddings._get("org/st")
     assert captured["name"] == "org/st"
-    assert captured["hf_hub_offline"] == "1"  # forced local during the load
-    assert "HF_HUB_OFFLINE" not in os.environ  # and restored afterward (was unset)
+    assert captured["local_files_only"] is True
 
 
-def test_get_online_does_not_force_offline(monkeypatch):
+def test_get_online_omits_local_files_only(monkeypatch):
     from core.rag import embeddings
 
     monkeypatch.delenv("HF_HUB_OFFLINE", raising = False)
@@ -427,4 +453,4 @@ def test_get_online_does_not_force_offline(monkeypatch):
     captured = {}
     _install_fake_sentence_transformers(monkeypatch, captured)
     embeddings._get("org/online")
-    assert captured["hf_hub_offline"] is None  # not forced offline
+    assert captured["local_files_only"] is False

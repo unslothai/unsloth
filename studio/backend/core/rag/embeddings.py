@@ -17,7 +17,6 @@ from __future__ import annotations
 import logging
 import os
 import threading
-from contextlib import contextmanager, nullcontext
 from functools import lru_cache
 from typing import Callable
 
@@ -164,20 +163,15 @@ def _guard_model_security(name: str, local_only: bool = False) -> None:
         )
 
 
-@contextmanager
-def _force_hf_hub_offline():
-    """Force ``HF_HUB_OFFLINE`` for the duration so the load stays fully local even on a
-    sentence-transformers / huggingface_hub that ignores ``TRANSFORMERS_OFFLINE`` or predates
-    the ``local_files_only`` constructor arg. Restores the prior value afterward."""
-    prior = os.environ.get("HF_HUB_OFFLINE")
-    os.environ["HF_HUB_OFFLINE"] = "1"
+def _st_accepts_local_files_only(st_cls) -> bool:
+    """Whether this SentenceTransformer version accepts ``local_files_only`` (added in newer
+    releases). Passing it to an older constructor raises, so gate on the signature."""
     try:
-        yield
-    finally:
-        if prior is None:
-            os.environ.pop("HF_HUB_OFFLINE", None)
-        else:
-            os.environ["HF_HUB_OFFLINE"] = prior
+        import inspect
+
+        return "local_files_only" in inspect.signature(st_cls.__init__).parameters
+    except Exception:
+        return False
 
 
 def _get(model_name: str | None = None):
@@ -196,13 +190,14 @@ def _get(model_name: str | None = None):
             device = _device()
             logger.info("loading embedding model %s on %s", name, device)
             _guard_model_security(name, local_only)
-            # Offline, force HF_HUB_OFFLINE around the load so any ST / huggingface_hub version
-            # (including ones that ignore TRANSFORMERS_OFFLINE or lack local_files_only) stays
-            # local and never retries the network for an uncached file.
-            with _force_hf_hub_offline() if local_only else nullcontext():
-                _model = SentenceTransformer(
-                    name, device = device, model_kwargs = dtype_kwargs("float16")
-                )
+            st_kwargs = dict(device = device, model_kwargs = dtype_kwargs("float16"))
+            if local_only and _st_accepts_local_files_only(SentenceTransformer):
+                # local_files_only forces snapshot_download to cache-only for this call,
+                # independent of the process-wide HF_HUB_OFFLINE (frozen at import). An older ST
+                # without this arg relies on a launch-time HF_HUB_OFFLINE / TRANSFORMERS_OFFLINE,
+                # which huggingface_hub folds into its offline mode when first imported.
+                st_kwargs["local_files_only"] = True
+            _model = SentenceTransformer(name, **st_kwargs)
             _name = name
         return _model
 

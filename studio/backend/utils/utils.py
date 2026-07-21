@@ -49,48 +49,70 @@ def st_repo_id_candidates(model_name: str) -> list:
     return candidates
 
 
-def _hf_cache_root() -> Path:
-    """Local HF hub cache root, honoring ``HF_HUB_CACHE`` / ``HF_HOME`` at call time
-    (mirrors huggingface_hub's own resolution so it tracks a test's env override)."""
-    root = os.environ.get("HF_HUB_CACHE") or os.environ.get("HUGGINGFACE_HUB_CACHE")
-    if root:
-        return Path(root)
+def _expand_path(raw: str) -> Path:
+    """Expand ``~`` and ``$VARS`` the way huggingface_hub does for its cache paths, so the gate
+    resolves the same directory the loader will."""
+    return Path(os.path.expandvars(os.path.expanduser(raw)))
+
+
+def _hf_cache_roots() -> list:
+    """Candidate local cache roots a Sentence-Transformers / huggingface_hub load may use, in
+    the loader's own precedence: an explicit ``SENTENCE_TRANSFORMERS_HOME`` (ST's cache_folder),
+    then ``HF_HUB_CACHE`` / ``HF_HOME/hub`` / ``XDG_CACHE_HOME`` / ``~/.cache``. Expanded (``~`` /
+    ``$VARS``) and de-duplicated, honoring the env at call time so a test override is tracked.
+    """
+    roots = []
+    st_home = os.environ.get("SENTENCE_TRANSFORMERS_HOME")
+    if st_home:
+        roots.append(_expand_path(st_home))
+    hub = os.environ.get("HF_HUB_CACHE") or os.environ.get("HUGGINGFACE_HUB_CACHE")
+    if hub:
+        roots.append(_expand_path(hub))
     hf_home = os.environ.get("HF_HOME")
     if hf_home:
-        return Path(hf_home) / "hub"
+        roots.append(_expand_path(hf_home) / "hub")
     xdg = os.environ.get("XDG_CACHE_HOME")
-    base = Path(xdg) if xdg else Path.home() / ".cache"
-    return base / "huggingface" / "hub"
+    if xdg:
+        roots.append(_expand_path(xdg) / "huggingface" / "hub")
+    roots.append(Path.home() / ".cache" / "huggingface" / "hub")
+    seen = set()
+    unique = []
+    for root in roots:
+        if root not in seen:
+            seen.add(root)
+            unique.append(root)
+    return unique
 
 
 def hf_cache_snapshot_dir(model_name: str) -> Optional[Path]:
-    """Active local snapshot dir for ``model_name``'s ``main`` revision, or None when the
-    repo is not cached. Reads ``refs/main`` then ``snapshots/<commit>``; never touches the
-    network. Tries the ``sentence-transformers/`` alias for a slashless name.
+    """Active local snapshot dir for ``model_name``'s ``main`` revision, or None when the repo
+    is not cached in any known cache root (including ``SENTENCE_TRANSFORMERS_HOME``). Reads
+    ``refs/main`` then ``snapshots/<commit>``; never touches the network. Tries the
+    ``sentence-transformers/`` alias for a slashless name.
     """
     try:
         from huggingface_hub.file_download import repo_folder_name
     except Exception:
         repo_folder_name = None
-    cache_root = _hf_cache_root()
-    for repo_id in st_repo_id_candidates(model_name):
-        try:
-            if repo_folder_name is not None:
-                folder = repo_folder_name(repo_id = repo_id, repo_type = "model")
-            else:
-                folder = "models--" + repo_id.replace("/", "--")
-            repo_dir = cache_root / folder
-            ref = repo_dir / "refs" / "main"
-            if not ref.is_file():
+    for cache_root in _hf_cache_roots():
+        for repo_id in st_repo_id_candidates(model_name):
+            try:
+                if repo_folder_name is not None:
+                    folder = repo_folder_name(repo_id = repo_id, repo_type = "model")
+                else:
+                    folder = "models--" + repo_id.replace("/", "--")
+                repo_dir = cache_root / folder
+                ref = repo_dir / "refs" / "main"
+                if not ref.is_file():
+                    continue
+                commit = ref.read_text().strip()
+                if not commit:
+                    continue
+                snapshot = repo_dir / "snapshots" / commit
+                if snapshot.is_dir():
+                    return snapshot
+            except OSError:
                 continue
-            commit = ref.read_text().strip()
-            if not commit:
-                continue
-            snapshot = repo_dir / "snapshots" / commit
-            if snapshot.is_dir():
-                return snapshot
-        except OSError:
-            continue
     return None
 
 
