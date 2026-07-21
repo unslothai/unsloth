@@ -108,9 +108,7 @@ def hf_cache_snapshot_dir(model_name: str) -> Optional[Path]:
 
 # Weight file suffixes a load can consume. Presence of one (plus a config) distinguishes a
 # real cached model from a metadata-only partial cache that would fail at load time.
-_LOADABLE_WEIGHT_SUFFIXES = frozenset(
-    {".safetensors", ".bin", ".gguf", ".pt", ".pth", ".ckpt"}
-)
+_LOADABLE_WEIGHT_SUFFIXES = frozenset({".safetensors", ".bin", ".gguf", ".pt", ".pth", ".ckpt"})
 
 
 def hf_cache_snapshot_is_loadable(model_name: str) -> bool:

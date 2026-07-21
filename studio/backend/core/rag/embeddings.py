@@ -193,7 +193,6 @@ def _get(model_name: str | None = None):
             load_target = name
             if local_only:
                 from utils.utils import hf_cache_snapshot_dir
-
                 snapshot = hf_cache_snapshot_dir(name)
                 if snapshot is not None:
                     # Load from the resolved local snapshot dir: a local path never touches the
