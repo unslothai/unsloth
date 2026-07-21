@@ -39,6 +39,7 @@ import {
   renameChatProject,
   useChatProjects,
   useChatRuntimeStore,
+  usePinnedProjectsStore,
   type ProjectRecord,
 } from "@/features/chat";
 import {
@@ -47,6 +48,8 @@ import {
   Edit03Icon,
   Folder02Icon,
   FolderAddIcon,
+  PinIcon,
+  PinOffIcon,
   Search01Icon,
   Upload01Icon,
 } from "@hugeicons/core-free-icons";
@@ -91,6 +94,12 @@ export function ProjectsPage() {
 
   const [query, setQuery] = useState("");
   const [sortMode, setSortMode] = useState<SortMode>("activity");
+  const pinnedProjectIds = usePinnedProjectsStore((s) => s.pinnedIds);
+  const togglePinProject = usePinnedProjectsStore((s) => s.togglePin);
+  const pinnedProjectIdSet = useMemo(
+    () => new Set(pinnedProjectIds),
+    [pinnedProjectIds],
+  );
 
   const [creating, setCreating] = useState(false);
   const [nameDraft, setNameDraft] = useState("");
@@ -172,7 +181,8 @@ export function ProjectsPage() {
         ? a.name.localeCompare(b.name)
         : b.updatedAt - a.updatedAt,
     );
-    return filtered;
+    // Default view shows only the 4 most recent; search still spans all matches.
+    return trimmed ? filtered : filtered.slice(0, 4);
   }, [projects, query, sortMode]);
 
   function openProject(projectId: string) {
@@ -498,6 +508,24 @@ export function ProjectsPage() {
                     onKeyDown={(e) => e.stopPropagation()}
                     className="app-user-menu menu-soft-surface menu-flat-destructive ring-0 w-44 py-2 font-heading rounded-[14px] border-0"
                   >
+                    <DropdownMenuItem
+                      onSelect={() => togglePinProject(project.id)}
+                    >
+                      <HugeiconsIcon
+                        icon={
+                          pinnedProjectIdSet.has(project.id)
+                            ? PinOffIcon
+                            : PinIcon
+                        }
+                        strokeWidth={1.75}
+                        className="size-icon"
+                      />
+                      <span>
+                        {pinnedProjectIdSet.has(project.id)
+                          ? "Unpin project"
+                          : "Pin project"}
+                      </span>
+                    </DropdownMenuItem>
                     <DropdownMenuItem
                       onSelect={() => {
                         setRenameDraft(project.name);

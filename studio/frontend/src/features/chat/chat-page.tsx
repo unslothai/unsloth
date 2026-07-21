@@ -21,8 +21,22 @@ import {
   DropdownMenu,
   DropdownMenuContent,
   DropdownMenuItem,
+  DropdownMenuSeparator,
+  DropdownMenuSub,
+  DropdownMenuSubContent,
+  DropdownMenuSubTrigger,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
 import {
   ResizableHandle,
   ResizablePanel,
@@ -46,14 +60,22 @@ import {
 } from "@/features/native-intents";
 import { GuidedTour, useGuidedTourController } from "@/features/tour";
 import { isTauri } from "@/lib/api-base";
+import { isDownloadCancelled } from "@/lib/native-files";
 import { toast } from "@/lib/toast";
 import { cn } from "@/lib/utils";
 import {
+  Archive03Icon,
   BubbleChatTemporaryIcon,
+  Delete02Icon,
+  Download01Icon,
   Edit03Icon,
+  Folder01Icon,
   Folder02Icon,
+  FolderExportIcon,
   LayoutAlignRightIcon,
   MoreVerticalIcon,
+  PinIcon,
+  PinOffIcon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { useNavigate } from "@tanstack/react-router";
@@ -90,12 +112,18 @@ import {
 } from "./external-providers";
 import { useChatModelRuntime } from "./hooks/use-chat-model-runtime";
 import type { SelectedModelInput } from "./hooks/use-chat-model-runtime";
-import { useChatProjects } from "./hooks/use-chat-projects";
+import {
+  moveChatItemToProject,
+  useChatProjects,
+} from "./hooks/use-chat-projects";
 import {
   type SidebarItem,
+  archiveChatItem,
+  deleteChatItem,
   renameChatItem,
   useChatSidebarItems,
 } from "./hooks/use-chat-sidebar-items";
+import { usePinnedChatsStore } from "./stores/pinned-chats-store";
 import {
   clearTrainingCompareHandoff,
   getTrainingCompareHandoff,
@@ -876,6 +904,38 @@ function formatProjectChatDate(timestamp: number): string {
   }).format(new Date(timestamp));
 }
 
+// Chat export formats, mirroring the sidebar chat menu.
+type ProjectChatExportFormat = "raw-jsonl" | "csv" | "sharegpt-jsonl";
+const PROJECT_CHAT_EXPORT_OPTIONS: Array<{
+  label: string;
+  format: ProjectChatExportFormat;
+}> = [
+  { label: "Raw JSONL", format: "raw-jsonl" },
+  { label: "CSV", format: "csv" },
+  { label: "ShareGPT JSONL", format: "sharegpt-jsonl" },
+];
+
+async function exportProjectConversation(
+  threadId: string,
+  format: ProjectChatExportFormat,
+): Promise<void> {
+  const exports = await import("./prompt-storage/prompt-storage-dialog");
+  if (format === "raw-jsonl") return exports.exportConversationRawJsonl(threadId);
+  if (format === "csv") return exports.exportConversationCsv(threadId);
+  return exports.exportConversationShareGPT(threadId);
+}
+
+async function exportProjectChatItem(
+  item: SidebarItem,
+  format: ProjectChatExportFormat,
+): Promise<void> {
+  const ids =
+    item.type === "single"
+      ? [item.id]
+      : (await listStoredChatThreads({ pairId: item.id })).map((t) => t.id);
+  for (const id of ids) await exportProjectConversation(id, format);
+}
+
 function extractMessageText(content: MessageRecord["content"]): string {
   if (typeof content === "string") {
     return content;
@@ -977,16 +1037,98 @@ function ProjectLanding({
     [renameDraft],
   );
 
+  // Full chat actions, matching the sidebar chat menu.
+  const { projects } = useChatProjects();
+  const pinnedChatIds = usePinnedChatsStore((s) => s.pinnedIds);
+  const togglePinnedChat = usePinnedChatsStore((s) => s.togglePin);
+  const confirmDeleteChats = useChatPreferencesStore(
+    (s) => s.confirmDeleteChats,
+  );
+  const pinnedChatIdSet = useMemo(
+    () => new Set(pinnedChatIds),
+    [pinnedChatIds],
+  );
+  const [confirmingDelete, setConfirmingDelete] = useState<SidebarItem | null>(
+    null,
+  );
+
+  // Landing has no active thread selected, so the onView callback here is a
+  // no-op; the items list refreshes itself once storage emits its update.
+  const noopView = useCallback(() => {}, []);
+
+  const handleArchive = useCallback(
+    async (item: SidebarItem) => {
+      try {
+        await archiveChatItem(item, activeThreadId ?? undefined, noopView);
+      } catch (err) {
+        toast.error("Failed to archive chat", {
+          description: err instanceof Error ? err.message : undefined,
+        });
+      }
+    },
+    [activeThreadId, noopView],
+  );
+
+  const runDelete = useCallback(
+    async (item: SidebarItem) => {
+      try {
+        await deleteChatItem(item, activeThreadId ?? undefined, noopView);
+      } catch (err) {
+        toast.error("Failed to delete chat", {
+          description: err instanceof Error ? err.message : undefined,
+        });
+      }
+    },
+    [activeThreadId, noopView],
+  );
+
+  const handleDelete = useCallback(
+    (item: SidebarItem) => {
+      if (confirmDeleteChats) setConfirmingDelete(item);
+      else void runDelete(item);
+    },
+    [confirmDeleteChats, runDelete],
+  );
+
+  const handleMoveToProject = useCallback(
+    async (item: SidebarItem, targetId: string | null) => {
+      try {
+        await moveChatItemToProject(item, targetId);
+      } catch (err) {
+        toast.error("Failed to move chat", {
+          description: err instanceof Error ? err.message : undefined,
+        });
+      }
+    },
+    [],
+  );
+
+  const handleExport = useCallback(
+    async (item: SidebarItem, format: ProjectChatExportFormat) => {
+      try {
+        await exportProjectChatItem(item, format);
+      } catch (error) {
+        if (!isDownloadCancelled(error)) toast.error("Export failed.");
+      }
+    },
+    [],
+  );
+
   useEffect(() => {
     if (!activeThreadId) {
-      setPendingNewThreadId(null);
+      // Leaving a created chat for a new one: rotate the nonce so the runtime
+      // switches to a fresh thread instead of appending to the old chat.
+      if (pendingNewThreadId) {
+        setNewThreadNonce(crypto.randomUUID());
+        setPendingNewThreadId(null);
+      }
       return;
     }
     if (activeThreadId === initialActiveThreadRef.current) {
       return;
     }
     setPendingNewThreadId(activeThreadId);
-  }, [activeThreadId]);
+  }, [activeThreadId, pendingNewThreadId]);
 
   useEffect(() => {
     let cancelled = false;
@@ -1148,11 +1290,6 @@ function ProjectLanding({
                             aria-label="Rename chat"
                             className="w-full border-0 bg-transparent text-[15px] font-semibold leading-5 text-foreground outline-none"
                           />
-                          {preview?.snippet ? (
-                            <div className="mt-0.5 truncate text-[14px] leading-5 text-muted-foreground">
-                              {preview.snippet}
-                            </div>
-                          ) : null}
                         </div>
                       </div>
                     );
@@ -1179,11 +1316,6 @@ function ProjectLanding({
                           <div className="truncate text-[15px] font-semibold leading-5 text-foreground">
                             {displayTitle}
                           </div>
-                          {preview?.snippet ? (
-                            <div className="mt-0.5 truncate text-[14px] leading-5 text-muted-foreground">
-                              {preview.snippet}
-                            </div>
-                          ) : null}
                         </div>
                         <span className="shrink-0 text-[14px] text-muted-foreground transition-opacity max-md:opacity-0 pointer-coarse:opacity-0 group-hover:opacity-0 group-has-[[data-state=open]]:opacity-0">
                           {preview?.date ??
@@ -1209,7 +1341,7 @@ function ProjectLanding({
                           side="bottom"
                           align="end"
                           sideOffset={4}
-                          className="unsloth-plus-menu w-56"
+                          className="unsloth-plus-menu menu-flat-destructive w-56"
                         >
                           <DropdownMenuItem onSelect={() => openRename(item)}>
                             <HugeiconsIcon
@@ -1218,6 +1350,106 @@ function ProjectLanding({
                               className="size-icon"
                             />
                             <span>Rename</span>
+                          </DropdownMenuItem>
+                          <DropdownMenuItem
+                            onSelect={() => togglePinnedChat(item.id)}
+                          >
+                            <HugeiconsIcon
+                              icon={
+                                pinnedChatIdSet.has(item.id)
+                                  ? PinOffIcon
+                                  : PinIcon
+                              }
+                              strokeWidth={1.75}
+                              className="size-icon"
+                            />
+                            <span>
+                              {pinnedChatIdSet.has(item.id)
+                                ? "Unpin chat"
+                                : "Pin chat"}
+                            </span>
+                          </DropdownMenuItem>
+                          <DropdownMenuSub>
+                            <DropdownMenuSubTrigger>
+                              <HugeiconsIcon
+                                icon={FolderExportIcon}
+                                strokeWidth={1.75}
+                                className="size-icon"
+                              />
+                              <span>Move to project</span>
+                            </DropdownMenuSubTrigger>
+                            <DropdownMenuSubContent className="unsloth-plus-menu w-52">
+                              <DropdownMenuItem
+                                disabled={item.projectId !== projectId}
+                                onSelect={() =>
+                                  void handleMoveToProject(item, null)
+                                }
+                              >
+                                <span>Recents</span>
+                              </DropdownMenuItem>
+                              {projects.map((p) => (
+                                <DropdownMenuItem
+                                  key={p.id}
+                                  disabled={item.projectId === p.id}
+                                  onSelect={() =>
+                                    void handleMoveToProject(item, p.id)
+                                  }
+                                >
+                                  <HugeiconsIcon
+                                    icon={Folder01Icon}
+                                    strokeWidth={1.75}
+                                    className="size-icon"
+                                  />
+                                  <span className="truncate">{p.name}</span>
+                                </DropdownMenuItem>
+                              ))}
+                            </DropdownMenuSubContent>
+                          </DropdownMenuSub>
+                          <DropdownMenuSub>
+                            <DropdownMenuSubTrigger>
+                              <HugeiconsIcon
+                                icon={Download01Icon}
+                                strokeWidth={1.75}
+                                className="size-icon"
+                              />
+                              <span>Export</span>
+                            </DropdownMenuSubTrigger>
+                            <DropdownMenuSubContent className="unsloth-plus-menu w-52">
+                              {PROJECT_CHAT_EXPORT_OPTIONS.map(
+                                ({ label, format }) => (
+                                  <DropdownMenuItem
+                                    key={format}
+                                    onSelect={() =>
+                                      void handleExport(item, format)
+                                    }
+                                  >
+                                    {label}
+                                  </DropdownMenuItem>
+                                ),
+                              )}
+                            </DropdownMenuSubContent>
+                          </DropdownMenuSub>
+                          <DropdownMenuSeparator />
+                          <DropdownMenuItem
+                            onSelect={() => void handleArchive(item)}
+                          >
+                            <HugeiconsIcon
+                              icon={Archive03Icon}
+                              strokeWidth={1.75}
+                              className="size-icon"
+                            />
+                            <span>Archive</span>
+                          </DropdownMenuItem>
+                          <DropdownMenuItem
+                            variant="destructive"
+                            onSelect={() => handleDelete(item)}
+                          >
+                            <HugeiconsIcon
+                              icon={Delete02Icon}
+                              strokeWidth={1.75}
+                              className="size-icon"
+                            />
+                            <span>Delete</span>
                           </DropdownMenuItem>
                         </DropdownMenuContent>
                       </DropdownMenu>
@@ -1229,6 +1461,34 @@ function ProjectLanding({
           </div>
         </div>
       )}
+      <AlertDialog
+        open={confirmingDelete !== null}
+        onOpenChange={(open) => {
+          if (!open) setConfirmingDelete(null);
+        }}
+      >
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Delete chat</AlertDialogTitle>
+            <AlertDialogDescription>
+              This permanently deletes "{confirmingDelete?.title}". This cannot
+              be undone.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Cancel</AlertDialogCancel>
+            <AlertDialogAction
+              onClick={() => {
+                const target = confirmingDelete;
+                setConfirmingDelete(null);
+                if (target) void runDelete(target);
+              }}
+            >
+              Delete
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </ChatRuntimeProvider>
   );
 }

@@ -53,6 +53,7 @@ export {
 export { PermissionModeDropdown } from "./permission-mode-select";
 export { useChatSearchStore } from "./stores/chat-search-store";
 export { usePinnedChatsStore } from "./stores/pinned-chats-store";
+export { usePinnedProjectsStore } from "./stores/pinned-projects-store";
 export { useChatPreferencesStore } from "./stores/chat-preferences-store";
 export {
   PLUS_MENU_ORDER,
