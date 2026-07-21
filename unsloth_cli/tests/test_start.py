@@ -1793,6 +1793,7 @@ def _reset_auto_served():
 
 def test_start_studio_server_builds_command_and_waits(monkeypatch, capsys):
     captured = {}
+    monkeypatch.setenv(start._START_API_KEY_MARKER_ENV, "parent")
 
     class FakePopen:
         def __init__(self, command, **kwargs):
@@ -1822,7 +1823,9 @@ def test_start_studio_server_builds_command_and_waits(monkeypatch, capsys):
     assert cmd[cmd.index("--gguf-variant") + 1] == "UD-Q4_K_XL"
     assert cmd[cmd.index("--context-length") + 1] == "8192"
     assert "--tensor-parallel" in cmd
-    assert "--start-api-key-marker" in cmd
+    assert "--start-api-key-marker" not in cmd
+    assert captured["kwargs"]["env"][start._START_API_KEY_MARKER_ENV] == "1"
+    assert start.os.environ[start._START_API_KEY_MARKER_ENV] == "parent"
     assert cmd[cmd.index("-p") + 1] == "8888"
     assert start.LoadOptions().load_in_4bit is True and "--no-load-in-4bit" not in cmd
     assert captured["kwargs"].get("start_new_session") is True  # own process group

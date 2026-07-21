@@ -388,6 +388,7 @@ _auto_served_server: Optional[subprocess.Popen] = None
 _SERVER_START_TIMEOUT_S = 900
 _DOWNLOAD_POLL_INTERVAL_S = 1.0
 _START_API_KEY_PREFIX = "UNSLOTH_START_API_KEY: "
+_START_API_KEY_MARKER_ENV = "_UNSLOTH_START_API_KEY_MARKER"
 
 
 def _format_download_bytes(value: int) -> str:
@@ -731,10 +732,6 @@ def _start_studio_server(base: str, model: str, load: LoadOptions) -> subprocess
         "--no-cloudflare",
         "--model",
         model,
-        # The child writes this marker only to our private 0600 log as soon as
-        # it creates the API key. That lets us authenticate progress polling
-        # while the child is still blocked loading the model.
-        "--start-api-key-marker",
     ]
     if load.gguf_variant:
         command += ["--gguf-variant", load.gguf_variant]
@@ -757,7 +754,17 @@ def _start_studio_server(base: str, model: str, load: LoadOptions) -> subprocess
     # Own session/process group so a mid-session Ctrl+C (cancel a turn) doesn't reach the
     # server. It stays available after a successful agent session and is torn down on
     # startup or launch failure.
-    kwargs: dict = {"stdout": log, "stderr": subprocess.STDOUT, "stdin": subprocess.DEVNULL}
+    child_env = os.environ.copy()
+    # Pass the marker out of band so an older launcher ignores it instead of
+    # treating an unknown CLI option as a llama-server argument. New launchers
+    # consume and preserve it across any Studio re-exec.
+    child_env[_START_API_KEY_MARKER_ENV] = "1"
+    kwargs: dict = {
+        "stdout": log,
+        "stderr": subprocess.STDOUT,
+        "stdin": subprocess.DEVNULL,
+        "env": child_env,
+    }
     if os.name == "nt":
         kwargs["creationflags"] = subprocess.CREATE_NEW_PROCESS_GROUP
     else:
