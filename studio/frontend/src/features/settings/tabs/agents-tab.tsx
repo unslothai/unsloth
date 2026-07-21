@@ -13,29 +13,47 @@ import {
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { useEffect, useState } from "react";
+import { ApiProviderLogo } from "../../chat/api-provider-logo";
 import { type CodingAgentsInfo, loadCodingAgents } from "../api/coding-agents";
 import { SettingsSection } from "../components/settings-section";
 
 const DOCS_URL = "https://unsloth.ai/docs/integrations/unsloth-start";
 
-// Each agent's `unsloth start <id>` token, display name, and monogram icon
-// (brand-colored tile, no remote logos). Ids match the backend detection list.
+// Each agent's `unsloth start <id>` token and display name. `logo` reuses an
+// official provider asset; agents without one fall back to a monogram tile.
+// Ids match the backend detection list.
 const SUPPORTED_AGENTS: {
   id: string;
   name: string;
-  color: string;
-  mark: string;
+  logo?: string;
+  color?: string;
+  mark?: string;
 }[] = [
-  { id: "claude", name: "Claude Code", color: "#D97757", mark: "Cl" },
-  { id: "codex", name: "OpenAI Codex", color: "#10A37F", mark: "Cx" },
+  { id: "claude", name: "Claude Code", logo: "anthropic" },
+  { id: "codex", name: "OpenAI Codex", logo: "openai" },
   { id: "hermes", name: "Hermes", color: "#8B5CF6", mark: "He" },
   { id: "openclaw", name: "OpenClaw", color: "#F59E0B", mark: "Ol" },
   { id: "opencode", name: "OpenCode", color: "#3B82F6", mark: "Oc" },
   { id: "pi", name: "Pi", color: "#EC4899", mark: "Pi" },
 ];
 
-/** Brand-colored monogram tile used as each agent's icon. */
-function AgentIcon({ color, mark }: { color: string; mark: string }) {
+/** Official brand logo when available, else a brand-colored monogram tile. */
+function AgentIcon({
+  logo,
+  color,
+  mark,
+}: {
+  logo?: string;
+  color?: string;
+  mark?: string;
+}) {
+  if (logo) {
+    return (
+      <span className="flex size-7 shrink-0 items-center justify-center overflow-hidden rounded-md">
+        <ApiProviderLogo providerType={logo} className="size-7 rounded-md" />
+      </span>
+    );
+  }
   return (
     <span
       aria-hidden={true}
@@ -239,7 +257,11 @@ export function AgentsTab() {
               className="flex items-center justify-between gap-4 py-2.5"
             >
               <div className="flex min-w-0 items-center gap-3">
-                <AgentIcon color={agent.color} mark={agent.mark} />
+                <AgentIcon
+                  logo={agent.logo}
+                  color={agent.color}
+                  mark={agent.mark}
+                />
                 <span className="truncate text-sm font-medium text-foreground">
                   {agent.name}
                 </span>
