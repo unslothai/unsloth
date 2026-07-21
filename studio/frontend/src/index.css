@@ -1818,6 +1818,15 @@ html[data-chat-font] .aui-root {
 		border-radius: 12px;
 	}
 
+	/* Project switcher rows are short, so a smaller radius reads as a rounded
+	   rectangle rather than a pill. */
+	.unsloth-plus-menu.project-switcher-menu :is(
+			[data-slot="dropdown-menu-item"],
+			[data-slot="dropdown-menu-sub-trigger"]
+		) {
+		border-radius: 9px;
+	}
+
 	.unsloth-plus-menu [data-slot="dropdown-menu-label"] {
 		@apply pl-3 pr-3 py-1.5 text-[12px];
 	}

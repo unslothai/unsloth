@@ -75,7 +75,7 @@ export function ProjectSwitcher({
         side="bottom"
         align="start"
         sideOffset={0}
-        className="unsloth-plus-menu ring-0 min-w-56 max-w-72 max-h-72 font-heading"
+        className="unsloth-plus-menu project-switcher-menu ring-0 min-w-56 max-w-72 max-h-72 font-heading"
       >
         {showLoadingRow ? (
           <DropdownMenuItem disabled={true} className="text-muted-foreground">
