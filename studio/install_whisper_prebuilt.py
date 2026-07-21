@@ -65,6 +65,21 @@ except ImportError:
     FileLock = None
     FileLockTimeout = None
 
+# The shared prebuilt-consumer core (coverage-aware CUDA/ROCm selection + GPU
+# host-capability detection) lives under studio/backend/. Ensure this file's own
+# directory (studio/) is importable so `backend.*` resolves whether this module
+# is run as a script or imported by the setup scripts / tests -- the same import
+# convention install_python_stack.py uses.
+_STUDIO_DIR = os.path.dirname(os.path.abspath(__file__))
+if _STUDIO_DIR not in sys.path:
+    sys.path.insert(0, _STUDIO_DIR)
+
+from backend.utils.prebuilt import selection as _sel  # noqa: E402
+from backend.utils.prebuilt.hosts import (  # noqa: E402
+    detect_nvidia_caps,
+    detect_torch_cuda_runtime_line,
+)
+
 
 EXIT_SUCCESS = 0
 EXIT_ERROR = 1
@@ -129,6 +144,13 @@ class HostInfo:
     has_usable_nvidia: bool = False
     has_rocm: bool = False
     rocm_gfx: str | None = None
+    # NVIDIA GPU compute capabilities (bare SM strings, e.g. ("89",)) and the
+    # driver's CUDA version, used to pick an SM-appropriate CUDA bundle. Empty /
+    # None on non-NVIDIA hosts. `torch_runtime_line` ('cuda12'/'cuda13') is torch's
+    # build preference, a tie-break on non-Blackwell hosts.
+    compute_caps: tuple[str, ...] = ()
+    driver_cuda_version: tuple[int, int] | None = None
+    torch_runtime_line: str | None = None
 
 
 def _has_usable_nvidia() -> bool:
@@ -225,10 +247,21 @@ def detect_host() -> HostInfo:
     has_usable_nvidia = False
     has_rocm = False
     rocm_gfx: str | None = None
+    compute_caps: tuple[str, ...] = ()
+    driver_cuda_version: tuple[int, int] | None = None
+    torch_runtime_line: str | None = None
     if system == "Linux" or is_windows:
         # macOS has no CUDA/ROCm; skip the probes there.
-        has_usable_nvidia = _has_usable_nvidia()
-        if not has_usable_nvidia:
+        # The shared probe reports the GPU compute caps + driver CUDA version so
+        # an SM-appropriate CUDA bundle can be picked (llama parity), honoring
+        # CUDA_VISIBLE_DEVICES.
+        nvidia = detect_nvidia_caps()
+        has_usable_nvidia = nvidia.has_usable_nvidia
+        compute_caps = tuple(nvidia.compute_caps)
+        driver_cuda_version = nvidia.driver_cuda_version
+        if has_usable_nvidia:
+            torch_runtime_line = detect_torch_cuda_runtime_line()
+        else:
             has_rocm, rocm_gfx = _detect_rocm_gfx()
 
     return HostInfo(
@@ -243,6 +276,9 @@ def detect_host() -> HostInfo:
         has_usable_nvidia = has_usable_nvidia,
         has_rocm = has_rocm,
         rocm_gfx = rocm_gfx,
+        compute_caps = compute_caps,
+        driver_cuda_version = driver_cuda_version,
+        torch_runtime_line = torch_runtime_line,
     )
 
 
@@ -263,11 +299,19 @@ def apply_host_overrides(
             has_rocm = False,
             rocm_gfx = None,
             is_apple_silicon = False,
+            compute_caps = (),
+            driver_cuda_version = None,
+            torch_runtime_line = None,
         )
     updates: dict[str, Any] = {}
     if has_rocm:
         updates["has_rocm"] = True
         updates["has_usable_nvidia"] = False
+        # A forced ROCm host is not NVIDIA; drop any stray CUDA detection so it
+        # can't drive CUDA selection.
+        updates["compute_caps"] = ()
+        updates["driver_cuda_version"] = None
+        updates["torch_runtime_line"] = None
     if rocm_gfx:
         updates["rocm_gfx"] = rocm_gfx
     return replace(host, **updates) if updates else host
@@ -369,18 +413,56 @@ def parse_manifest(payload: Any, *, label: str = MANIFEST_ASSET_NAME) -> dict[st
     }
 
 
+def _artifacts_for_host(
+    manifest: dict[str, Any], host: HostInfo, backend: str
+) -> list[dict[str, Any]]:
+    """All manifest artifacts matching this host os/arch and the given backend."""
+    return [
+        artifact
+        for artifact in manifest.get("artifacts", [])
+        if artifact.get("os") == host.whisper_os
+        and artifact.get("arch") == host.whisper_arch
+        and artifact.get("backend") == backend
+    ]
+
+
 def select_artifact(
     manifest: dict[str, Any], host: HostInfo, backend: str
 ) -> dict[str, Any] | None:
-    """First manifest artifact matching this host os/arch and the given backend."""
-    for artifact in manifest.get("artifacts", []):
-        if (
-            artifact.get("os") == host.whisper_os
-            and artifact.get("arch") == host.whisper_arch
-            and artifact.get("backend") == backend
-        ):
-            return artifact
-    return None
+    """Best manifest artifact for this host os/arch and backend, or None.
+
+    CPU/Metal/Vulkan take the first os/arch/backend match. CUDA and ROCm are
+    coverage-aware via the shared prebuilt core (the same algorithm as
+    install_llama_prebuilt.py): CUDA matches the GPU compute caps + driver CUDA
+    version against each bundle's supported_sms/min_sm/max_sm/runtime_line and
+    picks the tightest-covering profile (Blackwell-aware), ROCm matches the gfx
+    target exactly. So a B200 (sm_100) gets a Blackwell bundle, not the first
+    CUDA asset in manifest order. Returns None when no bundle covers the host --
+    the caller (select_artifact_with_cpu_fallback) then falls back to CPU.
+    """
+    candidates = _artifacts_for_host(manifest, host, backend)
+    if not candidates:
+        return None
+    if backend not in {"cuda", "rocm"}:
+        # cpu / metal / vulkan: no per-GPU coverage to match; first match wins.
+        return candidates[0]
+
+    sel_candidates = [_sel.SelArtifact.from_manifest(artifact) for artifact in candidates]
+    log_lines: list[str] = []
+    if backend == "cuda":
+        attempts = _sel.select_cuda_attempts(
+            sel_candidates,
+            _sel.normalize_compute_caps(host.compute_caps),
+            host.driver_cuda_version,
+            host.torch_runtime_line,
+            log_lines,
+        )
+        chosen = attempts[0] if attempts else None
+    else:  # rocm
+        chosen = _sel.match_rocm_artifact(sel_candidates, host.rocm_gfx, log_lines)
+    for line in log_lines:
+        log(line)
+    return chosen.raw if chosen is not None else None
 
 
 def select_artifact_with_cpu_fallback(
