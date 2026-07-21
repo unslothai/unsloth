@@ -417,7 +417,7 @@ def test_terminal_classifier(command, unsafe):
         ("x=$(printf 'git clean -fd'); bash -c \"$x\"", True),
         ("x=$(printf 'git clean -fd'); $x", True),
         ("x=`printf 'git clean -fd'`; $x", True),
-        ("c=$(echo rm); eval \"$c -rf build\"", True),
+        ('c=$(echo rm); eval "$c -rf build"', True),
         # --- run: a benign shell -c payload / benign global-option git ---
         ("bash -c 'ls -la'", False),
         ("sh -c 'git commit -m x'", False),
@@ -451,7 +451,7 @@ def test_terminal_classifier(command, unsafe):
         ("d=$(date +%s); mkdir build_$d", False),
         ("files=$(ls -1); for f in $files; do echo $f; done", False),
         ('msg=$(git log -1 --format=%s); echo "$msg"', False),
-        ("ts=$(date); echo \"log $ts\" > out.txt", False),
+        ('ts=$(date); echo "log $ts" > out.txt', False),
         ("bash run.sh $HOME/data", False),  # bash script + $var arg, no -c payload
         ("chmod +x build.sh", False),  # scoped, non-recursive
         ("cat README.md", False),
