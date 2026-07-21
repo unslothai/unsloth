@@ -2,7 +2,6 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { Button } from "@/components/ui/button";
-import { FolderBrowser } from "@/components/assistant-ui/model-selector/folder-browser";
 import { Input } from "@/components/ui/input";
 import {
   InputGroup,
@@ -17,6 +16,7 @@ import {
   TooltipContent,
   TooltipTrigger,
 } from "@/components/ui/tooltip";
+import { FolderBrowser } from "@/features/model-picker";
 import {
   AlertCircleIcon,
   ArrowRight01Icon,
@@ -28,17 +28,17 @@ import {
 import { HugeiconsIcon } from "@hugeicons/react";
 import { useEffect, useRef, useState } from "react";
 import { useShallow } from "zustand/react/shallow";
+import type { ExportLogEntry } from "../api/export-api";
 import {
   EXPORT_METHODS,
   type ExportMethod,
   findMergedFormat,
 } from "../constants";
-import type { ExportLogEntry } from "../api/export-api";
 import { getExportLogLineClass } from "../lib/log-style";
 import {
+  type ExportDestination,
   selectExportProgressPercent,
   useExportRuntimeStore,
-  type ExportDestination,
 } from "../stores/export-runtime-store";
 
 function useElapsedSeconds(startedAt: number | null, running: boolean): number {
@@ -165,7 +165,9 @@ export function ExportRunPanel(props: ExportRunPanelProps) {
 
   const isExporting = run.isExporting;
   const isTerminal =
-    run.phase === "success" || run.phase === "error" || run.phase === "canceled";
+    run.phase === "success" ||
+    run.phase === "error" ||
+    run.phase === "canceled";
   const showConfig = run.phase === "idle";
   // Gate the log area on the active run's method (from the store) as well as the
   // local form selection, so it stays visible after navigating away and back
@@ -197,7 +199,9 @@ export function ExportRunPanel(props: ExportRunPanelProps) {
     setFollowTail(nearBottom);
   };
 
-  const methodTitle = EXPORT_METHODS.find((m) => m.value === exportMethod)?.title;
+  const methodTitle = EXPORT_METHODS.find(
+    (m) => m.value === exportMethod,
+  )?.title;
   const summary = run.summary;
   const summaryBaseModel = summary?.baseModelName ?? baseModelName;
   const summaryCheckpoint = summary?.checkpointLabel ?? checkpoint;
@@ -290,7 +294,10 @@ export function ExportRunPanel(props: ExportRunPanelProps) {
                       onClick={() => setFolderBrowserOpen(true)}
                       aria-label="Browse save folder"
                     >
-                      <HugeiconsIcon icon={FolderSearchIcon} className="size-4" />
+                      <HugeiconsIcon
+                        icon={FolderSearchIcon}
+                        className="size-4"
+                      />
                     </Button>
                   </TooltipTrigger>
                   <TooltipContent>Browse</TooltipContent>
@@ -301,8 +308,8 @@ export function ExportRunPanel(props: ExportRunPanelProps) {
                   <>Default: {defaultSaveDirectory}</>
                 ) : (
                   <>
-                    Paste an absolute path if the folder browser cannot reach the
-                    drive.
+                    Paste an absolute path if the folder browser cannot reach
+                    the drive.
                   </>
                 )}
               </p>
@@ -410,7 +417,10 @@ export function ExportRunPanel(props: ExportRunPanelProps) {
                     : [];
               const showLabels = items.length > 1;
               return items.map((o, i) => (
-                <div key={`${o.path}-${i}`} className="flex min-w-0 flex-col gap-0.5">
+                <div
+                  key={`${o.path}-${i}`}
+                  className="flex min-w-0 flex-col gap-0.5"
+                >
                   {showLabels && o.label ? (
                     <span className="text-xs text-emerald-700/80 dark:text-emerald-300/80">
                       {o.label}
@@ -431,14 +441,22 @@ export function ExportRunPanel(props: ExportRunPanelProps) {
 
       {run.phase === "canceled" && (
         <div className="flex items-start gap-2 rounded-lg bg-amber-500/10 p-3 text-sm text-amber-700 dark:text-amber-300">
-          <HugeiconsIcon icon={CancelCircleIcon} className="mt-0.5 size-4 shrink-0" />
-          <span>Export canceled. Training and inference were not affected.</span>
+          <HugeiconsIcon
+            icon={CancelCircleIcon}
+            className="mt-0.5 size-4 shrink-0"
+          />
+          <span>
+            Export canceled. Training and inference were not affected.
+          </span>
         </div>
       )}
 
       {run.phase === "error" && run.error && (
         <div className="flex items-start gap-2 rounded-lg bg-destructive/10 p-3 text-sm text-destructive">
-          <HugeiconsIcon icon={AlertCircleIcon} className="size-4 mt-0.5 shrink-0" />
+          <HugeiconsIcon
+            icon={AlertCircleIcon}
+            className="size-4 mt-0.5 shrink-0"
+          />
           <span>{run.error}</span>
         </div>
       )}
@@ -447,15 +465,21 @@ export function ExportRunPanel(props: ExportRunPanelProps) {
       <div className="rounded-xl bg-muted/50 p-3 text-xs text-muted-foreground flex flex-col gap-1">
         <div className="flex justify-between">
           <span>Base Model</span>
-          <span className="font-medium text-foreground">{summaryBaseModel}</span>
+          <span className="font-medium text-foreground">
+            {summaryBaseModel}
+          </span>
         </div>
         <div className="flex justify-between">
           <span>{isAdapter ? "Checkpoint" : "Model"}</span>
-          <span className="font-medium text-foreground">{summaryCheckpoint}</span>
+          <span className="font-medium text-foreground">
+            {summaryCheckpoint}
+          </span>
         </div>
         <div className="flex justify-between">
           <span>Export Method</span>
-          <span className="font-medium text-foreground">{summaryMethodLabel}</span>
+          <span className="font-medium text-foreground">
+            {summaryMethodLabel}
+          </span>
         </div>
         {summaryMethod === "merged" && summaryFormats.length > 0 && (
           <div className="flex justify-between gap-3">
@@ -484,7 +508,12 @@ export function ExportRunPanel(props: ExportRunPanelProps) {
             </span>
             {summaryMethod === "gguf" && run.quantTotal > 1 && (
               <span className="text-[10px] tabular-nums text-muted-foreground">
-                Quant {Math.min(run.quantIndex + (isExporting ? 1 : 0), run.quantTotal)} of {run.quantTotal}
+                Quant{" "}
+                {Math.min(
+                  run.quantIndex + (isExporting ? 1 : 0),
+                  run.quantTotal,
+                )}{" "}
+                of {run.quantTotal}
               </span>
             )}
             <span className="rounded-full border border-border/60 px-2.5 py-1 text-[10px] font-medium tabular-nums text-muted-foreground">
@@ -506,7 +535,10 @@ export function ExportRunPanel(props: ExportRunPanelProps) {
             }
           />
           {run.stage && (
-            <p className="truncate text-[11px] text-muted-foreground/80" title={run.stage}>
+            <p
+              className="truncate text-[11px] text-muted-foreground/80"
+              title={run.stage}
+            >
               {run.stage}
             </p>
           )}
@@ -556,10 +588,7 @@ export function ExportRunPanel(props: ExportRunPanelProps) {
                 ) : (
                   <div className="whitespace-pre-wrap break-words">
                     {run.logLines.map((entry, idx) => (
-                      <div
-                        key={idx}
-                        className={getExportLogLineClass(entry)}
-                      >
+                  <div key={idx} className={getExportLogLineClass(entry)}>
                         {formatLogLine(entry)}
                       </div>
                     ))}

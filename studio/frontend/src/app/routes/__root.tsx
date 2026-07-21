@@ -196,9 +196,6 @@ function RootLayout() {
         chatRuntime.setActiveThreadId(null);
         chatRuntime.setActiveProjectId(null);
         chatRuntime.setIncognito(false);
-        // Detach the staging UI but keep any in-flight download running, like Hub.
-        if (chatRuntime.pendingSelection)
-          chatRuntime.abandonStagedModel({ keepDownload: true });
         void navigate({
           to: "/chat",
           search: { new: crypto.randomUUID() },
@@ -221,10 +218,6 @@ function RootLayout() {
     chatRuntime.setActiveProjectId(null);
     chatRuntime.setActiveThreadId(null);
     chatRuntime.setIncognito(false);
-    // Leaving chat must not kill an in-flight download: detach the staging UI
-    // but keep the transfer running in the manager, like a Hub download.
-    if (chatRuntime.pendingSelection)
-      chatRuntime.abandonStagedModel({ keepDownload: true });
   }, [isChatRoute]);
 
   return (

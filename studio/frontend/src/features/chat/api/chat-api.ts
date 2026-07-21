@@ -377,14 +377,33 @@ export async function listCachedModels(
   return data.cached;
 }
 
-export async function deleteCachedModel(
+export interface CachedModelPath {
+  path: string;
+  is_dir: boolean;
+}
+
+/** Absolute on-disk path of a cached repo or one of its GGUF variants. */
+export async function getCachedModelPath(
+  repoId: string,
+  variant?: string,
+): Promise<CachedModelPath> {
+  const params = new URLSearchParams({ repo_id: repoId });
+  if (variant) params.set("variant", variant);
+  const response = await authFetch(
+    `/api/models/cached-model-path?${params.toString()}`,
+  );
+  return parseJsonOrThrow<CachedModelPath>(response);
+}
+
+/** Reveal a cached repo (or one GGUF variant's file) in the OS file manager. */
+export async function revealCachedModel(
   repoId: string,
   variant?: string,
 ): Promise<void> {
   const payload: Record<string, string> = { repo_id: repoId };
   if (variant) payload.variant = variant;
-  const response = await authFetch("/api/models/delete-cached", {
-    method: "DELETE",
+  const response = await authFetch("/api/models/reveal-cached-model", {
+    method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(payload),
   });
