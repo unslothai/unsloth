@@ -64,9 +64,8 @@ export function matchesFormatFilter(
   }
 }
 
-// First "<n>B" token in a repo id, e.g. "Qwen3-4B-GGUF" -> 4, "gpt-oss-20b" ->
-// 20, "Qwen3-30B-A3B" -> 30 (MoE total), "gemma-4-E4B" -> 4 (effective-param
-// "E" series). The digits must be bounded by a separator so we never read "16"
+// First "<n>B" token in a repo id, e.g. "Qwen3-30B-A3B" -> 30 (MoE total),
+// "gemma-4-E4B" -> 4. Digits must be separator-bounded so we never read "16"
 // from "bf16" or the "2" in "Kimi-K2".
 const PARAM_RE = /(?:^|[-_/. ])[eE]?(\d+(?:\.\d+)?)\s*[bB](?=$|[-_./ ])/;
 
@@ -79,9 +78,8 @@ export function paramsFromId(id: string): number | undefined {
   return Number.isFinite(billions) && billions > 0 ? billions * 1e9 : undefined;
 }
 
-// Smallest practical GGUF/MLX quant (~Q2_K, low-bit). The fit check asks whether
-// a model can run at all, so it uses this rather than a default 4-bit size; a
-// user with a smaller device can still pick a low-bit variant.
+// Smallest practical GGUF/MLX quant (~Q2_K). The fit check asks whether a model
+// can run at all, so it uses this rather than a default 4-bit size.
 const MIN_QUANT_BYTES_PER_PARAM = 0.4;
 
 /** Rough on-disk bytes for the smallest practical quant of `params` weights. */

@@ -6,24 +6,18 @@ import {
   TooltipContent,
   TooltipTrigger,
 } from "@/components/ui/tooltip";
-import { useChatRuntimeStore } from "@/features/chat/stores/chat-runtime-store";
 import { cn } from "@/lib/utils";
 import { Settings02Icon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 
-/** Gear button on a downloaded quant row. Stages the model into the Run
- * settings sidebar (always, regardless of the Load-on-selection toggle) so the
- * user can set load options, then click Load model. */
 export function ModelLoadSettingsAction({
   ariaLabel,
-  repoId,
-  quant,
-  maxContext,
+  onConfigure,
+  className,
 }: {
   ariaLabel: string;
-  repoId: string;
-  quant: string;
-  maxContext?: number | null;
+  onConfigure: () => void;
+  className?: string;
 }) {
   return (
     <Tooltip delayDuration={0}>
@@ -32,16 +26,12 @@ export function ModelLoadSettingsAction({
           type="button"
           onClick={(e) => {
             e.stopPropagation();
-            useChatRuntimeStore.getState().stageModel({
-              id: repoId,
-              ggufVariant: quant,
-              isDownloaded: true,
-              contextLength: maxContext ?? null,
-            });
+            onConfigure();
           }}
           aria-label={ariaLabel}
           className={cn(
-            "shrink-0 rounded-md p-1 text-muted-foreground/60 transition-colors hover:bg-muted hover:text-foreground",
+            "shrink-0 rounded-md p-1 text-muted-foreground/60 transition-colors hover:bg-black/5 hover:text-foreground dark:hover:bg-white/10",
+            className,
           )}
         >
           <HugeiconsIcon
