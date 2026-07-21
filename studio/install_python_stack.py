@@ -73,6 +73,24 @@ _ROCM_TORCH_INDEX: dict[tuple[int, int], str] = {
     (6, 0): "rocm6.0",
 }
 
+
+def _generic_pytorch_rocm_tag(ver: tuple[int, int]) -> str | None:
+    """Newest download.pytorch.org rocmX.Y tag for a host ROCm version."""
+    return next(
+        (
+            t
+            for (maj, mn), t in sorted(_ROCM_TORCH_INDEX.items(), reverse = True)
+            if ver >= (maj, mn)
+        ),
+        None,
+    )
+
+
+def _strix_needs_amd_arch_index(ver: tuple[int, int]) -> bool:
+    """True when install.sh would land Strix on generic rocm7.1/7.2 indexes."""
+    tag = _generic_pytorch_rocm_tag(ver)
+    return tag in {"rocm7.1", "rocm7.2"}
+
 # AMD per-arch leaves needing the torch 2.11 floor (the _grouped_mm <2.11 bug).
 # Mirrors *FloorMap in install.ps1 / setup.ps1; other arches ship <2.11 and stay bare.
 _ROCM_GFX_TORCH211_LEAVES: frozenset[str] = frozenset({"gfx120x-all", "gfx1151", "gfx1150"})
@@ -1691,13 +1709,13 @@ def _ensure_rocm_torch() -> None:
 
     rocm_torch_ready = has_hip_torch and not _rocm_pin_mismatch
 
-    # Strix Halo / Point (gfx1151 / gfx1150) segfault under ROCm 7.1 in torch._grouped_mm;
-    # AMD's per-gfx repo ships 2.11.0+rocm7.13.0 with the fix, so route those hosts there
-    # (mirrors install.sh). On mixed hosts, reroute only when HIP's runtime GPU is the Strix one.
+    # Strix Halo / Point (gfx1151 / gfx1150) need torch from AMD's per-gfx index
+    # (2.11+rocm7.13) instead of the generic pytorch.org rocm7.1/7.2 indexes.
+    # Modern ROCm (7.3+) caps to rocm7.2; ROCm 7.1 has a _grouped_mm segfault.
     _strix_override_url: "str | None" = None
     _strix_override_pkgs: "tuple[str, str, str] | None" = None
     # An explicit ROCm pin is authoritative: never auto-reroute it.
-    if ver < (7, 2) and _explicit_rocm_torch_index_url() is None:
+    if _strix_needs_amd_arch_index(ver) and _explicit_rocm_torch_index_url() is None:
         gfx_codes = _detect_amd_gfx_codes()
         _strix_gfx = {"gfx1151", "gfx1150"}
         _detected_strix = _strix_gfx.intersection(gfx_codes)
@@ -1721,10 +1739,10 @@ def _ensure_rocm_torch() -> None:
                 print(
                     f"\n   {_selected_gfx} (AMD Strix) is the runtime target with ROCm "
                     f"{ver[0]}.{ver[1]}.\n"
-                    f"   ROCm 7.1 has a known _grouped_mm segfault on this GPU;\n"
-                    f"   routing torch install to AMD's arch-specific index\n"
+                    f"   Routing torch install to AMD's arch-specific index\n"
                     f"   ({_strix_override_url}) which serves torch 2.11.0+rocm7.13.0\n"
-                    f"   with the upstream fix.\n"
+                    f"   with AMD's gfx1150/gfx1151 fixes (more reliable than the generic\n"
+                    f"   pytorch.org rocm7.2 index on ROCm 7.3+ hosts).\n"
                 )
             else:
                 _gfx_str = ", ".join(sorted(_detected_strix))
@@ -1740,7 +1758,7 @@ def _ensure_rocm_torch() -> None:
         index_url = _strix_override_url
         _torch_pkg, _vision_pkg, _audio_pkg = _strix_override_pkgs
         print(
-            f"   Strix ROCm 7.1 override -- installing torch from "
+            f"   Strix arch-specific override -- installing torch from "
             f"{_strip_index_url_credentials(index_url)}"
         )
         pip_install(

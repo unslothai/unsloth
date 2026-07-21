@@ -2127,6 +2127,24 @@ _has_amd_rocm_gpu() {
     return 1
 }
 
+# Returns 0 if an AMD display GPU is on the PCI bus, regardless of whether ROCm
+# can use it. Used only to sharpen the "no GPU detected" hint: a Strix Halo iGPU
+# whose ROCm kernel interface (/dev/kfd) is absent shows here but not in
+# _has_amd_rocm_gpu. vendor 0x1002 = AMD/ATI; class 0x03* = display controller.
+_amd_gpu_present_via_pci() {
+    [ -d /sys/bus/pci/devices ] || return 1
+    for _pci_vendor in /sys/bus/pci/devices/*/vendor; do
+        [ -r "$_pci_vendor" ] || continue
+        read -r _v < "$_pci_vendor" 2>/dev/null || continue
+        [ "$_v" = "0x1002" ] || continue
+        _cls="${_pci_vendor%vendor}class"
+        [ -r "$_cls" ] || continue
+        read -r _c < "$_cls" 2>/dev/null || continue
+        case "$_c" in 0x03*) return 0 ;; esac
+    done
+    return 1
+}
+
 # ── Detect GPU and choose PyTorch index URL ──
 # Mirrors Get-TorchIndexUrl in install.ps1.
 # On CPU-only machines this returns the cpu index, avoiding the solver
@@ -2818,14 +2836,16 @@ case "$TORCH_INDEX_URL" in
         fi
         ;;
 esac
-# ── Strix Halo / Strix Point: force rocm7.2 wheels, bypass Radeon repo ───────
-# gfx1151 (Strix Halo) and gfx1150 (Strix Point) have a ROCm 7.1 driver bug
-# that causes a segfault in torch._grouped_mm (moe_utils.py line 167).
-# The Radeon repo now ships cp313 wheels for rocm-rel-7.1, so when
-# _amd_gpu_radeon=true the installer silently lands on the broken combo.
-# Detect these GPUs when TORCH_INDEX_URL is rocm7.1 and override to rocm7.2.
+# ── Strix Halo / Strix Point: route to the AMD arch-specific index ───────────
+# gfx1151 (Strix Halo) and gfx1150 (Strix Point) need torch 2.11+rocm7.13 from
+# repo.amd.com/rocm/whl/gfx<arch>/, which carries AMD's real fixes (the ROCm 7.1
+# _grouped_mm segfault, moe_utils.py:167, plus later Strix kernel bugs). Modern
+# ROCm (7.3+) caps to the generic rocm7.2 index, and the Radeon repo can be
+# unavailable (unslothai#7264, unslothai#7280) -- both leave Strix on a
+# non-arch-specific build. Reroute when the index is rocm7.1 or rocm7.2 and a
+# Strix GPU is detected.
 case "$TORCH_INDEX_URL" in
-    */rocm7.1|*/rocm7.1.*)
+    */rocm7.1|*/rocm7.1.*|*/rocm7.2|*/rocm7.2.*)
         # Collect every gfx token in rocminfo / amd-smi enumeration order
         # (skip duplicates), then index by HIP_VISIBLE_DEVICES /
         # ROCR_VISIBLE_DEVICES so a mixed Strix iGPU + non-Strix dGPU box
@@ -2867,11 +2887,10 @@ case "$TORCH_INDEX_URL" in
         esac
         if [ -n "$_strix_gfx" ]; then
             echo "" >&2
-            echo "  [WARN] $_strix_gfx (Strix) + ROCm 7.1 detected -- known _grouped_mm segfault" >&2
-            echo "  [WARN] ROCm 7.1 wheels are broken for gfx1150/gfx1151 (moe_utils.py:167)" >&2
-            echo "  [WARN] Routing to AMD arch-specific index (torch 2.11+rocm7.13 has the real fix)" >&2
-            echo "  [WARN] Upgrade ROCm to 7.2+ to use the standard index:" >&2
-            echo "  [WARN]   https://rocm.docs.amd.com/en/latest/deploy/linux/index.html" >&2
+            echo "  [WARN] $_strix_gfx (Strix) detected -- routing to the AMD arch-specific index" >&2
+            echo "  [WARN] torch 2.11+rocm7.13 has AMD's real gfx1150/gfx1151 fixes (the ROCm 7.1" >&2
+            echo "  [WARN] _grouped_mm segfault, moe_utils.py:167, and later Strix kernel bugs)," >&2
+            echo "  [WARN] and is more reliable than the rocm7.2 index or an offline Radeon repo." >&2
             echo "" >&2
             # AMD's arch-specific index serves torch 2.11.0+rocm7.13.0 which has AMD's
             # actual fix for the gfx1151/gfx1150 _grouped_mm kernel bug -- preferred
@@ -3031,6 +3050,13 @@ case "$TORCH_INDEX_URL" in
                 substep "  driver is current; or run unsloth/scripts/install_rocm_wsl_strixhalo.sh yourself."
             else
                 substep "AMD ROCm users: see https://docs.unsloth.ai/get-started/install-and-update/amd"
+                # Only when ROCm truly can't see the GPU: a detected-but-too-old
+                # ROCm (rocminfo works, wheels need 6.0+) has its own guidance.
+                if ! _has_amd_rocm_gpu && _amd_gpu_present_via_pci; then
+                    substep "An AMD GPU is on the PCI bus but ROCm cannot see it (no /dev/kfd," "$C_WARN"
+                    substep "  rocminfo, or amd-smi). Install the ROCm kernel stack so /dev/kfd exists;"
+                    substep "  Strix Halo (gfx1151/gfx1150) needs a recent kernel (6.11+) and ROCm 7.x."
+                fi
             fi
             substep "Re-run with --no-torch for GGUF-only (faster, no PyTorch):"
             substep "  curl -fsSL https://unsloth.ai/install.sh | sh -s -- --no-torch"
