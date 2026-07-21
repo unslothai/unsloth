@@ -118,6 +118,8 @@ def compute_snapshot_progress(
         0,
         int(getattr(metadata, "completed_baseline_bytes", 0) or 0),
     )
+    metadata_hub_cache = getattr(metadata, "hub_cache", None)
+    active_root = Path(metadata_hub_cache) if metadata_hub_cache else None
 
     expected_total = max(expected_bytes, 0)
     # Always resolve the revision's blob hashes so stale blobs from a superseded
@@ -134,11 +136,17 @@ def compute_snapshot_progress(
     count_finalized_unscoped = variant is None
 
     readings: list[tuple[int, int, Optional[str], bool]] = []
-    for entry in preferred_repo_cache_dirs(
-        repo_type,
-        repo_id,
-        force_active = force_active,
-    ):
+    cache_dirs = (
+        preferred_repo_cache_dirs(
+            repo_type,
+            repo_id,
+            force_active = force_active,
+            active_root = active_root,
+        )
+        if active_root is not None
+        else preferred_repo_cache_dirs(repo_type, repo_id, force_active = force_active)
+    )
+    for entry in cache_dirs:
         completed_bytes = 0
         in_progress_bytes = 0
         cache_path = hf_cache_scan.resolve_hf_cache_realpath(entry)

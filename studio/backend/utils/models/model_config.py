@@ -37,6 +37,7 @@ import yaml
 
 
 from utils.native_path_leases import child_env_without_native_path_secret
+from utils.hf_cache_settings import active_hf_hub_cache, get_hf_cache_paths
 from utils.subprocess_compat import (
     windows_hidden_subprocess_kwargs as _windows_hidden_subprocess_kwargs,
 )
@@ -493,6 +494,7 @@ def load_model_config(
             trust_remote_code = trust_remote_code,
             token = token,
             local_files_only = local_files_only,
+            cache_dir = active_hf_hub_cache(),
         )
 
     if not use_auth:
@@ -503,6 +505,7 @@ def load_model_config(
                 trust_remote_code = trust_remote_code,
                 token = None,
                 local_files_only = local_files_only,
+                cache_dir = active_hf_hub_cache(),
             )
 
     # Default auth (cached tokens)
@@ -510,6 +513,7 @@ def load_model_config(
         model_name,
         trust_remote_code = trust_remote_code,
         local_files_only = local_files_only,
+        cache_dir = active_hf_hub_cache(),
     )
 
 
@@ -624,6 +628,7 @@ def _raw_config_has_vision_config(
                     filename = "config.json",
                     token = hf_token,
                     local_files_only = local_files_only,
+                    cache_dir = active_hf_hub_cache(),
                 )
             )
         config = json.loads(config_path.read_text())
@@ -770,7 +775,7 @@ def _is_vision_model_subprocess(model_name: str, hf_token: Optional[str] = None)
             capture_output = True,
             text = True,
             timeout = 60,
-            env = child_env_without_native_path_secret(),
+            env = get_hf_cache_paths().child_env(child_env_without_native_path_secret()),
             **_windows_hidden_subprocess_kwargs(),
         )
 
@@ -1997,6 +2002,7 @@ def download_gguf_file(
         repo_id = repo_id,
         filename = filename,
         token = hf_token,
+        cache_dir = active_hf_hub_cache(),
     )
     return local_path
 
@@ -2416,7 +2422,10 @@ def get_base_model_from_lora_identifier(
     for _attempt in range(2):  # one retry: a transient blip must not skip the base
         try:
             cfg_path = hf_hub_download(
-                identifier, "adapter_config.json", token = hf_token if hf_token else None
+                identifier,
+                "adapter_config.json",
+                token = hf_token if hf_token else None,
+                cache_dir = active_hf_hub_cache(),
             )
         except (EntryNotFoundError, RepositoryNotFoundError):
             # No adapter_config.json -> not a resolvable LoRA; caller scans the identifier.
@@ -2796,7 +2805,12 @@ class ModelConfig:
                 try:
                     from huggingface_hub import hf_hub_download
 
-                    config_path = hf_hub_download(identifier, "adapter_config.json", token = hf_token)
+                    config_path = hf_hub_download(
+                        identifier,
+                        "adapter_config.json",
+                        token = hf_token,
+                        cache_dir = active_hf_hub_cache(),
+                    )
                     with open(config_path, "r") as f:
                         adapter_config = json.load(f)
                     base_model = adapter_config.get("base_model_name_or_path")

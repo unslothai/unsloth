@@ -103,9 +103,15 @@ def _st_module_subdirs(name: str, token: str | None) -> tuple[str, ...]:
         else:
             from huggingface_hub import hf_hub_download
             from huggingface_hub.utils import EntryNotFoundError
+            from utils.hf_cache_settings import active_hf_hub_cache
 
             try:
-                local = hf_hub_download(name, "modules.json", token = token or None)
+                local = hf_hub_download(
+                    name,
+                    "modules.json",
+                    token = token or None,
+                    cache_dir = active_hf_hub_cache(),
+                )
             except EntryNotFoundError:
                 return ()
             data = json.loads(open(local).read())

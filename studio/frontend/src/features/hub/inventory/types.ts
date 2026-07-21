@@ -80,6 +80,7 @@ export interface LocalInventoryRow {
   updatedAt: number | null;
   partial?: boolean;
   partialTransport?: string | null;
+  activeCache?: boolean | null;
   pipelineTag?: string | null;
   tags?: string[];
   libraryName?: string | null;

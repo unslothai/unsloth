@@ -29,12 +29,10 @@ def _safe_is_dir(path: Path) -> bool:
         return False
 
 
-def hf_cache_root(*, create: bool = False) -> Optional[Path]:
-    try:
-        from huggingface_hub import constants as hf_constants
-    except ImportError:
-        return None
-    root = Path(hf_constants.HF_HUB_CACHE)
+def hf_cache_root(*, create: bool = False, root: Optional[Path] = None) -> Optional[Path]:
+    from utils.hf_cache_settings import get_hf_cache_paths
+
+    root = root or get_hf_cache_paths().hub_cache
     if create:
         try:
             root.mkdir(parents = True, exist_ok = True)
@@ -46,6 +44,7 @@ def hf_cache_root(*, create: bool = False) -> Optional[Path]:
 
 def hf_cache_roots() -> list[Path]:
     from hub.utils.paths import hf_default_cache_dir, legacy_hf_cache_dir
+    from utils.hf_cache_settings import known_hf_hub_caches
 
     roots: list[Path] = []
     seen: set[str] = set()
@@ -62,7 +61,8 @@ def hf_cache_roots() -> list[Path]:
         seen.add(key)
         roots.append(path)
 
-    _add(hf_cache_root())
+    for configured in known_hf_hub_caches():
+        _add(configured)
     _add(legacy_hf_cache_dir())
     _add(hf_default_cache_dir())
     return roots
@@ -200,8 +200,13 @@ def iter_destructive_repo_cache_dirs(repo_type: str, repo_id: str) -> Iterator[P
                 yield entry
 
 
-def iter_active_repo_cache_dirs(repo_type: str, repo_id: str) -> Iterator[Path]:
-    root = hf_cache_root()
+def iter_active_repo_cache_dirs(
+    repo_type: str,
+    repo_id: str,
+    *,
+    root: Optional[Path] = None,
+) -> Iterator[Path]:
+    root = hf_cache_root(root = root)
     if root is None:
         return
     target = target_dir_name(repo_type, repo_id)
@@ -218,12 +223,15 @@ def preferred_repo_cache_dirs(
     repo_id: str,
     *,
     force_active: bool = False,
+    active_root: Optional[Path] = None,
 ) -> list[Path]:
-    active_entries = list(iter_active_repo_cache_dirs(repo_type, repo_id))
+    active_entries = list(
+        iter_active_repo_cache_dirs(repo_type, repo_id, root = active_root)
+    )
     if active_entries:
         return active_entries
     if force_active:
-        root = hf_cache_root()
+        root = hf_cache_root(root = active_root)
         if root is not None:
             canonical = repo_cache_dir_name(repo_type, repo_id)
             return [root / canonical]

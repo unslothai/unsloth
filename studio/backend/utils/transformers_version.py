@@ -44,6 +44,7 @@ import time
 from pathlib import Path
 
 from utils.native_path_leases import child_env_without_native_path_secret
+from utils.hf_cache_settings import get_hf_cache_paths
 from utils.subprocess_compat import (
     windows_hidden_subprocess_kwargs as _windows_hidden_subprocess_kwargs,
 )
@@ -1251,7 +1252,7 @@ def _probe_autoconfig(target_dir: str, model_name: str, hf_token: str | None) ->
     True = parses, False = parse/version failure (escalate), None = transient
     (auth/network/offline/spawn) so the caller fails safe and does not cache.
     """
-    env = child_env_without_native_path_secret()
+    env = get_hf_cache_paths().child_env(child_env_without_native_path_secret())
     if hf_token:
         env["HF_TOKEN"] = hf_token
         # The probe relies on the implicit HF_TOKEN env (no token= arg). Clear any inherited
@@ -1806,7 +1807,7 @@ def _install_to_dir(pkg: str, target_dir: str) -> bool:
             stdout = subprocess.PIPE,
             stderr = subprocess.STDOUT,
             text = True,
-            env = child_env_without_native_path_secret(),
+            env = get_hf_cache_paths().child_env(child_env_without_native_path_secret()),
             **_windows_hidden_subprocess_kwargs(),
         )
         if result.returncode == 0:
@@ -1829,7 +1830,7 @@ def _install_to_dir(pkg: str, target_dir: str) -> bool:
         stdout = subprocess.PIPE,
         stderr = subprocess.STDOUT,
         text = True,
-        env = child_env_without_native_path_secret(),
+        env = get_hf_cache_paths().child_env(child_env_without_native_path_secret()),
         **_windows_hidden_subprocess_kwargs(),
     )
     if result.returncode != 0:
@@ -2458,7 +2459,7 @@ def _ensure_venv_llmcompressor_exists() -> bool:
             stdout = subprocess.PIPE,
             stderr = subprocess.STDOUT,
             text = True,
-            env = child_env_without_native_path_secret(),
+            env = get_hf_cache_paths().child_env(child_env_without_native_path_secret()),
             **_windows_hidden_subprocess_kwargs(),
         )
         last_out = result.stdout or ""

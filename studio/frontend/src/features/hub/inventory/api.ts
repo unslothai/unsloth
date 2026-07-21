@@ -86,6 +86,7 @@ export interface LocalModelInfo {
   capabilities?: BackendModelCapabilities | null;
   source: LocalSource;
   model_id?: string | null;
+  active_cache?: boolean | null;
   base_model?: string | null;
   base_model_source?: BaseModelSource | null;
   adapter_type?: string | null;

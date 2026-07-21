@@ -432,8 +432,13 @@ def _local_model_info(
     base_model_source: Optional[str] = None,
     adapter_type: Optional[str] = None,
     training_method: Optional[str] = None,
+    active_cache: Optional[bool] = None,
 ) -> LocalModelInfo:
-    load_id = model_id if source == "hf_cache" and model_id else str(load_path)
+    load_id = (
+        model_id
+        if source == "hf_cache" and model_id and active_cache is not False
+        else str(load_path)
+    )
     semantic_id = model_id or str(load_path)
     return LocalModelInfo(
         id = load_id,
@@ -445,6 +450,7 @@ def _local_model_info(
         ),
         load_id = load_id,
         model_id = model_id,
+        active_cache = active_cache if source == "hf_cache" else None,
         display_name = display_name or (scan_path.stem if scan_path.is_file() else scan_path.name),
         path = str(load_path),
         size_bytes = max(0, int(size_bytes or 0)),
@@ -476,6 +482,7 @@ def _classify_local_path(
     model_id: Optional[str] = None,
     updated_at: Optional[float] = None,
     partial: bool = False,
+    active_cache: Optional[bool] = None,
 ) -> list[LocalModelInfo]:
     load_path = load_path or scan_path
     files = (
@@ -512,6 +519,7 @@ def _classify_local_path(
                 requires_variant = scan_path.is_dir(),
                 format_variant = variant,
                 size_bytes = gguf_size_bytes,
+                active_cache = active_cache,
             )
         )
 
@@ -574,6 +582,7 @@ def _classify_local_path(
                 ),
                 adapter_type = adapter_type if model_format == "adapter" else None,
                 training_method = training_method if model_format == "adapter" else None,
+                active_cache = active_cache,
             )
         )
     elif not rows:
@@ -592,6 +601,7 @@ def _classify_local_path(
                 updated_at = updated_at,
                 partial = partial or trusted_hf_cache_repo,
                 size_bytes = size_bytes,
+                active_cache = active_cache,
             )
         )
 

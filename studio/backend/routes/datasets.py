@@ -292,11 +292,13 @@ def _download_hf_metadata(*, repo_id: str, repo_files: list[str], token: str | N
 
     try:
         from huggingface_hub import hf_hub_download
+        from utils.hf_cache_settings import active_hf_hub_cache
         local_path = hf_hub_download(
             repo_id = repo_id,
             filename = metadata_file,
             repo_type = "dataset",
             token = token,
+            cache_dir = active_hf_hub_cache(),
         )
     except Exception as exc:
         logger.warning(f"Could not read HF dataset metadata for {repo_id}: {exc}")

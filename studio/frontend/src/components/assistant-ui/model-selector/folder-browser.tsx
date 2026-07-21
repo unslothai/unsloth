@@ -31,6 +31,9 @@ export interface FolderBrowserProps {
   onSelect: (path: string) => void;
   /** Optional initial directory. Defaults to the user's home on the server. */
   initialPath?: string;
+  title?: string;
+  confirmLabel?: string;
+  showModelHints?: boolean;
 }
 
 function splitBreadcrumb(path: string): { label: string; value: string }[] {
@@ -82,6 +85,9 @@ export function FolderBrowser({
   onOpenChange,
   onSelect,
   initialPath,
+  title = "Select folder to detect models",
+  confirmLabel = "Use this folder",
+  showModelHints = true,
 }: FolderBrowserProps) {
   const [data, setData] = useState<BrowseFoldersResponse | null>(null);
   const [path, setPath] = useState<string | undefined>(initialPath);
@@ -158,7 +164,7 @@ export function FolderBrowser({
         data-testid="folder-browser-dialog"
       >
         <DialogHeader className="px-6 pt-6 pb-2">
-          <DialogTitle>Select folder to detect models</DialogTitle>
+          <DialogTitle>{title}</DialogTitle>
         </DialogHeader>
 
         {/* Breadcrumb */}
@@ -238,12 +244,13 @@ export function FolderBrowser({
                 </button>
               )}
               {data.entries.length === 0 &&
-                !(data.model_files_here && data.model_files_here > 0) && (
+                (!showModelHints ||
+                  !(data.model_files_here && data.model_files_here > 0)) && (
                   <div className="px-6 py-3 text-xs text-muted-foreground/60">
                     (empty directory)
                   </div>
                 )}
-              {data.model_files_here !== undefined &&
+              {showModelHints && data.model_files_here !== undefined &&
                 data.model_files_here > 0 && (
                   <div className="border-t border-border/30 px-6 py-1.5 text-[10px] text-foreground/70">
                     {data.model_files_here} model file
@@ -280,7 +287,7 @@ export function FolderBrowser({
                     )}
                   />
                   <span className="truncate font-mono">{e.name}</span>
-                  {e.has_models && (
+                  {showModelHints && e.has_models && (
                     <span className="ml-auto shrink-0 rounded-full border border-border/50 px-1.5 py-0 text-[9px] uppercase tracking-wider text-muted-foreground">
                       models
                     </span>
@@ -320,7 +327,7 @@ export function FolderBrowser({
               onClick={handleConfirm}
               disabled={!path || loading || !!error}
             >
-              Use this folder
+              {confirmLabel}
             </Button>
           </div>
         </DialogFooter>

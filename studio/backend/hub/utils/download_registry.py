@@ -712,6 +712,8 @@ class DownloadMetadata:
     # Bytes already complete before this job started; not counted as this run's
     # progress.
     completed_baseline_bytes: int = 0
+    hub_cache: Optional[str] = None
+    xet_cache: Optional[str] = None
 
 
 @dataclass(frozen = True)
@@ -1033,6 +1035,8 @@ class DownloadRegistry:
         replace_active: bool = False,
         metadata_transport: Optional[str] = None,
         cancel_marker_transport: Optional[str] = None,
+        hub_cache: Optional[str] = None,
+        xet_cache: Optional[str] = None,
     ) -> tuple[bool, str]:
         key = normalize_job_key(key)
         repo = _repo_of_key(key)
@@ -1106,6 +1110,8 @@ class DownloadRegistry:
                         0,
                         int(completed_baseline_bytes or 0),
                     ),
+                    hub_cache = hub_cache,
+                    xet_cache = xet_cache,
                 )
                 if cancel_marker_transport is not None:
                     self._cancel_marker_transports[key] = cancel_marker_transport

@@ -293,9 +293,14 @@ def hf_hub_download_with_xet_fallback(
     grace_period: float = DEFAULT_GRACE_PERIOD,
     on_status: Optional[Callable[[str], None]] = None,
     force_download: bool = False,
+    cache_dir: Optional[str] = None,
 ) -> str:
     """Single-file download via the shared fallback with Unsloth's marker-aware HTTP-retry prep.
     ``force_download`` re-fetches a newer blob over a cached one (Unsloth's model-update path)."""
+    if cache_dir is None:
+        from utils.hf_cache_settings import get_hf_cache_paths
+
+        cache_dir = str(get_hf_cache_paths().hub_cache)
     return _shared_hf_hub_download_with_xet_fallback(
         repo_id,
         filename,
@@ -308,11 +313,16 @@ def hf_hub_download_with_xet_fallback(
         grace_period = grace_period,
         on_status = on_status,
         force_download = force_download,
+        cache_dir = cache_dir,
         prepare_for_http_fn = _studio_prepare_for_http,
     )
 
 
 def snapshot_download_with_xet_fallback(repo_id: str, **kwargs: Any) -> str:
     """Whole-repo download via the shared fallback with Unsloth's marker-aware HTTP-retry prep."""
+    if kwargs.get("cache_dir") is None:
+        from utils.hf_cache_settings import get_hf_cache_paths
+
+        kwargs["cache_dir"] = str(get_hf_cache_paths().hub_cache)
     kwargs.setdefault("prepare_for_http_fn", _studio_prepare_for_http)
     return _shared_snapshot_download_with_xet_fallback(repo_id, **kwargs)

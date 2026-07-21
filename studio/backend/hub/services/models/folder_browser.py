@@ -30,6 +30,7 @@ from hub.utils.paths import (
 )
 from utils.paths.external_media import (
     linux_run_media_mount_roots,
+    macos_volume_roots,
     windows_drive_roots,
 )
 from hub.services.models.common import _safe_is_dir
@@ -187,7 +188,7 @@ def _build_browse_allowlist(
 
     _add(Path.home())
     if media_roots is None:
-        media_roots = linux_run_media_mount_roots()
+        media_roots = [*linux_run_media_mount_roots(), *macos_volume_roots()]
     if drive_roots is None:
         drive_roots = windows_drive_roots()
     for p in media_roots:
@@ -195,6 +196,13 @@ def _build_browse_allowlist(
     for p in drive_roots:
         _add(p)
     _add(_resolve_hf_cache_dir())
+    try:
+        from utils.hf_cache_settings import known_hf_cache_homes
+
+        for cache_home in known_hf_cache_homes():
+            _add(cache_home)
+    except Exception:  # noqa: BLE001 -- best-effort
+        pass
     try:
         _add(hf_default_cache_dir())
     except Exception:  # noqa: BLE001 -- best-effort
@@ -431,7 +439,7 @@ def browse_folders_response(
 
     # Probe removable-media and Windows drive roots once; the allowlist and
     # chips reuse the result so a disconnected mapped drive isn't scanned twice.
-    media_roots = linux_run_media_mount_roots()
+    media_roots = [*linux_run_media_mount_roots(), *macos_volume_roots()]
     drive_roots = windows_drive_roots()
     # Build the allowlist once -- the sandbox check and suggestion chips share
     # it so chips are always navigable.

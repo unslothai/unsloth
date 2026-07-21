@@ -159,12 +159,18 @@ async def download_dataset_response(
 
     use_xet = download_lifecycle.resolve_effective_use_xet(body.use_xet)
     transport = download_lifecycle.resolve_transport(use_xet)
+    from utils.hf_cache_settings import get_hf_cache_paths
+
+    cache_paths = get_hf_cache_paths()
+    cache_env = cache_paths.child_env({})
 
     claimed, claim_state = _registry.claim(
         key,
         transport,
         repo_type = "dataset",
         repo_id = repo_id,
+        hub_cache = str(cache_paths.hub_cache),
+        xet_cache = str(cache_paths.xet_cache),
     )
     generation = _registry.current_generation(key)
     if not claimed:
@@ -185,6 +191,7 @@ async def download_dataset_response(
             ["--repo-id", repo_id, "--dataset"],
             hf_token,
             use_xet = use_xet,
+            cache_env = cache_env,
         ),
         hf_token = hf_token,
         label = repo_id,

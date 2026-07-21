@@ -122,15 +122,9 @@ def is_model_cached(model_name: str) -> bool:
 
 def _hf_hub_cache_dir() -> Path:
     """Return HF cache root honoring HF_HUB_CACHE when available."""
-    try:
-        from huggingface_hub.constants import HF_HUB_CACHE
-        return Path(HF_HUB_CACHE)
-    except Exception as exc:
-        logger.debug(
-            "Could not read huggingface_hub HF_HUB_CACHE, using default hub path: %s",
-            exc,
-        )
-        return Path.home() / ".cache" / "huggingface" / "hub"
+    from utils.hf_cache_settings import get_hf_cache_paths
+
+    return get_hf_cache_paths().hub_cache
 
 
 def resolve_cached_repo_id_case(model_name: str, use_memo: bool = True) -> str:

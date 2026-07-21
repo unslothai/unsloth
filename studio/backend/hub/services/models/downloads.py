@@ -90,6 +90,7 @@ def _spawn_download_worker(
     hf_token: Optional[str],
     use_xet: bool = True,
     protected_blob_hashes: Optional[frozenset[str]] = None,
+    cache_env: Optional[dict[str, str]] = None,
 ) -> subprocess.Popen:
     args = ["--repo-id", repo_id]
     if variant:
@@ -99,6 +100,7 @@ def _spawn_download_worker(
         hf_token,
         use_xet = use_xet,
         protected_blob_hashes = protected_blob_hashes,
+        cache_env = cache_env,
     )
 
 
@@ -125,6 +127,10 @@ async def download_model_response(body: DownloadModelRequest, hf_token: Optional
     key = _download_job_key(repo_id, variant)
     use_xet = download_lifecycle.resolve_effective_use_xet(body.use_xet)
     transport = download_lifecycle.resolve_transport(use_xet)
+    from utils.hf_cache_settings import get_hf_cache_paths
+
+    cache_paths = get_hf_cache_paths()
+    cache_env = cache_paths.child_env({})
     variant_blob_hashes = frozenset()
     variant_progress_blob_hashes = frozenset()
     completed_baseline_bytes = 0
@@ -175,6 +181,8 @@ async def download_model_response(body: DownloadModelRequest, hf_token: Optional
         progress_blob_hashes = variant_progress_blob_hashes,
         completed_baseline_bytes = completed_baseline_bytes,
         admission_check = lambda: not _load_in_flight(repo_id),
+        hub_cache = str(cache_paths.hub_cache),
+        xet_cache = str(cache_paths.xet_cache),
     )
     generation = _registry.current_generation(key)
     if not claimed:
@@ -204,6 +212,7 @@ async def download_model_response(body: DownloadModelRequest, hf_token: Optional
             hf_token,
             use_xet = use_xet,
             protected_blob_hashes = protected_blob_hashes,
+            cache_env = cache_env,
         ),
         hf_token = hf_token,
         label = label,

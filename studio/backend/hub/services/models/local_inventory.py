@@ -106,11 +106,9 @@ def _is_model_directory_for_scan(path: Path, *, entry_limit: int | None) -> bool
 
 
 def _resolve_hf_cache_dir() -> Path:
-    try:
-        from huggingface_hub.constants import HF_HUB_CACHE
-        return Path(HF_HUB_CACHE)
-    except Exception:
-        return Path.home() / ".cache" / "huggingface" / "hub"
+    from utils.hf_cache_settings import get_hf_cache_paths
+
+    return get_hf_cache_paths().hub_cache
 
 
 def _scan_models_dir(
@@ -202,7 +200,12 @@ def _hf_repo_dir_has_content(repo_dir: Path) -> bool:
     return False
 
 
-def _scan_hf_cache(cache_dir: Path, *, entry_limit: int | None = None) -> List[LocalModelInfo]:
+def _scan_hf_cache(
+    cache_dir: Path,
+    *,
+    entry_limit: int | None = None,
+    active_cache: bool = True,
+) -> List[LocalModelInfo]:
     if not _safe_is_dir(cache_dir):
         return []
 
@@ -252,23 +255,25 @@ def _scan_hf_cache(cache_dir: Path, *, entry_limit: int | None = None) -> List[L
         )
         resolved = hf_cache_scan.resolve_hf_cache_realpath(repo_dir)
         scan_path = Path(resolved) if resolved else repo_dir
+        load_path = repo_dir if active_cache else scan_path
         # partial=False here; _apply_format_aware_partial below rewrites per-row
         # so a hybrid repo's gguf row doesn't taint its safetensors row.
         rows = _classify_local_path(
             scan_path,
             "hf_cache",
-            load_path = repo_dir,
+            load_path = load_path,
             display_name = model_id.split("/")[-1],
             model_id = model_id,
             updated_at = updated_at,
             partial = False,
+            active_cache = active_cache,
         )
         if not rows:
             if has_gguf_variant_state and gguf_partial:
                 rows = [
                     _local_model_info(
                         scan_path = repo_dir,
-                        load_path = repo_dir,
+                        load_path = load_path,
                         source = "hf_cache",
                         model_format = "gguf",
                         display_name = model_id.split("/")[-1],
@@ -277,6 +282,7 @@ def _scan_hf_cache(cache_dir: Path, *, entry_limit: int | None = None) -> List[L
                         partial = True,
                         requires_variant = True,
                         size_bytes = gguf_variant_state_size,
+                        active_cache = active_cache,
                     )
                 ]
             else:
@@ -285,13 +291,14 @@ def _scan_hf_cache(cache_dir: Path, *, entry_limit: int | None = None) -> List[L
                 rows = [
                     _local_model_info(
                         scan_path = repo_dir,
-                        load_path = repo_dir,
+                        load_path = load_path,
                         source = "hf_cache",
                         model_format = "unknown",
                         display_name = model_id.split("/")[-1],
                         model_id = model_id,
                         updated_at = updated_at,
                         partial = snapshot_partial or gguf_partial,
+                        active_cache = active_cache,
                     )
                 ]
         elif (
@@ -302,7 +309,7 @@ def _scan_hf_cache(cache_dir: Path, *, entry_limit: int | None = None) -> List[L
             rows.append(
                 _local_model_info(
                     scan_path = repo_dir,
-                    load_path = repo_dir,
+                    load_path = load_path,
                     source = "hf_cache",
                     model_format = "gguf",
                     display_name = model_id.split("/")[-1],
@@ -311,6 +318,7 @@ def _scan_hf_cache(cache_dir: Path, *, entry_limit: int | None = None) -> List[L
                     partial = True,
                     requires_variant = True,
                     size_bytes = gguf_variant_state_size,
+                    active_cache = active_cache,
                 )
             )
         rows = _apply_format_aware_partial(
@@ -515,14 +523,39 @@ async def _collect_models_from_default_sources(
     local_models += await _scan_source("HF cache", _scan_hf_cache, hf_cache_dir)
 
     if _safe_is_dir(legacy_hf) and legacy_hf.resolve() != hf_cache_dir.resolve():
-        local_models += await _scan_source("legacy HF cache", _scan_hf_cache, legacy_hf)
+        local_models += await _scan_source(
+            "legacy HF cache",
+            lambda path: _scan_hf_cache(path, active_cache = False),
+            legacy_hf,
+        )
 
     if (
         _safe_is_dir(hf_default)
         and hf_default.resolve() != hf_cache_dir.resolve()
         and hf_default.resolve() != legacy_hf.resolve()
     ):
-        local_models += await _scan_source("default HF cache", _scan_hf_cache, hf_default)
+        local_models += await _scan_source(
+            "default HF cache",
+            lambda path: _scan_hf_cache(path, active_cache = False),
+            hf_default,
+        )
+
+    from utils.hf_cache_settings import known_hf_hub_caches
+
+    seen_hf = {
+        os.path.normcase(str(path.resolve(strict = False)))
+        for path in (hf_cache_dir, legacy_hf, hf_default)
+    }
+    for previous_cache in known_hf_hub_caches():
+        key = os.path.normcase(str(previous_cache.resolve(strict = False)))
+        if key in seen_hf:
+            continue
+        seen_hf.add(key)
+        local_models += await _scan_source(
+            "previous HF cache",
+            lambda path: _scan_hf_cache(path, active_cache = False),
+            previous_cache,
+        )
 
     for lm_dir in lm_dirs:
         local_models += await _scan_source("LM Studio", _scan_lmstudio_dir, lm_dir)
@@ -543,7 +576,11 @@ def _scan_custom_folder(folder_path: Path) -> List[LocalModelInfo]:
                 limit = _MAX_MODELS_PER_CUSTOM_FOLDER,
                 entry_limit = _MAX_CUSTOM_FOLDER_ENTRIES,
             )
-            + _scan_hf_cache(folder_path, entry_limit = _MAX_CUSTOM_FOLDER_ENTRIES)
+            + _scan_hf_cache(
+                folder_path,
+                entry_limit = _MAX_CUSTOM_FOLDER_ENTRIES,
+                active_cache = False,
+            )
             + _scan_lmstudio_dir(folder_path, entry_limit = _MAX_CUSTOM_FOLDER_ENTRIES)
         )
         if m.model_format in supported_formats
@@ -610,11 +647,15 @@ def _dedupe_local_models(local_models: List[LocalModelInfo]) -> list[LocalModelI
             row_key = model.inventory_id or model.id
             key = f"{row_key}\x00custom" if model.source == "custom" else row_key
         existing = deduped.get(key)
-        if existing is None or _prefer_complete_larger(
-            model.partial,
-            model.size_bytes,
-            existing.partial,
-            existing.size_bytes,
+        if existing is None or (
+            model.active_cache is True and existing.active_cache is not True
+        ) or (
+            model.active_cache == existing.active_cache and _prefer_complete_larger(
+                model.partial,
+                model.size_bytes,
+                existing.partial,
+                existing.size_bytes,
+            )
         ):
             deduped[key] = model
     return sorted(

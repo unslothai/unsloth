@@ -28,6 +28,9 @@ def _isolate_studio_home(monkeypatch, tmp_path):
 
 
 def _load_storage_roots():
+    # Each test models a fresh backend process. The cache resolver intentionally
+    # snapshots explicit environment variables once per process.
+    sys.modules.pop("utils.hf_cache_settings", None)
     spec = importlib.util.spec_from_file_location("storage_roots_under_test", _STORAGE_ROOTS_PATH)
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
@@ -40,10 +43,10 @@ def _clear_hf_env(monkeypatch):
 
 
 def test_custom_hf_home_seeds_hub_and_xet(monkeypatch, tmp_path):
-    sr = _load_storage_roots()
     _clear_hf_env(monkeypatch)
     custom = tmp_path / "shared" / "huggingface"
     monkeypatch.setenv("HF_HOME", str(custom))
+    sr = _load_storage_roots()
 
     sr._setup_cache_env()
 
@@ -54,9 +57,9 @@ def test_custom_hf_home_seeds_hub_and_xet(monkeypatch, tmp_path):
 
 
 def test_default_when_hf_home_unset(monkeypatch, tmp_path):
-    sr = _load_storage_roots()
     _clear_hf_env(monkeypatch)
     monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path / "xdg"))
+    sr = _load_storage_roots()
 
     sr._setup_cache_env()
 
@@ -67,11 +70,11 @@ def test_default_when_hf_home_unset(monkeypatch, tmp_path):
 
 
 def test_explicit_hub_cache_is_not_overridden(monkeypatch, tmp_path):
-    sr = _load_storage_roots()
     _clear_hf_env(monkeypatch)
     monkeypatch.setenv("HF_HOME", str(tmp_path / "home"))
     explicit = tmp_path / "explicit" / "hub"
     monkeypatch.setenv("HF_HUB_CACHE", str(explicit))
+    sr = _load_storage_roots()
 
     sr._setup_cache_env()
 
@@ -81,11 +84,11 @@ def test_explicit_hub_cache_is_not_overridden(monkeypatch, tmp_path):
 
 
 def test_legacy_huggingface_hub_cache_alias_is_honored(monkeypatch, tmp_path):
-    sr = _load_storage_roots()
     _clear_hf_env(monkeypatch)
     monkeypatch.setenv("HF_HOME", str(tmp_path / "home"))
     legacy = tmp_path / "legacy" / "hub"
     monkeypatch.setenv("HUGGINGFACE_HUB_CACHE", str(legacy))
+    sr = _load_storage_roots()
 
     sr._setup_cache_env()
 
@@ -96,10 +99,10 @@ def test_legacy_huggingface_hub_cache_alias_is_honored(monkeypatch, tmp_path):
 
 def test_whitespace_hf_home_falls_back_to_default(monkeypatch, tmp_path):
     # A blank/whitespace HF_HOME must not become " /hub"; fall back to default.
-    sr = _load_storage_roots()
     _clear_hf_env(monkeypatch)
     monkeypatch.setenv("HF_HOME", "   ")
     monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path / "xdg"))
+    sr = _load_storage_roots()
 
     sr._setup_cache_env()
 
@@ -114,9 +117,9 @@ def test_unwritable_hf_home_does_not_crash(monkeypatch, tmp_path):
     blocker = tmp_path / "blocker"
     blocker.write_text("not a dir")
     unwritable = blocker / "hf"
-    sr = _load_storage_roots()
     _clear_hf_env(monkeypatch)
     monkeypatch.setenv("HF_HOME", str(unwritable))
+    sr = _load_storage_roots()
 
     sr._setup_cache_env()  # must not raise
 

@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { FolderBrowser } from "@/components/assistant-ui/model-selector/folder-browser";
 import { Button } from "@/components/ui/button";
 import { Progress } from "@/components/ui/progress";
 import { Switch } from "@/components/ui/switch";
@@ -12,7 +13,11 @@ import { toast } from "@/lib/toast";
 import { cn } from "@/lib/utils";
 import { useT } from "@/i18n";
 import { useEffect, useMemo, useState } from "react";
-import { loadModelsFolder, type ModelsFolder } from "../api/models-folder";
+import {
+  type HuggingFaceCacheSettings,
+  loadHuggingFaceCacheSettings,
+  updateHuggingFaceCacheSettings,
+} from "../api/hugging-face-cache";
 import { SettingsRow } from "../components/settings-row";
 import { SettingsSection } from "../components/settings-section";
 import { useMonitorOverlayStore } from "../stores/monitor-overlay-store";
@@ -45,6 +50,12 @@ function formatGb(value: number | null | undefined): string {
   const safe = isFiniteNumber(value) ? Math.max(0, value) : 0;
   const digits = safe >= 10 ? 1 : 2;
   return `${safe.toFixed(digits)} GB`;
+}
+
+function formatBytes(value: number | null): string | null {
+  if (value === null || !Number.isFinite(value)) return null;
+  const gib = value / 1024 ** 3;
+  return `${gib >= 10 ? gib.toFixed(1) : gib.toFixed(2)} GiB`;
 }
 
 // RAM/VRAM come from the backend in binary units (bytes / 1024**3), matching
@@ -165,20 +176,22 @@ export function ResourcesTab() {
     enabled: liveUpdates,
     pollMs: liveUpdates ? POLL_MS : undefined,
   });
-  const [modelsFolder, setModelsFolder] = useState<ModelsFolder | null>(null);
-  const [modelsFolderLoaded, setModelsFolderLoaded] = useState(false);
+  const [hfCache, setHfCache] = useState<HuggingFaceCacheSettings | null>(null);
+  const [hfCacheLoaded, setHfCacheLoaded] = useState(false);
+  const [cacheBrowserOpen, setCacheBrowserOpen] = useState(false);
+  const [cacheSaving, setCacheSaving] = useState(false);
 
   useEffect(() => {
     let cancelled = false;
-    void loadModelsFolder()
-      .then((folder) => {
+    void loadHuggingFaceCacheSettings()
+      .then((settings) => {
         if (cancelled) return;
-        setModelsFolder(folder);
-        setModelsFolderLoaded(true);
+        setHfCache(settings);
+        setHfCacheLoaded(true);
       })
       .catch(() => {
         if (cancelled) return;
-        setModelsFolderLoaded(true);
+        setHfCacheLoaded(true);
       });
     return () => {
       cancelled = true;
@@ -237,12 +250,11 @@ export function ResourcesTab() {
     };
   }, [systemInfo]);
 
-  const handleModelsFolder = async () => {
-    const folder = modelsFolder;
-    if (!folder) return;
+  const handleCacheFolder = async () => {
+    if (!hfCache) return;
     if (isTauri) {
       try {
-        await openModelsDir(folder.path);
+        await openModelsDir(hfCache.cacheHome);
       } catch (error) {
         toast.error(t("settings.resources.storage.openError"), {
           description: error instanceof Error ? error.message : undefined,
@@ -250,10 +262,25 @@ export function ResourcesTab() {
       }
       return;
     }
-    if (await copyToClipboard(folder.path)) {
+    if (await copyToClipboard(hfCache.cacheHome)) {
       toast.success(t("settings.resources.storage.copied"));
     } else {
       toast.error(t("settings.resources.storage.copyError"));
+    }
+  };
+
+  const saveCacheFolder = async (path: string | null) => {
+    setCacheSaving(true);
+    try {
+      const settings = await updateHuggingFaceCacheSettings(path);
+      setHfCache(settings);
+      toast.success(t("settings.resources.storage.cacheSaved"));
+    } catch (error) {
+      toast.error(t("settings.resources.storage.cacheSaveError"), {
+        description: error instanceof Error ? error.message : undefined,
+      });
+    } finally {
+      setCacheSaving(false);
     }
   };
 
@@ -270,9 +297,9 @@ export function ResourcesTab() {
   const backendLabel = (
     systemInfo.gpu?.backend ?? systemInfo.device_backend ?? "cpu"
   ).toUpperCase();
-  const modelsFolderPath = modelsFolder
-    ? modelsFolder.path
-    : modelsFolderLoaded
+  const modelsFolderPath = hfCache
+    ? hfCache.cacheHome
+    : hfCacheLoaded
       ? t("settings.resources.environment.unknown")
       : t("common.loading");
   const unknownLabel = t("settings.resources.environment.unknown");
@@ -466,12 +493,35 @@ export function ResourcesTab() {
         />
         <SettingsRow
           label={t("settings.resources.storage.modelsFolder")}
-          description={t("settings.resources.storage.modelsFolderDescription")}
+          description={
+            <span className="flex flex-col gap-1">
+              <span>
+                {t("settings.resources.storage.modelsFolderDescription")}
+              </span>
+              {hfCache?.source === "environment" ? (
+                <span>
+                  {t("settings.resources.storage.environmentManaged", {
+                    variable: hfCache.environmentVariable ?? "HF_HOME",
+                  })}
+                </span>
+              ) : (
+                <span>{t("settings.resources.storage.futureDownloads")}</span>
+              )}
+              {hfCache?.freeBytes !== null && hfCache?.freeBytes !== undefined ? (
+                <span>
+                  {t("settings.resources.storage.locationFree", {
+                    free: formatBytes(hfCache.freeBytes) ?? "",
+                  })}
+                </span>
+              ) : null}
+            </span>
+          }
           className="max-sm:flex-col max-sm:items-start max-sm:gap-2"
+          alignTop
         >
-          <div className="flex min-w-0 items-center gap-2 max-sm:max-w-[calc(100vw-5rem)]">
+          <div className="flex min-w-0 max-w-[430px] flex-wrap items-center justify-end gap-2 max-sm:max-w-[calc(100vw-5rem)] max-sm:justify-start">
             <span
-              title={modelsFolder?.path}
+              title={hfCache?.cacheHome}
               className="min-w-0 max-w-[280px] truncate font-mono text-xs text-muted-foreground max-sm:max-w-[180px]"
             >
               {modelsFolderPath}
@@ -479,16 +529,44 @@ export function ResourcesTab() {
             <Button
               variant="outline"
               size="sm"
-              disabled={!modelsFolder}
-              onClick={() => void handleModelsFolder()}
+              disabled={!hfCache}
+              onClick={() => void handleCacheFolder()}
             >
               {isTauri
                 ? t("settings.resources.storage.openAction")
                 : t("settings.resources.storage.copyAction")}
             </Button>
+            <Button
+              variant="outline"
+              size="sm"
+              disabled={!hfCache?.editable || cacheSaving}
+              onClick={() => setCacheBrowserOpen(true)}
+            >
+              {t("settings.resources.storage.changeAction")}
+            </Button>
+            {hfCache?.isCustom ? (
+              <Button
+                variant="ghost"
+                size="sm"
+                disabled={cacheSaving}
+                onClick={() => void saveCacheFolder(null)}
+              >
+                {t("settings.resources.storage.resetAction")}
+              </Button>
+            ) : null}
           </div>
         </SettingsRow>
       </SettingsSection>
+
+      <FolderBrowser
+        open={cacheBrowserOpen}
+        onOpenChange={setCacheBrowserOpen}
+        onSelect={(path) => void saveCacheFolder(path)}
+        initialPath={hfCache?.cacheHome}
+        title={t("settings.resources.storage.chooseTitle")}
+        confirmLabel={t("settings.resources.storage.chooseAction")}
+        showModelHints={false}
+      />
 
       <SettingsSection title={t("settings.resources.environment.title")}>
         <InfoRow
