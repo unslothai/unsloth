@@ -2233,10 +2233,12 @@ def stop():
         _PID_FILE.unlink(missing_ok = True)
         raise typer.Exit(0)
 
-    # Send SIGTERM (graceful shutdown) or TerminateProcess on Windows
+    # Send SIGTERM (graceful shutdown) or terminate the complete process tree on
+    # Windows. `/T` is essential: force-killing only the Python parent bypasses its
+    # cleanup handler and can leave llama-server holding the model and GPU memory.
     try:
         if sys.platform == "win32":
-            subprocess.run(["taskkill", "/PID", str(pid), "/F"], check = True)
+            subprocess.run(["taskkill", "/PID", str(pid), "/T", "/F"], check = True)
         else:
             os.kill(pid, _signal.SIGTERM)
         typer.echo(f"Sent shutdown signal to Unsloth server (PID {pid}).")

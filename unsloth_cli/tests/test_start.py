@@ -717,6 +717,9 @@ def test_connect_claude_launch_scrubs_conflicting_auth_env(fake_studio, monkeypa
     assert captured["env"]["ANTHROPIC_BASE_URL"] == BASE
     assert captured["env"]["ANTHROPIC_MODEL"] == MODEL["id"]
     assert captured["env"]["CLAUDE_CODE_ATTRIBUTION_HEADER"] == "0"
+    assert f"model loaded: {MODEL['id']}" in result.output
+    assert "Unsloth Studio is still running" in result.output
+    assert "unsloth studio stop" in result.output
 
 
 @pytest.mark.skipif(
@@ -1213,6 +1216,8 @@ def test_connect_model_flag_loads_on_server(fake_studio):
     assert loads == [
         ("POST", f"{BASE}/api/inference/load", {"model_path": "unsloth/Qwen3.5-35B-A3B"})
     ]
+    assert "Loading model: unsloth/Qwen3.5-35B-A3B" in result.output
+    assert "model loaded: unsloth/Qwen3.5-35B-A3B" in result.output
     _assert_env_set(result.output, "ANTHROPIC_MODEL", "unsloth/Qwen3.5-35B-A3B")
 
 
@@ -1795,6 +1800,8 @@ def test_auto_serves_when_no_server_then_tears_down(fake_studio, monkeypatch):
     assert started["base"] == BASE
     # Torn down after the agent session ended.
     assert started.get("down") is fake
+    assert "Unsloth Studio is still running" not in result.output
+    assert "unsloth studio stop" not in result.output
 
 
 def test_codex_preflight_failure_tears_down_auto_served(fake_studio, monkeypatch):

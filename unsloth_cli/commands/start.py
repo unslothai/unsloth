@@ -468,7 +468,8 @@ def _start_studio_server(base: str, model: str, load: LoadOptions) -> subprocess
 
     log_path = Path(tempfile.gettempdir()) / f"unsloth-start-server-{os.getpid()}.log"
     typer.echo(
-        f"No Unsloth server at {base}. Starting one for {model} (loading the model can take a while)…"
+        f"No Unsloth server at {base}. Starting Unsloth Studio and loading model: {model} "
+        "(this can take a while)…"
     )
     typer.echo(f"Server log: {log_path}")
     # 0600: the `unsloth run` banner in this log carries the minted sk-unsloth- key, and
@@ -499,7 +500,7 @@ def _start_studio_server(base: str, model: str, load: LoadOptions) -> subprocess
         # `unsloth run` prints the minted key only after the server is up AND the model is
         # loaded, so it is the fully-ready signal (same contract serve-unsloth-run.sh uses).
         if _studio_healthy(base) and "sk-unsloth-" in _log_tail(log_path, lines = 400):
-            typer.echo(f"Unsloth server ready at {base}.")
+            typer.echo(f"Model loaded. Unsloth Studio is ready at {base}.")
             return server
         time.sleep(2.0)
     _shutdown_auto_served()
@@ -826,9 +827,9 @@ def _resolve_model(
     )
     if requested and match is None:
         typer.echo(
-            f"Loading {requested} - please wait…"
+            f"Loading model: {requested} - please wait…"
             if load_has_overrides
-            else f"Loading {requested} on the Unsloth server (this can take a while)…"
+            else f"Loading model: {requested} on Unsloth Studio (this can take a while)…"
         )
         # Mirror `unsloth run`'s load knobs; keep the default payload as just
         # model_path so a bare `--model` load is unchanged.
@@ -1434,16 +1435,33 @@ def _run(
     # --no-launch recipes stay intact.
     if launch and clear_screen:
         click.clear()
-    typer.echo(f"Unsloth {base} · model {entry['id']}")
+    typer.echo(f"Unsloth Studio ready at {base} · model loaded: {entry['id']}")
     if not launch:
         env, wsl_env_bridge = _wsl_shim_env(command, env, unset_env)
         _print_env(env, command, unset_env = unset_env, wsl_env_bridge = wsl_env_bridge)
         return
+    auto_started = _auto_served_server is not None
     try:
         _launch(command, env, install_hint = install_hint, unset_env = unset_env)
     finally:
-        # Tear down a server we auto-started once the agent session ends (no-op otherwise).
-        _shutdown_auto_served()
+        if auto_started:
+            # A server created solely for this session has no other owner, so free its
+            # port and model memory when the agent exits.
+            _shutdown_auto_served()
+        elif is_loopback_url(base):
+            # A pre-existing local Studio may be shared by other terminals. Keep it warm,
+            # but make that ownership decision visible instead of looking like an orphan.
+            # This command is implemented for Windows, WSL, Linux, and macOS.
+            typer.echo(
+                "\nUnsloth Studio is still running, so the model stays loaded for your "
+                "next agent session."
+            )
+            typer.echo("To stop it and free the model memory, run: unsloth studio stop")
+        else:
+            # Never imply that a local command can stop a remote server or SSH-forwarded
+            # endpoint; its owner must stop it on the machine where Studio is running.
+            typer.echo(f"\nThe remote Unsloth Studio at {base} is still running.")
+            typer.echo("To stop it, run `unsloth studio stop` on the server host.")
 
 
 def _agents_config_root() -> Path:

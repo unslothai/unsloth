@@ -115,6 +115,30 @@ def test_pid_alive_windows_assumes_alive_when_tasklist_errors():
     assert pid_alive(4242) is True
 
 
+def test_stop_windows_terminates_the_complete_process_tree():
+    """Force-stopping only the Python parent can orphan llama-server on Windows."""
+    stop_src = _func_source("stop")
+    tree = ast.parse(stop_src)
+    taskkill_calls = [
+        call
+        for call in ast.walk(tree)
+        if isinstance(call, ast.Call)
+        and isinstance(call.func, ast.Attribute)
+        and call.func.attr == "run"
+        and call.args
+        and isinstance(call.args[0], ast.List)
+        and any(
+            isinstance(item, ast.Constant) and item.value == "taskkill"
+            for item in call.args[0].elts
+        )
+    ]
+    assert len(taskkill_calls) == 1
+    command = taskkill_calls[0].args[0]
+    assert any(
+        isinstance(item, ast.Constant) and item.value == "/T" for item in command.elts
+    ), "taskkill must include /T so llama-server is terminated with the Studio parent"
+
+
 # ── Behavioral: the POSIX signal-0 branch (skip on Windows runners) ───────────
 
 
