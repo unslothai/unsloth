@@ -482,7 +482,7 @@ export function ProjectsPage() {
 
       {!hasLoaded ? (
         <div className="mt-10">
-          <div className="flex items-center gap-3 border-b border-border/60 px-5 pb-2 text-[13px] font-medium text-muted-foreground">
+          <div className="mb-1 flex items-center gap-3 px-5 pb-1 text-[13px] font-medium text-muted-foreground">
             <span className="flex-1">Name</span>
             <span className="w-40 shrink-0">Modified</span>
             <span className="w-8 shrink-0" />
@@ -490,7 +490,7 @@ export function ProjectsPage() {
           {Array.from({ length: 6 }).map((_, index) => (
             <div
               key={index}
-              className="flex items-center gap-3 border-b border-border/40 px-5 py-3"
+              className="flex items-center gap-3 rounded-2xl px-5 py-3"
             >
               <Skeleton className="mr-1 size-9 shrink-0 rounded-[10px]" />
               <Skeleton className="h-4 w-40 rounded-[8px]" />
@@ -526,7 +526,7 @@ export function ProjectsPage() {
         <div className="mt-10">
           {/* Column header. Name starts at the folder icon's left edge; the
               right-anchored columns keep Modified over its values. */}
-          <div className="flex items-center gap-3 border-b border-border/60 px-5 pb-2 text-[13px] font-medium text-muted-foreground">
+          <div className="mb-1 flex items-center gap-3 px-5 pb-1 text-[13px] font-medium text-muted-foreground">
             <span className="flex-1">Name</span>
             <span className="w-40 shrink-0">Modified</span>
             <span className="w-8 shrink-0" />
@@ -562,7 +562,7 @@ export function ProjectsPage() {
                   openProject(project.id);
                 }
               }}
-              className="group/project-row relative flex cursor-pointer items-center gap-3 border-b border-border/50 px-5 py-2.5 text-left transition-colors duration-150 hover:bg-muted/60 dark:hover:bg-accent/30 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+              className="group/project-row relative flex cursor-pointer items-center gap-3 rounded-2xl px-5 py-2.5 text-left transition-colors duration-150 hover:bg-muted/70 dark:hover:bg-white/[0.055] focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
             >
               <span className="mr-1 flex size-9 shrink-0 items-center justify-center rounded-[10px] bg-muted text-foreground/70 transition-colors group-hover/project-row:bg-primary/10 group-hover/project-row:text-primary">
                 <HugeiconsIcon
