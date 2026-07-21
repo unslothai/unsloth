@@ -102,6 +102,7 @@ import { applyQwenThinkingParams } from "@/features/chat/utils/qwen-params";
 import { isTauri } from "@/lib/api-base";
 import { copyToClipboard } from "@/lib/copy-to-clipboard";
 import { MicIcon } from "@/lib/mic-icon";
+import { downloadFile, isDownloadCancelled } from "@/lib/native-files";
 import { toast } from "@/lib/toast";
 import { Tick02Icon } from "@/lib/tick-icon";
 import { cn } from "@/lib/utils";
@@ -2911,9 +2912,9 @@ const ComposerToolsMenu: FC<{ side?: "top" | "bottom" }> = ({
           <DropdownMenuItem
             onSelect={() => {
               if (!activeThreadId) return;
-              exportConversationRawJsonl(activeThreadId).catch(() =>
-                toast.error("Export failed."),
-              );
+              exportConversationRawJsonl(activeThreadId).catch((error) => {
+                if (!isDownloadCancelled(error)) toast.error("Export failed.");
+              });
             }}
           >
             Raw JSONL
@@ -2921,9 +2922,9 @@ const ComposerToolsMenu: FC<{ side?: "top" | "bottom" }> = ({
           <DropdownMenuItem
             onSelect={() => {
               if (!activeThreadId) return;
-              exportConversationCsv(activeThreadId).catch(() =>
-                toast.error("Export failed."),
-              );
+              exportConversationCsv(activeThreadId).catch((error) => {
+                if (!isDownloadCancelled(error)) toast.error("Export failed.");
+              });
             }}
           >
             CSV
@@ -2931,9 +2932,9 @@ const ComposerToolsMenu: FC<{ side?: "top" | "bottom" }> = ({
           <DropdownMenuItem
             onSelect={() => {
               if (!activeThreadId) return;
-              exportConversationShareGPT(activeThreadId).catch(() =>
-                toast.error("Export failed."),
-              );
+              exportConversationShareGPT(activeThreadId).catch((error) => {
+                if (!isDownloadCancelled(error)) toast.error("Export failed.");
+              });
             }}
           >
             ShareGPT JSONL
@@ -3896,6 +3897,21 @@ const EditAssistantMessageButton: FC = () => {
   );
 };
 
+async function exportMessageMarkdown(content: string): Promise<void> {
+  try {
+    await downloadFile(
+      content,
+      `message-${Date.now()}.md`,
+      "text/markdown",
+    );
+  } catch (error) {
+    if (!isDownloadCancelled(error)) {
+      toast.error("Could not save Markdown export.", {
+        description: error instanceof Error ? error.message : String(error),
+      });
+    }
+  }
+}
 const AssistantActionBar: FC = () => {
   const { forkMessage, forkDisabled } = useForkMessageAction();
   const [detailsOpen, setDetailsOpen] = useState(false);
@@ -3964,7 +3980,10 @@ const AssistantActionBar: FC = () => {
               <GitBranchIcon strokeWidth={1.75} className="size-icon" />
               Fork in new chat
             </ActionBarMorePrimitive.Item>
-            <ActionBarPrimitive.ExportMarkdown asChild={true}>
+            <ActionBarPrimitive.ExportMarkdown
+              asChild={true}
+              onExport={exportMessageMarkdown}
+            >
               <ActionBarMorePrimitive.Item className="aui-action-bar-more-item flex cursor-pointer select-none items-center gap-2 rounded-[12px] px-3 py-2 text-sm outline-none hover:bg-accent hover:text-accent-foreground focus:bg-accent focus:text-accent-foreground">
                 <HugeiconsIcon
                   icon={Download01Icon}

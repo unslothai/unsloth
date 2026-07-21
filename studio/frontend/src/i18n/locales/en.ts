@@ -1053,7 +1053,8 @@ export const en = {
       continueAction: "Continue Training",
       cancelAction: "Cancel Training",
       stopTitle: "Stop Training",
-      stopDescription: "Choose how you want to stop the current training run.",
+      stopDescription:
+        "Choose how you want to stop the current training run. Stop and Save writes a checkpoint you can resume from later; Stop cannot be resumed.",
       stopAction: "Stop",
       stopping: "Stopping...",
       stopAndSave: "Stop and Save",

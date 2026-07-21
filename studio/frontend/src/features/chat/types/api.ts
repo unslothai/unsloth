@@ -101,6 +101,9 @@ export interface ValidateModelResponse {
   /** MoE expert-layer count from the GGUF header (manual --n-cpu-moe ceiling);
    *  0 for dense models, null until downloaded. */
   moe_layer_count?: number | null;
+  /** Embedded GGUF chat template, returned when include_chat_template is set
+   *  (native lease-backed picks); null for non-GGUF, over-cap, or not read. */
+  chat_template?: string | null;
   /** Architecture only shipped by a newer transformers; UI pauses on the upgrade dialog. */
   requires_transformers_upgrade?: boolean;
   /** Set only when requires_transformers_upgrade. */

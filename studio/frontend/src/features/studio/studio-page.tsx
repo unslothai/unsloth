@@ -217,7 +217,13 @@ export function StudioPage(): ReactElement {
 
             <TabsContent value="history">
               {selectedHistoryRunId ? (
-                <HistoricalTrainingView runId={selectedHistoryRunId} />
+                <HistoricalTrainingView
+                  runId={selectedHistoryRunId}
+                  onResumeStarted={() => {
+                    setSelectedHistoryRunId(null);
+                    handleTabChange("current-run");
+                  }}
+                />
               ) : (
                 <HistoryCardGrid onSelectRun={(runId) => {
                   if (runId === currentJobId && isTrainingRunning) {

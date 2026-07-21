@@ -18,6 +18,8 @@ from pydantic import (
     model_validator,
 )
 
+from picker.schemas import MAX_CHAT_TEMPLATE_BYTES
+
 
 class LoadRequest(BaseModel):
     """Request to load a model for inference"""
@@ -54,8 +56,16 @@ class LoadRequest(BaseModel):
     @field_validator("chat_template_override")
     @classmethod
     def normalize_blank_chat_template_override(cls, value: Optional[str]) -> Optional[str]:
-        if value is not None and value.strip() == "":
+        if value is None:
             return None
+        # Char count is a lower bound on UTF-8 byte length: reject an oversized
+        # template before spending work encoding it.
+        if len(value) > MAX_CHAT_TEMPLATE_BYTES:
+            raise ValueError(f"Chat template exceeds the {MAX_CHAT_TEMPLATE_BYTES}-byte limit.")
+        if value.strip() == "":
+            return None
+        if len(value.encode("utf-8")) > MAX_CHAT_TEMPLATE_BYTES:
+            raise ValueError(f"Chat template exceeds the {MAX_CHAT_TEMPLATE_BYTES}-byte limit.")
         return value
 
     cache_type_kv: Optional[str] = Field(
@@ -243,6 +253,13 @@ class ValidateModelRequest(BaseModel):
         description = "Also read the native context length from the local GGUF header. "
         "Opt-in so the normal load preflight doesn't pay for a cache scan it doesn't need.",
     )
+    include_chat_template: bool = Field(
+        False,
+        description = "Also read the embedded chat template from the local GGUF header, so a "
+        "native (picked / drag-drop) file's default template can be shown before it is loaded. "
+        "Opt-in and, like include_context_length, a metadata-only probe that skips the training "
+        "guard. Only the leased file's own embedded template is read, never sibling sidecars.",
+    )
 
 
 class TransformersUpgradeInfo(BaseModel):
@@ -302,6 +319,11 @@ class ValidateModelResponse(BaseModel):
         None,
         description = "MoE expert-layer count (the manual --n-cpu-moe ceiling), read from the GGUF "
         "header alongside context_length; 0 for dense models, None when not read.",
+    )
+    chat_template: Optional[str] = Field(
+        None,
+        description = "Embedded GGUF chat template, read from the header when include_chat_template "
+        "is set (native lease-backed picks); None for non-GGUF, over-cap, or not-read templates.",
     )
     # Additive fields; the consuming consent dialog ships in a follow-up frontend PR.
     requires_transformers_upgrade: bool = Field(
