@@ -33,6 +33,7 @@ import type {
 } from "../types/api";
 
 export const CHAT_HISTORY_UPDATED_EVENT = "unsloth-chat-history-updated";
+export const CHAT_PROJECTS_UPDATED_EVENT = "unsloth-chat-projects-updated";
 
 /**
  * Thrown when the chat SSE stream ends without a terminal signal (`[DONE]` or a
@@ -52,6 +53,13 @@ export class StreamInterruptedError extends Error {
 export function notifyChatHistoryUpdated(): void {
   if (typeof window !== "undefined") {
     window.dispatchEvent(new Event(CHAT_HISTORY_UPDATED_EVENT));
+  }
+}
+
+function notifyChatProjectsUpdated(): void {
+  notifyChatHistoryUpdated();
+  if (typeof window !== "undefined") {
+    window.dispatchEvent(new Event(CHAT_PROJECTS_UPDATED_EVENT));
   }
 }
 
@@ -663,7 +671,7 @@ export async function saveChatProject(
     body: JSON.stringify(project),
   });
   const saved = await parseJsonOrThrow<ProjectRecord>(response);
-  notifyChatHistoryUpdated();
+  notifyChatProjectsUpdated();
   return saved;
 }
 
@@ -680,7 +688,7 @@ export async function updateChatProject(
     },
   );
   const project = await parseJsonOrThrow<ProjectRecord>(response);
-  notifyChatHistoryUpdated();
+  notifyChatProjectsUpdated();
   return project;
 }
 
@@ -696,7 +704,7 @@ export async function deleteChatProject(
     { method: "DELETE" },
   );
   await parseJsonOrThrow<ProjectRecord>(response);
-  notifyChatHistoryUpdated();
+  notifyChatProjectsUpdated();
 }
 
 export async function listChatMessages(
