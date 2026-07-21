@@ -1755,7 +1755,7 @@ def _reset_auto_served():
     start._auto_served_server = None
 
 
-def test_start_studio_server_builds_command_and_waits(monkeypatch):
+def test_start_studio_server_builds_command_and_waits(monkeypatch, capsys):
     captured = {}
 
     class FakePopen:
@@ -1791,6 +1791,9 @@ def test_start_studio_server_builds_command_and_waits(monkeypatch):
     assert start.LoadOptions().load_in_4bit is True and "--no-load-in-4bit" not in cmd
     assert captured["kwargs"].get("start_new_session") is True  # own process group
     assert server.pid == 4321
+    output = capsys.readouterr().out
+    assert "Starting Unsloth server for unsloth/Qwen3-1.7B-GGUF:UD-Q4_K_XL…" in output
+    assert "No Unsloth server at" not in output
 
 
 def test_start_studio_server_polls_progress_from_early_key(monkeypatch):
@@ -1826,6 +1829,11 @@ def test_start_studio_server_polls_progress_from_early_key(monkeypatch):
     monkeypatch.setattr(start, "_log_tail", lambda *a, **k: next(tails))
     monkeypatch.setattr(start, "_ModelDownloadProgress", FakeProgress)
     monkeypatch.setattr(start.time, "sleep", lambda _s: None)
+    monkeypatch.setattr(
+        start.typer,
+        "echo",
+        lambda message = "", **_kwargs: created.append(("echo", message)),
+    )
 
     server = start._start_studio_server(
         BASE,
@@ -1834,15 +1842,17 @@ def test_start_studio_server_polls_progress_from_early_key(monkeypatch):
     )
 
     assert server.pid == 4321
-    assert created[0] == (
+    assert (
         BASE,
         "sk-unsloth-early",
         "owner/model-GGUF",
         "Q4_K_M",
         "created",
-    )
+    ) in created
     assert created.count("poll") == 2
-    assert created[-2:] == ["complete", "close"]
+    ready = ("echo", f"Unsloth server ready at {BASE}.")
+    assert created[-3:] == ["complete", "close", ready]
+    assert created.index("close") < created.index(ready)
 
 
 def test_load_model_with_progress_uses_selected_gguf_size(monkeypatch, capsys):

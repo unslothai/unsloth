@@ -739,9 +739,7 @@ def _start_studio_server(base: str, model: str, load: LoadOptions) -> subprocess
         command += ["--tensor-parallel"]
 
     log_path = Path(tempfile.gettempdir()) / f"unsloth-start-server-{os.getpid()}.log"
-    typer.echo(
-        f"No Unsloth server at {base}. Starting one for {model} (loading the model can take a while)…"
-    )
+    typer.echo(f"Starting Unsloth server for {model}…")
     typer.echo(f"Server log: {log_path}")
     # 0600: the `unsloth run` banner in this log carries the minted sk-unsloth- key, and
     # the tempdir is world-traversable. Unlink first so a stale looser-mode file (pid
@@ -795,6 +793,8 @@ def _start_studio_server(base: str, model: str, load: LoadOptions) -> subprocess
             if _studio_healthy(base) and ready_signal:
                 if progress is not None:
                     progress.complete()
+                    progress.close()
+                    progress = None
                 typer.echo(f"Unsloth server ready at {base}.")
                 return server
             time.sleep(2.0)
