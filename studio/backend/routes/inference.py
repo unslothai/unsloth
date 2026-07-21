@@ -4152,6 +4152,16 @@ def _maybe_unsupported_message(msg: str) -> str:
     return msg
 
 
+def _raise_if_sidecar_swap_in_progress() -> None:
+    from utils.transformers_version import sidecar_swap_in_progress
+
+    if sidecar_swap_in_progress():
+        raise HTTPException(
+            status_code = 409,
+            detail = "A transformers installation is in progress. Retry when it completes.",
+        )
+
+
 @router.post("/load", response_model = LoadResponse)
 async def load_model(
     request: LoadRequest,
@@ -4172,20 +4182,12 @@ async def load_model(
     # install can reserve while this request queues on the gate, so the pre-gate
     # check alone is only a fast path.
     from core.inference.llama_keepwarm import inference_lifecycle_gate
-    from utils.transformers_version import sidecar_swap_in_progress
-
-    _swap_409 = HTTPException(
-        status_code = 409,
-        detail = "A transformers installation is in progress. Retry when it completes.",
-    )
-    if sidecar_swap_in_progress():
-        raise _swap_409
+    _raise_if_sidecar_swap_in_progress()
     # Hold the lifecycle gate across the load so idle auto-unload can't unload the
     # model mid-load. Auto-switch calls _load_model_impl directly since it already
     # holds this gate.
     async with inference_lifecycle_gate():
-        if sidecar_swap_in_progress():
-            raise _swap_409
+        _raise_if_sidecar_swap_in_progress()
         return await _load_model_impl(request, fastapi_request, current_subject)
 
 
@@ -4532,6 +4534,10 @@ async def _load_model_impl(
             # Keep the resident model alive until every active generation has
             # finished. The lifecycle gate held by the caller blocks new starts.
             await _wait_for_model_switch_idle(current_request_counted = current_request_counted)
+            # The installer reserves its sidecar swap before waiting on this gate.
+            # It can do so while active inference drains, after the route-level
+            # checks above, so honor that reservation before replacing either backend.
+            _raise_if_sidecar_swap_in_progress()
 
             # Unload any active Unsloth model only after every hub conflict check.
             if unsloth_backend.active_model_name:
@@ -4744,6 +4750,7 @@ async def _load_model_impl(
         # Unload any active GGUF model first
         llama_backend = get_llama_cpp_backend()
         await _wait_for_model_switch_idle(current_request_counted = current_request_counted)
+        _raise_if_sidecar_swap_in_progress()
         if llama_backend.is_loaded:
             logger.info("Unloading GGUF model before loading Unsloth model")
             llama_backend.unload_model()

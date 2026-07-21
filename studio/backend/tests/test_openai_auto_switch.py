@@ -1490,20 +1490,23 @@ def test_load_route_holds_lifecycle_gate(monkeypatch):
     assert "_load_model_impl" in src
 
 
-def test_model_replacements_wait_before_either_backend_is_unloaded():
-    # Both replacement directions share the drain wait. Exact-model reuse exits
-    # earlier, so an already-loaded model never waits on unrelated inference.
+def test_model_replacements_recheck_sidecar_swap_before_either_backend_is_unloaded():
+    # Both replacement directions drain active inference, then recheck whether a
+    # sidecar install reserved the lifecycle gate during that wait. Exact-model
+    # reuse exits earlier, so an already-loaded model never waits on unrelated inference.
     import inspect
 
     src = inspect.getsource(inference_route._load_model_impl)
     gguf_wait = src.index("await _wait_for_model_switch_idle", src.index("if config.is_gguf:"))
+    gguf_sidecar_check = src.index("_raise_if_sidecar_swap_in_progress()", gguf_wait)
     unload_unsloth = src.index("unsloth_backend.unload_model", gguf_wait)
     standard_wait = src.index("await _wait_for_model_switch_idle", gguf_wait + 1)
+    standard_sidecar_check = src.index("_raise_if_sidecar_swap_in_progress()", standard_wait)
     unload_gguf = src.index("llama_backend.unload_model()", standard_wait)
     already_loaded = src.index('status = "already_loaded"')
 
-    assert already_loaded < gguf_wait < unload_unsloth
-    assert standard_wait < unload_gguf
+    assert already_loaded < gguf_wait < gguf_sidecar_check < unload_unsloth
+    assert standard_wait < standard_sidecar_check < unload_gguf
 
 
 def _anthropic_payload(max_tokens = None):
