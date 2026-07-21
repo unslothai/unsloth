@@ -30,6 +30,18 @@ MODULES_JSON = (
     '[{"idx": 0, "name": "0", "path": "", "type": "sentence_transformers.models.Transformer"}]'
 )
 
+
+def _modules_json(*paths):
+    """A modules.json listing one Transformer module per ``path`` (a load root)."""
+    import json
+
+    return json.dumps(
+        [
+            {"idx": i, "name": str(i), "path": p, "type": "sentence_transformers.models.Transformer"}
+            for i, p in enumerate(paths)
+        ]
+    )
+
 _COMMIT = "0123456789abcdef0123456789abcdef01234567"
 
 
@@ -306,10 +318,11 @@ def test_gate_allows_gguf_only(hf_cache):
 
 
 def test_gate_blocks_pickle_in_module_subdir(hf_cache):
+    # 0_Transformer is a module load root (listed in modules.json), so its pickle blocks.
     _make_cache(
         hf_cache,
         "org/mod",
-        {"modules.json": MODULES_JSON, "0_Transformer/pytorch_model.bin": "x"},
+        {"modules.json": _modules_json("0_Transformer"), "0_Transformer/pytorch_model.bin": "x"},
     )
     with _no_network():
         assert _offline_decision("org/mod").blocked is True
@@ -320,12 +333,29 @@ def test_gate_allows_pickle_in_subdir_with_safetensors(hf_cache):
         hf_cache,
         "org/mod2",
         {
+            "modules.json": _modules_json("0_Transformer"),
             "0_Transformer/pytorch_model.bin": "x",
             "0_Transformer/model.safetensors": "y",
         },
     )
     with _no_network():
         assert _offline_decision("org/mod2").blocked is False
+
+
+def test_gate_allows_unreferenced_nested_pickle(hf_cache):
+    # A pickle in a dir NOT referenced by modules.json (e.g. nemo/) is never deserialized by
+    # SentenceTransformer, so it must not block the offline load (matches the online gate).
+    _make_cache(
+        hf_cache,
+        "org/aux",
+        {
+            "modules.json": MODULES_JSON,  # Transformer at the root only
+            "model.safetensors": "w",
+            "nemo/pytorch_model.bin": "x",
+        },
+    )
+    with _no_network():
+        assert _offline_decision("org/aux").blocked is False
 
 
 def test_gate_blocks_adapter_pickle_without_safetensors(hf_cache):
@@ -358,7 +388,11 @@ def test_gate_blocks_adapter_pickle_with_only_base_safetensors_decoy(hf_cache):
 
 
 def test_gate_reports_snapshot_relative_path(hf_cache):
-    _make_cache(hf_cache, "org/mod3", {"0_Transformer/pytorch_model.bin": "x"})
+    _make_cache(
+        hf_cache,
+        "org/mod3",
+        {"modules.json": _modules_json("0_Transformer"), "0_Transformer/pytorch_model.bin": "x"},
+    )
     with _no_network():
         decision = _offline_decision("org/mod3")
     assert decision.blocked is True

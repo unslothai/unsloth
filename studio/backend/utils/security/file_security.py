@@ -289,37 +289,55 @@ def _fetch_security_status(model_name: str, hf_token: Optional[str]):
     return None
 
 
-def _cached_pickle_weight_files(snapshot: Path) -> list:
-    """Pickle-format weight files under ``snapshot`` a load would deserialize, EXCLUDING those
-    whose own weight family also ships an inert ``safetensors`` in the same directory (the load
-    prefers the safetensors). A base pickle (``pytorch_model.bin`` / ``model.bin`` /
-    ``consolidated``) is suppressed only by a base ``model.safetensors`` weight; an
-    ``adapter_model`` pickle only by an ``adapter_model.safetensors`` -- an unrelated safetensors
-    is not a substitute the loader would pick. A single filesystem walk. Raises ``OSError`` if
-    the snapshot cannot be read (caller blocks).
+def _st_load_roots(snapshot: Path) -> list:
+    """Directories a SentenceTransformer load actually deserializes weights from: the snapshot
+    root plus each module ``path`` in ``modules.json`` (e.g. ``0_Transformer``), read locally,
+    no network. Mirrors the online gate, which ignores unreferenced nested pickles (an example
+    artifact or a ``nemo/`` pickle ST never loads), so the offline gate does not over-block.
     """
-    base_safetensors_dirs = set()
-    adapter_safetensors_dirs = set()
-    pickles = []
-    for path in snapshot.rglob("*"):
-        try:
-            if not path.is_file():
-                continue
-        except OSError:
-            continue
-        name = path.name
-        if _BASE_SAFETENSORS_RE.match(name):
-            base_safetensors_dirs.add(path.parent)
-        elif _ADAPTER_SAFETENSORS_RE.match(name):
-            adapter_safetensors_dirs.add(path.parent)
-        elif _PICKLE_WEIGHT_RE.match(name):
-            pickles.append(path)
+    roots = [snapshot]
+    try:
+        import json
+
+        modules = json.loads((snapshot / "modules.json").read_text())
+    except (OSError, ValueError):
+        return roots  # no / invalid modules.json -> the snapshot root is the only load root
+    for module in modules or ():
+        path = str((module or {}).get("path", "")).strip().strip("/")
+        # A relative module path only; ignore a crafted "../" escape.
+        if path and ".." not in path.split("/"):
+            candidate = snapshot / path
+            if candidate not in roots:
+                roots.append(candidate)
+    return roots
+
+
+def _cached_pickle_weight_files(snapshot: Path) -> list:
+    """Pickle-format weight files in ``snapshot``'s ST load roots a load would deserialize,
+    EXCLUDING those whose own weight family also ships an inert ``safetensors`` in the same
+    directory (the load prefers the safetensors). A base pickle (``pytorch_model.bin`` /
+    ``model.bin`` / ``consolidated``) is suppressed only by a base ``model.safetensors`` weight;
+    an ``adapter_model`` pickle only by an ``adapter_model.safetensors`` -- an unrelated
+    safetensors is not a substitute the loader would pick. Scans only the load roots (not every
+    nested file). Raises ``OSError`` if the snapshot root cannot be read (caller blocks).
+    """
     blocked = []
-    for path in pickles:
-        is_adapter = path.name.lower().startswith("adapter_model")
-        safe_dirs = adapter_safetensors_dirs if is_adapter else base_safetensors_dirs
-        if path.parent not in safe_dirs:
-            blocked.append(path)
+    for root in _st_load_roots(snapshot):
+        try:
+            entries = [p for p in root.iterdir() if p.is_file()]
+        except OSError:
+            if root == snapshot:
+                raise  # top-level unreadable -> fail closed
+            continue  # an unreadable module subdir: nothing loadable to attest here
+        has_base_safetensors = any(_BASE_SAFETENSORS_RE.match(p.name) for p in entries)
+        has_adapter_safetensors = any(_ADAPTER_SAFETENSORS_RE.match(p.name) for p in entries)
+        for path in entries:
+            if not _PICKLE_WEIGHT_RE.match(path.name):
+                continue
+            is_adapter = path.name.lower().startswith("adapter_model")
+            has_alternative = has_adapter_safetensors if is_adapter else has_base_safetensors
+            if not has_alternative:
+                blocked.append(path)
     return blocked
 
 
