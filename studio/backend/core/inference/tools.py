@@ -2668,7 +2668,7 @@ def _short_flag_arg(token: str, letters: str) -> "str | None":
     body = token[1:]
     for i, ch in enumerate(body):
         if ch in letters:
-            return body[i + 1:]
+            return body[i + 1 :]
     return None
 
 
