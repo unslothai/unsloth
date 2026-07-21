@@ -260,7 +260,6 @@ class _MLXPromptCacheHistory:
         self._lru = lru_cls(max_size = max_entries, max_bytes = max_bytes)
 
     def fetch(self, model, key, tokens):
-        # rest is never empty: generate_step needs a seed token to decode.
         cache, rest = self._lru.fetch_nearest_cache(key, list(tokens))
         if cache is not None:
             if rest:
@@ -429,13 +428,11 @@ class MLXInferenceBackend:
             return prompt, None, None, None, 0
         try:
             tokenizer = self._tokenizer
-            # Match stream_generate's own encode.
             bos = getattr(tokenizer, "bos_token", None)
             add_special_tokens = bos is None or not prompt.startswith(bos)
             tokens = list(tokenizer.encode(prompt, add_special_tokens = add_special_tokens))
             if not tokens:
                 return prompt, None, None, None, 0
-            # KV is only valid for the same model + adapter state.
             key = f"{self.active_model_name}|{adapter_state!r}"
             cache, rest = history.fetch(self._model, key, tokens)
         except Exception as exc:
@@ -863,7 +860,6 @@ class MLXInferenceBackend:
         # decoding path does below.
         normalized_output = think_prefix
         with self._generation_lock, _temporary_mlx_adapter_state(self._model, _adapter_state):
-            # Under the lock + adapter swap so KV matches the active weights.
             (
                 gen_prompt,
                 prompt_cache,
@@ -899,7 +895,6 @@ class MLXInferenceBackend:
                     **gen_kwargs,
                 ):
                     final_response = response
-                    # Both branches: the cache insert key needs the token ids.
                     token_ids.append(response.token)
                     if preserve_native_channels:
                         piece = getattr(response, "text", None) or ""
@@ -1156,6 +1151,5 @@ class MLXInferenceBackend:
         import mlx.core as mx
         import gc
 
-        # Keeps the prompt cache: entries are always valid; unload_model clears.
         gc.collect()
         mx.clear_cache()
