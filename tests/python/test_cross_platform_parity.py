@@ -25,11 +25,17 @@ class TestNoTorchBackendAutoInInstallSh:
         for i, line in enumerate(lines):
             if fallback_start is None and "GPU detection failed" in line:
                 fallback_start = i
-            elif fallback_start is not None and fallback_end is None and line.strip() == "fi":
+            elif (
+                fallback_start is not None
+                and fallback_end is None
+                and line.strip() == "fi"
+            ):
                 fallback_end = i
                 break
         fallback_range = (
-            range(fallback_start or 0, (fallback_end or 0) + 1) if fallback_start else range(0)
+            range(fallback_start or 0, (fallback_end or 0) + 1)
+            if fallback_start
+            else range(0)
         )
 
         matches = [
@@ -361,14 +367,20 @@ class TestKnown211SetParity:
             r"rocm7\.2\|gfx120x-all\|gfx1151\|gfx1150\)", text
         ), "install.sh 2.11 floor must be exactly rocm7.2|gfx120x-all|gfx1151|gfx1150"
         # No speculative rocm7.3 anywhere.
-        assert "rocm7.3" not in text, "install.sh must not reference a non-existent rocm7.3"
+        assert (
+            "rocm7.3" not in text
+        ), "install.sh must not reference a non-existent rocm7.3"
 
     def test_python_known_211_versions_is_only_rocm72(self):
         text = STACK_PY.read_text(encoding = "utf-8")
         assert "_ROCM_KNOWN_TORCH211_VERSIONS" in text
         # The frozenset literal is exactly {(7, 2)}.
-        m = re.search(r"_ROCM_KNOWN_TORCH211_VERSIONS[^=]*=\s*frozenset\(\{([^}]*)\}\)", text)
-        assert m is not None, "install_python_stack.py must define _ROCM_KNOWN_TORCH211_VERSIONS"
+        m = re.search(
+            r"_ROCM_KNOWN_TORCH211_VERSIONS[^=]*=\s*frozenset\(\{([^}]*)\}\)", text
+        )
+        assert (
+            m is not None
+        ), "install_python_stack.py must define _ROCM_KNOWN_TORCH211_VERSIONS"
         assert "(7, 2)" in m.group(1)
         assert "7, 3" not in m.group(1) and "7, 1" not in m.group(1)
 
@@ -377,7 +389,8 @@ class TestKnown211SetParity:
         assert "Test-RocmKnown211Version" in text
         # The predicate is Major -eq 7 -and Minor -eq 2 (only rocm7.2).
         assert re.search(
-            r"Test-RocmKnown211Version[\s\S]{0,400}\$Major -eq 7 -and \$Minor -eq 2", text
+            r"Test-RocmKnown211Version[\s\S]{0,400}\$Major -eq 7 -and \$Minor -eq 2",
+            text,
         ), "setup.ps1 Test-RocmKnown211Version must accept only rocm7.2"
 
     def test_install_ps1_pin_floor_is_only_rocm72(self):
@@ -538,7 +551,8 @@ class TestPinnedIndexClearsUvEnvParity:
     def test_install_sh_clears_uv_index_vars(self):
         text = INSTALL_SH.read_text(encoding = "utf-8")
         assert (
-            "env -u UV_DEFAULT_INDEX -u UV_INDEX_URL -u UV_INDEX -u UV_EXTRA_INDEX_URL" in text
+            "env -u UV_DEFAULT_INDEX -u UV_INDEX_URL -u UV_INDEX -u UV_EXTRA_INDEX_URL"
+            in text
         ), "install.sh run_install_cmd must clear the uv index vars for --default-index installs"
 
     def test_install_ps1_clears_uv_index_vars(self):
@@ -558,14 +572,18 @@ class TestPinnedIndexClearsUvEnvParity:
             "installs via _install_env_for_cmd (parity with install.sh #6898)"
         )
         for var in self.UV_VARS:
-            assert var in text, f"install_python_stack.py must clear {var} for pinned installs"
+            assert (
+                var in text
+            ), f"install_python_stack.py must clear {var} for pinned installs"
 
     def test_all_installers_clear_uv_torch_backend(self):
         """uv's torch backend redirects torch resolution to its own per-backend
         index even against an explicit pin, so every installer's pinned-install
         scrub must clear UV_TORCH_BACKEND too."""
         sh = INSTALL_SH.read_text(encoding = "utf-8")
-        assert "-u UV_TORCH_BACKEND" in sh, "install.sh pinned scrub must clear UV_TORCH_BACKEND"
+        assert (
+            "-u UV_TORCH_BACKEND" in sh
+        ), "install.sh pinned scrub must clear UV_TORCH_BACKEND"
         for path in (INSTALL_PS1, SETUP_PS1):
             text = path.read_text(encoding = "utf-8")
             assert (
@@ -696,7 +714,9 @@ class TestPinnedIndexClearsUvEnvParity:
         ), "setup.ps1's CPU branch must install via the spec variables"
         # The ceilings mirror the Python repair spec exactly.
         stack = STACK_PY.read_text(encoding = "utf-8")
-        spec_block = re.search(r"_CUDA_TORCH_PKG_SPEC[^(]*\(\s*(.*?)\)", stack, re.DOTALL)
+        spec_block = re.search(
+            r"_CUDA_TORCH_PKG_SPEC[^(]*\(\s*(.*?)\)", stack, re.DOTALL
+        )
         assert spec_block and '"torch>=2.4,<2.12.0"' in spec_block.group(1), (
             "_CPU_TORCH_PKG_SPEC (via _CUDA_TORCH_PKG_SPEC) must keep the torch<2.12 "
             "ceiling the setup.ps1 pinned CPU branch mirrors"
@@ -730,17 +750,23 @@ class TestIndexPathSlashTrimParity:
     def test_helper_defined_in_all_installers(self):
         assert "def _trim_index_path_slashes(" in STACK_PY.read_text(encoding = "utf-8")
         assert "_trim_index_path_slashes()" in INSTALL_SH.read_text(encoding = "utf-8")
-        assert "function Trim-IndexPathSlashes" in INSTALL_PS1.read_text(encoding = "utf-8")
+        assert "function Trim-IndexPathSlashes" in INSTALL_PS1.read_text(
+            encoding = "utf-8"
+        )
         assert "function Trim-IndexPathSlashes" in SETUP_PS1.read_text(encoding = "utf-8")
 
     def test_helper_wired_into_override_in_all_installers(self):
         assert "_trim_index_path_slashes(url)" in STACK_PY.read_text(encoding = "utf-8")
-        assert '_url=$(_trim_index_path_slashes "$_url")' in INSTALL_SH.read_text(encoding = "utf-8")
-        assert "Trim-IndexPathSlashes $env:UNSLOTH_TORCH_INDEX_URL" in INSTALL_PS1.read_text(
+        assert '_url=$(_trim_index_path_slashes "$_url")' in INSTALL_SH.read_text(
             encoding = "utf-8"
         )
-        assert "Trim-IndexPathSlashes $env:UNSLOTH_TORCH_INDEX_URL" in SETUP_PS1.read_text(
-            encoding = "utf-8"
+        assert (
+            "Trim-IndexPathSlashes $env:UNSLOTH_TORCH_INDEX_URL"
+            in INSTALL_PS1.read_text(encoding = "utf-8")
+        )
+        assert (
+            "Trim-IndexPathSlashes $env:UNSLOTH_TORCH_INDEX_URL"
+            in SETUP_PS1.read_text(encoding = "utf-8")
         )
 
 
@@ -752,12 +778,16 @@ class TestInstallOutputRedactionParity:
     def test_helper_defined_in_all_installers(self):
         assert "def _redact_install_output(" in STACK_PY.read_text(encoding = "utf-8")
         assert "_redact_install_output()" in INSTALL_SH.read_text(encoding = "utf-8")
-        assert "function Redact-InstallOutput" in INSTALL_PS1.read_text(encoding = "utf-8")
+        assert "function Redact-InstallOutput" in INSTALL_PS1.read_text(
+            encoding = "utf-8"
+        )
         assert "function Redact-InstallOutput" in SETUP_PS1.read_text(encoding = "utf-8")
 
     def test_helper_wired_into_failure_print(self):
         # install.sh dumps the captured log through the redactor on failure.
-        assert '_redact_install_output "$_log"' in INSTALL_SH.read_text(encoding = "utf-8")
+        assert '_redact_install_output "$_log"' in INSTALL_SH.read_text(
+            encoding = "utf-8"
+        )
         # Both ps1 installers redact the captured $output before Write-Host on non-zero exit.
         assert (
             "Write-Host (Redact-InstallOutput $output) -ForegroundColor Red"

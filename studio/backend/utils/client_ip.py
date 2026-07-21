@@ -27,7 +27,11 @@ _TRUST_FORWARDED_ENV = "UNSLOTH_STUDIO_TRUST_FORWARDED"
 
 
 def _trust_forwarded_for() -> bool:
-    return os.environ.get(_TRUST_FORWARDED_ENV, "").strip().lower() in {"1", "true", "yes"}
+    return os.environ.get(_TRUST_FORWARDED_ENV, "").strip().lower() in {
+        "1",
+        "true",
+        "yes",
+    }
 
 
 def _is_loopback(host: str | None) -> bool:

@@ -112,7 +112,9 @@ def test_old_tokenizer_is_saved_so_its_model_can_be_read(tmp_path, monkeypatch):
     old, new = _tokenizers()
     location = str(tmp_path / "_unsloth_sentencepiece_temp")
 
-    fix_sentencepiece_tokenizer(old, new, {"</s>": "<|im_end|>"}, temporary_location = location)
+    fix_sentencepiece_tokenizer(
+        old, new, {"</s>": "<|im_end|>"}, temporary_location = location
+    )
 
     assert old.saved_to, "old tokenizer was never saved: the body did not run"
 
@@ -123,13 +125,17 @@ def test_token_mapping_is_applied_to_the_sentencepiece_model(tmp_path, monkeypat
     location = str(tmp_path / "_unsloth_sentencepiece_temp")
 
     # Hold the returned tokenizer so its scratch dir survives until we read it.
-    tok = fix_sentencepiece_tokenizer(old, new, {"</s>": "<|im_end|>"}, temporary_location = location)
+    tok = fix_sentencepiece_tokenizer(
+        old, new, {"</s>": "<|im_end|>"}, temporary_location = location
+    )
 
     assert "<|im_end|>" in _read_pieces(f"{loaded[-1]}/tokenizer.model")
     assert tok is not None
 
 
-def test_tokenizer_without_a_sentencepiece_model_is_returned_untouched(tmp_path, monkeypatch):
+def test_tokenizer_without_a_sentencepiece_model_is_returned_untouched(
+    tmp_path, monkeypatch
+):
     """A fast-only tokenizer writes no tokenizer.model, so the guard still
     short-circuits and the caller gets new_tokenizer back unchanged. Its scratch
     dir is unreferenced and reclaimed immediately.
@@ -184,7 +190,9 @@ def test_each_call_uses_a_fresh_isolated_subdirectory(tmp_path, monkeypatch):
     assert tok1 is not None and tok2 is not None
 
 
-def test_sentencepiece_scratch_dir_is_reclaimed_once_the_tokenizer_is_gone(tmp_path, monkeypatch):
+def test_sentencepiece_scratch_dir_is_reclaimed_once_the_tokenizer_is_gone(
+    tmp_path, monkeypatch
+):
     """The scratch dir must live as long as the returned tokenizer (its vocab_file
     points there), then be reclaimed when the tokenizer is garbage collected.
     """
@@ -192,13 +200,17 @@ def test_sentencepiece_scratch_dir_is_reclaimed_once_the_tokenizer_is_gone(tmp_p
     old, new = _tokenizers()
     location = str(tmp_path / "_unsloth_sentencepiece_temp")
 
-    tok = fix_sentencepiece_tokenizer(old, new, {"</s>": "<|im_end|>"}, temporary_location = location)
+    tok = fix_sentencepiece_tokenizer(
+        old, new, {"</s>": "<|im_end|>"}, temporary_location = location
+    )
     work = loaded[-1]
     assert os.path.isdir(work), "scratch dir vanished while the tokenizer was alive"
 
     del tok
     gc.collect()
-    assert not os.path.isdir(work), "scratch dir was not reclaimed after the tokenizer was freed"
+    assert not os.path.isdir(
+        work
+    ), "scratch dir was not reclaimed after the tokenizer was freed"
 
 
 class _CopyFromSubdirTokenizer:
@@ -234,7 +246,9 @@ class _CopyFromSubdirTokenizer:
         return encoded
 
 
-def test_source_vocab_outside_the_work_directory_is_not_disturbed(tmp_path, monkeypatch):
+def test_source_vocab_outside_the_work_directory_is_not_disturbed(
+    tmp_path, monkeypatch
+):
     """A tokenizer whose sentencepiece source lives elsewhere (e.g. the subtree
     convert_to_fast_tokenizer created) is copied into the fresh work directory
     and patched there; the original source is left untouched.
@@ -251,7 +265,9 @@ def test_source_vocab_outside_the_work_directory_is_not_disturbed(tmp_path, monk
 
     old = _CopyFromSubdirTokenizer(source_model)
     new = _FakeTokenizer("new")
-    tok = fix_sentencepiece_tokenizer(old, new, {"</s>": "<|im_end|>"}, temporary_location = location)
+    tok = fix_sentencepiece_tokenizer(
+        old, new, {"</s>": "<|im_end|>"}, temporary_location = location
+    )
 
     assert _read_pieces(source_model) == [
         "<s>",
@@ -269,12 +285,21 @@ def test_swap_mapping_swaps_both_pieces_without_duplicating(tmp_path, monkeypatc
     loaded = _stub_auto_tokenizer(monkeypatch)
     location = str(tmp_path / "_unsloth_sentencepiece_temp")
 
-    pieces = [("<s>", 0.0, CONTROL), ("<|im_end|>", -1.0, NORMAL), ("</s>", 0.0, CONTROL)]
-    old = _FakeTokenizer("old", spm_bytes = _spm_bytes(pieces), vocab = {"</s>": 2, "<|im_end|>": 1})
+    pieces = [
+        ("<s>", 0.0, CONTROL),
+        ("<|im_end|>", -1.0, NORMAL),
+        ("</s>", 0.0, CONTROL),
+    ]
+    old = _FakeTokenizer(
+        "old", spm_bytes = _spm_bytes(pieces), vocab = {"</s>": 2, "<|im_end|>": 1}
+    )
     new = _FakeTokenizer("new")
 
     tok = fix_sentencepiece_tokenizer(
-        old, new, {"</s>": "<|im_end|>", "<|im_end|>": "</s>"}, temporary_location = location
+        old,
+        new,
+        {"</s>": "<|im_end|>", "<|im_end|>": "</s>"},
+        temporary_location = location,
     )
 
     result = _read_pieces(f"{loaded[-1]}/tokenizer.model")
@@ -300,7 +325,9 @@ def test_only_applied_mappings_are_patched(tmp_path, monkeypatch):
     new = _FakeTokenizer("new")
 
     # Caller skipped aa->X (X already exists) and applied bb->Y, so only bb->Y is passed.
-    tok = fix_sentencepiece_tokenizer(old, new, {"bb": "Y"}, temporary_location = location)
+    tok = fix_sentencepiece_tokenizer(
+        old, new, {"bb": "Y"}, temporary_location = location
+    )
 
     result = _read_pieces(f"{loaded[-1]}/tokenizer.model")
     assert result.count("X") == 1 and "Y" in result and "aa" in result, result

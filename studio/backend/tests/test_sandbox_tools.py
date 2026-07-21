@@ -88,7 +88,9 @@ class TestTrustedHostAllowlist:
         _ok(f"import requests; requests.get({url!r})")
 
     def test_wikipedia_subdomain_passes(self):
-        _ok('import urllib.request; urllib.request.urlopen("https://m.en.wikipedia.org/wiki/Foo")')
+        _ok(
+            'import urllib.request; urllib.request.urlopen("https://m.en.wikipedia.org/wiki/Foo")'
+        )
 
     def test_hf_co_short_form_passes(self):
         _ok('import requests; requests.get("https://hf.co/unsloth/Qwen3.5-4B-GGUF")')
@@ -219,7 +221,10 @@ class TestUploadDenylist:
         )
 
     def test_plain_post_json_not_blocked(self):
-        _ok("import requests\n" 'requests.post("https://api.weather.gov/lookup", json={"k": "v"})')
+        _ok(
+            "import requests\n"
+            'requests.post("https://api.weather.gov/lookup", json={"k": "v"})'
+        )
 
 
 class TestSandboxEnvIsolation:
@@ -327,7 +332,9 @@ class TestSandboxEnvIsolation:
         env = _build_bypass_env(str(tmp_path))
         assert _SANDBOX_SITE_DIR in env["PYTHONPATH"].split(os.pathsep)
 
-    def test_bypass_env_prepends_shim_and_keeps_inherited_pythonpath(self, monkeypatch, tmp_path):
+    def test_bypass_env_prepends_shim_and_keeps_inherited_pythonpath(
+        self, monkeypatch, tmp_path
+    ):
         from core.inference.tools import _SANDBOX_SITE_DIR, _build_bypass_env
 
         monkeypatch.setenv("PYTHONPATH", "/operator/libs")

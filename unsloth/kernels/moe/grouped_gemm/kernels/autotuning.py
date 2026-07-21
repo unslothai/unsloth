@@ -306,11 +306,16 @@ def get_dW_kernel_configs(
 
 
 def estimate_smem_reqs(
-    num_stages: int, BLOCK_SIZE_M: int, BLOCK_SIZE_N: int, BLOCK_SIZE_K: int, dtype: torch.dtype
+    num_stages: int,
+    BLOCK_SIZE_M: int,
+    BLOCK_SIZE_N: int,
+    BLOCK_SIZE_K: int,
+    dtype: torch.dtype,
 ):
     num_bytes = dtype.itemsize
     return (
-        num_stages * BLOCK_SIZE_K * (BLOCK_SIZE_M + BLOCK_SIZE_N) + BLOCK_SIZE_M * BLOCK_SIZE_N
+        num_stages * BLOCK_SIZE_K * (BLOCK_SIZE_M + BLOCK_SIZE_N)
+        + BLOCK_SIZE_M * BLOCK_SIZE_N
     ) * num_bytes
 
 
@@ -323,7 +328,9 @@ def exceeds_smem_capacity(
     smem_size: int,
     slack: float = 50000,
 ):
-    smem_reqs = estimate_smem_reqs(num_stages, BLOCK_SIZE_M, BLOCK_SIZE_N, BLOCK_SIZE_K, dtype)
+    smem_reqs = estimate_smem_reqs(
+        num_stages, BLOCK_SIZE_M, BLOCK_SIZE_N, BLOCK_SIZE_K, dtype
+    )
     return smem_reqs > smem_size + slack
 
 

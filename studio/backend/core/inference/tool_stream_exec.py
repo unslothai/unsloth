@@ -70,7 +70,9 @@ TOOL_OUTPUT_STREAM_MAX_CHARS = 400_000
 _STREAM_CAPPED_NOTICE = "\n... (further live output not streamed)\n"
 
 
-def _drain_queue(q: "queue.Queue", sentinel: object, max_chars: int | None) -> tuple[str, bool]:
+def _drain_queue(
+    q: "queue.Queue", sentinel: object, max_chars: int | None
+) -> tuple[str, bool]:
     """Pull every currently-queued item, joining chunks in FIFO order.
 
     With ``max_chars`` set, stop concatenating at the budget and discard the
@@ -170,7 +172,9 @@ def stream_tool_execution(
 
     # Heartbeats are paced by counting idle queue polls rather than a wall clock
     # (tests patch ``time.monotonic`` globally, so the wrapper must not read it).
-    idle_polls_per_heartbeat = max(1, int(round(heartbeat_interval_s / poll_interval_s)))
+    idle_polls_per_heartbeat = max(
+        1, int(round(heartbeat_interval_s / poll_interval_s))
+    )
     idle_polls = 0
     streamed_chars = 0
     stream_capped = False

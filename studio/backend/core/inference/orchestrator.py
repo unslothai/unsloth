@@ -137,7 +137,9 @@ class InferenceOrchestrator:
         atexit.register(self._cleanup)
         logger.info("InferenceOrchestrator initialized (subprocess mode)")
 
-        threading.Thread(target = self._fetch_top_models, daemon = True, name = "top-models").start()
+        threading.Thread(
+            target = self._fetch_top_models, daemon = True, name = "top-models"
+        ).start()
 
     # ------------------------------------------------------------------
     # Default models (top GGUFs fetched dynamically from HF)
@@ -175,12 +177,14 @@ class InferenceOrchestrator:
             if resp.status_code == 200:
                 models = resp.json()
                 # Top 40 GGUFs (deep pool for frontend infinite scroll)
-                gguf_ids = [m["id"] for m in models if m.get("id", "").upper().endswith("-GGUF")][
-                    :40
-                ]
+                gguf_ids = [
+                    m["id"] for m in models if m.get("id", "").upper().endswith("-GGUF")
+                ][:40]
                 # Top 40 non-GGUF hub models
                 hub_ids = [
-                    m["id"] for m in models if not m.get("id", "").upper().endswith("-GGUF")
+                    m["id"]
+                    for m in models
+                    if not m.get("id", "").upper().endswith("-GGUF")
                 ][:40]
                 if gguf_ids:
                     self._top_gguf_cache = gguf_ids
@@ -361,7 +365,8 @@ class InferenceOrchestrator:
                     "Try a smaller model, lower context length, or close other GPU-heavy apps."
                 )
             return (
-                f"{message}{suffix} " f"Details: pid={pid}, signal={sig_name}, exitcode={exitcode}."
+                f"{message}{suffix} "
+                f"Details: pid={pid}, signal={sig_name}, exitcode={exitcode}."
             )
 
         return f"{message} Details: pid={pid}, exitcode={exitcode}."
@@ -444,7 +449,8 @@ class InferenceOrchestrator:
             )
 
         raise RuntimeError(
-            f"Timeout waiting for '{expected_type}' response " f"(no activity for {timeout}s)"
+            f"Timeout waiting for '{expected_type}' response "
+            f"(no activity for {timeout}s)"
         )
 
     def _drain_queue(self) -> list:
@@ -555,7 +561,10 @@ class InferenceOrchestrator:
         initial_proc = self._proc
         initial_resp_queue = self._resp_queue
         while True:
-            if self._proc is not initial_proc or self._resp_queue is not initial_resp_queue:
+            if (
+                self._proc is not initial_proc
+                or self._resp_queue is not initial_resp_queue
+            ):
                 yield GenStreamError(
                     f"Error: {self._subprocess_crash_message(crash_context)}",
                     public = True,
@@ -622,7 +631,10 @@ class InferenceOrchestrator:
             # unload_model's _wait_response sees it -- hanging the unload 300s.
             if self._unload_pending:
                 return False
-            if self._dispatcher_thread is not None and self._dispatcher_thread.is_alive():
+            if (
+                self._dispatcher_thread is not None
+                and self._dispatcher_thread.is_alive()
+            ):
                 return False
 
             self._dispatcher_stop.clear()
@@ -690,7 +702,9 @@ class InferenceOrchestrator:
                     rtype,
                 )
             except Exception:
-                logger.exception("Inference dispatcher: failed to route a response; continuing")
+                logger.exception(
+                    "Inference dispatcher: failed to route a response; continuing"
+                )
                 continue
 
     def _generate_dispatched(
@@ -720,7 +734,9 @@ class InferenceOrchestrator:
         GPU work stays serialized; this only avoids orchestrator lock contention.
         """
         if not self._ensure_subprocess_alive():
-            yield GenStreamError("Error: Inference subprocess is not running", public = True)
+            yield GenStreamError(
+                "Error: Inference subprocess is not running", public = True
+            )
             return
 
         if not self.active_model_name:
@@ -786,7 +802,8 @@ class InferenceOrchestrator:
             # bail when the active model changed or the dispatcher died: a mailbox with no
             # dispatcher to route gen_done/gen_error hangs the compare stream.
             dispatcher_alive = (
-                self._dispatcher_thread is not None and self._dispatcher_thread.is_alive()
+                self._dispatcher_thread is not None
+                and self._dispatcher_thread.is_alive()
             )
             unloading = (
                 self._unload_pending
@@ -797,7 +814,9 @@ class InferenceOrchestrator:
                 self._mailboxes[request_id] = mailbox
             # When bailing without a mailbox, note whether any OTHER compare request still
             # routes through the dispatcher; if none and this call started it, stop it below.
-            orphaned_dispatcher = unloading and not dispatcher_preexisting and not self._mailboxes
+            orphaned_dispatcher = (
+                unloading and not dispatcher_preexisting and not self._mailboxes
+            )
         if unloading:
             # A racing unload can pass its _wait_dispatcher_idle() while the dispatcher was
             # stopped, then set _unload_pending. The one we just started would otherwise
@@ -919,11 +938,15 @@ class InferenceOrchestrator:
             self._send_cmd(cmd)
             deadline = None if timeout is None else time.monotonic() + timeout
             while deadline is None or time.monotonic() < deadline:
-                remaining = 1.0 if deadline is None else max(0.1, deadline - time.monotonic())
+                remaining = (
+                    1.0 if deadline is None else max(0.1, deadline - time.monotonic())
+                )
                 resp = self._read_resp(timeout = min(remaining, 1.0))
                 if resp is None:
                     if not self._ensure_subprocess_alive():
-                        raise RuntimeError(self._subprocess_crash_message("sharing chat turn"))
+                        raise RuntimeError(
+                            self._subprocess_crash_message("sharing chat turn")
+                        )
                     continue
 
                 rtype = resp.get("type", "")
@@ -1148,13 +1171,21 @@ class InferenceOrchestrator:
                     # without re-entering the subprocess.
                     _tpl_info = model_info.get("chat_template_info")
                     if isinstance(_tpl_info, dict):
-                        self.models[self.active_model_name]["chat_template_info"] = _tpl_info
+                        self.models[self.active_model_name]["chat_template_info"] = (
+                            _tpl_info
+                        )
                     self.loading_models.discard(model_name)
-                    logger.info("Model '%s' loaded successfully in subprocess", model_name)
+                    logger.info(
+                        "Model '%s' loaded successfully in subprocess", model_name
+                    )
                     return True
                 else:
                     # Worker reports failures (consent gate included) under "message".
-                    error = resp.get("message") or resp.get("error") or "Failed to load model"
+                    error = (
+                        resp.get("message")
+                        or resp.get("error")
+                        or "Failed to load model"
+                    )
                     self.loading_models.discard(model_name)
                     self.active_model_name = None
                     self.models.clear()
@@ -1164,7 +1195,10 @@ class InferenceOrchestrator:
             self.loading_models.discard(model_name)
             from utils.transformers_version import SidecarSwapInProgress
 
-            if isinstance(exc, SidecarSwapInProgress) and self._ensure_subprocess_alive():
+            if (
+                isinstance(exc, SidecarSwapInProgress)
+                and self._ensure_subprocess_alive()
+            ):
                 # Raised before the old worker was torn down: the previous model
                 # is still live, so keep the mirrors (clearing them would let the
                 # installer treat the worker as inactive and kill it unreported).
@@ -1466,7 +1500,10 @@ class InferenceOrchestrator:
                         try:
                             close()
                         except Exception:
-                            logger.debug("failed to close errored generation stream", exc_info = True)
+                            logger.debug(
+                                "failed to close errored generation stream",
+                                exc_info = True,
+                            )
 
         initial = list(messages)
         if system_prompt:
@@ -1550,7 +1587,9 @@ class InferenceOrchestrator:
         readers don't consume each other's tokens off the shared resp_queue.
         """
         if not self._ensure_subprocess_alive():
-            yield GenStreamError("Error: Inference subprocess is not running", public = True)
+            yield GenStreamError(
+                "Error: Inference subprocess is not running", public = True
+            )
             return
 
         if not self.active_model_name:
@@ -1677,7 +1716,9 @@ class InferenceOrchestrator:
 
                 if resp is None:
                     if not self._ensure_subprocess_alive():
-                        raise RuntimeError(self._subprocess_crash_message("audio generation"))
+                        raise RuntimeError(
+                            self._subprocess_crash_message("audio generation")
+                        )
                     continue
 
                 rtype = resp.get("type", "")
@@ -1756,7 +1797,9 @@ class InferenceOrchestrator:
     ) -> Generator[str, None, None]:
         """Shared inner logic for audio input generation (Whisper + ASR)."""
         if not self._ensure_subprocess_alive():
-            yield GenStreamError("Error: Inference subprocess is not running", public = True)
+            yield GenStreamError(
+                "Error: Inference subprocess is not running", public = True
+            )
             return
         if not self.active_model_name:
             yield GenStreamError("Error: No active model", public = True)
@@ -1774,7 +1817,9 @@ class InferenceOrchestrator:
 
             # numpy array -> list for mp.Queue serialization
             audio_data = (
-                audio_array.tolist() if hasattr(audio_array, "tolist") else list(audio_array)
+                audio_array.tolist()
+                if hasattr(audio_array, "tolist")
+                else list(audio_array)
             )
 
             cmd = {

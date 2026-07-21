@@ -96,7 +96,9 @@ def inference(
         llama_extra_args = llama_extra_args,
     )
     chat_backend = (
-        None if (no_server or is_mlx_distributed) else connect_studio_server(model, **load_opts)
+        None
+        if (no_server or is_mlx_distributed)
+        else connect_studio_server(model, **load_opts)
     )
     if chat_backend is None:
         chat_backend = load_chat_backend(model, **load_opts)

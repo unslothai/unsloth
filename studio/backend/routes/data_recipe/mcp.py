@@ -69,7 +69,9 @@ def list_mcp_tools(payload: McpToolsListRequest) -> McpToolsListResponse:
         provider = built[0]
         try:
             tools = mcp_io.list_tools(provider, timeout_sec = payload.timeout_sec)
-            tool_names = sorted({tool.name for tool in tools if getattr(tool, "name", "")})
+            tool_names = sorted(
+                {tool.name for tool in tools if getattr(tool, "name", "")}
+            )
             for tool_name in tool_names:
                 tool_to_providers[tool_name].append(provider.name)
             providers.append(

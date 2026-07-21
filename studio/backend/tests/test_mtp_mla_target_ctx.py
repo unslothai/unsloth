@@ -149,7 +149,9 @@ class TestMlaTargetCtxReserve:
         ctx = 262144
         f16 = _kv_bytes_per_elem("f16")
         expected_copy = b._estimate_kv_cache_bytes(ctx, "f16")
-        assert b._estimate_mtp_overhead_bytes(ctx) == (b._mtp_draft_kv_bytes(ctx) + expected_copy)
+        assert b._estimate_mtp_overhead_bytes(ctx) == (
+            b._mtp_draft_kv_bytes(ctx) + expected_copy
+        )
         assert f16 == 2.0  # sanity: f16 is 2 bytes/elem
 
     def test_target_copy_scales_linearly_with_context(self):
@@ -170,7 +172,9 @@ class TestMlaTargetCtxReserve:
         non = _make_mla_backend()
         non._kv_lora_rank = None  # flip MLA off, keep every other dim identical
         ctx = 131072
-        assert mla._estimate_mtp_overhead_bytes(ctx) > non._estimate_mtp_overhead_bytes(ctx)
+        assert mla._estimate_mtp_overhead_bytes(ctx) > non._estimate_mtp_overhead_bytes(
+            ctx
+        )
 
     def test_separate_drafter_mode_drops_target_copy(self):
         # The duplicated target context is MTP-only. draft-simple / draft-eagle3

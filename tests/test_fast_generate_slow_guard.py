@@ -15,7 +15,10 @@ UTILS = os.path.join(HERE, "unsloth", "models", "_utils.py")
 def _load_factory():
     src = open(UTILS).read()
     for node in ast.parse(src).body:
-        if isinstance(node, ast.FunctionDef) and node.name == "make_fast_generate_wrapper":
+        if (
+            isinstance(node, ast.FunctionDef)
+            and node.name == "make_fast_generate_wrapper"
+        ):
             ns = {"functools": functools}
             exec(ast.get_source_segment(src, node), ns)
             return ns["make_fast_generate_wrapper"]
@@ -29,7 +32,9 @@ class _SamplingParams:
     pass
 
 
-_SamplingParams.__name__ = "SamplingParams"  # match by class name, no vllm import needed
+_SamplingParams.__name__ = (
+    "SamplingParams"  # match by class name, no vllm import needed
+)
 
 
 def _wrapper():
@@ -56,14 +61,19 @@ def test_fast_generate_slow_guard():
     # reject every vLLM-only shape
     assert _rejects(lambda: w("hello"), "fast_inference=True")
     assert _rejects(
-        lambda: w({"prompt": "hi", "multi_modal_data": {"image": None}}), "fast_inference=True"
+        lambda: w({"prompt": "hi", "multi_modal_data": {"image": None}}),
+        "fast_inference=True",
     )
     assert _rejects(lambda: w(["a", "b"]), "fast_inference=True")
-    assert _rejects(lambda: w([{"prompt": "hi"}]), "fast_inference=True")  # list of prompt dicts
+    assert _rejects(
+        lambda: w([{"prompt": "hi"}]), "fast_inference=True"
+    )  # list of prompt dicts
     assert _rejects(
         lambda: w({"prompt_token_ids": [1, 2, 3]}), "fast_inference=True"
     )  # vLLM TokensPrompt
-    assert _rejects(lambda: w(prompts = "hello"), "fast_inference=True")  # vLLM `prompts` kwarg
+    assert _rejects(
+        lambda: w(prompts = "hello"), "fast_inference=True"
+    )  # vLLM `prompts` kwarg
     assert _rejects(
         lambda: w(prompts = [{"prompt": "hi"}]), "fast_inference=True"
     )  # vLLM `prompts` kwarg list

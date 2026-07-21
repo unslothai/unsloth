@@ -44,8 +44,12 @@ def resolve_effective_use_xet(use_xet: bool) -> bool:
 
 
 def resolve_transport(use_xet: bool) -> str:
-    transport = download_registry.TRANSPORT_XET if use_xet else download_registry.TRANSPORT_HTTP
-    unavailable_reason = download_registry.download_transport_unavailable_reason(transport)
+    transport = (
+        download_registry.TRANSPORT_XET if use_xet else download_registry.TRANSPORT_HTTP
+    )
+    unavailable_reason = download_registry.download_transport_unavailable_reason(
+        transport
+    )
     if unavailable_reason is not None:
         raise HTTPException(status_code = 400, detail = unavailable_reason)
     return transport
@@ -67,7 +71,9 @@ def spawn_worker(
     shared ``.incomplete`` (e.g. bundled mmproj) is never deleted.
     """
     cwd = backend_dir()
-    mode = download_registry.TRANSPORT_XET if use_xet else download_registry.TRANSPORT_HTTP
+    mode = (
+        download_registry.TRANSPORT_XET if use_xet else download_registry.TRANSPORT_HTTP
+    )
     env = os.environ.copy()
     if protected_blob_hashes:
         env["UNSLOTH_PROTECTED_BLOB_HASHES"] = ",".join(sorted(protected_blob_hashes))
@@ -95,7 +101,9 @@ def spawn_worker(
     if hf_token:
         env["HF_TOKEN"] = hf_token
     existing_path = env.get("PYTHONPATH", "")
-    env["PYTHONPATH"] = f"{cwd}{os.pathsep}{existing_path}" if existing_path else str(cwd)
+    env["PYTHONPATH"] = (
+        f"{cwd}{os.pathsep}{existing_path}" if existing_path else str(cwd)
+    )
     return subprocess.Popen(
         [
             sys.executable,
@@ -242,7 +250,9 @@ def finalize_worker_exit(
                     f"{label}: {stderr_text}"
                 )
             else:
-                logger.info(f"{log_prefix} worker diagnostics for {label}: {stderr_text}")
+                logger.info(
+                    f"{log_prefix} worker diagnostics for {label}: {stderr_text}"
+                )
         logger.info(f"{log_prefix} complete: {label}")
         # Defensive cleanup: the canonical clear is at download-start; this
         # catches the rare case where that failed but the download succeeded.
@@ -299,7 +309,9 @@ def _set_retry_failure_state(
         download_registry.persist_cancel_marker(
             repo_type,
             repo_id,
-            metadata.variant if metadata is not None and metadata.variant else fallback_variant,
+            metadata.variant
+            if metadata is not None and metadata.variant
+            else fallback_variant,
             metadata.transport
             if metadata is not None and metadata.transport
             else fallback_transport,
@@ -333,7 +345,9 @@ def _try_http_retry(
     """
     original_metadata = registry.get_job_metadata(key)
     if original_metadata is None:
-        logger.debug("%s XET retry skipped for %s; metadata unavailable", log_prefix, label)
+        logger.debug(
+            "%s XET retry skipped for %s; metadata unavailable", log_prefix, label
+        )
         _set_retry_failure_state(
             registry,
             key,
@@ -580,11 +594,15 @@ def register_worker(
             try:
                 kill_and_reap_process(proc, label = label, logger = logger)
             except Exception:
-                logger.exception("failed to reap worker after watcher crash for %s", key)
+                logger.exception(
+                    "failed to reap worker after watcher crash for %s", key
+                )
             try:
                 registry.drop_process(key, proc)
             except Exception:
-                logger.exception("failed to drop worker after watcher crash for %s", key)
+                logger.exception(
+                    "failed to drop worker after watcher crash for %s", key
+                )
             try:
                 registry.set_job(key, "error", "download watcher crashed")
             except Exception:
@@ -718,13 +736,18 @@ def idle_status(
 
 
 def active_download_refs(
-    registry: download_registry.DownloadRegistry, repo_id: Optional[str], *, with_variant: bool
+    registry: download_registry.DownloadRegistry,
+    repo_id: Optional[str],
+    *,
+    with_variant: bool,
 ) -> list[ActiveDownload]:
     downloads: list[ActiveDownload] = []
     for ref in registry.active_job_refs(repo_id):
         metadata = ref.metadata
         if with_variant:
-            ref_repo_id = metadata.repo_id if metadata is not None else ref.key.split("::", 1)[0]
+            ref_repo_id = (
+                metadata.repo_id if metadata is not None else ref.key.split("::", 1)[0]
+            )
             if metadata is not None:
                 variant = metadata.variant
             else:

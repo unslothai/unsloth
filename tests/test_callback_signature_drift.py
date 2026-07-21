@@ -157,7 +157,9 @@ def _func_arity(node: ast.AST) -> tuple[int, bool] | None:
     return arity, accepts_var
 
 
-def discover_producers(roots: list[pathlib.Path]) -> dict[str, list[tuple[pathlib.Path, int]]]:
+def discover_producers(
+    roots: list[pathlib.Path],
+) -> dict[str, list[tuple[pathlib.Path, int]]]:
     """Walk every .py under each root and return {cb_list_attr: [(file, arity), ...]}."""
     producers: dict[str, list[tuple[pathlib.Path, int]]] = {}
     for root in roots:

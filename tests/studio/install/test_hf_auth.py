@@ -21,7 +21,9 @@ sys.modules[_SPEC.name] = mod
 _SPEC.loader.exec_module(mod)
 
 _TOKEN_VARS = ("GH_TOKEN", "GITHUB_TOKEN", "HF_TOKEN", "HUGGING_FACE_HUB_TOKEN")
-HF_URL = "https://huggingface.co/ggml-org/models/resolve/main/tinyllamas/stories260K.gguf"
+HF_URL = (
+    "https://huggingface.co/ggml-org/models/resolve/main/tinyllamas/stories260K.gguf"
+)
 GH_URL = "https://api.github.com/repos/unslothai/llama.cpp/releases"
 
 

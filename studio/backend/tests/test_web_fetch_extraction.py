@@ -162,7 +162,8 @@ def test_inline_style_display_none_important_is_dropped():
 
 def test_inline_style_display_none_among_other_declarations():
     html = (
-        "<body><p>keep</p>" '<div style="color: red; display : none ; margin:0">gone</div></body>'
+        "<body><p>keep</p>"
+        '<div style="color: red; display : none ; margin:0">gone</div></body>'
     )
     out = html_to_markdown(html)
     assert "keep" in out
@@ -581,14 +582,14 @@ def test_looks_like_html_markdown_with_leading_fenced_example_stays_markdown():
     # A Markdown README OPENING with a fenced HTML example must not be sniffed as
     # HTML just because a doctype/tag appears in the first 256 chars; html_to_markdown
     # would corrupt the fences and prose.
-    fenced = (
-        "```html\n<!DOCTYPE html>\n<html><body><div>hi</div></body></html>\n```\n\n# Real README\n"
-    )
+    fenced = "```html\n<!DOCTYPE html>\n<html><body><div>hi</div></body></html>\n```\n\n# Real README\n"
     assert not _looks_like_html(fenced)
     # Prose that mentions a tag inline, and a centered-logo README that opens
     # with <p align>/<div align>/<h1 align>, also stay Markdown.
     assert not _looks_like_html("Use the <html> element to start a page.")
-    assert not _looks_like_html('<p align="center"><img src="logo.png"></p>\n\n# Project\n')
+    assert not _looks_like_html(
+        '<p align="center"><img src="logo.png"></p>\n\n# Project\n'
+    )
     assert not _looks_like_html('<div align="center">\n\n# Project\n\n</div>\n')
     assert not _looks_like_html('<h1 align="center">Project</h1>\n\nMarkdown body.\n')
     # An autolink is not a tag opener.
@@ -797,7 +798,9 @@ def test_hidden_paragraph_with_inline_child_implicitly_closed_by_block():
     # A browser closes an open <p> when a <div> arrives, even with an unclosed
     # <span> on top of it. The hidden region must end there, not swallow the
     # following visible blocks.
-    html = "<body><p hidden><span>secret<div>visible div</div><p>visible paragraph</body>"
+    html = (
+        "<body><p hidden><span>secret<div>visible div</div><p>visible paragraph</body>"
+    )
     out = html_to_markdown(html)
     assert "secret" not in out
     assert "visible div" in out
@@ -868,7 +871,8 @@ def test_nested_hidden_table_does_not_leak_inner_cells():
 
 def test_many_tiny_articles_do_not_displace_substantial_main():
     cards = "".join(
-        f"<article><h2>Teaser {i}</h2><p>Advertisement card blurb.</p></article>" for i in range(12)
+        f"<article><h2>Teaser {i}</h2><p>Advertisement card blurb.</p></article>"
+        for i in range(12)
     )
     main_body = "Authoritative main documentation content. " * 30
     html = f"<body>{cards}<main><h1>Real page</h1><p>{main_body}</p></main></body>"
@@ -899,7 +903,9 @@ def test_truncated_open_article_scope_is_scored_and_preferred():
     # _fetch_url_raw caps large pages, so the download can end before the closing
     # </article>. The scope is still the main content and must be preferred over the
     # whole document (which re-leaks the page chrome).
-    chrome = "<nav>Skip to content</nav><div>Repository file tree and page chrome.</div>"
+    chrome = (
+        "<nav>Skip to content</nav><div>Repository file tree and page chrome.</div>"
+    )
     article_body = "Real README documentation body text. " * 20
     # No closing </article> / </body> -- the fetch cap truncated the page.
     html = f"<body>{chrome}<article><h1>Guide</h1><p>{article_body}</p>"
@@ -909,7 +915,9 @@ def test_truncated_open_article_scope_is_scored_and_preferred():
 
 
 def test_truncated_open_main_scope_is_scored_and_preferred():
-    chrome = "<nav>Skip to content</nav><div>Repository file tree and page chrome.</div>"
+    chrome = (
+        "<nav>Skip to content</nav><div>Repository file tree and page chrome.</div>"
+    )
     main_body = "Authoritative main documentation content. " * 30
     html = f"<body>{chrome}<main><h1>Doc</h1><p>{main_body}</p>"
     out = html_to_markdown(html, main_content = True)
@@ -956,7 +964,9 @@ def test_fetch_url_raw_overall_deadline_aborts_across_redirects(monkeypatch):
         "_validate_and_resolve_host",
         lambda host, port: (True, "", "203.0.113.7"),
     )
-    monkeypatch.setattr(urllib.request, "build_opener", lambda *handlers: _RedirectingOpener())
+    monkeypatch.setattr(
+        urllib.request, "build_opener", lambda *handlers: _RedirectingOpener()
+    )
 
     err, body, content_type = tools_mod._fetch_url_raw(
         "https://example.com/start",
@@ -1148,7 +1158,9 @@ def test_web_search_query_cancelled_skips_search(monkeypatch):
     assert called["n"] == 0
 
 
-def test_fetch_page_text_markdown_readme_with_leading_block_tag_stays_markdown(monkeypatch):
+def test_fetch_page_text_markdown_readme_with_leading_block_tag_stays_markdown(
+    monkeypatch,
+):
     # A raw-Markdown README that OPENS with an HTML block tag (<blockquote>, <ul>,
     # <pre>, ...) must not be run through html_to_markdown, which would collapse its
     # headings/list/fence. Only a real HTML document (doctype / <html>) is converted.

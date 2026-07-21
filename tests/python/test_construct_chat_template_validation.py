@@ -92,7 +92,9 @@ class _SuccessFakeTokenizer(_FakeTokenizer):
         "User: {INPUT}\n{OUTPUT}</s>User: {INPUT}\n{OUTPUT}</s>",
     ],
 )
-def test_chat_template_does_not_leak_sentinel_when_section_starts_with_it(chat_template):
+def test_chat_template_does_not_leak_sentinel_when_section_starts_with_it(
+    chat_template,
+):
     """When an input/output section begins with the {INPUT}/{OUTPUT} sentinel, the
     generated Jinja template must not keep the literal sentinel text. The `startswith`
     branch in the internal `process()` helper used to slice from `find()` (which is 0
@@ -117,7 +119,9 @@ def _render(jinja_template, messages):
     from jinja2.sandbox import ImmutableSandboxedEnvironment
 
     env = ImmutableSandboxedEnvironment()
-    env.globals["raise_exception"] = lambda message: (_ for _ in ()).throw(RuntimeError(message))
+    env.globals["raise_exception"] = lambda message: (_ for _ in ()).throw(
+        RuntimeError(message)
+    )
     return env.from_string(jinja_template).render(
         messages = messages,
         bos_token = "<s>",
@@ -186,7 +190,9 @@ def test_static_prefix_without_system_still_rejects_system_message():
         default_system_message = None,
         extra_eos_tokens = ["</s>"],
     )
-    with pytest.raises(RuntimeError, match = "Only user and assistant roles are supported!"):
+    with pytest.raises(
+        RuntimeError, match = "Only user and assistant roles are supported!"
+    ):
         _render(
             jinja_template,
             [

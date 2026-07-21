@@ -112,7 +112,9 @@ def test_preview_routes_and_signed_file(rag_home, stub_embeddings):
     assert res
     chunk_id = res[0]["chunkId"]
 
-    pt = c.get(f"/api/rag/documents/{doc_id}/preview-target", params = {"chunk_id": chunk_id}).json()
+    pt = c.get(
+        f"/api/rag/documents/{doc_id}/preview-target", params = {"chunk_id": chunk_id}
+    ).json()
     assert pt["mediaKind"] == "pdf"
     assert pt["text"]
 
@@ -148,7 +150,9 @@ def test_locator_handles_midword_anchor_and_locates_line():
 
     doc = pymupdf.open()
     page = doc.new_page()
-    page.insert_text((72, 200), "alpha beta gamma delta epsilon zeta eta theta", fontsize = 12)
+    page.insert_text(
+        (72, 200), "alpha beta gamma delta epsilon zeta eta theta", fontsize = 12
+    )
     page_text = doc[0].get_text("text")  # mirrors what the parser stores
     start = page_text.index("lpha")
     end = page_text.index("theta") + 3
@@ -174,7 +178,9 @@ def test_locator_anchors_through_markdown_table_pipes():
 
     doc = pymupdf.open()
     page = doc.new_page()
-    page.insert_text((72, 200), "Quarter Revenue Growth Q1 sales strong here", fontsize = 12)
+    page.insert_text(
+        (72, 200), "Quarter Revenue Growth Q1 sales strong here", fontsize = 12
+    )
     # What the Markdown parser stores for the row (cells joined by pipes, no spaces).
     page_text = "|Quarter|Revenue|Growth|Q1|sales|strong|here|"
     match = LocatorMatch(page_index = 0, page_number = 1, start = 0, end = len(page_text))
@@ -189,5 +195,7 @@ def test_sign_verify_roundtrip(rag_home):
 
     tok = rag_routes._sign_document("doc-123")
     assert rag_routes._verify_document_token(tok) == "doc-123"
-    assert rag_routes._verify_document_token("doc-123.0.deadbeef") is None  # expired/bad
+    assert (
+        rag_routes._verify_document_token("doc-123.0.deadbeef") is None
+    )  # expired/bad
     assert rag_routes._verify_document_token("garbage") is None

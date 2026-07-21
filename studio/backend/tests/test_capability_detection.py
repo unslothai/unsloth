@@ -134,7 +134,9 @@ class TestIsVlm:
         assert _is_vlm(c) is False
 
     def test_whisper_audio_not_vision(self):
-        c = _cfg(model_type = "whisper", architectures = ["WhisperForConditionalGeneration"])
+        c = _cfg(
+            model_type = "whisper", architectures = ["WhisperForConditionalGeneration"]
+        )
         assert _is_vlm(c) is False
 
     def test_csm_audio_not_vision(self):
@@ -175,7 +177,9 @@ class TestRawConfigVisionReader:
                 {
                     "model_type": "deepseek_vl_v2",
                     "architectures": ["DeepseekOCRForCausalLM"],
-                    "auto_map": {"AutoConfig": "modeling_deepseekocr.DeepseekOCRConfig"},
+                    "auto_map": {
+                        "AutoConfig": "modeling_deepseekocr.DeepseekOCRConfig"
+                    },
                     "vision_config": {},
                     "projector_config": {},
                 },
@@ -190,7 +194,13 @@ class TestRawConfigVisionReader:
                 },
                 True,
             ),
-            ({"model_type": "glm4_moe_lite", "architectures": ["Glm4MoeLiteForCausalLM"]}, False),
+            (
+                {
+                    "model_type": "glm4_moe_lite",
+                    "architectures": ["Glm4MoeLiteForCausalLM"],
+                },
+                False,
+            ),
             (
                 {
                     "model_type": "gemma4_unified",
@@ -199,12 +209,21 @@ class TestRawConfigVisionReader:
                 },
                 True,
             ),
-            ({"model_type": "t5", "architectures": ["T5ForConditionalGeneration"]}, False),
             (
-                {"model_type": "whisper", "architectures": ["WhisperForConditionalGeneration"]},
+                {"model_type": "t5", "architectures": ["T5ForConditionalGeneration"]},
                 False,
             ),
-            ({"model_type": "csm", "architectures": ["CsmForConditionalGeneration"]}, False),
+            (
+                {
+                    "model_type": "whisper",
+                    "architectures": ["WhisperForConditionalGeneration"],
+                },
+                False,
+            ),
+            (
+                {"model_type": "csm", "architectures": ["CsmForConditionalGeneration"]},
+                False,
+            ),
         ],
     )
     def test_reader(self, tmp_path, payload, expected):
@@ -293,7 +312,9 @@ def test_no_code_execution_on_detection(tmp_path):
     ns = _load_config_for_gpu_estimate(path)
     raw = _load_config_json(path)
 
-    assert not sentinel.exists(), "SECURITY FAILURE: auto_map code executed during detection"
+    assert (
+        not sentinel.exists()
+    ), "SECURITY FAILURE: auto_map code executed during detection"
     assert result is True  # detected as vision via raw vision_config, no exec
     assert ns is not None and getattr(ns, "max_position_embeddings", None) == 4096
     assert raw is not None and raw.get("model_type") == "deepseek_vl_v2"
@@ -332,24 +353,55 @@ def test_no_code_execution_on_detection(tmp_path):
             True,
         ),
         # text / seq2seq / audio that share the ForConditionalGeneration suffix
-        ({"model_type": "glm4_moe_lite", "architectures": ["Glm4MoeLiteForCausalLM"]}, False),
+        (
+            {
+                "model_type": "glm4_moe_lite",
+                "architectures": ["Glm4MoeLiteForCausalLM"],
+            },
+            False,
+        ),
         ({"model_type": "t5", "architectures": ["T5ForConditionalGeneration"]}, False),
-        ({"model_type": "bart", "architectures": ["BartForConditionalGeneration"]}, False),
-        ({"model_type": "whisper", "architectures": ["WhisperForConditionalGeneration"]}, False),
-        ({"model_type": "csm", "architectures": ["CsmForConditionalGeneration"]}, False),
+        (
+            {"model_type": "bart", "architectures": ["BartForConditionalGeneration"]},
+            False,
+        ),
+        (
+            {
+                "model_type": "whisper",
+                "architectures": ["WhisperForConditionalGeneration"],
+            },
+            False,
+        ),
+        (
+            {"model_type": "csm", "architectures": ["CsmForConditionalGeneration"]},
+            False,
+        ),
         # registry-native VLMs via model_type
-        ({"model_type": "qwen2_vl", "architectures": ["Qwen2VLForConditionalGeneration"]}, True),
-        ({"model_type": "llava", "architectures": ["LlavaForConditionalGeneration"]}, True),
+        (
+            {
+                "model_type": "qwen2_vl",
+                "architectures": ["Qwen2VLForConditionalGeneration"],
+            },
+            True,
+        ),
+        (
+            {"model_type": "llava", "architectures": ["LlavaForConditionalGeneration"]},
+            True,
+        ),
     ],
 )
 def test_is_vision_model_end_to_end(tmp_path, cfg, expected):
     path = _write_model_dir(tmp_path, cfg)
-    assert is_vision_model(path) is expected, f"{cfg['model_type']} expected vision={expected}"
+    assert (
+        is_vision_model(path) is expected
+    ), f"{cfg['model_type']} expected vision={expected}"
 
 
 def test_registry_derivation():
     # Registry-derived sets are large and include the curated repo-code VLMs.
-    assert len(_VLM_MODEL_TYPES) >= 50, f"_VLM_MODEL_TYPES too small: {len(_VLM_MODEL_TYPES)}"
+    assert (
+        len(_VLM_MODEL_TYPES) >= 50
+    ), f"_VLM_MODEL_TYPES too small: {len(_VLM_MODEL_TYPES)}"
     assert (
         len(_AUDIO_ONLY_MODEL_TYPES) >= 20
     ), f"_AUDIO_ONLY too small: {len(_AUDIO_ONLY_MODEL_TYPES)}"

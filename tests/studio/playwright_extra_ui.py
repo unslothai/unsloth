@@ -127,7 +127,9 @@ with sync_playwright() as p:
     form_err: Exception | None = None
     for _form_attempt in range(3):
         try:
-            page.goto(f"{BASE}/change-password", wait_until = "domcontentloaded", timeout = 60_000)
+            page.goto(
+                f"{BASE}/change-password", wait_until = "domcontentloaded", timeout = 60_000
+            )
             try:
                 page.wait_for_load_state("networkidle", timeout = 30_000)
             except Exception:
@@ -275,14 +277,20 @@ with sync_playwright() as p:
     step("Compare tab: send to two panes")
     # Compare lives in the composer "Tools and attachments" menu.
     compare_opened = False
-    plus_btn = page.get_by_role("button", name = re.compile(r"Tools and attachments", re.I)).first
+    plus_btn = page.get_by_role(
+        "button", name = re.compile(r"Tools and attachments", re.I)
+    ).first
     if plus_btn.count() > 0:
         plus_btn.click(force = True)
         page.wait_for_timeout(400)
-        compare_item = page.get_by_role("menuitem", name = re.compile(r"Compare chat", re.I)).first
+        compare_item = page.get_by_role(
+            "menuitem", name = re.compile(r"Compare chat", re.I)
+        ).first
         if compare_item.count() == 0:
             # Fallback: Compare chat may be under the "More" submenu.
-            more_trigger = page.get_by_role("menuitem", name = re.compile(r"^More$", re.I)).first
+            more_trigger = page.get_by_role(
+                "menuitem", name = re.compile(r"^More$", re.I)
+            ).first
             if more_trigger.count() > 0:
                 more_trigger.hover()
                 page.wait_for_timeout(400)
@@ -357,7 +365,9 @@ with sync_playwright() as p:
                         arg = ok_count_before + 4,
                         timeout = 60_000,
                     )
-                    info("OK Compare: 4 total new assistant bubbles after second prompt")
+                    info(
+                        "OK Compare: 4 total new assistant bubbles after second prompt"
+                    )
                 except Exception as exc:
                     runtime_warn(
                         f"Compare: 4 bubbles didn't appear (panes likely "
@@ -378,7 +388,9 @@ with sync_playwright() as p:
     page.wait_for_timeout(1500)
     shoot("05-recipes-list")
     # Template cards render as <button> elements.
-    templates = page.locator("main button").filter(has_not_text = re.compile(r"^(\+|Create)"))
+    templates = page.locator("main button").filter(
+        has_not_text = re.compile(r"^(\+|Create)")
+    )
     n_templates = templates.count()
     info(f"recipe templates visible: {n_templates}")
     if n_templates == 0:
@@ -412,7 +424,9 @@ with sync_playwright() as p:
         if "/export" not in page.url:
             soft_fail(f"chat-only mode should keep /export reachable; url={page.url}")
         else:
-            unavailable = page.get_by_text(re.compile(r"Export unavailable", re.I)).first
+            unavailable = page.get_by_text(
+                re.compile(r"Export unavailable", re.I)
+            ).first
             if unavailable.count() == 0:
                 soft_fail("chat-only /export did not show the export unavailable gate")
             else:
@@ -459,12 +473,16 @@ with sync_playwright() as p:
     shoot("08-studio")
     if chat_only:
         if "/studio" in page.url:
-            soft_fail(f"chat-only mode should redirect /studio -> /chat; url={page.url}")
+            soft_fail(
+                f"chat-only mode should redirect /studio -> /chat; url={page.url}"
+            )
         else:
             info(f"OK chat-only redirected /studio -> {page.url}")
     else:
         for tab_name in ("Configure", "Current run", "History"):
-            tab = page.get_by_role("tab", name = re.compile(rf"^\s*{tab_name}\s*$", re.I)).first
+            tab = page.get_by_role(
+                "tab", name = re.compile(rf"^\s*{tab_name}\s*$", re.I)
+            ).first
             if tab.count() == 0:
                 soft_fail(f"tab '{tab_name}' not found in /studio")
             else:
@@ -525,7 +543,9 @@ with sync_playwright() as p:
                     info(f"OK Settings tab '{tab_name}' body length={body_text}")
                     seen_tabs.append(tab_name)
                 else:
-                    soft_fail(f"Settings tab '{tab_name}' body suspiciously short: {body_text}")
+                    soft_fail(
+                        f"Settings tab '{tab_name}' body suspiciously short: {body_text}"
+                    )
             except Exception as exc:
                 soft_fail(f"Settings tab '{tab_name}' click failed: {exc!r}")
         shoot("10-settings-tabs-visited")

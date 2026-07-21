@@ -28,7 +28,9 @@ ST_TAGS = [
 # Top-level: SentenceTransformer + SentenceTransformerTrainer must be importable.
 @pytest.mark.parametrize("tag", ST_TAGS)
 def test_st_top_level_exports(tag: str):
-    src = fetch_text("UKPLab/sentence-transformers", tag, "sentence_transformers/__init__.py")
+    src = fetch_text(
+        "UKPLab/sentence-transformers", tag, "sentence_transformers/__init__.py"
+    )
     assert src is not None, f"{tag}: sentence_transformers/__init__.py missing"
     needed = ("SentenceTransformer", "SentenceTransformerTrainer")
     missing = [n for n in needed if n not in src]
@@ -85,10 +87,14 @@ def test_st_models_re_exports(tag: str):
             if src and has_def(src, cls, "class"):
                 break
         else:
-            pytest.fail(f"{tag}: ST 5.4+ layout: class {cls} not found in any of {paths}")
+            pytest.fail(
+                f"{tag}: ST 5.4+ layout: class {cls} not found in any of {paths}"
+            )
 
     # The backward-compat shim must be wired so `from ...models import Pooling` keeps working.
-    top = fetch_text("UKPLab/sentence-transformers", tag, "sentence_transformers/__init__.py")
+    top = fetch_text(
+        "UKPLab/sentence-transformers", tag, "sentence_transformers/__init__.py"
+    )
     assert top is not None, f"{tag}: sentence_transformers/__init__.py missing"
     has_shim = bool(
         re.search(r"setup_deprecated_module_imports\s*\(", top)
@@ -155,7 +161,9 @@ def test_st_transformer_load_accepts_unsloth_kwargs(tag: str):
             f"(#6881) before it silently falls back to Transformer(...)."
         )
         return
-    pytest.skip(f"{tag}: Transformer.load not locatable in {candidates} (may be inherited)")
+    pytest.skip(
+        f"{tag}: Transformer.load not locatable in {candidates} (may be inherited)"
+    )
 
 
 # sentence_transformers.util: import_from_string + load_dir_path helpers unsloth calls.
@@ -168,7 +176,9 @@ def test_st_util_helpers(tag: str):
         "sentence_transformers/util/__init__.py",
     ]
     hit = first_match("UKPLab/sentence-transformers", tag, candidates)
-    assert hit is not None, f"{tag}: sentence_transformers/util[.py|/__init__.py] both missing"
+    assert (
+        hit is not None
+    ), f"{tag}: sentence_transformers/util[.py|/__init__.py] both missing"
     _path, src = hit
     for fn in ("import_from_string", "load_dir_path"):
         defined_here = has_def(src, fn, "func")

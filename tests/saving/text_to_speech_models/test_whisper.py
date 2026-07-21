@@ -178,9 +178,13 @@ expected_phrases = [
 ]
 
 transcribed_lower = transcribed_text["text"].lower()
-all_phrases_found = all(phrase.lower() in transcribed_lower for phrase in expected_phrases)
+all_phrases_found = all(
+    phrase.lower() in transcribed_lower for phrase in expected_phrases
+)
 
-assert all_phrases_found, f"Expected phrases not found in transcription: {transcribed_text['text']}"
+assert (
+    all_phrases_found
+), f"Expected phrases not found in transcription: {transcribed_text['text']}"
 print("✅ Transcription contains all expected phrases!")
 
 

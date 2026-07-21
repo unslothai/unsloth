@@ -43,7 +43,9 @@ SEARCH_TOOL = {
 }
 
 _CALL_XML = '<tool_call>{"name": "lookup", "arguments": {"q": "cats"}}</tool_call>'
-_SEARCH_XML = '<tool_call>{"name": "search", "arguments": {"query": "dogs"}}</tool_call>'
+_SEARCH_XML = (
+    '<tool_call>{"name": "search", "arguments": {"query": "dogs"}}</tool_call>'
+)
 
 
 class _Request:
@@ -145,7 +147,9 @@ def _call(payload, monkeypatch, backend, **install_kwargs):
     _install(monkeypatch, backend, **install_kwargs)
 
     async def _run():
-        return await openai_chat_completions(payload, request = _Request(), current_subject = "u")
+        return await openai_chat_completions(
+            payload, request = _Request(), current_subject = "u"
+        )
 
     return asyncio.run(_run())
 
@@ -340,7 +344,9 @@ def test_forced_tool_choice_narrows_promotion(monkeypatch):
 
 def test_parallel_cap_non_streaming(monkeypatch):
     backend = _ScriptedBackend(_fixed(_CALL_XML + _SEARCH_XML))
-    payload = _request(tools = [LOOKUP_TOOL, SEARCH_TOOL], stream = False, parallel_tool_calls = False)
+    payload = _request(
+        tools = [LOOKUP_TOOL, SEARCH_TOOL], stream = False, parallel_tool_calls = False
+    )
     body = _json_body(_call(payload, monkeypatch, backend))
     calls = body["choices"][0]["message"]["tool_calls"]
     assert len(calls) == 1
@@ -354,7 +360,9 @@ def test_usage_recorded_when_stats_present(monkeypatch):
     monitor = _install(monkeypatch, backend)
 
     async def _run():
-        return await openai_chat_completions(payload, request = _Request(), current_subject = "u")
+        return await openai_chat_completions(
+            payload, request = _Request(), current_subject = "u"
+        )
 
     asyncio.run(_run())
     [entry] = monitor.snapshot()
@@ -410,7 +418,11 @@ def test_nudge_double_failure_relays_original(monkeypatch):
 
 def test_streaming_heals_split_call_into_one_delta(monkeypatch):
     # Cumulative snapshots that build the call across many increments.
-    pieces = ["<tool", '<tool_call>{"name": "loo', '<tool_call>{"name": "lookup", "argum']
+    pieces = [
+        "<tool",
+        '<tool_call>{"name": "loo',
+        '<tool_call>{"name": "lookup", "argum',
+    ]
     cumulative = pieces + [_CALL_XML]
     backend = _ScriptedBackend(_fixed(*cumulative))
     payload = _request(tools = [LOOKUP_TOOL], stream = True)
@@ -419,7 +431,10 @@ def test_streaming_heals_split_call_into_one_delta(monkeypatch):
     tool_deltas = [
         tc
         for o in objs
-        for tc in (o.get("choices", [{}])[0].get("delta", {}) or {}).get("tool_calls", []) or []
+        for tc in (o.get("choices", [{}])[0].get("delta", {}) or {}).get(
+            "tool_calls", []
+        )
+        or []
     ]
     assert len(tool_deltas) == 1
     assert tool_deltas[0]["function"]["name"] == "lookup"
@@ -464,7 +479,10 @@ def test_streaming_cancel_does_not_finalize_tool_call(monkeypatch):
     tool_deltas = [
         tc
         for o in objs
-        for tc in (o.get("choices", [{}])[0].get("delta", {}) or {}).get("tool_calls", []) or []
+        for tc in (o.get("choices", [{}])[0].get("delta", {}) or {}).get(
+            "tool_calls", []
+        )
+        or []
     ]
     assert tool_deltas == []  # no tool promoted after cancel
     finishes = [
@@ -511,7 +529,9 @@ def test_streaming_gen_stream_error_is_not_model_text(monkeypatch):
     chunks = _collect_sse(response)
     objs = _sse_objects(chunks)
 
-    deltas = [o.get("choices", [{}])[0].get("delta", {}) for o in objs if o.get("choices")]
+    deltas = [
+        o.get("choices", [{}])[0].get("delta", {}) for o in objs if o.get("choices")
+    ]
     assert any("partial" in json.dumps(delta) for delta in deltas)
     assert not any("/tmp/secret" in json.dumps(delta) for delta in deltas)
     errors = [o["error"]["message"] for o in objs if "error" in o]
@@ -549,20 +569,28 @@ def test_streaming_repeated_snapshot_no_duplicate_call(monkeypatch):
     tool_deltas = [
         tc
         for o in objs
-        for tc in (o.get("choices", [{}])[0].get("delta", {}) or {}).get("tool_calls", []) or []
+        for tc in (o.get("choices", [{}])[0].get("delta", {}) or {}).get(
+            "tool_calls", []
+        )
+        or []
     ]
     assert len(tool_deltas) == 1
 
 
 def test_streaming_parallel_cap(monkeypatch):
     backend = _ScriptedBackend(_fixed(_CALL_XML + _SEARCH_XML))
-    payload = _request(tools = [LOOKUP_TOOL, SEARCH_TOOL], stream = True, parallel_tool_calls = False)
+    payload = _request(
+        tools = [LOOKUP_TOOL, SEARCH_TOOL], stream = True, parallel_tool_calls = False
+    )
     response = _call(payload, monkeypatch, backend)
     objs = _sse_objects(_collect_sse(response))
     tool_deltas = [
         tc
         for o in objs
-        for tc in (o.get("choices", [{}])[0].get("delta", {}) or {}).get("tool_calls", []) or []
+        for tc in (o.get("choices", [{}])[0].get("delta", {}) or {}).get(
+            "tool_calls", []
+        )
+        or []
     ]
     assert len(tool_deltas) == 1
     assert tool_deltas[0]["function"]["name"] == "lookup"
@@ -658,8 +686,12 @@ def test_discarded_nudge_retry_reports_first_attempt_usage(monkeypatch):
     # Double-failure nudge: the first response is delivered, but the retry's
     # generate() overwrites stats_holder. The monitor must record the FIRST
     # attempt's usage, not the discarded retry's.
-    first_stats = {"usage": {"prompt_tokens": 7, "completion_tokens": 3, "total_tokens": 10}}
-    retry_stats = {"usage": {"prompt_tokens": 99, "completion_tokens": 99, "total_tokens": 198}}
+    first_stats = {
+        "usage": {"prompt_tokens": 7, "completion_tokens": 3, "total_tokens": 10}
+    }
+    retry_stats = {
+        "usage": {"prompt_tokens": 99, "completion_tokens": 99, "total_tokens": 198}
+    }
 
     class _PerCallStatsBackend(_ScriptedBackend):
         def __init__(self):
@@ -687,7 +719,9 @@ def test_discarded_nudge_retry_reports_first_attempt_usage(monkeypatch):
     monitor = _install(monkeypatch, backend)
 
     async def _run():
-        return await openai_chat_completions(payload, request = _Request(), current_subject = "u")
+        return await openai_chat_completions(
+            payload, request = _Request(), current_subject = "u"
+        )
 
     asyncio.run(_run())
     assert len(backend.calls) == 2  # first attempt + one discarded retry
@@ -703,7 +737,9 @@ def test_monitor_records_healed_call_not_raw_xml(monkeypatch):
     monitor = _install(monkeypatch, backend)
 
     async def _run():
-        return await openai_chat_completions(payload, request = _Request(), current_subject = "u")
+        return await openai_chat_completions(
+            payload, request = _Request(), current_subject = "u"
+        )
 
     asyncio.run(_run())
     snap = monitor.snapshot(include_details = True)
@@ -721,7 +757,9 @@ def test_streaming_monitor_records_healed_call_not_raw_xml(monkeypatch):
     monitor = _install(monkeypatch, backend)
 
     async def _run():
-        return await openai_chat_completions(payload, request = _Request(), current_subject = "u")
+        return await openai_chat_completions(
+            payload, request = _Request(), current_subject = "u"
+        )
 
     response = asyncio.run(_run())
     _collect_sse(response)
@@ -798,7 +836,9 @@ def test_string_arguments_history_deserialized_for_template(monkeypatch):
         ],
     )
     _json_body(_call(payload, monkeypatch, backend))
-    assistant = next(m for m in backend.calls[0]["messages"] if m["role"] == "assistant")
+    assistant = next(
+        m for m in backend.calls[0]["messages"] if m["role"] == "assistant"
+    )
     assert assistant["tool_calls"][0]["function"]["arguments"] == {"q": "weather"}
 
 
@@ -825,7 +865,9 @@ def test_unparseable_arguments_string_left_untouched(monkeypatch):
     )
     body = _json_body(_call(payload, monkeypatch, backend))
     assert body["choices"][0]["message"]["content"] == "ok"
-    assistant = next(m for m in backend.calls[0]["messages"] if m["role"] == "assistant")
+    assistant = next(
+        m for m in backend.calls[0]["messages"] if m["role"] == "assistant"
+    )
     assert assistant["tool_calls"][0]["function"]["arguments"] == "not json {"
 
 

@@ -61,7 +61,9 @@ def _parse_json_response(text: str) -> Optional[dict[str, Any]]:
     return parsed if isinstance(parsed, dict) else None
 
 
-def _generate_with_backend(backend, messages: list[dict[str, str]], max_tokens: int) -> str:
+def _generate_with_backend(
+    backend, messages: list[dict[str, str]], max_tokens: int
+) -> str:
     cumulative = ""
     for chunk in backend.generate_chat_completion(
         messages = messages,
@@ -159,7 +161,9 @@ def _run_multi_pass_advisor(
         return None
 
     repo = os.environ.get("UNSLOTH_HELPER_MODEL_REPO", DEFAULT_HELPER_MODEL_REPO)
-    variant = os.environ.get("UNSLOTH_HELPER_MODEL_VARIANT", DEFAULT_HELPER_MODEL_VARIANT)
+    variant = os.environ.get(
+        "UNSLOTH_HELPER_MODEL_VARIANT", DEFAULT_HELPER_MODEL_VARIANT
+    )
     backend = None
     try:
         from core.inference.llama_cpp import LlamaCppBackend
@@ -179,7 +183,9 @@ def _run_multi_pass_advisor(
 
         samples_text = _sample_text(columns, samples)
         metadata_text = (
-            json.dumps(dataset_metadata, indent = 2, default = str)[:500] if dataset_metadata else "N/A"
+            json.dumps(dataset_metadata, indent = 2, default = str)[:500]
+            if dataset_metadata
+            else "N/A"
         )
         card_excerpt = (dataset_card or "")[:1200] or "N/A"
         hints = _target_hints(model_name, model_type)
@@ -284,7 +290,9 @@ def _run_multi_pass_advisor(
         system_prompt = ""
         if not pass1.get("is_conversational"):
             user_cols = [col for col, role in column_roles.items() if role == "user"]
-            assistant_cols = [col for col, role in column_roles.items() if role == "assistant"]
+            assistant_cols = [
+                col for col, role in column_roles.items() if role == "assistant"
+            ]
             prompt_raw = _generate_with_backend(
                 backend,
                 [

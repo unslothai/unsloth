@@ -158,7 +158,9 @@ def _changes_from_payload(payload: McpServerUpdate) -> dict:
     if "display_name" in sent:
         name = (payload.display_name or "").strip()
         if not name:
-            raise HTTPException(status_code = 400, detail = "display_name must not be empty")
+            raise HTTPException(
+                status_code = 400, detail = "display_name must not be empty"
+            )
         changes["display_name"] = name
     if "url" in sent:
         changes["url"] = _validate_url(payload.url or "")
@@ -167,11 +169,15 @@ def _changes_from_payload(payload: McpServerUpdate) -> dict:
         changes["headers_json"] = json.dumps(headers) if headers else None
     if "is_enabled" in sent:
         if payload.is_enabled is None:
-            raise HTTPException(status_code = 400, detail = "is_enabled must be true or false")
+            raise HTTPException(
+                status_code = 400, detail = "is_enabled must be true or false"
+            )
         changes["is_enabled"] = payload.is_enabled
     if "use_oauth" in sent:
         if payload.use_oauth is None:
-            raise HTTPException(status_code = 400, detail = "use_oauth must be true or false")
+            raise HTTPException(
+                status_code = 400, detail = "use_oauth must be true or false"
+            )
         changes["use_oauth"] = payload.use_oauth
     # stdio is OAuth-less: drop a stale OAuth flag when switching to a command.
     if "url" in changes and is_stdio(changes["url"]):
@@ -204,7 +210,8 @@ async def update_mcp_server(
     # fastmcp keys tokens by URL and would otherwise let a re-pointed server
     # silently inherit the old account's credentials.
     if bool(old.get("use_oauth")) and (
-        ("url" in changes and changes["url"] != old["url"]) or changes.get("use_oauth") is False
+        ("url" in changes and changes["url"] != old["url"])
+        or changes.get("use_oauth") is False
     ):
         await clear_oauth_tokens_async(old["url"])
     mcp_servers_db.update_server(server_id, changes)
@@ -212,16 +219,23 @@ async def update_mcp_server(
     # them and let the next send re-probe; a rename leaves them valid. Live stdio sessions for the
     # old endpoint close too. Gate on a real value change, not mere presence: the edit dialog
     # resends url/headers/oauth unchanged on a rename, which must not drop the session.
-    if any(changes[k] != old.get(k) for k in changes.keys() & TOOL_CACHE_INVALIDATING_FIELDS):
+    if any(
+        changes[k] != old.get(k)
+        for k in changes.keys() & TOOL_CACHE_INVALIDATING_FIELDS
+    ):
         invalidate_tool_cache(server_id)
         # Narrow to this row's env: another server row sharing the command but
         # with a different env keeps its live sessions.
-        await asyncio.to_thread(close_stdio_sessions, old["url"], parse_server_headers(old))
+        await asyncio.to_thread(
+            close_stdio_sessions, old["url"], parse_server_headers(old)
+        )
     return _row_to_response(mcp_servers_db.get_server(server_id))
 
 
 @router.delete("/{server_id}", status_code = 204)
-async def delete_mcp_server(server_id: str, current_subject: str = Depends(get_current_subject)):
+async def delete_mcp_server(
+    server_id: str, current_subject: str = Depends(get_current_subject)
+):
     old = mcp_servers_db.get_server(server_id)
     if not old:
         raise HTTPException(status_code = 404, detail = "MCP server not found")
@@ -242,7 +256,9 @@ async def refresh_mcp_server_tools(
     # Refresh uses the stored address, so re-check the stdio gate here too: a
     # stdio row from a desktop DB must not spawn on a hosted/network host.
     if is_stdio(server["url"]) and not stdio_mcp_enabled():
-        raise HTTPException(status_code = 400, detail = "stdio MCP servers are disabled on this host")
+        raise HTTPException(
+            status_code = 400, detail = "stdio MCP servers are disabled on this host"
+        )
 
     use_oauth = bool(server.get("use_oauth"))
     try:

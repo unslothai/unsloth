@@ -31,7 +31,9 @@ def _unescape_project_marker(segment: str) -> str:
 
 def _appended_project_marker_index(segment: str) -> int:
     marker_index = segment.rfind(_PROJECT_MARKER)
-    while marker_index >= 0 and segment.startswith(_PROJECT_MARKER_ESCAPE, marker_index):
+    while marker_index >= 0 and segment.startswith(
+        _PROJECT_MARKER_ESCAPE, marker_index
+    ):
         marker_index = segment.rfind(_PROJECT_MARKER, 0, marker_index)
     return marker_index
 
@@ -75,7 +77,10 @@ def build_default_output_dir_name(
         return f"{model_segment}{timestamp_suffix}"
 
     max_project_chars = (
-        _MAX_RUN_DIR_NAME_CHARS - len("model") - len(_PROJECT_MARKER) - len(timestamp_suffix)
+        _MAX_RUN_DIR_NAME_CHARS
+        - len("model")
+        - len(_PROJECT_MARKER)
+        - len(timestamp_suffix)
     )
     project_slug = _trim_segment(project_slug, max_project_chars) or "project"
     project_suffix = f"{_PROJECT_MARKER}{project_slug}{timestamp_suffix}"

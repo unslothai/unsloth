@@ -43,7 +43,11 @@ def _add_doc(conn, scope, doc_id, status, texts):
         conn, scope = scope, filename = f"{doc_id}.txt", sha256 = doc_id, document_id = doc_id
     )
     store.add_chunks(
-        conn, scope, doc_id, [_chunk(t, i) for i, t in enumerate(texts)], [_embed(t) for t in texts]
+        conn,
+        scope,
+        doc_id,
+        [_chunk(t, i) for i, t in enumerate(texts)],
+        [_embed(t) for t in texts],
     )
     store.set_document_status(conn, doc_id, status, num_chunks = len(texts))
 
@@ -63,7 +67,9 @@ def _orphan_job(
 
 
 def _chunk_count(conn, doc_id):
-    return conn.execute("SELECT COUNT(*) FROM chunks WHERE document_id=?", (doc_id,)).fetchone()[0]
+    return conn.execute(
+        "SELECT COUNT(*) FROM chunks WHERE document_id=?", (doc_id,)
+    ).fetchone()[0]
 
 
 def _job_status(conn, doc_id):

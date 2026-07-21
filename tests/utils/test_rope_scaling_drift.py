@@ -193,7 +193,8 @@ def _reference_inv_freq(config, rope_type):
 
 def _vanilla_inv_freq():
     return 1.0 / (
-        ROPE_THETA ** (torch.arange(0, HEAD_DIM, 2, dtype = torch.int64).float() / HEAD_DIM)
+        ROPE_THETA
+        ** (torch.arange(0, HEAD_DIM, 2, dtype = torch.int64).float() / HEAD_DIM)
     )
 
 
@@ -272,7 +273,9 @@ def test_extended_rope_scaling_keeps_llama3_and_carries_theta():
     ), "must keep native llama3 scaling instead of overwriting it with linear."
 
     # yarn is not rebuildable by the patcher -> keep the safe linear fallback, not native.
-    yarn = SimpleNamespace(rope_scaling = {"rope_type": "yarn", "factor": 2.0}, rope_theta = 500000.0)
+    yarn = SimpleNamespace(
+        rope_scaling = {"rope_type": "yarn", "factor": 2.0}, rope_theta = 500000.0
+    )
     scaling, _ = _extended_rope_scaling(yarn, 2.0)
     assert scaling == {
         "type": "linear",
@@ -281,13 +284,18 @@ def test_extended_rope_scaling_keeps_llama3_and_carries_theta():
     }, f"yarn must fall back to linear (patcher cannot rebuild it), got {scaling}."
 
     # plain RoPE with theta only under v5 rope_parameters: linear must carry rope_theta.
-    v5 = SimpleNamespace(rope_parameters = {"rope_type": "default", "rope_theta": 1000000.0})
+    v5 = SimpleNamespace(
+        rope_parameters = {"rope_type": "default", "rope_theta": 1000000.0}
+    )
     scaling, _ = _extended_rope_scaling(v5, 2.0)
-    assert scaling == {
-        "type": "linear",
-        "factor": 2.0,
-        "rope_theta": 1000000.0,
-    }, f"linear override dropped rope_theta on v5 (got {scaling}); base would fall back to 10000."
+    assert (
+        scaling
+        == {
+            "type": "linear",
+            "factor": 2.0,
+            "rope_theta": 1000000.0,
+        }
+    ), f"linear override dropped rope_theta on v5 (got {scaling}); base would fall back to 10000."
 
 
 def test_extended_rotary_reads_config_factor():
@@ -510,7 +518,9 @@ def test_object_style_rope_scaling_does_not_crash():
         original_max_position_embeddings: int = 8192
 
     config = _make_config(LLAMA3_ROPE_SCALING)
-    inv_freq, attention_scaling = _compute_config_rope_inv_freq(config, FakeRopeScalingConfig())
+    inv_freq, attention_scaling = _compute_config_rope_inv_freq(
+        config, FakeRopeScalingConfig()
+    )
     assert inv_freq is not None, (
         "object-style (non-dict) config.rope_scaling must be normalized, not "
         "dropped; otherwise scaled models silently lose RoPE scaling again "

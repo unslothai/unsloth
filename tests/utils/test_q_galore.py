@@ -197,7 +197,9 @@ class TestQuantizationUtils:
             errors.append((w - w_hat).mean().item())
 
         mean_error = sum(errors) / len(errors)
-        assert abs(mean_error) < 0.01, f"Mean error {mean_error} suggests biased rounding"
+        assert (
+            abs(mean_error) < 0.01
+        ), f"Mean error {mean_error} suggests biased rounding"
 
 
 # ======================================================================
@@ -227,7 +229,9 @@ class TestParamGroupHelper:
 
         # q_proj + k_proj in galore group.
         assert len(galore_group["params"]) == 2
-        assert len(non_galore_group["params"]) == 3  # embed weight + norm weight + norm bias
+        assert (
+            len(non_galore_group["params"]) == 3
+        )  # embed weight + norm weight + norm bias
 
     def test_custom_target_modules(self):
         """Custom target_modules narrows GaLore scope."""
@@ -280,7 +284,9 @@ class TestParamGroupHelper:
         )
 
         galore_groups = [g for g in groups if "rank" in g]
-        assert len(galore_groups) == 0, "Expected no GaLore groups when target_modules=[]"
+        assert (
+            len(galore_groups) == 0
+        ), "Expected no GaLore groups when target_modules=[]"
 
 
 # ======================================================================
@@ -321,7 +327,9 @@ class TestQGaLoreIntegration:
 
             optimizer.step()
 
-        assert losses[-1] < losses[0], f"Loss did not decrease: {losses[0]:.4f} → {losses[-1]:.4f}"
+        assert (
+            losses[-1] < losses[0]
+        ), f"Loss did not decrease: {losses[0]:.4f} → {losses[-1]:.4f}"
 
     def test_full_projector_roundtrip_quality(self):
         """project → project_back captures the dominant gradient directions."""
@@ -336,7 +344,9 @@ class TestQGaLoreIntegration:
 
         # Rank-4 grad with rank-4 projection reconstructs near-exactly.
         relative_error = (grad - reconstructed).norm() / grad.norm()
-        assert relative_error < 0.05, f"Reconstruction error too high: {relative_error:.4f}"
+        assert (
+            relative_error < 0.05
+        ), f"Reconstruction error too high: {relative_error:.4f}"
 
     def test_weight_quant_activates_on_first_step(self):
         """_has_weight_quant returns True even when _q_scales is None (first step)."""
@@ -450,7 +460,9 @@ class TestQGaLoreIntegration:
 
         # Re-quantize logic from the end of an optimizer step.
         float_data = p.data.clone()
-        q, scales, zeros, shape = _quantize(float_data, q_group_size = group["weight_group_size"])
+        q, scales, zeros, shape = _quantize(
+            float_data, q_group_size = group["weight_group_size"]
+        )
 
         # Key check: p.data stays float, _q_data holds uint8.
         p._q_data = q.to(p.data.device)

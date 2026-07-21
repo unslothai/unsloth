@@ -109,7 +109,9 @@ _FALLBACK_PATTERNS: tuple[tuple[re.Pattern, str, str], ...] = (
         CRITICAL,
     ),
     (
-        re.compile(r"/tmp/\S+.*(?:subprocess|os\.system|os\.popen|Popen|chmod.*\+x)", re.DOTALL),
+        re.compile(
+            r"/tmp/\S+.*(?:subprocess|os\.system|os\.popen|Popen|chmod.*\+x)", re.DOTALL
+        ),
         "tmp-staged-dropper",
         CRITICAL,
     ),
@@ -200,7 +202,9 @@ class ScanResult:
     def max_severity(self) -> Optional[str]:
         if not self.findings:
             return None
-        return min((f.severity for f in self.findings), key = lambda s: _SEVERITY_ORDER[s])
+        return min(
+            (f.severity for f in self.findings), key = lambda s: _SEVERITY_ORDER[s]
+        )
 
     @property
     def clean(self) -> bool:
@@ -253,7 +257,9 @@ def _load_canonical_scanner():
         candidate = parent / "scripts" / "scan_packages.py"
         if candidate.is_file():
             try:
-                spec = importlib.util.spec_from_file_location("unsloth_scan_packages", candidate)
+                spec = importlib.util.spec_from_file_location(
+                    "unsloth_scan_packages", candidate
+                )
                 mod = importlib.util.module_from_spec(spec)
                 sys.modules.setdefault("unsloth_scan_packages", mod)
                 spec.loader.exec_module(mod)  # type: ignore[union-attr]
@@ -402,7 +408,9 @@ def remote_code_fingerprint(files: dict[str, str]) -> str:
     return h.hexdigest()
 
 
-def repo_remote_code_files(model_name: str, hf_token: Optional[str] = None) -> dict[str, str]:
+def repo_remote_code_files(
+    model_name: str, hf_token: Optional[str] = None
+) -> dict[str, str]:
     """Download a repo's executable ``.py`` (auto_map targets + modeling/config).
 
     Returns {filename: content}. An EMPTY dict means the repo ships no executable ``.py``
@@ -443,7 +451,9 @@ def repo_remote_code_files(model_name: str, hf_token: Optional[str] = None) -> d
                     except Exception:
                         pass
             if not _add_external_refs(files, ext_refs, hf_token, model_name):
-                raise RemoteCodeUnscannable(f"{model_name}: external auto_map code unreachable")
+                raise RemoteCodeUnscannable(
+                    f"{model_name}: external auto_map code unreachable"
+                )
             return files
 
         from huggingface_hub import hf_hub_download, list_repo_files
@@ -473,7 +483,9 @@ def repo_remote_code_files(model_name: str, hf_token: Optional[str] = None) -> d
         try:
             repo_files = list_repo_files(model_name, token = hf_token)
         except Exception as exc:
-            raise RemoteCodeUnscannable(f"{model_name}: could not list repo files ({exc})") from exc
+            raise RemoteCodeUnscannable(
+                f"{model_name}: could not list repo files ({exc})"
+            ) from exc
         repo_file_set = set(repo_files)
         # Scan every present .py PLUS own-repo auto_map targets that ACTUALLY EXIST in
         # this revision. Scanning EVERY .py (not just the closure) is DELIBERATE: the
@@ -511,9 +523,13 @@ def repo_remote_code_files(model_name: str, hf_token: Optional[str] = None) -> d
             files[fn] = Path(fp).read_text(errors = "replace")
         # Code referenced from another repo executes too: scan it or fail closed.
         if not _add_external_refs(files, refs, hf_token, model_name):
-            raise RemoteCodeUnscannable(f"{model_name}: external auto_map code unreachable")
+            raise RemoteCodeUnscannable(
+                f"{model_name}: external auto_map code unreachable"
+            )
     except RemoteCodeUnscannable:
-        logger.warning("repo_remote_code_files(%s): unscannable; failing closed", model_name)
+        logger.warning(
+            "repo_remote_code_files(%s): unscannable; failing closed", model_name
+        )
         raise
     except Exception as exc:
         # An unexpected error mid-scan means we could not complete it -> unscannable.

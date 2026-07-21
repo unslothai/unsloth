@@ -59,15 +59,24 @@ T2R = model_mappings.TEMPLATE_TO_RESPONSES_MAPPER
 EXPECTED_FIXED = {
     "mistral": {"instruction": "[INST]", "response": "[/INST]"},
     "llama": {"instruction": "<s>[INST]", "response": "[/INST]"},
-    "starling": {"instruction": "GPT4 Correct User:", "response": "GPT4 Correct Assistant:"},
+    "starling": {
+        "instruction": "GPT4 Correct User:",
+        "response": "GPT4 Correct Assistant:",
+    },
     "glm": {"instruction": "<|user|>", "response": "<|assistant|>"},
-    "qwen3-thinking": {"instruction": "<|im_start|>user\n", "response": "<|im_start|>assistant\n"},
+    "qwen3-thinking": {
+        "instruction": "<|im_start|>user\n",
+        "response": "<|im_start|>assistant\n",
+    },
     "zephyr": {"instruction": "\n<|user|>\n", "response": "\n<|assistant|>\n"},
 }
 
 # Spot-pin some known-good entries so a refactor cannot silently change them.
 EXPECTED_UNCHANGED = {
-    "qwen3": {"instruction": "<|im_start|>user\n", "response": "<|im_start|>assistant\n"},
+    "qwen3": {
+        "instruction": "<|im_start|>user\n",
+        "response": "<|im_start|>assistant\n",
+    },
     "llama-3.1": {
         "instruction": "<|start_header_id|>user<|end_header_id|>\n\n",
         "response": "<|start_header_id|>assistant<|end_header_id|>\n\n",
@@ -76,7 +85,10 @@ EXPECTED_UNCHANGED = {
         "instruction": "<|im_start|>user<|im_sep|>",
         "response": "<|im_start|>assistant<|im_sep|>",
     },
-    "gemma-3": {"instruction": "<start_of_turn>user\n", "response": "<start_of_turn>model\n"},
+    "gemma-3": {
+        "instruction": "<start_of_turn>user\n",
+        "response": "<start_of_turn>model\n",
+    },
     "gpt-oss": {
         "instruction": "<|start|>user<|message|>",
         "response": "<|start|>assistant<|channel|>final<|message|>",
@@ -137,7 +149,9 @@ def _load_tokenizer(repo):
             from huggingface_hub import hf_hub_download
             from transformers import PreTrainedTokenizerFast
 
-            with open(hf_hub_download(repo, "tokenizer_config.json"), encoding = "utf-8") as f:
+            with open(
+                hf_hub_download(repo, "tokenizer_config.json"), encoding = "utf-8"
+            ) as f:
                 cfg = _json.load(f)
             tok_file = hf_hub_download(repo, "tokenizer.json")
 
@@ -180,7 +194,9 @@ def test_fixed_markers_token_level(template, repo):
         if hasattr(ids, "keys"):
             ids = ids["input_ids"]  # transformers 5.x returns a BatchEncoding
     except Exception:
-        ids = tok.apply_chat_template(FIXTURE, tokenize = True, add_generation_prompt = False)
+        ids = tok.apply_chat_template(
+            FIXTURE, tokenize = True, add_generation_prompt = False
+        )
         if hasattr(ids, "keys"):
             ids = ids["input_ids"]
 
@@ -209,7 +225,9 @@ def test_fixed_markers_token_level(template, repo):
     i = n - 1
     while i > 0 and tok.decode([ids[i]]).strip() == "":
         i -= 1
-    assert labels[i] != -100, f"final token {tok.convert_ids_to_tokens(int(ids[i]))!r} is masked"
+    assert (
+        labels[i] != -100
+    ), f"final token {tok.convert_ids_to_tokens(int(ids[i]))!r} is masked"
 
 
 if __name__ == "__main__":

@@ -107,22 +107,30 @@ class TestClientIp:
 
     def test_xff_strips_ipv4_port(self, env_trust_proxy):
         from routes.auth import _client_ip
-        req = _FakeRequest("127.0.0.1", {"x-forwarded-for": "198.51.100.7:50001, 10.0.0.1"})
+        req = _FakeRequest(
+            "127.0.0.1", {"x-forwarded-for": "198.51.100.7:50001, 10.0.0.1"}
+        )
         assert _client_ip(req) == "198.51.100.7"
 
     def test_xff_strips_bracketed_ipv6_port(self, env_trust_proxy):
         from routes.auth import _client_ip
-        req = _FakeRequest("127.0.0.1", {"x-forwarded-for": "[2001:db8::1]:50001, 10.0.0.1"})
+        req = _FakeRequest(
+            "127.0.0.1", {"x-forwarded-for": "[2001:db8::1]:50001, 10.0.0.1"}
+        )
         assert _client_ip(req) == "2001:db8::1"
 
     def test_forwarded_strips_ipv4_port(self, env_trust_proxy):
         from routes.auth import _client_ip
-        req = _FakeRequest("127.0.0.1", {"forwarded": 'for="198.51.100.7:50001";proto=https'})
+        req = _FakeRequest(
+            "127.0.0.1", {"forwarded": 'for="198.51.100.7:50001";proto=https'}
+        )
         assert _client_ip(req) == "198.51.100.7"
 
     def test_forwarded_strips_bracketed_ipv6_port(self, env_trust_proxy):
         from routes.auth import _client_ip
-        req = _FakeRequest("127.0.0.1", {"forwarded": 'for="[2001:db8::1]:50001";proto=https'})
+        req = _FakeRequest(
+            "127.0.0.1", {"forwarded": 'for="[2001:db8::1]:50001";proto=https'}
+        )
         assert _client_ip(req) == "2001:db8::1"
 
     def test_forwarded_isolates_first_element(self, env_trust_proxy):
@@ -221,7 +229,9 @@ class TestBucketKeyAndBlocking:
         # Hard cap respected; further keys don't allocate.
         assert len(auth_routes._LOGIN_BUCKETS) <= 10
 
-    def test_ip_bucket_cap_bounds_without_disabling_throttling(self, env_no_proxy, monkeypatch):
+    def test_ip_bucket_cap_bounds_without_disabling_throttling(
+        self, env_no_proxy, monkeypatch
+    ):
         """The per-IP dict is bounded, but saturating it must NOT disable
         throttling: a new IP that keeps failing after the cap is hit is still
         blocked (now via the shared overflow counter)."""
@@ -241,7 +251,9 @@ class TestBucketKeyAndBlocking:
             auth_routes._record_login_failure(victim)
         assert auth_routes._login_blocked(victim) > 0
 
-    def test_saturating_spray_cannot_reset_a_hot_ip_bucket(self, env_no_proxy, monkeypatch):
+    def test_saturating_spray_cannot_reset_a_hot_ip_bucket(
+        self, env_no_proxy, monkeypatch
+    ):
         """An IP flooding the dict must not evict (and reset) its own hot bucket.
 
         With FIFO eviction the oldest-inserted bucket -- the attacker's own, now
@@ -300,7 +312,9 @@ class TestBucketKeyAndBlocking:
         )
         assert auth_routes._login_blocked((victim_ip, "admin")) == 0
 
-    def test_overflow_throttle_survives_capacity_freeing(self, env_no_proxy, monkeypatch):
+    def test_overflow_throttle_survives_capacity_freeing(
+        self, env_no_proxy, monkeypatch
+    ):
         """A source throttled via overflow must stay throttled even if a bucket
         frees up before the window expires; otherwise a fresh bucket resets it.
         """
@@ -344,11 +358,15 @@ class TestBucketKeyAndBlocking:
         for idx in range(10):
             auth_routes._record_login_failure((f"10.0.0.{idx}", "admin"))
         for idx in range(5000):
-            auth_routes._record_login_failure((f"198.51.{idx // 256}.{idx % 256}", "admin"))
+            auth_routes._record_login_failure(
+                (f"198.51.{idx // 256}.{idx % 256}", "admin")
+            )
 
         assert all(len(shard) <= 8 for shard in auth_routes._LOGIN_IP_OVERFLOW)
 
-    def test_overflow_eviction_does_not_inherit_count_onto_new_ip(self, env_no_proxy, monkeypatch):
+    def test_overflow_eviction_does_not_inherit_count_onto_new_ip(
+        self, env_no_proxy, monkeypatch
+    ):
         """Evicting a hot entry to make room must not hand its failure count to the
         new source; one attempt from an unrelated IP must not 429 it.
         """
@@ -474,7 +492,9 @@ class TestLogin429Body:
         import secrets as _secrets
 
         monkeypatch.setattr(storage, "DB_PATH", tmp_path / "auth.db")
-        monkeypatch.setattr(storage, "_BOOTSTRAP_PW_PATH", tmp_path / ".bootstrap_password")
+        monkeypatch.setattr(
+            storage, "_BOOTSTRAP_PW_PATH", tmp_path / ".bootstrap_password"
+        )
         monkeypatch.setattr(storage, "_bootstrap_password", None)
         storage.create_initial_user(
             username = storage.DEFAULT_ADMIN_USERNAME,

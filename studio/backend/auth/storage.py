@@ -195,9 +195,13 @@ def get_connection() -> sqlite3.Connection:
         );
         """
     )
-    api_key_columns = {row["name"] for row in conn.execute("PRAGMA table_info(api_keys)")}
+    api_key_columns = {
+        row["name"] for row in conn.execute("PRAGMA table_info(api_keys)")
+    }
     if "is_internal" not in api_key_columns:
-        conn.execute("ALTER TABLE api_keys ADD COLUMN is_internal INTEGER NOT NULL DEFAULT 0")
+        conn.execute(
+            "ALTER TABLE api_keys ADD COLUMN is_internal INTEGER NOT NULL DEFAULT 0"
+        )
     conn.execute(
         """
         CREATE TABLE IF NOT EXISTS app_secrets (
@@ -211,9 +215,13 @@ def get_connection() -> sqlite3.Connection:
         conn.execute(
             "ALTER TABLE auth_user ADD COLUMN must_change_password INTEGER NOT NULL DEFAULT 0"
         )
-    refresh_columns = {row["name"] for row in conn.execute("PRAGMA table_info(refresh_tokens)")}
+    refresh_columns = {
+        row["name"] for row in conn.execute("PRAGMA table_info(refresh_tokens)")
+    }
     if "is_desktop" not in refresh_columns:
-        conn.execute("ALTER TABLE refresh_tokens ADD COLUMN is_desktop INTEGER NOT NULL DEFAULT 0")
+        conn.execute(
+            "ALTER TABLE refresh_tokens ADD COLUMN is_desktop INTEGER NOT NULL DEFAULT 0"
+        )
     conn.commit()
     return conn
 

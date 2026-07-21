@@ -73,7 +73,12 @@ def _rope_embedding_QK(
     batch_id = row_position // seqlen
     seq_index = row_position - batch_id * seqlen
 
-    q_ptr = Q + batch_id * Q_batch_stride + head_position * Q_head_stride + seq_index * Q_seq_stride
+    q_ptr = (
+        Q
+        + batch_id * Q_batch_stride
+        + head_position * Q_head_stride
+        + seq_index * Q_seq_stride
+    )
     q0 = tl.load(q_ptr + col_offsets, mask = mask, other = 0)
     q1 = tl.load(q_ptr + half_head_dim + col_offsets, mask = mask, other = 0)
     tl.store(q_ptr + col_offsets, q0 * cos1 - q1 * sin1, mask = mask)
@@ -81,7 +86,10 @@ def _rope_embedding_QK(
 
     if head_position < n_heads_K:
         k_ptr = (
-            K + batch_id * K_batch_stride + head_position * K_head_stride + seq_index * K_seq_stride
+            K
+            + batch_id * K_batch_stride
+            + head_position * K_head_stride
+            + seq_index * K_seq_stride
         )
         k0 = tl.load(k_ptr + col_offsets, mask = mask, other = 0)
         k1 = tl.load(k_ptr + half_head_dim + col_offsets, mask = mask, other = 0)
@@ -127,12 +135,18 @@ def _rope_embedding(
     mask = col_offsets < half_head_dim
 
     sin1 = tl.load(
-        sin + (row_position % seqlen) * sin_row_stride + half_head_dim * 0 + col_offsets,
+        sin
+        + (row_position % seqlen) * sin_row_stride
+        + half_head_dim * 0
+        + col_offsets,
         mask = mask,
         other = 0,
     )
     cos1 = tl.load(
-        cos + (row_position % seqlen) * cos_row_stride + half_head_dim * 0 + col_offsets,
+        cos
+        + (row_position % seqlen) * cos_row_stride
+        + half_head_dim * 0
+        + col_offsets,
         mask = mask,
         other = 0,
     )
@@ -148,7 +162,9 @@ def _rope_embedding(
     # 10% Faster kernel from [HuyNguyen-hust](https://github.com/unslothai/unsloth/pull/238)
     for k in range(head_start, head_end):
         offs_q1 = row_position * Q_row_stride + k * head_dim + col_offsets
-        offs_q2 = row_position * Q_row_stride + k * head_dim + col_offsets + half_head_dim
+        offs_q2 = (
+            row_position * Q_row_stride + k * head_dim + col_offsets + half_head_dim
+        )
 
         # For Gemma - sometimes RoPE must be done in float32 and not bfloat16
         Q1 = tl.load(Q + offs_q1, mask = mask, other = 0).to(sin1.dtype)
@@ -271,10 +287,16 @@ def fast_rope_embedding(
     rope_embedding_indices = None,
 ):
     if rope_embedding_indices is not None:
-        Q_out, K_out = Fast_RoPE_Embedding_QK.apply(Q, K, cos, sin, rope_embedding_indices)
+        Q_out, K_out = Fast_RoPE_Embedding_QK.apply(
+            Q, K, cos, sin, rope_embedding_indices
+        )
     else:
-        Q_out = Fast_RoPE_Embedding.apply(Q.transpose(1, 2).contiguous(), cos, sin).transpose(1, 2)
-        K_out = Fast_RoPE_Embedding.apply(K.transpose(1, 2).contiguous(), cos, sin).transpose(1, 2)
+        Q_out = Fast_RoPE_Embedding.apply(
+            Q.transpose(1, 2).contiguous(), cos, sin
+        ).transpose(1, 2)
+        K_out = Fast_RoPE_Embedding.apply(
+            K.transpose(1, 2).contiguous(), cos, sin
+        ).transpose(1, 2)
     if DEVICE_COUNT > 1:
         torch_device_stream(Q.device).synchronize()
     return Q_out, K_out
@@ -355,7 +377,11 @@ class Fast_RoPE_Embedding_QK(torch.autograd.Function):
     def backward(ctx, dQ, dK):
         batch, _, _, head_dim = dQ.shape
 
-        rope_ptr = ctx.rope_indices if ctx.has_indices else ctx.cos.new_empty(1, dtype = torch.int32)
+        rope_ptr = (
+            ctx.rope_indices
+            if ctx.has_indices
+            else ctx.cos.new_empty(1, dtype = torch.int32)
+        )
 
         # Inplace rotary embedding is generally fine
         dQ_out = dQ.clone() if not dQ.is_contiguous() else dQ

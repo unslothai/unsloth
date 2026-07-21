@@ -24,7 +24,9 @@ def _encode_bytes_to_base64(value: bytes | bytearray) -> str:
     return base64.b64encode(bytes(value)).decode("utf-8")
 
 
-def _load_image_file_to_base64(path_value: str, *, base_path: str | None = None) -> str | None:
+def _load_image_file_to_base64(
+    path_value: str, *, base_path: str | None = None
+) -> str | None:
     try:
         path = Path(path_value)
         candidates: list[Path] = []
@@ -119,7 +121,9 @@ def _apply_data_designer_image_context_patch() -> None:
 
     original_auto_resolve = ImageContext._auto_resolve_context_value
 
-    def _patched_auto_resolve(self: Any, context_value: Any, base_path: str | None) -> Any:
+    def _patched_auto_resolve(
+        self: Any, context_value: Any, base_path: str | None
+    ) -> Any:
         normalized = _normalize_image_context_value(context_value, base_path = base_path)
         return original_auto_resolve(self, normalized, base_path)
 
@@ -161,7 +165,9 @@ def _recipe_has_llm_columns(recipe: dict[str, Any]) -> bool:
     return False
 
 
-def _validate_recipe_runtime_support(recipe: dict[str, Any], model_providers: list[Any]) -> None:
+def _validate_recipe_runtime_support(
+    recipe: dict[str, Any], model_providers: list[Any]
+) -> None:
     if _recipe_has_llm_columns(recipe) and not model_providers:
         raise ValueError("Add a Provider connection block before running this recipe.")
 
@@ -251,7 +257,9 @@ def build_config_builder(recipe: dict[str, Any]):
         if key not in {"model_providers", "mcp_providers"}
     }
     recipe_core = _strip_frontend_model_config_metadata(recipe_core)
-    recipe_core, oxc_local_callable_specs = split_oxc_local_callable_validators(recipe_core)
+    recipe_core, oxc_local_callable_specs = split_oxc_local_callable_validators(
+        recipe_core
+    )
     builder = DataDesignerConfigBuilder.from_config({"data_designer": recipe_core})
     register_oxc_local_callable_validators(
         builder = builder,
@@ -327,10 +335,14 @@ def preview_recipe(
         dataset = [to_jsonable(row) for row in raw_rows]
 
     artifacts = (
-        None if results.processor_artifacts is None else to_jsonable(results.processor_artifacts)
+        None
+        if results.processor_artifacts is None
+        else to_jsonable(results.processor_artifacts)
     )
     analysis = (
-        None if results.analysis is None else to_jsonable(results.analysis.model_dump(mode = "json"))
+        None
+        if results.analysis is None
+        else to_jsonable(results.analysis.model_dump(mode = "json"))
     )
 
     return dataset, artifacts, analysis

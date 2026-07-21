@@ -248,7 +248,9 @@ def _client(
         auth = OAuth(mcp_url = url, token_storage = _oauth_store())
 
     transport_cls = (
-        SSETransport if infer_transport_type_from_url(url) == "sse" else StreamableHttpTransport
+        SSETransport
+        if infer_transport_type_from_url(url) == "sse"
+        else StreamableHttpTransport
     )
     return Client(transport_cls(url = url, headers = headers or None, auth = auth))
 
@@ -266,7 +268,9 @@ _STDIO_WEDGE_MARGIN = 15.0
 # the scope includes a caller-supplied thread_id, so an unbounded cache is a
 # resource-exhaustion surface. Overridable via env for large deployments.
 try:
-    _STDIO_MAX_SESSIONS = max(1, int(os.environ.get("UNSLOTH_STUDIO_MAX_STDIO_MCP_SESSIONS", "32")))
+    _STDIO_MAX_SESSIONS = max(
+        1, int(os.environ.get("UNSLOTH_STUDIO_MAX_STDIO_MCP_SESSIONS", "32"))
+    )
 except ValueError:
     _STDIO_MAX_SESSIONS = 32
 
@@ -401,7 +405,11 @@ class _StdioSession:
         # wedged loop. No deadline at all when the caller set none -- but poll
         # so a session closed under us (server update/delete) can't hang the
         # request thread forever on a stopped loop.
-        deadline = None if timeout is None else time.monotonic() + timeout + _STDIO_WEDGE_MARGIN
+        deadline = (
+            None
+            if timeout is None
+            else time.monotonic() + timeout + _STDIO_WEDGE_MARGIN
+        )
         try:
             while True:
                 try:
@@ -445,7 +453,9 @@ class _StdioSession:
                         task.cancel()
 
             try:
-                asyncio.run_coroutine_threadsafe(_shutdown(), loop).result(_STDIO_CLOSE_TIMEOUT)
+                asyncio.run_coroutine_threadsafe(_shutdown(), loop).result(
+                    _STDIO_CLOSE_TIMEOUT
+                )
             except Exception as exc:  # noqa: BLE001
                 logger.warning(
                     "MCP stdio session close failed for %s: %s",
@@ -547,7 +557,12 @@ def _return_stdio_key_lock(key: tuple, key_lock: _StdioKeyLock) -> None:
 
 
 def _get_stdio_session(
-    url: str, headers: Optional[dict], scope: Optional[str], deadline, cancel_event, config_check
+    url: str,
+    headers: Optional[dict],
+    scope: Optional[str],
+    deadline,
+    cancel_event,
+    config_check,
 ) -> _StdioSession:
     """``deadline`` is the caller's absolute monotonic budget (None = no limit):
     the key-lock wait and the connect share it, so a slow startup can't stack
@@ -602,10 +617,14 @@ def _get_stdio_session(
                     current = False
                 if not current:
                     session.close()
-                    raise RuntimeError("MCP server was updated or removed while connecting")
+                    raise RuntimeError(
+                        "MCP server was updated or removed while connecting"
+                    )
             evicted: list = []
             with _stdio_sessions_lock:
-                closed_while_connecting = _stdio_close_generation(url, headers) != generation
+                closed_while_connecting = (
+                    _stdio_close_generation(url, headers) != generation
+                )
                 if not closed_while_connecting:
                     session.in_flight = 1
                     evicted = _evict_stdio_lru_locked()  # bound the cache (LRU idle)
@@ -613,11 +632,15 @@ def _get_stdio_session(
                     if not _stdio_reaper_started:
                         _stdio_reaper_started = True
                         threading.Thread(
-                            target = _stdio_session_reaper, name = "mcp-stdio-reaper", daemon = True
+                            target = _stdio_session_reaper,
+                            name = "mcp-stdio-reaper",
+                            daemon = True,
                         ).start()
                         atexit.register(close_stdio_sessions)
             for victim in evicted:
-                logger.info("Evicting LRU idle stdio MCP session: %s", _stdio_log_id(victim.url))
+                logger.info(
+                    "Evicting LRU idle stdio MCP session: %s", _stdio_log_id(victim.url)
+                )
                 victim.close()
             if closed_while_connecting:
                 session.close()
@@ -683,7 +706,9 @@ def _evict_stdio_lru_locked() -> list:
     cache may transiently overshoot rather than kill an in-flight call."""
     victims: list = []
     while len(_stdio_sessions) >= _STDIO_MAX_SESSIONS:
-        idle = [(s.last_used, k) for k, s in _stdio_sessions.items() if s.in_flight == 0]
+        idle = [
+            (s.last_used, k) for k, s in _stdio_sessions.items() if s.in_flight == 0
+        ]
         if not idle:
             break
         _, oldest = min(idle, key = lambda item: item[0])
@@ -730,7 +755,8 @@ def _reap_idle_stdio_sessions(now: Optional[float] = None) -> None:
         expired = [
             key
             for key, session in _stdio_sessions.items()
-            if session.in_flight == 0 and now - session.last_used >= _STDIO_SESSION_IDLE_TTL
+            if session.in_flight == 0
+            and now - session.last_used >= _STDIO_SESSION_IDLE_TTL
         ]
         sessions = [_stdio_sessions.pop(key) for key in expired]
         for key in expired:
@@ -778,7 +804,9 @@ _probe_cooloff_until: dict[str, float] = {}
 # endpoint/auth used to probe it (url, headers, oauth) or whether it's used at
 # all (is_enabled). A rename does not. The update route's eviction and
 # get_enabled_mcp_tools' mid-probe guard both key off this so they can't drift.
-TOOL_CACHE_INVALIDATING_FIELDS = frozenset({"url", "headers_json", "use_oauth", "is_enabled"})
+TOOL_CACHE_INVALIDATING_FIELDS = frozenset(
+    {"url", "headers_json", "use_oauth", "is_enabled"}
+)
 
 
 def get_cached_tools(server_id: str) -> Optional[list[dict]]:
@@ -791,7 +819,11 @@ def cache_tools(server_id: str, tools: list[dict]) -> None:
 
 
 def record_probe_failure(server_id: str, use_oauth: bool = False) -> None:
-    cooloff = OAUTH_FAILED_PROBE_COOLOFF_SECONDS if use_oauth else FAILED_PROBE_COOLOFF_SECONDS
+    cooloff = (
+        OAUTH_FAILED_PROBE_COOLOFF_SECONDS
+        if use_oauth
+        else FAILED_PROBE_COOLOFF_SECONDS
+    )
     _probe_cooloff_until[server_id] = time.monotonic() + cooloff
 
 
@@ -840,9 +872,13 @@ def _flatten_result(result: Any) -> str:
         notes = []
         if images:
             n = len(images)
-            notes.append(f"{n} image{'s' if n > 1 else ''} attached; displayed to the user")
+            notes.append(
+                f"{n} image{'s' if n > 1 else ''} attached; displayed to the user"
+            )
         if omitted:
-            notes.append(f"{omitted} image{'s' if omitted > 1 else ''} omitted (too large)")
+            notes.append(
+                f"{omitted} image{'s' if omitted > 1 else ''} omitted (too large)"
+            )
         note = f"[{'; '.join(notes)}]"
         body = f"{body}\n{note}" if body else note
 
@@ -925,7 +961,9 @@ def _call_stdio_tool(
     # attempt 0 may find the cached session stale/dead *before* dispatch and
     # reconnect once (safe); attempt 1 is a freshly connected session.
     for attempt in (0, 1):
-        session = _get_stdio_session(url, headers, scope, deadline, cancel_event, config_check)
+        session = _get_stdio_session(
+            url, headers, scope, deadline, cancel_event, config_check
+        )
         try:
             # Serialize calls per session: overlapping same-scope calls must
             # not interleave operations on one stateful server (browser, REPL).
@@ -971,7 +1009,9 @@ def _call_stdio_tool(
                     raise RuntimeError("MCP server connection is not available")
             else:
                 rem = _remaining()
-                coro = _race_tool_call(session.client.call_tool(name, args), rem, cancel_event)
+                coro = _race_tool_call(
+                    session.client.call_tool(name, args), rem, cancel_event
+                )
                 return session.run(coro, rem)
         except (_MCPCancelled, asyncio.TimeoutError):
             # _race_tool_call cancels the pending call but cancellation is

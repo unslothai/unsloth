@@ -770,7 +770,8 @@ def download_tarball(
                     written += len(chunk)
                     if written > max_bytes:
                         return dest, (
-                            f"download exceeded cap {max_bytes} bytes " f"after {written} bytes"
+                            f"download exceeded cap {max_bytes} bytes "
+                            f"after {written} bytes"
                         )
                     h.update(chunk)
                     out.write(chunk)
@@ -867,7 +868,11 @@ def safe_extract(
                 # each gets its own cap (both are bounded).
                 header = src.read(16)
                 is_binary = _looks_binary(name, header)
-                file_cap = HARD_MAX_BINARY_FILE_BYTES if is_binary else HARD_MAX_TEXT_FILE_BYTES
+                file_cap = (
+                    HARD_MAX_BINARY_FILE_BYTES
+                    if is_binary
+                    else HARD_MAX_TEXT_FILE_BYTES
+                )
                 if declared > file_cap:
                     return (
                         f"member {name!r} declared size {declared} > "
@@ -1195,7 +1200,11 @@ def _format_match(
 
 
 def _stream_overflow_digest(
-    matches, lines: list[str], sl_blanked: list[str], ml_blanked: list[str], nl: list[int]
+    matches,
+    lines: list[str],
+    sl_blanked: list[str],
+    ml_blanked: list[str],
+    nl: list[int],
 ) -> tuple[int, str]:
     """A single digest binding the LOGICAL line (the bound bracket-group context,
     not just the regex match text) of every overflow match in the iterable, plus
@@ -1211,7 +1220,12 @@ def _stream_overflow_digest(
 
 
 def _fold_overflow_match(
-    h, m: re.Match, lines: list[str], sl_blanked: list[str], ml_blanked: list[str], nl: list[int]
+    h,
+    m: re.Match,
+    lines: list[str],
+    sl_blanked: list[str],
+    ml_blanked: list[str],
+    nl: list[int],
 ) -> None:
     """Fold one overflow match's whitespace-normalized logical-line context into the
     running hash ``h``. Shared by _stream_overflow_digest and the inline overflow
@@ -1241,11 +1255,14 @@ def _evidence(
         return ""
     lines, sl_blanked, ml_blanked, nl = _index_text(text)
     shown = [
-        _format_match(text, lines, sl_blanked, ml_blanked, nl, m, max_chars) for m in shown_matches
+        _format_match(text, lines, sl_blanked, ml_blanked, nl, m, max_chars)
+        for m in shown_matches
     ]
     # Fold the rest (past the cap) into one digest as they arrive, never building a
     # second list. Byte-identical to digesting matches[_MAX_EVIDENCE_MATCHES:].
-    overflow_count, digest = _stream_overflow_digest(it, lines, sl_blanked, ml_blanked, nl)
+    overflow_count, digest = _stream_overflow_digest(
+        it, lines, sl_blanked, ml_blanked, nl
+    )
     if overflow_count:
         shown.append(f"(+{overflow_count} more) sha256:{digest}")
     return " | ".join(shown)
@@ -1291,7 +1308,9 @@ _REGEX_PRECEDING_KEYWORDS = frozenset(
         "case",
     }
 )
-_IDENT_CHARS = frozenset("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_$")
+_IDENT_CHARS = frozenset(
+    "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_$"
+)
 
 
 def _slash_is_regex(prev_tok: str) -> bool:
@@ -1547,7 +1566,9 @@ def scan_package_json(pkg: PackageEntry, rel: str, text: str) -> list[Finding]:
     if isinstance(opt, dict):
         for k, v in opt.items():
             if isinstance(v, str) and (
-                v.startswith("github:") or v.startswith("git+") or v.startswith("git://")
+                v.startswith("github:")
+                or v.startswith("git+")
+                or v.startswith("git://")
             ):
                 findings.append(
                     Finding(
@@ -1612,7 +1633,9 @@ def _outbound_host_evidence(text: str, host: str) -> str:
         ),
         # Host-config form: capture the whole line (path/headers/body), so a
         # changed outbound payload on the same hostname line reopens the key.
-        re.compile(rf"[^\n]*(?:host|hostname)\s*:\s*['\"`]{host_re}['\"`][^\n]*", re.IGNORECASE),
+        re.compile(
+            rf"[^\n]*(?:host|hostname)\s*:\s*['\"`]{host_re}['\"`][^\n]*", re.IGNORECASE
+        ),
     )
     # Record EVERY outbound context for the host, not just the first form that
     # matches: a file that already has a baselined URL for the host and later adds
@@ -1641,12 +1664,16 @@ def _outbound_host_evidence(text: str, host: str) -> str:
                 claimed.append((m.start(), m.end()))
                 chosen.append(m)
             else:
-                _fold_overflow_match(overflow_hash, m, lines, sl_blanked, ml_blanked, nl)
+                _fold_overflow_match(
+                    overflow_hash, m, lines, sl_blanked, ml_blanked, nl
+                )
                 overflow_count += 1
     if not chosen:
         return host
     chosen.sort(key = lambda m: m.start())
-    shown = [_format_match(text, lines, sl_blanked, ml_blanked, nl, m, 1000) for m in chosen]
+    shown = [
+        _format_match(text, lines, sl_blanked, ml_blanked, nl, m, 1000) for m in chosen
+    ]
     if overflow_count:
         shown.append(f"(+{overflow_count} more) sha256:{overflow_hash.hexdigest()}")
     return " | ".join(shown)
@@ -1730,7 +1757,9 @@ def scan_text_blob(pkg: PackageEntry, rel: str, text: str) -> list[Finding]:
                 filename = rel,
                 pattern = "js-fetch-eval",
                 evidence = _evidence(text, _JS_FETCH_EVAL),
-                detail = ("Function/eval against base64-decoded payload (obfuscated dropper shape)"),
+                detail = (
+                    "Function/eval against base64-decoded payload (obfuscated dropper shape)"
+                ),
             )
         )
     if _JS_ENV_TOKEN.search(text):
@@ -1871,7 +1900,9 @@ def scan_one(pkg: PackageEntry, workspace: Path) -> tuple[list[Finding], str | N
 # Mirrors scan_packages.py. Regenerate with ``--write-baseline``.
 # ─────────────────────────────────────────────────────────────────────
 
-_DEFAULT_BASELINE_PATH = str(Path(__file__).resolve().parent / "scan_npm_packages_baseline.json")
+_DEFAULT_BASELINE_PATH = str(
+    Path(__file__).resolve().parent / "scan_npm_packages_baseline.json"
+)
 
 # Bumped when the entry-key semantics change. v3 adds an evidence hash so a new
 # payload under an already-listed package/path/pattern is not auto-suppressed; v2
@@ -1959,7 +1990,9 @@ def _load_baseline(path: str) -> set[tuple[str, str, str, str]]:
         if not isinstance(e, dict):
             continue
         try:
-            evidence_hash = e.get("evidence_hash") or _evidence_hash(e.get("evidence") or "")
+            evidence_hash = e.get("evidence_hash") or _evidence_hash(
+                e.get("evidence") or ""
+            )
             if not e.get("evidence_hash"):
                 legacy += 1
             keys.add(
@@ -2206,7 +2239,8 @@ def main(argv: list[str] | None = None) -> int:
     if hard_errors or blocking:
         if blocking:
             print(
-                f"\n[scan-npm] FAIL: {len(blocking)} finding(s) " f"at or above {threshold}",
+                f"\n[scan-npm] FAIL: {len(blocking)} finding(s) "
+                f"at or above {threshold}",
                 file = sys.stderr,
             )
         return 1

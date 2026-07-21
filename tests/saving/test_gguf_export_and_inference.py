@@ -132,7 +132,10 @@ def exported_gguf(tmp_path_factory):
         {
             "text": [
                 tokenizer.apply_chat_template(
-                    [{"role": "user", "content": q}, {"role": "assistant", "content": _ANSWER}],
+                    [
+                        {"role": "user", "content": q},
+                        {"role": "assistant", "content": _ANSWER},
+                    ],
                     tokenize = False,
                 )
                 for q in questions
@@ -197,7 +200,9 @@ def test_gguf_q8_0_export_produces_valid_file(exported_gguf):
 def test_gguf_llama_cli_inference_reflects_finetune(exported_gguf):
     cli = _find_llama_cli()
     if cli is None:
-        pytest.skip("no llama-cli binary (Unsloth's GGUF export only builds llama-quantize)")
+        pytest.skip(
+            "no llama-cli binary (Unsloth's GGUF export only builds llama-quantize)"
+        )
     gguf = exported_gguf["gguf"]
     assert gguf is not None, "export did not produce a GGUF"
 
@@ -205,13 +210,20 @@ def test_gguf_llama_cli_inference_reflects_finetune(exported_gguf):
     assert text.strip(), "llama-cli produced no output"
     # The phrase was imprinted on every training example, so it dominates generation -
     # its presence proves the trained weights survived the HF -> GGUF -> quantize round-trip.
-    assert PHRASE in text, f"trained phrase not found in GGUF inference output:\n{text[:500]}"
+    assert (
+        PHRASE in text
+    ), f"trained phrase not found in GGUF inference output:\n{text[:500]}"
 
 
 # -- imatrix IQ low-bit export -------------------------------------------------------------
 # A base whose upstream unsloth/<base>-GGUF ships an imatrix, so imatrix_file=True is exercised.
-IMATRIX_MODEL = os.environ.get("UNSLOTH_IMATRIX_TEST_MODEL", "unsloth/Llama-3.2-1B-Instruct")
-IMATRIX_QUANTS = ["iq2_xxs", "iq4_xs"]  # both were previously disabled; imatrix unlocks them
+IMATRIX_MODEL = os.environ.get(
+    "UNSLOTH_IMATRIX_TEST_MODEL", "unsloth/Llama-3.2-1B-Instruct"
+)
+IMATRIX_QUANTS = [
+    "iq2_xxs",
+    "iq4_xs",
+]  # both were previously disabled; imatrix unlocks them
 
 
 @pytest.fixture(scope = "module")
@@ -260,7 +272,10 @@ def exported_imatrix_gguf(tmp_path_factory):
         {
             "text": [
                 tokenizer.apply_chat_template(
-                    [{"role": "user", "content": q}, {"role": "assistant", "content": _ANSWER}],
+                    [
+                        {"role": "user", "content": q},
+                        {"role": "assistant", "content": _ANSWER},
+                    ],
                     tokenize = False,
                 )
                 for q in questions
@@ -320,7 +335,9 @@ def test_imatrix_iq_quants_export_valid_files(exported_imatrix_gguf):
     # Both requested IQ quants must be produced (they are gated off without an imatrix).
     for tag in ("IQ2_XXS", "IQ4_XS"):
         match = [g for g in ggufs if tag in os.path.basename(g).upper()]
-        assert match, f"no {tag} gguf produced (found: {[os.path.basename(g) for g in ggufs]})"
+        assert (
+            match
+        ), f"no {tag} gguf produced (found: {[os.path.basename(g) for g in ggufs]})"
         gguf = match[0]
         assert os.path.getsize(gguf) > 100_000, f"{tag} GGUF implausibly small"
         with open(gguf, "rb") as f:
@@ -329,14 +346,22 @@ def test_imatrix_iq_quants_export_valid_files(exported_imatrix_gguf):
 
 def test_imatrix_was_downloaded(exported_imatrix_gguf):
     # imatrix_file=True must have fetched the upstream imatrix into the export dir.
-    assert exported_imatrix_gguf["imatrix"], "imatrix_file=True did not download an imatrix"
+    assert exported_imatrix_gguf[
+        "imatrix"
+    ], "imatrix_file=True did not download an imatrix"
 
 
 def test_imatrix_iq_inference_runs(exported_imatrix_gguf):
     cli = _find_llama_cli()
     if cli is None:
-        pytest.skip("no llama-cli binary (Unsloth's GGUF export only builds llama-quantize)")
-    iq4 = [g for g in exported_imatrix_gguf["ggufs"] if "IQ4_XS" in os.path.basename(g).upper()]
+        pytest.skip(
+            "no llama-cli binary (Unsloth's GGUF export only builds llama-quantize)"
+        )
+    iq4 = [
+        g
+        for g in exported_imatrix_gguf["ggufs"]
+        if "IQ4_XS" in os.path.basename(g).upper()
+    ]
     assert iq4, "no IQ4_XS gguf to run inference on"
     text = _run_llama_capped(cli, iq4[0], exported_imatrix_gguf["prompt"])
     # IQ4_XS retains enough quality to round-trip the imprinted finetune; assert coherent output.

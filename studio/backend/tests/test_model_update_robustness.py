@@ -167,7 +167,9 @@ def test_variant_update_check_missing_remote_blob_id_is_not_phantom_update(
     assert q4.update_available is False
 
 
-def test_variant_update_check_detects_update_from_existing_siblings(tmp_path, patch_hub_gguf):
+def test_variant_update_check_detects_update_from_existing_siblings(
+    tmp_path, patch_hub_gguf
+):
     repo = "unsloth/gemma-3-4b-it-GGUF"
     patch_hub_gguf.apply(
         tmp_path,
@@ -265,7 +267,9 @@ def test_variant_update_check_detects_companion_only_update(
     assert q4.update_available is True
 
 
-def test_variant_update_check_accepts_lfs_dict_and_blob_id_fallback(tmp_path, patch_hub_gguf):
+def test_variant_update_check_accepts_lfs_dict_and_blob_id_fallback(
+    tmp_path, patch_hub_gguf
+):
     repo = "unsloth/gemma-3-4b-it-GGUF"
     patch_hub_gguf.apply(
         tmp_path,
@@ -279,7 +283,9 @@ def test_variant_update_check_accepts_lfs_dict_and_blob_id_fallback(tmp_path, pa
         ),
     )
     resp = _call(GV.get_gguf_variants_response(repo))
-    assert next(v for v in resp.variants if v.quant == "Q4_K_M").update_available is False
+    assert (
+        next(v for v in resp.variants if v.quant == "Q4_K_M").update_available is False
+    )
 
     patch_hub_gguf.apply(
         tmp_path,
@@ -293,7 +299,9 @@ def test_variant_update_check_accepts_lfs_dict_and_blob_id_fallback(tmp_path, pa
         ),
     )
     resp = _call(GV.get_gguf_variants_response(repo))
-    assert next(v for v in resp.variants if v.quant == "Q4_K_M").update_available is False
+    assert (
+        next(v for v in resp.variants if v.quant == "Q4_K_M").update_available is False
+    )
 
 
 def test_cached_model_scan_keeps_local_safetensors_repo(monkeypatch, tmp_path):
@@ -352,7 +360,9 @@ def test_force_download_is_forwarded_through_the_shim(monkeypatch):
         seen.append(kwargs.get("force_download"))
         return "/downloaded/path"
 
-    monkeypatch.setattr(X, "_shared_hf_hub_download_with_xet_fallback", fake_shared, raising = True)
+    monkeypatch.setattr(
+        X, "_shared_hf_hub_download_with_xet_fallback", fake_shared, raising = True
+    )
 
     X.hf_hub_download_with_xet_fallback(
         "unsloth/repo", "model.gguf", token = None, force_download = False
@@ -360,7 +370,10 @@ def test_force_download_is_forwarded_through_the_shim(monkeypatch):
     X.hf_hub_download_with_xet_fallback(
         "unsloth/repo", "model.gguf", token = None, force_download = True
     )
-    assert seen == [False, True]  # the shim forwards force_download to the shared helper unchanged
+    assert seen == [
+        False,
+        True,
+    ]  # the shim forwards force_download to the shared helper unchanged
 
 
 # ── multi-revision GGUF blob comparison and update reclaim ──
@@ -374,7 +387,10 @@ def test_force_download_is_forwarded_through_the_shim(monkeypatch):
 
 def _rev(*files):
     return SimpleNamespace(
-        files = [SimpleNamespace(file_name = name, blob_path = f"/blobs/{blob}") for name, blob in files]
+        files = [
+            SimpleNamespace(file_name = name, blob_path = f"/blobs/{blob}")
+            for name, blob in files
+        ]
     )
 
 
@@ -388,7 +404,9 @@ def test_repo_gguf_blob_map_collects_all_revision_blobs():
             _rev(("lfm2-350m-q4_k_m.gguf", "NEWsha")),
         ],
     )
-    assert CI._repo_gguf_blob_map(repo_info) == {"lfm2-350m-q4_k_m.gguf": {"OLDsha", "NEWsha"}}
+    assert CI._repo_gguf_blob_map(repo_info) == {
+        "lfm2-350m-q4_k_m.gguf": {"OLDsha", "NEWsha"}
+    }
 
 
 # ── no-symlink (Windows without Developer Mode) GGUF update detection ──
@@ -493,7 +511,10 @@ def test_no_symlink_cache_matching_remote_size_reports_no_update():
     requirement = _requirement(("model-Q4_K_M.gguf", 4096, "REMOTEsha256"))
 
     assert (
-        GV._variant_update_available_from_requirement(local_blobs, requirement, "Q4_K_M") is False
+        GV._variant_update_available_from_requirement(
+            local_blobs, requirement, "Q4_K_M"
+        )
+        is False
     )
 
 
@@ -502,7 +523,12 @@ def test_no_symlink_cache_with_different_remote_size_still_reports_update():
     local_blobs = {"model-Q4_K_M.gguf": {CI.local_size_identity(4096)}}
     requirement = _requirement(("model-Q4_K_M.gguf", 8192, "REMOTEsha256"))
 
-    assert GV._variant_update_available_from_requirement(local_blobs, requirement, "Q4_K_M") is True
+    assert (
+        GV._variant_update_available_from_requirement(
+            local_blobs, requirement, "Q4_K_M"
+        )
+        is True
+    )
 
 
 def test_symlinked_cache_with_stale_blob_still_reports_update():
@@ -511,7 +537,12 @@ def test_symlinked_cache_with_stale_blob_still_reports_update():
     local_blobs = {"model-Q4_K_M.gguf": {"OLDsha"}}
     requirement = _requirement(("model-Q4_K_M.gguf", 4096, "NEWsha"))
 
-    assert GV._variant_update_available_from_requirement(local_blobs, requirement, "Q4_K_M") is True
+    assert (
+        GV._variant_update_available_from_requirement(
+            local_blobs, requirement, "Q4_K_M"
+        )
+        is True
+    )
 
 
 def test_symlinked_cache_with_current_blob_reports_no_update():
@@ -520,7 +551,10 @@ def test_symlinked_cache_with_current_blob_reports_no_update():
     requirement = _requirement(("model-Q4_K_M.gguf", 4096, "NEWsha"))
 
     assert (
-        GV._variant_update_available_from_requirement(local_blobs, requirement, "Q4_K_M") is False
+        GV._variant_update_available_from_requirement(
+            local_blobs, requirement, "Q4_K_M"
+        )
+        is False
     )
 
 
@@ -582,7 +616,9 @@ def test_reclaim_replaced_gguf_variant_prunes_old_revision_only(monkeypatch, tmp
         lambda: [SimpleNamespace(repos = [repo_info])],
     )
     invalidated = []
-    monkeypatch.setattr(CI, "invalidate_hf_cache_scans", lambda: invalidated.append(True))
+    monkeypatch.setattr(
+        CI, "invalidate_hf_cache_scans", lambda: invalidated.append(True)
+    )
 
     result = D.reclaim_replaced_gguf_variant(repo_id, "Q4_K_M", frozenset({"NEWsha"}))
 
@@ -599,7 +635,9 @@ def test_reclaim_replaced_gguf_variant_prunes_old_revision_only(monkeypatch, tmp
     assert invalidated == [True]
 
 
-def test_reclaim_replaced_gguf_variant_keeps_no_symlink_current_file(monkeypatch, tmp_path):
+def test_reclaim_replaced_gguf_variant_keeps_no_symlink_current_file(
+    monkeypatch, tmp_path
+):
     """No-symlink cache (Windows without Developer Mode): the moved GGUF lives
     directly in snapshots/ and blobs/ is empty, so scan_cache_dir reports
     blob_path == the snapshot file and its name is the FILENAME, not an etag.
@@ -622,16 +660,22 @@ def test_reclaim_replaced_gguf_variant_keeps_no_symlink_current_file(monkeypatch
                     SimpleNamespace(
                         file_name = "model-Q4_K_M.gguf",
                         file_path = str(snap),
-                        blob_path = str(snap),  # no-symlink: blob_path == the snapshot file
+                        blob_path = str(
+                            snap
+                        ),  # no-symlink: blob_path == the snapshot file
                     )
                 ]
             )
         ],
     )
-    monkeypatch.setattr(CI, "all_hf_cache_scans", lambda: [SimpleNamespace(repos = [repo_info])])
+    monkeypatch.setattr(
+        CI, "all_hf_cache_scans", lambda: [SimpleNamespace(repos = [repo_info])]
+    )
     monkeypatch.setattr(CI, "invalidate_hf_cache_scans", lambda: None)
 
-    result = D.reclaim_replaced_gguf_variant(repo_id, "Q4_K_M", frozenset({"REMOTEsha256"}))
+    result = D.reclaim_replaced_gguf_variant(
+        repo_id, "Q4_K_M", frozenset({"REMOTEsha256"})
+    )
 
     assert snap.exists() is True  # the current file must survive
     assert result["removed_snapshots"] == 0

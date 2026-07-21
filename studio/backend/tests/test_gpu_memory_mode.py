@@ -65,7 +65,9 @@ def test_load_request_defaults_gpu_memory_mode_auto():
 
 
 def test_load_request_round_trips_json_key():
-    req = LoadRequest.model_validate({"model_path": "owner/repo", "gpu_memory_mode": "manual"})
+    req = LoadRequest.model_validate(
+        {"model_path": "owner/repo", "gpu_memory_mode": "manual"}
+    )
     assert req.gpu_memory_mode == "manual"
     assert req.model_dump()["gpu_memory_mode"] == "manual"
 
@@ -213,7 +215,9 @@ def test_auto_layers_branch_empties_gpus_and_drops_tensor_parallel():
     assert 'cmd.extend(["--fit", "on"])' in src
     # TP drops for this path, but at a guard BEFORE the quantized-KV cache-drop, so
     # a requested quantized cache survives into the --fit load.
-    tp_drop = src.find('if tensor_parallel and gpu_memory_mode == "manual" and gpu_layers < 0:')
+    tp_drop = src.find(
+        'if tensor_parallel and gpu_memory_mode == "manual" and gpu_layers < 0:'
+    )
     assert tp_drop != -1, "manual + Auto layers must drop tensor_parallel"
     assert "tensor_parallel = False" in src[tp_drop : tp_drop + 400]
     cache_drop = src.find("Tensor parallelism requires a non-quantized KV cache")
@@ -239,7 +243,9 @@ def test_auto_layers_never_sends_ctx_size_zero():
     zero = src.find('cmd.extend(["-c", "0"])')
     assert zero != -1, '"-c 0" emission must exist outside the Auto-layers case'
     guard = src.rfind("elif not auto_fit:", 0, zero)
-    assert guard != -1 and zero - guard < 120, '"-c 0" must sit under the not-auto_fit guard'
+    assert (
+        guard != -1 and zero - guard < 120
+    ), '"-c 0" must sit under the not-auto_fit guard'
 
 
 def test_manual_mode_clears_inherited_main_model_placement_env():
@@ -301,7 +307,9 @@ def test_load_request_accepts_valid_tensor_split(good):
 
 
 def test_route_normalizes_explicit_extras_before_reload_dedupe():
-    route_src = (Path(_BACKEND_DIR) / "routes" / "inference.py").read_text(encoding = "utf-8")
+    route_src = (Path(_BACKEND_DIR) / "routes" / "inference.py").read_text(
+        encoding = "utf-8"
+    )
     load_impl = route_src[route_src.index("async def _load_model_impl") :]
     strip = load_impl.index("_stripped_explicit = strip_shadowing_flags")
     normalize = load_impl.index(
@@ -410,10 +418,16 @@ def test_manual_reloads_on_gpu_layers_or_n_cpu_moe_or_split_change():
     # Changed MoE offload -> reload.
     assert _target_state_manual(backend, gpu_layers = 20, n_cpu_moe = 8) is False
     # Added a GPU split -> reload.
-    assert _target_state_manual(backend, gpu_layers = 20, n_cpu_moe = 0, tensor_split = [2, 1]) is False
+    assert (
+        _target_state_manual(backend, gpu_layers = 20, n_cpu_moe = 0, tensor_split = [2, 1])
+        is False
+    )
     # Same GPU split -> no reload.
     backend._tensor_split = [2, 1]
-    assert _target_state_manual(backend, gpu_layers = 20, n_cpu_moe = 0, tensor_split = [2, 1]) is True
+    assert (
+        _target_state_manual(backend, gpu_layers = 20, n_cpu_moe = 0, tensor_split = [2, 1])
+        is True
+    )
 
 
 def test_auto_layers_reload_tracks_only_gpu_layers():
@@ -424,7 +438,10 @@ def test_auto_layers_reload_tracks_only_gpu_layers():
     backend._n_cpu_moe = 0
     backend._tensor_split = None
     # Same Auto, leftover MoE/split in the request -> still no reload.
-    assert _target_state_manual(backend, gpu_layers = -1, n_cpu_moe = 8, tensor_split = [2, 1]) is True
+    assert (
+        _target_state_manual(backend, gpu_layers = -1, n_cpu_moe = 8, tensor_split = [2, 1])
+        is True
+    )
     # Auto -> explicit offload reloads.
     assert _target_state_manual(backend, gpu_layers = 20, n_cpu_moe = 0) is False
 
@@ -466,7 +483,9 @@ def test_status_reports_requested_context_length():
     # never-populated field would leave hydration silently reverting the pin).
     from pathlib import Path as _P
 
-    route_src = (_P(_BACKEND_DIR) / "routes" / "inference.py").read_text(encoding = "utf-8")
+    route_src = (_P(_BACKEND_DIR) / "routes" / "inference.py").read_text(
+        encoding = "utf-8"
+    )
     assert "requested_context_length = llama_backend.requested_n_ctx" in route_src
 
 
@@ -570,9 +589,13 @@ def test_fit_sets_target_margin():
     assert flags[flags.index("--fit-target") + 1] == "512"
     # Not emitted on the legacy auto path (fit on but not auto_fit): -c 0 pins
     # native there, so the tighter margin must not ride along.
-    assert "--fit-target" not in LlamaCppBackend._ctx_integrity_flags(1, True, False, 0, 0, caps)
+    assert "--fit-target" not in LlamaCppBackend._ctx_integrity_flags(
+        1, True, False, 0, 0, caps
+    )
     # Not emitted when fit is off.
-    assert "--fit-target" not in LlamaCppBackend._ctx_integrity_flags(1, False, False, 0, 0, caps)
+    assert "--fit-target" not in LlamaCppBackend._ctx_integrity_flags(
+        1, False, False, 0, 0, caps
+    )
     # Not emitted when the binary lacks support.
     assert "--fit-target" not in LlamaCppBackend._ctx_integrity_flags(
         1, True, True, 0, 0, {"supports_fit_target": False}
@@ -591,7 +614,9 @@ def test_load_request_accepts_gpu_ids():
 @pytest.mark.parametrize("model_cls", [LoadResponse, InferenceStatusResponse])
 def test_response_models_emit_gpu_ids(model_cls):
     if model_cls is LoadResponse:
-        obj = model_cls(status = "loaded", model = "m", display_name = "m", inference = {}, gpu_ids = [1])
+        obj = model_cls(
+            status = "loaded", model = "m", display_name = "m", inference = {}, gpu_ids = [1]
+        )
     else:
         obj = model_cls(gpu_ids = [1])
     assert obj.model_dump()["gpu_ids"] == [1]
@@ -662,10 +687,14 @@ def test_route_matches_loaded_settings_collapses_diffusion_gpu_ids():
     # The route-level reload dedupe mirrors the backend: for a loaded diffusion
     # model it compares the request against the single recorded device, not the
     # full requested list, or a same-device multi-GPU pick reloads needlessly.
-    route_src = (Path(_BACKEND_DIR) / "routes" / "inference.py").read_text(encoding = "utf-8")
+    route_src = (Path(_BACKEND_DIR) / "routes" / "inference.py").read_text(
+        encoding = "utf-8"
+    )
     match_impl = route_src[route_src.index("def _request_matches_loaded_settings") :]
     guard = match_impl.index("if llama_backend.is_diffusion:")
-    collapse = match_impl.index("[sorted(request.gpu_ids)[0]] if request.gpu_ids else None")
+    collapse = match_impl.index(
+        "[sorted(request.gpu_ids)[0]] if request.gpu_ids else None"
+    )
     compare = match_impl.index("if _req_gpu_ids != llama_backend.gpu_ids:")
     assert guard < collapse < compare
 
@@ -679,7 +708,9 @@ def _patch_split_pin_env(monkeypatch, *, inherited, reported):
     import utils.hardware as hw
 
     monkeypatch.setattr(
-        LlamaCppBackend, "_resolve_visible_physical_ids", staticmethod(lambda: inherited)
+        LlamaCppBackend,
+        "_resolve_visible_physical_ids",
+        staticmethod(lambda: inherited),
     )
     info = (
         {"available": False}
@@ -840,12 +871,22 @@ def test_zero_offload_flag_false_with_cpu_device_pin(device_args, env):
 
 
 def test_zero_offload_flag_true_with_surviving_tensor_mode():
-    cmd = ["llama-server", "-m", "model.gguf", "--gpu-layers", "0", "--split-mode", "tensor"]
+    cmd = [
+        "llama-server",
+        "-m",
+        "model.gguf",
+        "--gpu-layers",
+        "0",
+        "--split-mode",
+        "tensor",
+    ]
     assert LlamaCppBackend._zero_offload_gpu_flag(cmd, [(0, 8000, 24000)], {}) is True
 
 
 def test_zero_offload_flag_true_for_unmasked_vulkan(monkeypatch):
-    monkeypatch.setattr(LlamaCppBackend, "_is_vulkan_backend", staticmethod(lambda: True))
+    monkeypatch.setattr(
+        LlamaCppBackend, "_is_vulkan_backend", staticmethod(lambda: True)
+    )
     cmd = ["llama-server", "-m", "model.gguf", "--gpu-layers", "0"]
     assert LlamaCppBackend._zero_offload_gpu_flag(cmd, [(0, 8000, 24000)], {}) is True
 
@@ -875,5 +916,13 @@ def test_cmd_companion_ignores_cpu_forced_drafter():
     cmd = ["llama-server", "-md", "d.gguf", "--spec-draft-device", "cpu"]
     assert has(cmd, {}) is False
     # mmproj still counts even alongside a CPU drafter.
-    cmd = ["llama-server", "-md", "d.gguf", "--spec-draft-ngl", "0", "--mmproj", "p.gguf"]
+    cmd = [
+        "llama-server",
+        "-md",
+        "d.gguf",
+        "--spec-draft-ngl",
+        "0",
+        "--mmproj",
+        "p.gguf",
+    ]
     assert has(cmd, {}) is True

@@ -161,7 +161,9 @@ class _Builder(ast.NodeVisitor):
 
     def _visit_stmt(self, node: ast.AST, scope: Scope) -> None:
         if isinstance(node, (ast.Import, ast.ImportFrom)):
-            star = isinstance(node, ast.ImportFrom) and any(a.name == "*" for a in node.names)
+            star = isinstance(node, ast.ImportFrom) and any(
+                a.name == "*" for a in node.names
+            )
             if star:
                 scope.star_import = True
             for alias in node.names:
@@ -349,7 +351,9 @@ class _Builder(ast.NodeVisitor):
             self._bind_args(node.args, child)
             self._visit_expr(node.body, child)
             return
-        if isinstance(node, (ast.ListComp, ast.SetComp, ast.GeneratorExp, ast.DictComp)):
+        if isinstance(
+            node, (ast.ListComp, ast.SetComp, ast.GeneratorExp, ast.DictComp)
+        ):
             child = Scope("comp", f"{scope.qualname}.<comp>", scope)
             for i, gen in enumerate(node.generators):
                 # first iterable evaluates in the enclosing scope
@@ -608,7 +612,9 @@ def compare(before_src: str, after_src: str, path: str) -> list[tuple[str, str]]
         if tbefore and tbefore != tafter and (tbefore - tafter):
             lost = tbefore - tafter
             gained = tafter - tbefore
-            relocated = lost <= removed_module_targets and gained <= added_module_targets
+            relocated = (
+                lost <= removed_module_targets and gained <= added_module_targets
+            )
             if relocated:
                 continue
             findings.append(
@@ -633,7 +639,9 @@ def compare(before_src: str, after_src: str, path: str) -> list[tuple[str, str]]
     for scope, names in b["ambiguous"].items():
         new = names - a["ambiguous"].get(scope, set())
         for n in sorted(new):
-            findings.append(("WARN", f"{path}: AMBIGUOUS-BIND '{n}' import+non-import in {scope}"))
+            findings.append(
+                ("WARN", f"{path}: AMBIGUOUS-BIND '{n}' import+non-import in {scope}")
+            )
 
     # 6. TARGET-MISSING (informational): a scope stopped resolving to an import
     #    target. Real bugs are covered above; remaining cases are relocated code.
@@ -645,7 +653,9 @@ def compare(before_src: str, after_src: str, path: str) -> list[tuple[str, str]]
                 if t in added_module_targets
                 else "  [target not re-added here -> likely relocated/deleted]"
             )
-            findings.append(("INFO", f"{path}: TARGET-MISSING {t} in scope {scope}{relocated}"))
+            findings.append(
+                ("INFO", f"{path}: TARGET-MISSING {t} in scope {scope}{relocated}")
+            )
     return findings
 
 
@@ -790,7 +800,9 @@ def audit_files(paths: list[str]) -> int:
     ok = n_err == 0 and n_fp == 0
     print(
         "\nAUDIT:",
-        "ROBUST (no crashes, no false positives vs pyflakes)" if ok else "NEEDS WORK (see above)",
+        "ROBUST (no crashes, no false positives vs pyflakes)"
+        if ok
+        else "NEEDS WORK (see above)",
     )
     return 0 if ok else 1
 
@@ -826,12 +838,18 @@ def main() -> int:
         blockers = [f for f in findings if f[0] == "BLOCKER"]
         warns = [f for f in findings if f[0] == "WARN"]
         infos = [f for f in findings if f[0] == "INFO"]
-        status = "CLEAN" if not blockers and not warns else ("BLOCKERS" if blockers else "WARNINGS")
+        status = (
+            "CLEAN"
+            if not blockers and not warns
+            else ("BLOCKERS" if blockers else "WARNINGS")
+        )
         print(f"\n=== {path}: {status} ===")
         for sev, m in blockers + warns + infos:
             print(f"  [{sev}] {m}")
         any_blocker = any_blocker or bool(blockers)
-    print("\nOVERALL:", "FAIL (blockers found)" if any_blocker else "PASS (no blockers)")
+    print(
+        "\nOVERALL:", "FAIL (blockers found)" if any_blocker else "PASS (no blockers)"
+    )
     return 1 if any_blocker else 0
 
 

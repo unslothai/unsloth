@@ -10,7 +10,13 @@ from pathlib import Path
 
 WORKDIR = Path(__file__).resolve().parents[2]
 MODEL_SELECTOR = (
-    WORKDIR / "studio" / "frontend" / "src" / "components" / "assistant-ui" / "model-selector.tsx"
+    WORKDIR
+    / "studio"
+    / "frontend"
+    / "src"
+    / "components"
+    / "assistant-ui"
+    / "model-selector.tsx"
 )
 APP_SIDEBAR = WORKDIR / "studio" / "frontend" / "src" / "components" / "app-sidebar.tsx"
 
@@ -29,7 +35,9 @@ def test_model_selector_trigger_label_uses_leading_tight():
     assert matches, "could not find ModelSelectorTrigger model-name span"
     for cls in matches:
         assert "leading-tight" in cls, f"expected leading-tight, got: {cls}"
-        assert "leading-none" not in cls, f"leading-none must not coexist with truncate here: {cls}"
+        assert (
+            "leading-none" not in cls
+        ), f"leading-none must not coexist with truncate here: {cls}"
 
 
 def test_sidebar_account_block_uses_leading_tight():
@@ -45,7 +53,9 @@ def test_sidebar_account_block_uses_leading_tight():
     assert matches, "could not find sidebar account-block parent div"
     for classes in matches:
         leading_classes = [cls for cls in classes.split() if cls.startswith("leading-")]
-        assert leading_classes, f"no leading-* class on sidebar account-block parent: {classes}"
+        assert (
+            leading_classes
+        ), f"no leading-* class on sidebar account-block parent: {classes}"
         for cls in leading_classes:
             assert (
                 cls == "leading-tight"

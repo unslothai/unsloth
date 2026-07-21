@@ -92,7 +92,9 @@ def test_load_request_accepts_tensor_parallel():
 
 def test_load_request_round_trips_json_key():
     # The frontend sends the snake_case key verbatim.
-    req = LoadRequest.model_validate({"model_path": "owner/repo", "tensor_parallel": True})
+    req = LoadRequest.model_validate(
+        {"model_path": "owner/repo", "tensor_parallel": True}
+    )
     assert req.tensor_parallel is True
     assert req.model_dump()["tensor_parallel"] is True
 
@@ -266,7 +268,9 @@ def test_proportional_tensor_split_is_emitted_in_tensor_mode():
     # --tensor-split earlier in the source from the user's per-GPU shares.
     ts = src.find('"--tensor-split"', gate)
     nxt_else = src.find("self._tensor_parallel = False")
-    assert 0 <= gate < ts < nxt_else, "--tensor-split must be emitted under `if tensor_parallel:`"
+    assert (
+        0 <= gate < ts < nxt_else
+    ), "--tensor-split must be emitted under `if tensor_parallel:`"
     assert "tp_tensor_split" in src[gate:nxt_else]
 
 
@@ -301,7 +305,9 @@ def test_probe_mtp_decode_returns_false_on_crash(monkeypatch):
             self.status_code = code
 
     backend._process = None  # liveness check skipped; exercise the HTTP result
-    monkeypatch.setattr(llama_cpp_module.httpx, "post", lambda *a, **k: _Resp(200), raising = False)
+    monkeypatch.setattr(
+        llama_cpp_module.httpx, "post", lambda *a, **k: _Resp(200), raising = False
+    )
     assert backend._probe_mtp_decode(timeout = 1.0) is True
 
     def _drop(*a, **k):
@@ -310,12 +316,16 @@ def test_probe_mtp_decode_returns_false_on_crash(monkeypatch):
     monkeypatch.setattr(llama_cpp_module.httpx, "post", _drop, raising = False)
     assert backend._probe_mtp_decode(timeout = 1.0) is False
 
-    monkeypatch.setattr(llama_cpp_module.httpx, "post", lambda *a, **k: _Resp(500), raising = False)
+    monkeypatch.setattr(
+        llama_cpp_module.httpx, "post", lambda *a, **k: _Resp(500), raising = False
+    )
     assert backend._probe_mtp_decode(timeout = 1.0) is False
 
     # 200 but the server aborted right after (poll() returns an exit code).
     backend._process = _FakeProcess()
-    monkeypatch.setattr(llama_cpp_module.httpx, "post", lambda *a, **k: _Resp(200), raising = False)
+    monkeypatch.setattr(
+        llama_cpp_module.httpx, "post", lambda *a, **k: _Resp(200), raising = False
+    )
     assert backend._probe_mtp_decode(timeout = 1.0) is False
 
 
@@ -442,7 +452,9 @@ def test_runtime_recovery_strips_user_mtp_extra_args(monkeypatch):
     # A user --spec-type draft-mtp in extra_args must be neutralised on the reload
     # (append a last-wins --spec-default) so MTP can't re-engage and loop.
     b = _recovery_backend()
-    b._last_load_kwargs = dict(b._last_load_kwargs, extra_args = ["--spec-type", "draft-mtp"])
+    b._last_load_kwargs = dict(
+        b._last_load_kwargs, extra_args = ["--spec-type", "draft-mtp"]
+    )
     done = threading.Event()
     captured = {}
 
@@ -691,11 +703,15 @@ def test_fit_context_budget_frac_override_is_tighter():
     pool_mib = 24 * 1024  # tight enough that KV capping bites
 
     fit_default = backend._fit_context_to_vram(131072, pool_mib, model_size, "f16")
-    fit_tp = backend._fit_context_to_vram(131072, pool_mib, model_size, "f16", budget_frac = 0.80)
+    fit_tp = backend._fit_context_to_vram(
+        131072, pool_mib, model_size, "f16", budget_frac = 0.80
+    )
     assert fit_tp < 131072, "expected the context to be capped at this VRAM tier"
     assert fit_tp <= fit_default, "a tighter budget must not allow MORE context"
     # Omitting the override must reproduce the default budget exactly.
-    assert backend._fit_context_to_vram(131072, pool_mib, model_size, "f16") == fit_default
+    assert (
+        backend._fit_context_to_vram(131072, pool_mib, model_size, "f16") == fit_default
+    )
 
 
 # ── unsupported-arch load failure -> clean message ───────────────────
@@ -735,7 +751,9 @@ def _plan(
     mtp = False,
 ):
     b = _kv_seeded_backend()
-    return b, b._plan_tensor_parallel(gpus, int(model_gb * _GB), target, mtp_engaged = mtp)
+    return b, b._plan_tensor_parallel(
+        gpus, int(model_gb * _GB), target, mtp_engaged = mtp
+    )
 
 
 def _kv_budget_b(model_gb, gpus = _ASYM):
@@ -814,7 +832,9 @@ def test_tp_plan_max_available_ctx_reports_native_not_explicit_ctx():
     # An explicit small ctx caps effective_ctx but the UI ceiling
     # (max_available_ctx) must reflect the native/hardware cap, not the request.
     b = _kv_seeded_backend()
-    ec, mac, _gi, _ts = b._plan_tensor_parallel(_ASYM, int(50 * _GB), 8192, max_target_ctx = 131072)
+    ec, mac, _gi, _ts = b._plan_tensor_parallel(
+        _ASYM, int(50 * _GB), 8192, max_target_ctx = 131072
+    )
     _, native_mac, *_ = b._plan_tensor_parallel(_ASYM, int(50 * _GB), 131072)
     assert ec == 8192  # explicit request honored for the load
     assert mac == native_mac > ec  # ceiling reflects the hardware cap
@@ -865,7 +885,9 @@ def test_tp_plan_soft_overhead_reserved_against_budget():
     # the replicated context compute, so the real footprint stays within the pool.
     b = _kv_seeded_backend()
     soft = 2 * _GB
-    ec, *_r = b._plan_tensor_parallel(_ASYM, int(50 * _GB), 131072, soft_overhead_bytes = soft)
+    ec, *_r = b._plan_tensor_parallel(
+        _ASYM, int(50 * _GB), 131072, soft_overhead_bytes = soft
+    )
     cc = len(_ASYM) * b._compute_buffer_ctx_bytes(ec, None, None)
     assert b._estimate_kv_cache_bytes(ec) + cc + soft <= _kv_budget_b(50)
 
@@ -892,7 +914,10 @@ def test_tp_plan_weighted_split_keeps_small_gpu_within_budget():
     # card was placed over its budget; the cc term is what pulls it back.
     old_adj = [int(free_by_idx[i] * _CTX_FIT_VRAM_FRACTION - reserve) for i in gi]
     old_small_placed = split_content_mib * old_adj[1] / sum(old_adj)
-    assert old_small_placed + reserve + cc_per_dev > free_by_idx[1] * _CTX_FIT_VRAM_FRACTION
+    assert (
+        old_small_placed + reserve + cc_per_dev
+        > free_by_idx[1] * _CTX_FIT_VRAM_FRACTION
+    )
 
 
 def test_tp_plan_no_kv_metadata_floors_context():
@@ -923,7 +948,9 @@ def test_tp_plan_drops_gpu_below_buffer_reserve():
     # split (and gpu_indices reflects only the usable device).
     b = _kv_seeded_backend()
     reserve = LlamaCppBackend._TENSOR_PARALLEL_BUFFER_RESERVE_MIB
-    ec, mac, gi, ts = b._plan_tensor_parallel([(0, 48000), (1, reserve - 1)], int(8 * _GB), 8192)
+    ec, mac, gi, ts = b._plan_tensor_parallel(
+        [(0, 48000), (1, reserve - 1)], int(8 * _GB), 8192
+    )
     assert gi == [0]
     assert ts is None
 
@@ -943,7 +970,9 @@ class _RecordingLoader:
         self.calls: list[tuple] = []
 
     async def __call__(self, tensor_parallel, extra_args):
-        self.calls.append((tensor_parallel, list(extra_args) if extra_args else extra_args))
+        self.calls.append(
+            (tensor_parallel, list(extra_args) if extra_args else extra_args)
+        )
         if resolve_tensor_parallel(extra_args, tensor_parallel):
             raise RuntimeError("llama-server failed to start")
         return True
@@ -952,7 +981,9 @@ class _RecordingLoader:
 def test_tensor_fallback_retries_layer_on_crash():
     loader = _RecordingLoader()
     ok = asyncio.run(
-        load_with_tensor_fallback(loader, requested_tensor = True, extra_args = None, label = "m")
+        load_with_tensor_fallback(
+            loader, requested_tensor = True, extra_args = None, label = "m"
+        )
     )
     assert ok is True
     # tensor first (crashes), then layer split.
@@ -967,7 +998,9 @@ def test_tensor_fallback_no_retry_on_success():
         return True
 
     ok = asyncio.run(
-        load_with_tensor_fallback(_ok, requested_tensor = True, extra_args = None, label = "m")
+        load_with_tensor_fallback(
+            _ok, requested_tensor = True, extra_args = None, label = "m"
+        )
     )
     assert ok is True
     assert calls == [True]  # no fallback when the tensor load succeeds
@@ -1001,7 +1034,9 @@ def test_tensor_fallback_returns_false_when_both_attempts_fail():
         return False
 
     ok = asyncio.run(
-        load_with_tensor_fallback(_always_false, requested_tensor = True, extra_args = None, label = "m")
+        load_with_tensor_fallback(
+            _always_false, requested_tensor = True, extra_args = None, label = "m"
+        )
     )
     assert ok is False
     assert calls == [True, False]  # tried tensor, then layer split
@@ -1044,7 +1079,9 @@ def test_tensor_fallback_strips_split_mode_from_extras_on_retry(extras):
     # other flags, else tensor is re-enabled and relaunches the crash.
     loader = _RecordingLoader()
     ok = asyncio.run(
-        load_with_tensor_fallback(loader, requested_tensor = False, extra_args = extras, label = "m")
+        load_with_tensor_fallback(
+            loader, requested_tensor = False, extra_args = extras, label = "m"
+        )
     )
     assert ok is True
     assert len(loader.calls) == 2
@@ -1109,10 +1146,16 @@ def test_tensor_caps_context_to_total_vram_budget():
     assert with_total < without  # total cap tightens the chosen context
 
     MIB = 1024 * 1024
-    reserve = LlamaCppBackend._TENSOR_PARALLEL_BUFFER_RESERVE_MIB  # flat (no vocab dims)
+    reserve = (
+        LlamaCppBackend._TENSOR_PARALLEL_BUFFER_RESERVE_MIB
+    )  # flat (no vocab dims)
     pool_usable = sum(f - (1.0 - _CTX_FIT_VRAM_FRACTION) * totals[i] for i, f in gpus)
-    foot_total = (model + b._estimate_kv_cache_bytes(with_total, None)) / MIB + len(gpus) * reserve
-    foot_free = (model + b._estimate_kv_cache_bytes(without, None)) / MIB + len(gpus) * reserve
+    foot_total = (model + b._estimate_kv_cache_bytes(with_total, None)) / MIB + len(
+        gpus
+    ) * reserve
+    foot_free = (model + b._estimate_kv_cache_bytes(without, None)) / MIB + len(
+        gpus
+    ) * reserve
     assert foot_total <= pool_usable + 2  # fix: fits the total-based budget
     assert foot_free > pool_usable  # old behavior over-spent the cushion
 
@@ -1126,12 +1169,18 @@ def test_tensor_unknown_total_keeps_fraction_cushion():
     MIB = 1024 * 1024
     reserve = LlamaCppBackend._TENSOR_PARALLEL_BUFFER_RESERVE_MIB
     model = int(18 * _GB)
-    ec_zero, *_ = b._plan_tensor_parallel(gpus, model, 131072, total_by_idx = {0: 0, 1: 0})
+    ec_zero, *_ = b._plan_tensor_parallel(
+        gpus, model, 131072, total_by_idx = {0: 0, 1: 0}
+    )
     ec_none, *_ = b._plan_tensor_parallel(gpus, model, 131072)
     assert ec_zero == ec_none  # total 0 == total absent: both use free*frac
     pool_free = sum(f for _, f in gpus)
-    foot = (model + b._estimate_kv_cache_bytes(ec_zero, None)) / MIB + len(gpus) * reserve
-    assert foot <= pool_free * _CTX_FIT_VRAM_FRACTION + 2  # within free*frac, not raw free
+    foot = (model + b._estimate_kv_cache_bytes(ec_zero, None)) / MIB + len(
+        gpus
+    ) * reserve
+    assert (
+        foot <= pool_free * _CTX_FIT_VRAM_FRACTION + 2
+    )  # within free*frac, not raw free
 
 
 def test_tensor_reserve_scales_with_ubatch():
@@ -1181,7 +1230,9 @@ def test_tensor_admission_drops_gpu_below_usable_budget():
     b = _kv_seeded_backend()
     gpus = [(0, 6000), (1, 40000)]
     totals = {0: 81920, 1: 81920}
-    _ec, _mac, gi, ts = b._plan_tensor_parallel(gpus, int(8 * _GB), 8192, total_by_idx = totals)
+    _ec, _mac, gi, ts = b._plan_tensor_parallel(
+        gpus, int(8 * _GB), 8192, total_by_idx = totals
+    )
     assert gi == [1] and ts is None  # GPU 0 excluded on usable budget
     _ec2, _mac2, gi_raw, _ts2 = b._plan_tensor_parallel(gpus, int(8 * _GB), 8192)
     assert gi_raw == [0, 1]  # raw free would have admitted both
@@ -1232,6 +1283,12 @@ def test_load_model_restores_quantized_kv_on_tensor_downgrade():
     compact = "".join(inspect.getsource(LlamaCppBackend.load_model).split())
     assert "_tensor_dropped_cache_type_kv=cache_type_kv" in compact  # captured pre-null
     # Restore is shared in one closure, called at every tensor->layer downgrade.
-    assert "cache_type_kv=_tensor_dropped_cache_type_kv" in compact  # restored in the closure
-    assert "def_restore_after_tensor_downgrade():" in compact  # one shared restore helper
-    assert compact.count("_restore_after_tensor_downgrade()") >= 3  # called at each downgrade
+    assert (
+        "cache_type_kv=_tensor_dropped_cache_type_kv" in compact
+    )  # restored in the closure
+    assert (
+        "def_restore_after_tensor_downgrade():" in compact
+    )  # one shared restore helper
+    assert (
+        compact.count("_restore_after_tensor_downgrade()") >= 3
+    )  # called at each downgrade

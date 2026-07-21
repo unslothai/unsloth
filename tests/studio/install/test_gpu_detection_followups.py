@@ -76,9 +76,15 @@ def _run_detect_host(
     patches = [
         patch.object(prebuilt_mod.platform, "system", return_value = system),
         patch.object(prebuilt_mod.platform, "machine", return_value = machine),
-        patch.object(prebuilt_mod.platform, "mac_ver", return_value = ("", ("", "", ""), "")),
-        patch.object(prebuilt_mod.shutil, "which", side_effect = lambda n: which_map.get(n)),
-        patch.object(prebuilt_mod, "run_capture", side_effect = _make_run_capture(rocminfo_stdout)),
+        patch.object(
+            prebuilt_mod.platform, "mac_ver", return_value = ("", ("", "", ""), "")
+        ),
+        patch.object(
+            prebuilt_mod.shutil, "which", side_effect = lambda n: which_map.get(n)
+        ),
+        patch.object(
+            prebuilt_mod, "run_capture", side_effect = _make_run_capture(rocminfo_stdout)
+        ),
         patch.object(prebuilt_mod.os.path, "isdir", side_effect = fake_isdir),
         patch.object(prebuilt_mod.os, "listdir", side_effect = fake_listdir),
         patch.object(prebuilt_mod.os, "access", return_value = False),
@@ -262,7 +268,9 @@ class TestSetupShHardening:
                 wrapped = True
                 break
             start = idx + 1
-        assert wrapped, "compute_cap probe must be wrapped in _setup_run_smi (timeout-bounded)"
+        assert (
+            wrapped
+        ), "compute_cap probe must be wrapped in _setup_run_smi (timeout-bounded)"
 
     def test_driver_version_probe_timeout_wrapped(self, setup_src):
         start = setup_src.find("_cuda_driver_max_version()")
@@ -317,7 +325,9 @@ class TestBackendExportLeafClassification:
             out = sp.run(
                 ["sh", str(script), url], capture_output = True, text = True, timeout = 30
             ).stdout.strip()
-            assert out == expected, f"{url} classified as {out!r}, expected {expected!r}"
+            assert (
+                out == expected
+            ), f"{url} classified as {out!r}, expected {expected!r}"
 
 
 # TEST: CUDA_VISIBLE_DEVICES=""/-1 hides NVIDIA in every usable-GPU helper
@@ -398,7 +408,9 @@ class TestHiddenCvdNotUsable:
         with (
             patch.object(stack_mod.shutil, "which", side_effect = which_map.get),
             patch.object(stack_mod.subprocess, "run", side_effect = fake_run),
-            patch.dict(stack_mod.os.environ, {"CUDA_VISIBLE_DEVICES": "-1"}, clear = False),
+            patch.dict(
+                stack_mod.os.environ, {"CUDA_VISIBLE_DEVICES": "-1"}, clear = False
+            ),
         ):
             assert stack_mod._has_rocm_gpu() is True
 
@@ -457,7 +469,11 @@ class TestHiddenCvdNotUsable:
         out = self._run_sh_helper(
             tmp_path,
             src,
-            ["_setup_run_smi", "_setup_cvd_hides_nvidia", "_setup_has_usable_nvidia_gpu"],
+            [
+                "_setup_run_smi",
+                "_setup_cvd_hides_nvidia",
+                "_setup_has_usable_nvidia_gpu",
+            ],
             cvd,
         )
         assert out == expected
@@ -474,23 +490,33 @@ class TestRedactInstallOutput:
         assert out == "ERROR: failed https://<redacted>@download.pytorch.org/whl/cu128"
 
     def test_bytes_input_decoded_and_redacted(self):
-        out = stack_mod._redact_install_output(b"fetch https://ghp_deadbeef@host/whl/cu128 failed")
+        out = stack_mod._redact_install_output(
+            b"fetch https://ghp_deadbeef@host/whl/cu128 failed"
+        )
         assert out == "fetch https://<redacted>@host/whl/cu128 failed"
 
     def test_query_values_redacted(self):
         out = stack_mod._redact_install_output(
             "url https://host/whl/cu128?token=abcd1234&channel=beta unreachable"
         )
-        assert out == "url https://host/whl/cu128?token=<redacted>&channel=<redacted> unreachable"
+        assert (
+            out
+            == "url https://host/whl/cu128?token=<redacted>&channel=<redacted> unreachable"
+        )
 
     def test_fragment_redacted(self):
         out = stack_mod._redact_install_output(
             "ERROR: could not fetch https://mirror.local/whl/cu128#token=SECRET123 (403)"
         )
-        assert out == "ERROR: could not fetch https://mirror.local/whl/cu128#<redacted> (403)"
+        assert (
+            out
+            == "ERROR: could not fetch https://mirror.local/whl/cu128#<redacted> (403)"
+        )
 
     def test_query_and_fragment_both_redacted(self):
-        out = stack_mod._redact_install_output("https://host/whl/cu128?token=abc#sig=xyz done")
+        out = stack_mod._redact_install_output(
+            "https://host/whl/cu128?token=abc#sig=xyz done"
+        )
         assert out == "https://host/whl/cu128?token=<redacted>#<redacted> done"
 
     def test_bare_hash_comment_untouched(self):
@@ -510,7 +536,9 @@ class TestRedactInstallOutput:
         out = stack_mod._redact_install_output(
             "https://alice:s3cr3t@host/whl/cu128?token=SUPERSECRET#frag=ALSOSECRET"
         )
-        assert "s3cr3t" not in out and "SUPERSECRET" not in out and "ALSOSECRET" not in out
+        assert (
+            "s3cr3t" not in out and "SUPERSECRET" not in out and "ALSOSECRET" not in out
+        )
 
 
 class TestTrimIndexPathSlashes:
@@ -518,7 +546,10 @@ class TestTrimIndexPathSlashes:
     ending in "/" must survive (a whole-URL rstrip would corrupt a base64 token)."""
 
     def test_double_path_slash_collapsed(self):
-        assert stack_mod._trim_index_path_slashes("https://h/whl/cu128//") == "https://h/whl/cu128"
+        assert (
+            stack_mod._trim_index_path_slashes("https://h/whl/cu128//")
+            == "https://h/whl/cu128"
+        )
 
     def test_query_token_slash_preserved(self):
         assert (

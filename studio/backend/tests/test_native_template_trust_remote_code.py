@@ -110,7 +110,9 @@ def _install_custom_code_tokenizer(monkeypatch):
             )
         return _JinjaTokenizer(_NATIVE_TEMPLATE)
 
-    monkeypatch.setattr(AutoTokenizer, "from_pretrained", staticmethod(fake_from_pretrained))
+    monkeypatch.setattr(
+        AutoTokenizer, "from_pretrained", staticmethod(fake_from_pretrained)
+    )
     return calls
 
 
@@ -138,7 +140,9 @@ def test_native_reload_passes_stored_trust_remote_code(monkeypatch):
         tools = _TOOLS,
     )
 
-    assert out is not None, "native fallback should render the tools prompt with consent"
+    assert (
+        out is not None
+    ), "native fallback should render the tools prompt with consent"
     assert "[AVAILABLE_TOOLS]" in out
     assert "get_weather" in out
     assert calls["trust_remote_code"] is True  # the stored consent was threaded through

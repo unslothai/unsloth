@@ -40,7 +40,9 @@ try:
     )
 except:
     transformers_version = Version(transformers_version)
-    if not transformers_version >= Version("4.50.3"):  # TODO: Update when transformers is updated
+    if not transformers_version >= Version(
+        "4.50.3"
+    ):  # TODO: Update when transformers is updated
         raise ImportError(
             f"Unsloth: Your transformers version of {transformers_version} does not support Qwen3 and Qwen3Moe.\n"
             f"The minimum required version is 4.50.3.\n"
@@ -124,7 +126,9 @@ def Qwen3Attention_fast_forward(
         rotary_emb.extend_rope_embedding(V, seq_len = kv_seq_len)
         cos, sin = rotary_emb.get_cached(kv_seq_len, Q.device.index)
 
-    rope_position_ids = position_ids if position_ids is not None else kwargs.get("position_ids")
+    rope_position_ids = (
+        position_ids if position_ids is not None else kwargs.get("position_ids")
+    )
     # Useful for LongRoPE
     Q, K = fast_rope_embedding(Q, K, cos, sin, rope_position_ids)
 
@@ -135,7 +139,9 @@ def Qwen3Attention_fast_forward(
 
     # Attention module
     use_varlen = seq_info is not None and past_key_value is None
-    backend = SDPA if attention_mask is not None else select_attention_backend(use_varlen)
+    backend = (
+        SDPA if attention_mask is not None else select_attention_backend(use_varlen)
+    )
     attention_config = AttentionConfig(
         backend = backend,
         n_kv_heads = n_kv_heads,
@@ -219,8 +225,12 @@ def Qwen3Attention_fast_forward_inference(
         self.paged_attention_V = self.paged_attention[:, 1]
         self.paged_attention_K[:seq_len] = K1.permute(2, 0, 1, 3)
         self.paged_attention_V[:seq_len] = V1.permute(2, 0, 1, 3)
-        self.temp_QA = torch.empty((2, bsz, 1, attention_size), dtype = dtype, device = device)
-        self.temp_KV = torch.empty((2, bsz, 1, n_kv_heads * head_dim), dtype = dtype, device = device)
+        self.temp_QA = torch.empty(
+            (2, bsz, 1, attention_size), dtype = dtype, device = device
+        )
+        self.temp_KV = torch.empty(
+            (2, bsz, 1, n_kv_heads * head_dim), dtype = dtype, device = device
+        )
         self.RH_Q = torch.empty((bsz, n_heads, 1, head_dim), dtype = dtype, device = device)
 
         # Mistral Nemo 12b has weird dimensions
@@ -246,7 +256,9 @@ def Qwen3Attention_fast_forward_inference(
         )
         self.paged_attention_K = self.paged_attention[:, 0]
         self.paged_attention_V = self.paged_attention[:, 1]
-        self.attention.resize_((bsz, n_heads, 1, self.attention.shape[-1] + KV_CACHE_INCREMENT))
+        self.attention.resize_(
+            (bsz, n_heads, 1, self.attention.shape[-1] + KV_CACHE_INCREMENT)
+        )
 
     Qn = fast_linear_forward(self.q_proj, Xn, out = self.temp_QA[0])
     Kn = fast_linear_forward(self.k_proj, Xn, out = self.temp_KV[0])
@@ -342,19 +354,25 @@ def Qwen3Attention_fast_forward_inference(
     # Grouped query attention
     _, _, cached_len, _ = Knn.shape
     if bsz == 1 or ((not use_sdpa_gqa) and n_groups != 1):
-        Knn = Knn[:, :, None, :, :].expand(bsz, n_kv_heads, n_groups, cached_len, head_dim)
-        Vnn = Vnn[:, :, None, :, :].expand(bsz, n_kv_heads, n_groups, cached_len, head_dim)
+        Knn = Knn[:, :, None, :, :].expand(
+            bsz, n_kv_heads, n_groups, cached_len, head_dim
+        )
+        Vnn = Vnn[:, :, None, :, :].expand(
+            bsz, n_kv_heads, n_groups, cached_len, head_dim
+        )
         Knn = Knn.reshape(bsz, n_heads, cached_len, head_dim)
         Vnn = Vnn.reshape(bsz, n_heads, cached_len, head_dim)
 
     # Attention
     if bsz == 1:
-        Qn *= (
-            self.scalar
-        )  # See https://github.com/ggerganov/llama.cpp/issues/7805#issuecomment-2153349963
+        Qn *= self.scalar  # See https://github.com/ggerganov/llama.cpp/issues/7805#issuecomment-2153349963
         # It seems like doing (Q * scalar) @ K is better than (Q @ K) * scalar to stop overflows
-        A = torch_matmul(Qn, Knn.transpose(2, 3), out = self.attention[:, :, :, :cached_len])
-        A[:] = torch_nn_functional_softmax(A, dim = -1, dtype = torch.float32)  # .to(A.dtype)
+        A = torch_matmul(
+            Qn, Knn.transpose(2, 3), out = self.attention[:, :, :, :cached_len]
+        )
+        A[:] = torch_nn_functional_softmax(
+            A, dim = -1, dtype = torch.float32
+        )  # .to(A.dtype)
         A = torch_matmul(A, Vnn, out = Qn)
     else:
         if use_sdpa_gqa:
@@ -403,7 +421,9 @@ class FastQwen3Model(FastLlamaModel):
         # slowed training. See unslothai/unsloth#168 and transformers#27931.
         import transformers.models.qwen3.modeling_qwen3
 
-        transformers.models.qwen3.modeling_qwen3.Qwen3RotaryEmbedding = LlamaRotaryEmbedding
+        transformers.models.qwen3.modeling_qwen3.Qwen3RotaryEmbedding = (
+            LlamaRotaryEmbedding
+        )
         return
 
     @staticmethod

@@ -41,7 +41,12 @@ def get_colab_url(port: int = 8888) -> str:
         try:
             url = eval_js(f"google.colab.kernel.proxyPort({port})", timeout_sec = 10)
             # Valid proxy URL is https:// and embeds the port.
-            if url and isinstance(url, str) and url.startswith("https://") and str(port) in url:
+            if (
+                url
+                and isinstance(url, str)
+                and url.startswith("https://")
+                and str(port) in url
+            ):
                 return url.rstrip("/")
         except Exception as e:
             logger.info(f"Note: Could not get Colab URL (attempt {attempt + 1}/3: {e})")
@@ -114,7 +119,9 @@ def _bootstrap_password_pending() -> bool:
         from auth.storage import requires_password_change, DEFAULT_ADMIN_USERNAME
         return bool(requires_password_change(DEFAULT_ADMIN_USERNAME))
     except Exception as e:
-        logger.info(f"Could not check admin password state ({e}); refusing tunnel to be safe.")
+        logger.info(
+            f"Could not check admin password state ({e}); refusing tunnel to be safe."
+        )
         return True
 
 
@@ -188,7 +195,9 @@ def _is_studio_healthy(port: int, timeout: float = 2.0) -> bool:
     """
     import json, urllib.request
     try:
-        with urllib.request.urlopen(f"http://localhost:{port}/api/health", timeout = timeout) as r:
+        with urllib.request.urlopen(
+            f"http://localhost:{port}/api/health", timeout = timeout
+        ) as r:
             return json.loads(r.read()).get("service") == "Unsloth UI Backend"
     except Exception:
         return False
@@ -295,7 +304,9 @@ def start(port: int = 8888, *, cloudflare: bool = False):
     # Fast path: Unsloth already running (cell re-run). Re-launching would collide on
     # the port, so just re-show the link and iframe.
     if _is_studio_healthy(port):
-        logger.info(f"   Unsloth is already running on port {port} — reusing existing server.")
+        logger.info(
+            f"   Unsloth is already running on port {port} — reusing existing server."
+        )
         # try/finally: tear the tunnel down even if interrupted mid-start/render.
         try:
             cf_url = start_cloudflare_tunnel(port) if cloudflare else None
@@ -352,7 +363,9 @@ def start(port: int = 8888, *, cloudflare: bool = False):
     server_ready = False
     for _ in range(40):
         try:
-            with urllib.request.urlopen(f"http://localhost:{actual_port}/api/health", timeout = 1):
+            with urllib.request.urlopen(
+                f"http://localhost:{actual_port}/api/health", timeout = 1
+            ):
                 server_ready = True
                 break
         except Exception:

@@ -68,7 +68,9 @@ def _install_run_reexec_capture(monkeypatch, *, platform = "linux"):
 
     monkeypatch.setattr(sys, "prefix", "/nonexistent/outer/venv")
     fake_venv = Path("/fake/studio/venv/unsloth_studio")
-    monkeypatch.setattr(studio_mod, "_studio_venv_python", lambda: fake_venv / "bin" / "python")
+    monkeypatch.setattr(
+        studio_mod, "_studio_venv_python", lambda: fake_venv / "bin" / "python"
+    )
     # A built frontend dist is present so the public-launch UI check passes
     # deterministically (independent of whether the repo dist was built).
     monkeypatch.setattr(
@@ -123,7 +125,9 @@ def _invoke_run(monkeypatch, args):
         (["--secure"], None, "--no-cloudflare"),
     ],
 )
-def test_run_reexec_forwards_cloudflare_polarity(monkeypatch, extra_flags, expected, unexpected):
+def test_run_reexec_forwards_cloudflare_polarity(
+    monkeypatch, extra_flags, expected, unexpected
+):
     captured = _invoke_run(monkeypatch, _BASE + extra_flags)
     assert len(captured) == 1, captured
     argv = captured[0]
@@ -149,7 +153,9 @@ def _invoke_studio_default(
     monkeypatch.setattr(sys, "prefix", "/nonexistent/outer/venv")
     monkeypatch.setattr(studio_mod, "_ensure_studio_env_exported", lambda: None)
     fake_venv = Path("/fake/studio/venv/unsloth_studio")
-    monkeypatch.setattr(studio_mod, "_studio_venv_python", lambda: fake_venv / "bin" / "python")
+    monkeypatch.setattr(
+        studio_mod, "_studio_venv_python", lambda: fake_venv / "bin" / "python"
+    )
     monkeypatch.setattr(studio_mod, "_find_run_py", lambda: Path("/fake/studio/run.py"))
     # A built frontend dist is present so the public-launch UI check passes; this
     # suite exercises flag forwarding, not the missing-dist lockout guard.
@@ -183,7 +189,9 @@ def _invoke_studio_default(
         (["--secure"], None, "--no-cloudflare"),
     ],
 )
-def test_studio_default_reexec_forwards_cloudflare(monkeypatch, extra_flags, expected, unexpected):
+def test_studio_default_reexec_forwards_cloudflare(
+    monkeypatch, extra_flags, expected, unexpected
+):
     captured = _invoke_studio_default(monkeypatch, ["-H", "0.0.0.0"] + extra_flags)
     assert len(captured) == 1, captured
     argv = captured[0]
@@ -273,11 +281,15 @@ def test_run_cloudflare_notice_uses_external_host_policy():
     studio_mod = _studio()
     calls = []
     run_mod = types.SimpleNamespace(
-        _verify_global_reachability = lambda host, port: calls.append(("verify", host, port)),
+        _verify_global_reachability = lambda host, port: calls.append(
+            ("verify", host, port)
+        ),
         _print_cloudflare_line = lambda **kw: calls.append(("print", kw)),
     )
 
-    studio_mod._emit_run_cloudflare_notice(run_mod, "0.0.0.0", "198.51.100.7", 8888, False)
+    studio_mod._emit_run_cloudflare_notice(
+        run_mod, "0.0.0.0", "198.51.100.7", 8888, False
+    )
     assert calls == [
         ("verify", "198.51.100.7", 8888),
         ("print", {"secure": False, "loopback_host": "127.0.0.1"}),
@@ -291,7 +303,9 @@ def test_run_cloudflare_notice_uses_external_host_policy():
     ]
 
     calls.clear()
-    studio_mod._emit_run_cloudflare_notice(run_mod, "127.0.0.1", "127.0.0.1", 8888, False)
+    studio_mod._emit_run_cloudflare_notice(
+        run_mod, "127.0.0.1", "127.0.0.1", 8888, False
+    )
     assert calls == []
 
 
@@ -330,7 +344,9 @@ def test_run_silent_emits_cloudflare_notice_for_external_bind(monkeypatch):
     backend = types.ModuleType("studio.backend.run")
     backend.run_server = lambda **_kwargs: _App()
     backend._resolve_external_ip = lambda: "198.51.100.7"
-    backend._verify_global_reachability = lambda host, port: calls.append(("verify", host, port))
+    backend._verify_global_reachability = lambda host, port: calls.append(
+        ("verify", host, port)
+    )
     backend._print_cloudflare_line = lambda **kw: calls.append(("print", kw))
     backend._server = object()
     backend._shutdown_event = _ShutdownEvent()
@@ -412,7 +428,9 @@ def test_run_in_venv_shuts_down_on_startup_abort(monkeypatch):
             server_port = 8888
 
     shutdown_calls = []
-    backend = sys.modules.setdefault("studio.backend.run", types.ModuleType("studio.backend.run"))
+    backend = sys.modules.setdefault(
+        "studio.backend.run", types.ModuleType("studio.backend.run")
+    )
     backend.run_server = lambda **k: _App()
     backend._resolve_external_ip = lambda: "1.2.3.4"
     backend._server = object()
@@ -424,7 +442,9 @@ def test_run_in_venv_shuts_down_on_startup_abort(monkeypatch):
 
     # set_tool_policy is imported as `from state.tool_policy import set_tool_policy`.
     state_mod = sys.modules.setdefault("state", types.ModuleType("state"))
-    tp_mod = sys.modules.setdefault("state.tool_policy", types.ModuleType("state.tool_policy"))
+    tp_mod = sys.modules.setdefault(
+        "state.tool_policy", types.ModuleType("state.tool_policy")
+    )
     tp_mod.set_tool_policy = lambda *a, **k: None
     state_mod.tool_policy = tp_mod
 

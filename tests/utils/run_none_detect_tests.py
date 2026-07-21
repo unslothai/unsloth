@@ -162,7 +162,9 @@ def test_probe_p1_fix():
         )
         return stats
     except ValueError as exc:
-        print(f"  [FAIL] scan_dataset raised ValueError (probe P1 bug NOT fixed): {exc}")
+        print(
+            f"  [FAIL] scan_dataset raised ValueError (probe P1 bug NOT fixed): {exc}"
+        )
         return None
 
 
@@ -210,13 +212,17 @@ def test_explicit_fmt_corrupt():
         )
         return stats
     except ValueError as exc:
-        print(f"  [FAIL] scan_dataset raised ValueError (explicit-fmt P1 NOT fixed): {exc}")
+        print(
+            f"  [FAIL] scan_dataset raised ValueError (explicit-fmt P1 NOT fixed): {exc}"
+        )
         return None
 
 
 def test_p2_probe_skips_corrupt_prefers_valid():
     """P2 fix: probe continues past a corrupt 'messages' column to a valid 'conversations' column."""
-    section("P2 Fix Verification — probe continues past corrupt first column to valid second")
+    section(
+        "P2 Fix Verification — probe continues past corrupt first column to valid second"
+    )
 
     # messages column is all-None; conversations is a valid ShareGPT column.
     rows = [
@@ -238,7 +244,9 @@ def test_p2_probe_skips_corrupt_prefers_valid():
     ] * 2
     mock_ds = _MockDataset(rows, ["messages", "conversations"])
 
-    print(f"  Rows: {len(rows)} — messages=None, conversations=valid ShareGPT (2 bad value='')")
+    print(
+        f"  Rows: {len(rows)} — messages=None, conversations=valid ShareGPT (2 bad value='')"
+    )
     try:
         stats = scan_dataset(mock_ds, fmt = "auto")
         fmt = stats.get("format", "?")
@@ -262,7 +270,9 @@ def test_p2_probe_skips_corrupt_prefers_valid():
 
 def test_p2_explicit_fmt_col_priority():
     """P2 fix: explicit fmt='sharegpt' lets find_none_sharegpt pick its own column (conversations)."""
-    section("P2 Fix Verification — explicit fmt='sharegpt' respects per-scanner column priority")
+    section(
+        "P2 Fix Verification — explicit fmt='sharegpt' respects per-scanner column priority"
+    )
 
     # messages has valid role/content turns (chatml-ish); conversations has bad sharegpt turns.
     rows = [
@@ -279,7 +289,9 @@ def test_p2_explicit_fmt_col_priority():
     ] * 5
     mock_ds = _MockDataset(rows, ["messages", "conversations"])
 
-    print(f"  Rows: {len(rows)} — messages=clean chatml, conversations=bad sharegpt (value=None)")
+    print(
+        f"  Rows: {len(rows)} — messages=clean chatml, conversations=bad sharegpt (value=None)"
+    )
     stats = scan_dataset(mock_ds, fmt = "sharegpt")
     col = stats.get("column", "?")
     bad = len(stats.get("bad_row_indices", []))
@@ -311,7 +323,9 @@ def test_p2_gptoss_col_priority():
     ] * 5
     mock_ds = _MockDataset(rows, ["messages", "conversations"])
 
-    print(f"  Rows: {len(rows)} — messages=None (corrupt), conversations=clean sharegpt")
+    print(
+        f"  Rows: {len(rows)} — messages=None (corrupt), conversations=clean sharegpt"
+    )
     try:
         stats = scan_dataset(mock_ds, fmt = "gptoss")
         col = stats.get("column", "?")
@@ -368,7 +382,9 @@ def test_new_p2_plain_string_messages_not_chatml():
     rows = [{"messages": "hello world"}] * 5
     mock_ds = _MockDataset(rows, ["messages"])
 
-    print(f"  Rows: {len(rows)} — messages='hello world' (plain strings, not conversation)")
+    print(
+        f"  Rows: {len(rows)} — messages='hello world' (plain strings, not conversation)"
+    )
     try:
         stats = scan_dataset(mock_ds, fmt = "auto")
         fmt = stats.get("format", "?")
@@ -452,7 +468,9 @@ def _brute_force_bad_rows(ds, fmt: str) -> set:
                 bad.add(i)
                 continue
             for turn in msgs:
-                if turn is None or (isinstance(turn, dict) and _blank(turn.get("content"))):
+                if turn is None or (
+                    isinstance(turn, dict) and _blank(turn.get("content"))
+                ):
                     bad.add(i)
                     break
         elif fmt == "sharegpt":
@@ -461,7 +479,9 @@ def _brute_force_bad_rows(ds, fmt: str) -> set:
                 bad.add(i)
                 continue
             for turn in convs:
-                if turn is None or (isinstance(turn, dict) and _blank(turn.get("value"))):
+                if turn is None or (
+                    isinstance(turn, dict) and _blank(turn.get("value"))
+                ):
                     bad.add(i)
                     break
         elif fmt == "alpaca":
@@ -578,7 +598,9 @@ def main():
         all_results["probe_p1_fix"] = test_probe_p1_fix()
         all_results["probe_string_corrupt"] = test_probe_string_corrupt()
         all_results["explicit_fmt_corrupt"] = test_explicit_fmt_corrupt()
-        all_results["p2_probe_valid_fallback"] = test_p2_probe_skips_corrupt_prefers_valid()
+        all_results["p2_probe_valid_fallback"] = (
+            test_p2_probe_skips_corrupt_prefers_valid()
+        )
         all_results["p2_explicit_col_priority"] = test_p2_explicit_fmt_col_priority()
         all_results["p2_gptoss_col_priority"] = test_p2_gptoss_col_priority()
         all_results["new_p1_sharegpt_all_corrupt"] = (
@@ -652,7 +674,9 @@ def main():
                         "format": val.get("format"),
                         "total_rows": val.get("total_rows"),
                         "bad_row_count": len(val.get("bad_row_indices", [])),
-                        "bad_turn_count": val.get("total_none_turns", len(val.get("findings", []))),
+                        "bad_turn_count": val.get(
+                            "total_none_turns", len(val.get("findings", []))
+                        ),
                     }
 
         json_path.write_text(json.dumps(summary, indent = 2), encoding = "utf-8")

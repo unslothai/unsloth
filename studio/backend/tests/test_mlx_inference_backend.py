@@ -116,7 +116,9 @@ def test_temporary_mlx_adapter_state_validates_requests():
     with _temporary_mlx_adapter_state(base_model, True):
         pass
 
-    unsupported = _AdapterTree({"proj": SimpleNamespace(lora_a = object(), lora_b = object())})
+    unsupported = _AdapterTree(
+        {"proj": SimpleNamespace(lora_a = object(), lora_b = object())}
+    )
     with _temporary_mlx_adapter_state(unsupported, True):
         pass
     with pytest.raises(RuntimeError, match = "without their base modules"):
@@ -136,7 +138,9 @@ def test_temporary_mlx_adapter_state_uses_real_mlx_module_tree():
     class _Layer(nn.Module):
         def __init__(self):
             super().__init__()
-            quantized = nn.QuantizedLinear.from_linear(nn.Linear(32, 32), group_size = 32, bits = 4)
+            quantized = nn.QuantizedLinear.from_linear(
+                nn.Linear(32, 32), group_size = 32, bits = 4
+            )
             self.quantized_proj = LoRALinear.from_base(quantized)
             self.dora_proj = DoRALinear.from_base(nn.Linear(4, 4))
 
@@ -295,7 +299,9 @@ def test_mlx_inference_distributed_vlm_forwards_group_to_fast_mlx(monkeypatch):
     config = SimpleNamespace(identifier = "fake/vlm", is_vision = True, is_lora = False)
     for mode, group_key in (("tensor", "tensor_group"), ("pipeline", "pipeline_group")):
         calls.clear()
-        assert MLXInferenceBackend().load_model(config, parallel_mode = mode, distributed_group = group)
+        assert MLXInferenceBackend().load_model(
+            config, parallel_mode = mode, distributed_group = group
+        )
         _, kwargs = calls.pop()
         assert kwargs["text_only"] is False and kwargs[group_key] is group
 
@@ -308,7 +314,9 @@ def test_mlx_inference_distributed_vlm_forwards_group_to_fast_mlx(monkeypatch):
 
     config = SimpleNamespace(identifier = "fake/adapter", is_vision = False, is_lora = True)
     with pytest.raises(ValueError, match = "LoRA adapter repos"):
-        MLXInferenceBackend().load_model(config, parallel_mode = "tensor", distributed_group = group)
+        MLXInferenceBackend().load_model(
+            config, parallel_mode = "tensor", distributed_group = group
+        )
 
 
 @pytest.mark.parametrize("accepts_backend", (True, False))
@@ -330,7 +338,9 @@ def test_mlx_distributed_init_selects_jaccl_backend(monkeypatch, accepts_backend
     monkeypatch.setenv("MLX_IBV_DEVICES", "/tmp/devices.json")
 
     assert _init_mlx_distributed() == (group, 1, 2)
-    assert calls == ([{"backend": "jaccl"}] if accepts_backend else [{"backend": "jaccl"}, {}])
+    assert calls == (
+        [{"backend": "jaccl"}] if accepts_backend else [{"backend": "jaccl"}, {}]
+    )
 
 
 def test_worker_share_object_receives_distributed_payload(monkeypatch):
@@ -479,7 +489,17 @@ def test_mlx_vlm_reemits_think_prefill_inside_adapter_context(monkeypatch):
     backend = MLXInferenceBackend()
     backend._model = SimpleNamespace(config = {"model_type": "deepseek_vl_v2"})
     backend._processor = SimpleNamespace(tokenizer = SimpleNamespace())
-    args = ([{"role": "user", "content": [{"type": "image"}]}], object(), 0, 1, 0, 0, 1, 1, None)
+    args = (
+        [{"role": "user", "content": [{"type": "image"}]}],
+        object(),
+        0,
+        1,
+        0,
+        0,
+        1,
+        1,
+        None,
+    )
 
     gen = backend._generate_vlm(*args, _adapter_state = False)
     # First snapshot is the prefill alone, emitted after entering the adapter context.
@@ -545,7 +565,17 @@ def test_mlx_vlm_generation_selects_renderer_by_capability(monkeypatch):
     backend = MLXInferenceBackend()
     backend._model = SimpleNamespace(config = {"model_type": "deepseek_vl_v2"})
     backend._processor = SimpleNamespace(tokenizer = SimpleNamespace())
-    args = ([{"role": "user", "content": [{"type": "image"}]}], object(), 0, 1, 0, 0, 1, 1, None)
+    args = (
+        [{"role": "user", "content": [{"type": "image"}]}],
+        object(),
+        0,
+        1,
+        0,
+        0,
+        1,
+        1,
+        None,
+    )
     tools = [{"function": {"name": "search"}}]
     generator = backend._generate_vlm(*args, _adapter_state = False)
     assert next(generator) == "ok"
@@ -560,12 +590,16 @@ def test_mlx_vlm_generation_selects_renderer_by_capability(monkeypatch):
         list(backend._generate_vlm(*args, enable_thinking = False))
     backend._processor = SimpleNamespace(chat_template = "template")
     state["generic"] = "<image> healthy generic"
-    assert list(backend._generate_vlm(*args, tools = tools, enable_thinking = False)) == ["ok"]
+    assert list(backend._generate_vlm(*args, tools = tools, enable_thinking = False)) == [
+        "ok"
+    ]
     assert calls["generic"][-1]["enable_thinking"] is False
     assert calls["stream"][-1][0][2] == "<image> healthy generic"
     state["generic"] = "generic prompt"
     text_messages = [{"role": "user", "content": "hello"}]
-    assert list(backend._generate_vlm(*((text_messages, None) + args[2:]), tools = tools)) == ["ok"]
+    assert list(
+        backend._generate_vlm(*((text_messages, None) + args[2:]), tools = tools)
+    ) == ["ok"]
     assert calls["generic"][-1]["tools"] == tools
     assert calls["stream"][-1][0][2] == "generic prompt"
     two_images = [{"role": "user", "content": [{"type": "image"}, {"type": "image"}]}]
@@ -582,10 +616,16 @@ def test_mlx_vlm_generation_selects_renderer_by_capability(monkeypatch):
 
 
 def test_mlx_vlm_image_injection_reuses_media_aliases(monkeypatch):
-    from core.inference.mlx_inference import MLXInferenceBackend, _prompt_serializes_vlm_media
+    from core.inference.mlx_inference import (
+        MLXInferenceBackend,
+        _prompt_serializes_vlm_media,
+    )
 
     media = [{"type": "image"}]
-    quoted = [{"role": "user", "content": media}, {"role": "user", "content": f"Explain {media}"}]
+    quoted = [
+        {"role": "user", "content": media},
+        {"role": "user", "content": f"Explain {media}"},
+    ]
     assert _prompt_serializes_vlm_media(f"<image>\n{media[0]}", quoted[:1])
     assert not _prompt_serializes_vlm_media(f"<image>\nExplain {media}", quoted)
     assert _prompt_serializes_vlm_media(f"User: {media}\nExplain {media}", quoted)
@@ -593,7 +633,9 @@ def test_mlx_vlm_image_injection_reuses_media_aliases(monkeypatch):
     assert not _prompt_serializes_vlm_media(f'<image>\nExplain "this" {media}', quoted)
     json_media = [{"type": "image_url"}]
     json_repr = '{"type": "image_url"}'
-    assert _prompt_serializes_vlm_media(f"<image>\n{json_repr}", [{"content": json_media}])
+    assert _prompt_serializes_vlm_media(
+        f"<image>\n{json_repr}", [{"content": json_media}]
+    )
     assert not _prompt_serializes_vlm_media(
         f"<image>\nExplain {json_repr}",
         [{"content": json_media}, {"content": f"Explain {json_repr}"}],
@@ -616,9 +658,14 @@ def test_mlx_vlm_model_config_prefers_config_with_model_type():
 
     # config present but missing model_type must fall back to _config
     m = SimpleNamespace(config = {}, _config = {"model_type": "deepseek_vl_v2"})
-    assert _mlx_vlm_model_config(m) == ({"model_type": "deepseek_vl_v2"}, "deepseek_vl_v2")
+    assert _mlx_vlm_model_config(m) == (
+        {"model_type": "deepseek_vl_v2"},
+        "deepseek_vl_v2",
+    )
     # an object config whose model_type is None also falls back
-    m = SimpleNamespace(config = SimpleNamespace(model_type = None), _config = {"model_type": "qwen2_vl"})
+    m = SimpleNamespace(
+        config = SimpleNamespace(model_type = None), _config = {"model_type": "qwen2_vl"}
+    )
     assert _mlx_vlm_model_config(m)[1] == "qwen2_vl"
     # a config that already carries a model_type is preferred and returned unchanged
     assert _mlx_vlm_model_config(SimpleNamespace(config = {"model_type": "gemma3"})) == (
@@ -641,7 +688,9 @@ def test_mlx_generate_text_forwards_kwargs_into_template_helper(monkeypatch):
     captured_calls = []
 
     def _fake_apply(tokenizer, messages, **kwargs):
-        captured_calls.append({"tokenizer": tokenizer, "messages": messages, "kwargs": kwargs})
+        captured_calls.append(
+            {"tokenizer": tokenizer, "messages": messages, "kwargs": kwargs}
+        )
         return "<rendered prompt>"
 
     monkeypatch.setattr(
@@ -730,7 +779,9 @@ def test_mlx_generate_text_forwards_kwargs_into_template_helper(monkeypatch):
     assert adapter_events[-2:] == [("enter", False), ("exit", False)]
     assert not backend._generation_lock.locked()
 
-    monkeypatch.setattr(mlx_inference, "_temporary_mlx_adapter_state", real_adapter_state)
+    monkeypatch.setattr(
+        mlx_inference, "_temporary_mlx_adapter_state", real_adapter_state
+    )
     monkeypatch.setattr(
         "core.inference.chat_template_helpers.detect_think_prefill",
         lambda *_args, **_kwargs: "<think>",
@@ -872,7 +923,10 @@ def test_mlx_text_native_metadata_preserves_prefilled_think_snapshots(monkeypatc
         "<think>\nreason</think>",
         "<think>\nreason</think>answer",
     ]
-    assert all(current.startswith(previous) for previous, current in zip(snapshots, snapshots[1:]))
+    assert all(
+        current.startswith(previous)
+        for previous, current in zip(snapshots, snapshots[1:])
+    )
 
 
 def test_mlx_vlm_normalizes_native_reasoning_channels(monkeypatch):

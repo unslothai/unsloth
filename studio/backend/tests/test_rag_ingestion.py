@@ -39,7 +39,11 @@ def test_ingestion_lifecycle_pending_to_completed(rag_home, stub_embeddings, tmp
 
     conn = rag_db.get_connection()
     try:
-        assert store.get_document(conn, doc_id)["status"] in {"pending", "running", "completed"}
+        assert store.get_document(conn, doc_id)["status"] in {
+            "pending",
+            "running",
+            "completed",
+        }
     finally:
         conn.close()
 
@@ -83,7 +87,9 @@ def test_ingestion_dedupe_by_hash(rag_home, stub_embeddings, tmp_path):
         conn.close()
 
 
-def test_ingestion_reingests_when_existing_has_zero_chunks(rag_home, stub_embeddings, tmp_path):
+def test_ingestion_reingests_when_existing_has_zero_chunks(
+    rag_home, stub_embeddings, tmp_path
+):
     # A prior ingest of identical bytes that yielded no chunks (e.g. a scanned PDF
     # before a vision model loaded) must re-ingest, not dedupe to the empty record.
     path = _write(tmp_path, "doc.txt", "alpha bravo charlie " * 50)
@@ -91,7 +97,9 @@ def test_ingestion_reingests_when_existing_has_zero_chunks(rag_home, stub_embedd
     scope = store.kb_scope("K1")
     conn = rag_db.get_connection()
     try:
-        empty_id = store.create_document(conn, scope = scope, filename = "old.txt", sha256 = sha)
+        empty_id = store.create_document(
+            conn, scope = scope, filename = "old.txt", sha256 = sha
+        )
         store.set_document_status(conn, empty_id, "completed", num_chunks = 0)
     finally:
         conn.close()
@@ -296,7 +304,9 @@ def test_ingestion_rejects_unsupported_ext(rag_home, stub_embeddings, tmp_path):
         ingestion.start_ingestion(store.kb_scope("K1"), "K1", None, "doc.xyz", path)
 
 
-def test_ingestion_empty_doc_completes_with_zero_chunks(rag_home, stub_embeddings, tmp_path):
+def test_ingestion_empty_doc_completes_with_zero_chunks(
+    rag_home, stub_embeddings, tmp_path
+):
     path = _write(tmp_path, "empty.txt", "   \n  ")
     scope = store.kb_scope("K1")
     doc_id, job_id = ingestion.start_ingestion(scope, "K1", None, "empty.txt", path)
@@ -312,7 +322,9 @@ def test_ingestion_empty_doc_completes_with_zero_chunks(rag_home, stub_embedding
     reason = "set RAG_REAL_EMBEDDER=1 to run the real sentence-transformers test",
 )
 def test_ingestion_with_real_embedder(rag_home, tmp_path):
-    path = _write(tmp_path, "doc.txt", "The Kestrel-9 turbine is rated at 9.5 megawatts.")
+    path = _write(
+        tmp_path, "doc.txt", "The Kestrel-9 turbine is rated at 9.5 megawatts."
+    )
     scope = store.kb_scope("K1")
     doc_id, job_id = ingestion.start_ingestion(scope, "K1", None, "doc.txt", path)
     _drain(job_id)
@@ -323,7 +335,9 @@ def test_ingestion_with_real_embedder(rag_home, tmp_path):
 
     conn = rag_db.get_connection()
     try:
-        hits = retrieval.retrieve_hybrid(conn, scope, "how much power does the turbine make?", k = 5)
+        hits = retrieval.retrieve_hybrid(
+            conn, scope, "how much power does the turbine make?", k = 5
+        )
         assert hits and hits[0].chunk_id == f"{doc_id}:0"
     finally:
         conn.close()

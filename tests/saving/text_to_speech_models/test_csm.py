@@ -133,7 +133,9 @@ import torch
 
 output_audio_path = "csm_audio.wav"
 try:
-    text = "We just finished fine tuning a text to speech model... and it's pretty good!"
+    text = (
+        "We just finished fine tuning a text to speech model... and it's pretty good!"
+    )
     speaker_id = 0
     inputs = processor(f"[{speaker_id}]{text}", add_special_tokens = True).to("cuda")
     audio_values = model.generate(

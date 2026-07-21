@@ -51,8 +51,12 @@ def auth_client():
 
 
 def data_recipe_jobs_module():
-    route_path = Path(__file__).resolve().parents[1] / "routes" / "data_recipe" / "jobs.py"
-    spec = importlib.util.spec_from_file_location("_desktop_data_recipe_jobs", route_path)
+    route_path = (
+        Path(__file__).resolve().parents[1] / "routes" / "data_recipe" / "jobs.py"
+    )
+    spec = importlib.util.spec_from_file_location(
+        "_desktop_data_recipe_jobs", route_path
+    )
     jobs_route = importlib.util.module_from_spec(spec)
     assert spec.loader is not None
     spec.loader.exec_module(jobs_route)
@@ -261,7 +265,9 @@ def test_consume_refresh_token_concurrent_only_one_succeeds(tmp_path, monkeypatc
         results = list(pool.map(attempt, range(workers)))
 
     successes = [r for r in results if r is not None]
-    assert len(successes) == 1, f"expected exactly one consumer to win, got {len(successes)}"
+    assert (
+        len(successes) == 1
+    ), f"expected exactly one consumer to win, got {len(successes)}"
     assert successes[0] == (storage.DEFAULT_ADMIN_USERNAME, False)
 
 
@@ -279,7 +285,9 @@ def test_desktop_session_uses_real_admin_identity_for_api_keys():
     seed_user(must_change_password = True)
     raw = storage.create_desktop_secret()
     client = auth_client()
-    token = client.post("/api/auth/desktop-login", json = {"secret": raw}).json()["access_token"]
+    token = client.post("/api/auth/desktop-login", json = {"secret": raw}).json()[
+        "access_token"
+    ]
 
     response = client.post(
         "/api/auth/api-keys",
@@ -313,7 +321,9 @@ def test_local_recipe_token_authenticates_as_admin_for_desktop_user(loaded_local
         scheme = "Bearer",
         credentials = local_token,
     )
-    assert asyncio.run(get_current_subject(credentials)) == storage.DEFAULT_ADMIN_USERNAME
+    assert (
+        asyncio.run(get_current_subject(credentials)) == storage.DEFAULT_ADMIN_USERNAME
+    )
 
 
 def test_local_recipe_token_authenticates_as_admin_for_web_user(loaded_local_model):
@@ -333,7 +343,9 @@ def test_local_recipe_token_authenticates_as_admin_for_web_user(loaded_local_mod
         scheme = "Bearer",
         credentials = local_token,
     )
-    assert asyncio.run(get_current_subject(credentials)) == storage.DEFAULT_ADMIN_USERNAME
+    assert (
+        asyncio.run(get_current_subject(credentials)) == storage.DEFAULT_ADMIN_USERNAME
+    )
 
 
 def test_desktop_login_rejects_invalid_secret():
@@ -537,9 +549,12 @@ if result.exit_code != 0:
             """
         ).fetchone()
         app_secrets = {
-            row["key"]: row["value"] for row in conn.execute("SELECT key, value FROM app_secrets")
+            row["key"]: row["value"]
+            for row in conn.execute("SELECT key, value FROM app_secrets")
         }
-        refresh_columns = {row["name"] for row in conn.execute("PRAGMA table_info(refresh_tokens)")}
+        refresh_columns = {
+            row["name"] for row in conn.execute("PRAGMA table_info(refresh_tokens)")
+        }
     finally:
         conn.close()
 
@@ -631,7 +646,9 @@ def test_update_password_clears_desktop_secret():
     raw = storage.create_desktop_secret()
     assert storage.validate_desktop_secret(raw) == storage.DEFAULT_ADMIN_USERNAME
 
-    changed = storage.update_password(storage.DEFAULT_ADMIN_USERNAME, "new-admin-password")
+    changed = storage.update_password(
+        storage.DEFAULT_ADMIN_USERNAME, "new-admin-password"
+    )
     assert changed is True
     assert storage.validate_desktop_secret(raw) is None
 
@@ -647,7 +664,11 @@ def test_update_password_on_unknown_user_leaves_desktop_secret_intact():
 
 def test_desktop_auth_provision_has_bounded_timeout():
     rs_path = (
-        Path(__file__).resolve().parents[3] / "studio" / "src-tauri" / "src" / "desktop_auth.rs"
+        Path(__file__).resolve().parents[3]
+        / "studio"
+        / "src-tauri"
+        / "src"
+        / "desktop_auth.rs"
     )
     src = rs_path.read_text()
     start = src.index("async fn provision_desktop_auth(")

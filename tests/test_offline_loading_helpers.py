@@ -129,7 +129,10 @@ def test_status_less_http_without_network_wording_propagates():
 
 
 def test_gaierror_dns_failure_is_offline():
-    assert L._is_offline_related_error(socket.gaierror(-2, "Name or service not known")) is True
+    assert (
+        L._is_offline_related_error(socket.gaierror(-2, "Name or service not known"))
+        is True
+    )
 
 
 def test_gaierror_without_wording_is_offline_by_type():
@@ -139,7 +142,9 @@ def test_gaierror_without_wording_is_offline_by_type():
 
 def test_urllib_urlerror_is_offline():
     import urllib.error
-    assert L._is_offline_related_error(urllib.error.URLError("connection failed")) is True
+    assert (
+        L._is_offline_related_error(urllib.error.URLError("connection failed")) is True
+    )
 
 
 def test_urllib_httperror_404_propagates():
@@ -157,13 +162,17 @@ def test_urllib_httperror_503_is_offline():
 def test_ssl_error_is_not_offline():
     # TLS/cert failure must surface, not silently fall back to cached files.
     import ssl
-    assert L._is_offline_related_error(ssl.SSLError("certificate verify failed")) is False
+    assert (
+        L._is_offline_related_error(ssl.SSLError("certificate verify failed")) is False
+    )
 
 
 def test_requests_ssl_error_is_not_offline():
     # requests.SSLError subclasses ConnectionError, but is still a TLS failure -> not offline.
     requests = pytest.importorskip("requests")
-    assert L._is_offline_related_error(requests.exceptions.SSLError("bad cert")) is False
+    assert (
+        L._is_offline_related_error(requests.exceptions.SSLError("bad cert")) is False
+    )
 
 
 def test_urlerror_wrapping_ssl_is_not_offline():
@@ -197,7 +206,9 @@ def test_offline_mode_is_enabled_is_offline():
 def test_local_entry_not_found_is_offline():
     # Both a FileNotFoundError and an HfHubHTTPError, but means "not cached + Hub down" -> offline.
     errors = pytest.importorskip("huggingface_hub.errors")
-    assert L._is_offline_related_error(errors.LocalEntryNotFoundError("missing")) is True
+    assert (
+        L._is_offline_related_error(errors.LocalEntryNotFoundError("missing")) is True
+    )
 
 
 def test_chained_cause_connection_error_is_offline():
@@ -502,7 +513,9 @@ def test_force_offline_restores_freshly_imported_constant(monkeypatch):
     saved_mod = sys.modules.get("huggingface_hub.constants")
     saved_val = getattr(saved_mod, "HF_HUB_OFFLINE", None) if saved_mod else None
     try:
-        sys.modules.pop("huggingface_hub.constants", None)  # simulate "not imported yet"
+        sys.modules.pop(
+            "huggingface_hub.constants", None
+        )  # simulate "not imported yet"
         with L._force_hf_offline():
             import huggingface_hub.constants as hfc_in
             assert hfc_in.HF_HUB_OFFLINE is True  # forced offline inside the window
@@ -527,13 +540,16 @@ def test_resolve_tokenizer_vlm_without_processor_falls_back(tmp_path):
     # cached processor still loads instead of AutoProcessor failing on the local dir.
     _touch(tmp_path, "tokenizer_config.json")
     _touch(tmp_path, "tokenizer.json")
-    assert L._resolve_checkpoint_tokenizer_name(str(tmp_path), {}, require_processor = True) is None
+    assert (
+        L._resolve_checkpoint_tokenizer_name(str(tmp_path), {}, require_processor = True)
+        is None
+    )
 
 
 def test_resolve_tokenizer_vlm_with_processor_uses_local_dir(tmp_path):
     _touch(tmp_path, "tokenizer_config.json")
     _touch(tmp_path, "tokenizer.json")
     _touch(tmp_path, "preprocessor_config.json")
-    assert L._resolve_checkpoint_tokenizer_name(str(tmp_path), {}, require_processor = True) == str(
-        tmp_path
-    )
+    assert L._resolve_checkpoint_tokenizer_name(
+        str(tmp_path), {}, require_processor = True
+    ) == str(tmp_path)

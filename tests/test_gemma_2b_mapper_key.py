@@ -14,7 +14,9 @@ mappers without importing ``unsloth`` (which requires a GPU).
 
 import os
 
-MAPPER_PATH = os.path.join(os.path.dirname(__file__), os.pardir, "unsloth", "models", "mapper.py")
+MAPPER_PATH = os.path.join(
+    os.path.dirname(__file__), os.pardir, "unsloth", "models", "mapper.py"
+)
 
 
 def _load_mappers():

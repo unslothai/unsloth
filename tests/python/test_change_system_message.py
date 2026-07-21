@@ -18,7 +18,9 @@ def _load_change_system_message():
     namespace = {
         "re": re,
         "logger": types.SimpleNamespace(warning_once = lambda *a, **k: None),
-        "DEFAULT_SYSTEM_MESSAGE": {"unsloth": "You are a helpful assistant to the user"},
+        "DEFAULT_SYSTEM_MESSAGE": {
+            "unsloth": "You are a helpful assistant to the user"
+        },
     }
     module = ast.Module(body = funcs, type_ignores = [])
     ast.fix_missing_locations(module)

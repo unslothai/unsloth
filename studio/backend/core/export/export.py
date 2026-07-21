@@ -19,7 +19,9 @@ from typing import Optional, Tuple, List
 try:
     from unsloth import FastLanguageModel, FastVisionModel, _IS_MLX
     _UNSLOTH_IMPORT_ERROR = None
-except Exception as _unsloth_exc:  # ImportError (e.g. missing torch) or a broken native load
+except (
+    Exception
+) as _unsloth_exc:  # ImportError (e.g. missing torch) or a broken native load
     FastLanguageModel = None
     FastVisionModel = None
     _IS_MLX = False
@@ -89,7 +91,9 @@ def _supports_kwarg(fn, name):
         params = inspect.signature(fn).parameters
     except (TypeError, ValueError):
         return False
-    return name in params or any(p.kind == inspect.Parameter.VAR_KEYWORD for p in params.values())
+    return name in params or any(
+        p.kind == inspect.Parameter.VAR_KEYWORD for p in params.values()
+    )
 
 
 def _compressed_export_supported():
@@ -118,7 +122,10 @@ def _has_nvidia_gpu():
     except Exception:
         try:
             import torch
-            return bool(torch.cuda.is_available()) and getattr(torch.version, "hip", None) is None
+            return (
+                bool(torch.cuda.is_available())
+                and getattr(torch.version, "hip", None) is None
+            )
         except Exception:
             return False
 
@@ -134,14 +141,21 @@ def _hf_offline(timeout = 3):
         or os.environ.get("TRANSFORMERS_OFFLINE", "").strip().lower() in _offline
     ):
         return True
-    if os.environ.get("UNSLOTH_OFFLINE_PROBE", "1").strip().lower() in {"0", "false", "no", "off"}:
+    if os.environ.get("UNSLOTH_OFFLINE_PROBE", "1").strip().lower() in {
+        "0",
+        "false",
+        "no",
+        "off",
+    }:
         return False  # probe disabled -> assume online; loads still pass local_files_only on env
 
     # Shared bounded, proxy-aware probe (also used by the export worker before version activation).
     from utils.transformers_version import hf_endpoint_unreachable
 
     if hf_endpoint_unreachable(timeout):
-        logger.warning("Hugging Face endpoint unreachable; loading checkpoint in offline mode")
+        logger.warning(
+            "Hugging Face endpoint unreachable; loading checkpoint in offline mode"
+        )
         return True
     return False
 
@@ -183,7 +197,9 @@ def _apply_wsl_sudo_patch():
         import unsloth_zoo.llama_cpp as llama_cpp_module
 
         def _wsl_do_we_need_sudo(system_type = "debian"):
-            logger.info("WSL detected — skipping sudo check (build deps pre-installed by setup.sh)")
+            logger.info(
+                "WSL detected — skipping sudo check (build deps pre-installed by setup.sh)"
+            )
             return False
 
         llama_cpp_module.do_we_need_sudo = _wsl_do_we_need_sudo
@@ -542,7 +558,9 @@ class ExportBackend:
                 # through it when available; else fall back to the workspace 0.10.x path below.
                 _shadow_pp = None
                 try:
-                    from utils.transformers_version import llmcompressor_shadow_pythonpath
+                    from utils.transformers_version import (
+                        llmcompressor_shadow_pythonpath,
+                    )
                     _shadow_pp = llmcompressor_shadow_pythonpath()
                 except Exception as e:
                     logger.warning(f"llm-compressor-main shadow unavailable: {e}")
@@ -552,7 +570,9 @@ class ExportBackend:
                     # No shadow (disabled/offline/failed): the workspace 0.10.x cannot exceed its
                     # transformers ceiling, so fail fast for sidecar models; default-tier still works.
                     os.environ.pop(_us._COMPRESSED_QUANTIZE_PYTHONPATH_ENV, None)
-                    _exceeds, _tf_ver = _us._transformers_exceeds_llm_compressor_ceiling()
+                    _exceeds, _tf_ver = (
+                        _us._transformers_exceeds_llm_compressor_ceiling()
+                    )
                     if _exceeds:
                         return (
                             False,
@@ -567,7 +587,11 @@ class ExportBackend:
                 try:
                     info = _us._normalize_compressed_method(compressed_alias)
                 except Exception as e:
-                    return False, f"Unsupported compressed export '{compressed_alias}': {e}", None
+                    return (
+                        False,
+                        f"Unsupported compressed export '{compressed_alias}': {e}",
+                        None,
+                    )
                 if info is None:
                     return (
                         False,
@@ -577,7 +601,9 @@ class ExportBackend:
                 compressed_suffix = info[2]
 
             if _IS_MLX:
-                mlx_save_method = "merged_4bit" if format_type == "4-bit (FP4)" else "merged_16bit"
+                mlx_save_method = (
+                    "merged_4bit" if format_type == "4-bit (FP4)" else "merged_16bit"
+                )
             elif is_compressed or is_torchao:
                 save_method = compressed_alias
             elif format_type == "4-bit (FP4)":
@@ -646,7 +672,11 @@ class ExportBackend:
                                 token = hf_token,
                                 private = private,
                             )
-                elif (is_compressed or is_torchao) and output_path and Path(output_path).is_dir():
+                elif (
+                    (is_compressed or is_torchao)
+                    and output_path
+                    and Path(output_path).is_dir()
+                ):
                     # Already built in output_path; upload it directly instead of re-running the
                     # expensive quantization that push_to_hub_merged(save_method=...) would redo.
                     hf_api = HfApi(token = hf_token)
@@ -658,8 +688,12 @@ class ExportBackend:
                     )
                     content = MODEL_CARD.format(
                         username = repo_id.split("/")[0],
-                        base_model = getattr(self.current_model.config, "_name_or_path", "unknown"),
-                        model_type = getattr(self.current_model.config, "model_type", "llm"),
+                        base_model = getattr(
+                            self.current_model.config, "_name_or_path", "unknown"
+                        ),
+                        model_type = getattr(
+                            self.current_model.config, "model_type", "llm"
+                        ),
                         method = compressed_alias or format_type,
                         extra = "unsloth",
                     )
@@ -672,7 +706,9 @@ class ExportBackend:
                         repo_type = "model",
                     )
                 else:
-                    hub_save_method = save_method if save_method is not None else "merged_16bit"
+                    hub_save_method = (
+                        save_method if save_method is not None else "merged_16bit"
+                    )
                     self.current_model.push_to_hub_merged(
                         repo_id,
                         self.current_tokenizer,
@@ -778,7 +814,9 @@ class ExportBackend:
                 else:
                     # Base model name from request or model config
                     base_model = (
-                        base_model_id or self.current_model.config._name_or_path or "unknown"
+                        base_model_id
+                        or self.current_model.config._name_or_path
+                        or "unknown"
                     )
 
                     hf_api = HfApi(token = hf_token)
@@ -798,7 +836,9 @@ class ExportBackend:
                         extra = "unsloth",
                     )
                     card = ModelCard(content)
-                    card.push_to_hub(repo_id, token = hf_token, commit_message = "Unsloth Model Card")
+                    card.push_to_hub(
+                        repo_id, token = hf_token, commit_message = "Unsloth Model Card"
+                    )
 
                     if save_directory:
                         hf_api.upload_folder(
@@ -870,7 +910,9 @@ class ExportBackend:
         try:
             # Normalize to a lowercased list so multiple quants come from one model load.
             if isinstance(quantization_method, (list, tuple)):
-                quant_methods = [str(q).lower() for q in quantization_method if str(q).strip()]
+                quant_methods = [
+                    str(q).lower() for q in quantization_method if str(q).strip()
+                ]
             else:
                 quant_methods = [str(quantization_method).lower()]
             if not quant_methods:
@@ -885,7 +927,9 @@ class ExportBackend:
                     LLAMA_CPP_DEFAULT_DIR,
                     _resolve_local_convert_script,  # noqa: F401
                 )
-                os.environ.setdefault("UNSLOTH_LLAMA_CPP_SCRIPTS_DIR", LLAMA_CPP_DEFAULT_DIR)
+                os.environ.setdefault(
+                    "UNSLOTH_LLAMA_CPP_SCRIPTS_DIR", LLAMA_CPP_DEFAULT_DIR
+                )
             except ImportError:
                 if not _LLAMA_CPP_SCRIPTS_WARNING_EMITTED:
                     logger.warning(
@@ -913,12 +957,16 @@ class ExportBackend:
                 cwd = os.getcwd()
                 pre_existing_ggufs = set(glob.glob(os.path.join(cwd, "*.gguf")))
 
-                pre_existing_subs = {d.name for d in Path(abs_save_dir).iterdir() if d.is_dir()}
+                pre_existing_subs = {
+                    d.name for d in Path(abs_save_dir).iterdir() if d.is_dir()
+                }
 
                 # Avoid clobbering an existing user-owned model/ directory.
                 import uuid
 
-                _model_tmp = os.path.join(abs_save_dir, f"_tmp_model_{uuid.uuid4().hex[:8]}")
+                _model_tmp = os.path.join(
+                    abs_save_dir, f"_tmp_model_{uuid.uuid4().hex[:8]}"
+                )
                 model_tmp_to_cleanup = _model_tmp
                 self.current_model.save_pretrained_gguf(
                     _model_tmp,
@@ -928,11 +976,15 @@ class ExportBackend:
                 )
 
                 # Relocate the .gguf that convert_to_gguf wrote to cwd (repo root).
-                new_ggufs = set(glob.glob(os.path.join(cwd, "*.gguf"))) - pre_existing_ggufs
+                new_ggufs = (
+                    set(glob.glob(os.path.join(cwd, "*.gguf"))) - pre_existing_ggufs
+                )
                 for src in sorted(new_ggufs):
                     dest = os.path.join(abs_save_dir, os.path.basename(src))
                     shutil.move(src, dest)
-                    logger.info(f"Relocated GGUF: {os.path.basename(src)} → {abs_save_dir}/")
+                    logger.info(
+                        f"Relocated GGUF: {os.path.basename(src)} → {abs_save_dir}/"
+                    )
 
                 # Flatten GGUF files from subdirs created during this export.
                 for sub in list(Path(abs_save_dir).iterdir()):
@@ -952,7 +1004,10 @@ class ExportBackend:
                 if self.current_checkpoint:
                     ckpt = Path(self.current_checkpoint)
                     gguf_dir = ckpt.parent / f"{ckpt.name}_gguf"
-                    if gguf_dir.is_dir() and gguf_dir.resolve() != Path(abs_save_dir).resolve():
+                    if (
+                        gguf_dir.is_dir()
+                        and gguf_dir.resolve() != Path(abs_save_dir).resolve()
+                    ):
                         for src in gguf_dir.glob("*.gguf"):
                             dest = os.path.join(abs_save_dir, src.name)
                             shutil.move(str(src), dest)
@@ -960,7 +1015,9 @@ class ExportBackend:
                         # Also relocate Ollama Modelfile if present
                         modelfile = gguf_dir / "Modelfile"
                         if modelfile.is_file():
-                            shutil.move(str(modelfile), os.path.join(abs_save_dir, "Modelfile"))
+                            shutil.move(
+                                str(modelfile), os.path.join(abs_save_dir, "Modelfile")
+                            )
                             logger.info(f"Relocated Modelfile → {abs_save_dir}/")
                         shutil.rmtree(str(gguf_dir), ignore_errors = True)
                         logger.info(f"Cleaned up intermediate GGUF dir: {gguf_dir}")
@@ -1059,7 +1116,9 @@ class ExportBackend:
             # getattr so an older build without save_pretrained_gguf returns a clean message
             # instead of an AttributeError (a generic 500).
             _save_gguf_fn = getattr(self.current_model, "save_pretrained_gguf", None)
-            if _save_gguf_fn is None or not _supports_kwarg(_save_gguf_fn, "save_method"):
+            if _save_gguf_fn is None or not _supports_kwarg(
+                _save_gguf_fn, "save_method"
+            ):
                 return (
                     False,
                     "This Unsloth build does not support GGUF LoRA adapter export. "
@@ -1085,11 +1144,14 @@ class ExportBackend:
                         # Forward the token so convert_lora_to_gguf.py can fetch a gated base's config.
                         token = hf_token or None,
                     )
-                    final_ggufs = sorted(glob.glob(os.path.join(save_directory, "*.gguf")))
+                    final_ggufs = sorted(
+                        glob.glob(os.path.join(save_directory, "*.gguf"))
+                    )
                     logger.info(
                         "LoRA GGUF export complete. Files in %s:\n  %s",
                         save_directory,
-                        "\n  ".join(os.path.basename(f) for f in final_ggufs) or "(none)",
+                        "\n  ".join(os.path.basename(f) for f in final_ggufs)
+                        or "(none)",
                     )
                 elif _IS_MLX:
                     # MLX: save adapters.safetensors + tokenizer files
@@ -1140,8 +1202,12 @@ class ExportBackend:
                             repo_type = "model",
                         )
                 else:
-                    self.current_model.push_to_hub(repo_id, token = hf_token, private = private)
-                    self.current_tokenizer.push_to_hub(repo_id, token = hf_token, private = private)
+                    self.current_model.push_to_hub(
+                        repo_id, token = hf_token, private = private
+                    )
+                    self.current_tokenizer.push_to_hub(
+                        repo_id, token = hf_token, private = private
+                    )
                 logger.info(f"Adapter pushed successfully to {repo_id}")
 
             return True, "LoRA adapter exported successfully", output_path

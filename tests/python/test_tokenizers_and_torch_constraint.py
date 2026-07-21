@@ -15,7 +15,9 @@ _REPO_ROOT = _TESTS_DIR.parent  # unsloth/
 _INSTALL_SH = _REPO_ROOT / "install.sh"
 _INSTALL_PS1 = _REPO_ROOT / "install.ps1"
 _SETUP_PS1 = _REPO_ROOT / "studio" / "setup.ps1"
-_NO_TORCH_RT = _REPO_ROOT / "studio" / "backend" / "requirements" / "no-torch-runtime.txt"
+_NO_TORCH_RT = (
+    _REPO_ROOT / "studio" / "backend" / "requirements" / "no-torch-runtime.txt"
+)
 
 
 def _read(path: pathlib.Path) -> str:
@@ -38,23 +40,30 @@ class TestStructuralTokenizers:
     def test_tokenizers_present(self):
         """tokenizers must be a standalone package line."""
         pkgs = _lines(_NO_TORCH_RT)
-        bare_names = [p.split(">")[0].split("<")[0].split("!")[0].split("=")[0] for p in pkgs]
+        bare_names = [
+            p.split(">")[0].split("<")[0].split("!")[0].split("=")[0] for p in pkgs
+        ]
         assert "tokenizers" in bare_names
 
     def test_tokenizers_before_transformers(self):
         """tokenizers should appear before transformers (install order intent)."""
         pkgs = _lines(_NO_TORCH_RT)
-        bare_names = [p.split(">")[0].split("<")[0].split("!")[0].split("=")[0] for p in pkgs]
+        bare_names = [
+            p.split(">")[0].split("<")[0].split("!")[0].split("=")[0] for p in pkgs
+        ]
         idx_tok = bare_names.index("tokenizers")
         idx_tf = bare_names.index("transformers")
         assert idx_tok < idx_tf, (
-            f"tokenizers at index {idx_tok} should appear before " f"transformers at index {idx_tf}"
+            f"tokenizers at index {idx_tok} should appear before "
+            f"transformers at index {idx_tf}"
         )
 
     def test_torch_not_in_no_torch_file(self):
         """torch itself must NOT be listed in the no-torch requirements."""
         pkgs = _lines(_NO_TORCH_RT)
-        bare_names = [p.split(">")[0].split("<")[0].split("!")[0].split("=")[0] for p in pkgs]
+        bare_names = [
+            p.split(">")[0].split("<")[0].split("!")[0].split("=")[0] for p in pkgs
+        ]
         assert "torch" not in bare_names
 
 
@@ -140,7 +149,12 @@ class TestInstallPs1UvDefaultIndex:
 
     def test_torch_installs_neutralize_all_uv_index_env_vars(self):
         # Extra-index vars outrank --default-index, so pinned installs must clear them.
-        for var in ("UV_DEFAULT_INDEX", "UV_INDEX_URL", "UV_INDEX", "UV_EXTRA_INDEX_URL"):
+        for var in (
+            "UV_DEFAULT_INDEX",
+            "UV_INDEX_URL",
+            "UV_INDEX",
+            "UV_EXTRA_INDEX_URL",
+        ):
             assert var in self._ps1
         assert 'Remove-Item "Env:$n"' in self._ps1
 
@@ -151,7 +165,12 @@ class TestSetupPs1FastInstallIndex:
     _ps1 = _read(_SETUP_PS1)
 
     def test_fast_install_clears_all_uv_index_env_vars(self):
-        for var in ("UV_DEFAULT_INDEX", "UV_INDEX_URL", "UV_INDEX", "UV_EXTRA_INDEX_URL"):
+        for var in (
+            "UV_DEFAULT_INDEX",
+            "UV_INDEX_URL",
+            "UV_INDEX",
+            "UV_EXTRA_INDEX_URL",
+        ):
             assert var in self._ps1
         # Must truly remove the vars (child sees no value), not set them empty.
         assert 'Remove-Item "Env:$n"' in self._ps1
@@ -171,7 +190,8 @@ class TestInstallShUvDefaultIndex:
     def test_torch_installs_neutralize_all_uv_index_env_vars(self):
         # --default-index installs run with all uv index env vars unset via `env -u`.
         assert (
-            "env -u UV_DEFAULT_INDEX -u UV_INDEX_URL -u UV_INDEX -u UV_EXTRA_INDEX_URL" in self._sh
+            "env -u UV_DEFAULT_INDEX -u UV_INDEX_URL -u UV_INDEX -u UV_EXTRA_INDEX_URL"
+            in self._sh
         )
 
 
@@ -506,7 +526,9 @@ class TestE2ETokenizersFix:
         r = self._pip_install(venv, "--no-deps", "-r", str(_NO_TORCH_RT))
         assert r.returncode == 0, f"Install failed: {r.stderr}"
 
-        result = self._run_python(venv, "from transformers import AutoConfig; print('OK')")
+        result = self._run_python(
+            venv, "from transformers import AutoConfig; print('OK')"
+        )
         assert (
             result.returncode == 0
         ), f"AutoConfig import failed:\nstdout: {result.stdout}\nstderr: {result.stderr}"
@@ -535,15 +557,22 @@ class TestE2ETokenizersFix:
         req_no_tokenizers = tmp_path / "no-tokenizers.txt"
         req_no_tokenizers.write_text(
             "\n".join(
-                line for line in _read(_NO_TORCH_RT).splitlines() if line.strip() != "tokenizers"
+                line
+                for line in _read(_NO_TORCH_RT).splitlines()
+                if line.strip() != "tokenizers"
             ),
             encoding = "utf-8",
         )
         r = self._pip_install(venv, "--no-deps", "-r", str(req_no_tokenizers))
         assert r.returncode == 0, f"Install failed: {r.stderr}"
         result = self._run_python(venv, "from transformers import AutoConfig")
-        assert result.returncode != 0, "AutoConfig should fail without tokenizers installed"
-        assert "tokenizers" in result.stderr.lower() or "ModuleNotFoundError" in result.stderr
+        assert (
+            result.returncode != 0
+        ), "AutoConfig should fail without tokenizers installed"
+        assert (
+            "tokenizers" in result.stderr.lower()
+            or "ModuleNotFoundError" in result.stderr
+        )
 
 
 # Group 4 -- Integration: install.sh reads no-torch-runtime.txt correctly
@@ -614,7 +643,9 @@ class TestE2EFullNoTorchSandbox:
         venv = self._create_venv(tmp_path, "full-no-torch")
         r = self._pip_install(venv, "--no-deps", "-r", str(_NO_TORCH_RT))
         assert r.returncode == 0, f"Install failed: {r.stderr}"
-        result = self._run_python(venv, "from transformers import AutoConfig; print('OK')")
+        result = self._run_python(
+            venv, "from transformers import AutoConfig; print('OK')"
+        )
         assert (
             result.returncode == 0
         ), f"AutoConfig failed:\nstdout: {result.stdout}\nstderr: {result.stderr}"

@@ -183,7 +183,9 @@ class ApiMonitor:
             ):
                 # Derive only when no authoritative total has been set;
                 # a later partial chunk must not clobber a provider total.
-                entry.total_tokens = (entry.prompt_tokens or 0) + (entry.completion_tokens or 0)
+                entry.total_tokens = (entry.prompt_tokens or 0) + (
+                    entry.completion_tokens or 0
+                )
             if context_length is not None:
                 entry.context_length = context_length
             entry.updated_at = time.time()
@@ -266,7 +268,8 @@ class ApiMonitor:
             return sum(
                 1
                 for entry in self._entries
-                if entry.status == "running" and (subject is None or entry.subject == subject)
+                if entry.status == "running"
+                and (subject is None or entry.subject == subject)
             )
 
     def clear(self) -> None:

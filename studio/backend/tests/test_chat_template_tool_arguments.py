@@ -80,7 +80,9 @@ def test_non_json_string_left_as_is():
 
 def test_render_succeeds_on_strict_template_with_string_arguments():
     # Regression: strict template + string args used to raise.
-    result = apply_chat_template_for_generation(_StrictTemplateTokenizer(), _conv('{"query": "x"}'))
+    result = apply_chat_template_for_generation(
+        _StrictTemplateTokenizer(), _conv('{"query": "x"}')
+    )
     assert result == "RENDERED"
 
 

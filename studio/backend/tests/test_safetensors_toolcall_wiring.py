@@ -42,7 +42,9 @@ FAKE_TOOL = {
     },
 }
 # Full parser matrix lives in test_safetensors_tool_loop.py.
-TOOL_CALL_TEXT = '<tool_call>{"name": "get_weather", "arguments": {"city": "Paris"}}</tool_call>'
+TOOL_CALL_TEXT = (
+    '<tool_call>{"name": "get_weather", "arguments": {"city": "Paris"}}</tool_call>'
+)
 FINAL_ANSWER = "The weather in Paris is sunny and 22C."
 TOOL_RESULT = "Paris: sunny, 22C"
 
@@ -164,11 +166,15 @@ def test_backend_seam_injects_tools_and_drives_full_tool_loop():
     assert contents and FINAL_ANSWER in contents[-1]["text"]
     last_tool_end_idx = max(i for i, e in enumerate(events) if e["type"] == "tool_end")
     last_content_idx = max(i for i, e in enumerate(events) if e["type"] == "content")
-    assert last_content_idx > last_tool_end_idx, "final answer must stream after the tool result"
+    assert (
+        last_content_idx > last_tool_end_idx
+    ), "final answer must stream after the tool result"
 
     # 6b. Tool result fed back into the conversation before the final turn (6 alone misses this:
     #     the fake generation ignores the conversation).
-    assert len(conversations_seen) >= 2, "loop did not re-enter generation after the tool call"
+    assert (
+        len(conversations_seen) >= 2
+    ), "loop did not re-enter generation after the tool call"
     final_turn_convo = conversations_seen[1]
     assert any(
         TOOL_RESULT in str(m.get("content", "")) for m in final_turn_convo

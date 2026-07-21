@@ -119,7 +119,9 @@ def test_is_datacenter_gpu_masked_host_physical_ids(monkeypatch):
 def test_is_datacenter_gpu_masked_host_reordered(monkeypatch):
     # Reordered mask preserves order: ordinal 0 -> physical 7, 1 -> 4, ...
     monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "7,4,5,6")
-    monkeypatch.setitem(sys.modules, "torch", _fake_torch(["NVIDIA H100 80GB HBM3"] * 4))
+    monkeypatch.setitem(
+        sys.modules, "torch", _fake_torch(["NVIDIA H100 80GB HBM3"] * 4)
+    )
     assert LlamaCppBackend._is_datacenter_gpu([7, 4]) is True
 
 
@@ -220,7 +222,9 @@ def test_apply_env_multi_dc_gpu_sets_all(monkeypatch):
 def test_apply_env_none_indices_uses_visible_count(monkeypatch):
     # None on a 2x DC box -> multi-GPU flags applied.
     monkeypatch.delenv("UNSLOTH_DISABLE_DC_TUNING", raising = False)
-    monkeypatch.setitem(sys.modules, "torch", _fake_torch(["NVIDIA H100", "NVIDIA H100"]))
+    monkeypatch.setitem(
+        sys.modules, "torch", _fake_torch(["NVIDIA H100", "NVIDIA H100"])
+    )
     env: dict = {}
     assert LlamaCppBackend._apply_datacenter_env(env, None) is True
     assert env["GGML_CUDA_P2P"] == "1"
@@ -229,7 +233,9 @@ def test_apply_env_none_indices_uses_visible_count(monkeypatch):
 
 def test_apply_env_consumer_gpu_is_noop(monkeypatch):
     monkeypatch.delenv("UNSLOTH_DISABLE_DC_TUNING", raising = False)
-    monkeypatch.setitem(sys.modules, "torch", _fake_torch(["NVIDIA GeForce RTX 4090"] * 2))
+    monkeypatch.setitem(
+        sys.modules, "torch", _fake_torch(["NVIDIA GeForce RTX 4090"] * 2)
+    )
     env: dict = {}
     assert LlamaCppBackend._apply_datacenter_env(env, [0, 1]) is False
     assert env == {}

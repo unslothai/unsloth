@@ -37,9 +37,7 @@ from hub.utils.snapshot_filters import (
 
 logger = get_logger(__name__)
 
-_dataset_size_cache: "OrderedDict[str, tuple[int, frozenset[str], bool, str, float]]" = (
-    OrderedDict()
-)
+_dataset_size_cache: "OrderedDict[str, tuple[int, frozenset[str], bool, str, float]]" = OrderedDict()
 _dataset_size_neg_cache: "OrderedDict[tuple[str, str], float]" = OrderedDict()
 _DATASET_SIZE_CACHE_MAX = 256
 _DATASET_SIZE_POS_TTL = 60.0
@@ -88,7 +86,9 @@ def get_dataset_snapshot_metadata_cached(
         )
         total = total_size_for_siblings(info.siblings)
         hashes = blob_hashes_for_siblings(info.siblings)
-        restricted = bool(getattr(info, "private", False) or getattr(info, "gated", False))
+        restricted = bool(
+            getattr(info, "private", False) or getattr(info, "gated", False)
+        )
     except Exception:
         with _dataset_size_cache_lock:
             _dataset_size_neg_cache[cache_key] = time.monotonic()
@@ -132,7 +132,9 @@ async def get_dataset_download_progress_response(
     )
 
 
-def _dataset_status(key: str, *, repo_id: Optional[str] = None) -> DatasetDownloadJobStatus:
+def _dataset_status(
+    key: str, *, repo_id: Optional[str] = None
+) -> DatasetDownloadJobStatus:
     state, error, generation = download_lifecycle.idle_status(
         _registry,
         key,
@@ -154,7 +156,9 @@ async def download_dataset_response(
             detail = f"Invalid repo_id: {repo_id!r}",
         )
     # Canonicalize so two different-cased paste-ins share one job + cache dir.
-    repo_id = await asyncio.to_thread(resolve_cached_repo_id_case, repo_id, repo_type = "dataset")
+    repo_id = await asyncio.to_thread(
+        resolve_cached_repo_id_case, repo_id, repo_type = "dataset"
+    )
     key = _download_job_key(repo_id)
 
     use_xet = download_lifecycle.resolve_effective_use_xet(body.use_xet)
@@ -212,7 +216,9 @@ async def cancel_dataset_download_response(body: CancelDatasetDownloadRequest) -
             status_code = 400,
             detail = f"Invalid repo_id: {repo_id!r}",
         )
-    repo_id = await asyncio.to_thread(resolve_cached_repo_id_case, repo_id, repo_type = "dataset")
+    repo_id = await asyncio.to_thread(
+        resolve_cached_repo_id_case, repo_id, repo_type = "dataset"
+    )
     key = _download_job_key(repo_id)
 
     state = download_lifecycle.cancel_worker(
@@ -225,21 +231,29 @@ async def cancel_dataset_download_response(body: CancelDatasetDownloadRequest) -
     return {"repo_id": repo_id, "state": state}
 
 
-async def get_dataset_download_status_response(repo_id: str) -> DatasetDownloadJobStatus:
+async def get_dataset_download_status_response(
+    repo_id: str,
+) -> DatasetDownloadJobStatus:
     """Return the latest state of a background dataset download job."""
     repo_id = repo_id.strip()
     if not _is_valid_repo_id(repo_id):
         return DatasetDownloadJobStatus(state = "idle")
-    repo_id = await asyncio.to_thread(resolve_cached_repo_id_case, repo_id, repo_type = "dataset")
+    repo_id = await asyncio.to_thread(
+        resolve_cached_repo_id_case, repo_id, repo_type = "dataset"
+    )
     return _dataset_status(_download_job_key(repo_id), repo_id = repo_id)
 
 
-async def get_active_dataset_downloads_response(repo_id: str = "") -> ActiveDownloadsResponse:
+async def get_active_dataset_downloads_response(
+    repo_id: str = "",
+) -> ActiveDownloadsResponse:
     repo_id = repo_id.strip()
     if repo_id and not _is_valid_repo_id(repo_id):
         return ActiveDownloadsResponse(downloads = [])
     canonical_repo_id = (
-        await asyncio.to_thread(resolve_cached_repo_id_case, repo_id, repo_type = "dataset")
+        await asyncio.to_thread(
+            resolve_cached_repo_id_case, repo_id, repo_type = "dataset"
+        )
         if repo_id
         else None
     )
@@ -261,7 +275,9 @@ async def get_dataset_transport_status_response(repo_id: str) -> dict:
         return {"has_partial": False, "last_transport": None, "resumable": False}
     return {
         "has_partial": has_active_incomplete_blobs("dataset", repo_id),
-        "last_transport": download_registry.read_active_transport_marker("dataset", repo_id),
+        "last_transport": download_registry.read_active_transport_marker(
+            "dataset", repo_id
+        ),
         "resumable": download_registry.is_resumable_partial("dataset", repo_id),
     }
 

@@ -85,7 +85,12 @@ def _first_mpi_env_pair() -> tuple[Optional[int], Optional[int]]:
     for rank_name, size_name in _MPI_ENV_PAIRS:
         rank = _parse_nonnegative_int(os.environ.get(rank_name))
         world_size = _parse_nonnegative_int(os.environ.get(size_name))
-        if rank is not None and world_size is not None and world_size > 1 and rank < world_size:
+        if (
+            rank is not None
+            and world_size is not None
+            and world_size > 1
+            and rank < world_size
+        ):
             return rank, world_size
     return None, None
 
@@ -214,7 +219,9 @@ def stream_markdown(stream, show_thinking: bool, *, console) -> str:
     from rich.text import Text
 
     raw = ""
-    with Live(console = console, refresh_per_second = 12, vertical_overflow = "visible") as live:
+    with Live(
+        console = console, refresh_per_second = 12, vertical_overflow = "visible"
+    ) as live:
         for chunk in stream:
             if not isinstance(chunk, str):
                 continue
@@ -243,7 +250,9 @@ def raise_on_streamed_error(stream):
         GenStreamError = None
     for chunk in stream:
         if GenStreamError is not None and isinstance(chunk, GenStreamError):
-            raise RuntimeError(str(chunk)[len(_STREAMED_ERROR_PREFIX) :].strip() or "Unknown error")
+            raise RuntimeError(
+                str(chunk)[len(_STREAMED_ERROR_PREFIX) :].strip() or "Unknown error"
+            )
         yield chunk
 
 
@@ -333,7 +342,9 @@ class ChatBackend:
         *,
         timeout = 300.0,
     ):
-        if self._kind != "unsloth" or not hasattr(self._backend, "share_distributed_object"):
+        if self._kind != "unsloth" or not hasattr(
+            self._backend, "share_distributed_object"
+        ):
             raise RuntimeError(
                 "Distributed MLX chat requires the Unsloth MLX backend; "
                 f"backend '{self._kind}' cannot broadcast chat turns."
@@ -352,7 +363,9 @@ def resolve_model_config(model: str, *, hf_token: Optional[str]):
     return model_config
 
 
-def _validate_llama_extra_args_or_exit(llama_extra_args: Optional[List[str]]) -> list[str]:
+def _validate_llama_extra_args_or_exit(
+    llama_extra_args: Optional[List[str]],
+) -> list[str]:
     from core.inference.llama_server_args import validate_extra_args
     try:
         return validate_extra_args(llama_extra_args)
@@ -507,7 +520,8 @@ def _loopback_candidate_bases(base: str) -> list:
     port = parsed.port or (443 if parsed.scheme == "https" else 80)
     try:
         ips = {
-            ai[4][0] for ai in socket.getaddrinfo(parsed.hostname, port, type = socket.SOCK_STREAM)
+            ai[4][0]
+            for ai in socket.getaddrinfo(parsed.hostname, port, type = socket.SOCK_STREAM)
         }
     except Exception:
         return [base]
@@ -616,7 +630,11 @@ def _studio_token() -> Optional[str]:
         from studio.backend.auth import storage
         from studio.backend.auth.authentication import create_access_token
 
-        row = storage.get_connection().execute("SELECT username FROM auth_user LIMIT 1").fetchone()
+        row = (
+            storage.get_connection()
+            .execute("SELECT username FROM auth_user LIMIT 1")
+            .fetchone()
+        )
         return create_access_token(row[0], desktop = True) if row else None
     except Exception:
         return None
@@ -752,7 +770,9 @@ class HttpChatBackend:
                     visible = text
                     if "\ud800" <= visible[-1] <= "\udbff":
                         visible = visible[:-1]
-                    yield visible.encode("utf-16", "surrogatepass").decode("utf-16", "replace")
+                    yield visible.encode("utf-16", "surrogatepass").decode(
+                        "utf-16", "replace"
+                    )
 
         return cumulative()
 
@@ -803,7 +823,9 @@ def connect_studio_server(
         )
     token = _studio_token()
     if not token:
-        return _refuse("couldn't self-issue an Unsloth token (is Unsloth set up here?).")
+        return _refuse(
+            "couldn't self-issue an Unsloth token (is Unsloth set up here?)."
+        )
     backend = HttpChatBackend(base_url, token)
     backend.ensure_loaded(
         model,

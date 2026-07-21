@@ -38,10 +38,26 @@ def make_inputs(
     dtype,
     requires_grad = False,
 ):
-    X1 = torch.randn((M, K), device = "cuda", dtype = dtype, requires_grad = requires_grad) / 10
-    X2 = torch.randn((M * topk, N), device = "cuda", dtype = dtype, requires_grad = requires_grad) / 10
-    W1 = torch.randn((E, 2 * N, K), device = "cuda", dtype = dtype, requires_grad = requires_grad) / 10
-    W2 = torch.randn((E, K, N), device = "cuda", dtype = dtype, requires_grad = requires_grad) / 10
+    X1 = (
+        torch.randn((M, K), device = "cuda", dtype = dtype, requires_grad = requires_grad)
+        / 10
+    )
+    X2 = (
+        torch.randn(
+            (M * topk, N), device = "cuda", dtype = dtype, requires_grad = requires_grad
+        )
+        / 10
+    )
+    W1 = (
+        torch.randn(
+            (E, 2 * N, K), device = "cuda", dtype = dtype, requires_grad = requires_grad
+        )
+        / 10
+    )
+    W2 = (
+        torch.randn((E, K, N), device = "cuda", dtype = dtype, requires_grad = requires_grad)
+        / 10
+    )
     score = torch.randn((M, E), device = "cuda", dtype = dtype, requires_grad = requires_grad)
     if requires_grad:
         X1.retain_grad()
@@ -123,12 +139,16 @@ def assert_close(
     # cast to float32:
     ref = ref.to(torch.float32).detach()
     tri = tri.to(torch.float32).detach()
-    assert ref.shape == tri.shape, f"Tensors must have same size {ref.shape = } {tri.shape = }"
+    assert (
+        ref.shape == tri.shape
+    ), f"Tensors must have same size {ref.shape = } {tri.shape = }"
 
     # deal with infinite elements:
     inf_mask_ref = torch.isinf(ref)
     inf_mask_tri = torch.isinf(tri)
-    assert torch.equal(inf_mask_ref, inf_mask_tri), "Tensor must have same infinite elements"
+    assert torch.equal(
+        inf_mask_ref, inf_mask_tri
+    ), "Tensor must have same infinite elements"
     refn = torch.where(inf_mask_ref, 0, ref)
     trin = torch.where(inf_mask_tri, 0, tri)
 
@@ -145,8 +165,14 @@ def assert_close(
     rms_err = torch.sqrt(torch.square(rel_err).mean()).item()
 
     if verbose:
-        print("%s maximum relative error = %s (threshold = %s)" % (description, max_err, maxtol))
-        print("%s RMS relative error = %s (threshold = %s)" % (description, rms_err, rmstol))
+        print(
+            "%s maximum relative error = %s (threshold = %s)"
+            % (description, max_err, maxtol)
+        )
+        print(
+            "%s RMS relative error = %s (threshold = %s)"
+            % (description, rms_err, rmstol)
+        )
 
     if max_err > maxtol:
         bad_idxs = torch.nonzero(rel_err > maxtol)
@@ -285,7 +311,9 @@ SMALL_MODEL_CONFIGS = [
         use_sigmoid = False,
         renormalize = False,
     )
-    for topk, num_experts, model_size in itertools.product(TOPK, NUM_EXPERTS, TEST_MODEL_SIZES)
+    for topk, num_experts, model_size in itertools.product(
+        TOPK, NUM_EXPERTS, TEST_MODEL_SIZES
+    )
 ]
 LLAMA_MODEL_CONFIG = ModelConfig(
     topk = 1,
@@ -308,9 +336,16 @@ SEQLENS = [128, 1024]
 DTYPE = [torch.bfloat16]
 
 DATA_CONFIGS = [
-    DataConfig(seq_len = seq_len, dtype = dtype) for seq_len, dtype in itertools.product(SEQLENS, DTYPE)
+    DataConfig(seq_len = seq_len, dtype = dtype)
+    for seq_len, dtype in itertools.product(SEQLENS, DTYPE)
 ]
-KERNEL_CONFIGS_FWD, KERNEL_CONFIGS_BWD_dX, KERNEL_CONFIGS_BWD_dW = get_kernel_test_configs()
+KERNEL_CONFIGS_FWD, KERNEL_CONFIGS_BWD_dX, KERNEL_CONFIGS_BWD_dW = (
+    get_kernel_test_configs()
+)
 
 if __name__ == "__main__":
-    print(KERNEL_CONFIGS_BWD_dX[0].to_string(include_tuning_params = False, include_tma = False))
+    print(
+        KERNEL_CONFIGS_BWD_dX[0].to_string(
+            include_tuning_params = False, include_tma = False
+        )
+    )

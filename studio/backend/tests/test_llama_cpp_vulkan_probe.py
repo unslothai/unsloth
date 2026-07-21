@@ -68,7 +68,9 @@ def _make_vulkan_install(tmp_path: Path) -> str:
     reader's ``is_vulkan_backend`` sibling-file check passes."""
     bindir = tmp_path / "build" / "bin"
     bindir.mkdir(parents = True)
-    binary = bindir / ("llama-server.exe" if sys.platform == "win32" else "llama-server")
+    binary = bindir / (
+        "llama-server.exe" if sys.platform == "win32" else "llama-server"
+    )
     binary.write_bytes(b"stub")
     (bindir / _vulkan_lib_filename()).write_bytes(b"stub")
     return str(binary)
@@ -132,7 +134,9 @@ def test_large_discrete_gpu_is_untouched(tmp_path):
     assert gpus == [(0, 47 * 1024, 48 * 1024)], gpus
 
 
-def test_inherited_visible_devices_mask_is_passed_through_to_probe(tmp_path, monkeypatch):
+def test_inherited_visible_devices_mask_is_passed_through_to_probe(
+    tmp_path, monkeypatch
+):
     # The mask is NOT stripped or filtered in Python: ggml parses it in raw
     # physical-device space while this probe reports the compact post-filter
     # ordinal, so mixing spaces would be wrong. It is passed through unchanged
@@ -180,10 +184,14 @@ def test_shell_wrapper_entrypoint_resolves_to_real_lib_dir(tmp_path):
     # never engage on a valid Vulkan install.
     import os
 
-    binary = _make_vulkan_install(tmp_path)  # tmp_path/build/bin/llama-server + vulkan lib
+    binary = _make_vulkan_install(
+        tmp_path
+    )  # tmp_path/build/bin/llama-server + vulkan lib
     bindir = Path(binary).parent
     wrapper = tmp_path / "llama-server"
-    wrapper.write_text('#!/bin/sh\nexec "$(dirname "$0")/build/bin/llama-server" "$@"\n')
+    wrapper.write_text(
+        '#!/bin/sh\nexec "$(dirname "$0")/build/bin/llama-server" "$@"\n'
+    )
     os.chmod(wrapper, 0o755)
     assert _llama_lib_dir(str(wrapper)) == bindir
     assert LlamaCppBackend._is_vulkan_backend(str(wrapper)) is True

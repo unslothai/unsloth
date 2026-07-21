@@ -225,7 +225,9 @@ def _remap(path, notify = True):
     for prefix in _PREFIXES + _CONDITIONAL_PREFIXES:
         # Heal only while the real prefix directory is absent, so a genuine host
         # mount / user directory at that prefix is never shadowed.
-        if (text == prefix or text.startswith(prefix + "/")) and not os.path.exists(prefix):
+        if (text == prefix or text.startswith(prefix + "/")) and not os.path.exists(
+            prefix
+        ):
             return _map_onto_cwd(prefix, text, notify = notify)
     return path
 

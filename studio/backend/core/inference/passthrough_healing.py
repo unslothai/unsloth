@@ -181,7 +181,9 @@ def _promote(
         name = function.get("name") if isinstance(function, dict) else None
         if name not in allowed_tools:
             continue
-        arguments = _coerce_promoted_arguments(function.get("arguments"), name, tool_schemas)
+        arguments = _coerce_promoted_arguments(
+            function.get("arguments"), name, tool_schemas
+        )
         if arguments is None:
             continue
         promoted.append(
@@ -218,13 +220,17 @@ def heal_openai_message_events(
     content = msg.get("content")
     if not isinstance(content, str) or not _has_heal_signal(content):
         return None
-    parsed, spans = parse_tool_calls_from_text(content, allow_incomplete = True, with_spans = True)
+    parsed, spans = parse_tool_calls_from_text(
+        content, allow_incomplete = True, with_spans = True
+    )
     tool_schemas = _tool_schemas_by_name(tools) if tools is not None else None
     events: list = []
     pos = 0
     call_count = 0
     for call, (start, end) in zip(parsed, spans):
-        promoted = _promote([call], allowed_tools, id_offset = call_count, tool_schemas = tool_schemas)
+        promoted = _promote(
+            [call], allowed_tools, id_offset = call_count, tool_schemas = tool_schemas
+        )
         if promoted:
             if content[pos:start]:
                 events.append(("text", content[pos:start]))
@@ -545,7 +551,10 @@ def nudge_messages(data: Any, allowed_tools: set) -> list:
     is byte-identical and llama-server's slot/prefix cache is reused (same
     shape as the enable-tools loop's reprompt).
     """
-    tool_hint = " or ".join(f"`{name}`" for name in sorted(allowed_tools)) or "an available tool"
+    tool_hint = (
+        " or ".join(f"`{name}`" for name in sorted(allowed_tools))
+        or "an available tool"
+    )
     return [
         {"role": "assistant", "content": _last_assistant_text(data)},
         {

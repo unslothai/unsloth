@@ -69,7 +69,9 @@ def remove_entry(entry_id: str, current_subject: str = Depends(get_current_subje
 
 
 @router.post("/entries/bulk")
-def bulk_entries(req: BulkEntriesRequest, current_subject: str = Depends(get_current_subject)):
+def bulk_entries(
+    req: BulkEntriesRequest, current_subject: str = Depends(get_current_subject)
+):
     count = bulk_upsert_prompt_entries([e.model_dump() for e in req.entries])
     return {"count": count}
 
@@ -96,6 +98,8 @@ def remove_list(list_id: str, current_subject: str = Depends(get_current_subject
 
 
 @router.post("/lists/bulk")
-def bulk_lists(req: BulkListsRequest, current_subject: str = Depends(get_current_subject)):
+def bulk_lists(
+    req: BulkListsRequest, current_subject: str = Depends(get_current_subject)
+):
     count = bulk_upsert_prompt_lists([l.model_dump() for l in req.lists])
     return {"count": count}

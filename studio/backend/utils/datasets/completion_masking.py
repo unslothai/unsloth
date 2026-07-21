@@ -79,7 +79,9 @@ def apply_completion_masking(
             template = "gpt-oss"
             instruction_part = markers["instruction"]
             response_part = markers["response"]
-    processor = getattr(trainer, "processing_class", None) or getattr(trainer, "tokenizer", None)
+    processor = getattr(trainer, "processing_class", None) or getattr(
+        trainer, "tokenizer", None
+    )
     # mlx-lm TokenizerWrapper hides underscore attrs, so preset _unsloth_*
     # markers are invisible through it. Unwrap to the real tokenizer (as
     # zoo's MLX resolver does) before the preset check and detection.

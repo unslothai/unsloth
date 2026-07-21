@@ -143,7 +143,9 @@ def test_startup_output_emits_tool_notice_on_network_bind(capsys, monkeypatch):
     monkeypatch.setattr(run, "_print_cloudflare_line", lambda *a, **k: None)
     monkeypatch.setattr(run, "_localhost_ipv6_mismatch_url", lambda *a, **k: None)
 
-    run._emit_startup_output("0.0.0.0", 8000, "0.0.0.0", secure = False, enable_tools = None)
+    run._emit_startup_output(
+        "0.0.0.0", 8000, "0.0.0.0", secure = False, enable_tools = None
+    )
     out = capsys.readouterr().out
     assert "Server-side tools" in out
     assert "network-reachable" in out
@@ -153,7 +155,9 @@ def test_startup_output_emits_disabled_notice(capsys, monkeypatch):
     import run
 
     monkeypatch.setattr(run, "_localhost_ipv6_mismatch_url", lambda *a, **k: None)
-    run._emit_startup_output("127.0.0.1", 8000, "127.0.0.1", secure = False, enable_tools = False)
+    run._emit_startup_output(
+        "127.0.0.1", 8000, "127.0.0.1", secure = False, enable_tools = False
+    )
     out = capsys.readouterr().out
     assert "Server-side tools are DISABLED" in out
 

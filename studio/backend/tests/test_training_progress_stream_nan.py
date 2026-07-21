@@ -97,7 +97,9 @@ def test_stream_reports_live_step_with_null_loss_during_nan(monkeypatch):
     backend = _FakeBackend(active_polls = 2)
     monkeypatch.setattr(rt, "get_training_backend", lambda: backend)
 
-    response = asyncio.run(rt.stream_training_progress(_FakeRequest(), current_subject = "tester"))
+    response = asyncio.run(
+        rt.stream_training_progress(_FakeRequest(), current_subject = "tester")
+    )
     raw = _collect_events(response)
     payloads = _progress_payloads(raw)
     assert payloads, f"no SSE payloads parsed from: {raw!r}"
@@ -119,7 +121,9 @@ def test_inactive_stream_completes_with_live_step_and_null_loss(monkeypatch):
     backend = _FakeBackend(active_polls = 0)
     monkeypatch.setattr(rt, "get_training_backend", lambda: backend)
 
-    response = asyncio.run(rt.stream_training_progress(_FakeRequest(), current_subject = "tester"))
+    response = asyncio.run(
+        rt.stream_training_progress(_FakeRequest(), current_subject = "tester")
+    )
     payloads = _progress_payloads(_collect_events(response))
     final = payloads[-1]
     assert final["step"] == 5
@@ -147,7 +151,9 @@ def test_stream_uses_finite_history_when_progress_in_sync(monkeypatch):
     backend.trainer.training_progress.loss = 1.5
     monkeypatch.setattr(rt, "get_training_backend", lambda: backend)
 
-    response = asyncio.run(rt.stream_training_progress(_FakeRequest(), current_subject = "tester"))
+    response = asyncio.run(
+        rt.stream_training_progress(_FakeRequest(), current_subject = "tester")
+    )
     payloads = _progress_payloads(_collect_events(response))
     finite = [p for p in payloads if p.get("step") == 2]
     assert finite and finite[0]["loss"] == 1.5

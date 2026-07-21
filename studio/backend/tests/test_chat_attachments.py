@@ -195,7 +195,9 @@ def test_list_chat_attachments_skips_malformed_rows(tmp_path, monkeypatch):
         message_id = f"msg-bad-{i}"
         studio_db.upsert_chat_message(_message(message_id))
         _set_raw_attachments_json(message_id, raw)
-    studio_db.upsert_chat_message(_message("msg-good", attachments = [_image_attachment("att-ok")]))
+    studio_db.upsert_chat_message(
+        _message("msg-good", attachments = [_image_attachment("att-ok")])
+    )
     records = studio_db.list_chat_attachments()
     assert [r["id"] for r in records] == ["att-ok"]
 
@@ -209,7 +211,10 @@ def test_list_chat_attachments_orders_newest_first(tmp_path, monkeypatch):
     studio_db.upsert_chat_message(
         _message("msg-new", 1_700_000_100_000, [_image_attachment("att-new")])
     )
-    assert [r["id"] for r in studio_db.list_chat_attachments()] == ["att-new", "att-old"]
+    assert [r["id"] for r in studio_db.list_chat_attachments()] == [
+        "att-new",
+        "att-old",
+    ]
 
 
 def test_list_chat_attachments_survives_missing_thread_row(tmp_path, monkeypatch):
@@ -230,7 +235,9 @@ def test_list_chat_attachments_survives_missing_thread_row(tmp_path, monkeypatch
 def test_list_chat_attachments_includes_compare_pair_id(tmp_path, monkeypatch):
     _reset_studio_db(tmp_path, monkeypatch)
     studio_db.upsert_chat_thread(_thread(pair_id = "pair-1"))
-    studio_db.upsert_chat_message(_message("msg-compare", attachments = [_image_attachment()]))
+    studio_db.upsert_chat_message(
+        _message("msg-compare", attachments = [_image_attachment()])
+    )
     record = studio_db.list_chat_attachments()[0]
     assert record["threadId"] == "thread-1"
     assert record["pairId"] == "pair-1"
@@ -304,7 +311,9 @@ def test_list_attachments_route(tmp_path, monkeypatch):
 
 def test_attachment_file_serves_image_bytes(tmp_path, monkeypatch):
     _seed(tmp_path, monkeypatch, [_image_attachment()])
-    response = chat_history.get_attachment_file("msg-1", "att-1", current_subject = "unsloth")
+    response = chat_history.get_attachment_file(
+        "msg-1", "att-1", current_subject = "unsloth"
+    )
     assert response.body == PNG_BYTES
     assert response.media_type == "image/png"
 
@@ -313,9 +322,13 @@ def test_attachment_file_tolerates_whitespace_in_base64(tmp_path, monkeypatch):
     encoded = base64.b64encode(PNG_BYTES).decode("ascii")
     wrapped = "\n".join(encoded[i : i + 8] for i in range(0, len(encoded), 8))
     attachment = _image_attachment()
-    attachment["content"] = [{"type": "image", "image": "data:image/png;base64," + wrapped}]
+    attachment["content"] = [
+        {"type": "image", "image": "data:image/png;base64," + wrapped}
+    ]
     _seed(tmp_path, monkeypatch, [attachment])
-    response = chat_history.get_attachment_file("msg-1", "att-1", current_subject = "unsloth")
+    response = chat_history.get_attachment_file(
+        "msg-1", "att-1", current_subject = "unsloth"
+    )
     assert response.body == PNG_BYTES
 
 
@@ -333,26 +346,38 @@ def test_attachment_file_accepts_urlsafe_base64(tmp_path, monkeypatch):
     payload = base64.urlsafe_b64encode(data).decode("ascii")
     assert "-" in payload or "_" in payload
     attachment = _image_attachment()
-    attachment["content"] = [{"type": "image", "image": "data:image/png;base64," + payload}]
+    attachment["content"] = [
+        {"type": "image", "image": "data:image/png;base64," + payload}
+    ]
     _seed(tmp_path, monkeypatch, [attachment])
-    response = chat_history.get_attachment_file("msg-1", "att-1", current_subject = "unsloth")
+    response = chat_history.get_attachment_file(
+        "msg-1", "att-1", current_subject = "unsloth"
+    )
     assert response.body == data
 
 
 def test_attachment_file_accepts_missing_padding(tmp_path, monkeypatch):
     payload = base64.b64encode(PNG_BYTES).decode("ascii").rstrip("=")
     attachment = _image_attachment()
-    attachment["content"] = [{"type": "image", "image": "data:image/png;base64," + payload}]
+    attachment["content"] = [
+        {"type": "image", "image": "data:image/png;base64," + payload}
+    ]
     _seed(tmp_path, monkeypatch, [attachment])
-    response = chat_history.get_attachment_file("msg-1", "att-1", current_subject = "unsloth")
+    response = chat_history.get_attachment_file(
+        "msg-1", "att-1", current_subject = "unsloth"
+    )
     assert response.body == PNG_BYTES
 
 
 def test_attachment_file_serves_percent_encoded_data_url(tmp_path, monkeypatch):
     attachment = _image_attachment()
-    attachment["content"] = [{"type": "image", "image": "data:text/plain,hello%20world"}]
+    attachment["content"] = [
+        {"type": "image", "image": "data:text/plain,hello%20world"}
+    ]
     _seed(tmp_path, monkeypatch, [attachment])
-    response = chat_history.get_attachment_file("msg-1", "att-1", current_subject = "unsloth")
+    response = chat_history.get_attachment_file(
+        "msg-1", "att-1", current_subject = "unsloth"
+    )
     assert response.body == b"hello world"
     # Non-image data URL types are clamped so markup never renders same-origin.
     assert response.media_type == "application/octet-stream"
@@ -369,7 +394,9 @@ def test_attachment_file_serves_text_parts(tmp_path, monkeypatch):
         ],
     }
     _seed(tmp_path, monkeypatch, [attachment])
-    response = chat_history.get_attachment_file("msg-1", "att-txt", current_subject = "unsloth")
+    response = chat_history.get_attachment_file(
+        "msg-1", "att-txt", current_subject = "unsloth"
+    )
     assert response.body.decode("utf-8") == "first\nsecond"
     assert response.media_type.startswith("text/plain")
 
@@ -377,7 +404,9 @@ def test_attachment_file_serves_text_parts(tmp_path, monkeypatch):
 def test_attachment_file_no_content_is_404(tmp_path, monkeypatch):
     _seed(tmp_path, monkeypatch, [{"id": "att-empty", "name": "ghost", "content": []}])
     with pytest.raises(HTTPException) as excinfo:
-        chat_history.get_attachment_file("msg-1", "att-empty", current_subject = "unsloth")
+        chat_history.get_attachment_file(
+            "msg-1", "att-empty", current_subject = "unsloth"
+        )
     assert excinfo.value.status_code == 404
 
 
@@ -402,7 +431,9 @@ def test_attachment_file_defaults_media_type(tmp_path, monkeypatch):
     attachment = _image_attachment()
     attachment["content"] = [{"type": "image", "image": "data:;base64," + payload}]
     _seed(tmp_path, monkeypatch, [attachment])
-    response = chat_history.get_attachment_file("msg-1", "att-1", current_subject = "unsloth")
+    response = chat_history.get_attachment_file(
+        "msg-1", "att-1", current_subject = "unsloth"
+    )
     assert response.body == b"raw-bytes"
     assert response.media_type == "application/octet-stream"
 
@@ -411,9 +442,13 @@ def test_attachment_file_svg_media_type(tmp_path, monkeypatch):
     svg = b"<svg xmlns='http://www.w3.org/2000/svg'/>"
     payload = base64.b64encode(svg).decode("ascii")
     attachment = _image_attachment()
-    attachment["content"] = [{"type": "image", "image": "data:image/svg+xml;base64," + payload}]
+    attachment["content"] = [
+        {"type": "image", "image": "data:image/svg+xml;base64," + payload}
+    ]
     _seed(tmp_path, monkeypatch, [attachment])
-    response = chat_history.get_attachment_file("msg-1", "att-1", current_subject = "unsloth")
+    response = chat_history.get_attachment_file(
+        "msg-1", "att-1", current_subject = "unsloth"
+    )
     assert response.body == svg
     # SVG can carry scripts, so it downloads as bytes instead of rendering.
     assert response.media_type == "application/octet-stream"
@@ -457,7 +492,9 @@ def test_audio_attachment_lists_with_size(tmp_path, monkeypatch):
 
 def test_audio_attachment_file_serves_bytes(tmp_path, monkeypatch):
     _seed(tmp_path, monkeypatch, [_audio_attachment()])
-    response = chat_history.get_attachment_file("msg-1", "att-audio", current_subject = "unsloth")
+    response = chat_history.get_attachment_file(
+        "msg-1", "att-audio", current_subject = "unsloth"
+    )
     assert response.body == WAV_BYTES
     assert response.media_type == "audio/wav"
 
@@ -465,18 +502,26 @@ def test_audio_attachment_file_serves_bytes(tmp_path, monkeypatch):
 def test_audio_attachment_media_type_from_format(tmp_path, monkeypatch):
     attachment = _audio_attachment()
     attachment["contentType"] = None
-    attachment["content"] = [{"type": "audio", "audio": {"data": WAV_B64, "format": "mp3"}}]
+    attachment["content"] = [
+        {"type": "audio", "audio": {"data": WAV_B64, "format": "mp3"}}
+    ]
     _seed(tmp_path, monkeypatch, [attachment])
-    response = chat_history.get_attachment_file("msg-1", "att-audio", current_subject = "unsloth")
+    response = chat_history.get_attachment_file(
+        "msg-1", "att-audio", current_subject = "unsloth"
+    )
     assert response.media_type == "audio/mpeg"
 
 
 def test_audio_attachment_corrupt_payload_is_422(tmp_path, monkeypatch):
     attachment = _audio_attachment()
-    attachment["content"] = [{"type": "audio", "audio": {"data": "%%%", "format": "wav"}}]
+    attachment["content"] = [
+        {"type": "audio", "audio": {"data": "%%%", "format": "wav"}}
+    ]
     _seed(tmp_path, monkeypatch, [attachment])
     with pytest.raises(HTTPException) as excinfo:
-        chat_history.get_attachment_file("msg-1", "att-audio", current_subject = "unsloth")
+        chat_history.get_attachment_file(
+            "msg-1", "att-audio", current_subject = "unsloth"
+        )
     assert excinfo.value.status_code == 422
 
 
@@ -538,7 +583,9 @@ def test_content_part_uploads_are_listed(tmp_path, monkeypatch):
 def test_content_part_file_serves_image_bytes(tmp_path, monkeypatch):
     _seed_compare(tmp_path, monkeypatch)
     image_id = _content_part_id_for("msg-cmp", "image")
-    response = chat_history.get_attachment_file("msg-cmp", image_id, current_subject = "unsloth")
+    response = chat_history.get_attachment_file(
+        "msg-cmp", image_id, current_subject = "unsloth"
+    )
     assert response.body == PNG_BYTES
     assert response.media_type == "image/png"
 
@@ -563,7 +610,10 @@ def test_content_part_delete_rejects_non_blob(tmp_path, monkeypatch):
     # image and audio blobs are addressable.
     assert len(studio_db.list_chat_attachments()) == 2
     # A well-formed but unknown content-hash id, and malformed ids, all no-op.
-    assert studio_db.delete_chat_attachment("msg-cmp", _CONTENT_PART_PREFIX + "0" * 64) is False
+    assert (
+        studio_db.delete_chat_attachment("msg-cmp", _CONTENT_PART_PREFIX + "0" * 64)
+        is False
+    )
     assert studio_db.delete_chat_attachment("msg-cmp", "content-part-99") is False
     assert studio_db.delete_chat_attachment("msg-cmp", "content-part-x") is False
 
@@ -573,7 +623,9 @@ def test_text_only_messages_not_listed_as_uploads(tmp_path, monkeypatch):
     studio_db.upsert_chat_thread(_thread())
     # The word "image" inside text must not create phantom upload rows.
     message = _message("msg-txt")
-    message["content"] = [{"type": "text", "text": 'discussing an "image" and "audio" here'}]
+    message["content"] = [
+        {"type": "text", "text": 'discussing an "image" and "audio" here'}
+    ]
     studio_db.upsert_chat_message(message)
     assert studio_db.list_chat_attachments() == []
 
@@ -623,12 +675,16 @@ def test_svg_data_url_serves_as_octet_stream(tmp_path, monkeypatch):
     ]
     studio_db.upsert_chat_message(message)
     attachment_id = _content_part_id_for("msg-svg", "image")
-    response = chat_history.get_attachment_file("msg-svg", attachment_id, current_subject = "unsloth")
+    response = chat_history.get_attachment_file(
+        "msg-svg", attachment_id, current_subject = "unsloth"
+    )
     assert response.media_type == "application/octet-stream"
 
 
 def test_png_data_url_keeps_its_media_type(tmp_path, monkeypatch):
     _seed_compare(tmp_path, monkeypatch)
     image_id = _content_part_id_for("msg-cmp", "image")
-    response = chat_history.get_attachment_file("msg-cmp", image_id, current_subject = "unsloth")
+    response = chat_history.get_attachment_file(
+        "msg-cmp", image_id, current_subject = "unsloth"
+    )
     assert response.media_type == "image/png"

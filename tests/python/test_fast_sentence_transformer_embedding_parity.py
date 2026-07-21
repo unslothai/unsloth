@@ -30,9 +30,13 @@ def test_transformer_load_signature_supports_unsloth_kwargs():
         "unsloth.models.sentence_transformer._create_transformer_module depends on it."
     )
     params = inspect.signature(load).parameters
-    accepts_var_kw = any(p.kind is inspect.Parameter.VAR_KEYWORD for p in params.values())
+    accepts_var_kw = any(
+        p.kind is inspect.Parameter.VAR_KEYWORD for p in params.values()
+    )
     # Mirror _create_transformer_module's hub_capable gate.
-    hub_capable = accepts_var_kw or any(k in params for k in ("token", "cache_folder", "revision"))
+    hub_capable = accepts_var_kw or any(
+        k in params for k in ("token", "cache_folder", "revision")
+    )
     if not hub_capable:
         pytest.skip(
             "legacy Transformer.load(input_path); production path falls back to Transformer(...)"
@@ -71,7 +75,9 @@ def test_fast_sentence_transformer_matches_stock_st():
 
     torch = pytest.importorskip("torch")
     if not torch.cuda.is_available():
-        pytest.skip("FastSentenceTransformer requires CUDA; skipping on CPU-only runner")
+        pytest.skip(
+            "FastSentenceTransformer requires CUDA; skipping on CPU-only runner"
+        )
     np = pytest.importorskip("numpy")
     pytest.importorskip("sentence_transformers")
     from sentence_transformers import SentenceTransformer
@@ -85,7 +91,9 @@ def test_fast_sentence_transformer_matches_stock_st():
 
     # Control FIRST, before importing unsloth, so its global import patches never
     # touch the stock reference (mirrors the issue's "restart runtime" repro).
-    ctrl = SentenceTransformer(model_id, device = device, model_kwargs = {"torch_dtype": dtype})
+    ctrl = SentenceTransformer(
+        model_id, device = device, model_kwargs = {"torch_dtype": dtype}
+    )
     ctrl.max_seq_length = max_seq_length
     ctrl_ids = ctrl.tokenize([texts[0]])["input_ids"][0].tolist()
     ctrl_emb = np.asarray(

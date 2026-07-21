@@ -99,7 +99,11 @@ def layernorm_backward(
     mean = tl.load(mu).to(tl.float32)
     normed = (X_row - mean) * inv_var
     dY_W = dY_row * W_row
-    dX_row = dY_W - tl.sum(dY_W, axis = 0) / n_cols - normed * tl.sum(dY_W * normed, axis = 0) / n_cols
+    dX_row = (
+        dY_W
+        - tl.sum(dY_W, axis = 0) / n_cols
+        - normed * tl.sum(dY_W * normed, axis = 0) / n_cols
+    )
     dX_row = dX_row * inv_var
     tl.store(dY + col_offsets, dX_row, mask = mask)
 
@@ -169,7 +173,11 @@ def fast_layernorm(layernorm, X):
     assert layernorm.elementwise_affine is True
     W = layernorm.weight
     bias = layernorm.bias
-    eps = layernorm.variance_epsilon if hasattr(layernorm, "variance_epsilon") else layernorm.eps
+    eps = (
+        layernorm.variance_epsilon
+        if hasattr(layernorm, "variance_epsilon")
+        else layernorm.eps
+    )
     out = Fast_Layernorm.apply(X, W, bias, eps)
     return out
 

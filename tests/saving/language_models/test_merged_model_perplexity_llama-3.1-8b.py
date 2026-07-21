@@ -33,7 +33,9 @@ from tests.utils.perplexity_eval import (
 def formatting_prompts_func(examples):
     convos = examples["messages"]
     texts = [
-        tokenizer.apply_chat_template(convo, tokenize = False, add_generation_prompt = False)
+        tokenizer.apply_chat_template(
+            convo, tokenize = False, add_generation_prompt = False
+        )
         for convo in convos
     ]
     return {"text": texts}
@@ -61,12 +63,16 @@ def load_and_compute_8bit_ppl(
     )
 
     # Load dataset fresh in subprocess
-    dataset_ppl = load_dataset("allenai/openassistant-guanaco-reformatted", split = "eval")
+    dataset_ppl = load_dataset(
+        "allenai/openassistant-guanaco-reformatted", split = "eval"
+    )
 
     def formatting_prompts_func(examples):
         convos = examples["messages"]
         texts = [
-            merged_tokenizer.apply_chat_template(convo, tokenize = False, add_generation_prompt = False)
+            merged_tokenizer.apply_chat_template(
+                convo, tokenize = False, add_generation_prompt = False
+            )
             for convo in convos
         ]
         return {"text": texts}
@@ -119,8 +125,12 @@ if __name__ == "__main__":
 
     from unsloth.chat_templates import standardize_sharegpt
 
-    dataset_train = load_dataset("allenai/openassistant-guanaco-reformatted", split = "train")
-    dataset_ppl = load_dataset("allenai/openassistant-guanaco-reformatted", split = "eval")
+    dataset_train = load_dataset(
+        "allenai/openassistant-guanaco-reformatted", split = "train"
+    )
+    dataset_ppl = load_dataset(
+        "allenai/openassistant-guanaco-reformatted", split = "eval"
+    )
 
     dataset_train = dataset_train.map(formatting_prompts_func, batched = True)
     dataset_ppl = dataset_ppl.map(formatting_prompts_func, batched = True)

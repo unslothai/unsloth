@@ -206,7 +206,9 @@ class ReasoningTextIteratorStreamer(TextIteratorStreamer):
         **decode_kwargs,
     ):
         decode_kwargs["skip_special_tokens"] = False
-        super().__init__(tokenizer, skip_prompt = skip_prompt, timeout = timeout, **decode_kwargs)
+        super().__init__(
+            tokenizer, skip_prompt = skip_prompt, timeout = timeout, **decode_kwargs
+        )
         self._normalizer = ReasoningChannelNormalizer(*markers)
         self._cancel_event = cancel_event
         self._aborted = False
@@ -289,11 +291,17 @@ class InferenceBackend:
         # Vision models carry the chat_template on the processor, not the inner
         # tokenizer. Read markers from whichever has one, but resolve ids on the
         # generation tokenizer, else the vision path misses the turn-end token.
-        template_source = container if getattr(container, "chat_template", None) else tokenizer
+        template_source = (
+            container if getattr(container, "chat_template", None) else tokenizer
+        )
         try:
-            turn_end_ids = resolve_chat_turn_end_eos_ids_using(template_source, tokenizer)
+            turn_end_ids = resolve_chat_turn_end_eos_ids_using(
+                template_source, tokenizer
+            )
         except Exception as e:  # never block a load on eos resolution
-            logger.warning("Chat turn-end eos resolution failed for %s: %s", model_name, e)
+            logger.warning(
+                "Chat turn-end eos resolution failed for %s: %s", model_name, e
+            )
             return
         info["chat_turn_end_eos_ids"] = turn_end_ids
 
@@ -376,7 +384,9 @@ class InferenceBackend:
             if config.is_audio:
                 audio_type = config.audio_type
                 adapter_info = " (LoRA adapter)" if config.is_lora else ""
-                logger.info(f"Loading audio ({audio_type}) model{adapter_info}: {model_name}")
+                logger.info(
+                    f"Loading audio ({audio_type}) model{adapter_info}: {model_name}"
+                )
                 log_gpu_memory(f"Before loading {model_name}")
 
                 if audio_type == "csm":
@@ -410,7 +420,9 @@ class InferenceBackend:
                             from huggingface_hub import snapshot_download
 
                             local_dir = base_path.split("/")[-1]
-                            repo_path = snapshot_download(base_path, local_dir = local_dir)
+                            repo_path = snapshot_download(
+                                base_path, local_dir = local_dir
+                            )
                             abs_repo_path = os.path.abspath(repo_path)
 
                         logger.info(
@@ -521,7 +533,9 @@ class InferenceBackend:
                     )
 
                 # Reject CPU/disk offload for audio models too
-                raise_if_offloaded(self.models[model_name]["model"], device_map, "Inference")
+                raise_if_offloaded(
+                    self.models[model_name]["model"], device_map, "Inference"
+                )
                 self.models[model_name]["context_length"] = runtime_context_length(
                     self.models[model_name].get("model"),
                     max_seq_length,
@@ -534,7 +548,9 @@ class InferenceBackend:
                 return True
 
             model_type = "vision" if config.is_vision else "text"
-            adapter_info = " (LoRA adapter)" if self.models[model_name]["is_lora"] else ""
+            adapter_info = (
+                " (LoRA adapter)" if self.models[model_name]["is_lora"] else ""
+            )
             logger.info(f"Loading {model_type} model{adapter_info}: {model_name}")
             log_gpu_memory(f"Before loading {model_name}")
 
@@ -558,10 +574,13 @@ class InferenceBackend:
                 from transformers import ProcessorMixin
 
                 if not (
-                    isinstance(processor, ProcessorMixin) or hasattr(processor, "image_processor")
+                    isinstance(processor, ProcessorMixin)
+                    or hasattr(processor, "image_processor")
                 ):
                     # LoRA adapters: use base model. Local merged exports: read base from export_metadata.json.
-                    processor_source = config.base_model if config.is_lora else config.identifier
+                    processor_source = (
+                        config.base_model if config.is_lora else config.identifier
+                    )
                     if not config.is_lora and config.is_local:
                         _meta_path = Path(config.path) / "export_metadata.json"
                         try:
@@ -582,7 +601,9 @@ class InferenceBackend:
                         token = hf_token if hf_token and hf_token.strip() else None,
                         trust_remote_code = trust_remote_code,
                     )
-                    logger.info(f"Loaded {type(processor).__name__} from {processor_source}")
+                    logger.info(
+                        f"Loaded {type(processor).__name__} from {processor_source}"
+                    )
 
                 self.models[model_name]["model"] = model
                 self.models[model_name]["tokenizer"] = processor
@@ -605,7 +626,9 @@ class InferenceBackend:
                 self.models[model_name]["model"] = model
                 self.models[model_name]["tokenizer"] = tokenizer
 
-            raise_if_offloaded(self.models[model_name]["model"], device_map, "Inference")
+            raise_if_offloaded(
+                self.models[model_name]["model"], device_map, "Inference"
+            )
             self.models[model_name]["context_length"] = runtime_context_length(
                 self.models[model_name].get("model"),
                 max_seq_length,
@@ -654,7 +677,11 @@ class InferenceBackend:
                 import sys as _sys
                 from utils.cache_cleanup import clear_unsloth_compiled_cache
 
-                _preserve = ["Unsloth*Trainer.py"] if _sys.platform in ("win32", "darwin") else None
+                _preserve = (
+                    ["Unsloth*Trainer.py"]
+                    if _sys.platform in ("win32", "darwin")
+                    else None
+                )
                 clear_unsloth_compiled_cache(preserve_patterns = _preserve)
 
                 logger.info(f"Model '{model_name}' successfully unloaded.")
@@ -721,9 +748,13 @@ class InferenceBackend:
             base_model_name = lora_config.base_model
 
             # 1. Load the base model if not already in memory
-            if base_model_name not in self.models or not self.models[base_model_name].get("model"):
+            if base_model_name not in self.models or not self.models[
+                base_model_name
+            ].get("model"):
                 logger.info(f"Base model '{base_model_name}' not loaded, loading now.")
-                base_config = ModelConfig.from_ui_selection(base_model_name, None, is_lora = False)
+                base_config = ModelConfig.from_ui_selection(
+                    base_model_name, None, is_lora = False
+                )
                 if not self.load_model(
                     base_config,
                     max_seq_length,
@@ -759,7 +790,9 @@ class InferenceBackend:
             logger.error(traceback.format_exc())
             return False, None, None
 
-    def load_adapter(self, base_model_name: str, adapter_path: str, adapter_name: str) -> bool:
+    def load_adapter(
+        self, base_model_name: str, adapter_path: str, adapter_name: str
+    ) -> bool:
         """Load an adapter onto the model only if not already attached."""
         model = self.models[base_model_name].get("model")
 
@@ -830,12 +863,16 @@ class InferenceBackend:
                 )
                 model.base_model.disable_adapter_layers()
             else:
-                logger.info(f"Compare mode: model '{base}' is not a PeftModel, already base")
+                logger.info(
+                    f"Compare mode: model '{base}' is not a PeftModel, already base"
+                )
 
         elif use_adapter is True:
             # Re-enable LoRA layers -> adapter output.
             if isinstance(model, (PeftModel, PeftModelForCausalLM)):
-                logger.info(f"Compare mode: enabling adapters on '{base}' for LoRA generation")
+                logger.info(
+                    f"Compare mode: enabling adapters on '{base}' for LoRA generation"
+                )
                 model.base_model.enable_adapter_layers()
             else:
                 logger.warning("use_adapter=true but model is not a PeftModel")
@@ -843,11 +880,15 @@ class InferenceBackend:
         elif isinstance(use_adapter, str):
             # Enable adapters and set the named one active.
             if isinstance(model, (PeftModel, PeftModelForCausalLM)):
-                logger.info(f"Compare mode: enabling adapter '{use_adapter}' on '{base}'")
+                logger.info(
+                    f"Compare mode: enabling adapter '{use_adapter}' on '{base}'"
+                )
                 model.base_model.enable_adapter_layers()
                 self.set_active_adapter(base, use_adapter)
             else:
-                logger.warning(f"use_adapter='{use_adapter}' but model is not a PeftModel")
+                logger.warning(
+                    f"use_adapter='{use_adapter}' but model is not a PeftModel"
+                )
 
     def generate_with_adapter_control(
         self,
@@ -1030,7 +1071,8 @@ class InferenceBackend:
 
             processor = model_info.get("processor")
             has_image_processing = processor is not None and (
-                isinstance(processor, ProcessorMixin) or hasattr(processor, "image_processor")
+                isinstance(processor, ProcessorMixin)
+                or hasattr(processor, "image_processor")
             )
             if has_image_processing:
                 yield from self._generate_vision_response(
@@ -1087,9 +1129,13 @@ class InferenceBackend:
                         getattr(_gen_tok, "tokenizer", _gen_tok),
                     )
                     existing = model_info.get("chat_turn_end_eos_ids") or []
-                    model_info["chat_turn_end_eos_ids"] = sorted(set(existing) | set(refreshed))
+                    model_info["chat_turn_end_eos_ids"] = sorted(
+                        set(existing) | set(refreshed)
+                    )
                 except Exception as e:
-                    logger.warning(f"Could not refresh chat turn-end eos after template: {e}")
+                    logger.warning(
+                        f"Could not refresh chat turn-end eos after template: {e}"
+                    )
             else:
                 logger.info(
                     f"No registered Unsloth template for {self.active_model_name}, using tokenizer default"
@@ -1099,7 +1145,9 @@ class InferenceBackend:
 
         # Step 2: format with tokenizer.apply_chat_template().
         if system_prompt:
-            template_messages = [{"role": "system", "content": system_prompt}] + messages
+            template_messages = [
+                {"role": "system", "content": system_prompt}
+            ] + messages
         else:
             template_messages = messages
         reasoning_channel_markers_resolved = False
@@ -1248,7 +1296,9 @@ class InferenceBackend:
         else:
             # Text-only path for a vision model
             formatted_prompt = self.format_chat_prompt(messages, system_prompt)
-            inputs = raw_tokenizer(formatted_prompt, return_tensors = "pt").to(model.device)
+            inputs = raw_tokenizer(formatted_prompt, return_tensors = "pt").to(
+                model.device
+            )
             prompt_text = formatted_prompt
 
         # Stream with TextIteratorStreamer + background thread
@@ -1288,7 +1338,9 @@ class InferenceBackend:
                 min_p = min_p,
             )
             # Presence penalty (GGUF parity) for VLM chat.
-            _vision_input_ids = inputs.get("input_ids") if hasattr(inputs, "get") else None
+            _vision_input_ids = (
+                inputs.get("input_ids") if hasattr(inputs, "get") else None
+            )
             if _vision_input_ids is not None:
                 _pp = _make_presence_penalty_processor(
                     presence_penalty, int(_vision_input_ids.shape[1])
@@ -1298,7 +1350,9 @@ class InferenceBackend:
             stopping_criteria = self._cancel_stopping_criteria(cancel_event)
             if stopping_criteria is not None:
                 generation_kwargs["stopping_criteria"] = stopping_criteria
-            active_stop_token_ids = self._generation_stop_token_ids(model, generation_kwargs)
+            active_stop_token_ids = self._generation_stop_token_ids(
+                model, generation_kwargs
+            )
 
             err: dict[str, str] = {}
 
@@ -1673,7 +1727,9 @@ class InferenceBackend:
             think_prefix = (
                 ""
                 if self._is_gpt_oss_model()
-                else detect_think_prefill(prompt, getattr(tokenizer, "all_special_tokens", None))
+                else detect_think_prefill(
+                    prompt, getattr(tokenizer, "all_special_tokens", None)
+                )
             )
 
             streamer = self._make_text_streamer(
@@ -1698,12 +1754,15 @@ class InferenceBackend:
                 repetition_penalty = repetition_penalty,
                 do_sample = temperature > 0,
                 # Resolved once at load (chat_template-derived turn-end tokens).
-                eos_token_id = model_info.get("chat_turn_end_eos_ids") or tokenizer.eos_token_id,
+                eos_token_id = model_info.get("chat_turn_end_eos_ids")
+                or tokenizer.eos_token_id,
                 pad_token_id = tokenizer.eos_token_id
                 if tokenizer.pad_token_id is None
                 else tokenizer.pad_token_id,
             )
-            active_stop_token_ids = self._generation_stop_token_ids(model, generation_kwargs)
+            active_stop_token_ids = self._generation_stop_token_ids(
+                model, generation_kwargs
+            )
             # Presence penalty (GGUF parity); prompt_len excludes prompt tokens.
             _pp = _make_presence_penalty_processor(
                 presence_penalty, int(inputs["input_ids"].shape[1])
@@ -1794,7 +1853,9 @@ class InferenceBackend:
                     join_timeout = max(0, cancel_deadline - time.monotonic())
                 thread.join(timeout = join_timeout)
                 if thread.is_alive():
-                    logger.warning("Generation thread did not exit after cancel/join timeout")
+                    logger.warning(
+                        "Generation thread did not exit after cancel/join timeout"
+                    )
 
             if err.get("msg"):
                 raise _GenerationThreadError(err["msg"])
@@ -1871,12 +1932,21 @@ class InferenceBackend:
                 raise RuntimeError(f"Unknown audio_type: {audio_type}")
 
     def _generate_snac(
-        self, model, tokenizer, text, temperature, top_p, max_new_tokens, repetition_penalty
+        self,
+        model,
+        tokenizer,
+        text,
+        temperature,
+        top_p,
+        max_new_tokens,
+        repetition_penalty,
     ):
         """Generate audio using SNAC codec (Orpheus)."""
         device = model.device
         start_token = torch.tensor([[128259]], device = device)  # START_OF_HUMAN
-        end_tokens = torch.tensor([[128009, 128260]], device = device)  # EOT, END_OF_HUMAN
+        end_tokens = torch.tensor(
+            [[128009, 128260]], device = device
+        )  # EOT, END_OF_HUMAN
         text_ids = tokenizer(text, return_tensors = "pt").input_ids.to(device)
         input_ids = torch.cat([start_token, text_ids, end_tokens], dim = 1)
         attention_mask = torch.ones_like(input_ids)
@@ -1900,12 +1970,20 @@ class InferenceBackend:
         inputs = processor(
             f"[{speaker_id}]{text}", add_special_tokens = True, return_tensors = "pt"
         ).to(model.device)
-        audio_values = model.generate(**inputs, max_new_tokens = max_new_tokens, output_audio = True)
+        audio_values = model.generate(
+            **inputs, max_new_tokens = max_new_tokens, output_audio = True
+        )
         return self._audio_codec_manager.decode_csm(audio_values)
 
-    def _generate_bicodec(self, model, tokenizer, text, temperature, top_k, max_new_tokens):
+    def _generate_bicodec(
+        self, model, tokenizer, text, temperature, top_k, max_new_tokens
+    ):
         """Generate audio using BiCodec (Spark-TTS)."""
-        prompt = "<|task_tts|><|start_content|>" + text + "<|end_content|><|start_global_token|>"
+        prompt = (
+            "<|task_tts|><|start_content|>"
+            + text
+            + "<|end_content|><|start_global_token|>"
+        )
         inputs = tokenizer([prompt], return_tensors = "pt").to(model.device)
         generated = model.generate(
             **inputs,
@@ -1976,7 +2054,9 @@ class InferenceBackend:
             def __init__(self, penalty: float):
                 self.penalty_last_n = 64
                 if not isinstance(penalty, float) or penalty <= 0:
-                    raise ValueError(f"`penalty` has to be a positive float, but is {penalty}")
+                    raise ValueError(
+                        f"`penalty` has to be a positive float, but is {penalty}"
+                    )
                 self.penalty = penalty
 
             @torch.no_grad()
@@ -2001,8 +2081,12 @@ class InferenceBackend:
                         )
                 return scores
 
-        generation_utils.RepetitionPenaltyLogitsProcessor = RepetitionPenaltyLogitsProcessorPatch
-        logger.info("Patched RepetitionPenaltyLogitsProcessor with 64-token window for OuteTTS")
+        generation_utils.RepetitionPenaltyLogitsProcessor = (
+            RepetitionPenaltyLogitsProcessorPatch
+        )
+        logger.info(
+            "Patched RepetitionPenaltyLogitsProcessor with 64-token window for OuteTTS"
+        )
 
     def _apply_chat_template_for_generation(
         self,
@@ -2044,7 +2128,9 @@ class InferenceBackend:
             logger.error("Tokenizer not loaded for active model")
             return ""
 
-        chat_template_info = self.models[self.active_model_name].get("chat_template_info", {})
+        chat_template_info = self.models[self.active_model_name].get(
+            "chat_template_info", {}
+        )
         tokenizer = self.models[self.active_model_name]["tokenizer"]
         tokenizer = getattr(tokenizer, "tokenizer", tokenizer)
 
@@ -2061,7 +2147,9 @@ class InferenceBackend:
 
             if role in ["system", "user", "assistant"] and content.strip():
                 if role == last_role:
-                    logger.debug(f"Skipping consecutive {role} message to maintain alternation")
+                    logger.debug(
+                        f"Skipping consecutive {role} message to maintain alternation"
+                    )
                     continue
 
                 if role == "user":
@@ -2077,7 +2165,9 @@ class InferenceBackend:
                     continue
 
         if chat_messages and chat_messages[-1]["role"] == "assistant":
-            logger.debug("Removing final assistant message to ensure proper alternation")
+            logger.debug(
+                "Removing final assistant message to ensure proper alternation"
+            )
             chat_messages.pop()
 
         logger.info(f"Sending {len(chat_messages)} messages to tokenizer:")
@@ -2092,7 +2182,10 @@ class InferenceBackend:
             return formatted_prompt
         except Exception as e:
             error_msg = str(e).lower()
-            if "chat_template is not set" in error_msg or "no template argument" in error_msg:
+            if (
+                "chat_template is not set" in error_msg
+                or "no template argument" in error_msg
+            ):
                 logger.info(
                     f"Base model detected - no built-in chat template available, using fallback formatting"
                 )
@@ -2103,7 +2196,9 @@ class InferenceBackend:
             )
 
         if chat_template_info.get("has_template", False):
-            logger.info("Falling back to manual template formatting based on detected patterns")
+            logger.info(
+                "Falling back to manual template formatting based on detected patterns"
+            )
             template_type = chat_template_info.get("format_type", "generic")
             manual_prompt = self._format_chat_manual(
                 chat_messages,
@@ -2116,7 +2211,9 @@ class InferenceBackend:
             logger.info("Using generic chat formatting for base model")
             return self._format_generic_template(chat_messages, {})
 
-    def _format_chat_manual(self, messages: list, template_type: str, special_tokens: dict) -> str:
+    def _format_chat_manual(
+        self, messages: list, template_type: str, special_tokens: dict
+    ) -> str:
         """Manual chat-formatting fallback when the tokenizer template fails.
 
         Args:
@@ -2146,7 +2243,9 @@ class InferenceBackend:
         for msg in messages:
             role = msg["role"]
             content = content_to_text(msg["content"])
-            formatted += f"<|start_header_id|>{role}<|end_header_id|>\n\n{content}<|eot_id|>"
+            formatted += (
+                f"<|start_header_id|>{role}<|end_header_id|>\n\n{content}<|eot_id|>"
+            )
 
         formatted += "<|start_header_id|>assistant<|end_header_id|>\n\n"
         return formatted
@@ -2175,8 +2274,13 @@ class InferenceBackend:
 
                 formatted += f"[INST] {user_content} [/INST]"
 
-                if i + 1 < len(conversation) and conversation[i + 1]["role"] == "assistant":
-                    formatted += f" {content_to_text(conversation[i + 1]['content'])}</s>"
+                if (
+                    i + 1 < len(conversation)
+                    and conversation[i + 1]["role"] == "assistant"
+                ):
+                    formatted += (
+                        f" {content_to_text(conversation[i + 1]['content'])}</s>"
+                    )
                     i += 2
                 else:
                     formatted += " "
@@ -2362,7 +2466,9 @@ class InferenceBackend:
         return text.strip()
 
     def _load_chat_template_info(self, model_name: str):
-        if model_name not in self.models or not self.models[model_name].get("tokenizer"):
+        if model_name not in self.models or not self.models[model_name].get(
+            "tokenizer"
+        ):
             return
 
         tokenizer = self.models[model_name]["tokenizer"]
@@ -2380,7 +2486,9 @@ class InferenceBackend:
             # Exact match first
             model_name_lower = model_name.lower()
             if model_name_lower in MODEL_TO_TEMPLATE_MAPPER:
-                chat_template_info["template_name"] = MODEL_TO_TEMPLATE_MAPPER[model_name_lower]
+                chat_template_info["template_name"] = MODEL_TO_TEMPLATE_MAPPER[
+                    model_name_lower
+                ]
                 logger.info(
                     f"Detected template '{chat_template_info['template_name']}' for {model_name} from mapper"
                 )
@@ -2388,13 +2496,17 @@ class InferenceBackend:
                 # Partial match (for variants like model_name-bnb-4bit)
                 for key in MODEL_TO_TEMPLATE_MAPPER:
                     if key in model_name_lower or model_name_lower in key:
-                        chat_template_info["template_name"] = MODEL_TO_TEMPLATE_MAPPER[key]
+                        chat_template_info["template_name"] = MODEL_TO_TEMPLATE_MAPPER[
+                            key
+                        ]
                         logger.info(
                             f"Detected template '{chat_template_info['template_name']}' for {model_name} (partial match)"
                         )
                         break
         except Exception as e:
-            logger.warning(f"Could not detect template from mapper for {model_name}: {e}")
+            logger.warning(
+                f"Could not detect template from mapper for {model_name}: {e}"
+            )
 
         try:
             if hasattr(tokenizer, "chat_template") and tokenizer.chat_template:
@@ -2403,7 +2515,10 @@ class InferenceBackend:
 
                 template_str = tokenizer.chat_template.lower()
 
-                if "start_header_id" in template_str and "end_header_id" in template_str:
+                if (
+                    "start_header_id" in template_str
+                    and "end_header_id" in template_str
+                ):
                     chat_template_info["format_type"] = "llama3"
                 elif "[inst]" in template_str and "[/inst]" in template_str:
                     chat_template_info["format_type"] = "mistral"
@@ -2430,7 +2545,9 @@ class InferenceBackend:
                 chat_template_info["special_tokens"] = special_tokens
 
             else:
-                logger.info(f"No chat template found for {model_name}, will use generic formatting")
+                logger.info(
+                    f"No chat template found for {model_name}, will use generic formatting"
+                )
 
         except Exception as e:
             logger.error(f"Error loading chat template info for {model_name}: {e}")
@@ -2442,7 +2559,9 @@ class InferenceBackend:
                 f"Chat template loaded for {model_name}: {chat_template_info['format_type']} format"
             )
         else:
-            logger.info(f"No built-in chat template for {model_name}, will use generic formatting")
+            logger.info(
+                f"No built-in chat template for {model_name}, will use generic formatting"
+            )
 
     def get_current_model(self) -> Optional[str]:
         """Currently active model name."""

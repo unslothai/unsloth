@@ -18,7 +18,9 @@ def _classify(tokens: list[str]) -> str | None:
 
 
 def test_gemma3n_audio_soft_token_is_audio_vlm():
-    assert _classify(["<bos>", "<audio_soft_token>", "<image_soft_token>"]) == "audio_vlm"
+    assert (
+        _classify(["<bos>", "<audio_soft_token>", "<image_soft_token>"]) == "audio_vlm"
+    )
 
 
 def test_gemma4_pipe_audio_token_is_audio_vlm():

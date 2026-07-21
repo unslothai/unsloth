@@ -27,7 +27,9 @@ import types
 import pytest
 
 
-_LIBCUDART_ERROR = "libcudart.so.13: cannot open shared object file: No such file or directory"
+_LIBCUDART_ERROR = (
+    "libcudart.so.13: cannot open shared object file: No such file or directory"
+)
 
 
 class _ExtensionLoader(importlib.abc.Loader):
@@ -63,7 +65,9 @@ class _FakeVllmFinder(importlib.abc.MetaPathFinder):
         if fullname in self.present:
             return importlib.machinery.ModuleSpec(
                 name = fullname,
-                loader = _ExtensionLoader(broken = fullname in self.broken, error = self.error),
+                loader = _ExtensionLoader(
+                    broken = fullname in self.broken, error = self.error
+                ),
                 is_package = False,
             )
         return None  # absent -> ModuleNotFoundError, which the guard ignores
@@ -88,7 +92,9 @@ def _fake_vllm(
         import_fixes.VLLM_BROKEN = False
         fake_vllm = types.ModuleType("vllm")
         fake_vllm.__path__ = []
-        fake_vllm.__spec__ = importlib.machinery.ModuleSpec("vllm", loader = None, is_package = True)
+        fake_vllm.__spec__ = importlib.machinery.ModuleSpec(
+            "vllm", loader = None, is_package = True
+        )
         sys.modules["vllm"] = fake_vllm
         for name in submodules:
             sys.modules.pop(name, None)
@@ -136,7 +142,9 @@ def test_disable_broken_vllm_detects_lazy_loaded_broken_extension(broken_ext):
 def test_disable_broken_vllm_detects_non_cudart_so_failure(error):
     # A CUDA mismatch can surface through a non-libcudart .so (libnccl, libcuda),
     # which the old libcudart/libcublas/libnvrtc allow-list let slip through.
-    with _fake_vllm(present = {"vllm._C"}, broken = {"vllm._C"}, error = error) as import_fixes:
+    with _fake_vllm(
+        present = {"vllm._C"}, broken = {"vllm._C"}, error = error
+    ) as import_fixes:
         detected = import_fixes.disable_broken_vllm()
 
         assert detected is True, (

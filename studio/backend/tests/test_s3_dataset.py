@@ -37,7 +37,9 @@ class _FakePaginator:
 
     def paginate(self, **kwargs):
         prefix = kwargs.get("Prefix")
-        contents = [{"Key": k} for k in self._keys if prefix is None or k.startswith(prefix)]
+        contents = [
+            {"Key": k} for k in self._keys if prefix is None or k.startswith(prefix)
+        ]
         # Emit in two pages to exercise pagination handling.
         mid = len(contents) // 2
         yield {"Contents": contents[:mid]}

@@ -44,7 +44,10 @@ def _obj(module_name, **attrs):
 
 
 def test_builtin_class_is_not_remote_code():
-    assert _loaded_via_remote_code(_obj("transformers.models.llama.modeling_llama")) is False
+    assert (
+        _loaded_via_remote_code(_obj("transformers.models.llama.modeling_llama"))
+        is False
+    )
 
 
 def test_transformers_modules_class_is_remote_code():
@@ -65,7 +68,9 @@ def test_auto_map_in_config_alone_does_not_grant_trust():
     # be treated as remote-code-loaded (that is exactly what enabled the consent-gate bypass).
     cfg = type("Cfg", (), {"auto_map": {"AutoModelForCausalLM": "modeling_x.Model"}})()
     assert (
-        _loaded_via_remote_code(_obj("transformers.models.llama.modeling_llama", config = cfg))
+        _loaded_via_remote_code(
+            _obj("transformers.models.llama.modeling_llama", config = cfg)
+        )
         is False
     )
 
@@ -134,7 +139,10 @@ def test_compressed_and_gguf_lora_paths_drop_auto_map_trust():
     # No path derives a trust decision straight from config auto_map anymore, and no path
     # collapses model and tokenizer trust into one flag.
     assert 'bool(getattr(model.config, "auto_map", None))' not in _SRC
-    assert "_loaded_via_remote_code(model) or _loaded_via_remote_code(tokenizer)" not in _SRC
+    assert (
+        "_loaded_via_remote_code(model) or _loaded_via_remote_code(tokenizer)"
+        not in _SRC
+    )
     assert "if _loaded_via_remote_code(model):" in _SRC  # GGUF-LoRA converter flag
 
 
@@ -144,7 +152,10 @@ def test_compressed_export_keeps_model_and_tokenizer_trust_separate():
     assert 'cmd.append("--trust-remote-code")' in _SRC
     assert 'cmd.append("--trust-remote-code-tokenizer")' in _SRC
     qsrc = (_SAVE_PY.parent / "_compressed_quantize.py").read_text(encoding = "utf-8")
-    assert 'ap.add_argument("--trust-remote-code-tokenizer", action = "store_true")' in qsrc
+    assert (
+        'ap.add_argument("--trust-remote-code-tokenizer", action = "store_true")'
+        in qsrc
+    )
     assert "trust_remote_code = args.trust_remote_code_tokenizer" in qsrc
     # The model loads keep the model flag only.
     assert "args.model, args.trust_remote_code)" in qsrc

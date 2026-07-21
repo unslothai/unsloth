@@ -120,7 +120,9 @@ def _rects_from_words(page_words: list, indices: list[int], pw: float, ph: float
     return out
 
 
-def _regions_for_match(doc: Any, page_text: str, match: LocatorMatch) -> list[dict[str, Any]]:
+def _regions_for_match(
+    doc: Any, page_text: str, match: LocatorMatch
+) -> list[dict[str, Any]]:
     try:
         if match.page_index < 0 or match.page_index >= len(doc):
             return []
@@ -147,7 +149,9 @@ def _regions_for_match(doc: Any, page_text: str, match: LocatorMatch) -> list[di
         return []
 
 
-def pdf_regions_for_chunks(pdf_path: Path, pages: list, chunks: list) -> list[list[dict[str, Any]]]:
+def pdf_regions_for_chunks(
+    pdf_path: Path, pages: list, chunks: list
+) -> list[list[dict[str, Any]]]:
     """Region rects per chunk (parallel to ``chunks``), keyed off each chunk's
     ``source_page_index`` / ``page_char_start`` / ``page_char_end``. Non-PDFs and
     failures yield [], never an exception."""

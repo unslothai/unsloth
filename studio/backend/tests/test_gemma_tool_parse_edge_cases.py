@@ -35,14 +35,18 @@ def test_bare_string_argument_with_comma_is_kept():
 
 
 def test_normal_multi_key_arguments_still_split():
-    calls = parse_tool_calls_from_text('<|tool_call>call:f{a:1,b:hello,c:"x,y"}<tool_call|>')
+    calls = parse_tool_calls_from_text(
+        '<|tool_call>call:f{a:1,b:hello,c:"x,y"}<tool_call|>'
+    )
     assert len(calls) == 1, calls
     assert _args(calls[0]) == {"a": 1, "b": "hello", "c": "x,y"}
 
 
 def test_empty_bare_value_becomes_empty_string_not_dropped():
     # An empty bare value (``{query:}``) must serialise as ``""`` (``{"query":}`` is invalid JSON and dropped the call).
-    calls = parse_tool_calls_from_text("<|tool_call>call:search{query:,unit:celsius}<tool_call|>")
+    calls = parse_tool_calls_from_text(
+        "<|tool_call>call:search{query:,unit:celsius}<tool_call|>"
+    )
     assert len(calls) == 1, calls
     assert _args(calls[0]) == {"query": "", "unit": "celsius"}
 
@@ -57,13 +61,18 @@ def test_bare_value_with_timestamps_after_comma_is_kept():
         "<|tool_call>call:remind{query:meet at 10:00, 11:00 tomorrow,priority:high}<tool_call|>"
     )
     assert len(calls) == 1, calls
-    assert _args(calls[0]) == {"query": "meet at 10:00, 11:00 tomorrow", "priority": "high"}
+    assert _args(calls[0]) == {
+        "query": "meet at 10:00, 11:00 tomorrow",
+        "priority": "high",
+    }
 
 
 def test_wrapperless_bare_value_with_timestamps_after_comma_is_kept():
     # The wrapper-less Gemma form (no <|tool_call> markers) goes through the
     # _gemma_parse_stripped_body scanner and its _GEMMA_KEY_RE.
-    calls = parse_tool_calls_from_text("call:web_search{query:meet at 10:00, 11:00 tomorrow}")
+    calls = parse_tool_calls_from_text(
+        "call:web_search{query:meet at 10:00, 11:00 tomorrow}"
+    )
     assert len(calls) == 1, calls
     assert calls[0]["function"]["name"] == "web_search"
     assert _args(calls[0]) == {"query": "meet at 10:00, 11:00 tomorrow"}
@@ -79,7 +88,9 @@ def test_marker_inside_json_argument_is_not_a_second_call():
 
 
 def test_two_separate_gemma_calls_both_parse():
-    content = "<|tool_call>call:a{x:1}<tool_call|> and <|tool_call>call:b{y:2}<tool_call|>"
+    content = (
+        "<|tool_call>call:a{x:1}<tool_call|> and <|tool_call>call:b{y:2}<tool_call|>"
+    )
     calls = parse_tool_calls_from_text(content)
     assert [c["function"]["name"] for c in calls] == ["a", "b"], calls
     assert _args(calls[0]) == {"x": 1}
@@ -114,7 +125,9 @@ def test_nested_gemma_marker_in_unquoted_arg_does_not_run_inner_call():
 
 
 def test_bare_string_array_argument_is_quoted():
-    calls = parse_tool_calls_from_text("<|tool_call>call:label{labels:[bug,ui]}<tool_call|>")
+    calls = parse_tool_calls_from_text(
+        "<|tool_call>call:label{labels:[bug,ui]}<tool_call|>"
+    )
     assert len(calls) == 1, calls
     assert _args(calls[0]) == {"labels": ["bug", "ui"]}
 
@@ -131,11 +144,15 @@ def test_array_of_objects_is_normalised():
         "<|tool_call>call:batch{items:[{path:a,mode:r},{path:b,mode:w}]}<tool_call|>"
     )
     assert len(calls) == 1, calls
-    assert _args(calls[0]) == {"items": [{"path": "a", "mode": "r"}, {"path": "b", "mode": "w"}]}
+    assert _args(calls[0]) == {
+        "items": [{"path": "a", "mode": "r"}, {"path": "b", "mode": "w"}]
+    }
 
 
 def test_nested_array_elements_are_normalised():
-    calls = parse_tool_calls_from_text("<|tool_call>call:grid{cells:[[a,b],[c,d]]}<tool_call|>")
+    calls = parse_tool_calls_from_text(
+        "<|tool_call>call:grid{cells:[[a,b],[c,d]]}<tool_call|>"
+    )
     assert _args(calls[0]) == {"cells": [["a", "b"], ["c", "d"]]}
 
 
@@ -218,7 +235,10 @@ def test_gemma_close_marker_inside_quoted_arg_is_not_leaked_when_stripping():
     assert len(calls) == 1, calls
     assert _args(calls[0]) == {"code": 'print("<tool_call|>")'}
     assert strip_tool_call_markup("before " + text + " after") == "before  after"
-    assert strip_tool_call_markup("before " + text + " after", final = True) == "before  after"
+    assert (
+        strip_tool_call_markup("before " + text + " after", final = True)
+        == "before  after"
+    )
 
 
 def test_nested_xml_in_malformed_gemma_call_does_not_execute():
@@ -261,7 +281,9 @@ def test_xml_between_braces_and_close_marker_does_not_execute():
 
 
 def test_balanced_inner_call_inside_unclosed_outer_does_not_execute():
-    text = "<|tool_call>call:outer{code:<|tool_call>call:terminal{command:id}<tool_call|>"
+    text = (
+        "<|tool_call>call:outer{code:<|tool_call>call:terminal{command:id}<tool_call|>"
+    )
     for allow_incomplete in (True, False):
         calls = parse_tool_calls_from_text(text, allow_incomplete = allow_incomplete)
         assert "terminal" not in [c["function"]["name"] for c in calls], calls
@@ -285,11 +307,13 @@ def test_valid_call_after_missing_close_is_recovered():
     # A close-less call covers only its braces, so the later call is recovered.
     text = "<|tool_call>call:a{x:1} <|tool_call>call:b{y:2}<tool_call|>"
     names_inc = [
-        c["function"]["name"] for c in parse_tool_calls_from_text(text, allow_incomplete = True)
+        c["function"]["name"]
+        for c in parse_tool_calls_from_text(text, allow_incomplete = True)
     ]
     assert "b" in names_inc, names_inc
     names_strict = [
-        c["function"]["name"] for c in parse_tool_calls_from_text(text, allow_incomplete = False)
+        c["function"]["name"]
+        for c in parse_tool_calls_from_text(text, allow_incomplete = False)
     ]
     assert names_strict == ["b"], names_strict
 
@@ -322,9 +346,7 @@ def test_gemma_call_between_gemma_braces_and_close_does_not_execute():
 
 def test_strip_final_keeps_text_after_closed_xml_with_inner_gemma_opener():
     # The to-EOF Gemma sweep must not eat visible text after </function>.
-    text = (
-        'before <function=python><parameter=code>print("<|tool_call>")</parameter></function> after'
-    )
+    text = 'before <function=python><parameter=code>print("<|tool_call>")</parameter></function> after'
     assert strip_tool_call_markup(text, final = True) == "before  after"
     assert strip_tool_call_markup(text) == "before  after"
 
@@ -332,9 +354,7 @@ def test_strip_final_keeps_text_after_closed_xml_with_inner_gemma_opener():
 def test_strip_final_keeps_text_after_closed_block_with_call_form_gemma_opener():
     # A call-form Gemma opener quoted in a closed block must not truncate it.
     xml = "<function=python><parameter=code><|tool_call>call:t{</parameter></function>"
-    json_block = (
-        '<tool_call>{"name":"python","arguments":{"code":"<|tool_call>call:t{"}}</tool_call>'
-    )
+    json_block = '<tool_call>{"name":"python","arguments":{"code":"<|tool_call>call:t{"}}</tool_call>'
     for block in (xml, json_block):
         text = "before " + block + " after"
         assert strip_tool_call_markup(text, final = True) == "before  after", block
@@ -357,7 +377,8 @@ def test_valid_call_after_close_less_marker_with_quoted_close_token_is_recovered
     # close-less marker's coverage over that call.
     gemma = '<|tool_call>call:a{x:1} <|tool_call>call:b{note:<|"|></tool_call><|"|>}<tool_call|>'
     names = [
-        c["function"]["name"] for c in parse_tool_calls_from_text(gemma, allow_incomplete = False)
+        c["function"]["name"]
+        for c in parse_tool_calls_from_text(gemma, allow_incomplete = False)
     ]
     assert names == ["b"], names
     json_text = (
@@ -365,7 +386,8 @@ def test_valid_call_after_close_less_marker_with_quoted_close_token_is_recovered
         '<tool_call>{"name":"b","arguments":{"x":"</tool_call>"}}</tool_call>'
     )
     names_j = [
-        c["function"]["name"] for c in parse_tool_calls_from_text(json_text, allow_incomplete = False)
+        c["function"]["name"]
+        for c in parse_tool_calls_from_text(json_text, allow_incomplete = False)
     ]
     assert "b" in names_j, names_j
 
@@ -388,7 +410,9 @@ def test_malformed_gemma_array_does_not_hang():
     result: dict = {}
 
     def _run():
-        result["calls"] = parse_tool_calls_from_text("<|tool_call>call:f{a:[},]}<tool_call|>")
+        result["calls"] = parse_tool_calls_from_text(
+            "<|tool_call>call:f{a:[},]}<tool_call|>"
+        )
 
     t = threading.Thread(target = _run, daemon = True)
     t.start()
@@ -403,9 +427,13 @@ def test_malformed_gemma_mapping_value_does_not_hang():
     result: dict = {}
 
     def _run():
-        result["calls"] = parse_tool_calls_from_text("<|tool_call>call:f{a:}},b:1}<tool_call|>")
+        result["calls"] = parse_tool_calls_from_text(
+            "<|tool_call>call:f{a:}},b:1}<tool_call|>"
+        )
 
     t = threading.Thread(target = _run, daemon = True)
     t.start()
     t.join(timeout = 10.0)
-    assert not t.is_alive(), "parse_tool_calls_from_text hung on malformed mapping input"
+    assert (
+        not t.is_alive()
+    ), "parse_tool_calls_from_text hung on malformed mapping input"

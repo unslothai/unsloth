@@ -51,7 +51,9 @@ def load_and_compute_8bit_ppl(
     # )
 
     # Load dataset fresh in subprocess.
-    dataset_ppl = load_dataset("allenai/openassistant-guanaco-reformatted", split = "eval")
+    dataset_ppl = load_dataset(
+        "allenai/openassistant-guanaco-reformatted", split = "eval"
+    )
 
     alpaca_prompt = """Below is an instruction that describes a task, paired with an input that provides further context. Write a response that appropriately completes the request.
 
@@ -87,7 +89,10 @@ def load_and_compute_8bit_ppl(
             inputs.append(user_message)
             outputs.append(assistant_message)
 
-            text = alpaca_prompt.format(instruction, user_message, assistant_message) + EOS_TOKEN
+            text = (
+                alpaca_prompt.format(instruction, user_message, assistant_message)
+                + EOS_TOKEN
+            )
             texts.append(text)
 
         return {
@@ -172,7 +177,10 @@ if __name__ == "__main__":
             inputs.append(user_message)
             outputs.append(assistant_message)
 
-            text = alpaca_prompt.format(instruction, user_message, assistant_message) + EOS_TOKEN
+            text = (
+                alpaca_prompt.format(instruction, user_message, assistant_message)
+                + EOS_TOKEN
+            )
             texts.append(text)
 
         return {
@@ -182,8 +190,12 @@ if __name__ == "__main__":
             "text": texts,
         }
 
-    dataset_train = load_dataset("allenai/openassistant-guanaco-reformatted", split = "train")
-    dataset_ppl = load_dataset("allenai/openassistant-guanaco-reformatted", split = "eval")
+    dataset_train = load_dataset(
+        "allenai/openassistant-guanaco-reformatted", split = "train"
+    )
+    dataset_ppl = load_dataset(
+        "allenai/openassistant-guanaco-reformatted", split = "eval"
+    )
 
     dataset_train = dataset_train.map(formatting_prompts_func, batched = True)
     dataset_ppl = dataset_ppl.map(formatting_prompts_func, batched = True)

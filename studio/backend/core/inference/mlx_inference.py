@@ -50,12 +50,16 @@ def _temporary_mlx_adapter_state(model, use_adapter):
             "the loaded adapter or False for the base model."
         )
     if use_adapter is not True and use_adapter is not False:
-        raise TypeError("Unsloth MLX: use_adapter must be None, True, False, or a string.")
+        raise TypeError(
+            "Unsloth MLX: use_adapter must be None, True, False, or a string."
+        )
 
     adapters, unsupported = _mlx_adapter_modules(model)
     if use_adapter is True:
         if not adapters and not unsupported:
-            logger.warning("MLX adapter requested, but the active model has no adapter layers")
+            logger.warning(
+                "MLX adapter requested, but the active model has no adapter layers"
+            )
         yield
         return
     if unsupported:
@@ -83,7 +87,11 @@ def _mlx_vlm_model_config(model):
     config / _config actually carries a model_type."""
 
     def _model_type(cfg):
-        return cfg.get("model_type") if isinstance(cfg, dict) else getattr(cfg, "model_type", None)
+        return (
+            cfg.get("model_type")
+            if isinstance(cfg, dict)
+            else getattr(cfg, "model_type", None)
+        )
 
     configs = [
         cfg
@@ -153,10 +161,13 @@ def _prompt_serializes_vlm_media(prompt, messages):
         if isinstance(message, dict):
             media_reprs.update(_vlm_media_reprs(message.get("content")))
     text_content = [
-        content_to_text(message.get("content")) for message in messages if isinstance(message, dict)
+        content_to_text(message.get("content"))
+        for message in messages
+        if isinstance(message, dict)
     ]
     return any(
-        prompt.count(media_repr) > sum(content.count(media_repr) for content in text_content)
+        prompt.count(media_repr)
+        > sum(content.count(media_repr) for content in text_content)
         for media_repr in media_reprs
     )
 
@@ -218,7 +229,9 @@ def _mlx_distributed_rank_size(group = None):
     if world_size < 1:
         raise ValueError(f"Invalid MLX distributed world_size={world_size}.")
     if rank < 0 or rank >= world_size:
-        raise ValueError(f"Invalid MLX distributed rank={rank} for world_size={world_size}.")
+        raise ValueError(
+            f"Invalid MLX distributed rank={rank} for world_size={world_size}."
+        )
     return rank, world_size
 
 
@@ -363,7 +376,9 @@ class MLXInferenceBackend:
         self._hf_token = hf_token
         model_name = config.identifier if hasattr(config, "identifier") else str(config)
         is_vision = getattr(config, "is_vision", False)
-        distributed_rank, distributed_size = _mlx_distributed_rank_size(distributed_group)
+        distributed_rank, distributed_size = _mlx_distributed_rank_size(
+            distributed_group
+        )
         is_distributed = distributed_group is not None and distributed_size > 1
         self._distributed_group = distributed_group
         self._distributed_rank = distributed_rank
@@ -668,7 +683,9 @@ class MLXInferenceBackend:
             preserve_thinking = preserve_thinking,
         )
         if prompt is None:
-            raise RuntimeError("apply_chat_template returned None — tokenizer may be incompatible")
+            raise RuntimeError(
+                "apply_chat_template returned None — tokenizer may be incompatible"
+            )
 
         # Parity with the transformers backend: if the template dropped the
         # requested tools, fall back to the native template so MLX text models
@@ -716,7 +733,9 @@ class MLXInferenceBackend:
                 )
             )
         if presence_penalty:
-            logits_processors.append(_make_mlx_presence_penalty_processor(float(presence_penalty)))
+            logits_processors.append(
+                _make_mlx_presence_penalty_processor(float(presence_penalty))
+            )
         if not logits_processors:
             logits_processors = None
 
@@ -738,7 +757,10 @@ class MLXInferenceBackend:
             type(self._model).__name__,
             type(self._tokenizer).__name__,
         )
-        with self._generation_lock, _temporary_mlx_adapter_state(self._model, _adapter_state):
+        with (
+            self._generation_lock,
+            _temporary_mlx_adapter_state(self._model, _adapter_state),
+        ):
             final_response = None
             try:
                 # Enter request-scoped model state before yielding any response.
@@ -858,7 +880,9 @@ class MLXInferenceBackend:
                 raise
             prompt_error = exc
         prompt_issue = (
-            _vlm_prompt_issue(prompt, messages) if prompt_error is None else "a rendering error"
+            _vlm_prompt_issue(prompt, messages)
+            if prompt_error is None
+            else "a rendering error"
         )
         if prompt_issue and has_tool_history:
             raise RuntimeError(
@@ -908,12 +932,16 @@ class MLXInferenceBackend:
                 )
             prompt = recovered_prompt
         elif prompt_issue:
-            raise RuntimeError(f"VLM chat template returned {prompt_issue}.") from prompt_error
+            raise RuntimeError(
+                f"VLM chat template returned {prompt_issue}."
+            ) from prompt_error
 
         from core.inference.chat_template_helpers import detect_think_prefill
 
         # Re-emit an open <think> prefill from the prompt (see _generate_text).
-        cumulative = detect_think_prefill(prompt, getattr(chat_target, "all_special_tokens", None))
+        cumulative = detect_think_prefill(
+            prompt, getattr(chat_target, "all_special_tokens", None)
+        )
         logger.info(
             "VLM generating: prompt_len=%d, has_image=%s",
             len(prompt),
@@ -929,7 +957,9 @@ class MLXInferenceBackend:
             top_k = int(top_k or 0),
             min_p = float(min_p or 0.0),
         )
-        _rep_active = repetition_penalty is not None and float(repetition_penalty) not in (
+        _rep_active = repetition_penalty is not None and float(
+            repetition_penalty
+        ) not in (
             0.0,
             1.0,
         )
@@ -943,7 +973,9 @@ class MLXInferenceBackend:
                 _vlm_processors.extend(
                     make_logits_processors(repetition_penalty = float(repetition_penalty))
                 )
-            _vlm_processors.append(_make_mlx_presence_penalty_processor(float(presence_penalty)))
+            _vlm_processors.append(
+                _make_mlx_presence_penalty_processor(float(presence_penalty))
+            )
             vlm_kwargs["logits_processors"] = _vlm_processors
         elif _rep_active:
             vlm_kwargs["repetition_penalty"] = float(repetition_penalty)
@@ -953,7 +985,10 @@ class MLXInferenceBackend:
             # Hold the generation lock AND the request-scoped adapter state for the
             # whole stream so Base-vs-LoRA compare mode honors use_adapter and the
             # wrapper tree is restored on completion, cancellation, or close.
-            with self._generation_lock, _temporary_mlx_adapter_state(self._model, _adapter_state):
+            with (
+                self._generation_lock,
+                _temporary_mlx_adapter_state(self._model, _adapter_state),
+            ):
                 final_response = None
                 try:
                     # Emit any prefilled <think> block before the first token so the
@@ -970,7 +1005,11 @@ class MLXInferenceBackend:
                         **vlm_kwargs,
                     ):
                         final_response = response
-                        token_text = response.text if hasattr(response, "text") else str(response)
+                        token_text = (
+                            response.text
+                            if hasattr(response, "text")
+                            else str(response)
+                        )
                         cumulative += token_text
                         yield cumulative
                         if cancel_event and cancel_event.is_set():

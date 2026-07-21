@@ -162,7 +162,11 @@ def test_native_template_fallback_returns_selected_reasoning_metadata():
     def render(tokenizer, msgs, *, tools, **_kw):
         body = "".join(message["content"] for message in msgs)
         suffix = "|TOOLS" if tools else ""
-        return body + suffix if tokenizer.chat_template == "NATIVE <|channel>thought\n" else body
+        return (
+            body + suffix
+            if tokenizer.chat_template == "NATIVE <|channel>thought\n"
+            else body
+        )
 
     result = render_with_native_template_fallback(
         formatted_prompt = "hi",
@@ -185,7 +189,9 @@ def test_native_template_fallback_returns_selected_reasoning_metadata():
 def test_cached_native_template_metadata_recovers_reasoning_markers_without_tools():
     from types import SimpleNamespace
 
-    model_info = {"chat_template_info": {"template": "native <|channel>thought\n<channel|>"}}
+    model_info = {
+        "chat_template_info": {"template": "native <|channel>thought\n<channel|>"}
+    }
 
     assert detect_reasoning_channel_markers_from_model_info(
         SimpleNamespace(chat_template = "override has no native markers"),

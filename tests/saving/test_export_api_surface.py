@@ -79,7 +79,9 @@ def _list_var_elts(func_node, var_name):
 def test_all_merged_savers_dispatch_compressed_export():
     for fn in MERGED_SAVERS:
         called = _called_names(_func(SAVE_TREE, fn))
-        assert "_normalize_compressed_method" in called, f"{fn} must normalize the save_method"
+        assert (
+            "_normalize_compressed_method" in called
+        ), f"{fn} must normalize the save_method"
         assert (
             "_unsloth_save_compressed_tensors" in called
         ), f"{fn} must dispatch the compressed export"
@@ -109,8 +111,12 @@ def test_gguf_savers_have_lora_branch():
 
 def test_torchao_dispatches_both_ptq_and_qat():
     called = _called_names(_func(SAVE_TREE, "unsloth_save_pretrained_torchao"))
-    assert "_unsloth_save_torchao_with_given_config" in called, "torchao PTQ path missing"
-    assert "_unsloth_save_torchao_with_attached_config" in called, "torchao QAT path missing"
+    assert (
+        "_unsloth_save_torchao_with_given_config" in called
+    ), "torchao PTQ path missing"
+    assert (
+        "_unsloth_save_torchao_with_attached_config" in called
+    ), "torchao QAT path missing"
 
 
 def test_export_subprocesses_are_shell_safe():
@@ -136,7 +142,11 @@ def test_export_subprocesses_are_shell_safe():
             elts = (
                 argv.elts
                 if isinstance(argv, ast.List)
-                else (_list_var_elts(node, argv.id) if isinstance(argv, ast.Name) else None)
+                else (
+                    _list_var_elts(node, argv.id)
+                    if isinstance(argv, ast.Name)
+                    else None
+                )
             )
             if elts is None:
                 continue
@@ -145,7 +155,9 @@ def test_export_subprocesses_are_shell_safe():
                 isinstance(first, ast.Attribute) and first.attr == "executable"
             ), f"{fn}: subprocess argv[0] must be sys.executable, not a shell string"
             checked_argv = True
-        assert checked_argv, f"{fn}: could not verify an argv-list subprocess invocation"
+        assert (
+            checked_argv
+        ), f"{fn}: could not verify an argv-list subprocess invocation"
 
 
 def test_compressed_export_propagates_variant():

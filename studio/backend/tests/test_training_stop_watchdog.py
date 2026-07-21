@@ -122,7 +122,9 @@ def _wait_until(predicate, timeout = 5.0):
 def _record_force_terminate(monkeypatch, b):
     """Replace force_terminate + escalation finalize with recorders (no DB/OS)."""
     calls: list = []
-    monkeypatch.setattr(b, "force_terminate", lambda target_proc = None: calls.append("force"))
+    monkeypatch.setattr(
+        b, "force_terminate", lambda target_proc = None: calls.append("force")
+    )
     monkeypatch.setattr(
         b,
         "_finalize_stopped_after_escalation",
@@ -138,7 +140,9 @@ def _record_force_terminate(monkeypatch, b):
 
 def test_watchdog_escalates_after_grace_once_complete_seen(monkeypatch):
     monkeypatch.setitem(_G, "_STOP_GRACE_S", 0.05)
-    monkeypatch.setitem(_G, "_STOP_TIMEOUT_S", 100.0)  # ensure grace, not timeout, fires
+    monkeypatch.setitem(
+        _G, "_STOP_TIMEOUT_S", 100.0
+    )  # ensure grace, not timeout, fires
     b = TrainingBackend()
     calls = _record_force_terminate(monkeypatch, b)
 
@@ -171,7 +175,9 @@ def test_watchdog_does_not_kill_save_still_saving_within_window(monkeypatch):
     b._start_stop_watchdog(cancel = False)
 
     time.sleep(0.3)
-    assert calls == [], "an in-progress save must not be killed within the absolute window"
+    assert (
+        calls == []
+    ), "an in-progress save must not be killed within the absolute window"
     assert b._stop_watchdog.is_alive()
 
     proc._alive = False
@@ -306,7 +312,9 @@ def test_force_terminate_targets_only_captured_proc():
     b._proc = new_proc
     b.force_terminate(target_proc = old_proc)
     assert new_proc.terminated is False, "must not terminate the new run's worker"
-    assert old_proc.terminated is False, "must not terminate a handle that is not current"
+    assert (
+        old_proc.terminated is False
+    ), "must not terminate a handle that is not current"
 
     # Matching: the captured handle is the current worker, so it is terminated.
     p = _FakeProc(alive = True)
@@ -363,10 +371,14 @@ def test_finalize_after_escalation_clears_state(monkeypatch):
 
     b._finalize_stopped_after_escalation(watched_job_id = "job_c")
 
-    assert b._proc is None, "the wedged handle must be dropped so is_training_active clears"
+    assert (
+        b._proc is None
+    ), "the wedged handle must be dropped so is_training_active clears"
     assert b._progress.is_training is False
     assert b._progress.status_message == "Training stopped."
-    assert finstop and finstop[0][0] == "job_c", "the captured run must be finalized by id"
+    assert (
+        finstop and finstop[0][0] == "job_c"
+    ), "the captured run must be finalized by id"
     assert b.is_training_active() is False
 
 
@@ -499,7 +511,13 @@ def test_later_cancel_tightens_watchdog_timeout(monkeypatch):
 def _install_fake_db(monkeypatch):
     """Stub storage.studio_db + utils.downsample so the real DB helpers run without
     SQLite. Returns the recorder dict."""
-    recs = {"created": [], "finished": [], "inserted": [], "insert_ids": [], "progress_ids": []}
+    recs = {
+        "created": [],
+        "finished": [],
+        "inserted": [],
+        "insert_ids": [],
+        "progress_ids": [],
+    }
     fake_storage = _types.ModuleType("storage")
     fake_db = _types.ModuleType("storage.studio_db")
     fake_db.create_run = lambda **kw: recs["created"].append(kw)
@@ -538,7 +556,9 @@ def test_finalize_run_in_db_single_winner_under_concurrency(monkeypatch):
     for t in threads:
         t.join(timeout = 5)
 
-    assert len(recs["finished"]) == 1, f"finalize must run once, got {len(recs['finished'])}"
+    assert (
+        len(recs["finished"]) == 1
+    ), f"finalize must run once, got {len(recs['finished'])}"
     assert b._run_finalized is True
 
 
@@ -552,7 +572,9 @@ def test_finalize_run_in_db_no_ops_on_job_mismatch(monkeypatch):
 
     b._finalize_run_in_db(status = "stopped", expected_job_id = "job_old")
 
-    assert recs["finished"] == [], "a superseded job id must not finalize the current run"
+    assert (
+        recs["finished"] == []
+    ), "a superseded job id must not finalize the current run"
     assert b._run_finalized is False
 
 
@@ -595,7 +617,9 @@ def test_flush_pins_to_passed_run_id(monkeypatch):
 
     b._flush_metrics_to_db(run_id = "job_old")
 
-    assert recs["insert_ids"] == ["job_old"], "metrics must go to the captured run, not the new one"
+    assert recs["insert_ids"] == [
+        "job_old"
+    ], "metrics must go to the captured run, not the new one"
     assert recs["progress_ids"] == ["job_old"]
 
 
@@ -648,7 +672,9 @@ def test_ensure_db_run_created_publishes_only_after_insert(monkeypatch):
 
     b._ensure_db_run_created()
 
-    assert observed["flag_during_create"] is False, "flag must not be published before insert"
+    assert (
+        observed["flag_during_create"] is False
+    ), "flag must not be published before insert"
     assert observed["in_progress_during_create"] is True
     assert b._db_run_created is True, "flag must be published after a successful insert"
     assert b._db_create_in_progress is False
@@ -673,8 +699,12 @@ def test_ensure_db_run_created_stays_unpublished_on_failure(monkeypatch):
 
     b._ensure_db_run_created()
 
-    assert b._db_run_created is False, "a failed insert must not publish the row as created"
-    assert b._db_create_in_progress is False, "the in-progress flag must be cleared on failure"
+    assert (
+        b._db_run_created is False
+    ), "a failed insert must not publish the row as created"
+    assert (
+        b._db_create_in_progress is False
+    ), "the in-progress flag must be cleared on failure"
 
 
 def test_ensure_db_run_created_does_not_publish_for_a_new_run(monkeypatch):
@@ -700,9 +730,13 @@ def test_ensure_db_run_created_does_not_publish_for_a_new_run(monkeypatch):
 
     b._ensure_db_run_created()
 
-    assert b._db_run_created is False, "must not publish the created flag against the new run"
+    assert (
+        b._db_run_created is False
+    ), "must not publish the created flag against the new run"
     # The stale claim is left for start_training to reset, not satisfied for the new run.
-    assert b._db_create_in_progress is True, "must not clear the claim once the run is not current"
+    assert (
+        b._db_create_in_progress is True
+    ), "must not clear the claim once the run is not current"
 
 
 # ----------------------------------------------------------------------------
@@ -725,9 +759,13 @@ def test_escalation_finalizes_watched_run_by_id_end_to_end(monkeypatch):
 
     b._finalize_stopped_after_escalation(target_proc = b._proc, watched_job_id = "job_old")
 
-    assert [f["id"] for f in recs["finished"]] == ["job_old"], "must finish the captured run by id"
+    assert [f["id"] for f in recs["finished"]] == [
+        "job_old"
+    ], "must finish the captured run by id"
     assert recs["finished"][0]["status"] == "stopped"
-    assert recs["insert_ids"] == ["job_old"], "buffered metrics must land on the captured run"
+    assert recs["insert_ids"] == [
+        "job_old"
+    ], "buffered metrics must land on the captured run"
     assert b._metric_buffer == [], "the captured batch must be drained"
 
 
@@ -750,7 +788,9 @@ def test_escalation_defers_when_row_cannot_be_created_here(monkeypatch):
 
     assert called == [], "must not finalize when the row can't be established here"
     assert b._run_finalized is False, "must not claim the finalize the pump still owes"
-    assert b._progress.is_training is False, "parent state must still clear so the UI unsticks"
+    assert (
+        b._progress.is_training is False
+    ), "parent state must still clear so the UI unsticks"
     assert b._proc is None
 
 
@@ -769,8 +809,12 @@ def test_escalation_creates_row_then_finalizes_when_start_create_failed(monkeypa
 
     b._finalize_stopped_after_escalation(target_proc = b._proc, watched_job_id = "job_s")
 
-    assert [c["id"] for c in recs["created"]] == ["job_s"], "must create the missing row"
-    assert [f["id"] for f in recs["finished"]] == ["job_s"], "must finish the created row by id"
+    assert [c["id"] for c in recs["created"]] == [
+        "job_s"
+    ], "must create the missing row"
+    assert [f["id"] for f in recs["finished"]] == [
+        "job_s"
+    ], "must finish the created row by id"
     assert b._proc is None, "handle dropped only after the terminal state is recorded"
     assert b._db_run_created is True
 
@@ -792,7 +836,9 @@ def test_escalation_does_not_drop_a_new_runs_handle(monkeypatch):
 
     b._finalize_stopped_after_escalation(target_proc = old_proc, watched_job_id = "job_old")
 
-    assert b._proc is new_proc, "must not drop the handle a new run installed during finalize"
+    assert (
+        b._proc is new_proc
+    ), "must not drop the handle a new run installed during finalize"
 
 
 def _make_finish_raise(monkeypatch, calls):

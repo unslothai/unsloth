@@ -41,7 +41,9 @@ class LlamaServerStatsLogger:
 
     def start(self):
         if self._thread is None:
-            self._thread = threading.Thread(target = self._run, name = "llama-stats", daemon = True)
+            self._thread = threading.Thread(
+                target = self._run, name = "llama-stats", daemon = True
+            )
             self._thread.start()
 
     def stop(self):
@@ -71,7 +73,9 @@ class LlamaServerStatsLogger:
             if not m:
                 misses += 1
                 if misses == 3:  # transient stall (load/GC); keep polling.
-                    self._log.debug("engine_stats: /metrics scrape failing, still retrying")
+                    self._log.debug(
+                        "engine_stats: /metrics scrape failing, still retrying"
+                    )
                 continue  # real shutdown is driven by stop() from _kill_process
             misses = 0
             # Generation tokens come from tokens_predicted_total (counter) and
@@ -107,7 +111,9 @@ class LlamaServerStatsLogger:
 
 def maybe_start_stats_logger(base_url, logger):
     """Start a stats logger unless UNSLOTH_STUDIO_ENGINE_STATS disables it."""
-    if (os.environ.get("UNSLOTH_STUDIO_ENGINE_STATS", "1") or "").strip().lower() in _OFF:
+    if (
+        os.environ.get("UNSLOTH_STUDIO_ENGINE_STATS", "1") or ""
+    ).strip().lower() in _OFF:
         return None
     try:
         interval = float(os.environ.get("UNSLOTH_STUDIO_ENGINE_STATS_INTERVAL_S", "10"))

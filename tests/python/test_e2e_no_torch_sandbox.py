@@ -199,8 +199,12 @@ class TestBeforeAfterImportChain:
             exec(source)
         """)
         result = _run_in_sandbox(no_torch_venv, code)
-        assert result.returncode != 0, "BEFORE chat_templates.py should crash without torch"
-        assert b"ModuleNotFoundError" in result.stderr or b"ImportError" in result.stderr
+        assert (
+            result.returncode != 0
+        ), "BEFORE chat_templates.py should crash without torch"
+        assert (
+            b"ModuleNotFoundError" in result.stderr or b"ImportError" in result.stderr
+        )
 
     def test_before_data_collators_crashes(self, no_torch_venv, sandbox_dir):
         """BEFORE: data_collators.py with top-level 'import torch' crashes."""
@@ -218,8 +222,12 @@ class TestBeforeAfterImportChain:
             exec(open({str(before_file)!r}).read())
         """)
         result = _run_in_sandbox(no_torch_venv, code)
-        assert result.returncode != 0, "BEFORE data_collators.py should crash without torch"
-        assert b"ModuleNotFoundError" in result.stderr or b"ImportError" in result.stderr
+        assert (
+            result.returncode != 0
+        ), "BEFORE data_collators.py should crash without torch"
+        assert (
+            b"ModuleNotFoundError" in result.stderr or b"ImportError" in result.stderr
+        )
 
     def test_before_full_import_chain_crashes(self, no_torch_venv, sandbox_dir):
         """BEFORE: full utils/datasets/ package with top-level torch imports crashes."""
@@ -263,8 +271,12 @@ class TestBeforeAfterImportChain:
             from utils.datasets import detect_dataset_format
         """)
         result = _run_in_sandbox(no_torch_venv, code)
-        assert result.returncode != 0, "BEFORE full import chain should crash without torch"
-        assert b"ModuleNotFoundError" in result.stderr or b"ImportError" in result.stderr
+        assert (
+            result.returncode != 0
+        ), "BEFORE full import chain should crash without torch"
+        assert (
+            b"ModuleNotFoundError" in result.stderr or b"ImportError" in result.stderr
+        )
 
     # -- AFTER: succeeds --
 
@@ -478,7 +490,9 @@ class TestEdgeCasesBrokenTorch:
             print("OK: data_collators works despite broken torch on sys.path")
         """)
         result = _run_in_sandbox(no_torch_venv, code)
-        assert result.returncode == 0, f"Should work with broken torch:\n{result.stderr.decode()}"
+        assert (
+            result.returncode == 0
+        ), f"Should work with broken torch:\n{result.stderr.decode()}"
         assert b"OK:" in result.stdout
 
     def test_torch_import_error_hardware_fallback(self, no_torch_venv, sandbox_dir):
@@ -538,10 +552,14 @@ class TestEdgeCasesBrokenTorch:
             print("OK: detect_hardware returned CPU with fake torch (no CUDA)")
         """)
         result = _run_in_sandbox(no_torch_venv, code)
-        assert result.returncode == 0, f"Should fall back to CPU:\n{result.stderr.decode()}"
+        assert (
+            result.returncode == 0
+        ), f"Should fall back to CPU:\n{result.stderr.decode()}"
         assert b"OK:" in result.stdout
 
-    def test_lazy_torch_fails_at_call_time_not_import_time(self, no_torch_venv, sandbox_dir):
+    def test_lazy_torch_fails_at_call_time_not_import_time(
+        self, no_torch_venv, sandbox_dir
+    ):
         """apply_chat_template_to_dataset imports without torch; the lazy import fails at call time, not import time."""
         _write_loggers_stub(sandbox_dir)
 
@@ -586,7 +604,9 @@ class TestEdgeCasesBrokenTorch:
                 print("OK: call succeeded (unexpected but not a crash)")
         """)
         result = _run_in_sandbox(no_torch_venv, code)
-        assert result.returncode == 0, f"Should not crash at import time:\n{result.stderr.decode()}"
+        assert (
+            result.returncode == 0
+        ), f"Should not crash at import time:\n{result.stderr.decode()}"
         assert b"OK: import succeeded" in result.stdout
 
 
@@ -867,7 +887,9 @@ class TestInstallPythonStackFiltering:
         result_path = ips._filter_requirements(extras, ips.NO_TORCH_SKIP_PACKAGES)
         filtered = Path(result_path).read_text(encoding = "utf-8").lower()
         lines = [
-            l.strip() for l in filtered.splitlines() if l.strip() and not l.strip().startswith("#")
+            l.strip()
+            for l in filtered.splitlines()
+            if l.strip() and not l.strip().startswith("#")
         ]
 
         for pkg in ips.NO_TORCH_SKIP_PACKAGES:
@@ -925,7 +947,9 @@ class TestInstallPythonStackFiltering:
 
         source = Path(ips.__file__).read_text(encoding = "utf-8")
 
-        assert "if NO_TORCH:" in source, "NO_TORCH guard not found in install_python_stack.py"
+        assert (
+            "if NO_TORCH:" in source
+        ), "NO_TORCH guard not found in install_python_stack.py"
 
         # macOS guard for triton
         assert (
@@ -1016,7 +1040,9 @@ class TestLiveServerStartup:
         for _ in range(30):
             time.sleep(1)
             try:
-                resp = urllib.request.urlopen(f"http://127.0.0.1:{port}/api/health", timeout = 2)
+                resp = urllib.request.urlopen(
+                    f"http://127.0.0.1:{port}/api/health", timeout = 2
+                )
                 if resp.status == 200:
                     ready = True
                     break
@@ -1039,8 +1065,12 @@ class TestLiveServerStartup:
                     capture_output = True,
                     timeout = 300,
                 )
-            server_output = stdout.decode(errors = "replace") + stderr.decode(errors = "replace")
-            pytest.skip(f"Server failed to start within 30 seconds. Output:\n{server_output}")
+            server_output = stdout.decode(errors = "replace") + stderr.decode(
+                errors = "replace"
+            )
+            pytest.skip(
+                f"Server failed to start within 30 seconds. Output:\n{server_output}"
+            )
 
         yield proc, port
 
@@ -1084,7 +1114,9 @@ class TestLiveServerStartup:
         import urllib.request
 
         _, port = server_process
-        resp = urllib.request.urlopen(f"http://127.0.0.1:{port}/openapi.json", timeout = 5)
+        resp = urllib.request.urlopen(
+            f"http://127.0.0.1:{port}/openapi.json", timeout = 5
+        )
         spec = json.loads(resp.read())
         assert (
             len(spec.get("paths", {})) >= 20

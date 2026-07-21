@@ -31,7 +31,9 @@ _loggers_stub = _types.ModuleType("loggers")
 _loggers_stub.get_logger = lambda name: __import__("logging").getLogger(name)
 sys.modules.setdefault("loggers", _loggers_stub)
 _structlog_stub = _types.ModuleType("structlog")
-_structlog_stub.get_logger = lambda *a, **k: __import__("logging").getLogger("structlog")
+_structlog_stub.get_logger = lambda *a, **k: __import__("logging").getLogger(
+    "structlog"
+)
 sys.modules.setdefault("structlog", _structlog_stub)
 if not hasattr(sys.modules["structlog"], "get_logger"):
     sys.modules["structlog"].get_logger = _structlog_stub.get_logger
@@ -57,7 +59,9 @@ _OOM_OUT = (
     "ggml_backend_cuda_buffer_type_alloc_buffer: allocating 12000.00 MiB on "
     "device 0: cudaMalloc failed: out of memory"
 )
-_BAD_ARCH_OUT = "llama_model_load: error loading model: unknown model architecture: 'qwen_image'"
+_BAD_ARCH_OUT = (
+    "llama_model_load: error loading model: unknown model architecture: 'qwen_image'"
+)
 _PORT_OUT = "srv start: failed to bind: address already in use"
 _MISSING_OUT = "error: failed to open GGUF file: no such file or directory"
 # A healthy startup log that merely mentions the projector must not match.
@@ -218,13 +222,25 @@ class TestFlashAttnOff:
         assert out == ["llama-server", "--flash-attn=off", "-c", "4096"]
 
     def test_flips_fa_alias_and_auto(self):
-        assert _flash_off(["llama-server", "-fa", "auto"]) == ["llama-server", "-fa", "off"]
+        assert _flash_off(["llama-server", "-fa", "auto"]) == [
+            "llama-server",
+            "-fa",
+            "off",
+        ]
         assert _flash_off(["llama-server", "-fa=on"]) == ["llama-server", "-fa=off"]
 
     def test_flips_every_occurrence_last_wins(self):
         # extra_args can re-enable FA after Unsloth's flag; llama.cpp is last-wins,
         # so one leftover 'on' would re-crash the retry. Every enable must flip.
-        cmd = ["llama-server", "--flash-attn", "on", "--mmproj", "/p", "--flash-attn", "on"]
+        cmd = [
+            "llama-server",
+            "--flash-attn",
+            "on",
+            "--mmproj",
+            "/p",
+            "--flash-attn",
+            "on",
+        ]
         out = _flash_off(cmd)
         assert out is not None
         assert "on" not in out
@@ -236,7 +252,10 @@ class TestFlashAttnOff:
     def test_none_when_user_off_wins_last(self):
         # User appended 'off' after Unsloth's 'on'; effective (last-wins) is off,
         # so there is nothing to retry.
-        assert _flash_off(["llama-server", "--flash-attn", "on", "--flash-attn", "off"]) is None
+        assert (
+            _flash_off(["llama-server", "--flash-attn", "on", "--flash-attn", "off"])
+            is None
+        )
 
     def test_neutralizes_trailing_bare_flag(self):
         # A bare --flash-attn reads as on under last-wins; it must be neutralized
@@ -246,7 +265,10 @@ class TestFlashAttnOff:
         assert "on" not in out
 
     def test_bare_flag_only(self):
-        assert _flash_off(["llama-server", "--flash-attn"]) == ["llama-server", "--flash-attn=off"]
+        assert _flash_off(["llama-server", "--flash-attn"]) == [
+            "llama-server",
+            "--flash-attn=off",
+        ]
         assert _flash_off(["llama-server", "-fa"]) == ["llama-server", "-fa=off"]
 
 
@@ -310,11 +332,15 @@ class TestRetryContract:
         # A hard fault that already printed an OOM must surface it, not silently
         # drop --mmproj and tell the user to update llama.cpp.
         assert _signal_crash(-6) is True
-        should_retry = _detect(_OOM_OUT) or (_signal_crash(-6) and not _nonproj(_OOM_OUT))
+        should_retry = _detect(_OOM_OUT) or (
+            _signal_crash(-6) and not _nonproj(_OOM_OUT)
+        )
         assert should_retry is False
 
     def test_signal_crash_with_bad_arch_does_not_drop_vision(self):
-        should_retry = _detect(_BAD_ARCH_OUT) or (_signal_crash(-6) and not _nonproj(_BAD_ARCH_OUT))
+        should_retry = _detect(_BAD_ARCH_OUT) or (
+            _signal_crash(-6) and not _nonproj(_BAD_ARCH_OUT)
+        )
         assert should_retry is False
 
     def test_clean_nonzero_exit_with_mmproj_does_not_retry(self):

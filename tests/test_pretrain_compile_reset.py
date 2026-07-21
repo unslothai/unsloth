@@ -149,5 +149,7 @@ def test_reset_walks_wrapper_chain_to_reach_a_nested_marker():
         warnings.simplefilter("ignore")
         _unsloth_reset_stray_compile_cache(trainer)
 
-    assert "hook" not in inner._unsloth_pretrain_marker  # found and torn down through the chain
+    assert (
+        "hook" not in inner._unsloth_pretrain_marker
+    )  # found and torn down through the chain
     assert inner._unsloth_pretrain_marker["seen"] is False

@@ -6,14 +6,18 @@
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parents[2]
-USAGE_EXAMPLES_TSX = REPO / "studio/frontend/src/features/settings/components/usage-examples.tsx"
+USAGE_EXAMPLES_TSX = (
+    REPO / "studio/frontend/src/features/settings/components/usage-examples.tsx"
+)
 
 
 def test_agent_detection_requires_desktop_scope():
     src = USAGE_EXAMPLES_TSX.read_text(encoding = "utf-8")
     assert 'import { isTauri } from "@/lib/api-base"' in src
     assert "function canUseLocalAgentDetection(base: string): boolean" in src
-    helper = src[src.find("function canUseLocalAgentDetection") : src.find("const SHIKI_THEMES")]
+    helper = src[
+        src.find("function canUseLocalAgentDetection") : src.find("const SHIKI_THEMES")
+    ]
     assert "if (!isTauri) return false" in helper
     assert "isLoopbackHost(normalizeHost(new URL(base).hostname))" in helper
     assert "const localAgentDetection = canUseLocalAgentDetection(base)" in src

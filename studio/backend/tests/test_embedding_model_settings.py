@@ -29,10 +29,14 @@ def settings_store(monkeypatch):
 
     store: dict = {}
     monkeypatch.setattr(
-        studio_db, "get_app_setting", lambda key, fallback = None: store.get(key, fallback)
+        studio_db,
+        "get_app_setting",
+        lambda key, fallback = None: store.get(key, fallback),
     )
     monkeypatch.setattr(
-        studio_db, "upsert_app_settings", lambda settings: store.update(settings) or store
+        studio_db,
+        "upsert_app_settings",
+        lambda settings: store.update(settings) or store,
     )
     ems._invalidate_cache()
     yield store

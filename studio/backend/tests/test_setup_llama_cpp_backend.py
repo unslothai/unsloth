@@ -20,8 +20,12 @@ import pytest
 _STUDIO = Path(__file__).resolve().parents[2]
 _SETUP_SH = _STUDIO / "setup.sh"
 _SETUP_PS1 = _STUDIO / "setup.ps1"
-_SKIP_NO_BASH = pytest.mark.skipif(shutil.which("bash") is None, reason = "bash unavailable")
-_SKIP_NO_PWSH = pytest.mark.skipif(shutil.which("pwsh") is None, reason = "pwsh unavailable")
+_SKIP_NO_BASH = pytest.mark.skipif(
+    shutil.which("bash") is None, reason = "bash unavailable"
+)
+_SKIP_NO_PWSH = pytest.mark.skipif(
+    shutil.which("pwsh") is None, reason = "pwsh unavailable"
+)
 
 
 def _backend_block() -> str:

@@ -31,7 +31,9 @@ def _start(backend, hook):
     dummy_queue = object()
     with (
         patch("core.training.training.prepare_gpu_selection", return_value = ([0], {})),
-        patch("core.training.training._CTX.Queue", side_effect = [dummy_queue, dummy_queue]),
+        patch(
+            "core.training.training._CTX.Queue", side_effect = [dummy_queue, dummy_queue]
+        ),
         patch("core.training.training._CTX.Process", return_value = _DummyProcess()),
         patch("core.training.training.threading.Thread", return_value = _DummyThread()),
     ):
@@ -116,10 +118,16 @@ class TestBeforeSpawnHook(unittest.TestCase):
 
         with (
             patch("utils.hardware.hardware.DEVICE", DeviceType.CUDA),
-            patch("core.training.training.prepare_gpu_selection", side_effect = _placement),
-            patch("core.training.training._CTX.Queue", side_effect = [object(), object()]),
+            patch(
+                "core.training.training.prepare_gpu_selection", side_effect = _placement
+            ),
+            patch(
+                "core.training.training._CTX.Queue", side_effect = [object(), object()]
+            ),
             patch("core.training.training._CTX.Process", return_value = _DummyProcess()),
-            patch("core.training.training.threading.Thread", return_value = _DummyThread()),
+            patch(
+                "core.training.training.threading.Thread", return_value = _DummyThread()
+            ),
         ):
             ok = backend.start_training(
                 job_id = "before-spawn-test",
@@ -143,10 +151,16 @@ class TestBeforeSpawnHook(unittest.TestCase):
 
         with (
             patch("utils.hardware.hardware.DEVICE", DeviceType.CUDA),
-            patch("core.training.training.prepare_gpu_selection", side_effect = _placement),
-            patch("core.training.training._CTX.Queue", side_effect = [object(), object()]),
+            patch(
+                "core.training.training.prepare_gpu_selection", side_effect = _placement
+            ),
+            patch(
+                "core.training.training._CTX.Queue", side_effect = [object(), object()]
+            ),
             patch("core.training.training._CTX.Process", return_value = _DummyProcess()),
-            patch("core.training.training.threading.Thread", return_value = _DummyThread()),
+            patch(
+                "core.training.training.threading.Thread", return_value = _DummyThread()
+            ),
         ):
             ok = backend.start_training(
                 job_id = "before-spawn-test",

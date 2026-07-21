@@ -72,7 +72,9 @@ def vision_endpoint() -> tuple[str, str] | None:
     try:
         from routes.inference import get_llama_cpp_backend
         backend = get_llama_cpp_backend()
-        if getattr(backend, "is_loaded", False) and getattr(backend, "is_vision", False):
+        if getattr(backend, "is_loaded", False) and getattr(
+            backend, "is_vision", False
+        ):
             return backend.base_url, "local"
     except Exception:  # noqa: BLE001 - never let discovery break ingestion
         return None
@@ -139,7 +141,9 @@ def _vision_complete(
         return None
 
 
-def _caption_one(base_url: str, model: str, image_bytes: bytes, timeout: float) -> str | None:
+def _caption_one(
+    base_url: str, model: str, image_bytes: bytes, timeout: float
+) -> str | None:
     return _vision_complete(
         base_url,
         model,
@@ -150,7 +154,9 @@ def _caption_one(base_url: str, model: str, image_bytes: bytes, timeout: float) 
     )
 
 
-def _ocr_one(base_url: str, model: str, image_bytes: bytes, timeout: float) -> str | None:
+def _ocr_one(
+    base_url: str, model: str, image_bytes: bytes, timeout: float
+) -> str | None:
     return _vision_complete(
         base_url,
         model,

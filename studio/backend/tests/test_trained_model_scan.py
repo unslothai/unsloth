@@ -29,7 +29,9 @@ from utils.models.model_config import (
 )
 
 
-def test_scan_trained_models_includes_lora_and_full_finetune_outputs(tmp_path: Path, monkeypatch):
+def test_scan_trained_models_includes_lora_and_full_finetune_outputs(
+    tmp_path: Path, monkeypatch
+):
     # resolve_output_dir refuses absolutes outside outputs_root; point it at tmp_path.
     from utils.models import model_config as _mc
     from utils.paths import storage_roots as _sr
@@ -52,14 +54,17 @@ def test_scan_trained_models_includes_lora_and_full_finetune_outputs(tmp_path: P
     (full_dir / "model.safetensors").write_bytes(b"")
 
     found = {
-        name: (path, model_type) for name, path, model_type in scan_trained_models(str(tmp_path))
+        name: (path, model_type)
+        for name, path, model_type in scan_trained_models(str(tmp_path))
     }
 
     assert found[lora_dir.name] == (str(lora_dir), "lora")
     assert found[full_dir.name] == (str(full_dir), "merged")
 
 
-def test_get_base_model_from_checkpoint_falls_back_to_full_finetune_config(tmp_path: Path):
+def test_get_base_model_from_checkpoint_falls_back_to_full_finetune_config(
+    tmp_path: Path,
+):
     (tmp_path / "config.json").write_text(
         json.dumps({"_name_or_path": "HuggingFaceTB/SmolLM-135M"})
     )
@@ -83,15 +88,22 @@ def test_lora_identifier_resolves_local_dir_like_the_local_helper(tmp_path: Path
         json.dumps({"base_model_name_or_path": "HuggingFaceTB/SmolLM-135M"})
     )
     (tmp_path / "adapter_model.safetensors").write_bytes(b"")
-    with patch("huggingface_hub.hf_hub_download", side_effect = AssertionError("no Hub call")):
-        assert get_base_model_from_lora_identifier(str(tmp_path)) == "HuggingFaceTB/SmolLM-135M"
+    with patch(
+        "huggingface_hub.hf_hub_download", side_effect = AssertionError("no Hub call")
+    ):
+        assert (
+            get_base_model_from_lora_identifier(str(tmp_path))
+            == "HuggingFaceTB/SmolLM-135M"
+        )
 
 
 def test_lora_identifier_resolves_remote_adapter_base(tmp_path: Path):
     # Remote adapter: the identifier helper fetches adapter_config.json from the Hub so
     # the gate can scan the base, where the local helper returns None.
     cfg = tmp_path / "adapter_config.json"
-    cfg.write_text(json.dumps({"base_model_name_or_path": "unsloth/Llama-3.2-1B-Instruct"}))
+    cfg.write_text(
+        json.dumps({"base_model_name_or_path": "unsloth/Llama-3.2-1B-Instruct"})
+    )
 
     def _dl(
         repo,
@@ -102,7 +114,9 @@ def test_lora_identifier_resolves_remote_adapter_base(tmp_path: Path):
         assert fn == "adapter_config.json"
         return str(cfg)
 
-    assert get_base_model_from_lora("someone/my-remote-lora") is None  # local-only: misses it
+    assert (
+        get_base_model_from_lora("someone/my-remote-lora") is None
+    )  # local-only: misses it
     with patch("huggingface_hub.hf_hub_download", side_effect = _dl):
         base = get_base_model_from_lora_identifier("someone/my-remote-lora")
     assert base == "unsloth/Llama-3.2-1B-Instruct"
@@ -112,16 +126,22 @@ def test_lora_identifier_returns_none_for_non_adapter_remote_repo():
     # Non-LoRA remote repo: a 404 on adapter_config.json returns None without retrying.
     from huggingface_hub.utils import EntryNotFoundError
 
-    mock = patch("huggingface_hub.hf_hub_download", side_effect = EntryNotFoundError("404"))
+    mock = patch(
+        "huggingface_hub.hf_hub_download", side_effect = EntryNotFoundError("404")
+    )
     with mock as m:
-        assert get_base_model_from_lora_identifier("unsloth/Llama-3.2-1B-Instruct") is None
+        assert (
+            get_base_model_from_lora_identifier("unsloth/Llama-3.2-1B-Instruct") is None
+        )
     assert m.call_count == 1  # 404 is definitive -> no retry
 
 
 def test_lora_identifier_retries_transient_then_resolves(tmp_path: Path):
     # A transient error is retried (not treated as "not a LoRA"); the retry resolves the base.
     cfg = tmp_path / "adapter_config.json"
-    cfg.write_text(json.dumps({"base_model_name_or_path": "unsloth/Llama-3.2-1B-Instruct"}))
+    cfg.write_text(
+        json.dumps({"base_model_name_or_path": "unsloth/Llama-3.2-1B-Instruct"})
+    )
     calls = {"n": 0}
 
     def _dl(
@@ -150,7 +170,8 @@ def test_lora_identifier_persistent_transient_returns_none():
     ):
         assert get_base_model_from_lora_identifier("someone/remote-lora") is None
     assert any(
-        "Could not resolve remote LoRA base" in str(c.args[0]) for c in mock_warn.call_args_list
+        "Could not resolve remote LoRA base" in str(c.args[0])
+        for c in mock_warn.call_args_list
     )
 
 
@@ -160,7 +181,9 @@ def test_lora_identifier_persistent_transient_returns_none():
 def test_model_config_full_finetune_local_path_is_not_lora(
     _mock_vision, _mock_audio_type, _mock_audio_input, tmp_path: Path
 ):
-    (tmp_path / "config.json").write_text(json.dumps({"_name_or_path": "unsloth/Qwen3-4B"}))
+    (tmp_path / "config.json").write_text(
+        json.dumps({"_name_or_path": "unsloth/Qwen3-4B"})
+    )
     (tmp_path / "model.safetensors").write_bytes(b"")
 
     config = ModelConfig.from_identifier(str(tmp_path))

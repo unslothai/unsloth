@@ -37,7 +37,9 @@ StatusCb = Optional[Callable[[str], None]]
 # Pinned wheels, kept in lockstep with core/training/worker.py by tests/test_ssm_runtime.py.
 CAUSAL_CONV1D_PACKAGE_VERSION = "1.6.1"
 CAUSAL_CONV1D_RELEASE_TAG = "v1.6.1.post4"
-CAUSAL_CONV1D_RELEASE_BASE_URL = "https://github.com/Dao-AILab/causal-conv1d/releases/download"
+CAUSAL_CONV1D_RELEASE_BASE_URL = (
+    "https://github.com/Dao-AILab/causal-conv1d/releases/download"
+)
 MAMBA_SSM_PACKAGE_VERSION = "2.3.1"
 MAMBA_SSM_RELEASE_TAG = "v2.3.1"
 MAMBA_SSM_RELEASE_BASE_URL = "https://github.com/state-spaces/mamba/releases/download"
@@ -112,7 +114,9 @@ def _is_importable(import_name: str) -> bool:
         # An ABI-incompatible kernel (undefined symbol after a torch/CUDA upgrade) raises
         # OSError/RuntimeError, not ImportError; treat any failure as "not importable" so the
         # caller reinstalls/source-builds instead of hard-failing on a merely broken kernel.
-        logger.debug("%s is not importable (%s: %s)", import_name, type(exc).__name__, exc)
+        logger.debug(
+            "%s is not importable (%s: %s)", import_name, type(exc).__name__, exc
+        )
         return False
 
 
@@ -132,9 +136,9 @@ def _hipcc_gcc_install_dir() -> Optional[str]:
     if not sys.platform.startswith("linux") or platform.machine().lower() != "x86_64":
         return None
     for ver in (14, 13, 12, 11):
-        if os.path.isdir(f"/usr/lib/gcc/x86_64-linux-gnu/{ver}/include") and os.path.isdir(
-            f"/usr/include/c++/{ver}"
-        ):
+        if os.path.isdir(
+            f"/usr/lib/gcc/x86_64-linux-gnu/{ver}/include"
+        ) and os.path.isdir(f"/usr/include/c++/{ver}"):
             return f"/usr/lib/gcc/x86_64-linux-gnu/{ver}"
     return None
 
@@ -146,7 +150,10 @@ def _run_with_heartbeat(run, cmd, status_cb, display_name, **kwargs):
 
     def _beat():
         while not done.wait(60):
-            _emit(status_cb, f"Still building {display_name} (this can take several minutes)...")
+            _emit(
+                status_cb,
+                f"Still building {display_name} (this can take several minutes)...",
+            )
 
     threading.Thread(target = _beat, daemon = True).start()
     try:
@@ -181,7 +188,9 @@ def _install_kernel(
         env = env,
     )
     if wheel_url and url_exists(wheel_url):
-        _emit(status_cb, f"Installing {display_name} (prebuilt kernel) for this model...")
+        _emit(
+            status_cb, f"Installing {display_name} (prebuilt kernel) for this model..."
+        )
         for installer, result in install_wheel(
             wheel_url,
             python_executable = sys.executable,
@@ -195,7 +204,8 @@ def _install_kernel(
                     logger.info("Installed prebuilt %s wheel", display_name)
                     return True
                 logger.warning(
-                    "%s wheel installed but not importable; building from source", display_name
+                    "%s wheel installed but not importable; building from source",
+                    display_name,
                 )
                 break
             logger.warning(
@@ -215,7 +225,10 @@ def _install_kernel(
     spec = f"{pypi_name}=={package_version}"
     is_hip = bool((env or {}).get("hip_version"))
     if is_hip and not shutil.which("hipcc"):
-        _emit(status_cb, f"{display_name}: hipcc not found; install the ROCm HIP SDK to build it.")
+        _emit(
+            status_cb,
+            f"{display_name}: hipcc not found; install the ROCm HIP SDK to build it.",
+        )
         return False
     _emit(
         status_cb,
@@ -273,7 +286,9 @@ def _install_kernel(
         _emit(status_cb, f"{display_name} source build timed out.")
         return False
     if getattr(result, "returncode", 1) != 0:
-        logger.warning("%s source install failed:\n%s", display_name, getattr(result, "stdout", ""))
+        logger.warning(
+            "%s source install failed:\n%s", display_name, getattr(result, "stdout", "")
+        )
     return _is_importable(import_name)
 
 
@@ -312,7 +327,9 @@ def ensure_ssm_runtime(
         status_cb = status_cb,
         run = run,
     ):
-        logger.warning("causal-conv1d unavailable; continuing on the model's torch fallback")
+        logger.warning(
+            "causal-conv1d unavailable; continuing on the model's torch fallback"
+        )
 
     if is_ssm and not _install_kernel(
         import_name = "mamba_ssm",

@@ -204,7 +204,9 @@ def test_cache_path_uses_exe_on_windows(monkeypatch, tmp_path):
 def test_ensure_windows_downloads_exe(monkeypatch, tmp_path):
     cached = tmp_path / "cloudflared.exe"
     monkeypatch.setattr(ct, "find_cloudflared", lambda: None)
-    monkeypatch.setattr(ct, "_asset_name", lambda: ("cloudflared-windows-amd64.exe", False))
+    monkeypatch.setattr(
+        ct, "_asset_name", lambda: ("cloudflared-windows-amd64.exe", False)
+    )
     monkeypatch.setattr(ct, "_cache_path", lambda: cached)
     monkeypatch.setattr(ct.sys, "platform", "win32")
 
@@ -215,7 +217,9 @@ def test_ensure_windows_downloads_exe(monkeypatch, tmp_path):
 
     monkeypatch.setattr(ct, "_download", fake_download)
     # chmod is skipped on Windows; would raise on a path that does not exist yet.
-    monkeypatch.setattr(ct.os, "chmod", lambda *a, **k: pytest.fail("chmod called on win32"))
+    monkeypatch.setattr(
+        ct.os, "chmod", lambda *a, **k: pytest.fail("chmod called on win32")
+    )
     assert ct.ensure_cloudflared() == str(cached)
     assert cached.read_bytes() == b"MZ"
 
@@ -223,7 +227,9 @@ def test_ensure_windows_downloads_exe(monkeypatch, tmp_path):
 def test_ensure_macos_extracts_tgz_and_chmods(monkeypatch, tmp_path):
     cached = tmp_path / "cloudflared"
     monkeypatch.setattr(ct, "find_cloudflared", lambda: None)
-    monkeypatch.setattr(ct, "_asset_name", lambda: ("cloudflared-darwin-arm64.tgz", True))
+    monkeypatch.setattr(
+        ct, "_asset_name", lambda: ("cloudflared-darwin-arm64.tgz", True)
+    )
     monkeypatch.setattr(ct, "_cache_path", lambda: cached)
     monkeypatch.setattr(ct.sys, "platform", "darwin")
 
@@ -332,7 +338,9 @@ def test_start_after_stop_does_not_spawn(monkeypatch):
         def poll(self):
             return 0
 
-    monkeypatch.setattr(ct.subprocess, "Popen", lambda *a, **k: (spawned.append(a), _FakeProc())[1])
+    monkeypatch.setattr(
+        ct.subprocess, "Popen", lambda *a, **k: (spawned.append(a), _FakeProc())[1]
+    )
     t.stop()  # proc is None -> no-op terminate, but marks the tunnel stopped
     t.start()  # must short-circuit before Popen
     assert spawned == []
@@ -666,7 +674,10 @@ def test_start_studio_tunnel_aborts_retry_on_concurrent_shutdown(monkeypatch):
 def _func_param_defaults(source, func_name):
     tree = ast.parse(source)
     for node in ast.walk(tree):
-        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.name == func_name:
+        if (
+            isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+            and node.name == func_name
+        ):
             args = node.args.args
             defaults = node.args.defaults
             offset = len(args) - len(defaults)
@@ -767,9 +778,14 @@ def _run_print_cloudflare_line(
 
 def test_cloudflare_line_reworded_when_public_unreachable(monkeypatch):
     out = _run_print_cloudflare_line(
-        monkeypatch, cloudflare_url = "https://x.trycloudflare.com", public_reachable = False
+        monkeypatch,
+        cloudflare_url = "https://x.trycloudflare.com",
+        public_reachable = False,
     )
-    assert "Use the secure link access via Cloudflare instead: https://x.trycloudflare.com" in out
+    assert (
+        "Use the secure link access via Cloudflare instead: https://x.trycloudflare.com"
+        in out
+    )
 
 
 def test_cloudflare_line_default_wording_when_reachable(monkeypatch):
@@ -789,7 +805,9 @@ def test_cloudflare_line_default_wording_when_unknown(monkeypatch):
 
 
 def test_cloudflare_line_states_inactive_when_enabled_but_not_requested(monkeypatch):
-    out = _run_print_cloudflare_line(monkeypatch, cloudflare_url = None, public_reachable = False)
+    out = _run_print_cloudflare_line(
+        monkeypatch, cloudflare_url = None, public_reachable = False
+    )
     assert "Cloudflare tunnel: OFF for this mode" in out
     assert "local network only" in out
 
@@ -922,7 +940,9 @@ def test_cloudflare_line_unknown_warns_with_loopback_host(
     assert "\033[38;5;215;1m" in out
 
 
-def test_cloudflare_line_off_does_not_claim_local_only_when_publicly_reachable(monkeypatch):
+def test_cloudflare_line_off_does_not_claim_local_only_when_publicly_reachable(
+    monkeypatch,
+):
     out = _run_print_cloudflare_line(
         monkeypatch,
         cloudflare_url = None,
@@ -935,7 +955,9 @@ def test_cloudflare_line_off_does_not_claim_local_only_when_publicly_reachable(m
     assert "local network only" not in out
 
 
-def test_cloudflare_line_failed_does_not_claim_local_only_when_publicly_reachable(monkeypatch):
+def test_cloudflare_line_failed_does_not_claim_local_only_when_publicly_reachable(
+    monkeypatch,
+):
     out = _run_print_cloudflare_line(
         monkeypatch,
         cloudflare_url = None,

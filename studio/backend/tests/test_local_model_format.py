@@ -97,7 +97,9 @@ def test_scan_models_dir_classifies_gguf_with_config(tmp_path):
     # A standalone .gguf file is GGUF.
     _touch(root / "loose.gguf")
 
-    fmt = {Path(m.path).name: m.model_format for m in models_route._scan_models_dir(root)}
+    fmt = {
+        Path(m.path).name: m.model_format for m in models_route._scan_models_dir(root)
+    }
 
     assert fmt["gguf_repo"] == "gguf"
     assert fmt["st_repo"] is None

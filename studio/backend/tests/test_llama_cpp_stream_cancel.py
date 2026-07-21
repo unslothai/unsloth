@@ -189,4 +189,6 @@ def test_cancel_interrupts_a_read_blocked_on_a_mid_stream_stall():
                         pass  # first chunk arrives, then the read blocks silently
         elapsed = time.monotonic() - started
 
-    assert elapsed < 10, f"cancel took {elapsed:.1f}s; the blocked read was not interrupted"
+    assert (
+        elapsed < 10
+    ), f"cancel took {elapsed:.1f}s; the blocked read was not interrupted"

@@ -86,7 +86,9 @@ def repo_cache_basename(repo_type: RepoType, repo_id: str) -> str:
     # wrong filename and a misclassified scanner row (the Literal only guards
     # statically; dynamic/JSON-sourced values slip past it).
     if repo_type not in _VALID_REPO_TYPES:
-        raise ValueError(f"repo_type must be one of {_VALID_REPO_TYPES}, got {repo_type!r}")
+        raise ValueError(
+            f"repo_type must be one of {_VALID_REPO_TYPES}, got {repo_type!r}"
+        )
     return f"{repo_type}s--{repo_id.replace('/', '--')}".lower()
 
 
@@ -96,7 +98,10 @@ def _filename_bytes(name: str) -> int:
 
 def _state_filename_fits(entry_key: str) -> bool:
     filename = f"{entry_key}{_STATE_EXTENSION}"
-    return _filename_bytes(filename) + _ATOMIC_WRITE_TMP_OVERHEAD <= _MAX_STATE_BASENAME_BYTES
+    return (
+        _filename_bytes(filename) + _ATOMIC_WRITE_TMP_OVERHEAD
+        <= _MAX_STATE_BASENAME_BYTES
+    )
 
 
 def _state_repo_key(repo_type: RepoType, repo_id: str) -> str:

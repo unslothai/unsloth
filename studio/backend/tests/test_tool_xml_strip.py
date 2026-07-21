@@ -100,7 +100,9 @@ _gemma_strip_gate = _ns["_gemma_strip_gate"]
 def test_route_display_strip_respects_disabled_auto_heal_contract():
     text = 'literal <tool_call>{"name":"web_search"}</tool_call> survives'
     assert _strip_tool_xml_for_display(text, auto_heal_tool_calls = False) == text
-    assert "<tool_call>" not in _strip_tool_xml_for_display(text, auto_heal_tool_calls = True)
+    assert "<tool_call>" not in _strip_tool_xml_for_display(
+        text, auto_heal_tool_calls = True
+    )
 
 
 def test_route_display_strip_preserves_rehearsal_inside_think():
@@ -207,7 +209,9 @@ def test_strips_function_attribute_form():
 
     # Auto-Heal-disabled display contract still preserves literal markup.
     assert _strip_tool_xml_for_display(text, auto_heal_tool_calls = False) == text
-    assert "<function name=" not in _strip_tool_xml_for_display(text, auto_heal_tool_calls = True)
+    assert "<function name=" not in _strip_tool_xml_for_display(
+        text, auto_heal_tool_calls = True
+    )
 
 
 # ── Orphan openings ───────────────────────────────────────────────
@@ -228,7 +232,9 @@ def test_strips_orphan_tool_call_no_close():
 
 
 def test_strips_orphan_function_no_close():
-    text = "I'll call python:\n<function=python>\n<parameter=code>\nprint(1)\n</parameter>"
+    text = (
+        "I'll call python:\n<function=python>\n<parameter=code>\nprint(1)\n</parameter>"
+    )
     cleaned = _TOOL_XML_RE.sub("", text)
     assert "<function=" not in cleaned
     assert "I'll call python:" in cleaned
@@ -544,11 +550,14 @@ def test_incomplete_xml_call_with_literal_think_in_arg_is_stripped():
 
     # A real reasoning block with no tool call is still preserved verbatim.
     assert (
-        _strip("answer <think>real</think> done", final = True) == "answer <think>real</think> done"
+        _strip("answer <think>real</think> done", final = True)
+        == "answer <think>real</think> done"
     )
 
     # A complete call followed by a real reasoning block: call stripped, block kept.
-    mixed = '<tool_call>{"name":"a","arguments":{}}</tool_call> mid <think>r</think> end'
+    mixed = (
+        '<tool_call>{"name":"a","arguments":{}}</tool_call> mid <think>r</think> end'
+    )
     assert _strip(mixed, final = True) == "mid <think>r</think> end"
 
 
@@ -574,7 +583,9 @@ def test_route_display_strip_keeps_inactive_rehearsal_when_gated():
     gate = {"web_search"}
     text = 'foo[ARGS]{"x":1} is just syntax.'
     assert (
-        _strip_tool_xml_for_display(text, auto_heal_tool_calls = True, enabled_tool_names = gate)
+        _strip_tool_xml_for_display(
+            text, auto_heal_tool_calls = True, enabled_tool_names = gate
+        )
         == text
     )
     # A bare marker with no JSON body is likewise prose when inactive.
@@ -590,7 +601,9 @@ def test_route_display_strip_removes_active_rehearsal_when_gated():
     # Mirror case: an active tool name is a real rehearsal and still strips.
     gate = {"web_search"}
     out = _strip_tool_xml_for_display(
-        'web_search[ARGS]{"query":"x"} done', auto_heal_tool_calls = True, enabled_tool_names = gate
+        'web_search[ARGS]{"query":"x"} done',
+        auto_heal_tool_calls = True,
+        enabled_tool_names = gate,
     )
     assert "web_search[ARGS]" not in out
     assert out.strip() == "done"
@@ -599,7 +612,10 @@ def test_route_display_strip_removes_active_rehearsal_when_gated():
 def test_route_display_strip_ungated_strips_all_rehearsal_unchanged():
     # Backwards-compat: with no gate (None) the bare rehearsal strips as before.
     text = 'foo[ARGS]{"x":1} is just syntax.'
-    assert _strip_tool_xml_for_display(text, auto_heal_tool_calls = True).strip() == "is just syntax."
+    assert (
+        _strip_tool_xml_for_display(text, auto_heal_tool_calls = True).strip()
+        == "is just syntax."
+    )
     assert (
         _strip_tool_xml_for_display(
             text, auto_heal_tool_calls = True, enabled_tool_names = None
@@ -612,7 +628,9 @@ def test_route_display_strip_control_token_stripped_regardless_of_gate():
     # [TOOL_CALLS] is a control token: stripped even when its NAME is not in the gate.
     gate = {"web_search"}
     out = _strip_tool_xml_for_display(
-        '[TOOL_CALLS]foo[ARGS]{"x":1} keep', auto_heal_tool_calls = True, enabled_tool_names = gate
+        '[TOOL_CALLS]foo[ARGS]{"x":1} keep',
+        auto_heal_tool_calls = True,
+        enabled_tool_names = gate,
     )
     assert "[TOOL_CALLS]" not in out and "foo[ARGS]" not in out
     assert out.strip() == "keep"
@@ -626,11 +644,17 @@ def test_core_strip_gates_bare_rehearsal_on_enabled_tools():
     text = 'foo[ARGS]{"x":1} is just syntax.'
     assert _strip(text, final = True, enabled_tool_names = {"web_search"}) == text
     assert (
-        _strip('web_search[ARGS]{"q":1} done', final = True, enabled_tool_names = {"web_search"})
+        _strip(
+            'web_search[ARGS]{"q":1} done',
+            final = True,
+            enabled_tool_names = {"web_search"},
+        )
         == "done"
     )
     assert _strip(text, final = True).strip() == "is just syntax."
-    assert _strip(text, final = True, enabled_tool_names = None).strip() == "is just syntax."
+    assert (
+        _strip(text, final = True, enabled_tool_names = None).strip() == "is just syntax."
+    )
 
 
 def test_route_display_strip_gate_preserves_inactive_history_rehearsal():
@@ -643,10 +667,14 @@ def test_route_display_strip_gate_preserves_inactive_history_rehearsal():
     )
     # An ACTIVE name is still stripped as a real rehearsed call.
     assert "web_search[ARGS]" not in _strip_tool_xml_for_display(
-        'Result web_search[ARGS]{"q":"x"} done', auto_heal_tool_calls = True, enabled_tool_names = gate
+        'Result web_search[ARGS]{"q":"x"} done',
+        auto_heal_tool_calls = True,
+        enabled_tool_names = gate,
     )
     # No gate (legacy) strips every NAME[ARGS]{...}.
-    assert "foo[ARGS]" not in _strip_tool_xml_for_display(text, auto_heal_tool_calls = True)
+    assert "foo[ARGS]" not in _strip_tool_xml_for_display(
+        text, auto_heal_tool_calls = True
+    )
 
 
 def test_gguf_history_sanitizer_forwards_enabled_tool_names_gate():
@@ -657,8 +685,8 @@ def test_gguf_history_sanitizer_forwards_enabled_tool_names_gate():
         _re.DOTALL,
     )
     assert block, "could not locate GGUF history sanitizer block"
-    assert "enabled_tool_names" in block.group(
-        0
+    assert (
+        "enabled_tool_names" in block.group(0)
     ), "GGUF history sanitizer must pass enabled_tool_names to _strip_tool_xml_for_display"
 
 
@@ -806,15 +834,21 @@ def test_glm_normal_and_qwen_calls_still_stripped_by_route():
     glm = "<tool_call>get_time\n<arg_key>tz</arg_key>\n<arg_value>UTC</arg_value>\n</tool_call> ok"
     assert _strip_tool_xml_for_display(glm, auto_heal_tool_calls = True).strip() == "ok"
     qwen = '<tool_call>{"name":"web_search","arguments":{"q":"x"}}</tool_call> after'
-    assert _strip_tool_xml_for_display(qwen, auto_heal_tool_calls = True).strip() == "after"
+    assert (
+        _strip_tool_xml_for_display(qwen, auto_heal_tool_calls = True).strip() == "after"
+    )
 
 
 def test_route_strip_removes_param_alias_close_tag():
     # The parser accepts the <param name="...">...</param> attribute-form alias of
     # <parameter=...>; the route tail cleanup must strip an orphan </param> close too.
-    assert _strip_tool_xml_for_display("answer </param>", auto_heal_tool_calls = True) == "answer "
     assert (
-        _strip_tool_xml_for_display("answer </parameter>", auto_heal_tool_calls = True) == "answer "
+        _strip_tool_xml_for_display("answer </param>", auto_heal_tool_calls = True)
+        == "answer "
+    )
+    assert (
+        _strip_tool_xml_for_display("answer </parameter>", auto_heal_tool_calls = True)
+        == "answer "
     )
 
 
@@ -822,13 +856,17 @@ def test_route_strip_uses_guarded_function_scan_for_literal_nested_markup():
     # A literal <function=...></function> in a value must not truncate the strip: the route runs the
     # parser's guarded function-XML scan before the regex, matching the core strip.
     text = "<function=python><parameter=code><function=evil></function></parameter></function> tail"
-    assert _strip_tool_xml_for_display(text, auto_heal_tool_calls = True).strip() == "tail"
+    assert (
+        _strip_tool_xml_for_display(text, auto_heal_tool_calls = True).strip() == "tail"
+    )
 
 
 def test_route_strip_gates_wrapperless_gemma_by_enabled_tools():
     # The route strip must gate the markerless Gemma call:NAME{...} form on the enabled tool names,
     # like the parser/loop, so a disabled/example name in prose is preserved in ...
-    prose = "To document syntax you write call:foo{query:example}. That shows the format."
+    prose = (
+        "To document syntax you write call:foo{query:example}. That shows the format."
+    )
     assert "call:foo{query:example}" in _strip_tool_xml(prose, {"web_search"})
     # An enabled name is still a real call and stripped.
     assert "call:web_search" not in _strip_tool_xml(
@@ -844,7 +882,9 @@ def test_gemma_strip_gate_empty_tools_preserves_prose():
     assert _gemma_strip_gate([]) == set()
     assert _gemma_strip_gate(None) == set()
     assert _gemma_strip_gate([{"function": {"name": "web_search"}}]) == {"web_search"}
-    prose = "To document syntax you write call:foo{query:example}. That shows the format."
+    prose = (
+        "To document syntax you write call:foo{query:example}. That shows the format."
+    )
     assert "call:foo{query:example}" in _strip_tool_xml(prose, _gemma_strip_gate([]))
     assert "call:foo{query:example}" in _strip_tool_xml(prose, _gemma_strip_gate(None))
     # An enabled tool's real call is still stripped.
@@ -862,7 +902,10 @@ def test_strip_keeps_prose_after_closed_function_call_with_literal_close():
         "<function=web_search><parameter=query>cats</parameter></function>"
         " Done. The tag </function> closes a call."
     )
-    assert strip_tool_markup(text, final = True) == "Done. The tag </function> closes a call."
+    assert (
+        strip_tool_markup(text, final = True)
+        == "Done. The tag </function> closes a call."
+    )
 
 
 def test_final_strip_keeps_prose_mentioning_bare_markers():
@@ -903,13 +946,13 @@ def test_chained_bare_json_strip_consumes_all_calls():
     )
     assert strip_leading_bare_json_call(chained, enabled_tool_names = enabled) == ""
     assert (
-        strip_leading_bare_json_call(chained + " trailing prose", enabled_tool_names = enabled)
+        strip_leading_bare_json_call(
+            chained + " trailing prose", enabled_tool_names = enabled
+        )
         == "trailing prose"
     )
     # The chain stops at a non-call answer object, which stays visible.
-    call_then_answer = (
-        '{"name":"web_search","parameters":{"q":"x"}};{"name":"web_search","result":"data"}'
-    )
+    call_then_answer = '{"name":"web_search","parameters":{"q":"x"}};{"name":"web_search","result":"data"}'
     assert (
         strip_leading_bare_json_call(call_then_answer, enabled_tool_names = enabled)
         == '{"name":"web_search","result":"data"}'

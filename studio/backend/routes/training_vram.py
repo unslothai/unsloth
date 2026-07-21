@@ -133,17 +133,23 @@ def can_keep_chat_during_training(
                 # Invalid ids -> start_training will 400 first, so don't unload.
                 return True, {"mode": "explicit", "reason": "invalid_gpu_ids"}
 
-            required_gb, est_meta = estimate_required_model_memory_gb(model_name, **est_kwargs)
+            required_gb, est_meta = estimate_required_model_memory_gb(
+                model_name, **est_kwargs
+            )
             if required_gb is None:
                 return False, {"mode": "explicit", "reason": "estimate_unavailable"}
 
-            free_by_index = _free_vram_by_index(get_visible_gpu_utilization().get("devices", []))
+            free_by_index = _free_vram_by_index(
+                get_visible_gpu_utilization().get("devices", [])
+            )
 
             # A requested GPU missing from the device list contributes 0.
             free_vals = [free_by_index.get(i, 0.0) for i in resolved]
             ranked = sorted(free_vals, reverse = True)
             usable_gb = (
-                ranked[0] + sum(f * _MULTI_GPU_OVERHEAD for f in ranked[1:]) if ranked else 0.0
+                ranked[0] + sum(f * _MULTI_GPU_OVERHEAD for f in ranked[1:])
+                if ranked
+                else 0.0
             )
             aggregate_fits = usable_gb >= required_gb * SAFETY_MARGIN + KEEP_FLOOR_GB
 
@@ -262,11 +268,15 @@ def can_load_chat_during_training(
             mode = "explicit"
         required_gb = required_override_gb
         if required_gb is None:
-            required_gb, _meta = estimate_required_model_memory_gb(model_name, **est_kwargs)
+            required_gb, _meta = estimate_required_model_memory_gb(
+                model_name, **est_kwargs
+            )
         if required_gb is None:
             return False, {"mode": mode, "reason": "estimate_unavailable"}
 
-        free_by_index = _free_vram_by_index(get_visible_gpu_utilization().get("devices", []))
+        free_by_index = _free_vram_by_index(
+            get_visible_gpu_utilization().get("devices", [])
+        )
         if single_device_gpu is not None:
             token = str(single_device_gpu).strip()
             if not token:

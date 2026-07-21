@@ -128,7 +128,9 @@ def test_tool_error_does_not_recycle_session(fake_clients, monkeypatch):
     monkeypatch.setattr(
         mcp_client, "_client", lambda url, headers, use_oauth = False: ToolFailure(url)
     )
-    assert call_tool_sync(STDIO_URL, None, "boom", {}, scope = "chat").startswith("Error: MCP tool")
+    assert call_tool_sync(STDIO_URL, None, "boom", {}, scope = "chat").startswith(
+        "Error: MCP tool"
+    )
     assert call_tool_sync(STDIO_URL, None, "t", {}, scope = "chat") == "call-1"
     assert len(fake_clients) == 1
 
@@ -164,7 +166,10 @@ def test_no_timeout_allows_long_call(fake_clients):
     call_tool_sync(STDIO_URL, None, "t", {}, scope = "chat")
     fake_clients[0].call_delay = 0.2
     # timeout=None means no deadline: the call must not be treated as wedged.
-    assert call_tool_sync(STDIO_URL, None, "slow", {}, timeout = None, scope = "chat") == "call-2"
+    assert (
+        call_tool_sync(STDIO_URL, None, "slow", {}, timeout = None, scope = "chat")
+        == "call-2"
+    )
 
 
 def test_connect_races_cancel_event(fake_clients, monkeypatch):
@@ -173,7 +178,9 @@ def test_connect_races_cancel_event(fake_clients, monkeypatch):
             await asyncio.sleep(5.0)
             return await super().__aenter__()
 
-    monkeypatch.setattr(mcp_client, "_client", lambda url, headers, use_oauth = False: SlowStart(url))
+    monkeypatch.setattr(
+        mcp_client, "_client", lambda url, headers, use_oauth = False: SlowStart(url)
+    )
     ev = threading.Event()
     threading.Timer(0.1, ev.set).start()
     start = time.monotonic()
@@ -189,7 +196,9 @@ def test_connect_respects_caller_timeout(fake_clients, monkeypatch):
             await asyncio.sleep(5.0)
             return await super().__aenter__()
 
-    monkeypatch.setattr(mcp_client, "_client", lambda url, headers, use_oauth = False: SlowStart(url))
+    monkeypatch.setattr(
+        mcp_client, "_client", lambda url, headers, use_oauth = False: SlowStart(url)
+    )
     start = time.monotonic()
     out = call_tool_sync(STDIO_URL, None, "t", {}, timeout = 0.2)
     assert "timed out" in out
@@ -219,8 +228,12 @@ def test_key_lock_wait_honors_cancel_and_timeout(fake_clients, monkeypatch):
             await asyncio.sleep(1.5)
             return await super().__aenter__()
 
-    monkeypatch.setattr(mcp_client, "_client", lambda url, headers, use_oauth = False: SlowStart(url))
-    first = threading.Thread(target = lambda: call_tool_sync(STDIO_URL, None, "t", {}, scope = "chat"))
+    monkeypatch.setattr(
+        mcp_client, "_client", lambda url, headers, use_oauth = False: SlowStart(url)
+    )
+    first = threading.Thread(
+        target = lambda: call_tool_sync(STDIO_URL, None, "t", {}, scope = "chat")
+    )
     first.start()
     key = mcp_client._session_key(STDIO_URL, None, "chat")
     deadline = time.monotonic() + 5.0
@@ -287,10 +300,14 @@ def test_close_during_connect_is_not_cached(fake_clients, monkeypatch):
             await asyncio.sleep(0.5)
             return await super().__aenter__()
 
-    monkeypatch.setattr(mcp_client, "_client", lambda url, headers, use_oauth = False: SlowStart(url))
+    monkeypatch.setattr(
+        mcp_client, "_client", lambda url, headers, use_oauth = False: SlowStart(url)
+    )
     results: list[str] = []
     worker = threading.Thread(
-        target = lambda: results.append(call_tool_sync(STDIO_URL, None, "t", {}, scope = "chat"))
+        target = lambda: results.append(
+            call_tool_sync(STDIO_URL, None, "t", {}, scope = "chat")
+        )
     )
     worker.start()
     deadline = time.monotonic() + 5.0
@@ -314,7 +331,9 @@ def test_connect_abort_race_still_closes_client(fake_clients, monkeypatch):
                 pass  # connect finishes just as the abort lands
             return await super().__aenter__()
 
-    monkeypatch.setattr(mcp_client, "_client", lambda url, headers, use_oauth = False: WinsRace(url))
+    monkeypatch.setattr(
+        mcp_client, "_client", lambda url, headers, use_oauth = False: WinsRace(url)
+    )
     out = call_tool_sync(STDIO_URL, None, "t", {}, timeout = 0.1)
     assert "timed out" in out
     assert fake_clients[0].entered == 1
@@ -413,14 +432,19 @@ def test_error_on_closed_session_does_not_retry(fake_clients):
     fake_clients[0].fail_next = True
     session.closed.set()
     out = call_tool_sync(STDIO_URL, None, "t", {}, scope = "chat")
-    assert out == "Error: MCP tool 't' failed: MCP server was updated or removed during the call"
+    assert (
+        out
+        == "Error: MCP tool 't' failed: MCP server was updated or removed during the call"
+    )
     assert len(fake_clients) == 1  # no respawn for the removed config
 
 
 def test_config_check_blocks_stale_publish(fake_clients):
     # Simulates a caller that read the server row before an update/delete:
     # the row re-check runs after connect and must block caching.
-    out = call_tool_sync(STDIO_URL, None, "t", {}, scope = "chat", config_check = lambda: False)
+    out = call_tool_sync(
+        STDIO_URL, None, "t", {}, scope = "chat", config_check = lambda: False
+    )
     assert out.startswith("Error: MCP tool 't' failed")
     assert mcp_client._stdio_sessions == {}
     assert fake_clients[0].exited == 1
@@ -430,10 +454,15 @@ def test_close_generation_keys_hold_no_secrets(fake_clients):
     secret_url = "npx server --token sk-url-secret"
     close_stdio_sessions(secret_url, {"API_KEY": "sk-env-secret"})
     close_stdio_sessions(secret_url)
-    gen_keys = list(mcp_client._stdio_cfg_close_gen) + list(mcp_client._stdio_url_close_gen)
+    gen_keys = list(mcp_client._stdio_cfg_close_gen) + list(
+        mcp_client._stdio_url_close_gen
+    )
     assert gen_keys
     # These maps are never pruned: neither command/URL nor env may persist.
-    assert all("sk-url-secret" not in repr(k) and "sk-env-secret" not in repr(k) for k in gen_keys)
+    assert all(
+        "sk-url-secret" not in repr(k) and "sk-env-secret" not in repr(k)
+        for k in gen_keys
+    )
 
 
 def test_overlapping_calls_serialize_on_shared_session(fake_clients, monkeypatch):
@@ -443,7 +472,9 @@ def test_overlapping_calls_serialize_on_shared_session(fake_clients, monkeypatch
 
         async def call_tool(self, name, args):
             OverlapDetect.active += 1
-            OverlapDetect.max_active = max(OverlapDetect.max_active, OverlapDetect.active)
+            OverlapDetect.max_active = max(
+                OverlapDetect.max_active, OverlapDetect.active
+            )
             try:
                 await asyncio.sleep(0.2)
                 return await super().call_tool(name, args)
@@ -455,7 +486,9 @@ def test_overlapping_calls_serialize_on_shared_session(fake_clients, monkeypatch
     )
     call_tool_sync(STDIO_URL, None, "t", {}, scope = "chat")
     workers = [
-        threading.Thread(target = lambda: call_tool_sync(STDIO_URL, None, "t", {}, scope = "chat"))
+        threading.Thread(
+            target = lambda: call_tool_sync(STDIO_URL, None, "t", {}, scope = "chat")
+        )
         for _ in range(2)
     ]
     for worker in workers:
@@ -477,7 +510,9 @@ def test_timeout_budget_spans_connect_and_call(fake_clients, monkeypatch):
             await asyncio.sleep(0.5)
             return await super().call_tool(name, args)
 
-    monkeypatch.setattr(mcp_client, "_client", lambda url, headers, use_oauth = False: SlowBoth(url))
+    monkeypatch.setattr(
+        mcp_client, "_client", lambda url, headers, use_oauth = False: SlowBoth(url)
+    )
     start = time.monotonic()
     # 0.4s connect + 0.5s call vs a 0.6s budget: the call must inherit only
     # the remaining ~0.2s, not a fresh full window.
@@ -520,7 +555,9 @@ def test_execute_tool_mcp_scope_is_per_thread(tmp_path, monkeypatch):
     monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path))
     monkeypatch.setattr(mcp_servers_db, "_schema_ready", False)
     monkeypatch.setattr(tools_mod, "stdio_mcp_enabled", lambda: True)
-    mcp_servers_db.create_server(id = "s1", display_name = "S", url = STDIO_URL, is_enabled = True)
+    mcp_servers_db.create_server(
+        id = "s1", display_name = "S", url = STDIO_URL, is_enabled = True
+    )
 
     scopes: list = []
 
@@ -529,13 +566,22 @@ def test_execute_tool_mcp_scope_is_per_thread(tmp_path, monkeypatch):
         return "ok"
 
     monkeypatch.setattr(tools_mod, "call_tool_sync", fake_call_tool_sync)
-    tools_mod.execute_tool("mcp__s1__t", {}, session_id = "project-p1", thread_id = "thread-a")
-    tools_mod.execute_tool("mcp__s1__t", {}, session_id = "project-p1", thread_id = "thread-b")
+    tools_mod.execute_tool(
+        "mcp__s1__t", {}, session_id = "project-p1", thread_id = "thread-a"
+    )
+    tools_mod.execute_tool(
+        "mcp__s1__t", {}, session_id = "project-p1", thread_id = "thread-b"
+    )
     tools_mod.execute_tool("mcp__s1__t", {}, session_id = "sess-only")
     tools_mod.execute_tool("mcp__s1__t", {}, thread_id = "thread-a")
     # Persist only with a thread_id; session_id alone stays one-shot (None) so a
     # project-wide id can't leak state across conversations. Fields are tagged.
-    assert scopes == ["s=project-p1:t=thread-a", "s=project-p1:t=thread-b", None, "s=:t=thread-a"]
+    assert scopes == [
+        "s=project-p1:t=thread-a",
+        "s=project-p1:t=thread-b",
+        None,
+        "s=:t=thread-a",
+    ]
     # IDs containing ":" must not collapse distinct conversations into one scope,
     # and a session-only id must never collide with a thread-only id.
     tools_mod.execute_tool("mcp__s1__t", {}, session_id = "a:b", thread_id = "c")
@@ -553,10 +599,14 @@ def test_execute_tool_config_check_tracks_row(tmp_path, monkeypatch):
     monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path))
     monkeypatch.setattr(mcp_servers_db, "_schema_ready", False)
     monkeypatch.setattr(tools_mod, "stdio_mcp_enabled", lambda: True)
-    mcp_servers_db.create_server(id = "s1", display_name = "S", url = STDIO_URL, is_enabled = True)
+    mcp_servers_db.create_server(
+        id = "s1", display_name = "S", url = STDIO_URL, is_enabled = True
+    )
 
     captured: dict = {}
-    monkeypatch.setattr(tools_mod, "call_tool_sync", lambda **kw: captured.update(kw) or "ok")
+    monkeypatch.setattr(
+        tools_mod, "call_tool_sync", lambda **kw: captured.update(kw) or "ok"
+    )
     tools_mod.execute_tool("mcp__s1__t", {})
     check = captured["config_check"]
     assert check() is True

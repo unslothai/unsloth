@@ -556,7 +556,9 @@ def test_bash_exec_nonstreaming_timeout_kills_grandchild(tmp_path):
     result = _bash_exec(command, timeout = 1)  # no output_callback -> communicate path
     assert "timed out" in result
     time.sleep(4.0)
-    assert not sentinel.exists(), "non-streaming timeout leaked a stdout-holding grandchild"
+    assert (
+        not sentinel.exists()
+    ), "non-streaming timeout leaked a stdout-holding grandchild"
 
 
 @pytest.mark.skipif(sys.platform == "win32", reason = "POSIX process groups")
@@ -571,7 +573,9 @@ def test_python_exec_nonstreaming_timeout_kills_grandchild(tmp_path):
     result = _python_exec(code, timeout = 1)  # no output_callback -> communicate path
     assert "timed out" in result
     time.sleep(4.0)
-    assert not sentinel.exists(), "non-streaming timeout leaked a stdout-holding grandchild"
+    assert (
+        not sentinel.exists()
+    ), "non-streaming timeout leaked a stdout-holding grandchild"
 
 
 def test_drain_process_output_without_posix_process_group_apis(monkeypatch):
@@ -662,18 +666,24 @@ def test_finite_drain_honors_cancel_after_leader_exit(tmp_path):
     started = time.monotonic()
     # Large finite timeout (30s); without the cancel poll the drain keeps reading
     # the grandchild until the pipe closes ~20s later.
-    output, timed_out = _drain_process_output(proc, 30, lambda _t: None, cancel_event, pgid = pgid)
+    output, timed_out = _drain_process_output(
+        proc, 30, lambda _t: None, cancel_event, pgid = pgid
+    )
     elapsed = time.monotonic() - started
     assert elapsed < 5.0, f"finite drain ignored cancel_event (took {elapsed:.1f}s)"
     # Cancellation is not a timeout: the budget never elapsed.
     assert not timed_out
     assert "parent-done" in output
     time.sleep(11.0)  # past the grandchild's 10s sentinel write
-    assert not sentinel.exists(), "cancel did not kill the stdout-holding grandchild group"
+    assert (
+        not sentinel.exists()
+    ), "cancel did not kill the stdout-holding grandchild group"
 
 
 @pytest.mark.skipif(sys.platform == "win32", reason = "POSIX process groups")
-def test_streamed_wait_timeout_kills_grandchild_when_leader_reaped(tmp_path, monkeypatch):
+def test_streamed_wait_timeout_kills_grandchild_when_leader_reaped(
+    tmp_path, monkeypatch
+):
     # The proc.wait() timeout branch normally kills the group via _kill_process_tree.
     # But the leader can exit before _kill_process_tree samples its pgid, which then
     # short-circuits on the reaped leader and leaves a stdout-holding grandchild.
@@ -761,11 +771,16 @@ def test_gguf_loop_final_tool_message_unchanged_by_streaming(monkeypatch):
         return result_text
 
     events_plain, payloads_plain = _run_gguf_tool_turn(monkeypatch, plain_tool)
-    events_streaming, payloads_streaming = _run_gguf_tool_turn(monkeypatch, streaming_tool)
+    events_streaming, payloads_streaming = _run_gguf_tool_turn(
+        monkeypatch, streaming_tool
+    )
 
     def _tool_messages(payloads):
         return [
-            msg for payload in payloads for msg in payload["messages"] if msg.get("role") == "tool"
+            msg
+            for payload in payloads
+            for msg in payload["messages"]
+            if msg.get("role") == "tool"
         ]
 
     # The role=tool message fed to the model is byte-identical: streaming is purely
@@ -918,7 +933,9 @@ def test_missing_path_hint_respects_project_workdir():
     # Against the real project workdir it is local -> no hint.
     assert _missing_path_hint(output, workdir) == ""
     # A path genuinely outside the project workdir still earns the hint.
-    outside_err = "FileNotFoundError: [Errno 2] No such file or directory: '/srv/other/x.html'"
+    outside_err = (
+        "FileNotFoundError: [Errno 2] No such file or directory: '/srv/other/x.html'"
+    )
     assert "working directory is writable" in _missing_path_hint(outside_err, workdir)
 
 
@@ -939,7 +956,9 @@ def test_missing_path_hint_project_workdir_under_convention_prefix():
     assert _missing_path_hint(root_output, workdir) == ""
     # A convention path genuinely outside the project workdir still earns the
     # hint (e.g. a /mnt/data habit path with a /workspace-rooted project).
-    outside = "FileNotFoundError: [Errno 2] No such file or directory: '/mnt/data/x.html'"
+    outside = (
+        "FileNotFoundError: [Errno 2] No such file or directory: '/mnt/data/x.html'"
+    )
     assert "'x.html', not '/mnt/data/x.html'" in _missing_path_hint(outside, workdir)
     # Without an explicit workdir the default sandbox root applies, so a
     # /workspace path is out of sandbox and keeps the habit-path hint.
@@ -963,7 +982,9 @@ def test_missing_path_hint_convention_scoped_to_failing_line():
     )
     assert _missing_path_hint(printed_err) == ""
     # But a convention path ON the error line still earns the hint.
-    on_line = "FileNotFoundError: [Errno 2] No such file or directory: '/mnt/data/x.html'"
+    on_line = (
+        "FileNotFoundError: [Errno 2] No such file or directory: '/mnt/data/x.html'"
+    )
     assert "'x.html', not '/mnt/data/x.html'" in _missing_path_hint(on_line)
 
 
@@ -1082,7 +1103,9 @@ def test_bash_exec_missing_path_hint():
     assert "No such file or directory" in baseline
     assert "working directory is writable" in baseline
     streamed = _bash_exec(
-        "cat /mnt/data/definitely_missing.txt", timeout = 60, output_callback = lambda _t: None
+        "cat /mnt/data/definitely_missing.txt",
+        timeout = 60,
+        output_callback = lambda _t: None,
     )
     assert streamed == baseline
 
@@ -1209,7 +1232,9 @@ def test_bash_exec_nonstreaming_cancel_kills_grandchild_after_leader_exit(tmp_pa
     assert time.monotonic() - started < 2.5
     assert result == "Execution cancelled."
     time.sleep(3.5)
-    assert not sentinel.exists(), "non-streaming cancel leaked a stdout-holding grandchild"
+    assert (
+        not sentinel.exists()
+    ), "non-streaming cancel leaked a stdout-holding grandchild"
 
 
 @pytest.mark.skipif(sys.platform == "win32", reason = "POSIX process groups")
@@ -1231,4 +1256,6 @@ def test_python_exec_nonstreaming_cancel_kills_grandchild_after_leader_exit(tmp_
     assert time.monotonic() - started < 2.5
     assert result == "Execution cancelled."
     time.sleep(3.5)
-    assert not sentinel.exists(), "non-streaming cancel leaked a stdout-holding grandchild"
+    assert (
+        not sentinel.exists()
+    ), "non-streaming cancel leaked a stdout-holding grandchild"

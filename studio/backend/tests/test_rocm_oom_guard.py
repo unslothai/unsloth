@@ -172,7 +172,9 @@ class TestDeviceNameFallback:
         props = _props(name = device_name)
         gcn, is_unified = _rocm_classify_unified_memory(props)
         assert gcn == "", f"expected empty gcn_arch, got {gcn!r}"
-        assert is_unified is True, f"device {device_name!r} should be classified as unified-memory"
+        assert (
+            is_unified is True
+        ), f"device {device_name!r} should be classified as unified-memory"
 
     # --- discrete devices that must NOT be mis-classified ---
 

@@ -23,16 +23,27 @@ def test_caption_images_runs_when_images_present(monkeypatch):
 
 def test_caption_images_groups_by_page(monkeypatch):
     monkeypatch.setattr(captioner.config, "CAPTION_MAX_IMAGES", 8)
-    monkeypatch.setattr(captioner, "_caption_one", lambda base, model, b, t: "a chart of results")
-    out = captioner.caption_images([_img(1), _img(1), _img(3)], endpoint = ("http://x", "local"))
-    assert out == {1: ["a chart of results", "a chart of results"], 3: ["a chart of results"]}
+    monkeypatch.setattr(
+        captioner, "_caption_one", lambda base, model, b, t: "a chart of results"
+    )
+    out = captioner.caption_images(
+        [_img(1), _img(1), _img(3)], endpoint = ("http://x", "local")
+    )
+    assert out == {
+        1: ["a chart of results", "a chart of results"],
+        3: ["a chart of results"],
+    }
 
 
 def test_caption_images_respects_cap(monkeypatch):
     monkeypatch.setattr(captioner.config, "CAPTION_MAX_IMAGES", 2)
     calls = []
-    monkeypatch.setattr(captioner, "_caption_one", lambda *a: (calls.append(1) or "cap"))
-    captioner.caption_images([_img(i) for i in range(5)], endpoint = ("http://x", "local"))
+    monkeypatch.setattr(
+        captioner, "_caption_one", lambda *a: (calls.append(1) or "cap")
+    )
+    captioner.caption_images(
+        [_img(i) for i in range(5)], endpoint = ("http://x", "local")
+    )
     assert len(calls) == 2
 
 
@@ -52,7 +63,9 @@ def test_caption_prompt_and_token_budget(monkeypatch):
     # Caption and OCR keep separate prompts + token caps over the shared _vision_complete.
     captured: dict = {}
 
-    def fake_vision_complete(base_url, model, image_bytes, *, prompt, timeout, max_tokens):
+    def fake_vision_complete(
+        base_url, model, image_bytes, *, prompt, timeout, max_tokens
+    ):
         captured.update(prompt = prompt, timeout = timeout, max_tokens = max_tokens)
         return "ok"
 
@@ -82,9 +95,13 @@ def test_pages_with_figures_and_tiles(tmp_path):
     _figure_pdf(pdf)
     pgs = parsers.pages_with_figures(str(pdf), max_pages = 4)
     assert pgs == [1]
-    tiles = parsers.render_pdf_figure_tiles(str(pdf), pgs, rows = 2, cols = 2, fullpage = True)
+    tiles = parsers.render_pdf_figure_tiles(
+        str(pdf), pgs, rows = 2, cols = 2, fullpage = True
+    )
     assert len(tiles) == 5  # full page + 2x2 grid
-    assert all(t.image_bytes[:8] == b"\x89PNG\r\n\x1a\n" and t.page_number == 1 for t in tiles)
+    assert all(
+        t.image_bytes[:8] == b"\x89PNG\r\n\x1a\n" and t.page_number == 1 for t in tiles
+    )
     capped = parsers.render_pdf_figure_tiles(
         str(pdf), pgs, rows = 2, cols = 2, fullpage = True, max_tiles = 3
     )
@@ -147,7 +164,9 @@ def test_run_skips_figure_work_without_vision_model(
         parsers, "pages_with_figures", lambda *a, **k: touched.append("detect") or []
     )
     monkeypatch.setattr(
-        parsers, "render_pdf_figure_tiles", lambda *a, **k: touched.append("render") or []
+        parsers,
+        "render_pdf_figure_tiles",
+        lambda *a, **k: touched.append("render") or [],
     )
 
     pdf = tmp_path / "fig.pdf"
@@ -205,7 +224,9 @@ def test_vision_complete_omits_header_when_unauthenticated(monkeypatch):
         return _Resp()
 
     monkeypatch.setattr(httpx, "post", fake_post)
-    captioner._vision_complete("http://x", "local", b"i", prompt = "p", timeout = 5.0, max_tokens = 8)
+    captioner._vision_complete(
+        "http://x", "local", b"i", prompt = "p", timeout = 5.0, max_tokens = 8
+    )
     assert captured["headers"] is None
     assert captured["trust_env"] is False
 
@@ -213,7 +234,9 @@ def test_vision_complete_omits_header_when_unauthenticated(monkeypatch):
 def test_merge_page_captions_dedups():
     out = captioner.merge_page_captions({1: ["MatMul\nScale", "Scale\nSoftMax"]})
     text = out[1][0]
-    assert text.lower().count("scale") == 1  # repeated label from overlapping tiles dropped
+    assert (
+        text.lower().count("scale") == 1
+    )  # repeated label from overlapping tiles dropped
     assert "MatMul" in text and "SoftMax" in text
 
 
@@ -310,7 +333,9 @@ def test_caption_override_true_runs_when_config_off(
 
     monkeypatch.setattr(captioner.config, "CAPTION_IMAGES", False)
     monkeypatch.setattr(captioner, "vision_endpoint", lambda: ("http://x", "local"))
-    monkeypatch.setattr(captioner, "_caption_one", lambda *a: "bar chart of revenue wombat-7")
+    monkeypatch.setattr(
+        captioner, "_caption_one", lambda *a: "bar chart of revenue wombat-7"
+    )
 
     pdf = tmp_path / "fig.pdf"
     _figure_pdf(pdf)
@@ -327,7 +352,9 @@ def test_caption_override_false_skips_when_config_on(
     monkeypatch.setattr(captioner.config, "CAPTION_IMAGES", True)
     monkeypatch.setattr(captioner, "vision_endpoint", lambda: ("http://x", "local"))
     called = []
-    monkeypatch.setattr(captioner, "_caption_one", lambda *a: called.append(1) or "should not run")
+    monkeypatch.setattr(
+        captioner, "_caption_one", lambda *a: called.append(1) or "should not run"
+    )
 
     pdf = tmp_path / "fig.pdf"
     _figure_pdf(pdf)
@@ -340,7 +367,9 @@ def test_caption_none_follows_config(rag_conn, stub_embeddings, monkeypatch, tmp
     # Omitted override (None) falls back to config.CAPTION_IMAGES.
     monkeypatch.setattr(captioner, "vision_endpoint", lambda: ("http://x", "local"))
     seen = []
-    monkeypatch.setattr(captioner, "_caption_one", lambda *a: seen.append(1) or "chart caption")
+    monkeypatch.setattr(
+        captioner, "_caption_one", lambda *a: seen.append(1) or "chart caption"
+    )
 
     monkeypatch.setattr(captioner.config, "CAPTION_IMAGES", False)
     pdf_off = tmp_path / "off.pdf"

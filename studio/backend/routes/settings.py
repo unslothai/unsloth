@@ -136,7 +136,9 @@ def _helper_precache_response(enabled: bool | None = None) -> HelperPrecacheResp
 
 
 @router.get("/upload-limit", response_model = UploadLimitResponse)
-def get_upload_limit(current_subject: str = Depends(get_current_subject)) -> UploadLimitResponse:
+def get_upload_limit(
+    current_subject: str = Depends(get_current_subject),
+) -> UploadLimitResponse:
     return _upload_limit_response(get_upload_limit_mb())
 
 
@@ -190,7 +192,9 @@ class CodingAgentsResponse(BaseModel):
 
 
 @router.get("/coding-agents", response_model = CodingAgentsResponse)
-def get_coding_agents(current_subject: str = Depends(get_current_subject)) -> CodingAgentsResponse:
+def get_coding_agents(
+    current_subject: str = Depends(get_current_subject),
+) -> CodingAgentsResponse:
     return CodingAgentsResponse(detected = detect_installed_coding_agents())
 
 
@@ -208,11 +212,14 @@ def get_openai_auto_switch(
 
 @router.put("/openai-auto-switch", response_model = OpenAIAutoSwitchResponse)
 def update_openai_auto_switch(
-    payload: OpenAIAutoSwitchPayload, current_subject: str = Depends(get_current_subject)
+    payload: OpenAIAutoSwitchPayload,
+    current_subject: str = Depends(get_current_subject),
 ) -> OpenAIAutoSwitchResponse:
     try:
         enabled, idle_seconds, keep_kv = set_openai_auto_switch(
-            payload.enabled, payload.auto_unload_idle_seconds, payload.auto_unload_keep_kv
+            payload.enabled,
+            payload.auto_unload_idle_seconds,
+            payload.auto_unload_keep_kv,
         )
     except ValueError as exc:
         raise log_and_http_error(
@@ -266,7 +273,9 @@ def update_openai_auto_switch_override(
 
 
 class EmbeddingModelPayload(BaseModel):
-    embedding_model: str = Field(..., min_length = 1, max_length = MAX_EMBEDDING_MODEL_LENGTH)
+    embedding_model: str = Field(
+        ..., min_length = 1, max_length = MAX_EMBEDDING_MODEL_LENGTH
+    )
     # Token for gated/private repos during verification (not stored).
     hf_token: Optional[str] = Field(default = None, max_length = 512)
     # Skip HF verification (offline installs, local paths HF can't see).
@@ -376,7 +385,9 @@ def _hf_gguf_backend_error(model: str, hf_token: Optional[str]) -> str | None:
             files = list_repo_files(candidate, token = hf_token)
         except Exception:  # noqa: BLE001 - missing/gated repo: try next candidate
             continue
-        if any(f.lower().endswith(".gguf") and "mmproj" not in f.lower() for f in files):
+        if any(
+            f.lower().endswith(".gguf") and "mmproj" not in f.lower() for f in files
+        ):
             return None
     checked = " or ".join(repr(c) for c in candidates)
     return (
@@ -426,7 +437,9 @@ def update_embedding_model(
     # wrongly reject a custom repo whose GGUF companion is clean; the GGUF availability
     # checks below cover that path instead.
     scan_st_pickle = (
-        model != default_embedding_model() and not is_local_gguf and not _llama_backend_active()
+        model != default_embedding_model()
+        and not is_local_gguf
+        and not _llama_backend_active()
     )
     if scan_st_pickle:
         # Malware/pickle gate before we persist a repo the embedder later loads with
@@ -449,7 +462,9 @@ def update_embedding_model(
                 )
             )
         )
-        if evaluate_file_security(model, hf_token = scan_token, load_subdirs = load_subdirs).blocked:
+        if evaluate_file_security(
+            model, hf_token = scan_token, load_subdirs = load_subdirs
+        ).blocked:
             # 403, not 409: the client routes every 409 into the forceable "save anyway"
             # flow, but this block is a hard, non-forceable security refusal.
             raise HTTPException(
@@ -476,7 +491,9 @@ def update_embedding_model(
                     "you may be offline)."
                 ),
             )
-        gguf_error = _local_gguf_backend_error(model) or _hf_gguf_backend_error(model, hf_token)
+        gguf_error = _local_gguf_backend_error(model) or _hf_gguf_backend_error(
+            model, hf_token
+        )
         if gguf_error:
             raise HTTPException(status_code = 409, detail = gguf_error)
     set_rag_embedding_model(model)
@@ -544,7 +561,11 @@ def update_preview_sharing(
             event = "settings.update_preview_sharing_failed",
             log = logger,
         ) from exc
-    logger.info("settings.preview_sharing_updated subject=%s enabled=%s", current_subject, enabled)
+    logger.info(
+        "settings.preview_sharing_updated subject=%s enabled=%s",
+        current_subject,
+        enabled,
+    )
     return PreviewSharingResponse(enabled = enabled)
 
 
@@ -576,7 +597,9 @@ class PersonalizationProfile(BaseModel):
         if not value:
             return value
         if not value.startswith("data:image/") and not _is_bundled_avatar_url(value):
-            raise ValueError("avatarDataUrl must be an image data URL or bundled avatar.")
+            raise ValueError(
+                "avatarDataUrl must be an image data URL or bundled avatar."
+            )
         return value
 
 
@@ -591,8 +614,12 @@ class PersonalizationCustomColors(BaseModel):
 class PersonalizationCustomColorModes(BaseModel):
     model_config = ConfigDict(extra = "ignore")
 
-    light: PersonalizationCustomColors = Field(default_factory = PersonalizationCustomColors)
-    dark: PersonalizationCustomColors = Field(default_factory = PersonalizationCustomColors)
+    light: PersonalizationCustomColors = Field(
+        default_factory = PersonalizationCustomColors
+    )
+    dark: PersonalizationCustomColors = Field(
+        default_factory = PersonalizationCustomColors
+    )
 
 
 MAX_IMPORTED_FONTS = 3
@@ -694,7 +721,9 @@ def _default_sidebar_menu() -> "list[PersonalizationSidebarMenuItem]":
 class PersonalizationCustomization(BaseModel):
     model_config = ConfigDict(extra = "ignore")
 
-    colors: PersonalizationCustomColorModes = Field(default_factory = PersonalizationCustomColorModes)
+    colors: PersonalizationCustomColorModes = Field(
+        default_factory = PersonalizationCustomColorModes
+    )
     uiFont: Optional[str] = Field(None, max_length = 200)
     headingFont: Optional[str] = Field(None, max_length = 200)
     chatFont: Optional[str] = Field(None, max_length = 200)
@@ -740,7 +769,9 @@ class PersonalizationCustomization(BaseModel):
         items = [item for item in value if not (item.id in seen or seen.add(item.id))]
         for item_id, visible in SIDEBAR_MENU_ITEM_DEFAULTS.items():
             if item_id not in seen:
-                items.append(PersonalizationSidebarMenuItem(id = item_id, visible = visible))
+                items.append(
+                    PersonalizationSidebarMenuItem(id = item_id, visible = visible)
+                )
         return items
 
 
@@ -760,7 +791,9 @@ class PersonalizationPayload(BaseModel):
 
     version: int = PERSONALIZATION_VERSION
     profile: PersonalizationProfile = Field(default_factory = PersonalizationProfile)
-    appearance: PersonalizationAppearance = Field(default_factory = PersonalizationAppearance)
+    appearance: PersonalizationAppearance = Field(
+        default_factory = PersonalizationAppearance
+    )
 
 
 class PersonalizationResponse(PersonalizationPayload):
@@ -781,9 +814,13 @@ def get_personalization_settings(
     response.saved = bool(stored)
     appearance = stored.get("appearance") if isinstance(stored, dict) else None
     profile = stored.get("profile") if isinstance(stored, dict) else None
-    response.customizationSaved = isinstance(appearance, dict) and "customization" in appearance
+    response.customizationSaved = (
+        isinstance(appearance, dict) and "customization" in appearance
+    )
     response.paletteSaved = isinstance(appearance, dict) and "palette" in appearance
-    response.greetingSlothSaved = isinstance(profile, dict) and "showGreetingSloth" in profile
+    response.greetingSlothSaved = (
+        isinstance(profile, dict) and "showGreetingSloth" in profile
+    )
     return response
 
 

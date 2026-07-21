@@ -329,7 +329,10 @@ def test_local_gguf_entry_rejects_standalone_mmproj(tmp_path):
     proj = tmp_path / "mmproj-F16.gguf"
     proj.write_text("x")
     assert resolver._local_gguf_entry("p", SimpleNamespace(path = str(proj))) is None
-    assert resolver.info_has_local_gguf(SimpleNamespace(id = str(proj), path = str(proj))) is False
+    assert (
+        resolver.info_has_local_gguf(SimpleNamespace(id = str(proj), path = str(proj)))
+        is False
+    )
 
 
 def _entry(loader_id, *variants):
@@ -469,7 +472,9 @@ def test_idle_loop_unloads_after_ttl_and_stashes_for_reload(monkeypatch):
     asyncio.run(_drive())
     assert unloads == [1]  # freed once, not repeatedly
     stash = kw.get_last_unloaded_model()
-    assert stash is not None and stash[0] == "unsloth/Idle-GGUF" and stash[1] == "Q4_K_M"
+    assert (
+        stash is not None and stash[0] == "unsloth/Idle-GGUF" and stash[1] == "Q4_K_M"
+    )
 
 
 def test_idle_loop_deletes_saved_kv_when_unload_fails(monkeypatch, tmp_path):
@@ -532,7 +537,9 @@ def test_disabling_idle_unload_purges_saved_kv(monkeypatch, tmp_path):
         "dir": str(tmp_path),
         "slots": [{"id": 0, "filename": saved.name}],
     }
-    monkeypatch.setattr(settings_route, "set_openai_auto_switch", lambda *a: (False, 300, True))
+    monkeypatch.setattr(
+        settings_route, "set_openai_auto_switch", lambda *a: (False, 300, True)
+    )
     monkeypatch.setattr(settings_route, "get_auto_unload_idle_seconds", lambda: 0)
 
     payload = settings_route.OpenAIAutoSwitchPayload(enabled = False)
@@ -596,7 +603,10 @@ def test_auto_switch_applies_model_override(monkeypatch):
     monkeypatch.setattr(
         settings,
         "get_model_override",
-        lambda model_id: {"llama_extra_args": ["--n-gpu-layers", "20"], "max_seq_length": 4096},
+        lambda model_id: {
+            "llama_extra_args": ["--n-gpu-layers", "20"],
+            "max_seq_length": 4096,
+        },
     )
 
     _run_hook("unsloth/B-GGUF")
@@ -620,7 +630,9 @@ def test_auto_switch_applies_partial_override(monkeypatch):
         recorder = rec,
     )
     monkeypatch.setattr(
-        settings, "get_model_override", lambda model_id: {"llama_extra_args": ["--flash-attn"]}
+        settings,
+        "get_model_override",
+        lambda model_id: {"llama_extra_args": ["--flash-attn"]},
     )
 
     _run_hook("unsloth/B-GGUF")
@@ -645,7 +657,9 @@ def _mock_override_store(monkeypatch):
         return current
 
     monkeypatch.setattr(db, "upsert_app_setting_map_entry", _merge_entry)
-    monkeypatch.setattr(db, "get_app_setting", lambda k, default = None: store.get(k, default))
+    monkeypatch.setattr(
+        db, "get_app_setting", lambda k, default = None: store.get(k, default)
+    )
     settings._cache.clear()
     return store
 
@@ -661,7 +675,9 @@ def test_model_override_roundtrip(monkeypatch):
         "max_seq_length": 4096,
     }
     # An override with no fields removes the entry rather than storing an empty one.
-    settings.set_model_override("unsloth/B-GGUF", llama_extra_args = [], max_seq_length = None)
+    settings.set_model_override(
+        "unsloth/B-GGUF", llama_extra_args = [], max_seq_length = None
+    )
     assert settings.get_model_override("unsloth/B-GGUF") == {}
     assert settings.get_model_overrides() == {}
 
@@ -682,7 +698,9 @@ def test_override_route_rejects_managed_flag_and_removes(monkeypatch):
 
     # A valid override is stored, then an empty payload removes it through the route.
     ok = settings_route.ModelOverridePayload(
-        model_id = "unsloth/B-GGUF", llama_extra_args = ["--flash-attn"], max_seq_length = 4096
+        model_id = "unsloth/B-GGUF",
+        llama_extra_args = ["--flash-attn"],
+        max_seq_length = 4096,
     )
     resp = settings_route.update_openai_auto_switch_override(ok, "tester")
     assert resp.overrides["unsloth/B-GGUF"]["max_seq_length"] == 4096
@@ -701,7 +719,12 @@ def test_model_override_rejects_zero_max_seq_length():
 
     with pytest.raises(pydantic.ValidationError):
         settings_route.ModelOverridePayload(model_id = "x", max_seq_length = 0)
-    assert settings_route.ModelOverridePayload(model_id = "x", max_seq_length = 1).max_seq_length == 1
+    assert (
+        settings_route.ModelOverridePayload(
+            model_id = "x", max_seq_length = 1
+        ).max_seq_length
+        == 1
+    )
 
 
 def test_update_openai_auto_switch_writes_both_keys_in_one_transaction(monkeypatch):
@@ -723,7 +746,9 @@ def test_update_openai_auto_switch_writes_both_keys_in_one_transaction(monkeypat
     monkeypatch.setattr(db, "upsert_app_settings", _capture)
     settings._cache.clear()
 
-    payload = settings_route.OpenAIAutoSwitchPayload(enabled = True, auto_unload_idle_seconds = 120)
+    payload = settings_route.OpenAIAutoSwitchPayload(
+        enabled = True, auto_unload_idle_seconds = 120
+    )
     resp = settings_route.update_openai_auto_switch(payload, "tester")
     assert resp.enabled is True and resp.auto_unload_idle_seconds == 120
     assert len(calls) == 1  # one transaction, not two
@@ -739,7 +764,9 @@ def test_settings_report_idle_unload_active_when_env_backed(monkeypatch):
     import routes.settings as settings_route
 
     monkeypatch.setattr(settings_route, "get_openai_auto_switch_enabled", lambda: False)
-    monkeypatch.setattr(settings_route, "get_stored_auto_unload_idle_seconds", lambda: 600)
+    monkeypatch.setattr(
+        settings_route, "get_stored_auto_unload_idle_seconds", lambda: 600
+    )
     monkeypatch.setattr(
         settings_route, "get_auto_unload_idle_seconds", lambda: 600
     )  # effective > 0
@@ -760,12 +787,24 @@ def test_v1_models_retrieve_is_case_insensitive(monkeypatch):
     # main's #6519; only the loaded fast-path is exact, the catalog loop is lenient.)
     from fastapi import HTTPException
 
-    monkeypatch.setattr(inference_route, "_openai_model_objects", lambda: [])  # nothing loaded
+    monkeypatch.setattr(
+        inference_route, "_openai_model_objects", lambda: []
+    )  # nothing loaded
 
     async def _catalog():
         return [
-            {"id": "unsloth/A-GGUF", "object": "model", "created": 1, "owned_by": "local"},
-            {"id": "unsloth/B-GGUF", "object": "model", "created": 1, "owned_by": "local"},
+            {
+                "id": "unsloth/A-GGUF",
+                "object": "model",
+                "created": 1,
+                "owned_by": "local",
+            },
+            {
+                "id": "unsloth/B-GGUF",
+                "object": "model",
+                "created": 1,
+                "owned_by": "local",
+            },
         ]
 
     monkeypatch.setattr(inference_route, "_openai_catalog_objects", _catalog)
@@ -933,7 +972,12 @@ def test_keepwarm_tracks_inflight_when_enabled_even_if_idle_zero(monkeypatch):
         async def send(_m):
             pass
 
-        scope = {"type": "http", "path": "/v1/chat/completions", "method": "POST", "headers": []}
+        scope = {
+            "type": "http",
+            "path": "/v1/chat/completions",
+            "method": "POST",
+            "headers": [],
+        }
         await kw.LlamaKeepWarmMiddleware(app)(scope, receive, send)
 
     asyncio.run(drive())
@@ -1008,7 +1052,9 @@ def test_anthropic_validates_max_tokens_before_auto_switch():
 
     src = inspect.getsource(inference_route.anthropic_messages)
     assert "_maybe_auto_switch_model" in src
-    assert src.index("max_tokens: field required") < src.index("_maybe_auto_switch_model")
+    assert src.index("max_tokens: field required") < src.index(
+        "_maybe_auto_switch_model"
+    )
 
 
 def test_alias_reloads_model_freed_by_idle_unload_with_quant(monkeypatch):
@@ -1077,7 +1123,12 @@ def test_keepwarm_tracks_inflight_even_when_auto_switch_off(monkeypatch):
         async def send(_m):
             pass
 
-        scope = {"type": "http", "path": "/v1/chat/completions", "method": "POST", "headers": []}
+        scope = {
+            "type": "http",
+            "path": "/v1/chat/completions",
+            "method": "POST",
+            "headers": [],
+        }
         await kw.LlamaKeepWarmMiddleware(app)(scope, receive, send)
 
     asyncio.run(drive())
@@ -1085,7 +1136,9 @@ def test_keepwarm_tracks_inflight_even_when_auto_switch_off(monkeypatch):
     assert kw._inflight == 0
 
 
-def test_build_index_covers_legacy_default_lmstudio_and_custom_roots(monkeypatch, tmp_path):
+def test_build_index_covers_legacy_default_lmstudio_and_custom_roots(
+    monkeypatch, tmp_path
+):
     # _build_index must scan the same roots the model picker lists, else a model
     # the UI shows is silently served as the loaded one. Verify each is consulted.
     from pathlib import Path
@@ -1109,7 +1162,9 @@ def test_build_index_covers_legacy_default_lmstudio_and_custom_roots(monkeypatch
         "_scan_lmstudio_dir",
         lambda d: scanned.append(("lm", str(Path(d).resolve()))) or [],
     )
-    monkeypatch.setattr(models_route, "_resolve_hf_cache_dir", lambda: tmp_path / "active")
+    monkeypatch.setattr(
+        models_route, "_resolve_hf_cache_dir", lambda: tmp_path / "active"
+    )
     monkeypatch.setattr(models_route, "_is_hidden_model", lambda *a, **k: False)
     monkeypatch.setattr(upaths, "legacy_hf_cache_dir", lambda: tmp_path / "legacy")
     monkeypatch.setattr(upaths, "hf_default_cache_dir", lambda: tmp_path / "default")
@@ -1155,7 +1210,9 @@ def test_completions_list_body_is_400_not_500(monkeypatch):
         recorder = _LoadRecorder(backend),
     )
     with pytest.raises(HTTPException) as exc:
-        asyncio.run(inference_route.openai_completions(_json_body_request([]), "tester"))
+        asyncio.run(
+            inference_route.openai_completions(_json_body_request([]), "tester")
+        )
     assert exc.value.status_code == 400
 
 
@@ -1194,7 +1251,12 @@ def test_middleware_ignores_non_post(monkeypatch):
         async def send(_m):
             pass
 
-        scope = {"type": "http", "path": "/v1/chat/completions", "method": "OPTIONS", "headers": []}
+        scope = {
+            "type": "http",
+            "path": "/v1/chat/completions",
+            "method": "OPTIONS",
+            "headers": [],
+        }
         await kw.LlamaKeepWarmMiddleware(app)(scope, receive, send)
 
     asyncio.run(drive())
@@ -1307,7 +1369,9 @@ def test_hf_cache_entry_loads_from_local_snapshot_path(tmp_path):
     snap.mkdir(parents = True)
     (snap / "model-Q4_K_M.gguf").write_bytes(b"GGUF stub")
 
-    entry = resolver._local_gguf_entry("org/Repo", SimpleNamespace(id = "org/Repo", path = str(repo)))
+    entry = resolver._local_gguf_entry(
+        "org/Repo", SimpleNamespace(id = "org/Repo", path = str(repo))
+    )
     assert entry is not None
     assert entry.loader_id == "org/Repo"  # advertised id unchanged
     assert "snapshots" in entry.load_path  # loads from the concrete snapshot dir
@@ -1329,7 +1393,11 @@ def test_already_loaded_by_repo_id_is_not_reswapped(monkeypatch):
     _wire(
         monkeypatch,
         enabled = True,
-        resolves_to = ("/cache/models--org--Repo-GGUF/snapshots/abc", "Q4_K_M", "org/Repo-GGUF"),
+        resolves_to = (
+            "/cache/models--org--Repo-GGUF/snapshots/abc",
+            "Q4_K_M",
+            "org/Repo-GGUF",
+        ),
         backend = backend,
         recorder = rec,
     )
@@ -1363,7 +1431,9 @@ def test_already_serving_by_path_records_advertised_alias(monkeypatch):
     # and responses would report the path basename and list the alias as loaded:false
     # unless the alias is recorded as the advertised id on the already-serving return.
     path = "/cache/models--org--Repo-GGUF/snapshots/abc"
-    backend = _FakeBackend(path, hf_variant = "Q4_K_M")  # loaded by path, no advertised id
+    backend = _FakeBackend(
+        path, hf_variant = "Q4_K_M"
+    )  # loaded by path, no advertised id
     rec = _LoadRecorder(backend)
     _wire(
         monkeypatch,
@@ -1409,7 +1479,9 @@ def test_concurrent_same_target_requests_load_once(monkeypatch):
     )
     monkeypatch.setattr(kw, "_inflight", 2)  # both same-target requests counted
     monkeypatch.setattr(kw, "_pending", 0)
-    inference_route._note_switch_waiter(inference_route._switch_key("org/B-GGUF", "Q8_0"), 1)
+    inference_route._note_switch_waiter(
+        inference_route._switch_key("org/B-GGUF", "Q8_0"), 1
+    )
     _run_hook("org/B-GGUF:Q8_0")
     assert len(rec.calls) == 1  # loads once, no 409
 
@@ -1431,7 +1503,9 @@ def test_swap_still_refused_when_other_request_targets_different_model(monkeypat
     )
     monkeypatch.setattr(kw, "_inflight", 2)
     monkeypatch.setattr(kw, "_pending", 0)
-    inference_route._note_switch_waiter(inference_route._switch_key("org/C-GGUF", "Q4_K_M"), 1)
+    inference_route._note_switch_waiter(
+        inference_route._switch_key("org/C-GGUF", "Q4_K_M"), 1
+    )
     with pytest.raises(HTTPException) as exc:
         _run_hook("org/B-GGUF:Q8_0")
     assert exc.value.status_code == 409
@@ -1446,7 +1520,9 @@ def test_v1_models_advertises_repo_id_not_load_path(monkeypatch):
     llama._openai_advertised_id = "org/Repo-GGUF"
     monkeypatch.setattr(inference_route, "get_llama_cpp_backend", lambda: llama)
     monkeypatch.setattr(
-        inference_route, "get_inference_backend", lambda: SimpleNamespace(active_model_name = None)
+        inference_route,
+        "get_inference_backend",
+        lambda: SimpleNamespace(active_model_name = None),
     )
     objects = inference_route._openai_model_objects()
     assert [o["id"] for o in objects] == ["org/Repo-GGUF"]
@@ -1462,9 +1538,13 @@ def test_idle_alias_reload_preserves_override_via_advertised_id(monkeypatch):
     rec = _LoadRecorder(backend)
     _wire(monkeypatch, enabled = True, resolves_to = None, backend = backend, recorder = rec)
     monkeypatch.setattr(kw, "_inflight", 0)
-    monkeypatch.setattr(kw, "_last_unloaded_model", ("/cache/snap/A", "Q4_K_M", "org/A-GGUF"))
+    monkeypatch.setattr(
+        kw, "_last_unloaded_model", ("/cache/snap/A", "Q4_K_M", "org/A-GGUF")
+    )
     overrides = {"org/A-GGUF": {"max_seq_length": 8192}}
-    monkeypatch.setattr(settings, "get_model_override", lambda mid: overrides.get(mid, {}))
+    monkeypatch.setattr(
+        settings, "get_model_override", lambda mid: overrides.get(mid, {})
+    )
     _run_hook("gpt-4o-mini")
     assert rec.calls[0].model_path == "/cache/snap/A"  # reloads the freed path
     assert rec.calls[0].gguf_variant == "Q4_K_M"
@@ -1499,7 +1579,9 @@ def test_anthropic_503_when_unloaded_and_auto_switch_off(monkeypatch):
     monkeypatch.setattr(inference_route, "get_llama_cpp_backend", lambda: backend)
     monkeypatch.setattr(settings, "get_openai_auto_switch_enabled", lambda: False)
     with pytest.raises(HTTPException) as exc:
-        asyncio.run(inference_route.anthropic_messages(_anthropic_payload(), object(), "tester"))
+        asyncio.run(
+            inference_route.anthropic_messages(_anthropic_payload(), object(), "tester")
+        )
     assert exc.value.status_code == 503
 
 
@@ -1512,7 +1594,9 @@ def test_anthropic_400_when_auto_switch_on_and_max_tokens_missing(monkeypatch):
     monkeypatch.setattr(inference_route, "get_llama_cpp_backend", lambda: backend)
     monkeypatch.setattr(settings, "get_openai_auto_switch_enabled", lambda: True)
     with pytest.raises(HTTPException) as exc:
-        asyncio.run(inference_route.anthropic_messages(_anthropic_payload(), object(), "tester"))
+        asyncio.run(
+            inference_route.anthropic_messages(_anthropic_payload(), object(), "tester")
+        )
     assert exc.value.status_code == 400
 
 
@@ -1557,7 +1641,9 @@ def test_concurrent_same_target_loads_once_while_other_still_resolving(monkeypat
     monkeypatch.setattr(kw, "_inflight", 2)  # caller + a still-resolving twin
     monkeypatch.setattr(kw, "_pending", 0)
     # The twin has only registered its raw requested model (not yet a target waiter).
-    inference_route._note_request_waiter(inference_route._request_waiter_key("org/B-GGUF:Q8_0"), 1)
+    inference_route._note_request_waiter(
+        inference_route._request_waiter_key("org/B-GGUF:Q8_0"), 1
+    )
     _run_hook("org/B-GGUF:Q8_0")
     assert len(rec.calls) == 1  # loads once, no 409
 
@@ -1585,7 +1671,9 @@ def test_manual_unload_interrupts_even_while_inference_active(monkeypatch):
     backend.is_active = True
     backend.unload_model = lambda: setattr(backend, "is_loaded", False)
     monkeypatch.setattr(inference_route, "get_llama_cpp_backend", lambda: backend)
-    monkeypatch.setattr(inference_route, "is_registered_native_path_label", lambda *a: False)
+    monkeypatch.setattr(
+        inference_route, "is_registered_native_path_label", lambda *a: False
+    )
     monkeypatch.setattr(kw, "_inflight", 1)  # another request streaming
     monkeypatch.setattr(kw, "_pending", 0)
     resp = asyncio.run(
@@ -1651,7 +1739,9 @@ def test_chat_untracks_external_provider_before_proxy():
     # stream can't block a concurrent local auto-switch.
     import inspect
     src = inspect.getsource(inference_route.openai_chat_completions)
-    assert src.index("untrack_current_request") < src.index("_proxy_to_external_provider")
+    assert src.index("untrack_current_request") < src.index(
+        "_proxy_to_external_provider"
+    )
 
 
 # ── round 7: API-initiated training defers to active inference, UI does not ──
@@ -1661,8 +1751,12 @@ def test_authenticated_via_api_key_detects_key_vs_session():
     from fastapi.security import HTTPAuthorizationCredentials
     from auth.authentication import authenticated_via_api_key, API_KEY_PREFIX
 
-    key = HTTPAuthorizationCredentials(scheme = "Bearer", credentials = API_KEY_PREFIX + "abc")
-    jwt = HTTPAuthorizationCredentials(scheme = "Bearer", credentials = "eyJhbGciOiJ.session")
+    key = HTTPAuthorizationCredentials(
+        scheme = "Bearer", credentials = API_KEY_PREFIX + "abc"
+    )
+    jwt = HTTPAuthorizationCredentials(
+        scheme = "Bearer", credentials = "eyJhbGciOiJ.session"
+    )
     assert asyncio.run(authenticated_via_api_key(key)) is True
     assert asyncio.run(authenticated_via_api_key(jwt)) is False
 
@@ -1704,7 +1798,9 @@ def test_ui_training_not_blocked_by_active_inference(monkeypatch):
     fake = SimpleNamespace(is_training_active = lambda: True, current_job_id = "job-1")
     monkeypatch.setattr(training_route, "get_training_backend", lambda: fake)
     resp = asyncio.run(
-        training_route.start_training(_training_request(), current_subject = "t", via_api_key = False)
+        training_route.start_training(
+            _training_request(), current_subject = "t", via_api_key = False
+        )
     )
     assert resp.status == "error" and "already" in (resp.error or "").lower()
 
@@ -1715,7 +1811,9 @@ def test_ui_training_not_blocked_by_active_inference(monkeypatch):
 def test_env_idle_ttl_standalone_when_no_stored_value(monkeypatch):
     # With nothing stored, the env var enables idle-unload even while auto-switch
     # is off (headless/ops default), and the UI reader reflects it.
-    monkeypatch.setattr(settings, "_cached_setting", lambda k, d = None: d)  # nothing stored
+    monkeypatch.setattr(
+        settings, "_cached_setting", lambda k, d = None: d
+    )  # nothing stored
     monkeypatch.setenv("UNSLOTH_MODEL_IDLE_TTL", "600")
     monkeypatch.setattr(settings, "get_openai_auto_switch_enabled", lambda: False)
     assert settings.get_auto_unload_idle_seconds() == 600
@@ -1731,7 +1829,9 @@ def test_stored_idle_value_overrides_env_and_stays_gated(monkeypatch):
     monkeypatch.setattr(settings, "get_openai_auto_switch_enabled", lambda: True)
     assert settings.get_auto_unload_idle_seconds() == 90  # stored wins, not env
     monkeypatch.setattr(settings, "get_openai_auto_switch_enabled", lambda: False)
-    assert settings.get_auto_unload_idle_seconds() == 0  # explicit value still gated off
+    assert (
+        settings.get_auto_unload_idle_seconds() == 0
+    )  # explicit value still gated off
 
 
 def test_env_idle_ttl_invalid_is_ignored(monkeypatch):
@@ -1761,9 +1861,13 @@ def test_env_idle_standalone_reloads_freed_model_with_auto_switch_off(monkeypatc
         backend = backend,
         recorder = rec,
     )
-    monkeypatch.setattr(settings, "get_auto_unload_idle_seconds", lambda: 600)  # standalone env TTL
+    monkeypatch.setattr(
+        settings, "get_auto_unload_idle_seconds", lambda: 600
+    )  # standalone env TTL
     monkeypatch.setattr(kw, "_inflight", 0)
-    monkeypatch.setattr(kw, "_last_unloaded_model", ("/cache/snap/A", "Q4_K_M", "org/A-GGUF"))
+    monkeypatch.setattr(
+        kw, "_last_unloaded_model", ("/cache/snap/A", "Q4_K_M", "org/A-GGUF")
+    )
     _run_hook("org/B-GGUF")
     # Resolver skipped (auto-switch off), so only the stash reload runs: the freed A
     # is restored, not the resolves_to target B.
@@ -1782,7 +1886,9 @@ def test_no_stash_reload_when_idle_off_and_auto_switch_off(monkeypatch):
     _wire(monkeypatch, enabled = False, resolves_to = None, backend = backend, recorder = rec)
     monkeypatch.setattr(settings, "get_auto_unload_idle_seconds", lambda: 0)
     monkeypatch.setattr(kw, "_inflight", 0)
-    monkeypatch.setattr(kw, "_last_unloaded_model", ("/cache/snap/A", "Q4_K_M", "org/A-GGUF"))
+    monkeypatch.setattr(
+        kw, "_last_unloaded_model", ("/cache/snap/A", "Q4_K_M", "org/A-GGUF")
+    )
     _run_hook("org/B-GGUF")
     assert rec.calls == []
 
@@ -1798,7 +1904,9 @@ def test_stash_reload_skipped_while_unsloth_model_active(monkeypatch):
     rec = _LoadRecorder(backend)
     _wire(monkeypatch, enabled = True, resolves_to = None, backend = backend, recorder = rec)
     monkeypatch.setattr(kw, "_inflight", 0)
-    monkeypatch.setattr(kw, "_last_unloaded_model", ("/cache/snap/A", "Q4_K_M", "org/A-GGUF"))
+    monkeypatch.setattr(
+        kw, "_last_unloaded_model", ("/cache/snap/A", "Q4_K_M", "org/A-GGUF")
+    )
     # An Unsloth model is the live backend.
     monkeypatch.setattr(
         inference_route,
@@ -1822,21 +1930,28 @@ def test_advertised_loader_id_prefers_alias_over_abs_path():
     f = resolver._advertised_loader_id
     # An absolute-path id falls back to the first non-path alias.
     assert (
-        f(SimpleNamespace(id = "/home/me/models/x", model_id = "org/X-GGUF", display_name = "X"))
+        f(
+            SimpleNamespace(
+                id = "/home/me/models/x", model_id = "org/X-GGUF", display_name = "X"
+            )
+        )
         == "org/X-GGUF"
     )
     # No alias available: strip the path to a public id so a host path is never advertised.
     assert (
         f(
             SimpleNamespace(
-                id = "/home/me/models/Qwen3-8B-Q4_K_M.gguf", model_id = None, display_name = None
+                id = "/home/me/models/Qwen3-8B-Q4_K_M.gguf",
+                model_id = None,
+                display_name = None,
             )
         )
         == "Qwen3-8B-Q4_K_M"
     )
     # A normal repo id is advertised as-is.
     assert (
-        f(SimpleNamespace(id = "org/X-GGUF", model_id = "org/X-GGUF", display_name = "X")) == "org/X-GGUF"
+        f(SimpleNamespace(id = "org/X-GGUF", model_id = "org/X-GGUF", display_name = "X"))
+        == "org/X-GGUF"
     )
 
 
@@ -1883,7 +1998,10 @@ def test_build_index_survives_a_failing_scanner(tmp_path, monkeypatch):
         raise OSError("permission denied")
 
     lm_info = SimpleNamespace(
-        id = "org/Repo-GGUF", path = "/lm/Repo", model_id = "org/Repo-GGUF", display_name = "Repo"
+        id = "org/Repo-GGUF",
+        path = "/lm/Repo",
+        model_id = "org/Repo-GGUF",
+        display_name = "Repo",
     )
     monkeypatch.setattr(models_route, "_scan_models_dir", _boom)  # ./models blows up
     monkeypatch.setattr(models_route, "_scan_hf_cache", lambda *a, **k: [])
@@ -1912,12 +2030,17 @@ def test_info_has_local_gguf_reads_files_not_model_format(tmp_path):
 
     gguf = tmp_path / "model-Q4_K_M.gguf"
     gguf.write_bytes(b"x" * 32)
-    assert resolver.info_has_local_gguf(SimpleNamespace(id = str(gguf), path = str(gguf))) is True
+    assert (
+        resolver.info_has_local_gguf(SimpleNamespace(id = str(gguf), path = str(gguf)))
+        is True
+    )
 
     st = tmp_path / "safetensors_model"
     st.mkdir()
     (st / "model.safetensors").write_bytes(b"x" * 32)
-    assert resolver.info_has_local_gguf(SimpleNamespace(id = str(st), path = str(st))) is False
+    assert (
+        resolver.info_has_local_gguf(SimpleNamespace(id = str(st), path = str(st))) is False
+    )
 
 
 def test_info_has_local_gguf_excludes_ollama_links(tmp_path):
@@ -1930,13 +2053,18 @@ def test_info_has_local_gguf_excludes_ollama_links(tmp_path):
     ollama_gguf = links / "model-Q4_K_M.gguf"
     ollama_gguf.write_bytes(b"x" * 32)
     assert (
-        resolver.info_has_local_gguf(SimpleNamespace(id = "ollama/foo:latest", path = str(ollama_gguf)))
+        resolver.info_has_local_gguf(
+            SimpleNamespace(id = "ollama/foo:latest", path = str(ollama_gguf))
+        )
         is False
     )
     # The same GGUF outside an ollama-link dir is still servable.
     plain = tmp_path / "model-Q4_K_M.gguf"
     plain.write_bytes(b"x" * 32)
-    assert resolver.info_has_local_gguf(SimpleNamespace(id = str(plain), path = str(plain))) is True
+    assert (
+        resolver.info_has_local_gguf(SimpleNamespace(id = str(plain), path = str(plain)))
+        is True
+    )
 
 
 def test_embeddings_input_present_helper():
@@ -1965,7 +2093,9 @@ def test_embeddings_rejects_missing_input_before_switch(monkeypatch):
     )
     with pytest.raises(HTTPException) as exc:
         asyncio.run(
-            inference_route.openai_embeddings(_json_body_request({"model": "org/B-GGUF"}), "tester")
+            inference_route.openai_embeddings(
+                _json_body_request({"model": "org/B-GGUF"}), "tester"
+            )
         )
     assert exc.value.status_code == 400
     assert rec.calls == []  # no model switch happened
@@ -1979,7 +2109,9 @@ def test_retrieve_model_tolerates_non_string_id(monkeypatch):
     async def _objs():
         return [{"id": 123, "object": "model"}, {"id": "org/B-GGUF", "object": "model"}]
 
-    monkeypatch.setattr(inference_route, "_openai_model_objects", lambda: [])  # nothing loaded
+    monkeypatch.setattr(
+        inference_route, "_openai_model_objects", lambda: []
+    )  # nothing loaded
     monkeypatch.setattr(inference_route, "_openai_catalog_objects", _objs)
     obj = asyncio.run(inference_route.openai_retrieve_model("org/B-GGUF", "tester"))
     assert obj["id"] == "org/B-GGUF"
@@ -2033,7 +2165,9 @@ def test_chat_streaming_n_gt_1_rejected_before_switch(monkeypatch):
     )
     payload = _chat_request(model = "org/B-GGUF", stream = True, n = 2)
     with pytest.raises(HTTPException) as exc:
-        asyncio.run(inference_route.openai_chat_completions(payload, object(), "tester"))
+        asyncio.run(
+            inference_route.openai_chat_completions(payload, object(), "tester")
+        )
     assert exc.value.status_code == 400
     assert rec.calls == []
 
@@ -2074,7 +2208,9 @@ def test_keepwarm_does_not_stamp_activity_on_401(monkeypatch):
 
     async def _run(status_code):
         async def _app(scope, receive, send):
-            await send({"type": "http.response.start", "status": status_code, "headers": []})
+            await send(
+                {"type": "http.response.start", "status": status_code, "headers": []}
+            )
             await send({"type": "http.response.body", "body": b"x", "more_body": False})
 
         sent = []
@@ -2083,7 +2219,11 @@ def test_keepwarm_does_not_stamp_activity_on_401(monkeypatch):
             sent.append(m)
 
         mw = kw.LlamaKeepWarmMiddleware(_app)
-        await mw({"type": "http", "method": "POST", "path": "/v1/chat/completions"}, _recv, _send)
+        await mw(
+            {"type": "http", "method": "POST", "path": "/v1/chat/completions"},
+            _recv,
+            _send,
+        )
 
     asyncio.run(_run(401))
     assert kw._inflight == 0  # balanced (start then untracked end)
@@ -2104,7 +2244,9 @@ def _stash(monkeypatch, *, idle = 600):
 
     monkeypatch.setattr(settings, "get_auto_unload_idle_seconds", lambda: idle)
     monkeypatch.setattr(kw, "_inflight", 0)
-    monkeypatch.setattr(kw, "_last_unloaded_model", ("/cache/snap/A", "Q4_K_M", "org/A-GGUF"))
+    monkeypatch.setattr(
+        kw, "_last_unloaded_model", ("/cache/snap/A", "Q4_K_M", "org/A-GGUF")
+    )
 
 
 def test_completions_prompt_present_helper():
@@ -2150,9 +2292,13 @@ def test_chat_system_only_rejected_before_idle_reload(monkeypatch):
     rec = _LoadRecorder(backend)
     _wire(monkeypatch, enabled = False, resolves_to = None, backend = backend, recorder = rec)
     _stash(monkeypatch)
-    payload = ChatCompletionRequest(model = "x", messages = [{"role": "system", "content": "sys"}])
+    payload = ChatCompletionRequest(
+        model = "x", messages = [{"role": "system", "content": "sys"}]
+    )
     with pytest.raises(HTTPException) as exc:
-        asyncio.run(inference_route.openai_chat_completions(payload, object(), "tester"))
+        asyncio.run(
+            inference_route.openai_chat_completions(payload, object(), "tester")
+        )
     assert exc.value.status_code == 400
     assert rec.calls == []  # no reload before rejection
 
@@ -2167,7 +2313,11 @@ def test_embeddings_missing_input_rejected_before_idle_reload(monkeypatch):
     _wire(monkeypatch, enabled = False, resolves_to = None, backend = backend, recorder = rec)
     _stash(monkeypatch)
     with pytest.raises(HTTPException) as exc:
-        asyncio.run(inference_route.openai_embeddings(_json_body_request({"model": "x"}), "tester"))
+        asyncio.run(
+            inference_route.openai_embeddings(
+                _json_body_request({"model": "x"}), "tester"
+            )
+        )
     assert exc.value.status_code == 400
     assert rec.calls == []  # no reload before rejection
 
@@ -2229,7 +2379,9 @@ def test_audio_generate_reloads_idle_freed_model(monkeypatch):
     rec = _LoadRecorder(backend)
     _wire(monkeypatch, enabled = False, resolves_to = None, backend = backend, recorder = rec)
     _stash(monkeypatch)
-    payload = ChatCompletionRequest(model = "x", messages = [{"role": "user", "content": "say hi"}])
+    payload = ChatCompletionRequest(
+        model = "x", messages = [{"role": "user", "content": "say hi"}]
+    )
     # Falls through to the non-audio backend path (no real model) after the reload;
     # tolerate that downstream failure, the reload having run is the assertion.
     try:
@@ -2366,7 +2518,9 @@ def test_omitted_model_still_reloads_idle_freed_model(monkeypatch):
     _wire(monkeypatch, enabled = False, resolves_to = None, backend = backend, recorder = rec)
     monkeypatch.setattr(settings, "get_auto_unload_idle_seconds", lambda: 600)
     monkeypatch.setattr(kw, "_inflight", 0)
-    monkeypatch.setattr(kw, "_last_unloaded_model", ("/cache/snap/A", "Q4_K_M", "org/A-GGUF"))
+    monkeypatch.setattr(
+        kw, "_last_unloaded_model", ("/cache/snap/A", "Q4_K_M", "org/A-GGUF")
+    )
     asyncio.run(
         inference_route._auto_switch_from_request_body(
             _json_body_request({"prompt": "hi"}), "tester"
@@ -2400,7 +2554,9 @@ def test_anthropic_invalid_tool_rejected_before_switch(monkeypatch):
         backend = backend,
         recorder = rec,
     )
-    payload = _anthropic_payload_with_tools([{"name": "broken"}])  # missing input_schema
+    payload = _anthropic_payload_with_tools(
+        [{"name": "broken"}]
+    )  # missing input_schema
     with pytest.raises(HTTPException) as exc:
         asyncio.run(inference_route.anthropic_messages(payload, object(), "tester"))
     assert exc.value.status_code == 400
@@ -2411,9 +2567,14 @@ def test_anthropic_validates_tools_before_auto_switch():
     # Lock the order at the source: tool-shape validation precedes the hook, for
     # both /messages and /messages/count_tokens (shared helper).
     import inspect
-    for fn in (inference_route.anthropic_messages, inference_route.anthropic_count_tokens):
+    for fn in (
+        inference_route.anthropic_messages,
+        inference_route.anthropic_count_tokens,
+    ):
         src = inspect.getsource(fn)
-        assert src.index("_validate_anthropic_client_tools") < src.index("_maybe_auto_switch_model")
+        assert src.index("_validate_anthropic_client_tools") < src.index(
+            "_maybe_auto_switch_model"
+        )
 
 
 def test_anthropic_mixed_tools_rejected_before_switch(monkeypatch):
@@ -2468,7 +2629,10 @@ def test_switch_model_for_payload_only_switches_when_explicit():
     from models.inference import ChatCompletionRequest
 
     omitted = ChatCompletionRequest(messages = [_chat_msg()])
-    assert inference_route._switch_model_for_payload(omitted) == inference_route._RELOAD_ONLY_MODEL
+    assert (
+        inference_route._switch_model_for_payload(omitted)
+        == inference_route._RELOAD_ONLY_MODEL
+    )
     explicit_default = ChatCompletionRequest(model = "default", messages = [_chat_msg()])
     assert inference_route._switch_model_for_payload(explicit_default) == "default"
     explicit = ChatCompletionRequest(model = "org/B-GGUF", messages = [_chat_msg()])
@@ -2512,7 +2676,9 @@ def test_build_chat_request_propagates_omitted_model():
     chat_req = inference_route._build_chat_request(omitted, [_chat_msg()], stream = False)
     assert "model" not in chat_req.model_fields_set
     explicit = _responses_payload(set_model = True)
-    chat_req2 = inference_route._build_chat_request(explicit, [_chat_msg()], stream = False)
+    chat_req2 = inference_route._build_chat_request(
+        explicit, [_chat_msg()], stream = False
+    )
     assert "model" in chat_req2.model_fields_set
 
 
@@ -2548,7 +2714,10 @@ def test_responses_valid_and_builtin_tools_pass_validation(monkeypatch):
 
     monkeypatch.setattr(inference_route, "_maybe_auto_switch_model", _boom)
     payload = _responses_payload(
-        tools = [{"type": "function", "name": "ok", "parameters": {}}, {"type": "web_search"}]
+        tools = [
+            {"type": "function", "name": "ok", "parameters": {}},
+            {"type": "web_search"},
+        ]
     )
     with pytest.raises(_Reached):
         asyncio.run(inference_route.openai_responses(payload, object(), "tester"))
@@ -2574,7 +2743,9 @@ def test_responses_forcing_tool_choice_without_name_rejected_before_switch(monke
         raise AssertionError("must not switch on an invalid tool_choice")
 
     monkeypatch.setattr(inference_route, "_maybe_auto_switch_model", _boom)
-    payload = ResponsesRequest(model = "org/B-GGUF", input = "hi", tool_choice = {"type": "function"})
+    payload = ResponsesRequest(
+        model = "org/B-GGUF", input = "hi", tool_choice = {"type": "function"}
+    )
     with pytest.raises(HTTPException) as exc:
         asyncio.run(inference_route.openai_responses(payload, object(), "tester"))
     assert exc.value.status_code == 400
@@ -2626,7 +2797,9 @@ def test_chat_confirm_without_stream_rejected_before_switch(monkeypatch):
         model = "org/B-GGUF", enable_tools = True, confirm_tool_calls = True, stream = False
     )
     with pytest.raises(HTTPException) as exc:
-        asyncio.run(inference_route.openai_chat_completions(payload, object(), "tester"))
+        asyncio.run(
+            inference_route.openai_chat_completions(payload, object(), "tester")
+        )
     assert exc.value.status_code == 400
     assert rec.calls == []
 
@@ -2650,7 +2823,9 @@ def test_chat_confirm_with_bypass_permissions_reaches_hook(monkeypatch):
         bypass_permissions = True,
     )
     with pytest.raises(_Reached):
-        asyncio.run(inference_route.openai_chat_completions(payload, object(), "tester"))
+        asyncio.run(
+            inference_route.openai_chat_completions(payload, object(), "tester")
+        )
 
 
 def test_chat_audio_input_guards_target_before_switch(monkeypatch):
@@ -2677,7 +2852,9 @@ def test_chat_audio_input_guards_target_before_switch(monkeypatch):
     monkeypatch.setattr(inference_route, "_maybe_auto_switch_model", _capture)
     payload = _chat_request(model = "org/B-GGUF", audio_base64 = "AAAA")
     with pytest.raises(_Reached):
-        asyncio.run(inference_route.openai_chat_completions(payload, object(), "tester"))
+        asyncio.run(
+            inference_route.openai_chat_completions(payload, object(), "tester")
+        )
     assert captured["require_vision"] is True
 
 
@@ -2747,7 +2924,9 @@ def test_chat_oversized_audio_rejected_before_switch(monkeypatch):
     big = "A" * (inference_route._MAX_AUDIO_B64_CHARS + 1)
     payload = _chat_request(model = "org/B-GGUF", audio_base64 = big)
     with pytest.raises(HTTPException) as exc:
-        asyncio.run(inference_route.openai_chat_completions(payload, object(), "tester"))
+        asyncio.run(
+            inference_route.openai_chat_completions(payload, object(), "tester")
+        )
     assert exc.value.status_code == 413
     assert rec.calls == []
 
@@ -2773,7 +2952,9 @@ def test_chat_confirm_without_stream_mcp_rejected_before_switch(monkeypatch):
         model = "org/B-GGUF", mcp_enabled = True, confirm_tool_calls = True, stream = False
     )
     with pytest.raises(HTTPException) as exc:
-        asyncio.run(inference_route.openai_chat_completions(payload, object(), "tester"))
+        asyncio.run(
+            inference_route.openai_chat_completions(payload, object(), "tester")
+        )
     assert exc.value.status_code == 400
     assert rec.calls == []
 
@@ -2815,7 +2996,9 @@ def test_require_vision_allows_vision_target(monkeypatch):
     )
     monkeypatch.setattr(inference_route, "_target_is_vision", lambda _p: True)
     asyncio.run(
-        inference_route._maybe_auto_switch_model("org/B-GGUF", object(), "t", require_vision = True)
+        inference_route._maybe_auto_switch_model(
+            "org/B-GGUF", object(), "t", require_vision = True
+        )
     )
     assert len(rec.calls) == 1  # vision target still switches
 
@@ -2830,12 +3013,16 @@ def test_require_vision_ignores_reload_stash(monkeypatch):
     _wire(monkeypatch, enabled = False, resolves_to = None, backend = backend, recorder = rec)
     monkeypatch.setattr(settings, "get_auto_unload_idle_seconds", lambda: 600)
     monkeypatch.setattr(kw, "_inflight", 0)
-    monkeypatch.setattr(kw, "_last_unloaded_model", ("/cache/snap/A", "Q4_K_M", "org/A-GGUF"))
+    monkeypatch.setattr(
+        kw, "_last_unloaded_model", ("/cache/snap/A", "Q4_K_M", "org/A-GGUF")
+    )
     monkeypatch.setattr(
         inference_route, "_target_is_vision", lambda _p: False
     )  # would reject if used
     asyncio.run(
-        inference_route._maybe_auto_switch_model("org/B-GGUF", object(), "t", require_vision = True)
+        inference_route._maybe_auto_switch_model(
+            "org/B-GGUF", object(), "t", require_vision = True
+        )
     )
     assert len(rec.calls) == 1
     assert rec.calls[0].model_path == "/cache/snap/A"  # restored despite require_vision
@@ -2857,7 +3044,12 @@ def test_chat_validates_confirm_and_modality_before_switch():
 
 
 def test_messages_have_image_helper():
-    from models.inference import ChatMessage, ImageContentPart, ImageUrl, TextContentPart
+    from models.inference import (
+        ChatMessage,
+        ImageContentPart,
+        ImageUrl,
+        TextContentPart,
+    )
 
     f = inference_route._messages_have_image
     text_only = [
@@ -2865,7 +3057,9 @@ def test_messages_have_image_helper():
         ChatMessage(role = "user", content = [TextContentPart(type = "text", text = "hi")]),
     ]
     assert f(text_only) is False
-    img = ImageContentPart(type = "image_url", image_url = ImageUrl(url = "data:image/png;base64,AAAA"))
+    img = ImageContentPart(
+        type = "image_url", image_url = ImageUrl(url = "data:image/png;base64,AAAA")
+    )
     assert f([ChatMessage(role = "user", content = [img])]) is True
 
 
@@ -2881,7 +3075,9 @@ def test_anthropic_request_has_image_helper():
     assert f(text_block) is False
     dict_img = SimpleNamespace(messages = [SimpleNamespace(content = [{"type": "image"}])])
     assert f(dict_img) is True
-    typed_img = SimpleNamespace(messages = [SimpleNamespace(content = [SimpleNamespace(type = "image")])])
+    typed_img = SimpleNamespace(
+        messages = [SimpleNamespace(content = [SimpleNamespace(type = "image")])]
+    )
     assert f(typed_img) is True
 
 
@@ -2918,7 +3114,9 @@ def test_count_tokens_rejects_malformed_tool_before_switch(monkeypatch):
         backend = backend,
         recorder = rec,
     )
-    payload = _anthropic_payload_with_tools([{"name": "broken"}])  # no input_schema/type
+    payload = _anthropic_payload_with_tools(
+        [{"name": "broken"}]
+    )  # no input_schema/type
     with pytest.raises(HTTPException) as exc:
         asyncio.run(inference_route.anthropic_count_tokens(payload, object(), "tester"))
     assert exc.value.status_code == 400
@@ -3026,9 +3224,13 @@ def test_chat_rejects_malformed_tool_choice_before_switch(monkeypatch):
         backend = backend,
         recorder = rec,
     )
-    payload = _chat_request(model = "org/B-GGUF", tool_choice = {"type": "function", "function": {}})
+    payload = _chat_request(
+        model = "org/B-GGUF", tool_choice = {"type": "function", "function": {}}
+    )
     with pytest.raises(HTTPException) as exc:
-        asyncio.run(inference_route.openai_chat_completions(payload, object(), "tester"))
+        asyncio.run(
+            inference_route.openai_chat_completions(payload, object(), "tester")
+        )
     assert exc.value.status_code == 400
     assert rec.calls == []
 
@@ -3047,7 +3249,9 @@ def test_chat_valid_tool_choice_reaches_hook(monkeypatch):
         model = "org/B-GGUF", tool_choice = {"type": "function", "function": {"name": "ok"}}
     )
     with pytest.raises(_Reached):
-        asyncio.run(inference_route.openai_chat_completions(payload, object(), "tester"))
+        asyncio.run(
+            inference_route.openai_chat_completions(payload, object(), "tester")
+        )
 
 
 def test_lifecycle_gate_serializes_across_loops():
@@ -3206,10 +3410,14 @@ def test_responses_stream_hint_matches_toggle_regardless_of_active_model(monkeyp
     # evicts it to load a resolved GGUF (_maybe_auto_switch_model's resolver
     # branch has no active-model guard, unlike its reload-stash branch). Only
     # the toggle being on suppresses it.
-    hinted = _run_responses_stream_no_model(monkeypatch, enabled = False, active_model_name = None)
+    hinted = _run_responses_stream_no_model(
+        monkeypatch, enabled = False, active_model_name = None
+    )
     assert "Model auto-switch" in hinted
 
-    on = _run_responses_stream_no_model(monkeypatch, enabled = True, active_model_name = None)
+    on = _run_responses_stream_no_model(
+        monkeypatch, enabled = True, active_model_name = None
+    )
     assert "Model auto-switch" not in on
 
     non_gguf_loaded = _run_responses_stream_no_model(
@@ -3261,7 +3469,9 @@ def _drive_idle_loop(
     asyncio.run(_drive())
 
 
-def test_idle_unload_saves_slots_before_unload_and_stashes_manifest(monkeypatch, tmp_path):
+def test_idle_unload_saves_slots_before_unload_and_stashes_manifest(
+    monkeypatch, tmp_path
+):
     import time
     from core.inference import llama_keepwarm as kw
 
@@ -3512,7 +3722,12 @@ def test_restore_skipped_when_launch_config_changed(tmp_path):
     backend = _FakeBackend("unsloth/A-GGUF", hf_variant = "Q4_K_M")
     backend._gguf_path = manifest["gguf"]
     backend._slot_save_binary = ("/bin/llama-server", 111)
-    backend._slot_launch_fingerprint = lambda: (("--rope-freq-scale", "0.5"), None, None, 1)
+    backend._slot_launch_fingerprint = lambda: (
+        ("--rope-freq-scale", "0.5"),
+        None,
+        None,
+        1,
+    )
     restored = []
     backend.restore_slots_for_resume = lambda manifest: restored.append(manifest)
 
@@ -3652,7 +3867,9 @@ def test_put_route_disabling_keep_kv_purges_saved_state(monkeypatch, tmp_path):
     state_file, manifest = _seed_kv_manifest(tmp_path)
     monkeypatch.setattr(kw, "_kv_resume", manifest)
 
-    payload = settings_route.OpenAIAutoSwitchPayload(enabled = True, auto_unload_keep_kv = False)
+    payload = settings_route.OpenAIAutoSwitchPayload(
+        enabled = True, auto_unload_keep_kv = False
+    )
     resp = settings_route.update_openai_auto_switch(payload, "tester")
     assert resp.auto_unload_keep_kv is False
     assert kw._kv_resume is None
@@ -3669,7 +3886,10 @@ def test_keep_kv_only_update_leaves_env_idle_ttl_active(monkeypatch):
     monkeypatch.setattr(settings, "_cached_setting", lambda k, d = None: store.get(k, d))
     monkeypatch.setenv(settings.MODEL_IDLE_TTL_ENV_VAR, "600")
 
-    assert settings_route.OpenAIAutoSwitchPayload(enabled = False).auto_unload_idle_seconds is None
+    assert (
+        settings_route.OpenAIAutoSwitchPayload(enabled = False).auto_unload_idle_seconds
+        is None
+    )
     enabled, idle, keep_kv = settings.set_openai_auto_switch(False, None, False)
     assert settings.AUTO_UNLOAD_IDLE_SETTING_KEY not in store  # idle untouched
     assert settings.get_auto_unload_idle_seconds() == 600  # env TTL still active
@@ -3727,7 +3947,9 @@ def test_put_route_rejects_idle_below_floor():
     import routes.settings as settings_route
     from fastapi import HTTPException
 
-    payload = settings_route.OpenAIAutoSwitchPayload(enabled = True, auto_unload_idle_seconds = 30)
+    payload = settings_route.OpenAIAutoSwitchPayload(
+        enabled = True, auto_unload_idle_seconds = 30
+    )
     with pytest.raises(HTTPException) as excinfo:
         settings_route.update_openai_auto_switch(payload, "tester")
     assert excinfo.value.status_code == 400

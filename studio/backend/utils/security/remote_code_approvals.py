@@ -44,7 +44,11 @@ class StoredApproval:
 
 
 def cache_disabled() -> bool:
-    return os.environ.get("UNSLOTH_TRC_APPROVAL_CACHE_DISABLE", "").lower() in ("1", "true", "yes")
+    return os.environ.get("UNSLOTH_TRC_APPROVAL_CACHE_DISABLE", "").lower() in (
+        "1",
+        "true",
+        "yes",
+    )
 
 
 def _store_path():
@@ -52,9 +56,11 @@ def _store_path():
 
 
 def _env_offline() -> bool:
-    return os.environ.get("HF_HUB_OFFLINE", "").lower() in ("1", "true", "yes") or os.environ.get(
-        "TRANSFORMERS_OFFLINE", ""
-    ).lower() in ("1", "true", "yes")
+    return os.environ.get("HF_HUB_OFFLINE", "").lower() in (
+        "1",
+        "true",
+        "yes",
+    ) or os.environ.get("TRANSFORMERS_OFFLINE", "").lower() in ("1", "true", "yes")
 
 
 def approval_target_key(targets) -> str:
@@ -117,7 +123,9 @@ def _file_lock():
     path = _store_path()
     try:
         storage_roots.ensure_dir(path.parent)
-        fd = os.open(str(path.parent / f"{path.name}.lock"), os.O_CREAT | os.O_RDWR, 0o600)
+        fd = os.open(
+            str(path.parent / f"{path.name}.lock"), os.O_CREAT | os.O_RDWR, 0o600
+        )
     except Exception:
         yield
         return

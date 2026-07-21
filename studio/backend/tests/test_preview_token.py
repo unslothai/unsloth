@@ -72,4 +72,6 @@ def test_rotation_revokes_links(tmp_path, monkeypatch):
     storage.rotate_preview_link_secret()
     # Old shared link is revoked; a freshly minted one works.
     assert not preview_token.verify_preview_ref("demorun", token)
-    assert preview_token.verify_preview_ref("demorun", preview_token.sign_preview_ref("demorun"))
+    assert preview_token.verify_preview_ref(
+        "demorun", preview_token.sign_preview_ref("demorun")
+    )

@@ -277,7 +277,10 @@ def test_deepseek_r1_fenced_json_parses():
     calls = parse_tool_calls_from_text(text)
     assert len(calls) == 1
     assert calls[0]["function"]["name"] == "get_weather"
-    assert _json.loads(calls[0]["function"]["arguments"]) == {"city": "NYC", "unit": "c"}
+    assert _json.loads(calls[0]["function"]["arguments"]) == {
+        "city": "NYC",
+        "unit": "c",
+    }
 
 
 def test_deepseek_v3_1_truncated_arguments_drops_call_without_crash():
@@ -293,7 +296,10 @@ def test_deepseek_v3_1_truncated_arguments_drops_call_without_crash():
 
 def test_deepseek_v3_1_truncated_after_end_marker_still_yields_call():
     text = (
-        "<｜tool▁calls▁begin｜>" "<｜tool▁call▁begin｜>get_time" "<｜tool▁sep｜>" '{"city":"Tokyo"}'
+        "<｜tool▁calls▁begin｜>"
+        "<｜tool▁call▁begin｜>get_time"
+        "<｜tool▁sep｜>"
+        '{"city":"Tokyo"}'
         # neither <｜tool▁call▁end｜> nor <｜tool▁calls▁end｜>
     )
     calls = parse_tool_calls_from_text(text)
@@ -511,7 +517,9 @@ def test_glm_value_containing_literal_arg_value_close_is_preserved():
     )
     calls = parse_tool_calls_from_text(content)
     assert len(calls) == 1, calls
-    assert json.loads(calls[0]["function"]["arguments"]) == {"code": 'print("</arg_value>")'}
+    assert json.loads(calls[0]["function"]["arguments"]) == {
+        "code": 'print("</arg_value>")'
+    }
 
 
 def test_attribute_form_function_with_embedded_marker_runs_outer_call():
@@ -530,7 +538,9 @@ def test_attribute_form_function_with_embedded_marker_runs_outer_call():
 def test_wrapperless_gemma_call_gated_by_enabled_tools():
     # Once skip_special_tokens removes the <|tool_call> wrapper, call:NAME{...} is
     # indistinguishable from prose documenting the Gemma syntax.
-    prose = "Here is an example of the syntax: call:foo{x:1}. That shows how tools work."
+    prose = (
+        "Here is an example of the syntax: call:foo{x:1}. That shows how tools work."
+    )
     assert parse_tool_calls_from_text(prose, enabled_tool_names = {"web_search"}) == []
     # The display strip is gated the same way, so the example survives in the answer.
     assert "call:foo{x:1}" in strip_tool_markup(
@@ -572,9 +582,7 @@ def test_closed_envelope_before_deepseek_block_owns_turn():
         "```"
         "<｜tool▁call▁end｜><｜tool▁calls▁end｜>"
     )
-    prose = (
-        'A Qwen call looks like <tool_call>{"name":"example_tool","arguments":{}}</tool_call>.\n'
-    )
+    prose = 'A Qwen call looks like <tool_call>{"name":"example_tool","arguments":{}}</tool_call>.\n'
     calls = parse_tool_calls_from_text(prose + deepseek)
     assert [c["function"]["name"] for c in calls] == ["example_tool"], calls
 
@@ -582,15 +590,15 @@ def test_closed_envelope_before_deepseek_block_owns_turn():
         "<|tool_calls_section_begin|><|tool_call_begin|>functions.lookup:0"
         '<|tool_call_argument_begin|>{"id":7}<|tool_call_end|><|tool_calls_section_end|>'
     )
-    calls_k = parse_tool_calls_from_text("Example: <function=demo>{}</function> and now:\n" + kimi)
+    calls_k = parse_tool_calls_from_text(
+        "Example: <function=demo>{}</function> and now:\n" + kimi
+    )
     assert [c["function"]["name"] for c in calls_k] == ["demo"], calls_k
 
 
 def test_marker_inside_closed_outer_envelope_still_runs_outer_call():
     # The guard must fire when the marker sits INSIDE a closed outer <function>/<tool_call> envelope's arguments: the OUTER call wins.
-    outer = (
-        "<function=lookup><parameter=q>what does <｜tool▁calls▁begin｜> mean</parameter></function>"
-    )
+    outer = "<function=lookup><parameter=q>what does <｜tool▁calls▁begin｜> mean</parameter></function>"
     calls = parse_tool_calls_from_text(outer)
     # The outer envelope is the real call; the embedded DeepSeek marker must not
     # hijack the parse into a spurious tool.
@@ -691,7 +699,8 @@ def test_r1_heal_keeps_later_call_when_first_omits_close_fence():
     assert "get_time" in heal, heal
     # Strict keeps the later well-formed call; heal must be a superset.
     strict = [
-        c["function"]["name"] for c in parse_tool_calls_from_text(text, allow_incomplete = False)
+        c["function"]["name"]
+        for c in parse_tool_calls_from_text(text, allow_incomplete = False)
     ]
     assert set(strict) <= set(heal), (strict, heal)
 
@@ -699,7 +708,9 @@ def test_r1_heal_keeps_later_call_when_first_omits_close_fence():
 def test_wrapperless_gemma_nested_call_in_arg_is_not_a_second_call():
     # A wrapper-less Gemma call whose quoted argument mentions another enabled tool must not execute that nested name.
     text = 'call:web_search{query:"explain call:delete_all{target:files}"}'
-    calls = parse_tool_calls_from_text(text, enabled_tool_names = {"web_search", "delete_all"})
+    calls = parse_tool_calls_from_text(
+        text, enabled_tool_names = {"web_search", "delete_all"}
+    )
     assert [c["function"]["name"] for c in calls] == ["web_search"], calls
     assert json.loads(calls[0]["function"]["arguments"]) == {
         "query": "explain call:delete_all{target:files}"
@@ -708,7 +719,9 @@ def test_wrapperless_gemma_nested_call_in_arg_is_not_a_second_call():
     two = "call:web_search{query:hi}call:get_time{tz:UTC}"
     assert [
         c["function"]["name"]
-        for c in parse_tool_calls_from_text(two, enabled_tool_names = {"web_search", "get_time"})
+        for c in parse_tool_calls_from_text(
+            two, enabled_tool_names = {"web_search", "get_time"}
+        )
     ] == ["web_search", "get_time"]
 
 
@@ -718,7 +731,9 @@ def test_leading_bare_json_call_owns_quoted_gemma_snippet():
         '{"name":"lookup","parameters":{"note":"use call:web_search{query:cats} for this"}}\n'
         "That is the call I would make."
     )
-    calls = parse_tool_calls_from_text(text, enabled_tool_names = {"lookup", "web_search"})
+    calls = parse_tool_calls_from_text(
+        text, enabled_tool_names = {"lookup", "web_search"}
+    )
     assert [c["function"]["name"] for c in calls] == ["lookup"], calls
     assert json.loads(calls[0]["function"]["arguments"]) == {
         "note": "use call:web_search{query:cats} for this"
@@ -730,14 +745,20 @@ def test_leading_bare_json_call_owns_quoted_gemma_snippet():
         '{"name":"lookup","parameters":{"note":"see call:web_search{query:cats}"}};'
         '{"name":"lookup","parameters":{"q":"second"}}'
     )
-    calls_two = parse_tool_calls_from_text(two, enabled_tool_names = {"lookup", "web_search"})
+    calls_two = parse_tool_calls_from_text(
+        two, enabled_tool_names = {"lookup", "web_search"}
+    )
     assert [c["function"]["name"] for c in calls_two] == ["lookup", "lookup"], calls_two
 
 
 def test_leading_gemma_call_still_wins_over_trailing_json_example():
     # Reverse control: a real leading Gemma call followed by a bare-JSON example keeps the Gemma call (bare JSON matches only a LEADING object).
-    text = 'call:web_search{query:cats} Example JSON: {"name":"demo_tool","parameters":{}}'
-    calls = parse_tool_calls_from_text(text, enabled_tool_names = {"web_search", "demo_tool"})
+    text = (
+        'call:web_search{query:cats} Example JSON: {"name":"demo_tool","parameters":{}}'
+    )
+    calls = parse_tool_calls_from_text(
+        text, enabled_tool_names = {"web_search", "demo_tool"}
+    )
     assert [c["function"]["name"] for c in calls] == ["web_search"], calls
 
     # And prose-only enabled Gemma syntax (no leading JSON) still promotes: the
@@ -750,7 +771,9 @@ def test_leading_gemma_call_still_wins_over_trailing_json_example():
 def test_leading_gemma_call_owns_quoted_mistral_trigger():
     # A leading wrapper-less Gemma call whose argument quotes a Mistral trigger must win: the [TOOL_CALLS] literal is data.
     text = 'call:web_search{query:"docs say [TOOL_CALLS]delete_all{}"}'
-    calls = parse_tool_calls_from_text(text, enabled_tool_names = {"web_search", "delete_all"})
+    calls = parse_tool_calls_from_text(
+        text, enabled_tool_names = {"web_search", "delete_all"}
+    )
     assert [c["function"]["name"] for c in calls] == ["web_search"], calls
     assert json.loads(calls[0]["function"]["arguments"]) == {
         "query": "docs say [TOOL_CALLS]delete_all{}"
@@ -758,7 +781,9 @@ def test_leading_gemma_call_owns_quoted_mistral_trigger():
 
     # Reverse control: a real leading Mistral call still parses normally.
     real = '[TOOL_CALLS]delete_all{"x":1}'
-    calls_m = parse_tool_calls_from_text(real, enabled_tool_names = {"web_search", "delete_all"})
+    calls_m = parse_tool_calls_from_text(
+        real, enabled_tool_names = {"web_search", "delete_all"}
+    )
     assert [c["function"]["name"] for c in calls_m] == ["delete_all"], calls_m
 
     # A DISABLED Gemma example quoting the trigger is dropped as prose and a
@@ -767,7 +792,9 @@ def test_leading_gemma_call_owns_quoted_mistral_trigger():
         'Example: call:demo{note:"see [TOOL_CALLS]delete_all{}"}\n'
         '[TOOL_CALLS]web_search{"q":"real"}'
     )
-    calls_d = parse_tool_calls_from_text(mixed, enabled_tool_names = {"web_search", "delete_all"})
+    calls_d = parse_tool_calls_from_text(
+        mixed, enabled_tool_names = {"web_search", "delete_all"}
+    )
     assert [c["function"]["name"] for c in calls_d] == ["web_search"], calls_d
 
 
@@ -785,14 +812,22 @@ def test_chained_bare_json_owns_kimi_marker_in_later_call():
     assert [c["function"]["name"] for c in calls] == ["lookup", "lookup"], calls
 
     # Reverse control: prose followed by a real Kimi block still parses.
-    real = "Let me check.\n<|tool_calls_section_begin|>" + kimi + "<|tool_calls_section_end|>"
-    calls_k = parse_tool_calls_from_text(real, enabled_tool_names = {"lookup", "delete_all"})
+    real = (
+        "Let me check.\n<|tool_calls_section_begin|>"
+        + kimi
+        + "<|tool_calls_section_end|>"
+    )
+    calls_k = parse_tool_calls_from_text(
+        real, enabled_tool_names = {"lookup", "delete_all"}
+    )
     assert [c["function"]["name"] for c in calls_k] == ["delete_all"], calls_k
 
     # A closed leading Mistral call preceding a trailing Kimi example owns the
     # turn too (same closed-call-precedes-marker rule).
     mistral = '[TOOL_CALLS]lookup{"q":"first"} then example ' + kimi
-    calls_m = parse_tool_calls_from_text(mistral, enabled_tool_names = {"lookup", "delete_all"})
+    calls_m = parse_tool_calls_from_text(
+        mistral, enabled_tool_names = {"lookup", "delete_all"}
+    )
     assert [c["function"]["name"] for c in calls_m] == ["lookup"], calls_m
 
 
@@ -809,12 +844,16 @@ def test_nested_gemma_values_keep_commas_and_parens():
     arr = parse_tool_calls_from_text(
         "call:python{opts:[1,2,{a:f(1,2)}]}", enabled_tool_names = {"python"}
     )
-    assert json.loads(arr[0]["function"]["arguments"]) == {"opts": [1, 2, {"a": "f(1,2)"}]}
+    assert json.loads(arr[0]["function"]["arguments"]) == {
+        "opts": [1, 2, {"a": "f(1,2)"}]
+    }
 
     prose_comma = parse_tool_calls_from_text(
         "call:python{opts:{note:hello, world}}", enabled_tool_names = {"python"}
     )
-    assert json.loads(prose_comma[0]["function"]["arguments"]) == {"opts": {"note": "hello, world"}}
+    assert json.loads(prose_comma[0]["function"]["arguments"]) == {
+        "opts": {"note": "hello, world"}
+    }
 
     quoted = parse_tool_calls_from_text(
         'call:python{opts:{q:say "a, b" now,n:3}}', enabled_tool_names = {"python"}
@@ -828,11 +867,16 @@ def test_nested_gemma_values_keep_commas_and_parens():
     nested_q = parse_tool_calls_from_text(
         'call:python{loc:{city:"New York"}}', enabled_tool_names = {"python"}
     )
-    assert json.loads(nested_q[0]["function"]["arguments"]) == {"loc": {"city": "New York"}}
+    assert json.loads(nested_q[0]["function"]["arguments"]) == {
+        "loc": {"city": "New York"}
+    }
     multi = parse_tool_calls_from_text(
         "call:python{opts:{a:1,b:2},n:3}", enabled_tool_names = {"python"}
     )
-    assert json.loads(multi[0]["function"]["arguments"]) == {"opts": {"a": 1, "b": 2}, "n": 3}
+    assert json.loads(multi[0]["function"]["arguments"]) == {
+        "opts": {"a": 1, "b": 2},
+        "n": 3,
+    }
     trunc = parse_tool_calls_from_text(
         "call:python{opts:{code:print(1,2}}", enabled_tool_names = {"python"}
     )
@@ -907,7 +951,8 @@ def test_disabled_leading_bare_json_does_not_hide_later_marker_call():
         '```json\n{"q":"cats"}\n```<｜tool▁call▁end｜><｜tool▁calls▁end｜>'
     )
     calls_ds = parse_tool_calls_from_text(
-        '{"name":"draft","parameters":{}} ' + deepseek, enabled_tool_names = {"web_search"}
+        '{"name":"draft","parameters":{}} ' + deepseek,
+        enabled_tool_names = {"web_search"},
     )
     assert [c["function"]["name"] for c in calls_ds] == ["web_search"], calls_ds
 
@@ -938,7 +983,9 @@ def test_disabled_leading_bare_json_ownership_controls():
     )
     assert [c["function"]["name"] for c in nameless] == ["delete_all"], nameless
     # Name-agnostic path unchanged: the leading object is the call.
-    agnostic = parse_tool_calls_from_text('{"name":"draft","parameters":{}} ' + kimi_delete)
+    agnostic = parse_tool_calls_from_text(
+        '{"name":"draft","parameters":{}} ' + kimi_delete
+    )
     assert [c["function"]["name"] for c in agnostic] == ["draft"], agnostic
 
 
@@ -987,7 +1034,9 @@ def test_glm_heal_bounds_unclosed_value_at_tool_call_close():
         '<arg_value>print("</tool_call>")</arg_value></tool_call>'
     )
     calls_lit = parse_tool_calls_from_text(lit, allow_incomplete = True)
-    assert json.loads(calls_lit[0]["function"]["arguments"]) == {"city": 'print("</tool_call>")'}
+    assert json.loads(calls_lit[0]["function"]["arguments"]) == {
+        "city": 'print("</tool_call>")'
+    }
 
 
 def test_prose_mentioning_ds_kimi_markers_survives_final_strip():
@@ -1008,4 +1057,6 @@ def test_prose_mentioning_ds_kimi_markers_survives_final_strip():
         '<|tool_call_argument_begin|>{"q'
     )
     assert strip_tool_markup(truncated_kimi, final = True) == ""
-    assert strip_tool_markup("prefix <|tool_calls_section_begin|>", final = True) == "prefix"
+    assert (
+        strip_tool_markup("prefix <|tool_calls_section_begin|>", final = True) == "prefix"
+    )

@@ -52,7 +52,9 @@ def _xformers_runs_on_device() -> bool:
         return False
 
 
-def _xformers_disabled_for_capability(capability, probe = _xformers_runs_on_device) -> bool:
+def _xformers_disabled_for_capability(
+    capability, probe = _xformers_runs_on_device
+) -> bool:
     # At sm_120 (RTX 50-series) xformers' cutlass op is capability-rejected (caps at
     # sm_90) and its flash-2 op runs only if the build ships an sm_120 kernel, so run
     # one real forward to decide. Below sm_120 xformers always works; skip the probe.
@@ -78,7 +80,12 @@ SDPA_HAS_GQA = "enable_gqa" in (scaled_dot_product_attention.__doc__ or "")
 # PrefixGrouper kernel, resolved once when the env gate is on so PG-off users never load
 # torch flex_attention.
 _flex_shared_prefix_attention = None
-if os.environ.get("UNSLOTH_GRPO_PREFIX_GROUPER", "1").lower() not in ("0", "false", "no", "off"):
+if os.environ.get("UNSLOTH_GRPO_PREFIX_GROUPER", "1").lower() not in (
+    "0",
+    "false",
+    "no",
+    "off",
+):
     try:
         from .prefix_grouper_kernel import (
             flex_shared_prefix_attention as _flex_shared_prefix_attention,
@@ -92,7 +99,9 @@ XFORMERS = "xformers"
 SDPA = "sdpa"
 
 
-XFORMERS_BLOCK_DIAG_CLS = xformers.attn_bias.BlockDiagonalCausalMask if HAS_XFORMERS else None
+XFORMERS_BLOCK_DIAG_CLS = (
+    xformers.attn_bias.BlockDiagonalCausalMask if HAS_XFORMERS else None
+)
 
 
 @dataclass
@@ -174,7 +183,12 @@ def resolve_prefix_seg_info(kwargs, past_key_value, attention_mask):
 
 
 def run_attention(
-    *, config: AttentionConfig, context: AttentionContext, Q: Tensor, K: Tensor, V: Tensor
+    *,
+    config: AttentionConfig,
+    context: AttentionContext,
+    Q: Tensor,
+    K: Tensor,
+    V: Tensor,
 ) -> Tensor:
     """
     Run attention using config / context info.
@@ -298,14 +312,20 @@ def run_attention(
         if config.n_groups != 1:
             K_mod = K_t.view(bsz, kv_seq_len, config.n_kv_heads, 1, head_dim)
             V_mod = V_t.view(bsz, kv_seq_len, config.n_kv_heads, 1, head_dim)
-            K_mod = K_mod.expand(bsz, kv_seq_len, config.n_kv_heads, config.n_groups, head_dim)
-            V_mod = V_mod.expand(bsz, kv_seq_len, config.n_kv_heads, config.n_groups, head_dim)
+            K_mod = K_mod.expand(
+                bsz, kv_seq_len, config.n_kv_heads, config.n_groups, head_dim
+            )
+            V_mod = V_mod.expand(
+                bsz, kv_seq_len, config.n_kv_heads, config.n_groups, head_dim
+            )
 
             if requires_grad:
                 K_mod = K_mod.reshape(bsz, kv_seq_len, n_heads, head_dim)
                 V_mod = V_mod.reshape(bsz, kv_seq_len, n_heads, head_dim)
             else:
-                Q_mod = Q_t.view(bsz, q_len, config.n_kv_heads, config.n_groups, head_dim)
+                Q_mod = Q_t.view(
+                    bsz, q_len, config.n_kv_heads, config.n_groups, head_dim
+                )
 
         has_block = XFORMERS_BLOCK_DIAG_CLS is not None and isinstance(
             attn_bias, XFORMERS_BLOCK_DIAG_CLS
@@ -313,7 +333,9 @@ def run_attention(
 
         if config.n_groups != 1 and has_block:
             if not requires_grad:
-                Q_mod = Q_mod.view(1, bsz * q_len, config.n_kv_heads, config.n_groups, head_dim)
+                Q_mod = Q_mod.view(
+                    1, bsz * q_len, config.n_kv_heads, config.n_groups, head_dim
+                )
                 K_mod = K_mod.view(
                     1, bsz * kv_seq_len, config.n_kv_heads, config.n_groups, head_dim
                 )
@@ -364,16 +386,26 @@ def run_attention(
                         # tokenizer attention_mask is typically int 0/1
                         key_keep = local_mask != 0
 
-                    past_len = k_len_local - q_len_local  # works for prefill (0) and decode
-                    q_pos = torch.arange(past_len, past_len + q_len_local, device = Q.device)
+                    past_len = (
+                        k_len_local - q_len_local
+                    )  # works for prefill (0) and decode
+                    q_pos = torch.arange(
+                        past_len, past_len + q_len_local, device = Q.device
+                    )
                     k_pos = torch.arange(k_len_local, device = Q.device)
 
-                    causal_keep = k_pos[None, :] <= q_pos[:, None]  # True = allowed (SDPA)
+                    causal_keep = (
+                        k_pos[None, :] <= q_pos[:, None]
+                    )  # True = allowed (SDPA)
                     if sliding_window is not None:
-                        causal_keep &= k_pos[None, :] >= (q_pos[:, None] - (sliding_window - 1))
+                        causal_keep &= k_pos[None, :] >= (
+                            q_pos[:, None] - (sliding_window - 1)
+                        )
 
                     # (bsz, 1, q_len, k_len) boolean keep mask
-                    local_mask = causal_keep[None, None, :, :] & key_keep[:, None, None, :]
+                    local_mask = (
+                        causal_keep[None, None, :, :] & key_keep[:, None, None, :]
+                    )
 
                 elif local_mask.dim() == 3:
                     # (bsz, q_len, k_len) -> (bsz, 1, q_len, k_len)
@@ -384,11 +416,15 @@ def run_attention(
                         # Use boolean keep masks for better SDPA stability.
                         local_mask = local_mask.eq(0)
                 else:
-                    raise ValueError(f"Unsupported SDPA attention_mask rank: {local_mask.dim()}")
+                    raise ValueError(
+                        f"Unsupported SDPA attention_mask rank: {local_mask.dim()}"
+                    )
 
                 # Avoid NaNs from fully-masked rows (common with left padding).
                 if local_mask.dtype == torch.bool:
-                    no_allowed = ~local_mask.any(dim = -1, keepdim = True)  # (bsz,1,q_len,1)
+                    no_allowed = ~local_mask.any(
+                        dim = -1, keepdim = True
+                    )  # (bsz,1,q_len,1)
                     local_mask = local_mask | no_allowed
 
             is_causal_local = local_mask is None and q_len_local == k_len_local

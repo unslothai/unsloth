@@ -197,7 +197,11 @@ def _read_password(prompt: str, *, out: "TextIO | None" = None) -> str:
 
 
 def should_prompt_password_change(
-    *, tunnel_will_start: bool, requires_change: bool, stdin_isatty: bool, stderr_isatty: bool
+    *,
+    tunnel_will_start: bool,
+    requires_change: bool,
+    stdin_isatty: bool,
+    stderr_isatty: bool,
 ) -> bool:
     """Whether to block startup on an interactive terminal password change.
 
@@ -233,7 +237,9 @@ def prompt_for_password_change(
         while True:
             new_password = _read_password("New password: ", out = out)
             if len(new_password) < min_length:
-                out.write(f"Password must be at least {min_length} characters; try again.\n")
+                out.write(
+                    f"Password must be at least {min_length} characters; try again.\n"
+                )
                 out.flush()
                 continue
             if is_current_password(new_password):
@@ -257,7 +263,9 @@ def prompt_for_password_change(
         return False
 
 
-def resolve_supplied_password(cli_value: "str | None", out: "TextIO | None" = None) -> "str | None":
+def resolve_supplied_password(
+    cli_value: "str | None", out: "TextIO | None" = None
+) -> "str | None":
     """Resolve a non-interactive initial admin password, or None if unset.
 
     Precedence: an explicit ``--password`` (literal ``-`` reads a line from

@@ -99,7 +99,9 @@ def standardize_chat_format(
             role_key = keys[1]
             content_key = keys[0]
     else:
-        raise ValueError(f"Could not infer role/content keys for chat column '{chat_column}'")
+        raise ValueError(
+            f"Could not infer role/content keys for chat column '{chat_column}'"
+        )
 
     # Mapping for aliases
     aliases_mapping = {}
@@ -130,7 +132,9 @@ def standardize_chat_format(
                 if original_role is None:
                     original_role = message.get("role") or message.get("from") or ""
                 if original_content is None:
-                    original_content = message.get("content") or message.get("value") or ""
+                    original_content = (
+                        message.get("content") or message.get("value") or ""
+                    )
 
                 standard_role = aliases_mapping.get(original_role, original_role)
 
@@ -196,11 +200,15 @@ def convert_chatml_to_alpaca(
         chatml_data = examples.get(chat_column) if chat_column else None
         if chatml_data is None:
             chatml_data = (
-                examples.get("messages") or examples.get("conversations") or examples.get("texts")
+                examples.get("messages")
+                or examples.get("conversations")
+                or examples.get("texts")
             )
 
         if chatml_data is None:
-            raise ValueError("No 'messages' or 'conversations' or 'texts' column found.")
+            raise ValueError(
+                "No 'messages' or 'conversations' or 'texts' column found."
+            )
 
         instructions = []
         outputs = []
@@ -382,12 +390,16 @@ def convert_to_vlm_format(
         instruction_column = instruction_info.get("instruction_column")
         uses_dynamic = instruction_info["uses_dynamic_instruction"]
 
-        logger.info(f"📝 Auto-detected instruction type: {instruction_info['instruction_type']}")
+        logger.info(
+            f"📝 Auto-detected instruction type: {instruction_info['instruction_type']}"
+        )
         logger.info(f"📝 Confidence: {instruction_info['confidence']:.2f}")
         if not uses_dynamic:
             logger.info(f"📝 Using instruction: '{instruction}'")
         else:
-            logger.info(f"📝 Using dynamic instructions from column: '{instruction_column}'")
+            logger.info(
+                f"📝 Using dynamic instructions from column: '{instruction_column}'"
+            )
     else:
         instruction_column = None
         uses_dynamic = False
@@ -442,7 +454,9 @@ def convert_to_vlm_format(
 
     total = len(dataset)
     first_image = next(iter(dataset))[image_column]
-    has_urls = isinstance(first_image, str) and first_image.startswith(("http://", "https://"))
+    has_urls = isinstance(first_image, str) and first_image.startswith(
+        ("http://", "https://")
+    )
 
     # ── Bare-filename detection: build a basename→repo_path lookup so
     #    filename-only images resolve via hf_hub_download during conversion.
@@ -491,7 +505,9 @@ def convert_to_vlm_format(
 
         num_workers = safe_thread_num_proc()
         _notify(f"Probing {PROBE_SIZE} image URLs with {num_workers} workers...")
-        logger.info(f"🔍 Probing {PROBE_SIZE}/{total} image URLs with {num_workers} workers...")
+        logger.info(
+            f"🔍 Probing {PROBE_SIZE}/{total} image URLs with {num_workers} workers..."
+        )
 
         probe_samples = [dataset[i] for i in range(PROBE_SIZE)]
         probe_ok = 0
@@ -499,7 +515,9 @@ def convert_to_vlm_format(
         probe_start = time.time()
 
         with ThreadPoolExecutor(max_workers = num_workers) as executor:
-            futures = {executor.submit(_convert_single_sample, s): s for s in probe_samples}
+            futures = {
+                executor.submit(_convert_single_sample, s): s for s in probe_samples
+            }
             for future in as_completed(futures):
                 try:
                     future.result()
@@ -591,7 +609,9 @@ def convert_to_vlm_format(
                     except Exception as e:
                         failed_count += 1
                         if failed_count == 1:
-                            logger.info(f"First VLM conversion failure: {type(e).__name__}: {e}")
+                            logger.info(
+                                f"First VLM conversion failure: {type(e).__name__}: {e}"
+                            )
 
             converted_list.extend(r for r in batch_results if r is not None)
 
@@ -616,7 +636,9 @@ def convert_to_vlm_format(
                 failed_count += 1
                 if failed_count == 1:
                     # Log the first failure to aid debugging
-                    logger.info(f"First VLM conversion failure: {type(e).__name__}: {e}")
+                    logger.info(
+                        f"First VLM conversion failure: {type(e).__name__}: {e}"
+                    )
             pbar.set_postfix(ok = len(converted_list), failed = failed_count, refresh = False)
         pbar.close()
 
@@ -782,7 +804,9 @@ def convert_sharegpt_with_images_to_vlm_format(
                 return Image.open(local_path).convert("RGB")
             else:
                 return Image.open(image_data).convert("RGB")
-        if isinstance(image_data, dict) and ("bytes" in image_data or "path" in image_data):
+        if isinstance(image_data, dict) and (
+            "bytes" in image_data or "path" in image_data
+        ):
             if image_data.get("bytes"):
                 from io import BytesIO
                 return Image.open(BytesIO(image_data["bytes"])).convert("RGB")
@@ -838,7 +862,9 @@ def convert_sharegpt_with_images_to_vlm_format(
     pbar.close()
 
     if failed_count > 0:
-        logger.info(f"⚠️ Skipped {failed_count}/{total} ({failed_count*100//total}%) samples")
+        logger.info(
+            f"⚠️ Skipped {failed_count}/{total} ({failed_count*100//total}%) samples"
+        )
 
     if len(converted_list) == 0:
         raise ValueError(
@@ -864,7 +890,9 @@ def convert_llava_to_vlm_format(dataset):
     """
     from PIL import Image
 
-    logger.info(f"🔄 Converting {len(dataset)} samples from Llava format to standard VLM format...")
+    logger.info(
+        f"🔄 Converting {len(dataset)} samples from Llava format to standard VLM format..."
+    )
 
     def _convert_single_sample(sample):
         """Convert one llava sample to standard VLM format."""

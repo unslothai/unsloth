@@ -36,7 +36,9 @@ def _cuda_spoof():
     torch.cuda machinery instead of duplicating it."""
     if "_zoo_aggressive_cuda_spoof" in sys.modules:
         return sys.modules["_zoo_aggressive_cuda_spoof"]
-    path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "_zoo_aggressive_cuda_spoof.py")
+    path = os.path.join(
+        os.path.dirname(os.path.abspath(__file__)), "_zoo_aggressive_cuda_spoof.py"
+    )
     spec = importlib.util.spec_from_file_location("_zoo_aggressive_cuda_spoof", path)
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)
@@ -81,4 +83,8 @@ def apply(gfx: str = "gfx1100", device_count: int = 1) -> None:
 if __name__ == "__main__":
     apply()
     import torch
-    print("ROCm spoof applied:", torch.version.hip, torch.cuda.get_device_properties(0).gcnArchName)
+    print(
+        "ROCm spoof applied:",
+        torch.version.hip,
+        torch.cuda.get_device_properties(0).gcnArchName,
+    )

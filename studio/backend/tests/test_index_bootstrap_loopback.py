@@ -17,7 +17,9 @@ def _request(
     if request_host is not None:
         hdrs["host"] = request_host
     hdrs.update(headers or {})
-    return SimpleNamespace(client = client, headers = hdrs, url = SimpleNamespace(hostname = request_host))
+    return SimpleNamespace(
+        client = client, headers = hdrs, url = SimpleNamespace(hostname = request_host)
+    )
 
 
 def test_loopback_peers_are_local():
@@ -110,7 +112,9 @@ def test_colab_allows_notebook_proxy_but_not_shareable_tunnel(monkeypatch):
     # In-notebook proxy: same-origin, no tunnel header, injects off-loopback too.
     assert main._should_inject_bootstrap(_request("10.0.0.2", "colab.proxy")) is True
     # Shareable Cloudflare link marks visitors with cf-connecting-ip; withhold.
-    tunnel = _request("127.0.0.1", "localhost", headers = {"cf-connecting-ip": "203.0.113.7"})
+    tunnel = _request(
+        "127.0.0.1", "localhost", headers = {"cf-connecting-ip": "203.0.113.7"}
+    )
     assert main._should_inject_bootstrap(tunnel) is False
 
 

@@ -49,13 +49,17 @@ def test_dispatcher_survives_malformed_response_and_routes_next():
     o._mailboxes = {rid: mbox}
     # A non-dict response (resp.get -> AttributeError) must not kill the loop;
     # the following valid response must still reach its mailbox.
-    o._resp_queue = _ScriptedQueue([12345, {"request_id": rid, "type": "token", "text": "hi"}])
+    o._resp_queue = _ScriptedQueue(
+        [12345, {"request_id": rid, "type": "token", "text": "hi"}]
+    )
 
     t = threading.Thread(target = o._dispatcher_loop, daemon = True)
     t.start()
     try:
         got = mbox.get(timeout = 5)
-        assert got["text"] == "hi", "valid response must route despite the prior bad one"
+        assert (
+            got["text"] == "hi"
+        ), "valid response must route despite the prior bad one"
         assert t.is_alive(), "dispatcher must survive a malformed response"
     finally:
         o._dispatcher_stop.set()
@@ -94,9 +98,9 @@ def test_dispatcher_survives_mailbox_put_error():
 
 def test_route_llama_streaming_async_clients_disable_proxy_env():
     """Local llama-server streaming proxies must ignore ambient HTTP_PROXY."""
-    source = (Path(__file__).resolve().parent.parent / "routes" / "inference.py").read_text(
-        encoding = "utf-8"
-    )
+    source = (
+        Path(__file__).resolve().parent.parent / "routes" / "inference.py"
+    ).read_text(encoding = "utf-8")
     tree = ast.parse(source)
     calls = []
     for node in ast.walk(tree):
@@ -115,6 +119,8 @@ def test_route_llama_streaming_async_clients_disable_proxy_env():
     assert len(calls) == 5
     for call in calls:
         assert any(
-            kw.arg == "trust_env" and isinstance(kw.value, ast.Constant) and kw.value.value is False
+            kw.arg == "trust_env"
+            and isinstance(kw.value, ast.Constant)
+            and kw.value.value is False
             for kw in call.keywords
         ), f"httpx.AsyncClient at line {call.lineno} must set trust_env=False"

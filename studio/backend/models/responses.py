@@ -21,10 +21,16 @@ class TrainingStopResponse(BaseModel):
 class TrainingMetricsResponse(BaseModel):
     """Response for training metrics history"""
 
-    loss_history: List[float] = Field(default_factory = list, description = "Loss values per step")
-    lr_history: List[float] = Field(default_factory = list, description = "Learning rate per step")
+    loss_history: List[float] = Field(
+        default_factory = list, description = "Loss values per step"
+    )
+    lr_history: List[float] = Field(
+        default_factory = list, description = "Learning rate per step"
+    )
     step_history: List[int] = Field(default_factory = list, description = "Step numbers")
-    grad_norm_history: List[float] = Field(default_factory = list, description = "Gradient norm values")
+    grad_norm_history: List[float] = Field(
+        default_factory = list, description = "Gradient norm values"
+    )
     grad_norm_step_history: List[int] = Field(
         default_factory = list, description = "Step numbers for gradient norm values"
     )

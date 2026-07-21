@@ -91,7 +91,9 @@ def test_is_same_origin_request_data_url_origin_is_cross_origin():
     """``data:`` URLs are opaque origins (HTML living standard); no host, never same-origin."""
     from main import _is_same_origin_request
 
-    req = _build_request("127.0.0.1:8902", origin = "data:text/html,<script>alert(1)</script>")
+    req = _build_request(
+        "127.0.0.1:8902", origin = "data:text/html,<script>alert(1)</script>"
+    )
     assert _is_same_origin_request(req) is False
 
 

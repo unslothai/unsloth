@@ -76,7 +76,9 @@ CHAT_ONLY: bool = True  # No CUDA GPU -> GGUF chat only (Mac, CPU-only, etc.)
 # (the usual cause of "Train/Export greyed out" on Macs after a reinstall dropped MLX);
 # "intel_mac": Intel Mac (no PyTorch/MLX); "no_gpu": CPU-only non-Mac host.
 CHAT_ONLY_REASON: Optional[str] = None
-IS_ROCM: bool = False  # True when running on AMD ROCm (HIP) -- routes GPU monitoring to amd.py
+IS_ROCM: bool = (
+    False  # True when running on AMD ROCm (HIP) -- routes GPU monitoring to amd.py
+)
 
 
 def _backend_label(device: DeviceType) -> str:
@@ -247,7 +249,9 @@ def detect_hardware() -> DeviceType:
             "restore MLX training."
         )
     elif platform.system() == "Darwin":
-        CHAT_ONLY_REASON = "intel_mac"  # Intel Mac: no PyTorch/MLX -> GGUF-only by design.
+        CHAT_ONLY_REASON = (
+            "intel_mac"  # Intel Mac: no PyTorch/MLX -> GGUF-only by design.
+        )
     else:
         CHAT_ONLY_REASON = "no_gpu"
     print("Hardware detected: CPU (no GPU backend available)")
@@ -571,7 +575,9 @@ def _torch_get_per_device_info(device_indices: list[int]) -> list[Dict[str, Any]
                     "visible_ordinal": ordinal,
                     "name": props.name,
                     "total_gb": round(total_bytes / (1024**3), 2),
-                    "used_gb": round(used_bytes / (1024**3), 2) if used_bytes is not None else None,
+                    "used_gb": round(used_bytes / (1024**3), 2)
+                    if used_bytes is not None
+                    else None,
                 }
             )
         except Exception as e:
@@ -1003,7 +1009,9 @@ def get_gpu_utilization() -> Dict[str, Any]:
                 # A single visible GPU can own the aggregate 3D-engine utilization;
                 # across several GPUs the sum isn't per-device, so leave it unset.
                 _win_util = (
-                    _rocm_windows_perf_counter_gpu_util_pct() if len(_win_devices) == 1 else None
+                    _rocm_windows_perf_counter_gpu_util_pct()
+                    if len(_win_devices) == 1
+                    else None
                 )
                 return _gpu_utilization_payload(
                     device,
@@ -1032,7 +1040,9 @@ def get_gpu_utilization() -> Dict[str, Any]:
                             "temperature_c": _linux_temp,
                             "vram_used_gb": _linux_used,
                             "vram_total_gb": _linux_total,
-                            "vram_utilization_pct": round((_linux_used / _linux_total) * 100, 1)
+                            "vram_utilization_pct": round(
+                                (_linux_used / _linux_total) * 100, 1
+                            )
                             if _linux_total > 0
                             else None,
                             "power_draw_w": _linux_power,
@@ -1083,7 +1093,12 @@ def get_gpu_utilization() -> Dict[str, Any]:
             total_bytes = psutil.virtual_memory().total
         except Exception as e:
             logger.error(f"Error getting MLX GPU utilization: {e}")
-            return {"available": False, "backend": device.value, "devices": [], "error": str(e)}
+            return {
+                "available": False,
+                "backend": device.value,
+                "devices": [],
+                "error": str(e),
+            }
 
         allocated_bytes = agx.get("vram_used_bytes", 0) or 0
         vram_used_gb = allocated_bytes / (1024**3)
@@ -1185,7 +1200,9 @@ def _apply_unified_memory_correction(
         )
 
 
-def _reconcile_rocm_unified_memory(utilization: Dict[str, Any], device_indices: list[int]) -> None:
+def _reconcile_rocm_unified_memory(
+    utilization: Dict[str, Any], device_indices: list[int]
+) -> None:
     """Fix amd-smi VRAM for ROCm unified-memory GPUs (e.g. Strix Halo).
 
     amd-smi reports only the dedicated slice; torch sees the full GTT pool. When
@@ -1380,7 +1397,9 @@ def _get_parent_visible_gpu_spec() -> Dict[str, Any]:
     # stale HIP_VISIBLE_DEVICES on NVIDIA can't override CUDA_VISIBLE_DEVICES.
     _is_rocm_spec = IS_ROCM or (
         "CUDA_VISIBLE_DEVICES" not in os.environ
-        and ("HIP_VISIBLE_DEVICES" in os.environ or "ROCR_VISIBLE_DEVICES" in os.environ)
+        and (
+            "HIP_VISIBLE_DEVICES" in os.environ or "ROCR_VISIBLE_DEVICES" in os.environ
+        )
     )
     if _is_rocm_spec:
         hip_vis = os.environ.get("HIP_VISIBLE_DEVICES")
@@ -1470,7 +1489,9 @@ def resolve_requested_gpu_ids(gpu_ids: Optional[list[int]]) -> list[int]:
         max_parent_id = max(parent_visible_ids)
         if physical_gpu_count > max_parent_id:
             # Count is plausibly physical, so enforce it.
-            out_of_range = [gpu_id for gpu_id in requested_ids if gpu_id >= physical_gpu_count]
+            out_of_range = [
+                gpu_id for gpu_id in requested_ids if gpu_id >= physical_gpu_count
+            ]
             if out_of_range:
                 raise ValueError(
                     f"Invalid gpu_ids {requested_ids}: IDs must be physical GPU IDs "
@@ -1478,7 +1499,9 @@ def resolve_requested_gpu_ids(gpu_ids: Optional[list[int]]) -> list[int]:
                     f"Rejected IDs: {out_of_range}. Parent-visible GPUs: {parent_visible_ids}"
                 )
 
-    disallowed_ids = [gpu_id for gpu_id in requested_ids if gpu_id not in parent_visible_ids]
+    disallowed_ids = [
+        gpu_id for gpu_id in requested_ids if gpu_id not in parent_visible_ids
+    ]
     if disallowed_ids:
         raise ValueError(
             f"Invalid gpu_ids {requested_ids}: requested GPUs {disallowed_ids} are "
@@ -1499,7 +1522,9 @@ def _resolve_model_identifier_for_gpu_estimate(
             return config.base_model
         return config.identifier if config else model_name
     except Exception as e:
-        logger.debug("Could not resolve base model for GPU estimate '%s': %s", model_name, e)
+        logger.debug(
+            "Could not resolve base model for GPU estimate '%s': %s", model_name, e
+        )
         return model_name
 
 
@@ -1568,7 +1593,9 @@ def _load_config_for_gpu_estimate(model_name: str, hf_token: Optional[str] = Non
         except Exception:
             pass
         if tier != "default":
-            _tier_version = {"510": "5.10.x", "530": "5.3.0", "550": "5.5.0"}.get(tier, "5.x")
+            _tier_version = {"510": "5.10.x", "530": "5.3.0", "550": "5.5.0"}.get(
+                tier, "5.x"
+            )
             logger.info(
                 "Config for '%s' not parseable by the default transformers; "
                 "needs transformers %s and will be loaded with that sidecar in the worker",
@@ -1677,15 +1704,17 @@ def _estimate_fp16_model_size_bytes_from_vllm_utils(config) -> Optional[int]:
                 synthetic_total_bytes,
                 synthetic_total_bytes,
             )
-            _, _, _, memory_left_for_kv_cache_gb = _vllm_utils.approximate_vllm_memory_usage(
-                config,
-                load_in_4bit = False,
-                load_in_8bit = False,
-                max_seq_length = 1,
-                gpu_memory_utilization = 1.0,
-                enable_lora = False,
-                account_for_gradients = False,
-                cuda_graph_overhead = False,
+            _, _, _, memory_left_for_kv_cache_gb = (
+                _vllm_utils.approximate_vllm_memory_usage(
+                    config,
+                    load_in_4bit = False,
+                    load_in_8bit = False,
+                    max_seq_length = 1,
+                    gpu_memory_utilization = 1.0,
+                    enable_lora = False,
+                    account_for_gradients = False,
+                    cuda_graph_overhead = False,
+                )
             )
         finally:
             _vllm_utils.get_mem_info = original_get_mem_info
@@ -1707,11 +1736,15 @@ def _estimate_fp16_model_size_bytes_from_vllm_utils(config) -> Optional[int]:
 def estimate_fp16_model_size_bytes(
     model_name: str, hf_token: Optional[str] = None
 ) -> tuple[Optional[int], str]:
-    estimate_model = _resolve_model_identifier_for_gpu_estimate(model_name, hf_token = hf_token)
+    estimate_model = _resolve_model_identifier_for_gpu_estimate(
+        model_name, hf_token = hf_token
+    )
 
     total_params = None
     if "/" in estimate_model and not Path(estimate_model).exists():
-        total_params = _get_hf_safetensors_total_params(estimate_model, hf_token = hf_token)
+        total_params = _get_hf_safetensors_total_params(
+            estimate_model, hf_token = hf_token
+        )
     if total_params:
         return int(total_params * 2), "safetensors"
 
@@ -1766,7 +1799,9 @@ def estimate_required_model_memory_gb(
         DEFAULT_TARGET_MODULES,
     )
 
-    model_size_bytes, source = estimate_fp16_model_size_bytes(model_name, hf_token = hf_token)
+    model_size_bytes, source = estimate_fp16_model_size_bytes(
+        model_name, hf_token = hf_token
+    )
     metadata: Dict[str, Any] = {
         "mode": "inference" if training_type is None else "training",
         "model_size_source": source,
@@ -1789,7 +1824,9 @@ def estimate_required_model_memory_gb(
         return required_gb, metadata
 
     training_method = (
-        "full" if training_type == "Full Finetuning" else ("qlora" if load_in_4bit else "lora")
+        "full"
+        if training_type == "Full Finetuning"
+        else ("qlora" if load_in_4bit else "lora")
     )
     vram_config = TrainingVramConfig(
         training_method = training_method,
@@ -1802,12 +1839,14 @@ def estimate_required_model_memory_gb(
         load_in_4bit = load_in_4bit,
     )
 
-    estimate_model = _resolve_model_identifier_for_gpu_estimate(model_name, hf_token = hf_token)
+    estimate_model = _resolve_model_identifier_for_gpu_estimate(
+        model_name, hf_token = hf_token
+    )
     config = _load_config_for_gpu_estimate(estimate_model, hf_token = hf_token)
     if config is not None:
         try:
-            vram_config.attention_implementation = _determine_attention_impl_for_gpu_estimate(
-                config
+            vram_config.attention_implementation = (
+                _determine_attention_impl_for_gpu_estimate(config)
             )
         except Exception as e:
             # Debug-level: fires every estimate on Windows ROCm (stub lacks Store);
@@ -1993,7 +2032,9 @@ def auto_select_gpu_ids(
             return selected, metadata
 
     # Use only GPUs with verified VRAM data.
-    fallback_all = [c["index"] for c in gpu_candidates] if gpu_candidates else parent_ids
+    fallback_all = (
+        [c["index"] for c in gpu_candidates] if gpu_candidates else parent_ids
+    )
     metadata["selection_mode"] = "fallback_all"
     if ranked:
         fallback_usable = ranked[0]["free_gb"] + sum(
@@ -2342,7 +2383,10 @@ def get_device_map(gpu_ids: Optional[list[int]] = None) -> str:
             # UUID/MIG masks can't be split into numeric IDs; >1 visible GPU
             # means multi-GPU sharding is intended.
             parent_visible_spec = _get_parent_visible_gpu_spec()
-            if parent_visible_spec["numeric_ids"] is None and get_visible_gpu_count() > 1:
+            if (
+                parent_visible_spec["numeric_ids"] is None
+                and get_visible_gpu_count() > 1
+            ):
                 multi_gpu = True
 
         if multi_gpu:
@@ -2371,7 +2415,9 @@ def raise_if_offloaded(
     offloaded = get_offloaded_device_map_entries(model)
     if not offloaded:
         return
-    example = ", ".join(f"{name}={placement}" for name, placement in list(offloaded.items())[:5])
+    example = ", ".join(
+        f"{name}={placement}" for name, placement in list(offloaded.items())[:5]
+    )
     raise ValueError(
         f"{context} does not support models loaded with CPU or disk offload. "
         f"device_map='{device_map}' produced offloaded modules: {example}"

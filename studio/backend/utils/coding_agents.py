@@ -16,7 +16,14 @@ import shutil
 # unsloth_cli/commands/start.py. Each entry is the exact executable name that
 # subcommand launches, so a hit here means `unsloth start <agent>` can find the
 # binary on PATH without the user installing anything first.
-CODING_AGENTS: tuple[str, ...] = ("claude", "codex", "openclaw", "opencode", "hermes", "pi")
+CODING_AGENTS: tuple[str, ...] = (
+    "claude",
+    "codex",
+    "openclaw",
+    "opencode",
+    "hermes",
+    "pi",
+)
 
 
 def _is_on_path(agent: str) -> bool:

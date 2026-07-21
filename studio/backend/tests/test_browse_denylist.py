@@ -103,7 +103,15 @@ def test_is_denied_system_path_linux_allows_run_media_mounts(monkeypatch, path):
 
 @pytest.mark.parametrize(
     "path",
-    ["/etc-backup", "/etcetera", "/home/u/models", "/mnt/data", "/devices", "/", "/opt/models"],
+    [
+        "/etc-backup",
+        "/etcetera",
+        "/home/u/models",
+        "/mnt/data",
+        "/devices",
+        "/",
+        "/opt/models",
+    ],
 )
 def test_is_denied_system_path_linux_allows_non_system(monkeypatch, path):
     monkeypatch.setattr(studio_db.platform, "system", lambda: "Linux")
@@ -114,7 +122,9 @@ def test_legacy_and_hub_denylist_agree(monkeypatch):
     monkeypatch.setattr(studio_db.platform, "system", lambda: "Linux")
     monkeypatch.setattr(scan_folders.platform, "system", lambda: "Linux")
     for p in ["/etc", "/proc/1", "/home/u", "/boot", "/opt/x"]:
-        assert studio_db.is_denied_system_path(p) == scan_folders.is_denied_system_path(p)
+        assert studio_db.is_denied_system_path(p) == scan_folders.is_denied_system_path(
+            p
+        )
 
 
 # is_denied_system_path -- Windows (ntpath-backed), case-insensitive + collisions
@@ -173,7 +183,9 @@ def _extract_resolver():
         "Path": Path,
         "Optional": Optional,
         "HTTPException": _HTTPException,
-        "logger": SimpleNamespace(warning = lambda *a, **k: None, debug = lambda *a, **k: None),
+        "logger": SimpleNamespace(
+            warning = lambda *a, **k: None, debug = lambda *a, **k: None
+        ),
     }
     exec(compile(module, "<extracted routes/models.py>", "exec"), ns)
     return ns["_resolve_browse_target"]
@@ -343,8 +355,12 @@ def test_is_local_filesystem_root(path, pathmod, expected):
 def test_both_guards_use_the_shared_local_root_helper():
     # Register-root parity: both browsers reject the same roots via one helper, so a
     # UNC-share exemption can never drift between the legacy and hub code paths.
-    legacy_src = (_BACKEND_ROOT / "storage" / "studio_db.py").read_text(encoding = "utf-8")
-    hub_src = (_BACKEND_ROOT / "hub" / "storage" / "scan_folders.py").read_text(encoding = "utf-8")
+    legacy_src = (_BACKEND_ROOT / "storage" / "studio_db.py").read_text(
+        encoding = "utf-8"
+    )
+    hub_src = (_BACKEND_ROOT / "hub" / "storage" / "scan_folders.py").read_text(
+        encoding = "utf-8"
+    )
     assert "is_local_filesystem_root(normalized)" in legacy_src
     assert "is_local_filesystem_root(normalized)" in hub_src
 

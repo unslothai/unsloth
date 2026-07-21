@@ -53,7 +53,16 @@ def _restore(mapping, saved):
             mapping[k] = v
 
 
-def _decide(dtype, *, bf16_supported, force_float32, full_finetuning, mixed_precision, fp16, bf16):
+def _decide(
+    dtype,
+    *,
+    bf16_supported,
+    force_float32,
+    full_finetuning,
+    mixed_precision,
+    fp16,
+    bf16,
+):
     """Run the template block; return (args.fp16, args.bf16, ACCELERATE_MP, raised).
 
     Stubs (sys.modules, env vars, torch.cuda.is_bf16_supported) are restored on
@@ -95,7 +104,12 @@ def _decide(dtype, *, bf16_supported, force_float32, full_finetuning, mixed_prec
             exec(CODE, {"torch": torch, "os": os}, {"args": args, "model": model})
         except TypeError:
             raised = "TypeError"
-        return args.fp16, args.bf16, os.environ.get("ACCELERATE_MIXED_PRECISION"), raised
+        return (
+            args.fp16,
+            args.bf16,
+            os.environ.get("ACCELERATE_MIXED_PRECISION"),
+            raised,
+        )
     finally:
         torch.cuda.is_bf16_supported = orig_bf16
         _restore(os.environ, saved_env)

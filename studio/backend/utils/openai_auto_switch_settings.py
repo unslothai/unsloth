@@ -205,7 +205,9 @@ def set_openai_auto_switch(
         _invalidate(AUTO_UNLOAD_KEEP_KV_SETTING_KEY)
     return (
         parsed_enabled,
-        parsed_idle if parsed_idle is not None else get_stored_auto_unload_idle_seconds(),
+        parsed_idle
+        if parsed_idle is not None
+        else get_stored_auto_unload_idle_seconds(),
         parsed_keep_kv if parsed_keep_kv is not None else get_auto_unload_keep_kv(),
     )
 
@@ -239,6 +241,8 @@ def set_model_override(
     from storage.studio_db import upsert_app_setting_map_entry
 
     # Atomic per-entry merge so two PUTs for different models can't drop each other.
-    upsert_app_setting_map_entry(MODEL_OVERRIDES_SETTING_KEY, model_id.strip(), entry or None)
+    upsert_app_setting_map_entry(
+        MODEL_OVERRIDES_SETTING_KEY, model_id.strip(), entry or None
+    )
     _invalidate(MODEL_OVERRIDES_SETTING_KEY)
     return entry

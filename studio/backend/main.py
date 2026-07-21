@@ -74,7 +74,9 @@ if sys.platform == "win32":
 
         try:
             if os.path.isdir(_default_root):
-                for _ver in sorted(os.listdir(_default_root), key = _ver_key, reverse = True):
+                for _ver in sorted(
+                    os.listdir(_default_root), key = _ver_key, reverse = True
+                ):
                     _bin = os.path.join(_default_root, _ver, "bin")
                     if os.path.isdir(_bin):
                         candidates.append(_bin)
@@ -133,7 +135,9 @@ if sys.platform == "win32":
 
                 _all_vers_main: list[str] = []
                 for _pkg_dir in _bnb_spec.submodule_search_locations:
-                    for _dll in _glob.glob(os.path.join(_pkg_dir, "libbitsandbytes_rocm*.dll")):
+                    for _dll in _glob.glob(
+                        os.path.join(_pkg_dir, "libbitsandbytes_rocm*.dll")
+                    ):
                         _found_rocm_bnb = True
                         _km = _re_bnb.search(
                             r"libbitsandbytes_rocm(\d+)\.dll", os.path.basename(_dll)
@@ -151,7 +155,9 @@ if sys.platform == "win32":
         # (HIP SDK on a CUDA/CPU box) must not force a ROCm backend onto a
         # non-ROCm bitsandbytes, which raises at import. DLL unparsable -> "72".
         if _found_rocm_bnb:
-            _bnb_rocm_ver_final = _bnb_rocm_ver or os.environ.get("BNB_ROCM_VERSION") or "72"
+            _bnb_rocm_ver_final = (
+                _bnb_rocm_ver or os.environ.get("BNB_ROCM_VERSION") or "72"
+            )
             os.environ["BNB_ROCM_VERSION"] = _bnb_rocm_ver_final
             os.environ["UNSLOTH_BNB_ROCM_VERSION_SOURCE"] = "detected"
             _logging.getLogger(__name__).info(
@@ -202,7 +208,9 @@ try:
     configure_cpu_threads()
 except ValueError as exc:
     _raw = os.environ.get("UNSLOTH_CPU_THREADS")
-    raise SystemExit(f"Error: Invalid UNSLOTH_CPU_THREADS value {_raw!r}: {exc}") from None
+    raise SystemExit(
+        f"Error: Invalid UNSLOTH_CPU_THREADS value {_raw!r}: {exc}"
+    ) from None
 
 # Anaconda/conda-forge Python: seed platform._sys_version_cache before any
 # library import triggers attrs -> rich -> structlog -> platform crash.
@@ -254,7 +262,9 @@ def _read_studio_install_id() -> str:
     /api/health emits "" and the launcher accepts any healthy backend.
     Carries no install-path info (matters when Unsloth runs -H 0.0.0.0)."""
     try:
-        token = (_STUDIO_ROOT_RESOLVED / "share" / "studio_install_id").read_text().strip()
+        token = (
+            (_STUDIO_ROOT_RESOLVED / "share" / "studio_install_id").read_text().strip()
+        )
     except (OSError, ValueError):
         return ""
     return token if _STUDIO_INSTALL_ID_RE.fullmatch(token) else ""
@@ -349,7 +359,9 @@ def get_unsloth_version() -> str:
     except PackageNotFoundError:
         pass
 
-    version_file = _Path(__file__).resolve().parents[2] / "unsloth" / "models" / "_utils.py"
+    version_file = (
+        _Path(__file__).resolve().parents[2] / "unsloth" / "models" / "_utils.py"
+    )
     try:
         for line in version_file.read_text(encoding = "utf-8").splitlines():
             if line.startswith("__version__ = "):
@@ -449,7 +461,9 @@ def _run_llama_cpp_startup_probes(app: FastAPI) -> None:
             print(f"WARNING: {_msg}", flush = True)
     except Exception as _probe_exc:
         import structlog as _structlog
-        _structlog.get_logger(__name__).debug("llama.cpp startup probes failed: %s", _probe_exc)
+        _structlog.get_logger(__name__).debug(
+            "llama.cpp startup probes failed: %s", _probe_exc
+        )
 
 
 def _start_llama_cpp_probes_if_enabled(app: FastAPI) -> None:
@@ -542,10 +556,14 @@ async def lifespan(app: FastAPI):
         from storage.rag_db import reconcile_orphaned_ingestion_jobs
         reconcile_orphaned_ingestion_jobs()
     except Exception as exc:
-        _lifespan_log.warning("reconcile_orphaned_ingestion_jobs failed at startup: %s", exc)
+        _lifespan_log.warning(
+            "reconcile_orphaned_ingestion_jobs failed at startup: %s", exc
+        )
 
     _start_helper_precache_if_enabled()
-    threading.Thread(target = _warm_rag_embedder, daemon = True, name = "rag-embedder-warm").start()
+    threading.Thread(
+        target = _warm_rag_embedder, daemon = True, name = "rag-embedder-warm"
+    ).start()
 
     # Idle auto-unload loop (no-op unless the OpenAI auto-unload TTL is set).
     from core.inference.llama_keepwarm import idle_unload_loop, sweep_slot_save_dir
@@ -682,7 +700,9 @@ def _build_csp(script_nonce: "str | None" = None) -> str:
             "https://*.googleusercontent.com wss://*.googleusercontent.com"
         )
     else:
-        connect_src = "'self' https://huggingface.co https://datasets-server.huggingface.co"
+        connect_src = (
+            "'self' https://huggingface.co https://datasets-server.huggingface.co"
+        )
 
     return (
         "default-src 'self'; "
@@ -809,7 +829,11 @@ async def _send_411(send) -> None:
 
 async def _send_413(send, total_bytes: int, max_bytes: int) -> None:
     payload = _json_for_413.dumps(
-        {"detail": (f"Request body too large ({total_bytes:,} bytes; max {max_bytes:,}).")},
+        {
+            "detail": (
+                f"Request body too large ({total_bytes:,} bytes; max {max_bytes:,})."
+            )
+        },
     ).encode("utf-8")
     await send(
         {
@@ -991,7 +1015,9 @@ app.include_router(data_recipe_router, prefix = "/api/data-recipe", tags = ["dat
 app.include_router(llama_router, prefix = "/api/llama", tags = ["llama"])
 app.include_router(export_router, prefix = "/api/export", tags = ["export"])
 app.include_router(rag_router, prefix = "/api/rag", tags = ["rag"])
-app.include_router(training_history_router, prefix = "/api/train", tags = ["training-history"])
+app.include_router(
+    training_history_router, prefix = "/api/train", tags = ["training-history"]
+)
 app.include_router(hub_inventory_router, prefix = "/api/hub", tags = ["hub"])
 app.include_router(hub_datasets_router, prefix = "/api/hub/datasets", tags = ["hub"])
 app.include_router(hub_token_router, prefix = "/api/hub", tags = ["hub"])
@@ -1049,7 +1075,9 @@ async def health_check(request: Request):
         from auth.authentication import get_current_subject as _gcs
         from fastapi.security import HTTPAuthorizationCredentials
 
-        creds = HTTPAuthorizationCredentials(scheme = "Bearer", credentials = auth.split(" ", 1)[1])
+        creds = HTTPAuthorizationCredentials(
+            scheme = "Bearer", credentials = auth.split(" ", 1)[1]
+        )
         # Must await: a bare coroutine is truthy and would skip the auth check
         subject = await _gcs(creds)
     except HTTPException:
@@ -1091,12 +1119,16 @@ def studio_update_status(_current_subject: str = Depends(get_current_subject)):
     "/api/studio/download-transport-capabilities",
     response_model = TransportCapabilities,
 )
-def studio_download_transport_capabilities(_current_subject: str = Depends(get_current_subject)):
+def studio_download_transport_capabilities(
+    _current_subject: str = Depends(get_current_subject),
+):
     return asdict(get_download_transport_capabilities())
 
 
 @app.post("/api/shutdown")
-async def shutdown_server(request: Request, current_subject: str = Depends(get_current_subject)):
+async def shutdown_server(
+    request: Request, current_subject: str = Depends(get_current_subject)
+):
     """Gracefully shut down the Unsloth Studio server.
 
     Called by the frontend quit dialog so users can stop the server from the UI
@@ -1132,7 +1164,10 @@ def _get_cached_system_gpu_info(logger) -> dict[str, Any]:
                 return cached_gpu_info
 
         try:
-            visibility_info = get_backend_visible_gpu_info() or {"available": False, "devices": []}
+            visibility_info = get_backend_visible_gpu_info() or {
+                "available": False,
+                "devices": [],
+            }
         except Exception as e:
             logger.debug(f"Failed to get GPU visibility info: {e}")
             visibility_info = {"available": False, "devices": []}
@@ -1158,7 +1193,9 @@ def _get_cached_system_gpu_info(logger) -> dict[str, Any]:
             enriched_dev = dict(dev)
             enriched_dev["vram_used_gb"] = used_vram
             enriched_dev["vram_free_gb"] = (
-                round(total_vram - used_vram, 2) if total_vram and used_vram is not None else None
+                round(total_vram - used_vram, 2)
+                if total_vram and used_vram is not None
+                else None
             )
             enriched_dev["vram_utilization_pct"] = util.get("vram_utilization_pct")
             enriched_devices.append(enriched_dev)
@@ -1171,7 +1208,8 @@ def _get_cached_system_gpu_info(logger) -> dict[str, Any]:
             from core.inference.llama_cpp import LlamaCppBackend
             from utils.hardware import DeviceType, get_device
             gpu_ids_supported = (
-                get_device() != DeviceType.XPU and not LlamaCppBackend._is_vulkan_backend()
+                get_device() != DeviceType.XPU
+                and not LlamaCppBackend._is_vulkan_backend()
             )
         except Exception as e:
             logger.debug(f"Could not resolve gpu_ids support: {e}")
@@ -1283,7 +1321,8 @@ async def get_gpu_visibility(current_subject: str = Depends(get_current_subject)
 
 @app.get("/api/system/hardware")
 def get_hardware_info(
-    include_details: bool = Query(False), current_subject: str = Depends(get_current_subject)
+    include_details: bool = Query(False),
+    current_subject: str = Depends(get_current_subject),
 ):
     """Return GPU name, total VRAM, and key ML package versions.
 

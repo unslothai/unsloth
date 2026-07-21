@@ -85,7 +85,9 @@ class TestResolveRequestedGpuIds(_GpuCacheResetMixin, unittest.TestCase):
 
     def test_parent_visibility_uses_empty_numeric_ids_for_uuid_masks(self):
         with (
-            patch.dict(os.environ, {"CUDA_VISIBLE_DEVICES": "GPU-aaa,GPU-bbb"}, clear = True),
+            patch.dict(
+                os.environ, {"CUDA_VISIBLE_DEVICES": "GPU-aaa,GPU-bbb"}, clear = True
+            ),
             patch("utils.hardware.hardware.get_physical_gpu_count", return_value = 8),
         ):
             self.assertEqual(get_parent_visible_gpu_ids(), [])
@@ -115,7 +117,9 @@ class TestResolveRequestedGpuIds(_GpuCacheResetMixin, unittest.TestCase):
 
     def test_explicit_ids_are_rejected_for_uuid_parent_visibility(self):
         with (
-            patch.dict(os.environ, {"CUDA_VISIBLE_DEVICES": "GPU-aaa,GPU-bbb"}, clear = True),
+            patch.dict(
+                os.environ, {"CUDA_VISIBLE_DEVICES": "GPU-aaa,GPU-bbb"}, clear = True
+            ),
             patch("utils.hardware.hardware.get_physical_gpu_count", return_value = 8),
         ):
             with self.assertRaisesRegex(
@@ -354,9 +358,13 @@ class TestVisibleGpuUtilization(_GpuCacheResetMixin, unittest.TestCase):
             },
         ]
         with (
-            patch.dict(os.environ, {"CUDA_VISIBLE_DEVICES": "GPU-aaa,GPU-bbb"}, clear = True),
+            patch.dict(
+                os.environ, {"CUDA_VISIBLE_DEVICES": "GPU-aaa,GPU-bbb"}, clear = True
+            ),
             patch("utils.hardware.hardware.get_device", return_value = DeviceType.CUDA),
-            patch("utils.hardware.hardware._torch_get_physical_gpu_count", return_value = 2),
+            patch(
+                "utils.hardware.hardware._torch_get_physical_gpu_count", return_value = 2
+            ),
             patch(
                 "utils.hardware.hardware._torch_get_per_device_info",
                 return_value = fake_torch_devices,
@@ -400,7 +408,9 @@ class TestGpuAutoSelection(_GpuCacheResetMixin, unittest.TestCase):
 
     def test_get_device_map_uses_all_inherited_visible_gpus_for_uuid_masks(self):
         with (
-            patch.dict(os.environ, {"CUDA_VISIBLE_DEVICES": "GPU-aaa,GPU-bbb"}, clear = True),
+            patch.dict(
+                os.environ, {"CUDA_VISIBLE_DEVICES": "GPU-aaa,GPU-bbb"}, clear = True
+            ),
             patch("utils.hardware.hardware.get_device", return_value = DeviceType.CUDA),
         ):
             self.assertEqual(get_device_map(None), "balanced")
@@ -528,7 +538,9 @@ class TestGpuAutoSelection(_GpuCacheResetMixin, unittest.TestCase):
                 return_value = 1234,
             ),
         ):
-            model_size_bytes, source = _hw_module.estimate_fp16_model_size_bytes("unsloth/test")
+            model_size_bytes, source = _hw_module.estimate_fp16_model_size_bytes(
+                "unsloth/test"
+            )
 
         self.assertEqual(model_size_bytes, 1234)
         self.assertEqual(source, "vllm_utils")
@@ -626,7 +638,9 @@ class TestGpuAutoSelection(_GpuCacheResetMixin, unittest.TestCase):
 
     def test_prepare_gpu_selection_preserves_uuid_parent_visibility_in_auto_mode(self):
         with (
-            patch.dict(os.environ, {"CUDA_VISIBLE_DEVICES": "GPU-aaa,GPU-bbb"}, clear = True),
+            patch.dict(
+                os.environ, {"CUDA_VISIBLE_DEVICES": "GPU-aaa,GPU-bbb"}, clear = True
+            ),
             patch("utils.hardware.hardware.get_device", return_value = DeviceType.CUDA),
             patch(
                 "utils.hardware.hardware.estimate_required_model_memory_gb",
@@ -674,7 +688,9 @@ class TestPreSpawnGpuResolution(_GpuCacheResetMixin, unittest.TestCase):
             patch(
                 "core.training.training._CTX.Process", return_value = DummyProcess()
             ) as mock_process,
-            patch("core.training.training.threading.Thread", return_value = DummyThread()),
+            patch(
+                "core.training.training.threading.Thread", return_value = DummyThread()
+            ),
         ):
             backend.start_training(
                 job_id = "test-job-1",
@@ -715,7 +731,9 @@ class TestPreSpawnGpuResolution(_GpuCacheResetMixin, unittest.TestCase):
             patch(
                 "core.training.training._CTX.Process", return_value = DummyProcess()
             ) as mock_process,
-            patch("core.training.training.threading.Thread", return_value = DummyThread()),
+            patch(
+                "core.training.training.threading.Thread", return_value = DummyThread()
+            ),
         ):
             backend.start_training(
                 job_id = "test-job-2",
@@ -745,7 +763,9 @@ class TestPreSpawnGpuResolution(_GpuCacheResetMixin, unittest.TestCase):
         dummy_queue = object()
 
         with (
-            patch.dict(os.environ, {"CUDA_VISIBLE_DEVICES": "GPU-aaa,GPU-bbb"}, clear = True),
+            patch.dict(
+                os.environ, {"CUDA_VISIBLE_DEVICES": "GPU-aaa,GPU-bbb"}, clear = True
+            ),
             patch("utils.hardware.hardware.get_device", return_value = DeviceType.CUDA),
             patch(
                 "core.training.training._CTX.Queue",
@@ -754,7 +774,9 @@ class TestPreSpawnGpuResolution(_GpuCacheResetMixin, unittest.TestCase):
             patch(
                 "core.training.training._CTX.Process", return_value = DummyProcess()
             ) as mock_process,
-            patch("core.training.training.threading.Thread", return_value = DummyThread()),
+            patch(
+                "core.training.training.threading.Thread", return_value = DummyThread()
+            ),
             patch(
                 "utils.hardware.hardware.estimate_required_model_memory_gb",
                 return_value = (
@@ -772,7 +794,9 @@ class TestPreSpawnGpuResolution(_GpuCacheResetMixin, unittest.TestCase):
 
         config = mock_process.call_args.kwargs["kwargs"]["config"]
         self.assertIsNone(config["resolved_gpu_ids"])
-        self.assertEqual(config["gpu_selection"]["selection_mode"], "inherit_parent_visible")
+        self.assertEqual(
+            config["gpu_selection"]["selection_mode"], "inherit_parent_visible"
+        )
 
     def test_inference_orchestrator_resolves_explicit_gpu_ids_before_spawn(self):
         class DummyThread:
@@ -800,7 +824,9 @@ class TestPreSpawnGpuResolution(_GpuCacheResetMixin, unittest.TestCase):
                 "_wait_response",
                 return_value = {"success": True, "model_info": {}},
             ),
-            patch("utils.transformers_version.needs_transformers_5", return_value = False),
+            patch(
+                "utils.transformers_version.needs_transformers_5", return_value = False
+            ),
         ):
             self.assertTrue(orchestrator.load_model(config = config, gpu_ids = [1]))
 
@@ -835,7 +861,9 @@ class TestPreSpawnGpuResolution(_GpuCacheResetMixin, unittest.TestCase):
                 "_wait_response",
                 return_value = {"success": True, "model_info": {}},
             ),
-            patch("utils.transformers_version.needs_transformers_5", return_value = False),
+            patch(
+                "utils.transformers_version.needs_transformers_5", return_value = False
+            ),
         ):
             self.assertTrue(orchestrator.load_model(config = config, gpu_ids = None))
 
@@ -940,7 +968,9 @@ class TestRouteErrors(unittest.TestCase):
                 raise ValueError("Invalid gpu_ids [99]")
 
         with (
-            patch.object(training_route, "get_training_backend", return_value = DummyBackend()),
+            patch.object(
+                training_route, "get_training_backend", return_value = DummyBackend()
+            ),
             patch(
                 "routes.training_vram.summarize_resident_chat",
                 return_value = {"any": False, "hf": None, "gguf": None},
@@ -951,7 +981,9 @@ class TestRouteErrors(unittest.TestCase):
             ),
         ):
             with self.assertRaises(HTTPException) as exc_info:
-                asyncio.run(training_route.start_training(request, current_subject = "test-user"))
+                asyncio.run(
+                    training_route.start_training(request, current_subject = "test-user")
+                )
 
         self.assertEqual(exc_info.exception.status_code, 400)
         self.assertIn("gpu_ids [99]", exc_info.exception.detail)
@@ -980,7 +1012,9 @@ class TestRouteErrors(unittest.TestCase):
                 )
 
         with (
-            patch.object(training_route, "get_training_backend", return_value = DummyBackend()),
+            patch.object(
+                training_route, "get_training_backend", return_value = DummyBackend()
+            ),
             patch(
                 "routes.training_vram.summarize_resident_chat",
                 return_value = {"any": False, "hf": None, "gguf": None},
@@ -991,7 +1025,9 @@ class TestRouteErrors(unittest.TestCase):
             ),
         ):
             with self.assertRaises(HTTPException) as exc_info:
-                asyncio.run(training_route.start_training(request, current_subject = "test-user"))
+                asyncio.run(
+                    training_route.start_training(request, current_subject = "test-user")
+                )
 
         self.assertEqual(exc_info.exception.status_code, 400)
         self.assertIn("UUID/MIG", exc_info.exception.detail)
@@ -1145,7 +1181,9 @@ class TestRaiseIfOffloaded(unittest.TestCase):
 
     def test_cpu_offload_raises(self):
         from utils.hardware import raise_if_offloaded
-        model = SimpleNamespace(hf_device_map = {"model.layers.0": 0, "model.layers.1": "cpu"})
+        model = SimpleNamespace(
+            hf_device_map = {"model.layers.0": 0, "model.layers.1": "cpu"}
+        )
         with self.assertRaisesRegex(ValueError, "offloaded"):
             raise_if_offloaded(model, "balanced", "Test")
 

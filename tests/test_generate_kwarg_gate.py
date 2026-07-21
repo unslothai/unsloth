@@ -12,7 +12,10 @@ def _load_helper():
     src = open(VISION).read()
     mod = ast.parse(src)
     for node in mod.body:
-        if isinstance(node, ast.FunctionDef) and node.name == "_unsloth_generate_accepts_kwarg":
+        if (
+            isinstance(node, ast.FunctionDef)
+            and node.name == "_unsloth_generate_accepts_kwarg"
+        ):
             ns = {"inspect": inspect}
             exec(ast.get_source_segment(src, node), ns)
             return ns["_unsloth_generate_accepts_kwarg"]
@@ -106,7 +109,12 @@ CASES = [
         "logits_to_keep",
         False,
     ),
-    ("prep(key) direct             -> accept", PrepHasKeyDirectly(), "logits_to_keep", True),
+    (
+        "prep(key) direct             -> accept",
+        PrepHasKeyDirectly(),
+        "logits_to_keep",
+        True,
+    ),
     ("no prepare_inputs_for_gen    -> reject", NoPrepare(), "logits_to_keep", False),
     (
         "num_logits_to_keep variant   -> reject",
@@ -120,7 +128,12 @@ CASES = [
         "mm_token_type_ids",
         False,
     ),
-    ("mm_token_type_ids accepted     -> keep", VisionAcceptsMM(), "mm_token_type_ids", True),
+    (
+        "mm_token_type_ids accepted     -> keep",
+        VisionAcceptsMM(),
+        "mm_token_type_ids",
+        True,
+    ),
 ]
 
 

@@ -125,7 +125,9 @@ def test_fast_language_model_forwards_text_only_to_fast_model():
 
     # text_only defaults False (opt-in); both FastModel delegations forward it.
     text_only_default = _param_default(method, "text_only")
-    assert isinstance(text_only_default, ast.Constant) and text_only_default.value is False
+    assert (
+        isinstance(text_only_default, ast.Constant) and text_only_default.value is False
+    )
 
     fast_model_calls = [
         node
@@ -149,13 +151,16 @@ def test_fast_model_text_only_does_not_override_explicit_auto_model():
     method = _class_method(ast.parse(source), "FastModel", "from_pretrained")
 
     text_only_default = _param_default(method, "text_only")
-    assert isinstance(text_only_default, ast.Constant) and text_only_default.value is False
+    assert (
+        isinstance(text_only_default, ast.Constant) and text_only_default.value is False
+    )
 
     # load_text_only is text_only AND a check that the caller did not pass auto_model.
     def _is_guarded_bool(value):
         names = _names_in(value)
         has_none_check = any(
-            isinstance(n, ast.Compare) and any(isinstance(op, (ast.Is, ast.IsNot)) for op in n.ops)
+            isinstance(n, ast.Compare)
+            and any(isinstance(op, (ast.Is, ast.IsNot)) for op in n.ops)
             for n in ast.walk(value)
         )
         return "text_only" in names and "auto_model" in names and has_none_check
@@ -191,7 +196,9 @@ def test_fast_base_model_text_only_bypasses_vision_auto_model():
     method = _class_method(ast.parse(source), "FastBaseModel", "from_pretrained")
 
     text_only_default = _param_default(method, "text_only")
-    assert isinstance(text_only_default, ast.Constant) and text_only_default.value is False
+    assert (
+        isinstance(text_only_default, ast.Constant) and text_only_default.value is False
+    )
 
     assert _assigns_name(
         method,
@@ -317,7 +324,9 @@ def test_text_only_key_mapping_targets_published_prefixes():
     # (on 4.x base_model_prefix handles it and a mapping hurts).
     transformers = pytest.importorskip("transformers")
     get_key_mapping = _load_util_func("_get_text_only_key_mapping")
-    mapping = get_key_mapping(transformers.Gemma3Config(), transformers.Gemma3TextConfig())
+    mapping = get_key_mapping(
+        transformers.Gemma3Config(), transformers.Gemma3TextConfig()
+    )
     if int(transformers.__version__.split(".")[0]) < 5:
         assert mapping is None
     else:

@@ -107,7 +107,9 @@ def render_sources(sources: list[dict]) -> str:
         src = quoteattr(s.get("filename") or "unknown")
         page = s.get("page")
         page_attr = f" page={quoteattr(str(page))}" if page else ""
-        blocks.append(f'<chunk id="{i}" source={src}{page_attr}>\n{s.get("text") or ""}\n</chunk>')
+        blocks.append(
+            f'<chunk id="{i}" source={src}{page_attr}>\n{s.get("text") or ""}\n</chunk>'
+        )
     return "\n\n".join(blocks)
 
 
@@ -197,10 +199,14 @@ def search_for_autoinject(
             mode = mode,
         )
         strong = [
-            h for h in hits if h.dense_score is not None and h.dense_score >= min_dense_score
+            h
+            for h in hits
+            if h.dense_score is not None and h.dense_score >= min_dense_score
         ][:k]
         if not strong and hits and mode == "lexical":
-            probe = retrieval.retrieve_dense(conn, scope, query, 1, model_name = model_name)
+            probe = retrieval.retrieve_dense(
+                conn, scope, query, 1, model_name = model_name
+            )
             if (
                 probe
                 and probe[0].dense_score is not None

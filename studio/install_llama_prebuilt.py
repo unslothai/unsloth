@@ -69,7 +69,10 @@ def _path_inside_venv(path: str) -> bool:
         # it. A venv is never at root, so treat that as outside.
         if os.path.dirname(_root) == _root:
             return False
-        return os.path.normcase(os.path.commonpath([os.path.realpath(path), _root])) == _root
+        return (
+            os.path.normcase(os.path.commonpath([os.path.realpath(path), _root]))
+            == _root
+        )
     except (ValueError, OSError):
         # Different drive / unresolvable -> treat as outside the venv.
         return False
@@ -182,7 +185,9 @@ UPSTREAM_REPO = "ggml-org/llama.cpp"
 UPSTREAM_RELEASES_API = f"https://api.github.com/repos/{UPSTREAM_REPO}/releases/latest"
 
 
-TEST_MODEL_URL = "https://huggingface.co/ggml-org/models/resolve/main/tinyllamas/stories260K.gguf"
+TEST_MODEL_URL = (
+    "https://huggingface.co/ggml-org/models/resolve/main/tinyllamas/stories260K.gguf"
+)
 TEST_MODEL_SHA256 = "270cba1bd5109f42d03350f60406024560464db173c0e387d91f0426d3bd256d"
 VALIDATION_MODEL_CACHE_DIRNAME = ".cache"
 VALIDATION_MODEL_CACHE_FILENAME = "stories260K.gguf"
@@ -473,7 +478,9 @@ _LOG_TO_STDOUT = False
 
 
 def log(message: str) -> None:
-    print(f"[llama-prebuilt] {message}", file = sys.stdout if _LOG_TO_STDOUT else sys.stderr)
+    print(
+        f"[llama-prebuilt] {message}", file = sys.stdout if _LOG_TO_STDOUT else sys.stderr
+    )
 
 
 def log_lines(lines: Iterable[str]) -> None:
@@ -528,7 +535,9 @@ class _CrossHostAuthStrippingRedirectHandler(urllib.request.HTTPRedirectHandler)
 
     def redirect_request(self, req, fp, code, msg, headers, newurl):
         new_request = super().redirect_request(req, fp, code, msg, headers, newurl)
-        if new_request is not None and parsed_hostname(newurl) != parsed_hostname(req.full_url):
+        if new_request is not None and parsed_hostname(newurl) != parsed_hostname(
+            req.full_url
+        ):
             new_request.headers.pop("Authorization", None)
             new_request.unredirected_hdrs.pop("Authorization", None)
         return new_request
@@ -780,9 +789,9 @@ def refs_match(candidate_ref: str | None, requested_ref: str | None) -> bool:
     candidate_commit = normalize_source_commit(candidate_ref)
     requested_commit = normalize_source_commit(requested_ref)
     if candidate_commit and requested_commit:
-        return candidate_commit.startswith(requested_commit) or requested_commit.startswith(
-            candidate_commit
-        )
+        return candidate_commit.startswith(
+            requested_commit
+        ) or requested_commit.startswith(candidate_commit)
     return False
 
 
@@ -886,7 +895,11 @@ class DownloadProgress:
         self.last_emit = 0.0
         term_ok = os.environ.get("TERM", "").lower() != "dumb"
         self.stream = (
-            sys.stderr if sys.stderr.isatty() else sys.stdout if sys.stdout.isatty() else sys.stderr
+            sys.stderr
+            if sys.stderr.isatty()
+            else sys.stdout
+            if sys.stdout.isatty()
+            else sys.stderr
         )
         self.is_tty = term_ok and self.stream.isatty()
         self.completed = False
@@ -920,7 +933,10 @@ class DownloadProgress:
         if self.is_tty:
             elapsed = now - self.start_time
             if not self.has_rendered_tty_progress:
-                if self.total_bytes is not None and downloaded_bytes >= self.total_bytes:
+                if (
+                    self.total_bytes is not None
+                    and downloaded_bytes >= self.total_bytes
+                ):
                     return
                 if elapsed < TTY_PROGRESS_START_DELAY_SECONDS:
                     return
@@ -943,7 +959,10 @@ class DownloadProgress:
             percent = int((downloaded_bytes * 100) / max(self.total_bytes, 1))
             step = self.milestone_step
             milestone_percent = min((percent // step) * step, 100)
-            if milestone_percent > self.last_milestone_percent and milestone_percent < 100:
+            if (
+                milestone_percent > self.last_milestone_percent
+                and milestone_percent < 100
+            ):
                 self.last_milestone_percent = milestone_percent
                 should_emit = True
         else:
@@ -996,7 +1015,11 @@ def download_bytes(
                 content_length = response.headers.get("Content-Length")
                 if content_length and content_length.isdigit():
                     total_bytes = int(content_length)
-                progress = DownloadProgress(progress_label, total_bytes) if progress_label else None
+                progress = (
+                    DownloadProgress(progress_label, total_bytes)
+                    if progress_label
+                    else None
+                )
                 data = bytearray()
                 while True:
                     chunk = response.read(1024 * 1024)
@@ -1026,13 +1049,17 @@ def fetch_json(url: str) -> Any:
             data = download_bytes(
                 url,
                 timeout = 30,
-                headers = github_api_headers(url) if is_github_api_url(url) else auth_headers(url),
+                headers = github_api_headers(url)
+                if is_github_api_url(url)
+                else auth_headers(url),
             )
         except urllib.error.HTTPError as exc:
             if exc.code == 403 and is_github_api_url(url):
                 hint = ""
                 if not (os.environ.get("GH_TOKEN") or os.environ.get("GITHUB_TOKEN")):
-                    hint = "; set GH_TOKEN or GITHUB_TOKEN to avoid GitHub API rate limits"
+                    hint = (
+                        "; set GH_TOKEN or GITHUB_TOKEN to avoid GitHub API rate limits"
+                    )
                 raise RuntimeError(f"GitHub API returned 403 for {url}{hint}") from exc
             raise
         if not data:
@@ -1041,7 +1068,9 @@ def fetch_json(url: str) -> Any:
             try:
                 payload = json.loads(data.decode("utf-8"))
             except (UnicodeDecodeError, json.JSONDecodeError) as exc:
-                last_decode_exc = RuntimeError(f"downloaded invalid JSON from {url}: {exc}")
+                last_decode_exc = RuntimeError(
+                    f"downloaded invalid JSON from {url}: {exc}"
+                )
             else:
                 if not isinstance(payload, dict) and not isinstance(payload, list):
                     raise RuntimeError(
@@ -1075,7 +1104,9 @@ def download_file(url: str, destination: Path) -> None:
                     content_length = response.headers.get("Content-Length")
                     if content_length and content_length.isdigit():
                         total_bytes = int(content_length)
-                    progress = DownloadProgress(f"Downloading {destination.name}", total_bytes)
+                    progress = DownloadProgress(
+                        f"Downloading {destination.name}", total_bytes
+                    )
                     downloaded_bytes = 0
                     while True:
                         chunk = response.read(1024 * 1024)
@@ -1100,7 +1131,9 @@ def download_file(url: str, destination: Path) -> None:
                     pass
             if attempt >= HTTP_FETCH_ATTEMPTS or not is_retryable_url_error(exc):
                 raise
-            log(f"download failed ({attempt}/{HTTP_FETCH_ATTEMPTS}) for {url}: {exc}; retrying")
+            log(
+                f"download failed ({attempt}/{HTTP_FETCH_ATTEMPTS}) for {url}: {exc}; retrying"
+            )
             sleep_backoff(attempt, exc = exc)
     assert last_exc is not None
     raise last_exc
@@ -1112,7 +1145,9 @@ def download_file_verified(
     normalized_expected = normalize_sha256_digest(expected_sha256)
     if not normalized_expected:
         download_file(url, destination)
-        log(f"downloaded {label} without a published sha256; relying on install validation")
+        log(
+            f"downloaded {label} without a published sha256; relying on install validation"
+        )
         return
 
     for attempt in range(1, 3):
@@ -1210,7 +1245,9 @@ def latest_upstream_release_tag() -> str:
     payload = fetch_json(UPSTREAM_RELEASES_API)
     tag = payload.get("tag_name")
     if not isinstance(tag, str) or not tag:
-        raise RuntimeError(f"latest release tag was missing from {UPSTREAM_RELEASES_API}")
+        raise RuntimeError(
+            f"latest release tag was missing from {UPSTREAM_RELEASES_API}"
+        )
     return tag
 
 
@@ -1245,13 +1282,19 @@ def iter_release_payloads_by_time(
         yield github_release(repo, published_release_tag)
         return
 
-    if requested_tag and requested_tag != "latest" and is_release_tag_like(requested_tag):
+    if (
+        requested_tag
+        and requested_tag != "latest"
+        and is_release_tag_like(requested_tag)
+    ):
         try:
             yield github_release(repo, requested_tag)
             return
         except urllib.error.HTTPError as exc:
             if exc.code == 404:
-                log(f"release tag {requested_tag} not found in {repo}; scanning recent releases")
+                log(
+                    f"release tag {requested_tag} not found in {repo}; scanning recent releases"
+                )
             else:
                 raise
         except Exception:
@@ -1259,15 +1302,21 @@ def iter_release_payloads_by_time(
 
     releases = [
         release
-        for release in github_releases(repo, max_pages = DEFAULT_GITHUB_RELEASE_SCAN_MAX_PAGES)
-        if isinstance(release, dict) and not release.get("draft") and not release.get("prerelease")
+        for release in github_releases(
+            repo, max_pages = DEFAULT_GITHUB_RELEASE_SCAN_MAX_PAGES
+        )
+        if isinstance(release, dict)
+        and not release.get("draft")
+        and not release.get("prerelease")
     ]
     releases.sort(key = release_time_sort_key, reverse = True)
     for release in releases:
         yield release
 
 
-def direct_release_matches_request(*, release_tag: str, llama_tag: str, requested_tag: str) -> bool:
+def direct_release_matches_request(
+    *, release_tag: str, llama_tag: str, requested_tag: str
+) -> bool:
     if requested_tag == "latest":
         return True
     for candidate in (release_tag, llama_tag):
@@ -1406,7 +1455,12 @@ def direct_upstream_release_plan(
                     install_kind = "macos-x64",
                 )
             )
-    elif host.is_linux and host.is_x86_64 and not host.has_usable_nvidia and not host.has_rocm:
+    elif (
+        host.is_linux
+        and host.is_x86_64
+        and not host.has_usable_nvidia
+        and not host.has_rocm
+    ):
         # ROCm hosts are excluded: this ggml-org path ships no per-gfx ROCm
         # asset, so they fall through to the empty-attempts raise (HIP source
         # build) rather than silently getting a CPU binary on a GPU host.
@@ -1520,7 +1574,9 @@ def resolve_simple_install_release_plans(
             max_release_fallbacks = max_release_fallbacks,
         )
     requested_tag = normalized_requested_llama_tag(llama_tag)
-    allow_older_release_fallback = requested_tag == "latest" and not published_release_tag
+    allow_older_release_fallback = (
+        requested_tag == "latest" and not published_release_tag
+    )
     if allow_older_release_fallback:
         pinned_macos = pinned_macos_release_tag(host, repo)
         if pinned_macos is not None:
@@ -1531,7 +1587,9 @@ def resolve_simple_install_release_plans(
     last_error: PrebuiltFallback | None = None
 
     try:
-        releases = iter_release_payloads_by_time(repo, published_release_tag, requested_tag)
+        releases = iter_release_payloads_by_time(
+            repo, published_release_tag, requested_tag
+        )
         for release in releases:
             try:
                 plan = direct_upstream_release_plan(release, host, repo, requested_tag)
@@ -1554,13 +1612,17 @@ def resolve_simple_install_release_plans(
     except PrebuiltFallback:
         raise
     except Exception as exc:
-        raise PrebuiltFallback(f"failed to inspect published releases in {repo}: {exc}") from exc
+        raise PrebuiltFallback(
+            f"failed to inspect published releases in {repo}: {exc}"
+        ) from exc
 
     if plans:
         return requested_tag, plans
     if last_error is not None:
         raise last_error
-    raise PrebuiltFallback(f"no installable published llama.cpp releases were found in {repo}")
+    raise PrebuiltFallback(
+        f"no installable published llama.cpp releases were found in {repo}"
+    )
 
 
 def normalized_requested_llama_tag(requested_tag: str | None) -> str:
@@ -1612,7 +1674,9 @@ def parse_cuda_visible_devices(value: str | None) -> list[str] | None:
     return [token.strip() for token in raw.split(",") if token.strip()]
 
 
-def supports_explicit_visible_device_matching(visible_devices: list[str] | None) -> bool:
+def supports_explicit_visible_device_matching(
+    visible_devices: list[str] | None,
+) -> bool:
     if not visible_devices:
         return False
     for token in visible_devices:
@@ -1662,7 +1726,9 @@ def dir_provides_exact_library(directory: str | Path, library: str) -> bool:
     return candidate.exists() and (candidate.is_file() or candidate.is_symlink())
 
 
-def linux_runtime_dirs_for_required_libraries(required_libraries: Iterable[str]) -> list[str]:
+def linux_runtime_dirs_for_required_libraries(
+    required_libraries: Iterable[str],
+) -> list[str]:
     required = [library for library in required_libraries if library]
     candidates: list[str | Path] = []
 
@@ -1678,7 +1744,9 @@ def linux_runtime_dirs_for_required_libraries(required_libraries: Iterable[str])
         value = os.environ.get(name)
         if value:
             cuda_roots.append(Path(value))
-    cuda_roots.extend(Path(path) for path in glob_paths("/usr/local/cuda", "/usr/local/cuda-*"))
+    cuda_roots.extend(
+        Path(path) for path in glob_paths("/usr/local/cuda", "/usr/local/cuda-*")
+    )
 
     for root in cuda_roots:
         candidates.extend(
@@ -1703,7 +1771,8 @@ def linux_runtime_dirs_for_required_libraries(required_libraries: Iterable[str])
         )
     )
     candidates.extend(
-        Path(path) for path in glob_paths("/usr/local/lib/ollama/cuda_v*", "/usr/lib/wsl/lib")
+        Path(path)
+        for path in glob_paths("/usr/local/lib/ollama/cuda_v*", "/usr/lib/wsl/lib")
     )
     candidates.extend(Path(path) for path in python_runtime_dirs())
     candidates.extend(Path(path) for path in ldconfig_runtime_dirs(required))
@@ -1715,7 +1784,9 @@ def linux_runtime_dirs_for_required_libraries(required_libraries: Iterable[str])
     matched: list[tuple[int, str]] = []
     for directory in resolved:
         base = Path(directory)
-        provided = sum(1 for library in required if dir_provides_exact_library(directory, library))
+        provided = sum(
+            1 for library in required if dir_provides_exact_library(directory, library)
+        )
         if provided:
             matched.append((provided, directory))
 
@@ -1736,7 +1807,9 @@ def detected_linux_runtime_lines() -> tuple[list[str], dict[str, list[str]]]:
         matching_dirs: list[str] = []
         for library in required:
             matched_dirs = [
-                directory for directory in dirs if any(Path(directory).glob(f"{library}*"))
+                directory
+                for directory in dirs
+                if any(Path(directory).glob(f"{library}*"))
             ]
             if not matched_dirs:
                 library_matches = {}
@@ -1773,13 +1846,17 @@ def parse_published_artifact(raw: Any) -> PublishedLlamaArtifact | None:
     if not isinstance(asset_name, str) or not asset_name:
         raise ValueError("artifact.asset_name was missing or not a string")
     if not isinstance(install_kind, str) or not install_kind:
-        raise ValueError(f"artifact {asset_name} install_kind was missing or not a string")
+        raise ValueError(
+            f"artifact {asset_name} install_kind was missing or not a string"
+        )
 
     supported_sms_raw = raw.get("supported_sms", [])
     if not isinstance(supported_sms_raw, (list, tuple)):
         raise ValueError(f"artifact {asset_name} supported_sms must be a list or tuple")
     if any(not isinstance(value, (int, str)) for value in supported_sms_raw):
-        raise ValueError(f"artifact {asset_name} supported_sms entries must be ints or strings")
+        raise ValueError(
+            f"artifact {asset_name} supported_sms entries must be ints or strings"
+        )
     supported_sms = normalize_compute_caps(supported_sms_raw)
 
     min_sm_raw = raw.get("min_sm")
@@ -1788,7 +1865,9 @@ def parse_published_artifact(raw: Any) -> PublishedLlamaArtifact | None:
         min_sm = int(min_sm_raw) if min_sm_raw is not None else None
         max_sm = int(max_sm_raw) if max_sm_raw is not None else None
     except (TypeError, ValueError) as exc:
-        raise ValueError(f"artifact {asset_name} min_sm/max_sm were not integers") from exc
+        raise ValueError(
+            f"artifact {asset_name} min_sm/max_sm were not integers"
+        ) from exc
     runtime_line = raw.get("runtime_line")
     coverage_class = raw.get("coverage_class")
     bundle_profile = raw.get("bundle_profile")
@@ -1811,14 +1890,20 @@ def parse_published_artifact(raw: Any) -> PublishedLlamaArtifact | None:
     )
     mapped_raw = raw.get("mapped_targets", [])
     mapped_targets = (
-        [value.strip() for value in mapped_raw if isinstance(value, str) and value.strip()]
+        [
+            value.strip()
+            for value in mapped_raw
+            if isinstance(value, str) and value.strip()
+        ]
         if isinstance(mapped_raw, (list, tuple))
         else []
     )
     return PublishedLlamaArtifact(
         asset_name = asset_name,
         install_kind = install_kind,
-        runtime_line = runtime_line if isinstance(runtime_line, str) and runtime_line else None,
+        runtime_line = runtime_line
+        if isinstance(runtime_line, str) and runtime_line
+        else None,
         coverage_class = coverage_class
         if isinstance(coverage_class, str) and coverage_class
         else None,
@@ -1895,7 +1980,9 @@ def parse_published_release_bundle(
         try:
             artifact = parse_published_artifact(raw_artifact)
         except ValueError as exc:
-            log(f"published artifact ignored for {repo}@{release_tag} artifact[{index}]: {exc}")
+            log(
+                f"published artifact ignored for {repo}@{release_tag} artifact[{index}]: {exc}"
+            )
             continue
         if artifact is not None:
             artifacts.append(artifact)
@@ -1914,7 +2001,9 @@ def parse_published_release_bundle(
         release_tag = release_tag,
         upstream_tag = upstream_tag,
         manifest_sha256 = manifest_sha256,
-        source_repo = source_repo if isinstance(source_repo, str) and source_repo else None,
+        source_repo = source_repo
+        if isinstance(source_repo, str) and source_repo
+        else None,
         source_repo_url = source_repo_url
         if isinstance(source_repo_url, str) and source_repo_url
         else None,
@@ -1975,12 +2064,18 @@ def parse_approved_release_checksums(
     artifacts: dict[str, ApprovedArtifactHash] = {}
     for asset_name, raw_entry in artifacts_payload.items():
         if not isinstance(asset_name, str) or not asset_name:
-            raise RuntimeError("published checksum asset used a non-string artifact key")
+            raise RuntimeError(
+                "published checksum asset used a non-string artifact key"
+            )
         if not isinstance(raw_entry, dict):
-            raise RuntimeError(f"published checksum entry for {asset_name} was not an object")
+            raise RuntimeError(
+                f"published checksum entry for {asset_name} was not an object"
+            )
         digest = normalize_sha256_digest(raw_entry.get("sha256"))
         if not digest:
-            raise RuntimeError(f"published checksum entry for {asset_name} omitted a valid sha256")
+            raise RuntimeError(
+                f"published checksum entry for {asset_name} omitted a valid sha256"
+            )
         repo_value = raw_entry.get("repo")
         kind_value = raw_entry.get("kind")
         artifacts[asset_name] = ApprovedArtifactHash(
@@ -2001,7 +2096,9 @@ def parse_approved_release_checksums(
         repo = repo,
         release_tag = release_tag,
         upstream_tag = upstream_tag,
-        source_repo = source_repo if isinstance(source_repo, str) and source_repo else None,
+        source_repo = source_repo
+        if isinstance(source_repo, str) and source_repo
+        else None,
         source_repo_url = source_repo_url
         if isinstance(source_repo_url, str) and source_repo_url
         else None,
@@ -2020,7 +2117,9 @@ def parse_approved_release_checksums(
     )
 
 
-def load_approved_release_checksums(repo: str, release_tag: str) -> ApprovedReleaseChecksums:
+def load_approved_release_checksums(
+    repo: str, release_tag: str
+) -> ApprovedReleaseChecksums:
     try:
         release = github_release(repo, release_tag)
     except Exception as exc:
@@ -2054,7 +2153,9 @@ def iter_published_release_bundles(
         else github_releases(repo, max_pages = DEFAULT_GITHUB_RELEASE_SCAN_MAX_PAGES)
     )
     for release in releases:
-        if not published_release_tag and (release.get("draft") or release.get("prerelease")):
+        if not published_release_tag and (
+            release.get("draft") or release.get("prerelease")
+        ):
             continue
         try:
             bundle = parse_published_release_bundle(repo, release)
@@ -2067,13 +2168,18 @@ def iter_published_release_bundles(
         yield bundle
 
 
-def _artifact_covers_sms(artifact: PublishedLlamaArtifact, host_sms: Iterable[str]) -> bool:
+def _artifact_covers_sms(
+    artifact: PublishedLlamaArtifact, host_sms: Iterable[str]
+) -> bool:
     """True when every host SM is listed in the artifact's supported_sms and
     falls within its [min_sm, max_sm] range."""
     if not artifact.supported_sms or artifact.min_sm is None or artifact.max_sm is None:
         return False
     supported = {str(value) for value in artifact.supported_sms}
-    return all(sm in supported and artifact.min_sm <= int(sm) <= artifact.max_sm for sm in host_sms)
+    return all(
+        sm in supported and artifact.min_sm <= int(sm) <= artifact.max_sm
+        for sm in host_sms
+    )
 
 
 def _sm_range(artifact: PublishedLlamaArtifact) -> int:
@@ -2100,11 +2206,16 @@ def _blackwell_capable_linux_runtime_lines(
         # than crashing the major sort.
         if not (line and line.startswith("cuda") and line[len("cuda") :].isdigit()):
             continue
-        if not artifact.supported_sms or artifact.min_sm is None or artifact.max_sm is None:
+        if (
+            not artifact.supported_sms
+            or artifact.min_sm is None
+            or artifact.max_sm is None
+        ):
             continue
         supported = {str(value) for value in artifact.supported_sms}
         if all(
-            sm in supported and artifact.min_sm <= int(sm) <= artifact.max_sm for sm in host_sms
+            sm in supported and artifact.min_sm <= int(sm) <= artifact.max_sm
+            for sm in host_sms
         ):
             lines.add(line)
     return sorted(lines, key = lambda line: int(line[len("cuda") :]), reverse = True)
@@ -2154,9 +2265,13 @@ def linux_cuda_choice_from_release(
     # below is arch-agnostic and applies to both.
     cuda_install_kind = "linux-arm64-cuda" if host.is_arm64 else "linux-cuda"
     published_artifacts = [
-        artifact for artifact in release.artifacts if artifact.install_kind == cuda_install_kind
+        artifact
+        for artifact in release.artifacts
+        if artifact.install_kind == cuda_install_kind
     ]
-    published_asset_names = sorted(artifact.asset_name for artifact in published_artifacts)
+    published_asset_names = sorted(
+        artifact.asset_name for artifact in published_artifacts
+    )
     selection_log.append(
         "linux_cuda_selection: published_assets="
         + (",".join(published_asset_names) if published_asset_names else "none")
@@ -2175,7 +2290,9 @@ def linux_cuda_choice_from_release(
     blackwell_lines = (
         [
             line
-            for line in _blackwell_capable_linux_runtime_lines(host_sms, published_artifacts)
+            for line in _blackwell_capable_linux_runtime_lines(
+                host_sms, published_artifacts
+            )
             if line in ordered_runtime_lines
         ]
         if _host_is_blackwell(host)
@@ -2190,7 +2307,11 @@ def linux_cuda_choice_from_release(
         selection_log.append(
             "linux_cuda_selection: blackwell_runtime_override prefer="
             + ",".join(blackwell_lines)
-            + (f" over torch_preferred={preferred_runtime_line}" if preferred_runtime_line else "")
+            + (
+                f" over torch_preferred={preferred_runtime_line}"
+                if preferred_runtime_line
+                else ""
+            )
         )
     elif preferred_runtime_line:
         if preferred_runtime_line in ordered_runtime_lines:
@@ -2212,7 +2333,9 @@ def linux_cuda_choice_from_release(
     attempts: list[AssetChoice] = []
     seen_attempts: set[str] = set()
 
-    def add_attempt(artifact: PublishedLlamaArtifact, asset_url: str, reason: str) -> None:
+    def add_attempt(
+        artifact: PublishedLlamaArtifact, asset_url: str, reason: str
+    ) -> None:
         asset_name = artifact.asset_name
         if asset_name in seen_attempts:
             return
@@ -2249,7 +2372,9 @@ def linux_cuda_choice_from_release(
             asset_name = artifact.asset_name
             asset_url = release.assets.get(asset_name)
             if not asset_url:
-                selection_log.append(f"linux_cuda_selection: reject {asset_name} missing asset")
+                selection_log.append(
+                    f"linux_cuda_selection: reject {asset_name} missing asset"
+                )
                 continue
             if not host_sms and artifact.coverage_class != "portable":
                 selection_log.append(
@@ -2277,7 +2402,9 @@ def linux_cuda_choice_from_release(
             supported_sms = {str(value) for value in artifact.supported_sms}
             missing_sms = [sm for sm in host_sms if sm not in supported_sms]
             out_of_range_sms = [
-                sm for sm in host_sms if not (artifact.min_sm <= int(sm) <= artifact.max_sm)
+                sm
+                for sm in host_sms
+                if not (artifact.min_sm <= int(sm) <= artifact.max_sm)
             ]
             reasons: list[str] = []
             if missing_sms:
@@ -2321,7 +2448,8 @@ def linux_cuda_choice_from_release(
         return None
 
     selection_log.append(
-        "linux_cuda_selection: attempt_order=" + ",".join(choice.name for choice in attempts)
+        "linux_cuda_selection: attempt_order="
+        + ",".join(choice.name for choice in attempts)
     )
     for attempt in attempts:
         attempt.selection_log = list(selection_log) + [
@@ -2339,7 +2467,9 @@ def latest_published_linux_cuda_tag(host: HostInfo, published_repo: str) -> str 
 
 
 def iter_upstream_releases() -> Iterable[dict[str, Any]]:
-    for release in github_releases(UPSTREAM_REPO, max_pages = DEFAULT_GITHUB_RELEASE_SCAN_MAX_PAGES):
+    for release in github_releases(
+        UPSTREAM_REPO, max_pages = DEFAULT_GITHUB_RELEASE_SCAN_MAX_PAGES
+    ):
         if release.get("draft") or release.get("prerelease"):
             continue
         yield release
@@ -2453,7 +2583,9 @@ def _download_host_resolved_release(repo: str) -> ResolvedPublishedRelease | Non
     release_tag = _download_host_latest_release_tag(repo)
     if not release_tag:
         return None
-    sha_url = _release_asset_download_url(repo, release_tag, DEFAULT_PUBLISHED_SHA256_ASSET)
+    sha_url = _release_asset_download_url(
+        repo, release_tag, DEFAULT_PUBLISHED_SHA256_ASSET
+    )
     try:
         sha_payload = _fetch_download_host_json(sha_url)
     except urllib.error.HTTPError as exc:
@@ -2478,7 +2610,9 @@ def _download_host_resolved_release(repo: str) -> ResolvedPublishedRelease | Non
         "assets": [
             {
                 "name": name,
-                "browser_download_url": _release_asset_download_url(repo, release_tag, name),
+                "browser_download_url": _release_asset_download_url(
+                    repo, release_tag, name
+                ),
             }
             for name in sorted(asset_names)
         ],
@@ -2505,7 +2639,9 @@ def _download_host_resolved_release(repo: str) -> ResolvedPublishedRelease | Non
     return ResolvedPublishedRelease(bundle = bundle, checksums = checksums)
 
 
-def published_release_matches_request(bundle: PublishedReleaseBundle, requested_ref: str) -> bool:
+def published_release_matches_request(
+    bundle: PublishedReleaseBundle, requested_ref: str
+) -> bool:
     if requested_ref == "latest":
         return True
     for candidate in (
@@ -2560,7 +2696,9 @@ def resolve_published_release(
             raise PrebuiltFallback(
                 f"no usable published llama.cpp releases were available in {repo}"
             )
-        raise PrebuiltFallback(f"no published llama.cpp releases were available in {repo}")
+        raise PrebuiltFallback(
+            f"no published llama.cpp releases were available in {repo}"
+        )
 
     raise PrebuiltFallback(
         f"no published prebuilt release in {repo} matched upstream tag {normalized_requested}"
@@ -2605,10 +2743,14 @@ def iter_resolved_published_releases(
         try:
             resolved = _download_host_resolved_release(repo)
         except PrebuiltFallback as exc:
-            log(f"download-host latest release rejected for {repo} ({exc}); trying GitHub API")
+            log(
+                f"download-host latest release rejected for {repo} ({exc}); trying GitHub API"
+            )
             resolved = None
         except Exception as exc:
-            log(f"download-host latest resolve unavailable for {repo} ({exc}); trying GitHub API")
+            log(
+                f"download-host latest resolve unavailable for {repo} ({exc}); trying GitHub API"
+            )
             resolved = None
         if resolved is not None:
             yield resolved
@@ -2644,7 +2786,9 @@ def iter_resolved_published_releases(
         return
 
     if normalized_requested == "latest":
-        raise PrebuiltFallback(f"no published llama.cpp releases were available in {repo}")
+        raise PrebuiltFallback(
+            f"no published llama.cpp releases were available in {repo}"
+        )
 
     raise PrebuiltFallback(
         f"no published prebuilt release in {repo} matched upstream tag {normalized_requested}"
@@ -2702,10 +2846,14 @@ def resolve_requested_install_tag(
     ).bundle.upstream_tag
 
 
-def exact_source_archive_hash(checksums: ApprovedReleaseChecksums) -> ApprovedArtifactHash | None:
+def exact_source_archive_hash(
+    checksums: ApprovedReleaseChecksums,
+) -> ApprovedArtifactHash | None:
     if not checksums.source_commit:
         return None
-    return checksums.artifacts.get(exact_source_archive_logical_name(checksums.source_commit))
+    return checksums.artifacts.get(
+        exact_source_archive_logical_name(checksums.source_commit)
+    )
 
 
 def source_clone_url_for_release(
@@ -2725,8 +2873,12 @@ def source_build_plan_for_release(release: ResolvedPublishedRelease) -> SourceBu
     exact_source = exact_source_archive_hash(checksums)
     source_repo = checksums.source_repo or release.bundle.source_repo
     source_repo_url = checksums.source_repo_url or release.bundle.source_repo_url
-    requested_source_ref = checksums.requested_source_ref or release.bundle.requested_source_ref
-    resolved_source_ref = checksums.resolved_source_ref or release.bundle.resolved_source_ref
+    requested_source_ref = (
+        checksums.requested_source_ref or release.bundle.requested_source_ref
+    )
+    resolved_source_ref = (
+        checksums.resolved_source_ref or release.bundle.resolved_source_ref
+    )
     source_commit = checksums.source_commit or release.bundle.source_commit
     source_ref_kind = checksums.source_ref_kind or release.bundle.source_ref_kind
     source_url = source_clone_url_for_release(checksums, release.bundle)
@@ -2742,8 +2894,14 @@ def source_build_plan_for_release(release: ResolvedPublishedRelease) -> SourceBu
             resolved_source_ref = resolved_source_ref,
             source_commit = source_commit,
         )
-    source_ref = checkout_friendly_ref(source_ref_kind, resolved_source_ref or requested_source_ref)
-    if source_url and source_ref and source_ref_kind in {"tag", "branch", "pull", "commit"}:
+    source_ref = checkout_friendly_ref(
+        source_ref_kind, resolved_source_ref or requested_source_ref
+    )
+    if (
+        source_url
+        and source_ref
+        and source_ref_kind in {"tag", "branch", "pull", "commit"}
+    ):
         return SourceBuildPlan(
             source_url = source_url,
             source_ref = source_ref,
@@ -2940,7 +3098,9 @@ def windows_intel_gpu_in_registry() -> bool:
     except ImportError:
         return False
     try:
-        with winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE, _WINDOWS_DISPLAY_CLASS_KEY) as class_key:
+        with winreg.OpenKey(
+            winreg.HKEY_LOCAL_MACHINE, _WINDOWS_DISPLAY_CLASS_KEY
+        ) as class_key:
             for index in range(winreg.QueryInfoKey(class_key)[0]):
                 try:
                     name = winreg.EnumKey(class_key, index)
@@ -2994,7 +3154,9 @@ def detect_host() -> HostInfo:
         # ROCm host as NVIDIA and short-circuit the ROCm path.
         try:
             listing = run_capture([nvidia_smi, "-L"], timeout = 20)
-            gpu_lines = [line for line in listing.stdout.splitlines() if line.startswith("GPU ")]
+            gpu_lines = [
+                line for line in listing.stdout.splitlines() if line.startswith("GPU ")
+            ]
             if gpu_lines:
                 has_physical_nvidia = True
                 has_usable_nvidia = visible_device_tokens != []
@@ -3152,7 +3314,9 @@ def detect_host() -> HostInfo:
             # AMD torch wheels ship hipInfo.exe into the venv Scripts dir
             # (next to python.exe) -- resolvable on driver-only hosts where no
             # SDK dir exists, so a standalone rerun can still detect the GPU.
-            _venv_candidate = os.path.join(os.path.dirname(sys.executable), f"{name}.exe")
+            _venv_candidate = os.path.join(
+                os.path.dirname(sys.executable), f"{name}.exe"
+            )
             if os.path.isfile(_venv_candidate):
                 return _venv_candidate
             return None
@@ -3214,7 +3378,10 @@ def detect_host() -> HostInfo:
                             ],
                             timeout = 15,
                         )
-                        if _result.returncode == 0 and "intel" in _result.stdout.lower():
+                        if (
+                            _result.returncode == 0
+                            and "intel" in _result.stdout.lower()
+                        ):
                             has_intel_gpu = True
                     except Exception:
                         pass
@@ -3378,7 +3545,9 @@ def detect_torch_cuda_runtime_preference(host: HostInfo) -> CudaRuntimePreferenc
     try:
         cuda_available = bool(torch.cuda.is_available())
     except Exception as exc:
-        selection_log.append(f"torch_cuda_preference: torch.cuda.is_available() failed: {exc}")
+        selection_log.append(
+            f"torch_cuda_preference: torch.cuda.is_available() failed: {exc}"
+        )
         return CudaRuntimePreference(runtime_line = None, selection_log = selection_log)
 
     if not cuda_available:
@@ -3466,10 +3635,14 @@ def windows_cuda_attempts(
             f"{preferred_runtime_line} unavailable_or_incompatible"
         )
     else:
-        selection_log.append("windows_cuda_selection: no Torch runtime preference available")
+        selection_log.append(
+            "windows_cuda_selection: no Torch runtime preference available"
+        )
 
     runtime_order.extend(
-        runtime_line for runtime_line in normal_runtime_lines if runtime_line not in runtime_order
+        runtime_line
+        for runtime_line in normal_runtime_lines
+        if runtime_line not in runtime_order
     )
     # Keep every driver-compatible line reachable as a fallback, so a line gated
     # out by the driver version still drops to an older major (cuda13 -> cuda12).
@@ -3493,7 +3666,9 @@ def windows_cuda_attempts(
         # Track whatever minor llama.cpp actually ships for this major
         # (cuda13 -> 13.1, 13.3, ...). Skip the line when the release has no
         # matching asset instead of guessing a now-missing name.
-        runtime = _published_windows_cuda_runtime(upstream_assets, major, host.driver_cuda_version)
+        runtime = _published_windows_cuda_runtime(
+            upstream_assets, major, host.driver_cuda_version
+        )
         if runtime is None:
             selection_log.append(
                 f"windows_cuda_selection: no driver-supported asset for {runtime_line}"
@@ -3609,7 +3784,9 @@ def published_windows_cuda_attempts(
 ) -> list[AssetChoice]:
     selection_log = list(release.selection_log) + list(selection_preamble)
     published_artifacts = [
-        artifact for artifact in release.artifacts if artifact.install_kind == "windows-cuda"
+        artifact
+        for artifact in release.artifacts
+        if artifact.install_kind == "windows-cuda"
     ]
     artifacts_by_runtime: dict[str, list[PublishedLlamaArtifact]] = {}
     for artifact in published_artifacts:
@@ -3653,7 +3830,9 @@ def published_windows_cuda_attempts(
         # the driver major is the real constraint. Mirrors the legacy
         # windows_cuda_attempts fallback; without it a torch-only host gets no
         # fork attempt and silently drops to the upstream build.
-        ordered_lines = [line for line in compatible if line in detected] or list(compatible)
+        ordered_lines = [line for line in compatible if line in detected] or list(
+            compatible
+        )
         if preferred_runtime_line and preferred_runtime_line in ordered_lines:
             ordered_lines = [preferred_runtime_line] + [
                 line for line in ordered_lines if line != preferred_runtime_line
@@ -3698,7 +3877,11 @@ def published_windows_cuda_attempts(
                 and artifact.min_sm is not None
                 and artifact.max_sm is not None
             )
-            if host_sms and has_sm_info and not _artifact_covers_sms(artifact, host_sms):
+            if (
+                host_sms
+                and has_sm_info
+                and not _artifact_covers_sms(artifact, host_sms)
+            ):
                 continue
             if not host_sms and has_sm_info and artifact.coverage_class != "portable":
                 continue
@@ -3794,7 +3977,11 @@ def published_asset_choice_for_kind(
     release: PublishedReleaseBundle, install_kind: str
 ) -> AssetChoice | None:
     candidates = sorted(
-        (artifact for artifact in release.artifacts if artifact.install_kind == install_kind),
+        (
+            artifact
+            for artifact in release.artifacts
+            if artifact.install_kind == install_kind
+        ),
         key = lambda artifact: (artifact.rank, artifact.asset_name),
     )
     for artifact in candidates:
@@ -3810,7 +3997,9 @@ def published_asset_choice_for_kind(
             install_kind = install_kind,
             runtime_line = artifact.runtime_line,
             selection_log = list(release.selection_log)
-            + [f"published_selection: selected {artifact.asset_name} install_kind={install_kind}"],
+            + [
+                f"published_selection: selected {artifact.asset_name} install_kind={install_kind}"
+            ],
         )
     return None
 
@@ -3863,7 +4052,11 @@ def _detect_host_rocm_version() -> tuple[int, int] | None:
             if result.returncode == 0:
                 raw = (result.stdout or "").strip().split("\n")[0]
                 parts = raw.split(".")
-                if len(parts) >= 2 and parts[0].isdigit() and parts[1].split("-")[0].isdigit():
+                if (
+                    len(parts) >= 2
+                    and parts[0].isdigit()
+                    and parts[1].split("-")[0].isdigit()
+                ):
                     return int(parts[0]), int(parts[1].split("-")[0])
         except Exception:
             pass
@@ -3977,7 +4170,9 @@ def resolve_upstream_asset_choice(host: HostInfo, llama_tag: str) -> AssetChoice
             _compatible: list[tuple[tuple[int, ...], str]] = rocm_candidates
             if _host_rocm_version is not None:
                 _compatible = [
-                    item for item in rocm_candidates if item[0][:2] <= _host_rocm_version
+                    item
+                    for item in rocm_candidates
+                    if item[0][:2] <= _host_rocm_version
                 ]
             if rocm_candidates and not _compatible:
                 # Fall back to the newest candidate so a source build is
@@ -4018,7 +4213,9 @@ def resolve_upstream_asset_choice(host: HostInfo, llama_tag: str) -> AssetChoice
         if host.has_intel_gpu and not host.has_physical_nvidia and not host.has_rocm:
             vulkan_name = f"llama-{llama_tag}-bin-ubuntu-vulkan-x64.tar.gz"
             if vulkan_name in upstream_assets:
-                log(f"Intel GPU detected -- using upstream Vulkan prebuilt {vulkan_name}")
+                log(
+                    f"Intel GPU detected -- using upstream Vulkan prebuilt {vulkan_name}"
+                )
                 return AssetChoice(
                     repo = UPSTREAM_REPO,
                     tag = llama_tag,
@@ -4027,7 +4224,9 @@ def resolve_upstream_asset_choice(host: HostInfo, llama_tag: str) -> AssetChoice
                     source_label = "upstream",
                     install_kind = "linux-vulkan",
                 )
-            log("Intel GPU detected but no Vulkan prebuilt found -- falling back to CPU")
+            log(
+                "Intel GPU detected but no Vulkan prebuilt found -- falling back to CPU"
+            )
 
         upstream_name = f"llama-{llama_tag}-bin-ubuntu-x64.tar.gz"
         if upstream_name not in upstream_assets:
@@ -4060,7 +4259,9 @@ def resolve_upstream_asset_choice(host: HostInfo, llama_tag: str) -> AssetChoice
         if host.has_rocm:
             hip_name = f"llama-{llama_tag}-bin-win-hip-radeon-x64.zip"
             if hip_name in upstream_assets:
-                log(f"AMD ROCm detected on Windows -- trying upstream HIP prebuilt {hip_name}")
+                log(
+                    f"AMD ROCm detected on Windows -- trying upstream HIP prebuilt {hip_name}"
+                )
                 return AssetChoice(
                     repo = UPSTREAM_REPO,
                     tag = llama_tag,
@@ -4069,7 +4270,9 @@ def resolve_upstream_asset_choice(host: HostInfo, llama_tag: str) -> AssetChoice
                     source_label = "upstream",
                     install_kind = "windows-hip",
                 )
-            log("AMD ROCm detected on Windows but no HIP prebuilt found -- falling back to CPU")
+            log(
+                "AMD ROCm detected on Windows but no HIP prebuilt found -- falling back to CPU"
+            )
 
         # Intel (or other non-NVIDIA/non-AMD) GPU on Windows: use Vulkan. No
         # physical NVIDIA so a CUDA-hidden card isn't reached through Vulkan.
@@ -4087,7 +4290,9 @@ def resolve_upstream_asset_choice(host: HostInfo, llama_tag: str) -> AssetChoice
                     source_label = "upstream",
                     install_kind = "windows-vulkan",
                 )
-            log("Intel GPU detected on Windows but no Vulkan prebuilt found -- falling back to CPU")
+            log(
+                "Intel GPU detected on Windows but no Vulkan prebuilt found -- falling back to CPU"
+            )
 
         upstream_name = f"llama-{llama_tag}-bin-win-cpu-x64.zip"
         if upstream_name not in upstream_assets:
@@ -4127,7 +4332,9 @@ def resolve_upstream_asset_choice(host: HostInfo, llama_tag: str) -> AssetChoice
             install_kind = "macos-x64",
         )
 
-    raise PrebuiltFallback(f"no prebuilt policy exists for {host.system} {host.machine}")
+    raise PrebuiltFallback(
+        f"no prebuilt policy exists for {host.system} {host.machine}"
+    )
 
 
 def resolve_asset_choice(host: HostInfo, llama_tag: str) -> AssetChoice:
@@ -4153,7 +4360,9 @@ def resolve_release_asset_choice(
             torch_preference.selection_log,
         )
         if published_attempts:
-            pin_attempts = _drop_blackwell_incapable_windows_cuda(host, published_attempts)
+            pin_attempts = _drop_blackwell_incapable_windows_cuda(
+                host, published_attempts
+            )
             try:
                 return apply_approved_hashes(pin_attempts, checksums)
             except PrebuiltFallback as exc:
@@ -4178,7 +4387,9 @@ def resolve_release_asset_choice(
         # prebuilt. We still avoid hard-pinning windows-cpu here so a CPU bundle
         # never shadows that ROCm path.
         if host.has_rocm:
-            published_choice = published_rocm_choice_for_host(release, host, "windows-rocm")
+            published_choice = published_rocm_choice_for_host(
+                release, host, "windows-rocm"
+            )
         else:
             published_choice = published_asset_choice_for_kind(release, "windows-cpu")
     elif host.is_windows and host.is_arm64:
@@ -4209,14 +4420,18 @@ def extract_archive(archive_path: Path, destination: Path) -> None:
         normalized = member_name.replace("\\", "/")
         member_path = Path(normalized)
         if member_path.is_absolute():
-            raise PrebuiltFallback(f"archive member used an absolute path: {member_name}")
+            raise PrebuiltFallback(
+                f"archive member used an absolute path: {member_name}"
+            )
 
         target = (base / member_path).resolve()
         base_resolved = base.resolve()
         try:
             target.relative_to(base_resolved)
         except ValueError as exc:
-            raise PrebuiltFallback(f"archive member escaped destination: {member_name}") from exc
+            raise PrebuiltFallback(
+                f"archive member escaped destination: {member_name}"
+            ) from exc
         return target
 
     def _try_repair_missing_slash(
@@ -4262,7 +4477,11 @@ def extract_archive(archive_path: Path, destination: Path) -> None:
         return candidates[0][len(prefix) :]
 
     def safe_link_target(
-        base: Path, member_name: str, link_name: str, target: Path, archive_names: set[str]
+        base: Path,
+        member_name: str,
+        link_name: str,
+        target: Path,
+        archive_names: set[str],
     ) -> tuple[str, Path]:
         normalized = link_name.replace("\\", "/")
         repaired = _try_repair_missing_slash(member_name, normalized, archive_names)
@@ -4322,7 +4541,9 @@ def extract_archive(archive_path: Path, destination: Path) -> None:
                 target.parent.mkdir(parents = True, exist_ok = True)
                 extracted = archive.extractfile(member)
                 if extracted is None:
-                    raise PrebuiltFallback(f"tar archive entry could not be read: {member.name}")
+                    raise PrebuiltFallback(
+                        f"tar archive entry could not be read: {member.name}"
+                    )
                 with extracted, target.open("wb") as dst:
                     shutil.copyfileobj(extracted, dst)
 
@@ -4356,7 +4577,9 @@ def extract_archive(archive_path: Path, destination: Path) -> None:
                 details = ", ".join(
                     f"{member.name} -> {member.linkname}" for member, _ in next_round
                 )
-                raise PrebuiltFallback(f"tar archive contained unresolved link entries: {details}")
+                raise PrebuiltFallback(
+                    f"tar archive contained unresolved link entries: {details}"
+                )
             unresolved = next_round
 
     destination.mkdir(parents = True, exist_ok = True)
@@ -4553,14 +4776,18 @@ def remove_agent_instruction_files(root: Path) -> int:
         return 0
 
     removed = 0
-    for current_dir, dirnames, filenames in os.walk(root, topdown = True, followlinks = False):
+    for current_dir, dirnames, filenames in os.walk(
+        root, topdown = True, followlinks = False
+    ):
         current_path = Path(current_dir)
         # followlinks=False still follows Windows junctions.
         if current_path != root and _is_link_or_junction(current_path):
             dirnames.clear()
             continue
         dirnames[:] = [
-            dirname for dirname in dirnames if not _is_link_or_junction(current_path / dirname)
+            dirname
+            for dirname in dirnames
+            if not _is_link_or_junction(current_path / dirname)
         ]
         for filename in sorted({"AGENTS.md", "CLAUDE.md"}.intersection(filenames)):
             candidate = current_path / filename
@@ -4605,7 +4832,9 @@ def hydrate_source_tree(
         for index, source_url in enumerate(source_urls):
             try:
                 if index > 0:
-                    log(f"retrying source tree download from fallback URL: {source_url}")
+                    log(
+                        f"retrying source tree download from fallback URL: {source_url}"
+                    )
                 download_file_verified(
                     source_url,
                     archive_path,
@@ -4630,16 +4859,21 @@ def hydrate_source_tree(
             source_root / "gguf-py",
         ]
         missing = [
-            str(path.relative_to(source_root)) for path in required_paths if not path.exists()
+            str(path.relative_to(source_root))
+            for path in required_paths
+            if not path.exists()
         ]
         if missing:
             raise PrebuiltFallback(
-                "upstream source archive was missing required repo files: " + ", ".join(missing)
+                "upstream source archive was missing required repo files: "
+                + ", ".join(missing)
             )
         copy_directory_contents(source_root, install_dir)
         removed = remove_agent_instruction_files(install_dir)
         if removed:
-            log(f"removed {removed} contributor-only agent instruction file(s) from staged source")
+            log(
+                f"removed {removed} contributor-only agent instruction file(s) from staged source"
+            )
     except PrebuiltFallback:
         raise
     except Exception as exc:
@@ -4664,7 +4898,9 @@ def discover_installed_executable(install_dir: Path, executable_name: str) -> Pa
     direct = install_dir / executable_name
     if direct.exists() and direct.is_file():
         return direct
-    candidate = next((path for path in install_dir.rglob(executable_name) if path.is_file()), None)
+    candidate = next(
+        (path for path in install_dir.rglob(executable_name) if path.is_file()), None
+    )
     if candidate is None:
         raise PrebuiltFallback(f"{executable_name} was not installed")
     return candidate
@@ -4694,7 +4930,9 @@ def create_exec_entrypoint(entrypoint: Path, target: Path) -> None:
         write_exec_wrapper(entrypoint, target)
 
 
-def overlay_directory_for_choice(install_dir: Path, choice: AssetChoice, host: HostInfo) -> Path:
+def overlay_directory_for_choice(
+    install_dir: Path, choice: AssetChoice, host: HostInfo
+) -> Path:
     if host.is_windows or choice.install_kind.startswith("windows"):
         path = install_dir / "build" / "bin" / "Release"
     else:
@@ -4731,7 +4969,12 @@ def runtime_patterns_for_choice(choice: AssetChoice) -> list[str]:
         "linux-arm64",
         "linux-vulkan",
     }:
-        return ["llama-server", "llama-quantize", "llama-diffusion-gemma-visual-server", "lib*.so*"]
+        return [
+            "llama-server",
+            "llama-quantize",
+            "llama-diffusion-gemma-visual-server",
+            "lib*.so*",
+        ]
     if choice.install_kind in {"macos-arm64", "macos-x64"}:
         return [
             "llama-server",
@@ -4753,7 +4996,9 @@ def runtime_patterns_for_choice(choice: AssetChoice) -> list[str]:
             "llama-diffusion-gemma-visual-server.exe",
             "*.dll",
         ]
-    raise PrebuiltFallback(f"unsupported install kind for runtime overlay: {choice.install_kind}")
+    raise PrebuiltFallback(
+        f"unsupported install kind for runtime overlay: {choice.install_kind}"
+    )
 
 
 def runtime_subdirs_for_choice(choice: AssetChoice) -> list[str]:
@@ -4959,7 +5204,9 @@ def confirm_install_tree(install_dir: Path, host: HostInfo) -> None:
     expected.append(install_dir / "UNSLOTH_PREBUILT_INFO.json")
     missing = [str(path) for path in expected if not path.exists()]
     if missing:
-        raise RuntimeError("activated install was missing expected files: " + ", ".join(missing))
+        raise RuntimeError(
+            "activated install was missing expected files: " + ", ".join(missing)
+        )
 
 
 def activate_staged_dir(staging_dir: Path, dst: Path) -> None:
@@ -4986,7 +5233,9 @@ def activate_staged_dir(staging_dir: Path, dst: Path) -> None:
     except OSError as exc:
         if not is_busy_lock_error(exc):
             raise
-        log(f"os.replace failed ({exc!r}); falling back to file-by-file copy of staging tree")
+        log(
+            f"os.replace failed ({exc!r}); falling back to file-by-file copy of staging tree"
+        )
         shutil.copytree(staging_dir, dst, dirs_exist_ok = True)
         remove_tree(staging_dir)
 
@@ -5111,11 +5360,15 @@ def install_from_archives(
                 expected_sha256 = choice.runtime_sha256,
                 label = f"prebuilt runtime archive {choice.runtime_name}",
             )
-            runtime_extract_dir = Path(tempfile.mkdtemp(prefix = "extract-runtime-", dir = work_dir))
+            runtime_extract_dir = Path(
+                tempfile.mkdtemp(prefix = "extract-runtime-", dir = work_dir)
+            )
             extract_archive(runtime_archive, runtime_extract_dir)
         source_dir = extract_dir
         overlay_dir = overlay_directory_for_choice(install_dir, choice, host)
-        copy_globs(source_dir, overlay_dir, runtime_patterns_for_choice(choice), required = True)
+        copy_globs(
+            source_dir, overlay_dir, runtime_patterns_for_choice(choice), required = True
+        )
         for _subdir in runtime_subdirs_for_choice(choice):
             _src_subdir = source_dir / _subdir
             if _src_subdir.is_dir():
@@ -5160,7 +5413,9 @@ def install_from_archives(
     source_server = build_bin / "llama-server"
     source_quantize = build_bin / "llama-quantize"
     if not source_server.exists() or not source_quantize.exists():
-        raise PrebuiltFallback("unix executables were not installed correctly into build/bin")
+        raise PrebuiltFallback(
+            "unix executables were not installed correctly into build/bin"
+        )
     os.chmod(source_server, 0o755)
     os.chmod(source_quantize, 0o755)
 
@@ -5186,9 +5441,13 @@ def ensure_repo_shape(install_dir: Path) -> None:
         install_dir / "convert_hf_to_gguf.py",
         install_dir / "gguf-py",
     ]
-    missing = [str(path.relative_to(install_dir)) for path in required if not path.exists()]
+    missing = [
+        str(path.relative_to(install_dir)) for path in required if not path.exists()
+    ]
     if missing:
-        raise PrebuiltFallback("hydrated llama.cpp source tree was missing: " + ", ".join(missing))
+        raise PrebuiltFallback(
+            "hydrated llama.cpp source tree was missing: " + ", ".join(missing)
+        )
 
 
 def validation_model_cache_path(install_dir: Path) -> Path:
@@ -5233,7 +5492,9 @@ def _fetch_validation_model_bytes() -> bytes:
         repo_id, revision, filename = parts
         try:
             from huggingface_hub import hf_hub_download
-            local = hf_hub_download(repo_id = repo_id, filename = filename, revision = revision)
+            local = hf_hub_download(
+                repo_id = repo_id, filename = filename, revision = revision
+            )
             return validated_validation_model_bytes(Path(local).read_bytes())
         except Exception as exc:
             log(
@@ -5256,7 +5517,9 @@ def download_validation_model(path: Path, cache_path: Path | None = None) -> Non
                 data = validated_validation_model_bytes(cache_path.read_bytes())
                 log(f"using cached tiny GGUF validation model from {cache_path}")
             except Exception as exc:
-                log(f"cached tiny GGUF validation model was invalid; refreshing cache ({exc})")
+                log(
+                    f"cached tiny GGUF validation model was invalid; refreshing cache ({exc})"
+                )
                 data = None
         if data is None:
             log("downloading tiny GGUF validation model")
@@ -5340,7 +5603,9 @@ def dedupe_existing_dirs(paths: Iterable[str | Path]) -> list[str]:
     return unique
 
 
-def linux_missing_libraries(binary_path: Path, *, env: dict[str, str] | None = None) -> list[str]:
+def linux_missing_libraries(
+    binary_path: Path, *, env: dict[str, str] | None = None
+) -> list[str]:
     try:
         result = run_capture(["ldd", str(binary_path)], timeout = 20, env = env)
     except Exception:
@@ -5498,7 +5763,9 @@ def _macho_slice_minos(data: bytes, offset: int) -> tuple[int, int] | None:
     return None
 
 
-def macho_minimum_macos(path: Path, host: HostInfo | None = None) -> tuple[int, int] | None:
+def macho_minimum_macos(
+    path: Path, host: HostInfo | None = None
+) -> tuple[int, int] | None:
     """Minimum macOS (major, minor) a Mach-O binary or dylib requires.
 
     Pure-Python so it works on consumer Macs without the Xcode command line
@@ -5537,7 +5804,9 @@ def macho_minimum_macos(path: Path, host: HostInfo | None = None) -> tuple[int, 
             return None
         if host is not None:
             want = (
-                _CPU_TYPE_ARM64 if host.is_arm64 else (_CPU_TYPE_X86_64 if host.is_x86_64 else None)
+                _CPU_TYPE_ARM64
+                if host.is_arm64
+                else (_CPU_TYPE_X86_64 if host.is_x86_64 else None)
             )
             for cputype, minos in slices:
                 if cputype == want:
@@ -5598,7 +5867,8 @@ def preflight_macos_installed_binaries(
     issues = macos_binary_minos_issues(binaries, install_dir, host)
     if issues:
         raise PrebuiltFallback(
-            "macos prebuilt requires a newer macOS than this host:\n" + "\n".join(issues)
+            "macos prebuilt requires a newer macOS than this host:\n"
+            + "\n".join(issues)
         )
 
 
@@ -5614,14 +5884,18 @@ def preflight_linux_installed_binaries(
         missing = linux_missing_libraries(binary_path, env = env)
         if not missing:
             continue
-        runtime_dirs = [part for part in env.get("LD_LIBRARY_PATH", "").split(os.pathsep) if part]
+        runtime_dirs = [
+            part for part in env.get("LD_LIBRARY_PATH", "").split(os.pathsep) if part
+        ]
         issues.append(
             f"{binary_path.name}: missing={','.join(missing)} "
             f"ld_library_path={','.join(runtime_dirs) if runtime_dirs else 'none'}"
         )
 
     if issues:
-        raise PrebuiltFallback("linux extracted binary preflight failed:\n" + "\n".join(issues))
+        raise PrebuiltFallback(
+            "linux extracted binary preflight failed:\n" + "\n".join(issues)
+        )
 
 
 def glob_paths(*patterns: str) -> list[str]:
@@ -5667,7 +5941,9 @@ def windows_runtime_dirs() -> list[str]:
 def windows_runtime_dirs_for_patterns(
     required_patterns: Iterable[str], candidate_dirs: Iterable[str] | None = None
 ) -> list[str]:
-    directories = list(candidate_dirs) if candidate_dirs is not None else windows_runtime_dirs()
+    directories = (
+        list(candidate_dirs) if candidate_dirs is not None else windows_runtime_dirs()
+    )
     matching_dirs: list[str] = []
     for pattern in required_patterns:
         matched_dirs = [
@@ -5786,7 +6062,8 @@ def scrub_env(env: dict[str, str]) -> dict[str, str]:
     return {
         key: value
         for key, value in env.items()
-        if not is_secret_env_name(key) and not _URL_USERINFO_CREDENTIAL_RE.search(value or "")
+        if not is_secret_env_name(key)
+        and not _URL_USERINFO_CREDENTIAL_RE.search(value or "")
     }
 
 
@@ -5877,12 +6154,20 @@ def binary_env(
         if _wsl_rocm:
             ld_dirs = [*_wsl_rocm, *ld_dirs]
             env.setdefault("HSA_ENABLE_DXG_DETECTION", "1")
-        existing = [part for part in env.get("LD_LIBRARY_PATH", "").split(os.pathsep) if part]
-        env["LD_LIBRARY_PATH"] = os.pathsep.join(dedupe_existing_dirs([*ld_dirs, *existing]))
+        existing = [
+            part for part in env.get("LD_LIBRARY_PATH", "").split(os.pathsep) if part
+        ]
+        env["LD_LIBRARY_PATH"] = os.pathsep.join(
+            dedupe_existing_dirs([*ld_dirs, *existing])
+        )
     elif host.is_macos:
         dyld_dirs = [str(binary_path.parent), str(install_dir)]
-        existing = [part for part in env.get("DYLD_LIBRARY_PATH", "").split(os.pathsep) if part]
-        env["DYLD_LIBRARY_PATH"] = os.pathsep.join(dedupe_existing_dirs([*dyld_dirs, *existing]))
+        existing = [
+            part for part in env.get("DYLD_LIBRARY_PATH", "").split(os.pathsep) if part
+        ]
+        env["DYLD_LIBRARY_PATH"] = os.pathsep.join(
+            dedupe_existing_dirs([*dyld_dirs, *existing])
+        )
     return env
 
 
@@ -5904,7 +6189,11 @@ def validate_quantize(
         env = binary_env(quantize_path, install_dir, host, runtime_line = runtime_line),
         **windows_hidden_subprocess_kwargs(),
     )
-    if result.returncode != 0 or not quantized_path.exists() or quantized_path.stat().st_size == 0:
+    if (
+        result.returncode != 0
+        or not quantized_path.exists()
+        or quantized_path.stat().st_size == 0
+    ):
         combined = result.stdout + ("\n" + result.stderr if result.stderr else "")
         # Backstop for prebuilts the static minos scan could not read: a dyld
         # "built for macOS N" / missing Metal symbol failure means this binary
@@ -5914,7 +6203,9 @@ def validate_quantize(
             if looks_like_macos_incompatibility(combined)
             else ""
         )
-        raise PrebuiltFallback(prefix + "llama-quantize validation failed:\n" + combined)
+        raise PrebuiltFallback(
+            prefix + "llama-quantize validation failed:\n" + combined
+        )
 
 
 def validate_server(
@@ -5974,7 +6265,9 @@ def validate_server(
             # is exercised against the actual hardware rather than the
             # CPU fallback. NVIDIA and macOS-arm64 are already covered.
             _enable_gpu_layers = (
-                host.has_usable_nvidia or host.has_rocm or (host.is_macos and host.is_arm64)
+                host.has_usable_nvidia
+                or host.has_rocm
+                or (host.is_macos and host.is_arm64)
             )
         if _enable_gpu_layers:
             command.extend(["--n-gpu-layers", "1"])
@@ -5990,7 +6283,9 @@ def validate_server(
                     stdout = log_handle,
                     stderr = subprocess.STDOUT,
                     text = True,
-                    env = binary_env(server_path, install_dir, host, runtime_line = runtime_line),
+                    env = binary_env(
+                        server_path, install_dir, host, runtime_line = runtime_line
+                    ),
                     **windows_hidden_subprocess_kwargs(),
                 )
                 deadline = time.time() + 60
@@ -6005,7 +6300,9 @@ def validate_server(
                         exited_quickly = (
                             time.time() - startup_started
                         ) <= SERVER_BIND_RETRY_WINDOW_SECONDS
-                        failure = PrebuiltFallback("llama-server exited during startup:\n" + output)
+                        failure = PrebuiltFallback(
+                            "llama-server exited during startup:\n" + output
+                        )
                         if (
                             port_attempt < SERVER_PORT_BIND_ATTEMPTS
                             and is_retryable_server_bind_error(
@@ -6022,7 +6319,9 @@ def validate_server(
                             break
                         raise failure
 
-                    payload = json.dumps({"prompt": "a", "n_predict": 1}).encode("utf-8")
+                    payload = json.dumps({"prompt": "a", "n_predict": 1}).encode(
+                        "utf-8"
+                    )
                     request = urllib.request.Request(
                         f"http://127.0.0.1:{port}/completion",
                         data = payload,
@@ -6034,7 +6333,9 @@ def validate_server(
                             response_body = response.read().decode("utf-8", "replace")
                             if status_code == 200:
                                 return
-                            last_error = RuntimeError(f"unexpected HTTP status {status_code}")
+                            last_error = RuntimeError(
+                                f"unexpected HTTP status {status_code}"
+                            )
                     except urllib.error.HTTPError as exc:
                         response_body = exc.read().decode("utf-8", "replace")
                         last_error = exc
@@ -6068,7 +6369,9 @@ def validate_server(
     raise PrebuiltFallback("llama-server validation failed unexpectedly")
 
 
-def collect_system_report(host: HostInfo, choice: AssetChoice | None, install_dir: Path) -> str:
+def collect_system_report(
+    host: HostInfo, choice: AssetChoice | None, install_dir: Path
+) -> str:
     lines = [
         f"platform={host.system} machine={host.machine}",
         f"driver_cuda_version={host.driver_cuda_version}",
@@ -6082,7 +6385,8 @@ def collect_system_report(host: HostInfo, choice: AssetChoice | None, install_di
     if host.is_linux and host.has_physical_nvidia:
         runtime_lines, runtime_dirs = detected_linux_runtime_lines()
         lines.append(
-            "linux_runtime_lines=" + (",".join(runtime_lines) if runtime_lines else "none")
+            "linux_runtime_lines="
+            + (",".join(runtime_lines) if runtime_lines else "none")
         )
         for runtime_line in ("cuda13", "cuda12"):
             lines.append(
@@ -6111,7 +6415,10 @@ def collect_system_report(host: HostInfo, choice: AssetChoice | None, install_di
             server_env = binary_env(server_binary, install_dir, host)
             lines.append(
                 "linux_missing_libs="
-                + (",".join(linux_missing_libraries(server_binary, env = server_env)) or "none")
+                + (
+                    ",".join(linux_missing_libraries(server_binary, env = server_env))
+                    or "none"
+                )
             )
             lines.append(
                 "linux_runtime_dirs="
@@ -6119,7 +6426,9 @@ def collect_system_report(host: HostInfo, choice: AssetChoice | None, install_di
                     ",".join(
                         [
                             part
-                            for part in server_env.get("LD_LIBRARY_PATH", "").split(os.pathsep)
+                            for part in server_env.get("LD_LIBRARY_PATH", "").split(
+                                os.pathsep
+                            )
                             if part
                         ]
                     )
@@ -6127,16 +6436,21 @@ def collect_system_report(host: HostInfo, choice: AssetChoice | None, install_di
                 )
             )
             try:
-                ldd = run_capture(["ldd", str(server_binary)], timeout = 20, env = server_env)
+                ldd = run_capture(
+                    ["ldd", str(server_binary)], timeout = 20, env = server_env
+                )
                 lines.append("ldd llama-server:")
                 lines.append((ldd.stdout + ldd.stderr).strip())
             except Exception as exc:
                 lines.append(f"ldd error: {exc}")
     elif host.is_windows:
-        lines.append("windows_runtime_dirs=" + (",".join(windows_runtime_dirs()) or "none"))
+        lines.append(
+            "windows_runtime_dirs=" + (",".join(windows_runtime_dirs()) or "none")
+        )
         runtime_lines, runtime_dirs = detected_windows_runtime_lines()
         lines.append(
-            "windows_runtime_lines=" + (",".join(runtime_lines) if runtime_lines else "none")
+            "windows_runtime_lines="
+            + (",".join(runtime_lines) if runtime_lines else "none")
         )
         for runtime_line in ("cuda13", "cuda12"):
             lines.append(
@@ -6313,7 +6627,9 @@ def resolve_install_attempts(
     return requested_tag, plan.llama_tag, plan.attempts, plan.approved_checksums
 
 
-def _linux_published_attempts(host: HostInfo, bundle: PublishedReleaseBundle) -> list[AssetChoice]:
+def _linux_published_attempts(
+    host: HostInfo, bundle: PublishedReleaseBundle
+) -> list[AssetChoice]:
     """Build the install attempts for a fork Linux host from a manifest-described
     bundle: CUDA, per-gfx ROCm, or (non-GPU) CPU. Same selection the upstream
     filename path used, just sourced from the manifest instead of reconstructed
@@ -6350,7 +6666,9 @@ def _linux_published_attempts(host: HostInfo, bundle: PublishedReleaseBundle) ->
         # has none, so leave attempts empty and source-build rather than hand it
         # the x86_64 linux-cpu binary (the Linux preflight checks libraries, not
         # ELF arch, so a wrong-arch binary would not be caught).
-        kind = "linux-cpu" if host.is_x86_64 else "linux-arm64" if host.is_arm64 else None
+        kind = (
+            "linux-cpu" if host.is_x86_64 else "linux-arm64" if host.is_arm64 else None
+        )
         cpu_choice = published_asset_choice_for_kind(bundle, kind) if kind else None
         if cpu_choice is not None:
             attempts.append(cpu_choice)
@@ -6370,11 +6688,17 @@ def _fork_manifest_release_plans(
     in llama-prebuilt-manifest.json rather than in the asset filename (CPU,
     x64/arm64 CUDA, Windows CUDA, per-gfx ROCm, and macOS)."""
     requested_tag = normalized_requested_llama_tag(llama_tag)
-    allow_older_release_fallback = requested_tag == "latest" and not published_release_tag
+    allow_older_release_fallback = (
+        requested_tag == "latest" and not published_release_tag
+    )
     release_limit = max(1, max_release_fallbacks)
     # macOS may need to walk past a run of too-new prebuilts. Only when the host
     # version is known; otherwise keep the default (cannot tell up front).
-    if host.is_macos and allow_older_release_fallback and host.macos_version is not None:
+    if (
+        host.is_macos
+        and allow_older_release_fallback
+        and host.macos_version is not None
+    ):
         release_limit = max(release_limit, DEFAULT_MAX_MACOS_RELEASE_FALLBACKS)
     plans: list[InstallReleasePlan] = []
     last_error: PrebuiltFallback | None = None
@@ -6394,10 +6718,14 @@ def _fork_manifest_release_plans(
             if host.is_linux:
                 linux_attempts = _linux_published_attempts(host, bundle)
                 if not linux_attempts:
-                    raise PrebuiltFallback("no compatible Linux prebuilt asset was found")
+                    raise PrebuiltFallback(
+                        "no compatible Linux prebuilt asset was found"
+                    )
                 attempts = apply_approved_hashes(linux_attempts, checksums)
                 if not attempts:
-                    raise PrebuiltFallback("no compatible Linux prebuilt asset was found")
+                    raise PrebuiltFallback(
+                        "no compatible Linux prebuilt asset was found"
+                    )
                 if attempts[0].selection_log:
                     log_lines(attempts[0].selection_log)
             else:
@@ -6503,7 +6831,9 @@ def write_prebuilt_metadata(
         "prebuilt_fallback_used": prebuilt_fallback_used,
         "installed_at_utc": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
     }
-    (install_dir / "UNSLOTH_PREBUILT_INFO.json").write_text(json.dumps(metadata, indent = 2) + "\n")
+    (install_dir / "UNSLOTH_PREBUILT_INFO.json").write_text(
+        json.dumps(metadata, indent = 2) + "\n"
+    )
 
 
 def sync_marker_force_cpu(install_dir: Path, persist_force_cpu: bool) -> None:
@@ -6517,11 +6847,16 @@ def sync_marker_force_cpu(install_dir: Path, persist_force_cpu: bool) -> None:
         marker = json.loads(marker_path.read_text())
     except (OSError, ValueError):
         return
-    if not isinstance(marker, dict) or bool(marker.get("force_cpu")) == persist_force_cpu:
+    if (
+        not isinstance(marker, dict)
+        or bool(marker.get("force_cpu")) == persist_force_cpu
+    ):
         return
     marker["force_cpu"] = persist_force_cpu
     marker_path.write_text(json.dumps(marker, indent = 2) + "\n")
-    log(f"existing install reused; recorded force_cpu={persist_force_cpu} from this run")
+    log(
+        f"existing install reused; recorded force_cpu={persist_force_cpu} from this run"
+    )
 
 
 def expected_install_fingerprint(
@@ -6654,7 +6989,9 @@ def install_runtime_dir(install_dir: Path, host: HostInfo) -> Path:
     return install_dir / "build" / "bin"
 
 
-def runtime_payload_is_healthy(install_dir: Path, host: HostInfo, choice: AssetChoice) -> bool:
+def runtime_payload_is_healthy(
+    install_dir: Path, host: HostInfo, choice: AssetChoice
+) -> bool:
     runtime_dir = install_runtime_dir(install_dir, host)
     if not runtime_dir.exists():
         return False
@@ -6780,7 +7117,9 @@ def validate_prebuilt_choice(
         approved_checksums, source_repo, source_archive, exact_source, release_tag
     )
     if exact_source:
-        log(f"hydrating exact llama.cpp source for {source_repo}@{source_ref} into {install_dir}")
+        log(
+            f"hydrating exact llama.cpp source for {source_repo}@{source_ref} into {install_dir}"
+        )
     else:
         log(f"hydrating upstream llama.cpp source for {llama_tag} into {install_dir}")
     hydrate_source_tree(
@@ -6798,7 +7137,9 @@ def validate_prebuilt_choice(
         asset_url = asset_url,
     )
     log(f"overlaying prebuilt bundle {choice.name} into {install_dir}")
-    server_path, quantize_path = install_from_archives(choice, host, install_dir, work_dir)
+    server_path, quantize_path = install_from_archives(
+        choice, host, install_dir, work_dir
+    )
     preflight_linux_installed_binaries((server_path, quantize_path), install_dir, host)
     preflight_macos_installed_binaries((server_path, quantize_path), install_dir, host)
     ensure_repo_shape(install_dir)
@@ -6881,7 +7222,9 @@ def validate_prebuilt_attempts(
             )
             # Skip a matching candidate unless it still needs the DiffusionGemma
             # backfill re-extract (gated per-attempt, not per-plan).
-            and not diffusion_visual_server_backfill_needed(existing_install_dir, host, attempt)
+            and not diffusion_visual_server_backfill_needed(
+                existing_install_dir, host, attempt
+            )
         ):
             log(
                 "existing llama.cpp install already matches fallback candidate "
@@ -6982,7 +7325,9 @@ def _route_to_vulkan_prebuilt(
     # has_physical_nvidia=True while has_usable_nvidia goes False. Vulkan ignores
     # CUDA_VISIBLE_DEVICES, so auto-routing such a host would let it grab the
     # reserved NVIDIA GPU. An explicit UNSLOTH_FORCE_VULKAN still overrides.
-    auto_intel = host.has_intel_gpu and not host.has_physical_nvidia and not host.has_rocm
+    auto_intel = (
+        host.has_intel_gpu and not host.has_physical_nvidia and not host.has_rocm
+    )
     if force_cpu or not (forced or auto_intel):
         return host, published_repo, published_release_tag
     if host.is_macos:
@@ -7063,7 +7408,9 @@ def install_prebuilt(
         host, published_repo, published_release_tag, force_cpu = force_cpu
     )
     choice: AssetChoice | None = None
-    cleanup_root = install_dir if instruction_cleanup_root is None else instruction_cleanup_root
+    cleanup_root = (
+        install_dir if instruction_cleanup_root is None else instruction_cleanup_root
+    )
     try:
         with install_lock(install_lock_path(install_dir)):
             if (install_dir / "UNSLOTH_PREBUILT_INFO.json").is_file():
@@ -7090,9 +7437,13 @@ def install_prebuilt(
                 published_repo,
                 published_release_tag,
             )
-            if release_plans and existing_install_matches_plan(install_dir, host, release_plans[0]):
+            if release_plans and existing_install_matches_plan(
+                install_dir, host, release_plans[0]
+            ):
                 current = release_plans[0]
-                if diffusion_visual_server_backfill_needed(install_dir, host, current.attempts[0]):
+                if diffusion_visual_server_backfill_needed(
+                    install_dir, host, current.attempts[0]
+                ):
                     log(
                         f"existing install matches {current.release_tag} but is missing the "
                         "DiffusionGemma visual-server; re-extracting the bundle to backfill it"
@@ -7109,11 +7460,15 @@ def install_prebuilt(
             with tempfile.TemporaryDirectory(prefix = "unsloth-llama-prebuilt-") as tmp:
                 work_dir = Path(tmp)
                 probe_path = work_dir / "stories260K.gguf"
-                download_validation_model(probe_path, validation_model_cache_path(install_dir))
+                download_validation_model(
+                    probe_path, validation_model_cache_path(install_dir)
+                )
                 release_count = len(release_plans)
                 for release_index, plan in enumerate(release_plans):
                     choice = plan.attempts[0]
-                    backfill = diffusion_visual_server_backfill_needed(install_dir, host, choice)
+                    backfill = diffusion_visual_server_backfill_needed(
+                        install_dir, host, choice
+                    )
                     if existing_install_matches_plan(install_dir, host, plan):
                         if backfill:
                             log(
@@ -7353,7 +7708,9 @@ def main() -> int:
         )
         emit_resolver_output(
             {
-                "requested_tag": normalized_requested_llama_tag(args.resolve_install_tag),
+                "requested_tag": normalized_requested_llama_tag(
+                    args.resolve_install_tag
+                ),
                 "llama_tag": resolved,
             },
             output_format = args.output_format,
@@ -7368,7 +7725,9 @@ def main() -> int:
         )
         emit_resolver_output(
             {
-                "requested_tag": normalized_requested_llama_tag(args.resolve_source_build),
+                "requested_tag": normalized_requested_llama_tag(
+                    args.resolve_source_build
+                ),
                 "source_url": plan.source_url,
                 "source_ref_kind": plan.source_ref_kind,
                 "source_ref": plan.source_ref,
@@ -7394,7 +7753,10 @@ def main() -> int:
         # Same Vulkan routing the install path applies, so the probe's answer
         # matches what would install (an Intel/forced-Vulkan host -> upstream).
         host, repo, release_tag = _route_to_vulkan_prebuilt(
-            host, args.published_repo, args.published_release_tag or "", force_cpu = _cpu_mechanism
+            host,
+            args.published_repo,
+            args.published_release_tag or "",
+            force_cpu = _cpu_mechanism,
         )
         try:
             _requested, plans = resolve_simple_install_release_plans(

@@ -59,7 +59,9 @@ def _mlx_spec(name: str, version: str) -> str:
     return spec
 
 
-MLX_PACKAGES = tuple(_mlx_spec(name, version) for name, version in _MLX_MIN_VERSIONS.items())
+MLX_PACKAGES = tuple(
+    _mlx_spec(name, version) for name, version in _MLX_MIN_VERSIONS.items()
+)
 _MLX_REINSTALL_ARGS = tuple(
     arg for name in _MLX_PACKAGE_NAMES for arg in ("--reinstall-package", name)
 )
@@ -157,7 +159,9 @@ def _mlx_versions_satisfy_minimums() -> bool:
                 return False
             # A known-broken build counts as unsatisfied so the self-heal
             # reinstalls a good one; Version compare matches 0.31.3(.0/+local).
-            if any(installed == Version(bad) for bad in _MLX_BAD_VERSIONS.get(name, ())):
+            if any(
+                installed == Version(bad) for bad in _MLX_BAD_VERSIONS.get(name, ())
+            ):
                 return False
         except PackageNotFoundError:
             return False

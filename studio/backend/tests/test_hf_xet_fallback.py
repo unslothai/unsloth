@@ -72,7 +72,11 @@ def test_shim_injects_studio_prepare_on_http_retry(monkeypatch):
     """A Xet stall retries over HTTP and the shim runs Unsloth's marker-aware
     ``prepare_cache_for_transport(..., 'http')`` before the retry."""
     _requires_shared()
-    for var in ("UNSLOTH_DISABLE_XET", "UNSLOTH_STABLE_DOWNLOADS", "HF_HUB_DISABLE_XET"):
+    for var in (
+        "UNSLOTH_DISABLE_XET",
+        "UNSLOTH_STABLE_DOWNLOADS",
+        "HF_HUB_DISABLE_XET",
+    ):
         monkeypatch.delenv(var, raising = False)
     monkeypatch.setattr(huggingface_hub, "try_to_load_from_cache", lambda *a, **k: None)
 
@@ -101,13 +105,17 @@ def test_shim_injects_studio_prepare_on_http_retry(monkeypatch):
     prepared = []
     monkeypatch.setattr(
         "hub.utils.download_registry.prepare_cache_for_transport",
-        lambda repo_type, repo_id, mode, *a, **k: prepared.append((repo_type, repo_id, mode)),
+        lambda repo_type, repo_id, mode, *a, **k: prepared.append(
+            (repo_type, repo_id, mode)
+        ),
     )
 
     out = xf.hf_hub_download_with_xet_fallback(DL_REPO, FILE, None)
     assert out == "/cache/model.gguf"
     assert seen_disable_xet == [False, True]  # Xet first, then HTTP
-    assert prepared == [("model", DL_REPO, "http")], "shim must run Unsloth's marker-aware prep"
+    assert prepared == [
+        ("model", DL_REPO, "http")
+    ], "shim must run Unsloth's marker-aware prep"
 
 
 def test_shim_snapshot_injects_studio_prepare(monkeypatch):
@@ -119,7 +127,9 @@ def test_shim_snapshot_injects_studio_prepare(monkeypatch):
         captured["prepare_for_http_fn"] = kwargs.get("prepare_for_http_fn")
         return "/tmp/snap-dir"
 
-    monkeypatch.setattr(xf, "_shared_snapshot_download_with_xet_fallback", fake_snapshot)
+    monkeypatch.setattr(
+        xf, "_shared_snapshot_download_with_xet_fallback", fake_snapshot
+    )
     out = xf.snapshot_download_with_xet_fallback("org/model")
     assert out == "/tmp/snap-dir"
     assert captured["repo_id"] == "org/model"
@@ -192,7 +202,9 @@ def test_degrades_gracefully_without_shared_helper(monkeypatch):
         cancelled.set()
         called.clear()
         with pytest.raises(RuntimeError, match = "Cancelled"):
-            degraded.snapshot_download_with_xet_fallback("org/model", cancel_event = cancelled)
+            degraded.snapshot_download_with_xet_fallback(
+                "org/model", cancel_event = cancelled
+            )
         assert "repo_id" not in called, "degraded download ran despite cancellation"
     finally:
         sys.meta_path.remove(finder)
@@ -218,7 +230,9 @@ def test_degrades_when_unsloth_zoo_entirely_absent():
         ):
             # Whole package absent, so ModuleNotFoundError.name is the top-level 'unsloth_zoo'.
             if name == "unsloth_zoo" or name.startswith("unsloth_zoo."):
-                raise ModuleNotFoundError("No module named 'unsloth_zoo'", name = "unsloth_zoo")
+                raise ModuleNotFoundError(
+                    "No module named 'unsloth_zoo'", name = "unsloth_zoo"
+                )
             return None
 
     finder = _BlockZoo()
@@ -365,5 +379,9 @@ def test_importing_child_should_disable_xet_stays_light(monkeypatch):
     assert mod.child_should_disable_xet({"disable_xet": True}) is True
     assert mod.child_should_disable_xet({}) is False
     # And nothing heavy was imported as a side effect.
-    assert "transformers" not in sys.modules, "importing the shim must not import transformers"
-    assert "unsloth_zoo" not in sys.modules, "importing the shim must not import unsloth_zoo"
+    assert (
+        "transformers" not in sys.modules
+    ), "importing the shim must not import transformers"
+    assert (
+        "unsloth_zoo" not in sys.modules
+    ), "importing the shim must not import unsloth_zoo"

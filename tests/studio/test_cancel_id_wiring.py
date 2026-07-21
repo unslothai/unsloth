@@ -15,8 +15,12 @@ from pathlib import Path
 WORKSPACE = Path(__file__).resolve().parents[2]
 MODELS_SRC = (WORKSPACE / "studio/backend/models/inference.py").read_text()
 ROUTES_SRC = (WORKSPACE / "studio/backend/routes/inference.py").read_text()
-ADAPTER_SRC = (WORKSPACE / "studio/frontend/src/features/chat/api/chat-adapter.ts").read_text()
-API_TYPES_SRC = (WORKSPACE / "studio/frontend/src/features/chat/types/api.ts").read_text()
+ADAPTER_SRC = (
+    WORKSPACE / "studio/frontend/src/features/chat/api/chat-adapter.ts"
+).read_text()
+API_TYPES_SRC = (
+    WORKSPACE / "studio/frontend/src/features/chat/types/api.ts"
+).read_text()
 
 
 def _find_class(tree: ast.AST, name: str) -> ast.ClassDef | None:
@@ -100,7 +104,9 @@ def test_chat_adapter_generates_cancel_id_per_run():
     )
     assert m, "chat-adapter.ts must declare a per-run `cancelId` constant"
     rhs = m.group(1)
-    assert "randomUUID" in rhs, "cancelId should prefer crypto.randomUUID() for uniqueness"
+    assert (
+        "randomUUID" in rhs
+    ), "cancelId should prefer crypto.randomUUID() for uniqueness"
 
 
 def test_chat_adapter_sends_cancel_id_in_completion_payload():

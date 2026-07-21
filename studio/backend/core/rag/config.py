@@ -116,7 +116,9 @@ def effective_gguf_repo() -> str:
 
 # llama-server backend only. F16 over Q8_0: faster (no per-block dequant for this
 # tiny model) and exact vs fp32, for ~30MB more on disk.
-EMBED_GGUF_REPO = os.environ.get("RAG_EMBED_GGUF_REPO", "unsloth/bge-small-en-v1.5-GGUF")
+EMBED_GGUF_REPO = os.environ.get(
+    "RAG_EMBED_GGUF_REPO", "unsloth/bge-small-en-v1.5-GGUF"
+)
 EMBED_GGUF_VARIANT = os.environ.get("RAG_EMBED_GGUF_VARIANT", "F16")
 EMBED_DEVICE = os.environ.get("RAG_EMBED_DEVICE", "auto")  # "auto" | "gpu" | "cpu"
 EMBED_HOST = os.environ.get("RAG_EMBED_HOST", "127.0.0.1")

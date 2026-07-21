@@ -73,7 +73,12 @@ def _win_signatures(kernel32) -> None:
     H, BOOL, DWORD = wintypes.HANDLE, wintypes.BOOL, wintypes.DWORD
     kernel32.CreateJobObjectW.argtypes = [ctypes.c_void_p, ctypes.c_wchar_p]
     kernel32.CreateJobObjectW.restype = H
-    kernel32.SetInformationJobObject.argtypes = [H, ctypes.c_int, ctypes.c_void_p, DWORD]
+    kernel32.SetInformationJobObject.argtypes = [
+        H,
+        ctypes.c_int,
+        ctypes.c_void_p,
+        DWORD,
+    ]
     kernel32.SetInformationJobObject.restype = BOOL
     kernel32.AssignProcessToJobObject.argtypes = [H, H]
     kernel32.AssignProcessToJobObject.restype = BOOL
@@ -134,7 +139,10 @@ def _install_windows_job() -> None:
         info = _EXT()
         info.BasicLimitInformation.LimitFlags = _JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE
         if not kernel32.SetInformationJobObject(
-            job, _JobObjectExtendedLimitInformation, ctypes.byref(info), ctypes.sizeof(info)
+            job,
+            _JobObjectExtendedLimitInformation,
+            ctypes.byref(info),
+            ctypes.sizeof(info),
         ):
             kernel32.CloseHandle(job)
             return
@@ -157,7 +165,9 @@ def _pdeathsig_preexec() -> None:
     # check closes the race where the parent died before this ran.
     try:
         import ctypes
-        ctypes.CDLL("libc.so.6", use_errno = True).prctl(_PR_SET_PDEATHSIG, signal.SIGTERM)
+        ctypes.CDLL("libc.so.6", use_errno = True).prctl(
+            _PR_SET_PDEATHSIG, signal.SIGTERM
+        )
         if os.getppid() == 1:
             os._exit(1)
     except Exception:
@@ -172,7 +182,9 @@ def bind_current_process_to_parent_lifetime() -> None:
         _pdeathsig_preexec()
 
 
-def compose_preexec(existing: Optional[Callable[[], None]]) -> Optional[Callable[[], None]]:
+def compose_preexec(
+    existing: Optional[Callable[[], None]],
+) -> Optional[Callable[[], None]]:
     """Run the PDEATHSIG hook then any caller-supplied preexec (Linux only)."""
     if not _is_linux():
         return existing
@@ -232,10 +244,16 @@ def adopt_pid(pid: Optional[int]) -> None:
 
             kernel32 = ctypes.WinDLL("kernel32", use_last_error = True)
             _win_signatures(kernel32)
-            kernel32.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
+            kernel32.OpenProcess.argtypes = [
+                wintypes.DWORD,
+                wintypes.BOOL,
+                wintypes.DWORD,
+            ]
             kernel32.OpenProcess.restype = wintypes.HANDLE
             PROCESS_SET_QUOTA, PROCESS_TERMINATE = 0x0100, 0x0001
-            handle = kernel32.OpenProcess(PROCESS_SET_QUOTA | PROCESS_TERMINATE, False, pid)
+            handle = kernel32.OpenProcess(
+                PROCESS_SET_QUOTA | PROCESS_TERMINATE, False, pid
+            )
             if handle:
                 kernel32.AssignProcessToJobObject(_win_job_handle, handle)
                 kernel32.CloseHandle(handle)

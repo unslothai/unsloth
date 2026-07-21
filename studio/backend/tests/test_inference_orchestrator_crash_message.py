@@ -25,7 +25,9 @@ def test_subprocess_crash_message_includes_signal_and_oom_hint():
 
     msg = orchestrator._subprocess_crash_message("wait")
 
-    assert msg.startswith("The inference worker stopped unexpectedly while loading the model.")
+    assert msg.startswith(
+        "The inference worker stopped unexpectedly while loading the model."
+    )
     assert "memory pressure" in msg
     assert "smaller model" in msg
     assert "Details:" in msg

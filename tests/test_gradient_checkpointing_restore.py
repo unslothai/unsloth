@@ -87,7 +87,9 @@ def _eval_ternary(expr, recorded, args_gc):
     args = _Obj(gradient_checkpointing = args_gc)
     self = _Self(model = model, args = args)
     return eval(
-        expr, {"hasattr": hasattr, "getattr": getattr}, {"model": model, "args": args, "self": self}
+        expr,
+        {"hasattr": hasattr, "getattr": getattr},
+        {"model": model, "args": args, "self": self},
     )
 
 
@@ -95,12 +97,14 @@ def test_ternary_restore_semantics():
     exprs = [m.group(0) for m in _TERNARY.finditer(_RL)]
     exprs += [m.group(0) for m in _TERNARY.finditer(_RL_REPLACEMENTS)]
     # Also guards against the lines being deleted/renamed (which reinstates the bug).
-    assert len(exprs) >= 3, f"expected the 3 trainer-call restore sites, found {len(exprs)}"
+    assert (
+        len(exprs) >= 3
+    ), f"expected the 3 trainer-call restore sites, found {len(exprs)}"
     for expr in exprs:
         for recorded, args_gc, expected in _MATRIX:
             got = _eval_ternary(expr, recorded, args_gc)
-            assert got == expected and type(got) is type(
-                expected
+            assert (
+                got == expected and type(got) is type(expected)
             ), f"{expr!r}: recorded={recorded!r} args={args_gc!r} -> {got!r}, expected {expected!r}"
 
 
@@ -113,14 +117,17 @@ def _extract_prepare_restore_block():
     """
     lines = _RL.splitlines()
     start = next(
-        i for i, l in enumerate(lines) if l.strip() == "_model = getattr(self, 'model', None)"
+        i
+        for i, l in enumerate(lines)
+        if l.strip() == "_model = getattr(self, 'model', None)"
     )
     # End at the fallback assignment rather than a fixed line count, so inserting
     # lines into the block can't silently truncate what gets exec'd.
     end = next(
         i
         for i, l in enumerate(lines)
-        if i > start and "use_gc = getattr(self.args, 'gradient_checkpointing', True)" in l
+        if i > start
+        and "use_gc = getattr(self.args, 'gradient_checkpointing', True)" in l
     )
     block = lines[start : end + 1]
     # dedent to column 0 so it execs as a top-level block
@@ -136,7 +143,11 @@ def test_prepare_for_training_mode_block_semantics():
     for recorded, args_gc, expected in _MATRIX:
         model = _Obj(recorded = recorded)
         args = _Obj(gradient_checkpointing = args_gc)
-        ns = {"self": _Self(model = model, args = args), "hasattr": hasattr, "getattr": getattr}
+        ns = {
+            "self": _Self(model = model, args = args),
+            "hasattr": hasattr,
+            "getattr": getattr,
+        }
         exec(block, {}, ns)
         got = ns["use_gc"]
         assert (
@@ -150,7 +161,9 @@ def test_prepare_block_tolerates_missing_model():
     # back to args rather than raising AttributeError.
     block = _extract_prepare_restore_block()
     args = _Obj(gradient_checkpointing = True)
-    self_no_model = _Self(model = None, args = args)  # _Self leaves .model unset when model is None
+    self_no_model = _Self(
+        model = None, args = args
+    )  # _Self leaves .model unset when model is None
     assert not hasattr(self_no_model, "model")
     ns = {"self": self_no_model, "hasattr": hasattr, "getattr": getattr}
     exec(block, {}, ns)
@@ -169,15 +182,16 @@ def test_recording_sites_are_real_module_code():
         return any(
             isinstance(n, ast.Assign)
             and any(
-                isinstance(t, ast.Attribute) and t.attr == "_unsloth_gradient_checkpointing"
+                isinstance(t, ast.Attribute)
+                and t.attr == "_unsloth_gradient_checkpointing"
                 for t in n.targets
             )
             for n in ast.walk(node)
         )
 
     fns = {n.name: n for n in ast.walk(tree) if isinstance(n, ast.FunctionDef)}
-    assert "patch_peft_model" in fns and assigns_marker(
-        fns["patch_peft_model"]
+    assert (
+        "patch_peft_model" in fns and assigns_marker(fns["patch_peft_model"])
     ), "patch_peft_model must record _unsloth_gradient_checkpointing so loaded adapters are covered"
     # The pass-through branch lives in get_peft_model.
     assert assigns_marker(

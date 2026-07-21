@@ -127,9 +127,7 @@ def test_mask_derived_position_ids_branch_exists():
         and any(_is_kwargs_position_ids_target(t) for t in stmt.targets)
         for stmt in ast.walk(ast.Module(body = branch.body, type_ignores = []))
     )
-    assert (
-        assigns_kwargs
-    ), 'the attention-mask branch must store the derived positions into kwargs["position_ids"]'
+    assert assigns_kwargs, 'the attention-mask branch must store the derived positions into kwargs["position_ids"]'
 
 
 def test_cache_position_only_used_as_fallback_for_position_ids():
@@ -151,9 +149,9 @@ def test_cache_position_only_used_as_fallback_for_position_ids():
         value_names = _names_in(node.value)
         # Direct use of cache_position, or the local alias `cp` the current
         # implementation builds from it inside the fallback branch.
-        derives_from_cache_position = any("cache_position" in n for n in value_names) or bool(
-            value_names & {"cp"}
-        )
+        derives_from_cache_position = any(
+            "cache_position" in n for n in value_names
+        ) or bool(value_names & {"cp"})
         if derives_from_cache_position and id(node) not in orelse_nodes:
             offenders.append(ast.unparse(node))
 
@@ -284,7 +282,9 @@ class FakeModelWith4DMask(FakeModel):
     ):
         self.mask_calls.append(
             {
-                "mask_shape": tuple(attention_mask.shape) if attention_mask is not None else None,
+                "mask_shape": tuple(attention_mask.shape)
+                if attention_mask is not None
+                else None,
                 "sequence_length": sequence_length,
                 "target_length": target_length,
                 "batch_size": batch_size,
@@ -347,7 +347,9 @@ def test_cached_decode_does_not_truncate_2d_attention_mask():
     # Without a 4D mask builder the original 2D mask must survive untouched.
     # The historical bug replaced it with attention_mask[:, [-1]].
     input_ids = torch.arange(BS * SEQ).reshape(BS, SEQ)
-    result = _prepare(FakeModel(), input_ids, MASK, past_key_values = FakeDynamicCache(PAST_LEN))
+    result = _prepare(
+        FakeModel(), input_ids, MASK, past_key_values = FakeDynamicCache(PAST_LEN)
+    )
     mask_out = result["attention_mask"]
     assert mask_out is not None
     assert mask_out.dim() != 2 or mask_out.shape[-1] == SEQ, (
@@ -360,7 +362,9 @@ def test_cached_decode_does_not_truncate_2d_attention_mask():
 def test_cached_decode_4d_mask_builder_receives_full_target_length():
     model = FakeModelWith4DMask()
     input_ids = torch.arange(BS * SEQ).reshape(BS, SEQ)
-    result = _prepare(model, input_ids, MASK, past_key_values = FakeDynamicCache(PAST_LEN))
+    result = _prepare(
+        model, input_ids, MASK, past_key_values = FakeDynamicCache(PAST_LEN)
+    )
     assert len(model.mask_calls) == 1
     call = model.mask_calls[0]
     assert call["mask_shape"] == (BS, SEQ), (

@@ -60,7 +60,8 @@ def _path_contains_repo_id(value: str, repo_ids: set[str]) -> bool:
         if f"models--{owner}--{name}" in parts:
             return True
         if any(
-            parts[index] == owner and parts[index + 1] == name for index in range(len(parts) - 1)
+            parts[index] == owner and parts[index + 1] == name
+            for index in range(len(parts) - 1)
         ):
             return True
     return False
@@ -72,7 +73,9 @@ def _path_basename_is_default_embedder(value: str) -> bool:
     basename = normalized.rsplit("/", 1)[-1]
     return any(
         basename == needle
-        or any(basename.startswith(f"{needle}{separator}") for separator in ("-", "_", "."))
+        or any(
+            basename.startswith(f"{needle}{separator}") for separator in ("-", "_", ".")
+        )
         for needle in _DEFAULT_EMBEDDING_PATH_BASENAMES
     )
 

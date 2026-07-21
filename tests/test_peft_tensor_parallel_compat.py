@@ -12,7 +12,9 @@ IMPORT_FIXES = REPO_ROOT / "unsloth" / "import_fixes.py"
 
 
 def _load_import_fixes():
-    spec = importlib.util.spec_from_file_location("_unsloth_import_fixes_peft_tp", IMPORT_FIXES)
+    spec = importlib.util.spec_from_file_location(
+        "_unsloth_import_fixes_peft_tp", IMPORT_FIXES
+    )
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module
@@ -25,7 +27,9 @@ def _install_fake_module(
     attrs = None,
 ):
     module = types.ModuleType(name)
-    module.__spec__ = importlib.machinery.ModuleSpec(name, loader = None, is_package = is_package)
+    module.__spec__ = importlib.machinery.ModuleSpec(
+        name, loader = None, is_package = is_package
+    )
     if is_package:
         module.__path__ = []
     if attrs:
@@ -142,7 +146,12 @@ def test_existing_embedding_parallel_is_not_replaced(monkeypatch):
     monkeypatch.setattr(
         module,
         "_extract_peft_tensor_parallel_imported_symbols",
-        lambda: ("ALL_PARALLEL_STYLES", "ColwiseParallel", "EmbeddingParallel", "RowwiseParallel"),
+        lambda: (
+            "ALL_PARALLEL_STYLES",
+            "ColwiseParallel",
+            "EmbeddingParallel",
+            "RowwiseParallel",
+        ),
     )
     assert module.fix_peft_transformers_tensor_parallel_import_compat() is True
 
@@ -152,7 +161,9 @@ def test_existing_embedding_parallel_is_not_replaced(monkeypatch):
 
 def test_missing_tensor_parallel_module_is_not_created(monkeypatch):
     module = _load_import_fixes()
-    previous_tp_module = sys.modules.pop("transformers.integrations.tensor_parallel", None)
+    previous_tp_module = sys.modules.pop(
+        "transformers.integrations.tensor_parallel", None
+    )
 
     original_find_spec = module.importlib.util.find_spec
 
@@ -239,7 +250,9 @@ def test_tensor_parallel_import_module_not_found_returns_none(monkeypatch):
     monkeypatch.setattr(
         module.importlib.util,
         "find_spec",
-        lambda name: object() if name == "transformers.integrations.tensor_parallel" else None,
+        lambda name: object()
+        if name == "transformers.integrations.tensor_parallel"
+        else None,
     )
 
     def _raise_missing(name):

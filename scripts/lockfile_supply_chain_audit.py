@@ -459,7 +459,9 @@ def audit_npm_lockfile(path: Path) -> list[Finding]:
                     path = str(path),
                     package = key,
                     kind = "blocked-known-malicious",
-                    detail = (f"{pkg_name}@{version} is on the BLOCKED_NPM_VERSIONS list"),
+                    detail = (
+                        f"{pkg_name}@{version} is on the BLOCKED_NPM_VERSIONS list"
+                    ),
                 )
             )
 
@@ -663,7 +665,9 @@ def main(argv: list[str] | None = None) -> int:
         "--cargo-lockfile",
         action = "append",
         default = None,
-        help = ("Path to a Cargo.lock (repeatable). Default: studio/src-tauri/Cargo.lock."),
+        help = (
+            "Path to a Cargo.lock (repeatable). Default: studio/src-tauri/Cargo.lock."
+        ),
     )
     parser.add_argument(
         "--strict",

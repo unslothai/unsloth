@@ -229,7 +229,8 @@ def test_peft_transformers_weight_conversion_module(tag: str):
         pytest.skip(f"{tag}: transformers_weight_conversion not present (legacy peft)")
     _, src = hit
     assert (
-        has_def(src, "build_peft_weight_mapping", "func") or "build_peft_weight_mapping" in src
+        has_def(src, "build_peft_weight_mapping", "func")
+        or "build_peft_weight_mapping" in src
     ), (
         f"{tag}: build_peft_weight_mapping missing in transformers_weight_conversion; "
         f"unsloth/import_fixes.py:1375-1456 wrap breaks (unsloth#5167)"
@@ -247,9 +248,14 @@ def test_peft_integrations_dequantize_module_weight(tag: str):
         "src/peft/utils/integrations/__init__.py",
     ]
     hit = first_match("huggingface/peft", tag, candidates)
-    assert hit is not None, f"{tag}: src/peft/utils/integrations[.py|/__init__.py] both missing"
+    assert (
+        hit is not None
+    ), f"{tag}: src/peft/utils/integrations[.py|/__init__.py] both missing"
     _, src = hit
-    assert has_def(src, "dequantize_module_weight", "func") or "dequantize_module_weight" in src, (
+    assert (
+        has_def(src, "dequantize_module_weight", "func")
+        or "dequantize_module_weight" in src
+    ), (
         f"{tag}: peft.utils.integrations.dequantize_module_weight missing; "
         f"unsloth-zoo vllm_utils.py:2701, unsloth/_utils.py:1550, "
         f"saving_utils.py:270 ImportError"
@@ -325,7 +331,9 @@ def test_peft_version_parseable(tag: str):
     assert src is not None
     # Same gates as the TRL test: literal / submodule / metadata
     has_literal = bool(re.search(r'^__version__\s*=\s*["\']', src, re.MULTILINE))
-    has_subimport = bool(re.search(r"^from\s+\.version\s+import\s+__version__", src, re.MULTILINE))
+    has_subimport = bool(
+        re.search(r"^from\s+\.version\s+import\s+__version__", src, re.MULTILINE)
+    )
     has_metadata = bool(
         re.search(
             r"^from\s+importlib\.metadata\s+import\s+(?:[\w,\s]+,\s*)?version",

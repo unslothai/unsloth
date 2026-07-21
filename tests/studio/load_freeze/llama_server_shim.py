@@ -114,7 +114,9 @@ class _Handler(BaseHTTPRequestHandler):
                 self._send_raw(srv.config.detok_status, srv.config.detok_body)
                 return
             tids = body.get("tokens") or []
-            content = "".join(srv.config.detok_map.get(int(t), f"<tok_{t}>") for t in tids)
+            content = "".join(
+                srv.config.detok_map.get(int(t), f"<tok_{t}>") for t in tids
+            )
             self._send_json(srv.config.detok_status, {"content": content})
             return
         if path == "/completion":
@@ -215,7 +217,9 @@ class FakeLlamaServer:
 
     def start(self) -> "FakeLlamaServer":
         # port=0 lets the server pick a free port atomically (no find-then-bind race).
-        self._server = FakeLlamaServer._Server((self.host, self._requested_port), _Handler)
+        self._server = FakeLlamaServer._Server(
+            (self.host, self._requested_port), _Handler
+        )
         self._server.config = self.config
         bound_port = self._server.server_address[1]
         self._thread = threading.Thread(

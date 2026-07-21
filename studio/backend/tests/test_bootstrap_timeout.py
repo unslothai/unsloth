@@ -27,13 +27,16 @@ def test_default_when_unset():
 
 
 def test_default_when_empty():
-    assert bootstrap_timeout_seconds(env = {"UNSLOTH_STUDIO_BOOTSTRAP_TIMEOUT": "  "}) == (
-        DEFAULT_BOOTSTRAP_TIMEOUT_SECONDS
-    )
+    assert bootstrap_timeout_seconds(
+        env = {"UNSLOTH_STUDIO_BOOTSTRAP_TIMEOUT": "  "}
+    ) == (DEFAULT_BOOTSTRAP_TIMEOUT_SECONDS)
 
 
 def test_explicit_value_parsed():
-    assert bootstrap_timeout_seconds(env = {"UNSLOTH_STUDIO_BOOTSTRAP_TIMEOUT": "1800"}) == 1800
+    assert (
+        bootstrap_timeout_seconds(env = {"UNSLOTH_STUDIO_BOOTSTRAP_TIMEOUT": "1800"})
+        == 1800
+    )
 
 
 def test_zero_disables():
@@ -41,14 +44,16 @@ def test_zero_disables():
 
 
 def test_negative_disables():
-    assert bootstrap_timeout_seconds(env = {"UNSLOTH_STUDIO_BOOTSTRAP_TIMEOUT": "-5"}) == 0
+    assert (
+        bootstrap_timeout_seconds(env = {"UNSLOTH_STUDIO_BOOTSTRAP_TIMEOUT": "-5"}) == 0
+    )
 
 
 def test_invalid_falls_back_to_default():
     # A typo must keep the protection, not silently disable it.
-    assert bootstrap_timeout_seconds(env = {"UNSLOTH_STUDIO_BOOTSTRAP_TIMEOUT": "abc"}) == (
-        DEFAULT_BOOTSTRAP_TIMEOUT_SECONDS
-    )
+    assert bootstrap_timeout_seconds(
+        env = {"UNSLOTH_STUDIO_BOOTSTRAP_TIMEOUT": "abc"}
+    ) == (DEFAULT_BOOTSTRAP_TIMEOUT_SECONDS)
 
 
 # ── should_arm_bootstrap_timeout matrix ─────────────────────────────
@@ -74,11 +79,17 @@ def test_arm_exposed_wildcard_web_ui():
 
 def test_arm_secure_loopback_bind():
     # --secure forces a loopback bind but exposes a public tunnel.
-    assert should_arm_bootstrap_timeout(**_arm_kwargs(host = "127.0.0.1", secure = True)) is True
+    assert (
+        should_arm_bootstrap_timeout(**_arm_kwargs(host = "127.0.0.1", secure = True))
+        is True
+    )
 
 
 def test_no_arm_loopback_bind():
-    assert should_arm_bootstrap_timeout(**_arm_kwargs(host = "127.0.0.1", secure = False)) is False
+    assert (
+        should_arm_bootstrap_timeout(**_arm_kwargs(host = "127.0.0.1", secure = False))
+        is False
+    )
 
 
 def test_no_arm_api_only():

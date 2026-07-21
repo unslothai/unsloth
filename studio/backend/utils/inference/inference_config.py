@@ -28,7 +28,10 @@ def _load_family_defaults():
         return
 
     json_path = (
-        Path(__file__).parent.parent.parent / "assets" / "configs" / "inference_defaults.json"
+        Path(__file__).parent.parent.parent
+        / "assets"
+        / "configs"
+        / "inference_defaults.json"
     )
     try:
         with open(json_path, "r", encoding = "utf-8") as f:

@@ -60,7 +60,9 @@ def _slugify_run_name(value: str) -> str:
     return slug[:80].strip("-")
 
 
-def _build_dataset_name(*, run_name: str | None, job_id: str, artifact_root: Path) -> str:
+def _build_dataset_name(
+    *, run_name: str | None, job_id: str, artifact_root: Path
+) -> str:
     fallback = f"recipe_{job_id}"
     slug = _slugify_run_name(run_name or "")
     base_name = f"recipe_{slug}" if slug else fallback
@@ -72,7 +74,9 @@ def _build_dataset_name(*, run_name: str | None, job_id: str, artifact_root: Pat
     return candidate
 
 
-def run_job_process(*, event_queue, recipe: dict[str, Any], run: dict[str, Any]) -> None:
+def run_job_process(
+    *, event_queue, recipe: dict[str, Any], run: dict[str, Any]
+) -> None:
     """Subprocess entrypoint. Sends events to `event_queue`."""
     import os
 
@@ -160,10 +164,14 @@ def run_job_process(*, event_queue, recipe: dict[str, Any], run: dict[str, Any])
                 }
             )
         else:
-            results = designer.create(builder, num_records = rows, dataset_name = dataset_name)
+            results = designer.create(
+                builder, num_records = rows, dataset_name = dataset_name
+            )
             analysis = to_jsonable(results.load_analysis().model_dump(mode = "json"))
             if merge_batches:
-                _merge_batches_to_single_parquet(results.artifact_storage.base_dataset_path)
+                _merge_batches_to_single_parquet(
+                    results.artifact_storage.base_dataset_path
+                )
             artifact_path = str(results.artifact_storage.base_dataset_path)
             event_queue.put(
                 {

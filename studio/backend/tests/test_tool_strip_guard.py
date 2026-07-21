@@ -56,12 +56,18 @@ def test_guard_matches_plain_loop_on_fuzz():
     for patterns in (_TOOL_ALL_PATS, _TOOL_CLOSED_PATS):
         for _ in range(20000):
             s = "".join(rng.choice(_TOKENS) for _ in range(rng.randint(0, 10)))
-            assert strip_tool_patterns(s, patterns) == _naive(s, patterns), (s, patterns)
+            assert strip_tool_patterns(s, patterns) == _naive(s, patterns), (
+                s,
+                patterns,
+            )
 
 
 def test_strip_markup_representative_cases_unchanged():
     assert strip_tool_call_markup("a <tool_call>{}</tool_call> b") == "a  b"
-    assert strip_tool_call_markup("a <function=x><parameter=p>1</parameter></function> b") == "a  b"
+    assert (
+        strip_tool_call_markup("a <function=x><parameter=p>1</parameter></function> b")
+        == "a  b"
+    )
     # Non-final keeps an unclosed block; final strips it to EOF.
     assert strip_tool_call_markup("a <tool_call>{partial") == "a <tool_call>{partial"
     assert strip_tool_call_markup("a <tool_call>{partial", final = True) == "a"

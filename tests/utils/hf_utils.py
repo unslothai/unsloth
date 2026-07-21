@@ -37,19 +37,32 @@ from trl import SFTTrainer
 
 class PeftWeightCallback(TrainerCallback):
     def on_log(
-        self, args: TrainingArguments, state: TrainerState, control: TrainerControl, logs, **kwargs
+        self,
+        args: TrainingArguments,
+        state: TrainerState,
+        control: TrainerControl,
+        logs,
+        **kwargs,
     ):
         print(f"DEBUG::CALLBACK::on_log::{state.log_history}")
 
     def on_train_begin(
-        self, args: TrainingArguments, state: TrainerState, control: TrainerControl, **kwargs
+        self,
+        args: TrainingArguments,
+        state: TrainerState,
+        control: TrainerControl,
+        **kwargs,
     ):
         model = kwargs.get("model")
         assert model is not None
         print(f"DEBUG::CALLBACK::on_train_begin::{kwargs.keys()}")
 
     def on_step_end(
-        self, args: TrainingArguments, state: TrainerState, control: TrainerControl, **kwargs
+        self,
+        args: TrainingArguments,
+        state: TrainerState,
+        control: TrainerControl,
+        **kwargs,
     ):
         print(f"DEBUG::CALLBACK::on_step_end::{state.global_step}")
 
@@ -69,7 +82,8 @@ def generate_responses(
     inputs = [tokenizer(prompt, return_tensors = "pt") for _ in range(num_generations)]
     keys = inputs[0].keys()
     batched_inputs = {
-        key: torch.cat([input[key] for input in inputs], dim = 0).to(model.device) for key in keys
+        key: torch.cat([input[key] for input in inputs], dim = 0).to(model.device)
+        for key in keys
     }
 
     if dtype is not None:
@@ -146,7 +160,9 @@ def setup_model(
     model = prepare_model_for_kbit_training(model) if quantize else model
 
     if peft_config is not None:
-        model = get_peft_model(model, peft_config, autocast_adapter_dtype = autocast_adapter)
+        model = get_peft_model(
+            model, peft_config, autocast_adapter_dtype = autocast_adapter
+        )
 
     return model
 
@@ -227,7 +243,9 @@ def fix_llama3_tokenizer(tokenizer, padding_side = "right"):
 
 
 def replace_module(
-    module: torch.nn.Module, target_module_type: torch.nn.Module, conversion_func: Callable
+    module: torch.nn.Module,
+    target_module_type: torch.nn.Module,
+    conversion_func: Callable,
 ):
     for child_name, child_module in module.named_children():
         if isinstance(child_module, target_module_type):

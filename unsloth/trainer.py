@@ -115,7 +115,11 @@ def _should_pack(config) -> bool:
 
 
 def _should_auto_padding_free(config) -> bool:
-    if config is None or _AUTO_PADDING_FREE_ENV_DISABLED or getattr(config, "packing", False):
+    if (
+        config is None
+        or _AUTO_PADDING_FREE_ENV_DISABLED
+        or getattr(config, "packing", False)
+    ):
         return False
     return getattr(config, "padding_free", None) is None
 
@@ -165,7 +169,12 @@ _VISION_DATASET_KEYS = frozenset(
 def _is_vlm_config(config, model_types = ()) -> bool:
     if any(
         hasattr(config, attr)
-        for attr in ("vision_config", "img_processor", "image_token_index", "projector_config")
+        for attr in (
+            "vision_config",
+            "img_processor",
+            "image_token_index",
+            "projector_config",
+        )
     ):
         return True
 
@@ -174,7 +183,8 @@ def _is_vlm_config(config, model_types = ()) -> bool:
         from transformers.models.auto import modeling_auto
 
         mappings = (
-            getattr(modeling_auto, "MODEL_FOR_IMAGE_TEXT_TO_TEXT_MAPPING_NAMES", {}) or {},
+            getattr(modeling_auto, "MODEL_FOR_IMAGE_TEXT_TO_TEXT_MAPPING_NAMES", {})
+            or {},
             getattr(modeling_auto, "MODEL_FOR_VISION_2_SEQ_MAPPING_NAMES", {}) or {},
         )
         registry_types = set().union(*(mapping.keys() for mapping in mappings))
@@ -257,12 +267,18 @@ def _is_hybrid_linear_attention_model(model) -> bool:
         seen.add(id(module))
         cls = type(module).__name__
         if not (
-            cls.endswith("GatedDeltaNet") or "LinearAttention" in cls or cls.endswith("Mamba2Mixer")
+            cls.endswith("GatedDeltaNet")
+            or "LinearAttention" in cls
+            or cls.endswith("Mamba2Mixer")
         ):
             continue
         has_recurrent = any(
             hasattr(module, attr)
-            for attr in ("chunk_gated_delta_rule", "recurrent_gated_delta_rule", "A_log")
+            for attr in (
+                "chunk_gated_delta_rule",
+                "recurrent_gated_delta_rule",
+                "A_log",
+            )
         )
         if has_recurrent and hasattr(module, "conv1d"):
             return True
@@ -445,7 +461,9 @@ class UnslothTrainer(SFTTrainer):
             return super().create_optimizer()
 
         if self.optimizer is None:
-            optimizer_cls, optimizer_kwargs = SFTTrainer.get_optimizer_cls_and_kwargs(self.args)
+            optimizer_cls, optimizer_kwargs = SFTTrainer.get_optimizer_cls_and_kwargs(
+                self.args
+            )
             self.optimizer = _create_unsloth_optimizer(
                 self.model,
                 optimizer_cls,
@@ -567,7 +585,8 @@ def _resolve_trainer_params(trainer_class, init_fn):
     named = {
         k
         for k, v in params.items()
-        if v.kind in (inspect.Parameter.POSITIONAL_OR_KEYWORD, inspect.Parameter.KEYWORD_ONLY)
+        if v.kind
+        in (inspect.Parameter.POSITIONAL_OR_KEYWORD, inspect.Parameter.KEYWORD_ONLY)
         and k != "self"
     }
     if named:
@@ -618,7 +637,9 @@ def _backwards_compatible_trainer(trainer_class, config_class):
 
             # Fields that should be passed to Config init
             config_fields = {
-                field.name: field for field in dataclasses.fields(config_class) if field.init
+                field.name: field
+                for field in dataclasses.fields(config_class)
+                if field.init
             }
 
             config_dict = {
@@ -694,9 +715,13 @@ def _patch_sft_trainer_auto_packing(trl_module):
                 model_config = _resolve_string_model_config(model, config_arg)
             if model_config is not None:
                 model_types = get_transformers_model_type(model_config)
-                is_unsupported_model = any(x in PADDING_FREE_BLOCKLIST for x in model_types)
+                is_unsupported_model = any(
+                    x in PADDING_FREE_BLOCKLIST for x in model_types
+                )
                 is_vlm = _is_vlm_config(model_config, model_types)
-                is_encoder_decoder = bool(getattr(model_config, "is_encoder_decoder", False))
+                is_encoder_decoder = bool(
+                    getattr(model_config, "is_encoder_decoder", False)
+                )
             hybrid_target = (
                 SimpleNamespace(config = model_config)
                 if isinstance(model, str) and model_config is not None
@@ -719,7 +744,9 @@ def _patch_sft_trainer_auto_packing(trl_module):
                     hybrid_varlen_active = False
 
         processing_class = (
-            args[5] if len(args) >= 6 else kwargs.get("processing_class") or kwargs.get("tokenizer")
+            args[5]
+            if len(args) >= 6
+            else kwargs.get("processing_class") or kwargs.get("tokenizer")
         )
         data_collator = args[2] if len(args) >= 3 else kwargs.get("data_collator")
         train_dataset = args[3] if len(args) >= 4 else kwargs.get("train_dataset")
@@ -787,7 +814,9 @@ def _patch_sft_trainer_auto_packing(trl_module):
             elif _should_auto_padding_free(config_arg):
                 configure_padding_free(config_arg)
                 auto_padding_free_active = True
-                logger.info("Unsloth: Padding-free batching auto-enabled for SFTTrainer instance.")
+                logger.info(
+                    "Unsloth: Padding-free batching auto-enabled for SFTTrainer instance."
+                )
 
         try:
             original_init(self, *args, **kwargs)
@@ -805,16 +834,24 @@ def _patch_sft_trainer_auto_packing(trl_module):
 
         trainer_args = getattr(self, "args", None)
         trainer_packing = bool(trainer_args and getattr(trainer_args, "packing", False))
-        trainer_padding_free = bool(trainer_args and getattr(trainer_args, "padding_free", False))
+        trainer_padding_free = bool(
+            trainer_args and getattr(trainer_args, "padding_free", False)
+        )
 
         if blocked and trainer_args is not None:
             # Mirror the block on the trainer args to avoid re-enabling later
             setattr(trainer_args, "packing", False)
             setattr(trainer_args, "padding_free", False)
 
-        if not blocked and trainer_packing and (packing_active or _should_pack(trainer_args)):
+        if (
+            not blocked
+            and trainer_packing
+            and (packing_active or _should_pack(trainer_args))
+        ):
             enable_sample_packing(self.model, self)
-            print("🦥 Unsloth: Packing enabled - training is >2x faster and uses less VRAM!")
+            print(
+                "🦥 Unsloth: Packing enabled - training is >2x faster and uses less VRAM!"
+            )
         elif not blocked and trainer_padding_free:
             enable_padding_free_metadata(self.model, self)
             message = (
@@ -863,7 +900,9 @@ def _patch_trl_trainer():
     import trl.trainer
 
     trl_classes = dir(trl.trainer)
-    trl_trainers = set(x[: -len("Trainer")] for x in trl_classes if x.endswith("Trainer"))
+    trl_trainers = set(
+        x[: -len("Trainer")] for x in trl_classes if x.endswith("Trainer")
+    )
     trl_configs = set(x[: -len("Config")] for x in trl_classes if x.endswith("Config"))
     trl_classes = list(trl_trainers & trl_configs)
 

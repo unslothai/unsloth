@@ -88,7 +88,9 @@ def _markdown_corrupted(text: str) -> bool:
     legitimate shaped glyph does not force the fallback)."""
     if not text:
         return False
-    threshold = max(_PDF_FALLBACK_MIN_BAD_GLYPHS, _PDF_FALLBACK_BAD_GLYPH_RATIO * len(text))
+    threshold = max(
+        _PDF_FALLBACK_MIN_BAD_GLYPHS, _PDF_FALLBACK_BAD_GLYPH_RATIO * len(text)
+    )
     shaped = len(_SHAPED_PRESENTATION_FORMS.findall(text))
     return shaped > threshold or text.count("\ufffd") > threshold
 
@@ -135,13 +137,17 @@ def _pdf(
     pages: list[Page] = []
     images: list[ParsedImage] = []
     doc = (
-        fitz.open(stream = source, filetype = "pdf") if isinstance(source, bytes) else fitz.open(source)
+        fitz.open(stream = source, filetype = "pdf")
+        if isinstance(source, bytes)
+        else fitz.open(source)
     )
     try:
         if doc.needs_pass:
             raise ValueError("encrypted PDF requires a password")
         total_pages = doc.page_count
-        page_numbers = range(total_pages if max_pages is None else min(total_pages, max_pages))
+        page_numbers = range(
+            total_pages if max_pages is None else min(total_pages, max_pages)
+        )
         if not config.PDF_MARKDOWN:
             md = None
         elif max_pages is None:
@@ -186,7 +192,9 @@ def _pdf(
     return pages, images, total_pages
 
 
-def parse_pdf_bytes(data: bytes, *, max_pages: int | None = None) -> tuple[list[Page], int]:
+def parse_pdf_bytes(
+    data: bytes, *, max_pages: int | None = None
+) -> tuple[list[Page], int]:
     """Extract PDF pages from an in-memory download using the ingestion parser.
 
     Returns the (capped) pages plus the document's full page count, so a caller
@@ -330,7 +338,11 @@ def render_pdf_figure_tiles(
             for clip in clips:
                 try:
                     pix = page.get_pixmap(dpi = dpi, clip = clip)
-                    out.append(ParsedImage(image_bytes = pix.tobytes("png"), page_number = num, xref = 0))
+                    out.append(
+                        ParsedImage(
+                            image_bytes = pix.tobytes("png"), page_number = num, xref = 0
+                        )
+                    )
                 except Exception:
                     continue
                 if len(out) >= max_tiles:

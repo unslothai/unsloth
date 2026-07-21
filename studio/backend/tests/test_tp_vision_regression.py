@@ -106,7 +106,10 @@ def _tensor_parallel_false_drop_guards() -> list[str]:
         for n in body:
             if (
                 isinstance(n, ast.Assign)
-                and any(isinstance(t, ast.Name) and t.id == "tensor_parallel" for t in n.targets)
+                and any(
+                    isinstance(t, ast.Name) and t.id == "tensor_parallel"
+                    for t in n.targets
+                )
                 and isinstance(n.value, ast.Constant)
                 and n.value.value is False
             ):
@@ -165,7 +168,9 @@ def test_every_tp_drop_is_logged_not_silent():
     def _body_drops_tp(body):
         return any(
             isinstance(n, ast.Assign)
-            and any(isinstance(t, ast.Name) and t.id == "tensor_parallel" for t in n.targets)
+            and any(
+                isinstance(t, ast.Name) and t.id == "tensor_parallel" for t in n.targets
+            )
             and isinstance(n.value, ast.Constant)
             and n.value.value is False
             for n in body
@@ -221,7 +226,9 @@ def test_tensor_split_abort_recorded_early_on_first_spawn():
     ), "record must be gated on the marker-plus-hard-crash decision helper"
     # Recorded before the flash-attn-off retry, not after the full ladder.
     fa_off = src.find("_with_flash_attn_off")
-    assert 0 <= idx < fa_off, "recording must latch on the first spawn, before flash-off"
+    assert (
+        0 <= idx < fa_off
+    ), "recording must latch on the first spawn, before flash-off"
 
 
 def test_vision_downgrade_preserves_multi_gpu_intent():
@@ -240,7 +247,9 @@ def test_vision_downgrade_preserves_multi_gpu_intent():
 
 def test_tensor_attempted_by_default_for_unknown_binary():
     """A (binary, model) not seen to abort -> tensor is attempted (not skipped)."""
-    assert LlamaCppBackend._tensor_split_aborts("/never/seen/llama-server", "m") is False
+    assert (
+        LlamaCppBackend._tensor_split_aborts("/never/seen/llama-server", "m") is False
+    )
     assert LlamaCppBackend._tensor_split_aborts(None, "m") is False
     assert LlamaCppBackend._tensor_split_aborts("/x", None) is False
 
@@ -457,11 +466,13 @@ def test_fallback_hint_uses_effective_tensor_request_not_just_toggle():
     assert "extra_llama_args, request.tensor_parallel" in block
     pres = src.find("preserve_multi_gpu_on_layer = bool(")
     assert (
-        "_effective_tensor_parallel(attempt_extra_args, tensor_parallel)" in src[pres : pres + 200]
+        "_effective_tensor_parallel(attempt_extra_args, tensor_parallel)"
+        in src[pres : pres + 200]
     )
     # not the toggle-only form this replaced
     assert (
-        "bool(\n                        request.tensor_parallel and not tensor_parallel" not in src
+        "bool(\n                        request.tensor_parallel and not tensor_parallel"
+        not in src
     )
 
 
@@ -472,9 +483,15 @@ def test_carry_preserved_tensor_intent_truth_table():
     inference_routes = _load_inference_routes_module()
     f = inference_routes._carry_preserved_tensor_intent
     assert f(preserved = True, same_model = True, explicit_drop = False) is True
-    assert f(preserved = True, same_model = True, explicit_drop = True) is False  # explicit drop
-    assert f(preserved = True, same_model = False, explicit_drop = False) is False  # model switch
-    assert f(preserved = False, same_model = True, explicit_drop = False) is False  # not a fallback
+    assert (
+        f(preserved = True, same_model = True, explicit_drop = True) is False
+    )  # explicit drop
+    assert (
+        f(preserved = True, same_model = False, explicit_drop = False) is False
+    )  # model switch
+    assert (
+        f(preserved = False, same_model = True, explicit_drop = False) is False
+    )  # not a fallback
 
 
 def test_preserved_fallback_carried_across_non_drop_reload():
@@ -670,7 +687,9 @@ def test_explicit_split_mode_layer_extras_reloads_after_multi_gpu_fallback():
 
     inference_routes = _load_inference_routes_module()
 
-    req = LoadRequest(model_path = "owner/repo", llama_extra_args = ["--split-mode", "layer"])
+    req = LoadRequest(
+        model_path = "owner/repo", llama_extra_args = ["--split-mode", "layer"]
+    )
     assert "llama_extra_args" in req.model_fields_set
     assert (
         inference_routes._request_matches_loaded_settings(
@@ -727,18 +746,30 @@ def test_is_explicit_tensor_drop_truth_table():
     f = _load_inference_routes_module()._is_explicit_tensor_drop
     # A non-tensor split-mode override is the one deliberate departure -> drop.
     assert (
-        f(LoadRequest(model_path = "owner/repo", llama_extra_args = ["--split-mode", "layer"])) is True
+        f(
+            LoadRequest(
+                model_path = "owner/repo", llama_extra_args = ["--split-mode", "layer"]
+            )
+        )
+        is True
     )
     # tensor / retry re-engages, never a drop.
     assert (
-        f(LoadRequest(model_path = "owner/repo", llama_extra_args = ["--split-mode", "tensor"]))
+        f(
+            LoadRequest(
+                model_path = "owner/repo", llama_extra_args = ["--split-mode", "tensor"]
+            )
+        )
         is False
     )
     # A bare tensor_parallel field is the UI echo, not a drop (would collapse on reload).
     assert f(LoadRequest(model_path = "owner/repo", tensor_parallel = False)) is False
     assert f(LoadRequest(model_path = "owner/repo", tensor_parallel = True)) is False
     # Unrelated extra / empty clear / inherit all keep the preserved placement.
-    assert f(LoadRequest(model_path = "owner/repo", llama_extra_args = ["--top-k", "20"])) is False
+    assert (
+        f(LoadRequest(model_path = "owner/repo", llama_extra_args = ["--top-k", "20"]))
+        is False
+    )
     assert f(LoadRequest(model_path = "owner/repo", llama_extra_args = [])) is False
     assert f(LoadRequest(model_path = "owner/repo")) is False
 
@@ -763,7 +794,10 @@ def test_layer_preserves_tensor_intent_set_only_on_preserved_downgrade():
     off = src.find("self._tensor_parallel = False")
     assert 0 <= on and 0 <= off
     assert "self._layer_preserves_tensor_intent = False" in src[on : on + 120]
-    assert "self._layer_preserves_tensor_intent = _layer_min_gpus > 1" in src[off : off + 400]
+    assert (
+        "self._layer_preserves_tensor_intent = _layer_min_gpus > 1"
+        in src[off : off + 400]
+    )
 
 
 def test_layer_min_gpus_bound_before_gpu_selection_try():
@@ -810,7 +844,10 @@ def test_already_in_target_state_reloads_on_tensor_off_after_fallback():
     # Same preserved fallback but an implicit reload that carries the intent forward
     # (HF auto-pick / local-dir flows skip the route guard and reach here) -> dedupe.
     assert (
-        _backend(True)._already_in_target_state(**kwargs, preserve_multi_gpu_on_layer = True) is True
+        _backend(True)._already_in_target_state(
+            **kwargs, preserve_multi_gpu_on_layer = True
+        )
+        is True
     )
     # A genuine layer load (no preserved intent) -> dedupe, no churn.
     assert _backend(False)._already_in_target_state(**kwargs) is True

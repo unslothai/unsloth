@@ -59,11 +59,18 @@ def test_xet_failure_retries_over_http_for_model_and_dataset(monkeypatch, tmp_pa
     register_worker = download_lifecycle.register_worker
 
     for repo_type, repo_id, variant, expected_args in (
-        ("model", "Org/Model", "Q4_K_M", ["--repo-id", "Org/Model", "--variant", "Q4_K_M"]),
+        (
+            "model",
+            "Org/Model",
+            "Q4_K_M",
+            ["--repo-id", "Org/Model", "--variant", "Q4_K_M"],
+        ),
         ("dataset", "Org/Data", None, ["--repo-id", "Org/Data", "--dataset"]),
     ):
         registry = download_registry.DownloadRegistry()
-        key = download_registry.normalize_job_key(f"{repo_id}::{variant}" if variant else repo_id)
+        key = download_registry.normalize_job_key(
+            f"{repo_id}::{variant}" if variant else repo_id
+        )
         assert registry.claim(
             key,
             download_registry.TRANSPORT_XET,

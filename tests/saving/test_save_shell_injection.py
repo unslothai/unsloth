@@ -41,15 +41,21 @@ def _list_assignments(node: ast.AST, target: str) -> list[ast.List]:
 def test_lora_gguf_conversion_does_not_use_shell() -> None:
     """The LoRA -> GGUF conversion must pass argv as a list (no shell=True), so a crafted
     save path cannot inject shell commands. The conversion lives in the shared helper now."""
-    helper = _get_function(SAVE_PY.read_text(encoding = "utf-8"), "_unsloth_save_lora_gguf")
+    helper = _get_function(
+        SAVE_PY.read_text(encoding = "utf-8"), "_unsloth_save_lora_gguf"
+    )
     popen_calls = _popen_calls(helper)
-    assert popen_calls, "Expected at least one subprocess.Popen call in _unsloth_save_lora_gguf"
+    assert (
+        popen_calls
+    ), "Expected at least one subprocess.Popen call in _unsloth_save_lora_gguf"
 
     for call in popen_calls:
         shell = [
             kw
             for kw in call.keywords
-            if kw.arg == "shell" and isinstance(kw.value, ast.Constant) and kw.value.value is True
+            if kw.arg == "shell"
+            and isinstance(kw.value, ast.Constant)
+            and kw.value.value is True
         ]
         assert not shell, "subprocess.Popen must not use shell=True"
 
@@ -59,12 +65,18 @@ def test_lora_gguf_conversion_does_not_use_shell() -> None:
             elts = argv.elts
         else:
             # argv is built as a list variable (cmd = [...]) and passed positionally.
-            assert isinstance(argv, ast.Name), "argv must be a list or a list-built variable"
+            assert isinstance(
+                argv, ast.Name
+            ), "argv must be a list or a list-built variable"
             assigned = _list_assignments(helper, argv.id)
-            assert assigned, f"argv variable '{argv.id}' must be assigned a list literal"
+            assert (
+                assigned
+            ), f"argv variable '{argv.id}' must be assigned a list literal"
             elts = assigned[0].elts
 
-        assert len(elts) >= 2, "argv must include the interpreter and the converter script"
+        assert (
+            len(elts) >= 2
+        ), "argv must include the interpreter and the converter script"
         first = elts[0]
         assert (
             isinstance(first, ast.Attribute) and first.attr == "executable"
@@ -82,7 +94,8 @@ def test_legacy_ggml_wrappers_delegate_safely() -> None:
         node = _get_function(source, function_name)
         calls = [c for c in ast.walk(node) if isinstance(c, ast.Call)]
         assert any(
-            isinstance(c.func, ast.Name) and c.func.id == "_unsloth_save_lora_gguf" for c in calls
+            isinstance(c.func, ast.Name) and c.func.id == "_unsloth_save_lora_gguf"
+            for c in calls
         ), f"{function_name} should delegate to _unsloth_save_lora_gguf"
         assert not _popen_calls(
             node

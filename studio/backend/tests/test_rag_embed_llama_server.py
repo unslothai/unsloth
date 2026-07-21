@@ -52,8 +52,12 @@ def _mock_auto(monkeypatch, *, gpus, binary):
     from core.inference.llama_cpp import LlamaCppBackend
 
     monkeypatch.setattr(config, "EMBED_BACKEND", "auto")
-    monkeypatch.setattr(LlamaCppBackend, "_get_gpu_free_memory", staticmethod(lambda: gpus))
-    monkeypatch.setattr(LlamaCppBackend, "_find_llama_server_binary", staticmethod(lambda: binary))
+    monkeypatch.setattr(
+        LlamaCppBackend, "_get_gpu_free_memory", staticmethod(lambda: gpus)
+    )
+    monkeypatch.setattr(
+        LlamaCppBackend, "_find_llama_server_binary", staticmethod(lambda: binary)
+    )
 
 
 def _stub_st_load(monkeypatch):
@@ -117,7 +121,9 @@ def test_llama_backend_imports_no_torch():
         "RAG_EMBED_BACKEND": "llama-server",
         "PYTHONPATH": str(backend_dir),
     }
-    proc = subprocess.run([sys.executable, "-c", code], capture_output = True, text = True, env = env)
+    proc = subprocess.run(
+        [sys.executable, "-c", code], capture_output = True, text = True, env = env
+    )
     assert proc.returncode == 0, proc.stderr
     assert "OK" in proc.stdout
 
@@ -163,16 +169,22 @@ def test_use_gpu_explicit_modes(monkeypatch):
 def test_use_gpu_auto_follows_probe(monkeypatch):
     b = LlamaServerBackend()
     monkeypatch.setattr(config, "EMBED_DEVICE", "auto")
-    monkeypatch.setattr(LlamaServerBackend, "_gpu_available", staticmethod(lambda: True))
+    monkeypatch.setattr(
+        LlamaServerBackend, "_gpu_available", staticmethod(lambda: True)
+    )
     assert b._use_gpu() is True
-    monkeypatch.setattr(LlamaServerBackend, "_gpu_available", staticmethod(lambda: False))
+    monkeypatch.setattr(
+        LlamaServerBackend, "_gpu_available", staticmethod(lambda: False)
+    )
     assert b._use_gpu() is False
 
 
 def test_use_gpu_sticky_cpu_fallback(monkeypatch):
     b = LlamaServerBackend()
     monkeypatch.setattr(config, "EMBED_DEVICE", "auto")
-    monkeypatch.setattr(LlamaServerBackend, "_gpu_available", staticmethod(lambda: True))
+    monkeypatch.setattr(
+        LlamaServerBackend, "_gpu_available", staticmethod(lambda: True)
+    )
     b._force_cpu = True  # a prior GPU start failed
     assert b._use_gpu() is False
 
@@ -183,11 +195,17 @@ def test_gpu_available_reuses_studio_probe(monkeypatch):
 
     monkeypatch.setattr(uh, "is_apple_silicon", lambda: False)
     # Ample free VRAM -> GPU; nearly full -> CPU; none -> CPU.
-    monkeypatch.setattr(LlamaCppBackend, "_get_gpu_free_memory", staticmethod(lambda: [(0, 40000)]))
+    monkeypatch.setattr(
+        LlamaCppBackend, "_get_gpu_free_memory", staticmethod(lambda: [(0, 40000)])
+    )
     assert LlamaServerBackend._gpu_available() is True
-    monkeypatch.setattr(LlamaCppBackend, "_get_gpu_free_memory", staticmethod(lambda: [(0, 100)]))
+    monkeypatch.setattr(
+        LlamaCppBackend, "_get_gpu_free_memory", staticmethod(lambda: [(0, 100)])
+    )
     assert LlamaServerBackend._gpu_available() is False
-    monkeypatch.setattr(LlamaCppBackend, "_get_gpu_free_memory", staticmethod(lambda: []))
+    monkeypatch.setattr(
+        LlamaCppBackend, "_get_gpu_free_memory", staticmethod(lambda: [])
+    )
     assert LlamaServerBackend._gpu_available() is False
 
 
@@ -205,9 +223,15 @@ def _patch_spawn_deps(
 ):
     # Force CPU so spawn never depends on a host GPU.
     monkeypatch.setattr(config, "EMBED_DEVICE", "cpu")
-    monkeypatch.setattr(LlamaServerBackend, "_resolve_binary", lambda self: "/bin/llama-server")
-    monkeypatch.setattr(LlamaServerBackend, "_resolve_model_path", lambda self: "/m/bge.gguf")
-    monkeypatch.setattr(LlamaServerBackend, "_find_free_port", staticmethod(lambda: free_port))
+    monkeypatch.setattr(
+        LlamaServerBackend, "_resolve_binary", lambda self: "/bin/llama-server"
+    )
+    monkeypatch.setattr(
+        LlamaServerBackend, "_resolve_model_path", lambda self: "/m/bge.gguf"
+    )
+    monkeypatch.setattr(
+        LlamaServerBackend, "_find_free_port", staticmethod(lambda: free_port)
+    )
     monkeypatch.setattr(mod.subprocess, "Popen", lambda *a, **k: proc)
 
 
@@ -239,7 +263,9 @@ def test_spawn_fails_loud_on_early_exit(monkeypatch):
 
 def test_spawn_auto_falls_back_to_cpu_on_gpu_failure(monkeypatch):
     monkeypatch.setattr(config, "EMBED_DEVICE", "auto")
-    monkeypatch.setattr(LlamaServerBackend, "_gpu_available", staticmethod(lambda: True))
+    monkeypatch.setattr(
+        LlamaServerBackend, "_gpu_available", staticmethod(lambda: True)
+    )
     b = LlamaServerBackend()
     calls = []
 
@@ -311,7 +337,9 @@ def test_encode_empty_returns_zero_rows(monkeypatch):
 def test_encode_rejects_count_mismatch(monkeypatch):
     b = LlamaServerBackend()
     monkeypatch.setattr(b, "_ensure_ready", lambda: None)
-    monkeypatch.setattr(b, "_post", lambda p, pl: {"data": [{"index": 0, "embedding": [1.0]}]})
+    monkeypatch.setattr(
+        b, "_post", lambda p, pl: {"data": [{"index": 0, "embedding": [1.0]}]}
+    )
     with pytest.raises(RuntimeError, match = "vectors for"):
         b.encode(["a", "b"], normalize = False)
 
@@ -392,7 +420,9 @@ def test_post_restarts_once_on_connect_error(monkeypatch):
     b._port = 9000
     monkeypatch.setattr(b, "_ensure_ready", lambda: None)
     restarts = {"n": 0}
-    monkeypatch.setattr(b, "_restart", lambda: restarts.__setitem__("n", restarts["n"] + 1))
+    monkeypatch.setattr(
+        b, "_restart", lambda: restarts.__setitem__("n", restarts["n"] + 1)
+    )
 
     attempts = {"n": 0}
 
@@ -425,7 +455,9 @@ def test_post_restarts_once_on_read_timeout(monkeypatch):
     b._port = 9000
     monkeypatch.setattr(b, "_ensure_ready", lambda: None)
     restarts = {"n": 0}
-    monkeypatch.setattr(b, "_restart", lambda: restarts.__setitem__("n", restarts["n"] + 1))
+    monkeypatch.setattr(
+        b, "_restart", lambda: restarts.__setitem__("n", restarts["n"] + 1)
+    )
 
     attempts = {"n": 0}
 

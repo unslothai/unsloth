@@ -179,9 +179,7 @@ def _get_new_mapper():
     try:
         import requests
 
-        new_mapper = (
-            "https://raw.githubusercontent.com/unslothai/unsloth/main/unsloth/models/mapper.py"
-        )
+        new_mapper = "https://raw.githubusercontent.com/unslothai/unsloth/main/unsloth/models/mapper.py"
         with requests.get(new_mapper, timeout = 3) as new_mapper:
             new_mapper = new_mapper.text
         new_mapper = new_mapper[new_mapper.find("__INT_TO_FLOAT_MAPPER") :]
@@ -202,7 +200,12 @@ def _get_new_mapper():
 
 
 def _resolve_with_mappers(
-    model_name, load_in_4bit, load_in_fp8, int_to_float, float_to_int, map_to_unsloth_16bit
+    model_name,
+    load_in_4bit,
+    load_in_fp8,
+    int_to_float,
+    float_to_int,
+    map_to_unsloth_16bit,
 ):
     return __get_model_name(
         model_name = model_name,
@@ -327,14 +330,18 @@ def _offline_quantize_to_fp8(
     if text_config is not None:
         cache_name += "-text-only"
     new_model_name = os.path.join(temp_dir, cache_name)
-    print(f"Unsloth: Quantizing '{model_name}' to fp8, using model_name='{new_model_name}' instead")
+    print(
+        f"Unsloth: Quantizing '{model_name}' to fp8, using model_name='{new_model_name}' instead"
+    )
 
     if not os.path.isdir(new_model_name):
         from ._utils import _apply_text_only_key_mapping
 
         qconfig = _get_torchao_fp8_config(fp8_mode)
         qconfig = TorchAoConfig(qconfig)
-        load_kwargs = dict(torch_dtype = "auto", device_map = "auto", quantization_config = qconfig)
+        load_kwargs = dict(
+            torch_dtype = "auto", device_map = "auto", quantization_config = qconfig
+        )
         if text_config is not None:
             _apply_text_only_key_mapping(load_kwargs, config, text_config)
             config = text_config
@@ -369,7 +376,10 @@ def _tag_model_with_fp8_torchao_config(model: torch.nn.Module, fp8_mode: str):
 
 _FP8_DTYPES = tuple(
     dtype
-    for dtype in (getattr(torch, "float8_e4m3fn", None), getattr(torch, "float8_e5m2", None))
+    for dtype in (
+        getattr(torch, "float8_e4m3fn", None),
+        getattr(torch, "float8_e5m2", None),
+    )
     if dtype is not None
 )
 
@@ -509,9 +519,13 @@ def _match_fp8_module(module_by_name, base):
         return module_by_name[base]
     candidates = []
     if "language_model." in base:
-        candidates.append(base.replace("language_model.", "", 1))  # text-only: drop wrapper
+        candidates.append(
+            base.replace("language_model.", "", 1)
+        )  # text-only: drop wrapper
     if "language_model.model." in base:
-        candidates.append(base.replace("language_model.model.", "model.language_model.", 1))
+        candidates.append(
+            base.replace("language_model.model.", "model.language_model.", 1)
+        )
     if base.startswith("language_model."):
         candidates.append("model." + base)  # add model. prefix
     for candidate in candidates:
@@ -557,7 +571,9 @@ def _restore_dropped_fp8_scales(
         if not weight_map:
             return (0, 0)
 
-        scale_keys = {k: v for k, v in weight_map.items() if k.endswith(".weight_scale_inv")}
+        scale_keys = {
+            k: v for k, v in weight_map.items() if k.endswith(".weight_scale_inv")
+        }
         if not scale_keys:
             return (0, 0)
 
@@ -607,7 +623,10 @@ def _restore_dropped_fp8_scales(
                 in_blocks = (in_features + bs1 - 1) // bs1
                 if tuple(scale.shape) == (out_blocks, in_blocks):
                     pass
-                elif tuple(scale.shape) == (in_blocks, out_blocks) and out_blocks != in_blocks:
+                elif (
+                    tuple(scale.shape) == (in_blocks, out_blocks)
+                    and out_blocks != in_blocks
+                ):
                     # Transposed block layout: same handling as the fp8 forward path.
                     scale = scale.t().contiguous()
                 else:
@@ -623,21 +642,25 @@ def _restore_dropped_fp8_scales(
                             scale[:, None, :, None]
                         )
                     else:
-                        scale_expanded = scale.repeat_interleave(bs0, dim = 0).repeat_interleave(
-                            bs1, dim = 1
-                        )[:out_features, :in_features]
-                        module.weight.data = (weight.to(torch.float32) * scale_expanded).to(
-                            weight.dtype
-                        )
+                        scale_expanded = scale.repeat_interleave(
+                            bs0, dim = 0
+                        ).repeat_interleave(bs1, dim = 1)[:out_features, :in_features]
+                        module.weight.data = (
+                            weight.to(torch.float32) * scale_expanded
+                        ).to(weight.dtype)
                 restored += 1
             except Exception:
                 failed += 1
                 continue
 
         if restored > 0:
-            print(f"Unsloth: Restored {restored} dropped FP8 weight_scale_inv tensor(s) on load")
+            print(
+                f"Unsloth: Restored {restored} dropped FP8 weight_scale_inv tensor(s) on load"
+            )
         if failed > 0:
-            print(f"Unsloth: {failed} dropped FP8 weight_scale_inv tensor(s) could not be restored")
+            print(
+                f"Unsloth: {failed} dropped FP8 weight_scale_inv tensor(s) could not be restored"
+            )
         if offloaded > 0:
             print(
                 f"Unsloth: {offloaded} dropped FP8 weight_scale_inv tensor(s) skipped because the "
@@ -728,9 +751,13 @@ def _get_fp8_mode_and_check_settings(
 
     # Check user settings
     if fp8_mode not in ["row", "block"]:
-        raise ValueError(f"Unsloth: `load_in_fp8` can only be 'row' or 'block', got '{fp8_mode}'")
+        raise ValueError(
+            f"Unsloth: `load_in_fp8` can only be 'row' or 'block', got '{fp8_mode}'"
+        )
     if full_finetuning:
-        raise ValueError("Unsloth: `load_in_fp8` is not compatible with full finetuning")
+        raise ValueError(
+            "Unsloth: `load_in_fp8` is not compatible with full finetuning"
+        )
     if load_in_4bit or load_in_8bit or load_in_16bit:
         raise ValueError(
             "Unsloth: `load_in_fp8` is not compatible with `load_in_4bit`, `load_in_8bit` or `load_in_16bit`",
@@ -811,7 +838,9 @@ def _exclude_rope_inv_freq_from_ddp(model):
     if ignored:
         try:
             from torch.nn.parallel import DistributedDataParallel
-            DistributedDataParallel._set_params_and_buffers_to_ignore_for_model(model, ignored)
+            DistributedDataParallel._set_params_and_buffers_to_ignore_for_model(
+                model, ignored
+            )
         except Exception:
             # Private PyTorch API - fall back to setting the attribute DDP reads
             # directly if it ever moves or changes signature.
@@ -832,7 +861,8 @@ _OFFLINE_ENV_KEYS = ("HF_HUB_OFFLINE", "TRANSFORMERS_OFFLINE")
 def _env_says_offline():
     """True if an HF offline env var is set to a truthy value."""
     return any(
-        os.environ.get(_k, "").strip().lower() in _OFFLINE_ENV_VALUES for _k in _OFFLINE_ENV_KEYS
+        os.environ.get(_k, "").strip().lower() in _OFFLINE_ENV_VALUES
+        for _k in _OFFLINE_ENV_KEYS
     )
 
 
@@ -922,10 +952,14 @@ def _is_offline_related_error(exc):
         seen.add(id(cur))
         # TLS/cert failure (corporate MITM, expired CA): security-sensitive, never retry from
         # cache. Skip this node; a deeper cause in the chain may still be a genuine outage.
-        if isinstance(cur, _ssl_types) or isinstance(getattr(cur, "reason", None), _ssl_types):
+        if isinstance(cur, _ssl_types) or isinstance(
+            getattr(cur, "reason", None), _ssl_types
+        ):
             cur = cur.__cause__ or cur.__context__
             continue
-        is_fnf = isinstance(cur, FileNotFoundError) and not isinstance(cur, _offline_fnf_types)
+        is_fnf = isinstance(cur, FileNotFoundError) and not isinstance(
+            cur, _offline_fnf_types
+        )
         # urllib HTTPError is a URLError (net type) but must be judged by status code below,
         # unlike LocalEntryNotFoundError (an HfHubHTTPError that is always offline).
         if (
@@ -939,7 +973,11 @@ def _is_offline_related_error(exc):
             if code is not None and 500 <= code < 600:
                 return True
             # No status -> wording fallback (coded 4xx already decided above).
-            if code is None and not is_fnf and any(w in str(cur).lower() for w in _wording):
+            if (
+                code is None
+                and not is_fnf
+                and any(w in str(cur).lower() for w in _wording)
+            ):
                 return True
         # OSError wording fallback (HTTP status already decided above).
         elif isinstance(cur, OSError) and not is_fnf:
@@ -1074,7 +1112,9 @@ def _offline_aware_load(fn):
         except Exception as e:
             # Skip if not network-related, or already retried by a nested decorator
             # (else outer layers reload the whole model again).
-            if not _is_offline_related_error(e) or getattr(e, "_unsloth_offline_retried", False):
+            if not _is_offline_related_error(e) or getattr(
+                e, "_unsloth_offline_retried", False
+            ):
                 raise
         # Retry OUTSIDE the except so the failed attempt's traceback (a partial model)
         # is freed before reallocating, else a large VLM can OOM on the second load.
@@ -1121,9 +1161,9 @@ def _has_local_tokenizer_files(path):
 def _has_local_processor_files(path):
     """True if a local dir ships a processor/image-processor config (a VLM needs this to
     build AutoProcessor; tokenizer files alone are not enough)."""
-    return os.path.exists(os.path.join(path, "processor_config.json")) or os.path.exists(
-        os.path.join(path, "preprocessor_config.json")
-    )
+    return os.path.exists(
+        os.path.join(path, "processor_config.json")
+    ) or os.path.exists(os.path.join(path, "preprocessor_config.json"))
 
 
 def _resolve_checkpoint_tokenizer_name(

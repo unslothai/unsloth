@@ -149,7 +149,9 @@ def _loaded_chat_template() -> Optional[str]:
         return None
 
 
-def _template_raise_message(error_text: str, chat_template: Optional[str]) -> Optional[str]:
+def _template_raise_message(
+    error_text: str, chat_template: Optional[str]
+) -> Optional[str]:
     """A chat-template raise_exception message to surface, but only when it appears
     verbatim in chat_template (simple substring check), so we never leak arbitrary
     llama-server text. Anchors on llama.cpp's "Jinja Exception:" prefix."""
@@ -169,9 +171,7 @@ def _template_raise_message(error_text: str, chat_template: Optional[str]) -> Op
     return candidate if candidate and candidate in chat_template else None
 
 
-_LOST_CONNECTION_MSG = (
-    "Lost connection to the model server. It may have crashed -- try reloading the model."
-)
+_LOST_CONNECTION_MSG = "Lost connection to the model server. It may have crashed -- try reloading the model."
 
 
 def _friendly_error(exc: Exception) -> str:
@@ -232,7 +232,10 @@ def _friendly_upstream_error(text: str) -> str:
     coding-agent tools, so point the user at updating Unsloth rather than the raw body.
     """
     lowered = text.lower()
-    if "failed to parse grammar" in lowered or "failed to initialize samplers" in lowered:
+    if (
+        "failed to parse grammar" in lowered
+        or "failed to initialize samplers" in lowered
+    ):
         return (
             "The model couldn't compile a tool-calling grammar for this request. This is a "
             "llama-server limitation with some model/quant and tool-schema combinations. "
@@ -343,7 +346,9 @@ def _effective_openai_max_tokens_from_values(max_tokens, max_completion_tokens =
         return value
 
     max_tokens = _validate_explicit(max_tokens, "max_tokens")
-    max_completion_tokens = _validate_explicit(max_completion_tokens, "max_completion_tokens")
+    max_completion_tokens = _validate_explicit(
+        max_completion_tokens, "max_completion_tokens"
+    )
     return max_completion_tokens if max_completion_tokens is not None else max_tokens
 
 
@@ -364,7 +369,9 @@ def _has_openai_tool_history(messages) -> bool:
             if message.get("role") == "tool" or message.get("tool_calls"):
                 return True
             continue
-        if getattr(message, "role", None) == "tool" or getattr(message, "tool_calls", None):
+        if getattr(message, "role", None) == "tool" or getattr(
+            message, "tool_calls", None
+        ):
             return True
     return False
 
@@ -382,7 +389,9 @@ def _raise_unsupported_openai_parameter(param: str, message: str) -> None:
 
 
 def _raise_unsupported_n(path_label: str) -> None:
-    _raise_unsupported_openai_parameter("n", f"n > 1 is not supported for {path_label}.")
+    _raise_unsupported_openai_parameter(
+        "n", f"n > 1 is not supported for {path_label}."
+    )
 
 
 def _sse_streaming_response(content) -> StreamingResponse:
@@ -470,7 +479,10 @@ def _overflow_truncation_requested(payload) -> bool:
     requested = getattr(payload, "context_overflow", None)
     if requested is not None:
         return requested == "truncate_middle"
-    return os.environ.get("UNSLOTH_CONTEXT_OVERFLOW", "").strip().lower() == "truncate_middle"
+    return (
+        os.environ.get("UNSLOTH_CONTEXT_OVERFLOW", "").strip().lower()
+        == "truncate_middle"
+    )
 
 
 def _parse_overflow_counts(err_text: str):
@@ -575,7 +587,9 @@ def _clip_long_contents(messages: list, target_est: int) -> int:
             if sum(_estimate_message_tokens(m) for m in messages) <= target_est:
                 return clipped
             content = msg.get("content")
-            if not isinstance(content, str) or len(content) <= 2 * keep + len(_CLIP_MARKER):
+            if not isinstance(content, str) or len(content) <= 2 * keep + len(
+                _CLIP_MARKER
+            ):
                 continue
             msg["content"] = content[:keep] + _CLIP_MARKER + content[-keep:]
             clipped += 1
@@ -591,7 +605,9 @@ def _apply_overflow_truncation(body: dict, err_text: str) -> bool:
     total_est = sum(_estimate_message_tokens(m) for m in messages)
     if counts:
         n_prompt, n_ctx = counts
-        keep_ratio = min(0.95, (_OVERFLOW_PROMPT_TARGET_FRACTION * n_ctx) / max(1, n_prompt))
+        keep_ratio = min(
+            0.95, (_OVERFLOW_PROMPT_TARGET_FRACTION * n_ctx) / max(1, n_prompt)
+        )
     else:
         n_ctx = None
         keep_ratio = 0.6  # no counts in the error; cut conservatively
@@ -602,7 +618,10 @@ def _apply_overflow_truncation(body: dict, err_text: str) -> bool:
     if dropped:
         body["messages"] = new_messages
     clipped = 0
-    if sum(_estimate_message_tokens(m) for m in body.get("messages") or []) > target_est:
+    if (
+        sum(_estimate_message_tokens(m) for m in body.get("messages") or [])
+        > target_est
+    ):
         clipped = _clip_long_contents(body.get("messages") or [], target_est)
     if not dropped and not clipped:
         return False
@@ -643,7 +662,9 @@ def _drop_parallel_tool_call_deltas(chunk) -> bool:
         delta = ch.get("delta") or {}
         tcs = delta.get("tool_calls")
         if isinstance(tcs, list):
-            kept = [tc for tc in tcs if isinstance(tc, dict) and (tc.get("index") or 0) == 0]
+            kept = [
+                tc for tc in tcs if isinstance(tc, dict) and (tc.get("index") or 0) == 0
+            ]
             if len(kept) != len(tcs):
                 delta["tool_calls"] = kept
                 changed = True
@@ -788,7 +809,9 @@ def _openai_stream_usage_chunk(
             prompt_tokens = _prompt_tokens,
             completion_tokens = _completion_tokens,
             total_tokens = _total_tokens,
-            prompt_tokens_details = _prompt_tokens_details(_usage.get("prompt_tokens_details")),
+            prompt_tokens_details = _prompt_tokens_details(
+                _usage.get("prompt_tokens_details")
+            ),
         ),
         timings = stream_timings,
     )
@@ -886,7 +909,9 @@ def _sf_heal_events_to_sse(
     for kind, value in events:
         if kind == "text":
             if value:
-                lines.append(_chat_content_chunk(completion_id, created, model_name, value))
+                lines.append(
+                    _chat_content_chunk(completion_id, created, model_name, value)
+                )
                 api_monitor.append_reply(monitor_id, value)
             continue
         if parallel_tool_calls is False and state["idx"] >= 1:
@@ -980,7 +1005,8 @@ def _classify_llama_generation_error(exc: Exception) -> Optional[bool]:
     msg = str(exc)
     msg_l = msg.lower()
     if "n_ctx" in msg_l or (
-        "context" in msg_l and any(t in msg_l for t in ("exceed", "length", "window", "too long"))
+        "context" in msg_l
+        and any(t in msg_l for t in ("exceed", "length", "window", "too long"))
     ):
         return True
     if _re.search(r"llama-server returned (4\d\d)", msg):
@@ -1077,7 +1103,8 @@ def _llama_streaming_generation_timeout() -> httpx.Timeout:
 
 
 def _set_stream_response_read_timeout(
-    response: httpx.Response, read_timeout_s: Optional[float] = _DEFAULT_STREAM_STALL_TIMEOUT_S
+    response: httpx.Response,
+    read_timeout_s: Optional[float] = _DEFAULT_STREAM_STALL_TIMEOUT_S,
 ) -> None:
     # ``read_timeout_s = None`` clears httpx's read timeout (wait indefinitely),
     # used when the stall guard is disabled so a stale first-token deadline
@@ -1101,7 +1128,9 @@ _OPENAI_LLAMA_ADMISSION_POLL_S = 0.25
 _LOCAL_TOOL_STREAM_STALL_KEEPALIVE_S = 15.0
 
 
-def _openai_llama_admission_capacity(request: Optional[Request], llama_backend = None) -> int:
+def _openai_llama_admission_capacity(
+    request: Optional[Request], llama_backend = None
+) -> int:
     """Serving slots available for one local llama-server backend.
 
     The loaded backend is the source of truth because it may have reduced
@@ -1109,7 +1138,9 @@ def _openai_llama_admission_capacity(request: Optional[Request], llama_backend =
     launch-intent fallback for tests and for the short window before a backend
     reports its committed runtime slots.
     """
-    slots = _positive_int_or_none(getattr(llama_backend, "effective_parallel_slots", None))
+    slots = _positive_int_or_none(
+        getattr(llama_backend, "effective_parallel_slots", None)
+    )
     if slots is not None:
         return slots
     try:
@@ -1180,7 +1211,9 @@ def _openai_admission_error_body(exc: Exception, *, status_code: int) -> dict:
     return openai_error_body(message, status = status_code)
 
 
-def _openai_admission_http_exception(exc: Exception, *, status_code: int) -> HTTPException:
+def _openai_admission_http_exception(
+    exc: Exception, *, status_code: int
+) -> HTTPException:
     return HTTPException(
         status_code = status_code,
         detail = _openai_admission_error_body(exc, status_code = status_code),
@@ -1242,7 +1275,11 @@ async def _wait_for_openai_admission_non_streaming(
         request = request,
         cancel_event = cancel_event,
     )
-    deadline = None if config.queue_timeout_s is None else time.monotonic() + config.queue_timeout_s
+    deadline = (
+        None
+        if config.queue_timeout_s is None
+        else time.monotonic() + config.queue_timeout_s
+    )
     try:
         while True:
             await _raise_if_openai_admission_cancelled(
@@ -1305,7 +1342,11 @@ async def _openai_admission_wait_stream_chunks(
         request = request,
         cancel_event = cancel_event,
     )
-    deadline = None if config.queue_timeout_s is None else time.monotonic() + config.queue_timeout_s
+    deadline = (
+        None
+        if config.queue_timeout_s is None
+        else time.monotonic() + config.queue_timeout_s
+    )
     keepalive_interval_s = max(0.001, config.keepalive_interval_s)
     next_keepalive_at = time.monotonic() + keepalive_interval_s
     try:
@@ -1321,7 +1362,9 @@ async def _openai_admission_wait_stream_chunks(
                 return
 
             now = time.monotonic()
-            wait_s = min(_OPENAI_LLAMA_ADMISSION_POLL_S, max(next_keepalive_at - now, 0.001))
+            wait_s = min(
+                _OPENAI_LLAMA_ADMISSION_POLL_S, max(next_keepalive_at - now, 0.001)
+            )
             if deadline is not None:
                 remaining_s = deadline - now
                 if remaining_s <= 0:
@@ -1547,7 +1590,9 @@ async def _aclose_stream_resources(
         raise asyncio.CancelledError()
 
 
-async def _preheader_cancelled(cancel_event = None, request: Optional[Request] = None) -> bool:
+async def _preheader_cancelled(
+    cancel_event = None, request: Optional[Request] = None
+) -> bool:
     if cancel_event is not None and cancel_event.is_set():
         return True
     if request is not None and await request.is_disconnected():
@@ -1557,7 +1602,9 @@ async def _preheader_cancelled(cancel_event = None, request: Optional[Request] =
     return False
 
 
-async def _wait_preheader_cancel(cancel_event = None, request: Optional[Request] = None) -> None:
+async def _wait_preheader_cancel(
+    cancel_event = None, request: Optional[Request] = None
+) -> None:
     while not await _preheader_cancelled(cancel_event, request):
         await asyncio.sleep(0.05)
 
@@ -1643,7 +1690,9 @@ async def _aiter_llama_stream_items(
             if waiting_first_item:
                 remaining_s = first_token_deadline - time.monotonic()
                 if remaining_s <= 0:
-                    raise httpx.ReadTimeout("The model did not produce a first token in time.")
+                    raise httpx.ReadTimeout(
+                        "The model did not produce a first token in time."
+                    )
                 if response is not None:
                     _set_stream_response_read_timeout(response, remaining_s)
                 # Keep httpx/httpcore's AnyIO cancel scope in this task.
@@ -1660,12 +1709,16 @@ async def _aiter_llama_stream_items(
                 ):
                     stall_remaining_s = timeout_s - (time.monotonic() - last_item_at)
                     if stall_remaining_s <= 0:
-                        raise httpx.ReadTimeout("The model stopped producing tokens mid-response.")
+                        raise httpx.ReadTimeout(
+                            "The model stopped producing tokens mid-response."
+                        )
                     _set_stream_response_read_timeout(response, stall_remaining_s)
                 item = await async_iter.__anext__()
         except asyncio.TimeoutError as exc:
             if waiting_first_item:
-                raise httpx.ReadTimeout("The model did not produce a first token in time.") from exc
+                raise httpx.ReadTimeout(
+                    "The model did not produce a first token in time."
+                ) from exc
             raise
         except StopAsyncIteration:
             return
@@ -1676,7 +1729,11 @@ async def _aiter_llama_stream_items(
                     raise
                 continue
             timeout_s = _post_first_timeout_s()
-            if request is not None and timeout_s is not None and now - last_item_at < timeout_s:
+            if (
+                request is not None
+                and timeout_s is not None
+                and now - last_item_at < timeout_s
+            ):
                 continue
             raise httpx.ReadTimeout("The model stopped producing tokens mid-response.")
         if last_item_at is None and response is not None:
@@ -1778,7 +1835,11 @@ from core.inference.providers import get_base_url
 from core.inference.external_provider import ExternalProviderClient
 from core.inference.chat_templates import resolve_effective_chat_template_override
 from storage import providers_db
-from utils.utils import is_hf_authentication_error, safe_error_detail, log_and_http_error
+from utils.utils import (
+    is_hf_authentication_error,
+    safe_error_detail,
+    log_and_http_error,
+)
 
 import io
 import base64
@@ -1908,7 +1969,9 @@ async def artifact_preview_frame(allow_network: bool = False):
     """
 
     csp = (
-        _ARTIFACT_PREVIEW_FRAME_NETWORK_CSP if allow_network else _ARTIFACT_PREVIEW_FRAME_STRICT_CSP
+        _ARTIFACT_PREVIEW_FRAME_NETWORK_CSP
+        if allow_network
+        else _ARTIFACT_PREVIEW_FRAME_STRICT_CSP
     )
     return Response(
         content = _ARTIFACT_PREVIEW_FRAME_HTML,
@@ -1938,7 +2001,9 @@ def _detect_safetensors_features(
     model_id = getattr(backend, "active_model_name", None)
     feature_template = chat_template
     try:
-        from core.inference.chat_template_helpers import _selected_template_strings_from_value
+        from core.inference.chat_template_helpers import (
+            _selected_template_strings_from_value,
+        )
         selected_templates = _selected_template_strings_from_value(chat_template, tools)
         if selected_templates:
             feature_template = selected_templates[0]
@@ -1970,14 +2035,19 @@ def _detect_safetensors_features(
                     )
                 )
             if any(
-                detect_reasoning_channel_markers_from_template(template, tools = tools) is not None
+                detect_reasoning_channel_markers_from_template(template, tools = tools)
+                is not None
                 for template in templates
             ):
                 flags["supports_reasoning"] = True
                 flags["reasoning_always_on"] = True
-                logger.info("safetensors: model always reasons (native channel markers)")
+                logger.info(
+                    "safetensors: model always reasons (native channel markers)"
+                )
         except Exception:
-            logger.debug("safetensors_native_reasoning_marker_check_failed", exc_info = True)
+            logger.debug(
+                "safetensors_native_reasoning_marker_check_failed", exc_info = True
+            )
     # Markers any supported parser recognises (template advertises tools but
     # uses none -> drop the pill). Reuse the parser's own signal list so this
     # gate never drifts (a hand-maintained copy lost the DeepSeek variants);
@@ -2039,7 +2109,9 @@ def _generation_prompt_opens_think(template: Optional[str]) -> bool:
             lstrip_blocks = True,
             extensions = ["jinja2.ext.loopcontrols"],
         )
-        env.filters["tojson"] = lambda value, **kwargs: json.dumps(value, ensure_ascii = False)
+        env.filters["tojson"] = lambda value, **kwargs: json.dumps(
+            value, ensure_ascii = False
+        )
         env.globals["raise_exception"] = _raise_exception
         rendered = env.from_string(template).render(
             messages = [{"role": "user", "content": "hi"}],
@@ -2069,7 +2141,10 @@ def _sf_reasoning_prefill_mode(
     gpt-oss and thinking-disabled requests return False. ``enable_thinking`` None
     defaults thinking ON, so a plain request still prefills.
     """
-    if features.get("reasoning_style") not in ("enable_thinking", "enable_thinking_effort"):
+    if features.get("reasoning_style") not in (
+        "enable_thinking",
+        "enable_thinking_effort",
+    ):
         return False
     tpl = template or ""
     if "</think>" not in tpl and "<think>" not in tpl:
@@ -2090,7 +2165,10 @@ def _sf_reasoning_prefill_mode(
         return False
     # Thinking-off arrives as reasoning_effort "none" on enable_thinking_effort models; honor it
     # so we don't prefill and capture the answer. Plain enable_thinking models ignore effort.
-    if features.get("reasoning_style") == "enable_thinking_effort" and reasoning_effort == "none":
+    if (
+        features.get("reasoning_style") == "enable_thinking_effort"
+        and reasoning_effort == "none"
+    ):
         return False
     return True
 
@@ -2118,7 +2196,9 @@ def _explicit_studio_tool_loop_requested(payload) -> bool:
     from state.tool_policy import get_tool_policy
 
     policy = get_tool_policy()
-    return policy is not False and (payload.enable_tools is True or bool(payload.mcp_enabled))
+    return policy is not False and (
+        payload.enable_tools is True or bool(payload.mcp_enabled)
+    )
 
 
 def _permission_mode_confirm(payload) -> bool:
@@ -2164,7 +2244,9 @@ def _confirm_gate_needs_stream(payload) -> bool:
         return True
     enabled = getattr(payload, "enabled_tools", None)
     if enabled is None:
-        return True  # omitted enabled_tools resolves to ALL tools (incl. terminal/python)
+        return (
+            True  # omitted enabled_tools resolves to ALL tools (incl. terminal/python)
+        )
     if not enabled:
         # An explicit empty selection runs no built-in tool (_select_request_tools
         # skips the loop), so there is nothing to prompt and no stream is needed.
@@ -2188,7 +2270,9 @@ _PENDING_CANCEL_TTL_S = 30.0
 
 
 def _prune_pending(now: float) -> None:
-    for k in [k for k, ts in _PENDING_CANCELS.items() if now - ts > _PENDING_CANCEL_TTL_S]:
+    for k in [
+        k for k, ts in _PENDING_CANCELS.items() if now - ts > _PENDING_CANCEL_TTL_S
+    ]:
         _PENDING_CANCELS.pop(k, None)
 
 
@@ -2431,7 +2515,9 @@ def _build_tool_action_nudge(*, tools: list[dict], model_name: str) -> str:
     compact_web_tip = model_size_b is not None and model_size_b < 9
     tool_tip_parts: list[str] = []
     if has_web:
-        tool_tip_parts.append(_TOOL_WEB_COMPACT_TIP if compact_web_tip else _TOOL_WEB_EXPANDED_TIP)
+        tool_tip_parts.append(
+            _TOOL_WEB_COMPACT_TIP if compact_web_tip else _TOOL_WEB_EXPANDED_TIP
+        )
     if has_code:
         tool_tip_parts.append(_TOOL_CODE_TIP)
     if has_artifact:
@@ -2684,9 +2770,13 @@ def _monitor_prompt_from_messages(messages) -> str:
     lines: list[str] = []
     for msg in messages or []:
         role = msg.get("role") if isinstance(msg, dict) else getattr(msg, "role", "")
-        content = msg.get("content") if isinstance(msg, dict) else getattr(msg, "content", "")
+        content = (
+            msg.get("content") if isinstance(msg, dict) else getattr(msg, "content", "")
+        )
         tool_calls = (
-            msg.get("tool_calls") if isinstance(msg, dict) else getattr(msg, "tool_calls", None)
+            msg.get("tool_calls")
+            if isinstance(msg, dict)
+            else getattr(msg, "tool_calls", None)
         )
         text = _monitor_content_text(content)
         if tool_calls and not text:
@@ -2851,7 +2941,8 @@ def _monitor_anthropic_usage(
         monitor_id,
         {
             "prompt_tokens": usage.get("input_tokens") or usage.get("prompt_tokens"),
-            "completion_tokens": usage.get("output_tokens") or usage.get("completion_tokens"),
+            "completion_tokens": usage.get("output_tokens")
+            or usage.get("completion_tokens"),
             "total_tokens": usage.get("total_tokens"),
         },
         context_length,
@@ -2886,7 +2977,9 @@ def _monitor_anthropic_payload(
         if isinstance(content_block, dict) and content_block.get("type") == "tool_use":
             index = _monitor_anthropic_index(data)
             _ANTHROPIC_MONITOR_TOOL_BLOCKS.setdefault(monitor_id, {})[index] = False
-            api_monitor.append_reply(monitor_id, _monitor_call_text(content_block.get("name")))
+            api_monitor.append_reply(
+                monitor_id, _monitor_call_text(content_block.get("name"))
+            )
         return None
     if event_type == "content_block_delta":
         delta = data.get("delta") or {}
@@ -3036,14 +3129,18 @@ def _monitor_anthropic_response(
 def _monitor_context_length() -> Optional[int]:
     llama_backend = get_llama_cpp_backend()
     if getattr(llama_backend, "is_loaded", False):
-        context_length = _positive_int_or_none(getattr(llama_backend, "context_length", None))
+        context_length = _positive_int_or_none(
+            getattr(llama_backend, "context_length", None)
+        )
         if context_length is not None:
             return context_length
     backend = get_inference_backend()
     if not backend.active_model_name:
         return None
     models = getattr(backend, "models", {}) or {}
-    model_info = models.get(backend.active_model_name, {}) if isinstance(models, dict) else {}
+    model_info = (
+        models.get(backend.active_model_name, {}) if isinstance(models, dict) else {}
+    )
     context_length = _positive_int_or_none(model_info.get("context_length"))
     if context_length is not None:
         return context_length
@@ -3114,7 +3211,9 @@ def _normalise_settings_str(value: Optional[str]) -> Optional[str]:
     return value
 
 
-def _should_strip_split_mode(request: LoadRequest, backend_extra: Optional[list[str]]) -> bool:
+def _should_strip_split_mode(
+    request: LoadRequest, backend_extra: Optional[list[str]]
+) -> bool:
     """Whether an inherited --split-mode (and its coupled --tensor-split) should
     be stripped on reload.
 
@@ -3232,7 +3331,8 @@ def _request_matches_loaded_settings(
                 request.gpu_layers >= 0
                 and (
                     request.n_cpu_moe != llama_backend.n_cpu_moe
-                    or (request.tensor_split or None) != (llama_backend.tensor_split or None)
+                    or (request.tensor_split or None)
+                    != (llama_backend.tensor_split or None)
                 )
             )
         ):
@@ -3252,7 +3352,9 @@ def _request_matches_loaded_settings(
     # re-selects instead of keeping the all-GPU mask (#6659). The effective check
     # includes the env, so an env-only tensor (LLAMA_ARG_SPLIT_MODE=tensor) that
     # can't actually be dropped falls through to the env-downgrade match, not a loop.
-    if llama_backend.layer_preserves_tensor_intent and _is_explicit_tensor_drop(request):
+    if llama_backend.layer_preserves_tensor_intent and _is_explicit_tensor_drop(
+        request
+    ):
         return False
     # Spec decoding works on vision models too (MTP is mmproj-compatible,
     # llama.cpp #22673; the old ``not is_vision`` gate is gone), so compare
@@ -3358,7 +3460,9 @@ def _resolve_model_identifier_for_request(
             status_code = 400,
             detail = redact_native_paths(str(exc)),
         ) from exc
-    display_label = grant.display_label or Path(request.model_path).name or "Native model"
+    display_label = (
+        grant.display_label or Path(request.model_path).name or "Native model"
+    )
     return str(grant.canonical_path), display_label, True
 
 
@@ -3457,7 +3561,9 @@ def _same_request_waiters(key: str) -> int:
         return _auto_switch_request_waiters.get(key, 0)
 
 
-def _llama_public_model_id(llama_backend, fallback: Optional[str] = None) -> Optional[str]:
+def _llama_public_model_id(
+    llama_backend, fallback: Optional[str] = None
+) -> Optional[str]:
     """The id to report for the loaded GGUF in API responses: the advertised repo
     id from an auto-switch load, else the cleaned public id, never the on-disk
     .gguf path (see core.inference.model_ids.public_model_id)."""
@@ -3500,7 +3606,8 @@ def _target_is_vision(load_path: str) -> bool:
 
 def _messages_have_image(messages) -> bool:
     return any(
-        isinstance(m.content, list) and any(isinstance(p, ImageContentPart) for p in m.content)
+        isinstance(m.content, list)
+        and any(isinstance(p, ImageContentPart) for p in m.content)
         for m in messages
     )
 
@@ -3519,7 +3626,11 @@ def _anthropic_request_has_image(payload) -> bool:
         if not isinstance(content, list):
             continue
         for block in content:
-            bt = block.get("type") if isinstance(block, dict) else getattr(block, "type", None)
+            bt = (
+                block.get("type")
+                if isinstance(block, dict)
+                else getattr(block, "type", None)
+            )
             if bt == "image":
                 return True
     return False
@@ -3725,7 +3836,9 @@ async def _maybe_auto_switch_model(
                         # pending request is still in the middleware, not generating, so
                         # it is not counted here.
                         same_others = max(
-                            _same_target_waiters(key) - 1, _same_request_waiters(request_key) - 1, 0
+                            _same_target_waiters(key) - 1,
+                            _same_request_waiters(request_key) - 1,
+                            0,
                         )
                         others = other_inference_request_count(
                             current_request_counted = True, include_pending = False
@@ -3747,7 +3860,9 @@ async def _maybe_auto_switch_model(
                         override = get_model_override(override_id)
                         load_kwargs = {"model_path": target_id, "gguf_variant": variant}
                         if override.get("llama_extra_args") is not None:
-                            load_kwargs["llama_extra_args"] = override["llama_extra_args"]
+                            load_kwargs["llama_extra_args"] = override[
+                                "llama_extra_args"
+                            ]
                         if override.get("max_seq_length") is not None:
                             load_kwargs["max_seq_length"] = override["max_seq_length"]
                         # Reuse the load impl so its dedup, tensor fallback, and threading
@@ -3812,7 +3927,11 @@ def _effective_load_in_4bit(config: ModelConfig, requested: bool) -> bool:
         return False
     if training_method == "qlora":
         return True
-    if not training_method and config.base_model and "-bnb-4bit" not in config.base_model.lower():
+    if (
+        not training_method
+        and config.base_model
+        and "-bnb-4bit" not in config.base_model.lower()
+    ):
         return False
     return load_in_4bit
 
@@ -3904,7 +4023,8 @@ def _estimate_gguf_required_gb(
 
             variants, has_vision = list_gguf_variants(repo, hf_token = hf_token)
             main_bytes = next(
-                (v.size_bytes for v in variants if v.quant.lower() == variant.lower()), None
+                (v.size_bytes for v in variants if v.quant.lower() == variant.lower()),
+                None,
             )
             if main_bytes is None:
                 return None
@@ -3927,7 +4047,8 @@ def _classify_diffusion_gguf(config: ModelConfig) -> Optional[bool]:
     though the runner ignores Manual's llama-server placement controls.
     """
     identity = " ".join(
-        str(getattr(config, attr, "") or "") for attr in ("identifier", "gguf_hf_repo", "gguf_file")
+        str(getattr(config, attr, "") or "")
+        for attr in ("identifier", "gguf_hf_repo", "gguf_file")
     ).lower()
     if "diffusion" in identity:
         return True
@@ -4083,7 +4204,9 @@ def _resolve_inherited_extra_args(
     resolved_variant = (config.gguf_variant or "").lower()
     request_variant = (request.gguf_variant or "").lower()
     stored_variant = (source[1] or "").lower() if source else ""
-    same_model = bool(source and source[0] and source[0].lower() == model_identifier.lower())
+    same_model = bool(
+        source and source[0] and source[0].lower() == model_identifier.lower()
+    )
     if request.gguf_variant:
         variant_mismatch = request_variant != stored_variant
     else:
@@ -4110,12 +4233,16 @@ def _resolve_inherited_extra_args(
             llama_backend.extra_args,
             strip_context = "max_seq_length" in fields_set,
             strip_cache = "cache_type_kv" in fields_set,
-            strip_spec = ("speculative_type" in fields_set or "spec_draft_n_max" in fields_set),
+            strip_spec = (
+                "speculative_type" in fields_set or "spec_draft_n_max" in fields_set
+            ),
             strip_template = (
                 "chat_template_override" in fields_set
                 or effective_chat_template_override is not None
             ),
-            strip_split_mode = _should_strip_split_mode(request, llama_backend.extra_args),
+            strip_split_mode = _should_strip_split_mode(
+                request, llama_backend.extra_args
+            ),
             # manual + per-GPU ratio emits its own --tensor-split; drop
             # an inherited one (appended last would override it) while
             # keeping the user's --split-mode row/none/layer choice.
@@ -4223,7 +4350,9 @@ async def load_model(
         return await _load_model_impl(request, fastapi_request, current_subject)
 
 
-async def _load_model_impl(request: LoadRequest, fastapi_request: Request, current_subject: str):
+async def _load_model_impl(
+    request: LoadRequest, fastapi_request: Request, current_subject: str
+):
     from core.inference.llama_cpp import LlamaServerNotFoundError
 
     # A new load starts here; arm the progress throttle so this load's first
@@ -4374,7 +4503,9 @@ async def _load_model_impl(request: LoadRequest, fastapi_request: Request, curre
                 backend.active_model_name
                 and backend.active_model_name.lower() == model_identifier.lower()
             ):
-                logger.info(f"Model already loaded (Unsloth): {model_log_label}, skipping reload")
+                logger.info(
+                    f"Model already loaded (Unsloth): {model_log_label}, skipping reload"
+                )
                 inference_config = load_inference_config(backend.active_model_name)
                 _model_info = backend.models.get(backend.active_model_name, {})
                 _chat_template = None
@@ -4391,7 +4522,9 @@ async def _load_model_impl(request: LoadRequest, fastapi_request: Request, curre
                 _sf_reasoning_style = _sf_flags["reasoning_style"]
                 return LoadResponse(
                     status = "already_loaded",
-                    model = model_log_label if native_grant_backed else backend.active_model_name,
+                    model = model_log_label
+                    if native_grant_backed
+                    else backend.active_model_name,
                     display_name = model_log_label
                     if native_grant_backed
                     else backend.active_model_name,
@@ -4407,11 +4540,15 @@ async def _load_model_impl(request: LoadRequest, fastapi_request: Request, curre
                     ),
                     supports_reasoning = _sf_supports_reasoning,
                     reasoning_style = _sf_reasoning_style,
-                    reasoning_effort_levels = _sf_flags.get("reasoning_effort_levels", []),
+                    reasoning_effort_levels = _sf_flags.get(
+                        "reasoning_effort_levels", []
+                    ),
                     reasoning_always_on = _sf_flags["reasoning_always_on"],
                     supports_preserve_thinking = _sf_flags["supports_preserve_thinking"],
                     supports_tools = _sf_flags["supports_tools"],
-                    context_length = _positive_int_or_none(_model_info.get("context_length")),
+                    context_length = _positive_int_or_none(
+                        _model_info.get("context_length")
+                    ),
                     chat_template = _chat_template,
                 )
 
@@ -4490,7 +4627,9 @@ async def _load_model_impl(request: LoadRequest, fastapi_request: Request, curre
         # to match. Off-loop: tier resolution reads configs.
         if effective_load_in_4bit and not config.is_gguf:
             from utils.transformers_version import latest_tier_active_for
-            if await asyncio.to_thread(latest_tier_active_for, config.identifier, request.hf_token):
+            if await asyncio.to_thread(
+                latest_tier_active_for, config.identifier, request.hf_token
+            ):
                 effective_load_in_4bit = False
                 logger.info(
                     f"Latest-transformers sidecar active for '{model_log_label}' - "
@@ -4544,7 +4683,8 @@ async def _load_model_impl(request: LoadRequest, fastapi_request: Request, curre
                     config.gguf_hf_repo,
                     config.gguf_variant,
                     require_mmproj = bool(
-                        config.is_vision and not extra_args_disable_mmproj(extra_llama_args)
+                        config.is_vision
+                        and not extra_args_disable_mmproj(extra_llama_args)
                     ),
                     hf_token = request.hf_token,
                 ):
@@ -4600,7 +4740,9 @@ async def _load_model_impl(request: LoadRequest, fastapi_request: Request, curre
                 if native_grant_backed:
                     if config.gguf_mmproj_file:
                         _validate_native_gguf_companion(
-                            config.gguf_mmproj_file, config.gguf_file, "vision companion"
+                            config.gguf_mmproj_file,
+                            config.gguf_file,
+                            "vision companion",
                         )
                     if config.gguf_mtp_file:
                         # The drafter is optional (unlike mmproj for a vision
@@ -4610,7 +4752,9 @@ async def _load_model_impl(request: LoadRequest, fastapi_request: Request, curre
                                 config.gguf_mtp_file, config.gguf_file, "MTP drafter"
                             )
                         except HTTPException as exc:
-                            logger.warning("Dropping MTP drafter for native load: %s", exc.detail)
+                            logger.warning(
+                                "Dropping MTP drafter for native load: %s", exc.detail
+                            )
                             config.gguf_mtp_file = None
                 _source_load_kwargs = dict(
                     gguf_path = config.gguf_file,
@@ -4681,7 +4825,9 @@ async def _load_model_impl(request: LoadRequest, fastapi_request: Request, curre
                     # this attempt): keep multi-GPU. Mirrors the fallback's key.
                     preserve_multi_gpu_on_layer = bool(
                         _tensor_intent_overall
-                        and not _effective_tensor_parallel(attempt_extra_args, tensor_parallel)
+                        and not _effective_tensor_parallel(
+                            attempt_extra_args, tensor_parallel
+                        )
                     ),
                 )
 
@@ -4718,7 +4864,9 @@ async def _load_model_impl(request: LoadRequest, fastapi_request: Request, curre
             # Audio detection moved into load_model under _serial_load_lock (#5642).
             _gguf_audio = llama_backend._audio_type
             _gguf_is_audio = llama_backend._is_audio
-            llama_backend._native_display_label = model_log_label if native_grant_backed else None
+            llama_backend._native_display_label = (
+                model_log_label if native_grant_backed else None
+            )
             llama_backend._native_grant_backed = bool(native_grant_backed)
             if _gguf_is_audio:
                 logger.info(f"GGUF model detected as audio: audio_type={_gguf_audio}")
@@ -4728,7 +4876,9 @@ async def _load_model_impl(request: LoadRequest, fastapi_request: Request, curre
             return LoadResponse(
                 status = "loaded",
                 model = model_log_label if native_grant_backed else config.identifier,
-                display_name = model_log_label if native_grant_backed else config.display_name,
+                display_name = model_log_label
+                if native_grant_backed
+                else config.display_name,
                 is_vision = llama_backend.is_vision,
                 is_lora = False,
                 is_gguf = True,
@@ -4776,7 +4926,9 @@ async def _load_model_impl(request: LoadRequest, fastapi_request: Request, curre
             from core.export import get_export_backend
             exp_backend = get_export_backend()
             if exp_backend.current_checkpoint:
-                logger.info("Shutting down export subprocess to free GPU memory for inference")
+                logger.info(
+                    "Shutting down export subprocess to free GPU memory for inference"
+                )
                 exp_backend._shutdown_subprocess()
                 exp_backend.current_checkpoint = None
                 exp_backend.is_vision = False
@@ -4805,7 +4957,9 @@ async def _load_model_impl(request: LoadRequest, fastapi_request: Request, curre
             # Check if YAML says this model needs trust_remote_code.
             if not request.trust_remote_code:
                 model_defaults = load_model_defaults(config.identifier)
-                yaml_trust = model_defaults.get("inference", {}).get("trust_remote_code", False)
+                yaml_trust = model_defaults.get("inference", {}).get(
+                    "trust_remote_code", False
+                )
                 if yaml_trust:
                     raise HTTPException(
                         status_code = 400,
@@ -4856,16 +5010,18 @@ async def _load_model_impl(request: LoadRequest, fastapi_request: Request, curre
             trust_remote_code_used = bool(getattr(request, "trust_remote_code", False)),
         )
         try:
-            backend.models.setdefault(config.identifier, {})["requires_trust_remote_code"] = (
-                _requires_rc
-            )
+            backend.models.setdefault(config.identifier, {})[
+                "requires_trust_remote_code"
+            ] = _requires_rc
         except Exception:
             pass
 
         return LoadResponse(
             status = "loaded",
             model = model_log_label if native_grant_backed else config.identifier,
-            display_name = model_log_label if native_grant_backed else config.display_name,
+            display_name = model_log_label
+            if native_grant_backed
+            else config.display_name,
             is_vision = config.is_vision,
             is_lora = config.is_lora,
             is_gguf = False,
@@ -4909,7 +5065,9 @@ async def _load_model_impl(request: LoadRequest, fastapi_request: Request, curre
         raise HTTPException(status_code = 400, detail = redacted_msg)
     except LlamaServerNotFoundError as e:
         # Missing GGUF runtime: 400 with the install message, not a generic 500.
-        logger.warning("GGUF runtime missing while loading '%s': %s", model_log_label, e)
+        logger.warning(
+            "GGUF runtime missing while loading '%s': %s", model_log_label, e
+        )
         raise HTTPException(status_code = 400, detail = str(e))
     except Exception as e:
         from utils.transformers_version import SidecarSwapInProgress
@@ -4957,7 +5115,9 @@ def _requires_trust_remote_code_for_model(
     from utils.inference import load_inference_config
 
     try:
-        if bool(load_inference_config(model_identifier).get("trust_remote_code", False)):
+        if bool(
+            load_inference_config(model_identifier).get("trust_remote_code", False)
+        ):
             return True
     except Exception:
         pass
@@ -4991,7 +5151,9 @@ def _resolve_loaded_trust_remote_code(
     stored = (model_info or {}).get("requires_trust_remote_code")
     if stored is not None:
         return bool(stored)
-    if trust_remote_code_used or bool((inference_config or {}).get("trust_remote_code", False)):
+    if trust_remote_code_used or bool(
+        (inference_config or {}).get("trust_remote_code", False)
+    ):
         return True
     try:
         return bool(_requires_trust_remote_code_for_model(model_id, hf_token))
@@ -5090,7 +5252,9 @@ async def validate_model(
             from utils.models.model_config import get_base_model_from_lora_identifier
 
             # Resolve a LOCAL or REMOTE adapter's base so its code/weights are reviewed too.
-            _base = get_base_model_from_lora_identifier(model_identifier, request.hf_token)
+            _base = get_base_model_from_lora_identifier(
+                model_identifier, request.hf_token
+            )
             if _base:
                 security_targets.append(_base)
         except Exception:
@@ -5178,7 +5342,8 @@ async def validate_model(
         requires_security_review = False
         if not is_gguf:
             requires_security_review = any(
-                _requires_security_review_for_model(_t, request.hf_token) for _t in security_targets
+                _requires_security_review_for_model(_t, request.hf_token)
+                for _t in security_targets
             )
         # Native context length, read from the local GGUF header when present.
         # Lets the staged ("Load on selection" off) flow populate the context
@@ -5240,7 +5405,9 @@ async def validate_model(
         raise
     except LlamaServerNotFoundError as e:
         # Missing GGUF runtime: 400 with the install message, not a generic "Invalid model".
-        logger.warning("GGUF runtime missing while validating '%s': %s", request.model_path, e)
+        logger.warning(
+            "GGUF runtime missing while validating '%s': %s", request.model_path, e
+        )
         raise HTTPException(status_code = 400, detail = str(e))
     except Exception as e:
         redacted_msg = redact_native_paths(str(e))
@@ -5300,7 +5467,8 @@ async def validate_model(
     "/install-latest-transformers", response_model = InstallLatestTransformersResponse
 )
 async def install_latest_transformers_route(
-    request: InstallLatestTransformersRequest, current_subject: str = Depends(get_current_subject)
+    request: InstallLatestTransformersRequest,
+    current_subject: str = Depends(get_current_subject),
 ):
     """
     Consented install of the latest transformers release into the persistent
@@ -5370,7 +5538,12 @@ async def install_latest_transformers_route(
             other_inference_request_count,
         )
 
-        if other_inference_request_count(current_request_counted = False, include_pending = False) > 0:
+        if (
+            other_inference_request_count(
+                current_request_counted = False, include_pending = False
+            )
+            > 0
+        ):
             raise HTTPException(
                 status_code = 409,
                 detail = (
@@ -5399,7 +5572,9 @@ async def install_latest_transformers_route(
             export_backend.cleanup_memory()
             export_alive = getattr(export_backend, "is_worker_alive", None)
             if callable(export_alive) and export_alive():
-                raise RuntimeError("Export worker still alive before the transformers swap")
+                raise RuntimeError(
+                    "Export worker still alive before the transformers swap"
+                )
             active = getattr(backend, "active_model_name", None)
             if active:
                 if not backend.unload_model(active):
@@ -5410,7 +5585,9 @@ async def install_latest_transformers_route(
                     if getattr(backend, "active_model_name", None) != active:
                         unloaded_chat["v"] = True
                         note_model_unloaded()
-                    raise RuntimeError(f"Could not unload '{active}' before the transformers swap")
+                    raise RuntimeError(
+                        f"Could not unload '{active}' before the transformers swap"
+                    )
                 note_model_unloaded()
                 unloaded_chat["v"] = True
                 logger.info(
@@ -5427,13 +5604,17 @@ async def install_latest_transformers_route(
                 # rather than the recheck being fooled by a nulled handle.
                 stopped = backend._shutdown_subprocess()
                 if not stopped or worker_alive():
-                    raise RuntimeError("Inference worker still alive before the transformers swap")
+                    raise RuntimeError(
+                        "Inference worker still alive before the transformers swap"
+                    )
 
         def _run_install() -> dict:
             # Owns the reservation from here: releasing in the thread, not the route,
             # keeps it held if the request is cancelled while the install still stages.
             try:
-                return install_latest_transformers(request.version, _unload_before_swap, True)
+                return install_latest_transformers(
+                    request.version, _unload_before_swap, True
+                )
             finally:
                 end_sidecar_swap()
 
@@ -5496,18 +5677,24 @@ async def install_latest_transformers_route(
         if result.get("latest_version"):
             # Structured failure so the dialog can update to the newer release
             # and offer a retry that can actually succeed.
-            return InstallLatestTransformersResponse(**result, model_unloaded = unloaded_chat["v"])
+            return InstallLatestTransformersResponse(
+                **result, model_unloaded = unloaded_chat["v"]
+            )
         if unloaded_chat["v"]:
             # The chat model is already gone even though the swap failed; return a
             # structured failure (not a bare 400) so the client can restore its
             # model state instead of pointing at an unloaded model.
             return InstallLatestTransformersResponse(**result, model_unloaded = True)
         raise HTTPException(status_code = 400, detail = result["message"])
-    return InstallLatestTransformersResponse(**result, model_unloaded = unloaded_chat["v"])
+    return InstallLatestTransformersResponse(
+        **result, model_unloaded = unloaded_chat["v"]
+    )
 
 
 @router.post("/unload", response_model = UnloadResponse)
-async def unload_model(request: UnloadRequest, current_subject: str = Depends(get_current_subject)):
+async def unload_model(
+    request: UnloadRequest, current_subject: str = Depends(get_current_subject)
+):
     """
     Unload a model from memory.
     Routes to the correct backend (llama-server for GGUF, Unsloth otherwise).
@@ -5515,7 +5702,10 @@ async def unload_model(request: UnloadRequest, current_subject: str = Depends(ge
     # A deliberate unload means "stay unloaded": drop any idle reload stash so the
     # next /v1 request can't resurrect this model. The idle loop unloads via the
     # backend directly (not this route), so clearing here never fights keep-warm.
-    from core.inference.llama_keepwarm import inference_lifecycle_gate, note_model_unloaded
+    from core.inference.llama_keepwarm import (
+        inference_lifecycle_gate,
+        note_model_unloaded,
+    )
     try:
         # "Stop loading" (frontend cancelLoading -> /unload) must abort a still-loading
         # model promptly. /load holds the lifecycle gate for the whole (multi-minute) load,
@@ -5526,7 +5716,10 @@ async def unload_model(request: UnloadRequest, current_subject: str = Depends(ge
         if (
             loading is not None
             and hasattr(backend, "cancel_load")
-            and (request.model_path == loading or request.model_path.lower() == loading.lower())
+            and (
+                request.model_path == loading
+                or request.model_path.lower() == loading.lower()
+            )
         ):
             if await asyncio.to_thread(backend.cancel_load, request.model_path):
                 note_model_unloaded()
@@ -5592,7 +5785,9 @@ async def unload_model(request: UnloadRequest, current_subject: str = Depends(ge
 
 
 @studio_router.post("/cancel")
-async def cancel_inference(request: Request, current_subject: str = Depends(get_current_subject)):
+async def cancel_inference(
+    request: Request, current_subject: str = Depends(get_current_subject)
+):
     """Cancel in-flight inference requests.
 
     Body (JSON, at least one key required):
@@ -5665,7 +5860,9 @@ async def get_api_monitor(current_subject: str = Depends(get_current_subject)):
 
 
 @studio_router.get("/monitor/{entry_id}")
-async def get_api_monitor_entry(entry_id: str, current_subject: str = Depends(get_current_subject)):
+async def get_api_monitor_entry(
+    entry_id: str, current_subject: str = Depends(get_current_subject)
+):
     """Return full prompt/reply details for one OpenAI-compatible API request."""
     entry = api_monitor.get(entry_id, subject = current_subject)
     if entry is None:
@@ -5910,13 +6107,17 @@ async def get_status(current_subject: str = Depends(get_current_subject)):
             has_audio_input = model_info.get("has_audio_input", False)
         chat_template_info = model_info.get("chat_template_info", {})
         chat_template = (
-            chat_template_info.get("template") if isinstance(chat_template_info, dict) else None
+            chat_template_info.get("template")
+            if isinstance(chat_template_info, dict)
+            else None
         )
 
         # Non-GGUF: classify from the loaded template.
         _sf_flags = _detect_safetensors_features(backend, chat_template)
         inference_config = (
-            load_inference_config(backend.active_model_name) if backend.active_model_name else None
+            load_inference_config(backend.active_model_name)
+            if backend.active_model_name
+            else None
         )
 
         return InferenceStatusResponse(
@@ -6027,7 +6228,9 @@ async def generate_audio(
     _, chat_messages, _ = _extract_content_parts(payload.messages)
     if not chat_messages:
         raise HTTPException(status_code = 400, detail = "No messages provided.")
-    last_user_msg = next((m for m in reversed(chat_messages) if m["role"] == "user"), None)
+    last_user_msg = next(
+        (m for m in reversed(chat_messages) if m["role"] == "user"), None
+    )
     if not last_user_msg:
         raise HTTPException(status_code = 400, detail = "No user message found.")
     text = last_user_msg["content"]
@@ -6067,7 +6270,9 @@ async def generate_audio(
             raise HTTPException(status_code = 400, detail = "No model loaded.")
         model_info = backend.models.get(backend.active_model_name, {})
         if not model_info.get("is_audio"):
-            raise HTTPException(status_code = 400, detail = "Active model is not an audio model.")
+            raise HTTPException(
+                status_code = 400, detail = "Active model is not an audio model."
+            )
         model_name = public_model_id(backend.active_model_name)
         gen = lambda: backend.generate_audio_response(
             text = text,
@@ -6162,7 +6367,9 @@ def _sniff_audio_container(raw: bytes) -> Optional[str]:
         return "wav"
     # mp3: ID3 tag, or an MPEG audio frame sync (no other accepted format leads
     # with 0xFF, so the simple sync check doesn't collide).
-    if raw[:3] == b"ID3" or (len(raw) >= 2 and raw[0] == 0xFF and (raw[1] & 0xE0) == 0xE0):
+    if raw[:3] == b"ID3" or (
+        len(raw) >= 2 and raw[0] == 0xFF and (raw[1] & 0xE0) == 0xE0
+    ):
         return "mp3"
     return None
 
@@ -6176,7 +6383,9 @@ def _mono_f32_to_wav_bytes(arr: np.ndarray, sample_rate: int) -> bytes:
     import io
     import wave
 
-    arr = np.nan_to_num(np.asarray(arr, dtype = np.float32).flatten(), posinf = 0.0, neginf = 0.0)
+    arr = np.nan_to_num(
+        np.asarray(arr, dtype = np.float32).flatten(), posinf = 0.0, neginf = 0.0
+    )
     if arr.size == 0:
         raise ValueError("decoded audio is empty")
     peak = float(np.abs(arr).max())
@@ -6193,7 +6402,9 @@ def _mono_f32_to_wav_bytes(arr: np.ndarray, sample_rate: int) -> bytes:
     return buf.getvalue()
 
 
-def _resample_mono_linear(arr: np.ndarray, source_rate: int, target_rate: int) -> np.ndarray:
+def _resample_mono_linear(
+    arr: np.ndarray, source_rate: int, target_rate: int
+) -> np.ndarray:
     """Small numpy-only resampler for upload size limiting."""
     if source_rate <= 0 or target_rate <= 0 or source_rate == target_rate:
         return arr
@@ -6206,7 +6417,9 @@ def _resample_mono_linear(arr: np.ndarray, source_rate: int, target_rate: int) -
     return np.interp(target_x, source_x, arr).astype(np.float32)
 
 
-def _fit_transcoded_audio_to_wav_cap(arr: np.ndarray, sample_rate: int) -> tuple[np.ndarray, int]:
+def _fit_transcoded_audio_to_wav_cap(
+    arr: np.ndarray, sample_rate: int
+) -> tuple[np.ndarray, int]:
     """Downsample only when needed so transcoded WAV stays within the upload cap."""
     if sample_rate <= 0:
         raise ValueError("decoded audio has an invalid sample rate")
@@ -6266,7 +6479,9 @@ def _decode_audio_mono(raw: bytes) -> tuple[np.ndarray, int]:
     if arr.ndim > 1:
         arr = arr.mean(axis = 1)
     if sr > 0 and len(arr) > sr * _MAX_AUDIO_SECONDS:
-        raise ValueError(f"decoded audio exceeds the {_MAX_AUDIO_SECONDS // 60}-minute limit")
+        raise ValueError(
+            f"decoded audio exceeds the {_MAX_AUDIO_SECONDS // 60}-minute limit"
+        )
     return arr, sr
 
 
@@ -6333,7 +6548,9 @@ def _extract_content_parts(messages: list) -> tuple[str, list[dict], "Optional[s
                 system_parts.append(msg.content)
             elif isinstance(msg.content, list):
                 # Unlikely but handle: join text parts
-                system_parts.append("\n".join(p.text for p in msg.content if p.type == "text"))
+                system_parts.append(
+                    "\n".join(p.text for p in msg.content if p.type == "text")
+                )
             continue
 
         # ── User / assistant messages ─────────────────────────
@@ -6352,7 +6569,9 @@ def _extract_content_parts(messages: list) -> tuple[str, list[dict], "Optional[s
                         # data:image/png;base64,<DATA> -> extract <DATA>
                         first_image_b64 = url.split(",", 1)[1] if "," in url else None
                     else:
-                        logger.warning(f"Remote image URLs not yet supported: {url[:80]}...")
+                        logger.warning(
+                            f"Remote image URLs not yet supported: {url[:80]}..."
+                        )
             combined_text = "\n".join(text_parts) if text_parts else ""
             chat_messages.append({"role": msg.role, "content": combined_text})
 
@@ -6534,7 +6753,11 @@ def _build_external_messages(
             # (some providers reject empty assistant turns). Preserve assistant
             # turns whose only payload is tool_calls so multi-turn
             # function-call loops round-trip.
-            if msg.role == "assistant" and not msg.content.strip() and not msg.tool_calls:
+            if (
+                msg.role == "assistant"
+                and not msg.content.strip()
+                and not msg.tool_calls
+            ):
                 continue
             out: dict[str, Any] = {"role": msg.role, "content": msg.content}
             if msg.role == "assistant" and msg.tool_calls:
@@ -6671,7 +6894,9 @@ def _build_external_messages(
                         _entry_content = entry.get("content")
                         _has_text = (
                             isinstance(_entry_content, str) and _entry_content.strip()
-                        ) or (isinstance(_entry_content, list) and len(_entry_content) > 0)
+                        ) or (
+                            isinstance(_entry_content, list) and len(_entry_content) > 0
+                        )
                         if not _has_text:
                             continue
                 if msg.role == "tool":
@@ -6837,7 +7062,9 @@ async def _proxy_to_external_provider(
             # by the chat client as success, saving a partial answer with no error.
             yield (
                 "data: "
-                + json.dumps({"error": {"message": _friendly_error(exc), "type": "server_error"}})
+                + json.dumps(
+                    {"error": {"message": _friendly_error(exc), "type": "server_error"}}
+                )
                 + "\n\n"
             )
             yield "data: [DONE]\n\n"
@@ -6861,7 +7088,9 @@ async def _proxy_to_external_provider(
 # ── OpenAI shell-tool container management ───────────────────────
 
 
-def _resolve_openai_cloud_client(body: OpenAIContainerRequest) -> ExternalProviderClient:
+def _resolve_openai_cloud_client(
+    body: OpenAIContainerRequest,
+) -> ExternalProviderClient:
     """
     Decrypt the API key + validate the base URL points at OpenAI cloud, then
     build an ExternalProviderClient for the three container CRUD endpoints
@@ -6904,7 +7133,9 @@ def _summarize_container(raw: dict) -> OpenAIContainerSummary:
     return OpenAIContainerSummary(
         id = str(raw.get("id") or ""),
         name = raw.get("name"),
-        created_at = raw.get("created_at") if isinstance(raw.get("created_at"), int) else None,
+        created_at = raw.get("created_at")
+        if isinstance(raw.get("created_at"), int)
+        else None,
         last_active_at = raw.get("last_active_at")
         if isinstance(raw.get("last_active_at"), int)
         else None,
@@ -7171,7 +7402,9 @@ async def openai_chat_completions(
         _use_tools_intent = _effective_enable_tools(payload) or (
             bool(payload.mcp_enabled) and _cli_policy_pre is not False
         )
-        if payload.tool_choice == "none" and not _explicit_studio_tool_loop_requested(payload):
+        if payload.tool_choice == "none" and not _explicit_studio_tool_loop_requested(
+            payload
+        ):
             _use_tools_intent = False
         _client_tool_passthrough = (
             bool(payload.tools)
@@ -7188,7 +7421,8 @@ async def openai_chat_completions(
         # intentionally leaves confirm_tool_calls unset there, so only an explicit
         # confirm_tool_calls=True should force the local-confirm rejection for it.
         _studio_local_tool_loop = bool(_use_tools_intent) and (
-            _explicit_studio_tool_loop_requested(payload) or not _client_tool_passthrough
+            _explicit_studio_tool_loop_requested(payload)
+            or not _client_tool_passthrough
         )
         if (
             not payload.bypass_permissions
@@ -7229,7 +7463,9 @@ async def openai_chat_completions(
         # load a GGUF only to 413 afterward (the decode itself stays post-switch to
         # avoid decoding a valid upload twice).
         if payload.audio_base64 and len(payload.audio_base64) > _MAX_AUDIO_B64_CHARS:
-            raise HTTPException(status_code = 413, detail = "Audio file is too large (max ~25 MB).")
+            raise HTTPException(
+                status_code = 413, detail = "Audio file is too large (max ~25 MB)."
+            )
         # Reject streaming n>1 before the switch: only the non-streaming GGUF path
         # returns multiple choices, so stream=true + n>1 is invalid on every local
         # serving path (the external path already rejected it before its early
@@ -7241,7 +7477,9 @@ async def openai_chat_completions(
         # Audio input rides the same companion-mmproj projector as vision, so a
         # text-only target can't serve it either; guard both before the switch.
         _needs_vision = (
-            bool(_pre_parsed[2]) or _request_has_image(payload) or bool(payload.audio_base64)
+            bool(_pre_parsed[2])
+            or _request_has_image(payload)
+            or bool(payload.audio_base64)
         )
 
     await _maybe_auto_switch_model(
@@ -7273,7 +7511,9 @@ async def openai_chat_completions(
     # OpenAI compat), so payload.model is only a fallback label here.
     monitor_id = None
 
-    async def _monitored_generate_audio(model_label: str, context_length: Optional[int] = None):
+    async def _monitored_generate_audio(
+        model_label: str, context_length: Optional[int] = None
+    ):
         tts_monitor_id = None
         if not getattr(request.state, "skip_api_monitor", False):
             tts_monitor_id = api_monitor.start(
@@ -7321,7 +7561,9 @@ async def openai_chat_completions(
         if not backend.active_model_name:
             raise HTTPException(
                 status_code = 400,
-                detail = _no_model_loaded_detail("No model loaded. Call POST /inference/load first."),
+                detail = _no_model_loaded_detail(
+                    "No model loaded. Call POST /inference/load first."
+                ),
             )
         # Clean public id so the response never echoes a local path; the audio
         # branch below receives this sanitized label too.
@@ -7356,7 +7598,9 @@ async def openai_chat_completions(
         if payload.audio_base64 and model_info.get("has_audio_input"):
             try:
                 audio_array = _decode_audio_base64(payload.audio_base64)
-                system_prompt, chat_messages, _ = _extract_content_parts(payload.messages)
+                system_prompt, chat_messages, _ = _extract_content_parts(
+                    payload.messages
+                )
             except Exception as e:
                 api_monitor.fail(monitor_id, _friendly_error(e))
                 raise
@@ -7422,15 +7666,21 @@ async def openai_chat_completions(
                                     completion_id, created, model_name, chunk_text
                                 )
 
-                        api_monitor.finish(monitor_id, "cancelled" if cancelled else "completed")
-                        yield _chat_final_chunk(completion_id, created, model_name, "stop")
+                        api_monitor.finish(
+                            monitor_id, "cancelled" if cancelled else "completed"
+                        )
+                        yield _chat_final_chunk(
+                            completion_id, created, model_name, "stop"
+                        )
                         yield "data: [DONE]\n\n"
                     except asyncio.CancelledError:
                         cancel_event.set()
                         api_monitor.finish(monitor_id, "cancelled")
                         raise
                     except Exception as e:
-                        logger.error(f"Error during audio input streaming: {e}", exc_info = True)
+                        logger.error(
+                            f"Error during audio input streaming: {e}", exc_info = True
+                        )
                         _msg = _friendly_error(e)
                         api_monitor.fail(monitor_id, _msg)
                         yield _openai_stream_error_sse(
@@ -7492,7 +7742,9 @@ async def openai_chat_completions(
     # Finalize the monitor entry on validation rejection before raising.
     def _reject(status_code: int, detail: Any) -> "HTTPException":
         if monitor_id is not None:
-            fail_detail = detail if isinstance(detail, str) else json.dumps(detail, default = str)
+            fail_detail = (
+                detail if isinstance(detail, str) else json.dumps(detail, default = str)
+            )
             api_monitor.fail(monitor_id, fail_detail)
         return HTTPException(status_code = status_code, detail = detail)
 
@@ -7538,7 +7790,9 @@ async def openai_chat_completions(
     _studio_tool_loop_requested = (
         _explicit_studio_tool_loop_requested(payload) and llama_backend.supports_tools
     )
-    _client_disabled_tool_calls = payload.tool_choice == "none" and not _studio_tool_loop_requested
+    _client_disabled_tool_calls = (
+        payload.tool_choice == "none" and not _studio_tool_loop_requested
+    )
     _supports_tool_passthrough = getattr(
         llama_backend, "supports_tool_passthrough", llama_backend.supports_tools
     )
@@ -7629,7 +7883,9 @@ async def openai_chat_completions(
     if _pre_parsed is not None:
         system_prompt, chat_messages, extracted_image_b64 = _pre_parsed
     else:
-        system_prompt, chat_messages, extracted_image_b64 = _extract_content_parts(payload.messages)
+        system_prompt, chat_messages, extracted_image_b64 = _extract_content_parts(
+            payload.messages
+        )
 
     if not chat_messages:
         raise _reject(400, "At least one non-system message is required.")
@@ -7707,7 +7963,9 @@ async def openai_chat_completions(
         from state.tool_policy import get_tool_policy as _get_tool_policy_g
 
         _cli_policy = _get_tool_policy_g()
-        _tools_on = False if _client_disabled_tool_calls else _effective_enable_tools(payload)
+        _tools_on = (
+            False if _client_disabled_tool_calls else _effective_enable_tools(payload)
+        )
         _mcp_allowed = (
             not _client_disabled_tool_calls
             and bool(payload.mcp_enabled)
@@ -7771,17 +8029,23 @@ async def openai_chat_completions(
                     system_prompt = system_prompt.rstrip() + "\n\n" + _nudge
                 else:
                     system_prompt = _nudge
-                gguf_messages = _set_or_prepend_system_message(gguf_messages, system_prompt)
+                gguf_messages = _set_or_prepend_system_message(
+                    gguf_messages, system_prompt
+                )
 
             _gguf_auto_heal_tool_calls = (
-                payload.auto_heal_tool_calls if payload.auto_heal_tool_calls is not None else True
+                payload.auto_heal_tool_calls
+                if payload.auto_heal_tool_calls is not None
+                else True
             )
             # Active tool names gating the bare-rehearsal strip, matching the loop gate.
             _gguf_display_tool_names = _display_tool_name_gate(tools_to_use)
 
             # ── Strip stale tool-call XML from conversation history ─
             for _msg in gguf_messages:
-                if _msg.get("role") == "assistant" and isinstance(_msg.get("content"), str):
+                if _msg.get("role") == "assistant" and isinstance(
+                    _msg.get("content"), str
+                ):
                     # Gate on enabled tool names, like the live strip, so a documented inactive
                     # ``foo[ARGS]{...}`` survives in the replayed prompt context.
                     _msg["content"] = _strip_tool_xml_for_display(
@@ -7821,12 +8085,15 @@ async def openai_chat_completions(
                     disable_parallel_tool_use = payload.parallel_tool_calls is False,
                     # Bypass Permissions takes precedence over the confirm gate:
                     # never prompt while bypassing.
-                    confirm_tool_calls = _effective_confirm and not bool(payload.bypass_permissions),
+                    confirm_tool_calls = _effective_confirm
+                    and not bool(payload.bypass_permissions),
                     bypass_permissions = bool(payload.bypass_permissions),
                     permission_mode = payload.permission_mode,
                 )
 
-            _tool_admission_mode = "chat_tool_stream" if payload.stream else "chat_tool_nonstream"
+            _tool_admission_mode = (
+                "chat_tool_stream" if payload.stream else "chat_tool_nonstream"
+            )
             try:
                 reservation, admission_config = _openai_llama_admission_reserve(
                     request = request,
@@ -7880,7 +8147,11 @@ async def openai_chat_completions(
                             )
                         if final_visible:
                             api_monitor.append_reply(monitor_id, final_visible)
-                            chunks.append(_gguf_chat_delta_line(ChoiceDelta(content = final_visible)))
+                            chunks.append(
+                                _gguf_chat_delta_line(
+                                    ChoiceDelta(content = final_visible)
+                                )
+                            )
                         return chunks
 
                     while True:
@@ -7978,14 +8249,18 @@ async def openai_chat_completions(
                         prev_text = clean_cumulative
                         if not new_text:
                             continue
-                        reasoning_delta, visible_delta = reasoning_extractor.feed(new_text)
+                        reasoning_delta, visible_delta = reasoning_extractor.feed(
+                            new_text
+                        )
                         if reasoning_delta:
                             yield _gguf_chat_delta_line(
                                 ChoiceDelta(reasoning_content = reasoning_delta)
                             )
                         if visible_delta:
                             api_monitor.append_reply(monitor_id, visible_delta)
-                            yield _gguf_chat_delta_line(ChoiceDelta(content = visible_delta))
+                            yield _gguf_chat_delta_line(
+                                ChoiceDelta(content = visible_delta)
+                            )
 
                     for chunk in _flush_reasoning_extractor():
                         yield chunk
@@ -8017,7 +8292,8 @@ async def openai_chat_completions(
                         yield usage_line
                     _monitor_usage(monitor_id, _stream_usage, _monitor_context_length())
                     api_monitor.finish(
-                        monitor_id, "cancelled" if cancel_event.is_set() else "completed"
+                        monitor_id,
+                        "cancelled" if cancel_event.is_set() else "completed",
                     )
                     stream_completed = True
                     yield "data: [DONE]\n\n"
@@ -8027,7 +8303,9 @@ async def openai_chat_completions(
                     api_monitor.finish(monitor_id, "cancelled")
                     raise
                 except Exception as e:
-                    logger.error(f"Error during GGUF tool streaming: {e}", exc_info = True)
+                    logger.error(
+                        f"Error during GGUF tool streaming: {e}", exc_info = True
+                    )
                     api_monitor.fail(monitor_id, _friendly_error(e))
                     # Recover if an MTP+tensor crash killed the server mid-stream.
                     get_llama_cpp_backend()._maybe_recover_from_mtp_crash(e)
@@ -8281,8 +8559,12 @@ async def openai_chat_completions(
                     request = request,
                     cancel_event = cancel_event,
                 )
-                drain_task = asyncio.create_task(asyncio.to_thread(_drain_gguf_tool_loop))
-                full_text, completion_usage, completion_finish = await asyncio.shield(drain_task)
+                drain_task = asyncio.create_task(
+                    asyncio.to_thread(_drain_gguf_tool_loop)
+                )
+                full_text, completion_usage, completion_finish = await asyncio.shield(
+                    drain_task
+                )
                 reasoning_text, visible_text = _extract_responses_reasoning(
                     full_text,
                     parse_think_markers = _responses_should_parse_think_markers(
@@ -8503,25 +8785,35 @@ async def openai_chat_completions(
                             else:
                                 logger.warning(
                                     "gguf_stream_chunks: unexpected dict event: %s",
-                                    {k: v for k, v in cumulative.items() if k != "timings"},
+                                    {
+                                        k: v
+                                        for k, v in cumulative.items()
+                                        if k != "timings"
+                                    },
                                 )
                             continue
                         new_text = cumulative[len(prev_text) :]
                         prev_text = cumulative
                         if not new_text:
                             continue
-                        reasoning_delta, visible_delta = reasoning_extractor.feed(new_text)
+                        reasoning_delta, visible_delta = reasoning_extractor.feed(
+                            new_text
+                        )
                         if reasoning_delta:
                             yield _gguf_chat_delta_line(
                                 ChoiceDelta(reasoning_content = reasoning_delta)
                             )
                         if visible_delta:
                             api_monitor.append_reply(monitor_id, visible_delta)
-                            yield _gguf_chat_delta_line(ChoiceDelta(content = visible_delta))
+                            yield _gguf_chat_delta_line(
+                                ChoiceDelta(content = visible_delta)
+                            )
 
                     final_reasoning, final_visible = reasoning_extractor.finish()
                     if final_reasoning:
-                        yield _gguf_chat_delta_line(ChoiceDelta(reasoning_content = final_reasoning))
+                        yield _gguf_chat_delta_line(
+                            ChoiceDelta(reasoning_content = final_reasoning)
+                        )
                     if final_visible:
                         api_monitor.append_reply(monitor_id, final_visible)
                         yield _gguf_chat_delta_line(ChoiceDelta(content = final_visible))
@@ -8554,7 +8846,8 @@ async def openai_chat_completions(
                         yield usage_line
                     _monitor_usage(monitor_id, _stream_usage, _monitor_context_length())
                     api_monitor.finish(
-                        monitor_id, "cancelled" if cancel_event.is_set() else "completed"
+                        monitor_id,
+                        "cancelled" if cancel_event.is_set() else "completed",
                     )
                     stream_completed = True
                     yield "data: [DONE]\n\n"
@@ -8886,10 +9179,16 @@ async def openai_chat_completions(
                             # The prompt is shared across all n choices, so count its
                             # tokens ONCE (OpenAI bills only generated tokens for each
                             # extra choice). Only completion_tokens accumulates.
-                            _prompt_tokens = completion_usage.get("prompt_tokens") or _prompt_tokens
-                            _sum_completion += completion_usage.get("completion_tokens") or 0
+                            _prompt_tokens = (
+                                completion_usage.get("prompt_tokens") or _prompt_tokens
+                            )
+                            _sum_completion += (
+                                completion_usage.get("completion_tokens") or 0
+                            )
                             if _prompt_details is None:
-                                _prompt_details = completion_usage.get("prompt_tokens_details")
+                                _prompt_details = completion_usage.get(
+                                    "prompt_tokens_details"
+                                )
                     return (
                         _n,
                         _choices,
@@ -8924,7 +9223,8 @@ async def openai_chat_completions(
                 monitor_reply = _monitor_replies[-1] if _monitor_replies else ""
                 if _n > 1:
                     monitor_reply = "\n\n".join(
-                        f"Choice {_idx + 1}:\n{text}" for _idx, text in enumerate(_monitor_replies)
+                        f"Choice {_idx + 1}:\n{text}"
+                        for _idx, text in enumerate(_monitor_replies)
                     )
                 api_monitor.set_reply(monitor_id, monitor_reply)
                 _monitor_usage(
@@ -9008,7 +9308,8 @@ async def openai_chat_completions(
     # branch. Use a truthy placeholder for Unsloth-managed tools, whose concrete
     # schemas are selected below, and the request schemas for client passthrough.
     _sf_server_tool_intent = bool(
-        _effective_enable_tools(payload) or _explicit_studio_tool_loop_requested(payload)
+        _effective_enable_tools(payload)
+        or _explicit_studio_tool_loop_requested(payload)
     )
     _sf_template_tools = payload.tools if payload.tool_choice != "none" else None
     if not _sf_template_tools and _sf_server_tool_intent:
@@ -9050,12 +9351,16 @@ async def openai_chat_completions(
     # the GGUF path).
     _sf_is_gptoss = False
     try:
-        _sf_is_gptoss = bool(hasattr(backend, "_is_gpt_oss_model") and backend._is_gpt_oss_model())
+        _sf_is_gptoss = bool(
+            hasattr(backend, "_is_gpt_oss_model") and backend._is_gpt_oss_model()
+        )
     except Exception:
         _sf_is_gptoss = False
 
     _sf_tool_budget = (
-        payload.max_tool_calls_per_message if payload.max_tool_calls_per_message is not None else 25
+        payload.max_tool_calls_per_message
+        if payload.max_tool_calls_per_message is not None
+        else 25
     )
 
     # Match the GGUF path: mcp_enabled also opens the tool loop on its own
@@ -9113,7 +9418,9 @@ async def openai_chat_completions(
         )
 
         # RAG nudge, mirroring the GGUF path.
-        _sf_nudge = _apply_rag_nudge(_sf_nudge, _sf_tools_to_use, rag_scope = payload.rag_scope)
+        _sf_nudge = _apply_rag_nudge(
+            _sf_nudge, _sf_tools_to_use, rag_scope = payload.rag_scope
+        )
 
         _sf_system_prompt = system_prompt
         if _sf_nudge:
@@ -9123,7 +9430,9 @@ async def openai_chat_completions(
                 _sf_system_prompt = _sf_nudge
 
         _sf_auto_heal_tool_calls = (
-            payload.auto_heal_tool_calls if payload.auto_heal_tool_calls is not None else True
+            payload.auto_heal_tool_calls
+            if payload.auto_heal_tool_calls is not None
+            else True
         )
         # Active tool names gating the bare-rehearsal strip, matching the loop gate.
         _sf_display_tool_names = _display_tool_name_gate(_sf_tools_to_use)
@@ -9175,7 +9484,8 @@ async def openai_chat_completions(
                 rag_scope = payload.rag_scope,
                 # Bypass Permissions takes precedence over the confirm gate:
                 # never prompt while bypassing.
-                confirm_tool_calls = _sf_effective_confirm and not bool(payload.bypass_permissions),
+                confirm_tool_calls = _sf_effective_confirm
+                and not bool(payload.bypass_permissions),
                 bypass_permissions = bool(payload.bypass_permissions),
                 permission_mode = payload.permission_mode,
                 use_adapter = payload.use_adapter,
@@ -9206,10 +9516,16 @@ async def openai_chat_completions(
                     fr, fv = reasoning_extractor.finish()
                     out = []
                     if fr:
-                        out.append(_chat_reasoning_chunk(completion_id, created, model_name, fr))
+                        out.append(
+                            _chat_reasoning_chunk(
+                                completion_id, created, model_name, fr
+                            )
+                        )
                     if fv:
                         api_monitor.append_reply(monitor_id, fv)
-                        out.append(_chat_content_chunk(completion_id, created, model_name, fv))
+                        out.append(
+                            _chat_content_chunk(completion_id, created, model_name, fv)
+                        )
                     return out
 
                 while True:
@@ -9308,7 +9624,9 @@ async def openai_chat_completions(
                         )
                     if visible_delta:
                         api_monitor.append_reply(monitor_id, visible_delta)
-                        yield _chat_content_chunk(completion_id, created, model_name, visible_delta)
+                        yield _chat_content_chunk(
+                            completion_id, created, model_name, visible_delta
+                        )
 
                 for _c in _sf_flush_reasoning():
                     yield _c
@@ -9343,7 +9661,9 @@ async def openai_chat_completions(
                 backend.reset_generation_state()
                 _msg = _friendly_gen_stream_error(exc)
                 api_monitor.fail(monitor_id, _msg)
-                yield _openai_stream_error_sse({"error": {"message": _msg, "type": "server_error"}})
+                yield _openai_stream_error_sse(
+                    {"error": {"message": _msg, "type": "server_error"}}
+                )
             except Exception:
                 backend.reset_generation_state()
                 # Generic wire message; full trace stays in the log (CWE-209:
@@ -9421,7 +9741,9 @@ async def openai_chat_completions(
             _stats = _sf_stats_holder.get("stats")
             if _stats:
                 _monitor_usage(monitor_id, _stats.get("usage"))
-            api_monitor.finish(monitor_id, "cancelled" if cancel_event.is_set() else "completed")
+            api_monitor.finish(
+                monitor_id, "cancelled" if cancel_event.is_set() else "completed"
+            )
             _sf_msg_kwargs = {"content": _visible_text}
             if _reasoning_text:
                 _sf_msg_kwargs["reasoning_content"] = _reasoning_text
@@ -9511,7 +9833,9 @@ async def openai_chat_completions(
         # message (templates reject "developer") and clear prompt to avoid a dup.
         gen_kwargs["messages"] = _set_or_prepend_system_message(
             _structured_tool_history_for_local_template(
-                _flatten_content_parts_for_local_template(_openai_messages_for_passthrough(payload))
+                _flatten_content_parts_for_local_template(
+                    _openai_messages_for_passthrough(payload)
+                )
             ),
             system_prompt,
         )
@@ -9541,7 +9865,9 @@ async def openai_chat_completions(
     # known. This standard path now has the exact schemas that will be rendered,
     # so resolve reasoning parsing again to keep empty registries, forced-tool
     # misses, and tool_choice="none" on the marker-free template branch.
-    _, _sf_parse_think, _sf_reasoning_prefilled = _sf_response_protocol(gen_kwargs.get("tools"))
+    _, _sf_parse_think, _sf_reasoning_prefilled = _sf_response_protocol(
+        gen_kwargs.get("tools")
+    )
 
     # Request-scoped usage/timings receptacle (filled at gen_done).
     stats_holder: dict = {}
@@ -9591,7 +9917,9 @@ async def openai_chat_completions(
 
                 # Client-tool passthrough: heal text-form calls on the fly
                 # (None => relay verbatim).
-                healer = StreamToolCallHealer(_sf_heal, payload.tools) if _sf_heal else None
+                healer = (
+                    StreamToolCallHealer(_sf_heal, payload.tools) if _sf_heal else None
+                )
                 heal_state = {"idx": 0}
 
                 prev_text = ""
@@ -9609,7 +9937,9 @@ async def openai_chat_completions(
                     # Stall keepalive (see safetensors tool stream) each window while
                     # next(gen) runs in a worker. next(gen, _DONE) returns _DONE rather
                     # than raising StopIteration (which can't cross asyncio futures).
-                    _next_task = asyncio.create_task(asyncio.to_thread(next, gen, _DONE))
+                    _next_task = asyncio.create_task(
+                        asyncio.to_thread(next, gen, _DONE)
+                    )
                     while True:
                         _done_tasks, _ = await asyncio.wait(
                             {_next_task},
@@ -9670,11 +10000,15 @@ async def openai_chat_completions(
 
                 final_reasoning, final_visible = reasoning_extractor.finish()
                 if final_reasoning:
-                    yield _chat_reasoning_chunk(completion_id, created, model_name, final_reasoning)
+                    yield _chat_reasoning_chunk(
+                        completion_id, created, model_name, final_reasoning
+                    )
                 if final_visible:
                     if healer is None:
                         api_monitor.append_reply(monitor_id, final_visible)
-                        yield _chat_content_chunk(completion_id, created, model_name, final_visible)
+                        yield _chat_content_chunk(
+                            completion_id, created, model_name, final_visible
+                        )
                     else:
                         for line in _sf_heal_events_to_sse(
                             healer.feed(final_visible),
@@ -9743,7 +10077,9 @@ async def openai_chat_completions(
                 backend.reset_generation_state()
                 _msg = _friendly_gen_stream_error(exc)
                 api_monitor.fail(monitor_id, _msg)
-                yield _openai_stream_error_sse({"error": {"message": _msg, "type": "server_error"}})
+                yield _openai_stream_error_sse(
+                    {"error": {"message": _msg, "type": "server_error"}}
+                )
             except Exception as e:
                 backend.reset_generation_state()
                 logger.error(f"Error during OpenAI streaming: {e}", exc_info = True)
@@ -9813,7 +10149,9 @@ async def openai_chat_completions(
                     _finish = "tool_calls"
                 elif nudge_enabled(payload.nudge_tool_calls):
                     _data = {
-                        "choices": [{"message": {"role": "assistant", "content": _visible_text}}]
+                        "choices": [
+                            {"message": {"role": "assistant", "content": _visible_text}}
+                        ]
                     }
                     if nudge_should_retry(_data, _sf_heal, payload.tools):
                         # A failed retry must not 500 the request; keep the first
@@ -9824,15 +10162,20 @@ async def openai_chat_completions(
                         try:
                             retry_text = ""
                             for token in generate(
-                                [*gen_kwargs["messages"], *nudge_messages(_data, _sf_heal)]
+                                [
+                                    *gen_kwargs["messages"],
+                                    *nudge_messages(_data, _sf_heal),
+                                ]
                             ):
                                 retry_text = token
                             # Re-split reasoning on the retry so its visible text is
                             # what heals into a call (and reaches the monitor).
-                            _retry_reasoning, _retry_visible = _extract_responses_reasoning(
-                                retry_text,
-                                parse_think_markers = _sf_parse_think,
-                                reasoning_prefilled = _sf_reasoning_prefilled,
+                            _retry_reasoning, _retry_visible = (
+                                _extract_responses_reasoning(
+                                    retry_text,
+                                    parse_think_markers = _sf_parse_think,
+                                    reasoning_prefilled = _sf_reasoning_prefilled,
+                                )
                             )
                             retry_msg = {"role": "assistant", "content": _retry_visible}
                             if _retry_reasoning:
@@ -9848,7 +10191,8 @@ async def openai_chat_completions(
                                 stats_holder["stats"] = _first_stats
                         except Exception as retry_exc:
                             logger.debug(
-                                "Nudge retry failed; keeping first response: %s", retry_exc
+                                "Nudge retry failed; keeping first response: %s",
+                                retry_exc,
                             )
                             stats_holder["stats"] = _first_stats
                 # parallel_tool_calls=false: cap to one call (GGUF parity).
@@ -10014,10 +10358,14 @@ def _openai_model_objects() -> list[dict]:
         _ctx = _positive_int_or_none(getattr(llama_backend, "context_length", None))
         if _ctx is not None:
             entry["context_length"] = _ctx
-        _max_ctx = _positive_int_or_none(getattr(llama_backend, "max_context_length", None))
+        _max_ctx = _positive_int_or_none(
+            getattr(llama_backend, "max_context_length", None)
+        )
         if _max_ctx is not None:
             entry["max_context_length"] = _max_ctx
-        _native_ctx = _positive_int_or_none(getattr(llama_backend, "native_context_length", None))
+        _native_ctx = _positive_int_or_none(
+            getattr(llama_backend, "native_context_length", None)
+        )
         if _native_ctx is not None:
             entry["native_context_length"] = _native_ctx
         models.append(entry)
@@ -10120,9 +10468,13 @@ async def _openai_catalog_objects() -> list[dict]:
     from core.inference.local_model_resolver import info_has_local_gguf
 
     catalog = await _cached_local_catalog()
-    servable = await asyncio.to_thread(lambda: [i for i in catalog if info_has_local_gguf(i)])
+    servable = await asyncio.to_thread(
+        lambda: [i for i in catalog if info_has_local_gguf(i)]
+    )
     for info in servable:
-        cid = getattr(info, "model_id", None) or public_model_id(getattr(info, "id", None))
+        cid = getattr(info, "model_id", None) or public_model_id(
+            getattr(info, "id", None)
+        )
         if not cid or cid in by_id:
             continue
         obj = {
@@ -10153,7 +10505,9 @@ async def openai_list_models(current_subject: str = Depends(get_current_subject)
 
 
 @router.get("/models/{model_id:path}")
-async def openai_retrieve_model(model_id: str, current_subject: str = Depends(get_current_subject)):
+async def openai_retrieve_model(
+    model_id: str, current_subject: str = Depends(get_current_subject)
+):
     """
     OpenAI-compatible single-model retrieval endpoint (``GET /v1/models/{id}``).
 
@@ -10237,7 +10591,9 @@ def _completions_prompt_present(body: dict) -> bool:
 
 
 @router.post("/completions")
-async def openai_completions(request: Request, current_subject: str = Depends(get_current_subject)):
+async def openai_completions(
+    request: Request, current_subject: str = Depends(get_current_subject)
+):
     """
     OpenAI-compatible text completions endpoint (non-chat).
 
@@ -10256,29 +10612,41 @@ async def openai_completions(request: Request, current_subject: str = Depends(ge
             _pre = None
         if isinstance(_pre, dict):
             _pre_prompt = _pre.get("prompt")
-            if _pre_prompt is not None and not isinstance(_pre_prompt, (str, list, tuple)):
+            if _pre_prompt is not None and not isinstance(
+                _pre_prompt, (str, list, tuple)
+            ):
                 # An object/number prompt is a deterministic client error (only a
                 # string or array is valid); reject it before the switch so a bad
                 # shape can't load a GGUF only to be rejected by llama-server after.
-                raise HTTPException(status_code = 400, detail = "'prompt' must be a string or array.")
+                raise HTTPException(
+                    status_code = 400, detail = "'prompt' must be a string or array."
+                )
             if not _completions_prompt_present(_pre):
-                raise HTTPException(status_code = 400, detail = "'prompt' is required for completions.")
+                raise HTTPException(
+                    status_code = 400, detail = "'prompt' is required for completions."
+                )
 
     # Opt-in: load the requested local GGUF before the loaded-state check.
     body = await _auto_switch_from_request_body(request, current_subject)
     if not llama_backend.is_loaded:
         raise HTTPException(
             status_code = 503,
-            detail = _no_model_loaded_detail("No GGUF model loaded. Load a GGUF model first."),
+            detail = _no_model_loaded_detail(
+                "No GGUF model loaded. Load a GGUF model first."
+            ),
         )
     if not isinstance(body, dict):
         # Re-read to re-raise a malformed-body error (post-503, pre-feature behavior);
         # a valid non-dict body such as a list is a clean 400 rather than a 500.
         body = await request.json()
         if not isinstance(body, dict):
-            raise HTTPException(status_code = 400, detail = "Request body must be a JSON object")
+            raise HTTPException(
+                status_code = 400, detail = "Request body must be a JSON object"
+            )
 
-    _resolved_max_tokens = _effective_openai_max_tokens_from_values(body.get("max_tokens"))
+    _resolved_max_tokens = _effective_openai_max_tokens_from_values(
+        body.get("max_tokens")
+    )
     body["max_tokens"] = (
         _resolved_max_tokens
         if _resolved_max_tokens is not None
@@ -10290,7 +10658,9 @@ async def openai_completions(request: Request, current_subject: str = Depends(ge
     monitor_id = api_monitor.start(
         endpoint = request.url.path,
         method = request.method,
-        model = str(body.get("model") or _llama_public_model_id(llama_backend) or "default"),
+        model = str(
+            body.get("model") or _llama_public_model_id(llama_backend) or "default"
+        ),
         prompt = prompt_text,
         context_length = llama_backend.context_length,
         subject = current_subject,
@@ -10309,7 +10679,9 @@ async def openai_completions(request: Request, current_subject: str = Depends(ge
             # separator) so _cmpl_stream_event_out can rewrite the cmpl- id and
             # honor stream_options.include_usage per event, while keeping SSE
             # framing and token bytes intact.
-            _include_usage = bool((body.get("stream_options") or {}).get("include_usage"))
+            _include_usage = bool(
+                (body.get("stream_options") or {}).get("include_usage")
+            )
             client = httpx.AsyncClient(
                 timeout = _llama_streaming_generation_timeout(),
                 trust_env = False,
@@ -10323,7 +10695,9 @@ async def openai_completions(request: Request, current_subject: str = Depends(ge
                     "POST", target_url, json = body, headers = {"Connection": "close"}
                 )
                 first_token_deadline = time.monotonic() + _DEFAULT_FIRST_TOKEN_TIMEOUT_S
-                resp = await _send_stream_with_preheader_cancel(client, req, request = request)
+                resp = await _send_stream_with_preheader_cancel(
+                    client, req, request = request
+                )
                 if resp is None:
                     api_monitor.finish(monitor_id, "cancelled")
                     return
@@ -10331,7 +10705,9 @@ async def openai_completions(request: Request, current_subject: str = Depends(ge
                     err_bytes = await resp.aread()
                     err_text = err_bytes.decode("utf-8", errors = "replace")
                     api_monitor.fail(monitor_id, err_text[:500])
-                    raise RuntimeError(f"llama-server returned {resp.status_code}: {err_text}")
+                    raise RuntimeError(
+                        f"llama-server returned {resp.status_code}: {err_text}"
+                    )
                 disconnect_watcher = asyncio.create_task(
                     _await_disconnect_then_close(request, resp, disconnect_event)
                 )
@@ -10448,7 +10824,9 @@ def _embeddings_input_present(body: dict) -> bool:
 
 
 @router.post("/embeddings")
-async def openai_embeddings(request: Request, current_subject: str = Depends(get_current_subject)):
+async def openai_embeddings(
+    request: Request, current_subject: str = Depends(get_current_subject)
+):
     """
     OpenAI-compatible embeddings endpoint.
 
@@ -10469,13 +10847,19 @@ async def openai_embeddings(request: Request, current_subject: str = Depends(get
             _pre = None
         if isinstance(_pre, dict):
             _pre_input = _pre.get("input")
-            if _pre_input is not None and not isinstance(_pre_input, (str, list, tuple)):
+            if _pre_input is not None and not isinstance(
+                _pre_input, (str, list, tuple)
+            ):
                 # An object/number input is a deterministic client error (only a
                 # string or array is valid); reject it before the switch so a bad
                 # shape can't load a GGUF only to be rejected by llama-server after.
-                raise HTTPException(status_code = 400, detail = "'input' must be a string or array.")
+                raise HTTPException(
+                    status_code = 400, detail = "'input' must be a string or array."
+                )
             if not _embeddings_input_present(_pre):
-                raise HTTPException(status_code = 400, detail = "'input' is required for embeddings.")
+                raise HTTPException(
+                    status_code = 400, detail = "'input' is required for embeddings."
+                )
     # Embeddings is a model-bearing inference path too, so honor auto-switch. Unlike
     # vision (cheaply pre-checked via a companion mmproj), GGUF pooling capability has
     # no reliable pre-load probe -- is_embedding_model keys on a sentence-transformers
@@ -10485,14 +10869,18 @@ async def openai_embeddings(request: Request, current_subject: str = Depends(get
     if not llama_backend.is_loaded:
         raise HTTPException(
             status_code = 503,
-            detail = _no_model_loaded_detail("No GGUF model loaded. Load a GGUF model first."),
+            detail = _no_model_loaded_detail(
+                "No GGUF model loaded. Load a GGUF model first."
+            ),
         )
     if not isinstance(body, dict):
         # Re-read to re-raise a malformed-body error (post-503, pre-feature behavior);
         # a valid non-dict body such as a list is a clean 400 rather than a 500.
         body = await request.json()
         if not isinstance(body, dict):
-            raise HTTPException(status_code = 400, detail = "Request body must be a JSON object")
+            raise HTTPException(
+                status_code = 400, detail = "Request body must be a JSON object"
+            )
 
     target_url = f"{llama_backend.base_url}/v1/embeddings"
     prompt_text = _flatten_monitor_prompt(body.get("input", ""))
@@ -10501,7 +10889,9 @@ async def openai_embeddings(request: Request, current_subject: str = Depends(get
         monitor_id = api_monitor.start(
             endpoint = request.url.path,
             method = request.method,
-            model = str(body.get("model") or _llama_public_model_id(llama_backend) or "default"),
+            model = str(
+                body.get("model") or _llama_public_model_id(llama_backend) or "default"
+            ),
             prompt = prompt_text,
             context_length = llama_backend.context_length,
             subject = current_subject,
@@ -10523,7 +10913,9 @@ async def openai_embeddings(request: Request, current_subject: str = Depends(get
         api_monitor.fail(monitor_id, resp.text[:500])
     else:
         try:
-            _monitor_usage(monitor_id, resp.json().get("usage"), _monitor_context_length())
+            _monitor_usage(
+                monitor_id, resp.json().get("usage"), _monitor_context_length()
+            )
         except Exception:
             pass
         api_monitor.finish(monitor_id)
@@ -10539,7 +10931,9 @@ async def openai_embeddings(request: Request, current_subject: str = Depends(get
 # =====================================================================
 
 
-def _translate_responses_tools_to_chat(tools: Optional[list[dict]]) -> Optional[list[dict]]:
+def _translate_responses_tools_to_chat(
+    tools: Optional[list[dict]],
+) -> Optional[list[dict]]:
     """Translate Responses-shape function tools to the Chat Completions nested shape.
 
     Responses uses a flat shape per tool entry::
@@ -10688,7 +11082,15 @@ def _responses_tool_output_content(output: Union[str, list]) -> Union[str, list]
 
 _RESPONSES_THINK_OPEN = "<think>"
 _RESPONSES_THINK_CLOSE = "</think>"
-_RESPONSES_REASONING_EFFORTS = {"none", "minimal", "low", "medium", "high", "max", "xhigh"}
+_RESPONSES_REASONING_EFFORTS = {
+    "none",
+    "minimal",
+    "low",
+    "medium",
+    "high",
+    "max",
+    "xhigh",
+}
 
 
 def _coerce_responses_reasoning_text(value: Any) -> str:
@@ -10756,7 +11158,9 @@ class _ResponsesReasoningExtractor:
                     reasoning_parts.append(
                         self._buffer[:close_idx].replace(_RESPONSES_THINK_OPEN, "")
                     )
-                    self._buffer = self._buffer[close_idx + len(_RESPONSES_THINK_CLOSE) :]
+                    self._buffer = self._buffer[
+                        close_idx + len(_RESPONSES_THINK_CLOSE) :
+                    ]
                     self._in_reasoning = False
                     continue
                 # Hold back a trailing partial of either marker: the close (clean split across chunks)
@@ -10835,10 +11239,15 @@ def _responses_should_parse_think_markers(
         return False
     if chat_req.enable_thinking is True:
         return True
-    return chat_req.enable_thinking is None and chat_req.reasoning_effort not in (None, "none")
+    return chat_req.enable_thinking is None and chat_req.reasoning_effort not in (
+        None,
+        "none",
+    )
 
 
-def _responses_reasoning_output_item(reasoning_text: str, item_id: Optional[str] = None) -> dict:
+def _responses_reasoning_output_item(
+    reasoning_text: str, item_id: Optional[str] = None
+) -> dict:
     kwargs: dict[str, Any] = {
         "status": "completed",
         "summary": [],
@@ -11118,12 +11527,16 @@ async def _responses_non_streaming(
         if choices:
             msg = choices[0].get("message", {}) or {}
             raw_content = msg.get("content", "") or ""
-            raw_text = raw_content if isinstance(raw_content, str) else json.dumps(raw_content)
+            raw_text = (
+                raw_content if isinstance(raw_content, str) else json.dumps(raw_content)
+            )
             llama_backend = get_llama_cpp_backend()
             reasoning_text, text = _extract_responses_reasoning(
                 raw_text,
                 msg.get("reasoning_content"),
-                parse_think_markers = _responses_should_parse_think_markers(chat_req, llama_backend),
+                parse_think_markers = _responses_should_parse_think_markers(
+                    chat_req, llama_backend
+                ),
             )
             tool_calls = msg.get("tool_calls") or []
 
@@ -11234,7 +11647,8 @@ async def _responses_stream(
 
     # Direct pass-through bypasses the openai_chat_completions image gate.
     if not llama_backend.is_vision and any(
-        isinstance(m.content, list) and any(isinstance(p, ImageContentPart) for p in m.content)
+        isinstance(m.content, list)
+        and any(isinstance(p, ImageContentPart) for p in m.content)
         for m in messages
     ):
         raise HTTPException(
@@ -11302,15 +11716,23 @@ async def _responses_stream(
         # helper, not the raw identifier: after an auto-switch to a cached HF GGUF
         # the identifier is the snapshot path while the repo id lives in
         # _openai_advertised_id, so the raw form would stream a snapshot basename.
-        _clean_model = _llama_public_model_id(llama_backend, payload.model) or payload.model
+        _clean_model = (
+            _llama_public_model_id(llama_backend, payload.model) or payload.model
+        )
         full_text = ""
         full_reasoning = ""
         input_tokens = 0
         output_tokens = 0
         extractor = _ResponsesReasoningExtractor(
-            parse_think_markers = _responses_should_parse_think_markers(chat_req, llama_backend)
+            parse_think_markers = _responses_should_parse_think_markers(
+                chat_req, llama_backend
+            )
         )
-        reasoning_state: dict[str, Any] = {"output_index": None, "item_id": None, "opened": False}
+        reasoning_state: dict[str, Any] = {
+            "output_index": None,
+            "item_id": None,
+            "opened": False,
+        }
         message_state: dict[str, Any] = {
             "output_index": None,
             "item_id": None,
@@ -11333,7 +11755,11 @@ async def _responses_stream(
             body.get("tools"),
             body.get("tool_choice"),
         )
-        healer = StreamToolCallHealer(_allowed_tools, body.get("tools")) if _allowed_tools else None
+        healer = (
+            StreamToolCallHealer(_allowed_tools, body.get("tools"))
+            if _allowed_tools
+            else None
+        )
         healed_tc_index = 0
 
         def _healed_tc(call: dict):
@@ -11409,7 +11835,9 @@ async def _responses_stream(
                     "output_index": st["output_index"],
                     "delta": arg_delta,
                 }
-                events.append(_sse("response.function_call_arguments.delta", args_delta_event))
+                events.append(
+                    _sse("response.function_call_arguments.delta", args_delta_event)
+                )
             elif arg_delta:
                 # Buffer args until we can open the item (some models
                 # send id/name in the same chunk as the first arg delta;
@@ -11529,7 +11957,11 @@ async def _responses_stream(
                         "item_id": message_state["item_id"],
                         "output_index": message_state["output_index"],
                         "content_index": 0,
-                        "part": {"type": "output_text", "text": text, "annotations": []},
+                        "part": {
+                            "type": "output_text",
+                            "text": text,
+                            "annotations": [],
+                        },
                     },
                 ),
                 _sse(
@@ -11542,7 +11974,9 @@ async def _responses_stream(
                             "id": message_state["item_id"],
                             "status": "completed",
                             "role": "assistant",
-                            "content": [{"type": "output_text", "text": text, "annotations": []}],
+                            "content": [
+                                {"type": "output_text", "text": text, "annotations": []}
+                            ],
                         },
                     },
                 ),
@@ -11605,7 +12039,9 @@ async def _responses_stream(
                             "id": reasoning_state["item_id"],
                             "status": "completed",
                             "summary": [],
-                            "content": [{"type": "reasoning_text", "text": full_reasoning}],
+                            "content": [
+                                {"type": "reasoning_text", "text": full_reasoning}
+                            ],
                         },
                     )
                 )
@@ -11707,7 +12143,9 @@ async def _responses_stream(
             )
             first_token_deadline = time.monotonic() + _DEFAULT_FIRST_TOKEN_TIMEOUT_S
             try:
-                resp = await _send_stream_with_preheader_cancel(client, req, request = request)
+                resp = await _send_stream_with_preheader_cancel(
+                    client, req, request = request
+                )
                 if resp is None:
                     api_monitor.finish(monitor_id, "cancelled")
                     return
@@ -11869,7 +12307,9 @@ async def _responses_stream(
             if not disconnect_event.is_set():
                 logger.error("responses stream error: %s", e)
                 api_monitor.fail(monitor_id, _friendly_error(e))
-                status_code = 400 if _classify_llama_generation_error(e) is not None else 500
+                status_code = (
+                    400 if _classify_llama_generation_error(e) is not None else 500
+                )
                 yield _sse(
                     "response.failed",
                     _failed_response_payload(e, status_code),
@@ -11881,7 +12321,9 @@ async def _responses_stream(
                 return
             logger.error("responses stream error: %s", e)
             api_monitor.fail(monitor_id, _friendly_error(e))
-            status_code = 400 if _classify_llama_generation_error(e) is not None else 500
+            status_code = (
+                400 if _classify_llama_generation_error(e) is not None else 500
+            )
             yield _sse(
                 "response.failed",
                 _failed_response_payload(e, status_code),
@@ -11918,7 +12360,9 @@ async def _responses_stream(
         # never closed) before the trailing visible text is flushed; events
         # keep healer order so trailing text stays behind a healed call.
         if healer is not None:
-            events = (healer.feed(final_visible) if final_visible else []) + healer.finalize()
+            events = (
+                healer.feed(final_visible) if final_visible else []
+            ) + healer.finalize()
             final_visible = ""
             for event in _healed_event_sse(events):
                 yield event
@@ -11941,10 +12385,16 @@ async def _responses_stream(
 
         close_items: list[tuple[int, str, dict[str, Any]]] = []
         if reasoning_state["opened"]:
-            close_items.append((reasoning_state["output_index"], "reasoning", reasoning_state))
+            close_items.append(
+                (reasoning_state["output_index"], "reasoning", reasoning_state)
+            )
         if message_state["opened"]:
-            close_items.append((message_state["output_index"], "message", message_state))
-        close_items.extend((st["output_index"], "tool", st) for st in tool_call_state.values())
+            close_items.append(
+                (message_state["output_index"], "message", message_state)
+            )
+        close_items.extend(
+            (st["output_index"], "tool", st) for st in tool_call_state.values()
+        )
 
         for _, kind, st in sorted(close_items, key = lambda item: item[0]):
             if kind == "reasoning":
@@ -11978,7 +12428,9 @@ async def _responses_stream(
                             "id": st["item_id"],
                             "status": "completed",
                             "summary": [],
-                            "content": [{"type": "reasoning_text", "text": full_reasoning}],
+                            "content": [
+                                {"type": "reasoning_text", "text": full_reasoning}
+                            ],
                         },
                     },
                 )
@@ -12006,7 +12458,11 @@ async def _responses_stream(
                         "item_id": st["item_id"],
                         "output_index": st["output_index"],
                         "content_index": 0,
-                        "part": {"type": "output_text", "text": _msg_text, "annotations": []},
+                        "part": {
+                            "type": "output_text",
+                            "text": _msg_text,
+                            "annotations": [],
+                        },
                     },
                 )
                 yield _sse(
@@ -12020,7 +12476,11 @@ async def _responses_stream(
                             "status": "completed",
                             "role": "assistant",
                             "content": [
-                                {"type": "output_text", "text": _msg_text, "annotations": []}
+                                {
+                                    "type": "output_text",
+                                    "text": _msg_text,
+                                    "annotations": [],
+                                }
                             ],
                         },
                     },
@@ -12078,7 +12538,9 @@ async def _responses_stream(
                     "arguments": st["arguments"],
                 },
             }
-            api_monitor.append_reply(monitor_id, _monitor_call_text(st["name"], st["arguments"]))
+            api_monitor.append_reply(
+                monitor_id, _monitor_call_text(st["name"], st["arguments"])
+            )
             yield _sse("response.output_item.done", item_done)
 
         # response.completed
@@ -12230,7 +12692,9 @@ async def openai_responses(
     # before the switch (mirror chat) or an invalid request evicts the resident
     # model only for the chat handler to 400 it as having no non-system message.
     if not any(m.role not in ("system", "developer") for m in messages):
-        raise HTTPException(status_code = 400, detail = "At least one non-system message is required.")
+        raise HTTPException(
+            status_code = 400, detail = "At least one non-system message is required."
+        )
     # Reject a malformed function tool before any model load, mirroring the
     # /v1/chat/completions check, so an invalid request never switches the model.
     # Built-in tools (web_search, mcp, ...) carry no name and are dropped later.
@@ -12342,7 +12806,9 @@ def _anthropic_requested_studio_tools(tools: Optional[list]) -> set[str]:
 
 
 def _select_anthropic_server_tools(
-    all_tools: list[dict], requested_studio_tools: set[str], enabled_tools: Optional[list[str]]
+    all_tools: list[dict],
+    requested_studio_tools: set[str],
+    enabled_tools: Optional[list[str]],
 ) -> list[dict]:
     """Select Unsloth tools requested through Anthropic tools and extensions."""
     if not requested_studio_tools and enabled_tools is None:
@@ -12369,7 +12835,9 @@ def _image_bytes_to_png_b64(raw: bytes) -> str:
     return base64.b64encode(buf.getvalue()).decode("ascii")
 
 
-def _normalize_anthropic_openai_images(openai_messages: list[dict], is_vision: bool) -> bool:
+def _normalize_anthropic_openai_images(
+    openai_messages: list[dict], is_vision: bool
+) -> bool:
     """Enforce the vision guard on translated Anthropic messages and normalize
     any base64-data-URL ``image_url`` parts to PNG.
 
@@ -12471,7 +12939,9 @@ async def anthropic_count_tokens(
     if not llama_backend.is_loaded:
         raise HTTPException(
             status_code = 503,
-            detail = _no_model_loaded_detail("No GGUF model loaded. Load a GGUF model first."),
+            detail = _no_model_loaded_detail(
+                "No GGUF model loaded. Load a GGUF model first."
+            ),
         )
 
     # Same Anthropic → OpenAI translation as anthropic_messages: system is
@@ -12487,7 +12957,9 @@ async def anthropic_count_tokens(
     # turn, so a strict GGUF chat template does not 400 on non-alternating roles
     # (mirrors the GGUF chat path); a no-op for already-alternating histories.
     openai_messages = _coalesce_consecutive_user_turns(
-        _strip_provider_synthetic_tool_history(_drop_empty_assistant_sentinels(openai_messages))
+        _strip_provider_synthetic_tool_history(
+            _drop_empty_assistant_sentinels(openai_messages)
+        )
     )
     openai_tools = anthropic_tools_to_openai(payload.tools or []) or None
 
@@ -12517,7 +12989,11 @@ def _set_or_prepend_system_message(
 
     # Drop existing system/developer turns so the backend never sees duplicate
     # or conflicting system instructions, then prepend the resolved prompt.
-    others = [dict(msg) for msg in safe_messages if msg.get("role") not in ("system", "developer")]
+    others = [
+        dict(msg)
+        for msg in safe_messages
+        if msg.get("role") not in ("system", "developer")
+    ]
     return [{"role": "system", "content": system_prompt}, *others]
 
 
@@ -12544,7 +13020,9 @@ async def anthropic_messages(
     if not llama_backend.is_loaded and not _automatic_model_load_may_run():
         raise HTTPException(
             status_code = 503,
-            detail = _no_model_loaded_detail("No GGUF model loaded. Load a GGUF model first."),
+            detail = _no_model_loaded_detail(
+                "No GGUF model loaded. Load a GGUF model first."
+            ),
         )
 
     # max_tokens is a required field on the Anthropic Messages API; real Anthropic
@@ -12642,7 +13120,9 @@ async def anthropic_messages(
     if not llama_backend.is_loaded:
         raise HTTPException(
             status_code = 503,
-            detail = _no_model_loaded_detail("No GGUF model loaded. Load a GGUF model first."),
+            detail = _no_model_loaded_detail(
+                "No GGUF model loaded. Load a GGUF model first."
+            ),
         )
 
     # Advertised repo id after an auto-switch load, else a clean public id, never
@@ -12666,12 +13146,16 @@ async def anthropic_messages(
     # turn, so a strict GGUF chat template does not 400 on non-alternating roles
     # (mirrors the GGUF chat path); a no-op for already-alternating histories.
     openai_messages = _coalesce_consecutive_user_turns(
-        _strip_provider_synthetic_tool_history(_drop_empty_assistant_sentinels(openai_messages))
+        _strip_provider_synthetic_tool_history(
+            _drop_empty_assistant_sentinels(openai_messages)
+        )
     )
 
     # Enforce vision guard + re-encode embedded images to PNG so the Anthropic
     # endpoint matches /v1/chat/completions.
-    _has_image = _normalize_anthropic_openai_images(openai_messages, llama_backend.is_vision)
+    _has_image = _normalize_anthropic_openai_images(
+        openai_messages, llama_backend.is_vision
+    )
 
     temperature = payload.temperature if payload.temperature is not None else 0.6
     top_p = payload.top_p if payload.top_p is not None else 0.95
@@ -12680,7 +13164,9 @@ async def anthropic_messages(
     repetition_penalty = (
         payload.repetition_penalty if payload.repetition_penalty is not None else 1.0
     )
-    presence_penalty = payload.presence_penalty if payload.presence_penalty is not None else 0.0
+    presence_penalty = (
+        payload.presence_penalty if payload.presence_penalty is not None else 0.0
+    )
     stop = payload.stop_sequences or None
 
     # Translate Anthropic tool_choice to OpenAI format for llama-server. Falls
@@ -12717,7 +13203,9 @@ async def anthropic_messages(
     client_tools = (
         not server_tools
         and len(openai_client_tools) > 0
-        and getattr(llama_backend, "supports_tool_passthrough", llama_backend.supports_tools)
+        and getattr(
+            llama_backend, "supports_tool_passthrough", llama_backend.supports_tools
+        )
     )
 
     # Anthropic tool_choice.disable_parallel_tool_use caps the response to a
@@ -13010,7 +13498,9 @@ async def _anthropic_tool_stream(
                     return
                 # Stall keepalive (see GGUF tool stream): silent backend segments
                 # must not leave the SSE stream idle past proxy timeouts.
-                _next_task = asyncio.create_task(asyncio.to_thread(next, gen, _sentinel))
+                _next_task = asyncio.create_task(
+                    asyncio.to_thread(next, gen, _sentinel)
+                )
                 while True:
                     _done_tasks, _ = await asyncio.wait(
                         {_next_task},
@@ -13037,7 +13527,10 @@ async def _anthropic_tool_stream(
                     # They keep the stall keepalive from firing, so a chatty tool would go
                     # silent past the ~100s proxy cap; emit a rate-limited keepalive instead.
                     _now = time.monotonic()
-                    if _now - _last_drop_keepalive >= _LOCAL_TOOL_STREAM_STALL_KEEPALIVE_S:
+                    if (
+                        _now - _last_drop_keepalive
+                        >= _LOCAL_TOOL_STREAM_STALL_KEEPALIVE_S
+                    ):
                         _last_drop_keepalive = _now
                         yield _OPENAI_PASSTHROUGH_SSE_KEEPALIVE
                     continue
@@ -13128,7 +13621,9 @@ async def _anthropic_plain_stream(
     # makes blocking HTTP calls to llama-server, so run it off the event loop.
     input_tokens = 0
     if llama_backend is not None and openai_messages is not None:
-        input_tokens = await asyncio.to_thread(llama_backend.count_chat_tokens, openai_messages)
+        input_tokens = await asyncio.to_thread(
+            llama_backend.count_chat_tokens, openai_messages
+        )
 
     async def _stream():
         emitter = AnthropicStreamEmitter()
@@ -13151,7 +13646,9 @@ async def _anthropic_plain_stream(
                     return
                 # Stall keepalive (see Anthropic tool stream) each window while
                 # next(gen) runs in a worker.
-                _next_task = asyncio.create_task(asyncio.to_thread(next, gen, _sentinel))
+                _next_task = asyncio.create_task(
+                    asyncio.to_thread(next, gen, _sentinel)
+                )
                 while True:
                     _done_tasks, _ = await asyncio.wait(
                         {_next_task},
@@ -13197,7 +13694,9 @@ async def _anthropic_plain_stream(
                 except (RuntimeError, ValueError):
                     pass
 
-        stop_reason = openai_finish_to_anthropic_stop(captured_finish_reason, had_tool_calls = False)
+        stop_reason = openai_finish_to_anthropic_stop(
+            captured_finish_reason, had_tool_calls = False
+        )
         for line in emitter.finish(stop_reason = stop_reason, stop_sequence = None):
             yield line
 
@@ -13287,20 +13786,26 @@ async def _anthropic_tool_non_streaming(
         if etype == "content":
             # Strip leaked tool XML (protected helper keeps think rehearsal and trailing prose).
             clean = _strip_tool_xml_for_display(
-                event["text"], auto_heal_tool_calls = True, enabled_tool_names = _display_names
+                event["text"],
+                auto_heal_tool_calls = True,
+                enabled_tool_names = _display_names,
             )
             new = clean[len(prev_text) :]
             prev_text = clean
             if new:
                 ends_on_tool_use = False
-                if content_blocks and isinstance(content_blocks[-1], AnthropicResponseTextBlock):
+                if content_blocks and isinstance(
+                    content_blocks[-1], AnthropicResponseTextBlock
+                ):
                     content_blocks[-1].text += new
                 else:
                     content_blocks.append(AnthropicResponseTextBlock(text = new))
         elif etype == "tool_start":
             tool_call_id = event["tool_call_id"]
             arguments = event.get("arguments", {})
-            existing_tool_block = tool_blocks_by_id.get(tool_call_id) if tool_call_id else None
+            existing_tool_block = (
+                tool_blocks_by_id.get(tool_call_id) if tool_call_id else None
+            )
             if existing_tool_block is not None:
                 if arguments or not existing_tool_block.input:
                     existing_tool_block.input = arguments
@@ -13379,7 +13884,9 @@ async def _anthropic_plain_non_streaming(run_gen, message_id, model_name):
     if full_text:
         content_blocks.append(AnthropicResponseTextBlock(text = full_text))
 
-    stop_reason = openai_finish_to_anthropic_stop(captured_finish_reason, had_tool_calls = False)
+    stop_reason = openai_finish_to_anthropic_stop(
+        captured_finish_reason, had_tool_calls = False
+    )
 
     return _anthropic_message_json_response(
         message_id, model_name, content_blocks, stop_reason, usage
@@ -13426,7 +13933,9 @@ def _build_passthrough_payload(
     if stream and stream_options is not None:
         body["stream_options"] = stream_options
     body["max_tokens"] = (
-        max_tokens if max_tokens is not None else (backend_ctx or _DEFAULT_MAX_TOKENS_FLOOR)
+        max_tokens
+        if max_tokens is not None
+        else (backend_ctx or _DEFAULT_MAX_TOKENS_FLOOR)
     )
     # Normalize stop the same way the non-passthrough path does (the passthrough
     # was previously the one path that forwarded an empty stop string verbatim).
@@ -13590,7 +14099,9 @@ async def _anthropic_passthrough_stream(
 
             # Watchers unblock aiter_lines() during prefill, before in-loop
             # cancel/disconnect checks can run.
-            cancel_watcher = asyncio.create_task(_await_cancel_then_close(cancel_event, resp))
+            cancel_watcher = asyncio.create_task(
+                _await_cancel_then_close(cancel_event, resp)
+            )
             disconnect_watcher = asyncio.create_task(
                 _await_disconnect_then_close(request, resp, cancel_event)
             )
@@ -13708,7 +14219,10 @@ async def _anthropic_passthrough_non_streaming(
     ):
         retry_body = {
             **body,
-            "messages": [*body.get("messages", []), *nudge_messages(data, _allowed_tools)],
+            "messages": [
+                *body.get("messages", []),
+                *nudge_messages(data, _allowed_tools),
+            ],
         }
         try:
             retry_resp = await nonstreaming_client().post(
@@ -13718,7 +14232,9 @@ async def _anthropic_passthrough_non_streaming(
             )
             if retry_resp.status_code == 200:
                 retry_data = retry_resp.json()
-                if response_has_promotable_calls(retry_data, _allowed_tools, openai_tools):
+                if response_has_promotable_calls(
+                    retry_data, _allowed_tools, openai_tools
+                ):
                     data = retry_data
         except (httpx.RequestError, ValueError) as exc:
             logger.warning("tool-call nudge retry failed; keeping original: %s", exc)
@@ -13795,7 +14311,9 @@ async def _anthropic_passthrough_non_streaming(
                 )
             )
 
-    stop_reason = openai_finish_to_anthropic_stop(finish_reason, had_tool_calls = bool(tool_calls))
+    stop_reason = openai_finish_to_anthropic_stop(
+        finish_reason, had_tool_calls = bool(tool_calls)
+    )
 
     usage = data.get("usage") or {}
     return _anthropic_message_json_response(
@@ -13923,7 +14441,9 @@ def _strip_provider_synthetic_tool_history(messages: list[dict]) -> list[dict]:
                     if args_obj.get("_server_tool") is True:
                         is_synthetic = True
                     google = args_obj.get("google")
-                    if isinstance(google, dict) and isinstance(google.get("native_part"), dict):
+                    if isinstance(google, dict) and isinstance(
+                        google.get("native_part"), dict
+                    ):
                         is_synthetic = True
                 if is_synthetic:
                     tc_id = tc.get("id")
@@ -13998,7 +14518,9 @@ def _openai_messages_for_passthrough(payload) -> list[dict]:
     content part so vision + function-calling requests work transparently.
     """
     messages = _strip_provider_synthetic_tool_history(
-        _drop_empty_assistant_sentinels([m.model_dump(exclude_none = True) for m in payload.messages])
+        _drop_empty_assistant_sentinels(
+            [m.model_dump(exclude_none = True) for m in payload.messages]
+        )
     )
 
     if not payload.image_base64:
@@ -14315,7 +14837,9 @@ async def _openai_passthrough_stream(
                 level = "warning",
             )
             api_monitor.fail(monitor_id, str(exc))
-            yield _openai_stream_error_sse(_openai_admission_error_body(exc, status_code = 503))
+            yield _openai_stream_error_sse(
+                _openai_admission_error_body(exc, status_code = 503)
+            )
         except LlamaAdmissionCancelled:
             _openai_admission_log(
                 "cancelled-before-upstream",
@@ -14398,7 +14922,9 @@ async def _openai_passthrough_stream_admitted(
     resp = None
     send_task: Optional[asyncio.Task[Optional[httpx.Response]]] = None
 
-    async def _aclose_send_task(task: Optional[asyncio.Task[Optional[httpx.Response]]]) -> None:
+    async def _aclose_send_task(
+        task: Optional[asyncio.Task[Optional[httpx.Response]]],
+    ) -> None:
         if task is None:
             return
         if not task.done():
@@ -14416,7 +14942,9 @@ async def _openai_passthrough_stream_admitted(
     # Keep tracker cleanup paired if pre-header dispatch is cancelled.
     try:
         body = _build_openai_passthrough_body(
-            payload, backend_ctx = llama_backend.context_length, llama_backend = llama_backend
+            payload,
+            backend_ctx = llama_backend.context_length,
+            llama_backend = llama_backend,
         )
         # Text-form tool calls from small models get promoted to structured calls on
         # the way back (declared client tools only); requests without tools or with
@@ -14434,12 +14962,16 @@ async def _openai_passthrough_stream_admitted(
             trust_env = False,
         )
         _truncate_budget = (
-            _OVERFLOW_TRUNCATE_MAX_RETRIES if _overflow_truncation_requested(payload) else 0
+            _OVERFLOW_TRUNCATE_MAX_RETRIES
+            if _overflow_truncation_requested(payload)
+            else 0
         )
 
         while True:
             try:
-                req = client.build_request("POST", target_url, json = body, headers = upstream_headers)
+                req = client.build_request(
+                    "POST", target_url, json = body, headers = upstream_headers
+                )
                 first_token_deadline = time.monotonic() + _DEFAULT_FIRST_TOKEN_TIMEOUT_S
                 send_task = asyncio.create_task(
                     _send_stream_with_preheader_cancel(
@@ -14550,13 +15082,17 @@ async def _openai_passthrough_stream_admitted(
             last_chunk_model = model_name
             last_chunk_created = int(time.time())
             healer = (
-                StreamToolCallHealer(_allowed_tools, body.get("tools")) if _allowed_tools else None
+                StreamToolCallHealer(_allowed_tools, body.get("tools"))
+                if _allowed_tools
+                else None
             )
             healed_call_index = 0
 
             def _synthetic_finish_line() -> str:
                 healed = healer is not None and healer.healed
-                finish_reason = "tool_calls" if (saw_tool_call_delta or healed) else "stop"
+                finish_reason = (
+                    "tool_calls" if (saw_tool_call_delta or healed) else "stop"
+                )
                 chunk = ChatCompletionChunk(
                     id = last_chunk_id,
                     created = last_chunk_created,
@@ -14583,7 +15119,10 @@ async def _openai_passthrough_stream_admitted(
                     else:
                         # parallel_tool_calls=false caps healed calls too (the SSE
                         # line cap only sees structured upstream deltas).
-                        if payload.parallel_tool_calls is False and healed_call_index >= 1:
+                        if (
+                            payload.parallel_tool_calls is False
+                            and healed_call_index >= 1
+                        ):
                             continue
                         delta = {
                             "tool_calls": [
@@ -14601,7 +15140,9 @@ async def _openai_passthrough_stream_admitted(
                         "object": "chat.completion.chunk",
                         "created": last_chunk_created,
                         "model": last_chunk_model,
-                        "choices": [{"index": 0, "delta": delta, "finish_reason": None}],
+                        "choices": [
+                            {"index": 0, "delta": delta, "finish_reason": None}
+                        ],
                     }
                     lines.append("data: " + json.dumps(chunk, ensure_ascii = False))
                 return lines
@@ -14616,7 +15157,11 @@ async def _openai_passthrough_stream_admitted(
             def _heal_transform(chunk_data: dict, raw_line: str) -> list:
                 """SSE lines to emit in place of one upstream line (healing on)."""
                 choices = chunk_data.get("choices")
-                if not (isinstance(choices, list) and choices and isinstance(choices[0], dict)):
+                if not (
+                    isinstance(choices, list)
+                    and choices
+                    and isinstance(choices[0], dict)
+                ):
                     return [raw_line]
                 choice = choices[0]
                 delta = choice.get("delta")
@@ -14631,17 +15176,28 @@ async def _openai_passthrough_stream_admitted(
                             # slot; the upstream SSE cap keeps native index 0, so
                             # drop the native call here or the client gets two.
                             del delta["tool_calls"]
-                            if delta or choice.get("finish_reason") or chunk_data.get("usage"):
-                                lines.append("data: " + json.dumps(chunk_data, ensure_ascii = False))
+                            if (
+                                delta
+                                or choice.get("finish_reason")
+                                or chunk_data.get("usage")
+                            ):
+                                lines.append(
+                                    "data: "
+                                    + json.dumps(chunk_data, ensure_ascii = False)
+                                )
                             return lines
                         # A healed call already went out on index 0..n-1; OpenAI
                         # clients merge tool-call deltas by index, so shift the
                         # native calls into the next indexes or they would merge
                         # into the healed call.
                         for tc in delta["tool_calls"]:
-                            if isinstance(tc, dict) and isinstance(tc.get("index"), int):
+                            if isinstance(tc, dict) and isinstance(
+                                tc.get("index"), int
+                            ):
                                 tc["index"] += healed_call_index
-                        return lines + ["data: " + json.dumps(chunk_data, ensure_ascii = False)]
+                        return lines + [
+                            "data: " + json.dumps(chunk_data, ensure_ascii = False)
+                        ]
                     return lines + [raw_line]
                 content = delta.get("content")
                 finish = choice.get("finish_reason")
@@ -14653,7 +15209,9 @@ async def _openai_passthrough_stream_admitted(
                     lines = _healer_sse_lines(healer.finalize())
                     if healer.healed and finish == "stop":
                         choice["finish_reason"] = "tool_calls"
-                        return lines + ["data: " + json.dumps(chunk_data, ensure_ascii = False)]
+                        return lines + [
+                            "data: " + json.dumps(chunk_data, ensure_ascii = False)
+                        ]
                     return lines + [raw_line]
                 events = healer.feed(content)
                 if finish:
@@ -14670,7 +15228,9 @@ async def _openai_passthrough_stream_admitted(
                     prefix_choice["delta"] = dict(delta)
                     prefix_choice["finish_reason"] = None
                     prefix_chunk["choices"] = [prefix_choice]
-                    prefix_lines.append("data: " + json.dumps(prefix_chunk, ensure_ascii = False))
+                    prefix_lines.append(
+                        "data: " + json.dumps(prefix_chunk, ensure_ascii = False)
+                    )
                     delta.clear()
                 lines = prefix_lines + _healer_sse_lines(events)
                 if delta or finish or chunk_data.get("usage"):
@@ -14716,10 +15276,13 @@ async def _openai_passthrough_stream_admitted(
                                 resp = send_task.result()
                             except httpx.RequestError as e:
                                 logger.error(
-                                    "openai passthrough stream: upstream unreachable: %s", e
+                                    "openai passthrough stream: upstream unreachable: %s",
+                                    e,
                                 )
                                 api_monitor.fail(monitor_id, _friendly_error(e))
-                                yield _openai_stream_error_sse(_openai_stream_error_chunk(e))
+                                yield _openai_stream_error_sse(
+                                    _openai_stream_error_chunk(e)
+                                )
                                 return
                             send_task = None
 
@@ -14751,7 +15314,9 @@ async def _openai_passthrough_stream_admitted(
                         req = client.build_request(
                             "POST", target_url, json = body, headers = upstream_headers
                         )
-                        first_token_deadline = time.monotonic() + _DEFAULT_FIRST_TOKEN_TIMEOUT_S
+                        first_token_deadline = (
+                            time.monotonic() + _DEFAULT_FIRST_TOKEN_TIMEOUT_S
+                        )
                         send_task = asyncio.create_task(
                             _send_stream_with_preheader_cancel(
                                 client,
@@ -14763,7 +15328,9 @@ async def _openai_passthrough_stream_admitted(
                         )
                         continue
 
-                    upstream_error = _openai_passthrough_error(upstream_status, err_text)
+                    upstream_error = _openai_passthrough_error(
+                        upstream_status, err_text
+                    )
                     error_payload = (
                         upstream_error.detail
                         if isinstance(upstream_error.detail, dict)
@@ -14776,7 +15343,9 @@ async def _openai_passthrough_stream_admitted(
                     yield _openai_stream_error_sse(error_payload)
                     return
 
-                cancel_watcher = asyncio.create_task(_await_cancel_then_close(cancel_event, resp))
+                cancel_watcher = asyncio.create_task(
+                    _await_cancel_then_close(cancel_event, resp)
+                )
                 disconnect_watcher = asyncio.create_task(
                     _await_disconnect_then_close(request, resp, cancel_event)
                 )
@@ -14876,7 +15445,8 @@ async def _openai_passthrough_stream_admitted(
                         isinstance(chunk_data, dict)
                         and chunk_data.get("usage")
                         and not (
-                            isinstance(chunk_data.get("choices"), list) and chunk_data["choices"]
+                            isinstance(chunk_data.get("choices"), list)
+                            and chunk_data["choices"]
                         )
                         and not saw_finish_reason
                         and not saw_stream_error
@@ -14916,7 +15486,8 @@ async def _openai_passthrough_stream_admitted(
                             else _openai_passthrough_sse_line_terminal_state(out_line)
                         )
                         if terminal_state == "usage" or (
-                            terminal_state == "finish" and not _wants_stream_usage(payload)
+                            terminal_state == "finish"
+                            and not _wants_stream_usage(payload)
                         ):
                             done_line = _SSE_DONE_LINE
                             _monitor_openai_sse_line(
@@ -15065,7 +15636,9 @@ async def _openai_passthrough_stream_admitted(
                 cancel_event.set()
             api_monitor.finish(monitor_id, "cancelled")
         else:
-            detail = exc.detail if isinstance(exc, HTTPException) else _friendly_error(exc)
+            detail = (
+                exc.detail if isinstance(exc, HTTPException) else _friendly_error(exc)
+            )
             api_monitor.fail(monitor_id, str(detail))
         try:
             await _aclose_send_task(send_task)
@@ -15262,7 +15835,9 @@ async def _openai_passthrough_non_streaming_upstream(
             # llama-server subprocess crashed / starting / unreachable. Surface the
             # same friendly message the sync chat path emits so operators don't see
             # a bare 500 with no diagnostic.
-            logger.error("openai passthrough non-streaming: upstream unreachable: %s", e)
+            logger.error(
+                "openai passthrough non-streaming: upstream unreachable: %s", e
+            )
             api_monitor.fail(monitor_id, _friendly_error(e))
             get_llama_cpp_backend()._maybe_recover_from_mtp_crash(e)
             raise HTTPException(
@@ -15319,13 +15894,18 @@ async def _openai_passthrough_non_streaming_upstream(
     ):
         retry_body = {
             **body,
-            "messages": [*body.get("messages", []), *nudge_messages(data, _allowed_tools)],
+            "messages": [
+                *body.get("messages", []),
+                *nudge_messages(data, _allowed_tools),
+            ],
         }
         try:
             retry_resp = await _post(retry_body)
             if retry_resp.status_code == 200:
                 retry_data = retry_resp.json()
-                if response_has_promotable_calls(retry_data, _allowed_tools, body.get("tools")):
+                if response_has_promotable_calls(
+                    retry_data, _allowed_tools, body.get("tools")
+                ):
                     resp, data = retry_resp, retry_data
         except asyncio.CancelledError:
             api_monitor.finish(monitor_id, "cancelled")
@@ -15347,7 +15927,9 @@ async def _openai_passthrough_non_streaming_upstream(
         # Anthropic paths): a call cut off at max_tokens keeps
         # finish_reason="length" so the client knows the arguments may be
         # incomplete, while the healed call itself stays attached.
-        if _allowed_tools and heal_openai_message(msg, _allowed_tools, body.get("tools")):
+        if _allowed_tools and heal_openai_message(
+            msg, _allowed_tools, body.get("tools")
+        ):
             if choice.get("finish_reason") == "stop":
                 choice["finish_reason"] = "tool_calls"
             changed = True

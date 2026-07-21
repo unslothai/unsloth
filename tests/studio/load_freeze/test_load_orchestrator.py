@@ -89,7 +89,9 @@ class _UvicornServerThread:
 
         self.host = host
         self.port = port
-        cfg = uvicorn.Config(app, host = host, port = port, log_level = "warning", access_log = False)
+        cfg = uvicorn.Config(
+            app, host = host, port = port, log_level = "warning", access_log = False
+        )
         self._server = uvicorn.Server(cfg)
         self._server.install_signal_handlers = lambda: None  # type: ignore[assignment]
         self._thread: threading.Thread | None = None
@@ -191,7 +193,9 @@ def test_buggy_route_blocks_event_loop():
         app = _build_app(backend, wrap_in_thread = False)
         port = _free_port()
         with _UvicornServerThread(app, port = port) as uv:
-            max_lat, probe_t, _ = _drive_concurrent_probe_and_health(f"http://127.0.0.1:{uv.port}")
+            max_lat, probe_t, _ = _drive_concurrent_probe_and_health(
+                f"http://127.0.0.1:{uv.port}"
+            )
     assert probe_t >= 0.5
     assert max_lat >= 0.4, f"expected >=0.4s stall, got {max_lat:.3f}s"
 
@@ -390,7 +394,9 @@ def test_50_concurrent_probes_complete_without_deadlock():
             with ThreadPoolExecutor(max_workers = 50) as pool:
                 futs = [
                     pool.submit(
-                        lambda: httpx.get(f"http://127.0.0.1:{uv.port}/probe", timeout = 30.0)
+                        lambda: httpx.get(
+                            f"http://127.0.0.1:{uv.port}/probe", timeout = 30.0
+                        )
                     )
                     for _ in range(50)
                 ]

@@ -20,7 +20,9 @@ def test_locale_changes_do_not_force_document_direction():
 
 def test_locale_metadata_does_not_advertise_unused_layout_direction():
     src = MESSAGES.read_text(encoding = "utf-8")
-    locales_block = src[src.index("export const LOCALES") : src.index("export type Locale")]
+    locales_block = src[
+        src.index("export const LOCALES") : src.index("export type Locale")
+    ]
     assert "dir:" not in locales_block
 
 

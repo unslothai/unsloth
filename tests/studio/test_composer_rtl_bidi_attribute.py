@@ -91,7 +91,9 @@ def test_compare_composer_has_stuck_compositionend_watchdog():
     assert (
         "IME_STUCK_TIMEOUT_MS" in src
     ), "compare composer is missing the stuck-compositionend watchdog (issue #5546)"
-    assert "onCompositionUpdate" in src, "compare composer is missing onCompositionUpdate wiring"
+    assert (
+        "onCompositionUpdate" in src
+    ), "compare composer is missing onCompositionUpdate wiring"
 
 
 def test_main_composer_keydown_repins_composing_during_ime():
@@ -167,7 +169,9 @@ def test_compare_composer_keydown_rearms_watchdog():
     )
 
 
-def _assert_enter_guard_before_immediate_recovery(block: str, refresh_call: str) -> None:
+def _assert_enter_guard_before_immediate_recovery(
+    block: str, refresh_call: str
+) -> None:
     enter_idx = block.find('e.key === "Enter"')
     recovery_idx = block.find("setCompositionState(false)")
     assert enter_idx != -1, "keydown handler is missing an Enter guard"

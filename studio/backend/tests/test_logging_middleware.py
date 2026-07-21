@@ -117,7 +117,11 @@ def test_non_http_scope_passes_through(logs):
     async def send(message):
         pass
 
-    _run(LoggingMiddleware(app)({"type": "websocket", "path": "/ws"}, _noop_receive, send))
+    _run(
+        LoggingMiddleware(app)(
+            {"type": "websocket", "path": "/ws"}, _noop_receive, send
+        )
+    )
 
     assert seen == ["websocket"]
     assert logs.events == []
@@ -183,11 +187,15 @@ def test_quiet_poll_paths_use_longer_heartbeat_window(logs, monkeypatch):
     for _ in range(3):
         _run(mw(_http_scope("/api/inference/monitor"), _noop_receive, send))  # quiet
     for _ in range(3):
-        _run(mw(_http_scope("/api/models/browse-folders"), _noop_receive, send))  # normal
+        _run(
+            mw(_http_scope("/api/models/browse-folders"), _noop_receive, send)
+        )  # normal
 
     paths = [e[2]["path"] for e in logs.events]
     assert paths.count("/api/inference/monitor") == 1  # collapsed to one heartbeat
-    assert paths.count("/api/models/browse-folders") == 3  # base dedup off -> all logged
+    assert (
+        paths.count("/api/models/browse-folders") == 3
+    )  # base dedup off -> all logged
 
 
 def test_distinct_query_strings_are_not_deduped(logs, monkeypatch):
@@ -263,7 +271,9 @@ def _paths_logged(logs):
 def test_quiet_success_get_2xx_suppressed(logs):
     # A GET/2xx poll on a quiet-success path logs nothing; the signal is in events.
     for path in ("/api/chat/threads", "/api/export/status", "/api/hub/download-status"):
-        _run(LoggingMiddleware(_status_app(200))(_http_scope(path), _noop_receive, _drop))
+        _run(
+            LoggingMiddleware(_status_app(200))(_http_scope(path), _noop_receive, _drop)
+        )
     assert logs.events == []
 
 
@@ -276,7 +286,9 @@ def test_chat_detail_and_message_reads_still_log(logs):
         "/api/chat/threads/abc123/messages/m1",
         "/api/chat/projects/p1",
     ):
-        _run(LoggingMiddleware(_status_app(200))(_http_scope(path), _noop_receive, _drop))
+        _run(
+            LoggingMiddleware(_status_app(200))(_http_scope(path), _noop_receive, _drop)
+        )
     assert _paths_logged(logs) == [
         "/api/chat/threads/abc123",
         "/api/chat/threads/abc123/messages",
@@ -300,11 +312,15 @@ def test_chat_pre_auth_401_suppressed_other_errors_logged(logs):
     # The transient bootstrap 401 on a chat list GET is dropped, but a 500 (or any
     # other status) still logs so real failures stay visible.
     _run(
-        LoggingMiddleware(_status_app(401))(_http_scope("/api/chat/projects"), _noop_receive, _drop)
+        LoggingMiddleware(_status_app(401))(
+            _http_scope("/api/chat/projects"), _noop_receive, _drop
+        )
     )
     assert logs.events == []
     _run(
-        LoggingMiddleware(_status_app(500))(_http_scope("/api/chat/projects"), _noop_receive, _drop)
+        LoggingMiddleware(_status_app(500))(
+            _http_scope("/api/chat/projects"), _noop_receive, _drop
+        )
     )
     assert _paths_logged(logs) == ["/api/chat/projects"]
 
@@ -339,11 +355,15 @@ def test_chat_401_logged_after_first_auth_refresh(logs):
 def test_export_status_error_still_logs(logs):
     # 2xx suppressed, but an HTTP-level error on export status remains visible.
     _run(
-        LoggingMiddleware(_status_app(200))(_http_scope("/api/export/status"), _noop_receive, _drop)
+        LoggingMiddleware(_status_app(200))(
+            _http_scope("/api/export/status"), _noop_receive, _drop
+        )
     )
     assert logs.events == []
     _run(
-        LoggingMiddleware(_status_app(500))(_http_scope("/api/export/status"), _noop_receive, _drop)
+        LoggingMiddleware(_status_app(500))(
+            _http_scope("/api/export/status"), _noop_receive, _drop
+        )
     )
     assert _paths_logged(logs) == ["/api/export/status"]
 

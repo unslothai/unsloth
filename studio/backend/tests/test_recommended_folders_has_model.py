@@ -39,7 +39,8 @@ def _load_has_downloaded_model():
         if isinstance(node, ast.FunctionDef) and node.name in wanted:
             body.append(node)
         elif isinstance(node, ast.Assign) and any(
-            isinstance(t, ast.Name) and t.id == "_WEIGHT_BIN_PREFIXES" for t in node.targets
+            isinstance(t, ast.Name) and t.id == "_WEIGHT_BIN_PREFIXES"
+            for t in node.targets
         ):
             body.append(node)
     got = {n.name for n in body if isinstance(n, ast.FunctionDef)}

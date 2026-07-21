@@ -160,7 +160,9 @@ RE_EMBEDDED_KEYS = re.compile(
 )
 
 # Full PEM block (BEGIN..END), used to pin a multiline key body in evidence.
-RE_PEM_BLOCK = re.compile(r"-----BEGIN[^\n]*KEY-----.*?-----END[^\n]*KEY-----", re.DOTALL)
+RE_PEM_BLOCK = re.compile(
+    r"-----BEGIN[^\n]*KEY-----.*?-----END[^\n]*KEY-----", re.DOTALL
+)
 
 # Cloud metadata / IMDS endpoints
 RE_CLOUD_METADATA = re.compile(
@@ -324,7 +326,9 @@ RE_CRYPTO_THEFT = re.compile(
 RE_PTH_IMPORT = re.compile(r"^\s*import\s+", re.MULTILINE)
 
 # openssl CLI invocations via subprocess (encrypted exfiltration)
-RE_OPENSSL_CLI = re.compile(r"\bopenssl\s+(enc|rand|rsautl|pkeyutl|genrsa|dgst|s_client)\b")
+RE_OPENSSL_CLI = re.compile(
+    r"\bopenssl\s+(enc|rand|rsautl|pkeyutl|genrsa|dgst|s_client)\b"
+)
 
 # Write to /tmp then execute (staged dropper)
 RE_TEMP_EXEC = re.compile(
@@ -533,7 +537,9 @@ def check_pth_file(content: str, filename: str, package: str) -> list[Finding]:
 # A STRING after one of these tokens (and before a NEWLINE) is a bare
 # docstring/doctest/prose statement -- the dominant FP source -- so we blank it.
 # A string after `=` or `(` is real code and is never blanked.
-_LINE_START_TOKENS = frozenset({tokenize.NEWLINE, tokenize.NL, tokenize.INDENT, tokenize.DEDENT})
+_LINE_START_TOKENS = frozenset(
+    {tokenize.NEWLINE, tokenize.NL, tokenize.INDENT, tokenize.DEDENT}
+)
 
 
 def _is_fstring(tok_string: str) -> bool:
@@ -1425,7 +1431,9 @@ def _extract_evidence(
             if len(head) > _MAX_LINE_CHARS:
                 head = head[:_MAX_LINE_CHARS] + "..."
             return f"L{start}: {head} sha256:{digest}"
-        return "\n".join(f"L{start + i}: {_cap_line(ln.rstrip())}" for i, ln in enumerate(span))
+        return "\n".join(
+            f"L{start + i}: {_cap_line(ln.rstrip())}" for i, ln in enumerate(span)
+        )
 
     for i, line in enumerate(lines, 1):
         if pattern.search(line):
@@ -1484,7 +1492,9 @@ def _embedded_key_evidence(content: str) -> str:
     ev = _extract_evidence(content, RE_EMBEDDED_KEYS)
     blocks = RE_PEM_BLOCK.findall(content)
     if blocks:
-        digest = hashlib.sha256("\n".join(blocks).encode("utf-8", "replace")).hexdigest()
+        digest = hashlib.sha256(
+            "\n".join(blocks).encode("utf-8", "replace")
+        ).hexdigest()
         ev = f"{ev} sha256:{digest}" if ev else f"sha256:{digest}"
     return ev
 
@@ -1794,13 +1804,15 @@ def iter_archive_files(archive_path: str):
                 # historically dereferenced them on extract.
                 if member.issym() or member.islnk():
                     print(
-                        f"  [WARN] {path.name}: refused link member " f"{member.name!r}",
+                        f"  [WARN] {path.name}: refused link member "
+                        f"{member.name!r}",
                         file = sys.stderr,
                     )
                     continue
                 if member.isdev() or member.isfifo():
                     print(
-                        f"  [WARN] {path.name}: refused special member " f"{member.name!r}",
+                        f"  [WARN] {path.name}: refused special member "
+                        f"{member.name!r}",
                         file = sys.stderr,
                     )
                     continue
@@ -1975,7 +1987,9 @@ _SDIST_DOWNLOAD_TIMEOUT = 180
 # Never fetch an archive larger than we would be willing to scan (iter_archive_files cap).
 _MAX_SDIST_BYTES = HARD_MAX_TOTAL_BYTES
 # Direct sdist bytes only ever come from PyPI's own CDN; refuse anything else.
-_TRUSTED_PYPI_HOSTS = frozenset({"files.pythonhosted.org", "pypi.org", "pypi.python.org"})
+_TRUSTED_PYPI_HOSTS = frozenset(
+    {"files.pythonhosted.org", "pypi.org", "pypi.python.org"}
+)
 
 
 def _spec_pin_version(spec: str) -> str | None:
@@ -2014,7 +2028,9 @@ def _release_files(meta: dict, version: str | None) -> list[dict]:
 
 def _release_has_wheel(meta: dict, version: str | None) -> bool:
     """True if the (pinned or latest) release publishes any bdist_wheel."""
-    return any(f.get("packagetype") == "bdist_wheel" for f in _release_files(meta, version))
+    return any(
+        f.get("packagetype") == "bdist_wheel" for f in _release_files(meta, version)
+    )
 
 
 def _is_trusted_pypi_url(url: str) -> bool:
@@ -2140,10 +2156,14 @@ def _download_sdist_direct(
         return None, f"refusing non-PyPI sdist URL for {name}: {url[:80]}"
     # basename + sanitize keeps the path inside dest; the char class preserves
     # the real `.tar.gz` / `.zip` suffix so the archive reader picks the format.
-    safe_fname = _RE_PKG_NAME_SANITIZE.sub("_", os.path.basename(fname)) or "sdist.tar.gz"
+    safe_fname = (
+        _RE_PKG_NAME_SANITIZE.sub("_", os.path.basename(fname)) or "sdist.tar.gz"
+    )
     out = os.path.join(dest, safe_fname)
     try:
-        req = urllib.request.Request(url, headers = {"Accept": "application/octet-stream"})
+        req = urllib.request.Request(
+            url, headers = {"Accept": "application/octet-stream"}
+        )
         with urllib.request.urlopen(req, timeout = _SDIST_DOWNLOAD_TIMEOUT) as resp:
             if getattr(resp, "status", 200) != 200:
                 return None, f"sdist HTTP {getattr(resp, 'status', '?')} for {name}"
@@ -2158,7 +2178,10 @@ def _download_sdist_direct(
         )
         return out, None
     except Exception as exc:
-        return None, f"sdist download failed for {name}: {type(exc).__name__}: {str(exc)[:120]}"
+        return (
+            None,
+            f"sdist download failed for {name}: {type(exc).__name__}: {str(exc)[:120]}",
+        )
 
 
 def _pip_download_with_deps(
@@ -2179,7 +2202,9 @@ def _pip_download_with_deps(
         dest,
     ] + list(specs)
     try:
-        proc = subprocess.run(cmd, capture_output = True, text = True, timeout = timeout, env = env)
+        proc = subprocess.run(
+            cmd, capture_output = True, text = True, timeout = timeout, env = env
+        )
         return proc.returncode, proc.stderr or ""
     except subprocess.TimeoutExpired:
         return 124, "pip download (with deps) timed out"
@@ -2219,7 +2244,9 @@ def _resolve_per_spec_with_deps(
             spec,
         ]
         try:
-            proc = subprocess.run(cmd, capture_output = True, text = True, timeout = 300, env = env)
+            proc = subprocess.run(
+                cmd, capture_output = True, text = True, timeout = 300, env = env
+            )
         except subprocess.TimeoutExpired:
             download_errors.append(f"per-spec --with-deps timed out for {spec}")
             continue
@@ -2231,7 +2258,9 @@ def _resolve_per_spec_with_deps(
             if fpath is None:
                 download_errors.append(serr or f"sdist fetch failed for {name}")
                 continue
-            sdist_dep_followups.extend(_requires_dist_for(name, version, meta, download_errors))
+            sdist_dep_followups.extend(
+                _requires_dist_for(name, version, meta, download_errors)
+            )
             continue
         # Has a wheel but the full transitive tree won't co-resolve
         # (ResolutionImpossible) -- typically a package the requirement file
@@ -2251,7 +2280,9 @@ def _resolve_per_spec_with_deps(
             spec,
         ]
         try:
-            nd = subprocess.run(nd_cmd, capture_output = True, text = True, timeout = 180, env = env)
+            nd = subprocess.run(
+                nd_cmd, capture_output = True, text = True, timeout = 180, env = env
+            )
         except subprocess.TimeoutExpired:
             download_errors.append(f"per-spec --no-deps timed out for {spec}")
             continue
@@ -2265,7 +2296,9 @@ def _resolve_per_spec_with_deps(
             # which --no-deps skips. Recover the declared deps so that class is
             # still scanned (each is fetched as a wheel or direct sdist below).
             if meta is not None:
-                sdist_dep_followups.extend(_requires_dist_for(name, version, meta, download_errors))
+                sdist_dep_followups.extend(
+                    _requires_dist_for(name, version, meta, download_errors)
+                )
             continue
         # --no-deps also failed: last-ditch sdist fetch at the pinned version.
         if meta is not None:
@@ -2273,7 +2306,8 @@ def _resolve_per_spec_with_deps(
             if fpath is not None:
                 continue
         download_errors.append(
-            f"per-spec failed for {spec} (with-deps and --no-deps): " f"{nd.stderr.strip()[:240]}"
+            f"per-spec failed for {spec} (with-deps and --no-deps): "
+            f"{nd.stderr.strip()[:240]}"
         )
 
     # Recover the transitive deps of sdist-only packages. A depth-bounded,
@@ -2302,7 +2336,9 @@ def _resolve_per_spec_with_deps(
             dep,
         ]
         try:
-            proc = subprocess.run(cmd, capture_output = True, text = True, timeout = 300, env = env)
+            proc = subprocess.run(
+                cmd, capture_output = True, text = True, timeout = 300, env = env
+            )
         except subprocess.TimeoutExpired:
             print(f"  [WARN] dep download timed out for {dep}", file = sys.stderr)
             continue
@@ -2310,14 +2346,21 @@ def _resolve_per_spec_with_deps(
             continue
         meta = _pypi_json(dep_name)
         if meta is None:
-            print(f"  [WARN] could not resolve indirect dep {dep}; skipping", file = sys.stderr)
+            print(
+                f"  [WARN] could not resolve indirect dep {dep}; skipping",
+                file = sys.stderr,
+            )
             continue
         if not _release_has_wheel(meta, dep_ver):
             fpath, serr = _download_sdist_direct(dep_name, dep_ver, dest, meta = meta)
             if fpath is None:
-                print(f"  [WARN] could not fetch sdist dep {dep}: {serr}", file = sys.stderr)
+                print(
+                    f"  [WARN] could not fetch sdist dep {dep}: {serr}", file = sys.stderr
+                )
             elif depth < _MAX_DEP_FOLLOWUP_DEPTH:
-                worklist.extend((d, depth + 1) for d in _requires_dist_for(dep_name, dep_ver, meta))
+                worklist.extend(
+                    (d, depth + 1) for d in _requires_dist_for(dep_name, dep_ver, meta)
+                )
             continue
         # Wheel published but its tree won't co-resolve (a sdist-only child).
         # Fetch the dep alone so it is scanned, then chase its own declared deps.
@@ -2333,19 +2376,28 @@ def _resolve_per_spec_with_deps(
             dep,
         ]
         try:
-            nd = subprocess.run(nd_cmd, capture_output = True, text = True, timeout = 180, env = env)
+            nd = subprocess.run(
+                nd_cmd, capture_output = True, text = True, timeout = 180, env = env
+            )
         except subprocess.TimeoutExpired:
             print(f"  [WARN] dep --no-deps timed out for {dep}", file = sys.stderr)
             continue
         if nd.returncode == 0:
             if depth < _MAX_DEP_FOLLOWUP_DEPTH:
-                worklist.extend((d, depth + 1) for d in _requires_dist_for(dep_name, dep_ver, meta))
+                worklist.extend(
+                    (d, depth + 1) for d in _requires_dist_for(dep_name, dep_ver, meta)
+                )
             continue
         fpath, _serr = _download_sdist_direct(dep_name, dep_ver, dest, meta = meta)
         if fpath is None:
-            print(f"  [WARN] could not resolve indirect dep {dep}; skipping", file = sys.stderr)
+            print(
+                f"  [WARN] could not resolve indirect dep {dep}; skipping",
+                file = sys.stderr,
+            )
         elif depth < _MAX_DEP_FOLLOWUP_DEPTH:
-            worklist.extend((d, depth + 1) for d in _requires_dist_for(dep_name, dep_ver, meta))
+            worklist.extend(
+                (d, depth + 1) for d in _requires_dist_for(dep_name, dep_ver, meta)
+            )
 
 
 def download_packages(
@@ -2410,7 +2462,9 @@ def download_packages(
                 spec,
             ]
             try:
-                proc = subprocess.run(cmd, capture_output = True, text = True, timeout = 120, env = env)
+                proc = subprocess.run(
+                    cmd, capture_output = True, text = True, timeout = 120, env = env
+                )
             except subprocess.TimeoutExpired:
                 download_errors.append(f"pip download timed out for {spec}")
                 continue
@@ -2420,7 +2474,9 @@ def download_packages(
                 version = _spec_pin_version(spec)
                 meta = _pypi_json(name)
                 if meta is not None and not _release_has_wheel(meta, version):
-                    fpath, serr = _download_sdist_direct(name, version, pkg_dir, meta = meta)
+                    fpath, serr = _download_sdist_direct(
+                        name, version, pkg_dir, meta = meta
+                    )
                     if fpath is not None:
                         results.append((spec, fpath))
                         continue
@@ -2447,7 +2503,9 @@ def _extract_pkg_name(spec: str) -> str:
     """Extract the package name from a pip spec string."""
     m = _RE_NAME.match(spec)
     return (
-        m.group(1) if m else spec.split("==")[0].split(">=")[0].split("<=")[0].split("[")[0].strip()
+        m.group(1)
+        if m
+        else spec.split("==")[0].split(">=")[0].split("<=")[0].split("[")[0].strip()
     )
 
 
@@ -2790,7 +2848,9 @@ def _run_fix(critical_pkgs: set[str], entries: list[dict], max_search: int) -> N
             if git_entries:
                 for e in git_entries:
                     src = e["source_file"] or "CLI"
-                    print(f"  [SKIP] {pkg_name} is a git URL dep in {src}, cannot auto-update")
+                    print(
+                        f"  [SKIP] {pkg_name} is a git URL dep in {src}, cannot auto-update"
+                    )
                     changes_summary.append(f"  SKIP  {pkg_name} (git URL)")
                 continue
 
@@ -2815,7 +2875,9 @@ def _run_fix(critical_pkgs: set[str], entries: list[dict], max_search: int) -> N
                 shutil.rmtree(dl_dir, ignore_errors = True)
 
             if not current_ver:
-                print(f"  [WARN] Cannot determine current version of {pkg_name}, skipping fix")
+                print(
+                    f"  [WARN] Cannot determine current version of {pkg_name}, skipping fix"
+                )
                 changes_summary.append(f"  SKIP  {pkg_name} (version unknown)")
                 continue
 
@@ -2832,7 +2894,9 @@ def _run_fix(critical_pkgs: set[str], entries: list[dict], max_search: int) -> N
                 continue
 
             print(f"  [OK]   {pkg_name}: {current_ver} -> {safe_ver}")
-            changes_summary.append(f"  FIX   {pkg_name}=={current_ver} -> {pkg_name}=={safe_ver}")
+            changes_summary.append(
+                f"  FIX   {pkg_name}=={current_ver} -> {pkg_name}=={safe_ver}"
+            )
 
             # Update all occurrences in requirements files
             file_updates: dict[str, dict[int, str]] = {}
@@ -2879,7 +2943,9 @@ def _find_requirements_files(root: str) -> list[str]:
         dirnames[:] = [
             d
             for d in dirnames
-            if not d.startswith(".") and d not in skip_dirs and not d.endswith(".egg-info")
+            if not d.startswith(".")
+            and d not in skip_dirs
+            and not d.endswith(".egg-info")
         ]
         dirname = os.path.basename(dirpath)
         for fname in sorted(filenames):
@@ -2953,7 +3019,9 @@ def _canon_evidence(evidence: str) -> str:
 
 def _evidence_hash(evidence: str) -> str:
     """Stable digest of the canonical matched evidence."""
-    return hashlib.sha256(_canon_evidence(evidence).encode("utf-8", "replace")).hexdigest()
+    return hashlib.sha256(
+        _canon_evidence(evidence).encode("utf-8", "replace")
+    ).hexdigest()
 
 
 def _finding_key(f: Finding) -> tuple[str, str, str, str]:
@@ -2995,7 +3063,9 @@ def _load_baseline(path: str) -> set[tuple[str, str, str, str]]:
             continue
         try:
             # Use the reviewed hash; else recompute it from the stored evidence.
-            evidence_hash = e.get("evidence_hash") or _evidence_hash(e.get("evidence") or "")
+            evidence_hash = e.get("evidence_hash") or _evidence_hash(
+                e.get("evidence") or ""
+            )
             if not e.get("evidence_hash"):
                 legacy += 1
             keys.add(
@@ -3151,7 +3221,9 @@ def main() -> int:
                 print(f"    {f}")
             req_files.extend(found)
         else:
-            print(f"  [WARN] No requirements files found in {scan_dir}/", file = sys.stderr)
+            print(
+                f"  [WARN] No requirements files found in {scan_dir}/", file = sys.stderr
+            )
 
     # Build unified entry list: list of dicts with source tracking
     entries: list[dict] = []

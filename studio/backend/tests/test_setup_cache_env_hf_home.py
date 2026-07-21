@@ -18,7 +18,9 @@ _BACKEND_DIR = str(Path(__file__).resolve().parent.parent)
 if _BACKEND_DIR not in sys.path:
     sys.path.insert(0, _BACKEND_DIR)
 
-_STORAGE_ROOTS_PATH = Path(__file__).resolve().parent.parent / "utils/paths/storage_roots.py"
+_STORAGE_ROOTS_PATH = (
+    Path(__file__).resolve().parent.parent / "utils/paths/storage_roots.py"
+)
 
 
 @pytest.fixture(autouse = True)
@@ -28,7 +30,9 @@ def _isolate_studio_home(monkeypatch, tmp_path):
 
 
 def _load_storage_roots():
-    spec = importlib.util.spec_from_file_location("storage_roots_under_test", _STORAGE_ROOTS_PATH)
+    spec = importlib.util.spec_from_file_location(
+        "storage_roots_under_test", _STORAGE_ROOTS_PATH
+    )
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module

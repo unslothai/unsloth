@@ -231,7 +231,9 @@ def test_trl_version_parseable(tag: str):
     # Any one mechanism suffices: literal, `from .version import`,
     # importlib.metadata version(), or reading a sibling VERSION file.
     has_literal = bool(re.search(r'^__version__\s*=\s*["\']', src, re.MULTILINE))
-    has_subimport = bool(re.search(r"^from\s+\.version\s+import\s+__version__", src, re.MULTILINE))
+    has_subimport = bool(
+        re.search(r"^from\s+\.version\s+import\s+__version__", src, re.MULTILINE)
+    )
     has_metadata = bool(
         re.search(
             r"^from\s+importlib\.metadata\s+import\s+(?:[\w,\s]+,\s*)?version",
@@ -277,7 +279,9 @@ def test_trl_sft_trainer_module_internals(tag: str):
         f"{tag}: trl/trainer/sft_trainer.py missing; "
         f"unsloth/tokenizer_utils.py:1538 wildcard import fails"
     )
-    assert has_def(src, "SFTTrainer", "class"), f"{tag}: class SFTTrainer missing in sft_trainer.py"
+    assert has_def(
+        src, "SFTTrainer", "class"
+    ), f"{tag}: class SFTTrainer missing in sft_trainer.py"
     # neftune_post_forward_hook: optional, soft-imported in tokenizer_utils.py:1542.
     if "neftune_post_forward_hook" not in src:
         pass
@@ -294,7 +298,9 @@ def test_trl_dpo_trainer_module_exists(tag: str):
         f"{tag}: trl/trainer/dpo_trainer.py missing; "
         f"unsloth-zoo/temporary_patches/misc.py:1376 import fails"
     )
-    assert has_def(src, "DPOTrainer", "class"), f"{tag}: class DPOTrainer missing in dpo_trainer.py"
+    assert has_def(
+        src, "DPOTrainer", "class"
+    ), f"{tag}: class DPOTrainer missing in dpo_trainer.py"
 
 
 # 7. trl.trainer.utils.ConstantLengthDataset — optional soft import in
@@ -313,7 +319,8 @@ def test_trl_constant_length_dataset_optional(tag: str):
     _, src = hit
     if "ConstantLengthDataset" not in src:
         pytest.skip(
-            f"{tag}: ConstantLengthDataset removed; unsloth-zoo soft " f"import handles this"
+            f"{tag}: ConstantLengthDataset removed; unsloth-zoo soft "
+            f"import handles this"
         )
 
 
@@ -472,7 +479,9 @@ def test_trl_kto_get_batch_logps_signature(tag: str):
         'raise ValueError("Logits (batch and sequence length dim) and labels '
         'must have the same shape.")'
     )
-    if checked_sources and not any(old_shape_check in src for _, src in checked_sources):
+    if checked_sources and not any(
+        old_shape_check in src for _, src in checked_sources
+    ):
         # TRL main inlined KTO log-probs and removed the old rewrite target;
         # nothing to guard until a new concrete shape-mismatch target appears.
         return
@@ -508,7 +517,9 @@ def test_trl_dpo_trainer_methods(tag: str):
     src = fetch_text("huggingface/trl", tag, "trl/trainer/dpo_trainer.py")
     assert src is not None
     # The DPO class itself must always exist.
-    assert has_def(src, "DPOTrainer", "class"), f"{tag}: class DPOTrainer missing in dpo_trainer.py"
+    assert has_def(
+        src, "DPOTrainer", "class"
+    ), f"{tag}: class DPOTrainer missing in dpo_trainer.py"
     # Informational only -- pass either way:
     for method in (
         "concatenated_inputs",
@@ -617,10 +628,14 @@ def test_trl_grpo_aux_loss_enabled_contract(tag: str):
     the penalty (the optimized forward cannot compute it). A change to this
     line drops the guard silently (PR #6904)."""
     if not _tag_ge(tag, "1.7.0"):
-        pytest.skip(f"{tag}: aux_loss_enabled / router_aux_loss_coef added in TRL 1.7.0")
+        pytest.skip(
+            f"{tag}: aux_loss_enabled / router_aux_loss_coef added in TRL 1.7.0"
+        )
     src = fetch_text("huggingface/trl", tag, "trl/trainer/grpo_trainer.py")
     assert src is not None
-    assert "self.aux_loss_enabled = is_moe and args.router_aux_loss_coef != 0.0" in src, (
+    assert (
+        "self.aux_loss_enabled = is_moe and args.router_aux_loss_coef != 0.0" in src
+    ), (
         f"{tag}: `aux_loss_enabled = is_moe and args.router_aux_loss_coef != 0.0` "
         f"changed; unsloth/models/rl.py's fail-fast .replace() anchor no-ops"
     )
@@ -635,7 +650,9 @@ def test_trl_grpo_per_token_logps_aux_arity_contract(tag: str):
     has_def existence checks miss: the method still exists, only its arity
     changed. If TRL drops/renames the aux return, the gate needs revisiting."""
     if not _tag_ge(tag, "0.20.0"):
-        pytest.skip(f"{tag}: pre-0.20 uses legacy _get_per_token_logps (2-tuple, no aux)")
+        pytest.skip(
+            f"{tag}: pre-0.20 uses legacy _get_per_token_logps (2-tuple, no aux)"
+        )
     src = fetch_text("huggingface/trl", tag, "trl/trainer/grpo_trainer.py")
     assert src is not None
     assert has_def(src, "_get_per_token_logps_and_entropies", "func"), (

@@ -69,7 +69,9 @@ class _Harness:
         self._delays = quantize_delays or {}
         self._error = quantize_error
 
-        monkeypatch.setattr(save_mod, "check_llama_cpp", lambda: ("llama-quantize", "convert.py"))
+        monkeypatch.setattr(
+            save_mod, "check_llama_cpp", lambda: ("llama-quantize", "convert.py")
+        )
         monkeypatch.setattr(
             save_mod,
             "_download_convert_hf_to_gguf",
@@ -104,7 +106,9 @@ class _Harness:
             if self._error is not None:
                 raise self._error
             time.sleep(self._delays.get(quant_type, 0.02))
-            self.quantize_calls.append({"quant_type": quant_type, "n_threads": n_threads})
+            self.quantize_calls.append(
+                {"quant_type": quant_type, "n_threads": n_threads}
+            )
             with open(output_gguf, "wb") as f:
                 f.write(b"GGUF")
             return output_gguf
@@ -166,7 +170,9 @@ def test_mixed_methods_share_16bit_base(monkeypatch, tmp_path):
 def test_parallel_quants_preserve_request_order(monkeypatch, tmp_path):
     # First method is the slowest: completion order != request order.
     h = _Harness(
-        monkeypatch, tmp_path, quantize_delays = {"q4_k_m": 0.3, "q5_k_m": 0.05, "q6_k": 0.01}
+        monkeypatch,
+        tmp_path,
+        quantize_delays = {"q4_k_m": 0.3, "q5_k_m": 0.05, "q6_k": 0.01},
     )
     locations, _, _ = _run(tmp_path, ["q4_k_m", "q5_k_m", "q6_k"])
 
@@ -184,7 +190,9 @@ def test_parallel_quants_preserve_request_order(monkeypatch, tmp_path):
 
 def test_parallel_quants_env_kill_switch(monkeypatch, tmp_path):
     monkeypatch.setenv("UNSLOTH_PARALLEL_GGUF_QUANTS", "0")
-    h = _Harness(monkeypatch, tmp_path, quantize_delays = {"q4_k_m": 0.05, "q5_k_m": 0.05})
+    h = _Harness(
+        monkeypatch, tmp_path, quantize_delays = {"q4_k_m": 0.05, "q5_k_m": 0.05}
+    )
     _run(tmp_path, ["q4_k_m", "q5_k_m"])
     assert h.max_concurrency == 1
 

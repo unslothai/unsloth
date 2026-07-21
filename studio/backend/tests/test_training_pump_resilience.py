@@ -304,7 +304,9 @@ def test_pump_finalizes_when_read_keeps_raising_on_dead_worker(monkeypatch):
     pump = threading.Thread(target = b._pump_loop, daemon = True)
     pump.start()
     pump.join(timeout = 5)
-    assert not pump.is_alive(), "pump must finalize a dead worker even when reads keep raising"
+    assert (
+        not pump.is_alive()
+    ), "pump must finalize a dead worker even when reads keep raising"
     assert b._progress.is_training is False
     assert finalized.get("status") == "error"
     assert b._pump_running is False
@@ -453,7 +455,9 @@ def _stub_spawn(monkeypatch):
 
     hw = _types.ModuleType("utils.hardware")
     hw.prepare_gpu_selection = lambda *a, **k: (None, None)
-    hw.hardware = type("HW", (), {"DEVICE": "cuda", "DeviceType": type("D", (), {"MLX": "mlx"})})()
+    hw.hardware = type(
+        "HW", (), {"DEVICE": "cuda", "DeviceType": type("D", (), {"MLX": "mlx"})}
+    )()
     monkeypatch.setitem(sys.modules, "utils.hardware", hw)
 
     pl = _types.ModuleType("utils.process_lifetime")

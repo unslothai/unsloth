@@ -41,7 +41,9 @@ _progress_step_lock = threading.Lock()
 _last_progress_step: dict[str, int] = {}
 
 
-def _log_progress_step(job_key: str, repo_id: str, variant: Optional[str], progress: float) -> None:
+def _log_progress_step(
+    job_key: str, repo_id: str, variant: Optional[str], progress: float
+) -> None:
     step = int(progress * 10)
     with _progress_step_lock:
         last = _last_progress_step.get(job_key, -1)

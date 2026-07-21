@@ -29,7 +29,11 @@ class _FakeResp:
 
     def read(self, n: int | None = None) -> bytes:
         # Advance a cursor like a real stream so the chunked reader reaches EOF.
-        chunk = self._body[self._pos :] if n is None else self._body[self._pos : self._pos + n]
+        chunk = (
+            self._body[self._pos :]
+            if n is None
+            else self._body[self._pos : self._pos + n]
+        )
         self._pos += len(chunk)
         return chunk
 
@@ -49,7 +53,9 @@ class _FakeOpener:
 def _fetch_with(monkeypatch, body: bytes, content_type: str | None) -> str:
     # Pass SSRF validation and skip real DNS/network.
     monkeypatch.setattr(
-        tools, "_validate_and_resolve_host", lambda host, port: (True, "", "93.184.216.34")
+        tools,
+        "_validate_and_resolve_host",
+        lambda host, port: (True, "", "93.184.216.34"),
     )
     monkeypatch.setattr(
         tools.urllib.request,
@@ -93,7 +99,10 @@ def _pdf_bytes(*page_texts: str) -> bytes:
         ("application/octet-stream", True),
         ("application/zip", False),
         ("application/vnd.ms-excel", True),
-        ("application/vnd.openxmlformats-officedocument.wordprocessingml.document", True),
+        (
+            "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+            True,
+        ),
         ("", True),
         (None, True),
     ],
@@ -144,7 +153,9 @@ def test_encrypted_pdf_returns_safe_placeholder(monkeypatch):
 
 def test_pdf_download_limit_enforced(monkeypatch):
     monkeypatch.setattr(tools, "_MAX_PDF_FETCH_BYTES", 256)
-    out = _fetch_with(monkeypatch, _pdf_bytes("Readable but oversized"), "application/pdf")
+    out = _fetch_with(
+        monkeypatch, _pdf_bytes("Readable but oversized"), "application/pdf"
+    )
     assert out == "(PDF content exceeds the download limit; not readable as text)"
 
 
@@ -163,7 +174,9 @@ def test_pdf_extraction_caps_pages_and_intermediate_text(monkeypatch):
 
     def fake_parse(data, *, max_pages = None):
         seen["max_pages"] = max_pages
-        pages = [Page(text = "x" * 1000, page_number = i, char_count = 1000) for i in range(1, 51)]
+        pages = [
+            Page(text = "x" * 1000, page_number = i, char_count = 1000) for i in range(1, 51)
+        ]
         return pages, 60  # document actually has more pages than the cap
 
     monkeypatch.setattr("core.rag.parsers.parse_pdf_bytes", fake_parse)
@@ -234,9 +247,13 @@ def test_binary_candidates_rejected_after_sniffing(monkeypatch, content_type):
     assert "binary content" in out
 
 
-@pytest.mark.parametrize("content_type", ["application/sql", "application/x-www-form-urlencoded"])
+@pytest.mark.parametrize(
+    "content_type", ["application/sql", "application/x-www-form-urlencoded"]
+)
 def test_unknown_application_text_kept_after_sniffing(monkeypatch, content_type):
-    out = _fetch_with(monkeypatch, b"select readable_text from artifacts;\n" * 100, content_type)
+    out = _fetch_with(
+        monkeypatch, b"select readable_text from artifacts;\n" * 100, content_type
+    )
     assert "readable_text" in out
     assert "non-text content" not in out and "binary content" not in out
 
@@ -258,7 +275,9 @@ def test_excel_labeled_csv_kept_after_sniffing(monkeypatch):
     ],
 )
 @pytest.mark.parametrize("content_type", ["text/plain", "application/vnd.ms-excel"])
-def test_bom_unicode_text_without_charset_kept(monkeypatch, bom, encoding, content_type):
+def test_bom_unicode_text_without_charset_kept(
+    monkeypatch, bom, encoding, content_type
+):
     body = bom + ("name,value\nreadable,42\n" * 100).encode(encoding)
     out = _fetch_with(monkeypatch, body, content_type)
     assert "readable" in out
@@ -284,7 +303,9 @@ def test_valid_utf8_binary_caught_by_control_chars(monkeypatch):
     ],
 )
 def test_text_labeled_binary_caught_by_magic(monkeypatch, magic):
-    out = _fetch_with(monkeypatch, magic + b" printable text-heavy body" * 100, "text/plain")
+    out = _fetch_with(
+        monkeypatch, magic + b" printable text-heavy body" * 100, "text/plain"
+    )
     assert "binary content" in out
 
 
@@ -317,14 +338,18 @@ def test_binary_magic_after_harmless_prefix(monkeypatch, prefix):
     ],
 )
 def test_office_labeled_binary_caught_by_magic(monkeypatch, content_type, magic):
-    out = _fetch_with(monkeypatch, magic + b" printable text-heavy body" * 100, content_type)
+    out = _fetch_with(
+        monkeypatch, magic + b" printable text-heavy body" * 100, content_type
+    )
     assert "binary content" in out
 
 
 def test_latin1_text_without_charset_kept(monkeypatch):
     # The cp1252 retry should rescue accent-heavy text with ASCII structure.
     body = (
-        "Muller lauft uber die Strasse: schoene, groesse. MARKERWORD ".replace("ue", "ü")
+        "Muller lauft uber die Strasse: schoene, groesse. MARKERWORD ".replace(
+            "ue", "ü"
+        )
         + "äöüß éèà "
     ) * 30
     out = _fetch_with(monkeypatch, body.encode("cp1252"), "text/plain")
@@ -363,7 +388,9 @@ def test_html_page_unaffected(monkeypatch):
 
 def test_content_type_sanitized_in_message(monkeypatch):
     # Do not echo obs-folded header content into the model response.
-    out = _fetch_with(monkeypatch, b"PK\x03\x04" * 500, "application/zip\r\n data: injected")
+    out = _fetch_with(
+        monkeypatch, b"PK\x03\x04" * 500, "application/zip\r\n data: injected"
+    )
     assert "\n" not in out and "\r" not in out
     assert "injected" not in out
     assert "application/zip" in out

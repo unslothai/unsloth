@@ -61,7 +61,9 @@ class _Backend:
         self.eval_enabled = False
         self._active_calls = 0
         self._active_polls = active_polls
-        self.trainer = types.SimpleNamespace(training_progress = _Progress(step = live_step))
+        self.trainer = types.SimpleNamespace(
+            training_progress = _Progress(step = live_step)
+        )
 
     def is_training_active(self):
         self._active_calls += 1
@@ -104,19 +106,27 @@ def _fast_short_timeout(monkeypatch):
     monkeypatch.setattr(rt, "_PROGRESS_STALL_TIMEOUT_POLLS", 3)
 
 
-def test_prep_phase_does_not_time_out_before_first_step(monkeypatch, _fast_short_timeout):
+def test_prep_phase_does_not_time_out_before_first_step(
+    monkeypatch, _fast_short_timeout
+):
     # Step 0 for many polls (far past the timeout), then the run ends. Pre-step
     # this is preparation, not a stall: no error event may be emitted.
     backend = _Backend(active_polls = 20, step_history = [], live_step = 0)
     monkeypatch.setattr(rt, "get_training_backend", lambda: backend)
 
-    raw = _raw(asyncio.run(rt.stream_training_progress(_FakeRequest(), current_subject = "tester")))
+    raw = _raw(
+        asyncio.run(
+            rt.stream_training_progress(_FakeRequest(), current_subject = "tester")
+        )
+    )
 
     assert (
         backend._active_calls > rt._PROGRESS_STALL_TIMEOUT_POLLS + 1
     ), "the loop must have run past the stall threshold for this test to be meaningful"
     assert "event: heartbeat" in raw, "prep heartbeats should still flow"
-    assert "event: error" not in raw, "a still-preparing run must not be timed out as a stall"
+    assert (
+        "event: error" not in raw
+    ), "a still-preparing run must not be timed out as a stall"
 
 
 def test_stall_after_first_step_still_times_out(monkeypatch, _fast_short_timeout):
@@ -125,7 +135,11 @@ def test_stall_after_first_step_still_times_out(monkeypatch, _fast_short_timeout
     backend = _Backend(active_polls = 100, step_history = [1, 2], live_step = 5)
     monkeypatch.setattr(rt, "get_training_backend", lambda: backend)
 
-    raw = _raw(asyncio.run(rt.stream_training_progress(_FakeRequest(), current_subject = "tester")))
+    raw = _raw(
+        asyncio.run(
+            rt.stream_training_progress(_FakeRequest(), current_subject = "tester")
+        )
+    )
 
     assert "event: error" in raw, "a real post-step stall should still time out"
 
@@ -139,7 +153,9 @@ def test_reconnect_to_stepped_run_still_times_out(monkeypatch, _fast_short_timeo
     monkeypatch.setattr(rt, "get_training_backend", lambda: backend)
 
     raw = _raw(
-        asyncio.run(rt.stream_training_progress(_ReconnectRequest(), current_subject = "tester"))
+        asyncio.run(
+            rt.stream_training_progress(_ReconnectRequest(), current_subject = "tester")
+        )
     )
 
     assert (

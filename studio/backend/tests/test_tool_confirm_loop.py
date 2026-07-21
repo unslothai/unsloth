@@ -101,7 +101,9 @@ def _drive(
         if ev["type"] == "tool_start" and ev.get("awaiting_confirmation"):
             # Slot is already registered (begin ran before this yield), so
             # the decision lands before the loop enters its blocking wait.
-            resolve_tool_decision(ev["approval_id"], next(decision_iter), session_id = _SESSION)
+            resolve_tool_decision(
+                ev["approval_id"], next(decision_iter), session_id = _SESSION
+            )
     return events, exec_fn.calls
 
 

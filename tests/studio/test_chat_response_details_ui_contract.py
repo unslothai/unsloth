@@ -11,11 +11,14 @@ from pathlib import Path
 REPO = Path(__file__).resolve().parents[2]
 THREAD_TSX = REPO / "studio/frontend/src/components/assistant-ui/thread.tsx"
 DETAILS_TSX = (
-    REPO / "studio/frontend/src/components/assistant-ui/message-response-details-sheet.tsx"
+    REPO
+    / "studio/frontend/src/components/assistant-ui/message-response-details-sheet.tsx"
 )
 REASONING_TSX = REPO / "studio/frontend/src/components/assistant-ui/reasoning.tsx"
 ADAPTER_TS = REPO / "studio/frontend/src/features/chat/api/chat-adapter.ts"
-CHAT_PREFS_TS = REPO / "studio/frontend/src/features/chat/stores/chat-preferences-store.ts"
+CHAT_PREFS_TS = (
+    REPO / "studio/frontend/src/features/chat/stores/chat-preferences-store.ts"
+)
 CHAT_TAB_TSX = REPO / "studio/frontend/src/features/settings/tabs/chat-tab.tsx"
 
 
@@ -57,7 +60,8 @@ def test_response_model_badge_is_user_configurable_and_rendered_once_per_message
     assert "setShowResponseModel" in chat_tab_src
     details_src = DETAILS_TSX.read_text()
     assert (
-        "aui-response-model-badge pointer-events-none relative inline-flex min-h-5" in details_src
+        "aui-response-model-badge pointer-events-none relative inline-flex min-h-5"
+        in details_src
     )
     assert "cursor-text select-text" in details_src
     assert "leading-5" in details_src

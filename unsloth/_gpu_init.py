@@ -320,7 +320,9 @@ if DEVICE_TYPE == "cuda":
             elif os.path.exists("/usr/local"):
                 # Sometimes bitsandbytes cannot be linked properly in Runpod for example
                 possible_cudas = (
-                    subprocess.check_output(["ls", "-al", "/usr/local"]).decode("utf-8").split("\n")
+                    subprocess.check_output(["ls", "-al", "/usr/local"])
+                    .decode("utf-8")
+                    .split("\n")
                 )
                 find_cuda = re.compile(r"[\s](cuda\-[\d\.]{2,})$")
                 possible_cudas = [find_cuda.search(x) for x in possible_cudas]
@@ -351,7 +353,9 @@ if DEVICE_TYPE == "cuda":
                         pass
                 else:
                     from triton.common.build import libcuda_dirs
-                cdequantize_blockwise_fp32 = bnb.functional.lib.cdequantize_blockwise_fp32
+                cdequantize_blockwise_fp32 = (
+                    bnb.functional.lib.cdequantize_blockwise_fp32
+                )
                 libcuda_dirs()
             except:
                 warnings.warn(

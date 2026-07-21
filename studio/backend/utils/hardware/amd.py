@@ -46,7 +46,9 @@ def _path_inside_venv(path: str) -> bool:
         # it. A venv is never at root, so treat that as outside.
         if os.path.dirname(root) == root:
             return False
-        return os.path.normcase(os.path.commonpath([os.path.realpath(path), root])) == root
+        return (
+            os.path.normcase(os.path.commonpath([os.path.realpath(path), root])) == root
+        )
     except (ValueError, OSError):
         # Different drive / unresolvable -> treat as outside the venv.
         return False
@@ -254,7 +256,9 @@ def _extract_gpu_metrics(gpu_data: dict) -> dict[str, Any]:
     # Output structure varies by version; try common paths
     usage = gpu_data.get("usage", gpu_data.get("gpu_activity", {}))
     if isinstance(usage, dict):
-        gpu_util = _parse_numeric(usage.get("gfx_activity", usage.get("gpu_use_percent")))
+        gpu_util = _parse_numeric(
+            usage.get("gfx_activity", usage.get("gpu_use_percent"))
+        )
     else:
         gpu_util = _parse_numeric(usage)
 
@@ -279,7 +283,9 @@ def _extract_gpu_metrics(gpu_data: dict) -> dict[str, Any]:
                 power_data.get("average_socket_power", power_data.get("socket_power")),
             )
         )
-        power_limit = _parse_numeric(power_data.get("power_cap", power_data.get("max_power_limit")))
+        power_limit = _parse_numeric(
+            power_data.get("power_cap", power_data.get("max_power_limit"))
+        )
     else:
         power_draw = None
         power_limit = None
@@ -293,10 +299,14 @@ def _extract_gpu_metrics(gpu_data: dict) -> dict[str, Any]:
     )
     if isinstance(vram_data, dict):
         vram_used_mb = _parse_memory_mb(
-            vram_data.get("used_vram", vram_data.get("vram_used", vram_data.get("used")))
+            vram_data.get(
+                "used_vram", vram_data.get("vram_used", vram_data.get("used"))
+            )
         )
         vram_total_mb = _parse_memory_mb(
-            vram_data.get("total_vram", vram_data.get("vram_total", vram_data.get("total")))
+            vram_data.get(
+                "total_vram", vram_data.get("vram_total", vram_data.get("total"))
+            )
         )
     else:
         vram_used_mb = None
@@ -304,7 +314,9 @@ def _extract_gpu_metrics(gpu_data: dict) -> dict[str, Any]:
 
     # Build the standardized dict (same shape as nvidia._build_gpu_metrics)
     vram_used_gb = round(vram_used_mb / 1024, 2) if vram_used_mb is not None else None
-    vram_total_gb = round(vram_total_mb / 1024, 2) if vram_total_mb is not None else None
+    vram_total_gb = (
+        round(vram_total_mb / 1024, 2) if vram_total_mb is not None else None
+    )
     vram_util = (
         round((vram_used_mb / vram_total_mb) * 100, 1)
         if vram_used_mb is not None and vram_total_mb is not None and vram_total_mb > 0
@@ -414,7 +426,8 @@ def get_primary_gpu_utilization() -> dict[str, Any]:
 
 
 def get_visible_gpu_utilization(
-    parent_visible_ids: Optional[list[int]], parent_cuda_visible_devices: Optional[str] = None
+    parent_visible_ids: Optional[list[int]],
+    parent_cuda_visible_devices: Optional[str] = None,
 ) -> dict[str, Any]:
     """Return utilization metrics for visible AMD GPUs."""
     if parent_visible_ids is None:
@@ -454,7 +467,9 @@ def get_visible_gpu_utilization(
             continue
         # Use the AMD-reported GPU ID, else the enumeration index. _parse_numeric
         # handles bare ints/floats/strings and the {"value", "unit"} dict shape.
-        raw_id = gpu_data.get("gpu", gpu_data.get("gpu_id", gpu_data.get("id", fallback_idx)))
+        raw_id = gpu_data.get(
+            "gpu", gpu_data.get("gpu_id", gpu_data.get("id", fallback_idx))
+        )
         parsed_id = _parse_numeric(raw_id)
         if parsed_id is None:
             logger.warning(

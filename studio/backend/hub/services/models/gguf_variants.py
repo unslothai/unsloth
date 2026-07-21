@@ -51,9 +51,7 @@ from hub.utils.gguf_plan import (
 
 logger = get_logger(__name__)
 
-_VARIANT_HASH_CACHE: "OrderedDict[tuple[str, str, str, bool], tuple[frozenset[str], float]]" = (
-    OrderedDict()
-)
+_VARIANT_HASH_CACHE: "OrderedDict[tuple[str, str, str, bool], tuple[frozenset[str], float]]" = OrderedDict()
 _VARIANT_REQUIREMENT_CACHE: "OrderedDict[tuple[str, str, str], tuple[_GgufVariantRequirement, float]]" = OrderedDict()
 _VARIANT_REQUIREMENT_NEG_CACHE: "OrderedDict[tuple[str, str], float]" = OrderedDict()
 _VARIANT_HASH_MAX = 512
@@ -122,7 +120,9 @@ def _variant_requirement_neg_cache_clear(key: tuple[str, str]) -> None:
         _VARIANT_REQUIREMENT_NEG_CACHE.pop(key, None)
 
 
-def _variant_hash_cache_get(key: tuple[str, str, str, bool]) -> Optional[frozenset[str]]:
+def _variant_hash_cache_get(
+    key: tuple[str, str, str, bool],
+) -> Optional[frozenset[str]]:
     with _VARIANT_HASH_LOCK:
         cached = _VARIANT_HASH_CACHE.get(key)
         if cached is None:
@@ -135,7 +135,9 @@ def _variant_hash_cache_get(key: tuple[str, str, str, bool]) -> Optional[frozens
         return hashes
 
 
-def _variant_hash_cache_set(key: tuple[str, str, str, bool], hashes: frozenset[str]) -> None:
+def _variant_hash_cache_set(
+    key: tuple[str, str, str, bool], hashes: frozenset[str]
+) -> None:
     with _VARIANT_HASH_LOCK:
         _VARIANT_HASH_CACHE[key] = (hashes, time.monotonic())
         _VARIANT_HASH_CACHE.move_to_end(key)
@@ -143,7 +145,9 @@ def _variant_hash_cache_set(key: tuple[str, str, str, bool], hashes: frozenset[s
             _VARIANT_HASH_CACHE.popitem(last = False)
 
 
-def _variant_requirement_cache_get(key: tuple[str, str, str]) -> Optional[_GgufVariantRequirement]:
+def _variant_requirement_cache_get(
+    key: tuple[str, str, str],
+) -> Optional[_GgufVariantRequirement]:
     with _VARIANT_HASH_LOCK:
         cached = _VARIANT_REQUIREMENT_CACHE.get(key)
         if cached is None:
@@ -157,7 +161,9 @@ def _variant_requirement_cache_get(key: tuple[str, str, str]) -> Optional[_GgufV
 
 
 def _variant_requirement_cache_set_many(
-    repo_id: str, hf_token: Optional[str], requirements: dict[str, _GgufVariantRequirement]
+    repo_id: str,
+    hf_token: Optional[str],
+    requirements: dict[str, _GgufVariantRequirement],
 ) -> None:
     with _VARIANT_HASH_LOCK:
         now = time.monotonic()
@@ -169,7 +175,9 @@ def _variant_requirement_cache_set_many(
             _VARIANT_REQUIREMENT_CACHE.popitem(last = False)
 
 
-def _build_gguf_variant_requirements(siblings: list) -> dict[str, _GgufVariantRequirement]:
+def _build_gguf_variant_requirements(
+    siblings: list,
+) -> dict[str, _GgufVariantRequirement]:
     return build_gguf_variant_plans(siblings)
 
 
@@ -280,7 +288,11 @@ def gguf_variant_blob_hashes(
     if requirement is None and allow_remote:
         requirement = gguf_variant_requirements(repo_id, variant, hf_token)
     if requirement is not None:
-        hashes = requirement.required_hashes if include_companions else requirement.main_hashes
+        hashes = (
+            requirement.required_hashes
+            if include_companions
+            else requirement.main_hashes
+        )
         if hashes:
             _variant_hash_cache_set(key, hashes)
         return hashes
@@ -354,11 +366,15 @@ def _size_identity_matches(local_set: set[str], remote_size: int) -> bool:
 
 
 def _variant_update_available_from_requirement(
-    local_blobs: dict[str, set[str]], requirement: Optional[_GgufVariantRequirement], variant: str
+    local_blobs: dict[str, set[str]],
+    requirement: Optional[_GgufVariantRequirement],
+    variant: str,
 ) -> bool:
     if requirement is None or not local_blobs:
         return False
-    local_by_posix = {path.replace("\\", "/"): blobs for path, blobs in local_blobs.items()}
+    local_by_posix = {
+        path.replace("\\", "/"): blobs for path, blobs in local_blobs.items()
+    }
     for expected in requirement.expected_files:
         path = str(expected.path).replace("\\", "/")
         if not (
@@ -392,7 +408,9 @@ def delete_variant_incomplete_blobs_result(
     # With a sibling still downloading, ``companions=False`` keeps a shared mmproj
     # from being unlinked out from under it; the repo's last delete reclaims it.
     target_hashes = (
-        gguf_variant_blob_hashes(repo_id, variant, hf_token, include_companions = companions)
+        gguf_variant_blob_hashes(
+            repo_id, variant, hf_token, include_companions = companions
+        )
         | extra_hashes
     )
     if not target_hashes:
@@ -402,7 +420,9 @@ def delete_variant_incomplete_blobs_result(
             incomplete_blob_hashes = set(),
             variant_blob_hashes = frozenset(),
         )
-        has_repo_partials = bool(download_registry.incomplete_blob_hashes("model", repo_id))
+        has_repo_partials = bool(
+            download_registry.incomplete_blob_hashes("model", repo_id)
+        )
         return VariantIncompleteDeleteResult(
             deleted = 0,
             unresolved = has_variant_partial_state and has_repo_partials,
@@ -447,7 +467,9 @@ def _mark_empty_dir_cleanables(
             variants[i] = v.model_copy(update = {"partial": True})
     for key, label in sorted(empty_by_key.items()):
         if key not in listed:
-            variants.append(GgufVariantDetail(filename = f"{label}.gguf", quant = label, partial = True))
+            variants.append(
+                GgufVariantDetail(filename = f"{label}.gguf", quant = label, partial = True)
+            )
     return response.model_copy(update = {"variants": variants})
 
 
@@ -558,7 +580,9 @@ async def get_gguf_variants_response(
                 )
 
         try:
-            variants, has_vision, siblings = list_gguf_variants(repo_id, hf_token = hf_token)
+            variants, has_vision, siblings = list_gguf_variants(
+                repo_id, hf_token = hf_token
+            )
         except Exception:
             cached = list_gguf_variants_from_hf_cache(repo_id)
             if cached is not None:
@@ -694,17 +718,25 @@ async def get_gguf_variants_response(
         partial_quants: set[str] = set()
         partial_quant_transports: dict[str, Optional[str]] = {}
         try:
-            incomplete_hashes = download_registry.incomplete_blob_hashes("model", repo_id)
+            incomplete_hashes = download_registry.incomplete_blob_hashes(
+                "model", repo_id
+            )
         except Exception as e:
-            logger.warning(f"Failed to compute partial GGUF variants for {repo_id}: {e}")
+            logger.warning(
+                f"Failed to compute partial GGUF variants for {repo_id}: {e}"
+            )
             incomplete_hashes = set()
-        scan_snapshot_dir = hf_cache_scan.resolve_snapshot_dir_for_scan("model", repo_id)
+        scan_snapshot_dir = hf_cache_scan.resolve_snapshot_dir_for_scan(
+            "model", repo_id
+        )
         # Manifest + marker + main incomplete-blob check: catches variants whose
         # download was cancelled or whose expected shards are missing/undersized.
         for variant in variants:
             try:
                 requirement = requirements_by_quant.get(variant.quant.lower())
-                variant_hashes = requirement.main_hashes if requirement is not None else None
+                variant_hashes = (
+                    requirement.main_hashes if requirement is not None else None
+                )
                 if variant_hashes is None and incomplete_hashes:
                     variant_hashes = gguf_variant_blob_hashes(
                         repo_id,
@@ -720,13 +752,16 @@ async def get_gguf_variants_response(
                     variant_blob_hashes = variant_hashes,
                 ):
                     partial_quants.add(variant.quant)
-                    partial_quant_transports[variant.quant] = _partial_transport_for_variant(
-                        repo_id,
-                        variant.quant,
+                    partial_quant_transports[variant.quant] = (
+                        _partial_transport_for_variant(
+                            repo_id,
+                            variant.quant,
+                        )
                     )
             except Exception as e:
                 logger.warning(
-                    f"Manifest-based partial check failed for " f"{repo_id}/{variant.quant}: {e}"
+                    f"Manifest-based partial check failed for "
+                    f"{repo_id}/{variant.quant}: {e}"
                 )
         if incomplete_hashes:
             for variant in variants:
@@ -736,7 +771,8 @@ async def get_gguf_variants_response(
                 # companion_hashes adds the MTP drafter (mmproj_hashes covers
                 # every mmproj precision in the repo, not just the planned one).
                 if (
-                    (requirement.mmproj_hashes | requirement.companion_hashes) & incomplete_hashes
+                    (requirement.mmproj_hashes | requirement.companion_hashes)
+                    & incomplete_hashes
                 ) and _filenames_cached(
                     requirement.main_filenames,
                     requirement.main_size_bytes,
@@ -759,7 +795,9 @@ async def get_gguf_variants_response(
                 display_label = v.display_label,
                 size_bytes = v.size_bytes,
                 download_size_bytes = (
-                    requirement.download_size_bytes if requirement is not None else v.size_bytes
+                    requirement.download_size_bytes
+                    if requirement is not None
+                    else v.size_bytes
                 ),
                 downloaded = downloaded,
                 update_available = downloaded
@@ -769,7 +807,9 @@ async def get_gguf_variants_response(
                     v.quant,
                 ),
                 partial = is_partial,
-                partial_transport = (partial_quant_transports.get(v.quant) if is_partial else None),
+                partial_transport = (
+                    partial_quant_transports.get(v.quant) if is_partial else None
+                ),
             )
 
         return GgufVariantsResponse(

@@ -128,7 +128,9 @@ def test_ocr_scanned_pages_merges_short_text_layer(rag_conn, monkeypatch):
     # Near-empty pages can still have meaningful extractable text; OCR augments it
     # rather than replacing it with a fallible vision transcription.
     scope = store.thread_scope("t1")
-    document_id = store.create_document(rag_conn, scope = scope, filename = "scan.pdf", sha256 = "h")
+    document_id = store.create_document(
+        rag_conn, scope = scope, filename = "scan.pdf", sha256 = "h"
+    )
     job_id = ingestion._new_job(rag_conn, document_id, scope)
     pages = [parsers.Page("ID-42", 1, 5)]
 
@@ -146,11 +148,15 @@ def test_ocr_scanned_pages_merges_short_text_layer(rag_conn, monkeypatch):
 # ── end-to-end ingestion ─────────────────────────────────────────────
 
 
-def test_scanned_pdf_is_ocred_into_chunks(rag_conn, stub_embeddings, monkeypatch, tmp_path):
+def test_scanned_pdf_is_ocred_into_chunks(
+    rag_conn, stub_embeddings, monkeypatch, tmp_path
+):
     monkeypatch.setattr(captioner.config, "OCR_SCANNED", True)
     monkeypatch.setattr(captioner, "vision_endpoint", lambda: ("http://x", "local"))
     monkeypatch.setattr(
-        captioner, "_ocr_one", lambda base, model, b, t: "Invoice total is zebra-42 due Friday"
+        captioner,
+        "_ocr_one",
+        lambda base, model, b, t: "Invoice total is zebra-42 due Friday",
     )
 
     pdf = tmp_path / "scan.pdf"
@@ -184,13 +190,17 @@ def test_scanned_page_past_ocr_cap_is_still_captioned(
     assert doc["status"] == "completed"
     text, _ = tool.whole_document_context(scope_thread_id = "t1", max_tokens = 6000)
     assert "scanned page alpha" in text  # page 1 OCR'd, within the cap
-    assert "figure caption bravo" in text  # page 2 past the cap -> captioned, not dropped
+    assert (
+        "figure caption bravo" in text
+    )  # page 2 past the cap -> captioned, not dropped
 
 
 def test_born_digital_pdf_skips_ocr(rag_conn, stub_embeddings, monkeypatch, tmp_path):
     called = []
     monkeypatch.setattr(captioner.config, "OCR_SCANNED", True)
-    monkeypatch.setattr(captioner, "_ocr_one", lambda *a: called.append(1) or "should not run")
+    monkeypatch.setattr(
+        captioner, "_ocr_one", lambda *a: called.append(1) or "should not run"
+    )
 
     pdf = tmp_path / "digital.pdf"
     _text_pdf(pdf, "Real born digital body text. " * 30 + "marker-quokka")
@@ -246,7 +256,9 @@ def test_ocr_override_true_runs_ocr_when_config_off(
     assert "quokka" in text
 
 
-def test_ocr_disabled_leaves_scanned_pdf_empty(rag_conn, stub_embeddings, monkeypatch, tmp_path):
+def test_ocr_disabled_leaves_scanned_pdf_empty(
+    rag_conn, stub_embeddings, monkeypatch, tmp_path
+):
     monkeypatch.setattr(captioner.config, "OCR_SCANNED", False)
 
     pdf = tmp_path / "scan.pdf"

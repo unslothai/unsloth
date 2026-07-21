@@ -99,7 +99,9 @@ try:
     configure_cpu_threads()
 except ValueError as exc:
     configured = os.environ.get("UNSLOTH_CPU_THREADS")
-    raise SystemExit(f"Error: Invalid UNSLOTH_CPU_THREADS value {configured!r}: {exc}") from None
+    raise SystemExit(
+        f"Error: Invalid UNSLOTH_CPU_THREADS value {configured!r}: {exc}"
+    ) from None
 
 # Anaconda/conda-forge Python: seed platform._sys_version_cache before imports
 # that trigger attrs -> rich -> structlog -> platform crash.
@@ -164,7 +166,9 @@ def _install_uvicorn_startup_log_rewrite(bind_host: str, display_host: str) -> N
     import re
 
     rewrite_host = (
-        bind_host in ("0.0.0.0", "::") and bool(display_host) and display_host != bind_host
+        bind_host in ("0.0.0.0", "::")
+        and bool(display_host)
+        and display_host != bind_host
     )
     new_suffix = "(To stop: press Ctrl+C -- on macOS, Control+C not Command+C)"
     old_suffix_re = re.compile(r"\(Press CTRL\+C to quit\)")
@@ -248,7 +252,9 @@ def _localhost_ipv6_mismatch_url(bind_host: str, port: int) -> "str | None":
         return None
 
     try:
-        addr_info = socket.getaddrinfo("localhost", port, socket.AF_UNSPEC, socket.SOCK_STREAM)
+        addr_info = socket.getaddrinfo(
+            "localhost", port, socket.AF_UNSPEC, socket.SOCK_STREAM
+        )
     except Exception:
         return None
 
@@ -464,7 +470,9 @@ def _loopback_bind_host_for(host: str) -> str:
 
 def _url_host(host: str) -> str:
     return (
-        f"[{host}]" if ":" in host and not (host.startswith("[") and host.endswith("]")) else host
+        f"[{host}]"
+        if ":" in host and not (host.startswith("[") and host.endswith("]"))
+        else host
     )
 
 
@@ -492,14 +500,20 @@ def _tool_policy_notice(host: str, secure: bool, enable_tools: "Optional[bool]")
             "Anyone who can reach it with the API key can run code on this "
             "machine. Do not share the API key. Pass --disable-tools to turn off."
         )
-    return f"Server-side tools are {state} for loopback. Pass --disable-tools to turn off."
+    return (
+        f"Server-side tools are {state} for loopback. Pass --disable-tools to turn off."
+    )
 
 
-def _emit_tool_policy_notice(host: str, secure: bool, enable_tools: "Optional[bool]") -> None:
+def _emit_tool_policy_notice(
+    host: str, secure: bool, enable_tools: "Optional[bool]"
+) -> None:
     print(_tool_policy_notice(host, secure, enable_tools), flush = True)
 
 
-def _emit_secure_startup_output(port: int, enable_tools: "Optional[bool]" = None) -> None:
+def _emit_secure_startup_output(
+    port: int, enable_tools: "Optional[bool]" = None
+) -> None:
     """Secure-mode banner: only the Cloudflare link (loopback has no public raw URL)."""
     print("")
     print("🦥 Unsloth Studio is running (secure)")
@@ -540,7 +554,9 @@ def _emit_startup_output(
     print_studio_stop_hint()
 
 
-def _print_cloudflare_line(secure: bool = False, loopback_host: str = "127.0.0.1") -> None:
+def _print_cloudflare_line(
+    secure: bool = False, loopback_host: str = "127.0.0.1"
+) -> None:
     """Print Cloudflare tunnel state for startup banners."""
     from startup_banner import stdout_supports_color
 
@@ -554,7 +570,10 @@ def _print_cloudflare_line(secure: bool = False, loopback_host: str = "127.0.0.1
 
     if _cloudflare_url:
         if _public_reachable is False:
-            _emit(f"  Use the secure link access via Cloudflare instead: {_cloudflare_url}", accent)
+            _emit(
+                f"  Use the secure link access via Cloudflare instead: {_cloudflare_url}",
+                accent,
+            )
         else:
             _emit(f"  Secure link access via Cloudflare: {_cloudflare_url}", accent)
         if not secure:
@@ -719,7 +738,9 @@ def _find_free_port(
         candidate = start + offset
         if _is_port_free(host, candidate):
             return candidate
-    raise RuntimeError(f"Could not find a free port in range {start}-{start + max_attempts - 1}")
+    raise RuntimeError(
+        f"Could not find a free port in range {start}-{start + max_attempts - 1}"
+    )
 
 
 from utils.paths.storage_roots import studio_root as _studio_root
@@ -844,7 +865,9 @@ def _flush_standard_streams() -> None:
             pass
 
 
-def _wait_for_server_shutdown(timeout: Optional[float] = _SERVER_SHUTDOWN_JOIN_TIMEOUT) -> None:
+def _wait_for_server_shutdown(
+    timeout: Optional[float] = _SERVER_SHUTDOWN_JOIN_TIMEOUT,
+) -> None:
     """Join the uvicorn thread so the prompt returns only after its shutdown logs
     flush. Skip the self-join when called from the server thread."""
     import threading
@@ -918,7 +941,9 @@ def _iter_frontend_fallback_candidates() -> "list[Path]":
                     continue
                 # Tolerate single/multi-line dict literals; [^}]* rejects nested
                 # dicts, which the setuptools editable template never emits.
-                m = re.search(r"^MAPPING\s*(?::[^=]*)?=\s*(\{[^}]*\})", src, re.M | re.S)
+                m = re.search(
+                    r"^MAPPING\s*(?::[^=]*)?=\s*(\{[^}]*\})", src, re.M | re.S
+                )
                 if not m:
                     continue
                 try:
@@ -1306,7 +1331,9 @@ def run_server(
     global _server, _server_thread, _shutdown_event
 
     boot_started = time.perf_counter()
-    logger.info("run_server startup begin api_only=%s host=%s port=%s", api_only, host, port)
+    logger.info(
+        "run_server startup begin api_only=%s host=%s port=%s", api_only, host, port
+    )
 
     # Reap every child if the parent dies abnormally (terminal close, Task
     # Manager kill, SIGKILL); must run before any child can spawn.
@@ -1702,7 +1729,9 @@ def run_server(
         logger.warning("Bootstrap timeout not armed: %s", e)
 
     if not silent:
-        _emit_startup_output(host, port, display_host, secure = secure, enable_tools = enable_tools)
+        _emit_startup_output(
+            host, port, display_host, secure = secure, enable_tools = enable_tools
+        )
 
     return app
 
@@ -1858,7 +1887,9 @@ if __name__ == "__main__":
         sys.stderr.write("=" * 60 + "\n")
         traceback.print_exc(file = sys.stderr)
         sys.stderr.write("\n")
-        sys.stderr.write("If a package is missing, try re-running: unsloth studio setup\n")
+        sys.stderr.write(
+            "If a package is missing, try re-running: unsloth studio setup\n"
+        )
         sys.stderr.flush()
         sys.exit(1)
 

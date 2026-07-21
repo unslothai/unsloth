@@ -16,7 +16,13 @@ import time
 from pathlib import Path
 
 
-SOURCE_PATH = Path(__file__).resolve().parents[2] / "studio" / "backend" / "routes" / "inference.py"
+SOURCE_PATH = (
+    Path(__file__).resolve().parents[2]
+    / "studio"
+    / "backend"
+    / "routes"
+    / "inference.py"
+)
 SRC = SOURCE_PATH.read_text(encoding = "utf-8")
 _TREE = ast.parse(SRC)
 
@@ -233,7 +239,10 @@ def test_audio_input_stream_installs_disconnect_watcher():
                 and sub.args[0].func.id == "_await_disconnect_then_cancel"
             ):
                 has_watcher = True
-            if isinstance(fn, ast.Name) and fn.id == "_stop_local_disconnect_cancel_watcher":
+            if (
+                isinstance(fn, ast.Name)
+                and fn.id == "_stop_local_disconnect_cancel_watcher"
+            ):
                 has_cleanup = True
     assert has_watcher, (
         "audio_input_stream must install a disconnect watcher so client "
@@ -288,7 +297,8 @@ def _load_same_task_response_module():
         raise AssertionError("_SameTaskStreamingResponse missing")
     mod = {}
     exec(
-        "class StreamingResponse: pass\nclass ClientDisconnect(Exception): pass\n" + source,
+        "class StreamingResponse: pass\nclass ClientDisconnect(Exception): pass\n"
+        + source,
         mod,
     )
     return mod
@@ -412,7 +422,9 @@ def test_same_task_response_closes_body_iterator_on_send_disconnect():
     async def run():
         agen = body()
         await agen.__anext__()
-        response = m["_SameTaskStreamingResponse"].__new__(m["_SameTaskStreamingResponse"])
+        response = m["_SameTaskStreamingResponse"].__new__(
+            m["_SameTaskStreamingResponse"]
+        )
         response.body_iterator = agen
         response.background = None
         # __new__ bypasses __init__; __call__'s disconnect branch reads _unstarted_cleanup.
@@ -451,7 +463,13 @@ def test_normal_path_streams_all_tokens():
     # Regression: the top-of-loop cancel_event check must not short-circuit when unset.
     ev = threading.Event()
     chunks = asyncio.run(_consume(_post_fix_gguf_loop(ev)))
-    assert chunks == ["first_chunk", "cumulative-1", "cumulative-2", "final_chunk", "[DONE]"]
+    assert chunks == [
+        "first_chunk",
+        "cumulative-1",
+        "cumulative-2",
+        "final_chunk",
+        "[DONE]",
+    ]
 
 
 def test_cancel_during_streaming_stops_iteration_promptly():
@@ -675,7 +693,10 @@ def test_generate_stream_cancels_backend_on_stream_cancelled_error():
             found_cancel_handler = (
                 "cancel_event.set()" in body_src
                 and "backend.reset_generation_state()" in body_src
-                and any(isinstance(stmt, ast.Raise) and stmt.exc is None for stmt in sub.body)
+                and any(
+                    isinstance(stmt, ast.Raise) and stmt.exc is None
+                    for stmt in sub.body
+                )
             )
         if isinstance(sub, ast.Try) and sub.finalbody:
             final_src = "\n".join(ast.unparse(stmt) for stmt in sub.finalbody)
@@ -856,8 +877,12 @@ def test_generate_stream_stays_responsive_under_blocking_next():
         return out, ticks, max_gap
 
     async def _main():
-        direct_out, direct_ticks, direct_max_gap = await _run_with_heartbeat(_direct_loop)
-        threaded_out, threaded_ticks, threaded_max_gap = await _run_with_heartbeat(_to_thread_loop)
+        direct_out, direct_ticks, direct_max_gap = await _run_with_heartbeat(
+            _direct_loop
+        )
+        threaded_out, threaded_ticks, threaded_max_gap = await _run_with_heartbeat(
+            _to_thread_loop
+        )
         return (
             direct_out,
             direct_ticks,
@@ -876,7 +901,11 @@ def test_generate_stream_stays_responsive_under_blocking_next():
         threaded_max_gap,
     ) = asyncio.run(_main())
 
-    assert threaded_out == direct_out == [_sse(chunk) for chunk in chunks] + ["data: [DONE]\n\n"]
+    assert (
+        threaded_out
+        == direct_out
+        == [_sse(chunk) for chunk in chunks] + ["data: [DONE]\n\n"]
+    )
     assert direct_ticks == 0, (
         f"direct generate_stream loop should block the event loop; "
         f"got {direct_ticks} heartbeat ticks and max gap {direct_max_gap:.3f}s"
@@ -992,7 +1021,8 @@ def test_unsloth_stream_loop_emits_zero_tokens_on_preset_cancel():
         f"(pending-replay path); got {seen}"
     )
     assert next_calls[0] == 0, (
-        f"loop must not call next() at all on pre-set cancel; got " f"{next_calls[0]} calls"
+        f"loop must not call next() at all on pre-set cancel; got "
+        f"{next_calls[0]} calls"
     )
     assert reset_calls[0] == 1, (
         f"backend.reset_generation_state() must still fire exactly once "
@@ -1029,5 +1059,6 @@ def test_audio_stream_emits_zero_chunks_on_preset_cancel():
     seen = asyncio.run(_loop())
     assert seen == [], f"audio loop must emit zero chunks on pre-set cancel; got {seen}"
     assert next_calls[0] == 0, (
-        f"audio loop must not call next() on pre-set cancel; got " f"{next_calls[0]} calls"
+        f"audio loop must not call next() on pre-set cancel; got "
+        f"{next_calls[0]} calls"
     )

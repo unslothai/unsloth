@@ -135,7 +135,9 @@ class TestHealOpenaiMessage:
         assert heal_openai_message(msg, {"Bash"}, TOOLS) is False
         assert "tool_calls" not in msg
 
-    def test_mixed_declared_and_undeclared_promotes_declared_keeps_undeclared_text(self):
+    def test_mixed_declared_and_undeclared_promotes_declared_keeps_undeclared_text(
+        self,
+    ):
         # Span-exact removal: only the promoted Bash markup is dropped; the
         # undeclared Nuke call's text stays in the content byte-intact.
         content = f"pre {XML_BASH} mid {XML_UNDECLARED} post"
@@ -158,7 +160,10 @@ class TestHealOpenaiMessage:
         content = f"{func_read} then {XML_BASH}"
         msg = {"role": "assistant", "content": content}
         assert heal_openai_message(msg, {"Bash", "Read"}) is True
-        assert [call["function"]["name"] for call in msg["tool_calls"]] == ["Read", "Bash"]
+        assert [call["function"]["name"] for call in msg["tool_calls"]] == [
+            "Read",
+            "Bash",
+        ]
         assert msg["content"] == "then"
 
     def test_unparseable_closed_block_not_deleted(self):
@@ -205,7 +210,10 @@ class TestStreamHealer:
         healer = StreamToolCallHealer({"Bash", "Read"})
         func_read = "<function=Read><parameter=path>a.txt</parameter></function>"
         events = healer.feed(f"{func_read} then {XML_BASH}") + healer.finalize()
-        assert [call["function"]["name"] for call in _events_calls(events)] == ["Read", "Bash"]
+        assert [call["function"]["name"] for call in _events_calls(events)] == [
+            "Read",
+            "Bash",
+        ]
         assert _events_text(events).strip() == "then"
 
     def test_false_alarm_html_flushes(self):
@@ -400,12 +408,22 @@ class TestNudgeHelpers:
         # The retry replaces the original only when it carries a USABLE call:
         # a structured call naming an undeclared tool must not count.
         undeclared = [
-            {"id": "x", "type": "function", "function": {"name": "Nuke", "arguments": "{}"}}
+            {
+                "id": "x",
+                "type": "function",
+                "function": {"name": "Nuke", "arguments": "{}"},
+            }
         ]
         declared = [
-            {"id": "y", "type": "function", "function": {"name": "Bash", "arguments": "{}"}}
+            {
+                "id": "y",
+                "type": "function",
+                "function": {"name": "Bash", "arguments": "{}"},
+            }
         ]
-        assert response_has_promotable_calls(self._resp("", undeclared), {"Bash"}) is False
+        assert (
+            response_has_promotable_calls(self._resp("", undeclared), {"Bash"}) is False
+        )
         assert response_has_promotable_calls(self._resp("", declared), {"Bash"}) is True
 
     def test_retry_with_mixed_structured_calls_is_not_an_improvement(self):
@@ -413,12 +431,23 @@ class TestNudgeHelpers:
         # list (and a parallel cap could keep only the FIRST), so a mixed retry
         # could still hand the client an undeclared tool.
         mixed = [
-            {"id": "x", "type": "function", "function": {"name": "Nuke", "arguments": "{}"}},
-            {"id": "y", "type": "function", "function": {"name": "Bash", "arguments": "{}"}},
+            {
+                "id": "x",
+                "type": "function",
+                "function": {"name": "Nuke", "arguments": "{}"},
+            },
+            {
+                "id": "y",
+                "type": "function",
+                "function": {"name": "Bash", "arguments": "{}"},
+            },
         ]
         assert response_has_promotable_calls(self._resp("", mixed), {"Bash"}) is False
         assert (
-            response_has_promotable_calls(self._resp("", list(reversed(mixed))), {"Bash"}) is False
+            response_has_promotable_calls(
+                self._resp("", list(reversed(mixed))), {"Bash"}
+            )
+            is False
         )
 
     @pytest.mark.parametrize(
@@ -518,7 +547,9 @@ class ScriptedClient:
         headers = None,
     ):
         self.posts.append(json)
-        return httpx.Response(200, json = self.bodies[min(len(self.posts) - 1, len(self.bodies) - 1)])
+        return httpx.Response(
+            200, json = self.bodies[min(len(self.posts) - 1, len(self.bodies) - 1)]
+        )
 
 
 async def _drive_non_streaming(monkeypatch, payload, bodies):
@@ -626,7 +657,9 @@ class TestOpenaiNonStreamingRoute:
     def test_undeclared_tool_not_promoted(self, monkeypatch):
         async def _run():
             xml = '<tool_call>{"name":"rogue","arguments":{}}</tool_call>'
-            _, data = await _drive_non_streaming(monkeypatch, _payload(), [_upstream_message(xml)])
+            _, data = await _drive_non_streaming(
+                monkeypatch, _payload(), [_upstream_message(xml)]
+            )
             assert data["choices"][0]["message"]["content"] == xml
             assert "tool_calls" not in data["choices"][0]["message"]
 
@@ -684,7 +717,9 @@ class TestOpenaiNonStreamingRoute:
         async def _run():
             _, data = await _drive_non_streaming(
                 monkeypatch,
-                _payload(tool_choice = {"type": "function", "function": {"name": "other"}}),
+                _payload(
+                    tool_choice = {"type": "function", "function": {"name": "other"}}
+                ),
                 [_upstream_message(LOOKUP_XML)],
             )
             message = data["choices"][0]["message"]
@@ -732,7 +767,9 @@ class TestOpenaiNonStreamingRoute:
                 for ch in payload_data.get("choices", []):
                     for tc in (ch.get("delta") or {}).get("tool_calls") or []:
                         indexes.setdefault(tc["index"], tc.get("id"))
-            assert indexes.get(0, "").startswith("call_") and indexes[0] != "call_native"
+            assert (
+                indexes.get(0, "").startswith("call_") and indexes[0] != "call_native"
+            )
             assert indexes.get(1) == "call_native"
 
         asyncio.run(_run())
@@ -788,7 +825,9 @@ class TestNudgeRetryOpenai:
             assert len(client.posts) == 2  # exactly one retry
             # Prefix byte-identical, nudge suffix appended (KV-cache reuse guard).
             original, retry = client.posts
-            assert retry["messages"][: len(original["messages"])] == original["messages"]
+            assert (
+                retry["messages"][: len(original["messages"])] == original["messages"]
+            )
             suffix = retry["messages"][len(original["messages"]) :]
             assert [m["role"] for m in suffix] == ["assistant", "user"]
             assert suffix[0]["content"] == GARBAGE_SIGNAL
@@ -804,7 +843,10 @@ class TestNudgeRetryOpenai:
             client, data = await _drive_non_streaming(
                 monkeypatch,
                 _payload(nudge_tool_calls = True),
-                [_upstream_message(GARBAGE_SIGNAL), _upstream_message(GARBAGE_SIGNAL + "2")],
+                [
+                    _upstream_message(GARBAGE_SIGNAL),
+                    _upstream_message(GARBAGE_SIGNAL + "2"),
+                ],
             )
             assert len(client.posts) == 2
             assert data["choices"][0]["message"]["content"] == GARBAGE_SIGNAL
@@ -898,7 +940,9 @@ class TestNudgeRetryAnthropic:
 
     def test_healed_tool_use_precedes_trailing_text(self, monkeypatch):
         async def _run():
-            _, data = await self._drive(monkeypatch, [_upstream_message(f"{LOOKUP_XML} done")])
+            _, data = await self._drive(
+                monkeypatch, [_upstream_message(f"{LOOKUP_XML} done")]
+            )
             assert [block["type"] for block in data["content"]] == ["tool_use", "text"]
             assert data["content"][1]["text"] == "done"
 
@@ -906,7 +950,9 @@ class TestNudgeRetryAnthropic:
 
     def test_default_off(self, monkeypatch):
         async def _run():
-            client, _ = await self._drive(monkeypatch, [_upstream_message(GARBAGE_SIGNAL)])
+            client, _ = await self._drive(
+                monkeypatch, [_upstream_message(GARBAGE_SIGNAL)]
+            )
             assert len(client.posts) == 1
 
         asyncio.run(_run())
@@ -1007,7 +1053,8 @@ class TestAnthropicEmitterHealing:
         (args,) = [
             e["delta"]["partial_json"]
             for e in events
-            if e.get("type") == "content_block_delta" and e["delta"]["type"] == "input_json_delta"
+            if e.get("type") == "content_block_delta"
+            and e["delta"]["type"] == "input_json_delta"
         ]
         assert json.loads(args) == {"q": "x"}
         (message_delta,) = [e for e in events if e.get("type") == "message_delta"]
@@ -1034,19 +1081,24 @@ class TestAnthropicEmitterHealing:
         texts = [
             e["delta"]["text"]
             for e in events
-            if e.get("type") == "content_block_delta" and e["delta"]["type"] == "text_delta"
+            if e.get("type") == "content_block_delta"
+            and e["delta"]["type"] == "text_delta"
         ]
         assert "".join(texts) == "Let me check "
 
     def test_false_alarm_streams_as_text(self):
         events = self._events(
             self._emitter(),
-            [self._chunk(content = "use the <div> tag"), self._chunk(finish_reason = "stop")],
+            [
+                self._chunk(content = "use the <div> tag"),
+                self._chunk(finish_reason = "stop"),
+            ],
         )
         texts = [
             e["delta"]["text"]
             for e in events
-            if e.get("type") == "content_block_delta" and e["delta"]["type"] == "text_delta"
+            if e.get("type") == "content_block_delta"
+            and e["delta"]["type"] == "text_delta"
         ]
         assert "".join(texts) == "use the <div> tag"
         (message_delta,) = [e for e in events if e.get("type") == "message_delta"]
@@ -1066,7 +1118,8 @@ class TestAnthropicEmitterHealing:
         texts = [
             e
             for e in events
-            if e.get("type") == "content_block_delta" and e["delta"]["type"] == "text_delta"
+            if e.get("type") == "content_block_delta"
+            and e["delta"]["type"] == "text_delta"
         ]
         assert texts == []
 
@@ -1097,14 +1150,18 @@ class TestAnthropicEmitterHealing:
         texts = [
             e["delta"]["text"]
             for e in events
-            if e.get("type") == "content_block_delta" and e["delta"]["type"] == "text_delta"
+            if e.get("type") == "content_block_delta"
+            and e["delta"]["type"] == "text_delta"
         ]
         assert "".join(texts) == "held <tool"  # nothing swallowed
         starts = [e for e in events if e.get("type") == "content_block_start"]
         assert [e["content_block"]["type"] for e in starts] == ["text", "tool_use"]
 
     def test_disable_parallel_caps_healed_calls(self):
-        two = LOOKUP_XML + '<tool_call>{"name":"lookup","arguments":{"q":"y"}}</tool_call>'
+        two = (
+            LOOKUP_XML
+            + '<tool_call>{"name":"lookup","arguments":{"q":"y"}}</tool_call>'
+        )
         events = self._events(
             self._emitter(disable_parallel_tool_use = True),
             [self._chunk(content = two), self._chunk(finish_reason = "stop")],
@@ -1112,7 +1169,8 @@ class TestAnthropicEmitterHealing:
         starts = [
             e
             for e in events
-            if e.get("type") == "content_block_start" and e["content_block"]["type"] == "tool_use"
+            if e.get("type") == "content_block_start"
+            and e["content_block"]["type"] == "tool_use"
         ]
         assert len(starts) == 1
 
@@ -1138,7 +1196,8 @@ class TestAnthropicEmitterHealing:
         starts = [
             e
             for e in events
-            if e.get("type") == "content_block_start" and e["content_block"]["type"] == "tool_use"
+            if e.get("type") == "content_block_start"
+            and e["content_block"]["type"] == "tool_use"
         ]
         assert len(starts) == 1
 
@@ -1153,7 +1212,8 @@ class TestAnthropicEmitterHealing:
         texts = [
             e["delta"]["text"]
             for e in events
-            if e.get("type") == "content_block_delta" and e["delta"]["type"] == "text_delta"
+            if e.get("type") == "content_block_delta"
+            and e["delta"]["type"] == "text_delta"
         ]
         assert "".join(texts) == LOOKUP_XML
 
@@ -1229,7 +1289,9 @@ class TestAnthropicNonStreamingRoute:
             # stays in the text block (the legacy strip must not run after a
             # span-exact heal), matching the OpenAI passthrough.
             rogue = '<tool_call>{"name":"rogue","arguments":{}}</tool_call>'
-            _, data = await self._drive(monkeypatch, [_upstream_message(f"{LOOKUP_XML} {rogue}")])
+            _, data = await self._drive(
+                monkeypatch, [_upstream_message(f"{LOOKUP_XML} {rogue}")]
+            )
             (tool_block,) = [b for b in data["content"] if b["type"] == "tool_use"]
             assert tool_block["name"] == "lookup"
             (text_block,) = [b for b in data["content"] if b["type"] == "text"]
@@ -1269,7 +1331,12 @@ class TestAnthropicNonStreamingRoute:
 class TestOpenaiStreamingRoute:
     def test_heals_streamed_xml(self, monkeypatch):
         async def _run():
-            pieces = ["<tool_call>", '{"name":"lookup",', '"arguments":{"q":"x"}}', "</tool_call>"]
+            pieces = [
+                "<tool_call>",
+                '{"name":"lookup",',
+                '"arguments":{"q":"x"}}',
+                "</tool_call>",
+            ]
             lines = [
                 'data: {"id":"c1","model":"gguf","created":1,"choices":[{"index":0,"delta":{"content":%s}}]}'
                 % json.dumps(p)
@@ -1326,7 +1393,9 @@ class TestOpenaiStreamingRoute:
                 'data: {"id":"c1","choices":[{"index":0,"delta":{},"finish_reason":"tool_calls"}]}',
                 "data: [DONE]",
             ]
-            chunks = await _drive_stream(monkeypatch, _payload(parallel_tool_calls = False), lines)
+            chunks = await _drive_stream(
+                monkeypatch, _payload(parallel_tool_calls = False), lines
+            )
             payloads = _stream_payloads(chunks)
             tool_deltas = [
                 tc
@@ -1443,7 +1512,10 @@ class TestHealerSignalAlignment:
 
     def test_bracket_tool_calls_still_promote_in_stream(self):
         healer = StreamToolCallHealer({"web_search"})
-        events = healer.feed('[TOOL_CALLS]web_search{"query": "unsloth docs"}') + healer.finalize()
+        events = (
+            healer.feed('[TOOL_CALLS]web_search{"query": "unsloth docs"}')
+            + healer.finalize()
+        )
         (call,) = _events_calls(events)
         assert call["function"]["name"] == "web_search"
         assert healer.healed

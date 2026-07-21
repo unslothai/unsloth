@@ -53,7 +53,9 @@ import textwrap
 from ._utils import _get_inference_mode_context_manager, UNSLOTH_ENABLE_LOGGING
 
 # One-time GRPO sequence-packing gates; mirrored into the generated trainer cache via RL_PRE_ITEMS.
-UNSLOTH_GRPO_SEQ_PACKING_ON = os.environ.get("UNSLOTH_GRPO_SEQ_PACKING", "1").lower() not in (
+UNSLOTH_GRPO_SEQ_PACKING_ON = os.environ.get(
+    "UNSLOTH_GRPO_SEQ_PACKING", "1"
+).lower() not in (
     "0",
     "false",
     "no",
@@ -68,7 +70,9 @@ except Exception:
     UNSLOTH_ZOO_HAS_MASKED_COL_GUARD = False
 # One-time PrefixGrouper gate; any import failure degrades to "PrefixGrouper off".
 _pg_build_layout = _pg_enabled_fn = _pg_verify_on = _pg_tol_ok = _PG_TOL_KILL = None
-UNSLOTH_GRPO_PREFIX_GROUPER_ON = os.environ.get("UNSLOTH_GRPO_PREFIX_GROUPER", "1").lower() not in (
+UNSLOTH_GRPO_PREFIX_GROUPER_ON = os.environ.get(
+    "UNSLOTH_GRPO_PREFIX_GROUPER", "1"
+).lower() not in (
     "0",
     "false",
     "no",
@@ -98,7 +102,9 @@ def _unsloth_clear_stateful_mrope(model):
 
     cleared = False
     for module in modules():
-        if hasattr(module, "compute_3d_position_ids") and hasattr(module, "rope_deltas"):
+        if hasattr(module, "compute_3d_position_ids") and hasattr(
+            module, "rope_deltas"
+        ):
             module.rope_deltas = None
             cleared = True
     return cleared
@@ -219,8 +225,12 @@ def dpo_trainer_vision_process_row(
     )
 
     prompt_input_ids = processed_features["input_ids"][0]
-    chosen_input_ids = tokenizer(features["chosen"], add_special_tokens = False)["input_ids"]
-    rejected_input_ids = tokenizer(features["rejected"], add_special_tokens = False)["input_ids"]
+    chosen_input_ids = tokenizer(features["chosen"], add_special_tokens = False)[
+        "input_ids"
+    ]
+    rejected_input_ids = tokenizer(features["rejected"], add_special_tokens = False)[
+        "input_ids"
+    ]
 
     if add_special_tokens:
         if tokenizer.bos_token_id is not None:
@@ -478,14 +488,19 @@ def _require_replace(
             )
         if where not in _WARNED_MISSING_ANCHORS:
             _WARNED_MISSING_ANCHORS.add(where)
-            logger.warning(f"Unsloth: skipped an optional source edit{detail} (anchor not found).")
+            logger.warning(
+                f"Unsloth: skipped an optional source edit{detail} (anchor not found)."
+            )
         return function
     return function.replace(old, new, count)
 
 
 # Fix tokenizer double BOS
 def sft_trainer_prepare_dataset(function_name, function):
-    if function_name != "_prepare_non_packed_dataloader" and function_name != "_prepare_dataset":
+    if (
+        function_name != "_prepare_non_packed_dataloader"
+        and function_name != "_prepare_dataset"
+    ):
         return function
 
     fast_sft_prepare_dataset = RL_REPLACEMENTS.get("sft_prepare_dataset", None)
@@ -554,7 +569,9 @@ def sft_trainer_prepare_dataset(function_name, function):
             )
             function = function.split("\n")
             function = "\n".join(" " * 4 + x for x in function)
-            function = function.replace("def sft_prepare_dataset", "def _prepare_dataset")
+            function = function.replace(
+                "def sft_prepare_dataset", "def _prepare_dataset"
+            )
             return function
 
     check_text = (
@@ -601,7 +618,9 @@ def sft_trainer_prepare_dataset(function_name, function):
         function = function.replace(replacer, replacer + check_text)
 
     # Return tokenizer's original state
-    return_state = "if tokenizer_call is not None: tokenizer.__call__ = tokenizer_call\n"
+    return_state = (
+        "if tokenizer_call is not None: tokenizer.__call__ = tokenizer_call\n"
+    )
     function = re.sub(
         r"\n([ ]{4,})(return .*?[\s]{0,})$",
         rf"\1{return_state}\1\2",
@@ -679,8 +698,12 @@ def orpo_trainer_text_tokenizer(function_name, function):
             return function
         function = new_function
     function = function.replace("self.processing_class(", "tokenizer(")
-    function = function.replace("self.processing_class.bos_token_id", "tokenizer.bos_token_id")
-    function = function.replace("self.processing_class.eos_token_id", "tokenizer.eos_token_id")
+    function = function.replace(
+        "self.processing_class.bos_token_id", "tokenizer.bos_token_id"
+    )
+    function = function.replace(
+        "self.processing_class.eos_token_id", "tokenizer.eos_token_id"
+    )
     return function
 
 
@@ -830,7 +853,9 @@ def grpo_trainer__generate_single_turn(function_name, function):
     ]:
         function = re.sub(pattern, "", function)
 
-    string_to_find = "            generate_inputs = super()._prepare_inputs(generate_inputs)"
+    string_to_find = (
+        "            generate_inputs = super()._prepare_inputs(generate_inputs)"
+    )
     replacement_string = (
         string_to_find
         + """
@@ -973,7 +998,9 @@ def grpo_trainer__generate_and_score_completions(function_name, function):
     # We must adjust the vLLM sampling_logprob tensor in Unsloth to account for this.
     string_to_find = "if self.use_vllm and self.vllm_importance_sampling_correction:"
 
-    replacement_string = "if False and self.use_vllm and self.vllm_importance_sampling_correction:"
+    replacement_string = (
+        "if False and self.use_vllm and self.vllm_importance_sampling_correction:"
+    )
 
     function = function.replace(string_to_find, replacement_string)
 
@@ -1095,11 +1122,11 @@ def grpo_trainer__generate_and_score_completions(function_name, function):
             if _mm_token_type_ids is not None:
                 forward_kwargs["mm_token_type_ids"] = _mm_token_type_ids
 """
-    _tool_image_marker = (
-        "        # For VLM tool images: build token type IDs from the full prompt_completion_ids."
-    )
+    _tool_image_marker = "        # For VLM tool images: build token type IDs from the full prompt_completion_ids."
     if _tool_image_marker in function:
-        function = function.replace(_tool_image_marker, _mm_alignment + "\n" + _tool_image_marker)
+        function = function.replace(
+            _tool_image_marker, _mm_alignment + "\n" + _tool_image_marker
+        )
     else:
         _tt_search = (
             'if "token_type_ids" in forward_kwargs:\n'
@@ -1108,7 +1135,9 @@ def grpo_trainer__generate_and_score_completions(function_name, function):
             "                [token_type_ids, token_type_ids.new_zeros(completion_ids.shape)], dim=1\n"
             "            )"
         )
-        function = function.replace(_tt_search, _tt_search + "\n" + _mm_alignment.rstrip())
+        function = function.replace(
+            _tt_search, _tt_search + "\n" + _mm_alignment.rstrip()
+        )
 
     _save_search = (
         'if "token_type_ids" in forward_kwargs:\n'
@@ -1170,7 +1199,9 @@ def grpo_trainer_fix_maybe_apply_chat_template(function_name, function):
     replacement = textwrap.indent(replacement, spaces * " ")
     replacement = f"\n{replacement}\n"
     what = 'prompts_text = [maybe_apply_chat_template(example, self.processing_class)["prompt"] for example in inputs]'
-    function = function.replace(what, replacement.replace("__INPUTS__REPLACEMENT__", "inputs"))
+    function = function.replace(
+        what, replacement.replace("__INPUTS__REPLACEMENT__", "inputs")
+    )
 
     """prompts_text = [
         maybe_apply_chat_template({"prompt": prompt}, self.processing_class)["prompt"] for prompt in prompts
@@ -1316,11 +1347,15 @@ def grpo_trainer__get_per_token_logps_and_entropies(function_name, function):
                     self.processing_class, input_ids, mm_token_type_ids
                 )
 
-            unwrapped_model = self.accelerator.unwrap_model(model, keep_fp32_wrapper = False)
+            unwrapped_model = self.accelerator.unwrap_model(
+                model, keep_fp32_wrapper = False
+            )
 
             lm_head = self.model.get_output_embeddings().weight
 
-            dtype_bytes = 16 if self._autocast_dtype in [torch.float16, torch.bfloat16] else 32
+            dtype_bytes = (
+                16 if self._autocast_dtype in [torch.float16, torch.bfloat16] else 32
+            )
             total_rows = input_ids.shape[0]
             seq_len = input_ids.shape[1]
             hidden_dim = lm_head.shape[1]
@@ -1350,7 +1385,9 @@ def grpo_trainer__get_per_token_logps_and_entropies(function_name, function):
                     input_ids, logits_to_keep, self.processing_class.pad_token_id
                 )
                 max_left_pad = torch.max(left_pad_tokens_per_prompt).item()
-                input_ids = left_pack_padding(input_ids, self.processing_class.pad_token_id)
+                input_ids = left_pack_padding(
+                    input_ids, self.processing_class.pad_token_id
+                )
                 attention_mask = input_ids != self.processing_class.pad_token_id
                 attention_mask = attention_mask.to(attention_mask.dtype)
             else:
@@ -1367,7 +1404,11 @@ def grpo_trainer__get_per_token_logps_and_entropies(function_name, function):
             batch_size = math.ceil(total_samples / B)
             if isinstance(num_images, torch.Tensor):
                 num_images = num_images.detach().cpu().reshape(-1).tolist()
-            if image_grid_thw is not None and pixel_values is not None and num_images is not None:
+            if (
+                image_grid_thw is not None
+                and pixel_values is not None
+                and num_images is not None
+            ):
                 rows_per_image = image_grid_thw.prod(dim = -1)
                 rows_per_sample = torch.split(rows_per_image, num_images)
                 rows_per_sample = torch.stack([s.sum() for s in rows_per_sample])
@@ -1413,8 +1454,12 @@ def grpo_trainer__get_per_token_logps_and_entropies(function_name, function):
 
                 input_ids_chunks.append(input_ids[start:end])
                 attention_mask_chunks.append(attention_mask[start:end])
-                token_type_ids_chunks.append(slice_sample_axis(token_type_ids, start, end))
-                mm_token_type_ids_chunks.append(slice_sample_axis(mm_token_type_ids, start, end))
+                token_type_ids_chunks.append(
+                    slice_sample_axis(token_type_ids, start, end)
+                )
+                mm_token_type_ids_chunks.append(
+                    slice_sample_axis(mm_token_type_ids, start, end)
+                )
 
                 if image_grid_thw is not None and pixel_values is not None:
                     if num_images is None:
@@ -1432,7 +1477,9 @@ def grpo_trainer__get_per_token_logps_and_entropies(function_name, function):
                         grid_slice = image_grid_thw[img_start:img_end]
                     image_grid_thw_chunks.append(grid_slice)
 
-                    pixel_values_chunks.append(pixel_values[start_pixel_idx:end_pixel_idx])
+                    pixel_values_chunks.append(
+                        pixel_values[start_pixel_idx:end_pixel_idx]
+                    )
 
                     if image_sizes is None:
                         image_sizes_chunks.append(None)
@@ -1443,7 +1490,9 @@ def grpo_trainer__get_per_token_logps_and_entropies(function_name, function):
                     ):
                         image_sizes_chunks.append(image_sizes[img_start:img_end])
                     else:
-                        image_sizes_chunks.append(slice_sample_axis(image_sizes, start, end))
+                        image_sizes_chunks.append(
+                            slice_sample_axis(image_sizes, start, end)
+                        )
 
                     if pixel_attention_mask is None:
                         pixel_attention_mask_chunks.append(None)
@@ -1452,7 +1501,9 @@ def grpo_trainer__get_per_token_logps_and_entropies(function_name, function):
                         and img_start is not None
                         and pixel_attention_mask.shape[0] == image_grid_thw.shape[0]
                     ):
-                        pixel_attention_mask_chunks.append(pixel_attention_mask[img_start:img_end])
+                        pixel_attention_mask_chunks.append(
+                            pixel_attention_mask[img_start:img_end]
+                        )
                     elif (
                         pixel_attention_mask.shape[0] == pixel_values.shape[0]
                         and pixel_attention_mask.shape[0] != input_ids.shape[0]
@@ -1461,13 +1512,17 @@ def grpo_trainer__get_per_token_logps_and_entropies(function_name, function):
                             pixel_attention_mask[start_pixel_idx:end_pixel_idx]
                         )
                     else:
-                        pixel_attention_mask_chunks.append(pixel_attention_mask[start:end])
+                        pixel_attention_mask_chunks.append(
+                            pixel_attention_mask[start:end]
+                        )
 
                 else:
                     pixel_values_chunks.append(None)
                     image_grid_thw_chunks.append(None)
                     pixel_attention_mask_chunks.append(None)
-                    image_sizes_chunks.append(slice_sample_axis(image_sizes, start, end))
+                    image_sizes_chunks.append(
+                        slice_sample_axis(image_sizes, start, end)
+                    )
 
             temperature = self.temperature
             model_config = _unsloth_get_model_config(model)
@@ -1506,7 +1561,9 @@ def grpo_trainer__get_per_token_logps_and_entropies(function_name, function):
             # silently. When off / ungrouped / unverified, the packed path below runs as before.
             _pg_result = None
             _pg_use = False
-            _pg_skip_pk = False  # once a shape is PG-verified, skip the full-row forward
+            _pg_skip_pk = (
+                False  # once a shape is PG-verified, skip the full-row forward
+            )
             _pg_forward_fn = None  # deferred PG forward (runs at the verify site below)
             _pg_num_gen = getattr(self, "num_generations", None)
             # Env gate hoisted to module level (mirrored via RL_PRE_ITEMS). Skip PG under vLLM
@@ -1515,7 +1572,9 @@ def grpo_trainer__get_per_token_logps_and_entropies(function_name, function):
             _pg_engage = (
                 UNSLOTH_GRPO_PREFIX_GROUPER_ON
                 and not getattr(self, "use_vllm", False)
-                and not getattr(unwrapped_model, "_unsloth_prefix_grouper_nograd_disabled", False)
+                and not getattr(
+                    unwrapped_model, "_unsloth_prefix_grouper_nograd_disabled", False
+                )
             )
             if _pg_engage:
                 try:
@@ -1574,16 +1633,23 @@ def grpo_trainer__get_per_token_logps_and_entropies(function_name, function):
                     )
                     if _pg_unsafe is None:
                         _pg_unsafe = set()
-                    if _pg_layout is not None and _pg_layout.signature not in _pg_unsafe:
+                    if (
+                        _pg_layout is not None
+                        and _pg_layout.signature not in _pg_unsafe
+                    ):
                         _pg_sig = _pg_layout.signature
                         _pg_verified = getattr(
-                            unwrapped_model, "_unsloth_prefix_grouper_nograd_verified", None
+                            unwrapped_model,
+                            "_unsloth_prefix_grouper_nograd_verified",
+                            None,
                         )
                         if _pg_verified is None:
                             _pg_verified = set()
                         _pg_chunks = max(1, total_rows * multiplier)
 
-                        def _pg_run_forward(_pg_layout = _pg_layout, _pg_chunks = _pg_chunks):
+                        def _pg_run_forward(
+                            _pg_layout = _pg_layout, _pg_chunks = _pg_chunks
+                        ):
                             with _get_inference_mode_context_manager(model):
                                 with torch.amp.autocast(
                                     device_type = "cuda", dtype = self._autocast_dtype
@@ -1604,7 +1670,9 @@ def grpo_trainer__get_per_token_logps_and_entropies(function_name, function):
                                         logit_softcapping,
                                         temperature,
                                     )
-                                    _pg_hidden = None  # release before any verify forward
+                                    _pg_hidden = (
+                                        None  # release before any verify forward
+                                    )
                             device_synchronize()
                             # clip to the loss window [B, logits_to_keep+max_left_pad]
                             _pg_w = logits_to_keep + max_left_pad
@@ -1617,10 +1685,14 @@ def grpo_trainer__get_per_token_logps_and_entropies(function_name, function):
                         _pg_T = int(_pg_layout.flat_ids.shape[1])
                         _pg_maxseg = int(_pg_layout.position_ids.max()) + 1
                         _pg_env = (
-                            _pg_verified.get(_pg_sig) if isinstance(_pg_verified, dict) else None
+                            _pg_verified.get(_pg_sig)
+                            if isinstance(_pg_verified, dict)
+                            else None
                         )
                         if (not _pg_verify_on()) or (
-                            _pg_env is not None and _pg_T <= _pg_env[0] and _pg_maxseg <= _pg_env[1]
+                            _pg_env is not None
+                            and _pg_T <= _pg_env[0]
+                            and _pg_maxseg <= _pg_env[1]
                         ):
                             # trusted shape: run PG now and skip the full-row forward below
                             _pg_result = _pg_run_forward()
@@ -1685,10 +1757,15 @@ def grpo_trainer__get_per_token_logps_and_entropies(function_name, function):
                     _pk_sw = getattr(
                         getattr(unwrapped_model, "config", None), "sliding_window", None
                     )
-                    _pk_sw_ok = not (isinstance(_pk_sw, int) and _pk_sw > 0 and _pk_maxseg > _pk_sw)
+                    _pk_sw_ok = not (
+                        isinstance(_pk_sw, int) and _pk_sw > 0 and _pk_maxseg > _pk_sw
+                    )
                     # per-row completion mask (same as the loss); prompt-only rows count as inactive
                     _pk_cmask = create_completion_attention_mask(
-                        input_ids[:, -_pk_W:], left_pad_tokens_per_prompt, max_left_pad, _pk_pad
+                        input_ids[:, -_pk_W:],
+                        left_pad_tokens_per_prompt,
+                        max_left_pad,
+                        _pk_pad,
                     )
                     _pk_active = int(_pk_cmask.any(dim = 1).sum())
                     # skip the packed forward entirely at known-unsafe lengths (avoids a wasted pass / OOM)
@@ -1714,16 +1791,24 @@ def grpo_trainer__get_per_token_logps_and_entropies(function_name, function):
                         )  # [T, 2] = (row, col), row-major
                         _pk_within = _pk_nz_idx[1:, 0] == _pk_nz_idx[:-1, 0]  # [T-1]
                         # per-row completion start after left-packing (matches create_completion_attention_mask)
-                        _pk_cstart = (_pk_L - logits_to_keep) - left_pad_tokens_per_prompt  # [rows]
-                        _pk_ctgt = (_pk_nz_idx[1:, 1] >= _pk_cstart[_pk_nz_idx[1:, 0]]) & _pk_within
+                        _pk_cstart = (
+                            _pk_L - logits_to_keep
+                        ) - left_pad_tokens_per_prompt  # [rows]
+                        _pk_ctgt = (
+                            _pk_nz_idx[1:, 1] >= _pk_cstart[_pk_nz_idx[1:, 0]]
+                        ) & _pk_within
                         with _get_inference_mode_context_manager(model):
-                            with torch.amp.autocast(device_type = "cuda", dtype = self._autocast_dtype):
+                            with torch.amp.autocast(
+                                device_type = "cuda", dtype = self._autocast_dtype
+                            ):
                                 # use_cache=False: a KV cache silently disables varlen packing
                                 _pk_hidden = unwrapped_model(
                                     input_ids = _pk_flat,
                                     position_ids = _pk_pos,
                                     packed_seq_lengths = torch.tensor(
-                                        _pk_nz_cpu, dtype = torch.int32, device = input_ids.device
+                                        _pk_nz_cpu,
+                                        dtype = torch.int32,
+                                        device = input_ids.device,
                                     ),
                                     use_cache = False,
                                 ).logits
@@ -1740,7 +1825,9 @@ def grpo_trainer__get_per_token_logps_and_entropies(function_name, function):
                         # GPT-OSS offload race guard (matches the padded loop)
                         device_synchronize()
                         # scatter each logprob back to its (row, col) so [:, -_pk_W:] matches padded
-                        _pk_tgt = (_pk_nz_idx[1:, 0] * _pk_L + _pk_nz_idx[1:, 1])[_pk_ctgt]
+                        _pk_tgt = (_pk_nz_idx[1:, 0] * _pk_L + _pk_nz_idx[1:, 1])[
+                            _pk_ctgt
+                        ]
                         _pk_result = (
                             torch.zeros(
                                 total_rows * _pk_L,
@@ -1753,10 +1840,18 @@ def grpo_trainer__get_per_token_logps_and_entropies(function_name, function):
                         # re-verify when T or the longest segment grows past what was verified
                         # (a LongRoPE cache switch can change the result)
                         _pk_vT = int(
-                            getattr(unwrapped_model, "_unsloth_seq_packing_nograd_verified_T", 0)
+                            getattr(
+                                unwrapped_model,
+                                "_unsloth_seq_packing_nograd_verified_T",
+                                0,
+                            )
                         )
                         _pk_vS = int(
-                            getattr(unwrapped_model, "_unsloth_seq_packing_nograd_verified_seg", 0)
+                            getattr(
+                                unwrapped_model,
+                                "_unsloth_seq_packing_nograd_verified_seg",
+                                0,
+                            )
                         )
                         # debug: hand-edit this condition to force re-verify every step
                         if _pk_ok is True and _pk_T <= _pk_vT and _pk_maxseg <= _pk_vS:
@@ -1773,7 +1868,9 @@ def grpo_trainer__get_per_token_logps_and_entropies(function_name, function):
                                         if _pk_ni < 2:
                                             continue
                                         _pk_rmask = _pk_keep[_pk_i]
-                                        _pk_real = input_ids[_pk_i][_pk_rmask].unsqueeze(0)
+                                        _pk_real = input_ids[_pk_i][
+                                            _pk_rmask
+                                        ].unsqueeze(0)
                                         _pk_rpos = torch.arange(
                                             _pk_ni, device = input_ids.device
                                         ).unsqueeze(0)
@@ -1782,19 +1879,21 @@ def grpo_trainer__get_per_token_logps_and_entropies(function_name, function):
                                             position_ids = _pk_rpos,
                                             use_cache = False,
                                         ).logits
-                                        _pk_rsel = chunked_hidden_states_selective_log_softmax(
-                                            _pk_rh[:, :-1, :],
-                                            lm_head,
-                                            _pk_real[:, 1:],
-                                            1,
-                                            logit_scale_multiply,
-                                            logit_scale_divide,
-                                            logit_softcapping,
-                                            temperature,
-                                        )[0]
-                                        _pk_rcols = _pk_rmask.nonzero(as_tuple = False).squeeze(1)[
-                                            1:
-                                        ] - (_pk_L - _pk_W)
+                                        _pk_rsel = (
+                                            chunked_hidden_states_selective_log_softmax(
+                                                _pk_rh[:, :-1, :],
+                                                lm_head,
+                                                _pk_real[:, 1:],
+                                                1,
+                                                logit_scale_multiply,
+                                                logit_scale_divide,
+                                                logit_softcapping,
+                                                temperature,
+                                            )[0]
+                                        )
+                                        _pk_rcols = _pk_rmask.nonzero(
+                                            as_tuple = False
+                                        ).squeeze(1)[1:] - (_pk_L - _pk_W)
                                         _pk_rkeep = _pk_rcols >= 0
                                         _pk_ref[_pk_i, _pk_rcols[_pk_rkeep]] = _pk_rsel[
                                             _pk_rkeep
@@ -1802,7 +1901,9 @@ def grpo_trainer__get_per_token_logps_and_entropies(function_name, function):
                             device_synchronize()
                             # compare over the loss-mask region only
                             _pk_cm = _pk_cmask.float()
-                            _pk_diff = float(((_pk_result - _pk_ref).abs() * _pk_cm).max())
+                            _pk_diff = float(
+                                ((_pk_result - _pk_ref).abs() * _pk_cm).max()
+                            )
                             if UNSLOTH_ENABLE_LOGGING:
                                 print(
                                     f"[Unsloth] GRPO seq-packing (no-grad) verify: T={_pk_T} maxseg={_pk_maxseg} packed-vs-perrow max|d|={_pk_diff:.4f}",
@@ -1826,11 +1927,15 @@ def grpo_trainer__get_per_token_logps_and_entropies(function_name, function):
                                 _pk_use = False
                                 if _pk_diff >= 1.5:
                                     # contamination (attention ignores the packed mask): disable packing
-                                    unwrapped_model._unsloth_seq_packing_nograd_ok = False
+                                    unwrapped_model._unsloth_seq_packing_nograd_ok = (
+                                        False
+                                    )
                                 else:
                                     # likely a length boundary (LongRoPE): mark unsafe, keep smaller shapes
                                     unwrapped_model._unsloth_seq_packing_nograd_unsafe_T = (
-                                        _pk_T if _pk_unsafe is None else min(_pk_unsafe, _pk_T)
+                                        _pk_T
+                                        if _pk_unsafe is None
+                                        else min(_pk_unsafe, _pk_T)
                                     )
                                 if UNSLOTH_ENABLE_LOGGING:
                                     print(
@@ -1878,7 +1983,9 @@ def grpo_trainer__get_per_token_logps_and_entropies(function_name, function):
                             )
                         if _pg_diff < _pg_tol_ok():
                             _pg_v = getattr(
-                                unwrapped_model, "_unsloth_prefix_grouper_nograd_verified", None
+                                unwrapped_model,
+                                "_unsloth_prefix_grouper_nograd_verified",
+                                None,
                             )
                             if not isinstance(_pg_v, dict):
                                 _pg_v = {}
@@ -1889,11 +1996,15 @@ def grpo_trainer__get_per_token_logps_and_entropies(function_name, function):
                                 max(_pg_vT, _pg_old[0]),
                                 max(_pg_vS, _pg_old[1]),
                             )
-                            unwrapped_model._unsloth_prefix_grouper_nograd_verified = _pg_v
+                            unwrapped_model._unsloth_prefix_grouper_nograd_verified = (
+                                _pg_v
+                            )
                             _pg_use = True
                         else:
                             _pg_u = getattr(
-                                unwrapped_model, "_unsloth_prefix_grouper_nograd_unsafe", None
+                                unwrapped_model,
+                                "_unsloth_prefix_grouper_nograd_unsafe",
+                                None,
                             )
                             if _pg_u is None:
                                 _pg_u = set()
@@ -1939,8 +2050,12 @@ def grpo_trainer__get_per_token_logps_and_entropies(function_name, function):
                     if token_type_ids_chunk is not None:
                         _extra_vision_kwargs["token_type_ids"] = token_type_ids_chunk
                     if mm_token_type_ids_chunk is not None:
-                        _extra_vision_kwargs["mm_token_type_ids"] = mm_token_type_ids_chunk
-                    with torch.amp.autocast(device_type = "cuda", dtype = self._autocast_dtype):
+                        _extra_vision_kwargs["mm_token_type_ids"] = (
+                            mm_token_type_ids_chunk
+                        )
+                    with torch.amp.autocast(
+                        device_type = "cuda", dtype = self._autocast_dtype
+                    ):
                         if pixel_values is None:
                             outputs = unwrapped_model(
                                 input_ids = input_ids_chunk,
@@ -1962,15 +2077,17 @@ def grpo_trainer__get_per_token_logps_and_entropies(function_name, function):
                                 :, -(logits_to_keep + max_left_pad + 1) :, :
                             ]
                             logits_chunk = logits_chunk[:, :-1, :]
-                            logprobs_chunk = chunked_hidden_states_selective_log_softmax(
-                                logits_chunk,
-                                lm_head,
-                                completion_input_ids_chunk,
-                                chunks = input_ids_chunk.shape[0] * multiplier,
-                                logit_scale_multiply = logit_scale_multiply,
-                                logit_scale_divide = logit_scale_divide,
-                                logit_softcapping = logit_softcapping,
-                                temperature = temperature,
+                            logprobs_chunk = (
+                                chunked_hidden_states_selective_log_softmax(
+                                    logits_chunk,
+                                    lm_head,
+                                    completion_input_ids_chunk,
+                                    chunks = input_ids_chunk.shape[0] * multiplier,
+                                    logit_scale_multiply = logit_scale_multiply,
+                                    logit_scale_divide = logit_scale_divide,
+                                    logit_softcapping = logit_softcapping,
+                                    temperature = temperature,
+                                )
                             )
                         else:
                             # Essentially, for VLMs we do not go via the optimized path in models/,
@@ -1990,18 +2107,22 @@ def grpo_trainer__get_per_token_logps_and_entropies(function_name, function):
                             del outputs  # free hidden_states before chunked log-softmax
 
                             logits_chunk = logits_chunk[:, :-1, :]
-                            completion_input_ids_chunk = input_ids_chunk[:, -logits_to_keep:]
+                            completion_input_ids_chunk = input_ids_chunk[
+                                :, -logits_to_keep:
+                            ]
                             # Guard: check if model returned hidden states or logits
                             if logits_chunk.shape[-1] == lm_head.shape[1]:
-                                logprobs_chunk = chunked_hidden_states_selective_log_softmax(
-                                    logits_chunk,
-                                    lm_head,
-                                    completion_input_ids_chunk,
-                                    chunks = input_ids_chunk.shape[0] * multiplier,
-                                    logit_scale_multiply = logit_scale_multiply,
-                                    logit_scale_divide = logit_scale_divide,
-                                    logit_softcapping = logit_softcapping,
-                                    temperature = temperature,
+                                logprobs_chunk = (
+                                    chunked_hidden_states_selective_log_softmax(
+                                        logits_chunk,
+                                        lm_head,
+                                        completion_input_ids_chunk,
+                                        chunks = input_ids_chunk.shape[0] * multiplier,
+                                        logit_scale_multiply = logit_scale_multiply,
+                                        logit_scale_divide = logit_scale_divide,
+                                        logit_softcapping = logit_softcapping,
+                                        temperature = temperature,
+                                    )
                                 )
                             else:
                                 # Model returned logits directly - scaling/softcapping already applied by model forward
@@ -2107,7 +2228,9 @@ UnslothEfficientGRPO = RL_REPLACEMENTS["UnslothEfficientGRPO"]
 grpo_accumulated_loss = RL_REPLACEMENTS["grpo_accumulated_loss"]
 grpo_update_SamplingParams = RL_REPLACEMENTS["grpo_update_SamplingParams"]
 RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(_unsloth_get_model_config))
-RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(_unsloth_get_final_logit_softcapping))
+RL_PRE_ITEMS["grpo_trainer"].append(
+    inspect.getsource(_unsloth_get_final_logit_softcapping)
+)
 RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(_unsloth_get_mm_token_id))
 RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(_unsloth_fix_mm_token_type_ids))
 RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(_unsloth_clear_stateful_mrope))
@@ -2116,7 +2239,9 @@ RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(UnslothEfficientGRPO))
 RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(grpo_accumulated_loss))
 RL_PRE_ITEMS["grpo_trainer"].append(grpo_compute_loss_slow)
 RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(grpo_update_SamplingParams))
-RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(_get_inference_mode_context_manager))
+RL_PRE_ITEMS["grpo_trainer"].append(
+    inspect.getsource(_get_inference_mode_context_manager)
+)
 # inspect.getsource inlines function bodies but not module imports, so constants the inlined
 # grpo functions reference (e.g. UNSLOTH_ENABLE_LOGGING) must be redefined in the generated cache.
 RL_PRE_ITEMS["grpo_trainer"].append(
@@ -2406,28 +2531,30 @@ def grpo_trainer_compute_loss(function_name, function):
                 )
             else:
                 # to ensure backwards compatibility with trl 0.15.2 and maybe even 0.17
-                loss, completion_length, mean_kl, coef_1, completion_mask = grpo_accumulated_loss(
-                    trainer = self,
-                    input_ids = _input_ids,
-                    pixel_values = pixel_values,
-                    image_grid_thw = image_grid_thw,
-                    pixel_attention_mask = pixel_attention_mask,
-                    image_sizes = image_sizes,
-                    num_images = num_images,
-                    logits_to_keep = logits_to_keep,
-                    completion_mask = completion_mask,
-                    advantages = advantages,
-                    old_logps = old_logps,
-                    ref_logps = ref_logps,
-                    n_chunks = self.args.unsloth_num_chunks,
-                    temperature = self.args.temperature,
-                    logit_softcapping = logit_softcapping,
-                    logit_scale_multiply = logit_scale_multiply,
-                    logit_scale_divide = logit_scale_divide,
-                    attention_mask = attention_mask,
-                    token_type_ids = token_type_ids,
-                    mm_token_type_ids = mm_token_type_ids,
-                    **_grpo_accumulated_loss_kwargs,
+                loss, completion_length, mean_kl, coef_1, completion_mask = (
+                    grpo_accumulated_loss(
+                        trainer = self,
+                        input_ids = _input_ids,
+                        pixel_values = pixel_values,
+                        image_grid_thw = image_grid_thw,
+                        pixel_attention_mask = pixel_attention_mask,
+                        image_sizes = image_sizes,
+                        num_images = num_images,
+                        logits_to_keep = logits_to_keep,
+                        completion_mask = completion_mask,
+                        advantages = advantages,
+                        old_logps = old_logps,
+                        ref_logps = ref_logps,
+                        n_chunks = self.args.unsloth_num_chunks,
+                        temperature = self.args.temperature,
+                        logit_softcapping = logit_softcapping,
+                        logit_scale_multiply = logit_scale_multiply,
+                        logit_scale_divide = logit_scale_divide,
+                        attention_mask = attention_mask,
+                        token_type_ids = token_type_ids,
+                        mm_token_type_ids = mm_token_type_ids,
+                        **_grpo_accumulated_loss_kwargs,
+                    )
                 )
         if "train" in self._metrics:
             mode = "eval" if self.control.should_evaluate else "train"
@@ -2512,11 +2639,19 @@ def grpo_trainer_compute_loss(function_name, function):
             clip_ratio = masked_batch_mean(is_region_clipped.float())
 
             gathered_low_clip = self.accelerator.gather(low_clip)
-            self._metrics[mode]["clip_ratio/low_mean"].append(gathered_low_clip.nanmean().item())
-            self._metrics[mode]["clip_ratio/low_min"].append(nanmin(gathered_low_clip).item())
+            self._metrics[mode]["clip_ratio/low_mean"].append(
+                gathered_low_clip.nanmean().item()
+            )
+            self._metrics[mode]["clip_ratio/low_min"].append(
+                nanmin(gathered_low_clip).item()
+            )
             gathered_high_clip = self.accelerator.gather(high_clip)
-            self._metrics[mode]["clip_ratio/high_mean"].append(gathered_high_clip.nanmean().item())
-            self._metrics[mode]["clip_ratio/high_max"].append(nanmax(gathered_high_clip).item())
+            self._metrics[mode]["clip_ratio/high_mean"].append(
+                gathered_high_clip.nanmean().item()
+            )
+            self._metrics[mode]["clip_ratio/high_max"].append(
+                nanmax(gathered_high_clip).item()
+            )
             gathered_clip_ratio = self.accelerator.gather(clip_ratio)
             self._metrics[mode]["clip_ratio/region_mean"].append(
                 gathered_clip_ratio.nanmean().item()
@@ -2797,7 +2932,9 @@ def vllm_generation_init_patch():
         try:
             src = inspect.getsource(method)
         except Exception as e:
-            logger.info(f"Unsloth: Could not get source of VLLMGeneration.{method_name}: {e}")
+            logger.info(
+                f"Unsloth: Could not get source of VLLMGeneration.{method_name}: {e}"
+            )
             return False
 
         src = textwrap.dedent(src)
@@ -2889,7 +3026,9 @@ def vllm_generation_init_patch():
                 f'{indent}    self.llm.collective_rpc("reload_weights")'
             )
 
-        patched_src, num_replacements = pattern.subn(replace_reload_weights, src, count = 1)
+        patched_src, num_replacements = pattern.subn(
+            replace_reload_weights, src, count = 1
+        )
         if num_replacements == 0:
             raise RuntimeError(
                 "Unsloth: Warning - regex did not match, VLLMGeneration.generate patch may have failed"

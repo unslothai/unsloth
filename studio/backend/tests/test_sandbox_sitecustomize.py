@@ -53,7 +53,9 @@ def _save_patch_targets():
 def _restore_patch_targets(saved):
     """Undo _save_patch_targets so the test process stays clean."""
     globals_tuple, accessor, accessor_open = saved
-    (builtins.open, io.open, os.open, os.makedirs, os.mkdir, pathlib.Path.mkdir) = globals_tuple
+    (builtins.open, io.open, os.open, os.makedirs, os.mkdir, pathlib.Path.mkdir) = (
+        globals_tuple
+    )
     if accessor is not None:
         accessor.open = accessor_open
 
@@ -61,7 +63,9 @@ def _restore_patch_targets(saved):
 def _load_shim():
     """Import the shim without leaving its open()/mkdir patches installed."""
     saved = _save_patch_targets()
-    spec = importlib.util.spec_from_file_location("_sandbox_sitecustomize_under_test", _SHIM)
+    spec = importlib.util.spec_from_file_location(
+        "_sandbox_sitecustomize_under_test", _SHIM
+    )
     mod = importlib.util.module_from_spec(spec)
     try:
         spec.loader.exec_module(mod)  # runs _install(), patching the globals
@@ -134,9 +138,13 @@ def test_write_fallback_remaps_hallucinated_absolute_path(monkeypatch, tmp_path)
     cwd = os.getcwd()
     hallucinated = "/home/ubuntu/Sandbox/flappy_bird.html"
     for mode in ("w", "a", "x", "w+"):
-        assert mod._remap_open(hallucinated, mode) == os.path.join(cwd, "flappy_bird.html")
+        assert mod._remap_open(hallucinated, mode) == os.path.join(
+            cwd, "flappy_bird.html"
+        )
     # A nested missing tree collapses to just the basename in the CWD.
-    assert mod._remap_open("/no/such/tree/report.txt", "w") == os.path.join(cwd, "report.txt")
+    assert mod._remap_open("/no/such/tree/report.txt", "w") == os.path.join(
+        cwd, "report.txt"
+    )
 
 
 def test_write_fallback_never_touches_read_modes(monkeypatch, tmp_path):
@@ -219,7 +227,9 @@ def test_write_fallback_reserves_same_target_on_repeated_writes(monkeypatch, tmp
     assert mod._remap_open(other, "w") == other
 
 
-def test_write_fallback_reserves_healed_target_across_separate_runs(monkeypatch, tmp_path):
+def test_write_fallback_reserves_healed_target_across_separate_runs(
+    monkeypatch, tmp_path
+):
     # Each tool call is a FRESH subprocess, so the in-process remap map is empty on
     # the next run while the healed file persists in the working directory. A second
     # run overwriting the SAME invented path (whose healed basename now exists) must
@@ -263,7 +273,9 @@ def test_write_fallback_reserves_healed_target_across_separate_runs(monkeypatch,
 
 
 @pytest.mark.parametrize("mode", ["r+", "rb+"])
-def test_read_update_modes_never_redirected_even_with_missing_parent(monkeypatch, tmp_path, mode):
+def test_read_update_modes_never_redirected_even_with_missing_parent(
+    monkeypatch, tmp_path, mode
+):
     # r+ / rb+ REQUIRE the target to exist and never create; a "+" must not qualify
     # as creation, or a missing absolute path would be redirected onto a same-basename
     # workspace file and corrupt it. The parent is missing, so only the mode predicate
@@ -318,7 +330,9 @@ def test_os_open_and_path_touch_remap_convention_path(monkeypatch, tmp_path):
     # Keep the shim's patches installed under a chdir into tmp_path so os.open is
     # patched, and confirm a convention path is healed into the CWD instead of raising.
     saved = _save_patch_targets()
-    spec = importlib.util.spec_from_file_location("_sandbox_sitecustomize_osopen", _SHIM)
+    spec = importlib.util.spec_from_file_location(
+        "_sandbox_sitecustomize_osopen", _SHIM
+    )
     mod = importlib.util.module_from_spec(spec)
     monkeypatch.chdir(tmp_path)
     cwd = os.getcwd()
@@ -341,7 +355,9 @@ def test_path_write_read_text_remap_convention_path(monkeypatch, tmp_path):
     # and confirm a convention path is healed into the CWD on every version. This is
     # the hermetic guard for the 3.10 accessor path a plain io.open patch misses.
     saved = _save_patch_targets()
-    spec = importlib.util.spec_from_file_location("_sandbox_sitecustomize_writetext", _SHIM)
+    spec = importlib.util.spec_from_file_location(
+        "_sandbox_sitecustomize_writetext", _SHIM
+    )
     mod = importlib.util.module_from_spec(spec)
     monkeypatch.chdir(tmp_path)
     cwd = os.getcwd()
@@ -375,7 +391,9 @@ def test_remap_open_still_applies_prefix_remaps(monkeypatch, tmp_path):
     mod = _load_shim()
     monkeypatch.chdir(tmp_path)
     cwd = os.getcwd()
-    assert mod._remap_open("/mnt/data/sub/out.txt", "w") == os.path.join(cwd, "sub", "out.txt")
+    assert mod._remap_open("/mnt/data/sub/out.txt", "w") == os.path.join(
+        cwd, "sub", "out.txt"
+    )
     # A read whose mapped target does NOT exist keeps the original path: a missing
     # input stays truthful, not silently redirected into the CWD.
     assert mod._remap_open("/mnt/data/sub/out.txt", "r") == "/mnt/data/sub/out.txt"
@@ -498,7 +516,9 @@ def test_read_of_missing_prefix_path_emits_no_notice(monkeypatch, tmp_path, caps
     assert mod._notified is False
     assert "does not exist" not in capsys.readouterr().err
     # A committed write then heals and fires the notice exactly once.
-    assert mod._remap_open("/mnt/data/out.txt", "w") == os.path.join(os.getcwd(), "out.txt")
+    assert mod._remap_open("/mnt/data/out.txt", "w") == os.path.join(
+        os.getcwd(), "out.txt"
+    )
     assert mod._notified is True
     assert "/mnt/data does not exist in this sandbox" in capsys.readouterr().err
 

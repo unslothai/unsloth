@@ -93,9 +93,13 @@ def test_transient_status_read_failure_does_not_end_stream(monkeypatch):
     ing._jobs[jid] = queue.Queue()
     try:
         gen = ing.job_events(jid)
-        assert next(gen) == {"type": "heartbeat"}  # transient error -> heartbeat, no raise
+        assert next(gen) == {
+            "type": "heartbeat"
+        }  # transient error -> heartbeat, no raise
         gen.close()
-        assert jid in ing._jobs, "an unconfirmed (transient-error) status must keep the queue"
+        assert (
+            jid in ing._jobs
+        ), "an unconfirmed (transient-error) status must keep the queue"
     finally:
         ing._jobs.pop(jid, None)
 

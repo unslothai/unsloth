@@ -45,7 +45,9 @@ _TEST_SECRET = b"unit-test-preview-secret-0123456789"
 
 
 def _use_test_secret(monkeypatch) -> None:
-    monkeypatch.setattr(preview_token, "get_or_create_preview_link_secret", lambda: _TEST_SECRET)
+    monkeypatch.setattr(
+        preview_token, "get_or_create_preview_link_secret", lambda: _TEST_SECRET
+    )
 
 
 def _sig(ref: str) -> str:
@@ -229,7 +231,9 @@ def test_chat_payload_sanitized(client, captured):
         f"/p/demorun/v1/chat/completions?k={_sig('demorun')}",
         json = {
             "messages": [{"role": "user", "content": "hi"}],
-            "tools": [{"type": "function", "function": {"name": "rm", "parameters": {}}}],
+            "tools": [
+                {"type": "function", "function": {"name": "rm", "parameters": {}}}
+            ],
             "enable_tools": True,
             "enabled_tools": ["python"],
             "mcp_enabled": True,
@@ -452,7 +456,10 @@ def test_generation_clamp_honors_lower_legacy_max_tokens(client, captured):
 def test_generation_clamp_honors_lower_completion_tokens(client, captured):
     r = client.post(
         f"/p/demorun/v1/chat/completions?k={_sig('demorun')}",
-        json = {"messages": [{"role": "user", "content": "hi"}], "max_completion_tokens": 32},
+        json = {
+            "messages": [{"role": "user", "content": "hi"}],
+            "max_completion_tokens": 32,
+        },
     )
     assert r.status_code == 200
     p = captured["payload"]

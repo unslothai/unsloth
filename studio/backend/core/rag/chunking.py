@@ -27,7 +27,9 @@ class Chunk:
     page_char_end: int
 
 
-def _split(text: str, seps: tuple[str, ...], max_tokens: int, count: TokenCounter) -> list[str]:
+def _split(
+    text: str, seps: tuple[str, ...], max_tokens: int, count: TokenCounter
+) -> list[str]:
     """Recursively split into pieces each <= max_tokens (best effort). Pieces
     rejoin to ``text`` exactly, so offsets are a running length."""
     if count(text) <= max_tokens:
@@ -41,7 +43,9 @@ def _split(text: str, seps: tuple[str, ...], max_tokens: int, count: TokenCounte
         out: list[str] = []
         for p in parts:
             out.extend(
-                [p] if count(p) <= max_tokens else _split(p, seps[i + 1 :], max_tokens, count)
+                [p]
+                if count(p) <= max_tokens
+                else _split(p, seps[i + 1 :], max_tokens, count)
             )
         return [p for p in out if p]
     n = max(1, max_tokens * 4)
@@ -49,7 +53,11 @@ def _split(text: str, seps: tuple[str, ...], max_tokens: int, count: TokenCounte
 
 
 def _merge(
-    pieces: list[str], starts: list[int], max_tokens: int, overlap: int, count: TokenCounter
+    pieces: list[str],
+    starts: list[int],
+    max_tokens: int,
+    overlap: int,
+    count: TokenCounter,
 ) -> list[tuple[str, int, int]]:
     """Greedy-merge pieces into <= max_tokens chunks with token overlap.
     ``starts[i]`` is ``pieces[i]``'s page char offset; returns
@@ -106,7 +114,9 @@ def chunk_pages(
         for piece in pieces:
             starts.append(cursor)
             cursor += len(piece)
-        for text, char_start, char_end in _merge(pieces, starts, max_tokens, overlap, count):
+        for text, char_start, char_end in _merge(
+            pieces, starts, max_tokens, overlap, count
+        ):
             out.append(
                 Chunk(
                     text = text,

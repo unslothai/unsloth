@@ -27,12 +27,16 @@ def test_chunk_never_exceeds_max_with_overlap_carry():
     """Overlap carry is trimmed so no chunk exceeds max_tokens (else the embedder overflows)."""
     s1 = " ".join("a" for _ in range(10))
     s2 = " ".join("b" for _ in range(95))  # near max
-    chunks = chunk_pages([_page(f"{s1}. {s2}")], max_tokens = 100, overlap = 24, count = WORDS)
+    chunks = chunk_pages(
+        [_page(f"{s1}. {s2}")], max_tokens = 100, overlap = 24, count = WORDS
+    )
     assert all(c.token_count <= 100 for c in chunks), [c.token_count for c in chunks]
 
 
 def test_chunk_indices_are_sequential():
-    chunks = chunk_pages([_page("alpha. " * 200)], max_tokens = 32, overlap = 0, count = WORDS)
+    chunks = chunk_pages(
+        [_page("alpha. " * 200)], max_tokens = 32, overlap = 0, count = WORDS
+    )
     assert [c.chunk_index for c in chunks] == list(range(len(chunks)))
 
 

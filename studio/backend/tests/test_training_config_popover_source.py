@@ -17,7 +17,9 @@ from __future__ import annotations
 
 from pathlib import Path
 
-_STUDIO_FRONTEND = Path(__file__).resolve().parents[2] / "frontend" / "src" / "features" / "studio"
+_STUDIO_FRONTEND = (
+    Path(__file__).resolve().parents[2] / "frontend" / "src" / "features" / "studio"
+)
 
 
 def _read(rel: str) -> str:

@@ -140,7 +140,9 @@ def test_stream_wait_does_not_shorten_upstream_read_for_disconnect_poll():
 
         class _NoItem:
             async def __anext__(self):
-                seen_read_timeouts.append(response.request.extensions["timeout"]["read"])
+                seen_read_timeouts.append(
+                    response.request.extensions["timeout"]["read"]
+                )
                 raise StopAsyncIteration
 
         async for _ in inf_mod._aiter_llama_stream_items(
@@ -184,7 +186,9 @@ def test_preheader_send_cleanup_on_disconnect_and_cancel():
                 return state.disconnected
 
         task = asyncio.create_task(
-            inf_mod._send_stream_with_preheader_cancel(_Client(), object(), request = _Request())
+            inf_mod._send_stream_with_preheader_cancel(
+                _Client(), object(), request = _Request()
+            )
         )
         await started.wait()
         if cancel_parent:

@@ -27,7 +27,8 @@ def _spec_value():
     for node in ast.walk(_module()):
         if isinstance(node, ast.Assign) and isinstance(node.value, ast.Constant):
             if any(
-                isinstance(t, ast.Name) and t.id == "_LLM_COMPRESSOR_SPEC" for t in node.targets
+                isinstance(t, ast.Name) and t.id == "_LLM_COMPRESSOR_SPEC"
+                for t in node.targets
             ):
                 return node.value.value
     return None
@@ -43,7 +44,9 @@ def test_spec_is_a_bounded_pin() -> None:
     assert spec is not None, "_LLM_COMPRESSOR_SPEC must be defined at module scope"
     assert "llmcompressor" in spec, f"spec must name llmcompressor, got {spec!r}"
     # A lower and an upper bound: pip cannot jump to an arbitrary (e.g. inflated) future release.
-    assert ">=" in spec and "<" in spec, f"spec must have lower and upper bounds, got {spec!r}"
+    assert (
+        ">=" in spec and "<" in spec
+    ), f"spec must have lower and upper bounds, got {spec!r}"
 
 
 def test_ceiling_blocks_inflated_versions() -> None:
@@ -68,7 +71,9 @@ def test_floor_stays_compatible_with_supported_torch() -> None:
     from packaging.version import Version
 
     req = Requirement(_spec_value())
-    lowers = [Version(s.version) for s in req.specifier if s.operator in (">=", "==", "~=")]
+    lowers = [
+        Version(s.version) for s in req.specifier if s.operator in (">=", "==", "~=")
+    ]
     assert lowers, "spec must declare a lower bound"
     assert max(lowers) <= Version("0.6.0"), (
         f"floor {max(lowers)} requires a torch newer than Unsloth's minimum (2.4); "
@@ -88,13 +93,19 @@ def test_install_command_uses_pinned_spec_not_bare_name() -> None:
                         "use the bounded _LLM_COMPRESSOR_SPEC"
                     )
     names = {n.id for n in ast.walk(fn) if isinstance(n, ast.Name)}
-    assert "_LLM_COMPRESSOR_SPEC" in names, "install command must reference _LLM_COMPRESSOR_SPEC"
+    assert (
+        "_LLM_COMPRESSOR_SPEC" in names
+    ), "install command must reference _LLM_COMPRESSOR_SPEC"
 
 
 def test_optout_env_gate_precedes_subprocess_install() -> None:
     fn = _get_function("install_llm_compressor")
-    env_line = _first_lineno(fn, lambda n: isinstance(n, ast.Constant) and n.value == _ENV_FLAG)
-    assert env_line is not None, f"{_ENV_FLAG} opt-out must be checked in install_llm_compressor"
+    env_line = _first_lineno(
+        fn, lambda n: isinstance(n, ast.Constant) and n.value == _ENV_FLAG
+    )
+    assert (
+        env_line is not None
+    ), f"{_ENV_FLAG} opt-out must be checked in install_llm_compressor"
 
     def _is_check_call(n: ast.AST) -> bool:
         return (
@@ -106,7 +117,9 @@ def test_optout_env_gate_precedes_subprocess_install() -> None:
         )
 
     install_line = _first_lineno(fn, _is_check_call)
-    assert install_line is not None, "expected a subprocess.check_call install in the function"
+    assert (
+        install_line is not None
+    ), "expected a subprocess.check_call install in the function"
     assert (
         env_line < install_line
     ), "the auto-install opt-out must be evaluated before any package install runs"

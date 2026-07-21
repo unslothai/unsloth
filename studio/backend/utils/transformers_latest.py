@@ -87,7 +87,8 @@ _TRUE_VALUES = {"1", "true", "yes", "on"}
 def _disabled() -> bool:
     """True if the operator disabled the latest-transformers check entirely."""
     return (
-        os.environ.get("UNSLOTH_STUDIO_NO_LATEST_TRANSFORMERS", "").strip().lower() in _TRUE_VALUES
+        os.environ.get("UNSLOTH_STUDIO_NO_LATEST_TRANSFORMERS", "").strip().lower()
+        in _TRUE_VALUES
     )
 
 
@@ -314,7 +315,9 @@ def _hardcoded_model_types() -> frozenset[str]:
     )
 
 
-def check_upgrade_for_model(model_name: str, hf_token: str | None = None) -> dict | None:
+def check_upgrade_for_model(
+    model_name: str, hf_token: str | None = None
+) -> dict | None:
     """Upgrade signal for *model_name*, or None when current routing already handles it.
 
     The tier hook for the pre-load ``/validate`` path: fires ONLY when the model's
@@ -351,14 +354,17 @@ def check_upgrade_for_model(model_name: str, hf_token: str | None = None) -> dic
         # through CONFIG_MAPPING) or the load still fails.
         supports = [latest_transformers_supports(candidate) for candidate in missing]
         if any(
-            s is None or not (s["supported_in_pypi"] or s["supported_in_main"]) for s in supports
+            s is None or not (s["supported_in_pypi"] or s["supported_in_main"])
+            for s in supports
         ):
             return None
         # Offer the PyPI install only if the release ships every missing type; a
         # main-only type in the mix surfaces as dev-only.
         model_type = missing[0]
         supported_in_pypi = all(s["supported_in_pypi"] for s in supports)
-        supported_in_main = all(s["supported_in_pypi"] or s["supported_in_main"] for s in supports)
+        supported_in_main = all(
+            s["supported_in_pypi"] or s["supported_in_main"] for s in supports
+        )
         logger.info(
             "Model %s has model_type=%s unknown to every installed transformers "
             "(latest PyPI %s: %s, main: %s)",
@@ -446,7 +452,9 @@ def compat_plan(version: str) -> tuple[tuple[str, ...], list[str]]:
     """
     reqs = _fetch_requires_dist(version)
     if reqs is None:
-        return (), ["dependency metadata for this release (could not be fetched from PyPI; retry)"]
+        return (), [
+            "dependency metadata for this release (could not be fetched from PyPI; retry)"
+        ]
     try:
         from importlib.metadata import PackageNotFoundError
         from importlib.metadata import version as _installed_version
@@ -473,7 +481,9 @@ def compat_plan(version: str) -> tuple[tuple[str, ...], list[str]]:
             installed = _installed_version(req.name)
         except PackageNotFoundError:
             installed = None
-        if installed is not None and req.specifier.contains(installed, prereleases = True):
+        if installed is not None and req.specifier.contains(
+            installed, prereleases = True
+        ):
             continue
         if name in _SHADOWABLE_DEPS:
             exact = _resolve_exact_version(name, req.specifier)
@@ -575,7 +585,9 @@ def _install_latest_transformers_locked(version: str, before_swap = None) -> dic
             f"{version}: this environment does not satisfy {', '.join(blockers)}. "
             "An Unsloth update is required first.",
         }
-    if not ensure_latest_transformers_venv(version, extra_packages, before_swap = before_swap):
+    if not ensure_latest_transformers_venv(
+        version, extra_packages, before_swap = before_swap
+    ):
         return {
             "success": False,
             "version": version,

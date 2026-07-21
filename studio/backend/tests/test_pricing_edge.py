@@ -191,7 +191,9 @@ def test_anthropic_chat_cache_read_exceeds_prompt_no_negative_billable():
     assert out["billable_input_tokens"] == 500  # 0 uncached + 500 cache_read
     # cache_read still priced at the discount rate.
     base = ANTHROPIC_PRICING["claude-opus-4-7"]["input_per_mtok"]
-    assert _isclose(out["cache_read_usd"], 500 / 1_000_000.0 * base * ANTHROPIC_CACHE_READ_MULT)
+    assert _isclose(
+        out["cache_read_usd"], 500 / 1_000_000.0 * base * ANTHROPIC_CACHE_READ_MULT
+    )
 
 
 def test_openai_raw_cached_tokens_exceeds_input_clamp_non_cached():
@@ -208,7 +210,9 @@ def test_openai_raw_cached_tokens_exceeds_input_clamp_non_cached():
     )
     assert out["input_usd"] == 0.0
     # Cache read still priced (the 0.1x bucket).
-    assert _isclose(out["cache_read_usd"], 500 / 1_000_000.0 * base * OPENAI_CACHE_READ_MULT)
+    assert _isclose(
+        out["cache_read_usd"], 500 / 1_000_000.0 * base * OPENAI_CACHE_READ_MULT
+    )
 
 
 # ── long-context tier crosses on billable, including cache_creation ──

@@ -67,7 +67,10 @@ def test_multiple_images_pluralized():
     flat = _flatten_result(_result(_image(), _image(mime = "image/jpeg")))
     body, payload = flat.split("\n" + MCP_IMAGES_SENTINEL, 1)
     assert "[2 images attached; displayed to the user]" in body
-    assert [img["mimeType"] for img in json.loads(payload)] == ["image/png", "image/jpeg"]
+    assert [img["mimeType"] for img in json.loads(payload)] == [
+        "image/png",
+        "image/jpeg",
+    ]
 
 
 def test_strip_result_for_model_drops_image_payload():

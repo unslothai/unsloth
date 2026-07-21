@@ -270,7 +270,9 @@ def test_refusal_notice_appears_before_content_filter_chunk(monkeypatch):
     """The notice content delta must precede the finish_reason chunk."""
     _, lines = _capture(monkeypatch, sse = _refusal_sse(), model = "claude-opus-4-7")
     notice_idx = next(i for i, l in enumerate(lines) if "stopped by Anthropic" in l)
-    filter_idx = next(i for i, l in enumerate(lines) if '"finish_reason": "content_filter"' in l)
+    filter_idx = next(
+        i for i, l in enumerate(lines) if '"finish_reason": "content_filter"' in l
+    )
     assert notice_idx < filter_idx, (notice_idx, filter_idx, lines)
 
 
@@ -421,7 +423,9 @@ def test_usage_speed_propagates_to_final_usage_chunk_fast(monkeypatch):
 def test_usage_speed_propagates_to_final_usage_chunk_standard(monkeypatch):
     _, lines = _capture(monkeypatch, sse = _fast_speed_sse(speed = "standard"))
     parsed = [
-        json.loads(l[len("data: ") :]) for l in lines if l.startswith("data: ") and '"usage"' in l
+        json.loads(l[len("data: ") :])
+        for l in lines
+        if l.startswith("data: ") and '"usage"' in l
     ]
     speeds = [p["usage"].get("speed") for p in parsed if "usage" in p]
     assert "standard" in speeds, parsed
@@ -431,7 +435,9 @@ def test_usage_speed_absent_when_anthropic_does_not_report(monkeypatch):
     """Unsloth must not invent ``usage.speed`` when upstream omits it."""
     _, lines = _capture(monkeypatch)
     parsed = [
-        json.loads(l[len("data: ") :]) for l in lines if l.startswith("data: ") and '"usage"' in l
+        json.loads(l[len("data: ") :])
+        for l in lines
+        if l.startswith("data: ") and '"usage"' in l
     ]
     for p in parsed:
         usage = p.get("usage") or {}

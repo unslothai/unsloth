@@ -71,7 +71,9 @@ def test_linux_run_media_policy_accepts_mounted_volume_descendants(monkeypatch):
     monkeypatch.setattr(external_media.platform, "system", lambda: "Linux")
 
     assert external_media.is_linux_run_media_path("/run/media/dspofu/nvmeB")
-    assert external_media.is_linux_run_media_path("/run/media/dspofu/nvmeB/modelsAI/gguf/qwen3.6")
+    assert external_media.is_linux_run_media_path(
+        "/run/media/dspofu/nvmeB/modelsAI/gguf/qwen3.6"
+    )
 
 
 @pytest.mark.parametrize(
@@ -110,7 +112,9 @@ def test_linux_run_media_mount_roots_lists_readable_volume_roots(monkeypatch, tm
     assert roots == [mount.resolve()]
 
 
-def test_linux_run_media_mount_roots_skips_sensitive_resolved_volume_name(monkeypatch, tmp_path):
+def test_linux_run_media_mount_roots_skips_sensitive_resolved_volume_name(
+    monkeypatch, tmp_path
+):
     base = tmp_path / "run" / "media"
     normal_mount = base / "dspofu" / "nvmeB"
     sensitive_target = base / "dspofu" / ".config"
@@ -125,7 +129,9 @@ def test_linux_run_media_mount_roots_skips_sensitive_resolved_volume_name(monkey
     assert roots == [normal_mount.resolve()]
 
 
-def test_linux_run_media_mount_roots_skips_sensitive_resolved_descendant(monkeypatch, tmp_path):
+def test_linux_run_media_mount_roots_skips_sensitive_resolved_descendant(
+    monkeypatch, tmp_path
+):
     base = tmp_path / "run" / "media"
     normal_mount = base / "dspofu" / "nvmeB"
     sensitive_descendant = normal_mount / ".ssh" / "models"
@@ -220,7 +226,9 @@ def test_legacy_scan_folder_keeps_sensitive_dirs_blocked_under_run_media(monkeyp
 
 
 def test_legacy_browse_allowlist_includes_linux_run_media_mounts(monkeypatch, tmp_path):
-    tree = ast.parse((_BACKEND_ROOT / "routes" / "models.py").read_text(encoding = "utf-8"))
+    tree = ast.parse(
+        (_BACKEND_ROOT / "routes" / "models.py").read_text(encoding = "utf-8")
+    )
     function_names = {
         "_build_browse_allowlist",
         "_browse_relative_parts",
@@ -282,7 +290,9 @@ def test_legacy_browse_allowlist_includes_linux_run_media_mounts(monkeypatch, tm
     allowlist = ns["_build_browse_allowlist"]()
 
     assert media_root.resolve() in allowlist
-    assert ns["_resolve_browse_target"](str(model_dir), allowlist) == model_dir.resolve()
+    assert (
+        ns["_resolve_browse_target"](str(model_dir), allowlist) == model_dir.resolve()
+    )
 
     with pytest.raises(_HTTPException) as exc:
         ns["_resolve_browse_target"](str(media_root / ".ssh"), allowlist)

@@ -27,7 +27,11 @@ def _is_mlx_backend(unsloth_module):
 
 
 def _normalize_dtype(dtype, is_mlx):
-    if is_mlx and isinstance(dtype, str) and dtype.strip().lower() in {"", "none", "auto"}:
+    if (
+        is_mlx
+        and isinstance(dtype, str)
+        and dtype.strip().lower() in {"", "none", "auto"}
+    ):
         return None
     return dtype
 
@@ -113,7 +117,9 @@ def _save_or_push_model(model, tokenizer, args, is_mlx):
     # without --save_gguf (the local save is guarded separately below).
     if args.save_gguf or args.push_gguf:
         if not args.save_gguf:
-            print("Warning: --save_gguf not set, pushing GGUF to hub without saving locally.")
+            print(
+                "Warning: --save_gguf not set, pushing GGUF to hub without saving locally."
+            )
         for quantization_method in _iter_quantization_methods(args.quantization):
             if args.save_gguf:
                 print(f"Saving model with quantization method: {quantization_method}")
@@ -142,9 +148,13 @@ def _save_or_push_model(model, tokenizer, args, is_mlx):
         )
         return
 
-    model.save_pretrained_merged(args.save_path, tokenizer, save_method = args.save_method)
+    model.save_pretrained_merged(
+        args.save_path, tokenizer, save_method = args.save_method
+    )
     if args.push_model:
-        model.push_to_hub_merged(args.hub_path, tokenizer, args.save_method, token = args.hub_token)
+        model.push_to_hub_merged(
+            args.hub_path, tokenizer, args.save_method, token = args.hub_token
+        )
 
 
 def _build_sft_config(SFTConfig, args, is_mlx, bf16_supported):
@@ -169,7 +179,9 @@ def _build_sft_config(SFTConfig, args, is_mlx, bf16_supported):
     )
     if is_mlx:
         if args.per_device_eval_batch_size != 4:
-            print("Warning: --per_device_eval_batch_size is ignored on MLX without eval data.")
+            print(
+                "Warning: --per_device_eval_batch_size is ignored on MLX without eval data."
+            )
     else:
         config_kwargs["per_device_eval_batch_size"] = args.per_device_eval_batch_size
     return SFTConfig(**config_kwargs)
@@ -256,7 +268,9 @@ def run(args):
             loader = _raw_text_loader_for_backend(RawTextDataLoader, tokenizer, is_mlx)
             dataset = loader.load_from_file(args.dataset)
         else:
-            use_modelscope = strtobool(os.environ.get("UNSLOTH_USE_MODELSCOPE", "False"))
+            use_modelscope = strtobool(
+                os.environ.get("UNSLOTH_USE_MODELSCOPE", "False")
+            )
             if use_modelscope:
                 from modelscope import MsDataset
                 dataset = MsDataset.load(args.dataset, split = "train")
@@ -290,7 +304,9 @@ def run(args):
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description = "🦥 Fine-tune your llm faster using unsloth!")
+    parser = argparse.ArgumentParser(
+        description = "🦥 Fine-tune your llm faster using unsloth!"
+    )
 
     model_group = parser.add_argument_group("🤖 Model Options")
     model_group.add_argument(
@@ -540,11 +556,15 @@ if __name__ == "__main__":
         help = "Token for pushing the model to Hugging Face hub",
     )
 
-    parser.add_argument("--raw_text_file", type = str, help = "Path to raw text file for training")
+    parser.add_argument(
+        "--raw_text_file", type = str, help = "Path to raw text file for training"
+    )
     parser.add_argument(
         "--chunk_size", type = int, default = 2048, help = "Size of text chunks for training"
     )
-    parser.add_argument("--stride", type = int, default = 512, help = "Overlap between chunks")
+    parser.add_argument(
+        "--stride", type = int, default = 512, help = "Overlap between chunks"
+    )
 
     args = parser.parse_args()
     run(args)

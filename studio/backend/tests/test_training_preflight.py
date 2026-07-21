@@ -47,7 +47,9 @@ def _stub_if_missing(name, attrs):
         setattr(sys.modules[parent], child, mod)
 
 
-_stub_if_missing("unsloth", ("FastLanguageModel", "FastVisionModel", "is_bfloat16_supported"))
+_stub_if_missing(
+    "unsloth", ("FastLanguageModel", "FastVisionModel", "is_bfloat16_supported")
+)
 _stub_if_missing("unsloth.chat_templates", ("get_chat_template",))
 _stub_if_missing("trl", ("SFTTrainer", "SFTConfig"))
 
@@ -110,13 +112,17 @@ class _RealTemplateTokenizer:
 
 class TestPreflightFirstBatch(unittest.TestCase):
     def test_float_input_ids_with_empty_template_suggests_instruct(self):
-        ds = [{"messages": [{"role": "user", "content": [{"type": "text", "text": "x"}]}]}]
+        ds = [
+            {"messages": [{"role": "user", "content": [{"type": "text", "text": "x"}]}]}
+        ]
         inner = _FakeInnerTrainer(
             batch = {"input_ids": torch.zeros((1, 0), dtype = torch.float32)},
             train_dataset = ds,
         )
         s = _fake_self(
-            inner = inner, model_name = "Qwen/Qwen2-VL-7B", tokenizer = _EmptyTemplateTokenizer()
+            inner = inner,
+            model_name = "Qwen/Qwen2-VL-7B",
+            tokenizer = _EmptyTemplateTokenizer(),
         )
         msg = s._preflight_first_batch()
         self.assertIsNotNone(msg)
@@ -125,13 +131,17 @@ class TestPreflightFirstBatch(unittest.TestCase):
         self.assertIn("base (pretrained) model", msg)
 
     def test_no_instruct_hint_when_model_already_instruct(self):
-        ds = [{"messages": [{"role": "user", "content": [{"type": "text", "text": "x"}]}]}]
+        ds = [
+            {"messages": [{"role": "user", "content": [{"type": "text", "text": "x"}]}]}
+        ]
         inner = _FakeInnerTrainer(
             batch = {"input_ids": torch.zeros((1, 0), dtype = torch.float32)},
             train_dataset = ds,
         )
         s = _fake_self(
-            inner = inner, model_name = "org/Foo-Instruct", tokenizer = _EmptyTemplateTokenizer()
+            inner = inner,
+            model_name = "org/Foo-Instruct",
+            tokenizer = _EmptyTemplateTokenizer(),
         )
         msg = s._preflight_first_batch()
         self.assertIsNotNone(msg)
@@ -176,17 +186,23 @@ class TestChatTemplateRendersEmpty(unittest.TestCase):
         return _fake_self(inner = inner, tokenizer = tokenizer)
 
     def test_empty_render_detected(self):
-        ds = [{"messages": [{"role": "user", "content": [{"type": "text", "text": "x"}]}]}]
+        ds = [
+            {"messages": [{"role": "user", "content": [{"type": "text", "text": "x"}]}]}
+        ]
         s = self._self(train_dataset = ds, tokenizer = _EmptyTemplateTokenizer())
         self.assertTrue(s._chat_template_renders_empty())
 
     def test_nonempty_render_not_flagged(self):
-        ds = [{"messages": [{"role": "user", "content": [{"type": "text", "text": "x"}]}]}]
+        ds = [
+            {"messages": [{"role": "user", "content": [{"type": "text", "text": "x"}]}]}
+        ]
         s = self._self(train_dataset = ds, tokenizer = _RealTemplateTokenizer())
         self.assertFalse(s._chat_template_renders_empty())
 
     def test_no_messages_key_not_flagged(self):
-        s = self._self(train_dataset = [{"text": "raw"}], tokenizer = _EmptyTemplateTokenizer())
+        s = self._self(
+            train_dataset = [{"text": "raw"}], tokenizer = _EmptyTemplateTokenizer()
+        )
         self.assertFalse(s._chat_template_renders_empty())
 
 
@@ -299,7 +315,11 @@ print(json.dumps({
 """
     env = os.environ.copy()
     env["PYTHONPATH"] = os.pathsep.join(
-        [str(repo_root), str(repo_root / "studio" / "backend"), env.get("PYTHONPATH", "")]
+        [
+            str(repo_root),
+            str(repo_root / "studio" / "backend"),
+            env.get("PYTHONPATH", ""),
+        ]
     )
     result = subprocess.run(
         [sys.executable, "-c", script],
@@ -326,7 +346,11 @@ def test_mlx_adapter_builds_config_and_reports_completion(tmp_path, monkeypatch)
         captured["config"] = config
         event_queue.put({"type": "progress", "step": 1, "total_steps": 1, "loss": 0.25})
         event_queue.put(
-            {"type": "complete", "status_message": "done", "output_dir": config["output_dir"]}
+            {
+                "type": "complete",
+                "status_message": "done",
+                "output_dir": config["output_dir"],
+            }
         )
 
     trainer = trainer_mod.UnslothTrainer()
@@ -382,7 +406,9 @@ def test_mlx_worker_helpers_cover_cli_paths(tmp_path, monkeypatch):
     ) == str((tmp_path / "cli-out").resolve())
 
 
-def test_run_mlx_training_process_applies_side_effects_before_hardware_detection(monkeypatch):
+def test_run_mlx_training_process_applies_side_effects_before_hardware_detection(
+    monkeypatch,
+):
     _load_trainer_module(monkeypatch, "mlx")
     from core.training import worker
     from utils.hardware import hardware as hw

@@ -133,7 +133,9 @@ class TestSpawnPathsHonorFailedShutdown:
         o._export_active = False
         o._ensure_subprocess_alive = lambda: True
         o._shutdown_subprocess = lambda *a, **k: False
-        o._spawn_subprocess = lambda cfg: pytest.fail("must not spawn over a live survivor")
+        o._spawn_subprocess = lambda cfg: pytest.fail(
+            "must not spawn over a live survivor"
+        )
         o._record_op_finished = lambda *a, **k: None
         monkeypatch.setattr(tv, "sidecar_swap_in_progress", lambda: False)
 
