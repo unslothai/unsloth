@@ -71,11 +71,9 @@ def test_non_audio_tokens_classify_none():
                 "encodec",
                 "dac",
                 "gemma3n_audio",
-                "jukebox",
                 "mimi",
                 "parakeet_encoder",
                 "qwen2_audio_encoder",
-                "speech_to_text_2",
                 "univnet",
                 "voxtral_encoder",
                 "xcodec",
@@ -92,8 +90,9 @@ def test_structured_model_type_controls_chat_capability(model_type, audio_type, 
         assert _classify_audio_capability("org/model", audio_type) == expected
 
 
-def test_unknown_asr_config_uses_raw_model_type(tmp_path):
-    (tmp_path / "config.json").write_text('{"model_type": "qwen3_asr"}')
+@pytest.mark.parametrize("model_type", ["qwen3_asr", "jukebox", "speech_to_text_2"])
+def test_unknown_non_chat_config_uses_raw_model_type(tmp_path, model_type):
+    (tmp_path / "config.json").write_text(f'{{"model_type": "{model_type}"}}')
     with patch("utils.models.model_config.load_model_config", side_effect = ValueError("unknown")):
         config = ModelConfig.from_identifier(str(tmp_path))
 

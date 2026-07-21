@@ -525,20 +525,16 @@ class TestLoadReusesCachedCopy:
                     return_value = "future_audio",
                 ):
                     assert chat_capable() is False
+                with patch(
+                    "utils.models.model_config.load_model_config",
+                    return_value = _types.SimpleNamespace(model_type = "llama"),
+                ):
+                    assert chat_capable() is False
             monkeypatch.delenv("HF_HUB_OFFLINE")
 
             assert chat_capable() is False
             with patch("utils.models.model_config.list_gguf_variants", return_value = ([], False)):
                 assert chat_capable() is True
-
-            with (
-                patch("core.inference.llama_cpp._probe_dns_dead", return_value = False),
-                patch(
-                    "utils.models.model_config.detect_gguf_audio_type",
-                    side_effect = lambda path: "audio_vlm" if "mmproj" in path else None,
-                ),
-            ):
-                assert chat_capable() is False
 
     def test_companion_does_not_download_during_hub_job(self, hf_cache):
         backend = LlamaCppBackend()

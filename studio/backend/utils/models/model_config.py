@@ -1209,11 +1209,10 @@ def _classify_audio_capability(
         )
     audio_chat = False
     audio_only = False
-    config_resolved = False
+    capability_resolved = False
     try:
         config = load_model_config(model_name, use_auth = True, token = hf_token)
         model_type = getattr(config, "model_type", None)
-        config_resolved = model_type is not None
         thinker = getattr(config, "thinker_config", None)
         audio_chat = (
             model_type in _AUDIO_CHAT_THINKER_MODEL_TYPES
@@ -1229,10 +1228,11 @@ def _classify_audio_capability(
             )
         )
         audio_only = model_type in _NON_CHAT_AUDIO_MODEL_TYPES
+        capability_resolved = audio_chat or audio_only
     except Exception as exc:
         logger.debug("Could not classify audio capability for '%s': %s", model_name, exc)
         model_type = _raw_config_model_type(model_name, hf_token)
-        config_resolved = (
+        capability_resolved = (
             model_type in _AUDIO_CHAT_RAW_MODEL_TYPES or model_type in _NON_CHAT_AUDIO_MODEL_TYPES
         )
         audio_chat = model_type in _AUDIO_CHAT_RAW_MODEL_TYPES
@@ -1240,7 +1240,7 @@ def _classify_audio_capability(
 
     if audio_chat:
         return "audio_vlm", True, True
-    if audio_type is None and not config_resolved:
+    if audio_type is None and not capability_resolved:
         audio_type = fallback_audio_type
     return (
         audio_type,
@@ -1817,12 +1817,15 @@ def _list_gguf_variants_from_hf_cache(repo_id: str) -> Optional[tuple[list[GgufV
     would shadow those real variants, so keep scanning older snapshots for
     actual variants and carry the vision flag across snapshots.
     """
+    selected_variants = None
     any_vision = False
     for snap in _iter_hf_cache_snapshots(repo_id):
         variants, has_vision = list_local_gguf_variants(str(snap))
         any_vision = any_vision or has_vision
-        if variants:
-            return variants, any_vision
+        if selected_variants is None and variants:
+            selected_variants = variants
+    if selected_variants is not None:
+        return selected_variants, any_vision
     if any_vision:
         return [], True
     return None

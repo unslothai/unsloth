@@ -662,6 +662,13 @@ class TestResolveRepoIdCasing:
         assert [v.quant for v in variants] == ["Q4_K_M"]
         assert has_vision is True
 
+        os.utime(old, (3000, 3000))
+        out = _list_gguf_variants_from_hf_cache("unsloth/vision-GGUF")
+        assert out is not None
+        variants, has_vision = out
+        assert [v.quant for v in variants] == ["Q4_K_M"]
+        assert has_vision is True
+
     def test_companion_only_cache_returns_empty_variants_with_vision(self, hf_cache):
         # Only a vision projector is cached anywhere: report the vision flag
         # with an empty variant list rather than None.
