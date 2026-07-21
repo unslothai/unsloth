@@ -24,6 +24,10 @@ import {
   useHfTokenStore,
 } from "@/features/hub/stores/hf-token-store";
 import {
+  isChannelEntryFresh,
+  useHubFeedStore,
+} from "./stores/hub-feed-store";
+import {
   getInferenceStatus,
   isExternalModelId,
   useChatModelRuntime,
@@ -80,6 +84,7 @@ import {
 } from "./lib/hidden-models";
 import { inventoryRowMatches, tokenizeQuery } from "./lib/inventory-search";
 import { resolveOwnerProviderLogo } from "./lib/provider-logos";
+import { fingerprintToken } from "./lib/token-fingerprint";
 import {
   buildDiscoverRows,
   detectResultFormat,
@@ -569,6 +574,10 @@ export function ModelsPage() {
   const hfToken = useHfTokenStore((s) => s.token);
   const debouncedHfToken = useDebouncedValue(hfToken, 500);
   const apiHfToken = hfApiToken(debouncedHfToken);
+  const tokenFingerprint = useMemo(
+    () => fingerprintToken(apiHfToken),
+    [apiHfToken],
+  );
   const deferredFormatFilter = useDeferredValue(formatFilter);
   const deferredCapabilityFilter = useDeferredValue(capabilityFilter);
 
@@ -633,8 +642,22 @@ export function ModelsPage() {
     online,
   });
 
+  const cachedListEntry = useHubFeedStore((state) =>
+    liveListChannel ? state.channels[liveListChannel.id] : undefined,
+  );
+  const visibleResults =
+    results.length === 0 &&
+    liveListChannel &&
+    isChannelEntryFresh(
+      cachedListEntry,
+      liveListChannel.id,
+      tokenFingerprint,
+    )
+      ? (cachedListEntry?.results ?? results)
+      : results;
+
   useFeedWriteBack({
-    channelId: isChannelListMode ? activeChannelId : null,
+    channelId: liveListChannel?.id ?? null,
     results,
     isLoading,
     accessToken: apiHfToken,
@@ -656,8 +679,13 @@ export function ModelsPage() {
     [effectiveCachedRows, effectiveLocalRows],
   );
   const modelDiscoverRows = useMemo<DiscoverRow[]>(
-    () => buildDiscoverRows(results, effectiveCachedRows, effectiveLocalRows),
-    [results, modelDiscoveryInventorySignature],
+    () =>
+      buildDiscoverRows(
+        visibleResults,
+        effectiveCachedRows,
+        effectiveLocalRows,
+      ),
+    [visibleResults, modelDiscoveryInventorySignature],
   );
 
   const datasetDiscoverRows = useMemo<DiscoverRow[]>(() => {
@@ -784,7 +812,7 @@ export function ModelsPage() {
   const selectionFilteredDiscoverRows = isFeedMode
     ? feedRows
     : filteredDiscoverRows;
-  const selectionResults = isFeedMode ? feedResults : results;
+  const selectionResults = isFeedMode ? feedResults : visibleResults;
 
   const inventoryTokens = useMemo(
     () => (isDiscoverTab ? [] : tokenizeQuery(deferredDebouncedQuery)),
