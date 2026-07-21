@@ -10,7 +10,7 @@ assert that, offline:
     the Hub (``model_info`` patched to raise if reached);
   * the file-security gate fails CLOSED on an unscanned pickle weight with no safetensors
     alternative, and allows an inert (safetensors/gguf) cache;
-  * the embedder threads ``local_files_only`` into the SentenceTransformer load.
+  * the embedder forces ``HF_HUB_OFFLINE`` around the SentenceTransformer load.
 Online behavior is unchanged: a bounded ``model_info`` timeout with a local-cache fallback.
 """
 
