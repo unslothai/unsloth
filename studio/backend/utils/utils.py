@@ -8,11 +8,90 @@ import structlog
 from loggers import get_logger
 from contextlib import contextmanager
 from pathlib import Path
+from typing import Optional
 import shutil
 import tempfile
 
 
 logger = get_logger(__name__)
+
+
+# ── Offline / HF-cache helpers ──────────────────────────────────
+# An offline model load must never touch the network: a DNS-dead session hangs on
+# huggingface_hub download retries. These read the local HF cache the load itself uses.
+
+_HF_OFFLINE_TRUE_VALUES = frozenset({"1", "true", "yes", "on"})
+
+
+def hf_env_offline() -> bool:
+    """True when ``HF_HUB_OFFLINE`` or ``TRANSFORMERS_OFFLINE`` requests offline mode.
+
+    Broader than huggingface_hub, which honors only ``HF_HUB_OFFLINE``; the studio also
+    honors ``TRANSFORMERS_OFFLINE`` because users set it to keep transformers loads local.
+    """
+    for var in ("HF_HUB_OFFLINE", "TRANSFORMERS_OFFLINE"):
+        if os.environ.get(var, "").strip().lower() in _HF_OFFLINE_TRUE_VALUES:
+            return True
+    return False
+
+
+def st_repo_id_candidates(model_name: str) -> list:
+    """Repo ids a Sentence-Transformers load may resolve ``model_name`` to. A slashless
+    name (``all-MiniLM-L6-v2``) is loaded as ``sentence-transformers/all-MiniLM-L6-v2``,
+    so both are candidate cache repos.
+    """
+    name = (model_name or "").strip().strip("/")
+    if not name:
+        return []
+    candidates = [name]
+    if "/" not in name:
+        candidates.append(f"sentence-transformers/{name}")
+    return candidates
+
+
+def _hf_cache_root() -> Path:
+    """Local HF hub cache root, honoring ``HF_HUB_CACHE`` / ``HF_HOME`` at call time
+    (mirrors huggingface_hub's own resolution so it tracks a test's env override)."""
+    root = os.environ.get("HF_HUB_CACHE") or os.environ.get("HUGGINGFACE_HUB_CACHE")
+    if root:
+        return Path(root)
+    hf_home = os.environ.get("HF_HOME")
+    if hf_home:
+        return Path(hf_home) / "hub"
+    xdg = os.environ.get("XDG_CACHE_HOME")
+    base = Path(xdg) if xdg else Path.home() / ".cache"
+    return base / "huggingface" / "hub"
+
+
+def hf_cache_snapshot_dir(model_name: str) -> Optional[Path]:
+    """Active local snapshot dir for ``model_name``'s ``main`` revision, or None when the
+    repo is not cached. Reads ``refs/main`` then ``snapshots/<commit>``; never touches the
+    network. Tries the ``sentence-transformers/`` alias for a slashless name.
+    """
+    try:
+        from huggingface_hub.file_download import repo_folder_name
+    except Exception:
+        repo_folder_name = None
+    cache_root = _hf_cache_root()
+    for repo_id in st_repo_id_candidates(model_name):
+        try:
+            if repo_folder_name is not None:
+                folder = repo_folder_name(repo_id = repo_id, repo_type = "model")
+            else:
+                folder = "models--" + repo_id.replace("/", "--")
+            repo_dir = cache_root / folder
+            ref = repo_dir / "refs" / "main"
+            if not ref.is_file():
+                continue
+            commit = ref.read_text().strip()
+            if not commit:
+                continue
+            snapshot = repo_dir / "snapshots" / commit
+            if snapshot.is_dir():
+                return snapshot
+        except OSError:
+            continue
+    return None
 
 
 # ── Client-safe error helpers ───────────────────────────────────

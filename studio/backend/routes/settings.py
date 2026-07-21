@@ -435,30 +435,48 @@ def update_embedding_model(
         # unreachable scans fail open inside evaluate_file_security.
         from utils.security import evaluate_file_security, security_load_subdirs
         from core.rag.embeddings import _st_module_subdirs
+        from utils.utils import hf_env_offline
 
         # Fall back to the loader's own token so a gated/private repo is actually scanned
         # (a token-less scan fails open for exactly the repo that would still load).
         scan_token = hf_token or _ambient_hf_token()
-        # Include the ST module dirs (0_Transformer/) so a flagged pickle directly under
-        # one blocks instead of passing as an unreferenced nested shard.
-        load_subdirs = tuple(
-            dict.fromkeys(
-                (
-                    *security_load_subdirs(model, scan_token),
-                    *_st_module_subdirs(model, scan_token),
+        # Offline the Hub scan is unreachable and the subdir probes below would hit the
+        # network and hang on a dead DNS; the offline gate walks the whole cached snapshot,
+        # so no load-subdir hints are needed.
+        local_only_load = hf_env_offline()
+        if local_only_load:
+            load_subdirs = ()
+        else:
+            # Include the ST module dirs (0_Transformer/) so a flagged pickle directly under
+            # one blocks instead of passing as an unreferenced nested shard.
+            load_subdirs = tuple(
+                dict.fromkeys(
+                    (
+                        *security_load_subdirs(model, scan_token),
+                        *_st_module_subdirs(model, scan_token),
+                    )
                 )
             )
-        )
-        if evaluate_file_security(model, hf_token = scan_token, load_subdirs = load_subdirs).blocked:
+        if evaluate_file_security(
+            model,
+            hf_token = scan_token,
+            load_subdirs = load_subdirs,
+            local_only_load = local_only_load,
+        ).blocked:
             # 403, not 409: the client routes every 409 into the forceable "save anyway"
             # flow, but this block is a hard, non-forceable security refusal.
-            raise HTTPException(
-                status_code = 403,
+            if local_only_load:
+                detail = (
+                    f"{model!r} has cached pickle weights that cannot be security-scanned "
+                    "offline and no safetensors alternative, so it cannot be used as the "
+                    "embedding model. Re-download it with safetensors weights while online."
+                )
+            else:
                 detail = (
                     f"{model!r} is flagged as unsafe by Hugging Face's security scan and "
                     "cannot be used as the embedding model."
-                ),
-            )
+                )
+            raise HTTPException(status_code = 403, detail = detail)
     if model != default_embedding_model() and not payload.force and not is_local_gguf:
         from core.rag import config as rag_config
 

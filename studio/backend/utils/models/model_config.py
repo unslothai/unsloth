@@ -2076,6 +2076,27 @@ def download_gguf_file(
 _embedding_detection_cache: Dict[tuple, bool] = {}
 
 
+# Bound the Hub metadata lookup so a DNS-dead session fails fast (and falls back to the
+# local cache) instead of hanging on huggingface_hub's default retry loop.
+_HUB_MODEL_INFO_TIMEOUT = 15.0
+
+
+def _embedding_marker_in_hf_cache(model_name: str) -> bool:
+    """True when ``model_name``'s active cached snapshot carries a ``modules.json`` -- the
+    Sentence-Transformers marker, mirroring the local-path check. Cache-only, no network;
+    used offline and as a fallback when a bounded Hub lookup times out.
+    """
+    from utils.utils import hf_cache_snapshot_dir
+
+    snapshot = hf_cache_snapshot_dir(model_name)
+    if snapshot is None:
+        return False
+    try:
+        return (snapshot / "modules.json").is_file()
+    except OSError:
+        return False
+
+
 def is_embedding_model(model_name: str, hf_token: Optional[str] = None) -> bool:
     """Detect embedding/sentence-transformer models via HF metadata.
 
@@ -2101,10 +2122,20 @@ def is_embedding_model(model_name: str, hf_token: Optional[str] = None) -> bool:
         _embedding_detection_cache[cache_key] = is_emb
         return is_emb
 
+    # Offline: never call the Hub -- a DNS-dead session hangs on model_info retries.
+    # Classify from the local cache the load will use: a cached modules.json marks a
+    # Sentence-Transformers repo, mirroring the local-path check above.
+    from utils.utils import hf_env_offline
+
+    if hf_env_offline():
+        is_emb = _embedding_marker_in_hf_cache(model_name)
+        _embedding_detection_cache[cache_key] = is_emb
+        return is_emb
+
     try:
         from huggingface_hub import model_info as hf_model_info
 
-        info = hf_model_info(model_name, token = hf_token)
+        info = hf_model_info(model_name, token = hf_token, timeout = _HUB_MODEL_INFO_TIMEOUT)
         tags = set(info.tags or [])
         pipeline_tag = info.pipeline_tag or ""
 
@@ -2125,9 +2156,12 @@ def is_embedding_model(model_name: str, hf_token: Optional[str] = None) -> bool:
         return is_emb
 
     except Exception as e:
+        # A bounded timeout or transient network error must not hang or hard-fail the UI.
+        # Best-effort fall back to the local cache marker before giving up.
         logger.warning(f"Could not determine if {model_name} is embedding model: {e}")
-        _embedding_detection_cache[cache_key] = False
-        return False
+        is_emb = _embedding_marker_in_hf_cache(model_name)
+        _embedding_detection_cache[cache_key] = is_emb
+        return is_emb
 
 
 def _has_model_weight_files(model_dir: Path) -> bool:
