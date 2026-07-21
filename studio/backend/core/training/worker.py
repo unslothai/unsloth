@@ -2122,8 +2122,7 @@ def _run_mlx_training(event_queue, stop_queue, config):
                 "Failed to save a resumable checkpoint after stop. "
                 "Model files were saved, but this run cannot be resumed."
             ),
-            # A user stop normally finalizes as 'stopped'; this failure
-            # must keep its error status so history explains it.
+            # A user stop finalizes as 'stopped'; keep this failure's error status so history explains it.
             keep_error_status = True,
             # Older checkpoints are stale; resuming would roll back past this stop.
             resume_blocked = True,

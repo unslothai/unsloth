@@ -392,7 +392,7 @@ def test_finalize_after_escalation_preserves_output_dir(monkeypatch):
 
 def test_finalize_after_escalation_clears_output_dir_on_cancel(monkeypatch):
     # Stop-without-saving promises no resume: a cancel that escalates through the
-    # watchdog must clear the persisted output_dir, not record a checkpoint path.
+    # watchdog clears the persisted output_dir, not a checkpoint path.
     b = TrainingBackend()
     finstop: list = []
     monkeypatch.setattr(b, "_finish_stopped_run", lambda *a, **k: finstop.append((a, k)))

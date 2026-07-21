@@ -508,9 +508,8 @@ class TrainingStartRequest(BaseModel):
     @field_validator("target_modules", mode = "before")
     @classmethod
     def _normalize_target_modules(cls, value: Any) -> Any:
-        # Sanitized non-LoRA history stores the unused value as null. Resume
-        # replays that config through this request model, where null should have
-        # the same meaning as a fresh request's omitted/default empty list.
+        # Sanitized non-LoRA history stores the unused value as null; treat it as a
+        # fresh request's omitted/default empty list on resume.
         return [] if value is None else value
 
     @model_validator(mode = "after")
