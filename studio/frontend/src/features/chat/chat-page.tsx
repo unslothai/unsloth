@@ -904,6 +904,15 @@ function formatProjectChatDate(timestamp: number): string {
   }).format(new Date(timestamp));
 }
 
+// Unique thread nonce; falls back off crypto.randomUUID for non-secure
+// (HTTP LAN) contexts where it is unavailable.
+function createThreadNonce(): string {
+  if (typeof globalThis.crypto?.randomUUID === "function") {
+    return globalThis.crypto.randomUUID();
+  }
+  return `${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
+}
+
 // Chat export formats, mirroring the sidebar chat menu.
 type ProjectChatExportFormat = "raw-jsonl" | "csv" | "sharegpt-jsonl";
 const PROJECT_CHAT_EXPORT_OPTIONS: Array<{
@@ -977,7 +986,7 @@ function ProjectLanding({
     null,
   );
   const [newThreadNonce, setNewThreadNonce] = useState(() =>
-    crypto.randomUUID(),
+    createThreadNonce(),
   );
   const [previews, setPreviews] = useState<
     Record<string, { snippet: string; date: string }>
@@ -1002,7 +1011,7 @@ function ProjectLanding({
     useChatRuntimeStore.getState().setActiveThreadId(null);
     useChatRuntimeStore.getState().setContextUsage(null);
     setPendingNewThreadId(null);
-    setNewThreadNonce(crypto.randomUUID());
+    setNewThreadNonce(createThreadNonce());
     setRenamingId(null);
     setPendingRename(null);
   }, [projectId]);
@@ -1119,7 +1128,7 @@ function ProjectLanding({
       // Leaving a created chat for a new one: rotate the nonce so the runtime
       // switches to a fresh thread instead of appending to the old chat.
       if (pendingNewThreadId) {
-        setNewThreadNonce(crypto.randomUUID());
+        setNewThreadNonce(createThreadNonce());
         setPendingNewThreadId(null);
       }
       return;

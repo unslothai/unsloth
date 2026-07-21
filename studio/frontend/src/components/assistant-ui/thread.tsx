@@ -1903,8 +1903,11 @@ const Composer: FC<{
             isComposing ||
             hasPendingAttachments
           }
-          queueDisabled={!canQueueCurrentPrompt}
+          // disableQueue (project new-chat composer) also blocks the queue
+          // button, so a running thread shows Stop instead of Queue.
+          queueDisabled={disableQueue || !canQueueCurrentPrompt}
           onQueueClick={() => {
+            if (disableQueue) return;
             const queuedPrompt = composerText.trim();
             if (queuedPrompt.length === 0) {
               return;

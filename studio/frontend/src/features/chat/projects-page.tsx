@@ -71,6 +71,9 @@ import {
 
 type SortMode = "activity" | "name";
 
+// Default grid shows this many projects before "Show more".
+const PROJECTS_DEFAULT_LIMIT = 4;
+
 function formatUpdatedAgo(ts: number): string {
   const diff = Date.now() - ts;
   if (!Number.isFinite(diff) || diff < 0) return "just now";
@@ -94,6 +97,7 @@ export function ProjectsPage() {
 
   const [query, setQuery] = useState("");
   const [sortMode, setSortMode] = useState<SortMode>("activity");
+  const [showAllProjects, setShowAllProjects] = useState(false);
   const pinnedProjectIds = usePinnedProjectsStore((s) => s.pinnedIds);
   const togglePinProject = usePinnedProjectsStore((s) => s.togglePin);
   const pinnedProjectIdSet = useMemo(
@@ -171,7 +175,7 @@ export function ProjectsPage() {
     await handleImport(file, target);
   }
 
-  const visibleProjects = useMemo(() => {
+  const sortedProjects = useMemo(() => {
     const trimmed = query.trim().toLowerCase();
     const filtered = trimmed
       ? projects.filter((p) => p.name.toLowerCase().includes(trimmed))
@@ -181,9 +185,18 @@ export function ProjectsPage() {
         ? a.name.localeCompare(b.name)
         : b.updatedAt - a.updatedAt,
     );
-    // Default view shows only the 4 most recent; search still spans all matches.
-    return trimmed ? filtered : filtered.slice(0, 4);
+    return filtered;
   }, [projects, query, sortMode]);
+  // Default view shows only the 4 most recent, with "Show more" to reveal the
+  // rest. Search always spans all matches.
+  const isSearching = query.trim() !== "";
+  const capProjects = !isSearching && !showAllProjects;
+  const visibleProjects = capProjects
+    ? sortedProjects.slice(0, PROJECTS_DEFAULT_LIMIT)
+    : sortedProjects;
+  const hiddenProjectCount = capProjects
+    ? Math.max(0, sortedProjects.length - PROJECTS_DEFAULT_LIMIT)
+    : 0;
 
   function openProject(projectId: string) {
     const runtime = useChatRuntimeStore.getState();
@@ -450,6 +463,7 @@ export function ProjectsPage() {
           )}
         </div>
       ) : (
+        <>
         <div className="mt-12 grid grid-cols-1 gap-5 sm:grid-cols-2 lg:grid-cols-3">
           {visibleProjects.map((project) => (
             <div key={`wrap-${project.id}`} className="contents">
@@ -589,6 +603,20 @@ export function ProjectsPage() {
             </div>
           ))}
         </div>
+        {!isSearching && (hiddenProjectCount > 0 || showAllProjects) && (
+          <div className="mt-6 flex justify-center">
+            <button
+              type="button"
+              onClick={() => setShowAllProjects((v) => !v)}
+              className="text-[13px] font-medium text-muted-foreground transition-colors hover:text-foreground"
+            >
+              {showAllProjects
+                ? "Show less"
+                : `Show more (${hiddenProjectCount})`}
+            </button>
+          </div>
+        )}
+        </>
       )}
 
       {/* Create project */}

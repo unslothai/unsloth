@@ -789,6 +789,8 @@ export function AppSidebar() {
     const shouldDeleteProjectFiles =
       target.kind === "project" && deleteProjectFiles;
     setConfirmingDelete(null);
+    // Reset so the next project delete never inherits this checkbox.
+    setDeleteProjectFiles(false);
     if (target.kind === "chat") {
       await deleteChatWithCleanup(target.item);
       return;
@@ -1487,13 +1489,16 @@ export function AppSidebar() {
                                 <span>New chat</span>
                               </DropdownMenuItem>
                               <DropdownMenuItem
-                                onSelect={() =>
+                                onSelect={() => {
+                                  // Seed the shared draft so the dialog opens
+                                  // with the current name, not stale text.
+                                  setRenameDraft(project.name);
                                   setRenamingTarget({
                                     kind: "project",
                                     project,
                                     current: project.name,
-                                  })
-                                }
+                                  });
+                                }}
                               >
                                 <HugeiconsIcon icon={PencilEdit02Icon} strokeWidth={1.75} className="size-icon" />
                                 <span>Rename project</span>
