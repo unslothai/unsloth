@@ -128,3 +128,72 @@ def test_detect_nvidia_caps_no_nvidia_smi(monkeypatch):
     assert caps.has_physical_nvidia is False
     assert caps.compute_caps == []
     assert caps.driver_cuda_version is None
+
+
+# ── ROCm gfx picker (visible-device aware) ──
+_ROCMINFO_MULTI = """\
+*******
+Agent 1
+*******
+  Name:                    gfx000
+  Marketing Name:          AMD CPU
+*******
+Agent 2
+*******
+  Name:                    gfx1151
+  Marketing Name:          Strix Halo
+*******
+Agent 3
+*******
+  Name:                    gfx1100
+  Marketing Name:          RX 7900 XTX
+"""
+
+
+def _clear_rocm_env(monkeypatch):
+    for var in ("HIP_VISIBLE_DEVICES", "ROCR_VISIBLE_DEVICES", "CUDA_VISIBLE_DEVICES"):
+        monkeypatch.delenv(var, raising = False)
+
+
+def test_pick_rocm_gfx_target_flat_first_and_skips_cpu_generic(monkeypatch):
+    _clear_rocm_env(monkeypatch)
+    # gfx000 (CPU agent) and gfx11-generic (generic ISA) are skipped.
+    assert H.pick_rocm_gfx_target("Name: gfx000\nName: gfx11-generic\nName: gfx1100") == "gfx1100"
+    assert H.pick_rocm_gfx_target("no gpu here") is None
+
+
+def test_pick_rocm_gfx_target_sections_pick_per_gpu(monkeypatch):
+    _clear_rocm_env(monkeypatch)
+    # Two GPUs (gfx1151 index 0, gfx1100 index 1); CPU agent yields no token.
+    assert H.pick_rocm_gfx_target(_ROCMINFO_MULTI) == "gfx1151"  # first GPU by default
+
+
+def test_pick_rocm_gfx_target_honors_visible_devices(monkeypatch):
+    _clear_rocm_env(monkeypatch)
+    monkeypatch.setenv("HIP_VISIBLE_DEVICES", "1")
+    assert H.pick_rocm_gfx_target(_ROCMINFO_MULTI) == "gfx1100"  # index 1 -> dGPU
+    monkeypatch.setenv("HIP_VISIBLE_DEVICES", "0")
+    assert H.pick_rocm_gfx_target(_ROCMINFO_MULTI) == "gfx1151"
+
+
+def test_pick_rocm_gfx_target_rocr_and_cuda_env(monkeypatch):
+    _clear_rocm_env(monkeypatch)
+    monkeypatch.setenv("ROCR_VISIBLE_DEVICES", "1")
+    assert H.pick_rocm_gfx_target(_ROCMINFO_MULTI) == "gfx1100"
+    monkeypatch.delenv("ROCR_VISIBLE_DEVICES", raising = False)
+    monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "0")
+    assert H.pick_rocm_gfx_target(_ROCMINFO_MULTI) == "gfx1151"
+
+
+def test_pick_rocm_gfx_target_empty_or_disabled_returns_none(monkeypatch):
+    _clear_rocm_env(monkeypatch)
+    monkeypatch.setenv("HIP_VISIBLE_DEVICES", "-1")
+    assert H.pick_rocm_gfx_target(_ROCMINFO_MULTI) is None
+    monkeypatch.setenv("HIP_VISIBLE_DEVICES", "")
+    assert H.pick_rocm_gfx_target(_ROCMINFO_MULTI) is None
+
+
+def test_pick_rocm_gfx_target_out_of_range_falls_back_to_first(monkeypatch):
+    _clear_rocm_env(monkeypatch)
+    monkeypatch.setenv("HIP_VISIBLE_DEVICES", "9")  # no such GPU -> first
+    assert H.pick_rocm_gfx_target(_ROCMINFO_MULTI) == "gfx1151"

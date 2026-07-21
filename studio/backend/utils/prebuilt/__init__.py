@@ -15,6 +15,8 @@ from .hosts import (
     detect_nvidia_caps,
     detect_torch_cuda_runtime_line,
     parse_cuda_visible_devices,
+    parse_macos_version,
+    pick_rocm_gfx_target,
 )
 from .selection import (
     SelArtifact,
@@ -47,6 +49,8 @@ __all__ = [
     "normalize_compute_cap",
     "normalize_compute_caps",
     "parse_cuda_visible_devices",
+    "parse_macos_version",
+    "pick_rocm_gfx_target",
     "rank_cuda_attempts",
     "select_cuda_attempts",
     "sm_range",

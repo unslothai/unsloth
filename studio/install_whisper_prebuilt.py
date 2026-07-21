@@ -80,6 +80,7 @@ from backend.utils.prebuilt.hosts import (  # noqa: E402
     detect_nvidia_caps,
     detect_torch_cuda_runtime_line,
     parse_macos_version,
+    pick_rocm_gfx_target,
 )
 
 
@@ -208,20 +209,15 @@ def _detect_rocm_gfx() -> tuple[bool, str | None]:
             continue
         if result.returncode != 0:
             continue
-        for line in result.stdout.splitlines():
-            token = line.strip().lower()
-            if "gfx" not in token:
-                continue
-            for word in token.replace(":", " ").replace("\t", " ").split():
-                # Real GPU ISA id: gfx<nonzero><alnum...> (gfx908, gfx90a, gfx1100).
-                # Skip the CPU agent (gfx000) and generic ISA lines (gfx11-generic).
-                if (
-                    word.startswith("gfx")
-                    and len(word) > 3
-                    and word[3] != "0"
-                    and word[3:].isalnum()
-                ):
-                    return True, word
+        # Pick the gfx target for the ACTIVE GPU: honor HIP_VISIBLE_DEVICES /
+        # ROCR_VISIBLE_DEVICES / CUDA_VISIBLE_DEVICES (so a mixed APU + dGPU host
+        # gets the arch HIP actually runs on, and an empty/-1 value means no AMD
+        # GPU is visible). Since the exact ROCm matcher treats this token as the
+        # host GPU, a first-match here would install the wrong archive. Shared
+        # with install_llama_prebuilt.py via pick_rocm_gfx_target.
+        gfx = pick_rocm_gfx_target(result.stdout)
+        if gfx is not None:
+            return True, gfx
     return False, None
 
 
@@ -312,7 +308,10 @@ def apply_host_overrides(
             torch_runtime_line = None,
         )
     updates: dict[str, Any] = {}
-    if has_rocm:
+    if has_rocm or rocm_gfx:
+        # --rocm-gfx implies --has-rocm (llama parity, _apply_host_overrides):
+        # recording the gfx arch without enabling ROCm would leave the host on its
+        # CUDA/CPU path and never pick the ROCm bundle the arch names.
         updates["has_rocm"] = True
         updates["has_usable_nvidia"] = False
         # A forced ROCm host is not NVIDIA; drop any stray CUDA detection so it
@@ -422,10 +421,19 @@ def parse_manifest(payload: Any, *, label: str = MANIFEST_ASSET_NAME) -> dict[st
 
 
 def _macos_min_os_ok(host: HostInfo, min_os: Any) -> bool:
-    """True if a macOS artifact requiring `min_os` can load on this host. Unknown
-    host version or unknown/unparseable min_os -> True (defer to runtime
-    validation), mirroring install_llama_prebuilt.py `host_supports_macos_minos`."""
-    required = parse_macos_version(str(min_os)) if min_os else None
+    """True if a macOS artifact requiring `min_os` can load on this host. The
+    manifest labels macOS requirements as `macos-<version>` (e.g. `macos-14.0`,
+    `macos-13.3`), so strip that platform prefix before parsing -- otherwise every
+    macOS artifact parses as None and the guard is a no-op, installing a
+    macOS-14 bundle on a macOS-13 host. Unknown host version or
+    unknown/unparseable min_os -> True (defer to runtime validation), mirroring
+    install_llama_prebuilt.py `host_supports_macos_minos`."""
+    if not isinstance(min_os, str) or not min_os.strip():
+        return True
+    raw = min_os.strip()
+    if raw.lower().startswith("macos-"):
+        raw = raw[len("macos-") :]
+    required = parse_macos_version(raw)
     if required is None or host.macos_version is None:
         return True
     return host.macos_version >= required

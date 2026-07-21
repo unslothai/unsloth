@@ -176,6 +176,10 @@ def test_detect_rocm_gfx_wsl_env_and_skips_cpu_agent(monkeypatch):
     # so a WSL /dev/dxg host enumerates at all.
     rocminfo_out = "  Name:  gfx000\n  Marketing: CPU\n  Name:  gfx1100\n"
     captured = {}
+    # The gfx picker honors *_VISIBLE_DEVICES; clear them so this asserts the
+    # default (first GPU) path deterministically regardless of the CI env.
+    for _var in ("HIP_VISIBLE_DEVICES", "ROCR_VISIBLE_DEVICES", "CUDA_VISIBLE_DEVICES"):
+        monkeypatch.delenv(_var, raising = False)
 
     def fake_run(cmd, *a, **kw):
         captured["env"] = kw.get("env")
@@ -825,7 +829,7 @@ def test_macos_min_os_filters_incompatible_metal():
                     "metal",
                     "whisper-macos-arm64-metal-new.tar.gz",
                     "b" * 64,
-                    min_os = "15.0",
+                    min_os = "macos-15.0",
                 ),
                 _artifact(
                     "macos",
@@ -833,7 +837,7 @@ def test_macos_min_os_filters_incompatible_metal():
                     "metal",
                     "whisper-macos-arm64-metal.tar.gz",
                     "a" * 64,
-                    min_os = "13.0",
+                    min_os = "macos-13.0",
                 ),
             ]
         )
@@ -853,7 +857,7 @@ def test_macos_min_os_excludes_all_when_host_too_old():
                     "metal",
                     "whisper-macos-arm64-metal-new.tar.gz",
                     "b" * 64,
-                    min_os = "15.0",
+                    min_os = "macos-15.0",
                 )
             ]
         )
@@ -873,7 +877,7 @@ def test_macos_min_os_unknown_host_version_keeps_artifact():
                     "metal",
                     "whisper-macos-arm64-metal-new.tar.gz",
                     "b" * 64,
-                    min_os = "15.0",
+                    min_os = "macos-15.0",
                 )
             ]
         )
@@ -882,6 +886,56 @@ def test_macos_min_os_unknown_host_version_keeps_artifact():
         M.select_artifact(manifest, host, "metal")["asset"]
         == "whisper-macos-arm64-metal-new.tar.gz"
     )
+
+
+def test_macos_min_os_accepts_bare_version_format():
+    # A bare "14.0" (no 'macos-' prefix) must still parse, for forward-compat.
+    host = _host("macos", "arm64", macos_version = (13, 0))
+    manifest = M.parse_manifest(
+        _manifest(
+            [
+                _artifact(
+                    "macos",
+                    "arm64",
+                    "metal",
+                    "whisper-macos-arm64-metal.tar.gz",
+                    "a" * 64,
+                    min_os = "14.0",
+                )
+            ]
+        )
+    )
+    assert M.select_artifact(manifest, host, "metal") is None  # 13.0 < 14.0
+
+
+def test_macos_min_os_ok_helper_handles_prefix_and_bare():
+    host14 = _host("macos", "arm64", macos_version = (14, 0))
+    # The live manifest format is 'macos-<ver>'; the prefix must be stripped.
+    assert M._macos_min_os_ok(host14, "macos-14.0") is True
+    assert M._macos_min_os_ok(host14, "macos-15.0") is False
+    assert M._macos_min_os_ok(host14, "13.3") is True  # bare also parses
+    assert M._macos_min_os_ok(host14, None) is True  # unknown -> defer
+    assert M._macos_min_os_ok(_host("macos", "arm64"), "macos-15.0") is True  # host ver unknown
+
+
+# ── --rocm-gfx / --has-rocm overrides (llama parity) ──
+def test_rocm_gfx_override_implies_has_rocm():
+    # --rocm-gfx alone (no --has-rocm) must enable ROCm and clear NVIDIA, else the
+    # host stays on its CUDA/CPU path and never picks the ROCm bundle.
+    base = _host(
+        "linux",
+        "x64",
+        has_usable_nvidia = True,
+        compute_caps = ("10.0",),
+        driver_cuda_version = (13, 0),
+        torch_runtime_line = "cuda13",
+    )
+    out = M.apply_host_overrides(base, rocm_gfx = "gfx1100")
+    assert out.has_rocm is True
+    assert out.rocm_gfx == "gfx1100"
+    assert out.has_usable_nvidia is False
+    assert out.compute_caps == () and out.driver_cuda_version is None
+    assert M.auto_detect_backend(out) == "rocm"
 
 
 # ── existing_install_matches contract ──

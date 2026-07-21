@@ -126,17 +126,15 @@ def test_non_executable_binary_is_not_runnable(monkeypatch, tmp_path):
 
 
 def _loader_path_var() -> str:
-    return {"win32": "PATH", "darwin": "DYLD_LIBRARY_PATH"}.get(
-        sys.platform, "LD_LIBRARY_PATH"
-    )
+    return {"win32": "PATH", "darwin": "DYLD_LIBRARY_PATH"}.get(sys.platform, "LD_LIBRARY_PATH")
 
 
 def test_child_env_scrubs_secrets_and_adds_lib_dir(monkeypatch, tmp_path):
-    monkeypatch.setenv("HF_TOKEN", "secret-token")       # exact name
-    monkeypatch.setenv("MY_API_KEY", "nope")             # marker substring
+    monkeypatch.setenv("HF_TOKEN", "secret-token")  # exact name
+    monkeypatch.setenv("MY_API_KEY", "nope")  # marker substring
     monkeypatch.setenv("HTTPS_PROXY", "http://u:p@px:8080")  # url-name
     monkeypatch.setenv("SOME_REMOTE", "https://u:pw@host/repo")  # url-userinfo value
-    monkeypatch.setenv("STT_KEEPME", "keep")             # benign
+    monkeypatch.setenv("STT_KEEPME", "keep")  # benign
     binary = tmp_path / "whisper-server"
     binary.write_text("#!/bin/sh\n")
     env = ggml_module._whisper_server_child_env(str(binary))
@@ -158,9 +156,56 @@ def test_child_env_wsl_rocm_prepends_system_hip(monkeypatch, tmp_path):
     monkeypatch.setattr(ggml_module, "_wsl_system_rocm_lib_dirs", lambda: [str(rocm)])
     env = ggml_module._whisper_server_child_env(str(binary))
     parts = env["LD_LIBRARY_PATH"].split(os.pathsep)
-    assert parts[0] == str(rocm.resolve())          # system HIP wins
-    assert str(bindir.resolve()) in parts           # bundle libs still present
+    assert parts[0] == str(rocm.resolve())  # system HIP wins
+    assert str(bindir.resolve()) in parts  # bundle libs still present
     assert env.get("HSA_ENABLE_DXG_DETECTION") == "1"
+
+
+def test_child_env_adds_cuda_runtime_dirs_for_cuda_bundle(monkeypatch, tmp_path):
+    # A CUDA bundle ships libggml-cuda.so but not libcudart/libcublas, so the
+    # launch env must expose the CUDA-from-PyTorch wheel dirs; the bundle dir must
+    # still come first so its co-located libs win.
+    if sys.platform == "darwin":
+        pytest.skip("no CUDA on macOS")
+    import utils.prebuilt.runtime_libs as rl
+
+    bindir = tmp_path / "bin"
+    bindir.mkdir()
+    (bindir / "whisper-server").write_text("#!/bin/sh\n")
+    (bindir / "libggml-cuda.so").write_text("")  # marks this as a CUDA bundle
+    cuda_dir = tmp_path / "nvidia" / "cuda_runtime" / "lib"
+    cuda_dir.mkdir(parents = True)
+    monkeypatch.setattr(rl, "python_runtime_dirs", lambda: [str(cuda_dir)])
+    env = ggml_module._whisper_server_child_env(str(bindir / "whisper-server"))
+    parts = env[_loader_path_var()].split(os.pathsep)
+    assert str(bindir.resolve()) in parts
+    assert str(cuda_dir.resolve()) in parts
+    assert parts.index(str(bindir.resolve())) < parts.index(str(cuda_dir.resolve()))
+
+
+def test_child_env_omits_cuda_runtime_dirs_for_cpu_bundle(monkeypatch, tmp_path):
+    # No libggml-cuda.so beside the binary -> a static CPU/Metal bundle -> the CUDA
+    # wheel discovery must not run and must not touch the loader path.
+    if sys.platform == "darwin":
+        pytest.skip("no CUDA on macOS")
+    import utils.prebuilt.runtime_libs as rl
+
+    bindir = tmp_path / "bin"
+    bindir.mkdir()
+    (bindir / "whisper-server").write_text("#!/bin/sh\n")
+    cuda_dir = tmp_path / "nvidia" / "cuda_runtime" / "lib"
+    cuda_dir.mkdir(parents = True)
+    called = {"n": 0}
+
+    def _fake_dirs():
+        called["n"] += 1
+        return [str(cuda_dir)]
+
+    monkeypatch.setattr(rl, "python_runtime_dirs", _fake_dirs)
+    env = ggml_module._whisper_server_child_env(str(bindir / "whisper-server"))
+    parts = env[_loader_path_var()].split(os.pathsep)
+    assert str(cuda_dir.resolve()) not in parts
+    assert called["n"] == 0
 
 
 def test_engine_unavailable_is_stt_unavailable():

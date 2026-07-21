@@ -55,6 +55,29 @@ def test_normalize_compute_caps():
     assert sel.normalize_compute_caps(["12.0", "8.0"]) == ["80", "120"]
 
 
+def test_from_manifest_normalizes_supported_sms():
+    # Defensive parity with llama: a manifest using "8.9"-style SMs is normalized
+    # to bare SM strings so artifact_covers_sms compares apples to apples.
+    art = sel.SelArtifact.from_manifest(
+        {
+            "asset": "x",
+            "os": "linux",
+            "arch": "x64",
+            "backend": "cuda",
+            "runtime_line": "cuda13",
+            "coverage_class": "newer",
+            "supported_sms": ["8.6", "8.9", "9.0", "10.0"],
+            "min_sm": 86,
+            "max_sm": 100,
+        }
+    )
+    assert art.supported_sms == ("86", "89", "90", "100")
+    assert sel.artifact_covers_sms(art, ["100"]) is True
+    # bare values pass through unchanged; unparseable dropped
+    art2 = sel.SelArtifact.from_manifest({"asset": "y", "supported_sms": ["86", "bad", "100"]})
+    assert art2.supported_sms == ("86", "100")
+
+
 def test_normalize_compute_cap_edge_cases():
     assert sel.normalize_compute_cap("8.9") == "89"
     assert sel.normalize_compute_cap("90") == "90"

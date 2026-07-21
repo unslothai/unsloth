@@ -204,6 +204,56 @@ def detect_nvidia_caps(*, is_linux: bool | None = None) -> NvidiaCaps:
     )
 
 
+def pick_rocm_gfx_target(output: str) -> str | None:
+    """Choose the gfx target rocminfo / hipinfo report for the ACTIVE GPU.
+
+    A bare first-match picked the wrong device on mixed APU + dGPU hosts (e.g.
+    Strix Halo gfx1151 + discrete RX 7900 gfx1100). Honor HIP_VISIBLE_DEVICES /
+    ROCR_VISIBLE_DEVICES / CUDA_VISIBLE_DEVICES so the asset matches what HIP
+    actually runs on; fall back to the first GPU when no env var is set. Empty /
+    '-1' means no AMD GPU is visible -> None. Sections are split on rocminfo
+    'Agent N' blocks / hipinfo 'device#N' entries so one gfx token is taken per
+    GPU (correct even for two same-arch cards); a flat string falls back to
+    insertion-order dedup. The gfx regex requires a nonzero first digit so the CPU
+    agent (gfx000) and generic ISA lines (gfx11-generic) are skipped. Lifted from
+    install_llama_prebuilt.py `_pick_rocm_gfx_target`."""
+    sections = re.split(
+        r"(?mi)^\s*\*+\s*$\s*agent\s+\d+\s*$|\bdevice\s*#\s*\d+\b",
+        output,
+    )
+    if len(sections) > 1:
+        tokens: list[str] = []
+        for section in sections[1:]:
+            match = re.search(r"gfx[1-9][0-9a-z]{2,3}", section.lower())
+            if match:
+                tokens.append(match.group(0))
+    else:
+        tokens = list(dict.fromkeys(re.findall(r"gfx[1-9][0-9a-z]{2,3}", output.lower())))
+
+    if not tokens:
+        return None
+
+    visible_raw = None
+    # AMD's HIP runtime honors all three env vars with identical semantics.
+    for name in ("HIP_VISIBLE_DEVICES", "ROCR_VISIBLE_DEVICES", "CUDA_VISIBLE_DEVICES"):
+        value = os.environ.get(name)
+        if value is not None:
+            visible_raw = value
+            break
+    if visible_raw is not None:
+        visible = visible_raw.strip()
+        if visible == "" or visible == "-1":
+            return None
+        first = visible.split(",")[0].strip()
+        try:
+            index = int(first)
+            if 0 <= index < len(tokens):
+                return tokens[index]
+        except ValueError:
+            pass
+    return tokens[0]
+
+
 def parse_macos_version(value: str | None) -> tuple[int, int] | None:
     """Parse a macOS product version string into (major, minor). Handles
     "14.7.1", "15.5", "26.0" and bare "26". Returns None when empty or unparseable

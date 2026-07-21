@@ -205,26 +205,58 @@ def ensure_engine_available() -> str:
 # segfaults, so the WSL-capable libamdhip64/librocdxg must win while the bundle
 # still supplies libggml-hip/librocblas. Mirrors install_llama_prebuilt.py's
 # binary_env(); kept local so the sidecar need not import the installer CLI.
-# (The CUDA-from-PyTorch runtime_line lib discovery lands when CUDA bundles ship;
-# CPU/Metal P0 bundles are static and ROCm/Vulkan bundles are self-contained.)
+# A CUDA bundle ships the ggml CUDA backend (libggml-cuda.so) but deliberately not
+# libcudart/libcublas (paired with the user's PyTorch), so we add the
+# CUDA-from-PyTorch runtime dirs (the site-packages/nvidia/*/lib + torch/lib the
+# selection gated the cuda line on) to the loader path -- otherwise the backend
+# cannot resolve the runtime at launch on a host where it lives only in wheels and
+# not on the system loader path. CPU/Metal bundles are static and ROCm/Vulkan
+# bundles are self-contained, so those add nothing here.
 
-_STT_SECRET_ENV_EXACT = frozenset({
-    "HF_TOKEN", "HUGGING_FACE_HUB_TOKEN", "GH_TOKEN", "GITHUB_TOKEN",
-    "WANDB_API_KEY", "OPENAI_API_KEY", "ANTHROPIC_API_KEY", "AWS_ACCESS_KEY_ID",
-    "AWS_SECRET_ACCESS_KEY", "AWS_SESSION_TOKEN", "GOOGLE_APPLICATION_CREDENTIALS",
-    "AZURE_CLIENT_SECRET", "KUBECONFIG", "SSH_AUTH_SOCK",
-})
+_STT_SECRET_ENV_EXACT = frozenset(
+    {
+        "HF_TOKEN",
+        "HUGGING_FACE_HUB_TOKEN",
+        "GH_TOKEN",
+        "GITHUB_TOKEN",
+        "WANDB_API_KEY",
+        "OPENAI_API_KEY",
+        "ANTHROPIC_API_KEY",
+        "AWS_ACCESS_KEY_ID",
+        "AWS_SECRET_ACCESS_KEY",
+        "AWS_SESSION_TOKEN",
+        "GOOGLE_APPLICATION_CREDENTIALS",
+        "AZURE_CLIENT_SECRET",
+        "KUBECONFIG",
+        "SSH_AUTH_SOCK",
+    }
+)
 # Case-insensitive substring markers for names we do not enumerate (no bare "KEY").
 _STT_SECRET_ENV_MARKERS = (
-    "TOKEN", "SECRET", "PASSWORD", "PASSWD", "PASSPHRASE", "CREDENTIAL",
-    "PRIVATE_KEY", "API_KEY",
+    "TOKEN",
+    "SECRET",
+    "PASSWORD",
+    "PASSWD",
+    "PASSPHRASE",
+    "CREDENTIAL",
+    "PRIVATE_KEY",
+    "API_KEY",
 )
 # Proxy / index URLs embed creds in their value; the offline server never needs them.
-_STT_SECRET_ENV_URL_NAMES = frozenset({
-    "HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "FTP_PROXY", "RSYNC_PROXY",
-    "PIP_INDEX_URL", "PIP_EXTRA_INDEX_URL", "UV_INDEX_URL", "UV_DEFAULT_INDEX",
-    "UV_EXTRA_INDEX_URL",
-})
+_STT_SECRET_ENV_URL_NAMES = frozenset(
+    {
+        "HTTP_PROXY",
+        "HTTPS_PROXY",
+        "ALL_PROXY",
+        "FTP_PROXY",
+        "RSYNC_PROXY",
+        "PIP_INDEX_URL",
+        "PIP_EXTRA_INDEX_URL",
+        "UV_INDEX_URL",
+        "UV_DEFAULT_INDEX",
+        "UV_EXTRA_INDEX_URL",
+    }
+)
 # Also drop values with URL userinfo creds (scheme://user:secret@host).
 _STT_URL_USERINFO_RE = re.compile(r"://[^/@\s]+@")
 
@@ -286,15 +318,26 @@ def _whisper_server_child_env(binary: str) -> dict[str, str]:
         if not _stt_is_secret_env_name(k) and not _STT_URL_USERINFO_RE.search(v or "")
     }
     bin_dir = str(Path(binary).parent)
+    # For a CUDA bundle (ships the ggml CUDA backend but not the CUDA runtime),
+    # expose the CUDA-from-PyTorch wheel dirs so libcudart/libcublas resolve at
+    # launch even when they live only in site-packages/nvidia/*/lib. Placed after
+    # bin_dir so the bundle's co-located libs still win; harmless (empty) otherwise.
+    cuda_runtime_dirs: list[str] = []
+    if any((Path(bin_dir) / name).exists() for name in ("libggml-cuda.so", "ggml-cuda.dll")):
+        try:
+            from utils.prebuilt.runtime_libs import python_runtime_dirs
+            cuda_runtime_dirs = python_runtime_dirs()
+        except Exception:
+            cuda_runtime_dirs = []
     if sys.platform == "win32":
-        var, lead = "PATH", [bin_dir]
+        var, lead = "PATH", [bin_dir, *cuda_runtime_dirs]
     elif sys.platform == "darwin":
         var, lead = "DYLD_LIBRARY_PATH", [bin_dir]
     else:
-        var, lead = "LD_LIBRARY_PATH", [bin_dir]
+        var, lead = "LD_LIBRARY_PATH", [bin_dir, *cuda_runtime_dirs]
         wsl_rocm = _wsl_system_rocm_lib_dirs()
         if wsl_rocm:
-            lead = [*wsl_rocm, bin_dir]
+            lead = [*wsl_rocm, bin_dir, *cuda_runtime_dirs]
             env.setdefault("HSA_ENABLE_DXG_DETECTION", "1")
     existing = [p for p in env.get(var, "").split(os.pathsep) if p]
     env[var] = os.pathsep.join(_dedupe_existing_dirs([*lead, *existing]))

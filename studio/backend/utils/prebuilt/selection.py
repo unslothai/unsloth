@@ -104,7 +104,13 @@ def host_is_blackwell(host_sms: list[str]) -> bool:
 
 def blackwell_min_toolkit_for_caps(host_sms: list[str]) -> tuple[int, int]:
     """Minimum CUDA toolkit a Blackwell host needs: 12.8 for the family, 12.9 if
-    any SM is sm_103/sm_121."""
+    any SM is sm_103/sm_121.
+
+    NOTE: whisper bundles all carry explicit `supported_sms`, so `artifact_covers_sms`
+    already gates Blackwell capability and this is not called by the whisper
+    selection path. It is retained for Phase B, where llama's Windows CUDA
+    selection uses the toolkit floor to drop upstream bundles named only by
+    toolkit minor (no SM metadata). Kept in sync with llama's `_blackwell_min_toolkit`."""
     req = _BLACKWELL_MIN_TOOLKIT
     for sm in host_sms:
         req = max(req, _BLACKWELL_SM_MIN_TOOLKIT.get(int(sm), _BLACKWELL_MIN_TOOLKIT))
@@ -144,7 +150,11 @@ class SelArtifact:
             backend = str(artifact.get("backend") or ""),
             runtime_line = artifact.get("runtime_line"),
             coverage_class = artifact.get("coverage_class"),
-            supported_sms = tuple(str(v) for v in (artifact.get("supported_sms") or ())),
+            supported_sms = tuple(
+                s
+                for s in (normalize_compute_cap(v) for v in (artifact.get("supported_sms") or ()))
+                if s is not None
+            ),
             min_sm = _coerce_int(artifact.get("min_sm")),
             max_sm = _coerce_int(artifact.get("max_sm")),
             gfx_target = artifact.get("gfx_target"),
