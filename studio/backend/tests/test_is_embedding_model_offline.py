@@ -194,7 +194,11 @@ def _fake_hf_cache(monkeypatch, root):
     monkeypatch.setitem(sys.modules, "huggingface_hub.constants", fake.constants)
 
 
-def _mk_repo(tmp_path, repo_id = "org/model", commit = "aaa"):
+def _mk_repo(
+    tmp_path,
+    repo_id = "org/model",
+    commit = "aaa",
+):
     """(repo_dir, snapshot_dir) for a fresh HF cache repo under ``tmp_path/hf``; the snapshot dir
     is created. Shared skeleton for the per-type repo builders below."""
     repo = tmp_path / "hf" / f"models--{repo_id.replace('/', '--')}"
@@ -203,7 +207,11 @@ def _mk_repo(tmp_path, repo_id = "org/model", commit = "aaa"):
     return repo, snap
 
 
-def _activate(repo, monkeypatch, commit = "aaa"):
+def _activate(
+    repo,
+    monkeypatch,
+    commit = "aaa",
+):
     """Write refs/main and point the HF/ST cache at *repo*'s root, ignoring SENTENCE_TRANSFORMERS_HOME."""
     (repo / "refs").mkdir(parents = True, exist_ok = True)
     (repo / "refs" / "main").write_text(commit)
