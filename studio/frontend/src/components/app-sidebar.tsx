@@ -815,27 +815,37 @@ export function AppSidebar() {
     variant: "project" | "recent",
   ) {
     const isPinned = pinnedIdSet.has(item.id);
+    // Touch/coarse pointers have no hover, so reveal row actions immediately
+    // (mirrors hub model rows and project chat lists).
+    const touchVisibleAction =
+      "[@media(pointer:coarse)]:opacity-100 [@media(pointer:coarse)]:pointer-events-auto";
     const itemClass =
       variant === "project"
         ? "group/project-chat-item relative"
         : "group/recent-item relative";
     const actionClass =
       variant === "project"
-        ? "sidebar-row-action group-hover/project-chat-item:opacity-100 group-hover/project-chat-item:pointer-events-auto focus-visible:opacity-100 focus-visible:pointer-events-auto"
-        : "sidebar-row-action group-hover/recent-item:opacity-100 group-hover/recent-item:pointer-events-auto focus-visible:opacity-100 focus-visible:pointer-events-auto";
+        ? cn(
+            "sidebar-row-action group-hover/project-chat-item:opacity-100 group-hover/project-chat-item:pointer-events-auto focus-visible:opacity-100 focus-visible:pointer-events-auto",
+            touchVisibleAction,
+          )
+        : cn(
+            "sidebar-row-action group-hover/recent-item:opacity-100 group-hover/recent-item:pointer-events-auto focus-visible:opacity-100 focus-visible:pointer-events-auto",
+            touchVisibleAction,
+          );
     const buttonClass = cn(
       "sidebar-nav-btn h-[33px] cursor-pointer rounded-full pr-4 text-[14.5px] leading-[19px] tracking-nav font-medium",
       // pl-3 (12px) over the content's pl-1.5 (6px) = 18px, aligning the
       // title with the nav items above.
       variant === "project" ? "pl-[39px]" : "pl-3",
       variant === "project"
-        ? "group-hover/project-chat-item:pr-6 group-has-[.sidebar-row-action[data-state=open]]/project-chat-item:pr-6"
+        ? "group-hover/project-chat-item:pr-6 group-has-[.sidebar-row-action[data-state=open]]/project-chat-item:pr-6 [@media(pointer:coarse)]:pr-6"
         : isPinned
           ? // Pinned rows show an extra unpin button on hover, so reserve more room
             // (pr-8 when the menu is open keeps the unpin button clear of the title).
-            "group-hover/recent-item:pr-16 group-has-[.sidebar-row-action[data-state=open]]/recent-item:pr-8"
+            "group-hover/recent-item:pr-16 group-has-[.sidebar-row-action[data-state=open]]/recent-item:pr-8 [@media(pointer:coarse)]:pr-16"
           : // Hover room for the kebab only; title keeps one more character.
-            "group-hover/recent-item:pr-6 group-has-[.sidebar-row-action[data-state=open]]/recent-item:pr-6",
+            "group-hover/recent-item:pr-6 group-has-[.sidebar-row-action[data-state=open]]/recent-item:pr-6 [@media(pointer:coarse)]:pr-6",
     );
 
     const isRenamingThis =

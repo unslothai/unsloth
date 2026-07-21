@@ -129,3 +129,14 @@ def test_expanded_titlebar_button_and_corner_match_sidebar_edge():
         'className="pointer-events-none absolute top-full size-3 -translate-x-px rounded-tl-[12px] border-l border-t border-sidebar-border bg-background"'
         in source
     )
+
+
+def test_chat_sidebar_row_actions_visible_on_coarse_pointers():
+    """unslothai/unsloth#7276: Recents chat kebab must be tappable on iPad."""
+    source = APP_SIDEBAR.read_text(encoding = "utf-8")
+    assert "[@media(pointer:coarse)]:opacity-100" in source
+    assert "[@media(pointer:coarse)]:pointer-events-auto" in source
+    assert "renderChatSidebarItem" in source
+    block = source.split("function renderChatSidebarItem", 1)[1].split("\n  function ", 1)[0]
+    assert "touchVisibleAction" in block
+    assert "[@media(pointer:coarse)]:pr-6" in block
