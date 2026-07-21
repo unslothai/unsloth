@@ -1844,7 +1844,7 @@ exit 0
                 $nameArchTable = @(
                     @{ P = "9070 XT|9080";                                        A = "gfx1201" }  # RDNA 4 (RX 9070 XT / 9080)
                     @{ P = "9070|9060";                                           A = "gfx1200" }  # RDNA 4 (RX 9070 / 9060)
-                    @{ P = "8060S|8050S|8040S|Strix Halo|Ryzen AI Max|AI Max"; A = "gfx1151" }  # RDNA 3.5 (Strix Halo: Radeon 8060S/8050S/8040S iGPU, Ryzen AI Max+)
+                    @{ P = "8065S|8060S|8050S|8040S|Strix Halo|Ryzen AI Max|AI Max"; A = "gfx1151" }  # RDNA 3.5 (Strix Halo + Gorgon Halo: Radeon 8065S/8060S/8050S/8040S iGPU, Ryzen AI Max / Max+)
                     @{ P = "890M|880M|860M|840M|Strix Point|Krackan|HX 37[05]|AI 9 HX|AI 9 36[05]|AI 7 35[05]|AI 5 34[05]|AI 7 PRO 35|AI 5 33"; A = "gfx1150" }  # RDNA 3.5 (Strix/Krackan Point: Radeon 890M/880M iGPU, Ryzen AI 9 HX 370/375)
                     @{ P = "RX 7900|RX 7800|RX 7700(?!S)|PRO W7900|PRO W7800|PRO W7700"; A = "gfx1100" }  # RDNA 3 desktop/workstation (Navi 31)
                     @{ P = "RX 7600|RX 7700S|RX 7650|PRO W7600|PRO W7500|PRO V710"; A = "gfx1102" }  # RDNA 3 (Navi 33)
