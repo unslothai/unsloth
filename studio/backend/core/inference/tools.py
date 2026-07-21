@@ -2582,20 +2582,23 @@ _HIGH_RISK_FORWARDING_COMMANDS = frozenset({"find", "fd", "xargs", "parallel", "
 # separate command token to catch); an `-exec rm` is caught via forwarding.
 _HIGH_RISK_FIND_FLAGS = frozenset({"-delete"})
 # curl/wget flags that send local data out (exfiltration surface).
-_NET_UPLOAD_FLAGS = frozenset(
+# curl upload/POST flags. The short forms may be attached (-d@f, -Ffile=@dump.sql),
+# so they are matched prefix-wise; the long forms are exact.
+_CURL_UPLOAD_LONG_FLAGS = frozenset(
     {
-        "-d",
         "--data",
         "--data-ascii",
         "--data-binary",
         "--data-raw",
         "--data-urlencode",
-        "-F",
         "--form",
-        "-T",
         "--upload-file",
     }
 )
+_CURL_UPLOAD_SHORT_FLAGS = ("-d", "-F", "-T")
+# wget upload/POST flags. Kept separate from curl's so a benign wget short option
+# (wget -T 10 timeout, wget -F force-html) is not misread as an upload.
+_WGET_UPLOAD_FLAGS = frozenset({"--post-data", "--post-file", "--body-data", "--body-file"})
 # curl/wget output piped straight into an interpreter is remote code execution.
 _PIPE_TO_INTERPRETER_RE = re.compile(
     r"\|\s*(?:sudo\s+)?(?:sh|bash|zsh|dash|ksh|fish|python[0-9.]*|node|ruby|perl|php)\b"
@@ -2720,7 +2723,9 @@ def _command_is_network_exec_or_exfil(command: str) -> bool:
     substitution) or to upload local data. Plain downloads (curl -O, wget URL)
     are ordinary and stay out. Fails closed on an unparseable command."""
     low = command.lower()
-    if "curl" not in low and "wget" not in low:
+    has_curl = "curl" in low
+    has_wget = "wget" in low
+    if not has_curl and not has_wget:
         return False
     if _PIPE_TO_INTERPRETER_RE.search(low):
         return True
@@ -2730,7 +2735,17 @@ def _command_is_network_exec_or_exfil(command: str) -> bool:
         tokens = shlex.split(command.replace("\n", " "), posix = True)
     except ValueError:
         return True
-    return any(t.split("=", 1)[0] in _NET_UPLOAD_FLAGS for t in tokens)
+    for t in tokens:
+        name = t.split("=", 1)[0]
+        if has_curl and (
+            name in _CURL_UPLOAD_LONG_FLAGS
+            # a curl short upload flag, attached or not (-d@f, -Ffile=@dump.sql)
+            or (not name.startswith("--") and name.startswith(_CURL_UPLOAD_SHORT_FLAGS))
+        ):
+            return True
+        if has_wget and name in _WGET_UPLOAD_FLAGS:
+            return True
+    return False
 
 
 def _terminal_is_high_risk(command: str, _depth: int = 0) -> bool:
