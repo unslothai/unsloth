@@ -304,7 +304,13 @@ def can_load_chat_during_training(
             # start with too little protected headroom and OOM the training run (#7188).
             per_gpu_needed_gb = needed_gb / len(requested_gpu_ids)
             min_free_gb = min(free_vals)
-            ranked = sorted(free_vals, reverse = True)
+            # The pin lands on some N-of-visible subset (mapping unknown), so budget the
+            # aggregate over the least-free N cards, not all visible: the N smallest minimize
+            # usable_gb = max + overhead*rest, so if they fit, any N-subset does. Using all
+            # visible would over-count headroom the pinned cards may not have (e.g. four 50 GB
+            # cards make a two-card 100 GB pin look like it fits when no pair holds it).
+            n_pins = min(len(requested_gpu_ids), len(free_vals))
+            ranked = sorted(sorted(free_vals)[:n_pins], reverse = True)
             usable_gb = ranked[0] + sum(f * _MULTI_GPU_OVERHEAD for f in ranked[1:])
             aggregate_fits = usable_gb >= needed_gb
             per_gpu_fits = min_free_gb >= per_gpu_needed_gb

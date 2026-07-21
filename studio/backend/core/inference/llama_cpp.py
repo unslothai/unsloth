@@ -3472,7 +3472,12 @@ class LlamaCppBackend:
         if not binary:
             return []
         binary_dir = _llama_lib_dir(binary)
-        if not (binary_dir / _vulkan_lib_filename()).is_file():
+        # Match versioned sonames too (libggml-vulkan.so.0), mirroring
+        # _is_vulkan_backend: split-library installs ship only the versioned
+        # runtime lib, so an unversioned-symlink-only guard would return [] here
+        # for a real Vulkan build the detector already classified as Vulkan,
+        # rejecting every explicit gpu_ids request before launch (#7188).
+        if not _lib_dir_has_ggml_backend(binary_dir, "vulkan"):
             return []
 
         env = child_env_without_native_path_secret()

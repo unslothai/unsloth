@@ -365,6 +365,22 @@ class TestCanLoadGGUF(_GpuCacheResetMixin, unittest.TestCase):
         self.assertEqual(info_multi["mode"], "gguf_vulkan")
         self.assertEqual(info_multi["per_gpu_needed_gb"], round(6.3 / 2, 3))
 
+    def test_vulkan_aggregate_budgets_requested_subset_not_all_visible(self):
+        # More visible GPUs than pinned ordinals: a 2-ordinal Vulkan pin lands on some
+        # 2-of-4 cards (mapping unknown), so the aggregate must budget the least-free 2,
+        # not all four. free [50,50,50,50], needed 96 (80*1.15+4): any 2-card pool is
+        # 50 + 50*0.85 = 92.5 < 96, so reject -- even though summing all four (177.5)
+        # would pass. Guards against approving a pin that then OOMs training (#7188).
+        ok, info, _ = self._run(
+            devices = _devices((0, 80, 30), (1, 80, 30), (2, 80, 30), (3, 80, 30)),
+            required_override = 80.0,
+            gpu_ids = [0, 1],
+            gpu_ids_are_vulkan_ordinals = True,
+        )
+        self.assertFalse(ok)
+        self.assertEqual(info["mode"], "gguf_vulkan")
+        self.assertEqual(info["usable_gb"], 92.5)
+
 
 # ── can_load_chat_during_training: device-independent paths ──────────────────
 
@@ -550,6 +566,32 @@ class TestChatLoadGuardRoute(unittest.TestCase):
             with patch.object(self.route, "LlamaCppBackend", _Probe):
                 self.assertFalse(self.route._classify_diffusion_gguf(config))
 
+    def test_local_normal_gguf_in_diffusion_named_path_is_normal(self):
+        # A normal llama-server GGUF whose local path/repo merely contains "diffusion"
+        # must classify as normal: the loader routes on the decoded header, not the name,
+        # so the readable header wins over the name and the memory-placement feature is not
+        # rejected on a false name match. Header-before-name fallback (#7188).
+        import tempfile
+
+        class _Probe:
+            is_diffusion = False
+            _architecture = "llama"
+
+            def _read_gguf_metadata(self, _path):
+                pass
+
+        with tempfile.TemporaryDirectory() as d:
+            model = Path(d) / "diffusion-experiments" / "qwen3.gguf"
+            model.parent.mkdir(parents = True)
+            model.write_bytes(b"GGUF")
+            config = SimpleNamespace(
+                identifier = "me/qwen3-diffusion-tests",
+                gguf_hf_repo = "me/qwen3-diffusion-tests",
+                gguf_file = str(model),
+            )
+            with patch.object(self.route, "LlamaCppBackend", _Probe):
+                self.assertFalse(self.route._classify_diffusion_gguf(config))
+
     def test_manual_known_normal_gguf_bypasses_training_estimate(self):
         captured = []
         config = SimpleNamespace(is_gguf = True)
@@ -630,6 +672,59 @@ class TestChatLoadGuardRoute(unittest.TestCase):
             )
         gpu_arg.assert_called_once_with(None, cpu_only = False)
         self.assertEqual(captured[0]["single_device_gpu"], "3")
+
+    def test_unclassified_gguf_on_vulkan_build_budgets_as_ordinals(self):
+        # An uncached (unknown) GGUF pinned with explicit gpu_ids on a Vulkan build must be
+        # budgeted as Vulkan ordinals, NOT via the CUDA single-device path: the launch treats
+        # the ids as ordinals, so single-device CUDA sizing could pick the wrong physical card
+        # and OOM training. The Vulkan flag must fire and suppress diffusion_gpu (#7188).
+        captured = []
+        config = SimpleNamespace(is_gguf = True)
+        with (
+            patch.object(self.route, "_classify_diffusion_gguf", return_value = None),
+            patch.object(self.route, "_estimate_gguf_required_gb", return_value = 12.5),
+            patch.object(
+                self.route,
+                "get_llama_cpp_backend",
+                return_value = SimpleNamespace(is_vulkan_build = lambda: True),
+            ),
+        ):
+            self._guard(
+                config = config,
+                captured = captured,
+                training_active = True,
+                decision = (True, {"mode": "gguf_vulkan"}),
+                requested_gpu_ids = [0, 1],
+            )
+        self.assertEqual(len(captured), 1)
+        self.assertTrue(captured[0]["gpu_ids_are_vulkan_ordinals"])
+        self.assertIsNone(captured[0]["single_device_gpu"])
+
+    def test_unclassified_gguf_on_cuda_build_keeps_single_device(self):
+        # Same unknown GGUF on a CUDA-indexed build: the Vulkan flag stays off and the
+        # single-device CUDA guard is preserved (no regression from the Vulkan gating) (#7188).
+        captured = []
+        config = SimpleNamespace(is_gguf = True)
+        with (
+            patch.object(self.route, "_classify_diffusion_gguf", return_value = None),
+            patch.object(self.route, "_estimate_gguf_required_gb", return_value = 12.5),
+            patch.object(
+                self.route,
+                "get_llama_cpp_backend",
+                return_value = SimpleNamespace(is_vulkan_build = lambda: False),
+            ),
+            patch.object(self.route.LlamaCppBackend, "_diffusion_gpu_arg", return_value = "0"),
+        ):
+            self._guard(
+                config = config,
+                captured = captured,
+                training_active = True,
+                decision = (True, {"mode": "single_device"}),
+                requested_gpu_ids = [0, 1],
+            )
+        self.assertEqual(len(captured), 1)
+        self.assertFalse(captured[0]["gpu_ids_are_vulkan_ordinals"])
+        self.assertEqual(captured[0]["single_device_gpu"], "0")
 
     def test_refuses_with_headroom_number(self):
         info = {"required_gb": 30.0, "usable_gb": 6.0, "needed_gb": 39.0, "mode": "auto"}
