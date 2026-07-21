@@ -729,7 +729,11 @@ def _rocm_classify_unified_memory(props: Any) -> tuple[str, bool]:
     # Arch attrs absent — fall back to device-name matching.
     dev_lower = (getattr(props, "name", "") or "").lower()
     is_unified = (
-        "890m" in dev_lower or "880m" in dev_lower or "8065s" in dev_lower or "8060s" in dev_lower or "8050s" in dev_lower
+        "890m" in dev_lower
+        or "880m" in dev_lower
+        or "8065s" in dev_lower
+        or "8060s" in dev_lower
+        or "8050s" in dev_lower
     )
     return gcn_arch, is_unified
 
