@@ -156,7 +156,9 @@ def is_resume_checkpoint_valid(
     else:
         valid_bundle = (
             _has_model_state(path)
-            and _valid_state_file(path / "optimizer.pt")
+            # optimizer/scheduler state can be validly tensor-free (e.g. SGD without
+            # momentum); _has_model_state still requires real model tensors.
+            and _valid_state_file(path / "optimizer.pt", require_tensor = False)
             and _valid_state_file(path / "scheduler.pt", require_tensor = False)
         )
         if backend is None and not valid_bundle:

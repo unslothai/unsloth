@@ -550,3 +550,42 @@ def test_user_stop_error_without_checkpoint_ack_is_blocked(monkeypatch, tmp_path
 
     run = studio_db.get_run("run-user-stop")
     assert run["status"] == "error" and run["resume_blocked"] == 1
+
+
+def test_terminal_fallback_keeps_resumable_when_current_checkpoint_landed(monkeypatch, tmp_path):
+    # Worker died before its terminal event, but a valid current-step checkpoint
+    # is on disk: the fallback must keep the run resumable, not block it.
+    from core.training.training import TrainingBackend
+
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path))
+    out = tmp_path / "outputs" / "run_ok"
+    _write_checkpoint(out, 7)
+
+    backend = TrainingBackend()
+    backend.current_job_id = "run-ok"
+    backend._should_stop = True
+    backend._output_dir = str(out)
+    backend._progress.step = 7
+
+    kwargs = backend._terminal_finalize_kwargs()
+    assert kwargs["status"] == "stopped"
+    assert kwargs["resume_blocked"] is False
+
+
+def test_terminal_fallback_blocks_when_no_current_checkpoint(monkeypatch, tmp_path):
+    # Same path, but only a stale (older-step) checkpoint exists: must block.
+    from core.training.training import TrainingBackend
+
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path))
+    out = tmp_path / "outputs" / "run_stale"
+    _write_checkpoint(out, 5)
+
+    backend = TrainingBackend()
+    backend.current_job_id = "run-stale"
+    backend._should_stop = True
+    backend._output_dir = str(out)
+    backend._progress.step = 7
+
+    kwargs = backend._terminal_finalize_kwargs()
+    assert kwargs["status"] == "error"
+    assert kwargs["resume_blocked"] is True

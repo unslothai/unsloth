@@ -1704,6 +1704,15 @@ class TrainingBackend:
             self._pump_running = False
             return
 
+    def _has_current_resume_checkpoint(self, output_dir, step) -> bool:
+        # A valid checkpoint at the current step means the stop-and-save landed on
+        # disk even if the worker died before confirming it.
+        if not output_dir or not isinstance(step, int) or step <= 0:
+            return False
+        from core.training.resume import get_resume_checkpoint_path
+
+        return get_resume_checkpoint_path(output_dir, expected_step = step) is not None
+
     def _terminal_finalize_kwargs(self) -> dict:
         with self._lock:
             job_id = self.current_job_id
@@ -1712,6 +1721,7 @@ class TrainingBackend:
                 return dict(payload)
             cancel, stopped = self._cancel_requested, self._should_stop
             output_dir = None if cancel else self._output_dir
+            step = self._progress.step
             existing_error = self._progress.error
         status, error, blocked = (
             ("stopped", None, cancel)
@@ -1722,7 +1732,8 @@ class TrainingBackend:
                 False,
             )
         )
-        if stopped and not cancel:
+        # Block only when no valid current-step checkpoint actually landed.
+        if stopped and not cancel and not self._has_current_resume_checkpoint(output_dir, step):
             status = "error"
             error = "Stop and Save ended before a valid current-step checkpoint was written."
             blocked = True
@@ -1949,7 +1960,13 @@ class TrainingBackend:
                     db_action = "create_and_finalize"
                 else:
                     db_action = "finalize"
-                stop_save_failed = self._should_stop and not self._cancel_requested
+                stop_save_failed = (
+                    self._should_stop
+                    and not self._cancel_requested
+                    and not self._has_current_resume_checkpoint(
+                        self._output_dir, self._progress.step
+                    )
+                )
                 db_action_kwargs = {
                     "status": "stopped"
                     if self._should_stop
