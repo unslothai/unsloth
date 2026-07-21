@@ -75,8 +75,8 @@ _HERMES_MIN_CONTEXT = 65536
 _PI_PROVIDER = "unsloth"
 _SUBAGENT_NAME = "unsloth"
 _SUBAGENT_DESCRIPTION = (
-    "Local subagent powered by Unsloth for quick debugging, fast implementation, and research. "
-    "Use when the user asks to spawn an Unsloth or local agent."
+    "Local coding subagent powered by Unsloth for debugging, implementation, and codebase "
+    "research. Use when the user asks to spawn an Unsloth or local agent."
 )
 _SUBAGENT_INSTRUCTIONS = (
     "You are a local coding subagent powered by Unsloth. Complete the assigned task directly, "

@@ -75,7 +75,7 @@ export default function unslothSubagent(pi: ExtensionAPI): void {
 		name: "unsloth_agent",
 		label: "Unsloth agent",
 		description:
-			"Run a local subagent powered by Unsloth for quick debugging, fast implementation, and research. Use when the user asks to spawn an Unsloth or local agent.",
+			"Local coding subagent powered by Unsloth for debugging, implementation, and codebase research. Use when the user asks to spawn an Unsloth or local agent.",
 		parameters: Type.Object({
 			task: Type.String({ description: "The complete task for the local Unsloth agent." }),
 		}),
