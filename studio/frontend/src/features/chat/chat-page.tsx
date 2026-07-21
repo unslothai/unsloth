@@ -1201,8 +1201,8 @@ function ProjectLanding({
             } as CSSProperties
           }
         >
-          {/* 46rem matches the composer so every block shares the same edges. */}
-          <div className="mx-auto flex w-full max-w-[46rem] flex-col pt-[120px] pb-14">
+          {/* Slightly narrower than the composer max; every block shares this. */}
+          <div className="mx-auto flex w-full max-w-[44rem] flex-col pt-[120px] pb-14">
             <div className="mb-12 flex items-center gap-4">
               <span className="flex size-13 shrink-0 items-center justify-center rounded-[18px] bg-muted text-foreground/80">
                 <HugeiconsIcon
@@ -1234,12 +1234,9 @@ function ProjectLanding({
                 type="button"
                 onClick={() => setProjectTab("sources")}
                 data-active={projectTab === "sources"}
-                className="flex h-10 items-center gap-1.5 rounded-full px-5 text-[14px] font-semibold transition-colors data-[active=true]:bg-muted data-[active=true]:text-foreground data-[active=false]:text-muted-foreground data-[active=false]:hover:bg-nav-surface-hover"
+                className="h-10 rounded-full px-5 text-[14px] font-semibold transition-colors data-[active=true]:bg-muted data-[active=true]:text-foreground data-[active=false]:text-muted-foreground data-[active=false]:hover:bg-nav-surface-hover"
               >
                 Sources
-                <span className="rounded-full bg-emerald-500/10 px-2 py-1 text-[10px] font-semibold leading-none text-emerald-700 dark:text-emerald-300">
-                  New
-                </span>
               </button>
             </div>
 
