@@ -85,15 +85,15 @@ const TABS: TabDef[] = [
     icon: Globe02Icon,
   },
   {
+    id: "connections",
+    labelKey: "settings.tabs.connections",
+    icon: CloudIcon,
+  },
+  {
     id: "agents",
     labelKey: "settings.tabs.agents",
     icon: BotIcon,
     badgeKey: "common.new",
-  },
-  {
-    id: "connections",
-    labelKey: "settings.tabs.connections",
-    icon: CloudIcon,
   },
   {
     id: "voice",

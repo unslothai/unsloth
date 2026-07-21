@@ -512,7 +512,7 @@ export const en = {
       },
     },
     agents: {
-      title: "Agents",
+      title: "Agents (unsloth start)",
       description:
         "Connect coding agents like Claude Code and Codex to a model running locally in Unsloth.",
       intro:
