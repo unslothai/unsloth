@@ -56,7 +56,7 @@ import {
 import { HugeiconsIcon } from "@hugeicons/react";
 import { MoreHorizontalIcon } from "lucide-react";
 import { useNavigate } from "@tanstack/react-router";
-import { useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
   exportProjectConversations,
   exportBulkConversationsMerged,
@@ -71,8 +71,12 @@ import {
 
 type SortMode = "activity" | "name";
 
-// Default grid shows this many projects before "Show more".
-const PROJECTS_DEFAULT_LIMIT = 4;
+// Reveal this many more projects each time Show more is clicked.
+const PROJECTS_PAGE_STEP = 5;
+// Visible count before the fit-to-height measurement runs.
+const PROJECTS_INITIAL_FALLBACK = 8;
+// Approx list row height in px, used to estimate how many rows fit the page.
+const PROJECTS_ROW_HEIGHT = 57;
 
 // Modified column, matching a file-list feel: Today / Yesterday / N days ago,
 // then a short date once it is over a week old.
@@ -107,7 +111,10 @@ export function ProjectsPage() {
 
   const [query, setQuery] = useState("");
   const [sortMode, setSortMode] = useState<SortMode>("activity");
-  const [showAllProjects, setShowAllProjects] = useState(false);
+  // Rows that fit the page height (measured), plus any revealed via Show more.
+  const [baseFit, setBaseFit] = useState(PROJECTS_INITIAL_FALLBACK);
+  const [extraCount, setExtraCount] = useState(0);
+  const listRef = useRef<HTMLDivElement>(null);
   const pinnedProjectIds = usePinnedProjectsStore((s) => s.pinnedIds);
   const togglePinProject = usePinnedProjectsStore((s) => s.togglePin);
   const pinnedProjectIdSet = useMemo(
@@ -197,16 +204,34 @@ export function ProjectsPage() {
     );
     return filtered;
   }, [projects, query, sortMode]);
-  // Default view shows only the 4 most recent, with "Show more" to reveal the
-  // rest. Search always spans all matches.
+  // Default view shows as many rows as fit the page; Show more reveals another
+  // page-step each click. Search always spans all matches.
   const isSearching = query.trim() !== "";
-  const capProjects = !isSearching && !showAllProjects;
-  const visibleProjects = capProjects
-    ? sortedProjects.slice(0, PROJECTS_DEFAULT_LIMIT)
-    : sortedProjects;
-  const hiddenProjectCount = capProjects
-    ? Math.max(0, sortedProjects.length - PROJECTS_DEFAULT_LIMIT)
-    : 0;
+  const visibleCount = baseFit + extraCount;
+  const visibleProjects = isSearching
+    ? sortedProjects
+    : sortedProjects.slice(0, visibleCount);
+  const hiddenProjectCount = isSearching
+    ? 0
+    : Math.max(0, sortedProjects.length - visibleCount);
+
+  // Estimate how many rows fit below the list's top so Show more only appears
+  // once projects overflow the page height.
+  useEffect(() => {
+    function measure() {
+      const el = listRef.current;
+      if (!el) return;
+      const top = el.getBoundingClientRect().top;
+      const reserve = 72; // Show more control plus bottom breathing room.
+      const fits = Math.floor(
+        (window.innerHeight - top - reserve) / PROJECTS_ROW_HEIGHT,
+      );
+      setBaseFit(Math.max(PROJECTS_PAGE_STEP, fits));
+    }
+    measure();
+    window.addEventListener("resize", measure);
+    return () => window.removeEventListener("resize", measure);
+  }, [hasLoaded]);
 
   function openProject(projectId: string) {
     const runtime = useChatRuntimeStore.getState();
@@ -439,7 +464,8 @@ export function ProjectsPage() {
 
       {!hasLoaded ? (
         <div className="mt-10">
-          <div className="flex items-center border-b border-border/60 px-3 pb-2 text-[13px] font-medium text-muted-foreground">
+          <div className="flex items-center gap-3 border-b border-border/60 px-5 pb-2 text-[13px] font-medium text-muted-foreground">
+            <span className="mr-1 size-9 shrink-0" />
             <span className="flex-1">Name</span>
             <span className="w-40 shrink-0">Modified</span>
             <span className="w-8 shrink-0" />
@@ -447,9 +473,9 @@ export function ProjectsPage() {
           {Array.from({ length: 6 }).map((_, index) => (
             <div
               key={index}
-              className="flex items-center gap-3 border-b border-border/40 px-3 py-3"
+              className="flex items-center gap-3 border-b border-border/40 px-5 py-3"
             >
-              <Skeleton className="size-9 shrink-0 rounded-[10px]" />
+              <Skeleton className="mr-1 size-9 shrink-0 rounded-[10px]" />
               <Skeleton className="h-4 w-40 rounded-[8px]" />
               <span className="flex-1" />
               <Skeleton className="h-4 w-16 rounded-[8px]" />
@@ -481,11 +507,15 @@ export function ProjectsPage() {
       ) : (
         <>
         <div className="mt-10">
-          <div className="flex items-center border-b border-border/60 px-3 pb-2 text-[13px] font-medium text-muted-foreground">
+          {/* Column header. The leading spacer matches the row folder icon so
+              Name and Modified line up with the values below. */}
+          <div className="flex items-center gap-3 border-b border-border/60 px-5 pb-2 text-[13px] font-medium text-muted-foreground">
+            <span className="mr-1 size-9 shrink-0" />
             <span className="flex-1">Name</span>
             <span className="w-40 shrink-0">Modified</span>
             <span className="w-8 shrink-0" />
           </div>
+          <div ref={listRef}>
           {visibleProjects.map((project) => {
             const pinned = pinnedProjectIdSet.has(project.id);
             return (
@@ -516,9 +546,9 @@ export function ProjectsPage() {
                   openProject(project.id);
                 }
               }}
-              className="group/project-row relative flex cursor-pointer items-center gap-3 border-b border-border/50 px-3 py-2.5 text-left transition-colors duration-150 hover:bg-muted/60 dark:hover:bg-accent/30 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+              className="group/project-row relative flex cursor-pointer items-center gap-3 border-b border-border/50 px-5 py-2.5 text-left transition-colors duration-150 hover:bg-muted/60 dark:hover:bg-accent/30 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
             >
-              <span className="flex size-9 shrink-0 items-center justify-center rounded-[10px] bg-muted text-foreground/70 transition-colors group-hover/project-row:bg-primary/10 group-hover/project-row:text-primary">
+              <span className="mr-1 flex size-9 shrink-0 items-center justify-center rounded-[10px] bg-muted text-foreground/70 transition-colors group-hover/project-row:bg-primary/10 group-hover/project-row:text-primary">
                 <HugeiconsIcon
                   icon={Folder02Icon}
                   strokeWidth={1.75}
@@ -531,11 +561,11 @@ export function ProjectsPage() {
               <span className="w-40 shrink-0 text-sm text-muted-foreground">
                 {formatModified(project.updatedAt)}
               </span>
-              <div className="relative flex w-8 shrink-0 items-center justify-end">
-                {/* Pinned indicator; fades out on hover so the options button
-                    (absolutely placed) takes the same slot without reflow. */}
+              <div className="flex w-8 shrink-0 items-center justify-end">
+                {/* Pin indicator and options button swap via display so they
+                    never overlap: pin when idle, kebab on hover or menu open. */}
                 {pinned && (
-                  <span className="text-muted-foreground transition-opacity group-hover/project-row:opacity-0">
+                  <span className="text-muted-foreground group-hover/project-row:hidden group-has-[[data-state=open]]/project-row:hidden">
                     <HugeiconsIcon icon={PinIcon} strokeWidth={1.75} className="size-4" />
                   </span>
                 )}
@@ -545,7 +575,7 @@ export function ProjectsPage() {
                       type="button"
                       onClick={(e) => e.stopPropagation()}
                       aria-label="Project options"
-                      className="absolute right-0 top-1/2 inline-flex size-7 shrink-0 -translate-y-1/2 items-center justify-center rounded-full text-muted-foreground opacity-0 transition-opacity hover:bg-black/5 hover:text-foreground dark:hover:bg-white/10 focus-visible:opacity-100 group-hover/project-row:opacity-100 data-[state=open]:bg-black/5 data-[state=open]:opacity-100 dark:data-[state=open]:bg-white/10"
+                      className="hidden size-7 shrink-0 items-center justify-center rounded-full text-muted-foreground transition-colors hover:bg-black/5 hover:text-foreground dark:hover:bg-white/10 group-hover/project-row:flex data-[state=open]:flex data-[state=open]:bg-black/5 dark:data-[state=open]:bg-white/10"
                     >
                       <MoreHorizontalIcon strokeWidth={1.75} className="size-icon" />
                     </button>
@@ -620,17 +650,18 @@ export function ProjectsPage() {
             </div>
             );
           })}
+          </div>
         </div>
-        {!isSearching && (hiddenProjectCount > 0 || showAllProjects) && (
+        {hiddenProjectCount > 0 && (
           <div className="mt-6 flex justify-center">
             <button
               type="button"
-              onClick={() => setShowAllProjects((v) => !v)}
+              onClick={() =>
+                setExtraCount((n) => n + PROJECTS_PAGE_STEP)
+              }
               className="text-[13px] font-medium text-muted-foreground transition-colors hover:text-foreground"
             >
-              {showAllProjects
-                ? "Show less"
-                : `Show more (${hiddenProjectCount})`}
+              {`Show more (${hiddenProjectCount})`}
             </button>
           </div>
         )}
