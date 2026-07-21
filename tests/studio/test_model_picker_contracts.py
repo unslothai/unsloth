@@ -276,6 +276,15 @@ def test_chat_autoload_scopes_variant_lookup_to_cached_repo_path():
     assert 'params.set("local_path", localPath)' in variants_fn
 
 
+def test_cache_location_update_invalidates_frontend_inventory():
+    """A successful cache switch must refresh both inventory rows and cached
+    GGUF variant results before any stale active-cache identity can be reused."""
+    src = _read("features/settings/api/hugging-face-cache.ts")
+    update_fn = src.split("export async function updateHuggingFaceCacheSettings", 1)[1]
+    assert "bumpInventoryVersion();" in update_fn
+    assert "invalidateGgufVariantsCache();" in update_fn
+
+
 def test_downloaded_list_offsets_virtual_rows():
     """The On Device virtualized list sits below the Pinned block in the same
     scroll element, so it must pass its measured offset as scrollMargin or rows

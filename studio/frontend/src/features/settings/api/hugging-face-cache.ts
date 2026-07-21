@@ -2,6 +2,10 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { authFetch } from "@/features/auth";
+import {
+  bumpInventoryVersion,
+  invalidateGgufVariantsCache,
+} from "@/features/hub";
 import { readFastApiError } from "@/lib/format-fastapi-error";
 
 export type HuggingFaceCacheSettings = {
@@ -79,5 +83,8 @@ export async function updateHuggingFaceCacheSettings(cacheHome: string | null) {
       ),
     );
   }
-  return fromApi(await response.json());
+  const settings = fromApi(await response.json());
+  bumpInventoryVersion();
+  invalidateGgufVariantsCache();
+  return settings;
 }
