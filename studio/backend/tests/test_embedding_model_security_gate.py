@@ -566,6 +566,43 @@ def test_st_module_subdirs_drops_traversing_router_child(tmp_path):
     assert not any(".." in s for s in subdirs)
 
 
+def test_st_module_subdirs_expands_grandchild_router_children(tmp_path):
+    # A Router child that is ITSELF a Router must expand recursively (mirroring the offline BFS), so
+    # a flagged grandchild pickle is scoped online too and cannot be recorded clean.
+    import json
+    import core.rag.embeddings as embeddings
+
+    (tmp_path / "modules.json").write_text(
+        json.dumps([{"path": "", "type": "sentence_transformers.models.Router.Router"}])
+    )
+    (tmp_path / "router_config.json").write_text(
+        json.dumps({"types": {"child_Router": "sentence_transformers.models.Router.Router"}})
+    )
+    (tmp_path / "child_Router").mkdir()
+    (tmp_path / "child_Router" / "router_config.json").write_text(
+        json.dumps({"types": {"grand_WordEmbeddings": "..."}})
+    )
+    subdirs = embeddings._st_module_subdirs(str(tmp_path), None, False)
+    assert "child_Router" in subdirs
+    assert "child_Router/grand_WordEmbeddings" in subdirs
+
+
+def test_st_module_subdirs_drops_absolute_module_path(tmp_path):
+    # An absolute (or drive/UNC) module path is dropped: the loader would resolve it outside the
+    # snapshot, so canonicalizing it into an in-snapshot relative dir would scope the wrong place.
+    import json
+    import core.rag.embeddings as embeddings
+
+    (tmp_path / "modules.json").write_text(
+        json.dumps(
+            [{"path": "/etc/evil", "type": "..."}, {"path": "0_Transformer", "type": "..."}]
+        )
+    )
+    subdirs = embeddings._st_module_subdirs(str(tmp_path), None, False)
+    assert subdirs == ("0_Transformer",)
+    assert not any(s.startswith("/") or "etc" in s for s in subdirs)
+
+
 def test_st_module_subdirs_router_expansion_over_hub(monkeypatch, tmp_path):
     # The Hub (non-local) path expands Router children symmetrically: hf_hub_download serves
     # modules.json then the Router's router_config.json.

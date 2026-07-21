@@ -107,6 +107,7 @@ def _st_module_subdirs(name: str, token: str | None, local_only: bool) -> tuple[
     try:
         import json
         import posixpath
+        import re
 
         from utils.paths import is_local_path
 
@@ -141,10 +142,13 @@ def _st_module_subdirs(name: str, token: str | None, local_only: bool) -> tuple[
                 return None
 
         def _safe_subdir(rel) -> str | None:
-            """Canonical repo-relative subdir (``""`` = root), or None if it escapes the repo.
-            Mirrors the offline gate so a traversing declared path cannot read or scope a
-            directory outside the repo."""
-            norm = posixpath.normpath(str(rel).strip().strip("/"))
+            """Canonical repo-relative subdir (``""`` = root), or None if it is absolute or escapes
+            the repo. Mirrors the offline gate so a traversing (``0/../evil``) or absolute
+            (``/etc``, ``C:/x``) declared path cannot read or scope a directory outside the repo."""
+            raw = str(rel).strip().replace("\\", "/")
+            if raw.startswith("/") or re.match(r"^[A-Za-z]:/", raw):
+                return None
+            norm = posixpath.normpath(raw.strip("/"))
             if norm in ("", "."):
                 return ""
             if norm == ".." or norm.startswith("../"):
@@ -155,27 +159,37 @@ def _st_module_subdirs(name: str, token: str | None, local_only: bool) -> tuple[
         if not isinstance(data, list):
             return ()
         subdirs = []
+        pending = []  # (canonical-prefix, type-string) nodes that MIGHT be Routers to expand
         for module in data:
             if not isinstance(module, dict):
                 continue
-            sub = str(module.get("path", "")).strip().strip("/")
+            sub = _safe_subdir(module.get("path", ""))
+            if sub is None:
+                continue  # absolute / traversing module path -> drop (the offline gate drops it too)
             if sub:
                 subdirs.append(sub)
-            # Only a Router/Asym module hides load roots in router_config.json; the read is
-            # scoped to it so a plain embedder incurs no extra fetch.
-            if str(module.get("type", "")).rsplit(".", 1)[-1].lower() not in ("router", "asym"):
+            pending.append((sub, str(module.get("type", ""))))
+        # A Router child can itself be a Router, so expand recursively (bounded by a seen-set),
+        # mirroring the offline _st_load_roots BFS -- otherwise a flagged GRANDCHILD pickle
+        # (child_Router/grand_WordEmbeddings/pytorch_model.bin) is scoped offline but not online and
+        # could be recorded clean. router_config.json is read only for a Router/Asym-typed node, so
+        # a plain embedder pays no extra fetch.
+        seen: set[str] = set()
+        while pending:
+            prefix, mtype = pending.pop()
+            if mtype.rsplit(".", 1)[-1].lower() not in ("router", "asym") or prefix in seen:
                 continue
-            prefix = _safe_subdir(sub)
-            if prefix is None:
-                continue
+            seen.add(prefix)
             cfg = _read_repo_json(posixpath.join(prefix, "router_config.json"))
             types = cfg.get("types") if isinstance(cfg, dict) else None
             if not isinstance(types, dict):
                 continue
-            for model_id in types:
-                child = _safe_subdir(model_id)
-                if child:
-                    subdirs.append(posixpath.join(prefix, child))
+            for model_id, child_type in types.items():
+                child = _safe_subdir(posixpath.join(prefix, str(model_id)))
+                if not child:
+                    continue
+                subdirs.append(child)
+                pending.append((child, str(child_type)))
         return tuple(dict.fromkeys(subdirs))
     except Exception:
         return ()
@@ -223,7 +237,15 @@ def _guard_model_security(name: str, local_only_load: bool):
             local_only_load = local_only_load,
         )
         blocked = decision.blocked  # read inside the guard so a gate error never bricks the load
-    except Exception:
+    except Exception as exc:
+        # An OFFLINE load cannot be re-scanned, so a gate error must fail CLOSED -- otherwise the
+        # constructor would deserialize the unscanned cached pickle unguarded. Online, the Hub scan
+        # is best-effort and a gate error stays fail-open (return None).
+        if local_only_load:
+            raise UnsafeEmbeddingModelError(
+                f"Could not verify cached embedding model {name!r} offline; refusing the load. "
+                "Reconnect once to scan, or use safetensors weights."
+            ) from exc
         return None
     if blocked:
         raise UnsafeEmbeddingModelError(
