@@ -2030,16 +2030,20 @@ exit 0
     # _strip_index_url_credentials (install.sh / py / setup.ps1).
     function Remove-IndexUrlCredentials {
         param([string]$Url)
-        $sep = $Url.IndexOf('://')
+        # URL parsing must be culture-invariant. On non-English Windows locales
+        # (e.g. th-TH), culture-aware IndexOf can mis-locate punctuation-only
+        # markers like "://", corrupting scheme/authority and crashing on
+        # Substring (issue #7279). Always use Ordinal comparison here.
+        $sep = $Url.IndexOf('://', [System.StringComparison]::Ordinal)
         if ($sep -lt 0) { return $Url }
         $scheme = $Url.Substring(0, $sep)
         $rest = $Url.Substring($sep + 3)
         # Drop query / fragment (may hold auth tokens).
         $q = $rest.IndexOfAny([char[]]('?', '#'))
         if ($q -ge 0) { $rest = $rest.Substring(0, $q) }
-        $slash = $rest.IndexOf('/')
+        $slash = $rest.IndexOf('/', [System.StringComparison]::Ordinal)
         $authority = if ($slash -ge 0) { $rest.Substring(0, $slash) } else { $rest }
-        $at = $authority.LastIndexOf('@')
+        $at = $authority.LastIndexOf('@', [System.StringComparison]::Ordinal)
         $host_ = if ($at -ge 0) { $authority.Substring($at + 1) } else { $authority }
         if ($slash -ge 0) { return "${scheme}://${host_}$($rest.Substring($slash))" }
         return "${scheme}://${host_}"
