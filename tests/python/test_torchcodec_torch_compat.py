@@ -33,7 +33,6 @@ def test_pyproject_declares_audio_extra_with_torchcodec_pin():
 
 def test_torchcodec_matrix_matches_notebook_validator():
     from scripts import notebook_validator as nv
-
     fixes = _load_import_fixes_module()
     assert fixes._TORCH_TORCHCODEC_MINORS == nv.TORCH_TORCHCODEC
 

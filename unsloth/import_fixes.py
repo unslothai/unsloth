@@ -1577,7 +1577,6 @@ def disable_torchcodec_if_broken():
     mismatch_hint = _torchcodec_version_mismatch_hint()
     if mismatch_hint is not None:
         import warnings
-
         warnings.warn(mismatch_hint, stacklevel = 2)
     try:
         import importlib.util
