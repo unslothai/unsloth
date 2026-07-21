@@ -462,34 +462,28 @@ export function AppSidebar() {
   // first). The section only appears once at least one project is pinned.
   const pinnedProjectIds = usePinnedProjectsStore((s) => s.pinnedIds);
   const unpinProject = usePinnedProjectsStore((s) => s.unpin);
-  const pinnedProjectIdSet = useMemo(
-    () => new Set(pinnedProjectIds),
-    [pinnedProjectIds],
-  );
   const pinnedProjectRecords = useMemo(() => {
     const byId = new Map(projects.map((p) => [p.id, p]));
     return pinnedProjectIds
       .map((id) => byId.get(id))
       .filter((p): p is ProjectRecord => Boolean(p));
   }, [projects, pinnedProjectIds]);
-  // Pinned chats, in pin order (most recent first). Chats that live inside a
-  // pinned project already render nested under it, so drop them here to avoid
-  // showing the same chat twice in the Pinned section.
+  // Pinned chats, in pin order (most recent first). Includes chats that live
+  // inside a project: pinning promotes a chat into this list, and it is removed
+  // from the project's nested list below so it never shows twice.
   const pinnedChatItems = useMemo(() => {
     const byId = new Map(allChatItems.map((item) => [item.id, item]));
     return pinnedIds
       .map((id) => byId.get(id))
-      .filter((item): item is SidebarItem => Boolean(item))
-      .filter(
-        (item) =>
-          !(item.projectId && pinnedProjectIdSet.has(item.projectId)),
-      );
-  }, [allChatItems, pinnedIds, pinnedProjectIdSet]);
+      .filter((item): item is SidebarItem => Boolean(item));
+  }, [allChatItems, pinnedIds]);
   // A pinned project reveals its recent chats (most recent first) nested below.
+  // Pinned chats are excluded here since they render in the pinned-chats list.
   const chatsByProjectId = useMemo(() => {
     const map = new Map<string, SidebarItem[]>();
     for (const item of allChatItems) {
       if (!item.projectId) continue;
+      if (pinnedIdSet.has(item.id)) continue;
       const list = map.get(item.projectId);
       if (list) list.push(item);
       else map.set(item.projectId, [item]);
@@ -497,7 +491,7 @@ export function AppSidebar() {
     for (const list of map.values())
       list.sort((a, b) => b.updatedAt - a.updatedAt);
     return map;
-  }, [allChatItems]);
+  }, [allChatItems, pinnedIdSet]);
   // Default expanded (not collapsed); the row toggles this. Show-more reveals
   // chats past the first PINNED_PROJECT_CHAT_LIMIT.
   const [collapsedProjectIds, setCollapsedProjectIds] = useState<Set<string>>(
@@ -1465,7 +1459,9 @@ export function AppSidebar() {
                           className="group/recent-item relative"
                         >
                           <SidebarMenuButton
-                            isActive={activeProjectId === project.id}
+                            // Highlight the folder only on the project home; when
+                            // a chat inside it is open, only that chat row is active.
+                            isActive={activeProjectId === project.id && !activeThreadId}
                             onClick={() => toggleProjectCollapsed(project.id)}
                             className="sidebar-nav-btn h-[33px] rounded-full gap-[8.5px] pl-3 pr-2.5 font-medium group-hover/recent-item:pr-16 group-has-[.sidebar-row-action[data-state=open]]/recent-item:pr-8"
                           >
@@ -1526,7 +1522,7 @@ export function AppSidebar() {
                                   });
                                 }}
                               >
-                                <HugeiconsIcon icon={PencilEdit02Icon} strokeWidth={1.75} className="size-icon" />
+                                <HugeiconsIcon icon={Edit03Icon} strokeWidth={1.75} className="size-icon" />
                                 <span>Rename project</span>
                               </DropdownMenuItem>
                               <DropdownMenuItem onSelect={() => unpinProject(project.id)}>
