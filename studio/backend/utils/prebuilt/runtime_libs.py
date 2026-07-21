@@ -3,15 +3,9 @@
 
 """On-disk CUDA runtime-line detection for the prebuilt installers.
 
-The prebuilt CUDA bundles are dynamically linked and do NOT ship the CUDA runtime
-(libcudart / libcublas) -- they load the same runtime the host already has (the
-libraries torch ships, a system CUDA toolkit, ...). So the driver's advertised
-CUDA version is only an upper bound: a cuda13 bundle still needs cuda13 runtime
-libraries actually present on disk. This module scans for them and reports which
-`cuda<major>` lines are usable, so selection can intersect
-detected(on-disk) with driver-compatible lines -- exactly what
-install_llama_prebuilt.py does (`detected_linux_runtime_lines` /
-`detected_windows_runtime_lines`). Ported from there.
+The CUDA bundles do NOT ship libcudart/libcublas, so a cuda<major> line is only
+usable when that runtime is present on disk; selection intersects this scan with
+the driver-compatible lines. Ported from install_llama_prebuilt.py.
 """
 
 from __future__ import annotations
@@ -25,9 +19,8 @@ from typing import Iterable
 from .hosts import _run
 from .selection import _MIN_CUDA_MAJOR
 
-# Highest CUDA major we probe for installed runtime libraries. Detection is
-# generated per major so a new toolkit (cuda14, ...) needs no code change while
-# the cudart64_<major>.dll / libcudart.so.<major> naming holds.
+# Highest CUDA major we probe for; per-major detection means a new toolkit
+# (cuda14, ...) needs no code change while the libcudart naming holds.
 _MAX_PROBE_CUDA_MAJOR = 19
 
 
@@ -149,20 +142,16 @@ def _linux_runtime_dirs_for_required_libraries(required_libraries: Iterable[str]
 
 
 def _glob_hit(directories: Iterable[str], pattern: str) -> bool:
-    """True when `pattern` matches at least one file in any of `directories`.
-    (Note: `any(Path(d).glob(p) for d in dirs)` is always truthy because each
-    element is a generator object -- the match must be consumed per directory.)
-    Used for Windows DLL probing where the patterns carry real wildcards; the
-    Linux SONAME check is exact (see `_dir_has_exact_library`)."""
+    """True when `pattern` matches a file in any dir. Consume the glob per dir:
+    `any(Path(d).glob(p) for d in dirs)` is always truthy (generator objects).
+    Used for Windows DLL wildcards; Linux SONAME matching is exact."""
     return any(any(Path(directory).glob(pattern)) for directory in directories)
 
 
 def _dir_has_exact_library(directory: str, library: str) -> bool:
-    """True when `directory` contains a file/symlink named exactly `library`. The
-    dynamic linker resolves the SONAME (e.g. libcudart.so.13), so a bare versioned
-    file (libcudart.so.13.0.88) *without* that symlink is not loadable -- match the
-    exact name, not a `{library}*` glob. Lifted from install_llama_prebuilt.py
-    `dir_provides_exact_library`."""
+    """True when `directory` holds a file/symlink named exactly `library`. The
+    loader resolves the SONAME (libcudart.so.13), so a versioned-only file without
+    that symlink is not loadable. Lifted from install_llama_prebuilt.py."""
     if not library:
         return False
     candidate = Path(directory) / library
@@ -170,8 +159,8 @@ def _dir_has_exact_library(directory: str, library: str) -> bool:
 
 
 def detected_linux_runtime_lines() -> list[str]:
-    """`cuda<major>` lines whose libcudart + libcublas SONAMEs are present on disk,
-    newest major first. Ported from install_llama_prebuilt.py."""
+    """`cuda<major>` lines whose libcudart + libcublas SONAMEs are on disk, newest
+    first. Ported from install_llama_prebuilt.py."""
     detected: list[str] = []
     for major in range(_MAX_PROBE_CUDA_MAJOR, _MIN_CUDA_MAJOR - 1, -1):
         required = [f"libcudart.so.{major}", f"libcublas.so.{major}"]

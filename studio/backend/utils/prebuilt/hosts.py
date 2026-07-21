@@ -3,15 +3,9 @@
 
 """Shared GPU host-capability detection for the prebuilt installers.
 
-whisper's original `detect_host` only recorded a boolean `has_usable_nvidia`; it
-never read the GPU compute capabilities or the driver's CUDA version, so it could
-not select an SM-appropriate CUDA bundle. This module provides the detection
-llama already does -- compute caps + driver CUDA version from nvidia-smi, honoring
-CUDA_VISIBLE_DEVICES -- so both installers share one probe.
-
-Lifted from install_llama_prebuilt.py (`detect_host` NVIDIA block,
-`parse_cuda_visible_devices`, `select_visible_gpu_rows`,
-`detect_torch_cuda_runtime_preference`).
+Reads compute caps + driver CUDA version (honoring CUDA_VISIBLE_DEVICES) and the
+ROCm gfx target so SM-appropriate bundle selection works, giving both installers
+one probe. Lifted from install_llama_prebuilt.py.
 """
 
 from __future__ import annotations
@@ -61,12 +55,9 @@ def parse_cuda_visible_devices(value: str | None) -> list[str] | None:
 
 
 def supports_explicit_visible_device_matching(visible_devices: list[str] | None) -> bool:
-    """True when every CUDA_VISIBLE_DEVICES token is an index or a GPU-UUID
-    ('gpu-...') selector -- tokens we can map deterministically to nvidia-smi rows.
-    When such tokens match no row, the GPU is explicitly hidden. A non-index/UUID
-    selector (e.g. a MIG-only UUID we can't enumerate) returns False so the caller
-    keeps the host usable rather than declaring it hidden. Lifted from
-    install_llama_prebuilt.py."""
+    """True when every CUDA_VISIBLE_DEVICES token is an index or GPU-UUID we can map
+    to a row (so an unmatched token means the GPU is hidden). A non-mappable token
+    (e.g. a MIG UUID) returns False, keeping the host usable. From llama."""
     if not visible_devices:
         return False
     for token in visible_devices:
@@ -80,11 +71,9 @@ def supports_explicit_visible_device_matching(visible_devices: list[str] | None)
 def _select_visible_rows(
     rows: list[tuple[str, str, str]], visible_devices: list[str] | None
 ) -> list[tuple[str, str, str]]:
-    """Filter nvidia-smi (index, uuid, compute_cap) rows by CUDA_VISIBLE_DEVICES,
-    matching by index or GPU-UUID token (with the 'gpu-' prefix optional). Tokens
-    that map to no row are skipped -- the host-usable decision for non-mappable
-    selectors is made by the caller via supports_explicit_visible_device_matching,
-    not here. Lifted from install_llama_prebuilt.py `select_visible_gpu_rows`."""
+    """Filter nvidia-smi (index, uuid, cap) rows by CUDA_VISIBLE_DEVICES, matching
+    by index or GPU-UUID ('gpu-' prefix optional); unmatched tokens are skipped.
+    Lifted from install_llama_prebuilt.py `select_visible_gpu_rows`."""
     if visible_devices is None:
         return list(rows)
     if not visible_devices:
@@ -119,13 +108,10 @@ class NvidiaCaps:
 
 
 def detect_nvidia_caps(*, is_linux: bool | None = None) -> NvidiaCaps:
-    """Detect visible NVIDIA GPUs, their compute caps, and the driver's CUDA
-    version via nvidia-smi, honoring CUDA_VISIBLE_DEVICES. Mirrors
-    install_llama_prebuilt.py `detect_host`'s NVIDIA block, including the
-    explicit-visible-device-matching decision (so `CUDA_VISIBLE_DEVICES=7` on a
-    single-GPU host reports the GPU hidden, not usable) and the Linux
-    /proc/driver/nvidia/gpus fallback for an absent/wedged nvidia-smi. All-empty /
-    None when no NVIDIA GPU is present."""
+    """Detect visible NVIDIA GPUs, compute caps, and driver CUDA version via
+    nvidia-smi, honoring CUDA_VISIBLE_DEVICES (so a hidden GPU reads as not usable)
+    with a /proc/driver/nvidia/gpus fallback. Mirrors install_llama_prebuilt.py's
+    NVIDIA block; all-empty/None when no NVIDIA GPU is present."""
     if is_linux is None:
         is_linux = sys.platform.startswith("linux")
     nvidia_smi = shutil.which("nvidia-smi")
@@ -167,26 +153,18 @@ def detect_nvidia_caps(*, is_linux: bool | None = None) -> NvidiaCaps:
                     compute_caps.append(normalized)
             if visible_rows:
                 has_usable = True
-                # Older nvidia-smi (pre -L) misses the -L block but still lists
-                # caps here; keep has_physical consistent for downstream routing.
-                if not has_physical:
+                if not has_physical:  # older nvidia-smi lists caps but not -L
                     has_physical = True
             elif visible_tokens == []:
                 has_usable = False
             elif supports_explicit_visible_device_matching(visible_tokens):
-                # All tokens are index/UUID selectors but none matched a row: the
-                # GPU(s) are explicitly hidden from this process.
-                has_usable = False
+                has_usable = False  # index/UUID tokens matched nothing -> hidden
             elif has_physical:
-                # Non-mappable selector (e.g. a MIG UUID we can't enumerate) on a
-                # host with a physical NVIDIA GPU: can't rule the GPU out.
-                has_usable = True
+                has_usable = True  # non-mappable token (MIG UUID) -> can't rule out
 
-    # Linux /proc fallback: the driver exposes one subdir per GPU regardless of
-    # nvidia-smi state, so a host whose nvidia-smi is absent/wedged is still
-    # recognised as NVIDIA. compute_caps / driver_cuda_version stay unset here, so
-    # downstream CUDA selection treats unknown SMs as "prefer portable" and an
-    # unknown driver line as "no CUDA match". Mirrors install_llama_prebuilt.py.
+    # Linux /proc fallback: the driver exposes a subdir per GPU regardless of
+    # nvidia-smi state, so an absent/wedged nvidia-smi is still recognised as
+    # NVIDIA (caps/driver stay unset -> selection prefers portable). From llama.
     if is_linux and not has_physical:
         try:
             proc_gpu_dir = "/proc/driver/nvidia/gpus"
@@ -205,18 +183,12 @@ def detect_nvidia_caps(*, is_linux: bool | None = None) -> NvidiaCaps:
 
 
 def pick_rocm_gfx_target(output: str) -> str | None:
-    """Choose the gfx target rocminfo / hipinfo report for the ACTIVE GPU.
-
-    A bare first-match picked the wrong device on mixed APU + dGPU hosts (e.g.
-    Strix Halo gfx1151 + discrete RX 7900 gfx1100). Honor HIP_VISIBLE_DEVICES /
-    ROCR_VISIBLE_DEVICES / CUDA_VISIBLE_DEVICES so the asset matches what HIP
-    actually runs on; fall back to the first GPU when no env var is set. Empty /
-    '-1' means no AMD GPU is visible -> None. Sections are split on rocminfo
-    'Agent N' blocks / hipinfo 'device#N' entries so one gfx token is taken per
-    GPU (correct even for two same-arch cards); a flat string falls back to
-    insertion-order dedup. The gfx regex requires a nonzero first digit so the CPU
-    agent (gfx000) and generic ISA lines (gfx11-generic) are skipped. Lifted from
-    install_llama_prebuilt.py `_pick_rocm_gfx_target`."""
+    """gfx target for the ACTIVE AMD GPU from rocminfo/hipinfo output. Honors
+    HIP_VISIBLE_DEVICES / ROCR_VISIBLE_DEVICES / CUDA_VISIBLE_DEVICES (empty/'-1'
+    -> None, else the first GPU) so a mixed APU + dGPU host gets the arch HIP runs
+    on. Splits per-GPU 'Agent N'/'device#N' sections (one token each, right for
+    same-arch cards), else insertion-order dedup; the nonzero-first-digit regex
+    skips the CPU agent and generic ISA. From install_llama_prebuilt.py."""
     sections = re.split(
         r"(?mi)^\s*\*+\s*$\s*agent\s+\d+\s*$|\bdevice\s*#\s*\d+\b",
         output,
@@ -255,10 +227,8 @@ def pick_rocm_gfx_target(output: str) -> str | None:
 
 
 def parse_macos_version(value: str | None) -> tuple[int, int] | None:
-    """Parse a macOS product version string into (major, minor). Handles
-    "14.7.1", "15.5", "26.0" and bare "26". Returns None when empty or unparseable
-    (callers then defer to runtime validation rather than rejecting a prebuilt).
-    Lifted from install_llama_prebuilt.py."""
+    """Parse a macOS version ("14.7.1", "15.5", "26") into (major, minor), or None
+    when unparseable (callers then defer to runtime validation). From llama."""
     if not value:
         return None
     match = re.match(r"\s*(\d+)(?:\.(\d+))?", str(value))
@@ -279,10 +249,9 @@ def _runtime_line_from_cuda_version(cuda_version: str | None) -> str | None:
 
 
 def detect_torch_cuda_runtime_line() -> str | None:
-    """The CUDA runtime line torch is built against ('cuda12'/'cuda13'), used as a
-    tie-break preference on non-Blackwell hosts. None if torch is absent, has no
-    CUDA build, reports CUDA unavailable, or reports an unsupported major. Lifted
-    from llama `detect_torch_cuda_runtime_preference` (best-effort, never raises)."""
+    """The CUDA runtime line torch is built against ('cuda12'/'cuda13'), a tie-break
+    on non-Blackwell hosts; None if torch is absent/CPU-only/unsupported.
+    Best-effort, never raises. From llama's detect_torch_cuda_runtime_preference."""
     try:
         import torch
     except Exception:

@@ -65,11 +65,8 @@ except ImportError:
     FileLock = None
     FileLockTimeout = None
 
-# The shared prebuilt-consumer core (coverage-aware CUDA/ROCm selection + GPU
-# host-capability detection) lives under studio/backend/. Ensure this file's own
-# directory (studio/) is importable so `backend.*` resolves whether this module
-# is run as a script or imported by the setup scripts / tests -- the same import
-# convention install_python_stack.py uses.
+# Put studio/ on sys.path so the shared prebuilt-consumer core (`backend.*`)
+# resolves whether run as a script or imported, like install_python_stack.py.
 _STUDIO_DIR = os.path.dirname(os.path.abspath(__file__))
 if _STUDIO_DIR not in sys.path:
     sys.path.insert(0, _STUDIO_DIR)
@@ -209,12 +206,9 @@ def _detect_rocm_gfx() -> tuple[bool, str | None]:
             continue
         if result.returncode != 0:
             continue
-        # Pick the gfx target for the ACTIVE GPU: honor HIP_VISIBLE_DEVICES /
-        # ROCR_VISIBLE_DEVICES / CUDA_VISIBLE_DEVICES (so a mixed APU + dGPU host
-        # gets the arch HIP actually runs on, and an empty/-1 value means no AMD
-        # GPU is visible). Since the exact ROCm matcher treats this token as the
-        # host GPU, a first-match here would install the wrong archive. Shared
-        # with install_llama_prebuilt.py via pick_rocm_gfx_target.
+        # gfx for the active GPU (honors *_VISIBLE_DEVICES) since the exact ROCm
+        # matcher treats this token as the host GPU; a first-match would install
+        # the wrong archive. Shared with llama via pick_rocm_gfx_target.
         gfx = pick_rocm_gfx_target(result.stdout)
         if gfx is not None:
             return True, gfx
@@ -309,13 +303,10 @@ def apply_host_overrides(
         )
     updates: dict[str, Any] = {}
     if has_rocm or rocm_gfx:
-        # --rocm-gfx implies --has-rocm (llama parity, _apply_host_overrides):
-        # recording the gfx arch without enabling ROCm would leave the host on its
-        # CUDA/CPU path and never pick the ROCm bundle the arch names.
+        # --rocm-gfx implies --has-rocm (llama parity): otherwise the host stays on
+        # its CUDA/CPU path and never picks the ROCm bundle. Drop CUDA detection too.
         updates["has_rocm"] = True
         updates["has_usable_nvidia"] = False
-        # A forced ROCm host is not NVIDIA; drop any stray CUDA detection so it
-        # can't drive CUDA selection.
         updates["compute_caps"] = ()
         updates["driver_cuda_version"] = None
         updates["torch_runtime_line"] = None
@@ -421,13 +412,10 @@ def parse_manifest(payload: Any, *, label: str = MANIFEST_ASSET_NAME) -> dict[st
 
 
 def _macos_min_os_ok(host: HostInfo, min_os: Any) -> bool:
-    """True if a macOS artifact requiring `min_os` can load on this host. The
-    manifest labels macOS requirements as `macos-<version>` (e.g. `macos-14.0`,
-    `macos-13.3`), so strip that platform prefix before parsing -- otherwise every
-    macOS artifact parses as None and the guard is a no-op, installing a
-    macOS-14 bundle on a macOS-13 host. Unknown host version or
-    unknown/unparseable min_os -> True (defer to runtime validation), mirroring
-    install_llama_prebuilt.py `host_supports_macos_minos`."""
+    """True if a macOS artifact requiring `min_os` can load here. The manifest
+    labels it `macos-<version>` (e.g. `macos-14.0`), so strip that prefix before
+    parsing or every entry parses as None and the guard is a no-op. Unknown host
+    or min_os -> True (defer to runtime validation). Llama parity."""
     if not isinstance(min_os, str) or not min_os.strip():
         return True
     raw = min_os.strip()
@@ -442,11 +430,8 @@ def _macos_min_os_ok(host: HostInfo, min_os: Any) -> bool:
 def _artifacts_for_host(
     manifest: dict[str, Any], host: HostInfo, backend: str
 ) -> list[dict[str, Any]]:
-    """All manifest artifacts matching this host os/arch and the given backend.
-
-    On macOS, an artifact whose `min_os` exceeds the host's OS version is dropped
-    so we never pick a bundle that cannot load (llama parity). Off macOS `min_os`
-    is not meaningful and is ignored."""
+    """Manifest artifacts matching this host os/arch/backend. On macOS, drop any
+    whose `min_os` exceeds the host version (llama parity); ignored off macOS."""
     return [
         artifact
         for artifact in manifest.get("artifacts", [])
@@ -462,15 +447,12 @@ def select_artifact(
 ) -> dict[str, Any] | None:
     """Best manifest artifact for this host os/arch and backend, or None.
 
-    CPU/Metal/Vulkan take the first os/arch/backend match. CUDA and ROCm are
-    coverage-aware via the shared prebuilt core (the same algorithm as
-    install_llama_prebuilt.py): CUDA matches the GPU compute caps + driver CUDA
-    version against each bundle's supported_sms/min_sm/max_sm/runtime_line and
-    picks the tightest-covering profile (Blackwell-aware), ROCm matches the gfx
-    target exactly. So a B200 (sm_100) gets a Blackwell bundle, not the first
-    CUDA asset in manifest order. Returns None when no bundle covers the host --
-    the caller (select_artifact_with_cpu_fallback) then falls back to CPU.
-    """
+    CPU/Metal/Vulkan take the first match. CUDA and ROCm are coverage-aware via the
+    shared core (same as llama): CUDA matches compute caps + driver against each
+    bundle's supported_sms/min_sm/max_sm/runtime_line and picks the tightest
+    Blackwell-aware profile, ROCm matches the gfx target exactly. So a B200
+    (sm_100) gets a Blackwell bundle. None when nothing covers the host -- the
+    caller then falls back to CPU."""
     candidates = _artifacts_for_host(manifest, host, backend)
     if not candidates:
         return None
@@ -481,9 +463,8 @@ def select_artifact(
     sel_candidates = [_sel.SelArtifact.from_manifest(artifact) for artifact in candidates]
     log_lines: list[str] = []
     if backend == "cuda":
-        # The CUDA bundles do not ship libcudart/libcublas; a runtime line is only
-        # usable when its runtime libraries are on disk (same as llama). Intersect
-        # the on-disk scan with the driver-compatible lines.
+        # Bundles omit libcudart/libcublas, so a runtime line is usable only when
+        # its libs are on disk (llama parity): intersect the scan with the driver.
         detected = _runtime_libs.detected_cuda_runtime_lines(is_windows = host.is_windows)
         attempts = _sel.select_cuda_attempts(
             sel_candidates,
@@ -1682,11 +1663,9 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
 
     if args.resolve_prebuilt is not None:
-        # The resolver is a read-only probe: its ONLY stdout is the JSON/asset line
-        # (setup.sh and whisper_cpp_update.py parse it), so diagnostics stay on
-        # stderr. Force _LOG_TO_STDOUT False (not just "leave it") so the routing
-        # is deterministic. Any unexpected failure maps to "not available" rather
-        # than a traceback so the caller falls back cleanly.
+        # Read-only probe: stdout is only the JSON/asset line (setup.sh and
+        # whisper_cpp_update.py parse it), so force diagnostics to stderr and map
+        # any failure to "not available" instead of a traceback.
         _LOG_TO_STDOUT = False
         try:
             host = apply_host_overrides(

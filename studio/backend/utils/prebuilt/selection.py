@@ -2,22 +2,15 @@
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 """Coverage-aware prebuilt artifact selection, shared by the llama.cpp and
-whisper.cpp prebuilt installers.
+whisper.cpp installers.
 
-The selection algorithm is lifted from install_llama_prebuilt.py
-(`linux_cuda_choice_from_release` / `_artifact_covers_sms` / `_sm_range`) and
-generalised to operate on a normalised artifact view (`SelArtifact`) instead of
-llama's `install_kind`-tagged `PublishedLlamaArtifact`. The caller pre-filters
-candidates to one host os/arch and a single backend, so this module is component
-agnostic: it never looks at asset-name spelling, `install_kind`, or the manifest
-schema. It answers one question -- given the host's GPUs and a set of candidate
-CUDA/ROCm artifacts, which bundle(s) actually run here, best first.
-
-Why this exists: whisper's original `select_artifact` returned the first
-os/arch/backend match and ignored `supported_sms`/`min_sm`/`max_sm`, so a
-Blackwell B200 (sm_100) was served `cuda12-legacy` (sms 50-61). llama already
-matched SM coverage correctly; sharing that logic fixes whisper and removes the
-divergence.
+Lifted from install_llama_prebuilt.py (`linux_cuda_choice_from_release` /
+`_artifact_covers_sms` / `_sm_range`) and generalised to a normalised artifact
+view (`SelArtifact`). The caller pre-filters to one os/arch/backend, so this is
+component agnostic: given the host GPUs and candidate CUDA/ROCm artifacts it
+returns which bundle(s) run here, best first. whisper lacked this -- it took the
+first os/arch/backend match and ignored SM coverage, serving a B200 (sm_100) the
+cuda12-legacy bundle (sms 50-61).
 """
 
 from __future__ import annotations
@@ -25,16 +18,12 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any, Iterable
 
-# Lowest CUDA major we ship prebuilts for. A driver of major N can run its own
-# major and any older one down to this floor (CUDA minor-version compatibility),
-# newest first. Mirrors install_llama_prebuilt.py `_MIN_CUDA_MAJOR`.
+# Lowest CUDA major we ship: a driver of major N runs down to this floor. Mirrors
+# install_llama_prebuilt.py `_MIN_CUDA_MAJOR`.
 _MIN_CUDA_MAJOR = 12
 
-# Blackwell floor is sm_100: data-center parts (B100/B200 sm_100, B300/GB300
-# sm_103) sit below consumer Blackwell (RTX 50 sm_120). The family needs toolkit
-# >= 12.8, except sm_103/sm_121 which need 12.9. Kept in sync with
-# install_llama_prebuilt.py `_BLACKWELL_MIN_SM` / `_BLACKWELL_MIN_TOOLKIT` /
-# `_BLACKWELL_SM_MIN_TOOLKIT`.
+# Blackwell floor sm_100 (B100/B200 sm_100, B300 sm_103, RTX50 sm_120); needs
+# toolkit >= 12.8, or 12.9 for sm_103/sm_121. Synced with llama's _BLACKWELL_*.
 _BLACKWELL_MIN_SM = 100
 _BLACKWELL_MIN_TOOLKIT = (12, 8)
 _BLACKWELL_SM_MIN_TOOLKIT = {103: (12, 9), 121: (12, 9)}
@@ -82,13 +71,10 @@ def cuda_runtime_lines_for_major(major: int) -> list[str]:
 
 
 def compatible_runtime_lines_for_driver(driver_cuda_version: tuple[int, int] | None) -> list[str]:
-    """CUDA runtime lines the installed *driver* can support (newest major first).
-    A driver of major N runs its own major and any older one down to the floor
-    (CUDA minor-version compatibility). This is only the driver's upper bound: the
-    bundles do NOT ship libcudart/libcublas, so the caller must still intersect
-    these lines with the on-disk runtime scan (see
-    `select_cuda_attempts(detected_runtime_lines=...)`). Empty below the floor or
-    when the driver version is unknown."""
+    """CUDA runtime lines the driver can support (newest first): major N runs its
+    own major down to the floor. Only an upper bound -- the caller still intersects
+    with the on-disk scan (bundles omit libcudart/libcublas). Empty below the floor
+    or when the driver version is unknown."""
     if not driver_cuda_version:
         return []
     major, _minor = driver_cuda_version
@@ -103,14 +89,9 @@ def host_is_blackwell(host_sms: list[str]) -> bool:
 
 
 def blackwell_min_toolkit_for_caps(host_sms: list[str]) -> tuple[int, int]:
-    """Minimum CUDA toolkit a Blackwell host needs: 12.8 for the family, 12.9 if
-    any SM is sm_103/sm_121.
-
-    NOTE: whisper bundles all carry explicit `supported_sms`, so `artifact_covers_sms`
-    already gates Blackwell capability and this is not called by the whisper
-    selection path. It is retained for Phase B, where llama's Windows CUDA
-    selection uses the toolkit floor to drop upstream bundles named only by
-    toolkit minor (no SM metadata). Kept in sync with llama's `_blackwell_min_toolkit`."""
+    """Minimum CUDA toolkit a Blackwell host needs: 12.8, or 12.9 for sm_103/sm_121.
+    Unused by the whisper path (supported_sms already gates Blackwell); retained for
+    Phase B llama Windows selection. Synced with llama's _blackwell_min_toolkit."""
     req = _BLACKWELL_MIN_TOOLKIT
     for sm in host_sms:
         req = max(req, _BLACKWELL_SM_MIN_TOOLKIT.get(int(sm), _BLACKWELL_MIN_TOOLKIT))
@@ -215,11 +196,10 @@ def rank_cuda_attempts(
     ordered_runtime_lines: list[str],
     log: list[str],
 ) -> list[SelArtifact]:
-    """The per-runtime-line coverage filter + ranking, lifted from llama's
-    `linux_cuda_choice_from_release` inner loop. Returns an ordered attempt list
-    (best first): within each runtime line, the tightest-covering targeted bundle
-    beats a portable one, and portable is kept as an explicit fallback attempt.
-    `candidates` must already be filtered to one os/arch and backend='cuda'."""
+    """Per-runtime-line coverage filter + ranking (llama's
+    `linux_cuda_choice_from_release` inner loop): within each line the tightest
+    covering bundle wins, portable kept as an explicit fallback. `candidates` must
+    be pre-filtered to one os/arch and backend='cuda'."""
     attempts: list[SelArtifact] = []
     seen: set[str] = set()
     for runtime_line in ordered_runtime_lines:
@@ -311,16 +291,12 @@ def select_cuda_attempts(
 ) -> list[SelArtifact]:
     """Ordered CUDA bundle attempts for this host, best first.
 
-    A runtime line is usable only when the driver supports it AND the matching
-    CUDA runtime libraries are actually present on disk -- the bundles do not ship
-    libcudart/libcublas, so a cuda13 bundle needs cuda13 runtime libs even under a
-    cuda13 driver. When `detected_runtime_lines` (on-disk scan) is given, it is
-    intersected with the driver-compatible lines, mirroring
-    install_llama_prebuilt.py; when None (detection unavailable), the driver
-    lines are used alone. Lines are ordered newest-first, then a Blackwell host
-    prefers the highest CUDA-major line that natively covers its SMs, else torch's
-    reported line is moved to the front. Empty when no line is usable (caller then
-    decides its own fallback -- CPU for whisper)."""
+    A runtime line is usable only when the driver supports it AND its runtime libs
+    are on disk (bundles omit libcudart/libcublas): `detected_runtime_lines`, when
+    given, is intersected with the driver lines, else the driver lines alone.
+    Ordered newest-first, then a Blackwell host prefers the highest major that
+    natively covers its SMs, else torch's line moves front. Empty when nothing is
+    usable (caller falls back, CPU for whisper)."""
     driver_lines = compatible_runtime_lines_for_driver(driver_cuda_version)
     log.append(f"cuda_selection: detected_sms={','.join(host_sms) if host_sms else 'unknown'}")
     log.append(
@@ -345,10 +321,8 @@ def select_cuda_attempts(
         return []
 
     ordered = list(runtime_lines)
-    # Key on `blackwell_lines` (not `host_is_blackwell`) so a Blackwell host whose
-    # covering lines were filtered out by the driver/on-disk intersection still
-    # falls through to the torch preference, exactly like llama's
-    # `linux_cuda_choice_from_release`.
+    # Key on `blackwell_lines` (not host_is_blackwell): a Blackwell host whose
+    # covering lines were filtered out still falls through to torch, like llama.
     blackwell_lines = (
         [line for line in blackwell_capable_runtime_lines(host_sms, candidates) if line in ordered]
         if host_is_blackwell(host_sms)

@@ -1,11 +1,9 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Shared prebuilt-consumer core for the llama.cpp and whisper.cpp installers.
-
-Currently exposes coverage-aware artifact selection (`selection`) and GPU
-host-capability detection (`hosts`). See the module docstrings for how the
-selection algorithm is lifted from install_llama_prebuilt.py and generalised.
+"""Shared prebuilt-consumer core for the llama.cpp and whisper.cpp installers:
+coverage-aware artifact selection, GPU host detection, and on-disk CUDA runtime
+scanning, lifted from install_llama_prebuilt.py. See the module docstrings.
 """
 
 from __future__ import annotations

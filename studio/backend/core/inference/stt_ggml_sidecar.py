@@ -195,23 +195,13 @@ def ensure_engine_available() -> str:
 # ---------------------------------------------------------------------------
 # whisper-server child-process environment
 # ---------------------------------------------------------------------------
-# A prebuilt whisper-server co-locates its shared libs (libwhisper, libggml-*,
-# and for GPU bundles the HIP/Vulkan backends) beside the binary under an
-# $ORIGIN / @loader_path rpath. We still prepend the binary dir to the loader
-# path as a backstop (and for hosts whose loader ignores the rpath), and scrub
-# secret-bearing vars the downloaded binary never needs (models load via -m; the
-# parent process keeps its own env for HF downloads). On WSL2 ROCm the system
-# HIP libs go first: a bundle's bare-metal HIP cannot drive /dev/dxg and
-# segfaults, so the WSL-capable libamdhip64/librocdxg must win while the bundle
-# still supplies libggml-hip/librocblas. Mirrors install_llama_prebuilt.py's
-# binary_env(); kept local so the sidecar need not import the installer CLI.
-# A CUDA bundle ships the ggml CUDA backend (libggml-cuda.so) but deliberately not
-# libcudart/libcublas (paired with the user's PyTorch), so we add the
-# CUDA-from-PyTorch runtime dirs (the site-packages/nvidia/*/lib + torch/lib the
-# selection gated the cuda line on) to the loader path -- otherwise the backend
-# cannot resolve the runtime at launch on a host where it lives only in wheels and
-# not on the system loader path. CPU/Metal bundles are static and ROCm/Vulkan
-# bundles are self-contained, so those add nothing here.
+# Build the whisper-server env: prepend the binary dir (co-located libs win, and
+# as a backstop where the loader ignores the rpath), and scrub secret-bearing vars
+# the binary never needs. On WSL2 ROCm the system HIP libs go first, since a
+# bundle's bare-metal HIP cannot drive /dev/dxg. A CUDA bundle ships libggml-cuda.so
+# but not libcudart/libcublas (paired with the user's PyTorch), so add the
+# CUDA-from-PyTorch runtime dirs the selection gated on; otherwise the backend
+# cannot resolve the runtime when it lives only in wheels. Mirrors llama's binary_env().
 
 _STT_SECRET_ENV_EXACT = frozenset(
     {
@@ -318,10 +308,9 @@ def _whisper_server_child_env(binary: str) -> dict[str, str]:
         if not _stt_is_secret_env_name(k) and not _STT_URL_USERINFO_RE.search(v or "")
     }
     bin_dir = str(Path(binary).parent)
-    # For a CUDA bundle (ships the ggml CUDA backend but not the CUDA runtime),
-    # expose the CUDA-from-PyTorch wheel dirs so libcudart/libcublas resolve at
-    # launch even when they live only in site-packages/nvidia/*/lib. Placed after
-    # bin_dir so the bundle's co-located libs still win; harmless (empty) otherwise.
+    # A CUDA bundle needs the CUDA-from-PyTorch wheel dirs so libcudart/libcublas
+    # resolve at launch when they live only in site-packages/nvidia/*/lib. After
+    # bin_dir so the bundle's co-located libs still win; empty for other bundles.
     cuda_runtime_dirs: list[str] = []
     if any((Path(bin_dir) / name).exists() for name in ("libggml-cuda.so", "ggml-cuda.dll")):
         try:
