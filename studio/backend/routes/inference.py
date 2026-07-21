@@ -3942,20 +3942,18 @@ def _classify_diffusion_gguf(config: ModelConfig) -> Optional[bool]:
     """Classify a GGUF as diffusion, normal, or unknown before it is loaded.
 
     ``None`` is important here: a remote GGUF whose header is not cached can
-    still be routed to the single-GPU diffusion runner after download. Default
-    placement keeps that unknown case guarded until the header is available.
-    """
-    identity = " ".join(
-        str(getattr(config, attr, "") or "") for attr in ("identifier", "gguf_hf_repo", "gguf_file")
-    ).lower()
-    # Name-only hint, used ONLY as a pre-download fallback, scoped to the
-    # DiffusionGemma runner family: a bare "diffusion" substring is common in
-    # ordinary text-model names/paths (e.g. "stable-diffusion-prompt"), and treating
-    # those as diffusion falsely rejects a valid Vulkan+gpu_ids GGUF (#7239). Normalize
-    # non-alphanumerics so "DiffusionGemma"/"diffusion-gemma" collapse to one token.
-    # The local header below stays authoritative.
-    name_says_diffusion = "diffusiongemma" in _re.sub(r"[^a-z0-9]+", "", identity)
+    still be routed to the single-GPU diffusion runner after download. Treating
+    that case as normal would let Manual mode skip the training guard even
+    though the runner ignores Manual's llama-server placement controls.
 
+    The local header is authoritative and checked first: the loader routes on
+    the decoded architecture (LlamaCppBackend._is_diffusion), never the path, so
+    a normal llama-server GGUF whose directory/repo name merely contains
+    "diffusion" must classify as normal (else its memory-placement feature is
+    rejected on a false name match). The name is only a fallback when no local
+    header is readable -- an uncached remote GGUF -- where it conservatively
+    flags a likely-diffusion download (#7188).
+    """
     try:
         main = getattr(config, "gguf_file", None)
         if not (main and Path(main).is_file()):
@@ -3965,36 +3963,25 @@ def _classify_diffusion_gguf(config: ModelConfig) -> Optional[bool]:
                 from hub.utils.gguf import resolve_local_gguf_path
                 main = resolve_local_gguf_path(repo, variant)
         if main and Path(main).is_file():
-            # The local GGUF header is authoritative (same probe the loader uses), so
-            # it can't be fooled by a "diffusion"-flavored name/path.
             probe = LlamaCppBackend()
             probe._read_gguf_metadata(str(main))
             if probe.is_diffusion:
                 return True
-            # A decoded architecture proves a normal llama-server GGUF; no architecture
-            # means the probe was inconclusive, so fall through to the name hint below.
+            # A successfully decoded architecture proves that this is a normal
+            # llama-server GGUF, even if the path/name contains "diffusion".
             if getattr(probe, "_architecture", None):
                 return False
     except Exception as e:
         logger.debug("Could not identify diffusion GGUF for training guard: %s", e)
 
-    # Header unavailable (remote uncached) or inconclusive: True only for the
-    # DiffusionGemma name family; otherwise None keeps an unknown remote GGUF guarded
-    # as potentially diffusion until its header proves otherwise.
-    return True if name_says_diffusion else None
-
-
-async def _resolve_gguf_gpu_ids_for_request(
-    config: ModelConfig, gpu_ids: Optional[List[int]]
-) -> Optional[List[int]]:
-    """Resolve and fully validate an explicit GGUF GPU placement pool.
-
-    CUDA and ROCm use physical IDs. Vulkan uses ggml ordinals, so its device
-    existence check comes from the same ggml probe used by the loader. Both
-    /load and /validate call this before their training guard or any teardown.
-    """
-    if not gpu_ids:
-        return None
+    # No readable local header: fall back to the name heuristic so an uncached
+    # remote GGUF that will route to the diffusion runner isn't treated as normal.
+    identity = " ".join(
+        str(getattr(config, attr, "") or "") for attr in ("identifier", "gguf_hf_repo", "gguf_file")
+    ).lower()
+    if "diffusion" in identity:
+        return True
+    return None
 
     from utils.hardware import DeviceType, get_device
     from utils.hardware.hardware import resolve_requested_gpu_ids
@@ -4103,20 +4090,26 @@ def _guard_chat_load_against_training(
     if is_gguf and gpu_memory_mode == "manual" and diffusion_kind is False:
         return
 
-    # Vulkan GGUF pins are ggml ordinals, not CUDA physical IDs. Detect this
-    # before deriving a possible diffusion fallback device so an unknown remote
-    # GGUF never sends its ordinal through the CUDA single-device path.
-    is_vulkan = False
-    if is_gguf:
+    # Vulkan ordinals enumerate independently of the CUDA index space the guard budgets in;
+    # resolving them as CUDA physical IDs would size free VRAM on the wrong card. Flag it so
+    # the guard budgets conservatively, matching /load's deferral to the probe (#7188).
+    # Computed before diffusion_gpu: only a CONFIRMED diffusion GGUF (diffusion_kind is True)
+    # uses the runner's CUDA single-device mask; an unclassified (None) GGUF on a Vulkan build
+    # must be budgeted as Vulkan ordinals, not resolved through the CUDA index space -- else an
+    # uncached remote normal GGUF would size the wrong physical card and could OOM training.
+    gpu_ids_are_vulkan_ordinals = False
+    if is_gguf and requested_gpu_ids and diffusion_kind is not True:
         try:
-            is_vulkan = LlamaCppBackend._is_vulkan_backend()
-        except Exception as e:
-            logger.warning("Could not detect Vulkan backend for chat-load guard: %s", e)
+            gpu_ids_are_vulkan_ordinals = get_llama_cpp_backend().is_vulkan_build()
+        except Exception:
+            gpu_ids_are_vulkan_ordinals = False
 
     diffusion_gpu = None
-    if is_gguf and diffusion_kind is not False and not (is_vulkan and requested_gpu_ids):
+    if is_gguf and diffusion_kind is not False and not gpu_ids_are_vulkan_ordinals:
         # Use the same token selection as the runner: an explicit pick wins,
-        # followed by DG_GPU, the first parent-visible token, then GPU 0.
+        # followed by DG_GPU, the first parent-visible token, then GPU 0. Suppressed
+        # for a Vulkan-ordinal pin so single-device CUDA budgeting can't override the
+        # Vulkan-ordinal path (single_device_gpu wins in can_load_chat_during_training).
         diffusion_gpu = LlamaCppBackend._diffusion_gpu_arg(
             requested_gpu_ids,
             cpu_only = LlamaCppBackend._effective_gpu_count() == 0,
@@ -4133,16 +4126,6 @@ def _guard_chat_load_against_training(
         if is_gguf
         else None
     )
-
-    # Vulkan ordinals enumerate independently of the CUDA index space the guard budgets in;
-    # resolving them as CUDA physical IDs would size free VRAM on the wrong card. Flag it so
-    # the guard budgets conservatively, matching /load's deferral to the probe (#7188).
-    gpu_ids_are_vulkan_ordinals = False
-    if is_gguf and requested_gpu_ids and diffusion_gpu is None:
-        try:
-            gpu_ids_are_vulkan_ordinals = get_llama_cpp_backend().is_vulkan_build()
-        except Exception:
-            gpu_ids_are_vulkan_ordinals = False
 
     ok, info = can_load_chat_during_training(
         model_name = model_identifier,
