@@ -151,9 +151,7 @@ def _prefer_complete_larger(
 
 
 def _gguf_variant_state_summary(
-    repo_id: str,
-    *,
-    hub_cache: Optional[str | Path] = None,
+    repo_id: str, *, hub_cache: Optional[str | Path] = None
 ) -> tuple[bool, int]:
     """Whether GGUF variant-scoped state exists and its expected size; a cancelled/in-progress variant may have only manifests/markers/`.incomplete` blobs, which inventory needs to avoid a generic fallback row."""
     from hub.utils import download_manifest

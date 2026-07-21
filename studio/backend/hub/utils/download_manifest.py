@@ -400,10 +400,7 @@ def read_cancel_marker_transport(
 
 
 def _all_matching_state_paths(
-    parent: Optional[Path],
-    repo_type: RepoType,
-    repo_id: str,
-    variant: Optional[str],
+    parent: Optional[Path], repo_type: RepoType, repo_id: str, variant: Optional[str]
 ) -> tuple[Path, ...]:
     if parent is None:
         return ()

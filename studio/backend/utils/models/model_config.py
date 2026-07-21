@@ -1719,10 +1719,7 @@ def _local_gguf_companion_search_root(selected_path: str, gguf_file: str) -> str
     return str(gguf_dir)
 
 
-def _iter_hf_cache_snapshots(
-    repo_id: str,
-    cache_dir: Optional[str | Path] = None,
-):
+def _iter_hf_cache_snapshots(repo_id: str, cache_dir: Optional[str | Path] = None):
     """Yield HF cache snapshot dirs for *repo_id*, newest first.
 
     Empty if HF_HUB_CACHE is missing, the repo isn't cached, or has no

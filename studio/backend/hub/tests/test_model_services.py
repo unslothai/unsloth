@@ -436,12 +436,7 @@ def test_download_state_isolated_across_hub_cache_switches(monkeypatch, tmp_path
     expected_b = [download_manifest.ExpectedFile(path = "b.gguf", size = 2)]
 
     assert download_manifest.write_manifest("model", "Owner/Repo", "Q4_K_M", expected_a)
-    assert download_manifest.write_cancel_marker(
-        "model",
-        "Owner/Repo",
-        "Q4_K_M",
-        "http",
-    )
+    assert download_manifest.write_cancel_marker("model", "Owner/Repo", "Q4_K_M", "http")
 
     selected.hub_cache = cache_b
     assert download_manifest.write_manifest("model", "Owner/Repo", "Q4_K_M", expected_b)
