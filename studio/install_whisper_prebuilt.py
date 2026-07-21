@@ -17,10 +17,12 @@ Prebuilt bundles are dynamically linked: ``whisper-server`` needs ``libwhisper``
 so the installer co-locates every shared library from the archive into the same
 ``build/bin`` directory as the server, and marks the server executable on Unix.
 
-Archives are verified against sha256 digests pinned in ``whisper_prebuilt_pins.json``
-(committed in-tree, code-reviewed), not a checksum re-fetched from the same origin
-as the archive. An unpinned ``--published-release-tag`` override fails closed
-unless ``UNSLOTH_WHISPER_ALLOW_UNVERIFIED=1`` is set.
+Archives are verified against the release's own ``whisper-prebuilt-sha256.json``
+checksum index, fetched from the same GitHub release (the same model as
+``install_llama_prebuilt.py``). An asset absent from that index, or a release that
+does not publish it, fails closed to a source build. This is a same-origin
+checksum -- it proves integrity, not authenticity -- so pair the release with
+GitHub artifact attestations for provenance.
 
 Mirrors ``install_node_prebuilt.py`` / ``install_llama_prebuilt.py`` so the setup
 scripts drive it the same way. Exit codes: 0 success (or already current), 1 error,
@@ -74,12 +76,6 @@ SHA256_ASSET_NAME = "whisper-prebuilt-sha256.json"
 
 METADATA_FILENAME = "UNSLOTH_WHISPER_PREBUILT_INFO.json"
 
-# Trust anchor: verify archives against sha256 pins committed in
-# whisper_prebuilt_pins.json (in-tree, code-reviewed), not a same-origin checksum.
-PINS_FILENAME = "whisper_prebuilt_pins.json"
-# Opt-in to install an unpinned release, trusting the release's own manifest sha256.
-ALLOW_UNVERIFIED_ENV = "UNSLOTH_WHISPER_ALLOW_UNVERIFIED"
-
 # Backends the installer knows how to select. Asset filenames carry a finer
 # accelerator token (e.g. cuda12); selection matches the manifest artifact's
 # coarse `backend` field so a new CUDA toolkit needs no code change here.
@@ -104,11 +100,6 @@ _LOG_TO_STDOUT = False
 
 class PrebuiltFallback(RuntimeError):
     """Recoverable failure -- caller should fall back to source build (exit code 2)."""
-
-
-class UnverifiedReleaseRefused(PrebuiltFallback):
-    """Unpinned release requested without opt-in. Distinct type so the orchestrator
-    re-raises it instead of letting a keep-existing path swallow the refusal."""
 
 
 class BusyInstallConflict(RuntimeError):
@@ -373,7 +364,9 @@ def parse_manifest(payload: Any, *, label: str = MANIFEST_ASSET_NAME) -> dict[st
     }
 
 
-def select_artifact(manifest: dict[str, Any], host: HostInfo, backend: str) -> dict[str, Any] | None:
+def select_artifact(
+    manifest: dict[str, Any], host: HostInfo, backend: str
+) -> dict[str, Any] | None:
     """First manifest artifact matching this host os/arch and the given backend."""
     for artifact in manifest.get("artifacts", []):
         if (
@@ -419,104 +412,101 @@ def artifact_coverage(artifact: dict[str, Any]) -> dict[str, Any]:
     return coverage
 
 
-# ── Pinned digest manifest (trust anchor) ──
-def pins_path() -> Path:
-    return Path(__file__).resolve().parent / PINS_FILENAME
-
-
-def load_pins() -> dict[str, Any]:
-    path = pins_path()
-    try:
-        data = json.loads(path.read_text(encoding = "utf-8"))
-    except FileNotFoundError as exc:
-        raise PrebuiltFallback(f"pinned whisper.cpp manifest missing: {path}") from exc
-    except (json.JSONDecodeError, OSError) as exc:
-        raise PrebuiltFallback(f"pinned whisper.cpp manifest unreadable ({path}): {exc}") from exc
-    if not isinstance(data, dict) or data.get("schema_version") != SCHEMA_VERSION:
-        raise PrebuiltFallback(f"pinned whisper.cpp manifest has an unexpected schema: {path}")
-    if data.get("component") != COMPONENT:
-        raise PrebuiltFallback(f"pinned whisper.cpp manifest describes the wrong component: {path}")
-    return data
-
-
-def pinned_release_tag(pins: dict[str, Any]) -> str:
-    tag = str(pins.get("default_release_tag", "")).strip()
-    if not tag:
-        raise PrebuiltFallback("pinned whisper.cpp manifest is missing a 'default_release_tag'")
-    return tag
-
-
-def release_is_pinned(pins: dict[str, Any], release_tag: str) -> bool:
-    releases = pins.get("releases")
-    return isinstance(releases, dict) and release_tag in releases
-
-
+# ── Release checksum index (trust anchor: the release's own sha256 asset) ──
 def _valid_sha256(value: Any) -> str | None:
     if not isinstance(value, str):
         return None
     digest = value.strip().lower()
+    if digest.startswith("sha256:"):
+        digest = digest[len("sha256:") :]
     if len(digest) == 64 and all(c in "0123456789abcdef" for c in digest):
         return digest
     return None
 
 
-def pinned_sha256(pins: dict[str, Any], release_tag: str, asset_name: str) -> str | None:
-    releases = pins.get("releases")
-    if not isinstance(releases, dict):
-        return None
-    entry = releases.get(release_tag)
-    if not isinstance(entry, dict):
-        return None
-    assets = entry.get("assets")
-    if not isinstance(assets, dict):
-        return None
-    return _valid_sha256(assets.get(asset_name))
+def parse_release_checksums(repo: str, release_tag: str, payload: Any) -> dict[str, str]:
+    """Asset name -> sha256 from a release's ``whisper-prebuilt-sha256.json``.
+
+    Mirrors ``install_llama_prebuilt.py``: the checksum index published alongside
+    the bundles is the authority for each asset's sha256. It is validated for
+    schema/component and that its ``release_tag`` matches the release we resolved,
+    so a redirected or mismatched index is rejected. A malformed index fails
+    closed (source build)."""
+    label = f"{SHA256_ASSET_NAME} in {repo}@{release_tag}"
+    if not isinstance(payload, dict):
+        raise PrebuiltFallback(f"{label} was not a JSON object")
+    if payload.get("schema_version") != SCHEMA_VERSION:
+        raise PrebuiltFallback(f"{label} has an unexpected schema_version")
+    if payload.get("component") != COMPONENT:
+        raise PrebuiltFallback(f"{label} did not describe {COMPONENT}")
+    payload_tag = payload.get("release_tag")
+    if not isinstance(payload_tag, str) or not payload_tag:
+        raise PrebuiltFallback(f"{label} omitted release_tag")
+    if payload_tag != release_tag:
+        raise PrebuiltFallback(
+            f"{label} release_tag={payload_tag} did not match the resolved release {release_tag}"
+        )
+    artifacts = payload.get("artifacts")
+    if not isinstance(artifacts, dict):
+        raise PrebuiltFallback(f"{label} omitted an 'artifacts' map")
+    checksums: dict[str, str] = {}
+    for asset_name, entry in artifacts.items():
+        if not isinstance(asset_name, str) or not asset_name or not isinstance(entry, dict):
+            continue
+        digest = _valid_sha256(entry.get("sha256"))
+        if digest is not None:
+            checksums[asset_name] = digest
+    if not checksums:
+        raise PrebuiltFallback(f"{label} carried no usable sha256 entries")
+    return checksums
 
 
-def allow_unverified() -> bool:
-    return os.environ.get(ALLOW_UNVERIFIED_ENV, "").strip().lower() in {"1", "true", "yes", "on"}
+def fetch_release_checksums(bundle: ReleaseBundle) -> dict[str, str]:
+    """Download + parse the release's ``whisper-prebuilt-sha256.json``. Fails
+    closed (source build) if the release does not publish it."""
+    url = bundle.asset_urls.get(SHA256_ASSET_NAME)
+    if not url:
+        raise PrebuiltFallback(
+            f"release {bundle.repo}@{bundle.release_tag} has no {SHA256_ASSET_NAME}; "
+            f"cannot verify a download"
+        )
+    try:
+        raw = download_bytes(url, timeout = 30, headers = auth_headers(url))
+        payload = json.loads(raw.decode("utf-8"))
+    except (urllib.error.URLError, OSError, socket.timeout) as exc:
+        raise PrebuiltFallback(
+            f"could not fetch {SHA256_ASSET_NAME} from {bundle.repo}@{bundle.release_tag}: {exc}"
+        ) from exc
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise PrebuiltFallback(
+            f"{SHA256_ASSET_NAME} in {bundle.repo}@{bundle.release_tag} was not valid JSON"
+        ) from exc
+    return parse_release_checksums(bundle.repo, bundle.release_tag, payload)
 
 
-def resolve_expected_sha256(
-    pins: dict[str, Any],
-    release_tag: str,
+def expected_sha256_for(
+    checksums: dict[str, str],
     asset_name: str,
     *,
     manifest_sha256: str | None = None,
-    allow_unverified_release: bool,
 ) -> str:
-    """Sha256 the archive must match: the committed pin, or (only with explicit
-    opt-in) the release's own manifest sha256. Unpinned without opt-in is refused."""
-    pinned = pinned_sha256(pins, release_tag, asset_name)
-    if pinned is not None:
-        manifest_digest = _valid_sha256(manifest_sha256)
-        if manifest_digest is not None and manifest_digest != pinned:
-            raise PrebuiltFallback(
-                f"release manifest sha256 for {asset_name} does not match the committed pin "
-                f"({PINS_FILENAME}); refusing a possibly tampered release"
-            )
-        log(f"verifying {asset_name} against pinned sha256 from {PINS_FILENAME}")
-        return pinned
-
-    if not allow_unverified_release:
-        raise UnverifiedReleaseRefused(
-            f"refusing to install whisper.cpp {release_tag}: {asset_name} is not in the pinned "
-            f"manifest ({PINS_FILENAME}); its only checksum would arrive over the same channel as "
-            f"the archive. Use the pinned default release, add a pin for {asset_name}, or set "
-            f"{ALLOW_UNVERIFIED_ENV}=1 to trust the release manifest at your own risk."
-        )
-
-    manifest_digest = _valid_sha256(manifest_sha256)
-    if manifest_digest is None:
+    """The sha256 the archive must match: the release checksum-index entry for
+    this asset. An asset absent from the index fails closed. If the manifest also
+    embeds a sha256 for the asset it must agree with the index (a mismatch means a
+    tampered manifest)."""
+    digest = checksums.get(asset_name)
+    if digest is None:
         raise PrebuiltFallback(
-            f"no usable sha256 for {asset_name} in the release manifest (release {release_tag})"
+            f"{asset_name} is not covered by {SHA256_ASSET_NAME}; refusing an unverifiable download"
         )
-    log(
-        f"WARNING: {asset_name} is not pinned; trusting the release manifest sha256 because "
-        f"{ALLOW_UNVERIFIED_ENV} is set. This checksum shares the archive's origin and is "
-        f"not an independent integrity guarantee."
-    )
-    return manifest_digest
+    embedded = _valid_sha256(manifest_sha256)
+    if embedded is not None and embedded != digest:
+        raise PrebuiltFallback(
+            f"manifest sha256 for {asset_name} disagrees with {SHA256_ASSET_NAME}; "
+            f"refusing a possibly tampered release"
+        )
+    log(f"verifying {asset_name} against {SHA256_ASSET_NAME} sha256={digest}")
+    return digest
 
 
 # ── HTTP (retry/backoff, token-safe cross-host redirects) ──
@@ -588,7 +578,12 @@ def sleep_backoff(attempt: int) -> None:
     time.sleep(delay)
 
 
-def download_bytes(url: str, *, timeout: int = 60, headers: dict[str, str] | None = None) -> bytes:
+def download_bytes(
+    url: str,
+    *,
+    timeout: int = 60,
+    headers: dict[str, str] | None = None,
+) -> bytes:
     last_exc: Exception | None = None
     for attempt in range(1, HTTP_FETCH_ATTEMPTS + 1):
         try:
@@ -726,9 +721,7 @@ def fetch_release_bundle(repo: str, release_tag: str) -> ReleaseBundle:
     except PrebuiltFallback:
         raise
     except (urllib.error.URLError, OSError, socket.timeout) as exc:
-        raise PrebuiltFallback(
-            f"could not fetch release {repo}@{release_tag}: {exc}"
-        ) from exc
+        raise PrebuiltFallback(f"could not fetch release {repo}@{release_tag}: {exc}") from exc
     resolved_tag = release.get("tag_name")
     resolved_tag = resolved_tag if isinstance(resolved_tag, str) and resolved_tag else release_tag
     asset_urls = release_asset_map(release)
@@ -738,7 +731,9 @@ def fetch_release_bundle(repo: str, release_tag: str) -> ReleaseBundle:
             f"release {repo}@{resolved_tag} has no {MANIFEST_ASSET_NAME}; cannot select a prebuilt"
         )
     try:
-        manifest_bytes = download_bytes(manifest_url, timeout = 30, headers = auth_headers(manifest_url))
+        manifest_bytes = download_bytes(
+            manifest_url, timeout = 30, headers = auth_headers(manifest_url)
+        )
     except (urllib.error.URLError, OSError, socket.timeout) as exc:
         raise PrebuiltFallback(
             f"could not fetch {MANIFEST_ASSET_NAME} from {repo}@{resolved_tag}: {exc}"
@@ -746,7 +741,9 @@ def fetch_release_bundle(repo: str, release_tag: str) -> ReleaseBundle:
     try:
         manifest_payload = json.loads(manifest_bytes.decode("utf-8"))
     except (UnicodeDecodeError, json.JSONDecodeError) as exc:
-        raise PrebuiltFallback(f"{MANIFEST_ASSET_NAME} in {repo}@{resolved_tag} was not valid JSON") from exc
+        raise PrebuiltFallback(
+            f"{MANIFEST_ASSET_NAME} in {repo}@{resolved_tag} was not valid JSON"
+        ) from exc
     manifest = parse_manifest(
         manifest_payload, label = f"{MANIFEST_ASSET_NAME} in {repo}@{resolved_tag}"
     )
@@ -1166,7 +1163,9 @@ def load_whisper_prebuilt_metadata(install_dir: Path) -> dict[str, Any] | None:
     return payload if isinstance(payload, dict) else None
 
 
-def existing_install_matches(install_dir: Path, host: HostInfo, selection: InstallSelection) -> bool:
+def existing_install_matches(
+    install_dir: Path, host: HostInfo, selection: InstallSelection
+) -> bool:
     """True iff the marker records this exact selection and the server binary is on disk."""
     metadata = load_whisper_prebuilt_metadata(install_dir)
     if metadata is None:
@@ -1184,32 +1183,40 @@ def existing_install_matches(install_dir: Path, host: HostInfo, selection: Insta
 
 
 # ── Orchestration ──
-def resolve_release_tag(
-    pins: dict[str, Any],
-    *,
-    published_release_tag: str | None,
-    allow_unverified_release: bool,
-) -> str:
-    """The release tag to install: the pinned default, or an explicit override.
+def resolve_newest_release_tag(repo: str) -> str:
+    """Newest published (non-draft/non-prerelease) release tag for `repo`, by
+    ``published_at`` -- the same selection ``install_llama_prebuilt.py`` and the
+    freshness check use, NOT GitHub's ``/releases/latest`` pointer (which sorts by
+    commit date and can lag the newest build)."""
+    payload = fetch_json(f"https://api.github.com/repos/{repo}/releases?per_page=30")
+    if not isinstance(payload, list):
+        raise PrebuiltFallback(f"unexpected releases payload for {repo}")
+    published = [
+        r
+        for r in payload
+        if isinstance(r, dict)
+        and not r.get("draft")
+        and not r.get("prerelease")
+        and isinstance(r.get("tag_name"), str)
+        and r.get("tag_name")
+    ]
+    if not published:
+        raise PrebuiltFallback(f"{repo} has no published prebuilt release yet")
+    newest = max(published, key = lambda r: r.get("published_at") or "")
+    return newest["tag_name"]
 
-    An explicit override not present in the pins fails closed unless the opt-in is set.
-    """
+
+def resolve_release_tag(published_repo: str, *, published_release_tag: str | None) -> str:
+    """The release tag to install: an explicit override, else the newest published
+    release resolved at runtime."""
     override = (published_release_tag or "").strip()
-    if not override:
-        return pinned_release_tag(pins)
-    if not release_is_pinned(pins, override) and not allow_unverified_release:
-        raise UnverifiedReleaseRefused(
-            f"refusing to install whisper.cpp release '{override}': it is not in the pinned "
-            f"manifest ({PINS_FILENAME}). Set {ALLOW_UNVERIFIED_ENV}=1 to override at your own risk."
-        )
-    return override
+    if override:
+        return override
+    return resolve_newest_release_tag(published_repo)
 
 
 def _install_from_bundle(
-    install_dir: Path,
-    host: HostInfo,
-    bundle: ReleaseBundle,
-    selection: InstallSelection,
+    install_dir: Path, host: HostInfo, bundle: ReleaseBundle, selection: InstallSelection
 ) -> None:
     staging_root = install_dir.parent / INSTALL_STAGING_ROOT_NAME
     staging_root.mkdir(parents = True, exist_ok = True)
@@ -1246,21 +1253,19 @@ def plan_selection(
     *,
     published_repo: str,
     backend: str,
-    pins: dict[str, Any],
-    allow_unverified_release: bool,
+    checksums: dict[str, str],
 ) -> InstallSelection:
-    """Choose an artifact (with CPU fallback) and resolve its trusted sha256."""
+    """Choose an artifact (with CPU fallback) and resolve its trusted sha256 from
+    the release checksum index."""
     artifact, effective_backend, _used_cpu = select_artifact_with_cpu_fallback(
         bundle.manifest, host, backend
     )
     asset = str(artifact.get("asset"))
     manifest_sha256 = artifact.get("sha256") if isinstance(artifact.get("sha256"), str) else None
-    expected_sha = resolve_expected_sha256(
-        pins,
-        bundle.release_tag,
+    expected_sha = expected_sha256_for(
+        checksums,
         asset,
         manifest_sha256 = manifest_sha256,
-        allow_unverified_release = allow_unverified_release,
     )
     return selection_from_artifact(
         published_repo = published_repo,
@@ -1288,26 +1293,20 @@ def install_prebuilt(
         detect_host(), has_rocm = has_rocm, rocm_gfx = rocm_gfx, force_cpu = cpu_fallback
     )
     effective_backend = resolve_backend(host, backend, cpu_fallback = cpu_fallback)
-    pins = load_pins()
-    allow_unverified_release = allow_unverified()
-    release_tag = resolve_release_tag(
-        pins,
-        published_release_tag = published_release_tag,
-        allow_unverified_release = allow_unverified_release,
-    )
+    release_tag = resolve_release_tag(published_repo, published_release_tag = published_release_tag)
     log(
         f"target whisper.cpp {release_tag} from {published_repo} "
         f"({host.whisper_os}-{host.whisper_arch}, backend {effective_backend})"
     )
 
     bundle = fetch_release_bundle(published_repo, release_tag)
+    checksums = fetch_release_checksums(bundle)
     selection = plan_selection(
         host,
         bundle,
         published_repo = published_repo,
         backend = effective_backend,
-        pins = pins,
-        allow_unverified_release = allow_unverified_release,
+        checksums = checksums,
     )
 
     if not force and existing_install_matches(install_dir, host, selection):
@@ -1336,13 +1335,9 @@ def resolve_prebuilt(
 ) -> dict[str, Any]:
     """Host-aware "is a prebuilt available" probe. No archive download."""
     effective_backend = resolve_backend(host, backend, cpu_fallback = cpu_fallback)
-    pins = load_pins()
-    allow_unverified_release = allow_unverified()
     try:
         release_tag = resolve_release_tag(
-            pins,
-            published_release_tag = published_release_tag,
-            allow_unverified_release = allow_unverified_release,
+            published_repo, published_release_tag = published_release_tag
         )
         bundle = fetch_release_bundle(published_repo, release_tag)
         artifact, resolved_backend, used_cpu = select_artifact_with_cpu_fallback(
@@ -1400,7 +1395,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--published-release-tag",
         default = os.environ.get("UNSLOTH_WHISPER_RELEASE_TAG") or None,
-        help = f"explicit release tag; unpinned tags require {ALLOW_UNVERIFIED_ENV}=1",
+        help = "explicit release tag to install (default: the newest published release)",
     )
     parser.add_argument(
         "--backend",
@@ -1408,9 +1403,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
         choices = ("auto", *SUPPORTED_BACKENDS),
         help = "accelerator backend; 'auto' detects from hardware",
     )
-    parser.add_argument(
-        "--has-rocm", action = "store_true", help = "treat this host as ROCm-capable"
-    )
+    parser.add_argument("--has-rocm", action = "store_true", help = "treat this host as ROCm-capable")
     parser.add_argument("--rocm-gfx", default = None, help = "ROCm gfx target override, e.g. gfx1100")
     parser.add_argument(
         "--cpu-fallback", action = "store_true", help = "force the CPU asset regardless of hardware"
@@ -1479,10 +1472,6 @@ def main(argv: list[str] | None = None) -> int:
     except BusyInstallConflict as exc:
         log(str(exc))
         return EXIT_BUSY
-    except UnverifiedReleaseRefused as exc:
-        # Catch before PrebuiltFallback so the refusal logs its own message.
-        log(str(exc))
-        return EXIT_FALLBACK
     except PrebuiltFallback as exc:
         log(f"prebuilt unavailable: {exc}")
         return EXIT_FALLBACK

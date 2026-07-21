@@ -486,8 +486,8 @@ def _run_update(
         # Preserve the installed accelerator across updates. Left unpinned the
         # installer re-detects the host, which is fine on unchanged hardware but
         # can reroute a deliberate choice (e.g. cpu on a GPU box); forwarding the
-        # marker's backend keeps the same slice. No --published-release-tag pin:
-        # the installer resolves the newest pinned/published release itself.
+        # marker's backend keeps the same slice. No --published-release-tag:
+        # the installer resolves the newest published release itself.
         if isinstance(backend, str) and backend:
             cmd.extend(["--backend", backend])
         cmd.extend(_rocm_install_args(asset))
