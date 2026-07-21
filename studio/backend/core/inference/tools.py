@@ -2646,6 +2646,21 @@ _COMMAND_SUBST_AT_CMD_RE = re.compile(
     r"(?:^|[;&|\n(]|&&|\|\|)\s*(?:[A-Za-z_]\w*=[^\s;&|()]*\s+)*(?:\$\(|`)"
 )
 
+# A command substitution appearing anywhere ($(...) that is not arithmetic
+# $((...)), or a backtick). Used to catch a substitution stashed in a variable
+# (x=`...`) that a later dynamic exec runs, which never surfaces as literal text.
+_HAS_COMMAND_SUBST_RE = re.compile(r"\$\((?!\()|`")
+# A variable expansion executed as a command: $VAR at command position (after
+# optional NAME=value prefixes), or a shell `-c` / eval whose payload contains a
+# `$` expansion. Paired with _HAS_COMMAND_SUBST_RE, this flags the pattern
+# `x=`printf 'git clean -fd'`; bash -c "$x"` (or `; $x`) whose executed command
+# is assembled at runtime and so cannot be screened statically.
+_VAR_EXECUTED_AS_COMMAND_RE = re.compile(
+    r"(?:^|[;&|\n(]|&&|\|\|)\s*(?:[A-Za-z_]\w*=\S*\s+)*\$\{?\w"
+    r"|\b(?:sh|bash|zsh|dash|ksh|ash)\b[^\n]*?\s-c\b[^\n]*\$"
+    r"|\beval\b[^\n]*\$"
+)
+
 
 def _command_is_network_exec_or_exfil(command: str) -> bool:
     """curl/wget used to run remote code (piped into a shell, or via process
@@ -2687,6 +2702,12 @@ def _terminal_is_high_risk(command: str, _depth: int = 0) -> bool:
         return True
     # A command substitution at command position generates the command Bash runs.
     if _COMMAND_SUBST_AT_CMD_RE.search(command):
+        return True
+    # A substitution stashed in a variable and then executed dynamically
+    # (x=`printf 'git clean -fd'`; bash -c "$x") never appears as literal text,
+    # so the token scan below cannot see the real command. When a command
+    # substitution coincides with a variable executed as a command, fail closed.
+    if _HAS_COMMAND_SUBST_RE.search(command) and _VAR_EXECUTED_AS_COMMAND_RE.search(command):
         return True
     for text in {normalized, expanded}:
         try:

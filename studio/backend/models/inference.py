@@ -1322,6 +1322,21 @@ class ChatCompletionRequest(BaseModel):
             # "Off" never prompts, so route guards must see confirm disabled.
             self.confirm_tool_calls = False
         elif (
+            self.permission_mode is None
+            and self.confirm_tool_calls is True
+            and not (self.provider_id or self.provider_type)
+            and (self.enable_tools is True or bool(self.mcp_enabled))
+        ):
+            # A legacy caller that explicitly set confirm_tool_calls=True with no
+            # permission_mode opted into the pre-permission-mode contract of gating
+            # every call, so resolve the unset mode to "ask" here instead of letting
+            # the loop apply the "auto" product default (which only prompts on
+            # high-risk calls and would silently weaken that explicit opt-in). Scoped
+            # to Unsloth's own tool loop (no external provider, tools/MCP requested),
+            # matching the "ask" self-enable branch below; a bare unset request
+            # (confirm_tool_calls is None) still defaults to auto.
+            self.permission_mode = "ask"
+        elif (
             self.permission_mode == "ask"
             and self.confirm_tool_calls is None
             and not (self.provider_id or self.provider_type)

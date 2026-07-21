@@ -10341,6 +10341,9 @@ class LlamaCppBackend:
         # switch, whichever arrives first wins toward the permissive side.
         # "off" keeps the sandbox but never prompts. Unset defaults to "auto"
         # (the product default); an unknown value falls back to the stricter "ask".
+        # An explicit confirm_tool_calls=True with no mode is resolved to "ask" at
+        # the request layer (_fold_full_permission_into_bypass), so it arrives here
+        # as "ask" rather than an ambiguous unset.
         if permission_mode == "full":
             bypass_permissions = True
         elif bypass_permissions:

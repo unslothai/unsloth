@@ -517,7 +517,10 @@ def run_safetensors_tool_loop(
     # Normalize the mode (mirrors the GGUF loop): "full" and
     # bypass_permissions are the same switch; unset defaults to "auto" (the
     # product default) and an unknown value falls back to the stricter "ask".
-    # "off" keeps the sandbox but never prompts.
+    # An explicit confirm_tool_calls=True with no mode is resolved to "ask" at the
+    # request layer (_fold_full_permission_into_bypass), so it arrives here as
+    # "ask" rather than an ambiguous unset. "off" keeps the sandbox but never
+    # prompts.
     if permission_mode == "full":
         bypass_permissions = True
     elif bypass_permissions:
