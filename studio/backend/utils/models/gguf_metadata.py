@@ -50,10 +50,14 @@ _CACHE_MAX_ENTRIES = 4096
 # keyed by (file cache key, wanted key). None = key absent / file unreadable.
 _BOOL_CACHE: Dict[Tuple[_CacheKey, str], Optional[bool]] = {}
 
+_STRING_CACHE: Dict[Tuple[_CacheKey, str], Optional[str]] = {}
+
 # GGUF header dims for the staged/deferred-load UI: context_length, layer_count
 # (block_count), and moe_layer_count (block_count minus leading dense layers; 0
 # if not MoE). One cached pass fills all three so the staged sheet can size every
-# slider before the model loads. None = unreadable / not a GGUF.
+# slider before the model loads. None = unreadable / not a GGUF. The native
+# training context length (``{arch}.context_length``) the UI shows before a model
+# loads is read from here via read_gguf_context_length.
 _DIMS_CACHE: Dict[_CacheKey, Optional[Dict[str, Optional[int]]]] = {}
 
 
@@ -559,6 +563,83 @@ def _read_gguf_bool(path: str, wanted_key: str) -> Optional[bool]:
                 break
         _BOOL_CACHE[ckey] = result
     return result
+
+
+def _parse_gguf_string(path: str, wanted_key: str) -> Optional[str]:
+    try:
+        with open(path, "rb") as f:
+            head = f.read(24)
+            if len(head) < 24:
+                return None
+            magic, _version, _tcount, kv_count = struct.unpack("<IIQQ", head)
+            if magic != _GGUF_MAGIC:
+                return None
+
+            for _ in range(kv_count):
+                try:
+                    klen_bytes = f.read(8)
+                    if len(klen_bytes) < 8:
+                        break
+                    klen = struct.unpack("<Q", klen_bytes)[0]
+                    if klen > 1 << 20:
+                        break
+                    kbytes = f.read(klen)
+                    if len(kbytes) < klen:
+                        break
+                    key = kbytes.decode("utf-8", "replace")
+                    vt_bytes = f.read(4)
+                    if len(vt_bytes) < 4:
+                        break
+                    vtype = struct.unpack("<I", vt_bytes)[0]
+
+                    if key == wanted_key and vtype == 8:
+                        slen_bytes = f.read(8)
+                        if len(slen_bytes) < 8:
+                            break
+                        slen = struct.unpack("<Q", slen_bytes)[0]
+                        if slen > 1 << 22:
+                            break
+                        sbytes = f.read(slen)
+                        if len(sbytes) < slen:
+                            break
+                        return sbytes.decode("utf-8", "replace")
+                    if not _skip_gguf_value(f, vtype):
+                        break
+                except (struct.error, UnicodeDecodeError):
+                    break
+    except OSError as e:
+        logger.debug(f"_parse_gguf_string: cannot open {path}: {e}")
+        return None
+    except Exception as e:
+        logger.debug(f"_parse_gguf_string: parse failure on {path}: {e}")
+        return None
+    return None
+
+
+def _read_gguf_string(path: str, wanted_key: str) -> Optional[str]:
+    fkey = _cache_key(path)
+    if fkey is None:
+        return None
+    ckey = (fkey, wanted_key)
+    with _CACHE_LOCK:
+        if ckey in _STRING_CACHE:
+            return _STRING_CACHE[ckey]
+    result = _parse_gguf_string(path, wanted_key)
+    with _CACHE_LOCK:
+        while len(_STRING_CACHE) >= _CACHE_MAX_ENTRIES:
+            try:
+                _STRING_CACHE.pop(next(iter(_STRING_CACHE)))
+            except StopIteration:
+                break
+        _STRING_CACHE[ckey] = result
+    return result
+
+
+def read_gguf_chat_template(path: str) -> Optional[str]:
+    template = _read_gguf_string(path, "tokenizer.chat_template")
+    if isinstance(template, str) and template.strip():
+        return template
+    return None
 
 
 def read_mmproj_audio_capability(path: str) -> Optional[bool]:

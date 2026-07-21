@@ -40,7 +40,8 @@ export function loadedAt(times: ModelLoadTimes, id: string): number {
 export function useModelLoadTimes(currentValue?: string): ModelLoadTimes {
   const [times, setTimes] = useState<ModelLoadTimes>(() => readLoadTimes());
   useEffect(() => {
-    if (currentValue) setTimes(recordModelLoaded(currentValue));
+    if (!currentValue) return;
+    queueMicrotask(() => setTimes(recordModelLoaded(currentValue)));
   }, [currentValue]);
   return times;
 }

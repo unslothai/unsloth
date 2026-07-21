@@ -14,10 +14,7 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { Spinner } from "@/components/ui/spinner";
-import {
-  type BrowseFoldersResponse,
-  browseFolders,
-} from "@/features/chat/api/chat-api";
+import { type BrowseFoldersResponse, browseFolders } from "@/features/chat";
 import { ChevronUpStandardIcon } from "@/lib/chevron-icons";
 import { cn } from "@/lib/utils";
 import { Folder02Icon } from "@hugeicons/core-free-icons";
@@ -35,9 +32,9 @@ export interface FolderBrowserProps {
 
 function splitBreadcrumb(path: string): { label: string; value: string }[] {
   if (!path) return [];
-  // Detect path style BEFORE normalizing: on POSIX, `\` is a valid filename
-  // char, so blindly rewriting `\` -> `/` mangles names like `my\backup` into
-  // 404ing breadcrumbs. Only Windows-style paths (drive letter, or UNC) convert.
+  // Detect path style BEFORE normalizing: on POSIX `\` is a valid filename char,
+  // so rewriting `\` -> `/` would mangle names like `my\backup`. Only Windows
+  // paths (drive letter or UNC) convert.
   const isWindowsDrive =
     /^[A-Za-z]:[\\/]/.test(path) || /^[A-Za-z]:$/.test(path);
   const isUnc = /^\\\\/.test(path);
@@ -58,9 +55,8 @@ function splitBreadcrumb(path: string): { label: string; value: string }[] {
     return parts;
   }
 
-  // Windows drive path (C:, D:): first segment is the drive. Use `C:/` as the
-  // crumb value so clicking the drive root navigates to the drive root, not the
-  // drive-relative CWD (`C:` alone resolves to CWD-on-C, not `C:\`).
+  // Windows drive path: use `C:/` as the crumb value so clicking the drive root
+  // goes to the drive root, not the drive-relative CWD (`C:` alone is CWD-on-C).
   if (/^[A-Za-z]:$/.test(segments[0])) {
     const driveRoot = `${segments[0]}/`;
     let cur = driveRoot;
@@ -90,47 +86,43 @@ export function FolderBrowser({
   const [error, setError] = useState<string | null>(null);
   const abortRef = useRef<AbortController | null>(null);
 
-  const navigate = useCallback(
-    (
-      target: string | undefined,
-      hidden: boolean,
-      opts?: { fallbackOnError?: boolean },
-    ) => {
-      abortRef.current?.abort();
-      const ctrl = new AbortController();
-      abortRef.current = ctrl;
-      setLoading(true);
-      setError(null);
-      // Forward the signal so cancelled navigation aborts the backend
-      // enumeration, not just the response.
-      browseFolders(target, hidden, ctrl.signal)
-        .then((res) => {
-          if (ctrl.signal.aborted) return;
-          setData(res);
-          setPath(res.current);
-        })
-        .catch((err) => {
-          if (ctrl.signal.aborted) return;
-          // Surface the error; if the first request (e.g. a bad initialPath)
-          // fails, fall back to HOME so the modal stays navigable.
-          const message = err instanceof Error ? err.message : String(err);
-          setError(message);
-          if (opts?.fallbackOnError && target !== undefined) {
-            // Re-issue without a target -> backend defaults to HOME.
-            // Don't recurse if HOME itself fails (allowlist always has HOME).
-            queueMicrotask(() => navigate(undefined, hidden));
-          }
-        })
-        .finally(() => {
-          if (!ctrl.signal.aborted) setLoading(false);
-        });
-    },
-    [],
-  );
+  function navigate(
+    target: string | undefined,
+    hidden: boolean,
+    opts?: { fallbackOnError?: boolean },
+  ) {
+    abortRef.current?.abort();
+    const ctrl = new AbortController();
+    abortRef.current = ctrl;
+    setLoading(true);
+    setError(null);
+    // Forward the signal so cancelled navigation aborts the backend
+    // enumeration, not just the response.
+    browseFolders(target, hidden, ctrl.signal)
+      .then((res) => {
+        if (ctrl.signal.aborted) return;
+        setData(res);
+        setPath(res.current);
+      })
+      .catch((err) => {
+        if (ctrl.signal.aborted) return;
+        // Surface the error; if the first request (e.g. a bad initialPath)
+        // fails, fall back to HOME so the modal stays navigable.
+        const message = err instanceof Error ? err.message : String(err);
+        setError(message);
+        if (opts?.fallbackOnError && target !== undefined) {
+          // Re-issue without a target -> backend defaults to HOME.
+          // Don't recurse if HOME itself fails (allowlist always has HOME).
+          queueMicrotask(() => navigate(undefined, hidden));
+        }
+      })
+      .finally(() => {
+        if (!ctrl.signal.aborted) setLoading(false);
+      });
+  }
 
   // Fetch only on closed -> open; later navigation is driven by `navigate()`,
   // so `path` is deliberately kept out of the dependency list.
-  // eslint-disable-next-line react-hooks/exhaustive-deps
   useEffect(() => {
     if (!open) return;
     // fallbackOnError: recover into HOME if initialPath is bad, rather than
@@ -147,7 +139,7 @@ export function FolderBrowser({
 
   const crumbs = useMemo(
     () => (data?.current ? splitBreadcrumb(data.current) : []),
-    [data?.current],
+    [data],
   );
 
   return (
