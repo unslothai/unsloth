@@ -405,15 +405,31 @@ export function ChatProvidersSettings({
               uiProviderType,
               registryEntry?.default_models ?? [],
             );
+            const serverModels = pruneProviderModelIds(
+              uiProviderType,
+              config.models ?? [],
+            );
+            const serverAvailableModels = pruneProviderModelIds(
+              uiProviderType,
+              config.available_models ?? [],
+            );
             const savedModels = existing?.models ?? [];
             const savedAvailableModels = existing?.availableModels ?? [];
             const existingModels = pruneProviderModelIds(
               uiProviderType,
-              savedModels.length > 0 ? savedModels : defaultModels,
+              serverModels.length > 0
+                ? serverModels
+                : savedModels.length > 0
+                  ? savedModels
+                  : defaultModels,
             );
             const existingAvailableModels = pruneProviderModelIds(
               uiProviderType,
-              savedAvailableModels.length > 0 ? savedAvailableModels : defaultModels,
+              serverAvailableModels.length > 0
+                ? serverAvailableModels
+                : savedAvailableModels.length > 0
+                  ? savedAvailableModels
+                  : defaultModels,
             );
             return {
               id: config.id,
@@ -699,6 +715,10 @@ export function ChatProvidersSettings({
         providerType: backendProviderType,
         displayName,
         baseUrl,
+        models: modelsToSave,
+        availableModels: manualOnly
+          ? []
+          : pruneProviderModelIds(providerType, availableModels),
       });
       const createdAt = Number.isFinite(Date.parse(created.created_at))
         ? Date.parse(created.created_at)
@@ -814,6 +834,10 @@ export function ChatProvidersSettings({
             customProviderDisplayName(existing.providerType)
           : existing.name,
         baseUrl,
+        models: modelsToSave,
+        availableModels: manualOnly
+          ? []
+          : pruneProviderModelIds(existing.providerType, availableModels),
       });
       if (apiKey.trim()) {
         setExternalProviderApiKey(editingProviderId, apiKey.trim());
