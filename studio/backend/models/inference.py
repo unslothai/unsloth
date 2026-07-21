@@ -1325,16 +1325,23 @@ class ChatCompletionRequest(BaseModel):
             self.permission_mode is None
             and self.confirm_tool_calls is True
             and not (self.provider_id or self.provider_type)
-            and (self.enable_tools is True or bool(self.mcp_enabled))
         ):
             # A legacy caller that explicitly set confirm_tool_calls=True with no
             # permission_mode opted into the pre-permission-mode contract of gating
             # every call, so resolve the unset mode to "ask" here instead of letting
             # the loop apply the "auto" product default (which only prompts on
-            # high-risk calls and would silently weaken that explicit opt-in). Scoped
-            # to Unsloth's own tool loop (no external provider, tools/MCP requested),
-            # matching the "ask" self-enable branch below; a bare unset request
-            # (confirm_tool_calls is None) still defaults to auto.
+            # high-risk calls and would silently weaken that explicit opt-in).
+            #
+            # Unlike the "ask" self-enable branch below (which mutates the confirm
+            # flag and so must be gated to an actual loop request), this only sets
+            # permission_mode, which is inert unless Unsloth's own tool loop runs:
+            # _permission_mode_confirm and _confirm_gate_needs_stream give the same
+            # answer for None vs "ask" when confirm is explicitly True, so a
+            # passthrough / no-tool request is unaffected. Not gating on
+            # enable_tools/mcp is deliberate: it also covers a process-wide
+            # --enable-tools policy that forces the loop when the request itself
+            # sets neither flag. External-provider requests are left untouched. A
+            # bare unset request (confirm_tool_calls is None) still defaults to auto.
             self.permission_mode = "ask"
         elif (
             self.permission_mode == "ask"

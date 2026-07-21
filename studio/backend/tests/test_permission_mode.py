@@ -380,6 +380,11 @@ def test_terminal_classifier(command, unsafe):
         ("ruby -e 'puts 1'", True),
         ("perl -E 'say 1'", True),
         ("php -r 'echo 1;'", True),
+        # --- prompt: Windows cmd.exe delete built-ins (the terminal runs cmd /c
+        # there; these are not in the hard-block set) ---
+        ("del /q important.csv", True),
+        ("erase data.txt", True),
+        ("rd /s /q build", True),
         # --- prompt: destructive git subcommands ---
         ("git clean -fd", True),
         ("git clean -n", True),  # clean is gated regardless of flags
@@ -491,6 +496,11 @@ def test_terminal_high_risk_classifier(command, high_risk):
         ("p = '/etc'; open(p + '/shadow').read()", True),
         ("import os; open(os.path.join('/etc', 'shadow')).read()", True),
         ("base = '/etc'; open(f'{base}/shadow').read()", True),
+        # --- prompt: a sensitive path assembled with pathlib (the / operator,
+        # joinpath, or a Path bound to a variable then joined) ---
+        ("from pathlib import Path\n(Path('/etc') / 'passwd').read_text()", True),
+        ("import pathlib\npathlib.Path('/etc').joinpath('shadow').read_text()", True),
+        ("from pathlib import Path\np = Path('/etc')\n(p / 'shadow').open()", True),
         # --- run: literal exec of safe code, and a literal import name ---
         ("exec('total = 1 + 2')", False),  # a literal source that runs safe code
         ("exec(\"open('out.txt', 'w').write('hi')\")", False),  # in-workdir write
@@ -503,6 +513,8 @@ def test_terminal_high_risk_classifier(command, high_risk):
         ("import json; json.dump({}, open('out.json', 'w'))", False),
         ("open(f'{base}/data.csv')", False),  # an unknown f-string fragment stays out
         ("import os; open(os.path.join(workdir, 'data.csv'))", False),  # unknown root
+        ("from pathlib import Path\nopen(Path('data') / 'out.csv', 'w')", False),  # in-workdir
+        ("from pathlib import Path\n(Path(user_dir) / 'x').read_text()", False),  # unknown base
     ],
 )
 def test_python_high_risk_classifier(code, high_risk):
@@ -1758,7 +1770,13 @@ def test_ask_auto_self_enable_confirm_on_chat_request():
     # contract), so the unset mode resolves to "ask" for Unsloth's own tool loop
     # rather than the "auto" product default (which only prompts on high-risk
     # calls and would silently weaken that explicit opt-in).
-    for loop in ({"enable_tools": True}, {"mcp_enabled": True}):
+    # It is resolved regardless of the request-level tool flags (enable_tools /
+    # mcp_enabled / neither), so a process-wide --enable-tools policy that forces
+    # the loop when the request sets neither flag is also covered. Setting only the
+    # mode is inert unless the loop runs (the route guards give the same answer for
+    # None vs "ask" under an explicit confirm), so a passthrough request is
+    # unaffected.
+    for loop in ({"enable_tools": True}, {"mcp_enabled": True}, {}):
         req = ChatCompletionRequest(
             messages = [{"role": "user", "content": "hi"}],
             confirm_tool_calls = True,
@@ -1774,13 +1792,13 @@ def test_ask_auto_self_enable_confirm_on_chat_request():
     )
     assert req.permission_mode is None
     assert req.confirm_tool_calls is None
-    # An explicit confirm_tool_calls=True with no mode is not resolved to ask when
-    # Unsloth's own loop is not requested (external provider, or no tools/MCP): the
-    # mode is a local-loop concept and external routing handles confirm separately.
-    for extra in ({"enable_tools": True, "provider_id": "p1"}, {}):
+    # External-provider requests are left untouched: the mode is a local-loop
+    # concept and external routing handles confirm separately.
+    for extra in ({"provider_id": "p1"}, {"provider_type": "openai"}):
         req = ChatCompletionRequest(
             messages = [{"role": "user", "content": "hi"}],
             confirm_tool_calls = True,
+            enable_tools = True,
             **extra,
         )
         assert req.permission_mode is None

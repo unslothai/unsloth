@@ -2535,6 +2535,11 @@ _HIGH_RISK_COMMANDS = frozenset(
         "blkdiscard",
         "chattr",
         "truncate",
+        # Windows cmd.exe built-ins that delete files / trees (the terminal
+        # executor runs `cmd /c` there, and these are not in _BLOCKED_COMMANDS_WIN)
+        "del",
+        "erase",
+        "rd",
         # accounts / persistence / system services
         "crontab",
         "systemctl",
@@ -2866,54 +2871,37 @@ def _python_is_high_risk(code: str) -> bool:
     except SyntaxError:
         return False  # runs into a normal traceback; nothing to guard
     # A sensitive path split across names or joins (p = "/etc"; open(p + "/shadow"),
-    # os.path.join("/etc", "shadow"), f"{base}/shadow") is not a contiguous literal
-    # above, so fold simple string-literal variables and +/join/f-string forms and
+    # os.path.join("/etc", "shadow"), f"{base}/shadow", Path("/etc") / "shadow") is
+    # not a contiguous literal above, so fold the string-literal variables and reuse
+    # the shared _folded_path builder (which handles +, os.path.join, str.join,
+    # f-strings, %/.format, and pathlib Path(...) / joinpath / the "/" operator) and
     # re-check. An unresolved fragment folds to a sentinel so a partial fold never
-    # false-positives.
-    _UNKNOWN = "\x00"
+    # false-positives; _folded_is_sensitive applies the same sentinel-aware test the
+    # broad classifier uses (credential file, dynamic segment under a sensitive dir,
+    # or a pathlib .parent escape).
     str_vars: "dict[str, str]" = {}
     for node in ast.walk(tree):
-        if (
+        if not (
             isinstance(node, ast.Assign)
             and len(node.targets) == 1
             and isinstance(node.targets[0], ast.Name)
-            and isinstance(node.value, ast.Constant)
-            and isinstance(node.value.value, str)
         ):
-            str_vars[node.targets[0].id] = node.value.value
-
-    def _fold(n) -> str:
-        if isinstance(n, ast.Constant):
-            return n.value if isinstance(n.value, str) else _UNKNOWN
-        if isinstance(n, ast.Name):
-            return str_vars.get(n.id, _UNKNOWN)
-        if isinstance(n, ast.BinOp) and isinstance(n.op, ast.Add):
-            return _fold(n.left) + _fold(n.right)
-        if isinstance(n, ast.JoinedStr):
-            return "".join(_fold(v) for v in n.values)
-        if isinstance(n, ast.FormattedValue):
-            return _fold(n.value)  # f"{base}/shadow" folds the {base} value
-        if (
-            isinstance(n, ast.Call)
-            and isinstance(n.func, ast.Attribute)
-            and n.func.attr == "join"
-            and not any(isinstance(a, ast.Starred) for a in n.args)
-        ):
-            # os.path.join("/etc", "shadow") or sep.join([...]); use the literal
-            # separator when known ("/".join / "".join), else a path-like "/".
-            sep = _fold(n.func.value)
-            if sep == _UNKNOWN:
-                sep = "/"
-            parts = n.args
-            if len(parts) == 1 and isinstance(parts[0], (ast.List, ast.Tuple)):
-                parts = parts[0].elts
-            return sep.join(_fold(a) for a in parts)
-        return _UNKNOWN
+            continue
+        value = node.value
+        if isinstance(value, ast.Constant) and isinstance(value.value, str):
+            str_vars[node.targets[0].id] = value.value
+        elif isinstance(value, (ast.Call, ast.BinOp, ast.JoinedStr, ast.Name)):
+            # p = Path("/etc") / q = p / r = os.path.join("/etc", "x"): record the
+            # fully-literal folded path so a later reuse (p / "shadow") resolves. A
+            # dynamic or escaping fold is skipped so only fully-known paths bind.
+            folded = _folded_path(value, str_vars)
+            if folded and "\x00" not in folded and "\x02" not in folded:
+                str_vars[node.targets[0].id] = folded
 
     for node in ast.walk(tree):
         if isinstance(node, (ast.BinOp, ast.JoinedStr, ast.Call)):
-            folded = _fold(node)
-            if folded and _UNKNOWN not in folded and _references_sensitive_path(folded):
+            folded = _folded_path(node, str_vars)
+            if folded and _folded_is_sensitive(folded):
                 return True
     # exec/eval/compile/__import__ of a non-literal (exec(b64decode(...)),
     # eval(input()), __import__(name)) runs whatever it builds at runtime, past
