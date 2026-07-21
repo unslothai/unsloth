@@ -104,7 +104,7 @@ def test_shared_gate_still_scans_when_offline_by_default(monkeypatch, var):
     calls: list = []
     _fake_hub(monkeypatch, calls)
     monkeypatch.setenv(var, "1")
-    assert fs._fetch_security_status("org/model", None) is None
+    assert fs._fetch_security_status("org/model", None) == (None, None)
     assert calls, f"{var} alone must NOT bypass the shared malware gate"
 
 
@@ -384,7 +384,7 @@ def test_security_scan_runs_when_online(monkeypatch):
 
     calls: list = []
     _fake_hub(monkeypatch, calls)
-    assert fs._fetch_security_status("org/model", None) is None
+    assert fs._fetch_security_status("org/model", None) == (None, None)
     assert calls, "online must attempt the Hub"
 
 
@@ -557,9 +557,10 @@ def test_online_scan_blocks_flagged_pickle_under_traversing_module_subdir(monkey
     monkeypatch.setattr(
         fs,
         "_fetch_security_status",
-        lambda name, token: {
-            "filesWithIssues": [{"path": "evil/pytorch_model.bin", "level": "unsafe"}]
-        },
+        lambda name, token: (
+            {"filesWithIssues": [{"path": "evil/pytorch_model.bin", "level": "unsafe"}]},
+            "commitsha",
+        ),
     )
     # Definitive "no weight index" -> a missed shard is SKIPPED (allowed) on the pristine gate;
     # the fix instead treats evil/ as a load root so the pickle is root-level and blocks.
@@ -577,9 +578,10 @@ def test_online_scan_blocks_flagged_pickle_under_plain_module_subdir(monkeypatch
     monkeypatch.setattr(
         fs,
         "_fetch_security_status",
-        lambda name, token: {
-            "filesWithIssues": [{"path": "0_Transformer/pytorch_model.bin", "level": "unsafe"}]
-        },
+        lambda name, token: (
+            {"filesWithIssues": [{"path": "0_Transformer/pytorch_model.bin", "level": "unsafe"}]},
+            "commitsha",
+        ),
     )
     monkeypatch.setattr(fs, "_indexed_shard_paths", lambda *a, **k: set())
     decision = fs.evaluate_file_security(

@@ -181,11 +181,31 @@ def _st_module_subdirs(name: str, token: str | None, local_only: bool) -> tuple[
         return ()
 
 
-def _guard_model_security(name: str, local_only_load: bool) -> None:
+def _security_load_subdirs(name: str, token: str | None, local_only: bool) -> tuple[str, ...]:
+    """The subdirs a load calls ``from_pretrained`` on, for scoping the security scan: the audio
+    load roots unioned with the ST module dirs (Transformer module + Router children) from
+    ``modules.json`` / ``router_config.json``, so a flagged pickle directly under one blocks
+    instead of passing as an unreferenced nested shard. Shared by the guard and the verdict
+    recorder so both scope the SAME roots."""
+    from utils.security import security_load_subdirs
+
+    return tuple(
+        dict.fromkeys(
+            (
+                *security_load_subdirs(name, token),
+                *_st_module_subdirs(name, token, local_only),
+            )
+        )
+    )
+
+
+def _guard_model_security(name: str, local_only_load: bool):
     """Refuse to load a repo HF flagged as unsafe: a poisoned pickle deserializes inside
     SentenceTransformer regardless of trust_remote_code. Defense in depth behind the
     /settings gate (a name can also arrive via env/default); local paths and unreachable
     scans fail open inside evaluate_file_security. Never bricks the embedder on a gate error.
+    Returns the ``FileSecurityDecision`` (or None on a gate error) so a clean ONLINE load can be
+    recorded for later offline reuse; raises ``UnsafeEmbeddingModelError`` when blocked.
 
     ``local_only_load`` MUST equal the ``local_files_only`` the caller passes to
     SentenceTransformer -- it is what licenses skipping the Hub scan. ``_hf_offline_if_dns_dead()``
@@ -193,33 +213,38 @@ def _guard_model_security(name: str, local_only_load: bool) -> None:
     skipped while the constructor fetched the unscanned repo.
     """
     try:
-        from utils.security import evaluate_file_security, security_load_subdirs
+        from utils.security import evaluate_file_security
 
         token = _ambient_hf_token()
-        # Union the audio-model load roots with the ST module dirs so a flagged pickle
-        # directly under a Transformer module dir (0_Transformer/) blocks instead of
-        # passing as an unreferenced nested shard.
-        load_subdirs = tuple(
-            dict.fromkeys(
-                (
-                    *security_load_subdirs(name, token),
-                    *_st_module_subdirs(name, token, local_only_load),
-                )
-            )
-        )
-        blocked = evaluate_file_security(
+        decision = evaluate_file_security(
             name,
             hf_token = token,
-            load_subdirs = load_subdirs,
+            load_subdirs = _security_load_subdirs(name, token, local_only_load),
             local_only_load = local_only_load,
-        ).blocked
+        )
+        blocked = decision.blocked  # read inside the guard so a gate error never bricks the load
     except Exception:
-        return
+        return None
     if blocked:
         raise UnsafeEmbeddingModelError(
             f"Embedding model {name!r} is flagged as unsafe by Hugging Face's security "
             "scan; refusing to load. Set a different RAG embedding model."
         )
+    return decision
+
+
+def _record_embedding_verdict_safe(name: str, commit: str | None) -> None:
+    """After a clean ONLINE load, persist the Hub verdict so a later OFFLINE load of the same
+    content is not fail-closed. Best-effort: recomputes the scan load roots (files are now cached),
+    hashes each load-root pickle, and records under the scanned commit. Never disturbs the loaded
+    model."""
+    try:
+        from utils.security import record_embedding_verdict
+
+        token = _ambient_hf_token()
+        record_embedding_verdict(name, commit, _security_load_subdirs(name, token, local_only = False))
+    except Exception:
+        pass
 
 
 def _get(model_name: str | None = None):
@@ -227,6 +252,7 @@ def _get(model_name: str | None = None):
     for a ~1.5x speedup at negligible accuracy loss."""
     global _model, _name
     name = model_name or config.effective_embedding_model()
+    record: tuple[str, str | None] | None = None  # (load_name, scanned_commit) for a clean online load
     with _lock:
         if _model is None or _name != name:
             _install_torchao_stub_once()
@@ -251,7 +277,7 @@ def _get(model_name: str | None = None):
             # for the constructor could yield False after the guard skipped the Hub scan on
             # True.
             local_only = hf_env_offline()
-            _guard_model_security(load_name, local_only)
+            decision = _guard_model_security(load_name, local_only)
             # huggingface_hub honors only HF_HUB_OFFLINE, so a TRANSFORMERS_OFFLINE-only
             # session would otherwise still fetch missing repo files.
             _model = SentenceTransformer(
@@ -261,7 +287,15 @@ def _get(model_name: str | None = None):
                 local_files_only = local_only,
             )
             _name = name
-        return _model
+            # An ONLINE load that HF definitively scanned clean is now fully cached: record the
+            # verdict (outside the lock, so hashing stays off the hot path) so a later offline
+            # load of this exact content is not fail-closed.
+            if not local_only and decision is not None and decision.scanned_clean:
+                record = (load_name, decision.commit)
+        model = _model
+    if record is not None:
+        _record_embedding_verdict_safe(*record)
+    return model
 
 
 @lru_cache(maxsize = 1)

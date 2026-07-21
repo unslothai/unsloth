@@ -226,6 +226,12 @@ class FileSecurityDecision:
     blocked: bool
     unsafe_files: list = field(default_factory = list)  # [{"path", "level"}]
     reason: str = ""
+    # The commit SHA the Hub scan reported (online only), and whether that scan was a DEFINITIVE
+    # clean verdict (a completed scan with no load-path issue) -- not merely a non-block. The
+    # embedding recorder persists a clean verdict only when ``scanned_clean`` and the loaded commit
+    # equals ``commit``; both stay unset for local-only and fail-open (unavailable) decisions.
+    commit: Optional[str] = None
+    scanned_clean: bool = False
 
     def response_payload(self) -> dict:
         """Machine-readable detail merged into the preflight payload the dialog reads."""
@@ -456,17 +462,19 @@ def _st_load_roots(snap, load_subdirs = ()) -> set:
     return roots
 
 
-def _cached_pickle_weight_files(snap, load_subdirs = ()) -> list:
-    """Pickle weight files a from_pretrained load actually deserializes: at a real load root and
-    with NO loadable safetensors alternative there. A load root is the snapshot root, a directory
-    ``modules.json`` / ``load_subdirs`` declares, or a plain from_pretrained root (holds
-    ``config.json``). A stray pickle in a non-load subdir (``archive/``, ``nemo/``) that no load
-    opens is not a vector, matching the online scan's load-path scoping. Two weight classes are
-    scoped independently: a BASE pickle (``pytorch_model.bin`` ...) is covered by a loadable base
-    safetensors the loader picks instead; a PEFT ADAPTER pickle (``adapter_model.bin``), which
-    from_pretrained auto-loads when ``adapter_config.json`` is present, is covered only by
+def _cached_pickle_weight_paths(snap, load_subdirs = ()) -> list:
+    """The pickle weight FILES (as ``Path`` objects under *snap*) a from_pretrained load actually
+    deserializes: at a real load root and with NO loadable safetensors alternative there. A load
+    root is the snapshot root, a directory ``modules.json`` / ``load_subdirs`` declares, or a plain
+    from_pretrained root (holds ``config.json``). A stray pickle in a non-load subdir (``archive/``,
+    ``nemo/``) that no load opens is not a vector, matching the online scan's load-path scoping. Two
+    weight classes are scoped independently: a BASE pickle (``pytorch_model.bin`` ...) is covered by
+    a loadable base safetensors the loader picks instead; a PEFT ADAPTER pickle (``adapter_model.bin``),
+    which from_pretrained auto-loads when ``adapter_config.json`` is present, is covered only by
     ``adapter_model.safetensors`` -- a safetensors base does NOT cover it. A bare adapter or an
-    orphan shard leaves its pickle live."""
+    orphan shard leaves its pickle live. Returns the concrete Paths (not basenames) so the offline
+    verdict cache can hash exactly the files the loader reads and never conflate two module dirs that
+    ship the same pickle basename."""
     roots = _st_load_roots(snap, load_subdirs)
     by_dir_pickle: dict = {}
     by_dir_files: dict = {}  # directory -> {lower-name: Path}
@@ -496,7 +504,7 @@ def _cached_pickle_weight_files(snap, load_subdirs = ()) -> list:
             continue
         base = [n for n in names if _PICKLE_WEIGHT_RE.match(n.lower())]
         if base and not _dir_has_loadable_safetensors(files):
-            hits.update(base)
+            hits.update(files[n.lower()] for n in base)
         # An adapter pickle is deserialized only when from_pretrained auto-detects the adapter
         # (adapter_config.json present) and there is no adapter_model.safetensors to load instead.
         # The safetensors credit is case-SENSITIVE (a mixed-case Adapter_Model.SafeTensors decoy
@@ -508,7 +516,7 @@ def _cached_pickle_weight_files(snap, load_subdirs = ()) -> list:
             and "adapter_config.json" in files
             and _exact_named(files, "adapter_model.safetensors") is None
         ):
-            hits.update(adapter)
+            hits.update(files[n.lower()] for n in adapter)
     # A load-root pickle index (pytorch_model.bin.index.json) can map shards into SUBDIRECTORIES
     # that are not themselves load roots; from_pretrained follows the map and deserializes them,
     # so include those referenced pickle shards (unless a loadable base safetensors at the index
@@ -524,10 +532,87 @@ def _cached_pickle_weight_files(snap, load_subdirs = ()) -> list:
             shard = root_dir.joinpath(*shard_rel.split("/"))
             try:
                 if shard.is_file():
-                    hits.add(shard_rel)
+                    hits.add(shard)
             except OSError:
                 continue
     return sorted(hits)
+
+
+def _snapshot_relative(path, snap) -> str:
+    """*path* as a snapshot-relative posix string, or its basename if it is somehow not under
+    *snap* (only for display / the blocked-file list)."""
+    try:
+        return path.relative_to(snap).as_posix()
+    except ValueError:
+        return path.name
+
+
+def _cached_pickle_weight_files(snap, load_subdirs = ()) -> list:
+    """Snapshot-relative posix names of the load-root pickle weights (see
+    :func:`_cached_pickle_weight_paths`). Names are relative to the snapshot so two module dirs that
+    each ship ``pytorch_model.bin`` are reported (and, in the verdict cache, keyed) distinctly."""
+    return [_snapshot_relative(p, snap) for p in _cached_pickle_weight_paths(snap, load_subdirs)]
+
+
+def _pickle_hash_map(snap, paths):
+    """``{snapshot-relative posix name: sha256}`` for *paths*, or None if any file cannot be hashed
+    (an unreadable pickle must never verify or record as clean)."""
+    from utils.security import embedding_scan_verdicts
+
+    out = {}
+    for p in paths:
+        digest = embedding_scan_verdicts.sha256_file(p)
+        if digest is None:
+            return None
+        out[_snapshot_relative(p, snap)] = digest
+    return out
+
+
+def _matches_clean_verdict(model_name: str, snap, paths) -> bool:
+    """True when a recorded clean Hub verdict covers EXACTLY this load-root pickle set at the active
+    cached commit: same commit, same relative-name set, same sha256 for every file. A missing
+    record, moved commit, changed / added / unreadable pickle, or any error -> False (fail-closed)."""
+    try:
+        from utils.models.model_config import _active_commit
+        from utils.security import embedding_scan_verdicts
+
+        commit = _active_commit(model_name)
+        if not commit:
+            return False
+        recorded = embedding_scan_verdicts.lookup(model_name, commit)
+        if not recorded:
+            return False
+        current = _pickle_hash_map(snap, paths)
+        return current is not None and current == recorded
+    except Exception:
+        return False
+
+
+def record_embedding_verdict(model_name: str, scanned_commit, load_subdirs = ()) -> None:
+    """Record a clean Hub verdict for an embedding repo just loaded ONLINE, so a later offline load
+    of the same content is not fail-closed. Persists the sha256 of every load-root pickle keyed by
+    its snapshot-relative name. Records nothing when the snapshot is missing, the active cached
+    commit differs from the scanned commit (branch moved -> the loaded content was not what HF
+    scanned), there are no load-root pickles (an inert cache is already allowed), or any file cannot
+    be hashed. Never raises into the load path."""
+    try:
+        from utils.models.model_config import _active_commit, _active_snapshot_dir
+        from utils.security import embedding_scan_verdicts
+
+        if not scanned_commit or _active_commit(model_name) != scanned_commit:
+            return
+        snap = _active_snapshot_dir(model_name)
+        if snap is None:
+            return
+        paths = _cached_pickle_weight_paths(snap, load_subdirs)
+        if not paths:
+            return
+        pickles = _pickle_hash_map(snap, paths)
+        if pickles is None:
+            return
+        embedding_scan_verdicts.record_clean(model_name, scanned_commit, pickles)
+    except Exception as exc:
+        logger.debug("Could not record embedding scan verdict for '%s': %s", model_name, exc)
 
 
 def _evaluate_local_only(model_name: str, load_subdirs = ()) -> "FileSecurityDecision":
@@ -548,12 +633,24 @@ def _evaluate_local_only(model_name: str, load_subdirs = ()) -> "FileSecurityDec
     if snap is None:
         return FileSecurityDecision(model_name, False, reason = "offline; nothing cached to scan")
 
-    pickles = _cached_pickle_weight_files(snap, load_subdirs)
-    if not pickles:
+    paths = _cached_pickle_weight_paths(snap, load_subdirs)
+    if not paths:
         return FileSecurityDecision(
             model_name, False, reason = "offline; cached weights are pickle-free (inert)"
         )
 
+    # A pickle model the user already loaded ONLINE (and HF scanned clean) may load offline when
+    # its exact content is unchanged. Allow only when the active cached commit and EVERY load-root
+    # pickle's sha256 match the recorded clean verdict; a missing record, moved commit, hash
+    # mismatch, unreadable file, or any error falls through to the fail-closed block below.
+    if _matches_clean_verdict(model_name, snap, paths):
+        return FileSecurityDecision(
+            model_name,
+            False,
+            reason = "offline; cached pickle weights match a recorded clean Hub scan",
+        )
+
+    pickles = [_snapshot_relative(p, snap) for p in paths]
     names = ", ".join(pickles)
     logger.warning(
         "Blocking offline load of '%s': cached pickle weights cannot be security-scanned "
@@ -573,8 +670,10 @@ def _evaluate_local_only(model_name: str, load_subdirs = ()) -> "FileSecurityDec
 
 
 def _fetch_security_status(model_name: str, hf_token: Optional[str]):
-    """``security_repo_status`` (a dict) or None if unavailable. Hub metadata only;
-    retries once on a transient error, then returns None so the caller fails open.
+    """``(security_repo_status, commit_sha)`` from a single Hub metadata call, or ``(None, None)``
+    if unavailable. The commit is the SHA the scan applies to (used to bind a recorded clean
+    verdict to immutable content). Metadata only; retries once on a transient error, then returns
+    ``(None, None)`` so the caller fails open.
     """
     from huggingface_hub import model_info as hf_model_info
 
@@ -588,7 +687,7 @@ def _fetch_security_status(model_name: str, hf_token: Optional[str]):
                 securityStatus = True,
                 timeout = timeout,
             )
-            return getattr(info, "security_repo_status", None)
+            return getattr(info, "security_repo_status", None), getattr(info, "sha", None)
         except Exception as exc:  # network/offline/gated/404/unsupported-client
             last_exc = exc
             if attempt == 0:
@@ -598,7 +697,7 @@ def _fetch_security_status(model_name: str, hf_token: Optional[str]):
         model_name,
         type(last_exc).__name__ if last_exc else "unknown",
     )
-    return None
+    return None, None
 
 
 def evaluate_file_security(
@@ -644,11 +743,15 @@ def evaluate_file_security(
     if local_only_load:
         return _evaluate_local_only(model_name, load_subdirs)
 
-    status = _fetch_security_status(model_name, hf_token)
+    status, commit = _fetch_security_status(model_name, hf_token)
     if not isinstance(status, dict):
         return FileSecurityDecision(
             model_name, False, reason = "scan unavailable; allowed (fail-open)"
         )
+    # A DEFINITIVE clean verdict (for the durable offline cache) requires a COMPLETED scan, unlike
+    # the block decision which is not gated on scansDone. An in-progress scan is allowed online but
+    # must not be persisted as clean.
+    scans_done = bool(status.get("scansDone"))
 
     # Block a non-``safe`` flagged file scoped to the load-path RCE vector (root-level,
     # code-executing). Not gated on ``scansDone`` (often false even when clean; a flagged
@@ -701,7 +804,13 @@ def evaluate_file_security(
                 model_name,
                 ", ".join(f"{s['path']}({s['level']})" for s in skipped),
             )
-        return FileSecurityDecision(model_name, False, reason = "no unsafe files in the load path")
+        return FileSecurityDecision(
+            model_name,
+            False,
+            reason = "no unsafe files in the load path",
+            commit = commit,
+            scanned_clean = scans_done,
+        )
 
     names = ", ".join(u["path"] for u in unsafe if u["path"]) or "unknown files"
     logger.warning(
@@ -709,9 +818,17 @@ def evaluate_file_security(
         model_name,
         names,
     )
+    # An authoritative unsafe verdict revokes any stale clean record for this repo, so a
+    # now-flagged commit cannot keep loading offline on a previously recorded verdict.
+    try:
+        from utils.security import embedding_scan_verdicts
+        embedding_scan_verdicts.forget(model_name)
+    except Exception:
+        pass
     return FileSecurityDecision(
         model_name,
         True,
         unsafe_files = unsafe,
         reason = f"Hugging Face security scan flagged unsafe files: {names}",
+        commit = commit,
     )
