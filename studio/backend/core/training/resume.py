@@ -60,7 +60,8 @@ def _valid_state_file(path: Path, require_tensor: bool = True) -> bool:
                 return False
         if path.suffix in {".bin", ".pt"}:
             with zipfile.ZipFile(path) as state:
-                names = state.namelist()
+                infos = state.infolist()
+                names = [info.filename for info in infos]
                 data_name = next(
                     (name for name in names if name == "data.pkl" or name.endswith("/data.pkl")),
                     None,
@@ -69,12 +70,19 @@ def _valid_state_file(path: Path, require_tensor: bool = True) -> bool:
                     return False
                 data_prefix = data_name.removesuffix("data.pkl") + "data/"
                 operations = list(pickletools.genops(state.read(data_name)))
-                return (
-                    bool(operations)
-                    and operations[-1][0].name == "STOP"
-                    and (not require_tensor or any(name.startswith(data_prefix) for name in names))
+                if not operations or operations[-1][0].name != "STOP":
+                    return False
+                if not require_tensor:
+                    return True
+                # Require a non-empty tensor record; a zero-byte one fails torch.load.
+                return any(
+                    info.filename.startswith(data_prefix)
+                    and not info.is_dir()
+                    and info.file_size > 0
+                    for info in infos
                 )
-        return True
+        # Unrecognized state-file formats are not usable resume state.
+        return False
     except (OSError, ValueError, zipfile.BadZipFile):
         return False
 
@@ -89,6 +97,27 @@ def _checkpoint_state(path: Path) -> Optional[int]:
         return None
     directory_step = _checkpoint_step(path)
     return step if directory_step < 0 or step == directory_step else None
+
+
+_INDEX_SHARD_SUFFIX = {
+    "model.safetensors.index.json": ".safetensors",
+    "pytorch_model.bin.index.json": ".bin",
+}
+
+
+def _valid_indexed_shard(checkpoint: Path, shard: object, expected_suffix: str) -> bool:
+    # Shard must be a relative, in-format path contained in the checkpoint dir.
+    if not isinstance(shard, str) or not shard:
+        return False
+    if Path(shard).is_absolute() or Path(shard).suffix != expected_suffix:
+        return False
+    try:
+        root = checkpoint.resolve(strict = True)
+        candidate = (checkpoint / shard).resolve(strict = True)
+        candidate.relative_to(root)
+    except (OSError, ValueError):
+        return False
+    return _valid_state_file(candidate)
 
 
 def _has_model_state(path: Path) -> bool:
@@ -107,8 +136,9 @@ def _has_model_state(path: Path) -> bool:
             json.JSONDecodeError,
         ):
             continue
+        expected_suffix = _INDEX_SHARD_SUFFIX[name]
         if shards and all(
-            isinstance(shard, str) and _valid_state_file(path / shard) for shard in shards
+            _valid_indexed_shard(path, shard, expected_suffix) for shard in shards
         ):
             return True
     return False

@@ -209,7 +209,7 @@ async def start_training(
             if not resume_run or not can_resume_run(resume_run):
                 raise HTTPException(
                     status_code = 400,
-                    detail = "Resume checkpoint must belong to a stopped run with saved trainer state.",
+                    detail = "Resume checkpoint must belong to a stopped or errored run with complete saved trainer state.",
                 )
             resume_checkpoint = get_resume_checkpoint_path(resume_output_dir)
             if not resume_checkpoint:

@@ -2100,6 +2100,19 @@ def _run_mlx_training(event_queue, stop_queue, config):
         trainer.save_model = _save_model
 
     # ── 12. Save and finalize ──
+    def _finish_tracking() -> None:
+        # Runs on every save/finalize exit so TB/W&B never leak on early return.
+        if tb_writer is not None:
+            try:
+                tb_writer.close()
+            except Exception:
+                pass
+        if wandb_run is not None:
+            try:
+                wandb_run.finish()
+            except Exception:
+                pass
+
     def _stop_checkpoint_ok() -> bool:
         if _write_mlx_stop_checkpoint(trainer, _opt_ref[0], output_dir):
             return True
@@ -2117,37 +2130,29 @@ def _run_mlx_training(event_queue, stop_queue, config):
         )
         return False
 
-    if trainer.stop_requested:
-        if not _stop_save[0]:
-            # Cancel (save=False): skip saving.
-            _send("complete", output_dir = None, status_message = "Training cancelled")
+    try:
+        if trainer.stop_requested:
+            if not _stop_save[0]:
+                # Cancel (save=False): skip saving.
+                _send("complete", output_dir = None, status_message = "Training cancelled")
+            else:
+                _send("status", status_message = "Saving stopped model...")
+                mx.synchronize()
+                trainer.save_model(output_dir)
+                # Stop-and-save promises a resumable checkpoint, not just model files.
+                if not _stop_checkpoint_ok():
+                    return
+                _send("complete", output_dir = output_dir, status_message = "Training stopped")
         else:
-            _send("status", status_message = "Saving stopped model...")
+            _send("status", status_message = "Saving model...")
             mx.synchronize()
             trainer.save_model(output_dir)
-            # Stop-and-save promises a resumable checkpoint, not just model files.
-            if not _stop_checkpoint_ok():
+            # A save-stop can race the natural final save; it made the same promise.
+            if trainer.stop_requested and _stop_save[0] and not _stop_checkpoint_ok():
                 return
-            _send("complete", output_dir = output_dir, status_message = "Training stopped")
-    else:
-        _send("status", status_message = "Saving model...")
-        mx.synchronize()
-        trainer.save_model(output_dir)
-        # A save-stop can race the natural final save; it made the same promise.
-        if trainer.stop_requested and _stop_save[0] and not _stop_checkpoint_ok():
-            return
-        _send("complete", output_dir = output_dir, status_message = "Training completed")
-
-    if tb_writer is not None:
-        try:
-            tb_writer.close()
-        except Exception:
-            pass
-    if wandb_run is not None:
-        try:
-            wandb_run.finish()
-        except Exception:
-            pass
+            _send("complete", output_dir = output_dir, status_message = "Training completed")
+    finally:
+        _finish_tracking()
 
 
 def _is_current_process_apple_silicon() -> bool:
@@ -3366,6 +3371,10 @@ def _write_mlx_stop_checkpoint(trainer, optimizer, output_dir) -> bool:
     if step <= 0 or optimizer is None:
         return False
     ckpt_dir = Path(output_dir) / f"checkpoint-{step}"
+    if ckpt_dir.is_symlink():
+        # Refuse a symlinked dir: it could redirect writes outside output_dir.
+        logger.error("Refusing to write MLX stop checkpoint through symlink: %s", ckpt_dir)
+        return False
     try:
         ckpt_dir.mkdir(parents = True, exist_ok = True)
         from unsloth_zoo.mlx.utils import (
