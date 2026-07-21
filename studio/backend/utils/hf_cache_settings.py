@@ -78,12 +78,12 @@ def _canonical(path: Path | str) -> Path:
 
 
 def _environment_paths() -> Optional[HuggingFaceCachePaths]:
-    if not _EXPLICIT_CACHE_ENV:
-        return None
     explicit_home = _EXPLICIT_CACHE_ENV.get("HF_HOME")
     explicit_hub = _EXPLICIT_CACHE_ENV.get("HF_HUB_CACHE") or _EXPLICIT_CACHE_ENV.get(
         "HUGGINGFACE_HUB_CACHE"
     )
+    if not explicit_home and not explicit_hub:
+        return None
     explicit_xet = _EXPLICIT_CACHE_ENV.get("HF_XET_CACHE")
     default_home = _default_cache_home()
     hf_home = _canonical(explicit_home) if explicit_home else default_home
@@ -91,7 +91,7 @@ def _environment_paths() -> Optional[HuggingFaceCachePaths]:
     xet = _canonical(explicit_xet) if explicit_xet else hf_home / "xet"
     controlling = next(
         key
-        for key in ("HF_HUB_CACHE", "HUGGINGFACE_HUB_CACHE", "HF_HOME", "HF_XET_CACHE")
+        for key in ("HF_HUB_CACHE", "HUGGINGFACE_HUB_CACHE", "HF_HOME")
         if key in _EXPLICIT_CACHE_ENV
     )
     # Settings describes model downloads, so an explicit hub path is the
@@ -125,9 +125,21 @@ def get_hf_cache_paths() -> HuggingFaceCachePaths:
         return env_paths
     stored = _stored_cache_home()
     if stored is not None:
-        return HuggingFaceCachePaths(stored, stored / "hub", stored / "xet", "studio")
+        xet = _EXPLICIT_CACHE_ENV.get("HF_XET_CACHE")
+        return HuggingFaceCachePaths(
+            stored,
+            stored / "hub",
+            _canonical(xet) if xet else stored / "xet",
+            "studio",
+        )
     home = _default_cache_home()
-    return HuggingFaceCachePaths(home, home / "hub", home / "xet", "default")
+    xet = _EXPLICIT_CACHE_ENV.get("HF_XET_CACHE")
+    return HuggingFaceCachePaths(
+        home,
+        home / "hub",
+        _canonical(xet) if xet else home / "xet",
+        "default",
+    )
 
 
 def active_hf_hub_cache() -> str:

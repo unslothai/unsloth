@@ -461,6 +461,59 @@ def test_download_state_isolated_across_hub_cache_switches(monkeypatch, tmp_path
     assert len(list((tmp_path / "hub-state" / "manifests").rglob("*.json"))) == 2
 
 
+def test_legacy_unscoped_download_state_falls_back_only_for_selected_cache(monkeypatch, tmp_path):
+    monkeypatch.setattr(state_dir, "cache_root", lambda: tmp_path)
+    cache_a = tmp_path / "cache-a"
+    cache_b = tmp_path / "cache-b"
+    monkeypatch.setattr(
+        "utils.hf_cache_settings.get_hf_cache_paths",
+        lambda: SimpleNamespace(hub_cache = cache_a),
+    )
+    manifest = state_dir.manifest_path("model", "Owner/Repo", "Q4_K_M")
+    marker = state_dir.marker_path("model", "Owner/Repo", "Q4_K_M")
+    assert manifest is not None and marker is not None
+    manifest.write_text(
+        json.dumps(
+            {
+                "version": 1,
+                "repo_id": "Owner/Repo",
+                "variant": "Q4_K_M",
+                "expected_files": [{"path": "model.gguf", "size": 10}],
+                "transport": "http",
+            }
+        ),
+        encoding = "utf-8",
+    )
+    marker.write_text(
+        json.dumps({"version": 1, "repo_id": "Owner/Repo", "variant": "Q4_K_M"}),
+        encoding = "utf-8",
+    )
+
+    assert download_manifest.read_manifest("model", "Owner/Repo", "Q4_K_M") is not None
+    assert download_manifest.has_cancel_marker("model", "Owner/Repo", "Q4_K_M")
+    assert list(download_manifest.iter_variant_manifests("model", "Owner/Repo")) == [
+        ("Q4_K_M", manifest)
+    ]
+    assert list(download_manifest.iter_variant_markers("model", "Owner/Repo")) == [
+        ("Q4_K_M", marker)
+    ]
+    assert (
+        download_manifest.read_manifest(
+            "model",
+            "Owner/Repo",
+            "Q4_K_M",
+            hub_cache = cache_b,
+        )
+        is None
+    )
+    assert not download_manifest.has_cancel_marker(
+        "model",
+        "Owner/Repo",
+        "Q4_K_M",
+        hub_cache = cache_b,
+    )
+
+
 class _RecordingLogger:
     def __init__(self):
         self.warnings = []
@@ -2415,7 +2468,7 @@ def test_gguf_variants_partial_marker_overrides_size_only_downloaded(monkeypatch
     monkeypatch.setattr(
         gguf_variants,
         "iter_hf_cache_snapshots",
-        lambda _repo_id: [snapshot],
+        lambda _repo_id, root = None: [snapshot],
     )
     monkeypatch.setattr(
         gguf_variants,
@@ -2432,6 +2485,70 @@ def test_gguf_variants_partial_marker_overrides_size_only_downloaded(monkeypatch
 
     assert result.variants[0].downloaded is False
     assert result.variants[0].partial is True
+
+
+def test_gguf_variants_scopes_partial_state_to_requested_cache(monkeypatch, tmp_path):
+    async def _run_inline(fn, *args, **kwargs):
+        return fn(*args, **kwargs)
+
+    repo_id = "Org/SharedRepo"
+    repo_name = "models--Org--SharedRepo"
+    cache_a = tmp_path / "cache-a"
+    cache_b = tmp_path / "cache-b"
+    repo_a = cache_a / repo_name
+    snapshot_a = repo_a / "snapshots" / "revision"
+    snapshot_a.mkdir(parents = True)
+    (snapshot_a / "model-Q8_0.gguf").write_bytes(b"complete")
+    blobs_b = cache_b / repo_name / "blobs"
+    blobs_b.mkdir(parents = True)
+    (blobs_b / "q8-hash.incomplete").write_bytes(b"partial")
+
+    monkeypatch.setattr(state_dir, "cache_root", lambda: tmp_path / "state")
+    monkeypatch.setattr(gguf_variants.asyncio, "to_thread", _run_inline)
+    monkeypatch.setattr(
+        "utils.hf_cache_settings.get_hf_cache_paths",
+        lambda: SimpleNamespace(hub_cache = cache_b),
+    )
+    assert download_manifest.write_cancel_marker(
+        "model",
+        repo_id,
+        "Q8_0",
+        "http",
+        hub_cache = cache_b,
+    )
+    monkeypatch.setattr(
+        gguf_variants,
+        "list_gguf_variants",
+        lambda *_args, **_kwargs: (
+            [
+                SimpleNamespace(
+                    filename = "model-Q8_0.gguf",
+                    quant = "Q8_0",
+                    display_label = None,
+                    size_bytes = 8,
+                )
+            ],
+            False,
+            [
+                SimpleNamespace(
+                    rfilename = "model-Q8_0.gguf",
+                    size = 8,
+                    lfs = SimpleNamespace(sha256 = "q8-hash"),
+                )
+            ],
+        ),
+    )
+    monkeypatch.setattr(cache_inventory, "all_hf_cache_scans", lambda: [])
+
+    result = asyncio.run(
+        gguf_variants.get_gguf_variants_response(
+            repo_id,
+            local_path = str(repo_a),
+        )
+    )
+
+    assert result.variants[0].downloaded is True
+    assert result.variants[0].partial is False
 
 
 def test_download_registry_repo_keys_are_case_insensitive():

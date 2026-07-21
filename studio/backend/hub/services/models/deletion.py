@@ -317,6 +317,8 @@ def reclaim_replaced_gguf_variant(
     variant: str,
     keep_main_hashes: frozenset[str],
     hf_token: Optional[str] = None,
+    *,
+    hub_cache: Optional[str | Path] = None,
 ) -> dict:
     """Prune stale main-GGUF files for a variant after a replacement verified.
 
@@ -367,12 +369,22 @@ def reclaim_replaced_gguf_variant(
             "reason": "scan_failed",
         }
 
+    if hub_cache is None:
+        from utils.hf_cache_settings import get_hf_cache_paths
+        hub_cache = get_hf_cache_paths().hub_cache
+    try:
+        target_hub_cache = Path(hub_cache).expanduser().resolve(strict = False)
+    except (OSError, RuntimeError, ValueError):
+        target_hub_cache = Path(hub_cache).expanduser()
+
     candidate_repos = [
         repo_info
         for hf_cache in cache_scans
         for repo_info in hf_cache.repos
         if str(getattr(repo_info, "repo_type", "")) == "model"
         and str(getattr(repo_info, "repo_id", "")).lower() == repo_id.lower()
+        and getattr(repo_info, "repo_path", None)
+        and Path(repo_info.repo_path).parent.resolve(strict = False) == target_hub_cache
     ]
     try:
         matched_repo_ids = resolve_destructive_repo_ids(

@@ -9,6 +9,7 @@ import asyncio
 import threading
 import time
 from collections import OrderedDict
+from pathlib import Path
 from typing import NamedTuple, Optional
 
 from fastapi import HTTPException
@@ -22,6 +23,7 @@ from hub.utils.hf_errors import hf_error_status
 from hub.utils.hf_cache_state import (
     INCOMPLETE_SUFFIX,
     iter_destructive_repo_cache_dirs,
+    repo_cache_dir_name,
 )
 from hub.utils.gguf import (
     extract_quant_label,
@@ -233,8 +235,14 @@ def _manifest_variant_blob_hashes(
     variant: str,
     *,
     include_companions: bool = True,
+    repo_cache_dir: Optional[Path] = None,
 ) -> frozenset[str]:
-    manifest = download_manifest.read_manifest("model", repo_id, variant)
+    manifest = download_manifest.read_manifest(
+        "model",
+        repo_id,
+        variant,
+        hub_cache = repo_cache_dir.parent if repo_cache_dir is not None else None,
+    )
     if manifest is None:
         return frozenset()
     variant_key = variant.lower()
@@ -257,6 +265,7 @@ def gguf_variant_blob_hashes(
     *,
     include_companions: bool = True,
     allow_remote: bool = True,
+    repo_cache_dir: Optional[Path] = None,
 ) -> frozenset[str]:
     key = _variant_blob_hash_cache_key(
         repo_id,
@@ -271,9 +280,9 @@ def gguf_variant_blob_hashes(
         repo_id,
         variant,
         include_companions = include_companions,
+        repo_cache_dir = repo_cache_dir,
     )
     if hashes:
-        _variant_hash_cache_set(key, hashes)
         return hashes
     requirement_key = _variant_hash_cache_key(repo_id, variant, hf_token)
     requirement = _variant_requirement_cache_get(requirement_key)
@@ -287,11 +296,22 @@ def gguf_variant_blob_hashes(
     return frozenset()
 
 
-def _partial_transport_for_variant(repo_id: str, variant: str) -> Optional[str]:
-    return hf_cache_scan.partial_transport_for("model", repo_id, variant)
+def _partial_transport_for_variant(
+    repo_id: str,
+    variant: str,
+    repo_cache_dir: Optional[Path] = None,
+) -> Optional[str]:
+    return hf_cache_scan.partial_transport_for(
+        "model",
+        repo_id,
+        variant,
+        repo_cache_dir,
+    )
 
 
-def _local_main_gguf_blobs_by_quant(repo_id: str) -> dict[str, dict[str, set[str]]]:
+def _local_main_gguf_blobs_by_quant(
+    repo_id: str, repo_cache_dir: Optional[Path] = None
+) -> dict[str, dict[str, set[str]]]:
     """Map quant -> repo-relative expected GGUF filename -> cached blob hashes.
 
     Shared companions are copied into each main-quant bucket so update checks can
@@ -313,6 +333,14 @@ def _local_main_gguf_blobs_by_quant(repo_id: str) -> dict[str, dict[str, set[str
                 continue
             if str(getattr(repo_info, "repo_id", "")).lower() != target_lower:
                 continue
+            if repo_cache_dir is not None:
+                try:
+                    if Path(repo_info.repo_path).resolve(strict = False) != repo_cache_dir.resolve(
+                        strict = False
+                    ):
+                        continue
+                except (AttributeError, OSError, RuntimeError, ValueError):
+                    continue
             for path, hashes in cache_inventory._repo_gguf_blob_map(
                 repo_info,
                 include_companions = True,
@@ -425,15 +453,37 @@ def delete_variant_incomplete_blobs_result(
     return VariantIncompleteDeleteResult(deleted = deleted, unresolved = False)
 
 
+def _repo_cache_dir_for_request(repo_id: str, local_path: Optional[str]) -> Path:
+    """Resolve the one Hub repo cache represented by this variant request."""
+    expected_name = repo_cache_dir_name("model", repo_id).lower()
+    if local_path:
+        try:
+            local = Path(local_path).expanduser().resolve(strict = False)
+            for candidate in (local, *local.parents):
+                if candidate.name.lower() == expected_name:
+                    return candidate
+        except (OSError, RuntimeError, ValueError):
+            pass
+    from utils.hf_cache_settings import get_hf_cache_paths
+
+    return get_hf_cache_paths().hub_cache / repo_cache_dir_name("model", repo_id)
+
+
 def _mark_empty_dir_cleanables(
-    repo_id: str, response: GgufVariantsResponse
+    repo_id: str,
+    response: GgufVariantsResponse,
+    repo_cache_dir: Optional[Path] = None,
 ) -> GgufVariantsResponse:
     """Surface empty leftover ``<quant>/`` folders (interrupted downloads) as
     partial so the UI can delete them -- on local/offline paths too, not just a
     remote listing. A listed quant is flipped to partial; an unlisted one is
     appended as a zero-byte cleanable entry."""
     try:
-        empty_labels = list_empty_gguf_variant_dirs(repo_id)
+        empty_labels = (
+            list_empty_gguf_variant_dirs(repo_id, root = repo_cache_dir.parent)
+            if repo_cache_dir is not None
+            else list_empty_gguf_variant_dirs(repo_id)
+        )
     except Exception as e:
         logger.warning(f"Failed to scan empty GGUF variant folders for {repo_id}: {e}")
         return response
@@ -468,6 +518,11 @@ async def get_gguf_variants_response(
     """
 
     def _compute() -> GgufVariantsResponse:
+        repo_cache_dir = (
+            None if is_local_path(repo_id) else _repo_cache_dir_for_request(repo_id, local_path)
+        )
+        hub_cache = repo_cache_dir.parent if repo_cache_dir is not None else None
+
         def _local_response(
             response_repo_id: str, variants, has_vision: bool
         ) -> GgufVariantsResponse:
@@ -511,6 +566,7 @@ async def get_gguf_variants_response(
                         partial_transport = _partial_transport_for_variant(
                             response_repo_id,
                             v.quant,
+                            repo_cache_dir,
                         ),
                     )
                     for v in variants
@@ -532,7 +588,7 @@ async def get_gguf_variants_response(
 
         local_only = prefer_local_cache or offline
         if local_only:
-            cached = list_gguf_variants_from_hf_cache(repo_id)
+            cached = list_gguf_variants_from_hf_cache(repo_id, root = hub_cache)
             if cached is not None:
                 variants, has_vision = cached
                 return _local_response(repo_id, variants, has_vision)
@@ -540,7 +596,7 @@ async def get_gguf_variants_response(
                 variants, has_vision = list_local_gguf_variants(local_path)
                 if variants or has_vision:
                     return _local_response(repo_id, variants, has_vision)
-            partial = list_partial_gguf_variants_from_state(repo_id)
+            partial = list_partial_gguf_variants_from_state(repo_id, hub_cache = hub_cache)
             if partial is not None:
                 variants, has_vision = partial
                 return _partial_local_response(repo_id, variants, has_vision)
@@ -560,11 +616,11 @@ async def get_gguf_variants_response(
         try:
             variants, has_vision, siblings = list_gguf_variants(repo_id, hf_token = hf_token)
         except Exception:
-            cached = list_gguf_variants_from_hf_cache(repo_id)
+            cached = list_gguf_variants_from_hf_cache(repo_id, root = hub_cache)
             if cached is not None:
                 variants, has_vision = cached
                 return _local_response(repo_id, variants, has_vision)
-            partial = list_partial_gguf_variants_from_state(repo_id)
+            partial = list_partial_gguf_variants_from_state(repo_id, hub_cache = hub_cache)
             if partial is not None:
                 variants, has_vision = partial
                 return _partial_local_response(repo_id, variants, has_vision)
@@ -581,7 +637,7 @@ async def get_gguf_variants_response(
         cached_filenames_by_snapshot: list[dict[str, int]] = []
         cached_quant_bytes_by_snapshot: list[dict[str, int]] = []
         if _is_valid_repo_id(repo_id):
-            for snap in iter_hf_cache_snapshots(repo_id):
+            for snap in iter_hf_cache_snapshots(repo_id, root = hub_cache):
                 try:
                     gguf_paths = list(_iter_gguf_paths(snap))
                 except (OSError, RuntimeError, ValueError) as e:
@@ -694,11 +750,20 @@ async def get_gguf_variants_response(
         partial_quants: set[str] = set()
         partial_quant_transports: dict[str, Optional[str]] = {}
         try:
-            incomplete_hashes = download_registry.incomplete_blob_hashes("model", repo_id)
+            incomplete_hashes = download_registry.incomplete_blob_hashes(
+                "model",
+                repo_id,
+                active_only = True,
+                root = hub_cache,
+            )
         except Exception as e:
             logger.warning(f"Failed to compute partial GGUF variants for {repo_id}: {e}")
             incomplete_hashes = set()
-        scan_snapshot_dir = hf_cache_scan.resolve_snapshot_dir_for_scan("model", repo_id)
+        scan_snapshot_dir = hf_cache_scan.resolve_snapshot_dir_for_scan(
+            "model",
+            repo_id,
+            repo_cache_dir,
+        )
         # Manifest + marker + main incomplete-blob check: catches variants whose
         # download was cancelled or whose expected shards are missing/undersized.
         for variant in variants:
@@ -711,6 +776,7 @@ async def get_gguf_variants_response(
                         variant.quant,
                         hf_token,
                         include_companions = False,
+                        repo_cache_dir = repo_cache_dir,
                     )
                 if hf_cache_scan.is_variant_partial(
                     repo_id,
@@ -718,11 +784,13 @@ async def get_gguf_variants_response(
                     scan_snapshot_dir,
                     incomplete_blob_hashes = incomplete_hashes,
                     variant_blob_hashes = variant_hashes,
+                    repo_cache_dir = repo_cache_dir,
                 ):
                     partial_quants.add(variant.quant)
                     partial_quant_transports[variant.quant] = _partial_transport_for_variant(
                         repo_id,
                         variant.quant,
+                        repo_cache_dir,
                     )
             except Exception as e:
                 logger.warning(
@@ -744,10 +812,14 @@ async def get_gguf_variants_response(
                     partial_quants.add(variant.quant)
                     partial_quant_transports.setdefault(
                         variant.quant,
-                        _partial_transport_for_variant(repo_id, variant.quant),
+                        _partial_transport_for_variant(
+                            repo_id,
+                            variant.quant,
+                            repo_cache_dir,
+                        ),
                     )
 
-        local_blobs_by_quant = _local_main_gguf_blobs_by_quant(repo_id)
+        local_blobs_by_quant = _local_main_gguf_blobs_by_quant(repo_id, repo_cache_dir)
 
         def _variant_detail(v) -> GgufVariantDetail:
             is_partial = v.quant in partial_quants
@@ -790,14 +862,20 @@ async def get_gguf_variants_response(
             if skip:
                 raise
             enriched = _mark_empty_dir_cleanables(
-                repo_id, GgufVariantsResponse(repo_id = repo_id, variants = [])
+                repo_id,
+                GgufVariantsResponse(repo_id = repo_id, variants = []),
+                _repo_cache_dir_for_request(repo_id, local_path),
             )
             if enriched.variants:
                 return enriched
             raise
         if skip:
             return response
-        return _mark_empty_dir_cleanables(repo_id, response)
+        return _mark_empty_dir_cleanables(
+            repo_id,
+            response,
+            _repo_cache_dir_for_request(repo_id, local_path),
+        )
 
     try:
         return await asyncio.to_thread(_compute_with_cleanables)

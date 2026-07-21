@@ -113,8 +113,10 @@ def test_explicit_hub_cache_display_wins_over_hf_home(monkeypatch, tmp_path):
     assert hf_home / "hub" in hf_cache_settings.known_hf_hub_caches()
 
 
-def test_xet_only_override_keeps_model_cache_display_on_hf_home(monkeypatch, tmp_path):
+def test_xet_only_override_keeps_model_cache_editable(settings_store, monkeypatch, tmp_path):
     xet_cache = tmp_path / "chunks"
+    stored = tmp_path / "stored-cache"
+    settings_store[hf_cache_settings.CACHE_HOME_SETTING_KEY] = str(stored)
     monkeypatch.setattr(
         hf_cache_settings,
         "_EXPLICIT_CACHE_ENV",
@@ -123,9 +125,16 @@ def test_xet_only_override_keeps_model_cache_display_on_hf_home(monkeypatch, tmp
 
     paths = hf_cache_settings.get_hf_cache_paths()
 
-    assert paths.cache_home == hf_cache_settings._default_cache_home()
-    assert paths.hub_cache == hf_cache_settings._default_cache_home() / "hub"
+    assert paths.cache_home == stored
+    assert paths.hub_cache == stored / "hub"
     assert paths.xet_cache == xet_cache
+    assert paths.editable is True
+
+    selected = tmp_path / "selected-cache"
+    selected.parent.mkdir(exist_ok = True)
+    updated = hf_cache_settings.set_hf_cache_home(str(selected))
+    assert updated.hub_cache == selected / "hub"
+    assert updated.xet_cache == xet_cache
 
 
 def test_worker_environment_is_applied_before_import(monkeypatch, tmp_path):

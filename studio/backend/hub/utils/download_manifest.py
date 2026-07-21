@@ -109,6 +109,56 @@ def _read_state_payload(path: Path) -> Optional[dict]:
     return data if isinstance(data, dict) else None
 
 
+def _legacy_state_applies(
+    path: Path,
+    requested_hub_cache: Optional[str],
+    *,
+    fail_closed: bool = False,
+) -> bool:
+    """Whether an old unscoped state file belongs to the requested cache.
+
+    Transitional files that recorded their cache keep that ownership. Older
+    files with no ownership can only be attributed to the currently selected
+    cache, which matches the single-cache behavior under which they were
+    written without leaking them into remembered inactive caches.
+    """
+    data = _read_state_payload(path)
+    if data is not None:
+        recorded = data.get("hub_cache")
+        if isinstance(recorded, str) and recorded:
+            return _canonical_hub_cache(recorded) == requested_hub_cache
+    elif not fail_closed:
+        return False
+    return requested_hub_cache == _canonical_hub_cache()
+
+
+def _state_read_path(
+    path_factory,
+    repo_type: RepoType,
+    repo_id: str,
+    variant: Optional[str],
+    hub_cache: Optional[str | Path],
+    *,
+    fail_closed: bool = False,
+) -> Optional[Path]:
+    requested = _canonical_hub_cache(hub_cache)
+    scoped = path_factory(repo_type, repo_id, variant, hub_cache = requested)
+    try:
+        if scoped is not None and scoped.is_file():
+            return scoped
+    except OSError:
+        pass
+    legacy = path_factory(repo_type, repo_id, variant)
+    if legacy is None or legacy == scoped:
+        return None
+    try:
+        if not legacy.is_file():
+            return None
+    except OSError:
+        return None
+    return legacy if _legacy_state_applies(legacy, requested, fail_closed = fail_closed) else None
+
+
 def _atomic_write_json(path: Path, payload: dict) -> bool:
     # Per-write uuid suffix so a concurrent caller or a stale tmp from a
     # previous crash cannot collide with the in-flight write.
@@ -205,11 +255,12 @@ def read_manifest(
     ``_MANIFEST_VERSION`` and widen this check) or live under a different
     filename, so an incompatible payload can never mis-classify rows.
     """
-    path = manifest_path(
+    path = _state_read_path(
+        manifest_path,
         repo_type,
         repo_id,
         variant,
-        hub_cache = _canonical_hub_cache(hub_cache),
+        hub_cache,
     )
     if path is None or not path.is_file():
         return None
@@ -377,11 +428,12 @@ def read_cancel_marker_transport(
       ``None`` keeps the neutral "Retry" label.
     * Unknown future versions → ``None`` (unknown layout, unknown transport).
     """
-    path = marker_path(
+    path = _state_read_path(
+        marker_path,
         repo_type,
         repo_id,
         variant,
-        hub_cache = _canonical_hub_cache(hub_cache),
+        hub_cache,
     )
     if path is None or not path.is_file():
         return None
@@ -430,18 +482,28 @@ def clear_cancel_marker(
     download-start (a fresh attempt supersedes prior cancel state) and
     again at successful completion (cleans up if the start clear failed).
     """
+    requested = _canonical_hub_cache(hub_cache)
     path = marker_path(
         repo_type,
         repo_id,
         variant,
-        hub_cache = _canonical_hub_cache(hub_cache),
+        hub_cache = requested,
     )
-    if path is None:
-        return
-    try:
-        path.unlink(missing_ok = True)
-    except OSError as exc:
-        logger.debug("Could not clear cancel marker %s: %s", path, exc)
+    legacy = marker_path(repo_type, repo_id, variant)
+    paths = [path]
+    if (
+        legacy is not None
+        and legacy != path
+        and _legacy_state_applies(legacy, requested, fail_closed = True)
+    ):
+        paths.append(legacy)
+    for target in paths:
+        if target is None:
+            continue
+        try:
+            target.unlink(missing_ok = True)
+        except OSError as exc:
+            logger.debug("Could not clear cancel marker %s: %s", target, exc)
 
 
 def has_cancel_marker(
@@ -452,11 +514,13 @@ def has_cancel_marker(
     hub_cache: Optional[str | Path] = None,
 ) -> bool:
     """Return whether a cancel marker applies to the selected cache."""
-    path = marker_path(
+    path = _state_read_path(
+        marker_path,
         repo_type,
         repo_id,
         variant,
-        hub_cache = _canonical_hub_cache(hub_cache),
+        hub_cache,
+        fail_closed = True,
     )
     try:
         return path is not None and path.is_file()
@@ -471,22 +535,28 @@ def delete_manifest(
     *,
     hub_cache: Optional[str | Path] = None,
 ) -> bool:
+    requested = _canonical_hub_cache(hub_cache)
     path = manifest_path(
         repo_type,
         repo_id,
         variant,
-        hub_cache = _canonical_hub_cache(hub_cache),
+        hub_cache = requested,
     )
-    if path is None:
-        return False
-    try:
-        if not path.is_file():
-            return False
-        path.unlink()
-        return True
-    except OSError as exc:
-        logger.debug("Could not delete manifest %s: %s", path, exc)
-        return False
+    legacy = manifest_path(repo_type, repo_id, variant)
+    paths = [path]
+    if legacy is not None and legacy != path and _legacy_state_applies(legacy, requested):
+        paths.append(legacy)
+    removed = False
+    for target in paths:
+        if target is None:
+            continue
+        try:
+            if target.is_file():
+                target.unlink()
+                removed = True
+        except OSError as exc:
+            logger.debug("Could not delete manifest %s: %s", target, exc)
+    return removed
 
 
 def purge_state(
@@ -561,28 +631,40 @@ def _iter_variant_state_files(
     if parent is None:
         return
     path_factory = marker_path if cancel_markers else manifest_path
+    requested = _canonical_hub_cache(hub_cache)
     scoped_probe = path_factory(
         repo_type,
         repo_id,
         None,
-        hub_cache = _canonical_hub_cache(hub_cache),
+        hub_cache = requested,
     )
     if scoped_probe is None:
         return
     prefix = variant_filename_prefix(repo_type, repo_id)
-    try:
-        entries = list(scoped_probe.parent.iterdir())
-    except OSError:
-        return
-    for entry in entries:
-        if not entry.is_file() or not entry.name.endswith(".json"):
+    seen: set[str] = set()
+    for directory, legacy in ((scoped_probe.parent, False), (parent, True)):
+        if legacy and directory == scoped_probe.parent:
             continue
-        stem = entry.name[: -len(".json")]
-        if not stem.lower().startswith(prefix):
+        try:
+            entries = list(directory.iterdir())
+        except OSError:
             continue
-        fallback = stem[len(prefix) :]
-        if fallback:
-            yield _variant_from_state_file(entry, fallback), entry
+        for entry in entries:
+            if not entry.is_file() or not entry.name.endswith(".json"):
+                continue
+            stem = entry.name[: -len(".json")]
+            if not stem.lower().startswith(prefix) or entry.name in seen:
+                continue
+            if legacy and not _legacy_state_applies(
+                entry,
+                requested,
+                fail_closed = cancel_markers,
+            ):
+                continue
+            fallback = stem[len(prefix) :]
+            if fallback:
+                seen.add(entry.name)
+                yield _variant_from_state_file(entry, fallback), entry
 
 
 def iter_variant_manifests(

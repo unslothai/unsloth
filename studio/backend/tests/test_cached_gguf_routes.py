@@ -727,13 +727,17 @@ def test_gguf_variants_mmproj_does_not_mark_quant_downloaded(monkeypatch, tmp_pa
         "list_gguf_variants",
         lambda repo_id, hf_token = None: (variants, True, []),
     )
-    monkeypatch.setattr(GV, "_local_main_gguf_blobs_by_quant", lambda _repo_id: {})
+    monkeypatch.setattr(
+        GV,
+        "_local_main_gguf_blobs_by_quant",
+        lambda _repo_id, repo_cache_dir = None: {},
+    )
 
     snap = tmp_path / "models--org--repo" / "snapshots" / "rev"
     snap.mkdir(parents = True)
     (snap / "model-Q4_K_M.gguf").write_bytes(b"x" * 10_000)  # real weight, fully present
     (snap / "mmproj-F16.gguf").write_bytes(b"y" * 20_000)  # mmproj adapter, label "F16"
-    monkeypatch.setattr(GV, "iter_hf_cache_snapshots", lambda _repo_id: [snap])
+    monkeypatch.setattr(GV, "iter_hf_cache_snapshots", lambda _repo_id, root = None: [snap])
 
     result = asyncio.run(
         models_route.get_gguf_variants(
@@ -767,12 +771,16 @@ def test_gguf_variants_ignore_big_endian_siblings(monkeypatch, tmp_path):
             siblings,
         ),
     )
-    monkeypatch.setattr(GV, "_local_main_gguf_blobs_by_quant", lambda _repo_id: {})
+    monkeypatch.setattr(
+        GV,
+        "_local_main_gguf_blobs_by_quant",
+        lambda _repo_id, repo_cache_dir = None: {},
+    )
 
     snap = tmp_path / "models--org--repo" / "snapshots" / "rev"
     snap.mkdir(parents = True)
     (snap / "model-Q4_K_M.gguf").write_bytes(b"x" * 10)
-    monkeypatch.setattr(GV, "iter_hf_cache_snapshots", lambda _repo_id: [snap])
+    monkeypatch.setattr(GV, "iter_hf_cache_snapshots", lambda _repo_id, root = None: [snap])
 
     result = asyncio.run(
         models_route.get_gguf_variants(
@@ -799,12 +807,16 @@ def test_gguf_variants_cached_big_endian_does_not_satisfy_variant(monkeypatch, t
         "list_gguf_variants",
         lambda repo_id, hf_token = None: (variants, False, []),
     )
-    monkeypatch.setattr(GV, "_local_main_gguf_blobs_by_quant", lambda _repo_id: {})
+    monkeypatch.setattr(
+        GV,
+        "_local_main_gguf_blobs_by_quant",
+        lambda _repo_id, repo_cache_dir = None: {},
+    )
 
     snap = tmp_path / "models--org--repo" / "snapshots" / "rev"
     snap.mkdir(parents = True)
     (snap / "model-Q4_K_M-be.gguf").write_bytes(b"x" * 10)
-    monkeypatch.setattr(GV, "iter_hf_cache_snapshots", lambda _repo_id: [snap])
+    monkeypatch.setattr(GV, "iter_hf_cache_snapshots", lambda _repo_id, root = None: [snap])
 
     result = asyncio.run(
         models_route.get_gguf_variants(
