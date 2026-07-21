@@ -16,8 +16,10 @@ predecessor PR reverted:
     llama.cpp validation probe (stories260K) never appear in the picker. The
     probe GGUF is primed into the HF cache by the CI job, so "absent" proves
     "hidden", not "not downloaded" (HARD).
-  - Legacy migration: a pre-feature unsloth_load_settings store migrates once into
-    the versioned unsloth_model_configs map with values preserved (best-effort).
+  - Legacy migration is idempotent: a pre-feature unsloth_load_settings store
+    migrates once into the versioned unsloth_model_configs map with the value
+    preserved, and a second reload with a fresh legacy seed present does not
+    re-migrate, duplicate, or clobber (gates under STUDIO_UI_STRICT via soft_fail).
   - Advanced settings persist: KV cache dtype / tensor-parallel toggled under
     Advanced + Remember land in unsloth_model_configs (best-effort).
 
