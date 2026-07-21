@@ -104,7 +104,13 @@ def _install_grouped_mm_cpu_fallback(torch_mod, logger, label):
 
     _gm_lib = torch_mod.library.Library("aten", "IMPL")
 
-    def _grouped_mm_safe_impl(self, mat2, offs = None, bias = None, out_dtype = None):
+    def _grouped_mm_safe_impl(
+        self,
+        mat2,
+        offs = None,
+        bias = None,
+        out_dtype = None,
+    ):
         """Python mm/bmm fallback for _grouped_mm on gfx120X (null HIP kernel, ROCm <= 7.12)."""
         _t = torch_mod
         if offs is None:
@@ -155,6 +161,7 @@ def _install_grouped_mm_cpu_fallback(torch_mod, logger, label):
         label,
     )
     return _gm_lib
+
 
 # Subprocesses don't inherit os.add_dll_directory registrations. Replicate
 # main.py's Windows ROCm DLL setup so the first `import torch` finds
@@ -2793,9 +2800,7 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
                         _torch_lin, logger, "Linux ROCm gfx120X"
                     )
         except Exception as _gm_lin_exc:
-            logger.warning(
-                "Linux ROCm gfx120X: could not patch _grouped_mm: %s", _gm_lin_exc
-            )
+            logger.warning("Linux ROCm gfx120X: could not patch _grouped_mm: %s", _gm_lin_exc)
 
     # ── 1g. ROCm OOM guard ──
     # On ROCm, exhausting VRAM can hang the HIP driver instead of raising.
