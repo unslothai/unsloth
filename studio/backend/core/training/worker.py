@@ -1469,6 +1469,10 @@ def _run_mlx_training(event_queue, stop_queue, config):
         message = "LoftQ is not supported for MLX training yet."
         _send("error", error = message)
         raise NotImplementedError(message)
+    if config.get("use_dora"):
+        message = "DoRA is not supported for MLX training yet."
+        _send("error", error = message)
+        raise NotImplementedError(message)
     if config.get("is_embedding"):
         message = "Embedding model training is not supported for MLX training yet."
         _send("error", error = message)
@@ -3142,6 +3146,7 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
                 use_gradient_checkpointing = config.get("gradient_checkpointing", "unsloth"),
                 use_rslora = config.get("use_rslora", False),
                 use_loftq = config.get("use_loftq", False),
+                use_dora = config.get("use_dora", False),
             )
         elif use_lora:
             _send_status(event_queue, "Configuring LoRA adapters...")
@@ -3158,6 +3163,7 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
                 use_gradient_checkpointing = config.get("gradient_checkpointing", "unsloth"),
                 use_rslora = config.get("use_rslora", False),
                 use_loftq = config.get("use_loftq", False),
+                use_dora = config.get("use_dora", False),
             )
         else:
             _send_status(event_queue, "Preparing model for full finetuning...")
@@ -3586,6 +3592,7 @@ def _run_embedding_training(event_queue: Any, stop_queue: Any, config: dict) -> 
                 use_gradient_checkpointing = gradient_checkpointing,
                 random_state = config.get("random_seed", 3407),
                 use_rslora = config.get("use_rslora", False),
+                use_dora = config.get("use_dora", False),
                 loftq_config = {"loftq_bits": 4, "loftq_iter": 1}
                 if config.get("use_loftq")
                 else None,

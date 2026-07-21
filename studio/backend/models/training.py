@@ -470,6 +470,7 @@ class TrainingStartRequest(BaseModel):
     gradient_checkpointing: str = Field("", description = "Gradient checkpointing setting")
     use_rslora: bool = Field(False, description = "Use RSLoRA")
     use_loftq: bool = Field(False, description = "Use LoftQ")
+    use_dora: bool = Field(False, description = "Use DoRA")
     train_on_completions: bool = Field(False, description = "Train on completions only")
 
     # Vision-specific LoRA parameters

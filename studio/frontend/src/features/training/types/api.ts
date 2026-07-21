@@ -54,6 +54,7 @@ export interface TrainingStartRequest {
   gradient_checkpointing: string;
   use_rslora: boolean;
   use_loftq: boolean;
+  use_dora: boolean;
   train_on_completions: boolean;
   finetune_vision_layers: boolean;
   finetune_language_layers: boolean;

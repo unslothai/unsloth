@@ -683,7 +683,7 @@ export function ParamsSection(): ReactElement {
                   )}
 
                   {/* LoRA variant */}
-                  <div className="flex gap-2">
+                  <div className="grid grid-cols-2 gap-2">
                     {(
                       [
                         {
@@ -701,13 +701,18 @@ export function ParamsSection(): ReactElement {
                           label: "LoftQ",
                           desc: t("studio.params.memoryEfficient"),
                         },
+                        {
+                          value: "dora",
+                          label: "DoRA",
+                          desc: t("studio.params.weightDecomposed"),
+                        },
                       ] as const
                     ).map((opt) => (
                       <button
                         key={opt.value}
                         type="button"
                         onClick={() => store.setLoraVariant(opt.value)}
-                        className={`flex-1 corner-squircle rounded-xl border px-3 py-2 text-left transition-colors cursor-pointer ${
+                        className={`corner-squircle rounded-xl border px-3 py-2 text-left transition-colors cursor-pointer ${
                           store.loraVariant === opt.value
                             ? "border-ring-strong bg-primary/5"
                             : "border-border hover:border-foreground/20"

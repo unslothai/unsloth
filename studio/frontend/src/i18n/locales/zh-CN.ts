@@ -826,6 +826,7 @@ export const zhCN = {
       trainWithLora: "使用 LoRA 训练",
       stableRank: "稳定 Rank",
       memoryEfficient: "节省内存",
+      weightDecomposed: "权重分解",
       optimization: "优化",
       schedule: "计划",
       memory: "内存",

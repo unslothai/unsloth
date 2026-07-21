@@ -219,6 +219,7 @@ def run(args):
         random_state = args.random_state,
         use_rslora = args.use_rslora,
         loftq_config = args.loftq_config,
+        use_dora = args.use_dora,
     )
 
     alpaca_prompt = """Below is an instruction that describes a task, paired with an input that provides further context. Write a response that appropriately completes the request.
@@ -373,6 +374,11 @@ if __name__ == "__main__":
         type = str,
         default = None,
         help = "Configuration for LoftQ",
+    )
+    lora_group.add_argument(
+        "--use_dora",
+        action = "store_true",
+        help = "Use DoRA (Weight-Decomposed LoRA)",
     )
 
     training_group = parser.add_argument_group("🎓 Training Options")
