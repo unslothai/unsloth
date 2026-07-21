@@ -115,7 +115,10 @@ def _installer_script() -> Optional[Path]:
         return Path(env)
     here = Path(__file__).resolve()
     for up in here.parents:
-        for cand in (up / "install_llama_prebuilt.py", up / "studio" / "install_llama_prebuilt.py"):
+        for cand in (
+            up / "install_llama_prebuilt.py",
+            up / "studio" / "install_llama_prebuilt.py",
+        ):
             if cand.is_file():
                 return cand
     return None
@@ -174,7 +177,9 @@ def _installed_build_number(binary: Optional[str]) -> Optional[int]:
     if not binary:
         return None
     try:
-        proc = subprocess.run([binary, "--version"], capture_output = True, text = True, timeout = 20)
+        proc = subprocess.run(
+            [binary, "--version"], capture_output = True, text = True, timeout = 20
+        )
     except Exception:  # pragma: no cover - defensive
         return None
     m = re.search(r"version:\s*(\d+)", (proc.stderr or "") + (proc.stdout or ""))
@@ -302,11 +307,15 @@ def _source_build_status(binary: str, *, force_refresh: bool) -> Optional[dict]:
         asset_name = res.get("asset")
         if isinstance(asset_name, str) and asset_name:
             try:
-                assets = latest_release_assets(res.get("repo"), force_refresh = force_refresh)
+                assets = latest_release_assets(
+                    res.get("repo"), force_refresh = force_refresh
+                )
                 if assets:
                     update_size_bytes = assets.get(asset_name)
             except Exception as exc:  # pragma: no cover - network defensive
-                logger.debug("llama update: source-build size lookup failed", error = str(exc))
+                logger.debug(
+                    "llama update: source-build size lookup failed", error = str(exc)
+                )
     with _job_lock:
         job = dict(_job)
     return {
@@ -495,7 +504,8 @@ def _run_update(
             backend = get_llama_cpp_backend()
         except Exception as exc:
             logger.debug(
-                "llama update: backend unavailable, skipping load coordination", error = str(exc)
+                "llama update: backend unavailable, skipping load coordination",
+                error = str(exc),
             )
             backend = None
 
@@ -565,7 +575,9 @@ def _run_update(
                 m = _PROGRESS_LINE_RE.search(line)
                 if m is None:
                     continue
-                fraction = min(float(m.group(1)) / 100.0, 1.0) * _DOWNLOAD_PROGRESS_CEILING
+                fraction = (
+                    min(float(m.group(1)) / 100.0, 1.0) * _DOWNLOAD_PROGRESS_CEILING
+                )
                 with _job_lock:
                     _job["progress"] = max(_job.get("progress") or 0.0, fraction)
             returncode = proc.wait()
@@ -583,7 +595,9 @@ def _run_update(
         try:
             latest_published_release(repo, force_refresh = True)
         except Exception as exc:  # pragma: no cover - network defensive
-            logger.debug("llama update: post-install freshness refresh failed", error = str(exc))
+            logger.debug(
+                "llama update: post-install freshness refresh failed", error = str(exc)
+            )
         new_marker = read_install_marker(_find_binary())
         new_tag = (new_marker or {}).get("release_tag") or (new_marker or {}).get("tag")
 
@@ -595,7 +609,9 @@ def _run_update(
             and (new_marker or {}).get("published_repo") == repo
             and new_tag != pin_release_tag
         ):
-            raise RuntimeError(f"pinned release {pin_release_tag} but installer produced {new_tag}")
+            raise RuntimeError(
+                f"pinned release {pin_release_tag} but installer produced {new_tag}"
+            )
 
         with _job_lock:
             _job.update(

@@ -40,7 +40,9 @@ def tools_force_disabled() -> Iterator[None]:
 
 def set_tool_policy(value: Optional[bool]) -> None:
     if value is not None and not isinstance(value, bool):
-        raise TypeError(f"tool_policy must be Optional[bool], got {type(value).__name__}")
+        raise TypeError(
+            f"tool_policy must be Optional[bool], got {type(value).__name__}"
+        )
     global _tool_policy
     _tool_policy = value
 

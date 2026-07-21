@@ -61,7 +61,9 @@ class TestBuildUvCmdTorchBackend:
         torch+cpu), defeating the pin."""
         for pin_flag in ("--index-url", "--default-index"):
             with mock.patch.dict(os.environ, {"UV_TORCH_BACKEND": "cpu"}):
-                cmd = self._call(("torch", pin_flag, "https://download.pytorch.org/whl/cu128"))
+                cmd = self._call(
+                    ("torch", pin_flag, "https://download.pytorch.org/whl/cu128")
+                )
             assert not any(
                 a.startswith("--torch-backend") for a in cmd
             ), f"{pin_flag} command must not carry --torch-backend, got: {cmd}"
@@ -232,12 +234,16 @@ class TestPinnedIndexClearsUvEnv:
         ):
             env = ips._install_env_for_cmd(cmd)
         assert env is not None
-        assert env.get("PATH_SENTINEL_XYZ") == "keepme", "only uv index vars are removed"
+        assert (
+            env.get("PATH_SENTINEL_XYZ") == "keepme"
+        ), "only uv index vars are removed"
 
     def test_pinned_cmd_strips_pip_extra_index_url(self):
         """PIP_EXTRA_INDEX_URL is stripped for pinned commands so the pip
         fallback cannot satisfy torch from an inherited extra index."""
-        with mock.patch.dict(os.environ, {"PIP_EXTRA_INDEX_URL": "https://mirror/simple"}):
+        with mock.patch.dict(
+            os.environ, {"PIP_EXTRA_INDEX_URL": "https://mirror/simple"}
+        ):
             env = ips._install_env_for_cmd(
                 ["pip", "install", "torch", "--index-url", "https://x/cu128"]
             )

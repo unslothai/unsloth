@@ -33,10 +33,14 @@ def client(monkeypatch):
         calls["enabled"] = bool(value)
         return bool(value)
 
-    monkeypatch.setattr(settings, "get_preview_sharing_enabled", lambda: calls["enabled"])
+    monkeypatch.setattr(
+        settings, "get_preview_sharing_enabled", lambda: calls["enabled"]
+    )
     monkeypatch.setattr(settings, "set_preview_sharing_enabled", _set)
     monkeypatch.setattr(
-        settings, "rotate_preview_link_secret", lambda: calls.__setitem__("rotated", True)
+        settings,
+        "rotate_preview_link_secret",
+        lambda: calls.__setitem__("rotated", True),
     )
 
     app = FastAPI()

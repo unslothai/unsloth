@@ -18,7 +18,10 @@ from __future__ import annotations
 
 import pytest
 
-from utils.datasets.completion_masking import apply_completion_masking, lookup_manual_markers
+from utils.datasets.completion_masking import (
+    apply_completion_masking,
+    lookup_manual_markers,
+)
 from utils.datasets.model_mappings import TEMPLATE_TO_RESPONSES_MAPPER
 
 
@@ -153,7 +156,9 @@ def test_application_failure_propagates_not_fallback():
         raise RuntimeError("dataset map worker crashed")
 
     with pytest.raises(RuntimeError, match = "dataset map worker crashed"):
-        apply_completion_masking(_Trainer(), "LiquidAI/LFM2-8B-A1B", train_fn, detect_fn = _detect_ok)
+        apply_completion_masking(
+            _Trainer(), "LiquidAI/LFM2-8B-A1B", train_fn, detect_fn = _detect_ok
+        )
 
 
 def test_preset_tokenizer_markers_used_directly():
@@ -179,7 +184,11 @@ def test_table_miss_warns_and_disables_without_crashing():
     notes = _Notes()
 
     result, applied = apply_completion_masking(
-        trainer, "some-org/not-in-any-mapper", train_fn, notify = notes, detect_fn = _detect_fail
+        trainer,
+        "some-org/not-in-any-mapper",
+        train_fn,
+        notify = notes,
+        detect_fn = _detect_fail,
     )
 
     assert applied is False
@@ -204,7 +213,9 @@ def test_num_proc_forwarded_only_when_given():
     assert train_fn.calls[0]["num_proc"] == 4
 
     train_fn = _Recorder()
-    apply_completion_masking(_Trainer(), "unsloth/Qwen3-0.6B", train_fn, detect_fn = _detect_ok)
+    apply_completion_masking(
+        _Trainer(), "unsloth/Qwen3-0.6B", train_fn, detect_fn = _detect_ok
+    )
     assert train_fn.calls == [dict(_AUTO)]
 
 

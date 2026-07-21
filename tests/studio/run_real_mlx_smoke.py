@@ -52,7 +52,9 @@ def _peak_gpu_gb() -> float:
     if not mx.metal.is_available():
         return 0.0
     # Newer MLX moved get_peak_memory to top-level; fall back to mx.metal.
-    getter = getattr(mx, "get_peak_memory", None) or getattr(mx.metal, "get_peak_memory", None)
+    getter = getattr(mx, "get_peak_memory", None) or getattr(
+        mx.metal, "get_peak_memory", None
+    )
     if getter is None:
         return 0.0
     try:
@@ -128,7 +130,9 @@ def _compute_loss_and_grad_norm(model, tokenizer, text: str) -> tuple[float, flo
     return float(loss_val.item()), float(mx.sqrt(norm_sq).item())
 
 
-def _teacher_forced_completion_loss(model, tokenizer, prompt: str, completion: str) -> float:
+def _teacher_forced_completion_loss(
+    model, tokenizer, prompt: str, completion: str
+) -> float:
     """Mean teacher-forced next-token CE on `completion` given `prompt`.
 
     Decouples the memorisation check from flaky greedy-decode geometry:
@@ -153,7 +157,9 @@ def _teacher_forced_completion_loss(model, tokenizer, prompt: str, completion: s
     start = len(prompt_ids) - 1
     completion_logits = logits[:, start:, :]
     completion_targets = targets[:, start:]
-    loss = nn.losses.cross_entropy(completion_logits, completion_targets, reduction = "mean")
+    loss = nn.losses.cross_entropy(
+        completion_logits, completion_targets, reduction = "mean"
+    )
     return float(loss.item())
 
 
@@ -308,7 +314,8 @@ def cmd_train(args) -> int:
     ), f"expected {expected_logged_steps} logged steps, got {losses_per_step}"
     if "train_steps" in train_result:
         assert int(train_result["train_steps"]) == expected_logged_steps, (
-            f"expected train_steps={expected_logged_steps}, got " f"{train_result['train_steps']}"
+            f"expected train_steps={expected_logged_steps}, got "
+            f"{train_result['train_steps']}"
         )
     for i, l in enumerate(losses_per_step):
         # Allow exact 0.0: fp16 loss underflows once the LoRA memorises the
@@ -497,7 +504,9 @@ def cmd_reload(args) -> int:
             in_mem_loss = None
     metrics["in_memory_generation_ref"] = in_mem_out
     metrics["in_memory_post_train_loss"] = in_mem_loss
-    metrics["reload_completion_matches_in_memory"] = in_mem_out is not None and out == in_mem_out
+    metrics["reload_completion_matches_in_memory"] = (
+        in_mem_out is not None and out == in_mem_out
+    )
     if isinstance(in_mem_loss, (int, float)) and math.isfinite(in_mem_loss):
         reload_loss, _ = _compute_loss_and_grad_norm(m, t, TRAIN_TEXT)
         metrics["reload_post_train_loss"] = round(reload_loss, 4)
@@ -510,7 +519,8 @@ def cmd_reload(args) -> int:
         # Fallback when train_metrics.json is missing: gate on non-empty output.
         body = out.replace(PROMPT, "", 1).strip()
         assert len(body) >= 4, (
-            f"reload {args.format!r} produced no usable output for " f"{PROMPT!r}: {out!r}"
+            f"reload {args.format!r} produced no usable output for "
+            f"{PROMPT!r}: {out!r}"
         )
 
     metrics["final_peak_gpu_gb"] = round(_peak_gpu_gb(), 3)
@@ -616,8 +626,14 @@ def _reload_gguf(save_dir: Path, metrics: dict) -> int:
                 return stream or ""
 
             print(f"  [reload:gguf] TIMEOUT running: {' '.join(argv)}", flush = True)
-            print(f"  [reload:gguf] TIMEOUT stdout:\n{_decode(exc.stdout)[:1000]}", flush = True)
-            print(f"  [reload:gguf] TIMEOUT stderr:\n{_decode(exc.stderr)[:1000]}", flush = True)
+            print(
+                f"  [reload:gguf] TIMEOUT stdout:\n{_decode(exc.stdout)[:1000]}",
+                flush = True,
+            )
+            print(
+                f"  [reload:gguf] TIMEOUT stderr:\n{_decode(exc.stderr)[:1000]}",
+                flush = True,
+            )
             raise
 
     metrics["llama_cli_returncode"] = proc.returncode
@@ -626,14 +642,17 @@ def _reload_gguf(save_dir: Path, metrics: dict) -> int:
 
     print(f"  [reload:gguf] stdout (head):\n{proc.stdout[:800]}", flush = True)
     if proc.returncode != 0:
-        raise SystemExit(f"llama-cli exit {proc.returncode}; stderr head: {proc.stderr[:400]}")
+        raise SystemExit(
+            f"llama-cli exit {proc.returncode}; stderr head: {proc.stderr[:400]}"
+        )
     # llama.cpp tokenises/samples differently than mlx_lm, so the GGUF
     # completion needn't match. Require non-empty output to catch real
     # save/reload corruption; record EXPECT_IN_OUTPUT without gating on it.
     body = (proc.stdout or "").replace(PROMPT, "", 1).strip()
     metrics["gguf_has_expected"] = EXPECT_IN_OUTPUT in (proc.stdout or "")
     assert len(body) >= 4, (
-        f"GGUF reload produced no usable output for {PROMPT!r}: " f"{proc.stdout[:400]!r}"
+        f"GGUF reload produced no usable output for {PROMPT!r}: "
+        f"{proc.stdout[:400]!r}"
     )
 
     metrics["final_peak_rss_gb"] = round(_peak_rss_gb(), 3)

@@ -144,7 +144,9 @@ _BLOCKED_COMMANDS = (
 )
 
 
-_SHELL_SEPARATORS = frozenset({";", "&&", "||", "|", "&", "\n", "(", ")", "`", "{", "}"})
+_SHELL_SEPARATORS = frozenset(
+    {";", "&&", "||", "|", "&", "\n", "(", ")", "`", "{", "}"}
+)
 # Bash keywords starting a new command position (then $cmd, do $cmd, etc.).
 _SHELL_KEYWORDS_AS_SEP = frozenset({"then", "do", "else", "elif"})
 # Wrappers whose next non-flag argument is the command Bash will exec.
@@ -302,7 +304,9 @@ def _find_blocked_commands(command: str) -> set[str]:
         tok_lower = token.lower()
         # Match -c exactly, or combined flags ending in c (e.g. -lc, -xc)
         is_unix_c = tok_lower == "-c" or (
-            tok_lower.startswith("-") and tok_lower.endswith("c") and not tok_lower.startswith("--")
+            tok_lower.startswith("-")
+            and tok_lower.endswith("c")
+            and not tok_lower.startswith("--")
         )
         is_win_c = tok_lower == "/c"
         if not (is_unix_c or is_win_c) or i < 1 or i + 1 >= len(tokens):
@@ -327,7 +331,9 @@ def _find_blocked_commands(command: str) -> set[str]:
 
 # Directory holding the sandbox ``sitecustomize.py`` shim (code-interpreter
 # path remap); placed on the sandboxed child's PYTHONPATH in _build_safe_env.
-_SANDBOX_SITE_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "sandbox_site")
+_SANDBOX_SITE_DIR = os.path.join(
+    os.path.dirname(os.path.abspath(__file__)), "sandbox_site"
+)
 # ── "Approve for me" (permission_mode="auto") safety detection ──────────────
 # Auto mode pauses only calls classified here as potentially unsafe. The sandbox
 # and hard blocks (blocklist, rlimits) still apply at run time; this gate only
@@ -422,7 +428,14 @@ _AUTO_UNSAFE_COMMAND_FLAGS = {
     # --files0-from=F makes sort read the NUL-separated list of input files
     # named in F, so a crafted list reads arbitrary host files indirectly.
     "sort": frozenset(
-        {"-o", "--output", "--compress-program", "-T", "--temporary-directory", "--files0-from"}
+        {
+            "-o",
+            "--output",
+            "--compress-program",
+            "-T",
+            "--temporary-directory",
+            "--files0-from",
+        }
     ),
     "tree": frozenset({"-o"}),
     "xxd": frozenset({"-r"}),
@@ -471,7 +484,9 @@ _AUTO_UNSAFE_COMMAND_FLAGS = {
     ),
     # fd -x/--exec/-X/--exec-batch run a command per result;
     # --base-directory/--search-path move the search root outside the workdir.
-    "fd": frozenset({"-x", "--exec", "-X", "--exec-batch", "--base-directory", "--search-path"}),
+    "fd": frozenset(
+        {"-x", "--exec", "-X", "--exec-batch", "--base-directory", "--search-path"}
+    ),
     # date -s/--set writes the clock; display forms (+FORMAT, -d/-u/-R/-r) read.
     "date": frozenset({"-s", "--set"}),
     # file -C/--compile writes a compiled .mgc magic database; ident forms read.
@@ -485,7 +500,9 @@ _AUTO_UNSAFE_COMMAND_FLAGS = {
 _AUTO_ARG_SENSITIVE_COMMANDS = frozenset({"hostname", "date"})
 # date display flags taking a value token (-d STRING, -r FILE, -f FILE); the
 # value is not a clock-setting positional, so it is skipped.
-_DATE_DISPLAY_VALUE_FLAGS = frozenset({"-d", "--date", "-r", "--reference", "-f", "--file"})
+_DATE_DISPLAY_VALUE_FLAGS = frozenset(
+    {"-d", "--date", "-r", "--reference", "-f", "--file"}
+)
 # Commands that write their 2nd positional (uniq [INPUT [OUTPUT]], xxd [infile
 # [outfile]]): the 1st file reads to stdout, but a second file positional
 # overwrites it, like `sort -o`.
@@ -495,14 +512,29 @@ _AUTO_SECOND_POSITIONAL_WRITES = frozenset({"uniq", "xxd"})
 # not miscounted as the output-file positional, and, conversely, a file that is
 # literally named with digits (uniq 123 out) is still counted.
 _SECOND_POSITIONAL_VALUE_FLAGS = {
-    "uniq": frozenset({"-f", "--skip-fields", "-s", "--skip-chars", "-w", "--check-chars"}),
+    "uniq": frozenset(
+        {"-f", "--skip-fields", "-s", "--skip-chars", "-w", "--check-chars"}
+    ),
     "xxd": frozenset(
-        {"-c", "--cols", "-s", "--seek", "-l", "--len", "-g", "--groupsize", "-o", "--offset"}
+        {
+            "-c",
+            "--cols",
+            "-s",
+            "--seek",
+            "-l",
+            "--len",
+            "-g",
+            "--groupsize",
+            "-o",
+            "--offset",
+        }
     ),
 }
 # find/fd group with (...) which resets command context, so scan every token for
 # these once find/fd appears anywhere.
-_AUTO_UNSAFE_FIND_LIKE_FLAGS = _AUTO_UNSAFE_COMMAND_FLAGS["find"] | _AUTO_UNSAFE_COMMAND_FLAGS["fd"]
+_AUTO_UNSAFE_FIND_LIKE_FLAGS = (
+    _AUTO_UNSAFE_COMMAND_FLAGS["find"] | _AUTO_UNSAFE_COMMAND_FLAGS["fd"]
+)
 # Recursive readers with an absolute-path target escape the workdir onto host
 # files (grep -R TOKEN /home, rg TOKEN /), so they ask.
 _AUTO_RECURSIVE_SEARCH = frozenset({"grep", "egrep", "fgrep", "rg", "ug", "find", "fd"})
@@ -762,7 +794,9 @@ _AUTO_UNSAFE_PY_WRITE_METHODS = frozenset(
 # Archive / compressed-file constructors taking the mode as their 2nd arg like
 # open: ZipFile(name, "w") / gzip.GzipFile(name, "w") write, so gated only in
 # write mode (reading a .gz is fine, so the modules are not blanket-unsafe).
-_ARCHIVE_CTOR_NAMES = frozenset({"ZipFile", "TarFile", "GzipFile", "BZ2File", "LZMAFile"})
+_ARCHIVE_CTOR_NAMES = frozenset(
+    {"ZipFile", "TarFile", "GzipFile", "BZ2File", "LZMAFile"}
+)
 # The stdlib module each archive constructor is imported from.
 _ARCHIVE_CTOR_MODULES = {
     "zipfile": "ZipFile",
@@ -1002,7 +1036,9 @@ def _expand_shell_assignments(command: str) -> str:
         var, is_global, pat, rep = m.group(1), m.group(2), m.group(3), m.group(4)
         if var not in env or not pat:
             return m.group(0)
-        return env[var].replace(pat, rep) if is_global else env[var].replace(pat, rep, 1)
+        return (
+            env[var].replace(pat, rep) if is_global else env[var].replace(pat, rep, 1)
+        )
 
     def repl_case(m):
         var, op = m.group(1), m.group(2)
@@ -1025,7 +1061,9 @@ def _expand_shell_assignments(command: str) -> str:
     command = _SHELL_PARAM_INDIRECT_RE.sub(repl_indirect, command)
     command = _SHELL_PARAM_REPL_RE.sub(repl_pattern, command)
     command = _SHELL_PARAM_CASE_RE.sub(repl_case, command)
-    return _SHELL_VAR_RE.sub(lambda m: env.get(m.group(1) or m.group(2), m.group(0)), command)
+    return _SHELL_VAR_RE.sub(
+        lambda m: env.get(m.group(1) or m.group(2), m.group(0)), command
+    )
 
 
 def _expand_param_defaults(command: str) -> str:
@@ -1164,7 +1202,15 @@ _PATH_CTORS = (
 # (os.path.abspath('/etc') -> /etc, Path('/etc').resolve() -> /etc), so folding
 # through them keeps a sensitive root visible to the scan.
 _PATH_PASSTHROUGH_ATTRS = frozenset(
-    {"abspath", "normpath", "realpath", "expanduser", "expandvars", "resolve", "absolute"}
+    {
+        "abspath",
+        "normpath",
+        "realpath",
+        "expanduser",
+        "expandvars",
+        "resolve",
+        "absolute",
+    }
 )
 # pathlib methods that rewrite only the final path component, so the sensitive
 # target is never spelled out as a literal (Path('/etc/x').with_name('passwd')
@@ -1267,12 +1313,18 @@ def _folded_path(
                 parts = [base if base is not None else "\x00"]
                 parts += [(fold(a) or "\x00") for a in node.args]
                 return "/".join(parts)
-            if isinstance(func, ast.Attribute) and func.attr in ("glob", "rglob", "iglob"):
+            if isinstance(func, ast.Attribute) and func.attr in (
+                "glob",
+                "rglob",
+                "iglob",
+            ):
                 # Path('/etc').glob('passw?') -> the receiver dir joined with the
                 # glob pattern; _glob_token_sensitive then tests /etc/passw?.
                 base = fold(func.value)
                 pattern = fold(node.args[0]) if node.args else "\x00"
-                return (base if base is not None else "\x00") + "/" + (pattern or "\x00")
+                return (
+                    (base if base is not None else "\x00") + "/" + (pattern or "\x00")
+                )
             if isinstance(func, ast.Attribute) and func.attr in _PATH_NAME_REWRITES:
                 # Path('/etc/x').with_name('passwd') -> /etc/passwd; with_stem /
                 # with_suffix rewrite only the final component. Fold to the
@@ -1377,7 +1429,9 @@ def _folded_is_sensitive(folded) -> bool:
         # A dynamic segment (NUL) can be the "/" forming a sensitive root:
         # open(os.sep + "etc/passwd") folds to "\x00etc/passwd", so re-scan with
         # NUL as "/" (a benign "\x00data/file" -> "/data/file" stays safe).
-        or ("\x00" in folded and _references_sensitive_path(folded.replace("\x00", "/")))
+        or (
+            "\x00" in folded and _references_sensitive_path(folded.replace("\x00", "/"))
+        )
         # A dynamic piece can also sit INSIDE a sensitive name: open('/et' +
         # chr(99) + '/passwd') folds to "/et\x00/passwd", which none of the above
         # catch. Match the literals around each NUL against a credential target,
@@ -1409,10 +1463,14 @@ def _terminal_is_potentially_unsafe(command: str) -> bool:
     candidates = []
     for c in (command, stripped, _decode_ansi_c(command)):
         c_param = _expand_param_defaults(c)
-        candidates.extend((c, c_param, _expand_braces(c_param), _expand_shell_assignments(c_param)))
+        candidates.extend(
+            (c, c_param, _expand_braces(c_param), _expand_shell_assignments(c_param))
+        )
     # Run both the literal and glob-sensitive scans over every candidate, so a
     # brace-expanded glob (cat /e{t,}c/pass?d -> /etc/pass?d) is caught.
-    if any(_glob_hits_sensitive(c) or _references_sensitive_path(c) for c in candidates):
+    if any(
+        _glob_hits_sensitive(c) or _references_sensitive_path(c) for c in candidates
+    ):
         return True
     # Newlines (and CR) separate commands in a shell but read as plain
     # whitespace to shlex, which would demote "ls\nrm x" to argument position.
@@ -1429,7 +1487,9 @@ def _terminal_is_potentially_unsafe(command: str) -> bool:
     expanded_command = _expand_shell_assignments(_expand_param_defaults(command))
     if expanded_command != command:
         try:
-            elexer = shlex.shlex(expanded_command, posix = True, punctuation_chars = ";&|()")
+            elexer = shlex.shlex(
+                expanded_command, posix = True, punctuation_chars = ";&|()"
+            )
             elexer.whitespace_split = True
             scan_tokens = list(elexer)
         except ValueError:
@@ -1438,7 +1498,10 @@ def _terminal_is_potentially_unsafe(command: str) -> bool:
         scan_tokens = tokens
     # find/fd group with (...) which resets command context, so a trailing
     # -delete/-exec could slip past; scan every token when find/fd appears.
-    if any(os.path.basename(t.strip(";&|()`{}")).lower() in ("find", "fd") for t in scan_tokens):
+    if any(
+        os.path.basename(t.strip(";&|()`{}")).lower() in ("find", "fd")
+        for t in scan_tokens
+    ):
         if any(t.split("=", 1)[0] in _AUTO_UNSAFE_FIND_LIKE_FLAGS for t in scan_tokens):
             return True
     # A recursive reader rooted outside the sandbox reads host files (grep -R
@@ -1449,7 +1512,10 @@ def _terminal_is_potentially_unsafe(command: str) -> bool:
     # that already asks below.
     if any(t.startswith("/") or t.startswith("~") for t in scan_tokens):
         token_bases = [os.path.basename(t.strip(";&|()`{}")).lower() for t in tokens]
-        if any(b in _AUTO_RECURSIVE_SEARCH or b in _AUTO_RECURSIVE_LISTERS for b in token_bases):
+        if any(
+            b in _AUTO_RECURSIVE_SEARCH or b in _AUTO_RECURSIVE_LISTERS
+            for b in token_bases
+        ):
             return True
         # ls only walks the whole subtree with -R/--recursive (ls -R /home,
         # ls -laR /); a non-recursive ls /home lists one level and stays here.
@@ -1490,7 +1556,9 @@ def _terminal_is_potentially_unsafe(command: str) -> bool:
             # a "--x" prefix of an unsafe long flag fails closed.
             is_long_abbrev = flag_head.startswith("--") and len(flag_head) > 2
             for uf in _AUTO_UNSAFE_COMMAND_FLAGS.get(current_command, ()):
-                if flag_head == uf or (len(uf) == 2 and (token.startswith(uf) or uf[1] in cluster)):
+                if flag_head == uf or (
+                    len(uf) == 2 and (token.startswith(uf) or uf[1] in cluster)
+                ):
                     return True
                 if is_long_abbrev and uf.startswith("--") and uf.startswith(flag_head):
                     return True
@@ -1523,7 +1591,9 @@ def _terminal_is_potentially_unsafe(command: str) -> bool:
             elif current_command in _AUTO_ARG_SENSITIVE_COMMANDS:
                 if pending_flag_value:
                     pending_flag_value = False
-                elif raw_pos and not (current_command == "date" and raw_pos.startswith("+")):
+                elif raw_pos and not (
+                    current_command == "date" and raw_pos.startswith("+")
+                ):
                     return True
             continue
         if _ASSIGNMENT_RE.match(token):
@@ -1654,7 +1724,10 @@ def _python_is_potentially_unsafe(code: str) -> bool:
         first = call.args[0]
         if not (isinstance(first, ast.Constant) and isinstance(first.value, str)):
             return True
-        return first.value in _AUTO_UNSAFE_PY_ATTRS or first.value in _AUTO_UNSAFE_PY_WRITE_METHODS
+        return (
+            first.value in _AUTO_UNSAFE_PY_ATTRS
+            or first.value in _AUTO_UNSAFE_PY_WRITE_METHODS
+        )
 
     def _fileinput_inplace(call) -> bool:
         # fileinput.input(..., inplace=True) opens each file for in-place rewrite.
@@ -1705,7 +1778,9 @@ def _python_is_potentially_unsafe(code: str) -> bool:
         # merely passed or printed (print(getattr(o, 'name'))).
         if isinstance(arg, ast.Name):
             return (
-                arg.id in open_aliases or arg.id in writer_aliases or arg.id in archive_ctor_aliases
+                arg.id in open_aliases
+                or arg.id in writer_aliases
+                or arg.id in archive_ctor_aliases
             )
         if isinstance(arg, ast.Attribute):
             return (
@@ -1800,7 +1875,9 @@ def _python_is_potentially_unsafe(code: str) -> bool:
             else:
                 assign_targets = node.targets
             targets = [t.id for t in assign_targets if isinstance(t, ast.Name)]
-            attr_targets = [t.attr for t in assign_targets if isinstance(t, ast.Attribute)]
+            attr_targets = [
+                t.attr for t in assign_targets if isinstance(t, ast.Attribute)
+            ]
             if isinstance(value, ast.Name) and value.id in open_aliases:
                 open_aliases.update(targets)
                 attr_open_aliases.update(attr_targets)  # box.f = open
@@ -1836,7 +1913,10 @@ def _python_is_potentially_unsafe(code: str) -> bool:
                 and value.value.id in builtins_aliases
             ):
                 code_exec_aliases.update(targets)  # e = builtins.eval
-            elif isinstance(value, ast.Attribute) and value.attr in _AUTO_UNSAFE_PY_WRITE_METHODS:
+            elif (
+                isinstance(value, ast.Attribute)
+                and value.attr in _AUTO_UNSAFE_PY_WRITE_METHODS
+            ):
                 writer_aliases.update(targets)  # s = np.save
             elif isinstance(value, ast.Attribute) and value.attr == "open":
                 # A captured .open bound method (p = Path('out').open) opens a file
@@ -1866,8 +1946,14 @@ def _python_is_potentially_unsafe(code: str) -> bool:
             elif (
                 isinstance(value, ast.Call)
                 and (
-                    (isinstance(value.func, ast.Name) and value.func.id in partial_aliases)
-                    or (isinstance(value.func, ast.Attribute) and value.func.attr == "partial")
+                    (
+                        isinstance(value.func, ast.Name)
+                        and value.func.id in partial_aliases
+                    )
+                    or (
+                        isinstance(value.func, ast.Attribute)
+                        and value.func.attr == "partial"
+                    )
                 )
                 and value.args
                 and _wraps_write_callable(value.args[0])
@@ -1876,7 +1962,10 @@ def _python_is_potentially_unsafe(code: str) -> bool:
             elif (
                 isinstance(value, ast.Call)
                 and (
-                    (isinstance(value.func, ast.Name) and value.func.id in methodcaller_aliases)
+                    (
+                        isinstance(value.func, ast.Name)
+                        and value.func.id in methodcaller_aliases
+                    )
                     or (
                         isinstance(value.func, ast.Attribute)
                         and value.func.attr == "methodcaller"
@@ -1891,14 +1980,20 @@ def _python_is_potentially_unsafe(code: str) -> bool:
                 # base = '/etc' -> resolve base in a later folded path. A name
                 # bound more than once is poisoned (\x02) so it fails closed.
                 for t in targets:
-                    literal_str_vars[t] = "\x02" if t in multi_assigned_names else value.value
+                    literal_str_vars[t] = (
+                        "\x02" if t in multi_assigned_names else value.value
+                    )
             elif isinstance(value, (ast.Call, ast.BinOp, ast.Name, ast.JoinedStr)):
                 # p = Path('/etc'); q = p; r = os.path.join('/etc','x'): record a
                 # fully-literal folded path so a later reuse (p / 'passwd') folds.
-                folded = _folded_path(value, literal_str_vars, path_ctor_aliases, pathjoin_aliases)
+                folded = _folded_path(
+                    value, literal_str_vars, path_ctor_aliases, pathjoin_aliases
+                )
                 if folded is not None and "\x00" not in folded and "\x02" not in folded:
                     for t in targets:
-                        literal_str_vars[t] = "\x02" if t in multi_assigned_names else folded
+                        literal_str_vars[t] = (
+                            "\x02" if t in multi_assigned_names else folded
+                        )
             elif isinstance(value, (ast.Tuple, ast.List)):
                 # Destructuring binds each element like a single assignment, so an
                 # aliased callable (f, _ = (open, print)) AND a string / path
@@ -1906,30 +2001,54 @@ def _python_is_potentially_unsafe(code: str) -> bool:
                 # the latter a path folded from base/leaf would miss the sensitive
                 # target and auto-approve.
                 for target in assign_targets:
-                    if isinstance(target, (ast.Tuple, ast.List)) and len(target.elts) == len(
-                        value.elts
-                    ):
+                    if isinstance(target, (ast.Tuple, ast.List)) and len(
+                        target.elts
+                    ) == len(value.elts):
                         for tgt_el, val_el in zip(target.elts, value.elts):
                             if not isinstance(tgt_el, ast.Name):
                                 continue
                             tid = tgt_el.id
-                            if isinstance(val_el, ast.Name) and val_el.id in open_aliases:
+                            if (
+                                isinstance(val_el, ast.Name)
+                                and val_el.id in open_aliases
+                            ):
                                 open_aliases.add(tid)
-                            elif isinstance(val_el, ast.Name) and val_el.id in getattr_aliases:
+                            elif (
+                                isinstance(val_el, ast.Name)
+                                and val_el.id in getattr_aliases
+                            ):
                                 getattr_aliases.add(tid)
-                            elif isinstance(val_el, ast.Name) and val_el.id in partial_aliases:
+                            elif (
+                                isinstance(val_el, ast.Name)
+                                and val_el.id in partial_aliases
+                            ):
                                 partial_aliases.add(tid)
-                            elif isinstance(val_el, ast.Name) and val_el.id in writer_aliases:
+                            elif (
+                                isinstance(val_el, ast.Name)
+                                and val_el.id in writer_aliases
+                            ):
                                 writer_aliases.add(tid)  # s, _ = (save, 1)
-                            elif isinstance(val_el, ast.Name) and val_el.id in archive_ctor_aliases:
+                            elif (
+                                isinstance(val_el, ast.Name)
+                                and val_el.id in archive_ctor_aliases
+                            ):
                                 archive_ctor_aliases.add(tid)  # z, _ = (ZipFile, 1)
-                            elif isinstance(val_el, ast.Constant) and isinstance(val_el.value, str):
+                            elif isinstance(val_el, ast.Constant) and isinstance(
+                                val_el.value, str
+                            ):
                                 literal_str_vars[tid] = (
-                                    "\x02" if tid in multi_assigned_names else val_el.value
+                                    "\x02"
+                                    if tid in multi_assigned_names
+                                    else val_el.value
                                 )
-                            elif isinstance(val_el, (ast.Call, ast.BinOp, ast.Name, ast.JoinedStr)):
+                            elif isinstance(
+                                val_el, (ast.Call, ast.BinOp, ast.Name, ast.JoinedStr)
+                            ):
                                 folded = _folded_path(
-                                    val_el, literal_str_vars, path_ctor_aliases, pathjoin_aliases
+                                    val_el,
+                                    literal_str_vars,
+                                    path_ctor_aliases,
+                                    pathjoin_aliases,
                                 )
                                 if (
                                     folded is not None
@@ -1937,7 +2056,9 @@ def _python_is_potentially_unsafe(code: str) -> bool:
                                     and "\x02" not in folded
                                 ):
                                     literal_str_vars[tid] = (
-                                        "\x02" if tid in multi_assigned_names else folded
+                                        "\x02"
+                                        if tid in multi_assigned_names
+                                        else folded
                                     )
         elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda)):
             # A callable captured as a parameter default (def f(o=open): o('x','w'))
@@ -2050,13 +2171,17 @@ def _python_is_potentially_unsafe(code: str) -> bool:
                 # dynamic segment under a sensitive dir (f'/etc/{name}'), or one
                 # split through a literal variable (base = '/etc'; base+'/passwd').
                 if _folded_is_sensitive(
-                    _folded_path(node, literal_str_vars, path_ctor_aliases, pathjoin_aliases)
+                    _folded_path(
+                        node, literal_str_vars, path_ctor_aliases, pathjoin_aliases
+                    )
                 ):
                     return True
             elif isinstance(node, ast.Call):
                 # A sensitive path composed via os.path.join('/etc', name).
                 if _folded_is_sensitive(
-                    _folded_path(node, literal_str_vars, path_ctor_aliases, pathjoin_aliases)
+                    _folded_path(
+                        node, literal_str_vars, path_ctor_aliases, pathjoin_aliases
+                    )
                 ):
                     return True
                 func = node.func
@@ -2176,7 +2301,10 @@ def _python_is_potentially_unsafe(code: str) -> bool:
                         # Path('/home').glob('*') enumerates the receiver dir;
                         # glob.glob('/home/*') enumerates the pattern's root dir.
                         _recv = _folded_path(
-                            func.value, literal_str_vars, path_ctor_aliases, pathjoin_aliases
+                            func.value,
+                            literal_str_vars,
+                            path_ctor_aliases,
+                            pathjoin_aliases,
                         )
                         if isinstance(_recv, str) and _recv not in ("", "\x00"):
                             _enum_dir = func.value
@@ -2191,7 +2319,10 @@ def _python_is_potentially_unsafe(code: str) -> bool:
                         _enum_dir = node.args[0]
                     if _enum_dir is not None:
                         _folded_dir = _folded_path(
-                            _enum_dir, literal_str_vars, path_ctor_aliases, pathjoin_aliases
+                            _enum_dir,
+                            literal_str_vars,
+                            path_ctor_aliases,
+                            pathjoin_aliases,
                         )
                         if isinstance(_folded_dir, str) and (
                             _folded_dir.startswith("/")
@@ -2247,9 +2378,7 @@ _SQL_DDL_OBJECTS = (
 )
 # Modifiers between the DDL verb and object (CREATE OR REPLACE VIEW, DROP
 # MATERIALIZED VIEW, CREATE UNIQUE INDEX).
-_SQL_DDL_MODIFIERS = (
-    r"(?:(?:or\s+replace|unique|temp|temporary|global|local|materialized|recursive)\s+)*"
-)
+_SQL_DDL_MODIFIERS = r"(?:(?:or\s+replace|unique|temp|temporary|global|local|materialized|recursive)\s+)*"
 # A SQL identifier (bare, "quoted", `quoted`, [bracketed]), optionally
 # schema-qualified, so UPDATE "users"/public.users/ONLY .../[users] SET all hit.
 _SQL_IDENT = r'(?:\w+|"(?:[^"]|"")*"|`(?:[^`]|``)*`|\[[^\]]+\])'
@@ -2338,7 +2467,9 @@ _GRAPHQL_COMMENT_RE = re.compile(r"#[^\n]*")
 # (mcp__http__get_url {"method": "DELETE"}) mutates an external service even
 # though its name looks read-only. GET/HEAD/OPTIONS/TRACE only read.
 _MUTATING_HTTP_METHODS = frozenset({"POST", "PUT", "PATCH", "DELETE"})
-_HTTP_METHOD_KEYS = frozenset({"method", "http_method", "httpmethod", "verb", "http_verb"})
+_HTTP_METHOD_KEYS = frozenset(
+    {"method", "http_method", "httpmethod", "verb", "http_verb"}
+)
 
 
 def _mcp_arguments_mutate(arguments) -> bool:
@@ -2354,7 +2485,9 @@ def _mcp_arguments_mutate(arguments) -> bool:
                 bool(_MCP_ARG_MUTATION_RE.search(_sql))
                 or bool(_MCP_ARG_SQLITE_MUTATION_RE.search(_sql))
                 or bool(_MCP_ARG_SQL_FUNCTION_RE.search(_sql))
-                or bool(_GRAPHQL_MUTATION_RE.search(_GRAPHQL_COMMENT_RE.sub(" ", value)))
+                or bool(
+                    _GRAPHQL_MUTATION_RE.search(_GRAPHQL_COMMENT_RE.sub(" ", value))
+                )
             )
         if isinstance(value, dict):
             for k, v in value.items():
@@ -2689,7 +2822,10 @@ def _is_secret_env_value(value: str) -> bool:
     """
     if not value:
         return False
-    return _URL_USERINFO_RE.search(value) is not None or _SECRET_VALUE_RE.search(value) is not None
+    return (
+        _URL_USERINFO_RE.search(value) is not None
+        or _SECRET_VALUE_RE.search(value) is not None
+    )
 
 
 def _build_bypass_env(workdir: str) -> dict[str, str]:
@@ -2763,11 +2899,18 @@ def _sandbox_preexec():
         except (ValueError, OSError, AttributeError):
             pass
         try:
-            _resource.setrlimit(_resource.RLIMIT_FSIZE, (100 * 1024 * 1024, 100 * 1024 * 1024))
+            _resource.setrlimit(
+                _resource.RLIMIT_FSIZE, (100 * 1024 * 1024, 100 * 1024 * 1024)
+            )
         except (ValueError, OSError):
             pass
         try:
-            as_bytes = int(os.environ.get("UNSLOTH_STUDIO_SANDBOX_AS_GB", "8")) * 1024 * 1024 * 1024
+            as_bytes = (
+                int(os.environ.get("UNSLOTH_STUDIO_SANDBOX_AS_GB", "8"))
+                * 1024
+                * 1024
+                * 1024
+            )
             _resource.setrlimit(_resource.RLIMIT_AS, (as_bytes, as_bytes))
         except (ValueError, OSError, AttributeError):
             pass
@@ -2782,7 +2925,9 @@ def _sandbox_preexec():
             # when the parent's hard cap is below the request.
             nofile = int(os.environ.get("UNSLOTH_STUDIO_SANDBOX_NOFILE", "16384"))
             _soft_cur, hard_cur = _resource.getrlimit(_resource.RLIMIT_NOFILE)
-            target = nofile if hard_cur == _resource.RLIM_INFINITY else min(nofile, hard_cur)
+            target = (
+                nofile if hard_cur == _resource.RLIM_INFINITY else min(nofile, hard_cur)
+            )
             _resource.setrlimit(_resource.RLIMIT_NOFILE, (target, target))
         except (ValueError, OSError, AttributeError):
             pass
@@ -2864,7 +3009,9 @@ def _get_project_workdir(session_id: str) -> str | None:
         from storage.studio_db import ensure_chat_project_workspace
         project = ensure_chat_project_workspace(project_id)
     except Exception:
-        logger.warning("Failed to resolve project sandbox for %s", session_id, exc_info = True)
+        logger.warning(
+            "Failed to resolve project sandbox for %s", session_id, exc_info = True
+        )
         return None
     if not project:
         return None
@@ -2895,7 +3042,9 @@ def _get_workdir(session_id: str | None = None) -> str:
             workdir = project_workdir
         elif session_id and _SESSION_ID_RE.match(session_id):
             workdir = os.path.join(sandbox_root, session_id)
-            if not os.path.realpath(workdir).startswith(os.path.realpath(sandbox_root) + os.sep):
+            if not os.path.realpath(workdir).startswith(
+                os.path.realpath(sandbox_root) + os.sep
+            ):
                 workdir = os.path.join(sandbox_root, "_invalid")
         elif session_id:
             workdir = os.path.join(sandbox_root, "_invalid")
@@ -2974,7 +3123,8 @@ TERMINAL_TOOL = {
     "type": "function",
     "function": {
         "name": "terminal",
-        "description": "Execute a terminal command and return stdout/stderr." + _SANDBOX_PATHS_NOTE,
+        "description": "Execute a terminal command and return stdout/stderr."
+        + _SANDBOX_PATHS_NOTE,
         "parameters": {
             "type": "object",
             "properties": {
@@ -3082,7 +3232,9 @@ def _mcp_specs_for_server(server: dict, mcp_tools: list[dict]) -> list[dict]:
             continue
         # Duplicate tool names would also 400 OpenAI; drop dupes.
         if name in seen_names:
-            logger.warning("Skipping duplicate MCP tool '%s' on '%s'.", raw_name, display)
+            logger.warning(
+                "Skipping duplicate MCP tool '%s' on '%s'.", raw_name, display
+            )
             continue
         seen_names.add(name)
         specs.append(
@@ -3091,7 +3243,8 @@ def _mcp_specs_for_server(server: dict, mcp_tools: list[dict]) -> list[dict]:
                 "function": {
                     "name": name,
                     "description": f"[{display}] {tool.get('description') or ''}".strip(),
-                    "parameters": tool.get("inputSchema") or {"type": "object", "properties": {}},
+                    "parameters": tool.get("inputSchema")
+                    or {"type": "object", "properties": {}},
                 },
             }
         )
@@ -3110,7 +3263,9 @@ async def get_enabled_mcp_tools() -> list[dict]:
     # server gets re-probed -- and blocks the send for the full timeout -- on
     # every message.
     uncached = [
-        s for s in servers if get_cached_tools(s["id"]) is None and not in_failure_cooloff(s["id"])
+        s
+        for s in servers
+        if get_cached_tools(s["id"]) is None and not in_failure_cooloff(s["id"])
     ]
     if uncached:
         results = await asyncio.gather(
@@ -3206,7 +3361,9 @@ def execute_tool(
     output). Purely observational: the returned result string is identical
     with or without it. Tools without incremental output ignore it.
     """
-    logger.info(f"execute_tool: name={name}, session_id={session_id}, timeout={timeout}")
+    logger.info(
+        f"execute_tool: name={name}, session_id={session_id}, timeout={timeout}"
+    )
     effective_timeout = _EXEC_TIMEOUT if timeout is _TIMEOUT_UNSET else timeout
     if name == "search_knowledge_base":
         return _search_knowledge_base(arguments, rag_scope)
@@ -3407,7 +3564,9 @@ def _message_token_estimate(conversation: list[dict]) -> int:
     return total
 
 
-def _whole_doc_budget(scope: dict | None = None, conversation: list[dict] | None = None) -> int:
+def _whole_doc_budget(
+    scope: dict | None = None, conversation: list[dict] | None = None
+) -> int:
     try:
         from core.rag import config as _rag_config
     except Exception:  # noqa: BLE001
@@ -3447,7 +3606,9 @@ def _last_user_text(conversation: list[dict]) -> str:
     return ""
 
 
-def build_rag_autoinject(conversation: list[dict], rag_scope: dict | None) -> dict | None:
+def build_rag_autoinject(
+    conversation: list[dict], rag_scope: dict | None
+) -> dict | None:
     """Pre-retrieve the latest user turn; if a hit clears the cosine floor return
     ``{"events": [...], "messages": [...]}`` to splice into the loop, else ``None``.
     Toggle via ``rag_scope.autoinject`` (else env ``RAG_AUTOINJECT``); floor via
@@ -3463,7 +3624,9 @@ def build_rag_autoinject(conversation: list[dict], rag_scope: dict | None) -> di
         enabled = _autoinject_enabled()
     thread_id = rag_scope.get("thread_id")
     whole_doc_requested = (
-        bool(thread_id) and not rag_scope.get("kb_id") and _thread_whole_doc_enabled(rag_scope)
+        bool(thread_id)
+        and not rag_scope.get("kb_id")
+        and _thread_whole_doc_enabled(rag_scope)
     )
     if not enabled and not whole_doc_requested:
         return None
@@ -3474,7 +3637,11 @@ def build_rag_autoinject(conversation: list[dict], rag_scope: dict | None) -> di
         from storage import rag_db
         if not rag_db.RAG_AVAILABLE:
             return None
-        from core.rag.tool import render_sources, search_for_autoinject, whole_document_context
+        from core.rag.tool import (
+            render_sources,
+            search_for_autoinject,
+            whole_document_context,
+        )
     except Exception as exc:  # noqa: BLE001
         logger.warning("RAG auto-inject unavailable: %s", exc)
         return None
@@ -3517,7 +3684,9 @@ def build_rag_autoinject(conversation: list[dict], rag_scope: dict | None) -> di
                         **_scope_retrieval_kwargs(rag_scope),
                     )
                 except Exception as exc:  # noqa: BLE001
-                    logger.warning("RAG project retrieval (whole-doc companion) failed: %s", exc)
+                    logger.warning(
+                        "RAG project retrieval (whole-doc companion) failed: %s", exc
+                    )
                     proj = None
                 if proj is not None:
                     merged = sources + proj[1]
@@ -3525,7 +3694,9 @@ def build_rag_autoinject(conversation: list[dict], rag_scope: dict | None) -> di
                     if max(1, len(merged_text) // 4) <= budget:
                         sources = merged
                         text = merged_text
-            logger.info("RAG auto-inject: whole-document context (%d chunk(s))", len(sources))
+            logger.info(
+                "RAG auto-inject: whole-document context (%d chunk(s))", len(sources)
+            )
 
     if text is None and enabled:
         try:
@@ -3605,7 +3776,9 @@ _MAX_PDF_FETCH_BYTES = 10 * 1024 * 1024
 _MAX_WEB_PDF_PAGES = 50
 # Control/undecodable chars, excluding text whitespace and ESC (for ANSI logs).
 # Binary when they exceed 12.5%, after allowing 16 minor encoding glitches.
-_BINARY_CHAR_RE = re.compile("[\\x00-\\x08\\x0b\\x0c\\x0e-\\x1a\\x1c-\\x1f\\x7f-\\x9f\\ufffd]")
+_BINARY_CHAR_RE = re.compile(
+    "[\\x00-\\x08\\x0b\\x0c\\x0e-\\x1a\\x1c-\\x1f\\x7f-\\x9f\\ufffd]"
+)
 _MIN_BINARY_CHARS = 16
 _BINARY_CHAR_DIVISOR = 8
 # Common binary signatures that can otherwise look text-heavy when mislabeled.
@@ -4033,7 +4206,11 @@ def _fetch_url_raw(
 
     parsed = urlparse(url)
     if parsed.scheme not in ("http", "https"):
-        return f"Blocked: only http/https URLs are allowed (got {parsed.scheme!r}).", "", ""
+        return (
+            f"Blocked: only http/https URLs are allowed (got {parsed.scheme!r}).",
+            "",
+            "",
+        )
     if not parsed.hostname:
         return "Blocked: URL is missing a hostname.", "", ""
 
@@ -4086,14 +4263,26 @@ def _fetch_url_raw(
                 resp = opener.open(req, timeout = _fetch_hop_timeout(timeout, deadline))
             except _HTTPError as e:
                 if e.code not in (301, 302, 303, 307, 308):
-                    return f"Failed to fetch URL: HTTP {e.code} {getattr(e, 'reason', '')}", "", ""
+                    return (
+                        f"Failed to fetch URL: HTTP {e.code} {getattr(e, 'reason', '')}",
+                        "",
+                        "",
+                    )
                 location = e.headers.get("Location")
                 if not location:
-                    return "Failed to fetch URL: redirect missing Location header.", "", ""
+                    return (
+                        "Failed to fetch URL: redirect missing Location header.",
+                        "",
+                        "",
+                    )
                 current_url = urljoin(current_url, location)
                 rp = urlparse(current_url)
                 if rp.scheme not in ("http", "https") or not rp.hostname:
-                    return "Blocked: redirect target is not a valid http/https URL.", "", ""
+                    return (
+                        "Blocked: redirect target is not a valid http/https URL.",
+                        "",
+                        "",
+                    )
                 rp_port = rp.port or (443 if rp.scheme == "https" else 80)
                 ok2, reason2, pinned_ip = _resolve_with_budget(
                     rp.hostname,
@@ -4131,7 +4320,11 @@ def _fetch_url_raw(
 
             # A missing or wrong PDF MIME type is common: once the initial text-sized
             # read identifies PDF magic, finish the bounded download to reach the EOF xref.
-            if not declared_pdf and len(raw_bytes) == max_bytes and _has_pdf_magic(raw_bytes):
+            if (
+                not declared_pdf
+                and len(raw_bytes) == max_bytes
+                and _has_pdf_magic(raw_bytes)
+            ):
                 tail_error, tail = _read_capped_body(
                     resp,
                     _MAX_PDF_FETCH_BYTES - max_bytes + 1,
@@ -4251,7 +4444,9 @@ _HTML_LEADING_TAGS = (
     "pre",
     "blockquote",
 )
-_HTML_LEADING_RE = re.compile(r"<(?:!doctype\s+html|/?(?:" + "|".join(_HTML_LEADING_TAGS) + r")\b)")
+_HTML_LEADING_RE = re.compile(
+    r"<(?:!doctype\s+html|/?(?:" + "|".join(_HTML_LEADING_TAGS) + r")\b)"
+)
 
 
 def _looks_like_html(body: str) -> bool:
@@ -4335,7 +4530,8 @@ def _fetch_page_text(
                 readme_body = converted if converted.strip() else body
             if readme_body.strip():
                 return _truncate_page_text(
-                    f"README of {url} (fetched via the GitHub README API):\n\n" + readme_body,
+                    f"README of {url} (fetched via the GitHub README API):\n\n"
+                    + readme_body,
                     max_chars,
                 )
 
@@ -4593,7 +4789,9 @@ def _check_signal_escape_patterns(code: str):
             if func_name:
                 if func_name in ("signal.signal", "signal"):
                     if len(node.args) >= 1:
-                        if _ast_name_matches(node.args[0], ("SIGALRM", "signal.SIGALRM")):
+                        if _ast_name_matches(
+                            node.args[0], ("SIGALRM", "signal.SIGALRM")
+                        ):
                             signal_tampering.append(
                                 {
                                     "type": "signal_handler_override",
@@ -4603,7 +4801,9 @@ def _check_signal_escape_patterns(code: str):
                             )
                 elif func_name in ("signal.setitimer", "setitimer"):
                     if len(node.args) >= 1:
-                        if _ast_name_matches(node.args[0], ("ITIMER_REAL", "signal.ITIMER_REAL")):
+                        if _ast_name_matches(
+                            node.args[0], ("ITIMER_REAL", "signal.ITIMER_REAL")
+                        ):
                             signal_tampering.append(
                                 {
                                     "type": "timer_manipulation",
@@ -4656,7 +4856,9 @@ def _check_signal_escape_patterns(code: str):
                     else:
                         has_opaque_kwargs = True
 
-                cmd_kw_values = [v for k, v in expanded_kwargs.items() if k in _CMD_KWARGS]
+                cmd_kw_values = [
+                    v for k, v in expanded_kwargs.items() if k in _CMD_KWARGS
+                ]
                 all_call_args = list(node.args) + cmd_kw_values
                 blocked_in_args = _check_args_for_blocked(all_call_args)
 
@@ -4666,7 +4868,9 @@ def _check_signal_escape_patterns(code: str):
                         {
                             "type": "shell_escape_dynamic",
                             "line": node.lineno,
-                            "description": (f"{shell_func}() called with dynamic **kwargs"),
+                            "description": (
+                                f"{shell_func}() called with dynamic **kwargs"
+                            ),
                         }
                     )
                 elif blocked_in_args:
@@ -4697,7 +4901,8 @@ def _check_signal_escape_patterns(code: str):
                     )
                     shell_node = expanded_kwargs.get("shell")
                     shell_safe = shell_node is None or (
-                        isinstance(shell_node, ast.Constant) and shell_node.value is False
+                        isinstance(shell_node, ast.Constant)
+                        and shell_node.value is False
                     )
                     # Dynamic shell-exec args (chr/format/concat bypasses).
                     if (
@@ -4710,10 +4915,15 @@ def _check_signal_escape_patterns(code: str):
                             if _extract_string_from_node(n) is not None:
                                 return True
                             if isinstance(n, (ast.List, ast.Tuple)):
-                                return all(_extract_string_from_node(e) is not None for e in n.elts)
+                                return all(
+                                    _extract_string_from_node(e) is not None
+                                    for e in n.elts
+                                )
                             return False
 
-                        has_non_literal = any(not _is_safe_literal(a) for a in all_call_args)
+                        has_non_literal = any(
+                            not _is_safe_literal(a) for a in all_call_args
+                        )
                         if has_non_literal:
                             shell_escapes.append(
                                 {
@@ -4970,7 +5180,9 @@ def _check_signal_escape_patterns(code: str):
         "/etc/sudoers",
         "/etc/ssh/",
     )
-    _SENSITIVE_FILE_RE = re.compile(r"^/proc/(?:self|\d+)/(?:environ|cmdline|task/\d+/environ)$")
+    _SENSITIVE_FILE_RE = re.compile(
+        r"^/proc/(?:self|\d+)/(?:environ|cmdline|task/\d+/environ)$"
+    )
 
     def _normalize_host(host: str) -> str:
         if not host:
@@ -5013,9 +5225,15 @@ def _check_signal_escape_patterns(code: str):
                 return True
             if kw.arg == "data":
                 v = kw.value
-                if isinstance(v, ast.Call) and isinstance(v.func, ast.Name) and v.func.id == "open":
+                if (
+                    isinstance(v, ast.Call)
+                    and isinstance(v.func, ast.Name)
+                    and v.func.id == "open"
+                ):
                     return True
-                if isinstance(v, ast.Constant) and isinstance(v.value, (bytes, bytearray)):
+                if isinstance(v, ast.Constant) and isinstance(
+                    v.value, (bytes, bytearray)
+                ):
                     return True
         return False
 
@@ -5146,7 +5364,9 @@ def _check_signal_escape_patterns(code: str):
         """Whether the path argument resolves to a sandbox-local literal."""
         if node is None:
             return False
-        if isinstance(node, ast.Constant) and isinstance(node.value, (bytes, bytearray)):
+        if isinstance(node, ast.Constant) and isinstance(
+            node.value, (bytes, bytearray)
+        ):
             return True  # inline bytes, no file access
         if isinstance(node, ast.Constant) and isinstance(node.value, str):
             return _is_safe_relative_path(node.value)
@@ -5232,7 +5452,11 @@ def _check_signal_escape_patterns(code: str):
                     )
 
             # Direct sock.connect((host, port)) bypasses the FQ-prefix branch.
-            if isinstance(node.func, ast.Attribute) and node.func.attr == "connect" and node.args:
+            if (
+                isinstance(node.func, ast.Attribute)
+                and node.func.attr == "connect"
+                and node.args
+            ):
                 a0 = node.args[0]
                 host_lit = None
                 if isinstance(a0, ast.Tuple) and a0.elts:
@@ -5269,7 +5493,9 @@ def _check_signal_escape_patterns(code: str):
                         {
                             "type": "upload_blocked",
                             "line": getattr(node, "lineno", -1),
-                            "description": ("Blocked: file upload disallowed in sandbox"),
+                            "description": (
+                                "Blocked: file upload disallowed in sandbox"
+                            ),
                         }
                     )
 
@@ -5370,18 +5596,28 @@ def _check_code_safety(code: str) -> str | None:
         if info.get("error"):
             return None
 
-        reasons = [item.get("description", "") for item in info.get("signal_tampering", [])]
-        shell_reasons = [item.get("description", "") for item in info.get("shell_escapes", [])]
+        reasons = [
+            item.get("description", "") for item in info.get("signal_tampering", [])
+        ]
+        shell_reasons = [
+            item.get("description", "") for item in info.get("shell_escapes", [])
+        ]
         exception_reasons = [
             item.get("description", "") for item in info.get("exception_catching", [])
         ]
-        network_reasons = [item.get("description", "") for item in info.get("network_calls", [])]
+        network_reasons = [
+            item.get("description", "") for item in info.get("network_calls", [])
+        ]
         file_reasons = [
             item.get("description", "") for item in info.get("sensitive_file_reads", [])
         ]
         all_reasons = [
             r
-            for r in reasons + shell_reasons + exception_reasons + network_reasons + file_reasons
+            for r in reasons
+            + shell_reasons
+            + exception_reasons
+            + network_reasons
+            + file_reasons
             if r
         ]
         if all_reasons:
@@ -5554,7 +5790,9 @@ def _missing_path_hint(output: str, workdir: str | None = None) -> str:
     # A convention prefix is an out-of-sandbox signal only when the exact failing
     # path could not be isolated; scoped to the failing-path error line(s) so a
     # prefix mentioned elsewhere doesn't trigger a misleading hint.
-    convention = any(prefix in line for line in error_lines for prefix in _MISSING_PATH_PREFIXES)
+    convention = any(
+        prefix in line for line in error_lines for prefix in _MISSING_PATH_PREFIXES
+    )
     if abs_path is not None:
         # Judge the isolated path against the real workdir even when it matches a
         # convention prefix, so a genuine miss inside a project rooted under such
@@ -5706,13 +5944,17 @@ def _python_exec(
                     except OSError:
                         pass
     try:
-        fd, tmp_path = tempfile.mkstemp(suffix = ".py", prefix = "studio_exec_", dir = workdir)
+        fd, tmp_path = tempfile.mkstemp(
+            suffix = ".py", prefix = "studio_exec_", dir = workdir
+        )
         # utf-8 so non-ASCII in model-written code survives the OS default codec
         # (Windows cp1252 would otherwise raise UnicodeEncodeError).
         with os.fdopen(fd, "w", encoding = "utf-8") as f:
             f.write(code)
 
-        safe_env = _build_bypass_env(workdir) if disable_sandbox else _build_safe_env(workdir)
+        safe_env = (
+            _build_bypass_env(workdir) if disable_sandbox else _build_safe_env(workdir)
+        )
         if disable_sandbox:
             # Match the sandboxed Python path without changing bypass shell I/O.
             safe_env = dict(safe_env)
@@ -5729,7 +5971,9 @@ def _python_exec(
             env = safe_env,
         )
         if sys.platform != "win32":
-            popen_kwargs["preexec_fn"] = _bypass_preexec if disable_sandbox else _sandbox_preexec
+            popen_kwargs["preexec_fn"] = (
+                _bypass_preexec if disable_sandbox else _sandbox_preexec
+            )
         else:
             popen_kwargs["creationflags"] = subprocess.CREATE_NO_WINDOW
 
@@ -5839,7 +6083,9 @@ def _bash_exec(
 
     try:
         workdir = _get_workdir(session_id)
-        safe_env = _build_bypass_env(workdir) if disable_sandbox else _build_safe_env(workdir)
+        safe_env = (
+            _build_bypass_env(workdir) if disable_sandbox else _build_safe_env(workdir)
+        )
         popen_kwargs = dict(
             stdout = subprocess.PIPE,
             stderr = subprocess.STDOUT,
@@ -5853,7 +6099,9 @@ def _bash_exec(
             env = safe_env,
         )
         if sys.platform != "win32":
-            popen_kwargs["preexec_fn"] = _bypass_preexec if disable_sandbox else _sandbox_preexec
+            popen_kwargs["preexec_fn"] = (
+                _bypass_preexec if disable_sandbox else _sandbox_preexec
+            )
         else:
             popen_kwargs["creationflags"] = subprocess.CREATE_NO_WINDOW
 

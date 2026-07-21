@@ -22,7 +22,9 @@ _HIGH = {
     )
 }
 _HIGH2 = {  # a different HIGH payload -> different fingerprint
-    "modeling_persist.py": ("open('/etc/cron.d/x', 'w').write('* * * * * root sh -c id')\n")
+    "modeling_persist.py": (
+        "open('/etc/cron.d/x', 'w').write('* * * * * root sh -c id')\n"
+    )
 }
 _CRITICAL = {
     "modeling_evil.py": (
@@ -93,7 +95,12 @@ def _approve(
 
 def test_store_roundtrip_and_forget():
     approvals.record(
-        "u", "k", commit_sha = "s", fingerprint = "f", max_severity = "HIGH", scanner_version = 1
+        "u",
+        "k",
+        commit_sha = "s",
+        fingerprint = "f",
+        max_severity = "HIGH",
+        scanner_version = 1,
     )
     got = approvals.lookup("u", "k")
     assert got is not None and got.fingerprint == "f" and got.scanner_version == 1
@@ -115,7 +122,9 @@ def test_concurrent_records_do_not_lose_entries():
     import threading
 
     def rec(i):
-        approvals.record("u", f"k{i}", commit_sha = "s", fingerprint = f"f{i}", max_severity = "HIGH")
+        approvals.record(
+            "u", f"k{i}", commit_sha = "s", fingerprint = f"f{i}", max_severity = "HIGH"
+        )
 
     threads = [threading.Thread(target = rec, args = (i,)) for i in range(20)]
     for t in threads:
@@ -128,7 +137,9 @@ def test_concurrent_records_do_not_lose_entries():
 
 def test_combined_sha_none_when_any_unresolvable(monkeypatch):
     monkeypatch.setattr(
-        approvals, "resolve_commit_sha", lambda t, hf = None: None if t == "org/base" else "s"
+        approvals,
+        "resolve_commit_sha",
+        lambda t, hf = None: None if t == "org/base" else "s",
     )
     assert approvals.resolve_combined_sha(["org/a", "org/base"]) is None
     assert approvals.resolve_combined_sha(["org/a"]) is not None
@@ -155,7 +166,10 @@ def test_malformed_store_shape_fails_safe():
     # never crash lookup/record/forget.
     store = approvals._store_path()
     store.parent.mkdir(parents = True, exist_ok = True)
-    for bad in ('{"version": 1, "subjects": []}', '{"version": 1, "subjects": {"u": []}}'):
+    for bad in (
+        '{"version": 1, "subjects": []}',
+        '{"version": 1, "subjects": {"u": []}}',
+    ):
         store.write_text(bad)
         assert approvals.lookup("u", "k") is None  # no raise
         approvals.forget("u", "k")  # no raise
@@ -176,7 +190,9 @@ def test_cache_miss_prompts(monkeypatch):
 def test_unchanged_repo_skips_prompt_but_still_scans(monkeypatch):
     st, _ = _approve(monkeypatch)
     before = st["scans"]
-    d = _gate("org/m")  # SHA + fingerprint match -> auto-approve, but the scan still runs
+    d = _gate(
+        "org/m"
+    )  # SHA + fingerprint match -> auto-approve, but the scan still runs
     assert d.blocked is False and d.reason == "approved by fingerprint"
     assert st["scans"] == before + 1  # cache never skips the scan
 
@@ -184,7 +200,9 @@ def test_unchanged_repo_skips_prompt_but_still_scans(monkeypatch):
 def test_sha_moved_forces_reprompt(monkeypatch):
     _approve(monkeypatch, sha = "sha1")
     monkeypatch.setattr(approvals, "resolve_commit_sha", lambda t, hf = None: "sha2")
-    d = _gate("org/m")  # SHA moved -> seed withheld -> re-prompt even though code is identical
+    d = _gate(
+        "org/m"
+    )  # SHA moved -> seed withheld -> re-prompt even though code is identical
     assert d.blocked is True
 
 
@@ -200,7 +218,9 @@ def test_changed_code_same_sha_reprompts(monkeypatch):
     # Even with the primary SHA unchanged, changed executable code (e.g. an external
     # auto_map repo) changes the fingerprint, so the dialog returns.
     _approve(monkeypatch, files = _HIGH, sha = "sha1")
-    monkeypatch.setattr(consent, "repo_remote_code_files", lambda t, hf_token = None: dict(_HIGH2))
+    monkeypatch.setattr(
+        consent, "repo_remote_code_files", lambda t, hf_token = None: dict(_HIGH2)
+    )
     d = _gate("org/m")
     assert d.blocked is True
 
@@ -281,7 +301,9 @@ def test_disable_flag_bypasses_cache(monkeypatch):
 
 def test_subject_isolation(monkeypatch):
     _approve(monkeypatch, subject = "user-a")
-    assert _gate("org/m", subject = "user-a").blocked is False  # a: seeded -> auto-approve
+    assert (
+        _gate("org/m", subject = "user-a").blocked is False
+    )  # a: seeded -> auto-approve
     assert _gate("org/m", subject = "user-b").blocked is True  # b: still prompted
 
 

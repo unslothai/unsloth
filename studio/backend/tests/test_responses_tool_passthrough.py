@@ -174,7 +174,9 @@ class TestResponsesMultiTurnInput:
 
     def test_function_call_output_missing_call_id_rejected(self):
         with pytest.raises(ValidationError):
-            ResponsesFunctionCallOutputInputItem(type = "function_call_output", output = "x")
+            ResponsesFunctionCallOutputInputItem(
+                type = "function_call_output", output = "x"
+            )
 
     def test_function_call_output_accepts_content_array(self):
         item = ResponsesFunctionCallOutputInputItem(
@@ -234,7 +236,9 @@ class TestToolsTranslation:
         assert _translate_responses_tools_to_chat([]) is None
 
     def test_only_builtin_tools_returns_none(self):
-        assert _translate_responses_tools_to_chat([{"type": "web_search_preview"}]) is None
+        assert (
+            _translate_responses_tools_to_chat([{"type": "web_search_preview"}]) is None
+        )
 
     def test_description_optional(self):
         out = _translate_responses_tools_to_chat(
@@ -266,7 +270,9 @@ class TestToolChoiceTranslation:
         """A client sending the Chat Completions nested shape isn't
         double-wrapped."""
         already_nested = {"type": "function", "function": {"name": "get_weather"}}
-        assert _translate_responses_tool_choice_to_chat(already_nested) == already_nested
+        assert (
+            _translate_responses_tool_choice_to_chat(already_nested) == already_nested
+        )
 
     def test_unknown_shape_passes_through(self):
         obj = {"type": "allowed_tools", "tools": [{"type": "function", "name": "x"}]}
@@ -779,7 +785,9 @@ class TestResponsesNonStreamingAdapter:
         )
 
         assert [item["type"] for item in body["output"]] == ["reasoning", "message"]
-        assert body["output"][0]["content"] == [{"type": "reasoning_text", "text": "plan"}]
+        assert body["output"][0]["content"] == [
+            {"type": "reasoning_text", "text": "plan"}
+        ]
         assert body["output"][0]["summary"] == []
         assert body["output"][1]["content"][0]["text"] == "33"
         assert "<think>" not in body["output"][1]["content"][0]["text"]
@@ -825,7 +833,9 @@ class TestResponsesNonStreamingAdapter:
 
         body = asyncio.run(run())
 
-        assert body["output"][0]["content"] == [{"type": "reasoning_text", "text": "plan"}]
+        assert body["output"][0]["content"] == [
+            {"type": "reasoning_text", "text": "plan"}
+        ]
         assert body["output"][1]["content"][0]["text"] == "answer"
         [entry] = monitor.snapshot()
         assert entry["status"] == "completed"
@@ -918,8 +928,12 @@ class TestResponsesNonStreamingAdapter:
         assert monitor.active_count() == 0
         assert request.state.skip_api_monitor is False
 
-    def test_literal_think_tags_remain_visible_without_reasoning_request(self, monkeypatch):
-        body = self._run_with_message(monkeypatch, {"content": "show <think>x</think> tags"})
+    def test_literal_think_tags_remain_visible_without_reasoning_request(
+        self, monkeypatch
+    ):
+        body = self._run_with_message(
+            monkeypatch, {"content": "show <think>x</think> tags"}
+        )
 
         assert [item["type"] for item in body["output"]] == ["message"]
         assert body["output"][0]["content"][0]["text"] == "show <think>x</think> tags"
@@ -952,10 +966,14 @@ class TestResponsesNonStreamingAdapter:
         )
 
         assert [item["type"] for item in body["output"]] == ["reasoning", "message"]
-        assert body["output"][0]["content"] == [{"type": "reasoning_text", "text": "plan"}]
+        assert body["output"][0]["content"] == [
+            {"type": "reasoning_text", "text": "plan"}
+        ]
         assert body["output"][1]["content"][0]["text"] == "answer"
 
-    def test_reasoning_capable_gguf_sanitizes_think_tags_when_disabled(self, monkeypatch):
+    def test_reasoning_capable_gguf_sanitizes_think_tags_when_disabled(
+        self, monkeypatch
+    ):
         payload = ResponsesRequest(input = "hi", reasoning = {"effort": "none"})
         body = self._run_with_message(
             monkeypatch,
@@ -969,7 +987,9 @@ class TestResponsesNonStreamingAdapter:
         )
 
         assert [item["type"] for item in body["output"]] == ["reasoning", "message"]
-        assert body["output"][0]["content"] == [{"type": "reasoning_text", "text": "leaked"}]
+        assert body["output"][0]["content"] == [
+            {"type": "reasoning_text", "text": "leaked"}
+        ]
         assert body["output"][1]["content"][0]["text"] == "answer"
 
     def test_structured_reasoning_content_extracts_text_parts(self, monkeypatch):
@@ -985,7 +1005,9 @@ class TestResponsesNonStreamingAdapter:
         )
 
         assert [item["type"] for item in body["output"]] == ["reasoning", "message"]
-        assert body["output"][0]["content"] == [{"type": "reasoning_text", "text": "plan next"}]
+        assert body["output"][0]["content"] == [
+            {"type": "reasoning_text", "text": "plan next"}
+        ]
         assert body["output"][1]["content"][0]["text"] == "33"
 
     def test_plain_content_remains_message_only(self, monkeypatch):
@@ -1072,7 +1094,9 @@ class TestResponsesStreamAdapter:
                 supports_reasoning = supports_reasoning,
                 reasoning_always_on = reasoning_always_on,
                 _request_reasoning_kwargs = (
-                    lambda enable_thinking = None, reasoning_effort = None, preserve_thinking = None: None
+                    lambda enable_thinking = None,
+                    reasoning_effort = None,
+                    preserve_thinking = None: None
                 ),
             ),
         )
@@ -1092,12 +1116,16 @@ class TestResponsesStreamAdapter:
             sent = []
 
             async def receive():
-                raise AssertionError("Responses streams poll disconnects in the generator")
+                raise AssertionError(
+                    "Responses streams poll disconnects in the generator"
+                )
 
             async def send(message):
                 sent.append(message)
 
-            await response({"type": "http", "asgi": {"spec_version": "2.3"}}, receive, send)
+            await response(
+                {"type": "http", "asgi": {"spec_version": "2.3"}}, receive, send
+            )
             return sent
 
         sent = asyncio.run(run())
@@ -1107,7 +1135,9 @@ class TestResponsesStreamAdapter:
         assert "response.output_text.delta" in body
         assert '"delta":"33"' in body.replace(" ", "")
 
-    def test_split_think_markers_stream_as_reasoning_and_visible_text(self, monkeypatch):
+    def test_split_think_markers_stream_as_reasoning_and_visible_text(
+        self, monkeypatch
+    ):
         chunks = [
             {"choices": [{"delta": {"content": "<thi"}}]},
             {"choices": [{"delta": {"content": "nk>pla"}}]},
@@ -1116,7 +1146,9 @@ class TestResponsesStreamAdapter:
             {"choices": [], "usage": {"prompt_tokens": 2, "completion_tokens": 3}},
         ]
         self._install_stream_mock(monkeypatch, chunks)
-        payload = ResponsesRequest(input = "hi", stream = True, reasoning = {"effort": "high"})
+        payload = ResponsesRequest(
+            input = "hi", stream = True, reasoning = {"effort": "high"}
+        )
         messages = [ChatMessage(role = "user", content = "hi")]
 
         async def run():
@@ -1221,7 +1253,10 @@ class TestResponsesStreamAdapter:
 
         lines = asyncio.run(run())
 
-        assert self._payloads(lines, "response.output_item.done")[-1]["item"]["name"] == "lookup"
+        assert (
+            self._payloads(lines, "response.output_item.done")[-1]["item"]["name"]
+            == "lookup"
+        )
         [entry] = monitor.snapshot()
         assert entry["status"] == "completed"
         assert entry["reply"] == 'Tool call: lookup({"query":"weather"})'
@@ -1275,7 +1310,9 @@ class TestResponsesStreamAdapter:
             self._install_stream_mock(monkeypatch, [])
             monitor = ApiMonitor(max_entries = 3)
             monkeypatch.setattr(inf_mod, "api_monitor", monitor)
-            monkeypatch.setattr(inf_mod, "_send_stream_with_preheader_cancel", fake_send)
+            monkeypatch.setattr(
+                inf_mod, "_send_stream_with_preheader_cancel", fake_send
+            )
             monkeypatch.setattr(inf_mod, "_aiter_llama_stream_items", fake_items)
             monitor_id = monitor.start(
                 endpoint = "/v1/responses",
@@ -1331,7 +1368,9 @@ class TestResponsesStreamAdapter:
             def finish(self):
                 return "", "tail"
 
-        self._install_stream_mock(monkeypatch, [{"choices": [{"delta": {"content": "<tai"}}]}])
+        self._install_stream_mock(
+            monkeypatch, [{"choices": [{"delta": {"content": "<tai"}}]}]
+        )
         monitor = ApiMonitor(max_entries = 3)
         monkeypatch.setattr(inf_mod, "api_monitor", monitor)
         monkeypatch.setattr(inf_mod, "_ResponsesReasoningExtractor", FakeExtractor)
@@ -1355,12 +1394,16 @@ class TestResponsesStreamAdapter:
 
         lines = asyncio.run(run())
 
-        assert self._payloads(lines, "response.output_text.delta")[-1]["delta"] == "tail"
+        assert (
+            self._payloads(lines, "response.output_text.delta")[-1]["delta"] == "tail"
+        )
         [entry] = monitor.snapshot()
         assert entry["status"] == "completed"
         assert entry["reply"] == "tail"
 
-    def test_reasoning_only_stream_does_not_update_visible_monitor_reply(self, monkeypatch):
+    def test_reasoning_only_stream_does_not_update_visible_monitor_reply(
+        self, monkeypatch
+    ):
         import routes.inference as inf_mod
 
         class FakeExtractor:
@@ -1377,7 +1420,9 @@ class TestResponsesStreamAdapter:
             def finish(self):
                 return "plan", ""
 
-        self._install_stream_mock(monkeypatch, [{"choices": [{"delta": {"content": "<think>"}}]}])
+        self._install_stream_mock(
+            monkeypatch, [{"choices": [{"delta": {"content": "<think>"}}]}]
+        )
         monitor = ApiMonitor(max_entries = 3)
         monkeypatch.setattr(inf_mod, "api_monitor", monitor)
         monkeypatch.setattr(inf_mod, "_ResponsesReasoningExtractor", FakeExtractor)
@@ -1402,12 +1447,17 @@ class TestResponsesStreamAdapter:
         lines = asyncio.run(run())
 
         assert self._payloads(lines, "response.output_text.delta") == []
-        assert self._payloads(lines, "response.reasoning_text.delta")[-1]["delta"] == "plan"
+        assert (
+            self._payloads(lines, "response.reasoning_text.delta")[-1]["delta"]
+            == "plan"
+        )
         [entry] = monitor.snapshot()
         assert entry["status"] == "completed"
         assert entry["reply"] == ""
 
-    def test_reasoning_capable_gguf_stream_parses_think_tags_by_default(self, monkeypatch):
+    def test_reasoning_capable_gguf_stream_parses_think_tags_by_default(
+        self, monkeypatch
+    ):
         chunks = [
             {"choices": [{"delta": {"content": "<thi"}}]},
             {"choices": [{"delta": {"content": "nk>plan</think>answer"}}]},
@@ -1435,14 +1485,18 @@ class TestResponsesStreamAdapter:
         assert completed["response"]["output"][0]["content"][0]["text"] == "plan"
         assert completed["response"]["output"][1]["content"][0]["text"] == "answer"
 
-    def test_non_reasoning_gguf_stream_keeps_literal_think_tags_visible(self, monkeypatch):
+    def test_non_reasoning_gguf_stream_keeps_literal_think_tags_visible(
+        self, monkeypatch
+    ):
         chunks = [
             {"choices": [{"delta": {"content": "show <thi"}}]},
             {"choices": [{"delta": {"content": "nk>x</think> tags"}}]},
             {"choices": [], "usage": {"prompt_tokens": 2, "completion_tokens": 3}},
         ]
         self._install_stream_mock(monkeypatch, chunks, supports_reasoning = False)
-        payload = ResponsesRequest(input = "hi", stream = True, reasoning = {"effort": "high"})
+        payload = ResponsesRequest(
+            input = "hi", stream = True, reasoning = {"effort": "high"}
+        )
         messages = [ChatMessage(role = "user", content = "hi")]
 
         async def run():
@@ -1454,7 +1508,10 @@ class TestResponsesStreamAdapter:
         reasoning_deltas = self._payloads(lines, "response.reasoning_text.delta")
         text_deltas = self._payloads(lines, "response.output_text.delta")
         assert reasoning_deltas == []
-        assert "".join(event["delta"] for event in text_deltas) == "show <think>x</think> tags"
+        assert (
+            "".join(event["delta"] for event in text_deltas)
+            == "show <think>x</think> tags"
+        )
         completed = self._payloads(lines, "response.completed")[0]
         assert [item["type"] for item in completed["response"]["output"]] == ["message"]
         assert completed["response"]["output"][0]["content"][0]["text"] == (
@@ -1467,7 +1524,9 @@ class TestResponsesStreamAdapter:
             {"choices": [], "usage": {"prompt_tokens": 2, "completion_tokens": 3}},
         ]
         self._install_stream_mock(monkeypatch, chunks)
-        payload = ResponsesRequest(input = "hi", stream = True, reasoning = {"effort": "high"})
+        payload = ResponsesRequest(
+            input = "hi", stream = True, reasoning = {"effort": "high"}
+        )
         messages = [ChatMessage(role = "user", content = "hi")]
 
         async def run():
@@ -1481,7 +1540,9 @@ class TestResponsesStreamAdapter:
         assert "".join(event["delta"] for event in reasoning_deltas) == "plan"
         assert text_deltas == []
         completed = self._payloads(lines, "response.completed")[0]
-        assert [item["type"] for item in completed["response"]["output"]] == ["reasoning"]
+        assert [item["type"] for item in completed["response"]["output"]] == [
+            "reasoning"
+        ]
         assert completed["response"]["output"][0]["content"][0]["text"] == "plan"
 
     def test_unclosed_think_stream_stays_out_of_visible_message_text(self, monkeypatch):
@@ -1491,7 +1552,9 @@ class TestResponsesStreamAdapter:
             {"choices": [], "usage": {"prompt_tokens": 2, "completion_tokens": 3}},
         ]
         self._install_stream_mock(monkeypatch, chunks)
-        payload = ResponsesRequest(input = "hi", stream = True, reasoning = {"effort": "high"})
+        payload = ResponsesRequest(
+            input = "hi", stream = True, reasoning = {"effort": "high"}
+        )
         messages = [ChatMessage(role = "user", content = "hi")]
 
         async def run():
@@ -1505,7 +1568,9 @@ class TestResponsesStreamAdapter:
         assert "".join(event["delta"] for event in reasoning_deltas) == "plan"
         assert text_deltas == []
         completed = self._payloads(lines, "response.completed")[0]
-        assert [item["type"] for item in completed["response"]["output"]] == ["reasoning"]
+        assert [item["type"] for item in completed["response"]["output"]] == [
+            "reasoning"
+        ]
         assert completed["response"]["output"][0]["content"][0]["text"] == "plan"
 
     def test_structured_reasoning_content_streams_as_reasoning(self, monkeypatch):
@@ -1565,7 +1630,9 @@ class TestResponsesStreamAdapter:
         text_deltas = self._payloads(lines, "response.output_text.delta")
         assert "".join(event["delta"] for event in reasoning_deltas) == "plan next"
         assert "".join(event["delta"] for event in text_deltas) == "33"
-        assert "reasoning_text" not in "".join(event["delta"] for event in reasoning_deltas)
+        assert "reasoning_text" not in "".join(
+            event["delta"] for event in reasoning_deltas
+        )
         completed = self._payloads(lines, "response.completed")[0]
         assert completed["response"]["output"][0]["content"][0]["text"] == "plan next"
         assert completed["response"]["output"][1]["content"][0]["text"] == "33"
@@ -1603,7 +1670,10 @@ class TestResponsesStreamAdapter:
 
         done_events = self._payloads(lines, "response.output_item.done")
         assert [event["output_index"] for event in done_events] == [0, 1]
-        assert [event["item"]["type"] for event in done_events] == ["function_call", "message"]
+        assert [event["item"]["type"] for event in done_events] == [
+            "function_call",
+            "message",
+        ]
         completed = self._payloads(lines, "response.completed")[0]
         assert [item["type"] for item in completed["response"]["output"]] == [
             "function_call",
@@ -1627,13 +1697,19 @@ class TestResponsesStreamAdapter:
                                         "index": 0,
                                         "id": "call_0",
                                         "type": "function",
-                                        "function": {"name": "first", "arguments": "{}"},
+                                        "function": {
+                                            "name": "first",
+                                            "arguments": "{}",
+                                        },
                                     },
                                     {
                                         "index": 1,
                                         "id": "call_1",
                                         "type": "function",
-                                        "function": {"name": "second", "arguments": "{}"},
+                                        "function": {
+                                            "name": "second",
+                                            "arguments": "{}",
+                                        },
                                     },
                                 ]
                             }
@@ -1670,7 +1746,9 @@ class TestResponsesStreamAdapter:
                 base_url = "http://llama.test",
                 # Non-reasoning template: the real backend returns None here.
                 _request_reasoning_kwargs = (
-                    lambda enable_thinking = None, reasoning_effort = None, preserve_thinking = None: None
+                    lambda enable_thinking = None,
+                    reasoning_effort = None,
+                    preserve_thinking = None: None
                 ),
             ),
         )
@@ -1719,7 +1797,9 @@ class TestResponsesStreamAdapter:
 
 class TestResponsesOutputFunctionCall:
     def test_reasoning_output_item_serialises_full_reasoning_content(self):
-        item = ResponsesOutputReasoning(content = [{"type": "reasoning_text", "text": "plan"}])
+        item = ResponsesOutputReasoning(
+            content = [{"type": "reasoning_text", "text": "plan"}]
+        )
         d = item.model_dump()
         assert d["type"] == "reasoning"
         assert d["id"].startswith("rs_")
@@ -1845,7 +1925,9 @@ class TestCodexStyleRequestShapes:
         msgs = _normalise_responses_input(payload)
 
         assert [m.role for m in msgs] == ["user", "assistant", "user"]
-        assert all("plan" not in (m.content or "") for m in msgs if isinstance(m.content, str))
+        assert all(
+            "plan" not in (m.content or "") for m in msgs if isinstance(m.content, str)
+        )
 
     def test_unknown_content_part_type_accepted(self):
         """Unknown content-part types (e.g. future input_audio) validate as
@@ -1936,7 +2018,9 @@ class TestCodexStyleRequestShapes:
             input = [
                 {
                     "role": "assistant",
-                    "content": [{"type": "output_text", "text": "ok", "annotations": []}],
+                    "content": [
+                        {"type": "output_text", "text": "ok", "annotations": []}
+                    ],
                 },
                 {"role": "user", "content": "next"},
             ],
@@ -2015,7 +2099,9 @@ class TestReasoningPrefilledExtractor:
 
     def test_prefilled_close_split_across_feeds(self):
         # T3: </think> straddles two feed() calls; holdback resolves it.
-        ex = _ResponsesReasoningExtractor(parse_think_markers = True, reasoning_prefilled = True)
+        ex = _ResponsesReasoningExtractor(
+            parse_think_markers = True, reasoning_prefilled = True
+        )
         r1, v1 = ex.feed("plan</th")
         r2, v2 = ex.feed("ink>ans")
         fr, fv = ex.finish()
@@ -2024,7 +2110,9 @@ class TestReasoningPrefilledExtractor:
 
     def test_prefilled_close_split_one_char_per_feed(self):
         # T4: every char in its own feed still splits correctly.
-        ex = _ResponsesReasoningExtractor(parse_think_markers = True, reasoning_prefilled = True)
+        ex = _ResponsesReasoningExtractor(
+            parse_think_markers = True, reasoning_prefilled = True
+        )
         reasoning, visible = "", ""
         for ch in "plan</think>x":
             r, v = ex.feed(ch)
@@ -2136,7 +2224,9 @@ class TestResponsesStreamHealing:
         TestResponsesStreamAdapter._install_stream_mock(
             monkeypatch, [{"choices": [{"delta": {"content": content}}]}]
         )
-        payload = ResponsesRequest(input = "hi", stream = True, tools = [self._TOOL], **payload_kwargs)
+        payload = ResponsesRequest(
+            input = "hi", stream = True, tools = [self._TOOL], **payload_kwargs
+        )
         messages = [ChatMessage(role = "user", content = "hi")]
 
         async def run():
@@ -2169,7 +2259,9 @@ class TestResponsesStreamHealing:
     def test_call_before_trailing_text_claims_lower_output_index(self, monkeypatch):
         events = self._run_stream(monkeypatch, f"{self._XML} done.")
         item_added = [
-            (name, payload) for name, payload in events if name == "response.output_item.added"
+            (name, payload)
+            for name, payload in events
+            if name == "response.output_item.added"
         ]
         # The call came first in the model output, so its item is added first
         # and claims the lower output_index; the trailing text's message item
@@ -2182,7 +2274,9 @@ class TestResponsesStreamHealing:
         msg_idx = item_added[1][1]["output_index"]
         assert call_idx < msg_idx
         text = "".join(
-            payload["delta"] for name, payload in events if name == "response.output_text.delta"
+            payload["delta"]
+            for name, payload in events
+            if name == "response.output_text.delta"
         )
         assert "done." in text
         assert "<tool_call>" not in text
@@ -2195,7 +2289,9 @@ class TestResponsesStreamHealing:
             if name == "response.output_item.added"
         )
         text = "".join(
-            payload["delta"] for name, payload in events if name == "response.output_text.delta"
+            payload["delta"]
+            for name, payload in events
+            if name == "response.output_text.delta"
         )
         assert text == self._XML
 
@@ -2205,7 +2301,11 @@ class TestResponsesStreamHealing:
         # one with a later output index (native Responses stream shape).
         events = self._run_stream(monkeypatch, f"before {self._XML} after.")
         added = [
-            (payload["output_index"], payload["item"]["type"], payload["item"].get("id"))
+            (
+                payload["output_index"],
+                payload["item"]["type"],
+                payload["item"].get("id"),
+            )
             for name, payload in events
             if name == "response.output_item.added"
         ]
@@ -2225,9 +2325,15 @@ class TestResponsesStreamHealing:
         assert [d for i, d in deltas if i == added[0][2]] == ["before "]
         assert [d for i, d in deltas if i == added[2][2]] == [" after."]
         # The completed snapshot lists all three items with per-item text.
-        completed = [payload for name, payload in events if name == "response.completed"]
+        completed = [
+            payload for name, payload in events if name == "response.completed"
+        ]
         output = completed[0]["response"]["output"]
-        assert [item["type"] for item in output] == ["message", "function_call", "message"]
+        assert [item["type"] for item in output] == [
+            "message",
+            "function_call",
+            "message",
+        ]
         assert output[0]["content"][0]["text"] == "before "
         assert output[2]["content"][0]["text"] == " after."
 
@@ -2248,7 +2354,10 @@ class TestResponsesStreamHealing:
                                     {
                                         "index": 0,
                                         "id": "call_up",
-                                        "function": {"name": "lookup", "arguments": "{}"},
+                                        "function": {
+                                            "name": "lookup",
+                                            "arguments": "{}",
+                                        },
                                     }
                                 ]
                             }
@@ -2275,7 +2384,8 @@ class TestResponsesStreamHealing:
         calls = [
             payload
             for name, payload in events
-            if name == "response.output_item.added" and payload["item"]["type"] == "function_call"
+            if name == "response.output_item.added"
+            and payload["item"]["type"] == "function_call"
         ]
         assert len(calls) == 1
         assert calls[0]["item"]["name"] == "lookup"

@@ -114,7 +114,11 @@ def _note_untracked_end() -> None:
 
 def _is_idle(ttl_seconds: float) -> bool:
     with _lock:
-        return _inflight == 0 and _pending == 0 and (time.monotonic() - _last_active) >= ttl_seconds
+        return (
+            _inflight == 0
+            and _pending == 0
+            and (time.monotonic() - _last_active) >= ttl_seconds
+        )
 
 
 def _note_activity() -> None:
@@ -240,16 +244,26 @@ def restore_kv_resume(backend, manifest) -> None:
         gguf = manifest.get("gguf")
         binary = manifest.get("binary")
         current = getattr(backend, "_gguf_path", None)
-        same_gguf = bool(gguf and current) and Path(current).resolve() == Path(gguf).resolve()
+        same_gguf = (
+            bool(gguf and current) and Path(current).resolve() == Path(gguf).resolve()
+        )
         if same_gguf:
             # Same path is not enough: shards may have been rewritten meanwhile.
             identity = getattr(backend, "_gguf_file_identity", None)
-            same_gguf = callable(identity) and identity(current) == manifest.get("gguf_stat")
+            same_gguf = callable(identity) and identity(current) == manifest.get(
+                "gguf_stat"
+            )
         if same_gguf:
             # Nor the same file: launch overrides can invalidate KV numerics.
             fingerprint = getattr(backend, "_slot_launch_fingerprint", None)
-            same_gguf = callable(fingerprint) and manifest.get("launch") == fingerprint()
-        if same_gguf and binary and binary == getattr(backend, "_slot_save_binary", None):
+            same_gguf = (
+                callable(fingerprint) and manifest.get("launch") == fingerprint()
+            )
+        if (
+            same_gguf
+            and binary
+            and binary == getattr(backend, "_slot_save_binary", None)
+        ):
             logger.info("Restoring saved slot KV onto the reloaded model")
             backend.restore_slots_for_resume(manifest)
     except Exception as exc:
@@ -341,7 +355,9 @@ def _loaded_identity(backend):
     # Third slot is the advertised id (repo id) an auto-switch load sets on the
     # backend; it's the override key, so an idle stash keyed by the concrete load
     # path doesn't drop the user's saved launch flags on the alias reload.
-    advertised = getattr(backend, "_openai_advertised_id", None) or backend.model_identifier
+    advertised = (
+        getattr(backend, "_openai_advertised_id", None) or backend.model_identifier
+    )
     return (backend.model_identifier, getattr(backend, "hf_variant", None), advertised)
 
 
@@ -403,7 +419,9 @@ async def idle_unload_loop(poll_seconds: float = 15.0) -> None:
                     _set_last_unloaded(freed)  # let an alias request reload it
                     if manifest and freed:
                         _set_kv_resume({"identity": freed, **manifest})
-                        logger.info("Idle auto-unload: saved slot KV for restore on reload")
+                        logger.info(
+                            "Idle auto-unload: saved slot KV for restore on reload"
+                        )
                     elif manifest:
                         _delete_resume_files(manifest)
                     logger.info("Idle auto-unload: freed GGUF after %ss idle", ttl)

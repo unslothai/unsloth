@@ -35,8 +35,12 @@ def _load_split_repo_variant():
         typer_stub.echo = lambda *args, **kwargs: None
         sys.modules["typer"] = typer_stub
 
-    studio_py = Path(__file__).resolve().parents[2] / "unsloth_cli" / "commands" / "studio.py"
-    spec = importlib.util.spec_from_file_location("_studio_for_repo_variant_test", studio_py)
+    studio_py = (
+        Path(__file__).resolve().parents[2] / "unsloth_cli" / "commands" / "studio.py"
+    )
+    spec = importlib.util.spec_from_file_location(
+        "_studio_for_repo_variant_test", studio_py
+    )
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module._split_repo_variant

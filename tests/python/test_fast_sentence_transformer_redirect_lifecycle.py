@@ -122,10 +122,18 @@ def _build_driver(transformer_class):
             return model if is_requested_model_name(a, kw) else original_model(*a, **kw)
 
         def return_existing_tokenizer(*a, **kw):
-            return tokenizer if is_requested_model_name(a, kw) else original_tokenizer(*a, **kw)
+            return (
+                tokenizer
+                if is_requested_model_name(a, kw)
+                else original_tokenizer(*a, **kw)
+            )
 
         def return_existing_processor(*a, **kw):
-            return tokenizer if is_requested_model_name(a, kw) else original_processor(*a, **kw)
+            return (
+                tokenizer
+                if is_requested_model_name(a, kw)
+                else original_processor(*a, **kw)
+            )
 
         try:
             AutoModel.from_pretrained = return_existing_model

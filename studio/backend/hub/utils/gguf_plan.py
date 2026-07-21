@@ -64,7 +64,9 @@ def expected_file_from_sibling(sibling) -> Optional[ExpectedFile]:
 def is_companion_gguf_path(path: str) -> bool:
     """Companion (non-main) GGUF downloaded alongside a variant: the vision
     mmproj or the separate MTP drafter (Gemma 4)."""
-    return is_gguf_filename(path) and (is_mmproj_filename(path) or is_mtp_drafter_path(path))
+    return is_gguf_filename(path) and (
+        is_mmproj_filename(path) or is_mtp_drafter_path(path)
+    )
 
 
 def is_main_gguf_variant_path(path: str, variant: str) -> bool:
@@ -86,7 +88,9 @@ def _gguf_rfilename(sibling) -> Optional[str]:
 
 
 def mmproj_siblings(siblings: Sequence) -> list:
-    return [s for s in siblings if (name := _gguf_rfilename(s)) and is_mmproj_filename(name)]
+    return [
+        s for s in siblings if (name := _gguf_rfilename(s)) and is_mmproj_filename(name)
+    ]
 
 
 def preferred_mmproj_sibling(siblings: Sequence) -> Optional[object]:
@@ -94,7 +98,11 @@ def preferred_mmproj_sibling(siblings: Sequence) -> Optional[object]:
     if not candidates:
         return None
     return next(
-        (s for s in candidates if extract_quant_label(getattr(s, "rfilename")).upper() == "F16"),
+        (
+            s
+            for s in candidates
+            if extract_quant_label(getattr(s, "rfilename")).upper() == "F16"
+        ),
         candidates[0],
     )
 
@@ -112,7 +120,9 @@ def preferred_mtp_sibling(siblings: Sequence) -> Optional[object]:
         (
             s
             for s in siblings
-            if (name := _gguf_rfilename(s)) and "/" not in name and name.lower().startswith("mtp-")
+            if (name := _gguf_rfilename(s))
+            and "/" not in name
+            and name.lower().startswith("mtp-")
         ),
         key = lambda s: getattr(s, "rfilename"),
     )
@@ -127,11 +137,17 @@ def build_gguf_variant_plans(siblings: Sequence) -> dict[str, GgufVariantPlan]:
         for s in all_mmproj
         if isinstance(getattr(s, "rfilename", None), str)
     )
-    all_mmproj_hashes = frozenset(h for h in (sibling_sha256(s) for s in all_mmproj) if h)
+    all_mmproj_hashes = frozenset(
+        h for h in (sibling_sha256(s) for s in all_mmproj) if h
+    )
     companion = preferred_mmproj_sibling(siblings)
-    companion_expected = expected_file_from_sibling(companion) if companion is not None else None
+    companion_expected = (
+        expected_file_from_sibling(companion) if companion is not None else None
+    )
     mtp_sibling = preferred_mtp_sibling(siblings)
-    mtp_expected = expected_file_from_sibling(mtp_sibling) if mtp_sibling is not None else None
+    mtp_expected = (
+        expected_file_from_sibling(mtp_sibling) if mtp_sibling is not None else None
+    )
     companions_expected = tuple(
         file for file in (companion_expected, mtp_expected) if file is not None
     )
@@ -175,11 +191,17 @@ def plan_from_expected_files(
     all_mmproj_hashes: frozenset[str] | None = None,
 ) -> GgufVariantPlan:
     expected = tuple(expected_files)
-    main_files = tuple(file for file in expected if is_main_gguf_variant_path(file.path, variant))
-    companion_files = tuple(file for file in expected if is_companion_gguf_path(file.path))
+    main_files = tuple(
+        file for file in expected if is_main_gguf_variant_path(file.path, variant)
+    )
+    companion_files = tuple(
+        file for file in expected if is_companion_gguf_path(file.path)
+    )
     # Manifest-resume fallback for the mmproj fields below: companion_files
     # also holds the MTP drafter, so keep an mmproj-only view.
-    mmproj_files = tuple(file for file in companion_files if is_mmproj_filename(file.path))
+    mmproj_files = tuple(
+        file for file in companion_files if is_mmproj_filename(file.path)
+    )
     main_hashes = frozenset(file.sha256 for file in main_files if file.sha256)
     companion_hashes = frozenset(file.sha256 for file in companion_files if file.sha256)
     required_hashes = frozenset(file.sha256 for file in expected if file.sha256)

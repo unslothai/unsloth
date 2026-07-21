@@ -150,7 +150,9 @@ class FastDiffusionModel:
         if dtype is None:
             dtype = torch.float16 if not SUPPORTS_BFLOAT16 else torch.bfloat16
         elif dtype == torch.bfloat16 and not SUPPORTS_BFLOAT16:
-            logger.warning_once("Device does not support bfloat16. Will change to float16.")
+            logger.warning_once(
+                "Device does not support bfloat16. Will change to float16."
+            )
             dtype = torch.float16
         assert dtype in (torch.float16, torch.bfloat16, torch.float32)
 
@@ -235,8 +237,12 @@ class FastDiffusionModel:
                 qcfg = BitsAndBytesConfig(load_in_8bit = True)
             load_kwargs["quantization_config"] = qcfg
 
-        print(f"==((  Unsloth: FastDiffusionModel (slow / transformers-only path)  ))==")
-        print(f"   Model: {model_name}  | class: {model_cls.__name__}  | model_type: {model_type}")
+        print(
+            f"==((  Unsloth: FastDiffusionModel (slow / transformers-only path)  ))=="
+        )
+        print(
+            f"   Model: {model_name}  | class: {model_cls.__name__}  | model_type: {model_type}"
+        )
         print(
             f"   dtype: {dtype} | 4bit: {load_in_4bit} | 8bit: {load_in_8bit} | attn: {attn_implementation}"
         )
@@ -297,7 +303,11 @@ class FastDiffusionModel:
             bias = bias,
             target_modules = target_modules,
             task_type = task_type,  # None: diffusion has no standard CAUSAL_LM head
-            **{k: v for k, v in kwargs.items() if k in ("modules_to_save", "init_lora_weights")},
+            **{
+                k: v
+                for k, v in kwargs.items()
+                if k in ("modules_to_save", "init_lora_weights")
+            },
         )
         # Exclude the vision tower's custom (non-Linear) modules that share suffix names.
         exclude = kwargs.get("exclude_modules", DIFFUSION_LORA_EXCLUDE)
@@ -333,6 +343,8 @@ class FastDiffusionModel:
     @staticmethod
     def for_training(model, use_gradient_checkpointing = True):
         model.train()
-        if use_gradient_checkpointing and hasattr(model, "gradient_checkpointing_enable"):
+        if use_gradient_checkpointing and hasattr(
+            model, "gradient_checkpointing_enable"
+        ):
             model.gradient_checkpointing_enable()
         return model

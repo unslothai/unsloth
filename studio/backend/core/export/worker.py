@@ -160,7 +160,9 @@ def _setup_log_capture(resp_queue: Any) -> None:
     t_err.start()
 
 
-def _activate_transformers_version(model_name: str, hf_token: str | None = None) -> None:
+def _activate_transformers_version(
+    model_name: str, hf_token: str | None = None
+) -> None:
     """Activate the correct transformers version BEFORE any ML imports."""
     # Ensure backend is on sys.path for utils imports.
     backend_path = str(Path(__file__).resolve().parent.parent.parent)
@@ -187,7 +189,9 @@ def _offline_window_if_unreachable(step = "loading"):
     force_ctx = None
     try:
         from utils.transformers_version import _env_offline, hf_endpoint_unreachable
-        probe_enabled = os.environ.get("UNSLOTH_OFFLINE_PROBE", "1").strip().lower() not in (
+        probe_enabled = os.environ.get(
+            "UNSLOTH_OFFLINE_PROBE", "1"
+        ).strip().lower() not in (
             "0",
             "false",
             "no",
@@ -279,7 +283,9 @@ def _handle_load(backend, cmd: dict, resp_queue: Any) -> None:
         from utils.models.model_config import get_base_model_from_lora_identifier
 
         # Resolve a LOCAL or REMOTE adapter's base so a remote LoRA base is gated too.
-        _base = get_base_model_from_lora_identifier(checkpoint_path, cmd.get("hf_token"))
+        _base = get_base_model_from_lora_identifier(
+            checkpoint_path, cmd.get("hf_token")
+        )
         if _base:
             malware_targets.append(_base)
     except Exception as exc:
@@ -287,7 +293,9 @@ def _handle_load(backend, cmd: dict, resp_queue: Any) -> None:
     _hf_token = cmd.get("hf_token")
     for target in dict.fromkeys(malware_targets):
         _fs = evaluate_file_security(
-            target, hf_token = _hf_token, load_subdirs = security_load_subdirs(target, _hf_token)
+            target,
+            hf_token = _hf_token,
+            load_subdirs = security_load_subdirs(target, _hf_token),
         )
         if _fs.blocked:
             _send_response(
@@ -313,7 +321,9 @@ def _handle_load(backend, cmd: dict, resp_queue: Any) -> None:
             from utils.models.model_config import get_base_model_from_lora_identifier
 
             # Resolve a local or remote adapter's base so its base repo is gated too.
-            base_model = get_base_model_from_lora_identifier(checkpoint_path, cmd.get("hf_token"))
+            base_model = get_base_model_from_lora_identifier(
+                checkpoint_path, cmd.get("hf_token")
+            )
             if base_model:
                 consent_targets.append(base_model)
         except Exception as exc:
@@ -541,7 +551,9 @@ def run_export_process(*, cmd_queue: Any, resp_queue: Any, config: dict) -> None
     # ── 1. Activate correct transformers version BEFORE any ML imports ──
     with _offline_window_if_unreachable(step = "activating transformers"):
         try:
-            _activate_transformers_version(checkpoint_path, config.get("hf_token") or None)
+            _activate_transformers_version(
+                checkpoint_path, config.get("hf_token") or None
+            )
         except Exception as exc:
             _send_response(
                 resp_queue,
@@ -597,7 +609,9 @@ def run_export_process(*, cmd_queue: Any, resp_queue: Any, config: dict) -> None
 
         import transformers
 
-        logger.info("Export subprocess loaded transformers %s", transformers.__version__)
+        logger.info(
+            "Export subprocess loaded transformers %s", transformers.__version__
+        )
 
     except Exception as exc:
         _send_response(
@@ -703,7 +717,9 @@ def run_export_process(*, cmd_queue: Any, resp_queue: Any, config: dict) -> None
                 )
 
         except Exception as exc:
-            logger.error("Error handling command '%s': %s", cmd_type, exc, exc_info = True)
+            logger.error(
+                "Error handling command '%s': %s", cmd_type, exc, exc_info = True
+            )
             _send_response(
                 resp_queue,
                 {

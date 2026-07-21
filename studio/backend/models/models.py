@@ -12,7 +12,9 @@ ModelType = Literal["text", "vision", "audio", "embeddings"]
 class CheckpointInfo(BaseModel):
     """Information about a discovered checkpoint directory."""
 
-    display_name: str = Field(..., description = "User-friendly checkpoint name (folder name)")
+    display_name: str = Field(
+        ..., description = "User-friendly checkpoint name (folder name)"
+    )
     path: str = Field(..., description = "Full path to the checkpoint directory")
     loss: Optional[float] = Field(None, description = "Training loss at this checkpoint")
 
@@ -56,7 +58,9 @@ class CheckpointListResponse(BaseModel):
 class ExportSizeResponse(BaseModel):
     """Model fp16/bf16-equivalent size; size fields are null when unknown."""
 
-    model: str = Field(..., description = "Model id or path the estimate was computed for")
+    model: str = Field(
+        ..., description = "Model id or path the estimate was computed for"
+    )
     fp16_bytes: Optional[int] = Field(
         None,
         description = "Estimated FP16/BF16-equivalent on-disk size in bytes, or null if unknown",
@@ -79,23 +83,33 @@ class ModelDetails(BaseModel):
         None, description = "Model identifier (alias for id, for backward compatibility)"
     )
     name: Optional[str] = Field(None, description = "Display name for the model")
-    config: Optional[Dict[str, Any]] = Field(None, description = "Model configuration dictionary")
+    config: Optional[Dict[str, Any]] = Field(
+        None, description = "Model configuration dictionary"
+    )
     is_vision: bool = Field(False, description = "Whether model is a vision model")
     is_embedding: bool = Field(
         False, description = "Whether model is an embedding/sentence-transformer model"
     )
     is_lora: bool = Field(False, description = "Whether model is a LoRA adapter")
-    is_gguf: bool = Field(False, description = "Whether model is a GGUF model (llama.cpp format)")
+    is_gguf: bool = Field(
+        False, description = "Whether model is a GGUF model (llama.cpp format)"
+    )
     is_mlx: bool = Field(
         False, description = "Whether model is served via the MLX backend (Apple Silicon)"
     )
     is_audio: bool = Field(False, description = "Whether model is a TTS audio model")
-    audio_type: Optional[str] = Field(None, description = "Audio codec type: snac, csm, bicodec, dac")
-    has_audio_input: bool = Field(False, description = "Whether model accepts audio input (ASR)")
+    audio_type: Optional[str] = Field(
+        None, description = "Audio codec type: snac, csm, bicodec, dac"
+    )
+    has_audio_input: bool = Field(
+        False, description = "Whether model accepts audio input (ASR)"
+    )
     model_type: Optional[ModelType] = Field(
         None, description = "Collapsed model modality: text, vision, audio, or embeddings"
     )
-    base_model: Optional[str] = Field(None, description = "Base model if this is a LoRA adapter")
+    base_model: Optional[str] = Field(
+        None, description = "Base model if this is a LoRA adapter"
+    )
     max_position_embeddings: Optional[int] = Field(
         None, description = "Maximum context length supported by the model"
     )
@@ -108,7 +122,9 @@ class LoRAInfo(BaseModel):
     """LoRA adapter or exported model information"""
 
     display_name: str = Field(..., description = "Display name for the LoRA")
-    adapter_path: str = Field(..., description = "Path to the LoRA adapter or exported model")
+    adapter_path: str = Field(
+        ..., description = "Path to the LoRA adapter or exported model"
+    )
     base_model: Optional[str] = Field(None, description = "Base model identifier")
     source: Optional[str] = Field(None, description = "'training' or 'exported'")
     export_type: Optional[str] = Field(
@@ -119,24 +135,34 @@ class LoRAInfo(BaseModel):
 class LoRAScanResponse(BaseModel):
     """Response schema for scanning trained LoRA adapters"""
 
-    loras: List[LoRAInfo] = Field(default_factory = list, description = "List of found LoRA adapters")
+    loras: List[LoRAInfo] = Field(
+        default_factory = list, description = "List of found LoRA adapters"
+    )
     outputs_dir: str = Field(..., description = "Directory that was scanned")
 
 
 class ModelListResponse(BaseModel):
     """Response schema for listing models"""
 
-    models: List[ModelDetails] = Field(default_factory = list, description = "List of models")
-    default_models: List[str] = Field(default_factory = list, description = "List of default model IDs")
+    models: List[ModelDetails] = Field(
+        default_factory = list, description = "List of models"
+    )
+    default_models: List[str] = Field(
+        default_factory = list, description = "List of default model IDs"
+    )
 
 
 class GgufVariantDetail(BaseModel):
     """A single GGUF quantization variant in a HuggingFace repo."""
 
-    filename: str = Field(..., description = "GGUF filename (e.g., 'gemma-3-4b-it-Q4_K_M.gguf')")
+    filename: str = Field(
+        ..., description = "GGUF filename (e.g., 'gemma-3-4b-it-Q4_K_M.gguf')"
+    )
     quant: str = Field(..., description = "Quantization label (e.g., 'Q4_K_M')")
     size_bytes: int = Field(0, description = "File size in bytes")
-    download_size_bytes: int = Field(0, description = "Total bytes needed to download this variant")
+    download_size_bytes: int = Field(
+        0, description = "Total bytes needed to download this variant"
+    )
     downloaded: bool = Field(
         False, description = "Whether this variant is already in the local HF cache"
     )
@@ -192,7 +218,9 @@ class LocalModelInfo(BaseModel):
 class LocalModelListResponse(BaseModel):
     """Response schema for listing local/cached models."""
 
-    models_dir: str = Field(..., description = "Directory scanned for custom local models")
+    models_dir: str = Field(
+        ..., description = "Directory scanned for custom local models"
+    )
     hf_cache_dir: Optional[str] = Field(
         None,
         description = "HF cache root that was scanned",
@@ -210,7 +238,9 @@ class LocalModelListResponse(BaseModel):
 class AddScanFolderRequest(BaseModel):
     """Request body for adding a custom scan folder."""
 
-    path: str = Field(..., description = "Absolute or relative directory path to scan for models")
+    path: str = Field(
+        ..., description = "Absolute or relative directory path to scan for models"
+    )
 
 
 class ScanFolderInfo(BaseModel):

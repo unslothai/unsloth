@@ -71,12 +71,12 @@ def prep_triton_kernel_traits(autotune):
         _autotuned_grouped_gemm_forward_kernel.configs = (
             _autotuned_grouped_gemm_forward_kernel.configs[:NUM_AUTOTUNE_CONFIGS]
         )
-        _autotuned_grouped_gemm_dW_kernel.configs = _autotuned_grouped_gemm_dW_kernel.configs[
-            :NUM_AUTOTUNE_CONFIGS
-        ]
-        _autotuned_grouped_gemm_dX_kernel.configs = _autotuned_grouped_gemm_dX_kernel.configs[
-            :NUM_AUTOTUNE_CONFIGS
-        ]
+        _autotuned_grouped_gemm_dW_kernel.configs = (
+            _autotuned_grouped_gemm_dW_kernel.configs[:NUM_AUTOTUNE_CONFIGS]
+        )
+        _autotuned_grouped_gemm_dX_kernel.configs = (
+            _autotuned_grouped_gemm_dX_kernel.configs[:NUM_AUTOTUNE_CONFIGS]
+        )
 
         kernel_config_fwd = None
         kernel_config_bwd_dW = None
@@ -152,7 +152,9 @@ def model_config():
 @pytest.mark.parametrize(
     "permute_x", [False], ids = lambda x: "permute_x" if x else "no_permute_x"
 )  # Llama4 does not support permute_x
-@pytest.mark.parametrize("autotune", [True], ids = lambda x: "autotune" if x else "manual")
+@pytest.mark.parametrize(
+    "autotune", [True], ids = lambda x: "autotune" if x else "manual"
+)
 @pytest.mark.parametrize("seqlen", SEQ_LENS, ids = lambda x: f"seqlen={x}")
 @pytest.mark.parametrize("dtype", DTYPES, ids = str)
 def test_llama4_ref(
@@ -174,8 +176,12 @@ def test_llama4_ref(
     device = "cuda"
     hidden_dim = model_config.hidden_size
     atol, rtol = TOLERANCES[dtype]
-    check_diff = partial(_check_diff, atol = atol, rtol = rtol, precision = precision, verbose = verbose)
-    check_grads = partial(_check_grads, atol = atol, rtol = rtol, precision = precision, verbose = verbose)
+    check_diff = partial(
+        _check_diff, atol = atol, rtol = rtol, precision = precision, verbose = verbose
+    )
+    check_grads = partial(
+        _check_grads, atol = atol, rtol = rtol, precision = precision, verbose = verbose
+    )
 
     # Reference op -- HF
     llama4_ref = Llama4TextMoe(model_config).to(dtype = dtype, device = device)
@@ -187,7 +193,9 @@ def test_llama4_ref(
     llama4_gg_ref.copy_weights(llama4_ref)
     llama4_gg_ref.check_weights(llama4_ref)
 
-    x_ref = torch.randn(bs, seqlen, hidden_dim, dtype = dtype, device = device, requires_grad = True)
+    x_ref = torch.randn(
+        bs, seqlen, hidden_dim, dtype = dtype, device = device, requires_grad = True
+    )
     x_torch_gg = x_ref.detach().clone().requires_grad_()
     x_triton = x_ref.detach().clone().requires_grad_()
 
@@ -196,10 +204,12 @@ def test_llama4_ref(
     assert y_ref.shape == y_torch_gg.shape, f"{y_ref.shape} != {y_torch_gg.shape}"
     with annotated_context("Testing torch grouped gemm Llama4TextMoe"):
         check_diff(y_ref, y_torch_gg, msg = "y_torch_gg")
-        check_diff(sparse_to_dense(routing_ref), routing_torch_gg, msg = "routing_torch_gg")
+        check_diff(
+            sparse_to_dense(routing_ref), routing_torch_gg, msg = "routing_torch_gg"
+        )
 
-    kernel_config_fwd, kernel_config_bwd_dW, kernel_config_bwd_dX = prep_triton_kernel_traits(
-        autotune
+    kernel_config_fwd, kernel_config_bwd_dW, kernel_config_bwd_dX = (
+        prep_triton_kernel_traits(autotune)
     )
 
     llama4_triton = Llama4TritonTextMoe(
@@ -234,7 +244,9 @@ def test_llama4_ref(
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--seqlen", type = int, default = 1024)
-    parser.add_argument("--dtype", type = str, choices = ["bfloat16", "float16"], default = "bfloat16")
+    parser.add_argument(
+        "--dtype", type = str, choices = ["bfloat16", "float16"], default = "bfloat16"
+    )
     args = parser.parse_args()
     args.dtype = getattr(torch, args.dtype)
     args_dict = vars(args)

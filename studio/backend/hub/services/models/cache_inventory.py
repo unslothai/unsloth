@@ -46,9 +46,7 @@ from utils.hidden_models import is_hidden_model
 
 logger = get_logger(__name__)
 
-_repo_size_cache: "OrderedDict[tuple[str, str, str], tuple[int, frozenset[str], float]]" = (
-    OrderedDict()
-)
+_repo_size_cache: "OrderedDict[tuple[str, str, str], tuple[int, frozenset[str], float]]" = OrderedDict()
 _repo_size_neg_cache: "OrderedDict[tuple[str, str, str], float]" = OrderedDict()
 _REPO_SIZE_CACHE_MAX = 256
 _REPO_SIZE_POS_TTL = 60.0
@@ -138,7 +136,9 @@ def _cached_repo_file_name(file_obj) -> str:
         try:
             path = Path(file_path)
             parts = path.parts
-            snapshots_idx = max(i for i, part in enumerate(parts) if part == "snapshots")
+            snapshots_idx = max(
+                i for i, part in enumerate(parts) if part == "snapshots"
+            )
             if len(parts) > snapshots_idx + 2:
                 return Path(*parts[snapshots_idx + 2 :]).as_posix()
         except Exception:
@@ -155,7 +155,9 @@ def _is_real_cache_blob(blob: Optional[Path], repo_dir: Optional[Path]) -> bool:
     if blob is None or repo_dir is None:
         return False
     try:
-        return blob.parent.resolve(strict = False) == (repo_dir / "blobs").resolve(strict = False)
+        return blob.parent.resolve(strict = False) == (repo_dir / "blobs").resolve(
+            strict = False
+        )
     except OSError:
         return False
 
@@ -180,7 +182,9 @@ def local_size_identity(size: int) -> str:
     return f"{_LOCAL_SIZE_IDENTITY_PREFIX}{int(size)}"
 
 
-def _repo_gguf_blob_map(repo_info, *, include_companions: bool = False) -> dict[str, set[str]]:
+def _repo_gguf_blob_map(
+    repo_info, *, include_companions: bool = False
+) -> dict[str, set[str]]:
     """Map each cached GGUF file's repo-relative name to the SET of its local
     identities across all revisions.
 
@@ -271,7 +275,9 @@ def _scan_cached_gguf() -> list[dict]:
                 repo_path = Path(repo_info.repo_path)
                 snapshot_path = _cached_model_snapshot_path(repo_path)
                 total_size = _repo_gguf_size_bytes(repo_info)
-                has_variant_state, variant_state_size = _gguf_variant_state_summary(repo_id)
+                has_variant_state, variant_state_size = _gguf_variant_state_summary(
+                    repo_id
+                )
                 is_hidden_infra = _is_hidden_infra_repo(
                     repo_id,
                     str(repo_path),
@@ -354,7 +360,9 @@ def _repo_non_gguf_model_payload(repo_info) -> _CachedNonGgufPayload:
     has_transformers_safetensors = False
     has_checkpoint = False
 
-    def _record_blob(target: dict[str, int], file_obj, rev_id: str, file_name: str) -> None:
+    def _record_blob(
+        target: dict[str, int], file_obj, rev_id: str, file_name: str
+    ) -> None:
         blob_path = getattr(file_obj, "blob_path", None)
         size = int(file_obj.size_on_disk or 0)
         key = str(blob_path) if blob_path else f"{rev_id}:{file_name}"
@@ -482,7 +490,9 @@ def _cached_model_local_metadata(repo_path: Path) -> dict:
         result["library_name"] = library_name.strip()
     tags = card.get("tags")
     if isinstance(tags, list):
-        clean_tags = [tag.strip() for tag in tags if isinstance(tag, str) and tag.strip()]
+        clean_tags = [
+            tag.strip() for tag in tags if isinstance(tag, str) and tag.strip()
+        ]
         if clean_tags:
             result["tags"] = clean_tags
     return result

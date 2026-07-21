@@ -137,7 +137,9 @@ def test_worker_activates_correct_transformers_version(tmp_path):
         f"STDOUT:\n{result.stdout}\nSTDERR:\n{result.stderr}"
     )
     parsed = _parse(result.stdout)
-    assert parsed, f"No RESULT line.\nSTDOUT:\n{result.stdout}\nSTDERR:\n{result.stderr}"
+    assert (
+        parsed
+    ), f"No RESULT line.\nSTDOUT:\n{result.stdout}\nSTDERR:\n{result.stderr}"
 
     # Correct tier chosen for a transformers-5.x model (pure, deterministic; no network/GPU).
     assert parsed["tier"] == "530", (

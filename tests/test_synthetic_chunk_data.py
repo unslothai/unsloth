@@ -79,8 +79,12 @@ def test_chunk_data_short_document_is_not_split_into_fragments():
     # A document shorter than the overlap previously reached the multi-chunk path
     # (n_chunks >= 3) where linspace produced negative start indices, slicing the
     # wrong tail tokens. It must be emitted as one chunk covering the whole document.
-    kit = _make_kit(max_seq_length = 2048, max_generation_tokens = 920, overlap = 64)  # max_tokens = 80
-    out, contents = _chunk("word " * 50, kit = kit)  # 50 tokens < overlap (would be 4 chunks)
+    kit = _make_kit(
+        max_seq_length = 2048, max_generation_tokens = 920, overlap = 64
+    )  # max_tokens = 80
+    out, contents = _chunk(
+        "word " * 50, kit = kit
+    )  # 50 tokens < overlap (would be 4 chunks)
     assert len(out) == 1, f"sub-overlap doc should yield 1 chunk, got {len(out)}"
     assert contents[0].split() == [
         f"w{i}" for i in range(50)
@@ -90,7 +94,9 @@ def test_chunk_data_short_document_is_not_split_into_fragments():
 def test_chunk_data_rejects_overlap_not_smaller_than_chunk():
     # If overlap >= chunk size the stride is non-positive, which would divide by zero
     # or emit one oversized chunk. The config must be rejected with a clear error.
-    kit = _make_kit(max_seq_length = 2048, max_generation_tokens = 950, overlap = 64)  # max_tokens = 20
+    kit = _make_kit(
+        max_seq_length = 2048, max_generation_tokens = 950, overlap = 64
+    )  # max_tokens = 20
     with tempfile.NamedTemporaryFile("w", suffix = ".txt", delete = False) as f:
         f.write("word " * 50)
         path = f.name
@@ -154,7 +160,9 @@ def test_chunk_data_does_not_over_split():
     kit = _make_kit(max_seq_length = 2048, max_generation_tokens = 760, overlap = 64)
     max_tokens = 2048 - 760 * 2 - 128  # 400
     out, contents = _chunk("word " * 673, kit = kit)
-    assert len(out) == 2, f"673-token doc should yield the minimal 2 chunks, got {len(out)}"
+    assert (
+        len(out) == 2
+    ), f"673-token doc should yield the minimal 2 chunks, got {len(out)}"
     for content in contents:
         n_tokens = len(content.split())
         assert (

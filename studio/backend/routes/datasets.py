@@ -261,7 +261,11 @@ def _select_best_hf_preview_candidate(
 
 
 def _select_hf_preview_file(
-    repo_files: list[str], *, metadata: dict | None, subset: str | None, split: str | None
+    repo_files: list[str],
+    *,
+    metadata: dict | None,
+    subset: str | None,
+    split: str | None,
 ) -> str | None:
     normalized_repo_files = [_normalize_hf_repo_path(path) for path in repo_files]
     repo_file_set = set(normalized_repo_files)
@@ -272,13 +276,21 @@ def _select_hf_preview_file(
         if path in repo_file_set and _is_hf_preview_data_file(path)
     ]
     if metadata_candidates:
-        return _select_best_hf_preview_candidate(metadata_candidates, subset = subset, split = split)
+        return _select_best_hf_preview_candidate(
+            metadata_candidates, subset = subset, split = split
+        )
 
-    data_candidates = [path for path in normalized_repo_files if _is_hf_preview_data_file(path)]
-    return _select_best_hf_preview_candidate(data_candidates, subset = subset, split = split)
+    data_candidates = [
+        path for path in normalized_repo_files if _is_hf_preview_data_file(path)
+    ]
+    return _select_best_hf_preview_candidate(
+        data_candidates, subset = subset, split = split
+    )
 
 
-def _download_hf_metadata(*, repo_id: str, repo_files: list[str], token: str | None) -> dict | None:
+def _download_hf_metadata(
+    *, repo_id: str, repo_files: list[str], token: str | None
+) -> dict | None:
     metadata_file = next(
         (
             path
@@ -411,7 +423,9 @@ def _build_local_dataset_items() -> list[LocalDatasetItem]:
     return items
 
 
-def _load_local_preview_slice(*, dataset_path: Path, train_split: str, preview_size: int):
+def _load_local_preview_slice(
+    *, dataset_path: Path, train_split: str, preview_size: int
+):
     # Non-streaming loads take the cached builder lock; use the EACCES-safe wrapper.
     from utils.datasets.cache_safe import load_dataset_cache_safe as load_dataset
 
@@ -447,7 +461,9 @@ def _load_local_preview_slice(*, dataset_path: Path, train_split: str, preview_s
     elif dataset_path.suffix == ".csv":
         dataset = load_dataset("csv", data_files = str(dataset_path), split = train_split)
     elif dataset_path.suffix == ".parquet":
-        dataset = load_dataset("parquet", data_files = str(dataset_path), split = train_split)
+        dataset = load_dataset(
+            "parquet", data_files = str(dataset_path), split = train_split
+        )
     else:
         raise HTTPException(
             status_code = 400, detail = f"Unsupported file format: {dataset_path.suffix}"
@@ -524,7 +540,9 @@ def list_local_datasets(
 
 @router.get("/download-progress")
 async def get_dataset_download_progress(
-    repo_id: str = Query(..., description = "HuggingFace dataset repo ID, e.g. 'unsloth/LaTeX_OCR'"),
+    repo_id: str = Query(
+        ..., description = "HuggingFace dataset repo ID, e.g. 'unsloth/LaTeX_OCR'"
+    ),
     current_subject: str = Depends(get_current_subject),
 ):
     """Return download progress for a HuggingFace dataset repo.
@@ -599,7 +617,9 @@ async def get_dataset_download_progress(
 
 
 @router.post("/check-format", response_model = CheckFormatResponse)
-def check_format(request: CheckFormatRequest, current_subject: str = Depends(get_current_subject)):
+def check_format(
+    request: CheckFormatRequest, current_subject: str = Depends(get_current_subject)
+):
     """Check if a dataset requires manual column mapping.
 
     HuggingFace strategy:
@@ -721,7 +741,9 @@ def check_format(request: CheckFormatRequest, current_subject: str = Depends(get
                     processed = format_result["dataset"]
                     preview_samples = _serialize_preview_rows(processed)
                 except Exception as e:
-                    logger.warning(f"Processed preview generation failed (non-fatal): {e}")
+                    logger.warning(
+                        f"Processed preview generation failed (non-fatal): {e}"
+                    )
                     preview_samples = _serialize_preview_rows(preview_slice)
         else:
             preview_samples = _serialize_preview_rows(preview_slice)
@@ -732,7 +754,9 @@ def check_format(request: CheckFormatRequest, current_subject: str = Depends(get
         if image_col and image_col in (result.get("columns") or []):
             try:
                 sample_val = preview_slice[0][image_col]
-                if isinstance(sample_val, str) and sample_val.startswith(("http://", "https://")):
+                if isinstance(sample_val, str) and sample_val.startswith(
+                    ("http://", "https://")
+                ):
                     url_warning = (
                         "This dataset contains image URLs instead of embedded images. "
                         "Images will be downloaded during training, which may be slow for large datasets."
@@ -782,7 +806,8 @@ def ai_assist_mapping(
 
         # Truncate sample values for the LLM prompt.
         truncated = [
-            {col: str(s.get(col, ""))[:200] for col in request.columns} for s in request.samples[:5]
+            {col: str(s.get(col, ""))[:200] for col in request.columns}
+            for s in request.samples[:5]
         ]
 
         result = llm_conversion_advisor(

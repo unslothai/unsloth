@@ -27,7 +27,8 @@ def _extract(pattern: str, source: str) -> str:
 
 @pytest.mark.parametrize(
     ("value", "expected"),
-    [(value, "true") for value in TRUTHY_VALUES] + [(value, "false") for value in FALSEY_VALUES],
+    [(value, "true") for value in TRUTHY_VALUES]
+    + [(value, "false") for value in FALSEY_VALUES],
 )
 @pytest.mark.skipif(shutil.which("sh") is None, reason = "POSIX shell is unavailable")
 def test_posix_skip_autostart_value_parsing_with_no_torch(value: str, expected: str):
@@ -75,7 +76,8 @@ def test_posix_skip_autostart_bypasses_only_the_interactive_prompt():
 @pytest.mark.skipif(shutil.which("pwsh") is None, reason = "PowerShell is unavailable")
 @pytest.mark.parametrize(
     ("value", "expected"),
-    [(value, "True") for value in TRUTHY_VALUES] + [(value, "False") for value in FALSEY_VALUES],
+    [(value, "True") for value in TRUTHY_VALUES]
+    + [(value, "False") for value in FALSEY_VALUES],
 )
 def test_windows_skip_autostart_value_parsing_with_no_torch(value: str, expected: str):
     source = INSTALL_PS1.read_text(encoding = "utf-8")

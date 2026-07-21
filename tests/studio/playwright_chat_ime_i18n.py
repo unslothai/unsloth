@@ -234,7 +234,8 @@ with sync_playwright() as p:
     dir_attr = composer.evaluate("(el) => el.getAttribute('dir')")
     if dir_attr != "auto":
         soft_fail(
-            f'composer is missing dir="auto" (got {dir_attr!r}); RTL ' "languages will render LTR."
+            f'composer is missing dir="auto" (got {dir_attr!r}); RTL '
+            "languages will render LTR."
         )
     else:
         info('composer dir="auto" present')
@@ -244,7 +245,9 @@ with sync_playwright() as p:
     _thread_src = (
         _repo_root / "studio/frontend/src/components/assistant-ui/thread.tsx"
     ).read_text()
-    _shared_src = (_repo_root / "studio/frontend/src/features/chat/shared-composer.tsx").read_text()
+    _shared_src = (
+        _repo_root / "studio/frontend/src/features/chat/shared-composer.tsx"
+    ).read_text()
     _edit_idx = _thread_src.find("aui-edit-composer-input")
     if _edit_idx == -1 or 'dir="auto"' not in _thread_src[_edit_idx : _edit_idx + 600]:
         soft_fail('edit composer source is missing dir="auto"')
@@ -253,7 +256,8 @@ with sync_playwright() as p:
     _compare_idx = _shared_src.find("Send to both models")
     if (
         _compare_idx == -1
-        or 'dir="auto"' not in _shared_src[max(_compare_idx - 400, 0) : _compare_idx + 400]
+        or 'dir="auto"'
+        not in _shared_src[max(_compare_idx - 400, 0) : _compare_idx + 400]
     ):
         soft_fail('compare composer source is missing dir="auto"')
     else:
@@ -299,7 +303,9 @@ with sync_playwright() as p:
             info(f"{label}: stopped generation started by submit probe")
         except Exception:
             if allowed_cancel_500:
-                expected_probe_cancel_500s[0] = max(0, expected_probe_cancel_500s[0] - 1)
+                expected_probe_cancel_500s[0] = max(
+                    0, expected_probe_cancel_500s[0] - 1
+                )
         try:
             expect(send_btn).to_be_visible(timeout = 15_000)
         except Exception:
@@ -480,7 +486,9 @@ with sync_playwright() as p:
     # 6c. Watchdog-race repro: after the watchdog clears composingRef, a later
     #     IME keydown (keyCode 229) must not slip preedit text through submit.
     #     The onKeyDown gate re-pins composingRef so handleSubmit refuses.
-    step("BUG REPRO: keydown re-pin after watchdog cleared composing (issue #5546 follow-up)")
+    step(
+        "BUG REPRO: keydown re-pin after watchdog cleared composing (issue #5546 follow-up)"
+    )
     clear()
     composer.click()
     composer.evaluate(
@@ -525,7 +533,9 @@ with sync_playwright() as p:
             "Form submitted after an IME keydown -- preedit text leaked "
             "through the watchdog gap (#5546 follow-up regression)."
         )
-    info(f"Form submit refused after IME keydown; textarea retained {submit_probe.get('after')!r}")
+    info(
+        f"Form submit refused after IME keydown; textarea retained {submit_probe.get('after')!r}"
+    )
     shoot("06c-keydown-repin")
     info("keydown re-pin gate PASS")
     clear()
@@ -707,7 +717,9 @@ with sync_playwright() as p:
         info("non-Enter key after Enter guard still recovers immediately")
     except Exception:
         shoot("06f-mac-ime-enter-guard-recovery-FAIL")
-        fail("After guarding Enter, a later non-IME key did not clear composingRef immediately.")
+        fail(
+            "After guarding Enter, a later non-IME key did not clear composingRef immediately."
+        )
     shoot("06f-mac-ime-enter-guard")
     info("Mac IME switch Enter guard PASS")
     clear()
@@ -766,7 +778,8 @@ with sync_playwright() as p:
             continue
         if (
             probe_cancel_500_allowance > 0
-            and "Failed to load resource: the server responded with a status of 500" in error
+            and "Failed to load resource: the server responded with a status of 500"
+            in error
             and "Internal Server Error" in error
         ):
             probe_cancel_500_allowance -= 1

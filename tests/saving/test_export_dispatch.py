@@ -19,7 +19,9 @@ class _FakeModel:
     """Minimal model stand-in; routing reads nothing meaningful off it before dispatch."""
 
     config = type(
-        "cfg", (), {"_name_or_path": "fake/model", "architectures": ["LlamaForCausalLM"]}
+        "cfg",
+        (),
+        {"_name_or_path": "fake/model", "architectures": ["LlamaForCausalLM"]},
     )()
 
 
@@ -28,8 +30,12 @@ class _FakeModel:
 
 def test_merged_fp8_routes_to_compressed(monkeypatch, tmp_path):
     seen = {}
-    monkeypatch.setattr(save_mod, "_unsloth_save_compressed_tensors", lambda **kw: seen.update(kw))
-    monkeypatch.setattr(save_mod, "unsloth_generic_save", lambda **kw: seen.update(generic = True))
+    monkeypatch.setattr(
+        save_mod, "_unsloth_save_compressed_tensors", lambda **kw: seen.update(kw)
+    )
+    monkeypatch.setattr(
+        save_mod, "unsloth_generic_save", lambda **kw: seen.update(generic = True)
+    )
     save_mod.unsloth_generic_save_pretrained_merged(
         _FakeModel(),
         str(tmp_path),
@@ -39,12 +45,16 @@ def test_merged_fp8_routes_to_compressed(monkeypatch, tmp_path):
     assert seen.get("scheme") == "FP8_DYNAMIC"
     assert seen.get("suffix") == "fp8"
     assert seen.get("needs_calibration") is False
-    assert "generic" not in seen, "compressed save_method must not fall through to the plain merge"
+    assert (
+        "generic" not in seen
+    ), "compressed save_method must not fall through to the plain merge"
 
 
 def test_merged_nvfp4_marks_calibration(monkeypatch, tmp_path):
     seen = {}
-    monkeypatch.setattr(save_mod, "_unsloth_save_compressed_tensors", lambda **kw: seen.update(kw))
+    monkeypatch.setattr(
+        save_mod, "_unsloth_save_compressed_tensors", lambda **kw: seen.update(kw)
+    )
     monkeypatch.setattr(save_mod, "unsloth_generic_save", lambda **kw: None)
     save_mod.unsloth_generic_save_pretrained_merged(
         _FakeModel(),
@@ -208,7 +218,9 @@ def test_push_to_hub_gguf_preserves_positional_max_shard_size():
 def test_torchao_ptq_routes_to_given_config(monkeypatch, tmp_path):
     seen = {}
     monkeypatch.setattr(
-        save_mod, "_unsloth_save_torchao_with_given_config", lambda **kw: seen.update(given = True)
+        save_mod,
+        "_unsloth_save_torchao_with_given_config",
+        lambda **kw: seen.update(given = True),
     )
     monkeypatch.setattr(
         save_mod,
@@ -227,7 +239,9 @@ def test_torchao_ptq_routes_to_given_config(monkeypatch, tmp_path):
 def test_torchao_qat_routes_to_attached_config(monkeypatch, tmp_path):
     seen = {}
     monkeypatch.setattr(
-        save_mod, "_unsloth_save_torchao_with_given_config", lambda **kw: seen.update(given = True)
+        save_mod,
+        "_unsloth_save_torchao_with_given_config",
+        lambda **kw: seen.update(given = True),
     )
     monkeypatch.setattr(
         save_mod,

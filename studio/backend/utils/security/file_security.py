@@ -39,7 +39,17 @@ logger = get_logger(__name__)
 # Non-blocking levels: clean or not-yet-finished. Anything else (unsafe/suspicious/
 # malicious or a future label) blocks, so Hub schema drift fails CLOSED.
 _NONBLOCKING_LEVELS = frozenset(
-    {"", "safe", "pending", "scanning", "queued", "unscanned", "error", "unknown", "none"}
+    {
+        "",
+        "safe",
+        "pending",
+        "scanning",
+        "queued",
+        "unscanned",
+        "error",
+        "unknown",
+        "none",
+    }
 )
 
 # Suffixes that cannot execute code on load (tensor-only safetensors, non-pickle gguf,
@@ -144,14 +154,20 @@ def _indexed_shard_paths(
     for prefix in _index_prefixes(load_subdirs):
         for filename in _TRANSFORMERS_INDEX_FILES:
             try:
-                index_path = hf_hub_download(model_name, prefix + filename, token = hf_token or None)
+                index_path = hf_hub_download(
+                    model_name, prefix + filename, token = hf_token or None
+                )
             except EntryNotFoundError:
                 continue  # definitively absent, not an error
             except Exception:
-                inconclusive = True  # transient: an index that might exist could not be read
+                inconclusive = (
+                    True  # transient: an index that might exist could not be read
+                )
                 continue
             try:
-                weight_map = (json.loads(open(index_path).read()) or {}).get("weight_map") or {}
+                weight_map = (json.loads(open(index_path).read()) or {}).get(
+                    "weight_map"
+                ) or {}
                 for shard in weight_map.values():
                     shard_norm = _normalize_repo_path(str(shard))
                     # weight_map paths are relative to the index file's directory.
@@ -290,10 +306,14 @@ def evaluate_file_security(
     try:
         from utils.paths import is_local_path
         if is_local_path(model_name):
-            return FileSecurityDecision(model_name, False, reason = "local path; no Hub scan")
+            return FileSecurityDecision(
+                model_name, False, reason = "local path; no Hub scan"
+            )
     except Exception:
         # Cannot classify the path -> do not block on that account.
-        return FileSecurityDecision(model_name, False, reason = "path check failed; not blocked")
+        return FileSecurityDecision(
+            model_name, False, reason = "path check failed; not blocked"
+        )
 
     status = _fetch_security_status(model_name, hf_token)
     if not isinstance(status, dict):
@@ -352,7 +372,9 @@ def evaluate_file_security(
                 model_name,
                 ", ".join(f"{s['path']}({s['level']})" for s in skipped),
             )
-        return FileSecurityDecision(model_name, False, reason = "no unsafe files in the load path")
+        return FileSecurityDecision(
+            model_name, False, reason = "no unsafe files in the load path"
+        )
 
     names = ", ".join(u["path"] for u in unsafe if u["path"]) or "unknown files"
     logger.warning(

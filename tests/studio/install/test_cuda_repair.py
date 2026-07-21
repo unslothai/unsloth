@@ -15,7 +15,9 @@ import pytest
 PACKAGE_ROOT = Path(__file__).resolve().parents[3]
 
 _STACK_PATH = PACKAGE_ROOT / "studio" / "install_python_stack.py"
-_STACK_SPEC = importlib.util.spec_from_file_location("studio_install_python_stack", _STACK_PATH)
+_STACK_SPEC = importlib.util.spec_from_file_location(
+    "studio_install_python_stack", _STACK_PATH
+)
 assert _STACK_SPEC is not None and _STACK_SPEC.loader is not None
 stack_mod = importlib.util.module_from_spec(_STACK_SPEC)
 sys.modules[_STACK_SPEC.name] = stack_mod
@@ -43,7 +45,9 @@ def _make_run(
             return result
         # nvidia-smi version probe (text = True)
         result.returncode = smi_rc
-        out = f"CUDA Version: {cuda_version}\n" if cuda_version else "No devices found\n"
+        out = (
+            f"CUDA Version: {cuda_version}\n" if cuda_version else "No devices found\n"
+        )
         result.stdout = out if kwargs.get("text") else out.encode()
         return result
 
@@ -293,7 +297,9 @@ class TestCudaRepairSkips:
         import contextlib
 
         def _with(url):
-            with patch.dict(stack_mod.os.environ, {"UNSLOTH_TORCH_INDEX_URL": url}, clear = False):
+            with patch.dict(
+                stack_mod.os.environ, {"UNSLOTH_TORCH_INDEX_URL": url}, clear = False
+            ):
                 stack_mod.os.environ.pop("UNSLOTH_TORCH_INDEX_FAMILY", None)
                 return stack_mod._explicit_cuda_torch_index_url()
 
@@ -335,7 +341,9 @@ class TestTorchBackendDerivationFromPin:
 
     def test_cu128_pin_is_cuda(self):
         assert (
-            self._derive({"UNSLOTH_TORCH_INDEX_URL": "https://download.pytorch.org/whl/cu128"})
+            self._derive(
+                {"UNSLOTH_TORCH_INDEX_URL": "https://download.pytorch.org/whl/cu128"}
+            )
             == "cuda"
         )
 
@@ -345,15 +353,25 @@ class TestTorchBackendDerivationFromPin:
     def test_current_leaf_not_cuda(self):
         # ^cu[0-9] rejects /current -> backend stays "" (probe GPU), so an AMD host still
         # repairs a CPU/wrong torch instead of short-circuiting.
-        assert self._derive({"UNSLOTH_TORCH_INDEX_URL": "https://mymirror.example/current"}) == ""
+        assert (
+            self._derive(
+                {"UNSLOTH_TORCH_INDEX_URL": "https://mymirror.example/current"}
+            )
+            == ""
+        )
 
     def test_custom_leaf_not_cuda(self):
-        assert self._derive({"UNSLOTH_TORCH_INDEX_URL": "https://mymirror.example/custom"}) == ""
+        assert (
+            self._derive({"UNSLOTH_TORCH_INDEX_URL": "https://mymirror.example/custom"})
+            == ""
+        )
 
     def test_rocm_and_gfx_pins_are_rocm(self):
         assert self._derive({"UNSLOTH_TORCH_INDEX_FAMILY": "rocm7.2"}) == "rocm"
         assert (
-            self._derive({"UNSLOTH_TORCH_INDEX_URL": "https://repo.amd.com/rocm/whl/gfx120X-all"})
+            self._derive(
+                {"UNSLOTH_TORCH_INDEX_URL": "https://repo.amd.com/rocm/whl/gfx120X-all"}
+            )
             == "rocm"
         )
 

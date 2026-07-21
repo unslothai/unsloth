@@ -246,7 +246,9 @@ def test_concurrent_distinct_calls_route_their_own_decisions():
     for i in range(n):
         aid = new_approval_id()
         waiters[aid] = _Waiter(f"s{i}", aid).start()
-    expected = {aid: ("allow" if i % 2 == 0 else "deny") for i, aid in enumerate(waiters)}
+    expected = {
+        aid: ("allow" if i % 2 == 0 else "deny") for i, aid in enumerate(waiters)
+    }
     for aid, decision in expected.items():
         assert resolve_tool_decision(aid, decision) is True
     for aid, w in waiters.items():

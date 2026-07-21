@@ -37,7 +37,9 @@ _BRACKETED_JSON_ONE_LEVEL = r"\{[^{}]*(?:\{[^{}]*\}[^{}]*)*\}"
 _REHEARSAL_CLOSED_STRIP_RE = re.compile(
     r"(?<!\[CALL_ID\])\b([\w-]+)\[ARGS\]\s*" + _BRACKETED_JSON_ONE_LEVEL, re.DOTALL
 )
-_REHEARSAL_TAIL_STRIP_RE = re.compile(r"(?<!\[CALL_ID\])\b([\w-]+)\[ARGS\]\s*(?:\{.*)?$", re.DOTALL)
+_REHEARSAL_TAIL_STRIP_RE = re.compile(
+    r"(?<!\[CALL_ID\])\b([\w-]+)\[ARGS\]\s*(?:\{.*)?$", re.DOTALL
+)
 
 # Tool-XML strip patterns; hyphen in the name class covers dashed MCP names.
 # Closed-pair patterns are named so _PAT_REQUIRED_TOKEN can skip a doomed lazy rescan when
@@ -79,7 +81,9 @@ _TOOL_ALL_PATS = (
 )
 
 # Rehearsal strips (name in group 1); name-gated via ``enabled_tool_names``, strip-all when None.
-_REHEARSAL_STRIP_PATS = frozenset({_REHEARSAL_CLOSED_STRIP_RE, _REHEARSAL_TAIL_STRIP_RE})
+_REHEARSAL_STRIP_PATS = frozenset(
+    {_REHEARSAL_CLOSED_STRIP_RE, _REHEARSAL_TAIL_STRIP_RE}
+)
 
 # Stripped before the quote-aware Gemma helper so a Gemma opener quoted in argument
 # data cannot make the helper truncate the block and its tail.
@@ -117,7 +121,9 @@ def apply_tool_strip_patterns(
         if token is not None and token not in text:
             continue
         if enabled_tool_names is not None and pat in _REHEARSAL_STRIP_PATS:
-            text = pat.sub(lambda m: "" if m.group(1) in enabled_tool_names else m.group(0), text)
+            text = pat.sub(
+                lambda m: "" if m.group(1) in enabled_tool_names else m.group(0), text
+            )
         else:
             text = pat.sub("", text)
     return text
@@ -148,7 +154,9 @@ _GEMMA_NEXT_KEY_RE = re.compile(r"\s*[A-Za-z_][\w.\-]*\s*:")
 
 # A candidate starting inside a think block is a rehearsal (block kept so literal tags in
 # real args survive); ``$`` accepts an unclosed block mid-stream.
-_THINK_TAG_RE = re.compile(r"<think>.*?(?:</think>|$)|\[THINK\].*?(?:\[/THINK\]|$)", re.DOTALL)
+_THINK_TAG_RE = re.compile(
+    r"<think>.*?(?:</think>|$)|\[THINK\].*?(?:\[/THINK\]|$)", re.DOTALL
+)
 # Bare open/close markers for prefilled-reasoning turns (template opens <think> in the prompt).
 _THINK_OPEN_RE = re.compile(r"<think>|\[THINK\]")
 _THINK_CLOSE_RE = re.compile(r"</think>|\[/THINK\]")
@@ -405,7 +413,9 @@ def _quote_gemma_array_elements(body: str) -> str:
             # Nested array: normalise its elements too.
             inner_end = _balanced_bracket_end(stripped, 0)
             if inner_end == len(stripped) - 1:
-                out.append("[" + _quote_gemma_array_elements(stripped[1:inner_end]) + "]")
+                out.append(
+                    "[" + _quote_gemma_array_elements(stripped[1:inner_end]) + "]"
+                )
             else:
                 out.append(element)
             continue
@@ -493,7 +503,9 @@ def _quote_gemma_object_keys(src: str) -> str:
                     parts.append(src[i:])
                     i = len(src)
                 else:
-                    parts.append("[" + _quote_gemma_array_elements(src[i + 1 : arr_end]) + "]")
+                    parts.append(
+                        "[" + _quote_gemma_array_elements(src[i + 1 : arr_end]) + "]"
+                    )
                     i = arr_end + 1
             elif i < len(src) and src[i] not in '"{':
                 v_start = i
@@ -595,7 +607,9 @@ def _marker_coverage(content: str, markers) -> list[tuple[int, int]]:
         if order == 0:
             waiting[kind].append(payload)  # marker index, now awaiting its close
         elif waiting[kind]:
-            close_end_for[waiting[kind].pop()] = payload  # innermost open marker closes here
+            close_end_for[waiting[kind].pop()] = (
+                payload  # innermost open marker closes here
+            )
     coverage = []
     for idx, (start, brace_end, _kind, _m) in enumerate(markers):
         if brace_end < 0:
@@ -708,7 +722,9 @@ def parse_tool_calls_from_text(
                             start -= len("<|message_model|>")
             else:
                 name = m.group(1)
-                arguments = json.dumps(_gemma_arguments_to_json(content[m.end() : brace_end]))
+                arguments = json.dumps(
+                    _gemma_arguments_to_json(content[m.end() : brace_end])
+                )
         except (json.JSONDecodeError, ValueError):
             continue
         span_end = brace_end + 1
@@ -729,7 +745,9 @@ def parse_tool_calls_from_text(
     for idx, fm in enumerate(func_starts):
         func_name = fm.group(1)
         body_start = fm.end()
-        next_func = func_starts[idx + 1].start() if idx + 1 < len(func_starts) else len(content)
+        next_func = (
+            func_starts[idx + 1].start() if idx + 1 < len(func_starts) else len(content)
+        )
         end_tag = _TC_END_TAG_RE.search(content[body_start:])
         if end_tag:
             body_end = body_start + end_tag.start()
@@ -766,7 +784,9 @@ def parse_tool_calls_from_text(
                 param_name = pm.group(1)
                 val_start = pm.end()
                 next_param = (
-                    param_starts[pidx + 1].start() if pidx + 1 < len(param_starts) else len(body)
+                    param_starts[pidx + 1].start()
+                    if pidx + 1 < len(param_starts)
+                    else len(body)
                 )
                 val = body[val_start:next_param]
                 if not allow_incomplete:
@@ -845,11 +865,15 @@ def parse_tool_calls_from_text(
                                 # A bare scalar string stays raw (like the <tool_call> path);
                                 # json.dumps would double-encode it so the arg healer wraps
                                 # "weather" with its literal quotes.
-                                "arguments": args if isinstance(args, str) else json.dumps(args),
+                                "arguments": args
+                                if isinstance(args, str)
+                                else json.dumps(args),
                             },
                         }
                     )
-                    item_end = item_ends[item_idx] if item_idx < len(item_ends) else region_end
+                    item_end = (
+                        item_ends[item_idx] if item_idx < len(item_ends) else region_end
+                    )
                     last_span_idx = len(call_spans)
                     call_spans.append((tile_start, item_end))
                     tile_start = item_end
@@ -890,7 +914,9 @@ def _strip_bracket_tag_calls(text: str, enabled_tool_names = None) -> str:
         return text
     out: list[str] = []
     cursor = 0
-    for start, end, _kind, _m in _iter_bracket_spans(text, enabled_tool_names = enabled_tool_names):
+    for start, end, _kind, _m in _iter_bracket_spans(
+        text, enabled_tool_names = enabled_tool_names
+    ):
         out.append(text[cursor:start])
         cursor = end
     out.append(text[cursor:])
@@ -941,7 +967,11 @@ def _think_spans_outside_tool_markup(text: str) -> list[tuple[int, int]]:
         return think_spans
     if not call_spans:
         return think_spans
-    return [(s, e) for (s, e) in think_spans if not any(cs <= s < ce for cs, ce in call_spans)]
+    return [
+        (s, e)
+        for (s, e) in think_spans
+        if not any(cs <= s < ce for cs, ce in call_spans)
+    ]
 
 
 def strip_outside_think(text: str, strip_segment) -> str:
@@ -1062,7 +1092,9 @@ def _strip_markup_segment(
     text = _strip_closed_blocks_outside_gemma(text)
     text = _strip_gemma_native_spans(text, final = final)
     patterns = _TOOL_ALL_PATS if final else _TOOL_CLOSED_PATS
-    return apply_tool_strip_patterns(text, patterns, enabled_tool_names = enabled_tool_names)
+    return apply_tool_strip_patterns(
+        text, patterns, enabled_tool_names = enabled_tool_names
+    )
 
 
 def strip_tool_call_markup(

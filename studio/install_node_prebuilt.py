@@ -94,7 +94,9 @@ class BusyInstallConflict(RuntimeError):
 
 
 def log(message: str) -> None:
-    print(f"[node-prebuilt] {message}", file = sys.stdout if _LOG_TO_STDOUT else sys.stderr)
+    print(
+        f"[node-prebuilt] {message}", file = sys.stdout if _LOG_TO_STDOUT else sys.stderr
+    )
 
 
 # ── Host detection ──
@@ -120,7 +122,9 @@ def detect_host() -> HostInfo:
     elif is_windows:
         node_os = "win"
     else:
-        raise PrebuiltFallback(f"unsupported operating system for Node prebuilt: {system}")
+        raise PrebuiltFallback(
+            f"unsupported operating system for Node prebuilt: {system}"
+        )
 
     if machine in {"x86_64", "amd64", "x64"}:
         node_arch = "x64"
@@ -129,7 +133,9 @@ def detect_host() -> HostInfo:
     else:
         # 32-bit ARM (armv7l) is intentionally unsupported: Node 24 LTS ships no
         # linux-armv7l build, so there is nothing at/above the floor to install.
-        raise PrebuiltFallback(f"unsupported CPU architecture for Node prebuilt: {machine}")
+        raise PrebuiltFallback(
+            f"unsupported CPU architecture for Node prebuilt: {machine}"
+        )
 
     # .tar.gz (not .tar.xz) on Unix so the extractor needs no xz; .zip on Windows.
     archive_ext = ".zip" if is_windows else ".tar.gz"
@@ -249,7 +255,9 @@ def download_bytes(url: str, *, timeout: int = 60) -> bytes:
             last_exc = exc
             if attempt >= HTTP_FETCH_ATTEMPTS or not is_retryable_url_error(exc):
                 raise
-            log(f"fetch failed ({attempt}/{HTTP_FETCH_ATTEMPTS}) for {url}: {exc}; retrying")
+            log(
+                f"fetch failed ({attempt}/{HTTP_FETCH_ATTEMPTS}) for {url}: {exc}; retrying"
+            )
             sleep_backoff(attempt)
     assert last_exc is not None
     raise last_exc
@@ -298,7 +306,9 @@ def download_file(url: str, destination: Path) -> None:
                     pass
             if attempt >= HTTP_FETCH_ATTEMPTS or not is_retryable_url_error(exc):
                 raise
-            log(f"download failed ({attempt}/{HTTP_FETCH_ATTEMPTS}) for {url}: {exc}; retrying")
+            log(
+                f"download failed ({attempt}/{HTTP_FETCH_ATTEMPTS}) for {url}: {exc}; retrying"
+            )
             sleep_backoff(attempt)
     assert last_exc is not None
     raise last_exc
@@ -321,7 +331,9 @@ def download_file_verified(
         if actual == expected_sha256:
             log(f"verified {label} sha256={actual}")
             return
-        log(f"{label} checksum mismatch {attempt}/2: expected={expected_sha256} actual={actual}")
+        log(
+            f"{label} checksum mismatch {attempt}/2: expected={expected_sha256} actual={actual}"
+        )
         destination.unlink(missing_ok = True)
         if attempt == 2:
             raise PrebuiltFallback(f"{label} checksum mismatch after retry")
@@ -339,7 +351,9 @@ def load_pins() -> dict:
     except FileNotFoundError as exc:
         raise PrebuiltFallback(f"pinned Node manifest missing: {path}") from exc
     except (json.JSONDecodeError, OSError) as exc:
-        raise PrebuiltFallback(f"pinned Node manifest unreadable ({path}): {exc}") from exc
+        raise PrebuiltFallback(
+            f"pinned Node manifest unreadable ({path}): {exc}"
+        ) from exc
     if not isinstance(data, dict) or data.get("schema_version") != PINS_SCHEMA_VERSION:
         raise PrebuiltFallback(f"pinned Node manifest has an unexpected schema: {path}")
     return data
@@ -348,7 +362,9 @@ def load_pins() -> dict:
 def pinned_default_version(pins: dict) -> str:
     version = str(pins.get("default_version", "")).lstrip("v")
     if not _version_tuple(version):
-        raise PrebuiltFallback("pinned Node manifest is missing a valid 'default_version'")
+        raise PrebuiltFallback(
+            "pinned Node manifest is missing a valid 'default_version'"
+        )
     return version
 
 
@@ -369,10 +385,17 @@ def pinned_sha256(pins: dict, version: str, asset_name: str) -> str | None:
 
 
 def allow_unverified_node() -> bool:
-    return os.environ.get(ALLOW_UNVERIFIED_ENV, "").strip().lower() in {"1", "true", "yes", "on"}
+    return os.environ.get(ALLOW_UNVERIFIED_ENV, "").strip().lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }
 
 
-def resolve_expected_sha256(pins: dict, version: str, asset: str, *, allow_unverified: bool) -> str:
+def resolve_expected_sha256(
+    pins: dict, version: str, asset: str, *, allow_unverified: bool
+) -> str:
     """Sha256 to verify the archive against: the committed pin, or (only with explicit
     opt-in) the same-origin SHASUMS256.txt. Unpinned without opt-in is refused."""
     pinned = pinned_sha256(pins, version, asset)
@@ -395,7 +418,9 @@ def resolve_expected_sha256(pins: dict, version: str, asset: str, *, allow_unver
         f"not an independent integrity guarantee."
     )
     # A non-UTF8 body just yields no hex match below -> clean PrebuiltFallback.
-    shasums = download_bytes(node_shasums_url(version), timeout = 30).decode("utf-8", "replace")
+    shasums = download_bytes(node_shasums_url(version), timeout = 30).decode(
+        "utf-8", "replace"
+    )
     expected = expected_sha256_for(shasums, asset)
     if not expected:
         raise PrebuiltFallback(f"no sha256 for {asset} in SHASUMS256.txt (v{version})")
@@ -411,7 +436,9 @@ def _safe_extract_path(base: Path, member_name: str) -> Path:
     try:
         target.relative_to(base.resolve())
     except ValueError as exc:
-        raise PrebuiltFallback(f"archive member escaped destination: {member_name}") from exc
+        raise PrebuiltFallback(
+            f"archive member escaped destination: {member_name}"
+        ) from exc
     return target
 
 
@@ -421,7 +448,9 @@ def _extract_zip_safely(source: Path, base: Path) -> None:
             target = _safe_extract_path(base, member.filename)
             mode = (member.external_attr >> 16) & 0o170000
             if mode == 0o120000:
-                raise PrebuiltFallback(f"zip archive contained a symlink entry: {member.filename}")
+                raise PrebuiltFallback(
+                    f"zip archive contained a symlink entry: {member.filename}"
+                )
             if member.is_dir():
                 target.mkdir(parents = True, exist_ok = True)
                 continue
@@ -444,11 +473,15 @@ def _extract_tar_safely(source: Path, base: Path) -> None:
                 pending_links.append((member, target))
                 continue
             if not member.isfile():
-                raise PrebuiltFallback(f"tar archive contained an unsupported entry: {member.name}")
+                raise PrebuiltFallback(
+                    f"tar archive contained an unsupported entry: {member.name}"
+                )
             target.parent.mkdir(parents = True, exist_ok = True)
             extracted = archive.extractfile(member)
             if extracted is None:
-                raise PrebuiltFallback(f"tar archive entry could not be read: {member.name}")
+                raise PrebuiltFallback(
+                    f"tar archive entry could not be read: {member.name}"
+                )
             with extracted, target.open("wb") as dst:
                 shutil.copyfileobj(extracted, dst)
             if member.mode & 0o111:
@@ -462,7 +495,9 @@ def _extract_tar_safely(source: Path, base: Path) -> None:
                 f"archive link used an unsafe target: {member.name} -> {link_name}"
             )
         # tar symlink names are link-parent relative; hard-link names are archive-root relative.
-        resolved = (target.parent / link_path if member.issym() else base / link_path).resolve()
+        resolved = (
+            target.parent / link_path if member.issym() else base / link_path
+        ).resolve()
         try:
             resolved.relative_to(base.resolve())
         except ValueError as exc:
@@ -548,7 +583,9 @@ def install_lock(lock_path: Path) -> Iterator[None]:
                     # Atomically rename before unlinking so only one racer removes
                     # the stale lock; a process recreating it loses the rename and waits.
                     try:
-                        stale_path = lock_path.with_name(f"{lock_path.name}.stale.{os.getpid()}")
+                        stale_path = lock_path.with_name(
+                            f"{lock_path.name}.stale.{os.getpid()}"
+                        )
                         os.replace(str(lock_path), str(stale_path))
                         stale_path.unlink(missing_ok = True)
                     except (OSError, ValueError):
@@ -727,13 +764,22 @@ def _ensure_npm_floor(install_dir: Path, host: HostInfo) -> None:
     npm_major = installed_npm_major(install_dir, host)
     if npm_major is not None and npm_major >= NPM_MIN_MAJOR:
         return
-    log(f"bundled npm {npm_major} below {NPM_MIN_MAJOR}; upgrading npm inside the isolated prefix")
+    log(
+        f"bundled npm {npm_major} below {NPM_MIN_MAJOR}; upgrading npm inside the isolated prefix"
+    )
     cli = npm_cli_path(install_dir, host)
-    _run_node(install_dir, host, [str(cli), "install", "-g", f"npm@^{NPM_MIN_MAJOR}"], timeout = 300)
+    _run_node(
+        install_dir,
+        host,
+        [str(cli), "install", "-g", f"npm@^{NPM_MIN_MAJOR}"],
+        timeout = 300,
+    )
 
 
 # ── Orchestration ──
-def install_prebuilt(install_dir: Path, *, channel: str, min_major: int, force: bool) -> int:
+def install_prebuilt(
+    install_dir: Path, *, channel: str, min_major: int, force: bool
+) -> int:
     host = detect_host()
     pins = load_pins()
 
@@ -746,11 +792,15 @@ def install_prebuilt(install_dir: Path, *, channel: str, min_major: int, force: 
         except Exception as exc:  # noqa: BLE001
             # nodejs.org unreachable: keep a working isolated Node instead of aborting.
             if not force and existing_install_usable(install_dir, host):
-                log(f"Node dist index unreachable ({exc}); keeping existing isolated Node")
+                log(
+                    f"Node dist index unreachable ({exc}); keeping existing isolated Node"
+                )
                 return EXIT_SUCCESS
             raise
         if not isinstance(index, list):
-            raise PrebuiltFallback(f"unexpected index.json payload from {NODE_DIST_INDEX}")
+            raise PrebuiltFallback(
+                f"unexpected index.json payload from {NODE_DIST_INDEX}"
+            )
         version = select_node_version(index, channel = channel, min_major = min_major)
     else:
         version = channel.lstrip("v")
@@ -773,7 +823,9 @@ def install_prebuilt(install_dir: Path, *, channel: str, min_major: int, force: 
     if (
         not force
         and may_keep
-        and existing_install_matches(install_dir, host, version = version, expected_sha = pin)
+        and existing_install_matches(
+            install_dir, host, version = version, expected_sha = pin
+        )
     ):
         log(f"existing Node install already matches v{version}; nothing to do")
         return EXIT_SUCCESS
@@ -783,7 +835,9 @@ def install_prebuilt(install_dir: Path, *, channel: str, min_major: int, force: 
         if (
             not force
             and may_keep
-            and existing_install_matches(install_dir, host, version = version, expected_sha = pin)
+            and existing_install_matches(
+                install_dir, host, version = version, expected_sha = pin
+            )
         ):
             log(f"existing Node install already matches v{version}; nothing to do")
             return EXIT_SUCCESS
@@ -796,7 +850,9 @@ def install_prebuilt(install_dir: Path, *, channel: str, min_major: int, force: 
             staging_root = install_dir.parent / INSTALL_STAGING_ROOT_NAME
             staging_root.mkdir(parents = True, exist_ok = True)
             staging = Path(
-                tempfile.mkdtemp(prefix = f"{install_dir.name}.staging-", dir = staging_root)
+                tempfile.mkdtemp(
+                    prefix = f"{install_dir.name}.staging-", dir = staging_root
+                )
             )
             try:
                 archive_path = staging / asset
@@ -812,11 +868,15 @@ def install_prebuilt(install_dir: Path, *, channel: str, min_major: int, force: 
 
                 roots = [p for p in extract_dir.iterdir() if p.is_dir()]
                 if len(roots) != 1:
-                    raise PrebuiltFallback(f"unexpected archive layout: {[p.name for p in roots]}")
+                    raise PrebuiltFallback(
+                        f"unexpected archive layout: {[p.name for p in roots]}"
+                    )
                 extracted_root = roots[0]
 
                 _ensure_npm_floor(extracted_root, host)
-                write_metadata(extracted_root, version = version, asset = asset, sha256 = expected_sha)
+                write_metadata(
+                    extracted_root, version = version, asset = asset, sha256 = expected_sha
+                )
                 _swap_into_place(extracted_root, install_dir)
             finally:
                 shutil.rmtree(staging, ignore_errors = True)
@@ -839,7 +899,11 @@ def install_prebuilt(install_dir: Path, *, channel: str, min_major: int, force: 
                 and meta.get("version") == version
                 and meta.get("sha256") != pin
             )
-            if not force and not pin_mismatch and existing_install_usable(install_dir, host):
+            if (
+                not force
+                and not pin_mismatch
+                and existing_install_usable(install_dir, host)
+            ):
                 log(f"Node download failed ({exc}); keeping existing isolated Node")
                 return EXIT_SUCCESS
             raise
@@ -850,7 +914,9 @@ def install_prebuilt(install_dir: Path, *, channel: str, min_major: int, force: 
         raise PrebuiltFallback(
             f"post-install verification failed: node={final_version} npm_major={npm_major}"
         )
-    log(f"installed isolated Node v{final_version} (npm {npm_major}.x) at {install_dir}")
+    log(
+        f"installed isolated Node v{final_version} (npm {npm_major}.x) at {install_dir}"
+    )
     return EXIT_SUCCESS
 
 
@@ -858,9 +924,13 @@ def main(argv: list[str] | None = None) -> int:
     global _LOG_TO_STDOUT
     _LOG_TO_STDOUT = True
 
-    parser = argparse.ArgumentParser(description = "Install an isolated Node.js for Unsloth Studio")
+    parser = argparse.ArgumentParser(
+        description = "Install an isolated Node.js for Unsloth Studio"
+    )
     parser.add_argument(
-        "--install-dir", required = True, help = "isolated Node directory, e.g. <UNSLOTH_HOME>/node"
+        "--install-dir",
+        required = True,
+        help = "isolated Node directory, e.g. <UNSLOTH_HOME>/node",
     )
     parser.add_argument(
         "--node-version",

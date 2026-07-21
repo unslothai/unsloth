@@ -79,9 +79,13 @@ def test_customization_invalid_values_rejected():
             {"appearance": {"customization": {"colors": {"light": {"accent": "red"}}}}}
         )
     with pytest.raises(ValidationError):
-        PersonalizationPayload.model_validate({"appearance": {"customization": {"uiFontSize": 99}}})
+        PersonalizationPayload.model_validate(
+            {"appearance": {"customization": {"uiFontSize": 99}}}
+        )
     with pytest.raises(ValidationError):
-        PersonalizationPayload.model_validate({"appearance": {"customization": {"contrast": 500}}})
+        PersonalizationPayload.model_validate(
+            {"appearance": {"customization": {"contrast": 500}}}
+        )
     with pytest.raises(ValidationError):
         PersonalizationPayload.model_validate(
             {"appearance": {"customization": {"reduceMotion": "sometimes"}}}
@@ -149,7 +153,9 @@ def test_customization_imported_fonts_validated():
         {
             "appearance": {
                 "customization": {
-                    "importedFonts": [{"name": "My Font", "dataUrl": "data:font/woff2;base64,AAAA"}]
+                    "importedFonts": [
+                        {"name": "My Font", "dataUrl": "data:font/woff2;base64,AAAA"}
+                    ]
                 }
             }
         }
@@ -161,7 +167,10 @@ def test_customization_imported_fonts_validated():
                 "appearance": {
                     "customization": {
                         "importedFonts": [
-                            {"name": "Evil", "dataUrl": "https://example.com/font.woff2"}
+                            {
+                                "name": "Evil",
+                                "dataUrl": "https://example.com/font.woff2",
+                            }
                         ]
                     }
                 }
@@ -173,7 +182,10 @@ def test_customization_imported_fonts_validated():
                 "appearance": {
                     "customization": {
                         "importedFonts": [
-                            {"name": f"Font {i}", "dataUrl": "data:font/ttf;base64,AAAA"}
+                            {
+                                "name": f"Font {i}",
+                                "dataUrl": "data:font/ttf;base64,AAAA",
+                            }
                             for i in range(4)
                         ]
                     }
@@ -189,7 +201,17 @@ def _imported(fonts):
 def test_imported_font_name_rejects_css_characters():
     # Includes backslash (escapes the quoted family), comma/slash (extra
     # fallbacks / comment start), and a control character.
-    for bad in ['Ev"il', "Ev;il", "Ev{il", "Ev<il", "Ev'il", "Ev\\il", "Ev,il", "Ev/il", "Ev\til"]:
+    for bad in [
+        'Ev"il',
+        "Ev;il",
+        "Ev{il",
+        "Ev<il",
+        "Ev'il",
+        "Ev\\il",
+        "Ev,il",
+        "Ev/il",
+        "Ev\til",
+    ]:
         with pytest.raises(ValidationError):
             PersonalizationPayload.model_validate(
                 _imported([{"name": bad, "dataUrl": "data:font/woff2;base64,AAAA"}])
@@ -232,12 +254,17 @@ def test_imported_font_data_url_rejects_newline():
         "\ndata:font/woff2;base64,AAAA",
     ]:
         with pytest.raises(ValidationError):
-            PersonalizationPayload.model_validate(_imported([{"name": "F", "dataUrl": bad}]))
+            PersonalizationPayload.model_validate(
+                _imported([{"name": "F", "dataUrl": bad}])
+            )
     # The same URL without the newline is still accepted.
     ok = PersonalizationPayload.model_validate(
         _imported([{"name": "F", "dataUrl": "data:font/woff2;base64,AAAA"}])
     )
-    assert ok.appearance.customization.importedFonts[0].dataUrl == "data:font/woff2;base64,AAAA"
+    assert (
+        ok.appearance.customization.importedFonts[0].dataUrl
+        == "data:font/woff2;base64,AAAA"
+    )
 
 
 def test_imported_fonts_total_size_capped():
@@ -310,8 +337,12 @@ def test_get_read_errors_propagate(monkeypatch):
 
 def test_get_set_roundtrip(monkeypatch):
     store: dict = {}
-    monkeypatch.setattr("storage.studio_db.get_app_setting", lambda k, d = None: store.get(k, d))
-    monkeypatch.setattr("storage.studio_db.upsert_app_settings", lambda d: store.update(d))
+    monkeypatch.setattr(
+        "storage.studio_db.get_app_setting", lambda k, d = None: store.get(k, d)
+    )
+    monkeypatch.setattr(
+        "storage.studio_db.upsert_app_settings", lambda d: store.update(d)
+    )
 
     assert pers.get_personalization() == {}
     data = {
@@ -326,8 +357,12 @@ def test_get_set_roundtrip(monkeypatch):
 
 def test_personalization_route_roundtrip_real_shape(monkeypatch):
     store: dict = {}
-    monkeypatch.setattr("storage.studio_db.get_app_setting", lambda k, d = None: store.get(k, d))
-    monkeypatch.setattr("storage.studio_db.upsert_app_settings", lambda d: store.update(d))
+    monkeypatch.setattr(
+        "storage.studio_db.get_app_setting", lambda k, d = None: store.get(k, d)
+    )
+    monkeypatch.setattr(
+        "storage.studio_db.upsert_app_settings", lambda d: store.update(d)
+    )
 
     app = FastAPI()
     app.dependency_overrides[get_current_subject] = lambda: "unsloth"
@@ -353,8 +388,16 @@ def test_personalization_route_roundtrip_real_shape(monkeypatch):
             "language": "en",
             "customization": {
                 "colors": {
-                    "light": {"accent": "#339cff", "background": None, "foreground": None},
-                    "dark": {"accent": None, "background": "#111111", "foreground": None},
+                    "light": {
+                        "accent": "#339cff",
+                        "background": None,
+                        "foreground": None,
+                    },
+                    "dark": {
+                        "accent": None,
+                        "background": "#111111",
+                        "foreground": None,
+                    },
                 },
                 "uiFont": "SF Pro Text",
                 "headingFont": "Avenir Next",
@@ -406,7 +449,9 @@ def test_personalization_get_flags_legacy_fields(monkeypatch):
             "appearance": {"theme": "dark"},
         }
     }
-    monkeypatch.setattr("storage.studio_db.get_app_setting", lambda k, d = None: store.get(k, d))
+    monkeypatch.setattr(
+        "storage.studio_db.get_app_setting", lambda k, d = None: store.get(k, d)
+    )
 
     app = FastAPI()
     app.dependency_overrides[get_current_subject] = lambda: "unsloth"
@@ -422,8 +467,12 @@ def test_personalization_put_preserves_absent_fields(monkeypatch):
     # A stale client that omits palette/customization must not materialize them,
     # so the record stays legacy and GET keeps reporting those fields unsaved.
     store: dict = {}
-    monkeypatch.setattr("storage.studio_db.get_app_setting", lambda k, d = None: store.get(k, d))
-    monkeypatch.setattr("storage.studio_db.upsert_app_settings", lambda d: store.update(d))
+    monkeypatch.setattr(
+        "storage.studio_db.get_app_setting", lambda k, d = None: store.get(k, d)
+    )
+    monkeypatch.setattr(
+        "storage.studio_db.upsert_app_settings", lambda d: store.update(d)
+    )
 
     app = FastAPI()
     app.dependency_overrides[get_current_subject] = lambda: "unsloth"
@@ -465,8 +514,12 @@ def test_personalization_put_preserves_existing_fields_on_stale_write(monkeypatc
             },
         }
     }
-    monkeypatch.setattr("storage.studio_db.get_app_setting", lambda k, d = None: store.get(k, d))
-    monkeypatch.setattr("storage.studio_db.upsert_app_settings", lambda d: store.update(d))
+    monkeypatch.setattr(
+        "storage.studio_db.get_app_setting", lambda k, d = None: store.get(k, d)
+    )
+    monkeypatch.setattr(
+        "storage.studio_db.upsert_app_settings", lambda d: store.update(d)
+    )
 
     app = FastAPI()
     app.dependency_overrides[get_current_subject] = lambda: "unsloth"
@@ -475,7 +528,11 @@ def test_personalization_put_preserves_existing_fields_on_stale_write(monkeypatc
 
     put = client.put(
         "/api/settings/personalization",
-        json = {"version": 1, "profile": {"displayName": "Mike"}, "appearance": {"theme": "dark"}},
+        json = {
+            "version": 1,
+            "profile": {"displayName": "Mike"},
+            "appearance": {"theme": "dark"},
+        },
     )
     assert put.status_code == 200
 

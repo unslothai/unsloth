@@ -53,7 +53,8 @@ def _test_model_uploaded(model_ids: list[str]):
 
 
 TestParams = [
-    ModelTestParam(name, models) for name, models in zip(MODEL_NAMES, MODEL_REGISTRATION_METHODS)
+    ModelTestParam(name, models)
+    for name, models in zip(MODEL_NAMES, MODEL_REGISTRATION_METHODS)
 ]
 
 
@@ -64,7 +65,9 @@ def test_model_registration(model_test_param: ModelTestParam):
     registration_method()
     registered_models = MODEL_REGISTRY.keys()
     missing_models = _test_model_uploaded(registered_models)
-    assert not missing_models, f"{model_test_param.name} missing following models: {missing_models}"
+    assert (
+        not missing_models
+    ), f"{model_test_param.name} missing following models: {missing_models}"
 
 
 def test_all_model_registration():
@@ -125,7 +128,9 @@ def test_importing_registry_does_not_register_models():
         f"registry import subprocess exited {result.returncode}\n"
         f"stdout:\n{result.stdout}\nstderr:\n{result.stderr}"
     )
-    size_lines = [line for line in result.stdout.splitlines() if line.startswith("REGISTRY_SIZE")]
+    size_lines = [
+        line for line in result.stdout.splitlines() if line.startswith("REGISTRY_SIZE")
+    ]
     assert size_lines == ["REGISTRY_SIZE 0"], result.stdout + result.stderr
 
 
@@ -160,5 +165,7 @@ def test_register_models_registers_no_upstream_originals():
     # Every registered model is unsloth-org: no upstream "original" leaked.
     assert "ORGS ['unsloth']" in out, out + result.stderr
     # Deepseek is still registered via the normal path, just without originals.
-    deepseek_lines = [line for line in out.splitlines() if line.startswith("NUM_DEEPSEEK")]
+    deepseek_lines = [
+        line for line in out.splitlines() if line.startswith("NUM_DEEPSEEK")
+    ]
     assert deepseek_lines and int(deepseek_lines[0].split()[1]) > 0, out + result.stderr

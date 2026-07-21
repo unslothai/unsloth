@@ -61,11 +61,17 @@ def _run(monkeypatch, qkv_dtype, backend):
 
 def test_dense_flash_downcasts_fp32_qkv(monkeypatch):
     # fp32 DoRA output must be downcast to a flash-compatible dtype.
-    assert _run(monkeypatch, torch.float32, ad.FLASH_DENSE) in (torch.bfloat16, torch.float16)
+    assert _run(monkeypatch, torch.float32, ad.FLASH_DENSE) in (
+        torch.bfloat16,
+        torch.float16,
+    )
 
 
 def test_varlen_flash_downcasts_fp32_qkv(monkeypatch):
-    assert _run(monkeypatch, torch.float32, ad.FLASH_VARLEN) in (torch.bfloat16, torch.float16)
+    assert _run(monkeypatch, torch.float32, ad.FLASH_VARLEN) in (
+        torch.bfloat16,
+        torch.float16,
+    )
 
 
 def test_bf16_qkv_left_untouched(monkeypatch):
@@ -89,11 +95,17 @@ def _run_xformers(monkeypatch, qkv_dtype, fp32_unsupported):
         captured["dtype"] = Q.dtype
         # Mirror the flash-2 op's real dtype constraint so an unfixed dispatch fails loudly.
         if fp32_unsupported and Q.dtype not in (torch.float16, torch.bfloat16):
-            raise RuntimeError("no operator found for memory_efficient_attention with fp32")
+            raise RuntimeError(
+                "no operator found for memory_efficient_attention with fp32"
+            )
         return torch.zeros_like(Q)
 
-    monkeypatch.setattr(ad, "_XFORMERS_FP32_UNSUPPORTED", fp32_unsupported, raising = False)
-    monkeypatch.setattr(ad, "xformers_attention", fake_xformers_attention, raising = False)
+    monkeypatch.setattr(
+        ad, "_XFORMERS_FP32_UNSUPPORTED", fp32_unsupported, raising = False
+    )
+    monkeypatch.setattr(
+        ad, "xformers_attention", fake_xformers_attention, raising = False
+    )
     monkeypatch.setattr(
         ad, "build_xformers_block_causal_mask", lambda *a, **k: object(), raising = False
     )
@@ -121,7 +133,10 @@ def _run_xformers(monkeypatch, qkv_dtype, fp32_unsupported):
 
 def test_xformers_downcasts_fp32_qkv_on_sm100_plus(monkeypatch):
     # sm_100+ (fp32 op gone): fp32 DoRA output must be downcast, else the flash-2 op raises.
-    assert _run_xformers(monkeypatch, torch.float32, True) in (torch.bfloat16, torch.float16)
+    assert _run_xformers(monkeypatch, torch.float32, True) in (
+        torch.bfloat16,
+        torch.float16,
+    )
 
 
 def test_xformers_leaves_fp32_qkv_below_sm100(monkeypatch):

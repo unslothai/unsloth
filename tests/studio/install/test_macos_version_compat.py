@@ -10,7 +10,9 @@ import pytest
 
 PACKAGE_ROOT = Path(__file__).resolve().parents[3]
 MODULE_PATH = PACKAGE_ROOT / "studio" / "install_llama_prebuilt.py"
-SPEC = importlib.util.spec_from_file_location("studio_install_llama_prebuilt_macos", MODULE_PATH)
+SPEC = importlib.util.spec_from_file_location(
+    "studio_install_llama_prebuilt_macos", MODULE_PATH
+)
 assert SPEC is not None and SPEC.loader is not None
 ILP = importlib.util.module_from_spec(SPEC)
 sys.modules[SPEC.name] = ILP
@@ -132,7 +134,10 @@ class TestMachoMinimumMacos:
             )
         )
         assert ILP.macho_minimum_macos(path, make_macos_host((14, 0))) == (14, 0)
-        assert ILP.macho_minimum_macos(path, make_macos_host((26, 0), arm64 = False)) == (26, 0)
+        assert ILP.macho_minimum_macos(path, make_macos_host((26, 0), arm64 = False)) == (
+            26,
+            0,
+        )
 
     def test_non_macho_returns_none(self, tmp_path):
         path = tmp_path / "script.sh"
@@ -175,17 +180,23 @@ class TestPreflightMacosInstalledBinaries:
     def test_rejects_too_new_dylib(self, tmp_path):
         install_dir, binaries = self._install_dir(tmp_path, (26, 0))
         with pytest.raises(PrebuiltFallback, match = "newer macOS"):
-            ILP.preflight_macos_installed_binaries(binaries, install_dir, make_macos_host((14, 0)))
+            ILP.preflight_macos_installed_binaries(
+                binaries, install_dir, make_macos_host((14, 0))
+            )
 
     def test_accepts_compatible_prebuilt(self, tmp_path):
         install_dir, binaries = self._install_dir(tmp_path, (14, 0))
         # Must not raise on a macOS 15 host.
-        ILP.preflight_macos_installed_binaries(binaries, install_dir, make_macos_host((15, 5)))
+        ILP.preflight_macos_installed_binaries(
+            binaries, install_dir, make_macos_host((15, 5))
+        )
 
     def test_skips_when_host_version_unknown(self, tmp_path):
         install_dir, binaries = self._install_dir(tmp_path, (26, 0))
         # Unknown host version -> defer to runtime validation, do not raise.
-        ILP.preflight_macos_installed_binaries(binaries, install_dir, make_macos_host(None))
+        ILP.preflight_macos_installed_binaries(
+            binaries, install_dir, make_macos_host(None)
+        )
 
     def test_noop_on_non_macos_host(self, tmp_path):
         install_dir, binaries = self._install_dir(tmp_path, (26, 0))

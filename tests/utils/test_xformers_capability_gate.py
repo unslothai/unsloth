@@ -27,7 +27,9 @@ def test_capability_gate(capability, probe_result, expect_disabled):
         calls["n"] += 1
         return probe_result
 
-    assert ad._xformers_disabled_for_capability(capability, probe = probe) is expect_disabled
+    assert (
+        ad._xformers_disabled_for_capability(capability, probe = probe) is expect_disabled
+    )
     # Below sm_120 the probe must not run at all (no import-time kernel launch there).
     assert calls["n"] == (0 if capability[0] < 12 else 1)
 

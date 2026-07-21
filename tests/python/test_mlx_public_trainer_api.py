@@ -183,7 +183,9 @@ def test_mlx_clear_gpu_memory_uses_metal_fallback(monkeypatch):
     metal = getattr(mx, "metal", None) or type("Metal", (), {})()
     monkeypatch.delattr(mx, "clear_cache", raising = False)
     monkeypatch.setattr(mx, "metal", metal, raising = False)
-    monkeypatch.setattr(metal, "clear_cache", lambda: called.append("metal"), raising = False)
+    monkeypatch.setattr(
+        metal, "clear_cache", lambda: called.append("metal"), raising = False
+    )
 
     unsloth.clear_gpu_memory()
 
@@ -920,7 +922,9 @@ def test_mlx_compatibility_shims_are_installed():
     assert issubclass(trl.SFTConfig, unsloth.UnslothTrainingArguments)
     assert trainer_module.UnslothTrainer is unsloth.UnslothTrainer
     assert trainer_module.UnslothVisionDataCollator is unsloth.UnslothVisionDataCollator
-    assert chat_templates.train_on_responses_only is dataset_utils.train_on_responses_only
+    assert (
+        chat_templates.train_on_responses_only is dataset_utils.train_on_responses_only
+    )
     assert callable(unsloth.train_on_responses_only)
 
 

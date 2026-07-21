@@ -201,7 +201,10 @@ def test_walkback_skips_explicitly_consumed_tool_call_id():
             {"role": "tool", "content": "second result"},
         ]
     )
-    assert [m.tool_call_id for m in req.messages if m.role == "tool"] == ["call_a", "call_b"]
+    assert [m.tool_call_id for m in req.messages if m.role == "tool"] == [
+        "call_a",
+        "call_b",
+    ]
 
 
 def test_walkback_handles_malformed_function_string():

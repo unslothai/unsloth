@@ -193,7 +193,9 @@ def PatchRL(FastLanguageModel):
         use_gradient_checkpointing = next(
             (
                 v
-                for v in (getattr(m, "gradient_checkpointing", False) for m in model.modules())
+                for v in (
+                    getattr(m, "gradient_checkpointing", False) for m in model.modules()
+                )
                 if v
             ),
             False,
@@ -259,12 +261,16 @@ def PatchRL(FastLanguageModel):
         return_loss = inputs.get("return_loss", None)
         if return_loss is None:
             return_loss = self.can_return_loss
-        loss_without_labels = True if len(self.label_names) == 0 and return_loss else False
+        loss_without_labels = (
+            True if len(self.label_names) == 0 and return_loss else False
+        )
 
         inputs = self._prepare_inputs(inputs)
         if ignore_keys is None:
             if hasattr(self.model, "config"):
-                ignore_keys = getattr(self.model.config, "keys_to_ignore_at_inference", [])
+                ignore_keys = getattr(
+                    self.model.config, "keys_to_ignore_at_inference", []
+                )
             else:
                 ignore_keys = []
 
@@ -295,7 +301,9 @@ def PatchRL(FastLanguageModel):
                 loss = loss.mean().detach()
 
                 if isinstance(outputs, dict):
-                    logits = tuple(v for k, v in outputs.items() if k not in ignore_keys + ["loss"])
+                    logits = tuple(
+                        v for k, v in outputs.items() if k not in ignore_keys + ["loss"]
+                    )
                 else:
                     logits = outputs[1:]
             else:
@@ -309,7 +317,9 @@ def PatchRL(FastLanguageModel):
                     ).to(model.device)
                     outputs = model(**tokenized_output)
                 if isinstance(outputs, dict):
-                    logits = tuple(v for k, v in outputs.items() if k not in ignore_keys)
+                    logits = tuple(
+                        v for k, v in outputs.items() if k not in ignore_keys
+                    )
                 else:
                     logits = outputs
                 # TODO: this needs to be fixed and made cleaner later.
@@ -574,7 +584,9 @@ def _wrap_grpo_generate_and_score(trainer_cls):
     trainer_cls._generate_and_score_completions = wrapped
 
 
-_UNSLOTH_RETURN_HIDDEN_STATES_SUPPORT_MARKER = "__UNSLOTH_SUPPORTS_RETURN_HIDDEN_STATES__"
+_UNSLOTH_RETURN_HIDDEN_STATES_SUPPORT_MARKER = (
+    "__UNSLOTH_SUPPORTS_RETURN_HIDDEN_STATES__"
+)
 _UNSLOTH_GRPO_HIDDEN_STATES_WRAPPED_ATTR = "_unsloth_grpo_hidden_states_forward_wrapped"
 _UNSLOTH_GRPO_HIDDEN_STATES_WARNING_ATTR = "_unsloth_grpo_hidden_states_warning_issued"
 
@@ -601,7 +613,9 @@ def _model_supports_unsloth_return_hidden_states(model):
             continue
         if getattr(candidate, _UNSLOTH_RETURN_HIDDEN_STATES_SUPPORT_MARKER, False):
             return True
-        if getattr(type(candidate), _UNSLOTH_RETURN_HIDDEN_STATES_SUPPORT_MARKER, False):
+        if getattr(
+            type(candidate), _UNSLOTH_RETURN_HIDDEN_STATES_SUPPORT_MARKER, False
+        ):
             return True
     return False
 
@@ -678,7 +692,9 @@ def _replace_outputs_logits(outputs, hidden_states):
         return outputs
     if isinstance(outputs, tuple) and len(outputs) != 0:
         return (hidden_states,) + tuple(outputs[1:])
-    raise TypeError(f"Unsupported output type for GRPO hidden-state fallback: {type(outputs)}")
+    raise TypeError(
+        f"Unsupported output type for GRPO hidden-state fallback: {type(outputs)}"
+    )
 
 
 def _install_grpo_hidden_states_forward_wrapper(model):
@@ -700,14 +716,20 @@ def _install_grpo_hidden_states_forward_wrapper(model):
         if os.environ.get("UNSLOTH_RETURN_HIDDEN_STATES", "0") != "1":
             return original_forward(*args, **kwargs)
 
-        forward_kwargs = _drop_forward_kwargs_consumed_positionally(forward_signature, args, kwargs)
-        num_logits_to_keep = _get_num_logits_to_keep(forward_signature, args, forward_kwargs)
+        forward_kwargs = _drop_forward_kwargs_consumed_positionally(
+            forward_signature, args, kwargs
+        )
+        num_logits_to_keep = _get_num_logits_to_keep(
+            forward_signature, args, forward_kwargs
+        )
         forward_kwargs["output_hidden_states"] = True
         forward_kwargs["return_dict"] = True
         try:
             outputs = original_forward(*args, **forward_kwargs)
         except TypeError as error:
-            if "output_hidden_states" not in str(error) and "return_dict" not in str(error):
+            if "output_hidden_states" not in str(error) and "return_dict" not in str(
+                error
+            ):
                 raise
             _warn_grpo_hidden_states_fallback_once(
                 target_model,
@@ -757,7 +779,8 @@ def _patch_trl_rl_trainers(trainer_file = "grpo_trainer"):
         return _patch_trl_rl_trainers_impl(trainer_file)
     except Exception as e:
         logger.info(
-            f"Unsloth: Could not patch trl.trainer.{trainer_file}: " f"{type(e).__name__}: {e}"
+            f"Unsloth: Could not patch trl.trainer.{trainer_file}: "
+            f"{type(e).__name__}: {e}"
         )
         return
 
@@ -819,7 +842,10 @@ def _patch_trl_rl_trainers_impl(trainer_file = "grpo_trainer"):
                 if _parent is object:
                     continue
                 _parent_mod = inspect.getmodule(_parent)
-                if _parent_mod is None or _parent_mod.__name__ == f"trl.trainer.{trainer_file}":
+                if (
+                    _parent_mod is None
+                    or _parent_mod.__name__ == f"trl.trainer.{trainer_file}"
+                ):
                     continue
                 config = [
                     x
@@ -866,7 +892,10 @@ def _patch_trl_rl_trainers_impl(trainer_file = "grpo_trainer"):
                     if _parent is object:
                         continue
                     _parent_mod = inspect.getmodule(_parent)
-                    if _parent_mod is None or _parent_mod.__name__ == f"trl.trainer.{trainer_file}":
+                    if (
+                        _parent_mod is None
+                        or _parent_mod.__name__ == f"trl.trainer.{trainer_file}"
+                    ):
                         continue
                     if hasattr(_parent_mod, RLConfig_name):
                         RLConfig = getattr(_parent_mod, RLConfig_name)
@@ -895,8 +924,13 @@ def _patch_trl_rl_trainers_impl(trainer_file = "grpo_trainer"):
     try:
         _trainer_src = inspect.getsource(RLTrainer)
         _trainer_module = inspect.getmodule(RLTrainer)
-        _trainer_module_src = inspect.getsource(_trainer_module) if _trainer_module else ""
-        if "trl.experimental" in _trainer_src or "trl.experimental" in _trainer_module_src:
+        _trainer_module_src = (
+            inspect.getsource(_trainer_module) if _trainer_module else ""
+        )
+        if (
+            "trl.experimental" in _trainer_src
+            or "trl.experimental" in _trainer_module_src
+        ):
             for _parent in RLTrainer.__mro__[1:]:
                 if _parent is object:
                     continue
@@ -915,7 +949,10 @@ def _patch_trl_rl_trainers_impl(trainer_file = "grpo_trainer"):
         _config_src = inspect.getsource(RLConfig)
         _config_module = inspect.getmodule(RLConfig)
         _config_module_src = inspect.getsource(_config_module) if _config_module else ""
-        if "trl.experimental" in _config_src or "trl.experimental" in _config_module_src:
+        if (
+            "trl.experimental" in _config_src
+            or "trl.experimental" in _config_module_src
+        ):
             for _parent in RLConfig.__mro__[1:]:
                 if _parent is object:
                     continue
@@ -1282,7 +1319,9 @@ def _patch_trl_rl_trainers_impl(trainer_file = "grpo_trainer"):
     if trainer_file in RL_METRICS_CHANGES:
         process_extra_args = RL_METRICS_CHANGES[trainer_file]
         for process_extra_arg in process_extra_args:
-            other_metrics_processor += process_extra_arg(old_RLTrainer_source, old_RLConfig_source)
+            other_metrics_processor += process_extra_arg(
+                old_RLTrainer_source, old_RLConfig_source
+            )
 
     # Add statistics as well!
     extra_args += (
@@ -1577,8 +1616,12 @@ def _patch_trl_rl_trainers_impl(trainer_file = "grpo_trainer"):
     # Selective log softmax and other functions
     selective_log_softmax_code = inspect.getsource(selective_log_softmax)
     grpo_selective_log_softmax_code = inspect.getsource(grpo_selective_log_softmax)
-    calculate_pad_tokens_in_prompt_code = inspect.getsource(calculate_pad_tokens_in_prompt)
-    create_completion_attention_mask_code = inspect.getsource(create_completion_attention_mask)
+    calculate_pad_tokens_in_prompt_code = inspect.getsource(
+        calculate_pad_tokens_in_prompt
+    )
+    create_completion_attention_mask_code = inspect.getsource(
+        create_completion_attention_mask
+    )
     left_pack_padding_code = inspect.getsource(left_pack_padding)
     align_logprobs_with_mask_code = inspect.getsource(align_logprobs_with_mask)
     align_completion_tool_mask_code = inspect.getsource(align_completion_tool_mask)
@@ -1649,7 +1692,9 @@ def _patch_trl_rl_trainers_impl(trainer_file = "grpo_trainer"):
 
         pattern = r"torch_compile_options\s*=\s*\{[^}]*\}"
 
-        RLTrainer_source = re.sub(pattern, new_options, RLTrainer_source, flags = re.DOTALL)
+        RLTrainer_source = re.sub(
+            pattern, new_options, RLTrainer_source, flags = re.DOTALL
+        )
 
         if trl_version >= Version("1.4.0"):
             # The `elif is_peft_model(model) and args.beta != 0.0:` ref-adapter block
@@ -1662,9 +1707,7 @@ def _patch_trl_rl_trainers_impl(trainer_file = "grpo_trainer"):
                 r"ref_param\.data\.copy_\(param\.data\)"
             )
 
-            replacement_comment = (
-                "\n        # PEFT initialization logic removed via script for trl >= 1.4.0\n"
-            )
+            replacement_comment = "\n        # PEFT initialization logic removed via script for trl >= 1.4.0\n"
 
             RLTrainer_source = re.sub(
                 peft_pattern, replacement_comment, RLTrainer_source, flags = re.DOTALL
@@ -1687,9 +1730,7 @@ def _patch_trl_rl_trainers_impl(trainer_file = "grpo_trainer"):
                 r"param\.data = param\.data\.to\(torch\.bfloat16\)"
             )
 
-            replacement_comment = (
-                "\n        # PEFT initialization logic removed via script for trl >= 0.27.0\n"
-            )
+            replacement_comment = "\n        # PEFT initialization logic removed via script for trl >= 0.27.0\n"
 
             RLTrainer_source = re.sub(
                 peft_pattern, replacement_comment, RLTrainer_source, flags = re.DOTALL
@@ -1725,12 +1766,8 @@ def _patch_trl_rl_trainers_impl(trainer_file = "grpo_trainer"):
     )
 
     if RLTrainer_name == "SFTTrainer":
-        original_text = (
-            'self._signature_columns = ["input_ids", "attention_mask", "completion_mask"]'
-        )
-        new_text = (
-            'self._signature_columns = ["input_ids", "attention_mask", "completion_mask","labels"]'
-        )
+        original_text = 'self._signature_columns = ["input_ids", "attention_mask", "completion_mask"]'
+        new_text = 'self._signature_columns = ["input_ids", "attention_mask", "completion_mask","labels"]'
         RLTrainer_source = RLTrainer_source.replace(original_text, new_text)
 
         # Do NOT override _is_vlm -- let TRL detect VLM models naturally
@@ -1754,14 +1791,18 @@ def _patch_trl_rl_trainers_impl(trainer_file = "grpo_trainer"):
             "        if self._is_vision_dataset and not self._is_vlm:"
         )
         if _vlm_check_original in RLTrainer_source:
-            RLTrainer_source = RLTrainer_source.replace(_vlm_check_original, _vlm_check_patched)
+            RLTrainer_source = RLTrainer_source.replace(
+                _vlm_check_original, _vlm_check_patched
+            )
 
         # Fix TRL 0.22.x: VLM models with text-only datasets. It checks _is_vlm
         # (model type), not _is_vision_dataset (added in 0.25.1+); with
         # _is_vlm=True the vision-only signature columns don't overlap tokenized
         # text columns. Fix: merge both column sets into the VLM branch. Extra
         # columns are ignored by _remove_unused_columns (raises only on zero match).
-        _sig_vlm_old = 'self._signature_columns = ["messages", "prompt", "completion", "images"]'
+        _sig_vlm_old = (
+            'self._signature_columns = ["messages", "prompt", "completion", "images"]'
+        )
         _sig_vlm_new = (
             'self._signature_columns = ["messages", "prompt", "completion", "images",'
             ' "input_ids", "labels", "attention_mask", "seq_lengths", "completion_mask", "assistant_masks"]'
@@ -1771,10 +1812,10 @@ def _patch_trl_rl_trainers_impl(trainer_file = "grpo_trainer"):
         # Inject model reference before _prepare_dataset for dynamic
         # token_type_ids detection in sft_prepare_dataset
         _prep_pattern = r"([ \t]*)train_dataset = self\._prepare_dataset\("
-        _prep_replacement = (
-            r"\1self._unsloth_model_ref = model\n\1train_dataset = self._prepare_dataset("
+        _prep_replacement = r"\1self._unsloth_model_ref = model\n\1train_dataset = self._prepare_dataset("
+        RLTrainer_source = re.sub(
+            _prep_pattern, _prep_replacement, RLTrainer_source, count = 1
         )
-        RLTrainer_source = re.sub(_prep_pattern, _prep_replacement, RLTrainer_source, count = 1)
 
     # Silence TRL's noisy batch_size=1 + padding-free warning (handles both
     # the original "anihilate" typo and the corrected "annihilate" spelling)
@@ -1783,7 +1824,9 @@ def _patch_trl_rl_trainers_impl(trainer_file = "grpo_trainer"):
         if _idx == -1:
             continue
         # Walk backwards to find "if args.per_device_train_batch_size"
-        _block_start = RLTrainer_source.rfind("if args.per_device_train_batch_size == 1", 0, _idx)
+        _block_start = RLTrainer_source.rfind(
+            "if args.per_device_train_batch_size == 1", 0, _idx
+        )
         if _block_start == -1:
             continue
         # Walk backwards to the newline before the if
@@ -1795,7 +1838,9 @@ def _patch_trl_rl_trainers_impl(trainer_file = "grpo_trainer"):
         _block_end = RLTrainer_source.find("\n", _close)
         if _block_end == -1:
             continue
-        RLTrainer_source = RLTrainer_source[:_line_start] + RLTrainer_source[_block_end:]
+        RLTrainer_source = (
+            RLTrainer_source[:_line_start] + RLTrainer_source[_block_end:]
+        )
         break
 
     # Remove multiple doc strings
@@ -1808,7 +1853,9 @@ def _patch_trl_rl_trainers_impl(trainer_file = "grpo_trainer"):
     # Create new function
     _resolved_module = _trainer_resolved_module or _config_resolved_module
     _model_location = (
-        _resolved_module.__name__ if _resolved_module is not None else f"trl.trainer.{trainer_file}"
+        _resolved_module.__name__
+        if _resolved_module is not None
+        else f"trl.trainer.{trainer_file}"
     )
     created_module = create_new_function(
         f"Unsloth{RLTrainer_name}",
@@ -1868,13 +1915,17 @@ def _patch_trl_rl_trainers_impl(trainer_file = "grpo_trainer"):
 
     if trainer_file == "grpo_trainer":
         try:
-            _wrap_grpo_generate_and_score(getattr(created_module, f"Unsloth{RLTrainer_name}"))
+            _wrap_grpo_generate_and_score(
+                getattr(created_module, f"Unsloth{RLTrainer_name}")
+            )
         except Exception as e:
             logger.info(
                 f"Unsloth: Could not wrap _generate_and_score_completions for {RLTrainer_name}: {e}"
             )
         try:
-            _wrap_grpo_hidden_states_fallback(getattr(created_module, f"Unsloth{RLTrainer_name}"))
+            _wrap_grpo_hidden_states_fallback(
+                getattr(created_module, f"Unsloth{RLTrainer_name}")
+            )
         except Exception as e:
             logger.info(
                 f"Unsloth: Could not wrap GRPO hidden-state fallback for {RLTrainer_name}: {e}"
@@ -1907,7 +1958,9 @@ def patch_functions(RLTrainer, trainer_file, RLTrainer_name, all_imports, import
         "if False:",
     )
     # New TRL 0.20.0
-    init = init.replace("model = self._prepare_peft_model(model, peft_config, args)\n", "pass\n")
+    init = init.replace(
+        "model = self._prepare_peft_model(model, peft_config, args)\n", "pass\n"
+    )
     # TRL 0.22.0+ uses prepare_peft_model as a standalone function
     init = init.replace("model = prepare_peft_model(model, peft_config, args)", "pass")
 
@@ -2034,7 +2087,9 @@ def patch_functions(RLTrainer, trainer_file, RLTrainer_name, all_imports, import
             if len(splitted_sampling_params) >= 2:
                 last_line = splitted_sampling_params[-1]
                 last_prev_line = splitted_sampling_params[-2]
-                last_prev_indentation = len(last_prev_line) - len(last_prev_line.lstrip())
+                last_prev_indentation = len(last_prev_line) - len(
+                    last_prev_line.lstrip()
+                )
                 last_indentation = len(last_line) - len(last_line.lstrip())
 
                 # Add extra arguments to SamplingParams
@@ -2053,13 +2108,16 @@ def patch_functions(RLTrainer, trainer_file, RLTrainer_name, all_imports, import
                 sampling_params = re.sub(r"[\,][\s]{0,}\,", ",", sampling_params)
 
                 new_vllm_part = (
-                    f"\n{' ' * 8}if {args}.use_vllm:\n{sampling_params}" f"\n{' ' * 8}else:\n"
+                    f"\n{' ' * 8}if {args}.use_vllm:\n{sampling_params}"
+                    f"\n{' ' * 8}else:\n"
                 )
 
         if trl_version >= Version("0.18.0"):
             # Guard LLM init - use existing vLLM engine when sharing weights,
             # otherwise keep the original LLM() creation for sync/reload path
-            vllm_llm_init_pattern = r"(?P<indent>[ \t]*)self\.llm\s*=\s*LLM\(.*?\)*\)\s*?\n(?!,)"
+            vllm_llm_init_pattern = (
+                r"(?P<indent>[ \t]*)self\.llm\s*=\s*LLM\(.*?\)*\)\s*?\n(?!,)"
+            )
 
             def guard_llm_init(match):
                 indent = match.group("indent")
@@ -2217,7 +2275,9 @@ def patch_trl_rl_trainers():
 
     all_trainers = dir(trl.trainer)
     all_trainers = [
-        x for x in all_trainers if x.islower() and x.endswith("_trainer") and x != "base_trainer"
+        x
+        for x in all_trainers
+        if x.islower() and x.endswith("_trainer") and x != "base_trainer"
     ]
     for trainer in all_trainers:
         try:
@@ -2303,7 +2363,9 @@ def patch_trl_vllm_generation():
     # We need to min_p patch it to not instantiate another vLLM instance if we already have one with fast_inference
     # Find the instance of self.llm = LLM(..) (multiline) and wrap it around an if clause
     for function in RL_ADDITIONAL_FUNCTIONS["vllm_generation"]:
-        logger.info(f"Unsloth: Patching trl VLLMGeneration with function: {function.__name__}")
+        logger.info(
+            f"Unsloth: Patching trl VLLMGeneration with function: {function.__name__}"
+        )
         function()
     return
 
@@ -2313,7 +2375,9 @@ def patch_trl_vllm_generation():
     # We need to min_p patch it to not instantiate another vLLM instance if we already have one with fast_inference
     # Find the instance of self.llm = LLM(..) (multiline) and wrap it around an if clause
     for function in RL_ADDITIONAL_FUNCTIONS["vllm_generation"]:
-        logger.info(f"Unsloth: Patching trl VLLMGeneration with function: {function.__name__}")
+        logger.info(
+            f"Unsloth: Patching trl VLLMGeneration with function: {function.__name__}"
+        )
         function()
     return
 

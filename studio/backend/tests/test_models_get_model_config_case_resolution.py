@@ -50,7 +50,9 @@ def test_get_model_config_resolves_cached_case_before_model_checks(monkeypatch):
         return _DummyModelConfig()
 
     monkeypatch.setattr(models_route, "is_local_path", lambda _: False)
-    monkeypatch.setattr(models_route, "resolve_cached_repo_id_case", lambda _: "Org/Model")
+    monkeypatch.setattr(
+        models_route, "resolve_cached_repo_id_case", lambda _: "Org/Model"
+    )
     monkeypatch.setattr(models_route, "load_model_defaults", _record_load)
     monkeypatch.setattr(models_route, "is_vision_model", _record_vision)
     monkeypatch.setattr(models_route, "is_embedding_model", _record_embedding)
@@ -79,7 +81,9 @@ def test_get_model_config_resolves_cached_case_before_model_checks(monkeypatch):
     assert calls["from_identifier"] == "Org/Model"
 
 
-def test_repo_in_any_hf_cache_matches_case_variant_in_legacy_cache(tmp_path, monkeypatch):
+def test_repo_in_any_hf_cache_matches_case_variant_in_legacy_cache(
+    tmp_path, monkeypatch
+):
     # A case-variant in a legacy/default cache must read as present (case resolution only
     # covers the active cache; discard deletes case-insensitively, so detection must too,
     # else a decline deletes a pre-existing user repo).

@@ -42,7 +42,9 @@ def ensure_real_packages(*names: str) -> None:
     saved = list(sys.path)
     sys.path[:] = [e for e in sys.path if e not in bad]
     for name in shadowed:
-        for cached in [m for m in list(sys.modules) if m == name or m.startswith(name + ".")]:
+        for cached in [
+            m for m in list(sys.modules) if m == name or m.startswith(name + ".")
+        ]:
             del sys.modules[cached]
     try:
         importlib.invalidate_caches()

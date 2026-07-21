@@ -206,7 +206,9 @@ def scan_checkpoints(
                 if name_part:
                     idx = name_part.find("_")
                     if idx > 0:
-                        metadata["base_model"] = name_part[:idx] + "/" + name_part[idx + 1 :]
+                        metadata["base_model"] = (
+                            name_part[:idx] + "/" + name_part[idx + 1 :]
+                        )
                     else:
                         metadata["base_model"] = name_part
 
@@ -243,7 +245,9 @@ def scan_checkpoints(
                 )
 
             models.append((item.name, checkpoints, metadata))
-            logger.debug(f"Found model: {item.name} with {len(checkpoints)} checkpoint(s)")
+            logger.debug(
+                f"Found model: {item.name} with {len(checkpoints)} checkpoint(s)"
+            )
 
         # Sort by modification time (newest first)
         models.sort(key = lambda x: Path(x[1][0][1]).stat().st_mtime, reverse = True)

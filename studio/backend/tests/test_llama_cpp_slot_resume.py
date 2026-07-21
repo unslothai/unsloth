@@ -30,7 +30,9 @@ def _resume_backend(tmp_path, n_slots = 1):
 
 
 def _fake_disk(monkeypatch, free = 1 << 40):
-    monkeypatch.setattr(llama_cpp.shutil, "disk_usage", lambda _p: SimpleNamespace(free = free))
+    monkeypatch.setattr(
+        llama_cpp.shutil, "disk_usage", lambda _p: SimpleNamespace(free = free)
+    )
 
 
 class _Resp:

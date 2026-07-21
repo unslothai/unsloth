@@ -6,7 +6,9 @@ from pathlib import Path
 
 
 WORKSPACE = Path(__file__).resolve().parents[2]
-ADAPTER_SRC = (WORKSPACE / "studio/frontend/src/features/chat/api/chat-adapter.ts").read_text()
+ADAPTER_SRC = (
+    WORKSPACE / "studio/frontend/src/features/chat/api/chat-adapter.ts"
+).read_text()
 
 
 def _function_source(name: str) -> str:

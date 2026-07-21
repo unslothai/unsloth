@@ -194,7 +194,9 @@ def update_knowledge_base(
             params.append(payload.description or None)
         if sets:
             params.append(kb_id)
-            conn.execute(f"UPDATE knowledge_bases SET {', '.join(sets)} WHERE id=?", params)
+            conn.execute(
+                f"UPDATE knowledge_bases SET {', '.join(sets)} WHERE id=?", params
+            )
             conn.commit()
         return {"ok": True}
     finally:
@@ -202,7 +204,9 @@ def update_knowledge_base(
 
 
 @router.delete("/knowledge-bases/{kb_id}")
-def delete_knowledge_base(kb_id: str, subject: str = Depends(get_current_subject)) -> dict:
+def delete_knowledge_base(
+    kb_id: str, subject: str = Depends(get_current_subject)
+) -> dict:
     _require_rag()
     conn = rag_db.get_connection()
     try:
@@ -231,7 +235,13 @@ async def upload_kb_document(
         conn.close()
     stored_path, filename = _save_upload(file)
     document_id, job_id = ingestion.start_ingestion(
-        store.kb_scope(kb_id), kb_id, None, filename, stored_path, ocr = ocr, caption = caption
+        store.kb_scope(kb_id),
+        kb_id,
+        None,
+        filename,
+        stored_path,
+        ocr = ocr,
+        caption = caption,
     )
     return {"documentId": document_id, "jobId": job_id, "filename": filename}
 
@@ -270,7 +280,9 @@ async def upload_thread_document(
 
 
 @router.get("/threads/{thread_id}/documents")
-def list_thread_documents(thread_id: str, subject: str = Depends(get_current_subject)) -> dict:
+def list_thread_documents(
+    thread_id: str, subject: str = Depends(get_current_subject)
+) -> dict:
     _require_rag()
     conn = rag_db.get_connection()
     try:
@@ -308,7 +320,9 @@ async def upload_project_document(
 
 
 @router.get("/projects/{project_id}/documents")
-def list_project_documents(project_id: str, subject: str = Depends(get_current_subject)) -> dict:
+def list_project_documents(
+    project_id: str, subject: str = Depends(get_current_subject)
+) -> dict:
     _require_rag()
     conn = rag_db.get_connection()
     try:
@@ -332,7 +346,9 @@ def list_all_uploaded_documents(subject: str = Depends(get_current_subject)) -> 
 
     from storage.studio_db import list_chat_projects
 
-    project_names = {p["id"]: p["name"] for p in list_chat_projects(include_archived = True)}
+    project_names = {
+        p["id"]: p["name"] for p in list_chat_projects(include_archived = True)
+    }
 
     out = []
     for doc in docs:
@@ -352,7 +368,9 @@ def list_all_uploaded_documents(subject: str = Depends(get_current_subject)) -> 
 
 
 @router.delete("/documents/{document_id}")
-def delete_document(document_id: str, subject: str = Depends(get_current_subject)) -> dict:
+def delete_document(
+    document_id: str, subject: str = Depends(get_current_subject)
+) -> dict:
     _require_rag()
     conn = rag_db.get_connection()
     try:
@@ -384,7 +402,9 @@ def job_status(job_id: str, subject: str = Depends(get_current_subject)) -> dict
 
 
 @router.get("/jobs/{job_id}/events")
-def job_events(job_id: str, subject: str = Depends(get_current_subject)) -> StreamingResponse:
+def job_events(
+    job_id: str, subject: str = Depends(get_current_subject)
+) -> StreamingResponse:
     _require_rag()
 
     def gen():
@@ -414,7 +434,9 @@ def search(payload: SearchRequest, subject: str = Depends(get_current_subject)) 
         if payload.thread_id:
             scopes.append(store.thread_scope(payload.thread_id))
         if not scopes:
-            raise HTTPException(status_code = 400, detail = "Provide kb_id, project_id, or thread_id")
+            raise HTTPException(
+                status_code = 400, detail = "Provide kb_id, project_id, or thread_id"
+            )
         scope = scopes[0] if len(scopes) == 1 else scopes
 
     conn = rag_db.get_connection()
@@ -424,7 +446,9 @@ def search(payload: SearchRequest, subject: str = Depends(get_current_subject)) 
         elif payload.mode == "dense":
             hits = retrieval.retrieve_dense(conn, scope, payload.query, payload.top_k)
         else:
-            hits = retrieval.retrieve_hybrid(conn, scope, payload.query, k = payload.top_k)
+            hits = retrieval.retrieve_hybrid(
+                conn, scope, payload.query, k = payload.top_k
+            )
         hits = retrieval.filter_min_score(hits, payload.min_score)
         rows = store.chunks_by_id(conn, [h.chunk_id for h in hits])
         results = []
@@ -531,7 +555,9 @@ def preview_target(
 
 
 @router.get("/documents/{document_id}/file-url")
-def document_file_url(document_id: str, subject: str = Depends(get_current_subject)) -> dict:
+def document_file_url(
+    document_id: str, subject: str = Depends(get_current_subject)
+) -> dict:
     """Mint a short-lived signed URL for the source file."""
     _require_rag()
     conn = rag_db.get_connection()

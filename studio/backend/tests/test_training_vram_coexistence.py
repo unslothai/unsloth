@@ -79,7 +79,9 @@ def _patch_backends(inf, llama):
     core_inf.get_inference_backend = lambda: inf
     routes_inf = types.ModuleType("routes.inference")
     routes_inf.get_llama_cpp_backend = lambda: llama
-    return patch.dict(sys.modules, {"core.inference": core_inf, "routes.inference": routes_inf})
+    return patch.dict(
+        sys.modules, {"core.inference": core_inf, "routes.inference": routes_inf}
+    )
 
 
 # ── summarize_resident_chat ──────────────────────────────────────────────────
@@ -87,7 +89,9 @@ def _patch_backends(inf, llama):
 
 class TestSummarizeResidentChat(_GpuCacheResetMixin, unittest.TestCase):
     def test_nothing_resident(self):
-        with _patch_backends(_fake_inference_backend(), _fake_llama_backend(active = False)):
+        with _patch_backends(
+            _fake_inference_backend(), _fake_llama_backend(active = False)
+        ):
             self.assertEqual(
                 tv.summarize_resident_chat(),
                 {"hf": None, "gguf": None, "loading": False, "any": False},
@@ -95,7 +99,8 @@ class TestSummarizeResidentChat(_GpuCacheResetMixin, unittest.TestCase):
 
     def test_hf_resident_via_active_model(self):
         with _patch_backends(
-            _fake_inference_backend(active = "unsloth/Qwen3-4B"), _fake_llama_backend(active = False)
+            _fake_inference_backend(active = "unsloth/Qwen3-4B"),
+            _fake_llama_backend(active = False),
         ):
             out = tv.summarize_resident_chat()
         self.assertEqual(out["hf"], "unsloth/Qwen3-4B")
@@ -146,7 +151,8 @@ class TestSummarizeResidentChat(_GpuCacheResetMixin, unittest.TestCase):
     def test_bare_alive_subprocess_without_model_is_not_resident(self):
         # Bare-alive subprocess (no model, only CUDA context) must NOT count.
         with _patch_backends(
-            _fake_inference_backend(active = None, alive = True), _fake_llama_backend(active = False)
+            _fake_inference_backend(active = None, alive = True),
+            _fake_llama_backend(active = False),
         ):
             out = tv.summarize_resident_chat()
         self.assertIsNone(out["hf"])
@@ -154,7 +160,8 @@ class TestSummarizeResidentChat(_GpuCacheResetMixin, unittest.TestCase):
 
     def test_gguf_resident(self):
         with _patch_backends(
-            _fake_inference_backend(), _fake_llama_backend(active = True, identifier = "gemma.gguf")
+            _fake_inference_backend(),
+            _fake_llama_backend(active = True, identifier = "gemma.gguf"),
         ):
             out = tv.summarize_resident_chat()
         self.assertEqual(out["gguf"], "gemma.gguf")
@@ -198,7 +205,9 @@ class TestCanKeepAuto(_GpuCacheResetMixin, unittest.TestCase):
         kw = {**_BASE_KW, **overrides}
         with (
             patch("utils.hardware.get_device", return_value = device),
-            patch("utils.hardware.auto_select_gpu_ids", return_value = auto_return) as auto_mock,
+            patch(
+                "utils.hardware.auto_select_gpu_ids", return_value = auto_return
+            ) as auto_mock,
         ):
             keep, info = tv.can_keep_chat_during_training(**kw)
         return keep, info, auto_mock
@@ -217,7 +226,11 @@ class TestCanKeepAuto(_GpuCacheResetMixin, unittest.TestCase):
         self.assertFalse(keep)
 
     def test_unload_on_fallback_all(self):
-        meta = {"selection_mode": "fallback_all", "required_gb": 10.0, "usable_gb": 100.0}
+        meta = {
+            "selection_mode": "fallback_all",
+            "required_gb": 10.0,
+            "usable_gb": 100.0,
+        }
         keep, _, _ = self._run(([0, 1], meta))
         self.assertFalse(keep)
 
@@ -248,7 +261,9 @@ class TestCanKeepAuto(_GpuCacheResetMixin, unittest.TestCase):
         kw = {**_BASE_KW}
         with (
             patch("utils.hardware.get_device", return_value = DeviceType.CUDA),
-            patch("utils.hardware.auto_select_gpu_ids", side_effect = RuntimeError("boom")),
+            patch(
+                "utils.hardware.auto_select_gpu_ids", side_effect = RuntimeError("boom")
+            ),
         ):
             keep, info = tv.can_keep_chat_during_training(**kw)
         self.assertFalse(keep)
@@ -293,7 +308,9 @@ class TestCanKeepExplicit(_GpuCacheResetMixin, unittest.TestCase):
 
     def test_keep_when_chosen_gpu_has_room(self):
         devices = [{"index": 0, "vram_total_gb": 80.0, "vram_used_gb": 20.0}]
-        keep, info, auto_mock = self._run(required = 30.0, devices = devices, resolved = [0], gpu_ids = [0])
+        keep, info, auto_mock = self._run(
+            required = 30.0, devices = devices, resolved = [0], gpu_ids = [0]
+        )
         # free 60 >= 30*1.15+4 = 38.5
         self.assertTrue(keep)
         self.assertEqual(info["mode"], "explicit")
@@ -301,7 +318,9 @@ class TestCanKeepExplicit(_GpuCacheResetMixin, unittest.TestCase):
 
     def test_unload_when_chosen_gpu_too_tight(self):
         devices = [{"index": 0, "vram_total_gb": 24.0, "vram_used_gb": 20.0}]
-        keep, _, _ = self._run(required = 10.0, devices = devices, resolved = [0], gpu_ids = [0])
+        keep, _, _ = self._run(
+            required = 10.0, devices = devices, resolved = [0], gpu_ids = [0]
+        )
         # free 4 < 10*1.15+4 = 15.5
         self.assertFalse(keep)
 
@@ -313,7 +332,9 @@ class TestCanKeepExplicit(_GpuCacheResetMixin, unittest.TestCase):
             {"index": 0, "vram_total_gb": 24.0, "vram_used_gb": 4.0},
             {"index": 1, "vram_total_gb": 24.0, "vram_used_gb": 14.0},
         ]
-        keep, info, _ = self._run(required = 22.0, devices = devices, resolved = [0, 1], gpu_ids = [0, 1])
+        keep, info, _ = self._run(
+            required = 22.0, devices = devices, resolved = [0, 1], gpu_ids = [0, 1]
+        )
         self.assertFalse(keep)
         self.assertAlmostEqual(info["usable_gb"], 28.5, places = 3)
 
@@ -326,10 +347,15 @@ class TestCanKeepExplicit(_GpuCacheResetMixin, unittest.TestCase):
     def test_unload_when_estimate_none(self):
         with (
             patch("utils.hardware.get_device", return_value = DeviceType.CUDA),
-            patch("utils.hardware.estimate_required_model_memory_gb", return_value = (None, {})),
+            patch(
+                "utils.hardware.estimate_required_model_memory_gb",
+                return_value = (None, {}),
+            ),
             patch("utils.hardware.resolve_requested_gpu_ids", return_value = [0]),
         ):
-            keep, info = tv.can_keep_chat_during_training(**{**_BASE_KW, "gpu_ids": [0]})
+            keep, info = tv.can_keep_chat_during_training(
+                **{**_BASE_KW, "gpu_ids": [0]}
+            )
         self.assertFalse(keep)
         self.assertEqual(info["reason"], "estimate_unavailable")
 
@@ -408,7 +434,9 @@ class TestFreeChatModels(_GpuCacheResetMixin, unittest.TestCase):
     def test_leaves_cpu_only_gguf_alone(self):
         # Killing a CPU-only llama-server cannot reclaim VRAM, so don't.
         inf = _fake_inference_backend()
-        llama = _fake_llama_backend(active = True, identifier = "cpu.gguf", gpu_offload = False)
+        llama = _fake_llama_backend(
+            active = True, identifier = "cpu.gguf", gpu_offload = False
+        )
         with _patch_backends(inf, llama):
             freed = tv.free_chat_models_for_training(reason = "test")
         llama.unload_model.assert_not_called()

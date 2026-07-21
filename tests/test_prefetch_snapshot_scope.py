@@ -35,7 +35,9 @@ def _filter(names, allow_patterns, ignore_patterns):
     """Mirror HF filter_repo_objects: keep on allow match (or None), drop on ignore match."""
     kept = []
     for name in names:
-        if allow_patterns is not None and not any(fnmatch.fnmatch(name, p) for p in allow_patterns):
+        if allow_patterns is not None and not any(
+            fnmatch.fnmatch(name, p) for p in allow_patterns
+        ):
             continue
         if ignore_patterns and any(fnmatch.fnmatch(name, p) for p in ignore_patterns):
             continue
@@ -168,7 +170,12 @@ def test_aux_warm_covers_arbitrary_remote_code_modules(capture):
         "configuration_foo.py",
     ]
     kept = _filter(remote_code, allow, st["ignore_patterns"])
-    for name in ("modeling.py", "tokenization.py", "my_custom_code.py", "configuration_foo.py"):
+    for name in (
+        "modeling.py",
+        "tokenization.py",
+        "my_custom_code.py",
+        "configuration_foo.py",
+    ):
         assert name in kept, name
 
 
@@ -224,7 +231,9 @@ def _install_fake_model_info(monkeypatch, filenames):
 
 def test_variant_keeps_bin_when_only_default_safetensors(monkeypatch):
     """A default model.safetensors must not prove a variant .bin redundant; without a variant it does."""
-    _install_fake_model_info(monkeypatch, ["model.safetensors", "pytorch_model.fp16.bin"])
+    _install_fake_model_info(
+        monkeypatch, ["model.safetensors", "pytorch_model.fp16.bin"]
+    )
     ig = U._prefetch_ignore_patterns("org/repo", variant = "fp16", weights_at_root = True)
     assert "*.bin" not in ig
     ig_default = U._prefetch_ignore_patterns("org/repo", weights_at_root = True)
@@ -233,14 +242,18 @@ def test_variant_keeps_bin_when_only_default_safetensors(monkeypatch):
 
 def test_variant_drops_bin_when_variant_safetensors_present(monkeypatch):
     """A variant-matching safetensors makes the variant .bin redundant, so .bin is dropped."""
-    _install_fake_model_info(monkeypatch, ["model.fp16.safetensors", "pytorch_model.fp16.bin"])
+    _install_fake_model_info(
+        monkeypatch, ["model.fp16.safetensors", "pytorch_model.fp16.bin"]
+    )
     ig = U._prefetch_ignore_patterns("org/repo", variant = "fp16", weights_at_root = True)
     assert "*.bin" in ig
 
 
 def test_no_variant_keeps_bin_when_only_variant_safetensors(monkeypatch):
     """For a no-variant load, only a canonical safetensors (not a lone variant) makes .bin redundant."""
-    _install_fake_model_info(monkeypatch, ["model.fp16.safetensors", "pytorch_model.bin"])
+    _install_fake_model_info(
+        monkeypatch, ["model.fp16.safetensors", "pytorch_model.bin"]
+    )
     ig = U._prefetch_ignore_patterns("org/repo", weights_at_root = True)
     assert "*.bin" not in ig
     _install_fake_model_info(monkeypatch, ["model.safetensors", "pytorch_model.bin"])
@@ -255,7 +268,9 @@ def test_variant_keeps_bin_for_noncanonical_sidecar(monkeypatch):
     )
     ig = U._prefetch_ignore_patterns("org/repo", variant = "fp16", weights_at_root = True)
     assert "*.bin" not in ig
-    _install_fake_model_info(monkeypatch, ["model.fp16.safetensors", "pytorch_model.fp16.bin"])
+    _install_fake_model_info(
+        monkeypatch, ["model.fp16.safetensors", "pytorch_model.fp16.bin"]
+    )
     ig2 = U._prefetch_ignore_patterns("org/repo", variant = "fp16", weights_at_root = True)
     assert "*.bin" in ig2
 
@@ -263,13 +278,23 @@ def test_variant_keeps_bin_for_noncanonical_sidecar(monkeypatch):
 def test_is_canonical_model_weight_safetensors():
     """The canonical detector matches only non-variant model-weight safetensors names."""
     assert U._is_canonical_model_weight_safetensors("model.safetensors") is True
-    assert U._is_canonical_model_weight_safetensors("model-00001-of-00002.safetensors") is True
-    assert U._is_canonical_model_weight_safetensors("model.safetensors.index.json") is True
+    assert (
+        U._is_canonical_model_weight_safetensors("model-00001-of-00002.safetensors")
+        is True
+    )
+    assert (
+        U._is_canonical_model_weight_safetensors("model.safetensors.index.json") is True
+    )
     assert U._is_canonical_model_weight_safetensors("model.fp16.safetensors") is False
     assert (
-        U._is_canonical_model_weight_safetensors("model.fp16-00001-of-00002.safetensors") is False
+        U._is_canonical_model_weight_safetensors(
+            "model.fp16-00001-of-00002.safetensors"
+        )
+        is False
     )
-    assert U._is_canonical_model_weight_safetensors("adapter_model.safetensors") is False
+    assert (
+        U._is_canonical_model_weight_safetensors("adapter_model.safetensors") is False
+    )
 
 
 def test_st_prefetch_resolves_env_cache_and_runs_after_validation():
@@ -316,10 +341,12 @@ def test_st_cache_resolutions_honor_explicit_hf_cache_dir():
         and kw.arg == "cache_dir"
         and "SENTENCE_TRANSFORMERS_HOME" in ast.dump(kw.value)
     ]
-    assert resolutions, "expected cache_dir resolutions referencing SENTENCE_TRANSFORMERS_HOME"
+    assert (
+        resolutions
+    ), "expected cache_dir resolutions referencing SENTENCE_TRANSFORMERS_HOME"
     for kw in resolutions:
-        assert "'cache_dir'" in ast.dump(
-            kw.value
+        assert (
+            "'cache_dir'" in ast.dump(kw.value)
         ), "an ST cache_dir resolution must read an explicit kwargs.get('cache_dir') first"
 
 
@@ -340,11 +367,15 @@ def test_st_native_loads_map_hf_cache_dir_to_cache_folder():
         and isinstance(n.func, ast.Name)
         and n.func.id == "SentenceTransformer"
     ]
-    cache_folder_kws = [kw for call in st_calls for kw in call.keywords if kw.arg == "cache_folder"]
-    assert cache_folder_kws, "expected a native SentenceTransformer call forwarding cache_folder"
+    cache_folder_kws = [
+        kw for call in st_calls for kw in call.keywords if kw.arg == "cache_folder"
+    ]
+    assert (
+        cache_folder_kws
+    ), "expected a native SentenceTransformer call forwarding cache_folder"
     for kw in cache_folder_kws:
-        assert "'cache_dir'" in ast.dump(
-            kw.value
+        assert (
+            "'cache_dir'" in ast.dump(kw.value)
         ), "a native SentenceTransformer cache_folder must map the explicit HF cache_dir first"
     # for_inference feeds cache_folder via st_kwargs; both native branches map cache_dir -> cache_folder.
     normalized = "".join(src.split())
@@ -401,7 +432,9 @@ def test_vision_prefetch_runs_after_load_mode_validation():
     assert prefetch_calls, "expected a vision prefetch call"
     first_prefetch = min(call.lineno for call in prefetch_calls)
     val_lineno = src[: src.index("Can only load in 4bit or 8bit or 16bit")].count("\n")
-    assert val_lineno < first_prefetch, "load-mode validation must precede the vision prefetch"
+    assert (
+        val_lineno < first_prefetch
+    ), "load-mode validation must precede the vision prefetch"
 
 
 def test_llama_prefetch_skips_only_real_vllm_loads():
@@ -497,7 +530,9 @@ def test_st_fallback_module_loads_forward_revision():
             assert any(
                 kw.arg == "revision" for kw in node.keywords
             ), f"{node.func.id} in {name} must forward revision"
-    assert downloads >= 3, "expected the module-download primitives to be revision-guarded"
+    assert (
+        downloads >= 3
+    ), "expected the module-download primitives to be revision-guarded"
 
     # (c) _load_modules threads revision into its internal _module_path / _read_pooling_mode calls.
     internal = 0
@@ -510,7 +545,9 @@ def test_st_fallback_module_loads_forward_revision():
         assert any(
             kw.arg == "revision" for kw in node.keywords
         ), f"_load_modules must forward revision to {node.func.attr}"
-    assert internal >= 2, "expected _load_modules to call _module_path and _read_pooling_mode"
+    assert (
+        internal >= 2
+    ), "expected _load_modules to call _module_path and _read_pooling_mode"
 
     # (d) the from_pretrained fallback _module_path / _load_modules sites forward revision.
     checked = 0
@@ -570,7 +607,9 @@ def test_st_fallback_model_load_resolves_env_cache():
                 and _resolves_st_cache(node.value)
             ):
                 resolved_lines.append(node.lineno)
-    assert resolved_lines, "from_pretrained must resolve the ST cache into kwargs['cache_dir']"
+    assert (
+        resolved_lines
+    ), "from_pretrained must resolve the ST cache into kwargs['cache_dir']"
 
     fastmodel_calls = [
         n.lineno
@@ -660,7 +699,9 @@ def test_format_probe_runs_even_when_config_cached(capture, monkeypatch):
 
 def test_optimizer_safetensors_does_not_drop_bin(monkeypatch):
     """An optimizer.safetensors sidecar must not count as model safetensors, so the real .bin weights are kept."""
-    _install_fake_model_info(monkeypatch, ["pytorch_model.bin", "optimizer.safetensors"])
+    _install_fake_model_info(
+        monkeypatch, ["pytorch_model.bin", "optimizer.safetensors"]
+    )
     ig = U._prefetch_ignore_patterns("org/repo", weights_at_root = True)
     assert "*.bin" not in ig
 
@@ -676,7 +717,9 @@ def test_model_safetensors_still_drops_bin(monkeypatch):
 
 def test_whole_multi_component_snapshot_keeps_subdir_bin(monkeypatch):
     """A whole multi-component snapshot must not drop *.bin (it would strip a subdir module's weight); a root load still does."""
-    _install_fake_model_info(monkeypatch, ["model.safetensors", "1_Dense/pytorch_model.bin"])
+    _install_fake_model_info(
+        monkeypatch, ["model.safetensors", "1_Dense/pytorch_model.bin"]
+    )
     ig = U._prefetch_ignore_patterns("org/repo", weights_at_root = False)
     assert "*.bin" not in ig
     ig_root = U._prefetch_ignore_patterns("org/repo", weights_at_root = True)
@@ -732,7 +775,11 @@ def test_adapter_safetensors_check_scoped_to_root(monkeypatch):
         huggingface_hub,
         "HfApi",
         lambda: _Api(
-            ["adapter_config.json", "adapter_model.bin", "checkpoint-5/adapter_model.safetensors"]
+            [
+                "adapter_config.json",
+                "adapter_model.bin",
+                "checkpoint-5/adapter_model.safetensors",
+            ]
         ),
     )
     assert U._adapter_repo_has_safetensors("org/repo") is False
@@ -769,7 +816,8 @@ def test_gguf_file_warm_keeps_gguf(capture):
 def test_adapter_only_prefers_safetensors_over_bin(capture, monkeypatch):
     """A mixed-format adapter repo warms only the safetensors PeftModel reads, not both formats."""
     _install_fake_model_info(
-        monkeypatch, ["adapter_config.json", "adapter_model.safetensors", "adapter_model.bin"]
+        monkeypatch,
+        ["adapter_config.json", "adapter_model.safetensors", "adapter_model.bin"],
     )
     _, st = capture(adapter_only = True)
     ig = st["ignore_patterns"]
@@ -788,7 +836,9 @@ def test_adapter_only_bin_only_keeps_bin(capture, monkeypatch):
     _install_fake_model_info(monkeypatch, ["adapter_config.json", "adapter_model.bin"])
     _, st = capture(adapter_only = True)
     kept = _filter(
-        ["adapter_config.json", "adapter_model.bin"], st["allow_patterns"], st["ignore_patterns"]
+        ["adapter_config.json", "adapter_model.bin"],
+        st["allow_patterns"],
+        st["ignore_patterns"],
     )
     assert "adapter_model.bin" in kept
 
@@ -809,10 +859,14 @@ def test_adapter_only_explicit_use_safetensors_false_keeps_bin(capture):
 
 def test_gguf_file_with_subfolder_warms_subfolder_path(capture):
     """gguf_file + subfolder: the warm allow-lists <subfolder>/<gguf_file>, not the bare root name."""
-    _, st = capture(weights_at_root = True, gguf_file = "model-Q4_K_M.gguf", subfolder = "gguf")
+    _, st = capture(
+        weights_at_root = True, gguf_file = "model-Q4_K_M.gguf", subfolder = "gguf"
+    )
     allow = st["allow_patterns"]
     assert "gguf/model-Q4_K_M.gguf" in allow
-    kept = _filter(["gguf/model-Q4_K_M.gguf", "config.json"], allow, st["ignore_patterns"])
+    kept = _filter(
+        ["gguf/model-Q4_K_M.gguf", "config.json"], allow, st["ignore_patterns"]
+    )
     assert "gguf/model-Q4_K_M.gguf" in kept and "config.json" in kept
 
 
@@ -821,7 +875,9 @@ def test_from_tf_root_load_ignores_nested_h5(capture):
     _, st = capture(weights_at_root = True, from_tf = True)
     ig = st["ignore_patterns"]
     assert "*/*.h5" in ig and "*/*.msgpack" in ig
-    kept = _filter(["model.h5", "checkpoint-1/model.h5", "config.json"], st["allow_patterns"], ig)
+    kept = _filter(
+        ["model.h5", "checkpoint-1/model.h5", "config.json"], st["allow_patterns"], ig
+    )
     assert "model.h5" in kept
     assert "checkpoint-1/model.h5" not in kept
 
@@ -835,9 +891,15 @@ def test_sentence_transformer_from_pretrained_is_prefetch_wired():
     with open(src_path, "r", encoding = "utf-8") as f:
         tree = ast.parse(f.read())
     cls = next(
-        n for n in tree.body if isinstance(n, ast.ClassDef) and n.name == "FastSentenceTransformer"
+        n
+        for n in tree.body
+        if isinstance(n, ast.ClassDef) and n.name == "FastSentenceTransformer"
     )
-    fp = next(n for n in cls.body if isinstance(n, ast.FunctionDef) and n.name == "from_pretrained")
+    fp = next(
+        n
+        for n in cls.body
+        if isinstance(n, ast.FunctionDef) and n.name == "from_pretrained"
+    )
 
     def _prefetch_call(node):
         # a bare call statement, or one whose return is captured (e.g. _st_prefetched = ...)
@@ -851,7 +913,9 @@ def test_sentence_transformer_from_pretrained_is_prefetch_wired():
         return None
 
     prefetch_pos = next((i for i, n in enumerate(fp.body) if _prefetch_call(n)), None)
-    return_pos = next((i for i, n in enumerate(fp.body) if isinstance(n, ast.Return)), len(fp.body))
+    return_pos = next(
+        (i for i, n in enumerate(fp.body) if isinstance(n, ast.Return)), len(fp.body)
+    )
     assert (
         prefetch_pos is not None
     ), "from_pretrained must call maybe_prefetch_hf_snapshot at top level"
@@ -874,7 +938,9 @@ def test_st_module_download_forwards_cache_folder():
     calls = [
         n
         for n in ast.walk(tree)
-        if isinstance(n, ast.Call) and isinstance(n.func, ast.Name) and n.func.id == "load_dir_path"
+        if isinstance(n, ast.Call)
+        and isinstance(n.func, ast.Name)
+        and n.func.id == "load_dir_path"
     ]
     assert calls, "expected a load_dir_path call in sentence_transformer.py"
     assert all(

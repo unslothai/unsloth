@@ -174,7 +174,9 @@ def read_gguf_context_length(path: str) -> Optional[int]:
     return dims["context_length"] if dims else None
 
 
-def _parse_gguf_arch_uints(path: str, wanted_suffixes: frozenset[str]) -> Optional[Dict[str, int]]:
+def _parse_gguf_arch_uints(
+    path: str, wanted_suffixes: frozenset[str]
+) -> Optional[Dict[str, int]]:
     """Walk a GGUF header once and return the requested architecture-namespaced
     uint (vtype 4/10) keys, e.g. ``{"block_count": 32}``. Keys are
     ``{arch}.<suffix>``; the arch is learned from ``general.architecture`` (GGUF

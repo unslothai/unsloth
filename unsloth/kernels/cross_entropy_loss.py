@@ -75,7 +75,9 @@ def _cross_entropy_forward(
     mask = col_offsets < VOCAB_SIZE
 
     label_idx = tl.load(labels_ptr).to(tl.int32)
-    logits = tl.load(logits_ptr + col_offsets, mask = mask, other = -float("inf")).to(tl.float32)
+    logits = tl.load(logits_ptr + col_offsets, mask = mask, other = -float("inf")).to(
+        tl.float32
+    )
 
     # Go logit scaling for Cohere: t * x
     if DO_LOGIT_SCALING:
@@ -160,7 +162,9 @@ def _chunked_cross_entropy_forward(
     mask = col_offsets < VOCAB_SIZE
 
     label_idx = tl.load(labels_ptr).to(tl.int32)
-    logits = tl.load(logits_ptr + col_offsets, mask = mask, other = -float("inf")).to(tl.float32)
+    logits = tl.load(logits_ptr + col_offsets, mask = mask, other = -float("inf")).to(
+        tl.float32
+    )
 
     # Go logit scaling for Cohere: t * x
     if DO_LOGIT_SCALING:

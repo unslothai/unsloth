@@ -40,7 +40,8 @@ import pytest
 # only pytest installed); skip the whole module cleanly when it is absent.
 if importlib.util.find_spec("torch") is None:
     pytest.skip(
-        "torch not installed; fake CPU train needs the real runtime", allow_module_level = True
+        "torch not installed; fake CPU train needs the real runtime",
+        allow_module_level = True,
     )
 
 # Apply the CUDA spoof before any unsloth-touching import.
@@ -214,7 +215,10 @@ def _load_plain():
 @pytest.fixture(autouse = True)
 def _require_stack():
     global torch  # the `import torch._dynamo` below would otherwise shadow it as local
-    if importlib.util.find_spec("unsloth") is None or importlib.util.find_spec("trl") is None:
+    if (
+        importlib.util.find_spec("unsloth") is None
+        or importlib.util.find_spec("trl") is None
+    ):
         pytest.skip("unsloth or trl not installed")
     # A real import failure is a regression we want to surface, so do not guard it.
     import unsloth  # noqa: F401  -- patches TRL trainers to the Unsloth variants
@@ -239,7 +243,9 @@ def test_sft_trains_on_cpu(tmp_path):
 
     assert SFTTrainer.__name__ == "UnslothSFTTrainer", "SFT patch did not apply"
     model, tok = _load_plain()
-    ds = Dataset.from_list([{"text": "The quick brown fox jumps over the lazy dog."}] * 8)
+    ds = Dataset.from_list(
+        [{"text": "The quick brown fox jumps over the lazy dog."}] * 8
+    )
     cfg = SFTConfig(
         output_dir = str(tmp_path / "ci_sft"),
         per_device_train_batch_size = 2,

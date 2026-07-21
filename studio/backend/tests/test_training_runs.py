@@ -13,7 +13,10 @@ from utils.training_runs import (
 
 
 def test_normalize_project_name_trims_and_collapses_whitespace():
-    assert normalize_project_name("  Customer   Support   LoRA  ") == "Customer Support LoRA"
+    assert (
+        normalize_project_name("  Customer   Support   LoRA  ")
+        == "Customer Support LoRA"
+    )
 
 
 def test_normalize_project_name_returns_none_for_empty_or_invalid_values():
@@ -22,7 +25,9 @@ def test_normalize_project_name_returns_none_for_empty_or_invalid_values():
 
 
 def test_slugify_project_name_makes_safe_suffix():
-    assert slugify_project_name("Customer Support / LoRA v2") == "customer-support-lora-v2"
+    assert (
+        slugify_project_name("Customer Support / LoRA v2") == "customer-support-lora-v2"
+    )
 
 
 def test_slugify_project_name_rejects_path_only_or_separator_only_values():
@@ -37,7 +42,10 @@ def test_build_default_output_dir_name_appends_project_slug():
         timestamp = 1771227800,
     )
 
-    assert output_dir == "unsloth_Llama-3.2-3B-Instruct__project-customer-support_1771227800"
+    assert (
+        output_dir
+        == "unsloth_Llama-3.2-3B-Instruct__project-customer-support_1771227800"
+    )
 
 
 def test_build_default_output_dir_name_caps_final_component(tmp_path):
@@ -77,7 +85,9 @@ def test_model_segment_preserves_project_marker_text_in_model_name():
     )
 
     assert output_dir == "org_foo__project--bar_1771227800"
-    assert model_segment_from_default_output_dir_name(output_dir) == "org_foo__project-bar"
+    assert (
+        model_segment_from_default_output_dir_name(output_dir) == "org_foo__project-bar"
+    )
 
 
 def test_model_segment_strips_project_slug_after_escaped_model_marker():
@@ -88,7 +98,9 @@ def test_model_segment_strips_project_slug_after_escaped_model_marker():
     )
 
     assert output_dir == "org_foo__project--bar__project-customer-support_1771227800"
-    assert model_segment_from_default_output_dir_name(output_dir) == "org_foo__project-bar"
+    assert (
+        model_segment_from_default_output_dir_name(output_dir) == "org_foo__project-bar"
+    )
 
 
 def test_extract_project_name_from_config_json_returns_normalized_name():
@@ -100,4 +112,7 @@ def test_extract_project_name_from_config_json_returns_normalized_name():
 def test_extract_project_name_from_config_json_handles_missing_or_invalid_payload():
     assert _extract_project_name_from_config_json(None) is None
     assert _extract_project_name_from_config_json("not-json") is None
-    assert _extract_project_name_from_config_json(json.dumps({"project_name": "   "})) is None
+    assert (
+        _extract_project_name_from_config_json(json.dumps({"project_name": "   "}))
+        is None
+    )

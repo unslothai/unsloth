@@ -34,7 +34,10 @@ def test_repo_id_keeps_namespace():
 
 def test_local_paths_collapse_to_basename():
     sr = _load_storage_roots()
-    assert sr.default_run_dir_name(r"G:\modelsAI\gguf\test\gemma-4-12B-it") == "gemma-4-12B-it"
+    assert (
+        sr.default_run_dir_name(r"G:\modelsAI\gguf\test\gemma-4-12B-it")
+        == "gemma-4-12B-it"
+    )
     assert sr.default_run_dir_name("/data/models/gemma-3-4b") == "gemma-3-4b"
     assert sr.default_run_dir_name("~/models/gemma-3-4b") == "gemma-3-4b"
     assert sr.default_run_dir_name("C:/Users/me/models/gemma-3-4b") == "gemma-3-4b"

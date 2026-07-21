@@ -22,9 +22,15 @@ def test_registry_entries_are_well_formed():
             isinstance(value, tuple) and len(value) == 3
         ), f"{alias!r} must map to a (scheme, needs_calib, suffix) tuple"
         scheme, needs_calib, suffix = value
-        assert isinstance(scheme, str) and scheme, f"{alias!r}: scheme must be a non-empty str"
-        assert isinstance(needs_calib, bool), f"{alias!r}: needs_calibration must be a bool"
-        assert isinstance(suffix, str) and suffix, f"{alias!r}: suffix must be a non-empty str"
+        assert (
+            isinstance(scheme, str) and scheme
+        ), f"{alias!r}: scheme must be a non-empty str"
+        assert isinstance(
+            needs_calib, bool
+        ), f"{alias!r}: needs_calibration must be a bool"
+        assert (
+            isinstance(suffix, str) and suffix
+        ), f"{alias!r}: suffix must be a non-empty str"
         # The suffix builds the sibling output dir "<save_dir>-<suffix>"; keep it path-safe.
         assert not (
             set(suffix) & set("/\\ ")
@@ -65,5 +71,16 @@ def test_calibration_flags_match_known_schemes():
 
 
 def test_core_aliases_present():
-    for alias in ("fp8", "fp8_dynamic", "fp8_static", "mxfp4", "nvfp4", "int8", "w4a16", "w8a8"):
-        assert alias in COMPRESSED_EXPORT_SCHEMES, f"expected core alias {alias!r} in registry"
+    for alias in (
+        "fp8",
+        "fp8_dynamic",
+        "fp8_static",
+        "mxfp4",
+        "nvfp4",
+        "int8",
+        "w4a16",
+        "w8a8",
+    ):
+        assert (
+            alias in COMPRESSED_EXPORT_SCHEMES
+        ), f"expected core alias {alias!r} in registry"

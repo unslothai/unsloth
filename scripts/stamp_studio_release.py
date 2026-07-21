@@ -42,7 +42,9 @@ def _atomic_write_text(
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
-BUILD_INFO_PATH = REPO_ROOT / "studio" / "backend" / "utils" / "_studio_release_build.py"
+BUILD_INFO_PATH = (
+    REPO_ROOT / "studio" / "backend" / "utils" / "_studio_release_build.py"
+)
 BUILD_INFO_SUFFIX = "studio/backend/utils/_studio_release_build.py"
 VERSION_RE = re.compile(r"^v\d+\.\d+\.\d+(?:-[0-9A-Za-z.][0-9A-Za-z.-]*)?$")
 GIT_DESCRIBE_SUFFIX_RE = re.compile(r"-\d+-g[0-9A-Fa-f]+(?:-dirty)?$")
@@ -233,7 +235,9 @@ def _read_sdist_member(path: Path) -> str | None:
 
 def verify_dist(expected: str, dist_dir: Path) -> int:
     if not is_valid_version(expected):
-        print(f"Invalid expected Unsloth release version: {expected!r}", file = sys.stderr)
+        print(
+            f"Invalid expected Unsloth release version: {expected!r}", file = sys.stderr
+        )
         return 2
 
     artifacts = list(dist_dir.glob("*.whl")) + list(dist_dir.glob("*.tar.gz"))
@@ -258,7 +262,9 @@ def verify_dist(expected: str, dist_dir: Path) -> int:
             print(failure, file = sys.stderr)
         return 2
 
-    print(f"Verified Unsloth release version {expected} in {len(artifacts)} artifact(s)")
+    print(
+        f"Verified Unsloth release version {expected} in {len(artifacts)} artifact(s)"
+    )
     return 0
 
 

@@ -11,7 +11,9 @@ def _load_formatter_builders():
     tree = ast.parse(source.read_text(encoding = "utf-8"))
     wanted = {"_parse_combined_prompt", "_create_formatter"}
     funcs = [
-        node for node in tree.body if isinstance(node, ast.FunctionDef) and node.name in wanted
+        node
+        for node in tree.body
+        if isinstance(node, ast.FunctionDef) and node.name in wanted
     ]
     namespace = {"re": re}
     module = ast.Module(body = funcs, type_ignores = [])
@@ -27,7 +29,9 @@ class _StubDataset:
 
 def _render(merged_prompt, columns, batch):
     parse, create = _load_formatter_builders()
-    possible_columns, final_optional_prompts = parse(merged_prompt, _StubDataset(columns))
+    possible_columns, final_optional_prompts = parse(
+        merged_prompt, _StubDataset(columns)
+    )
     processor = create(possible_columns, final_optional_prompts, "text")
     return processor(batch)["text"]
 

@@ -39,7 +39,8 @@ def _you_prompt(colors: bool) -> str:
     except ImportError:
         return "\n\x1b[1;36mYou: \x1b[0m" if colors else "\nYou: "
     libedit = (
-        "libedit" in (readline.__doc__ or "") or getattr(readline, "backend", "") == "editline"
+        "libedit" in (readline.__doc__ or "")
+        or getattr(readline, "backend", "") == "editline"
     )
     if not colors:
         return "\nYou: "
@@ -86,7 +87,10 @@ def _get_base_load_in_4bit(model_config) -> bool:
             return True
         elif not training_method:
             # Fallback: check base model name for -bnb-4bit suffix
-            if model_config.base_model and "-bnb-4bit" not in model_config.base_model.lower():
+            if (
+                model_config.base_model
+                and "-bnb-4bit" not in model_config.base_model.lower()
+            ):
                 return False
             return True
         return True
@@ -251,7 +255,9 @@ def chat(
         )
     if compare and compare_blocked:
         if should_print:
-            err.print(f"--compare unavailable: {compare_blocked}", style = "red", markup = False)
+            err.print(
+                f"--compare unavailable: {compare_blocked}", style = "red", markup = False
+            )
         raise typer.Exit(code = 1)
 
     load_opts = dict(
@@ -264,7 +270,9 @@ def chat(
 
     # Prefer a running Unsloth server: instant starts, model shared with the UI.
     chat_backend = (
-        None if (no_server or is_mlx_distributed) else connect_studio_server(model, **load_opts)
+        None
+        if (no_server or is_mlx_distributed)
+        else connect_studio_server(model, **load_opts)
     )
     server_mode = chat_backend is not None
     if server_mode and should_print:
@@ -283,7 +291,9 @@ def chat(
     # Compare's base column: server mode keeps the tuned model remote and
     # loads the base locally; local MLX (no adapter toggle) does the same;
     # local CUDA just toggles the adapter on the one loaded model.
-    dual_compare = compare_blocked is None and (server_mode or _compare_needs_second_model())
+    dual_compare = compare_blocked is None and (
+        server_mode or _compare_needs_second_model()
+    )
     base_backend = None
 
     def load_base_for_compare():
@@ -308,7 +318,9 @@ def chat(
             # Use the same precision as the tuned model for fair comparison
             base_load_opts = dict(load_opts)  # Copy original options
             base_load_opts["load_in_4bit"] = _get_base_load_in_4bit(model_config)
-            base_backend = load_chat_backend(base_id, fresh_backend = True, **base_load_opts)
+            base_backend = load_chat_backend(
+                base_id, fresh_backend = True, **base_load_opts
+            )
         except Exception as exc:
             if should_print:
                 err.print(f"(base model load failed: {exc})", style = "red", markup = False)
@@ -340,7 +352,9 @@ def chat(
 
     # legacy_windows: pre-VT consoles print raw ANSI as ←[1;36m garbage.
     you_prompt = (
-        _you_prompt(console.is_terminal and not console.legacy_windows) if should_print else ""
+        _you_prompt(console.is_terminal and not console.legacy_windows)
+        if should_print
+        else ""
     )
     assistant_label = "[bold magenta]Assistant:[/bold magenta]"
 
@@ -392,7 +406,9 @@ def chat(
             if user == "/compare":
                 if compare_blocked:
                     if should_print:
-                        console.print(f"(compare unavailable: {compare_blocked})", style = "yellow")
+                        console.print(
+                            f"(compare unavailable: {compare_blocked})", style = "yellow"
+                        )
                     continue
                 if not compare_mode and dual_compare and not load_base_for_compare():
                     continue
@@ -411,24 +427,38 @@ def chat(
             try:
                 if compare_mode:
                     if should_print:
-                        console.print("(comparing base vs tuned…)", style = "bright_black")
+                        console.print(
+                            "(comparing base vs tuned…)", style = "bright_black"
+                        )
                     if dual_compare:
-                        base_text = collect_stream(generate(backend = base_backend), show_thinking)
+                        base_text = collect_stream(
+                            generate(backend = base_backend), show_thinking
+                        )
                         tuned_text = collect_stream(generate(), show_thinking)
                     else:
-                        base_text = collect_stream(generate(use_adapter = False), show_thinking)
-                        tuned_text = collect_stream(generate(use_adapter = True), show_thinking)
+                        base_text = collect_stream(
+                            generate(use_adapter = False), show_thinking
+                        )
+                        tuned_text = collect_stream(
+                            generate(use_adapter = True), show_thinking
+                        )
                     if should_print:
                         console.print()
                         render_columns(
-                            "base", base_text, f"{name} (tuned)", tuned_text, console = console
+                            "base",
+                            base_text,
+                            f"{name} (tuned)",
+                            tuned_text,
+                            console = console,
                         )
                     # History continues as the tuned model; base is just the reference.
                     answer = tuned_text
                 else:
                     if should_print:
                         console.print(assistant_label)
-                        answer = stream_markdown(generate(), show_thinking, console = console)
+                        answer = stream_markdown(
+                            generate(), show_thinking, console = console
+                        )
                     else:
                         answer = collect_stream(generate(), show_thinking)
             except KeyboardInterrupt:
@@ -446,7 +476,10 @@ def chat(
                 continue
 
             messages.append(
-                {"role": "assistant", "content": visible_text(answer, show_thinking = False)}
+                {
+                    "role": "assistant",
+                    "content": visible_text(answer, show_thinking = False),
+                }
             )
     finally:
         chat_backend.close()

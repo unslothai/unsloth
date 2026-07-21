@@ -97,7 +97,10 @@ def test_status_response_exposes_update_size_bytes():
     assert model.model_dump()["update_size_bytes"] == 123_456_789
     # Omitted -> defaults to None (the offline / no-matching-asset case).
     without = {k: v for k, v in payload.items() if k != "update_size_bytes"}
-    assert rl.LlamaUpdateStatusResponse(**without).model_dump()["update_size_bytes"] is None
+    assert (
+        rl.LlamaUpdateStatusResponse(**without).model_dump()["update_size_bytes"]
+        is None
+    )
 
 
 def test_status_handler_runs_off_event_loop(monkeypatch):

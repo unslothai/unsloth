@@ -171,15 +171,23 @@ def test_list_chat_threads_orders_by_last_activity(tmp_path, monkeypatch):
     newer["createdAt"] = 1_700_000_100_000
     studio_db.upsert_chat_thread(older)
     studio_db.upsert_chat_thread(newer)
-    assert [t["id"] for t in studio_db.list_chat_threads()] == ["thread-new", "thread-old"]
+    assert [t["id"] for t in studio_db.list_chat_threads()] == [
+        "thread-new",
+        "thread-old",
+    ]
 
     studio_db.upsert_chat_message(
         _message("msg-1", 1_700_000_200_000, "hi", thread_id = "thread-old")
     )
-    assert [t["id"] for t in studio_db.list_chat_threads()] == ["thread-old", "thread-new"]
+    assert [t["id"] for t in studio_db.list_chat_threads()] == [
+        "thread-old",
+        "thread-new",
+    ]
 
 
-def test_chat_threads_updated_at_migration_backfills_from_messages(tmp_path, monkeypatch):
+def test_chat_threads_updated_at_migration_backfills_from_messages(
+    tmp_path, monkeypatch
+):
     _reset_studio_db(tmp_path, monkeypatch)
     db_path = studio_db_path()
     db_path.parent.mkdir(parents = True, exist_ok = True)
@@ -237,7 +245,9 @@ def test_chat_threads_updated_at_migration_backfills_from_messages(tmp_path, mon
     finally:
         conn.close()
 
-    assert studio_db.get_chat_thread("thread-with-msgs")["updatedAt"] == 1_700_000_002_000
+    assert (
+        studio_db.get_chat_thread("thread-with-msgs")["updatedAt"] == 1_700_000_002_000
+    )
     assert studio_db.get_chat_thread("thread-empty")["updatedAt"] == 1_700_000_050_000
     assert studio_db.get_chat_thread("thread-fork")["updatedAt"] == 1_700_000_100_000
 
@@ -365,16 +375,22 @@ def test_settings_merge_atomic_under_concurrency(tmp_path, monkeypatch):
 
 def test_settings_merge_preserves_nested_keys(tmp_path, monkeypatch):
     _reset_studio_db(tmp_path, monkeypatch)
-    studio_db.upsert_chat_settings_merge({"inferenceParams": {"temperature": 0.5, "topP": 0.8}})
+    studio_db.upsert_chat_settings_merge(
+        {"inferenceParams": {"temperature": 0.5, "topP": 0.8}}
+    )
     studio_db.upsert_chat_settings_merge({"inferenceParams": {"temperature": 0.9}})
 
     params = studio_db.list_chat_settings()["inferenceParams"]
     assert params == {"temperature": 0.9, "topP": 0.8}
 
 
-def test_settings_merge_quarantines_corrupt_json_and_rejects_partial_patch(tmp_path, monkeypatch):
+def test_settings_merge_quarantines_corrupt_json_and_rejects_partial_patch(
+    tmp_path, monkeypatch
+):
     _reset_studio_db(tmp_path, monkeypatch)
-    studio_db.upsert_chat_settings_merge({"inferenceParams": {"temperature": 0.5, "topP": 0.8}})
+    studio_db.upsert_chat_settings_merge(
+        {"inferenceParams": {"temperature": 0.5, "topP": 0.8}}
+    )
     conn = studio_db.get_connection()
     try:
         conn.execute(
@@ -422,7 +438,9 @@ def test_settings_merge_replaces_corrupt_scalar_after_quarantine(tmp_path, monke
     assert settings["autoTitle"] is True
     conn = studio_db.get_connection()
     try:
-        quarantined = conn.execute("SELECT key, reason FROM chat_settings_quarantine").fetchall()
+        quarantined = conn.execute(
+            "SELECT key, reason FROM chat_settings_quarantine"
+        ).fetchall()
     finally:
         conn.close()
     assert [(row["key"], row["reason"]) for row in quarantined] == [
@@ -478,7 +496,11 @@ def test_legacy_imports_records_and_lists(tmp_path, monkeypatch):
     )
     assert accepted == 3
     assert inserted == 3
-    assert set(studio_db.list_chat_legacy_imports()) == {"legacy-a", "legacy-b", "legacy-c"}
+    assert set(studio_db.list_chat_legacy_imports()) == {
+        "legacy-a",
+        "legacy-b",
+        "legacy-c",
+    }
 
 
 def test_legacy_imports_is_idempotent(tmp_path, monkeypatch):
@@ -492,7 +514,11 @@ def test_legacy_imports_is_idempotent(tmp_path, monkeypatch):
     assert (accepted1, inserted1) == (2, 2)
     # legacy-b is already in the ledger, only legacy-c is genuinely new.
     assert (accepted2, inserted2) == (2, 1)
-    assert set(studio_db.list_chat_legacy_imports()) == {"legacy-a", "legacy-b", "legacy-c"}
+    assert set(studio_db.list_chat_legacy_imports()) == {
+        "legacy-a",
+        "legacy-b",
+        "legacy-c",
+    }
 
 
 def test_legacy_imports_dedups_input(tmp_path, monkeypatch):
@@ -596,7 +622,9 @@ def test_fork_chat_thread_preserves_project_id(tmp_path, monkeypatch):
 
     assert forked is not None
     assert forked["projectId"] == "project-1"
-    assert {thread["id"] for thread in studio_db.list_chat_threads(project_id = "project-1")} == {
+    assert {
+        thread["id"] for thread in studio_db.list_chat_threads(project_id = "project-1")
+    } == {
         "fork-1",
         "src",
     }

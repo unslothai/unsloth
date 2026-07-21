@@ -63,7 +63,9 @@ def test_cpu_thread_cap_is_opt_in(raw):
 
 
 # Anything that is not a positive integer raises a clear ValueError.
-@pytest.mark.parametrize("raw", ["zero", "0", "-3", "1.5", "abc", "8a", "0x4", "1e3", "4 0"])
+@pytest.mark.parametrize(
+    "raw", ["zero", "0", "-3", "1.5", "abc", "8a", "0x4", "1e3", "4 0"]
+)
 def test_cpu_thread_cap_requires_positive_integer(raw):
     with pytest.raises(ValueError, match = "must be a positive integer"):
         configure_cpu_threads({"UNSLOTH_CPU_THREADS": raw})

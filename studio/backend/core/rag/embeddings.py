@@ -133,9 +133,13 @@ def _guard_model_security(name: str) -> None:
         # directly under a Transformer module dir (0_Transformer/) blocks instead of
         # passing as an unreferenced nested shard.
         load_subdirs = tuple(
-            dict.fromkeys((*security_load_subdirs(name, token), *_st_module_subdirs(name, token)))
+            dict.fromkeys(
+                (*security_load_subdirs(name, token), *_st_module_subdirs(name, token))
+            )
         )
-        blocked = evaluate_file_security(name, hf_token = token, load_subdirs = load_subdirs).blocked
+        blocked = evaluate_file_security(
+            name, hf_token = token, load_subdirs = load_subdirs
+        ).blocked
     except Exception:
         return
     if blocked:
@@ -158,7 +162,9 @@ def _get(model_name: str | None = None):
             device = _device()
             logger.info("loading embedding model %s on %s", name, device)
             _guard_model_security(name)
-            _model = SentenceTransformer(name, device = device, model_kwargs = dtype_kwargs("float16"))
+            _model = SentenceTransformer(
+                name, device = device, model_kwargs = dtype_kwargs("float16")
+            )
             _name = name
         return _model
 

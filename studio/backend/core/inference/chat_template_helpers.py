@@ -30,7 +30,9 @@ def _tokenizer_objects(tokenizer) -> tuple:
     if tokenizer is None:
         return ()
     nested = getattr(tokenizer, "tokenizer", None)
-    return (tokenizer,) if nested is None or nested is tokenizer else (tokenizer, nested)
+    return (
+        (tokenizer,) if nested is None or nested is tokenizer else (tokenizer, nested)
+    )
 
 
 def _selected_template_strings_from_value(
@@ -81,12 +83,18 @@ def _detect_reasoning_channel_markers_from_templates(
     templates: tuple[str, ...],
 ) -> Optional[tuple[str, str]]:
     """Return Gemma native reasoning markers only when a template emits them."""
-    if any(opener in template for template in templates for opener in _GEMMA_TEMPLATE_OPENERS):
+    if any(
+        opener in template
+        for template in templates
+        for opener in _GEMMA_TEMPLATE_OPENERS
+    ):
         return _GEMMA_THOUGHT_OPEN, _GEMMA_THOUGHT_CLOSE
     return None
 
 
-def detect_reasoning_channel_markers(tokenizer, tools = None) -> Optional[tuple[str, str]]:
+def detect_reasoning_channel_markers(
+    tokenizer, tools = None
+) -> Optional[tuple[str, str]]:
     """Return native Gemma thought-channel markers supported by a tokenizer.
 
     Detection uses the active chat template rather than model names or vocabulary
@@ -181,7 +189,9 @@ class ReasoningChannelNormalizer:
                 if not self._buffer:
                     break
 
-            marker = self._closing_marker if self._in_reasoning else self._opening_marker
+            marker = (
+                self._closing_marker if self._in_reasoning else self._opening_marker
+            )
             index = self._buffer.find(marker)
             if index < 0:
                 stable, self._buffer = _split_partial_marker(self._buffer, marker)
@@ -234,7 +244,9 @@ def normalize_reasoning_snapshots(
     normalized_output = ""
     for snapshot in stream:
         if not snapshot.startswith(raw_output):
-            raise RuntimeError("Reasoning normalization requires cumulative text snapshots")
+            raise RuntimeError(
+                "Reasoning normalization requires cumulative text snapshots"
+            )
         delta = normalizer.feed(snapshot[len(raw_output) :])
         raw_output = snapshot
         if delta:
@@ -373,7 +385,9 @@ def apply_chat_template_for_generation(
                 break
         if last_exc is not None:
             raise last_exc
-        raise RuntimeError("apply_chat_template_for_generation: no attempt produced a result")
+        raise RuntimeError(
+            "apply_chat_template_for_generation: no attempt produced a result"
+        )
 
     try:
         return _render(messages)

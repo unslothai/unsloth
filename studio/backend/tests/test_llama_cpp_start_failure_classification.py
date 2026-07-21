@@ -30,7 +30,9 @@ sys.modules.setdefault("loggers", _loggers_stub)
 # Give the structlog stub a real get_logger: a bare ModuleType poisons
 # sys.modules for later tests that call structlog.get_logger at import time.
 _structlog_stub = _types.ModuleType("structlog")
-_structlog_stub.get_logger = lambda *a, **k: __import__("logging").getLogger("structlog")
+_structlog_stub.get_logger = lambda *a, **k: __import__("logging").getLogger(
+    "structlog"
+)
 sys.modules.setdefault("structlog", _structlog_stub)
 if not hasattr(sys.modules["structlog"], "get_logger"):
     sys.modules["structlog"].get_logger = _structlog_stub.get_logger
@@ -107,7 +109,8 @@ class TestUnsupportedNonDiffusionArchitecture:
 
 class TestOllamaAndFallback:
     _OLLAMA_GGUF = (
-        f"/home/u/.ollama{__import__('os').sep}ollama_links" f"{__import__('os').sep}m.gguf"
+        f"/home/u/.ollama{__import__('os').sep}ollama_links"
+        f"{__import__('os').sep}m.gguf"
     )
 
     def test_ollama_compat_message_still_works(self):
@@ -144,7 +147,9 @@ class TestOllamaAndFallback:
         # A live server that never returns 200 on /health must name the probe and
         # proxy/context causes, not blame a bad GGUF (#5740).
         msg = _classify(
-            "llama-server health check timed out after 600.0s", "/models/x.gguf", "local/x"
+            "llama-server health check timed out after 600.0s",
+            "/models/x.gguf",
+            "local/x",
         )
         assert "/health" in msg
         assert "NO_PROXY" in msg
@@ -171,7 +176,9 @@ class TestOsKillReturncode:
         assert "out of memory" not in msg.lower()
 
     def test_specific_output_wins_over_os_kill_code(self):
-        msg = _classify(_QWEN_IMAGE_OUT, "/models/qwen-image.gguf", "local/qwen-image", -9)
+        msg = _classify(
+            _QWEN_IMAGE_OUT, "/models/qwen-image.gguf", "local/qwen-image", -9
+        )
         assert "diffusion" in msg.lower()
         assert "out of memory" not in msg.lower()
 

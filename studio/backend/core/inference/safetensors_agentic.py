@@ -341,7 +341,9 @@ def _reprompt_intent_text(text: str, *, reasoning_prefilled: bool = False) -> st
     reasoning_text = "".join(reasoning).strip()
     if visible_text:
         return visible_text
-    return "\n".join(part for part in (prefilled_reasoning, reasoning_text) if part).strip()
+    return "\n".join(
+        part for part in (prefilled_reasoning, reasoning_text) if part
+    ).strip()
 
 
 def _looks_like_enabled_bare_json(text: str, enabled_tool_names: Optional[set]) -> bool:
@@ -404,7 +406,9 @@ def _detect_render_html_tool_start(content: str) -> bool:
             # first call through the parser (it reads top-level names).
             arr_calls = parse_tool_calls_from_text(content[mt:])
             if arr_calls:
-                candidates.append((mt, (arr_calls[0].get("function") or {}).get("name") or ""))
+                candidates.append(
+                    (mt, (arr_calls[0].get("function") or {}).get("name") or "")
+                )
     for rm in _REHEARSAL_RENDER_NAME_RE.finditer(content):
         if not _in_think(rm.start(1)):
             candidates.append((rm.start(1), rm.group(1)))
@@ -532,7 +536,9 @@ def run_safetensors_tool_loop(
     # off never prompts, so (like auto) it must not lose first-pass retrieval
     # even if a direct caller passes a stale confirm_tool_calls flag.
     _skip_autoinject = (
-        confirm_tool_calls and not bypass_permissions and permission_mode not in ("auto", "off")
+        confirm_tool_calls
+        and not bypass_permissions
+        and permission_mode not in ("auto", "off")
     )
     _auto = None if _skip_autoinject else build_rag_autoinject(conversation, rag_scope)
     if _auto:
@@ -570,7 +576,9 @@ def run_safetensors_tool_loop(
     def _tool_succeeded(tool_name: str) -> bool:
         key_prefix = f"{tool_name}:"
         return any(
-            record.executed and not record.is_error and record.key.startswith(key_prefix)
+            record.executed
+            and not record.is_error
+            and record.key.startswith(key_prefix)
             for record in tool_controller.history
         )
 
@@ -599,10 +607,14 @@ def run_safetensors_tool_loop(
                 final_attempt_done = True
                 active_tools = []
 
-        tool_protocol_active = not final_attempt_done and (unrestricted_tools or bool(active_tools))
+        tool_protocol_active = not final_attempt_done and (
+            unrestricted_tools or bool(active_tools)
+        )
         tool_xml_signals = TOOL_XML_SIGNALS if tool_protocol_active else ()
         # Gate the markerless bare-JSON form on enabled names so an ordinary JSON answer isn't misread as a call.
-        _enabled_tool_names = None if unrestricted_tools else set(_active_tool_names(active_tools))
+        _enabled_tool_names = (
+            None if unrestricted_tools else set(_active_tool_names(active_tools))
+        )
 
         detect_state = _state_buffering
         content_buffer = ""
@@ -717,7 +729,10 @@ def run_safetensors_tool_loop(
                 # Earliest genuine boundary: bare [ARGS] in prose is skipped; a real NAME[ARGS] is
                 # pulled back to NAME so the name is not flushed.
                 signal_pos = _earliest_tool_signal(
-                    candidate, tool_xml_signals, _detect_tools, unrestricted = unrestricted_tools
+                    candidate,
+                    tool_xml_signals,
+                    _detect_tools,
+                    unrestricted = unrestricted_tools,
                 )
                 if signal_pos >= 0:
                     before_tool = candidate[:signal_pos]
@@ -818,7 +833,9 @@ def run_safetensors_tool_loop(
                 not is_match
                 and not is_prefix
                 and tool_protocol_active
-                and _is_rehearsal_prefix(stripped, _detect_tools, unrestricted = unrestricted_tools)
+                and _is_rehearsal_prefix(
+                    stripped, _detect_tools, unrestricted = unrestricted_tools
+                )
             ):
                 is_prefix = True
                 is_rehearsal_prefix = True
@@ -920,7 +937,9 @@ def run_safetensors_tool_loop(
                         "text": content_accum,
                     }
                     _live_args_streamed_upto = len(content_accum)
-            elif is_prefix and (is_rehearsal_prefix or len(stripped) < _MAX_BUFFER_CHARS):
+            elif is_prefix and (
+                is_rehearsal_prefix or len(stripped) < _MAX_BUFFER_CHARS
+            ):
                 # A rehearsal prefix is self-bounded; the buffer cap must not cut long MCP names short.
                 continue
             else:
@@ -976,7 +995,9 @@ def run_safetensors_tool_loop(
                 if content_buffer:
                     cumulative_display += content_buffer
                     cleaned = strip_tool_markup(
-                        cumulative_display, final = True, enabled_tool_names = _enabled_tool_names
+                        cumulative_display,
+                        final = True,
+                        enabled_tool_names = _enabled_tool_names,
                     )
                     if len(cleaned) > len(last_emitted):
                         last_emitted = cleaned
@@ -1020,7 +1041,10 @@ def run_safetensors_tool_loop(
                         len(intent_text),
                     )
                     conversation.append({"role": "assistant", "content": intent_text})
-                    tool_hint = " or ".join(_active_tool_names(active_tools)) or "an available tool"
+                    tool_hint = (
+                        " or ".join(_active_tool_names(active_tools))
+                        or "an available tool"
+                    )
                     conversation.append(
                         {
                             "role": "user",
@@ -1035,7 +1059,9 @@ def run_safetensors_tool_loop(
                 # Final answer. If a literal tool marker in prose was buffered but
                 # never parsed as a call, restore the raw text so the prose surfaces
                 # in full; route-level cleanup still applies the Auto-Heal policy.
-                if content_accum and any(sig in content_accum for sig in tool_xml_signals):
+                if content_accum and any(
+                    sig in content_accum for sig in tool_xml_signals
+                ):
                     yield {"type": "content", "text": content_accum}
                 else:
                     # Turn ended as a plain answer (no [ARGS] followed): the held rehearsal tail is real
@@ -1087,7 +1113,9 @@ def run_safetensors_tool_loop(
                     # Drained bare-JSON call that didn't parse: with Auto-Heal on, drop the fragment
                     # (plain JSON answers are left untouched); off keeps it visible per the strict contract.
                     if tool_protocol_active and auto_heal_tool_calls:
-                        _drain_text = strip_leading_bare_json_call(_drain_text, _enabled_tool_names)
+                        _drain_text = strip_leading_bare_json_call(
+                            _drain_text, _enabled_tool_names
+                        )
                     if _drain_text:
                         yield {"type": "content", "text": _drain_text}
                 if provisional_render_html_started and not provisional_resolved:
@@ -1112,7 +1140,9 @@ def run_safetensors_tool_loop(
             next_call_id += len(tool_calls)
             # Strip a leading bare-JSON call from the kept content so it isn't replayed as text or
             # next-turn history (``_strip_tool_markup_final`` only knows XML). No-op for plain JSON answers.
-            content_text = strip_leading_bare_json_call(content_text, _enabled_tool_names)
+            content_text = strip_leading_bare_json_call(
+                content_text, _enabled_tool_names
+            )
 
         if final_attempt_done:
             # Final-answer turn re-called a tool -- stop the loop.
@@ -1187,14 +1217,18 @@ def run_safetensors_tool_loop(
                 conversation.append(assistant_msg)
                 assistant_appended = True
             else:
-                assistant_msg.setdefault("tool_calls", []).append(decision.as_assistant_tool_call())
+                assistant_msg.setdefault("tool_calls", []).append(
+                    decision.as_assistant_tool_call()
+                )
 
             # Bypass wins over the confirm gate at the loop level too, so a
             # direct internal caller passing both flags never prompts. In
             # "auto" mode only calls detected as potentially unsafe pause.
             # "off" never prompts (sandbox stays on).
             needs_confirm = (
-                bool(confirm_tool_calls) and not bypass_permissions and permission_mode != "off"
+                bool(confirm_tool_calls)
+                and not bypass_permissions
+                and permission_mode != "off"
             )
             if needs_confirm and permission_mode == "auto":
                 from core.inference.tools import is_potentially_unsafe_tool_call
@@ -1202,7 +1236,9 @@ def run_safetensors_tool_loop(
                     decision.tool_name, decision.arguments
                 )
             approval_id = new_approval_id() if needs_confirm else ""
-            decision_slot = begin_tool_decision(session_id, approval_id) if needs_confirm else None
+            decision_slot = (
+                begin_tool_decision(session_id, approval_id) if needs_confirm else None
+            )
             start_event = decision.tool_start_event()
             start_event["approval_id"] = approval_id
             start_event["awaiting_confirmation"] = needs_confirm
@@ -1268,7 +1304,9 @@ def run_safetensors_tool_loop(
                     )
                     if _accepts_output_callback(execute_tool):
                         kwargs["output_callback"] = _output_callback
-                    return execute_tool(_decision.tool_name, _decision.arguments, **kwargs)
+                    return execute_tool(
+                        _decision.tool_name, _decision.arguments, **kwargs
+                    )
 
                 try:
                     result = yield from stream_tool_execution(

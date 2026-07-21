@@ -145,7 +145,11 @@ class _StubDrafter:
     ):
         bpe = _kv_bytes_per_elem(cache_type)
         # n_parallel scales like a sliding-window drafter's per-slot KV.
-        return 0 if n_ctx <= 0 else int(n_ctx * self._kv_per_token * bpe / 2.0 * n_parallel)
+        return (
+            0
+            if n_ctx <= 0
+            else int(n_ctx * self._kv_per_token * bpe / 2.0 * n_parallel)
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -183,10 +187,18 @@ class TestEmbeddedDraftKv:
         # f16, not more (ggml-org/llama.cpp#24102). The embedded reserve floors a
         # quantized draft type at f16 (never under-reserved); f32 still costs more.
         b = _make_backend()
-        f16 = b._mtp_draft_kv_bytes(65536, draft_cache_type_k = "f16", draft_cache_type_v = "f16")
-        q8 = b._mtp_draft_kv_bytes(65536, draft_cache_type_k = "q8_0", draft_cache_type_v = "q8_0")
-        q4 = b._mtp_draft_kv_bytes(65536, draft_cache_type_k = "q4_0", draft_cache_type_v = "q4_0")
-        f32 = b._mtp_draft_kv_bytes(65536, draft_cache_type_k = "f32", draft_cache_type_v = "f32")
+        f16 = b._mtp_draft_kv_bytes(
+            65536, draft_cache_type_k = "f16", draft_cache_type_v = "f16"
+        )
+        q8 = b._mtp_draft_kv_bytes(
+            65536, draft_cache_type_k = "q8_0", draft_cache_type_v = "q8_0"
+        )
+        q4 = b._mtp_draft_kv_bytes(
+            65536, draft_cache_type_k = "q4_0", draft_cache_type_v = "q4_0"
+        )
+        f32 = b._mtp_draft_kv_bytes(
+            65536, draft_cache_type_k = "f32", draft_cache_type_v = "f32"
+        )
         assert q8 == f16 and q4 == f16  # quantized draft KV priced as f16, not less
         assert f32 == pytest.approx(f16 * 2.0)  # f32 genuinely larger, not floored
 
@@ -197,8 +209,12 @@ class TestEmbeddedDraftKv:
         both_q4 = b._mtp_draft_kv_bytes(
             131072, draft_cache_type_k = "q4_0", draft_cache_type_v = "q4_0"
         )
-        k_only = b._mtp_draft_kv_bytes(131072, draft_cache_type_k = "q4_0")  # V defaults f16
-        both_f16 = b._mtp_draft_kv_bytes(131072, draft_cache_type_k = "f16", draft_cache_type_v = "f16")
+        k_only = b._mtp_draft_kv_bytes(
+            131072, draft_cache_type_k = "q4_0"
+        )  # V defaults f16
+        both_f16 = b._mtp_draft_kv_bytes(
+            131072, draft_cache_type_k = "f16", draft_cache_type_v = "f16"
+        )
         assert both_q4 == k_only == both_f16  # floored at f16, never under-reserved
 
     def test_none_when_dims_missing(self):
@@ -320,7 +336,9 @@ class TestFitContextWithMtp:
     def _fit_backend(self, kv_per_token = 325_000):
         b = _make_backend()
         b._can_estimate_kv = lambda: True
-        b._estimate_kv_cache_bytes = lambda n, _t = None, **_k: (0 if n <= 0 else n * kv_per_token)
+        b._estimate_kv_cache_bytes = lambda n, _t = None, **_k: (
+            0 if n <= 0 else n * kv_per_token
+        )
         return b
 
     def test_overhead_fn_lowers_context(self):
@@ -406,10 +424,21 @@ class TestExtraArgsMtpDetection:
 
     def test_requests_mtp_env(self):
         # The child honors LLAMA_ARG_SPEC_TYPE; env-requested MTP must reserve too.
-        assert _extra_args_requests_mtp([], env = {"LLAMA_ARG_SPEC_TYPE": "draft-mtp"}) is True
-        assert _extra_args_requests_mtp([], env = {"LLAMA_ARG_SPEC_TYPE": "ngram-mod,mtp"}) is True
-        assert _extra_args_requests_mtp([], env = {"LLAMA_ARG_SPEC_TYPE": "draft-simple"}) is False
-        assert _extra_args_requests_mtp([], env = {"LLAMA_ARG_SPEC_TYPE": "none"}) is False
+        assert (
+            _extra_args_requests_mtp([], env = {"LLAMA_ARG_SPEC_TYPE": "draft-mtp"})
+            is True
+        )
+        assert (
+            _extra_args_requests_mtp([], env = {"LLAMA_ARG_SPEC_TYPE": "ngram-mod,mtp"})
+            is True
+        )
+        assert (
+            _extra_args_requests_mtp([], env = {"LLAMA_ARG_SPEC_TYPE": "draft-simple"})
+            is False
+        )
+        assert (
+            _extra_args_requests_mtp([], env = {"LLAMA_ARG_SPEC_TYPE": "none"}) is False
+        )
 
     def test_requests_mtp_effective_spec_type(self):
         # llama.cpp uses the LAST CLI --spec-type and ignores the env when any CLI
@@ -425,7 +454,9 @@ class TestExtraArgsMtpDetection:
             is False
         )
         # A non-MTP CLI flag overrides a stale MTP env.
-        assert _extra_args_requests_mtp(["--spec-type", "ngram-mod"], env = env_mtp) is False
+        assert (
+            _extra_args_requests_mtp(["--spec-type", "ngram-mod"], env = env_mtp) is False
+        )
         assert _extra_args_requests_mtp(["--spec-type", "none"], env = env_mtp) is False
         # A later MTP CLI value still engages.
         assert (
@@ -443,7 +474,8 @@ class TestExtraArgsMtpDetection:
         )
         assert (
             _extra_args_requests_separate_draft(
-                ["--spec-type", "ngram-mod"], env = {"LLAMA_ARG_SPEC_TYPE": "draft-simple"}
+                ["--spec-type", "ngram-mod"],
+                env = {"LLAMA_ARG_SPEC_TYPE": "draft-simple"},
             )
             is False
         )
@@ -465,11 +497,15 @@ class TestExtraArgsMtpDetection:
 
     def test_requests_separate_draft_env(self):
         assert (
-            _extra_args_requests_separate_draft([], env = {"LLAMA_ARG_SPEC_TYPE": "draft-simple"})
+            _extra_args_requests_separate_draft(
+                [], env = {"LLAMA_ARG_SPEC_TYPE": "draft-simple"}
+            )
             is True
         )
         assert (
-            _extra_args_requests_separate_draft([], env = {"LLAMA_ARG_SPEC_TYPE": "draft-mtp"})
+            _extra_args_requests_separate_draft(
+                [], env = {"LLAMA_ARG_SPEC_TYPE": "draft-mtp"}
+            )
             is False
         )
 
@@ -525,7 +561,10 @@ class TestExtraArgsMtpDetection:
         )
         # A later --spec-type still wins over an earlier --spec-default.
         assert (
-            _extra_args_requests_mtp(["--spec-default", "--spec-type", "draft-mtp"], env = {}) is True
+            _extra_args_requests_mtp(
+                ["--spec-default", "--spec-type", "draft-mtp"], env = {}
+            )
+            is True
         )
 
     def test_load_model_drafter_budget_precedence(self):
@@ -533,9 +572,18 @@ class TestExtraArgsMtpDetection:
         # then Unsloth's emitted mtp_draft_path (overrides LLAMA_ARG_SPEC_DRAFT_MODEL),
         # then the env drafter -- not the env before Unsloth's (reviewer.py R3).
         compact = "".join(inspect.getsource(LlamaCppBackend.load_model).split())
-        assert "_cli_draft_for_budget=_extra_args_mtp_draft_path(extra_args,env={})" in compact
-        assert "_env_draft_for_budget=_extra_args_mtp_draft_path([],env=os.environ)" in compact
-        assert "_cli_draft_for_budgetor_studio_draft_for_budgetor_env_draft_for_budget" in compact
+        assert (
+            "_cli_draft_for_budget=_extra_args_mtp_draft_path(extra_args,env={})"
+            in compact
+        )
+        assert (
+            "_env_draft_for_budget=_extra_args_mtp_draft_path([],env=os.environ)"
+            in compact
+        )
+        assert (
+            "_cli_draft_for_budgetor_studio_draft_for_budgetor_env_draft_for_budget"
+            in compact
+        )
 
     def test_load_model_drops_cpu_offloaded_drafter_from_budget(self):
         # A SEPARATE drafter offloaded to CPU (--spec-draft-ngl 0 /
@@ -546,11 +594,15 @@ class TestExtraArgsMtpDetection:
         compact = "".join(inspect.getsource(LlamaCppBackend.load_model).split())
         # env-aware: also honors the inherited LLAMA_ARG_N_GPU_LAYERS_DRAFT.
         assert (
-            "_draft_on_cpu=_extra_args_draft_offloaded_to_cpu(extra_args,env=os.environ)" in compact
+            "_draft_on_cpu=_extra_args_draft_offloaded_to_cpu(extra_args,env=os.environ)"
+            in compact
         )
         assert "if_draft_on_cpu:_mtp_draft_for_budget=None" in compact
         # flat reserve suppressed only for a CPU drafter with no embedded head
-        assert "_draft_cpu_no_embedded=_draft_on_cpuandnotself._nextn_predict_layers" in compact
+        assert (
+            "_draft_cpu_no_embedded=_draft_on_cpuandnotself._nextn_predict_layers"
+            in compact
+        )
         assert "not_draft_cpu_no_embedded" in compact
 
     def test_load_model_keeps_flat_reserve_for_unsized_draft_kv(self):
@@ -598,11 +650,15 @@ class TestExtraArgsMtpDetection:
         # The child honors LLAMA_ARG_N_GPU_LAYERS_DRAFT; an env-only CPU offload
         # must drop the drafter from the budget too (review run3 #3). CLI wins.
         assert (
-            _extra_args_draft_offloaded_to_cpu([], env = {"LLAMA_ARG_N_GPU_LAYERS_DRAFT": "0"})
+            _extra_args_draft_offloaded_to_cpu(
+                [], env = {"LLAMA_ARG_N_GPU_LAYERS_DRAFT": "0"}
+            )
             is True
         )
         assert (
-            _extra_args_draft_offloaded_to_cpu([], env = {"LLAMA_ARG_N_GPU_LAYERS_DRAFT": "-1"})
+            _extra_args_draft_offloaded_to_cpu(
+                [], env = {"LLAMA_ARG_N_GPU_LAYERS_DRAFT": "-1"}
+            )
             is False
         )
         # CLI --spec-draft-ngl wins over the env (last-wins is CLI-only).
@@ -665,10 +721,15 @@ class TestExtraArgsMtpDetection:
     def test_mtp_draft_path_env_fallback(self):
         # The child honors LLAMA_ARG_SPEC_DRAFT_MODEL / _HF_REPO; CLI wins over env.
         assert (
-            _extra_args_mtp_draft_path([], env = {"LLAMA_ARG_SPEC_DRAFT_MODEL": "/m/e.gguf"})
+            _extra_args_mtp_draft_path(
+                [], env = {"LLAMA_ARG_SPEC_DRAFT_MODEL": "/m/e.gguf"}
+            )
             == "/m/e.gguf"
         )
-        assert _extra_args_mtp_draft_path([], env = {"LLAMA_ARG_SPEC_DRAFT_HF_REPO": "x/y"}) == "x/y"
+        assert (
+            _extra_args_mtp_draft_path([], env = {"LLAMA_ARG_SPEC_DRAFT_HF_REPO": "x/y"})
+            == "x/y"
+        )
         assert (
             _extra_args_mtp_draft_path(
                 ["-md", "/m/cli.gguf"], env = {"LLAMA_ARG_SPEC_DRAFT_HF_REPO": "x/y"}
@@ -683,7 +744,10 @@ class TestExtraArgsMtpDetection:
             (["--spec-draft-type-k", "q4_0"], ("q4_0", None)),
             (["-ctkd", "q8_0"], ("q8_0", None)),
             (["--cache-type-v-draft", "q4_0"], (None, "q4_0")),  # K stays f16, V only
-            (["--cache-type-k-draft", "q4_0", "--cache-type-v-draft", "q8_0"], ("q4_0", "q8_0")),
+            (
+                ["--cache-type-k-draft", "q4_0", "--cache-type-v-draft", "q8_0"],
+                ("q4_0", "q8_0"),
+            ),
             (["--cache-type-k-draft=q8_0"], ("q8_0", None)),
             (["--cache-type-k", "q8_0"], (None, None)),  # main type, not draft
             (["-c", "4096"], (None, None)),
@@ -727,7 +791,8 @@ class TestExtraArgsMtpDetection:
         # The child honors LLAMA_ARG_UBATCH; it must reach the compute-buffer reserve.
         assert _extra_args_n_ubatch([], env = {"LLAMA_ARG_UBATCH": "4096"}) == 4096
         assert (
-            _extra_args_n_ubatch(["-ub", "1024"], env = {"LLAMA_ARG_UBATCH": "4096"}) == 1024
+            _extra_args_n_ubatch(["-ub", "1024"], env = {"LLAMA_ARG_UBATCH": "4096"})
+            == 1024
         )  # CLI wins
         assert _extra_args_n_ubatch([], env = {"LLAMA_ARG_UBATCH": "notint"}) is None
 
@@ -738,8 +803,14 @@ class TestExtraArgsMtpDetection:
         assert _env_main_cache_type_for_budget(env = {}) is None
         # f32 exceeds the f16 default -> adopt it (lower-cased so the launch
         # re-emits it via _valid_cache_types).
-        assert _env_main_cache_type_for_budget(env = {"LLAMA_ARG_CACHE_TYPE_K": "f32"}) == "f32"
-        assert _env_main_cache_type_for_budget(env = {"LLAMA_ARG_CACHE_TYPE_V": "F32"}) == "f32"
+        assert (
+            _env_main_cache_type_for_budget(env = {"LLAMA_ARG_CACHE_TYPE_K": "f32"})
+            == "f32"
+        )
+        assert (
+            _env_main_cache_type_for_budget(env = {"LLAMA_ARG_CACHE_TYPE_V": "F32"})
+            == "f32"
+        )
         # Heavier of K/V (single knob; over-reserves the lighter axis).
         assert (
             _env_main_cache_type_for_budget(
@@ -748,11 +819,23 @@ class TestExtraArgsMtpDetection:
             == "f32"
         )
         # Quantized env types are <= f16 -> already over-reserved by the default.
-        assert _env_main_cache_type_for_budget(env = {"LLAMA_ARG_CACHE_TYPE_K": "q4_0"}) is None
-        assert _env_main_cache_type_for_budget(env = {"LLAMA_ARG_CACHE_TYPE_V": "q8_0"}) is None
-        assert _env_main_cache_type_for_budget(env = {"LLAMA_ARG_CACHE_TYPE_K": "f16"}) is None
+        assert (
+            _env_main_cache_type_for_budget(env = {"LLAMA_ARG_CACHE_TYPE_K": "q4_0"})
+            is None
+        )
+        assert (
+            _env_main_cache_type_for_budget(env = {"LLAMA_ARG_CACHE_TYPE_V": "q8_0"})
+            is None
+        )
+        assert (
+            _env_main_cache_type_for_budget(env = {"LLAMA_ARG_CACHE_TYPE_K": "f16"})
+            is None
+        )
         # Unknown env type self-neutralizes (treated as f16 by _kv_bytes_per_elem).
-        assert _env_main_cache_type_for_budget(env = {"LLAMA_ARG_CACHE_TYPE_K": "wat"}) is None
+        assert (
+            _env_main_cache_type_for_budget(env = {"LLAMA_ARG_CACHE_TYPE_K": "wat"})
+            is None
+        )
 
     def test_load_model_adopts_env_main_cache_type(self):
         # Source-level: load_model budgets the heavier of asymmetric --cache-type
@@ -782,14 +865,23 @@ class TestExtraArgsMtpDetection:
         # No extras, toggle off, tensor env -> flips on.
         assert _effective_tensor_parallel(None, False, env = tensor_env) is True
         # Extras override (any --split-mode) beats the env, even if non-tensor.
-        assert _effective_tensor_parallel(["--split-mode", "layer"], False, env = tensor_env) is False
+        assert (
+            _effective_tensor_parallel(["--split-mode", "layer"], False, env = tensor_env)
+            is False
+        )
         # Explicit extras/toggle tensor stays on regardless of env.
-        assert _effective_tensor_parallel(["--split-mode", "tensor"], False, env = {}) is True
+        assert (
+            _effective_tensor_parallel(["--split-mode", "tensor"], False, env = {})
+            is True
+        )
         assert _effective_tensor_parallel(None, True, env = {}) is True
         # One-directional: a non-tensor env never downgrades, and no env -> no flip.
         assert _effective_tensor_parallel(None, False, env = {}) is False
         assert (
-            _effective_tensor_parallel(None, False, env = {"LLAMA_ARG_SPLIT_MODE": "layer"}) is False
+            _effective_tensor_parallel(
+                None, False, env = {"LLAMA_ARG_SPLIT_MODE": "layer"}
+            )
+            is False
         )
 
     def test_tensor_parallel_matches_loaded_env_downgrade(self):
@@ -798,9 +890,13 @@ class TestExtraArgsMtpDetection:
         # an identical request -- not reload forever (#6312).
         tensor_env = {"LLAMA_ARG_SPLIT_MODE": "tensor"}
         # Launched tensor: env-only request matches.
-        assert _tensor_parallel_matches_loaded(None, False, True, env = tensor_env) is True
+        assert (
+            _tensor_parallel_matches_loaded(None, False, True, env = tensor_env) is True
+        )
         # Downgraded to layer: same env-only request still matches (no reload loop).
-        assert _tensor_parallel_matches_loaded(None, False, False, env = tensor_env) is True
+        assert (
+            _tensor_parallel_matches_loaded(None, False, False, env = tensor_env) is True
+        )
         # No env: a plain request matches a layer server and mismatches a tensor one.
         assert _tensor_parallel_matches_loaded(None, False, False, env = {}) is True
         assert _tensor_parallel_matches_loaded(None, False, True, env = {}) is False
@@ -809,7 +905,9 @@ class TestExtraArgsMtpDetection:
         assert _tensor_parallel_matches_loaded(None, True, True, env = {}) is True
         # An explicit non-tensor --split-mode beats the env (no flip).
         assert (
-            _tensor_parallel_matches_loaded(["--split-mode", "layer"], False, True, env = tensor_env)
+            _tensor_parallel_matches_loaded(
+                ["--split-mode", "layer"], False, True, env = tensor_env
+            )
             is False
         )
 
@@ -848,7 +946,9 @@ class TestExtraArgsMtpDetection:
         # per axis at launch), not the last-wins single type that under-reserves.
         H = _extra_args_main_cache_type_for_budget
         assert H(["--cache-type-k", "f32", "--cache-type-v", "f16"]) == "f32"
-        assert H(["--cache-type-v", "f16", "--cache-type-k", "f32"]) == "f32"  # order-free
+        assert (
+            H(["--cache-type-v", "f16", "--cache-type-k", "f32"]) == "f32"
+        )  # order-free
         assert H(["--cache-type-k=f32", "--cache-type-v=f16"]) == "f32"  # = form
         assert H(["-ctk", "q4_0", "-ctv", "q8_0"]) == "q8_0"  # heavier quant
         assert H(["--cache-type-k", "q8_0"]) == "q8_0"  # single axis honored as-is
@@ -898,7 +998,10 @@ class TestExtraArgsMtpDetection:
         # none is overridden, and the env selects tensor (an existing tensor plan
         # is never downgraded). Whitespace-stripped to survive formatter wrapping.
         load = "".join(inspect.getsource(LlamaCppBackend.load_model).split())
-        assert "tensor_parallel=_effective_tensor_parallel(extra_args,tensor_parallel)" in load
+        assert (
+            "tensor_parallel=_effective_tensor_parallel(extra_args,tensor_parallel)"
+            in load
+        )
         helper = "".join(inspect.getsource(_effective_tensor_parallel).split())
         assert "notresolved" in helper
         assert "parse_split_mode_override(extra_args)isNone" in helper
@@ -990,7 +1093,9 @@ def test_qwen36_class_regression_picks_lower_ctx_with_mtp():
     strictly lower one once the MTP draft reserve is accounted for."""
     b = _make_backend()
     b._can_estimate_kv = lambda: True
-    b._estimate_kv_cache_bytes = lambda n, _t = None, **_k: (0 if n <= 0 else int(n * 66_000))
+    b._estimate_kv_cache_bytes = lambda n, _t = None, **_k: (
+        0 if n <= 0 else int(n * 66_000)
+    )
     avail_mib = 24_000
     model = int(17.9 * GIB)  # UD-Q4_K_XL weights
     no_mtp = b._fit_context_to_vram(262144, avail_mib, model)
@@ -1011,8 +1116,13 @@ def test_mtp_draft_budget_prefers_user_extras_drafter():
     # Whitespace-stripped so the check survives any formatter line-wrapping.
     compact = "".join(inspect.getsource(LlamaCppBackend.load_model).split())
     # CLI extras sized first (env={} so the env doesn't pre-empt Unsloth's drafter).
-    assert "_cli_draft_for_budget=_extra_args_mtp_draft_path(extra_args,env={})" in compact
+    assert (
+        "_cli_draft_for_budget=_extra_args_mtp_draft_path(extra_args,env={})" in compact
+    )
     # Order: CLI extras, then Unsloth's mtp_draft_path, then the env drafter.
-    assert "_cli_draft_for_budgetor_studio_draft_for_budgetor_env_draft_for_budget" in compact
+    assert (
+        "_cli_draft_for_budgetor_studio_draft_for_budgetor_env_draft_for_budget"
+        in compact
+    )
     # The env must not be consulted before Unsloth's resolved drafter.
     assert "_extra_args_mtp_draft_path(extra_args)ormtp_draft_path" not in compact

@@ -249,7 +249,9 @@ def fast_rms_layernorm(
 ):
     W: torch.Tensor = layernorm.weight
     eps: float = (
-        layernorm.variance_epsilon if hasattr(layernorm, "variance_epsilon") else layernorm.eps
+        layernorm.variance_epsilon
+        if hasattr(layernorm, "variance_epsilon")
+        else layernorm.eps
     )
     out = Fast_RMS_Layernorm.apply(X, W, eps, gemma)
     return out
@@ -280,7 +282,9 @@ def patch_rms_layernorm():
     transformers.models.llama.modeling_llama.LlamaRMSNorm = Unsloth_LlamaRMSNorm
     try:
         import transformers.models.mllama.modeling_mllama
-        transformers.models.mllama.modeling_mllama.MllamaTextRMSNorm = Unsloth_MllamaTextRMSNorm
+        transformers.models.mllama.modeling_mllama.MllamaTextRMSNorm = (
+            Unsloth_MllamaTextRMSNorm
+        )
     except (ImportError, AttributeError, NameError):
         pass
     return

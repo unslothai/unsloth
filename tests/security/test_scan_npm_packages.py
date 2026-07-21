@@ -87,10 +87,16 @@ def test_blocked_npm_versions_complete():
     table = snp.BLOCKED_NPM_VERSIONS
     tanstack_keys = [k for k in table if k.startswith("@tanstack/")]
     assert len(tanstack_keys) == 42, (
-        f"expected 42 @tanstack/* entries, got {len(tanstack_keys)}: " f"{sorted(tanstack_keys)}"
+        f"expected 42 @tanstack/* entries, got {len(tanstack_keys)}: "
+        f"{sorted(tanstack_keys)}"
     )
     assert "@opensearch-project/opensearch" in table
-    assert table["@opensearch-project/opensearch"] == {"3.5.3", "3.6.2", "3.7.0", "3.8.0"}
+    assert table["@opensearch-project/opensearch"] == {
+        "3.5.3",
+        "3.6.2",
+        "3.7.0",
+        "3.8.0",
+    }
     squawk = [k for k in table if k.startswith("@squawk/")]
     assert len(squawk) >= 22, (
         f"expected at least 22 @squawk/* entries (full safedep.io enumeration), "
@@ -257,7 +263,9 @@ def test_strip_preserves_assigned_base64_payload():
 
 def test_strip_fails_open_on_unterminated_block_comment():
     src = "code(); /* never closed"
-    assert snp._strip_js_noncode(src) == src  # fail open: unchanged, still fully scanned
+    assert (
+        snp._strip_js_noncode(src) == src
+    )  # fail open: unchanged, still fully scanned
 
 
 def test_strip_only_applies_to_js_family():
@@ -330,7 +338,9 @@ def _finding(
     sev = snp.HIGH,
     evidence = "",
 ):
-    return snp.Finding(severity = sev, package = pkg, filename = fn, pattern = pattern, evidence = evidence)
+    return snp.Finding(
+        severity = sev, package = pkg, filename = fn, pattern = pattern, evidence = evidence
+    )
 
 
 def test_norm_pkg_name_strips_version_keeps_scope():
@@ -377,7 +387,9 @@ def test_baseline_suppresses_listed_but_not_new_pattern(tmp_path):
     )
     baseline = snp._load_baseline(str(bl))
 
-    listed = _finding("aws-sdk@2.0.0", "package/metadata.js", "cred-surface-host (outbound)")
+    listed = _finding(
+        "aws-sdk@2.0.0", "package/metadata.js", "cred-surface-host (outbound)"
+    )
     # A NEW kind of finding in the SAME file is a different pattern -> not suppressed.
     new_kind = _finding("aws-sdk@2.0.0", "package/metadata.js", "obfuscated-blob")
     active, suppressed = snp._partition_baseline([listed, new_kind], baseline)
@@ -390,7 +402,9 @@ def test_write_then_load_baseline_roundtrip(tmp_path):
     findings = [
         _finding("evil@1.0.0", "package/a.js", "obfuscated-blob", snp.CRITICAL),
         _finding("evil@1.0.0", "package/a.js", "obfuscated-blob", snp.CRITICAL),  # dup
-        _finding("noise@1.0.0", "package/b.js", "js-env-token", snp.MEDIUM),  # below thresh
+        _finding(
+            "noise@1.0.0", "package/b.js", "js-env-token", snp.MEDIUM
+        ),  # below thresh
     ]
     n = snp._write_baseline(str(bl), findings, snp._SEVERITY_RANK[snp.HIGH])
     assert n == 1  # dedup + MEDIUM excluded
@@ -405,14 +419,20 @@ def test_baseline_reopens_on_changed_evidence(tmp_path):
     # includes an evidence hash, so a new payload cannot ride a reviewed entry.
     bl = tmp_path / "bl.json"
     listed = _finding(
-        "left-pad@1.0.0", "package/dist/index.js", "obfuscated-blob", evidence = "fetch('http://ok')"
+        "left-pad@1.0.0",
+        "package/dist/index.js",
+        "obfuscated-blob",
+        evidence = "fetch('http://ok')",
     )
     snp._write_baseline(str(bl), [listed], snp._SEVERITY_RANK[snp.HIGH])
     baseline = snp._load_baseline(str(bl))
 
     # The reviewed finding stays suppressed across a version bump (same evidence).
     same = _finding(
-        "left-pad@9.9.9", "package/dist/index.js", "obfuscated-blob", evidence = "fetch('http://ok')"
+        "left-pad@9.9.9",
+        "package/dist/index.js",
+        "obfuscated-blob",
+        evidence = "fetch('http://ok')",
     )
     # A changed payload under the same package/file/pattern stays active.
     changed = _finding(
@@ -469,10 +489,14 @@ def test_js_fetch_eval_payload_tail_reopens_key():
     old = "(0,eval)(atob('" + head + "X" * 80 + "'))\n"
     new = "(0,eval)(atob('" + head + "Y" * 80 + "'))\n"
     of = [
-        f for f in snp.scan_text_blob(pkg, "package/index.js", old) if f.pattern == "js-fetch-eval"
+        f
+        for f in snp.scan_text_blob(pkg, "package/index.js", old)
+        if f.pattern == "js-fetch-eval"
     ][0]
     nf = [
-        f for f in snp.scan_text_blob(pkg, "package/index.js", new) if f.pattern == "js-fetch-eval"
+        f
+        for f in snp.scan_text_blob(pkg, "package/index.js", new)
+        if f.pattern == "js-fetch-eval"
     ][0]
     assert "sha256:" in of.evidence
     assert snp._finding_key(of) != snp._finding_key(nf)
@@ -516,9 +540,7 @@ def test_outbound_host_config_multiline_object_reopens():
         integrity = "sha512-test",
         lockfile_key = "node_modules/evil",
     )
-    obj = (
-        "const opts = {\n  hostname: '169.254.169.254',\n  path: '%s',\n};\nhttps.request(opts);\n"
-    )
+    obj = "const opts = {\n  hostname: '169.254.169.254',\n  path: '%s',\n};\nhttps.request(opts);\n"
     old = obj % "/latest/meta-data/iam/security-credentials/old"
     new = obj % "/latest/meta-data/iam/security-credentials/evil"
     of = [
@@ -578,7 +600,9 @@ def test_outbound_host_config_far_opener_binds():
         + "\n  hostname: '169.254.169.254',\n  path: '/x',\n};\nrun(opts);\n"
     )
     changed = obj.replace("opt0: 0,", "opt0: 999,")
-    assert snp._finding_key(_host_finding(obj)) != snp._finding_key(_host_finding(changed))
+    assert snp._finding_key(_host_finding(obj)) != snp._finding_key(
+        _host_finding(changed)
+    )
 
 
 def test_outbound_host_config_forward_cap_measured_from_match():
@@ -602,7 +626,9 @@ def test_outbound_host_multiple_contexts_all_bind():
     # reopen the key, not ride the unchanged URL evidence.
     base = "const u = 'http://169.254.169.254/latest/meta-data/';\nfetch(u);\n"
     extra = "https.request({\n  hostname: '169.254.169.254',\n  path: '/evil',\n});\n"
-    assert snp._finding_key(_host_finding(base)) != snp._finding_key(_host_finding(base + extra))
+    assert snp._finding_key(_host_finding(base)) != snp._finding_key(
+        _host_finding(base + extra)
+    )
 
 
 def test_outbound_host_config_opener_after_unmatched_closer_binds():
@@ -610,7 +636,10 @@ def test_outbound_host_config_opener_after_unmatched_closer_binds():
     # backward window) must not drive depth negative and mask the host-config
     # opener that follows; the object should still bind so a changed path reopens.
     pre = "callback(arg);\n});\n"  # stray closer; the matching opener is out of view
-    obj = pre + "const opts = {\n  hostname: '169.254.169.254',\n  path: '%s',\n};\nrun(opts);\n"
+    obj = (
+        pre
+        + "const opts = {\n  hostname: '169.254.169.254',\n  path: '%s',\n};\nrun(opts);\n"
+    )
     assert snp._finding_key(_host_finding(obj % "/old")) != snp._finding_key(
         _host_finding(obj % "/evil")
     )
@@ -673,7 +702,9 @@ def _lifecycle_finding(body, frag):
     )
     text = json.dumps({"scripts": {"postinstall": body}})
     return [
-        f for f in snp.scan_package_json(pkg, "package/package.json", text) if frag in f.pattern
+        f
+        for f in snp.scan_package_json(pkg, "package/package.json", text)
+        if frag in f.pattern
     ][0]
 
 
@@ -740,7 +771,9 @@ def test_evidence_caps_match_count_with_digest_remainder():
     assert "more) sha256:" in ev
     assert ev.count(" | ") <= snp._MAX_EVIDENCE_MATCHES  # bounded, not `over` spans
     less = "".join(f"x{i} = process.env.NPM_TOKEN\n" for i in range(over - 1))
-    assert snp._evidence_hash(ev) != snp._evidence_hash(snp._evidence(less, snp._JS_ENV_TOKEN))
+    assert snp._evidence_hash(ev) != snp._evidence_hash(
+        snp._evidence(less, snp._JS_ENV_TOKEN)
+    )
 
 
 def test_evidence_streams_overflow_count_is_exact():
@@ -809,10 +842,10 @@ def test_outbound_host_config_reindent_is_stable():
     # A formatter-only reindent of the bound continuation lines must NOT change
     # the key (whitespace is normalized before the logical-line digest).
     tight = "const opts = {\n  hostname: '169.254.169.254',\n  path: '/x',\n};\nrun(opts);\n"
-    loose = (
-        "const opts = {\n      hostname: '169.254.169.254',\n      path:    '/x',\n};\nrun(opts);\n"
+    loose = "const opts = {\n      hostname: '169.254.169.254',\n      path:    '/x',\n};\nrun(opts);\n"
+    assert snp._finding_key(_host_finding(tight)) == snp._finding_key(
+        _host_finding(loose)
     )
-    assert snp._finding_key(_host_finding(tight)) == snp._finding_key(_host_finding(loose))
 
 
 def test_evidence_preserves_intra_string_whitespace():
@@ -862,7 +895,11 @@ def test_load_baseline_skips_non_dict_entries(tmp_path):
         json.dumps(
             {
                 "version": snp._BASELINE_SCHEMA_VERSION,
-                "entries": ["oops", 123, {"package": "p", "file": "package/a.js", "pattern": "x"}],
+                "entries": [
+                    "oops",
+                    123,
+                    {"package": "p", "file": "package/a.js", "pattern": "x"},
+                ],
             }
         ),
         encoding = "utf-8",
@@ -885,7 +922,11 @@ def test_legacy_schema_baseline_is_ignored(tmp_path):
             {
                 "version": 1,
                 "entries": [
-                    {"package": "aws-sdk", "file": "index.js", "pattern": "obfuscated-blob"}
+                    {
+                        "package": "aws-sdk",
+                        "file": "index.js",
+                        "pattern": "obfuscated-blob",
+                    }
                 ],
             }
         ),

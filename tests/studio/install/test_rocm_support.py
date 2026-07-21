@@ -35,7 +35,9 @@ _normalize_forwarded_gfx = prebuilt_mod._normalize_forwarded_gfx
 
 # install_python_stack.py
 _STACK_PATH = PACKAGE_ROOT / "studio" / "install_python_stack.py"
-_STACK_SPEC = importlib.util.spec_from_file_location("studio_install_python_stack", _STACK_PATH)
+_STACK_SPEC = importlib.util.spec_from_file_location(
+    "studio_install_python_stack", _STACK_PATH
+)
 assert _STACK_SPEC is not None and _STACK_SPEC.loader is not None
 stack_mod = importlib.util.module_from_spec(_STACK_SPEC)
 sys.modules[_STACK_SPEC.name] = stack_mod
@@ -288,7 +290,9 @@ class TestResolveUpstreamAssetChoice:
     @patch.object(prebuilt_mod, "github_release_assets")
     def test_rocm_linux_no_prebuilt_falls_back(self, mock_assets):
         """AMD ROCm host should fall back to source build when no ROCm prebuilt exists."""
-        assets_without_rocm = {k: v for k, v in UPSTREAM_ASSETS.items() if "rocm" not in k}
+        assets_without_rocm = {
+            k: v for k, v in UPSTREAM_ASSETS.items() if "rocm" not in k
+        }
         mock_assets.return_value = assets_without_rocm
         host = rocm_host()
         with pytest.raises(PrebuiltFallback, match = "ROCm detected"):
@@ -595,7 +599,9 @@ class TestEnsureRocmTorch:
     @patch.object(stack_mod, "_has_usable_nvidia_gpu", return_value = False)
     @patch.object(stack_mod, "_has_rocm_gpu", return_value = True)
     @patch.object(stack_mod, "_detect_rocm_version", return_value = (7, 1))
-    def test_torch_already_has_hip_skips(self, mock_ver, mock_gpu, mock_nvidia, mock_pip):
+    def test_torch_already_has_hip_skips(
+        self, mock_ver, mock_gpu, mock_nvidia, mock_pip
+    ):
         """If torch already has HIP, should skip ROCm reinstall."""
         mock_probe = MagicMock()
         mock_probe.returncode = 0
@@ -610,7 +616,9 @@ class TestEnsureRocmTorch:
     @patch.object(stack_mod, "_has_usable_nvidia_gpu", return_value = False)
     @patch.object(stack_mod, "_has_rocm_gpu", return_value = True)
     @patch.object(stack_mod, "_detect_rocm_version", return_value = (7, 1))
-    def test_cpu_torch_probe_line_not_read_as_hip(self, mock_ver, mock_gpu, mock_nvidia, mock_pip):
+    def test_cpu_torch_probe_line_not_read_as_hip(
+        self, mock_ver, mock_gpu, mock_nvidia, mock_pip
+    ):
         """A CPU build's probe line ("|2.10.0+cpu") must not read as HIP: the version
         after the "|" separator is data, not a HIP marker, so has_hip_torch stays False
         and the reinstall fires."""
@@ -651,7 +659,9 @@ class TestEnsureRocmTorch:
     @patch.object(stack_mod, "_has_usable_nvidia_gpu", return_value = False)
     @patch.object(stack_mod, "_has_rocm_gpu", return_value = True)
     @patch.object(stack_mod, "_detect_rocm_version", return_value = (6, 3))
-    def test_rocm_63_selects_correct_tag(self, mock_ver, mock_gpu, mock_nvidia, mock_pip):
+    def test_rocm_63_selects_correct_tag(
+        self, mock_ver, mock_gpu, mock_nvidia, mock_pip
+    ):
         """ROCm 6.3 should select rocm6.3 tag."""
         mock_probe = MagicMock()
         mock_probe.returncode = 0
@@ -750,7 +760,9 @@ class TestEnsureRocmTorch:
         # tag but violates the spec -> mismatch (a plain version compare would accept it).
         assert f(f"{base}/rocm7.2", "2.12.0+rocm7.2") is True
         assert f(f"{base}/rocm7.2", "2.13.0+rocm7.2") is True
-        assert f(f"{base}/rocm7.2", "2.11.5+rocm7.2") is False  # patch on 2.11 is in-spec
+        assert (
+            f(f"{base}/rocm7.2", "2.11.5+rocm7.2") is False
+        )  # patch on 2.11 is in-spec
         # An UNKNOWN newer rocm (not on the 2.11 allowlist) is not floored to 2.11, so a
         # matching rocm version at any release line is NOT a mismatch on this branch.
         assert f(f"{base}/rocm8.0", "2.12.0+rocm8.0") is False
@@ -869,7 +881,8 @@ class TestEnsureRocmTorch:
                 ), "torch must not be reinstalled when the pin already matches"
         # A torch reinstall would pass torch>=... as a positional; assert none did.
         assert not any(
-            any(str(a).startswith("torch") for a in _c.args) for _c in mock_pip.call_args_list
+            any(str(a).startswith("torch") for a in _c.args)
+            for _c in mock_pip.call_args_list
         )
 
     @patch.object(stack_mod, "IS_WINDOWS", False)
@@ -895,7 +908,8 @@ class TestEnsureRocmTorch:
                     _ensure_rocm_torch()
         # has_hip_torch True + no mismatch -> torch must NOT be reinstalled.
         assert not any(
-            any(str(a).startswith("torch") for a in _c.args) for _c in mock_pip.call_args_list
+            any(str(a).startswith("torch") for a in _c.args)
+            for _c in mock_pip.call_args_list
         )
 
     @patch.object(stack_mod, "IS_WINDOWS", False)
@@ -949,14 +963,18 @@ class TestEnsureRocmTorch:
         # --index-url family. Match EXACTLY.
         assert leaf_f("rocm7.2-private") is False
         assert leaf_f("rocm7-current") is False
-        assert leaf_f("rocm7.2.1") is False  # two-part local suffix -> custom, not rocm7.2
+        assert (
+            leaf_f("rocm7.2.1") is False
+        )  # two-part local suffix -> custom, not rocm7.2
 
         radeon = "https://repo.radeon.com/rocm/manylinux/rocm-rel-7.2.1"
         pip_rocm = "https://download.pytorch.org/whl/rocm7.2"
         amd_gfx = "https://repo.amd.com/rocm/whl/gfx120X-all"
 
         def _classify(url, fn):
-            with patch.dict(stack_mod.os.environ, {"UNSLOTH_TORCH_INDEX_URL": url}, clear = False):
+            with patch.dict(
+                stack_mod.os.environ, {"UNSLOTH_TORCH_INDEX_URL": url}, clear = False
+            ):
                 stack_mod.os.environ.pop("UNSLOTH_TORCH_INDEX_FAMILY", None)
                 return fn()
 
@@ -1007,7 +1025,9 @@ class TestEnsureRocmTorch:
     ):
         """Probe subprocess timeout should not crash; should proceed to reinstall."""
         with patch("os.path.isdir", return_value = True):
-            with patch("subprocess.run", side_effect = subprocess.TimeoutExpired("python", 30)):
+            with patch(
+                "subprocess.run", side_effect = subprocess.TimeoutExpired("python", 30)
+            ):
                 _ensure_rocm_torch()
         # Probe timeout: treat torch as unusable and reinstall torch + bitsandbytes.
         assert mock_pip.call_count == 1
@@ -1030,7 +1050,9 @@ class TestEnsureRocmTorch:
     @patch.object(stack_mod, "pip_install")
     @patch.object(stack_mod, "_has_rocm_gpu", return_value = True)
     @patch.object(stack_mod, "_has_usable_nvidia_gpu", return_value = True)
-    def test_torch_backend_cuda_env_skips_entirely(self, mock_nvidia, mock_gpu, mock_pip):
+    def test_torch_backend_cuda_env_skips_entirely(
+        self, mock_nvidia, mock_gpu, mock_pip
+    ):
         """UNSLOTH_TORCH_BACKEND=cuda must short-circuit before any GPU probe."""
         with patch.dict(os.environ, {"UNSLOTH_TORCH_BACKEND": "cuda"}):
             with patch.object(stack_mod, "_TORCH_BACKEND", "cuda"):
@@ -1040,7 +1062,9 @@ class TestEnsureRocmTorch:
     @patch.object(stack_mod, "pip_install")
     @patch.object(stack_mod, "_has_rocm_gpu", return_value = True)
     @patch.object(stack_mod, "_has_usable_nvidia_gpu", return_value = True)
-    def test_torch_backend_cpu_env_skips_entirely(self, mock_nvidia, mock_gpu, mock_pip):
+    def test_torch_backend_cpu_env_skips_entirely(
+        self, mock_nvidia, mock_gpu, mock_pip
+    ):
         """UNSLOTH_TORCH_BACKEND=cpu must short-circuit before any GPU probe."""
         with patch.dict(os.environ, {"UNSLOTH_TORCH_BACKEND": "cpu"}):
             with patch.object(stack_mod, "_TORCH_BACKEND", "cpu"):
@@ -1084,7 +1108,9 @@ class TestHasRocmGpuKfdVendorGuard:
     def test_sysfs_fallback_guarded_by_non_win32(self):
         """KFD sysfs fallback must be Linux-only (guarded by sys.platform != 'win32')."""
         src = self._src()
-        assert "win32" in src, "_has_rocm_gpu sysfs fallback must be guarded by sys.platform check"
+        assert (
+            "win32" in src
+        ), "_has_rocm_gpu sysfs fallback must be guarded by sys.platform check"
 
     def test_cpu_node_excluded(self):
         """gpu_id == '0' must be excluded (CPU topology nodes)."""
@@ -1100,8 +1126,12 @@ class TestHasRocmGpuKfdVendorGuard:
         func_start = source.find("_has_amd_rocm_gpu()")
         func_end = source.find("\n}", func_start)
         func_body = source[func_start:func_end]
-        assert "vendor_id" in func_body, "_has_amd_rocm_gpu sysfs fallback must check vendor_id"
-        assert "4098" in func_body, "_has_amd_rocm_gpu must require AMD vendor_id 4098 (0x1002)"
+        assert (
+            "vendor_id" in func_body
+        ), "_has_amd_rocm_gpu sysfs fallback must check vendor_id"
+        assert (
+            "4098" in func_body
+        ), "_has_amd_rocm_gpu must require AMD vendor_id 4098 (0x1002)"
 
     def test_has_rocm_gpu_returns_false_when_nvidia_present(self):
         """_has_rocm_gpu returns False when _has_usable_nvidia_gpu is True (NVIDIA always wins)."""
@@ -1219,51 +1249,67 @@ class TestHardwareRocmFlag:
 
     def test_hardware_py_has_is_rocm(self):
         """hardware.py should define IS_ROCM."""
-        hw_path = PACKAGE_ROOT / "studio" / "backend" / "utils" / "hardware" / "hardware.py"
+        hw_path = (
+            PACKAGE_ROOT / "studio" / "backend" / "utils" / "hardware" / "hardware.py"
+        )
         source = hw_path.read_text(encoding = "utf-8")
         assert "IS_ROCM: bool" in source and "False" in source
 
     def test_hardware_py_sets_is_rocm_on_hip(self):
         """detect_hardware() should set IS_ROCM when torch.version.hip is set."""
-        hw_path = PACKAGE_ROOT / "studio" / "backend" / "utils" / "hardware" / "hardware.py"
+        hw_path = (
+            PACKAGE_ROOT / "studio" / "backend" / "utils" / "hardware" / "hardware.py"
+        )
         source = hw_path.read_text(encoding = "utf-8")
         assert 'torch.version, "hip"' in source or "torch.version.hip" in source
 
     def test_hardware_py_still_returns_cuda_for_rocm(self):
         """DeviceType should remain CUDA even on ROCm -- no DeviceType.ROCM."""
-        hw_path = PACKAGE_ROOT / "studio" / "backend" / "utils" / "hardware" / "hardware.py"
+        hw_path = (
+            PACKAGE_ROOT / "studio" / "backend" / "utils" / "hardware" / "hardware.py"
+        )
         source = hw_path.read_text(encoding = "utf-8")
         enum_section = source.split("class DeviceType")[1].split("\n\n")[0]
         assert "ROCM" not in enum_section
 
     def test_hardware_py_has_rocm_in_package_versions(self):
         """get_package_versions() should include 'rocm' key."""
-        hw_path = PACKAGE_ROOT / "studio" / "backend" / "utils" / "hardware" / "hardware.py"
+        hw_path = (
+            PACKAGE_ROOT / "studio" / "backend" / "utils" / "hardware" / "hardware.py"
+        )
         source = hw_path.read_text(encoding = "utf-8")
         assert '"rocm"' in source
 
     def test_hardware_py_device_type_cuda_references_intact(self):
         """All existing DeviceType.CUDA references should still be present."""
-        hw_path = PACKAGE_ROOT / "studio" / "backend" / "utils" / "hardware" / "hardware.py"
+        hw_path = (
+            PACKAGE_ROOT / "studio" / "backend" / "utils" / "hardware" / "hardware.py"
+        )
         source = hw_path.read_text(encoding = "utf-8")
         assert "DeviceType.CUDA" in source
         assert "DEVICE = DeviceType.CUDA" in source
 
     def test_is_rocm_exported_from_init(self):
         """IS_ROCM should be exported from hardware __init__.py."""
-        init_path = PACKAGE_ROOT / "studio" / "backend" / "utils" / "hardware" / "__init__.py"
+        init_path = (
+            PACKAGE_ROOT / "studio" / "backend" / "utils" / "hardware" / "__init__.py"
+        )
         source = init_path.read_text(encoding = "utf-8")
         assert "IS_ROCM" in source
 
     def test_is_rocm_in_all_list(self):
         """IS_ROCM should be in __all__ list in __init__.py."""
-        init_path = PACKAGE_ROOT / "studio" / "backend" / "utils" / "hardware" / "__init__.py"
+        init_path = (
+            PACKAGE_ROOT / "studio" / "backend" / "utils" / "hardware" / "__init__.py"
+        )
         source = init_path.read_text(encoding = "utf-8")
         assert '"IS_ROCM"' in source
 
     def test_get_package_versions_returns_rocm_key(self):
         """get_package_versions() source should return both 'cuda' and 'rocm' keys."""
-        hw_path = PACKAGE_ROOT / "studio" / "backend" / "utils" / "hardware" / "hardware.py"
+        hw_path = (
+            PACKAGE_ROOT / "studio" / "backend" / "utils" / "hardware" / "hardware.py"
+        )
         source = hw_path.read_text(encoding = "utf-8")
         func_start = source.find("def get_package_versions")
         func_body = source[func_start : source.find("\ndef ", func_start + 1)]
@@ -1272,16 +1318,22 @@ class TestHardwareRocmFlag:
 
     def test_distributed_stubs_cover_is_torchelastic_launched(self):
         """Must stub is_torchelastic_launched (Windows ROCm torch.distributed lacks it)."""
-        hw_path = PACKAGE_ROOT / "studio" / "backend" / "utils" / "hardware" / "hardware.py"
+        hw_path = (
+            PACKAGE_ROOT / "studio" / "backend" / "utils" / "hardware" / "hardware.py"
+        )
         source = hw_path.read_text(encoding = "utf-8")
         assert "is_torchelastic_launched" in source
 
     def test_distributed_stubs_cover_core_helpers(self):
         """_determine_attention_impl_for_gpu_estimate must stub the four core distributed helpers."""
-        hw_path = PACKAGE_ROOT / "studio" / "backend" / "utils" / "hardware" / "hardware.py"
+        hw_path = (
+            PACKAGE_ROOT / "studio" / "backend" / "utils" / "hardware" / "hardware.py"
+        )
         source = hw_path.read_text(encoding = "utf-8")
         for attr in ("is_initialized", "is_available", "get_rank", "get_world_size"):
-            assert attr in source, f"distributed stub for '{attr}' missing from hardware.py"
+            assert (
+                attr in source
+            ), f"distributed stub for '{attr}' missing from hardware.py"
 
 
 # TEST: tokenizer_utils.py -- error message
@@ -1322,7 +1374,9 @@ class TestInstallShStructure:
             # Strip quoted literals so `<<<` inside them is ignored.
             unquoted = re.sub(r"'[^']*'", "", line)
             unquoted = re.sub(r'"[^"]*"', "", unquoted)
-            assert "<<<" not in unquoted, f"install.sh:{i} uses non-POSIX <<< here-string"
+            assert (
+                "<<<" not in unquoted
+            ), f"install.sh:{i} uses non-POSIX <<< here-string"
 
     def test_rocm_detection_present(self):
         """install.sh should have ROCm detection in get_torch_index_url."""
@@ -1343,8 +1397,12 @@ class TestInstallShStructure:
         if no_nvidia_branch < 0:
             no_nvidia_branch = body.find('if [ -z "$_smi" ]')
         rocm_call = body.find("_has_amd_rocm_gpu")
-        assert nvidia_call >= 0, "get_torch_index_url should call _has_usable_nvidia_gpu"
-        assert no_nvidia_branch >= 0, "get_torch_index_url should gate ROCm on no-nvidia branch"
+        assert (
+            nvidia_call >= 0
+        ), "get_torch_index_url should call _has_usable_nvidia_gpu"
+        assert (
+            no_nvidia_branch >= 0
+        ), "get_torch_index_url should gate ROCm on no-nvidia branch"
         assert (
             rocm_call > no_nvidia_branch
         ), "ROCm detection should sit inside the 'no NVIDIA' branch"
@@ -1403,7 +1461,9 @@ class TestInstallShStructure:
                 continue
             # Strip POSIX char classes [[:foo:]] before checking for [[ ]].
             cleaned = re.sub(r"\[\[:[a-z]+:\]\]", "", line)
-            assert "[[" not in cleaned, f"get_torch_index_url line {i} uses non-POSIX [["
+            assert (
+                "[[" not in cleaned
+            ), f"get_torch_index_url line {i} uses non-POSIX [["
 
     def test_no_arithmetic_expansion_in_rocm_block(self):
         """ROCm detection block should not use (( )) (bash-only)."""
@@ -1534,11 +1594,15 @@ class TestLiveRegression:
 # TEST: worker.py -- ROCm Mamba/SSM source build path
 
 _WORKER_PATH = PACKAGE_ROOT / "studio" / "backend" / "core" / "training" / "worker.py"
-_EXPORT_WORKER_PATH = PACKAGE_ROOT / "studio" / "backend" / "core" / "export" / "worker.py"
+_EXPORT_WORKER_PATH = (
+    PACKAGE_ROOT / "studio" / "backend" / "core" / "export" / "worker.py"
+)
 # Shared torchao Windows-ROCm stub used by both workers.
 _TORCHAO_STUB_PATH = PACKAGE_ROOT / "studio" / "backend" / "core" / "_torchao_stub.py"
 # RAG embedder -- runs in the main backend process and also needs the stub.
-_EMBEDDINGS_PATH = PACKAGE_ROOT / "studio" / "backend" / "core" / "rag" / "embeddings.py"
+_EMBEDDINGS_PATH = (
+    PACKAGE_ROOT / "studio" / "backend" / "core" / "rag" / "embeddings.py"
+)
 # Wheel-probe script literal lives in wheel_utils after the resolver refactor.
 _WHEEL_UTILS_PATH = PACKAGE_ROOT / "studio" / "backend" / "utils" / "wheel_utils.py"
 
@@ -1558,7 +1622,9 @@ class TestWorkerRocmMambaSsm:
 
     def test_direct_wheel_url_returns_none_without_cuda_major(self, monkeypatch):
         """_direct_wheel_url should return None when cuda_major is empty (ROCm)."""
-        _worker_spec = importlib.util.spec_from_file_location("test_worker", _WORKER_PATH)
+        _worker_spec = importlib.util.spec_from_file_location(
+            "test_worker", _WORKER_PATH
+        )
         assert _worker_spec is not None and _worker_spec.loader is not None
         worker_mod = importlib.util.module_from_spec(_worker_spec)
 
@@ -1784,13 +1850,17 @@ class TestHardwareAmdBranching:
 
     def test_hardware_imports_amd_module(self):
         """hardware.py should import from amd module when IS_ROCM."""
-        hw_path = PACKAGE_ROOT / "studio" / "backend" / "utils" / "hardware" / "hardware.py"
+        hw_path = (
+            PACKAGE_ROOT / "studio" / "backend" / "utils" / "hardware" / "hardware.py"
+        )
         source = hw_path.read_text(encoding = "utf-8")
         assert "from . import amd" in source
 
     def test_hardware_branches_on_is_rocm_for_utilization(self):
         """get_gpu_utilization dispatches visible metrics through amd.py on ROCm."""
-        hw_path = PACKAGE_ROOT / "studio" / "backend" / "utils" / "hardware" / "hardware.py"
+        hw_path = (
+            PACKAGE_ROOT / "studio" / "backend" / "utils" / "hardware" / "hardware.py"
+        )
         source = hw_path.read_text(encoding = "utf-8")
         func_start = source.find("def get_gpu_utilization")
         func_body = source[func_start : source.find("\ndef ", func_start + 1)]
@@ -1798,14 +1868,18 @@ class TestHardwareAmdBranching:
         assert '"get_visible_gpu_utilization"' in func_body
         assert "_reconcile_rocm_unified_memory" in func_body
         smi = source[
-            source.find("def _smi_query") : source.find("\ndef ", source.find("def _smi_query") + 1)
+            source.find("def _smi_query") : source.find(
+                "\ndef ", source.find("def _smi_query") + 1
+            )
         ]
         assert "IS_ROCM" in smi
         assert "from . import amd" in smi
 
     def test_hardware_branches_on_is_rocm_for_visible(self):
         """get_visible_gpu_utilization dispatches to amd.py via _smi_query when IS_ROCM."""
-        hw_path = PACKAGE_ROOT / "studio" / "backend" / "utils" / "hardware" / "hardware.py"
+        hw_path = (
+            PACKAGE_ROOT / "studio" / "backend" / "utils" / "hardware" / "hardware.py"
+        )
         source = hw_path.read_text(encoding = "utf-8")
         func_start = source.find("def get_visible_gpu_utilization")
         func_body = source[func_start : source.find("\ndef ", func_start + 1)]
@@ -1814,14 +1888,18 @@ class TestHardwareAmdBranching:
 
         assert _re.search(r'_smi_query\(\s*"get_visible_gpu_utilization"', func_body)
         smi = source[
-            source.find("def _smi_query") : source.find("\ndef ", source.find("def _smi_query") + 1)
+            source.find("def _smi_query") : source.find(
+                "\ndef ", source.find("def _smi_query") + 1
+            )
         ]
         assert "IS_ROCM" in smi
         assert "from . import amd" in smi
 
     def test_hardware_branches_on_is_rocm_for_physical_count(self):
         """get_physical_gpu_count should try amd.py when IS_ROCM."""
-        hw_path = PACKAGE_ROOT / "studio" / "backend" / "utils" / "hardware" / "hardware.py"
+        hw_path = (
+            PACKAGE_ROOT / "studio" / "backend" / "utils" / "hardware" / "hardware.py"
+        )
         source = hw_path.read_text(encoding = "utf-8")
         func_start = source.find("def get_physical_gpu_count")
         func_body = source[func_start : source.find("\ndef ", func_start + 1)]
@@ -1837,7 +1915,9 @@ class TestApplyGpuIdsRocmFallback:
 
     def test_apply_gpu_ids_falls_back_to_torch_version_hip(self):
         """apply_gpu_ids probes torch.version.hip when IS_ROCM is False and no ROCm env vars set."""
-        hw_path = PACKAGE_ROOT / "studio" / "backend" / "utils" / "hardware" / "hardware.py"
+        hw_path = (
+            PACKAGE_ROOT / "studio" / "backend" / "utils" / "hardware" / "hardware.py"
+        )
         source = hw_path.read_text(encoding = "utf-8")
         func_start = source.find("def apply_gpu_ids")
         func_body = source[func_start : source.find("\ndef ", func_start + 1)]
@@ -1845,7 +1925,9 @@ class TestApplyGpuIdsRocmFallback:
 
     def test_apply_gpu_ids_sets_hip_but_not_rocr_visible_devices(self):
         """apply_gpu_ids sets HIP_VISIBLE_DEVICES but leaves ROCR_VISIBLE_DEVICES inherited (HSA indexing; issue #6118)."""
-        hw_path = PACKAGE_ROOT / "studio" / "backend" / "utils" / "hardware" / "hardware.py"
+        hw_path = (
+            PACKAGE_ROOT / "studio" / "backend" / "utils" / "hardware" / "hardware.py"
+        )
         source = hw_path.read_text(encoding = "utf-8")
         func_start = source.find("def apply_gpu_ids")
         func_body = source[func_start : source.find("\ndef ", func_start + 1)]
@@ -1854,7 +1936,9 @@ class TestApplyGpuIdsRocmFallback:
 
     def test_apply_gpu_ids_rocm_fallback_is_guarded_by_try_except(self):
         """torch import in apply_gpu_ids must be wrapped in try/except so a missing torch never crashes."""
-        hw_path = PACKAGE_ROOT / "studio" / "backend" / "utils" / "hardware" / "hardware.py"
+        hw_path = (
+            PACKAGE_ROOT / "studio" / "backend" / "utils" / "hardware" / "hardware.py"
+        )
         source = hw_path.read_text(encoding = "utf-8")
         func_start = source.find("def apply_gpu_ids")
         func_body = source[func_start : source.find("\ndef ", func_start + 1)]
@@ -1999,7 +2083,9 @@ class TestWindowsRocmIndexUrl:
         assert "repo.amd.com" in url
 
     def test_mirror_env_var_overrides_base(self, monkeypatch):
-        monkeypatch.setenv("UNSLOTH_ROCM_WINDOWS_MIRROR", "https://my-mirror.example.com/rocm/whl")
+        monkeypatch.setenv(
+            "UNSLOTH_ROCM_WINDOWS_MIRROR", "https://my-mirror.example.com/rocm/whl"
+        )
         # Reload module-level constant by calling helper directly
         url = stack_mod._windows_rocm_index_url("gfx1200")
         # The env var is read at module load time for _ROCM_WINDOWS_INDEX_BASE,
@@ -2118,7 +2204,9 @@ class TestGfxArchNameFallback:
         """hipinfo absent everywhere + amd-smi absent -> WMI name fallback."""
         ps_result = MagicMock()
         ps_result.returncode = 0
-        ps_result.stdout = b"AMD Radeon(TM) 8060S Graphics\r\nMicrosoft Basic Display Adapter\r\n"
+        ps_result.stdout = (
+            b"AMD Radeon(TM) 8060S Graphics\r\nMicrosoft Basic Display Adapter\r\n"
+        )
 
         def _run(cmd, **kwargs):
             if cmd and "powershell.exe" in str(cmd[0]).lower():
@@ -2247,7 +2335,9 @@ class TestInstallBnbWindowsRocm:
             os.environ.pop("BNB_ROCM_VERSION", None)
             os.environ.pop(stack_mod._BNB_ROCM_VERSION_SOURCE_ENV, None)
             with patch.object(stack_mod, "pip_install_try", return_value = True):
-                with patch.object(stack_mod, "_detect_bnb_rocm_dll_ver", return_value = "72"):
+                with patch.object(
+                    stack_mod, "_detect_bnb_rocm_dll_ver", return_value = "72"
+                ):
                     stack_mod._install_bnb_windows_rocm()
             assert os.environ.get("BNB_ROCM_VERSION") == "72"
 
@@ -2257,7 +2347,9 @@ class TestInstallBnbWindowsRocm:
             os.environ.pop("BNB_ROCM_VERSION", None)
             os.environ.pop(stack_mod._BNB_ROCM_VERSION_SOURCE_ENV, None)
             with patch.object(stack_mod, "pip_install_try", return_value = True):
-                with patch.object(stack_mod, "_detect_bnb_rocm_dll_ver", return_value = "713"):
+                with patch.object(
+                    stack_mod, "_detect_bnb_rocm_dll_ver", return_value = "713"
+                ):
                     stack_mod._install_bnb_windows_rocm()
             assert os.environ.get("BNB_ROCM_VERSION") == "713"
 
@@ -2267,7 +2359,9 @@ class TestInstallBnbWindowsRocm:
             os.environ.pop("BNB_ROCM_VERSION", None)
             os.environ.pop(stack_mod._BNB_ROCM_VERSION_SOURCE_ENV, None)
             with patch.object(stack_mod, "pip_install_try", return_value = True):
-                with patch.object(stack_mod, "_detect_bnb_rocm_dll_ver", return_value = None):
+                with patch.object(
+                    stack_mod, "_detect_bnb_rocm_dll_ver", return_value = None
+                ):
                     stack_mod._install_bnb_windows_rocm()
             assert os.environ.get("BNB_ROCM_VERSION") == "72"
 
@@ -2306,7 +2400,9 @@ class TestInstallBnbWindowsRocm:
             },
         ):
             with patch.object(stack_mod, "pip_install_try", return_value = True):
-                with patch.object(stack_mod, "_detect_bnb_rocm_dll_ver", return_value = "713"):
+                with patch.object(
+                    stack_mod, "_detect_bnb_rocm_dll_ver", return_value = "713"
+                ):
                     with patch.object(
                         stack_mod, "_persist_bnb_rocm_version", return_value = True
                     ) as mock_persist:
@@ -2327,7 +2423,9 @@ class TestInstallBnbWindowsRocm:
             os.environ.pop("BNB_ROCM_VERSION", None)
             os.environ.pop(stack_mod._BNB_ROCM_VERSION_SOURCE_ENV, None)
             with patch.object(stack_mod, "pip_install_try", return_value = True):
-                with patch.object(stack_mod, "_detect_bnb_rocm_dll_ver", return_value = "72"):
+                with patch.object(
+                    stack_mod, "_detect_bnb_rocm_dll_ver", return_value = "72"
+                ):
                     with patch.object(
                         stack_mod.sysconfig, "get_path", return_value = str(site_packages)
                     ):
@@ -2375,7 +2473,9 @@ class TestInstallBnbWindowsRocm:
             encoding = "utf-8",
         )
 
-        with patch.object(stack_mod.sysconfig, "get_path", return_value = str(site_packages)):
+        with patch.object(
+            stack_mod.sysconfig, "get_path", return_value = str(site_packages)
+        ):
             assert stack_mod._persist_bnb_rocm_version("713") is True
 
         source = sitecustomize.read_text(encoding = "utf-8")
@@ -2391,7 +2491,9 @@ class TestInstallBnbWindowsRocm:
         sitecustomize = site_packages / "sitecustomize.py"
         sitecustomize.write_bytes(b"\xff\xfe\x00")
 
-        with patch.object(stack_mod.sysconfig, "get_path", return_value = str(site_packages)):
+        with patch.object(
+            stack_mod.sysconfig, "get_path", return_value = str(site_packages)
+        ):
             assert stack_mod._persist_bnb_rocm_version("72") is False
 
     def test_persist_bnb_rocm_version_repairs_truncated_block(self, tmp_path):
@@ -2407,7 +2509,9 @@ class TestInstallBnbWindowsRocm:
             encoding = "utf-8",
         )
 
-        with patch.object(stack_mod.sysconfig, "get_path", return_value = str(site_packages)):
+        with patch.object(
+            stack_mod.sysconfig, "get_path", return_value = str(site_packages)
+        ):
             assert stack_mod._persist_bnb_rocm_version("713") is True
 
         source = sitecustomize.read_text(encoding = "utf-8")
@@ -2430,7 +2534,9 @@ class TestInstallBnbWindowsRocm:
         )
         sitecustomize.write_text(block + "USER_MID = 1\n" + block, encoding = "utf-8")
 
-        with patch.object(stack_mod.sysconfig, "get_path", return_value = str(site_packages)):
+        with patch.object(
+            stack_mod.sysconfig, "get_path", return_value = str(site_packages)
+        ):
             assert stack_mod._persist_bnb_rocm_version("713") is True
 
         source = sitecustomize.read_text(encoding = "utf-8")
@@ -2445,7 +2551,9 @@ class TestInstallBnbWindowsRocm:
         site_packages = tmp_path / "site-packages"
         site_packages.mkdir()
 
-        with patch.object(stack_mod.sysconfig, "get_path", return_value = str(site_packages)):
+        with patch.object(
+            stack_mod.sysconfig, "get_path", return_value = str(site_packages)
+        ):
             assert stack_mod._persist_bnb_rocm_version("72") is True
 
         leftovers = [p.name for p in site_packages.iterdir() if "unsloth-tmp" in p.name]
@@ -2457,16 +2565,24 @@ class TestRuntimeBnbRocmSourceGuards:
     """Runtime entrypoints redetect managed defaults but keep caller overrides."""
 
     _MAIN_PATH = PACKAGE_ROOT / "studio" / "backend" / "main.py"
-    _TRAINING_WORKER_PATH = PACKAGE_ROOT / "studio" / "backend" / "core" / "training" / "worker.py"
+    _TRAINING_WORKER_PATH = (
+        PACKAGE_ROOT / "studio" / "backend" / "core" / "training" / "worker.py"
+    )
 
     def test_main_gate_redetects_persisted_default(self):
         source = self._MAIN_PATH.read_text(encoding = "utf-8")
-        assert 'os.environ.get("UNSLOTH_BNB_ROCM_VERSION_SOURCE") == "sitecustomize"' in source
+        assert (
+            'os.environ.get("UNSLOTH_BNB_ROCM_VERSION_SOURCE") == "sitecustomize"'
+            in source
+        )
         assert 'os.environ["UNSLOTH_BNB_ROCM_VERSION_SOURCE"] = "detected"' in source
 
     def test_worker_gate_redetects_persisted_default(self):
         source = self._TRAINING_WORKER_PATH.read_text(encoding = "utf-8")
-        assert 'os.environ.get("UNSLOTH_BNB_ROCM_VERSION_SOURCE") == "sitecustomize"' in source
+        assert (
+            'os.environ.get("UNSLOTH_BNB_ROCM_VERSION_SOURCE") == "sitecustomize"'
+            in source
+        )
         assert 'os.environ["UNSLOTH_BNB_ROCM_VERSION_SOURCE"] = "detected"' in source
 
     def test_fallback_prefers_seeded_value_over_hardcoded_72(self):
@@ -2645,7 +2761,14 @@ class TestWindowsRocmTorchaoGuard:
     @patch.object(stack_mod, "run")
     @patch.object(stack_mod, "pip_install")
     def test_install_python_stack_skips_torchao_when_windows_rocm_torch_is_installed(
-        self, mock_pip, mock_run, mock_has_nvidia, mock_cuda, mock_rocm, mock_anyio, tmp_path
+        self,
+        mock_pip,
+        mock_run,
+        mock_has_nvidia,
+        mock_cuda,
+        mock_rocm,
+        mock_anyio,
+        tmp_path,
     ):
         unstructured_plugin = tmp_path / "unstructured"
         github_plugin = tmp_path / "github"
@@ -2664,14 +2787,20 @@ class TestWindowsRocmTorchaoGuard:
             patch.object(stack_mod, "NO_TORCH", False),
             patch.object(stack_mod, "_rocm_windows_torch_installed", False),
             patch.object(stack_mod, "_bootstrap_uv", return_value = False),
-            patch.object(stack_mod, "_installed_torch_is_windows_rocm", return_value = True),
-            patch.object(stack_mod, "LOCAL_DD_UNSTRUCTURED_PLUGIN", unstructured_plugin),
+            patch.object(
+                stack_mod, "_installed_torch_is_windows_rocm", return_value = True
+            ),
+            patch.object(
+                stack_mod, "LOCAL_DD_UNSTRUCTURED_PLUGIN", unstructured_plugin
+            ),
             patch.object(stack_mod, "LOCAL_DD_GITHUB_PLUGIN", github_plugin),
             patch.object(stack_mod.subprocess, "run", return_value = subprocess_result),
         ):
             assert stack_mod.install_python_stack() == 0
 
-        installed_specs = [str(arg) for call in mock_pip.call_args_list for arg in call.args]
+        installed_specs = [
+            str(arg) for call in mock_pip.call_args_list for arg in call.args
+        ]
         assert not any("torchao" in arg for arg in installed_specs)
 
 
@@ -2696,13 +2825,17 @@ class TestProgressStepCountMatchesTotal:
             patch.object(stack_mod, "NO_TORCH", False),
             patch.object(stack_mod, "_rocm_windows_torch_installed", False),
             patch.object(stack_mod, "_bootstrap_uv", return_value = False),
-            patch.object(stack_mod, "_installed_torch_is_windows_rocm", return_value = False),
+            patch.object(
+                stack_mod, "_installed_torch_is_windows_rocm", return_value = False
+            ),
             patch.object(stack_mod, "_has_usable_nvidia_gpu", return_value = True),
             patch.object(stack_mod, "_repair_bad_anyio"),
             patch.object(stack_mod, "_ensure_cuda_torch"),
             patch.object(stack_mod, "_ensure_rocm_torch"),
             patch.object(stack_mod, "_ensure_cpu_torch"),
-            patch.object(stack_mod, "LOCAL_DD_UNSTRUCTURED_PLUGIN", unstructured_plugin),
+            patch.object(
+                stack_mod, "LOCAL_DD_UNSTRUCTURED_PLUGIN", unstructured_plugin
+            ),
             patch.object(stack_mod, "LOCAL_DD_GITHUB_PLUGIN", github_plugin),
             patch.object(stack_mod.subprocess, "run", return_value = sub),
         ):
@@ -2710,11 +2843,17 @@ class TestProgressStepCountMatchesTotal:
             return stack_mod._STEP, stack_mod._TOTAL
 
     def test_windows_progress_reaches_total(self, tmp_path):
-        step, total = self._run_stack(tmp_path, is_windows = True, is_macos = False, is_mac_arm = False)
-        assert step == total, f"Windows progress {step} != total {total} (final step uncounted)"
+        step, total = self._run_stack(
+            tmp_path, is_windows = True, is_macos = False, is_mac_arm = False
+        )
+        assert (
+            step == total
+        ), f"Windows progress {step} != total {total} (final step uncounted)"
 
     def test_linux_progress_reaches_total(self, tmp_path):
-        step, total = self._run_stack(tmp_path, is_windows = False, is_macos = False, is_mac_arm = False)
+        step, total = self._run_stack(
+            tmp_path, is_windows = False, is_macos = False, is_mac_arm = False
+        )
         assert step == total, f"Linux progress {step} != total {total}"
 
 
@@ -2803,7 +2942,9 @@ class TestWorkerWindowsRocmPatches:
         # Use the entry-point section-2 marker (not the trainer helper's own "# ── 2.").
         idx_sec2 = source.find("# ── 2. Now import ML libraries")
         assert idx_bnb != -1, "BNB_ROCM_VERSION not found in worker.py"
-        assert idx_sec2 != -1, "'# ── 2. Now import ML libraries' marker not found in worker.py"
+        assert (
+            idx_sec2 != -1
+        ), "'# ── 2. Now import ML libraries' marker not found in worker.py"
         assert idx_bnb < idx_sec2, (
             "BNB_ROCM_VERSION must be set before section 2 ML imports "
             f"(found at {idx_bnb}, section 2 at {idx_sec2})"
@@ -3096,12 +3237,16 @@ class TestHipSdkEnvPathResolution:
     def test_setup_provides_path_fix_hint(self):
         """setup.ps1 must tell the user how to add the HIP bin dir to PATH."""
         source = _SETUP_PS1_PATH.read_text(encoding = "utf-8")
-        assert "PATH" in source and ("SetEnvironmentVariable" in source or "Add" in source)
+        assert "PATH" in source and (
+            "SetEnvironmentVariable" in source or "Add" in source
+        )
 
     def test_install_provides_path_fix_hint(self):
         """install.ps1 must tell the user how to add the HIP bin dir to PATH."""
         source = _INSTALL_PS1_PATH.read_text(encoding = "utf-8")
-        assert "PATH" in source and ("SetEnvironmentVariable" in source or "Add" in source)
+        assert "PATH" in source and (
+            "SetEnvironmentVariable" in source or "Add" in source
+        )
 
 
 # TEST: HIP SDK detected substep -- path + hipconfig version shown in terminal
@@ -3217,7 +3362,10 @@ class TestStrixRocm71Override:
         # $TORCH_INDEX_URL (a */gfx* match false-positives on a mirror base path). Only the
         # _grouped_mm-bug gfx families (gfx120X-all / gfx1151 / gfx1150) are pushed to 2.11;
         # a bare gfx* would also floor gfx110X-all/gfx90a/gfx908, left bare on purpose.
-        assert 'case "$_torch_index_leaf" in\n    rocm7.2|gfx120x-all|gfx1151|gfx1150)' in source, (
+        assert (
+            'case "$_torch_index_leaf" in\n    rocm7.2|gfx120x-all|gfx1151|gfx1150)'
+            in source
+        ), (
             "the torch>=2.11 constraint must match the specific gfx leaves that need "
             "it (rocm7.2|gfx120x-all|gfx1151|gfx1150), not a bare gfx* or the whole URL"
         )
@@ -3273,7 +3421,9 @@ class TestSetupShGccInstallDir:
 # TEST: main.py -- BNB_ROCM_VERSION server startup + distributed stubs
 
 _MAIN_PY_PATH = PACKAGE_ROOT / "studio" / "backend" / "main.py"
-_HARDWARE_PY_PATH = PACKAGE_ROOT / "studio" / "backend" / "utils" / "hardware" / "hardware.py"
+_HARDWARE_PY_PATH = (
+    PACKAGE_ROOT / "studio" / "backend" / "utils" / "hardware" / "hardware.py"
+)
 
 
 class TestServerStartupRocmFixes:
@@ -3506,7 +3656,9 @@ class TestApplyHostOverrides:
         assert out.rocm_gfx_target is None
 
     def test_malformed_forwarded_gfx_falls_back_to_has_rocm(self):
-        out = _apply_host_overrides(cpu_host(), override_has_rocm = True, override_rocm_gfx = "junk")
+        out = _apply_host_overrides(
+            cpu_host(), override_has_rocm = True, override_rocm_gfx = "junk"
+        )
         assert out.has_rocm is True
         assert out.rocm_gfx_target is None
 
@@ -3631,7 +3783,11 @@ class TestRocmGfxForwarding:
             pytest.skip("pwsh not available")
         source = _SETUP_PS1_PATH.read_text(encoding = "utf-8")
         line = next(
-            (ln for ln in source.splitlines() if ln.strip().startswith("$HelperReleaseRepo =")),
+            (
+                ln
+                for ln in source.splitlines()
+                if ln.strip().startswith("$HelperReleaseRepo =")
+            ),
             None,
         )
         assert line is not None, "$HelperReleaseRepo selection not found in setup.ps1"
@@ -3695,7 +3851,9 @@ def test_pick_rocm_gfx_target_same_arch_multi_gpu(monkeypatch):
 
 
 _INSTALL_SH_PATH = PACKAGE_ROOT / "install.sh"
-_LLAMA_CPP_PATH = PACKAGE_ROOT / "studio" / "backend" / "core" / "inference" / "llama_cpp.py"
+_LLAMA_CPP_PATH = (
+    PACKAGE_ROOT / "studio" / "backend" / "core" / "inference" / "llama_cpp.py"
+)
 
 
 class TestWslSystemRocmLibDirs:
@@ -3766,7 +3924,9 @@ class TestBinaryEnvWslOrdering:
         # dedupe_existing_dirs drops non-existent dirs, so use a real dir.
         sys_rocm = tmp_path / "sysrocm"
         sys_rocm.mkdir()
-        with patch.object(prebuilt_mod, "_wsl_system_rocm_lib_dirs", return_value = [str(sys_rocm)]):
+        with patch.object(
+            prebuilt_mod, "_wsl_system_rocm_lib_dirs", return_value = [str(sys_rocm)]
+        ):
             with patch.dict(os.environ, {}, clear = True):
                 env = prebuilt_mod.binary_env(binary, tmp_path, self._linux_host())
         ld = env["LD_LIBRARY_PATH"].split(os.pathsep)
@@ -3836,7 +3996,9 @@ class TestWslRerouteNvidiaGuard:
         body = source[start:end]
         nv = body.find("_has_usable_nvidia_gpu")
         wmi = body.find("_wsl_amd_gpu_name")
-        assert nv != -1, "reroute must consult _has_usable_nvidia_gpu before deciding to reroute"
+        assert (
+            nv != -1
+        ), "reroute must consult _has_usable_nvidia_gpu before deciding to reroute"
         assert wmi != -1
         # The NVIDIA guard must precede the AMD/WMI signal and return early.
         assert nv < wmi
@@ -3846,9 +4008,15 @@ class TestWslRerouteNvidiaGuard:
         source = _INSTALL_SH_PATH.read_text(encoding = "utf-8")
         call = source.find("\n_maybe_reroute_strixhalo_to_2404 || true")
         assert call != -1
-        for fn in ("_run_bounded() {", "_cvd_hides_nvidia() {", "_has_usable_nvidia_gpu() {"):
+        for fn in (
+            "_run_bounded() {",
+            "_cvd_hides_nvidia() {",
+            "_has_usable_nvidia_gpu() {",
+        ):
             idx = source.find(fn)
-            assert idx != -1 and idx < call, f"{fn} must be defined before the reroute call"
+            assert (
+                idx != -1 and idx < call
+            ), f"{fn} must be defined before the reroute call"
 
 
 class TestStrixhaloGfxOverridePipefail:

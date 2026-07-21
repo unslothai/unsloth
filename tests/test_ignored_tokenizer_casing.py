@@ -45,7 +45,9 @@ def test_ignored_tokenizer_name_matched_case_insensitively():
     with (
         patch.object(tu, "AutoTokenizer", _fake_auto_tokenizer()),
         patch.object(tu, "assert_same_tokenization", lambda a, b: False),
-        patch.object(tu, "convert_to_fast_tokenizer", lambda slow, **k: _Tok("converted")),
+        patch.object(
+            tu, "convert_to_fast_tokenizer", lambda slow, **k: _Tok("converted")
+        ),
     ):
         result = tu._load_correct_tokenizer(name, fix_tokenizer = True)
 

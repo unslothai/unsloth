@@ -39,13 +39,17 @@ def _fused_ce_not_return_dict_return(source: str) -> str:
     if guard is None:
         raise ValueError("`if not return_dict:` guard not found after fused-CE call")
     guard_start = fused.end() + guard.start()
-    out = re.search(r"output\s*=\s*\(.*?outputs\s*\[\s*1\s*:\s*\]", source[guard_start:], re.DOTALL)
+    out = re.search(
+        r"output\s*=\s*\(.*?outputs\s*\[\s*1\s*:\s*\]", source[guard_start:], re.DOTALL
+    )
     if out is None:
         raise ValueError("`output = (...) + outputs[1:]` assignment not found")
     return out.group(0)
 
 
-@pytest.mark.parametrize("rel", ["unsloth/models/llama.py", "unsloth/models/mistral.py"])
+@pytest.mark.parametrize(
+    "rel", ["unsloth/models/llama.py", "unsloth/models/mistral.py"]
+)
 def test_fused_ce_not_return_dict_uses_empty_logits(rel):
     path = _REPO / rel
     source = path.read_text(encoding = "utf-8")

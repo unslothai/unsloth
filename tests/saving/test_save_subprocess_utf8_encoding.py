@@ -64,7 +64,9 @@ def _collect_text_mode_subprocess_calls() -> list[ast.Call]:
     return [
         node
         for node in ast.walk(tree)
-        if isinstance(node, ast.Call) and _is_subprocess_call(node) and _is_text_mode(node)
+        if isinstance(node, ast.Call)
+        and _is_subprocess_call(node)
+        and _is_text_mode(node)
     ]
 
 

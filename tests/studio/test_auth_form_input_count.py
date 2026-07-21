@@ -52,7 +52,10 @@ def test_hasbootstrappassword_constant_is_derived_from_bootstrap_window_value():
     """The guard must read from window.__UNSLOTH_BOOTSTRAP__, matching the backend's
     bootstrap-injection contract in studio/backend/main.py::_inject_bootstrap."""
     src = AUTH_FORM.read_text()
-    assert "const hasBootstrapPassword = Boolean(window.__UNSLOTH_BOOTSTRAP__?.password);" in src, (
+    assert (
+        "const hasBootstrapPassword = Boolean(window.__UNSLOTH_BOOTSTRAP__?.password);"
+        in src
+    ), (
         "hasBootstrapPassword constant missing or its derivation drifted; "
         "this is the gate that hides the Current password input on first boot"
     )

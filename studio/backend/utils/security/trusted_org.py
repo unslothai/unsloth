@@ -36,9 +36,11 @@ def _token_key(hf_token: Optional[str]) -> str:
 
 
 def _env_offline() -> bool:
-    return os.environ.get("HF_HUB_OFFLINE", "").lower() in ("1", "true", "yes") or os.environ.get(
-        "TRANSFORMERS_OFFLINE", ""
-    ).lower() in ("1", "true", "yes")
+    return os.environ.get("HF_HUB_OFFLINE", "").lower() in (
+        "1",
+        "true",
+        "yes",
+    ) or os.environ.get("TRANSFORMERS_OFFLINE", "").lower() in ("1", "true", "yes")
 
 
 def is_trusted_org_repo(

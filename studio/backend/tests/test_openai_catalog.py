@@ -55,7 +55,9 @@ def test_catalog_lists_loaded_and_available(monkeypatch):
     async def _fake_catalog():
         return [
             _Info("/data/models/Qwen3-Q4.gguf", "Qwen3-Q4"),  # same as loaded -> dedup
-            _Info("/data/models/Llama-8B-Q8.gguf", "Llama-8B-Q8"),  # available, not loaded
+            _Info(
+                "/data/models/Llama-8B-Q8.gguf", "Llama-8B-Q8"
+            ),  # available, not loaded
             # HF-cache GGUF: model_format is unset for these, so a files-based check
             # (not model_format) must still list it.
             _Info("models--org--Foo", "Foo", model_id = "org/Foo"),
@@ -153,7 +155,9 @@ def test_catalog_ttl_starts_after_scan_completes(monkeypatch):
 
     first, second = asyncio.run(_run())
     assert [i.id for i in first] == ["/m/A.gguf"]
-    assert calls["n"] == 1, "TTL started before the scan -> cache born expired, rescanned"
+    assert (
+        calls["n"] == 1
+    ), "TTL started before the scan -> cache born expired, rescanned"
 
 
 def test_retrieve_loaded_model_skips_catalog_scan(monkeypatch):

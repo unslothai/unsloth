@@ -120,8 +120,16 @@ def test_scrape_parses_labelled_and_bare_metrics(monkeypatch):
 def test_counter_delta_fallback_without_gauges():
     # Older binaries expose only the counters; throughput falls back to deltas.
     snaps = [
-        {"tokens_predicted_total": 100.0, "prompt_tokens_total": 0.0, "requests_processing": 1.0},
-        {"tokens_predicted_total": 100.0, "prompt_tokens_total": 0.0, "requests_processing": 1.0},
+        {
+            "tokens_predicted_total": 100.0,
+            "prompt_tokens_total": 0.0,
+            "requests_processing": 1.0,
+        },
+        {
+            "tokens_predicted_total": 100.0,
+            "prompt_tokens_total": 0.0,
+            "requests_processing": 1.0,
+        },
     ]
     stats = _drive(snaps)
     # running=1 keeps it emitting; gen_tok_s falls back to the (here zero) delta.

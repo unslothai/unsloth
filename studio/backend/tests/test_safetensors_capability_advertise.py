@@ -111,7 +111,9 @@ def test_detect_reasoning_flags_deepseek_v4_exposes_none_high_max():
     though the template only branches on 'max'."""
     from core.inference.llama_cpp import detect_reasoning_flags
 
-    flags = detect_reasoning_flags(DEEPSEEK_V4_TEMPLATE, "unsloth/DeepSeek-V4-Flash-GGUF")
+    flags = detect_reasoning_flags(
+        DEEPSEEK_V4_TEMPLATE, "unsloth/DeepSeek-V4-Flash-GGUF"
+    )
     assert flags["supports_reasoning"] is True
     assert flags["reasoning_style"] == "enable_thinking_effort"
     assert flags["reasoning_effort_levels"] == ["high", "max"]
@@ -419,9 +421,14 @@ def test_detect_safetensors_features_gemma_native_tool_call_keeps_tools_on():
 
 def test_detect_safetensors_features_gemma_native_reasoning_is_parseable_not_prefilled():
     """Native Gemma channels are normalized to <think>, then split by the route."""
-    from routes.inference import _detect_safetensors_features, _sf_reasoning_prefill_mode
+    from routes.inference import (
+        _detect_safetensors_features,
+        _sf_reasoning_prefill_mode,
+    )
 
-    tpl_with_gemma_native = "{% if add_generation_prompt %}<|channel>thought\n<channel|>{% endif %}"
+    tpl_with_gemma_native = (
+        "{% if add_generation_prompt %}<|channel>thought\n<channel|>{% endif %}"
+    )
     backend = SimpleNamespace(
         active_model_name = "unsloth/gemma-4-E2B-it",
         models = {
@@ -453,7 +460,9 @@ def test_detect_safetensors_features_selects_native_reasoning_from_tool_template
         models = {
             "custom/named-native-reasoning": {
                 "native_chat_template": named_template,
-                "chat_template_info": {"template": "{% if tools %}<tool_call>{% endif %}"},
+                "chat_template_info": {
+                    "template": "{% if tools %}<tool_call>{% endif %}"
+                },
             }
         },
     )
@@ -631,7 +640,11 @@ def test_worker_load_reply_payload_includes_chat_template_info():
         "is_gguf": False,
     }
     _bm = getattr(backend, "models", {}) or {}
-    _entry = _bm.get(mc.identifier) or _bm.get(getattr(backend, "active_model_name", None)) or {}
+    _entry = (
+        _bm.get(mc.identifier)
+        or _bm.get(getattr(backend, "active_model_name", None))
+        or {}
+    )
     _tpl_info = _entry.get("chat_template_info")
     if isinstance(_tpl_info, dict):
         model_info["chat_template_info"] = {
@@ -804,7 +817,9 @@ class TestSafetensorsReasoningPrefillGate:
     # A minimal Qwen3-style template with the standard <think>/</think> markers.
     _QWEN_TPL = "{% if enable_thinking %}<think>{% endif %}...</think>..."
     # gemma-style bespoke reasoning channel -- no standard markers.
-    _GEMMA_TPL = "{% if enable_thinking %}<|think|>{% endif %}<|channel>thought<channel|>"
+    _GEMMA_TPL = (
+        "{% if enable_thinking %}<|think|>{% endif %}<|channel>thought<channel|>"
+    )
     # always-on template whose GENERATION PROMPT opens an unclosed <think> (DeepSeek-R1 / QwQ /
     # Qwen3-Thinking shape): the model emits only the closing </think>, so prefill.
     _ALWAYS_ON_OPEN_TPL = (
@@ -834,17 +849,23 @@ class TestSafetensorsReasoningPrefillGate:
     def test_g1_enable_thinking_true(self):
         # G1: Qwen3.5 template + explicit enable_thinking=True -> prefilled.
         from routes.inference import _sf_reasoning_prefill_mode
-        assert _sf_reasoning_prefill_mode(self._features(), True, self._QWEN_TPL) is True
+        assert (
+            _sf_reasoning_prefill_mode(self._features(), True, self._QWEN_TPL) is True
+        )
 
     def test_g2_enable_thinking_none_defaults_on(self):
         # G2: default request (None) -> prefilled (Qwen3/GLM templates default on).
         from routes.inference import _sf_reasoning_prefill_mode
-        assert _sf_reasoning_prefill_mode(self._features(), None, self._QWEN_TPL) is True
+        assert (
+            _sf_reasoning_prefill_mode(self._features(), None, self._QWEN_TPL) is True
+        )
 
     def test_g3_enable_thinking_false(self):
         # G3: thinking explicitly off -> not prefilled.
         from routes.inference import _sf_reasoning_prefill_mode
-        assert _sf_reasoning_prefill_mode(self._features(), False, self._QWEN_TPL) is False
+        assert (
+            _sf_reasoning_prefill_mode(self._features(), False, self._QWEN_TPL) is False
+        )
 
     def test_g4_gpt_oss_reasoning_effort_excluded(self):
         # G4: gpt-oss uses explicit tags via HarmonyTextStreamer -> normal mode.
@@ -868,7 +889,9 @@ class TestSafetensorsReasoningPrefillGate:
         # G7: always-on template whose generation prompt opens <think> -> prefilled regardless of the flag.
         from routes.inference import _sf_reasoning_prefill_mode
         feats = self._features(reasoning_always_on = True)
-        assert _sf_reasoning_prefill_mode(feats, False, self._ALWAYS_ON_OPEN_TPL) is True
+        assert (
+            _sf_reasoning_prefill_mode(feats, False, self._ALWAYS_ON_OPEN_TPL) is True
+        )
 
     def test_g7b_reasoning_always_on_history_only_not_prefilled(self):
         # G7b (#5704): always-on classification from rendered assistant HISTORY <think></think>
@@ -876,13 +899,18 @@ class TestSafetensorsReasoningPrefillGate:
         # normal answer entirely as reasoning_content and blank the visible answer, so it must be off.
         from routes.inference import _sf_reasoning_prefill_mode
         feats = self._features(reasoning_always_on = True)
-        assert _sf_reasoning_prefill_mode(feats, None, self._ALWAYS_ON_HISTORY_TPL) is False
+        assert (
+            _sf_reasoning_prefill_mode(feats, None, self._ALWAYS_ON_HISTORY_TPL)
+            is False
+        )
 
     def test_g8_gemma_bespoke_channel_excluded(self):
         # G8: gemma's <|think|>/<|channel> format has no </think> -> NOT prefilled
         # (would otherwise swallow the whole answer as reasoning). Regression guard.
         from routes.inference import _sf_reasoning_prefill_mode
-        assert _sf_reasoning_prefill_mode(self._features(), True, self._GEMMA_TPL) is False
+        assert (
+            _sf_reasoning_prefill_mode(self._features(), True, self._GEMMA_TPL) is False
+        )
 
     def test_g9_missing_template_not_prefilled(self):
         # G9: no template available -> conservative (not prefilled).

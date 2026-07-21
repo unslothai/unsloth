@@ -124,7 +124,9 @@ def test_pdeathsig_child_dies_when_parent_sigkilled(tmp_path):
         "print(p.pid, flush = True)\n"
         "time.sleep(300)\n"
     )
-    proc = subprocess.Popen([sys.executable, str(mid)], stdout = subprocess.PIPE, text = True)
+    proc = subprocess.Popen(
+        [sys.executable, str(mid)], stdout = subprocess.PIPE, text = True
+    )
     try:
         sleeper_pid = int(proc.stdout.readline().strip())
         assert _alive(sleeper_pid)
@@ -150,7 +152,9 @@ def test_windows_job_kills_child_when_parent_dies(tmp_path):
         "print(p.pid, int(pl._win_job_handle is not None), flush = True)\n"
         "time.sleep(300)\n"
     )
-    proc = subprocess.Popen([sys.executable, str(mid)], stdout = subprocess.PIPE, text = True)
+    proc = subprocess.Popen(
+        [sys.executable, str(mid)], stdout = subprocess.PIPE, text = True
+    )
     try:
         first = proc.stdout.readline().split()
         child_pid, installed = int(first[0]), first[1] == "1"
@@ -250,7 +254,9 @@ def test_bind_kills_multiprocessing_child_on_parent_death(tmp_path):
         "    print(p.pid, flush = True)\n"
         "    time.sleep(300)\n"
     )
-    proc = subprocess.Popen([sys.executable, str(mid)], stdout = subprocess.PIPE, text = True)
+    proc = subprocess.Popen(
+        [sys.executable, str(mid)], stdout = subprocess.PIPE, text = True
+    )
     try:
         child_pid = int(proc.stdout.readline().strip())
         assert _alive(child_pid)

@@ -87,7 +87,9 @@ class TestSafeUpperBound:
     @pytest.mark.parametrize("parallel,measured", sorted(_PIPELINE_MEASURED.items()))
     def test_pipeline_upper_bounds_measured(self, parallel, measured):
         est = _backend()._estimate_compute_buffer_bytes(n_parallel = parallel) / MIB
-        assert est >= measured, f"under-reserved at parallel={parallel}: {est:.0f} < {measured}"
+        assert (
+            est >= measured
+        ), f"under-reserved at parallel={parallel}: {est:.0f} < {measured}"
 
     @pytest.mark.parametrize("parallel,measured", sorted(_PIPELINE_MEASURED.items()))
     def test_pipeline_not_wildly_over(self, parallel, measured):
@@ -97,12 +99,22 @@ class TestSafeUpperBound:
         assert est <= max(measured * 2.0, 128)
 
     def test_tensor_upper_bounds_measured(self):
-        est = _backend()._estimate_compute_buffer_bytes(n_parallel = 1, per_device_tensor = True) / MIB
+        est = (
+            _backend()._estimate_compute_buffer_bytes(
+                n_parallel = 1, per_device_tensor = True
+            )
+            / MIB
+        )
         assert est >= _TENSOR_MEASURED_PER_DEVICE
 
     def test_tensor_far_below_old_flat_reserve(self):
         # The whole point: deterministic estimate << flat 5120 for this model.
-        est = _backend()._estimate_compute_buffer_bytes(n_parallel = 1, per_device_tensor = True) / MIB
+        est = (
+            _backend()._estimate_compute_buffer_bytes(
+                n_parallel = 1, per_device_tensor = True
+            )
+            / MIB
+        )
         assert est < LlamaCppBackend._TENSOR_PARALLEL_BUFFER_RESERVE_MIB
 
 
@@ -147,7 +159,9 @@ class TestFallback:
         # reserve (defense-in-depth) rather than reserving 0 and OOMing.
         b = _backend(vocab = None, embd = None)
         b._n_layers = None  # can't estimate KV -> floors ctx, still returns a plan
-        ec, mac, gi, ts = b._plan_tensor_parallel([(0, 48000), (1, 48000)], 8 * 1024**3, 8192)
+        ec, mac, gi, ts = b._plan_tensor_parallel(
+            [(0, 48000), (1, 48000)], 8 * 1024**3, 8192
+        )
         assert gi == [0, 1]  # both GPUs usable under the flat fallback
 
 
@@ -189,8 +203,12 @@ class TestContextLinearBuffer:
 
     def test_scales_with_embd(self):
         # The quantized (dequant-scratch) rate scales with n_embd; f16 (mask) does not.
-        small = _backend(embd = 2048)._compute_buffer_ctx_bytes(131072, cache_type_kv = "q8_0")
-        big = _backend(embd = 5120)._compute_buffer_ctx_bytes(131072, cache_type_kv = "q8_0")
+        small = _backend(embd = 2048)._compute_buffer_ctx_bytes(
+            131072, cache_type_kv = "q8_0"
+        )
+        big = _backend(embd = 5120)._compute_buffer_ctx_bytes(
+            131072, cache_type_kv = "q8_0"
+        )
         assert big > small
 
     def test_scales_with_ubatch(self):
@@ -270,8 +288,12 @@ class TestContextBufferMLA:
     multi-GPU MLA pin (per-device scaling multiplies the error)."""
 
     def test_mla_lighter_than_regular(self):
-        reg = _backend(embd = 6144, mla = None)._compute_buffer_ctx_bytes(262144, cache_type_kv = "q8_0")
-        mla = _backend(embd = 6144, mla = 256)._compute_buffer_ctx_bytes(262144, cache_type_kv = "q8_0")
+        reg = _backend(embd = 6144, mla = None)._compute_buffer_ctx_bytes(
+            262144, cache_type_kv = "q8_0"
+        )
+        mla = _backend(embd = 6144, mla = 256)._compute_buffer_ctx_bytes(
+            262144, cache_type_kv = "q8_0"
+        )
         assert mla < reg
 
     @pytest.mark.parametrize(
@@ -307,7 +329,9 @@ class TestContextBufferDSV4:
     def test_covers_measured_1m_buffer(self):
         b = _backend(embd = 4096, arch = "deepseek4")
         gib = b._compute_buffer_ctx_bytes(1048576, cache_type_kv = "f16") / self.GIB
-        assert gib >= self._MEASURED_1M_GIB, f"under-reserved {gib:.1f} < {self._MEASURED_1M_GIB}"
+        assert (
+            gib >= self._MEASURED_1M_GIB
+        ), f"under-reserved {gib:.1f} < {self._MEASURED_1M_GIB}"
 
     def test_not_wildly_over_at_1m(self):
         # Within ~1.3x of measured so the fit still grants a large (~256k) context.
@@ -341,9 +365,9 @@ class TestContextBufferDSV4:
     def test_scales_with_context_and_ubatch(self):
         b = _backend(embd = 4096, arch = "deepseek4")
         assert b._compute_buffer_ctx_bytes(131072) > b._compute_buffer_ctx_bytes(65536)
-        assert b._compute_buffer_ctx_bytes(131072, n_ubatch = 1024) > b._compute_buffer_ctx_bytes(
-            131072, n_ubatch = 256
-        )
+        assert b._compute_buffer_ctx_bytes(
+            131072, n_ubatch = 1024
+        ) > b._compute_buffer_ctx_bytes(131072, n_ubatch = 256)
 
     def test_non_dsv4_unchanged(self):
         # Regression guard: a non-deepseek4 model keeps the mask-only f16 rate.

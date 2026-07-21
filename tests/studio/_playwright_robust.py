@@ -133,7 +133,9 @@ def wait_for_health(
         # Accept any 200 -- different Unsloth builds report status differently.
         if status == 200:
             if info is not None:
-                info(f"health pre-flight OK: status=200, body keys={list((body or {}).keys())}")
+                info(
+                    f"health pre-flight OK: status=200, body keys={list((body or {}).keys())}"
+                )
             return True
         time.sleep(0.5)
     if info is not None:
@@ -168,7 +170,9 @@ def recover_or_replace_page(
             info(f"recovery: page.is_closed() check failed: {exc!r}")
     if goto_url is not None:
         try:
-            page.goto(goto_url, wait_until = "domcontentloaded", timeout = default_timeout_ms)
+            page.goto(
+                goto_url, wait_until = "domcontentloaded", timeout = default_timeout_ms
+            )
             if settle_networkidle:
                 try:
                     page.wait_for_load_state("networkidle", timeout = 30_000)
@@ -354,7 +358,11 @@ def robust_evaluate(
     """`target.evaluate(expression, arg)` for a Page or Locator, retried when a
     concurrent navigation destroys the execution context. Re-raises on a
     non-transient error or after the final attempt."""
-    page = target if hasattr(target, "wait_for_load_state") else getattr(target, "page", None)
+    page = (
+        target
+        if hasattr(target, "wait_for_load_state")
+        else getattr(target, "page", None)
+    )
     attempts = max(1, int(retries) + 1)
     for attempt in range(attempts):
         try:

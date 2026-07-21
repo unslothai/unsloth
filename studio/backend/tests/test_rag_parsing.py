@@ -16,7 +16,11 @@ def _table_pdf(path):
     doc = pymupdf.open()
     page = doc.new_page()
     page.insert_textbox(pymupdf.Rect(40, 40, 550, 70), "Quarterly Results", fontsize = 16)
-    rows = [("Quarter", "Revenue", "Growth"), ("Q1", "$1.2M", "12%"), ("Q2", "$1.5M", "25%")]
+    rows = [
+        ("Quarter", "Revenue", "Growth"),
+        ("Q1", "$1.2M", "12%"),
+        ("Q2", "$1.5M", "25%"),
+    ]
     y = 90
     for r in rows:
         page.insert_textbox(pymupdf.Rect(40, y, 250, y + 20), r[0], fontsize = 11)
@@ -51,7 +55,9 @@ def test_pdf_markdown_off_uses_plain_text(tmp_path, monkeypatch):
     _table_pdf(pdf)
     text = "\n".join(p.text for p in parsers.parse(str(pdf)))
     assert "Q2" in text and "$1.5M" in text
-    assert "#" not in text and "|" not in text  # plain text path emits no Markdown markup
+    assert (
+        "#" not in text and "|" not in text
+    )  # plain text path emits no Markdown markup
 
 
 def test_pdf_bytes_use_same_extraction_path(tmp_path, monkeypatch):
@@ -173,7 +179,9 @@ def test_pdf_markdown_incomplete_falls_back_to_plain(tmp_path, monkeypatch):
     pdf = tmp_path / "long.pdf"
     _long_text_pdf(pdf)
     text = "\n".join(p.text for p in parsers.parse(str(pdf)))
-    assert "quick brown fox" in text  # fuller raw layer used, not the near-empty Markdown
+    assert (
+        "quick brown fox" in text
+    )  # fuller raw layer used, not the near-empty Markdown
 
 
 def _docx_with_table(path):
@@ -252,7 +260,9 @@ def test_docx_table_merged_cell_keeps_grid_alignment(tmp_path):
 
     text = "\n".join(p.text for p in parsers.parse(str(path)))
     assert text.count("WIDE") == 1  # merged cell not duplicated across spanned columns
-    assert "WIDE |  | END" in text  # placeholder keeps 3 fields, aligned with "a | b | c"
+    assert (
+        "WIDE |  | END" in text
+    )  # placeholder keeps 3 fields, aligned with "a | b | c"
     assert "a | b | c" in text
 
 

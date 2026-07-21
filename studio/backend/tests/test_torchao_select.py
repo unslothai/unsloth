@@ -114,7 +114,9 @@ def test_skips_torchao_on_windows_rocm(
     monkeypatch.setattr(mod, "IS_MACOS", False)
     monkeypatch.setattr(mod, "IS_MAC_ARM", False)
     monkeypatch.setattr(mod, "NO_TORCH", False)
-    monkeypatch.setattr(mod, "_rocm_windows_torch_installed", rocm_windows_torch_installed)
+    monkeypatch.setattr(
+        mod, "_rocm_windows_torch_installed", rocm_windows_torch_installed
+    )
     monkeypatch.setattr(
         mod, "_installed_torch_is_windows_rocm", lambda: installed_torch_is_windows_rocm
     )
@@ -128,7 +130,9 @@ def test_skips_torchao_on_windows_rocm(
     monkeypatch.setattr(mod, "_progress", lambda label: progress_labels.append(label))
     monkeypatch.setattr(mod, "LOCAL_DD_UNSTRUCTURED_PLUGIN", unstructured_plugin)
     monkeypatch.setattr(mod, "LOCAL_DD_GITHUB_PLUGIN", github_plugin)
-    monkeypatch.setattr(mod.subprocess, "run", lambda *args, **kwargs: subprocess_result)
+    monkeypatch.setattr(
+        mod.subprocess, "run", lambda *args, **kwargs: subprocess_result
+    )
 
     assert mod.install_python_stack() == 0
 

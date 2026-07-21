@@ -112,7 +112,13 @@ def _run_resolve(monkeypatch, capsys, plans_or_exc):
     monkeypatch.setattr(
         sys,
         "argv",
-        ["install_llama_prebuilt.py", "--resolve-prebuilt", "latest", "--output-format", "json"],
+        [
+            "install_llama_prebuilt.py",
+            "--resolve-prebuilt",
+            "latest",
+            "--output-format",
+            "json",
+        ],
     )
     rc = ilp.main()
     assert rc == ilp.EXIT_SUCCESS
@@ -124,7 +130,9 @@ def test_resolve_prebuilt_available(monkeypatch, capsys):
         release_tag = "b9585",
         llama_tag = "b9585",
         attempts = [
-            SimpleNamespace(name = "llama-b9585-bin-macos-arm64.tar.gz", install_kind = "macos-arm64")
+            SimpleNamespace(
+                name = "llama-b9585-bin-macos-arm64.tar.gz", install_kind = "macos-arm64"
+            )
         ],
     )
     out = _run_resolve(monkeypatch, capsys, [plan])
@@ -154,7 +162,13 @@ def _run_resolve_capture_host(monkeypatch, capsys):
     monkeypatch.setattr(
         sys,
         "argv",
-        ["install_llama_prebuilt.py", "--resolve-prebuilt", "latest", "--output-format", "json"],
+        [
+            "install_llama_prebuilt.py",
+            "--resolve-prebuilt",
+            "latest",
+            "--output-format",
+            "json",
+        ],
     )
     assert ilp.main() == ilp.EXIT_SUCCESS
     out = json.loads(capsys.readouterr().out.strip().splitlines()[-1])
@@ -164,7 +178,9 @@ def _run_resolve_capture_host(monkeypatch, capsys):
 def test_resolve_prebuilt_cpu_linux_routes_to_fork(monkeypatch, capsys):
     # CPU-only Linux host (no GPU): the dispatch routes to the fork, which now
     # ships the CPU prebuilt -- it no longer falls back to ggml-org upstream.
-    monkeypatch.setattr(ilp, "detect_host", lambda: _host(is_linux = True, is_x86_64 = True))
+    monkeypatch.setattr(
+        ilp, "detect_host", lambda: _host(is_linux = True, is_x86_64 = True)
+    )
     seen, out = _run_resolve_capture_host(monkeypatch, capsys)
     assert seen["repo"] == FORK
     assert out["repo"] == FORK
@@ -176,9 +192,13 @@ def test_resolve_prebuilt_rocm_sdk_only_host_still_offered_cpu(monkeypatch, caps
     # must NOT reclassify it as ROCm from tool presence alone and suppress the CPU
     # bundle -- that would deny the fork CPU prebuilt to a legitimate CPU source
     # build. The host is left CPU-only and resolves against the fork.
-    monkeypatch.setattr(ilp, "detect_host", lambda: _host(is_linux = True, is_x86_64 = True))
     monkeypatch.setattr(
-        ilp.shutil, "which", lambda tool: "/opt/rocm/bin/hipconfig" if tool == "hipconfig" else None
+        ilp, "detect_host", lambda: _host(is_linux = True, is_x86_64 = True)
+    )
+    monkeypatch.setattr(
+        ilp.shutil,
+        "which",
+        lambda tool: "/opt/rocm/bin/hipconfig" if tool == "hipconfig" else None,
     )
     seen, out = _run_resolve_capture_host(monkeypatch, capsys)
     assert seen["repo"] == FORK
@@ -207,7 +227,9 @@ def test_host_is_blackwell_includes_datacenter_parts():
     assert ilp._host_is_blackwell(_gpu_linux_host(["12.1"])) is True  # DGX Spark sm_121
     assert ilp._host_is_blackwell(_gpu_linux_host(["9.0"])) is False  # Hopper
     assert ilp._host_is_blackwell(_gpu_linux_host(["8.0"])) is False  # Ampere
-    assert ilp._host_is_blackwell(_gpu_linux_host(["9.0", "10.0"])) is True  # highest cap wins
+    assert (
+        ilp._host_is_blackwell(_gpu_linux_host(["9.0", "10.0"])) is True
+    )  # highest cap wins
 
 
 def _linux_cuda_artifact(runtime_line, supported_sms, min_sm, max_sm, profile):
@@ -237,13 +259,19 @@ def test_linux_blackwell_override_prefers_cuda13_for_datacenter(monkeypatch):
         repo = FORK,
         release_tag = "b9739-mix",
         upstream_tag = "b9739",
-        assets = {cuda12.asset_name: "https://x/cuda12", cuda13.asset_name: "https://x/cuda13"},
+        assets = {
+            cuda12.asset_name: "https://x/cuda12",
+            cuda13.asset_name: "https://x/cuda13",
+        },
         artifacts = [cuda12, cuda13],
     )
     monkeypatch.setattr(
         ilp,
         "detected_linux_runtime_lines",
-        lambda: (["cuda13", "cuda12"], {"cuda13": ["/usr/lib"], "cuda12": ["/usr/lib"]}),
+        lambda: (
+            ["cuda13", "cuda12"],
+            {"cuda13": ["/usr/lib"], "cuda12": ["/usr/lib"]},
+        ),
     )
 
     selection = ilp.linux_cuda_choice_from_release(
@@ -340,7 +368,8 @@ def _upstream_release(tag, asset_names):
     return {
         "tag_name": tag,
         "assets": [
-            {"name": n, "browser_download_url": f"https://example/{n}"} for n in asset_names
+            {"name": n, "browser_download_url": f"https://example/{n}"}
+            for n in asset_names
         ],
     }
 
@@ -351,7 +380,10 @@ def test_direct_upstream_arm64_intel_prefers_vulkan():
     host = _host(is_linux = True, is_arm64 = True, machine = "aarch64", has_intel_gpu = True)
     rel = _upstream_release(
         "b9925",
-        ["llama-b9925-bin-ubuntu-vulkan-arm64.tar.gz", "llama-b9925-bin-ubuntu-arm64.tar.gz"],
+        [
+            "llama-b9925-bin-ubuntu-vulkan-arm64.tar.gz",
+            "llama-b9925-bin-ubuntu-arm64.tar.gz",
+        ],
     )
     plan = ilp.direct_upstream_release_plan(rel, host, UPSTREAM, "latest")
     kinds = [a.install_kind for a in plan.attempts]
@@ -374,7 +406,10 @@ def test_direct_upstream_intel_with_hidden_nvidia_is_cpu_only():
     )
     rel = _upstream_release(
         "b9925",
-        ["llama-b9925-bin-ubuntu-vulkan-x64.tar.gz", "llama-b9925-bin-ubuntu-x64.tar.gz"],
+        [
+            "llama-b9925-bin-ubuntu-vulkan-x64.tar.gz",
+            "llama-b9925-bin-ubuntu-x64.tar.gz",
+        ],
     )
     plan = ilp.direct_upstream_release_plan(rel, host, UPSTREAM, "latest")
     assert [a.install_kind for a in plan.attempts] == ["linux-cpu"]
@@ -384,7 +419,10 @@ def test_direct_upstream_arm64_without_intel_is_cpu_only():
     host = _host(is_linux = True, is_arm64 = True, machine = "aarch64")
     rel = _upstream_release(
         "b9925",
-        ["llama-b9925-bin-ubuntu-vulkan-arm64.tar.gz", "llama-b9925-bin-ubuntu-arm64.tar.gz"],
+        [
+            "llama-b9925-bin-ubuntu-vulkan-arm64.tar.gz",
+            "llama-b9925-bin-ubuntu-arm64.tar.gz",
+        ],
     )
     plan = ilp.direct_upstream_release_plan(rel, host, UPSTREAM, "latest")
     assert [a.install_kind for a in plan.attempts] == ["linux-arm64"]
@@ -394,7 +432,10 @@ def test_direct_upstream_x86_intel_prefers_vulkan():
     host = _host(is_linux = True, is_x86_64 = True, has_intel_gpu = True)
     rel = _upstream_release(
         "b9925",
-        ["llama-b9925-bin-ubuntu-vulkan-x64.tar.gz", "llama-b9925-bin-ubuntu-x64.tar.gz"],
+        [
+            "llama-b9925-bin-ubuntu-vulkan-x64.tar.gz",
+            "llama-b9925-bin-ubuntu-x64.tar.gz",
+        ],
     )
     plan = ilp.direct_upstream_release_plan(rel, host, UPSTREAM, "latest")
     kinds = [a.install_kind for a in plan.attempts]
@@ -422,7 +463,9 @@ def test_route_to_vulkan_prebuilt_auto_intel_goes_upstream_and_drops_fork_pin():
     # Routing fork -> upstream also drops the fork release pin, which is in a
     # different tag namespace and would make the upstream resolver miss.
     host = _host(is_linux = True, is_x86_64 = True, has_intel_gpu = True)
-    routed, repo, tag = ilp._route_to_vulkan_prebuilt(host, FORK, "b9596-mix-abc", force_cpu = False)
+    routed, repo, tag = ilp._route_to_vulkan_prebuilt(
+        host, FORK, "b9596-mix-abc", force_cpu = False
+    )
     assert repo == UPSTREAM
     assert tag == ""
     assert routed.has_intel_gpu is True
@@ -431,7 +474,9 @@ def test_route_to_vulkan_prebuilt_auto_intel_goes_upstream_and_drops_fork_pin():
 def test_route_to_vulkan_prebuilt_preserves_explicit_upstream_pin():
     # A pin set WITH an explicit upstream repo is already on upstream -> kept.
     host = _host(is_linux = True, is_x86_64 = True, has_intel_gpu = True)
-    _routed, repo, tag = ilp._route_to_vulkan_prebuilt(host, UPSTREAM, "b9596", force_cpu = False)
+    _routed, repo, tag = ilp._route_to_vulkan_prebuilt(
+        host, UPSTREAM, "b9596", force_cpu = False
+    )
     assert repo == UPSTREAM
     assert tag == "b9596"
 
@@ -439,14 +484,18 @@ def test_route_to_vulkan_prebuilt_preserves_explicit_upstream_pin():
 def test_route_to_vulkan_prebuilt_cpu_fallback_wins():
     # --cpu-fallback suppresses Vulkan routing even for an Intel host.
     host = _host(is_linux = True, is_x86_64 = True, has_intel_gpu = True)
-    routed, repo, tag = ilp._route_to_vulkan_prebuilt(host, FORK, "b9596-mix-abc", force_cpu = True)
+    routed, repo, tag = ilp._route_to_vulkan_prebuilt(
+        host, FORK, "b9596-mix-abc", force_cpu = True
+    )
     assert repo == FORK
     assert tag == "b9596-mix-abc"
     assert routed is host
 
 
 @pytest.mark.parametrize("cpu_flag", ["--cpu-fallback", "--force-cpu"])
-def test_resolve_prebuilt_cpu_fallback_overrides_intel_vulkan(monkeypatch, capsys, cpu_flag):
+def test_resolve_prebuilt_cpu_fallback_overrides_intel_vulkan(
+    monkeypatch, capsys, cpu_flag
+):
     """Either CPU flag via CLI must suppress Vulkan even on an Intel GPU host: both
     drop GPU detection (--force-cpu additionally persists, on the install path)."""
     monkeypatch.setattr(
@@ -501,7 +550,12 @@ def test_cli_cpu_flags_thread_force_and_persist(
     monkeypatch.setattr(
         sys,
         "argv",
-        ["install_llama_prebuilt.py", "--install-dir", str(tmp_path / "llama.cpp"), *flags],
+        [
+            "install_llama_prebuilt.py",
+            "--install-dir",
+            str(tmp_path / "llama.cpp"),
+            *flags,
+        ],
     )
     assert ilp.main() == ilp.EXIT_SUCCESS
     assert captured["force_cpu"] is expect_force
@@ -573,7 +627,9 @@ def test_resolve_prebuilt_intel_host_routes_to_upstream(monkeypatch, capsys):
     # The --resolve-prebuilt probe must agree with the install path: an
     # auto-detected Intel host resolves against upstream (Vulkan), not the fork.
     monkeypatch.setattr(
-        ilp, "detect_host", lambda: _host(is_linux = True, is_x86_64 = True, has_intel_gpu = True)
+        ilp,
+        "detect_host",
+        lambda: _host(is_linux = True, is_x86_64 = True, has_intel_gpu = True),
     )
     seen, out = _run_resolve_capture_host(monkeypatch, capsys)
     assert seen["repo"] == UPSTREAM
@@ -642,7 +698,9 @@ class _FakeWinreg:
 def _probe_with_display_class(monkeypatch, adapters):
     # The helper lazily does `import winreg`; plant the fake in sys.modules the
     # same way unsloth_cli/tests/test_start.py fakes it for _refresh_windows_path.
-    monkeypatch.setitem(sys.modules, "winreg", _FakeWinreg(_FakeRegKey(subkeys = adapters)))
+    monkeypatch.setitem(
+        sys.modules, "winreg", _FakeWinreg(_FakeRegKey(subkeys = adapters))
+    )
     return ilp.windows_intel_gpu_in_registry()
 
 
@@ -763,7 +821,9 @@ def test_detect_host_registry_intel_skips_cim_probe(monkeypatch):
     winreg = _FakeWinreg(
         _FakeRegKey(
             subkeys = {
-                "0000": _FakeRegKey(values = {"MatchingDeviceId": r"PCI\VEN_8086&DEV_56A0"}),
+                "0000": _FakeRegKey(
+                    values = {"MatchingDeviceId": r"PCI\VEN_8086&DEV_56A0"}
+                ),
             }
         )
     )
@@ -776,7 +836,9 @@ def test_detect_host_cim_fallback_fires_on_registry_miss(monkeypatch):
     winreg = _FakeWinreg(
         _FakeRegKey(
             subkeys = {
-                "0000": _FakeRegKey(values = {"MatchingDeviceId": r"PCI\VEN_10DE&DEV_2684"}),
+                "0000": _FakeRegKey(
+                    values = {"MatchingDeviceId": r"PCI\VEN_10DE&DEV_2684"}
+                ),
             }
         )
     )
@@ -808,7 +870,9 @@ def test_detect_host_cim_rescues_exploding_registry(monkeypatch):
             raise TypeError(name)
 
     host, captured = _detect_windows_host(
-        monkeypatch, _ExplodingWinreg(), powershell_stdout = "Intel(R) Arc(TM) A770 Graphics"
+        monkeypatch,
+        _ExplodingWinreg(),
+        powershell_stdout = "Intel(R) Arc(TM) A770 Graphics",
     )
     assert host.has_intel_gpu is True
     assert "powershell" in captured

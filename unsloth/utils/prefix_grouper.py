@@ -65,7 +65,9 @@ def env_on(name: str, default: str = "0") -> bool:
 
 
 # One-time env reads; the helpers stay callable since unsloth_zoo imports and calls them.
-_ENABLED = env_on("UNSLOTH_GRPO_SEQ_PACKING", "1") and env_on("UNSLOTH_GRPO_PREFIX_GROUPER", "1")
+_ENABLED = env_on("UNSLOTH_GRPO_SEQ_PACKING", "1") and env_on(
+    "UNSLOTH_GRPO_PREFIX_GROUPER", "1"
+)
 _VERIFY_ON = env_on("UNSLOTH_GRPO_PREFIX_GROUPER_VERIFY", "1")
 _TOKR_THRESHOLD = float(os.environ.get("UNSLOTH_GRPO_PREFIX_GROUPER_TOKR", "1.3"))
 _TOL_OK = float(os.environ.get("UNSLOTH_GRPO_PREFIX_GROUPER_TOL", "0.7"))
@@ -246,15 +248,23 @@ def build_group_layout(
     first = torch.argmax(keep.to(torch.int8), dim = 1)
     ar = torch.arange(L, device = device)
     contiguous = bool(
-        (keep == ((ar >= first.unsqueeze(1)) & (ar < (first + n_real).unsqueeze(1)))).all()
+        (
+            keep == ((ar >= first.unsqueeze(1)) & (ar < (first + n_real).unsqueeze(1)))
+        ).all()
     )
     if contiguous:
-        real_cols_cpu = [list(range(f, f + n)) for f, n in zip(first.tolist(), n_real.tolist())]
+        real_cols_cpu = [
+            list(range(f, f + n)) for f, n in zip(first.tolist(), n_real.tolist())
+        ]
     else:
         keep_cpu = keep.tolist()
-        real_cols_cpu = [[c for c in range(L) if keep_cpu[r][c]] for r in range(total_rows)]
+        real_cols_cpu = [
+            [c for c in range(L) if keep_cpu[r][c]] for r in range(total_rows)
+        ]
 
-    groups = _build_groups(ids_cpu, real_cols_cpu, cstart_cpu, num_generations, total_rows)
+    groups = _build_groups(
+        ids_cpu, real_cols_cpu, cstart_cpu, num_generations, total_rows
+    )
     if groups is None:
         return None
 

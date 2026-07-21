@@ -24,7 +24,9 @@ class BearerTokenMiddleware:
             raise ValueError("Unsloth MCP bearer token must be a non-empty value")
         if not token.isascii():
             # A non-ASCII token cannot be sent in an HTTP header; reject it here.
-            raise ValueError("Unsloth MCP bearer token must contain ASCII characters only")
+            raise ValueError(
+                "Unsloth MCP bearer token must contain ASCII characters only"
+            )
         self.app = app
         # Compare on raw header bytes: str hmac.compare_digest raises on non-ASCII
         # input, which would surface as a 500 instead of a clean 401.
@@ -39,7 +41,9 @@ class BearerTokenMiddleware:
         headers = dict(scope.get("headers", []))
         raw_auth = headers.get(b"authorization", b"")
         scheme, _, supplied = raw_auth.partition(b" ")
-        if scheme.lower() != b"bearer" or not hmac.compare_digest(supplied, self.expected):
+        if scheme.lower() != b"bearer" or not hmac.compare_digest(
+            supplied, self.expected
+        ):
             await _send_unauthorized(send, scope_type)
             return
 
@@ -55,7 +59,10 @@ async def _send_unauthorized(send: Any, scope_type: str) -> None:
         {
             "type": "http.response.start",
             "status": 401,
-            "headers": [(b"content-type", b"application/json"), (b"www-authenticate", b"Bearer")],
+            "headers": [
+                (b"content-type", b"application/json"),
+                (b"www-authenticate", b"Bearer"),
+            ],
         }
     )
     await send(
@@ -255,5 +262,6 @@ async def _gather_status(*coroutines: Any) -> tuple[Any, ...]:
 
     results = await asyncio.gather(*coroutines, return_exceptions = True)
     return tuple(
-        {"error": str(result)} if isinstance(result, Exception) else result for result in results
+        {"error": str(result)} if isinstance(result, Exception) else result
+        for result in results
     )

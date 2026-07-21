@@ -94,7 +94,9 @@ def load_aime_dataset(data_dir: str = "./data/aime") -> List[Dict[str, Any]]:
 
                     formatted_example = {
                         "global_id": data.get("global_id", line_num),
-                        "original_id": data.get("original_id", data.get("id", line_num)),
+                        "original_id": data.get(
+                            "original_id", data.get("id", line_num)
+                        ),
                         "source_dataset": data.get("source_dataset", "unknown"),
                         "problem": data["problem"],
                         "answer": str(data["answer"]),  # Ensure answer is string
@@ -253,7 +255,9 @@ def evaluate_model_aime(
     try:
         print(f"\n🚀 Evaluating {len(eval_dataset)} problems...")
 
-        with tqdm(total = len(eval_dataset), desc = "Processing AIME problems", unit = "problem") as pbar:
+        with tqdm(
+            total = len(eval_dataset), desc = "Processing AIME problems", unit = "problem"
+        ) as pbar:
             for task_id, item in enumerate(eval_dataset):
                 try:
                     prompt_text = tokenizer.apply_chat_template(
@@ -270,7 +274,9 @@ def evaluate_model_aime(
                     )[0].outputs
 
                     responses = [output.text for output in outputs]
-                    extracted_answers = [extract_aime_answer(response) for response in responses]
+                    extracted_answers = [
+                        extract_aime_answer(response) for response in responses
+                    ]
 
                     total_output_tokens = sum(
                         get_num_tokens(response, tokenizer) for response in responses
@@ -279,7 +285,9 @@ def evaluate_model_aime(
 
                     # Correct if any sample matches ground truth
                     ground_truth = item["answer"]
-                    correct_responses = [ans == ground_truth for ans in extracted_answers]
+                    correct_responses = [
+                        ans == ground_truth for ans in extracted_answers
+                    ]
                     is_correct = any(correct_responses)
 
                     if is_correct:
@@ -368,8 +376,12 @@ def evaluate_model_aime(
         "max_tokens": max_tokens,
         "top_p": top_p,
         "seed": seed,
-        "avg_input_tokens": sum(input_tokens) / len(input_tokens) if input_tokens else 0,
-        "avg_output_tokens": sum(output_tokens) / len(output_tokens) if output_tokens else 0,
+        "avg_input_tokens": sum(input_tokens) / len(input_tokens)
+        if input_tokens
+        else 0,
+        "avg_output_tokens": sum(output_tokens) / len(output_tokens)
+        if output_tokens
+        else 0,
         "max_input_tokens": max(input_tokens) if input_tokens else 0,
         "max_output_tokens": max(output_tokens) if output_tokens else 0,
     }
@@ -384,13 +396,17 @@ def evaluate_model_aime(
 
     print(f"\n🎯 Overall Performance:")
     print(f"   Total problems:       {total_problems:>6}")
-    print(f"   Correct answers:      {correct_answers:>6}/{total_problems} ({accuracy:>5.1f}%)")
+    print(
+        f"   Correct answers:      {correct_answers:>6}/{total_problems} ({accuracy:>5.1f}%)"
+    )
     print(f"   Pass@{n_sampling}:              {pass_at_k:>10.1f}%")
 
     print(f"\n📈 Performance by Dataset:")
     for source, stats in source_stats.items():
         source_acc = source_accuracies[source]
-        print(f"   {source:>12}: {stats['correct']:>3}/{stats['total']:>3} ({source_acc:>5.1f}%)")
+        print(
+            f"   {source:>12}: {stats['correct']:>3}/{stats['total']:>3} ({source_acc:>5.1f}%)"
+        )
 
     print(f"\n🔧 Configuration:")
     print(f"   Temperature:          {temperature}")
@@ -431,7 +447,9 @@ def compare_aime_results(all_results):
     print("COMPREHENSIVE AIME MODEL COMPARISON")
     print(f"{'='*80}")
 
-    print(f"{'Model':<15} {'Accuracy %':<12} {'Pass@K %':<10} {'Correct':<8} {'Total':<8}")
+    print(
+        f"{'Model':<15} {'Accuracy %':<12} {'Pass@K %':<10} {'Correct':<8} {'Total':<8}"
+    )
     print("-" * 80)
 
     for result in all_results:

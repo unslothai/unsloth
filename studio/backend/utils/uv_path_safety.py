@@ -55,7 +55,9 @@ def uv_safe_path(path: object) -> str:
         if " " in tmp_dir:  # e.g. TMPDIR itself has a space
             shutil.rmtree(tmp_dir, ignore_errors = True)
             return s
-        dst = os.path.join(tmp_dir, (os.path.basename(s) or "uv_args.txt").replace(" ", "_"))
+        dst = os.path.join(
+            tmp_dir, (os.path.basename(s) or "uv_args.txt").replace(" ", "_")
+        )
         shutil.copyfile(s, dst)
         _UV_SAFE_PATH_TMPDIRS.append(tmp_dir)
         tmp_dir = None

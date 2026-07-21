@@ -75,7 +75,9 @@ class Llama4GroupedGemmTextMoe(Llama4TextMoe):
             self.experts.gate_up_proj.as_strided_(permuted_shape, permuted_stride)
 
         if verbose:
-            print(f"{self.experts.gate_up_proj.shape}:{self.experts.gate_up_proj.stride()}")
+            print(
+                f"{self.experts.gate_up_proj.shape}:{self.experts.gate_up_proj.stride()}"
+            )
 
         assert self.experts.down_proj.shape == torch.Size(
             [E, N, K]
@@ -108,7 +110,9 @@ class Llama4GroupedGemmTextMoe(Llama4TextMoe):
             if any(n in name for n in self.EXPERT_WEIGHT_NAMES):
                 param_to_copy = param_to_copy.permute(0, 2, 1)
 
-            assert param.shape == param_to_copy.shape, f"{param.shape} != {param_to_copy.shape}"
+            assert (
+                param.shape == param_to_copy.shape
+            ), f"{param.shape} != {param_to_copy.shape}"
             param.copy_(param_to_copy)
 
         return self
@@ -131,7 +135,9 @@ class Llama4GroupedGemmTextMoe(Llama4TextMoe):
         # router_logits: (batch * sequence_length, n_experts)
         hidden_states = hidden_states.view(-1, self.hidden_dim)
         router_logits = self.router(hidden_states)
-        routing_weights, selected_experts = torch.topk(router_logits, self.top_k, dim = -1)
+        routing_weights, selected_experts = torch.topk(
+            router_logits, self.top_k, dim = -1
+        )
 
         routing_weights = F.sigmoid(routing_weights.float()).to(hidden_states.dtype)
 
@@ -158,7 +164,9 @@ class Llama4GroupedGemmTextMoe(Llama4TextMoe):
             # Marker for all prior ops on default stream
             self.default_event.record()
 
-        router_logits, routing_weights, selected_experts = self.run_router(hidden_states)
+        router_logits, routing_weights, selected_experts = self.run_router(
+            hidden_states
+        )
         assert routing_weights.shape == (
             num_tokens,
             self.top_k,
@@ -182,7 +190,8 @@ class Llama4GroupedGemmTextMoe(Llama4TextMoe):
             shared_expert_out = self.shared_expert(hidden_states)
 
         hidden_states = (
-            hidden_states.view(num_tokens, self.top_k, hidden_dim) * routing_weights[..., None]
+            hidden_states.view(num_tokens, self.top_k, hidden_dim)
+            * routing_weights[..., None]
         )
 
         if self.top_k > 1:
@@ -191,12 +200,14 @@ class Llama4GroupedGemmTextMoe(Llama4TextMoe):
 
         # Token counts per expert + gather indices (token->expert order).
         # Auxiliary structs; not recorded in the autograd graph.
-        token_counts_by_expert, gather_indices = self.get_token_counts_and_gather_indices(
-            selected_experts
+        token_counts_by_expert, gather_indices = (
+            self.get_token_counts_and_gather_indices(selected_experts)
         )
 
         # Permute tokens into expert order
-        hidden_states = permute(hidden_states_after_weight_merge, gather_indices, self.top_k)
+        hidden_states = permute(
+            hidden_states_after_weight_merge, gather_indices, self.top_k
+        )
         assert hidden_states.shape == (total_tokens, hidden_dim)
 
         # Start expert computation
@@ -284,7 +295,9 @@ class Llama4TritonTextMoe(Llama4GroupedGemmTextMoe):
             if any(n in name for n in self.EXPERT_WEIGHT_NAMES):
                 param_to_copy = param_to_copy.permute(0, 2, 1)
 
-            assert param.shape == param_to_copy.shape, f"{param.shape} != {param_to_copy.shape}"
+            assert (
+                param.shape == param_to_copy.shape
+            ), f"{param.shape} != {param_to_copy.shape}"
             param.copy_(param_to_copy)
 
         return self
@@ -307,7 +320,9 @@ class Llama4TritonTextMoe(Llama4GroupedGemmTextMoe):
         # router_logits: (batch * sequence_length, n_experts)
         hidden_states = hidden_states.view(-1, self.hidden_dim)
         router_logits = self.router(hidden_states)
-        routing_weights, selected_experts = torch.topk(router_logits, self.top_k, dim = -1)
+        routing_weights, selected_experts = torch.topk(
+            router_logits, self.top_k, dim = -1
+        )
 
         routing_weights = F.sigmoid(routing_weights.float()).to(hidden_states.dtype)
 
@@ -334,7 +349,9 @@ class Llama4TritonTextMoe(Llama4GroupedGemmTextMoe):
             # Marker for all prior ops on default stream
             self.default_event.record()
 
-        router_logits, routing_weights, selected_experts = self.run_router(hidden_states)
+        router_logits, routing_weights, selected_experts = self.run_router(
+            hidden_states
+        )
         assert routing_weights.shape == (
             num_tokens,
             self.top_k,
@@ -358,7 +375,8 @@ class Llama4TritonTextMoe(Llama4GroupedGemmTextMoe):
             shared_expert_out = self.shared_expert(hidden_states)
 
         hidden_states = (
-            hidden_states.view(num_tokens, self.top_k, hidden_dim) * routing_weights[..., None]
+            hidden_states.view(num_tokens, self.top_k, hidden_dim)
+            * routing_weights[..., None]
         )
 
         if self.top_k > 1:
@@ -367,8 +385,8 @@ class Llama4TritonTextMoe(Llama4GroupedGemmTextMoe):
 
         # Token counts per expert + gather indices (token->expert order).
         # Auxiliary structs; not recorded in the autograd graph.
-        token_counts_by_expert, gather_indices = self.get_token_counts_and_gather_indices(
-            selected_experts
+        token_counts_by_expert, gather_indices = (
+            self.get_token_counts_and_gather_indices(selected_experts)
         )
 
         # Permute tokens into expert order

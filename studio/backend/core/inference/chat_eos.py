@@ -75,7 +75,9 @@ def resolve_chat_turn_end_eos_ids_using(template_tokenizer, id_tokenizer) -> lis
     original tokenizer, so resolving ids on the mapped tokenizer would store the wrong
     (doc-eos) id and let generation run past the real turn marker."""
     ids = _eos_id_set(getattr(id_tokenizer, "eos_token_id", None))
-    template = _collect_template_text(getattr(template_tokenizer, "chat_template", None))
+    template = _collect_template_text(
+        getattr(template_tokenizer, "chat_template", None)
+    )
     if not template or any(h in template for h in _HARMONY_MARKERS):
         return sorted(ids)
     unk = getattr(id_tokenizer, "unk_token_id", None)

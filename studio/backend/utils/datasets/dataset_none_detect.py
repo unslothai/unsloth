@@ -71,7 +71,9 @@ def _probe_conversation(dataset: Dataset, candidates = None):
             # No usable dict turn in 100 rows. Record an all_corrupt fallback,
             # plausible only with turn-shaped data (None cell or list of dict/None
             # turns); a later plausible candidate upgrades a non-plausible one.
-            if all_corrupt_fallback is None or not all_corrupt_fallback.get("has_plausible_turns"):
+            if all_corrupt_fallback is None or not all_corrupt_fallback.get(
+                "has_plausible_turns"
+            ):
                 has_plausible_turns = False
                 for i in range(min(len(dataset), 100)):
                     cell = dataset[i][col]
@@ -116,7 +118,9 @@ def _probe_conversation(dataset: Dataset, candidates = None):
         _CONV_KEYS = {"role", "from", "content", "value"}
         if not any(keys <= turn_keys for keys in _CHAT_KEY_SETS):
             schema_less_plausible = bool(turn_keys & _CONV_KEYS)
-            if all_corrupt_fallback is None or not all_corrupt_fallback.get("has_plausible_turns"):
+            if all_corrupt_fallback is None or not all_corrupt_fallback.get(
+                "has_plausible_turns"
+            ):
                 all_corrupt_fallback = {
                     "column": col,
                     "turn_keys": turn_keys,
@@ -159,11 +163,14 @@ def is_none_or_empty(value) -> bool:
         non_text_blocks = [item for item in dict_blocks if item.get("type") != "text"]
         if non_text_blocks:
             return False
-        text_values = [item.get("text") for item in dict_blocks if item.get("type") == "text"]
+        text_values = [
+            item.get("text") for item in dict_blocks if item.get("type") == "text"
+        ]
         if text_values and all(
             t is None
             or (
-                isinstance(t, str) and not t.strip().strip("\ufeff\u200b\u200c\u200d\u2060").strip()
+                isinstance(t, str)
+                and not t.strip().strip("\ufeff\u200b\u200c\u200d\u2060").strip()
             )
             for t in text_values
         ):
@@ -274,7 +281,9 @@ def find_none_chatml(dataset: Dataset, col: str = None) -> dict:
             stats["rows_with_none_turns"] += 1
             stats["total_none_turns"] += 1
             stats["rows_all_none"] += 1
-            stats["none_by_role"]["unknown"] = stats["none_by_role"].get("unknown", 0) + 1
+            stats["none_by_role"]["unknown"] = (
+                stats["none_by_role"].get("unknown", 0) + 1
+            )
             stats["none_by_type"][vtype] = stats["none_by_type"].get(vtype, 0) + 1
             stats["findings"].append(
                 {
@@ -293,7 +302,9 @@ def find_none_chatml(dataset: Dataset, col: str = None) -> dict:
             stats["rows_with_none_turns"] += 1
             stats["total_none_turns"] += 1
             stats["rows_all_none"] += 1
-            stats["none_by_role"]["unknown"] = stats["none_by_role"].get("unknown", 0) + 1
+            stats["none_by_role"]["unknown"] = (
+                stats["none_by_role"].get("unknown", 0) + 1
+            )
             stats["none_by_type"]["empty_conversation"] = (
                 stats["none_by_type"].get("empty_conversation", 0) + 1
             )
@@ -321,7 +332,9 @@ def find_none_chatml(dataset: Dataset, col: str = None) -> dict:
                         "raw_value": repr(turn),
                     }
                 )
-                stats["none_by_role"]["unknown"] = stats["none_by_role"].get("unknown", 0) + 1
+                stats["none_by_role"]["unknown"] = (
+                    stats["none_by_role"].get("unknown", 0) + 1
+                )
                 vtype = "None" if turn is None else "invalid_type"
                 stats["none_by_type"][vtype] = stats["none_by_type"].get(vtype, 0) + 1
                 continue
@@ -342,14 +355,20 @@ def find_none_chatml(dataset: Dataset, col: str = None) -> dict:
             if "from" in turn and "value" in turn:
                 content = turn.get("value")
             elif "role" in turn:
-                content = turn.get("content") if "content" in turn else turn.get("value")
+                content = (
+                    turn.get("content") if "content" in turn else turn.get("value")
+                )
             elif "from" in turn:
                 content = turn.get("value")
             else:
-                content = turn.get("content") if "content" in turn else turn.get("value")
+                content = (
+                    turn.get("content") if "content" in turn else turn.get("value")
+                )
             # Assistant tool-call turns carry empty content + tool_calls and are
             # valid; the exemption is assistant-only.
-            if is_none_or_empty(content) and not (role == "assistant" and turn.get("tool_calls")):
+            if is_none_or_empty(content) and not (
+                role == "assistant" and turn.get("tool_calls")
+            ):
                 vtype = _classify_empty(content)
                 row_findings.append(
                     {
@@ -446,7 +465,9 @@ FORMAT_REGISTRY = [
     },
     {
         "name": "sharegpt",
-        "match": lambda ds, conv: (conv is not None and {"from", "value"} <= conv["turn_keys"]),
+        "match": lambda ds, conv: (
+            conv is not None and {"from", "value"} <= conv["turn_keys"]
+        ),
         "scan": find_none_sharegpt,
     },
     {
@@ -731,7 +752,9 @@ def show_row(
                     # Mirror scanner: tool_calls exemption is assistant-only;
                     # other roles with empty content + tool_calls are still bad.
                     r = t.get("role") if t.get("role") is not None else t.get("from")
-                    if is_none_or_empty(c) and not (str(r) == "assistant" and t.get("tool_calls")):
+                    if is_none_or_empty(c) and not (
+                        str(r) == "assistant" and t.get("tool_calls")
+                    ):
                         return True
                     return False
 
@@ -752,11 +775,19 @@ def show_row(
                     if "from" in turn and "value" in turn:
                         content = turn.get("value")
                     elif "role" in turn:
-                        content = turn.get("content") if "content" in turn else turn.get("value")
+                        content = (
+                            turn.get("content")
+                            if "content" in turn
+                            else turn.get("value")
+                        )
                     elif "from" in turn:
                         content = turn.get("value")
                     else:
-                        content = turn.get("content") if "content" in turn else turn.get("value")
+                        content = (
+                            turn.get("content")
+                            if "content" in turn
+                            else turn.get("value")
+                        )
                     if is_none_or_empty(content) and not (
                         role == "assistant" and turn.get("tool_calls")
                     ):
@@ -798,8 +829,12 @@ examples:
   python dataset_none_detect.py org/my-dataset --token hf_...
         """,
     )
-    parser.add_argument("dataset", help = "HuggingFace dataset repo id (e.g. org/my-dataset)")
-    parser.add_argument("--split", default = "train", help = "Dataset split to load (default: train)")
+    parser.add_argument(
+        "dataset", help = "HuggingFace dataset repo id (e.g. org/my-dataset)"
+    )
+    parser.add_argument(
+        "--split", default = "train", help = "Dataset split to load (default: train)"
+    )
     parser.add_argument(
         "--format",
         default = "auto",

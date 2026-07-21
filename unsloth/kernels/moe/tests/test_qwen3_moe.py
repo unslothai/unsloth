@@ -100,9 +100,15 @@ DTYPES = [torch.bfloat16]
 NUM_AUTOTUNE_CONFIGS = 50
 
 
-@pytest.mark.parametrize("permute_y", [True], ids = lambda x: "permute_y" if x else "no_permute_y")
-@pytest.mark.parametrize("permute_x", [True], ids = lambda x: "permute_x" if x else "no_permute_x")
-@pytest.mark.parametrize("autotune", [True], ids = lambda x: "autotune" if x else "manual")
+@pytest.mark.parametrize(
+    "permute_y", [True], ids = lambda x: "permute_y" if x else "no_permute_y"
+)
+@pytest.mark.parametrize(
+    "permute_x", [True], ids = lambda x: "permute_x" if x else "no_permute_x"
+)
+@pytest.mark.parametrize(
+    "autotune", [True], ids = lambda x: "autotune" if x else "manual"
+)
 @pytest.mark.parametrize("seqlen", SEQ_LENS, ids = lambda x: f"seqlen={x}")
 @pytest.mark.parametrize("dtype", DTYPES, ids = str)
 def test_qwen3_moe(
@@ -142,12 +148,12 @@ def test_qwen3_moe(
         _autotuned_grouped_gemm_forward_kernel.configs = (
             _autotuned_grouped_gemm_forward_kernel.configs[:NUM_AUTOTUNE_CONFIGS]
         )
-        _autotuned_grouped_gemm_dW_kernel.configs = _autotuned_grouped_gemm_dW_kernel.configs[
-            :NUM_AUTOTUNE_CONFIGS
-        ]
-        _autotuned_grouped_gemm_dX_kernel.configs = _autotuned_grouped_gemm_dX_kernel.configs[
-            :NUM_AUTOTUNE_CONFIGS
-        ]
+        _autotuned_grouped_gemm_dW_kernel.configs = (
+            _autotuned_grouped_gemm_dW_kernel.configs[:NUM_AUTOTUNE_CONFIGS]
+        )
+        _autotuned_grouped_gemm_dX_kernel.configs = (
+            _autotuned_grouped_gemm_dX_kernel.configs[:NUM_AUTOTUNE_CONFIGS]
+        )
 
         kernel_config_fwd = None
         kernel_config_bwd_dW = None
@@ -165,7 +171,9 @@ def test_qwen3_moe(
     ).to(device, dtype)
     fused_gemm_block.check_weights(moe_block)
 
-    X = torch.randn(bs, seqlen, hidden_size, dtype = dtype, device = device, requires_grad = True)
+    X = torch.randn(
+        bs, seqlen, hidden_size, dtype = dtype, device = device, requires_grad = True
+    )
 
     # Forward
     ref_result = run_forward(moe_block, X, is_grouped_gemm = False)
@@ -180,7 +188,9 @@ def test_qwen3_moe(
     ):
         # Sanity checks
 
-        with annotated_context("Checking HF vs torch grouped gemm MoE forward outputs..."):
+        with annotated_context(
+            "Checking HF vs torch grouped gemm MoE forward outputs..."
+        ):
             check_fwd(ref_result, grouped_result, atol, rtol, verbose = False)
 
         with annotated_context(
@@ -196,7 +206,9 @@ def test_qwen3_moe(
                 verbose = False,
             )
         # Actual test
-        with annotated_context("Checking HF vs fused grouped gemm MoE forward outputs..."):
+        with annotated_context(
+            "Checking HF vs fused grouped gemm MoE forward outputs..."
+        ):
             check_fwd(ref_result, fused_result, atol, rtol, verbose = True)
 
     # Backward
@@ -222,7 +234,9 @@ def test_qwen3_moe(
     ):
         # Sanity checks
         with annotated_context("Checking HF vs torch grouped gemm MoE grads..."):
-            check_grads(ref_backward_result, grouped_backward_result, atol, rtol, verbose = False)
+            check_grads(
+                ref_backward_result, grouped_backward_result, atol, rtol, verbose = False
+            )
         with annotated_context(
             "Checking torch grouped gemm MoE vs fused grouped gemm MoE grads..."
         ):
@@ -236,13 +250,17 @@ def test_qwen3_moe(
 
         # Actual test
         with annotated_context("Checking HF vs fused grouped gemm MoE grads..."):
-            check_grads(ref_backward_result, fused_backward_result, atol, rtol, verbose = True)
+            check_grads(
+                ref_backward_result, fused_backward_result, atol, rtol, verbose = True
+            )
 
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--seqlen", type = int, default = 1024)
-    parser.add_argument("--dtype", type = str, choices = ["bfloat16", "float16"], default = "bfloat16")
+    parser.add_argument(
+        "--dtype", type = str, choices = ["bfloat16", "float16"], default = "bfloat16"
+    )
     parser.add_argument("--permute_x", action = "store_true")
     parser.add_argument("--permute_y", action = "store_true")
     parser.add_argument("--autotune", action = "store_true")

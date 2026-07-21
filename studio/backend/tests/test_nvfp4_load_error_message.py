@@ -48,7 +48,9 @@ def _load_failure(
             return_value = None,
         ),
         patch.object(inference_route, "get_inference_backend", return_value = backend),
-        patch.object(inference_route, "get_llama_cpp_backend", return_value = MagicMock()),
+        patch.object(
+            inference_route, "get_llama_cpp_backend", return_value = MagicMock()
+        ),
         patch.object(
             inference_route.ModelConfig,
             "from_identifier",
@@ -56,7 +58,11 @@ def _load_failure(
         ),
         pytest.raises(HTTPException) as exc,
     ):
-        asyncio.run(inference_route.load_model(request, MagicMock(), current_subject = "test-user"))
+        asyncio.run(
+            inference_route.load_model(
+                request, MagicMock(), current_subject = "test-user"
+            )
+        )
     return exc.value
 
 
@@ -82,13 +88,17 @@ def _validation_failure(
         ),
         pytest.raises(HTTPException) as exc,
     ):
-        asyncio.run(inference_route.validate_model(request, current_subject = "test-user"))
+        asyncio.run(
+            inference_route.validate_model(request, current_subject = "test-user")
+        )
     return exc.value
 
 
 @pytest.mark.parametrize("exception_type", [Exception, RuntimeError, ValueError])
 @pytest.mark.parametrize("native", [False, True])
-def test_nvfp4_mlx_metadata_error_is_replaced_with_short_message(exception_type, native):
+def test_nvfp4_mlx_metadata_error_is_replaced_with_short_message(
+    exception_type, native
+):
     error = _load_failure(
         "Unsloth: 'unsloth/Qwen3.6-35B-A3B-NVFP4-Fast' has per-module MLX "
         "quantization metadata {'config_groups': {'group_0': {'format': "
@@ -113,7 +123,9 @@ def test_unrelated_load_error_keeps_existing_message():
 
 @pytest.mark.parametrize("native", [False, True])
 def test_unrelated_value_error_keeps_existing_message(native):
-    error = _load_failure("Invalid gpu_ids [99]", exception_type = ValueError, native = native)
+    error = _load_failure(
+        "Invalid gpu_ids [99]", exception_type = ValueError, native = native
+    )
 
     assert error.status_code == 400
     assert error.detail == "Invalid gpu_ids [99]"

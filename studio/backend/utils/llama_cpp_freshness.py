@@ -155,7 +155,9 @@ def _fetch_latest_release_tag(repo: str, timeout: float = 5.0) -> Optional[str]:
     return newest["tag_name"]
 
 
-def latest_published_release(repo: str, *, force_refresh: bool = False) -> Optional[str]:
+def latest_published_release(
+    repo: str, *, force_refresh: bool = False
+) -> Optional[str]:
     """Latest release tag for `repo`. Memo + disk-cached (24h TTL).
     None when offline and never previously cached."""
     if not repo:
@@ -182,7 +184,9 @@ def latest_published_release(repo: str, *, force_refresh: bool = False) -> Optio
     return latest
 
 
-def _fetch_latest_release_assets(repo: str, timeout: float = 5.0) -> Optional[dict[str, int]]:
+def _fetch_latest_release_assets(
+    repo: str, timeout: float = 5.0
+) -> Optional[dict[str, int]]:
     """Asset name -> size (bytes) for the newest published release of `repo`,
     selected exactly like _fetch_latest_release_tag. None on any failure."""
     import urllib.error
@@ -230,7 +234,9 @@ def _fetch_latest_release_assets(repo: str, timeout: float = 5.0) -> Optional[di
     return assets
 
 
-def latest_release_assets(repo: str, *, force_refresh: bool = False) -> Optional[dict[str, int]]:
+def latest_release_assets(
+    repo: str, *, force_refresh: bool = False
+) -> Optional[dict[str, int]]:
     """Newest-release asset sizes for `repo`, memoized (24h TTL). None when
     offline and never fetched. In-memory only -- a restart simply re-fetches."""
     if not repo:

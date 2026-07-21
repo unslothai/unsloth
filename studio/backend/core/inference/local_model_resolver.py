@@ -145,7 +145,11 @@ def _build_index() -> dict[str, _LocalGgufEntry]:
         _resolve_hf_cache_dir,
         _is_hidden_model,
     )
-    from utils.paths import legacy_hf_cache_dir, hf_default_cache_dir, lmstudio_model_dirs
+    from utils.paths import (
+        legacy_hf_cache_dir,
+        hf_default_cache_dir,
+        lmstudio_model_dirs,
+    )
 
     index: dict[str, _LocalGgufEntry] = {}
     seen_hf: set[str] = set()
@@ -162,7 +166,9 @@ def _build_index() -> dict[str, _LocalGgufEntry]:
                 return []
             seen_hf.add(rp)
             return _scan_hf_cache(directory)
-        except Exception as exc:  # a missing/malformed root must skip, never crash the index
+        except (
+            Exception
+        ) as exc:  # a missing/malformed root must skip, never crash the index
             logger.debug("auto-switch: skipping HF cache dir %r: %s", directory, exc)
             return []
 
@@ -174,7 +180,11 @@ def _build_index() -> dict[str, _LocalGgufEntry]:
     except Exception as exc:
         logger.debug("auto-switch: ./models scan failed: %s", exc)
     try:
-        for hf_dir in (_resolve_hf_cache_dir(), legacy_hf_cache_dir(), hf_default_cache_dir()):
+        for hf_dir in (
+            _resolve_hf_cache_dir(),
+            legacy_hf_cache_dir(),
+            hf_default_cache_dir(),
+        ):
             found += _scan_hf_once(hf_dir)
     except Exception as exc:
         logger.debug("auto-switch: HF cache scan failed: %s", exc)
@@ -189,7 +199,9 @@ def _build_index() -> dict[str, _LocalGgufEntry]:
             try:
                 fp = Path(folder["path"])
                 found += (
-                    _scan_models_dir(fp, limit = 200) + _scan_hf_once(fp) + _scan_lmstudio_dir(fp)
+                    _scan_models_dir(fp, limit = 200)
+                    + _scan_hf_once(fp)
+                    + _scan_lmstudio_dir(fp)
                 )
             except Exception as exc:
                 logger.debug("auto-switch: scan folder %r failed: %s", folder, exc)
@@ -214,7 +226,11 @@ def _build_index() -> dict[str, _LocalGgufEntry]:
             continue
         # Index every alias (including the path) so a client can resolve by any of
         # them, even though only the non-path loader_id is advertised.
-        for key in (raw_id, getattr(info, "model_id", None), getattr(info, "display_name", None)):
+        for key in (
+            raw_id,
+            getattr(info, "model_id", None),
+            getattr(info, "display_name", None),
+        ):
             if key:
                 index.setdefault(key.strip().lower(), entry)
     return index

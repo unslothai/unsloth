@@ -17,7 +17,9 @@ import pytest
 
 PACKAGE_ROOT = Path(__file__).resolve().parents[3]
 MODULE_PATH = PACKAGE_ROOT / "studio" / "install_node_prebuilt.py"
-SPEC = importlib.util.spec_from_file_location("studio_install_node_prebuilt", MODULE_PATH)
+SPEC = importlib.util.spec_from_file_location(
+    "studio_install_node_prebuilt", MODULE_PATH
+)
 assert SPEC is not None and SPEC.loader is not None
 M = importlib.util.module_from_spec(SPEC)
 sys.modules[SPEC.name] = M
@@ -55,13 +57,22 @@ def test_detect_host(monkeypatch, system, machine, exp_os, exp_arch, exp_ext):
     monkeypatch.setattr(M.platform, "system", lambda: system)
     monkeypatch.setattr(M.platform, "machine", lambda: machine)
     host = M.detect_host()
-    assert (host.node_os, host.node_arch, host.archive_ext) == (exp_os, exp_arch, exp_ext)
+    assert (host.node_os, host.node_arch, host.archive_ext) == (
+        exp_os,
+        exp_arch,
+        exp_ext,
+    )
     assert host.is_windows == (exp_os == "win")
 
 
 @pytest.mark.parametrize(
     "system,machine",
-    [("Plan9", "x86_64"), ("Linux", "sparc64"), ("Linux", "armv7l"), ("Linux", "armhf")],
+    [
+        ("Plan9", "x86_64"),
+        ("Linux", "sparc64"),
+        ("Linux", "armv7l"),
+        ("Linux", "armhf"),
+    ],
 )
 def test_detect_host_unsupported(monkeypatch, system, machine):
     monkeypatch.setattr(M.platform, "system", lambda: system)
@@ -86,7 +97,10 @@ def test_asset_windows_is_zip():
 
 
 def test_shasums_url():
-    assert M.node_shasums_url("24.17.0") == "https://nodejs.org/dist/v24.17.0/SHASUMS256.txt"
+    assert (
+        M.node_shasums_url("24.17.0")
+        == "https://nodejs.org/dist/v24.17.0/SHASUMS256.txt"
+    )
 
 
 def test_binary_layout_is_host_aware():
@@ -96,7 +110,9 @@ def test_binary_layout_is_host_aware():
     assert M.node_binary_path(Path("/n"), win) == Path("/n/node.exe")
     assert M.node_binary_path(Path("/n"), nix) == Path("/n/bin/node")
     assert M.npm_cli_path(Path("/n"), win) == Path("/n/node_modules/npm/bin/npm-cli.js")
-    assert M.npm_cli_path(Path("/n"), nix) == Path("/n/lib/node_modules/npm/bin/npm-cli.js")
+    assert M.npm_cli_path(Path("/n"), nix) == Path(
+        "/n/lib/node_modules/npm/bin/npm-cli.js"
+    )
 
 
 # ── SHASUMS256.txt parsing ──
@@ -224,7 +240,9 @@ def test_download_file_verified_rejects_mismatch(tmp_path: Path, monkeypatch):
 
     monkeypatch.setattr(M, "download_file", fake_download)
     with pytest.raises(PrebuiltFallback):
-        M.download_file_verified("http://x/a", tmp_path / "a", expected_sha256 = "0" * 64, label = "a")
+        M.download_file_verified(
+            "http://x/a", tmp_path / "a", expected_sha256 = "0" * 64, label = "a"
+        )
 
 
 # ── Lock liveness probe (Windows must not use os.kill(pid, 0)) ──
@@ -237,7 +255,9 @@ def test_pid_is_alive_windows_uses_tasklist_not_os_kill(monkeypatch):
     def fake_run(cmd, **kwargs):
         assert cmd[:2] == ["tasklist", "/FI"]
         assert "PID eq 1234" in cmd
-        return types.SimpleNamespace(stdout = '"node.exe","1234","Console","1","12,345 K"\n')
+        return types.SimpleNamespace(
+            stdout = '"node.exe","1234","Console","1","12,345 K"\n'
+        )
 
     monkeypatch.setattr(M.os, "kill", fail_kill)
     monkeypatch.setattr(M.subprocess, "run", fake_run)
@@ -287,7 +307,9 @@ def test_existing_install_matches_false_without_metadata(tmp_path: Path):
     assert M.existing_install_matches(tmp_path, host, version = "24.17.0") is False
 
 
-def test_existing_install_matches_true_when_version_and_runtime_ok(tmp_path: Path, monkeypatch):
+def test_existing_install_matches_true_when_version_and_runtime_ok(
+    tmp_path: Path, monkeypatch
+):
     host = _host("linux", "x64")
     M.write_metadata(tmp_path, version = "24.17.0", asset = "x", sha256 = "y")
     monkeypatch.setattr(M, "installed_node_version", lambda d, h: "24.17.0")
@@ -298,12 +320,16 @@ def test_existing_install_matches_true_when_version_and_runtime_ok(tmp_path: Pat
     assert M.existing_install_matches(tmp_path, host, version = "24.17.0") is False
 
 
-def test_install_prebuilt_short_circuits_when_version_matches(tmp_path: Path, monkeypatch):
+def test_install_prebuilt_short_circuits_when_version_matches(
+    tmp_path: Path, monkeypatch
+):
     install_dir = tmp_path / "node"
     install_dir.mkdir()
     version = M.pinned_default_version(M.load_pins())  # == INDEX's newest LTS
     asset = M.node_asset_name(version, _host("linux", "x64"))
-    pin = M.pinned_sha256(M.load_pins(), version, asset)  # short-circuit now needs the pin
+    pin = M.pinned_sha256(
+        M.load_pins(), version, asset
+    )  # short-circuit now needs the pin
     M.write_metadata(install_dir, version = version, asset = asset, sha256 = pin)
     monkeypatch.setattr(M, "detect_host", lambda: _host("linux", "x64"))
     monkeypatch.setattr(M, "fetch_json", lambda url: INDEX)
@@ -338,7 +364,9 @@ def _offline(*a, **k):
     raise OSError("nodejs.org unreachable")
 
 
-def test_install_prebuilt_keeps_existing_when_index_unreachable(tmp_path: Path, monkeypatch):
+def test_install_prebuilt_keeps_existing_when_index_unreachable(
+    tmp_path: Path, monkeypatch
+):
     install_dir = tmp_path / "node"
     install_dir.mkdir()
     M.write_metadata(install_dir, version = "24.17.0", asset = "x", sha256 = "y")
@@ -367,7 +395,9 @@ def test_install_prebuilt_reraises_when_index_unreachable_and_no_install(
         M.install_prebuilt(install_dir, channel = "lts", min_major = 24, force = False)
 
 
-def test_install_prebuilt_force_does_not_keep_existing_offline(tmp_path: Path, monkeypatch):
+def test_install_prebuilt_force_does_not_keep_existing_offline(
+    tmp_path: Path, monkeypatch
+):
     install_dir = tmp_path / "node"
     install_dir.mkdir()
     M.write_metadata(install_dir, version = "24.17.0", asset = "x", sha256 = "y")
@@ -410,13 +440,17 @@ def test_install_prebuilt_rejects_explicit_below_floor(tmp_path: Path, monkeypat
         M.install_prebuilt(install_dir, channel = "20.18.0", min_major = 24, force = False)
 
 
-def test_install_prebuilt_keeps_existing_when_download_fails(tmp_path: Path, monkeypatch):
+def test_install_prebuilt_keeps_existing_when_download_fails(
+    tmp_path: Path, monkeypatch
+):
     # Archive download fails but a usable older Node is on disk -> keep it.
     install_dir = tmp_path / "node"
     install_dir.mkdir()
     M.write_metadata(install_dir, version = "24.9.0", asset = "x", sha256 = "y")
     monkeypatch.setattr(M, "detect_host", lambda: _host("linux", "x64"))
-    monkeypatch.setattr(M, "fetch_json", lambda url: INDEX)  # newest LTS = 24.18.0 (pinned)
+    monkeypatch.setattr(
+        M, "fetch_json", lambda url: INDEX
+    )  # newest LTS = 24.18.0 (pinned)
     monkeypatch.setattr(M, "installed_node_version", lambda d, h: "24.9.0")
     monkeypatch.setattr(M, "installed_npm_major", lambda d, h: 11)
     monkeypatch.setattr(M, "download_file_verified", _offline)  # archive download fails
@@ -424,7 +458,9 @@ def test_install_prebuilt_keeps_existing_when_download_fails(tmp_path: Path, mon
     assert rc == M.EXIT_SUCCESS
 
 
-def test_install_prebuilt_reraises_download_failure_without_existing(tmp_path: Path, monkeypatch):
+def test_install_prebuilt_reraises_download_failure_without_existing(
+    tmp_path: Path, monkeypatch
+):
     install_dir = tmp_path / "node"  # nothing usable on disk
     monkeypatch.setattr(M, "detect_host", lambda: _host("linux", "x64"))
     monkeypatch.setattr(M, "fetch_json", lambda url: INDEX)
@@ -461,7 +497,9 @@ def test_ensure_npm_floor_scopes_upgrade_to_install_dir(tmp_path: Path, monkeypa
     install_dir = tmp_path / "node"
     monkeypatch.setattr(M, "installed_npm_major", lambda d, h: 10)
     calls = []
-    monkeypatch.setattr(M, "_run_node", lambda d, h, args, **kw: calls.append((d, args)) or "")
+    monkeypatch.setattr(
+        M, "_run_node", lambda d, h, args, **kw: calls.append((d, args)) or ""
+    )
     M._ensure_npm_floor(install_dir, _host("linux", "x64"))
     assert len(calls) == 1
     target_dir, args = calls[0]
@@ -473,7 +511,9 @@ def test_ensure_npm_floor_noop_when_npm_meets_bar(tmp_path: Path, monkeypatch):
     monkeypatch.setattr(M, "installed_npm_major", lambda d, h: M.NPM_MIN_MAJOR)
 
     def boom(*a, **k):
-        raise AssertionError("must not run an npm upgrade when npm already meets the floor")
+        raise AssertionError(
+            "must not run an npm upgrade when npm already meets the floor"
+        )
 
     monkeypatch.setattr(M, "_run_node", boom)
     M._ensure_npm_floor(tmp_path / "node", _host("linux", "x64"))
@@ -548,7 +588,9 @@ def test_resolve_expected_sha256_failcloses_on_unpinned(monkeypatch):
     pins = M.load_pins()
 
     def boom(*a, **k):
-        raise AssertionError("must not reach the network when refusing an unpinned version")
+        raise AssertionError(
+            "must not reach the network when refusing an unpinned version"
+        )
 
     monkeypatch.setattr(M, "download_bytes", boom)
     with pytest.raises(PrebuiltFallback):
@@ -561,7 +603,9 @@ def test_resolve_expected_sha256_optin_falls_back_to_remote_shasums(monkeypatch)
     pins = M.load_pins()
     asset = "node-v26.3.1-linux-x64.tar.gz"
     remote_sha = "d" * 64
-    monkeypatch.setattr(M, "download_bytes", lambda url, **k: f"{remote_sha}  {asset}\n".encode())
+    monkeypatch.setattr(
+        M, "download_bytes", lambda url, **k: f"{remote_sha}  {asset}\n".encode()
+    )
     # Only with the explicit opt-in does the legacy remote-checksum path run.
     sha = M.resolve_expected_sha256(pins, "26.3.1", asset, allow_unverified = True)
     assert sha == remote_sha
@@ -569,28 +613,41 @@ def test_resolve_expected_sha256_optin_falls_back_to_remote_shasums(monkeypatch)
 
 @pytest.mark.parametrize(
     "value,expected",
-    [("1", True), ("true", True), ("YES", True), ("on", True), ("0", False), ("", False)],
+    [
+        ("1", True),
+        ("true", True),
+        ("YES", True),
+        ("on", True),
+        ("0", False),
+        ("", False),
+    ],
 )
 def test_allow_unverified_node_reads_env(monkeypatch, value, expected):
     monkeypatch.setenv(M.ALLOW_UNVERIFIED_ENV, value)
     assert M.allow_unverified_node() is expected
 
 
-def test_install_prebuilt_default_channel_resolves_pinned_version(tmp_path: Path, monkeypatch):
+def test_install_prebuilt_default_channel_resolves_pinned_version(
+    tmp_path: Path, monkeypatch
+):
     # Default channel installs the pinned version with no index.json round-trip.
     pins = M.load_pins()
     version = M.pinned_default_version(pins)
     install_dir = tmp_path / "node"
     install_dir.mkdir()
     asset = M.node_asset_name(version, _host("linux", "x64"))
-    pin = M.pinned_sha256(pins, version, asset)  # kept only if the recorded digest is the pin
+    pin = M.pinned_sha256(
+        pins, version, asset
+    )  # kept only if the recorded digest is the pin
     M.write_metadata(install_dir, version = version, asset = asset, sha256 = pin)
     monkeypatch.setattr(M, "detect_host", lambda: _host("linux", "x64"))
     monkeypatch.setattr(M, "installed_node_version", lambda d, h: version)
     monkeypatch.setattr(M, "installed_npm_major", lambda d, h: 11)
 
     def boom(*a, **k):
-        raise AssertionError("default channel must not hit nodejs.org when the install matches")
+        raise AssertionError(
+            "default channel must not hit nodejs.org when the install matches"
+        )
 
     monkeypatch.setattr(M, "fetch_json", boom)  # no index.json
     monkeypatch.setattr(M, "download_file", boom)
@@ -603,7 +660,9 @@ def test_install_prebuilt_failcloses_on_unpinned_latest(tmp_path: Path, monkeypa
     # Unpinned `latest`, no opt-in, nothing on disk to keep: refuse.
     install_dir = tmp_path / "node"
     monkeypatch.setattr(M, "detect_host", lambda: _host("linux", "x64"))
-    monkeypatch.setattr(M, "fetch_json", lambda url: INDEX)  # latest overall = 26.3.1 (unpinned)
+    monkeypatch.setattr(
+        M, "fetch_json", lambda url: INDEX
+    )  # latest overall = 26.3.1 (unpinned)
     monkeypatch.delenv(M.ALLOW_UNVERIFIED_ENV, raising = False)
 
     def boom(*a, **k):
@@ -624,9 +683,13 @@ def test_install_prebuilt_unpinned_refusal_does_not_keep_existing(
     install_dir.mkdir()
     M.write_metadata(install_dir, version = "24.9.0", asset = "old", sha256 = "old")
     monkeypatch.setattr(M, "detect_host", lambda: _host("linux", "x64"))
-    monkeypatch.setattr(M, "fetch_json", lambda url: INDEX)  # latest overall = 26.3.1 (unpinned)
+    monkeypatch.setattr(
+        M, "fetch_json", lambda url: INDEX
+    )  # latest overall = 26.3.1 (unpinned)
     monkeypatch.setattr(M, "installed_node_version", lambda d, h: "24.9.0")
-    monkeypatch.setattr(M, "installed_npm_major", lambda d, h: 11)  # existing install is usable
+    monkeypatch.setattr(
+        M, "installed_npm_major", lambda d, h: 11
+    )  # existing install is usable
     monkeypatch.delenv(M.ALLOW_UNVERIFIED_ENV, raising = False)
 
     def boom(*a, **k):
@@ -637,7 +700,9 @@ def test_install_prebuilt_unpinned_refusal_does_not_keep_existing(
         M.install_prebuilt(install_dir, channel = channel, min_major = 24, force = False)
 
 
-def test_unpinned_refusal_maps_to_fallback_exit_code(tmp_path: Path, monkeypatch, capsys):
+def test_unpinned_refusal_maps_to_fallback_exit_code(
+    tmp_path: Path, monkeypatch, capsys
+):
     # main() must surface the refusal as EXIT_FALLBACK (setup treats it as a failed
     # install with guidance), not as a success masked by the keep-existing path.
     install_dir = tmp_path / "node"
@@ -662,11 +727,20 @@ def test_resolve_expected_sha256_rejects_malformed_pins():
     asset = "node-v24.17.0-linux-x64.tar.gz"
     assert M.pinned_sha256({"versions": "nope"}, "24.17.0", asset) is None
     assert M.pinned_sha256({"versions": {"24.17.0": "nope"}}, "24.17.0", asset) is None
-    assert M.pinned_sha256({"versions": {"24.17.0": {asset: "x" * 63}}}, "24.17.0", asset) is None
-    assert M.pinned_sha256({"versions": {"24.17.0": {asset: "z" * 64}}}, "24.17.0", asset) is None
+    assert (
+        M.pinned_sha256({"versions": {"24.17.0": {asset: "x" * 63}}}, "24.17.0", asset)
+        is None
+    )
+    assert (
+        M.pinned_sha256({"versions": {"24.17.0": {asset: "z" * 64}}}, "24.17.0", asset)
+        is None
+    )
     # an uppercase but otherwise valid digest is normalized to lowercase
     up = "A" * 64
-    assert M.pinned_sha256({"versions": {"24.17.0": {asset: up}}}, "24.17.0", asset) == up.lower()
+    assert (
+        M.pinned_sha256({"versions": {"24.17.0": {asset: up}}}, "24.17.0", asset)
+        == up.lower()
+    )
     for bad in [{}, {"default_version": ""}, {"default_version": "not-a-version"}]:
         with pytest.raises(PrebuiltFallback):
             M.pinned_default_version(bad)
@@ -675,10 +749,14 @@ def test_resolve_expected_sha256_rejects_malformed_pins():
 def test_install_prebuilt_optin_takes_remote_shasums_path(tmp_path: Path, monkeypatch):
     # With the opt-in set, an unpinned version drives the remote-SHASUMS path end to
     # end: fetch SHASUMS256.txt, then the verified archive download (no refusal).
-    install_dir = tmp_path / "node"  # nothing on disk -> errors re-raise, not keep-existing
+    install_dir = (
+        tmp_path / "node"
+    )  # nothing on disk -> errors re-raise, not keep-existing
     asset = "node-v26.3.1-linux-x64.tar.gz"
     monkeypatch.setattr(M, "detect_host", lambda: _host("linux", "x64"))
-    monkeypatch.setattr(M, "fetch_json", lambda url: INDEX)  # latest = 26.3.1 (unpinned)
+    monkeypatch.setattr(
+        M, "fetch_json", lambda url: INDEX
+    )  # latest = 26.3.1 (unpinned)
     monkeypatch.setenv(M.ALLOW_UNVERIFIED_ENV, "1")
     shasums_fetched = {"n": 0}
 
@@ -722,12 +800,22 @@ def test_existing_install_matches_enforces_expected_sha(tmp_path: Path, monkeypa
     M.write_metadata(tmp_path, version = "24.17.0", asset = "x", sha256 = "aa")
     monkeypatch.setattr(M, "installed_node_version", lambda d, h: "24.17.0")
     monkeypatch.setattr(M, "installed_npm_major", lambda d, h: 11)
-    assert M.existing_install_matches(tmp_path, host, version = "24.17.0") is True  # back-compat
-    assert M.existing_install_matches(tmp_path, host, version = "24.17.0", expected_sha = "aa") is True
-    assert M.existing_install_matches(tmp_path, host, version = "24.17.0", expected_sha = "bb") is False
+    assert (
+        M.existing_install_matches(tmp_path, host, version = "24.17.0") is True
+    )  # back-compat
+    assert (
+        M.existing_install_matches(tmp_path, host, version = "24.17.0", expected_sha = "aa")
+        is True
+    )
+    assert (
+        M.existing_install_matches(tmp_path, host, version = "24.17.0", expected_sha = "bb")
+        is False
+    )
 
 
-def test_install_prebuilt_refuses_existing_unpinned_install(tmp_path: Path, monkeypatch):
+def test_install_prebuilt_refuses_existing_unpinned_install(
+    tmp_path: Path, monkeypatch
+):
     # Codex P2: an unpinned version already on disk must still fail closed without the
     # opt-in, not be kept by the version-only short-circuit.
     install_dir = tmp_path / "node"
@@ -746,7 +834,9 @@ def test_install_prebuilt_refuses_existing_unpinned_install(tmp_path: Path, monk
         M.install_prebuilt(install_dir, channel = "26.3.1", min_major = 24, force = False)
 
 
-def test_pinned_target_wrong_sha_not_kept_when_download_fails(tmp_path: Path, monkeypatch):
+def test_pinned_target_wrong_sha_not_kept_when_download_fails(
+    tmp_path: Path, monkeypatch
+):
     # Symmetry with the short-circuit guard: the transient-failure fallback must not
     # keep a same-version install whose recorded digest is not the pin. (A different
     # usable version is still kept for offline resilience -- covered above.)
@@ -755,10 +845,14 @@ def test_pinned_target_wrong_sha_not_kept_when_download_fails(tmp_path: Path, mo
     asset = M.node_asset_name(version, host)
     install_dir = tmp_path / "node"
     install_dir.mkdir()
-    M.write_metadata(install_dir, version = version, asset = asset, sha256 = "0" * 64)  # not the pin
+    M.write_metadata(
+        install_dir, version = version, asset = asset, sha256 = "0" * 64
+    )  # not the pin
     monkeypatch.setattr(M, "detect_host", lambda: host)
     monkeypatch.setattr(M, "installed_node_version", lambda d, h: version)
     monkeypatch.setattr(M, "installed_npm_major", lambda d, h: 11)
-    monkeypatch.setattr(M, "download_file_verified", _offline)  # transient download failure
+    monkeypatch.setattr(
+        M, "download_file_verified", _offline
+    )  # transient download failure
     with pytest.raises(OSError):
         M.install_prebuilt(install_dir, channel = "pinned", min_major = 24, force = False)

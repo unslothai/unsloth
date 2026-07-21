@@ -28,7 +28,10 @@ from routes.inference import (
 
 _THINK_TPL = "...<think>...</think>..."
 _ETHINK = {"reasoning_style": "enable_thinking", "supports_reasoning": True}
-_ETHINK_EFFORT = {"reasoning_style": "enable_thinking_effort", "supports_reasoning": True}
+_ETHINK_EFFORT = {
+    "reasoning_style": "enable_thinking_effort",
+    "supports_reasoning": True,
+}
 
 
 def test_prefill_mode_on_for_enable_thinking_default():
@@ -43,11 +46,15 @@ def test_prefill_mode_off_for_reasoning_effort_none():
     # enable_thinking_effort turns thinking off via reasoning_effort="none"; prefilled mode
     # would capture the whole answer as reasoning_content.
     assert (
-        _sf_reasoning_prefill_mode(_ETHINK_EFFORT, None, _THINK_TPL, reasoning_effort = "none")
+        _sf_reasoning_prefill_mode(
+            _ETHINK_EFFORT, None, _THINK_TPL, reasoning_effort = "none"
+        )
         is False
     )
     assert (
-        _sf_reasoning_prefill_mode(_ETHINK_EFFORT, None, _THINK_TPL, reasoning_effort = "high")
+        _sf_reasoning_prefill_mode(
+            _ETHINK_EFFORT, None, _THINK_TPL, reasoning_effort = "high"
+        )
         is True
     )
 
@@ -100,7 +107,9 @@ def _replay_sf_reasoning_stream(events: list[dict], *, prefilled: bool) -> dict:
                 tool_starts.append(event)
                 order.append("tool_start")
             continue
-        clean = _strip_tool_xml_for_display(event.get("text", ""), auto_heal_tool_calls = True)
+        clean = _strip_tool_xml_for_display(
+            event.get("text", ""), auto_heal_tool_calls = True
+        )
         new_text = clean[len(prev_text) :]
         prev_text = clean
         if not new_text:
@@ -127,7 +136,10 @@ def test_s1_plain_stream_splits_prefilled_reasoning():
     # S1: plain/MLX single turn -> reasoning delta + visible delta; monitor visible-only.
     events = [
         {"type": "content", "text": "Let me compute 17*23"},
-        {"type": "content", "text": "Let me compute 17*23 = 391</think>The answer is 391."},
+        {
+            "type": "content",
+            "text": "Let me compute 17*23 = 391</think>The answer is 391.",
+        },
     ]
     out = _replay_sf_reasoning_stream(events, prefilled = True)
     assert out["reasoning"] == "Let me compute 17*23 = 391"
@@ -170,7 +182,9 @@ def test_s3_extractor_resets_each_turn():
 
 def test_s4_harmony_full_tags_normal_mode():
     # S4: gpt-oss / explicit-tag models use normal mode (prefilled=False).
-    events = [{"type": "content", "text": "<think>reasoning here</think>visible answer"}]
+    events = [
+        {"type": "content", "text": "<think>reasoning here</think>visible answer"}
+    ]
     out = _replay_sf_reasoning_stream(events, prefilled = False)
     assert out["reasoning"] == "reasoning here"
     assert out["visible"] == "visible answer"
@@ -264,7 +278,10 @@ def test_native_reasoning_streamer_selected_and_errors_raise():
     backend._generation_lock = threading.Lock()
     backend.models = {"gemma-test": {"model": Model(), "tokenizer": Tok()}}
 
-    assert list(backend.generate_stream("prompt", max_new_tokens = 4))[-1] == "<think>r</think>a"
+    assert (
+        list(backend.generate_stream("prompt", max_new_tokens = 4))[-1]
+        == "<think>r</think>a"
+    )
 
     backend.models["gemma-test"]["model"] = Model(fail = True)
 

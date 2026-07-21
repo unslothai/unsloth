@@ -26,7 +26,9 @@ def _src(rel):
 def _func_src(rel, name):
     src = _src(rel)
     node = next(
-        n for n in ast.walk(ast.parse(src)) if isinstance(n, ast.FunctionDef) and n.name == name
+        n
+        for n in ast.walk(ast.parse(src))
+        if isinstance(n, ast.FunctionDef) and n.name == name
     )
     return ast.get_source_segment(src, node)
 
@@ -153,4 +155,8 @@ def test_export_methods_check_runtime():
 
 def test_export_capability_reads_no_torch_helper():
     cap = _func_src("utils/hardware/hardware.py", "export_capability")
-    assert "_has_torch()" in cap and "DeviceType.MLX" in cap and "is_apple_silicon()" in cap
+    assert (
+        "_has_torch()" in cap
+        and "DeviceType.MLX" in cap
+        and "is_apple_silicon()" in cap
+    )

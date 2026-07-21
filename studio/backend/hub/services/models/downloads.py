@@ -102,7 +102,9 @@ def _spawn_download_worker(
     )
 
 
-async def download_model_response(body: DownloadModelRequest, hf_token: Optional[str] = None):
+async def download_model_response(
+    body: DownloadModelRequest, hf_token: Optional[str] = None
+):
     """Start a background download for a HuggingFace model."""
     repo_id = body.repo_id.strip()
     if not _is_valid_repo_id(repo_id):
@@ -111,7 +113,9 @@ async def download_model_response(body: DownloadModelRequest, hf_token: Optional
             detail = f"Invalid repo_id: {repo_id!r}",
         )
     # Canonicalize so two different-cased paste-ins share one job + cache dir.
-    repo_id = await asyncio.to_thread(resolve_cached_repo_id_case, repo_id, repo_type = "model")
+    repo_id = await asyncio.to_thread(
+        resolve_cached_repo_id_case, repo_id, repo_type = "model"
+    )
 
     # Avoid concurrent writers to the same HF cache files.
     _reject_if_load_in_flight(repo_id)
@@ -231,7 +235,9 @@ async def cancel_download_model_response(body: CancelDownloadRequest):
             status_code = 400,
             detail = f"Invalid repo_id: {repo_id!r}",
         )
-    repo_id = await asyncio.to_thread(resolve_cached_repo_id_case, repo_id, repo_type = "model")
+    repo_id = await asyncio.to_thread(
+        resolve_cached_repo_id_case, repo_id, repo_type = "model"
+    )
     variant = (body.gguf_variant or "").strip() or None
     if variant is not None and not _is_valid_gguf_variant(variant):
         raise HTTPException(
@@ -250,12 +256,16 @@ async def cancel_download_model_response(body: CancelDownloadRequest):
     return {"job_key": key, "state": state}
 
 
-async def get_download_status_response(repo_id: str, gguf_variant: str = "") -> DownloadJobStatus:
+async def get_download_status_response(
+    repo_id: str, gguf_variant: str = ""
+) -> DownloadJobStatus:
     """Return the latest state of a background download job."""
     repo_id = repo_id.strip()
     if not _is_valid_repo_id(repo_id):
         return DownloadJobStatus(state = "idle")
-    repo_id = await asyncio.to_thread(resolve_cached_repo_id_case, repo_id, repo_type = "model")
+    repo_id = await asyncio.to_thread(
+        resolve_cached_repo_id_case, repo_id, repo_type = "model"
+    )
     variant = (gguf_variant or "").strip() or None
     key = _download_job_key(repo_id, variant)
     return _job_status(key, repo_id = repo_id, variant = variant)
@@ -280,7 +290,9 @@ async def get_active_downloads_response(repo_id: str = "") -> ActiveDownloadsRes
     )
 
 
-def _variant_transport_status(repo_id: str, variant: str, hf_token: Optional[str]) -> dict:
+def _variant_transport_status(
+    repo_id: str, variant: str, hf_token: Optional[str]
+) -> dict:
     incomplete_hashes = download_registry.incomplete_blob_hashes(
         "model",
         repo_id,
@@ -312,13 +324,16 @@ def _variant_transport_status(repo_id: str, variant: str, hf_token: Optional[str
             variant,
         )
     has_matching_incomplete = bool(
-        incomplete_hashes and variant_hashes and incomplete_hashes.intersection(variant_hashes)
+        incomplete_hashes
+        and variant_hashes
+        and incomplete_hashes.intersection(variant_hashes)
     )
     return {
         "has_partial": has_partial,
         "last_transport": last_transport,
         "resumable": (
-            has_matching_incomplete and last_transport == download_registry.TRANSPORT_HTTP
+            has_matching_incomplete
+            and last_transport == download_registry.TRANSPORT_HTTP
         ),
     }
 
@@ -346,7 +361,9 @@ async def get_model_transport_status_response(
         return _variant_transport_status(repo_id, variant, hf_token)
     return {
         "has_partial": has_active_incomplete_blobs("model", repo_id),
-        "last_transport": download_registry.read_active_transport_marker("model", repo_id),
+        "last_transport": download_registry.read_active_transport_marker(
+            "model", repo_id
+        ),
         "resumable": download_registry.is_resumable_partial("model", repo_id),
     }
 
@@ -390,7 +407,9 @@ async def get_gguf_download_progress_response(
         if manifest is not None:
             return (
                 sum(max(0, int(file.size or 0)) for file in manifest.expected_files),
-                frozenset(file.sha256 for file in manifest.expected_files if file.sha256),
+                frozenset(
+                    file.sha256 for file in manifest.expected_files if file.sha256
+                ),
             )
         return (
             expected_total,

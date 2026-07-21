@@ -105,7 +105,10 @@ def expected_default_model():
     for node in tree.body:
         if not isinstance(node, ast.Assign):
             continue
-        if not any(isinstance(t, ast.Name) and t.id == "DEFAULT_MODELS_GGUF" for t in node.targets):
+        if not any(
+            isinstance(t, ast.Name) and t.id == "DEFAULT_MODELS_GGUF"
+            for t in node.targets
+        ):
             continue
         try:
             models = ast.literal_eval(node.value)
@@ -127,7 +130,9 @@ def soft_fail(m):
 def exercise_permission_mode_controls(page, shoot):
     """Exercise labels, migration, persistence, confirmation, and focus."""
     step("permission levels: labels, persistence, confirmation, and focus")
-    pill = page.locator('button[aria-label="Permission level for tool calls"]:visible').first
+    pill = page.locator(
+        'button[aria-label="Permission level for tool calls"]:visible'
+    ).first
     expect(pill).to_be_visible()
 
     def expect_mode(label):
@@ -155,10 +160,14 @@ def exercise_permission_mode_controls(page, shoot):
         "Run automatically",
         "Full access",
     ):
-        expect(menu.get_by_role("menuitem").filter(has_text = label).first).to_be_visible()
+        expect(
+            menu.get_by_role("menuitem").filter(has_text = label).first
+        ).to_be_visible()
     if menu.get_by_text("Off", exact = True).count() != 0:
         fail("legacy Off label is still visible")
-    if menu.locator('[role="menuitem"] button, [role="menuitem"] [role="button"]').count():
+    if menu.locator(
+        '[role="menuitem"] button, [role="menuitem"] [role="button"]'
+    ).count():
         fail("permission menu contains nested interactive controls")
     page.keyboard.press("Escape")
     expect(pill).to_be_focused()
@@ -203,7 +212,9 @@ def exercise_permission_mode_controls(page, shoot):
 
     choose("Run automatically")
     expect_mode("Run automatically")
-    expect(page.locator('button[data-pill-label="Search"]:visible').first).to_be_visible()
+    expect(
+        page.locator('button[data-pill-label="Search"]:visible').first
+    ).to_be_visible()
     expect(page.locator('button[data-pill-label="Code"]:visible').first).to_be_visible()
     stored = page.evaluate("() => localStorage.getItem('unsloth_chat_permission_mode')")
     if stored != "off":
@@ -363,7 +374,9 @@ with sync_playwright() as p:
     form_err: Exception | None = None
     for _form_attempt in range(3):
         try:
-            page.goto(f"{BASE}/change-password", wait_until = "domcontentloaded", timeout = 60_000)
+            page.goto(
+                f"{BASE}/change-password", wait_until = "domcontentloaded", timeout = 60_000
+            )
             try:
                 page.wait_for_load_state("networkidle", timeout = 30_000)
             except Exception:
@@ -411,7 +424,9 @@ with sync_playwright() as p:
                     flush = True,
                 )
             if page_errors:
-                print(f"[ui]   first pageerror:    {page_errors[0][:200]!r}", flush = True)
+                print(
+                    f"[ui]   first pageerror:    {page_errors[0][:200]!r}", flush = True
+                )
             try:
                 shoot(f"01-change-password-attempt-{_form_attempt + 1}-fail")
             except Exception:
@@ -476,7 +491,9 @@ with sync_playwright() as p:
                     flush = True,
                 )
             if page_errors:
-                print(f"[ui]   first pageerror:    {page_errors[0][:200]!r}", flush = True)
+                print(
+                    f"[ui]   first pageerror:    {page_errors[0][:200]!r}", flush = True
+                )
             try:
                 shoot(f"03-composer-wait-attempt-{_attempt + 1}-fail")
             except Exception:
@@ -586,7 +603,9 @@ with sync_playwright() as p:
     try:
         sel_text = (selector_btn.text_content(timeout = 2_000) or "").strip()
     except Exception as _sel_err:
-        info(f"WARN: model-selector probe skipped: {type(_sel_err).__name__}: {_sel_err}")
+        info(
+            f"WARN: model-selector probe skipped: {type(_sel_err).__name__}: {_sel_err}"
+        )
     if sel_text:
         info(f"model selector button text: {sel_text!r}")
         shoot("03b-default-model-button")
@@ -617,7 +636,9 @@ with sync_playwright() as p:
     if load_resp.get("error"):
         fail(f"/api/inference/load wedged: {load_resp['error']!r}")
     if load_resp["status"] != 200:
-        fail(f"/api/inference/load returned {load_resp['status']}: {load_resp.get('body')!r}")
+        fail(
+            f"/api/inference/load returned {load_resp['status']}: {load_resp.get('body')!r}"
+        )
     info(f"loaded model: {(load_resp['body'] or {}).get('display_name')}")
 
     # Unsloth caches model state in zustand; reload so the composer picks
@@ -964,7 +985,9 @@ with sync_playwright() as p:
                     acct.click(force = True)
                 except Exception as exc:
                     if attempt == 1:
-                        soft_fail(f"theme cycle {cycle + 1}: account-menu click failed ({exc!r})")
+                        soft_fail(
+                            f"theme cycle {cycle + 1}: account-menu click failed ({exc!r})"
+                        )
                     continue
                 try:
                     page.wait_for_selector(
@@ -1008,7 +1031,9 @@ with sync_playwright() as p:
                     page.wait_for_timeout(200)
             if click_err is not None:
                 page.keyboard.press("Escape")
-                soft_fail(f"theme cycle {cycle + 1}: theme menuitem click failed ({click_err!r})")
+                soft_fail(
+                    f"theme cycle {cycle + 1}: theme menuitem click failed ({click_err!r})"
+                )
                 break
             # Settle. The ".dark" class on <html> is the ground truth
             # (theme-store toggles only that); don't gate on ".light".
@@ -1057,7 +1082,9 @@ with sync_playwright() as p:
         # the sidebar collapses to icons, so fall back to more permissive
         # locators.
         candidates = [
-            page.get_by_role("button", name = re.compile(rf"^\s*{label}\s*$", re.I)).first,
+            page.get_by_role(
+                "button", name = re.compile(rf"^\s*{label}\s*$", re.I)
+            ).first,
             page.locator(f'button:has-text("{label}")').first,
             page.locator(f'a:has-text("{label}")').first,
             page.locator(f'[data-sidebar="menu-button"]:has-text("{label}")').first,
@@ -1091,15 +1118,21 @@ with sync_playwright() as p:
     click_nav("New Chat", r"/chat")
     shoot("11-new-chat")
     # Compare moved into the composer "Tools and attachments" menu.
-    plus_btn = page.get_by_role("button", name = re.compile(r"Tools and attachments", re.I)).first
+    plus_btn = page.get_by_role(
+        "button", name = re.compile(r"Tools and attachments", re.I)
+    ).first
     if plus_btn.count() > 0:
         plus_btn.click(force = True)
         page.wait_for_timeout(400)
-        compare_item = page.get_by_role("menuitem", name = re.compile(r"Compare chat", re.I)).first
+        compare_item = page.get_by_role(
+            "menuitem", name = re.compile(r"Compare chat", re.I)
+        ).first
         if compare_item.count() == 0:
             # Compare chat moved into the "More" submenu; hover (then
             # click as fallback) to open it.
-            more_trigger = page.get_by_role("menuitem", name = re.compile(r"^More$", re.I)).first
+            more_trigger = page.get_by_role(
+                "menuitem", name = re.compile(r"^More$", re.I)
+            ).first
             if more_trigger.count() > 0:
                 more_trigger.hover()
                 page.wait_for_timeout(400)
@@ -1144,7 +1177,9 @@ with sync_playwright() as p:
         step("Developer (API) tab via account menu")
         acct.click()
         page.wait_for_timeout(400)
-        dev = page.get_by_role("menuitem", name = re.compile(r"developer|api", re.I)).first
+        dev = page.get_by_role(
+            "menuitem", name = re.compile(r"developer|api", re.I)
+        ).first
         if dev.count() > 0:
             dev.click()
             page.wait_for_timeout(800)
@@ -1161,7 +1196,9 @@ with sync_playwright() as p:
                 re.compile(r"api keys|developer", re.I),
             ).first
             if keys_section.count() > 0:
-                info(f"OK API tab text: {(keys_section.text_content() or '').strip()[:80]!r}")
+                info(
+                    f"OK API tab text: {(keys_section.text_content() or '').strip()[:80]!r}"
+                )
             # Close dialog with Escape.
             page.keyboard.press("Escape")
             page.wait_for_timeout(300)
@@ -1176,7 +1213,9 @@ with sync_playwright() as p:
     page.goto(f"{BASE}/data-recipes")
     page.wait_for_timeout(1500)
     # Count clickable headings/cards under main, then screenshot.
-    headings = page.locator("main h2, main h3, [data-recipe], a[href*='/data-recipes/']")
+    headings = page.locator(
+        "main h2, main h3, [data-recipe], a[href*='/data-recipes/']"
+    )
     n_cards = headings.count()
     info(f"Recipes route headings/cards: {n_cards}")
     shoot("15b-recipes-cards")
@@ -1250,7 +1289,9 @@ with sync_playwright() as p:
             info(f"recent-thread click {i} failed: {_click_err!s}")
             continue
     if not clicked_recent:
-        soft_fail(f"no Recents entry was clickable within 30s deadline (n_threads={n_threads})")
+        soft_fail(
+            f"no Recents entry was clickable within 30s deadline (n_threads={n_threads})"
+        )
     # Back to chat.
     page.goto(f"{BASE}/chat")
     composer = page.locator('textarea[aria-label="Message input"]')
@@ -1402,7 +1443,10 @@ with sync_playwright() as p:
     try:
         refresh_status = int(refresh_proc.stdout.strip())
     except ValueError:
-        fail(f"curl refresh-token check returned invalid status: " f"{refresh_proc.stdout!r}")
+        fail(
+            f"curl refresh-token check returned invalid status: "
+            f"{refresh_proc.stdout!r}"
+        )
     if refresh_status == 200:
         fail(f"/api/auth/refresh should fail after CLI rotation; got 200")
     info(
@@ -1463,11 +1507,15 @@ with sync_playwright() as p:
     for _relogin_attempt in range(3):
         try:
             try:
-                page.goto(f"{BASE}/login", wait_until = "domcontentloaded", timeout = 60_000)
+                page.goto(
+                    f"{BASE}/login", wait_until = "domcontentloaded", timeout = 60_000
+                )
             except Exception as exc:
                 if not any(t in str(exc) for t in _tolerated_nav):
                     raise
-                info(f"goto /login interrupted ({exc!r}); password-field wait will confirm /login")
+                info(
+                    f"goto /login interrupted ({exc!r}); password-field wait will confirm /login"
+                )
             pw_field = page.locator("#password")
             pw_field.wait_for(state = "visible", timeout = 60_000)
             page.keyboard.press("Control+,")
@@ -1477,7 +1525,9 @@ with sync_playwright() as p:
                     "persisted monitor requested /api/system while /login was active"
                 )
             if "/login" not in page.url:
-                raise AssertionError(f"login route reloaded or redirected unexpectedly: {page.url}")
+                raise AssertionError(
+                    f"login route reloaded or redirected unexpectedly: {page.url}"
+                )
             pw_field.fill(NEW2)
             # Wait on the login POST so a transient 4xx/5xx is caught and retried
             # here, not swallowed until the out-of-loop composer wait.
@@ -1513,7 +1563,9 @@ with sync_playwright() as p:
                     flush = True,
                 )
             if page_errors:
-                print(f"[ui]   first pageerror:    {page_errors[0][:200]!r}", flush = True)
+                print(
+                    f"[ui]   first pageerror:    {page_errors[0][:200]!r}", flush = True
+                )
             try:
                 shoot(f"18-relogin-attempt-{_relogin_attempt + 1}-fail")
             except Exception:
@@ -1552,13 +1604,18 @@ with sync_playwright() as p:
     composer = page.locator('textarea[aria-label="Message input"]')
     composer.wait_for(state = "visible", timeout = 60_000)
     monitor_deadline = time.time() + 10
-    while len(system_requests) == login_system_request_count and time.time() < monitor_deadline:
+    while (
+        len(system_requests) == login_system_request_count
+        and time.time() < monitor_deadline
+    ):
         page.wait_for_timeout(100)
     if len(system_requests) == login_system_request_count:
         fail("persisted monitor did not resume /api/system polling after login")
     if page.get_by_role("dialog", name = re.compile(r"^Settings$")).count() != 0:
         fail("settings shortcut on /login left the dialog open after authentication")
-    info("OK persisted monitor stayed dormant on /login and resumed after authentication")
+    info(
+        "OK persisted monitor stayed dormant on /login and resumed after authentication"
+    )
     shoot("18-relogin-with-NEW2")
 
     step("Shutdown via account menu")

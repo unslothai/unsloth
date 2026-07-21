@@ -191,9 +191,7 @@ def _run(
         text = True,
         timeout = 120,
     )
-    assert (
-        out.is_file()
-    ), f"driver did not produce a result\nstdout:\n{proc.stdout}\nstderr:\n{proc.stderr}"
+    assert out.is_file(), f"driver did not produce a result\nstdout:\n{proc.stdout}\nstderr:\n{proc.stderr}"
     return json.loads(out.read_text())
 
 

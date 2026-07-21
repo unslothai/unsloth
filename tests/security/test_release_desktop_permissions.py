@@ -42,10 +42,12 @@ def test_build_matrix_hands_off_assets_without_release_credentials():
         assert not {"releaseId", "tagName", "releaseName"} & step.get("with", {}).keys()
 
     assert any(
-        step.get("uses", "").startswith("actions/upload-artifact@") for step in build["steps"]
+        step.get("uses", "").startswith("actions/upload-artifact@")
+        for step in build["steps"]
     )
     assert any(
-        step.get("uses", "").startswith("actions/download-artifact@") for step in publish["steps"]
+        step.get("uses", "").startswith("actions/download-artifact@")
+        for step in publish["steps"]
     )
     assert "build" in publish["needs"]
 

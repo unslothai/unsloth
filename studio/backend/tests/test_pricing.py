@@ -245,7 +245,9 @@ def test_openai_cache_read_subtracted_from_input_at_discount():
     )
     # 20k charged at full price, 80k charged at 0.1x
     assert _isclose(out["input_usd"], 20_000 / 1_000_000.0 * base)
-    assert _isclose(out["cache_read_usd"], 80_000 / 1_000_000.0 * base * OPENAI_CACHE_READ_MULT)
+    assert _isclose(
+        out["cache_read_usd"], 80_000 / 1_000_000.0 * base * OPENAI_CACHE_READ_MULT
+    )
 
 
 def test_openai_billable_input_tokens_does_not_double_count_cache_read():
@@ -392,7 +394,9 @@ def test_openai_web_search_charged_per_thousand():
             "openai_tool_use": {"web_search_requests": 250},
         },
     )
-    assert _isclose(out["server_tools_usd"], 250 / 1_000.0 * OPENAI_WEB_SEARCH_USD_PER_1K)
+    assert _isclose(
+        out["server_tools_usd"], 250 / 1_000.0 * OPENAI_WEB_SEARCH_USD_PER_1K
+    )
     assert _isclose(out["total_usd"], 250 / 1_000.0 * OPENAI_WEB_SEARCH_USD_PER_1K)
 
 
@@ -426,7 +430,8 @@ def test_openai_tool_surcharges_added_to_total():
     expected_input = 100_000 / 1_000_000.0 * 5.0
     expected_output = 5_000 / 1_000_000.0 * 30.0
     expected_tools = (
-        3 / 1_000.0 * OPENAI_WEB_SEARCH_USD_PER_1K + 0.25 * OPENAI_CONTAINER_USD_PER_HOUR
+        3 / 1_000.0 * OPENAI_WEB_SEARCH_USD_PER_1K
+        + 0.25 * OPENAI_CONTAINER_USD_PER_HOUR
     )
     assert _isclose(
         out["total_usd"],
@@ -599,7 +604,10 @@ def test_openai_chat_style_envelope_reads_cache_from_prompt_tokens_details():
     )
     # Both envelopes must price identically.
     assert _isclose(chat_style["input_usd"], raw["input_usd"]), (chat_style, raw)
-    assert _isclose(chat_style["cache_read_usd"], raw["cache_read_usd"]), (chat_style, raw)
+    assert _isclose(chat_style["cache_read_usd"], raw["cache_read_usd"]), (
+        chat_style,
+        raw,
+    )
     # 80k at 0.1x base, 20k at full.
     assert _isclose(
         chat_style["cache_read_usd"],

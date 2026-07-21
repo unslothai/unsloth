@@ -60,7 +60,9 @@ def main(
     ):  # this block catches unsloth running inside of System32 or any subdirs, this WILL cause errors if not prevented.
         _cwd = _os.path.normcase(_os.path.normpath(_os.getcwd()))
         _system32 = _os.path.normcase(
-            _os.path.normpath(_os.path.join(_os.environ.get("WINDIR", r"C:\Windows"), "System32"))
+            _os.path.normpath(
+                _os.path.join(_os.environ.get("WINDIR", r"C:\Windows"), "System32")
+            )
         )
         if _cwd == _system32 or _cwd.startswith(_system32 + _os.sep):
             typer.secho(

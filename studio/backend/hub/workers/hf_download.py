@@ -183,14 +183,17 @@ def _hf_token_arg(hf_token: str | None) -> HfTokenArg:
 
 
 def _retry_metadata_fetch(repo_id: str, fetch, *, label: str):
-    for attempt, timeout in enumerate((_METADATA_REQUEST_TIMEOUT, _METADATA_RETRY_TIMEOUT)):
+    for attempt, timeout in enumerate(
+        (_METADATA_REQUEST_TIMEOUT, _METADATA_RETRY_TIMEOUT)
+    ):
         try:
             return fetch(timeout)
         except Exception as e:
             if attempt == 1:
                 raise
             print(
-                f"{label} request failed for {repo_id} " f"({type(e).__name__}: {e}); retrying.",
+                f"{label} request failed for {repo_id} "
+                f"({type(e).__name__}: {e}); retrying.",
                 file = sys.stderr,
             )
             time.sleep(_METADATA_RETRY_DELAY)
@@ -439,7 +442,9 @@ def _recover_manifest_after_download(
         )
         sys.exit(1)
 
-    fallback_files = download_manifest.expected_files_from_snapshot_dir(Path(snapshot_path))
+    fallback_files = download_manifest.expected_files_from_snapshot_dir(
+        Path(snapshot_path)
+    )
     if fallback_files and download_manifest.write_manifest(
         repo_type,
         repo_id,
@@ -515,7 +520,9 @@ def _download_snapshot(repo_id: str, hf_token: str | None, mode: str) -> None:
             snapshot_path,
             mode,
             fetch_info = lambda: _model_info_with_retry(repo_id, hf_token),
-            expected_files_from_info = lambda recovered: _snapshot_download_plan(recovered)[1],
+            expected_files_from_info = lambda recovered: _snapshot_download_plan(
+                recovered
+            )[1],
         )
     _verify_completed_download(
         "model",
@@ -538,12 +545,15 @@ def _gguf_variant_target_plan(
             file = sys.stderr,
         )
         raise RuntimeError(
-            f"Metadata unavailable while resolving GGUF variant '{variant}' " f"for {repo_id}"
+            f"Metadata unavailable while resolving GGUF variant '{variant}' "
+            f"for {repo_id}"
         ) from e
     return build_gguf_variant_plans(list(info.siblings)).get(variant.lower())
 
 
-def _download_gguf_variant(repo_id: str, variant: str, hf_token: str | None, mode: str) -> None:
+def _download_gguf_variant(
+    repo_id: str, variant: str, hf_token: str | None, mode: str
+) -> None:
     from huggingface_hub import snapshot_download
     from hub.utils.download_registry import prepare_cache_for_transport
     from hub.utils.hf_cache_state import has_active_incomplete_blobs

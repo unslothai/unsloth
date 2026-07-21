@@ -64,7 +64,9 @@ def _invoke_run(monkeypatch, args):
     captured = []
     monkeypatch.setattr(sys, "prefix", "/nonexistent/outer/venv")
     fake_venv = Path("/fake/studio/venv/unsloth_studio")
-    monkeypatch.setattr(studio_mod, "_studio_venv_python", lambda: fake_venv / "bin" / "python")
+    monkeypatch.setattr(
+        studio_mod, "_studio_venv_python", lambda: fake_venv / "bin" / "python"
+    )
     fake_bin = fake_venv / "bin" / "unsloth"
     real_is_file = Path.is_file
     monkeypatch.setattr(

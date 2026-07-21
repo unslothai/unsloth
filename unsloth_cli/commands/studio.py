@@ -62,7 +62,9 @@ def _resolve_studio_home() -> tuple[Path, bool]:
         if prefix.name == "unsloth_studio":
             inferred = prefix.parent
             legacy = (Path.home() / ".unsloth" / "studio").resolve()
-            if inferred != legacy and _looks_like_installer_managed_studio_home(inferred):
+            if inferred != legacy and _looks_like_installer_managed_studio_home(
+                inferred
+            ):
                 return inferred, True
     except (OSError, ValueError):
         pass
@@ -174,7 +176,9 @@ def _loopback_bind_host_for(host: str) -> str:
 
 def _url_host(host: str) -> str:
     return (
-        f"[{host}]" if ":" in host and not (host.startswith("[") and host.endswith("]")) else host
+        f"[{host}]"
+        if ":" in host and not (host.startswith("[") and host.endswith("]"))
+        else host
     )
 
 
@@ -239,7 +243,9 @@ def _load_run_module():
 
     run_py = _find_run_py()
     if run_py is None:
-        raise ImportError("Could not find studio/backend/run.py. Re-run: unsloth studio setup")
+        raise ImportError(
+            "Could not find studio/backend/run.py. Re-run: unsloth studio setup"
+        )
 
     loaded = sys.modules.get("studio.backend.run")
     if loaded is not None:
@@ -333,7 +339,9 @@ def _iter_editable_studio_source_roots(venv_dir: Path):
                 # Tolerate single- or multi-line dict literals; [^}]* still
                 # rejects nested dicts, which the setuptools template never
                 # emits for editable installs.
-                m = re.search(r"^MAPPING\s*(?::[^=]*)?=\s*(\{[^}]*\})", src, re.M | re.S)
+                m = re.search(
+                    r"^MAPPING\s*(?::[^=]*)?=\s*(\{[^}]*\})", src, re.M | re.S
+                )
                 if not m:
                     continue
                 try:
@@ -423,7 +431,9 @@ def _create_api_key_inprocess(name: str) -> str:
 
 def _load_backend_auth_storage():
     run_py = _find_run_py()
-    backend_dir = run_py.parent if run_py is not None else _PACKAGE_ROOT / "studio" / "backend"
+    backend_dir = (
+        run_py.parent if run_py is not None else _PACKAGE_ROOT / "studio" / "backend"
+    )
     if backend_dir.is_dir() and str(backend_dir) not in sys.path:
         sys.path.insert(0, str(backend_dir))
 
@@ -542,9 +552,13 @@ def _connect_auth_db() -> sqlite3.Connection:
         conn.execute(
             "ALTER TABLE auth_user ADD COLUMN must_change_password INTEGER NOT NULL DEFAULT 0"
         )
-    refresh_columns = {row[1] for row in conn.execute("PRAGMA table_info(refresh_tokens)")}
+    refresh_columns = {
+        row[1] for row in conn.execute("PRAGMA table_info(refresh_tokens)")
+    }
     if "is_desktop" not in refresh_columns:
-        conn.execute("ALTER TABLE refresh_tokens ADD COLUMN is_desktop INTEGER NOT NULL DEFAULT 0")
+        conn.execute(
+            "ALTER TABLE refresh_tokens ADD COLUMN is_desktop INTEGER NOT NULL DEFAULT 0"
+        )
     conn.commit()
     return conn
 
@@ -678,7 +692,9 @@ def _bootstrap_deadline_active() -> bool:
         return True
 
 
-def _cli_update_password(conn: sqlite3.Connection, username: str, new_password: str) -> None:
+def _cli_update_password(
+    conn: sqlite3.Connection, username: str, new_password: str
+) -> None:
     """CLI mirror of backend update_password + change-password route effects.
 
     One transaction: rehash, rotate the JWT secret, clear must_change_password,
@@ -780,7 +796,9 @@ def _apply_supplied_password_before_launch(supplied_password: "str | None") -> N
                 _pbkdf2_hex(candidate, password_salt.encode("utf-8")), password_hash
             )
 
-        problem = _password_prompt.validate_new_password(supplied_password, _is_current_password)
+        problem = _password_prompt.validate_new_password(
+            supplied_password, _is_current_password
+        )
         if problem is not None:
             typer.echo(f"Error: {problem} Not starting.", err = True)
             raise typer.Exit(1)
@@ -825,7 +843,12 @@ def _strip_seeded_bootstrap_password_or_exit(*, context: str) -> None:
 
 
 def _require_servable_frontend_or_exit(
-    *, frontend: Optional[Path], api_only: bool, cloudflare: Optional[bool], host: str, secure: bool
+    *,
+    frontend: Optional[Path],
+    api_only: bool,
+    cloudflare: Optional[bool],
+    host: str,
+    secure: bool,
 ) -> Optional[Path]:
     """Fail closed BEFORE the pre-exposure gate if a public UI launch has no
     login page to change the seeded password.
@@ -929,7 +952,9 @@ def _tunnel_binary_confirmed_unavailable() -> bool:
         if str(backend_dir) not in sys.path:
             sys.path.insert(0, str(backend_dir))
             added_backend_path = True
-        spec = importlib.util.spec_from_file_location("studio.backend.cloudflare_tunnel", tunnel_py)
+        spec = importlib.util.spec_from_file_location(
+            "studio.backend.cloudflare_tunnel", tunnel_py
+        )
         if spec is None or spec.loader is None:
             return False
         module = importlib.util.module_from_spec(spec)
@@ -945,7 +970,9 @@ def _tunnel_binary_confirmed_unavailable() -> bool:
                 pass
 
 
-def _child_self_suppresses(*, in_studio_venv: bool, child_run_py: Optional[Path]) -> bool:
+def _child_self_suppresses(
+    *, in_studio_venv: bool, child_run_py: Optional[Path]
+) -> bool:
     """True when the child that will serve Unsloth is provably THIS install's
     backend, whose pre-bind gate sets app.state.suppress_bootstrap_injection and
     so never serves the seeded credential publicly -- even with .bootstrap_password
@@ -1443,7 +1470,9 @@ def studio_default(
     # admin password here in the parent, before the gate and any re-exec, so the
     # secret never reaches the child argv; strip the env var so a re-exec'd child
     # can't re-read it. The interactive gate below then no-ops.
-    _apply_supplied_password_before_launch(_password_prompt.resolve_supplied_password(password))
+    _apply_supplied_password_before_launch(
+        _password_prompt.resolve_supplied_password(password)
+    )
     os.environ.pop(_password_prompt.SUPPLIED_PASSWORD_ENV, None)
 
     # Public (tunnel) exposure with the seeded default password: force a terminal
@@ -1530,7 +1559,9 @@ def studio_default(
 
     if not silent:
         display_host = _display_host_for_bind(run_mod, host)
-        typer.echo(f"Starting Unsloth Studio on http://{_url_host(display_host)}:{port}")
+        typer.echo(
+            f"Starting Unsloth Studio on http://{_url_host(display_host)}:{port}"
+        )
 
     run_kwargs = dict(
         host = host,
@@ -1632,7 +1663,9 @@ def _consume_legacy_short_aliases(
             i += 1
             continue
         if value is not None:
-            raise typer.BadParameter(f"{name} conflicts with {canonical} already provided")
+            raise typer.BadParameter(
+                f"{name} conflicts with {canonical} already provided"
+            )
         if sep:
             if inline == "":  # `-m=` would become --model '' (Path('')='.').
                 raise typer.BadParameter(f"{name} requires a non-empty value")
@@ -1642,7 +1675,9 @@ def _consume_legacy_short_aliases(
             nxt = args[i + 1]
             # `--long` is unambiguously a flag; single-dash `-x` may be a path.
             if nxt.startswith("--") and nxt != "--":
-                raise typer.BadParameter(f"{name} expects a value but got the flag {nxt}")
+                raise typer.BadParameter(
+                    f"{name} expects a value but got the flag {nxt}"
+                )
             value = nxt
             i += 2
         else:
@@ -1883,7 +1918,9 @@ def run(
         # Re-exec via the studio venv's `unsloth` console-script.
         studio_bin = studio_python.parent / "unsloth"
         if not studio_bin.is_file():
-            typer.echo("Unsloth venv missing 'unsloth' entry point. Re-run: unsloth studio setup")
+            typer.echo(
+                "Unsloth venv missing 'unsloth' entry point. Re-run: unsloth studio setup"
+            )
             raise typer.Exit(1)
         # `run` serves the same Unsloth UI (unless --api-only); a public launch must
         # have a servable login page BEFORE the gate strips the seeded password, or
@@ -1916,7 +1953,9 @@ def run(
     # admin password here in the parent, before the gate and any re-exec, so the
     # secret never reaches the child argv; strip the env var so a re-exec'd child
     # can't re-read it. The interactive gate below then no-ops.
-    _apply_supplied_password_before_launch(_password_prompt.resolve_supplied_password(password))
+    _apply_supplied_password_before_launch(
+        _password_prompt.resolve_supplied_password(password)
+    )
     os.environ.pop(_password_prompt.SUPPLIED_PASSWORD_ENV, None)
 
     # Public (tunnel) exposure with the seeded default password: force a terminal
@@ -2040,7 +2079,9 @@ def run(
         if not silent:
             typer.echo("Starting Unsloth Studio...")
         if not _wait_for_server(actual_port):
-            typer.echo("Error: server did not become healthy within 30 seconds.", err = True)
+            typer.echo(
+                "Error: server did not become healthy within 30 seconds.", err = True
+            )
             raise typer.Exit(1)
 
         # 4. Create API key in-process.
@@ -2101,9 +2142,7 @@ def run(
             "machine. Do not share the API key. Pass --disable-tools to turn off."
         )
     else:
-        _tool_notice = (
-            "Server-side tools are ENABLED for loopback. Pass --disable-tools to turn off."
-        )
+        _tool_notice = "Server-side tools are ENABLED for loopback. Pass --disable-tools to turn off."
 
     if not silent:
         typer.echo("")
@@ -2113,7 +2152,9 @@ def run(
             typer.echo(f"  On this machine only: {base_url}")
         else:
             typer.echo(f"  Unsloth Studio running at {base_url}")
-            _emit_run_cloudflare_notice(run_mod, host, display_host, actual_port, secure)
+            _emit_run_cloudflare_notice(
+                run_mod, host, display_host, actual_port, secure
+            )
         typer.echo(f"  Model loaded: {loaded_model}{display_variant}")
         if context_length_line:
             typer.echo(context_length_line)
@@ -2153,7 +2194,9 @@ def run(
             typer.echo(f"Local:   {base_url}")
         else:
             typer.echo(f"URL:     {base_url}")
-            _emit_run_cloudflare_notice(run_mod, host, display_host, actual_port, secure)
+            _emit_run_cloudflare_notice(
+                run_mod, host, display_host, actual_port, secure
+            )
         if context_length_line:
             typer.echo(context_length_line.strip())
         typer.echo(f"API Key: {api_key}")
@@ -2229,7 +2272,9 @@ def stop():
 
     # Check if still alive (os.kill(pid, 0) is invalid on Windows -- see _pid_alive).
     if not _pid_alive(pid):
-        typer.echo(f"Unsloth server (PID {pid}) is not running. Cleaning up stale PID file.")
+        typer.echo(
+            f"Unsloth server (PID {pid}) is not running. Cleaning up stale PID file."
+        )
         _PID_FILE.unlink(missing_ok = True)
         raise typer.Exit(0)
 
@@ -2340,7 +2385,9 @@ def _refresh_desktop_shortcuts(*, verbose: bool = False) -> None:
     if is_windows:
         ps_argv: list[str] = ["powershell.exe"]
         if _should_hide_windows_subprocesses():
-            ps_argv.extend(["-NoLogo", "-NoProfile", "-NonInteractive", "-WindowStyle", "Hidden"])
+            ps_argv.extend(
+                ["-NoLogo", "-NoProfile", "-NonInteractive", "-WindowStyle", "Hidden"]
+            )
 
         for script in candidates:
             try:
@@ -2362,7 +2409,9 @@ def _refresh_desktop_shortcuts(*, verbose: bool = False) -> None:
                         **_windows_hidden_subprocess_kwargs(),
                     )
                     if result.returncode != 0:
-                        typer.echo(f"  refresh-launcher  install.ps1 exited {result.returncode}")
+                        typer.echo(
+                            f"  refresh-launcher  install.ps1 exited {result.returncode}"
+                        )
                     return
             except OSError:
                 continue
@@ -2375,7 +2424,9 @@ def _refresh_desktop_shortcuts(*, verbose: bool = False) -> None:
             with urllib.request.urlopen(request, timeout = 30) as response:
                 installer = response.read().decode("utf-8", errors = "replace")
         except (urllib.error.URLError, TimeoutError, OSError) as exc:
-            typer.echo(f"  refresh-launcher  skipped: could not fetch {installer_url} ({exc})")
+            typer.echo(
+                f"  refresh-launcher  skipped: could not fetch {installer_url} ({exc})"
+            )
             return
 
         # install.ps1 auto-invokes `Install-UnslothStudio @args` at EOF; over
@@ -2416,7 +2467,9 @@ def _refresh_desktop_shortcuts(*, verbose: bool = False) -> None:
                         f"  refresh-launcher  fetched install.ps1 exited {result.returncode}"
                     )
             except OSError as exc:
-                typer.echo(f"  refresh-launcher  skipped: powershell exec failed ({exc})")
+                typer.echo(
+                    f"  refresh-launcher  skipped: powershell exec failed ({exc})"
+                )
         finally:
             try:
                 os.unlink(ps1_path)
@@ -2433,7 +2486,9 @@ def _refresh_desktop_shortcuts(*, verbose: bool = False) -> None:
                     check = False,
                 )
                 if result.returncode != 0:
-                    typer.echo(f"  refresh-launcher  install.sh exited {result.returncode}")
+                    typer.echo(
+                        f"  refresh-launcher  install.sh exited {result.returncode}"
+                    )
                 return
         except OSError:
             continue
@@ -2446,7 +2501,9 @@ def _refresh_desktop_shortcuts(*, verbose: bool = False) -> None:
         with urllib.request.urlopen(request, timeout = 30) as response:
             installer = response.read()
     except (urllib.error.URLError, TimeoutError, OSError) as exc:
-        typer.echo(f"  refresh-launcher  skipped: could not fetch {installer_url} ({exc})")
+        typer.echo(
+            f"  refresh-launcher  skipped: could not fetch {installer_url} ({exc})"
+        )
         return
 
     try:
@@ -2457,7 +2514,9 @@ def _refresh_desktop_shortcuts(*, verbose: bool = False) -> None:
             check = False,
         )
         if result.returncode != 0:
-            typer.echo(f"  refresh-launcher  fetched install.sh exited {result.returncode}")
+            typer.echo(
+                f"  refresh-launcher  fetched install.sh exited {result.returncode}"
+            )
     except OSError as exc:
         typer.echo(f"  refresh-launcher  skipped: bash exec failed ({exc})")
 
@@ -2477,7 +2536,9 @@ def setup(
 
 @studio_app.command()
 def update(
-    local: bool = typer.Option(False, "--local", help = "Install from local repo instead of PyPI"),
+    local: bool = typer.Option(
+        False, "--local", help = "Install from local repo instead of PyPI"
+    ),
     package: str = typer.Option(
         "unsloth", "--package", help = "Package name to install/update (for testing)"
     ),

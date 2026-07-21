@@ -50,7 +50,9 @@ class TestValidateGgufRuntimeMessage(unittest.TestCase):
 
     def test_missing_llama_server_returns_actionable_message(self):
         route = _load_route_module("inf_route_runtime_msg_1", "routes/inference.py")
-        err = self._validate(route, "unsloth/Qwen3-1.7B-GGUF", LlamaServerNotFoundError(_GGUF_MSG))
+        err = self._validate(
+            route, "unsloth/Qwen3-1.7B-GGUF", LlamaServerNotFoundError(_GGUF_MSG)
+        )
         self.assertEqual(err.status_code, 400)
         self.assertIn("unsloth studio setup", err.detail)
         self.assertIn("llama.cpp runtime", err.detail)
@@ -61,7 +63,9 @@ class TestValidateGgufRuntimeMessage(unittest.TestCase):
         # routed to the GGUF "install the runtime" message. validate_model surfaces a RuntimeError's
         # own message (#6398), so assert the GGUF install text is absent and the message is intact.
         route = _load_route_module("inf_route_runtime_msg_2", "routes/inference.py")
-        err = self._validate(route, "not/a-real-model", RuntimeError("totally different failure"))
+        err = self._validate(
+            route, "not/a-real-model", RuntimeError("totally different failure")
+        )
         self.assertEqual(err.status_code, 400)
         self.assertNotIn("unsloth studio setup", err.detail)
         self.assertNotIn("llama.cpp runtime", err.detail)
@@ -73,32 +77,46 @@ class TestLoadGgufRuntimeMessage(unittest.TestCase):
 
     def _load(self, route, model_path, side_effect):
         request = LoadRequest(model_path = model_path)
-        backend = MagicMock(active_model_name = None)  # no resident model -> reach from_identifier
+        backend = MagicMock(
+            active_model_name = None
+        )  # no resident model -> reach from_identifier
         with (
             patch.object(
                 route,
                 "_resolve_model_identifier_for_request",
                 return_value = (model_path, model_path, False),
             ),
-            patch.object(route, "resolve_effective_chat_template_override", return_value = None),
+            patch.object(
+                route, "resolve_effective_chat_template_override", return_value = None
+            ),
             patch.object(route, "get_inference_backend", return_value = backend),
             patch.object(route, "get_llama_cpp_backend", return_value = MagicMock()),
             patch.object(route.ModelConfig, "from_identifier", side_effect = side_effect),
         ):
             with self.assertRaises(HTTPException) as exc:
-                asyncio.run(route.load_model(request, MagicMock(), current_subject = "test-user"))
+                asyncio.run(
+                    route.load_model(request, MagicMock(), current_subject = "test-user")
+                )
         return exc.exception
 
     def test_missing_llama_server_returns_actionable_message(self):
-        route = _load_route_module("inf_route_load_runtime_msg_1", "routes/inference.py")
-        err = self._load(route, "unsloth/Qwen3-1.7B-GGUF", LlamaServerNotFoundError(_GGUF_MSG))
+        route = _load_route_module(
+            "inf_route_load_runtime_msg_1", "routes/inference.py"
+        )
+        err = self._load(
+            route, "unsloth/Qwen3-1.7B-GGUF", LlamaServerNotFoundError(_GGUF_MSG)
+        )
         self.assertEqual(err.status_code, 400)
         self.assertIn("unsloth studio setup", err.detail)
         self.assertIn("llama.cpp runtime", err.detail)
 
     def test_other_load_errors_still_500(self):
-        route = _load_route_module("inf_route_load_runtime_msg_2", "routes/inference.py")
-        err = self._load(route, "unsloth/some-model", RuntimeError("totally different failure"))
+        route = _load_route_module(
+            "inf_route_load_runtime_msg_2", "routes/inference.py"
+        )
+        err = self._load(
+            route, "unsloth/some-model", RuntimeError("totally different failure")
+        )
         self.assertEqual(err.status_code, 500)
 
 
@@ -114,7 +132,9 @@ class TestLoadPathPropagatesRuntimeError(unittest.TestCase):
 
         with self.assertRaises(LlamaServerNotFoundError):
             asyncio.run(
-                load_with_tensor_fallback(_attempt, requested_tensor = False, extra_args = None)
+                load_with_tensor_fallback(
+                    _attempt, requested_tensor = False, extra_args = None
+                )
             )
 
 

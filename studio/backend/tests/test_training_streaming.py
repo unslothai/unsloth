@@ -43,7 +43,9 @@ class _Tokenizer:
     ):
         assert tokenize is False
         assert add_generation_prompt is False
-        return "\n".join(f"{message['role']}: {message['content']}" for message in conversation)
+        return "\n".join(
+            f"{message['role']}: {message['content']}" for message in conversation
+        )
 
 
 def _iterable_dataset(rows):
@@ -231,7 +233,9 @@ def test_streaming_start_rejects_train_on_completions_before_backend_start():
 
     with patch.object(training_route, "get_training_backend", return_value = backend):
         with pytest.raises(HTTPException) as exc_info:
-            asyncio.run(training_route.start_training(request, current_subject = "test-user"))
+            asyncio.run(
+                training_route.start_training(request, current_subject = "test-user")
+            )
 
     assert exc_info.value.status_code == 422
     assert "train_on_completions" in exc_info.value.detail
@@ -263,7 +267,9 @@ def test_streaming_start_requires_separate_eval_split(eval_split):
 
     with patch.object(training_route, "get_training_backend", return_value = backend):
         with pytest.raises(HTTPException) as exc_info:
-            asyncio.run(training_route.start_training(request, current_subject = "test-user"))
+            asyncio.run(
+                training_route.start_training(request, current_subject = "test-user")
+            )
 
     assert exc_info.value.status_code == 422
     assert "separate eval_split" in exc_info.value.detail
@@ -291,7 +297,9 @@ def test_streaming_start_rejects_missing_max_steps():
 
     with patch.object(training_route, "get_training_backend", return_value = backend):
         with pytest.raises(HTTPException) as exc_info:
-            asyncio.run(training_route.start_training(request, current_subject = "test-user"))
+            asyncio.run(
+                training_route.start_training(request, current_subject = "test-user")
+            )
 
     assert exc_info.value.status_code == 422
     assert "max_steps" in exc_info.value.detail
@@ -323,7 +331,9 @@ def test_streaming_start_rejects_embedding_models():
 
     with patch.object(training_route, "get_training_backend", return_value = backend):
         with pytest.raises(HTTPException) as exc_info:
-            asyncio.run(training_route.start_training(request, current_subject = "test-user"))
+            asyncio.run(
+                training_route.start_training(request, current_subject = "test-user")
+            )
 
     assert exc_info.value.status_code == 400
     assert "embedding" in exc_info.value.detail
@@ -473,10 +483,15 @@ def test_streaming_start_rejects_local_datasets():
 
     with patch.object(training_route, "get_training_backend", return_value = backend):
         with pytest.raises(HTTPException) as exc_info:
-            asyncio.run(training_route.start_training(request, current_subject = "test-user"))
+            asyncio.run(
+                training_route.start_training(request, current_subject = "test-user")
+            )
 
     assert exc_info.value.status_code == 400
-    assert "local" in exc_info.value.detail.lower() or "hf-only" in exc_info.value.detail.lower()
+    assert (
+        "local" in exc_info.value.detail.lower()
+        or "hf-only" in exc_info.value.detail.lower()
+    )
 
 
 # _drop_invalid_text_rows handles from_generator with column_names=None
@@ -533,7 +548,9 @@ def test_preflight_first_batch_returns_error_on_empty_stream():
     trainer_mod = importlib.util.module_from_spec(spec)
     # Provide a minimal sys.modules shim so top-level imports in trainer.py don't
     # crash when optional heavy deps (torch, unsloth) are absent.
-    _orig_import = __builtins__.__import__ if hasattr(__builtins__, "__import__") else __import__
+    _orig_import = (
+        __builtins__.__import__ if hasattr(__builtins__, "__import__") else __import__
+    )
 
     try:
         spec.loader.exec_module(trainer_mod)
@@ -552,7 +569,9 @@ def test_preflight_first_batch_returns_error_on_empty_stream():
             break
 
     if trainer_cls is None:
-        pytest.skip("Could not load trainer module (missing optional deps: torch/unsloth).")
+        pytest.skip(
+            "Could not load trainer module (missing optional deps: torch/unsloth)."
+        )
 
     # Build a bare instance without calling __init__ (avoids needing real deps).
     instance = object.__new__(trainer_cls)
@@ -567,4 +586,6 @@ def test_preflight_first_batch_returns_error_on_empty_stream():
     )
     assert isinstance(result, str)
     # The message should indicate there are no training rows / empty dataset.
-    assert any(kw in result.lower() for kw in ("empty", "no training", "no rows", "stream"))
+    assert any(
+        kw in result.lower() for kw in ("empty", "no training", "no rows", "stream")
+    )

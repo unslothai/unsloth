@@ -127,7 +127,9 @@ def test_stale_kill_skips_wait():
         LlamaCppBackend._wait_for_vram_settle(
             **_kw(since_kill = long_ago, max_wait = 2.0, interval = 0.25)
         )
-    assert state["calls"] == 0, "kill older than _VRAM_SETTLE_WINDOW_S must skip the wait"
+    assert (
+        state["calls"] == 0
+    ), "kill older than _VRAM_SETTLE_WINDOW_S must skip the wait"
 
 
 def test_empty_first_sample_returns_immediately():
@@ -215,7 +217,9 @@ def test_max_wait_respected_when_probe_is_slow():
         elapsed = time.monotonic() - start
     # First probe (0.30 s) + at most one clipped sleep + bail.
     # Hard cap well below the old 0.30 + 0.25 + 0.30 = 0.85.
-    assert elapsed < 0.85, f"helper exceeded the deadline due to slow probes: {elapsed:.3f}s"
+    assert (
+        elapsed < 0.85
+    ), f"helper exceeded the deadline due to slow probes: {elapsed:.3f}s"
 
 
 def test_gpu_index_set_change_returns():
@@ -373,7 +377,9 @@ def test_kill_orphaned_servers_returns_count():
     with (
         patch.dict(sys.modules, {"psutil": fake_psutil}),
         patch.dict(os.environ, {"LLAMA_SERVER_PATH": fake_path}),
-        patch.object(LlamaCppBackend, "_pid_parent_is_alive", staticmethod(lambda pid: False)),
+        patch.object(
+            LlamaCppBackend, "_pid_parent_is_alive", staticmethod(lambda pid: False)
+        ),
     ):
         n = LlamaCppBackend._kill_orphaned_servers()
     assert n == 1, "only the Unsloth-owned orphan should be counted"
@@ -385,7 +391,9 @@ def test_kill_orphaned_servers_returns_count():
     with (
         patch.dict(sys.modules, {"psutil": fake_psutil}),
         patch.dict(os.environ, {"LLAMA_SERVER_PATH": fake_path}),
-        patch.object(LlamaCppBackend, "_pid_parent_is_alive", staticmethod(lambda pid: False)),
+        patch.object(
+            LlamaCppBackend, "_pid_parent_is_alive", staticmethod(lambda pid: False)
+        ),
     ):
         assert LlamaCppBackend._kill_orphaned_servers() == 0
     assert killed == []
@@ -436,7 +444,9 @@ def test_startup_reaper_arms_settle_timestamp():
     """__init__ arms ``_last_kill_monotonic`` when the startup reaper kills an
     orphan (so the first load_model waits for VRAM to settle), and leaves the
     0.0 cold-start sentinel when nothing was reaped."""
-    with patch.object(LlamaCppBackend, "_kill_orphaned_servers", staticmethod(lambda: 1)):
+    with patch.object(
+        LlamaCppBackend, "_kill_orphaned_servers", staticmethod(lambda: 1)
+    ):
         before = time.monotonic()
         backend = LlamaCppBackend()
         after = time.monotonic()
@@ -444,7 +454,9 @@ def test_startup_reaper_arms_settle_timestamp():
         before <= backend._last_kill_monotonic <= after
     ), "a positive reap count must arm the settle clock"
 
-    with patch.object(LlamaCppBackend, "_kill_orphaned_servers", staticmethod(lambda: 0)):
+    with patch.object(
+        LlamaCppBackend, "_kill_orphaned_servers", staticmethod(lambda: 0)
+    ):
         backend_cold = LlamaCppBackend()
     assert (
         backend_cold._last_kill_monotonic == 0.0
@@ -486,7 +498,9 @@ def test_kill_process_clears_pidfile(tmp_path):
     backend._llama_log_fh = None
     backend._last_kill_monotonic = 0.0
     backend._stats_logger = None
-    with patch.object(LlamaCppBackend, "_server_pidfile_path", staticmethod(lambda: pidfile)):
+    with patch.object(
+        LlamaCppBackend, "_server_pidfile_path", staticmethod(lambda: pidfile)
+    ):
         backend._kill_process()
     assert not pidfile.exists()
 
@@ -501,8 +515,12 @@ def test_reap_recorded_pid_kills_recorded_server(tmp_path):
     pidfile.write_text(str(proc.pid))
     try:
         with (
-            patch.object(LlamaCppBackend, "_server_pidfile_path", staticmethod(lambda: pidfile)),
-            patch.object(LlamaCppBackend, "_pid_parent_is_alive", staticmethod(lambda pid: False)),
+            patch.object(
+                LlamaCppBackend, "_server_pidfile_path", staticmethod(lambda: pidfile)
+            ),
+            patch.object(
+                LlamaCppBackend, "_pid_parent_is_alive", staticmethod(lambda pid: False)
+            ),
             patch.object(
                 LlamaCppBackend,
                 "_pid_is_llama_server",
@@ -528,13 +546,21 @@ def test_record_then_reap_round_trip_identity_matches(tmp_path):
     proc = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(30)"])
     pidfile = tmp_path / "llama-server.pid"
     try:
-        with patch.object(LlamaCppBackend, "_server_pidfile_path", staticmethod(lambda: pidfile)):
+        with patch.object(
+            LlamaCppBackend, "_server_pidfile_path", staticmethod(lambda: pidfile)
+        ):
             LlamaCppBackend._record_server_pid(proc.pid)
         assert ":" in pidfile.read_text(), "a start-time identity must be recorded"
         with (
-            patch.object(LlamaCppBackend, "_server_pidfile_path", staticmethod(lambda: pidfile)),
-            patch.object(LlamaCppBackend, "_pid_parent_is_alive", staticmethod(lambda pid: False)),
-            patch.object(LlamaCppBackend, "_pid_is_llama_server", staticmethod(lambda pid: True)),
+            patch.object(
+                LlamaCppBackend, "_server_pidfile_path", staticmethod(lambda: pidfile)
+            ),
+            patch.object(
+                LlamaCppBackend, "_pid_parent_is_alive", staticmethod(lambda pid: False)
+            ),
+            patch.object(
+                LlamaCppBackend, "_pid_is_llama_server", staticmethod(lambda pid: True)
+            ),
         ):
             n = LlamaCppBackend._reap_recorded_pid()
         assert n == 1, "a matching identity on a true orphan must be reaped"
@@ -559,9 +585,13 @@ def test_reap_recorded_pid_spares_live_server(tmp_path):
     pidfile.write_text(str(proc.pid))
     try:
         with (
-            patch.object(LlamaCppBackend, "_server_pidfile_path", staticmethod(lambda: pidfile)),
+            patch.object(
+                LlamaCppBackend, "_server_pidfile_path", staticmethod(lambda: pidfile)
+            ),
             # Force the name check True so ONLY the parent-alive guard can spare it.
-            patch.object(LlamaCppBackend, "_pid_is_llama_server", staticmethod(lambda pid: True)),
+            patch.object(
+                LlamaCppBackend, "_pid_is_llama_server", staticmethod(lambda pid: True)
+            ),
         ):
             n = LlamaCppBackend._reap_recorded_pid()
         assert n == 0, "a live server with a running parent must not be reaped"
@@ -582,9 +612,15 @@ def test_reap_recorded_pid_skips_pid_reuse(tmp_path):
     pidfile.write_text(str(proc.pid))
     try:
         with (
-            patch.object(LlamaCppBackend, "_server_pidfile_path", staticmethod(lambda: pidfile)),
-            patch.object(LlamaCppBackend, "_pid_parent_is_alive", staticmethod(lambda pid: False)),
-            patch.object(LlamaCppBackend, "_pid_is_llama_server", staticmethod(lambda pid: False)),
+            patch.object(
+                LlamaCppBackend, "_server_pidfile_path", staticmethod(lambda: pidfile)
+            ),
+            patch.object(
+                LlamaCppBackend, "_pid_parent_is_alive", staticmethod(lambda pid: False)
+            ),
+            patch.object(
+                LlamaCppBackend, "_pid_is_llama_server", staticmethod(lambda pid: False)
+            ),
         ):
             n = LlamaCppBackend._reap_recorded_pid()
         assert n == 0
@@ -605,9 +641,15 @@ def test_reap_recorded_pid_skips_identity_mismatch(tmp_path):
     pidfile.write_text(f"{proc.pid}:0.0")  # stale identity that cannot match
     try:
         with (
-            patch.object(LlamaCppBackend, "_server_pidfile_path", staticmethod(lambda: pidfile)),
-            patch.object(LlamaCppBackend, "_pid_parent_is_alive", staticmethod(lambda pid: False)),
-            patch.object(LlamaCppBackend, "_pid_is_llama_server", staticmethod(lambda pid: True)),
+            patch.object(
+                LlamaCppBackend, "_server_pidfile_path", staticmethod(lambda: pidfile)
+            ),
+            patch.object(
+                LlamaCppBackend, "_pid_parent_is_alive", staticmethod(lambda pid: False)
+            ),
+            patch.object(
+                LlamaCppBackend, "_pid_is_llama_server", staticmethod(lambda pid: True)
+            ),
         ):
             n = LlamaCppBackend._reap_recorded_pid()
         assert n == 0, "a PID whose start-time identity changed must not be killed"
@@ -634,9 +676,15 @@ def test_reap_recorded_pid_windows_sigkill_fallback(tmp_path, monkeypatch):
     pidfile = tmp_path / "llama-server.pid"
     pidfile.write_text("424242")
     with (
-        patch.object(LlamaCppBackend, "_server_pidfile_path", staticmethod(lambda: pidfile)),
-        patch.object(LlamaCppBackend, "_pid_parent_is_alive", staticmethod(lambda pid: False)),
-        patch.object(LlamaCppBackend, "_pid_is_llama_server", staticmethod(lambda pid: True)),
+        patch.object(
+            LlamaCppBackend, "_server_pidfile_path", staticmethod(lambda: pidfile)
+        ),
+        patch.object(
+            LlamaCppBackend, "_pid_parent_is_alive", staticmethod(lambda pid: False)
+        ),
+        patch.object(
+            LlamaCppBackend, "_pid_is_llama_server", staticmethod(lambda pid: True)
+        ),
         patch.object(_os, "kill", _fake_kill),
     ):
         n = LlamaCppBackend._reap_recorded_pid()
@@ -650,5 +698,7 @@ def test_reap_recorded_pid_windows_sigkill_fallback(tmp_path, monkeypatch):
 def test_reap_recorded_pid_no_pidfile(tmp_path):
     """No pidfile -> nothing reaped, no error."""
     pidfile = tmp_path / "llama-server.pid"  # never created
-    with patch.object(LlamaCppBackend, "_server_pidfile_path", staticmethod(lambda: pidfile)):
+    with patch.object(
+        LlamaCppBackend, "_server_pidfile_path", staticmethod(lambda: pidfile)
+    ):
         assert LlamaCppBackend._reap_recorded_pid() == 0

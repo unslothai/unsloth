@@ -173,7 +173,9 @@ class ChatSettingsPayload(BaseModel):
     inferenceParams: Optional[ChatInferenceSettings] = None
     customPresets: Optional[list[ChatPreset]] = None
     activePreset: Optional[str] = None
-    activePresetSource: Optional[Literal["builtin-default", "custom", "modified"]] = None
+    activePresetSource: Optional[Literal["builtin-default", "custom", "modified"]] = (
+        None
+    )
     autoTitle: Optional[bool] = None
     reasoningEffort: Optional[
         Literal["none", "minimal", "low", "medium", "high", "max", "xhigh"]
@@ -233,7 +235,9 @@ async def list_threads(
 
 
 @router.post("/threads", response_model = ChatThread)
-async def save_thread(payload: ChatThread, current_subject: str = Depends(get_current_subject)):
+async def save_thread(
+    payload: ChatThread, current_subject: str = Depends(get_current_subject)
+):
     if payload.projectId and get_chat_project(payload.projectId) is None:
         raise HTTPException(
             status_code = 404,
@@ -243,7 +247,9 @@ async def save_thread(payload: ChatThread, current_subject: str = Depends(get_cu
 
 
 @router.get("/threads/{thread_id}", response_model = ChatThread)
-async def get_thread(thread_id: str, current_subject: str = Depends(get_current_subject)):
+async def get_thread(
+    thread_id: str, current_subject: str = Depends(get_current_subject)
+):
     thread = get_chat_thread(thread_id)
     if thread is None:
         raise HTTPException(status_code = 404, detail = f"Thread {thread_id} not found")
@@ -257,7 +263,14 @@ async def patch_thread(
     current_subject: str = Depends(get_current_subject),
 ):
     patch = payload.model_dump(exclude_unset = True)
-    for field in ("title", "modelType", "modelId", "archived", "createdAt", "updatedAt"):
+    for field in (
+        "title",
+        "modelType",
+        "modelId",
+        "archived",
+        "createdAt",
+        "updatedAt",
+    ):
         if field in patch and patch[field] is None:
             raise HTTPException(status_code = 400, detail = f"{field} cannot be null")
     if patch.get("projectId") and get_chat_project(patch["projectId"]) is None:
@@ -308,7 +321,9 @@ def _decode_attachment_base64(payload: str) -> bytes:
     try:
         return base64.b64decode(normalized, altchars = altchars, validate = True)
     except Exception as exc:  # noqa: BLE001 - corrupt stored payload
-        raise HTTPException(status_code = 422, detail = "Attachment data is corrupt") from exc
+        raise HTTPException(
+            status_code = 422, detail = "Attachment data is corrupt"
+        ) from exc
 
 
 _AUDIO_FORMAT_MEDIA_TYPES = {
@@ -391,7 +406,9 @@ def get_attachment_file(
         if isinstance(text, str) and text:
             texts.append(text)
     if texts:
-        return Response(content = "\n".join(texts), media_type = "text/plain; charset=utf-8")
+        return Response(
+            content = "\n".join(texts), media_type = "text/plain; charset=utf-8"
+        )
     raise HTTPException(status_code = 404, detail = "Attachment has no stored content")
 
 
@@ -409,7 +426,8 @@ def delete_attachment(
 
 @router.get("/projects", response_model = ChatProjectListResponse)
 async def list_projects(
-    include_archived: bool = Query(False), current_subject: str = Depends(get_current_subject)
+    include_archived: bool = Query(False),
+    current_subject: str = Depends(get_current_subject),
 ):
     return ChatProjectListResponse(
         projects = [
@@ -420,12 +438,16 @@ async def list_projects(
 
 
 @router.post("/projects", response_model = ChatProject)
-async def save_project(payload: ChatProject, current_subject: str = Depends(get_current_subject)):
+async def save_project(
+    payload: ChatProject, current_subject: str = Depends(get_current_subject)
+):
     return ChatProject(**upsert_chat_project(payload.model_dump()))
 
 
 @router.get("/projects/{project_id}", response_model = ChatProject)
-async def get_project(project_id: str, current_subject: str = Depends(get_current_subject)):
+async def get_project(
+    project_id: str, current_subject: str = Depends(get_current_subject)
+):
     project = ensure_chat_project_workspace(project_id)
     if project is None:
         raise HTTPException(
@@ -496,12 +518,16 @@ async def delete_project(
             finally:
                 conn.close()
     except Exception:  # noqa: BLE001 - source cleanup must not block project deletion
-        logger.warning("failed to delete RAG sources for project %s", project_id, exc_info = True)
+        logger.warning(
+            "failed to delete RAG sources for project %s", project_id, exc_info = True
+        )
     return ChatProject(**project)
 
 
 @router.get("/threads/{thread_id}/messages", response_model = ChatMessageListResponse)
-async def get_thread_messages(thread_id: str, current_subject: str = Depends(get_current_subject)):
+async def get_thread_messages(
+    thread_id: str, current_subject: str = Depends(get_current_subject)
+):
     if get_chat_thread(thread_id) is None:
         raise HTTPException(status_code = 404, detail = f"Thread {thread_id} not found")
     return ChatMessageListResponse(
@@ -511,7 +537,8 @@ async def get_thread_messages(thread_id: str, current_subject: str = Depends(get
 
 @router.post("/messages:batch", response_model = ChatMessagesBatchResponse)
 async def batch_thread_messages(
-    payload: ChatMessagesBatchRequest, current_subject: str = Depends(get_current_subject)
+    payload: ChatMessagesBatchRequest,
+    current_subject: str = Depends(get_current_subject),
 ):
     """One round-trip per sidebar/search rebuild instead of N. Unknown thread ids return empty lists."""
     by_thread: dict[str, list[ChatMessage]] = {tid: [] for tid in payload.threadIds}
@@ -565,10 +592,14 @@ def replace_thread_messages(
     payload: ChatMessageSyncRequest,
     current_subject: str = Depends(get_current_subject),
 ):
-    mismatched_ids = [message.id for message in payload.messages if message.threadId != thread_id]
+    mismatched_ids = [
+        message.id for message in payload.messages if message.threadId != thread_id
+    ]
     if mismatched_ids:
         preview = ", ".join(mismatched_ids[:5])
-        suffix = "" if len(mismatched_ids) <= 5 else f" (+{len(mismatched_ids) - 5} more)"
+        suffix = (
+            "" if len(mismatched_ids) <= 5 else f" (+{len(mismatched_ids) - 5} more)"
+        )
         raise HTTPException(
             status_code = 400,
             detail = f"Message threadId mismatch: {preview}{suffix}",
@@ -613,7 +644,8 @@ async def get_import_ledger(current_subject: str = Depends(get_current_subject))
 
 @router.post("/import-ledger", response_model = ChatImportLedgerRecordResponse)
 async def record_import_ledger(
-    payload: ChatImportLedgerRecordRequest, current_subject: str = Depends(get_current_subject)
+    payload: ChatImportLedgerRecordRequest,
+    current_subject: str = Depends(get_current_subject),
 ):
     """Mark each legacy thread id as imported. Idempotent."""
     accepted, inserted = upsert_chat_legacy_imports(payload.threadIds)
@@ -712,8 +744,12 @@ async def fork_thread(
     # and surface the same warning regardless of provider so the UI can
     # show a consistent "sandbox starts fresh" toast.
     warning: Optional[str] = None
-    if source.get("openaiCodeExecContainerId") or source.get("anthropicCodeExecContainerId"):
-        warning = "Sandbox starts fresh in fork; files from parent are not carried over."
+    if source.get("openaiCodeExecContainerId") or source.get(
+        "anthropicCodeExecContainerId"
+    ):
+        warning = (
+            "Sandbox starts fresh in fork; files from parent are not carried over."
+        )
     return ChatForkResponse(
         thread = ChatThread(**forked),
         messages = [ChatMessage(**m) for m in messages],

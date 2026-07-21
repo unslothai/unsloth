@@ -111,7 +111,9 @@ _CHATML_ROWS = [
             {"role": "assistant", "content": "  \t  "},
         ]
     },  # tab whitespace
-    {"messages": [None, {"role": "assistant", "content": "Reply"}]},  # None turn element
+    {
+        "messages": [None, {"role": "assistant", "content": "Reply"}]
+    },  # None turn element
 ]
 
 # P1 rows: messages is None or non-list. Plain dicts (not an HF Dataset) since
@@ -228,7 +230,9 @@ def make_alpaca_dataset() -> Dataset:
 
 if __name__ == "__main__":
     print("Synthetic dataset sizes:")
-    print(f"  chatml:   {len(_CHATML_ROWS)} rows (+ {len(_CHATML_P1_ROWS)} P1 mock rows)")
+    print(
+        f"  chatml:   {len(_CHATML_ROWS)} rows (+ {len(_CHATML_P1_ROWS)} P1 mock rows)"
+    )
     print(f"  sharegpt: {len(_SHAREGPT_ROWS)} rows")
     print(f"  alpaca:   {len(_ALPACA_ROWS)} rows")
     print(

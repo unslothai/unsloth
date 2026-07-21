@@ -75,7 +75,9 @@ _ROCM_TORCH_INDEX: dict[tuple[int, int], str] = {
 
 # AMD per-arch leaves needing the torch 2.11 floor (the _grouped_mm <2.11 bug).
 # Mirrors *FloorMap in install.ps1 / setup.ps1; other arches ship <2.11 and stay bare.
-_ROCM_GFX_TORCH211_LEAVES: frozenset[str] = frozenset({"gfx120x-all", "gfx1151", "gfx1150"})
+_ROCM_GFX_TORCH211_LEAVES: frozenset[str] = frozenset(
+    {"gfx120x-all", "gfx1151", "gfx1150"}
+)
 
 # pytorch.org rocmX.Y indexes KNOWN to ship torch 2.11 (rocm7.2 only today); don't
 # floor an unknown newer rocm speculatively. Match install.sh / setup.ps1 / install.ps1.
@@ -325,7 +327,11 @@ def _repair_bad_anyio() -> None:
     installed = _installed_anyio_version()
     if installed is None or installed < _ANYIO_BAD_FLOOR:
         return
-    _safe_print(_dim(f"   anyio {installed[0]}.{installed[1]} found -- reinstalling anyio<4.14..."))
+    _safe_print(
+        _dim(
+            f"   anyio {installed[0]}.{installed[1]} found -- reinstalling anyio<4.14..."
+        )
+    )
     pip_install(
         "Repairing anyio version",
         "--no-cache-dir",
@@ -413,7 +419,10 @@ def _path_inside_venv(path: str) -> bool:
         # it. A venv is never at root, so treat that as outside.
         if os.path.dirname(_root) == _root:
             return False
-        return os.path.normcase(os.path.commonpath([os.path.realpath(path), _root])) == _root
+        return (
+            os.path.normcase(os.path.commonpath([os.path.realpath(path), _root]))
+            == _root
+        )
     except (ValueError, OSError):
         # Different drive / unresolvable -> treat as outside the venv.
         return False
@@ -514,7 +523,11 @@ def _detect_rocm_version() -> tuple[int, int] | None:
             if result.returncode == 0:
                 raw = result.stdout.decode().strip().split("\n")[0]
                 parts = raw.split(".")
-                if len(parts) >= 2 and parts[0].isdigit() and parts[1].split("-")[0].isdigit():
+                if (
+                    len(parts) >= 2
+                    and parts[0].isdigit()
+                    and parts[1].split("-")[0].isdigit()
+                ):
                     return int(parts[0]), int(parts[1].split("-")[0])
         except Exception:
             pass
@@ -632,7 +645,8 @@ def _detect_windows_gfx_arch() -> str | None:
             # findall gets every gcnArchName line so multi-GPU hosts are
             # enumerable and HIP_VISIBLE_DEVICES selects correctly.
             _tokens = [
-                t.strip().lower() for t in re.findall(r"(?im)^\s*gcnArchName\s*:\s*(\S+)", text)
+                t.strip().lower()
+                for t in re.findall(r"(?im)^\s*gcnArchName\s*:\s*(\S+)", text)
             ]
             _pick = _dedup_pick(_tokens)
             if _pick:
@@ -808,7 +822,9 @@ def _persist_bnb_rocm_version(version: str) -> bool:
     try:
         sitecustomize_path.parent.mkdir(parents = True, exist_ok = True)
         existing = (
-            sitecustomize_path.read_text(encoding = "utf-8") if sitecustomize_path.exists() else ""
+            sitecustomize_path.read_text(encoding = "utf-8")
+            if sitecustomize_path.exists()
+            else ""
         )
         # Strip all managed regions, including one whose END marker was lost to
         # an interrupted write, then append exactly one fresh block.
@@ -1043,7 +1059,8 @@ def _install_bnb_windows_rocm() -> bool:
     # if detection fails (e.g. a no-op / dry-run install).
     _env_ver = os.environ.get("BNB_ROCM_VERSION")
     _env_is_persisted_default = (
-        os.environ.get(_BNB_ROCM_VERSION_SOURCE_ENV) == _BNB_ROCM_VERSION_SOURCE_SITECUSTOMIZE
+        os.environ.get(_BNB_ROCM_VERSION_SOURCE_ENV)
+        == _BNB_ROCM_VERSION_SOURCE_SITECUSTOMIZE
     )
     _persist_detected_version = False
     if _env_ver and not _env_is_persisted_default:
@@ -1140,7 +1157,9 @@ def _is_pip_rocm_family_leaf(leaf: str) -> bool:
     """
     # gfx must be followed by a digit (gfx90a, gfx1151, gfx120X-all): a gfx-prefixed
     # custom leaf (gfx-private) is a verbatim pin, like rocm7.2-private.
-    return bool(re.fullmatch(r"rocm\d+(?:\.\d+)?", leaf)) or bool(re.match(r"gfx\d", leaf))
+    return bool(re.fullmatch(r"rocm\d+(?:\.\d+)?", leaf)) or bool(
+        re.match(r"gfx\d", leaf)
+    )
 
 
 def _explicit_rocm_torch_index_url() -> "str | None":
@@ -1169,14 +1188,18 @@ def _rocm_pin_family_mismatch(pin_url: str, installed_ver: str) -> bool:
     # Installed +rocmX.Y version; a THREE-part +rocmA.B.C tag is the AMD per-arch
     # (repo.amd.com/gfx*) signature vs a two-part pytorch.org wheel.
     _inst_rocm = re.search(r"\+rocm(\d+)\.(\d+)", installed_ver)
-    _inst_ver = (int(_inst_rocm.group(1)), int(_inst_rocm.group(2))) if _inst_rocm else None
+    _inst_ver = (
+        (int(_inst_rocm.group(1)), int(_inst_rocm.group(2))) if _inst_rocm else None
+    )
     _inst_is_perarch = re.search(r"\+rocm\d+\.\d+\.\d+", installed_ver) is not None
     # A ROCm build MUST carry a +rocm tag; an untagged wheel never satisfies a ROCm pin.
     _inst_has_rocm = re.search(r"\+rocm", installed_ver) is not None
     # Installed torch RELEASE (before "+") is 2.11+.
     _inst_rel = re.match(r"^(\d+)\.(\d+)", installed_ver)
     _inst_is_211 = (
-        (int(_inst_rel.group(1)), int(_inst_rel.group(2))) >= (2, 11) if _inst_rel else False
+        (int(_inst_rel.group(1)), int(_inst_rel.group(2))) >= (2, 11)
+        if _inst_rel
+        else False
     )
 
     if leaf.startswith("gfx"):
@@ -1198,7 +1221,9 @@ def _rocm_pin_family_mismatch(pin_url: str, installed_ver: str) -> bool:
         return not _inst_has_rocm
 
     # rocmX.Y pin. Only KNOWN-2.11 rocm is the 2.11 line (no speculative floor).
-    _pin_is_211 = _pin_ver in _ROCM_KNOWN_TORCH211_VERSIONS if _pin_ver is not None else False
+    _pin_is_211 = (
+        _pin_ver in _ROCM_KNOWN_TORCH211_VERSIONS if _pin_ver is not None else False
+    )
     if _pin_ver is not None and _inst_ver is not None:
         # Both readable: exact (major, minor) compare (rocm7.2 pin over +rocm7.13.x ->
         # mismatch, reinstall the pinned wheel).
@@ -1355,7 +1380,9 @@ def _ensure_cuda_torch() -> None:
         return
     # Last non-empty line: stray sitecustomize/import-hook output must not mask the marker.
     _marker_lines = [
-        line.strip() for line in probe.stdout.decode(errors = "replace").splitlines() if line.strip()
+        line.strip()
+        for line in probe.stdout.decode(errors = "replace").splitlines()
+        if line.strip()
     ]
     if not _marker_lines:
         return
@@ -1455,7 +1482,9 @@ def _ensure_cpu_torch() -> None:
         )
         return
     _lines = [
-        line.strip() for line in probe.stdout.decode(errors = "replace").splitlines() if line.strip()
+        line.strip()
+        for line in probe.stdout.decode(errors = "replace").splitlines()
+        if line.strip()
     ]
     if not _lines:
         return  # unreadable -- the base install step handles a missing torch
@@ -1568,7 +1597,9 @@ def _ensure_rocm_torch() -> None:
         if not _torch_already_rocm:
             index_url = _win_rocm_pin or _windows_rocm_index_url(gfx_arch)
             if index_url is None:
-                print(f"   No AMD Windows torch index for GPU arch {gfx_arch} -- skipping")
+                print(
+                    f"   No AMD Windows torch index for GPU arch {gfx_arch} -- skipping"
+                )
                 return
             print(
                 f"   {gfx_arch or 'pinned ROCm index'} (Windows) -- installing torch from "
@@ -1663,7 +1694,11 @@ def _ensure_rocm_torch() -> None:
         probe = None
     # Last non-empty line, split on the FIRST "|" so the empty HIP field is preserved.
     _marker_lines = (
-        [ln.strip() for ln in probe.stdout.decode(errors = "replace").splitlines() if ln.strip()]
+        [
+            ln.strip()
+            for ln in probe.stdout.decode(errors = "replace").splitlines()
+            if ln.strip()
+        ]
         if (probe is not None and probe.returncode == 0)
         else []
     )
@@ -1697,11 +1732,14 @@ def _ensure_rocm_torch() -> None:
         if _detected_strix:
             # Runtime-visible GPU (HIP_VISIBLE_DEVICES index into gfx_codes, else first);
             # skip the override unless it's Strix.
-            _runtime_gfx = gfx_codes[_pick_visible_index(len(gfx_codes))] if gfx_codes else None
+            _runtime_gfx = (
+                gfx_codes[_pick_visible_index(len(gfx_codes))] if gfx_codes else None
+            )
             if _runtime_gfx in _strix_gfx:
                 _selected_gfx = _runtime_gfx
                 _amd_mirror = (
-                    os.environ.get("UNSLOTH_AMD_ROCM_MIRROR") or "https://repo.amd.com/rocm/whl"
+                    os.environ.get("UNSLOTH_AMD_ROCM_MIRROR")
+                    or "https://repo.amd.com/rocm/whl"
                 ).rstrip("/")
                 _strix_override_url = f"{_amd_mirror}/{_selected_gfx}/"
                 _strix_override_pkgs = (
@@ -1765,11 +1803,15 @@ def _ensure_rocm_torch() -> None:
                 None,
             )
         if tag is None:
-            print(f"   No PyTorch wheel for ROCm {ver[0]}.{ver[1]} -- skipping torch reinstall")
+            print(
+                f"   No PyTorch wheel for ROCm {ver[0]}.{ver[1]} -- skipping torch reinstall"
+            )
         else:
             if _override_idx is None:
                 index_url = f"{_PYTORCH_WHL_BASE}/{tag}"
-            print(f"   ROCm torch -- installing from {_strip_index_url_credentials(index_url)}")
+            print(
+                f"   ROCm torch -- installing from {_strip_index_url_credentials(index_url)}"
+            )
             # Only the _grouped_mm-bug gfx arches need the 2.11 spec; other gfx indexes ship
             # <2.11 and stay on the default range (matches install.ps1 / setup.ps1).
             if tag in _ROCM_GFX_TORCH211_LEAVES:
@@ -1929,7 +1971,9 @@ CONSTRAINTS = SINGLE_ENV / "constraints.txt"
 LOCAL_DD_UNSTRUCTURED_PLUGIN = (
     SCRIPT_DIR / "backend" / "plugins" / "data-designer-unstructured-seed"
 )
-LOCAL_DD_GITHUB_PLUGIN = SCRIPT_DIR / "backend" / "plugins" / "data-designer-github-repo-seed"
+LOCAL_DD_GITHUB_PLUGIN = (
+    SCRIPT_DIR / "backend" / "plugins" / "data-designer-github-repo-seed"
+)
 
 # mlx-lm 0.31.3 broke gemma4 / qwen3_5 loading (strict load_weights rejects the
 # QK-norm q_norm/k_norm tensors); exclude just that release. See mlx-lm #1242.
@@ -2083,7 +2127,9 @@ def _progress(label: str) -> None:
     pad = " " * (_COL - len(_LABEL))
     end = "\n" if _STEP >= _TOTAL else ""
     try:
-        sys.stdout.write(f"\r  {_dim(_LABEL)}{pad}[{bar}] {_STEP:2}/{_TOTAL}  {label:<20}{end}")
+        sys.stdout.write(
+            f"\r  {_dim(_LABEL)}{pad}[{bar}] {_STEP:2}/{_TOTAL}  {label:<20}{end}"
+        )
         sys.stdout.flush()
         _PROGRESS_LINE_ACTIVE = end == ""
     except OSError:
@@ -2144,7 +2190,9 @@ def _build_flash_attn_wheel_url(env: dict[str, str]) -> str | None:
     return flash_attn_wheel_url(env)
 
 
-def _print_optional_install_failure(label: str, result: subprocess.CompletedProcess[str]) -> None:
+def _print_optional_install_failure(
+    label: str, result: subprocess.CompletedProcess[str]
+) -> None:
     _step("warning", f"{label} failed (exit code {result.returncode})", _cyan)
     if result.stdout:
         # Redact any pinned --index-url credentials before printing captured output.
@@ -2240,7 +2288,9 @@ def _filter_requirements(req: Path, skip: set[str]) -> Path:
     """Return a temp copy of a requirements file with certain packages removed."""
     lines = req.read_text(encoding = "utf-8").splitlines(keepends = True)
     filtered = [
-        line for line in lines if not any(line.strip().lower().startswith(pkg) for pkg in skip)
+        line
+        for line in lines
+        if not any(line.strip().lower().startswith(pkg) for pkg in skip)
     ]
     tmp = tempfile.NamedTemporaryFile(
         mode = "w",
@@ -2747,12 +2797,16 @@ def install_python_stack() -> int:
         # and crashes transformers.quantizers. Unsloth stubs it at runtime, so
         # installing it only ships a package that crashes on import -- skip it.
         _progress("dependency overrides (skipped, Windows ROCm)")
-        _safe_print("   Windows ROCm -- skipping torchao (no working build; stubbed at runtime)")
+        _safe_print(
+            "   Windows ROCm -- skipping torchao (no working build; stubbed at runtime)"
+        )
     else:
         _progress("dependency overrides")
         _torch_ver = _probe_installed_torch_version()
         _torchao_spec = _select_torchao_spec(_torch_ver)
-        _safe_print(f"   torch {_torch_ver or 'unknown'} detected -- installing {_torchao_spec}")
+        _safe_print(
+            f"   torch {_torch_ver or 'unknown'} detected -- installing {_torchao_spec}"
+        )
         pip_install(
             "Installing dependency overrides",
             "--force-reinstall",

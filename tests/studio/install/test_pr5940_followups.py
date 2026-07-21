@@ -65,8 +65,12 @@ def test_fetch_validation_model_prefers_huggingface_hub(tmp_path):
     model.write_bytes(b"GGUF-via-hf")
     fake_hf = MagicMock(return_value = str(model))
     with (
-        patch.object(prebuilt, "validated_validation_model_bytes", side_effect = lambda b: b),
-        patch.dict(sys.modules, {"huggingface_hub": MagicMock(hf_hub_download = fake_hf)}),
+        patch.object(
+            prebuilt, "validated_validation_model_bytes", side_effect = lambda b: b
+        ),
+        patch.dict(
+            sys.modules, {"huggingface_hub": MagicMock(hf_hub_download = fake_hf)}
+        ),
     ):
         assert prebuilt._fetch_validation_model_bytes() == b"GGUF-via-hf"
     assert fake_hf.called  # hf path was taken, urllib not needed
@@ -75,8 +79,12 @@ def test_fetch_validation_model_prefers_huggingface_hub(tmp_path):
 def test_fetch_validation_model_falls_back_to_urllib_on_hf_failure():
     fake_hf = MagicMock(side_effect = RuntimeError("hf unreachable"))
     with (
-        patch.object(prebuilt, "validated_validation_model_bytes", side_effect = lambda b: b),
-        patch.dict(sys.modules, {"huggingface_hub": MagicMock(hf_hub_download = fake_hf)}),
+        patch.object(
+            prebuilt, "validated_validation_model_bytes", side_effect = lambda b: b
+        ),
+        patch.dict(
+            sys.modules, {"huggingface_hub": MagicMock(hf_hub_download = fake_hf)}
+        ),
         patch.object(prebuilt, "download_bytes", return_value = b"GGUF-via-urllib") as dl,
     ):
         assert prebuilt._fetch_validation_model_bytes() == b"GGUF-via-urllib"
@@ -188,7 +196,9 @@ def test_install_sh_name_arch_agrees_with_ps_for_strix_and_non_amd():
         assert sh == expect, f"install.sh: {name!r} -> {sh!r}, expected {expect!r}"
         if expect is not None:  # cross-check bash agrees with the PowerShell table
             ps = next((a for p, a in ps_rows if re.search(p, name)), None)
-            assert sh == ps, f"install.sh/install.ps1 drift for {name!r}: {sh!r} vs {ps!r}"
+            assert (
+                sh == ps
+            ), f"install.sh/install.ps1 drift for {name!r}: {sh!r} vs {ps!r}"
 
 
 def test_setup_sh_name_arch_table_in_sync_with_install_sh():
@@ -266,7 +276,9 @@ def test_amd_smi_opt_in_forces_on_windows_no_sdk():
 
 def test_amd_smi_opt_out_overrides_hip_sdk():
     assert (
-        _amd_smi_allowed_under("Windows", hipinfo_present = True, env = {"UNSLOTH_ENABLE_AMD_SMI": "0"})
+        _amd_smi_allowed_under(
+            "Windows", hipinfo_present = True, env = {"UNSLOTH_ENABLE_AMD_SMI": "0"}
+        )
         is False
     )
 
@@ -395,7 +407,9 @@ def test_ps_installers_gate_amd_smi_on_windows():
     # Both PowerShell installers must gate amd-smi like _amd_smi_allowed().
     for ps in (_INSTALL_PS1, _SETUP_PS1):
         text = ps.read_text(encoding = "utf-8")
-        assert "UNSLOTH_ENABLE_AMD_SMI" in text, f"{ps.name} missing amd-smi opt-in gate"
+        assert (
+            "UNSLOTH_ENABLE_AMD_SMI" in text
+        ), f"{ps.name} missing amd-smi opt-in gate"
         assert "amdSmiAllowed" in text, f"{ps.name} missing amd-smi gate variable"
         # The HIP-SDK probe must exclude the venv-internal hipInfo.exe (mirrors
         # _path_inside_venv()), else amd-smi can still pop the DiskPart UAC.
@@ -427,7 +441,9 @@ def test_ps_installers_gate_amd_smi_on_windows():
         ), f"{ps.name} venv-internal check must seed the venv root from UNSLOTH_STUDIO_HOME"
 
 
-@pytest.mark.parametrize("ps", [_INSTALL_PS1, _SETUP_PS1], ids = ["install.ps1", "setup.ps1"])
+@pytest.mark.parametrize(
+    "ps", [_INSTALL_PS1, _SETUP_PS1], ids = ["install.ps1", "setup.ps1"]
+)
 def test_ps_venv_probe_expands_tilde_for_custom_studio_home(ps):
     # The probe seeds the venv root from a custom Unsloth home; a ~\studio form
     # must expand to USERPROFILE like the canonical resolver, else GetFullPath
@@ -459,7 +475,9 @@ def test_ps_venv_probe_expands_tilde_for_custom_studio_home(ps):
 
 def _ps_floor_map(text, prefix):
     # {gfx -> spec} for entries like "gfx1151" = "torchvision>=0.26.0,<0.27.0".
-    return dict(re.findall(r'"(gfx[0-9a-z]+)"\s*=\s*"(' + re.escape(prefix) + r'[^"]*)"', text))
+    return dict(
+        re.findall(r'"(gfx[0-9a-z]+)"\s*=\s*"(' + re.escape(prefix) + r'[^"]*)"', text)
+    )
 
 
 def test_install_setup_ps_rocm_torch_floors_in_sync():
@@ -476,7 +494,10 @@ def test_install_setup_ps_rocm_torch_floors_in_sync():
             i_map == s_map
         ), f"{prefix!r} floor map drift:\ninstall.ps1={i_map}\nsetup.ps1={s_map}"
     # Strix Halo (the field case) must be pinned, not bare.
-    assert _ps_floor_map(it, "torchvision>=").get("gfx1151") == "torchvision>=0.26.0,<0.27.0"
+    assert (
+        _ps_floor_map(it, "torchvision>=").get("gfx1151")
+        == "torchvision>=0.26.0,<0.27.0"
+    )
     # The ROCm install must pass the pinned companion specs, not bare names.
     assert (
         "$torchSpec $visionSpec $audioSpec" in it
@@ -532,7 +553,9 @@ def test_install_python_stack_gates_every_amd_smi_spawn():
     # AND spawning a subprocess must gate it behind _amd_smi_allowed().
     import ast
 
-    src = (PACKAGE_ROOT / "studio" / "install_python_stack.py").read_text(encoding = "utf-8")
+    src = (PACKAGE_ROOT / "studio" / "install_python_stack.py").read_text(
+        encoding = "utf-8"
+    )
     tree = ast.parse(src)
 
     def _names_amd_smi_command(node):
@@ -556,7 +579,10 @@ def test_install_python_stack_gates_every_amd_smi_spawn():
         return False
 
     def _references_gate(node):
-        return any(isinstance(n, ast.Name) and n.id == "_amd_smi_allowed" for n in ast.walk(node))
+        return any(
+            isinstance(n, ast.Name) and n.id == "_amd_smi_allowed"
+            for n in ast.walk(node)
+        )
 
     offenders = [
         node.name
@@ -643,7 +669,9 @@ def test_path_inside_venv_returns_false_for_root_prefix():
         assert prebuilt._path_inside_venv(ext) is False
 
 
-@pytest.mark.parametrize("ps", [_INSTALL_PS1, _SETUP_PS1], ids = ["install.ps1", "setup.ps1"])
+@pytest.mark.parametrize(
+    "ps", [_INSTALL_PS1, _SETUP_PS1], ids = ["install.ps1", "setup.ps1"]
+)
 def test_ps_venv_probe_skips_drive_root(ps):
     # A non-venv UNSLOTH_SETUP_PYTHON like C:\Python311\python.exe yields a bare
     # drive root (C:) as a venv root; without a guard it matches every path on that
@@ -655,13 +683,17 @@ def test_ps_venv_probe_skips_drive_root(ps):
     )
 
 
-@pytest.mark.parametrize("ps", [_INSTALL_PS1, _SETUP_PS1], ids = ["install.ps1", "setup.ps1"])
+@pytest.mark.parametrize(
+    "ps", [_INSTALL_PS1, _SETUP_PS1], ids = ["install.ps1", "setup.ps1"]
+)
 def test_ps_env_fallback_iterates_all_hip_roots(ps):
     # The HIP_PATH/ROCM_PATH fallback must iterate every env root (incl. HIP_PATH_57)
     # and take the first non-venv hipinfo, so a venv-internal HIP_PATH can't mask a
     # real SDK in ROCM_PATH (single-root selection would bail on the venv copy).
     text = ps.read_text(encoding = "utf-8")
-    assert 'foreach ($hipEnvLabel in @("HIP_PATH", "HIP_PATH_57", "ROCM_PATH"))' in text, (
+    assert (
+        'foreach ($hipEnvLabel in @("HIP_PATH", "HIP_PATH_57", "ROCM_PATH"))' in text
+    ), (
         f"{ps.name} must iterate HIP_PATH/HIP_PATH_57/ROCM_PATH in the env fallback, "
         "not pick a single root"
     )
@@ -763,7 +795,8 @@ def test_uninstall_removes_managed_node_runtime():
     ), "uninstall.sh must remove the default-mode ~/.unsloth/node runtime"
     ps = (PACKAGE_ROOT / "scripts" / "uninstall.ps1").read_text(encoding = "utf-8")
     assert (
-        '$defaultNode = if ($defaultUnslothHome) { Join-Path $defaultUnslothHome "node" }' in ps
+        '$defaultNode = if ($defaultUnslothHome) { Join-Path $defaultUnslothHome "node" }'
+        in ps
     ), "uninstall.ps1 must resolve the default-mode ~/.unsloth\\node runtime dir"
     assert (
         "_RemovePath $defaultNode" in ps
@@ -831,11 +864,15 @@ def test_windows_rocm_repair_nonfatal_keeps_cpu_torch_on_index_failure(monkeypat
     monkeypatch.setattr(ps, "_has_usable_nvidia_gpu", lambda: False)
     monkeypatch.setattr(ps, "_detect_windows_gfx_arch", lambda: "gfx1151")
     monkeypatch.setattr(
-        ps, "_windows_rocm_index_url", lambda a: "https://repo.amd.com/rocm/whl/gfx1151/"
+        ps,
+        "_windows_rocm_index_url",
+        lambda a: "https://repo.amd.com/rocm/whl/gfx1151/",
     )
     # torch is not already a ROCm build -> the version probe prints nothing.
     monkeypatch.setattr(
-        ps.subprocess, "run", lambda *a, **k: subprocess.CompletedProcess(a, 0, b"", b"")
+        ps.subprocess,
+        "run",
+        lambda *a, **k: subprocess.CompletedProcess(a, 0, b"", b""),
     )
 
     def fake_try(label, *args, **kw):
@@ -844,7 +881,9 @@ def test_windows_rocm_repair_nonfatal_keeps_cpu_torch_on_index_failure(monkeypat
 
     monkeypatch.setattr(ps, "pip_install_try", fake_try)
     monkeypatch.setattr(
-        ps, "pip_install", lambda *a, **k: calls.__setitem__("fatal", calls["fatal"] + 1)
+        ps,
+        "pip_install",
+        lambda *a, **k: calls.__setitem__("fatal", calls["fatal"] + 1),
     )
     monkeypatch.setattr(
         ps,
@@ -861,7 +900,9 @@ def test_windows_rocm_repair_nonfatal_keeps_cpu_torch_on_index_failure(monkeypat
     assert "torch>=2.11.0,<2.12.0" in args, "torch must be pinned to the rocm7.2 floor"
     assert "torchvision>=0.26.0,<0.27.0" in args, "torchvision companion must be pinned"
     assert "torchaudio>=2.11.0,<2.12.0" in args, "torchaudio companion must be pinned"
-    assert calls["bnb"] == 0, "a failed ROCm torch install must not proceed to bitsandbytes"
+    assert (
+        calls["bnb"] == 0
+    ), "a failed ROCm torch install must not proceed to bitsandbytes"
 
 
 if __name__ == "__main__":

@@ -45,13 +45,21 @@ def client(monkeypatch):
 
     monkeypatch.setattr(embeddings, "_st_module_subdirs", lambda name, token = None: ())
     saved: dict = {}
-    monkeypatch.setattr(settings, "default_embedding_model", lambda: "unsloth/default-embed")
+    monkeypatch.setattr(
+        settings, "default_embedding_model", lambda: "unsloth/default-embed"
+    )
     monkeypatch.setattr(settings, "validate_embedding_model", lambda v: v)
-    monkeypatch.setattr(settings, "set_rag_embedding_model", lambda v: saved.setdefault("model", v))
+    monkeypatch.setattr(
+        settings, "set_rag_embedding_model", lambda v: saved.setdefault("model", v)
+    )
     monkeypatch.setattr(settings, "_llama_backend_active", lambda: False)
     monkeypatch.setattr(settings, "_resolves_as_local_gguf", lambda m: False)
-    monkeypatch.setattr(settings, "get_rag_embedding_model", lambda: saved.get("model", ""))
-    monkeypatch.setattr(settings, "get_stored_embedding_model", lambda: saved.get("model"))
+    monkeypatch.setattr(
+        settings, "get_rag_embedding_model", lambda: saved.get("model", "")
+    )
+    monkeypatch.setattr(
+        settings, "get_stored_embedding_model", lambda: saved.get("model")
+    )
     monkeypatch.setattr(
         settings,
         "effective_gguf_repo",
@@ -73,7 +81,8 @@ def test_flagged_repo_is_blocked_even_with_force(client, monkeypatch):
     c, saved = client
     monkeypatch.setitem(sys.modules, "utils.security", _security_stub(blocked = True))
     r = c.put(
-        "/embedding-model", json = {"embedding_model": "attacker/malicious-embed", "force": True}
+        "/embedding-model",
+        json = {"embedding_model": "attacker/malicious-embed", "force": True},
     )
     # 403, not the forceable 409, so the client does not offer "save anyway".
     assert r.status_code == 403
@@ -93,16 +102,22 @@ def test_hard_block_uses_non_forceable_status(client, monkeypatch):
     # (403) so the frontend never routes it into the "save anyway" force flow.
     c, _saved = client
     monkeypatch.setitem(sys.modules, "utils.security", _security_stub(blocked = True))
-    blocked = c.put("/embedding-model", json = {"embedding_model": "attacker/malicious-embed"})
+    blocked = c.put(
+        "/embedding-model", json = {"embedding_model": "attacker/malicious-embed"}
+    )
     assert blocked.status_code == 403
 
     # A verification failure (not-an-embedding-model) stays forceable at 409.
     monkeypatch.setitem(sys.modules, "utils.security", _security_stub(blocked = False))
-    monkeypatch.setattr(settings, "is_embedding_model", lambda *a, **k: False, raising = False)
+    monkeypatch.setattr(
+        settings, "is_embedding_model", lambda *a, **k: False, raising = False
+    )
     import utils.models as _models
 
     monkeypatch.setattr(_models, "is_embedding_model", lambda *a, **k: False)
-    unverified = c.put("/embedding-model", json = {"embedding_model": "acme/not-an-embedder"})
+    unverified = c.put(
+        "/embedding-model", json = {"embedding_model": "acme/not-an-embedder"}
+    )
     assert unverified.status_code == 409
 
 
@@ -110,13 +125,21 @@ def test_llama_backend_skips_the_st_pickle_scan(monkeypatch):
     # On the llama-server backend the embedder loads GGUF (inert), not the ST repo's
     # pickle, so a flagged ST repo with a clean GGUF companion must not be rejected here.
     saved: dict = {}
-    monkeypatch.setattr(settings, "default_embedding_model", lambda: "unsloth/default-embed")
+    monkeypatch.setattr(
+        settings, "default_embedding_model", lambda: "unsloth/default-embed"
+    )
     monkeypatch.setattr(settings, "validate_embedding_model", lambda v: v)
-    monkeypatch.setattr(settings, "set_rag_embedding_model", lambda v: saved.setdefault("model", v))
+    monkeypatch.setattr(
+        settings, "set_rag_embedding_model", lambda v: saved.setdefault("model", v)
+    )
     monkeypatch.setattr(settings, "_llama_backend_active", lambda: True)
     monkeypatch.setattr(settings, "_resolves_as_local_gguf", lambda m: False)
-    monkeypatch.setattr(settings, "get_rag_embedding_model", lambda: saved.get("model", ""))
-    monkeypatch.setattr(settings, "get_stored_embedding_model", lambda: saved.get("model"))
+    monkeypatch.setattr(
+        settings, "get_rag_embedding_model", lambda: saved.get("model", "")
+    )
+    monkeypatch.setattr(
+        settings, "get_stored_embedding_model", lambda: saved.get("model")
+    )
     # force skips the GGUF availability checks; the ST pickle gate is what we assert is skipped.
     called = {"scanned": False}
     mod = _types.ModuleType("utils.security")
@@ -157,14 +180,22 @@ def test_runtime_llama_fallback_skips_the_st_pickle_scan(monkeypatch):
     monkeypatch.setattr(embeddings, "_st_module_subdirs", lambda name, token = None: ())
 
     saved: dict = {}
-    monkeypatch.setattr(settings, "default_embedding_model", lambda: "unsloth/default-embed")
+    monkeypatch.setattr(
+        settings, "default_embedding_model", lambda: "unsloth/default-embed"
+    )
     monkeypatch.setattr(settings, "validate_embedding_model", lambda v: v)
-    monkeypatch.setattr(settings, "set_rag_embedding_model", lambda v: saved.setdefault("model", v))
+    monkeypatch.setattr(
+        settings, "set_rag_embedding_model", lambda v: saved.setdefault("model", v)
+    )
     # Deliberately do NOT monkeypatch settings._llama_backend_active: this test exercises the
     # real delegation to embeddings.active_backend_is_llama() so the cached fallback is honored.
     monkeypatch.setattr(settings, "_resolves_as_local_gguf", lambda m: False)
-    monkeypatch.setattr(settings, "get_rag_embedding_model", lambda: saved.get("model", ""))
-    monkeypatch.setattr(settings, "get_stored_embedding_model", lambda: saved.get("model"))
+    monkeypatch.setattr(
+        settings, "get_rag_embedding_model", lambda: saved.get("model", "")
+    )
+    monkeypatch.setattr(
+        settings, "get_stored_embedding_model", lambda: saved.get("model")
+    )
 
     called = {"scanned": False}
     mod = _types.ModuleType("utils.security")
@@ -186,7 +217,9 @@ def test_runtime_llama_fallback_skips_the_st_pickle_scan(monkeypatch):
         json = {"embedding_model": "attacker/flagged-st-clean-gguf", "force": True},
     )
     assert r.status_code == 200
-    assert called["scanned"] is False  # the ST pickle scan never ran on the llama fallback
+    assert (
+        called["scanned"] is False
+    )  # the ST pickle scan never ran on the llama fallback
     assert saved.get("model") == "attacker/flagged-st-clean-gguf"
 
 
@@ -206,13 +239,17 @@ def test_active_backend_is_llama_reflects_cache_and_resolver(monkeypatch):
     # A cached ST backend reports False even when the resolver now picks llama, so its
     # pickle stays gated (the cached backend, not the resolver, is what actually embeds).
     monkeypatch.setattr(embeddings, "_resolve_auto", lambda: "llama-server")
-    monkeypatch.setattr(embeddings, "_backend", embeddings._SentenceTransformersBackend())
+    monkeypatch.setattr(
+        embeddings, "_backend", embeddings._SentenceTransformersBackend()
+    )
     assert embeddings.active_backend_is_llama() is False
 
     # No cached backend -> the resolver decides, unchanged from before.
     monkeypatch.setattr(embeddings, "_resolve_auto", lambda: "sentence-transformers")
     monkeypatch.setattr(embeddings, "_backend", None)
-    assert embeddings.active_backend_is_llama() is False  # auto -> sentence-transformers
+    assert (
+        embeddings.active_backend_is_llama() is False
+    )  # auto -> sentence-transformers
 
     monkeypatch.setattr(embeddings, "_resolve_auto", lambda: "llama-server")
     assert embeddings.active_backend_is_llama() is True  # auto -> llama-server
@@ -226,13 +263,21 @@ def test_settings_scan_scopes_module_subdirs(monkeypatch):
     # The settings scan must pass the ST module dirs (0_Transformer/) as load roots so a
     # pickle directly under one blocks; assert those subdirs reach evaluate_file_security.
     saved: dict = {}
-    monkeypatch.setattr(settings, "default_embedding_model", lambda: "unsloth/default-embed")
+    monkeypatch.setattr(
+        settings, "default_embedding_model", lambda: "unsloth/default-embed"
+    )
     monkeypatch.setattr(settings, "validate_embedding_model", lambda v: v)
-    monkeypatch.setattr(settings, "set_rag_embedding_model", lambda v: saved.setdefault("model", v))
+    monkeypatch.setattr(
+        settings, "set_rag_embedding_model", lambda v: saved.setdefault("model", v)
+    )
     monkeypatch.setattr(settings, "_llama_backend_active", lambda: False)
     monkeypatch.setattr(settings, "_resolves_as_local_gguf", lambda m: False)
-    monkeypatch.setattr(settings, "get_rag_embedding_model", lambda: saved.get("model", ""))
-    monkeypatch.setattr(settings, "get_stored_embedding_model", lambda: saved.get("model"))
+    monkeypatch.setattr(
+        settings, "get_rag_embedding_model", lambda: saved.get("model", "")
+    )
+    monkeypatch.setattr(
+        settings, "get_stored_embedding_model", lambda: saved.get("model")
+    )
 
     import core.rag.embeddings as embeddings
 
@@ -255,7 +300,8 @@ def test_settings_scan_scopes_module_subdirs(monkeypatch):
     app.dependency_overrides[settings.get_current_subject] = lambda: "admin"
     c = TestClient(app, raise_server_exceptions = False)
     r = c.put(
-        "/embedding-model", json = {"embedding_model": "acme/embed-with-module-dir", "force": True}
+        "/embedding-model",
+        json = {"embedding_model": "acme/embed-with-module-dir", "force": True},
     )
     assert r.status_code == 200
     assert "0_Transformer" in seen["subdirs"]
@@ -264,7 +310,9 @@ def test_settings_scan_scopes_module_subdirs(monkeypatch):
 def test_clean_repo_saves_under_force(client, monkeypatch):
     c, saved = client
     monkeypatch.setitem(sys.modules, "utils.security", _security_stub(blocked = False))
-    r = c.put("/embedding-model", json = {"embedding_model": "acme/clean-embed", "force": True})
+    r = c.put(
+        "/embedding-model", json = {"embedding_model": "acme/clean-embed", "force": True}
+    )
     assert r.status_code == 200
     assert saved.get("model") == "acme/clean-embed"
     assert r.json() == {

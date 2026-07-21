@@ -27,7 +27,9 @@ tokenizer = None
 def formatting_prompts_func(examples):
     convos = examples["messages"]
     texts = [
-        tokenizer.apply_chat_template(convo, tokenize = False, add_generation_prompt = False)
+        tokenizer.apply_chat_template(
+            convo, tokenize = False, add_generation_prompt = False
+        )
         for convo in convos
     ]
     return {"text": texts}
@@ -81,7 +83,9 @@ print("Fine-tuning complete.")
 
 # --- Merge and Save ---
 print("\n💾 Merging and saving the 16-bit model to './gpt-oss-finetuned-merged'...")
-model.save_pretrained_merged(save_directory = "./gpt-oss-finetuned-merged", tokenizer = tokenizer)
+model.save_pretrained_merged(
+    save_directory = "./gpt-oss-finetuned-merged", tokenizer = tokenizer
+)
 print("✅ Model merged and saved.")
 
 # --- Cleanup ---

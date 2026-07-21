@@ -281,7 +281,9 @@ def _hf_hub_cache_dir() -> Path:
         from huggingface_hub.constants import HF_HUB_CACHE
         return Path(HF_HUB_CACHE)
     except Exception as exc:
-        logger.debug("Could not read huggingface_hub HF_HUB_CACHE, using default: %s", exc)
+        logger.debug(
+            "Could not read huggingface_hub HF_HUB_CACHE, using default: %s", exc
+        )
         return Path.home() / ".cache" / "huggingface" / "hub"
 
 
@@ -408,7 +410,9 @@ def resolve_dataset_path(path_value: str) -> Path:
                 return path
             except ValueError:
                 continue
-        raise ValueError(f"dataset path must be relative or under a dataset root: {raw!r}")
+        raise ValueError(
+            f"dataset path must be relative or under a dataset root: {raw!r}"
+        )
 
     parts = [part for part in Path(normalized).parts if part not in ("", ".")]
     if parts[:2] == ["assets", "datasets"]:

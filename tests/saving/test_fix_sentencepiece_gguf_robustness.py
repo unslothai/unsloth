@@ -44,7 +44,9 @@ def test_user_defined_special_piece_is_not_retyped(tmp_path):
     ]
     (tmp_path / "tokenizer.model").write_bytes(_build(pieces))
     (tmp_path / "tokenizer.json").write_text(
-        json.dumps({"added_tokens": [{"id": 2, "content": "<ud_special>", "special": True}]})
+        json.dumps(
+            {"added_tokens": [{"id": 2, "content": "<ud_special>", "special": True}]}
+        )
     )
     fix_sentencepiece_gguf(str(tmp_path))
     got = dict(_read(str(tmp_path / "tokenizer.model")))
@@ -85,7 +87,10 @@ def test_save_py_except_clause_is_broad_exception():
     with open(_SAVE_PY) as f:
         tree = ast.parse(f.read())
     for node in ast.walk(tree):
-        if isinstance(node, ast.FunctionDef) and node.name == "unsloth_save_pretrained_gguf":
+        if (
+            isinstance(node, ast.FunctionDef)
+            and node.name == "unsloth_save_pretrained_gguf"
+        ):
             for subnode in ast.walk(node):
                 if isinstance(subnode, ast.Try):
                     body_src = "\n".join(ast.unparse(s) for s in subnode.body)

@@ -206,8 +206,12 @@ def get_kernel_configs(
         )
 
     kernel_configs_fwd = prune_kernel_configs_fwd(kernel_configs_fwd)
-    kernel_configs_backward_dW = prune_kernel_configs_backward_dW(kernel_configs_backward_dW)
-    kernel_configs_backward_dX = prune_kernel_configs_backward_dX(kernel_configs_backward_dX)
+    kernel_configs_backward_dW = prune_kernel_configs_backward_dW(
+        kernel_configs_backward_dW
+    )
+    kernel_configs_backward_dX = prune_kernel_configs_backward_dX(
+        kernel_configs_backward_dX
+    )
     return kernel_configs_fwd, kernel_configs_backward_dW, kernel_configs_backward_dX
 
 

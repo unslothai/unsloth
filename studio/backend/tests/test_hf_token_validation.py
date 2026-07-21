@@ -73,7 +73,10 @@ def test_window_rolls_forward(monkeypatch):
     )
 
     assert validation.validate_hf_token("hf_a", rate_key = "user:ip").status == "invalid"
-    assert validation.validate_hf_token("hf_b", rate_key = "user:ip").status == "rate_limited"
+    assert (
+        validation.validate_hf_token("hf_b", rate_key = "user:ip").status
+        == "rate_limited"
+    )
     clock["now"] += 11.0
     assert validation.validate_hf_token("hf_b", rate_key = "user:ip").status == "invalid"
 

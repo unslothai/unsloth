@@ -36,7 +36,9 @@ def _resolve_recipe_artifact_path(artifact_path: str) -> Path:
     if not resolved.exists():
         raise RecipeDatasetPublishError("Execution artifacts are no longer available.")
     if not resolved.is_dir():
-        raise RecipeDatasetPublishError("Execution artifact path is not a dataset folder.")
+        raise RecipeDatasetPublishError(
+            "Execution artifact path is not a dataset folder."
+        )
 
     return resolved
 

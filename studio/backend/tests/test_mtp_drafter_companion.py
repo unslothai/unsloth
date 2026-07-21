@@ -207,7 +207,9 @@ def test_detect_mtp_file_search_root(tmp_path):
     sub.mkdir()
     (sub / "gemma-4-12b-it-Q4_K_M.gguf").write_bytes(b"x")
     (tmp_path / "mtp-gemma-4-12b-it.gguf").write_bytes(b"x")
-    found = detect_mtp_file(str(sub / "gemma-4-12b-it-Q4_K_M.gguf"), search_root = str(tmp_path))
+    found = detect_mtp_file(
+        str(sub / "gemma-4-12b-it-Q4_K_M.gguf"), search_root = str(tmp_path)
+    )
     assert found is not None and found.endswith("mtp-gemma-4-12b-it.gguf")
 
 
@@ -376,11 +378,15 @@ def test_download_mtp_reuses_cached_root_drafter_offline(tmp_path, monkeypatch):
     )
     monkeypatch.setattr(mc, "_iter_hf_cache_snapshots", lambda repo: [snap])
 
-    got = LlamaCppBackend()._download_mtp(hf_repo = "unsloth/gemma-4-E4B-it-qat-mobile-GGUF")
+    got = LlamaCppBackend()._download_mtp(
+        hf_repo = "unsloth/gemma-4-E4B-it-qat-mobile-GGUF"
+    )
     assert got is not None and Path(got).name == "mtp-gemma-4-E4B-it.gguf"
 
 
-def test_download_mtp_reuses_cached_subdir_copy_when_no_root_offline(tmp_path, monkeypatch):
+def test_download_mtp_reuses_cached_subdir_copy_when_no_root_offline(
+    tmp_path, monkeypatch
+):
     # Pre-fix build may have fetched only the MTP/ copy; reuse it offline.
     import utils.models.model_config as mc
     from core.inference.llama_cpp import LlamaCppBackend
@@ -395,7 +401,9 @@ def test_download_mtp_reuses_cached_subdir_copy_when_no_root_offline(tmp_path, m
     )
     monkeypatch.setattr(mc, "_iter_hf_cache_snapshots", lambda repo: [snap])
 
-    got = LlamaCppBackend()._download_mtp(hf_repo = "unsloth/gemma-4-E4B-it-qat-mobile-GGUF")
+    got = LlamaCppBackend()._download_mtp(
+        hf_repo = "unsloth/gemma-4-E4B-it-qat-mobile-GGUF"
+    )
     assert got is not None and Path(got).name == "mtp-gemma-4-E4B-it-BF16.gguf"
 
 
@@ -406,11 +414,17 @@ def test_download_mtp_prefers_root_across_snapshots_offline(tmp_path, monkeypatc
     from core.inference.llama_cpp import LlamaCppBackend
 
     monkeypatch.setenv("HF_HUB_OFFLINE", "1")
-    snap_partial = _seed_snapshot(tmp_path / "new", ["MTP/mtp-gemma-4-E4B-it-BF16.gguf"])
+    snap_partial = _seed_snapshot(
+        tmp_path / "new", ["MTP/mtp-gemma-4-E4B-it-BF16.gguf"]
+    )
     snap_full = _seed_snapshot(tmp_path / "old", ["mtp-gemma-4-E4B-it.gguf"])
-    monkeypatch.setattr(mc, "_iter_hf_cache_snapshots", lambda repo: [snap_partial, snap_full])
+    monkeypatch.setattr(
+        mc, "_iter_hf_cache_snapshots", lambda repo: [snap_partial, snap_full]
+    )
 
-    got = LlamaCppBackend()._download_mtp(hf_repo = "unsloth/gemma-4-E4B-it-qat-mobile-GGUF")
+    got = LlamaCppBackend()._download_mtp(
+        hf_repo = "unsloth/gemma-4-E4B-it-qat-mobile-GGUF"
+    )
     assert got is not None and Path(got).name == "mtp-gemma-4-E4B-it.gguf"
 
 
@@ -425,7 +439,9 @@ def test_download_mtp_reuse_follows_snapshot_order_offline(tmp_path, monkeypatch
     oldest = _seed_snapshot(tmp_path / "oldest", ["mtp-gemma-4-E4B-it.gguf"])
     monkeypatch.setattr(mc, "_iter_hf_cache_snapshots", lambda repo: [newest, oldest])
 
-    got = LlamaCppBackend()._download_mtp(hf_repo = "unsloth/gemma-4-E4B-it-qat-mobile-GGUF")
+    got = LlamaCppBackend()._download_mtp(
+        hf_repo = "unsloth/gemma-4-E4B-it-qat-mobile-GGUF"
+    )
     assert got is not None and Path(got).parent.parent.name == "newest"
 
 

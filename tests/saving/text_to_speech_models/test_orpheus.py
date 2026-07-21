@@ -151,7 +151,9 @@ for prompt in prompts_:
     all_input_ids.append(input_ids)
 
 start_token = torch.tensor([[128259]], dtype = torch.int64)  # Start of human
-end_tokens = torch.tensor([[128009, 128260]], dtype = torch.int64)  # End of text, End of human
+end_tokens = torch.tensor(
+    [[128009, 128260]], dtype = torch.int64
+)  # End of text, End of human
 
 all_modified_input_ids = []
 for input_ids in all_input_ids:
@@ -162,7 +164,9 @@ for input_ids in all_input_ids:
 
 all_padded_tensors = []
 all_attention_masks = []
-max_length = max([modified_input_ids.shape[1] for modified_input_ids in all_modified_input_ids])
+max_length = max(
+    [modified_input_ids.shape[1] for modified_input_ids in all_modified_input_ids]
+)
 for modified_input_ids in all_modified_input_ids:
     padding = max_length - modified_input_ids.shape[1]
     padded_tensor = torch.cat(

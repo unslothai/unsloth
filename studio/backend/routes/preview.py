@@ -165,10 +165,14 @@ async def _serve_chat(
     await _preview_lock.acquire()
     keep_locked = False
     try:
-        await load_model(LoadRequest(model_path = str(path)), request, DEFAULT_ADMIN_USERNAME)
+        await load_model(
+            LoadRequest(model_path = str(path)), request, DEFAULT_ADMIN_USERNAME
+        )
         # Beats a process-wide `--enable-tools` (enable_tools=False alone wouldn't).
         with tools_force_disabled():
-            response = await openai_chat_completions(payload, request, DEFAULT_ADMIN_USERNAME)
+            response = await openai_chat_completions(
+                payload, request, DEFAULT_ADMIN_USERNAME
+            )
         if isinstance(response, StreamingResponse):
             response.body_iterator = _unlock_after(response.body_iterator)
             keep_locked = True
@@ -179,7 +183,9 @@ async def _serve_chat(
 
 
 @router.get("")
-async def list_previews(request: Request, current_subject: str = Depends(get_current_subject)):
+async def list_previews(
+    request: Request, current_subject: str = Depends(get_current_subject)
+):
     base = str(request.base_url)
     sharing_on = get_preview_sharing_enabled()
     previews = []
@@ -202,7 +208,9 @@ async def list_previews(request: Request, current_subject: str = Depends(get_cur
 
 
 @router.post("/{run}/v1/chat/completions")
-async def preview_chat_latest(run: str, payload: ChatCompletionRequest, request: Request):
+async def preview_chat_latest(
+    run: str, payload: ChatCompletionRequest, request: Request
+):
     _verify_or_404(run, None, request)
     _enforce_rate_limit(request)
     return await _serve_chat(run, None, payload, request)
@@ -260,7 +268,11 @@ _PREVIEW_ASSET_MEDIA_TYPES = {
 async def preview_asset(asset_path: str):
     target = (_FRONTEND_DIST / asset_path).resolve()
     media_type = _PREVIEW_ASSET_MEDIA_TYPES.get(target.suffix.lower())
-    if media_type is None or not target.is_relative_to(_FRONTEND_DIST) or not target.is_file():
+    if (
+        media_type is None
+        or not target.is_relative_to(_FRONTEND_DIST)
+        or not target.is_file()
+    ):
         raise HTTPException(status_code = 404, detail = "Not found")
     return FileResponse(target, media_type = media_type)
 

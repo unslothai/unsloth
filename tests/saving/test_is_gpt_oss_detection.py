@@ -32,17 +32,29 @@ def test_detects_gpt_oss_by_architecture():
     # architectures is a list, so detection must use membership, not ==.
     is_gpt_oss = _load_is_gpt_oss()
     assert is_gpt_oss(_model(architectures = ["GptOssForCausalLM"])) is True
-    assert is_gpt_oss(_model(architectures = ["GptOssForCausalLM"], model_type = "gpt_oss")) is True
+    assert (
+        is_gpt_oss(_model(architectures = ["GptOssForCausalLM"], model_type = "gpt_oss"))
+        is True
+    )
 
 
 def test_detects_gpt_oss_by_model_type():
     is_gpt_oss = _load_is_gpt_oss()
-    assert is_gpt_oss(_model(architectures = ["SomethingElse"], model_type = "gpt-oss")) is True
-    assert is_gpt_oss(_model(architectures = ["SomethingElse"], model_type = "gpt_oss")) is True
+    assert (
+        is_gpt_oss(_model(architectures = ["SomethingElse"], model_type = "gpt-oss"))
+        is True
+    )
+    assert (
+        is_gpt_oss(_model(architectures = ["SomethingElse"], model_type = "gpt_oss"))
+        is True
+    )
 
 
 def test_non_gpt_oss_is_false():
     is_gpt_oss = _load_is_gpt_oss()
-    assert is_gpt_oss(_model(architectures = ["LlamaForCausalLM"], model_type = "llama")) is False
+    assert (
+        is_gpt_oss(_model(architectures = ["LlamaForCausalLM"], model_type = "llama"))
+        is False
+    )
     assert is_gpt_oss(_model()) is False
     assert is_gpt_oss(types.SimpleNamespace()) is False

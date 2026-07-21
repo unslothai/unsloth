@@ -216,7 +216,9 @@ def _is_model_directory(d: Path) -> bool:
         return False
 
     try:
-        has_config = (d / "config.json").exists() or (d / "adapter_config.json").exists()
+        has_config = (d / "config.json").exists() or (
+            d / "adapter_config.json"
+        ).exists()
         if not has_config:
             return False
         return any(_is_weight_file(f) for f in d.iterdir() if f.is_file())
@@ -247,7 +249,9 @@ def _has_non_gguf_weights(path: Path) -> bool:
         return False
 
 
-def _scan_models_dir(models_dir: Path, *, limit: int | None = None) -> List[LocalModelInfo]:
+def _scan_models_dir(
+    models_dir: Path, *, limit: int | None = None
+) -> List[LocalModelInfo]:
     if not models_dir.exists() or not models_dir.is_dir():
         return []
 
@@ -532,7 +536,9 @@ def _ollama_links_dir(ollama_dir: Path) -> Optional[Path]:
         return None
 
 
-def _scan_ollama_dir(ollama_dir: Path, limit: Optional[int] = None) -> List[LocalModelInfo]:
+def _scan_ollama_dir(
+    ollama_dir: Path, limit: Optional[int] = None
+) -> List[LocalModelInfo]:
     """Scan an Ollama models directory for downloaded models.
 
     Ollama uses a content-addressable layout
@@ -607,7 +613,9 @@ def _scan_ollama_dir(ollama_dir: Path, limit: Optional[int] = None) -> List[Loca
                 if tmp_path.is_symlink() or tmp_path.exists():
                     tmp_path.unlink()
             except OSError as cleanup_err:
-                logger.debug("Could not clean up tmp path %s: %s", tmp_path, cleanup_err)
+                logger.debug(
+                    "Could not clean up tmp path %s: %s", tmp_path, cleanup_err
+                )
             return None
 
     try:
@@ -624,7 +632,11 @@ def _scan_ollama_dir(ollama_dir: Path, limit: Optional[int] = None) -> List[Loca
             repo_parts = list(parts[1:-1])
             tag = parts[-1]
 
-            if host == "registry.ollama.ai" and repo_parts and repo_parts[0] == "library":
+            if (
+                host == "registry.ollama.ai"
+                and repo_parts
+                and repo_parts[0] == "library"
+            ):
                 repo_name = "/".join(repo_parts[1:])
             elif host == "registry.ollama.ai":
                 repo_name = "/".join(repo_parts)
@@ -681,7 +693,9 @@ def _scan_ollama_dir(ollama_dir: Path, limit: Optional[int] = None) -> List[Loca
                     candidate = blobs_dir / digest.replace(":", "-")
                     if candidate.is_file():
                         link_name = f"{safe_name}-{tag}{quant}.gguf"
-                        gguf_link_path = _make_link(model_link_dir, link_name, candidate)
+                        gguf_link_path = _make_link(
+                            model_link_dir, link_name, candidate
+                        )
 
                 elif media == "application/vnd.ollama.image.projector":
                     candidate = blobs_dir / digest.replace(":", "-")
@@ -753,7 +767,11 @@ def collect_local_models(models_root: Path) -> List[LocalModelInfo]:
         local_models += _scan_hf_cache(legacy_hf)
 
     # Scan HF system default cache (may differ under env overrides).
-    if _safe_is_dir(hf_default) and default_real != hf_cache_real and default_real != legacy_real:
+    if (
+        _safe_is_dir(hf_default)
+        and default_real != hf_cache_real
+        and default_real != legacy_real
+    ):
         local_models += _scan_hf_cache(hf_default)
 
     # Scan LM Studio directories.
@@ -779,7 +797,9 @@ def collect_local_models(models_root: Path) -> List[LocalModelInfo]:
                     + _scan_hf_cache(folder_path)
                     + _scan_lmstudio_dir(folder_path)
                 )
-                if not any(p in (".studio_links", "ollama_links") for p in Path(m.path).parts)
+                if not any(
+                    p in (".studio_links", "ollama_links") for p in Path(m.path).parts
+                )
             ]
             custom_models = _generic
             if len(custom_models) < _MAX_MODELS_PER_FOLDER:
@@ -790,7 +810,9 @@ def collect_local_models(models_root: Path) -> List[LocalModelInfo]:
         except OSError as e:
             logger.warning("Skipping unreadable scan folder %s: %s", folder_path, e)
             continue
-        local_models += [m.model_copy(update = {"source": "custom"}) for m in custom_models]
+        local_models += [
+            m.model_copy(update = {"source": "custom"}) for m in custom_models
+        ]
 
     # Deduplicate, but always keep custom folder entries (keyed by
     # (id, source)) so they show in the "Custom Folders" UI section
@@ -1321,7 +1343,9 @@ def _match_browse_child(current: Path, name: str) -> Optional[Path]:
             detail = f"Permission denied reading {current.name}",
         ) from None
     except OSError as exc:
-        logger.warning("browse-folders: could not read %s: %s", current, exc, exc_info = True)
+        logger.warning(
+            "browse-folders: could not read %s: %s", current, exc, exc_info = True
+        )
         raise HTTPException(
             status_code = 500,
             detail = f"Could not read {os.path.basename(str(current))}",
@@ -1502,7 +1526,9 @@ def browse_folders(
             detail = f"Permission denied reading {os.path.basename(str(target))}",
         )
     except OSError as exc:
-        logger.warning("browse-folders: could not read %s: %s", target, exc, exc_info = True)
+        logger.warning(
+            "browse-folders: could not read %s: %s", target, exc, exc_info = True
+        )
         raise HTTPException(
             status_code = 500,
             detail = f"Could not read {os.path.basename(str(target))}",
@@ -1566,7 +1592,9 @@ def browse_folders(
     # sandbox (else the up-row would 403 on click); users can still hop
     # to other allowed roots via the suggestion chips.
     parent: Optional[str]
-    if target.parent == target or not _is_path_inside_allowlist(target.parent, allowed_roots):
+    if target.parent == target or not _is_path_inside_allowlist(
+        target.parent, allowed_roots
+    ):
         parent = None
     else:
         parent = str(target.parent)
@@ -1718,12 +1746,16 @@ def _get_max_position_embeddings(config) -> Optional[int]:
     """Extract max_position_embeddings from a config, with text_config fallback."""
     if hasattr(config, "max_position_embeddings"):
         return config.max_position_embeddings
-    if hasattr(config, "text_config") and hasattr(config.text_config, "max_position_embeddings"):
+    if hasattr(config, "text_config") and hasattr(
+        config.text_config, "max_position_embeddings"
+    ):
         return config.text_config.max_position_embeddings
     return None
 
 
-def _get_model_size_bytes(model_name: str, hf_token: Optional[str] = None) -> Optional[int]:
+def _get_model_size_bytes(
+    model_name: str, hf_token: Optional[str] = None
+) -> Optional[int]:
     """Total size of model weight files from HF Hub."""
     try:
         from huggingface_hub import HfApi
@@ -1736,7 +1768,9 @@ def _get_model_size_bytes(model_name: str, hf_token: Optional[str] = None) -> Op
         weight_exts = (".safetensors", ".bin", ".pt", ".pth", ".gguf")
         total = 0
         for sibling in info.siblings:
-            if sibling.rfilename and any(sibling.rfilename.endswith(ext) for ext in weight_exts):
+            if sibling.rfilename and any(
+                sibling.rfilename.endswith(ext) for ext in weight_exts
+            ):
                 if sibling.size is not None:
                     total += sibling.size
 
@@ -1797,7 +1831,9 @@ async def get_model_config(
 
                     def _to_ns(d):
                         if isinstance(d, dict):
-                            return SimpleNamespace(**{k: _to_ns(v) for k, v in d.items()})
+                            return SimpleNamespace(
+                                **{k: _to_ns(v) for k, v in d.items()}
+                            )
                         return d
 
                     max_position_embeddings = _get_max_position_embeddings(_to_ns(_cfg))
@@ -1875,7 +1911,9 @@ async def scan_model_remote_code(
         # downloads adapter_config.json, which would otherwise hide the adapter from
         # cleanup on decline. On error treat as pre-existing so a decline never deletes it.
         try:
-            _primary_preexisting = is_local_path(model_name) or _repo_in_any_hf_cache(model_name)
+            _primary_preexisting = is_local_path(model_name) or _repo_in_any_hf_cache(
+                model_name
+            )
         except Exception:
             _primary_preexisting = True
         security_targets = [model_name]
@@ -1898,7 +1936,9 @@ async def scan_model_remote_code(
         scan_created_repos: list = []
         _seen_created: set = set()
 
-        def _mark_scan_created(repo: str, *, preexisting: Optional[bool] = None) -> None:
+        def _mark_scan_created(
+            repo: str, *, preexisting: Optional[bool] = None
+        ) -> None:
             if not repo or repo in _seen_created:
                 return
             _seen_created.add(repo)
@@ -1917,7 +1957,8 @@ async def scan_model_remote_code(
         for _target in security_targets:
             # Use the pre-base-resolution snapshot for the primary (see above).
             _mark_scan_created(
-                _target, preexisting = _primary_preexisting if _target == model_name else None
+                _target,
+                preexisting = _primary_preexisting if _target == model_name else None,
             )
             for _ext in external_auto_map_repos(_target, hf_token):
                 external_refs.append(_ext)
@@ -1938,7 +1979,9 @@ async def scan_model_remote_code(
         payload["created_by_scan"] = model_name in scan_created_repos
         payload["scan_created_repos"] = scan_created_repos
         # Provider tag decided here, where locality/scan scope/external refs are known.
-        payload["provider"] = _consent_provider(model_name, security_targets, external_refs)
+        payload["provider"] = _consent_provider(
+            model_name, security_targets, external_refs
+        )
 
         # Malware gate (metadata-only): surface HF-flagged unsafe files so the dialog can
         # hard-block. Orthogonal to remote code -- a poisoned pickle needs no auto_map.
@@ -1948,7 +1991,9 @@ async def scan_model_remote_code(
         security_blocked = False
         for _target in security_targets:
             _sec = evaluate_file_security(
-                _target, hf_token = hf_token, load_subdirs = security_load_subdirs(_target, hf_token)
+                _target,
+                hf_token = hf_token,
+                load_subdirs = security_load_subdirs(_target, hf_token),
             )
             security_blocked = security_blocked or _sec.blocked
             unsafe_files.extend(_sec.unsafe_files)
@@ -1973,7 +2018,8 @@ async def scan_model_remote_code(
 
 @router.post("/discard-remote-code")
 async def discard_remote_code_download(
-    model_name: str = Body(..., embed = True), current_subject: str = Depends(get_current_subject)
+    model_name: str = Body(..., embed = True),
+    current_subject: str = Depends(get_current_subject),
 ):
     """Purge a repo the consent scan downloaded after the user DECLINED its custom
     code, so untrusted code is not left on disk.
@@ -2048,7 +2094,9 @@ async def discard_remote_code_download(
         logger.info("Discarded declined remote-code download: %s", model_name)
         return {"deleted": True}
     except Exception as e:
-        logger.warning("Could not discard remote-code download for %s: %s", model_name, e)
+        logger.warning(
+            "Could not discard remote-code download for %s: %s", model_name, e
+        )
         return {"deleted": False, "reason": "error"}
 
 
@@ -2141,10 +2189,14 @@ def _loaded_model_matches_deleted_path(active_model: str, deleted_path: Path) ->
         )
         active_lower = active_model.lower()
         target_lower = str(deleted_path).lower()
-        return active_lower == target_lower or active_lower.startswith(f"{target_lower}{os.sep}")
+        return active_lower == target_lower or active_lower.startswith(
+            f"{target_lower}{os.sep}"
+        )
 
 
-def _loading_model_matches_deleted_path(loading_model: object, deleted_path: Path) -> bool:
+def _loading_model_matches_deleted_path(
+    loading_model: object, deleted_path: Path
+) -> bool:
     if not loading_model:
         return False
     return _loaded_model_matches_deleted_path(str(loading_model), deleted_path)
@@ -2363,7 +2415,9 @@ async def delete_finetuned_model(
     except HTTPException:
         raise
     except Exception as e:
-        logger.warning("Could not check inference backend loaded model before delete: %s", e)
+        logger.warning(
+            "Could not check inference backend loaded model before delete: %s", e
+        )
         raise HTTPException(
             status_code = 503,
             detail = "Could not verify model load status before deleting",
@@ -2435,7 +2489,9 @@ async def delete_finetuned_model(
 
 
 @router.get("/loras/{lora_path:path}/base-model", response_model = LoRABaseModelResponse)
-async def get_lora_base_model(lora_path: str, current_subject: str = Depends(get_current_subject)):
+async def get_lora_base_model(
+    lora_path: str, current_subject: str = Depends(get_current_subject)
+):
     """
     Get the base model for a LoRA adapter.
 
@@ -2514,7 +2570,9 @@ async def check_embedding_model(
         logger.info(f"Checking if embedding model: {model_name}")
         is_embedding = is_embedding_model(model_name, hf_token = hf_token)
 
-        logger.info(f"Embedding check result for {model_name}: is_embedding={is_embedding}")
+        logger.info(
+            f"Embedding check result for {model_name}: is_embedding={is_embedding}"
+        )
         return EmbeddingCheckResponse(
             model_name = model_name,
             is_embedding = is_embedding,
@@ -2561,7 +2619,9 @@ def _read_native_context_length(repo_id: str, is_local: bool) -> Optional[int]:
     return None
 
 
-def _resolve_quant_gguf(repo_id: str, quant: str, is_local: bool) -> tuple[Optional[str], int]:
+def _resolve_quant_gguf(
+    repo_id: str, quant: str, is_local: bool
+) -> tuple[Optional[str], int]:
     """Primary shard path and total weight bytes for a downloaded quant, or
     (None, 0). Metadata lives in shard 1, so the lexicographically first file of
     the matching quant is returned. Scoped to one snapshot to avoid summing the
@@ -2637,8 +2697,12 @@ def _resolve_quant_gguf(repo_id: str, quant: str, is_local: bool) -> tuple[Optio
 async def get_kv_cache_estimate(
     repo_id: str = Query(..., description = "HF repo ID or local path"),
     quant: str = Query(..., description = "Quantization label (e.g. Q4_K_M)"),
-    n_ctx: int = Query(..., ge = 1, description = "Context length to size the KV cache for"),
-    cache_type_kv: Optional[str] = Query(None, description = "KV cache dtype (e.g. q8_0)"),
+    n_ctx: int = Query(
+        ..., ge = 1, description = "Context length to size the KV cache for"
+    ),
+    cache_type_kv: Optional[str] = Query(
+        None, description = "KV cache dtype (e.g. q8_0)"
+    ),
     current_subject: str = Depends(get_current_subject),
 ):
     """Estimate KV cache + weight bytes for a downloaded GGUF at n_ctx.
@@ -2699,7 +2763,9 @@ async def get_gguf_variants(
     repo_id: str = Query(
         ..., description = "HuggingFace repo ID (e.g. 'unsloth/gemma-3-4b-it-GGUF')"
     ),
-    hf_token: Optional[str] = Query(None, description = "HuggingFace token for private repos"),
+    hf_token: Optional[str] = Query(
+        None, description = "HuggingFace token for private repos"
+    ),
     hf_token_header: Optional[str] = Depends(get_hf_token),
     current_subject: str = Depends(get_current_subject),
 ):
@@ -2804,7 +2870,11 @@ async def get_gguf_download_progress(
                 break
 
         total_progress_bytes = downloaded_bytes + in_progress_bytes
-        progress = min(total_progress_bytes / expected_bytes, 0.99) if expected_bytes > 0 else 0
+        progress = (
+            min(total_progress_bytes / expected_bytes, 0.99)
+            if expected_bytes > 0
+            else 0
+        )
         # Report 1.0 only when all bytes are in completed files.
         if expected_bytes > 0 and downloaded_bytes >= expected_bytes:
             progress = 1.0
@@ -3039,7 +3109,9 @@ def _repo_has_mmproj(repo_info) -> bool:
     """True if the repo ships a GGUF vision adapter (mmproj), so it can
     take image inputs. Cheap: scans already-listed file names only."""
     return any(
-        _is_mmproj_filename(f.file_name) for revision in repo_info.revisions for f in revision.files
+        _is_mmproj_filename(f.file_name)
+        for revision in repo_info.revisions
+        for f in revision.files
     )
 
 
@@ -3144,7 +3216,9 @@ async def list_cached_gguf(current_subject: str = Depends(get_current_subject)):
                         }
                         # Keep the newest timestamp across duplicate caches;
                         # attach only when known so absent rows sort as oldest.
-                        lm = max(last_modified, (existing or {}).get("last_modified", 0.0))
+                        lm = max(
+                            last_modified, (existing or {}).get("last_modified", 0.0)
+                        )
                         if lm > 0:
                             row["last_modified"] = lm
                         seen_lower[key] = row
@@ -3189,7 +3263,9 @@ async def list_cached_models(
                     if _repo_has_gguf_files(repo_info):
                         continue
                     total_size = sum(
-                        (f.size_on_disk or 0) for rev in repo_info.revisions for f in rev.files
+                        (f.size_on_disk or 0)
+                        for rev in repo_info.revisions
+                        for f in rev.files
                     )
                     if total_size == 0:
                         continue
@@ -3214,7 +3290,9 @@ async def list_cached_models(
                         }
                         # Keep the newest timestamp across duplicate caches;
                         # attach only when known so absent rows sort as oldest.
-                        lm = max(last_modified, (existing or {}).get("last_modified", 0.0))
+                        lm = max(
+                            last_modified, (existing or {}).get("last_modified", 0.0)
+                        )
                         if lm > 0:
                             row["last_modified"] = lm
                         seen_lower[key] = row

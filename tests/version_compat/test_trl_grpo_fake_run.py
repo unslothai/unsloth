@@ -35,7 +35,9 @@ import pytest
 # the spoof and the rest of this module need the real torch runtime. Skip the
 # whole module cleanly when torch is absent rather than crashing collection.
 if importlib.util.find_spec("torch") is None:
-    pytest.skip("torch not installed; fake-run needs the real runtime", allow_module_level = True)
+    pytest.skip(
+        "torch not installed; fake-run needs the real runtime", allow_module_level = True
+    )
 
 # Apply the spoof BEFORE any unsloth-touching import (mirrors
 # tests/vllm_compat/test_extended_module_imports.py).
@@ -50,7 +52,9 @@ def _stub_module(name: str, attrs: dict | None = None) -> None:
     if name in sys.modules:
         return
     m = types.ModuleType(name)
-    m.__spec__ = importlib.machinery.ModuleSpec(name = name, loader = None, origin = "<test stub>")
+    m.__spec__ = importlib.machinery.ModuleSpec(
+        name = name, loader = None, origin = "<test stub>"
+    )
     for k, v in (attrs or {}).items():
         setattr(m, k, v)
     sys.modules[name] = m
@@ -126,7 +130,9 @@ def test_grpo_patch_three_tuple_return(generated_grpo_source):
     (logps, entropies, aux_loss)."""
     from packaging.version import Version
     if _trl_version() >= Version("1.7.0"):
-        assert "return logprobs.detach(), entropies, aux_loss" in generated_grpo_source, (
+        assert (
+            "return logprobs.detach(), entropies, aux_loss" in generated_grpo_source
+        ), (
             "3-tuple per-token-logps return missing; the arity version-gate in "
             "rl_replacements.py did not emit the >=1.7.0 form"
         )
@@ -172,7 +178,10 @@ def test_grpo_patch_neutralizes_ref_adapter_and_qlora_cast(generated_grpo_source
 
 
 def _patch_and_get_source(trainer_file: str, trainer_cls: str) -> str:
-    if importlib.util.find_spec("unsloth") is None or importlib.util.find_spec("trl") is None:
+    if (
+        importlib.util.find_spec("unsloth") is None
+        or importlib.util.find_spec("trl") is None
+    ):
         pytest.skip("unsloth or trl not installed")
     # Let a real import failure fail the test (import-time drift is the target).
     import unsloth  # noqa: F401

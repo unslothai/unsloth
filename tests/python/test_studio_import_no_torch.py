@@ -14,9 +14,15 @@ from pathlib import Path
 import pytest
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
-DATA_COLLATORS = REPO_ROOT / "studio" / "backend" / "utils" / "datasets" / "data_collators.py"
-CHAT_TEMPLATES = REPO_ROOT / "studio" / "backend" / "utils" / "datasets" / "chat_templates.py"
-FORMAT_CONVERSION = REPO_ROOT / "studio" / "backend" / "utils" / "datasets" / "format_conversion.py"
+DATA_COLLATORS = (
+    REPO_ROOT / "studio" / "backend" / "utils" / "datasets" / "data_collators.py"
+)
+CHAT_TEMPLATES = (
+    REPO_ROOT / "studio" / "backend" / "utils" / "datasets" / "chat_templates.py"
+)
+FORMAT_CONVERSION = (
+    REPO_ROOT / "studio" / "backend" / "utils" / "datasets" / "format_conversion.py"
+)
 
 
 def _has_uv() -> bool:
@@ -53,7 +59,9 @@ def no_torch_venv(request, tmp_path_factory):
         [str(venv_python), "-c", "import torch"],
         capture_output = True,
     )
-    assert check.returncode != 0, f"torch should NOT be importable in fresh {py_version} venv"
+    assert (
+        check.returncode != 0
+    ), f"torch should NOT be importable in fresh {py_version} venv"
 
     return str(venv_python)
 
@@ -202,7 +210,9 @@ class TestDataCollatorsNoTorchVenv:
             capture_output = True,
             timeout = 30,
         )
-        assert result.returncode == 0, f"DeepSeekOCRDataCollator failed:\n{result.stderr.decode()}"
+        assert (
+            result.returncode == 0
+        ), f"DeepSeekOCRDataCollator failed:\n{result.stderr.decode()}"
         assert b"OK: DeepSeekOCRDataCollator instantiated" in result.stdout
 
     def test_dataclass_vlm_collator_instantiable(self, no_torch_venv):
@@ -223,7 +233,9 @@ class TestDataCollatorsNoTorchVenv:
             capture_output = True,
             timeout = 30,
         )
-        assert result.returncode == 0, f"VLMDataCollator failed:\n{result.stderr.decode()}"
+        assert (
+            result.returncode == 0
+        ), f"VLMDataCollator failed:\n{result.stderr.decode()}"
         assert b"OK: VLMDataCollator instantiated" in result.stdout
 
 
@@ -524,9 +536,12 @@ class TestNegativeControls:
                 capture_output = True,
                 timeout = 30,
             )
-            assert result.returncode != 0, "Expected failure when 'import torch' is prepended"
             assert (
-                b"ModuleNotFoundError" in result.stderr or b"ImportError" in result.stderr
+                result.returncode != 0
+            ), "Expected failure when 'import torch' is prepended"
+            assert (
+                b"ModuleNotFoundError" in result.stderr
+                or b"ImportError" in result.stderr
             ), f"Expected ImportError, got:\n{result.stderr.decode()}"
         finally:
             os.unlink(temp_file)
@@ -566,4 +581,6 @@ class TestNegativeControls:
             timeout = 30,
         )
         assert result.returncode != 0, "import torch should fail in no-torch venv"
-        assert b"ModuleNotFoundError" in result.stderr or b"ImportError" in result.stderr
+        assert (
+            b"ModuleNotFoundError" in result.stderr or b"ImportError" in result.stderr
+        )

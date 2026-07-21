@@ -37,7 +37,9 @@ def test_uv_cmd_targets_this_interpreter_with_mlx_packages(monkeypatch):
     assert "mlx-vlm>=0.4.4" in cmd
 
 
-def test_uv_executable_finds_installer_location_when_path_is_minimal(monkeypatch, tmp_path):
+def test_uv_executable_finds_installer_location_when_path_is_minimal(
+    monkeypatch, tmp_path
+):
     uv = tmp_path / ".local" / "bin" / "uv"
     uv.parent.mkdir(parents = True)
     uv.write_text("#!/bin/sh\n", encoding = "utf-8")
@@ -67,7 +69,10 @@ def test_constraint_pins_installed_transformers(monkeypatch):
     try:
         assert args[:1] == ["--constraint"]
         assert args[1] == path
-        assert Path(path).read_text().strip() == f"transformers=={transformers.__version__}"
+        assert (
+            Path(path).read_text().strip()
+            == f"transformers=={transformers.__version__}"
+        )
     finally:
         if path:
             Path(path).unlink(missing_ok = True)
@@ -208,7 +213,9 @@ def test_repair_invalidates_import_caches_before_stack_check(monkeypatch):
     monkeypatch.setattr(mr.subprocess, "run", lambda *a, **k: _Result())
     monkeypatch.setattr(mr, "_uv_executable", lambda: "/usr/bin/uv")
     monkeypatch.setattr(mr, "_transformers_constraint_args", lambda: ([], None))
-    monkeypatch.setattr(mr.importlib, "invalidate_caches", lambda: events.append("invalidate"))
+    monkeypatch.setattr(
+        mr.importlib, "invalidate_caches", lambda: events.append("invalidate")
+    )
     monkeypatch.setattr(mr, "mlx_stack_available", _stack_available)
 
     assert mr.attempt_mlx_repair() is True
@@ -289,7 +296,9 @@ def test_known_bad_installed_mlx_lm_triggers_repair(monkeypatch, bad_form):
 
     monkeypatch.setattr(metadata, "version", _version)
     monkeypatch.setattr(
-        mr.importlib, "import_module", lambda _n: pytest.fail("versions must gate imports")
+        mr.importlib,
+        "import_module",
+        lambda _n: pytest.fail("versions must gate imports"),
     )
     assert mr.mlx_stack_available() is False
 
@@ -298,7 +307,9 @@ def test_no_op_off_apple_silicon(monkeypatch):
     monkeypatch.setattr(mr, "is_apple_silicon", lambda: False)
     called = {"n": 0}
     monkeypatch.setattr(
-        mr, "attempt_mlx_repair", lambda **_k: called.__setitem__("n", called["n"] + 1) or True
+        mr,
+        "attempt_mlx_repair",
+        lambda **_k: called.__setitem__("n", called["n"] + 1) or True,
     )
     assert mr.start_mlx_autorepair_if_needed() is False
     assert called["n"] == 0
@@ -338,7 +349,9 @@ def test_apple_silicon_missing_mlx_starts_repair_and_redetects(monkeypatch):
 
     import utils.hardware.hardware as hw
 
-    monkeypatch.setattr(hw, "detect_hardware", lambda: redetected.__setitem__("called", True))
+    monkeypatch.setattr(
+        hw, "detect_hardware", lambda: redetected.__setitem__("called", True)
+    )
 
     started = mr.start_mlx_autorepair_if_needed()
     assert started is True

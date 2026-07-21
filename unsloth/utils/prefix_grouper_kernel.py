@@ -62,7 +62,9 @@ from torch.nn.attention.flex_attention import (
 
 # GRPO feeds many distinct segment lengths; at dynamo's default recompile_limit (8) the
 # compiled kernel silently reuses a mismatched specialisation (wrong results). Raise it.
-torch._dynamo.config.recompile_limit = max(getattr(torch._dynamo.config, "recompile_limit", 8), 256)
+torch._dynamo.config.recompile_limit = max(
+    getattr(torch._dynamo.config, "recompile_limit", 8), 256
+)
 torch._dynamo.config.accumulated_recompile_limit = max(
     getattr(torch._dynamo.config, "accumulated_recompile_limit", 256), 2048
 )
@@ -152,14 +154,18 @@ def _pad_labels(group_of_kv, is_prefix, suffix_of_kv, device):
     group_of_kv = torch.cat(
         [group_of_kv, torch.full((pad,), _PAD_GROUP, dtype = torch.long, device = device)]
     )
-    is_prefix = torch.cat([is_prefix, torch.zeros(pad, dtype = torch.bool, device = device)])
+    is_prefix = torch.cat(
+        [is_prefix, torch.zeros(pad, dtype = torch.bool, device = device)]
+    )
     suffix_of_kv = torch.cat(
         [suffix_of_kv, torch.full((pad,), _PAD_GROUP, dtype = torch.long, device = device)]
     )
     return group_of_kv, is_prefix, suffix_of_kv, T, T_pad
 
 
-def build_seg_info_from_layout(layout, device: Optional[torch.device] = None) -> PrefixSegInfo:
+def build_seg_info_from_layout(
+    layout, device: Optional[torch.device] = None
+) -> PrefixSegInfo:
     """Build PrefixSegInfo for ONE group from an object with ``.flat_ids``, ``.P`` and
     ``.suffix_slices`` (used by the parity test / oracle helpers)."""
     if device is None:
@@ -223,7 +229,9 @@ def build_seg_info_multigroup(
         for r in R_list:
             group_of_list.append(torch.full((r,), gid, dtype = torch.long, device = device))
             is_prefix_list.append(torch.zeros(r, dtype = torch.bool, device = device))
-            suffix_of_list.append(torch.full((r,), suffix_counter, dtype = torch.long, device = device))
+            suffix_of_list.append(
+                torch.full((r,), suffix_counter, dtype = torch.long, device = device)
+            )
             suffix_slices.append((cursor, cursor + r))
             cursor += r
             suffix_counter += 1
@@ -282,7 +290,9 @@ def _make_mask_mod(group_of_kv, is_prefix, suffix_of_kv):
         same_group = group_of_kv[q_idx] == group_of_kv[kv_idx]
         kv_is_prefix = is_prefix[kv_idx]
         causal = kv_idx <= q_idx
-        same_suffix = (suffix_of_kv[kv_idx] == suffix_of_kv[q_idx]) & (~is_prefix[q_idx])
+        same_suffix = (suffix_of_kv[kv_idx] == suffix_of_kv[q_idx]) & (
+            ~is_prefix[q_idx]
+        )
         keep = same_group & ((kv_is_prefix & causal) | (same_suffix & causal))
         return keep
 
@@ -318,7 +328,9 @@ def get_block_mask(
     builder = _create_block_mask_compiled if compile_mask else create_block_mask
     with torch.inference_mode(False):
         mask_mod = _make_mask_mod(
-            seg.group_of_kv.to(device), seg.is_prefix.to(device), seg.suffix_of_kv.to(device)
+            seg.group_of_kv.to(device),
+            seg.is_prefix.to(device),
+            seg.suffix_of_kv.to(device),
         )
         bm = builder(
             mask_mod,
@@ -344,7 +356,9 @@ def _pad_qkv_seq(x: torch.Tensor, T_pad: int) -> torch.Tensor:
     T = x.shape[2]
     if T_pad == T:
         return x
-    pad = torch.zeros(x.shape[0], x.shape[1], T_pad - T, x.shape[3], device = x.device, dtype = x.dtype)
+    pad = torch.zeros(
+        x.shape[0], x.shape[1], T_pad - T, x.shape[3], device = x.device, dtype = x.dtype
+    )
     return torch.cat([x, pad], dim = 2)
 
 

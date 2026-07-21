@@ -159,8 +159,12 @@ def _build_env(
     )
     hf_cache_module = types.SimpleNamespace(_active_caches = lambda: (None, _live, None))
     monkeypatch.setitem(__import__("sys").modules, "huggingface_hub", hf_module)
-    monkeypatch.setitem(__import__("sys").modules, "unsloth_zoo.saving_utils", zoo_module)
-    monkeypatch.setitem(__import__("sys").modules, "unsloth_zoo.hf_cache", hf_cache_module)
+    monkeypatch.setitem(
+        __import__("sys").modules, "unsloth_zoo.saving_utils", zoo_module
+    )
+    monkeypatch.setitem(
+        __import__("sys").modules, "unsloth_zoo.hf_cache", hf_cache_module
+    )
 
     fake_shutil = types.SimpleNamespace(
         disk_usage = lambda path: types.SimpleNamespace(free = free_bytes)
@@ -177,7 +181,9 @@ def _build_env(
         "print": lambda *a, **k: prints.append(" ".join(str(x) for x in a)),
     }
     exec(
-        compile(_extract_function("_prewarm_base_model_hub_cache"), str(_SAVE_PY), "exec"),
+        compile(
+            _extract_function("_prewarm_base_model_hub_cache"), str(_SAVE_PY), "exec"
+        ),
         namespace,
     )
     stubs = types.SimpleNamespace(
@@ -210,7 +216,9 @@ def test_skips_download_when_already_cached(monkeypatch, tmp_path):
     fn(_FakePeftModel(), save_method = "merged_16bit")
     assert stubs.snapshot_download.calls == []
     # The cached check must not hit the network.
-    assert all(kwargs.get("local_files_only") for _, kwargs in stubs.hf_hub_download.calls)
+    assert all(
+        kwargs.get("local_files_only") for _, kwargs in stubs.hf_hub_download.calls
+    )
 
 
 def test_skips_when_disk_too_small_for_cache_copy(monkeypatch, tmp_path):
@@ -336,7 +344,9 @@ def test_relative_hub_cache_does_not_falsely_skip(monkeypatch, tmp_path):
     monkeypatch.chdir(tmp_path)
     fn, stubs = _build_env(monkeypatch, tmp_path, hub_cache = "relcache/hub")
     fn(_FakePeftModel(), save_method = "merged_16bit")
-    assert len(stubs.snapshot_download.calls) == 1, "relative cache path falsely skipped pre-warm"
+    assert (
+        len(stubs.snapshot_download.calls) == 1
+    ), "relative cache path falsely skipped pre-warm"
 
 
 def test_generic_save_calls_prewarm_before_merge():
@@ -352,12 +362,16 @@ def test_generic_save_calls_prewarm_before_merge():
     merge_pos = body_src.find("merge_and_overwrite_lora(")
     assert prewarm_pos != -1, "unsloth_generic_save no longer pre-warms the hub cache"
     assert merge_pos != -1
-    assert prewarm_pos < merge_pos, "pre-warm must run before the merge downloads shards"
+    assert (
+        prewarm_pos < merge_pos
+    ), "pre-warm must run before the merge downloads shards"
 
 
 def test_prewarm_downloads_into_live_env_cache(monkeypatch, tmp_path):
     # Download must target the live-env cache (what the merge reads), via cache_dir.
-    fn, stubs = _build_env(monkeypatch, tmp_path, live_hub_cache = "/mnt/persistent/hf/hub")
+    fn, stubs = _build_env(
+        monkeypatch, tmp_path, live_hub_cache = "/mnt/persistent/hf/hub"
+    )
     fn(_FakePeftModel(), save_method = "merged_16bit")
     assert stubs.snapshot_download.calls[0][1]["cache_dir"] == "/mnt/persistent/hf/hub"
 
@@ -383,7 +397,8 @@ def test_cached_probe_uses_live_env_cache(monkeypatch, tmp_path):
     fn(_FakePeftModel(), save_method = "merged_16bit")
     assert stubs.hf_hub_download.calls, "cached probe did not run"
     assert all(
-        kw.get("cache_dir") == "/mnt/persistent/hf/hub" for _, kw in stubs.hf_hub_download.calls
+        kw.get("cache_dir") == "/mnt/persistent/hf/hub"
+        for _, kw in stubs.hf_hub_download.calls
     )
 
 

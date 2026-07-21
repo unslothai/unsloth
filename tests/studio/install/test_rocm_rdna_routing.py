@@ -62,7 +62,9 @@ def routed():
     code = _CHILD.format(tests = str(_TESTS_DIR), arches = list(_ARCHES))
     proc = subprocess.run([sys.executable, "-c", code], capture_output = True, text = True)
     line = next((l for l in proc.stdout.splitlines() if l.startswith("RESULT ")), None)
-    assert line, f"child produced no result.\nstdout:\n{proc.stdout}\nstderr:\n{proc.stderr}"
+    assert (
+        line
+    ), f"child produced no result.\nstdout:\n{proc.stdout}\nstderr:\n{proc.stderr}"
     return json.loads(line[len("RESULT ") :])
 
 

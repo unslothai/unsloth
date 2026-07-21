@@ -75,12 +75,18 @@ def test_anthropic_emitter_closes_reasoning_only_think_block():
     emitter = AnthropicStreamEmitter()
     events = emitter.start("msg_1", "m")
     events += emitter.feed({"type": "content", "text": "<think>The capital"})
-    events += emitter.feed({"type": "content", "text": "<think>The capital of France is Paris."})
+    events += emitter.feed(
+        {"type": "content", "text": "<think>The capital of France is Paris."}
+    )
     # The generator's final bare-text shrink (dropped by the cumulative diff).
-    events += emitter.feed({"type": "content", "text": "The capital of France is Paris."})
+    events += emitter.feed(
+        {"type": "content", "text": "The capital of France is Paris."}
+    )
     events += emitter.finish()
 
-    assert _emitter_client_text(events) == "<think>The capital of France is Paris.</think>"
+    assert (
+        _emitter_client_text(events) == "<think>The capital of France is Paris.</think>"
+    )
 
 
 def test_anthropic_emitter_does_not_double_close_balanced_think():
@@ -89,7 +95,9 @@ def test_anthropic_emitter_does_not_double_close_balanced_think():
     emitter = AnthropicStreamEmitter()
     events = emitter.start("msg_1", "m")
     events += emitter.feed({"type": "content", "text": "<think>Thinking."})
-    events += emitter.feed({"type": "content", "text": "<think>Thinking.</think>Answer."})
+    events += emitter.feed(
+        {"type": "content", "text": "<think>Thinking.</think>Answer."}
+    )
     events += emitter.finish()
 
     assert _emitter_client_text(events) == "<think>Thinking.</think>Answer."
@@ -153,7 +161,10 @@ class TestToolActionNudge:
         assert nudge.startswith("The current date is ")
         assert "Tools are available when they materially improve" in nudge
         assert "prefer using tools rather than answering from memory" not in nudge
-        assert "fetch its full content by calling web_search with the url parameter" in nudge
+        assert (
+            "fetch its full content by calling web_search with the url parameter"
+            in nudge
+        )
         assert "Use code execution for math" in nudge
         assert "render_html" not in nudge
 
@@ -171,7 +182,9 @@ class TestToolActionNudge:
         assert "call render_html once" in nudge
 
     def test_balanced_nudge_empty_without_known_tool_categories(self):
-        assert _build_tool_action_nudge(tools = [], model_name = "Llama-3.1-8B-Instruct") == ""
+        assert (
+            _build_tool_action_nudge(tools = [], model_name = "Llama-3.1-8B-Instruct") == ""
+        )
 
 
 # =====================================================================
@@ -497,7 +510,10 @@ class TestAnthropicMessagesToOpenAI:
         ]
         result = anthropic_messages_to_openai(msgs)
         parts = result[0]["content"]
-        assert parts[1] == {"type": "image_url", "image_url": {"url": "https://x/y.png"}}
+        assert parts[1] == {
+            "type": "image_url",
+            "image_url": {"url": "https://x/y.png"},
+        }
 
     def test_image_only_user_message_emits_no_text_part(self):
         msgs = [
@@ -643,7 +659,9 @@ class TestAnthropicToolsToOpenAI:
         assert [tool["function"]["name"] for tool in result] == ["web_search", "python"]
 
     def test_pydantic_model_input(self):
-        tool = AnthropicTool(name = "test", description = "desc", input_schema = {"type": "object"})
+        tool = AnthropicTool(
+            name = "test", description = "desc", input_schema = {"type": "object"}
+        )
         result = anthropic_tools_to_openai([tool])
         assert result[0]["function"]["name"] == "test"
 
@@ -743,8 +761,12 @@ class TestAnthropicStreamEmitter:
             }
         )
 
-        first_payloads = [json.loads(event.split("data: ")[1]) for event in first_events]
-        second_payloads = [json.loads(event.split("data: ")[1]) for event in second_events]
+        first_payloads = [
+            json.loads(event.split("data: ")[1]) for event in first_events
+        ]
+        second_payloads = [
+            json.loads(event.split("data: ")[1]) for event in second_events
+        ]
 
         tool_starts = [
             payload
@@ -760,7 +782,9 @@ class TestAnthropicStreamEmitter:
                 "index": tool_starts[0]["index"],
                 "delta": {
                     "type": "input_json_delta",
-                    "partial_json": json.dumps({"code": "<!doctype html><html></html>"}),
+                    "partial_json": json.dumps(
+                        {"code": "<!doctype html><html></html>"}
+                    ),
                 },
             }
         ]
@@ -924,7 +948,9 @@ class TestAnthropicToolNonStreaming:
 
         response = asyncio.run(_anthropic_tool_non_streaming(_run_gen, "msg_1", "m"))
         body = json.loads(response.body)
-        tool_blocks = [block for block in body["content"] if block["type"] == "tool_use"]
+        tool_blocks = [
+            block for block in body["content"] if block["type"] == "tool_use"
+        ]
 
         assert len(tool_blocks) == 1
         assert tool_blocks[0]["type"] == "tool_use"
@@ -941,7 +967,9 @@ class TestAnthropicToolNonStreaming:
                 "text": 'Try foo[ARGS]{"x": 1} but not web_search[ARGS]{"q": "hi"} here.',
             }
 
-        tools = [{"type": "function", "function": {"name": "web_search", "parameters": {}}}]
+        tools = [
+            {"type": "function", "function": {"name": "web_search", "parameters": {}}}
+        ]
         response = asyncio.run(
             _anthropic_tool_non_streaming(_run_gen, "msg_1", "m", openai_tools = tools)
         )
@@ -1045,14 +1073,26 @@ class TestAnthropicPassthroughEmitter:
         events1 = e.feed_chunk(
             {
                 "choices": [
-                    {"delta": {"tool_calls": [{"index": 0, "function": {"arguments": '{"cmd'}}]}}
+                    {
+                        "delta": {
+                            "tool_calls": [
+                                {"index": 0, "function": {"arguments": '{"cmd'}}
+                            ]
+                        }
+                    }
                 ]
             }
         )
         events2 = e.feed_chunk(
             {
                 "choices": [
-                    {"delta": {"tool_calls": [{"index": 0, "function": {"arguments": '": "ls"}'}}]}}
+                    {
+                        "delta": {
+                            "tool_calls": [
+                                {"index": 0, "function": {"arguments": '": "ls"}'}}
+                            ]
+                        }
+                    }
                 ]
             }
         )
@@ -1551,7 +1591,9 @@ class TestAnthropicMessagesToolRouting:
         monkeypatch.setattr(inf_mod, "api_monitor", monitor)
         payload = _basic_payload()
 
-        response = _drive(anthropic_messages(payload, request = self._Request(), current_subject = "t"))
+        response = _drive(
+            anthropic_messages(payload, request = self._Request(), current_subject = "t")
+        )
 
         assert response.status_code == 200
         [entry] = monitor.snapshot()
@@ -1586,14 +1628,18 @@ class TestAnthropicMessagesToolRouting:
             tools = [{"type": "web_search_20250305", "name": "web_search"}],
         )
 
-        response = _drive(anthropic_messages(payload, request = self._Request(), current_subject = "t"))
+        response = _drive(
+            anthropic_messages(payload, request = self._Request(), current_subject = "t")
+        )
 
         assert response.status_code == 200
         [entry] = monitor.snapshot()
         assert entry["status"] == "completed"
         assert entry["reply_preview"] == 'Tool call: lookup({"query": "weather"})'
 
-    def test_plain_streaming_records_active_and_completed_monitor_entry(self, monkeypatch):
+    def test_plain_streaming_records_active_and_completed_monitor_entry(
+        self, monkeypatch
+    ):
         import routes.inference as inf_mod
 
         _mock_backend(monkeypatch, context_length = 2048)
@@ -1601,7 +1647,9 @@ class TestAnthropicMessagesToolRouting:
         monkeypatch.setattr(inf_mod, "api_monitor", monitor)
         payload = _basic_payload(stream = True)
 
-        response = _drive(anthropic_messages(payload, request = self._Request(), current_subject = "t"))
+        response = _drive(
+            anthropic_messages(payload, request = self._Request(), current_subject = "t")
+        )
 
         assert monitor.active_count() == 1
         self._consume_response(response)
@@ -1621,11 +1669,17 @@ class TestAnthropicMessagesToolRouting:
         _mock_backend(monkeypatch, context_length = 2048)
         monitor = ApiMonitor(max_entries = 3)
         monkeypatch.setattr(inf_mod, "api_monitor", monitor)
-        monkeypatch.setattr(inf_mod, "_anthropic_plain_stream", _cancelled_before_response)
+        monkeypatch.setattr(
+            inf_mod, "_anthropic_plain_stream", _cancelled_before_response
+        )
         payload = _basic_payload(stream = True)
 
         with pytest.raises(asyncio.CancelledError):
-            _drive(anthropic_messages(payload, request = self._Request(), current_subject = "t"))
+            _drive(
+                anthropic_messages(
+                    payload, request = self._Request(), current_subject = "t"
+                )
+            )
 
         [entry] = monitor.snapshot()
         assert entry["status"] == "cancelled"
@@ -1634,7 +1688,9 @@ class TestAnthropicMessagesToolRouting:
     @staticmethod
     def _sse_blob(chunks):
         # StreamingResponse may hand back str or already-encoded bytes.
-        return "".join(c.decode() if isinstance(c, (bytes, bytearray)) else c for c in chunks)
+        return "".join(
+            c.decode() if isinstance(c, (bytes, bytearray)) else c for c in chunks
+        )
 
     def test_plain_streaming_unclassified_error_emits_error_event(self, monkeypatch):
         # An unclassified mid-stream failure must surface as an SSE `error` event
@@ -1646,7 +1702,9 @@ class TestAnthropicMessagesToolRouting:
         _mock_backend(monkeypatch, generate_chat_completion = _gen_boom)
         payload = _basic_payload(stream = True)
 
-        response = _drive(anthropic_messages(payload, request = self._Request(), current_subject = "t"))
+        response = _drive(
+            anthropic_messages(payload, request = self._Request(), current_subject = "t")
+        )
         blob = self._sse_blob(self._consume_response(response))
 
         assert "event: error" in blob
@@ -1666,7 +1724,9 @@ class TestAnthropicMessagesToolRouting:
             tools = [{"type": "web_search_20250305", "name": "web_search"}],
         )
 
-        response = _drive(anthropic_messages(payload, request = self._Request(), current_subject = "t"))
+        response = _drive(
+            anthropic_messages(payload, request = self._Request(), current_subject = "t")
+        )
         blob = self._sse_blob(self._consume_response(response))
 
         assert "event: error" in blob
@@ -1687,7 +1747,9 @@ class TestAnthropicMessagesToolRouting:
         assert exc.value.status_code == 400
         assert "Mixing Anthropic server tools" in exc.value.detail
 
-    def test_mixed_rejected_when_client_tool_name_collides_with_server_alias(self, monkeypatch):
+    def test_mixed_rejected_when_client_tool_name_collides_with_server_alias(
+        self, monkeypatch
+    ):
         # Regression: a client tool sharing a name with a mapped server tool
         # (e.g. a custom "web_search") must still trigger the mixed-mode 400;
         # otherwise the post-name filter drops the client tool and silently
@@ -1746,7 +1808,9 @@ class TestAnthropicMessagesToolRouting:
         assert exc.value.status_code == 400
         assert "name" in exc.value.detail
 
-    def test_alias_named_client_tool_without_schema_rejected_with_400(self, monkeypatch):
+    def test_alias_named_client_tool_without_schema_rejected_with_400(
+        self, monkeypatch
+    ):
         # Regression: a typo'd client tool whose name collides with an Unsloth
         # alias (e.g. a custom "python" tool missing input_schema) must
         # surface a 400, not silently switch into Unsloth's built-in python
@@ -1802,7 +1866,10 @@ class TestAnthropicMessagesToolRouting:
         with pytest.raises(HTTPException) as exc:
             _drive(anthropic_messages(payload, request = None, current_subject = "t"))
         assert exc.value.status_code == 400
-        assert "confirm_tool_calls is not supported" in exc.value.detail["error"]["message"]
+        assert (
+            "confirm_tool_calls is not supported"
+            in exc.value.detail["error"]["message"]
+        )
         assert backend.calls == []
 
     def test_permission_mode_gating_for_server_tools(self, monkeypatch):
@@ -1833,11 +1900,15 @@ class TestAnthropicMessagesToolRouting:
             _basic_payload(
                 tools = [{"type": "terminal", "name": "terminal"}], permission_mode = "auto"
             ),
-            _basic_payload(tools = safe_tools, enable_tools = True, enabled_tools = ["python"]),
+            _basic_payload(
+                tools = safe_tools, enable_tools = True, enabled_tools = ["python"]
+            ),
         ):
             backend = _mock_backend(monkeypatch)
             with pytest.raises(HTTPException) as exc:
-                _drive(anthropic_messages(local_payload, request = None, current_subject = "t"))
+                _drive(
+                    anthropic_messages(local_payload, request = None, current_subject = "t")
+                )
             assert exc.value.status_code == 400
             assert "terminal" in exc.value.detail["error"]["message"]
             assert backend.calls == []
@@ -1849,8 +1920,16 @@ class TestAnthropicMessagesToolRouting:
         for extra in (
             {"tools": safe_tools, "permission_mode": "off"},
             {"tools": safe_tools, "permission_mode": "full"},
-            {"tools": safe_tools, "enabled_tools": ["python"], "confirm_tool_calls": False},
-            {"tools": safe_tools, "permission_mode": "ask", "confirm_tool_calls": False},
+            {
+                "tools": safe_tools,
+                "enabled_tools": ["python"],
+                "confirm_tool_calls": False,
+            },
+            {
+                "tools": safe_tools,
+                "permission_mode": "ask",
+                "confirm_tool_calls": False,
+            },
             {
                 "tools": [{"type": "terminal", "name": "terminal"}],
                 "permission_mode": "ask",
@@ -1949,7 +2028,11 @@ def test_resumed_session_thinking_and_null_content_do_not_400():
             {
                 "role": "assistant",
                 "content": [
-                    {"type": "thinking", "thinking": "secret reasoning", "signature": "s"},
+                    {
+                        "type": "thinking",
+                        "thinking": "secret reasoning",
+                        "signature": "s",
+                    },
                     {"type": "text", "text": "the answer"},
                     {"type": "tool_use", "id": "t1", "name": "f", "input": {}},
                 ],
@@ -1972,7 +2055,9 @@ def test_resumed_session_thinking_and_null_content_do_not_400():
         AnthropicMessagesRequest(
             model = "x",
             max_tokens = 16,
-            messages = [{"role": "assistant", "content": [{"type": "tool_use", "name": "f"}]}],
+            messages = [
+                {"role": "assistant", "content": [{"type": "tool_use", "name": "f"}]}
+            ],
         )
 
 
@@ -2016,7 +2101,11 @@ def test_user_translatable_blocks_still_accepted():
                     {"type": "text", "text": "What is this?"},
                     {
                         "type": "image",
-                        "source": {"type": "base64", "media_type": "image/png", "data": "AA"},
+                        "source": {
+                            "type": "base64",
+                            "media_type": "image/png",
+                            "data": "AA",
+                        },
                     },
                     {"type": "tool_result", "tool_use_id": "t1", "content": "ok"},
                 ],
@@ -2193,7 +2282,9 @@ def test_disable_parallel_tool_use_forwards_heartbeats_while_dropping():
     # One heartbeat inside the kept call, two inside the dropped window.
     assert len(keepalives) >= 3
     # The dropped call must not surface as a second tool_use block.
-    tool_use_starts = [c for c in chunks if "content_block_start" in c and '"tool_use"' in c]
+    tool_use_starts = [
+        c for c in chunks if "content_block_start" in c and '"tool_use"' in c
+    ]
     assert len(tool_use_starts) == 1
 
 
@@ -2279,7 +2370,9 @@ def test_dropped_tool_output_events_emit_rate_limited_keepalives(monkeypatch):
     assert any("final answer" in c for c in chunks)
 
 
-def test_parallel_disabled_dropped_call_output_emits_rate_limited_keepalives(monkeypatch):
+def test_parallel_disabled_dropped_call_output_emits_rate_limited_keepalives(
+    monkeypatch,
+):
     """Under disable_parallel_tool_use a chatty second call is dropped whole
     (drop_until_tool_end). Its tool_output/tool_args events must still emit
     rate-limited keepalives: the drop window can last minutes with no heartbeats
@@ -2370,7 +2463,9 @@ def test_parallel_disabled_dropped_call_output_emits_rate_limited_keepalives(mon
     keepalives = [c for c in chunks if c == _OPENAI_PASSTHROUGH_SSE_KEEPALIVE]
     assert len(keepalives) == n_output
     # The dropped call must not surface as a second tool_use block.
-    tool_use_starts = [c for c in chunks if "content_block_start" in c and '"tool_use"' in c]
+    tool_use_starts = [
+        c for c in chunks if "content_block_start" in c and '"tool_use"' in c
+    ]
     assert len(tool_use_starts) == 1
     assert any("final answer" in c for c in chunks)
 
@@ -2383,7 +2478,10 @@ def test_plain_stream_emits_keepalive_during_prompt_stall(monkeypatch):
     import time as _time
 
     from routes import inference as inf_mod
-    from routes.inference import _OPENAI_PASSTHROUGH_SSE_KEEPALIVE, _anthropic_plain_stream
+    from routes.inference import (
+        _OPENAI_PASSTHROUGH_SSE_KEEPALIVE,
+        _anthropic_plain_stream,
+    )
 
     monkeypatch.setattr(inf_mod, "_LOCAL_TOOL_STREAM_STALL_KEEPALIVE_S", 0.05)
 

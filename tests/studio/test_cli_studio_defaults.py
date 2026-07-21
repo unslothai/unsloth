@@ -3,7 +3,9 @@
 import ast
 from pathlib import Path
 
-_STUDIO_CMD_PY = Path(__file__).resolve().parents[2] / "unsloth_cli" / "commands" / "studio.py"
+_STUDIO_CMD_PY = (
+    Path(__file__).resolve().parents[2] / "unsloth_cli" / "commands" / "studio.py"
+)
 
 
 def _find_typer_option_default(source: str, func_name: str, long_option: str):
@@ -63,7 +65,9 @@ def test_studio_run_host_is_loopback():
     """`unsloth studio run` --host default must be 127.0.0.1."""
     source = _STUDIO_CMD_PY.read_text()
     host_default = _find_typer_option_default(source, "run", "--host")
-    assert host_default is not None, "Could not find --host typer.Option default in run()"
+    assert (
+        host_default is not None
+    ), "Could not find --host typer.Option default in run()"
     assert host_default == "127.0.0.1", (
         f"`unsloth studio run` --host default must be '127.0.0.1' (loopback) "
         f"but got '{host_default}'."

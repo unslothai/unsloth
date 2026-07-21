@@ -62,7 +62,8 @@ def subject_of(token):
 def test_unexpired_key_validates():
     seed_user()
     assert (
-        storage.validate_api_key(make_key(iso_from_now(days = 1))) == storage.DEFAULT_ADMIN_USERNAME
+        storage.validate_api_key(make_key(iso_from_now(days = 1)))
+        == storage.DEFAULT_ADMIN_USERNAME
     )
 
 
@@ -94,7 +95,9 @@ def test_revoked_key_rejected():
 
 def test_unknown_key_rejected():
     seed_user()
-    assert storage.validate_api_key(storage.API_KEY_PREFIX + secrets.token_hex(16)) is None
+    assert (
+        storage.validate_api_key(storage.API_KEY_PREFIX + secrets.token_hex(16)) is None
+    )
 
 
 # --- get_current_subject (route dependency) ---------------------------------
@@ -137,7 +140,9 @@ def test_dependency_rejects_expired_jwt_as_401():
 def test_cache_skips_pbkdf2_on_repeat(monkeypatch):
     seed_user()
     raw = make_key(iso_from_now(days = 1))
-    assert storage.validate_api_key(raw) == storage.DEFAULT_ADMIN_USERNAME  # warms cache
+    assert (
+        storage.validate_api_key(raw) == storage.DEFAULT_ADMIN_USERNAME
+    )  # warms cache
 
     calls = {"n": 0}
     real = storage._pbkdf2_api_key
@@ -194,5 +199,7 @@ def test_create_api_key_route_stores_tz_aware_expiry():
         expires_at = iso_from_now(days = 30),
     )
     parsed = _dt.fromisoformat(row["expires_at"])
-    assert parsed.tzinfo is not None  # tz-aware: comparison in validate_api_key won't raise
+    assert (
+        parsed.tzinfo is not None
+    )  # tz-aware: comparison in validate_api_key won't raise
     assert storage.validate_api_key(raw) == storage.DEFAULT_ADMIN_USERNAME

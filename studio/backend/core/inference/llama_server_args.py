@@ -196,11 +196,17 @@ _SPLIT_SHADOWING_FLAGS: frozenset[str] = _SPLIT_MODE_FLAGS | _TENSOR_SPLIT_FLAGS
 _LAYER_OFFLOAD_FLAGS: frozenset[str] = frozenset(
     {"-ngl", "--gpu-layers", "--n-gpu-layers", "-fit", "--fit"}
 )
-_MOE_OFFLOAD_FLAGS: frozenset[str] = frozenset({"-ncmoe", "--n-cpu-moe", "-cmoe", "--cpu-moe"})
+_MOE_OFFLOAD_FLAGS: frozenset[str] = frozenset(
+    {"-ncmoe", "--n-cpu-moe", "-cmoe", "--cpu-moe"}
+)
 _OFFLOAD_SHADOWING_FLAGS: frozenset[str] = _LAYER_OFFLOAD_FLAGS | _MOE_OFFLOAD_FLAGS
 
 _SHADOWING_FLAGS: frozenset[str] = (
-    _CONTEXT_FLAGS | _CACHE_FLAGS | _SPEC_FLAGS | _TEMPLATE_FLAGS | _SPLIT_SHADOWING_FLAGS
+    _CONTEXT_FLAGS
+    | _CACHE_FLAGS
+    | _SPEC_FLAGS
+    | _TEMPLATE_FLAGS
+    | _SPLIT_SHADOWING_FLAGS
 )
 
 # Shadowing flags that take no value -- strip the flag only, not the next token.
@@ -233,16 +239,22 @@ def parse_ctx_override(args: Optional[Iterable[str]]) -> Optional[int]:
             i += 1
         else:
             if i + 1 >= n or _flag_name(tokens[i + 1]) is not None:
-                raise ValueError(f"llama-server flag '{flag}' requires an integer value")
+                raise ValueError(
+                    f"llama-server flag '{flag}' requires an integer value"
+                )
             raw_value = tokens[i + 1]
             i += 2
 
         try:
             value = int(str(raw_value).strip())
         except ValueError as exc:
-            raise ValueError(f"llama-server flag '{flag}' requires an integer value") from exc
+            raise ValueError(
+                f"llama-server flag '{flag}' requires an integer value"
+            ) from exc
         if value < 0:
-            raise ValueError(f"llama-server flag '{flag}' requires a non-negative integer value")
+            raise ValueError(
+                f"llama-server flag '{flag}' requires a non-negative integer value"
+            )
         override = value
 
     return override
@@ -258,7 +270,9 @@ def resolve_requested_ctx(args: Optional[Iterable[str]], fallback_n_ctx: int) ->
     return override if override is not None else fallback_n_ctx
 
 
-def _last_flag_value(args: Optional[Iterable[str]], flags: frozenset[str]) -> Optional[str]:
+def _last_flag_value(
+    args: Optional[Iterable[str]], flags: frozenset[str]
+) -> Optional[str]:
     """Return the last-wins string value among ``flags`` in extras, or None.
 
     Handles both ``--flag=value`` and ``--flag value`` forms and raises if a
@@ -341,7 +355,9 @@ def parse_split_mode_override(args: Optional[Iterable[str]]) -> Optional[str]:
     return _last_flag_value(args, _SPLIT_MODE_FLAGS)
 
 
-def resolve_tensor_parallel(args: Optional[Iterable[str]], fallback_tensor_parallel: bool) -> bool:
+def resolve_tensor_parallel(
+    args: Optional[Iterable[str]], fallback_tensor_parallel: bool
+) -> bool:
     """Return the tensor-parallel state load_model should treat as requested.
 
     A user-supplied ``--split-mode`` in extras last-wins-overrides the

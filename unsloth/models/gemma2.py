@@ -115,7 +115,9 @@ def Gemma2Attention_fast_forward(
     cos = self.rotary_emb.multi_gpu_cos_cached[device_index]
     sin = self.rotary_emb.multi_gpu_sin_cached[device_index]
 
-    rope_position_ids = position_ids if position_ids is not None else kwargs.get("position_ids")
+    rope_position_ids = (
+        position_ids if position_ids is not None else kwargs.get("position_ids")
+    )
     if rope_position_ids is not None:
         # Useful for LongRoPE
         cos_var, sin_var = self.rotary_emb.get_cached(kv_seq_len, device_index)
@@ -142,11 +144,19 @@ def Gemma2Attention_fast_forward(
         window = (-1, -1)
         sliding_window = getattr(self.config, "sliding_window", None)
         if has_sliding_window:
-            sliding_window = sliding_window if sliding_window is not None else kv_seq_len
-            window = (-1, -1) if kv_seq_len <= sliding_window else (sliding_window, sliding_window)
+            sliding_window = (
+                sliding_window if sliding_window is not None else kv_seq_len
+            )
+            window = (
+                (-1, -1)
+                if kv_seq_len <= sliding_window
+                else (sliding_window, sliding_window)
+            )
 
         if not hasattr(self, "_flash_attention_softmax_scale"):
-            self._flash_attention_softmax_scale = 1.0 / (self.config.query_pre_attn_scalar**0.5)
+            self._flash_attention_softmax_scale = 1.0 / (
+                self.config.query_pre_attn_scalar**0.5
+            )
 
         use_varlen = seq_info is not None and past_key_value is None
 
@@ -215,7 +225,9 @@ def Gemma2DecoderLayer_fast_forward(
     *args,
     **kwargs,
 ):
-    if use_cache and hasattr(self, "_flag_for_generation"):  # past_key_value is not None:
+    if use_cache and hasattr(
+        self, "_flag_for_generation"
+    ):  # past_key_value is not None:
         out_weight = torch.empty(
             self.input_layernorm.weight.shape,
             dtype = torch.float32,
@@ -256,7 +268,9 @@ def Gemma2DecoderLayer_fast_forward(
         hidden_states += residual
     else:
         residual = hidden_states
-        hidden_states = fast_rms_layernorm(self.input_layernorm, hidden_states, gemma = True)
+        hidden_states = fast_rms_layernorm(
+            self.input_layernorm, hidden_states, gemma = True
+        )
         hidden_states, self_attn_weights, present_key_value = self.self_attn(
             hidden_states = hidden_states,
             causal_mask = causal_mask,
@@ -268,7 +282,9 @@ def Gemma2DecoderLayer_fast_forward(
             padding_mask = padding_mask,
             **kwargs,
         )
-        hidden_states = fast_rms_layernorm(self.post_attention_layernorm, hidden_states, gemma = True)
+        hidden_states = fast_rms_layernorm(
+            self.post_attention_layernorm, hidden_states, gemma = True
+        )
         hidden_states = residual + hidden_states
 
         # Fully Connected
@@ -337,8 +353,12 @@ def Gemma2Attention_fast_forward_inference(
         self.paged_attention_V = self.paged_attention[:, 1]
         self.paged_attention_K[:seq_len] = K1.permute(2, 0, 1, 3)
         self.paged_attention_V[:seq_len] = V1.permute(2, 0, 1, 3)
-        self.temp_QA = torch.empty((2, bsz, 1, attention_size), dtype = dtype, device = device)
-        self.temp_KV = torch.empty((2, bsz, 1, n_kv_heads * head_dim), dtype = dtype, device = device)
+        self.temp_QA = torch.empty(
+            (2, bsz, 1, attention_size), dtype = dtype, device = device
+        )
+        self.temp_KV = torch.empty(
+            (2, bsz, 1, n_kv_heads * head_dim), dtype = dtype, device = device
+        )
         self.RH_Q = torch.empty((bsz, n_heads, 1, head_dim), dtype = dtype, device = device)
         # Only for Gemma2
         self.temp_O = torch.empty((bsz, 1, hidden_size), dtype = dtype, device = device)
@@ -367,7 +387,9 @@ def Gemma2Attention_fast_forward_inference(
         )
         self.paged_attention_K = self.paged_attention[:, 0]
         self.paged_attention_V = self.paged_attention[:, 1]
-        self.attention.resize_((bsz, n_heads, 1, self.attention.shape[-1] + KV_CACHE_INCREMENT))
+        self.attention.resize_(
+            (bsz, n_heads, 1, self.attention.shape[-1] + KV_CACHE_INCREMENT)
+        )
 
     Qn = fast_linear_forward(self.q_proj, Xn, out = self.temp_QA[0])
     Kn = fast_linear_forward(self.k_proj, Xn, out = self.temp_KV[0])
@@ -422,8 +444,12 @@ def Gemma2Attention_fast_forward_inference(
     # Grouped query attention
     _, _, cached_len, _ = Knn.shape
     if n_groups != 1:
-        Knn = Knn[:, :, None, :, :].expand(bsz, n_kv_heads, n_groups, cached_len, head_dim)
-        Vnn = Vnn[:, :, None, :, :].expand(bsz, n_kv_heads, n_groups, cached_len, head_dim)
+        Knn = Knn[:, :, None, :, :].expand(
+            bsz, n_kv_heads, n_groups, cached_len, head_dim
+        )
+        Vnn = Vnn[:, :, None, :, :].expand(
+            bsz, n_kv_heads, n_groups, cached_len, head_dim
+        )
         Knn = Knn.reshape(bsz, n_heads, cached_len, head_dim)
         Vnn = Vnn.reshape(bsz, n_heads, cached_len, head_dim)
 
@@ -480,7 +506,9 @@ def Gemma2Model_fast_forward_inference(
     hidden_states = hidden_states.to(_get_dtype(dtype_from_config(self.config)))
     # 3072**0.5 = 55.5000 in bfloat16, whilst 55.4256 in float32
     # 2048**0.5 = 45.2500 in bfloat16, whilst 45.2548 in float32
-    hidden_states *= torch.tensor(math_sqrt(self.config.hidden_size), dtype = hidden_states.dtype)
+    hidden_states *= torch.tensor(
+        math_sqrt(self.config.hidden_size), dtype = hidden_states.dtype
+    )
 
     bsz, q_len, hd = hidden_states.shape
     seq_len = past_key_values[0][0].shape[-2]
@@ -510,7 +538,9 @@ def Gemma2Model_fast_forward_inference(
         # For pipeline parallelism, we need to move all tensors to the same device
         # note that this movement is once per GPU in PP
         device_index = getattr(decoder_layer, "_per_layer_device_index", 0)
-        hidden_states, position_ids = move_to_device(device_index, hidden_states, position_ids)
+        hidden_states, position_ids = move_to_device(
+            device_index, hidden_states, position_ids
+        )
 
         use_sliding_window = idx % 2 == 0
 
@@ -578,7 +608,9 @@ class FastGemma2Model(FastLlamaModel):
         Gemma2FlashAttention2.forward = Gemma2Attention_fast_forward
         Gemma2DecoderLayer.forward = Gemma2DecoderLayer_fast_forward
         Gemma2Model.forward = LlamaModel_fast_forward
-        Gemma2ForCausalLM.forward = CausalLM_fast_forward(Gemma2Model_fast_forward_inference)
+        Gemma2ForCausalLM.forward = CausalLM_fast_forward(
+            Gemma2Model_fast_forward_inference
+        )
         PeftModelForCausalLM.forward = PeftModel_fast_forward
         fix_prepare_inputs_for_generation(Gemma2ForCausalLM)
 
@@ -589,7 +621,9 @@ class FastGemma2Model(FastLlamaModel):
         # https://github.com/huggingface/transformers/blob/v4.37.2/src/transformers/models/llama/modeling_llama.py
         import transformers.models.gemma2.modeling_gemma2
 
-        transformers.models.gemma2.modeling_gemma2.Gemma2RotaryEmbedding = GemmaFixedRotaryEmbedding
+        transformers.models.gemma2.modeling_gemma2.Gemma2RotaryEmbedding = (
+            GemmaFixedRotaryEmbedding
+        )
         return
 
     @staticmethod
@@ -625,7 +659,9 @@ class FastGemma2Model(FastLlamaModel):
                 # Leave + 1 to Triton kernel itself
                 # module.weight += 1.0 # return output * (1 + self.weight)
                 if not hasattr(module, "variance_epsilon"):
-                    module.variance_epsilon = module.eps  # Gemma doesn't use variance_epsilon
+                    module.variance_epsilon = (
+                        module.eps
+                    )  # Gemma doesn't use variance_epsilon
 
         # Clear deleted GPU items
         import gc

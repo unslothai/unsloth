@@ -16,7 +16,9 @@ from core.inference.llama_cpp import LlamaCppBackend
 @pytest.fixture
 def backend(monkeypatch):
     monkeypatch.setattr(LlamaCppBackend, "_kill_orphaned_servers", lambda self: 0)
-    monkeypatch.setattr(llama_cpp_module.atexit, "register", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(
+        llama_cpp_module.atexit, "register", lambda *_args, **_kwargs: None
+    )
     return LlamaCppBackend()
 
 
@@ -31,7 +33,9 @@ def test_effective_parallel_slots_commit_uses_final_positive_parallel(backend):
 
 
 @pytest.mark.parametrize("value", [None, 0, -2, "not-an-int"])
-def test_effective_parallel_slots_commit_invalid_value_falls_back_to_one(backend, value):
+def test_effective_parallel_slots_commit_invalid_value_falls_back_to_one(
+    backend, value
+):
     backend._commit_effective_parallel_slots(value)
 
     assert backend.effective_parallel_slots == 1

@@ -110,7 +110,9 @@ def transport(monkeypatch):
     monkeypatch.setattr(
         mcp_client,
         "_client",
-        lambda url, headers, use_oauth = False: _RecordingClient(url, headers, use_oauth, recorder),
+        lambda url, headers, use_oauth = False: _RecordingClient(
+            url, headers, use_oauth, recorder
+        ),
     )
     return recorder
 
@@ -155,7 +157,9 @@ def test_parse_basic_argv():
 
 def test_parse_keeps_url_argument_as_one_command():
     # gemini "high": a :// inside an ARGUMENT must not break the command.
-    assert mcp_client.parse_stdio_command("npx server --endpoint https://example.com/mcp") == [
+    assert mcp_client.parse_stdio_command(
+        "npx server --endpoint https://example.com/mcp"
+    ) == [
         "npx",
         "server",
         "--endpoint",
@@ -186,7 +190,9 @@ def test_parse_windows_strips_wrapping_quotes(monkeypatch):
     # gemini "medium": posix=False keeps backslash paths but also the
     # wrapping quotes; the PR strips a matched pair so argv[0] is clean.
     monkeypatch.setattr(sys, "platform", "win32")
-    parts = mcp_client.parse_stdio_command(r'"C:\Program Files\node\node.exe" server.js')
+    parts = mcp_client.parse_stdio_command(
+        r'"C:\Program Files\node\node.exe" server.js'
+    )
     assert parts[0] == r"C:\Program Files\node\node.exe"
     assert parts[1] == "server.js"
 
@@ -217,7 +223,9 @@ def test_is_external_host_false_for_loopback(host):
 
 # 127.0.0.2 is loopback in principle, but the rest of the stack hard-codes
 # 127.0.0.1, so only the exact aliases count as local here.
-@pytest.mark.parametrize("host", ["0.0.0.0", "::", "127.0.0.2", "192.168.1.10", "example.com"])
+@pytest.mark.parametrize(
+    "host", ["0.0.0.0", "::", "127.0.0.2", "192.168.1.10", "example.com"]
+)
 def test_is_external_host_true_for_network(host):
     assert host_policy.is_external_host(host) is True
 
@@ -229,7 +237,9 @@ def test_loopback_bind_enables_stdio(monkeypatch, host):
     assert mcp_client.stdio_mcp_enabled() is True
 
 
-@pytest.mark.parametrize("host", ["0.0.0.0", "::", "127.0.0.2", "192.168.1.10", "example.com"])
+@pytest.mark.parametrize(
+    "host", ["0.0.0.0", "::", "127.0.0.2", "192.168.1.10", "example.com"]
+)
 def test_network_bind_leaves_stdio_off(monkeypatch, host):
     _disable(monkeypatch)
     host_policy.apply_stdio_mcp_loopback_default(host)
@@ -328,7 +338,9 @@ def test_explicit_env_opt_in_beats_disable_tools_on_loopback(monkeypatch):
     from state import tool_policy
 
     monkeypatch.setenv("UNSLOTH_STUDIO_ALLOW_STDIO_MCP", "1")
-    host_policy.apply_stdio_mcp_loopback_default("127.0.0.1")  # no-op: value is explicit
+    host_policy.apply_stdio_mcp_loopback_default(
+        "127.0.0.1"
+    )  # no-op: value is explicit
     tool_policy.set_tool_policy(False)
     assert mcp_client.stdio_mcp_enabled() is True
 
@@ -407,10 +419,14 @@ def test_validate_url_gate_on_accepts_stdio(monkeypatch):
     # http still works when stdio is on
     assert _validate_url("https://x/mcp") == "https://x/mcp"
     # url-bearing argument accepted as a command
-    assert _validate_url("npx server --url https://x/mcp") == ("npx server --url https://x/mcp")
+    assert _validate_url("npx server --url https://x/mcp") == (
+        "npx server --url https://x/mcp"
+    )
     # A lone token is ambiguous; accept it as a command rather than
     # guessing it's a URL (no regression for single binaries).
-    assert _validate_url("/usr/local/bin/my-mcp-server") == "/usr/local/bin/my-mcp-server"
+    assert (
+        _validate_url("/usr/local/bin/my-mcp-server") == "/usr/local/bin/my-mcp-server"
+    )
     assert _validate_url("mcp-server-sqlite") == "mcp-server-sqlite"
     # empty / unparseable still rejected
     for bad in ["   ", '"unclosed']:
@@ -497,7 +513,9 @@ def test_refresh_route_gate(tmp_path, monkeypatch, transport):
     assert transport == []
 
     _enable(monkeypatch)
-    res = asyncio.run(routes_mcp.refresh_mcp_server_tools("stdio1", current_subject = "u"))
+    res = asyncio.run(
+        routes_mcp.refresh_mcp_server_tools("stdio1", current_subject = "u")
+    )
     assert res.ok and res.tool_count == 2
     assert len(transport) == 1
 
@@ -508,7 +526,9 @@ def test_discovery_gate(tmp_path, monkeypatch, transport):
     from core.inference.tools import get_enabled_mcp_tools
 
     _reset_db(tmp_path, monkeypatch)
-    mcp_servers_db.create_server(id = "stdio1", display_name = "FS", url = "npx server", is_enabled = True)
+    mcp_servers_db.create_server(
+        id = "stdio1", display_name = "FS", url = "npx server", is_enabled = True
+    )
 
     _disable(monkeypatch)
     assert asyncio.run(get_enabled_mcp_tools()) == []
@@ -524,7 +544,9 @@ def test_execute_gate(tmp_path, monkeypatch, transport):
     from core.inference.tools import execute_tool
 
     _reset_db(tmp_path, monkeypatch)
-    mcp_servers_db.create_server(id = "stdio1", display_name = "FS", url = "npx server", is_enabled = True)
+    mcp_servers_db.create_server(
+        id = "stdio1", display_name = "FS", url = "npx server", is_enabled = True
+    )
 
     _disable(monkeypatch)
     out = execute_tool("mcp__stdio1__list_directory", {"path": "/tmp"})

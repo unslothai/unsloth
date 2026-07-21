@@ -133,7 +133,9 @@ try:
         acao = r.headers.get("Access-Control-Allow-Origin", "")
         acac = r.headers.get("Access-Control-Allow-Credentials", "")
         if acao == "*" and acac.lower() == "true":
-            fail(f"CORS: wildcard origin + credentials=true (acao={acao!r}, acac={acac!r})")
+            fail(
+                f"CORS: wildcard origin + credentials=true (acao={acao!r}, acac={acac!r})"
+            )
         else:
             ok(f"CORS preflight acao={acao!r} acac={acac!r}")
 except Exception as exc:

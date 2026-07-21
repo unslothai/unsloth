@@ -111,5 +111,7 @@ class TestSlotsThatFitOnGpu:
     def test_kv_counted_per_candidate(self):
         # A non-zero (slot-independent) KV shifts the threshold: with 3000 MiB KV and
         # base 19500 (= 22500 total at par-independent terms) the same par3 fit holds.
-        gi, use_fit, slots = _run(_backend(kv_fixed_mib = 3000), 4, 19500, [(0, 24576)], {0: 24576})
+        gi, use_fit, slots = _run(
+            _backend(kv_fixed_mib = 3000), 4, 19500, [(0, 24576)], {0: 24576}
+        )
         assert use_fit is False and slots == 3

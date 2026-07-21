@@ -257,7 +257,9 @@ class TestTrainingRawSupport(unittest.TestCase):
             'getattr(MLXTrainingConfig, "__dataclass_fields__", {})',
             source,
         )
-        self.assertIn('if "cast_norm_output_to_input_dtype" in _supported_fields:', source)
+        self.assertIn(
+            'if "cast_norm_output_to_input_dtype" in _supported_fields:', source
+        )
         self.assertIn('if "dataset_order" in _supported_fields:', source)
         self.assertIn('if "max_grad_leaf_norm" in _supported_fields:', source)
         self.assertIn(
@@ -395,7 +397,10 @@ class TestTrainingRawSupport(unittest.TestCase):
         self.assertEqual(result.dataset[0]["text"], "hello<eos>")
         self.assertEqual(result.dataset[1]["text"], "world<eos>")
         self.assertTrue(
-            any("null or non-string 'text' values" in notice.message for notice in result.notices)
+            any(
+                "null or non-string 'text' values" in notice.message
+                for notice in result.notices
+            )
         )
 
 

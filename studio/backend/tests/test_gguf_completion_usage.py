@@ -30,8 +30,12 @@ class _GgufBackend:
 
 
 def _request_completion(monkeypatch, usage):
-    monkeypatch.setattr(inference_route, "get_llama_cpp_backend", lambda: _GgufBackend(usage))
-    monkeypatch.setattr(inference_route, "_effective_enable_tools", lambda payload: False)
+    monkeypatch.setattr(
+        inference_route, "get_llama_cpp_backend", lambda: _GgufBackend(usage)
+    )
+    monkeypatch.setattr(
+        inference_route, "_effective_enable_tools", lambda payload: False
+    )
 
     app = FastAPI()
     app.include_router(inference_route.router)

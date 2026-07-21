@@ -52,7 +52,9 @@ class FastQwen2Model(FastLlamaModel):
         Qwen2FlashAttention2.forward = LlamaAttention_fast_forward
         Qwen2DecoderLayer.forward = LlamaDecoderLayer_fast_forward
         Qwen2Model.forward = LlamaModel_fast_forward
-        Qwen2ForCausalLM.forward = CausalLM_fast_forward(LlamaModel_fast_forward_inference)
+        Qwen2ForCausalLM.forward = CausalLM_fast_forward(
+            LlamaModel_fast_forward_inference
+        )
         PeftModelForCausalLM.forward = PeftModel_fast_forward
         fix_prepare_inputs_for_generation(Qwen2ForCausalLM)
 
@@ -63,7 +65,9 @@ class FastQwen2Model(FastLlamaModel):
         # https://github.com/huggingface/transformers/blob/v4.37.2/src/transformers/models/llama/modeling_llama.py
         import transformers.models.qwen2.modeling_qwen2
 
-        transformers.models.qwen2.modeling_qwen2.Qwen2RotaryEmbedding = LlamaRotaryEmbedding
+        transformers.models.qwen2.modeling_qwen2.Qwen2RotaryEmbedding = (
+            LlamaRotaryEmbedding
+        )
         return
 
     @staticmethod

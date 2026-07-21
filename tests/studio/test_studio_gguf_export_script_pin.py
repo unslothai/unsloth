@@ -10,7 +10,12 @@ from pathlib import Path
 
 
 SOURCE_PATH = (
-    Path(__file__).resolve().parents[2] / "studio" / "backend" / "core" / "export" / "export.py"
+    Path(__file__).resolve().parents[2]
+    / "studio"
+    / "backend"
+    / "core"
+    / "export"
+    / "export.py"
 )
 SRC = SOURCE_PATH.read_text()
 TREE = ast.parse(SRC)
@@ -32,7 +37,10 @@ def _find_pin_try(tree: ast.AST):
             if (
                 isinstance(stmt, ast.ImportFrom)
                 and stmt.module == "unsloth_zoo.llama_cpp"
-                and any(alias.name == "_resolve_local_convert_script" for alias in stmt.names)
+                and any(
+                    alias.name == "_resolve_local_convert_script"
+                    for alias in stmt.names
+                )
             ):
                 return node
     return None
@@ -86,7 +94,9 @@ def test_warning_handler_gated_on_module_flag():
     try_node = _find_pin_try(TREE)
     assert try_node is not None
     handlers = [
-        h for h in try_node.handlers if isinstance(h.type, ast.Name) and h.type.id == "ImportError"
+        h
+        for h in try_node.handlers
+        if isinstance(h.type, ast.Name) and h.type.id == "ImportError"
     ]
     assert handlers
     handler = handlers[0]
@@ -94,7 +104,10 @@ def test_warning_handler_gated_on_module_flag():
     flag_writes = []
     warning_calls = []
     for node in ast.walk(ast.Module(body = handler.body, type_ignores = [])):
-        if isinstance(node, ast.Name) and node.id == "_LLAMA_CPP_SCRIPTS_WARNING_EMITTED":
+        if (
+            isinstance(node, ast.Name)
+            and node.id == "_LLAMA_CPP_SCRIPTS_WARNING_EMITTED"
+        ):
             if isinstance(node.ctx, ast.Load):
                 flag_reads.append(node)
             elif isinstance(node.ctx, ast.Store):
@@ -148,7 +161,9 @@ def _simulate_pin_block(emit_records, set_value):
                 LLAMA_CPP_DEFAULT_DIR,
                 _resolve_local_convert_script,  # noqa: F401
             )
-            os.environ.setdefault("UNSLOTH_LLAMA_CPP_SCRIPTS_DIR", LLAMA_CPP_DEFAULT_DIR)
+            os.environ.setdefault(
+                "UNSLOTH_LLAMA_CPP_SCRIPTS_DIR", LLAMA_CPP_DEFAULT_DIR
+            )
         except ImportError:
             if not state["emitted"]:
                 emit_records.append("warned")

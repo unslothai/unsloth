@@ -74,7 +74,9 @@ except ImportError:
             "__exit__": lambda self, *a: None,
         },
     )
-    _httpx_stub.get = lambda *a, **kw: (_ for _ in ()).throw(RuntimeError("unstubbed httpx.get"))
+    _httpx_stub.get = lambda *a, **kw: (_ for _ in ()).throw(
+        RuntimeError("unstubbed httpx.get")
+    )
     sys.modules.setdefault("httpx", _httpx_stub)
 
 from core.inference.llama_cpp import LlamaCppBackend
@@ -225,7 +227,9 @@ def test_kv_unified_added_for_multi_slot():
     """Explicit --parallel N disables llama-server's auto-slots kv-unified
     default, splitting -c into per-slot windows of -c/N; Unsloth must restore
     the shared pool so one request can use the full advertised context."""
-    flags = LlamaCppBackend._ctx_integrity_flags(4, False, False, 98304, 98304, _CAPS_ALL)
+    flags = LlamaCppBackend._ctx_integrity_flags(
+        4, False, False, 98304, 98304, _CAPS_ALL
+    )
     assert "--kv-unified" in flags
 
 
@@ -241,7 +245,9 @@ def test_kv_unified_skipped_for_single_slot_or_old_build():
 def test_fit_ctx_floors_explicit_request_under_fit():
     # An explicit requested ctx floors --fit-ctx at that value on any --fit
     # path, including legacy auto (auto_fit False).
-    flags = LlamaCppBackend._ctx_integrity_flags(1, True, False, 98304, 98304, _CAPS_ALL)
+    flags = LlamaCppBackend._ctx_integrity_flags(
+        1, True, False, 98304, 98304, _CAPS_ALL
+    )
     assert flags[flags.index("--fit-ctx") + 1] == "98304"
 
 

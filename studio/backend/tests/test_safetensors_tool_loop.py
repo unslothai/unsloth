@@ -41,7 +41,9 @@ from utils.datasets import is_gpt_oss_model_name
 
 class TestParser:
     def test_json_tool_call(self):
-        text = '<tool_call>{"name":"web_search","arguments":{"query":"hello"}}</tool_call>'
+        text = (
+            '<tool_call>{"name":"web_search","arguments":{"query":"hello"}}</tool_call>'
+        )
         result = parse_tool_calls_from_text(text)
         assert len(result) == 1
         tc = result[0]
@@ -76,28 +78,36 @@ class TestParser:
         result = parse_tool_calls_from_text(text)
         assert len(result) == 1
         assert result[0]["function"]["name"] == "web_search"
-        assert json.loads(result[0]["function"]["arguments"]) == {"query": "openai news"}
+        assert json.loads(result[0]["function"]["arguments"]) == {
+            "query": "openai news"
+        }
 
     def test_gemma_native_tool_call_template_quotes_escape_backslashes(self):
         text = r'<|tool_call>call:ls{path:<|"|>C:\Users\wasim\repo<|"|>}<tool_call|>'
         result = parse_tool_calls_from_text(text)
         assert len(result) == 1
         assert result[0]["function"]["name"] == "ls"
-        assert json.loads(result[0]["function"]["arguments"]) == {"path": r"C:\Users\wasim\repo"}
+        assert json.loads(result[0]["function"]["arguments"]) == {
+            "path": r"C:\Users\wasim\repo"
+        }
 
     def test_gemma_native_tool_call_hyphenated_argument_name(self):
         text = '<|tool_call>call:mcp__srv__create-issue{issue-title:"Bug report"}<tool_call|>'
         result = parse_tool_calls_from_text(text)
         assert len(result) == 1
         assert result[0]["function"]["name"] == "mcp__srv__create-issue"
-        assert json.loads(result[0]["function"]["arguments"]) == {"issue-title": "Bug report"}
+        assert json.loads(result[0]["function"]["arguments"]) == {
+            "issue-title": "Bug report"
+        }
 
     def test_gemma_native_tool_call_keeps_braces_inside_string_value(self):
         text = '<|tool_call>call:terminal{command:"echo {foo:bar}"}<tool_call|>'
         result = parse_tool_calls_from_text(text)
         assert len(result) == 1
         assert result[0]["function"]["name"] == "terminal"
-        assert json.loads(result[0]["function"]["arguments"]) == {"command": "echo {foo:bar}"}
+        assert json.loads(result[0]["function"]["arguments"]) == {
+            "command": "echo {foo:bar}"
+        }
 
     def test_gemma_native_tool_call_bare_string_values(self):
         text = "<|tool_call>call:get_weather{location:Tokyo,unit:celsius}<tool_call|>"
@@ -147,9 +157,7 @@ class TestParser:
     def test_code_with_embedded_xml(self):
         # A code parameter with a literal </parameter> must not truncate: the
         # parser uses end-of-body as the only boundary for single-param calls.
-        text = (
-            "<function=python><parameter=code>html = '<a></a>'\nprint('hi')</parameter></function>"
-        )
+        text = "<function=python><parameter=code>html = '<a></a>'\nprint('hi')</parameter></function>"
         result = parse_tool_calls_from_text(text)
         assert len(result) == 1
         assert "print('hi')" in result[0]["function"]["arguments"]
@@ -217,8 +225,12 @@ class TestParser:
 
     def test_render_html_start_detector_covers_mistral_and_rehearsal_forms(self):
         # The provisional render-html card must fire for bracket-tag forms too, not only XML.
-        assert _detect_render_html_tool_start('[TOOL_CALLS]render_html{"code":"<html>"}')
-        assert _detect_render_html_tool_start('[TOOL_CALLS]render_html[ARGS]{"code":"x"}')
+        assert _detect_render_html_tool_start(
+            '[TOOL_CALLS]render_html{"code":"<html>"}'
+        )
+        assert _detect_render_html_tool_start(
+            '[TOOL_CALLS]render_html[ARGS]{"code":"x"}'
+        )
         assert _detect_render_html_tool_start(
             '[TOOL_CALLS] [{"name":"render_html","arguments":{}}]'
         )
@@ -226,7 +238,9 @@ class TestParser:
         # A different first tool (or a prose mention with no JSON body) must not fire.
         assert not _detect_render_html_tool_start('[TOOL_CALLS]web_search{"q":"x"}')
         assert not _detect_render_html_tool_start('web_search[ARGS]{"q":"x"}')
-        assert not _detect_render_html_tool_start('python[ARGS]{"code":"render_html[ARGS]{}"}')
+        assert not _detect_render_html_tool_start(
+            'python[ARGS]{"code":"render_html[ARGS]{}"}'
+        )
         assert not _detect_render_html_tool_start("use render_html[ARGS] to render")
 
     def test_render_html_start_detector_skips_think_block_rehearsal(self):
@@ -242,7 +256,9 @@ class TestParser:
             '<think>web_search[ARGS]{"q":"x"}</think>render_html[ARGS]{"code":"<html>"}'
         )
         # A render_html rehearsed inside think with no real call after does not fire.
-        assert not _detect_render_html_tool_start('<think>render_html[ARGS]{"code":"x"}</think>')
+        assert not _detect_render_html_tool_start(
+            '<think>render_html[ARGS]{"code":"x"}</think>'
+        )
 
     def test_render_html_start_detector_reads_top_level_array_name(self):
         # Array form: the name is the object's top-level ``"name"``, not an argument key.
@@ -274,7 +290,10 @@ class TestParser:
         assert strip_tool_markup(text, final = True) == "before"
         # Without final=True the unclosed run is preserved.
         assert "partial" in strip_tool_markup(text)
-        assert strip_tool_markup("before <|tool_call>call:terminal{", final = True) == "before"
+        assert (
+            strip_tool_markup("before <|tool_call>call:terminal{", final = True)
+            == "before"
+        )
 
     def test_streaming_strip_respects_disabled_healing(self):
         raw = 'before <tool_call>{"name":"web_search"'
@@ -311,7 +330,8 @@ class TestParser:
         end-of-string as a terminator. Regression for the Gemini
         high-severity flag on this PR."""
         text = (
-            "<think>I should call web_search[ARGS]" '{"query":"weather"} next to find the answer.'
+            "<think>I should call web_search[ARGS]"
+            '{"query":"weather"} next to find the answer.'
         )
         result = parse_tool_calls_from_text(text)
         # Inside an unclosed think block no calls are yielded.
@@ -365,7 +385,9 @@ class TestParser:
 
     def test_mistral_bracket_nested_json(self):
         # Brace-balance scan handles nested objects and braces inside string literals.
-        text = "[TOOL_CALLS]web_search" '{"query":"a {nested} brace","opts":{"limit":5}}'
+        text = (
+            "[TOOL_CALLS]web_search" '{"query":"a {nested} brace","opts":{"limit":5}}'
+        )
         result = parse_tool_calls_from_text(text)
         assert len(result) == 1
         import json as _json
@@ -408,7 +430,9 @@ class TestParser:
         assert "print(1)" in result[0]["function"]["arguments"]
 
     def test_rehearsal_with_prose(self):
-        text = "I should call the python tool. Like this: " 'python[ARGS]{"code":"x = 1"}'
+        text = (
+            "I should call the python tool. Like this: " 'python[ARGS]{"code":"x = 1"}'
+        )
         result = parse_tool_calls_from_text(text)
         assert len(result) == 1
         assert result[0]["function"]["name"] == "python"
@@ -433,7 +457,9 @@ class TestParser:
 
     def test_streaming_strip_removes_partial_bracket_marker(self):
         # A bracket tag streamed before its opening brace must strip on the final pass, not leak.
-        assert strip_tool_markup("answer [TOOL_CALLS]web_search", final = True) == "answer"
+        assert (
+            strip_tool_markup("answer [TOOL_CALLS]web_search", final = True) == "answer"
+        )
         assert strip_tool_markup("text python[ARGS]", final = True) == "text"
         # Non-final must keep the in-progress tag buffered (not yet stripped).
         partial = "answer [TOOL_CALLS]web_search"
@@ -473,7 +499,9 @@ class TestParser:
         # [CALL_ID]/[ARGS] metadata (aligned with the parser).
         raw = 'before [TOOL_CALLS]web_search[CALL_ID]abc123[ARGS]{"q":"x"} after'
         out = strip_tool_markup_streaming(raw)
-        assert "[TOOL_CALLS]" not in out and "[CALL_ID]" not in out and "[ARGS]" not in out
+        assert (
+            "[TOOL_CALLS]" not in out and "[CALL_ID]" not in out and "[ARGS]" not in out
+        )
         assert "before" in out and "after" in out
 
     # <think> pre-strip.
@@ -490,7 +518,8 @@ class TestParser:
 
     def test_think_block_stripped_before_bracket_tag(self):
         text = (
-            "<think>Let me search for that.</think>\n" '[TOOL_CALLS]web_search{"query":"weather"}'
+            "<think>Let me search for that.</think>\n"
+            '[TOOL_CALLS]web_search{"query":"weather"}'
         )
         result = parse_tool_calls_from_text(text)
         assert len(result) == 1
@@ -498,7 +527,10 @@ class TestParser:
 
     def test_uppercase_think_tag_stripped(self):
         # Some templates use [THINK]...[/THINK] instead of <think>.
-        text = "[THINK]planning my next call[/THINK]" '[TOOL_CALLS]python{"code":"print(1)"}'
+        text = (
+            "[THINK]planning my next call[/THINK]"
+            '[TOOL_CALLS]python{"code":"print(1)"}'
+        )
         result = parse_tool_calls_from_text(text)
         assert len(result) == 1
         assert result[0]["function"]["name"] == "python"
@@ -530,7 +562,10 @@ class TestParser:
         text = '[TOOL_CALLS]search{"q":"explain [THINK] blocks"}'
         result = parse_tool_calls_from_text(text)
         assert len(result) == 1
-        assert json.loads(result[0]["function"]["arguments"])["q"] == "explain [THINK] blocks"
+        assert (
+            json.loads(result[0]["function"]["arguments"])["q"]
+            == "explain [THINK] blocks"
+        )
 
     def test_real_call_after_think_with_rehearsal_inside(self):
         # A rehearsal inside <think> is skipped, but the real call after the close tag parses.
@@ -601,7 +636,11 @@ class TestParser:
         xml = parse_tool_calls_from_text(
             '<tool_call>{"name":"web_search","arguments":"weather"}</tool_call>'
         )
-        assert array[0]["function"]["arguments"] == xml[0]["function"]["arguments"] == "weather"
+        assert (
+            array[0]["function"]["arguments"]
+            == xml[0]["function"]["arguments"]
+            == "weather"
+        )
         healed = _coerce_arguments(
             array[0]["function"]["arguments"], heal = True, tool_name = "web_search"
         )
@@ -620,7 +659,9 @@ class TestParser:
 
     def test_mistral_v11_call_id_is_not_the_function_name(self):
         # v11 shape: the function name is ``name``, never the opaque call-id token.
-        result = parse_tool_calls_from_text('[TOOL_CALLS]get_weather[CALL_ID]abc123[ARGS]{"q":"x"}')
+        result = parse_tool_calls_from_text(
+            '[TOOL_CALLS]get_weather[CALL_ID]abc123[ARGS]{"q":"x"}'
+        )
         assert len(result) == 1
         assert result[0]["function"]["name"] == "get_weather"
         assert json.loads(result[0]["function"]["arguments"]) == {"q": "x"}
@@ -643,7 +684,9 @@ class TestParser:
         assert strip_tool_markup_streaming(text, tool_protocol_active = True) == text
         # An unclosed block during streaming is preserved too (the parser keeps it).
         partial = '<think>plan: search[ARGS]{"q":"x"}'
-        assert strip_tool_markup_streaming(partial, tool_protocol_active = True) == partial
+        assert (
+            strip_tool_markup_streaming(partial, tool_protocol_active = True) == partial
+        )
 
     def test_streaming_strip_still_removes_real_call_outside_think(self):
         # The think guard must not stop the streaming strip removing a call outside the block.
@@ -699,7 +742,9 @@ class TestParser:
         # safetensors content; GGUF routes it to reasoning_content natively.
         closed = "[THINK]Let me think. 2+2 is 4.[/THINK]The answer is 4."
         assert strip_tool_markup_streaming(closed) == "The answer is 4."
-        assert strip_tool_markup_streaming(closed) == strip_tool_markup(closed, final = True)
+        assert strip_tool_markup_streaming(closed) == strip_tool_markup(
+            closed, final = True
+        )
         # Unclosed mid-stream reasoning is held from the marker on (nothing leaks, and
         # the cleaned text only grows as the answer streams in after ``[/THINK]``).
         assert strip_tool_markup_streaming("[THINK]still thinking") == ""
@@ -728,7 +773,10 @@ class TestParserMultiFormat:
     def test_llama3_python_tag_dot_call_multi_arg(self):
         import json
 
-        text = "<|python_tag|>get_weather.call(" 'location="Tokyo", units="celsius", days=5)'
+        text = (
+            "<|python_tag|>get_weather.call("
+            'location="Tokyo", units="celsius", days=5)'
+        )
         result = parse_tool_calls_from_text(text)
         assert len(result) == 1
         args = json.loads(result[0]["function"]["arguments"])
@@ -998,7 +1046,9 @@ class TestParserMultiFormat:
         text = '[TOOL_CALLS]search[ARGS]{"q":"explain the [THINK] token"}'
         result = parse_tool_calls_from_text(text)
         assert len(result) == 1
-        assert json.loads(result[0]["function"]["arguments"]) == {"q": "explain the [THINK] token"}
+        assert json.loads(result[0]["function"]["arguments"]) == {
+            "q": "explain the [THINK] token"
+        }
 
     # Gemma 4
 
@@ -1024,7 +1074,12 @@ class TestParserMultiFormat:
         )
         result = parse_tool_calls_from_text(text)
         args = json.loads(result[0]["function"]["arguments"])
-        assert args == {"enabled": True, "attempts": 5, "threshold": 1.5, "nickname": None}
+        assert args == {
+            "enabled": True,
+            "attempts": 5,
+            "threshold": 1.5,
+            "nickname": None,
+        }
 
     def test_gemma4_nested_args(self):
         # Gemma 4 nests dicts / lists with bare keys and ``<|"|>`` strings.
@@ -1128,7 +1183,9 @@ class TestParserMultiFormat:
             "[TOOL_CALLS]",
             "<|tool_call>",
         ):
-            assert marker in TOOL_XML_SIGNALS, f"streaming loop would not wake on {marker!r}"
+            assert (
+                marker in TOOL_XML_SIGNALS
+            ), f"streaming loop would not wake on {marker!r}"
 
     def test_has_tool_signal_for_all_formats(self):
         assert has_tool_signal('<|python_tag|>brave_search.call(q="x")')
@@ -1766,7 +1823,8 @@ class TestParserCrossFormatRouting:
             result = parse_tool_calls_from_text(text)
             assert len(result) == 1, f"{label}: parser missed the call"
             assert result[0]["function"]["name"] == expected_name, (
-                f"{label}: got {result[0]['function']['name']!r}, " f"expected {expected_name!r}"
+                f"{label}: got {result[0]['function']['name']!r}, "
+                f"expected {expected_name!r}"
             )
 
     def test_all_new_markers_in_tool_xml_signals(self):
@@ -1779,7 +1837,9 @@ class TestParserCrossFormatRouting:
             "<|tool_calls_section_begin|>",
             "<|tool_call_begin|>",
         ):
-            assert marker in TOOL_XML_SIGNALS, f"streaming loop would not wake on {marker!r}"
+            assert (
+                marker in TOOL_XML_SIGNALS
+            ), f"streaming loop would not wake on {marker!r}"
 
 
 def test_active_tools_are_passed_to_single_turn_after_render_html_success():
@@ -1814,7 +1874,10 @@ def test_active_tools_are_passed_to_single_turn_after_render_html_success():
 
     assert exec_fn.calls == [("render_html", {"code": "<html>one</html>"})]
     assert captured_tool_names == [["render_html", "web_search"], ["web_search"]]
-    assert any(event.get("type") == "content" and event.get("text") == "Done." for event in events)
+    assert any(
+        event.get("type") == "content" and event.get("text") == "Done."
+        for event in events
+    )
 
 
 def test_spent_one_shot_rehearsal_repeat_is_detected_not_blank_continuation():
@@ -1827,7 +1890,9 @@ def test_spent_one_shot_rehearsal_repeat_is_detected_not_blank_continuation():
             [
                 '<tool_call>{"name":"render_html","arguments":{"code":"<html>one</html>"}}</tool_call>'
             ],
-            ['render_html[ARGS]{"code":"<html>two</html>"}'],  # spent one-shot rehearsal
+            [
+                'render_html[ARGS]{"code":"<html>two</html>"}'
+            ],  # spent one-shot rehearsal
             ["The chart is above."],
         ]
     )
@@ -1856,7 +1921,9 @@ def test_spent_one_shot_rehearsal_repeat_is_detected_not_blank_continuation():
     )
     contents = [e["text"] for e in events if e["type"] == "content"]
     # render_html ran exactly once; the repeat was a no-op, not a second execution.
-    assert exec_fn.calls == [("render_html", {"code": "<html>one</html>"})], exec_fn.calls
+    assert exec_fn.calls == [
+        ("render_html", {"code": "<html>one</html>"})
+    ], exec_fn.calls
     # The loop continued past the repeat to the real answer (not a blank continuation).
     assert any("The chart is above." in t for t in contents), contents
     # The raw rehearsal markup never leaked as visible content.
@@ -1905,7 +1972,12 @@ def test_rehearsal_name_after_prose_in_streaming_is_not_streamed():
     loop, exec_fn = _make_loop(
         turns = [
             # _make_loop accumulates these deltas into cumulative snapshots.
-            ["Let me think. ", "I will search ", "web_search", '[ARGS]{"query":"cats"}'],
+            [
+                "Let me think. ",
+                "I will search ",
+                "web_search",
+                '[ARGS]{"query":"cats"}',
+            ],
             ["Found."],
         ],
         exec_results = ["RESULT"],
@@ -2069,7 +2141,9 @@ def test_safety_net_honors_disabled_auto_heal_for_late_incomplete_call():
     # A late call caught by the safety net: an unclosed ``<tool_call>`` heals only with Auto-Heal on;
     # off, the safety net must not pass ``allow_incomplete=True`` and execute a truncated call.
     prose = "Sure, let me look that up for you right now. "
-    incomplete = '<tool_call>{"name":"web_search","arguments":{"query":"weather in Sydney"}}'
+    incomplete = (
+        '<tool_call>{"name":"web_search","arguments":{"query":"weather in Sydney"}}'
+    )
 
     loop_off, exec_off = _make_loop(
         turns = [[prose, incomplete], ["Final answer."]],
@@ -2078,7 +2152,9 @@ def test_safety_net_honors_disabled_auto_heal_for_late_incomplete_call():
         max_tool_iterations = 3,
     )
     events_off = _collect_events(loop_off)
-    assert exec_off.calls == [], "disabled Auto-Heal must not execute a healed incomplete call"
+    assert (
+        exec_off.calls == []
+    ), "disabled Auto-Heal must not execute a healed incomplete call"
     assert not [e for e in events_off if e.get("type") == "tool_start"]
 
     loop_on, exec_on = _make_loop(
@@ -2088,7 +2164,9 @@ def test_safety_net_honors_disabled_auto_heal_for_late_incomplete_call():
         max_tool_iterations = 3,
     )
     _collect_events(loop_on)
-    assert exec_on.calls == [("web_search", {"query": "weather in Sydney"})], exec_on.calls
+    assert exec_on.calls == [
+        ("web_search", {"query": "weather in Sydney"})
+    ], exec_on.calls
 
 
 def test_bare_json_tool_call_is_not_streamed_as_content():
@@ -2504,14 +2582,22 @@ class TestLoopBasic:
         assert exec_fn.calls[0][0] == "render_html"
         assert "<!doctype html>" in exec_fn.calls[0][1]["code"]
 
-    def test_render_html_confirmation_gate_suppresses_early_provisional(self, monkeypatch):
+    def test_render_html_confirmation_gate_suppresses_early_provisional(
+        self, monkeypatch
+    ):
         """When a human confirmation gate is active, render_html must not surface
         an early provisional tool_start: that card (keyed by tool_call_id, no
         approval) would show the tool 'running' before the user approves. The
         gated real tool_start is the first signal the UI receives instead."""
-        monkeypatch.setattr(safetensors_agentic, "new_approval_id", lambda: "approval-rh")
-        monkeypatch.setattr(safetensors_agentic, "begin_tool_decision", lambda *_a, **_k: object())
-        monkeypatch.setattr(safetensors_agentic, "wait_tool_decision", lambda *_a, **_k: "allow")
+        monkeypatch.setattr(
+            safetensors_agentic, "new_approval_id", lambda: "approval-rh"
+        )
+        monkeypatch.setattr(
+            safetensors_agentic, "begin_tool_decision", lambda *_a, **_k: object()
+        )
+        monkeypatch.setattr(
+            safetensors_agentic, "wait_tool_decision", lambda *_a, **_k: "allow"
+        )
 
         exec_fn = FakeExecuteTool(["Rendered HTML canvas."])
         turn_iter = iter(
@@ -2644,7 +2730,10 @@ class TestLoopBasic:
 
         def _gen(_messages):
             acc = ""
-            for chunk in ["<function=render_html>", "<parameter=code><!doctype html><html>"]:
+            for chunk in [
+                "<function=render_html>",
+                "<parameter=code><!doctype html><html>",
+            ]:
                 acc += chunk
                 yield acc
             raise RuntimeError("model pipeline exploded")
@@ -2667,7 +2756,9 @@ class TestLoopBasic:
 
         assert raised
         provisional = [
-            e for e in collected if e["type"] == "tool_start" and e.get("arguments") == {}
+            e
+            for e in collected
+            if e["type"] == "tool_start" and e.get("arguments") == {}
         ]
         assert len(provisional) == 1
         # The provisional card is closed (as an error) before the exception
@@ -2675,12 +2766,15 @@ class TestLoopBasic:
         closing = [
             e
             for e in collected
-            if e["type"] == "tool_end" and e.get("tool_call_id") == provisional[0]["tool_call_id"]
+            if e["type"] == "tool_end"
+            and e.get("tool_call_id") == provisional[0]["tool_call_id"]
         ]
         assert len(closing) == 1
         assert "Error" in (closing[0].get("result") or "")
 
-    def test_python_tool_containing_render_html_signal_does_not_emit_provisional_start(self):
+    def test_python_tool_containing_render_html_signal_does_not_emit_provisional_start(
+        self,
+    ):
         loop, exec_fn = _make_loop(
             turns = [
                 [
@@ -2697,7 +2791,9 @@ class TestLoopBasic:
 
         assert len(tool_starts) == 1
         assert tool_starts[0]["tool_name"] == "python"
-        assert exec_fn.calls == [("python", {"code": "print('<function=render_html>')"})]
+        assert exec_fn.calls == [
+            ("python", {"code": "print('<function=render_html>')"})
+        ]
 
     def test_render_html_rehearsed_in_think_block_emits_no_provisional_start(self):
         # BUG B: a render_html rehearsed inside think before a real python call must not emit a
@@ -2768,7 +2864,10 @@ class TestLoopBasic:
         tool_starts = [e for e in events if e["type"] == "tool_start"]
 
         assert exec_fn.calls == [("render_html", {"code": "<html>one</html>"})]
-        assert [e["arguments"] for e in tool_starts] == [{}, {"code": "<html>one</html>"}]
+        assert [e["arguments"] for e in tool_starts] == [
+            {},
+            {"code": "<html>one</html>"},
+        ]
 
     def test_truncated_unclosed_tool_call(self):
         loop, exec_fn = _make_loop(
@@ -2788,7 +2887,9 @@ class TestLoopBasic:
         loop, exec_fn = _make_loop(
             turns = [
                 # ``arguments`` is a string _coerce_arguments can't parse, so heal runs.
-                ['<tool_call>{"name":"web_search","arguments":"hello world"}</tool_call>'],
+                [
+                    '<tool_call>{"name":"web_search","arguments":"hello world"}</tool_call>'
+                ],
                 ["ok"],
             ],
             exec_results = ["..."],
@@ -2803,8 +2904,12 @@ class TestLoopBehaviour:
         captured_messages: list[list[dict]] = []
         turns = iter(
             [
-                ['<tool_call>{"name":"web_search","arguments":{"query":"x"}}</tool_call>'],
-                ['<tool_call>{"name":"web_search","arguments":{"query":"x"}}</tool_call>'],
+                [
+                    '<tool_call>{"name":"web_search","arguments":{"query":"x"}}</tool_call>'
+                ],
+                [
+                    '<tool_call>{"name":"web_search","arguments":{"query":"x"}}</tool_call>'
+                ],
                 ["final"],
             ]
         )
@@ -2829,11 +2934,14 @@ class TestLoopBehaviour:
         )
 
         assert exec_fn.calls == [("web_search", {"query": "x"})]
-        assert [e["tool_call_id"] for e in events if e["type"] == "tool_end"] == ["call_0"]
+        assert [e["tool_call_id"] for e in events if e["type"] == "tool_end"] == [
+            "call_0"
+        ]
         assert not [
             e
             for e in events
-            if e.get("tool_call_id") == "call_1" and e.get("type") in {"tool_start", "tool_end"}
+            if e.get("tool_call_id") == "call_1"
+            and e.get("type") in {"tool_start", "tool_end"}
         ]
         duplicate_nudges = [
             message
@@ -2850,7 +2958,9 @@ class TestLoopBehaviour:
         captured_messages: list[list[dict]] = []
         turns = iter(
             [
-                ['<tool_call>{"name":"web_search","arguments":{"query":"x"}}</tool_call>'],
+                [
+                    '<tool_call>{"name":"web_search","arguments":{"query":"x"}}</tool_call>'
+                ],
                 [
                     '<tool_call>{"name":"web_search","arguments":{"query":"x"}}</tool_call>'
                     '<tool_call>{"name":"python","arguments":{"code":"print(1)"}}</tool_call>'
@@ -2888,7 +2998,9 @@ class TestLoopBehaviour:
         ]
 
         conv = captured_messages[-1]
-        turn2 = [m for m in conv if m.get("role") == "assistant" and m.get("tool_calls")][-1]
+        turn2 = [
+            m for m in conv if m.get("role") == "assistant" and m.get("tool_calls")
+        ][-1]
         assert [tc["function"]["name"] for tc in turn2["tool_calls"]] == ["python"]
         after = conv[conv.index(turn2) + 1 :]
         assert after[0]["role"] == "tool" and after[0]["content"] == "py-result"
@@ -2903,9 +3015,15 @@ class TestLoopBehaviour:
         captured_tool_names: list[list[str]] = []
         turns = iter(
             [
-                ['<tool_call>{"name":"web_search","arguments":{"query":"x"}}</tool_call>'],
-                ['<tool_call>{"name":"web_search","arguments":{"query":"x"}}</tool_call>'],
-                ['<tool_call>{"name":"python","arguments":{"code":"print(1)"}}</tool_call>'],
+                [
+                    '<tool_call>{"name":"web_search","arguments":{"query":"x"}}</tool_call>'
+                ],
+                [
+                    '<tool_call>{"name":"web_search","arguments":{"query":"x"}}</tool_call>'
+                ],
+                [
+                    '<tool_call>{"name":"python","arguments":{"code":"print(1)"}}</tool_call>'
+                ],
                 ["final"],
             ]
         )
@@ -2950,7 +3068,8 @@ class TestLoopBehaviour:
         assert not [
             e
             for e in events
-            if e.get("tool_call_id") == "call_1" and e.get("type") in {"tool_start", "tool_end"}
+            if e.get("tool_call_id") == "call_1"
+            and e.get("type") in {"tool_start", "tool_end"}
         ]
         duplicate_nudges = [
             message
@@ -2971,9 +3090,15 @@ class TestLoopBehaviour:
         captured_tool_names: list[list[str]] = []
         turns = iter(
             [
-                ['<tool_call>{"name":"web_search","arguments":{"query":"x"}}</tool_call>'],
-                ['<tool_call>{"name":"web_search","arguments":{"query":"x"}}</tool_call>'],
-                ['<tool_call>{"name":"python","arguments":{"code":"print(1)"}}</tool_call>'],
+                [
+                    '<tool_call>{"name":"web_search","arguments":{"query":"x"}}</tool_call>'
+                ],
+                [
+                    '<tool_call>{"name":"web_search","arguments":{"query":"x"}}</tool_call>'
+                ],
+                [
+                    '<tool_call>{"name":"python","arguments":{"code":"print(1)"}}</tool_call>'
+                ],
                 ["final"],
             ]
         )
@@ -3018,9 +3143,15 @@ class TestLoopBehaviour:
         captured_tool_names: list[list[str]] = []
         turns = iter(
             [
-                ['<tool_call>{"name":"web_search","arguments":{"query":"x"}}</tool_call>'],
-                ['<tool_call>{"name":"web_search","arguments":{"query":"x"}}</tool_call>'],
-                ['<tool_call>{"name":"web_search","arguments":{"query":"x"}}</tool_call>'],
+                [
+                    '<tool_call>{"name":"web_search","arguments":{"query":"x"}}</tool_call>'
+                ],
+                [
+                    '<tool_call>{"name":"web_search","arguments":{"query":"x"}}</tool_call>'
+                ],
+                [
+                    '<tool_call>{"name":"web_search","arguments":{"query":"x"}}</tool_call>'
+                ],
                 ["final from first result"],
             ]
         )
@@ -3052,11 +3183,14 @@ class TestLoopBehaviour:
 
         assert exec_fn.calls == [("web_search", {"query": "x"})]
         assert [
-            event.get("tool_call_id") for event in events if event.get("type") == "tool_end"
+            event.get("tool_call_id")
+            for event in events
+            if event.get("type") == "tool_end"
         ] == ["call_0"]
         assert captured_tool_names[-1] == []
         assert any(
-            event.get("type") == "content" and "final from first result" in event.get("text", "")
+            event.get("type") == "content"
+            and "final from first result" in event.get("text", "")
             for event in events
         )
 
@@ -3103,7 +3237,9 @@ class TestLoopBehaviour:
         # carries the raw result for the UI.
         loop, exec_fn = _make_loop(
             turns = [
-                ['<tool_call>{"name":"python","arguments":{"code":"plot()"}}</tool_call>'],
+                [
+                    '<tool_call>{"name":"python","arguments":{"code":"plot()"}}</tool_call>'
+                ],
                 ["see chart"],
             ],
             exec_results = ["chart\n__IMAGES__:/tmp/chart.png"],
@@ -3141,7 +3277,9 @@ class TestLoopBehaviour:
         tool_msgs = [m for m in captured[1] if m.get("role") == "tool"]
         assert tool_msgs, "no tool message reached the model"
         for tm in tool_msgs:
-            assert "__IMAGES__" not in tm["content"], f"sentinel leaked to model: {tm['content']!r}"
+            assert (
+                "__IMAGES__" not in tm["content"]
+            ), f"sentinel leaked to model: {tm['content']!r}"
 
     def test_image_sentinel_stripped_with_multiple_markers(self):
         # Consecutive sentinels: cut at the first, nothing leaks.
@@ -3171,13 +3309,19 @@ class TestLoopBehaviour:
         tool_msgs = [m for m in captured[1] if m.get("role") == "tool"]
         assert tool_msgs
         for tm in tool_msgs:
-            assert "__IMAGES__" not in tm["content"], f"second sentinel leaked: {tm['content']!r}"
-            assert tm["content"] == "panel", f"expected payload-only 'panel', got {tm['content']!r}"
+            assert (
+                "__IMAGES__" not in tm["content"]
+            ), f"second sentinel leaked: {tm['content']!r}"
+            assert (
+                tm["content"] == "panel"
+            ), f"expected payload-only 'panel', got {tm['content']!r}"
 
     def test_tool_execution_error_is_emitted_but_loop_continues(self):
         loop, exec_fn = _make_loop(
             turns = [
-                ['<tool_call>{"name":"web_search","arguments":{"query":"x"}}</tool_call>'],
+                [
+                    '<tool_call>{"name":"web_search","arguments":{"query":"x"}}</tool_call>'
+                ],
                 ["sorry, that failed"],
             ],
             exec_results = ["Error: network unreachable"],
@@ -3192,7 +3336,9 @@ class TestLoopBehaviour:
     def test_exception_in_executor_does_not_raise(self):
         loop, exec_fn = _make_loop(
             turns = [
-                ['<tool_call>{"name":"web_search","arguments":{"query":"x"}}</tool_call>'],
+                [
+                    '<tool_call>{"name":"web_search","arguments":{"query":"x"}}</tool_call>'
+                ],
                 ["recovered"],
             ],
             exec_results = [RuntimeError("boom")],
@@ -3318,7 +3464,9 @@ class TestLoopRePrompt:
         loop, exec_fn = _make_loop(
             turns = [
                 ["<think>Let me search for that.</think>"],
-                ['<tool_call>{"name":"web_search","arguments":{"query":"cats"}}</tool_call>'],
+                [
+                    '<tool_call>{"name":"web_search","arguments":{"query":"cats"}}</tool_call>'
+                ],
                 ["Here is the answer."],
             ],
             exec_results = ["result"],
@@ -3335,7 +3483,9 @@ class TestLoopRePrompt:
         loop, exec_fn = _make_loop(
             turns = [
                 ["I need more context.<think>Let me search for that."],
-                ['<tool_call>{"name":"web_search","arguments":{"query":"cats"}}</tool_call>'],
+                [
+                    '<tool_call>{"name":"web_search","arguments":{"query":"cats"}}</tool_call>'
+                ],
                 ["Here is the answer."],
             ],
             exec_results = ["result"],
@@ -3353,7 +3503,9 @@ class TestLoopRePrompt:
         loop, exec_fn = _make_loop(
             turns = [
                 ["Let me search for that.</think><think>checking details</think>"],
-                ['<tool_call>{"name":"web_search","arguments":{"query":"cats"}}</tool_call>'],
+                [
+                    '<tool_call>{"name":"web_search","arguments":{"query":"cats"}}</tool_call>'
+                ],
                 ["Here is the answer."],
             ],
             exec_results = ["result"],
@@ -3391,7 +3543,10 @@ class TestLoopRePrompt:
         )
 
         assert exec_fn.calls == [("web_search", {"query": "cats"})]
-        assert captured[1][1] == {"role": "assistant", "content": "Let me search for that."}
+        assert captured[1][1] == {
+            "role": "assistant",
+            "content": "Let me search for that.",
+        }
         contents = [e["text"] for e in events if e["type"] == "content"]
         assert contents[-1] == "Here is the answer."
 
@@ -3475,7 +3630,9 @@ class TestLoopRePrompt:
         loop, exec_fn = _make_loop(
             turns = [
                 ["Let me check."],
-                ['<tool_call>{"name":"web_search","arguments":{"query":"x"}}</tool_call>'],
+                [
+                    '<tool_call>{"name":"web_search","arguments":{"query":"x"}}</tool_call>'
+                ],
                 ["found"],
             ],
             exec_results = ["..."],
@@ -3493,7 +3650,9 @@ class TestLoopRePrompt:
                 # 1. Intent stall (re-prompt).
                 ["Let me search for that."],
                 # 2. Real tool call (uses the budget slot).
-                ['<tool_call>{"name":"web_search","arguments":{"query":"weather"}}</tool_call>'],
+                [
+                    '<tool_call>{"name":"web_search","arguments":{"query":"weather"}}</tool_call>'
+                ],
                 # 3. Budget exhausted -> nudged final answer.
                 ["Final: it is sunny"],
             ],
@@ -3591,15 +3750,15 @@ class TestGGUFSafetensorsHealingParity:
 
         assert _CANONICAL_HEAL_ARG["python"] == "code"
         assert _CANONICAL_HEAL_ARG["terminal"] == "command"
-        assert coerce_tool_arguments("print(1)", heal = True, tool_name = "python").arguments == {
-            "code": "print(1)"
-        }
-        assert coerce_tool_arguments("ls -la", heal = True, tool_name = "terminal").arguments == {
-            "command": "ls -la"
-        }
-        assert coerce_tool_arguments("weather", heal = True, tool_name = "web_search").arguments == {
-            "query": "weather"
-        }
+        assert coerce_tool_arguments(
+            "print(1)", heal = True, tool_name = "python"
+        ).arguments == {"code": "print(1)"}
+        assert coerce_tool_arguments(
+            "ls -la", heal = True, tool_name = "terminal"
+        ).arguments == {"command": "ls -la"}
+        assert coerce_tool_arguments(
+            "weather", heal = True, tool_name = "web_search"
+        ).arguments == {"query": "weather"}
 
     def test_intent_regex_matches_same_phrases_as_gguf(self):
         # The intent re-prompt regex is now a single shared source of truth
@@ -3681,7 +3840,9 @@ class TestLoopControl:
         loop, exec_fn = _make_loop(
             turns = [
                 # Tool call (executes once).
-                ['<tool_call>{"name":"web_search","arguments":{"query":"a"}}</tool_call>'],
+                [
+                    '<tool_call>{"name":"web_search","arguments":{"query":"a"}}</tool_call>'
+                ],
                 # Model gives a final answer when nudged.
                 ["here is the final answer"],
             ],
@@ -3698,19 +3859,24 @@ class TestStatusFormatting:
     def test_status_for_known_tools(self):
         # Call the private helper directly to verify status formatting.
         assert (
-            safetensors_agentic._status_for_tool("web_search", {"query": "abc"}) == "Searching: abc"
+            safetensors_agentic._status_for_tool("web_search", {"query": "abc"})
+            == "Searching: abc"
         )
         assert (
-            safetensors_agentic._status_for_tool("web_search", {"url": "https://www.example.com/x"})
+            safetensors_agentic._status_for_tool(
+                "web_search", {"url": "https://www.example.com/x"}
+            )
             == "Reading: example.com"
         )
-        assert safetensors_agentic._status_for_tool("python", {"code": "x = 1"}).startswith(
-            "Running Python:"
+        assert safetensors_agentic._status_for_tool(
+            "python", {"code": "x = 1"}
+        ).startswith("Running Python:")
+        assert safetensors_agentic._status_for_tool(
+            "terminal", {"command": "ls"}
+        ).startswith("Running:")
+        assert safetensors_agentic._status_for_tool("unknown_tool", {}).startswith(
+            "Calling:"
         )
-        assert safetensors_agentic._status_for_tool("terminal", {"command": "ls"}).startswith(
-            "Running:"
-        )
-        assert safetensors_agentic._status_for_tool("unknown_tool", {}).startswith("Calling:")
 
 
 class TestProseMentioningToolCall:
@@ -3720,7 +3886,9 @@ class TestProseMentioningToolCall:
         loop, exec_fn = _make_loop(
             turns = [
                 # A real tool call so the loop advances a turn.
-                ['<tool_call>{"name":"web_search","arguments":{"query":"x"}}</tool_call>'],
+                [
+                    '<tool_call>{"name":"web_search","arguments":{"query":"x"}}</tool_call>'
+                ],
                 # Prose that mentions the literal text.
                 ["the docs say <tool_call> means an LLM tool call wrapper"],
             ],
@@ -3739,7 +3907,9 @@ class TestProseMentioningToolCall:
         # loop parses only model output, so exactly one call.
         loop, exec_fn = _make_loop(
             turns = [
-                ['<tool_call>{"name":"web_search","arguments":{"query":"x"}}</tool_call>'],
+                [
+                    '<tool_call>{"name":"web_search","arguments":{"query":"x"}}</tool_call>'
+                ],
                 ["the docs mention <tool_call> wrappers"],
             ],
             exec_results = ["Page text: <tool_call> appears here in the docs"],
@@ -3840,18 +4010,23 @@ class TestGuardrails:
         )
 
         assert exec_fn.calls == []
-        assert not [event for event in events if event.get("type") in {"tool_start", "tool_end"}]
+        assert not [
+            event for event in events if event.get("type") in {"tool_start", "tool_end"}
+        ]
         disabled_nudges = [
             message
             for message in captured_messages[-1]
-            if message.get("role") == "user" and "not enabled" in message.get("content", "")
+            if message.get("role") == "user"
+            and "not enabled" in message.get("content", "")
         ]
         assert len(disabled_nudges) == 1
 
     def test_empty_tools_list_means_allow_all_in_core_loop(self):
         turns = iter(
             [
-                ['<tool_call>{"name":"python","arguments":{"code":"print(1)"}}</tool_call>'],
+                [
+                    '<tool_call>{"name":"python","arguments":{"code":"print(1)"}}</tool_call>'
+                ],
                 ["done"],
             ]
         )
@@ -3878,7 +4053,11 @@ class TestGuardrails:
 
     def test_max_iterations_zero_executes_no_tools(self):
         loop, exec_fn = _make_loop(
-            turns = [['<tool_call>{"name":"web_search","arguments":{"query":"x"}}</tool_call>']],
+            turns = [
+                [
+                    '<tool_call>{"name":"web_search","arguments":{"query":"x"}}</tool_call>'
+                ]
+            ],
             exec_results = ["OK"],
             max_tool_iterations = 0,
         )
@@ -3909,7 +4088,9 @@ class TestGuardrails:
     def test_auto_heal_disabled_still_parses_valid_tool_call(self):
         loop, exec_fn = _make_loop(
             turns = [
-                ['<tool_call>{"name":"web_search","arguments":{"query":"x"}}</tool_call>'],
+                [
+                    '<tool_call>{"name":"web_search","arguments":{"query":"x"}}</tool_call>'
+                ],
                 ["done"],
             ],
             exec_results = ["OK"],
@@ -3924,7 +4105,11 @@ class TestGuardrails:
         monkeypatch.setattr(safetensors_agentic, "new_approval_id", lambda: approval_id)
 
         loop, exec_fn = _make_loop(
-            turns = [['<tool_call>{"name":"python","arguments":{"code":"print(1)"}}</tool_call>']],
+            turns = [
+                [
+                    '<tool_call>{"name":"python","arguments":{"code":"print(1)"}}</tool_call>'
+                ]
+            ],
             exec_results = ["OK"],
             confirm_tool_calls = True,
             session_id = "sess",
@@ -3953,14 +4138,19 @@ class TestGuardrails:
         def fail_autoinject(*_args, **_kwargs):
             raise AssertionError("RAG autoinject must not run before approval")
 
-        monkeypatch.setattr("core.inference.tools.build_rag_autoinject", fail_autoinject)
+        monkeypatch.setattr(
+            "core.inference.tools.build_rag_autoinject", fail_autoinject
+        )
         loop, exec_fn = _make_loop(
             turns = [["plain answer"]],
             confirm_tool_calls = True,
             rag_scope = {"thread_id": "t1"},
         )
         events = _collect_events(loop)
-        assert any(e.get("type") == "content" and e.get("text") == "plain answer" for e in events)
+        assert any(
+            e.get("type") == "content" and e.get("text") == "plain answer"
+            for e in events
+        )
         assert exec_fn.calls == []
 
     def test_auto_mode_still_runs_rag_autoinject(self, monkeypatch):
@@ -3973,7 +4163,9 @@ class TestGuardrails:
             ran["called"] = True
             return None
 
-        monkeypatch.setattr("core.inference.tools.build_rag_autoinject", fake_autoinject)
+        monkeypatch.setattr(
+            "core.inference.tools.build_rag_autoinject", fake_autoinject
+        )
         loop, _exec_fn = _make_loop(
             turns = [["plain answer"]],
             confirm_tool_calls = True,
@@ -3986,8 +4178,12 @@ class TestGuardrails:
     def test_auto_heal_disabled_preserves_xml_on_final_no_tools_pass(self):
         turns = iter(
             [
-                ['<tool_call>{"name":"web_search","arguments":{"query":"x"}}</tool_call>'],
-                ['<tool_call>{"name":"web_search","arguments":{"query":"literal"}}</tool_call>'],
+                [
+                    '<tool_call>{"name":"web_search","arguments":{"query":"x"}}</tool_call>'
+                ],
+                [
+                    '<tool_call>{"name":"web_search","arguments":{"query":"literal"}}</tool_call>'
+                ],
             ]
         )
 
@@ -4047,18 +4243,29 @@ class TestGuardrails:
     def test_non_consecutive_duplicate_is_short_circuited(self):
         loop, exec_fn = _make_loop(
             turns = [
-                ['<tool_call>{"name":"web_search","arguments":{"query":"A"}}</tool_call>'],
-                ['<tool_call>{"name":"web_search","arguments":{"query":"B"}}</tool_call>'],
-                ['<tool_call>{"name":"web_search","arguments":{"query":"A"}}</tool_call>'],
+                [
+                    '<tool_call>{"name":"web_search","arguments":{"query":"A"}}</tool_call>'
+                ],
+                [
+                    '<tool_call>{"name":"web_search","arguments":{"query":"B"}}</tool_call>'
+                ],
+                [
+                    '<tool_call>{"name":"web_search","arguments":{"query":"A"}}</tool_call>'
+                ],
                 ["final"],
             ],
             exec_results = ["res-A", "res-B"],
             max_tool_iterations = 4,
         )
         events = _collect_events(loop)
-        assert exec_fn.calls == [("web_search", {"query": "A"}), ("web_search", {"query": "B"})]
+        assert exec_fn.calls == [
+            ("web_search", {"query": "A"}),
+            ("web_search", {"query": "B"}),
+        ]
         assert [
-            event.get("tool_call_id") for event in events if event.get("type") == "tool_end"
+            event.get("tool_call_id")
+            for event in events
+            if event.get("type") == "tool_end"
         ] == ["call_0", "call_1"]
         assert not [
             event
@@ -4082,7 +4289,9 @@ class TestGuardrails:
         events = _collect_events(loop)
         assert exec_fn.calls == [("web_search", {"query": "A"})]
         assert [
-            event.get("tool_call_id") for event in events if event.get("type") == "tool_end"
+            event.get("tool_call_id")
+            for event in events
+            if event.get("type") == "tool_end"
         ] == ["call_0"]
         assert not [
             event
@@ -4098,7 +4307,8 @@ class TestGuardrails:
 
         n = _MAX_TOOL_CALLS_PER_TURN + 4
         turn = "".join(
-            '<tool_call>{"name":"web_search","arguments":{"query":"q%d"}}</tool_call>' % i
+            '<tool_call>{"name":"web_search","arguments":{"query":"q%d"}}</tool_call>'
+            % i
             for i in range(n)
         )
         loop, exec_fn = _make_loop(
@@ -4114,16 +4324,24 @@ class TestGuardrails:
         ]
 
     def test_coerce_string_args_python_uses_code_key(self):
-        assert _coerce_arguments("print(1)", heal = True, tool_name = "python") == {"code": "print(1)"}
+        assert _coerce_arguments("print(1)", heal = True, tool_name = "python") == {
+            "code": "print(1)"
+        }
 
     def test_coerce_string_args_terminal_uses_command_key(self):
-        assert _coerce_arguments("ls -la", heal = True, tool_name = "terminal") == {"command": "ls -la"}
+        assert _coerce_arguments("ls -la", heal = True, tool_name = "terminal") == {
+            "command": "ls -la"
+        }
 
     def test_tool_call_ids_unique_across_loop_iterations(self):
         loop, _exec = _make_loop(
             turns = [
-                ['<tool_call>{"name":"web_search","arguments":{"query":"A"}}</tool_call>'],
-                ['<tool_call>{"name":"web_search","arguments":{"query":"B"}}</tool_call>'],
+                [
+                    '<tool_call>{"name":"web_search","arguments":{"query":"A"}}</tool_call>'
+                ],
+                [
+                    '<tool_call>{"name":"web_search","arguments":{"query":"B"}}</tool_call>'
+                ],
                 ["done"],
             ],
             exec_results = ["A", "B"],
@@ -4161,7 +4379,9 @@ class TestPlanWithoutActionReprompt:
         loop, exec_fn = _make_loop(
             turns = [
                 ["I'll search the web for that."],
-                ['<tool_call>{"name":"web_search","arguments":{"query":"cats"}}</tool_call>'],
+                [
+                    '<tool_call>{"name":"web_search","arguments":{"query":"cats"}}</tool_call>'
+                ],
                 ["Here is the final answer."],
             ],
             exec_results = ["result-1"],
@@ -4304,11 +4524,17 @@ class TestPlanWithoutActionReprompt:
         # An explicit user denial must not be answered with a nudge to call
         # the tool again (which would raise another confirmation prompt).
         monkeypatch.setattr(safetensors_agentic, "new_approval_id", lambda: "appr-1")
-        monkeypatch.setattr(safetensors_agentic, "begin_tool_decision", lambda *_a, **_k: object())
-        monkeypatch.setattr(safetensors_agentic, "wait_tool_decision", lambda *_a, **_k: "deny")
+        monkeypatch.setattr(
+            safetensors_agentic, "begin_tool_decision", lambda *_a, **_k: object()
+        )
+        monkeypatch.setattr(
+            safetensors_agentic, "wait_tool_decision", lambda *_a, **_k: "deny"
+        )
         loop, exec_fn = _make_loop(
             turns = [
-                ['<tool_call>{"name":"web_search","arguments":{"query":"cats"}}</tool_call>'],
+                [
+                    '<tool_call>{"name":"web_search","arguments":{"query":"cats"}}</tool_call>'
+                ],
                 ["I'll search again."],
                 ["SHOULD NOT APPEAR"],
             ],
@@ -4325,7 +4551,9 @@ class TestPlanWithoutActionReprompt:
     def test_no_reprompt_after_a_tool_already_executed(self):
         loop, exec_fn = _make_loop(
             turns = [
-                ['<tool_call>{"name":"web_search","arguments":{"query":"cats"}}</tool_call>'],
+                [
+                    '<tool_call>{"name":"web_search","arguments":{"query":"cats"}}</tool_call>'
+                ],
                 ["Now I'll refine the search."],
                 ["SHOULD NOT APPEAR"],
             ],
@@ -4376,7 +4604,10 @@ class TestRoutesPythonTagStrip:
     def test_python_tag_stops_at_eom_sentinel(self):
         # Strip stops at the next Llama-3 ``<|`` sentinel so any
         # trailing assistant content survives.
-        text = '<|python_tag|>python.call(code="multi\nline")' "<|eom_id|>final answer text"
+        text = (
+            '<|python_tag|>python.call(code="multi\nline")'
+            "<|eom_id|>final answer text"
+        )
         assert self._strip(text) == "<|eom_id|>final answer text"
 
     def test_python_tag_stops_at_eot_sentinel(self):
@@ -4410,7 +4641,11 @@ class TestParserRobustness:
         # too. Was extracting name only and silently dropping the args.
         import json
 
-        text = "<tool_call>\n" '{"name": "search", "parameters": {"q": "ramen"}}\n' "</tool_call>"
+        text = (
+            "<tool_call>\n"
+            '{"name": "search", "parameters": {"q": "ramen"}}\n'
+            "</tool_call>"
+        )
         result = parse_tool_calls_from_text(text)
         assert len(result) == 1
         assert result[0]["function"]["name"] == "search"
@@ -4421,7 +4656,11 @@ class TestParserRobustness:
         # ``<function name="..."><param name="...">v</param></function>``.
         import json
 
-        text = '<function name="get_weather">' '<param name="city">Tokyo</param>' "</function>"
+        text = (
+            '<function name="get_weather">'
+            '<param name="city">Tokyo</param>'
+            "</function>"
+        )
         result = parse_tool_calls_from_text(text)
         assert len(result) == 1
         assert result[0]["function"]["name"] == "get_weather"
@@ -4553,7 +4792,9 @@ def test_render_with_native_template_returns_render_only_when_tools_emitted():
 
     def emitting(tokenizer, msgs, *, tools, **_kw):
         body = "".join(m["content"] for m in msgs)
-        return body + ("|TOOLS=" + ",".join(t["function"]["name"] for t in tools) if tools else "")
+        return body + (
+            "|TOOLS=" + ",".join(t["function"]["name"] for t in tools) if tools else ""
+        )
 
     def ignoring(tokenizer, msgs, *, tools, **_kw):
         return "".join(m["content"] for m in msgs)  # never reflects tools
@@ -4639,7 +4880,9 @@ def test_native_template_loads_from_base_model_for_lora(monkeypatch):
         captured["source"] = name
         return SimpleNamespace(chat_template = "BASE_TPL")
 
-    monkeypatch.setattr(transformers.AutoTokenizer, "from_pretrained", fake_from_pretrained)
+    monkeypatch.setattr(
+        transformers.AutoTokenizer, "from_pretrained", fake_from_pretrained
+    )
 
     def emitting(tokenizer, msgs, *, tools, **_kw):
         body = "".join(m["content"] for m in msgs)
@@ -4665,7 +4908,9 @@ def test_render_with_native_template_fallback_swaps_when_override_drops_tools():
     # identical with and without tools, re-render with the native template and return it.
     from types import SimpleNamespace
 
-    from core.inference.chat_template_helpers import render_with_native_template_fallback
+    from core.inference.chat_template_helpers import (
+        render_with_native_template_fallback,
+    )
 
     messages = [{"role": "user", "content": "hi"}]
     tools = [{"type": "function", "function": {"name": "web_search"}}]
@@ -4705,7 +4950,9 @@ def test_render_with_native_template_fallback_keeps_prompt_when_tools_emitted():
     # unchanged. Also a no-tools call is a passthrough.
     from types import SimpleNamespace
 
-    from core.inference.chat_template_helpers import render_with_native_template_fallback
+    from core.inference.chat_template_helpers import (
+        render_with_native_template_fallback,
+    )
 
     messages = [{"role": "user", "content": "hi"}]
     tools = [{"type": "function", "function": {"name": "web_search"}}]
@@ -4742,7 +4989,9 @@ def test_render_with_native_template_fallback_keeps_prompt_when_no_tools_probe_r
     # A template that REQUIRES tools can raise on the no-tools probe.
     from types import SimpleNamespace
 
-    from core.inference.chat_template_helpers import render_with_native_template_fallback
+    from core.inference.chat_template_helpers import (
+        render_with_native_template_fallback,
+    )
 
     messages = [{"role": "user", "content": "hi"}]
     tools = [{"type": "function", "function": {"name": "web_search"}}]
@@ -4785,7 +5034,9 @@ def test_oversized_bare_json_call_is_not_leaked_and_executes():
     big = "A" * (_MAX_BARE_JSON_BUFFER + 5000)
     full = '{"name":"python","parameters":{"code":"' + big + '"}}'
     chunks = [full[i : i + 2000] for i in range(0, len(full), 2000)]
-    loop, exec_fn = _make_loop(turns = [chunks, ["done"]], exec_results = ["OK"], max_tool_iterations = 2)
+    loop, exec_fn = _make_loop(
+        turns = [chunks, ["done"]], exec_results = ["OK"], max_tool_iterations = 2
+    )
     events = _collect_events(loop)
     contents = [e["text"] for e in events if e["type"] == "content"]
     assert not any(t.lstrip().startswith('{"name') for t in contents), contents[:1]
@@ -4964,12 +5215,17 @@ class TestEnabledToolNameGate:
 
     def test_parse_inactive_rehearsal_alone_is_prose(self):
         assert (
-            parse_tool_calls_from_text('foo[ARGS]{"a":1}', enabled_tool_names = {"web_search"}) == []
+            parse_tool_calls_from_text(
+                'foo[ARGS]{"a":1}', enabled_tool_names = {"web_search"}
+            )
+            == []
         )
 
     def test_streaming_strip_keeps_inactive_rehearsal(self):
         raw = 'answer foo[ARGS]{"x":1} tail'
-        assert strip_tool_markup_streaming(raw, enabled_tool_names = {"web_search"}) == raw
+        assert (
+            strip_tool_markup_streaming(raw, enabled_tool_names = {"web_search"}) == raw
+        )
 
     def test_streaming_strip_removes_active_rehearsal(self):
         raw = 'answer web_search[ARGS]{"q":1} tail'
@@ -4979,7 +5235,10 @@ class TestEnabledToolNameGate:
 
     def test_final_strip_keeps_inactive_rehearsal(self):
         text = 'foo[ARGS]{"x":1} is just syntax.'
-        assert strip_tool_markup(text, final = True, enabled_tool_names = {"web_search"}) == text
+        assert (
+            strip_tool_markup(text, final = True, enabled_tool_names = {"web_search"})
+            == text
+        )
 
     def test_gate_none_preserves_legacy_strip_and_parse(self):
         text = 'foo[ARGS]{"x":1} tail'
@@ -4993,13 +5252,17 @@ def test_drain_truncated_enabled_name_json_preserved_when_auto_heal_disabled():
     # preserved), matching the XML strip in the same drain branch. With Auto-Heal ON
     # the same fragment is suppressed.
     trunc = '{"name":"web_search","parameters":{"query":"weather'
-    off, exec_off = _make_loop(turns = [[trunc]], max_tool_iterations = 1, auto_heal_tool_calls = False)
+    off, exec_off = _make_loop(
+        turns = [[trunc]], max_tool_iterations = 1, auto_heal_tool_calls = False
+    )
     events_off = _collect_events(off)
     assert exec_off.calls == [], exec_off.calls
     contents_off = "".join(e["text"] for e in events_off if e["type"] == "content")
     assert "web_search" in contents_off, contents_off
 
-    on, exec_on = _make_loop(turns = [[trunc]], max_tool_iterations = 1, auto_heal_tool_calls = True)
+    on, exec_on = _make_loop(
+        turns = [[trunc]], max_tool_iterations = 1, auto_heal_tool_calls = True
+    )
     events_on = _collect_events(on)
     assert exec_on.calls == [], exec_on.calls
     contents_on = "".join(e["text"] for e in events_on if e["type"] == "content")
@@ -5017,7 +5280,9 @@ def test_looks_like_enabled_bare_json_accepts_function_alias():
         '{"function":"web_search","parameters":{"q":"x"}}', enabled
     )
     # A non-tool "function" value is an ordinary JSON answer -> not gated.
-    assert not _looks_like_enabled_bare_json('{"function":"Alice","parameters":{}}', enabled)
+    assert not _looks_like_enabled_bare_json(
+        '{"function":"Alice","parameters":{}}', enabled
+    )
 
 
 class TestFalseAlarmMarkerProse:

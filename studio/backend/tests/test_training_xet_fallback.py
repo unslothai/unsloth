@@ -134,7 +134,11 @@ class _FakeCtx:
 
 def _backend_mid_load():
     b = TrainingBackend()
-    b._last_full_config = {"model_name": "org/model", "disable_xet": False, "hf_token": "tok"}
+    b._last_full_config = {
+        "model_name": "org/model",
+        "disable_xet": False,
+        "hf_token": "tok",
+    }
     b._in_model_load = True
     b._xet_fallback_used = False
     proc = _FakeProc()
@@ -163,7 +167,9 @@ def test_respawn_uses_disable_xet_and_preserves_run_row(monkeypatch):
         b, "_ensure_db_run_created", lambda: created.__setitem__("n", created["n"] + 1)
     )
     monkeypatch.setattr(
-        b, "_finalize_run_in_db", lambda **k: finalized.__setitem__("n", finalized["n"] + 1)
+        b,
+        "_finalize_run_in_db",
+        lambda **k: finalized.__setitem__("n", finalized["n"] + 1),
     )
 
     b._respawn_worker_disable_xet()
@@ -173,7 +179,9 @@ def test_respawn_uses_disable_xet_and_preserves_run_row(monkeypatch):
     assert cfg["disable_xet"] is True, "respawned worker must run with Xet disabled"
     assert cfg["model_name"] == "org/model"
     assert created["n"] == 0, "respawn must not recreate the DB run row"
-    assert finalized["n"] == 0, "a successful respawn must not finalize the run as error"
+    assert (
+        finalized["n"] == 0
+    ), "a successful respawn must not finalize the run as error"
 
 
 def test_second_stall_surfaces_error_without_respawn():

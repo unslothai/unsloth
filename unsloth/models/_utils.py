@@ -192,7 +192,9 @@ def _patch_transformers_trainer_data_parallel():
     if getattr(original_wrap_model, "_unsloth_data_parallel_patched", False):
         return True
     try:
-        supports_dataloader = "dataloader" in inspect.signature(original_wrap_model).parameters
+        supports_dataloader = (
+            "dataloader" in inspect.signature(original_wrap_model).parameters
+        )
     except (TypeError, ValueError):
         supports_dataloader = True
 
@@ -384,7 +386,9 @@ def _unsloth_reset_stray_compile_cache(self):
         _m["seen"] = False
 
 
-def apply_unsloth_gradient_checkpointing(use_gradient_checkpointing, max_seq_length, dtype):
+def apply_unsloth_gradient_checkpointing(
+    use_gradient_checkpointing, max_seq_length, dtype
+):
     """
     Apply gradient checkpointing with smart heuristics.
 
@@ -474,7 +478,8 @@ def _is_flash_excluded(model_type):
 
 def _config_prefers_flex_attention(config):
     return any(
-        _config_get(attention_config, "model_type", "").lower() in _FLEX_PREFERRED_MODELS
+        _config_get(attention_config, "model_type", "").lower()
+        in _FLEX_PREFERRED_MODELS
         for attention_config in _iter_attention_configs(config)
     )
 
@@ -549,7 +554,9 @@ def set_task_config_attr(config, field_name, value):
 
 
 def _iter_attention_configs(config, seen = None):
-    if config is None or (not isinstance(config, dict) and not hasattr(config, "__dict__")):
+    if config is None or (
+        not isinstance(config, dict) and not hasattr(config, "__dict__")
+    ):
         return
     if seen is None:
         seen = set()
@@ -592,7 +599,11 @@ def _collect_attention_head_dims(config):
             continue
         for num_heads_name in num_heads_names:
             num_heads = _config_get(config, num_heads_name, None)
-            if isinstance(num_heads, int) and num_heads > 0 and (hidden_size % num_heads) == 0:
+            if (
+                isinstance(num_heads, int)
+                and num_heads > 0
+                and (hidden_size % num_heads) == 0
+            ):
                 head_dims.append(hidden_size // num_heads)
 
     return head_dims
@@ -649,7 +660,9 @@ def _disable_flash_attention_if_needed(
 
     requested_attn_implementation = attn_implementation
     if requested_attn_implementation is None:
-        requested_attn_implementation = _config_get(config, "_attn_implementation", None)
+        requested_attn_implementation = _config_get(
+            config, "_attn_implementation", None
+        )
     if requested_attn_implementation is None:
         requested_attn_implementation = _config_get(config, "attn_implementation", None)
 
@@ -676,7 +689,10 @@ def _disable_flash_attention_if_needed(
         fallback_attn_implementation = "flex_attention"
     else:
         fallback_attn_implementation = "eager"
-    if _is_flash_attention_requested(requested_attn_implementation) or would_use_flash_attention:
+    if (
+        _is_flash_attention_requested(requested_attn_implementation)
+        or would_use_flash_attention
+    ):
         logged_attn_implementation = (
             requested_attn_implementation
             if _is_flash_attention_requested(requested_attn_implementation)
@@ -715,14 +731,20 @@ def resolve_model_class(auto_model, config):
         result = None
         for key in list(getattr(mapping, "_model_mapping", {})):
             try:
-                config_class = mapping._load_attr_from_module(key, mapping._config_mapping[key])
+                config_class = mapping._load_attr_from_module(
+                    key, mapping._config_mapping[key]
+                )
                 if isinstance(config, config_class):
-                    result = mapping._load_attr_from_module(key, mapping._model_mapping[key])
+                    result = mapping._load_attr_from_module(
+                        key, mapping._model_mapping[key]
+                    )
                     break
             except Exception:
                 continue
         if result is None:
-            for extra_cls, extra_model in getattr(mapping, "_extra_content", {}).items():
+            for extra_cls, extra_model in getattr(
+                mapping, "_extra_content", {}
+            ).items():
                 try:
                     if isinstance(config, extra_cls):
                         result = extra_model
@@ -737,7 +759,9 @@ def resolve_model_class(auto_model, config):
 def _is_family_text_decoder(parent_model_type, text_model_type):
     # True only for the family's own text variant (gemma3 -> gemma3_text); a generic
     # reused decoder (llava -> llama) would load random weights, so keep the full model.
-    return bool(parent_model_type) and str(text_model_type).startswith(parent_model_type)
+    return bool(parent_model_type) and str(text_model_type).startswith(
+        parent_model_type
+    )
 
 
 def _get_text_only_config(model_config, model_name):
@@ -762,7 +786,9 @@ def _remap_text_only_skip_modules(qc):
     # model.*) after text-only stripping, and drop vision/audio entries. See PR #5816.
     is_dict = isinstance(qc, dict)
     skip = (
-        qc.get("llm_int8_skip_modules") if is_dict else getattr(qc, "llm_int8_skip_modules", None)
+        qc.get("llm_int8_skip_modules")
+        if is_dict
+        else getattr(qc, "llm_int8_skip_modules", None)
     )
     if not skip:
         return qc
@@ -835,7 +861,9 @@ def resolve_attention_implementation(
     model_type_name = _config_get(config, "model_type", "")
     model_type = model_type_name.lower()
     if supports_sdpa is None:
-        supports_sdpa = model_class is not None and getattr(model_class, "_supports_sdpa", False)
+        supports_sdpa = model_class is not None and getattr(
+            model_class, "_supports_sdpa", False
+        )
     if _is_sdpa_excluded(model_type):
         supports_sdpa = False
     supports_flash_attention = (
@@ -861,14 +889,20 @@ def resolve_attention_implementation(
             # over flash. Caller can still override by passing
             # requested_attn_implementation="sdpa" (handled below).
             attn_impl = _set_attn_impl(config, "flex_attention")
-        elif not flash_attention_disabled and HAS_FLASH_ATTENTION and supports_flash_attention:
+        elif (
+            not flash_attention_disabled
+            and HAS_FLASH_ATTENTION
+            and supports_flash_attention
+        ):
             attn_impl = _set_attn_impl(config, "flash_attention_2")
         elif flash_attention_disabled:
             attn_impl = _disable_flash_attention_if_needed(
                 config,
                 supports_sdpa = supports_sdpa,
                 supports_flex_attention = supports_flex_attention,
-                would_use_flash_attention = (HAS_FLASH_ATTENTION and supports_flash_attention),
+                would_use_flash_attention = (
+                    HAS_FLASH_ATTENTION and supports_flash_attention
+                ),
                 disable_reason = disable_reason,
             )
         elif supports_sdpa:
@@ -904,8 +938,8 @@ def resolve_attention_implementation(
     # like flex falls back for _FLEX_EXCLUDED_MODELS. A synthesized/default sdpa
     # (requested is None, so the value came from the model resolution above or the
     # config) also downgrades.
-    honor_explicit_sdpa = requested_attn_implementation == "sdpa" and not _is_sdpa_excluded(
-        model_type
+    honor_explicit_sdpa = (
+        requested_attn_implementation == "sdpa" and not _is_sdpa_excluded(model_type)
     )
     if not supports_sdpa and final_attn_impl == "sdpa" and not honor_explicit_sdpa:
         print(
@@ -923,7 +957,9 @@ def resolve_encoder_attention_implementation(
     disable_sdpa_model_names = (),
 ):
     model_class = resolve_model_class(auto_model, config)
-    supports_sdpa = model_class is not None and getattr(model_class, "_supports_sdpa", False)
+    supports_sdpa = model_class is not None and getattr(
+        model_class, "_supports_sdpa", False
+    )
     if any(name in model_type.lower() for name in disable_sdpa_model_names):
         return "eager"
     if supports_sdpa:
@@ -951,14 +987,18 @@ _run_temporary_patches("init")
 warnings.filterwarnings(action = "ignore", category = UserWarning, module = "torch")
 warnings.filterwarnings(action = "ignore", category = FutureWarning, module = "torch")
 warnings.filterwarnings(action = "ignore", category = UserWarning, module = "huggingface_hub")
-warnings.filterwarnings(action = "ignore", category = FutureWarning, module = "huggingface_hub")
+warnings.filterwarnings(
+    action = "ignore", category = FutureWarning, module = "huggingface_hub"
+)
 warnings.filterwarnings(action = "ignore", category = UserWarning, module = "trl")
 warnings.filterwarnings(action = "ignore", category = FutureWarning, module = "trl")
 warnings.filterwarnings(action = "ignore", category = FutureWarning, module = "xformers")
 warnings.filterwarnings(action = "ignore", category = RuntimeWarning, module = "subprocess")
 warnings.filterwarnings(action = "ignore", category = UserWarning, module = "transformers")
 warnings.filterwarnings(action = "ignore", category = FutureWarning, module = "accelerate")
-warnings.filterwarnings(action = "ignore", category = RuntimeWarning, module = "multiprocessing")
+warnings.filterwarnings(
+    action = "ignore", category = RuntimeWarning, module = "multiprocessing"
+)
 warnings.filterwarnings(action = "ignore", category = RuntimeWarning, module = "multiprocess")
 warnings.filterwarnings(action = "ignore", category = UserWarning, module = "triton")
 warnings.filterwarnings(action = "ignore", category = UserWarning, module = "bitsandbytes")
@@ -1134,7 +1174,10 @@ def _adapter_repo_has_safetensors(
     redundant)? Scoped to root adapter_model* files; any failure returns False."""
     try:
         from huggingface_hub import HfApi
-        siblings = HfApi().model_info(model_name, revision = revision, token = token).siblings or []
+        siblings = (
+            HfApi().model_info(model_name, revision = revision, token = token).siblings
+            or []
+        )
         return any(
             "/" not in sibling.rfilename.replace("\\", "/")  # root only
             and sibling.rfilename.startswith("adapter_model")
@@ -1223,7 +1266,9 @@ def _prefetch_ignore_patterns(
                 _is_model_weight_safetensors(sibling.rfilename)
                 and _in_requested_load_scope(sibling.rfilename, subfolder)
                 and (
-                    _is_canonical_variant_model_weight_safetensors(sibling.rfilename, variant)
+                    _is_canonical_variant_model_weight_safetensors(
+                        sibling.rfilename, variant
+                    )
                     if variant
                     else _is_canonical_model_weight_safetensors(sibling.rfilename)
                 )
@@ -1422,7 +1467,9 @@ class ReplaceWarningMessage:
         ):
             msg_str = str(message)
             for match_text, replacement, match_category in cls._rules:
-                if match_text in msg_str and (match_category is None or category is match_category):
+                if match_text in msg_str and (
+                    match_category is None or category is match_category
+                ):
                     print(replacement)
                     return
             cls._original_showwarning(message, category, filename, lineno, file, line)
@@ -1458,7 +1505,9 @@ if not UNSLOTH_ENABLE_LOGGING:
 
         vllm_v1_executor_logger.addFilter(HideLoggingMessage("to fall asleep"))
         vllm_v1_executor_logger.addFilter(HideLoggingMessage("to wake up"))
-        vllm_v1_executor_logger.addFilter(HideLoggingMessage("Executor is not sleeping"))
+        vllm_v1_executor_logger.addFilter(
+            HideLoggingMessage("Executor is not sleeping")
+        )
         del vllm_v1_executor_logger
     except:
         pass
@@ -1479,7 +1528,9 @@ if not UNSLOTH_ENABLE_LOGGING:
     try:
         from vllm.lora.models import logger as vllm_lora_model_logger
         vllm_lora_model_logger.addFilter(
-            HideLoggingMessage("Regarding multimodal models, vLLM currently only supports adding")
+            HideLoggingMessage(
+                "Regarding multimodal models, vLLM currently only supports adding"
+            )
         )
         del vllm_lora_model_logger
     except:
@@ -1488,7 +1539,9 @@ if not UNSLOTH_ENABLE_LOGGING:
         from vllm.attention.utils.fa_utils import (
             logger as vllm_attention_utils_fa_utils_logger,
         )
-        vllm_attention_utils_fa_utils_logger.addFilter(HideLoggingMessage("Cannot use FA version"))
+        vllm_attention_utils_fa_utils_logger.addFilter(
+            HideLoggingMessage("Cannot use FA version")
+        )
         del vllm_attention_utils_fa_utils_logger
     except:
         pass
@@ -1500,7 +1553,9 @@ transformers_training_args_logger.addFilter(HideLoggingMessage("The speedups"))
 # torch.distributed process group is initialized, but parallel_mode != ParallelMode.DISTRIBUTED.
 transformers_training_args_logger.addFilter(HideLoggingMessage("torch.distributed"))
 # average_tokens_across_devices is set to True but it is invalid when world size is1
-transformers_training_args_logger.addFilter(HideLoggingMessage("average_tokens_across_devices"))
+transformers_training_args_logger.addFilter(
+    HideLoggingMessage("average_tokens_across_devices")
+)
 del transformers_training_args_logger
 
 # No label_names provided for model class
@@ -1538,7 +1593,9 @@ except:
 # The model weights are not tied. Please use the `tie_weights` method before using the `infer_auto_device` function.
 try:
     from accelerate.utils.modeling import logger as accelerate_utils_modeling_logger
-    accelerate_utils_modeling_logger.addFilter(HideLoggingMessage("The model weights are not tied"))
+    accelerate_utils_modeling_logger.addFilter(
+        HideLoggingMessage("The model weights are not tied")
+    )
     del accelerate_utils_modeling_logger
 except:
     pass
@@ -1738,7 +1795,9 @@ except:
 # Hide HF Hub unauthenticated request warnings
 try:
     from huggingface_hub.utils._http import logger as hf_http_logger
-    hf_http_logger.addFilter(HideLoggingMessage("You are sending unauthenticated requests"))
+    hf_http_logger.addFilter(
+        HideLoggingMessage("You are sending unauthenticated requests")
+    )
     del hf_http_logger
 except:
     pass
@@ -1783,7 +1842,9 @@ def get_model_param_count(model, trainable_only = False):
         def numel(p):
             return p.numel()
 
-    s = sum(numel(p) for p in model.parameters() if not trainable_only or p.requires_grad)
+    s = sum(
+        numel(p) for p in model.parameters() if not trainable_only or p.requires_grad
+    )
     if (
         (not trainable_only)
         and hasattr(model, "config")
@@ -1815,7 +1876,9 @@ def patch_mistral_nemo_config(config):
             "        head_dim (`int`, *optional*, defaults to `hidden_size // num_attention_heads`):\n"
             "            The attention head dimension."
         )
-        config = config.replace("If it is not specified, will default to `8`.", add_head_dim)
+        config = config.replace(
+            "If it is not specified, will default to `8`.", add_head_dim
+        )
 
         add_head_dim = "num_key_value_heads=8,\n        head_dim=None,"
         config = config.replace("num_key_value_heads=8,", add_head_dim)
@@ -2003,7 +2066,9 @@ if DEVICE_TYPE == "cuda":
                 # Also check for softcapping
                 from flash_attn import __version__ as flash_attn_version
 
-                HAS_FLASH_ATTENTION_SOFTCAPPING = Version(flash_attn_version) >= Version("2.6.3")
+                HAS_FLASH_ATTENTION_SOFTCAPPING = Version(
+                    flash_attn_version
+                ) >= Version("2.6.3")
                 if not HAS_FLASH_ATTENTION_SOFTCAPPING:
                     print(
                         "Unsloth: If you want to finetune Gemma 2, upgrade flash-attn to version 2.6.3 or higher!\n"
@@ -2025,7 +2090,9 @@ if DEVICE_TYPE == "cuda":
                 )
                 import transformers.utils
 
-                transformers.utils.is_flash_attn_2_available = lambda *args, **kwargs: False
+                transformers.utils.is_flash_attn_2_available = (
+                    lambda *args, **kwargs: False
+                )
 
                 HAS_FLASH_ATTENTION = False
         else:
@@ -2048,7 +2115,9 @@ elif DEVICE_TYPE == "hip":
             # Also check for softcapping
             from flash_attn import __version__ as flash_attn_version
 
-            HAS_FLASH_ATTENTION_SOFTCAPPING = Version(flash_attn_version) >= Version("2.6.3")
+            HAS_FLASH_ATTENTION_SOFTCAPPING = Version(flash_attn_version) >= Version(
+                "2.6.3"
+            )
             if not HAS_FLASH_ATTENTION_SOFTCAPPING:
                 print(
                     "Unsloth: If you want to finetune Gemma 2, upgrade flash-attn to version 2.6.3 or higher!\n"
@@ -2122,21 +2191,23 @@ try:
             'Please downgrade xformers via `pip install --force-reinstall "xformers<=0.0.27"'
         )
 
-    if Version(torch_version) < Version("2.2.0") and Version(xformers_version) >= Version("0.0.24"):
+    if Version(torch_version) < Version("2.2.0") and Version(
+        xformers_version
+    ) >= Version("0.0.24"):
         raise ImportError(
             f"Unsloth: You have torch = {torch_version} but xformers = {xformers_version}.\n"
             f"Please install xformers < 0.0.24 for torch = {torch_version}."
         )
-    elif Version(torch_version) < Version("2.3.0") and Version(xformers_version) >= Version(
-        "0.0.26"
-    ):
+    elif Version(torch_version) < Version("2.3.0") and Version(
+        xformers_version
+    ) >= Version("0.0.26"):
         raise ImportError(
             f"Unsloth: You have torch = {torch_version} but xformers = {xformers_version}.\n"
             f"Please install xformers < 0.0.26 for torch = {torch_version}."
         )
-    elif Version(torch_version) < Version("2.4.0") and Version(xformers_version) > Version(
-        "0.0.27"
-    ):
+    elif Version(torch_version) < Version("2.4.0") and Version(
+        xformers_version
+    ) > Version("0.0.27"):
         raise ImportError(
             f"Unsloth: You have torch = {torch_version} but xformers = {xformers_version}.\n"
             f"Please install xformers <= 0.0.27 for torch = {torch_version}."
@@ -2163,7 +2234,9 @@ except ModuleNotFoundError:
     xformers_version = None
 except Exception as e:
     if UNSLOTH_ENABLE_LOGGING:
-        print("========\nSwitching to PyTorch attention since your Xformers is broken.\n========\n")
+        print(
+            "========\nSwitching to PyTorch attention since your Xformers is broken.\n========\n"
+        )
         print(str(e))
     xformers = None
     xformers_attention = None
@@ -2213,16 +2286,26 @@ if False:  # Version(trl_version) >= Version("0.9.0"):
 import transformers.generation.configuration_utils
 
 if hasattr(transformers.generation.configuration_utils, "ALL_CACHE_IMPLEMENTATIONS"):
-    if type(transformers.generation.configuration_utils.ALL_CACHE_IMPLEMENTATIONS) is list:
-        if "dynamic" not in transformers.generation.configuration_utils.ALL_CACHE_IMPLEMENTATIONS:
-            transformers.generation.configuration_utils.ALL_CACHE_IMPLEMENTATIONS.append("dynamic")
+    if (
+        type(transformers.generation.configuration_utils.ALL_CACHE_IMPLEMENTATIONS)
+        is list
+    ):
+        if (
+            "dynamic"
+            not in transformers.generation.configuration_utils.ALL_CACHE_IMPLEMENTATIONS
+        ):
+            transformers.generation.configuration_utils.ALL_CACHE_IMPLEMENTATIONS.append(
+                "dynamic"
+            )
 # =============================================
 
 # =============================================
 # Torch compile settings
 UNSLOTH_COMPILE_DEBUG = os.environ.get("UNSLOTH_COMPILE_DEBUG", "0") == "1"
 UNSLOTH_COMPILE_MAXIMUM = os.environ.get("UNSLOTH_COMPILE_MAXIMUM", "0") == "1"
-UNSLOTH_COMPILE_IGNORE_ERRORS = os.environ.get("UNSLOTH_COMPILE_IGNORE_ERRORS", "1") == "1"
+UNSLOTH_COMPILE_IGNORE_ERRORS = (
+    os.environ.get("UNSLOTH_COMPILE_IGNORE_ERRORS", "1") == "1"
+)
 # Just remove max_autotune_gemm warning
 from torch._inductor.runtime.hints import DeviceProperties
 
@@ -2230,10 +2313,14 @@ from torch._inductor.runtime.hints import DeviceProperties
 @functools.lru_cache(None)
 def is_big_gpu(index) -> bool:
     if DEVICE_TYPE == "xpu":
-        prop = DeviceProperties.create(torch.device("xpu", index) if type(index) is int else index)
+        prop = DeviceProperties.create(
+            torch.device("xpu", index) if type(index) is int else index
+        )
         min_sms = 16
     else:
-        prop = DeviceProperties.create(torch.device("cuda", index) if type(index) is int else index)
+        prop = DeviceProperties.create(
+            torch.device("cuda", index) if type(index) is int else index
+        )
         min_sms = 80
 
     avail_sms = prop.multi_processor_count
@@ -2592,7 +2679,9 @@ BitsAndBytesConfig__init__ = re.sub(
 )
 BitsAndBytesConfig__init__ = BitsAndBytesConfig__init__.split("\n")
 length_spaces = len(re.match(r"[\s]{1,}", BitsAndBytesConfig__init__[0]).group(0))
-BitsAndBytesConfig__init__ = "\n".join(x[length_spaces:] for x in BitsAndBytesConfig__init__)
+BitsAndBytesConfig__init__ = "\n".join(
+    x[length_spaces:] for x in BitsAndBytesConfig__init__
+)
 BitsAndBytesConfig__init__ = BitsAndBytesConfig__init__.replace(
     "__init__",
     "_BitsAndBytesConfig__init__",
@@ -2608,7 +2697,9 @@ if DEVICE_COUNT == 1 and int(os.environ.get("WORLD_SIZE", "1")) <= 1:
     import accelerate.state
 
     accelerate.state.PartialState._prepare_backend = _prepare_backend
-    accelerate.accelerator.Accelerator.distributed_type = lambda *args, **kwargs: DistributedType.NO
+    accelerate.accelerator.Accelerator.distributed_type = (
+        lambda *args, **kwargs: DistributedType.NO
+    )
 
 
 # to move multiple tensors to the same device
@@ -2634,7 +2725,9 @@ def move_to_device(target_device, *tensors):
 
 import transformers.utils.quantization_config
 
-transformers.utils.quantization_config.BitsAndBytesConfig.__init__ = _BitsAndBytesConfig__init__
+transformers.utils.quantization_config.BitsAndBytesConfig.__init__ = (
+    _BitsAndBytesConfig__init__
+)
 # =============================================
 
 # Offloading to disk for modules (lm_head, embed_tokens)
@@ -2660,12 +2753,16 @@ def offload_to_disk(
         pickle_protocol = pickle.HIGHEST_PROTOCOL,
     )
     # We must use weights_only = False due to pickling
-    offloaded_W = torch.load(filename, map_location = "cpu", mmap = True, weights_only = False)
+    offloaded_W = torch.load(
+        filename, map_location = "cpu", mmap = True, weights_only = False
+    )
     offloaded_W._offloaded_file_location = filename
     return offloaded_W
 
 
-def offload_input_embeddings(model, temporary_location: str = "_unsloth_temporary_saved_buffers"):
+def offload_input_embeddings(
+    model, temporary_location: str = "_unsloth_temporary_saved_buffers"
+):
     offloaded_W = offload_to_disk(
         model.get_input_embeddings(), model, "input_embeddings", temporary_location
     )
@@ -2675,7 +2772,9 @@ def offload_input_embeddings(model, temporary_location: str = "_unsloth_temporar
     return
 
 
-def offload_output_embeddings(model, temporary_location: str = "_unsloth_temporary_saved_buffers"):
+def offload_output_embeddings(
+    model, temporary_location: str = "_unsloth_temporary_saved_buffers"
+):
     offloaded_W = offload_to_disk(
         model.get_output_embeddings(), model, "output_embeddings", temporary_location
     )
@@ -2686,7 +2785,9 @@ def offload_output_embeddings(model, temporary_location: str = "_unsloth_tempora
     new_output_embeddings.in_features = offloaded_W.shape[1]
     new_output_embeddings.out_features = offloaded_W.shape[0]
 
-    new_output_embeddings._offloaded_file_location = offloaded_W._offloaded_file_location
+    new_output_embeddings._offloaded_file_location = (
+        offloaded_W._offloaded_file_location
+    )
     model.set_output_embeddings(new_output_embeddings)
     return
 
@@ -2998,7 +3099,9 @@ def patch_gradient_accumulation_fix(Trainer):
             .strip()
             .endswith("return batch_samples, num_items_in_batch")
         ):
-            raise NotImplementedError("Unsloth: Please make a Github issue immediately!!")
+            raise NotImplementedError(
+                "Unsloth: Please make a Github issue immediately!!"
+            )
         else:
             if Trainer.get_batch_samples.__name__ != "_unsloth_get_batch_samples":
                 Trainer.get_batch_samples = _unsloth_get_batch_samples
@@ -3048,7 +3151,8 @@ def patch_gradient_accumulation_fix(Trainer):
     # Also fix up loss scaling ie negate loss *= self.args.gradient_accumulation_steps
     if not (
         Trainer.training_step.__name__ == "_unsloth_training_step"
-        or "num_items_in_batch" not in inspect.signature(Trainer.training_step).parameters
+        or "num_items_in_batch"
+        not in inspect.signature(Trainer.training_step).parameters
     ):
         function = inspect.getsource(Trainer.training_step)
         where = function.find("def")
@@ -3064,7 +3168,9 @@ def patch_gradient_accumulation_fix(Trainer):
             if item in function:
                 good_items.append(item)
         exec(
-            "from transformers.trainer import (" + ", ".join(x for x in good_items) + ")",
+            "from transformers.trainer import ("
+            + ", ".join(x for x in good_items)
+            + ")",
             globals(),
         )
 
@@ -3074,7 +3180,9 @@ def patch_gradient_accumulation_fix(Trainer):
             "loss *= self.args.gradient_accumulation_steps",
             "if num_items_in_batch is not None: loss *= self.args.gradient_accumulation_steps",
         )
-        function = function.replace("def training_step", "def _unsloth_training_step", 1)
+        function = function.replace(
+            "def training_step", "def _unsloth_training_step", 1
+        )
 
         # Fix 4.47.0 issue where num_items_in_batch was removed
         # See https://github.com/huggingface/transformers/pull/35121
@@ -3400,7 +3508,9 @@ EMPTY_LOGITS = EmptyLogits()
 functions = dir(torch.Tensor)
 for j, function in enumerate(functions):
     if function.startswith("__") and function.endswith("__"):
-        exec(f"def raise_{j}(*args, **kwargs): print('{function}')", globals(), locals())
+        exec(
+            f"def raise_{j}(*args, **kwargs): print('{function}')", globals(), locals()
+        )
         try:
             exec(f"EMPTY_LOGITS.{function} = raise_{j}", globals(), locals())
         except:
@@ -3474,7 +3584,9 @@ def validate_loftq_config(loftq_config, lora_dropout, bias, init_lora_weights, m
 def fast_inference_setup(model_name, model_config):
     fast_inference = True
     if not is_vLLM_available():
-        logger.warning_once("Unsloth: vLLM is not installed! Will use Unsloth inference!")
+        logger.warning_once(
+            "Unsloth: vLLM is not installed! Will use Unsloth inference!"
+        )
         fast_inference = False
     from unsloth_zoo.vllm_utils import (
         patch_vllm,
@@ -3536,7 +3648,8 @@ class TorchAOConfig:
         default_factory = lambda: [
             (
                 Int4WeightOnlyConfig(group_size = 128),
-                lambda m, _: isinstance(m, torch.nn.Linear) and getattr(m, "in_features", 0) >= 128,
+                lambda m, _: isinstance(m, torch.nn.Linear)
+                and getattr(m, "in_features", 0) >= 128,
             ),
         ]
     )
@@ -3580,7 +3693,9 @@ def _untie_input_output_embeddings(model: torch.nn.Module) -> None:
     model.tie_weights = _no_tie.__get__(model, model.__class__)
 
     # 5) Verify no shared storage
-    assert out_proj.weight.data_ptr() != in_emb.weight.data_ptr(), "Embeddings still tied!"
+    assert (
+        out_proj.weight.data_ptr() != in_emb.weight.data_ptr()
+    ), "Embeddings still tied!"
 
 
 def _filter_fn_to_fqns(
@@ -3671,7 +3786,10 @@ def _prepare_model_for_qat(
                 raise ImportError(TORCHAO_MSG)
             group_size = 128
             base_config = Float8DynamicActivationInt4WeightConfig()
-            filter_fn = lambda m, _: isinstance(m, torch.nn.Linear) and m.in_features >= group_size
+            filter_fn = (
+                lambda m, _: isinstance(m, torch.nn.Linear)
+                and m.in_features >= group_size
+            )
             torchao_config = TorchAOConfig(
                 qat_scheme = qat_scheme,
                 base_config_and_filter_fns = [(base_config, filter_fn)],
@@ -3683,7 +3801,9 @@ def _prepare_model_for_qat(
                 )
             except ImportError:
                 raise ImportError(TORCHAO_MSG)
-            base_config = Float8DynamicActivationFloat8WeightConfig(granularity = PerRow())
+            base_config = Float8DynamicActivationFloat8WeightConfig(
+                granularity = PerRow()
+            )
             torchao_config = TorchAOConfig(
                 qat_scheme = qat_scheme, base_config_and_filter_fns = [(base_config, None)]
             )
@@ -3699,7 +3819,9 @@ def _prepare_model_for_qat(
                 qat_scheme = qat_scheme,
                 base_config_and_filter_fns = [
                     (
-                        IntxWeightOnlyConfig(weight_dtype = torch.int8, granularity = PerAxis(0)),
+                        IntxWeightOnlyConfig(
+                            weight_dtype = torch.int8, granularity = PerAxis(0)
+                        ),
                         lambda m, fqn: isinstance(m, torch.nn.Embedding),
                     ),
                     (
@@ -3718,7 +3840,10 @@ def _prepare_model_for_qat(
                 raise ImportError(TORCHAO_MSG)
             group_size = 128
             base_config = Int4WeightOnlyConfig(group_size = group_size)
-            filter_fn = lambda m, _: isinstance(m, torch.nn.Linear) and m.in_features >= group_size
+            filter_fn = (
+                lambda m, _: isinstance(m, torch.nn.Linear)
+                and m.in_features >= group_size
+            )
             torchao_config = TorchAOConfig(
                 qat_scheme = qat_scheme,
                 base_config_and_filter_fns = [(base_config, filter_fn)],
@@ -3969,7 +4094,9 @@ def _resolve_moe_parameter_name(model, default_name: str, alternate_name: str) -
     return default_name
 
 
-_MOE_BROAD_MLP_TARGETS = frozenset(("gate_proj", "up_proj", "down_proj", "gate_up_proj"))
+_MOE_BROAD_MLP_TARGETS = frozenset(
+    ("gate_proj", "up_proj", "down_proj", "gate_up_proj")
+)
 
 
 def _moe_target_set_from_string(target_modules: str) -> set[str]:
@@ -4048,7 +4175,11 @@ def get_moe_target_parameters(model, target_modules = None) -> Optional[List[str
         target_set = {
             target
             for target in target_modules or ()
-            if (isinstance(target, str) and "." not in target and target in _MOE_BROAD_MLP_TARGETS)
+            if (
+                isinstance(target, str)
+                and "." not in target
+                and target in _MOE_BROAD_MLP_TARGETS
+            )
         }
 
     moe_params = []
@@ -4068,7 +4199,11 @@ def get_moe_target_parameters(model, target_modules = None) -> Optional[List[str
     # Only target a fused expert Parameter that exists: per-expert Linear layouts
     # (e.g. gpt-oss bnb-4bit) have no fused Parameter and are handled by
     # get_moe_target_modules, so skip them rather than pass PEFT a dead path.
-    if "gate_proj" in target_set or "up_proj" in target_set or "gate_up_proj" in target_set:
+    if (
+        "gate_proj" in target_set
+        or "up_proj" in target_set
+        or "gate_up_proj" in target_set
+    ):
         if _moe_parameter_exists(model, gate_up_name):
             moe_params.append(gate_up_name)
 
@@ -4120,7 +4255,11 @@ def get_moe_target_modules(model, target_modules = None) -> List[str]:
         target_set = {
             target
             for target in target_modules or ()
-            if (isinstance(target, str) and "." not in target and target in _MOE_BROAD_MLP_TARGETS)
+            if (
+                isinstance(target, str)
+                and "." not in target
+                and target in _MOE_BROAD_MLP_TARGETS
+            )
         }
     if not (target_set & _MOE_BROAD_MLP_TARGETS):
         return []
@@ -4210,7 +4349,11 @@ def _select_moe_detection_targets(
     leaves -- would wrongly re-introduce them. In that case honor the scoped
     result so the frozen-MLP / vision-only request is respected.
     """
-    if original_target_modules is not None and finetune_mlp_modules and finetune_language_layers:
+    if (
+        original_target_modules is not None
+        and finetune_mlp_modules
+        and finetune_language_layers
+    ):
         return original_target_modules
     return scoped_target_modules
 
@@ -4238,7 +4381,12 @@ def make_fast_generate_wrapper(original_generate):
                 isinstance(head, dict)
                 and any(
                     k in head
-                    for k in ("prompt", "prompt_token_ids", "prompt_embeds", "multi_modal_data")
+                    for k in (
+                        "prompt",
+                        "prompt_token_ids",
+                        "prompt_embeds",
+                        "multi_modal_data",
+                    )
                 )
             )
 
@@ -4312,7 +4460,9 @@ if (
             aliases.add(full_name.replace("language_model.model.", "language_model."))
         if full_name.startswith("model.language_model.model."):
             aliases.add(
-                full_name[len("model.") :].replace("language_model.model.", "language_model.")
+                full_name[len("model.") :].replace(
+                    "language_model.model.", "language_model."
+                )
             )
         return aliases
 
@@ -4341,11 +4491,15 @@ if (
             for candidate in _get_full_name_aliases(full_name)
         )
 
-    patched_should_convert_module._original_should_convert_module = _original_should_convert_module
+    patched_should_convert_module._original_should_convert_module = (
+        _original_should_convert_module
+    )
     _quantizers_utils.should_convert_module = patched_should_convert_module
 
     try:
         import transformers.integrations.bitsandbytes
-        transformers.integrations.bitsandbytes.should_convert_module = patched_should_convert_module
+        transformers.integrations.bitsandbytes.should_convert_module = (
+            patched_should_convert_module
+        )
     except Exception:
         pass

@@ -50,7 +50,10 @@ def _tool_call_stream(tool_name: str, arguments: dict, call_id: str) -> list[str
                         "index": 0,
                         "id": call_id,
                         "type": "function",
-                        "function": {"name": tool_name, "arguments": json.dumps(arguments)},
+                        "function": {
+                            "name": tool_name,
+                            "arguments": json.dumps(arguments),
+                        },
                     }
                 ]
             }
@@ -123,9 +126,13 @@ def _run_one_tool(monkeypatch, tool_name: str, arguments: dict) -> str:
         )
     )
     tool_ends = [
-        e for e in events if e.get("type") == "tool_end" and e.get("tool_name") == tool_name
+        e
+        for e in events
+        if e.get("type") == "tool_end" and e.get("tool_name") == tool_name
     ]
-    assert tool_ends, f"loop never executed {tool_name}; events={[e.get('type') for e in events]}"
+    assert (
+        tool_ends
+    ), f"loop never executed {tool_name}; events={[e.get('type') for e in events]}"
     return tool_ends[0]["result"]
 
 
@@ -143,7 +150,9 @@ def test_python_tool_counts_to_100(monkeypatch):
     # "Use the python tool to count from 1 to 100."
     expected = " ".join(str(i) for i in range(1, 101))
     result = _run_one_tool(
-        monkeypatch, "python", {"code": "print(' '.join(str(i) for i in range(1, 101)))"}
+        monkeypatch,
+        "python",
+        {"code": "print(' '.join(str(i) for i in range(1, 101)))"},
     )
     assert expected in result, result  # real subprocess produced the full sequence
 
@@ -152,12 +161,16 @@ def test_bash_tool_returns_current_datetime(monkeypatch):
     # "Use the bash tool to provide today's datetime." Bound the parsed UTC time
     # to the call window rather than a hard-coded date (survives midnight/TZ).
     before = datetime.now(timezone.utc) - timedelta(seconds = 5)
-    result = _run_one_tool(monkeypatch, "terminal", {"command": "date -u +%Y-%m-%dT%H:%M:%SZ"})
+    result = _run_one_tool(
+        monkeypatch, "terminal", {"command": "date -u +%Y-%m-%dT%H:%M:%SZ"}
+    )
     after = datetime.now(timezone.utc) + timedelta(seconds = 5)
 
     match = re.search(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z", result)
     assert match, f"no UTC datetime in terminal result: {result!r}"
-    parsed = datetime.strptime(match.group(), "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo = timezone.utc)
+    parsed = datetime.strptime(match.group(), "%Y-%m-%dT%H:%M:%SZ").replace(
+        tzinfo = timezone.utc
+    )
     assert before <= parsed <= after, f"{parsed} not in [{before}, {after}]"
 
 
@@ -182,7 +195,9 @@ def test_web_search_tool_runs_with_mocked_fetch(monkeypatch):
             ]
 
     monkeypatch.setattr("ddgs.DDGS", _FakeDDGS)
-    result = _run_one_tool(monkeypatch, "web_search", {"query": "weather in San Francisco"})
+    result = _run_one_tool(
+        monkeypatch, "web_search", {"query": "weather in San Francisco"}
+    )
     assert "San Francisco: sunny, 68F." in result, result
     assert "https://example.test/sf" in result
 

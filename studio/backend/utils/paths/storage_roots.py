@@ -286,7 +286,9 @@ def _setup_cache_env() -> None:
     download paths inherit the same wrong root.
     """
     root = cache_root()
-    xdg_cache = Path(os.environ.get("XDG_CACHE_HOME", Path.home() / ".cache")).expanduser()
+    xdg_cache = Path(
+        os.environ.get("XDG_CACHE_HOME", Path.home() / ".cache")
+    ).expanduser()
     # HUGGINGFACE_HUB_CACHE is HF's legacy alias for HF_HUB_CACHE; honor it.
     if "HF_HUB_CACHE" not in os.environ and os.environ.get("HUGGINGFACE_HUB_CACHE"):
         os.environ["HF_HUB_CACHE"] = os.environ["HUGGINGFACE_HUB_CACHE"]
@@ -330,7 +332,9 @@ def ensure_studio_directories() -> None:
     _setup_cache_env()
 
 
-def _clean_relative_path(path_value: str, *, strip_prefixes: tuple[str, ...] = ()) -> Path:
+def _clean_relative_path(
+    path_value: str, *, strip_prefixes: tuple[str, ...] = ()
+) -> Path:
     path = Path(path_value).expanduser()
     parts = [part for part in path.parts if part not in ("", ".")]
     while parts and parts[0] in strip_prefixes:
@@ -369,7 +373,8 @@ def _assert_contained(resolved: Path, root: Path) -> None:
         resolved_real.relative_to(root_real)
     except ValueError as exc:
         raise ValueError(
-            f"path escapes root: {resolved!s} -> {resolved_real!s} " f"is not under {root_real!s}"
+            f"path escapes root: {resolved!s} -> {resolved_real!s} "
+            f"is not under {root_real!s}"
         ) from exc
 
 
@@ -490,7 +495,9 @@ def resolve_dataset_path(path_value: str) -> Path:
                 return path
             except ValueError:
                 continue
-        raise ValueError(f"dataset path must be relative or under a dataset root: {raw!r}")
+        raise ValueError(
+            f"dataset path must be relative or under a dataset root: {raw!r}"
+        )
 
     parts = [part for part in Path(path_value).parts if part not in ("", ".")]
     if parts[:2] == ["assets", "datasets"]:

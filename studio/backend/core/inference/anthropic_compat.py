@@ -36,7 +36,11 @@ def anthropic_tool_use_id(upstream_id = None) -> str:
     """Return an Anthropic-style tool_use id (prefix 'toolu_'). Reuses an
     upstream id only if it already starts with 'toolu_'; otherwise mints a fresh
     'toolu_<24 hex>'."""
-    if upstream_id and isinstance(upstream_id, str) and upstream_id.startswith("toolu_"):
+    if (
+        upstream_id
+        and isinstance(upstream_id, str)
+        and upstream_id.startswith("toolu_")
+    ):
         return upstream_id
     return f"toolu_{uuid.uuid4().hex[:24]}"
 
@@ -149,7 +153,9 @@ def anthropic_messages_to_openai(
                     tc = b.get("content", "")
                     if isinstance(tc, list):
                         tc = " ".join(
-                            p["text"] for p in tc if isinstance(p, dict) and p.get("type") == "text"
+                            p["text"]
+                            for p in tc
+                            if isinstance(p, dict) and p.get("type") == "text"
                         )
                     tool_results.append(
                         {
@@ -459,7 +465,9 @@ class AnthropicStreamEmitter:
             events.append(self._close_block())
         # Reuse the id published in content_block_start; fall back to mapping
         # the raw id only if no tool_start preceded this end.
-        tool_use_id = self._open_tool_use_id or anthropic_tool_use_id(event.get("tool_call_id", ""))
+        tool_use_id = self._open_tool_use_id or anthropic_tool_use_id(
+            event.get("tool_call_id", "")
+        )
         self._open_tool_call_id = None
         self._open_tool_use_id = None
         self._open_tool_args_sent = False
@@ -596,7 +604,11 @@ class AnthropicPassthroughEmitter:
         # ── Structured tool calls take precedence over healing ──
         # Grammar mode worked: flush anything the healer held (it preceded the
         # call in the model's output) and relay verbatim from here on.
-        if delta.get("tool_calls") and self._healer is not None and not self._healer.dormant:
+        if (
+            delta.get("tool_calls")
+            and self._healer is not None
+            and not self._healer.dormant
+        ):
             for kind, value in self._healer.structured_tool_call_seen():
                 if kind == "text" and value:
                     events.extend(self._emit_text_delta(value))

@@ -86,9 +86,13 @@ def test_all_model_yamls_load_for_training_and_inference():
             # the dict sections the loaders read via .get('sect', {}).get(...)
             for sect in ("training", "inference", "lora", "logging"):
                 assert isinstance(md.get(sect, {}), dict), f"{sect!r} is not a mapping"
-            md.get("training", {}).get("trust_remote_code", False)  # routes/training.py:263
+            md.get("training", {}).get(
+                "trust_remote_code", False
+            )  # routes/training.py:263
             cfg = load_inference_config(stem)
-            assert infer_keys <= set(cfg), f"inference config missing {infer_keys - set(cfg)}"
+            assert infer_keys <= set(
+                cfg
+            ), f"inference config missing {infer_keys - set(cfg)}"
         except Exception as e:  # noqa: BLE001 - aggregate so one failure does not hide others
             failures.append(f"{f.relative_to(_CONFIGS)}: {type(e).__name__}: {e}")
     assert not failures, "YAML config loaders crashed on: " + "; ".join(failures)
@@ -98,7 +102,9 @@ def test_base_templates_have_no_trust_remote_code():
     for name in ("full_finetune.yaml", "lora_text.yaml", "vision_lora.yaml"):
         doc = yaml.safe_load((_CONFIGS / name).read_text()) or {}
         flat = yaml.safe_dump(doc)
-        assert "trust_remote_code" not in flat, f"{name} should not set trust_remote_code"
+        assert (
+            "trust_remote_code" not in flat
+        ), f"{name} should not set trust_remote_code"
 
 
 def test_loader_defaults_trust_remote_code_off_for_formerly_flagged_models():
@@ -138,7 +144,9 @@ def test_formerly_flagged_auto_map_models_still_require_consent_dialog():
         "unsloth/ERNIE-4.5-VL-28B-A3B-PT",
     ):
         with (
-            patch.object(consent, "_load_remote_code_configs", return_value = auto_map_cfg),
+            patch.object(
+                consent, "_load_remote_code_configs", return_value = auto_map_cfg
+            ),
             patch.object(consent, "repo_remote_code_files", return_value = benign_py),
         ):
             decision = preflight_remote_code_consent_for_targets([model], hf_token = None)
@@ -155,7 +163,9 @@ def test_no_auto_map_model_takes_no_dialog():
     from utils.security import consent, preflight_remote_code_consent_for_targets
 
     with patch.object(
-        consent, "_load_remote_code_configs", return_value = [{"model_type": "glm4_moe_lite"}]
+        consent,
+        "_load_remote_code_configs",
+        return_value = [{"model_type": "glm4_moe_lite"}],
     ):
         decision = preflight_remote_code_consent_for_targets(
             ["unsloth/GLM-4.7-Flash"], hf_token = None

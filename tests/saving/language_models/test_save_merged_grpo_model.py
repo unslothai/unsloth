@@ -173,7 +173,9 @@ def training_run(result_queue):
         avg_length = sum(lengths) / len(lengths)
         min_length = min(lengths)
 
-        print(f"Prompt lengths - Min: {min_length}, Max: {max_length}, Avg: {avg_length:.1f}")
+        print(
+            f"Prompt lengths - Min: {min_length}, Max: {max_length}, Avg: {avg_length:.1f}"
+        )
         return max_length, avg_length
 
     def extract_unsloth_answer(
@@ -264,7 +266,9 @@ def training_run(result_queue):
             ground_truth_num = float(norm_ground_truth)
 
             if ground_truth_num != 0:
-                relative_error = abs(extracted_num - ground_truth_num) / abs(ground_truth_num)
+                relative_error = abs(extracted_num - ground_truth_num) / abs(
+                    ground_truth_num
+                )
 
                 if relative_error < 0.01:
                     return True, True, 0.9
@@ -299,7 +303,10 @@ def training_run(result_queue):
         )
 
         responses = [completion[0]["content"] for completion in completions]
-        rewards = [3.0 if re.match(pattern, response, re.DOTALL) else 0.0 for response in responses]
+        rewards = [
+            3.0 if re.match(pattern, response, re.DOTALL) else 0.0
+            for response in responses
+        ]
         return rewards
 
     def match_format_approximately(completions, **kwargs):
@@ -397,7 +404,9 @@ def training_run(result_queue):
                 format_improvement = (
                     result["correct_format_pct"] - base_result["correct_format_pct"]
                 )
-                exact_improvement = result["exact_match_pct"] - base_result["exact_match_pct"]
+                exact_improvement = (
+                    result["exact_match_pct"] - base_result["exact_match_pct"]
+                )
                 plausible_improvement = (
                     result["plausible_match_pct"] - base_result["plausible_match_pct"]
                 )
@@ -429,7 +438,9 @@ def training_run(result_queue):
         if torch.cuda.is_available():
             allocated = torch.cuda.memory_allocated() / 1024**3
             reserved = torch.cuda.memory_reserved() / 1024**3
-            print(f"GPU memory - Allocated: {allocated:.2f} GB, Reserved: {reserved:.2f} GB")
+            print(
+                f"GPU memory - Allocated: {allocated:.2f} GB, Reserved: {reserved:.2f} GB"
+            )
 
     """#### Data Loading and Preparation"""
 
@@ -467,7 +478,9 @@ def training_run(result_queue):
     def formatting_prompts_func(examples):
         convos = examples["prompt"]
         texts = [
-            tokenizer.apply_chat_template(convo, tokenize = False, add_generation_prompt = False)
+            tokenizer.apply_chat_template(
+                convo, tokenize = False, add_generation_prompt = False
+            )
             for convo in convos
         ]
         return {
@@ -682,7 +695,9 @@ def training_run(result_queue):
     print(f"{'='*60}")
 
     try:
-        model.save_pretrained_merged("final_merged_model", tokenizer, save_method = "merged_16bit")
+        model.save_pretrained_merged(
+            "final_merged_model", tokenizer, save_method = "merged_16bit"
+        )
         print("✅ Merged model saved to: final_merged_model/")
     except Exception as e:
         print(f"⚠️ Could not save merged model: {e}")

@@ -67,8 +67,12 @@ def test_zoo_saving_utils_has_moe_merge_state():
 def test_zoo_saving_utils_has_layout_detector():
     src = _fetch_saving_utils()
     _skip_until_pr_647_lands(src)
-    assert "_detect_moe_lora_layout" in src, "_detect_moe_lora_layout removed (issue #5410)."
-    assert '"swapped"' in src and '"standard"' in src, "one of the layout labels removed."
+    assert (
+        "_detect_moe_lora_layout" in src
+    ), "_detect_moe_lora_layout removed (issue #5410)."
+    assert (
+        '"swapped"' in src and '"standard"' in src
+    ), "one of the layout labels removed."
 
 
 def test_zoo_saving_utils_has_num_experts_resolver():
@@ -114,4 +118,6 @@ def test_unsloth_save_pretrained_merged_entry_point_exists():
         pytest.skip(f"{save_py} not present")
     text = save_py.read_text(encoding = "utf-8", errors = "replace")
     assert "save_pretrained_merged" in text, "entry point removed from unsloth/save.py."
-    assert "merge_and_overwrite_lora" in text, "no dispatch into unsloth_zoo merge; #647 bypassed."
+    assert (
+        "merge_and_overwrite_lora" in text
+    ), "no dispatch into unsloth_zoo merge; #647 bypassed."

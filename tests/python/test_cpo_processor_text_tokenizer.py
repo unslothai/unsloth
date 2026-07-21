@@ -55,7 +55,10 @@ def _load_pad_rewriter():
             getattr(t, "id", None) == "_PAD_FALLBACK" for t in n.targets
         ):
             nodes.append(n)
-        elif isinstance(n, ast.FunctionDef) and n.name == "orpo_trainer_processor_pad_token":
+        elif (
+            isinstance(n, ast.FunctionDef)
+            and n.name == "orpo_trainer_processor_pad_token"
+        ):
             nodes.append(n)
     import re as _re
 
@@ -79,7 +82,10 @@ def test_pad_token_default_routed_through_inner_tokenizer():
     out = rewrite("__init__", init_src)
     assert "if processing_class.pad_token is None:" not in out
     assert "processing_class.pad_token = processing_class.eos_token" not in out
-    assert "_unsloth_proc_tok = getattr(processing_class, 'tokenizer', processing_class)" in out
+    assert (
+        "_unsloth_proc_tok = getattr(processing_class, 'tokenizer', processing_class)"
+        in out
+    )
     # bare pad_token_id must be routed through the getattr fallback, not left raw
     assert "= processing_class.pad_token_id\n" not in out
     ast.parse(out)  # rewritten source still compiles

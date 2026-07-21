@@ -144,7 +144,8 @@ def prepare_raw_text_dataset(
         notices.append(
             RawTextNotice(
                 message = (
-                    f"{mode_title}: renaming column '{renamed_col}' -> 'text' " f"for {split_scope}"
+                    f"{mode_title}: renaming column '{renamed_col}' -> 'text' "
+                    f"for {split_scope}"
                 ),
                 level = "info",
             )

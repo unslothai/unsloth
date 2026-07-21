@@ -35,7 +35,9 @@ class LlamaUpdateJob(BaseModel):
     to_tag: Optional[str] = None
     reload_required: Optional[bool] = None
     error: Optional[str] = None
-    progress: Optional[float] = Field(None, description = "0..1 while running, 1 on success.")
+    progress: Optional[float] = Field(
+        None, description = "0..1 while running, 1 on success."
+    )
     started_at: Optional[str] = None
     finished_at: Optional[str] = None
 
@@ -46,10 +48,12 @@ class LlamaUpdateStatusResponse(BaseModel):
         description = "True when the install came from an Unsloth prebuilt (has a marker).",
     )
     update_available: bool = Field(
-        False, description = "True when the latest release is genuinely newer than the install."
+        False,
+        description = "True when the latest release is genuinely newer than the install.",
     )
     stale: bool = Field(
-        False, description = "Update available AND install older than the staleness threshold."
+        False,
+        description = "Update available AND install older than the staleness threshold.",
     )
     installed_tag: Optional[str] = None
     latest_tag: Optional[str] = None
@@ -57,7 +61,8 @@ class LlamaUpdateStatusResponse(BaseModel):
     installed_at_utc: Optional[str] = None
     age_days: Optional[int] = None
     source_build: bool = Field(
-        False, description = "True when there is no marker (source build) but a prebuilt is offered."
+        False,
+        description = "True when there is no marker (source build) but a prebuilt is offered.",
     )
     update_size_bytes: Optional[int] = Field(
         None, description = "Download size of the prebuilt Update would fetch, in bytes."

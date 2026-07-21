@@ -41,7 +41,10 @@ class TestPrebuiltWheelTorchMapping:
             },
         )
         assert url is not None
-        assert "causal_conv1d-1.6.1+cu13torch2.10cxx11abiTRUE-cp313-cp313-linux_x86_64.whl" in url
+        assert (
+            "causal_conv1d-1.6.1+cu13torch2.10cxx11abiTRUE-cp313-cp313-linux_x86_64.whl"
+            in url
+        )
 
 
 class TestFlashAttnWheelSelection:
@@ -67,7 +70,10 @@ class TestFlashAttnWheelSelection:
             }
         )
         assert url is not None
-        assert "flash_attn-2.8.1+cu13torch2.10cxx11abiTRUE-cp313-cp313-linux_x86_64.whl" in url
+        assert (
+            "flash_attn-2.8.1+cu13torch2.10cxx11abiTRUE-cp313-cp313-linux_x86_64.whl"
+            in url
+        )
 
     def test_exact_wheel_url_uses_full_env_tuple(self):
         url = ips._build_flash_attn_wheel_url(
@@ -81,7 +87,10 @@ class TestFlashAttnWheelSelection:
         )
         assert url is not None
         assert "v2.8.1" in url
-        assert "flash_attn-2.8.1+cu12torch2.10cxx11abiTRUE-cp313-cp313-linux_x86_64.whl" in url
+        assert (
+            "flash_attn-2.8.1+cu12torch2.10cxx11abiTRUE-cp313-cp313-linux_x86_64.whl"
+            in url
+        )
 
     def test_missing_cuda_major_disables_wheel_lookup(self):
         assert (
@@ -264,7 +273,10 @@ class TestEnsureFlashAttn:
             ips._ensure_flash_attn()
 
         mock_install_wheel.assert_not_called()
-        assert ("warning", "No published flash-attn prebuilt wheel found") in step_messages
+        assert (
+            "warning",
+            "No published flash-attn prebuilt wheel found",
+        ) in step_messages
 
     def test_skip_env_disables_setup_install(self):
         with (
@@ -322,7 +334,9 @@ class TestInstallPythonStackFlashAttnIntegration:
             mock.patch("subprocess.run", side_effect = fake_run),
             mock.patch.object(ips, "_has_usable_nvidia_gpu", return_value = False),
             mock.patch.object(ips, "_has_rocm_gpu", return_value = False),
-            mock.patch.object(ips, "LOCAL_DD_UNSTRUCTURED_PLUGIN", Path("/fake/plugin")),
+            mock.patch.object(
+                ips, "LOCAL_DD_UNSTRUCTURED_PLUGIN", Path("/fake/plugin")
+            ),
             mock.patch("pathlib.Path.is_dir", return_value = True),
             mock.patch("pathlib.Path.is_file", return_value = True),
             mock.patch.dict(os.environ, {"SKIP_STUDIO_BASE": "1"}, clear = False),

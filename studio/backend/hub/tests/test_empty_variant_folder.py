@@ -27,13 +27,19 @@ def test_list_empty_gguf_variant_dirs_finds_empty_leftover(tmp_path, monkeypatch
     assert gguf.list_empty_gguf_variant_dirs("org/Repo-GGUF") == {"UD-IQ1_S"}
 
 
-def test_list_empty_excludes_quant_with_files_in_another_snapshot(tmp_path, monkeypatch):
+def test_list_empty_excludes_quant_with_files_in_another_snapshot(
+    tmp_path, monkeypatch
+):
     snap1 = tmp_path / "s1" / "snapshots" / "rev"
     (snap1 / "UD-IQ1_S").mkdir(parents = True)  # empty here
     snap2 = tmp_path / "s2" / "snapshots" / "rev"
     (snap2 / "UD-IQ1_S").mkdir(parents = True)
-    (snap2 / "UD-IQ1_S" / "m-UD-IQ1_S-00001-of-00001.gguf").write_bytes(b"z")  # has shards
-    monkeypatch.setattr(gguf, "iter_hf_cache_snapshots", lambda repo_id: iter([snap1, snap2]))
+    (snap2 / "UD-IQ1_S" / "m-UD-IQ1_S-00001-of-00001.gguf").write_bytes(
+        b"z"
+    )  # has shards
+    monkeypatch.setattr(
+        gguf, "iter_hf_cache_snapshots", lambda repo_id: iter([snap1, snap2])
+    )
     assert gguf.list_empty_gguf_variant_dirs("org/Repo-GGUF") == set()
 
 
@@ -90,10 +96,16 @@ def test_remove_empty_variant_dirs_ignores_concurrent_refill(tmp_path, monkeypat
 
 
 def test_mark_empty_dir_cleanables_appends_unlisted(monkeypatch):
-    monkeypatch.setattr(gguf_variants, "list_empty_gguf_variant_dirs", lambda repo_id: {"UD-IQ1_S"})
+    monkeypatch.setattr(
+        gguf_variants, "list_empty_gguf_variant_dirs", lambda repo_id: {"UD-IQ1_S"}
+    )
     resp = GgufVariantsResponse(
         repo_id = "org/Repo-GGUF",
-        variants = [GgufVariantDetail(filename = "m-UD-IQ1_M.gguf", quant = "UD-IQ1_M", downloaded = True)],
+        variants = [
+            GgufVariantDetail(
+                filename = "m-UD-IQ1_M.gguf", quant = "UD-IQ1_M", downloaded = True
+            )
+        ],
     )
     out = gguf_variants._mark_empty_dir_cleanables("org/Repo-GGUF", resp)
     by_q = {v.quant: v for v in out.variants}
@@ -102,7 +114,9 @@ def test_mark_empty_dir_cleanables_appends_unlisted(monkeypatch):
 
 
 def test_mark_empty_dir_cleanables_flips_listed_variant(monkeypatch):
-    monkeypatch.setattr(gguf_variants, "list_empty_gguf_variant_dirs", lambda repo_id: {"UD-IQ1_S"})
+    monkeypatch.setattr(
+        gguf_variants, "list_empty_gguf_variant_dirs", lambda repo_id: {"UD-IQ1_S"}
+    )
     resp = GgufVariantsResponse(
         repo_id = "org/Repo-GGUF",
         variants = [GgufVariantDetail(filename = "m-UD-IQ1_S.gguf", quant = "UD-IQ1_S")],
@@ -120,10 +134,16 @@ def _force_compute_to_raise(monkeypatch):
 
     monkeypatch.setattr(gguf_variants, "list_gguf_variants", _boom, raising = False)
     monkeypatch.setattr(
-        gguf_variants, "list_gguf_variants_from_hf_cache", lambda repo_id: None, raising = False
+        gguf_variants,
+        "list_gguf_variants_from_hf_cache",
+        lambda repo_id: None,
+        raising = False,
     )
     monkeypatch.setattr(
-        gguf_variants, "list_partial_gguf_variants_from_state", lambda repo_id: None, raising = False
+        gguf_variants,
+        "list_partial_gguf_variants_from_state",
+        lambda repo_id: None,
+        raising = False,
     )
 
 
@@ -133,7 +153,9 @@ def test_get_variants_surfaces_cleanable_when_metadata_fails(monkeypatch):
     import asyncio
 
     _force_compute_to_raise(monkeypatch)
-    monkeypatch.setattr(gguf_variants, "list_empty_gguf_variant_dirs", lambda repo_id: {"UD-IQ1_S"})
+    monkeypatch.setattr(
+        gguf_variants, "list_empty_gguf_variant_dirs", lambda repo_id: {"UD-IQ1_S"}
+    )
 
     resp = asyncio.run(
         gguf_variants.get_gguf_variants_response(
@@ -152,7 +174,9 @@ def test_get_variants_reraises_when_no_cleanable(monkeypatch):
     from fastapi import HTTPException
 
     _force_compute_to_raise(monkeypatch)
-    monkeypatch.setattr(gguf_variants, "list_empty_gguf_variant_dirs", lambda repo_id: set())
+    monkeypatch.setattr(
+        gguf_variants, "list_empty_gguf_variant_dirs", lambda repo_id: set()
+    )
 
     try:
         asyncio.run(

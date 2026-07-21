@@ -114,7 +114,9 @@ def _fake_urlopen_factory(counter: dict):
 def _isolated_caches(tmp_path: Path, monkeypatch):
     """Fresh in-memory + on-disk caches per test; no accidental real studio_root writes."""
     tl.clear_caches()
-    monkeypatch.setattr(tl, "_cache_file", lambda: tmp_path / "transformers_latest_check.json")
+    monkeypatch.setattr(
+        tl, "_cache_file", lambda: tmp_path / "transformers_latest_check.json"
+    )
     # The sidecar swap reservation writes a lock file next to the venv dir;
     # point it at tmp so tests never touch the real studio root.
     monkeypatch.setattr(tv, "_VENV_T5_LATEST_DIR", str(tmp_path / "venv_t5_latest"))
@@ -232,7 +234,10 @@ class TestLatestTransformersSupports:
     def test_unknown_everywhere(self, monkeypatch):
         monkeypatch.setattr("urllib.request.urlopen", _fake_urlopen_factory({}))
         result = latest_transformers_supports("no_such_arch")
-        assert result["supported_in_pypi"] is False and result["supported_in_main"] is False
+        assert (
+            result["supported_in_pypi"] is False
+            and result["supported_in_main"] is False
+        )
 
     def test_network_failure_returns_none(self, monkeypatch):
         _no_network(monkeypatch, exc = OSError("down"))
@@ -272,7 +277,9 @@ class TestLatestTransformersSupports:
         counter = {}
         monkeypatch.setattr("urllib.request.urlopen", _fake_urlopen_factory(counter))
         latest_transformers_supports("brandnew_arch")
-        stale = dict(tl._memory_snapshot, fetched_at = time.time() - tl._CACHE_TTL_SECONDS - 1)
+        stale = dict(
+            tl._memory_snapshot, fetched_at = time.time() - tl._CACHE_TTL_SECONDS - 1
+        )
         tl.clear_caches()
         tl._save_snapshot_file(stale)
         first_total = counter["__total__"]
@@ -342,7 +349,9 @@ class TestCheckUpgradeForModel:
         _fake_overlays(monkeypatch)
         monkeypatch.setattr("urllib.request.urlopen", _fake_urlopen_factory({}))
         result = check_upgrade_for_model(_local_model(tmp_path, "dev_only_arch"))
-        assert result["supported_in_pypi"] is False and result["supported_in_main"] is True
+        assert (
+            result["supported_in_pypi"] is False and result["supported_in_main"] is True
+        )
 
     def test_unknown_everywhere_falls_through(self, tmp_path: Path, monkeypatch):
         _fake_overlays(monkeypatch)
@@ -404,13 +413,17 @@ class TestCheckUpgradeForModel:
         monkeypatch.setattr("urllib.request.urlopen", _fake_urlopen_factory({}))
         d = tmp_path / "nested"
         d.mkdir()
-        (d / "config.json").write_text(json.dumps({"text_config": {"model_type": "brandnew_arch"}}))
+        (d / "config.json").write_text(
+            json.dumps({"text_config": {"model_type": "brandnew_arch"}})
+        )
         result = check_upgrade_for_model(str(d))
         assert result is not None and result["model_type"] == "brandnew_arch"
 
     def test_never_raises_on_internal_error(self, monkeypatch):
         monkeypatch.setattr(
-            tl, "_load_config_json", lambda *a, **k: (_ for _ in ()).throw(RuntimeError("boom"))
+            tl,
+            "_load_config_json",
+            lambda *a, **k: (_ for _ in ()).throw(RuntimeError("boom")),
         )
         assert check_upgrade_for_model("some/model") is None
 
@@ -432,7 +445,9 @@ class TestNestedModelTypeExtraction:
 
 
 class TestRoutingParity:
-    def test_all_overlay_types_route_identically_and_never_check(self, tmp_path: Path, monkeypatch):
+    def test_all_overlay_types_route_identically_and_never_check(
+        self, tmp_path: Path, monkeypatch
+    ):
         _fake_overlays(monkeypatch)
         calls = _no_network(monkeypatch)
         expected_tier = {
@@ -450,7 +465,9 @@ class TestRoutingParity:
             assert check_upgrade_for_model(_local_model(tmp_path, model_type)) is None
         assert calls["n"] == 0
 
-    def test_real_installed_mappings_route_without_checker(self, monkeypatch, tmp_path: Path):
+    def test_real_installed_mappings_route_without_checker(
+        self, monkeypatch, tmp_path: Path
+    ):
         """Parity over the REAL installed overlays (base + any provisioned sidecar):
         every shipped model_type resolves statically, so the remote checker never
         fires and routing is byte-identical with the feature enabled."""
@@ -493,7 +510,9 @@ class TestLatestVenvProvisioning:
         assert pkgs[0] == "transformers==5.13.0"
         assert any(p.startswith("huggingface_hub==") for p in pkgs)
 
-    def test_ensure_latest_writes_pin_and_invalidates_cache(self, tmp_path: Path, monkeypatch):
+    def test_ensure_latest_writes_pin_and_invalidates_cache(
+        self, tmp_path: Path, monkeypatch
+    ):
         venv_dir = tmp_path / ".venv_t5_latest"
         monkeypatch.setattr(tv, "_VENV_T5_LATEST_DIR", str(venv_dir))
         recorded = {}
@@ -515,7 +534,9 @@ class TestLatestVenvProvisioning:
         assert latest_venv_pinned_version() == "5.13.0"
         assert "latest" not in _config_mapping_cache
 
-    def test_ensure_latest_upgrade_failure_keeps_old_sidecar(self, tmp_path: Path, monkeypatch):
+    def test_ensure_latest_upgrade_failure_keeps_old_sidecar(
+        self, tmp_path: Path, monkeypatch
+    ):
         venv_dir = tmp_path / ".venv_t5_latest"
         monkeypatch.setattr(tv, "_VENV_T5_LATEST_DIR", str(venv_dir))
         venv_dir.mkdir(parents = True)
@@ -532,7 +553,9 @@ class TestLatestVenvProvisioning:
         assert not Path(str(venv_dir) + ".staging").exists()
 
     def test_ensure_latest_rejects_bad_version(self, tmp_path: Path, monkeypatch):
-        monkeypatch.setattr(tv, "_VENV_T5_LATEST_DIR", str(tmp_path / ".venv_t5_latest"))
+        monkeypatch.setattr(
+            tv, "_VENV_T5_LATEST_DIR", str(tmp_path / ".venv_t5_latest")
+        )
         monkeypatch.setattr(
             tv,
             "_ensure_venv_dir",
@@ -541,7 +564,9 @@ class TestLatestVenvProvisioning:
         assert ensure_latest_transformers_venv("5.13.0 && curl evil") is False
 
     def test_ensure_latest_offline_refuses(self, tmp_path: Path, monkeypatch):
-        monkeypatch.setattr(tv, "_VENV_T5_LATEST_DIR", str(tmp_path / ".venv_t5_latest"))
+        monkeypatch.setattr(
+            tv, "_VENV_T5_LATEST_DIR", str(tmp_path / ".venv_t5_latest")
+        )
         monkeypatch.setenv("HF_HUB_OFFLINE", "1")
         monkeypatch.setattr(
             tv,
@@ -551,7 +576,9 @@ class TestLatestVenvProvisioning:
         assert ensure_latest_transformers_venv("5.13.0") is False
 
     def test_unpinned_sidecar_never_installs(self, tmp_path: Path, monkeypatch):
-        monkeypatch.setattr(tv, "_VENV_T5_LATEST_DIR", str(tmp_path / ".venv_t5_latest"))
+        monkeypatch.setattr(
+            tv, "_VENV_T5_LATEST_DIR", str(tmp_path / ".venv_t5_latest")
+        )
         monkeypatch.setattr(
             tv,
             "_ensure_venv_dir",
@@ -559,7 +586,9 @@ class TestLatestVenvProvisioning:
         )
         assert tv._ensure_venv_t5_latest_exists() is False
 
-    def test_pinned_sidecar_repairs_with_same_version(self, tmp_path: Path, monkeypatch):
+    def test_pinned_sidecar_repairs_with_same_version(
+        self, tmp_path: Path, monkeypatch
+    ):
         venv_dir = tmp_path / ".venv_t5_latest"
         venv_dir.mkdir()
         (venv_dir / tv._LATEST_PIN_MARKER).write_text("5.13.0")
@@ -603,8 +632,12 @@ class TestLatestTierRouting:
         (venv_dir / tv._LATEST_PIN_MARKER).write_text("5.13.0")
         assert tv._overlay_transformers_dir("latest") == str(venv_dir / "transformers")
 
-    def test_probe_order_excludes_unprovisioned_latest(self, tmp_path: Path, monkeypatch):
-        monkeypatch.setattr(tv, "_VENV_T5_LATEST_DIR", str(tmp_path / ".venv_t5_latest"))
+    def test_probe_order_excludes_unprovisioned_latest(
+        self, tmp_path: Path, monkeypatch
+    ):
+        monkeypatch.setattr(
+            tv, "_VENV_T5_LATEST_DIR", str(tmp_path / ".venv_t5_latest")
+        )
         assert tv._probe_tier_order() == tv._PROBE_TIER_ORDER
 
     def test_probe_order_includes_provisioned_latest(self, tmp_path: Path, monkeypatch):
@@ -635,7 +668,9 @@ class TestLatestTierRouting:
                 os.environ["PYTHONPATH"] = old_pp
 
     def test_activation_raises_when_latest_missing(self, tmp_path: Path, monkeypatch):
-        monkeypatch.setattr(tv, "_VENV_T5_LATEST_DIR", str(tmp_path / ".venv_t5_latest"))
+        monkeypatch.setattr(
+            tv, "_VENV_T5_LATEST_DIR", str(tmp_path / ".venv_t5_latest")
+        )
         monkeypatch.setattr(tv, "get_transformers_tier", lambda *a, **k: "latest")
         with pytest.raises(RuntimeError, match = "venv_t5_latest"):
             activate_transformers_for_subprocess("some/brand-new-model")
@@ -669,7 +704,9 @@ class TestInstallLatestTransformers:
         monkeypatch.setattr(
             tl,
             "ensure_latest_transformers_venv",
-            lambda v, extra_packages = (): (_ for _ in ()).throw(AssertionError("must not install")),
+            lambda v, extra_packages = (): (_ for _ in ()).throw(
+                AssertionError("must not install")
+            ),
         )
         result = install_latest_transformers("4.99.0")
         assert result["success"] is False and "not the latest" in result["message"]
@@ -703,7 +740,9 @@ class TestInstallLatestTransformers:
         monkeypatch.setattr(
             tl,
             "ensure_latest_transformers_venv",
-            lambda v, extra_packages = (): (_ for _ in ()).throw(AssertionError("must not install")),
+            lambda v, extra_packages = (): (_ for _ in ()).throw(
+                AssertionError("must not install")
+            ),
         )
         result = install_latest_transformers("5.13.0")
         assert result["success"] is False and "numpy>=99.0" in result["message"]
@@ -772,12 +811,16 @@ class TestCompatPlan:
         assert extras == () and blockers == []
 
     def test_sidecar_provided_hub_checked_against_recipe_pin(self, monkeypatch):
-        self._patch_env(monkeypatch, ["huggingface-hub<2.0,>=1.5.0"], {"huggingface-hub": "0.36.2"})
+        self._patch_env(
+            monkeypatch, ["huggingface-hub<2.0,>=1.5.0"], {"huggingface-hub": "0.36.2"}
+        )
         extras, blockers = tl.compat_plan("5.13.0")
         assert extras == () and blockers == []  # 1.8.0 sidecar pin satisfies it
 
     def test_sidecar_provided_hub_out_of_range_blocks(self, monkeypatch):
-        self._patch_env(monkeypatch, ["huggingface-hub>=2.1"], {"huggingface-hub": "0.36.2"})
+        self._patch_env(
+            monkeypatch, ["huggingface-hub>=2.1"], {"huggingface-hub": "0.36.2"}
+        )
         extras, blockers = tl.compat_plan("5.99.0")
         assert blockers == ["huggingface-hub>=2.1"]
 
@@ -868,7 +911,9 @@ def test_upgrade_check_ignores_nested_known_types(monkeypatch):
     }
     monkeypatch.setattr(tl, "_load_config_json", lambda *a, **k: cfg)
     calls = []
-    monkeypatch.setattr(tl, "latest_transformers_supports", lambda mt: calls.append(mt) or None)
+    monkeypatch.setattr(
+        tl, "latest_transformers_supports", lambda mt: calls.append(mt) or None
+    )
     assert tl.check_upgrade_for_model("some-org/normal-vlm") is None
     assert calls == []
 
@@ -934,7 +979,9 @@ def test_install_success_invalidates_capability_caches(monkeypatch):
     monkeypatch.setattr("urllib.request.urlopen", _fake_urlopen_factory({}))
     monkeypatch.setattr(tl, "compat_plan", lambda v: ((), []))
     monkeypatch.setattr(
-        tl, "ensure_latest_transformers_venv", lambda v, extra_packages = (), before_swap = None: True
+        tl,
+        "ensure_latest_transformers_venv",
+        lambda v, extra_packages = (), before_swap = None: True,
     )
     monkeypatch.setattr(tl, "latest_venv_pinned_version", lambda: "5.13.0")
 

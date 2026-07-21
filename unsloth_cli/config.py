@@ -83,7 +83,9 @@ class Config(BaseModel):
             target_modules = "all-linear" if self.lora.vision_all_linear else None
         else:
             parsed = [
-                m.strip() for m in str(self.lora.target_modules).split(",") if m and m.strip()
+                m.strip()
+                for m in str(self.lora.target_modules).split(",")
+                if m and m.strip()
             ]
             target_modules = parsed or None
 

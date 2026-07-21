@@ -117,7 +117,8 @@ def _ocr_scanned_pages(
     scanned = [
         p.page_number
         for p in pages
-        if p.page_number is not None and len((p.text or "").strip()) < config.OCR_MIN_CHARS
+        if p.page_number is not None
+        and len((p.text or "").strip()) < config.OCR_MIN_CHARS
     ]
     if not scanned or captioner.vision_endpoint() is None:
         return pages, set()
@@ -143,15 +144,21 @@ def _ocr_scanned_pages(
         text = texts.get(page.page_number)
         if text:
             original = (page.text or "").strip()
-            merged = text if not original or original in text else f"{original}\n\n{text}"
-            out.append(Page(text = merged, page_number = page.page_number, char_count = len(merged)))
+            merged = (
+                text if not original or original in text else f"{original}\n\n{text}"
+            )
+            out.append(
+                Page(text = merged, page_number = page.page_number, char_count = len(merged))
+            )
             ocred.add(page.page_number)
         else:
             out.append(page)
     return out, ocred
 
 
-def _replace_old_document(conn, replaces: tuple[str, str | None] | None, keep_path: str) -> None:
+def _replace_old_document(
+    conn, replaces: tuple[str, str | None] | None, keep_path: str
+) -> None:
     """Drop the document this ingestion replaced (stale embedder / empty prior
     ingest), called only after the replacement completed successfully."""
     if replaces is None:
@@ -214,7 +221,9 @@ def _run(
                 tiles = []
             if tiles:
                 _progress(conn, job_id, "captioning", 0.28)
-                captions = captioner.merge_page_captions(captioner.caption_images(tiles))
+                captions = captioner.merge_page_captions(
+                    captioner.caption_images(tiles)
+                )
                 pages = captioner.splice_captions(pages, captions)
 
         _progress(conn, job_id, "chunking", 0.3)
@@ -242,12 +251,16 @@ def _run(
                 from . import locators
                 regions = locators.pdf_regions_for_chunks(stored_path, pages, chunks)
             except Exception:
-                logger.warning("pdf region location failed for job %s", job_id, exc_info = True)
+                logger.warning(
+                    "pdf region location failed for job %s", job_id, exc_info = True
+                )
                 regions = None
 
         _progress(conn, job_id, "storing", 0.9)
         store.add_chunks(conn, scope, document_id, chunks, vectors, regions)
-        store.set_document_status(conn, document_id, "completed", num_chunks = len(chunks))
+        store.set_document_status(
+            conn, document_id, "completed", num_chunks = len(chunks)
+        )
         _replace_old_document(conn, replaces, stored_path)
 
         _set_job(conn, job_id, status = "completed", stage = "done", progress = 1.0)
@@ -299,7 +312,9 @@ def start_ingestion(
         if existing is not None:
             doc = store.get_document(conn, existing)
             empty_completed = (
-                doc is not None and doc.get("status") == "completed" and not doc.get("num_chunks")
+                doc is not None
+                and doc.get("status") == "completed"
+                and not doc.get("num_chunks")
             )
             # Vectors from a different embedder are stale; re-uploading must
             # re-index, not dedupe. NULL (legacy rows) is assumed current. Only
@@ -317,13 +332,19 @@ def start_ingestion(
                 # different model. Re-ingest, don't dedupe.
                 replaces = (existing, doc.get("stored_path"))
             else:
-                job_id = _new_job(conn, existing, scope, status = "completed", progress = 1.0)
+                job_id = _new_job(
+                    conn, existing, scope, status = "completed", progress = 1.0
+                )
                 _remove_upload(stored_path)
                 with _jobs_lock:
                     _jobs[job_id] = queue.Queue()
                 _emit(
                     job_id,
-                    {"type": "complete", "num_chunks": doc.get("num_chunks") or 0, "deduped": True},
+                    {
+                        "type": "complete",
+                        "num_chunks": doc.get("num_chunks") or 0,
+                        "deduped": True,
+                    },
                 )
                 _emit(job_id, None)
                 return existing, job_id
@@ -354,7 +375,16 @@ def start_ingestion(
         # effective_model (not the raw model_name) pins the embedder for the
         # whole job: a Settings change mid-ingestion must not switch tokenizer
         # or embedder between batches of one document.
-        args = (job_id, document_id, scope, stored_path, effective_model, ocr, caption, replaces),
+        args = (
+            job_id,
+            document_id,
+            scope,
+            stored_path,
+            effective_model,
+            ocr,
+            caption,
+            replaces,
+        ),
         daemon = True,
     ).start()
     return document_id, job_id
@@ -437,7 +467,9 @@ def job_events(job_id: str):
                     # drop a document whose worker is still running. Heartbeat and
                     # retry on the next poll instead.
                     logger.warning(
-                        "job_events status read failed for %s; continuing", job_id, exc_info = True
+                        "job_events status read failed for %s; continuing",
+                        job_id,
+                        exc_info = True,
                     )
                     yield {"type": "heartbeat"}
                     continue

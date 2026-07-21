@@ -104,8 +104,13 @@ def test_companion_routes_through_helper(hf_cache):
         return f"/fake/{filename}"
 
     with (
-        patch("huggingface_hub.list_repo_files", lambda *a, **k: ["mmproj-vision-F16.gguf"]),
-        patch("core.inference.llama_cpp.hf_hub_download_with_xet_fallback", fake_helper),
+        patch(
+            "huggingface_hub.list_repo_files",
+            lambda *a, **k: ["mmproj-vision-F16.gguf"],
+        ),
+        patch(
+            "core.inference.llama_cpp.hf_hub_download_with_xet_fallback", fake_helper
+        ),
     ):
         out = backend._download_mmproj(hf_repo = REPO, hf_token = None)
 
@@ -127,12 +132,20 @@ def test_companion_swallows_terminal_stall_to_none(hf_cache):
         raise DownloadStallError("both transports stalled")
 
     with (
-        patch("huggingface_hub.list_repo_files", lambda *a, **k: ["mmproj-vision-F16.gguf"]),
-        patch("core.inference.llama_cpp.hf_hub_download_with_xet_fallback", stalling_helper),
+        patch(
+            "huggingface_hub.list_repo_files",
+            lambda *a, **k: ["mmproj-vision-F16.gguf"],
+        ),
+        patch(
+            "core.inference.llama_cpp.hf_hub_download_with_xet_fallback",
+            stalling_helper,
+        ),
     ):
         out = backend._download_mmproj(hf_repo = REPO, hf_token = None)
 
-    assert out is None, "a companion download is best-effort; a terminal stall must not raise"
+    assert (
+        out is None
+    ), "a companion download is best-effort; a terminal stall must not raise"
 
 
 def test_companion_cancelled_skips_download(hf_cache):
@@ -151,7 +164,10 @@ def test_companion_cancelled_skips_download(hf_cache):
         return "/should-not-happen"
 
     with (
-        patch("huggingface_hub.list_repo_files", lambda *a, **k: ["mmproj-vision-F16.gguf"]),
+        patch(
+            "huggingface_hub.list_repo_files",
+            lambda *a, **k: ["mmproj-vision-F16.gguf"],
+        ),
         patch("core.inference.llama_cpp.hf_hub_download_with_xet_fallback", helper),
     ):
         out = backend._download_mmproj(hf_repo = REPO, hf_token = None)

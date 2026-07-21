@@ -55,7 +55,9 @@ def _client(monkeypatch, backend = None):
         inference_route, "get_llama_cpp_backend", lambda: backend or _ToolGgufBackend()
     )
     # Tools forced on -- the same effect as the CLI `run --model` tool policy.
-    monkeypatch.setattr(inference_route, "_effective_enable_tools", lambda payload: True)
+    monkeypatch.setattr(
+        inference_route, "_effective_enable_tools", lambda payload: True
+    )
 
     async def _fake_select(payload, **_kwargs):
         return [{"type": "function", "function": {"name": "python"}}]
@@ -77,7 +79,9 @@ def _payload(stream: bool):
 
 
 def test_non_streaming_tool_call_returns_single_json(monkeypatch):
-    response = _client(monkeypatch).post("/chat/completions", json = _payload(stream = False))
+    response = _client(monkeypatch).post(
+        "/chat/completions", json = _payload(stream = False)
+    )
 
     assert response.status_code == 200
     # The bug returned text/event-stream here; it must be a single JSON object.
@@ -95,7 +99,9 @@ def test_non_streaming_tool_call_returns_single_json(monkeypatch):
 
 def test_streaming_tool_call_still_streams(monkeypatch):
     # The parallel path is untouched: stream:true keeps returning SSE.
-    response = _client(monkeypatch).post("/chat/completions", json = _payload(stream = True))
+    response = _client(monkeypatch).post(
+        "/chat/completions", json = _payload(stream = True)
+    )
 
     assert response.status_code == 200
     assert response.headers["content-type"].startswith("text/event-stream")

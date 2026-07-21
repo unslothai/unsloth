@@ -225,7 +225,9 @@ def _drive(
     elif gpus:
         gpu_indices, use_fit = inst._select_gpus(model_size, gpus)
         if use_fit and not explicit_ctx:
-            effective_ctx = min(FALLBACK_CTX, effective_ctx) if effective_ctx > 0 else FALLBACK_CTX
+            effective_ctx = (
+                min(FALLBACK_CTX, effective_ctx) if effective_ctx > 0 else FALLBACK_CTX
+            )
     elif apple_budget_mib > 0 and effective_ctx > 0:
         # Mirrors the Apple unified-memory branch in load_model: flat MTP reserve
         # off the budget up front (no-op at 0), sparse-KV floors to FALLBACK_CTX,
@@ -240,9 +242,9 @@ def _drive(
                 cache_type_kv,
                 budget_frac = 1.0,
             )
-            cap_footprint_mib = (model_size + inst._estimate_kv_cache_bytes(cap, cache_type_kv)) / (
-                1024 * 1024
-            )
+            cap_footprint_mib = (
+                model_size + inst._estimate_kv_cache_bytes(cap, cache_type_kv)
+            ) / (1024 * 1024)
             max_available_ctx = (
                 cap
                 if cap_footprint_mib <= apple_fit_budget_mib
@@ -687,11 +689,23 @@ class TestClassifyGpuOffload:
 
     @pytest.mark.parametrize(
         "marker",
-        ["CUDA0", "ROCm0", "HIP0", "Metal", "Vulkan0", "OpenCL0", "SYCL0", "MUSA0", "CANN0"],
+        [
+            "CUDA0",
+            "ROCm0",
+            "HIP0",
+            "Metal",
+            "Vulkan0",
+            "OpenCL0",
+            "SYCL0",
+            "MUSA0",
+            "CANN0",
+        ],
     )
     def test_all_gpu_buffer_markers_return_true(self, marker):
         assert (
-            classify_gpu_offload_lines([f"load_tensors: {marker} model buffer size = 8000.0 MiB"])
+            classify_gpu_offload_lines(
+                [f"load_tensors: {marker} model buffer size = 8000.0 MiB"]
+            )
             is True
         )
 
@@ -753,7 +767,9 @@ def _install_fake_mlx(monkeypatch, working_set_bytes):
     mlx = _types.ModuleType("mlx")
     mlx_core = _types.ModuleType("mlx.core")
     mlx_core.metal = _types.SimpleNamespace(is_available = lambda: True)
-    mlx_core.device_info = lambda: {"max_recommended_working_set_size": working_set_bytes}
+    mlx_core.device_info = lambda: {
+        "max_recommended_working_set_size": working_set_bytes
+    }
     mlx.core = mlx_core
     monkeypatch.setitem(sys.modules, "mlx", mlx)
     monkeypatch.setitem(sys.modules, "mlx.core", mlx_core)
@@ -807,18 +823,18 @@ class TestAppleContextCap:
         budget_mib = int(27 * GIB * _APPLE_UNIFIED_MEMORY_FRACTION) // (1024 * 1024)
 
         # The native footprint over-commits the budget -- this is the bug.
-        native_footprint_mib = (model_size_fit + inst._estimate_kv_cache_bytes(262144)) // (
-            1024 * 1024
-        )
+        native_footprint_mib = (
+            model_size_fit + inst._estimate_kv_cache_bytes(262144)
+        ) // (1024 * 1024)
         assert native_footprint_mib > budget_mib
 
         capped = inst._fit_context_to_vram(
             262144, budget_mib, model_size_fit, None, budget_frac = 1.0
         )
         assert capped < 262144
-        capped_footprint_mib = (model_size_fit + inst._estimate_kv_cache_bytes(capped)) // (
-            1024 * 1024
-        )
+        capped_footprint_mib = (
+            model_size_fit + inst._estimate_kv_cache_bytes(capped)
+        ) // (1024 * 1024)
         assert capped_footprint_mib <= budget_mib
 
 

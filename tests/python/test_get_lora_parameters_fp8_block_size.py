@@ -9,7 +9,9 @@ def _load_function(name):
     source = Path(__file__).parents[2] / "unsloth" / "kernels" / "utils.py"
     tree = ast.parse(source.read_text(encoding = "utf-8"))
     funcs = [
-        node for node in ast.walk(tree) if isinstance(node, ast.FunctionDef) and node.name == name
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, ast.FunctionDef) and node.name == name
     ]
     assert len(funcs) == 1, (name, funcs)
     namespace = {"getattr": getattr, "hasattr": hasattr, "_FP8_WEIGHT_DTYPES": ()}

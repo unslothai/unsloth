@@ -119,7 +119,8 @@ def parse_log_message(msg: str) -> ParsedUpdate | None:
                 page_items = page_items,
                 rate_remaining = int(m.group("remaining")),
                 message = (
-                    f"Scraping GitHub source: {repo} " f"{resource} page {page} (+{page_items})"
+                    f"Scraping GitHub source: {repo} "
+                    f"{resource} page {page} (+{page_items})"
                 ),
             ),
         )
@@ -133,7 +134,9 @@ def parse_log_message(msg: str) -> ParsedUpdate | None:
                 source = "github",
                 status = "rate_limited",
                 retry_after_sec = seconds,
-                message = ("Waiting for GitHub rate limit. Unsloth will resume automatically."),
+                message = (
+                    "Waiting for GitHub rate limit. Unsloth will resume automatically."
+                ),
             ),
         )
 
@@ -161,7 +164,9 @@ def parse_log_message(msg: str) -> ParsedUpdate | None:
                 source = "github",
                 status = "rate_limited",
                 retry_after_sec = seconds,
-                message = ("Waiting for GitHub rate limit. Unsloth will resume automatically."),
+                message = (
+                    "Waiting for GitHub rate limit. Unsloth will resume automatically."
+                ),
             ),
         )
 
@@ -379,13 +384,15 @@ def _apply_source_progress(job: Job, progress: SourceProgress) -> None:
         count_key = f"{progress.repo}:{progress.resource}"
         if page_key not in job._source_seen_pages:
             job._source_seen_pages.add(page_key)
-            job._source_counts[count_key] = int(job._source_counts.get(count_key, 0)) + int(
-                page_items or 0
-            )
+            job._source_counts[count_key] = int(
+                job._source_counts.get(count_key, 0)
+            ) + int(page_items or 0)
 
     fetched_items = sum(job._source_counts.values())
     if fetched_items <= 0:
-        fetched_items = progress.fetched_items or (previous.fetched_items if previous else None)
+        fetched_items = progress.fetched_items or (
+            previous.fetched_items if previous else None
+        )
 
     estimated_total = (
         progress.estimated_total
@@ -405,10 +412,14 @@ def _apply_source_progress(job: Job, progress: SourceProgress) -> None:
         repo = progress.repo or (previous.repo if previous else None),
         resource = progress.resource or (previous.resource if previous else None),
         page = (
-            progress.page if progress.page is not None else (previous.page if previous else None)
+            progress.page
+            if progress.page is not None
+            else (previous.page if previous else None)
         ),
         page_items = (
-            page_items if page_items is not None else (previous.page_items if previous else None)
+            page_items
+            if page_items is not None
+            else (previous.page_items if previous else None)
         ),
         fetched_items = fetched_items,
         estimated_total = estimated_total,
@@ -439,7 +450,9 @@ def _compute_overall_progress(job: Job, column_progress: Progress) -> Progress:
     if len(job._column_done) == 0:
         done = current_done
     else:
-        sum_done = sum(max(0, min(value, total_rows)) for value in job._column_done.values())
+        sum_done = sum(
+            max(0, min(value, total_rows)) for value in job._column_done.values()
+        )
         done = int(sum_done / total_columns)
 
     prev_done = int(job.progress.done or 0)

@@ -310,7 +310,10 @@ def test_new_key_retains_in_flight_prior_load_queue():
 
         # A new load must not drop a queue that still has an in-flight request.
         get_llama_admission_queue("http://127.0.0.1:2002")
-        assert set(llama_admission._QUEUES) == {"http://127.0.0.1:2001", "http://127.0.0.1:2002"}
+        assert set(llama_admission._QUEUES) == {
+            "http://127.0.0.1:2001",
+            "http://127.0.0.1:2002",
+        }
 
         # Once it drains, the next load reclaims it.
         lease.release()

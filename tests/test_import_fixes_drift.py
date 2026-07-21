@@ -99,7 +99,9 @@ def test_trl_is_x_available_returns_bool_not_tuple():
     accessor_names = [
         n
         for n in dir(tiu)
-        if n.startswith("is_") and n.endswith("_available") and callable(getattr(tiu, n, None))
+        if n.startswith("is_")
+        and n.endswith("_available")
+        and callable(getattr(tiu, n, None))
     ]
     assert accessor_names, "trl.import_utils has no is_*_available accessors"
 
@@ -144,7 +146,9 @@ def test_trl_cached_available_flags_are_not_tuples():
     tuple_flags = {
         name: value
         for name, value in vars(tiu).items()
-        if name.startswith("_") and name.endswith("_available") and isinstance(value, tuple)
+        if name.startswith("_")
+        and name.endswith("_available")
+        and isinstance(value, tuple)
     }
     if tuple_flags:
         pytest.fail(
@@ -349,7 +353,9 @@ def test_installed_torch_torchvision_pair_is_compatible():
         )
 
     pre_tags = (".dev", "a0", "b0", "rc", "alpha", "beta", "nightly")
-    is_prerelease = any(t in torch_raw for t in pre_tags) or any(t in tv_raw for t in pre_tags)
+    is_prerelease = any(t in torch_raw for t in pre_tags) or any(
+        t in tv_raw for t in pre_tags
+    )
     is_custom = _is_custom_torch_build(torch_raw) or _is_custom_torch_build(tv_raw)
     if is_prerelease or is_custom:
         pytest.skip(
@@ -528,7 +534,9 @@ def test_patch_loss_functions_does_not_touch_other_loss_types():
     cel = pytest.importorskip("unsloth.kernels.cross_entropy_loss")
 
     non_causal_keys = {
-        k for k, v in lu.LOSS_MAPPING.items() if getattr(v, "__name__", "") != "ForCausalLMLoss"
+        k
+        for k, v in lu.LOSS_MAPPING.items()
+        if getattr(v, "__name__", "") != "ForCausalLMLoss"
     }
 
     saved = dict(lu.LOSS_MAPPING)
@@ -620,7 +628,9 @@ def test_accelerate_gather_empty_logits_debug_mode_patch():
                 "accelerate.utils.operations.gather_object",
                 side_effect = mock_gather_object,
             ),
-            mock.patch("accelerate.utils.operations._gpu_gather", side_effect = mock_gpu_gather),
+            mock.patch(
+                "accelerate.utils.operations._gpu_gather", side_effect = mock_gpu_gather
+            ),
             mock.patch(
                 "accelerate.utils.operations._gpu_broadcast",
                 side_effect = mock_gpu_broadcast,
@@ -645,7 +655,9 @@ def test_accelerate_gather_empty_logits_debug_mode_patch():
             assert isinstance(res_mixed, dict)
             assert res_mixed["logits"] is e
             # num_processes = 2 -> gathered to [42, 42]
-            assert torch.equal(res_mixed["labels"], torch.tensor([42, 42], device = state.device))
+            assert torch.equal(
+                res_mixed["labels"], torch.tensor([42, 42], device = state.device)
+            )
 
             # Broadcast with EmptyLogits
             res_broadcast = acc_ops.broadcast(e)
@@ -676,7 +688,9 @@ def test_accelerate_patch_is_idempotent():
     assert (
         acc_ops.recursively_apply is recursively_apply
     ), "DRIFT DETECTED: recursively_apply was wrapped twice."
-    assert acc_ops.find_device is find_device, "DRIFT DETECTED: find_device was wrapped twice."
+    assert (
+        acc_ops.find_device is find_device
+    ), "DRIFT DETECTED: find_device was wrapped twice."
 
 
 def test_accelerate_find_device_skips_empty_logits():
@@ -693,7 +707,10 @@ def test_accelerate_find_device_skips_empty_logits():
     patch_accelerate_recursively_apply()
     tensor = torch.tensor([1.0])
     # Leading sentinel must not stop the search before the real tensor
-    assert acc_ops.find_device({"logits": EmptyLogits(), "labels": tensor}) == tensor.device
+    assert (
+        acc_ops.find_device({"logits": EmptyLogits(), "labels": tensor})
+        == tensor.device
+    )
     # Tensor-free payloads keep returning None (AlignDevicesHook needs it to skip moves)
     assert acc_ops.find_device({"a": 1}) is None
     # Sentinel-only payloads fall back to current device so debug-mode

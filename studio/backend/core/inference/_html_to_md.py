@@ -366,7 +366,11 @@ class _MarkdownRenderer(HTMLParser):
                     while self._hidden_marks and self._hidden_marks[-1] >= i:
                         self._hidden_marks.pop()
                     break
-        if self._scope_tags is not None and tag in self._scope_tags and self._scope_depth > 0:
+        if (
+            self._scope_tags is not None
+            and tag in self._scope_tags
+            and self._scope_depth > 0
+        ):
             self._scope_depth -= 1
             if self._scope_depth == 0 and self._scope_seg_start is not None:
                 self.scope_segments.append("".join(self._out[self._scope_seg_start :]))
@@ -690,9 +694,13 @@ def _line_is_boilerplate(line: str) -> bool:
     normalized = re.sub(r"\s+", " ", line).strip().casefold()
     if not normalized:
         return False
-    segments = [segment.strip().rstrip(".!:") for segment in re.split(r"[.!]", normalized)]
+    segments = [
+        segment.strip().rstrip(".!:") for segment in re.split(r"[.!]", normalized)
+    ]
     segments = [segment for segment in segments if segment]
-    return bool(segments) and all(segment in _BOILERPLATE_NORMALIZED for segment in segments)
+    return bool(segments) and all(
+        segment in _BOILERPLATE_NORMALIZED for segment in segments
+    )
 
 
 def _strip_boilerplate_lines(text: str) -> str:
@@ -707,7 +715,11 @@ def _strip_boilerplate_lines(text: str) -> str:
             in_fence = not in_fence
             out.append(line)
             continue
-        if not in_fence and len(line) <= _BOILERPLATE_MAX_LINE_CHARS and _line_is_boilerplate(line):
+        if (
+            not in_fence
+            and len(line) <= _BOILERPLATE_MAX_LINE_CHARS
+            and _line_is_boilerplate(line)
+        ):
             continue
         out.append(line)
     # Collapse blank runs the dropped lines may have left behind.

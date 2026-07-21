@@ -72,7 +72,8 @@ def clear_unsloth_compiled_cache(preserve_patterns: Optional[List[str]] = None) 
 
         if preserve_patterns:
             logger.info(
-                f"Cleaning unsloth compiled cache (preserving {preserve_patterns}): " f"{cache_dir}"
+                f"Cleaning unsloth compiled cache (preserving {preserve_patterns}): "
+                f"{cache_dir}"
             )
 
             for item in cache_dir.iterdir():

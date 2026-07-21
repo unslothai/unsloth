@@ -62,7 +62,9 @@ def test_create_forces_oauth_off_for_stdio(tmp_path, monkeypatch):
     _enable(monkeypatch)
     resp = asyncio.run(
         routes_mcp.create_mcp_server(
-            McpServerCreate(display_name = "FS", url = "npx -y server /tmp", use_oauth = True),
+            McpServerCreate(
+                display_name = "FS", url = "npx -y server /tmp", use_oauth = True
+            ),
             current_subject = "u",
         )
     )
@@ -92,8 +94,12 @@ def test_update_url_to_stdio_clears_oauth(tmp_path, monkeypatch):
     _reset_db(tmp_path, monkeypatch)
     _enable(monkeypatch)
     monkeypatch.setattr(mcp_client, "_oauth_token_store", None)
-    monkeypatch.setattr(routes_mcp, "clear_oauth_tokens_async", lambda *a, **k: asyncio.sleep(0))
-    mcp_servers_db.create_server(id = "s1", display_name = "A", url = "https://a/mcp", use_oauth = True)
+    monkeypatch.setattr(
+        routes_mcp, "clear_oauth_tokens_async", lambda *a, **k: asyncio.sleep(0)
+    )
+    mcp_servers_db.create_server(
+        id = "s1", display_name = "A", url = "https://a/mcp", use_oauth = True
+    )
     resp = asyncio.run(
         routes_mcp.update_mcp_server(
             "s1", McpServerUpdate(url = "npx -y server /tmp"), current_subject = "u"
@@ -142,7 +148,9 @@ def test_switch_keeps_explicitly_supplied_headers(tmp_path, monkeypatch):
     resp = asyncio.run(
         routes_mcp.update_mcp_server(
             "s1",
-            McpServerUpdate(url = "https://remote/mcp", headers = {"Authorization": "Bearer new"}),
+            McpServerUpdate(
+                url = "https://remote/mcp", headers = {"Authorization": "Bearer new"}
+            ),
             current_subject = "u",
         )
     )
@@ -163,7 +171,9 @@ def test_same_transport_edit_keeps_headers(tmp_path, monkeypatch):
     )
     # editing only the display name (still stdio) must keep env vars
     resp = asyncio.run(
-        routes_mcp.update_mcp_server("s1", McpServerUpdate(display_name = "B"), current_subject = "u")
+        routes_mcp.update_mcp_server(
+            "s1", McpServerUpdate(display_name = "B"), current_subject = "u"
+        )
     )
     assert resp.headers == {"API_KEY": "secret"}
 
@@ -184,7 +194,9 @@ def test_validate_url_allows_url_in_argument(monkeypatch):
     from routes.mcp_servers import _validate_url
     _enable(monkeypatch)
     # :// inside an ARGUMENT (not the first token) is a valid command
-    assert _validate_url("npx server --url https://x/mcp") == ("npx server --url https://x/mcp")
+    assert _validate_url("npx server --url https://x/mcp") == (
+        "npx server --url https://x/mcp"
+    )
 
 
 # ── P6: Data Recipe stdio path obeys the same host gate ─────────────

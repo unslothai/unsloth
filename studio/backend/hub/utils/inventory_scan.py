@@ -346,7 +346,11 @@ def _completed_gguf_variants(snapshot_dir: Optional[Path]) -> set[str]:
         except OSError:
             continue
         rel = path.relative_to(snapshot_dir).as_posix()
-        if not is_gguf_filename(rel) or is_mmproj_filename(rel) or is_mtp_drafter_path(rel):
+        if (
+            not is_gguf_filename(rel)
+            or is_mmproj_filename(rel)
+            or is_mtp_drafter_path(rel)
+        ):
             continue
         quant = extract_quant_label(rel)
         split = _GGUF_SPLIT_RE.search(path.name)
@@ -455,7 +459,8 @@ def is_snapshot_partial(
 
     state_applies = _state_applies_to_repo_cache_dir(repo_cache_dir)
     return _compose_partial(
-        lambda: state_applies and download_manifest.has_cancel_marker(repo_type, repo_id, None),
+        lambda: state_applies
+        and download_manifest.has_cancel_marker(repo_type, repo_id, None),
         lambda: _snapshot_legacy_partial(repo_type, repo_id, repo_cache_dir),
         lambda: _manifest_partial(
             repo_type,
@@ -487,7 +492,8 @@ def is_variant_partial(
 
     state_applies = _state_applies_to_repo_cache_dir(repo_cache_dir)
     return _compose_partial(
-        lambda: state_applies and download_manifest.has_cancel_marker("model", repo_id, variant),
+        lambda: state_applies
+        and download_manifest.has_cancel_marker("model", repo_id, variant),
         lambda: bool(
             incomplete_blob_hashes
             and variant_blob_hashes

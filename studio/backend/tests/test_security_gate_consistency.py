@@ -27,7 +27,9 @@ def _iter_caller_files():
 
 def _passes_token(call: ast.Call) -> bool:
     """True if the call passes an hf_token (keyword, or the 2nd positional slot)."""
-    if any(kw.arg in ("hf_token", "token") for kw in call.keywords if kw.arg is not None):
+    if any(
+        kw.arg in ("hf_token", "token") for kw in call.keywords if kw.arg is not None
+    ):
         return True
     return len(call.args) >= 2
 
@@ -50,7 +52,9 @@ def test_capability_probes_thread_the_hf_token():
             if isinstance(node, ast.Call) and _call_name(node) in _PROBE_FUNCS:
                 if not _passes_token(node):
                     rel = path.relative_to(_BACKEND)
-                    offenders.append(f"{rel}:{node.lineno} {_call_name(node)}() drops the hf_token")
+                    offenders.append(
+                        f"{rel}:{node.lineno} {_call_name(node)}() drops the hf_token"
+                    )
     assert not offenders, (
         "A capability probe must pass the hf_token so gated/private models classify "
         "correctly:\n  " + "\n  ".join(offenders)
@@ -94,8 +98,12 @@ def test_malware_and_consent_gates_cover_the_lora_base():
     offenders = []
     for rel in gated_workers:
         src = (_BACKEND / rel).read_text()
-        runs_gate = "evaluate_file_security(" in src or "evaluate_remote_code_consent" in src
-        resolves_base = "get_base_model_from_lora_identifier(" in src or "base_model" in src
+        runs_gate = (
+            "evaluate_file_security(" in src or "evaluate_remote_code_consent" in src
+        )
+        resolves_base = (
+            "get_base_model_from_lora_identifier(" in src or "base_model" in src
+        )
         if runs_gate and not resolves_base:
             offenders.append(f"{rel} runs a load gate but never resolves the LoRA base")
     assert not offenders, "\n".join(offenders)

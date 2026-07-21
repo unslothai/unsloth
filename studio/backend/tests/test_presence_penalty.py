@@ -249,4 +249,6 @@ def test_worker_forwards_all_sampling_params_to_backend():
 
     assert backend.received is not None
     for key, val in _SAMPLING.items():
-        assert backend.received[key] == val, f"{key} dropped/altered in worker gen_kwargs"
+        assert (
+            backend.received[key] == val
+        ), f"{key} dropped/altered in worker gen_kwargs"

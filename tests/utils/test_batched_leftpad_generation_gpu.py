@@ -22,7 +22,10 @@ PREFIX_TOKENS = 16
 PROMPTS = [
     "Give me a short introduction to large language model.",
     "Here is an experiment log: "
-    + " ".join(f"run {i} completed with stable throughput and no anomalies;" for i in range(1, 41))
+    + " ".join(
+        f"run {i} completed with stable throughput and no anomalies;"
+        for i in range(1, 41)
+    )
     + " In one sentence, what is the overall conclusion?",
 ]
 
@@ -52,9 +55,9 @@ def _chat(tokenizer, prompt):
 
 
 def _generate(model, tokenizer, texts):
-    inputs = tokenizer(texts, return_tensors = "pt", padding = True, add_special_tokens = False).to(
-        "cuda"
-    )
+    inputs = tokenizer(
+        texts, return_tensors = "pt", padding = True, add_special_tokens = False
+    ).to("cuda")
     with torch.inference_mode():
         out = model.generate(
             **inputs,

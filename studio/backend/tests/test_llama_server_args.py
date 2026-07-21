@@ -18,7 +18,12 @@ import pytest
 
 # Load llama_server_args.py directly to avoid dragging in the full backend
 # chain via core/inference/__init__.py. The validator is dependency-free.
-_LSA_PATH = Path(__file__).resolve().parent.parent / "core" / "inference" / "llama_server_args.py"
+_LSA_PATH = (
+    Path(__file__).resolve().parent.parent
+    / "core"
+    / "inference"
+    / "llama_server_args.py"
+)
 _spec = importlib.util.spec_from_file_location("_lsa_test_only", _LSA_PATH)
 _lsa = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(_lsa)
@@ -227,7 +232,11 @@ def test_denylist_rejects_equals_form():
 
 
 def test_slot_save_path_is_managed_in_all_forms():
-    for args in (["--slot-save-path", "/tmp/x"], ["--slot-save-path=/tmp/x"], ["--slot-save-path"]):
+    for args in (
+        ["--slot-save-path", "/tmp/x"],
+        ["--slot-save-path=/tmp/x"],
+        ["--slot-save-path"],
+    ):
         with pytest.raises(ValueError, match = "--slot-save-path"):
             validate_extra_args(args)
     assert is_managed_flag("--slot-save-path") is True
@@ -519,7 +528,9 @@ def test_strip_shadowing_flags_jinja_boolean_preserves_positional():
 
 
 def test_strip_shadowing_flags_no_jinja_boolean_preserves_positional():
-    out = strip_shadowing_flags(["--no-jinja", "trailing-positional"], strip_template = True)
+    out = strip_shadowing_flags(
+        ["--no-jinja", "trailing-positional"], strip_template = True
+    )
     assert out == ["trailing-positional"]
 
 
@@ -743,11 +754,15 @@ def test_strip_shadowing_flags_keeps_split_mode_when_not_requested():
 
 
 def test_strip_shadowing_flags_drops_split_mode_short_alias_and_equals():
-    assert strip_shadowing_flags(["-sm", "tensor", "--top-k", "20"], strip_split_mode = True) == [
+    assert strip_shadowing_flags(
+        ["-sm", "tensor", "--top-k", "20"], strip_split_mode = True
+    ) == [
         "--top-k",
         "20",
     ]
-    assert strip_shadowing_flags(["--split-mode=row", "--seed", "-1"], strip_split_mode = True) == [
+    assert strip_shadowing_flags(
+        ["--split-mode=row", "--seed", "-1"], strip_split_mode = True
+    ) == [
         "--seed",
         "-1",
     ]
@@ -781,7 +796,9 @@ def test_strip_offload_is_opt_in_and_covers_moe():
         strip_offload = True,
     ) == ["--top-k", "20"]
     # Boolean --cpu-moe drops the flag only, not the following value.
-    assert strip_shadowing_flags(["--cpu-moe", "--seed", "-1"], **base, strip_offload = True) == [
+    assert strip_shadowing_flags(
+        ["--cpu-moe", "--seed", "-1"], **base, strip_offload = True
+    ) == [
         "--seed",
         "-1",
     ]

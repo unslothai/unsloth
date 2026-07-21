@@ -40,8 +40,8 @@ class OCRModelEvaluator:
             try:
                 messages = sample["messages"]
 
-                ground_truth, image, question, input_messages = self._extract_sample_components(
-                    messages, i, verbose
+                ground_truth, image, question, input_messages = (
+                    self._extract_sample_components(messages, i, verbose)
                 )
 
                 if ground_truth is None or image is None or question is None:
@@ -87,7 +87,9 @@ class OCRModelEvaluator:
     ) -> Tuple[Optional[str], Optional[Any], Optional[str], List[Dict]]:
         """Extract ground truth, image, question, and input messages from sample."""
 
-        system_message = next((msg for msg in messages if msg["role"] == "system"), None)
+        system_message = next(
+            (msg for msg in messages if msg["role"] == "system"), None
+        )
 
         user_message = next((msg for msg in messages if msg["role"] == "user"), None)
         if not user_message:
@@ -95,10 +97,14 @@ class OCRModelEvaluator:
                 print(f"Skipping sample {sample_idx}: No user message found")
             return None, None, None, []
 
-        assistant_message = next((msg for msg in messages if msg["role"] == "assistant"), None)
+        assistant_message = next(
+            (msg for msg in messages if msg["role"] == "assistant"), None
+        )
         if not assistant_message:
             if verbose:
-                print(f"Skipping sample {sample_idx}: No assistant message (ground truth) found")
+                print(
+                    f"Skipping sample {sample_idx}: No assistant message (ground truth) found"
+                )
             return None, None, None, []
 
         ground_truth = None
@@ -109,7 +115,9 @@ class OCRModelEvaluator:
 
         if not ground_truth:
             if verbose:
-                print(f"Skipping sample {sample_idx}: No text found in assistant message")
+                print(
+                    f"Skipping sample {sample_idx}: No text found in assistant message"
+                )
             return None, None, None, []
 
         # Extract image and question from user message
@@ -128,7 +136,9 @@ class OCRModelEvaluator:
 
         if not question:
             if verbose:
-                print(f"Skipping sample {sample_idx}: No question found in user message")
+                print(
+                    f"Skipping sample {sample_idx}: No question found in user message"
+                )
             return None, None, None, []
 
         # Model input excludes the assistant message
@@ -176,7 +186,8 @@ class OCRModelEvaluator:
 
         # Keep only the generated tokens, not the input
         generated_ids_trimmed = [
-            out_ids[len(in_ids) :] for in_ids, out_ids in zip(inputs.input_ids, generated_ids)
+            out_ids[len(in_ids) :]
+            for in_ids, out_ids in zip(inputs.input_ids, generated_ids)
         ]
 
         generated_response = processor.batch_decode(
@@ -253,8 +264,12 @@ class OCRModelEvaluator:
         comparison_df = pd.DataFrame(
             {
                 "Model": list(self.model_comparison_results.keys()),
-                "WER": [results["wer"] for results in self.model_comparison_results.values()],
-                "CER": [results["cer"] for results in self.model_comparison_results.values()],
+                "WER": [
+                    results["wer"] for results in self.model_comparison_results.values()
+                ],
+                "CER": [
+                    results["cer"] for results in self.model_comparison_results.values()
+                ],
             }
         )
 

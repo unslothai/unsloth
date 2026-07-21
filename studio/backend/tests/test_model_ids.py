@@ -12,7 +12,10 @@ from core.inference.model_ids import model_id_matches, public_model_id  # noqa: 
 
 
 def test_local_gguf_path_becomes_clean_stem():
-    assert public_model_id("/srv/models/Qwen3-30B-A3B-Q4_K_M.gguf") == "Qwen3-30B-A3B-Q4_K_M"
+    assert (
+        public_model_id("/srv/models/Qwen3-30B-A3B-Q4_K_M.gguf")
+        == "Qwen3-30B-A3B-Q4_K_M"
+    )
     assert public_model_id("/home/u/.cache/models/llama.gguf") == "llama"
 
 

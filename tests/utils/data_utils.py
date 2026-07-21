@@ -90,7 +90,9 @@ def format_summary(stats: dict, precision: int = 6) -> str:
             # Format each element in tuples or lists (e.g., the shape)
             formatted_value = ", ".join(str(v) for v in value)
             formatted_value = (
-                f"({formatted_value})" if isinstance(value, tuple) else f"[{formatted_value}]"
+                f"({formatted_value})"
+                if isinstance(value, tuple)
+                else f"[{formatted_value}]"
             )
         else:
             formatted_value = str(value)
@@ -101,7 +103,9 @@ def format_summary(stats: dict, precision: int = 6) -> str:
 def get_peft_weights(model):
     # ruff: noqa
     is_lora_weight = lambda name: any(s in name for s in ["lora_A", "lora_B"])
-    return {name: param for name, param in model.named_parameters() if is_lora_weight(name)}
+    return {
+        name: param for name, param in model.named_parameters() if is_lora_weight(name)
+    }
 
 
 def describe_peft_weights(model):

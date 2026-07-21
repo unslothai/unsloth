@@ -181,7 +181,9 @@ def validate_hf_token(token: str, *, rate_key: str) -> TokenValidationResult:
         ttl = (
             _CACHE_TTL_SECONDS
             if result.status in ("valid", "invalid")
-            else max(_TEMPORARY_CACHE_TTL_SECONDS, float(result.retry_after_seconds or 0))
+            else max(
+                _TEMPORARY_CACHE_TTL_SECONDS, float(result.retry_after_seconds or 0)
+            )
         )
         with _lock:
             if len(_cache) >= _MAX_CACHE_ENTRIES:

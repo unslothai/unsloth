@@ -26,13 +26,17 @@ class DesktopLoginRequest(BaseModel):
 class RefreshTokenRequest(BaseModel):
     """Refresh token payload to obtain new access + refresh tokens."""
 
-    refresh_token: str = Field(..., description = "Refresh token from a previous login or refresh")
+    refresh_token: str = Field(
+        ..., description = "Refresh token from a previous login or refresh"
+    )
 
 
 class AuthStatusResponse(BaseModel):
     """Indicate whether the seeded admin auth flow is ready."""
 
-    initialized: bool = Field(..., description = "True if the auth database contains a login user")
+    initialized: bool = Field(
+        ..., description = "True if the auth database contains a login user"
+    )
     default_username: str = Field(
         "unsloth",
         description = "Default admin username for first-boot UI prefill.",
@@ -77,7 +81,9 @@ class ApiKeyResponse(BaseModel):
 
     id: int
     name: str
-    key_prefix: str = Field(..., description = "First 8 characters after sk-unsloth- for display")
+    key_prefix: str = Field(
+        ..., description = "First 8 characters after sk-unsloth- for display"
+    )
     created_at: str
     last_used_at: Optional[str] = None
     expires_at: Optional[str] = None

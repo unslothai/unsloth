@@ -32,7 +32,12 @@ def _is_moe(config):
     for cfg in (config, getattr(config, "text_config", None)):
         if cfg is None:
             continue
-        for attr in ("num_experts", "num_local_experts", "n_routed_experts", "moe_num_experts"):
+        for attr in (
+            "num_experts",
+            "num_local_experts",
+            "n_routed_experts",
+            "moe_num_experts",
+        ):
             v = getattr(cfg, attr, None)
             if isinstance(v, int) and v > 1:
                 return True
@@ -65,7 +70,9 @@ def _build_calibration_dataset(tokenizer, kind, value, num_samples, max_seq_leng
             "`calibration_dataset=...`.",
             flush = True,
         )
-        ds = load_dataset("HuggingFaceH4/ultrachat_200k", split = f"train_sft[:{num_samples}]")
+        ds = load_dataset(
+            "HuggingFaceH4/ultrachat_200k", split = f"train_sft[:{num_samples}]"
+        )
         ds = ds.shuffle(seed = 42)
     elif kind == "hfid":
         # Not every dataset has a "train" split (e.g. train_sft only); fall back to the first one.
@@ -197,14 +204,18 @@ def main():
     ap.add_argument("--scheme", required = True)
     ap.add_argument("--out", required = True)
     ap.add_argument("--needs-calibration", action = "store_true")
-    ap.add_argument("--calibration-dataset-kind", default = "none", choices = ["none", "hfid", "disk"])
+    ap.add_argument(
+        "--calibration-dataset-kind", default = "none", choices = ["none", "hfid", "disk"]
+    )
     ap.add_argument("--calibration-dataset", default = "")
     ap.add_argument("--num-calibration-samples", type = int, default = 512)
     ap.add_argument("--max-seq-length", type = int, default = 2048)
     ap.add_argument("--is-vlm", action = "store_true")
     ap.add_argument("--trust-remote-code", action = "store_true")
     ap.add_argument("--trust-remote-code-tokenizer", action = "store_true")
-    ap.add_argument("--variant", default = "", help = "weight-filename variant for the output shards")
+    ap.add_argument(
+        "--variant", default = "", help = "weight-filename variant for the output shards"
+    )
     args = ap.parse_args()
 
     from transformers import AutoModelForCausalLM, AutoTokenizer
@@ -341,7 +352,9 @@ def main():
         with open(cfg_path, "r", encoding = "utf-8") as f:
             cfg = json.load(f)
     if "quantization_config" not in cfg:
-        print(f"Unsloth: ERROR - no quantization_config written to {cfg_path}", flush = True)
+        print(
+            f"Unsloth: ERROR - no quantization_config written to {cfg_path}", flush = True
+        )
         sys.exit(2)
     shards = glob.glob(os.path.join(args.out, "*.safetensors"))
     qfmt = cfg["quantization_config"].get("format")

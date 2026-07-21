@@ -12,7 +12,9 @@ import pytest
 
 PACKAGE_ROOT = Path(__file__).resolve().parents[3]
 MODULE_PATH = PACKAGE_ROOT / "studio" / "install_llama_prebuilt.py"
-SPEC = importlib.util.spec_from_file_location("studio_install_llama_prebuilt_dlhost", MODULE_PATH)
+SPEC = importlib.util.spec_from_file_location(
+    "studio_install_llama_prebuilt_dlhost", MODULE_PATH
+)
 assert SPEC is not None and SPEC.loader is not None
 ILP = importlib.util.module_from_spec(SPEC)
 sys.modules[SPEC.name] = ILP
@@ -166,7 +168,9 @@ def _stub_downloads(
     monkeypatch.setattr(ILP, "fetch_json", _no_api)
     # The authoritative latest tag comes from the /releases/latest redirect
     # (github.com, no api.github.com); stub it so no real request is made.
-    monkeypatch.setattr(ILP, "_download_host_latest_release_tag", lambda _repo: latest_tag)
+    monkeypatch.setattr(
+        ILP, "_download_host_latest_release_tag", lambda _repo: latest_tag
+    )
 
     def _download_bytes(url, *_a, **_k):
         if SHA256_ASSET in url:
@@ -195,7 +199,9 @@ def test_resolved_release_adds_tag_pinned_url_for_manifest_only_asset(monkeypatc
 def test_resolved_release_rejects_manifest_checksum_mismatch(monkeypatch):
     # A wrong manifest hash in the checksum payload must fail closed, so the
     # router falls back to the API rather than trusting the fast path.
-    _stub_downloads(monkeypatch, _sha_payload(manifest_sha256 = "b" * 64), _manifest_bytes())
+    _stub_downloads(
+        monkeypatch, _sha_payload(manifest_sha256 = "b" * 64), _manifest_bytes()
+    )
     with pytest.raises(PrebuiltFallback, match = "manifest checksum"):
         ILP._download_host_resolved_release(FORK_REPO)
 
@@ -204,7 +210,9 @@ def test_resolved_release_rejects_release_tag_mismatch(monkeypatch):
     # The checksum asset self-reports RELEASE_TAG, but the authoritative
     # /releases/latest redirect resolves a different tag: the fast path must not
     # pin to the stale self-reported tag (it raises, so the router falls back).
-    _stub_downloads(monkeypatch, _sha_payload(), _manifest_bytes(), latest_tag = "b9999-mix-other")
+    _stub_downloads(
+        monkeypatch, _sha_payload(), _manifest_bytes(), latest_tag = "b9999-mix-other"
+    )
     with pytest.raises(RuntimeError, match = "did not match pinned release tag"):
         ILP._download_host_resolved_release(FORK_REPO)
 
@@ -280,5 +288,7 @@ def test_latest_release_tag_none_on_404(monkeypatch):
 
 def test_latest_release_tag_none_when_not_a_tag_url(monkeypatch):
     # No /releases/tag/ segment (e.g. redirected somewhere unexpected) -> None.
-    monkeypatch.setattr(ILP, "_URL_OPENER", _FakeOpener(url = f"https://github.com/{FORK_REPO}"))
+    monkeypatch.setattr(
+        ILP, "_URL_OPENER", _FakeOpener(url = f"https://github.com/{FORK_REPO}")
+    )
     assert ILP._download_host_latest_release_tag(FORK_REPO) is None

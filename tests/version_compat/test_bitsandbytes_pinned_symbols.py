@@ -31,12 +31,15 @@ def test_bnb_functional_4bit(tag: str):
         "bitsandbytes/functional/__init__.py",
     ]
     hit = first_match("bitsandbytes-foundation/bitsandbytes", tag, candidates)
-    assert hit is not None, f"{tag}: bitsandbytes/functional[.py|/__init__.py] both missing"
+    assert (
+        hit is not None
+    ), f"{tag}: bitsandbytes/functional[.py|/__init__.py] both missing"
     _, src = hit
     needed = ("dequantize_4bit", "quantize_4bit")
     missing = [n for n in needed if not has_def(src, n, "func") and n not in src]
     assert not missing, (
-        f"{tag}: bnb.functional missing {missing}; " f"unsloth-zoo dequant kernels rely on these"
+        f"{tag}: bnb.functional missing {missing}; "
+        f"unsloth-zoo dequant kernels rely on these"
     )
 
 
@@ -75,7 +78,9 @@ def test_bnb_nn_linear4bit_classes(tag: str):
 
 @pytest.mark.parametrize("tag", BNB_TAGS)
 def test_bnb_matmul_4bit_top_level(tag: str):
-    src = fetch_text("bitsandbytes-foundation/bitsandbytes", tag, "bitsandbytes/__init__.py")
+    src = fetch_text(
+        "bitsandbytes-foundation/bitsandbytes", tag, "bitsandbytes/__init__.py"
+    )
     if src is None:
         pytest.skip(f"{tag}: bitsandbytes/__init__.py missing")
     assert "matmul_4bit" in src, (
@@ -136,16 +141,21 @@ def test_bnb_quantstate_from_dict(tag: str):
     if hit is None:
         pytest.skip(f"{tag}: functional missing")
     _, src = hit
-    assert has_def(src, "QuantState", "class"), f"{tag}: bnb.functional.QuantState missing"
+    assert has_def(
+        src, "QuantState", "class"
+    ), f"{tag}: bnb.functional.QuantState missing"
     assert "from_dict" in src, (
-        f"{tag}: QuantState.from_dict missing; " f"unsloth-zoo monkey-patch silently no-ops"
+        f"{tag}: QuantState.from_dict missing; "
+        f"unsloth-zoo monkey-patch silently no-ops"
     )
 
 
 @pytest.mark.parametrize("tag", BNB_TAGS)
 def test_bnb_nn_modules_fix_4bit_weight_optional(tag: str):
     """fix_4bit_weight_quant_state_from_module is optional; unsloth getattr-fallbacks on older bnb."""
-    src = fetch_text("bitsandbytes-foundation/bitsandbytes", tag, "bitsandbytes/nn/modules.py")
+    src = fetch_text(
+        "bitsandbytes-foundation/bitsandbytes", tag, "bitsandbytes/nn/modules.py"
+    )
     if src is None:
         pytest.skip(f"{tag}: bitsandbytes/nn/modules.py missing")
     if "fix_4bit_weight_quant_state_from_module" not in src:
@@ -164,7 +174,8 @@ def test_bnb_nn_linear8bitlt(tag: str):
         if src and (has_def(src, "Linear8bitLt", "class") or "Linear8bitLt" in src):
             return
     pytest.fail(
-        f"{tag}: bnb.nn.Linear8bitLt missing in {candidates}; " f"legacy load_in_8bit path breaks"
+        f"{tag}: bnb.nn.Linear8bitLt missing in {candidates}; "
+        f"legacy load_in_8bit path breaks"
     )
 
 
@@ -186,17 +197,23 @@ def test_bnb_optim_optimizer2state(tag: str):
 @pytest.mark.parametrize("tag", BNB_TAGS)
 def test_bnb_utils_pack_unpack(tag: str):
     """4bit state-dict save/load uses these two helpers."""
-    src = fetch_text("bitsandbytes-foundation/bitsandbytes", tag, "bitsandbytes/utils.py")
+    src = fetch_text(
+        "bitsandbytes-foundation/bitsandbytes", tag, "bitsandbytes/utils.py"
+    )
     if src is None:
         pytest.skip(f"{tag}: bitsandbytes/utils.py missing")
     for name in ("pack_dict_to_tensor", "unpack_tensor_to_dict"):
-        assert has_def(src, name, "func") or name in src, f"{tag}: bnb.utils.{name} missing"
+        assert (
+            has_def(src, name, "func") or name in src
+        ), f"{tag}: bnb.utils.{name} missing"
 
 
 @pytest.mark.parametrize("tag", BNB_TAGS)
 def test_bnb_cextension_rocm_warp_size_optional(tag: str):
     """ROCM_WARP_SIZE_64 is optional (pre-ROCm bnb lacks it); unsloth probes via try/except."""
-    src = fetch_text("bitsandbytes-foundation/bitsandbytes", tag, "bitsandbytes/cextension.py")
+    src = fetch_text(
+        "bitsandbytes-foundation/bitsandbytes", tag, "bitsandbytes/cextension.py"
+    )
     if src is None:
         pytest.skip(f"{tag}: cextension.py missing")
     if "ROCM_WARP_SIZE_64" not in src:
@@ -219,11 +236,15 @@ def test_bnb_autograd_functions_matmul_4bit(tag: str):
 @pytest.mark.parametrize("tag", BNB_TAGS)
 def test_bnb_version_parseable(tag: str):
     """bnb.__version__ must be exported via at least one mechanism (unsloth feature-gates on it)."""
-    src = fetch_text("bitsandbytes-foundation/bitsandbytes", tag, "bitsandbytes/__init__.py")
+    src = fetch_text(
+        "bitsandbytes-foundation/bitsandbytes", tag, "bitsandbytes/__init__.py"
+    )
     if src is None:
         pytest.skip(f"{tag}: bitsandbytes/__init__.py missing")
     has_literal = bool(re.search(r'^__version__\s*=\s*["\']', src, re.MULTILINE))
-    has_subimport = bool(re.search(r"^from\s+\.version\s+import\s+__version__", src, re.MULTILINE))
+    has_subimport = bool(
+        re.search(r"^from\s+\.version\s+import\s+__version__", src, re.MULTILINE)
+    )
     has_metadata = bool(
         re.search(
             r"^from\s+importlib\.metadata\s+import\s+(?:[\w,\s]+,\s*)?version",

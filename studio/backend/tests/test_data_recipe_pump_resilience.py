@@ -147,6 +147,8 @@ def test_pump_finalizes_when_read_keeps_raising_on_dead_worker(monkeypatch):
     pump = threading.Thread(target = m._pump_loop, daemon = True)
     pump.start()
     pump.join(timeout = 5)
-    assert not pump.is_alive(), "pump must finalize a dead worker even when reads keep raising"
+    assert (
+        not pump.is_alive()
+    ), "pump must finalize a dead worker even when reads keep raising"
     assert m._job.status == "error"
     assert retired and retired[0] is m._job

@@ -84,7 +84,10 @@ _CLAUDE_ENV_UNSET = ("ANTHROPIC_API_KEY", "CLAUDE_CODE_OAUTH_TOKEN")
 
 # Shared by every agent command; only the config/env/command differ.
 _MODEL_OPTION = typer.Option(
-    None, "--model", "-m", help = "Model for the agent; defaults to the one loaded in Unsloth."
+    None,
+    "--model",
+    "-m",
+    help = "Model for the agent; defaults to the one loaded in Unsloth.",
 )
 _KEY_OPTION = typer.Option(
     None,
@@ -122,7 +125,9 @@ _CONTEXT_OPTION = typer.Option(
     help = "Context length in tokens for the load (0 = model default).",
 )
 _LOAD_4BIT_OPTION = typer.Option(
-    True, "--load-in-4bit/--no-load-in-4bit", help = "Load hub models in 4-bit (ignored for GGUF)."
+    True,
+    "--load-in-4bit/--no-load-in-4bit",
+    help = "Load hub models in 4-bit (ignored for GGUF).",
 )
 _TENSOR_PARALLEL_OPTION = typer.Option(
     False,
@@ -225,7 +230,9 @@ def _opencode_subcommand(args: list[str]) -> Optional[str]:
         if arg in _OPENCODE_GLOBAL_VALUE_OPTIONS:
             index += 2
             continue
-        if any(arg.startswith(f"{option}=") for option in _OPENCODE_GLOBAL_VALUE_OPTIONS):
+        if any(
+            arg.startswith(f"{option}=") for option in _OPENCODE_GLOBAL_VALUE_OPTIONS
+        ):
             index += 1
             continue
         # A non-global option (e.g. --session) is a TUI flag; stop before its value is
@@ -254,7 +261,9 @@ def _opencode_native_auto_args(args: list[str], yolo: bool) -> tuple[list[str], 
 
 
 def _hermes_install_hint() -> str:
-    return _HERMES_WINDOWS_INSTALL_HINT if os.name == "nt" else _HERMES_POSIX_INSTALL_HINT
+    return (
+        _HERMES_WINDOWS_INSTALL_HINT if os.name == "nt" else _HERMES_POSIX_INSTALL_HINT
+    )
 
 
 def _hermes_resume_oneshot_args(args: list[str]) -> list[str]:
@@ -280,7 +289,9 @@ def _hermes_resume_oneshot_args(args: list[str]) -> list[str]:
             rewritten[index] = f"--query={arg.partition('=')[2]}"
         else:
             continue
-        if any(item == "--usage-file" or item.startswith("--usage-file=") for item in args):
+        if any(
+            item == "--usage-file" or item.startswith("--usage-file=") for item in args
+        ):
             raise typer.BadParameter(
                 "Hermes cannot resume a one-shot session with --usage-file; remove that option."
             )
@@ -316,7 +327,9 @@ def _split_repo_variant(model: str) -> tuple:
     s = (model or "").strip()
     if not s or s.startswith(("/", "./", "../", "~")) or s == ".":
         return s, None
-    if len(s) >= 2 and s[1] == ":" and s[0].isalpha():  # Windows drive, e.g. C:\models\x
+    if (
+        len(s) >= 2 and s[1] == ":" and s[0].isalpha()
+    ):  # Windows drive, e.g. C:\models\x
         return s, None
     if ":" not in s:
         return s, None
@@ -381,17 +394,24 @@ _SERVER_START_TIMEOUT_S = 900
 
 
 def _studio_healthy(base: str, timeout: float = 3.0) -> bool:
-    request = urllib.request.Request(f"{base}/api/health", headers = {"User-Agent": _USER_AGENT})
+    request = urllib.request.Request(
+        f"{base}/api/health", headers = {"User-Agent": _USER_AGENT}
+    )
     try:
         with urllib.request.urlopen(request, timeout = timeout) as response:
-            return json.loads(response.read(65536).decode() or "{}").get("status") == "healthy"
+            return (
+                json.loads(response.read(65536).decode() or "{}").get("status")
+                == "healthy"
+            )
     except Exception:
         return False
 
 
 def _log_tail(path: Path, lines: int = 20) -> str:
     try:
-        return "\n".join(path.read_text(encoding = "utf-8", errors = "replace").splitlines()[-lines:])
+        return "\n".join(
+            path.read_text(encoding = "utf-8", errors = "replace").splitlines()[-lines:]
+        )
     except OSError:
         return "(no server log)"
 
@@ -475,10 +495,16 @@ def _start_studio_server(base: str, model: str, load: LoadOptions) -> subprocess
     # the tempdir is world-traversable. Unlink first so a stale looser-mode file (pid
     # reuse) can't survive with its old permissions.
     log_path.unlink(missing_ok = True)
-    log = os.fdopen(os.open(log_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600), "wb")
+    log = os.fdopen(
+        os.open(log_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600), "wb"
+    )
     # Own session/process group so a mid-session Ctrl+C (cancel a turn) doesn't reach the
     # server; we tear it down explicitly when the agent exits.
-    kwargs: dict = {"stdout": log, "stderr": subprocess.STDOUT, "stdin": subprocess.DEVNULL}
+    kwargs: dict = {
+        "stdout": log,
+        "stderr": subprocess.STDOUT,
+        "stdin": subprocess.DEVNULL,
+    }
     if os.name == "nt":
         kwargs["creationflags"] = subprocess.CREATE_NEW_PROCESS_GROUP
     else:
@@ -495,7 +521,9 @@ def _start_studio_server(base: str, model: str, load: LoadOptions) -> subprocess
         if server.poll() is not None:
             tail = _log_tail(log_path)
             _shutdown_auto_served()
-            _fail(f"The Unsloth server stopped before it was ready. Last log lines:\n{tail}")
+            _fail(
+                f"The Unsloth server stopped before it was ready. Last log lines:\n{tail}"
+            )
         # `unsloth run` prints the minted key only after the server is up AND the model is
         # loaded, so it is the fully-ready signal (same contract serve-unsloth-run.sh uses).
         if _studio_healthy(base) and "sk-unsloth-" in _log_tail(log_path, lines = 400):
@@ -580,7 +608,9 @@ def _server_buckets(servers: dict, base: str) -> dict:
 
     def _strs(name: str) -> list:
         value = entry.get(name)
-        return [k for k in value if isinstance(k, str)] if isinstance(value, list) else []
+        return (
+            [k for k in value if isinstance(k, str)] if isinstance(value, list) else []
+        )
 
     return {"saved": _strs("saved"), "minted": _strs("minted")}
 
@@ -733,7 +763,9 @@ def _agent_api_key(
 
 
 def _loaded_models(base: str, key: str) -> list:
-    return _http_json("GET", f"{base}/v1/models", key, error = "Couldn't list models").get("data", [])
+    return _http_json(
+        "GET", f"{base}/v1/models", key, error = "Couldn't list models"
+    ).get("data", [])
 
 
 _HF_REPO_ID_SEGMENT_RE = re.compile(r"^[A-Za-z0-9._-]+$")
@@ -758,7 +790,10 @@ def _is_hub_model_id(value: object) -> bool:
     parts = text.split("/")
     if len(parts) != 2:
         return False
-    if any(part in ("", ".", "..") or not _HF_REPO_ID_SEGMENT_RE.match(part) for part in parts):
+    if any(
+        part in ("", ".", "..") or not _HF_REPO_ID_SEGMENT_RE.match(part)
+        for part in parts
+    ):
         return False
     try:
         if Path(os.path.expanduser(text)).exists():
@@ -806,7 +841,10 @@ def _resolve_model(
     # without reloading when the variant AND settings match, so a second session running
     # the same command still attaches without evicting the first.
     load_has_overrides = bool(
-        load.gguf_variant or load.max_seq_length or not load.load_in_4bit or load.tensor_parallel
+        load.gguf_variant
+        or load.max_seq_length
+        or not load.load_in_4bit
+        or load.tensor_parallel
     )
     # /v1/models also lists cached-but-unloaded catalog entries (loaded == False);
     # matching one would skip /api/inference/load and leave the agent pointed at a
@@ -818,7 +856,9 @@ def _resolve_model(
             (
                 m
                 for m in models
-                if _model_id_matches(m.get("id"), requested, allow_casefold = allow_casefold)
+                if _model_id_matches(
+                    m.get("id"), requested, allow_casefold = allow_casefold
+                )
                 and m.get("loaded") is not False
             ),
             None,
@@ -862,7 +902,8 @@ def _resolve_model(
                 m
                 for m in models
                 if any(
-                    _model_id_matches(m.get("id"), w, allow_casefold = allow_casefold) for w in wanted
+                    _model_id_matches(m.get("id"), w, allow_casefold = allow_casefold)
+                    for w in wanted
                 )
             ),
             None,
@@ -1067,7 +1108,9 @@ def _wsl_windows_executable(command: list) -> Optional[str]:
 
 def _wsl_windows_path(path: Path) -> str:
     try:
-        translated = subprocess.check_output(["wslpath", "-w", str(path)], text = True).strip()
+        translated = subprocess.check_output(
+            ["wslpath", "-w", str(path)], text = True
+        ).strip()
     except (OSError, subprocess.CalledProcessError) as exc:
         _fail(f"Could not translate WSL path {path}: {exc}")
     if not translated:
@@ -1080,14 +1123,18 @@ def _looks_like_path(value: str) -> bool:
     # absolute POSIX path (/...), a UNC path (\\...), or a drive-qualified Windows
     # path (C:...). Scalar knobs (e.g. a numeric context window) must pass through
     # untranslated, so they get no flag.
-    return bool(value) and (value.startswith(("/", "\\")) or (len(value) >= 2 and value[1] == ":"))
+    return bool(value) and (
+        value.startswith(("/", "\\")) or (len(value) >= 2 and value[1] == ":")
+    )
 
 
 def _wsl_bridge_names(env: dict, unset_env: tuple) -> tuple:
     # Build the WSLENV share list for a Windows shim reached from WSL. Path-valued
     # vars get /p so WSLENV translates them to the Windows path the /mnt shim can
     # actually open; a cleared var carries no value to translate.
-    names = [name + ("/p" if _looks_like_path(value) else "") for name, value in env.items()]
+    names = [
+        name + ("/p" if _looks_like_path(value) else "") for name, value in env.items()
+    ]
     names.extend(unset_env)
     return tuple(dict.fromkeys(names))
 
@@ -1231,7 +1278,9 @@ def _augment_path_with_install_dirs() -> None:
         if directory.is_dir() and os.path.normcase(str(directory)) not in seen
     ]
     if additions:
-        os.environ["PATH"] = os.pathsep.join([current, *additions] if current else additions)
+        os.environ["PATH"] = os.pathsep.join(
+            [current, *additions] if current else additions
+        )
 
 
 def _which_with_install_dirs(name: str) -> Optional[str]:
@@ -1319,7 +1368,9 @@ def _install_agent(name: str, install_hint: str) -> Optional[str]:
     else:
         install_command = ["/bin/sh", "-c", install_hint]
     if subprocess.run(install_command).returncode != 0:
-        message = f"Install command failed. Run it yourself, then re-run: {install_hint}"
+        message = (
+            f"Install command failed. Run it yourself, then re-run: {install_hint}"
+        )
         if os.name == "nt":
             # A hand-run retry can still hit the policy; point at the one-time per-user fix.
             message += (
@@ -1342,7 +1393,9 @@ def _install_agent(name: str, install_hint: str) -> Optional[str]:
 
 
 def _wsl_shim_env(command: list, env: dict, unset_env: tuple) -> tuple[dict, tuple]:
-    wsl_env_bridge = _wsl_bridge_names(env, unset_env) if _wsl_windows_executable(command) else ()
+    wsl_env_bridge = (
+        _wsl_bridge_names(env, unset_env) if _wsl_windows_executable(command) else ()
+    )
     if not wsl_env_bridge:
         return env, wsl_env_bridge
     # Bridge PWD via WSLENV (PWD/p) so the Windows shim finds its project root from the
@@ -1550,7 +1603,10 @@ def write_openclaw_config(
         approvals = path.parent / "exec-approvals.json"
         _write_private_json(
             approvals,
-            {"version": 1, "defaults": {"security": "full", "ask": "off", "askFallback": "full"}},
+            {
+                "version": 1,
+                "defaults": {"security": "full", "ask": "off", "askFallback": "full"},
+            },
         )
         typer.echo(f"Updated {approvals}")
     else:
@@ -1579,7 +1635,9 @@ def write_openclaw_config(
         if permissive:
             exec_policy = _subdict(_subdict(config, "tools"), "exec")
             exec_policy.pop("host", None)  # routing only; defaults to the gateway host
-            exec_policy["security"] = "allowlist"  # only allowlisted commands skip approval
+            exec_policy["security"] = (
+                "allowlist"  # only allowlisted commands skip approval
+            )
             exec_policy["ask"] = "on-miss"  # prompt on every non-allowlisted command
         # Drop the yolo defaults from the host approvals file (a stricter default set by
         # the user or OpenClaw is kept). With a prompting tools.exec the stricter of the
@@ -1592,7 +1650,11 @@ def write_openclaw_config(
                 # Strip the defaults only when they are exactly the yolo fingerprint; a
                 # user-managed mixed policy that merely shares a field (e.g. askFallback=full,
                 # whose omitted default is deny) must be kept intact.
-                yolo_defaults = (("security", "full"), ("ask", "off"), ("askFallback", "full"))
+                yolo_defaults = (
+                    ("security", "full"),
+                    ("ask", "off"),
+                    ("askFallback", "full"),
+                )
                 is_yolo = isinstance(defaults, dict) and all(
                     defaults.get(k) == v for k, v in yolo_defaults
                 )
@@ -1911,7 +1973,14 @@ def codex(
     with _session_config("codex", launch, persist = persist) as home:
         write_codex_config(base, entry, home)
         env = {_CODEX_ENV_KEY: key, "CODEX_HOME": str(home)}
-        _run(base, entry, env, command, launch = launch, install_hint = "npm install -g @openai/codex")
+        _run(
+            base,
+            entry,
+            env,
+            command,
+            launch = launch,
+            install_hint = "npm install -g @openai/codex",
+        )
 
 
 @start_app.command("openclaw", context_settings = _PASSTHROUGH)
@@ -2004,7 +2073,9 @@ def opencode(
     native_auto = False
     route_native_auto = yolo and _opencode_supports_native_auto()
     if ctx.args:
-        opencode_args, native_auto = _opencode_native_auto_args(list(ctx.args), route_native_auto)
+        opencode_args, native_auto = _opencode_native_auto_args(
+            list(ctx.args), route_native_auto
+        )
         command = ["opencode", *opencode_args]
     elif launch:
         opencode_args, native_auto = _opencode_native_auto_args(
@@ -2061,7 +2132,14 @@ def opencode(
             "OPENCODE_CONFIG": str(config_path),
             "OPENCODE_CONFIG_CONTENT": json.dumps(inline_config),
         }
-        _run(base, entry, env, command, launch = launch, install_hint = "npm install -g opencode-ai")
+        _run(
+            base,
+            entry,
+            env,
+            command,
+            launch = launch,
+            install_hint = "npm install -g opencode-ai",
+        )
 
 
 @start_app.command("hermes", context_settings = _PASSTHROUGH)

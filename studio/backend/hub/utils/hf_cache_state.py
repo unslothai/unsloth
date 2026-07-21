@@ -76,7 +76,9 @@ def repo_cache_dir_name(repo_type: str, repo_id: str) -> str:
     return f"{repo_type}s--{repo_id.replace('/', '--')}"
 
 
-def resolve_destructive_case_matches(target: str, candidates: Iterable[str]) -> Optional[set[str]]:
+def resolve_destructive_case_matches(
+    target: str, candidates: Iterable[str]
+) -> Optional[set[str]]:
     values = list(candidates)
     exact = {candidate for candidate in values if candidate == target}
     if exact:
@@ -186,7 +188,9 @@ def iter_destructive_repo_cache_dirs(repo_type: str, repo_id: str) -> Iterator[P
     folded_target = target.lower()
     for root in hf_cache_roots():
         try:
-            entries = [entry for entry in root.iterdir() if entry.name.lower() == folded_target]
+            entries = [
+                entry for entry in root.iterdir() if entry.name.lower() == folded_target
+            ]
         except OSError:
             continue
         matched_names = resolve_destructive_case_matches(

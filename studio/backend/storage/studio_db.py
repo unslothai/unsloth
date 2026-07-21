@@ -132,7 +132,9 @@ def _delete_project_workspace(project: dict) -> None:
     try:
         root_resolved = root.resolve(strict = False)
     except (OSError, RuntimeError, ValueError):
-        logger.warning("Skipping project workspace delete for invalid path %r", root_path)
+        logger.warning(
+            "Skipping project workspace delete for invalid path %r", root_path
+        )
         return
 
     project_id = str(project["id"])
@@ -196,7 +198,9 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
         )
         """
     )
-    existing_cols = {row[1] for row in conn.execute("PRAGMA table_info(training_runs)").fetchall()}
+    existing_cols = {
+        row[1] for row in conn.execute("PRAGMA table_info(training_runs)").fetchall()
+    }
     if "display_name" not in existing_cols:
         conn.execute("ALTER TABLE training_runs ADD COLUMN display_name TEXT")
     conn.execute(
@@ -216,7 +220,9 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
         )
         """
     )
-    conn.execute("CREATE INDEX IF NOT EXISTS idx_metrics_run_id ON training_metrics(run_id)")
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_metrics_run_id ON training_metrics(run_id)"
+    )
     # Windows: COLLATE NOCASE so C:\Models and c:\models dedup. Elsewhere keep
     # case-sensitive BINARY so /Models and /models stay distinct.
     collation = "COLLATE NOCASE" if platform.system() == "Windows" else ""
@@ -276,9 +282,13 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
     if "project_id" not in chat_thread_cols:
         conn.execute("ALTER TABLE chat_threads ADD COLUMN project_id TEXT")
     if "openai_code_exec_container_id" not in chat_thread_cols:
-        conn.execute("ALTER TABLE chat_threads ADD COLUMN openai_code_exec_container_id TEXT")
+        conn.execute(
+            "ALTER TABLE chat_threads ADD COLUMN openai_code_exec_container_id TEXT"
+        )
     if "anthropic_code_exec_container_id" not in chat_thread_cols:
-        conn.execute("ALTER TABLE chat_threads ADD COLUMN anthropic_code_exec_container_id TEXT")
+        conn.execute(
+            "ALTER TABLE chat_threads ADD COLUMN anthropic_code_exec_container_id TEXT"
+        )
     if "forked_from_thread_id" not in chat_thread_cols:
         conn.execute("ALTER TABLE chat_threads ADD COLUMN forked_from_thread_id TEXT")
     if "forked_from_message_id" not in chat_thread_cols:
@@ -334,12 +344,19 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
         conn.execute(tombstone_schema)
     else:
         tombstone_columns = {
-            row[1] for row in conn.execute("PRAGMA table_info(chat_attachment_tombstones)")
+            row[1]
+            for row in conn.execute("PRAGMA table_info(chat_attachment_tombstones)")
         }
         tombstone_fk_targets = {
-            row[2] for row in conn.execute("PRAGMA foreign_key_list(chat_attachment_tombstones)")
+            row[2]
+            for row in conn.execute(
+                "PRAGMA foreign_key_list(chat_attachment_tombstones)"
+            )
         }
-        if "thread_id" not in tombstone_columns or "chat_threads" not in tombstone_fk_targets:
+        if (
+            "thread_id" not in tombstone_columns
+            or "chat_threads" not in tombstone_fk_targets
+        ):
             # The first implementation cascaded through chat_messages, which
             # erased deletion knowledge during pruneMissing. Rebuild once,
             # retaining every tombstone whose owning thread still exists.
@@ -402,7 +419,8 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
         """
     )
     inventory_state_columns = {
-        row[1] for row in conn.execute("PRAGMA table_info(chat_attachment_inventory_state)")
+        row[1]
+        for row in conn.execute("PRAGMA table_info(chat_attachment_inventory_state)")
     }
     if "inventory_version" not in inventory_state_columns:
         conn.execute(
@@ -453,7 +471,9 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
     conn.execute(
         "CREATE INDEX IF NOT EXISTS idx_chat_threads_model_type_created_at ON chat_threads(model_type, created_at)"
     )
-    conn.execute("CREATE INDEX IF NOT EXISTS idx_chat_threads_pair_id ON chat_threads(pair_id)")
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_chat_threads_pair_id ON chat_threads(pair_id)"
+    )
     conn.execute(
         "CREATE INDEX IF NOT EXISTS idx_chat_threads_project_id ON chat_threads(project_id)"
     )
@@ -558,7 +578,9 @@ def _prompt_entry_from_row(row: sqlite3.Row) -> dict:
 def list_prompt_entries() -> list[dict]:
     conn = get_connection()
     try:
-        rows = conn.execute("SELECT * FROM prompt_entries ORDER BY created_at DESC").fetchall()
+        rows = conn.execute(
+            "SELECT * FROM prompt_entries ORDER BY created_at DESC"
+        ).fetchall()
         return [_prompt_entry_from_row(r) for r in rows]
     finally:
         conn.close()
@@ -613,7 +635,10 @@ def bulk_upsert_prompt_entries(entries: list[dict]) -> int:
                 text = excluded.text,
                 updated_at = excluded.updated_at
             """,
-            [(e["id"], e["name"], e["text"], e["createdAt"], e["updatedAt"]) for e in entries],
+            [
+                (e["id"], e["name"], e["text"], e["createdAt"], e["updatedAt"])
+                for e in entries
+            ],
         )
         conn.commit()
         return len(entries)
@@ -634,7 +659,9 @@ def _prompt_list_from_row(row: sqlite3.Row) -> dict:
 def list_prompt_lists_db() -> list[dict]:
     conn = get_connection()
     try:
-        rows = conn.execute("SELECT * FROM prompt_lists ORDER BY created_at DESC").fetchall()
+        rows = conn.execute(
+            "SELECT * FROM prompt_lists ORDER BY created_at DESC"
+        ).fetchall()
         return [_prompt_list_from_row(r) for r in rows]
     finally:
         conn.close()
@@ -896,13 +923,17 @@ def list_runs(limit: int = 50, offset: int = 0) -> dict:
         runs = []
         for row in rows:
             run = dict(row)
-            run["project_name"] = _extract_project_name_from_config_json(run.get("config_json"))
+            run["project_name"] = _extract_project_name_from_config_json(
+                run.get("config_json")
+            )
             sparkline = run.get("loss_sparkline")
             if sparkline:
                 try:
                     run["loss_sparkline"] = json.loads(sparkline)
                 except (json.JSONDecodeError, TypeError):
-                    logger.debug("Failed to parse loss_sparkline for run %s", run.get("id"))
+                    logger.debug(
+                        "Failed to parse loss_sparkline for run %s", run.get("id")
+                    )
                     run["loss_sparkline"] = None
             runs.append(run)
         return {"runs": runs, "total": total}
@@ -936,7 +967,9 @@ def get_run(id: str) -> Optional[dict]:
         if row is None:
             return None
         run = dict(row)
-        run["project_name"] = _extract_project_name_from_config_json(run.get("config_json"))
+        run["project_name"] = _extract_project_name_from_config_json(
+            run.get("config_json")
+        )
         sparkline = run.get("loss_sparkline")
         if sparkline:
             try:
@@ -979,7 +1012,9 @@ def get_resumable_run_by_output_dir(output_dir: str) -> Optional[dict]:
             try:
                 run["loss_sparkline"] = json.loads(sparkline)
             except (json.JSONDecodeError, TypeError):
-                logger.debug("Failed to parse loss_sparkline for output_dir %s", output_dir)
+                logger.debug(
+                    "Failed to parse loss_sparkline for output_dir %s", output_dir
+                )
                 run["loss_sparkline"] = None
         return run
     finally:
@@ -1263,7 +1298,9 @@ def upsert_chat_thread(thread: dict) -> dict:
                 thread.get("projectId"),
                 1 if thread.get("archived") else 0,
                 int(thread["createdAt"]),
-                int(thread["updatedAt"]) if thread.get("updatedAt") is not None else None,
+                int(thread["updatedAt"])
+                if thread.get("updatedAt") is not None
+                else None,
                 thread.get("openaiCodeExecContainerId"),
                 thread.get("anthropicCodeExecContainerId"),
                 thread.get("forkedFromThreadId"),
@@ -1557,7 +1594,9 @@ def _parse_chat_setting_json(key: str, value_json: str) -> tuple[bool, Any]:
         return False, None
 
 
-def _load_chat_settings_for_merge(conn: sqlite3.Connection) -> tuple[dict[str, Any], set[str]]:
+def _load_chat_settings_for_merge(
+    conn: sqlite3.Connection,
+) -> tuple[dict[str, Any], set[str]]:
     rows = conn.execute("SELECT key, value_json FROM chat_settings").fetchall()
     current: dict[str, Any] = {}
     corrupt: set[str] = set()
@@ -1726,7 +1765,10 @@ def _reconcile_chat_message_uploads(message: dict, tombstones: set[str]) -> dict
         reconciled["attachments"] = [
             attachment
             for attachment in attachments
-            if not (isinstance(attachment, dict) and str(attachment.get("id") or "") in tombstones)
+            if not (
+                isinstance(attachment, dict)
+                and str(attachment.get("id") or "") in tombstones
+            )
         ]
 
     content = message.get("content")
@@ -1734,12 +1776,16 @@ def _reconcile_chat_message_uploads(message: dict, tombstones: set[str]) -> dict
         reconciled["content"] = [
             part
             for part in content
-            if not (isinstance(part, dict) and (_content_part_id(part) or "") in tombstones)
+            if not (
+                isinstance(part, dict) and (_content_part_id(part) or "") in tombstones
+            )
         ]
     return reconciled
 
 
-def _chat_attachment_metadata_text(value, fallback: Optional[str] = None) -> Optional[str]:
+def _chat_attachment_metadata_text(
+    value, fallback: Optional[str] = None
+) -> Optional[str]:
     """Keep untyped legacy/import metadata safe for SQLite binding."""
     if value is None:
         return fallback
@@ -1778,9 +1824,13 @@ def _chat_attachment_inventory_entries(
         entries.append(
             {
                 "id": attachment_id,
-                "name": _chat_attachment_metadata_text(attachment.get("name"), "attachment"),
+                "name": _chat_attachment_metadata_text(
+                    attachment.get("name"), "attachment"
+                ),
                 "type": _chat_attachment_metadata_text(attachment.get("type")),
-                "contentType": _chat_attachment_metadata_text(attachment.get("contentType")),
+                "contentType": _chat_attachment_metadata_text(
+                    attachment.get("contentType")
+                ),
                 "sizeBytes": _chat_attachment_size_bytes(attachment),
             }
         )
@@ -1794,7 +1844,9 @@ def _replace_chat_attachment_inventory(
     content_json: Optional[str],
     tombstones: Optional[set[str]] = None,
 ) -> None:
-    conn.execute("DELETE FROM chat_attachment_inventory WHERE message_id = ?", (message_id,))
+    conn.execute(
+        "DELETE FROM chat_attachment_inventory WHERE message_id = ?", (message_id,)
+    )
     entries = _chat_attachment_inventory_entries(
         attachments_json,
         content_json,
@@ -1995,13 +2047,16 @@ def sync_chat_messages(
             [m["id"] for m in messages],
         )
         reconciled_messages = [
-            _reconcile_chat_message_uploads(m, tombstones.get(m["id"], set())) for m in messages
+            _reconcile_chat_message_uploads(m, tombstones.get(m["id"], set()))
+            for m in messages
         ]
         serialized_messages = [
             (
                 m,
                 json.dumps(m.get("content", [])),
-                json.dumps(m.get("attachments")) if m.get("attachments") is not None else None,
+                json.dumps(m.get("attachments"))
+                if m.get("attachments") is not None
+                else None,
             )
             for m in reconciled_messages
         ]
@@ -2027,7 +2082,9 @@ def sync_chat_messages(
                     m["role"],
                     content_json,
                     attachments_json,
-                    json.dumps(m.get("metadata")) if m.get("metadata") is not None else None,
+                    json.dumps(m.get("metadata"))
+                    if m.get("metadata") is not None
+                    else None,
                     int(m["createdAt"]),
                 )
                 for m, content_json, attachments_json in serialized_messages
@@ -2397,7 +2454,10 @@ def get_chat_attachment(message_id: str, attachment_id: str) -> Optional[dict]:
     attachments = _json_loads(row["attachments_json"], None)
     if isinstance(attachments, list):
         for attachment in attachments:
-            if isinstance(attachment, dict) and str(attachment.get("id") or "") == attachment_id:
+            if (
+                isinstance(attachment, dict)
+                and str(attachment.get("id") or "") == attachment_id
+            ):
                 return attachment
     if attachment_id.startswith(_CONTENT_PART_ID_PREFIX):
         for attachment in _content_part_attachments(row["content_json"]):
@@ -2468,11 +2528,15 @@ def delete_chat_attachment(message_id: str, attachment_id: str) -> bool:
         content = _json_loads(row["content_json"], None)
         updated_content_json = row["content_json"]
         deleted_content = False
-        if attachment_id.startswith(_CONTENT_PART_ID_PREFIX) and isinstance(content, list):
+        if attachment_id.startswith(_CONTENT_PART_ID_PREFIX) and isinstance(
+            content, list
+        ):
             remaining_content = [
                 part
                 for part in content
-                if not (isinstance(part, dict) and _content_part_id(part) == attachment_id)
+                if not (
+                    isinstance(part, dict) and _content_part_id(part) == attachment_id
+                )
             ]
             deleted_content = len(remaining_content) != len(content)
             if deleted_content:
@@ -2541,7 +2605,9 @@ def list_chat_messages_for_threads(thread_ids: list[str]) -> list[dict]:
 def get_app_setting(key: str, fallback = None):
     conn = get_connection()
     try:
-        row = conn.execute("SELECT value_json FROM app_settings WHERE key = ?", (key,)).fetchone()
+        row = conn.execute(
+            "SELECT value_json FROM app_settings WHERE key = ?", (key,)
+        ).fetchone()
         if row is None:
             return fallback
         return _json_loads(row["value_json"], fallback)
@@ -2566,7 +2632,9 @@ def upsert_app_settings(settings: dict[str, Any]) -> dict[str, Any]:
             [(key, json.dumps(value), now) for key, value in settings.items()],
         )
         conn.commit()
-        rows = conn.execute("SELECT key, value_json FROM app_settings ORDER BY key").fetchall()
+        rows = conn.execute(
+            "SELECT key, value_json FROM app_settings ORDER BY key"
+        ).fetchall()
         return {row["key"]: _json_loads(row["value_json"], None) for row in rows}
     finally:
         conn.close()
@@ -2581,7 +2649,9 @@ def upsert_app_setting_map_entry(
     conn = get_connection()
     try:
         conn.execute("BEGIN IMMEDIATE")
-        row = conn.execute("SELECT value_json FROM app_settings WHERE key = ?", (key,)).fetchone()
+        row = conn.execute(
+            "SELECT value_json FROM app_settings WHERE key = ?", (key,)
+        ).fetchone()
         current = _json_loads(row["value_json"], {}) if row else {}
         if not isinstance(current, dict):
             current = {}
@@ -2612,7 +2682,9 @@ def upsert_app_setting_map_entry(
 def list_chat_settings() -> dict[str, Any]:
     conn = get_connection()
     try:
-        rows = conn.execute("SELECT key, value_json FROM chat_settings ORDER BY key").fetchall()
+        rows = conn.execute(
+            "SELECT key, value_json FROM chat_settings ORDER BY key"
+        ).fetchall()
         settings: dict[str, Any] = {}
         for row in rows:
             settings[row["key"]] = _json_loads(row["value_json"], None)
@@ -2643,7 +2715,9 @@ def upsert_chat_settings(settings: dict[str, Any]) -> dict[str, Any]:
         conn.close()
 
 
-def _deep_merge_settings(current: dict[str, Any], updates: dict[str, Any]) -> dict[str, Any]:
+def _deep_merge_settings(
+    current: dict[str, Any], updates: dict[str, Any]
+) -> dict[str, Any]:
     merged = dict(current)
     for key, value in updates.items():
         current_value = merged.get(key)
@@ -2664,7 +2738,9 @@ def upsert_chat_settings_merge(updates: dict[str, Any]) -> dict[str, Any]:
         conn.execute("BEGIN IMMEDIATE")
         current, corrupt = _load_chat_settings_for_merge(conn)
         unsafe_partial_keys = [
-            key for key, value in updates.items() if key in corrupt and isinstance(value, dict)
+            key
+            for key, value in updates.items()
+            if key in corrupt and isinstance(value, dict)
         ]
         if unsafe_partial_keys:
             conn.commit()
@@ -2705,7 +2781,9 @@ def list_chat_legacy_imports() -> list[str]:
     """Return the legacy_thread_id of every thread already imported."""
     conn = get_connection()
     try:
-        rows = conn.execute("SELECT legacy_thread_id FROM chat_legacy_imports").fetchall()
+        rows = conn.execute(
+            "SELECT legacy_thread_id FROM chat_legacy_imports"
+        ).fetchall()
         return [row[0] for row in rows]
     finally:
         conn.close()

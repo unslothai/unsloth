@@ -37,7 +37,9 @@ def _stub_call_linenos(node) -> list[int]:
     return [
         c.lineno
         for c in ast.walk(node)
-        if isinstance(c, ast.Call) and isinstance(c.func, ast.Name) and c.func.id == _STUB
+        if isinstance(c, ast.Call)
+        and isinstance(c.func, ast.Name)
+        and c.func.id == _STUB
     ]
 
 
@@ -82,7 +84,10 @@ def _imports_transformers(node) -> bool:
                 module.split(".")[0] == "transformers"
                 or module == _INFERENCE_MOD
                 or module.startswith(_INFERENCE_MOD + ".")
-                or (module == "core.inference" and any(a.name == "inference" for a in node.names))
+                or (
+                    module == "core.inference"
+                    and any(a.name == "inference" for a in node.names)
+                )
             )
         # Relative forms inside core/inference/worker.py: ``from .inference import X`` and
         # ``from . import inference`` both resolve to core.inference.inference.

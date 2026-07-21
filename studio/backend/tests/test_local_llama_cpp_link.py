@@ -38,7 +38,9 @@ def _make_link(link: Path, target: Path) -> None:
 
 def _server_subpath() -> Path:
     return Path(
-        "build/bin/Release/llama-server.exe" if os.name == "nt" else "build/bin/llama-server"
+        "build/bin/Release/llama-server.exe"
+        if os.name == "nt"
+        else "build/bin/llama-server"
     )
 
 

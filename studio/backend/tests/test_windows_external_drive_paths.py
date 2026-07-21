@@ -25,8 +25,14 @@ class _HTTPException(Exception):
 
 def _extract_routes_function(name: str, ns_extra: Optional[dict] = None) -> dict:
     """Exec one top-level function from routes/models.py without importing the module (which pulls in FastAPI)."""
-    tree = ast.parse((_BACKEND_ROOT / "routes" / "models.py").read_text(encoding = "utf-8"))
-    fn = next(node for node in tree.body if isinstance(node, ast.FunctionDef) and node.name == name)
+    tree = ast.parse(
+        (_BACKEND_ROOT / "routes" / "models.py").read_text(encoding = "utf-8")
+    )
+    fn = next(
+        node
+        for node in tree.body
+        if isinstance(node, ast.FunctionDef) and node.name == name
+    )
     module = ast.Module(body = [fn], type_ignores = [])
     ast.fix_missing_locations(module)
     ns = {"os": os, "Path": Path, "Optional": Optional}
@@ -89,7 +95,9 @@ def test_readable_dir_within_times_out(monkeypatch):
     # (disconnected mapped network) drive is skipped instead of blocking.
     import time
 
-    monkeypatch.setattr(external_media.os.path, "isdir", lambda p: time.sleep(5) or True)
+    monkeypatch.setattr(
+        external_media.os.path, "isdir", lambda p: time.sleep(5) or True
+    )
     monkeypatch.setattr(external_media.os, "access", lambda p, _mode: True)
     start = time.monotonic()
     ok = external_media._readable_dir_within("Z:\\", timeout = 0.2)
@@ -171,7 +179,9 @@ def test_windows_drive_roots_probes_hung_drives_in_parallel(monkeypatch):
 def test_browse_allowlist_includes_windows_drive_roots(monkeypatch, tmp_path):
     # End-to-end wiring: windows_drive_roots() output flows into the browse
     # allowlist built by routes/models.py, mirroring the Linux media-mounts test.
-    tree = ast.parse((_BACKEND_ROOT / "routes" / "models.py").read_text(encoding = "utf-8"))
+    tree = ast.parse(
+        (_BACKEND_ROOT / "routes" / "models.py").read_text(encoding = "utf-8")
+    )
     function_names = {
         "_build_browse_allowlist",
         "_browse_relative_parts",
@@ -231,14 +241,18 @@ def test_browse_allowlist_includes_windows_drive_roots(monkeypatch, tmp_path):
 
     # The simulated Windows drive root is now browsable, and a model dir on it resolves.
     assert drive_root.resolve() in allowlist
-    assert ns["_resolve_browse_target"](str(model_dir), allowlist) == model_dir.resolve()
+    assert (
+        ns["_resolve_browse_target"](str(model_dir), allowlist) == model_dir.resolve()
+    )
 
 
 def test_build_browse_allowlist_reuses_passed_roots(monkeypatch, tmp_path):
     # Double-probe fix: a browse request probes the drive/media roots once and
     # passes them in, so _build_browse_allowlist must NOT scan
     # windows_drive_roots() again (a disconnected drive would double the stall).
-    tree = ast.parse((_BACKEND_ROOT / "routes" / "models.py").read_text(encoding = "utf-8"))
+    tree = ast.parse(
+        (_BACKEND_ROOT / "routes" / "models.py").read_text(encoding = "utf-8")
+    )
     functions = [
         node
         for node in tree.body
@@ -315,7 +329,9 @@ def test_is_path_inside_allowlist_real_descendants_and_siblings(tmp_path):
     assert is_inside(sibling, [root]) is False  # prefix-collision sibling
 
 
-def test_is_path_inside_allowlist_posix_root_does_not_authorize_descendants(monkeypatch):
+def test_is_path_inside_allowlist_posix_root_does_not_authorize_descendants(
+    monkeypatch,
+):
     # Regression for the reported POSIX "/" unlock: a bare filesystem root may
     # match itself but must NOT authorize arbitrary descendants such as /etc.
     ns = _extract_routes_function("_is_path_inside_allowlist")

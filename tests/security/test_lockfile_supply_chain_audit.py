@@ -232,7 +232,9 @@ def test_advisory_finding_emitted_as_single_line_annotation(tmp_path):
         npm_lockfiles = [FIXTURES / "clean_lockfile.json"],
         cargo_lockfiles = [lockfile],
     )
-    warning_lines = [line for line in proc.stderr.splitlines() if line.startswith("::warning::")]
+    warning_lines = [
+        line for line in proc.stderr.splitlines() if line.startswith("::warning::")
+    ]
     assert warning_lines, (
         "expected at least one ::warning:: annotation; " f"stderr was:\n{proc.stderr}"
     )

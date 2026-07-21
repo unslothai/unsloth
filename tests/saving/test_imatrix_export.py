@@ -53,7 +53,9 @@ def test_quantize_gguf_accepts_imatrix():
 def test_imatrix_quants_registry():
     for q in ("iq2_xxs", "iq4_xs", "iq1_s", "iq3_xxs"):
         assert q in S.IMATRIX_QUANTS
-        assert q not in S.ALLOWED_QUANTS, f"{q} must be gated, not in the always-on allow-list"
+        assert (
+            q not in S.ALLOWED_QUANTS
+        ), f"{q} must be gated, not in the always-on allow-list"
 
 
 # -- _resolve_imatrix_file -----------------------------------------------------------------
@@ -71,7 +73,9 @@ def test_resolve_bad_type_raises_typeerror(tmp_path):
 
 def test_resolve_missing_path_raises(tmp_path):
     with pytest.raises(FileNotFoundError):
-        S._resolve_imatrix_file(_Model(), str(tmp_path / "nope.dat"), None, str(tmp_path))
+        S._resolve_imatrix_file(
+            _Model(), str(tmp_path / "nope.dat"), None, str(tmp_path)
+        )
 
 
 def test_resolve_plain_path_passthrough(tmp_path):
@@ -173,7 +177,9 @@ def test_resolve_true_downloads_gguf_file_and_renames(monkeypatch, tmp_path):
 
 def test_resolve_true_missing_raises(monkeypatch, tmp_path):
     _patch_hub(
-        monkeypatch, {"unsloth/Llama-3.1-8B-Instruct-GGUF": ["model.Q4_K_M.gguf"]}, str(tmp_path)
+        monkeypatch,
+        {"unsloth/Llama-3.1-8B-Instruct-GGUF": ["model.Q4_K_M.gguf"]},
+        str(tmp_path),
     )
     with pytest.raises(RuntimeError) as e:
         S._resolve_imatrix_file(_Model(), True, "tok", str(tmp_path / "dest"))
@@ -231,7 +237,9 @@ def test_quantize_gguf_emits_imatrix_flag(monkeypatch, tmp_path):
 
     monkeypatch.setattr(L.subprocess, "run", _fake_run)
     imat = str(tmp_path / "imatrix it.dat")  # space in path -> must be shell-quoted
-    with open(imat, "wb") as f:  # quantize_gguf validates the imatrix exists before running
+    with open(
+        imat, "wb"
+    ) as f:  # quantize_gguf validates the imatrix exists before running
         f.write(b"\x00")
     L.quantize_gguf(
         input_gguf = str(tmp_path / "in.gguf"),
