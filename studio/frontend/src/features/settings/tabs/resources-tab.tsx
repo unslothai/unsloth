@@ -25,7 +25,7 @@ import {
 import { SettingsRow } from "../components/settings-row";
 import { SettingsSection } from "../components/settings-section";
 import { useMonitorOverlayStore } from "../stores/monitor-overlay-store";
-import { LayersIcon } from "lucide-react";
+import { CopyIcon, FolderOpenIcon, LayersIcon } from "lucide-react";
 
 const POLL_MS = 3000;
 
@@ -529,42 +529,55 @@ export function ResourcesTab() {
         <SettingsRow
           label={t("settings.resources.storage.modelsFolder")}
           description={t("settings.resources.storage.modelsFolderDescription")}
-          className="max-sm:flex-col max-sm:items-start max-sm:gap-2"
+          className="max-[840px]:flex-col max-[840px]:items-stretch max-[840px]:gap-2"
         >
-          <div className="flex min-w-0 max-w-[430px] flex-col items-end gap-1.5 max-sm:w-full max-sm:max-w-[calc(100vw-5rem)] max-sm:items-start">
-            <div className="flex min-w-0 items-center gap-2 max-sm:w-full">
+          <div className="grid w-[392px] min-w-0 grid-cols-[minmax(0,1fr)_auto] gap-x-2 gap-y-1.5 max-[840px]:w-full">
+            <div className="relative min-w-0">
               <Input
                 readOnly
                 aria-label={t("settings.resources.storage.modelsFolder")}
                 value={modelsFolderPath}
                 title={hfCache?.cacheHome}
-                className="h-8 w-[220px] font-mono text-xs max-sm:min-w-0 max-sm:flex-1"
+                className="h-8 w-full pr-7 font-mono text-xs"
               />
-              <Button
-                variant="outline"
-                size="sm"
+              <button
+                type="button"
                 disabled={!hfCache}
                 onClick={() => void handleCacheFolder()}
+                aria-label={
+                  isTauri
+                    ? t("settings.resources.storage.openAction")
+                    : t("settings.resources.storage.copyAction")
+                }
+                title={
+                  isTauri
+                    ? t("settings.resources.storage.openAction")
+                    : t("settings.resources.storage.copyAction")
+                }
+                className="absolute right-1.5 top-1/2 flex size-5 -translate-y-1/2 items-center justify-center rounded text-muted-foreground transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:pointer-events-none disabled:opacity-50"
               >
-                {isTauri
-                  ? t("settings.resources.storage.openAction")
-                  : t("settings.resources.storage.copyAction")}
-              </Button>
-              <Button
-                variant="outline"
-                size="sm"
-                disabled={!hfCache?.editable || cacheSaving}
-                onClick={() => void changeCacheFolder()}
-              >
-                {t("settings.resources.storage.changeAction")}
-              </Button>
+                {isTauri ? (
+                  <FolderOpenIcon className="size-3.5" />
+                ) : (
+                  <CopyIcon className="size-3.5" />
+                )}
+              </button>
             </div>
+            <Button
+              variant="outline"
+              size="sm"
+              className="h-8"
+              disabled={!hfCache?.editable || cacheSaving}
+              onClick={() => void changeCacheFolder()}
+            >
+              {t("settings.resources.storage.changeAction")}
+            </Button>
             {cacheLocationDetail || hfCache?.isCustom ? (
-              <div className="flex items-center justify-end gap-2 text-xs text-muted-foreground max-sm:justify-start">
+              <div className="col-span-2 flex min-w-0 items-center justify-between gap-2 px-1 text-xs text-muted-foreground">
                 {cacheLocationDetail ? (
                   <span
                     title={cacheLocationDetail}
-                    className="max-w-[330px] truncate text-right max-sm:text-left"
+                    className="min-w-0 truncate"
                   >
                     {cacheLocationDetail}
                   </span>
