@@ -24,6 +24,11 @@ does not publish it, fails closed to a source build. This is a same-origin
 checksum -- it proves integrity, not authenticity -- so pair the release with
 GitHub artifact attestations for provenance.
 
+Release resolution prefers the download host (``github.com/<repo>/releases/...``),
+so the manifest + checksum index are fetched with **zero ``api.github.com`` calls**
+(that API is rate-limited to 60 req/hour unauthenticated); the GitHub API is only
+used as a fallback on a 404 / malformed asset.
+
 Mirrors ``install_node_prebuilt.py`` / ``install_llama_prebuilt.py`` so the setup
 scripts drive it the same way. Exit codes: 0 success (or already current), 1 error,
 2 source fallback, 3 busy. A re-run that already matches logs "already matches"
@@ -752,17 +757,125 @@ def fetch_release_bundle(repo: str, release_tag: str) -> ReleaseBundle:
     )
 
 
+def release_asset_download_url(repo: str, release_tag: str, asset_name: str) -> str:
+    """Deterministic download-host URL for a release asset. This is github.com
+    (a redirect to the CDN), NOT api.github.com, so it is not subject to the
+    unauthenticated 60-req/hour API rate limit."""
+    return (
+        f"https://github.com/{urllib.parse.quote(repo, safe = '/')}/releases/download/"
+        f"{urllib.parse.quote(release_tag, safe = '')}/"
+        f"{urllib.parse.quote(asset_name, safe = '')}"
+    )
+
+
 def asset_download_url(bundle: ReleaseBundle, asset_name: str) -> str:
     url = bundle.asset_urls.get(asset_name)
     if url:
         return url
     # A manifest can list an asset the release JSON did not surface; fall back to
     # the deterministic release-download URL.
-    return (
-        f"https://github.com/{bundle.repo}/releases/download/"
-        f"{urllib.parse.quote(bundle.release_tag, safe = '')}/"
-        f"{urllib.parse.quote(asset_name, safe = '')}"
+    return release_asset_download_url(bundle.repo, bundle.release_tag, asset_name)
+
+
+# ── Download-host fast path (resolve + fetch the JSON assets with no GitHub API) ──
+# api.github.com is rate-limited to 60 req/hour unauthenticated; the download host
+# (github.com/releases/...) is not. Mirroring install_llama_prebuilt.py, resolve the
+# release and fetch its manifest + checksum index straight from the download host,
+# falling back to the API only on a 404 / malformed asset / tag mismatch.
+_DOWNLOAD_HOST_UA = {"User-Agent": "unsloth-studio-whisper-prebuilt"}
+
+
+def _download_host_latest_release_tag(repo: str) -> str | None:
+    """Latest release tag from github.com/<repo>/releases/latest via its redirect
+    target (no api.github.com call). None on 404 so the caller falls back to the
+    API. Note: /releases/latest resolves by created_at/make_latest, which can lag
+    the published_at newest the freshness check uses -- acceptable for install."""
+    url = f"https://github.com/{urllib.parse.quote(repo, safe = '/')}/releases/latest"
+    request = urllib.request.Request(url, method = "HEAD", headers = dict(_DOWNLOAD_HOST_UA))
+    try:
+        with _URL_OPENER.open(request, timeout = 30) as response:
+            final_url = response.geturl()
+    except urllib.error.HTTPError as exc:
+        if exc.code == 404:
+            return None
+        raise
+    marker = "/releases/tag/"
+    index = final_url.find(marker)
+    if index == -1:
+        return None
+    tag = urllib.parse.unquote(final_url[index + len(marker) :]).strip("/")
+    return tag or None
+
+
+def _download_host_json(url: str) -> Any:
+    """Plain unauthenticated GET of a public release JSON asset from the CDN."""
+    data = download_bytes(url, timeout = 30, headers = dict(_DOWNLOAD_HOST_UA))
+    return json.loads(data.decode("utf-8"))
+
+
+def _resolve_release_via_download_host(
+    repo: str, published_release_tag: str | None
+) -> tuple[ReleaseBundle, dict[str, str]] | None:
+    """Resolve the release + manifest + checksum index entirely from the download
+    host, with zero api.github.com calls. Returns None (caller falls back to the
+    API) on a missing/renamed asset, a 404, or a tag mismatch. Fetches the checksum
+    index first (an in-progress release can publish it before the manifest)."""
+    release_tag = (published_release_tag or "").strip() or _download_host_latest_release_tag(repo)
+    if not release_tag:
+        return None
+    sha_url = release_asset_download_url(repo, release_tag, SHA256_ASSET_NAME)
+    try:
+        sha_payload = _download_host_json(sha_url)
+    except urllib.error.HTTPError as exc:
+        if exc.code == 404:
+            return None
+        raise
+    except (
+        urllib.error.URLError,
+        OSError,
+        socket.timeout,
+        UnicodeDecodeError,
+        json.JSONDecodeError,
+    ):
+        return None
+    try:
+        checksums = parse_release_checksums(repo, release_tag, sha_payload)
+    except PrebuiltFallback:
+        return None  # schema/component/tag mismatch -> let the API path decide
+    manifest_url = release_asset_download_url(repo, release_tag, MANIFEST_ASSET_NAME)
+    try:
+        manifest_payload = _download_host_json(manifest_url)
+    except urllib.error.HTTPError as exc:
+        if exc.code == 404:
+            return None
+        raise
+    except (
+        urllib.error.URLError,
+        OSError,
+        socket.timeout,
+        UnicodeDecodeError,
+        json.JSONDecodeError,
+    ):
+        return None
+    try:
+        manifest = parse_manifest(
+            manifest_payload, label = f"{MANIFEST_ASSET_NAME} in {repo}@{release_tag}"
+        )
+    except PrebuiltFallback:
+        return None
+    # Tag-pinned CDN URLs for every asset the install may fetch; asset_download_url
+    # also reconstructs any missing one, so this stays a pure download-host path.
+    names = {
+        str(a.get("asset"))
+        for a in manifest.get("artifacts", [])
+        if isinstance(a, dict) and a.get("asset")
+    }
+    names |= {MANIFEST_ASSET_NAME, SHA256_ASSET_NAME}
+    asset_urls = {name: release_asset_download_url(repo, release_tag, name) for name in names}
+    bundle = ReleaseBundle(
+        repo = repo, release_tag = release_tag, manifest = manifest, asset_urls = asset_urls
     )
+    return bundle, checksums
 
 
 # ── Safe archive extraction (zip + tar.gz, traversal/symlink guarded) ──
@@ -1215,6 +1328,23 @@ def resolve_release_tag(published_repo: str, *, published_release_tag: str | Non
     return resolve_newest_release_tag(published_repo)
 
 
+def fetch_release_for_install(
+    repo: str, *, published_release_tag: str | None
+) -> tuple[ReleaseBundle, dict[str, str]]:
+    """Resolve the release + manifest + checksum index, preferring the download
+    host (no api.github.com rate limit) and falling back to the GitHub API. This is
+    the single network seam the install/probe paths use."""
+    fast = _resolve_release_via_download_host(repo, published_release_tag)
+    if fast is not None:
+        bundle, checksums = fast
+        log(f"resolved {repo}@{bundle.release_tag} via the download host (no GitHub API)")
+        return bundle, checksums
+    release_tag = resolve_release_tag(repo, published_release_tag = published_release_tag)
+    bundle = fetch_release_bundle(repo, release_tag)
+    checksums = fetch_release_checksums(bundle)
+    return bundle, checksums
+
+
 def _install_from_bundle(
     install_dir: Path, host: HostInfo, bundle: ReleaseBundle, selection: InstallSelection
 ) -> None:
@@ -1293,14 +1423,15 @@ def install_prebuilt(
         detect_host(), has_rocm = has_rocm, rocm_gfx = rocm_gfx, force_cpu = cpu_fallback
     )
     effective_backend = resolve_backend(host, backend, cpu_fallback = cpu_fallback)
-    release_tag = resolve_release_tag(published_repo, published_release_tag = published_release_tag)
     log(
-        f"target whisper.cpp {release_tag} from {published_repo} "
+        f"target whisper.cpp from {published_repo} "
         f"({host.whisper_os}-{host.whisper_arch}, backend {effective_backend})"
     )
 
-    bundle = fetch_release_bundle(published_repo, release_tag)
-    checksums = fetch_release_checksums(bundle)
+    bundle, checksums = fetch_release_for_install(
+        published_repo, published_release_tag = published_release_tag
+    )
+    release_tag = bundle.release_tag
     selection = plan_selection(
         host,
         bundle,
@@ -1336,10 +1467,9 @@ def resolve_prebuilt(
     """Host-aware "is a prebuilt available" probe. No archive download."""
     effective_backend = resolve_backend(host, backend, cpu_fallback = cpu_fallback)
     try:
-        release_tag = resolve_release_tag(
+        bundle, _checksums = fetch_release_for_install(
             published_repo, published_release_tag = published_release_tag
         )
-        bundle = fetch_release_bundle(published_repo, release_tag)
         artifact, resolved_backend, used_cpu = select_artifact_with_cpu_fallback(
             bundle.manifest, host, effective_backend
         )

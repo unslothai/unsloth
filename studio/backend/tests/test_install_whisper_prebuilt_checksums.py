@@ -143,3 +143,140 @@ def test_pins_symbols_are_gone():
     # The committed-pins trust model was removed in favour of llama's runtime index.
     for gone in ("load_pins", "pins_path", "resolve_expected_sha256", "PINS_FILENAME"):
         assert not hasattr(iwp, gone), f"{gone} should have been removed"
+
+
+# Download-host fast path (resolve + fetch the JSON assets with no GitHub API).
+
+_CPU_ASSET = "whisper-v1.9.1-unsloth.1-linux-x64-cpu.tar.gz"
+
+
+def _manifest() -> dict:
+    return {
+        "schema_version": 1,
+        "component": "whisper.cpp",
+        "upstream_tag": "v1.9.1",
+        "artifacts": [{"asset": _CPU_ASSET, "os": "linux", "arch": "x64", "backend": "cpu"}],
+    }
+
+
+def _no_api(monkeypatch):
+    """Fail loudly if any code path touches api.github.com."""
+
+    def _boom(*a, **k):
+        raise AssertionError("api.github.com was used on the fast path")
+
+    monkeypatch.setattr(iwp, "fetch_json", _boom)
+    monkeypatch.setattr(iwp, "github_release", _boom)
+    monkeypatch.setattr(iwp, "fetch_release_bundle", _boom)
+
+
+def test_fetch_release_for_install_prefers_download_host(monkeypatch):
+    _no_api(monkeypatch)
+    monkeypatch.setattr(iwp, "_download_host_latest_release_tag", lambda repo: _TAG)
+
+    def _dhj(url):
+        if url.endswith(iwp.SHA256_ASSET_NAME):
+            return _index()
+        if url.endswith(iwp.MANIFEST_ASSET_NAME):
+            return _manifest()
+        raise AssertionError(f"unexpected url {url}")
+
+    monkeypatch.setattr(iwp, "_download_host_json", _dhj)
+    bundle, checks = iwp.fetch_release_for_install(_REPO, published_release_tag = None)
+    assert bundle.release_tag == _TAG
+    assert checks[_CPU_ASSET] == _A
+    # asset_urls point at the download host (github.com), not the API.
+    assert bundle.asset_urls[iwp.SHA256_ASSET_NAME].startswith(
+        f"https://github.com/{_REPO}/releases/"
+    )
+    assert bundle.asset_urls[_CPU_ASSET].startswith(
+        f"https://github.com/{_REPO}/releases/download/"
+    )
+
+
+def test_fetch_release_for_install_explicit_tag_skips_the_head(monkeypatch):
+    # An explicit tag needs no /releases/latest HEAD: resolving it must not call it.
+    monkeypatch.setattr(
+        iwp,
+        "_download_host_latest_release_tag",
+        lambda repo: (_ for _ in ()).throw(AssertionError("HEAD used for an explicit tag")),
+    )
+    monkeypatch.setattr(
+        iwp,
+        "_download_host_json",
+        lambda url: _index() if url.endswith(iwp.SHA256_ASSET_NAME) else _manifest(),
+    )
+    _no_api(monkeypatch)
+    bundle, checks = iwp.fetch_release_for_install(_REPO, published_release_tag = _TAG)
+    assert bundle.release_tag == _TAG
+
+
+def test_fetch_release_for_install_falls_back_to_api(monkeypatch):
+    # Fast path returns None (e.g. a 404) -> the API path resolves the release.
+    monkeypatch.setattr(iwp, "_resolve_release_via_download_host", lambda repo, tag: None)
+    sentinel = iwp.ReleaseBundle(repo = _REPO, release_tag = _TAG, manifest = _manifest(), asset_urls = {})
+    monkeypatch.setattr(iwp, "resolve_release_tag", lambda repo, *, published_release_tag: _TAG)
+    monkeypatch.setattr(iwp, "fetch_release_bundle", lambda repo, tag: sentinel)
+    monkeypatch.setattr(iwp, "fetch_release_checksums", lambda bundle: {_CPU_ASSET: _A})
+    bundle, checks = iwp.fetch_release_for_install(_REPO, published_release_tag = None)
+    assert bundle is sentinel
+    assert checks == {_CPU_ASSET: _A}
+
+
+def test_resolve_via_download_host_sha_404_returns_none(monkeypatch):
+    import urllib.error
+
+    monkeypatch.setattr(iwp, "_download_host_latest_release_tag", lambda repo: _TAG)
+
+    def _dhj(url):
+        raise urllib.error.HTTPError(url, 404, "not found", {}, None)
+
+    monkeypatch.setattr(iwp, "_download_host_json", _dhj)
+    assert iwp._resolve_release_via_download_host(_REPO, None) is None
+
+
+def test_resolve_via_download_host_tag_mismatch_returns_none(monkeypatch):
+    # A checksum index whose self-reported release_tag disagrees is rejected (None).
+    monkeypatch.setattr(iwp, "_download_host_latest_release_tag", lambda repo: _TAG)
+    monkeypatch.setattr(
+        iwp, "_download_host_json", lambda url: _index(release_tag = "v1.9.1-unsloth.2")
+    )
+    assert iwp._resolve_release_via_download_host(_REPO, None) is None
+
+
+def test_download_host_latest_release_tag_parses_redirect(monkeypatch):
+    class _Resp:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+        def geturl(self):
+            return f"https://github.com/{_REPO}/releases/tag/{_TAG}"
+
+    class _Opener:
+        def open(
+            self,
+            req,
+            timeout = None,
+        ):
+            return _Resp()
+
+    monkeypatch.setattr(iwp, "_URL_OPENER", _Opener())
+    assert iwp._download_host_latest_release_tag(_REPO) == _TAG
+
+
+def test_download_host_latest_release_tag_404_returns_none(monkeypatch):
+    import urllib.error
+
+    class _Opener:
+        def open(
+            self,
+            req,
+            timeout = None,
+        ):
+            raise urllib.error.HTTPError(req.full_url, 404, "nf", {}, None)
+
+    monkeypatch.setattr(iwp, "_URL_OPENER", _Opener())
+    assert iwp._download_host_latest_release_tag(_REPO) is None
