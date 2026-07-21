@@ -332,7 +332,7 @@ export function ProjectsPage() {
   }
 
   return (
-    <main className="mx-auto w-full max-w-6xl px-6 py-10 font-heading sm:px-10">
+    <main className="mx-auto w-full max-w-4xl px-6 py-10 font-heading sm:px-10">
       {/* Global import file input */}
       <input
         ref={globalImportRef}
@@ -465,7 +465,6 @@ export function ProjectsPage() {
       {!hasLoaded ? (
         <div className="mt-10">
           <div className="flex items-center gap-3 border-b border-border/60 px-5 pb-2 text-[13px] font-medium text-muted-foreground">
-            <span className="mr-1 size-9 shrink-0" />
             <span className="flex-1">Name</span>
             <span className="w-40 shrink-0">Modified</span>
             <span className="w-8 shrink-0" />
@@ -507,10 +506,9 @@ export function ProjectsPage() {
       ) : (
         <>
         <div className="mt-10">
-          {/* Column header. The leading spacer matches the row folder icon so
-              Name and Modified line up with the values below. */}
+          {/* Column header. Name starts at the folder icon's left edge; the
+              right-anchored columns keep Modified over its values. */}
           <div className="flex items-center gap-3 border-b border-border/60 px-5 pb-2 text-[13px] font-medium text-muted-foreground">
-            <span className="mr-1 size-9 shrink-0" />
             <span className="flex-1">Name</span>
             <span className="w-40 shrink-0">Modified</span>
             <span className="w-8 shrink-0" />
