@@ -100,24 +100,13 @@ def _canonical_hub_cache(hub_cache: Optional[str | Path] = None) -> Optional[str
         return str(hub_cache)
 
 
-def _hub_cache_key(hub_cache: Optional[str | Path] = None) -> Optional[str]:
-    canonical = _canonical_hub_cache(hub_cache)
-    return os.path.normcase(canonical) if canonical is not None else None
-
-
-def _state_applies_to_hub_cache(data: dict, hub_cache: Optional[str | Path]) -> bool:
-    if hub_cache is None:
-        return True
-    requested = _hub_cache_key(hub_cache)
-    if requested is None:
-        return False
-    recorded = data.get("hub_cache")
-    if isinstance(recorded, str) and recorded:
-        return _hub_cache_key(recorded) == requested
-    # State written before cache ownership was recorded belongs only to the
-    # currently selected cache, matching the legacy scanner behavior.
-    current = _hub_cache_key()
-    return current is not None and current == requested
+def _read_state_payload(path: Path) -> Optional[dict]:
+    try:
+        data = json.loads(path.read_text(encoding = "utf-8"))
+    except (OSError, ValueError) as exc:
+        logger.debug("Could not read Hub state %s: %s", path, exc)
+        return None
+    return data if isinstance(data, dict) else None
 
 
 def _atomic_write_json(path: Path, payload: dict) -> bool:
@@ -167,7 +156,13 @@ def write_manifest(
     worst-case fallback is the pre-fix scanner behavior (one missed
     partial detection), which is no regression.
     """
-    path = manifest_path(repo_type, repo_id, variant)
+    recorded_hub_cache = _canonical_hub_cache(hub_cache)
+    path = manifest_path(
+        repo_type,
+        repo_id,
+        variant,
+        hub_cache = recorded_hub_cache,
+    )
     if path is None:
         return False
     payload = {
@@ -185,7 +180,7 @@ def write_manifest(
             for f in expected_files
         ],
         "transport": transport,
-        "hub_cache": _canonical_hub_cache(hub_cache),
+        "hub_cache": recorded_hub_cache,
     }
     return _atomic_write_json(path, payload)
 
@@ -210,17 +205,16 @@ def read_manifest(
     ``_MANIFEST_VERSION`` and widen this check) or live under a different
     filename, so an incompatible payload can never mis-classify rows.
     """
-    path = manifest_path(repo_type, repo_id, variant)
+    path = manifest_path(
+        repo_type,
+        repo_id,
+        variant,
+        hub_cache = _canonical_hub_cache(hub_cache),
+    )
     if path is None or not path.is_file():
         return None
-    try:
-        data = json.loads(path.read_text(encoding = "utf-8"))
-    except (OSError, ValueError) as exc:
-        logger.debug("Could not read manifest %s: %s", path, exc)
-        return None
-    if not isinstance(data, dict):
-        return None
-    if not _state_applies_to_hub_cache(data, hub_cache):
+    data = _read_state_payload(path)
+    if data is None:
         return None
     if data.get("version") != _MANIFEST_VERSION:
         logger.debug(
@@ -340,7 +334,13 @@ def write_cancel_marker(
     inventory rows so the UI labels HTTP retries as continuable and XET
     retries as full redownloads. None is accepted for forward-compat.
     """
-    path = marker_path(repo_type, repo_id, variant)
+    recorded_hub_cache = _canonical_hub_cache(hub_cache)
+    path = marker_path(
+        repo_type,
+        repo_id,
+        variant,
+        hub_cache = recorded_hub_cache,
+    )
     if path is None:
         return False
     payload = {
@@ -350,7 +350,7 @@ def write_cancel_marker(
         "variant": variant,
         "transport": transport,
         "cancelled_at": datetime.now(timezone.utc).isoformat(),
-        "hub_cache": _canonical_hub_cache(hub_cache),
+        "hub_cache": recorded_hub_cache,
     }
     return _atomic_write_json(path, payload)
 
@@ -377,17 +377,16 @@ def read_cancel_marker_transport(
       ``None`` keeps the neutral "Retry" label.
     * Unknown future versions → ``None`` (unknown layout, unknown transport).
     """
-    path = marker_path(repo_type, repo_id, variant)
+    path = marker_path(
+        repo_type,
+        repo_id,
+        variant,
+        hub_cache = _canonical_hub_cache(hub_cache),
+    )
     if path is None or not path.is_file():
         return None
-    try:
-        data = json.loads(path.read_text(encoding = "utf-8"))
-    except (OSError, ValueError) as exc:
-        logger.debug("Could not read cancel marker %s: %s", path, exc)
-        return None
-    if not isinstance(data, dict):
-        return None
-    if not _state_applies_to_hub_cache(data, hub_cache):
+    data = _read_state_payload(path)
+    if data is None:
         return None
     version = data.get("version")
     if version == _LEGACY_MARKER_VERSION:
@@ -400,10 +399,33 @@ def read_cancel_marker_transport(
     return None
 
 
+def _all_matching_state_paths(
+    parent: Optional[Path],
+    repo_type: RepoType,
+    repo_id: str,
+    variant: Optional[str],
+) -> tuple[Path, ...]:
+    if parent is None:
+        return ()
+    legacy_path = (
+        manifest_path(repo_type, repo_id, variant)
+        if parent.name == "manifests"
+        else marker_path(repo_type, repo_id, variant)
+    )
+    if legacy_path is None:
+        return ()
+    try:
+        return tuple(path for path in parent.rglob(legacy_path.name) if path.is_file())
+    except OSError:
+        return ()
+
+
 def clear_cancel_marker(
     repo_type: RepoType,
     repo_id: str,
     variant: Optional[str] = None,
+    *,
+    hub_cache: Optional[str | Path] = None,
 ) -> None:
     """Remove the cancel marker for this triple if present.
 
@@ -411,7 +433,12 @@ def clear_cancel_marker(
     download-start (a fresh attempt supersedes prior cancel state) and
     again at successful completion (cleans up if the start clear failed).
     """
-    path = marker_path(repo_type, repo_id, variant)
+    path = marker_path(
+        repo_type,
+        repo_id,
+        variant,
+        hub_cache = _canonical_hub_cache(hub_cache),
+    )
     if path is None:
         return
     try:
@@ -427,27 +454,15 @@ def has_cancel_marker(
     *,
     hub_cache: Optional[str | Path] = None,
 ) -> bool:
-    """Return whether a cancel marker applies to this cache.
-
-    Without ``hub_cache``, file existence remains the fail-closed signal. With
-    a cache filter, the recorded owner is checked. Legacy or corrupt markers
-    retain their previous behavior for the current cache only.
-    """
-    path = marker_path(repo_type, repo_id, variant)
-    if path is None:
-        return False
+    """Return whether a cancel marker applies to the selected cache."""
+    path = marker_path(
+        repo_type,
+        repo_id,
+        variant,
+        hub_cache = _canonical_hub_cache(hub_cache),
+    )
     try:
-        if not path.is_file():
-            return False
-        if hub_cache is None:
-            return True
-        try:
-            data = json.loads(path.read_text(encoding = "utf-8"))
-        except (OSError, ValueError):
-            data = {}
-        if not isinstance(data, dict):
-            data = {}
-        return _state_applies_to_hub_cache(data, hub_cache)
+        return path is not None and path.is_file()
     except OSError:
         return False
 
@@ -456,8 +471,15 @@ def delete_manifest(
     repo_type: RepoType,
     repo_id: str,
     variant: Optional[str] = None,
+    *,
+    hub_cache: Optional[str | Path] = None,
 ) -> bool:
-    path = manifest_path(repo_type, repo_id, variant)
+    path = manifest_path(
+        repo_type,
+        repo_id,
+        variant,
+        hub_cache = _canonical_hub_cache(hub_cache),
+    )
     if path is None:
         return False
     try:
@@ -477,10 +499,19 @@ def purge_state(
 ) -> bool:
     """Remove manifest + cancel marker for this triple. Returns ``True``
     when anything was present on disk before the call. Idempotent."""
-    marker_existed = has_cancel_marker(repo_type, repo_id, variant)
-    manifest_removed = delete_manifest(repo_type, repo_id, variant)
-    clear_cancel_marker(repo_type, repo_id, variant)
-    return marker_existed or manifest_removed
+    paths = (
+        *_all_matching_state_paths(manifests_dir(), repo_type, repo_id, variant),
+        *_all_matching_state_paths(cancelled_dir(), repo_type, repo_id, variant),
+    )
+    removed = False
+    for path in paths:
+        try:
+            if path.is_file():
+                path.unlink()
+                removed = True
+        except OSError as exc:
+            logger.debug("Could not purge Hub state %s: %s", path, exc)
+    return removed
 
 
 def purge_all_state_for_repo(repo_type: RepoType, repo_id: str) -> int:
@@ -492,10 +523,19 @@ def purge_all_state_for_repo(repo_type: RepoType, repo_id: str) -> int:
     if purge_state(repo_type, repo_id, None):
         removed += 1
     variants: set[str] = set()
-    for variant, _ in iter_variant_manifests(repo_type, repo_id):
-        variants.add(variant)
-    for variant, _ in iter_variant_markers(repo_type, repo_id):
-        variants.add(variant)
+    for parent in (manifests_dir(), cancelled_dir()):
+        if parent is None:
+            continue
+        prefix = variant_filename_prefix(repo_type, repo_id)
+        try:
+            entries = tuple(parent.rglob(f"{prefix}*.json"))
+        except OSError:
+            continue
+        for entry in entries:
+            if not entry.is_file():
+                continue
+            fallback = entry.stem[len(prefix) :]
+            variants.add(_variant_from_state_file(entry, fallback))
     for variant in variants:
         if purge_state(repo_type, repo_id, variant):
             removed += 1
@@ -514,13 +554,27 @@ def _variant_from_state_file(path: Path, fallback: str) -> str:
 
 
 def _iter_variant_state_files(
-    parent: Optional[Path], repo_type: RepoType, repo_id: str
+    parent: Optional[Path],
+    repo_type: RepoType,
+    repo_id: str,
+    hub_cache: Optional[str | Path],
+    *,
+    cancel_markers: bool,
 ) -> Iterator[tuple[str, Path]]:
     if parent is None:
         return
+    path_factory = marker_path if cancel_markers else manifest_path
+    scoped_probe = path_factory(
+        repo_type,
+        repo_id,
+        None,
+        hub_cache = _canonical_hub_cache(hub_cache),
+    )
+    if scoped_probe is None:
+        return
     prefix = variant_filename_prefix(repo_type, repo_id)
     try:
-        entries = list(parent.iterdir())
+        entries = list(scoped_probe.parent.iterdir())
     except OSError:
         return
     for entry in entries:
@@ -529,20 +583,42 @@ def _iter_variant_state_files(
         stem = entry.name[: -len(".json")]
         if not stem.lower().startswith(prefix):
             continue
-        variant = stem[len(prefix) :]
-        if variant:
-            yield _variant_from_state_file(entry, variant), entry
+        fallback = stem[len(prefix) :]
+        if fallback:
+            yield _variant_from_state_file(entry, fallback), entry
 
 
-def iter_variant_manifests(repo_type: RepoType, repo_id: str) -> Iterator[tuple[str, Path]]:
+def iter_variant_manifests(
+    repo_type: RepoType,
+    repo_id: str,
+    *,
+    hub_cache: Optional[str | Path] = None,
+) -> Iterator[tuple[str, Path]]:
     """Yield (variant, manifest_path) for every variant-keyed manifest
     written for this repo. Used by is_gguf_repo_partial to enumerate all
     variants present on disk so the all-variants-broken gate can run."""
-    yield from _iter_variant_state_files(manifests_dir(), repo_type, repo_id)
+    yield from _iter_variant_state_files(
+        manifests_dir(),
+        repo_type,
+        repo_id,
+        hub_cache,
+        cancel_markers = False,
+    )
 
 
-def iter_variant_markers(repo_type: RepoType, repo_id: str) -> Iterator[tuple[str, Path]]:
+def iter_variant_markers(
+    repo_type: RepoType,
+    repo_id: str,
+    *,
+    hub_cache: Optional[str | Path] = None,
+) -> Iterator[tuple[str, Path]]:
     """Yield (variant, marker_path) for every variant-keyed cancel marker.
     Companion to iter_variant_manifests: catches variants cancelled
     before download-start ever wrote a manifest (very early failures)."""
-    yield from _iter_variant_state_files(cancelled_dir(), repo_type, repo_id)
+    yield from _iter_variant_state_files(
+        cancelled_dir(),
+        repo_type,
+        repo_id,
+        hub_cache,
+        cancel_markers = True,
+    )

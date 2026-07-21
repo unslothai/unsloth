@@ -1719,19 +1719,23 @@ def _local_gguf_companion_search_root(selected_path: str, gguf_file: str) -> str
     return str(gguf_dir)
 
 
-def _iter_hf_cache_snapshots(repo_id: str):
+def _iter_hf_cache_snapshots(
+    repo_id: str,
+    cache_dir: Optional[str | Path] = None,
+):
     """Yield HF cache snapshot dirs for *repo_id*, newest first.
 
     Empty if HF_HUB_CACHE is missing, the repo isn't cached, or has no
     snapshots. Repo name match is case-insensitive to handle casing drift
     between download time and lookup.
     """
-    try:
-        from huggingface_hub import constants as hf_constants
-    except Exception:
-        return
-
-    cache_dir = Path(hf_constants.HF_HUB_CACHE)
+    if cache_dir is None:
+        try:
+            from utils.hf_cache_settings import get_hf_cache_paths
+            cache_dir = get_hf_cache_paths().hub_cache
+        except Exception:
+            return
+    cache_dir = Path(cache_dir)
     target = f"models--{repo_id.replace('/', '--')}".lower()
     repo_dirs: list[Path] = []
     try:

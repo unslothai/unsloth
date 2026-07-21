@@ -34,7 +34,6 @@ from hub.services.models.common import (
     _is_mmproj_filename,
     _is_transformers_safetensors_weight_name,
     _local_inventory_id,
-    _prefer_complete_larger,
     _runtime_for_format,
 )
 
@@ -330,7 +329,10 @@ def _scan_cached_gguf() -> list[dict]:
                 repo_path = Path(repo_info.repo_path)
                 snapshot_path = _cached_model_snapshot_path(repo_path)
                 total_size = _repo_gguf_size_bytes(repo_info)
-                has_variant_state, variant_state_size = _gguf_variant_state_summary(repo_id)
+                has_variant_state, variant_state_size = _gguf_variant_state_summary(
+                    repo_id,
+                    hub_cache = repo_path.parent,
+                )
                 is_hidden_infra = _is_hidden_infra_repo(
                     repo_id,
                     str(repo_path),

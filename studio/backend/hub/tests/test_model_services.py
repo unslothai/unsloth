@@ -394,8 +394,19 @@ def test_download_state_bounds_long_repo_variant_filenames(monkeypatch, tmp_path
         "http",
     )
 
-    marker_path = state_dir.marker_path("model", repo_id, variant)
-    manifest_path = state_dir.manifest_path("model", repo_id, variant)
+    hub_cache = download_manifest._canonical_hub_cache()
+    marker_path = state_dir.marker_path(
+        "model",
+        repo_id,
+        variant,
+        hub_cache = hub_cache,
+    )
+    manifest_path = state_dir.manifest_path(
+        "model",
+        repo_id,
+        variant,
+        hub_cache = hub_cache,
+    )
 
     assert marker_path is not None
     assert manifest_path is not None
@@ -410,6 +421,49 @@ def test_download_state_bounds_long_repo_variant_filenames(monkeypatch, tmp_path
     assert list(download_manifest.iter_variant_manifests("model", repo_id)) == [
         (variant, manifest_path)
     ]
+
+
+def test_download_state_isolated_across_hub_cache_switches(monkeypatch, tmp_path):
+    monkeypatch.setattr(state_dir, "cache_root", lambda: tmp_path)
+    cache_a = tmp_path / "cache-a"
+    cache_b = tmp_path / "cache-b"
+    selected = SimpleNamespace(hub_cache = cache_a)
+
+    from utils import hf_cache_settings
+
+    monkeypatch.setattr(hf_cache_settings, "get_hf_cache_paths", lambda: selected)
+    expected_a = [download_manifest.ExpectedFile(path = "a.gguf", size = 1)]
+    expected_b = [download_manifest.ExpectedFile(path = "b.gguf", size = 2)]
+
+    assert download_manifest.write_manifest("model", "Owner/Repo", "Q4_K_M", expected_a)
+    assert download_manifest.write_cancel_marker(
+        "model",
+        "Owner/Repo",
+        "Q4_K_M",
+        "http",
+    )
+
+    selected.hub_cache = cache_b
+    assert download_manifest.write_manifest("model", "Owner/Repo", "Q4_K_M", expected_b)
+
+    manifest_b = download_manifest.read_manifest("model", "Owner/Repo", "Q4_K_M")
+    manifest_a = download_manifest.read_manifest(
+        "model",
+        "Owner/Repo",
+        "Q4_K_M",
+        hub_cache = cache_a,
+    )
+
+    assert manifest_b is not None and manifest_b.expected_files == tuple(expected_b)
+    assert manifest_a is not None and manifest_a.expected_files == tuple(expected_a)
+    assert not download_manifest.has_cancel_marker("model", "Owner/Repo", "Q4_K_M")
+    assert download_manifest.has_cancel_marker(
+        "model",
+        "Owner/Repo",
+        "Q4_K_M",
+        hub_cache = cache_a,
+    )
+    assert len(list((tmp_path / "hub-state" / "manifests").rglob("*.json"))) == 2
 
 
 class _RecordingLogger:
@@ -647,8 +701,15 @@ def test_cached_gguf_scan_includes_variant_state_without_completed_gguf(monkeypa
         "Q4_K_M",
         [download_manifest.ExpectedFile(path = "model-Q4_K_M.gguf", size = 4096)],
         "http",
+        hub_cache = repo_path.parent,
     )
-    assert download_manifest.write_cancel_marker("model", "Org/PartialGguf", "Q4_K_M", "http")
+    assert download_manifest.write_cancel_marker(
+        "model",
+        "Org/PartialGguf",
+        "Q4_K_M",
+        "http",
+        hub_cache = repo_path.parent,
+    )
     monkeypatch.setattr(
         cache_inventory,
         "all_hf_cache_scans",
@@ -715,6 +776,7 @@ def test_cached_gguf_scan_keeps_infra_repo_with_user_downloaded_variant(monkeypa
         "Q8_0",
         [download_manifest.ExpectedFile(path = "bge-small-en-v1.5-Q8_0.gguf", size = 35_000_000)],
         "http",
+        hub_cache = Path(embedder.repo_path).parent,
     )
     monkeypatch.setattr(
         cache_inventory,
@@ -2095,8 +2157,15 @@ def test_hf_cache_scan_uses_gguf_partial_row_for_variant_state(monkeypatch, tmp_
         "Q4_K_M",
         [download_manifest.ExpectedFile(path = "model-Q4_K_M.gguf", size = 8192)],
         "http",
+        hub_cache = cache_dir,
     )
-    assert download_manifest.write_cancel_marker("model", "Org/PartialGguf", "Q4_K_M", "http")
+    assert download_manifest.write_cancel_marker(
+        "model",
+        "Org/PartialGguf",
+        "Q4_K_M",
+        "http",
+        hub_cache = cache_dir,
+    )
     monkeypatch.setattr(local_inventory, "_classify_local_path", lambda *_args, **_kwargs: [])
     monkeypatch.setattr(
         local_inventory.hf_cache_scan,

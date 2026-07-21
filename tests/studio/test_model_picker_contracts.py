@@ -60,6 +60,19 @@ def test_compare_load_clears_stale_native_lease():
     assert "activeNativePathExpiresAtMs: null" in src
 
 
+def test_autoload_records_backend_loaded_model_identity():
+    """An inactive-cache inventory row loads by local path, so startup autoload
+    must key both the active checkpoint and its summary by the backend's loaded
+    model identity instead of the catalog repo id."""
+    src = _read("features/chat/api/chat-adapter.ts")
+    autoload = src.split("async function loadAutoLoadCandidate", 1)[1]
+    autoload = autoload.split("\n  try {", 1)[0]
+    assert "const loadedModelId = loadResp.model || modelPath" in autoload
+    assert "setCheckpoint(loadedModelId," in autoload
+    assert "id: loadedModelId" in autoload
+    assert "m.id === loadedModelId" in autoload
+
+
 def test_rollback_restores_native_lease_expiry_with_token():
     """A failed model switch that rolls back to a previously loaded picked GGUF
     must restore the lease expiry paired with the token, never the token alone

@@ -235,6 +235,7 @@ def finalize_worker_exit(
         (stderr_data or b"").decode("utf-8", "replace").strip(),
         hf_token = hf_token,
     )
+    metadata = registry.get_job_metadata(key)
     state = classify_exit(rc, cancel_requested = cancel_requested)
     if state == "complete":
         registry.set_job(key, "complete")
@@ -257,13 +258,13 @@ def finalize_worker_exit(
                     repo_type,
                     repo_id,
                     download_registry.variant_from_key(key),
+                    hub_cache = metadata.hub_cache if metadata is not None else None,
                 )
             except Exception as exc:
                 logger.debug(f"clear_cancel_marker failed for {repo_id} (rc=0): {exc}")
     elif state == "cancelled":
         # Read metadata before the terminal set_job so a concurrent eviction
         # can't drop it; the job key is the fallback variant label.
-        metadata = registry.get_job_metadata(key)
         registry.set_job(key, "cancelled")
         logger.info(f"{log_prefix} cancelled: {label} (rc={rc})")
         download_registry.persist_cancel_marker(

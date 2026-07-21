@@ -1637,9 +1637,10 @@ async function autoLoadSmallestModel(): Promise<{
     }
     // Self-gates on is_gguf (skips diffusion), so persists only for a real GGUF load.
     persistGpuMemoryModeOnLoad(loadResp, effectiveGpuMemoryMode);
+    const loadedModelId = loadResp.model || modelPath;
     useChatRuntimeStore
       .getState()
-      .setCheckpoint(candidate.id, candidate.ggufVariant ?? undefined);
+      .setCheckpoint(loadedModelId, candidate.ggufVariant ?? undefined);
     const store = useChatRuntimeStore.getState();
     store.setModelRequiresTrustRemoteCode(
       loadResp.requires_trust_remote_code ?? false,
@@ -1655,7 +1656,7 @@ async function autoLoadSmallestModel(): Promise<{
           : effectiveMaxSeqLength,
     });
     const autoModel: ChatModelSummary = {
-      id: candidate.id,
+      id: loadedModelId,
       name: loadResp.display_name ?? candidate.id,
       isVision: loadResp.is_vision ?? false,
       isLora: loadResp.is_lora ?? false,
@@ -1664,7 +1665,7 @@ async function autoLoadSmallestModel(): Promise<{
       audioType: loadResp.audio_type ?? null,
       hasAudioInput: loadResp.has_audio_input ?? false,
     };
-    if (!store.models.some((m) => m.id === candidate.id)) {
+    if (!store.models.some((m) => m.id === loadedModelId)) {
       store.setModels([...store.models, autoModel]);
     }
     if (candidate.kind === "gguf") {

@@ -372,7 +372,7 @@ def test_cached_gguf_scan_keeps_download_timestamp(monkeypatch, tmp_path):
     monkeypatch.setattr(
         CI,
         "_gguf_variant_state_summary",
-        lambda _repo_id: (False, 0),
+        lambda _repo_id, **_kwargs: (False, 0),
     )
 
     rows = CI._scan_cached_gguf()

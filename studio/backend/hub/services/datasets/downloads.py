@@ -182,7 +182,12 @@ async def download_dataset_response(
             "accepted": _registry.adoptable(key),
             "generation": generation,
         }
-    download_manifest.clear_cancel_marker("dataset", repo_id, None)
+    download_manifest.clear_cancel_marker(
+        "dataset",
+        repo_id,
+        None,
+        hub_cache = cache_paths.hub_cache,
+    )
 
     state = download_lifecycle.launch_worker(
         _registry,

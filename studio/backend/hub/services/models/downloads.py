@@ -197,7 +197,12 @@ async def download_model_response(body: DownloadModelRequest, hf_token: Optional
             "accepted": _registry.adoptable(key),
             "generation": generation,
         }
-    download_manifest.clear_cancel_marker("model", repo_id, variant)
+    download_manifest.clear_cancel_marker(
+        "model",
+        repo_id,
+        variant,
+        hub_cache = cache_paths.hub_cache,
+    )
     # Blobs a concurrent same-repo variant is already writing (e.g. a shared
     # mmproj). The worker must not purge these during cache preparation.
     protected_blob_hashes = _registry.peer_blob_hashes(key) if variant else frozenset()

@@ -242,7 +242,10 @@ def _scan_hf_cache(
             repo_dir,
         )
         gguf_partial = hf_cache_scan.is_gguf_repo_partial(model_id, repo_dir)
-        has_gguf_variant_state, gguf_variant_state_size = _gguf_variant_state_summary(model_id)
+        has_gguf_variant_state, gguf_variant_state_size = _gguf_variant_state_summary(
+            model_id,
+            hub_cache = cache_dir,
+        )
         snapshot_partial_transport = (
             hf_cache_scan.partial_transport_for(
                 "model",

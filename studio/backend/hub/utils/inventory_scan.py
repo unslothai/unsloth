@@ -263,12 +263,17 @@ def _gguf_variant_manifest_blob_hashes(
     from hub.utils import download_manifest
 
     hashes: set[str] = set()
-    for variant, _path in download_manifest.iter_variant_manifests("model", repo_id):
+    hub_cache = _hub_cache_for_repo_dir(repo_cache_dir)
+    for variant, _path in download_manifest.iter_variant_manifests(
+        "model",
+        repo_id,
+        hub_cache = hub_cache,
+    ):
         manifest = download_manifest.read_manifest(
             "model",
             repo_id,
             variant,
-            hub_cache = _hub_cache_for_repo_dir(repo_cache_dir),
+            hub_cache = hub_cache,
         )
         if manifest is None:
             continue
@@ -524,6 +529,7 @@ def is_gguf_repo_partial(repo_id: str, repo_cache_dir: Optional[Path] = None) ->
     for variant, _path in download_manifest.iter_variant_manifests(
         "model",
         repo_id,
+        hub_cache = hub_cache,
     ):
         if (
             download_manifest.read_manifest(
@@ -538,6 +544,7 @@ def is_gguf_repo_partial(repo_id: str, repo_cache_dir: Optional[Path] = None) ->
     for variant, _path in download_manifest.iter_variant_markers(
         "model",
         repo_id,
+        hub_cache = hub_cache,
     ):
         if download_manifest.has_cancel_marker(
             "model",
