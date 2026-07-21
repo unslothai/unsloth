@@ -101,6 +101,7 @@ export const en = {
       connections: "Connections",
       data: "Data",
       apiKeys: "API",
+      agents: "Agents",
       about: "About",
     },
     voice: {
@@ -508,6 +509,69 @@ export const en = {
         processMemory: "Process memory",
         notInstalled: "Not installed",
         unknown: "Unknown",
+      },
+    },
+    agents: {
+      title: "Agents",
+      description:
+        "Connect coding agents like Claude Code and Codex to a model running locally in Unsloth.",
+      intro:
+        "connects Claude Code, Codex, Hermes, OpenCode and other agents to a model served locally by Unsloth, fully offline on your own hardware. It runs a OpenAI-compatible server for the agent and never touches your agent's config files.",
+      readDocs: "Read the docs",
+      copy: "Copy",
+      copied: "Copied",
+      quickstart: {
+        title: "Quickstart",
+        description:
+          "Launch an agent against your first available local model. Swap claude for any supported agent below.",
+        detectedTitle: "Detected on this machine",
+        detectedDescription:
+          "Agent CLIs Unsloth found on your PATH. Others can still be launched once installed.",
+        noneDetected: "No supported agent CLIs were found on your PATH.",
+        installed: "Installed",
+        checking: "Checking your PATH…",
+      },
+      supportedAgents: {
+        title: "Supported agents",
+        description: "Each agent launches with its own command:",
+      },
+      models: {
+        title: "Choosing a model",
+        description:
+          "Pass --model to pick a model and quantization, and --context-length to set the window. Use a quantization suffix, or an explicit --gguf-variant flag.",
+        suffixLabel: "With a quantization suffix",
+        variantLabel: "With an explicit variant flag",
+      },
+      options: {
+        title: "Common options",
+        description:
+          "Unsloth flags are parsed first; anything it doesn't recognize is passed straight through to the agent.",
+        model: "Select a model. Defaults to the first available.",
+        contextLength:
+          "Set the requested context length (alias: --max-seq-length).",
+        ggufVariant: "Choose the GGUF quantization variant.",
+        loadIn4bit: "Toggle 4-bit loading for Hugging Face models.",
+        tensorParallel: "Toggle tensor-parallel across multiple GPUs.",
+        serve: "Enable or disable the automatic local server.",
+        launch: "Launch the agent, or just print the command and environment.",
+        persist: "Keep Unsloth-managed agent storage between runs.",
+        apiKey: "Provide your Unsloth API key (or set UNSLOTH_API_KEY).",
+        yolo: "Skip approval prompts. Use only in trusted environments.",
+      },
+      remote: {
+        title: "Connect to a remote Studio",
+        description:
+          "Point unsloth start at a Studio running elsewhere by setting these before launching (or pass --api-key directly):",
+      },
+      passthrough: {
+        title: "Passing agent arguments",
+        description:
+          "Arguments after the Unsloth flags are forwarded to the agent itself, so native commands like resume still work:",
+      },
+      dryRun: {
+        title: "Preview without launching",
+        description:
+          "Add --no-launch to print the environment variables and the full command without running anything.",
       },
     },
     chat: {
