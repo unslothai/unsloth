@@ -918,11 +918,9 @@ class TestRouteErrors(unittest.TestCase):
                     )
                 )
 
-        # The validator's ValueError becomes a clean 400 (not the removed
-        # "not supported for GGUF" rejection).
+        # The validator's ValueError (or backend capability rejection) becomes a clean 400.
         self.assertEqual(exc_info.exception.status_code, 400)
         self.assertIn("gpu_ids", exc_info.exception.detail.lower())
-        self.assertNotIn("not supported", exc_info.exception.detail.lower())
 
     def test_inference_route_rejects_gpu_ids_on_cpu_only_llama_build(self):
         # A CUDA-visible host with a CPU-only llama.cpp build: the CUDA resolver validates
