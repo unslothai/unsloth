@@ -111,6 +111,10 @@ const ALL_MODELS_VIEW_STORAGE_KEY = "unsloth.hub.allModelsView";
 const INVENTORY_SORT_STORAGE_KEY = "unsloth.hub.inventorySort";
 const OWNER_SCOPE_STORAGE_KEY = "unsloth.hub.ownerScope";
 
+// Iconless models (repo name matches no provider logo, e.g. Ornith, Inkling)
+// still show in the feed once they clear this many Hugging Face likes.
+const MIN_ICONLESS_MODEL_LIKES = 30;
+
 /** Discover browsing scope: the whole Hub (default) or only the unsloth org. */
 export type OwnerScope = "unsloth" | "all";
 
@@ -739,9 +743,10 @@ export function ModelsPage() {
       (row) =>
         !isHiddenModelId(row.id) &&
         !isConfiguredHiddenModelId(hiddenEmbeddingModelIds, row.id) &&
-        // The default feed only shows models with a provider logo.
+        // Feed shows logo'd models, plus iconless ones above the likes threshold.
         (!isFeedMode ||
-          resolveOwnerProviderLogo(row.owner, row.repo) !== null) &&
+          resolveOwnerProviderLogo(row.owner, row.repo) !== null ||
+          (row.result.likes ?? 0) >= MIN_ICONLESS_MODEL_LIKES) &&
         matchesFormat(
           detectResultFormat(row.result),
           effectiveDiscoverFormat,

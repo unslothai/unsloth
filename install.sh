@@ -3396,6 +3396,15 @@ else
     fi
 fi
 
+_installed_package_version=$("$_VENV_PY" -c \
+    'from importlib.metadata import version; import sys; print(version(sys.argv[1]))' \
+    "$PACKAGE_NAME" 2>/dev/null || true)
+if [ -n "$_installed_package_version" ]; then
+    step "$PACKAGE_NAME" "$_installed_package_version installed"
+else
+    substep "[WARN] installed $PACKAGE_NAME version could not be determined" "$C_WARN"
+fi
+
 # ── Enforce the installed torch flavor matches the detected GPU build ──
 # PEP 440 ignores the +cpu/+cuXXX/+rocm local label in a version range, so uv
 # keeps a stale torch==X+cpu against a GPU index and the venv silently trains on
