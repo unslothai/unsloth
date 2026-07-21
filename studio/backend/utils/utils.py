@@ -123,6 +123,26 @@ def without_hf_auth():
             os.environ.pop("HF_HUB_DISABLE_IMPLICIT_TOKEN", None)
 
 
+def is_hf_authentication_error(error: Exception) -> bool:
+    """Return whether an exception chain contains a definitive HF auth failure."""
+    seen: set[int] = set()
+    current: BaseException | None = error
+    while current is not None and id(current) not in seen:
+        seen.add(id(current))
+        response = getattr(current, "response", None)
+        status = getattr(response, "status_code", None)
+        try:
+            if status is not None and int(status) == 401:
+                return True
+        except (TypeError, ValueError):
+            pass
+        message = str(current).lower()
+        if "invalid user token" in message or "invalid hf token" in message:
+            return True
+        current = current.__cause__ or current.__context__
+    return False
+
+
 def format_error_message(error: Exception, model_name: str) -> str:
     """
     Format a user-friendly error message for common load issues.

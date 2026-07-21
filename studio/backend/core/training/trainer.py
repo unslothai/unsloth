@@ -3425,15 +3425,19 @@ class UnslothTrainer:
                     logger.info(
                         f"CPT: using UnslothTrainer with embedding_learning_rate={embedding_lr}\n"
                     )
+                    cpt_args = _UnslothTrainingArguments(
+                        embedding_learning_rate = embedding_lr,
+                        **config_args,
+                    )
+                    if config_args.get("packing", False):
+                        cpt_args.packing_strategy = "wrapped"
+                        logger.info("CPT packing strategy: wrapped\n")
                     trainer_kwargs = {
                         "model": self.model,
                         "tokenizer": sft_tokenizer,
                         "train_dataset": dataset["dataset"],
                         "data_collator": data_collator,
-                        "args": _UnslothTrainingArguments(
-                            embedding_learning_rate = embedding_lr,
-                            **config_args,
-                        ),
+                        "args": cpt_args,
                     }
                     if eval_dataset is not None:
                         trainer_kwargs["eval_dataset"] = eval_dataset

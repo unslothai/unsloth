@@ -61,6 +61,11 @@ def cache_root() -> Path:
     return studio_root() / "cache"
 
 
+def llama_slot_cache_root() -> Path:
+    """Dir llama-server saves/restores slot KV state in across idle unloads."""
+    return cache_root() / "llama-slots"
+
+
 def studio_bin_root() -> Path:
     """Dir for Unsloth-managed executables (the `unsloth` shim, downloaded tools like cloudflared)."""
     return studio_root() / "bin"

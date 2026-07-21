@@ -312,6 +312,7 @@ from routes.preview import router as preview_router
 from hub.routes import (
     inventory_router as hub_inventory_router,
     datasets_router as hub_datasets_router,
+    token_router as hub_token_router,
 )
 from hub.schemas.downloads import TransportCapabilities
 from hub.utils.download_registry import (
@@ -547,8 +548,9 @@ async def lifespan(app: FastAPI):
     threading.Thread(target = _warm_rag_embedder, daemon = True, name = "rag-embedder-warm").start()
 
     # Idle auto-unload loop (no-op unless the OpenAI auto-unload TTL is set).
-    from core.inference.llama_keepwarm import idle_unload_loop
+    from core.inference.llama_keepwarm import idle_unload_loop, sweep_slot_save_dir
 
+    sweep_slot_save_dir()
     app.state.idle_unload_task = asyncio.create_task(idle_unload_loop())
 
     # Initialize RSA key pair for API key encryption (external providers).
@@ -992,6 +994,7 @@ app.include_router(rag_router, prefix = "/api/rag", tags = ["rag"])
 app.include_router(training_history_router, prefix = "/api/train", tags = ["training-history"])
 app.include_router(hub_inventory_router, prefix = "/api/hub", tags = ["hub"])
 app.include_router(hub_datasets_router, prefix = "/api/hub/datasets", tags = ["hub"])
+app.include_router(hub_token_router, prefix = "/api/hub", tags = ["hub"])
 
 # Re-wrap client-error responses on the /v1/* surface into OpenAI/Anthropic
 # error envelopes; non-/v1 paths keep FastAPI's default {"detail": ...} shape.
@@ -1148,11 +1151,15 @@ def _get_cached_system_gpu_info(logger) -> dict[str, Any]:
             util = util_devices.get(idx, {})
 
             total_vram = util.get("vram_total_gb") or dev.get("memory_total_gb") or 0
-            used_vram = util.get("vram_used_gb") or 0
+            # Keep None (usage unknown, e.g. Windows ROCm perf counter) so the UI
+            # shows unknown, not a fabricated 0 used / full free.
+            used_vram = util.get("vram_used_gb")
 
             enriched_dev = dict(dev)
             enriched_dev["vram_used_gb"] = used_vram
-            enriched_dev["vram_free_gb"] = round(total_vram - used_vram, 2) if total_vram else 0
+            enriched_dev["vram_free_gb"] = (
+                round(total_vram - used_vram, 2) if total_vram and used_vram is not None else None
+            )
             enriched_dev["vram_utilization_pct"] = util.get("vram_utilization_pct")
             enriched_devices.append(enriched_dev)
 
