@@ -1607,9 +1607,19 @@ def _run_mlx_training(event_queue, stop_queue, config):
     # get_peft_model and MLXTrainer both accept and handle strings.
     gc_setting = config.get("gradient_checkpointing", "mlx")
     if isinstance(gc_setting, str):
-        use_grad_checkpoint = (
-            gc_setting if gc_setting.lower() not in ("false", "none", "") else False
-        )
+        _gc = gc_setting.lower()
+        if _gc in ("false", "none", ""):
+            use_grad_checkpoint = False
+        elif _gc in ("true", "1", "yes"):
+            # HF-standard GC (UI "Standard"): pass a real bool so unsloth
+            # unpatches the smart offloader. Leaving it the string "true" hits
+            # neither the "unsloth" nor the (True, False) branch in
+            # _configure_gradient_checkpointing, so the offloader stays patched
+            # and active against the user's choice (memory crash on
+            # constrained/unified GPUs).
+            use_grad_checkpoint = True
+        else:
+            use_grad_checkpoint = gc_setting  # "unsloth" / "mlx" stay strings
     else:
         use_grad_checkpoint = gc_setting
 
