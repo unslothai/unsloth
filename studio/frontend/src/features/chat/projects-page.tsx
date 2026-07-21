@@ -332,7 +332,7 @@ export function ProjectsPage() {
   }
 
   return (
-    <main className="mx-auto w-full max-w-4xl px-6 py-10 font-heading sm:px-10">
+    <main className="mx-auto w-full max-w-5xl px-6 pb-10 pt-16 font-heading sm:px-10">
       {/* Global import file input */}
       <input
         ref={globalImportRef}
