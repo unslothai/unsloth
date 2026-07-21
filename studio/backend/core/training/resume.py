@@ -137,9 +137,7 @@ def _has_model_state(path: Path) -> bool:
         ):
             continue
         expected_suffix = _INDEX_SHARD_SUFFIX[name]
-        if shards and all(
-            _valid_indexed_shard(path, shard, expected_suffix) for shard in shards
-        ):
+        if shards and all(_valid_indexed_shard(path, shard, expected_suffix) for shard in shards):
             return True
     return False
 
