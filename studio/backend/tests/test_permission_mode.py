@@ -964,8 +964,38 @@ def test_python_runtime_safety_blocks_child_startup_guard_bypass():
         )
         is None
     )
+    assert (
+        _check_code_safety(
+            "import subprocess\nsubprocess.run(['ignored','-c','print(1)'], executable='python')"
+        )
+        is None
+    )
+    assert (
+        _check_code_safety("import os\nos.execl('/usr/bin/python','python','-c','print(1)')")
+        is None
+    )
     assert "runtime guard" in (
         _check_code_safety("import subprocess\nsubprocess.run(['python','-S','-c','print(1)'])")
+        or ""
+    )
+    assert "runtime guard" in (
+        _check_code_safety(
+            "import subprocess\nsubprocess.run(args=['python','-S','-c','print(1)'])"
+        )
+        or ""
+    )
+    assert "runtime guard" in (
+        _check_code_safety(
+            "import subprocess\n"
+            "subprocess.run(['ignored','-S','-c','print(1)'], executable='python')"
+        )
+        or ""
+    )
+    assert "runtime guard" in (
+        _check_code_safety("from subprocess import *\nrun(['python','-S','-c','print(1)'])") or ""
+    )
+    assert "runtime guard" in (
+        _check_code_safety("import os\nos.execl('/usr/bin/python','python','-S','-c','print(1)')")
         or ""
     )
     assert "runtime guard" in (
@@ -1142,6 +1172,11 @@ def test_render_html_gated_only_when_networked():
     )
     assert rh("<script>img['src']='./local.png'</script>") is False
     assert rh("<script>img['setAttribute']('src','./local.png')</script>") is False
+    assert rh("<script>img.setAttribute.call(img, 'src', 'https://evil/x')</script>") is True
+    assert rh("<script>img.setAttribute.call(img, 'src', './local.png')</script>") is False
+    assert rh("<script>img.setAttribute.apply(img, ['src', 'https://evil/x'])</script>") is True
+    assert rh("<script>img.setAttribute.apply(img, ['src', './local.png'])</script>") is False
+    assert rh("<script>img.setAttribute.call(img, 'class', 'https://evil/x')</script>") is False
     assert rh("<script>Reflect.set(obj,'title','https://evil/x')</script>") is False
     assert (
         rh("<script>Object.assign(obj,{src:'./local.png',title:'https://evil/x'})</script>")
@@ -1150,6 +1185,8 @@ def test_render_html_gated_only_when_networked():
     assert rh("<script>node.outerHTML='<script>fetch(1)<\\/script>'</script>") is True
     assert rh("<script>node.insertAdjacentHTML('beforeend','<img src=/api/x>')</script>") is True
     assert rh("<script>document.write('<img sr','c=https://evil/x>')</script>") is True
+    assert rh("<script>document.write`<img src=https://evil/x>`</script>") is True
+    assert rh("<script>document.write`<p>Local</p>`</script>") is False
     assert rh("<script>document.write.call(document, '<img src=https://evil/x>')</script>") is True
     assert rh("<script>document.write.call(document, '<p>Local</p>')</script>") is False
     assert (

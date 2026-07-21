@@ -213,6 +213,9 @@ _SANDBOX_PYTHON_ENV_VARS = frozenset(
     {"PATH", "PYTHONHOME", "PYTHONPATH", "UNSLOTH_STUDIO_SANDBOXED"}
 )
 _PYTHON_LAUNCH_WRAPPERS = _COMMAND_PREFIXES | frozenset({"conda", "hatch", "pipx", "poetry", "uv"})
+_SHELL_SCRIPT_INTERPRETERS = frozenset(
+    {"bash", "cmd", "cmd.exe", "dash", "fish", "ksh", "sh", "zsh"}
+)
 
 
 def _python_executable_token(token: str) -> bool:
@@ -230,12 +233,18 @@ def _shell_command_segments(command: str) -> list[list[str]]:
     except ValueError:
         tokens = command.split()
     segments: list[list[str]] = [[]]
+    expect_command = True
     for token in tokens:
-        if token in _SHELL_SEPARATORS:
+        stripped = token.strip("\"'")
+        if token in _SHELL_SEPARATORS or (
+            expect_command and stripped.lower() in _SHELL_KEYWORDS_AS_SEP
+        ):
             if segments[-1]:
                 segments.append([])
+            expect_command = True
             continue
-        segments[-1].append(token.strip("\"'"))
+        segments[-1].append(stripped)
+        expect_command = False
     return [segment for segment in segments if segment]
 
 
@@ -338,6 +347,43 @@ def _segment_python_index(segment: list[str]) -> int | None:
         if _python_executable_token(segment[index]):
             return index
     return None
+
+
+def _segment_shell_index(segment: list[str]) -> int | None:
+    if not segment:
+        return None
+    first = os.path.basename(segment[0].replace("\\", "/")).lower()
+    wrapper_context = first in _PYTHON_LAUNCH_WRAPPERS
+    find_exec = first in {"find", "fd"}
+    for index, token in enumerate(segment):
+        shell = os.path.basename(token.replace("\\", "/")).lower()
+        find_exec_context = find_exec and any(
+            token in _FIND_EXEC_FLAGS for token in segment[:index]
+        )
+        if shell in _SHELL_SCRIPT_INTERPRETERS and (
+            index == 0 or wrapper_context or find_exec_context
+        ):
+            return index
+    return None
+
+
+def _segment_shell_reads_stdin(segment: list[str], shell_index: int) -> bool:
+    saw_stdin_flag = False
+    for token in segment[shell_index + 1 :]:
+        lowered = token.lower()
+        if lowered == "/c" or (lowered.startswith("-") and lowered.endswith("c")):
+            return False
+        if lowered in {"-s", "--stdin"} or (
+            lowered.startswith("-") and not lowered.startswith("--") and "s" in lowered[1:]
+        ):
+            saw_stdin_flag = True
+            continue
+        if lowered.startswith("-"):
+            continue
+        if saw_stdin_flag:
+            continue
+        return False
+    return True
 
 
 def _python_flags_skip_sitecustomize(arguments: list[str]) -> bool:
@@ -520,10 +566,66 @@ def _shell_here_doc_entries(command: str) -> tuple[list[tuple[str, str]], bool]:
     return entries, malformed
 
 
+def _shell_here_string_entries(command: str) -> tuple[list[tuple[str, str]], bool]:
+    if "<<<" not in command:
+        return [], False
+    try:
+        lexer = shlex.shlex(command, posix = sys.platform != "win32", punctuation_chars = ";&|()`{}<")
+        lexer.whitespace_split = True
+        tokens = list(lexer)
+    except ValueError:
+        return [], True
+    segments: list[list[str]] = [[]]
+    expect_command = True
+    for token in tokens:
+        if token in _SHELL_SEPARATORS or (
+            expect_command and token.lower() in _SHELL_KEYWORDS_AS_SEP
+        ):
+            if segments[-1]:
+                segments.append([])
+            expect_command = True
+            continue
+        segments[-1].append(token)
+        expect_command = False
+
+    entries: list[tuple[str, str]] = []
+    malformed = False
+    for segment in segments:
+        index = 0
+        while index < len(segment):
+            if segment[index] != "<<<":
+                index += 1
+                continue
+            if index + 1 >= len(segment):
+                malformed = True
+                break
+            opener = segment[:index] + segment[index + 2 :]
+            if not opener:
+                malformed = True
+            else:
+                entries.append((shlex.join(opener), segment[index + 1]))
+            index += 2
+    return entries, malformed
+
+
 _SHELL_EXPANSION_TOKEN_RE = re.compile(
     r"\$(?:[A-Za-z_][A-Za-z0-9_]*|\{[^}]*\}|[0-9#?*$!@_-])|%[A-Za-z_][A-Za-z0-9_]*%"
 )
 _PYTHON_CHILD_LAUNCHERS = frozenset({"run", "call", "check_call", "check_output", "Popen"})
+_PYTHON_OS_EXEC_LAUNCHERS = frozenset(
+    {
+        "execl",
+        "execle",
+        "execlp",
+        "execlpe",
+        "execv",
+        "execve",
+        "execvp",
+        "execvpe",
+        "posix_spawn",
+        "posix_spawnp",
+    }
+)
 
 
 def _segment_with_shell_expansions_split(segment: list[str]) -> list[str] | None:
@@ -592,6 +694,31 @@ def _static_python_command_argument(node: ast.AST) -> str | None:
     return None
 
 
+def _static_python_string(node: ast.AST | None) -> str | None:
+    if isinstance(node, ast.Constant) and isinstance(node.value, str):
+        return node.value
+    return None
+
+
+def _static_python_string_list(node: ast.AST | None) -> list[str] | None:
+    if not isinstance(node, (ast.List, ast.Tuple)):
+        return None
+    parts: list[str] = []
+    for element in node.elts:
+        value = _static_python_string(element)
+        if value is None:
+            return None
+        parts.append(value)
+    return parts
+
+
+def _python_call_keyword(node: ast.Call, name: str) -> ast.AST | None:
+    for keyword in node.keywords or []:
+        if keyword.arg == name:
+            return keyword.value
+    return None
+
+
 def _python_env_key(node: ast.AST) -> str | None:
     if isinstance(node, ast.Constant) and isinstance(node.value, str):
         return node.value.upper()
@@ -640,13 +767,13 @@ def _python_payload_mutates_sandbox_env(node: ast.AST, os_aliases: set[str]) -> 
 
 
 def _python_payload_child_env_taints_guard(node: ast.Call, os_aliases: set[str]) -> bool:
-    env_node = None
-    for keyword in node.keywords or []:
-        if keyword.arg == "env":
-            env_node = keyword.value
-            break
+    env_node = _python_call_keyword(node, "env")
     if env_node is None:
         return False
+    return _python_env_node_taints_guard(env_node, os_aliases)
+
+
+def _python_env_node_taints_guard(env_node: ast.AST, os_aliases: set[str]) -> bool:
     if isinstance(env_node, ast.Constant) and env_node.value is None:
         return False
     if (
@@ -669,6 +796,53 @@ def _python_payload_child_env_taints_guard(node: ast.Call, os_aliases: set[str])
     return True
 
 
+def _python_subprocess_command_argument(node: ast.Call, command_node: ast.AST) -> str | None:
+    executable = _static_python_string(_python_call_keyword(node, "executable"))
+    parts = _static_python_string_list(command_node)
+    if executable and _python_executable_token(executable):
+        if parts is not None:
+            return shlex.join([executable, *parts[1:]])
+        nested = _static_python_command_argument(command_node)
+        if nested is not None:
+            return f"{shlex.quote(executable)} {nested}"
+        return None
+    return _static_python_command_argument(command_node)
+
+
+def _python_os_exec_command_argument(node: ast.Call, launcher: str) -> str | None:
+    args = list(node.args)
+    if not args:
+        return None
+    executable = _static_python_string(args[0])
+    if executable is None:
+        return None
+    if launcher in {"execl", "execlp"}:
+        parts = [_static_python_string(arg) for arg in args[2:]]
+    elif launcher in {"execle", "execlpe"}:
+        parts = [_static_python_string(arg) for arg in args[2:-1]]
+    elif launcher in {"execv", "execvp"}:
+        argv = _static_python_string_list(args[1] if len(args) > 1 else None)
+        parts = None if argv is None else argv[1:]
+    elif launcher in {"execve", "execvpe", "posix_spawn", "posix_spawnp"}:
+        argv = _static_python_string_list(args[1] if len(args) > 1 else None)
+        parts = None if argv is None else argv[1:]
+    else:
+        return None
+    if parts is None or any(part is None for part in parts):
+        return None
+    return shlex.join([executable, *parts])
+
+
+def _python_os_exec_env_taints_guard(node: ast.Call, launcher: str, os_aliases: set[str]) -> bool:
+    if launcher in {"execle", "execlpe"}:
+        env_node = node.args[-1] if len(node.args) >= 2 else None
+    elif launcher in {"execve", "execvpe", "posix_spawn", "posix_spawnp"}:
+        env_node = node.args[2] if len(node.args) > 2 else None
+    else:
+        env_node = None
+    return env_node is not None and _python_env_node_taints_guard(env_node, os_aliases)
+
+
 def _python_payload_launches_startup_bypass(
     code: str,
     depth: int,
@@ -683,6 +857,7 @@ def _python_payload_launches_startup_bypass(
     subprocess_aliases = {"subprocess"}
     os_aliases = {"os"}
     launcher_aliases: set[str] = set()
+    os_exec_aliases: dict[str, str] = {}
     for node in ast.walk(tree):
         if isinstance(node, ast.Import):
             for alias in node.names:
@@ -693,36 +868,63 @@ def _python_payload_launches_startup_bypass(
         elif isinstance(node, ast.ImportFrom):
             if node.module == "subprocess":
                 for alias in node.names:
-                    if alias.name in _PYTHON_CHILD_LAUNCHERS:
+                    if alias.name == "*":
+                        launcher_aliases.update(_PYTHON_CHILD_LAUNCHERS)
+                    elif alias.name in _PYTHON_CHILD_LAUNCHERS:
                         launcher_aliases.add(alias.asname or alias.name)
+            elif node.module == "os":
+                for alias in node.names:
+                    if alias.name == "*":
+                        os_exec_aliases.update(
+                            (launcher, launcher) for launcher in _PYTHON_OS_EXEC_LAUNCHERS
+                        )
+                    elif alias.name in _PYTHON_OS_EXEC_LAUNCHERS:
+                        os_exec_aliases[alias.asname or alias.name] = alias.name
         if _python_payload_mutates_sandbox_env(node, os_aliases):
             environment_tainted = True
     for node in ast.walk(tree):
         if not isinstance(node, ast.Call):
             continue
-        command_node = None
+        nested = None
+        env_tainted = _python_payload_child_env_taints_guard(node, os_aliases)
         if isinstance(node.func, ast.Name) and node.func.id in launcher_aliases:
-            command_node = node.args[0] if node.args else None
+            command_node = node.args[0] if node.args else _python_call_keyword(node, "args")
+            if command_node is not None:
+                nested = _python_subprocess_command_argument(node, command_node)
+        elif isinstance(node.func, ast.Name) and node.func.id in os_exec_aliases:
+            launcher = os_exec_aliases[node.func.id]
+            nested = _python_os_exec_command_argument(node, launcher)
+            env_tainted = _python_os_exec_env_taints_guard(node, launcher, os_aliases)
         elif isinstance(node.func, ast.Attribute):
             if (
                 isinstance(node.func.value, ast.Name)
                 and node.func.value.id in subprocess_aliases
                 and node.func.attr in _PYTHON_CHILD_LAUNCHERS
             ):
-                command_node = node.args[0] if node.args else None
+                command_node = node.args[0] if node.args else _python_call_keyword(node, "args")
+                if command_node is not None:
+                    nested = _python_subprocess_command_argument(node, command_node)
             elif (
                 isinstance(node.func.value, ast.Name)
                 and node.func.value.id in os_aliases
                 and node.func.attr in {"system", "popen"}
             ):
                 command_node = node.args[0] if node.args else None
-        if command_node is None:
+                if command_node is not None:
+                    nested = _static_python_command_argument(command_node)
+            elif (
+                isinstance(node.func.value, ast.Name)
+                and node.func.value.id in os_aliases
+                and node.func.attr in _PYTHON_OS_EXEC_LAUNCHERS
+            ):
+                nested = _python_os_exec_command_argument(node, node.func.attr)
+                env_tainted = _python_os_exec_env_taints_guard(node, node.func.attr, os_aliases)
+        if nested is None:
             continue
-        nested = _static_python_command_argument(command_node)
-        if nested is not None and _sandbox_python_startup_bypasses_guard(
+        if _sandbox_python_startup_bypasses_guard(
             nested,
             depth + 1,
-            environment_tainted or _python_payload_child_env_taints_guard(node, os_aliases),
+            environment_tainted or env_tainted,
         ):
             return True
     return False
@@ -772,13 +974,43 @@ def _sandbox_python_startup_bypasses_guard(
         # Preserve the previous fail-safe for nested shell bodies.
         if _sandbox_python_startup_bypasses_guard(payload, depth + 1, environment_tainted):
             return True
+    here_string_entries, malformed_here_string = _shell_here_string_entries(command)
+    if malformed_here_string:
+        return True
+    for opener, payload in here_string_entries:
+        dynamic_payload = _SHELL_EXPANSION_TOKEN_RE.search(payload) is not None
+        opener_command = _shell_command_with_unquoted_newlines_as_separators(
+            _shell_command_without_line_continuations(opener)
+        )
+        for segment in _shell_command_segments(opener_command):
+            python_index = _segment_python_index(segment)
+            if python_index is not None:
+                if _segment_python_launch_bypasses_guard(
+                    segment, python_index, environment_tainted, depth
+                ):
+                    return True
+                arguments = segment[python_index + 1 :]
+                if _python_inline_payload(arguments) is None and _python_reads_program_from_stdin(
+                    arguments
+                ):
+                    if dynamic_payload:
+                        return True
+                    if _python_payload_launches_startup_bypass(
+                        payload, depth + 1, environment_tainted
+                    ):
+                        return True
+            shell_index = _segment_shell_index(segment)
+            if shell_index is not None and _segment_shell_reads_stdin(segment, shell_index):
+                if dynamic_payload:
+                    return True
+                if _sandbox_python_startup_bypasses_guard(payload, depth + 1, environment_tainted):
+                    return True
     command = _shell_command_with_unquoted_newlines_as_separators(
         _shell_command_without_line_continuations(command)
     )
     for nested in _shell_command_substitutions(command):
         if _sandbox_python_startup_bypasses_guard(nested, depth + 1, environment_tainted):
             return True
-    shell_names = {"bash", "cmd", "cmd.exe", "dash", "fish", "ksh", "sh", "zsh"}
     for segment in _shell_command_segments(command):
         first = os.path.basename(segment[0].replace("\\", "/")).lower()
         wrapper_context = first in _PYTHON_LAUNCH_WRAPPERS
@@ -791,7 +1023,7 @@ def _sandbox_python_startup_bypasses_guard(
             find_exec_context = find_exec and any(
                 token in _FIND_EXEC_FLAGS for token in segment[:shell_index]
             )
-            if shell not in shell_names or (
+            if shell not in _SHELL_SCRIPT_INTERPRETERS or (
                 shell_index and not wrapper_context and not find_exec_context
             ):
                 continue
@@ -3066,6 +3298,11 @@ _RENDER_HTML_SET_ATTRIBUTE_START_RE = re.compile(
     r"\.\s*(?P<method>setAttribute(?:NS)?)\s*(?:\?\.\s*)?\(",
     re.IGNORECASE,
 )
+_RENDER_HTML_SET_ATTRIBUTE_INDIRECT_CALL_START_RE = re.compile(
+    r"\.\s*(?P<method>setAttribute(?:NS)?)\s*(?:\?\.\s*|\.\s*)"
+    r"(?P<wrapper>call|apply)\s*(?:\?\.\s*)?\(",
+    re.IGNORECASE,
+)
 _RENDER_HTML_PROPERTY_ASSIGNMENT_START_RE = re.compile(
     r"\.\s*(?P<attr>src|href|srcset|action|formaction|poster|data|ping|srcdoc)\s*"
     r"(?P<operator>\+=|&&=|\|\|=|\?\?=|=(?!=))",
@@ -3092,6 +3329,14 @@ _RENDER_HTML_MARKUP_INDIRECT_CALL_START_RE = re.compile(
     r"\bdocument\s*(?:(?:\?\.\s*|\.\s*)open\s*\([^()]*\)\s*)?"
     r"\s*(?:\?\.\s*|\.\s*)(?P<write>write|writeln))"
     r"\s*(?:\?\.\s*|\.\s*)(?P<wrapper>call|apply)\s*(?:\?\.\s*)?\(",
+    re.IGNORECASE,
+)
+_RENDER_HTML_MARKUP_TAGGED_TEMPLATE_START_RE = re.compile(
+    r"(?:\.\s*(?P<insert>insertAdjacentHTML)|"
+    r"\.\s*(?P<contextual>createContextualFragment)|"
+    r"\bdocument\s*(?:(?:\?\.\s*|\.\s*)open\s*\([^()]*\)\s*)?"
+    r"\s*(?:\?\.\s*|\.\s*)(?P<write>write|writeln))"
+    r"\s*(?P<template>`)",
     re.IGNORECASE,
 )
 _RENDER_HTML_COMPUTED_ASSIGNMENT_START_RE = re.compile(
@@ -3532,6 +3777,31 @@ def _render_html_indirect_markup_call_reaches_network(
     return False
 
 
+def _render_html_indirect_set_attribute_reaches_network(
+    arguments: list[str], method: str, wrapper: str, depth: int, aliases: dict[str, str]
+) -> bool:
+    if wrapper == "call":
+        if not arguments:
+            return False
+        return _render_html_set_attribute_arguments(arguments[1:], method, depth, aliases)
+    if wrapper == "apply":
+        if len(arguments) < 2:
+            return False
+        applied = _js_array_literal_items(arguments[1])
+        if applied is None:
+            return True
+        return _render_html_set_attribute_arguments(applied, method, depth, aliases)
+    return False
+
+
+def _render_html_tagged_template_markup_reaches_network(code: str, offset: int, depth: int) -> bool:
+    parsed = _leading_js_string(code[offset:])
+    if parsed is None:
+        return True
+    markup, _ = parsed
+    return _render_html_code_reaches_network(markup, depth + 1)
+
+
 def _render_html_with_body_reaches_network(body: str, depth: int) -> bool:
     for assignment in _RENDER_HTML_BARE_PROPERTY_ASSIGNMENT_START_RE.finditer(body):
         prefix = body[max(0, assignment.start() - 12) : assignment.start()]
@@ -3571,6 +3841,19 @@ def _render_html_computed_network_access(code: str, depth: int = 0) -> bool:
         ):
             return True
 
+    for match in _RENDER_HTML_SET_ATTRIBUTE_INDIRECT_CALL_START_RE.finditer(code):
+        arguments = _js_call_arguments(code, match.end())
+        if arguments is None:
+            return True
+        if _render_html_indirect_set_attribute_reaches_network(
+            arguments,
+            match.group("method").lower(),
+            match.group("wrapper").lower(),
+            depth,
+            aliases,
+        ):
+            return True
+
     for match in _RENDER_HTML_PROPERTY_ASSIGNMENT_START_RE.finditer(code):
         value = _static_js_assignment_string(code[match.end() :])
         if value is None:
@@ -3605,6 +3888,12 @@ def _render_html_computed_network_access(code: str, depth: int = 0) -> bool:
         ).lower()
         if _render_html_indirect_markup_call_reaches_network(
             arguments, method, match.group("wrapper").lower(), depth
+        ):
+            return True
+
+    for match in _RENDER_HTML_MARKUP_TAGGED_TEMPLATE_START_RE.finditer(code):
+        if _render_html_tagged_template_markup_reaches_network(
+            code, match.start("template"), depth
         ):
             return True
 
