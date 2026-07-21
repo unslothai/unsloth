@@ -7,6 +7,7 @@ Self-contained; can be moved to any directory.
 """
 
 import os
+import subprocess
 import sys
 import time
 from pathlib import Path
