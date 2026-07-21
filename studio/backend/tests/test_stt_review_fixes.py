@@ -95,6 +95,40 @@ def test_gguf_status_accessors_do_not_block_on_the_inference_lock():
     assert result == {"model": "small", "device": "whisper.cpp"}
 
 
+def test_process_alive_snapshots_process_against_concurrent_unload():
+    # _process_alive() must read self._process exactly once. The lock-free
+    # readers (loaded_model/device) can run while unload() nulls self._process;
+    # the old `self._process is not None and self._process.poll() is None` read it
+    # twice, so a null landing between the two reads called None.poll(). A
+    # property that yields the live process on the first read and None afterwards
+    # reproduces that interleaving deterministically.
+    from core.inference.stt_ggml_sidecar import GgmlSttSidecar
+
+    class _AliveProc:
+        def poll(self):
+            return None  # still running
+
+    live = _AliveProc()
+    reads = {"n": 0}
+
+    class _RacingSidecar(GgmlSttSidecar):
+        @property
+        def _process(self):
+            reads["n"] += 1
+            return live if reads["n"] == 1 else None
+
+        @_process.setter
+        def _process(self, value):
+            pass  # __init__ assigns None; the property drives the read
+
+    sidecar = GgmlSttSidecar()
+    sidecar.__class__ = _RacingSidecar  # data descriptor wins over the instance attr
+
+    # Snapshot fix: exactly one read, no AttributeError from a second None read.
+    assert sidecar._process_alive() is True
+    assert reads["n"] == 1
+
+
 # 3. Unload resolves through the serving engine + attempts every backend ---------
 def test_gguf_unload_targets_transformers_fallback_without_whisper_server(monkeypatch):
     import core.inference.stt_ggml_sidecar as ggml_module

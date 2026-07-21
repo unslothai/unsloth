@@ -369,9 +369,10 @@ class GgmlSttSidecar:
         # Lock-free status read, mirroring the Transformers sidecar
         # (stt_sidecar.py). transcribe() holds self._lock across the whole
         # inference call (up to _TRANSCRIBE_TIMEOUT_SECONDS), and /audio/stt
-        # status polls plus training admission must not block behind it. The
-        # reads are single-attribute (GIL-atomic) and Popen.poll() is guarded by
-        # subprocess's own _waitpid_lock, so a concurrent unload is safe.
+        # status polls plus training admission must not block behind it.
+        # _process_alive() snapshots self._process before poll(), and Popen.poll()
+        # is guarded by subprocess's own _waitpid_lock, so a concurrent unload is
+        # safe.
         return self._model_id if self._process_alive() else None
 
     @property
@@ -388,7 +389,11 @@ class GgmlSttSidecar:
         return self._keep_alive_seconds
 
     def _process_alive(self) -> bool:
-        return self._process is not None and self._process.poll() is None
+        # Snapshot self._process once: a concurrent unload() nulls it under the
+        # lock, and the lock-free readers (loaded_model/device) would otherwise
+        # re-read a None between the truthiness check and .poll().
+        process = self._process
+        return process is not None and process.poll() is None
 
     # -- idle unload ------------------------------------------------------
 
