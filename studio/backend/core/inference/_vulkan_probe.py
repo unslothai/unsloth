@@ -99,7 +99,7 @@ def main() -> int:
     base_path = _find_lib(bindir, base_name)
     vk_path = _find_lib(bindir, vk_name)
     if not base_path or not vk_path:
-        print(f"ggml-vulkan load failed: library not found in {bindir}", file=sys.stderr)
+        print(f"ggml-vulkan load failed: library not found in {bindir}", file = sys.stderr)
         return 1
     try:
         base = ctypes.CDLL(base_path, mode = _rtld_global)
