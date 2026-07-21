@@ -731,7 +731,6 @@ def _pid_start_identity(pid: int) -> str:
     """Return a stable process-start token used to reject recycled PIDs."""
     try:
         import psutil
-
         return str(psutil.Process(pid).create_time())
     except Exception:
         pass
@@ -743,6 +742,7 @@ def _pid_start_identity(pid: int) -> str:
         except (OSError, IndexError):
             pass
     return ""
+
 
 # Direct backend launches bypass the CLI's env re-export; do it here for
 # real custom roots so unsloth-zoo's import-time LLAMA_CPP_DEFAULT_DIR

@@ -2183,7 +2183,6 @@ def _pid_start_identity(pid: int) -> str:
     """Return a stable process-start token used to reject recycled PIDs."""
     try:
         import psutil
-
         return str(psutil.Process(pid).create_time())
     except Exception:
         pass
