@@ -419,7 +419,14 @@ function Get-PytorchCudaTag {
             $major = [int]$Matches[1]
             $minor = [int]$Matches[2]
             # PyTorch 2.10 offers: cu124, cu126, cu128, cu130
-            if ($major -ge 13) { return "cu130" }
+            if ($major -ge 13) {
+                # cu130 dropped Volta (sm_70/sm_72); cap V100s to cu128.
+                $cap = (& $smiExe --query-gpu=compute_cap --format=csv,noheader 2>$null |
+                    ForEach-Object { $_.Trim() } | Where-Object { $_ -match '^\d+\.\d+$' } |
+                    Sort-Object { [version]$_ } | Select-Object -First 1)
+                if ($cap -eq '7.0' -or $cap -eq '7.2') { return "cu128" }
+                return "cu130"
+            }
             if ($major -eq 12 -and $minor -ge 8) { return "cu128" }
             if ($major -eq 12 -and $minor -ge 6) { return "cu126" }
             if ($major -ge 12) { return "cu124" }

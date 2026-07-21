@@ -90,6 +90,27 @@ MOCK
     echo "$_dir"
 }
 
+# Helper: mock nvidia-smi that also answers --query-gpu=compute_cap, so we can
+# exercise the Volta (sm_70/sm_72) cu130 -> cu128 cap. $1 = CUDA version,
+# $2 = compute_cap output (one cap per line; may be empty/malformed).
+make_mock_smi_caps() {
+    _dir=$(mktemp -d)
+    cat > "$_dir/nvidia-smi" <<MOCK
+#!/bin/sh
+case "\$*" in
+    *--query-gpu=compute_cap*) printf '%s\n' "$2" ;;
+    *)
+        case "\$1" in
+            -L) echo "GPU 0: NVIDIA Test GPU (UUID: GPU-fake-uuid)" ;;
+            *)  echo "| NVIDIA-SMI 590.00   Driver Version: 590.00   CUDA Version: $1   |" ;;
+        esac
+        ;;
+esac
+MOCK
+    chmod +x "$_dir/nvidia-smi"
+    echo "$_dir"
+}
+
 # Helper: create a mock amd-smi that prints a given ROCm version string
 # Supports both "amd-smi version" and "amd-smi list" subcommands so that
 # the GPU presence check (amd-smi list) also succeeds in tests.
@@ -435,6 +456,51 @@ assert_eq "url override path slash trimmed, query kept" "https://mirror.example.
 # 50) A #fragment ending in "/" is likewise preserved.
 _result=$(UNSLOTH_TORCH_INDEX_URL="https://mirror.example.com/whl/cu128#anchor/" run_func "none")
 assert_eq "url override preserves fragment slash" "https://mirror.example.com/whl/cu128#anchor/" "$_result"
+# --- Volta (sm_70/sm_72) capped to cu128 on CUDA 13 (cu130 dropped sm_70) ------
+# 51) CUDA 13.0 + Volta V100 (sm_70) -> cu128 (cu130 dropped sm_70)
+_dir=$(make_mock_smi_caps "13.0" "7.0")
+assert_eq "CUDA 13.0 + V100 (7.0) -> cu128" "https://download.pytorch.org/whl/cu128" "$(run_func "$_dir")"
+rm -rf "$_dir"
+
+# 52) CUDA 13.0 + Volta sm_72 -> cu128
+_dir=$(make_mock_smi_caps "13.0" "7.2")
+assert_eq "CUDA 13.0 + Volta (7.2) -> cu128" "https://download.pytorch.org/whl/cu128" "$(run_func "$_dir")"
+rm -rf "$_dir"
+
+# 53) CUDA 13.0 + Turing T4 (sm_75) -> cu130 (Turing is kept in cu130)
+_dir=$(make_mock_smi_caps "13.0" "7.5")
+assert_eq "CUDA 13.0 + T4 (7.5) -> cu130" "https://download.pytorch.org/whl/cu130" "$(run_func "$_dir")"
+rm -rf "$_dir"
+
+# 54) CUDA 13.0 + Ampere A100 (sm_80) -> cu130
+_dir=$(make_mock_smi_caps "13.0" "8.0")
+assert_eq "CUDA 13.0 + A100 (8.0) -> cu130" "https://download.pytorch.org/whl/cu130" "$(run_func "$_dir")"
+rm -rf "$_dir"
+
+# 55) CUDA 13.0 + Blackwell B200 (sm_100) -> cu130
+_dir=$(make_mock_smi_caps "13.0" "10.0")
+assert_eq "CUDA 13.0 + B200 (10.0) -> cu130" "https://download.pytorch.org/whl/cu130" "$(run_func "$_dir")"
+rm -rf "$_dir"
+
+# 56) CUDA 13.0 + mixed V100 + B200 -> cu128 (min cap is Volta)
+_dir=$(make_mock_smi_caps "13.0" "$(printf '10.0\n7.0')")
+assert_eq "CUDA 13.0 + mixed V100+B200 -> cu128" "https://download.pytorch.org/whl/cu128" "$(run_func "$_dir")"
+rm -rf "$_dir"
+
+# 57) CUDA 13.1 + V100 -> cu128 (any CUDA 13.x with Volta)
+_dir=$(make_mock_smi_caps "13.1" "7.0")
+assert_eq "CUDA 13.1 + V100 -> cu128" "https://download.pytorch.org/whl/cu128" "$(run_func "$_dir")"
+rm -rf "$_dir"
+
+# 58) CUDA 12.8 + V100 -> cu128 (12.x already ships sm_70; cap path not taken)
+_dir=$(make_mock_smi_caps "12.8" "7.0")
+assert_eq "CUDA 12.8 + V100 -> cu128" "https://download.pytorch.org/whl/cu128" "$(run_func "$_dir")"
+rm -rf "$_dir"
+
+# 59) CUDA 13.0 + empty compute_cap (query unsupported) -> cu130 (safe fallback)
+_dir=$(make_mock_smi_caps "13.0" "")
+assert_eq "CUDA 13.0 + empty cap -> cu130" "https://download.pytorch.org/whl/cu130" "$(run_func "$_dir")"
+rm -rf "$_dir"
 
 rm -f "$_FUNC_FILE"
 rm -rf "$_FAKE_SMI_DIR"
