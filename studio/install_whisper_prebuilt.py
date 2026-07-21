@@ -42,28 +42,18 @@ import hashlib
 import json
 import os
 import platform
-import random
 import shutil
 import socket
 import subprocess
 import sys
-import tarfile
 import tempfile
 import time
 import urllib.error
 import urllib.parse
 import urllib.request
-import zipfile
-from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Iterator
-
-try:
-    from filelock import FileLock, Timeout as FileLockTimeout
-except ImportError:
-    FileLock = None
-    FileLockTimeout = None
+from typing import Any
 
 # Put studio/ on sys.path so the shared prebuilt-consumer core (`backend.*`)
 # resolves whether run as a script or imported, like install_python_stack.py.
@@ -71,14 +61,37 @@ _STUDIO_DIR = os.path.dirname(os.path.abspath(__file__))
 if _STUDIO_DIR not in sys.path:
     sys.path.insert(0, _STUDIO_DIR)
 
+from backend.utils.prebuilt import logs as _logs  # noqa: E402
 from backend.utils.prebuilt import runtime_libs as _runtime_libs  # noqa: E402
 from backend.utils.prebuilt import selection as _sel  # noqa: E402
+from backend.utils.prebuilt.archive import extract_archive  # noqa: E402
+from backend.utils.prebuilt.errors import BusyInstallConflict, PrebuiltFallback  # noqa: E402
 from backend.utils.prebuilt.hosts import (  # noqa: E402
     detect_nvidia_caps,
     detect_torch_cuda_runtime_line,
     parse_macos_version,
     pick_rocm_gfx_target,
 )
+
+# Re-exported as module globals so the retained release/checksum helpers resolve
+# them by bare name (kept monkeypatchable) and tests can reach M.<name> directly.
+from backend.utils.prebuilt.http import (  # noqa: E402
+    auth_headers,
+    download_bytes,
+    download_file,
+    fetch_json,
+    sha256_file,
+    _URL_OPENER,
+)
+from backend.utils.prebuilt.locking import (  # noqa: E402
+    install_lock,
+    install_lock_path,
+    _windows_hidden_kwargs,
+)
+
+# Shared plumbing logs under this component's prefix; main() selects the stream.
+_logs.configure("[whisper-prebuilt] ")
+log = _logs.log
 
 
 EXIT_SUCCESS = 0
@@ -101,11 +114,6 @@ METADATA_FILENAME = "UNSLOTH_WHISPER_PREBUILT_INFO.json"
 # coarse `backend` field so a new CUDA toolkit needs no code change here.
 SUPPORTED_BACKENDS = ("cpu", "cuda", "metal", "vulkan", "rocm")
 
-GITHUB_AUTH_HOSTS = {"api.github.com", "github.com"}
-RETRYABLE_HTTP_STATUS = {408, 429, 500, 502, 503, 504}
-HTTP_FETCH_ATTEMPTS = 4
-HTTP_FETCH_BASE_DELAY_SECONDS = 0.75
-INSTALL_LOCK_TIMEOUT_SECONDS = 300
 INSTALL_STAGING_ROOT_NAME = ".staging"
 
 # Master switch for the staged runtime smoke test (start whisper-server + a tiny
@@ -113,21 +121,6 @@ INSTALL_STAGING_ROOT_NAME = ".staging"
 # GPU forward pass JIT-compiles kernels does not stall every install; the check and
 # its CPU-asset retry are kept intact -- set this True to re-enable them.
 _RUN_STAGED_PREBUILT_VALIDATION = False
-
-# PowerShell renders stderr as NativeCommandError noise; main() flips logs to stdout.
-_LOG_TO_STDOUT = False
-
-
-class PrebuiltFallback(RuntimeError):
-    """Recoverable failure -- caller should fall back to source build (exit code 2)."""
-
-
-class BusyInstallConflict(RuntimeError):
-    """Another process holds the install lock (exit code 3)."""
-
-
-def log(message: str) -> None:
-    print(f"[whisper-prebuilt] {message}", file = sys.stdout if _LOG_TO_STDOUT else sys.stderr)
 
 
 # ── Host detection ──
@@ -613,159 +606,7 @@ def expected_sha256_for(
     return digest
 
 
-# ── HTTP (retry/backoff, token-safe cross-host redirects) ──
-def parsed_hostname(url: str | None) -> str | None:
-    if not url:
-        return None
-    try:
-        hostname = urllib.parse.urlparse(url).hostname
-    except Exception:  # noqa: BLE001
-        return None
-    return hostname.lower() if hostname else None
-
-
-def should_send_github_auth(url: str | None) -> bool:
-    return parsed_hostname(url) in GITHUB_AUTH_HOSTS
-
-
-def auth_headers(url: str | None = None) -> dict[str, str]:
-    headers = {"User-Agent": "unsloth-studio-whisper-prebuilt"}
-    token = os.environ.get("GH_TOKEN") or os.environ.get("GITHUB_TOKEN")
-    if token and should_send_github_auth(url):
-        headers["Authorization"] = f"Bearer {token}"
-    return headers
-
-
-def github_api_headers(url: str | None = None) -> dict[str, str]:
-    return {"Accept": "application/vnd.github+json", **auth_headers(url)}
-
-
-def is_github_api_url(url: str | None) -> bool:
-    return parsed_hostname(url) == "api.github.com"
-
-
-class _CrossHostAuthStrippingRedirectHandler(urllib.request.HTTPRedirectHandler):
-    """Drop Authorization when a redirect leaves the original host.
-
-    GitHub redirects release-asset downloads to CDN hosts whose signed URLs can
-    reject a foreign Authorization header; urllib forwards headers to redirect
-    targets by default (requests/huggingface_hub strip them).
-    """
-
-    def redirect_request(self, req, fp, code, msg, headers, newurl):
-        new_request = super().redirect_request(req, fp, code, msg, headers, newurl)
-        if new_request is not None and parsed_hostname(newurl) != parsed_hostname(req.full_url):
-            new_request.headers.pop("Authorization", None)
-            new_request.unredirected_hdrs.pop("Authorization", None)
-        return new_request
-
-
-_URL_OPENER = urllib.request.build_opener(_CrossHostAuthStrippingRedirectHandler())
-
-
-def is_retryable_url_error(exc: Exception) -> bool:
-    if isinstance(exc, urllib.error.HTTPError):
-        # GitHub returns 403 (not 429) when the API rate limit is hit; treat that
-        # against api.github.com as retryable so a CI fleet gets a backoff cycle
-        # before the source-build fallback fires. Other-host 403s stay fatal.
-        if exc.code == 403:
-            return is_github_api_url(getattr(exc, "url", None))
-        return exc.code in RETRYABLE_HTTP_STATUS
-    if isinstance(exc, (urllib.error.URLError, TimeoutError, socket.timeout)):
-        return True
-    return False
-
-
-def sleep_backoff(attempt: int) -> None:
-    delay = HTTP_FETCH_BASE_DELAY_SECONDS * (2 ** max(attempt - 1, 0))
-    delay += random.uniform(0.0, 0.2)
-    time.sleep(delay)
-
-
-def download_bytes(
-    url: str,
-    *,
-    timeout: int = 60,
-    headers: dict[str, str] | None = None,
-) -> bytes:
-    last_exc: Exception | None = None
-    for attempt in range(1, HTTP_FETCH_ATTEMPTS + 1):
-        try:
-            request = urllib.request.Request(url, headers = headers or auth_headers(url))
-            with _URL_OPENER.open(request, timeout = timeout) as response:
-                return response.read()
-        except Exception as exc:  # noqa: BLE001
-            last_exc = exc
-            if attempt >= HTTP_FETCH_ATTEMPTS or not is_retryable_url_error(exc):
-                raise
-            log(f"fetch failed ({attempt}/{HTTP_FETCH_ATTEMPTS}) for {url}: {exc}; retrying")
-            sleep_backoff(attempt)
-    assert last_exc is not None
-    raise last_exc
-
-
-def fetch_json(url: str) -> Any:
-    headers = github_api_headers(url) if is_github_api_url(url) else auth_headers(url)
-    data = download_bytes(url, timeout = 30, headers = headers)
-    payload = json.loads(data.decode("utf-8"))
-    if not isinstance(payload, (dict, list)):
-        raise PrebuiltFallback(f"unexpected JSON type from {url}: {type(payload).__name__}")
-    return payload
-
-
-def atomic_replace_from_tempfile(tmp_path: Path, destination: Path) -> None:
-    destination.parent.mkdir(parents = True, exist_ok = True)
-    os.replace(tmp_path, destination)
-
-
-def download_file(url: str, destination: Path) -> None:
-    destination.parent.mkdir(parents = True, exist_ok = True)
-    last_exc: Exception | None = None
-    for attempt in range(1, HTTP_FETCH_ATTEMPTS + 1):
-        tmp_path: Path | None = None
-        try:
-            request = urllib.request.Request(url, headers = auth_headers(url))
-            with tempfile.NamedTemporaryFile(
-                prefix = destination.name + ".tmp-",
-                dir = destination.parent,
-                delete = False,
-            ) as handle:
-                tmp_path = Path(handle.name)
-                with _URL_OPENER.open(request, timeout = 120) as response:
-                    while True:
-                        chunk = response.read(1024 * 1024)
-                        if not chunk:
-                            break
-                        handle.write(chunk)
-                handle.flush()
-                os.fsync(handle.fileno())
-            if not tmp_path.exists() or tmp_path.stat().st_size == 0:
-                raise RuntimeError(f"downloaded empty file from {url}")
-            atomic_replace_from_tempfile(tmp_path, destination)
-            return
-        except Exception as exc:  # noqa: BLE001
-            last_exc = exc
-            if tmp_path is not None:
-                try:
-                    tmp_path.unlink(missing_ok = True)
-                except Exception:  # noqa: BLE001
-                    pass
-            if attempt >= HTTP_FETCH_ATTEMPTS or not is_retryable_url_error(exc):
-                raise
-            log(f"download failed ({attempt}/{HTTP_FETCH_ATTEMPTS}) for {url}: {exc}; retrying")
-            sleep_backoff(attempt)
-    assert last_exc is not None
-    raise last_exc
-
-
-def sha256_file(path: Path) -> str:
-    digest = hashlib.sha256()
-    with path.open("rb") as handle:
-        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
-            digest.update(chunk)
-    return digest.hexdigest()
-
-
+# ── Verified download (retries once on checksum mismatch) ──
 def download_file_verified(
     url: str, destination: Path, *, expected_sha256: str, label: str
 ) -> None:
@@ -975,193 +816,6 @@ def _resolve_release_via_download_host(
         repo = repo, release_tag = release_tag, manifest = manifest, asset_urls = asset_urls
     )
     return bundle, checksums
-
-
-# ── Safe archive extraction (zip + tar.gz, traversal/symlink guarded) ──
-def _safe_extract_path(base: Path, member_name: str) -> Path:
-    member_path = Path(member_name.replace("\\", "/"))
-    if member_path.is_absolute():
-        raise PrebuiltFallback(f"archive member used an absolute path: {member_name}")
-    target = (base / member_path).resolve()
-    try:
-        target.relative_to(base.resolve())
-    except ValueError as exc:
-        raise PrebuiltFallback(f"archive member escaped destination: {member_name}") from exc
-    return target
-
-
-def _extract_zip_safely(source: Path, base: Path) -> None:
-    with zipfile.ZipFile(source) as archive:
-        for member in archive.infolist():
-            target = _safe_extract_path(base, member.filename)
-            mode = (member.external_attr >> 16) & 0o170000
-            if mode == 0o120000:
-                raise PrebuiltFallback(f"zip archive contained a symlink entry: {member.filename}")
-            if member.is_dir():
-                target.mkdir(parents = True, exist_ok = True)
-                continue
-            target.parent.mkdir(parents = True, exist_ok = True)
-            with archive.open(member, "r") as src, target.open("wb") as dst:
-                shutil.copyfileobj(src, dst)
-            perm = (member.external_attr >> 16) & 0o777
-            if perm & 0o111:
-                os.chmod(target, target.stat().st_mode | 0o111)
-
-
-def _extract_tar_safely(source: Path, base: Path) -> None:
-    # whisper.cpp bundles co-locate the server with its shared libs; some GPU
-    # backends ship those as versioned symlinks (libwhisper.so -> libwhisper.so.1),
-    # so defer links and resolve them after the regular files.
-    pending_links: list[tuple[tarfile.TarInfo, Path]] = []
-    with tarfile.open(source, "r:gz") as archive:
-        for member in archive.getmembers():
-            target = _safe_extract_path(base, member.name)
-            if member.isdir():
-                target.mkdir(parents = True, exist_ok = True)
-                continue
-            if member.islnk() or member.issym():
-                pending_links.append((member, target))
-                continue
-            if not member.isfile():
-                raise PrebuiltFallback(f"tar archive contained an unsupported entry: {member.name}")
-            target.parent.mkdir(parents = True, exist_ok = True)
-            extracted = archive.extractfile(member)
-            if extracted is None:
-                raise PrebuiltFallback(f"tar archive entry could not be read: {member.name}")
-            with extracted, target.open("wb") as dst:
-                shutil.copyfileobj(extracted, dst)
-            if member.mode & 0o111:
-                os.chmod(target, target.stat().st_mode | 0o111)
-
-    for member, target in pending_links:
-        link_name = member.linkname.replace("\\", "/")
-        link_path = Path(link_name)
-        if link_path.is_absolute() or not link_name:
-            raise PrebuiltFallback(
-                f"archive link used an unsafe target: {member.name} -> {link_name}"
-            )
-        # tar symlink names are link-parent relative; hard-link names are archive-root relative.
-        resolved = (target.parent / link_path if member.issym() else base / link_path).resolve()
-        try:
-            resolved.relative_to(base.resolve())
-        except ValueError as exc:
-            raise PrebuiltFallback(
-                f"archive link escaped destination: {member.name} -> {link_name}"
-            ) from exc
-        target.parent.mkdir(parents = True, exist_ok = True)
-        if target.exists() or target.is_symlink():
-            target.unlink()
-        if member.issym():
-            target.symlink_to(link_name)
-        else:  # hard link
-            shutil.copy2(resolved, target)
-
-
-def extract_archive(archive_path: Path, destination: Path) -> None:
-    destination.mkdir(parents = True, exist_ok = True)
-    if archive_path.name.endswith(".zip"):
-        _extract_zip_safely(archive_path, destination)
-    elif archive_path.name.endswith(".tar.gz"):
-        _extract_tar_safely(archive_path, destination)
-    else:
-        raise PrebuiltFallback(f"unsupported archive format: {archive_path.name}")
-
-
-# ── Install lock (concurrent setup runs share one UNSLOTH_HOME) ──
-def _windows_hidden_kwargs() -> dict[str, object]:
-    if sys.platform != "win32":
-        return {}
-    kwargs: dict[str, object] = {}
-    flag = getattr(subprocess, "CREATE_NO_WINDOW", 0)
-    if flag:
-        kwargs["creationflags"] = flag
-    return kwargs
-
-
-def install_lock_path(install_dir: Path) -> Path:
-    return install_dir.parent / f".{install_dir.name}.install.lock"
-
-
-def _pid_is_alive(pid: int) -> bool:
-    """Best-effort process liveness check that never signals the process on Windows."""
-    if pid <= 0:
-        return False
-    if sys.platform == "win32":
-        try:
-            result = subprocess.run(
-                ["tasklist", "/FI", f"PID eq {pid}", "/FO", "CSV", "/NH"],
-                capture_output = True,
-                text = True,
-                timeout = 5,
-                **_windows_hidden_kwargs(),
-            )
-        except (OSError, ValueError, subprocess.SubprocessError):
-            return True
-        return f'"{pid}"' in result.stdout
-    try:
-        os.kill(pid, 0)
-    except ProcessLookupError:
-        return False
-    except PermissionError:
-        return True
-    except ValueError:
-        return False
-    return True
-
-
-@contextmanager
-def install_lock(lock_path: Path) -> Iterator[None]:
-    lock_path.parent.mkdir(parents = True, exist_ok = True)
-    if FileLock is None:
-        fd: int | None = None
-        deadline = time.monotonic() + INSTALL_LOCK_TIMEOUT_SECONDS
-        while True:
-            try:
-                fd = os.open(str(lock_path), os.O_CREAT | os.O_EXCL | os.O_RDWR)
-                os.write(fd, f"{os.getpid()}\n".encode())
-                os.fsync(fd)
-                break
-            except FileExistsError:
-                try:
-                    raw = lock_path.read_text().strip()
-                except FileNotFoundError:
-                    continue
-                stale = False
-                if raw:
-                    try:
-                        stale = not _pid_is_alive(int(raw))
-                    except ValueError:
-                        stale = True
-                if stale:
-                    # Atomically rename before unlinking so only one racer removes
-                    # the stale lock; a process recreating it loses the rename and waits.
-                    try:
-                        stale_path = lock_path.with_name(f"{lock_path.name}.stale.{os.getpid()}")
-                        os.replace(str(lock_path), str(stale_path))
-                        stale_path.unlink(missing_ok = True)
-                    except (OSError, ValueError):
-                        pass
-                    continue
-                if time.monotonic() >= deadline:
-                    raise BusyInstallConflict(
-                        f"timed out after {INSTALL_LOCK_TIMEOUT_SECONDS}s waiting for install lock: {lock_path}"
-                    )
-                time.sleep(0.5)
-        try:
-            yield
-        finally:
-            if fd is not None:
-                os.close(fd)
-            lock_path.unlink(missing_ok = True)
-        return
-
-    try:
-        with FileLock(str(lock_path), timeout = INSTALL_LOCK_TIMEOUT_SECONDS):
-            yield
-    except FileLockTimeout as exc:
-        raise BusyInstallConflict(
-            f"timed out after {INSTALL_LOCK_TIMEOUT_SECONDS}s waiting for install lock: {lock_path}"
-        ) from exc
 
 
 # ── Install layout ──
@@ -1657,8 +1311,6 @@ def build_arg_parser() -> argparse.ArgumentParser:
 
 
 def main(argv: list[str] | None = None) -> int:
-    global _LOG_TO_STDOUT
-
     parser = build_arg_parser()
     args = parser.parse_args(argv)
 
@@ -1666,7 +1318,7 @@ def main(argv: list[str] | None = None) -> int:
         # Read-only probe: stdout is only the JSON/asset line (setup.sh and
         # whisper_cpp_update.py parse it), so force diagnostics to stderr and map
         # any failure to "not available" instead of a traceback.
-        _LOG_TO_STDOUT = False
+        _logs.set_to_stdout(False)
         try:
             host = apply_host_overrides(
                 detect_host(),
@@ -1690,7 +1342,7 @@ def main(argv: list[str] | None = None) -> int:
         return EXIT_SUCCESS
 
     # Install path: progress logs go to stdout so setup surfaces them.
-    _LOG_TO_STDOUT = True
+    _logs.set_to_stdout(True)
 
     if not args.install_dir:
         parser.error("--install-dir is required unless --resolve-prebuilt is used")
