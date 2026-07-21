@@ -380,6 +380,10 @@ def test_terminal_classifier(command, unsafe):
         ("ruby -e 'puts 1'", True),
         ("perl -E 'say 1'", True),
         ("php -r 'echo 1;'", True),
+        # --- prompt: versioned interpreter binaries run inline code too ---
+        ("python3.11 -c \"import os; os.remove('x')\"", True),
+        ("python3.12 -c 'pass'", True),
+        ("pypy3.10 -c 'pass'", True),
         # --- prompt: Windows cmd.exe delete built-ins (the terminal runs cmd /c
         # there; these are not in the hard-block set) ---
         ("del /q important.csv", True),
@@ -409,6 +413,22 @@ def test_terminal_classifier(command, unsafe):
         ("bash -c 'git clean -fd'", True),
         ("sh -c 'truncate -s 0 results.txt'", True),
         ("bash -c \"python -c 'import os'\"", True),
+        # --- prompt: combined shell -c flag clusters (bash -lc, -xc) and the
+        # attached form still carry the -c payload ---
+        ("bash -lc 'git clean -fd'", True),
+        ("bash -xc 'git clean -fd'", True),
+        ("sh -ic 'truncate -s 0 results.txt'", True),
+        ("bash -c'git clean -fd'", True),
+        ("python -Bc \"import os; os.remove('x')\"", True),
+        # --- prompt: a multicall binary dispatches to its applet (busybox rm) ---
+        ("busybox rm -rf results", True),
+        ("toybox rm -rf x", True),
+        ("busybox dd if=/dev/zero of=x", True),
+        # --- prompt: a chdir into a sensitive dir sets up a relative read
+        # (cd /proc/$PPID; cat environ) ---
+        ("cd /proc/$PPID; cat environ", True),
+        ("cd /etc && cat shadow", True),
+        ("pushd ~/.ssh; cat id_rsa", True),
         # --- prompt: destructive git behind a global option (-C / -c) ---
         ("git -C repo clean -fd", True),
         ("git -c core.x=y clean -fd", True),
@@ -425,9 +445,19 @@ def test_terminal_classifier(command, unsafe):
         ('c=$(echo rm); eval "$c -rf build"', True),
         # --- run: a benign shell -c payload / benign global-option git ---
         ("bash -c 'ls -la'", False),
+        ("bash -lc 'ls -la'", False),  # combined cluster, benign payload
         ("sh -c 'git commit -m x'", False),
         ("git -C repo status", False),
         ("git -c user.name=x commit -m y", False),
+        # --- run: versioned interpreter running a script / module (not inline) ---
+        ("python3.11 train.py", False),
+        ("python3.12 -m pytest", False),
+        # --- run: a multicall binary dispatching to a safe applet ---
+        ("busybox ls -la", False),
+        ("busybox cat file.txt", False),
+        # --- run: a chdir into an ordinary in-workdir directory ---
+        ("cd build && make", False),
+        ("cd data/etcetera; ls", False),  # not the system /etc
         # --- run: ordinary development commands (NOT high risk) ---
         ("pip install -r requirements.txt", False),
         ("npm install", False),

@@ -2624,6 +2624,54 @@ _INLINE_CODE_INTERPRETERS = frozenset(
     }
 )
 _INLINE_CODE_FLAGS = frozenset({"-c", "-e", "-E", "-r", "--eval", "--exec"})
+# Versioned interpreter binaries (python3.11, python2.7, pypy3.10) are the same
+# inline-code risk as their unversioned names, so recognise the version suffix.
+_VERSIONED_INTERPRETER_RE = re.compile(r"^(?:python|pypy)\d+(?:\.\d+)*$")
+# busybox / toybox dispatch to an applet given as the first argument
+# (busybox rm -rf ...), so they are treated like a command wrapper: the applet,
+# not the multicall binary, is the command whose risk is judged.
+_MULTICALL_BINARIES = frozenset({"busybox", "toybox"})
+# Directory-changing builtins: `cd /proc/$PPID; cat environ` reads a sensitive
+# path after the chdir even though no single token spells it out, so a chdir into
+# a sensitive directory is gated.
+_CHDIR_COMMANDS = frozenset({"cd", "pushd", "chdir"})
+# A chdir target that lands in a sensitive directory (/proc/<pid> holds environ
+# and cmdline; /etc, secret stores, and credential dotfile dirs hold secrets).
+# The absolute system dirs are anchored so an unrelated user dir (/home/x/etc)
+# does not match; the credential dotfile dirs match anywhere in the path.
+_SENSITIVE_CHDIR_RE = re.compile(
+    r"^~?/proc/[^/\s'\"]+"
+    r"|^~?/etc(?:/|$)"
+    r"|^~?/root(?:/|$)"
+    r"|^~?/(?:var/)?run/secrets(?:/|$)"
+    r"|(?:^|[/\\])\.(?:ssh|aws|azure|gnupg|docker|kube)(?:[/\\]|$)"
+    r"|(?:^|[/\\])\.config[/\\](?:gcloud|gh)(?:[/\\]|$)",
+    re.IGNORECASE,
+)
+
+
+def _is_inline_code_interpreter(name: str) -> bool:
+    """True for an interpreter whose ``-c`` / ``-e`` runs an inline program the
+    terminal path never screens, including versioned python/pypy binaries."""
+    return name in _INLINE_CODE_INTERPRETERS or bool(_VERSIONED_INTERPRETER_RE.match(name))
+
+
+def _short_flag_arg(token: str, letters: str) -> "str | None":
+    """For a short-flag cluster (``-lc``, ``-Bc``, ``-c``), if one of ``letters``
+    appears as a flag in it, return the text glued after that letter -- ``""`` when
+    the value is the next token, or the attached payload for ``-c'cmd'``. Returns
+    ``None`` when no such flag is present, or for long options / non-flags. This
+    catches combined forms like ``bash -lc 'git clean'`` and ``python -Bc '...'``
+    that an exact ``-c`` match would miss."""
+    if not token.startswith("-") or token.startswith("--"):
+        return None
+    body = token[1:]
+    for i, ch in enumerate(body):
+        if ch in letters:
+            return body[i + 1:]
+    return None
+
+
 # git subcommands / flags that discard or overwrite work in the session workdir.
 # `git clean` deletes untracked files; `reset`/`push` only qualify with a
 # destructive flag, so `git reset --soft`, a plain `git push`, and read/commit
@@ -2738,6 +2786,7 @@ def _terminal_is_high_risk(command: str, _depth: int = 0) -> bool:
         git_subcommand = ""  # the first positional after `git`
         shell_c_pending = False  # a shell `-c` precedes its inline payload
         git_glob_pending = False  # a git global option (-C repo) precedes its value
+        chdir_pending = False  # a cd/pushd precedes its target directory
         for token in tokens:
             if (
                 token in _SHELL_SEPARATORS
@@ -2751,20 +2800,29 @@ def _terminal_is_high_risk(command: str, _depth: int = 0) -> bool:
                 git_subcommand = ""
                 shell_c_pending = False
                 git_glob_pending = False
+                chdir_pending = False
                 continue
             if token.startswith("-"):
                 flag = token.split("=", 1)[0]
-                # An interpreter running inline code (python -c, node -e, perl -E)
-                # executes an arbitrary program the terminal path never screens.
-                # An attached short form (python -c'import os...') keeps the code
-                # in the same token, so match the -c/-e/-E/-r prefix too.
-                if current_command in _INLINE_CODE_INTERPRETERS and (
-                    flag in _INLINE_CODE_FLAGS or token[:2] in ("-c", "-e", "-E", "-r")
+                # An interpreter running inline code (python -c, python3.11 -Bc,
+                # node -e, perl -E) executes an arbitrary program the terminal path
+                # never screens. Match the long --eval/--exec forms, and any short
+                # cluster carrying -c (attached python -c'...' and combined -Bc too).
+                if _is_inline_code_interpreter(current_command) and (
+                    flag in _INLINE_CODE_FLAGS or _short_flag_arg(token, "ceEr") is not None
                 ):
                     return True
-                # A shell `-c PAYLOAD` runs its quoted payload; screen it recursively.
-                if current_command in _SHELL_C_INTERPRETERS and flag == "-c":
-                    shell_c_pending = True
+                # A shell `-c PAYLOAD` runs its quoted payload; screen it
+                # recursively. Combined clusters (bash -lc, bash -xc) and the
+                # attached form (bash -c'...') carry -c among other short flags.
+                if current_command in _SHELL_C_INTERPRETERS:
+                    payload = _short_flag_arg(token, "c")
+                    if payload is not None:
+                        if payload:
+                            if _depth < 3 and _terminal_is_high_risk(payload, _depth + 1):
+                                return True
+                        else:
+                            shell_c_pending = True
                 # env -S 'cmd' / --split-string parses and runs the string as a new
                 # command; env -C / --chdir changes the working directory (enabling
                 # a relative sensitive read). Screen the -S payload; a chdir asks.
@@ -2823,10 +2881,13 @@ def _terminal_is_high_risk(command: str, _depth: int = 0) -> bool:
             stem, ext = os.path.splitext(base)
             if ext in {".exe", ".com", ".bat", ".cmd"}:
                 base = stem
-            if (expect_command or prefix_pending) and base in _AUTO_SAFE_WRAPPERS:
-                # A wrapper still precedes the real command; keep seeking it.
-                # Track the wrapper so its own flags (env -S / -C) are judged; the
-                # real command overwrites this when it is reached.
+            if (expect_command or prefix_pending) and (
+                base in _AUTO_SAFE_WRAPPERS or base in _MULTICALL_BINARIES
+            ):
+                # A wrapper (env/timeout) or a multicall binary (busybox rm)
+                # precedes the real command; keep seeking it. Track it so its own
+                # flags (env -S / -C) are judged; the real command / applet
+                # overwrites this when it is reached.
                 prefix_pending = True
                 expect_command = False
                 current_command = base
@@ -2838,13 +2899,26 @@ def _terminal_is_high_risk(command: str, _depth: int = 0) -> bool:
                     return True
                 if base in _HIGH_RISK_FORWARDING_COMMANDS:
                     scan_forward = True
-                # Remember the resolved command so its own flags (python -c) and
-                # git subcommand (git clean) can be judged as they follow.
+                # Remember the resolved command so its own flags (python -c), git
+                # subcommand (git clean), or chdir target (cd /proc/x) can be
+                # judged as they follow.
                 current_command = base
+                if base in _CHDIR_COMMANDS:
+                    chdir_pending = True
             elif current_command == "git" and not git_subcommand:
                 # The first positional after `git` is its subcommand.
                 git_subcommand = base
                 if base in _HIGH_RISK_GIT_SUBCOMMANDS:
+                    return True
+            elif chdir_pending:
+                # The target of a cd/pushd: a chdir into a sensitive directory
+                # sets up a relative read that no single token spells out
+                # (cd /proc/$PPID; cat environ).
+                chdir_pending = False
+                if any(
+                    _SENSITIVE_CHDIR_RE.search(cand)
+                    for cand in (raw, _expand_param_defaults(raw), _expand_shell_assignments(raw))
+                ):
                     return True
             expect_command = False
             prefix_pending = False
@@ -6328,6 +6402,12 @@ def _bash_exec(
         blocked = _find_blocked_commands(command)
         if blocked:
             return f"Blocked command(s) for safety: {', '.join(sorted(blocked))}"
+        # Stripping the child env is not enough: a same-UID child can read
+        # /proc/<getppid()>/environ to recover the Unsloth process's unfiltered
+        # secrets (cd /proc/$PPID; cat environ). Close that read here too, not
+        # only in bypass mode. Best-effort in the sandbox: the child env is
+        # already scrubbed, so a system where prctl is denied still runs.
+        _harden_parent_against_proc_env_leak()
     elif not _harden_parent_against_proc_env_leak():
         # Close the /proc/<parent>/environ secret-recovery path first; if it
         # cannot be applied, fail closed rather than leak the parent environ.
