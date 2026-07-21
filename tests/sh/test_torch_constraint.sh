@@ -108,6 +108,25 @@ assert_eq "\$TORCH_CONSTRAINT used in pip install" "yes" "$_has_var"
 _hardcoded=$(grep -c '"torch>=2.4,<2.11.0"' "$INSTALL_SH" || true)
 assert_eq "hardcoded torch>=2.4 appears exactly once" "1" "$_hardcoded"
 
+# Companions must be bounded to torch's window everywhere: the <2.11 bound appears
+# twice (default assignments + the pinned custom-leaf block), never bare. torchaudio
+# 2.11 dropped its exact torch pin, so a bare companion next to a <2.11-capped torch
+# resolves a mismatched 2.11 build.
+_count=$(grep -c 'TORCHVISION_CONSTRAINT="torchvision>=0.19,<0.26.0"' "$INSTALL_SH" || true)
+assert_eq "torchvision bounded (<0.26) at default + custom-leaf" "2" "$_count"
+_count=$(grep -c 'TORCHAUDIO_CONSTRAINT="torchaudio>=2.4,<2.11.0"' "$INSTALL_SH" || true)
+assert_eq "torchaudio bounded (<2.11) at default + custom-leaf" "2" "$_count"
+_count=$(grep -c 'TORCHVISION_CONSTRAINT="torchvision"$' "$INSTALL_SH" || true)
+assert_eq "no bare torchvision companion remains" "0" "$_count"
+_count=$(grep -c 'TORCHAUDIO_CONSTRAINT="torchaudio"$' "$INSTALL_SH" || true)
+assert_eq "no bare torchaudio companion remains" "0" "$_count"
+# The cu* widen must carry the companions with it (torch <2.12 with torchaudio <2.11
+# would cap a mismatched pair the other way).
+assert_eq "cu widen pairs torchaudio (<2.12)" "1" "$(grep -c 'TORCHAUDIO_CONSTRAINT="torchaudio>=2.4,<2.12.0"' "$INSTALL_SH" || true)"
+_gated=$(grep -c '_expected_torch_flavor_tag "$TORCH_INDEX_URL"' "$INSTALL_SH" || true)
+_has_gate=$([ "$_gated" -ge 1 ] && echo "yes" || echo "no")
+assert_eq "custom-companion bound gated on empty flavor tag" "yes" "$_has_gate"
+
 # A fresh CUDA install widens the ceiling to <2.12.0 so cu12x/cu13x land torch
 # 2.11.x (matches the base image and _CUDA_TORCH_PKG_SPEC).
 _cuda_widen=$(grep -c 'TORCH_CONSTRAINT="torch>=2.4,<2.12.0"' "$INSTALL_SH" || true)
@@ -284,6 +303,61 @@ bash -c "
 " 2>/dev/null
 _uv_got2=$(cat "$_UV_LOG2" 2>/dev/null || echo "")
 assert_contains "mock uv arm64+py312 receives torch>=2.4" "$_uv_got2" "torch>=2.4,<2.11.0"
+
+# ======================================================================
+# ROCm 2.11 floor: leaf is lowercased before the gfx*/rocm* allowlist match
+# ======================================================================
+echo ""
+echo "=== ROCm 2.11 floor case (leaf normalization) ==="
+
+# Structural: install.sh lowercases _torch_index_leaf before the floor case, so the
+# canonical gfx120X-all (capital X) matches gfx120x-all.
+_has_lc=$(grep -c '_torch_index_leaf=$(printf .* | tr .\[:upper:\]. .\[:lower:\].)' "$INSTALL_SH" || true)
+_has_lc_ok=$([ "$_has_lc" -ge 1 ] && echo "yes" || echo "no")
+assert_eq "install.sh lowercases _torch_index_leaf" "yes" "$_has_lc_ok"
+
+# Runtime: replicate install.sh's normalization + floor case and assert both gfx120X-all
+# and gfx120x-all get the floor, while non-2.11 leaves keep the default.
+run_floor_case() {
+    _url="$1"
+    bash -c '
+        TORCH_CONSTRAINT="torch>=2.4,<2.11.0"
+        TORCHVISION_CONSTRAINT="torchvision"
+        TORCHAUDIO_CONSTRAINT="torchaudio"
+        _torch_index_leaf="${1%/}"
+        _torch_index_leaf="${_torch_index_leaf##*/}"
+        _torch_index_leaf=$(printf "%s" "$_torch_index_leaf" | tr "[:upper:]" "[:lower:]")
+        case "$_torch_index_leaf" in
+            rocm7.2|gfx120x-all|gfx1151|gfx1150)
+                TORCH_CONSTRAINT="torch>=2.11.0,<2.12.0"
+                TORCHVISION_CONSTRAINT="torchvision>=0.26.0,<0.27.0"
+                TORCHAUDIO_CONSTRAINT="torchaudio>=2.11.0,<2.12.0"
+                ;;
+        esac
+        echo "$TORCH_CONSTRAINT"
+    ' _ "$_url"
+}
+
+assert_eq "gfx120X-all (capital) -> 2.11 floor" "torch>=2.11.0,<2.12.0" \
+    "$(run_floor_case 'https://repo.amd.com/rocm/whl/gfx120X-all')"
+assert_eq "gfx120X-all trailing slash -> 2.11 floor" "torch>=2.11.0,<2.12.0" \
+    "$(run_floor_case 'https://repo.amd.com/rocm/whl/gfx120X-all/')"
+assert_eq "gfx120x-all (lowercase) -> 2.11 floor" "torch>=2.11.0,<2.12.0" \
+    "$(run_floor_case 'https://repo.amd.com/rocm/whl/gfx120x-all')"
+assert_eq "gfx1151 -> 2.11 floor" "torch>=2.11.0,<2.12.0" \
+    "$(run_floor_case 'https://repo.amd.com/rocm/whl/gfx1151')"
+assert_eq "gfx1150 -> 2.11 floor" "torch>=2.11.0,<2.12.0" \
+    "$(run_floor_case 'https://repo.amd.com/rocm/whl/gfx1150')"
+assert_eq "rocm7.2 -> 2.11 floor" "torch>=2.11.0,<2.12.0" \
+    "$(run_floor_case 'https://download.pytorch.org/whl/rocm7.2')"
+assert_eq "gfx110X-all -> default (no floor)" "torch>=2.4,<2.11.0" \
+    "$(run_floor_case 'https://repo.amd.com/rocm/whl/gfx110X-all')"
+assert_eq "rocm6.4 -> default (no floor)" "torch>=2.4,<2.11.0" \
+    "$(run_floor_case 'https://download.pytorch.org/whl/rocm6.4')"
+assert_eq "cu128 -> default (no floor)" "torch>=2.4,<2.11.0" \
+    "$(run_floor_case 'https://download.pytorch.org/whl/cu128')"
+assert_eq "cpu -> default (no floor)" "torch>=2.4,<2.11.0" \
+    "$(run_floor_case 'https://download.pytorch.org/whl/cpu')"
 
 # ======================================================================
 # Summary

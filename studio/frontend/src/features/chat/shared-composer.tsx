@@ -619,7 +619,6 @@ export function SharedComposer({
   const artifactsEnabled = useChatRuntimeStore((s) => s.artifactsEnabled);
   const setArtifactsEnabled = useChatRuntimeStore((s) => s.setArtifactsEnabled);
   const showCanvasMenuItem = useChatRuntimeStore((s) => s.showCanvasMenuItem);
-  const permissionMode = useChatRuntimeStore((s) => s.permissionMode);
   const mcpEnabledForChat = useChatRuntimeStore((s) => s.mcpEnabledForChat);
   const setMcpEnabledForChat = useChatRuntimeStore(
     (s) => s.setMcpEnabledForChat,
@@ -790,15 +789,12 @@ export function SharedComposer({
   // can still be pre-selected, matching Web search/Code/MCP.
   const ragDisabled = modelLoaded && (isExternalModel || !supportsTools);
   const showRagPill = !isExternalModel;
-  // Above 4 pills, collapse to icons only to cut clutter. Compare, Search and
-  // Code always show; the permission pill shows in every mode except "off"
-  // (it renders null there); the rest are conditional.
-  const permissionPillVisible = permissionMode !== "off";
+  // Above 4 pills, collapse to icons only. Compare, Search, Code, and
+  // permissions always show; the rest are conditional.
   const pillsCompact =
-    3 +
-      (permissionPillVisible ? 1 : 0) +
+    4 +
       (showImagePill ? 1 : 0) +
-      (showRagPill && ragEnabled && !ragDisabled ? 1 : 0) +
+      (showRagPill && ragEnabled ? 1 : 0) +
       (showWebFetchPill ? 1 : 0) +
       (artifactsEnabled ? 1 : 0) +
       (mcpEnabledForChat ? 1 : 0) >
