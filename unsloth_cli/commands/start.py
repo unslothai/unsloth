@@ -83,6 +83,8 @@ _SUBAGENT_INSTRUCTIONS = (
     "use the available tools when useful, verify your work, and return a concise result to the "
     "parent agent."
 )
+_CLAUDE_SUBAGENT_MCP_MODULE = "unsloth_cli.claude_subagent_mcp"
+_CLAUDE_SUBAGENT_TOOL = "mcp__plugin_unsloth-local-agent_unsloth__unsloth_agent"
 _PI_SUBAGENT_EXTENSION = Path(__file__).parent.parent / "pi_subagent.ts"
 # OpenCode selects a model by "<providerID>/<modelID>" and honors a user
 # disabled_providers list. Register the session provider under a dedicated id a
@@ -359,7 +361,7 @@ def _subagent_model_id(
 ) -> str:
     """Return an API model id that preserves the selected GGUF variant.
 
-    Coding-agent model definitions outlive the initial load. If Studio later
+    Coding-agent model definitions outlive the initial load. If Unsloth later
     unloads the model, a bare repository id may resolve to a different cached
     quant. Include the explicit or currently loaded variant so an automatic
     reload selects the same weights.
@@ -1314,6 +1316,25 @@ def _claude_flags(model_id: str) -> list:
     return [_DYNAMIC_SECTIONS_FLAG, "--settings", _claude_settings_overlay(model_id)]
 
 
+def _claude_local_env(base: str, key: str, entry: dict) -> dict:
+    """Build the local endpoint, cache, display, and compaction environment."""
+    model_id = entry["id"]
+    env = {
+        "ANTHROPIC_BASE_URL": base,
+        "ANTHROPIC_AUTH_TOKEN": key,
+        "ANTHROPIC_MODEL": model_id,
+        "CLAUDE_CODE_ATTRIBUTION_HEADER": "0",
+        "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC": "1",
+        "CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS": "1",
+        "CLAUDE_CODE_NO_FLICKER": "1",
+    }
+    window = entry.get("context_length") or entry.get("max_context_length")
+    if window:
+        env["CLAUDE_CODE_AUTO_COMPACT_WINDOW"] = str(int(window))
+        env["CLAUDE_AUTOCOMPACT_PCT_OVERRIDE"] = "90"
+    return env
+
+
 def _merge_codex_config(existing: str, base: str) -> str:
     chunks = re.split(r"(?m)^(?=\[)", existing)  # preamble, then one chunk per table
     if not re.search(r"(?m)^\s*oss_provider\s*=", chunks[0]):
@@ -1467,6 +1488,56 @@ def write_codex_subagent_config(base: str, model: dict, home: Path) -> Path:
 def _agent_config_path(path: Path, command: list) -> str:
     """Translate a generated config path when a Windows agent runs through WSL."""
     return _wsl_windows_path(path) if _wsl_windows_executable(command) else str(path)
+
+
+def write_claude_subagent_plugin(path: Path) -> Path:
+    """Write a session plugin that exposes the local Claude child through MCP."""
+    plugin = path / "unsloth-local-agent"
+    command = sys.executable
+    args = ["-m", _CLAUDE_SUBAGENT_MCP_MODULE]
+    if _wsl_windows_executable(["claude"]):
+        command = "wsl.exe"
+        args = [
+            "-d",
+            os.environ["WSL_DISTRO_NAME"],
+            "--",
+            sys.executable,
+            "-m",
+            _CLAUDE_SUBAGENT_MCP_MODULE,
+        ]
+    _write_private_json(
+        plugin / ".claude-plugin" / "plugin.json",
+        {
+            "name": "unsloth-local-agent",
+            "version": "1.0.0",
+            "description": _SUBAGENT_DESCRIPTION,
+            "author": {"name": "Unsloth AI"},
+        },
+    )
+    _write_private_json(
+        plugin / ".mcp.json",
+        {
+            "mcpServers": {
+                "unsloth": {
+                    "type": "stdio",
+                    "command": command,
+                    "args": args,
+                }
+            }
+        },
+    )
+    skill = plugin / "skills" / "local-agent" / "SKILL.md"
+    skill.parent.mkdir(parents = True, exist_ok = True, mode = 0o700)
+    skill.write_text(
+        "---\n"
+        "description: Delegate a task to the local agent powered by Unsloth. Use when the "
+        "user asks to spawn an Unsloth agent or local agent.\n"
+        "---\n\n"
+        "Call the Unsloth local agent tool once with the complete task. Return its result "
+        "to the user without claiming that the cloud parent completed the local work.\n",
+        encoding = "utf-8",
+    )
+    return plugin
 
 
 def _codex_subagent_flags(path: Path) -> list[str]:
@@ -2265,6 +2336,7 @@ def claude(
     serve: bool = _SERVE_OPTION,
     yolo: bool = _YOLO_OPTION,
     persist: bool = _PERSIST_OPTION,
+    as_subagent: bool = _AS_SUBAGENT_OPTION,
 ):
     """Point Claude Code at the running Unsloth server and start it."""
     base, key, entry = _connect(
@@ -2275,37 +2347,53 @@ def claude(
         launch = launch,
     )
     model_id = entry["id"]
+    install_hint = (
+        "irm https://claude.ai/install.ps1 | iex"
+        if os.name == "nt"
+        else "curl -fsSL https://claude.ai/install.sh | bash"
+    )
+    if as_subagent:
+        subagent_id = _subagent_model_id(base, key, entry, model, gguf_variant)
+        subagent_model = {**entry, "id": subagent_id}
+        window = subagent_model.get("context_length") or subagent_model.get(
+            "max_context_length"
+        )
+        with _session_config("claude-subagent", launch, persist = persist) as config:
+            plugin = write_claude_subagent_plugin(config)
+            command = [
+                "claude",
+                "--plugin-dir",
+                _agent_config_path(plugin, ["claude"]),
+                *_yolo_command_flags("claude", yolo),
+                *ctx.args,
+                "--allowedTools",
+                _CLAUDE_SUBAGENT_TOOL,
+            ]
+            env = {
+                "UNSLOTH_CLAUDE_SUBAGENT_BASE_URL": base,
+                "UNSLOTH_CLAUDE_SUBAGENT_API_KEY": key,
+                "UNSLOTH_CLAUDE_SUBAGENT_MODEL": subagent_id,
+                "UNSLOTH_CLAUDE_SUBAGENT_BYPASS_PERMISSIONS": "1" if yolo else "0",
+            }
+            if window:
+                env["UNSLOTH_CLAUDE_SUBAGENT_CONTEXT_WINDOW"] = str(int(window))
+            typer.echo(
+                "Unsloth is available as a local agent. "
+                "Ask Claude to spawn an Unsloth or local agent."
+            )
+            _run(
+                base,
+                subagent_model,
+                env,
+                command,
+                launch = launch,
+                install_hint = install_hint,
+            )
+        return
 
-    env = {
-        "ANTHROPIC_BASE_URL": base,
-        "ANTHROPIC_AUTH_TOKEN": key,
-        "ANTHROPIC_MODEL": model_id,
-        # Session-only (no ~/.claude write): suppress the attribution header so
-        # llama.cpp KV-cache reuse is preserved; --settings below reinforces it.
-        "CLAUDE_CODE_ATTRIBUTION_HEADER": "0",
-        # Update checks, beta features, and other background requests either
-        # stall against a local server or evict the conversation from
-        # llama-server's KV-cache slots, so turn off everything nonessential.
-        "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC": "1",
-        "CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS": "1",
-        # A local server streams in bursts; disable the full-screen TUI redraw so the
-        # terminal doesn't flicker between tokens.
-        "CLAUDE_CODE_NO_FLICKER": "1",
-    }
-    # Claude Code auto-compacts against its native (~600k token) window; a local
-    # model's context is usually far smaller, so size the window to the loaded
-    # model's real context length. Otherwise the conversation overflows the
-    # server's window (silent truncation) long before Claude decides to compact.
-    # codex/openclaw get the same value through their config (model_context_window
-    # / contextWindow); Claude has no config file, so it rides on the env var.
-    window = entry.get("context_length") or entry.get("max_context_length")
-    if window:
-        env["CLAUDE_CODE_AUTO_COMPACT_WINDOW"] = str(int(window))
-        # Compact at 90% of that window; the override only takes effect once the
-        # window is set, and it can only lower the threshold, so it just guarantees
-        # headroom before the server's context limit instead of relying on Claude's
-        # default (which is tuned for its native 200K/1M window).
-        env["CLAUDE_AUTOCOMPACT_PCT_OVERRIDE"] = "90"
+    env = _claude_local_env(base, key, entry)
+    # Claude Code auto-compacts against its native context window. The local env
+    # above supplies the loaded model's real window and a 90% threshold instead.
     # --yolo (or its aliases) maps to Claude's own --dangerously-skip-permissions.
     # IS_SANDBOX is left unset on purpose: Claude refuses bypass mode as root unless a
     # sandbox is detected, and we don't want to falsely claim one on the user's host.
@@ -2320,11 +2408,6 @@ def claude(
         *_yolo_command_flags("claude", yolo),
         *ctx.args,
     ]
-    install_hint = (
-        "irm https://claude.ai/install.ps1 | iex"
-        if os.name == "nt"
-        else "curl -fsSL https://claude.ai/install.sh | bash"
-    )
     _run(
         base,
         entry,

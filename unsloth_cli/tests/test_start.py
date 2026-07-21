@@ -749,6 +749,76 @@ def test_connect_claude_no_launch(fake_studio):
     assert ".claude/settings.json" not in result.output
 
 
+def test_connect_claude_as_subagent_preserves_cloud_parent(fake_studio, tmp_path):
+    result = CliRunner().invoke(
+        start.start_app,
+        [
+            "claude",
+            "--as-subagent",
+            "--no-launch",
+            "--model",
+            MODEL["id"] + ":UD-Q4_K_XL",
+            "hello",
+        ],
+    )
+    assert result.exit_code == 0, result.output
+    command = _launch_command(result.output)
+    plugin = tmp_path / "agents" / "claude-subagent" / "unsloth-local-agent"
+    assert command == [
+        "claude",
+        "--plugin-dir",
+        str(plugin),
+        "hello",
+        "--allowedTools",
+        start._CLAUDE_SUBAGENT_TOOL,
+    ]
+    assert "--model" not in command
+    parent_base = "$env:ANTHROPIC_BASE_URL" if os.name == "nt" else "export ANTHROPIC_BASE_URL="
+    parent_token = (
+        "$env:ANTHROPIC_AUTH_TOKEN" if os.name == "nt" else "export ANTHROPIC_AUTH_TOKEN="
+    )
+    assert parent_base not in result.output
+    assert parent_token not in result.output
+    assert "unset ANTHROPIC_API_KEY" not in result.output
+    _assert_env_set(result.output, "UNSLOTH_CLAUDE_SUBAGENT_BASE_URL", BASE)
+    _assert_env_set(
+        result.output,
+        "UNSLOTH_CLAUDE_SUBAGENT_MODEL",
+        MODEL["id"] + ":UD-Q4_K_XL",
+    )
+    _assert_env_set(result.output, "UNSLOTH_CLAUDE_SUBAGENT_BYPASS_PERMISSIONS", "0")
+    assert json.loads((plugin / ".claude-plugin" / "plugin.json").read_text())["name"] == (
+        "unsloth-local-agent"
+    )
+    mcp = json.loads((plugin / ".mcp.json").read_text())["mcpServers"]["unsloth"]
+    assert mcp["command"] == sys.executable
+    assert mcp["args"] == ["-m", start._CLAUDE_SUBAGENT_MCP_MODULE]
+    skill = (plugin / "skills" / "local-agent" / "SKILL.md").read_text()
+    assert "spawn an Unsloth agent or local agent" in skill
+    assert "Ask Claude to spawn an Unsloth or local agent." in result.output
+
+
+@pytest.mark.skipif(os.name == "nt", reason = "WSL scenario")
+def test_claude_subagent_plugin_uses_wsl_for_windows_claude(monkeypatch, tmp_path):
+    monkeypatch.setenv("WSL_DISTRO_NAME", "Ubuntu")
+    monkeypatch.setattr(
+        start.shutil,
+        "which",
+        lambda _: "/mnt/c/Users/x/AppData/Local/Programs/claude.exe",
+    )
+    plugin = start.write_claude_subagent_plugin(tmp_path)
+    mcp = json.loads((plugin / ".mcp.json").read_text())["mcpServers"]["unsloth"]
+    assert mcp["command"] == "wsl.exe"
+    assert mcp["args"] == [
+        "-d",
+        "Ubuntu",
+        "--",
+        sys.executable,
+        "-m",
+        start._CLAUDE_SUBAGENT_MCP_MODULE,
+    ]
+
+
 def test_connect_claude_compact_window_omitted_without_context(fake_studio, monkeypatch):
     # A model that doesn't report a context length -> leave Claude's default window
     # rather than guessing one.
