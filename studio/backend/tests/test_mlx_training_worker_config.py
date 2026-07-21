@@ -1,9 +1,11 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 
 import importlib.util
+import inspect
 import sys
 import types
 from pathlib import Path
+from unittest.mock import Mock
 
 import pytest
 
@@ -14,6 +16,7 @@ def _load_worker_module():
         "loggers",
         "utils",
         "utils.hardware",
+        "utils.training_runs",
         "utils.wheel_utils",
     )
     previous_modules = {name: sys.modules.get(name) for name in stub_names}
@@ -32,6 +35,9 @@ def _load_worker_module():
         hardware = types.ModuleType("utils.hardware")
         hardware.apply_gpu_ids = lambda *_args, **_kwargs: None
         sys.modules["utils.hardware"] = hardware
+
+        training_runs = sys.modules["utils.training_runs"] = types.ModuleType("utils.training_runs")
+        training_runs.build_default_output_dir_name = lambda *_args, **_kwargs: "output"
 
         wheel_utils = types.ModuleType("utils.wheel_utils")
         for name in (
@@ -67,6 +73,7 @@ _mlx_vlm_resized_image_layout = _worker._mlx_vlm_resized_image_layout
 _copy_mlx_vlm_image_processor = _worker._copy_mlx_vlm_image_processor
 _resize_mlx_vlm_image = _worker._resize_mlx_vlm_image
 _adapt_for_mlx_vlm = _worker._adapt_for_mlx_vlm
+_configure_mlx_training_schedule = _worker._configure_mlx_training_schedule
 
 
 def test_mlx_studio_optimizer_aliases_are_explicit():
@@ -101,6 +108,112 @@ def test_mlx_wandb_run_config_excludes_subject_and_secrets():
     assert (
         '_wandb_sensitive = {"hf_token", "wandb_token", "s3_config", "subject"}' in source
     ), "MLX W&B run config must exclude subject and the token/s3 secrets"
+    run_source = inspect.getsource(_worker._run_mlx_training)
+    assert run_source.index("trainer = MLXTrainer(") < run_source.index(
+        "_prepare_mlx_output_dir(trainer, output_dir, ensure_dir)"
+    )
+    assert run_source.index("trainer = MLXTrainer(") < run_source.index(
+        "max_steps, eval_steps_val = _configure_mlx_training_schedule("
+    )
+    assert "_setup_mlx_tracking(trainer, config, output_dir, _send)" in run_source
+    assert "_finalize_mlx_training(trainer, _snapshot_stop" in run_source
+
+
+def test_mlx_rank_owned_worker_setup(monkeypatch):
+    namespace = types.SimpleNamespace
+    wandb_run, tb_writer = object(), object()
+    wandb_init, summary_writer = Mock(return_value = wandb_run), Mock(return_value = tb_writer)
+    monkeypatch.setitem(sys.modules, "wandb", namespace(init = wandb_init))
+    monkeypatch.setitem(sys.modules, "tensorboardX", namespace(SummaryWriter = summary_writer))
+    config = {"enable_wandb": True, "enable_tensorboard": True, "wandb_project": "project"}
+    contexts = ["output directory setup", "Weights & Biases setup", "TensorBoard setup"]
+
+    for world_size, is_main in ((1, True), (2, True), (2, False)):
+        output_setup, sync = Mock(), Mock()
+        trainer = namespace(
+            distributed_world_size = world_size,
+            is_main_process = is_main,
+            _raise_distributed_failure = sync,
+        )
+        _worker._prepare_mlx_output_dir(trainer, "output", output_setup)
+        resources = _worker._setup_mlx_tracking(trainer, config, "output", lambda *_a, **_k: None)
+        count = int(is_main)
+        assert [output_setup.call_count, wandb_init.call_count, summary_writer.call_count] == [
+            count
+        ] * 3
+        assert resources == ((wandb_run, tb_writer) if is_main else (None, None))
+        assert [call.args[1] for call in sync.call_args_list] == (
+            [] if world_size == 1 else contexts
+        )
+        if is_main:
+            output_setup.assert_called_once_with(Path("output"))
+            wandb_init.assert_called_once_with(project = "project", config = config, reinit = True)
+            summary_writer.assert_called_once_with(log_dir = "output/runs")
+        wandb_init.reset_mock()
+        summary_writer.reset_mock()
+
+    failure = OSError("read-only output")
+    sync = Mock(side_effect = RuntimeError("distributed failure during output"))
+    trainer = namespace(
+        distributed_world_size = 2,
+        is_main_process = True,
+        _raise_distributed_failure = sync,
+    )
+    with pytest.raises(RuntimeError, match = "distributed failure during output"):
+        _worker._prepare_mlx_output_dir(
+            trainer, "output", lambda _path: (_ for _ in ()).throw(failure)
+        )
+    sync.assert_called_once_with(True, "output directory setup", failure)
+
+    trainer = namespace(distributed_world_size = 2, is_main_process = True)
+    with pytest.raises(RuntimeError, match = "Upgrade unsloth-zoo"):
+        _worker._prepare_mlx_output_dir(trainer, "output", lambda _path: None)
+
+
+def test_mlx_epoch_steps_use_global_ddp_batch():
+    trainer = types.SimpleNamespace(
+        args = types.SimpleNamespace(max_steps = 0, warmup_steps = 0, eval_steps = 0),
+        distributed_world_size = 2,
+    )
+
+    result = _configure_mlx_training_schedule(
+        trainer, 0, 16, 2, 2, 3, warmup_ratio = 0.5, eval_steps_ratio = 0.5
+    )
+
+    assert result == (6, 3)
+    assert (trainer.args.max_steps, trainer.args.warmup_steps, trainer.args.eval_steps) == (6, 3, 3)
+    assert _configure_mlx_training_schedule(trainer, 7, 16, 2, 2, 3)[0] == 7
+    assert _configure_mlx_training_schedule(trainer, 0, 16, 2, 2, 0)[0] == 1
+    assert _configure_mlx_training_schedule(trainer, 0.5, 16, 2, 2, 3)[0] == 0.5
+
+    trainer.distributed_world_size = 1
+    assert _configure_mlx_training_schedule(
+        trainer, 0, 17, 2, 2, 1, warmup_ratio = 0.3, eval_steps_ratio = 0.3
+    ) == (5, 1)
+    assert (trainer.args.warmup_steps, trainer.args.eval_steps) == (2, 1)
+
+
+def test_mlx_finalization_reads_trainer_before_atomic_stop_snapshot():
+    reads = []
+
+    class Trainer:
+        distributed_world_size = 1
+
+        @property
+        def stop_requested(self):
+            reads.append("trainer")
+            return False
+
+        @stop_requested.setter
+        def stop_requested(self, _value):
+            reads.append("setter")
+
+    state = _worker._mlx_worker_finalization_state(
+        Trainer(), lambda: (reads.append("snapshot") or True, False)
+    )
+
+    assert state == (True, True)
+    assert reads[:2] == ["trainer", "snapshot"]
 
 
 def test_mlx_vlm_resize_uses_max_dimension_like_torch_trainer():
