@@ -9,6 +9,8 @@ signal-0 elsewhere). AST + mock-only; no real processes, no Unsloth deps importe
 """
 
 import ast
+import builtins
+import io
 import os
 import subprocess
 import sys
@@ -179,6 +181,41 @@ def test_backend_pidfile_records_process_start_identity(tmp_path):
     exec(_func_source("_write_pid_file", _BACKEND_RUN_SOURCE), ns)
     ns["_write_pid_file"]()
     assert pid_file.read_text() == "4242:123.5"
+
+
+@pytest.mark.parametrize("source", [_SOURCE, _BACKEND_RUN_SOURCE])
+def test_pid_start_identity_linux_uses_proc_token_with_psutil_installed(monkeypatch, source):
+    """Linux identity must not change with psutil availability between start and stop."""
+    proc_tail = [b"S"] + [b"0"] * 18 + [b"98765"] + [b"0"] * 4
+    proc_stat = b"4242 (studio worker) " + b" ".join(proc_tail)
+    fake_psutil = types.SimpleNamespace(
+        Process = lambda _pid: types.SimpleNamespace(create_time = lambda: 123.5)
+    )
+    monkeypatch.setitem(sys.modules, "psutil", fake_psutil)
+    monkeypatch.setattr(builtins, "open", lambda *_args, **_kwargs: io.BytesIO(proc_stat))
+
+    ns = {"sys": types.SimpleNamespace(platform = "linux")}
+    exec(_func_source("_pid_start_identity", source), ns)
+
+    assert ns["_pid_start_identity"](4242) == "98765"
+
+
+@pytest.mark.parametrize("source", [_SOURCE, _BACKEND_RUN_SOURCE])
+def test_pid_start_identity_linux_does_not_fall_back_to_psutil(monkeypatch, source):
+    """An unreadable /proc must produce no token, never a dependency-specific format."""
+    fake_psutil = types.SimpleNamespace(
+        Process = lambda _pid: types.SimpleNamespace(create_time = lambda: 123.5)
+    )
+    monkeypatch.setitem(sys.modules, "psutil", fake_psutil)
+
+    def unavailable(*_args, **_kwargs):
+        raise OSError("no procfs")
+
+    monkeypatch.setattr(builtins, "open", unavailable)
+    ns = {"sys": types.SimpleNamespace(platform = "linux")}
+    exec(_func_source("_pid_start_identity", source), ns)
+
+    assert ns["_pid_start_identity"](4242) == ""
 
 
 # ── Behavioral: the POSIX signal-0 branch (skip on Windows runners) ───────────

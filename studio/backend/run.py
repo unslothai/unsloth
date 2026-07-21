@@ -728,19 +728,20 @@ _PID_FILE = _studio_root() / "studio.pid"
 
 
 def _pid_start_identity(pid: int) -> str:
-    """Return a stable process-start token used to reject recycled PIDs."""
-    try:
-        import psutil
-        return str(psutil.Process(pid).create_time())
-    except Exception:
-        pass
+    """Return a stable OS-native process-start token used to reject recycled PIDs."""
     if sys.platform == "linux":
         try:
             with open(f"/proc/{pid}/stat", "rb") as fh:
                 data = fh.read()
             return data[data.rfind(b")") + 2 :].split()[19].decode()
         except (OSError, IndexError):
-            pass
+            return ""
+    try:
+        import psutil
+
+        return str(psutil.Process(pid).create_time())
+    except Exception:
+        pass
     return ""
 
 
