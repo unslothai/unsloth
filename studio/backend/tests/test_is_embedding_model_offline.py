@@ -1394,7 +1394,11 @@ def test_transient_tag_only_fallback_skipped_when_modules_json_present(tmp_path,
     monkeypatch.setattr(mc, "_persist_embedder", lambda name, commit: None)
     _tag_only_repo(tmp_path, monkeypatch, "commit_a", modules_json = "[]")
 
-    def _transient(model_name, token = None, **kwargs):
+    def _transient(
+        model_name,
+        token = None,
+        **kwargs,
+    ):
         raise OSError("Temporary failure in name resolution")  # non-permanent -> transient branch
 
     _fake_hf_model_info(monkeypatch, _transient)
@@ -1407,8 +1411,7 @@ def test_st_repo_id_candidates_prefers_namespaced_for_non_basic():
     # THAT snapshot, so the gate must probe it first (probing the bare name first lets a pickle in
     # the namespaced dir slip when a bare dir also exists). A slashed id is used verbatim.
     assert (
-        mc._st_repo_id_candidates("all-MiniLM-L6-v2")[0]
-        == "sentence-transformers/all-MiniLM-L6-v2"
+        mc._st_repo_id_candidates("all-MiniLM-L6-v2")[0] == "sentence-transformers/all-MiniLM-L6-v2"
     )
     assert mc._st_repo_id_candidates("BAAI/bge-m3") == ["BAAI/bge-m3"]
 
@@ -1416,7 +1419,9 @@ def test_st_repo_id_candidates_prefers_namespaced_for_non_basic():
 def test_st_repo_id_candidates_keeps_basic_model_bare(monkeypatch):
     # A basic transformer model (ORIGINAL_TRANSFORMER_MODELS) is loaded bare by the constructor, so
     # the bare id is tried first.
-    monkeypatch.setattr(mc, "_original_transformer_models", lambda: frozenset({"bert-base-uncased"}))
+    monkeypatch.setattr(
+        mc, "_original_transformer_models", lambda: frozenset({"bert-base-uncased"})
+    )
     assert mc._st_repo_id_candidates("bert-base-uncased")[0] == "bert-base-uncased"
     assert mc._st_repo_id_candidates("some-st-model")[0] == "sentence-transformers/some-st-model"
 

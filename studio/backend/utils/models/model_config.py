@@ -1717,7 +1717,6 @@ def _original_transformer_models() -> frozenset:
     if _ORIGINAL_TRANSFORMER_MODELS_CACHE is None:
         try:
             from sentence_transformers.util import ORIGINAL_TRANSFORMER_MODELS
-
             _ORIGINAL_TRANSFORMER_MODELS_CACHE = frozenset(
                 str(m).lower() for m in ORIGINAL_TRANSFORMER_MODELS
             )
