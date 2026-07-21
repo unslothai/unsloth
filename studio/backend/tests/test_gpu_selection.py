@@ -979,6 +979,70 @@ class TestRouteErrors(unittest.TestCase):
         self.assertEqual(exc_info.exception.status_code, 400)
         self.assertIn("cpu-only build", exc_info.exception.detail.lower())
 
+    def test_cpu_only_llama_build_skips_reject_for_diffusion_gguf(self):
+        # A diffusion GGUF is served by the separate visual-server runner (DG_GPU/--gpu),
+        # not llama-server, so a CPU-only llama.cpp build must NOT reject its gpu_ids. The
+        # flow skips the cpu-only reject and reaches the id resolver just after it, where a
+        # sentinel stops the load deterministically (#7188).
+        import utils.hardware as hardware_pkg
+
+        inference_route = _load_route_module(
+            "inference_route_module_for_diffusion_gpu_ids_test",
+            "routes/inference.py",
+        )
+        request = LoadRequest(model_path = "unsloth/diffusion.gguf", gpu_ids = [0, 1])
+        model_config = SimpleNamespace(
+            is_gguf = True,
+            is_lora = False,
+            gguf_hf_repo = None,
+            gguf_file = "/tmp/diffusion.gguf",
+            gguf_mmproj_file = None,
+            gguf_variant = None,
+            identifier = "unsloth/diffusion.gguf",
+            display_name = "unsloth/diffusion.gguf",
+            is_vision = False,
+            is_audio = False,
+            audio_type = None,
+            has_audio_input = False,
+        )
+        fake_backend = SimpleNamespace(
+            is_loaded = False,
+            model_identifier = None,
+            is_vulkan_build = lambda: False,
+            _backend_lacks_gpu_lib = lambda *a, **k: True,
+        )
+        with (
+            patch.object(
+                inference_route,
+                "ModelConfig",
+                SimpleNamespace(from_identifier = lambda **_kwargs: model_config),
+            ),
+            patch.object(inference_route, "_classify_diffusion_gguf", return_value = True),
+            patch.object(
+                _hw_module,
+                "resolve_requested_gpu_ids",
+                side_effect = ValueError("SENTINEL_AFTER_GATE"),
+            ),
+            patch.object(inference_route, "_guard_chat_load_against_training", return_value = None),
+            patch.object(inference_route.asyncio, "to_thread", new = _inline_to_thread),
+            patch.object(inference_route, "_hf_offline_if_dns_dead", nullcontext),
+            patch.object(inference_route, "get_llama_cpp_backend", return_value = fake_backend),
+            patch.object(hardware_pkg, "get_device", return_value = hardware_pkg.DeviceType.CUDA),
+        ):
+            with self.assertRaises(HTTPException) as exc_info:
+                asyncio.run(
+                    inference_route._load_model_impl(
+                        request,
+                        SimpleNamespace(
+                            app = SimpleNamespace(state = SimpleNamespace(llama_parallel_slots = 1)),
+                        ),
+                        current_subject = "test-user",
+                    )
+                )
+        # Reached the id resolver past the skipped cpu-only reject, not the reject itself.
+        self.assertNotIn("cpu-only build", exc_info.exception.detail.lower())
+        self.assertIn("SENTINEL_AFTER_GATE", exc_info.exception.detail)
+
     def test_inherited_extras_preserve_memory_flags_when_mode_omitted(self):
         # A same-model Apply that omits gguf_memory_mode must NOT drop an inherited
         # --mlock/--no-mmap pass-through (opt-in memory stripping), while a first-class
