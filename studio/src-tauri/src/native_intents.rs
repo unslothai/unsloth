@@ -312,6 +312,34 @@ pub async fn pick_native_model(
 }
 
 #[tauri::command]
+pub async fn pick_hugging_face_cache_dir(
+    window: WebviewWindow,
+    app: AppHandle,
+) -> Result<Option<String>, String> {
+    ensure_main_window(&window)?;
+    let (tx, rx) = tokio::sync::oneshot::channel();
+    app.dialog()
+        .file()
+        .set_title("Choose model download location")
+        .pick_folder(move |path| {
+            let _ = tx.send(path);
+        });
+    let Some(folder_path) = rx.await.map_err(|_| "Dialog closed".to_string())? else {
+        return Ok(None);
+    };
+    let path = folder_path
+        .into_path()
+        .map_err(|_| "Only local filesystem folders are supported.".to_string())?;
+    let canonical = path
+        .canonicalize()
+        .map_err(|e| format!("Could not use the selected folder: {e}"))?;
+    if !canonical.is_dir() {
+        return Err("The selected location is not a folder.".to_string());
+    }
+    Ok(Some(canonical.to_string_lossy().to_string()))
+}
+
+#[tauri::command]
 pub fn consume_native_path_token(
     window: WebviewWindow,
     state: tauri::State<'_, NativeIntakeState>,

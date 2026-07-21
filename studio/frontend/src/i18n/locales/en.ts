@@ -504,6 +504,7 @@ export const en = {
         chooseAction: "Use for future downloads",
         cacheSaved: "Model download location updated",
         cacheSaveError: "Couldn't update the model download location",
+        cachePickerError: "Couldn't open the folder picker",
         copied: "Path copied",
         openError: "Couldn't open the folder",
         copyError: "Couldn't copy the path",

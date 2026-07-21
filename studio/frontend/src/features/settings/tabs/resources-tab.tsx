@@ -5,7 +5,10 @@ import { FolderBrowser } from "@/components/assistant-ui/model-selector/folder-b
 import { Button } from "@/components/ui/button";
 import { Progress } from "@/components/ui/progress";
 import { Switch } from "@/components/ui/switch";
-import { openModelsDir } from "@/features/native-intents";
+import {
+  openModelsDir,
+  pickHuggingFaceCacheDir,
+} from "@/features/native-intents";
 import { useSystemInfo, type GpuDevice } from "@/hooks/use-system";
 import { isTauri } from "@/lib/api-base";
 import { copyToClipboard } from "@/lib/copy-to-clipboard";
@@ -284,6 +287,21 @@ export function ResourcesTab() {
     }
   };
 
+  const changeCacheFolder = async () => {
+    if (!isTauri) {
+      setCacheBrowserOpen(true);
+      return;
+    }
+    try {
+      const path = await pickHuggingFaceCacheDir();
+      if (path) await saveCacheFolder(path);
+    } catch (error) {
+      toast.error(t("settings.resources.storage.cachePickerError"), {
+        description: error instanceof Error ? error.message : undefined,
+      });
+    }
+  };
+
   const cpuCoresLabel =
     systemInfo.cpu?.logical_count && systemInfo.cpu?.physical_count
       ? t("settings.resources.liveMonitor.cpuCores", {
@@ -540,7 +558,7 @@ export function ResourcesTab() {
               variant="outline"
               size="sm"
               disabled={!hfCache?.editable || cacheSaving}
-              onClick={() => setCacheBrowserOpen(true)}
+              onClick={() => void changeCacheFolder()}
             >
               {t("settings.resources.storage.changeAction")}
             </Button>
@@ -559,7 +577,7 @@ export function ResourcesTab() {
       </SettingsSection>
 
       <FolderBrowser
-        open={cacheBrowserOpen}
+        open={!isTauri && cacheBrowserOpen}
         onOpenChange={setCacheBrowserOpen}
         onSelect={(path) => void saveCacheFolder(path)}
         initialPath={hfCache?.cacheHome}
