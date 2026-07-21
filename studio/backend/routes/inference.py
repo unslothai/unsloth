@@ -3406,9 +3406,9 @@ async def _acquire_swap_gate() -> None:
         await asyncio.sleep(0.02)
 
 
-# Counts in-flight auto-switch requests per (target, variant). The busy guard
-# subtracts same-target waiters so concurrent requests for one model load once
-# instead of each 409-ing the other.
+# Counts auto-switch requests waiting to load each (target, variant). These
+# requests are queued for a swap but are not generating, so the drain wait below
+# excludes them from the active inference count.
 _auto_switch_waiters: dict[tuple[str, str], int] = {}
 _auto_switch_waiters_guard = threading.Lock()
 
@@ -3426,15 +3426,36 @@ def _note_switch_waiter(key: tuple[str, str], delta: int) -> None:
             _auto_switch_waiters.pop(key, None)
 
 
-def _same_target_waiters(key: tuple[str, str]) -> int:
+def _switch_waiter_count() -> int:
     with _auto_switch_waiters_guard:
-        return _auto_switch_waiters.get(key, 0)
+        return sum(max(0, count) for count in _auto_switch_waiters.values())
 
 
-# A second waiter map keyed by the raw requested model, registered before the
-# (slow) resolve. The middleware counts a concurrent same-model request as
-# in-flight before it resolves and joins _auto_switch_waiters, so without this
-# the first request would see it as an unrelated request and 409.
+async def _wait_for_model_switch_idle(*, current_request_counted: bool) -> None:
+    """Wait until a model replacement cannot interrupt active inference.
+
+    The caller holds ``inference_lifecycle_gate``, which prevents new inference
+    from starting while existing requests drain. Auto-switch requests that have
+    resolved their targets are scheduler waiters, not active generations, so
+    exclude them to avoid a queue deadlock.
+    """
+    from core.inference.llama_keepwarm import other_inference_request_count
+
+    while True:
+        queued_switches = _switch_waiter_count()
+        if current_request_counted and queued_switches > 0:
+            queued_switches -= 1
+        active_others = other_inference_request_count(
+            current_request_counted = current_request_counted,
+            include_pending = False,
+        )
+        if active_others <= queued_switches:
+            return
+        await asyncio.sleep(0.02)
+
+
+# A second waiter map tracks requests during the slow resolve phase, before they
+# can join the concrete target queue above.
 _auto_switch_request_waiters: dict[str, int] = {}
 _auto_switch_request_waiters_guard = threading.Lock()
 
@@ -3450,11 +3471,6 @@ def _note_request_waiter(key: str, delta: int) -> None:
             _auto_switch_request_waiters[key] = n
         else:
             _auto_switch_request_waiters.pop(key, None)
-
-
-def _same_request_waiters(key: str) -> int:
-    with _auto_switch_request_waiters_guard:
-        return _auto_switch_request_waiters.get(key, 0)
 
 
 def _llama_public_model_id(llama_backend, fallback: Optional[str] = None) -> Optional[str]:
@@ -3582,7 +3598,6 @@ async def _maybe_auto_switch_model(
     from core.inference.local_model_resolver import resolve_local_gguf
     from core.inference.llama_keepwarm import (
         get_last_unloaded_model,
-        other_inference_request_count,
         inference_lifecycle_gate,
     )
 
@@ -3603,9 +3618,7 @@ async def _maybe_auto_switch_model(
     if not auto_switch_on and get_auto_unload_idle_seconds() <= 0:
         return
 
-    # Register by the raw requested model before resolving (which can be slow):
-    # the middleware already counts a concurrent same-model request as in-flight,
-    # so the busy guard must know it shares this target even while it resolves.
+    # Register by the raw requested model before resolving, which can be slow.
     request_key = _request_waiter_key(requested_model)
     _note_request_waiter(request_key, 1)
     try:
@@ -3718,31 +3731,6 @@ async def _maybe_auto_switch_model(
                         if _already_serving():
                             _record_serving_alias()
                             return
-                        # Single slot: refuse a cross-model swap while another inference
-                        # request is active rather than killing its response. Requests
-                        # heading to this same target (by resolved id or raw name) are
-                        # excluded, so concurrent requests for one model load once. A
-                        # pending request is still in the middleware, not generating, so
-                        # it is not counted here.
-                        same_others = max(
-                            _same_target_waiters(key) - 1, _same_request_waiters(request_key) - 1, 0
-                        )
-                        others = other_inference_request_count(
-                            current_request_counted = True, include_pending = False
-                        )
-                        # Not gated on the GGUF being loaded: _load_model_impl also
-                        # tears down an active Unsloth backend before loading a GGUF,
-                        # so refuse whenever any other inference request is in flight.
-                        if others > same_others:
-                            raise HTTPException(
-                                status_code = 409,
-                                detail = openai_error_body(
-                                    "Cannot switch models while another inference request is in progress.",
-                                    status = 409,
-                                    code = "model_switch_busy",
-                                    param = "model",
-                                ),
-                            )
                         # Apply this model's saved launch flags so the swap honors the config.
                         override = get_model_override(override_id)
                         load_kwargs = {"model_path": target_id, "gguf_variant": variant}
@@ -3757,6 +3745,7 @@ async def _maybe_auto_switch_model(
                             LoadRequest(**load_kwargs),
                             fastapi_request,
                             current_subject,
+                            current_request_counted = True,
                         )
                         # Advertise the repo id (not the concrete load path) as the loaded
                         # model's public id and override key for /v1/models and idle stash.
@@ -4223,7 +4212,13 @@ async def load_model(
         return await _load_model_impl(request, fastapi_request, current_subject)
 
 
-async def _load_model_impl(request: LoadRequest, fastapi_request: Request, current_subject: str):
+async def _load_model_impl(
+    request: LoadRequest,
+    fastapi_request: Request,
+    current_subject: str,
+    *,
+    current_request_counted: bool = False,
+):
     from core.inference.llama_cpp import LlamaServerNotFoundError
 
     # A new load starts here; arm the progress throttle so this load's first
@@ -4557,6 +4552,12 @@ async def _load_model_impl(request: LoadRequest, fastapi_request: Request, curre
                         ),
                     )
 
+            # Keep the resident model alive until every active generation has
+            # finished. The lifecycle gate held by the caller blocks new starts.
+            await _wait_for_model_switch_idle(
+                current_request_counted = current_request_counted
+            )
+
             # Unload any active Unsloth model only after every hub conflict check.
             if unsloth_backend.active_model_name:
                 logger.info(
@@ -4767,6 +4768,9 @@ async def _load_model_impl(request: LoadRequest, fastapi_request: Request, curre
 
         # Unload any active GGUF model first
         llama_backend = get_llama_cpp_backend()
+        await _wait_for_model_switch_idle(
+            current_request_counted = current_request_counted
+        )
         if llama_backend.is_loaded:
             logger.info("Unloading GGUF model before loading Unsloth model")
             llama_backend.unload_model()
@@ -7096,7 +7100,7 @@ async def openai_chat_completions(
     if payload.provider_id or payload.provider_type:
         # External provider: this request won't touch the local GGUF, so drop it
         # from the keep-warm count or its in-flight stream would falsely block a
-        # concurrent local auto-switch with model_switch_busy.
+        # concurrent local model switch from proceeding.
         from core.inference.llama_keepwarm import untrack_current_request
 
         untrack_current_request(request.scope)
