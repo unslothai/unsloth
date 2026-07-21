@@ -529,9 +529,7 @@ def _all_bound_outside_module_body(tree: ast.Module) -> bool:
             if isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef)):
                 # A __all__ assignment inside the function reaches module scope ONLY via
                 # `global __all__`; otherwise it is a local and cannot taint the export set.
-                if _declares_global_all(child) and any(
-                    _stmt_binds_all(n) for n in ast.walk(child)
-                ):
+                if _declares_global_all(child) and any(_stmt_binds_all(n) for n in ast.walk(child)):
                     return True
                 # else: a purely-local __all__ -> ignore this function entirely.
             elif isinstance(child, ast.ClassDef):
