@@ -5729,6 +5729,9 @@ def _bundled_hip_present(binary_dir: str) -> bool:
 
 
 def _native_linux_system_rocm_lib_dirs(binary_dir: str = "") -> list[str]:
+    # UNSLOTH_LLAMA_NO_SYSTEM_ROCM=1 keeps the bundled runtime (opt-out).
+    if os.environ.get("UNSLOTH_LLAMA_NO_SYSTEM_ROCM") == "1":
+        return []
     if sys.platform != "linux" or os.path.exists("/dev/dxg"):
         return []
     if not os.path.exists("/dev/kfd"):

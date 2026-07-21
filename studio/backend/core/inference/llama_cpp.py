@@ -266,8 +266,11 @@ def _native_linux_system_rocm_lib_dirs(binary_dir: str = "") -> "list[str]":
     kernel driver (amdkfd) and crash inside hsa_init(); prepending the system
     ROCm libs loads the matching libhsa-runtime64 / libamdhip64 while the
     bundle still supplies libggml-hip / librocblas with GPU kernels.
-    No-op on WSL (handled by _wsl_system_rocm_lib_dirs) or non-Linux.
+    No-op on WSL (handled by _wsl_system_rocm_lib_dirs), non-Linux, or via
+    UNSLOTH_LLAMA_NO_SYSTEM_ROCM=1 (keep the bundled runtime).
     """
+    if os.environ.get("UNSLOTH_LLAMA_NO_SYSTEM_ROCM") == "1":
+        return []
     if sys.platform != "linux" or os.path.exists("/dev/dxg"):
         return []
     if not os.path.exists("/dev/kfd"):
