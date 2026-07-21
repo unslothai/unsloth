@@ -5693,26 +5693,51 @@ def windows_runtime_dirs_for_runtime_line(runtime_line: str | None) -> list[str]
 def _wsl_system_rocm_lib_dirs() -> list[str]:
     """System ROCm lib dir(s) for binary_env to load before a prebuilt's HIP.
 
-    A prebuilt bundles a bare-metal HIP runtime that can't drive WSL's /dev/dxg
-    and segfaults on the first GPU call -> validation fails, install falls back
-    to a CPU build. Putting the system ROCm libs first loads the WSL-capable
-    HIP (libamdhip64 + librocdxg) while the bundle still supplies libggml-hip /
-    librocblas with the gfx1151 kernels. Strict no-op off WSL (needs /dev/dxg, a
-    "microsoft" /proc/version, and a librocdxg-providing ROCm).
+    A prebuilt bundles a bare-metal HIP runtime that must be shadowed by the
+    driver-matched system ROCm in two cases (else validation fails and install
+    falls back to a CPU build); the bundle still supplies libggml-hip /
+    librocblas gfx kernels:
+    - WSL ROCDXG: the bundled runtime can't drive /dev/dxg and segfaults; needs a
+      librocdxg-providing system ROCm.
+    - Bare-metal Strix Halo (gfx1151): the current prebuilt bundles a regressed
+      TheRock runtime that segfaults libhsa-runtime64 at HIP init (unslothai#6276);
+      the system HIP (libamdhip64 + libhsa-runtime64) works.
+    No-op when the needed system libs are absent, or via
+    UNSLOTH_LLAMA_NO_SYSTEM_ROCM=1.
     """
+    if os.environ.get("UNSLOTH_LLAMA_NO_SYSTEM_ROCM") == "1":
+        return []
+    _rocm_dirs = ("/opt/rocm/lib", "/opt/rocm/lib64")
+    _is_wsl = False
     try:
-        if not os.path.exists("/dev/dxg"):
-            return []
-        with open("/proc/version", encoding = "utf-8", errors = "replace") as fh:
-            if "microsoft" not in fh.read().lower():
-                return []
+        if os.path.exists("/dev/dxg"):
+            with open("/proc/version", encoding = "utf-8", errors = "replace") as fh:
+                _is_wsl = "microsoft" in fh.read().lower()
+    except OSError:
+        _is_wsl = False
+    out: list[str] = []
+    if _is_wsl:
+        for d in _rocm_dirs:
+            if os.path.exists(os.path.join(d, "librocdxg.so")) or os.path.exists(
+                os.path.join(d, "librocdxg.so.1")
+            ):
+                out.append(d)
+        return out
+    # Bare-metal Strix Halo (gfx1151): shadow the regressed bundled runtime with
+    # the driver-matched system HIP when present (unslothai#6276).
+    try:
+        with open("/proc/cpuinfo", encoding = "utf-8", errors = "replace") as fh:
+            _cpu = fh.read()
     except OSError:
         return []
-    out: list[str] = []
-    for d in ("/opt/rocm/lib", "/opt/rocm/lib64"):
-        if os.path.exists(os.path.join(d, "librocdxg.so")) or os.path.exists(
-            os.path.join(d, "librocdxg.so.1")
-        ):
+    if not re.search(r"Ryzen AI Max|Radeon 80[0-9]0S|Strix Halo", _cpu):
+        return []
+    for d in _rocm_dirs:
+        try:
+            _entries = os.listdir(d)
+        except OSError:
+            continue
+        if any(e.startswith(("libamdhip64.so", "libhsa-runtime64.so")) for e in _entries):
             out.append(d)
     return out
 
@@ -5872,7 +5897,8 @@ def binary_env(
             str(install_dir),
             *linux_runtime_dirs(binary_path),
         ]
-        # WSL: system HIP before the bundle's (which segfaults on /dev/dxg).
+        # System HIP before the bundle's on WSL / bare-metal Strix (bundled
+        # runtime segfaults there; see _wsl_system_rocm_lib_dirs).
         _wsl_rocm = _wsl_system_rocm_lib_dirs()
         if _wsl_rocm:
             ld_dirs = [*_wsl_rocm, *ld_dirs]
