@@ -99,13 +99,30 @@ def _fake_stt_sidecar(
     return sidecar
 
 
+def _fake_ggml_sidecar(
+    *,
+    model = None,
+    device = None,
+    loading = False,
+):
+    ggml = SimpleNamespace(
+        loaded_model = model,
+        device = device,
+        is_loading = lambda: loading,
+    )
+    ggml.cancel_pending_load = MagicMock(return_value = loading)
+    ggml.wait_for_load_to_settle = MagicMock()
+    ggml.unload = MagicMock()
+    return ggml
+
+
 def _patch_stt(sidecar):
     stt_module = types.ModuleType("core.inference.stt_sidecar")
     stt_module.get_stt_sidecar = lambda: sidecar
     # A fresh import of the GGUF sidecar pulls names from the fake module
     # above and fails; fake it too so test ordering cannot break that import.
     ggml_module = types.ModuleType("core.inference.stt_ggml_sidecar")
-    empty_ggml = SimpleNamespace(loaded_model = None, unload = MagicMock())
+    empty_ggml = _fake_ggml_sidecar()
     ggml_module.get_ggml_stt_sidecar = lambda: empty_ggml
     return patch.dict(
         sys.modules,
@@ -230,6 +247,26 @@ class TestSummarizeResidentStt(_GpuCacheResetMixin, unittest.TestCase):
         with _patch_stt(_fake_stt_sidecar()):
             out = tv.summarize_resident_stt()
         self.assertFalse(out["any"])
+
+    def test_reports_resident_gguf_when_transformers_idle(self):
+        ggml = _fake_ggml_sidecar(model = "small", device = "whisper.cpp")
+        with _patch_stt(_fake_stt_sidecar()), _patch_ggml_stt(ggml):
+            out = tv.summarize_resident_stt()
+        self.assertEqual(out["model"], "small")
+        self.assertEqual(out["device"], "whisper.cpp")
+        self.assertTrue(out["any"])
+
+    def test_resident_transformers_does_not_mask_loading_gguf(self):
+        # A Transformers model resident on CPU holds no VRAM, but a GGUF
+        # whisper-server still binding its accelerator backend does; the CPU
+        # model must not hide that in-flight startup from training admission.
+        sidecar = _fake_stt_sidecar(model = "small", device = "cpu")
+        ggml = _fake_ggml_sidecar(loading = True)
+        with _patch_stt(sidecar), _patch_ggml_stt(ggml):
+            out = tv.summarize_resident_stt()
+        self.assertEqual(out["model"], "small")
+        self.assertTrue(out["loading"])
+        self.assertTrue(out["any"])
 
 
 # ── can_keep_during_training (auto mode) ─────────────────────────────────────
@@ -535,8 +572,7 @@ class TestFreeSttModel(_GpuCacheResetMixin, unittest.TestCase):
         # Cancelling a Transformers load must not skip the GGUF sidecar; both
         # engines can hold memory at once (engine switch or direct load calls).
         sidecar = _fake_stt_sidecar(loading = True)
-        ggml = SimpleNamespace(loaded_model = "small")
-        ggml.unload = MagicMock()
+        ggml = _fake_ggml_sidecar(model = "small")
         with _patch_stt(sidecar), _patch_ggml_stt(ggml):
             freed = tv.free_stt_model_for_training(reason = "test")
         sidecar.cancel_pending_load.assert_called_once()
@@ -549,6 +585,19 @@ class TestFreeSttModel(_GpuCacheResetMixin, unittest.TestCase):
             freed = tv.free_stt_model_for_training(reason = "test")
         sidecar.unload.assert_not_called()
         self.assertEqual(freed, [])
+
+    def test_cancels_inflight_gguf_load_and_waits_to_settle(self):
+        # A GGUF whisper-server still in startup has no loaded_model yet, so the
+        # coordinator must cancel and wait for it, not skip it, before training
+        # claims the accelerator memory it is binding.
+        sidecar = _fake_stt_sidecar()  # Transformers idle
+        ggml = _fake_ggml_sidecar(loading = True)
+        with _patch_stt(sidecar), _patch_ggml_stt(ggml):
+            freed = tv.free_stt_model_for_training(reason = "test")
+        ggml.cancel_pending_load.assert_called_once()
+        ggml.wait_for_load_to_settle.assert_called_once()
+        ggml.unload.assert_not_called()  # nothing surfaced after the wait
+        self.assertEqual(freed, ["stt:gguf-loading"])
 
 
 class TestCoordinateModels(_GpuCacheResetMixin, unittest.TestCase):

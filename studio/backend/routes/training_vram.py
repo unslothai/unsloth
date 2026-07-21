@@ -78,22 +78,24 @@ def summarize_resident_chat() -> Dict[str, Any]:
 def summarize_resident_stt() -> Dict[str, Any]:
     """Report the resident dictation model (either engine). Never raises."""
     try:
+        from core.inference.stt_ggml_sidecar import get_ggml_stt_sidecar
         from core.inference.stt_sidecar import get_stt_sidecar
 
         sidecar = get_stt_sidecar()
         model = sidecar.loaded_model
         device = sidecar.device
         loading = sidecar.is_loading()
-        if not model and not loading:
-            # The whisper.cpp engine holds GPU memory through its own
-            # subprocess; report it so admission accounts for dictation
-            # regardless of the engine selected in Voice settings.
-            from core.inference.stt_ggml_sidecar import get_ggml_stt_sidecar
-
-            ggml = get_ggml_stt_sidecar()
+        # The whisper.cpp engine holds GPU memory through its own subprocess, and
+        # both engines can be live at once (an engine switch or direct
+        # /audio/stt/load calls). Always fold the GGUF sidecar in -- a resident
+        # Transformers model (e.g. after its CPU fallback) must not mask a GGUF
+        # server still binding its accelerator backend, or admission would let
+        # training launch into that startup and OOM.
+        ggml = get_ggml_stt_sidecar()
+        if not model:
             model = ggml.loaded_model
-            device = ggml.device
-            loading = ggml.is_loading()
+            device = device or ggml.device
+        loading = loading or ggml.is_loading()
         return {
             "model": model,
             "device": device,
@@ -371,11 +373,15 @@ def free_chat_models_for_training(reason: str) -> List[str]:
 
 
 def free_stt_model_for_training(reason: str) -> List[str]:
-    """Unload the dictation model before training. Never raises."""
+    """Unload the dictation model(s) before training. Never raises.
+
+    The Transformers and GGUF sidecars are freed under independent exception
+    boundaries so a failure unloading one backend never skips freeing the other
+    (both can hold accelerator memory at once after an engine switch).
+    """
+    freed: List[str] = []
     try:
         from core.inference.stt_sidecar import get_stt_sidecar
-
-        freed: List[str] = []
         sidecar = get_stt_sidecar()
         if sidecar.is_loading() and sidecar.cancel_pending_load():
             logger.info("Cancelling STT model load for training (%s)", reason)
@@ -394,20 +400,33 @@ def free_stt_model_for_training(reason: str) -> List[str]:
                 logger.info("Unloading STT model '%s' for training (%s)", model, reason)
                 sidecar.unload()
                 freed.append(f"stt:{model}")
-        # Check the GGUF sidecar even after a cancelled Transformers load; both
-        # engines can hold memory at once (engine switch or direct load calls).
-        from core.inference.stt_ggml_sidecar import get_ggml_stt_sidecar
-
-        ggml = get_ggml_stt_sidecar()
-        ggml_model = ggml.loaded_model
-        if ggml_model:
-            logger.info("Unloading GGUF STT model '%s' for training (%s)", ggml_model, reason)
-            ggml.unload()
-            freed.append(f"stt:{ggml_model}")
-        return freed
     except Exception as e:
-        logger.warning("Could not unload STT model: %s", e)
-        return []
+        logger.warning("Could not unload Transformers STT model: %s", e)
+
+    # Check the GGUF sidecar even after a cancelled/failed Transformers unload;
+    # both engines can hold memory at once (engine switch or direct load calls).
+    try:
+        from core.inference.stt_ggml_sidecar import get_ggml_stt_sidecar
+        ggml = get_ggml_stt_sidecar()
+        if ggml.is_loading() and ggml.cancel_pending_load():
+            logger.info("Cancelling GGUF STT model load for training (%s)", reason)
+            # whisper-server may still be binding its accelerator backend; wait
+            # for the cancelled startup to be killed and reaped before training
+            # claims the memory (its loaded_model stays unset until it is ready).
+            ggml.wait_for_load_to_settle()
+            if ggml.loaded_model:
+                ggml.unload()
+            freed.append("stt:gguf-loading")
+        else:
+            ggml_model = ggml.loaded_model
+            if ggml_model:
+                logger.info("Unloading GGUF STT model '%s' for training (%s)", ggml_model, reason)
+                ggml.unload()
+                freed.append(f"stt:{ggml_model}")
+    except Exception as e:
+        logger.warning("Could not unload GGUF STT model: %s", e)
+
+    return freed
 
 
 def coordinate_models_for_training(

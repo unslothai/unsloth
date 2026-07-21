@@ -411,6 +411,48 @@ export function resolveDictationLanguage(setting?: string): string {
     : "en-US";
 }
 
+// Whisper's language codes: transformers `LANGUAGES` keys mirrored here the way
+// STT_MODELS mirrors the backend, plus the backend's BCP-47 aliases
+// (stt_sidecar.py `_WHISPER_LANGUAGE_ALIASES`). Keep in sync with
+// `_known_whisper_languages()` in the backend; Auto only resolves to a language
+// in this set, so a UI locale Whisper cannot honor stays on auto-detect.
+const WHISPER_DICTATION_LANGUAGES = new Set([
+  "af", "am", "ar", "as", "az", "ba", "be", "bg", "bn", "bo", "br", "bs",
+  "ca", "cmn", "cs", "cy", "da", "de", "el", "en", "es", "et", "eu", "fa",
+  "fi", "fil", "fo", "fr", "gl", "gu", "ha", "haw", "he", "hi", "hr", "ht",
+  "hu", "hy", "id", "in", "is", "it", "iw", "ja", "ji", "jw", "ka", "kk",
+  "km", "kn", "ko", "la", "lb", "ln", "lo", "lt", "lv", "mg", "mi", "mk",
+  "ml", "mn", "mr", "ms", "mt", "my", "nb", "ne", "nl", "nn", "no", "oc",
+  "pa", "pl", "ps", "pt", "ro", "ru", "sa", "sd", "si", "sk", "sl", "sn",
+  "so", "sq", "sr", "su", "sv", "sw", "ta", "te", "tg", "th", "tk", "tl",
+  "tr", "tt", "uk", "ur", "uz", "vi", "yi", "yo", "yue", "zh",
+]);
+
+/**
+ * Resolve Auto for the model STT engine (the browser engine already resolves it
+ * via `resolveDictationLanguage`). Only the literal "auto" is resolved to a
+ * concrete locale; an explicit language (or an empty/malformed setting) passes
+ * through unchanged. Resolution is further gated so Auto only becomes a language
+ * the model AND Whisper can honor; otherwise it stays auto-detect rather than
+ * forcing a locale Whisper cannot handle (e.g. Irish) or 422ing every dictation.
+ */
+export function resolveModelDictationLanguage(
+  model: SttModel,
+  requested: string,
+): string {
+  if (requested !== "auto") return requested;
+  const resolved = resolveDictationLanguage(requested);
+  const primary = resolved
+    .trim()
+    .replaceAll("_", "-")
+    .toLowerCase()
+    .split("-", 1)[0];
+  return isSttModelLanguageCompatible(model, resolved) &&
+    WHISPER_DICTATION_LANGUAGES.has(primary)
+    ? resolved
+    : requested;
+}
+
 function escapeRegExp(value: string): string {
   return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }

@@ -7,6 +7,7 @@ import {
   applyDictationDictionary,
   isCuratedSttModel,
   recordRecentDictation,
+  resolveModelDictationLanguage,
   useVoiceSettingsStore,
 } from "@/features/settings/stores/voice-settings-store";
 import type { DictationAdapter } from "@assistant-ui/react";
@@ -74,7 +75,10 @@ export async function transcribeAudioBlob(
 ): Promise<string> {
   const settings = useVoiceSettingsStore.getState();
   const model = options.model ?? settings.sttModel;
-  const language = options.language ?? settings.dictationLanguage;
+  const language = resolveModelDictationLanguage(
+    model,
+    options.language ?? settings.dictationLanguage,
+  );
   const engine = options.engine ?? sttEngineFor(model);
   const params = new URLSearchParams({ model, fast: "true", engine });
   if (language) params.set("language", language);
@@ -267,8 +271,12 @@ export class StudioModelDictationAdapter implements DictationAdapter {
     // Pin the model, language, and linked chat chosen when recording began so
     // later segments are not transcribed with settings the user changed
     // mid-session and a thread switch cannot relink the saved transcript.
-    const { sttModel: sessionModel, dictationLanguage: sessionLanguage } =
+    const { sttModel: sessionModel, dictationLanguage } =
       useVoiceSettingsStore.getState();
+    const sessionLanguage = resolveModelDictationLanguage(
+      sessionModel,
+      dictationLanguage,
+    );
     const sessionEngine = sttEngineFor(sessionModel);
     const sessionChatId = resolveDictationChatId(this.chatId);
 

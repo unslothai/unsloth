@@ -5835,6 +5835,24 @@ def _resolve_stt_engine(engine: Optional[str]) -> str:
     )
 
 
+def _resolve_serving_stt_engine(engine: Optional[str]) -> str:
+    """Resolve the engine that will actually serve a model.
+
+    whisper.cpp (gguf) only accepts curated ids, which the Transformers engine
+    serves too, so when whisper-server is not installed (the common case, since
+    `unsloth studio update` does not yet build it) fall back to Transformers
+    instead of 501-ing on every recording -- the GGUF sidecar's documented
+    contract. Used for download/load/transcribe; unload targets a specific engine
+    and keeps _resolve_stt_engine.
+    """
+    resolved = _resolve_stt_engine(engine)
+    if resolved == "gguf":
+        from core.inference import stt_ggml_sidecar
+        if not stt_ggml_sidecar.is_available():
+            return "transformers"
+    return resolved
+
+
 def _stt_sidecar_for(engine: str):
     if engine == "gguf":
         from core.inference.stt_ggml_sidecar import get_ggml_stt_sidecar
@@ -5924,12 +5942,26 @@ async def stt_download(
     is reported by /audio/stt/status.
     """
     from core.inference import stt_ggml_sidecar, stt_sidecar
-    from core.inference.stt_sidecar import SttModelIdError
+    from core.inference.stt_sidecar import (
+        SttModelCompatibilityError,
+        SttModelIdError,
+        validate_remote_model,
+    )
 
-    module = stt_ggml_sidecar if _resolve_stt_engine(payload.engine) == "gguf" else stt_sidecar
+    engine = _resolve_serving_stt_engine(payload.engine)
+    module = stt_ggml_sidecar if engine == "gguf" else stt_sidecar
     try:
+        # The Transformers engine accepts arbitrary custom `owner/model` repos, so
+        # confirm the repo is a Whisper checkpoint (metadata-only, no weights) before
+        # snapshot_download pulls a possibly-large non-STT repository into the shared
+        # HF cache. Curated ids short-circuit; the GGUF engine only accepts curated
+        # ids (resolve_ggml_model_id rejects custom), so it needs no repo check.
+        if engine != "gguf":
+            await asyncio.to_thread(validate_remote_model, payload.model, hf_token)
         await asyncio.to_thread(module.start_model_download, payload.model, hf_token)
     except SttModelIdError as e:
+        raise HTTPException(status_code = 422, detail = str(e))
+    except SttModelCompatibilityError as e:
         raise HTTPException(status_code = 422, detail = str(e))
     return JSONResponse(content = module.download_status())
 
@@ -5946,7 +5978,7 @@ async def stt_load(payload: SttLoadRequest, current_subject: str = Depends(get_c
         get_stt_sidecar,
     )
 
-    sidecar = _stt_sidecar_for(_resolve_stt_engine(payload.engine))
+    sidecar = _stt_sidecar_for(_resolve_serving_stt_engine(payload.engine))
     try:
         await asyncio.to_thread(sidecar.load, payload.model)
     except SttModelNotDownloadedError as e:
@@ -5997,9 +6029,25 @@ async def stt_unload(
     if engine is None:
         engines = ["transformers", "gguf"]
     else:
-        engines = [_resolve_stt_engine(engine)]
+        # Resolve through the serving resolver, not the plain normalizer: a
+        # "gguf" pick on a host without whisper-server is actually served by the
+        # Transformers fallback, so unloading must target that same engine or the
+        # resident model is never freed.
+        engines = [_resolve_serving_stt_engine(engine)]
+    # Attempt every engine even if one raises, so a failure unloading one backend
+    # never skips freeing the other (both can be resident after an engine switch).
+    failed: list[str] = []
     for name in engines:
-        await asyncio.to_thread(_stt_sidecar_for(name).unload)
+        try:
+            await asyncio.to_thread(_stt_sidecar_for(name).unload)
+        except Exception as exc:  # noqa: BLE001 - report after attempting all engines
+            logger.warning("Failed to unload STT engine '%s': %s", name, exc)
+            failed.append(name)
+    if failed:
+        raise HTTPException(
+            status_code = 500,
+            detail = f"Failed to unload STT engine(s): {', '.join(failed)}",
+        )
     return JSONResponse(content = {"loaded_model": None, "device": None})
 
 
@@ -6027,7 +6075,7 @@ async def _transcribe_audio_bytes(
     if len(raw) > _MAX_AUDIO_RAW_BYTES:
         raise HTTPException(status_code = 413, detail = "Audio is too large.")
 
-    sidecar = _stt_sidecar_for(_resolve_stt_engine(engine))
+    sidecar = _stt_sidecar_for(_resolve_serving_stt_engine(engine))
     try:
         result = await asyncio.to_thread(
             sidecar.transcribe,

@@ -14,11 +14,18 @@ const HIDDEN_NEEDLES = [
   "stories260k.gguf", // probe filename (carries .gguf so it stays specific)
 ];
 const HIDDEN_STT_REPOS = new Set([
+  // Transformers safetensors repos and their whisper.cpp GGUF companions
+  // (unslothai/whisper-*-GGUF): STT-only, never chat models.
   "unsloth/whisper-tiny",
   "unsloth/whisper-base",
   "unsloth/whisper-small",
   "unsloth/whisper-large-v3-turbo",
   "unsloth/whisper-large-v3",
+  "unslothai/whisper-tiny-gguf",
+  "unslothai/whisper-base-gguf",
+  "unslothai/whisper-small-gguf",
+  "unslothai/whisper-large-v3-turbo-gguf",
+  "unslothai/whisper-large-v3-gguf",
 ]);
 const HIDDEN_STT_CACHE_NAMES = [...HIDDEN_STT_REPOS].map((repo) =>
   repo.replace("/", "--"),

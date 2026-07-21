@@ -46,6 +46,7 @@ from core.inference.stt_sidecar import (
     STT_KEEP_ALIVE_SECONDS,
     SttAudioDecodeError,
     SttLanguageError,
+    SttLoadCancelledError,
     SttModelIdError,
     SttModelNotDownloadedError,
     SttUnavailableError,
@@ -504,16 +505,28 @@ class GgmlSttSidecar:
         # Set while whisper-server is starting so training admission can account
         # for the accelerator memory it is about to bind. Read without the lock.
         self._loading = False
+        # A still-starting whisper-server is cancellable so training can preempt
+        # it before it finishes binding accelerator memory. Both are assigned
+        # inside self._lock but read/acted on without it: cancel_pending_load()
+        # runs while load() holds the lock, so the event is the source of truth
+        # and terminating the process is a best-effort fast path.
+        self._load_cancel_event: Optional[threading.Event] = None
+        self._starting_process: Optional[subprocess.Popen] = None
 
     @property
     def loaded_model(self) -> Optional[str]:
-        with self._lock:
-            return self._model_id if self._process_alive() else None
+        # Lock-free status read, mirroring the Transformers sidecar
+        # (stt_sidecar.py). transcribe() holds self._lock across the whole
+        # inference call (up to _TRANSCRIBE_TIMEOUT_SECONDS), and /audio/stt
+        # status polls plus training admission must not block behind it.
+        # _process_alive() snapshots self._process before poll(), and Popen.poll()
+        # is guarded by subprocess's own _waitpid_lock, so a concurrent unload is
+        # safe.
+        return self._model_id if self._process_alive() else None
 
     @property
     def device(self) -> Optional[str]:
-        with self._lock:
-            return "whisper.cpp" if self._process_alive() else None
+        return "whisper.cpp" if self._process_alive() else None
 
     def is_loading(self) -> bool:
         # True only while whisper-server is starting (may take seconds to bind
@@ -525,7 +538,11 @@ class GgmlSttSidecar:
         return self._keep_alive_seconds
 
     def _process_alive(self) -> bool:
-        return self._process is not None and self._process.poll() is None
+        # Snapshot self._process once: a concurrent unload() nulls it under the
+        # lock, and the lock-free readers (loaded_model/device) would otherwise
+        # re-read a None between the truthiness check and .poll().
+        process = self._process
+        return process is not None and process.poll() is None
 
     # -- idle unload ------------------------------------------------------
 
@@ -575,11 +592,31 @@ class GgmlSttSidecar:
             self._release_locked()
 
     def cancel_pending_load(self) -> bool:
-        # No async load phase to cancel; unloading is enough for training.
-        return False
+        # Preempt a whisper-server still in startup so training does not launch
+        # while it is binding accelerator memory. load() holds self._lock for the
+        # whole startup window, so act without the lock: signal the load to abort
+        # and terminate the starting process. _wait_for_server observes the event
+        # and raises, then load() reaps the process and releases the lock.
+        if not self._loading:
+            return False
+        event = self._load_cancel_event
+        if event is None:
+            return False
+        event.set()
+        process = self._starting_process
+        if process is not None and process.poll() is None:
+            try:
+                process.terminate()
+            except Exception:
+                pass
+        return True
 
     def wait_for_load_to_settle(self) -> None:
-        return None
+        # load() holds self._lock across the whole startup and its cancel
+        # cleanup, so acquiring the lock blocks until a cancelled server has been
+        # killed and reaped and its accelerator memory released.
+        with self._lock:
+            pass
 
     @staticmethod
     def _find_free_port() -> int:
@@ -618,6 +655,8 @@ class GgmlSttSidecar:
                 model_id,
                 port,
             )
+            cancel_event = threading.Event()
+            self._load_cancel_event = cancel_event
             self._loading = True
             try:
                 process = subprocess.Popen(
@@ -632,9 +671,10 @@ class GgmlSttSidecar:
                     # never orphans a server still holding the model.
                     **child_popen_kwargs(),
                 )
+                self._starting_process = process
                 adopt_pid(process.pid)  # terminate_all backstop for graceful exits
                 try:
-                    self._wait_for_server(process, port)
+                    self._wait_for_server(process, port, cancel_event)
                 except Exception:
                     if process.poll() is None:
                         process.kill()
@@ -647,11 +687,21 @@ class GgmlSttSidecar:
                 self._schedule_idle_unload_locked()
             finally:
                 self._loading = False
+                self._load_cancel_event = None
+                self._starting_process = None
 
     @staticmethod
-    def _wait_for_server(process: subprocess.Popen, port: int) -> None:
+    def _wait_for_server(
+        process: subprocess.Popen,
+        port: int,
+        cancel_event: Optional[threading.Event] = None,
+    ) -> None:
         deadline = time.monotonic() + _SERVER_START_TIMEOUT_SECONDS
         while time.monotonic() < deadline:
+            if cancel_event is not None and cancel_event.is_set():
+                raise SttLoadCancelledError(
+                    "GGUF STT model loading was cancelled so training could start."
+                )
             if process.poll() is not None:
                 raise SttEngineUnavailableError(
                     "The local transcription runtime exited before becoming "
