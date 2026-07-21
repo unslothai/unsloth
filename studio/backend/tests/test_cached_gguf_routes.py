@@ -98,6 +98,34 @@ def test_collect_local_models_scans_previous_cache(monkeypatch, tmp_path):
     assert previous_row.id == str(snapshot.resolve())
 
 
+def test_collect_local_models_prefers_complete_previous_copy(monkeypatch, tmp_path):
+    active = tmp_path / "active"
+    previous = tmp_path / "previous"
+    active_partial = active / "models--Org--Model" / "blobs" / "abc.incomplete"
+    active_partial.parent.mkdir(parents = True)
+    active_partial.write_bytes(b"partial")
+    snapshot = previous / "models--Org--Model" / "snapshots" / "revision"
+    snapshot.mkdir(parents = True)
+    (snapshot / "model.safetensors").write_bytes(b"complete")
+
+    monkeypatch.setattr(models_route, "_resolve_hf_cache_dir", lambda: active)
+    monkeypatch.setattr("utils.paths.legacy_hf_cache_dir", lambda: tmp_path / "legacy")
+    monkeypatch.setattr("utils.paths.hf_default_cache_dir", lambda: tmp_path / "default")
+    monkeypatch.setattr("utils.paths.lmstudio_model_dirs", lambda: [])
+    monkeypatch.setattr(
+        "utils.hf_cache_settings.known_hf_hub_caches",
+        lambda: [active, previous],
+    )
+    monkeypatch.setattr("storage.studio_db.list_scan_folders", lambda: [])
+
+    rows = models_route.collect_local_models(tmp_path / "models")
+
+    [row] = [row for row in rows if row.model_id == "Org/Model"]
+    assert row.id == str(snapshot.resolve())
+    assert row.partial is False
+    assert row.active_cache is False
+
+
 def test_list_cached_gguf_includes_non_suffix_repo_when_cache_contains_gguf(monkeypatch, tmp_path):
     repo = _repo(
         "HauhauCS/Gemma-4-E4B-Uncensored-HauhauCS-Aggressive",

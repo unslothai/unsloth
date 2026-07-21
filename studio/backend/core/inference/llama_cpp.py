@@ -935,6 +935,7 @@ def _cached_hf_snapshot_file(
     filename: str,
     *,
     expected_size: Optional[int] = None,
+    cache_dir: Optional[str] = None,
 ) -> Optional[str]:
     """Return a cached snapshot file even when HF's current-ref probe misses it."""
     if not filename:
@@ -943,8 +944,22 @@ def _cached_hf_snapshot_file(
     if not parts or any(part in (".", "..") for part in parts):
         return None
     try:
-        from utils.models.model_config import _iter_hf_cache_snapshots
-        for snap in _iter_hf_cache_snapshots(repo_id):
+        if cache_dir is None:
+            from utils.models.model_config import _iter_hf_cache_snapshots
+            snapshots = _iter_hf_cache_snapshots(repo_id)
+        else:
+            from hub.utils.hf_cache_state import iter_active_repo_cache_dirs
+            snapshots = (
+                snapshot
+                for repo_dir in iter_active_repo_cache_dirs(
+                    "model",
+                    repo_id,
+                    root = Path(cache_dir),
+                )
+                for snapshot in (repo_dir / "snapshots").glob("*")
+                if snapshot.is_dir()
+            )
+        for snap in snapshots:
             candidate = snap.joinpath(*parts)
             if not candidate.is_file():
                 continue
@@ -4962,6 +4977,9 @@ class LlamaCppBackend:
         touching the shared one; defaults to the shared event.
         """
         cancel_event = cancel_event if cancel_event is not None else self._cancel_event
+        from utils.hf_cache_settings import get_hf_cache_paths
+
+        download_cache_dir = str(get_hf_cache_paths().hub_cache)
         try:
             import huggingface_hub  # noqa: F401 -- presence check only
         except ImportError:
@@ -5057,7 +5075,11 @@ class LlamaCppBackend:
                     if not p.size:
                         continue
                     try:
-                        cached_path = try_to_load_from_cache(hf_repo, p.path)
+                        cached_path = try_to_load_from_cache(
+                            hf_repo,
+                            p.path,
+                            cache_dir = download_cache_dir,
+                        )
                     except Exception:
                         cached_path = None
                     if (
@@ -5068,6 +5090,7 @@ class LlamaCppBackend:
                             hf_repo,
                             p.path,
                             expected_size = p.size,
+                            cache_dir = download_cache_dir,
                         )
                     if isinstance(cached_path, str) and os.path.exists(cached_path):
                         try:
@@ -5081,12 +5104,8 @@ class LlamaCppBackend:
             total_download_bytes = max(0, total_bytes - already_cached_bytes)
 
             if total_download_bytes > 0:
-                cache_dir = os.environ.get(
-                    "HF_HUB_CACHE",
-                    str(Path.home() / ".cache" / "huggingface" / "hub"),
-                )
-                Path(cache_dir).mkdir(parents = True, exist_ok = True)
-                free_bytes = shutil.disk_usage(cache_dir).free
+                Path(download_cache_dir).mkdir(parents = True, exist_ok = True)
+                free_bytes = shutil.disk_usage(download_cache_dir).free
 
                 total_gb = total_download_bytes / (1024**3)
                 free_gb = free_bytes / (1024**3)
@@ -5104,7 +5123,7 @@ class LlamaCppBackend:
                         # surface the disk shortfall for the requested variant.
                         raise RuntimeError(
                             f"Not enough disk space to download {gguf_filename}. "
-                            f"Only {free_gb:.1f} GB free in {cache_dir}"
+                            f"Only {free_gb:.1f} GB free in {download_cache_dir}"
                         )
                     smaller = self._find_smallest_fitting_variant(
                         hf_repo,
@@ -5135,7 +5154,7 @@ class LlamaCppBackend:
                     else:
                         raise RuntimeError(
                             f"Not enough disk space to download any variant. "
-                            f"Only {free_gb:.1f} GB free in {cache_dir}"
+                            f"Only {free_gb:.1f} GB free in {download_cache_dir}"
                         )
         except RuntimeError:
             raise
@@ -5158,6 +5177,7 @@ class LlamaCppBackend:
                 cancel_event = cancel_event,
                 on_status = lambda m: logger.info(m),
                 force_download = force,
+                cache_dir = download_cache_dir,
             )
             for shard in gguf_extra_shards:
                 if cancel_event.is_set():
@@ -5169,6 +5189,7 @@ class LlamaCppBackend:
                     hf_token,
                     cancel_event = cancel_event,
                     force_download = force,
+                    cache_dir = download_cache_dir,
                 )
         except Exception as e:
             if isinstance(e, RuntimeError) and "Cancelled" in str(e):

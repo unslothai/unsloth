@@ -2,6 +2,7 @@
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import asyncio
+import json
 import sys
 from pathlib import Path
 from types import SimpleNamespace
@@ -2967,6 +2968,47 @@ def test_shutdown_skips_marker_for_worker_that_exits_cleanly(monkeypatch):
     registry.terminate_all("dataset download")
 
     assert markers == ["Org/Cut"]
+
+
+def test_orphan_reaper_uses_worker_cache_root_after_setting_changes(monkeypatch, tmp_path):
+    workers = tmp_path / "workers"
+    workers.mkdir()
+    cache_a = tmp_path / "cache-a" / "hub"
+    cache_b = tmp_path / "cache-b" / "hub"
+    partial = cache_a / "models--Org--Model" / "blobs" / "abc.incomplete"
+    partial.parent.mkdir(parents = True)
+    partial.write_bytes(b"partial")
+    cache_b.mkdir(parents = True)
+    monkeypatch.setattr(state_dir, "workers_dir", lambda: workers)
+    monkeypatch.setattr(download_registry, "_process_alive", lambda _pid: False)
+    monkeypatch.setattr(
+        "utils.hf_cache_settings.get_hf_cache_paths",
+        lambda: SimpleNamespace(hub_cache = cache_b),
+    )
+    markers = []
+    monkeypatch.setattr(
+        download_registry,
+        "persist_cancel_marker",
+        lambda *args, **kwargs: markers.append(args),
+    )
+    metadata = download_registry.DownloadMetadata(
+        repo_type = "model",
+        repo_id = "Org/Model",
+        variant = None,
+        transport = download_registry.TRANSPORT_HTTP,
+        hub_cache = str(cache_a),
+        xet_cache = str(tmp_path / "cache-a" / "xet"),
+    )
+    download_registry.write_worker_breadcrumb("org/model", 1234, metadata)
+    [breadcrumb] = list(workers.iterdir())
+    payload = json.loads(breadcrumb.read_text(encoding = "utf-8"))
+    assert payload["hub_cache"] == str(cache_a)
+    assert payload["xet_cache"] == str(tmp_path / "cache-a" / "xet")
+
+    download_registry.reap_orphan_workers()
+
+    assert markers == [("model", "Org/Model", None, "http")]
+    assert list(workers.iterdir()) == []
 
 
 def test_model_claim_register_cancel_uses_registry_marker_owner(monkeypatch):

@@ -130,6 +130,10 @@ def _symlink_or_skip(link: Path, target: Path) -> None:
 def hf_cache(tmp_path, monkeypatch):
     """Point ``huggingface_hub.constants.HF_HUB_CACHE`` at a temp dir."""
     monkeypatch.setattr(hf_constants, "HF_HUB_CACHE", str(tmp_path))
+    monkeypatch.setattr(
+        "utils.hf_cache_settings.get_hf_cache_paths",
+        lambda: _types.SimpleNamespace(hub_cache = tmp_path),
+    )
     return tmp_path
 
 

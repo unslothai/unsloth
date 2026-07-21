@@ -129,6 +129,8 @@ def write_worker_breadcrumb(key: str, pid: int, metadata: Optional["DownloadMeta
         "cancel_marker_transport": metadata.cancel_marker_transport
         if metadata is not None
         else None,
+        "hub_cache": metadata.hub_cache if metadata is not None else None,
+        "xet_cache": metadata.xet_cache if metadata is not None else None,
     }
     tmp = path.with_name(f".{path.name}.tmp-{pid}")
     try:
@@ -236,6 +238,7 @@ def _settle_orphaned_download(
     repo_id: Optional[str],
     variant: Optional[str],
     transport: Optional[str],
+    hub_cache: Optional[str] = None,
 ) -> None:
     """Persist a cancel marker for a reaped orphan still mid-download so the next
     launch settles it to a resumable "cancelled" state instead of a phantom-running
@@ -251,16 +254,28 @@ def _settle_orphaned_download(
         return
     from hub.utils import download_manifest
 
+    cache_root = Path(hub_cache) if isinstance(hub_cache, str) and hub_cache else None
+
     manifest = download_manifest.read_manifest(repo_type, repo_id, variant)
     if repo_type == "model" and variant and manifest is None:
         return
     if manifest is None:
-        if not has_active_incomplete_blobs(repo_type, repo_id):
+        if not has_active_incomplete_blobs(repo_type, repo_id, root = cache_root):
             return
     else:
-        if _manifest_verifies_against_active_cache(repo_type, repo_id, manifest):
+        if _manifest_verifies_against_active_cache(
+            repo_type,
+            repo_id,
+            manifest,
+            root = cache_root,
+        ):
             return
-        if not _manifest_has_active_incomplete_blobs(repo_type, repo_id, manifest):
+        if not _manifest_has_active_incomplete_blobs(
+            repo_type,
+            repo_id,
+            manifest,
+            root = cache_root,
+        ):
             return
     persist_cancel_marker(repo_type, repo_id, variant, transport, logger = logger)
 
@@ -309,6 +324,7 @@ def reap_orphan_workers() -> None:
                 repo_id,
                 data.get("variant"),
                 data.get("cancel_marker_transport") or data.get("transport"),
+                data.get("hub_cache"),
             )
         except Exception as exc:
             logger.debug("Reaper failed for breadcrumb %s: %s", entry, exc)
@@ -355,8 +371,13 @@ def _purge_incomplete_blobs(
     return removed
 
 
-def _iter_active_snapshot_dirs(repo_type: str, repo_id: str) -> Iterator[Path]:
-    for entry in iter_active_repo_cache_dirs(repo_type, repo_id):
+def _iter_active_snapshot_dirs(
+    repo_type: str,
+    repo_id: str,
+    *,
+    root: Optional[Path] = None,
+) -> Iterator[Path]:
+    for entry in iter_active_repo_cache_dirs(repo_type, repo_id, root = root):
         snapshots_dir = entry / "snapshots"
         if not snapshots_dir.is_dir():
             continue
@@ -369,24 +390,41 @@ def _iter_active_snapshot_dirs(repo_type: str, repo_id: str) -> Iterator[Path]:
                 yield snapshot
 
 
-def _manifest_verifies_against_active_cache(repo_type: str, repo_id: str, manifest) -> bool:
+def _manifest_verifies_against_active_cache(
+    repo_type: str,
+    repo_id: str,
+    manifest,
+    *,
+    root: Optional[Path] = None,
+) -> bool:
     from hub.utils import download_manifest
-    for snapshot_dir in _iter_active_snapshot_dirs(repo_type, repo_id):
+    for snapshot_dir in _iter_active_snapshot_dirs(repo_type, repo_id, root = root):
         if download_manifest.verify_against_disk(manifest, snapshot_dir).ok:
             return True
     return False
 
 
-def _manifest_has_active_incomplete_blobs(repo_type: str, repo_id: str, manifest) -> bool:
+def _manifest_has_active_incomplete_blobs(
+    repo_type: str,
+    repo_id: str,
+    manifest,
+    *,
+    root: Optional[Path] = None,
+) -> bool:
     if not getattr(manifest, "variant", None):
-        return has_active_incomplete_blobs(repo_type, repo_id)
+        return has_active_incomplete_blobs(repo_type, repo_id, root = root)
     expected_hashes = frozenset(
         expected.sha256 for expected in manifest.expected_files if expected.sha256
     )
     if not expected_hashes:
-        return has_active_incomplete_blobs(repo_type, repo_id)
+        return has_active_incomplete_blobs(repo_type, repo_id, root = root)
     return bool(
-        incomplete_blob_hashes(repo_type, repo_id, active_only = True).intersection(expected_hashes)
+        incomplete_blob_hashes(
+            repo_type,
+            repo_id,
+            active_only = True,
+            root = root,
+        ).intersection(expected_hashes)
     )
 
 
@@ -618,10 +656,11 @@ def incomplete_blob_hashes(
     repo_id: str,
     *,
     active_only: bool = False,
+    root: Optional[Path] = None,
 ) -> set[str]:
     out: set[str] = set()
     entries = (
-        iter_active_repo_cache_dirs(repo_type, repo_id)
+        iter_active_repo_cache_dirs(repo_type, repo_id, root = root)
         if active_only
         else iter_repo_cache_dirs(repo_type, repo_id)
     )

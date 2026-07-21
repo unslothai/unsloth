@@ -229,6 +229,42 @@ def test_cache_switch_invalidates_inventory(settings_store, tmp_path, monkeypatc
     assert invalidations == [True]
 
 
+def test_cache_validation_write_tests_hub_and_xet(settings_store, tmp_path, monkeypatch):
+    selected = tmp_path / "external" / "huggingface"
+    selected.parent.mkdir()
+    tested = []
+    real_named_temporary_file = hf_cache_settings.tempfile.NamedTemporaryFile
+
+    def recording_write_test(*args, **kwargs):
+        tested.append(Path(kwargs["dir"]))
+        return real_named_temporary_file(*args, **kwargs)
+
+    monkeypatch.setattr(
+        hf_cache_settings.tempfile,
+        "NamedTemporaryFile",
+        recording_write_test,
+    )
+
+    hf_cache_settings.set_hf_cache_home(str(selected))
+
+    assert tested == [selected / "hub", selected / "xet"]
+
+
+def test_cache_validation_rejects_unwritable_child(settings_store, tmp_path, monkeypatch):
+    selected = tmp_path / "external" / "huggingface"
+    selected.parent.mkdir()
+
+    def reject_hub(*args, **kwargs):
+        if Path(kwargs["dir"]).name == "hub":
+            raise PermissionError("read-only")
+        raise AssertionError("xet should not be tested after hub fails")
+
+    monkeypatch.setattr(hf_cache_settings.tempfile, "NamedTemporaryFile", reject_hub)
+
+    with pytest.raises(ValueError, match = "permission"):
+        hf_cache_settings.set_hf_cache_home(str(selected))
+
+
 def test_inactive_cache_model_loads_from_snapshot_path(tmp_path):
     snapshot = tmp_path / "snapshots" / "revision"
     snapshot.mkdir(parents = True)

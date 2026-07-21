@@ -210,8 +210,8 @@ def _validate_cache_home(raw_path: str) -> Path:
             raise ValueError("The selected cache location is not a folder.")
         for child in (resolved / "hub", resolved / "xet"):
             child.mkdir(exist_ok = True)
-        with tempfile.NamedTemporaryFile(prefix = ".unsloth-write-test-", dir = resolved):
-            pass
+            with tempfile.NamedTemporaryFile(prefix = ".unsloth-write-test-", dir = child):
+                pass
     except PermissionError as exc:
         raise ValueError("Studio does not have permission to write to this folder.") from exc
     except OSError as exc:

@@ -371,6 +371,8 @@ def _scan_hf_cache(cache_dir: Path, *, active_cache: bool = True) -> List[LocalM
     if not cache_dir.exists() or not cache_dir.is_dir():
         return []
 
+    from hub.utils import inventory_scan as hf_cache_scan
+
     found: List[LocalModelInfo] = []
     for repo_dir in cache_dir.glob("models--*"):
         if not repo_dir.is_dir():
@@ -386,6 +388,9 @@ def _scan_hf_cache(cache_dir: Path, *, active_cache: bool = True) -> List[LocalM
         except OSError:
             updated_at = None
 
+        partial = hf_cache_scan.is_snapshot_partial("model", model_id, repo_dir)
+        partial = partial or hf_cache_scan.is_gguf_repo_partial(model_id, repo_dir)
+
         load_id = model_id
         if not active_cache:
             load_id = _resolve_hf_cache_realpath(repo_dir) or str(repo_dir.resolve())
@@ -396,6 +401,8 @@ def _scan_hf_cache(cache_dir: Path, *, active_cache: bool = True) -> List[LocalM
                 display_name = model_id.split("/")[-1],
                 path = load_id if not active_cache else str(repo_dir),
                 source = "hf_cache",
+                active_cache = active_cache,
+                partial = partial,
                 updated_at = updated_at,
             ),
         )
@@ -848,7 +855,16 @@ def collect_local_models(models_root: Path) -> List[LocalModelInfo]:
     for model in local_models:
         semantic_id = model.model_id if model.source == "hf_cache" and model.model_id else model.id
         key = f"{semantic_id}\x00custom" if model.source == "custom" else semantic_id
-        if key not in deduped:
+        existing = deduped.get(key)
+        prefer_model = existing is None
+        if existing is not None and model.source == existing.source == "hf_cache":
+            if model.partial != existing.partial:
+                prefer_model = not model.partial
+            elif bool(model.active_cache) != bool(existing.active_cache):
+                prefer_model = bool(model.active_cache)
+            else:
+                prefer_model = (model.updated_at or 0) > (existing.updated_at or 0)
+        if prefer_model:
             deduped[key] = model
 
     models = sorted(

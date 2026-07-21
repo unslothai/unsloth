@@ -243,8 +243,13 @@ def has_incomplete_blobs(repo_type: str, repo_id: str) -> bool:
     return False
 
 
-def has_active_incomplete_blobs(repo_type: str, repo_id: str) -> bool:
-    for entry in iter_active_repo_cache_dirs(repo_type, repo_id):
+def has_active_incomplete_blobs(
+    repo_type: str,
+    repo_id: str,
+    *,
+    root: Optional[Path] = None,
+) -> bool:
+    for entry in iter_active_repo_cache_dirs(repo_type, repo_id, root = root):
         if repo_cache_dir_has_incomplete_blobs(entry):
             return True
     return False
