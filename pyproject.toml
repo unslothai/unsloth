@@ -48,6 +48,7 @@ studio = [
     "*.ps1",
     "*.bat",
     "node_prebuilt_pins.json",
+    "whisper_prebuilt_pins.json",
     "frontend/dist/**/*",
     "frontend/*.json",
     "frontend/*.ts",
