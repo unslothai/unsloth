@@ -606,11 +606,7 @@ class _ModelDownloadProgress:
 
 
 def _load_model_with_progress(
-    base: str,
-    key: str,
-    model: str,
-    load: LoadOptions,
-    payload: dict,
+    base: str, key: str, model: str, load: LoadOptions, payload: dict
 ) -> dict:
     """Run the blocking load request while polling its download progress."""
     result: list[tuple[bool, object]] = []

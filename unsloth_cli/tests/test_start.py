@@ -1271,9 +1271,7 @@ def test_connect_model_flag_loads_on_server(fake_studio):
     ]
     assert result.output.index(
         f"Switching the Unsloth server from {MODEL['id']} to unsloth/Qwen3.5-35B-A3B.\n"
-    ) < result.output.index(
-        "This unloads the current model for every attached session.\n"
-    )
+    ) < result.output.index("This unloads the current model for every attached session.\n")
     _assert_env_set(result.output, "ANTHROPIC_MODEL", "unsloth/Qwen3.5-35B-A3B")
 
 
@@ -1882,25 +1880,24 @@ def test_start_studio_server_polls_progress_from_early_key(monkeypatch):
     )
 
     assert server.pid == 4321
-    assert (
-        BASE,
-        "sk-unsloth-early",
-        "owner/model-GGUF",
-        "Q4_K_M",
-        "created",
-    ) in created
+    assert (BASE, "sk-unsloth-early", "owner/model-GGUF", "Q4_K_M", "created") in created
     assert created.count("poll") == 2
     assert created[-2:] == ["complete", "close"]
-    assert not any(
-        isinstance(event, tuple) and "server ready" in event[-1] for event in created
-    )
+    assert not any(isinstance(event, tuple) and "server ready" in event[-1] for event in created)
 
 
 def test_load_model_with_progress_uses_selected_gguf_size(monkeypatch, capsys):
     release = start.threading.Event()
     calls = []
 
-    def http_json(method, url, token, payload = None, timeout = 30, error = None):
+    def http_json(
+        method,
+        url,
+        token,
+        payload = None,
+        timeout = 30,
+        error = None,
+    ):
         calls.append((method, url, payload))
         if url.endswith("/api/inference/load"):
             assert release.wait(timeout = 2)

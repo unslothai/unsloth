@@ -1229,9 +1229,7 @@ def test_auto_switch_waits_for_another_inference_to_finish(monkeypatch):
 
     async def _drive():
         task = asyncio.create_task(
-            inference_route._maybe_auto_switch_model(
-                "org/B-GGUF:Q8_0", object(), "tester"
-            )
+            inference_route._maybe_auto_switch_model("org/B-GGUF:Q8_0", object(), "tester")
         )
         await asyncio.sleep(0.05)
         assert rec.calls == []
@@ -1588,15 +1586,11 @@ def test_swap_waits_until_concurrent_request_finishes_resolving(monkeypatch):
 
     async def _drive():
         task = asyncio.create_task(
-            inference_route._maybe_auto_switch_model(
-                "org/B-GGUF:Q8_0", object(), "tester"
-            )
+            inference_route._maybe_auto_switch_model("org/B-GGUF:Q8_0", object(), "tester")
         )
         await asyncio.sleep(0.05)
         assert rec.calls == []
-        inference_route._note_switch_waiter(
-            inference_route._switch_key("org/B-GGUF", "Q8_0"), 1
-        )
+        inference_route._note_switch_waiter(inference_route._switch_key("org/B-GGUF", "Q8_0"), 1)
         await asyncio.wait_for(task, timeout = 1)
 
     asyncio.run(_drive())
@@ -1655,9 +1649,7 @@ def test_auto_switch_waits_when_unsloth_stream_active(monkeypatch):
 
     async def _drive():
         task = asyncio.create_task(
-            inference_route._maybe_auto_switch_model(
-                "org/B-GGUF:Q8_0", object(), "tester"
-            )
+            inference_route._maybe_auto_switch_model("org/B-GGUF:Q8_0", object(), "tester")
         )
         await asyncio.sleep(0.05)
         assert rec.calls == []

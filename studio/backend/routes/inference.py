@@ -3440,7 +3440,6 @@ async def _wait_for_model_switch_idle(*, current_request_counted: bool) -> None:
     exclude them to avoid a queue deadlock.
     """
     from core.inference.llama_keepwarm import other_inference_request_count
-
     while True:
         queued_switches = _switch_waiter_count()
         if current_request_counted and queued_switches > 0:
@@ -3732,6 +3731,7 @@ async def _maybe_auto_switch_model(
                     _auto_switch_process_lock.release()
         finally:
             _note_switch_waiter(key, -1)
+
     await _resolve_and_switch()
 
 
@@ -4531,9 +4531,7 @@ async def _load_model_impl(
 
             # Keep the resident model alive until every active generation has
             # finished. The lifecycle gate held by the caller blocks new starts.
-            await _wait_for_model_switch_idle(
-                current_request_counted = current_request_counted
-            )
+            await _wait_for_model_switch_idle(current_request_counted = current_request_counted)
 
             # Unload any active Unsloth model only after every hub conflict check.
             if unsloth_backend.active_model_name:
@@ -4745,9 +4743,7 @@ async def _load_model_impl(
 
         # Unload any active GGUF model first
         llama_backend = get_llama_cpp_backend()
-        await _wait_for_model_switch_idle(
-            current_request_counted = current_request_counted
-        )
+        await _wait_for_model_switch_idle(current_request_counted = current_request_counted)
         if llama_backend.is_loaded:
             logger.info("Unloading GGUF model before loading Unsloth model")
             llama_backend.unload_model()
