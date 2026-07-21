@@ -100,7 +100,6 @@ def _wire(monkeypatch, *, enabled, resolves_to, backend, recorder):
     # gate that auto-switch already owns, so it calls the impl directly).
     monkeypatch.setattr(inference_route, "_load_model_impl", recorder)
     monkeypatch.setattr(inference_route, "_auto_switch_waiters", {})
-    monkeypatch.setattr(inference_route, "_auto_switch_request_waiters", {})
 
 
 def _run_hook(model = "some/model"):
@@ -1584,8 +1583,8 @@ def test_swap_waits_until_concurrent_request_finishes_resolving(monkeypatch):
     )
     monkeypatch.setattr(kw, "_inflight", 2)  # caller + a still-resolving twin
     monkeypatch.setattr(kw, "_pending", 0)
-    # The twin has only registered its raw requested model (not yet a target waiter).
-    inference_route._note_request_waiter(inference_route._request_waiter_key("org/B-GGUF:Q8_0"), 1)
+    # The twin is still resolving, so it is counted in-flight but has not joined
+    # the concrete target queue yet.
 
     async def _drive():
         task = asyncio.create_task(
@@ -3166,7 +3165,6 @@ def test_auto_switch_serializes_across_event_loops(monkeypatch):
     monkeypatch.setattr(inference_route, "get_llama_cpp_backend", lambda: backend)
     monkeypatch.setattr(inference_route, "_load_model_impl", _slow_load)
     monkeypatch.setattr(inference_route, "_auto_switch_waiters", {})
-    monkeypatch.setattr(inference_route, "_auto_switch_request_waiters", {})
 
     barrier = threading.Barrier(2)
 

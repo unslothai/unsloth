@@ -381,7 +381,7 @@ def _http_json(
 
 
 # A server that WE auto-started (never one we merely found). Kept at module scope so
-# _run's finally and the atexit backstop can tear it down without threading a handle
+# failure paths and the atexit backstop can tear it down without threading a handle
 # through all six agent commands. Only one agent runs per process, so one slot is enough.
 _auto_served_server: Optional[subprocess.Popen] = None
 # Model download + load can be slow; give the auto-started server room before giving up.
@@ -759,7 +759,8 @@ def _start_studio_server(base: str, model: str, load: LoadOptions) -> subprocess
     log_path.unlink(missing_ok = True)
     log = os.fdopen(os.open(log_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600), "wb")
     # Own session/process group so a mid-session Ctrl+C (cancel a turn) doesn't reach the
-    # server; we tear it down explicitly when the agent exits.
+    # server. It stays available after a successful agent session and is torn down on
+    # startup or launch failure.
     kwargs: dict = {"stdout": log, "stderr": subprocess.STDOUT, "stdin": subprocess.DEVNULL}
     if os.name == "nt":
         kwargs["creationflags"] = subprocess.CREATE_NEW_PROCESS_GROUP
@@ -1172,7 +1173,8 @@ def _resolve_model(
             (
                 m
                 for m in models
-                if any(
+                if m.get("loaded") is not False
+                and any(
                     _model_id_matches(m.get("id"), w, allow_casefold = allow_casefold) for w in wanted
                 )
             ),
@@ -2228,7 +2230,7 @@ def codex(
         launch = launch,
     )
     # This preflight runs after _connect may have auto-started a server but before _run
-    # installs its teardown finally, so tear the server down here if it rejects the model
+    # takes over its lifecycle, so tear the server down here if it rejects the model
     # (e.g. a transformers-backend model) rather than leaving it on the atexit backstop.
     try:
         _require_gguf_for_codex(base, key, entry["id"])

@@ -911,6 +911,35 @@ def test_resolve_model_loads_when_catalog_hit_is_not_loaded(monkeypatch):
     assert any(u.endswith("/api/inference/load") for _, u in calls)
 
 
+def test_resolve_model_does_not_attach_if_catalog_stays_unloaded(monkeypatch):
+    def http_json(
+        method,
+        url,
+        token,
+        payload = None,
+        timeout = 30,
+        error = None,
+    ):
+        if url.endswith("/v1/models"):
+            return {
+                "data": [
+                    {
+                        "id": "unsloth/Gemma-4-GGUF",
+                        "loaded": False,
+                        "context_length": 131072,
+                    }
+                ]
+            }
+        if url.endswith("/api/inference/load"):
+            return {"status": "loaded", "model": "unsloth/Gemma-4-GGUF"}
+        raise AssertionError(f"unexpected request: {method} {url}")
+
+    monkeypatch.setattr(start, "_http_json", http_json)
+
+    with pytest.raises(typer.Exit):
+        start._resolve_model(BASE, "sk-test", "unsloth/gemma-4-gguf")
+
+
 def test_resolve_model_attaches_to_loaded_catalog_hit_without_reload(monkeypatch):
     # The mirror case: a loaded entry (loaded == True) that case-matches attaches with
     # no /api/inference/load call.

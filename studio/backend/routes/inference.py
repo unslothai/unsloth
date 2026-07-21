@@ -3454,25 +3454,6 @@ async def _wait_for_model_switch_idle(*, current_request_counted: bool) -> None:
         await asyncio.sleep(0.02)
 
 
-# A second waiter map tracks requests during the slow resolve phase, before they
-# can join the concrete target queue above.
-_auto_switch_request_waiters: dict[str, int] = {}
-_auto_switch_request_waiters_guard = threading.Lock()
-
-
-def _request_waiter_key(requested_model: str) -> str:
-    return requested_model.strip().lower()
-
-
-def _note_request_waiter(key: str, delta: int) -> None:
-    with _auto_switch_request_waiters_guard:
-        n = _auto_switch_request_waiters.get(key, 0) + delta
-        if n > 0:
-            _auto_switch_request_waiters[key] = n
-        else:
-            _auto_switch_request_waiters.pop(key, None)
-
-
 def _llama_public_model_id(llama_backend, fallback: Optional[str] = None) -> Optional[str]:
     """The id to report for the loaded GGUF in API responses: the advertised repo
     id from an auto-switch load, else the cleaned public id, never the on-disk
@@ -3618,144 +3599,136 @@ async def _maybe_auto_switch_model(
     if not auto_switch_on and get_auto_unload_idle_seconds() <= 0:
         return
 
-    # Register by the raw requested model before resolving, which can be slow.
-    request_key = _request_waiter_key(requested_model)
-    _note_request_waiter(request_key, 1)
-    try:
-        # Off the loop: a cold-cache rebuild walks several model dirs + HF caches.
-        # With auto-switch off (or an omitted-model reload-only request), skip the
-        # resolve so only the reload-stash path runs and no name is ever matched.
-        reload_only = requested_model == _RELOAD_ONLY_MODEL
-        resolved = (
-            await asyncio.to_thread(resolve_local_gguf, requested_model)
-            if auto_switch_on and not reload_only
-            else None
-        )
-        if resolved is None:
-            # Idle-unload may have freed the model; reload exactly what it freed
-            # (path + quant + advertised id) so an alias/unknown name stays servable
-            # and keeps the override keyed by the advertised id, not the load path.
-            last = get_last_unloaded_model()
-            # A non-GGUF (Unsloth/Transformers) model loaded after the idle-unload
-            # leaves the GGUF slot empty but is the live model, so don't resurrect
-            # the stale GGUF over it (that load would tear the active model down).
-            if (
-                not last
-                or get_llama_cpp_backend().is_loaded
-                or getattr(get_inference_backend(), "active_model_name", None)
-            ):
-                return
-            if len(last) == 3:
-                target_id, variant, override_id = last
-            else:  # pre-3-tuple stash: fall back to the path as the override key
-                target_id, variant = last
-                override_id = target_id
-        else:
-            # load_path is a concrete local path (never the bare repo id), so /load
-            # takes the local branch and cannot trigger a download. override_id is the
-            # advertised repo id, the launch-override key and the public model id.
-            target_id, variant, override_id = resolved
-        backend = get_llama_cpp_backend()
-        # A bare model id (no :VARIANT) is satisfied by any loaded quant of that
-        # repo, so it never reloads a different local quant that already serves it.
-        bare = ":" not in requested_model
-
-        def _already_serving() -> bool:
-            # Match against both the concrete load path and the advertised repo id,
-            # so a model loaded manually by repo id (identifier = repo id) and one
-            # loaded by auto-switch (identifier = path, advertised = repo id) both
-            # count as already serving rather than triggering a needless reswap.
-            if not backend.is_loaded or not backend.model_identifier:
-                return False
-            loaded_keys = {backend.model_identifier.lower()}
-            advertised = getattr(backend, "_openai_advertised_id", None)
-            if advertised:
-                loaded_keys.add(advertised.lower())
-            if loaded_keys.isdisjoint({target_id.lower(), override_id.lower()}):
-                return False
-            if bare:
-                return True
-            if variant:
-                loaded_variant = (getattr(backend, "hf_variant", None) or "").lower()
-                return loaded_variant == variant.lower()
-            return True
-
-        def _record_serving_alias() -> None:
-            # When an advertised alias already resolves to the loaded model (e.g. a
-            # model loaded by local path, requested by its repo/LM Studio id), record
-            # the alias as the public id so /v1/models and responses report it (and
-            # mark it loaded) instead of the path-derived basename. Resolver branch
-            # only: the reload-stash override_id can be the bare path, not a repo id.
-            # Lock-free is safe here: an in-flight request blocks any concurrent swap
-            # (single-slot busy guard), so the loaded model can't change under this.
-            if resolved is None or not override_id:
-                return
-            b = get_llama_cpp_backend()
-            if getattr(b, "_openai_advertised_id", None) != override_id:
-                b._openai_advertised_id = override_id
-
-        if _already_serving():
-            _record_serving_alias()
-            return
-        # An image/audio request naming a different text-only GGUF would load it
-        # here and only 400 below, evicting the working model. Reject before the
-        # swap. Only the resolver branch (an explicit new target); the reload-stash
-        # path just restores the model the request was already using. Both vision and
-        # audio input come from a companion mmproj (a filesystem probe) -- run it off
-        # the loop, like the resolver above.
+    # Off the loop: a cold-cache rebuild walks several model dirs + HF caches.
+    # With auto-switch off (or an omitted-model reload-only request), skip the
+    # resolve so only the reload-stash path runs and no name is ever matched.
+    reload_only = requested_model == _RELOAD_ONLY_MODEL
+    resolved = (
+        await asyncio.to_thread(resolve_local_gguf, requested_model)
+        if auto_switch_on and not reload_only
+        else None
+    )
+    if resolved is None:
+        # Idle-unload may have freed the model; reload exactly what it freed
+        # (path + quant + advertised id) so an alias/unknown name stays servable
+        # and keeps the override keyed by the advertised id, not the load path.
+        last = get_last_unloaded_model()
+        # A non-GGUF (Unsloth/Transformers) model loaded after the idle-unload
+        # leaves the GGUF slot empty but is the live model, so don't resurrect
+        # the stale GGUF over it (that load would tear the active model down).
         if (
-            require_vision
-            and resolved is not None
-            and not await asyncio.to_thread(_target_is_vision, target_id)
+            not last
+            or get_llama_cpp_backend().is_loaded
+            or getattr(get_inference_backend(), "active_model_name", None)
         ):
-            raise HTTPException(
-                status_code = 400,
-                detail = openai_error_body(
-                    "The requested model does not support the image or audio input in this request.",
-                    status = 400,
-                    code = "invalid_value",
-                    param = "model",
-                ),
-            )
-        key = _switch_key(override_id, variant)
-        _note_switch_waiter(key, 1)
-        try:
-            async with _auto_switch_lock():
-                # The asyncio lock is per loop; add a process-wide gate so a swap on
-                # another loop in this process can't race the single slot.
-                await _acquire_swap_gate()
-                try:
-                    # Hold the keep-warm gate across the swap so no new inference can
-                    # start on the model while it is being torn down and replaced.
-                    async with inference_lifecycle_gate():
-                        if _already_serving():
-                            _record_serving_alias()
-                            return
-                        # Apply this model's saved launch flags so the swap honors the config.
-                        override = get_model_override(override_id)
-                        load_kwargs = {"model_path": target_id, "gguf_variant": variant}
-                        if override.get("llama_extra_args") is not None:
-                            load_kwargs["llama_extra_args"] = override["llama_extra_args"]
-                        if override.get("max_seq_length") is not None:
-                            load_kwargs["max_seq_length"] = override["max_seq_length"]
-                        # Reuse the load impl so its dedup, tensor fallback, and threading
-                        # apply. Call the impl directly: we already hold the lifecycle gate
-                        # the /load route would otherwise take, so the route would deadlock.
-                        await _load_model_impl(
-                            LoadRequest(**load_kwargs),
-                            fastapi_request,
-                            current_subject,
-                            current_request_counted = True,
-                        )
-                        # Advertise the repo id (not the concrete load path) as the loaded
-                        # model's public id and override key for /v1/models and idle stash.
-                        get_llama_cpp_backend()._openai_advertised_id = override_id
-                finally:
-                    _auto_switch_process_lock.release()
-        finally:
-            _note_switch_waiter(key, -1)
+            return
+        if len(last) == 3:
+            target_id, variant, override_id = last
+        else:  # pre-3-tuple stash: fall back to the path as the override key
+            target_id, variant = last
+            override_id = target_id
+    else:
+        # load_path is a concrete local path (never the bare repo id), so /load
+        # takes the local branch and cannot trigger a download. override_id is the
+        # advertised repo id, the launch-override key and the public model id.
+        target_id, variant, override_id = resolved
+    backend = get_llama_cpp_backend()
+    # A bare model id (no :VARIANT) is satisfied by any loaded quant of that
+    # repo, so it never reloads a different local quant that already serves it.
+    bare = ":" not in requested_model
+
+    def _already_serving() -> bool:
+        # Match against both the concrete load path and the advertised repo id,
+        # so a model loaded manually by repo id (identifier = repo id) and one
+        # loaded by auto-switch (identifier = path, advertised = repo id) both
+        # count as already serving rather than triggering a needless reswap.
+        if not backend.is_loaded or not backend.model_identifier:
+            return False
+        loaded_keys = {backend.model_identifier.lower()}
+        advertised = getattr(backend, "_openai_advertised_id", None)
+        if advertised:
+            loaded_keys.add(advertised.lower())
+        if loaded_keys.isdisjoint({target_id.lower(), override_id.lower()}):
+            return False
+        if bare:
+            return True
+        if variant:
+            loaded_variant = (getattr(backend, "hf_variant", None) or "").lower()
+            return loaded_variant == variant.lower()
+        return True
+
+    def _record_serving_alias() -> None:
+        # When an advertised alias already resolves to the loaded model (e.g. a
+        # model loaded by local path, requested by its repo/LM Studio id), record
+        # the alias as the public id so /v1/models and responses report it (and
+        # mark it loaded) instead of the path-derived basename. Resolver branch
+        # only: the reload-stash override_id can be the bare path, not a repo id.
+        if resolved is None or not override_id:
+            return
+        b = get_llama_cpp_backend()
+        if getattr(b, "_openai_advertised_id", None) != override_id:
+            b._openai_advertised_id = override_id
+
+    if _already_serving():
+        _record_serving_alias()
+        return
+    # An image/audio request naming a different text-only GGUF would load it
+    # here and only 400 below, evicting the working model. Reject before the
+    # swap. Only the resolver branch (an explicit new target); the reload-stash
+    # path just restores the model the request was already using. Both vision and
+    # audio input come from a companion mmproj (a filesystem probe) -- run it off
+    # the loop, like the resolver above.
+    if (
+        require_vision
+        and resolved is not None
+        and not await asyncio.to_thread(_target_is_vision, target_id)
+    ):
+        raise HTTPException(
+            status_code = 400,
+            detail = openai_error_body(
+                "The requested model does not support the image or audio input in this request.",
+                status = 400,
+                code = "invalid_value",
+                param = "model",
+            ),
+        )
+    key = _switch_key(override_id, variant)
+    _note_switch_waiter(key, 1)
+    try:
+        async with _auto_switch_lock():
+            # The asyncio lock is per loop; add a process-wide gate so a swap on
+            # another loop in this process can't race the single slot.
+            await _acquire_swap_gate()
+            try:
+                # Hold the keep-warm gate across the swap so no new inference can
+                # start on the model while it is being torn down and replaced.
+                async with inference_lifecycle_gate():
+                    if _already_serving():
+                        _record_serving_alias()
+                        return
+                    # Apply this model's saved launch flags so the swap honors the config.
+                    override = get_model_override(override_id)
+                    load_kwargs = {"model_path": target_id, "gguf_variant": variant}
+                    if override.get("llama_extra_args") is not None:
+                        load_kwargs["llama_extra_args"] = override["llama_extra_args"]
+                    if override.get("max_seq_length") is not None:
+                        load_kwargs["max_seq_length"] = override["max_seq_length"]
+                    # Reuse the load impl so its dedup, tensor fallback, and threading
+                    # apply. Call the impl directly: we already hold the lifecycle gate
+                    # the /load route would otherwise take, so the route would deadlock.
+                    await _load_model_impl(
+                        LoadRequest(**load_kwargs),
+                        fastapi_request,
+                        current_subject,
+                        current_request_counted = True,
+                    )
+                    # Advertise the repo id (not the concrete load path) as the loaded
+                    # model's public id and override key for /v1/models and idle stash.
+                    get_llama_cpp_backend()._openai_advertised_id = override_id
+            finally:
+                _auto_switch_process_lock.release()
     finally:
-        _note_request_waiter(request_key, -1)
+        _note_switch_waiter(key, -1)
 
 
 async def _auto_switch_from_request_body(request: Request, current_subject: str):
