@@ -6257,6 +6257,12 @@ def _python_exec(
         error = _check_code_safety(code)
         if error:
             return error
+        # Stripping the child env is not enough: a same-UID child can read
+        # /proc/<getppid()>/environ to recover the Unsloth process's unfiltered
+        # secrets. Close that read here too, not only in bypass mode. Best-effort
+        # in the sandbox: the child env is already scrubbed, so a system where
+        # prctl is denied still runs.
+        _harden_parent_against_proc_env_leak()
     elif not _harden_parent_against_proc_env_leak():
         # Close the /proc/<parent>/environ secret-recovery path first; if it
         # cannot be applied, fail closed rather than leak the parent environ.
