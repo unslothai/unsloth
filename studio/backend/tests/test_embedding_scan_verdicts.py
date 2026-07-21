@@ -102,8 +102,20 @@ def test_corrupt_store_fails_safe(verdicts):
 def test_wrong_schema_version_fails_safe(verdicts):
     path = verdicts._store_path()
     path.parent.mkdir(parents = True, exist_ok = True)
-    path.write_text(json.dumps({"version": 999, "records": {"acme/model": {"commit": "commit1",
-        "recorded_at": "2999-01-01T00:00:00+00:00", "pickles": {"pytorch_model.bin": _SHA}}}}))
+    path.write_text(
+        json.dumps(
+            {
+                "version": 999,
+                "records": {
+                    "acme/model": {
+                        "commit": "commit1",
+                        "recorded_at": "2999-01-01T00:00:00+00:00",
+                        "pickles": {"pytorch_model.bin": _SHA},
+                    }
+                },
+            }
+        )
+    )
     assert verdicts.lookup("acme/model", "commit1") is None
 
 

@@ -601,7 +601,11 @@ def _matches_clean_verdict(model_name: str, snap, paths) -> bool:
         return False
 
 
-def record_embedding_verdict(model_name: str, scanned_commit, load_subdirs = ()) -> None:
+def record_embedding_verdict(
+    model_name: str,
+    scanned_commit,
+    load_subdirs = (),
+) -> None:
     """Record a clean Hub verdict for an embedding repo just loaded ONLINE, so a later offline load
     of the same content is not fail-closed. Persists the sha256 of every load-root pickle keyed by
     its snapshot-relative name. Enumeration is PINNED to the scanned commit's snapshot

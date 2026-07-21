@@ -202,7 +202,6 @@ def _security_load_subdirs(name: str, token: str | None, local_only: bool) -> tu
     instead of passing as an unreferenced nested shard. Shared by the guard and the verdict
     recorder so both scope the SAME roots."""
     from utils.security import security_load_subdirs
-
     return tuple(
         dict.fromkeys(
             (
@@ -262,9 +261,10 @@ def _record_embedding_verdict_safe(name: str, commit: str | None) -> None:
     model."""
     try:
         from utils.security import record_embedding_verdict
-
         token = _ambient_hf_token()
-        record_embedding_verdict(name, commit, _security_load_subdirs(name, token, local_only = False))
+        record_embedding_verdict(
+            name, commit, _security_load_subdirs(name, token, local_only = False)
+        )
     except Exception:
         pass
 
@@ -274,7 +274,9 @@ def _get(model_name: str | None = None):
     for a ~1.5x speedup at negligible accuracy loss."""
     global _model, _name
     name = model_name or config.effective_embedding_model()
-    record: tuple[str, str | None] | None = None  # (load_name, scanned_commit) for a clean online load
+    record: tuple[str, str | None] | None = (
+        None  # (load_name, scanned_commit) for a clean online load
+    )
     with _lock:
         if _model is None or _name != name:
             _install_torchao_stub_once()

@@ -594,9 +594,7 @@ def test_st_module_subdirs_drops_absolute_module_path(tmp_path):
     import core.rag.embeddings as embeddings
 
     (tmp_path / "modules.json").write_text(
-        json.dumps(
-            [{"path": "/etc/evil", "type": "..."}, {"path": "0_Transformer", "type": "..."}]
-        )
+        json.dumps([{"path": "/etc/evil", "type": "..."}, {"path": "0_Transformer", "type": "..."}])
     )
     subdirs = embeddings._st_module_subdirs(str(tmp_path), None, False)
     assert subdirs == ("0_Transformer",)

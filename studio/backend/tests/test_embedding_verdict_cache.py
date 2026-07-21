@@ -40,7 +40,11 @@ def _repo_dir(tmp_path):
     return tmp_path / "cache" / _REPO
 
 
-def _snap(tmp_path, files: dict, commit = "c1"):
+def _snap(
+    tmp_path,
+    files: dict,
+    commit = "c1",
+):
     """Build ``models--org--model/snapshots/<commit>/`` with *files* (name -> bytes/str; names may
     be nested like ``a/b.bin``). Returns the snapshot dir, whose ``.name`` is the commit."""
     d = _repo_dir(tmp_path) / "snapshots" / commit
@@ -52,7 +56,11 @@ def _snap(tmp_path, files: dict, commit = "c1"):
     return d
 
 
-def _blocked(monkeypatch, snap, load_subdirs = ()):
+def _blocked(
+    monkeypatch,
+    snap,
+    load_subdirs = (),
+):
     # The offline verify derives the commit from snap.name; only _active_snapshot_dir is consulted.
     monkeypatch.setattr(mc, "_active_snapshot_dir", lambda name: snap)
     return fs.evaluate_file_security(
@@ -66,9 +74,12 @@ def _sha(path):
 
 # ── Offline verify matrix ────────────────────────────────────────────
 
+
 def test_matching_record_allows_offline_pickle(home, tmp_path, monkeypatch):
     snap = _snap(tmp_path, {"pytorch_model.bin": b"weights"})
-    verdicts.record_clean("org/model", "c1", {"pytorch_model.bin": _sha(snap / "pytorch_model.bin")})
+    verdicts.record_clean(
+        "org/model", "c1", {"pytorch_model.bin": _sha(snap / "pytorch_model.bin")}
+    )
     assert _blocked(monkeypatch, snap) is False
 
 
@@ -80,13 +91,17 @@ def test_no_record_blocks_offline_pickle(home, tmp_path, monkeypatch):
 def test_wrong_commit_blocks(home, tmp_path, monkeypatch):
     snap = _snap(tmp_path, {"pytorch_model.bin": b"weights"}, commit = "c1")
     # Record under a DIFFERENT commit than the cached snapshot's -> lookup by snap.name misses.
-    verdicts.record_clean("org/model", "c2", {"pytorch_model.bin": _sha(snap / "pytorch_model.bin")})
+    verdicts.record_clean(
+        "org/model", "c2", {"pytorch_model.bin": _sha(snap / "pytorch_model.bin")}
+    )
     assert _blocked(monkeypatch, snap) is True
 
 
 def test_tampered_pickle_blocks(home, tmp_path, monkeypatch):
     snap = _snap(tmp_path, {"pytorch_model.bin": b"weights"})
-    verdicts.record_clean("org/model", "c1", {"pytorch_model.bin": _sha(snap / "pytorch_model.bin")})
+    verdicts.record_clean(
+        "org/model", "c1", {"pytorch_model.bin": _sha(snap / "pytorch_model.bin")}
+    )
     (snap / "pytorch_model.bin").write_bytes(b"TAMPERED-SAME-COMMIT")
     assert _blocked(monkeypatch, snap) is True
 
@@ -103,7 +118,9 @@ def test_partial_record_blocks(home, tmp_path, monkeypatch):
             "0_B/pytorch_model.bin": b"bbb",
         },
     )
-    verdicts.record_clean("org/model", "c1", {"0_A/pytorch_model.bin": _sha(snap / "0_A/pytorch_model.bin")})
+    verdicts.record_clean(
+        "org/model", "c1", {"0_A/pytorch_model.bin": _sha(snap / "0_A/pytorch_model.bin")}
+    )
     assert _blocked(monkeypatch, snap) is True
 
 
@@ -144,13 +161,17 @@ def test_case_variant_pickles_are_both_hashed(home, tmp_path, monkeypatch):
     decoy = _sha(snap / "PYTORCH_MODEL.BIN")
     verdicts.record_clean("org/model", "c1", {"pytorch_model.bin": real})
     assert _blocked(monkeypatch, snap) is True  # decoy unrecorded -> mismatch
-    verdicts.record_clean("org/model", "c1", {"pytorch_model.bin": real, "PYTORCH_MODEL.BIN": decoy})
+    verdicts.record_clean(
+        "org/model", "c1", {"pytorch_model.bin": real, "PYTORCH_MODEL.BIN": decoy}
+    )
     assert _blocked(monkeypatch, snap) is False
 
 
 def test_expired_record_blocks(home, tmp_path, monkeypatch):
     snap = _snap(tmp_path, {"pytorch_model.bin": b"weights"})
-    verdicts.record_clean("org/model", "c1", {"pytorch_model.bin": _sha(snap / "pytorch_model.bin")})
+    verdicts.record_clean(
+        "org/model", "c1", {"pytorch_model.bin": _sha(snap / "pytorch_model.bin")}
+    )
     path = verdicts._store_path()
     data = json.loads(path.read_text())
     data["records"]["org/model"]["recorded_at"] = (
@@ -164,20 +185,26 @@ def test_router_child_pickle_recorded_allows_else_blocks(home, tmp_path, monkeyp
     snap = _snap(
         tmp_path,
         {
-            "modules.json": json.dumps([{"path": "", "type": "sentence_transformers.models.Router.Router"}]),
+            "modules.json": json.dumps(
+                [{"path": "", "type": "sentence_transformers.models.Router.Router"}]
+            ),
             "router_config.json": json.dumps({"types": {"query_0_WordEmbeddings": "..."}}),
             "query_0_WordEmbeddings/pytorch_model.bin": b"child-weights",
         },
     )
     child = snap / "query_0_WordEmbeddings" / "pytorch_model.bin"
     assert _blocked(monkeypatch, snap) is True
-    verdicts.record_clean("org/model", "c1", {"query_0_WordEmbeddings/pytorch_model.bin": _sha(child)})
+    verdicts.record_clean(
+        "org/model", "c1", {"query_0_WordEmbeddings/pytorch_model.bin": _sha(child)}
+    )
     assert _blocked(monkeypatch, snap) is False
 
 
 def test_disabled_cache_never_allows(home, tmp_path, monkeypatch):
     snap = _snap(tmp_path, {"pytorch_model.bin": b"weights"})
-    verdicts.record_clean("org/model", "c1", {"pytorch_model.bin": _sha(snap / "pytorch_model.bin")})
+    verdicts.record_clean(
+        "org/model", "c1", {"pytorch_model.bin": _sha(snap / "pytorch_model.bin")}
+    )
     monkeypatch.setenv("UNSLOTH_EMBED_VERDICT_CACHE_DISABLE", "1")
     assert _blocked(monkeypatch, snap) is True
 
@@ -185,7 +212,9 @@ def test_disabled_cache_never_allows(home, tmp_path, monkeypatch):
 def test_unreadable_recorded_pickle_blocks(home, tmp_path, monkeypatch):
     # A recorded pickle that cannot be re-hashed (sha256_file -> None) must block, not allow.
     snap = _snap(tmp_path, {"pytorch_model.bin": b"weights"})
-    verdicts.record_clean("org/model", "c1", {"pytorch_model.bin": _sha(snap / "pytorch_model.bin")})
+    verdicts.record_clean(
+        "org/model", "c1", {"pytorch_model.bin": _sha(snap / "pytorch_model.bin")}
+    )
     monkeypatch.setattr(verdicts, "sha256_file", lambda p: None)
     assert _blocked(monkeypatch, snap) is True
 
@@ -212,6 +241,7 @@ def test_unresolvable_snapshot_blocks(home, monkeypatch):
 
 # ── record_embedding_verdict (the post-load recorder) ────────────────
 
+
 def _stub_repo(monkeypatch, tmp_path):
     monkeypatch.setattr(mc, "_st_cache_repo_dir", lambda name: _repo_dir(tmp_path))
 
@@ -220,7 +250,9 @@ def test_record_embedding_verdict_records_and_allows(home, tmp_path, monkeypatch
     snap = _snap(tmp_path, {"pytorch_model.bin": b"w"}, commit = "c1")
     _stub_repo(monkeypatch, tmp_path)
     fs.record_embedding_verdict("org/model", "c1", load_subdirs = ())
-    assert verdicts.lookup("org/model", "c1") == {"pytorch_model.bin": _sha(snap / "pytorch_model.bin")}
+    assert verdicts.lookup("org/model", "c1") == {
+        "pytorch_model.bin": _sha(snap / "pytorch_model.bin")
+    }
     assert _blocked(monkeypatch, snap) is False
 
 
@@ -243,6 +275,7 @@ def test_record_skips_pickle_free_cache(home, tmp_path, monkeypatch):
 
 # ── forget() on an authoritative unsafe verdict (end-to-end) ─────────
 
+
 def test_online_unsafe_forgets_recorded_verdict(home, monkeypatch):
     # An online scan that flags a load-path pickle must delete any recorded clean verdict.
     verdicts.record_clean("org/model", "c1", {"pytorch_model.bin": "a" * 64})
@@ -250,7 +283,10 @@ def test_online_unsafe_forgets_recorded_verdict(home, monkeypatch):
         fs,
         "_fetch_security_status",
         lambda name, token: (
-            {"scansDone": True, "filesWithIssues": [{"path": "pytorch_model.bin", "level": "unsafe"}]},
+            {
+                "scansDone": True,
+                "filesWithIssues": [{"path": "pytorch_model.bin", "level": "unsafe"}],
+            },
             "c1",
         ),
     )
@@ -260,6 +296,7 @@ def test_online_unsafe_forgets_recorded_verdict(home, monkeypatch):
 
 
 # ── recordable-clean predicate (only a COMPLETED, entirely-benign scan) ──
+
 
 def _scanned_clean(monkeypatch, status):
     monkeypatch.setattr(fs, "_fetch_security_status", lambda name, token: (status, "c1"))
@@ -288,6 +325,7 @@ def test_recordable_rejects_malformed_or_flagged_manifest(home, monkeypatch):
 
 
 # ── _get() wiring: record only after a clean ONLINE load ─────────────
+
 
 def _drive_get(monkeypatch, decision, *, offline):
     fake_st = types.ModuleType("sentence_transformers")
@@ -329,6 +367,7 @@ def test_get_does_not_record_on_gate_error(home, monkeypatch):
 
 
 # ── guard fails CLOSED offline on a gate error ───────────────────────
+
 
 def test_guard_offline_gate_error_fails_closed(home, monkeypatch):
     def _boom(*a, **k):
