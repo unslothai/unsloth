@@ -1,8 +1,10 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { fetchDeviceType, usePlatformStore } from "@/config/env";
 import { useT } from "@/i18n";
 import type { TranslationKey } from "@/i18n";
+import { isTauri } from "@/lib/api-base";
 import { copyToClipboard } from "@/lib/copy-to-clipboard";
 import { Tick02Icon } from "@/lib/tick-icon";
 import { cn } from "@/lib/utils";
@@ -12,12 +14,50 @@ import {
   Copy01Icon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { ApiProviderLogo } from "../../chat/api-provider-logo";
 import { type CodingAgentsInfo, loadCodingAgents } from "../api/coding-agents";
+import { isLoopbackHost, normalizeHost } from "../components/agent-command";
 import { SettingsSection } from "../components/settings-section";
 
 const DOCS_URL = "https://unsloth.ai/docs/integrations/unsloth-start";
+
+// Backend PATH detection is only meaningful in the desktop app on a loopback
+// backend; a browser loopback URL may be an SSH/port forward to another host.
+function canUseLocalAgentDetection(base: string): boolean {
+  if (!isTauri) return false;
+  try {
+    return isLoopbackHost(normalizeHost(new URL(base).hostname));
+  } catch {
+    return false;
+  }
+}
+
+// Copy-to-clipboard state with a single timeout that a rapid re-click resets
+// and unmount clears, so the "copied" tick never resets early or leaks.
+function useCopyButton(text: string) {
+  const [copied, setCopied] = useState(false);
+  const timeoutRef = useRef<number | null>(null);
+
+  useEffect(
+    () => () => {
+      if (timeoutRef.current !== null) window.clearTimeout(timeoutRef.current);
+    },
+    [],
+  );
+
+  const copy = async () => {
+    if (!(await copyToClipboard(text))) return;
+    setCopied(true);
+    if (timeoutRef.current !== null) window.clearTimeout(timeoutRef.current);
+    timeoutRef.current = window.setTimeout(() => {
+      setCopied(false);
+      timeoutRef.current = null;
+    }, 1600);
+  };
+
+  return { copied, copy };
+}
 
 // Each agent's `unsloth start <id>` token and display name. `logo` reuses an
 // official provider asset; agents without one fall back to a monogram tile.
@@ -68,19 +108,12 @@ function AgentIcon({
 /** Compact, click-to-copy command chip for an agent row. */
 function InlineCommand({ command }: { command: string }) {
   const t = useT();
-  const [copied, setCopied] = useState(false);
-
-  const handleCopy = async () => {
-    if (await copyToClipboard(command)) {
-      setCopied(true);
-      window.setTimeout(() => setCopied(false), 1600);
-    }
-  };
+  const { copied, copy } = useCopyButton(command);
 
   return (
     <button
       type="button"
-      onClick={handleCopy}
+      onClick={copy}
       title={copied ? t("settings.agents.copied") : t("settings.agents.copy")}
       aria-label={`${
         copied ? t("settings.agents.copied") : t("settings.agents.copy")
@@ -140,8 +173,13 @@ const MODEL_VARIANT_CMD = `unsloth start codex \\
   --gguf-variant UD-Q4_K_XL \\
   --context-length 32768`;
 
-const REMOTE_CMD = `export UNSLOTH_STUDIO_URL=https://studio.example.com
+const REMOTE_CMD_UNIX = `export UNSLOTH_STUDIO_URL=https://studio.example.com
 export UNSLOTH_API_KEY=sk-unsloth-...
+unsloth start claude`;
+
+// PowerShell uses $env: assignments; export is POSIX-only.
+const REMOTE_CMD_WINDOWS = `$env:UNSLOTH_STUDIO_URL = "https://studio.example.com"
+$env:UNSLOTH_API_KEY = "sk-unsloth-..."
 unsloth start claude`;
 
 const PASSTHROUGH_CMD = `unsloth start claude --continue
@@ -152,14 +190,7 @@ const DRY_RUN_CMD = "unsloth start claude --no-launch";
 /** Monospace command block with a copy-to-clipboard button in the corner. */
 function CommandBlock({ command }: { command: string }) {
   const t = useT();
-  const [copied, setCopied] = useState(false);
-
-  const handleCopy = async () => {
-    if (await copyToClipboard(command)) {
-      setCopied(true);
-      window.setTimeout(() => setCopied(false), 1600);
-    }
-  };
+  const { copied, copy } = useCopyButton(command);
 
   return (
     <div className="group relative">
@@ -168,7 +199,7 @@ function CommandBlock({ command }: { command: string }) {
       </pre>
       <button
         type="button"
-        onClick={handleCopy}
+        onClick={copy}
         aria-label={
           copied ? t("settings.agents.copied") : t("settings.agents.copy")
         }
@@ -186,10 +217,24 @@ function CommandBlock({ command }: { command: string }) {
 
 export function AgentsTab() {
   const t = useT();
+  const deviceType = usePlatformStore((s) => s.deviceType);
+  const serverUrl = usePlatformStore((s) => s.serverUrl);
   const [info, setInfo] = useState<CodingAgentsInfo | null>(null);
-  const [loaded, setLoaded] = useState(false);
+
+  const origin = typeof window !== "undefined" ? window.location.origin : "";
+  const localDetection = canUseLocalAgentDetection(serverUrl ?? origin);
 
   useEffect(() => {
+    void fetchDeviceType({ force: true });
+  }, []);
+
+  // Only probe PATH when detection is meaningful; a remote backend's PATH says
+  // nothing about the machine the copied command will run on.
+  useEffect(() => {
+    if (!localDetection) {
+      setInfo(null);
+      return;
+    }
     let cancelled = false;
     loadCodingAgents()
       .then((next) => {
@@ -197,16 +242,15 @@ export function AgentsTab() {
       })
       .catch(() => {
         // PATH probing is best-effort; the tab is still useful without it.
-      })
-      .finally(() => {
-        if (!cancelled) setLoaded(true);
       });
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [localDetection]);
 
   const detected = new Set(info?.detected ?? []);
+  const remoteCommand =
+    deviceType === "windows" ? REMOTE_CMD_WINDOWS : REMOTE_CMD_UNIX;
 
   return (
     <div className="flex min-w-0 max-w-full flex-col gap-6">
@@ -265,7 +309,7 @@ export function AgentsTab() {
                 <span className="truncate text-sm font-medium text-foreground">
                   {agent.name}
                 </span>
-                {loaded && detected.has(agent.id) ? (
+                {detected.has(agent.id) ? (
                   <span className="shrink-0 rounded-full bg-control-accent/10 px-2 py-1 text-[10px] leading-none font-semibold text-control-accent">
                     {t("settings.agents.quickstart.installed")}
                   </span>
@@ -275,7 +319,7 @@ export function AgentsTab() {
             </div>
           ))}
         </div>
-        {loaded && detected.size === 0 ? (
+        {localDetection && info !== null && detected.size === 0 ? (
           <p className="pt-3 text-xs text-muted-foreground">
             {t("settings.agents.quickstart.noneDetected")}
           </p>
@@ -328,7 +372,7 @@ export function AgentsTab() {
         description={t("settings.agents.remote.description")}
       >
         <div className="pt-2">
-          <CommandBlock command={REMOTE_CMD} />
+          <CommandBlock command={remoteCommand} />
         </div>
       </SettingsSection>
 

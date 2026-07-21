@@ -524,12 +524,8 @@ export const en = {
         title: "Quickstart",
         description:
           "Launch an agent against your first available local model. Swap claude for any supported agent below.",
-        detectedTitle: "Detected on this machine",
-        detectedDescription:
-          "Agent CLIs Unsloth found on your PATH. Others can still be launched once installed.",
         noneDetected: "No supported agent CLIs were found on your PATH.",
         installed: "Installed",
-        checking: "Checking your PATH…",
       },
       supportedAgents: {
         title: "Supported agents",
@@ -571,7 +567,7 @@ export const en = {
       dryRun: {
         title: "Preview without launching",
         description:
-          "Add --no-launch to print the environment variables and the full command without running anything.",
+          "Add --no-launch to print the environment and command instead of launching the agent. If --model is set, the model may still be resolved and loaded.",
       },
     },
     chat: {
