@@ -1211,11 +1211,6 @@ def _require_gguf_for_codex(base: str, key: str, model_id: str) -> None:
 
 
 _DYNAMIC_SECTIONS_FLAG = "--exclude-dynamic-system-prompt-sections"
-_GEMMA_CLAUDE_NUDGE = (
-    "When the user asks to create an Unsloth fine-tuning run, begin with the next "
-    "concrete action. Do not wait silently. If action is blocked, state the exact "
-    "permission or input needed."
-)
 
 
 def _claude_settings_overlay(model_id: str) -> str:
@@ -1254,10 +1249,7 @@ def _claude_flags(model_id: str) -> list:
     version = _claude_version()
     if version is not None and version < (2, 1, 98):
         return []
-    flags = [_DYNAMIC_SECTIONS_FLAG, "--settings", _claude_settings_overlay(model_id)]
-    if "gemma" in model_id.casefold():
-        flags += ["--append-system-prompt", _GEMMA_CLAUDE_NUDGE]
-    return flags
+    return [_DYNAMIC_SECTIONS_FLAG, "--settings", _claude_settings_overlay(model_id)]
 
 
 def _merge_codex_config(existing: str, base: str) -> str:

@@ -93,23 +93,12 @@ def test_claude_flags_passed_to_supported_claude(monkeypatch):
         "--exclude-dynamic-system-prompt-sections",
         "--settings",
         start._claude_settings_overlay(MODEL["id"]),
-        "--append-system-prompt",
-        start._GEMMA_CLAUDE_NUDGE,
     ]
 
 
 def test_claude_flags_skipped_on_old_claude(monkeypatch):
     _fake_claude(monkeypatch, "2.0.14 (Claude Code)\n")
     assert start._claude_flags(MODEL["id"]) == []
-
-
-def test_claude_nudge_is_gemma_only(monkeypatch):
-    _fake_claude(monkeypatch, "2.1.215 (Claude Code)\n")
-
-    flags = start._claude_flags("unsloth/Qwen3.5-9B-GGUF")
-
-    assert "--append-system-prompt" not in flags
-    assert start._GEMMA_CLAUDE_NUDGE not in flags
 
 
 def test_claude_flags_skipped_on_unparseable_version(monkeypatch):
@@ -125,8 +114,6 @@ def test_claude_flags_detected_when_version_not_first_token(monkeypatch):
         "--exclude-dynamic-system-prompt-sections",
         "--settings",
         start._claude_settings_overlay(MODEL["id"]),
-        "--append-system-prompt",
-        start._GEMMA_CLAUDE_NUDGE,
     ]
 
 
@@ -440,8 +427,6 @@ def test_claude_flags_detects_supported_agent_only_in_install_dir(monkeypatch, t
         "--exclude-dynamic-system-prompt-sections",
         "--settings",
         start._claude_settings_overlay(MODEL["id"]),
-        "--append-system-prompt",
-        start._GEMMA_CLAUDE_NUDGE,
     ]
 
 
