@@ -198,7 +198,6 @@ def _build_browse_allowlist(
     _add(_resolve_hf_cache_dir())
     try:
         from utils.hf_cache_settings import known_hf_cache_homes
-
         for cache_home in known_hf_cache_homes():
             _add(cache_home)
     except Exception:  # noqa: BLE001 -- best-effort

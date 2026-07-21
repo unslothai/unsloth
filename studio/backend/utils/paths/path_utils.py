@@ -123,7 +123,6 @@ def is_model_cached(model_name: str) -> bool:
 def _hf_hub_cache_dir() -> Path:
     """Return HF cache root honoring HF_HUB_CACHE when available."""
     from utils.hf_cache_settings import get_hf_cache_paths
-
     return get_hf_cache_paths().hub_cache
 
 

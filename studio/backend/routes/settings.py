@@ -166,8 +166,7 @@ def get_hugging_face_cache(
 
 @router.put("/hugging-face-cache", response_model = HuggingFaceCacheResponse)
 def update_hugging_face_cache(
-    payload: HuggingFaceCachePayload,
-    current_subject: str = Depends(get_current_subject),
+    payload: HuggingFaceCachePayload, current_subject: str = Depends(get_current_subject)
 ) -> HuggingFaceCacheResponse:
     try:
         set_hf_cache_home(payload.cache_home)

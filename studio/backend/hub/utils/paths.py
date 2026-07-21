@@ -278,7 +278,6 @@ def _memo_drop(memo_key: tuple[str, str]) -> None:
 
 def _hf_hub_cache_dir() -> Path:
     from utils.hf_cache_settings import get_hf_cache_paths
-
     return get_hf_cache_paths().hub_cache
 
 

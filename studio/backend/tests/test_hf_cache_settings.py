@@ -80,7 +80,6 @@ def test_worker_environment_is_applied_before_import(monkeypatch, tmp_path):
         @staticmethod
         def run():
             import os
-
             return os.environ["HF_HUB_CACHE"], os.environ["HF_XET_CACHE"]
 
     def fake_import(name):
@@ -106,11 +105,8 @@ def test_spawn_environment_is_applied_then_restored(monkeypatch, tmp_path):
     monkeypatch.setenv("HF_HUB_CACHE", "parent-hub")
     monkeypatch.delenv("HF_XET_CACHE", raising = False)
 
-    with hf_cache_settings.child_environment_for_spawn(
-        {"HF_HUB_CACHE": hub, "HF_XET_CACHE": xet}
-    ):
+    with hf_cache_settings.child_environment_for_spawn({"HF_HUB_CACHE": hub, "HF_XET_CACHE": xet}):
         import os
-
         assert os.environ["HF_HUB_CACHE"] == hub
         assert os.environ["HF_XET_CACHE"] == xet
 

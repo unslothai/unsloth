@@ -1313,7 +1313,6 @@ class TrainingBackend:
         cache_env = getattr(self, "_last_hf_cache_env", None)
         if not cache_env:
             from utils.hf_cache_settings import get_hf_cache_paths
-
             cache_env = get_hf_cache_paths().child_env({})
         from utils.hf_cache_settings import child_environment_for_spawn
 

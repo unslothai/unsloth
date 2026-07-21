@@ -225,9 +225,7 @@ def preferred_repo_cache_dirs(
     force_active: bool = False,
     active_root: Optional[Path] = None,
 ) -> list[Path]:
-    active_entries = list(
-        iter_active_repo_cache_dirs(repo_type, repo_id, root = active_root)
-    )
+    active_entries = list(iter_active_repo_cache_dirs(repo_type, repo_id, root = active_root))
     if active_entries:
         return active_entries
     if force_active:

@@ -527,6 +527,7 @@ def _fetch_swa_entry_from_hf(repo_id: str) -> Optional[object]:
     try:
         from huggingface_hub import hf_hub_download
         from utils.hf_cache_settings import active_hf_hub_cache
+
         cfg_path = hf_hub_download(
             repo_id,
             "config.json",

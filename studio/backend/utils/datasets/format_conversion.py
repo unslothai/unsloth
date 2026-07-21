@@ -407,6 +407,7 @@ def convert_to_vlm_format(
                 # Bare filename → resolve via HF repo lookup
                 from huggingface_hub import hf_hub_download
                 from utils.hf_cache_settings import active_hf_hub_cache
+
                 local_path = hf_hub_download(
                     dataset_name,
                     _image_lookup[image_data],
@@ -777,6 +778,7 @@ def convert_sharegpt_with_images_to_vlm_format(
             elif _image_lookup is not None and image_data in _image_lookup:
                 from huggingface_hub import hf_hub_download
                 from utils.hf_cache_settings import active_hf_hub_cache
+
                 local_path = hf_hub_download(
                     dataset_name,
                     _image_lookup[image_data],

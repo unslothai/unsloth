@@ -82,9 +82,7 @@ def child_env_without_native_path_secret(env: Mapping[str, str] | None = None) -
 
 
 def run_without_native_path_secret(
-    target: Callable[..., Any] | str,
-    *args: Any,
-    **kwargs: Any,
+    target: Callable[..., Any] | str, *args: Any, **kwargs: Any
 ) -> Any:
     """Run a multiprocessing child target without the native path lease secret."""
 

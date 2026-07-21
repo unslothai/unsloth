@@ -105,7 +105,6 @@ def _environment_paths() -> Optional[HuggingFaceCachePaths]:
 def _stored_cache_home() -> Optional[Path]:
     try:
         from storage.studio_db import get_app_setting
-
         value = get_app_setting(CACHE_HOME_SETTING_KEY, None)
     except Exception:
         return None
@@ -194,7 +193,6 @@ def _validate_cache_home(raw_path: str) -> Path:
         raise ValueError("Choose a folder inside the filesystem or drive root.")
     try:
         from hub.storage.scan_folders import is_denied_system_path
-
         if is_denied_system_path(str(resolved)):
             raise ValueError("System folders cannot be used for model downloads.")
     except ImportError:
@@ -221,7 +219,6 @@ def _validate_cache_home(raw_path: str) -> Path:
 def _stored_history() -> list[Path]:
     try:
         from storage.studio_db import get_app_setting
-
         raw = get_app_setting(CACHE_HISTORY_SETTING_KEY, [])
     except Exception:
         raw = []

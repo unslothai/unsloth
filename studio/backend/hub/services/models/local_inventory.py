@@ -107,7 +107,6 @@ def _is_model_directory_for_scan(path: Path, *, entry_limit: int | None) -> bool
 
 def _resolve_hf_cache_dir() -> Path:
     from utils.hf_cache_settings import get_hf_cache_paths
-
     return get_hf_cache_paths().hub_cache
 
 
@@ -647,14 +646,17 @@ def _dedupe_local_models(local_models: List[LocalModelInfo]) -> list[LocalModelI
             row_key = model.inventory_id or model.id
             key = f"{row_key}\x00custom" if model.source == "custom" else row_key
         existing = deduped.get(key)
-        if existing is None or (
-            model.active_cache is True and existing.active_cache is not True
-        ) or (
-            model.active_cache == existing.active_cache and _prefer_complete_larger(
-                model.partial,
-                model.size_bytes,
-                existing.partial,
-                existing.size_bytes,
+        if (
+            existing is None
+            or (model.active_cache is True and existing.active_cache is not True)
+            or (
+                model.active_cache == existing.active_cache
+                and _prefer_complete_larger(
+                    model.partial,
+                    model.size_bytes,
+                    existing.partial,
+                    existing.size_bytes,
+                )
             )
         ):
             deduped[key] = model
