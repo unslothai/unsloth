@@ -5,6 +5,7 @@ import asyncio
 import sys
 from pathlib import Path
 from types import SimpleNamespace
+from unittest.mock import Mock
 
 import pytest
 from fastapi import HTTPException
@@ -1994,6 +1995,21 @@ def test_gguf_repo_partial_flags_vision_variant_missing_mmproj(monkeypatch, tmp_
     )
 
     assert inventory_scan.is_gguf_repo_partial("Org/Vision") is True
+
+
+def test_offline_gguf_variants_never_queries_hub(monkeypatch, tmp_path):
+    snapshot = tmp_path / "models--Org--Offline" / "snapshots" / "abc"
+    snapshot.mkdir(parents = True)
+    (snapshot / "model-Q4_K_M.gguf").write_bytes(b"cached")
+    monkeypatch.setattr("huggingface_hub.constants.HF_HUB_CACHE", str(tmp_path))
+    hub_probe = Mock()
+    monkeypatch.setattr("huggingface_hub.get_paths_info", hub_probe)
+    monkeypatch.setenv("HF_HUB_OFFLINE", "on")
+    assert gguf._env_offline() is True
+    result = asyncio.run(gguf_variants.get_gguf_variants_response("Org/Offline", offline = True))
+
+    hub_probe.assert_not_called()
+    assert [variant.quant for variant in result.variants] == ["Q4_K_M"]
 
 
 def test_cancel_worker_leaves_exited_process_to_watcher():

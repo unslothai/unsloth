@@ -85,6 +85,7 @@ from core.inference.llama_cpp import (
     _probe_dns_dead,
     _resolve_repo_id_casing,
 )
+from hub.utils.gguf import list_gguf_variants_from_hf_cache as list_hub_gguf_variants_from_hf_cache
 from utils.models.model_config import (
     _detect_gguf_from_hf_cache,
     _extract_quant_label,
@@ -653,21 +654,40 @@ class TestResolveRepoIdCasing:
             {"mmproj-vision-F16.gguf": 10},
             snapshot_sha = "b" * 40,
         )
+        partial = _build_cache(
+            hf_cache,
+            "unsloth/vision-GGUF",
+            {"vision-Q8_0-00001-of-00002.gguf": 50},
+            snapshot_sha = "c" * 40,
+        )
         os.utime(old, (1000, 1000))
         os.utime(new, (2000, 2000))
+        os.utime(partial, (3000, 3000))
 
-        out = _list_gguf_variants_from_hf_cache("unsloth/vision-GGUF")
-        assert out is not None
-        variants, has_vision = out
-        assert [v.quant for v in variants] == ["Q4_K_M"]
-        assert has_vision is True
+        with patch(
+            "huggingface_hub.get_paths_info",
+            side_effect = lambda _repo, paths, **_kwargs: [
+                _types.SimpleNamespace(path = path, size = 100) for path in paths
+            ],
+        ):
+            out = list_hub_gguf_variants_from_hf_cache("unsloth/vision-GGUF")
+            variants, has_vision = out
+            assert [v.quant for v in variants] == ["Q4_K_M"]
 
-        os.utime(old, (3000, 3000))
-        out = _list_gguf_variants_from_hf_cache("unsloth/vision-GGUF")
-        assert out is not None
-        variants, has_vision = out
-        assert [v.quant for v in variants] == ["Q4_K_M"]
-        assert has_vision is True
+            (partial / "vision-Q8_0-00002-of-00002.gguf").write_bytes(b"\0" * 50)
+            out = list_hub_gguf_variants_from_hf_cache("unsloth/vision-GGUF")
+            variants, has_vision = out
+            assert [v.quant for v in variants] == ["Q4_K_M"]
+
+            out = _list_gguf_variants_from_hf_cache("unsloth/vision-GGUF")
+            variants, has_vision = out
+            assert [v.quant for v in variants] == ["Q4_K_M"]
+            assert has_vision is True
+
+            os.utime(old, (4000, 4000))
+            out = _list_gguf_variants_from_hf_cache("unsloth/vision-GGUF")
+            _, has_vision = out
+            assert has_vision is False
 
     def test_companion_only_cache_returns_empty_variants_with_vision(self, hf_cache):
         # Only a vision projector is cached anywhere: report the vision flag

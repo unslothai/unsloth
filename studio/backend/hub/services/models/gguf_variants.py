@@ -532,7 +532,7 @@ async def get_gguf_variants_response(
 
         local_only = prefer_local_cache or offline
         if local_only:
-            cached = list_gguf_variants_from_hf_cache(repo_id)
+            cached = list_gguf_variants_from_hf_cache(repo_id, hf_token, offline = offline)
             if cached is not None:
                 variants, has_vision = cached
                 return _local_response(repo_id, variants, has_vision)
@@ -560,7 +560,7 @@ async def get_gguf_variants_response(
         try:
             variants, has_vision, siblings = list_gguf_variants(repo_id, hf_token = hf_token)
         except Exception:
-            cached = list_gguf_variants_from_hf_cache(repo_id)
+            cached = list_gguf_variants_from_hf_cache(repo_id, hf_token)
             if cached is not None:
                 variants, has_vision = cached
                 return _local_response(repo_id, variants, has_vision)
@@ -726,7 +726,7 @@ async def get_gguf_variants_response(
                     )
             except Exception as e:
                 logger.warning(
-                    f"Manifest-based partial check failed for " f"{repo_id}/{variant.quant}: {e}"
+                    f"Manifest-based partial check failed for {repo_id}/{variant.quant}: {e}"
                 )
         if incomplete_hashes:
             for variant in variants:

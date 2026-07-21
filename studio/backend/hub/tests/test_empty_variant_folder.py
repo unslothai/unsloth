@@ -120,7 +120,10 @@ def _force_compute_to_raise(monkeypatch):
 
     monkeypatch.setattr(gguf_variants, "list_gguf_variants", _boom, raising = False)
     monkeypatch.setattr(
-        gguf_variants, "list_gguf_variants_from_hf_cache", lambda repo_id: None, raising = False
+        gguf_variants,
+        "list_gguf_variants_from_hf_cache",
+        lambda repo_id, hf_token = None: None,
+        raising = False,
     )
     monkeypatch.setattr(
         gguf_variants, "list_partial_gguf_variants_from_state", lambda repo_id: None, raising = False

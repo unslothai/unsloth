@@ -1808,7 +1808,9 @@ def _iter_hf_cache_snapshots(repo_id: str):
     yield from (snap_dir for _, snap_dir in snap_dirs_with_mtime)
 
 
-def _list_gguf_variants_from_hf_cache(repo_id: str) -> Optional[tuple[list[GgufVariantInfo], bool]]:
+def _list_gguf_variants_from_hf_cache(
+    repo_id: str, hf_token: Optional[str] = None
+) -> Optional[tuple[list[GgufVariantInfo], bool]]:
     """Variants from the local HF cache snapshot, or None if not cached.
 
     A newer snapshot can hold only a companion file (for example a vision
@@ -1817,15 +1819,27 @@ def _list_gguf_variants_from_hf_cache(repo_id: str) -> Optional[tuple[list[GgufV
     would shadow those real variants, so keep scanning older snapshots for
     actual variants and carry the vision flag across snapshots.
     """
-    selected_variants = None
     any_vision = False
     for snap in _iter_hf_cache_snapshots(repo_id):
         variants, has_vision = list_local_gguf_variants(str(snap))
         any_vision = any_vision or has_vision
-        if selected_variants is None and variants:
-            selected_variants = variants
-    if selected_variants is not None:
-        return selected_variants, any_vision
+        if variants:
+            from core.inference.llama_cpp import _snapshot_dir_of, cached_gguf_for_load
+            variants = [
+                variant
+                for variant in variants
+                if (
+                    cached_path := cached_gguf_for_load(
+                        repo_id,
+                        variant.quant,
+                        verify_sizes = not _env_offline(),
+                        hf_token = hf_token,
+                    )
+                )
+                and _snapshot_dir_of(cached_path) == snap
+            ]
+        if variants:
+            return variants, any_vision
     if any_vision:
         return [], True
     return None
@@ -1846,7 +1860,7 @@ def list_gguf_variants(
 
     # Offline: skip the API and serve from cache
     if _env_offline():
-        cached = _list_gguf_variants_from_hf_cache(repo_id)
+        cached = _list_gguf_variants_from_hf_cache(repo_id, hf_token)
         if cached is not None:
             return cached
 
@@ -1864,7 +1878,7 @@ def list_gguf_variants(
         ):
             raise
         # API failed transiently; fall back to local snapshot if fully downloaded.
-        cached = _list_gguf_variants_from_hf_cache(repo_id)
+        cached = _list_gguf_variants_from_hf_cache(repo_id, hf_token)
         if cached is not None:
             logger.warning(
                 "HF API unreachable for %s (%s); using local cache snapshot.",
@@ -2873,15 +2887,17 @@ class ModelConfig:
                 cached_gguf = cached_gguf_for_load(
                     identifier,
                     variant,
-                    verify_sizes = True,
+                    verify_sizes = not _env_offline(),
                     hf_token = hf_token,
                 )
                 inspect_model_config = cached_gguf is None
                 fallback_audio_type = None
                 if cached_gguf:
                     embedded_audio_type = detect_gguf_audio_type(cached_gguf)
+                    cached_mmproj = _companion_snapshot_sibling(cached_gguf, _pick_mmproj)
+                    if cached_mmproj and mmproj_matches_model_family(cached_gguf, cached_mmproj):
+                        has_vision = True
                     if embedded_audio_type is None and has_vision:
-                        cached_mmproj = _companion_snapshot_sibling(cached_gguf, _pick_mmproj)
                         offline = False
                         if cached_mmproj is None:
                             offline = _env_offline()

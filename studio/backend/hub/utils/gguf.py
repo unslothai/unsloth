@@ -246,11 +246,17 @@ def _apply_gguf_display_labels(variants: list[GgufVariantInfo]) -> None:
 
 
 def _env_offline() -> bool:
-    return os.environ.get("HF_HUB_OFFLINE", "").lower() in (
+    return os.environ.get("HF_HUB_OFFLINE", "").strip().lower() in (
         "1",
         "true",
         "yes",
-    ) or os.environ.get("TRANSFORMERS_OFFLINE", "").lower() in ("1", "true", "yes")
+        "on",
+    ) or os.environ.get("TRANSFORMERS_OFFLINE", "").strip().lower() in (
+        "1",
+        "true",
+        "yes",
+        "on",
+    )
 
 
 def iter_hf_cache_snapshots(repo_id: str):
@@ -303,11 +309,36 @@ def list_empty_gguf_variant_dirs(repo_id: str) -> set[str]:
     return {label for key, label in empty.items() if key not in nonempty}
 
 
-def list_gguf_variants_from_hf_cache(repo_id: str) -> Optional[tuple[list[GgufVariantInfo], bool]]:
+def list_gguf_variants_from_hf_cache(
+    repo_id: str,
+    hf_token: Optional[str] = None,
+    *,
+    offline: bool = False,
+) -> Optional[tuple[list[GgufVariantInfo], bool]]:
+    verify_sizes = not (offline or _env_offline())
+    any_vision = False
     for snapshot in iter_hf_cache_snapshots(repo_id):
         variants, has_vision = list_local_gguf_variants(str(snapshot))
-        if variants or has_vision:
-            return variants, has_vision
+        any_vision = any_vision or has_vision
+        if variants:
+            from core.inference.llama_cpp import _snapshot_dir_of, cached_gguf_for_load
+            variants = [
+                variant
+                for variant in variants
+                if (
+                    cached_path := cached_gguf_for_load(
+                        repo_id,
+                        variant.quant,
+                        verify_sizes = verify_sizes,
+                        hf_token = hf_token,
+                    )
+                )
+                and _snapshot_dir_of(cached_path) == snapshot
+            ]
+        if variants:
+            return variants, any_vision
+    if any_vision:
+        return [], True
     return None
 
 
@@ -400,7 +431,7 @@ def list_gguf_variants(
     from huggingface_hub import HfApi
 
     if _env_offline():
-        cached = list_gguf_variants_from_hf_cache(repo_id)
+        cached = list_gguf_variants_from_hf_cache(repo_id, hf_token)
         if cached is not None:
             return (*cached, None)
 
@@ -418,7 +449,7 @@ def list_gguf_variants(
             "EntryNotFoundError",
         ):
             raise
-        cached = list_gguf_variants_from_hf_cache(repo_id)
+        cached = list_gguf_variants_from_hf_cache(repo_id, hf_token)
         if cached is not None:
             logger.warning(
                 "HF API unreachable for %s (%s); using local cache snapshot.",

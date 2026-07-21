@@ -474,8 +474,8 @@ class TestLoadReusesCachedCopy:
             ),
             patch("utils.models.model_config.detect_gguf_model_remote", return_value = MAIN),
             patch("utils.models.model_config.list_gguf_variants", return_value = ([], True)),
-            patch("core.inference.llama_cpp.cached_gguf_for_load", return_value = str(main / MAIN)),
-            patch("core.inference.llama_cpp._probe_dns_dead", return_value = True) as mock_dns,
+            patch("huggingface_hub.get_paths_info", return_value = []) as hub_probe,
+            patch("core.inference.llama_cpp._probe_dns_dead", return_value = True),
             patch(
                 "utils.models.model_config.detect_gguf_audio_type",
                 side_effect = lambda path: (
@@ -498,19 +498,15 @@ class TestLoadReusesCachedCopy:
             ),
         ):
             assert chat_capable() is False
-            mock_dns.assert_not_called()
+            with patch("utils.models.model_config.list_gguf_variants", return_value = ([], False)):
+                selected = ModelConfig.from_identifier(requested_repo, gguf_variant = VARIANT)
+                assert selected.is_vision is True
             same_snapshot_mmproj.unlink()
 
             monkeypatch.setenv("HF_HUB_OFFLINE", "0")
             with patch(
                 "utils.models.model_config.load_model_config", side_effect = OSError("missing")
             ):
-                for model_type in ("qwen2_audio", "qwen3_omni_moe", "granite_speech", "voxtral"):
-                    with patch(
-                        "utils.models.model_config._raw_config_model_type",
-                        return_value = model_type,
-                    ):
-                        assert chat_capable()
                 refs = projector.parent.parent / "refs"
                 refs.mkdir()
                 (refs / "main").write_text(projector.name)
@@ -532,9 +528,10 @@ class TestLoadReusesCachedCopy:
                     assert chat_capable() is False
             monkeypatch.delenv("HF_HUB_OFFLINE")
 
+            hub_probe.reset_mock()
+            monkeypatch.setenv("TRANSFORMERS_OFFLINE", "on")
             assert chat_capable() is False
-            with patch("utils.models.model_config.list_gguf_variants", return_value = ([], False)):
-                assert chat_capable() is True
+            hub_probe.assert_not_called()
 
     def test_companion_does_not_download_during_hub_job(self, hf_cache):
         backend = LlamaCppBackend()

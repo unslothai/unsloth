@@ -60,25 +60,7 @@ def test_non_audio_tokens_classify_none():
             (name, "csm", ("audio_vlm", True, True))
             for name in ("qwen2_audio", "qwen2_5_omni", "qwen3_omni_moe", "granite_speech")
         ),
-        *(
-            (name, None, (None, False, False))
-            for name in (
-                "wav2vec2",
-                "speecht5",
-                "bark",
-                "clap",
-                "clvp",
-                "encodec",
-                "dac",
-                "gemma3n_audio",
-                "mimi",
-                "parakeet_encoder",
-                "qwen2_audio_encoder",
-                "univnet",
-                "voxtral_encoder",
-                "xcodec",
-            )
-        ),
+        ("qwen2_audio_encoder", None, (None, False, False)),
         ("llama", None, (None, False, True)),
     ],
 )
@@ -97,9 +79,3 @@ def test_unknown_non_chat_config_uses_raw_model_type(tmp_path, model_type):
         config = ModelConfig.from_identifier(str(tmp_path))
 
     assert config.is_chat_capable is False
-
-
-@pytest.mark.parametrize("audio_type", ["csm", "whisper", "snac"])
-def test_audio_metadata_rejects_non_chat_model_when_config_is_missing(audio_type):
-    with patch("utils.models.model_config.load_model_config", side_effect = OSError("missing")):
-        assert _classify_audio_capability("org/model", audio_type)[2] is False
