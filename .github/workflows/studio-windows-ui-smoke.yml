@@ -19,6 +19,7 @@ on:
       - 'install.ps1'
       - 'pyproject.toml'
       - 'tests/studio/**'
+      - '.github/scripts/run-studio-permission-browser.sh'
       - '.github/workflows/studio-windows-ui-smoke.yml'
   push:
     branches: [main, pip]
@@ -345,6 +346,10 @@ jobs:
           kill "${STUDIO_PID}" 2>/dev/null || true
           sleep 2
 
+      - name: Edge permission controls
+        run: |
+          bash .github/scripts/run-studio-permission-browser.sh 18895 chromium msedge
+
       - name: Reset auth + boot Unsloth for extra UI tests (port 18897)
         run: |
           unsloth studio reset-password
@@ -402,5 +407,7 @@ jobs:
             logs/studio_extra.log
             logs/install.log
             logs/playwright
+            logs/playwright-permissions-*
             logs/playwright_extra
+            logs/studio-permissions-*.log
           retention-days: 7

@@ -1778,7 +1778,7 @@ from core.inference.providers import get_base_url
 from core.inference.external_provider import ExternalProviderClient
 from core.inference.chat_templates import resolve_effective_chat_template_override
 from storage import providers_db
-from utils.utils import safe_error_detail, log_and_http_error
+from utils.utils import is_hf_authentication_error, safe_error_detail, log_and_http_error
 
 import io
 import base64
@@ -4710,7 +4710,7 @@ async def _load_model_impl(request: LoadRequest, fastapi_request: Request, curre
             # Clear any idle-unload reload stash now, not only on the next poll.
             from core.inference.llama_keepwarm import note_model_loaded
 
-            note_model_loaded()
+            await asyncio.to_thread(note_model_loaded, llama_backend)
             # A plain load advertises its own identifier; auto-switch overwrites
             # this with the repo id right after _load_model_impl returns.
             llama_backend._openai_advertised_id = None
@@ -5244,6 +5244,14 @@ async def validate_model(
         raise HTTPException(status_code = 400, detail = str(e))
     except Exception as e:
         redacted_msg = redact_native_paths(str(e))
+        if is_hf_authentication_error(e):
+            raise HTTPException(
+                status_code = 400,
+                detail = (
+                    "Hugging Face authentication failed. Check or clear the token "
+                    "in Settings, and confirm access to this gated repository."
+                ),
+            )
         if _is_unsupported_nvfp4_inference_error(redacted_msg):
             logger.warning(
                 "NVFP4 inference is not supported yet while validating '%s'",

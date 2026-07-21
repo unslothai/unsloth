@@ -6499,6 +6499,7 @@ def write_prebuilt_metadata(
     choice: AssetChoice,
     approved_checksums: ApprovedReleaseChecksums,
     prebuilt_fallback_used: bool,
+    force_cpu: bool = False,
 ) -> None:
     source_asset_name, source_sha256 = selected_source_archive_metadata(
         approved_checksums,
@@ -6523,6 +6524,10 @@ def write_prebuilt_metadata(
         "release_tag": release_tag,
         "published_repo": approved_checksums.repo,
         "asset": choice.name,
+        # True only for a deliberate CPU choice (--force-cpu). The updater re-asserts it
+        # so a forced CPU install is not re-routed to a GPU bundle (#7213). An automatic
+        # --cpu-fallback (e.g. arm64 GPU-build recovery) stays False so it can heal to GPU.
+        "force_cpu": force_cpu,
         "asset_sha256": choice.expected_sha256,
         "source": choice.source_label,
         # Binary-side repo/tag for non-fork sources (e.g. the ggml-org upstream
@@ -6548,6 +6553,24 @@ def write_prebuilt_metadata(
         "installed_at_utc": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
     }
     (install_dir / "UNSLOTH_PREBUILT_INFO.json").write_text(json.dumps(metadata, indent = 2) + "\n")
+
+
+def sync_marker_force_cpu(install_dir: Path, persist_force_cpu: bool) -> None:
+    """Sync only the force_cpu flag of an existing marker when the resolved bundle is
+    unchanged, so the install is skipped without a full metadata rewrite. A deliberate
+    --force-cpu on top of a naturally installed CPU bundle (same asset) must still be
+    recorded, else the updater will not re-assert it and can re-route the install to a
+    GPU/Vulkan bundle that revives the crash (#7213)."""
+    marker_path = install_dir / "UNSLOTH_PREBUILT_INFO.json"
+    try:
+        marker = json.loads(marker_path.read_text())
+    except (OSError, ValueError):
+        return
+    if not isinstance(marker, dict) or bool(marker.get("force_cpu")) == persist_force_cpu:
+        return
+    marker["force_cpu"] = persist_force_cpu
+    marker_path.write_text(json.dumps(marker, indent = 2) + "\n")
+    log(f"existing install reused; recorded force_cpu={persist_force_cpu} from this run")
 
 
 def expected_install_fingerprint(
@@ -6795,6 +6818,7 @@ def validate_prebuilt_choice(
     approved_checksums: ApprovedReleaseChecksums,
     prebuilt_fallback_used: bool,
     quantized_path: Path,
+    force_cpu: bool = False,
 ) -> tuple[Path, Path]:
     source_repo, source_ref, source_archive, exact_source = preferred_source_archive(
         approved_checksums, llama_tag
@@ -6835,6 +6859,7 @@ def validate_prebuilt_choice(
         choice = choice,
         approved_checksums = approved_checksums,
         prebuilt_fallback_used = prebuilt_fallback_used,
+        force_cpu = force_cpu,
     )
     # Hashless external prebuilts are not in the approved-sha256
     # manifest and rely on the functional smoke test as their only integrity gate,
@@ -6877,6 +6902,7 @@ def validate_prebuilt_attempts(
     approved_checksums: ApprovedReleaseChecksums,
     initial_fallback_used: bool = False,
     existing_install_dir: Path | None = None,
+    force_cpu: bool = False,
 ) -> tuple[AssetChoice, Path, bool]:
     attempt_list = list(attempts)
     if not attempt_list:
@@ -6929,6 +6955,7 @@ def validate_prebuilt_attempts(
                 approved_checksums = approved_checksums,
                 prebuilt_fallback_used = tried_fallback,
                 quantized_path = quantized_path,
+                force_cpu = force_cpu,
             )
         except Exception as exc:
             remove_tree(staging_dir)
@@ -6988,8 +7015,8 @@ def _route_to_vulkan_prebuilt(
     """Point a Vulkan-capable host at the upstream ggml-org Vulkan prebuilt.
 
     The unsloth published repo ships only CUDA/ROCm/CPU assets, so Vulkan comes
-    from UPSTREAM_REPO. Two triggers route here, both suppressed under
-    --cpu-fallback (the explicit "give me CPU" last resort wins):
+    from UPSTREAM_REPO. Two triggers route here, both suppressed when a CPU flag
+    (--cpu-fallback or --force-cpu, folded into force_cpu) wins:
       * UNSLOTH_FORCE_VULKAN forces Vulkan over the detected CUDA/ROCm backend;
       * an auto-detected Intel GPU with NO physical NVIDIA/ROCm -- the purpose
         of the has_intel_gpu probe, since the fork manifest ships no Vulkan asset.
@@ -7069,8 +7096,11 @@ def install_prebuilt(
     override_has_rocm: bool = False,
     override_rocm_gfx: str | None = None,
     force_cpu: bool = False,
+    persist_force_cpu: bool = False,
     instruction_cleanup_root: Path | None = None,
 ) -> None:
+    # force_cpu drops GPU detection (mechanism, both --cpu-fallback and --force-cpu);
+    # persist_force_cpu records the deliberate choice so the updater re-asserts it.
     host = detect_host()
     host = _apply_host_overrides(
         host,
@@ -7121,6 +7151,9 @@ def install_prebuilt(
                         "existing llama.cpp install already matches selected release "
                         f"{current.release_tag} upstream_tag={current.llama_tag}; skipping download and install"
                     )
+                    # Reused bundle is unchanged, but a fresh --force-cpu still must be
+                    # recorded so the updater re-asserts it (#7213).
+                    sync_marker_force_cpu(install_dir, persist_force_cpu)
                     return
             with tempfile.TemporaryDirectory(prefix = "unsloth-llama-prebuilt-") as tmp:
                 work_dir = Path(tmp)
@@ -7141,6 +7174,7 @@ def install_prebuilt(
                                 "existing llama.cpp install already matches fallback release "
                                 f"{plan.release_tag} upstream_tag={plan.llama_tag}; skipping reinstall"
                             )
+                            sync_marker_force_cpu(install_dir, persist_force_cpu)
                             return
                     log(
                         "selected "
@@ -7161,6 +7195,8 @@ def install_prebuilt(
                             initial_fallback_used = release_index > 0,
                             # Skip is gated per-attempt inside, so pass the dir always.
                             existing_install_dir = install_dir,
+                            # Persist only the deliberate choice, not a transient fallback.
+                            force_cpu = persist_force_cpu,
                         )
                     except ExistingInstallSatisfied:
                         return
@@ -7258,8 +7294,21 @@ def parse_args() -> argparse.Namespace:
         default = False,
         help = (
             "Select the CPU prebuilt for this OS/arch even when a GPU is present. "
-            "setup.sh uses this as a last resort for arm64 Linux GPU hosts whose "
-            "source build failed (no arm64 CUDA prebuilt exists anywhere)."
+            "Automatic/transient: setup.sh uses this as a last resort for arm64 Linux "
+            "GPU hosts whose source build failed. Does NOT persist, so a later update "
+            "heals back to a GPU bundle once one is available (#6097). Use --force-cpu "
+            "for a deliberate CPU-only choice that survives updates."
+        ),
+    )
+    parser.add_argument(
+        "--force-cpu",
+        action = "store_true",
+        default = False,
+        help = (
+            "Deliberate CPU-only install (UNSLOTH_LLAMA_CPP_BACKEND=cpu). Drops GPU "
+            "detection like --cpu-fallback but also records force_cpu in the marker, so "
+            "the in-app updater re-asserts CPU and never re-routes to a GPU/Vulkan "
+            "bundle that would revive the Intel iGPU crash (#7213)."
         ),
     )
     resolve_group = parser.add_mutually_exclusive_group()
@@ -7382,16 +7431,19 @@ def main() -> int:
         # Host-aware "is a prebuilt available" probe, no download. Every host now
         # plans against the fork (args.published_repo defaults to it); an explicit
         # --published-repo overrides. PrebuiltFallback == source build.
+        # Both flags drop GPU detection; --force-cpu additionally persists (install
+        # path only). The probe only needs the mechanism, so OR them.
+        _cpu_mechanism = args.cpu_fallback or args.force_cpu
         host = _apply_host_overrides(
             detect_host(),
             override_has_rocm = args.has_rocm,
             override_rocm_gfx = args.rocm_gfx,
-            force_cpu = args.cpu_fallback,
+            force_cpu = _cpu_mechanism,
         )
         # Same Vulkan routing the install path applies, so the probe's answer
         # matches what would install (an Intel/forced-Vulkan host -> upstream).
         host, repo, release_tag = _route_to_vulkan_prebuilt(
-            host, args.published_repo, args.published_release_tag or "", force_cpu = args.cpu_fallback
+            host, args.published_repo, args.published_release_tag or "", force_cpu = _cpu_mechanism
         )
         try:
             _requested, plans = resolve_simple_install_release_plans(
@@ -7429,7 +7481,10 @@ def main() -> int:
         published_release_tag = args.published_release_tag or "",
         override_has_rocm = args.has_rocm,
         override_rocm_gfx = args.rocm_gfx,
-        force_cpu = args.cpu_fallback,
+        # Both drop GPU detection; only --force-cpu (deliberate) is recorded so the
+        # updater re-asserts it. --cpu-fallback stays transient and heals to GPU.
+        force_cpu = args.cpu_fallback or args.force_cpu,
+        persist_force_cpu = args.force_cpu,
         instruction_cleanup_root = install_arg.absolute(),
     )
     return EXIT_SUCCESS

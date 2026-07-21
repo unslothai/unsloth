@@ -1348,6 +1348,7 @@ def test_install_prebuilt_falls_back_to_older_release_plan(
         approved_checksums,
         initial_fallback_used = False,
         existing_install_dir = None,
+        force_cpu = False,
     ):
         call_log.append((llama_tag, initial_fallback_used))
         if llama_tag == "b9002":
@@ -2551,6 +2552,7 @@ def test_install_prebuilt_skips_when_older_release_fallback_matches_existing_ins
         approved_checksums,
         initial_fallback_used = False,
         existing_install_dir = None,
+        force_cpu = False,
     ):
         call_log.append(llama_tag)
         raise PrebuiltFallback("validation failed for latest release")
@@ -2698,6 +2700,7 @@ def test_install_prebuilt_skips_same_release_fallback_attempt_when_installed(
         approved_checksums,
         prebuilt_fallback_used,
         quantized_path,
+        force_cpu = False,
     ):
         attempted_names.append(choice.name)
         if choice.name == first_choice.name:
@@ -2824,6 +2827,7 @@ def test_install_prebuilt_same_tag_upstream_failure_uses_older_unsloth_release_p
         approved_checksums,
         initial_fallback_used = False,
         existing_install_dir = None,
+        force_cpu = False,
     ):
         attempted.append((llama_tag, release_tag, attempts[0].source_label))
         if llama_tag == "b9002":
