@@ -722,6 +722,25 @@ def test_connect_claude_launch_scrubs_conflicting_auth_env(fake_studio, monkeypa
     assert "unsloth studio stop" in result.output
 
 
+def test_connect_explicit_loopback_uses_server_host_stop_hint(fake_studio, monkeypatch):
+    """An explicit loopback URL may be an SSH tunnel, not a locally owned Studio."""
+    monkeypatch.setenv("UNSLOTH_STUDIO_URL", BASE)
+    monkeypatch.setattr(start.shutil, "which", lambda _: "/usr/local/bin/claude")
+    monkeypatch.setattr(start, "_claude_flags", lambda *a, **k: [])
+    monkeypatch.setattr(
+        start.subprocess,
+        "run",
+        lambda *args, **kwargs: SimpleNamespace(returncode = 0),
+    )
+
+    result = CliRunner().invoke(start.start_app, ["claude"])
+
+    assert result.exit_code == 0, result.output
+    assert "Unsloth Studio is still running, so the model stays loaded" not in result.output
+    assert f"configured Unsloth Studio at {BASE} is still running" in result.output
+    assert "unsloth studio stop` on the server host" in result.output
+
+
 @pytest.mark.skipif(
     os.name == "nt",
     reason = "WSL-from-Linux scenario (calling a Windows agent .exe from inside WSL); "

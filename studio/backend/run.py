@@ -726,6 +726,24 @@ from utils.paths.storage_roots import studio_root as _studio_root
 
 _PID_FILE = _studio_root() / "studio.pid"
 
+
+def _pid_start_identity(pid: int) -> str:
+    """Return a stable process-start token used to reject recycled PIDs."""
+    try:
+        import psutil
+
+        return str(psutil.Process(pid).create_time())
+    except Exception:
+        pass
+    if sys.platform == "linux":
+        try:
+            with open(f"/proc/{pid}/stat", "rb") as fh:
+                data = fh.read()
+            return data[data.rfind(b")") + 2 :].split()[19].decode()
+        except (OSError, IndexError):
+            pass
+    return ""
+
 # Direct backend launches bypass the CLI's env re-export; do it here for
 # real custom roots so unsloth-zoo's import-time LLAMA_CPP_DEFAULT_DIR
 # picks up the custom build. Skip legacy-default to avoid flipping
@@ -751,10 +769,13 @@ os.environ.setdefault("UNSLOTH_IS_PRESENT", "1")
 
 
 def _write_pid_file():
-    """Write the current process PID to the studio PID file."""
+    """Write the current process PID and start identity to the Studio PID file."""
     try:
+        pid = os.getpid()
+        identity = _pid_start_identity(pid)
+        record = f"{pid}:{identity}" if identity else str(pid)
         _PID_FILE.parent.mkdir(parents = True, exist_ok = True)
-        _PID_FILE.write_text(str(os.getpid()))
+        _PID_FILE.write_text(record)
     except OSError:
         pass
 
@@ -764,7 +785,11 @@ def _remove_pid_file():
     try:
         if _PID_FILE.is_file():
             stored = _PID_FILE.read_text().strip()
-            if stored == str(os.getpid()):
+            pid_text, separator, identity = stored.partition(":")
+            pid = os.getpid()
+            if pid_text == str(pid) and (
+                not separator or (identity and _pid_start_identity(pid) == identity)
+            ):
                 _PID_FILE.unlink(missing_ok = True)
     except OSError:
         pass

@@ -1448,7 +1448,7 @@ def _run(
             # A server created solely for this session has no other owner, so free its
             # port and model memory when the agent exits.
             _shutdown_auto_served()
-        elif is_loopback_url(base):
+        elif is_loopback_url(base) and not os.environ.get("UNSLOTH_STUDIO_URL"):
             # A pre-existing local Studio may be shared by other terminals. Keep it warm,
             # but make that ownership decision visible instead of looking like an orphan.
             # This command is implemented for Windows, WSL, Linux, and macOS.
@@ -1458,9 +1458,10 @@ def _run(
             )
             typer.echo("To stop it and free the model memory, run: unsloth studio stop")
         else:
-            # Never imply that a local command can stop a remote server or SSH-forwarded
-            # endpoint; its owner must stop it on the machine where Studio is running.
-            typer.echo(f"\nThe remote Unsloth Studio at {base} is still running.")
+            # An explicit URL may be a remote host or an SSH tunnel bound to loopback.
+            # Never imply that a local command can stop a server whose ownership is
+            # external to this launch.
+            typer.echo(f"\nThe configured Unsloth Studio at {base} is still running.")
             typer.echo("To stop it, run `unsloth studio stop` on the server host.")
 
 

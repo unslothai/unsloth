@@ -16,18 +16,21 @@ import types
 from pathlib import Path
 
 import pytest
+import typer
 
 _STUDIO_CMD_PY = Path(__file__).resolve().parents[2] / "unsloth_cli" / "commands" / "studio.py"
 _SOURCE = _STUDIO_CMD_PY.read_text(encoding = "utf-8")
+_BACKEND_RUN_PY = Path(__file__).resolve().parents[2] / "studio" / "backend" / "run.py"
+_BACKEND_RUN_SOURCE = _BACKEND_RUN_PY.read_text(encoding = "utf-8")
 
 
-def _func_source(name: str) -> str:
-    """Return the source of a top-level function `name` in studio.py."""
-    tree = ast.parse(_SOURCE)
+def _func_source(name: str, source: str = _SOURCE) -> str:
+    """Return the source of a top-level function from the selected module text."""
+    tree = ast.parse(source)
     for node in ast.walk(tree):
         if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.name == name:
-            return ast.get_source_segment(_SOURCE, node)
-    raise AssertionError(f"function {name!r} not found in studio.py")
+            return ast.get_source_segment(source, node)
+    raise AssertionError(f"function {name!r} not found")
 
 
 def _load_pid_alive(platform: str, fake_run = None):
@@ -115,28 +118,67 @@ def test_pid_alive_windows_assumes_alive_when_tasklist_errors():
     assert pid_alive(4242) is True
 
 
-def test_stop_windows_terminates_the_complete_process_tree():
-    """Force-stopping only the Python parent can orphan llama-server on Windows."""
-    stop_src = _func_source("stop")
-    tree = ast.parse(stop_src)
-    taskkill_calls = [
-        call
-        for call in ast.walk(tree)
-        if isinstance(call, ast.Call)
-        and isinstance(call.func, ast.Attribute)
-        and call.func.attr == "run"
-        and call.args
-        and isinstance(call.args[0], ast.List)
-        and any(
-            isinstance(item, ast.Constant) and item.value == "taskkill"
-            for item in call.args[0].elts
-        )
-    ]
-    assert len(taskkill_calls) == 1
-    command = taskkill_calls[0].args[0]
-    assert any(
-        isinstance(item, ast.Constant) and item.value == "/T" for item in command.elts
-    ), "taskkill must include /T so llama-server is terminated with the Studio parent"
+def _run_stop_windows(tmp_path, record: str, current_identity: str):
+    pid_file = tmp_path / "studio.pid"
+    pid_file.write_text(record)
+    calls = []
+    liveness = iter((True, False))
+
+    def fake_run(command, check = False):
+        calls.append(command)
+        return types.SimpleNamespace(returncode = 0)
+
+    ns = {
+        "_PID_FILE": pid_file,
+        "_pid_alive": lambda _pid: next(liveness),
+        "_pid_start_identity": lambda _pid: current_identity,
+        "os": os,
+        "subprocess": types.SimpleNamespace(run = fake_run),
+        "sys": types.SimpleNamespace(platform = "win32"),
+        "time": types.SimpleNamespace(sleep = lambda _seconds: None),
+        "typer": typer,
+    }
+    exec(_func_source("stop"), ns)
+    with pytest.raises(typer.Exit) as exc:
+        ns["stop"]()
+    return exc.value.exit_code, calls, pid_file
+
+
+def test_stop_windows_terminates_verified_process_tree(tmp_path):
+    """A matching start identity permits `/T`, so llama-server is terminated too."""
+    code, calls, pid_file = _run_stop_windows(tmp_path, "4242:123.5", "123.5")
+    assert code == 0
+    assert calls == [["taskkill", "/PID", "4242", "/T", "/F"]]
+    assert not pid_file.exists()
+
+
+def test_stop_windows_rejects_recycled_pid_before_taskkill(tmp_path):
+    """A stale pidfile must never tree-kill the unrelated process now using its PID."""
+    code, calls, pid_file = _run_stop_windows(tmp_path, "4242:123.5", "999.0")
+    assert code == 0
+    assert calls == []
+    assert not pid_file.exists()
+
+
+def test_stop_windows_legacy_pidfile_does_not_expand_to_process_tree(tmp_path):
+    """Bare legacy records keep the old parent-only behavior until Studio restarts."""
+    code, calls, pid_file = _run_stop_windows(tmp_path, "4242", "")
+    assert code == 0
+    assert calls == [["taskkill", "/PID", "4242", "/F"]]
+    assert not pid_file.exists()
+
+
+def test_backend_pidfile_records_process_start_identity(tmp_path):
+    """New Studio processes persist enough identity to reject later PID reuse."""
+    pid_file = tmp_path / "studio.pid"
+    ns = {
+        "_PID_FILE": pid_file,
+        "_pid_start_identity": lambda _pid: "123.5",
+        "os": types.SimpleNamespace(getpid = lambda: 4242),
+    }
+    exec(_func_source("_write_pid_file", _BACKEND_RUN_SOURCE), ns)
+    ns["_write_pid_file"]()
+    assert pid_file.read_text() == "4242:123.5"
 
 
 # ── Behavioral: the POSIX signal-0 branch (skip on Windows runners) ───────────

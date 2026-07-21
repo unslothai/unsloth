@@ -2179,6 +2179,24 @@ def run(
 _PID_FILE = STUDIO_HOME / "studio.pid"
 
 
+def _pid_start_identity(pid: int) -> str:
+    """Return a stable process-start token used to reject recycled PIDs."""
+    try:
+        import psutil
+
+        return str(psutil.Process(pid).create_time())
+    except Exception:
+        pass
+    if sys.platform == "linux":
+        try:
+            with open(f"/proc/{pid}/stat", "rb") as fh:
+                data = fh.read()
+            return data[data.rfind(b")") + 2 :].split()[19].decode()
+        except (OSError, IndexError):
+            pass
+    return ""
+
+
 def _pid_alive(pid: int) -> bool:
     """Return True if a process with ``pid`` exists.
 
@@ -2219,9 +2237,10 @@ def stop():
         typer.echo("No running Unsloth server found (no PID file).")
         raise typer.Exit(0)
 
-    pid_text = _PID_FILE.read_text().strip()
-    if not pid_text.isdigit():
-        typer.echo(f"Invalid PID file contents: {pid_text}")
+    pid_record = _PID_FILE.read_text().strip()
+    pid_text, separator, identity = pid_record.partition(":")
+    if not pid_text.isdigit() or (separator and not identity):
+        typer.echo(f"Invalid PID file contents: {pid_record}")
         _PID_FILE.unlink(missing_ok = True)
         raise typer.Exit(1)
 
@@ -2233,12 +2252,36 @@ def stop():
         _PID_FILE.unlink(missing_ok = True)
         raise typer.Exit(0)
 
+    if identity:
+        current_identity = _pid_start_identity(pid)
+        if not current_identity:
+            typer.echo(
+                f"Could not verify Unsloth server process identity for PID {pid}; "
+                "refusing to stop it.",
+                err = True,
+            )
+            raise typer.Exit(1)
+        if current_identity != identity:
+            typer.echo(
+                f"Unsloth server PID {pid} was reused by another process. "
+                "Cleaning up stale PID file."
+            )
+            _PID_FILE.unlink(missing_ok = True)
+            raise typer.Exit(0)
+
     # Send SIGTERM (graceful shutdown) or terminate the complete process tree on
     # Windows. `/T` is essential: force-killing only the Python parent bypasses its
     # cleanup handler and can leave llama-server holding the model and GPU memory.
     try:
         if sys.platform == "win32":
-            subprocess.run(["taskkill", "/PID", str(pid), "/T", "/F"], check = True)
+            # Only expand to the complete tree when the pidfile proves this is the
+            # same process that wrote it. Legacy bare-PID files retain the old,
+            # parent-only behavior rather than amplifying a stale-PID mistake.
+            command = ["taskkill", "/PID", str(pid)]
+            if identity:
+                command.append("/T")
+            command.append("/F")
+            subprocess.run(command, check = True)
         else:
             os.kill(pid, _signal.SIGTERM)
         typer.echo(f"Sent shutdown signal to Unsloth server (PID {pid}).")
