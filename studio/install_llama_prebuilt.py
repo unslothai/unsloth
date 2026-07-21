@@ -5721,9 +5721,9 @@ def _bundled_hip_present(binary_dir: str) -> bool:
     if not binary_dir:
         return False
     try:
-        return os.path.exists(os.path.join(str(binary_dir), "libggml-hip.so")) or os.path.exists(
-            os.path.join(str(binary_dir), "libggml-hip.so.0")
-        )
+        # Glob the version suffix (libggml-hip.so, .so.0, .so.0.11.1) the same
+        # way the installer's runtime health check matches libggml-hip.so*.
+        return any(Path(str(binary_dir)).glob("libggml-hip.so*"))
     except OSError:
         return False
 
