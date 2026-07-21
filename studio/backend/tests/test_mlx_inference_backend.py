@@ -995,13 +995,11 @@ def test_mlx_prompt_cache_max_bytes_budget(monkeypatch):
     )
 
     monkeypatch.delenv("UNSLOTH_MLX_PROMPT_CACHE_BYTES", raising = False)
-    # Metal unavailable (no recommended working set) still yields a real cap.
     assert _prompt_cache_max_bytes(None) == PROMPT_CACHE_FALLBACK_BYTES
     assert _prompt_cache_max_bytes(20.0) == int(20.0 * 1e9 * PROMPT_CACHE_MEMORY_FRACTION)
 
     monkeypatch.setenv("UNSLOTH_MLX_PROMPT_CACHE_BYTES", "4096")
     assert _prompt_cache_max_bytes(20.0) == 4096
-    # 0 is an explicit opt-out, not a fall-through to the default.
     monkeypatch.setenv("UNSLOTH_MLX_PROMPT_CACHE_BYTES", "0")
     assert _prompt_cache_max_bytes(20.0) == 0
     monkeypatch.setenv("UNSLOTH_MLX_PROMPT_CACHE_BYTES", "not-a-number")
@@ -1015,14 +1013,12 @@ def test_mlx_prompt_cache_never_returns_empty_remainder(monkeypatch):
     history = _MLXPromptCacheHistory(6, 1 << 30)
     tokens = list(range(10))
     cache, rest = history.fetch(object(), "key", tokens)
-    assert len(rest) == 10  # cold: full prefill
+    assert len(rest) == 10
     history.insert("key", tokens, cache)
 
-    # Exact re-request: trimmed back by one so decoding has a seed token.
     _cache, rest = history.fetch(object(), "key", tokens)
     assert rest == tokens[-1:]
 
-    # A longer prompt reuses the stored prefix and prefills only the new tail.
     longer = tokens + [99, 100]
     _cache, rest = history.fetch(object(), "key", longer)
     assert rest == [99, 100]
@@ -1060,10 +1056,8 @@ def test_mlx_prompt_cache_key_isolates_adapter_state(monkeypatch):
     assert cached == 0
     backend._prompt_cache_history.insert(key, tokens, cache)
 
-    # Same adapter state: reuses the prefix.
     _rest, _cache, _key, _tokens, cached_same = backend._prepare_prompt_cache(prompt, True)
     assert cached_same > 0
-    # Flipped adapter state: must miss.
     _rest, _cache, _key, _tokens, cached_flipped = backend._prepare_prompt_cache(prompt, False)
     assert cached_flipped == 0
 
@@ -1165,14 +1159,13 @@ def test_mlx_text_reuses_prompt_cache_on_the_next_turn(monkeypatch):
     captured = []
     token_map = {
         "P1": [1, 2, 3],
-        # P1 + generated + the new user turn.
         "P2": [1, 2, 3, 7, 8, 9, 10],
         "generated": [7, 8],
     }
     backend = _install_fake_text_stack(monkeypatch, token_map, captured)
 
     _run_turn(backend, "P1")
-    assert captured[0]["prompt"] == [1, 2, 3]  # cold: full prefill
+    assert captured[0]["prompt"] == [1, 2, 3]
     assert "prompt_cache" in captured[0]
     assert backend.last_generation_stats["timings"]["cache_n"] == 0
 
@@ -1182,7 +1175,6 @@ def test_mlx_text_reuses_prompt_cache_on_the_next_turn(monkeypatch):
     stats = backend.last_generation_stats
     assert stats["timings"]["cache_n"] == 5
     assert stats["timings"]["prompt_n"] == 2
-    # usage keeps reporting the whole prompt.
     assert stats["usage"]["prompt_tokens"] == 7
 
 
@@ -1195,7 +1187,7 @@ def test_mlx_text_without_lru_prompt_cache_prefills_the_full_prompt(monkeypatch)
     backend = _install_fake_text_stack(monkeypatch, token_map, captured)
 
     _run_turn(backend, "P1")
-    assert captured[0]["prompt"] == "P1"  # unchanged: the rendered string
+    assert captured[0]["prompt"] == "P1"
     assert "prompt_cache" not in captured[0]
     assert backend.last_generation_stats["timings"]["cache_n"] == 0
 
@@ -1208,22 +1200,19 @@ def test_mlx_text_tracks_tokens_on_the_native_reasoning_path(monkeypatch):
 
     _run_turn(backend, "P1")
     _run_turn(backend, "P2")
-    # A miss here would mean the generated tokens never entered the cache key.
     assert captured[1]["prompt"] == [9]
 
 
 def test_mlx_presence_penalty_latches_the_first_decode_step():
-    mx = pytest.importorskip("mlx.core")  # real MLX arrays; Apple Silicon only
+    mx = pytest.importorskip("mlx.core")
     import numpy as np
 
     from core.inference.mlx_inference import _make_mlx_presence_penalty_processor
 
     processor = _make_mlx_presence_penalty_processor(2.0)
-    # First step: the single seed token left over after prefill/cache restore.
     logits = mx.zeros((1, 5))
     out = processor(mx.array([3]), logits)
     assert np.array_equal(np.array(out), np.zeros((1, 5))), "prompt must not be penalized"
-    # Subsequent steps penalize only what was generated, not the seed token.
     out = processor(mx.array([3, 1]), mx.zeros((1, 5)))
     penalized = np.array(out)[0]
     assert penalized[1] == -2.0
@@ -1249,8 +1238,6 @@ def test_mlx_prompt_cache_survives_reset_but_not_unload(monkeypatch):
 
 
 def test_mlx_prompt_cache_skips_entries_over_budget(monkeypatch):
-    # An over-budget entry makes LRUPromptCache evict itself *and* every other
-    # conversation, so a single huge chat would silently wipe the cache.
     _install_fake_prompt_cache_api(monkeypatch)
     from core.inference.mlx_inference import _MLXPromptCacheHistory
 
@@ -1263,7 +1250,6 @@ def test_mlx_prompt_cache_skips_entries_over_budget(monkeypatch):
     assert len(history._lru.entries.get("key", {})) == 1
 
     history.insert("key", list(range(50)), [_Sized(5000)])
-    # The oversized entry is dropped and the earlier one survives.
     stored = history._lru.entries.get("key", {})
     assert tuple([1, 2, 3]) in stored
     assert tuple(range(50)) not in stored
@@ -1284,11 +1270,40 @@ def test_mlx_prompt_cache_keys_on_what_the_kv_covers(monkeypatch):
 
     history = _MLXPromptCacheHistory(6, 1 << 30)
 
-    # More tokens tracked than the KV holds: the key is truncated to the KV.
     history.insert("key", list(range(10)), [_Entry(offset = 8)])
     assert tuple(range(8)) in history._lru.entries["key"]
     assert tuple(range(10)) not in history._lru.entries["key"]
 
-    # KV ahead of the tracked tokens is unresolvable, so nothing is stored.
     history.insert("other", list(range(4)), [_Entry(offset = 9)])
     assert "other" not in history._lru.entries
+
+
+def test_mlx_prompt_cache_skips_windowed_caches_past_their_window(monkeypatch):
+    mx = pytest.importorskip("mlx.core")
+    from mlx_lm.models.cache import KVCache, RotatingKVCache
+
+    _install_fake_prompt_cache_api(monkeypatch)
+    from core.inference.mlx_inference import _MLXPromptCacheHistory, _kv_retains_full_prefix
+
+    def feed(entry, n):
+        for _ in range(n):
+            block = mx.zeros((1, 2, 1, 4), dtype = mx.float16)
+            entry.update_and_fetch(block, block)
+        mx.eval(entry.state)
+        return entry
+
+    plain = feed(KVCache(), 30)
+    unwrapped = feed(RotatingKVCache(max_size = 100, keep = 2), 30)
+    wrapped = feed(RotatingKVCache(max_size = 10, keep = 2), 30)
+
+    assert _kv_retains_full_prefix([plain])
+    assert _kv_retains_full_prefix([unwrapped])
+    assert wrapped.offset == 30 and wrapped.state[0].shape[2] == 10
+    assert not _kv_retains_full_prefix([wrapped])
+
+    history = _MLXPromptCacheHistory(6, 1 << 40)
+    history.insert("key", list(range(30)), [wrapped])
+    assert "key" not in history._lru.entries
+
+    history.insert("key", list(range(30)), [plain])
+    assert tuple(range(30)) in history._lru.entries["key"]

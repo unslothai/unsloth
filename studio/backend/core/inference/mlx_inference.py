@@ -247,6 +247,15 @@ def _prompt_cache_max_bytes(recommended_gb = None):
     return PROMPT_CACHE_FALLBACK_BYTES
 
 
+def _kv_retains_full_prefix(cache):
+    for entry in cache:
+        window = getattr(entry, "max_size", None)
+        offset = getattr(entry, "offset", None)
+        if window is not None and offset is not None and offset > window:
+            return False
+    return True
+
+
 class _MLXPromptCacheHistory:
     def __init__(self, max_entries, max_bytes):
         api = _mlx_prompt_cache_api()
@@ -284,9 +293,10 @@ class _MLXPromptCacheHistory:
                 self._max_bytes / 1e9,
             )
             return
+        if not _kv_retains_full_prefix(cache):
+            logger.debug("MLX prompt cache: skipping windowed cache past its window")
+            return
         tokens = list(tokens)
-        # Key on what the KV actually covers rather than trusting the caller's
-        # token count, so a mismatch can never store KV under the wrong key.
         covered = next((entry.offset for entry in cache if hasattr(entry, "offset")), None)
         if covered is not None:
             if covered > len(tokens):
