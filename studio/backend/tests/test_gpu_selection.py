@@ -1043,6 +1043,75 @@ class TestRouteErrors(unittest.TestCase):
         self.assertNotIn("cpu-only build", exc_info.exception.detail.lower())
         self.assertIn("SENTINEL_AFTER_GATE", exc_info.exception.detail)
 
+    def test_diffusion_gguf_on_vulkan_build_uses_cuda_path(self):
+        # A confirmed diffusion GGUF on a CUDA host whose llama-server is a Vulkan build must
+        # validate gpu_ids through the CUDA physical-id resolver (the diffusion runner takes a
+        # CUDA --gpu/DG_GPU id), NOT the Vulkan-ordinal branch, which would size the wrong
+        # device namespace and reject a valid physical pick (#7188).
+        from unittest.mock import MagicMock
+
+        import utils.hardware as hardware_pkg
+
+        inference_route = _load_route_module(
+            "inference_route_module_for_diffusion_cuda_path_test",
+            "routes/inference.py",
+        )
+        request = LoadRequest(model_path = "unsloth/diffusion.gguf", gpu_ids = [0, 1])
+        model_config = SimpleNamespace(
+            is_gguf = True,
+            is_lora = False,
+            gguf_hf_repo = None,
+            gguf_file = "/tmp/diffusion.gguf",
+            gguf_mmproj_file = None,
+            gguf_variant = None,
+            identifier = "unsloth/diffusion.gguf",
+            display_name = "unsloth/diffusion.gguf",
+            is_vision = False,
+            is_audio = False,
+            audio_type = None,
+            has_audio_input = False,
+        )
+        assert_resolvable = MagicMock()  # the Vulkan-ordinal validator; must NOT be called
+        fake_backend = SimpleNamespace(
+            is_loaded = False,
+            model_identifier = None,
+            is_vulkan_build = lambda: True,
+            _backend_lacks_gpu_lib = lambda *a, **k: False,
+            has_gpu_backend = lambda *a, **k: True,
+            assert_requested_gpu_ids_resolvable = assert_resolvable,
+        )
+        with (
+            patch.object(
+                inference_route,
+                "ModelConfig",
+                SimpleNamespace(from_identifier = lambda **_kwargs: model_config),
+            ),
+            patch.object(inference_route, "_classify_diffusion_gguf", return_value = True),
+            patch.object(
+                _hw_module,
+                "resolve_requested_gpu_ids",
+                side_effect = ValueError("CUDA_PATH_SENTINEL"),
+            ),
+            patch.object(inference_route, "_guard_chat_load_against_training", return_value = None),
+            patch.object(inference_route.asyncio, "to_thread", new = _inline_to_thread),
+            patch.object(inference_route, "_hf_offline_if_dns_dead", nullcontext),
+            patch.object(inference_route, "get_llama_cpp_backend", return_value = fake_backend),
+            patch.object(hardware_pkg, "get_device", return_value = hardware_pkg.DeviceType.CUDA),
+        ):
+            with self.assertRaises(HTTPException) as exc_info:
+                asyncio.run(
+                    inference_route._load_model_impl(
+                        request,
+                        SimpleNamespace(
+                            app = SimpleNamespace(state = SimpleNamespace(llama_parallel_slots = 1)),
+                        ),
+                        current_subject = "test-user",
+                    )
+                )
+        # Took the CUDA physical-id resolver, never the Vulkan-ordinal validator.
+        self.assertIn("CUDA_PATH_SENTINEL", exc_info.exception.detail)
+        assert_resolvable.assert_not_called()
+
     def test_inherited_extras_preserve_memory_flags_when_mode_omitted(self):
         # A same-model Apply that omits gguf_memory_mode must NOT drop an inherited
         # --mlock/--no-mmap pass-through (opt-in memory stripping), while a first-class

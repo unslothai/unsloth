@@ -4543,6 +4543,11 @@ async def _load_model_impl(request: LoadRequest, fastapi_request: Request, curre
 
             _llama_backend = get_llama_cpp_backend()
             _gguf_vulkan_build = await asyncio.to_thread(_llama_backend.is_vulkan_build)
+            # A confirmed diffusion GGUF is served by the visual-server runner, which takes a
+            # CUDA physical id via --gpu/DG_GPU (it remasks CUDA_VISIBLE_DEVICES), never a
+            # Vulkan ordinal. Route its gpu_ids through the CUDA resolver even on a Vulkan
+            # build, matching the training guard's diffusion_gpu handling (#7188).
+            _gguf_confirmed_diffusion = _classify_diffusion_gguf(config) is True
 
             if get_device() == DeviceType.XPU and not _gguf_vulkan_build:
                 raise HTTPException(
@@ -4592,8 +4597,12 @@ async def _load_model_impl(request: LoadRequest, fastapi_request: Request, curre
             # A Vulkan build treats gpu_ids as Vulkan ordinals (never remapped through
             # CUDA_VISIBLE_DEVICES), so defer to the backend probe even on a CUDA-visible
             # host, else the CUDA resolver would 400 a valid Vulkan id under a CUDA/HIP
-            # mask (#7188). Otherwise keep the CUDA physical-ID resolver (#6414).
-            if get_device() == DeviceType.CUDA and not _gguf_vulkan_build:
+            # mask (#7188). Otherwise keep the CUDA physical-ID resolver (#6414). A confirmed
+            # diffusion GGUF always takes the CUDA path: its runner uses CUDA ids, not the
+            # Vulkan llama-server, so a Vulkan build must not send it to the ordinal branch.
+            if get_device() == DeviceType.CUDA and (
+                not _gguf_vulkan_build or _gguf_confirmed_diffusion
+            ):
                 # The CUDA resolver only validates the physical-ID mask; it can't tell the
                 # llama.cpp build is CPU-only. A CPU-only build ignores CUDA_VISIBLE_DEVICES,
                 # so the pin would silently run on CPU while /load reports gpu_ids active --
@@ -4601,7 +4610,7 @@ async def _load_model_impl(request: LoadRequest, fastapi_request: Request, curre
                 # Diffusion GGUF models bypass llama-server (the diffusion runner
                 # handles gpu_ids via --gpu/DG_GPU), so the llama.cpp GPU-lib
                 # check is irrelevant for them (#7188).
-                if _classify_diffusion_gguf(config) is not True and await asyncio.to_thread(
+                if not _gguf_confirmed_diffusion and await asyncio.to_thread(
                     _llama_backend._backend_lacks_gpu_lib
                 ):
                     raise HTTPException(
@@ -5234,6 +5243,10 @@ async def validate_model(
 
             _loaded_llama = get_llama_cpp_backend()
             _gguf_vulkan_build = await asyncio.to_thread(_loaded_llama.is_vulkan_build)
+            # Mirror /load: a confirmed diffusion GGUF uses the visual-server runner (CUDA
+            # ids via --gpu/DG_GPU), not the Vulkan llama-server, so route its gpu_ids
+            # through the CUDA resolver even on a Vulkan build (#7188).
+            _gguf_confirmed_diffusion = _classify_diffusion_gguf(config) is True
 
             if get_device() == DeviceType.XPU and not _gguf_vulkan_build:
                 raise HTTPException(
@@ -5274,12 +5287,16 @@ async def validate_model(
                         )
             # A Vulkan build treats gpu_ids as Vulkan ordinals, so defer to the backend
             # probe even on a CUDA-visible host; otherwise keep the CUDA resolver (#6414/#7188).
-            if get_device() == DeviceType.CUDA and not _gguf_vulkan_build:
+            # A confirmed diffusion GGUF always takes the CUDA path: its runner uses CUDA ids,
+            # not the Vulkan llama-server (#7188).
+            if get_device() == DeviceType.CUDA and (
+                not _gguf_vulkan_build or _gguf_confirmed_diffusion
+            ):
                 # A CPU-only llama.cpp build ignores CUDA_VISIBLE_DEVICES; the CUDA resolver
                 # can't see that, so reject a pin it would silently run on CPU (mirrors /load
                 # and the non-CUDA resolvable check). Diffusion GGUF models bypass
                 # llama-server, so the llama.cpp GPU-lib check is irrelevant (#7188).
-                if _classify_diffusion_gguf(config) is not True and await asyncio.to_thread(
+                if not _gguf_confirmed_diffusion and await asyncio.to_thread(
                     _loaded_llama._backend_lacks_gpu_lib
                 ):
                     raise HTTPException(
