@@ -93,7 +93,12 @@ import {
 import { Tooltip as TooltipPrimitive } from "radix-ui";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { ChevronDown, Moon } from "lucide-react";
-import { Link, useNavigate, useRouterState } from "@tanstack/react-router";
+import {
+  Link,
+  useNavigate,
+  useRouter,
+  useRouterState,
+} from "@tanstack/react-router";
 import {
   archiveChatItem,
   ChatSearchDialog,
@@ -256,6 +261,10 @@ function createNavigationNonce(): string {
   return `${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
 }
 
+function preloadSilently(request: Promise<unknown>): void {
+  void request.catch(() => undefined);
+}
+
 function NavItem({
   icon,
   label,
@@ -267,6 +276,7 @@ function NavItem({
   className,
   spinner,
   tooltip,
+  onIntent,
 }: {
   icon: typeof ZapIcon;
   label: string;
@@ -277,6 +287,7 @@ function NavItem({
   dataTour?: string;
   className?: string;
   spinner?: boolean;
+  onIntent?: () => void;
   // Overrides the hover tooltip (defaults to `label`). Used to explain why a
   // disabled item (e.g. Train/Export on a chat-only host) is greyed out.
   tooltip?: string;
@@ -288,6 +299,8 @@ function NavItem({
           tooltip={tooltip ?? label}
           disabled={disabled}
           onClick={onClick}
+          onPointerEnter={disabled ? undefined : onIntent}
+          onFocus={disabled ? undefined : onIntent}
           isActive={active}
           data-tour={dataTour}
           className="sidebar-nav-btn h-[33px] rounded-full gap-[8.5px] pl-3 pr-2.5 font-medium group-data-[collapsible=icon]:px-2.5 group-data-[collapsible=icon]:!w-[32px] group-data-[collapsible=icon]:mx-auto"
@@ -324,6 +337,7 @@ export function AppSidebar() {
   });
   const { togglePinned, isMobile, setOpenMobile } = useSidebar();
   const navigate = useNavigate();
+  const router = useRouter();
 
   // Web update detection: `webUpdate` is non-null only when the installed
   // (PyPI) version is behind the latest release, so the card is hidden by
@@ -969,10 +983,10 @@ export function AppSidebar() {
                   </DropdownMenuItem>
                 ))}
                 <DropdownMenuSeparator />
-                {/* Bulk export and import live in Settings -> Chat -> Data. */}
+                {/* Bulk export and import live in Settings -> Data. */}
                 <DropdownMenuItem
                   onSelect={() =>
-                    useSettingsDialogStore.getState().openDialog("chat")
+                    useSettingsDialogStore.getState().openDialog("data")
                   }
                 >
                   Export all chats…
@@ -997,28 +1011,6 @@ export function AppSidebar() {
             </DropdownMenuItem>
           </DropdownMenuContent>
         </DropdownMenu>
-        {isPinned ? (
-          <Tooltip>
-            <TooltipPrimitive.Trigger asChild>
-              <button
-                type="button"
-                onClick={(e) => {
-                  e.stopPropagation();
-                  unpinChat(item.id);
-                }}
-                aria-label="Unpin chat"
-                className={cn(actionClass, "is-unpin-action")}
-              >
-                <span className="sidebar-row-action-glyph">
-                  <HugeiconsIcon icon={PinOffIcon} strokeWidth={1.75} className="size-4" />
-                </span>
-              </button>
-            </TooltipPrimitive.Trigger>
-            <TooltipContent side="bottom" sideOffset={6} className="tooltip-compact">
-              Unpin
-            </TooltipContent>
-          </Tooltip>
-        ) : null}
       </SidebarMenuItem>
     );
   }
@@ -1218,6 +1210,9 @@ export function AppSidebar() {
                   navigate({ to: "/projects" });
                   closeMobileIfOpen();
                 }}
+                onIntent={() => {
+                  preloadSilently(router.preloadRoute({ to: "/projects" }));
+                }}
                 className="group/projects-item relative"
               >
                 <button
@@ -1248,6 +1243,9 @@ export function AppSidebar() {
                   navigate({ to: "/hub" });
                   closeMobileIfOpen();
                 }}
+                onIntent={() => {
+                  preloadSilently(router.preloadRoute({ to: "/hub" }));
+                }}
               />
               {/* Train has a labelled section when expanded; plain icon here only when collapsed. */}
               <NavItem
@@ -1263,6 +1261,9 @@ export function AppSidebar() {
                   if (chatOnly) return;
                   navigate({ to: "/studio" });
                   closeMobileIfOpen();
+                }}
+                onIntent={() => {
+                  preloadSilently(router.preloadRoute({ to: "/studio" }));
                 }}
                 className="hidden group-data-[collapsible=icon]:block"
               />
@@ -1293,6 +1294,9 @@ export function AppSidebar() {
                       navigate({ to: "/studio" });
                       closeMobileIfOpen();
                     }}
+                    onIntent={() => {
+                      preloadSilently(router.preloadRoute({ to: "/studio" }));
+                    }}
                   />
                   <NavItem
                     icon={ChefHatIcon}
@@ -1301,6 +1305,16 @@ export function AppSidebar() {
                     onClick={() => {
                       navigate({ to: "/data-recipes" });
                       closeMobileIfOpen();
+                    }}
+                    onIntent={() => {
+                      preloadSilently(
+                        router.preloadRoute({ to: "/data-recipes" }),
+                      );
+                      preloadSilently(
+                        import("@/features/data-recipes").then((module) =>
+                          module.preloadRecipes(),
+                        ),
+                      );
                     }}
                   />
                   <NavItem
@@ -1311,6 +1325,14 @@ export function AppSidebar() {
                     onClick={() => {
                       navigate({ to: "/export" });
                       closeMobileIfOpen();
+                    }}
+                    onIntent={() => {
+                      preloadSilently(router.preloadRoute({ to: "/export" }));
+                      preloadSilently(
+                        import(
+                          "@/features/export/export-navigation-cache"
+                        ).then((module) => module.preloadExportData()),
+                      );
                     }}
                   />
                 </SidebarMenu>
@@ -1551,7 +1573,7 @@ export function AppSidebar() {
                 <SidebarMenuButton
                   size="lg"
                   aria-label={t("shell.accountMenu", { name: displayTitle })}
-                  className="sidebar-nav-btn !h-[44px] -my-[3px] gap-[9px] px-2 py-[3px] rounded-[14px] group-data-[collapsible=icon]:!size-[34px] group-data-[collapsible=icon]:!rounded-full group-data-[collapsible=icon]:!p-0 group-data-[collapsible=icon]:mx-auto group-data-[collapsible=icon]:justify-center"
+                  className="sidebar-nav-btn !h-[44px] -my-[3px] gap-[9px] pl-2 pr-[45px] py-[3px] rounded-[14px] group-data-[collapsible=icon]:!size-[34px] group-data-[collapsible=icon]:!rounded-full group-data-[collapsible=icon]:!p-0 group-data-[collapsible=icon]:mx-auto group-data-[collapsible=icon]:justify-center"
                 >
                   <div className="flex shrink-0 items-center">
                     <UserAvatar
@@ -1561,21 +1583,12 @@ export function AppSidebar() {
                       className="!size-[32px] group-data-[collapsible=icon]:!rounded-full"
                     />
                   </div>
-                  <div className="flex flex-col gap-px leading-tight group-data-[collapsible=icon]:hidden">
+                  {/* min-w-0 so long names truncate instead of overflowing;
+                      pr on the button reserves room for the settings cog */}
+                  <div className="flex min-w-0 flex-1 flex-col gap-px leading-tight group-data-[collapsible=icon]:hidden">
                     <span className="truncate font-heading text-[13.5px] tracking-[0.025em] dark:tracking-[0.04em] font-semibold text-nav-fg">{displayTitle}</span>
                     <span className="truncate text-[11.5px] tracking-nav text-muted-foreground">Unsloth</span>
                   </div>
-                  {/* settings cog (replaces the up/down chevron) */}
-                  <span
-                    aria-hidden="true"
-                    className="ml-auto flex size-[32px] shrink-0 items-center justify-center text-muted-foreground group-data-[collapsible=icon]:hidden"
-                  >
-                    <HugeiconsIcon
-                      icon={Settings02Icon}
-                      strokeWidth={1.5}
-                      className="!size-[18px]"
-                    />
-                  </span>
                 </SidebarMenuButton>
               </DropdownMenuTrigger>
               <DropdownMenuContent
@@ -1690,6 +1703,20 @@ export function AppSidebar() {
                 )}
               </DropdownMenuContent>
             </DropdownMenu>
+            {/* settings cog; sibling of the trigger (buttons cannot nest),
+                overlaid on the row's right edge, opens settings directly */}
+            <button
+              type="button"
+              aria-label={t("shell.navigation.settings")}
+              onClick={() => useSettingsDialogStore.getState().openDialog()}
+              className="absolute right-2 top-1/2 flex size-[32px] -translate-y-1/2 items-center justify-center rounded-full text-muted-foreground transition-colors hover:bg-black/10 hover:text-foreground dark:hover:bg-white/10 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring group-data-[collapsible=icon]:hidden"
+            >
+              <HugeiconsIcon
+                icon={Settings02Icon}
+                strokeWidth={1.5}
+                className="!size-[18px]"
+              />
+            </button>
           </SidebarMenuItem>
         </SidebarMenu>
       </SidebarFooter>

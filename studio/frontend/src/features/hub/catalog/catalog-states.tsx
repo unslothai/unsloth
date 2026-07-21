@@ -10,6 +10,7 @@ import {
 } from "@hugeicons/core-free-icons";
 import type { IconSvgElement } from "@hugeicons/react";
 import { HugeiconsIcon } from "@hugeicons/react";
+import type { ReactNode } from "react";
 import { useLayoutEffect, useRef, useState } from "react";
 
 export function NetworkErrorState({
@@ -199,10 +200,12 @@ export function EmptyState({
   title,
   body,
   icon = CubeIcon,
+  action,
 }: {
   title: string;
   body: string;
   icon?: IconSvgElement;
+  action?: ReactNode;
 }) {
   return (
     <div className="flex min-h-[220px] flex-col items-center justify-center gap-3 px-6 text-center">
@@ -217,6 +220,7 @@ export function EmptyState({
           {body}
         </p>
       </div>
+      {action}
     </div>
   );
 }

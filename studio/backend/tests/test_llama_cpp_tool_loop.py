@@ -122,7 +122,7 @@ def _structured_tool_call(tool_name: str, arguments: dict, call_id: str) -> list
 def test_structured_tool_call_after_visible_preface_is_executed(monkeypatch):
     """llama-server may emit content first and then native delta.tool_calls.
 
-    Studio must not drop that tool call after it has streamed the preface.
+    Unsloth must not drop that tool call after it has streamed the preface.
     """
 
     tool_call_id = "call_render_late"
@@ -1059,6 +1059,80 @@ def test_same_turn_duplicate_web_search_is_internal_noop(monkeypatch):
         if event.get("tool_call_id") == "call_search_2"
         and event.get("type") in {"tool_start", "tool_end"}
     ]
+
+
+def test_same_turn_duplicate_does_not_drop_later_parallel_call(monkeypatch):
+    # One batch: search(a), search(a) [duplicate], search(b). The duplicate is an
+    # internal no-op, but the distinct search(b) after it must still run, and the
+    # no-op nudge must land after the tool results rather than splitting them.
+    batch = [
+        _sse(
+            {
+                "tool_calls": [
+                    {
+                        "index": 0,
+                        "id": "call_a1",
+                        "type": "function",
+                        "function": {"name": "web_search", "arguments": json.dumps({"query": "a"})},
+                    },
+                    {
+                        "index": 1,
+                        "id": "call_a2",
+                        "type": "function",
+                        "function": {"name": "web_search", "arguments": json.dumps({"query": "a"})},
+                    },
+                    {
+                        "index": 2,
+                        "id": "call_b",
+                        "type": "function",
+                        "function": {"name": "web_search", "arguments": json.dumps({"query": "b"})},
+                    },
+                ]
+            }
+        ),
+        _done(),
+    ]
+    final_stream = [_sse({"content": "Final answer."}), _done()]
+    payloads: list[dict] = []
+    backend = _make_backend(monkeypatch, [batch, final_stream], payloads)
+
+    calls: list[dict] = []
+
+    def fake_execute_tool(name, arguments, **_kwargs):
+        calls.append(arguments)
+        return "search-result"
+
+    monkeypatch.setattr("core.inference.tools.execute_tool", fake_execute_tool)
+
+    events = list(
+        backend.generate_chat_completion_with_tools(
+            messages = [{"role": "user", "content": "search"}],
+            tools = [{"type": "function", "function": {"name": "web_search"}}],
+            max_tool_iterations = 3,
+        )
+    )
+
+    # Both distinct calls ran; the duplicate did not (old `break` dropped search(b)).
+    assert calls == [{"query": "a"}, {"query": "b"}]
+    assert [e.get("tool_call_id") for e in events if e.get("type") == "tool_end"] == [
+        "call_a1",
+        "call_b",
+    ]
+
+    # The next generation's conversation must be well-formed: the assistant lists
+    # only the executed calls (no orphan for the duplicate), the two tool results
+    # follow contiguously, and the no-op nudge lands after them, never between.
+    conv = payloads[1]["messages"]
+    asst = next(m for m in conv if m["role"] == "assistant" and m.get("tool_calls"))
+    assert [tc.get("id") for tc in asst["tool_calls"]] == ["call_a1", "call_b"]
+    after = conv[conv.index(asst) + 1 :]
+    assert [m["role"] for m in after[:2]] == ["tool", "tool"]
+    assert [m.get("tool_call_id") for m in after[:2]] == ["call_a1", "call_b"]
+    assert after[2]["role"] == "user"  # deferred duplicate nudge, after the results
+    assert after[2]["content"].startswith(
+        "One earlier request to call tool 'web_search' in this batch was not executed"
+    )
+    assert "previous tool request" not in after[2]["content"].lower()
 
 
 def test_same_turn_repeated_render_html_does_not_emit_second_provisional_start(monkeypatch):

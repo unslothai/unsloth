@@ -338,11 +338,11 @@ def _clear_login_bucket(key: tuple[str, str]) -> None:
 # so FastAPI runs it in the threadpool rather than blocking the event loop.
 @router.get("/identity")
 def identity(nonce: str, request: Request) -> dict:
-    """Challenge-response proof this is the real local Studio: caller sends a nonce,
+    """Challenge-response proof this is the real local Unsloth: caller sends a nonce,
     gets HMAC(install identity secret, nonce, connection address + port).
     Unauthenticated and side-effect free; a process that can't read the same-user
     secret can't forge a proof, and binding to the address/port the connection
-    landed on stops a squatter relaying a proof from the real Studio elsewhere."""
+    landed on stops a squatter relaying a proof from the real Unsloth elsewhere."""
     try:
         raw = base64.urlsafe_b64decode(nonce)
     except Exception:

@@ -346,7 +346,7 @@ def test_helper_is_static_method_callable_off_class():
 
 def test_kill_orphaned_servers_returns_count():
     """The reaper reports how many owned orphans it killed, so __init__ can
-    arm the settle wait. Only Studio-owned llama-server procs count."""
+    arm the settle wait. Only Unsloth-owned llama-server procs count."""
     import os
 
     mypid = os.getpid()
@@ -373,9 +373,10 @@ def test_kill_orphaned_servers_returns_count():
     with (
         patch.dict(sys.modules, {"psutil": fake_psutil}),
         patch.dict(os.environ, {"LLAMA_SERVER_PATH": fake_path}),
+        patch.object(LlamaCppBackend, "_pid_parent_is_alive", staticmethod(lambda pid: False)),
     ):
         n = LlamaCppBackend._kill_orphaned_servers()
-    assert n == 1, "only the Studio-owned orphan should be counted"
+    assert n == 1, "only the Unsloth-owned orphan should be counted"
     assert killed == [mypid + 1]
 
     # No owned orphans -> zero, so __init__ leaves the cold-start sentinel.
@@ -384,9 +385,51 @@ def test_kill_orphaned_servers_returns_count():
     with (
         patch.dict(sys.modules, {"psutil": fake_psutil}),
         patch.dict(os.environ, {"LLAMA_SERVER_PATH": fake_path}),
+        patch.object(LlamaCppBackend, "_pid_parent_is_alive", staticmethod(lambda pid: False)),
     ):
         assert LlamaCppBackend._kill_orphaned_servers() == 0
     assert killed == []
+
+
+def test_kill_orphaned_servers_spares_live_parent():
+    """An Unsloth-owned llama-server whose parent is still running is not an
+    orphan (a live Unsloth or the user's shell owns it) and must never be
+    killed; only the true orphan (parent gone) is reaped."""
+    import os
+
+    mypid = os.getpid()
+    fake_path = "/tmp/unsloth-test-llama/llama-server"
+    killed: list[int] = []
+
+    class _FakeProc:
+        def __init__(self, pid, name, exe):
+            self.info = {"pid": pid, "name": name, "exe": exe}
+
+        def kill(self):
+            killed.append(self.info["pid"])
+
+    live_parent = _FakeProc(mypid + 1, "llama-server", fake_path)
+    true_orphan = _FakeProc(mypid + 2, "llama-server", fake_path)
+
+    fake_psutil = _types.ModuleType("psutil")
+    fake_psutil.NoSuchProcess = type("NoSuchProcess", (Exception,), {})
+    fake_psutil.AccessDenied = type("AccessDenied", (Exception,), {})
+    fake_psutil.ZombieProcess = type("ZombieProcess", (Exception,), {})
+    fake_psutil.process_iter = lambda attrs = None: [live_parent, true_orphan]
+
+    with (
+        patch.dict(sys.modules, {"psutil": fake_psutil}),
+        patch.dict(os.environ, {"LLAMA_SERVER_PATH": fake_path}),
+        patch.object(LlamaCppBackend, "_reap_recorded_pid", staticmethod(lambda: 0)),
+        patch.object(
+            LlamaCppBackend,
+            "_pid_parent_is_alive",
+            staticmethod(lambda pid: pid == mypid + 1),
+        ),
+    ):
+        n = LlamaCppBackend._kill_orphaned_servers()
+    assert n == 1, "only the true orphan should be reaped"
+    assert killed == [mypid + 2], "the live-parent server must be spared"
 
 
 def test_startup_reaper_arms_settle_timestamp():
@@ -505,7 +548,7 @@ def test_record_then_reap_round_trip_identity_matches(tmp_path):
 
 
 def test_reap_recorded_pid_spares_live_server(tmp_path):
-    """A recorded server whose parent is still alive (the running Studio) is NEVER
+    """A recorded server whose parent is still alive (the running Unsloth) is NEVER
     reaped, and its pidfile is kept. This is the finding-3 guard: a helper backend
     constructed in-process must not kill the active chat server. Uses the REAL
     _pid_parent_is_alive (the child's parent is this live test process)."""
