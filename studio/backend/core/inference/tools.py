@@ -551,6 +551,18 @@ _AUTO_SENSITIVE_MCP_NOUN_RE = re.compile(
     r")s?(?:[_\-]|$)",
     re.IGNORECASE,
 )
+# An MCP tool that runs arbitrary commands/code on its server (run_command,
+# execute_script, eval_code, invoke_shell, spawn_process, bash) is as unsafe as
+# a terminal call and is forwarded straight to the server, outside the terminal
+# sandbox, so auto gates it. Matches an execution verb or code-exec noun as a
+# whole name segment; read/list names (get_command, list_shells) do not match.
+_AUTO_EXEC_MCP_TOOL_RE = re.compile(
+    r"(?:^|[_\-])(?:"
+    r"exec|execute|run|eval|spawn|invoke|launch|"
+    r"shell|bash|zsh|powershell|pwsh|terminal|subprocess|interpreter"
+    r")(?:[_\-]|$)",
+    re.IGNORECASE,
+)
 
 # Python: modules whose import alone signals side effects auto mode should ask
 # about (process spawning, network, bulk file ops, low-level memory).
@@ -2583,6 +2595,30 @@ _PIPE_TO_INTERPRETER_RE = re.compile(
 # A wrapper's bare duration/count argument (timeout 5 rm, timeout 1.5s rm) that
 # precedes the real command, so it is not mistaken for the command itself.
 _WRAPPER_DURATION_RE = re.compile(r"\d+(?:\.\d+)?[smhd]?$")
+# Non-shell interpreters running an inline program (python -c, node -e, perl -E,
+# php -r): the terminal path never screens that program the way the python tool
+# does, so an arbitrary destructive script would run unprompted. sh/bash -c are
+# omitted -- the sandbox hard-block already recurses into their payloads.
+_INLINE_CODE_INTERPRETERS = frozenset(
+    {"python", "python2", "python3", "pypy", "pypy3", "node", "nodejs", "deno", "bun", "ruby",
+     "perl", "php"}
+)
+_INLINE_CODE_FLAGS = frozenset({"-c", "-e", "-E", "-r", "--eval", "--exec"})
+# git subcommands / flags that discard or overwrite work in the session workdir.
+# `git clean` deletes untracked files; `reset`/`push` only qualify with a
+# destructive flag, so `git reset --soft`, a plain `git push`, and read/commit
+# subcommands run. Ordinary git (add/commit/status/log/pull) stays out.
+_HIGH_RISK_GIT_SUBCOMMANDS = frozenset({"clean"})
+_HIGH_RISK_GIT_RESET_FLAGS = frozenset({"--hard"})
+_HIGH_RISK_GIT_PUSH_FLAGS = frozenset({"-f", "--force", "--force-with-lease"})
+# A command synthesized by a command substitution at command position
+# ($(printf rm) -rf build, `printf rm` ...) cannot be read statically. A
+# substitution in argument position (echo $(date), make $(FILES)) is left alone.
+# Matches $( or a backtick at the start of the command or right after a command
+# separator, allowing leading NAME=value prefixes.
+_COMMAND_SUBST_AT_CMD_RE = re.compile(
+    r"(?:^|[;&|\n(]|&&|\|\|)\s*(?:[A-Za-z_]\w*=[^\s;&|()]*\s+)*(?:\$\(|`)"
+)
 
 
 def _command_is_network_exec_or_exfil(command: str) -> bool:
@@ -2615,6 +2651,9 @@ def _terminal_is_high_risk(command: str) -> bool:
         return True
     if _command_is_network_exec_or_exfil(command):
         return True
+    # A command substitution at command position generates the command Bash runs.
+    if _COMMAND_SUBST_AT_CMD_RE.search(command):
+        return True
     # Newlines separate commands in a shell but read as whitespace to shlex.
     normalized = command.replace("\r\n", ";").replace("\n", ";").replace("\r", ";")
     # A verb hidden behind an assignment (c=rm; $c x) or a default parameter
@@ -2640,6 +2679,8 @@ def _terminal_is_high_risk(command: str) -> bool:
         expect_command = True  # at the start of a command (after a separator)
         prefix_pending = False  # inside a wrapper (env/timeout/...) still seeking the command
         scan_forward = False  # a forwarding command (find/xargs/...) precedes another command
+        current_command = ""  # the resolved command whose flags / git subcommand we judge
+        git_subcommand = ""  # the first positional after `git`
         for token in tokens:
             if (
                 token in _SHELL_SEPARATORS
@@ -2649,8 +2690,22 @@ def _terminal_is_high_risk(command: str) -> bool:
                 expect_command = True
                 prefix_pending = False
                 scan_forward = False
+                current_command = ""
+                git_subcommand = ""
                 continue
             if token.startswith("-"):
+                flag = token.split("=", 1)[0]
+                # An interpreter running inline code (python -c, node -e, perl -E)
+                # executes an arbitrary program the terminal path never screens.
+                if current_command in _INLINE_CODE_INTERPRETERS and flag in _INLINE_CODE_FLAGS:
+                    return True
+                # git reset --hard discards the working tree; git push --force
+                # overwrites a remote ref.
+                if current_command == "git":
+                    if git_subcommand == "reset" and flag in _HIGH_RISK_GIT_RESET_FLAGS:
+                        return True
+                    if git_subcommand == "push" and flag in _HIGH_RISK_GIT_PUSH_FLAGS:
+                        return True
                 continue
             if _ASSIGNMENT_RE.match(token):
                 # PATH/LD_PRELOAD-style assignments hijack command lookup/loading.
@@ -2679,6 +2734,14 @@ def _terminal_is_high_risk(command: str) -> bool:
                     return True
                 if base in _HIGH_RISK_FORWARDING_COMMANDS:
                     scan_forward = True
+                # Remember the resolved command so its own flags (python -c) and
+                # git subcommand (git clean) can be judged as they follow.
+                current_command = base
+            elif current_command == "git" and not git_subcommand:
+                # The first positional after `git` is its subcommand.
+                git_subcommand = base
+                if base in _HIGH_RISK_GIT_SUBCOMMANDS:
+                    return True
             expect_command = False
             prefix_pending = False
     return False
@@ -2720,10 +2783,17 @@ def _python_is_high_risk(code: str) -> bool:
                 name = func.attr
         if name not in ("exec", "eval", "compile", "__import__"):
             continue
-        first = node.args[0] if node.args else None
-        if first is None:
+        # The source is the first positional, or the source=/name= keyword when
+        # called by keyword (compile(source=x), importlib.import_module(name=x)).
+        arg = node.args[0] if node.args else None
+        if arg is None:
+            for kw in node.keywords:
+                if kw.arg in ("source", "name"):
+                    arg = kw.value
+                    break
+        if arg is None:
             continue
-        if isinstance(first, ast.Constant) and isinstance(first.value, (str, bytes)):
+        if isinstance(arg, ast.Constant) and isinstance(arg.value, (str, bytes)):
             continue  # a literal source string is harmless
         return True
     return False
@@ -2748,9 +2818,14 @@ def is_high_risk_tool_call(name: str, arguments: dict) -> bool:
         return _render_html_reaches_network(arguments)
     if name.startswith(MCP_TOOL_PREFIX):
         tool_name = name.split("__", 2)[-1]
-        # A credential noun (read_secret, list_tokens) discloses secrets, and a
-        # read/write pointed at a sensitive path is a sensitive access; both
-        # prompt. Ordinary create/update/delete MCP calls run in auto.
+        # An execution tool (run_command, execute_script, eval_code, shell) runs
+        # arbitrary commands on the MCP server, outside the terminal sandbox, so
+        # it is gated like a terminal call. A credential noun (read_secret,
+        # list_tokens) discloses secrets, and a read/write pointed at a sensitive
+        # path is a sensitive access; all prompt. Ordinary create/update/delete
+        # MCP calls run in auto.
+        if _AUTO_EXEC_MCP_TOOL_RE.search(tool_name):
+            return True
         if _AUTO_SENSITIVE_MCP_NOUN_RE.search(tool_name):
             return True
         if _mcp_arguments_reference_sensitive(arguments):

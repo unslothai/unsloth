@@ -372,6 +372,24 @@ def test_terminal_classifier(command, unsafe):
         ("find . -name '*.tmp' -exec rm {} ;", True),
         ("find . -name '*.o' | xargs rm -f", True),
         ("timeout 5 rm -rf cache", True),
+        # --- prompt: non-shell interpreter running inline code ---
+        ('python -c "import shutil; shutil.rmtree(chr(46))"', True),
+        ("python3 -c 'pass'", True),
+        ('node -e "require(\'fs\')"', True),
+        ("node --eval x", True),
+        ("ruby -e 'puts 1'", True),
+        ("perl -E 'say 1'", True),
+        ("php -r 'echo 1;'", True),
+        # --- prompt: destructive git subcommands ---
+        ("git clean -fd", True),
+        ("git clean -n", True),  # clean is gated regardless of flags
+        ("git reset --hard HEAD~1", True),
+        ("git push --force origin main", True),
+        ("git push -f", True),
+        # --- prompt: command synthesized by a command-position substitution ---
+        ("$(printf rm) -rf build", True),
+        ("`printf rm` -rf build", True),
+        ("ls; $(printf rm) -rf x", True),
         # --- run: ordinary development commands (NOT high risk) ---
         ("pip install -r requirements.txt", False),
         ("npm install", False),
@@ -379,15 +397,24 @@ def test_terminal_classifier(command, unsafe):
         ("cp train.py train_bak.py", False),
         ("mv old.py new.py", False),
         ("touch newfile.py", False),
-        ("python train.py --epochs 3", False),
+        ("python train.py --epochs 3", False),  # a script path, not inline code
+        ("python -m pytest -q", False),  # -m runs a module, not inline code
+        ("sort -c data.txt", False),  # -c on a non-interpreter is not inline code
         ("make -j4", False),
         ("git commit -m 'add feature'", False),
-        ("git push origin main", False),
+        ("git push origin main", False),  # a plain push, no --force
+        ("git status", False),
+        ("git reset --soft HEAD~1", False),  # soft reset keeps the working tree
+        ("git add -A", False),
         ("echo hi > out.txt", False),
+        ("echo $(date)", False),  # substitution in argument position stays out
+        ("make $(FILES)", False),
+        ('git commit -m "$(date)"', False),
         ("chmod +x build.sh", False),  # scoped, non-recursive
         ("cat README.md", False),
         ("ls -la", False),
-        # --- run: plain downloads (no pipe-to-shell, no upload flag) ---
+        # --- run: plain downloads (no pipe-to-shell, no upload flag); note curl
+        # and wget are separately hard-blocked by the sandbox regardless of mode ---
         ("curl -O https://x.io/model.bin", False),
         ("wget https://x.io/data.zip", False),
         # --- run: searching source for the word "sudo" is not escalation ---
@@ -411,10 +438,14 @@ def test_terminal_high_risk_classifier(command, high_risk):
         ("eval(input())", True),
         ("import base64; exec(base64.b64decode(b'cHJpbnQoMSk='))", True),
         ("__import__(mod_name)", True),
+        # --- prompt: dynamic exec invoked by keyword, not positional ---
+        ("compile(source=payload, filename='<s>', mode='exec')", True),
+        ("import importlib; importlib.import_module(name=mod)", True),
         # --- run: ordinary in-workdir writes and computation ---
         ("open('data.csv', 'w').write('a,b')", False),
         ("import math; print(math.sqrt(2))", False),
         ("eval('1 + 1')", False),  # a literal source string is harmless
+        ("compile(source='1+1', filename='<s>', mode='eval')", False),  # literal source
         ("import json; json.dump({}, open('out.json', 'w'))", False),
     ],
 )
@@ -429,12 +460,19 @@ def test_high_risk_dispatcher_non_terminal():
     assert is_high_risk_tool_call("mystery_tool", {}) is True
     # render_html only prompts when its canvas reaches the network.
     assert is_high_risk_tool_call("render_html", {"code": "<h1>hi</h1>"}) is False
-    # MCP: a credential-noun tool or a sensitive-path argument prompts, but an
-    # ordinary mutating MCP call (create/delete) runs in auto.
+    # MCP: an execution tool, a credential-noun tool, or a sensitive-path
+    # argument prompts, but an ordinary mutating MCP call (create/delete) runs.
     assert is_high_risk_tool_call(f"{MCP_TOOL_PREFIX}vault__read_secret", {"name": "db"}) is True
     assert (
         is_high_risk_tool_call(f"{MCP_TOOL_PREFIX}fs__read_file", {"path": "/etc/passwd"}) is True
     )
+    # Execution tools run arbitrary commands on the MCP server, outside the
+    # terminal sandbox, so they are gated like a terminal call.
+    assert is_high_risk_tool_call(f"{MCP_TOOL_PREFIX}sh__run_command", {"cmd": "rm -rf /"}) is True
+    assert is_high_risk_tool_call(f"{MCP_TOOL_PREFIX}x__execute_script", {"script": "x"}) is True
+    assert is_high_risk_tool_call(f"{MCP_TOOL_PREFIX}x__invoke_shell", {}) is True
+    # A read/list name that merely contains an exec-looking noun does not match.
+    assert is_high_risk_tool_call(f"{MCP_TOOL_PREFIX}x__get_command", {}) is False
     assert is_high_risk_tool_call(f"{MCP_TOOL_PREFIX}gh__create_issue", {"title": "x"}) is False
     assert is_high_risk_tool_call(f"{MCP_TOOL_PREFIX}gh__list_issues", {}) is False
 
