@@ -38,11 +38,25 @@ from loggers import get_logger
 
 logger = get_logger(__name__)
 
-# Base-model pickle weights (plain or sharded) that execute code when a load deserializes
-# them; safetensors/gguf are inert (tensor-only) and never match. This scopes the offline
-# fail-closed gate to the actual RCE vector.
+# Pickle-format weight files (plain or sharded) that execute code when a load deserializes
+# them; safetensors/gguf are inert (tensor-only). Grouped by weight family so an inert
+# safetensors only suppresses the pickle it actually replaces (below): the base loader will
+# not use an adapter's safetensors in place of pytorch_model.bin, and vice versa.
 _PICKLE_WEIGHT_RE = re.compile(
-    r"^(model|pytorch_model)(-\d+-of-\d+)?\.(bin|pt|pth|ckpt|pkl|pickle)$",
+    r"^(model|pytorch_model|adapter_model|consolidated)(-\d+-of-\d+)?"
+    r"\.(bin|pt|pth|ckpt|pkl|pickle)$",
+    re.IGNORECASE,
+)
+# Base-model safetensors weight set. HF saves the torch pickle as ``pytorch_model.bin`` but the
+# safetensors as ``model.safetensors`` (the stems differ), so a base pickle is inert-replaced by
+# ``model.safetensors``, its shards, or the sharded index -- not by an adapter's safetensors.
+_BASE_SAFETENSORS_RE = re.compile(
+    r"^(model(-\d+-of-\d+)?\.safetensors|model\.safetensors\.index\.json)$",
+    re.IGNORECASE,
+)
+# Adapter (PEFT) safetensors weight set: ``adapter_model.safetensors``, its shards, or index.
+_ADAPTER_SAFETENSORS_RE = re.compile(
+    r"^(adapter_model(-\d+-of-\d+)?\.safetensors|adapter_model\.safetensors\.index\.json)$",
     re.IGNORECASE,
 )
 
@@ -276,23 +290,37 @@ def _fetch_security_status(model_name: str, hf_token: Optional[str]):
 
 
 def _cached_pickle_weight_files(snapshot: Path) -> list:
-    """Pickle-format weight files under ``snapshot`` that a load would deserialize, skipping
-    any directory that also ships a ``*.safetensors`` (the load prefers the inert weight). A
-    single filesystem walk. Raises ``OSError`` if the snapshot cannot be read (caller blocks).
+    """Pickle-format weight files under ``snapshot`` a load would deserialize, EXCLUDING those
+    whose own weight family also ships an inert ``safetensors`` in the same directory (the load
+    prefers the safetensors). A base pickle (``pytorch_model.bin`` / ``model.bin`` /
+    ``consolidated``) is suppressed only by a base ``model.safetensors`` weight; an
+    ``adapter_model`` pickle only by an ``adapter_model.safetensors`` -- an unrelated safetensors
+    is not a substitute the loader would pick. A single filesystem walk. Raises ``OSError`` if
+    the snapshot cannot be read (caller blocks).
     """
-    dirs_with_safetensors = set()
-    candidates = []
+    base_safetensors_dirs = set()
+    adapter_safetensors_dirs = set()
+    pickles = []
     for path in snapshot.rglob("*"):
         try:
             if not path.is_file():
                 continue
         except OSError:
             continue
-        if path.name.lower().endswith(".safetensors"):
-            dirs_with_safetensors.add(path.parent)
-        elif _PICKLE_WEIGHT_RE.match(path.name):
-            candidates.append(path)
-    return [p for p in candidates if p.parent not in dirs_with_safetensors]
+        name = path.name
+        if _BASE_SAFETENSORS_RE.match(name):
+            base_safetensors_dirs.add(path.parent)
+        elif _ADAPTER_SAFETENSORS_RE.match(name):
+            adapter_safetensors_dirs.add(path.parent)
+        elif _PICKLE_WEIGHT_RE.match(name):
+            pickles.append(path)
+    blocked = []
+    for path in pickles:
+        is_adapter = path.name.lower().startswith("adapter_model")
+        safe_dirs = adapter_safetensors_dirs if is_adapter else base_safetensors_dirs
+        if path.parent not in safe_dirs:
+            blocked.append(path)
+    return blocked
 
 
 def _evaluate_local_only(model_name: str) -> FileSecurityDecision:
@@ -327,7 +355,10 @@ def _evaluate_local_only(model_name: str) -> FileSecurityDecision:
             model_name, False, reason = "offline; cached weights are inert (safetensors/gguf)"
         )
 
-    names = ", ".join(sorted(p.name for p in pickles))
+    # Report snapshot-relative posix paths (matching the online gate, and disambiguating a
+    # same-named pickle in different module dirs).
+    rel_paths = sorted(p.relative_to(snapshot).as_posix() for p in pickles)
+    names = ", ".join(rel_paths)
     logger.warning(
         "Blocking offline load of '%s': cached pickle weight(s) cannot be malware-scanned "
         "offline and have no safetensors alternative (%s).",
@@ -337,7 +368,7 @@ def _evaluate_local_only(model_name: str) -> FileSecurityDecision:
     return FileSecurityDecision(
         model_name,
         True,
-        unsafe_files = [{"path": p.name, "level": "unscanned"} for p in pickles],
+        unsafe_files = [{"path": rel, "level": "unscanned"} for rel in rel_paths],
         reason = f"offline; unscanned pickle weights with no safetensors alternative: {names}",
     )
 

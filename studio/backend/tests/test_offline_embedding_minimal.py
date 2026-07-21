@@ -14,6 +14,7 @@ assert that, offline:
 Online behavior is unchanged: a bounded ``model_info`` timeout with a local-cache fallback.
 """
 
+import os
 import sys
 import types
 from pathlib import Path
@@ -292,6 +293,49 @@ def test_gate_allows_pickle_in_subdir_with_safetensors(hf_cache):
         assert _offline_decision("org/mod2").blocked is False
 
 
+def test_gate_blocks_adapter_pickle_without_safetensors(hf_cache):
+    _make_cache(hf_cache, "org/ad", {"config.json": "{}", "adapter_model.bin": "x"})
+    with _no_network():
+        decision = _offline_decision("org/ad")
+    assert decision.blocked is True
+    assert any(u["path"] == "adapter_model.bin" for u in decision.unsafe_files)
+
+
+def test_gate_allows_adapter_pickle_with_adapter_safetensors(hf_cache):
+    _make_cache(
+        hf_cache, "org/ad2", {"adapter_model.bin": "x", "adapter_model.safetensors": "y"}
+    )
+    with _no_network():
+        assert _offline_decision("org/ad2").blocked is False
+
+
+def test_gate_blocks_base_pickle_with_only_adapter_safetensors_decoy(hf_cache):
+    # A decoy adapter_model.safetensors must NOT suppress a base pytorch_model.bin: the base
+    # loader would still deserialize the unscanned pickle.
+    _make_cache(
+        hf_cache, "org/decoy", {"pytorch_model.bin": "x", "adapter_model.safetensors": "y"}
+    )
+    with _no_network():
+        assert _offline_decision("org/decoy").blocked is True
+
+
+def test_gate_blocks_adapter_pickle_with_only_base_safetensors_decoy(hf_cache):
+    # Symmetric: a base model.safetensors must NOT suppress an adapter_model.bin.
+    _make_cache(
+        hf_cache, "org/decoy2", {"adapter_model.bin": "x", "model.safetensors": "y"}
+    )
+    with _no_network():
+        assert _offline_decision("org/decoy2").blocked is True
+
+
+def test_gate_reports_snapshot_relative_path(hf_cache):
+    _make_cache(hf_cache, "org/mod3", {"0_Transformer/pytorch_model.bin": "x"})
+    with _no_network():
+        decision = _offline_decision("org/mod3")
+    assert decision.blocked is True
+    assert any(u["path"] == "0_Transformer/pytorch_model.bin" for u in decision.unsafe_files)
+
+
 # ── evaluate_file_security: online path unchanged ────────────────
 
 
@@ -336,29 +380,25 @@ def test_guard_offline_allows_safetensors(hf_cache):
 
 def _install_fake_sentence_transformers(monkeypatch, captured):
     class FakeSentenceTransformer:
-        def __init__(
-            self,
-            name,
-            *,
-            device = None,
-            model_kwargs = None,
-            local_files_only = False,
-            **kw,
-        ):
+        def __init__(self, name, *, device = None, model_kwargs = None, **kw):
             captured["name"] = name
             captured["device"] = device
-            captured["local_files_only"] = local_files_only
+            # Snapshot the env the load actually sees, to prove the offline force is active.
+            captured["hf_hub_offline"] = os.environ.get("HF_HUB_OFFLINE")
 
     module = types.ModuleType("sentence_transformers")
     module.SentenceTransformer = FakeSentenceTransformer
     monkeypatch.setitem(sys.modules, "sentence_transformers", module)
 
 
-def test_get_offline_threads_local_files_only(hf_cache, monkeypatch):
+def test_get_offline_forces_hub_offline_during_load(hf_cache, monkeypatch):
     from core.rag import embeddings
 
     _make_cache(hf_cache, "org/st", {"modules.json": MODULES_JSON, "model.safetensors": "x"})
-    monkeypatch.setenv("HF_HUB_OFFLINE", "1")
+    # TRANSFORMERS_OFFLINE only (huggingface_hub ignores it) -> the load must still be forced
+    # local via HF_HUB_OFFLINE, which works on any sentence-transformers version.
+    monkeypatch.setenv("TRANSFORMERS_OFFLINE", "1")
+    monkeypatch.delenv("HF_HUB_OFFLINE", raising = False)
     monkeypatch.setattr(embeddings, "_model", None, raising = False)
     monkeypatch.setattr(embeddings, "_name", None, raising = False)
     monkeypatch.setattr(embeddings, "_install_torchao_stub_once", lambda: None)
@@ -368,12 +408,15 @@ def test_get_offline_threads_local_files_only(hf_cache, monkeypatch):
     with _no_network():
         embeddings._get("org/st")
     assert captured["name"] == "org/st"
-    assert captured["local_files_only"] is True
+    assert captured["hf_hub_offline"] == "1"  # forced local during the load
+    assert "HF_HUB_OFFLINE" not in os.environ  # and restored afterward (was unset)
 
 
-def test_get_online_omits_local_files_only(monkeypatch):
+def test_get_online_does_not_force_offline(monkeypatch):
     from core.rag import embeddings
 
+    monkeypatch.delenv("HF_HUB_OFFLINE", raising = False)
+    monkeypatch.delenv("TRANSFORMERS_OFFLINE", raising = False)
     monkeypatch.setattr(embeddings, "_model", None, raising = False)
     monkeypatch.setattr(embeddings, "_name", None, raising = False)
     monkeypatch.setattr(embeddings, "_install_torchao_stub_once", lambda: None)
@@ -383,4 +426,4 @@ def test_get_online_omits_local_files_only(monkeypatch):
     captured = {}
     _install_fake_sentence_transformers(monkeypatch, captured)
     embeddings._get("org/online")
-    assert captured["local_files_only"] is False
+    assert captured["hf_hub_offline"] is None  # not forced offline
