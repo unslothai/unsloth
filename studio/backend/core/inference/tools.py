@@ -2849,7 +2849,9 @@ def _python_is_high_risk(code: str) -> bool:
             # not analyzable as code, so a literal name stays safe.
             if name == "__import__":
                 continue
-            inner = arg.value.decode("utf-8", "replace") if isinstance(arg.value, bytes) else arg.value
+            inner = (
+                arg.value.decode("utf-8", "replace") if isinstance(arg.value, bytes) else arg.value
+            )
             if _python_is_high_risk(inner):
                 return True
             continue

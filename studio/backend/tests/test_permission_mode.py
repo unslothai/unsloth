@@ -458,7 +458,7 @@ def test_terminal_high_risk_classifier(command, high_risk):
         ("import importlib; importlib.import_module(name=mod)", True),
         # --- prompt: a literal exec source is screened for what it runs ---
         ("exec(\"import urllib.request; urllib.request.urlopen('http://x')\")", True),
-        ("exec('import subprocess; subprocess.run([\"sudo\", \"x\"])')", True),
+        ('exec(\'import subprocess; subprocess.run(["sudo", "x"])\')', True),
         # --- run: literal exec of safe code, and a literal import name ---
         ("exec('total = 1 + 2')", False),  # a literal source that runs safe code
         ("exec(\"open('out.txt', 'w').write('hi')\")", False),  # in-workdir write
