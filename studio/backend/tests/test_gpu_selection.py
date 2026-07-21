@@ -1045,6 +1045,7 @@ class TestRouteErrors(unittest.TestCase):
         # "not supported for GGUF" rejection. Patch the validator so the test
         # is deterministic regardless of the host's (or a prior test's) GPU env.
         import utils.hardware.hardware as hardware_mod
+        import utils.hardware as hardware_pkg
 
         inference_route = _load_route_module(
             "inference_route_module_for_gguf_gpu_ids_test2",
@@ -1090,6 +1091,16 @@ class TestRouteErrors(unittest.TestCase):
             ),
             patch.object(inference_route.asyncio, "to_thread", new = _inline_to_thread),
             patch.object(inference_route, "_hf_offline_if_dns_dead", nullcontext),
+            # Pin the device so the test deterministically exercises the CUDA
+            # physical-ID resolver it patches, rather than drifting into the
+            # non-CUDA/Vulkan deferral branch on a GPU-less runner (whose
+            # "no GPU backend detected" message contains "not supported").
+            patch.object(hardware_pkg, "get_device", return_value = hardware_pkg.DeviceType.CUDA),
+            patch.object(
+                hardware_mod,
+                "resolve_requested_gpu_ids",
+                side_effect = ValueError("Invalid gpu_ids [0, 1]: rejected by test"),
+            ),
         ):
             with self.assertRaises(HTTPException) as exc_info:
                 asyncio.run(
