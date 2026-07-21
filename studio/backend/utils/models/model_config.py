@@ -1704,17 +1704,45 @@ def resolve_st_cached_repo_id_case(repo_id: str) -> str:
     return name[len(prefix) :].replace("--", "/")
 
 
+_ORIGINAL_TRANSFORMER_MODELS_CACHE: Optional[frozenset] = None
+
+
+def _original_transformer_models() -> frozenset:
+    """The lowercased ``ORIGINAL_TRANSFORMER_MODELS`` list SentenceTransformer treats as plain HF
+    models: these slashless names load BARE, while every OTHER slashless name is rewritten to the
+    ``sentence-transformers/`` org. Imported once and memoized; an import failure yields an empty
+    set, so every slashless name then resolves to the namespaced org -- the constructor's dominant
+    behavior."""
+    global _ORIGINAL_TRANSFORMER_MODELS_CACHE
+    if _ORIGINAL_TRANSFORMER_MODELS_CACHE is None:
+        try:
+            from sentence_transformers.util import ORIGINAL_TRANSFORMER_MODELS
+
+            _ORIGINAL_TRANSFORMER_MODELS_CACHE = frozenset(
+                str(m).lower() for m in ORIGINAL_TRANSFORMER_MODELS
+            )
+        except Exception:
+            _ORIGINAL_TRANSFORMER_MODELS_CACHE = frozenset()
+    return _ORIGINAL_TRANSFORMER_MODELS_CACHE
+
+
 def _st_repo_id_candidates(repo_id: str) -> list[str]:
     """Repo ids the ST loader could resolve *repo_id* to, in the order it tries them.
 
-    A slashless short name like ``all-MiniLM-L6-v2`` is a supported Sentence Transformers
-    alias: the loader falls back to the ``sentence-transformers/`` organization, so the
-    snapshot is cached under ``models--sentence-transformers--all-MiniLM-L6-v2``. Probing
-    only the bare name would report a cache miss -- a 409 offline -- for a model that is
-    cached and loadable."""
+    Mirrors the SentenceTransformer constructor: a slashless short name like ``all-MiniLM-L6-v2`` is
+    rewritten to ``sentence-transformers/<name>`` and loaded from THERE (never the bare id), UNLESS
+    it is one of the basic transformer models (``ORIGINAL_TRANSFORMER_MODELS``, e.g.
+    ``bert-base-uncased``), which load bare. The local-only security gate must inspect the SAME
+    snapshot the constructor loads, so the constructor's target is tried FIRST; the other spelling
+    stays only as a defensive fallback for an unusually laid-out cache. Probing the bare name first
+    would let a pickle in ``models--sentence-transformers--<name>`` -- the dir the constructor
+    actually loads -- slip the gate when a bare ``models--<name>`` also exists."""
     if "/" in repo_id:
         return [repo_id]
-    return [repo_id, f"sentence-transformers/{repo_id}"]
+    namespaced = f"sentence-transformers/{repo_id}"
+    if repo_id.lower() in _original_transformer_models():
+        return [repo_id, namespaced]  # a basic transformer model loads bare
+    return [namespaced, repo_id]  # the constructor rewrites a non-basic slashless name to the org
 
 
 def _st_cache_repo_dir(repo_id: str) -> Optional[Path]:
@@ -2936,6 +2964,7 @@ def is_embedding_model(model_name: str, hf_token: Optional[str] = None) -> bool:
         snapshot = _active_snapshot_dir(model_name)
         if (
             snapshot is not None
+            and not (snapshot / "modules.json").is_file()
             and _known_embedder(model_name, cache_key, _active_commit(model_name))
             and _snapshot_has_complete_weights(snapshot)
         ):

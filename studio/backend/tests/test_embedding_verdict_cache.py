@@ -312,6 +312,46 @@ def test_sharded_index_not_credited_in_non_transformer_submodule(home, tmp_path,
     assert _blocked(monkeypatch, snap) is True
 
 
+def test_router_child_escaping_router_dir_but_in_snapshot_blocks(home, tmp_path, monkeypatch):
+    # Router.load resolves each child at Path(subfolder, model_id): a nested 1_Router with a
+    # "../evil" child points at evil/ INSIDE the snapshot, which the loader deserializes. The gate
+    # must scan evil/ as a load root, not drop the child for escaping the router dir.
+    snap = _snap(
+        tmp_path,
+        {
+            "modules.json": json.dumps(
+                [{"path": "1_Router", "type": "sentence_transformers.models.Router.Router"}]
+            ),
+            "1_Router/router_config.json": json.dumps(
+                {"types": {"../evil": "sentence_transformers.models.WordEmbeddings.WordEmbeddings"}}
+            ),
+            "evil/pytorch_model.bin": b"pickle",
+        },
+        commit = "crte",
+    )
+    assert _blocked(monkeypatch, snap) is True
+
+
+def test_router_child_escaping_snapshot_blocks(home, tmp_path, monkeypatch):
+    # A ROOT Router (subfolder "") with a "../evil" child resolves OUTSIDE the snapshot; the local
+    # loader would follow it out of the cache, so the gate fails closed even though the snapshot's
+    # own weights are inert safetensors.
+    snap = _snap(
+        tmp_path,
+        {
+            "modules.json": json.dumps(
+                [{"path": "", "type": "sentence_transformers.models.Router.Router"}]
+            ),
+            "router_config.json": json.dumps(
+                {"types": {"../evil": "sentence_transformers.models.WordEmbeddings.WordEmbeddings"}}
+            ),
+            "model.safetensors": b"\0",
+        },
+        commit = "crse",
+    )
+    assert _blocked(monkeypatch, snap) is True
+
+
 def test_index_shard_escaping_snapshot_blocks(home, tmp_path, monkeypatch):
     # A weight index whose weight_map points OUT of the snapshot ("../..") must fail closed, not be
     # followed: offline from_pretrained would resolve it on disk and deserialize an out-of-snapshot

@@ -430,14 +430,21 @@ def _dir_has_loadable_safetensors(files: dict, honors_sharded_index: bool = Fals
     return False
 
 
-def _router_child_dirs(root) -> set:
+def _router_child_dirs(root, snap) -> set:
     """Child sub-module directories a SentenceTransformer ``Router`` (legacy ``Asym``) at *root*
     deserializes. A Router declares its children only in ``router_config.json`` (``types`` maps
     ``{route}_{idx}_{ClassName}`` -> module class), NOT in the top-level ``modules.json``, and
-    ``Router.load()`` calls ``module_class.load(subfolder=model_id)`` on each. A child such as
-    ``query_0_WordEmbeddings/`` holds ``wordembedding_config.json`` + ``pytorch_model.bin`` and no
-    ``config.json``, so its pickle is still deserialized and its dir must be a load root. Returns
-    an empty set when there is no readable router config."""
+    ``Router.load()`` loads each from ``Path(subfolder, model_id)`` -- the child ``model_id``
+    resolved RELATIVE TO the Router dir *root*. A child such as ``query_0_WordEmbeddings/`` holds
+    ``wordembedding_config.json`` + ``pytorch_model.bin`` and no ``config.json``, so its pickle is
+    still deserialized and its dir must be a load root.
+
+    A ``model_id`` may use ``..`` to point at a SIBLING dir that is still inside the snapshot
+    (``1_Router`` + ``../evil`` -> ``evil/``): the local loader follows it and deserializes
+    ``evil/pytorch_model.bin``, so it is canonicalized against the SNAPSHOT (not the Router dir) and
+    retained as a load root. A child that escapes the snapshot ITSELF (a root Router with
+    ``../evil``) is a traversal the local loader would follow out of the cache, so it fails closed
+    (:class:`_SnapshotEscapeError`). Returns an empty set when there is no readable router config."""
     import json
 
     try:
@@ -447,12 +454,19 @@ def _router_child_dirs(root) -> set:
     if not isinstance(config, dict):
         return set()
     types = config.get("types")
+    if not isinstance(types, dict):
+        return set()
+    try:
+        root_rel = root.relative_to(snap).as_posix()
+    except ValueError:
+        return set()  # a Router dir not under the snapshot (should not happen) -> scan nothing
     children: set = set()
-    if isinstance(types, dict):
-        for model_id in types:
-            child = _canonical_load_dir(root, str(model_id))
-            if child is not None:
-                children.add(child)
+    for model_id in types:
+        combined = str(model_id) if root_rel in ("", ".") else root_rel + "/" + str(model_id)
+        child_rel = _canonical_rel(combined)
+        if child_rel is None:
+            raise _SnapshotEscapeError(f"router child escapes the snapshot: {str(model_id)!r}")
+        children.add(snap.joinpath(*child_rel.split("/")))
     return children
 
 
@@ -481,12 +495,13 @@ def _st_load_roots(snap, load_subdirs = ()) -> set:
     # A Router/Asym module declares its child sub-modules in router_config.json, not modules.json,
     # and Router.load() deserializes each child's weights from its own subdir. Treat those child
     # dirs as load roots too so a pickle in a config.json-less child (e.g.
-    # query_0_WordEmbeddings/pytorch_model.bin) is scanned. Bounded BFS: every child is a strict
-    # subpath and a visited set stops any cycle; scanning extra dirs only tightens the gate.
+    # query_0_WordEmbeddings/pytorch_model.bin) is scanned. Bounded BFS: each child canonicalizes to
+    # an in-snapshot dir and a visited set (roots) stops any cycle; the finite set of in-snapshot
+    # dirs bounds it. Scanning extra dirs only tightens the gate.
     pending = list(roots)
     while pending:
         current = pending.pop()
-        for child in _router_child_dirs(current):
+        for child in _router_child_dirs(current, snap):
             if child not in roots:
                 roots.add(child)
                 pending.append(child)
@@ -527,12 +542,13 @@ def _transformer_load_roots(snap) -> set:
     return roots
 
 
-class _EscapingShardError(OSError):
-    """A weight-index ``weight_map`` value resolves OUTSIDE the snapshot (a repo-controlled ``../``
-    traversal). Subclasses ``OSError`` so the offline caller's existing fail-closed enumeration
-    handler blocks the load; raised instead of following the path, because offline the loader would
-    resolve it on the local filesystem and an online load would hash+record an out-of-snapshot file
-    as this commit's clean content."""
+class _SnapshotEscapeError(OSError):
+    """A repo-controlled load path -- a weight-index ``weight_map`` value or a ``Router``
+    ``router_config.json`` child -- resolves OUTSIDE the snapshot via a ``../`` traversal.
+    Subclasses ``OSError`` so the offline caller's fail-closed enumeration handler blocks the load;
+    raised instead of following the path, because offline the loader resolves it on the local
+    filesystem (reading an out-of-snapshot pickle) and an online load would hash+record that
+    external file as this commit's clean content."""
 
 
 def _cached_pickle_weight_paths(snap, load_subdirs = ()) -> list:
@@ -628,7 +644,7 @@ def _cached_pickle_weight_paths(snap, load_subdirs = ()) -> list:
             combined = shard_rel if root_rel in ("", ".") else root_rel + "/" + shard_rel
             shard_canon = _canonical_rel(combined)
             if shard_canon is None:
-                raise _EscapingShardError(
+                raise _SnapshotEscapeError(
                     f"weight index maps a shard outside the snapshot: {shard_rel!r}"
                 )
             shard = snap.joinpath(*shard_canon.split("/"))
@@ -751,14 +767,15 @@ def _evaluate_local_only(model_name: str, load_subdirs = ()) -> "FileSecurityDec
 
     try:
         paths = _cached_pickle_weight_paths(snap, load_subdirs)
-    except _EscapingShardError as exc:
-        # A weight index maps a shard outside the snapshot (a "../" traversal). Following it would
-        # deserialize an out-of-snapshot pickle, so refuse the load outright.
+    except _SnapshotEscapeError as exc:
+        # A repo-controlled load path (weight-index shard or Router child) resolves outside the
+        # snapshot via "../". Following it would deserialize an out-of-snapshot pickle, so refuse
+        # the load outright.
         logger.warning("Blocking offline load of '%s': %s; cannot verify.", model_name, exc)
         return FileSecurityDecision(
             model_name,
             True,
-            reason = "offline; a weight index maps a shard outside the snapshot, cannot verify",
+            reason = "offline; a cached load path resolves outside the snapshot, cannot verify",
         )
     except OSError:
         # The cache tree could not be fully enumerated: an undiscovered pickle might exist, so a

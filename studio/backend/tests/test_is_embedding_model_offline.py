@@ -1384,6 +1384,43 @@ def test_offline_tag_only_fallback_skipped_when_modules_json_present(tmp_path, m
     assert mc.is_embedding_model("org/emb") is False
 
 
+def test_transient_tag_only_fallback_skipped_when_modules_json_present(tmp_path, monkeypatch):
+    # #7218: the TRANSIENT-Hub-failure tag-only fallback must mirror the offline branch and run ONLY
+    # when modules.json is ABSENT. With a present-but-unloadable modules.json ("[]") the loader takes
+    # the modules.json path and never falls back to the root weights, so a known embedder with a
+    # complete root weight set is still not loadable. Pre-fix the ungated transient fallback fired on
+    # the same commit + complete weights and returned True, then the local-only load 409'd.
+    monkeypatch.setattr(mc, "_load_persisted_embedders", lambda: {"org/emb": "commit_a"})
+    monkeypatch.setattr(mc, "_persist_embedder", lambda name, commit: None)
+    _tag_only_repo(tmp_path, monkeypatch, "commit_a", modules_json = "[]")
+
+    def _transient(model_name, token = None, **kwargs):
+        raise OSError("Temporary failure in name resolution")  # non-permanent -> transient branch
+
+    _fake_hf_model_info(monkeypatch, _transient)
+    mc._embedding_detection_cache.clear()
+    assert mc.is_embedding_model("org/emb") is False
+
+
+def test_st_repo_id_candidates_prefers_namespaced_for_non_basic():
+    # The constructor rewrites a non-basic slashless name to sentence-transformers/<name> and loads
+    # THAT snapshot, so the gate must probe it first (probing the bare name first lets a pickle in
+    # the namespaced dir slip when a bare dir also exists). A slashed id is used verbatim.
+    assert (
+        mc._st_repo_id_candidates("all-MiniLM-L6-v2")[0]
+        == "sentence-transformers/all-MiniLM-L6-v2"
+    )
+    assert mc._st_repo_id_candidates("BAAI/bge-m3") == ["BAAI/bge-m3"]
+
+
+def test_st_repo_id_candidates_keeps_basic_model_bare(monkeypatch):
+    # A basic transformer model (ORIGINAL_TRANSFORMER_MODELS) is loaded bare by the constructor, so
+    # the bare id is tried first.
+    monkeypatch.setattr(mc, "_original_transformer_models", lambda: frozenset({"bert-base-uncased"}))
+    assert mc._st_repo_id_candidates("bert-base-uncased")[0] == "bert-base-uncased"
+    assert mc._st_repo_id_candidates("some-st-model")[0] == "sentence-transformers/some-st-model"
+
+
 def test_online_verdict_stops_applying_when_the_revision_advances(tmp_path, monkeypatch):
     # A verdict records that the Hub tagged ONE revision an embedder. Once refs/main
     # advances -- e.g. to a complete but non-embedding Transformer snapshot -- the old
