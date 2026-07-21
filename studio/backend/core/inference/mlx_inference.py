@@ -247,13 +247,31 @@ def _prompt_cache_max_bytes(recommended_gb = None):
     return PROMPT_CACHE_FALLBACK_BYTES
 
 
-def _kv_retains_full_prefix(cache):
+def _flatten_kv_entries(cache):
     for entry in cache:
-        window = getattr(entry, "max_size", None)
+        nested = getattr(entry, "caches", None)
+        if nested is None:
+            yield entry
+        else:
+            yield from _flatten_kv_entries(nested)
+
+
+def _kv_prefix_coverage(cache):
+    covered = None
+    for entry in _flatten_kv_entries(cache):
         offset = getattr(entry, "offset", None)
-        if window is not None and offset is not None and offset > window:
-            return False
-    return True
+        if offset is None:
+            return None
+        if getattr(entry, "start_position", 0):
+            return None
+        window = getattr(entry, "max_size", None)
+        if window is not None and offset > window:
+            return None
+        if covered is None:
+            covered = offset
+        elif covered != offset:
+            return None
+    return covered
 
 
 class _MLXPromptCacheHistory:
@@ -293,20 +311,19 @@ class _MLXPromptCacheHistory:
                 self._max_bytes / 1e9,
             )
             return
-        if not _kv_retains_full_prefix(cache):
-            logger.debug("MLX prompt cache: skipping windowed cache past its window")
+        covered = _kv_prefix_coverage(cache)
+        if covered is None:
+            logger.debug("MLX prompt cache: skipping cache with unverifiable prefix coverage")
             return
         tokens = list(tokens)
-        covered = next((entry.offset for entry in cache if hasattr(entry, "offset")), None)
-        if covered is not None:
-            if covered > len(tokens):
-                logger.debug(
-                    "MLX prompt cache: cache covers %d tokens but only %d were tracked",
-                    covered,
-                    len(tokens),
-                )
-                return
-            tokens = tokens[:covered]
+        if covered > len(tokens):
+            logger.debug(
+                "MLX prompt cache: cache covers %d tokens but only %d were tracked",
+                covered,
+                len(tokens),
+            )
+            return
+        tokens = tokens[:covered]
         if not tokens:
             return
         self._lru.insert_cache(key, tokens, cache)

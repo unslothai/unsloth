@@ -962,17 +962,27 @@ class _FakeLRUPromptCache:
         self.entries.setdefault(key, {})[tuple(tokens)] = copy.deepcopy(prompt_cache)
 
 
+class _FakeCacheEntry:
+    def __init__(
+        self,
+        offset = 0,
+        nbytes = 1,
+    ):
+        self.offset = offset
+        self.nbytes = nbytes
+
+
 def _install_fake_prompt_cache_api(monkeypatch, trimmable = True):
     from core.inference import mlx_inference
 
     def _make_prompt_cache(_model):
-        return [{"n": 0}]
+        return [_FakeCacheEntry()]
 
     def _can_trim_prompt_cache(_cache):
         return trimmable
 
     def _trim_prompt_cache(cache, num):
-        cache[0]["n"] = max(cache[0]["n"] - num, 0)
+        cache[0].offset = max(cache[0].offset - num, 0)
         return num
 
     monkeypatch.setattr(
@@ -1014,6 +1024,7 @@ def test_mlx_prompt_cache_never_returns_empty_remainder(monkeypatch):
     tokens = list(range(10))
     cache, rest = history.fetch(object(), "key", tokens)
     assert len(rest) == 10
+    cache[0].offset = len(tokens)
     history.insert("key", tokens, cache)
 
     _cache, rest = history.fetch(object(), "key", tokens)
@@ -1026,6 +1037,7 @@ def test_mlx_prompt_cache_never_returns_empty_remainder(monkeypatch):
     _install_fake_prompt_cache_api(monkeypatch, trimmable = False)
     history = _MLXPromptCacheHistory(6, 1 << 30)
     cache, _rest = history.fetch(object(), "key", tokens)
+    cache[0].offset = len(tokens)
     history.insert("key", tokens, cache)
     _cache, rest = history.fetch(object(), "key", tokens)
     assert rest == tokens, "untrimmable entry must not be reused"
@@ -1054,6 +1066,7 @@ def test_mlx_prompt_cache_key_isolates_adapter_state(monkeypatch):
     prompt = "shared prefix"
     _rest, cache, key, tokens, cached = backend._prepare_prompt_cache(prompt, True)
     assert cached == 0
+    cache[0].offset = len(tokens)
     backend._prompt_cache_history.insert(key, tokens, cache)
 
     _rest, _cache, _key, _tokens, cached_same = backend._prepare_prompt_cache(prompt, True)
@@ -1106,7 +1119,12 @@ def _install_fake_text_stack(
     def _stream_generate(_model, _tokenizer, **kwargs):
         captured.append(kwargs)
         processed = len(kwargs["prompt"])
+        cache = kwargs.get("prompt_cache")
+        if cache is not None:
+            cache[0].offset += processed
         for token in token_map["generated"]:
+            if cache is not None:
+                cache[0].offset += 1
             yield _Resp(token, processed)
 
     mlx_lm_pkg = _types.ModuleType("mlx_lm")
@@ -1241,15 +1259,11 @@ def test_mlx_prompt_cache_skips_entries_over_budget(monkeypatch):
     _install_fake_prompt_cache_api(monkeypatch)
     from core.inference.mlx_inference import _MLXPromptCacheHistory
 
-    class _Sized:
-        def __init__(self, nbytes):
-            self.nbytes = nbytes
-
     history = _MLXPromptCacheHistory(6, 1000)
-    history.insert("key", [1, 2, 3], [_Sized(400)])
+    history.insert("key", [1, 2, 3], [_FakeCacheEntry(offset = 3, nbytes = 400)])
     assert len(history._lru.entries.get("key", {})) == 1
 
-    history.insert("key", list(range(50)), [_Sized(5000)])
+    history.insert("key", list(range(50)), [_FakeCacheEntry(offset = 50, nbytes = 5000)])
     stored = history._lru.entries.get("key", {})
     assert tuple([1, 2, 3]) in stored
     assert tuple(range(50)) not in stored
@@ -1278,12 +1292,12 @@ def test_mlx_prompt_cache_keys_on_what_the_kv_covers(monkeypatch):
     assert "other" not in history._lru.entries
 
 
-def test_mlx_prompt_cache_skips_windowed_caches_past_their_window(monkeypatch):
+def test_mlx_prompt_cache_only_stores_verifiable_prefix_coverage(monkeypatch):
     mx = pytest.importorskip("mlx.core")
-    from mlx_lm.models.cache import KVCache, RotatingKVCache
+    from mlx_lm.models.cache import CacheList, ChunkedKVCache, KVCache, RotatingKVCache
 
     _install_fake_prompt_cache_api(monkeypatch)
-    from core.inference.mlx_inference import _MLXPromptCacheHistory, _kv_retains_full_prefix
+    from core.inference.mlx_inference import _kv_prefix_coverage, _MLXPromptCacheHistory
 
     def feed(entry, n):
         for _ in range(n):
@@ -1295,14 +1309,25 @@ def test_mlx_prompt_cache_skips_windowed_caches_past_their_window(monkeypatch):
     plain = feed(KVCache(), 30)
     unwrapped = feed(RotatingKVCache(max_size = 100, keep = 2), 30)
     wrapped = feed(RotatingKVCache(max_size = 10, keep = 2), 30)
+    chunked = feed(ChunkedKVCache(chunk_size = 8), 30)
+    slid = feed(ChunkedKVCache(chunk_size = 8), 30)
+    slid.maybe_trim_front()
 
-    assert _kv_retains_full_prefix([plain])
-    assert _kv_retains_full_prefix([unwrapped])
+    assert _kv_prefix_coverage([plain]) == 30
+    assert _kv_prefix_coverage([unwrapped]) == 30
+    assert _kv_prefix_coverage([chunked]) == 30
     assert wrapped.offset == 30 and wrapped.state[0].shape[2] == 10
-    assert not _kv_retains_full_prefix([wrapped])
+    assert _kv_prefix_coverage([wrapped]) is None
+    assert slid.start_position > 0
+    assert _kv_prefix_coverage([slid]) is None
+    assert _kv_prefix_coverage([CacheList(feed(KVCache(), 30), feed(KVCache(), 30))]) == 30
+    assert _kv_prefix_coverage([CacheList(feed(KVCache(), 30), wrapped)]) is None
+    assert _kv_prefix_coverage([feed(KVCache(), 30), feed(KVCache(), 29)]) is None
+    assert _kv_prefix_coverage([]) is None
 
     history = _MLXPromptCacheHistory(6, 1 << 40)
-    history.insert("key", list(range(30)), [wrapped])
+    for unsafe in (wrapped, slid):
+        history.insert("key", list(range(30)), [unsafe])
     assert "key" not in history._lru.entries
 
     history.insert("key", list(range(30)), [plain])
