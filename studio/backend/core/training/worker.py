@@ -2786,9 +2786,6 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
         try:
             _torch_lin = sys.modules.get("torch")
             if _torch_lin is not None and _torch_lin.cuda.is_available():
-                _lin_arch, _ = _rocm_classify_unified_memory(
-                    _torch_lin.cuda.get_device_properties(0)
-                )
                 # Prefer torch.version.hip, else the rocmX.Y embedded in
                 # torch.__version__ (AMD SDK / Radeon wheels leave version.hip
                 # unset). Unknown version on a recognized gfx120X ROCm build ->
@@ -2800,7 +2797,21 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
                     _hip_lt_713 = (int(_m.group(1)), int(_m.group(2))) < (7, 13)
                 else:
                     _hip_lt_713 = "rocmsdk" not in _ver
-                if _lin_arch.lower() in ("gfx1200", "gfx1201") and _hip_lt_713:
+                # Scan every visible GPU: device_map="balanced" can place layers
+                # on a later RDNA4 card, so device 0 alone is not enough. Match
+                # gfx120X by arch, or by RX 9000 / R9700 name when the wheel omits
+                # gcnArchName (name check only when arch is unknown).
+                _rdna4 = False
+                for _i in range(_torch_lin.cuda.device_count()):
+                    _props = _torch_lin.cuda.get_device_properties(_i)
+                    _lin_arch, _ = _rocm_classify_unified_memory(_props)
+                    _lin_name = (getattr(_props, "name", "") or "").lower()
+                    if _lin_arch.lower() in ("gfx1200", "gfx1201") or (
+                        not _lin_arch and re.search(r"rx\s*90[0-9]0|r9700", _lin_name)
+                    ):
+                        _rdna4 = True
+                        break
+                if _rdna4 and _hip_lt_713:
                     _WINDOWS_ROCM_GROUPED_MM_LIB = _install_grouped_mm_cpu_fallback(
                         _torch_lin, logger, "Linux ROCm gfx120X"
                     )
