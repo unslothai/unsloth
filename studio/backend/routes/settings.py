@@ -495,7 +495,6 @@ def update_embedding_model(
             # already cached and loadable, accept it rather than raising a 409 that online
             # would not -- SentenceTransformer can load any cached encoder. Uncached -> 409.
             from utils.utils import hf_cache_snapshot_dir
-
             offline_cached = local_only_load and hf_cache_snapshot_dir(model) is not None
             if not offline_cached:
                 raise HTTPException(
