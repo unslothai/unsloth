@@ -754,9 +754,7 @@ def _evaluate_local_only(model_name: str, load_subdirs = ()) -> "FileSecurityDec
     except _EscapingShardError as exc:
         # A weight index maps a shard outside the snapshot (a "../" traversal). Following it would
         # deserialize an out-of-snapshot pickle, so refuse the load outright.
-        logger.warning(
-            "Blocking offline load of '%s': %s; cannot verify.", model_name, exc
-        )
+        logger.warning("Blocking offline load of '%s': %s; cannot verify.", model_name, exc)
         return FileSecurityDecision(
             model_name,
             True,
