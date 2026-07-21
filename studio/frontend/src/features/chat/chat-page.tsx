@@ -37,6 +37,15 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
+import { Button } from "@/components/ui/button";
+import {
+  Dialog,
+  DialogContent,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
+import { Input } from "@/components/ui/input";
 import {
   ResizableHandle,
   ResizablePanel,
@@ -73,6 +82,7 @@ import {
   Folder02Icon,
   FolderExportIcon,
   LayoutAlignRightIcon,
+  MoreHorizontalIcon,
   MoreVerticalIcon,
   PinIcon,
   PinOffIcon,
@@ -113,7 +123,9 @@ import {
 import { useChatModelRuntime } from "./hooks/use-chat-model-runtime";
 import type { SelectedModelInput } from "./hooks/use-chat-model-runtime";
 import {
+  deleteChatProject,
   moveChatItemToProject,
+  renameChatProject,
   useChatProjects,
 } from "./hooks/use-chat-projects";
 import {
@@ -124,6 +136,7 @@ import {
   useChatSidebarItems,
 } from "./hooks/use-chat-sidebar-items";
 import { usePinnedChatsStore } from "./stores/pinned-chats-store";
+import { usePinnedProjectsStore } from "./stores/pinned-projects-store";
 import {
   clearTrainingCompareHandoff,
   getTrainingCompareHandoff,
@@ -1005,6 +1018,55 @@ function ProjectLanding({
     title: string;
   } | null>(null);
 
+  // Project-level options (the header kebab menu).
+  const pinnedProjectIds = usePinnedProjectsStore((s) => s.pinnedIds);
+  const togglePinProject = usePinnedProjectsStore((s) => s.togglePin);
+  const projectPinned = pinnedProjectIds.includes(projectId);
+  const [renamingProject, setRenamingProject] = useState(false);
+  const [projectNameDraft, setProjectNameDraft] = useState("");
+  const [deletingProject, setDeletingProject] = useState(false);
+
+  async function handleProjectExport(
+    format: ProjectChatExportFormat,
+  ): Promise<void> {
+    try {
+      const threads = await listStoredChatThreads({
+        projectId,
+        includeArchived: false,
+      });
+      const ids = [...new Set(threads.map((t) => t.id))];
+      for (const id of ids) await exportProjectConversation(id, format);
+    } catch (error) {
+      if (!isDownloadCancelled(error)) toast.error("Export failed.");
+    }
+  }
+
+  async function commitProjectRename(): Promise<void> {
+    const name = projectNameDraft.trim();
+    setRenamingProject(false);
+    if (!name || name === projectName) return;
+    try {
+      await renameChatProject(projectId, name);
+    } catch (err) {
+      toast.error("Failed to rename project", {
+        description: err instanceof Error ? err.message : undefined,
+      });
+    }
+  }
+
+  async function commitProjectDelete(): Promise<void> {
+    setDeletingProject(false);
+    try {
+      await deleteChatProject(projectId);
+      useChatRuntimeStore.getState().setActiveProjectId(null);
+      navigate({ to: "/chat", search: { new: createThreadNonce() } });
+    } catch (err) {
+      toast.error("Failed to delete project", {
+        description: err instanceof Error ? err.message : undefined,
+      });
+    }
+  }
+
   useEffect(() => {
     initialActiveThreadRef.current =
       useChatRuntimeStore.getState().activeThreadId;
@@ -1211,9 +1273,64 @@ function ProjectLanding({
                   className="size-6.5"
                 />
               </span>
-              <h1 className="truncate font-sans text-[30px] font-medium leading-tight tracking-normal text-foreground">
+              <h1 className="min-w-0 flex-1 truncate font-sans text-[30px] font-medium leading-tight tracking-normal text-foreground">
                 {projectName}
               </h1>
+              <DropdownMenu>
+                <DropdownMenuTrigger asChild={true}>
+                  <button
+                    type="button"
+                    aria-label="Project options"
+                    className="inline-flex size-9 shrink-0 items-center justify-center rounded-full text-muted-foreground transition-colors hover:bg-muted hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring data-[state=open]:bg-muted data-[state=open]:text-foreground"
+                  >
+                    <HugeiconsIcon icon={MoreHorizontalIcon} strokeWidth={1.75} className="size-5" />
+                  </button>
+                </DropdownMenuTrigger>
+                <DropdownMenuContent
+                  side="bottom"
+                  align="end"
+                  sideOffset={6}
+                  className="unsloth-plus-menu menu-flat-destructive w-52"
+                >
+                  <DropdownMenuItem
+                    onSelect={() => {
+                      setProjectNameDraft(projectName);
+                      setRenamingProject(true);
+                    }}
+                  >
+                    <HugeiconsIcon icon={Edit03Icon} strokeWidth={1.75} className="size-icon" />
+                    <span>Rename project</span>
+                  </DropdownMenuItem>
+                  <DropdownMenuItem onSelect={() => togglePinProject(projectId)}>
+                    <HugeiconsIcon icon={projectPinned ? PinOffIcon : PinIcon} strokeWidth={1.75} className="size-icon" />
+                    <span>{projectPinned ? "Unpin project" : "Pin project"}</span>
+                  </DropdownMenuItem>
+                  <DropdownMenuSub>
+                    <DropdownMenuSubTrigger>
+                      <HugeiconsIcon icon={Download01Icon} strokeWidth={1.75} className="size-icon" />
+                      <span>Export</span>
+                    </DropdownMenuSubTrigger>
+                    <DropdownMenuSubContent className="unsloth-plus-menu w-48">
+                      {PROJECT_CHAT_EXPORT_OPTIONS.map(({ label, format }) => (
+                        <DropdownMenuItem
+                          key={format}
+                          onSelect={() => void handleProjectExport(format)}
+                        >
+                          {label}
+                        </DropdownMenuItem>
+                      ))}
+                    </DropdownMenuSubContent>
+                  </DropdownMenuSub>
+                  <DropdownMenuSeparator />
+                  <DropdownMenuItem
+                    variant="destructive"
+                    onSelect={() => setDeletingProject(true)}
+                  >
+                    <HugeiconsIcon icon={Delete02Icon} strokeWidth={1.75} className="size-icon" />
+                    <span>Delete project</span>
+                  </DropdownMenuItem>
+                </DropdownMenuContent>
+              </DropdownMenu>
             </div>
 
             <ProjectComposer
@@ -1490,6 +1607,68 @@ function ProjectLanding({
                 if (target) void runDelete(target);
               }}
             >
+              Delete
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+      <Dialog
+        open={renamingProject}
+        onOpenChange={(open) => {
+          if (!open) setRenamingProject(false);
+        }}
+      >
+        <DialogContent className="corner-squircle dialog-soft-surface sm:max-w-md">
+          <DialogHeader>
+            <DialogTitle>Rename project</DialogTitle>
+          </DialogHeader>
+          <Input
+            value={projectNameDraft}
+            onChange={(e) => setProjectNameDraft(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === "Enter") {
+                e.preventDefault();
+                void commitProjectRename();
+              }
+            }}
+            autoFocus={true}
+            maxLength={120}
+            placeholder="Project name"
+            aria-label="Project name"
+            className="focus-visible:border-input focus-visible:ring-0"
+          />
+          <DialogFooter className="flex-wrap gap-2 sm:justify-end">
+            <Button type="button" variant="ghost" onClick={() => setRenamingProject(false)}>
+              Cancel
+            </Button>
+            <Button
+              type="button"
+              onClick={() => void commitProjectRename()}
+              disabled={
+                !projectNameDraft.trim() || projectNameDraft.trim() === projectName
+              }
+            >
+              Save
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+      <AlertDialog
+        open={deletingProject}
+        onOpenChange={(open) => {
+          if (!open) setDeletingProject(false);
+        }}
+      >
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Delete project</AlertDialogTitle>
+            <AlertDialogDescription>
+              Delete "{projectName}"? Its chats will be moved back to Recents.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Cancel</AlertDialogCancel>
+            <AlertDialogAction onClick={() => void commitProjectDelete()}>
               Delete
             </AlertDialogAction>
           </AlertDialogFooter>
