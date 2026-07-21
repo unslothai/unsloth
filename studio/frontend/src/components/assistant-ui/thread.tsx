@@ -1841,9 +1841,12 @@ const Composer: FC<{
 
   const startQueue = useCallback(
     (items: string[], waitForCurrentRun = threadIsRunning) => {
+      // Saved-prompt Run-list calls this directly, so honour disableQueue here
+      // too: queuing from the project new-chat composer misbinds the thread.
+      if (disableQueue) return;
       startPromptQueue(items, createPromptQueueTarget(), waitForCurrentRun);
     },
-    [createPromptQueueTarget, threadIsRunning],
+    [createPromptQueueTarget, threadIsRunning, disableQueue],
   );
 
   const queueContextValue: PromptQueueCallbacks = { startQueue, stopQueue };

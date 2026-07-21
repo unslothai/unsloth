@@ -457,24 +457,34 @@ export function AppSidebar() {
       ),
     [allChatItems, pinnedIdSet],
   );
-  // Pinned chats, in pin order (most recent first).
-  const pinnedChatItems = useMemo(() => {
-    const byId = new Map(allChatItems.map((item) => [item.id, item]));
-    return pinnedIds
-      .map((id) => byId.get(id))
-      .filter((item): item is SidebarItem => Boolean(item));
-  }, [allChatItems, pinnedIds]);
   const [pinnedOpen, setPinnedOpen] = useState(true);
   // "Projects" section: projects the user pinned, in pin order (most recent
   // first). The section only appears once at least one project is pinned.
   const pinnedProjectIds = usePinnedProjectsStore((s) => s.pinnedIds);
   const unpinProject = usePinnedProjectsStore((s) => s.unpin);
+  const pinnedProjectIdSet = useMemo(
+    () => new Set(pinnedProjectIds),
+    [pinnedProjectIds],
+  );
   const pinnedProjectRecords = useMemo(() => {
     const byId = new Map(projects.map((p) => [p.id, p]));
     return pinnedProjectIds
       .map((id) => byId.get(id))
       .filter((p): p is ProjectRecord => Boolean(p));
   }, [projects, pinnedProjectIds]);
+  // Pinned chats, in pin order (most recent first). Chats that live inside a
+  // pinned project already render nested under it, so drop them here to avoid
+  // showing the same chat twice in the Pinned section.
+  const pinnedChatItems = useMemo(() => {
+    const byId = new Map(allChatItems.map((item) => [item.id, item]));
+    return pinnedIds
+      .map((id) => byId.get(id))
+      .filter((item): item is SidebarItem => Boolean(item))
+      .filter(
+        (item) =>
+          !(item.projectId && pinnedProjectIdSet.has(item.projectId)),
+      );
+  }, [allChatItems, pinnedIds, pinnedProjectIdSet]);
   // A pinned project reveals its recent chats (most recent first) nested below.
   const chatsByProjectId = useMemo(() => {
     const map = new Map<string, SidebarItem[]>();
@@ -1510,9 +1520,13 @@ export function AppSidebar() {
                               <DropdownMenuSeparator />
                               <DropdownMenuItem
                                 variant="destructive"
-                                onSelect={() =>
-                                  setConfirmingDelete({ kind: "project", project })
-                                }
+                                onSelect={() => {
+                                  // Start each delete with the file toggle off:
+                                  // Cancel closes programmatically and skips the
+                                  // dialog onOpenChange reset.
+                                  setDeleteProjectFiles(false);
+                                  setConfirmingDelete({ kind: "project", project });
+                                }}
                               >
                                 <HugeiconsIcon icon={Delete02Icon} strokeWidth={1.75} className="size-icon" />
                                 <span>Delete project</span>
@@ -1525,15 +1539,18 @@ export function AppSidebar() {
                             <SidebarMenuItem key={chat.id}>
                               <SidebarMenuButton
                                 isActive={activeThreadId === chat.id}
-                                onClick={() =>
+                                onClick={() => {
                                   navigate({
                                     to: "/chat",
                                     search:
                                       chat.type === "single"
                                         ? { thread: chat.id, project: project.id }
                                         : { compare: chat.id, project: project.id },
-                                  })
-                                }
+                                  });
+                                  // Match the other nav handlers: close the
+                                  // mobile drawer over the opened chat.
+                                  closeMobileIfOpen();
+                                }}
                                 className="sidebar-nav-btn h-[33px] rounded-full pl-9 pr-4 font-medium text-sidebar-foreground/80"
                               >
                                 <span className="truncate text-[14.5px] leading-[19px] tracking-nav">{chat.title}</span>
