@@ -1196,13 +1196,18 @@ export function AppSidebar() {
                 openNewChat(null);
               }}
             />
-            {/* Search now lives in the header; keep this row only for the
-                collapsed rail, where no header button shows. */}
+            {/* Search sits in the header when the brand row is shown (mac/web).
+                Hide this row there, but keep it in the collapsed rail. On custom
+                titlebars (win/linux) there's no header button, so keep the row. */}
             <NavItem
               icon={Search01Icon}
               label={t("shell.navigation.search")}
               active={false}
-              className="hidden group-data-[collapsible=icon]:block"
+              className={
+                showSidebarBrand
+                  ? "hidden group-data-[collapsible=icon]:block"
+                  : undefined
+              }
               onClick={() => {
                 useChatSearchStore.getState().open();
                 closeMobileIfOpen();
