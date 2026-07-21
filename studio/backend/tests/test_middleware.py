@@ -514,6 +514,28 @@ class TestFrontendAssets:
         assert response.status_code == 304
         assert response.headers["cache-control"] == (main_module._IMMUTABLE_ASSET_CACHE_CONTROL)
 
+    def test_range_request_is_not_compressed(self, tmp_path, main_module):
+        content = b"export const value = 'responsive';\n" * 200
+        (tmp_path / "page-abc123.js").write_bytes(content)
+        app = FastAPI()
+        assets_app = main_module._AssetGZipMiddleware(
+            main_module.ImmutableStaticFiles(directory = tmp_path),
+            minimum_size = 1024,
+            compresslevel = 6,
+        )
+        app.mount("/assets", assets_app, name = "assets")
+
+        response = TestClient(app).get(
+            "/assets/page-abc123.js",
+            headers = {"Accept-Encoding": "gzip", "Range": "bytes=0-99"},
+        )
+
+        assert response.status_code == 206
+        assert response.headers.get("content-encoding") != "gzip"
+        assert response.headers["content-range"] == f"bytes 0-99/{len(content)}"
+        assert response.content == content[:100]
+        assert response.headers["cache-control"] == (main_module._IMMUTABLE_ASSET_CACHE_CONTROL)
+
 
 # /api/health auth gate
 

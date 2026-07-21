@@ -1528,6 +1528,18 @@ class ImmutableStaticFiles(StaticFiles):
         return response
 
 
+class _AssetGZipMiddleware(GZipMiddleware):
+    """Serve range requests uncompressed; gzip + 206 mislabels Content-Range."""
+
+    async def __call__(self, scope, receive, send):
+        if scope["type"] == "http" and any(
+            key == b"range" for key, _ in scope["headers"]
+        ):
+            await self.app(scope, receive, send)
+            return
+        await super().__call__(scope, receive, send)
+
+
 def setup_frontend(app: FastAPI, build_path: Path):
     """Mount frontend static files (optional)"""
     if not build_path.exists():
@@ -1535,7 +1547,7 @@ def setup_frontend(app: FastAPI, build_path: Path):
 
     assets_dir = build_path / "assets"
     if assets_dir.exists():
-        assets_app = GZipMiddleware(
+        assets_app = _AssetGZipMiddleware(
             ImmutableStaticFiles(directory = assets_dir),
             minimum_size = 1024,
             compresslevel = 6,
