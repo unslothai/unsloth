@@ -327,6 +327,13 @@ def _split_repo_variant(model: str) -> tuple:
     return repo, variant
 
 
+def _display_model_spec(model: str, variant: Optional[str]) -> str:
+    """Return a user-facing model name that includes the selected GGUF variant."""
+    repo, inline_variant = _split_repo_variant(model)
+    selected_variant = variant or inline_variant
+    return f"{repo}:{selected_variant}" if selected_variant else model
+
+
 def _fail(message: str) -> NoReturn:
     typer.echo(message, err = True)
     raise typer.Exit(code = 1)
@@ -739,7 +746,8 @@ def _start_studio_server(base: str, model: str, load: LoadOptions) -> subprocess
         command += ["--tensor-parallel"]
 
     log_path = Path(tempfile.gettempdir()) / f"unsloth-start-server-{os.getpid()}.log"
-    typer.echo(f"Starting Unsloth server for {model}…")
+    typer.echo("Starting Unsloth server")
+    typer.echo(f"Model: {_display_model_spec(model, load.gguf_variant)}")
     typer.echo(f"Server log: {log_path}")
     # 0600: the `unsloth run` banner in this log carries the minted sk-unsloth- key, and
     # the tempdir is world-traversable. Unlink first so a stale looser-mode file (pid
@@ -795,7 +803,6 @@ def _start_studio_server(base: str, model: str, load: LoadOptions) -> subprocess
                     progress.complete()
                     progress.close()
                     progress = None
-                typer.echo(f"Unsloth server ready at {base}.")
                 return server
             time.sleep(2.0)
     finally:
@@ -1135,11 +1142,7 @@ def _resolve_model(
                 f"Switching the Unsloth server from {active_id} to {requested}. "
                 "This unloads the current model for every attached session."
             )
-        typer.echo(
-            f"Loading {requested} - please wait…"
-            if load_has_overrides
-            else f"Loading {requested} on the Unsloth server (this can take a while)…"
-        )
+        typer.echo(f"Loading model: {_display_model_spec(requested, load.gguf_variant)}")
         # Mirror `unsloth run`'s load knobs; keep the default payload as just
         # model_path so a bare `--model` load is unchanged.
         payload = {"model_path": requested}
@@ -1748,10 +1751,8 @@ def _run(
         env, wsl_env_bridge = _wsl_shim_env(command, env, unset_env)
         _print_env(env, command, unset_env = unset_env, wsl_env_bridge = wsl_env_bridge)
         if _keep_auto_served():
-            typer.echo(
-                f"Unsloth Studio is still running at {base}. "
-                "Stop it with `unsloth studio stop`."
-            )
+            typer.echo(f"Unsloth Studio is still running at {base}.")
+            typer.echo("Stop it with: unsloth studio stop")
         return
     try:
         code = _launch(command, env, install_hint = install_hint, unset_env = unset_env)
@@ -1766,10 +1767,8 @@ def _run(
         typer.echo(f"The auto-started Unsloth server at {base} stopped during the session.")
         raise typer.Exit(code = code)
     if is_loopback_url(base):
-        typer.echo(
-            f"Unsloth Studio is still running at {base}. "
-            "Stop it with `unsloth studio stop`."
-        )
+        typer.echo(f"Unsloth Studio is still running at {base}.")
+        typer.echo("Stop it with: unsloth studio stop")
     else:
         typer.echo(f"The remote Unsloth server is still running at {base}.")
     raise typer.Exit(code = code)

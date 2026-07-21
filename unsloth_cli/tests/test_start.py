@@ -825,7 +825,7 @@ def test_connect_codex_matches_requested_model_case_insensitively(fake_studio, t
     assert profile["model"] == MODEL["id"]
 
 
-def test_resolve_model_matches_loaded_canonical_case_after_load(monkeypatch):
+def test_resolve_model_matches_loaded_canonical_case_after_load(monkeypatch, capsys):
     calls = []
     state = {"loaded": False}
 
@@ -863,6 +863,9 @@ def test_resolve_model_matches_loaded_canonical_case_after_load(monkeypatch):
 
     assert entry["id"] == "unsloth/gemma-4-E2B-it-GGUF"
     assert any(c[1].endswith("/api/inference/load") for c in calls)
+    output = capsys.readouterr().out
+    assert "Loading model: unsloth/gemma-4-e2b-it-gguf:UD-Q4_K_XL\n" in output
+    assert "please wait" not in output
 
 
 def test_resolve_model_loads_when_catalog_hit_is_not_loaded(monkeypatch):
@@ -1792,8 +1795,10 @@ def test_start_studio_server_builds_command_and_waits(monkeypatch, capsys):
     assert captured["kwargs"].get("start_new_session") is True  # own process group
     assert server.pid == 4321
     output = capsys.readouterr().out
-    assert "Starting Unsloth server for unsloth/Qwen3-1.7B-GGUF:UD-Q4_K_XL…" in output
+    assert "Starting Unsloth server\n" in output
+    assert "Model: unsloth/Qwen3-1.7B-GGUF:UD-Q4_K_XL\n" in output
     assert "No Unsloth server at" not in output
+    assert "server ready" not in output
 
 
 def test_start_studio_server_polls_progress_from_early_key(monkeypatch):
@@ -1850,9 +1855,10 @@ def test_start_studio_server_polls_progress_from_early_key(monkeypatch):
         "created",
     ) in created
     assert created.count("poll") == 2
-    ready = ("echo", f"Unsloth server ready at {BASE}.")
-    assert created[-3:] == ["complete", "close", ready]
-    assert created.index("close") < created.index(ready)
+    assert created[-2:] == ["complete", "close"]
+    assert not any(
+        isinstance(event, tuple) and "server ready" in event[-1] for event in created
+    )
 
 
 def test_load_model_with_progress_uses_selected_gguf_size(monkeypatch, capsys):
@@ -2014,7 +2020,7 @@ def test_attached_server_prints_stop_hint_after_agent_exits(fake_studio, monkeyp
 
     assert result.exit_code == 0, result.output
     assert f"Unsloth Studio is still running at {BASE}." in result.output
-    assert "unsloth studio stop" in result.output
+    assert "Stop it with: unsloth studio stop\n" in result.output
 
 
 def test_no_launch_recipe_does_not_print_stop_hint(fake_studio):
