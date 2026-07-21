@@ -2115,13 +2115,16 @@ _has_amd_rocm_gpu() {
          amd-smi list 2>/dev/null | awk '/^GPU[[:space:]]*[:\[][[:space:]]*[0-9]/{ found=1 } END{ exit !found }'; then
         return 0
     elif [ -e /dev/kfd ] && \
-         awk 'FNR==1{ gpu=0; amd=0 } /gpu_id/{ gpu=($2+0>0) } /vendor_id/{ amd=($2==4098) } \
-              gpu && amd { found=1 } END{ exit !found }' \
+         awk '/vendor_id/ && $2 == 4098 { found = 1 } END { exit !found }' \
              /sys/class/kfd/kfd/topology/nodes/*/properties 2>/dev/null; then
-        # vendor_id 4098 = 0x1002 (AMD). NVIDIA open kernel module (driver
-        # 560+) can register KFD topology nodes with non-zero gpu_id but
-        # vendor_id 4318 (0x10DE). Require AMD vendor to avoid misrouting
-        # NVIDIA-only hosts to the ROCm install path.
+        # vendor_id 4098 = 0x1002 (AMD) marks a GPU node: the KFD CPU node
+        # reports vendor_id 0, so any 4098 node is an AMD GPU. NVIDIA's open
+        # kernel module (driver 560+) registers KFD nodes as vendor_id 4318
+        # (0x10DE), so this never false-positives on NVIDIA-only hosts.
+        # The prior check also required a gpu_id line, but gpu_id is a SIBLING
+        # sysfs file, not a line in properties -- it never matched, so the
+        # fallback silently missed every ROCm-less AMD host (issue: fresh
+        # Arch/CachyOS boxes reporting "no GPU detected").
         return 0
     fi
     return 1
@@ -2249,12 +2252,17 @@ get_torch_index_url() {
             esac
             return
         fi
-        # AMD GPU confirmed by rocminfo/amd-smi but ROCm version could not be
-        # read from any source (amd-smi, /opt/rocm/.info/version, hipconfig,
-        # dpkg, rpm).  Warn explicitly rather than silently installing CPU PyTorch.
-        echo "[WARN] AMD GPU detected but ROCm version could not be determined -- falling back to CPU-only PyTorch" >&2
-        echo "[WARN] Ensure one of the following is accessible: amd-smi, hipconfig, /opt/rocm/.info/version, rocm-core package" >&2
-        echo "[WARN] To install ROCm: https://rocm.docs.amd.com/en/latest/deploy/linux/index.html" >&2
+        # AMD GPU confirmed (rocminfo/amd-smi or the KFD topology fallback) but
+        # no ROCm/HIP install was found to read the version from (amd-smi,
+        # /opt/rocm/.info/version, hipconfig, dpkg, rpm). This is the common
+        # fresh-install case: the GPU is real, but with no ROCm userspace the
+        # correct PyTorch build can't be selected. Warn with an actionable fix
+        # rather than silently installing CPU PyTorch.
+        echo "[WARN] AMD GPU detected, but no ROCm/HIP install was found to select the matching GPU PyTorch build -- falling back to CPU-only PyTorch." >&2
+        echo "[WARN] Install the ROCm/HIP SDK, then re-run this installer:" >&2
+        echo "[WARN]   Arch / CachyOS : sudo pacman -S rocm-hip-sdk" >&2
+        echo "[WARN]   other distros  : https://rocm.docs.amd.com/en/latest/deploy/linux/index.html" >&2
+        echo "[WARN] Minimum required for version detection: amd-smi, hipconfig, /opt/rocm/.info/version, or the rocm-core package." >&2
         echo "$_base/cpu"; return
     fi
     # Parse CUDA version from nvidia-smi output (POSIX-safe, no grep -P).
