@@ -2010,6 +2010,9 @@ def test_offline_gguf_variants_never_queries_hub(monkeypatch, tmp_path):
 
     hub_probe.assert_not_called()
     assert [variant.quant for variant in result.variants] == ["Q4_K_M"]
+    monkeypatch.delenv("HF_HUB_OFFLINE")
+    asyncio.run(gguf_variants.get_gguf_variants_response("Org/Offline", prefer_local_cache = True))
+    hub_probe.assert_not_called()
 
 
 def test_cancel_worker_leaves_exited_process_to_watcher():

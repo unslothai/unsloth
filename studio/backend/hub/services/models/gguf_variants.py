@@ -532,7 +532,7 @@ async def get_gguf_variants_response(
 
         local_only = prefer_local_cache or offline
         if local_only:
-            cached = list_gguf_variants_from_hf_cache(repo_id, hf_token, offline = offline)
+            cached = list_gguf_variants_from_hf_cache(repo_id, hf_token, offline = local_only)
             if cached is not None:
                 variants, has_vision = cached
                 return _local_response(repo_id, variants, has_vision)
