@@ -1100,7 +1100,7 @@ _MLX_VLM_RESIZED_IMAGE_LAYOUT_CACHE = {}
 
 
 def _mlx_vlm_resized_image_layout(processor = None) -> str | None:
-    """Return the numpy image layout expected after Studio-side VLM resizing."""
+    """Return the numpy image layout expected after Unsloth-side VLM resizing."""
     image_processor = getattr(processor, "image_processor", None)
     if image_processor is None:
         return None
@@ -1257,7 +1257,7 @@ _MLX_STUDIO_LR_SCHEDULERS = {"linear", "cosine", "constant"}
 
 
 # Fallback alias map mirroring unsloth_zoo._normalize_mlx_optimizer_name, used
-# only when mlx (Apple Silicon) is not importable so Studio config validation
+# only when mlx (Apple Silicon) is not importable so Unsloth config validation
 # still works on non-MLX hosts. The zoo function stays the source of truth.
 _MLX_STUDIO_ADAMW_ALIASES = frozenset(
     (
@@ -1309,7 +1309,7 @@ def _normalize_mlx_studio_scheduler(value):
 
 
 def _resolve_mlx_local_dataset_files(file_paths: list) -> list[str]:
-    """Resolve CLI paths and Studio local dataset uploads without importing the GPU trainer."""
+    """Resolve CLI paths and Unsloth local dataset uploads without importing the GPU trainer."""
     from utils.paths import resolve_dataset_path
 
     all_files: list[str] = []
@@ -1840,8 +1840,15 @@ def _run_mlx_training(event_queue, stop_queue, config):
     # Resolve to ~/.unsloth/studio/outputs/ so the export page finds it
     from utils.paths import ensure_dir
 
-    output_dir = _resolve_mlx_output_dir(config, model_name)
+    # Resume must land in the original run dir even when config lacks output_dir.
+    resume_dir = config.get("output_dir", "") or _output_dir_from_resume_checkpoint(
+        resume_from_checkpoint
+    )
+    output_dir = _resolve_mlx_output_dir(
+        {**config, "output_dir": resume_dir} if resume_dir else config, model_name
+    )
     ensure_dir(Path(output_dir))
+    _emit_output_dir(event_queue, output_dir)
 
     # ── 6. Create trainer ──
     eval_steps_val = config.get("eval_steps", 0) or 0
@@ -1912,7 +1919,7 @@ def _run_mlx_training(event_queue, stop_queue, config):
     if "max_grad_leaf_norm" in _supported_fields:
         mlx_config_kwargs["max_grad_leaf_norm"] = max_grad_leaf_norm
     if "append_eos" in _supported_fields:
-        # Studio SFT formatting owns rendered examples; raw/CPT text still
+        # Unsloth SFT formatting owns rendered examples; raw/CPT text still
         # needs MLX to append EOS like the CUDA raw-text path.
         mlx_config_kwargs["append_eos"] = bool(raw_text_mode)
 
@@ -2067,6 +2074,17 @@ def _run_mlx_training(event_queue, stop_queue, config):
 
     trainer.add_eval_callback(_on_eval)
 
+    _opt_ref = [None]
+    _orig_build_optimizer = getattr(trainer, "_build_optimizer", None)
+
+    if callable(_orig_build_optimizer):
+
+        def _capture_optimizer(total_steps):
+            _opt_ref[0] = _orig_build_optimizer(total_steps)
+            return _opt_ref[0]
+
+        trainer._build_optimizer = _capture_optimizer
+
     # ── 11. Run training ──
     gc.collect()
     mx.synchronize()
@@ -2082,31 +2100,58 @@ def _run_mlx_training(event_queue, stop_queue, config):
         trainer.save_model = _save_model
 
     # ── 12. Save and finalize ──
-    if trainer.stop_requested:
-        if not _stop_save[0]:
-            # Cancel (save=False): skip saving.
-            _send("complete", output_dir = None, status_message = "Training cancelled")
+    def _finish_tracking() -> None:
+        # Runs on every save/finalize exit so TB/W&B never leak on early return.
+        if tb_writer is not None:
+            try:
+                tb_writer.close()
+            except Exception:
+                pass
+        if wandb_run is not None:
+            try:
+                wandb_run.finish()
+            except Exception:
+                pass
+
+    def _stop_checkpoint_ok() -> bool:
+        if _write_mlx_stop_checkpoint(trainer, _opt_ref[0], output_dir):
+            return True
+        _send(
+            "error",
+            error = (
+                "Failed to save a resumable checkpoint after stop. "
+                "Model files were saved, but this run cannot be resumed."
+            ),
+            # A user stop finalizes as 'stopped'; keep this failure's error status so history explains it.
+            keep_error_status = True,
+            # Older checkpoints are stale; resuming would roll back past this stop.
+            resume_blocked = True,
+        )
+        return False
+
+    try:
+        if trainer.stop_requested:
+            if not _stop_save[0]:
+                # Cancel (save=False): skip saving.
+                _send("complete", output_dir = None, status_message = "Training cancelled")
+            else:
+                _send("status", status_message = "Saving stopped model...")
+                mx.synchronize()
+                trainer.save_model(output_dir)
+                # Stop-and-save promises a resumable checkpoint, not just model files.
+                if not _stop_checkpoint_ok():
+                    return
+                _send("complete", output_dir = output_dir, status_message = "Training stopped")
         else:
-            _send("status", status_message = "Saving stopped model...")
+            _send("status", status_message = "Saving model...")
             mx.synchronize()
             trainer.save_model(output_dir)
-            _send("complete", output_dir = output_dir, status_message = "Training stopped")
-    else:
-        _send("status", status_message = "Saving model...")
-        mx.synchronize()
-        trainer.save_model(output_dir)
-        _send("complete", output_dir = output_dir, status_message = "Training completed")
-
-    if tb_writer is not None:
-        try:
-            tb_writer.close()
-        except Exception:
-            pass
-    if wandb_run is not None:
-        try:
-            wandb_run.finish()
-        except Exception:
-            pass
+            # A save-stop can race the natural final save; it made the same promise.
+            if trainer.stop_requested and _stop_save[0] and not _stop_checkpoint_ok():
+                return
+            _send("complete", output_dir = output_dir, status_message = "Training completed")
+    finally:
+        _finish_tracking()
 
 
 def _is_current_process_apple_silicon() -> bool:
@@ -2121,7 +2166,7 @@ def run_mlx_training_process(
     config: dict,
     transformers_activated: bool = False,
 ) -> None:
-    """MLX worker entrypoint shared by Studio subprocesses and the CLI adapter."""
+    """MLX worker entrypoint shared by Unsloth subprocesses and the CLI adapter."""
     model_name = config["model_name"]
 
     backend_path = str(Path(__file__).resolve().parent.parent.parent)
@@ -2780,7 +2825,7 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
                 )
                 # Unified Windows APUs: the WDDM budget is user-raisable, but
                 # nothing on the box says so -- users see "48 GB VRAM" on a
-                # 96 GB machine and assume a Studio bug. Say where the limit
+                # 96 GB machine and assume an Unsloth bug. Say where the limit
                 # comes from and how to raise it.
                 if _is_unified and sys.platform == "win32":
                     try:
@@ -3177,6 +3222,7 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
             )
         output_dir = str(resolve_output_dir(output_dir))
         ensure_dir(Path(output_dir))
+        _emit_output_dir(event_queue, output_dir)
 
         tensorboard_dir = config.get("tensorboard_dir")
         if config.get("enable_tensorboard", False):
@@ -3294,6 +3340,61 @@ def _send_status(event_queue: Any, message: str) -> None:
             "ts": time.time(),
         }
     )
+
+
+def _emit_output_dir(event_queue: Any, output_dir: str) -> None:
+    try:
+        event_queue.put({"type": "output_dir", "output_dir": output_dir, "ts": time.time()})
+    except Exception:
+        pass
+
+
+def _mlx_has_checkpoint_at_step(output_dir, step: int) -> bool:
+    if step <= 0:
+        return False
+    from core.training.resume import is_resume_checkpoint_valid
+    return is_resume_checkpoint_valid(
+        Path(output_dir) / f"checkpoint-{step}", expected_step = step, backend = "mlx"
+    )
+
+
+def _write_mlx_stop_checkpoint(trainer, optimizer, output_dir) -> bool:
+    """Write a full resume checkpoint for a stopped MLX run.
+
+    Returns True when a checkpoint for the current training step exists.
+    """
+    step = int(getattr(trainer, "_global_step", 0) or 0)
+    # A periodic save or a resumed run may already cover the current step.
+    if _mlx_has_checkpoint_at_step(output_dir, step):
+        return True
+    if step <= 0 or optimizer is None:
+        return False
+    ckpt_dir = Path(output_dir) / f"checkpoint-{step}"
+    if ckpt_dir.is_symlink():
+        # Refuse a symlinked dir: it could redirect writes outside output_dir.
+        logger.error("Refusing to write MLX stop checkpoint through symlink: %s", ckpt_dir)
+        return False
+    try:
+        ckpt_dir.mkdir(parents = True, exist_ok = True)
+        from unsloth_zoo.mlx.utils import (
+            save_optimizer_state,
+            save_trainable_adapters,
+            save_trainer_state,
+        )
+
+        save_trainable_adapters(trainer.model, str(ckpt_dir))
+        save_optimizer_state(optimizer, str(ckpt_dir))
+        save_trainer_state(
+            {
+                "global_step": step,
+                "train_loss_history": list(getattr(trainer, "_train_loss_history", [])),
+            },
+            str(ckpt_dir),
+        )
+        logger.info("Saved stop checkpoint to %s", ckpt_dir)
+    except Exception:
+        logger.exception("Failed to write stop checkpoint under %s", output_dir)
+    return _mlx_has_checkpoint_at_step(output_dir, step)
 
 
 def _run_embedding_training(event_queue: Any, stop_queue: Any, config: dict) -> None:
@@ -3660,6 +3761,7 @@ def _run_embedding_training(event_queue: Any, stop_queue: Any, config: dict) -> 
             config.get("project_name"),
         )
     output_dir = str(resolve_output_dir(output_dir))
+    _emit_output_dir(event_queue, output_dir)
 
     num_epochs = config.get("num_epochs", 2)
     batch_size = config.get("batch_size", 256)

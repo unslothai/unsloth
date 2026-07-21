@@ -1249,6 +1249,77 @@ def _iter_gguf_files(directory: Path, recursive: bool = False):
             yield f
 
 
+_GGUF_SPLIT_FILE_RE = re.compile(
+    r"^(?P<prefix>.+)-(?P<index>\d{5})-of-(?P<total>\d{5})\.gguf$",
+    re.IGNORECASE,
+)
+
+
+def _colocated_first_split_shard(path: Path) -> tuple[Optional[Path], bool]:
+    """Return shard 1 and whether every shard is beside *path*."""
+    match = _GGUF_SPLIT_FILE_RE.match(path.name)
+    if match is None:
+        return None, False
+
+    prefix = match.group("prefix").casefold()
+    total_text = match.group("total")
+    total = int(total_text)
+    if total < 1:
+        return None, False
+
+    first: Optional[Path] = None
+    indices: set[int] = set()
+    try:
+        siblings = path.parent.iterdir()
+        for sibling in siblings:
+            sibling_match = _GGUF_SPLIT_FILE_RE.match(sibling.name)
+            if (
+                sibling_match is None
+                or sibling_match.group("prefix").casefold() != prefix
+                or sibling_match.group("total") != total_text
+            ):
+                continue
+            try:
+                if not sibling.is_file():
+                    continue
+            except OSError:
+                continue
+            index = int(sibling_match.group("index"))
+            if not 1 <= index <= total:
+                continue
+            indices.add(index)
+            if index == 1:
+                first = sibling
+    except OSError:
+        return None, False
+
+    return first, first is not None and len(indices) == total
+
+
+def _local_gguf_load_path(path: Path) -> Path:
+    """Choose a loadable local path while preserving complete symlink sets."""
+    if _GGUF_SPLIT_FILE_RE.match(path.name) is None:
+        return path.absolute()
+
+    first, complete = _colocated_first_split_shard(path)
+    if complete and first is not None:
+        return first.absolute()
+
+    try:
+        is_symlink = path.is_symlink()
+    except OSError:
+        is_symlink = False
+    if is_symlink:
+        try:
+            target = path.resolve()
+        except OSError:
+            return (first or path).absolute()
+        target_first, _ = _colocated_first_split_shard(target)
+        return (target_first or target).absolute()
+
+    return (first or path).absolute()
+
+
 def detect_mmproj_file(path: str, search_root: Optional[str] = None) -> Optional[str]:
     """Find the mmproj GGUF for a model.
 
@@ -1434,7 +1505,7 @@ def detect_gguf_model(path: str) -> Optional[str]:
         except OSError:
             is_dir = False  # stat() unavailable in the lock window
         if not is_dir:
-            return str(p.absolute())  # absolute() keeps symlink names readable
+            return str(_local_gguf_load_path(p))
         # Directory named "*.gguf": fall through to the dir scan below.
 
     # Case 2: directory containing .gguf files (skip mmproj / MTP drafter)
@@ -1452,7 +1523,7 @@ def detect_gguf_model(path: str) -> Optional[str]:
             gguf_files.append(f)
         gguf_files.sort(key = lambda f: f.stat().st_size, reverse = True)
         if gguf_files:
-            return str(gguf_files[0].resolve())
+            return str(_local_gguf_load_path(gguf_files[0]))
 
     return None
 
@@ -1879,7 +1950,7 @@ def _find_local_gguf_by_variant(directory: str, variant: str) -> Optional[str]:
     For sharded GGUFs (multiple files sharing a quant label), returns the
     first shard (sorted by name), which is what ``llama-server -m`` expects.
 
-    Returns the resolved absolute path, or ``None`` if no match.
+    Returns the absolute path, or ``None`` if no match.
     """
     p = _resolve_gguf_dir(Path(directory))
     if p is None:
@@ -1900,7 +1971,7 @@ def _find_local_gguf_by_variant(directory: str, variant: str) -> Optional[str]:
         matches.append(f)
     matches.sort()
     if matches:
-        return str(matches[0].resolve())
+        return str(_local_gguf_load_path(matches[0]))
     return None
 
 
@@ -2083,7 +2154,7 @@ def _has_model_weight_files(model_dir: Path) -> bool:
 
 
 def _detect_training_output_type(model_dir: Path) -> Optional[str]:
-    """Classify a Studio training output as LoRA or full finetune."""
+    """Classify an Unsloth training output as LoRA or full finetune."""
     adapter_config = model_dir / "adapter_config.json"
     adapter_model = model_dir / "adapter_model.safetensors"
     if adapter_config.exists() or adapter_model.exists():
@@ -2105,7 +2176,7 @@ def _looks_like_lora_adapter(model_dir: Path) -> bool:
 
 
 def scan_trained_models(outputs_dir: str = str(outputs_root())) -> List[Tuple[str, str, str]]:
-    """Scan outputs folder for trained Studio models.
+    """Scan outputs folder for trained Unsloth models.
 
     Returns:
         List of (display_name, model_path, model_type), where model_type is

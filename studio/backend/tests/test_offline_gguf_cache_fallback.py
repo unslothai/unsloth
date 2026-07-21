@@ -119,6 +119,13 @@ def _build_cache(
     return snap
 
 
+def _symlink_or_skip(link: Path, target: Path) -> None:
+    try:
+        link.symlink_to(target)
+    except OSError as exc:
+        pytest.skip(f"symlinks unavailable: {exc}")
+
+
 @pytest.fixture
 def hf_cache(tmp_path, monkeypatch):
     """Point ``huggingface_hub.constants.HF_HUB_CACHE`` at a temp dir."""
@@ -244,9 +251,7 @@ class TestGgufVariantFileResolution:
     def test_download_reuses_older_snapshot_when_current_ref_snapshot_is_partial(
         self, monkeypatch, hf_cache
     ):
-        # Cross-snapshot reuse is an offline-resilience path: online, hf_hub_download
-        # resumes the partial current-ref download and revalidates the revision instead
-        # of serving an older snapshot's same-name blob.
+        # Keep coverage for offline reuse; online reuse is tested separately.
         monkeypatch.setenv("HF_HUB_OFFLINE", "1")
         backend = LlamaCppBackend()
         repo = "unsloth/vision-GGUF"
@@ -292,8 +297,7 @@ class TestGgufVariantFileResolution:
     def test_download_reuses_cached_gguf_when_lowercase_partial_cache_shadows_it(
         self, monkeypatch, hf_cache
     ):
-        # Case-variant cross-dir reuse is offline-only; online the canonical repo id
-        # resolves up front and hf_hub_download fetches the current revision.
+        # Keep coverage for case-insensitive offline cache lookup.
         monkeypatch.setenv("HF_HUB_OFFLINE", "1")
         backend = LlamaCppBackend()
         canonical_repo = "unsloth/gemma-4-E2B-it-GGUF"
@@ -348,45 +352,26 @@ class TestGgufVariantFileResolution:
         assert out == str(snap / gguf_file)
         assert seen_repos
 
-    def test_download_online_does_not_reuse_old_snapshot(self, monkeypatch, hf_cache):
-        # Online, an older same-name snapshot must not be served (it may be a stale
-        # revision); hf_hub_download is called so the current revision is fetched and
-        # its etag revalidated.
+    def test_download_online_reuses_complete_cached_snapshot(self, monkeypatch, hf_cache):
+        # Loads reuse complete cached models across repo revisions.
         monkeypatch.delenv("HF_HUB_OFFLINE", raising = False)
         backend = LlamaCppBackend()
         repo = "unsloth/vision-GGUF"
-        _build_cache(hf_cache, repo, {"model-UD-Q4_K_XL.gguf": 4}, snapshot_sha = "a" * 40)
-        downloaded: list[str] = []
+        snap = _build_cache(hf_cache, repo, {"model-UD-Q4_K_XL.gguf": 4}, snapshot_sha = "a" * 40)
 
-        def fake_get_paths_info(
-            _repo_id,
-            paths,
-            token = None,
-        ):
-            return [_types.SimpleNamespace(path = p, size = 4) for p in paths if p]
-
-        def fake_download(
-            repo_id,
-            filename,
-            token = None,
-            **kwargs,
-        ):
-            downloaded.append(filename)
-            return f"/fresh/{filename}"
+        def fail_download(*_args, **_kwargs):
+            raise AssertionError("must reuse the cached GGUF instead of downloading")
 
         with (
             patch(
                 "huggingface_hub.list_repo_files",
                 lambda *_a, **_k: ["model-UD-Q4_K_XL.gguf"],
             ),
-            patch("huggingface_hub.get_paths_info", fake_get_paths_info),
-            patch("huggingface_hub.try_to_load_from_cache", lambda *_a, **_k: None),
-            patch("core.inference.llama_cpp.hf_hub_download_with_xet_fallback", fake_download),
+            patch("core.inference.llama_cpp.hf_hub_download_with_xet_fallback", fail_download),
         ):
             out = backend._download_gguf(hf_repo = repo, hf_variant = "UD-Q4_K_XL")
 
-        assert downloaded == ["model-UD-Q4_K_XL.gguf"]
-        assert out == "/fresh/model-UD-Q4_K_XL.gguf"
+        assert out == str(snap / "model-UD-Q4_K_XL.gguf")
 
     def test_download_reuses_older_snapshot_when_offline_env_is_true(self, monkeypatch, hf_cache):
         # HF_HUB_OFFLINE accepts truthy spellings beyond "1" (true/yes/on); the offline
@@ -919,7 +904,7 @@ class TestHfOfflineIfDnsDead:
             assert "HF_HUB_OFFLINE" not in os.environ
 
     def test_user_set_hf_hub_offline_is_preserved(self, dns, clean_offline_env, monkeypatch):
-        # User explicitly set offline before launching Studio.
+        # User explicitly set offline before launching Unsloth.
         monkeypatch.setenv("HF_HUB_OFFLINE", "1")
         dns.fail()
         with _hf_offline_if_dns_dead() as did_set:
@@ -1106,7 +1091,7 @@ class TestListLocalGgufVariantsSubdir:
         target.write_bytes(b"\0" * 20)
 
         out = _find_local_gguf_by_variant(str(tmp_path), "Q4_K_M")
-        assert out == str(target.resolve())
+        assert out == str(target.absolute())
 
     def test_find_local_gguf_by_variant_skips_big_endian_only_match(self, tmp_path):
         from utils.models.model_config import _find_local_gguf_by_variant
@@ -1115,6 +1100,57 @@ class TestListLocalGgufVariantsSubdir:
         (tmp_path / "model-Q4_K_M-be.gguf").write_bytes(b"\0" * 10)
 
         assert _find_local_gguf_by_variant(str(tmp_path), "Q4_K_M") is None
+
+    def test_find_local_gguf_by_variant_keeps_split_symlink_name(self, tmp_path):
+        from utils.models.model_config import _find_local_gguf_by_variant
+
+        blobs = tmp_path / "blobs"
+        blobs.mkdir()
+        snap = tmp_path / "snapshots" / "rev" / "BF16"
+        snap.mkdir(parents = True)
+        (tmp_path / "snapshots" / "rev" / "config.json").write_text("{}")
+        for i, sha in enumerate(("aa" * 32, "bb" * 32), start = 1):
+            (blobs / sha).write_bytes(b"\0" * 10)
+            _symlink_or_skip(snap / f"model-BF16-0000{i}-of-00002.gguf", blobs / sha)
+
+        out = _find_local_gguf_by_variant(str(tmp_path / "snapshots" / "rev"), "BF16")
+        assert out is not None
+        assert Path(out).name == "model-BF16-00001-of-00002.gguf"
+
+    def test_detect_gguf_model_keeps_split_symlink_name(self, tmp_path):
+        from utils.models.model_config import detect_gguf_model
+
+        blobs = tmp_path / "blobs"
+        blobs.mkdir()
+        snap = tmp_path / "snapshots" / "rev"
+        snap.mkdir(parents = True)
+        for i, (sha, size) in enumerate((("cc" * 32, 10), ("dd" * 32, 20)), start = 1):
+            (blobs / sha).write_bytes(b"\0" * size)
+            _symlink_or_skip(snap / f"model-BF16-0000{i}-of-00002.gguf", blobs / sha)
+
+        out = detect_gguf_model(str(snap))
+        assert out is not None
+        assert Path(out).name == "model-BF16-00001-of-00002.gguf"
+
+    def test_lone_split_symlink_uses_colocated_target_shards(self, tmp_path):
+        from utils.models.model_config import _find_local_gguf_by_variant, detect_gguf_model
+
+        target_dir = tmp_path / "external" / "BF16"
+        target_dir.mkdir(parents = True)
+        target = target_dir / "model-BF16-00001-of-00002.gguf"
+        target.write_bytes(b"\0" * 10)
+        (target_dir / "model-BF16-00002-of-00002.gguf").write_bytes(b"\0" * 10)
+
+        local = tmp_path / "local"
+        local.mkdir()
+        (local / "config.json").write_text("{}")
+        link = local / target.name
+        _symlink_or_skip(link, target)
+
+        expected = str(target.absolute())
+        assert _find_local_gguf_by_variant(str(local), "BF16") == expected
+        assert detect_gguf_model(str(local)) == expected
+        assert detect_gguf_model(str(link)) == expected
 
     def test_model_config_variant_ignores_big_endian_sibling(self, tmp_path):
         from utils.models.model_config import ModelConfig

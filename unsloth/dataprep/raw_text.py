@@ -236,6 +236,10 @@ class RawTextDataLoader:
 
     def _extract_text_from_json(self, data):
         """Extract text from JSON object using common field names."""
+        # Skip non-object lines (str/list/number): `field in data` would be a
+        # substring/membership test, not a key lookup, and `data[field]` raises.
+        if not isinstance(data, dict):
+            return ""
         for field in self._TEXT_FIELDS:
             if field in data and isinstance(data[field], str):
                 return data[field]

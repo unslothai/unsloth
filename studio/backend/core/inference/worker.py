@@ -513,20 +513,25 @@ def _handle_generate(backend, cmd: dict, resp_queue: Any, cancel_event) -> None:
 
         logger.info("Starting text generation for request_id=%s", request_id)
 
-        for cumulative_text in generator:
-            # cancel_event is an mp.Event — checked instantly, no queue polling.
-            if cancel_event.is_set():
-                logger.info("Generation cancelled for request %s", request_id)
-                break
+        try:
+            for cumulative_text in generator:
+                # cancel_event is an mp.Event — checked instantly, no queue polling.
+                if cancel_event.is_set():
+                    logger.info("Generation cancelled for request %s", request_id)
+                    break
 
-            _send_response(
-                resp_queue,
-                {
-                    "type": "token",
-                    "request_id": request_id,
-                    "text": cumulative_text,
-                },
-            )
+                _send_response(
+                    resp_queue,
+                    {
+                        "type": "token",
+                        "request_id": request_id,
+                        "text": cumulative_text,
+                    },
+                )
+        finally:
+            close = getattr(generator, "close", None)
+            if callable(close):
+                close()
 
         _send_response(
             resp_queue,

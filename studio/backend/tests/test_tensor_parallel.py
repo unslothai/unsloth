@@ -262,9 +262,12 @@ def test_proportional_tensor_split_is_emitted_in_tensor_mode():
     src = _load_model_source()
     assert '"--tensor-split"' in src
     gate = src.find("if tensor_parallel:")
-    ts = src.find('"--tensor-split"')
+    # Find the TP block's emission (after the gate); manual mode emits its own
+    # --tensor-split earlier in the source from the user's per-GPU shares.
+    ts = src.find('"--tensor-split"', gate)
     nxt_else = src.find("self._tensor_parallel = False")
     assert 0 <= gate < ts < nxt_else, "--tensor-split must be emitted under `if tensor_parallel:`"
+    assert "tp_tensor_split" in src[gate:nxt_else]
 
 
 def test_mtp_decode_probe_wired_under_tensor_parallel():
@@ -420,7 +423,7 @@ def test_runtime_recovery_fires_for_user_env_mtp(monkeypatch):
     # MTP driven by user extra_args / LLAMA_ARG_SPEC_TYPE leaves _speculative_type
     # unset, but the launch flag still gates recovery on (pass-through MTP).
     b = _recovery_backend()
-    b._speculative_type = None  # Studio stepped back; user/env owns the spec
+    b._speculative_type = None  # Unsloth stepped back; user/env owns the spec
     done = threading.Event()
     captured = {}
 

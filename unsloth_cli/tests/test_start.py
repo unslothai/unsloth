@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import shlex
 import sys
 import urllib.error
@@ -60,34 +61,71 @@ def _fake_claude(monkeypatch, version_output: str) -> None:
     )
 
 
+def _path_aware_which(binaries: dict):
+    # A shutil.which fake that resolves a name only when its directory is on PATH at call time.
+    # Lets a test prove a version probe augments PATH before resolving: an agent present only in
+    # an install dir (~/.local/bin, %APPDATA%\npm) must still be found and version-checked.
+    def _which(name):
+        directory = binaries.get(name)
+        if directory is None:
+            return None
+        entries = os.environ.get("PATH", "").split(os.pathsep)
+        # os.path.join (not Path()) so this works when a test has flipped os.name to "nt": under
+        # a simulated os.name, pathlib would build the non-native flavour and raise.
+        return os.path.join(str(directory), name) if str(directory) in entries else None
+
+    return _which
+
+
+def _simulate_windows(monkeypatch) -> None:
+    # Exercise the `os.name == "nt"` branch on any host. Flipping os.name alone makes pathlib
+    # pick the non-native flavour (WindowsPath on POSIX, PosixPath on Windows) when a Path is
+    # constructed, which raises; pin Path to the host-native class (captured before the flip)
+    # so the branch logic runs without that crash. Keeps these tests green on Linux/Mac/WSL too.
+    monkeypatch.setattr(start, "Path", type(Path()))
+    monkeypatch.setattr(start.os, "name", "nt")
+
+
 def test_claude_flags_passed_to_supported_claude(monkeypatch):
     _fake_claude(monkeypatch, "2.1.98 (Claude Code)\n")
-    assert start._claude_flags() == [
+    assert start._claude_flags(MODEL["id"]) == [
         "--exclude-dynamic-system-prompt-sections",
         "--settings",
-        start._CLAUDE_SETTINGS_OVERLAY,
+        start._claude_settings_overlay(MODEL["id"]),
     ]
 
 
 def test_claude_flags_skipped_on_old_claude(monkeypatch):
     _fake_claude(monkeypatch, "2.0.14 (Claude Code)\n")
-    assert start._claude_flags() == []
+    assert start._claude_flags(MODEL["id"]) == []
 
 
 def test_claude_flags_skipped_on_unparseable_version(monkeypatch):
     _fake_claude(monkeypatch, "weird build string\n")
-    assert start._claude_flags() == []
+    assert start._claude_flags(MODEL["id"]) == []
 
 
 def test_claude_flags_detected_when_version_not_first_token(monkeypatch):
     # The X.Y.Z is pulled from anywhere in the output, so a format change (version not
     # the first token) doesn't silently drop the optimization flags.
     _fake_claude(monkeypatch, "claude version 2.1.98\n")
-    assert start._claude_flags() == [
+    assert start._claude_flags(MODEL["id"]) == [
         "--exclude-dynamic-system-prompt-sections",
         "--settings",
-        start._CLAUDE_SETTINGS_OVERLAY,
+        start._claude_settings_overlay(MODEL["id"]),
     ]
+
+
+def test_claude_settings_overlay_pins_served_model():
+    # The session overlay must pin availableModels to the served model: a user's allowlist
+    # in ~/.claude/settings.json otherwise rejects the Unsloth --model ("restricted by your
+    # organization's settings"), and no env var can bypass it. The override must be a
+    # NON-EMPTY array to take effect (an empty [] is ignored and the user's list still
+    # applies), so it lists exactly this model, for this session only.
+    overlay = json.loads(start._claude_settings_overlay(MODEL["id"]))
+    assert overlay["availableModels"] == [MODEL["id"]]
+    # The attribution-header suppression is preserved alongside it.
+    assert overlay["env"]["CLAUDE_CODE_ATTRIBUTION_HEADER"] == "0"
 
 
 def test_install_agent_prompts_then_installs(monkeypatch):
@@ -125,10 +163,55 @@ def test_install_agent_uses_powershell_on_windows(monkeypatch):
     executable = start._install_agent("hermes", install_hint)
 
     assert executable == r"C:\Users\samle\bin\hermes.exe"
-    assert ran == [["powershell", "-NoProfile", "-Command", install_hint]]
+    # -ExecutionPolicy Bypass (process-scoped) lets npm's npm.ps1 wrapper and irm|iex
+    # scripts run even when the machine policy is the Windows default Restricted.
+    assert ran == [
+        ["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", install_hint]
+    ]
 
 
-def test_install_agent_warns_and_names_remote_source(monkeypatch, capsys):
+def test_install_agent_windows_failure_hints_execution_policy(monkeypatch, capsys):
+    # A failed install on Windows points the user at the per-user execution-policy fix:
+    # our subprocess bypasses the policy, but their own shell may still block npm.ps1
+    # (PSSecurityException) when they run the install by hand.
+    monkeypatch.setattr(start.os, "name", "nt")
+    monkeypatch.setattr(start.sys, "stdin", SimpleNamespace(isatty = lambda: True))
+    monkeypatch.setattr(start.typer, "confirm", lambda *a, **k: True)
+    monkeypatch.setattr(
+        start.subprocess,
+        "run",
+        lambda *a, **k: SimpleNamespace(returncode = 1),
+    )
+    monkeypatch.setattr(start.shutil, "which", lambda _: None)
+
+    with pytest.raises(start.typer.Exit):
+        start._install_agent("codex", "npm install -g @openai/codex")
+
+    err = capsys.readouterr().err
+    assert "Install command failed" in err
+    assert "Set-ExecutionPolicy -Scope CurrentUser -ExecutionPolicy RemoteSigned" in err
+
+
+def test_install_agent_posix_failure_omits_execution_policy_hint(monkeypatch, capsys):
+    # The execution-policy hint is Windows-only; a POSIX install failure must not mention it.
+    monkeypatch.setattr(start.os, "name", "posix")
+    monkeypatch.setattr(start.sys, "stdin", SimpleNamespace(isatty = lambda: True))
+    monkeypatch.setattr(start.typer, "confirm", lambda *a, **k: True)
+    monkeypatch.setattr(
+        start.subprocess,
+        "run",
+        lambda *a, **k: SimpleNamespace(returncode = 1),
+    )
+
+    with pytest.raises(start.typer.Exit):
+        start._install_agent("codex", "npm install -g @openai/codex")
+
+    err = capsys.readouterr().err
+    assert "Install command failed" in err
+    assert "Set-ExecutionPolicy" not in err
+
+
+def test_install_agent_warns_remote_installer_is_unverified_third_party(monkeypatch, capsys):
     # Before the confirm, a remote installer must name the URL it fetches so the
     # user consents to a specific source rather than blindly accepting.
     monkeypatch.setattr(start.os, "name", "nt")
@@ -137,9 +220,23 @@ def test_install_agent_warns_and_names_remote_source(monkeypatch, capsys):
     hint = "& ([scriptblock]::Create((irm https://hermes-agent.nousresearch.com/install.ps1))) -SkipSetup"
     assert start._install_agent("hermes", hint) is None
     err = capsys.readouterr().err
+    assert "Security warning" in err
+    assert "unverified third-party script" in err
     assert "https://hermes-agent.nousresearch.com/install.ps1" in err
-    assert "download and RUN" in err
-    assert "signature or hash" in err
+    assert "Unsloth does not pin or verify the downloaded content" in err
+    assert "Continue only if you trust this source" in err
+
+
+def test_install_agent_reports_immutable_remote_installer_pin(monkeypatch, capsys):
+    monkeypatch.setattr(start.os, "name", "posix")
+    monkeypatch.setattr(start.sys, "stdin", SimpleNamespace(isatty = lambda: True))
+    monkeypatch.setattr(start.typer, "confirm", lambda *a, **k: False)
+    assert start._install_agent("hermes", start._HERMES_POSIX_INSTALL_HINT) is None
+    err = capsys.readouterr().err
+    assert start._HERMES_INSTALL_COMMIT in err
+    assert "immutable upstream commit" in err
+    assert "does not independently verify or sandbox it" in err
+    assert "does not pin or verify" not in err
 
 
 def test_install_agent_warns_for_package_installer(monkeypatch, capsys):
@@ -160,8 +257,8 @@ def test_hermes_install_hint_is_windows_native_on_windows(monkeypatch):
     # Scriptblock form so `-SkipSetup` reaches the installer and the interactive
     # setup wizard is skipped during the unattended `unsloth start hermes` run.
     assert start._hermes_install_hint() == (
-        "& ([scriptblock]::Create((irm https://hermes-agent.nousresearch.com/install.ps1)))"
-        " -SkipSetup"
+        f"& ([scriptblock]::Create((irm {start._HERMES_INSTALL_BASE}/install.ps1)))"
+        f" -SkipSetup -Commit {start._HERMES_INSTALL_COMMIT}"
     )
 
 
@@ -170,9 +267,18 @@ def test_hermes_install_hint_is_bash_on_posix(monkeypatch):
 
     # `bash -s -- --skip-setup` forwards the skip flag to the piped installer.
     assert start._hermes_install_hint() == (
-        "curl -fsSL https://raw.githubusercontent.com/NousResearch/hermes-agent"
-        "/main/scripts/install.sh | bash -s -- --skip-setup"
+        f"curl -fsSL {start._HERMES_INSTALL_BASE}/install.sh | bash -s --"
+        f" --skip-setup --commit {start._HERMES_INSTALL_COMMIT}"
     )
+
+
+def test_hermes_install_hints_pin_script_and_checkout_to_full_commit():
+    commit = start._HERMES_INSTALL_COMMIT
+    assert re.fullmatch(r"[0-9a-f]{40}", commit)
+    for hint in (start._HERMES_WINDOWS_INSTALL_HINT, start._HERMES_POSIX_INSTALL_HINT):
+        assert hint.count(commit) == 2
+        assert "/main/" not in hint
+        assert "hermes-agent.nousresearch.com" not in hint
 
 
 def test_refresh_windows_path_noop_off_windows(monkeypatch):
@@ -228,6 +334,172 @@ def test_refresh_windows_path_merges_registry_hives(monkeypatch):
         r"C:\Users\me\hermes\bin",
         r"C:\Windows\System32",
     ]
+
+
+def test_augment_path_adds_existing_local_bin(monkeypatch, tmp_path):
+    # Claude's installer drops its binary in ~/.local/bin but only *suggests* adding it to
+    # PATH, so Unsloth appends it in-process to resolve the freshly installed agent.
+    local_bin = tmp_path / ".local" / "bin"
+    local_bin.mkdir(parents = True)
+    monkeypatch.setattr(start.Path, "home", lambda: tmp_path)
+    monkeypatch.setenv("APPDATA", str(tmp_path / "no-appdata"))  # skip the npm candidate
+    monkeypatch.setenv("PATH", str(tmp_path / "existing"))
+    start._augment_path_with_install_dirs()
+    entries = os.environ["PATH"].split(os.pathsep)
+    assert str(local_bin) in entries
+    # Appended (lowest precedence), so it never shadows an existing PATH entry.
+    assert entries[-1] == str(local_bin)
+
+
+def test_augment_path_skips_missing_and_duplicate_dirs(monkeypatch, tmp_path):
+    # A non-existent ~/.local/bin is not added; an already-present one is not duplicated.
+    monkeypatch.setattr(start.Path, "home", lambda: tmp_path)  # no .local/bin created yet
+    monkeypatch.setenv("APPDATA", str(tmp_path / "no-appdata"))  # skip the npm candidate
+    monkeypatch.setenv("PATH", str(tmp_path / "existing"))
+    start._augment_path_with_install_dirs()
+    assert os.environ["PATH"] == str(tmp_path / "existing")
+
+    local_bin = tmp_path / ".local" / "bin"
+    local_bin.mkdir(parents = True)
+    monkeypatch.setenv("PATH", os.pathsep.join([str(tmp_path / "existing"), str(local_bin)]))
+    start._augment_path_with_install_dirs()
+    assert os.environ["PATH"].split(os.pathsep).count(str(local_bin)) == 1
+
+
+def test_augment_path_adds_npm_global_bin_on_windows(monkeypatch, tmp_path):
+    # npm -g shims (codex/opencode/pi) land in %APPDATA%\npm on Windows; add it so a freshly
+    # installed npm agent resolves even when that dir isn't on PATH yet.
+    _simulate_windows(monkeypatch)
+    monkeypatch.setattr(start.Path, "home", lambda: tmp_path)  # no ~/.local/bin created
+    npm_dir = tmp_path / "Roaming" / "npm"
+    npm_dir.mkdir(parents = True)
+    monkeypatch.setenv("APPDATA", str(tmp_path / "Roaming"))
+    monkeypatch.setenv("PATH", str(tmp_path / "existing"))
+    start._augment_path_with_install_dirs()
+    assert str(npm_dir) in os.environ["PATH"].split(os.pathsep)
+
+
+def test_which_with_install_dirs_finds_agent_and_restores_path(monkeypatch, tmp_path):
+    # The probe helper resolves against the augmented PATH but must NOT persist it: only
+    # _launch() should mutate PATH for the child process. Here `claude` is only in ~/.local/bin.
+    local_bin = tmp_path / ".local" / "bin"
+    local_bin.mkdir(parents = True)
+    monkeypatch.setattr(start.Path, "home", lambda: tmp_path)
+    monkeypatch.setenv("APPDATA", str(tmp_path / "no-appdata"))  # skip the npm candidate
+    original = str(tmp_path / "existing")
+    monkeypatch.setenv("PATH", original)  # local_bin NOT on PATH yet
+    monkeypatch.setattr(start.shutil, "which", _path_aware_which({"claude": local_bin}))
+    assert start._which_with_install_dirs("claude") == str(local_bin / "claude")
+    assert os.environ["PATH"] == original  # restored, no global pollution
+
+
+def test_claude_flags_probes_old_agent_only_in_install_dir(monkeypatch, tmp_path):
+    # Regression: the version probe must augment PATH before resolving, so an OLD claude present
+    # only in ~/.local/bin (not yet on PATH) is detected as old and the unsupported flags are
+    # dropped -- the same binary _launch() will run. Before the fix the probe saw no binary,
+    # assumed a current build, and emitted flags the old claude rejects.
+    local_bin = tmp_path / ".local" / "bin"
+    local_bin.mkdir(parents = True)
+    monkeypatch.setattr(start.Path, "home", lambda: tmp_path)
+    monkeypatch.setenv("APPDATA", str(tmp_path / "no-appdata"))
+    monkeypatch.setenv("PATH", str(tmp_path / "existing"))
+    monkeypatch.setattr(start.shutil, "which", _path_aware_which({"claude": local_bin}))
+    monkeypatch.setattr(
+        start.subprocess, "run", lambda *a, **k: SimpleNamespace(stdout = "2.0.14 (Claude Code)\n")
+    )
+    assert start._claude_flags(MODEL["id"]) == []
+
+
+def test_claude_flags_detects_supported_agent_only_in_install_dir(monkeypatch, tmp_path):
+    # The counterpart: a SUPPORTED claude present only in ~/.local/bin is now resolved and gets
+    # the flags, instead of being missed and (coincidentally) also assumed current.
+    local_bin = tmp_path / ".local" / "bin"
+    local_bin.mkdir(parents = True)
+    monkeypatch.setattr(start.Path, "home", lambda: tmp_path)
+    monkeypatch.setenv("APPDATA", str(tmp_path / "no-appdata"))
+    monkeypatch.setenv("PATH", str(tmp_path / "existing"))
+    monkeypatch.setattr(start.shutil, "which", _path_aware_which({"claude": local_bin}))
+    monkeypatch.setattr(
+        start.subprocess, "run", lambda *a, **k: SimpleNamespace(stdout = "2.1.98 (Claude Code)\n")
+    )
+    assert start._claude_flags(MODEL["id"]) == [
+        "--exclude-dynamic-system-prompt-sections",
+        "--settings",
+        start._claude_settings_overlay(MODEL["id"]),
+    ]
+
+
+def test_claude_flags_probes_npm_install_dir_on_windows(monkeypatch, tmp_path):
+    # npm -g shims land in %APPDATA%\npm on Windows; an old claude there (not on PATH) must still
+    # be version-checked so the unsupported flags are dropped.
+    _simulate_windows(monkeypatch)
+    monkeypatch.setattr(start.Path, "home", lambda: tmp_path)  # no ~/.local/bin created
+    npm_dir = tmp_path / "Roaming" / "npm"
+    npm_dir.mkdir(parents = True)
+    monkeypatch.setenv("APPDATA", str(tmp_path / "Roaming"))
+    monkeypatch.setenv("PATH", str(tmp_path / "existing"))
+    monkeypatch.setattr(start.shutil, "which", _path_aware_which({"claude": npm_dir}))
+    monkeypatch.setattr(
+        start.subprocess, "run", lambda *a, **k: SimpleNamespace(stdout = "2.0.14 (Claude Code)\n")
+    )
+    assert start._claude_flags(MODEL["id"]) == []
+
+
+def test_codex_catalog_probes_old_codex_only_in_install_dir(monkeypatch, tmp_path):
+    # Same ordering fix for codex: an old codex present only in an install dir is detected so the
+    # model-catalog config is omitted (the old binary can't consume it).
+    local_bin = tmp_path / ".local" / "bin"
+    local_bin.mkdir(parents = True)
+    monkeypatch.setattr(start.Path, "home", lambda: tmp_path)
+    monkeypatch.setenv("APPDATA", str(tmp_path / "no-appdata"))
+    monkeypatch.setenv("PATH", str(tmp_path / "existing"))
+    monkeypatch.setattr(start.shutil, "which", _path_aware_which({"codex": local_bin}))
+    monkeypatch.setattr(start.subprocess, "check_output", lambda *a, **k: "codex-cli 0.109.0")
+    assert start._codex_supports_model_catalog() is False
+
+
+def test_opencode_native_auto_probes_old_opencode_only_in_install_dir(monkeypatch, tmp_path):
+    # Same ordering fix for opencode: an old opencode present only in an install dir is detected
+    # so native --auto is not assumed (the old binary rejects it).
+    local_bin = tmp_path / ".local" / "bin"
+    local_bin.mkdir(parents = True)
+    monkeypatch.setattr(start.Path, "home", lambda: tmp_path)
+    monkeypatch.setenv("APPDATA", str(tmp_path / "no-appdata"))
+    monkeypatch.setenv("PATH", str(tmp_path / "existing"))
+    monkeypatch.setattr(start.shutil, "which", _path_aware_which({"opencode": local_bin}))
+    monkeypatch.setattr(start.subprocess, "check_output", lambda *a, **k: "1.17.11")
+    assert start._opencode_supports_native_auto() is False
+
+
+def test_augment_path_preserves_defpath_when_path_unset(monkeypatch, tmp_path):
+    # PATH unset: shutil.which() and exec*p* fall back to os.defpath (e.g. /bin:/usr/bin), so the
+    # augmentation must keep those default dirs instead of collapsing to just the install dir
+    # (which would hide a system-installed agent and strip the launched child's normal PATH).
+    local_bin = tmp_path / ".local" / "bin"
+    local_bin.mkdir(parents = True)
+    monkeypatch.setattr(start.Path, "home", lambda: tmp_path)
+    monkeypatch.setenv("APPDATA", str(tmp_path / "no-appdata"))
+    monkeypatch.delenv("PATH", raising = False)
+    start._augment_path_with_install_dirs()
+    entries = os.environ["PATH"].split(os.pathsep)
+    for default_dir in os.defpath.split(os.pathsep):
+        if default_dir:
+            assert default_dir in entries
+    assert str(local_bin) in entries
+
+
+def test_which_with_install_dirs_keeps_defpath_when_path_unset(monkeypatch, tmp_path):
+    # With PATH unset, a system agent on os.defpath (e.g. /usr/bin) must still resolve; the
+    # install-dir augmentation must not drop the default search path. PATH is restored to unset.
+    local_bin = tmp_path / ".local" / "bin"
+    local_bin.mkdir(parents = True)
+    monkeypatch.setattr(start.Path, "home", lambda: tmp_path)
+    monkeypatch.setenv("APPDATA", str(tmp_path / "no-appdata"))
+    monkeypatch.delenv("PATH", raising = False)
+    sysdir = next(part for part in reversed(os.defpath.split(os.pathsep)) if part)
+    monkeypatch.setattr(start.shutil, "which", _path_aware_which({"claude": Path(sysdir)}))
+    assert start._which_with_install_dirs("claude") == os.path.join(sysdir, "claude")
+    assert "PATH" not in os.environ
 
 
 def test_install_agent_declined_returns_none(monkeypatch):
@@ -448,7 +720,7 @@ def test_connect_claude_launch_scrubs_conflicting_auth_env(fake_studio, monkeypa
     monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-anthropic-stale")
     monkeypatch.setenv("CLAUDE_CODE_OAUTH_TOKEN", "oauth-stale")
     monkeypatch.setattr(start.shutil, "which", lambda _: "/usr/local/bin/claude")
-    monkeypatch.setattr(start, "_claude_flags", lambda: [])
+    monkeypatch.setattr(start, "_claude_flags", lambda *a, **k: [])
 
     def run(command, env):
         captured["command"] = command
@@ -473,15 +745,17 @@ def test_connect_claude_launch_scrubs_conflicting_auth_env(fake_studio, monkeypa
     reason = "WSL-from-Linux scenario (calling a Windows agent .exe from inside WSL); "
     "os.name is 'posix' under WSL, so this path can't run on a native Windows runner.",
 )
-def test_connect_claude_windows_shim_from_wsl_bridges_env(fake_studio, monkeypatch):
+def test_connect_claude_windows_shim_from_wsl_bridges_env(fake_studio, monkeypatch, tmp_path):
     captured = {}
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("PWD", "/stale/outer/repo")
     monkeypatch.setenv("WSL_DISTRO_NAME", "Ubuntu")
     monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-anthropic-stale")
     monkeypatch.setenv("CLAUDE_CODE_OAUTH_TOKEN", "oauth-stale")
     monkeypatch.setattr(
         start.shutil, "which", lambda _: "/mnt/c/Users/samle/AppData/Roaming/npm/claude"
     )
-    monkeypatch.setattr(start, "_claude_flags", lambda: [])
+    monkeypatch.setattr(start, "_claude_flags", lambda *a, **k: [])
 
     def run(command, env):
         captured["command"] = command
@@ -502,6 +776,8 @@ def test_connect_claude_windows_shim_from_wsl_bridges_env(fake_studio, monkeypat
     assert captured["env"]["ANTHROPIC_AUTH_TOKEN"] == "sk-unsloth-feedfacefeedface"
     assert captured["env"]["ANTHROPIC_BASE_URL"] == BASE
     assert captured["env"]["ANTHROPIC_MODEL"] == MODEL["id"]
+    assert captured["env"]["PWD"] == str(tmp_path)
+    assert "PWD/p" in captured["env"]["WSLENV"].split(":")
     for name in (
         "ANTHROPIC_AUTH_TOKEN",
         "ANTHROPIC_BASE_URL",
@@ -517,7 +793,11 @@ def test_connect_claude_windows_shim_from_wsl_bridges_env(fake_studio, monkeypat
     reason = "WSL-from-Linux scenario (calling a Windows agent .exe from inside WSL); "
     "os.name is 'posix' under WSL, so this path can't run on a native Windows runner.",
 )
-def test_connect_claude_no_launch_windows_shim_from_wsl_prints_wslenv(fake_studio, monkeypatch):
+def test_connect_claude_no_launch_windows_shim_from_wsl_prints_wslenv(
+    fake_studio, monkeypatch, tmp_path
+):
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("PWD", "/stale/outer/repo")
     monkeypatch.setenv("WSL_DISTRO_NAME", "Ubuntu")
     monkeypatch.setattr(
         start.shutil, "which", lambda _: "/mnt/c/Users/samle/AppData/Roaming/npm/claude"
@@ -529,6 +809,10 @@ def test_connect_claude_no_launch_windows_shim_from_wsl_prints_wslenv(fake_studi
     assert "export ANTHROPIC_API_KEY=" in result.output
     assert "export CLAUDE_CODE_OAUTH_TOKEN=" in result.output
     assert "export WSLENV=" in result.output
+    # PWD must NOT be frozen into the recipe (no `export PWD=`): WSLENV PWD/p translates the
+    # shell's live PWD at run time, so a recipe reused from another dir resolves the project root.
+    assert "export PWD=" not in result.output
+    assert "PWD/p" in result.output
     assert "ANTHROPIC_AUTH_TOKEN" in result.output
     assert "CLAUDE_CODE_OAUTH_TOKEN" in result.output
 
@@ -669,7 +953,7 @@ def test_resolve_model_attaches_to_loaded_catalog_hit_without_reload(monkeypatch
 
 
 def test_resolve_model_remote_studio_does_not_casefold_attach(monkeypatch):
-    # Against a remote Studio the local existence probe cannot see server-side paths,
+    # Against a remote Unsloth the local existence probe cannot see server-side paths,
     # so a case-variant loaded id must NOT attach without a load: it could be a distinct
     # server-side path on a case-sensitive host. The load endpoint resolves the request.
     calls = []
@@ -759,7 +1043,7 @@ def test_no_launch_output_is_parseable(fake_studio):
     result = CliRunner().invoke(start.start_app, ["codex", "--no-launch"])
     assert result.exit_code == 0, result.output
     lines = [ln for ln in result.output.splitlines() if ln.strip()]
-    skip = ("export ", "unset ", "Studio ", "Updated ", "Disabled ", "Warning", "Loading")
+    skip = ("export ", "unset ", "Unsloth ", "Updated ", "Disabled ", "Warning", "Loading")
     body = [ln for ln in lines if not ln.startswith(skip)]
     assert "codex --oss --profile unsloth_api" in body[-1]
     assert any(ln.startswith("export CODEX_HOME=") for ln in lines)
@@ -788,7 +1072,7 @@ def test_no_launch_last_line_is_self_contained(fake_studio, tmp_path):
 
 def test_no_launch_claude_last_line_blanks_conflicting_auth(fake_studio):
     # The unset vars must be neutralized inline too, or a partial copy would send the
-    # user's own ANTHROPIC_API_KEY to the Studio base.
+    # user's own ANTHROPIC_API_KEY to the Unsloth base.
     result = CliRunner().invoke(start.start_app, ["claude", "--no-launch"])
     assert result.exit_code == 0, result.output
     last = [ln for ln in result.output.splitlines() if ln.strip()][-1]
@@ -835,7 +1119,7 @@ def test_https_loopback_never_auto_serves(fake_studio, monkeypatch):
     )
     result = CliRunner().invoke(start.start_app, ["claude", "--model", "unsloth/Qwen3-1.7B-GGUF"])
     assert result.exit_code == 1
-    assert "No running Studio server" in result.output
+    assert "No running Unsloth server" in result.output
     assert started["called"] is False
 
 
@@ -988,7 +1272,7 @@ def test_connect_model_flag_forwards_load_options(fake_studio):
 
 
 def test_connect_model_flag_matches_canonical_id(fake_studio, monkeypatch):
-    # Studio registers a loaded model under a canonical id (resolved identifier
+    # Unsloth registers a loaded model under a canonical id (resolved identifier
     # / casing) that can differ from the path we passed. The agent must connect
     # to that model, not silently fall through to the first loaded one.
     requested = "Unsloth/Qwen3.5-35B-A3B"
@@ -1045,7 +1329,7 @@ def test_connect_model_bare_id_matches_loaded_without_reload(fake_studio):
 
 def test_connect_model_variant_suffix_defers_to_server_dedup(fake_studio):
     # `--model repo:QUANT` splits into a VALID load payload (bare repo + gguf_variant),
-    # never the `:`-suffixed repo id Studio rejects. The variant knob defers to
+    # never the `:`-suffixed repo id Unsloth rejects. The variant knob defers to
     # /api/inference/load, whose already-loaded dedup answers without reloading when the
     # active variant+settings match -- so a second session running the same command
     # attaches without evicting the first, while a genuinely different quant reloads.
@@ -1137,7 +1421,7 @@ def test_connect_no_model_loaded_errors(fake_studio, monkeypatch):
 
 
 def test_connect_requested_model_not_loaded_fails(fake_studio, monkeypatch):
-    # Studio never surfaces the requested model; fail loudly rather than
+    # Unsloth never surfaces the requested model; fail loudly rather than
     # silently connecting to whatever else happens to be loaded.
     inner = start._http_json
 
@@ -1208,7 +1492,7 @@ def test_connect_nonloopback_explicit_key_is_allowed(fake_studio, monkeypatch):
 
 
 def test_connect_nonloopback_replays_saved_key(fake_studio, tmp_path, monkeypatch):
-    # A key saved for a remote (non-loopback) Studio is replayed on keyless runs;
+    # A key saved for a remote (non-loopback) Unsloth is replayed on keyless runs;
     # auto-minting stays blocked for non-loopback.
     remote = "http://studio.example:8888"
     monkeypatch.setattr(start, "find_studio_server", lambda: remote)
@@ -1222,7 +1506,7 @@ def test_connect_nonloopback_replays_saved_key(fake_studio, tmp_path, monkeypatc
 
 
 def test_connect_studio_server_errors_on_explicit_remote(monkeypatch):
-    # A user who pointed UNSLOTH_STUDIO_URL at a remote Studio should get an
+    # A user who pointed UNSLOTH_STUDIO_URL at a remote Unsloth should get an
     # error, not a silent local model load (which they did not ask for).
     import typer
 
@@ -1263,7 +1547,7 @@ def test_connect_unverified_loopback_without_cached_key_refuses_to_mint(
 
 
 def test_connect_replays_saved_key_without_identity_check(fake_studio, tmp_path, monkeypatch):
-    # A "saved" key (e.g. for an SSH-tunnelled Studio the handshake can't match)
+    # A "saved" key (e.g. for an SSH-tunnelled Unsloth the handshake can't match)
     # replays on keyless runs without the handshake, scoped to its own base.
     cache = tmp_path / "agent_api_key.json"
     cache.write_text(json.dumps({"servers": {BASE: {"saved": ["sk-unsloth-deadbeefdeadbeef"]}}}))
@@ -1379,7 +1663,7 @@ def _serve_redirect(target):
 
 
 def test_verify_studio_identity_rejects_redirect(tmp_path, monkeypatch):
-    # A squatter could 302 /api/auth/identity to the real Studio and relay its
+    # A squatter could 302 /api/auth/identity to the real Unsloth and relay its
     # proof; redirects must be refused so the squatter's base isn't accepted.
     import unsloth_cli._inference as inference
 
@@ -1405,7 +1689,7 @@ def test_verify_studio_identity_rejects_redirect(tmp_path, monkeypatch):
 
 
 def test_verify_studio_identity_rejects_relayed_proof(tmp_path, monkeypatch):
-    # A squatter that proxies the nonce to the real Studio on another port gets a
+    # A squatter that proxies the nonce to the real Unsloth on another port gets a
     # proof bound to *that* port; the client expects one bound to the port it
     # connected to, so the relayed proof is rejected.
     import unsloth_cli._inference as inference
@@ -1456,7 +1740,7 @@ def test_connect_no_studio_errors(fake_studio, monkeypatch):
     monkeypatch.setattr(start, "find_studio_server", lambda: None)
     result = CliRunner().invoke(start.start_app, ["claude", "--no-launch"])
     assert result.exit_code == 1
-    assert "No running Studio server" in result.output
+    assert "No running Unsloth server" in result.output
 
 
 @pytest.fixture(autouse = True)
@@ -1585,7 +1869,7 @@ def test_no_serve_preserves_error(fake_studio, monkeypatch):
         start.start_app, ["claude", "--model", "unsloth/Qwen3-1.7B-GGUF", "--no-serve"]
     )
     assert result.exit_code == 1
-    assert "No running Studio server" in result.output
+    assert "No running Unsloth server" in result.output
     assert started["called"] is False
 
 
@@ -1599,7 +1883,7 @@ def test_no_launch_never_serves(fake_studio, monkeypatch):
         start.start_app, ["claude", "--model", "unsloth/Qwen3-1.7B-GGUF", "--no-launch"]
     )
     assert result.exit_code == 1
-    assert "No running Studio server" in result.output
+    assert "No running Unsloth server" in result.output
     assert started["called"] is False
 
 
@@ -1892,7 +2176,7 @@ def _opencode_inline_config(output: str) -> dict:
 def test_opencode_inline_scopes_session_to_studio_provider(fake_studio):
     # opencode filters even config-defined providers through enabled/disabled_providers,
     # and a model pin does not bypass that gate. The inline overlay (session-only, highest
-    # layer, arrays replace) allowlists our provider and clears the denylist so the Studio
+    # layer, arrays replace) allowlists our provider and clears the denylist so the Unsloth
     # model always loads regardless of the user's config, without reading or editing it.
     result = CliRunner().invoke(start.start_app, ["opencode", "--no-launch"])
     assert result.exit_code == 0, result.output
@@ -2160,8 +2444,9 @@ def test_powershell_quote_single_quotes_json():
     # keeps the embedded double quotes literal (list2cmdline's backslashes would not).
     assert start._powershell_quote("--settings") == "--settings"
     assert start._powershell_quote("unsloth/gemma-4-26B") == "unsloth/gemma-4-26B"
-    quoted = start._powershell_quote(start._CLAUDE_SETTINGS_OVERLAY)
-    assert quoted == "'" + start._CLAUDE_SETTINGS_OVERLAY + "'"
+    overlay = start._claude_settings_overlay("unsloth/gemma-4-26B")
+    quoted = start._powershell_quote(overlay)
+    assert quoted == "'" + overlay + "'"
     assert "\\" not in quoted  # no cmd.exe backslash escaping
     assert start._powershell_quote("a'b") == "'a''b'"  # embedded quote doubled
 
@@ -2211,12 +2496,188 @@ def test_yolo_aliases_are_interchangeable(fake_studio, alias):
     assert "--dangerously-bypass-approvals-and-sandbox" in codex.output
     assert "--dangerously-skip-permissions" not in codex.output
 
+    opencode = CliRunner().invoke(
+        start.start_app,
+        ["opencode", alias, "--no-launch", "run", "hello"],
+    )
+    assert opencode.exit_code == 0, opencode.output
+    assert _launch_command(opencode.output) == ["opencode", "run", "hello", "--auto"]
+    assert "permission" not in _opencode_inline_config(opencode.output)
 
-def test_yolo_opencode_writes_permission_block(fake_studio, tmp_path):
+
+def test_yolo_opencode_bare_no_launch_uses_permission_fallback(fake_studio, tmp_path):
+    # A bare --no-launch recipe stays append-safe (callers add a subcommand later);
+    # `opencode --auto run ...` would select the TUI, not `run`, so keep the config fallback.
     result = CliRunner().invoke(start.start_app, ["opencode", "--yolo", "--no-launch"])
     assert result.exit_code == 0, result.output
     config = json.loads((tmp_path / "agents" / "opencode" / "opencode.json").read_text())
     assert config["permission"] == {
+        "edit": "allow",
+        "bash": "allow",
+        "webfetch": "allow",
+        "external_directory": {"*": "allow"},
+    }
+
+
+def test_yolo_opencode_run_uses_native_auto(fake_studio):
+    result = CliRunner().invoke(
+        start.start_app,
+        ["opencode", "--yolo", "--no-launch", "run", "hello"],
+    )
+    assert result.exit_code == 0, result.output
+    command = _launch_command(result.output)
+    assert command == ["opencode", "run", "hello", "--auto"]
+    assert "permission" not in _opencode_inline_config(result.output)
+
+
+def test_yolo_opencode_tui_resume_uses_native_auto(fake_studio):
+    result = CliRunner().invoke(
+        start.start_app,
+        ["opencode", "--yolo", "--no-launch", "--session", "sid"],
+    )
+    assert result.exit_code == 0, result.output
+    command = _launch_command(result.output)
+    assert command == ["opencode", "--session", "sid", "--auto"]
+    assert "permission" not in _opencode_inline_config(result.output)
+
+
+def test_no_yolo_opencode_run_omits_native_auto(fake_studio):
+    result = CliRunner().invoke(
+        start.start_app,
+        ["opencode", "--no-launch", "run", "hello"],
+    )
+    assert result.exit_code == 0, result.output
+    assert _launch_command(result.output) == ["opencode", "run", "hello"]
+    assert "permission" not in _opencode_inline_config(result.output)
+
+
+def test_yolo_opencode_bare_launch_uses_native_auto(fake_studio, monkeypatch):
+    monkeypatch.setattr(start.shutil, "which", lambda _: "/usr/local/bin/opencode")
+    monkeypatch.setattr(start, "_opencode_supports_native_auto", lambda: True)
+    captured = _capture_launch(monkeypatch, ["opencode", "--yolo"])
+    assert captured["command"][1:] == [
+        "--model",
+        f"{start._OPENCODE_PROVIDER}/{MODEL['id']}",
+        "--auto",
+    ]
+    assert "permission" not in json.loads(captured["env"]["OPENCODE_CONFIG_CONTENT"])
+
+
+def test_yolo_opencode_native_auto_clears_prior_config_fallback(fake_studio, tmp_path):
+    fallback = CliRunner().invoke(
+        start.start_app,
+        ["opencode", "--yolo", "--no-launch"],
+    )
+    assert fallback.exit_code == 0, fallback.output
+
+    native = CliRunner().invoke(
+        start.start_app,
+        ["opencode", "--yolo", "--no-launch", "run", "hello"],
+    )
+    assert native.exit_code == 0, native.output
+    assert _launch_command(native.output) == ["opencode", "run", "hello", "--auto"]
+    assert "permission" not in _opencode_inline_config(native.output)
+    config = json.loads((tmp_path / "agents" / "opencode" / "opencode.json").read_text())
+    assert config["permission"] == {
+        "edit": "ask",
+        "bash": "ask",
+        "webfetch": "ask",
+        "external_directory": {"*": "ask"},
+    }
+
+
+@pytest.mark.parametrize(
+    ("version", "expected"),
+    [
+        ("1.17.11", False),
+        ("1.17.12", True),
+        ("opencode 1.18.2", True),
+        ("development build", False),
+    ],
+)
+def test_opencode_native_auto_version_gate(monkeypatch, version, expected):
+    monkeypatch.setattr(start.shutil, "which", lambda _: "/usr/local/bin/opencode")
+    monkeypatch.setattr(start.subprocess, "check_output", lambda *args, **kwargs: version)
+    assert start._opencode_supports_native_auto() is expected
+
+
+def test_opencode_native_auto_assumes_current_without_local_binary(monkeypatch):
+    monkeypatch.setattr(start.shutil, "which", lambda _: None)
+    assert start._opencode_supports_native_auto() is True
+
+
+def test_yolo_opencode_old_version_uses_config_fallback(fake_studio, monkeypatch):
+    monkeypatch.setattr(start.shutil, "which", lambda _: "/usr/local/bin/opencode")
+    monkeypatch.setattr(start.subprocess, "check_output", lambda *args, **kwargs: "1.17.11")
+    result = CliRunner().invoke(
+        start.start_app,
+        ["opencode", "--yolo", "--no-launch", "run", "hello"],
+    )
+    assert result.exit_code == 0, result.output
+    assert _launch_command(result.output) == ["opencode", "run", "hello"]
+    assert _opencode_inline_config(result.output)["permission"] == {
+        "edit": "allow",
+        "bash": "allow",
+        "webfetch": "allow",
+        "external_directory": {"*": "allow"},
+    }
+
+
+@pytest.mark.parametrize(
+    ("args", "expected", "native"),
+    [
+        ([], ["--auto"], True),
+        (["run", "hello"], ["run", "hello", "--auto"], True),
+        (
+            ["run", "hello", "--", "--literal"],
+            ["run", "hello", "--auto", "--", "--literal"],
+            True,
+        ),
+        (["--print-logs", "run", "hello"], ["--print-logs", "run", "hello", "--auto"], True),
+        (["--session", "serve"], ["--session", "serve", "--auto"], True),
+        (["serve"], ["serve"], False),
+        (["--print-logs", "serve"], ["--print-logs", "serve"], False),
+        (["run", "--auto", "hello"], ["run", "--auto", "hello"], True),
+        # Hidden commands that reject --auto fall back like the visible utility ones.
+        (["generate"], ["generate"], False),
+        (["console", "login"], ["console", "login"], False),
+        # --mini ignores --auto (runMini forces auto=false), so use the config fallback.
+        (["--mini"], ["--mini"], False),
+        (["--session", "sid", "--mini"], ["--session", "sid", "--mini"], False),
+    ],
+)
+def test_opencode_native_auto_args(args, expected, native):
+    assert start._opencode_native_auto_args(args, True) == (expected, native)
+    assert start._opencode_native_auto_args(args, False) == (args, False)
+
+
+def test_yolo_opencode_non_agent_subcommand_uses_config_fallback(fake_studio):
+    result = CliRunner().invoke(
+        start.start_app,
+        ["opencode", "--yolo", "--no-launch", "serve"],
+    )
+    assert result.exit_code == 0, result.output
+    command = _launch_command(result.output)
+    assert command == ["opencode", "serve"]
+    assert _opencode_inline_config(result.output)["permission"] == {
+        "edit": "allow",
+        "bash": "allow",
+        "webfetch": "allow",
+        "external_directory": {"*": "allow"},
+    }
+
+
+@pytest.mark.parametrize("passthrough", (["generate"], ["console", "login"], ["--mini"]))
+def test_yolo_opencode_no_auto_command_uses_config_fallback(fake_studio, passthrough):
+    # generate/console are hidden and reject --auto, --mini ignores it: none get --auto,
+    # all keep the config permission fallback.
+    result = CliRunner().invoke(
+        start.start_app,
+        ["opencode", "--yolo", "--no-launch", *passthrough],
+    )
+    assert result.exit_code == 0, result.output
+    assert _launch_command(result.output) == ["opencode", *passthrough]
+    assert _opencode_inline_config(result.output)["permission"] == {
         "edit": "allow",
         "bash": "allow",
         "webfetch": "allow",
@@ -2570,15 +3031,16 @@ def test_openclaw_non_yolo_preserves_full_mode(tmp_path):
 
 
 def test_yolo_command_flags_unmapped_agent_is_empty():
-    # Config-based agents (and any typo) must yield no flag, not a KeyError.
+    # Placement-aware/config-based agents (and any typo) must yield no prefix flag.
     assert start._yolo_command_flags("opencode", True) == []
     assert start._yolo_command_flags("openclaw", True) == []
     assert start._yolo_command_flags("claude", True) == ["--dangerously-skip-permissions"]
     assert start._yolo_command_flags("claude", False) == []
 
 
-def test_yolo_config_agents_add_no_command_flag(fake_studio):
-    # opencode/openclaw auto-approve is config-only; nothing should leak onto argv.
+def test_yolo_config_fallbacks_add_no_legacy_command_flag(fake_studio):
+    # OpenClaw is config-only; OpenCode's append-safe bare recipe uses its config fallback.
+    # Neither should leak a legacy yolo/dangerous alias onto argv.
     for agent in ("opencode", "openclaw"):
         result = CliRunner().invoke(start.start_app, [agent, "--yolo", "--no-launch"])
         assert result.exit_code == 0, result.output
@@ -2619,7 +3081,7 @@ def test_claude_launch_does_not_clear(fake_studio, monkeypatch):
     calls = []
     monkeypatch.setattr(start.click, "clear", lambda: calls.append("clear"))
     monkeypatch.setattr(start.shutil, "which", lambda _: "/usr/local/bin/claude")
-    monkeypatch.setattr(start, "_claude_flags", lambda: [])
+    monkeypatch.setattr(start, "_claude_flags", lambda *a, **k: [])
     monkeypatch.setattr(start.subprocess, "run", lambda command, env: SimpleNamespace(returncode = 0))
     result = CliRunner().invoke(start.start_app, ["claude"])
     assert result.exit_code == 0, result.output
@@ -2678,7 +3140,7 @@ def test_agent_api_key_auto_started_rejected_env_key_falls_back(fake_studio, tmp
 
 
 def test_agent_api_key_auto_started_accepted_key_is_honored(fake_studio, tmp_path):
-    # An explicit key the fresh server accepts (e.g. persisted in this Studio
+    # An explicit key the fresh server accepts (e.g. persisted in this Unsloth
     # home's auth db across restarts) keeps working exactly as before.
     key = start._agent_api_key(BASE, "sk-unsloth-deadbeefdeadbeef", auto_started = True)
     assert key == "sk-unsloth-deadbeefdeadbeef"
@@ -2796,7 +3258,7 @@ def test_persist_bare_opencode_launch_has_no_resume_token(fake_studio, monkeypat
 
 def test_persist_bare_claude_launch_has_no_resume_token(fake_studio, monkeypatch):
     monkeypatch.setattr(start.shutil, "which", lambda _: "/usr/local/bin/claude")
-    monkeypatch.setattr(start, "_claude_flags", lambda: [])
+    monkeypatch.setattr(start, "_claude_flags", lambda *a, **k: [])
     captured = _capture_launch(monkeypatch, ["claude", "--persist"])
     assert "--continue" not in captured["command"]
     assert captured["command"][1:] == ["--model", MODEL["id"]]
@@ -2958,11 +3420,11 @@ def test_hermes_resume_oneshot_rejects_usage_file(monkeypatch, usage_arg):
 def test_native_resume_flag_passes_through_unchanged(fake_studio, monkeypatch):
     # The persistence flag is --persist, NOT --resume, so an agent's own
     # `--resume <id>` (e.g. `unsloth start claude --resume <guid>`) still flows
-    # through to the agent verbatim and is not swallowed as a Studio option.
+    # through to the agent verbatim and is not swallowed as an Unsloth option.
     monkeypatch.setattr(start.shutil, "which", lambda _: "/usr/local/bin/claude")
-    monkeypatch.setattr(start, "_claude_flags", lambda: [])
+    monkeypatch.setattr(start, "_claude_flags", lambda *a, **k: [])
     captured = _capture_launch(monkeypatch, ["claude", "--resume", "some-session-guid"])
     assert captured["command"][-2:] == ["--resume", "some-session-guid"]
-    # Studio never auto-appends its own resume token when the user drives resume.
+    # Unsloth never auto-appends its own resume token when the user drives resume.
     assert captured["command"].count("--resume") == 1
     assert "--continue" not in captured["command"]

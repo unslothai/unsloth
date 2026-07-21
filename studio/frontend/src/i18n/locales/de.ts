@@ -112,10 +112,10 @@ export const de = {
         "Wird verwendet, um gated Modelle zu laden und Artefakte zu pushen.",
       hideToken: "Token verbergen",
       showToken: "Token anzeigen",
-      tokenSaved: "Token gespeichert",
+      tokenValidated: "Token validiert",
       password: "Passwort",
       passwordDescription:
-        "Ändern Sie das Passwort für dieses Studio-Konto.",
+        "Ändern Sie das Passwort für dieses Unsloth-Konto.",
       passwordDialog: {
         trigger: "Passwort ändern",
         title: "Passwort ändern",
@@ -158,7 +158,7 @@ export const de = {
           "Wenn eine OpenAI-kompatible Anfrage ein anderes heruntergeladenes GGUF nennt, wird dieses vor der Auslieferung geladen. Standardmäßig aus; unbekannte Namen liefern weiterhin das geladene Modell aus.",
         idleUnload: "Automatisches Entladen bei Inaktivität",
         idleUnloadDescription:
-          "Entlädt das Modell nach dieser Anzahl inaktiver Sekunden, um VRAM freizugeben; die nächste Anfrage lädt es erneut. 0 hält es geladen.",
+          "Entlädt das Modell nach dieser Anzahl inaktiver Sekunden, um VRAM freizugeben; die nächste Anfrage lädt es erneut. 0 hält es geladen. Minimum 60 Sekunden.",
         idleNeedsEnable:
           "Aktivieren Sie \"Modell je Anfrage wechseln\", damit ein entladenes Modell bei der nächsten Nutzung erneut geladen wird.",
         idleActiveViaEnv:
@@ -167,7 +167,7 @@ export const de = {
           "Einstellungen für automatischen Modellwechsel konnten nicht geladen werden.",
         saveError:
           "Einstellungen für automatischen Modellwechsel konnten nicht gespeichert werden.",
-        idleError: "Geben Sie eine ganze Anzahl an Sekunden ein (0 oder mehr).",
+        idleError: "Geben Sie 0 ein, um das Modell geladen zu halten, oder mindestens 60 Sekunden.",
       },
       previewSharing: {
         sectionTitle: "Vorschau-Freigabe",
@@ -295,7 +295,7 @@ export const de = {
     resources: {
       title: "System",
       description:
-        "Überwachen Sie Hardware und Speicher dieses Studio-Servers.",
+        "Überwachen Sie Hardware und Speicher dieses Unsloth-Servers.",
       liveUpdates: "Live-Updates",
       floatingWindow: "Schwebendes Fenster",
       disableOverlay: "Overlay deaktivieren",

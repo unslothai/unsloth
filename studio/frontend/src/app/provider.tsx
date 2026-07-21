@@ -51,9 +51,12 @@ async function showSetupWindow(isCurrent: WindowLayoutGuard): Promise<void> {
   const { getCurrentWindow, LogicalSize } = await import(
     "@tauri-apps/api/window"
   );
+  const { invoke } = await import("@tauri-apps/api/core");
   if (!isCurrent()) return;
 
   const win = getCurrentWindow();
+  await invoke("reset_app_window_layout_initialized");
+  if (!isCurrent()) return;
   await win.setResizable(false);
   if (!isCurrent()) return;
   await win.setSize(new LogicalSize(SETUP_WINDOW_WIDTH, SETUP_WINDOW_HEIGHT));
@@ -98,18 +101,20 @@ async function applyAppWindowLayout(
   if (!isCurrent()) return;
 
   const win = getCurrentWindow();
-  // Decide first-launch vs restore from the on-disk state file BEFORE touching the
-  // window. Probing the window after restoreStateCurrent is unreliable: on GTK,
-  // set_size on a hidden window is deferred until show(), so innerSize() reads a
-  // stale value and a baseline fallback would overwrite the queued restore. On
-  // macOS the same probe works, hence the inconsistency between prior iterations.
-  const hasSavedState = await invoke<boolean>("has_saved_window_state");
+  // Setup-window activity may create plugin state before the full app is ever
+  // shown, so use a dedicated full-app marker to decide whether restoration is
+  // appropriate. Keep checking plugin state so a missing/corrupt state file
+  // falls back to a monitor-safe centered layout.
+  const [hasInitializedAppLayout, hasSavedState] = await Promise.all([
+    invoke<boolean>("has_initialized_app_window_layout"),
+    invoke<boolean>("has_saved_window_state"),
+  ]);
   if (!isCurrent()) return;
 
   await win.setResizable(true);
   if (!isCurrent()) return;
 
-  if (hasSavedState) {
+  if (hasInitializedAppLayout && hasSavedState) {
     // Subsequent launch: plugin restores size/position/maximized, with built-in
     // off-screen protection for positions saved on a now-disconnected display.
     await restoreStateCurrent(
@@ -144,6 +149,9 @@ async function applyAppWindowLayout(
   });
   if (!isCurrent()) return;
   await enforceMinimumWindowSize(win, LogicalSize, isCurrent);
+
+  if (!isCurrent()) return;
+  await invoke("mark_app_window_layout_initialized");
 }
 
 async function showWindowFallback(): Promise<void> {
@@ -412,7 +420,7 @@ function TauriWrapper({ children }: { children: ReactNode }) {
       {desktopBooting ? (
         <div className="pointer-events-none fixed inset-x-0 bottom-5 z-[9999] flex justify-center px-4">
           <div className="absolute inset-x-4 bottom-16 mx-auto flex max-w-[520px] flex-col items-center gap-2 rounded-2xl border border-border/70 bg-background/95 px-6 py-5 text-center shadow-xl">
-            <div className="font-medium text-sm">Preparing Studio</div>
+            <div className="font-medium text-sm">Preparing Unsloth</div>
             <div className="text-muted-foreground text-xs">
               The local backend is ready. Signing in to your desktop session
               before loading chats.

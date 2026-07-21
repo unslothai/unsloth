@@ -1,7 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-import { ModelDeleteAction } from "@/components/assistant-ui/model-selector/model-delete-action";
 import {
   Tooltip,
   TooltipContent,
@@ -9,18 +8,26 @@ import {
 } from "@/components/ui/tooltip";
 import {
   type GgufVariantDetail,
-  deleteCachedModel,
   deleteCachedDataset,
+  deleteCachedModel,
   formatLocalUpdated,
   listGgufVariants,
   useGgufVariantsCacheVersion,
-} from "@/features/hub/inventory";
-import { classifyUnslothSupport } from "@/features/hub/hooks/use-hub-model-search";
-import { formatBytes, formatRelativeShort } from "@/features/hub/lib/format";
-import { ggufVariantDisplayLabel } from "@/features/hub/lib/gguf-variant-sort";
-import { modelIdsMatch } from "@/features/hub/lib/model-identity";
+} from "../inventory";
+import {
+  classifyUnslothSupport,
+  formatBytes,
+  formatRelativeShort,
+  ggufVariantDisplayLabel,
+  useHfTokenStore,
+} from "@/features/hub";
+import { modelIdsMatch } from "../lib/model-identity";
+import {
+  ModelRowMenu,
+  pinKey,
+  usePinnedModelsStore,
+} from "@/features/model-picker";
 import { cn, formatCompact } from "@/lib/utils";
-import { useHfTokenStore } from "@/features/hub/stores/hf-token-store";
 import {
   Download01Icon,
   FavouriteIcon,
@@ -39,6 +46,7 @@ import {
   useRef,
   useState,
 } from "react";
+import { paramLabelFromId } from "../lib/view-models";
 import type {
   CachedInventoryRow,
   DiscoverRow,
@@ -46,7 +54,6 @@ import type {
 } from "../types";
 import { OwnerAvatar } from "./owner-avatar";
 import { AccessGlyphs } from "./shared";
-import { paramLabelFromId } from "../lib/view-models";
 
 const COARSE_POINTER =
   typeof window !== "undefined" &&
@@ -142,15 +149,15 @@ function CachedSizeChipLive({
   );
 
   const rows: Array<{ label: string; size_bytes: number }> | null =
-    !needsVariantFetch
-      ? [{ label: repoId, size_bytes: totalBytes }]
-      : currentVariantState.status === "loaded" &&
-          currentVariantState.variants.length > 0
+    needsVariantFetch
+      ? currentVariantState.status === "loaded" &&
+        currentVariantState.variants.length > 0
         ? currentVariantState.variants.map((variant) => ({
             label: ggufVariantDisplayLabel(variant),
             size_bytes: variant.size_bytes,
           }))
-        : null;
+        : null
+      : [{ label: repoId, size_bytes: totalBytes }];
   const variantMessage =
     currentVariantState.status === "loading"
       ? "Loading downloaded variants..."
@@ -275,7 +282,9 @@ function CatalogRow({
         )}
       />
       <CatalogRowInteractiveContext.Provider value={interactive}>
-        <div className={cn("pointer-events-none relative", card && "z-[1] w-full")}>
+        <div
+          className={cn("pointer-events-none relative", card && "z-[1] w-full")}
+        >
           {children}
         </div>
       </CatalogRowInteractiveContext.Provider>
@@ -653,7 +662,9 @@ export const InventoryRow = memo(function InventoryRow({
       <div className="hidden shrink-0 items-center gap-1.5 sm:flex">
         {/* Format already shows as the status dot, so the pill stays neutral. */}
         {formatLabel && <span className="hub-chip">{formatLabel}</span>}
-        {paramLabel && <span className="hub-chip tabular-nums">{paramLabel}</span>}
+        {paramLabel && (
+          <span className="hub-chip tabular-nums">{paramLabel}</span>
+        )}
         {quantLabel && (
           <span className="hub-chip font-mono text-[10.5px] uppercase">
             {quantLabel}
@@ -697,9 +708,7 @@ export const InventoryRow = memo(function InventoryRow({
   const compactMarkers =
     partialRepoId || unsupported ? (
       <span className="flex shrink-0 items-center gap-1">
-        {partialRepoId && (
-          <StatusDot tone="warning" label="Partial download" />
-        )}
+        {partialRepoId && <StatusDot tone="warning" label="Partial download" />}
         {unsupported && (
           <StatusDot tone="danger" label="May not be supported yet" />
         )}
@@ -718,37 +727,72 @@ export const InventoryRow = memo(function InventoryRow({
     </span>
   );
 
+  const pinnedKeys = usePinnedModelsStore((s) => s.pinned);
+  const togglePinned = usePinnedModelsStore((s) => s.togglePinned);
+  const rowPinned =
+    cacheDeletableRepoId != null &&
+    pinnedKeys.includes(pinKey(cacheDeletableRepoId));
   const deleteAction =
     canDelete && cacheDeletableRepoId ? (
-      <ModelDeleteAction
-        ariaLabel={`Delete ${cacheDeletableRepoId}`}
-        title={isDataset ? "Delete cached dataset?" : "Delete cached model?"}
-        description={
-          <>
-            This will remove{" "}
-            <span className="font-medium text-foreground">
-              {cacheDeletableRepoId}
-            </span>{" "}
-            {isDataset
-              ? "and its downloaded files"
-              : row.isGguf
-                ? "and all of its downloaded quantizations"
-                : "and all of its downloaded files"}
-            {row.kind === "cache" ? ` (${formatBytes(row.bytes)})` : ""} from
-            disk. You can re-download it later.
-          </>
-        }
-        successMessage={`Deleted ${cacheDeletableRepoId}`}
+      <ModelRowMenu
+        ariaLabel={`More options for ${cacheDeletableRepoId}`}
         buttonClassName="pointer-events-auto hub-modal-pe-guard p-2 opacity-0 transition-opacity group-hover/row:opacity-100 focus-visible:opacity-100 data-[state=open]:opacity-100 [@media(pointer:coarse)]:opacity-100"
         iconClassName="size-4"
-        onConfirm={async () => {
-          if (isDataset) {
-            await deleteCachedDataset(cacheDeletableRepoId);
-          } else {
-            await deleteCachedModel(cacheDeletableRepoId);
-          }
+        pin={
+          isDataset
+            ? undefined
+            : {
+                pinned: rowPinned,
+                pinLabel: "Pin to top",
+                unpinLabel: "Unpin",
+                onToggle: () => togglePinned(cacheDeletableRepoId),
+              }
+        }
+        cachePath={isDataset ? undefined : { repoId: cacheDeletableRepoId }}
+        del={{
+          title: isDataset ? "Delete cached dataset?" : "Delete cached model?",
+          description: (
+            <>
+              This will remove{" "}
+              <span className="font-medium text-foreground">
+                {cacheDeletableRepoId}
+              </span>{" "}
+              {isDataset
+                ? "and its downloaded files"
+                : row.isGguf
+                  ? "and all of its downloaded quantizations"
+                  : "and all of its downloaded files"}
+              {row.kind === "cache" ? ` (${formatBytes(row.bytes)})` : ""} from
+              disk. You can re-download it later.
+            </>
+          ),
+          successMessage: `Deleted ${cacheDeletableRepoId}`,
+          onConfirm: async () => {
+            if (isDataset) {
+              await deleteCachedDataset(cacheDeletableRepoId);
+            } else {
+              await deleteCachedModel(cacheDeletableRepoId);
+              // Deleted repos can't stay pinned: drop the repo pin and any of
+              // its per-quant pins so stale rows don't linger up top.
+              const { pinned, togglePinned: toggle } =
+                usePinnedModelsStore.getState();
+              for (const key of pinned) {
+                if (
+                  key === pinKey(cacheDeletableRepoId) ||
+                  key.startsWith(`${cacheDeletableRepoId}::`)
+                ) {
+                  toggle(
+                    cacheDeletableRepoId,
+                    key.includes("::")
+                      ? key.slice(key.indexOf("::") + 2)
+                      : undefined,
+                  );
+                }
+              }
+            }
+          },
+          onDeleted: onChange,
         }}
-        onDeleted={onChange}
       />
     ) : null;
 
