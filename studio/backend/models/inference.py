@@ -832,7 +832,7 @@ class ChatMessage(BaseModel):
             "the Jinja template can render it back into <think>...</think> "
             "blocks when `preserve_thinking=true` is set. Without this field "
             "the proxy silently drops the value (Pydantic default "
-            "`extra=\"ignore\"`), and multi-turn reasoning collapses to empty "
+            '`extra="ignore"`), and multi-turn reasoning collapses to empty '
             "thinking blocks."
         ),
     )
