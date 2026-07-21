@@ -2623,6 +2623,17 @@ _INLINE_CODE_FLAGS = frozenset({"-c", "-e", "-E", "-r", "--eval", "--exec"})
 _HIGH_RISK_GIT_SUBCOMMANDS = frozenset({"clean"})
 _HIGH_RISK_GIT_RESET_FLAGS = frozenset({"--hard"})
 _HIGH_RISK_GIT_PUSH_FLAGS = frozenset({"-f", "--force", "--force-with-lease"})
+# git global options that take a separate value token (git -C repo clean, git
+# --git-dir d clean); the value must be consumed so it is not mistaken for the
+# subcommand. Attached forms (-C=..., --git-dir=...) carry their own value.
+_GIT_GLOBAL_VALUE_FLAGS = frozenset(
+    {"-C", "-c", "--git-dir", "--work-tree", "--namespace", "--exec-path", "--config-env"}
+)
+# Shells whose `-c PAYLOAD` runs an inline program: the payload is recursively
+# screened, so a high-risk command wrapped in `bash -c '...'` / `sh -c '...'`
+# (git clean, truncate, ... -- destructive but not in the hard-block set) is
+# still caught. The hard-block only recurses for its own smaller command set.
+_SHELL_C_INTERPRETERS = frozenset({"sh", "bash", "zsh", "dash", "ksh", "fish", "ash"})
 # A command synthesized by a command substitution at command position
 # ($(printf rm) -rf build, `printf rm` ...) cannot be read statically. A
 # substitution in argument position (echo $(date), make $(FILES)) is left alone.
@@ -2651,26 +2662,29 @@ def _command_is_network_exec_or_exfil(command: str) -> bool:
     return any(t.split("=", 1)[0] in _NET_UPLOAD_FLAGS for t in tokens)
 
 
-def _terminal_is_high_risk(command: str) -> bool:
+def _terminal_is_high_risk(command: str, _depth: int = 0) -> bool:
     """High-risk terminal command for auto mode: credential/secret access,
     privilege escalation, destructive/persistence changes, or network
     exec/exfil. Ordinary dev commands run without a prompt. Fails closed
-    (prompts) on an unparseable command."""
+    (prompts) on an unparseable command. ``_depth`` bounds the recursion into
+    shell ``-c`` payloads."""
     if not command or not command.strip():
         return False
     # A credential/secret path read or write, or a sandbox escape (../), asks.
     if _command_references_sensitive(command):
-        return True
-    if _command_is_network_exec_or_exfil(command):
-        return True
-    # A command substitution at command position generates the command Bash runs.
-    if _COMMAND_SUBST_AT_CMD_RE.search(command):
         return True
     # Newlines separate commands in a shell but read as whitespace to shlex.
     normalized = command.replace("\r\n", ";").replace("\n", ";").replace("\r", ";")
     # A verb hidden behind an assignment (c=rm; $c x) or a default parameter
     # (${c:-rm}) is expanded so the resolved token is scanned too.
     expanded = _expand_shell_assignments(_expand_param_defaults(normalized))
+    # Run the network exfil check over the expanded form too, so a curl/wget
+    # name assembled from variables (c=cu d=rl; $c$d -F ...) is still seen.
+    if _command_is_network_exec_or_exfil(command) or _command_is_network_exec_or_exfil(expanded):
+        return True
+    # A command substitution at command position generates the command Bash runs.
+    if _COMMAND_SUBST_AT_CMD_RE.search(command):
+        return True
     for text in {normalized, expanded}:
         try:
             lexer = shlex.shlex(text, posix = True, punctuation_chars = ";&|()")
@@ -2693,6 +2707,8 @@ def _terminal_is_high_risk(command: str) -> bool:
         scan_forward = False  # a forwarding command (find/xargs/...) precedes another command
         current_command = ""  # the resolved command whose flags / git subcommand we judge
         git_subcommand = ""  # the first positional after `git`
+        shell_c_pending = False  # a shell `-c` precedes its inline payload
+        git_glob_pending = False  # a git global option (-C repo) precedes its value
         for token in tokens:
             if (
                 token in _SHELL_SEPARATORS
@@ -2704,6 +2720,8 @@ def _terminal_is_high_risk(command: str) -> bool:
                 scan_forward = False
                 current_command = ""
                 git_subcommand = ""
+                shell_c_pending = False
+                git_glob_pending = False
                 continue
             if token.startswith("-"):
                 flag = token.split("=", 1)[0]
@@ -2711,6 +2729,9 @@ def _terminal_is_high_risk(command: str) -> bool:
                 # executes an arbitrary program the terminal path never screens.
                 if current_command in _INLINE_CODE_INTERPRETERS and flag in _INLINE_CODE_FLAGS:
                     return True
+                # A shell `-c PAYLOAD` runs its quoted payload; screen it recursively.
+                if current_command in _SHELL_C_INTERPRETERS and flag == "-c":
+                    shell_c_pending = True
                 # git reset --hard discards the working tree; git push --force
                 # overwrites a remote ref.
                 if current_command == "git":
@@ -2718,6 +2739,10 @@ def _terminal_is_high_risk(command: str) -> bool:
                         return True
                     if git_subcommand == "push" and flag in _HIGH_RISK_GIT_PUSH_FLAGS:
                         return True
+                    # A git global option that takes a separate value (git -C repo
+                    # clean) precedes its value, not the subcommand.
+                    if not git_subcommand and "=" not in token and flag in _GIT_GLOBAL_VALUE_FLAGS:
+                        git_glob_pending = True
                 continue
             if _ASSIGNMENT_RE.match(token):
                 # PATH/LD_PRELOAD-style assignments hijack command lookup/loading.
@@ -2726,6 +2751,18 @@ def _terminal_is_high_risk(command: str) -> bool:
                 continue
             raw = token.strip(";&|()`{}")
             if not raw:
+                continue
+            # The payload of a shell `-c`: recursively screen it so a high-risk
+            # command wrapped in `bash -c '...'` is caught (bounded recursion).
+            if shell_c_pending:
+                shell_c_pending = False
+                if _depth < 3 and _terminal_is_high_risk(raw, _depth + 1):
+                    return True
+                expect_command = False
+                continue
+            # The value of a git global option (git -C repo clean): not the subcommand.
+            if git_glob_pending:
+                git_glob_pending = False
                 continue
             # A wrapper's bare duration argument (timeout 5 rm) is not the command.
             if prefix_pending and _WRAPPER_DURATION_RE.fullmatch(raw):
@@ -2806,7 +2843,16 @@ def _python_is_high_risk(code: str) -> bool:
         if arg is None:
             continue
         if isinstance(arg, ast.Constant) and isinstance(arg.value, (str, bytes)):
-            continue  # a literal source string is harmless
+            # A literal source is only as safe as the code it runs: exec("x=1")
+            # is fine, but exec("import urllib.request; ...urlopen(...)") egresses.
+            # Screen the literal recursively; __import__("os") of a module name is
+            # not analyzable as code, so a literal name stays safe.
+            if name == "__import__":
+                continue
+            inner = arg.value.decode("utf-8", "replace") if isinstance(arg.value, bytes) else arg.value
+            if _python_is_high_risk(inner):
+                return True
+            continue
         return True
     return False
 

