@@ -2752,8 +2752,10 @@ def _terminal_is_high_risk(command: str, _depth: int = 0) -> bool:
                         payload = token.split("=", 1)[1]
                     elif token == "-S" or flag == "--split-string":
                         shell_c_pending = True  # payload is the next token
-                    if payload is not None and _depth < 3 and _terminal_is_high_risk(
-                        payload, _depth + 1
+                    if (
+                        payload is not None
+                        and _depth < 3
+                        and _terminal_is_high_risk(payload, _depth + 1)
                     ):
                         return True
                 # git reset --hard discards the working tree; git push --force
