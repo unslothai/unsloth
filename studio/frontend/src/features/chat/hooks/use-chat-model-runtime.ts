@@ -906,12 +906,16 @@ export function useChatModelRuntime() {
                 presetSource: useChatRuntimeStore.getState().activePresetSource,
               }),
             );
-            // Qwen3.5/3.6 small models (0.8B, 2B, 4B, 9B) disable thinking by default
+            // Qwen3.5/3.6 small models (0.8B, 2B, 4B, 9B) disable thinking by default.
+            // Anchored regex: first "Xb" / "X.Xb" after start-of-string or
+            // [-_/.] so the version literal in "qwen3.5" / "qwen3.6" doesn't
+            // match first, and for "Qwen3.5-35B-A3B" the result is 35 (total
+            // params), not 3 (MoE active params).
             let reasoningDefault = loadResponse.supports_reasoning ?? false;
             if (reasoningDefault) {
               const mid = modelId.toLowerCase();
               if (mid.includes("qwen3.5") || mid.includes("qwen3.6")) {
-                const sizeMatch = mid.match(/(\d+\.?\d*)\s*b/);
+                const sizeMatch = mid.match(/(?:^|[-_/.])(\d+\.?\d*)b/);
                 if (sizeMatch && parseFloat(sizeMatch[1]) < 9) {
                   reasoningDefault = false;
                 }

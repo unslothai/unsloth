@@ -7529,18 +7529,22 @@ class LlamaCppBackend:
                     thinking_default = True
                     mid = (model_identifier or "").lower()
                     if "qwen3.5" in mid or "qwen3.6" in mid:
-                        size_val = _extract_model_size_b(mid)
-                        if size_val is not None and size_val < 9:
+                        # First "Xb" / "X.Xb" size in the model id, anchored
+                        # to start-of-string or after [-_/.] so the version
+                        # literal in "qwen3.5" / "qwen3.6" doesn't match first.
+                        # For "Qwen3.5-35B-A3B" this returns 35 (total params),
+                        # not 3 (MoE active params) -- see also the frontends'
+                        # mirrored regex in use-chat-model-runtime.ts and
+                        # apply-inference-status-to-store.ts.
+                        size_match = re.search(r"(?:^|[-_/.])(\d+\.?\d*)b", mid)
+                        if size_match and float(size_match.group(1)) < 9:
                             thinking_default = False
                     self._reasoning_default = thinking_default
                     reasoning_kw = self._reasoning_kwargs(thinking_default)
-                    # preserve_thinking is an independent kwarg. Default it OFF
-                    # at launch so direct OpenAI-compatible callers that omit the
-                    # field match the UI's default-off behavior (the bundled
-                    # gemma-4 template also defaults it false; the frontend sends
-                    # preserve_thinking per request once toggled on).
+                    # preserve_thinking defaults ON so historical thinking
+                    # blocks are kept in context for reasoning models.
                     if self._supports_preserve_thinking:
-                        reasoning_kw["preserve_thinking"] = False
+                        reasoning_kw["preserve_thinking"] = True
                     cmd.extend(
                         [
                             "--chat-template-kwargs",
