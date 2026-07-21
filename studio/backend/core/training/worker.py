@@ -90,6 +90,72 @@ _FAST_PATH_HOOKS_SKIP_ENV = "UNSLOTH_STUDIO_SKIP_FAST_PATH_HOOKS"
 # run_training_process() and isn't GC'd mid-run.
 _WINDOWS_ROCM_GROUPED_MM_LIB = None
 
+
+def _install_grouped_mm_cpu_fallback(torch_mod, logger, label):
+    """Register a Python mm/bmm fallback for torch._grouped_mm and return the Library.
+
+    RDNA4 (gfx1200/gfx1201) ships a null HIP _grouped_mm kernel on ROCm <= 7.12
+    (fixed in 7.13; ROCm/TheRock #5284). JitDecomp dispatches _grouped_mm to the
+    null kernel and crashes; overriding the CUDA dispatch key bypasses it. Shared
+    by the Windows and Linux ROCm guards. Keep the returned Library referenced so
+    the registration outlives the caller.
+    """
+    import warnings as _warnings
+
+    _gm_lib = torch_mod.library.Library("aten", "IMPL")
+
+    def _grouped_mm_safe_impl(self, mat2, offs = None, bias = None, out_dtype = None):
+        """Python mm/bmm fallback for _grouped_mm on gfx120X (null HIP kernel, ROCm <= 7.12)."""
+        _t = torch_mod
+        if offs is None:
+            # No offsets: 2-D -> mm, 3-D batched -> bmm (unconditional mm broke 3-D MoE).
+            if self.dim() == 3 and mat2.dim() == 3:
+                result = _t.bmm(self.contiguous(), mat2.contiguous())
+            elif self.dim() == 3 and mat2.dim() == 2:
+                result = _t.matmul(self.contiguous(), mat2.contiguous())
+            elif self.dim() == 2 and mat2.dim() == 3:
+                result = _t.matmul(self.contiguous(), mat2.contiguous())
+            else:
+                result = _t.mm(self.contiguous(), mat2.contiguous())
+        else:
+            # Grouped: offs[i] is the exclusive end-row of group i.
+            offs_list = offs.tolist()
+            pieces = []
+            prev = 0
+            for idx, end in enumerate(offs_list):
+                end = int(end)
+                a_part = self[prev:end].contiguous()
+                b_part = mat2[idx].contiguous() if mat2.dim() == 3 else mat2.contiguous()
+                pieces.append(_t.mm(a_part, b_part))
+                prev = end
+            # Include trailing rows not covered by offs.
+            if prev < self.shape[0]:
+                a_tail = self[prev:].contiguous()
+                b_tail = mat2[-1].contiguous() if mat2.dim() == 3 else mat2.contiguous()
+                pieces.append(_t.mm(a_tail, b_tail))
+            result = (
+                _t.cat(pieces, dim = 0)
+                if pieces
+                else _t.zeros(0, mat2.shape[-1], device = self.device, dtype = self.dtype)
+            )
+        if bias is not None:
+            result = result + bias
+        if out_dtype is not None:
+            result = result.to(out_dtype)
+        elif result.dtype != self.dtype:
+            result = result.to(self.dtype)
+        return result
+
+    with _warnings.catch_warnings():
+        _warnings.simplefilter("ignore")
+        _gm_lib.impl("_grouped_mm", _grouped_mm_safe_impl, "CUDA")
+    logger.info(
+        "%s: patched _grouped_mm CUDA dispatch (null HIP kernel on gfx120X, "
+        "ROCm <= 7.12 -- bypassed with Python mm fallback)",
+        label,
+    )
+    return _gm_lib
+
 # Subprocesses don't inherit os.add_dll_directory registrations. Replicate
 # main.py's Windows ROCm DLL setup so the first `import torch` finds
 # amdhip64.dll. Handles retained at module scope so they aren't GC'd.
@@ -2689,80 +2755,8 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
             # so 7.13+ uses the real GPU kernel.
             if not _hip_ver_at_least(7, 13):
                 try:
-                    import warnings as _warnings
-
-                    _gm_lib = _torch_for_rocm.library.Library("aten", "IMPL")
-
-                    def _grouped_mm_safe_impl(
-                        self,
-                        mat2,
-                        offs = None,
-                        bias = None,
-                        out_dtype = None,
-                    ):
-                        """Python mm/bmm fallback for _grouped_mm on gfx1200 (null HIP kernel, ROCm ≤ 7.12)."""
-                        _t = _torch_for_rocm
-                        if offs is None:
-                            # No offsets: 2-D -> mm, 3-D batched -> bmm
-                            # (unconditional mm broke 3-D MoE).
-                            if self.dim() == 3 and mat2.dim() == 3:
-                                result = _t.bmm(self.contiguous(), mat2.contiguous())
-                            elif self.dim() == 3 and mat2.dim() == 2:
-                                # Broadcast 2-D mat2 across the batch dim.
-                                result = _t.matmul(self.contiguous(), mat2.contiguous())
-                            elif self.dim() == 2 and mat2.dim() == 3:
-                                # Broadcast 2-D self across batch via matmul.
-                                result = _t.matmul(self.contiguous(), mat2.contiguous())
-                            else:
-                                result = _t.mm(self.contiguous(), mat2.contiguous())
-                        else:
-                            # Grouped: offs[i] is the exclusive end-row of group i.
-                            offs_list = offs.tolist()
-                            pieces = []
-                            prev = 0
-                            for idx, end in enumerate(offs_list):
-                                end = int(end)
-                                a_part = self[prev:end].contiguous()
-                                if mat2.dim() == 3:
-                                    b_part = mat2[idx].contiguous()
-                                else:
-                                    b_part = mat2.contiguous()
-                                pieces.append(_t.mm(a_part, b_part))
-                                prev = end
-                            # Include trailing rows not covered by offs.
-                            if prev < self.shape[0]:
-                                a_tail = self[prev:].contiguous()
-                                b_tail = (
-                                    mat2[-1].contiguous() if mat2.dim() == 3 else mat2.contiguous()
-                                )
-                                pieces.append(_t.mm(a_tail, b_tail))
-                            result = (
-                                _t.cat(pieces, dim = 0)
-                                if pieces
-                                else _t.zeros(
-                                    0,
-                                    mat2.shape[-1],
-                                    device = self.device,
-                                    dtype = self.dtype,
-                                )
-                            )
-                        if bias is not None:
-                            result = result + bias
-                        if out_dtype is not None:
-                            result = result.to(out_dtype)
-                        elif result.dtype != self.dtype:
-                            result = result.to(self.dtype)
-                        return result
-
-                    with _warnings.catch_warnings():
-                        _warnings.simplefilter("ignore")
-                        _gm_lib.impl("_grouped_mm", _grouped_mm_safe_impl, "CUDA")
-
-                    _WINDOWS_ROCM_GROUPED_MM_LIB = _gm_lib  # prevent GC
-                    logger.info(
-                        "Windows ROCm: patched _grouped_mm CUDA dispatch "
-                        "(null HIP kernel on gfx1200, ROCm ≤ 7.12 — "
-                        "bypassed with Python mm fallback)"
+                    _WINDOWS_ROCM_GROUPED_MM_LIB = _install_grouped_mm_cpu_fallback(
+                        _torch_for_rocm, logger, "Windows ROCm"
                     )
                 except Exception as _patch_exc:
                     logger.warning(
@@ -2775,6 +2769,33 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
                     "Windows ROCm: HIP >= 7.13 — _grouped_mm kernel is functional, "
                     "skipping Python fallback (AMD fixed gfx1200 null kernel in ROCm 7.13)"
                 )
+
+    # ── 1f-linux. Linux ROCm RDNA4 _grouped_mm null kernel ──
+    # The guard above is win32-only; RDNA4 (gfx1200/gfx1201) hits the same null
+    # HIP _grouped_mm kernel on Linux at ROCm <= 7.12 (fixed in 7.13;
+    # ROCm/TheRock #5284). Gate on arch + HIP < 7.13 so NVIDIA/CUDA and non-RDNA4
+    # AMD are never touched; no-op on fixed runtimes.
+    if sys.platform.startswith("linux") and _hw.IS_ROCM:
+        try:
+            _torch_lin = sys.modules.get("torch")
+            if _torch_lin is not None and _torch_lin.cuda.is_available():
+                _lin_arch, _ = _rocm_classify_unified_memory(
+                    _torch_lin.cuda.get_device_properties(0)
+                )
+                _hip_parts = [
+                    int(x)
+                    for x in str(getattr(_torch_lin.version, "hip", "") or "").split(".")[:2]
+                    if x.isdigit()
+                ]
+                _hip_lt_713 = len(_hip_parts) == 2 and (_hip_parts[0], _hip_parts[1]) < (7, 13)
+                if _lin_arch.lower() in ("gfx1200", "gfx1201") and _hip_lt_713:
+                    _WINDOWS_ROCM_GROUPED_MM_LIB = _install_grouped_mm_cpu_fallback(
+                        _torch_lin, logger, "Linux ROCm gfx120X"
+                    )
+        except Exception as _gm_lin_exc:
+            logger.warning(
+                "Linux ROCm gfx120X: could not patch _grouped_mm: %s", _gm_lin_exc
+            )
 
     # ── 1g. ROCm OOM guard ──
     # On ROCm, exhausting VRAM can hang the HIP driver instead of raising.
