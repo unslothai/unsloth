@@ -7563,8 +7563,9 @@ class LlamaCppBackend:
                 else:
                     self._api_key = None
 
-                # Windows + full offload: disable KV checkpoints (WDDM/PCI-E
-                # overhead). CPU/partial offload keeps prompt caching. #5692.
+                # Windows + full offload: drop the host-RAM KV checkpoints that cause
+                # WDDM/PCI-E overhead, but keep prompt caching (in-VRAM prefix reuse) so
+                # a repeated prompt is not re-prefilled on every request. #5692.
                 if sys.platform == "win32" and full_offload_tuning_active:
                     unsupported_cache_flags: list[str] = []
                     if server_caps.get("supports_cache_ram"):
@@ -7575,11 +7576,6 @@ class LlamaCppBackend:
                         cmd.extend(["--ctx-checkpoints", "0"])
                     else:
                         unsupported_cache_flags.append("--ctx-checkpoints")
-                    if server_caps.get("supports_no_cache_prompt"):
-                        cmd.append("--no-cache-prompt")
-                        self._prompt_cache_disabled = True
-                    else:
-                        unsupported_cache_flags.append("--no-cache-prompt")
                     if unsupported_cache_flags:
                         logger.info(
                             "Skipping unsupported Windows cache flags for llama-server: %s",
@@ -9908,6 +9904,75 @@ class LlamaCppBackend:
             logger.debug("Could not close httpx client", exc_info = True)
 
     @staticmethod
+    def _install_cancel_aware_read(
+        client: "httpx.Client",
+        cancel_event: threading.Event,
+        response: Optional["httpx.Response"] = None,
+        poll_s: float = 0.2,
+    ) -> None:
+        """Wrap the httpcore stream so the reader interrupts its own blocked recv() on cancel.
+
+        A cross-thread socket shutdown wakes a parked recv() on POSIX but not on
+        Windows (Winsock), so read in short slices and poll cancel_event between them
+        (plain or TLS); slice timeouts are swallowed so a slow-but-alive stream survives.
+        httpcore snapshots request.extensions["timeout"]["read"] once at body start, so
+        given ``response`` we re-read the live value per call to honor the post-first-token
+        stall timeout instead of the long prefill timeout."""
+        import httpcore
+
+        def _live_read_timeout() -> Optional[float]:
+            if response is None:
+                return None
+            try:
+                ext = response.request.extensions.get("timeout")
+                if isinstance(ext, dict):
+                    value = ext.get("read")
+                    if isinstance(value, (int, float)):
+                        return float(value)
+            except Exception:
+                pass
+            return None
+
+        try:
+            pool = getattr(getattr(client, "_transport", None), "_pool", None)
+            for connection in list(getattr(pool, "_connections", []) or []):
+                inner = getattr(connection, "_connection", None)
+                stream = getattr(inner, "_network_stream", None)
+                if stream is None or getattr(stream, "_unsloth_cancel_wrapped", False):
+                    continue
+                orig_read = stream.read
+
+                def read(
+                    max_bytes,
+                    timeout = None,
+                    _orig = orig_read,
+                ):
+                    live = _live_read_timeout()
+                    effective = live if live is not None else timeout
+                    deadline = None if effective is None else time.monotonic() + effective
+                    while True:
+                        if cancel_event.is_set():
+                            raise httpcore.ReadError("stream cancelled by user")
+                        if deadline is None:
+                            step = poll_s
+                        else:
+                            remaining = deadline - time.monotonic()
+                            if remaining <= 0:
+                                raise httpcore.ReadTimeout("read operation timed out")
+                            step = min(poll_s, remaining)
+                        try:
+                            return _orig(max_bytes, timeout = step)
+                        except httpcore.ReadTimeout:
+                            if deadline is not None and time.monotonic() >= deadline:
+                                raise
+                            continue  # slow but alive: keep reading
+
+                stream.read = read
+                stream._unsloth_cancel_wrapped = True
+        except Exception:
+            logger.debug("Could not install cancel-aware read", exc_info = True)
+
+    @staticmethod
     @contextlib.contextmanager
     def _stream_with_retry(
         client: "httpx.Client",
@@ -9964,6 +10029,11 @@ class LlamaCppBackend:
                 headers = headers,
             ) as response:
                 _response_ref[0] = response
+                if cancel_event is not None:
+                    # Portable mid-stream cancel: the reader polls cancel itself, so
+                    # Stop interrupts a stalled read where the watcher's Windows socket
+                    # shutdown does not. Pass response to honor the live stall timeout.
+                    LlamaCppBackend._install_cancel_aware_read(client, cancel_event, response)
                 if cancel_event is not None and cancel_event.is_set():
                     raise _LlamaStreamCancelled
                 yield response

@@ -2134,7 +2134,7 @@ exit 0
         substep "upgrading unsloth in migrated environment..."
         if ($SkipTorch) {
             # No-torch: install unsloth + unsloth-zoo --no-deps, then runtime deps (typer, safetensors, transformers, etc.) --no-deps.
-            $baseInstallExit = Invoke-InstallCommandRetry -Label "install unsloth (migrated no-torch)" { uv pip install --python $VenvPython --no-deps --reinstall-package unsloth --reinstall-package unsloth-zoo "unsloth>=2026.7.3" "unsloth-zoo>=2026.7.3" }
+            $baseInstallExit = Invoke-InstallCommandRetry -Label "install unsloth (migrated no-torch)" { uv pip install --python $VenvPython --no-deps --reinstall-package unsloth --reinstall-package unsloth-zoo "unsloth>=2026.7.4" "unsloth-zoo>=2026.7.4" }
             if ($baseInstallExit -eq 0) {
                 # Resolve pydantic WITH deps so pip pins the matching pydantic-core (no-torch-runtime.txt below is --no-deps); all transitive deps are torch-free.
                 $baseInstallExit = Invoke-InstallCommandRetry -Label "install pydantic" { uv pip install --python $VenvPython pydantic }
@@ -2146,7 +2146,7 @@ exit 0
                 }
             }
         } else {
-            $baseInstallExit = Invoke-InstallCommandRetry -Label "install unsloth (migrated)" { uv pip install --python $VenvPython --reinstall-package unsloth --reinstall-package unsloth-zoo "unsloth>=2026.7.3" "unsloth-zoo>=2026.7.3" }
+            $baseInstallExit = Invoke-InstallCommandRetry -Label "install unsloth (migrated)" { uv pip install --python $VenvPython --reinstall-package unsloth --reinstall-package unsloth-zoo "unsloth>=2026.7.4" "unsloth-zoo>=2026.7.4" }
         }
         if ($baseInstallExit -ne 0) {
             Write-Host "[ERROR] Failed to install unsloth (exit code $baseInstallExit)" -ForegroundColor Red
@@ -2253,7 +2253,7 @@ exit 0
         substep "installing unsloth (this may take a few minutes)..."
         if ($SkipTorch) {
             # No-torch: install unsloth + unsloth-zoo --no-deps, then runtime deps (typer, safetensors, transformers, etc.) --no-deps.
-            $baseInstallExit = Invoke-InstallCommandRetry -Label "install unsloth (no-torch)" { uv pip install --python $VenvPython --no-deps --upgrade-package unsloth --upgrade-package unsloth-zoo "unsloth>=2026.7.3" "unsloth-zoo>=2026.7.3" }
+            $baseInstallExit = Invoke-InstallCommandRetry -Label "install unsloth (no-torch)" { uv pip install --python $VenvPython --no-deps --upgrade-package unsloth --upgrade-package unsloth-zoo "unsloth>=2026.7.4" "unsloth-zoo>=2026.7.4" }
             if ($baseInstallExit -eq 0) {
                 # Same pydantic-with-deps trick as the migrated branch.
                 $baseInstallExit = Invoke-InstallCommandRetry -Label "install pydantic" { uv pip install --python $VenvPython pydantic }
@@ -2268,11 +2268,11 @@ exit 0
             # Freeze the installed torch trio so this with-deps resolve can't downgrade the pinned +cuXXX/+rocm build (twin of install.sh's _build_unsloth_torch_overrides).
             $script:TorchOverridesFile = New-UnslothTorchOverridesFile -PythonExe $VenvPython
             if ($script:TorchOverridesFile) {
-                $baseInstallExit = Invoke-InstallCommandRetry -Label "install unsloth (local)" { uv pip install --python $VenvPython --upgrade-package unsloth --overrides $script:TorchOverridesFile "unsloth>=2026.7.3" "unsloth-zoo>=2026.7.3" }
+                $baseInstallExit = Invoke-InstallCommandRetry -Label "install unsloth (local)" { uv pip install --python $VenvPython --upgrade-package unsloth --overrides $script:TorchOverridesFile "unsloth>=2026.7.4" "unsloth-zoo>=2026.7.4" }
                 Remove-Item -LiteralPath $script:TorchOverridesFile -Force -ErrorAction SilentlyContinue
                 $script:TorchOverridesFile = $null
             } else {
-                $baseInstallExit = Invoke-InstallCommandRetry -Label "install unsloth (local)" { uv pip install --python $VenvPython --upgrade-package unsloth "unsloth>=2026.7.3" "unsloth-zoo>=2026.7.3" }
+                $baseInstallExit = Invoke-InstallCommandRetry -Label "install unsloth (local)" { uv pip install --python $VenvPython --upgrade-package unsloth "unsloth>=2026.7.4" "unsloth-zoo>=2026.7.4" }
             }
         } else {
             # Freeze the installed torch trio (see above) so the with-deps unsloth resolve can't strip the +cuXXX/+rocm suffix.
@@ -2309,7 +2309,7 @@ exit 0
         Write-TauriLog "STEP" "Installing unsloth"
         substep "installing unsloth (this may take a few minutes)..."
         if ($StudioLocalInstall) {
-            $baseInstallExit = Invoke-InstallCommandRetry -Label "install unsloth (auto torch backend)" { uv pip install --python $VenvPython "unsloth-zoo>=2026.7.3" "unsloth>=2026.7.3" --torch-backend=auto }
+            $baseInstallExit = Invoke-InstallCommandRetry -Label "install unsloth (auto torch backend)" { uv pip install --python $VenvPython "unsloth-zoo>=2026.7.4" "unsloth>=2026.7.4" --torch-backend=auto }
             if ($baseInstallExit -ne 0) {
                 Write-Host "[ERROR] Failed to install unsloth (exit code $baseInstallExit)" -ForegroundColor Red
                 return (Exit-InstallFailure "Failed to install unsloth (exit code $baseInstallExit)" $baseInstallExit)

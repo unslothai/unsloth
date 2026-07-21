@@ -54,9 +54,8 @@ class GenStreamError(str):
     """A stream chunk carrying a real backend/generation error, not model text.
 
     Subclasses str so existing display/logging consumers are unaffected, while
-    callers that must abort a distributed run on error (raise_on_streamed_error)
-    can distinguish a real error from model output whose visible text starts with
-    "Error:" by checking isinstance(chunk, GenStreamError).
+    callers can distinguish a real error from model output whose visible text
+    starts with "Error:" by checking isinstance(chunk, GenStreamError).
     """
 
     __slots__ = ("public",)
