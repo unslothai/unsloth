@@ -23,9 +23,7 @@ from hub.utils.hf_cache_state import (
     resolve_destructive_case_matches,
 )
 from hub.utils.paths import (
-    hf_default_cache_dir,
     is_valid_repo_id as _is_valid_repo_id,
-    legacy_hf_cache_dir,
     resolve_cached_repo_id_case,
 )
 
@@ -43,38 +41,8 @@ def _collect_hf_cache_scans() -> tuple[list, set[str]]:
 
 
 def _hf_hub_cache_roots() -> list[Path]:
-    roots: list[Path] = []
-    seen: set[str] = set()
-
-    def _add(path: Optional[Path]) -> None:
-        if path is None or not path.is_dir():
-            return
-        try:
-            resolved = str(path.resolve())
-        except OSError:
-            return
-        if resolved in seen:
-            return
-        seen.add(resolved)
-        roots.append(path)
-
-    try:
-        from huggingface_hub.constants import HF_HUB_CACHE
-        _add(Path(HF_HUB_CACHE))
-    except Exception:
-        pass
-
-    hf_hub_cache = os.environ.get("HF_HUB_CACHE")
-    if hf_hub_cache:
-        _add(Path(hf_hub_cache).expanduser())
-
-    hf_home = os.environ.get("HF_HOME")
-    if hf_home:
-        _add(Path(hf_home).expanduser() / "hub")
-
-    _add(legacy_hf_cache_dir())
-    _add(hf_default_cache_dir())
-    return roots
+    from hub.utils.hf_cache_state import hf_cache_roots
+    return hf_cache_roots()
 
 
 def _repo_id_from_hub_dataset_dir(name: str) -> str | None:

@@ -85,21 +85,24 @@ def _environment_paths() -> Optional[HuggingFaceCachePaths]:
         "HUGGINGFACE_HUB_CACHE"
     )
     explicit_xet = _EXPLICIT_CACHE_ENV.get("HF_XET_CACHE")
-    home = _canonical(explicit_home) if explicit_home else _default_cache_home()
-    hub = _canonical(explicit_hub) if explicit_hub else home / "hub"
-    xet = _canonical(explicit_xet) if explicit_xet else home / "xet"
+    default_home = _default_cache_home()
+    hf_home = _canonical(explicit_home) if explicit_home else default_home
+    hub = _canonical(explicit_hub) if explicit_hub else hf_home / "hub"
+    xet = _canonical(explicit_xet) if explicit_xet else hf_home / "xet"
     controlling = next(
         key
         for key in ("HF_HUB_CACHE", "HUGGINGFACE_HUB_CACHE", "HF_HOME", "HF_XET_CACHE")
         if key in _EXPLICIT_CACHE_ENV
     )
-    # A lone explicit hub/xet path still needs a useful common display home.
-    if not explicit_home:
-        if explicit_hub and hub.name.lower() == "hub":
-            home = hub.parent
-        elif explicit_xet and xet.name.lower() == "xet":
-            home = xet.parent
-    return HuggingFaceCachePaths(home, hub, xet, "environment", controlling)
+    # Settings describes model downloads, so an explicit hub path is the
+    # displayed/opened location even when HF_HOME points somewhere else for
+    # credentials or XET data.
+    display_home = (
+        (hub.parent if explicit_hub and hub.name.lower() == "hub" else hub)
+        if explicit_hub
+        else hf_home
+    )
+    return HuggingFaceCachePaths(display_home, hub, xet, "environment", controlling)
 
 
 def _stored_cache_home() -> Optional[Path]:
@@ -268,13 +271,22 @@ def set_hf_cache_home(cache_home: Optional[str]) -> HuggingFaceCachePaths:
                 CACHE_HISTORY_SETTING_KEY: deduped,
             }
         )
+    # Inventory scans are cached independently from settings. Invalidate after
+    # persistence so the next request sees both the new active root and history.
+    from hub.utils.inventory_scan import invalidate_hf_cache_scans
+
+    invalidate_hf_cache_scans()
     return get_hf_cache_paths()
 
 
 def known_hf_cache_homes() -> list[Path]:
     paths = get_hf_cache_paths()
     stored = _stored_cache_home()
-    candidates = [paths.cache_home]
+    candidates: list[Path] = []
+    if paths.source != "environment":
+        candidates.append(paths.cache_home)
+    elif explicit_home := _EXPLICIT_CACHE_ENV.get("HF_HOME"):
+        candidates.append(_canonical(explicit_home))
     if stored is not None:
         candidates.append(stored)
     candidates.extend([*_stored_history(), _default_cache_home()])

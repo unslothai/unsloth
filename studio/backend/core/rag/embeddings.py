@@ -160,11 +160,17 @@ def _get(model_name: str | None = None):
         if _model is None or _name != name:
             _install_torchao_stub_once()
             from sentence_transformers import SentenceTransformer
+            from utils.hf_cache_settings import active_hf_hub_cache
 
             device = _device()
             logger.info("loading embedding model %s on %s", name, device)
             _guard_model_security(name)
-            _model = SentenceTransformer(name, device = device, model_kwargs = dtype_kwargs("float16"))
+            _model = SentenceTransformer(
+                name,
+                device = device,
+                cache_folder = active_hf_hub_cache(),
+                model_kwargs = dtype_kwargs("float16"),
+            )
             _name = name
         return _model
 

@@ -5,8 +5,10 @@
 and token counting must be serialized (else threads panic "Already borrowed")."""
 
 import os
+import sys
 import threading
 import time
+from types import SimpleNamespace
 
 import numpy as np
 import pytest
@@ -128,6 +130,35 @@ def test_token_counter_enables_parallelism_only_during_call(monkeypatch):
     count("alpha beta gamma")
     assert seen["during"] == "true"  # rayon enabled in-call, like _st_encode
     assert os.environ.get("TOKENIZERS_PARALLELISM") == "false"  # restored after
+
+
+def test_sentence_transformer_load_uses_live_cache(monkeypatch, tmp_path):
+    observed = {}
+
+    class FakeSentenceTransformer:
+        def __init__(self, name, **kwargs):
+            observed["name"] = name
+            observed.update(kwargs)
+
+    monkeypatch.setitem(
+        sys.modules,
+        "sentence_transformers",
+        SimpleNamespace(SentenceTransformer = FakeSentenceTransformer),
+    )
+    monkeypatch.setattr(embeddings, "_install_torchao_stub_once", lambda: None)
+    monkeypatch.setattr(embeddings, "_guard_model_security", lambda _name: None)
+    monkeypatch.setattr(embeddings, "_device", lambda: "cpu")
+    monkeypatch.setattr(
+        "utils.hf_cache_settings.active_hf_hub_cache",
+        lambda: str(tmp_path / "selected-hub"),
+    )
+    embeddings._model = None
+    embeddings._name = None
+
+    embeddings._get("Org/Embedder")
+
+    assert observed["name"] == "Org/Embedder"
+    assert observed["cache_folder"] == str(tmp_path / "selected-hub")
 
 
 class _SentinelLlamaBackend:

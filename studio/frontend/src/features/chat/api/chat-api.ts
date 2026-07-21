@@ -235,6 +235,7 @@ export async function resolveToolConfirmation(
 
 export interface CachedGgufRepo {
   repo_id: string;
+  load_id?: string | null;
   size_bytes: number;
   cache_path: string;
   /** Epoch seconds of the newest downloaded quant; sorts Downloaded
@@ -344,13 +345,14 @@ export async function listLocalModels(
 export async function listCachedGguf(
   signal?: AbortSignal,
 ): Promise<CachedGgufRepo[]> {
-  const response = await authFetch("/api/models/cached-gguf", { signal });
+  const response = await authFetch("/api/hub/cached-gguf", { signal });
   const data = await parseJsonOrThrow<{ cached: CachedGgufRepo[] }>(response);
   return data.cached;
 }
 
 export interface CachedModelRepo {
   repo_id: string;
+  load_id?: string | null;
   size_bytes: number;
   /** Epoch seconds of the newest downloaded weight file; sorts Downloaded
    * newest-first. Optional for older-backend compatibility. */
@@ -361,7 +363,7 @@ export async function listCachedModels(
   hfToken?: string | null,
   signal?: AbortSignal,
 ): Promise<CachedModelRepo[]> {
-  const response = await authFetch("/api/models/cached-models", {
+  const response = await authFetch("/api/hub/cached-models", {
     headers: hubTokenHeader(hfToken),
     signal,
   });
@@ -375,7 +377,7 @@ export async function deleteCachedModel(
 ): Promise<void> {
   const payload: Record<string, string> = { repo_id: repoId };
   if (variant) payload.variant = variant;
-  const response = await authFetch("/api/models/delete-cached", {
+  const response = await authFetch("/api/hub/delete-cached", {
     method: "DELETE",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(payload),

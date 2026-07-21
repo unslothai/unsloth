@@ -216,24 +216,46 @@ def _repo_gguf_blob_map(repo_info, *, include_companions: bool = False) -> dict[
 def _prefer_cache_row(candidate: dict, existing: Optional[dict]) -> bool:
     if existing is None:
         return True
-    return _prefer_complete_larger(
-        bool(candidate.get("partial")),
-        int(candidate.get("size_bytes") or 0),
-        bool(existing.get("partial")),
-        int(existing.get("size_bytes") or 0),
-    )
+    candidate_partial = bool(candidate.get("partial"))
+    existing_partial = bool(existing.get("partial"))
+    if candidate_partial != existing_partial:
+        return not candidate_partial
+    candidate_active = bool(candidate.get("active_cache"))
+    existing_active = bool(existing.get("active_cache"))
+    if candidate_active != existing_active:
+        return candidate_active
+    return int(candidate.get("size_bytes") or 0) > int(existing.get("size_bytes") or 0)
 
 
 def _cache_inventory_fields(
     repo_id: str,
     model_format: ModelFormat,
     *,
+    repo_path: Optional[Path] = None,
+    snapshot_path: Optional[Path] = None,
+    active_hub_cache: Optional[Path] = None,
     partial: bool = False,
     requires_variant: bool = False,
 ) -> dict:
+    load_id = repo_id
+    active_cache = True
+    if repo_path is not None:
+        try:
+            if active_hub_cache is None:
+                from utils.hf_cache_settings import get_hf_cache_paths
+                active_hub_cache = get_hf_cache_paths().hub_cache
+            active_root = active_hub_cache.resolve(strict = False)
+            cached_root = repo_path.parent.resolve(strict = False)
+            if cached_root != active_root:
+                active_cache = False
+                load_id = str(snapshot_path or repo_path.resolve(strict = False))
+        except (OSError, RuntimeError, ValueError):
+            active_cache = False
+            load_id = str(snapshot_path or repo_path)
     return {
         "inventory_id": _local_inventory_id("cache", model_format, repo_id),
-        "load_id": repo_id,
+        "load_id": load_id,
+        "active_cache": active_cache,
         "model_format": model_format,
         "runtime": _runtime_for_format(model_format),
         "format_variant": None,
@@ -260,6 +282,9 @@ def _is_hidden_infra_repo(*values: str | None) -> bool:
 def _scan_cached_gguf() -> list[dict]:
     """Synchronous HF-cache disk walk for GGUF repos; runs in a worker thread."""
     cache_scans = all_hf_cache_scans()
+    from utils.hf_cache_settings import get_hf_cache_paths
+
+    active_hub_cache = get_hf_cache_paths().hub_cache
 
     seen_lower: dict[str, dict] = {}
     for hf_cache in cache_scans:
@@ -304,6 +329,9 @@ def _scan_cached_gguf() -> list[dict]:
                     _cache_inventory_fields(
                         repo_id,
                         "gguf",
+                        repo_path = repo_path,
+                        snapshot_path = snapshot_path,
+                        active_hub_cache = active_hub_cache,
                         partial = bool(row["partial"]),
                         requires_variant = True,
                     )
@@ -491,6 +519,9 @@ def _cached_model_local_metadata(repo_path: Path) -> dict:
 def _scan_cached_models() -> list[dict]:
     """Synchronous HF-cache disk walk for non-GGUF model repos; runs in a worker thread."""
     cache_scans = all_hf_cache_scans()
+    from utils.hf_cache_settings import get_hf_cache_paths
+
+    active_hub_cache = get_hf_cache_paths().hub_cache
 
     seen_lower: dict[str, dict] = {}
     inspected = 0
@@ -548,6 +579,9 @@ def _scan_cached_models() -> list[dict]:
                     _cache_inventory_fields(
                         repo_id,
                         payload.model_format,
+                        repo_path = repo_path,
+                        snapshot_path = snapshot_path,
+                        active_hub_cache = active_hub_cache,
                         partial = bool(row["partial"]),
                     )
                 )

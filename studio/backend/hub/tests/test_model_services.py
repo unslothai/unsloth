@@ -102,6 +102,173 @@ def test_big_endian_detection_ignores_model_name_be_token():
     )
 
 
+def _cached_model_row(tmp_path: Path, *, partial: bool, active_cache: bool | None, size_bytes: int):
+    path = tmp_path / f"cache-{active_cache}-{partial}-{size_bytes}"
+    return model_common._local_model_info(
+        scan_path = path,
+        load_path = path,
+        source = "hf_cache",
+        model_format = "safetensors",
+        model_id = "Org/Model",
+        partial = partial,
+        active_cache = active_cache,
+        size_bytes = size_bytes,
+    )
+
+
+@pytest.mark.parametrize("reverse", [False, True])
+def test_local_inventory_prefers_complete_previous_cache_copy(tmp_path, reverse):
+    active_partial = _cached_model_row(
+        tmp_path,
+        partial = True,
+        active_cache = True,
+        size_bytes = 20,
+    )
+    previous_complete = _cached_model_row(
+        tmp_path,
+        partial = False,
+        active_cache = False,
+        size_bytes = 10,
+    )
+    rows = [active_partial, previous_complete]
+    if reverse:
+        rows.reverse()
+
+    result = local_inventory._dedupe_local_models(rows)
+
+    assert result == [previous_complete]
+
+
+def test_local_inventory_compares_all_non_active_cache_copies(tmp_path):
+    inactive_partial = _cached_model_row(
+        tmp_path,
+        partial = True,
+        active_cache = False,
+        size_bytes = 20,
+    )
+    custom_complete = _cached_model_row(
+        tmp_path,
+        partial = False,
+        active_cache = None,
+        size_bytes = 10,
+    )
+
+    assert local_inventory._dedupe_local_models([inactive_partial, custom_complete]) == [
+        custom_complete
+    ]
+
+
+def test_local_inventory_prefers_active_cache_when_copies_are_equally_complete(tmp_path):
+    previous = _cached_model_row(
+        tmp_path,
+        partial = False,
+        active_cache = False,
+        size_bytes = 20,
+    )
+    active = _cached_model_row(
+        tmp_path,
+        partial = False,
+        active_cache = True,
+        size_bytes = 10,
+    )
+
+    assert local_inventory._dedupe_local_models([previous, active]) == [active]
+
+
+def test_loaded_repo_match_accepts_previous_cache_snapshot_path(monkeypatch, tmp_path):
+    repo_dir = tmp_path / "old-hub" / "models--Org--Model"
+    snapshot = repo_dir / "snapshots" / "revision"
+    snapshot.mkdir(parents = True)
+    monkeypatch.setattr(deletion, "iter_repo_cache_dirs", lambda *_args: iter([repo_dir]))
+
+    assert deletion._loaded_id_matches_repo(str(snapshot), "Org/Model") is True
+    assert deletion._loaded_id_matches_repo(str(snapshot / "model.gguf"), "Org/Model") is True
+    assert deletion._loaded_id_matches_repo(str(tmp_path / "other"), "Org/Model") is False
+
+
+def test_cached_inventory_loads_previous_cache_copy_by_snapshot(monkeypatch, tmp_path):
+    active_hub = tmp_path / "active-hub"
+    previous_repo = tmp_path / "previous-hub" / "models--Org--Model"
+    snapshot = previous_repo / "snapshots" / "revision"
+    snapshot.mkdir(parents = True)
+    monkeypatch.setattr(
+        "utils.hf_cache_settings.get_hf_cache_paths",
+        lambda: SimpleNamespace(hub_cache = active_hub),
+    )
+
+    fields = cache_inventory._cache_inventory_fields(
+        "Org/Model",
+        "safetensors",
+        repo_path = previous_repo,
+        snapshot_path = snapshot,
+    )
+
+    assert fields["load_id"] == str(snapshot)
+
+
+def test_cached_inventory_keeps_repo_id_for_active_cache(monkeypatch, tmp_path):
+    active_hub = tmp_path / "active-hub"
+    active_repo = active_hub / "models--Org--Model"
+    monkeypatch.setattr(
+        "utils.hf_cache_settings.get_hf_cache_paths",
+        lambda: SimpleNamespace(hub_cache = active_hub),
+    )
+
+    fields = cache_inventory._cache_inventory_fields(
+        "Org/Model",
+        "safetensors",
+        repo_path = active_repo,
+    )
+
+    assert fields["load_id"] == "Org/Model"
+
+
+def test_cached_inventory_prefers_active_copy_when_completeness_matches():
+    previous = {"partial": False, "active_cache": False, "size_bytes": 200}
+    active = {"partial": False, "active_cache": True, "size_bytes": 100}
+
+    assert cache_inventory._prefer_cache_row(active, previous) is True
+    assert cache_inventory._prefer_cache_row(previous, active) is False
+
+
+def test_cached_inventory_prefers_complete_copy_before_active_cache():
+    previous = {"partial": False, "active_cache": False, "size_bytes": 100}
+    active_partial = {"partial": True, "active_cache": True, "size_bytes": 200}
+
+    assert cache_inventory._prefer_cache_row(previous, active_partial) is True
+    assert cache_inventory._prefer_cache_row(active_partial, previous) is False
+
+
+def test_inventory_scans_every_dynamic_cache_root(monkeypatch, tmp_path):
+    first = tmp_path / "first-hub"
+    second = tmp_path / "second-hub"
+    unreadable = tmp_path / "unreadable-hub"
+    first.mkdir()
+    second.mkdir()
+    unreadable.mkdir()
+    scanned = []
+
+    monkeypatch.setattr(
+        inventory_scan,
+        "hf_cache_roots",
+        lambda: [first, unreadable, second],
+    )
+
+    def scan_cache(cache_dir):
+        path = Path(cache_dir)
+        scanned.append(path)
+        if path == unreadable:
+            raise PermissionError("unreadable")
+        return SimpleNamespace(cache_dir = cache_dir)
+
+    monkeypatch.setattr("huggingface_hub.scan_cache_dir", scan_cache)
+
+    result = inventory_scan._compute_all_hf_cache_scans()
+
+    assert scanned == [first, unreadable, second]
+    assert [Path(scan.cache_dir) for scan in result] == [first, second]
+
+
 def test_list_local_gguf_variants_skips_big_endian_sibling(tmp_path):
     (tmp_path / "model-Q4_K_M-be.gguf").write_bytes(b"x" * 100)
     (tmp_path / "model-Q4_K_M.gguf").write_bytes(b"y" * 10)

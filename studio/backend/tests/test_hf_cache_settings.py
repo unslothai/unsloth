@@ -3,7 +3,10 @@
 
 from __future__ import annotations
 
+import os
 import sys
+import threading
+import time
 from pathlib import Path
 
 import pytest
@@ -71,6 +74,60 @@ def test_environment_cache_is_read_only(monkeypatch, tmp_path):
         hf_cache_settings.set_hf_cache_home(str(tmp_path / "other"))
 
 
+def test_explicit_hub_cache_is_the_displayed_location(monkeypatch, tmp_path):
+    custom_hub = tmp_path / "models-cache"
+    custom_hub.mkdir()
+    monkeypatch.setattr(
+        hf_cache_settings,
+        "_EXPLICIT_CACHE_ENV",
+        {"HF_HUB_CACHE": str(custom_hub)},
+    )
+
+    paths = hf_cache_settings.get_hf_cache_paths()
+    status = hf_cache_settings.cache_status(paths)
+
+    assert paths.cache_home == custom_hub
+    assert paths.hub_cache == custom_hub
+    assert status["cache_home"] == str(custom_hub)
+    assert status["available"] is True
+    assert custom_hub / "hub" not in hf_cache_settings.known_hf_hub_caches()
+
+
+def test_explicit_hub_cache_display_wins_over_hf_home(monkeypatch, tmp_path):
+    hf_home = tmp_path / "hf-home"
+    custom_hub = tmp_path / "other-disk" / "models-cache"
+    hf_home.mkdir()
+    custom_hub.mkdir(parents = True)
+    monkeypatch.setattr(
+        hf_cache_settings,
+        "_EXPLICIT_CACHE_ENV",
+        {"HF_HOME": str(hf_home), "HF_HUB_CACHE": str(custom_hub)},
+    )
+
+    paths = hf_cache_settings.get_hf_cache_paths()
+
+    assert paths.cache_home == custom_hub
+    assert paths.hub_cache == custom_hub
+    assert paths.xet_cache == hf_home / "xet"
+    assert custom_hub / "hub" not in hf_cache_settings.known_hf_hub_caches()
+    assert hf_home / "hub" in hf_cache_settings.known_hf_hub_caches()
+
+
+def test_xet_only_override_keeps_model_cache_display_on_hf_home(monkeypatch, tmp_path):
+    xet_cache = tmp_path / "chunks"
+    monkeypatch.setattr(
+        hf_cache_settings,
+        "_EXPLICIT_CACHE_ENV",
+        {"HF_XET_CACHE": str(xet_cache)},
+    )
+
+    paths = hf_cache_settings.get_hf_cache_paths()
+
+    assert paths.cache_home == hf_cache_settings._default_cache_home()
+    assert paths.hub_cache == hf_cache_settings._default_cache_home() / "hub"
+    assert paths.xet_cache == xet_cache
+
+
 def test_worker_environment_is_applied_before_import(monkeypatch, tmp_path):
     hub = str(tmp_path / "hub")
     xet = str(tmp_path / "xet")
@@ -112,6 +169,64 @@ def test_spawn_environment_is_applied_then_restored(monkeypatch, tmp_path):
 
     assert os.environ["HF_HUB_CACHE"] == "parent-hub"
     assert "HF_XET_CACHE" not in os.environ
+
+
+def test_spawn_environment_supports_nested_contexts(monkeypatch):
+    monkeypatch.setenv("HF_HUB_CACHE", "parent")
+
+    with hf_cache_settings.child_environment_for_spawn({"HF_HUB_CACHE": "outer"}):
+        assert os.environ["HF_HUB_CACHE"] == "outer"
+        with hf_cache_settings.child_environment_for_spawn({"HF_HUB_CACHE": "inner"}):
+            assert os.environ["HF_HUB_CACHE"] == "inner"
+        assert os.environ["HF_HUB_CACHE"] == "outer"
+
+    assert os.environ["HF_HUB_CACHE"] == "parent"
+
+
+def test_spawn_environment_serializes_threads(monkeypatch):
+    monkeypatch.setenv("HF_HUB_CACHE", "parent")
+    first_entered = threading.Event()
+    release_first = threading.Event()
+    observations: list[tuple[str, str]] = []
+
+    def first():
+        with hf_cache_settings.child_environment_for_spawn({"HF_HUB_CACHE": "first"}):
+            observations.append(("first", os.environ["HF_HUB_CACHE"]))
+            first_entered.set()
+            assert release_first.wait(timeout = 2)
+
+    def second():
+        assert first_entered.wait(timeout = 2)
+        with hf_cache_settings.child_environment_for_spawn({"HF_HUB_CACHE": "second"}):
+            observations.append(("second", os.environ["HF_HUB_CACHE"]))
+
+    first_thread = threading.Thread(target = first)
+    second_thread = threading.Thread(target = second)
+    first_thread.start()
+    second_thread.start()
+    assert first_entered.wait(timeout = 2)
+    time.sleep(0.02)
+    assert observations == [("first", "first")]
+    release_first.set()
+    first_thread.join(timeout = 2)
+    second_thread.join(timeout = 2)
+
+    assert observations == [("first", "first"), ("second", "second")]
+    assert os.environ["HF_HUB_CACHE"] == "parent"
+
+
+def test_cache_switch_invalidates_inventory(settings_store, tmp_path, monkeypatch):
+    invalidations = []
+    monkeypatch.setattr(
+        "hub.utils.inventory_scan.invalidate_hf_cache_scans",
+        lambda: invalidations.append(True),
+    )
+    selected = tmp_path / "external" / "huggingface"
+    selected.parent.mkdir()
+
+    hf_cache_settings.set_hf_cache_home(str(selected))
+
+    assert invalidations == [True]
 
 
 def test_inactive_cache_model_loads_from_snapshot_path(tmp_path):

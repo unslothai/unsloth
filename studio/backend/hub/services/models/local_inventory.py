@@ -646,19 +646,20 @@ def _dedupe_local_models(local_models: List[LocalModelInfo]) -> list[LocalModelI
             row_key = model.inventory_id or model.id
             key = f"{row_key}\x00custom" if model.source == "custom" else row_key
         existing = deduped.get(key)
-        if (
-            existing is None
-            or (model.active_cache is True and existing.active_cache is not True)
-            or (
-                model.active_cache == existing.active_cache
-                and _prefer_complete_larger(
+        prefer_candidate = existing is None
+        if existing is not None:
+            if model.partial != existing.partial:
+                prefer_candidate = not model.partial
+            elif (model.active_cache is True) != (existing.active_cache is True):
+                prefer_candidate = model.active_cache is True
+            else:
+                prefer_candidate = _prefer_complete_larger(
                     model.partial,
                     model.size_bytes,
                     existing.partial,
                     existing.size_bytes,
                 )
-            )
-        ):
+        if prefer_candidate:
             deduped[key] = model
     return sorted(
         deduped.values(),

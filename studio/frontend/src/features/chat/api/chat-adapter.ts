@@ -1407,6 +1407,7 @@ const GGUF_KNOWN_QUANT_RE =
 
 type AutoLoadCandidate = {
   id: string;
+  loadId?: string | null;
   kind: LastLocalModelKind;
   ggufVariant: string | null;
   maxSeqLength: number;
@@ -1533,6 +1534,7 @@ async function autoLoadSmallestModel(): Promise<{
       return false;
     }
     const currentStore = useChatRuntimeStore.getState();
+    const modelPath = candidate.loadId ?? candidate.id;
     // Blobs are saved for GGUF picks only (the sheet gates on it), so don't
     // let a legacy non-GGUF blob feed a stale context/spec choice into a
     // safetensors auto-load.
@@ -1594,7 +1596,7 @@ async function autoLoadSmallestModel(): Promise<{
       remembered?.specDraftNMax ?? specSettings.specDraftNMax;
     if (
       !(await canAutoLoad({
-        model_path: candidate.id,
+        model_path: modelPath,
         max_seq_length: fitMaxSeqLength,
         is_lora: false,
         gguf_variant: candidate.ggufVariant,
@@ -1614,7 +1616,7 @@ async function autoLoadSmallestModel(): Promise<{
     }
     loadAttempts += 1;
     const loadResp = await loadModel({
-      model_path: candidate.id,
+      model_path: modelPath,
       hf_token: hfToken,
       max_seq_length: fitMaxSeqLength,
       load_in_4bit: true,
@@ -1767,6 +1769,7 @@ async function autoLoadSmallestModel(): Promise<{
               if (
                 await loadAutoLoadCandidate({
                   id: repo.repo_id,
+                  loadId: repo.load_id,
                   kind: "gguf",
                   ggufVariant: variant.quant,
                   maxSeqLength: 0,
@@ -1795,6 +1798,7 @@ async function autoLoadSmallestModel(): Promise<{
             if (
               await loadAutoLoadCandidate({
                 id: repo.repo_id,
+                loadId: repo.load_id,
                 kind: "model",
                 ggufVariant: null,
                 maxSeqLength: store.params.maxSeqLength,
@@ -1840,6 +1844,7 @@ async function autoLoadSmallestModel(): Promise<{
             if (
               await loadAutoLoadCandidate({
                 id: repo.repo_id,
+                loadId: repo.load_id,
                 kind: "gguf",
                 ggufVariant: variant.quant,
                 maxSeqLength: 0,
@@ -1874,6 +1879,7 @@ async function autoLoadSmallestModel(): Promise<{
           if (
             await loadAutoLoadCandidate({
               id: repo.repo_id,
+              loadId: repo.load_id,
               kind: "model",
               ggufVariant: null,
               maxSeqLength: 4096,

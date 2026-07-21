@@ -16,6 +16,25 @@ use tauri_plugin_dialog::DialogExt;
 
 const TOKEN_TTL: Duration = Duration::from_secs(15 * 60);
 
+fn normalize_windows_verbatim_path(path: String) -> String {
+    if let Some(rest) = path.strip_prefix(r"\\?\UNC\") {
+        return format!(r"\\{rest}");
+    }
+    path.strip_prefix(r"\\?\").unwrap_or(&path).to_string()
+}
+
+fn portable_path_string(path: &Path) -> String {
+    let value = path.to_string_lossy().to_string();
+    #[cfg(windows)]
+    {
+        return normalize_windows_verbatim_path(value);
+    }
+    #[cfg(not(windows))]
+    {
+        value
+    }
+}
+
 #[derive(Clone, Debug)]
 struct NativePathEntry {
     token: String,
@@ -336,7 +355,7 @@ pub async fn pick_hugging_face_cache_dir(
     if !canonical.is_dir() {
         return Err("The selected location is not a folder.".to_string());
     }
-    Ok(Some(canonical.to_string_lossy().to_string()))
+    Ok(Some(portable_path_string(&canonical)))
 }
 
 #[tauri::command]
@@ -477,6 +496,18 @@ mod tests {
             .unwrap_err();
         assert!(err.contains("changed"));
         let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn windows_verbatim_paths_are_portable() {
+        assert_eq!(
+            normalize_windows_verbatim_path(r"\\?\C:\models\cache".to_string()),
+            r"C:\models\cache"
+        );
+        assert_eq!(
+            normalize_windows_verbatim_path(r"\\?\UNC\server\share\cache".to_string()),
+            r"\\server\share\cache"
+        );
     }
 
     #[cfg(unix)]

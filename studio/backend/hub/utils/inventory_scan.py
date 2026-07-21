@@ -37,6 +37,7 @@ from hub.utils.hf_cache_state import (
     INCOMPLETE_SUFFIX,
     has_incomplete_blobs,
     hf_cache_root,
+    hf_cache_roots,
     iter_repo_cache_dirs,
     latest_snapshot_dir,
     repo_cache_dir_has_incomplete_blobs,
@@ -127,33 +128,13 @@ def all_hf_cache_scans() -> list:
 
 def _compute_all_hf_cache_scans() -> list:
     from huggingface_hub import scan_cache_dir
-    from hub.utils.paths import legacy_hf_cache_dir, hf_default_cache_dir
 
     scans: list = []
-    seen: set[str] = set()
-    try:
-        from huggingface_hub.constants import HF_HUB_CACHE
-
-        active = Path(HF_HUB_CACHE).resolve()
-        seen.add(str(active))
-        if active.is_dir():
-            scans.append(scan_cache_dir())
-    except Exception as exc:
-        logger.warning("Could not scan active HF cache: %s", exc)
-
-    for extra_fn in (legacy_hf_cache_dir, hf_default_cache_dir):
+    for cache_root in hf_cache_roots():
         try:
-            extra = extra_fn()
-            # is_dir()/resolve() can raise on an inaccessible path; skip it.
-            if not extra.is_dir():
-                continue
-            resolved = str(extra.resolve())
-            if resolved in seen:
-                continue
-            seen.add(resolved)
-            scans.append(scan_cache_dir(cache_dir = str(extra)))
+            scans.append(scan_cache_dir(cache_dir = str(cache_root)))
         except Exception as exc:
-            logger.warning("Could not scan HF cache %s: %s", extra_fn.__name__, exc)
+            logger.warning("Could not scan HF cache %s: %s", cache_root, exc)
     return scans
 
 
