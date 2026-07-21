@@ -112,7 +112,7 @@ export const ptBR = {
       huggingFaceToken: "Token do Hugging Face",
       huggingFaceTokenDescription:
         "Usado para carregar modelos restritos e enviar artefatos.",
-      tokenSaved: "Token salvo",
+      tokenValidated: "Token validado",
       hideToken: "Ocultar token",
       showToken: "Mostrar token",
       password: "Senha",

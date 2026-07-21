@@ -352,6 +352,13 @@ _GFX_TO_AMD_INDEX_ARCH: dict[str, str] = {
     "gfx1102": "gfx110X-all",  # RDNA 3
     "gfx1101": "gfx110X-all",
     "gfx1100": "gfx110X-all",
+    "gfx1036": "gfx103X-all",
+    "gfx1035": "gfx103X-all",  # RDNA 2 (RX 6000)
+    "gfx1034": "gfx103X-all",
+    "gfx1033": "gfx103X-all",
+    "gfx1032": "gfx103X-all",
+    "gfx1031": "gfx103X-all",
+    "gfx1030": "gfx103X-all",
     "gfx90a": "gfx90a",
     "gfx908": "gfx908",  # MI200/MI100
 }
