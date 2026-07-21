@@ -109,6 +109,7 @@ import {
   deleteChatItem,
   listStoredChatThreads,
   moveChatItemToProject,
+  notifyChatHistoryUpdated,
   renameChatItem,
   renameChatProject,
   useChatRuntimeStore,
@@ -804,14 +805,19 @@ export function AppSidebar() {
         await deleteChatProject(target.project.id, {
           deleteFiles: shouldDeleteProjectFiles,
         });
+        // Refresh chat history so the project's reparented chats don't linger
+        // as stale top-level rows.
+        notifyChatHistoryUpdated();
         // activeProjectId is only the ?project= param; on a thread-only URL the
         // project is resolved from the thread into the runtime store, so check
-        // that too or we strand the user on a now-deleted thread.
+        // that too or we strand the user on a now-deleted thread. Only redirect
+        // from a chat route: the runtime store value can be stale elsewhere.
         const runtimeProjectId =
           useChatRuntimeStore.getState().activeProjectId;
         if (
-          activeProjectId === target.project.id ||
-          runtimeProjectId === target.project.id
+          isChatRoute &&
+          (activeProjectId === target.project.id ||
+            runtimeProjectId === target.project.id)
         ) {
           useChatRuntimeStore.getState().setActiveProjectId(null);
           navigate({ to: "/chat", search: { new: createNavigationNonce() } });

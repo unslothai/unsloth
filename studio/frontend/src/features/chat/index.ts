@@ -17,6 +17,7 @@ export {
   listRecommendedFolders,
   listScanFolders,
   loadModel,
+  notifyChatHistoryUpdated,
   removeScanFolder,
   revealCachedModel,
   type BrowseFoldersResponse,

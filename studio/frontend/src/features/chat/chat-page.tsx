@@ -992,6 +992,9 @@ function ProjectLanding({
   items: SidebarItem[];
 }): ReactElement {
   const navigate = useNavigate();
+  // Gates body-portaled surfaces so they can't linger or act while the landing
+  // is off-route (e.g. behind another tab).
+  const active = useChatActive();
   const activeThreadId = useChatRuntimeStore((s) => s.activeThreadId);
   const initialActiveThreadRef = useRef<string | null>(null);
   const [projectTab, setProjectTab] = useState<"chats" | "sources">("chats");
@@ -1613,7 +1616,7 @@ function ProjectLanding({
         </AlertDialogContent>
       </AlertDialog>
       <Dialog
-        open={renamingProject}
+        open={active && renamingProject}
         onOpenChange={(open) => {
           if (!open) setRenamingProject(false);
         }}
@@ -1654,7 +1657,7 @@ function ProjectLanding({
         </DialogContent>
       </Dialog>
       <AlertDialog
-        open={deletingProject}
+        open={active && deletingProject}
         onOpenChange={(open) => {
           if (!open) setDeletingProject(false);
         }}

@@ -577,11 +577,12 @@ export function ProjectsPage() {
               <span className="w-40 shrink-0 text-sm text-muted-foreground">
                 {formatModified(project.updatedAt)}
               </span>
-              <div className="flex w-8 shrink-0 items-center justify-end">
-                {/* Pin indicator and options button swap via display so they
-                    never overlap: pin when idle, kebab on hover or menu open. */}
+              <div className="relative flex w-8 shrink-0 items-center justify-end">
+                {/* Pin fades out and the kebab fades in on hover, focus, or
+                    menu open. Absolute + opacity gating keeps them from
+                    overlapping while leaving the button keyboard-focusable. */}
                 {pinned && (
-                  <span className="text-muted-foreground group-hover/project-row:hidden group-has-[[data-state=open]]/project-row:hidden">
+                  <span className="text-muted-foreground transition-opacity group-hover/project-row:opacity-0 group-focus-within/project-row:opacity-0 group-has-[[data-state=open]]/project-row:opacity-0">
                     <HugeiconsIcon icon={PinIcon} strokeWidth={1.75} className="size-4" />
                   </span>
                 )}
@@ -591,7 +592,7 @@ export function ProjectsPage() {
                       type="button"
                       onClick={(e) => e.stopPropagation()}
                       aria-label="Project options"
-                      className="hidden size-7 shrink-0 items-center justify-center rounded-full text-muted-foreground transition-colors hover:bg-black/5 hover:text-foreground dark:hover:bg-white/10 group-hover/project-row:flex data-[state=open]:flex data-[state=open]:bg-black/5 dark:data-[state=open]:bg-white/10"
+                      className="absolute right-0 flex size-7 shrink-0 items-center justify-center rounded-full text-muted-foreground opacity-0 transition hover:bg-black/5 hover:text-foreground focus-visible:opacity-100 group-hover/project-row:opacity-100 data-[state=open]:bg-black/5 data-[state=open]:opacity-100 dark:hover:bg-white/10 dark:data-[state=open]:bg-white/10"
                     >
                       <MoreHorizontalIcon strokeWidth={1.75} className="size-icon" />
                     </button>
