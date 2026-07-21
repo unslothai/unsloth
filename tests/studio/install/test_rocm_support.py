@@ -573,6 +573,27 @@ class TestEnsureRocmTorch:
     @patch.object(stack_mod, "pip_install_try", return_value = True)
     @patch.object(stack_mod, "pip_install")
     @patch.object(stack_mod, "_has_usable_nvidia_gpu", return_value = False)
+    @patch.object(stack_mod, "_has_rocm_gpu", return_value = False)
+    @patch.object(stack_mod, "_infer_linux_amd_gfx_arch", return_value = "gfx1151")
+    @patch.object(stack_mod, "_detect_rocm_version", return_value = None)
+    def test_inferred_gfx_without_rocm_runtime_installs_amd_index(
+        self, mock_ver, mock_infer, mock_gpu, mock_nvidia, mock_pip, mock_pip_try
+    ):
+        """Strix Halo without /dev/kfd must still get AMD gfx1151 wheels (unslothai#7301)."""
+        mock_probe = MagicMock()
+        mock_probe.returncode = 0
+        mock_probe.stdout = b"|2.10.0+cpu\n"
+        with patch("os.path.isdir", return_value = True):
+            with patch("subprocess.run", return_value = mock_probe):
+                _ensure_rocm_torch()
+        torch_call = str(mock_pip.call_args_list[0])
+        assert "gfx1151" in torch_call
+        assert "torch>=2.11.0,<2.12.0" in torch_call
+
+    @patch.object(stack_mod, "IS_WINDOWS", False)
+    @patch.object(stack_mod, "pip_install_try", return_value = True)
+    @patch.object(stack_mod, "pip_install")
+    @patch.object(stack_mod, "_has_usable_nvidia_gpu", return_value = False)
     @patch.object(stack_mod, "_has_rocm_gpu", return_value = True)
     @patch.object(stack_mod, "_detect_rocm_version", return_value = (7, 1))
     def test_cuda_torch_on_amd_host_reinstalls(
@@ -3164,6 +3185,22 @@ _SETUP_SH_PATH = PACKAGE_ROOT / "studio" / "setup.sh"
 
 class TestStrixRocm71Override:
     """install.sh routes gfx1151/gfx1150 to AMD's arch index instead of ROCm 7.1 (_grouped_mm segfault)."""
+
+    def test_linux_gfx_inference_helpers_present(self):
+        source = _INSTALL_SH_PATH.read_text(encoding = "utf-8")
+        assert "_infer_linux_amd_gfx_arch" in source
+        assert "_amd_arch_index_family_for_gfx" in source
+        assert "_amd_gpu_present_via_pci" in source
+        assert "unslothai#7301" in source
+
+    def test_infer_linux_amd_gfx_from_cpuinfo(self):
+        assert stack_mod._linux_amd_gfx_from_cpuinfo is not None
+        with patch.object(
+            Path,
+            "read_text",
+            return_value = "model name : AMD Ryzen AI Max+ 395 w/ Radeon 8060S\n",
+        ):
+            assert stack_mod._linux_amd_gfx_from_cpuinfo() == "gfx1151"
 
     def test_strix_gfx_detection_in_install_sh(self):
         """install.sh must detect gfx1151 and gfx1150 for the override."""
