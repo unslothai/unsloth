@@ -252,6 +252,14 @@ def _sanitize_config(payload: CreateResearchRun, thread: dict) -> dict:
             raise HTTPException(
                 status_code = 400, detail = f"{key} must be between {minimum} and {maximum}"
             )
+    # Server-controlled, not client tunable. OFF by default; opt in via
+    # UNSLOTH_RESEARCH_AUTO_SCRAPE=1. Injected only when enabled, so a default run's budgets stay
+    # byte-identical to legacy.
+    from core.research_runs import _auto_scrape_default
+
+    _auto_scrape = _auto_scrape_default()
+    if _auto_scrape > 0:
+        budgets["maxAutoScrape"] = _auto_scrape
     try:
         website_policy = normalize_website_policy(payload.websitePolicy)
     except ValueError as exc:

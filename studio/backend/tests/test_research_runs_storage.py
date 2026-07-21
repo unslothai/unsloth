@@ -55,6 +55,7 @@ def _create(
     user_message_id = "user-1",
     rag_scope = None,
     instructions = "",
+    budgets = None,
 ):
     return research_db.create_run(
         run_id = run_id,
@@ -67,7 +68,7 @@ def _create(
             "inferenceRequest": {"model": "local-model"},
             "ragScope": rag_scope,
             "instructions": instructions,
-            "budgets": {
+            "budgets": budgets or {
                 "maxSteps": 5,
                 "maxSources": 15,
                 "modelTimeoutSeconds": 30,
@@ -176,6 +177,31 @@ def test_synthesis_evidence_is_bounded_across_all_steps():
 
     assert len(evidence) <= worker._MAX_SYNTHESIS_EVIDENCE_CHARS
     assert all(f"### Step {index}" in evidence for index in range(12))
+
+
+def test_synthesis_evidence_budget_tracks_loaded_context(monkeypatch):
+    from core import research_runs as worker
+
+    # Unknown context keeps the full cap (backwards compatible).
+    monkeypatch.setattr(worker, "_loaded_context_length", lambda: None)
+    assert worker._synthesis_evidence_budget() == worker._MAX_SYNTHESIS_EVIDENCE_CHARS
+
+    # A small context (Studio's 2048 default) shrinks the budget so evidence fits.
+    monkeypatch.setattr(worker, "_loaded_context_length", lambda: 2048)
+    small = worker._synthesis_evidence_budget()
+    assert worker._MIN_SYNTHESIS_EVIDENCE_CHARS <= small < worker._MAX_SYNTHESIS_EVIDENCE_CHARS
+
+    # A large context uses (and clamps to) the full cap.
+    monkeypatch.setattr(worker, "_loaded_context_length", lambda: 32768)
+    assert worker._synthesis_evidence_budget() == worker._MAX_SYNTHESIS_EVIDENCE_CHARS
+
+
+def test_bounded_synthesis_evidence_respects_small_budget():
+    from core import research_runs as worker
+
+    notes = ["### Step\n" + "x" * 20_000 for _ in range(6)]
+    evidence = worker._bounded_synthesis_evidence(notes, 3_072)
+    assert len(evidence) <= 3_072
 
 
 def test_report_is_recovered_from_substantial_synthesis_reasoning():
@@ -1027,6 +1053,7 @@ def test_research_budget_defaults_support_long_runs():
         {"modelId": "local-model"},
     )
 
+    # auto-scrape (page grounding) is off by default, so budgets stay byte-identical to legacy
     assert config["budgets"] == {
         "maxSteps": 12,
         "maxSources": 40,
@@ -1273,6 +1300,334 @@ def test_supervisor_planning_and_research_are_durable_with_mocked_io(research_ho
         for part in assistant["content"]
         if isinstance(part, dict) and part.get("type") == "source"
     )
+
+
+_SCRAPE_BUDGETS = {
+    "maxSteps": 5,
+    "maxSources": 15,
+    "modelTimeoutSeconds": 30,
+    "toolTimeoutSeconds": 10,
+    "maxAutoScrape": 3,
+}
+
+
+def _patch_web_rank(monkeypatch, *, retrieve = None):
+    """Stub the ephemeral web-RAG so loop-integration tests need no sqlite/vec store: by
+    default each scraped page renders as one ``<chunk>`` block, mirroring the real
+    ``retrieve_web_chunks`` output (whose retrieval/ranking is covered in test_web_rank.py)."""
+    from core.rag import web_rank
+
+    def default_retrieve(pages, query, *, top_n, min_score, char_budget = None, **kwargs):
+        blocks, sources = [], []
+        for i, page in enumerate(pages, 1):
+            text = page.get("text") or ""
+            src = page.get("title") or page.get("url") or "web"
+            blocks.append(f'<chunk id="{i}" source="{src}">\n{text}\n</chunk>')
+            sources.append({"citationId": i, "text": text})
+        rendered = "\n\n".join(blocks)
+        if char_budget is not None:
+            rendered = rendered[:char_budget]
+        return rendered, sources
+
+    monkeypatch.setattr(web_rank, "retrieve_web_chunks", retrieve or default_retrieve)
+
+
+def _bare_supervisor(monkeypatch):
+    from core import research_runs as worker
+
+    supervisor = worker.ResearchSupervisor(
+        SimpleNamespace(state = SimpleNamespace(server_port = 1))
+    )
+    return worker, supervisor
+
+
+def _run_search_then_finish(monkeypatch, fake_tool, *, retrieve = None):
+    """Drive one search step (which auto-scrapes) followed by finish, and return the
+    completed run plus the synthesis prompts the model was given."""
+    from core import research_runs as worker
+
+    _patch_web_rank(monkeypatch, retrieve = retrieve)
+    supervisor = worker.ResearchSupervisor(
+        SimpleNamespace(state = SimpleNamespace(server_port = 1))
+    )
+    decisions = iter(
+        (
+            json.dumps({"action": "search", "title": "Find", "query": "grounding evidence"}),
+            json.dumps({"action": "finish", "title": "Enough evidence"}),
+        )
+    )
+    synthesis_prompts = []
+    report = "# Report\n\nGrounded finding [source](https://a.example.com)."
+
+    async def fake_stream_completion(run, messages, *, json_mode = False, report_progress = True, **kwargs):
+        system = messages[0]["content"]
+        if "rigorous web research plan" in system:
+            return json.dumps(_plan()), "planned", "stop"
+        if "iterative research process" in system:
+            return next(decisions), "decided", "stop"
+        synthesis_prompts.append(messages[1]["content"])
+        research_db.set_report_progress(run["id"], report)
+        return report, "synthesized", "stop"
+
+    monkeypatch.setattr(supervisor, "_stream_completion", fake_stream_completion)
+    monkeypatch.setattr(worker, "execute_tool", fake_tool)
+
+    asyncio.run(supervisor._process(research_db.claim_next(supervisor.worker_id)))
+    planned = research_db.get_run("run-1")
+    research_db.approve("run-1", planned["planRevision"], planned["planHash"])
+    asyncio.run(supervisor._process(research_db.claim_next(supervisor.worker_id)))
+    return research_db.get_run("run-1"), synthesis_prompts
+
+
+def _two_source_search():
+    return (
+        "Title: Alpha\nURL: https://a.example.com\nSnippet: alpha snippet.\n\n---\n\n"
+        "Title: Beta\nURL: https://b.example.com\nSnippet: beta snippet."
+    )
+
+
+def test_auto_scrape_retrieves_page_chunks_into_synthesis_evidence(research_home, monkeypatch):
+    _create(budgets = _SCRAPE_BUDGETS)
+    url_calls = []
+
+    def fake_tool(name, arguments, *args, **kwargs):
+        url = arguments.get("url")
+        if url:
+            url_calls.append(url)
+            return {"https://a.example.com": "ALPHA_PAGE_BODY", "https://b.example.com": "BETA_PAGE_BODY"}[url]
+        return _two_source_search()
+
+    completed, synthesis_prompts = _run_search_then_finish(monkeypatch, fake_tool)
+
+    assert completed["status"] == "completed"
+    assert sorted(url_calls) == ["https://a.example.com", "https://b.example.com"]
+    assert synthesis_prompts, "synthesis must have run"
+    # the retrieved page chunks reach synthesis, rendered in the <chunk> format
+    assert "<chunk" in synthesis_prompts[0]
+    assert "ALPHA_PAGE_BODY" in synthesis_prompts[0]
+    assert "BETA_PAGE_BODY" in synthesis_prompts[0]
+
+
+def test_auto_scrape_persists_chunk_excerpt_for_resume(research_home, monkeypatch):
+    _create(budgets = _SCRAPE_BUDGETS)
+
+    def fake_tool(name, arguments, *args, **kwargs):
+        url = arguments.get("url")
+        if url:
+            return {"https://a.example.com": "ALPHA_PAGE_BODY", "https://b.example.com": "BETA_PAGE_BODY"}[url]
+        return _two_source_search()
+
+    completed, _ = _run_search_then_finish(monkeypatch, fake_tool)
+
+    search_step = completed["steps"][0]
+    result = search_step["result"]
+    assert result["action"] == "search"
+    assert result["sourceUrls"] == ["https://a.example.com", "https://b.example.com"]
+    assert result["sourceCount"] == 2
+    # the durable excerpt carries the chunks so a resumed run reconstructs the same evidence
+    assert "<chunk" in result["excerpt"]
+    assert "ALPHA_PAGE_BODY" in result["excerpt"]
+
+
+def test_auto_scrape_ignores_fetch_failures(research_home, monkeypatch):
+    _create(budgets = _SCRAPE_BUDGETS)
+    url_calls = []
+
+    def fake_tool(name, arguments, *args, **kwargs):
+        url = arguments.get("url")
+        if url:
+            url_calls.append(url)
+            return "Error: boom" if url == "https://a.example.com" else "BETA_PAGE_BODY"
+        return _two_source_search()
+
+    completed, synthesis_prompts = _run_search_then_finish(monkeypatch, fake_tool)
+
+    assert completed["status"] == "completed"
+    assert completed["steps"][0]["status"] == "completed"
+    assert len(url_calls) == 2
+    # the failed fetch is never chunked; only the good page's content appears
+    assert "BETA_PAGE_BODY" in synthesis_prompts[0]
+    assert "Error: boom" not in synthesis_prompts[0]
+
+
+def test_auto_scrape_skipped_for_legacy_config_without_key(research_home, monkeypatch):
+    # Existing/legacy runs persisted no maxAutoScrape; they must never gain scraping on resume
+    # or new steps, regardless of the current server default.
+    _create()  # legacy budgets, no maxAutoScrape
+    url_calls = []
+
+    def fake_tool(name, arguments, *args, **kwargs):
+        if arguments.get("url"):
+            url_calls.append(arguments["url"])
+            return "SHOULD_NOT_BE_FETCHED"
+        return _two_source_search()
+
+    completed, synthesis_prompts = _run_search_then_finish(monkeypatch, fake_tool)
+
+    assert completed["status"] == "completed"
+    assert url_calls == []
+    assert "SHOULD_NOT_BE_FETCHED" not in synthesis_prompts[0]
+    assert "excerpt" not in completed["steps"][0]["result"]
+
+
+def test_auto_scrape_skipped_on_small_context(research_home, monkeypatch):
+    # A context too small for the grounded synthesis prompt would degenerate the report, so
+    # grounding is skipped (snippet-only) even when maxAutoScrape is set.
+    from core import research_runs as worker
+
+    monkeypatch.setattr(worker, "_loaded_context_length", lambda: 2048)
+    _create(budgets = _SCRAPE_BUDGETS)
+
+    def fake_tool(name, arguments, *args, **kwargs):
+        if arguments.get("url"):
+            return "SHOULD_NOT_BE_FETCHED"
+        return _two_source_search()
+
+    completed, synthesis_prompts = _run_search_then_finish(monkeypatch, fake_tool)
+
+    assert completed["status"] == "completed"
+    assert "<chunk" not in synthesis_prompts[0]
+    assert "SHOULD_NOT_BE_FETCHED" not in synthesis_prompts[0]
+    assert "excerpt" not in completed["steps"][0]["result"]
+
+
+def test_synthesis_pass_runs_at_synthesis_phase(research_home, monkeypatch):
+    # The report pass runs at phase "synthesis" and with default sampling: no repetition
+    # penalty is injected (an aggressive one degenerates small local models into a word-salad).
+    from core import research_runs as worker
+
+    _create(budgets = _SCRAPE_BUDGETS)
+    _patch_web_rank(monkeypatch)
+    supervisor = worker.ResearchSupervisor(
+        SimpleNamespace(state = SimpleNamespace(server_port = 1))
+    )
+    decisions = iter(
+        (
+            json.dumps({"action": "search", "title": "Find", "query": "q"}),
+            json.dumps({"action": "finish", "title": "done"}),
+        )
+    )
+    captured = {}
+
+    async def fake_stream_completion(run, messages, *, json_mode = False, report_progress = True, **kwargs):
+        system = messages[0]["content"]
+        if "rigorous web research plan" in system:
+            return json.dumps(_plan()), "p", "stop"
+        if "iterative research process" in system:
+            return next(decisions), "d", "stop"
+        captured.update(kwargs)
+        research_db.set_report_progress(run["id"], "# Report\n\nGrounded text.")
+        return "# Report\n\nGrounded text.", "s", "stop"
+
+    def fake_tool(name, arguments, *a, **k):
+        return "page body" if arguments.get("url") else _two_source_search()
+
+    monkeypatch.setattr(supervisor, "_stream_completion", fake_stream_completion)
+    monkeypatch.setattr(worker, "execute_tool", fake_tool)
+    asyncio.run(supervisor._process(research_db.claim_next(supervisor.worker_id)))
+    planned = research_db.get_run("run-1")
+    research_db.approve("run-1", planned["planRevision"], planned["planHash"])
+    asyncio.run(supervisor._process(research_db.claim_next(supervisor.worker_id)))
+
+    assert captured.get("phase") == "synthesis"
+    assert "repetition_penalty" not in captured
+
+
+def test_auto_scrape_respects_char_budgets(research_home, monkeypatch):
+    worker, supervisor = _bare_supervisor(monkeypatch)
+    _patch_web_rank(monkeypatch)
+    # space-separated so page cleaning keeps it (a single 50k-char token is stripped as junk)
+    monkeypatch.setattr(worker, "execute_tool", lambda *a, **k: "yy " * 20_000)
+    step_sources = [
+        {"url": f"https://s{i}.example.com", "title": f"S{i}"} for i in range(3)
+    ]
+    section, fetched = asyncio.run(
+        supervisor._auto_scrape_sources(
+            {"id": "run-x"}, "question", step_sources, set(),
+            tool_timeout = 10, website_policy = None,
+        )
+    )
+    # the folded evidence is bounded chunks, not the 150k of raw page bodies
+    # (the retrieved chunk section is capped at _AUTO_SCRAPE_TOTAL_CHARS; a short fixed
+    # header is prepended on top)
+    assert "<chunk" in section
+    assert len(section) <= worker._AUTO_SCRAPE_TOTAL_CHARS + 200
+    assert len(fetched) == worker._AUTO_SCRAPE_TOP_K
+    notes = [f"### Step\nInput: q\nResult:\n{section[:12_000]}"]
+    assert len(worker._bounded_synthesis_evidence(notes)) <= worker._MAX_SYNTHESIS_EVIDENCE_CHARS
+
+
+def test_auto_scrape_falls_back_when_no_relevant_chunks(research_home, monkeypatch):
+    # When hybrid retrieval surfaces nothing above the floor (covered in test_web_rank.py),
+    # the step yields no scraped section and the caller keeps the snippet evidence.
+    worker, supervisor = _bare_supervisor(monkeypatch)
+    _patch_web_rank(monkeypatch, retrieve = lambda *a, **k: ("", []))
+    monkeypatch.setattr(worker, "execute_tool", lambda *a, **k: "unrelated boilerplate content")
+    step_sources = [{"url": "https://s.example.com", "title": "S"}]
+    section, fetched = asyncio.run(
+        supervisor._auto_scrape_sources(
+            {"id": "run-x"}, "find the special token", step_sources, set(),
+            tool_timeout = 10, website_policy = None,
+        )
+    )
+    assert section == ""
+    assert fetched == []
+
+
+def test_clean_scraped_text_strips_nav_and_encoded_links():
+    from core import research_runs as worker
+
+    raw = (
+        "# Qwen\n"
+        "* [العربية](https://ar.wikipedia.org/wiki/%D9%83%D9%88%D9%8A%D9%86_%D9%86%D9%85)\n"
+        "* [Deutsch](https://de.wikipedia.org/wiki/Qwen)\n"
+        "[Qwen](/Qwen) 's Collections\n"
+        "[Qwen-AgentWorld](/collections/Qwen/qwen-agentworld)\n"
+        "BaseModelAndInstructionTuning.html?q=base%2Cmodels&sa=D&sntz=1&usg=AOvVaw2JZPpIYwRrXNjGnFtOuS-H\n"
+        "Qwen2.5 is released under the [Apache 2.0](https://apache.org/licenses) license, "
+        "which permits commercial use and redistribution.\n"
+        "The maximum context length is 131072 tokens.\n"
+    )
+    cleaned = worker._clean_scraped_text(raw)
+
+    # nav sidebars, encoded-URL lists, bare link menus, and tracking-URL tokens are gone
+    assert "العربية" not in cleaned
+    assert "ar.wikipedia" not in cleaned
+    assert "AgentWorld" not in cleaned
+    assert "'s Collections" not in cleaned
+    assert "AOvVaw2" not in cleaned
+    # real prose with an inline link survives
+    assert "Apache 2.0" in cleaned
+    assert "131072 tokens" in cleaned
+
+
+def test_auto_scrape_skips_already_fetched_urls(research_home, monkeypatch):
+    worker, supervisor = _bare_supervisor(monkeypatch)
+    _patch_web_rank(monkeypatch)
+    called = []
+
+    def fake_tool(name, arguments, *args, **kwargs):
+        called.append(arguments["url"])
+        return "body for " + arguments["url"]
+
+    monkeypatch.setattr(worker, "execute_tool", fake_tool)
+    step_sources = [
+        {"url": "https://x.example.com", "title": "X"},
+        {"url": "https://y.example.com", "title": "Y"},
+    ]
+    section, fetched = asyncio.run(
+        supervisor._auto_scrape_sources(
+            {"id": "run-x"},
+            "question",
+            step_sources,
+            {"https://x.example.com"},
+            tool_timeout = 10,
+            website_policy = None,
+        )
+    )
+    assert called == ["https://y.example.com"]
+    assert fetched == ["https://y.example.com"]
+    assert "https://x.example.com" not in section
 
 
 def test_recovered_running_research_resumes_durable_progress(research_home, monkeypatch):

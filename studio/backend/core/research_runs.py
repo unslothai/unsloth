@@ -8,6 +8,7 @@ from __future__ import annotations
 import asyncio
 import ipaddress
 import json
+import os
 import re
 import sqlite3
 import threading
@@ -81,6 +82,78 @@ _MAX_ERROR_CHARS = 500
 _MAX_CONTEXT_CHARS = 12_000
 _MAX_CONTEXT_MESSAGE_CHARS = 4_000
 _MAX_SYNTHESIS_EVIDENCE_CHARS = 32_000
+# The synthesis prompt must fit the loaded context or it is silently truncated and the report
+# degenerates (echoes the evidence tail). Studio defaults context to 2048 tokens, far below the
+# cap above, so the evidence budget adapts to the loaded context: reserve tokens for the prompt
+# scaffolding, then convert the remainder to chars. Unknown context keeps the full cap.
+_MIN_SYNTHESIS_EVIDENCE_CHARS = 1_500
+_SYNTHESIS_EVIDENCE_CHARS_PER_TOKEN = 3.0
+_SYNTHESIS_CONTEXT_RESERVE_TOKENS = 2_048
+# Below this loaded context the prompt scaffolding alone fills the window and the grounded
+# report degenerates, so grounding is skipped (snippet-only) for smaller loads.
+_AUTO_SCRAPE_MIN_CONTEXT_TOKENS = 8_192
+# Optionally read the top search results so synthesis is grounded in page text, not just
+# snippets: each scraped page is ingested into an ephemeral RAG scope (deleted after, so a
+# user's knowledge base is untouched), the passages most relevant to the question are
+# hybrid-retrieved reusing the KB retriever, and the resulting <chunk> blocks replace the raw
+# search text (staying under the existing 12k per-note cap). OFF by default, opt in via
+# UNSLOTH_RESEARCH_AUTO_SCRAPE=1: benchmarking showed no reliable factoid-accuracy gain over
+# snippets on a local model (snippets usually already carry the fact) while adding latency.
+# Gated per run by budgets["maxAutoScrape"] (absent/0 means no scrape, so existing runs keep
+# legacy behavior). Safe only with the context gate in _research and the adaptive budget in
+# _synthesis_evidence_budget; without them, denser evidence overflows a small context.
+_AUTO_SCRAPE_TOP_K = 3
+_AUTO_SCRAPE_TOTAL_CHARS = 6_000
+_WEB_RAG_TOP_N = 6
+_WEB_RAG_MIN_SCORE = 0.30
+
+
+def _auto_scrape_default() -> int:
+    """Server default for ``budgets["maxAutoScrape"]``: 0 (off) unless
+    ``UNSLOTH_RESEARCH_AUTO_SCRAPE`` enables it (``1``/``true`` -> ``_AUTO_SCRAPE_TOP_K``, or an
+    explicit count clamped to ``[0, _AUTO_SCRAPE_TOP_K]``)."""
+    raw = os.environ.get("UNSLOTH_RESEARCH_AUTO_SCRAPE", "").strip().lower()
+    if not raw:
+        return 0
+    if raw in ("0", "false", "no", "off"):
+        return 0
+    if raw in ("1", "true", "yes", "on"):
+        return _AUTO_SCRAPE_TOP_K
+    try:
+        return max(0, min(int(raw), _AUTO_SCRAPE_TOP_K))
+    except ValueError:
+        return 0
+
+
+# Nav menus, language sidebars, and percent-encoded link lists are not evidence and derail
+# retrieval; drop link-dominated and encoded-URL lines.
+_MD_LINK = re.compile(r"\[([^\]]*)\]\([^)]*\)")
+_PERCENT_ESCAPE = re.compile(r"%[0-9A-Fa-f]{2}")
+_LIST_PREFIX = re.compile(r"^(?:[\*\-\+•]|\d+[.)])\s")
+_BLANK_RUN = re.compile(r"\n{3,}")
+# Bare tracking/redirect URLs arrive as one unbroken token (prose never has an 80-char word);
+# not evidence, and a small model will latch onto and echo it.
+_LONG_TOKEN = re.compile(r"\S{80,}")
+
+
+def _clean_scraped_text(text: str) -> str:
+    kept: list[str] = []
+    for line in text.splitlines():
+        stripped = line.strip()
+        if not stripped:
+            kept.append("")
+            continue
+        if len(_PERCENT_ESCAPE.findall(stripped)) >= 4:
+            continue
+        if _LONG_TOKEN.search(stripped):
+            continue
+        prose = _MD_LINK.sub(r"\1", stripped).strip()
+        if "](" in stripped and (
+            _LIST_PREFIX.match(stripped) or len(prose) <= max(30, len(stripped) // 3)
+        ):
+            continue
+        kept.append(line)
+    return _BLANK_RUN.sub("\n\n", "\n".join(kept)).strip()
 
 _REPORT_SYSTEM_PROMPT = """You are writing a rigorous, self-contained research report.
 
@@ -370,13 +443,42 @@ def _research_question_context(thread_id: str, user_message_id: str) -> tuple[st
     return question, json.dumps(turns, ensure_ascii = False)
 
 
-def _bounded_synthesis_evidence(notes: list[str]) -> str:
+def _loaded_context_length() -> int | None:
+    """Best-effort read of the active model's context window in tokens, or None if unknown."""
+    try:
+        from core.inference.inference import get_inference_backend
+
+        backend = get_inference_backend()
+        name = getattr(backend, "active_model_name", None)
+        if name:
+            ctx = (getattr(backend, "models", {}).get(name) or {}).get("context_length")
+            if isinstance(ctx, int) and not isinstance(ctx, bool) and ctx > 0:
+                return ctx
+    except Exception:
+        logger.debug("research.context_probe_failed", exc_info = True)
+    return None
+
+
+def _synthesis_evidence_budget() -> int:
+    """Char budget for synthesis evidence, sized to fit the loaded context (falls back to the
+    full cap when the context is unknown)."""
+    ctx = _loaded_context_length()
+    if not ctx:
+        return _MAX_SYNTHESIS_EVIDENCE_CHARS
+    usable_tokens = max(0, ctx - _SYNTHESIS_CONTEXT_RESERVE_TOKENS)
+    budget = int(usable_tokens * _SYNTHESIS_EVIDENCE_CHARS_PER_TOKEN)
+    return max(_MIN_SYNTHESIS_EVIDENCE_CHARS, min(budget, _MAX_SYNTHESIS_EVIDENCE_CHARS))
+
+
+def _bounded_synthesis_evidence(
+    notes: list[str], max_chars: int = _MAX_SYNTHESIS_EVIDENCE_CHARS
+) -> str:
     if not notes:
         return "(none)"
     separator = "\n\n"
     per_note = max(
-        1000,
-        (_MAX_SYNTHESIS_EVIDENCE_CHARS - len(separator) * (len(notes) - 1)) // len(notes),
+        min(1000, max_chars),
+        (max_chars - len(separator) * (len(notes) - 1)) // len(notes),
     )
     bounded = []
     for note in notes:
@@ -384,7 +486,7 @@ def _bounded_synthesis_evidence(notes: list[str]) -> str:
             bounded.append(note)
         else:
             bounded.append(note[: per_note - 24].rstrip() + "\n[Evidence truncated]")
-    return separator.join(bounded)[:_MAX_SYNTHESIS_EVIDENCE_CHARS]
+    return separator.join(bounded)[:max_chars]
 
 
 def _parse_json_object(text: str) -> dict:
@@ -748,6 +850,87 @@ class ResearchSupervisor:
             raise LeaseLost()
         if self._cancel_event(run_id).is_set():
             raise RunCancelled()
+
+    async def _auto_scrape_sources(
+        self,
+        run: dict,
+        question: str,
+        step_sources: list[dict],
+        fetched_urls: set[str],
+        *,
+        tool_timeout: int,
+        website_policy: dict | None,
+    ) -> tuple[str, list[str]]:
+        """Concurrently read the top few of this step's accepted source URLs, rank their
+        content against the research question with the knowledge-base embedding model, and
+        return the most relevant chunks as ``<chunk>`` evidence plus the URLs actually read.
+        URLs are already access checked and deduplicated by the caller, so no new sources are
+        created. Failures, timeouts, unreadable pages, and low-relevance chunks are dropped;
+        the caller enforces cancellation."""
+        targets = []
+        for source in step_sources:
+            url = str(source.get("url") or "")
+            if url and url not in fetched_urls:
+                targets.append(source)
+            if len(targets) >= _AUTO_SCRAPE_TOP_K:
+                break
+        if not targets:
+            return "", []
+        cancel_event = self._cancel_event(run["id"])
+        results = await asyncio.gather(
+            *(
+                asyncio.to_thread(
+                    execute_tool,
+                    "web_search",
+                    {"url": source["url"]},
+                    cancel_event = cancel_event,
+                    timeout = tool_timeout,
+                    website_policy = website_policy,
+                )
+                for source in targets
+            ),
+            return_exceptions = True,
+        )
+        pages = []
+        fetched = []
+        for source, result in zip(targets, results):
+            if isinstance(result, BaseException) or not isinstance(result, str):
+                continue
+            body = strip_result_for_model(result)
+            if is_tool_error(body):
+                continue
+            body = _clean_scraped_text(body)
+            if not body:
+                continue
+            fetched.append(source["url"])
+            pages.append(
+                {
+                    "text": body,
+                    "title": source.get("title") or source["url"],
+                    "url": source["url"],
+                }
+            )
+        if not pages:
+            return "", []
+        # Reuse Studio's knowledge-base RAG pipeline (ingest -> hybrid retrieve -> <chunk>
+        # render) over an ephemeral scope; runs off the event loop since embedding and the
+        # sqlite/vec index work are CPU/GPU bound.
+        from core.rag import web_rank
+
+        section, _sources = await asyncio.to_thread(
+            web_rank.retrieve_web_chunks,
+            pages,
+            question,
+            top_n = _WEB_RAG_TOP_N,
+            min_score = _WEB_RAG_MIN_SCORE,
+            char_budget = _AUTO_SCRAPE_TOTAL_CHARS,
+        )
+        if not section:
+            return "", []
+        return (
+            "Relevant passages retrieved from the top results (already read):\n\n" + section,
+            fetched,
+        )
 
     async def _check_worker_write(self, run_id: str, written: bool) -> None:
         if written:
@@ -1281,6 +1464,20 @@ class ResearchSupervisor:
         max_steps = int(budgets["maxSteps"])
         max_sources = int(budgets["maxSources"])
         tool_timeout = int(budgets["toolTimeoutSeconds"])
+        # Absent for runs created before auto-scrape: default 0 keeps their behavior unchanged.
+        max_auto_scrape = int(budgets.get("maxAutoScrape", 0))
+        # Grounding needs the synthesis prompt to fit the loaded context; on a tiny context the
+        # prompt overhead alone fills the window and the report degenerates, so fall back to
+        # snippet-only when the context is too small.
+        if max_auto_scrape > 0:
+            loaded_ctx = _loaded_context_length()
+            if loaded_ctx is not None and loaded_ctx < _AUTO_SCRAPE_MIN_CONTEXT_TOKENS:
+                logger.info(
+                    "research.auto_scrape_disabled_small_context run_id=%s context=%s",
+                    run["id"],
+                    loaded_ctx,
+                )
+                max_auto_scrape = 0
         website_policy = run["config"].get("websitePolicy")
         policy_prompt = website_policy_prompt(website_policy)
         notes: list[str] = []
@@ -1571,6 +1768,29 @@ class ResearchSupervisor:
                     self.worker_id,
                 )
                 await self._check_worker_write(run["id"], written)
+            tool_failed = is_tool_error(result)
+            step_failed = _research_step_failed(result, rag_sources)
+            scraped_section = ""
+            if (
+                action["action"] == "search"
+                and step_sources
+                and not tool_failed
+                and max_auto_scrape > 0
+            ):
+                scraped_section, scraped_urls = await self._auto_scrape_sources(
+                    run,
+                    question,
+                    step_sources,
+                    fetched_urls,
+                    tool_timeout = tool_timeout,
+                    website_policy = website_policy,
+                )
+                fetched_urls.update(scraped_urls)
+                await self._check_active(run["id"])
+                if scraped_section:
+                    # Replace raw search text with the retrieved chunks; sources are already
+                    # cataloged above, so nothing citable is lost.
+                    result = scraped_section
             note = (
                 f"### {action['title']} ({action['action']})\n"
                 f"Input: {argument}\nResult:\n{result[:12000]}\n\n"
@@ -1581,8 +1801,6 @@ class ResearchSupervisor:
                 f"### {action['title']} ({action['action']})\n"
                 f"Input: {argument}\nResult:\n{result[:12000]}"
             )
-            tool_failed = is_tool_error(result)
-            step_failed = _research_step_failed(result, rag_sources)
             clean_result = strip_result_for_model(result)
             step_result = {
                 "action": action["action"],
@@ -1590,7 +1808,11 @@ class ResearchSupervisor:
                 "sourceCount": len(step_sources) + len(rag_sources),
                 "sourceUrls": [source["url"] for source in step_sources],
                 "evidenceSources": rag_sources,
-                **({"excerpt": clean_result[:12000]} if action["action"] == "fetch" else {}),
+                **(
+                    {"excerpt": clean_result[:12000]}
+                    if action["action"] == "fetch" or scraped_section
+                    else {}
+                ),
                 **({"error": clean_result[:500]} if tool_failed else {}),
             }
             await self._check_active(run["id"])
@@ -1633,7 +1855,7 @@ class ResearchSupervisor:
             f"   Chunk ID: {source.get('chunkId') or '(unknown)'}"
             for index, source in enumerate(document_sources, 1)
         )
-        evidence_text = _bounded_synthesis_evidence(notes)
+        evidence_text = _bounded_synthesis_evidence(notes, _synthesis_evidence_budget())
         report, synthesis_reasoning, synthesis_finish_reason = await self._stream_completion(
             run,
             [
