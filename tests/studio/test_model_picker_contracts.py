@@ -385,26 +385,23 @@ def test_legacy_migration_is_idempotent_and_non_destructive():
     """
     raw = _read("features/model-picker/model-config/per-model-config.ts")
     src = " ".join(raw.split())
-    # Migration runs from readMap (every store read triggers it), which is
-    # exactly why it must be safe to attempt repeatedly.
+    # Migration runs from readMap (every store read), so it must be safe to repeat.
     assert (
         "function readMap(): StoredMap { migrateLegacyLoadSettingsOnce(); "
         "return readMapRaw(); }" in src
     )
-    # Layer 1: in-memory once-per-session guard (checked at entry, set before
-    # any work) so repeated readMap() calls in one session migrate at most once.
+    # Layer 1: in-memory once-per-session guard so repeated readMap() calls
+    # migrate at most once.
     assert "let legacyMigrationChecked = false;" in src
     assert "if (legacyMigrationChecked || !canUseStorage()) {" in src
     assert "legacyMigrationChecked = true;" in src
     # Layer 2: persistent cross-session flag so a completed migration is never
-    # redone after a reload/restart. It must be set in every terminal branch
-    # (malformed legacy data, nothing to migrate, and after a successful write);
-    # a failed quota write deliberately leaves it unset so the next session
+    # redone. Set in every terminal branch (malformed data, nothing to migrate,
+    # successful write); a failed quota write leaves it unset so the next session
     # retries. Three set-sites encode exactly that.
     assert 'const LEGACY_MIGRATION_FLAG = "unsloth_model_configs_migrated";' in src
     assert "if (localStorage.getItem(LEGACY_MIGRATION_FLAG)) {" in src
     assert src.count('localStorage.setItem(LEGACY_MIGRATION_FLAG, "1");') >= 3
-    # Layer 3: non-overwriting merge - an existing (or default) key is skipped,
-    # so even a forced re-run cannot duplicate or clobber a config the user
-    # already has.
+    # Layer 3: non-overwriting merge skips an existing (or default) key, so even a
+    # forced re-run cannot duplicate or clobber a user's config.
     assert "if (isDefaultConfig(migrated) || Object.hasOwn(map, key)) {" in src

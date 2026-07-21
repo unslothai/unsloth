@@ -224,10 +224,8 @@ function AdvancedGpuSlider({
 }
 
 // GPU Memory placement controls (mode / GPU Layers / MoE offload / GPU picker),
-// re-homed here from the chat settings sheet onto the per-model config. GGUF
-// only; the layer/MoE slider ceilings come from the GGUF header dims and the GPU
-// picker from the live device list. The per-GPU split ratio (--tensor-split) is
-// intentionally not persisted per model, so it is not exposed here.
+// GGUF only. Slider ceilings come from the GGUF header dims, the picker from the
+// live device list. --tensor-split is not persisted per model, so not exposed here.
 function GpuMemorySettings({
   config,
   update,
@@ -243,11 +241,10 @@ function GpuMemorySettings({
   const mode = config.gpuMemoryMode ?? "auto";
   const isManual = mode === "manual";
   const gpuLayers = config.gpuLayers ?? GPU_LAYERS_AUTO;
-  // Manual with the slider at Auto (leftmost): llama.cpp --fit owns the whole
-  // layout, so the MoE-offload knob doesn't apply.
+  // Slider at Auto: llama.cpp --fit owns the layout, so MoE-offload doesn't apply.
   const autoLayers = isManual && gpuLayers < 0;
-  // Ceiling = model layer count + 1 (llama.cpp counts the output layer as one
-  // more offloadable layer past the repeating blocks), else a safe fallback.
+  // Ceiling = layer count + 1 (llama.cpp counts the output layer as offloadable),
+  // else a safe fallback.
   const gpuLayersMax = layerCount != null ? layerCount + 1 : 256;
   const nCpuMoe = config.nCpuMoe ?? 0;
   const moeLayersMax = moeLayerCount ?? 0;
@@ -255,9 +252,8 @@ function GpuMemorySettings({
   const selectedGpuIds = config.selectedGpuIds ?? null;
   const singleGpuInUse =
     (selectedGpuIds ?? gpuDevices.map((device) => device.index)).length <= 1;
-  // Only meaningful on multi-GPU, and only when the reported indices are
-  // physical (relative ordinals from a parent CUDA_VISIBLE_DEVICES mask can't be
-  // mapped back to pin a device). null = use all (auto).
+  // Multi-GPU only, and only with physical indices (relative ordinals from a
+  // CUDA_VISIBLE_DEVICES mask can't be mapped back to pin a device). null = all (auto).
   const showGpuPicker =
     gpuDevices.length > 1 && gpuDevices.every((d) => d.physicalIndex);
   const isGpuChecked = (index: number) =>
@@ -293,10 +289,9 @@ function GpuMemorySettings({
         <Select
           value={mode}
           onValueChange={(v) =>
-            // Returning to Default must clear the Manual-only knobs; otherwise a
+            // Returning to Default must clear the Manual-only knobs, else a
             // remembered config keeps stale gpuLayers/nCpuMoe/GPU pick that a
-            // later load re-applies whenever the standing GPU preference is
-            // Manual, despite the page showing Default.
+            // later load re-applies while the page shows Default.
             update(
               v === "manual"
                 ? { gpuMemoryMode: "manual" }
@@ -626,9 +621,8 @@ export function ModelConfigPage({
   const update = (patch: Partial<PerModelConfig>) =>
     setConfig((current) => ({ ...current, ...patch }));
 
-  // Fetch the GGUF header dims (context + layer/MoE counts) for any GGUF target
-  // so the GPU Memory sliders can size themselves; the context is also used
-  // below when target.meta doesn't already carry it.
+  // Fetch GGUF header dims (context + layer/MoE counts) to size the GPU Memory
+  // sliders; the context also fills in below when target.meta lacks it.
   const contextFetchKey = target.isGguf
     ? `${target.id}\n${target.ggufVariant ?? ""}\n${hfToken || ""}\n${nativePathToken ?? ""}`
     : null;
@@ -707,10 +701,9 @@ export function ModelConfigPage({
     update({ customContextLength: v });
   const baseline = loadedConfig ?? DEFAULT_PER_MODEL_CONFIG;
   const atBaseline = perModelConfigsEqual(config, baseline);
-  // An explicit customContextLength that happens to equal the native ceiling is
-  // still a user override (not a default), so Reset must stay enabled for it. It
-  // only counts as "at default" when there is no override at all AND the shown
-  // context matches native (or the model exposes no native context length).
+  // An explicit customContextLength equal to the native ceiling is still an
+  // override (Reset stays enabled). "At default" means no override at all AND the
+  // shown context matches native (or no native context length is exposed).
   const contextAtDefault =
     !target.isGguf ||
     (config.customContextLength == null &&
@@ -724,19 +717,17 @@ export function ModelConfigPage({
   const nativeMaxSeqLength =
     floorMaxSeqLength(modelMaxPosition.maxPositionEmbeddings) ??
     MAX_SEQ_LENGTH_MAX;
-  // A non-GGUF active model seeds config.maxSeqLength from its loaded value, so
-  // the initial view still shows the running context. Once that is cleared
-  // (Reset sets it to null), fall back to the app default rather than the loaded
-  // runtime value, otherwise a remembered/active override can never be cleared.
+  // A non-GGUF active model seeds maxSeqLength from its loaded value. Once cleared
+  // (Reset sets null), fall back to the app default, not the loaded runtime value,
+  // else a remembered/active override can never be cleared.
   const maxSeqLengthValue =
     normalizeMaxSeqLength(config.maxSeqLength) ??
     clampMaxSeqLength(DEFAULT_MAX_SEQ_LENGTH, nativeMaxSeqLength);
   const maxSeqLengthMax = Math.max(nativeMaxSeqLength, maxSeqLengthValue);
-  // An already-loaded GGUF that was auto-fit below native shows activeLoadedContext
-  // while customContextLength stays null. If the user fixes GPU Layers (Manual)
-  // and remembers, pin that shown context so a later fresh load keeps the fitted
-  // placement instead of sending native/0 for fixed layers and recreating the OOM
-  // the same-model reload workaround avoids.
+  // An auto-fit-below-native GGUF shows activeLoadedContext while
+  // customContextLength stays null. If the user fixes GPU Layers (Manual) and
+  // remembers, pin that shown context so a later fresh load keeps the fitted
+  // placement instead of sending native/0 for fixed layers and recreating the OOM.
   const pinFixedLayerContext =
     target.isGguf &&
     config.gpuMemoryMode === "manual" &&
@@ -744,16 +735,16 @@ export function ModelConfigPage({
     config.gpuLayers >= 0 &&
     config.customContextLength == null &&
     activeLoadedContext != null;
-  // Persisted record: keep config as-is (a default / just-reset non-GGUF model
-  // keeps maxSeqLength null) so isDefaultConfig can still recognise it and clear
-  // a remembered override instead of pinning the app-default value.
+  // Persisted record: keep config as-is (non-GGUF keeps maxSeqLength null) so
+  // isDefaultConfig recognises it and clears a remembered override instead of
+  // pinning the app default.
   const runtimeConfig = target.isGguf
     ? pinFixedLayerContext
       ? { ...config, customContextLength: activeLoadedContext }
       : config
     : config;
-  // Load request: the model needs a concrete max length, so substitute the
-  // resolved fallback here only, never in the persisted runtimeConfig.
+  // Load request needs a concrete max length; substitute the fallback here only,
+  // never in the persisted runtimeConfig.
   const loadConfig = target.isGguf
     ? runtimeConfig
     : { ...runtimeConfig, maxSeqLength: maxSeqLengthValue };

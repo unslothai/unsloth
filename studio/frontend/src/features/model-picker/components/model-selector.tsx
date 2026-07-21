@@ -193,15 +193,12 @@ function ModelSelectorTrigger({
       >
         {isLoaded &&
           (onEject ? (
-            // Loaded status doubles as a mouse eject shortcut: green checkmark
-            // at rest, red eject icon on pill hover, click to eject. A plain
-            // span (no role/tabIndex) keeps it out of the trigger button's
-            // content model, which forbids focusable descendants. Keyboard and
-            // screen-reader users eject via the picker's "Eject model" button.
-            // aria-hidden marks it decorative; stopPropagation stops the
-            // popover from toggling. On touch (no hover) the eject icon and
-            // tooltip never reveal, so pointer-events-none disables the
-            // shortcut there and taps open the picker instead of ejecting.
+            // Loaded status doubles as a mouse eject shortcut (checkmark at rest,
+            // eject icon on hover). A plain span keeps it out of the trigger
+            // button's content model (no focusable descendants); keyboard/SR users
+            // eject via the "Eject model" button. aria-hidden marks it decorative;
+            // stopPropagation stops the popover toggling. On touch (no hover)
+            // pointer-events-none disables it so taps open the picker instead.
             <span
               aria-hidden={true}
               title="Eject model"
@@ -358,8 +355,7 @@ function ModelSelectorContent({
   const chatOnly = usePlatformStore((s) => s.isChatOnly());
   const hasExternal = externalModels.length > 0;
   // The Fine-tuned tab is for fine-tuned models only. Local models (LM Studio,
-  // Ollama, custom folders) carry source "local" and live in the Hub tab's
-  // Downloaded / Custom sections instead.
+  // Ollama, custom folders) carry source "local" and live in the Hub tab instead.
   const fineTunedModels = useMemo(
     () => loraModels.filter((model) => isFineTunedSource(model.source)),
     [loraModels],
@@ -416,9 +412,8 @@ function ModelSelectorContent({
     null,
   );
 
-  // The picker below remounts on each open, but this tab state does not, so a
-  // persisted selection that lands in lora/external after async load would
-  // reopen on Hub. Re-derive the default tab on the open edge.
+  // The picker remounts on each open but this tab state does not, so re-derive
+  // the default tab on the open edge (else a lora/external selection reopens on Hub).
   const wasOpen = useRef(open);
   useEffect(() => {
     if (open && !wasOpen.current) {

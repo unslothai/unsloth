@@ -60,9 +60,8 @@ def _safe_is_dir(path) -> bool:
 
 
 # Shared with the hub inventory scans; keep the private aliases so existing
-# importers (core.inference.local_model_resolver, tests) stay valid.
-# ``_HF_REPO_ID_RE`` is the Hub repo id shape ("owner/name", no leading
-# separator); anything else is treated as a local filesystem path.
+# importers stay valid. ``_HF_REPO_ID_RE`` is the Hub repo id shape ("owner/name");
+# anything else is treated as a local filesystem path.
 from utils.hidden_models import (
     _HF_REPO_ID_RE,
     _existing_resolved_path,
@@ -82,9 +81,8 @@ def hidden_model_matchers() -> tuple[list[str], list[str], list[str]]:
     from core.rag import config as rag_config
 
     needles = [
-        # The validation probe's repo (matches the cached repo id) and its exact
-        # filename (matches the on-disk path). The filename carries the .gguf so
-        # it does not hide unrelated repos like ``user/stories260K-finetune-GGUF``.
+        # The validation probe's repo and its exact filename. The filename carries
+        # .gguf so it won't hide unrelated repos like ``user/stories260K-finetune-GGUF``.
         "ggml-org/models",
         "stories260k.gguf",
     ]
@@ -94,9 +92,8 @@ def hidden_model_matchers() -> tuple[list[str], list[str], list[str]]:
         rag_config.effective_embedding_model(),
         rag_config.effective_gguf_repo(),
     ):
-        # Resolve an existing local path before the repo-id regex, mirroring
-        # utils.hidden_models.is_hidden_model: a local embedder shaped like
-        # "models/embedder" is an exact path, not a Hub repo id.
+        # Resolve an existing local path before the repo-id regex: a local embedder
+        # shaped like "models/embedder" is an exact path, not a Hub repo id.
         existing_path = _existing_resolved_path(model)
         if existing_path:
             exact_paths.append(existing_path.lower())

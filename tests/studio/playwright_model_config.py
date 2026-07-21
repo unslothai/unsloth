@@ -54,20 +54,17 @@ from _playwright_robust import (  # noqa: E402
 
 BASE = os.environ["BASE_URL"]
 NEW = os.environ.get("STUDIO_NEW_PW", "ModelCfg-NEW-2026!")
-# Attach mode: point the test at an ALREADY-provisioned Studio by logging in
-# with an existing password instead of doing the first-boot change-password
-# dance. CI leaves STUDIO_LOGIN_PW unset and exercises the real change-password
-# flow (matching the sibling Playwright scripts); local runs against a
-# long-lived Studio can set it to skip re-provisioning.
+# Attach mode: log into an already-provisioned Studio with an existing password
+# instead of the first-boot change-password dance. CI leaves STUDIO_LOGIN_PW unset
+# to exercise the real change-password flow; local runs can set it to skip re-provisioning.
 LOGIN_PW = os.environ.get("STUDIO_LOGIN_PW")
 LOGIN_USER = os.environ.get("STUDIO_LOGIN_USER", "unsloth")
 GGUF_REPO = os.environ.get("GGUF_REPO", "unsloth/gemma-3-270m-it-GGUF")
 GGUF_VARIANT = os.environ.get("GGUF_VARIANT", "UD-Q4_K_XL")
 # Substring of the On Device picker row for the loaded model.
 MODEL_HINT = os.environ.get("STUDIO_MODEL_HINT", "gemma-3-270m")
-# A distinctive, valid (>=128, multiple of 128, below the tiny model's 32768
-# ceiling) Context Length that is clearly not a default, so persistence is
-# unambiguous.
+# A distinctive valid (>=128, multiple of 128, below the model's 32768 ceiling)
+# Context Length, clearly not a default, so persistence is unambiguous.
 DISTINCT_CTX = int(os.environ.get("STUDIO_DISTINCT_CTX", "4096"))
 ART_DIR = os.environ.get("PW_ART_DIR", "logs/playwright_modelcfg")
 ART = Path(ART_DIR)
@@ -170,8 +167,8 @@ with sync_playwright() as p:
 
     page.on("pageerror", _on_pageerror)
 
-    # Record every /api/inference/load POST payload (runtime truth for what the
-    # picker actually sent), so the persistence gate can assert max_seq_length.
+    # Record every /api/inference/load POST payload so the persistence gate can
+    # assert max_seq_length.
     load_posts: list[str] = []
 
     def _on_request(req):
@@ -215,8 +212,7 @@ with sync_playwright() as p:
     # ─────────────────────────────────────────────────────
     if LOGIN_PW:
         # Attach mode: log in via the API and seed the token before navigation,
-        # skipping the first-boot change-password dance. Local convenience only;
-        # CI leaves STUDIO_LOGIN_PW unset and exercises the change-password path.
+        # skipping the first-boot change-password dance.
         step("setup: API login + token seed (attach to running Studio)")
         _tok = _login_token_via_api(BASE, LOGIN_USER, LOGIN_PW)
         ctx.add_init_script(
@@ -516,8 +512,8 @@ with sync_playwright() as p:
                 if got_req:
                     info(f"OK persist(request): /api/inference/load max_seq_length={DISTINCT_CTX}")
                 else:
-                    # The UI may debounce the load; a persisted localStorage value
-                    # is the primary proof, so only warn if the request was missed.
+                    # The UI may debounce the load; localStorage is the primary
+                    # proof, so only warn if the request was missed.
                     runtime_warn(
                         "no /api/inference/load carried "
                         f"max_seq_length={DISTINCT_CTX}; posts={load_posts!r}"
@@ -554,11 +550,9 @@ with sync_playwright() as p:
             page.wait_for_timeout(500)
         except Exception as e:
             fail(f"Reset click failed: {e}")
-        # The displayed input after Reset is only an informational signal: with
-        # the model live-loaded at the custom length, the box can legitimately
-        # still echo that live context even though the stored override is gone.
-        # The regression we actually guard ("Reset PINS the override") lives in
-        # localStorage, asserted below.
+        # The input after Reset is informational only: a live-loaded model can still
+        # echo its context even with the stored override gone. The regression we
+        # guard ("Reset PINS the override") lives in localStorage, asserted below.
         ctx_in = context_input(popover)
         after_reset = ctx_in.input_value() if ctx_in else None
         info(f"reset: Context Length input now shows {after_reset!r}")
@@ -592,9 +586,8 @@ with sync_playwright() as p:
                 except Exception:
                     adv.click()
                 page.wait_for_timeout(500)
-            # The Tensor Parallelism control is a Radix Switch with a sibling
-            # label span (no aria-label), so target the first switch after the
-            # "Tensor Parallelism" text.
+            # The Tensor Parallelism Radix Switch has no aria-label, so target the
+            # first switch after the "Tensor Parallelism" text.
             tp = popover.locator(
                 'xpath=.//span[contains(text(),"Tensor Parallelism")]'
                 '/following::*[@role="switch"][1]'
@@ -635,11 +628,10 @@ with sync_playwright() as p:
 
     # ─────────────────────────────────────────────────────
     # 5. Legacy migration is idempotent (gates in CI via soft_fail).
-    #    Seed a pre-feature unsloth_load_settings store, confirm it migrates
-    #    once with the value preserved, then reload AGAIN with a fresh legacy
-    #    seed still present and confirm the migration does not re-run, duplicate,
-    #    or clobber. Re-running the migration on every reload was the regression
-    #    class that reverted the predecessor PR, so this must gate.
+    #    Seed a pre-feature unsloth_load_settings store, confirm it migrates once
+    #    with the value preserved, then reload with a fresh legacy seed and confirm
+    #    the migration does not re-run, duplicate, or clobber. Re-running on every
+    #    reload was the regression that reverted the predecessor PR.
     # ─────────────────────────────────────────────────────
     step("legacy unsloth_load_settings migrates once and stays idempotent")
     try:
@@ -687,10 +679,9 @@ with sync_playwright() as p:
         shoot("09-after-migration")
         close_picker()
 
-        # Idempotency: a second reload, with a DIFFERENT legacy entry freshly
-        # seeded, must not re-run the migration (the persistent flag blocks it),
-        # so the new legacy key must not leak in, no entry duplicates, and the
-        # already-migrated value is untouched. Compare the stored key sets.
+        # Idempotency: a second reload with a DIFFERENT legacy entry must not re-run
+        # the migration (the persistent flag blocks it), so the new key must not leak
+        # in, nothing duplicates, and the migrated value is untouched.
         if migrated_ctx:
             probe_key = "unsloth/__idem_probe__::Q4_K_M"
             robust_evaluate(

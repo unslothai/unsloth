@@ -17,12 +17,10 @@ export interface PerModelConfig {
   specDraftNMax: number | null;
   tensorParallel: boolean;
   chatTemplateOverride: string | null;
-  // GPU Memory controls (per-model, GGUF-only), optional so an older blob (or a
-  // build without them) still parses. gpuLayers/nCpuMoe are Manual-mode knobs;
-  // gpuMemoryMode "manual" is itself a non-default choice. A null selectedGpuIds
-  // is meaningful (all GPUs), so it is distinguished from absent. The per-GPU
-  // split ratio (--tensor-split) is deliberately NOT remembered: it is
-  // positionally bound to the exact GPU set/order and unvalidated.
+  // GPU Memory controls (per-model, GGUF-only), optional so older blobs still
+  // parse. null selectedGpuIds (all GPUs) is distinct from absent. The --tensor-split
+  // ratio is deliberately not remembered: it is positionally bound to the exact
+  // GPU set/order and unvalidated.
   gpuMemoryMode?: "auto" | "manual";
   gpuLayers?: number;
   nCpuMoe?: number;
@@ -42,11 +40,9 @@ export const DEFAULT_PER_MODEL_CONFIG: PerModelConfig = {
 export const MAX_SEQ_LENGTH_MIN = 128;
 export const MAX_SEQ_LENGTH_MAX = 1048576;
 export const MAX_SEQ_LENGTH_STEP = 128;
-// App-default max sequence length for a non-GGUF model with no explicit
-// override (a fresh model, after Reset, or an unconfigured compare pane). Both
-// the single-model config and the compare path fall back to this rather than an
-// active model's runtime value, so an unconfigured pane never inherits another
-// model's larger context and OOMs.
+// App-default max sequence length when a non-GGUF model has no override. Both
+// paths fall back to this rather than an active model's runtime value, so an
+// unconfigured pane never inherits another model's larger context and OOMs.
 export const DEFAULT_MAX_SEQ_LENGTH = 4096;
 export const CONTEXT_LENGTH_MIN = 128;
 
@@ -106,9 +102,8 @@ function normalizeGpuFields(partial: RawConfig): {
     nCpuMoe?: number;
     selectedGpuIds?: number[] | null;
   } = {};
-  // "auto" is the follow-global default; only "manual" is a real per-model
-  // override. Persisting "auto" would pin the model and stop it following later
-  // changes to the global GPU Memory preference, so drop it here.
+  // Only "manual" is a real override; persisting "auto" would pin the model and
+  // stop it following later changes to the global GPU Memory preference.
   if (partial.gpuMemoryMode === "manual") {
     out.gpuMemoryMode = "manual";
   }
@@ -143,9 +138,8 @@ function canonicalizeSpeculativeType(value: string): string | null {
   if (!s) {
     return null;
   }
-  // "auto"/"default" is the follow-global sentinel; canonicalize it to null (the
-  // stored default) so it is never persisted as a per-model override and later
-  // changes to the global speculative-decoding preference keep applying.
+  // "auto"/"default" is the follow-global sentinel; store as null so it is never
+  // persisted as an override and global speculative-decoding changes keep applying.
   if (s === "auto" || s === "default") {
     return null;
   }
@@ -215,8 +209,7 @@ function deleteOldestEvictableEntry(
   protectedKeys?: ReadonlySet<string>,
 ): { key: string; value: StoredMap[string] } | null {
   for (const key of Object.keys(map)) {
-    // Never evict a future-schema entry an older client cannot interpret,
-    // matching the save/delete guards.
+    // Never evict a future-schema entry an older client cannot interpret.
     if (
       protectedKeys?.has(key) ||
       storedConfigVersion(map[key]) > STORAGE_SCHEMA_VERSION
@@ -292,8 +285,7 @@ function legacyEntryToConfig(raw: Record<string, unknown>): PerModelConfig {
     tensorParallel:
       typeof raw.tensorParallel === "boolean" ? raw.tensorParallel : false,
     chatTemplateOverride: null,
-    // Carry the legacy GPU Memory knobs (older unsloth_load_settings blobs stored
-    // them here); normalizeGpuFields validates and drops anything malformed.
+    // Carry legacy GPU Memory knobs; normalizeGpuFields drops anything malformed.
     gpuMemoryMode:
       raw.gpuMemoryMode === "auto" || raw.gpuMemoryMode === "manual"
         ? raw.gpuMemoryMode
@@ -353,9 +345,8 @@ function migrateLegacyLoadSettingsOnce(): void {
       return;
     }
     const map = readMapRaw();
-    // Snapshot the user's existing entries before merging so eviction can
-    // protect them: importing old load settings must never discard a newer
-    // per-model config the user already has.
+    // Snapshot existing entries so eviction can protect them: importing old load
+    // settings must never discard a newer per-model config the user already has.
     const existingKeys = new Set(Object.keys(map));
     const migratedKeys = mergeLegacyEntries(
       map,
@@ -365,9 +356,8 @@ function migrateLegacyLoadSettingsOnce(): void {
       localStorage.setItem(LEGACY_MIGRATION_FLAG, "1");
       return;
     }
-    // Protect the pre-existing entries during eviction so only just-migrated
-    // legacy entries are dropped when over budget; a stale import can never
-    // evict a config the user already had.
+    // Protect pre-existing entries so only just-migrated legacy entries are
+    // dropped when over budget.
     if (!enforceStorageBudget(map, existingKeys)) {
       return;
     }
@@ -583,8 +573,7 @@ function loadPerModelConfig(
   if (!key) {
     return null;
   }
-  // Never apply a future-schema record an older client cannot interpret,
-  // matching the save/delete/evict guards.
+  // Never apply a future-schema record an older client cannot interpret.
   if (storedConfigVersion(map[key]) > STORAGE_SCHEMA_VERSION) {
     return null;
   }
@@ -605,9 +594,8 @@ export function isDefaultConfig(config: PerModelConfig): boolean {
   );
 }
 
-// GPU knobs are "default" when the mode is Auto and the Manual knobs / GPU pick
-// carry no explicit choice: mode auto/absent, gpuLayers Auto (< 0) / absent,
-// nCpuMoe 0 / absent, and no picked GPU set (null / absent = all GPUs).
+// GPU knobs are "default" when mode is Auto with no explicit choice: mode
+// auto/absent, gpuLayers < 0/absent, nCpuMoe 0/absent, selectedGpuIds null/absent.
 function gpuFieldsAtDefault(config: PerModelConfig): boolean {
   return (
     (config.gpuMemoryMode ?? "auto") === "auto" &&
@@ -655,8 +643,7 @@ export function deletePerModelConfig(
   ggufVariant?: string | null,
 ): boolean {
   const map = readMap();
-  // Mirror savePerModelConfig: never let an older client destroy a
-  // future-schema entry it cannot interpret.
+  // Mirror savePerModelConfig: never let an older client destroy a future-schema entry.
   if (hasFutureConfigForModelVariant(map, modelId, ggufVariant)) {
     return false;
   }

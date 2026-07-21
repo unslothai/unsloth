@@ -350,15 +350,12 @@ function ListLabel({
 
 /** Format bytes to a human-readable size string. */
 function formatBytes(bytes: number): string {
-  // Guard non-positive / non-finite sizes (0, missing -> NaN, Infinity) so we
-  // never render "NaN undefined" or a negative unit index.
+  // Guard non-positive / non-finite sizes so we never render "NaN undefined".
   if (!Number.isFinite(bytes) || bytes <= 0) return "0 B";
-  // Decimal (base-1000) units to match what Hugging Face reports for a repo's
-  // file sizes -- e.g. 217 GB, not the 201.8 GiB a base-1024 divide would show.
-  // (GPU-fit math below stays base-1024 since VRAM is binary.)
-  // Divide iteratively rather than via Math.log, which has float error at exact
-  // powers of 1000 (log(1e12)/log(1000) = 3.9999... would mislabel 1 TB as
-  // "1000 GB"); the loop also can't run off the end of units.
+  // Decimal (base-1000) units to match Hugging Face's reported file sizes (GPU-fit
+  // math below stays base-1024 since VRAM is binary). Divide iteratively rather
+  // than via Math.log, which has float error at exact powers of 1000 (mislabeling
+  // 1 TB as "1000 GB") and could run off the end of units.
   const units = ["B", "KB", "MB", "GB", "TB"];
   let i = 0;
   let value = bytes;
@@ -857,13 +854,12 @@ function GgufVariantExpander({
 
   const getGgufFit = useCallback(
     (sizeBytes: number): "fits" | "tight" | "oom" => {
-      // No device budget at all (no GPU and no known system RAM): can't
-      // classify, so don't scare the user with OOM badges.
+      // No device budget at all: can't classify, so don't show OOM badges.
       if (totalBudgetGb <= 0) return "fits";
       const gb = sizeBytes / 1024 ** 3;
       if (gb <= 0 || gb <= gpuBudgetGb) return "fits";
-      // No-GPU / unified-memory hosts (Mac) have only the RAM budget, so the
-      // tier collapses to fit-or-oom against system RAM rather than GPU+offload.
+      // No-GPU / unified-memory hosts (Mac) have only the RAM budget, so the tier
+      // collapses to fit-or-oom against system RAM.
       if (gpuBudgetGb <= 0) return gb <= totalBudgetGb ? "fits" : "oom";
       if (gb <= totalBudgetGb) return "tight";
       return "oom";
@@ -1440,9 +1436,8 @@ export function HubModelPicker({
     pinUnslothFirst: true,
     keepUnsupportedTags: true,
     accessToken,
-    // Only the Recommended section renders Hub results (On Device / Connected
-    // use local data), so keep the Hub hooks idle on the other tabs to avoid
-    // needless requests/spinner and to preserve offline-local behavior.
+    // Only Recommended renders Hub results, so keep the Hub hooks idle on other
+    // tabs to avoid needless requests and preserve offline-local behavior.
     enabled: online && section === "recommended",
   });
   const recommendedSearch = useHubModelSearch("", {
@@ -1455,10 +1450,9 @@ export function HubModelPicker({
     enabled: online && section === "recommended",
   });
 
-  // Lowercased repo ids confirmed GGUF by the store or HF search.
-  // Absence means "no hint" -> hasGgufSuffix is the fallback (don't
-  // conflate unknown with known-not-GGUF). Lowercased so store and HF
-  // IDs differing only by casing match the same hint.
+  // Lowercased repo ids confirmed GGUF by the store or HF search. Absence means
+  // "no hint" -> hasGgufSuffix is the fallback (don't conflate unknown with
+  // known-not-GGUF). Lowercased so store and HF IDs match regardless of casing.
   const modelGgufIds = useMemo(() => {
     const ids = new Set<string>();
     for (const model of models) {
@@ -1673,9 +1667,8 @@ export function HubModelPicker({
       if (!trimmed || folderLoading) return;
       setFolderError(null);
       setFolderLoading(true);
-      // From the folder browser's one-click "Use this folder": the typed-
-      // input panel is closed, so the inline folderError is invisible.
-      // Surface failures (denylisted path, sandbox 403, etc.) via toast.
+      // From the folder browser's "Use this folder": the typed-input panel is
+      // closed, so surface failures (denylisted path, sandbox 403) via toast.
       const fromBrowser = overridePath !== undefined;
       try {
         const created = await addScanFolder(trimmed);
@@ -2087,14 +2080,12 @@ export function HubModelPicker({
   const togglePinned = usePinnedModelsStore((s) => s.togglePinned);
   const pinnedSet = useMemo(() => new Set(pinnedIds), [pinnedIds]);
 
-  // Candidate pins whose repo still exists in the managed cache. Per-quant
-  // validation below is required because deleting one variant can leave a
-  // sibling quant (and therefore the repo row) cached.
+  // Candidate pins whose repo still exists in the cache. Per-quant validation
+  // below is needed because deleting one variant can leave a sibling cached.
   const pinnedQuantCandidates = useMemo(() => {
-    // The existence check ignores the text query (but keeps the format filter)
-    // so a pinned quant stays findable by its quant name even when the repo id
-    // does not match the query; querying visibleCachedGguf here would drop the
-    // repo before the later `${repoId} ${quant}` predicate could surface it.
+    // The existence check ignores the text query (keeps the format filter) so a
+    // pinned quant stays findable by quant name; querying visibleCachedGguf would
+    // drop the repo before the `${repoId} ${quant}` predicate could surface it.
     const cached = new Set(
       sortedCachedGguf
         .filter((c) => matchesFormatFilter(c.repo_id, true, formatFilter))
@@ -2552,9 +2543,8 @@ export function HubModelPicker({
   }, [scrollRef, updateListFades]);
 
   // Sentinel + IntersectionObserver for recommended infinite scroll. Re-running
-  // on each loaded page (results length) re-attaches the observer so a heavily
-  // filtered list keeps paging until the viewport fills or the listing ends;
-  // fetchMore is a no-op while a page is in flight. Callback ref tracks mount.
+  // per loaded page re-attaches the observer so a heavily filtered list keeps
+  // paging until the viewport fills; fetchMore is a no-op while a page is in flight.
   const [recommendedSentinel, setRecommendedSentinel] =
     useState<HTMLDivElement | null>(null);
   const recommendedSentinelRef = useCallback((node: HTMLDivElement | null) => {
@@ -2613,22 +2603,18 @@ export function HubModelPicker({
     // non-empty Fine-tuned section.
     fineTunedRows.length === 0;
 
-  // Sort dropdown shown inline to the right of the section toggle. Options
-  // depend on the tab and stay visible while searching so results can be
-  // sorted. Fixed width matching the Search Hub button so it and the format
-  // dropdown always line up; text-xs matches that button too. The trigger label
-  // clips (no ellipsis) when long; the open menu expands to show it in full.
+  // Sort dropdown inline right of the section toggle; options depend on the tab
+  // and stay visible while searching. Fixed width matches the Search Hub button
+  // so it and the format dropdown line up. Trigger label clips; the menu shows full.
   const sortTriggerClassName =
     "w-[110px] shrink-0 justify-between pr-2.5 !border-0 text-xs [&>span]:!text-clip";
-  // Tighter menu like the Projects activity Select: less left/top padding and
-  // text-xs to match the trigger. Keep the option's right padding so the
-  // selected-item checkmark never overlaps the label.
+  // Tighter menu (less padding, text-xs) matching the trigger. Keep the option's
+  // right padding so the selected-item checkmark never overlaps the label.
   const sortMenuContentClassName =
     "!p-1 !rounded-[14px] [&_[role=option]]:!pl-2 [&_[role=option]]:!py-1.5 [&_[role=option]]:!text-xs [&_[role=option]]:!rounded-[10px]";
-  // Device-fit toggle lives inside the sort menu (shared with the Hub page).
-  // The whole row is the click target (a button): a Checkbox renders as a
-  // <button>, and label-click forwarding to a button is unreliable, so the row
-  // owns the toggle and the Checkbox is presentational (pointer-events-none).
+  // Device-fit toggle inside the sort menu (shared with the Hub page). The whole
+  // row is the button: a Checkbox renders as a <button> and label-click forwarding
+  // to it is unreliable, so the row owns the toggle and the Checkbox is presentational.
   const fitOnDeviceFooter = (
     <Tooltip>
       <TooltipTrigger asChild={true}>
@@ -3093,10 +3079,9 @@ export function HubModelPicker({
           ref={scrollRef}
           onScroll={(e) => updateListFades(e.currentTarget)}
           className={cn(
-            // List sits within the menu padding so left and right gaps match.
-            // Height tracks the content up to the cap, so short lists do not
-            // leave white space. scroll-py + symmetric px keep the focus ring off
-            // the overflow clip edges during keyboard nav.
+            // List sits within the menu padding so gaps match; height tracks content
+            // up to the cap. scroll-py + symmetric px keep the focus ring off the
+            // overflow clip edges during keyboard nav.
             "model-list-scroll max-h-[335px] overflow-y-auto scroll-py-1.5 px-0.5 mr-1",
             listScrolled && "is-scrolled",
             listMoreBelow && "is-bottom-faded",
@@ -3840,10 +3825,10 @@ export function HubModelPicker({
                     </ListLabel>
                     {!localDirCollapsed &&
                       sortedLocalDir.map((m) => {
-                        // A loose ./models/*.gguf file loads directly; a GGUF repo
-                        // directory expands to pick a variant. The backend's local
-                        // variant scanner returns nothing for a config-less loose
-                        // file, so expanding it would dead-end at "No GGUF variants".
+                        // A loose ./models/*.gguf loads directly; a GGUF repo dir
+                        // expands to pick a variant. The variant scanner returns
+                        // nothing for a config-less loose file, so expanding it would
+                        // dead-end at "No GGUF variants".
                         const isGgufFile = m.path
                           .toLowerCase()
                           .endsWith(".gguf");

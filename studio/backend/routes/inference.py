@@ -5144,10 +5144,9 @@ async def validate_model(
                 latest_tier_active_for, config.identifier, request.hf_token
             ):
                 effective_load_in_4bit = False
-        # A metadata-only probe just reads the GGUF header and allocates no VRAM,
-        # so it must not be refused by the training guard. Real loads validate
-        # without include_context_length / include_chat_template and /load applies
-        # the guard again.
+        # A metadata-only probe reads the GGUF header and allocates no VRAM, so the
+        # training guard must not refuse it. Real loads omit include_context_length /
+        # include_chat_template, and /load applies the guard again.
         if not (request.include_context_length or request.include_chat_template):
             # Match /load's inherited llama.cpp extras and parallel slot count so
             # validation cannot pass a smaller estimate than the subsequent load.
@@ -5215,8 +5214,8 @@ async def validate_model(
                     )
                 if local_gguf:
                     if request.include_context_length:
-                        # Header walk reads tokenizer arrays for dense models (tens
-                        # of ms); keep it off the event loop.
+                        # Header walk reads tokenizer arrays (tens of ms); keep it
+                        # off the event loop.
                         dims = await asyncio.to_thread(read_gguf_staged_dims, local_gguf)
                         if dims:
                             context_length = dims["context_length"]
@@ -5224,9 +5223,8 @@ async def validate_model(
                             moe_layer_count = dims["moe_layer_count"]
                     if request.include_chat_template:
                         # Read only the leased GGUF's own embedded template (the copy
-                        # llama.cpp will actually use at load), never a sibling
-                        # sidecar file: the native grant authorizes just this one
-                        # path, so reading neighbours would be a scope escalation.
+                        # llama.cpp loads), never a sibling sidecar: the native grant
+                        # authorizes just this path, so neighbours would be scope escalation.
                         raw_template = await asyncio.to_thread(read_gguf_chat_template, local_gguf)
                         if (
                             raw_template is not None

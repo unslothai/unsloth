@@ -1090,23 +1090,22 @@ export function SharedComposer({
         const config = sel.config ?? null;
         // This pane's effective config: an explicit selection config, else the
         // remembered store config for this model/quant (never the other pane's).
-        // A model with no saved config resolves to all-null defaults, so every
-        // setting below still falls through to its session default.
+        // No saved config resolves to all-null defaults, so settings below fall
+        // through to their session default.
         const resolved = config
           ? { config, remembered: true }
           : resolveInitialConfig(sel.id, sel.ggufVariant ?? null);
         const ownConfig = resolved.config;
         const ownRemembered = resolved.remembered;
-        // Mirror single-view resolveLoadMaxSeqLength: a GGUF pane with no
-        // explicit context loads at native (0 -> n_ctx_train), not the session
-        // maxSeqLength, which would silently shrink the picker's shown context.
+        // Mirror single-view resolveLoadMaxSeqLength: a GGUF pane with no explicit
+        // context loads at native (0 -> n_ctx_train), not the session maxSeqLength,
+        // which would silently shrink the shown context.
         const isGgufLoad =
           (sel.ggufVariant ?? null) != null ||
           sel.id.toLowerCase().endsWith(".gguf");
-        // A non-GGUF pane with no saved maxSeqLength must fall back to the app
-        // default, not the active model's shared runtime snapshot: comparing a
-        // saved 128K model against an unconfigured one would otherwise load the
-        // latter at 128K (risking OOM) instead of its own default.
+        // A non-GGUF pane with no saved maxSeqLength falls back to the app default,
+        // not the active model's shared runtime snapshot: else comparing a saved
+        // 128K model against an unconfigured one loads the latter at 128K and OOMs.
         const effectiveMaxSeqLength =
           ownConfig.customContextLength ??
           normalizeMaxSeqLength(ownConfig.maxSeqLength) ??
@@ -1139,11 +1138,9 @@ export function SharedComposer({
             ? reconcilePersistedGpuIds(ownConfig.selectedGpuIds)
             : compareLoadKnobs.selectedGpuIds;
         // A pane's context comes from its own config only: a saved pin, or null
-        // (Auto/native) when it has no saved context. It must not inherit the
-        // active model's shared snapshot -- resolveFitMaxSeqLength would treat
-        // that as an explicit pin and load this pane at the other model's
-        // context (changing VRAM/results or OOMing), contradicting the
-        // Auto/native its settings show and the single-model load path.
+        // (Auto/native). It must not inherit the active model's shared snapshot --
+        // resolveFitMaxSeqLength would treat that as a pin and load this pane at
+        // the other model's context (changing VRAM/results or OOMing).
         const effectiveCustomContextLength = ownConfig.customContextLength;
         let loadTrustRemoteCode = trustRemoteCode;
         let approvedRemoteCodeFingerprint: string | null = null;
@@ -1164,8 +1161,8 @@ export function SharedComposer({
           effectiveGpuMemoryMode,
           effectiveGpuLayers,
           // Prefer this pane's own saved context pin over the shared snapshot,
-          // and fall back to its per-pane effective context (a GGUF pane with no
-          // saved context loads at native, not the session maxSeqLength).
+          // falling back to its per-pane effective context (GGUF with no saved
+          // context loads at native, not the session maxSeqLength).
           effectiveCustomContextLength,
           effectiveMaxSeqLength,
         );
@@ -1255,9 +1252,8 @@ export function SharedComposer({
               }
             : {}),
         });
-        // Keep a compare pane's per-model speculative choice load-local: only
-        // persist the global preference when it came from the global settings,
-        // matching the single-model load path.
+        // Keep a compare pane's per-model speculative choice load-local: persist
+        // the global preference only when it came from global settings.
         if (ownConfig.speculativeType == null) {
           saveSpeculativeType(effectiveSpeculativeType);
         }
@@ -1300,19 +1296,17 @@ export function SharedComposer({
           // The context baseline this pane loaded with (see keepCustomCtx above),
           // so a later Apply/Reset can't silently revert a Manual+Auto pin.
           loadedCustomContextLength: keepCustomCtx,
-          // Adopt the load response's GPU-memory fields (mode / layers / MoE /
-          // split / pick, plus their loaded baselines) so the GPU controls
-          // round-trip. (The gguf context, customContextLength and native-path
-          // token/expiry clearing are set once in the shared tail below.)
+          // Adopt the load response's GPU-memory fields (mode/layers/MoE/split/pick
+          // plus loaded baselines) so the GPU controls round-trip. (gguf context,
+          // customContextLength and native-path token/expiry clear in the tail below.)
           ...loadedGpuMemoryFields(resp),
           // Drives the GPU Memory controls' diffusion gate; set alongside the
           // GPU fields on every load path so the gate can't read stale.
           loadedIsDiffusion: resp.is_diffusion ?? false,
           loadedIsMultimodal: isMultimodalResponse(resp),
-          // Record the context this pane actually loaded with, mirroring the
-          // single-model load path, so that when the last-loaded pane becomes
-          // the active model the settings UI and any subsequent reload or save
-          // use its context instead of the previous/default one.
+          // Record the context this pane loaded with (like the single-model path)
+          // so when it becomes the active model, the UI and later reload/save use
+          // its context, not the previous/default one.
           customContextLength: isGgufLoad
             ? (ownConfig.customContextLength ?? keepCustomCtx)
             : null,
@@ -1323,10 +1317,9 @@ export function SharedComposer({
           ggufMaxContextLength: resp.is_gguf
             ? (resp.max_context_length ?? null)
             : null,
-          // Compare selections load by repo/variant, never from the desktop
-          // file picker, so they carry no native lease. Clear any prior picked
-          // file's token/expiry (mirroring the single-model load path) so the
-          // reload path never sends a stale lease for the now-active pane.
+          // Compare selections load by repo/variant, never from the file picker,
+          // so they carry no native lease. Clear any prior picked file's
+          // token/expiry so the reload path never sends a stale lease.
           activeNativePathToken: null,
           activeNativePathExpiresAtMs: null,
           ...resolveLoadedSpeculativeSettings(resp),

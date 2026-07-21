@@ -165,8 +165,7 @@ def test_read_default_chat_template_direct_gguf_prefers_sidecar(tmp_path, monkey
     )
     monkeypatch.setattr("picker.service._build_browse_allowlist", lambda: [tmp_path])
     monkeypatch.setattr("picker.service.read_gguf_chat_template", lambda _path: "FROM_GGUF")
-    # A directly selected .gguf file must prefer a maintained sidecar template
-    # over its embedded copy, matching directory/variant precedence.
+    # A directly selected .gguf must prefer a maintained sidecar over its embedded copy.
     assert read_default_chat_template(str(gguf)) == "FROM_CONFIG"
 
 
@@ -181,7 +180,7 @@ def test_read_default_chat_template_direct_gguf_falls_back_to_embedded(tmp_path,
 
 def test_tokenizer_config_over_size_limit_is_skipped_not_parsed(tmp_path):
     # An oversized tokenizer_config.json must be skipped before json.loads so a
-    # hostile sidecar cannot exhaust memory; no template is returned.
+    # hostile sidecar cannot exhaust memory.
     padding = "x" * (MAX_TEMPLATE_METADATA_BYTES + 1024)
     (tmp_path / "tokenizer_config.json").write_text(
         json.dumps({"chat_template": "HELLO", "_pad": padding}), encoding = "utf-8"
@@ -206,8 +205,8 @@ def test_tokenizer_config_at_size_limit_is_still_read(tmp_path):
 
 
 def test_remote_template_over_size_limit_is_skipped_before_download(monkeypatch):
-    # An uncached Hub repo whose template file is larger than the cap must be
-    # skipped via the remote size pre-check, never fully downloaded/cached.
+    # An uncached Hub repo whose template exceeds the cap must be skipped via the
+    # remote size pre-check, never downloaded.
     import huggingface_hub
 
     monkeypatch.setattr("picker.service.resolve_cached_repo_id_case", lambda name: name)
@@ -227,11 +226,9 @@ def test_remote_template_over_size_limit_is_skipped_before_download(monkeypatch)
 
 def test_remote_oversized_jinja_falls_through_to_tokenizer_template(tmp_path, monkeypatch):
     # A raw chat_template.jinja between the response cap (MAX_CHAT_TEMPLATE_BYTES)
-    # and the download bound (MAX_TEMPLATE_METADATA_BYTES) must not be returned:
-    # the route drops any over-cap template, so returning it would leave the
-    # caller with no template even though a valid smaller tokenizer_config.json
-    # exists. The remote path must skip the oversized Jinja and fall through,
-    # mirroring the local _chat_template_from_jinja_file size gate.
+    # and the download bound (MAX_TEMPLATE_METADATA_BYTES) must not be returned: the
+    # route drops it, so the remote path must skip the oversized Jinja and fall
+    # through to the smaller tokenizer_config.json.
     import huggingface_hub
     from picker.schemas import MAX_CHAT_TEMPLATE_BYTES
 

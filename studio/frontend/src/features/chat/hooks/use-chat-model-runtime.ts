@@ -498,14 +498,12 @@ export function useChatModelRuntime() {
         }
         return;
       }
-      // A load is already in flight. If it's this exact pick (id + GGUF variant +
-      // native path token), ignore the duplicate click. If it's a DIFFERENT model
-      // -- crucially including a different GGUF variant of the same repo, which the
-      // old id+token-only guard wrongly treated as a duplicate and silently
-      // no-op'd -- don't start a second concurrent load (the load path has no clean
-      // supersession) and don't silently swallow the request: surface it so the
-      // user knows to wait for, or cancel, the in-flight load. Centralized here so
-      // every entry point is covered, not just the staged Load button.
+      // A load is already in flight. If it's this exact pick (id + variant + token),
+      // ignore the duplicate click. If it's a DIFFERENT model (including a different
+      // GGUF variant of the same repo, which the old id+token guard wrongly treated
+      // as a duplicate), don't start a second concurrent load and don't swallow the
+      // request: surface it so the user waits or cancels. Centralized here so every
+      // entry point is covered, not just the staged Load button.
       const inFlightLoad =
         loadingModelRef.current ??
         useChatRuntimeStore.getState().loadingModelPick;
@@ -620,17 +618,16 @@ export function useChatModelRuntime() {
             || previousActiveNativePathToken != null
             || (previousCheckpoint?.toLowerCase().endsWith(".gguf") ?? false);
           // Roll back to the previous model's own context. previousConfig was
-          // snapshotted before this load pre-applied the next model's config to
-          // the shared store, so params.maxSeqLength may already be the next
-          // model's value; fall back to it only when no snapshot exists.
+          // snapshotted before this load pre-applied the next model's config, so
+          // params.maxSeqLength may already be the next model's; use it only when
+          // no snapshot exists.
           const previousMaxSeqLength =
             (typeof selection !== "string"
               ? selection.previousConfig?.maxSeqLength
               : null) ?? maxSeqLength;
           // Respect the rolled-back model's auto-layers mode: a Manual+Auto model
-          // with an unpinned (auto) context must reload with 0 (so --fit
-          // re-auto-sizes), not the positive context it happened to pick (which
-          // the backend would treat as a pin).
+          // with an unpinned context must reload with 0 (so --fit re-auto-sizes),
+          // not the positive context it picked (which the backend treats as a pin).
           const rollbackMaxSeqLength = resolveFitMaxSeqLength(
             previousIsGguf,
             stateBeforeUnload.loadedGpuMemoryMode ?? "auto",
@@ -684,14 +681,11 @@ export function useChatModelRuntime() {
             // context can exceed maxSeqLength, so sizing on raw maxSeqLength could
             // pass, unload, then have /load refuse it. Uses the click-time
             // snapshot (same values loadModel uses below), so the two agree.
-            // Mirror what /load does on a cross-model switch: the reset below
-            // clears the per-model Auto-layers context pin + GPU pick, and
-            // Manual+Auto sizes context through resolveFitMaxSeqLength.
-            // gpuMemoryMode is a standing preference, kept across the switch.
-            // A same-repo quant switch (same checkpoint, different gguf_variant)
-            // is a different model for per-model knobs: the pinned context,
-            // gpuLayers, GPU pick, and MoE offload are scoped per variant, so
-            // treat a variant change like a model switch and re-baseline them.
+            // Mirror /load on a cross-model switch: the reset below clears the
+            // per-model Auto-layers context pin + GPU pick; gpuMemoryMode is a
+            // standing preference kept across the switch. A same-repo quant switch
+            // (different gguf_variant) is a different model for per-model knobs
+            // (context/gpuLayers/pick/MoE are per variant), so re-baseline them too.
             const switchingModelOrVariant =
               currentCheckpoint !== modelId ||
               (loadActiveGgufVariant ?? null) !== (ggufVariant ?? null);
@@ -894,9 +888,8 @@ export function useChatModelRuntime() {
             // The load applied this spec mode, so persist the user's standing
             // preference now (the requested intent, not the resolved echo;
             // saveSpeculativeType keeps only the universal auto/ngram/off).
-            // Skip for a per-model/one-off config (keepSpeculative): that choice
-            // is model-specific and must not overwrite the global default, or a
-            // later model with no saved config would start from it instead of Auto.
+            // Skip for a per-model config (keepSpeculative): that choice is
+            // model-specific and must not overwrite the global default.
             if (!keepSpeculative) {
               saveSpeculativeType(loadSpeculativeType);
             }
@@ -939,9 +932,9 @@ export function useChatModelRuntime() {
               ? (loadResponse.native_context_length ?? null)
               : null;
             // Keep an explicit Manual+Auto context pin (so a later Apply doesn't
-            // revert it to Auto), else retain the user's requested context so
-            // re-opening or re-saving keeps the intended override rather than the
-            // backend's effective (auto-fit) context; null stays null.
+            // revert it to Auto) and retain the user's requested context so
+            // re-open/re-save keeps the intended override, not the backend's
+            // auto-fit context; null stays null.
             const keepCustomCtx = resolveManualAutoCtxPin(
               loadGpuMemoryMode,
               loadGpuLayers,
@@ -1109,8 +1102,7 @@ export function useChatModelRuntime() {
                   // Restore the previous model in the split mode it was running,
                   // not the default layer split.
                   tensor_parallel: stateBeforeUnload.loadedTensorParallel ?? false,
-                  // Restore the previous model's GPU Memory placement so the
-                  // rollback runs it as it was, not at the backend defaults.
+                  // Restore the previous model's GPU Memory placement, not backend defaults.
                   gpu_memory_mode: stateBeforeUnload.loadedGpuMemoryMode ?? "auto",
                   gpu_layers: stateBeforeUnload.loadedGpuLayers ?? GPU_LAYERS_AUTO,
                   n_cpu_moe: stateBeforeUnload.loadedNCpuMoe ?? 0,

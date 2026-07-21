@@ -58,8 +58,8 @@ class LoadRequest(BaseModel):
     def normalize_blank_chat_template_override(cls, value: Optional[str]) -> Optional[str]:
         if value is None:
             return None
-        # Character count is a lower bound on the UTF-8 byte length, so reject an
-        # obviously-oversized template before spending work encoding it.
+        # Char count is a lower bound on UTF-8 byte length: reject an oversized
+        # template before spending work encoding it.
         if len(value) > MAX_CHAT_TEMPLATE_BYTES:
             raise ValueError(f"Chat template exceeds the {MAX_CHAT_TEMPLATE_BYTES}-byte limit.")
         if value.strip() == "":

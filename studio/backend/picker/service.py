@@ -43,11 +43,10 @@ _TOKENIZER_CONFIG_PATHS = ("tokenizer_config.json", "LLM/tokenizer_config.json")
 _JINJA_TEMPLATE_PATHS = ("chat_template.jinja", "LLM/chat_template.jinja")
 _PROCESSOR_TEMPLATE_PATHS = ("chat_template.json", "LLM/chat_template.json")
 
-# Cap sidecar reads so a malformed or hostile metadata file cannot exhaust
-# memory before its extracted template is size-checked. The JSON envelope
-# (tokenizer_config.json / chat_template.json) is allowed to be larger than a
-# bare template because it also carries unrelated tokenizer metadata; the
-# extracted template is still bounded by MAX_CHAT_TEMPLATE_BYTES downstream.
+# Cap sidecar reads so a malformed or hostile metadata file cannot exhaust memory
+# before its template is size-checked. The JSON envelope may exceed a bare template
+# (it carries other tokenizer metadata); the extracted template is still bounded by
+# MAX_CHAT_TEMPLATE_BYTES downstream.
 MAX_TEMPLATE_METADATA_BYTES = 4 * 1024 * 1024
 
 
@@ -67,8 +66,8 @@ def _read_bounded_text(path: Path, limit: int) -> Optional[str]:
 
 
 def _leaf_inside_allowlist(path: Path, allow_roots: Optional[list[Path]]) -> bool:
-    # Block symlinked children from escaping the validated directory
-    # (realpath-checked). None = trusted caller (HF cache / remote download).
+    # Block symlinked children from escaping the validated directory (realpath-checked).
+    # None = trusted caller (HF cache / remote download).
     return allow_roots is None or _is_path_inside_allowlist(path, allow_roots)
 
 
@@ -76,8 +75,8 @@ def validate_chat_template(template: str) -> ValidateChatTemplateResponse:
     text = (template or "").strip()
     if not text:
         return ValidateChatTemplateResponse(valid = True, error = None)
-    # Import Jinja lazily: it is optional at runtime (e.g. GGUF-only installs),
-    # so a missing dependency must not crash API startup through this module.
+    # Import Jinja lazily: optional at runtime (e.g. GGUF-only installs), so a
+    # missing dependency must not crash API startup.
     try:
         from jinja2 import TemplateError
         from jinja2.ext import Extension
@@ -86,8 +85,8 @@ def validate_chat_template(template: str) -> ValidateChatTemplateResponse:
         return ValidateChatTemplateResponse(valid = True, error = None)
 
     class _GenerationTag(Extension):
-        # Accept Transformers' {% generation %}...{% endgeneration %} assistant
-        # mask tag so a pasted HF chat template validates (we only parse it).
+        # Accept Transformers' {% generation %} assistant-mask tag so a pasted HF
+        # chat template validates (we only parse it).
         tags = {"generation"}
 
         def parse(self, parser):
@@ -302,10 +301,10 @@ def _chat_template_from_dir(
             return None
         return read_gguf_chat_template(str(gguf))
 
-    # Sidecar tokenizer files (chat_template.jinja / tokenizer_config.json) are
-    # the model author's maintained template and supersede the GGUF's embedded
-    # copy, which can be stale. The variant only selects which GGUF to fall back
-    # to, so keep tokenizer-first precedence whether or not a variant is given.
+    # Sidecar tokenizer files (chat_template.jinja / tokenizer_config.json) are the
+    # author's maintained template and supersede the GGUF's possibly-stale embedded
+    # copy. The variant only picks the GGUF fallback, so tokenizer-first precedence
+    # holds whether or not a variant is given.
     return _chat_template_from_tokenizer_dir(dir_path, allow_roots) or from_gguf()
 
 
@@ -326,10 +325,8 @@ def read_default_chat_template(
                 logger.debug("Refused chat template read outside allowed folders: %s", name)
                 return None
             if name.lower().endswith(".gguf"):
-                # Prefer a maintained sidecar template (chat_template.jinja /
-                # tokenizer_config.json) next to the file over the GGUF's embedded
-                # copy, matching the tokenizer-first precedence used for directory
-                # and variant selections.
+                # Prefer a maintained sidecar next to the file over the GGUF's
+                # embedded copy (tokenizer-first precedence, as elsewhere).
                 sidecar = _chat_template_from_tokenizer_dir(target.parent, allow_roots)
                 if sidecar:
                     return sidecar
@@ -345,11 +342,9 @@ def read_default_chat_template(
     resolved = resolve_cached_repo_id_case(name)
 
     try:
-        # Resolve within each cached revision, newest first. A revision's
-        # maintained sidecar (chat_template.jinja / tokenizer_config.json)
-        # supersedes its own embedded GGUF copy, but a newer revision must not be
-        # overridden by an older revision's sidecar, so precedence stays
-        # per-snapshot rather than searching all sidecars globally first.
+        # Resolve within each cached revision, newest first. A revision's sidecar
+        # supersedes its own embedded GGUF copy, but must not override a newer
+        # revision, so precedence stays per-snapshot rather than global.
         for snapshot in iter_hf_cache_snapshots(resolved):
             template = _chat_template_from_dir(snapshot, gguf_variant)
             if template:
@@ -363,9 +358,8 @@ def read_default_chat_template(
         _api = HfApi()
 
         def _remote_exceeds_cap(rel: str) -> bool:
-            # Best-effort: skip the download when the remote file's advertised size
-            # already exceeds the cap, so a maliciously large sidecar is never
-            # fetched and retained in full (the local-file path is size-gated too).
+            # Best-effort: skip the download when the remote's advertised size
+            # exceeds the cap, so a maliciously large sidecar is never fetched.
             try:
                 infos = _api.get_paths_info(resolved, [rel], repo_type = "model", token = hf_token)
             except Exception:
@@ -393,13 +387,11 @@ def read_default_chat_template(
             template = _download_text(rel)
             if not template or not template.strip():
                 continue
-            # A raw Jinja sidecar whose whole content is the template must fit the
-            # response cap the route enforces; the local path skips oversized
-            # .jinja files too (see _chat_template_from_jinja_file). Downloading
-            # is still bounded at MAX_TEMPLATE_METADATA_BYTES so a large JSON that
-            # merely embeds a small template can be extracted below, but an
-            # over-cap Jinja is dropped so the search falls through to the
-            # tokenizer/processor template instead of returning a dead value.
+            # A raw Jinja sidecar is the whole template, so it must fit the route's
+            # response cap (the local path skips oversized .jinja too). Download stays
+            # bounded at MAX_TEMPLATE_METADATA_BYTES so a large JSON embedding a small
+            # template still extracts below, but an over-cap Jinja is dropped so the
+            # search falls through to the tokenizer/processor template.
             if len(template.encode("utf-8")) > MAX_CHAT_TEMPLATE_BYTES:
                 continue
             return template

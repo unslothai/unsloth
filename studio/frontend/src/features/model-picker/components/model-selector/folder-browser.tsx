@@ -32,9 +32,9 @@ export interface FolderBrowserProps {
 
 function splitBreadcrumb(path: string): { label: string; value: string }[] {
   if (!path) return [];
-  // Detect path style BEFORE normalizing: on POSIX, `\` is a valid filename
-  // char, so blindly rewriting `\` -> `/` mangles names like `my\backup` into
-  // 404ing breadcrumbs. Only Windows-style paths (drive letter, or UNC) convert.
+  // Detect path style BEFORE normalizing: on POSIX `\` is a valid filename char,
+  // so rewriting `\` -> `/` would mangle names like `my\backup`. Only Windows
+  // paths (drive letter or UNC) convert.
   const isWindowsDrive =
     /^[A-Za-z]:[\\/]/.test(path) || /^[A-Za-z]:$/.test(path);
   const isUnc = /^\\\\/.test(path);
@@ -55,9 +55,8 @@ function splitBreadcrumb(path: string): { label: string; value: string }[] {
     return parts;
   }
 
-  // Windows drive path (C:, D:): first segment is the drive. Use `C:/` as the
-  // crumb value so clicking the drive root navigates to the drive root, not the
-  // drive-relative CWD (`C:` alone resolves to CWD-on-C, not `C:\`).
+  // Windows drive path: use `C:/` as the crumb value so clicking the drive root
+  // goes to the drive root, not the drive-relative CWD (`C:` alone is CWD-on-C).
   if (/^[A-Za-z]:$/.test(segments[0])) {
     const driveRoot = `${segments[0]}/`;
     let cur = driveRoot;
