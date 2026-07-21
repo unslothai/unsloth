@@ -168,7 +168,6 @@ def _st_accepts_local_files_only(st_cls) -> bool:
     releases). Passing it to an older constructor raises, so gate on the signature."""
     try:
         import inspect
-
         return "local_files_only" in inspect.signature(st_cls.__init__).parameters
     except Exception:
         return False

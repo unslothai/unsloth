@@ -409,7 +409,15 @@ def test_guard_offline_allows_safetensors(hf_cache):
 
 def _install_fake_sentence_transformers(monkeypatch, captured):
     class FakeSentenceTransformer:
-        def __init__(self, name, *, device = None, model_kwargs = None, local_files_only = False, **kw):
+        def __init__(
+            self,
+            name,
+            *,
+            device = None,
+            model_kwargs = None,
+            local_files_only = False,
+            **kw,
+        ):
             captured["name"] = name
             captured["device"] = device
             captured["local_files_only"] = local_files_only
