@@ -1525,6 +1525,47 @@ def patch_torchcodec_audio_decoder():
         pass
 
 
+# torch.minor -> compatible torchcodec.minor strings (see notebook_validator.py).
+_TORCH_TORCHCODEC_MINORS: dict[str, set[str]] = {
+    "2.10": {"0.10"},
+    "2.9": {"0.7", "0.8", "0.9"},
+    "2.8": {"0.6"},
+    "2.7": {"0.3", "0.4", "0.5"},
+    "2.6": {"0.2", "0.3"},
+    "2.5": {"0.1", "0.2"},
+}
+
+
+def _torchcodec_version_mismatch_hint() -> str | None:
+    """Return a user-facing hint when installed torchcodec mismatches torch."""
+    try:
+        import importlib.metadata as importlib_metadata
+        import torch
+        from packaging.version import Version
+
+        torchcodec_version = importlib_metadata.version("torchcodec")
+    except Exception:
+        return None
+
+    def _minor(version: str) -> str:
+        parts = Version(version.split("+", 1)[0]).release
+        return ".".join(str(p) for p in parts[:2])
+
+    torch_minor = _minor(torch.__version__)
+    codec_minor = _minor(torchcodec_version)
+    allowed = _TORCH_TORCHCODEC_MINORS.get(torch_minor)
+    if allowed is None or codec_minor in allowed:
+        return None
+
+    pin = sorted(allowed)[-1]
+    return (
+        f"torchcodec {torchcodec_version} is incompatible with torch {torch.__version__}; "
+        f"install a matching build with "
+        f"`pip install 'torchcodec>={pin},<{int(pin.split('.')[1]) + 1}.0'` "
+        f"or `pip install 'unsloth[audio]'`."
+    )
+
+
 def disable_torchcodec_if_broken():
     """Make broken torchcodec behave as if uninstalled (#5446).
 
@@ -1533,6 +1574,11 @@ def disable_torchcodec_if_broken():
     flags and seat a sys.modules sentinel so downstream imports fall through
     their existing except ImportError handlers cleanly.
     """
+    mismatch_hint = _torchcodec_version_mismatch_hint()
+    if mismatch_hint is not None:
+        import warnings
+
+        warnings.warn(mismatch_hint, stacklevel = 2)
     try:
         import importlib.util
         if importlib.util.find_spec("torchcodec") is None:
