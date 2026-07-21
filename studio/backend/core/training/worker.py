@@ -2789,12 +2789,17 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
                 _lin_arch, _ = _rocm_classify_unified_memory(
                     _torch_lin.cuda.get_device_properties(0)
                 )
-                _hip_parts = [
-                    int(x)
-                    for x in str(getattr(_torch_lin.version, "hip", "") or "").split(".")[:2]
-                    if x.isdigit()
-                ]
-                _hip_lt_713 = len(_hip_parts) == 2 and (_hip_parts[0], _hip_parts[1]) < (7, 13)
+                # Prefer torch.version.hip, else the rocmX.Y embedded in
+                # torch.__version__ (AMD SDK / Radeon wheels leave version.hip
+                # unset). Unknown version on a recognized gfx120X ROCm build ->
+                # treat as affected unless it is a post-fix rocmsdk wheel.
+                _hip_str = str(getattr(getattr(_torch_lin, "version", None), "hip", "") or "")
+                _ver = getattr(_torch_lin, "__version__", "").lower()
+                _m = re.match(r"(\d+)\.(\d+)", _hip_str) or re.search(r"rocm(\d+)\.(\d+)", _ver)
+                if _m:
+                    _hip_lt_713 = (int(_m.group(1)), int(_m.group(2))) < (7, 13)
+                else:
+                    _hip_lt_713 = "rocmsdk" not in _ver
                 if _lin_arch.lower() in ("gfx1200", "gfx1201") and _hip_lt_713:
                     _WINDOWS_ROCM_GROUPED_MM_LIB = _install_grouped_mm_cpu_fallback(
                         _torch_lin, logger, "Linux ROCm gfx120X"
