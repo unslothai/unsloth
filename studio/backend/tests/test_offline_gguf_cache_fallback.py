@@ -120,6 +120,13 @@ def _build_cache(
     return snap
 
 
+def _symlink_or_skip(link: Path, target: Path) -> None:
+    try:
+        link.symlink_to(target)
+    except OSError as exc:
+        pytest.skip(f"symlinks unavailable: {exc}")
+
+
 @pytest.fixture
 def hf_cache(tmp_path, monkeypatch):
     """Point ``huggingface_hub.constants.HF_HUB_CACHE`` at a temp dir."""
@@ -1111,7 +1118,7 @@ class TestListLocalGgufVariantsSubdir:
         target.write_bytes(b"\0" * 20)
 
         out = _find_local_gguf_by_variant(str(tmp_path), "Q4_K_M")
-        assert out == str(target.resolve())
+        assert out == str(target.absolute())
 
     def test_find_local_gguf_by_variant_skips_big_endian_only_match(self, tmp_path):
         from utils.models.model_config import _find_local_gguf_by_variant
@@ -1120,6 +1127,57 @@ class TestListLocalGgufVariantsSubdir:
         (tmp_path / "model-Q4_K_M-be.gguf").write_bytes(b"\0" * 10)
 
         assert _find_local_gguf_by_variant(str(tmp_path), "Q4_K_M") is None
+
+    def test_find_local_gguf_by_variant_keeps_split_symlink_name(self, tmp_path):
+        from utils.models.model_config import _find_local_gguf_by_variant
+
+        blobs = tmp_path / "blobs"
+        blobs.mkdir()
+        snap = tmp_path / "snapshots" / "rev" / "BF16"
+        snap.mkdir(parents = True)
+        (tmp_path / "snapshots" / "rev" / "config.json").write_text("{}")
+        for i, sha in enumerate(("aa" * 32, "bb" * 32), start = 1):
+            (blobs / sha).write_bytes(b"\0" * 10)
+            _symlink_or_skip(snap / f"model-BF16-0000{i}-of-00002.gguf", blobs / sha)
+
+        out = _find_local_gguf_by_variant(str(tmp_path / "snapshots" / "rev"), "BF16")
+        assert out is not None
+        assert Path(out).name == "model-BF16-00001-of-00002.gguf"
+
+    def test_detect_gguf_model_keeps_split_symlink_name(self, tmp_path):
+        from utils.models.model_config import detect_gguf_model
+
+        blobs = tmp_path / "blobs"
+        blobs.mkdir()
+        snap = tmp_path / "snapshots" / "rev"
+        snap.mkdir(parents = True)
+        for i, (sha, size) in enumerate((("cc" * 32, 10), ("dd" * 32, 20)), start = 1):
+            (blobs / sha).write_bytes(b"\0" * size)
+            _symlink_or_skip(snap / f"model-BF16-0000{i}-of-00002.gguf", blobs / sha)
+
+        out = detect_gguf_model(str(snap))
+        assert out is not None
+        assert Path(out).name == "model-BF16-00001-of-00002.gguf"
+
+    def test_lone_split_symlink_uses_colocated_target_shards(self, tmp_path):
+        from utils.models.model_config import _find_local_gguf_by_variant, detect_gguf_model
+
+        target_dir = tmp_path / "external" / "BF16"
+        target_dir.mkdir(parents = True)
+        target = target_dir / "model-BF16-00001-of-00002.gguf"
+        target.write_bytes(b"\0" * 10)
+        (target_dir / "model-BF16-00002-of-00002.gguf").write_bytes(b"\0" * 10)
+
+        local = tmp_path / "local"
+        local.mkdir()
+        (local / "config.json").write_text("{}")
+        link = local / target.name
+        _symlink_or_skip(link, target)
+
+        expected = str(target.absolute())
+        assert _find_local_gguf_by_variant(str(local), "BF16") == expected
+        assert detect_gguf_model(str(local)) == expected
+        assert detect_gguf_model(str(link)) == expected
 
     def test_model_config_variant_ignores_big_endian_sibling(self, tmp_path):
         from utils.models.model_config import ModelConfig
