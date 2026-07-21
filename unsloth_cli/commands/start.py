@@ -1746,7 +1746,7 @@ def _run(
     # --no-launch recipes stay intact.
     if launch and clear_screen:
         click.clear()
-    typer.echo(f"Unsloth {base} · model {entry['id']}")
+    typer.echo(f"Unsloth ready at {base} · model {entry['id']}")
     if not launch:
         env, wsl_env_bridge = _wsl_shim_env(command, env, unset_env)
         _print_env(env, command, unset_env = unset_env, wsl_env_bridge = wsl_env_bridge)

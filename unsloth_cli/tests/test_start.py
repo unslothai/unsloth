@@ -2019,6 +2019,7 @@ def test_attached_server_prints_stop_hint_after_agent_exits(fake_studio, monkeyp
     result = CliRunner().invoke(start.start_app, ["claude"])
 
     assert result.exit_code == 0, result.output
+    assert f"Unsloth ready at {BASE} · model {MODEL['id']}\n" in result.output
     assert f"Unsloth Studio is still running at {BASE}." in result.output
     assert "Stop it with: unsloth studio stop\n" in result.output
 
