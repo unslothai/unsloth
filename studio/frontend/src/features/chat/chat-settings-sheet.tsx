@@ -723,11 +723,11 @@ export function ChatSettingsPanel({
   const autoLayers = isManual && gpuLayers < 0;
   // GPUs actually in use: the picked subset, or all visible when none picked.
   const gpusInUse = selectedGpuIds ?? gpuDevices.map((d) => d.index);
-  // TP is off with fewer than 2 GPUs in use (single GPU, or the picker narrowed
-  // to one): tensor split is a no-op there and aborts on some archs. Mirrors the
-  // multi-GPU gate on the GPU picker / Split ratio. (Under Auto layers the whole
-  // TP control is hidden -- llama.cpp's --fit aborts under --split-mode tensor.)
-  const tpDisabled = gpusInUse.length <= 1;
+  // The picker must keep one GPU selected.
+  const singleGpuInUse = gpusInUse.length <= 1;
+  // TP needs at least two GPUs because tensor split is a no-op on one and may
+  // abort. Auto layers hides TP because --fit aborts under --split-mode tensor.
+  const tpDisabled = singleGpuInUse;
   // Manual gpu-layers ceiling = model layer count + 1 (else a safe fallback):
   // llama.cpp counts the output layer as one more offloadable layer past the
   // repeating blocks ("offloaded 33/33" needs -ngl 33 on a 32-block model), so
@@ -1537,7 +1537,7 @@ export function ChatSettingsPanel({
                         Which GPUs this model may use. Unchecked GPUs are hidden
                         from llama.cpp (CUDA_VISIBLE_DEVICES, or
                         HIP_VISIBLE_DEVICES on ROCm). Leave all checked to use
-                        every GPU.
+                        every GPU. At least one GPU must stay selected.
                       </InfoHint>
                     </div>
                     <div className="flex flex-col gap-2">
@@ -1557,7 +1557,10 @@ export function ChatSettingsPanel({
                             checked={isGpuChecked(d.index)}
                             onCheckedChange={() => toggleGpu(d.index)}
                             data-test-id={`gpu-pick-${d.index}`}
-                            disabled={modelControlsDisabled}
+                            disabled={
+                              modelControlsDisabled ||
+                              (isGpuChecked(d.index) && singleGpuInUse)
+                            }
                           />
                         </div>
                       ))}
@@ -2432,13 +2435,14 @@ function ConfirmToolCallsToggle() {
           <InfoHint>
             When on, every local Unsloth tool call pauses for your approval
             before it runs (the "Ask for approval" level). When off, tool calls
-            run without prompts inside the sandbox (the "Off" level).
+            run without prompts inside the sandbox (the "Run automatically"
+            level).
             Provider-hosted tools are not gated here.
           </InfoHint>
         </div>
         {permissionMode === "full" ? (
           <span className="text-[11px] text-muted-foreground">
-            Overridden by Full access (Bypass permissions)
+            Overridden by Full access
           </span>
         ) : null}
       </div>
@@ -2459,11 +2463,11 @@ function BypassPermissionsToggle() {
     <div className="flex flex-col gap-2">
       <div className="flex min-w-0 items-center gap-1.5">
         <span className="whitespace-nowrap text-[13px] font-medium leading-[1.25] tracking-nav text-nav-fg">
-          Bypass permissions
+          Tool permissions
         </span>
         <InfoHint>
-          How Unsloth approves tool calls before they run. Full access is
-          dangerous: it disables confirmations and the code sandbox.
+          Choose how Unsloth approves tool calls before they run. Full access
+          disables confirmations and the code sandbox.
         </InfoHint>
       </div>
       {/* Full width, styled like the panel selects/preset input. */}

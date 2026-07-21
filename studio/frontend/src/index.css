@@ -1532,12 +1532,12 @@ html[data-chat-font] .aui-root {
 	}
 
 	/* Hovering an active pill swaps the icon for an X (click to turn off). */
-	.composer-pill-btn[data-active="true"]:hover .composer-pill-glyph > :not(.composer-pill-x),
+	.composer-pill-btn[data-active="true"]:has(.composer-pill-x):hover .composer-pill-glyph > :not(.composer-pill-x),
 	.unsloth-thinking-pill[data-active="true"]:hover .composer-pill-glyph > :not(.composer-pill-x) {
 		@apply opacity-0;
 	}
 
-	.composer-pill-btn[data-active="true"]:hover .composer-pill-x,
+	.composer-pill-btn[data-active="true"]:has(.composer-pill-x):hover .composer-pill-x,
 	.unsloth-thinking-pill[data-active="true"]:hover .composer-pill-x {
 		@apply opacity-100;
 	}
