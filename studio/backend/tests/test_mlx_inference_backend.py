@@ -1267,3 +1267,28 @@ def test_mlx_prompt_cache_skips_entries_over_budget(monkeypatch):
     stored = history._lru.entries.get("key", {})
     assert tuple([1, 2, 3]) in stored
     assert tuple(range(50)) not in stored
+
+
+def test_mlx_prompt_cache_keys_on_what_the_kv_covers(monkeypatch):
+    _install_fake_prompt_cache_api(monkeypatch)
+    from core.inference.mlx_inference import _MLXPromptCacheHistory
+
+    class _Entry:
+        def __init__(
+            self,
+            offset,
+            nbytes = 1,
+        ):
+            self.offset = offset
+            self.nbytes = nbytes
+
+    history = _MLXPromptCacheHistory(6, 1 << 30)
+
+    # More tokens tracked than the KV holds: the key is truncated to the KV.
+    history.insert("key", list(range(10)), [_Entry(offset = 8)])
+    assert tuple(range(8)) in history._lru.entries["key"]
+    assert tuple(range(10)) not in history._lru.entries["key"]
+
+    # KV ahead of the tracked tokens is unresolvable, so nothing is stored.
+    history.insert("other", list(range(4)), [_Entry(offset = 9)])
+    assert "other" not in history._lru.entries

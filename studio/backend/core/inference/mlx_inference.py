@@ -284,7 +284,22 @@ class _MLXPromptCacheHistory:
                 self._max_bytes / 1e9,
             )
             return
-        self._lru.insert_cache(key, list(tokens), cache)
+        tokens = list(tokens)
+        # Key on what the KV actually covers rather than trusting the caller's
+        # token count, so a mismatch can never store KV under the wrong key.
+        covered = next((entry.offset for entry in cache if hasattr(entry, "offset")), None)
+        if covered is not None:
+            if covered > len(tokens):
+                logger.debug(
+                    "MLX prompt cache: cache covers %d tokens but only %d were tracked",
+                    covered,
+                    len(tokens),
+                )
+                return
+            tokens = tokens[:covered]
+        if not tokens:
+            return
+        self._lru.insert_cache(key, tokens, cache)
 
 
 def _mlx_distributed_rank_size(group = None):
