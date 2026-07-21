@@ -77,11 +77,7 @@ _ROCM_TORCH_INDEX: dict[tuple[int, int], str] = {
 def _generic_pytorch_rocm_tag(ver: tuple[int, int]) -> str | None:
     """Newest download.pytorch.org rocmX.Y tag for a host ROCm version."""
     return next(
-        (
-            t
-            for (maj, mn), t in sorted(_ROCM_TORCH_INDEX.items(), reverse = True)
-            if ver >= (maj, mn)
-        ),
+        (t for (maj, mn), t in sorted(_ROCM_TORCH_INDEX.items(), reverse = True) if ver >= (maj, mn)),
         None,
     )
 
@@ -90,6 +86,7 @@ def _strix_needs_amd_arch_index(ver: tuple[int, int]) -> bool:
     """True when install.sh would land Strix on generic rocm7.1/7.2 indexes."""
     tag = _generic_pytorch_rocm_tag(ver)
     return tag in {"rocm7.1", "rocm7.2"}
+
 
 # AMD per-arch leaves needing the torch 2.11 floor (the _grouped_mm <2.11 bug).
 # Mirrors *FloorMap in install.ps1 / setup.ps1; other arches ship <2.11 and stay bare.
