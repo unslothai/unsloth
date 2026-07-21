@@ -31,6 +31,7 @@ export { useHubInfiniteScroll } from "./hooks/use-hub-infinite-scroll";
 export { bumpInventoryVersion } from "./stores/inventory-events";
 export {
   getHfToken,
+  hfApiToken,
   mirrorHfTokenInto,
   useHfTokenStore,
 } from "./stores/hf-token-store";

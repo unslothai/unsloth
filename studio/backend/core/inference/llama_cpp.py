@@ -7563,8 +7563,9 @@ class LlamaCppBackend:
                 else:
                     self._api_key = None
 
-                # Windows + full offload: disable KV checkpoints (WDDM/PCI-E
-                # overhead). CPU/partial offload keeps prompt caching. #5692.
+                # Windows + full offload: drop the host-RAM KV checkpoints that cause
+                # WDDM/PCI-E overhead, but keep prompt caching (in-VRAM prefix reuse) so
+                # a repeated prompt is not re-prefilled on every request. #5692.
                 if sys.platform == "win32" and full_offload_tuning_active:
                     unsupported_cache_flags: list[str] = []
                     if server_caps.get("supports_cache_ram"):
@@ -7575,11 +7576,6 @@ class LlamaCppBackend:
                         cmd.extend(["--ctx-checkpoints", "0"])
                     else:
                         unsupported_cache_flags.append("--ctx-checkpoints")
-                    if server_caps.get("supports_no_cache_prompt"):
-                        cmd.append("--no-cache-prompt")
-                        self._prompt_cache_disabled = True
-                    else:
-                        unsupported_cache_flags.append("--no-cache-prompt")
                     if unsupported_cache_flags:
                         logger.info(
                             "Skipping unsupported Windows cache flags for llama-server: %s",
