@@ -405,23 +405,23 @@ def _exact_named(files: dict, name: str):
     return None
 
 
-def _dir_has_loadable_safetensors(files: dict, is_root: bool = False) -> bool:
+def _dir_has_loadable_safetensors(files: dict, honors_sharded_index: bool = False) -> bool:
     """True when *files* (lower-name -> Path for one directory) hold a safetensors weight the loader
-    will read INSTEAD of a pickle sibling: an unsharded ``model.safetensors``, or -- ONLY at a
-    ``from_pretrained`` root -- a complete ``model.safetensors.index.json`` shard set. A bare
-    adapter or an orphan shard does not qualify. The safetensors credit is case-SENSITIVE (see
+    will read INSTEAD of a pickle sibling: an unsharded ``model.safetensors``, or -- ONLY where the
+    loader honors it -- a complete ``model.safetensors.index.json`` shard set. A bare adapter or an
+    orphan shard does not qualify. The safetensors credit is case-SENSITIVE (see
     :func:`_exact_named`) so a mis-cased decoy the loader would skip cannot vouch for a live pickle.
 
-    ``is_root`` gates the SHARDED-index credit. A sharded safetensors index is honored only by
-    ``from_pretrained`` (the snapshot root / a Transformer root loaded via ``AutoModel``). A
-    non-Transformer SentenceTransformer module (``Dense``, ``WordEmbeddings``, ``StaticEmbedding``)
-    loads through ``Module.load_torch_weights``, which probes only ``model.safetensors`` then
-    ``pytorch_model.bin`` and NEVER reads the index -- so crediting a sharded index in such a module
-    dir would let its ``pytorch_model.bin`` deserialize unblocked. The unsharded ``model.safetensors``
-    credit is honored by both loaders and applies everywhere."""
+    ``honors_sharded_index`` gates the SHARDED-index credit. A sharded safetensors index is honored
+    only by ``AutoModel.from_pretrained`` -- the snapshot root, or a Transformer-typed module
+    subdirectory (``0_Transformer/``). A non-Transformer SentenceTransformer module (``Dense``,
+    ``WordEmbeddings``, ``StaticEmbedding``) loads through ``Module.load_torch_weights``, which probes
+    only ``model.safetensors`` then ``pytorch_model.bin`` and NEVER reads the index -- so crediting a
+    sharded index in such a module dir would let its ``pytorch_model.bin`` deserialize unblocked. The
+    unsharded ``model.safetensors`` credit is honored by both loaders and applies everywhere."""
     if any(_exact_named(files, name) is not None for name in _SAFETENSORS_BASE_UNSHARDED):
         return True
-    if not is_root:
+    if not honors_sharded_index:
         return False
     for index_name in _SAFETENSORS_BASE_INDEX:
         index_path = _exact_named(files, index_name)
@@ -493,6 +493,48 @@ def _st_load_roots(snap, load_subdirs = ()) -> set:
     return roots
 
 
+def _is_transformer_module_type(type_str) -> bool:
+    """True for the SentenceTransformer ``Transformer`` module class, whose loader is
+    ``AutoModel.from_pretrained`` and therefore honors a ``model.safetensors.index.json`` shard set.
+    ``Dense`` / ``WordEmbeddings`` / ``StaticEmbedding`` read a single flat weight file through
+    ``Module.load_torch_weights`` and never consult an index, so their sharded-index credit stays
+    gated off."""
+    return str(type_str).rsplit(".", 1)[-1] == "Transformer"
+
+
+def _transformer_load_roots(snap) -> set:
+    """The load roots whose loader honors a sharded ``model.safetensors.index.json``: the
+    Transformer-typed modules ``modules.json`` declares (loaded via ``AutoModel.from_pretrained``).
+    A complete safetensors shard set in such a SUBMODULE (e.g. ``0_Transformer/``) means the loader
+    reads safetensors and never the sibling ``pytorch_model.bin``, so that pickle must not block.
+    The declared type is authoritative -- the loader instantiates the module by the SAME type, so a
+    mis-declared dir loads through its declared loader too. A missing / malformed ``modules.json``
+    yields an empty set, leaving the shard credit unextended (the conservative over-block
+    direction). The snapshot root is credited separately by the caller."""
+    import json
+
+    roots: set = set()
+    try:
+        modules = json.loads((snap / "modules.json").read_text(encoding = "utf-8"))
+    except (OSError, ValueError):
+        return roots
+    if isinstance(modules, list):
+        for module in modules:
+            if isinstance(module, dict) and _is_transformer_module_type(module.get("type")):
+                root = _canonical_load_dir(snap, str(module.get("path") or ""))
+                if root is not None:
+                    roots.add(root)
+    return roots
+
+
+class _EscapingShardError(OSError):
+    """A weight-index ``weight_map`` value resolves OUTSIDE the snapshot (a repo-controlled ``../``
+    traversal). Subclasses ``OSError`` so the offline caller's existing fail-closed enumeration
+    handler blocks the load; raised instead of following the path, because offline the loader would
+    resolve it on the local filesystem and an online load would hash+record an out-of-snapshot file
+    as this commit's clean content."""
+
+
 def _cached_pickle_weight_paths(snap, load_subdirs = ()) -> list:
     """The pickle weight FILES (as ``Path`` objects under *snap*) a from_pretrained load actually
     deserializes: at a real load root and with NO loadable safetensors alternative there. A load
@@ -510,6 +552,10 @@ def _cached_pickle_weight_paths(snap, load_subdirs = ()) -> list:
     Raises ``OSError`` if the snapshot tree cannot be enumerated (``rglob`` failure), so the offline
     caller fails CLOSED rather than treat an unreadable cache as pickle-free."""
     roots = _st_load_roots(snap, load_subdirs)
+    # Dirs whose loader (AutoModel.from_pretrained) honors a sharded safetensors index: the snapshot
+    # root plus each Transformer-typed module subdir. Elsewhere a sharded index is NOT a substitute
+    # for a live pickle (see _dir_has_loadable_safetensors).
+    index_honoring = _transformer_load_roots(snap) | {snap}
     by_dir_pickle: dict = {}  # directory -> [Path] (EVERY case variant, not last-wins)
     by_dir_files: dict = {}  # directory -> {lower-name: Path} (safetensors credit; last-wins is safe)
     # A whole-tree rglob failure propagates (fail-closed); a single unstattable entry is skipped.
@@ -539,7 +585,9 @@ def _cached_pickle_weight_paths(snap, load_subdirs = ()) -> list:
         # reads the exact-case one, and a mis-cased sibling that is never loaded is only over-blocked
         # (safe). Keying by lowered name would drop one and could hash a decoy instead of the target.
         base = [p for p in pickle_paths if _PICKLE_WEIGHT_RE.match(p.name.lower())]
-        if base and not _dir_has_loadable_safetensors(files, is_root = directory == snap):
+        if base and not _dir_has_loadable_safetensors(
+            files, honors_sharded_index = directory in index_honoring
+        ):
             hits.update(base)
         # An adapter pickle is deserialized only when from_pretrained auto-detects the adapter
         # (adapter_config.json present) and there is no adapter_model.safetensors to load instead.
@@ -560,12 +608,30 @@ def _cached_pickle_weight_paths(snap, load_subdirs = ()) -> list:
     for root_dir in roots:
         files = by_dir_files.get(root_dir, {})
         index_path = files.get(_PICKLE_INDEX_FILE)
-        if index_path is None or _dir_has_loadable_safetensors(files, is_root = root_dir == snap):
+        if index_path is None or _dir_has_loadable_safetensors(
+            files, honors_sharded_index = root_dir in index_honoring
+        ):
             continue
+        try:
+            root_rel = root_dir.relative_to(snap).as_posix()
+        except ValueError:
+            continue  # a load root not under the snapshot (should not happen) -> skip conservatively
         for shard_rel in _index_weight_map_values(index_path):
             if _file_suffix(shard_rel) not in _PICKLE_SUFFIXES:
                 continue
-            shard = root_dir.joinpath(*shard_rel.split("/"))
+            # A weight_map value is relative to the index dir (root_dir). Canonicalize it against the
+            # snapshot root and REFUSE any that escape it: a repo-controlled index can map "../.." into
+            # a sibling snapshot, and unlike the Hub (which cannot serve "../"), an offline
+            # from_pretrained resolves it on the local filesystem and would deserialize an
+            # out-of-snapshot pickle -- an online load would then hash+record that external file as
+            # this commit's clean content. Fail closed rather than follow it.
+            combined = shard_rel if root_rel in ("", ".") else root_rel + "/" + shard_rel
+            shard_canon = _canonical_rel(combined)
+            if shard_canon is None:
+                raise _EscapingShardError(
+                    f"weight index maps a shard outside the snapshot: {shard_rel!r}"
+                )
+            shard = snap.joinpath(*shard_canon.split("/"))
             try:
                 if shard.is_file():
                     hits.add(shard)
@@ -685,6 +751,17 @@ def _evaluate_local_only(model_name: str, load_subdirs = ()) -> "FileSecurityDec
 
     try:
         paths = _cached_pickle_weight_paths(snap, load_subdirs)
+    except _EscapingShardError as exc:
+        # A weight index maps a shard outside the snapshot (a "../" traversal). Following it would
+        # deserialize an out-of-snapshot pickle, so refuse the load outright.
+        logger.warning(
+            "Blocking offline load of '%s': %s; cannot verify.", model_name, exc
+        )
+        return FileSecurityDecision(
+            model_name,
+            True,
+            reason = "offline; a weight index maps a shard outside the snapshot, cannot verify",
+        )
     except OSError:
         # The cache tree could not be fully enumerated: an undiscovered pickle might exist, so a
         # partial "pickle-free" reading is unsafe. Fail closed.

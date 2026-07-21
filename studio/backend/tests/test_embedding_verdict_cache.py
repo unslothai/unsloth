@@ -263,6 +263,74 @@ def test_sharded_safetensors_index_credited_only_at_root(home, tmp_path, monkeyp
     assert _blocked(monkeypatch, root) is False
 
 
+def test_sharded_index_credited_in_transformer_submodule(home, tmp_path, monkeypatch):
+    # A 0_Transformer/ module is loaded via AutoModel.from_pretrained, which honors a complete
+    # model.safetensors.index.json and never reads the sibling pytorch_model.bin -- so that pickle
+    # must NOT block offline even though the index is in a SUBDIR, not the snapshot root.
+    index = json.dumps({"weight_map": {"w": "model-00001-of-00001.safetensors"}})
+    snap = _snap(
+        tmp_path,
+        {
+            "modules.json": json.dumps(
+                [
+                    {
+                        "path": "0_Transformer",
+                        "type": "sentence_transformers.models.Transformer.Transformer",
+                    }
+                ]
+            ),
+            "0_Transformer/pytorch_model.bin": b"pickle",
+            "0_Transformer/model.safetensors.index.json": index,
+            "0_Transformer/model-00001-of-00001.safetensors": b"\0",
+        },
+        commit = "ctf",
+    )
+    assert _blocked(monkeypatch, snap) is False
+
+
+def test_sharded_index_not_credited_in_non_transformer_submodule(home, tmp_path, monkeypatch):
+    # The same layout under a WordEmbeddings module (load_torch_weights, no index) still blocks: the
+    # credit is extended ONLY to Transformer-typed dirs, never to a module that reads the pickle.
+    index = json.dumps({"weight_map": {"w": "model-00001-of-00001.safetensors"}})
+    snap = _snap(
+        tmp_path,
+        {
+            "modules.json": json.dumps(
+                [
+                    {
+                        "path": "0_WordEmbeddings",
+                        "type": "sentence_transformers.models.WordEmbeddings.WordEmbeddings",
+                    }
+                ]
+            ),
+            "0_WordEmbeddings/pytorch_model.bin": b"pickle",
+            "0_WordEmbeddings/model.safetensors.index.json": index,
+            "0_WordEmbeddings/model-00001-of-00001.safetensors": b"\0",
+        },
+        commit = "cwe",
+    )
+    assert _blocked(monkeypatch, snap) is True
+
+
+def test_index_shard_escaping_snapshot_blocks(home, tmp_path, monkeypatch):
+    # A weight index whose weight_map points OUT of the snapshot ("../..") must fail closed, not be
+    # followed: offline from_pretrained would resolve it on disk and deserialize an out-of-snapshot
+    # pickle, and an online load would hash+record that external file as this commit's clean content.
+    snap = _snap(
+        tmp_path,
+        {
+            "pytorch_model.bin.index.json": json.dumps(
+                {"weight_map": {"w": "../../evil/pytorch_model.bin"}}
+            ),
+        },
+        commit = "cesc",
+    )
+    monkeypatch.setattr(mc, "_active_snapshot_dir", lambda name: snap)
+    decision = fs.evaluate_file_security("org/model", None, local_only_load = True)
+    assert decision.blocked is True
+    assert "outside the snapshot" in decision.reason
+
+
 def test_unresolvable_snapshot_blocks(home, monkeypatch):
     # A snapshot that ERRORS on resolution (not a clean None) fails closed.
     def _boom(name):

@@ -512,6 +512,23 @@ def _declares_global_all(func: ast.AST) -> bool:
     return False
 
 
+def _binds_all_in_own_scope(func: ast.AST) -> bool:
+    """True when *func*'s OWN body (not a nested function/class) binds ``__all__``. Paired with
+    :func:`_declares_global_all`, this identifies a function that writes the MODULE export set. A
+    nested scope's ``__all__`` is a local of THAT scope and cannot reach module scope, so it is not
+    counted -- otherwise ``def f(): global __all__`` with an inner ``def g(): __all__ = [...]`` would
+    wrongly mark the module ``__all__`` opaque and mask a genuinely unused hoisted import."""
+    stack = list(ast.iter_child_nodes(func))
+    while stack:
+        node = stack.pop()
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+            continue  # a nested scope; its `__all__` binds are its own
+        if _stmt_binds_all(node):
+            return True
+        stack.extend(ast.iter_child_nodes(node))
+    return False
+
+
 def _all_bound_outside_module_body(tree: ast.Module) -> bool:
     """True when the module's runtime ``__all__`` may be mutated somewhere a static read cannot
     replay: a MODULE-LEVEL binding nested in a conditional (``if`` / ``try`` / ``for`` / ``while``
@@ -528,8 +545,9 @@ def _all_bound_outside_module_body(tree: ast.Module) -> bool:
         for child in ast.iter_child_nodes(node):
             if isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef)):
                 # A __all__ assignment inside the function reaches module scope ONLY via
-                # `global __all__`; otherwise it is a local and cannot taint the export set.
-                if _declares_global_all(child) and any(_stmt_binds_all(n) for n in ast.walk(child)):
+                # `global __all__` AND a bind in the function's OWN scope; a bind nested in a
+                # further inner scope is that scope's local and cannot taint the export set.
+                if _declares_global_all(child) and _binds_all_in_own_scope(child):
                     return True
                 # else: a purely-local __all__ -> ignore this function entirely.
             elif isinstance(child, ast.ClassDef):
@@ -992,6 +1010,15 @@ _SELF_TESTS = {
         'from pkg import a\nfrom pkg import b\n__all__ = ["a"]\n'
         'def register():\n    global __all__\n    __all__ = __all__ + ["b"]\n',
         None,
+    ),
+    "nested_global_all_bind_does_not_mask_unused_hoist": (
+        # `global __all__` in the OUTER function but the only `__all__` bind is in a further inner
+        # scope: that bind is the inner scope's local and never reaches module scope, so it must NOT
+        # mark the module __all__ opaque -- the unused hoisted import stays a genuine bad hoist
+        'from pkg import a\n__all__ = ["a"]\n',
+        'from pkg import a\nfrom pkg import b\n__all__ = ["a"]\n'
+        'def f():\n    global __all__\n    def g():\n        __all__ = ["x"]\n        return __all__\n    return g\n',
+        "BLOCKER",
     ),
     "readable_reassign_resets_opacity": (
         # an opaque "+=" then a readable replacing "=": the final __all__ is empty, so a
