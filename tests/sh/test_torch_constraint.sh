@@ -76,11 +76,12 @@ run_constraint_snippet() {
         OS=\"$_os\"
         _ARCH=\"$_arch\"
         VENV_DIR=\"$_venv_dir\"
-        TORCH_CONSTRAINT=\"torch>=2.4,<2.11.0\"
+        _TORCH_CEILING=\"2.12.0\"
+        TORCH_CONSTRAINT=\"torch>=2.4,<\${_TORCH_CEILING}\"
         if [ \"\$SKIP_TORCH\" = false ] && [ \"\$OS\" = \"macos\" ] && [ \"\$_ARCH\" = \"arm64\" ]; then
             _PY_MINOR=\$(\"\$VENV_DIR/bin/python\" -c \"import sys; print(sys.version_info.minor)\" 2>/dev/null || echo \"0\")
             if [ \"\$_PY_MINOR\" -ge 13 ] 2>/dev/null; then
-                TORCH_CONSTRAINT=\"torch>=2.6,<2.11.0\"
+                TORCH_CONSTRAINT=\"torch>=2.6,<\${_TORCH_CEILING}\"
             fi
         fi
         echo \"\$TORCH_CONSTRAINT\"
@@ -94,43 +95,39 @@ echo "=== Structural: TORCH_CONSTRAINT in install.sh ==="
 
 _SH_CONTENT=$(cat "$INSTALL_SH")
 
-_count=$(grep -c 'TORCH_CONSTRAINT="torch>=2.4,<2.11.0"' "$INSTALL_SH" || true)
-assert_eq "default TORCH_CONSTRAINT assignment exists" "1" "$_count"
+# The supported line is centralized in per-file ceiling variables so a future
+# torch 2.12 bump is a three-line change; the default range admits torch 2.11.
+_count=$(grep -c '_TORCH_CEILING="2.12.0"' "$INSTALL_SH" || true)
+assert_eq "torch ceiling variable defined once" "1" "$_count"
+_count=$(grep -c '_TORCHVISION_CEILING="0.27.0"' "$INSTALL_SH" || true)
+assert_eq "torchvision ceiling variable defined once" "1" "$_count"
+_count=$(grep -c '_TORCHAUDIO_CEILING="2.12.0"' "$INSTALL_SH" || true)
+assert_eq "torchaudio ceiling variable defined once" "1" "$_count"
 
-_count=$(grep -c 'TORCH_CONSTRAINT="torch>=2.6,<2.11.0"' "$INSTALL_SH" || true)
-assert_eq "tightened TORCH_CONSTRAINT assignment exists" "1" "$_count"
+_count=$(grep -c 'TORCH_CONSTRAINT="torch>=2.4,<${_TORCH_CEILING}"' "$INSTALL_SH" || true)
+assert_eq "default TORCH_CONSTRAINT composes the ceiling" "1" "$_count"
+_count=$(grep -c 'TORCH_CONSTRAINT="torch>=2.6,<${_TORCH_CEILING}"' "$INSTALL_SH" || true)
+assert_eq "tightened TORCH_CONSTRAINT composes the ceiling" "1" "$_count"
 
 _count=$(grep -c '"\$TORCH_CONSTRAINT"' "$INSTALL_SH" || true)
 _has_var=$([ "$_count" -ge 1 ] && echo "yes" || echo "no")
 assert_eq "\$TORCH_CONSTRAINT used in pip install" "yes" "$_has_var"
 
-# Hardcoded torch>=2.4,<2.11.0 should only appear once (the default assignment)
-_hardcoded=$(grep -c '"torch>=2.4,<2.11.0"' "$INSTALL_SH" || true)
-assert_eq "hardcoded torch>=2.4 appears exactly once" "1" "$_hardcoded"
+# No stray hardcoded default ranges outside the ceiling-composed assignments
+# (the curated ROCm >=2.11 floors are deliberately literal).
+_hardcoded=$(grep -c '"torch>=2.4,<2.11.0"\|"torch>=2.4,<2.12.0"' "$INSTALL_SH" || true)
+assert_eq "no hardcoded default torch range remains" "0" "$_hardcoded"
 
-# Companions must be bounded to torch's window everywhere: the <2.11 bound appears
-# twice (default assignments + the pinned custom-leaf block), never bare. torchaudio
-# 2.11 dropped its exact torch pin, so a bare companion next to a <2.11-capped torch
-# resolves a mismatched 2.11 build.
-_count=$(grep -c 'TORCHVISION_CONSTRAINT="torchvision>=0.19,<0.26.0"' "$INSTALL_SH" || true)
-assert_eq "torchvision bounded (<0.26) at default + custom-leaf" "2" "$_count"
-_count=$(grep -c 'TORCHAUDIO_CONSTRAINT="torchaudio>=2.4,<2.11.0"' "$INSTALL_SH" || true)
-assert_eq "torchaudio bounded (<2.11) at default + custom-leaf" "2" "$_count"
+# Companions must be bounded to torch's window everywhere, never bare: torchaudio
+# 2.11 dropped its exact torch pin, so a bare companion can drift from a capped torch.
+_count=$(grep -c 'TORCHVISION_CONSTRAINT="torchvision>=0.19,<${_TORCHVISION_CEILING}"' "$INSTALL_SH" || true)
+assert_eq "torchvision default composes the ceiling" "1" "$_count"
+_count=$(grep -c 'TORCHAUDIO_CONSTRAINT="torchaudio>=2.4,<${_TORCHAUDIO_CEILING}"' "$INSTALL_SH" || true)
+assert_eq "torchaudio default composes the ceiling" "1" "$_count"
 _count=$(grep -c 'TORCHVISION_CONSTRAINT="torchvision"$' "$INSTALL_SH" || true)
 assert_eq "no bare torchvision companion remains" "0" "$_count"
 _count=$(grep -c 'TORCHAUDIO_CONSTRAINT="torchaudio"$' "$INSTALL_SH" || true)
 assert_eq "no bare torchaudio companion remains" "0" "$_count"
-# The cu* widen must carry the companions with it (torch <2.12 with torchaudio <2.11
-# would cap a mismatched pair the other way).
-assert_eq "cu widen pairs torchaudio (<2.12)" "1" "$(grep -c 'TORCHAUDIO_CONSTRAINT="torchaudio>=2.4,<2.12.0"' "$INSTALL_SH" || true)"
-_gated=$(grep -c '_expected_torch_flavor_tag "$TORCH_INDEX_URL"' "$INSTALL_SH" || true)
-_has_gate=$([ "$_gated" -ge 1 ] && echo "yes" || echo "no")
-assert_eq "custom-companion bound gated on empty flavor tag" "yes" "$_has_gate"
-
-# A fresh CUDA install widens the ceiling to <2.12.0 so cu12x/cu13x land torch
-# 2.11.x (matches the base image and _CUDA_TORCH_PKG_SPEC).
-_cuda_widen=$(grep -c 'TORCH_CONSTRAINT="torch>=2.4,<2.12.0"' "$INSTALL_SH" || true)
-assert_eq "CUDA TORCH_CONSTRAINT widened to <2.12.0" "1" "$_cuda_widen"
 
 # Widening keys off the final leaf (_torch_index_leaf), not the full URL, so a
 # mirror base path with cu*/rocm7.2 but a cpu/older-rocm leaf is not mis-widened.
@@ -181,7 +178,7 @@ _PS1_CONTENT=$(cat "$INSTALL_PS1")
 _ps1_has_var=$(echo "$_PS1_CONTENT" | grep -c 'TORCH_CONSTRAINT\|TorchConstraint' || true)
 assert_eq "install.ps1 has no TORCH_CONSTRAINT variable" "0" "$_ps1_has_var"
 
-_ps1_hardcoded=$(echo "$_PS1_CONTENT" | grep -c '"torch>=2.4,<2.11.0"' || true)
+_ps1_hardcoded=$(echo "$_PS1_CONTENT" | grep -c '"torch>=2.4,<2.12.0"' || true)
 _ps1_has_hc=$([ "$_ps1_hardcoded" -ge 1 ] && echo "yes" || echo "no")
 assert_eq "install.ps1 has hardcoded torch constraint" "yes" "$_ps1_has_hc"
 
@@ -196,55 +193,55 @@ trap 'rm -rf "$TMPDIR_BASE"' EXIT
 
 # 1. arm64 macOS py3.13 -> tightened
 _result=$(run_constraint_snippet false macos arm64 13 "$TMPDIR_BASE/v1")
-assert_eq "arm64+macos+py313 -> tightened" "torch>=2.6,<2.11.0" "$_result"
+assert_eq "arm64+macos+py313 -> tightened" "torch>=2.6,<2.12.0" "$_result"
 
 # 2. arm64 macOS py3.14 -> tightened (future-proofed)
 _result=$(run_constraint_snippet false macos arm64 14 "$TMPDIR_BASE/v2")
-assert_eq "arm64+macos+py314 -> tightened" "torch>=2.6,<2.11.0" "$_result"
+assert_eq "arm64+macos+py314 -> tightened" "torch>=2.6,<2.12.0" "$_result"
 
 # 3. arm64 macOS py3.12 -> default
 _result=$(run_constraint_snippet false macos arm64 12 "$TMPDIR_BASE/v3")
-assert_eq "arm64+macos+py312 -> default" "torch>=2.4,<2.11.0" "$_result"
+assert_eq "arm64+macos+py312 -> default" "torch>=2.4,<2.12.0" "$_result"
 
 # 4. arm64 macOS py3.11 -> default
 _result=$(run_constraint_snippet false macos arm64 11 "$TMPDIR_BASE/v4")
-assert_eq "arm64+macos+py311 -> default" "torch>=2.4,<2.11.0" "$_result"
+assert_eq "arm64+macos+py311 -> default" "torch>=2.4,<2.12.0" "$_result"
 
 # 5. Linux x86_64 py3.13 -> default (Linux unaffected)
 _result=$(run_constraint_snippet false linux x86_64 13 "$TMPDIR_BASE/v5")
-assert_eq "linux+x86_64+py313 -> default" "torch>=2.4,<2.11.0" "$_result"
+assert_eq "linux+x86_64+py313 -> default" "torch>=2.4,<2.12.0" "$_result"
 
 # 6. Linux aarch64 py3.13 -> default (guard checks OS=macos)
 _result=$(run_constraint_snippet false linux aarch64 13 "$TMPDIR_BASE/v6")
-assert_eq "linux+aarch64+py313 -> default" "torch>=2.4,<2.11.0" "$_result"
+assert_eq "linux+aarch64+py313 -> default" "torch>=2.4,<2.12.0" "$_result"
 
 # 7. Intel Mac x86_64 py3.12 -> default (arch mismatch)
 _result=$(run_constraint_snippet false macos x86_64 12 "$TMPDIR_BASE/v7")
-assert_eq "macos+x86_64+py312 -> default" "torch>=2.4,<2.11.0" "$_result"
+assert_eq "macos+x86_64+py312 -> default" "torch>=2.4,<2.12.0" "$_result"
 
 # 8. SKIP_TORCH=true arm64 macOS py3.13 -> block skipped, default
 _result=$(run_constraint_snippet true macos arm64 13 "$TMPDIR_BASE/v8")
-assert_eq "SKIP_TORCH=true -> default" "torch>=2.4,<2.11.0" "$_result"
+assert_eq "SKIP_TORCH=true -> default" "torch>=2.4,<2.12.0" "$_result"
 
 # 9. WSL py3.13 -> default
 _result=$(run_constraint_snippet false wsl x86_64 13 "$TMPDIR_BASE/v9")
-assert_eq "wsl+py313 -> default" "torch>=2.4,<2.11.0" "$_result"
+assert_eq "wsl+py313 -> default" "torch>=2.4,<2.12.0" "$_result"
 
 # 10. py_minor=0 (failed query fallback) -> default
 _result=$(run_constraint_snippet false macos arm64 0 "$TMPDIR_BASE/v10")
-assert_eq "py_minor=0 fallback -> default" "torch>=2.4,<2.11.0" "$_result"
+assert_eq "py_minor=0 fallback -> default" "torch>=2.4,<2.12.0" "$_result"
 
 # 11. Boundary: py_minor=12 -> NOT tightened
 _result=$(run_constraint_snippet false macos arm64 12 "$TMPDIR_BASE/v11")
-assert_eq "boundary py_minor=12 -> default" "torch>=2.4,<2.11.0" "$_result"
+assert_eq "boundary py_minor=12 -> default" "torch>=2.4,<2.12.0" "$_result"
 
 # 12. Boundary: py_minor=13 -> tightened
 _result=$(run_constraint_snippet false macos arm64 13 "$TMPDIR_BASE/v12")
-assert_eq "boundary py_minor=13 -> tightened" "torch>=2.6,<2.11.0" "$_result"
+assert_eq "boundary py_minor=13 -> tightened" "torch>=2.6,<2.12.0" "$_result"
 
 # 13. Intel Mac py3.13 -> default (arch=x86_64, not arm64)
 _result=$(run_constraint_snippet false macos x86_64 13 "$TMPDIR_BASE/v13")
-assert_eq "macos+x86_64+py313 -> default" "torch>=2.4,<2.11.0" "$_result"
+assert_eq "macos+x86_64+py313 -> default" "torch>=2.4,<2.12.0" "$_result"
 
 # ======================================================================
 # Mock uv integration
