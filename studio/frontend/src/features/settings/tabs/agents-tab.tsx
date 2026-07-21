@@ -1,10 +1,36 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import {
+  Command,
+  CommandEmpty,
+  CommandInput,
+  CommandItem,
+  CommandList,
+} from "@/components/ui/command";
+import {
+  Popover,
+  PopoverContent,
+  PopoverTrigger,
+} from "@/components/ui/popover";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
 import { fetchDeviceType, usePlatformStore } from "@/config/env";
-import { useT } from "@/i18n";
+import {
+  type BackendModelDetails,
+  type GgufVariantDetail,
+  listGgufVariants,
+  listModels,
+} from "@/features/chat";
 import type { TranslationKey } from "@/i18n";
+import { useT } from "@/i18n";
 import { isTauri } from "@/lib/api-base";
+import { ChevronDownStandardIcon } from "@/lib/chevron-icons";
 import { copyToClipboard } from "@/lib/copy-to-clipboard";
 import { Tick02Icon } from "@/lib/tick-icon";
 import { cn } from "@/lib/utils";
@@ -14,13 +40,18 @@ import {
   Copy01Icon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { ApiProviderLogo } from "../../chat/api-provider-logo";
-import { type CodingAgentsInfo, loadCodingAgents } from "../api/coding-agents";
+import { loadCodingAgents } from "../api/coding-agents";
 import { isLoopbackHost, normalizeHost } from "../components/agent-command";
 import { SettingsSection } from "../components/settings-section";
 
 const DOCS_URL = "https://unsloth.ai/docs/integrations/unsloth-start";
+const EXAMPLE_MODEL_REPO = "unsloth/gemma-4-E4B-it-GGUF";
+const EXAMPLE_MODEL_VARIANT = "UD-Q4_K_XL";
+const MODEL_RESULT_LIMIT = 7;
+const HUGGING_FACE_REPO_PATTERN = /^[^/\\:\s]+\/[^/\\:\s]+$/;
+const SEARCH_TOKEN_PATTERN = /\s+/;
 
 // Backend PATH detection is only meaningful in the desktop app on a loopback
 // backend; a browser loopback URL may be an SSH/port forward to another host.
@@ -56,26 +87,150 @@ function useCopyButton(text: string) {
     }, 1600);
   };
 
-  return { copied, copy };
+  const reset = () => {
+    if (timeoutRef.current !== null) {
+      window.clearTimeout(timeoutRef.current);
+      timeoutRef.current = null;
+    }
+    setCopied(false);
+  };
+
+  return { copied, copy, reset };
 }
 
-// Each agent's `unsloth start <id>` token and display name. `logo` reuses an
-// official provider asset; agents without one fall back to a monogram tile.
-// Ids match the backend detection list.
-const SUPPORTED_AGENTS: {
+type AgentDetails = {
   id: string;
   name: string;
+  docsUrl: string;
   logo?: string;
   color?: string;
   mark?: string;
-}[] = [
-  { id: "claude", name: "Claude Code", logo: "anthropic" },
-  { id: "codex", name: "OpenAI Codex", logo: "openai" },
-  { id: "hermes", name: "Hermes", color: "#8B5CF6", mark: "He" },
-  { id: "openclaw", name: "OpenClaw", color: "#F59E0B", mark: "Ol" },
-  { id: "opencode", name: "OpenCode", color: "#3B82F6", mark: "Oc" },
-  { id: "pi", name: "Pi", color: "#EC4899", mark: "Pi" },
+};
+
+type ParsedModel = {
+  repo: string;
+  variant: string | null;
+};
+
+const SUPPORTED_AGENTS: AgentDetails[] = [
+  {
+    id: "claude",
+    name: "Claude Code",
+    docsUrl: "https://unsloth.ai/docs/basics/claude-code",
+    logo: "anthropic",
+  },
+  {
+    id: "codex",
+    name: "OpenAI Codex",
+    docsUrl: "https://unsloth.ai/docs/basics/codex",
+    logo: "openai",
+  },
+  {
+    id: "hermes",
+    name: "Hermes Agent",
+    docsUrl: "https://unsloth.ai/docs/integrations/hermes-agent",
+    color: "#8B5CF6",
+    mark: "He",
+  },
+  {
+    id: "openclaw",
+    name: "OpenClaw",
+    docsUrl: "https://unsloth.ai/docs/integrations/openclaw",
+    color: "#F59E0B",
+    mark: "Cl",
+  },
+  {
+    id: "opencode",
+    name: "OpenCode",
+    docsUrl: "https://unsloth.ai/docs/integrations/opencode",
+    color: "#3B82F6",
+    mark: "Oc",
+  },
+  {
+    id: "pi",
+    name: "Pi Coding Agent",
+    docsUrl: DOCS_URL,
+    color: "#EC4899",
+    mark: "Pi",
+  },
 ];
+
+const FALLBACK_AGENT = SUPPORTED_AGENTS[0];
+
+function detailsFor(agentId: string): AgentDetails {
+  return (
+    SUPPORTED_AGENTS.find((agent) => agent.id === agentId) ?? {
+      id: agentId,
+      name: agentId,
+      docsUrl: DOCS_URL,
+      color: "#64748B",
+      mark: agentId.slice(0, 2),
+    }
+  );
+}
+
+function splitModelVariant(model: string): ParsedModel {
+  const value = model.trim();
+  if (
+    !value ||
+    value.startsWith("/") ||
+    value.startsWith("./") ||
+    value.startsWith("../") ||
+    value.startsWith("~") ||
+    (value.length >= 2 && value[1] === ":")
+  ) {
+    return { repo: value, variant: null };
+  }
+
+  const separator = value.lastIndexOf(":");
+  if (separator < 0) {
+    return { repo: value, variant: null };
+  }
+  const repo = value.slice(0, separator);
+  const variant = value.slice(separator + 1);
+  if (!(repo && variant) || variant.includes("/")) {
+    return { repo: value, variant: null };
+  }
+  return { repo, variant };
+}
+
+function isHuggingFaceRepo(model: string): boolean {
+  return HUGGING_FACE_REPO_PATTERN.test(model);
+}
+
+function formatBytes(bytes: number): string {
+  if (!Number.isFinite(bytes) || bytes <= 0) {
+    return "";
+  }
+  const units = ["B", "KB", "MB", "GB", "TB"];
+  const unitIndex = Math.min(
+    Math.floor(Math.log(bytes) / Math.log(1024)),
+    units.length - 1,
+  );
+  const value = bytes / 1024 ** unitIndex;
+  return `${value >= 10 || unitIndex === 0 ? value.toFixed(0) : value.toFixed(1)} ${units[unitIndex]}`;
+}
+
+function discoverGgufModels(items: BackendModelDetails[]): {
+  models: string[];
+  variants: Record<string, string>;
+} {
+  const models = [EXAMPLE_MODEL_REPO];
+  const variants: Record<string, string> = {};
+  for (const model of items) {
+    if (!model.is_gguf) {
+      continue;
+    }
+    const parsed = splitModelVariant(model.id);
+    if (parsed.repo && !models.includes(parsed.repo)) {
+      models.push(parsed.repo);
+    }
+    if (parsed.variant && !variants[parsed.repo]) {
+      variants[parsed.repo] = parsed.variant;
+    }
+  }
+  return { models, variants };
+}
 
 /** Official brand logo when available, else a brand-colored monogram tile. */
 function AgentIcon({
@@ -102,34 +257,6 @@ function AgentIcon({
     >
       {mark}
     </span>
-  );
-}
-
-/** Compact, click-to-copy command chip for an agent row. */
-function InlineCommand({ command }: { command: string }) {
-  const t = useT();
-  const { copied, copy } = useCopyButton(command);
-
-  return (
-    <button
-      type="button"
-      onClick={copy}
-      title={copied ? t("settings.agents.copied") : t("settings.agents.copy")}
-      aria-label={`${
-        copied ? t("settings.agents.copied") : t("settings.agents.copy")
-      }: ${command}`}
-      className="inline-flex shrink-0 items-center gap-2 rounded-md border border-border bg-muted/40 py-1.5 pl-2.5 pr-2 font-mono text-xs text-foreground transition-colors hover:bg-accent hover:text-accent-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring dark:bg-white/[0.04]"
-    >
-      <span className="whitespace-nowrap">{command}</span>
-      <HugeiconsIcon
-        icon={copied ? Tick02Icon : Copy01Icon}
-        strokeWidth={2}
-        className={cn(
-          "size-3.5 shrink-0",
-          copied ? "text-control-accent" : "text-muted-foreground",
-        )}
-      />
-    </button>
   );
 }
 
@@ -161,17 +288,6 @@ const OPTION_ROWS: { flag: string; descKey: TranslationKey }[] = [
   { flag: "--api-key", descKey: "settings.agents.options.apiKey" },
   { flag: "--yolo", descKey: "settings.agents.options.yolo" },
 ];
-
-const QUICKSTART_CMD = "unsloth start claude";
-
-const MODEL_SUFFIX_CMD = `unsloth start codex \\
-  --model unsloth/gemma-4-E2B-it-GGUF:UD-Q4_K_XL \\
-  --context-length 32768`;
-
-const MODEL_VARIANT_CMD = `unsloth start codex \\
-  --model unsloth/gemma-4-E2B-it-GGUF \\
-  --gguf-variant UD-Q4_K_XL \\
-  --context-length 32768`;
 
 const REMOTE_CMD_UNIX = `export UNSLOTH_STUDIO_URL=https://studio.example.com
 export UNSLOTH_API_KEY=sk-unsloth-...
@@ -219,10 +335,66 @@ export function AgentsTab() {
   const t = useT();
   const deviceType = usePlatformStore((s) => s.deviceType);
   const serverUrl = usePlatformStore((s) => s.serverUrl);
-  const [info, setInfo] = useState<CodingAgentsInfo | null>(null);
-
   const origin = typeof window !== "undefined" ? window.location.origin : "";
   const localDetection = canUseLocalAgentDetection(serverUrl ?? origin);
+  const [agents, setAgents] = useState<string[]>(
+    SUPPORTED_AGENTS.map((agent) => agent.id),
+  );
+  const [selectedAgent, setSelectedAgent] = useState(FALLBACK_AGENT.id);
+  const [detectedAgents, setDetectedAgents] = useState<Set<string>>(new Set());
+  const [loaded, setLoaded] = useState(false);
+  const [models, setModels] = useState<string[]>([EXAMPLE_MODEL_REPO]);
+  const [knownVariants, setKnownVariants] = useState<Record<string, string>>({
+    [EXAMPLE_MODEL_REPO]: EXAMPLE_MODEL_VARIANT,
+  });
+  const [selectedModel, setSelectedModel] = useState(EXAMPLE_MODEL_REPO);
+  const [modelSearch, setModelSearch] = useState("");
+  const [modelPickerOpen, setModelPickerOpen] = useState(false);
+  const [variants, setVariants] = useState<GgufVariantDetail[]>([]);
+  const [defaultVariant, setDefaultVariant] = useState<string | null>(null);
+  const [selectedVariant, setSelectedVariant] = useState<string | null>(
+    EXAMPLE_MODEL_VARIANT,
+  );
+  const [variantsLoading, setVariantsLoading] = useState(true);
+  const [variantsFailed, setVariantsFailed] = useState(false);
+
+  const matchingModels = useMemo(() => {
+    const tokens = modelSearch
+      .trim()
+      .toLowerCase()
+      .split(SEARCH_TOKEN_PATTERN)
+      .filter(Boolean);
+    const matches =
+      tokens.length === 0
+        ? models
+        : models.filter((model) => {
+            const normalizedModel = model.toLowerCase();
+            return tokens.every((token) => normalizedModel.includes(token));
+          });
+
+    if (tokens.length === 0 && matches.includes(selectedModel)) {
+      return [
+        selectedModel,
+        ...matches.filter((model) => model !== selectedModel),
+      ];
+    }
+    return matches;
+  }, [modelSearch, models, selectedModel]);
+
+  const visibleModels = matchingModels.slice(0, MODEL_RESULT_LIMIT);
+  const preferredVariant = knownVariants[selectedModel] ?? null;
+  const selectedAgentDetails = detailsFor(selectedAgent);
+  const commandModel = selectedVariant
+    ? `${selectedModel}:${selectedVariant}`
+    : selectedModel;
+  const command = `unsloth start ${selectedAgent} --model ${commandModel}`;
+  const {
+    copied,
+    copy: handleCopy,
+    reset: resetCopied,
+  } = useCopyButton(command);
+  const remoteCommand =
+    deviceType === "windows" ? REMOTE_CMD_WINDOWS : REMOTE_CMD_UNIX;
 
   useEffect(() => {
     void fetchDeviceType({ force: true });
@@ -232,25 +404,120 @@ export function AgentsTab() {
   // nothing about the machine the copied command will run on.
   useEffect(() => {
     if (!localDetection) {
-      setInfo(null);
       return;
     }
     let cancelled = false;
     loadCodingAgents()
       .then((next) => {
-        if (!cancelled) setInfo(next);
+        if (cancelled) {
+          return;
+        }
+        if (next.agents.length > 0) {
+          setAgents(next.agents);
+          setSelectedAgent((current) =>
+            next.agents.includes(current) ? current : next.agents[0],
+          );
+        }
+        setDetectedAgents(new Set(next.detected));
       })
       .catch(() => {
         // PATH probing is best-effort; the tab is still useful without it.
+      })
+      .finally(() => {
+        if (!cancelled) {
+          setLoaded(true);
+        }
       });
     return () => {
       cancelled = true;
     };
   }, [localDetection]);
 
-  const detected = new Set(info?.detected ?? []);
-  const remoteCommand =
-    deviceType === "windows" ? REMOTE_CMD_WINDOWS : REMOTE_CMD_UNIX;
+  useEffect(() => {
+    let cancelled = false;
+    listModels()
+      .then((info) => {
+        if (cancelled) {
+          return;
+        }
+        const discovered = discoverGgufModels(info.models);
+        setModels(discovered.models);
+        setKnownVariants((current) => ({
+          ...current,
+          ...discovered.variants,
+        }));
+      })
+      .catch(() => {
+        // The example model keeps the builder useful if discovery fails.
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    if (!isHuggingFaceRepo(selectedModel)) {
+      return () => {
+        cancelled = true;
+      };
+    }
+
+    listGgufVariants(selectedModel)
+      .then((info) => {
+        if (cancelled) {
+          return;
+        }
+        const uniqueVariants = Array.from(
+          new Map(
+            info.variants.map((variant) => [variant.quant, variant]),
+          ).values(),
+        );
+        setVariants(uniqueVariants);
+        setDefaultVariant(info.default_variant);
+        const available = new Set(
+          uniqueVariants.map((variant) => variant.quant),
+        );
+        const nextVariant =
+          (preferredVariant && available.has(preferredVariant)
+            ? preferredVariant
+            : null) ??
+          (info.default_variant && available.has(info.default_variant)
+            ? info.default_variant
+            : null) ??
+          uniqueVariants[0]?.quant ??
+          null;
+        setSelectedVariant(nextVariant);
+      })
+      .catch(() => {
+        if (cancelled) {
+          return;
+        }
+        setVariantsFailed(true);
+        setSelectedVariant(preferredVariant);
+        if (preferredVariant) {
+          setVariants([
+            {
+              filename: "",
+              quant: preferredVariant,
+              // API field names intentionally mirror the backend response.
+              // biome-ignore lint/style/useNamingConvention: API response field
+              size_bytes: 0,
+            },
+          ]);
+        }
+      })
+      .finally(() => {
+        if (!cancelled) {
+          setVariantsLoading(false);
+        }
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [preferredVariant, selectedModel]);
 
   return (
     <div className="flex min-w-0 max-w-full flex-col gap-6">
@@ -281,70 +548,243 @@ export function AgentsTab() {
         <HugeiconsIcon icon={ArrowUpRight01Icon} className="size-3" />
       </a>
 
-      <SettingsSection
-        title={t("settings.agents.quickstart.title")}
-        description={t("settings.agents.quickstart.description")}
+      <section
+        aria-label={t("settings.agents.commandBuilder")}
+        className="flex w-full flex-col gap-4"
       >
-        <div className="pt-2">
-          <CommandBlock command={QUICKSTART_CMD} />
-        </div>
-      </SettingsSection>
-
-      <SettingsSection
-        title={t("settings.agents.supportedAgents.title")}
-        description={t("settings.agents.supportedAgents.description")}
-      >
-        <div className="mt-1 flex flex-col divide-y divide-border/60">
-          {SUPPORTED_AGENTS.map((agent) => (
-            <div
-              key={agent.id}
-              className="flex items-center justify-between gap-4 py-2.5"
+        <div className="flex flex-col gap-1.5">
+          <div className="flex items-center justify-between gap-3">
+            <span className="text-xs font-medium text-foreground">
+              {t("settings.agents.agent")}
+            </span>
+            <a
+              href={selectedAgentDetails.docsUrl}
+              target="_blank"
+              rel="noreferrer"
+              aria-label={t("settings.agents.agentDocs", {
+                agent: selectedAgentDetails.name,
+              })}
+              className="inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-[11px] font-medium text-muted-foreground transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
             >
-              <div className="flex min-w-0 items-center gap-3">
-                <AgentIcon
-                  logo={agent.logo}
-                  color={agent.color}
-                  mark={agent.mark}
-                />
-                <span className="truncate text-sm font-medium text-foreground">
-                  {agent.name}
+              {t("settings.agents.docs")}
+              <HugeiconsIcon icon={ArrowUpRight01Icon} className="size-3" />
+            </a>
+          </div>
+          <Select
+            value={selectedAgent}
+            onValueChange={(agent) => {
+              setSelectedAgent(agent);
+              resetCopied();
+            }}
+          >
+            <SelectTrigger
+              aria-label={t("settings.agents.agent")}
+              className="w-full rounded-lg"
+            >
+              <SelectValue>
+                <span className="flex min-w-0 items-center gap-2">
+                  <AgentIcon
+                    logo={selectedAgentDetails.logo}
+                    color={selectedAgentDetails.color}
+                    mark={selectedAgentDetails.mark}
+                  />
+                  <span className="truncate">{selectedAgentDetails.name}</span>
                 </span>
-                {detected.has(agent.id) ? (
-                  <span className="shrink-0 rounded-full bg-control-accent/10 px-2 py-1 text-[10px] leading-none font-semibold text-control-accent">
-                    {t("settings.agents.quickstart.installed")}
-                  </span>
-                ) : null}
-              </div>
-              <InlineCommand command={`unsloth start ${agent.id}`} />
-            </div>
-          ))}
+              </SelectValue>
+            </SelectTrigger>
+            <SelectContent align="start">
+              {agents.map((agentId) => {
+                const agent = detailsFor(agentId);
+                return (
+                  <SelectItem key={agent.id} value={agent.id}>
+                    <span className="flex min-w-0 items-center gap-2">
+                      <AgentIcon
+                        logo={agent.logo}
+                        color={agent.color}
+                        mark={agent.mark}
+                      />
+                      <span className="truncate">{agent.name}</span>
+                      {localDetection &&
+                      loaded &&
+                      detectedAgents.has(agent.id) ? (
+                        <span className="shrink-0 rounded-full bg-control-accent/10 px-2 py-1 text-[10px] leading-none font-semibold text-control-accent">
+                          {t("settings.agents.quickstart.installed")}
+                        </span>
+                      ) : null}
+                    </span>
+                  </SelectItem>
+                );
+              })}
+            </SelectContent>
+          </Select>
         </div>
-        {localDetection && info !== null && detected.size === 0 ? (
-          <p className="pt-3 text-xs text-muted-foreground">
-            {t("settings.agents.quickstart.noneDetected")}
+
+        <div className="grid grid-cols-[minmax(0,1fr)_minmax(10rem,0.4fr)] items-start gap-3 max-md:grid-cols-1">
+          <div className="flex min-w-0 flex-col gap-1.5">
+            <span className="text-xs font-medium text-foreground">
+              {t("settings.agents.model")}
+            </span>
+            <Popover
+              open={modelPickerOpen}
+              onOpenChange={(open) => {
+                setModelPickerOpen(open);
+                if (!open) {
+                  setModelSearch("");
+                }
+              }}
+            >
+              <PopoverTrigger asChild={true}>
+                <button
+                  type="button"
+                  aria-label={t("settings.agents.model")}
+                  aria-expanded={modelPickerOpen}
+                  title={selectedModel}
+                  className="flex h-9 w-full items-center justify-between gap-2 rounded-lg border border-border bg-background px-3 text-left transition-colors hover:bg-accent/50 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring dark:border-transparent dark:bg-white/[0.06] dark:hover:bg-white/10"
+                >
+                  <span className="min-w-0 truncate font-mono text-xs">
+                    {selectedModel}
+                  </span>
+                  <HugeiconsIcon
+                    icon={ChevronDownStandardIcon}
+                    strokeWidth={2}
+                    className="size-4 shrink-0 text-muted-foreground"
+                  />
+                </button>
+              </PopoverTrigger>
+              <PopoverContent
+                align="start"
+                sideOffset={4}
+                className="w-[var(--radix-popover-trigger-width)] max-w-[calc(100vw-2rem)] gap-0 rounded-lg p-1"
+              >
+                <Command
+                  shouldFilter={false}
+                  className="rounded-none bg-transparent p-0"
+                >
+                  <CommandInput
+                    value={modelSearch}
+                    onValueChange={setModelSearch}
+                    aria-label={t("settings.agents.searchModels")}
+                    placeholder={t("settings.agents.searchModels")}
+                    className="font-mono text-xs"
+                  />
+                  <CommandList>
+                    <CommandEmpty>{t("settings.agents.noModels")}</CommandEmpty>
+                    {visibleModels.map((model) => (
+                      <CommandItem
+                        key={model}
+                        value={model}
+                        data-checked={model === selectedModel}
+                        onSelect={() => {
+                          setSelectedModel(model);
+                          setSelectedVariant(knownVariants[model] ?? null);
+                          setVariants([]);
+                          setDefaultVariant(null);
+                          setVariantsFailed(false);
+                          setVariantsLoading(isHuggingFaceRepo(model));
+                          setModelSearch("");
+                          setModelPickerOpen(false);
+                          resetCopied();
+                        }}
+                        className="cursor-pointer font-mono text-xs"
+                      >
+                        <span className="min-w-0 truncate">{model}</span>
+                      </CommandItem>
+                    ))}
+                  </CommandList>
+                  {matchingModels.length > visibleModels.length ? (
+                    <p className="border-t border-border/60 px-3 py-2 text-[11px] text-muted-foreground">
+                      {t("settings.agents.showingModels", {
+                        shown: visibleModels.length,
+                        total: matchingModels.length,
+                      })}
+                    </p>
+                  ) : null}
+                </Command>
+              </PopoverContent>
+            </Popover>
+          </div>
+
+          <div className="flex min-w-0 flex-col gap-1.5">
+            <span className="text-xs font-medium text-foreground">
+              {t("settings.agents.quantization")}
+            </span>
+            <Select
+              value={selectedVariant ?? undefined}
+              onValueChange={(variant) => {
+                setSelectedVariant(variant);
+                resetCopied();
+              }}
+              disabled={variantsLoading || variants.length === 0}
+            >
+              <SelectTrigger
+                aria-label={t("settings.agents.quantization")}
+                className="w-full rounded-lg font-mono text-xs"
+              >
+                <SelectValue
+                  placeholder={t("settings.agents.loadingQuantizations")}
+                >
+                  {selectedVariant}
+                </SelectValue>
+              </SelectTrigger>
+              <SelectContent align="start">
+                {variants.map((variant) => {
+                  const metadata = [
+                    variant.quant === defaultVariant
+                      ? t("settings.agents.recommended")
+                      : null,
+                    variant.downloaded ? t("settings.agents.downloaded") : null,
+                    formatBytes(
+                      variant.download_size_bytes ?? variant.size_bytes,
+                    ),
+                  ].filter(Boolean);
+                  return (
+                    <SelectItem key={variant.quant} value={variant.quant}>
+                      <span className="font-mono text-xs">{variant.quant}</span>
+                      {metadata.length > 0 ? (
+                        <span className="text-[10px] text-muted-foreground">
+                          {metadata.join(" · ")}
+                        </span>
+                      ) : null}
+                    </SelectItem>
+                  );
+                })}
+              </SelectContent>
+            </Select>
+          </div>
+        </div>
+
+        {variantsFailed ? (
+          <p className="text-[11px] leading-relaxed text-amber-700 dark:text-amber-400">
+            {t("settings.agents.quantizationLoadError")}
           </p>
         ) : null}
-      </SettingsSection>
 
-      <SettingsSection
-        title={t("settings.agents.models.title")}
-        description={t("settings.agents.models.description")}
-      >
-        <div className="flex flex-col gap-3 pt-2">
-          <div className="flex flex-col gap-1.5">
+        <div className="flex min-w-0 flex-col gap-2 rounded-lg border border-border bg-muted/20 p-3">
+          <div className="flex items-center justify-between gap-3">
             <span className="text-xs font-medium text-foreground">
-              {t("settings.agents.models.suffixLabel")}
+              {t("settings.agents.generatedCommand")}
             </span>
-            <CommandBlock command={MODEL_SUFFIX_CMD} />
+            <button
+              type="button"
+              onClick={handleCopy}
+              aria-label={t("settings.agents.copyGeneratedCommand")}
+              className="inline-flex h-7 items-center gap-1.5 rounded-md border border-border bg-background/70 px-2 text-[11px] font-medium text-muted-foreground transition-colors hover:bg-accent/60 hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+            >
+              <HugeiconsIcon
+                icon={copied ? Tick02Icon : Copy01Icon}
+                className={cn("size-3.5", copied && "text-control-accent")}
+              />
+              {copied ? t("settings.agents.copied") : t("settings.agents.copy")}
+            </button>
           </div>
-          <div className="flex flex-col gap-1.5">
-            <span className="text-xs font-medium text-foreground">
-              {t("settings.agents.models.variantLabel")}
-            </span>
-            <CommandBlock command={MODEL_VARIANT_CMD} />
-          </div>
+          <code className="block min-w-0 whitespace-pre-wrap break-all rounded-md border border-border bg-background/70 px-2.5 py-2 font-mono text-[11px] leading-relaxed text-foreground">
+            {command}
+          </code>
         </div>
-      </SettingsSection>
+        <p className="text-[11px] leading-relaxed text-muted-foreground">
+          {t("settings.agents.modelNote")}
+        </p>
+      </section>
 
       <SettingsSection
         title={t("settings.agents.options.title")}
