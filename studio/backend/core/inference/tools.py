@@ -2600,8 +2600,20 @@ _WRAPPER_DURATION_RE = re.compile(r"\d+(?:\.\d+)?[smhd]?$")
 # does, so an arbitrary destructive script would run unprompted. sh/bash -c are
 # omitted -- the sandbox hard-block already recurses into their payloads.
 _INLINE_CODE_INTERPRETERS = frozenset(
-    {"python", "python2", "python3", "pypy", "pypy3", "node", "nodejs", "deno", "bun", "ruby",
-     "perl", "php"}
+    {
+        "python",
+        "python2",
+        "python3",
+        "pypy",
+        "pypy3",
+        "node",
+        "nodejs",
+        "deno",
+        "bun",
+        "ruby",
+        "perl",
+        "php",
+    }
 )
 _INLINE_CODE_FLAGS = frozenset({"-c", "-e", "-E", "-r", "--eval", "--exec"})
 # git subcommands / flags that discard or overwrite work in the session workdir.

@@ -375,7 +375,7 @@ def test_terminal_classifier(command, unsafe):
         # --- prompt: non-shell interpreter running inline code ---
         ('python -c "import shutil; shutil.rmtree(chr(46))"', True),
         ("python3 -c 'pass'", True),
-        ('node -e "require(\'fs\')"', True),
+        ("node -e \"require('fs')\"", True),
         ("node --eval x", True),
         ("ruby -e 'puts 1'", True),
         ("perl -E 'say 1'", True),
