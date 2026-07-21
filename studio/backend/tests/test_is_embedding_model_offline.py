@@ -194,6 +194,23 @@ def _fake_hf_cache(monkeypatch, root):
     monkeypatch.setitem(sys.modules, "huggingface_hub.constants", fake.constants)
 
 
+def _mk_repo(tmp_path, repo_id = "org/model", commit = "aaa"):
+    """(repo_dir, snapshot_dir) for a fresh HF cache repo under ``tmp_path/hf``; the snapshot dir
+    is created. Shared skeleton for the per-type repo builders below."""
+    repo = tmp_path / "hf" / f"models--{repo_id.replace('/', '--')}"
+    snap = repo / "snapshots" / commit
+    snap.mkdir(parents = True)
+    return repo, snap
+
+
+def _activate(repo, monkeypatch, commit = "aaa"):
+    """Write refs/main and point the HF/ST cache at *repo*'s root, ignoring SENTENCE_TRANSFORMERS_HOME."""
+    (repo / "refs").mkdir(parents = True, exist_ok = True)
+    (repo / "refs" / "main").write_text(commit)
+    _fake_hf_cache(monkeypatch, repo.parent)
+    monkeypatch.delenv("SENTENCE_TRANSFORMERS_HOME", raising = False)
+
+
 def _st_snapshot(
     root,
     repo_dir,
@@ -263,19 +280,13 @@ def test_marker_only_snapshot_is_not_loadable(tmp_path, monkeypatch):
 
 def test_marker_onnx_only_snapshot_is_not_loadable(tmp_path, monkeypatch):
     # Marker + config but only an ONNX export: the Torch backend needs safetensors/bin.
-    hf_root = tmp_path / "hf"
-    repo = hf_root / "models--org--model"
-    snap = repo / "snapshots" / "aaa"
-    snap.mkdir(parents = True)
+    repo, snap = _mk_repo(tmp_path, "org/model", "aaa")
     (snap / "modules.json").write_text("[]")
     (snap / "config.json").write_text("{}")
     (snap / "tokenizer.json").write_text("{}")
     (snap / "model.onnx").write_bytes(b"\0")
     # refs/main so the probe reaches the weight check.
-    (repo / "refs").mkdir(parents = True)
-    (repo / "refs" / "main").write_text("aaa")
-    _fake_hf_cache(monkeypatch, hf_root)
-    monkeypatch.delenv("SENTENCE_TRANSFORMERS_HOME", raising = False)
+    _activate(repo, monkeypatch)
     assert mc._embedding_marker_in_hf_cache("org/model") is False
 
 
@@ -320,10 +331,7 @@ def _cache_repo_with_files(
     unrealistic snapshot (#7218). Root-level files declare a single Transformer at path ``""`` --
     the save_in_root layout a plain load reads from the snapshot root -- rather than an empty
     ``[]`` list, which builds ZERO modules and is not a loadable ST model (#7218 P4)."""
-    hf_root = tmp_path / "hf"
-    repo = hf_root / "models--org--model"
-    snap = repo / "snapshots" / commit
-    snap.mkdir(parents = True)
+    repo, snap = _mk_repo(tmp_path, commit = commit)
     (snap / "config.json").write_text("{}")
     if tokenizer:
         (snap / "tokenizer.json").write_text("{}")
@@ -347,10 +355,7 @@ def _cache_repo_with_files(
         )
     else:
         (snap / "modules.json").write_text(_ROOT_TRANSFORMER_MODULES)
-    (repo / "refs").mkdir(parents = True)
-    (repo / "refs" / "main").write_text(commit)
-    _fake_hf_cache(monkeypatch, hf_root)
-    monkeypatch.delenv("SENTENCE_TRANSFORMERS_HOME", raising = False)
+    _activate(repo, monkeypatch, commit)
 
 
 def test_marker_rejects_non_base_weight_bins(tmp_path, monkeypatch):
@@ -436,9 +441,7 @@ def test_marker_rejects_complete_dir_at_an_undeclared_path(tmp_path, monkeypatch
     # UNDECLARED sibling dir (stray_complete/) the loader never opens. Judging any complete
     # directory would accept this snapshot and then 409 at the first local_files_only load, so
     # it must be restricted to the declared load roots and read as NOT loadable (#7218 P2).
-    hf_root = tmp_path / "hf"
-    repo = hf_root / "models--org--model"
-    snap = repo / "snapshots" / "aaa"
+    repo, snap = _mk_repo(tmp_path, "org/model", "aaa")
     (snap / "0_Transformer").mkdir(parents = True)
     (snap / "modules.json").write_text(
         _modules_json(("0", "0_Transformer", "sentence_transformers.models.Transformer"))
@@ -449,10 +452,7 @@ def test_marker_rejects_complete_dir_at_an_undeclared_path(tmp_path, monkeypatch
     (stray / "config.json").write_text("{}")
     (stray / "tokenizer.json").write_text("{}")
     (stray / "model.safetensors").write_bytes(b"\0")
-    (repo / "refs").mkdir(parents = True)
-    (repo / "refs" / "main").write_text("aaa")
-    _fake_hf_cache(monkeypatch, hf_root)
-    monkeypatch.delenv("SENTENCE_TRANSFORMERS_HOME", raising = False)
+    _activate(repo, monkeypatch)
     assert mc._embedding_marker_in_hf_cache("org/model") is False
 
 
@@ -460,9 +460,7 @@ def test_marker_accepts_complete_dir_at_the_declared_module_path(tmp_path, monke
     # Companion to the rejection above: when the complete config+tokenizer+weights sit at the
     # DECLARED module path (0_Transformer/), the loader opens exactly that directory, so a
     # normal Transformer model must still be recognized (#7218 P2).
-    hf_root = tmp_path / "hf"
-    repo = hf_root / "models--org--model"
-    snap = repo / "snapshots" / "aaa"
+    repo, snap = _mk_repo(tmp_path, "org/model", "aaa")
     (snap / "0_Transformer").mkdir(parents = True)
     (snap / "modules.json").write_text(
         _modules_json(("0", "0_Transformer", "sentence_transformers.models.Transformer"))
@@ -470,10 +468,7 @@ def test_marker_accepts_complete_dir_at_the_declared_module_path(tmp_path, monke
     (snap / "0_Transformer" / "config.json").write_text("{}")
     (snap / "0_Transformer" / "tokenizer.json").write_text("{}")
     (snap / "0_Transformer" / "model.safetensors").write_bytes(b"\0")
-    (repo / "refs").mkdir(parents = True)
-    (repo / "refs" / "main").write_text("aaa")
-    _fake_hf_cache(monkeypatch, hf_root)
-    monkeypatch.delenv("SENTENCE_TRANSFORMERS_HOME", raising = False)
+    _activate(repo, monkeypatch)
     assert mc._embedding_marker_in_hf_cache("org/model") is True
 
 
@@ -523,9 +518,7 @@ def _wordembeddings_repo(
     ``1_Pooling`` module dir holding ``config.json``. It carries NO HF ``config.json`` /
     tokenizer, so the Transformer-shaped weight check alone misclassifies it as non-embedding
     and the settings route 409s it (#7218)."""
-    hf_root = tmp_path / "hf"
-    repo = hf_root / f"models--{repo_id.replace('/', '--')}"
-    snap = repo / "snapshots" / commit
+    repo, snap = _mk_repo(tmp_path, repo_id, commit)
     (snap / "0_WordEmbeddings").mkdir(parents = True)
     (snap / "modules.json").write_text(
         _modules_json(
@@ -543,10 +536,7 @@ def _wordembeddings_repo(
         (snap / "0_WordEmbeddings" / weight_file).write_bytes(b"\0")
     (snap / "1_Pooling").mkdir(parents = True)
     (snap / "1_Pooling" / "config.json").write_text("{}")
-    (repo / "refs").mkdir(parents = True)
-    (repo / "refs" / "main").write_text(commit)
-    _fake_hf_cache(monkeypatch, hf_root)
-    monkeypatch.delenv("SENTENCE_TRANSFORMERS_HOME", raising = False)
+    _activate(repo, monkeypatch, commit)
     return snap
 
 
@@ -628,10 +618,7 @@ def _router_repo(
     weights of its own -- ``Router.load()`` reads router_config.json and loads each child from its
     subdir -- so the Transformer-shaped root check alone misclassifies it (#7218). ``complete=False``
     strips the Transformer child's weights so the load would fail."""
-    hf_root = tmp_path / "hf"
-    repo = hf_root / f"models--{repo_id.replace('/', '--')}"
-    snap = repo / "snapshots" / commit
-    snap.mkdir(parents = True)
+    repo, snap = _mk_repo(tmp_path, repo_id, commit)
     router_dir = snap if root_path in ("", ".") else snap / root_path
     router_dir.mkdir(parents = True, exist_ok = True)
     (snap / "modules.json").write_text(
@@ -658,10 +645,7 @@ def _router_repo(
     pooling = router_dir / "query_1_Pooling"
     pooling.mkdir(parents = True)
     (pooling / "config.json").write_text("{}")
-    (repo / "refs").mkdir(parents = True)
-    (repo / "refs" / "main").write_text(commit)
-    _fake_hf_cache(monkeypatch, hf_root)
-    monkeypatch.delenv("SENTENCE_TRANSFORMERS_HOME", raising = False)
+    _activate(repo, monkeypatch, commit)
     return snap
 
 
@@ -699,20 +683,14 @@ def test_marker_rejects_self_referential_router_without_recursing(tmp_path, monk
     # must be rejected, not recursed into forever: the child path resolves back to the same dir, so
     # without the self-reference guard _router_dir_is_loadable would re-enter until RecursionError
     # and turn is_embedding_model into a 500. It must instead return False gracefully (never raise).
-    hf_root = tmp_path / "hf"
-    repo = hf_root / "models--org--self-router"
-    snap = repo / "snapshots" / "aaa"
-    snap.mkdir(parents = True)
+    repo, snap = _mk_repo(tmp_path, "org/self-router", "aaa")
     (snap / "modules.json").write_text(
         _modules_json(("0", "", "sentence_transformers.models.Router"))
     )
     (snap / "router_config.json").write_text(
         json.dumps({"types": {".": "sentence_transformers.models.Router"}})
     )
-    (repo / "refs").mkdir(parents = True)
-    (repo / "refs" / "main").write_text("aaa")
-    _fake_hf_cache(monkeypatch, hf_root)
-    monkeypatch.delenv("SENTENCE_TRANSFORMERS_HOME", raising = False)
+    _activate(repo, monkeypatch)
     assert mc._embedding_marker_in_hf_cache("org/self-router") is False
 
 
@@ -738,9 +716,7 @@ def _staticembedding_repo(
     ``tokenizer.json`` + ``model.safetensors`` -- exactly what ``StaticEmbedding.load()`` reads,
     which writes NO config. It carries NO HF/module ``config.json``, so the config-gated
     non-Transformer path alone misclassifies it and the settings route 409s it offline (#7218)."""
-    hf_root = tmp_path / "hf"
-    repo = hf_root / f"models--{repo_id.replace('/', '--')}"
-    snap = repo / "snapshots" / commit
+    repo, snap = _mk_repo(tmp_path, repo_id, commit)
     (snap / "0_StaticEmbedding").mkdir(parents = True)
     (snap / "modules.json").write_text(
         _modules_json(
@@ -752,10 +728,7 @@ def _staticembedding_repo(
         (snap / "0_StaticEmbedding" / "tokenizer.json").write_text("{}")
     if include_weights:
         (snap / "0_StaticEmbedding" / weight_file).write_bytes(b"\0")
-    (repo / "refs").mkdir(parents = True)
-    (repo / "refs" / "main").write_text(commit)
-    _fake_hf_cache(monkeypatch, hf_root)
-    monkeypatch.delenv("SENTENCE_TRANSFORMERS_HOME", raising = False)
+    _activate(repo, monkeypatch, commit)
     return snap
 
 
@@ -768,17 +741,12 @@ def test_marker_accepts_complete_staticembedding_model(tmp_path, monkeypatch, we
     assert mc._embedding_marker_in_hf_cache(_STATIC) is True
 
 
-def test_marker_rejects_staticembedding_without_weights(tmp_path, monkeypatch):
-    # StaticEmbedding.load() hard-reads model.safetensors / pytorch_model.bin, so a tokenizer-only
-    # module dir (weights pruned) would fail the offline load and must NOT validate.
-    _staticembedding_repo(tmp_path, monkeypatch, include_weights = False)
-    assert mc._embedding_marker_in_hf_cache(_STATIC) is False
-
-
-def test_marker_rejects_staticembedding_without_tokenizer(tmp_path, monkeypatch):
-    # StaticEmbedding.load() hard-reads tokenizer.json (Tokenizer.from_file), so a weights-only
-    # module dir would fail the offline load and must NOT validate.
-    _staticembedding_repo(tmp_path, monkeypatch, include_tokenizer = False)
+@pytest.mark.parametrize("kwargs", [{"include_weights": False}, {"include_tokenizer": False}])
+def test_marker_rejects_staticembedding_missing_asset(tmp_path, monkeypatch, kwargs):
+    # StaticEmbedding.load() hard-reads BOTH tokenizer.json (Tokenizer.from_file) and
+    # model.safetensors / pytorch_model.bin, so a module dir missing either would fail the offline
+    # load and must NOT validate.
+    _staticembedding_repo(tmp_path, monkeypatch, **kwargs)
     assert mc._embedding_marker_in_hf_cache(_STATIC) is False
 
 
@@ -797,9 +765,7 @@ def _we_dense_repo(
     commit = "aaa",
 ):
     # WordEmbeddings + Pooling + a Dense projection module, with the Dense weights ABSENT.
-    hf_root = tmp_path / "hf"
-    repo = hf_root / "models--org--we-dense"
-    snap = repo / "snapshots" / commit
+    repo, snap = _mk_repo(tmp_path, "org/we-dense", commit)
     (snap / "0_WordEmbeddings").mkdir(parents = True)
     (snap / "modules.json").write_text(
         _modules_json(
@@ -818,10 +784,7 @@ def _we_dense_repo(
     (snap / "1_Pooling" / "config.json").write_text("{}")
     (snap / "2_Dense").mkdir(parents = True)
     (snap / "2_Dense" / "config.json").write_text("{}")  # config present, weights absent
-    (repo / "refs").mkdir(parents = True)
-    (repo / "refs" / "main").write_text(commit)
-    _fake_hf_cache(monkeypatch, hf_root)
-    monkeypatch.delenv("SENTENCE_TRANSFORMERS_HOME", raising = False)
+    _activate(repo, monkeypatch, commit)
     return snap
 
 
@@ -858,9 +821,7 @@ def _transformer_plus_module_repo(
     declared module -- each of these modules' ``load()`` ends in ``load_torch_weights``, which
     RAISES without a weight file -- so a weightless sibling must fail offline validation even
     though the Transformer alone is complete."""
-    hf_root = tmp_path / "hf"
-    repo = hf_root / f"models--{repo_id.replace('/', '--')}"
-    snap = repo / "snapshots" / commit
+    repo, snap = _mk_repo(tmp_path, repo_id, commit)
     transformer = snap / "0_Transformer"
     transformer.mkdir(parents = True)
     (transformer / "config.json").write_text("{}")
@@ -877,10 +838,7 @@ def _transformer_plus_module_repo(
             ("1", module_dir, module_type),
         )
     )
-    (repo / "refs").mkdir(parents = True)
-    (repo / "refs" / "main").write_text(commit)
-    _fake_hf_cache(monkeypatch, hf_root)
-    monkeypatch.delenv("SENTENCE_TRANSFORMERS_HOME", raising = False)
+    _activate(repo, monkeypatch, commit)
     return snap
 
 
@@ -932,9 +890,7 @@ def test_marker_accepts_complete_transformer_with_complete_sibling(
 def test_marker_accepts_complete_bow_model(tmp_path, monkeypatch):
     # A BoW module keeps its vocab in config.json and writes NO weight file; a complete cache is
     # still loadable via BoW.load(config.json), so it must validate.
-    hf_root = tmp_path / "hf"
-    repo = hf_root / "models--org--bow"
-    snap = repo / "snapshots" / "aaa"
+    repo, snap = _mk_repo(tmp_path, "org/bow", "aaa")
     (snap / "0_BoW").mkdir(parents = True)
     (snap / "modules.json").write_text(
         _modules_json(
@@ -946,19 +902,14 @@ def test_marker_accepts_complete_bow_model(tmp_path, monkeypatch):
     (snap / "0_BoW" / "config.json").write_text('{"vocab": ["a", "b"]}')
     (snap / "1_Pooling").mkdir(parents = True)
     (snap / "1_Pooling" / "config.json").write_text("{}")
-    (repo / "refs").mkdir(parents = True)
-    (repo / "refs" / "main").write_text("aaa")
-    _fake_hf_cache(monkeypatch, hf_root)
-    monkeypatch.delenv("SENTENCE_TRANSFORMERS_HOME", raising = False)
+    _activate(repo, monkeypatch)
     assert mc._embedding_marker_in_hf_cache("org/bow") is True
 
 
 def test_marker_rejects_structural_only_module_list(tmp_path, monkeypatch):
     # A degenerate modules.json with only structural modules (Pooling / Normalize) has no source
     # of embeddings and must NOT validate on the non-Transformer path.
-    hf_root = tmp_path / "hf"
-    repo = hf_root / "models--org--degenerate"
-    snap = repo / "snapshots" / "aaa"
+    repo, snap = _mk_repo(tmp_path, "org/degenerate", "aaa")
     (snap / "1_Pooling").mkdir(parents = True)
     (snap / "modules.json").write_text(
         _modules_json(
@@ -967,10 +918,7 @@ def test_marker_rejects_structural_only_module_list(tmp_path, monkeypatch):
         )
     )
     (snap / "1_Pooling" / "config.json").write_text("{}")
-    (repo / "refs").mkdir(parents = True)
-    (repo / "refs" / "main").write_text("aaa")
-    _fake_hf_cache(monkeypatch, hf_root)
-    monkeypatch.delenv("SENTENCE_TRANSFORMERS_HOME", raising = False)
+    _activate(repo, monkeypatch)
     assert mc._embedding_marker_in_hf_cache("org/degenerate") is False
 
 
@@ -1345,19 +1293,13 @@ def _tag_only_repo(
     which the marker cannot recognize, so detection falls through to the recorded verdict.
     ``modules_json`` (raw body) writes a modules.json when given, to exercise the case where the
     tag-only fallback must NOT run because a manifest is present."""
-    hf_root = tmp_path / "hf"
-    repo = hf_root / f"models--{repo_id.replace('/', '--')}"
-    snap = repo / "snapshots" / commit
-    snap.mkdir(parents = True)
+    repo, snap = _mk_repo(tmp_path, repo_id, commit)
     (snap / "config.json").write_text("{}")
     (snap / "tokenizer.json").write_text("{}")
     (snap / "model.safetensors").write_bytes(b"\0")
     if modules_json is not None:
         (snap / "modules.json").write_text(modules_json)
-    (repo / "refs").mkdir(parents = True)
-    (repo / "refs" / "main").write_text(commit)
-    _fake_hf_cache(monkeypatch, hf_root)
-    monkeypatch.delenv("SENTENCE_TRANSFORMERS_HOME", raising = False)
+    _activate(repo, monkeypatch, commit)
 
 
 def test_online_verdict_still_applies_at_the_confirmed_revision(tmp_path, monkeypatch):
@@ -1643,9 +1585,7 @@ def _root_wordembeddings_repo(
     WordEmbeddings.load() reads exactly those files, but the Transformer-shaped root check fails on
     the tokenizer, so the pristine `if is_root: _dir_is_transformer_load_root(...)` returned False and
     the offline settings route 409'd it (#7218 P1). include_tokenizer=False prunes the tokenizer."""
-    hf_root = tmp_path / "hf"
-    repo = hf_root / f"models--{repo_id.replace('/', '--')}"
-    snap = repo / "snapshots" / commit
+    repo, snap = _mk_repo(tmp_path, repo_id, commit)
     (snap / "1_Pooling").mkdir(parents = True)
     (snap / "modules.json").write_text(
         _modules_json(
@@ -1659,10 +1599,7 @@ def _root_wordembeddings_repo(
         (snap / "whitespacetokenizer_config.json").write_text("{}")
     (snap / "model.safetensors").write_bytes(b"\0")
     (snap / "1_Pooling" / "config.json").write_text("{}")
-    (repo / "refs").mkdir(parents = True)
-    (repo / "refs" / "main").write_text(commit)
-    _fake_hf_cache(monkeypatch, hf_root)
-    monkeypatch.delenv("SENTENCE_TRANSFORMERS_HOME", raising = False)
+    _activate(repo, monkeypatch, commit)
     return snap
 
 
@@ -1698,10 +1635,7 @@ def _root_staticembedding_repo(
     config. StaticEmbedding already passes the pristine is_root Transformer check because it ships a
     tokenizer.json + config_sentence_transformers.json + weights; dispatching StaticEmbedding through
     its own branch BEFORE the root fallback must keep it loadable (#7218 P1)."""
-    hf_root = tmp_path / "hf"
-    repo = hf_root / f"models--{_ROOT_STATIC.replace('/', '--')}"
-    snap = repo / "snapshots" / commit
-    snap.mkdir(parents = True)
+    repo, snap = _mk_repo(tmp_path, _ROOT_STATIC, commit)
     (snap / "modules.json").write_text(
         _modules_json(("0", "", "sentence_transformers.models.StaticEmbedding"))
     )
@@ -1709,10 +1643,7 @@ def _root_staticembedding_repo(
     (snap / "tokenizer.json").write_text("{}")
     if include_weights:
         (snap / "model.safetensors").write_bytes(b"\0")
-    (repo / "refs").mkdir(parents = True)
-    (repo / "refs" / "main").write_text(commit)
-    _fake_hf_cache(monkeypatch, hf_root)
-    monkeypatch.delenv("SENTENCE_TRANSFORMERS_HOME", raising = False)
+    _activate(repo, monkeypatch, commit)
     return snap
 
 
@@ -1749,9 +1680,7 @@ def _clip_repo(
     (image processor + tokenizer), so a config-only dir is NOT loadable. complete=False writes only
     config.json (no processor asset, no weights). ``processor=False`` writes the tokenizer + weights
     but omits the image-processor config (preprocessor_config.json) AutoProcessor needs for CLIP."""
-    hf_root = tmp_path / "hf"
-    repo = hf_root / f"models--{_CLIP.replace('/', '--')}"
-    snap = repo / "snapshots" / commit
+    repo, snap = _mk_repo(tmp_path, _CLIP, commit)
     (snap / "0_CLIPModel").mkdir(parents = True)
     (snap / "modules.json").write_text(
         _modules_json(("0", "0_CLIPModel", "sentence_transformers.models.CLIPModel"))
@@ -1764,10 +1693,7 @@ def _clip_repo(
         if processor:
             # AutoProcessor's image-processor half reads its own config.
             (snap / "0_CLIPModel" / "preprocessor_config.json").write_text("{}")
-    (repo / "refs").mkdir(parents = True)
-    (repo / "refs" / "main").write_text(commit)
-    _fake_hf_cache(monkeypatch, hf_root)
-    monkeypatch.delenv("SENTENCE_TRANSFORMERS_HOME", raising = False)
+    _activate(repo, monkeypatch, commit)
 
 
 def test_marker_rejects_config_only_clip_module(tmp_path, monkeypatch):
@@ -1814,9 +1740,7 @@ def _sparse_static_repo(
     (load_torch_weights). ``payload`` selects what backs it: "idf" (config path -> idf.json),
     "idf_unselected" (idf.json present but config does NOT name a ``.json`` path, so load() falls
     through to load_torch_weights and raises), "weights" (model.safetensors) or "none" (neither)."""
-    hf_root = tmp_path / "hf"
-    repo = hf_root / f"models--{_SPARSE_STATIC.replace('/', '--')}"
-    snap = repo / "snapshots" / commit
+    repo, snap = _mk_repo(tmp_path, _SPARSE_STATIC, commit)
     mod = snap / "0_SparseStaticEmbedding"
     mod.mkdir(parents = True)
     (snap / "modules.json").write_text(
@@ -1838,10 +1762,7 @@ def _sparse_static_repo(
         (mod / "idf.json").write_text("{}")
     elif payload == "weights":
         (mod / "model.safetensors").write_bytes(b"\0")
-    (repo / "refs").mkdir(parents = True)
-    (repo / "refs" / "main").write_text(commit)
-    _fake_hf_cache(monkeypatch, hf_root)
-    monkeypatch.delenv("SENTENCE_TRANSFORMERS_HOME", raising = False)
+    _activate(repo, monkeypatch, commit)
 
 
 @pytest.mark.parametrize("payload", ["idf", "weights"])
@@ -1890,18 +1811,12 @@ def _root_weights_snapshot(
     """A snapshot with a COMPLETE root weight set (config + tokenizer + weights) and a modules.json
     whose raw body is ``modules_body``. Lets a test assert that a present-but-empty / malformed
     modules.json is not loadable even though the root weights are complete."""
-    hf_root = tmp_path / "hf"
-    repo = hf_root / f"models--{repo_id.replace('/', '--')}"
-    snap = repo / "snapshots" / "aaa"
-    snap.mkdir(parents = True)
+    repo, snap = _mk_repo(tmp_path, repo_id, "aaa")
     (snap / "modules.json").write_text(modules_body)
     (snap / "config.json").write_text("{}")
     (snap / "tokenizer.json").write_text("{}")
     (snap / "model.safetensors").write_bytes(b"\0")
-    (repo / "refs").mkdir(parents = True)
-    (repo / "refs" / "main").write_text("aaa")
-    _fake_hf_cache(monkeypatch, hf_root)
-    monkeypatch.delenv("SENTENCE_TRANSFORMERS_HOME", raising = False)
+    _activate(repo, monkeypatch)
     return repo_id
 
 
@@ -1947,9 +1862,7 @@ def _sharded_transformer_repo(
     tokenizer + a model.safetensors.index.json whose ``weight_map`` is the given dict, plus
     ``present_shards`` written to disk (paths relative to the module dir). Lets a test reference a
     shard the index maps but leave it absent, or place shards in a subdirectory."""
-    hf_root = tmp_path / "hf"
-    repo = hf_root / f"models--{_SHARDED.replace('/', '--')}"
-    snap = repo / "snapshots" / commit
+    repo, snap = _mk_repo(tmp_path, _SHARDED, commit)
     mod = snap / module_path
     mod.mkdir(parents = True)
     (snap / "modules.json").write_text(
@@ -1963,10 +1876,7 @@ def _sharded_transformer_repo(
         target = mod / Path(shard_rel)
         target.parent.mkdir(parents = True, exist_ok = True)
         target.write_bytes(b"\0")
-    (repo / "refs").mkdir(parents = True)
-    (repo / "refs" / "main").write_text(commit)
-    _fake_hf_cache(monkeypatch, hf_root)
-    monkeypatch.delenv("SENTENCE_TRANSFORMERS_HOME", raising = False)
+    _activate(repo, monkeypatch, commit)
 
 
 def test_marker_rejects_sharded_index_with_a_missing_mapped_shard(tmp_path, monkeypatch):
