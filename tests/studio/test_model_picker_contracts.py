@@ -261,6 +261,21 @@ def test_pinned_validation_uses_cached_local_variant_listing():
     assert "bumpInventoryVersion(" in delete_fn
 
 
+def test_chat_autoload_scopes_variant_lookup_to_cached_repo_path():
+    """Autoload must probe the exact cache row it will load, including rows
+    retained from a previously selected Hugging Face cache."""
+    src = _read("features/chat/api/chat-adapter.ts")
+    auto_load = src.split("async function autoLoadSmallestModel", 1)[1]
+    assert auto_load.count("preferLocalCache: true") >= 2
+    assert auto_load.count("localPath: repo.cache_path") >= 2
+
+    chat_api = _read("features/chat/api/chat-api.ts")
+    variants_fn = chat_api.split("export async function listGgufVariants", 1)[1]
+    variants_fn = variants_fn.split("export interface KvCacheEstimate", 1)[0]
+    assert 'params.set("prefer_local_cache", "true")' in variants_fn
+    assert 'params.set("local_path", localPath)' in variants_fn
+
+
 def test_downloaded_list_offsets_virtual_rows():
     """The On Device virtualized list sits below the Pinned block in the same
     scroll element, so it must pass its measured offset as scrollMargin or rows

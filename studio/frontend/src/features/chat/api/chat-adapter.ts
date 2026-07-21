@@ -1752,7 +1752,10 @@ async function autoLoadSmallestModel(): Promise<{
         const repo = findCachedRepo(ggufRepos, lastLoaded.id);
         if (repo && lastLoaded.ggufVariant) {
           try {
-            const variants = await listGgufVariants(repo.repo_id);
+            const variants = await listGgufVariants(repo.repo_id, undefined, {
+              preferLocalCache: true,
+              localPath: repo.cache_path,
+            });
             const variant = variants.variants.find(
               (entry) =>
                 entry.downloaded &&
@@ -1828,7 +1831,10 @@ async function autoLoadSmallestModel(): Promise<{
       for (const repo of sorted) {
         if (loadAttempts >= MAX_AUTO_LOAD_ATTEMPTS) break;
         try {
-          const variants = await listGgufVariants(repo.repo_id);
+          const variants = await listGgufVariants(repo.repo_id, undefined, {
+            preferLocalCache: true,
+            localPath: repo.cache_path,
+          });
           const downloaded = variants.variants
             .filter((v) => v.downloaded && isAutoLoadableGgufVariant(v))
             .sort((a, b) => a.size_bytes - b.size_bytes);

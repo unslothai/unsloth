@@ -922,8 +922,19 @@ export async function browseFolders(
 export async function listGgufVariants(
   repoId: string,
   hfToken?: string,
+  options?: {
+    preferLocalCache?: boolean;
+    localPath?: string | null;
+  },
 ): Promise<GgufVariantsResponse> {
   const params = new URLSearchParams({ repo_id: repoId });
+  if (options?.preferLocalCache) {
+    params.set("prefer_local_cache", "true");
+  }
+  const localPath = options?.localPath?.trim();
+  if (localPath) {
+    params.set("local_path", localPath);
+  }
   const response = await authFetch(`/api/models/gguf-variants?${params}`, {
     headers: hubTokenHeader(hfToken),
   });

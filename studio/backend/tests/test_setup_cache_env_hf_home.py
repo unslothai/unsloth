@@ -108,6 +108,7 @@ def test_whitespace_hf_home_falls_back_to_default(monkeypatch, tmp_path):
 
     import os
 
+    assert os.environ["HF_HOME"] == str(tmp_path / "xdg" / "huggingface")
     assert os.environ["HF_HUB_CACHE"] == str(tmp_path / "xdg" / "huggingface" / "hub")
 
 

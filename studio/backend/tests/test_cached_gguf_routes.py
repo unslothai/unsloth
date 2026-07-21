@@ -750,6 +750,52 @@ def test_gguf_variants_mmproj_does_not_mark_quant_downloaded(monkeypatch, tmp_pa
     assert flags["F16"] is False
 
 
+def test_gguf_variants_route_scopes_local_probe_to_selected_cache(monkeypatch, tmp_path):
+    snapshot = tmp_path / "inactive" / "models--org--repo" / "snapshots" / "rev"
+    snapshot.mkdir(parents = True)
+    calls = []
+
+    async def scoped_variants(repo_id, **kwargs):
+        calls.append((repo_id, kwargs))
+        return SimpleNamespace(
+            repo_id = repo_id,
+            variants = [],
+            has_vision = False,
+            default_variant = None,
+        )
+
+    context_calls = []
+    monkeypatch.setattr(GV, "get_gguf_variants_response", scoped_variants)
+    monkeypatch.setattr(
+        models_route,
+        "_read_native_context_length",
+        lambda model, *, is_local: context_calls.append((model, is_local)) or 8192,
+    )
+
+    result = asyncio.run(
+        models_route.get_gguf_variants(
+            repo_id = "org/repo",
+            prefer_local_cache = True,
+            local_path = str(snapshot),
+            hf_token = None,
+            current_subject = "test-user",
+        )
+    )
+
+    assert calls == [
+        (
+            "org/repo",
+            {
+                "prefer_local_cache": True,
+                "local_path": str(snapshot),
+                "hf_token": None,
+            },
+        )
+    ]
+    assert context_calls == [(str(snapshot), True)]
+    assert result.context_length == 8192
+
+
 def test_gguf_variants_ignore_big_endian_siblings(monkeypatch, tmp_path):
     siblings = [
         SimpleNamespace(rfilename = "model-Q4_K_M-be.gguf", size = 100),

@@ -2753,6 +2753,8 @@ async def get_gguf_variants(
     repo_id: str = Query(
         ..., description = "HuggingFace repo ID (e.g. 'unsloth/gemma-3-4b-it-GGUF')"
     ),
+    prefer_local_cache: bool = False,
+    local_path: Optional[str] = None,
     hf_token: Optional[str] = Query(None, description = "HuggingFace token for private repos"),
     hf_token_header: Optional[str] = Depends(get_hf_token),
     current_subject: str = Depends(get_current_subject),
@@ -2764,9 +2766,16 @@ async def get_gguf_variants(
 
         response = await hub_gguf_variants.get_gguf_variants_response(
             repo_id,
+            prefer_local_cache = prefer_local_cache,
+            local_path = local_path,
             hf_token = hf_token,
         )
-        local = is_local_path(repo_id)
+        context_model = (
+            local_path
+            if prefer_local_cache and local_path and is_local_path(local_path)
+            else repo_id
+        )
+        local = is_local_path(context_model)
 
         return GgufVariantsResponse(
             repo_id = response.repo_id,
@@ -2788,7 +2797,7 @@ async def get_gguf_variants(
             # The header walk reads tokenizer arrays on dense models (tens of
             # ms per uncached file); keep it off the event loop.
             context_length = await asyncio.to_thread(
-                _read_native_context_length, repo_id, is_local = local
+                _read_native_context_length, context_model, is_local = local
             ),
         )
     except HTTPException:

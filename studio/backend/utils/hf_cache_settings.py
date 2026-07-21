@@ -179,7 +179,8 @@ def initialize_hf_cache_environment() -> HuggingFaceCachePaths:
     paths = get_hf_cache_paths()
     # Preserve an explicit HF_HOME, otherwise keep credentials at the platform
     # default while routing cache bytes through the selected home.
-    os.environ.setdefault("HF_HOME", str(_default_cache_home()))
+    if not os.environ.get("HF_HOME", "").strip():
+        os.environ["HF_HOME"] = str(_default_cache_home())
     os.environ["HF_HUB_CACHE"] = str(paths.hub_cache)
     os.environ["HF_XET_CACHE"] = str(paths.xet_cache)
     if "HUGGINGFACE_HUB_CACHE" not in _EXPLICIT_CACHE_ENV:
