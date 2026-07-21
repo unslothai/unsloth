@@ -61,6 +61,7 @@ def test_non_audio_tokens_classify_none():
             for name in ("qwen2_audio", "qwen2_5_omni", "qwen3_omni_moe", "granite_speech")
         ),
         ("qwen2_audio_encoder", None, (None, False, False)),
+        ("whisper", None, (None, True, False)),
         ("llama", None, (None, False, True)),
     ],
 )
@@ -72,10 +73,11 @@ def test_structured_model_type_controls_chat_capability(model_type, audio_type, 
         assert _classify_audio_capability("org/model", audio_type) == expected
 
 
-@pytest.mark.parametrize("model_type", ["qwen3_asr", "jukebox", "speech_to_text_2"])
+@pytest.mark.parametrize("model_type", ["qwen3_asr", "whisper", "jukebox", "speech_to_text_2"])
 def test_unknown_non_chat_config_uses_raw_model_type(tmp_path, model_type):
     (tmp_path / "config.json").write_text(f'{{"model_type": "{model_type}"}}')
     with patch("utils.models.model_config.load_model_config", side_effect = ValueError("unknown")):
         config = ModelConfig.from_identifier(str(tmp_path))
 
     assert config.is_chat_capable is False
+    assert config.has_audio_input is (model_type in {"qwen3_asr", "whisper"})

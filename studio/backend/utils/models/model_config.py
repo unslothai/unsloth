@@ -4,7 +4,7 @@
 """Model and LoRA configuration handling."""
 
 from dataclasses import dataclass
-from typing import Optional, Dict, Any
+from typing import Optional, Dict, Any, Union
 from utils.paths import (
     normalize_path,
     is_local_path,
@@ -593,22 +593,27 @@ def _build_detection_sets():
     _AUDIO_ONLY_MODEL_TYPES,
     _AUDIO_CHAT_MODEL_TYPES,
 ) = _build_detection_sets()
-_NON_CHAT_AUDIO_MODEL_TYPES = _AUDIO_ONLY_MODEL_TYPES | {
-    "clap",
-    "clvp",
-    "dac",
-    "encodec",
-    "gemma3n_audio",
-    "jukebox",
-    "mimi",
-    "parakeet_encoder",
-    "qwen2_audio_encoder",
-    "snac",
-    "speech_to_text_2",
-    "univnet",
-    "voxtral_encoder",
-    "xcodec",
-}
+_AUDIO_INPUT_MODEL_TYPES = frozenset({"qwen3_asr", "whisper"})
+_NON_CHAT_AUDIO_MODEL_TYPES = (
+    _AUDIO_ONLY_MODEL_TYPES
+    | _AUDIO_INPUT_MODEL_TYPES
+    | {
+        "clap",
+        "clvp",
+        "dac",
+        "encodec",
+        "gemma3n_audio",
+        "jukebox",
+        "mimi",
+        "parakeet_encoder",
+        "qwen2_audio_encoder",
+        "snac",
+        "speech_to_text_2",
+        "univnet",
+        "voxtral_encoder",
+        "xcodec",
+    }
+)
 _AUDIO_CHAT_THINKER_MODEL_TYPES = frozenset({"qwen2_5_omni", "qwen3_omni_moe"})
 _AUDIO_CHAT_RAW_MODEL_TYPES = _AUDIO_CHAT_THINKER_MODEL_TYPES | {
     "granite_speech",
@@ -1198,7 +1203,6 @@ def _classify_audio_capability(
     audio_type: Optional[str],
     hf_token: Optional[str] = None,
     inspect_model_config: bool = True,
-    fallback_audio_type: Optional[str] = None,
 ) -> Tuple[Optional[str], bool, bool]:
     """Return (audio_type, has_audio_input, is_chat_capable)."""
     if not inspect_model_config:
@@ -1209,7 +1213,7 @@ def _classify_audio_capability(
         )
     audio_chat = False
     audio_only = False
-    capability_resolved = False
+    config_has_audio_input = False
     try:
         config = load_model_config(model_name, use_auth = True, token = hf_token)
         model_type = getattr(config, "model_type", None)
@@ -1228,23 +1232,19 @@ def _classify_audio_capability(
             )
         )
         audio_only = model_type in _NON_CHAT_AUDIO_MODEL_TYPES
-        capability_resolved = audio_chat or audio_only
+        config_has_audio_input = model_type in _AUDIO_INPUT_MODEL_TYPES
     except Exception as exc:
         logger.debug("Could not classify audio capability for '%s': %s", model_name, exc)
         model_type = _raw_config_model_type(model_name, hf_token)
-        capability_resolved = (
-            model_type in _AUDIO_CHAT_RAW_MODEL_TYPES or model_type in _NON_CHAT_AUDIO_MODEL_TYPES
-        )
         audio_chat = model_type in _AUDIO_CHAT_RAW_MODEL_TYPES
         audio_only = model_type in _NON_CHAT_AUDIO_MODEL_TYPES
+        config_has_audio_input = model_type in _AUDIO_INPUT_MODEL_TYPES
 
     if audio_chat:
         return "audio_vlm", True, True
-    if audio_type is None and not capability_resolved:
-        audio_type = fallback_audio_type
     return (
         audio_type,
-        is_audio_input_type(audio_type),
+        is_audio_input_type(audio_type) or config_has_audio_input,
         not audio_only and audio_type not in _NON_CHAT_AUDIO_TYPES,
     )
 
@@ -1826,6 +1826,18 @@ def _local_gguf_companion_search_root(selected_path: str, gguf_file: str) -> str
     if re.fullmatch(quant_dir_re, gguf_dir.name, re.IGNORECASE):
         return str(gguf_dir.parent)
     return str(gguf_dir)
+
+
+def _local_gguf_config_source(gguf_file: str, *search_roots: Optional[Union[str, Path]]) -> str:
+    """Use config metadata nearest to the selected GGUF artifact."""
+    candidates = [Path(gguf_file).parent]
+    for root in search_roots:
+        if root is not None and Path(root) not in candidates:
+            candidates.append(Path(root))
+    for candidate in candidates:
+        if (candidate / "config.json").is_file():
+            return str(candidate)
+    return str(candidates[0])
 
 
 def _iter_hf_cache_snapshots(repo_id: str):
@@ -2874,34 +2886,53 @@ class ModelConfig:
 
                 # Is this a vision/audio model, per export metadata?
                 base_is_vision = False
-                meta_path = gguf_dir / "export_metadata.json"
-                if meta_path.exists():
+                base = None
+                companion_root = _local_gguf_companion_search_root(path, gguf_file)
+                metadata_roots = [gguf_dir]
+                if Path(companion_root) not in metadata_roots:
+                    metadata_roots.append(Path(companion_root))
+                config_source = str(gguf_dir)
+                for metadata_root in metadata_roots:
+                    if (metadata_root / "config.json").is_file():
+                        config_source = str(metadata_root)
+                        break
+                    meta_path = metadata_root / "export_metadata.json"
+                    if not meta_path.exists():
+                        continue
                     try:
                         meta = json.loads(meta_path.read_text())
                         base = meta.get("base_model")
                         if base:
+                            config_source = base
                             if is_vision_model(base, hf_token = hf_token):
                                 base_is_vision = True
                                 logger.info(f"GGUF base model '{base}' is a vision model")
+                            break
                     except Exception as e:
                         logger.debug(f"Could not read export metadata: {e}")
                 gguf_audio_type = detect_gguf_audio_type(gguf_file)
 
                 # Direct file selections may point into a quant subdir while
                 # mmproj-*.gguf lives at the snapshot root.
-                companion_root = _local_gguf_companion_search_root(path, gguf_file)
                 mmproj_file = detect_mmproj_file(gguf_file, search_root = companion_root)
+                projector_has_audio = False
                 if mmproj_file:
                     gguf_is_vision = True
                     logger.info(f"Detected mmproj for vision: {mmproj_file}")
+                    projector_has_audio = read_mmproj_audio_capability(mmproj_file) is True
                     if gguf_audio_type is None:
                         gguf_audio_type = detect_gguf_audio_type(mmproj_file)
                 elif base_is_vision:
                     logger.warning(f"Base model is vision but no mmproj file found in {gguf_dir}")
 
+                ambiguous_audio_projector = gguf_audio_type is None and projector_has_audio
                 gguf_audio_type, has_audio_in, is_chat_capable = _classify_audio_capability(
-                    path, gguf_audio_type, hf_token, inspect_model_config = False
+                    config_source,
+                    gguf_audio_type,
+                    hf_token,
+                    inspect_model_config = ambiguous_audio_projector,
                 )
+                has_audio_in = has_audio_in or ambiguous_audio_projector
 
                 # Separate MTP drafter sibling (Gemma 4), mirroring mmproj.
                 mtp_file = detect_mtp_file(gguf_file, search_root = companion_root)
@@ -2941,6 +2972,7 @@ class ModelConfig:
                     _companion_snapshot_sibling,
                     _pick_mmproj,
                     _probe_dns_dead,
+                    _snapshot_dir_of,
                     cached_gguf_for_load,
                 )
 
@@ -2965,7 +2997,8 @@ class ModelConfig:
                     hf_token = hf_token,
                 )
                 inspect_model_config = cached_gguf is None
-                fallback_audio_type = None
+                config_source = identifier
+                ambiguous_projector_has_audio = False
                 if cached_gguf:
                     embedded_audio_type = detect_gguf_audio_type(cached_gguf)
                     cached_mmproj = _companion_snapshot_sibling(cached_gguf, _pick_mmproj)
@@ -2993,26 +3026,34 @@ class ModelConfig:
                                 if fallback_mmproj and mmproj_matches_model_family(
                                     cached_gguf, fallback_mmproj
                                 ):
-                                    fallback_audio_type = detect_gguf_audio_type(fallback_mmproj)
+                                    cached_mmproj = fallback_mmproj
                         if cached_mmproj and mmproj_matches_model_family(
                             cached_gguf, cached_mmproj
                         ):
                             embedded_audio_type = detect_gguf_audio_type(cached_mmproj)
-                            if (
+                            if embedded_audio_type is not None:
+                                inspect_model_config = False
+                            elif (
                                 embedded_audio_type is None
                                 and read_mmproj_audio_capability(cached_mmproj) is True
                             ):
                                 inspect_model_config = True
+                                ambiguous_projector_has_audio = True
+                                config_source = _local_gguf_config_source(
+                                    cached_gguf,
+                                    _snapshot_dir_of(cached_gguf),
+                                    _snapshot_dir_of(cached_mmproj),
+                                )
                     gguf_audio_type = embedded_audio_type
                 else:
                     gguf_audio_type = detect_audio_type(identifier, hf_token = hf_token)
                 gguf_audio_type, has_audio_in, is_chat_capable = _classify_audio_capability(
-                    identifier,
+                    config_source,
                     gguf_audio_type,
                     hf_token,
                     inspect_model_config = inspect_model_config,
-                    fallback_audio_type = fallback_audio_type,
                 )
+                has_audio_in = has_audio_in or ambiguous_projector_has_audio
                 display_name = f"{identifier.split('/')[-1]} ({variant})"
                 logger.info(
                     f"Detected remote GGUF repo '{identifier}', "

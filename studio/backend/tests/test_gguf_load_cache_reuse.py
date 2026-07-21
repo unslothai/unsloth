@@ -462,6 +462,16 @@ class TestLoadReusesCachedCopy:
         projector = _build_cache(hf_cache, REPO, {"mmproj-F16.gguf": 2}, snapshot_sha = "b" * 40)
         same_snapshot_mmproj = main / "mmproj-F16.gguf"
         same_snapshot_mmproj.write_bytes(b"mmproj")
+        (main / "config.json").write_text('{"model_type": "qwen3_asr"}')
+
+        def load_config(source, **_kwargs):
+            if source == requested_repo:
+                return _types.SimpleNamespace(
+                    model_type = "qwen2_audio",
+                    text_config = object(),
+                    audio_config = object(),
+                )
+            raise OSError("use the selected snapshot config")
 
         def chat_capable():
             return ModelConfig.from_identifier(requested_repo, gguf_variant = VARIANT).is_chat_capable
@@ -489,18 +499,14 @@ class TestLoadReusesCachedCopy:
             ),
             patch(
                 "utils.models.model_config.load_model_config",
-                return_value = _types.SimpleNamespace(
-                    model_type = "qwen3_asr",
-                    thinker_config = _types.SimpleNamespace(
-                        audio_config = object(), text_config = object()
-                    ),
-                ),
+                side_effect = load_config,
             ),
         ):
             assert chat_capable() is False
             with patch("utils.models.model_config.list_gguf_variants", return_value = ([], False)):
                 selected = ModelConfig.from_identifier(requested_repo, gguf_variant = VARIANT)
                 assert selected.is_vision is True
+                assert selected.has_audio_input is True
             same_snapshot_mmproj.unlink()
 
             monkeypatch.setenv("HF_HUB_OFFLINE", "0")
@@ -523,9 +529,31 @@ class TestLoadReusesCachedCopy:
                     assert chat_capable() is False
                 with patch(
                     "utils.models.model_config.load_model_config",
+                    return_value = _types.SimpleNamespace(
+                        model_type = "qwen2_audio",
+                        text_config = object(),
+                        audio_config = object(),
+                    ),
+                ):
+                    assert chat_capable() is False
+                with patch(
+                    "utils.models.model_config.load_model_config",
                     return_value = _types.SimpleNamespace(model_type = "llama"),
                 ):
                     assert chat_capable() is False
+
+                (main / "config.json").unlink()
+                (projector / "config.json").write_text('{"model_type": "qwen3_asr"}')
+                with (
+                    patch("utils.models.model_config.detect_gguf_audio_type", return_value = None),
+                    patch(
+                        "utils.models.model_config.load_model_config",
+                        side_effect = load_config,
+                    ),
+                ):
+                    selected = ModelConfig.from_identifier(requested_repo, gguf_variant = VARIANT)
+                    assert selected.has_audio_input is True
+                    assert selected.is_chat_capable is False
             monkeypatch.delenv("HF_HUB_OFFLINE")
 
             hub_probe.reset_mock()

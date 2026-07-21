@@ -13,6 +13,7 @@ pattern used by ``detect_audio_type()``. These tests verify:
 * Exceptions that fall back to False are cached.
 """
 
+import json
 import sys
 import types as _types
 from pathlib import Path
@@ -221,12 +222,23 @@ class TestLocalGgufVisionDetection:
         model.write_bytes(b"")
         mmproj = tmp_path / "mmproj-F32.gguf"
         mmproj.write_bytes(b"")
+        asr_base = tmp_path / "asr-base"
+        asr_base.mkdir()
+        (asr_base / "config.json").write_text('{"model_type": "qwen3_asr"}')
+        (variant_dir / "export_metadata.json").write_text(json.dumps({"base_model": str(asr_base)}))
+        (tmp_path / "config.json").write_text('{"model_type": "qwen2_audio"}')
 
-        config = ModelConfig.from_ui_selection(str(model), None)
+        with (
+            patch("utils.models.model_config.detect_gguf_audio_type", return_value = None),
+            patch("utils.models.model_config.read_mmproj_audio_capability", return_value = True),
+        ):
+            config = ModelConfig.from_ui_selection(str(model), None)
 
         assert config is not None
         assert config.is_gguf is True
         assert config.is_vision is True
+        assert config.has_audio_input is True
+        assert config.is_chat_capable is False
         assert config.gguf_mmproj_file == str(mmproj.resolve())
         mock_subprocess.assert_not_called()
 
