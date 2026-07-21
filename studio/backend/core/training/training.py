@@ -1710,7 +1710,6 @@ class TrainingBackend:
         if not output_dir or not isinstance(step, int) or step <= 0:
             return False
         from core.training.resume import get_resume_checkpoint_path
-
         return get_resume_checkpoint_path(output_dir, expected_step = step) is not None
 
     def _terminal_finalize_kwargs(self) -> dict:
