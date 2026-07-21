@@ -551,6 +551,9 @@ _AUTO_SENSITIVE_MCP_NOUN_RE = re.compile(
     r")s?(?:[_\-]|$)",
     re.IGNORECASE,
 )
+# Split a camelCase boundary with an underscore (runCommand -> run_Command) so
+# the term-boundary MCP regexes match camelCase tool names too.
+_CAMEL_CASE_RE = re.compile(r"(?<=[a-z0-9])(?=[A-Z])")
 # An MCP tool that runs arbitrary commands/code on its server (run_command,
 # execute_script, eval_code, invoke_shell, spawn_process, bash) is as unsafe as
 # a terminal call and is forwarded straight to the server, outside the terminal
@@ -2727,11 +2730,32 @@ def _terminal_is_high_risk(command: str, _depth: int = 0) -> bool:
                 flag = token.split("=", 1)[0]
                 # An interpreter running inline code (python -c, node -e, perl -E)
                 # executes an arbitrary program the terminal path never screens.
-                if current_command in _INLINE_CODE_INTERPRETERS and flag in _INLINE_CODE_FLAGS:
+                # An attached short form (python -c'import os...') keeps the code
+                # in the same token, so match the -c/-e/-E/-r prefix too.
+                if current_command in _INLINE_CODE_INTERPRETERS and (
+                    flag in _INLINE_CODE_FLAGS or token[:2] in ("-c", "-e", "-E", "-r")
+                ):
                     return True
                 # A shell `-c PAYLOAD` runs its quoted payload; screen it recursively.
                 if current_command in _SHELL_C_INTERPRETERS and flag == "-c":
                     shell_c_pending = True
+                # env -S 'cmd' / --split-string parses and runs the string as a new
+                # command; env -C / --chdir changes the working directory (enabling
+                # a relative sensitive read). Screen the -S payload; a chdir asks.
+                if current_command == "env":
+                    if flag in ("-C", "--chdir"):
+                        return True
+                    payload = None
+                    if token.startswith("-S") and token != "-S":
+                        payload = token[2:]  # attached: -S'cmd'
+                    elif flag == "--split-string" and "=" in token:
+                        payload = token.split("=", 1)[1]
+                    elif token == "-S" or flag == "--split-string":
+                        shell_c_pending = True  # payload is the next token
+                    if payload is not None and _depth < 3 and _terminal_is_high_risk(
+                        payload, _depth + 1
+                    ):
+                        return True
                 # git reset --hard discards the working tree; git push --force
                 # overwrites a remote ref.
                 if current_command == "git":
@@ -2773,8 +2797,11 @@ def _terminal_is_high_risk(command: str, _depth: int = 0) -> bool:
                 base = stem
             if (expect_command or prefix_pending) and base in _AUTO_SAFE_WRAPPERS:
                 # A wrapper still precedes the real command; keep seeking it.
+                # Track the wrapper so its own flags (env -S / -C) are judged; the
+                # real command overwrites this when it is reached.
                 prefix_pending = True
                 expect_command = False
+                current_command = base
                 continue
             if expect_command or prefix_pending or scan_forward:
                 if base in _HIGH_RISK_COMMANDS or base.startswith("mkfs"):
@@ -2811,13 +2838,63 @@ def _python_is_high_risk(code: str) -> bool:
         return True
     if _references_sensitive_path(code):
         return True
-    # exec/eval/compile/__import__ of a non-literal (exec(b64decode(...)),
-    # eval(input()), __import__(name)) runs whatever it builds at runtime, past
-    # the static checks above; ask. A literal eval("1+1") is harmless and runs.
     try:
         tree = ast.parse(code)
     except SyntaxError:
         return False  # runs into a normal traceback; nothing to guard
+    # A sensitive path split across names or joins (p = "/etc"; open(p + "/shadow"),
+    # os.path.join("/etc", "shadow"), f"{base}/shadow") is not a contiguous literal
+    # above, so fold simple string-literal variables and +/join/f-string forms and
+    # re-check. An unresolved fragment folds to a sentinel so a partial fold never
+    # false-positives.
+    _UNKNOWN = "\x00"
+    str_vars: "dict[str, str]" = {}
+    for node in ast.walk(tree):
+        if (
+            isinstance(node, ast.Assign)
+            and len(node.targets) == 1
+            and isinstance(node.targets[0], ast.Name)
+            and isinstance(node.value, ast.Constant)
+            and isinstance(node.value.value, str)
+        ):
+            str_vars[node.targets[0].id] = node.value.value
+
+    def _fold(n) -> str:
+        if isinstance(n, ast.Constant):
+            return n.value if isinstance(n.value, str) else _UNKNOWN
+        if isinstance(n, ast.Name):
+            return str_vars.get(n.id, _UNKNOWN)
+        if isinstance(n, ast.BinOp) and isinstance(n.op, ast.Add):
+            return _fold(n.left) + _fold(n.right)
+        if isinstance(n, ast.JoinedStr):
+            return "".join(_fold(v) for v in n.values)
+        if isinstance(n, ast.FormattedValue):
+            return _fold(n.value)  # f"{base}/shadow" folds the {base} value
+        if (
+            isinstance(n, ast.Call)
+            and isinstance(n.func, ast.Attribute)
+            and n.func.attr == "join"
+            and not any(isinstance(a, ast.Starred) for a in n.args)
+        ):
+            # os.path.join("/etc", "shadow") or sep.join([...]); use the literal
+            # separator when known ("/".join / "".join), else a path-like "/".
+            sep = _fold(n.func.value)
+            if sep == _UNKNOWN:
+                sep = "/"
+            parts = n.args
+            if len(parts) == 1 and isinstance(parts[0], (ast.List, ast.Tuple)):
+                parts = parts[0].elts
+            return sep.join(_fold(a) for a in parts)
+        return _UNKNOWN
+
+    for node in ast.walk(tree):
+        if isinstance(node, (ast.BinOp, ast.JoinedStr, ast.Call)):
+            folded = _fold(node)
+            if folded and _UNKNOWN not in folded and _references_sensitive_path(folded):
+                return True
+    # exec/eval/compile/__import__ of a non-literal (exec(b64decode(...)),
+    # eval(input()), __import__(name)) runs whatever it builds at runtime, past
+    # the static checks above; ask. A literal eval("1+1") is harmless and runs.
     for node in ast.walk(tree):
         if not isinstance(node, ast.Call):
             continue
@@ -2878,6 +2955,10 @@ def is_high_risk_tool_call(name: str, arguments: dict) -> bool:
         return _render_html_reaches_network(arguments)
     if name.startswith(MCP_TOOL_PREFIX):
         tool_name = name.split("__", 2)[-1]
+        # Split camelCase into `_`-delimited terms (runCommand -> run_Command) so
+        # the term-boundary regexes below match camelCase names too, not only
+        # snake/kebab-case ones.
+        tool_name = _CAMEL_CASE_RE.sub("_", tool_name)
         # An execution tool (run_command, execute_script, eval_code, shell) runs
         # arbitrary commands on the MCP server, outside the terminal sandbox, so
         # it is gated like a terminal call. A credential noun (read_secret,

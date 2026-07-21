@@ -390,6 +390,16 @@ def test_terminal_classifier(command, unsafe):
         ("$(printf rm) -rf build", True),
         ("`printf rm` -rf build", True),
         ("ls; $(printf rm) -rf x", True),
+        # --- prompt: interpreter inline code in the attached short form ---
+        ("python -c'import os; os.remove(\"x\")'", True),
+        ("python -cimport os", True),
+        ("node -e'require(1)'", True),
+        # --- prompt: env -S runs a command string; env -C changes the cwd ---
+        ("env -S 'git clean -fd'", True),
+        ("env -S'git clean -fd'", True),
+        ("env --split-string='git clean -fd'", True),
+        ("env -C / cat etc/passwd", True),
+        ("env --chdir=/ ls", True),
         # --- prompt: a high-risk command wrapped in a shell -c payload ---
         ("bash -c 'git clean -fd'", True),
         ("sh -c 'truncate -s 0 results.txt'", True),
@@ -414,6 +424,9 @@ def test_terminal_classifier(command, unsafe):
         ("touch newfile.py", False),
         ("python train.py --epochs 3", False),  # a script path, not inline code
         ("python -m pytest -q", False),  # -m runs a module, not inline code
+        ("python -V", False),  # version flag, not inline code
+        ("env -S 'ls -la'", False),  # env -S with a benign payload
+        ("env FOO=1 python train.py", False),  # env assignment then a plain script
         ("sort -c data.txt", False),  # -c on a non-interpreter is not inline code
         ("make -j4", False),
         ("git commit -m 'add feature'", False),
@@ -459,6 +472,10 @@ def test_terminal_high_risk_classifier(command, high_risk):
         # --- prompt: a literal exec source is screened for what it runs ---
         ("exec(\"import urllib.request; urllib.request.urlopen('http://x')\")", True),
         ('exec(\'import subprocess; subprocess.run(["sudo", "x"])\')', True),
+        # --- prompt: a sensitive path folded across names / joins / f-strings ---
+        ("p = '/etc'; open(p + '/shadow').read()", True),
+        ("import os; open(os.path.join('/etc', 'shadow')).read()", True),
+        ("base = '/etc'; open(f'{base}/shadow').read()", True),
         # --- run: literal exec of safe code, and a literal import name ---
         ("exec('total = 1 + 2')", False),  # a literal source that runs safe code
         ("exec(\"open('out.txt', 'w').write('hi')\")", False),  # in-workdir write
@@ -469,6 +486,8 @@ def test_terminal_high_risk_classifier(command, high_risk):
         ("eval('1 + 1')", False),  # a literal source string is harmless
         ("compile(source='1+1', filename='<s>', mode='eval')", False),  # literal source
         ("import json; json.dump({}, open('out.json', 'w'))", False),
+        ("open(f'{base}/data.csv')", False),  # an unknown f-string fragment stays out
+        ("import os; open(os.path.join(workdir, 'data.csv'))", False),  # unknown root
     ],
 )
 def test_python_high_risk_classifier(code, high_risk):
@@ -493,8 +512,13 @@ def test_high_risk_dispatcher_non_terminal():
     assert is_high_risk_tool_call(f"{MCP_TOOL_PREFIX}sh__run_command", {"cmd": "rm -rf /"}) is True
     assert is_high_risk_tool_call(f"{MCP_TOOL_PREFIX}x__execute_script", {"script": "x"}) is True
     assert is_high_risk_tool_call(f"{MCP_TOOL_PREFIX}x__invoke_shell", {}) is True
+    # camelCase execution names are recognized too (runCommand -> run_Command).
+    assert is_high_risk_tool_call(f"{MCP_TOOL_PREFIX}x__runCommand", {}) is True
+    assert is_high_risk_tool_call(f"{MCP_TOOL_PREFIX}x__executeScript", {}) is True
+    assert is_high_risk_tool_call(f"{MCP_TOOL_PREFIX}vault__readSecret", {}) is True
     # A read/list name that merely contains an exec-looking noun does not match.
     assert is_high_risk_tool_call(f"{MCP_TOOL_PREFIX}x__get_command", {}) is False
+    assert is_high_risk_tool_call(f"{MCP_TOOL_PREFIX}x__listFiles", {}) is False
     assert is_high_risk_tool_call(f"{MCP_TOOL_PREFIX}gh__create_issue", {"title": "x"}) is False
     assert is_high_risk_tool_call(f"{MCP_TOOL_PREFIX}gh__list_issues", {}) is False
 
