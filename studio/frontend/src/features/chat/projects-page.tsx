@@ -71,8 +71,8 @@ import {
 
 type SortMode = "activity" | "name";
 
-// Reveal this many more projects each time Show more is clicked.
-const PROJECTS_PAGE_STEP = 5;
+// Reveal this many more projects each time the user scrolls near the bottom.
+const PROJECTS_PAGE_STEP = 12;
 // Visible count before the fit-to-height measurement runs.
 const PROJECTS_INITIAL_FALLBACK = 8;
 // Approx list row height in px, used to estimate how many rows fit the page.
@@ -115,6 +115,7 @@ export function ProjectsPage() {
   const [baseFit, setBaseFit] = useState(PROJECTS_INITIAL_FALLBACK);
   const [extraCount, setExtraCount] = useState(0);
   const listRef = useRef<HTMLDivElement>(null);
+  const sentinelRef = useRef<HTMLDivElement>(null);
   const pinnedProjectIds = usePinnedProjectsStore((s) => s.pinnedIds);
   const togglePinProject = usePinnedProjectsStore((s) => s.togglePin);
   const pinnedProjectIdSet = useMemo(
@@ -204,25 +205,23 @@ export function ProjectsPage() {
     );
     return filtered;
   }, [projects, query, sortMode]);
-  // Default view shows as many rows as fit the page; Show more reveals another
-  // page-step each click. Search always spans all matches.
+  // Default view shows as many rows as fit the page, then loads more as the
+  // user scrolls near the bottom. Search always spans every project.
   const isSearching = query.trim() !== "";
   const visibleCount = baseFit + extraCount;
   const visibleProjects = isSearching
     ? sortedProjects
     : sortedProjects.slice(0, visibleCount);
-  const hiddenProjectCount = isSearching
-    ? 0
-    : Math.max(0, sortedProjects.length - visibleCount);
+  const hasMore = !isSearching && sortedProjects.length > visibleCount;
 
-  // Estimate how many rows fit below the list's top so Show more only appears
-  // once projects overflow the page height.
+  // Estimate how many rows fit below the list's top so the first page fills the
+  // screen without loading everything up front.
   useEffect(() => {
     function measure() {
       const el = listRef.current;
       if (!el) return;
       const top = el.getBoundingClientRect().top;
-      const reserve = 72; // Show more control plus bottom breathing room.
+      const reserve = 24; // bottom breathing room
       const fits = Math.floor(
         (window.innerHeight - top - reserve) / PROJECTS_ROW_HEIGHT,
       );
@@ -232,6 +231,25 @@ export function ProjectsPage() {
     window.addEventListener("resize", measure);
     return () => window.removeEventListener("resize", measure);
   }, [hasLoaded]);
+
+  // Infinite scroll: reveal another page-step whenever the sentinel near the
+  // list bottom scrolls into view.
+  useEffect(() => {
+    const el = sentinelRef.current;
+    if (!el || !hasMore) return;
+    const io = new IntersectionObserver(
+      (entries) => {
+        if (entries[0]?.isIntersecting) {
+          setExtraCount((n) => n + PROJECTS_PAGE_STEP);
+        }
+      },
+      { rootMargin: "300px" },
+    );
+    io.observe(el);
+    return () => io.disconnect();
+    // Re-observe after each load so it keeps filling while the sentinel stays
+    // in view (IntersectionObserver does not re-fire on a steady intersection).
+  }, [hasMore, visibleCount]);
 
   function openProject(projectId: string) {
     const runtime = useChatRuntimeStore.getState();
@@ -648,21 +666,10 @@ export function ProjectsPage() {
             </div>
             );
           })}
+          {/* Loads the next page-step when scrolled into view. */}
+          {hasMore && <div ref={sentinelRef} className="h-px w-full" />}
           </div>
         </div>
-        {hiddenProjectCount > 0 && (
-          <div className="mt-6 flex justify-center">
-            <button
-              type="button"
-              onClick={() =>
-                setExtraCount((n) => n + PROJECTS_PAGE_STEP)
-              }
-              className="text-[13px] font-medium text-muted-foreground transition-colors hover:text-foreground"
-            >
-              {`Show more (${hiddenProjectCount})`}
-            </button>
-          </div>
-        )}
         </>
       )}
 
