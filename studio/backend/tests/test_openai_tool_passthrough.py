@@ -3231,6 +3231,10 @@ class TestGgufVisionToolRouting:
                 model = "default",
                 messages = [{"role": "user", "content": "hi"}],
                 enable_tools = True,
+                # "off" reaches the admission queue non-streaming; the default is
+                # now "auto", which 400s a non-streaming tool request at the
+                # confirm-without-stream guard before the queue is involved.
+                permission_mode = "off",
             )
             try:
                 with pytest.raises(HTTPException) as exc:
@@ -3296,6 +3300,10 @@ class TestGgufVisionToolRouting:
                 model = "default",
                 messages = [{"role": "user", "content": "hi"}],
                 enable_tools = True,
+                # "off" reaches the admission queue non-streaming; the default is
+                # now "auto", which 400s a non-streaming tool request at the
+                # confirm-without-stream guard before the queue is involved.
+                permission_mode = "off",
             )
             task = asyncio.create_task(
                 openai_chat_completions(

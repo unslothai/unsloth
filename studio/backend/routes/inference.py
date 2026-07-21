@@ -2124,23 +2124,22 @@ def _explicit_studio_tool_loop_requested(payload) -> bool:
 def _permission_mode_confirm(payload) -> bool:
     """Effective confirm-gate intent for Unsloth's own local tool loop.
 
-    Honors the documented default that an unset permission_mode behaves as
-    "ask". An explicit confirm_tool_calls (True or False) wins; explicit
-    ask/auto always engage the gate (a non-streaming one is then rejected, since
-    it cannot prompt); off/full never prompt. An unset mode defaults to ask, but
-    that is only realizable on a streaming request, so a non-streaming unset
-    request keeps the legacy run-without-gate behavior instead of 400ing. Used
-    at the pre-switch guard and the per-backend tool paths so a forced tool loop
-    (CLI --enable-tools) with the default mode still gates streaming requests.
+    The product default is "auto" ("Approve for me"), so an unset permission_mode
+    normalizes to "auto" at the request boundary. An explicit confirm_tool_calls
+    (True or False) wins; ask/auto engage the gate (auto only prompts for a
+    high-risk call, decided per-call in the loop; a non-streaming request that
+    could reach such a call is rejected up front, since it cannot prompt);
+    off/full never prompt. Used at the pre-switch guard and the per-backend tool
+    paths so a forced tool loop (CLI --enable-tools) still gates correctly.
     """
     if payload.confirm_tool_calls is not None:
         return bool(payload.confirm_tool_calls)
     mode = getattr(payload, "permission_mode", None)
-    if mode in ("ask", "auto"):
-        return True
     if mode in ("off", "full"):
         return False
-    return bool(getattr(payload, "stream", False))
+    # ask/auto -> gate on; a residual unset (unvalidated internal payload) defaults
+    # to auto, the product default, rather than the old stream-dependent behavior.
+    return True
 
 
 def _confirm_gate_needs_stream(payload) -> bool:

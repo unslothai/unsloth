@@ -3158,12 +3158,16 @@ export function createOpenAIStreamAdapter(
             // Permission level for local tool calls is sent for every local
             // chat, not only when a tool pill is on: a process policy
             // (unsloth run --enable-tools) can open the tool loop with no pill,
-            // and the backend must still see the selected gate. ask/auto request
-            // the confirm gate ("auto" only pauses calls flagged unsafe); off
-            // and full never prompt, full also drops the sandbox.
+            // and the backend must still see the selected gate. "auto" ("Approve
+            // for me", the default) only pauses high-risk calls, so we OMIT
+            // confirm_tool_calls for it: an explicit true would make the backend
+            // treat every auto request as needing a stream and defeat the
+            // safe-only no-stream exception. "ask" sends true (gate every call);
+            // off/full send false (never prompt; full also drops the sandbox).
             permission_mode: permissionMode,
-            confirm_tool_calls:
-              permissionMode === "ask" || permissionMode === "auto",
+            ...(permissionMode === "auto"
+              ? {}
+              : { confirm_tool_calls: permissionMode === "ask" }),
             bypass_permissions: bypassPermissions,
             ...(supportsTools &&
             (toolsEnabled ||

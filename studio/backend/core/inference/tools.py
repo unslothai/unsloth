@@ -1389,6 +1389,23 @@ def _folded_is_sensitive(folded) -> bool:
     )
 
 
+def _command_references_sensitive(command: str) -> bool:
+    """True if a shell command reads/writes a credential path or escapes the
+    sandbox workdir (../), after undoing the shell expansions that would hide it.
+
+    Strips quotes/backslash escapes and applies brace/parameter/ANSI-C expansion
+    and NAME=value prefixes first, so `cat /proc/$PPID/enviro''n`, `cat /et\\c/passwd`,
+    `p="/proc/$PPID"; cat $p/environ`, and a brace-expanded glob
+    (`cat /e{t,}c/pass?d` -> `/etc/pass?d`) are all caught. Shared by the
+    potentially-unsafe classifier and the high-risk classifier."""
+    stripped = _SHELL_QUOTE_RE.sub("", command).replace("\\", "")
+    candidates = []
+    for c in (command, stripped, _decode_ansi_c(command)):
+        c_param = _expand_param_defaults(c)
+        candidates.extend((c, c_param, _expand_braces(c_param), _expand_shell_assignments(c_param)))
+    return any(_glob_hits_sensitive(c) or _references_sensitive_path(c) for c in candidates)
+
+
 def _terminal_is_potentially_unsafe(command: str) -> bool:
     """Classify a terminal command for auto mode (fail closed)."""
     if not command or not command.strip():
@@ -1398,21 +1415,8 @@ def _terminal_is_potentially_unsafe(command: str) -> bool:
     if ">" in command or "`" in command or "$(" in command or "<(" in command:
         return True
     # Reads that escape the sandbox workdir (../) or hit credential paths are
-    # not "safe" reads; ask before running them. Strip shell quotes/backslash
-    # escapes and expand NAME=value prefixes first so `cat /proc/$PPID/enviro''n`,
-    # `cat /et\c/passwd`, and `p="/proc/$PPID"; cat $p/environ` are caught too.
-    stripped = _SHELL_QUOTE_RE.sub("", command).replace("\\", "")
-    # Bash applies brace/parameter/ANSI-C expansion after this classifier, so a
-    # path split across a brace group (/etc/pass{w,}d), a default/substring param
-    # (${x:-wd}, ${p:0:6}), or an escape ($'...') is invisible to the raw scan;
-    # expand first (ANSI-C decoded from the raw command, before backslash strip).
-    candidates = []
-    for c in (command, stripped, _decode_ansi_c(command)):
-        c_param = _expand_param_defaults(c)
-        candidates.extend((c, c_param, _expand_braces(c_param), _expand_shell_assignments(c_param)))
-    # Run both the literal and glob-sensitive scans over every candidate, so a
-    # brace-expanded glob (cat /e{t,}c/pass?d -> /etc/pass?d) is caught.
-    if any(_glob_hits_sensitive(c) or _references_sensitive_path(c) for c in candidates):
+    # not "safe" reads; ask before running them.
+    if _command_references_sensitive(command):
         return True
     # Newlines (and CR) separate commands in a shell but read as plain
     # whitespace to shlex, which would demote "ls\nrm x" to argument position.
@@ -2488,6 +2492,233 @@ def is_potentially_unsafe_tool_call(name: str, arguments: dict) -> bool:
         return _terminal_is_potentially_unsafe(str(arguments.get("command", "")))
     if name == "python":
         return _python_is_potentially_unsafe(str(arguments.get("code", "")))
+    return True
+
+
+# Terminal commands that are high risk regardless of their arguments, so auto
+# ("Approve for me") pauses them for approval while ordinary dev commands
+# (pip/npm install, mkdir, cp, python <script>, make, git, ...) run. Grouped:
+# privilege escalation, destructive/device ops, account/persistence/service
+# changes, firewall/mount changes, and remote-exec / raw network transfer. The
+# hard-block command set, rlimits, secret-env stripping, and the per-session
+# scratch workdir remain always-on backstops beneath this prompt.
+_HIGH_RISK_COMMANDS = frozenset(
+    {
+        # privilege escalation
+        "sudo", "su", "doas", "pkexec",
+        # destructive filesystem / storage devices (mkfs* matched by prefix)
+        "rm", "rmdir", "shred", "dd", "wipefs", "fdisk", "parted",
+        "blkdiscard", "chattr", "truncate",
+        # accounts / persistence / system services
+        "crontab", "systemctl", "service", "useradd", "userdel", "usermod",
+        "groupadd", "groupdel", "passwd", "chpasswd", "visudo", "chsh",
+        # firewall / mounts
+        "iptables", "ip6tables", "nft", "ufw", "mount", "umount",
+        # remote exec / raw network transfer
+        "ssh", "scp", "sftp", "telnet", "nc", "ncat", "netcat", "socat",
+    }
+)
+# Recursive-permission commands are high risk only with a recursive flag
+# (chmod -R 777 .); a scoped `chmod +x build.sh` stays out.
+_HIGH_RISK_RECURSIVE_COMMANDS = frozenset({"chmod", "chown", "chgrp"})
+# Commands that forward command position to a following command name
+# (find . -exec rm, echo x | xargs rm, parallel rm, watch rm), so the wrapped
+# command is checked against the high-risk sets too.
+_HIGH_RISK_FORWARDING_COMMANDS = frozenset({"find", "fd", "xargs", "parallel", "watch"})
+# find/fd flags that delete matches outright (a bare `find . -delete`, with no
+# separate command token to catch); an `-exec rm` is caught via forwarding.
+_HIGH_RISK_FIND_FLAGS = frozenset({"-delete"})
+# curl/wget flags that send local data out (exfiltration surface).
+_NET_UPLOAD_FLAGS = frozenset(
+    {
+        "-d", "--data", "--data-ascii", "--data-binary", "--data-raw",
+        "--data-urlencode", "-F", "--form", "-T", "--upload-file",
+    }
+)
+# curl/wget output piped straight into an interpreter is remote code execution.
+_PIPE_TO_INTERPRETER_RE = re.compile(
+    r"\|\s*(?:sudo\s+)?(?:sh|bash|zsh|dash|ksh|fish|python[0-9.]*|node|ruby|perl|php)\b"
+)
+# A wrapper's bare duration/count argument (timeout 5 rm, timeout 1.5s rm) that
+# precedes the real command, so it is not mistaken for the command itself.
+_WRAPPER_DURATION_RE = re.compile(r"\d+(?:\.\d+)?[smhd]?$")
+
+
+def _command_is_network_exec_or_exfil(command: str) -> bool:
+    """curl/wget used to run remote code (piped into a shell, or via process
+    substitution) or to upload local data. Plain downloads (curl -O, wget URL)
+    are ordinary and stay out. Fails closed on an unparseable command."""
+    low = command.lower()
+    if "curl" not in low and "wget" not in low:
+        return False
+    if _PIPE_TO_INTERPRETER_RE.search(low):
+        return True
+    if "<(" in command:  # bash <(curl ...) process substitution
+        return True
+    try:
+        tokens = shlex.split(command.replace("\n", " "), posix=True)
+    except ValueError:
+        return True
+    return any(t.split("=", 1)[0] in _NET_UPLOAD_FLAGS for t in tokens)
+
+
+def _terminal_is_high_risk(command: str) -> bool:
+    """High-risk terminal command for auto mode: credential/secret access,
+    privilege escalation, destructive/persistence changes, or network
+    exec/exfil. Ordinary dev commands run without a prompt. Fails closed
+    (prompts) on an unparseable command."""
+    if not command or not command.strip():
+        return False
+    # A credential/secret path read or write, or a sandbox escape (../), asks.
+    if _command_references_sensitive(command):
+        return True
+    if _command_is_network_exec_or_exfil(command):
+        return True
+    # Newlines separate commands in a shell but read as whitespace to shlex.
+    normalized = command.replace("\r\n", ";").replace("\n", ";").replace("\r", ";")
+    # A verb hidden behind an assignment (c=rm; $c x) or a default parameter
+    # (${c:-rm}) is expanded so the resolved token is scanned too.
+    expanded = _expand_shell_assignments(_expand_param_defaults(normalized))
+    for text in {normalized, expanded}:
+        try:
+            lexer = shlex.shlex(text, posix=True, punctuation_chars=";&|()")
+            lexer.whitespace_split = True
+            tokens = list(lexer)
+        except ValueError:
+            return True
+        recursive = any(
+            t in ("-R", "--recursive")
+            or (t[:1] == "-" and t[:2] != "--" and "=" not in t and "R" in t[1:])
+            for t in tokens
+        )
+        find_like = any(
+            os.path.basename(t.strip(";&|()`{}")).lower() in ("find", "fd") for t in tokens
+        )
+        if find_like and any(t.split("=", 1)[0] in _HIGH_RISK_FIND_FLAGS for t in tokens):
+            return True
+        expect_command = True  # at the start of a command (after a separator)
+        prefix_pending = False  # inside a wrapper (env/timeout/...) still seeking the command
+        scan_forward = False  # a forwarding command (find/xargs/...) precedes another command
+        for token in tokens:
+            if (
+                token in _SHELL_SEPARATORS
+                or token in _SHELL_KEYWORDS_AS_SEP
+                or not set(token) - set(";&|()")
+            ):
+                expect_command = True
+                prefix_pending = False
+                scan_forward = False
+                continue
+            if token.startswith("-"):
+                continue
+            if _ASSIGNMENT_RE.match(token):
+                # PATH/LD_PRELOAD-style assignments hijack command lookup/loading.
+                if _env_assignment_is_unsafe(token.split("=", 1)[0]):
+                    return True
+                continue
+            raw = token.strip(";&|()`{}")
+            if not raw:
+                continue
+            # A wrapper's bare duration argument (timeout 5 rm) is not the command.
+            if prefix_pending and _WRAPPER_DURATION_RE.fullmatch(raw):
+                continue
+            base = os.path.basename(raw).lower()
+            stem, ext = os.path.splitext(base)
+            if ext in {".exe", ".com", ".bat", ".cmd"}:
+                base = stem
+            if (expect_command or prefix_pending) and base in _AUTO_SAFE_WRAPPERS:
+                # A wrapper still precedes the real command; keep seeking it.
+                prefix_pending = True
+                expect_command = False
+                continue
+            if expect_command or prefix_pending or scan_forward:
+                if base in _HIGH_RISK_COMMANDS or base.startswith("mkfs"):
+                    return True
+                if base in _HIGH_RISK_RECURSIVE_COMMANDS and recursive:
+                    return True
+                if base in _HIGH_RISK_FORWARDING_COMMANDS:
+                    scan_forward = True
+            expect_command = False
+            prefix_pending = False
+    return False
+
+
+def _python_is_high_risk(code: str) -> bool:
+    """High-risk python for auto mode: code the sandbox static analysis would
+    refuse anyway (shell escape, network egress, a sensitive read), that
+    reads/writes a credential path, or that runs dynamically built code past
+    those static checks. Ordinary in-workdir file writes and computation run
+    without a prompt."""
+    if not code or not code.strip():
+        return False
+    # _check_code_safety objecting means execution would be refused outright, so
+    # surfacing it as a confirmation first is strictly a better UX than a silent
+    # refusal; it covers subprocess/os.system shell escapes and network egress.
+    if _check_code_safety(code) is not None:
+        return True
+    if _references_sensitive_path(code):
+        return True
+    # exec/eval/compile/__import__ of a non-literal (exec(b64decode(...)),
+    # eval(input()), __import__(name)) runs whatever it builds at runtime, past
+    # the static checks above; ask. A literal eval("1+1") is harmless and runs.
+    try:
+        tree = ast.parse(code)
+    except SyntaxError:
+        return False  # runs into a normal traceback; nothing to guard
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call):
+            continue
+        func = node.func
+        name = None
+        if isinstance(func, ast.Name):
+            name = func.id
+        elif isinstance(func, ast.Attribute):
+            if func.attr == "import_module":  # importlib.import_module(name)
+                name = "__import__"
+            elif func.attr in ("exec", "eval", "compile"):  # builtins.exec(...)
+                name = func.attr
+        if name not in ("exec", "eval", "compile", "__import__"):
+            continue
+        first = node.args[0] if node.args else None
+        if first is None:
+            continue
+        if isinstance(first, ast.Constant) and isinstance(first.value, (str, bytes)):
+            continue  # a literal source string is harmless
+        return True
+    return False
+
+
+def is_high_risk_tool_call(name: str, arguments: dict) -> bool:
+    """Whether a tool call is sensitive enough to pause for approval in auto
+    ("Approve for me") mode.
+
+    Unlike is_potentially_unsafe_tool_call (which prompts on anything not
+    read-only), this prompts only on genuinely sensitive actions - credential
+    access, privilege escalation, destructive/persistence changes, and network
+    exec/exfil - and lets ordinary development commands (pip install, mkdir,
+    cp, python <script>, git commit, in-workdir writes) run. The hard-block
+    command set, rlimits, and secret-env stripping remain in force underneath.
+    Unknown tools fail closed (prompt).
+    """
+    if name in _ALWAYS_SAFE_TOOLS:
+        return False
+    if name == "render_html":
+        # A static canvas is fine; only a networked canvas can egress.
+        return _render_html_reaches_network(arguments)
+    if name.startswith(MCP_TOOL_PREFIX):
+        tool_name = name.split("__", 2)[-1]
+        # A credential noun (read_secret, list_tokens) discloses secrets, and a
+        # read/write pointed at a sensitive path is a sensitive access; both
+        # prompt. Ordinary create/update/delete MCP calls run in auto.
+        if _AUTO_SENSITIVE_MCP_NOUN_RE.search(tool_name):
+            return True
+        if _mcp_arguments_reference_sensitive(arguments):
+            return True
+        return False
+    if name == "terminal":
+        return _terminal_is_high_risk(str(arguments.get("command", "")))
+    if name == "python":
+        return _python_is_high_risk(str(arguments.get("code", "")))
     return True
 
 

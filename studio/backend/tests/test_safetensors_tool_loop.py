@@ -2538,6 +2538,9 @@ class TestLoopBasic:
             tools = [{"type": "function", "function": {"name": "render_html"}}],
             execute_tool = exec_fn,
             confirm_tool_calls = True,
+            # "ask" keeps the gate active for a static canvas; unset now defaults
+            # to "auto", which only gates render_html when it reaches the network.
+            permission_mode = "ask",
             session_id = "sess",
             max_tool_iterations = 3,
         )
@@ -3927,6 +3930,9 @@ class TestGuardrails:
             turns = [['<tool_call>{"name":"python","arguments":{"code":"print(1)"}}</tool_call>']],
             exec_results = ["OK"],
             confirm_tool_calls = True,
+            # Gate every call so the approval-slot lifecycle is exercised; unset
+            # now defaults to "auto", which would not prompt this safe call.
+            permission_mode = "ask",
             session_id = "sess",
             max_tool_iterations = 1,
         )
@@ -3957,6 +3963,10 @@ class TestGuardrails:
         loop, exec_fn = _make_loop(
             turns = [["plain answer"]],
             confirm_tool_calls = True,
+            # "ask" gates every call, so autoinject must wait for approval; the
+            # companion test below covers "auto" (safe retrieval never gates, so
+            # autoinject runs). Unset now defaults to "auto".
+            permission_mode = "ask",
             rag_scope = {"thread_id": "t1"},
         )
         events = _collect_events(loop)
@@ -4313,6 +4323,9 @@ class TestPlanWithoutActionReprompt:
                 ["SHOULD NOT APPEAR"],
             ],
             confirm_tool_calls = True,
+            # "ask" gates even the always-safe web_search so the deny path runs;
+            # unset now defaults to "auto", which never gates web_search.
+            permission_mode = "ask",
             session_id = "sess",
             nudge_tool_calls = True,
         )
