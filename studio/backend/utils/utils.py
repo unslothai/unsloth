@@ -56,32 +56,22 @@ def _expand_path(raw: str) -> Path:
 
 
 def _hf_cache_roots() -> list:
-    """Candidate local cache roots a Sentence-Transformers / huggingface_hub load may use, in
-    the loader's own precedence: an explicit ``SENTENCE_TRANSFORMERS_HOME`` (ST's cache_folder),
-    then ``HF_HUB_CACHE`` / ``HF_HOME/hub`` / ``XDG_CACHE_HOME`` / ``~/.cache``. Expanded (``~`` /
-    ``$VARS``) and de-duplicated, honoring the env at call time so a test override is tracked.
+    """The single local cache root a Sentence-Transformers / huggingface_hub load resolves to,
+    by the loader's own precedence (it selects ONE ``cache_folder`` and does not fall through):
+    an explicit ``SENTENCE_TRANSFORMERS_HOME`` (ST's cache_folder), else ``HF_HUB_CACHE``, else
+    ``HF_HOME/hub``, else ``~/.cache/huggingface/hub`` (mirroring huggingface_hub). Expanded
+    (``~`` / ``$VARS``), read from the env at call time. Returned as a one-element list.
     """
-    roots = []
     st_home = os.environ.get("SENTENCE_TRANSFORMERS_HOME")
     if st_home:
-        roots.append(_expand_path(st_home))
+        return [_expand_path(st_home)]
     hub = os.environ.get("HF_HUB_CACHE") or os.environ.get("HUGGINGFACE_HUB_CACHE")
     if hub:
-        roots.append(_expand_path(hub))
+        return [_expand_path(hub)]
     hf_home = os.environ.get("HF_HOME")
     if hf_home:
-        roots.append(_expand_path(hf_home) / "hub")
-    xdg = os.environ.get("XDG_CACHE_HOME")
-    if xdg:
-        roots.append(_expand_path(xdg) / "huggingface" / "hub")
-    roots.append(Path.home() / ".cache" / "huggingface" / "hub")
-    seen = set()
-    unique = []
-    for root in roots:
-        if root not in seen:
-            seen.add(root)
-            unique.append(root)
-    return unique
+        return [_expand_path(hf_home) / "hub"]
+    return [Path.home() / ".cache" / "huggingface" / "hub"]
 
 
 def hf_cache_snapshot_dir(model_name: str) -> Optional[Path]:

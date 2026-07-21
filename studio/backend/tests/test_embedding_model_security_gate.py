@@ -106,6 +106,36 @@ def test_hard_block_uses_non_forceable_status(client, monkeypatch):
     assert unverified.status_code == 409
 
 
+def test_offline_cached_non_st_model_is_accepted(client, monkeypatch):
+    # Offline, a cached transformers-native embedder (no modules.json) is unverifiable via HF
+    # metadata; since SentenceTransformer can load any cached encoder, accept it (no 409).
+    c, saved = client
+    monkeypatch.setitem(sys.modules, "utils.security", _security_stub(blocked = False))
+    monkeypatch.setenv("HF_HUB_OFFLINE", "1")
+    import utils.models as _models
+    import utils.utils as _uu
+
+    monkeypatch.setattr(_models, "is_embedding_model", lambda *a, **k: False)
+    monkeypatch.setattr(_uu, "hf_cache_snapshot_dir", lambda name: "cached-snapshot")
+    r = c.put("/embedding-model", json = {"embedding_model": "acme/gte-modernbert"})
+    assert r.status_code == 200
+    assert saved.get("model") == "acme/gte-modernbert"
+
+
+def test_offline_uncached_model_still_409(client, monkeypatch):
+    # Offline but NOT cached: the load would fail anyway, so keep the forceable 409.
+    c, _saved = client
+    monkeypatch.setitem(sys.modules, "utils.security", _security_stub(blocked = False))
+    monkeypatch.setenv("HF_HUB_OFFLINE", "1")
+    import utils.models as _models
+    import utils.utils as _uu
+
+    monkeypatch.setattr(_models, "is_embedding_model", lambda *a, **k: False)
+    monkeypatch.setattr(_uu, "hf_cache_snapshot_dir", lambda name: None)
+    r = c.put("/embedding-model", json = {"embedding_model": "acme/uncached-embedder"})
+    assert r.status_code == 409
+
+
 def test_llama_backend_skips_the_st_pickle_scan(monkeypatch):
     # On the llama-server backend the embedder loads GGUF (inert), not the ST repo's
     # pickle, so a flagged ST repo with a clean GGUF companion must not be rejected here.

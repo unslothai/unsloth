@@ -198,6 +198,20 @@ def test_snapshot_dir_uses_sentence_transformers_home(tmp_path, monkeypatch):
     assert hf_cache_snapshot_dir("org/emb") == snapshot
 
 
+def test_snapshot_dir_st_home_is_exclusive(tmp_path, monkeypatch):
+    # With SENTENCE_TRANSFORMERS_HOME set, ST loads only from it; a model that lives only under
+    # HF_HUB_CACHE is not what the loader would use, so the resolver must not report it.
+    st_home = tmp_path / "st_home"
+    st_home.mkdir()
+    hub = tmp_path / "hub"
+    hub.mkdir()
+    monkeypatch.setenv("SENTENCE_TRANSFORMERS_HOME", str(st_home))
+    monkeypatch.setenv("HF_HUB_CACHE", str(hub))
+    monkeypatch.delenv("HF_HOME", raising = False)
+    _make_cache(hub, "org/emb", {"modules.json": MODULES_JSON})  # only in the HF hub cache
+    assert hf_cache_snapshot_dir("org/emb") is None
+
+
 def test_gate_blocks_pickle_in_sentence_transformers_home(tmp_path, monkeypatch):
     # A pickle cached under SENTENCE_TRANSFORMERS_HOME must still fail closed offline.
     st_home = tmp_path / "st_home"

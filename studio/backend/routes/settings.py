@@ -416,6 +416,11 @@ def update_embedding_model(
             log = logger,
         ) from exc
     hf_token = (payload.hf_token or "").strip() or None
+    from utils.utils import hf_env_offline
+
+    # Capture the offline state once: offline, both the Hub malware scan and the is-embedding
+    # metadata check are unreachable, so both degrade to the local cache below.
+    local_only_load = hf_env_offline()
     # The env/default model needs no verification; saving it is a no-op override.
     # A local GGUF on the llama-server backend is accepted as-is: it is exactly
     # what the backend loads, and HF metadata cannot verify a local path.
@@ -435,7 +440,6 @@ def update_embedding_model(
         # unreachable scans fail open inside evaluate_file_security.
         from utils.security import evaluate_file_security, security_load_subdirs
         from core.rag.embeddings import _st_module_subdirs
-        from utils.utils import hf_env_offline
 
         # Fall back to the loader's own token so a gated/private repo is actually scanned
         # (a token-less scan fails open for exactly the repo that would still load).
@@ -443,7 +447,6 @@ def update_embedding_model(
         # Offline the Hub scan is unreachable and the subdir probes below would hit the
         # network and hang on a dead DNS; the offline gate walks the whole cached snapshot,
         # so no load-subdir hints are needed.
-        local_only_load = hf_env_offline()
         if local_only_load:
             load_subdirs = ()
         else:
@@ -486,14 +489,23 @@ def update_embedding_model(
         # which would wrongly 409 a valid online GGUF embedder.
         gguf_named = _llama_backend_active() and rag_config._names_gguf(model)
         if not gguf_named and not is_embedding_model(model, hf_token = hf_token):
-            raise HTTPException(
-                status_code = 409,
-                detail = (
-                    f"Could not verify {model!r} as an embedding model on "
-                    "Hugging Face (it may be the wrong model type, gated, or "
-                    "you may be offline)."
-                ),
-            )
+            # Offline, is_embedding_model can only confirm the Sentence-Transformers layout
+            # (modules.json); a transformers-native embedder (e.g. a feature-extraction model
+            # like gte-modernbert) is unverifiable without the Hub metadata. If the repo is
+            # already cached and loadable, accept it rather than raising a 409 that online
+            # would not -- SentenceTransformer can load any cached encoder. Uncached -> 409.
+            from utils.utils import hf_cache_snapshot_dir
+
+            offline_cached = local_only_load and hf_cache_snapshot_dir(model) is not None
+            if not offline_cached:
+                raise HTTPException(
+                    status_code = 409,
+                    detail = (
+                        f"Could not verify {model!r} as an embedding model on "
+                        "Hugging Face (it may be the wrong model type, gated, or "
+                        "you may be offline)."
+                    ),
+                )
         gguf_error = _local_gguf_backend_error(model) or _hf_gguf_backend_error(model, hf_token)
         if gguf_error:
             raise HTTPException(status_code = 409, detail = gguf_error)
