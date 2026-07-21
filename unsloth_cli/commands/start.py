@@ -2170,9 +2170,7 @@ def write_opencode_config(
         for field in ("model", "small_model"):
             if str(config.get(field) or "").startswith(f"{_OPENCODE_PROVIDER}/"):
                 config.pop(field, None)
-        managed_compaction = (
-            {"auto": True, "reserved": max(1, window // 10)} if window else None
-        )
+        managed_compaction = {"auto": True, "reserved": max(1, window // 10)} if window else None
         if managed_compaction and config.get("compaction") == managed_compaction:
             config.pop("compaction", None)
         _subdict(config, "agent")[_SUBAGENT_NAME] = {
@@ -2355,9 +2353,7 @@ def claude(
     if as_subagent:
         subagent_id = _subagent_model_id(base, key, entry, model, gguf_variant)
         subagent_model = {**entry, "id": subagent_id}
-        window = subagent_model.get("context_length") or subagent_model.get(
-            "max_context_length"
-        )
+        window = subagent_model.get("context_length") or subagent_model.get("max_context_length")
         with _session_config("claude-subagent", launch, persist = persist) as config:
             plugin = write_claude_subagent_plugin(config)
             command = [
@@ -2572,9 +2568,7 @@ def opencode(
         subagent_id = _subagent_model_id(base, key, entry, model, gguf_variant)
         subagent_model = {**entry, "id": subagent_id}
         route_native_auto = yolo and _opencode_supports_native_auto()
-        opencode_args, native_auto = _opencode_native_auto_args(
-            list(ctx.args), route_native_auto
-        )
+        opencode_args, native_auto = _opencode_native_auto_args(list(ctx.args), route_native_auto)
         command = ["opencode", *opencode_args]
         with _session_config("opencode-subagent", launch, persist = persist) as cfg:
             config_path = cfg / "opencode.json"
@@ -2588,9 +2582,7 @@ def opencode(
             )
             env = {"OPENCODE_CONFIG": str(config_path)}
             if session_permission:
-                env["OPENCODE_CONFIG_CONTENT"] = json.dumps(
-                    {"permission": session_permission}
-                )
+                env["OPENCODE_CONFIG_CONTENT"] = json.dumps({"permission": session_permission})
             typer.echo("Unsloth is available as @unsloth and in /models.")
             _run(
                 base,
@@ -2734,9 +2726,7 @@ def pi(
             _fail(f"Missing Pi subagent extension: {_PI_SUBAGENT_EXTENSION}")
         subagent_id = _subagent_model_id(base, key, entry, model, gguf_variant)
         subagent_model = {**entry, "id": subagent_id}
-        window = subagent_model.get("context_length") or subagent_model.get(
-            "max_context_length"
-        )
+        window = subagent_model.get("context_length") or subagent_model.get("max_context_length")
         extension = _agent_config_path(_PI_SUBAGENT_EXTENSION, ["pi"])
         command = [
             "pi",

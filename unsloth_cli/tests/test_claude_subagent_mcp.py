@@ -97,11 +97,7 @@ def test_local_child_uses_unsloth_without_overwriting_parent_auth(
     monkeypatch.setattr(bridge.subprocess, "run", run)
     assert bridge.run_local_agent("reply exactly LOCAL_OK") == "LOCAL_OK"
     command = captured["command"]
-    assert command[:3] == [
-        "/usr/local/bin/claude",
-        "--model",
-        "unsloth/model-GGUF:Q4_K_M",
-    ]
+    assert command[:3] == ["/usr/local/bin/claude", "--model", "unsloth/model-GGUF:Q4_K_M"]
     assert command[command.index("--permission-mode") + 1] == permission
     assert "--no-session-persistence" in command
     assert captured["cwd"] == str(tmp_path)

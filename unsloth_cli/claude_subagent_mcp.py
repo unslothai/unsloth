@@ -107,7 +107,9 @@ def run_local_agent(task: str) -> str:
     )
     if completed.returncode != 0:
         detail = completed.stderr.strip() or completed.stdout.strip()
-        raise RuntimeError(_bounded(detail) or f"Local Claude exited with code {completed.returncode}.")
+        raise RuntimeError(
+            _bounded(detail) or f"Local Claude exited with code {completed.returncode}."
+        )
     return _result_text(completed.stdout)
 
 

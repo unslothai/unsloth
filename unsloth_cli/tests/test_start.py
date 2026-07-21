@@ -672,10 +672,7 @@ def test_subagent_model_id_uses_loaded_variant(monkeypatch):
         "_http_json",
         lambda *args, **kwargs: {"is_gguf": True, "gguf_variant": "Q5_K_M"},
     )
-    assert (
-        start._subagent_model_id(BASE, "key", MODEL, None, None)
-        == MODEL["id"] + ":Q5_K_M"
-    )
+    assert start._subagent_model_id(BASE, "key", MODEL, None, None) == MODEL["id"] + ":Q5_K_M"
 
 
 @pytest.fixture()
@@ -2698,9 +2695,7 @@ def test_connect_opencode_as_subagent_preserves_cloud_parent(fake_studio, tmp_pa
     assert "small_model" not in config
     assert "compaction" not in config
     agent = config["agent"]["unsloth"]
-    assert agent["model"] == (
-        f"{start._OPENCODE_PROVIDER}/{MODEL['id']}:UD-Q4_K_XL"
-    )
+    assert agent["model"] == (f"{start._OPENCODE_PROVIDER}/{MODEL['id']}:UD-Q4_K_XL")
     assert "Unsloth is available as @unsloth and in /models." in result.output
 
 
