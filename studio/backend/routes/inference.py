@@ -4549,11 +4549,15 @@ async def _load_model_impl(request: LoadRequest, fastapi_request: Request, curre
                     resolved_variant = (config.gguf_variant or "").lower()
                     request_variant = (request.gguf_variant or "").lower()
                     stored_variant = (source[1] or "").lower() if source else ""
-                    same_model = bool(source and source[0] and source[0].lower() == model_identifier.lower())
+                    same_model = bool(
+                        source and source[0] and source[0].lower() == model_identifier.lower()
+                    )
                     if request.gguf_variant:
                         variant_mismatch = request_variant != stored_variant
                     else:
-                        variant_mismatch = bool(stored_variant and resolved_variant != stored_variant)
+                        variant_mismatch = bool(
+                            stored_variant and resolved_variant != stored_variant
+                        )
                     if same_model and not variant_mismatch:
                         _draft_extra = _loaded_llama.extra_args
             _draft_dev_pin = _extra_args_draft_device_pin(_draft_extra)
@@ -5226,7 +5230,9 @@ async def validate_model(
                 resolved_variant = (config.gguf_variant or "").lower()
                 request_variant = (request.gguf_variant or "").lower()
                 stored_variant = (source[1] or "").lower() if source else ""
-                same_model = bool(source and source[0] and source[0].lower() == model_identifier.lower())
+                same_model = bool(
+                    source and source[0] and source[0].lower() == model_identifier.lower()
+                )
                 if request.gguf_variant:
                     variant_mismatch = request_variant != stored_variant
                 else:
