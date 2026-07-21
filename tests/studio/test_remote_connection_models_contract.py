@@ -18,7 +18,7 @@ def test_providers_db_stores_model_json_columns():
     source = PROVIDERS_DB.read_text(encoding = "utf-8")
     assert "models_json" in source
     assert "available_models_json" in source
-    assert 'ALTER TABLE llm_providers ADD COLUMN models_json' in source
+    assert "ALTER TABLE llm_providers ADD COLUMN models_json" in source
 
 
 def test_provider_api_schemas_expose_models():
