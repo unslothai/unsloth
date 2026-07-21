@@ -302,9 +302,7 @@ def test_gate_blocks_adapter_pickle_without_safetensors(hf_cache):
 
 
 def test_gate_allows_adapter_pickle_with_adapter_safetensors(hf_cache):
-    _make_cache(
-        hf_cache, "org/ad2", {"adapter_model.bin": "x", "adapter_model.safetensors": "y"}
-    )
+    _make_cache(hf_cache, "org/ad2", {"adapter_model.bin": "x", "adapter_model.safetensors": "y"})
     with _no_network():
         assert _offline_decision("org/ad2").blocked is False
 
@@ -312,18 +310,14 @@ def test_gate_allows_adapter_pickle_with_adapter_safetensors(hf_cache):
 def test_gate_blocks_base_pickle_with_only_adapter_safetensors_decoy(hf_cache):
     # A decoy adapter_model.safetensors must NOT suppress a base pytorch_model.bin: the base
     # loader would still deserialize the unscanned pickle.
-    _make_cache(
-        hf_cache, "org/decoy", {"pytorch_model.bin": "x", "adapter_model.safetensors": "y"}
-    )
+    _make_cache(hf_cache, "org/decoy", {"pytorch_model.bin": "x", "adapter_model.safetensors": "y"})
     with _no_network():
         assert _offline_decision("org/decoy").blocked is True
 
 
 def test_gate_blocks_adapter_pickle_with_only_base_safetensors_decoy(hf_cache):
     # Symmetric: a base model.safetensors must NOT suppress an adapter_model.bin.
-    _make_cache(
-        hf_cache, "org/decoy2", {"adapter_model.bin": "x", "model.safetensors": "y"}
-    )
+    _make_cache(hf_cache, "org/decoy2", {"adapter_model.bin": "x", "model.safetensors": "y"})
     with _no_network():
         assert _offline_decision("org/decoy2").blocked is True
 
@@ -380,7 +374,14 @@ def test_guard_offline_allows_safetensors(hf_cache):
 
 def _install_fake_sentence_transformers(monkeypatch, captured):
     class FakeSentenceTransformer:
-        def __init__(self, name, *, device = None, model_kwargs = None, **kw):
+        def __init__(
+            self,
+            name,
+            *,
+            device = None,
+            model_kwargs = None,
+            **kw,
+        ):
             captured["name"] = name
             captured["device"] = device
             # Snapshot the env the load actually sees, to prove the offline force is active.
