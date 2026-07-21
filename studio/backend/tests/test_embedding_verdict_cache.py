@@ -411,7 +411,9 @@ def _drive_get_capturing_st(monkeypatch, st_factory, *, offline):
     monkeypatch.setattr("utils.models.resolve_st_cached_repo_id_case", lambda r: r)
     monkeypatch.setattr("utils.utils.hf_env_offline", lambda: offline)
     monkeypatch.setattr(
-        embeddings, "_guard_model_security", lambda name, lo: fs.FileSecurityDecision("org/model", False)
+        embeddings,
+        "_guard_model_security",
+        lambda name, lo: fs.FileSecurityDecision("org/model", False),
     )
     monkeypatch.setattr(embeddings, "_record_embedding_verdict_safe", lambda n, c: None)
     monkeypatch.setattr(embeddings, "_model", None, raising = False)
