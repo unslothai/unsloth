@@ -985,6 +985,21 @@ export function AppSidebar() {
             </span>
           </button>
         )}
+        {variant === "recent" && isPinned && (
+          <button
+            type="button"
+            onClick={(e) => {
+              e.stopPropagation();
+              togglePinnedChat(item.id);
+            }}
+            aria-label="Unpin chat"
+            className="sidebar-row-action is-unpin-action group-hover/recent-item:opacity-100 group-hover/recent-item:pointer-events-auto focus-visible:opacity-100 focus-visible:pointer-events-auto"
+          >
+            <span className="sidebar-row-action-glyph">
+              <HugeiconsIcon icon={PinOffIcon} strokeWidth={1.75} className="size-icon" />
+            </span>
+          </button>
+        )}
         <DropdownMenu>
           <DropdownMenuTrigger asChild>
             <button
