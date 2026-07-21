@@ -17,9 +17,9 @@ import {
   formatRelativeShort,
   formatShortDate,
 } from "@/features/hub/lib/format";
-import { cn, formatCompact } from "@/lib/utils";
-import { confirmExternalLink } from "../stores/external-link-confirm";
 import { useHfTokenStore } from "@/features/hub/stores/hf-token-store";
+import { Tick02Icon } from "@/lib/tick-icon";
+import { cn, formatCompact } from "@/lib/utils";
 import {
   Calendar03Icon,
   CalendarAdd01Icon,
@@ -37,10 +37,10 @@ import {
   RamMemoryIcon,
   Share05Icon,
 } from "@hugeicons/core-free-icons";
-import { Tick02Icon } from "@/lib/tick-icon";
 import type { IconSvgElement } from "@hugeicons/react";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { memo, useDeferredValue, useMemo } from "react";
+import { selectActiveJob, useDownloadManagerStore } from "../download-manager";
 import { useCopyFeedback } from "../hooks/use-copy-feedback";
 import { useDatasetSize } from "../hooks/use-dataset-size";
 import {
@@ -49,8 +49,8 @@ import {
   formatPipelineTag,
   parseLanguageTags,
 } from "../lib/view-models";
+import { confirmExternalLink } from "../stores/external-link-confirm";
 import type { SelectedModelView } from "../types";
-import { selectActiveJob, useDownloadManagerStore } from "../download-manager";
 import { DatasetDownloadSection } from "./dataset-download-section";
 import { DownloadSection } from "./download-section";
 import { LocalDatasetCard } from "./local-dataset-card";
@@ -399,6 +399,7 @@ export type ModelInspectorActions = {
     expectedBytes?: number;
   }) => void;
   onUseInChat: () => void;
+  onEject?: () => void;
   onTrain?: () => void;
   onInventoryChange?: () => void;
   onSearchHub?: (query: string) => void;
@@ -433,6 +434,7 @@ export const ModelInspector = memo(function ModelInspector({
     onLoad,
     onLoadLocal,
     onUseInChat,
+    onEject,
     onTrain,
     onInventoryChange,
     onSearchHub,
@@ -517,7 +519,9 @@ export const ModelInspector = memo(function ModelInspector({
     ? formatRelativeShort(model.updatedAt)
     : formatLocalUpdated(model.localUpdatedAt);
   const updatedLabel = updatedRaw === "Unknown update" ? "N/A" : updatedRaw;
-  const createdLabel = model.createdAt ? formatShortDate(model.createdAt) : null;
+  const createdLabel = model.createdAt
+    ? formatShortDate(model.createdAt)
+    : null;
   const libraryLabel = isDataset ? null : formatLibrary(model.libraryName);
   const gatedAccess = model.gated !== false && model.gated !== undefined;
   const downloadsTooltip =
@@ -696,6 +700,7 @@ export const ModelInspector = memo(function ModelInspector({
               }
               onLoad={onLoadLocal}
               onUseInChat={onUseInChat}
+              onEject={onEject}
               onTrain={
                 model.isDownloaded && canTrainModel ? onTrain : undefined
               }
@@ -719,6 +724,7 @@ export const ModelInspector = memo(function ModelInspector({
               knownBytes={model.cachedBytes}
               onLoad={model.isLocal ? onLoadLocal : onLoad}
               onUseInChat={onUseInChat}
+              onEject={onEject}
               onTrain={
                 model.isDownloaded && canTrainModel ? onTrain : undefined
               }

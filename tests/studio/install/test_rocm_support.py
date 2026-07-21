@@ -1557,7 +1557,7 @@ class TestWorkerRocmMambaSsm:
         assert "getattr(torch.version, 'hip', None)" in source
 
     def test_direct_wheel_url_returns_none_without_cuda_major(self, monkeypatch):
-        """_direct_wheel_url should return None when cuda_major is empty (ROCm)."""
+        """direct_wheel_url should return None when cuda_major is empty (ROCm)."""
         _worker_spec = importlib.util.spec_from_file_location("test_worker", _WORKER_PATH)
         assert _worker_spec is not None and _worker_spec.loader is not None
         worker_mod = importlib.util.module_from_spec(_worker_spec)
@@ -1583,7 +1583,7 @@ class TestWorkerRocmMambaSsm:
             "hip_version": "7.1.12345",
             "cxx11abi": "TRUE",
         }
-        result = worker_mod._direct_wheel_url(
+        result = worker_mod.direct_wheel_url(
             filename_prefix = "causal_conv1d",
             package_version = "1.6.1",
             release_tag = "v1.6.1.post4",

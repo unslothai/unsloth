@@ -237,6 +237,54 @@ jobs:
           kill "${STUDIO_EXTRA_PID}" 2>/dev/null || true
           sleep 2
 
+      # Model-picker per-model-config regression (PR #7207 re-land of #6647).
+      # Fourth Unsloth on its own port; loads the tiny GGUF and drives the
+      # picker's run-settings surface: Context Length persists across a reload,
+      # Reset clears the stored override (never pins it), and the infra models
+      # (RAG embedder + llama.cpp probe) stay hidden from the picker.
+      - name: Reset auth + boot Unsloth for model-config tests (port 18898)
+        run: |
+          unsloth studio reset-password
+          mkdir -p logs
+          UNSLOTH_API_ONLY=1 unsloth studio -H 127.0.0.1 -p 18898 \
+            > logs/studio_modelcfg.log 2>&1 &
+          echo "STUDIO_MODELCFG_PID=$!" >> "$GITHUB_ENV"
+
+      - name: Wait for /api/health on 18898
+        run: |
+          for i in $(seq 1 180); do
+            if curl -fs "http://127.0.0.1:18898/api/health" > /tmp/health4.json; then
+              jq -e '.status == "healthy"' /tmp/health4.json && break
+            fi
+            sleep 1
+          done
+          jq -e '.status == "healthy"' /tmp/health4.json
+
+      - name: Pass bootstrap pw for model-config test
+        run: |
+          NEW="CIModelCfg-$(python -c 'import secrets; print(secrets.token_urlsafe(16))')"
+          echo "::add-mask::$NEW"
+          echo "STUDIO_MODELCFG_NEW_PW=$NEW" >> "$GITHUB_ENV"
+
+      - name: Drive model-picker per-model-config with Playwright
+        env:
+          BASE_URL: http://127.0.0.1:18898
+          STUDIO_NEW_PW: ${{ env.STUDIO_MODELCFG_NEW_PW }}
+          PW_ART_DIR: logs/playwright_modelcfg
+          STUDIO_UI_STRICT: '1'
+          GGUF_REPO: ${{ env.GGUF_REPO }}
+          GGUF_VARIANT: ${{ env.GGUF_VARIANT }}
+          STUDIO_MODEL_HINT: gemma-3-270m
+        run: |
+          mkdir -p logs/playwright_modelcfg
+          python tests/studio/playwright_model_config.py
+
+      - name: Stop fourth Unsloth
+        if: always()
+        run: |
+          kill "${STUDIO_MODELCFG_PID}" 2>/dev/null || true
+          sleep 2
+
       # IME + multilingual paste regression (issue #5318 / PR #5327).
       # Third Unsloth on its own port so a hang here cannot poison the
       # earlier UI tests. No GGUF -- the bug surface is the composer.
@@ -297,12 +345,14 @@ jobs:
           path: |
             logs/studio.log
             logs/studio_extra.log
+            logs/studio_modelcfg.log
             logs/studio_ime.log
             logs/install.log
             logs/server-logs/
             logs/playwright
             logs/playwright-permissions-*
             logs/playwright_extra
+            logs/playwright_modelcfg
             logs/playwright_ime
             logs/studio-permissions-*.log
           retention-days: 7

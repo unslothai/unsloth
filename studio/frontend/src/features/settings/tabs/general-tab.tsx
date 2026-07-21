@@ -93,9 +93,11 @@ const PREFS_KEYS: string[] = [
   "unsloth_chat_inference_params",
   "unsloth_chat_collapsible_state",
   "unsloth_chat_preferences",
+  "unsloth_model_configs",
+  "unsloth_model_configs_migrated",
   "unsloth_load_settings",
-  // Model selector settings ("Select model settings" group)
   "unsloth_chat_load_on_selection",
+  // Model selector settings ("Select model settings" group)
   "unsloth_chat_expand_quantizations",
   "unsloth_chat_show_all_quantizations",
   "unsloth_models_fit_on_device_only",
