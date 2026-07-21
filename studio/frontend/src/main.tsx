@@ -36,13 +36,8 @@ if (!rootElement) {
 
 initializeLocale();
 
-// Font rasterization happens in the rendering client, so key off navigator
-// rather than the server-reported platform (the backend may be a remote host
-// on a different OS). Linux FreeType draws Inter visibly heavier than macOS
-// CoreText renders it under the app's antialiased smoothing; index.css
-// lightens chat text under this class to compensate. Android is excluded:
-// it also uses FreeType, but its display densities hide the difference and
-// the compensation is untested there.
+// Rasterization follows the browser OS, not the potentially remote server.
+// This adjustment is calibrated for desktop Linux, so exclude Android.
 const uaLower = navigator.userAgent.toLowerCase();
 if (uaLower.includes("linux") && !uaLower.includes("android")) {
   document.documentElement.classList.add("render-linux");
