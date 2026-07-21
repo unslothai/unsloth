@@ -273,6 +273,7 @@ def finalize_worker_exit(
             if metadata is not None and metadata.variant
             else download_registry.variant_from_key(key),
             cancel_marker_transport or transport,
+            hub_cache = metadata.hub_cache if metadata is not None else None,
             logger = logger,
         )
     else:
@@ -308,6 +309,7 @@ def _set_retry_failure_state(
             metadata.transport
             if metadata is not None and metadata.transport
             else fallback_transport,
+            hub_cache = metadata.hub_cache if metadata is not None else None,
             logger = logger,
         )
     return state

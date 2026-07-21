@@ -86,9 +86,20 @@ def _snapshot_complete_on_disk(
         return False
     if variant is None and hf_cache_scan.repo_cache_dir_has_incomplete_blobs(entry):
         return False
-    if download_manifest.has_cancel_marker(repo_type, repo_id, variant):
+    hub_cache = entry.parent
+    if download_manifest.has_cancel_marker(
+        repo_type,
+        repo_id,
+        variant,
+        hub_cache = hub_cache,
+    ):
         return False
-    manifest = download_manifest.read_manifest(repo_type, repo_id, variant)
+    manifest = download_manifest.read_manifest(
+        repo_type,
+        repo_id,
+        variant,
+        hub_cache = hub_cache,
+    )
     if manifest is None:
         return False
     return download_manifest.verify_against_disk(manifest, snapshot_dir).ok

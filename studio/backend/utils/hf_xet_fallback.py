@@ -21,6 +21,8 @@ never triggers the heavy load.
 from __future__ import annotations
 
 import threading
+from functools import partial
+from pathlib import Path
 from typing import Any, Callable, Optional
 
 # Defaults mirror unsloth_zoo.hf_xet_fallback; plain literals so they resolve (including as
@@ -262,13 +264,23 @@ __all__ = [
 ]
 
 
-def _studio_prepare_for_http(repo_type: str, repo_id: str) -> None:
+def _studio_prepare_for_http(
+    repo_type: str,
+    repo_id: str,
+    *,
+    cache_dir: Optional[str] = None,
+) -> None:
     """Unsloth's marker-aware purge before an HTTP resume, keeping the download manager's ``.transport``
     accounting consistent (vs unsloth_zoo's generic default). Guarded: a purge failure is logged,
     not fatal to the retry."""
     try:
         from hub.utils.download_registry import prepare_cache_for_transport
-        prepare_cache_for_transport(repo_type, repo_id, "http")
+        prepare_cache_for_transport(
+            repo_type,
+            repo_id,
+            "http",
+            root = Path(cache_dir) if cache_dir else None,
+        )
     except Exception as exc:
         try:
             from loggers import get_logger
@@ -313,7 +325,7 @@ def hf_hub_download_with_xet_fallback(
         on_status = on_status,
         force_download = force_download,
         cache_dir = cache_dir,
-        prepare_for_http_fn = _studio_prepare_for_http,
+        prepare_for_http_fn = partial(_studio_prepare_for_http, cache_dir = cache_dir),
     )
 
 
@@ -322,5 +334,8 @@ def snapshot_download_with_xet_fallback(repo_id: str, **kwargs: Any) -> str:
     if kwargs.get("cache_dir") is None:
         from utils.hf_cache_settings import get_hf_cache_paths
         kwargs["cache_dir"] = str(get_hf_cache_paths().hub_cache)
-    kwargs.setdefault("prepare_for_http_fn", _studio_prepare_for_http)
+    kwargs.setdefault(
+        "prepare_for_http_fn",
+        partial(_studio_prepare_for_http, cache_dir = kwargs["cache_dir"]),
+    )
     return _shared_snapshot_download_with_xet_fallback(repo_id, **kwargs)

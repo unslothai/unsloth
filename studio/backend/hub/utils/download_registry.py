@@ -256,7 +256,12 @@ def _settle_orphaned_download(
 
     cache_root = Path(hub_cache) if isinstance(hub_cache, str) and hub_cache else None
 
-    manifest = download_manifest.read_manifest(repo_type, repo_id, variant)
+    manifest = download_manifest.read_manifest(
+        repo_type,
+        repo_id,
+        variant,
+        hub_cache = cache_root,
+    )
     if repo_type == "model" and variant and manifest is None:
         return
     if manifest is None:
@@ -277,7 +282,14 @@ def _settle_orphaned_download(
             root = cache_root,
         ):
             return
-    persist_cancel_marker(repo_type, repo_id, variant, transport, logger = logger)
+    persist_cancel_marker(
+        repo_type,
+        repo_id,
+        variant,
+        transport,
+        hub_cache = hub_cache,
+        logger = logger,
+    )
 
 
 def reap_orphan_workers() -> None:
@@ -497,6 +509,7 @@ def prepare_cache_for_transport(
     only_blob_hashes: Optional[frozenset[str]] = None,
     companion_blob_hashes: Optional[frozenset[str]] = None,
     protected_blob_hashes: Optional[frozenset[str]] = None,
+    root: Optional[Path] = None,
 ) -> int:
     """Guarantee any pre-existing ``.incomplete`` blobs are SAFE to resume under
     *mode*. Returns the number of partial blobs purged for untrusted provenance.
@@ -523,14 +536,13 @@ def prepare_cache_for_transport(
     they are excluded from every purge so a shared companion is never deleted
     mid-write.
 
-    Scope: only the active ``HF_HUB_CACHE`` root is inspected. That suffices for
-    resume safety because ``snapshot_download`` runs without a ``cache_dir``
-    override and so can only read or resume a ``.incomplete`` under this same
-    active root. Markers are written for the new mode before returning.
+    Scope: ``root`` selects the cache captured by the caller. It defaults to the
+    active ``HF_HUB_CACHE`` root for workers that inherit their cache through
+    the environment. Markers are written for the new mode before returning.
     """
     if mode not in VALID_TRANSPORTS:
         raise ValueError(f"Invalid transport mode: {mode!r}")
-    root = hf_cache_root(create = True)
+    root = hf_cache_root(create = True) if root is None else hf_cache_root(create = True, root = root)
     if root is None:
         return 0
     target = target_dir_name(repo_type, repo_id)
@@ -793,6 +805,7 @@ def persist_cancel_marker(
     variant: Optional[str],
     transport: Optional[str],
     *,
+    hub_cache: Optional[str] = None,
     logger = logger,
 ) -> None:
     if not repo_type or not repo_id:
@@ -804,6 +817,7 @@ def persist_cancel_marker(
             repo_id,
             variant,
             transport = transport,
+            hub_cache = hub_cache,
         ):
             logger.debug("write_cancel_marker returned False for %s", repo_id)
     except Exception as exc:
@@ -1012,6 +1026,7 @@ class DownloadRegistry:
                 metadata_to_persist.repo_id,
                 metadata_to_persist.variant,
                 metadata_to_persist.transport,
+                hub_cache = metadata_to_persist.hub_cache,
             )
         return False
 
@@ -1431,6 +1446,7 @@ class DownloadRegistry:
                     metadata.repo_id,
                     metadata.variant,
                     metadata.cancel_marker_transport or metadata.transport,
+                    hub_cache = metadata.hub_cache,
                 )
         reaped: list[tuple[str, subprocess.Popen, Optional[DownloadMetadata]]] = []
         for key, proc, metadata in live:
@@ -1446,6 +1462,7 @@ class DownloadRegistry:
                         metadata.repo_id,
                         metadata.variant,
                         metadata.cancel_marker_transport or metadata.transport,
+                        hub_cache = metadata.hub_cache,
                     )
                 continue
             reaped.append((key, proc, metadata))
@@ -1466,6 +1483,7 @@ class DownloadRegistry:
                     metadata.repo_id,
                     metadata.variant,
                     metadata.cancel_marker_transport or metadata.transport,
+                    hub_cache = metadata.hub_cache,
                 )
 
 

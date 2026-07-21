@@ -270,6 +270,69 @@ def test_inventory_scans_every_dynamic_cache_root(monkeypatch, tmp_path):
     assert [Path(scan.cache_dir) for scan in result] == [first, second]
 
 
+def test_inventory_applies_download_state_to_its_owning_cache(monkeypatch, tmp_path):
+    state_root = tmp_path / "state"
+    cache_a = tmp_path / "cache-a"
+    cache_b = tmp_path / "cache-b"
+    repo_id = "Org/Model"
+    repo_name = "models--Org--Model"
+    repo_a = cache_a / repo_name
+    repo_b = cache_b / repo_name
+    snapshot_a = repo_a / "snapshots" / "revision"
+    snapshot_b = repo_b / "snapshots" / "revision"
+    snapshot_a.mkdir(parents = True)
+    snapshot_b.mkdir(parents = True)
+    (snapshot_a / "config.json").write_bytes(b"x")
+    (snapshot_b / "config.json").write_bytes(b"xx")
+
+    monkeypatch.setattr(state_dir, "cache_root", lambda: state_root)
+    monkeypatch.setattr(
+        "utils.hf_cache_settings.get_hf_cache_paths",
+        lambda: SimpleNamespace(hub_cache = cache_b),
+    )
+    assert download_manifest.write_manifest(
+        "model",
+        repo_id,
+        None,
+        [download_manifest.ExpectedFile(path = "config.json", size = 2)],
+        "http",
+        hub_cache = cache_a,
+    )
+
+    assert inventory_scan.is_snapshot_partial("model", repo_id, repo_a) is True
+    assert inventory_scan.is_snapshot_partial("model", repo_id, repo_b) is False
+    assert inventory_scan.partial_transport_for("model", repo_id, None, repo_a) == "http"
+    assert inventory_scan.partial_transport_for("model", repo_id, None, repo_b) is None
+
+
+def test_inventory_scopes_cancel_markers_to_their_owning_cache(monkeypatch, tmp_path):
+    state_root = tmp_path / "state"
+    cache_a = tmp_path / "cache-a"
+    cache_b = tmp_path / "cache-b"
+    repo_id = "Org/Model"
+    repo_name = "models--Org--Model"
+    repo_a = cache_a / repo_name
+    repo_b = cache_b / repo_name
+    repo_a.mkdir(parents = True)
+    repo_b.mkdir(parents = True)
+
+    monkeypatch.setattr(state_dir, "cache_root", lambda: state_root)
+    monkeypatch.setattr(
+        "utils.hf_cache_settings.get_hf_cache_paths",
+        lambda: SimpleNamespace(hub_cache = cache_b),
+    )
+    assert download_manifest.write_cancel_marker(
+        "model",
+        repo_id,
+        "Q4_K_M",
+        "xet",
+        hub_cache = cache_a,
+    )
+
+    assert inventory_scan.is_variant_partial(repo_id, "Q4_K_M", repo_cache_dir = repo_a) is True
+    assert inventory_scan.is_variant_partial(repo_id, "Q4_K_M", repo_cache_dir = repo_b) is False
+
+
 def test_list_local_gguf_variants_skips_big_endian_sibling(tmp_path):
     (tmp_path / "model-Q4_K_M-be.gguf").write_bytes(b"x" * 100)
     (tmp_path / "model-Q4_K_M.gguf").write_bytes(b"y" * 10)
@@ -1374,6 +1437,7 @@ def test_gguf_progress_counts_completed_mmproj_with_expected_bytes(monkeypatch, 
             ),
         ],
         "http",
+        hub_cache = entry.parent,
     )
 
     requirement = gguf_variants._GgufVariantRequirement(
@@ -1460,6 +1524,7 @@ def test_gguf_progress_subtracts_new_job_completed_baseline(monkeypatch, tmp_pat
             ),
         ],
         "http",
+        hub_cache = entry.parent,
     )
 
     requirement = gguf_variants._GgufVariantRequirement(
@@ -1630,6 +1695,7 @@ def test_gguf_progress_complete_on_disk_ignores_full_baseline(monkeypatch, tmp_p
             ),
         ],
         "http",
+        hub_cache = entry.parent,
     )
 
     requirement = gguf_variants._GgufVariantRequirement(
@@ -2610,6 +2676,34 @@ def test_prepare_cache_for_transport_purges_only_requested_hashes(monkeypatch, t
     assert purged == 1
     assert not (blobs / "variant-main.incomplete").exists()
     assert (blobs / "shared-mmproj.incomplete").exists()
+
+
+def test_prepare_cache_for_transport_uses_captured_root(monkeypatch, tmp_path):
+    cache_a = tmp_path / "cache-a"
+    cache_b = tmp_path / "cache-b"
+    repo_name = "models--Org--Repo"
+    partial_a = cache_a / repo_name / "blobs" / "blob.incomplete"
+    partial_b = cache_b / repo_name / "blobs" / "blob.incomplete"
+    partial_a.parent.mkdir(parents = True)
+    partial_b.parent.mkdir(parents = True)
+    partial_a.write_bytes(b"a")
+    partial_b.write_bytes(b"b")
+    monkeypatch.setattr(
+        download_registry,
+        "hf_cache_root",
+        lambda create = False, root = None: root or cache_b,
+    )
+
+    purged = download_registry.prepare_cache_for_transport(
+        "model",
+        "Org/Repo",
+        download_registry.TRANSPORT_HTTP,
+        root = cache_a,
+    )
+
+    assert purged == 1
+    assert not partial_a.exists()
+    assert partial_b.exists()
 
 
 def _vision_cache_root(monkeypatch, tmp_path):

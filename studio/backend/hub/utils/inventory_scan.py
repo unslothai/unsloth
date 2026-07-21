@@ -36,7 +36,6 @@ from hub.utils.state_dir import RepoType
 from hub.utils.hf_cache_state import (
     INCOMPLETE_SUFFIX,
     has_incomplete_blobs,
-    hf_cache_root,
     hf_cache_roots,
     iter_repo_cache_dirs,
     latest_snapshot_dir,
@@ -205,16 +204,8 @@ def _compose_partial(*signals: Callable[[], bool]) -> bool:
     return any(signal() for signal in signals)
 
 
-def _state_applies_to_repo_cache_dir(repo_cache_dir: Optional[Path]) -> bool:
-    if repo_cache_dir is None:
-        return True
-    root = hf_cache_root()
-    if root is None:
-        return False
-    try:
-        return repo_cache_dir.resolve().parent == root.resolve()
-    except OSError:
-        return False
+def _hub_cache_for_repo_dir(repo_cache_dir: Optional[Path]) -> Optional[Path]:
+    return repo_cache_dir.parent if repo_cache_dir is not None else None
 
 
 def _legacy_partial(
@@ -266,12 +257,19 @@ def _repo_cache_dir_has_non_gguf_broken_snapshot_symlinks(repo_cache_dir: Path) 
     return False
 
 
-def _gguf_variant_manifest_blob_hashes(repo_id: str) -> frozenset[str]:
+def _gguf_variant_manifest_blob_hashes(
+    repo_id: str, repo_cache_dir: Optional[Path] = None
+) -> frozenset[str]:
     from hub.utils import download_manifest
 
     hashes: set[str] = set()
     for variant, _path in download_manifest.iter_variant_manifests("model", repo_id):
-        manifest = download_manifest.read_manifest("model", repo_id, variant)
+        manifest = download_manifest.read_manifest(
+            "model",
+            repo_id,
+            variant,
+            hub_cache = _hub_cache_for_repo_dir(repo_cache_dir),
+        )
         if manifest is None:
             continue
         for expected in manifest.expected_files:
@@ -296,7 +294,7 @@ def _snapshot_legacy_partial(
 ) -> bool:
     if repo_type != "model":
         return _legacy_partial(repo_type, repo_id, repo_cache_dir)
-    ignored_hashes = _gguf_variant_manifest_blob_hashes(repo_id)
+    ignored_hashes = _gguf_variant_manifest_blob_hashes(repo_id, repo_cache_dir)
     if repo_cache_dir is not None:
         return _repo_cache_dir_has_snapshot_legacy_partial(
             repo_cache_dir,
@@ -356,9 +354,12 @@ def _manifest_partial(
 ) -> bool:
     from hub.utils import download_manifest
 
-    if not _state_applies_to_repo_cache_dir(repo_cache_dir):
-        return False
-    manifest = download_manifest.read_manifest(repo_type, repo_id, variant)
+    manifest = download_manifest.read_manifest(
+        repo_type,
+        repo_id,
+        variant,
+        hub_cache = _hub_cache_for_repo_dir(repo_cache_dir),
+    )
     if manifest is None:
         return False
     resolved = (
@@ -433,10 +434,13 @@ def is_snapshot_partial(
     A manifest without a resolvable snapshot is partial: the worker got
     far enough to record expectations but did not leave a usable snapshot."""
     from hub.utils import download_manifest
-
-    state_applies = _state_applies_to_repo_cache_dir(repo_cache_dir)
     return _compose_partial(
-        lambda: state_applies and download_manifest.has_cancel_marker(repo_type, repo_id, None),
+        lambda: download_manifest.has_cancel_marker(
+            repo_type,
+            repo_id,
+            None,
+            hub_cache = _hub_cache_for_repo_dir(repo_cache_dir),
+        ),
         lambda: _snapshot_legacy_partial(repo_type, repo_id, repo_cache_dir),
         lambda: _manifest_partial(
             repo_type,
@@ -465,10 +469,13 @@ def is_variant_partial(
     caller is checking many variants of the same repo (see
     is_gguf_repo_partial for that usage)."""
     from hub.utils import download_manifest
-
-    state_applies = _state_applies_to_repo_cache_dir(repo_cache_dir)
     return _compose_partial(
-        lambda: state_applies and download_manifest.has_cancel_marker("model", repo_id, variant),
+        lambda: download_manifest.has_cancel_marker(
+            "model",
+            repo_id,
+            variant,
+            hub_cache = _hub_cache_for_repo_dir(repo_cache_dir),
+        ),
         lambda: bool(
             incomplete_blob_hashes
             and variant_blob_hashes
@@ -507,22 +514,36 @@ def is_gguf_repo_partial(repo_id: str, repo_cache_dir: Optional[Path] = None) ->
     from hub.utils import download_manifest
 
     has_legacy_partial = _legacy_partial("model", repo_id, repo_cache_dir)
-    state_applies = _state_applies_to_repo_cache_dir(repo_cache_dir)
     snapshot_dir = resolve_snapshot_dir_for_scan(
         "model",
         repo_id,
         repo_cache_dir,
     )
     variants: set[str] = set(_completed_gguf_variants(snapshot_dir))
-    if state_applies:
-        for variant, _path in download_manifest.iter_variant_manifests(
-            "model",
-            repo_id,
+    hub_cache = _hub_cache_for_repo_dir(repo_cache_dir)
+    for variant, _path in download_manifest.iter_variant_manifests(
+        "model",
+        repo_id,
+    ):
+        if (
+            download_manifest.read_manifest(
+                "model",
+                repo_id,
+                variant,
+                hub_cache = hub_cache,
+            )
+            is not None
         ):
             variants.add(variant)
-        for variant, _path in download_manifest.iter_variant_markers(
+    for variant, _path in download_manifest.iter_variant_markers(
+        "model",
+        repo_id,
+    ):
+        if download_manifest.has_cancel_marker(
             "model",
             repo_id,
+            variant,
+            hub_cache = hub_cache,
         ):
             variants.add(variant)
     if not variants:
@@ -557,14 +578,19 @@ def partial_transport_for(
     available."""
     from hub.utils import download_manifest
 
-    if not _state_applies_to_repo_cache_dir(repo_cache_dir):
-        return None
+    hub_cache = _hub_cache_for_repo_dir(repo_cache_dir)
     marker_transport = download_manifest.read_cancel_marker_transport(
         repo_type,
         repo_id,
         variant,
+        hub_cache = hub_cache,
     )
     if marker_transport is not None:
         return marker_transport
-    manifest = download_manifest.read_manifest(repo_type, repo_id, variant)
+    manifest = download_manifest.read_manifest(
+        repo_type,
+        repo_id,
+        variant,
+        hub_cache = hub_cache,
+    )
     return manifest.transport if manifest is not None else None

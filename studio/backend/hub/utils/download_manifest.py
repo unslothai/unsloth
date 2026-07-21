@@ -77,6 +77,7 @@ class Manifest:
     started_at: str
     expected_files: tuple[ExpectedFile, ...]
     transport: Optional[str] = None
+    hub_cache: Optional[str] = None
 
 
 @dataclass(frozen = True)
@@ -84,6 +85,39 @@ class VerifyResult:
     ok: bool
     missing: tuple[str, ...]
     size_mismatched: tuple[str, ...]
+
+
+def _canonical_hub_cache(hub_cache: Optional[str | Path] = None) -> Optional[str]:
+    if hub_cache is None:
+        try:
+            from utils.hf_cache_settings import get_hf_cache_paths
+            hub_cache = get_hf_cache_paths().hub_cache
+        except Exception:
+            return None
+    try:
+        return str(Path(hub_cache).expanduser().resolve(strict = False))
+    except (OSError, RuntimeError, ValueError):
+        return str(hub_cache)
+
+
+def _hub_cache_key(hub_cache: Optional[str | Path] = None) -> Optional[str]:
+    canonical = _canonical_hub_cache(hub_cache)
+    return os.path.normcase(canonical) if canonical is not None else None
+
+
+def _state_applies_to_hub_cache(data: dict, hub_cache: Optional[str | Path]) -> bool:
+    if hub_cache is None:
+        return True
+    requested = _hub_cache_key(hub_cache)
+    if requested is None:
+        return False
+    recorded = data.get("hub_cache")
+    if isinstance(recorded, str) and recorded:
+        return _hub_cache_key(recorded) == requested
+    # State written before cache ownership was recorded belongs only to the
+    # currently selected cache, matching the legacy scanner behavior.
+    current = _hub_cache_key()
+    return current is not None and current == requested
 
 
 def _atomic_write_json(path: Path, payload: dict) -> bool:
@@ -124,6 +158,8 @@ def write_manifest(
     variant: Optional[str],
     expected_files: Sequence[ExpectedFile],
     transport: Optional[str] = None,
+    *,
+    hub_cache: Optional[str | Path] = None,
 ) -> bool:
     """Write/overwrite the manifest for this triple. Best-effort.
 
@@ -149,6 +185,7 @@ def write_manifest(
             for f in expected_files
         ],
         "transport": transport,
+        "hub_cache": _canonical_hub_cache(hub_cache),
     }
     return _atomic_write_json(path, payload)
 
@@ -157,6 +194,8 @@ def read_manifest(
     repo_type: RepoType,
     repo_id: str,
     variant: Optional[str] = None,
+    *,
+    hub_cache: Optional[str | Path] = None,
 ) -> Optional[Manifest]:
     """Return the manifest if present and parseable; ``None`` otherwise.
 
@@ -180,6 +219,8 @@ def read_manifest(
         logger.debug("Could not read manifest %s: %s", path, exc)
         return None
     if not isinstance(data, dict):
+        return None
+    if not _state_applies_to_hub_cache(data, hub_cache):
         return None
     if data.get("version") != _MANIFEST_VERSION:
         logger.debug(
@@ -216,6 +257,7 @@ def read_manifest(
         started_at = str(data.get("started_at", "")),
         expected_files = tuple(expected),
         transport = transport if transport in ("http", "xet") else None,
+        hub_cache = data.get("hub_cache") if isinstance(data.get("hub_cache"), str) else None,
     )
 
 
@@ -289,6 +331,8 @@ def write_cancel_marker(
     repo_id: str,
     variant: Optional[str] = None,
     transport: Optional[str] = None,
+    *,
+    hub_cache: Optional[str | Path] = None,
 ) -> bool:
     """Record that this triple was cancelled. Idempotent across repeated cancels.
 
@@ -306,6 +350,7 @@ def write_cancel_marker(
         "variant": variant,
         "transport": transport,
         "cancelled_at": datetime.now(timezone.utc).isoformat(),
+        "hub_cache": _canonical_hub_cache(hub_cache),
     }
     return _atomic_write_json(path, payload)
 
@@ -314,6 +359,8 @@ def read_cancel_marker_transport(
     repo_type: RepoType,
     repo_id: str,
     variant: Optional[str] = None,
+    *,
+    hub_cache: Optional[str | Path] = None,
 ) -> Optional[str]:
     """Return the transport recorded in the cancel marker, or ``None`` if no
     marker exists or it is unreadable.
@@ -339,6 +386,8 @@ def read_cancel_marker_transport(
         logger.debug("Could not read cancel marker %s: %s", path, exc)
         return None
     if not isinstance(data, dict):
+        return None
+    if not _state_applies_to_hub_cache(data, hub_cache):
         return None
     version = data.get("version")
     if version == _LEGACY_MARKER_VERSION:
@@ -375,18 +424,30 @@ def has_cancel_marker(
     repo_type: RepoType,
     repo_id: str,
     variant: Optional[str] = None,
+    *,
+    hub_cache: Optional[str | Path] = None,
 ) -> bool:
-    """File-existence check only. Body is never read.
+    """Return whether a cancel marker applies to this cache.
 
-    Fail-closed: a corrupt marker still returns ``True`` because the
-    file's existence is the signal (the user once cancelled this
-    triple, even if the body is unreadable).
+    Without ``hub_cache``, file existence remains the fail-closed signal. With
+    a cache filter, the recorded owner is checked. Legacy or corrupt markers
+    retain their previous behavior for the current cache only.
     """
     path = marker_path(repo_type, repo_id, variant)
     if path is None:
         return False
     try:
-        return path.is_file()
+        if not path.is_file():
+            return False
+        if hub_cache is None:
+            return True
+        try:
+            data = json.loads(path.read_text(encoding = "utf-8"))
+        except (OSError, ValueError):
+            data = {}
+        if not isinstance(data, dict):
+            data = {}
+        return _state_applies_to_hub_cache(data, hub_cache)
     except OSError:
         return False
 
