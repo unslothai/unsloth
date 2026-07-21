@@ -288,6 +288,64 @@ def test_sharded_index_credited_in_transformer_submodule(home, tmp_path, monkeyp
     assert _blocked(monkeypatch, snap) is False
 
 
+def test_sharded_index_credited_in_clip_and_mlm_submodules(home, tmp_path, monkeypatch):
+    # CLIPModel and MLMTransformer are Transformer subclasses loaded via AutoModel.from_pretrained,
+    # which honors model.safetensors.index.json -- so a sharded-safetensors CLIP/MLM submodule with a
+    # legacy pytorch_model.bin sibling must NOT block offline.
+    index = json.dumps({"weight_map": {"w": "model-00001-of-00001.safetensors"}})
+    for path, mtype, commit in (
+        ("0_CLIPModel", "sentence_transformers.models.CLIPModel.CLIPModel", "cclip"),
+        ("0_MLM", "sentence_transformers.sparse_encoder.models.MLMTransformer.MLMTransformer", "cmlm"),
+    ):
+        snap = _snap(
+            tmp_path,
+            {
+                "modules.json": json.dumps([{"path": path, "type": mtype}]),
+                f"{path}/pytorch_model.bin": b"pickle",
+                f"{path}/model.safetensors.index.json": index,
+                f"{path}/model-00001-of-00001.safetensors": b"\0",
+            },
+            commit = commit,
+        )
+        assert _blocked(monkeypatch, snap) is False, mtype
+
+
+def test_root_non_transformer_module_pickle_blocks_despite_shard_index(home, tmp_path, monkeypatch):
+    # A modules.json ROOT StaticEmbedding module loads via load_torch_weights, which ignores the
+    # sharded safetensors index and reads pytorch_model.bin -- so a complete ROOT shard index must
+    # NOT suppress the live root pickle (crediting snap unconditionally would).
+    index = json.dumps({"weight_map": {"w": "model-00001-of-00001.safetensors"}})
+    snap = _snap(
+        tmp_path,
+        {
+            "modules.json": json.dumps(
+                [{"path": "", "type": "sentence_transformers.models.StaticEmbedding.StaticEmbedding"}]
+            ),
+            "pytorch_model.bin": b"pickle",
+            "model.safetensors.index.json": index,
+            "model-00001-of-00001.safetensors": b"\0",
+        },
+        commit = "crootse",
+    )
+    assert _blocked(monkeypatch, snap) is True
+
+
+def test_escaping_module_path_blocks(home, tmp_path, monkeypatch):
+    # A modules.json module path that escapes the snapshot ("../evil") is resolved OUTSIDE the
+    # snapshot by SentenceTransformer, so the gate fails closed rather than silently dropping it.
+    snap = _snap(
+        tmp_path,
+        {
+            "modules.json": json.dumps(
+                [{"path": "../evil", "type": "sentence_transformers.models.Transformer.Transformer"}]
+            ),
+            "model.safetensors": b"\0",
+        },
+        commit = "cescmod",
+    )
+    assert _blocked(monkeypatch, snap) is True
+
+
 def test_sharded_index_not_credited_in_non_transformer_submodule(home, tmp_path, monkeypatch):
     # The same layout under a WordEmbeddings module (load_torch_weights, no index) still blocks: the
     # credit is extended ONLY to Transformer-typed dirs, never to a module that reads the pickle.

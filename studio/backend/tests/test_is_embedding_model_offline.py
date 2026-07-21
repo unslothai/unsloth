@@ -1426,6 +1426,47 @@ def test_st_repo_id_candidates_keeps_basic_model_bare(monkeypatch):
     assert mc._st_repo_id_candidates("some-st-model")[0] == "sentence-transformers/some-st-model"
 
 
+def test_dir_weight_set_pickle_behind_bad_safetensors_index_is_incomplete(tmp_path):
+    # #7218: transformers probes the safetensors index BEFORE the pickle bin, so pytorch_model.bin
+    # behind an incomplete model.safetensors.index.json is NOT complete -- the loader follows the bad
+    # index and fails instead of falling back to the bin.
+    (tmp_path / "pytorch_model.bin").write_bytes(b"\0")
+    (tmp_path / "model.safetensors.index.json").write_text(
+        json.dumps({"weight_map": {"w": "model-00001-of-00002.safetensors"}})  # a mapped shard absent
+    )
+    names = {p.name for p in tmp_path.iterdir()}
+    assert mc._dir_weight_set_is_complete(tmp_path, names) is False
+
+
+def test_dir_weight_set_pickle_alone_is_complete(tmp_path):
+    # Control: a plain pytorch_model.bin with no safetensors index is complete.
+    (tmp_path / "pytorch_model.bin").write_bytes(b"\0")
+    names = {p.name for p in tmp_path.iterdir()}
+    assert mc._dir_weight_set_is_complete(tmp_path, names) is True
+
+
+def test_dir_weight_set_decoy_shard_set_is_incomplete(tmp_path):
+    # #7218: model-*.bin + model.bin.index.json is a decoy shard set no loader probes (real
+    # safetensors shards are model-*.safetensors; real pickle shards pytorch_model-*.bin), so it is
+    # NOT complete.
+    (tmp_path / "model-00001-of-00001.bin").write_bytes(b"\0")
+    (tmp_path / "model.bin.index.json").write_text(
+        json.dumps({"weight_map": {"w": "model-00001-of-00001.bin"}})
+    )
+    names = {p.name for p in tmp_path.iterdir()}
+    assert mc._dir_weight_set_is_complete(tmp_path, names) is False
+
+
+def test_dir_weight_set_real_sharded_safetensors_is_complete(tmp_path):
+    # Control: a real sharded safetensors set still validates after the decoy tightening.
+    (tmp_path / "model-00001-of-00001.safetensors").write_bytes(b"\0")
+    (tmp_path / "model.safetensors.index.json").write_text(
+        json.dumps({"weight_map": {"w": "model-00001-of-00001.safetensors"}})
+    )
+    names = {p.name for p in tmp_path.iterdir()}
+    assert mc._dir_weight_set_is_complete(tmp_path, names) is True
+
+
 def test_online_verdict_stops_applying_when_the_revision_advances(tmp_path, monkeypatch):
     # A verdict records that the Hub tagged ONE revision an embedder. Once refs/main
     # advances -- e.g. to a complete but non-embedding Transformer snapshot -- the old

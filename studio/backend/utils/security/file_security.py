@@ -470,15 +470,36 @@ def _router_child_dirs(root, snap) -> set:
     return children
 
 
+def _load_root_or_raise(snap, raw_rel: str):
+    """Resolve a repo-declared load path (a ``modules.json`` module ``path`` or a ``load_subdirs``
+    entry) to an in-snapshot directory, or None for a ROOT-like path (empty / ``.`` -- loads from
+    *snap*, already a root). Raises :class:`_SnapshotEscapeError` for an ABSOLUTE or
+    snapshot-ESCAPING path: ``SentenceTransformer`` resolves such a declared path OUTSIDE the
+    snapshot and would deserialize an external ``pytorch_model.bin`` the gate cannot scan, so the
+    cache is unverifiable and must fail closed rather than silently drop the module."""
+    root = _canonical_load_dir(snap, raw_rel)
+    if root is not None:
+        return root
+    import posixpath
+
+    norm = posixpath.normpath(_normalize_repo_path(raw_rel).strip("/"))
+    if norm in ("", "."):
+        return None  # a root module loads from snap, already a root
+    raise _SnapshotEscapeError(f"declared load path escapes the snapshot: {raw_rel!r}")
+
+
 def _st_load_roots(snap, load_subdirs = ()) -> set:
     """Directories a load opens ``from_pretrained`` on: the snapshot root, every module path
     ``modules.json`` declares, and each passed-in ``load_subdirs`` entry. A SentenceTransformer
     module can load from a directory without ``config.json`` -- e.g. a ``0_WordEmbeddings/``
     module with ``wordembedding_config.json`` + ``pytorch_model.bin`` -- so a pickle there is
-    still deserialized and must be treated as a load root."""
+    still deserialized and must be treated as a load root.
+
+    An absolute or snapshot-escaping declared path fails closed (:class:`_SnapshotEscapeError`): the
+    loader resolves it outside the snapshot, so the cache cannot be verified."""
     roots = {snap}
     for subdir in load_subdirs or ():
-        root = _canonical_load_dir(snap, str(subdir))
+        root = _load_root_or_raise(snap, str(subdir))
         if root is not None:
             roots.add(root)
     try:
@@ -489,7 +510,7 @@ def _st_load_roots(snap, load_subdirs = ()) -> set:
     if isinstance(modules, list):
         for module in modules:
             if isinstance(module, dict):
-                root = _canonical_load_dir(snap, str(module.get("path") or ""))
+                root = _load_root_or_raise(snap, str(module.get("path") or ""))
                 if root is not None:
                     roots.add(root)
     # A Router/Asym module declares its child sub-modules in router_config.json, not modules.json,
@@ -509,12 +530,15 @@ def _st_load_roots(snap, load_subdirs = ()) -> set:
 
 
 def _is_transformer_module_type(type_str) -> bool:
-    """True for the SentenceTransformer ``Transformer`` module class, whose loader is
-    ``AutoModel.from_pretrained`` and therefore honors a ``model.safetensors.index.json`` shard set.
-    ``Dense`` / ``WordEmbeddings`` / ``StaticEmbedding`` read a single flat weight file through
+    """True for a Transformer-SHAPED SentenceTransformer module -- ``Transformer`` and its subclasses
+    ``MLMTransformer`` / ``CLIPModel``, all of which load via ``AutoModel.from_pretrained`` and so
+    honor a ``model.safetensors.index.json`` shard set. Mirrors the classifier's
+    ``_ST_TRANSFORMER_SHAPED_MODULE_NAMES`` + ``"transformer" in cls`` dispatch. ``Dense`` /
+    ``WordEmbeddings`` / ``StaticEmbedding`` read a single flat weight file through
     ``Module.load_torch_weights`` and never consult an index, so their sharded-index credit stays
     gated off."""
-    return str(type_str).rsplit(".", 1)[-1] == "Transformer"
+    cls = str(type_str).rsplit(".", 1)[-1].strip().lower()
+    return "transformer" in cls or cls == "clipmodel"
 
 
 def _transformer_load_roots(snap) -> set:
@@ -540,6 +564,32 @@ def _transformer_load_roots(snap) -> set:
                 if root is not None:
                     roots.add(root)
     return roots
+
+
+def _root_honors_sharded_index(snap) -> bool:
+    """Whether the snapshot ROOT is loaded through an index-honoring path
+    (``AutoModel.from_pretrained``). True with no / unreadable ``modules.json`` (a plain
+    ``from_pretrained`` root, or one that loads no root weights at all), or when a ROOT module is
+    Transformer-shaped. False when ``modules.json`` declares a ROOT module of a NON-Transformer type
+    (``StaticEmbedding`` / ``WordEmbeddings`` / ``Dense`` ...), whose ``load()`` reads
+    ``pytorch_model.bin`` and ignores the sharded index -- crediting a root shard index would then
+    suppress a LIVE root pickle."""
+    import json
+    import posixpath
+
+    try:
+        modules = json.loads((snap / "modules.json").read_text(encoding = "utf-8"))
+    except (OSError, ValueError):
+        return True
+    if not isinstance(modules, list):
+        return True
+    for module in modules:
+        if not isinstance(module, dict):
+            continue
+        norm = posixpath.normpath(_normalize_repo_path(str(module.get("path") or "")).strip("/"))
+        if norm in ("", ".") and not _is_transformer_module_type(module.get("type")):
+            return False  # a non-Transformer ROOT module reads the root pickle, ignoring the index
+    return True
 
 
 class _SnapshotEscapeError(OSError):
@@ -568,10 +618,15 @@ def _cached_pickle_weight_paths(snap, load_subdirs = ()) -> list:
     Raises ``OSError`` if the snapshot tree cannot be enumerated (``rglob`` failure), so the offline
     caller fails CLOSED rather than treat an unreadable cache as pickle-free."""
     roots = _st_load_roots(snap, load_subdirs)
-    # Dirs whose loader (AutoModel.from_pretrained) honors a sharded safetensors index: the snapshot
-    # root plus each Transformer-typed module subdir. Elsewhere a sharded index is NOT a substitute
-    # for a live pickle (see _dir_has_loadable_safetensors).
-    index_honoring = _transformer_load_roots(snap) | {snap}
+    # Dirs whose loader (AutoModel.from_pretrained) honors a sharded safetensors index: each
+    # Transformer-typed module subdir, plus the snapshot root -- but ONLY when the root is actually
+    # loaded through a Transformer/from_pretrained path. A modules.json root module of a
+    # non-Transformer type reads pytorch_model.bin and ignores the index, so crediting the root shard
+    # index there would suppress a live root pickle. Elsewhere a sharded index is NOT a substitute for
+    # a live pickle (see _dir_has_loadable_safetensors).
+    index_honoring = _transformer_load_roots(snap)
+    if _root_honors_sharded_index(snap):
+        index_honoring = index_honoring | {snap}
     by_dir_pickle: dict = {}  # directory -> [Path] (EVERY case variant, not last-wins)
     by_dir_files: dict = {}  # directory -> {lower-name: Path} (safetensors credit; last-wins is safe)
     # A whole-tree rglob failure propagates (fail-closed); a single unstattable entry is skipped.

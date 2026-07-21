@@ -2218,6 +2218,12 @@ def _known_embedder(model_name: str, cache_key: tuple, active_commit: Optional[s
 # training_args.bin / adapter-only artifact can't pass offline validation then fail on load.
 _ST_WEIGHT_FILE_RE = re.compile(r"^(model|pytorch_model)(-\d+-of-\d+)?\.(safetensors|bin)$")
 _ST_SHARD_RE = re.compile(r"^(model|pytorch_model)-(\d+)-of-(\d+)\.(safetensors|bin)$")
+# Only these (stem, ext) shard sets exist in transformers / sentence-transformers: safetensors shards
+# are named ``model-*.safetensors`` (index ``model.safetensors.index.json``), pickle shards
+# ``pytorch_model-*.bin`` (index ``pytorch_model.bin.index.json``). The crossed combinations
+# (``model-*.bin`` / ``pytorch_model-*.safetensors`` and their index maps) are decoys no loader ever
+# probes, so a cache carrying only one of them is NOT loadable.
+_ST_SHARD_EXT_FOR_STEM = {"model": "safetensors", "pytorch_model": "bin"}
 
 # A Transformer module also loads an AutoTokenizer, so weights without any tokenizer asset
 # fail the local_files_only load. Any ONE of these suffices -- a permissive union, so only
@@ -2259,26 +2265,14 @@ def _dir_has_complete_torch_weights(names: set) -> bool:
     shards: dict = {}
     for name in names:
         m = _ST_SHARD_RE.match(name)
-        if m:
+        # Only a valid stem<->ext shard set counts; a decoy such as model-*.bin is never probed.
+        if m and _ST_SHARD_EXT_FOR_STEM.get(m.group(1)) == m.group(4):
             shards.setdefault((m.group(1), m.group(4), int(m.group(3))), set()).add(int(m.group(2)))
     for (stem, ext, total), indices in shards.items():
         index_map = f"{stem}.{ext}.index.json"
         if total > 0 and indices == set(range(1, total + 1)) and index_map in names:
             return True
     return False
-
-
-# Weight-index files a ``from_pretrained`` / sentence-transformers load follows to locate sharded
-# weights. Its ``weight_map`` is AUTHORITATIVE about which shards the load reads, so every mapped
-# shard must be present -- the ``model-*-of-*`` FILENAME numbering above is only a proxy for it.
-# All (stem, ext) combinations of the base weight set are listed so a ``pytorch_model.bin`` shard
-# set is validated the same way as a ``model.safetensors`` one.
-_ST_WEIGHT_INDEX_FILES = (
-    "model.safetensors.index.json",
-    "model.bin.index.json",
-    "pytorch_model.safetensors.index.json",
-    "pytorch_model.bin.index.json",
-)
 
 
 def _index_weight_set_complete(index_path: Path) -> Optional[bool]:
@@ -2327,27 +2321,25 @@ def _dir_weight_set_is_complete(dir_path: Path, names: set) -> bool:
     (authoritative, resolved relative to *dir_path*, subdirectory values included); else the
     filename-numbering shard heuristic (:func:`_dir_has_complete_torch_weights`) as a fallback for
     an unreadable / stub index. Never raises."""
-    # 1. An unsharded base weight the loader actually probes: model.safetensors (safetensors) or
-    #    pytorch_model.bin (pickle). from_pretrained / Module.load_torch_weights never read
-    #    ``model.bin`` or ``pytorch_model.safetensors``, so a cache holding only one of those is NOT
-    #    loadable (the security gate treats ``pytorch_model.safetensors`` as a decoy for the same
-    #    reason) -- classifying it as complete accepts a snapshot the local_files_only load then 409s.
-    if "model.safetensors" in names or "pytorch_model.bin" in names:
+    # Mirror the from_pretrained / sentence-transformers probe ORDER exactly: the FIRST present weight
+    # source wins, and a present safetensors weight/index makes the loader IGNORE a sibling pickle.
+    #   1. unsharded model.safetensors
+    #   2. sharded model.safetensors.index.json  (present index is authoritative -> must fully resolve)
+    #   3. unsharded pytorch_model.bin
+    #   4. sharded pytorch_model.bin.index.json   (present index is authoritative -> must fully resolve)
+    # from_pretrained / Module.load_torch_weights never read ``model.bin`` or
+    # ``pytorch_model.safetensors`` (nor their decoy index maps), so those do not count. A pickle
+    # sibling behind a malformed/incomplete safetensors index does NOT rescue the load -- the loader
+    # follows the bad index and fails rather than falling back to the bin.
+    if "model.safetensors" in names:
         return True
-    # 2. A PRESENT weight-index is authoritative: transformers / sentence-transformers open and parse
-    #    it to locate the sharded weights, so if any index file exists it must fully resolve. One that
-    #    maps a complete shard set validates; one missing a mapped shard OR unreadable / lacking a
-    #    ``weight_map`` (a stub or truncated write) makes the local_files_only load fail -- so do NOT
-    #    fall back to the filename-numbering heuristic when an index file is present.
-    saw_index = False
-    for index_name in _ST_WEIGHT_INDEX_FILES:
-        if index_name in names:
-            saw_index = True
-            if _index_weight_set_complete(dir_path / index_name) is True:
-                return True
-    if saw_index:
-        return False
-    # 3. No index file at all: the filename-numbering shard heuristic on basenames.
+    if "model.safetensors.index.json" in names:
+        return _index_weight_set_complete(dir_path / "model.safetensors.index.json") is True
+    if "pytorch_model.bin" in names:
+        return True
+    if "pytorch_model.bin.index.json" in names:
+        return _index_weight_set_complete(dir_path / "pytorch_model.bin.index.json") is True
+    # No loader-probed base weight or index by exact name: the filename-numbering shard heuristic.
     return _dir_has_complete_torch_weights(names)
 
 
