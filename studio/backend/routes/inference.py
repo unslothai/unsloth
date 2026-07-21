@@ -4598,7 +4598,10 @@ async def _load_model_impl(request: LoadRequest, fastapi_request: Request, curre
                 # llama.cpp build is CPU-only. A CPU-only build ignores CUDA_VISIBLE_DEVICES,
                 # so the pin would silently run on CPU while /load reports gpu_ids active --
                 # reject before teardown here too (mirrors the non-CUDA resolvable check) (#7188).
-                if await asyncio.to_thread(_llama_backend._backend_lacks_gpu_lib):
+                # Diffusion GGUF models bypass llama-server (the diffusion runner
+                # handles gpu_ids via --gpu/DG_GPU), so the llama.cpp GPU-lib
+                # check is irrelevant for them (#7188).
+                if _classify_diffusion_gguf(config) is not True and await asyncio.to_thread(_llama_backend._backend_lacks_gpu_lib):
                     raise HTTPException(
                         status_code = 400,
                         detail = (
@@ -5272,8 +5275,9 @@ async def validate_model(
             if get_device() == DeviceType.CUDA and not _gguf_vulkan_build:
                 # A CPU-only llama.cpp build ignores CUDA_VISIBLE_DEVICES; the CUDA resolver
                 # can't see that, so reject a pin it would silently run on CPU (mirrors /load
-                # and the non-CUDA resolvable check) (#7188).
-                if await asyncio.to_thread(_loaded_llama._backend_lacks_gpu_lib):
+                # and the non-CUDA resolvable check). Diffusion GGUF models bypass
+                # llama-server, so the llama.cpp GPU-lib check is irrelevant (#7188).
+                if _classify_diffusion_gguf(config) is not True and await asyncio.to_thread(_loaded_llama._backend_lacks_gpu_lib):
                     raise HTTPException(
                         status_code = 400,
                         detail = (

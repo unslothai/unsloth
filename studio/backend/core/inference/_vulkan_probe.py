@@ -76,12 +76,34 @@ def main() -> int:
     else:
         base_name, vk_name = "libggml-base.so", "libggml-vulkan.so"
 
+    def _find_lib(directory, stem):
+        """Find ``stem`` or a versioned ``stem.N`` in *directory*.
+
+        Prefers the unversioned name; falls back to the first versioned match.
+        Split-lib installs often ship only the versioned runtime soname
+        (e.g. ``libggml-vulkan.so.0``) without the dev-only unversioned symlink,
+        so a hard-coded unversioned-only load would miss a real Vulkan backend
+        that the detector already classified correctly (#7188).
+        """
+        path = os.path.join(directory, stem)
+        if os.path.isfile(path):
+            return path
+        for entry in sorted(os.listdir(directory)):
+            if entry.startswith(stem + "."):
+                return os.path.join(directory, entry)
+        return None
+
     # RTLD_GLOBAL exposes ggml-base's symbols to ggml-vulkan on POSIX. getattr
     # falls back to 0 where the flag doesn't exist (Windows CDLL ignores mode).
     _rtld_global = getattr(ctypes, "RTLD_GLOBAL", 0)
+    base_path = _find_lib(bindir, base_name)
+    vk_path = _find_lib(bindir, vk_name)
+    if not base_path or not vk_path:
+        print(f"ggml-vulkan load failed: library not found in {bindir}", file=sys.stderr)
+        return 1
     try:
-        base = ctypes.CDLL(os.path.join(bindir, base_name), mode = _rtld_global)
-        lib = ctypes.CDLL(os.path.join(bindir, vk_name), mode = _rtld_global)
+        base = ctypes.CDLL(base_path, mode = _rtld_global)
+        lib = ctypes.CDLL(vk_path, mode = _rtld_global)
     except OSError as e:
         print(f"ggml-vulkan load failed: {e}", file = sys.stderr)
         return 1
