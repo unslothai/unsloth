@@ -85,10 +85,11 @@ _MAX_SYNTHESIS_EVIDENCE_CHARS = 32_000
 # The synthesis prompt must fit the loaded context or it is silently truncated and the report
 # degenerates (echoes the evidence tail). Studio defaults context to 2048 tokens, far below the
 # cap above, so the evidence budget adapts to the loaded context: reserve tokens for the prompt
-# scaffolding, then convert the remainder to chars. Unknown context keeps the full cap.
+# scaffolding (system prompt, plan, source catalogs) AND the generated report, then convert the
+# remainder to chars. Unknown context keeps the full cap.
 _MIN_SYNTHESIS_EVIDENCE_CHARS = 1_500
 _SYNTHESIS_EVIDENCE_CHARS_PER_TOKEN = 3.0
-_SYNTHESIS_CONTEXT_RESERVE_TOKENS = 2_048
+_SYNTHESIS_CONTEXT_RESERVE_TOKENS = 4_096
 # Below this loaded context the prompt scaffolding alone fills the window and the grounded
 # report degenerates, so grounding is skipped (snippet-only) for smaller loads.
 _AUTO_SCRAPE_MIN_CONTEXT_TOKENS = 8_192
@@ -443,16 +444,44 @@ def _research_question_context(thread_id: str, user_message_id: str) -> tuple[st
     return question, json.dumps(turns, ensure_ascii = False)
 
 
+def _positive_int_or_none(value: object) -> int | None:
+    return value if isinstance(value, int) and not isinstance(value, bool) and value > 0 else None
+
+
 def _loaded_context_length() -> int | None:
-    """Best-effort read of the active model's context window in tokens, or None if unknown."""
+    """Best-effort read of the active model's context window in tokens, or None if unknown.
+
+    Mirrors routes.inference._monitor_context_length (llama.cpp backend, else the inference
+    orchestrator) so grounding sizes evidence to the same context the API layer serves. The ML
+    backends live in a worker subprocess, so the low-level core.inference.inference singleton is
+    unpopulated in this (main) process and importing it pulls in the ML stack; read the
+    orchestrator the routes use instead."""
+    # GGUF / llama.cpp keeps context on its own backend (checked first, like the API layer).
     try:
-        from core.inference.inference import get_inference_backend
+        from routes.inference import get_llama_cpp_backend
+
+        llama = get_llama_cpp_backend()
+        if getattr(llama, "is_loaded", False):
+            ctx = _positive_int_or_none(getattr(llama, "context_length", None))
+            if ctx is not None:
+                return ctx
+    except Exception:
+        logger.debug("research.context_probe_llama_failed", exc_info = True)
+    # Native / transformers: the orchestrator the API layer reads (not the subprocess singleton).
+    try:
+        from core.inference import get_inference_backend
 
         backend = get_inference_backend()
         name = getattr(backend, "active_model_name", None)
-        if name:
-            ctx = (getattr(backend, "models", {}).get(name) or {}).get("context_length")
-            if isinstance(ctx, int) and not isinstance(ctx, bool) and ctx > 0:
+        models = getattr(backend, "models", {}) or {}
+        info = models.get(name) if (name and isinstance(models, dict)) else None
+        for candidate in (
+            (info or {}).get("context_length"),
+            getattr(backend, "context_length", None),
+            getattr(backend, "max_seq_length", None),
+        ):
+            ctx = _positive_int_or_none(candidate)
+            if ctx is not None:
                 return ctx
     except Exception:
         logger.debug("research.context_probe_failed", exc_info = True)
@@ -858,21 +887,25 @@ class ResearchSupervisor:
         step_sources: list[dict],
         fetched_urls: set[str],
         *,
+        limit: int,
         tool_timeout: int,
         website_policy: dict | None,
     ) -> tuple[str, list[str]]:
-        """Concurrently read the top few of this step's accepted source URLs, rank their
+        """Concurrently read up to ``limit`` of this step's accepted source URLs, rank their
         content against the research question with the knowledge-base embedding model, and
         return the most relevant chunks as ``<chunk>`` evidence plus the URLs actually read.
         URLs are already access checked and deduplicated by the caller, so no new sources are
         created. Failures, timeouts, unreadable pages, and low-relevance chunks are dropped;
         the caller enforces cancellation."""
+        cap = max(0, min(limit, _AUTO_SCRAPE_TOP_K))
+        if cap <= 0:
+            return "", []
         targets = []
         for source in step_sources:
             url = str(source.get("url") or "")
             if url and url not in fetched_urls:
                 targets.append(source)
-            if len(targets) >= _AUTO_SCRAPE_TOP_K:
+            if len(targets) >= cap:
                 break
         if not targets:
             return "", []
@@ -1782,6 +1815,7 @@ class ResearchSupervisor:
                     question,
                     step_sources,
                     fetched_urls,
+                    limit = max_auto_scrape,
                     tool_timeout = tool_timeout,
                     website_policy = website_policy,
                 )

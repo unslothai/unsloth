@@ -75,7 +75,11 @@ def retrieve_web_chunks(
     overlap = config.CHUNK_OVERLAP if overlap is None else overlap
     count = embeddings.token_counter(model)
 
-    conn = rag_db.get_connection()
+    try:
+        conn = rag_db.get_connection()
+    except Exception:
+        logger.warning("research.web_rank_failed", exc_info = True)
+        return "", []
     scope = f"research_scrape_{uuid.uuid4().hex}"
     doc_ids: list[str] = []
     try:

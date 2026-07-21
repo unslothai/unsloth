@@ -196,6 +196,31 @@ def test_synthesis_evidence_budget_tracks_loaded_context(monkeypatch):
     assert worker._synthesis_evidence_budget() == worker._MAX_SYNTHESIS_EVIDENCE_CHARS
 
 
+def test_loaded_context_length_reads_orchestrator(monkeypatch):
+    # The probe must read the inference ORCHESTRATOR (what the API layer serves), not the
+    # low-level in-subprocess singleton that stays unpopulated in the main process. Patch the
+    # real accessor (not _loaded_context_length) so this exercises the production wiring; a probe
+    # that read the wrong backend would return None here and the adaptive budget would not engage.
+    import core.inference as core_inference
+    from core import research_runs as worker
+
+    class _Orchestrator:
+        active_model_name = "Qwen2.5-14B-Instruct"
+        models = {"Qwen2.5-14B-Instruct": {"context_length": 8192}}
+
+    monkeypatch.setattr(core_inference, "get_inference_backend", lambda: _Orchestrator(), raising = False)
+    assert worker._loaded_context_length() == 8192
+    assert worker._synthesis_evidence_budget() < worker._MAX_SYNTHESIS_EVIDENCE_CHARS
+
+    class _NoModel:
+        active_model_name = None
+        models: dict = {}
+
+    monkeypatch.setattr(core_inference, "get_inference_backend", lambda: _NoModel(), raising = False)
+    assert worker._loaded_context_length() is None
+    assert worker._synthesis_evidence_budget() == worker._MAX_SYNTHESIS_EVIDENCE_CHARS
+
+
 def test_bounded_synthesis_evidence_respects_small_budget():
     from core import research_runs as worker
 
@@ -1544,7 +1569,7 @@ def test_auto_scrape_respects_char_budgets(research_home, monkeypatch):
     section, fetched = asyncio.run(
         supervisor._auto_scrape_sources(
             {"id": "run-x"}, "question", step_sources, set(),
-            tool_timeout = 10, website_policy = None,
+            limit = worker._AUTO_SCRAPE_TOP_K, tool_timeout = 10, website_policy = None,
         )
     )
     # the folded evidence is bounded chunks, not the 150k of raw page bodies
@@ -1567,7 +1592,7 @@ def test_auto_scrape_falls_back_when_no_relevant_chunks(research_home, monkeypat
     section, fetched = asyncio.run(
         supervisor._auto_scrape_sources(
             {"id": "run-x"}, "find the special token", step_sources, set(),
-            tool_timeout = 10, website_policy = None,
+            limit = worker._AUTO_SCRAPE_TOP_K, tool_timeout = 10, website_policy = None,
         )
     )
     assert section == ""
@@ -1621,6 +1646,7 @@ def test_auto_scrape_skips_already_fetched_urls(research_home, monkeypatch):
             "question",
             step_sources,
             {"https://x.example.com"},
+            limit = worker._AUTO_SCRAPE_TOP_K,
             tool_timeout = 10,
             website_policy = None,
         )
@@ -1628,6 +1654,29 @@ def test_auto_scrape_skips_already_fetched_urls(research_home, monkeypatch):
     assert called == ["https://y.example.com"]
     assert fetched == ["https://y.example.com"]
     assert "https://x.example.com" not in section
+
+
+def test_auto_scrape_honors_numeric_limit(research_home, monkeypatch):
+    # A numeric UNSLOTH_RESEARCH_AUTO_SCRAPE (persisted as maxAutoScrape=N) caps the pages read,
+    # rather than always scraping _AUTO_SCRAPE_TOP_K.
+    worker, supervisor = _bare_supervisor(monkeypatch)
+    _patch_web_rank(monkeypatch)
+    called = []
+
+    def fake_tool(name, arguments, *args, **kwargs):
+        called.append(arguments["url"])
+        return "body for " + arguments["url"]
+
+    monkeypatch.setattr(worker, "execute_tool", fake_tool)
+    step_sources = [{"url": f"https://s{i}.example.com", "title": f"S{i}"} for i in range(3)]
+    _section, fetched = asyncio.run(
+        supervisor._auto_scrape_sources(
+            {"id": "run-x"}, "question", step_sources, set(),
+            limit = 1, tool_timeout = 10, website_policy = None,
+        )
+    )
+    assert len(called) == 1
+    assert len(fetched) == 1
 
 
 def test_recovered_running_research_resumes_durable_progress(research_home, monkeypatch):
