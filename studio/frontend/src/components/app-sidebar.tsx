@@ -900,7 +900,8 @@ export function AppSidebar() {
       // Pinned chats carry a chat icon, so add the nav-item icon gap.
       isPinned && variant !== "project" && "gap-[8.5px]",
       variant === "project"
-        ? "group-hover/project-chat-item:pr-6 group-has-[.sidebar-row-action[data-state=open]]/project-chat-item:pr-6"
+        ? // Room for the hover pin quick-action plus the kebab.
+          "group-hover/project-chat-item:pr-14 group-has-[.sidebar-row-action[data-state=open]]/project-chat-item:pr-8"
         : isPinned
           ? // Pinned rows show an extra unpin button on hover, so reserve more room
             // (pr-8 when the menu is open keeps the unpin button clear of the title).
@@ -967,6 +968,21 @@ export function AppSidebar() {
             {pendingRename?.id === item.id ? pendingRename.title : item.title}
           </span>
         </SidebarMenuButton>
+        {variant === "project" && (
+          <button
+            type="button"
+            onClick={(e) => {
+              e.stopPropagation();
+              togglePinnedChat(item.id);
+            }}
+            aria-label={isPinned ? "Unpin chat" : "Pin chat"}
+            className="sidebar-row-action is-unpin-action group-hover/project-chat-item:opacity-100 group-hover/project-chat-item:pointer-events-auto focus-visible:opacity-100 focus-visible:pointer-events-auto"
+          >
+            <span className="sidebar-row-action-glyph">
+              <HugeiconsIcon icon={isPinned ? PinOffIcon : PinIcon} strokeWidth={1.75} className="size-icon" />
+            </span>
+          </button>
+        )}
         <DropdownMenu>
           <DropdownMenuTrigger asChild>
             <button
@@ -1535,34 +1551,18 @@ export function AppSidebar() {
                           </DropdownMenu>
                         </SidebarMenuItem>
                         {expanded &&
-                          visibleChats.map((chat) => (
-                            <SidebarMenuItem key={chat.id}>
-                              <SidebarMenuButton
-                                isActive={activeThreadId === chat.id}
-                                onClick={() => {
-                                  navigate({
-                                    to: "/chat",
-                                    search:
-                                      chat.type === "single"
-                                        ? { thread: chat.id, project: project.id }
-                                        : { compare: chat.id, project: project.id },
-                                  });
-                                  // Match the other nav handlers: close the
-                                  // mobile drawer over the opened chat.
-                                  closeMobileIfOpen();
-                                }}
-                                className="sidebar-nav-btn h-[33px] rounded-full pl-9 pr-4 font-medium text-sidebar-foreground/80"
-                              >
-                                <span className="truncate text-[14.5px] leading-[19px] tracking-nav">{chat.title}</span>
-                              </SidebarMenuButton>
-                            </SidebarMenuItem>
-                          ))}
+                          visibleChats.map((chat) =>
+                            renderChatSidebarItem(chat, "project"),
+                          )}
                         {expanded &&
                           projectChats.length > PINNED_PROJECT_CHAT_LIMIT && (
                             <SidebarMenuItem>
                               <SidebarMenuButton
                                 onClick={() => toggleProjectShowAll(project.id)}
-                                className="sidebar-nav-btn h-[30px] rounded-full pl-9 pr-4 font-medium text-muted-foreground"
+                                // Force the muted token: .sidebar-nav-btn's own
+                                // color rule outweighs a plain text utility, so
+                                // Show more would otherwise match the chat rows.
+                                className="sidebar-nav-btn h-[30px] rounded-full pl-9 pr-4 font-medium text-nav-fg-muted!"
                               >
                                 <span className="text-[13px] leading-[18px] tracking-nav">
                                   {showAll ? "Show less" : "Show more"}
