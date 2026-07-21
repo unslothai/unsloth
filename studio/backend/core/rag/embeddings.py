@@ -141,7 +141,9 @@ def _guard_model_security(name: str, local_only: bool = False) -> None:
             # directly under a Transformer module dir (0_Transformer/) blocks instead of
             # passing as an unreferenced nested shard.
             load_subdirs = tuple(
-                dict.fromkeys((*security_load_subdirs(name, token), *_st_module_subdirs(name, token)))
+                dict.fromkeys(
+                    (*security_load_subdirs(name, token), *_st_module_subdirs(name, token))
+                )
             )
         blocked = evaluate_file_security(
             name, hf_token = token, load_subdirs = load_subdirs, local_only_load = local_only
@@ -166,7 +168,6 @@ def _st_accepts_local_files_only(st_cls) -> bool:
     releases). Passing it to an older constructor raises, so gate on the signature."""
     try:
         import inspect
-
         return "local_files_only" in inspect.signature(st_cls.__init__).parameters
     except Exception:
         return False

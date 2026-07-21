@@ -27,14 +27,18 @@ from utils.utils import hf_cache_snapshot_dir, hf_env_offline, st_repo_id_candid
 
 # A minimal sentence-transformers modules.json (the marker the local-path check keys on).
 MODULES_JSON = (
-    '[{"idx": 0, "name": "0", "path": "", '
-    '"type": "sentence_transformers.models.Transformer"}]'
+    '[{"idx": 0, "name": "0", "path": "", "type": "sentence_transformers.models.Transformer"}]'
 )
 
 _COMMIT = "0123456789abcdef0123456789abcdef01234567"
 
 
-def _make_cache(root, repo_id, files, commit = _COMMIT):
+def _make_cache(
+    root,
+    repo_id,
+    files,
+    commit = _COMMIT,
+):
     """Build a canonical HF-cache snapshot (``refs/main`` + ``snapshots/<commit>/``) for
     ``repo_id`` under ``root`` with ``{relpath: contents}``. Returns the snapshot dir."""
     from huggingface_hub.file_download import repo_folder_name
@@ -58,7 +62,6 @@ def _no_network():
 
 def _is_embedding_model(*args, **kwargs):
     from utils.models.model_config import is_embedding_model
-
     return is_embedding_model(*args, **kwargs)
 
 
@@ -179,9 +182,7 @@ def test_offline_false_when_uncached(hf_cache, monkeypatch):
 
 def test_offline_slashless_resolves_via_alias(hf_cache, monkeypatch):
     monkeypatch.setenv("HF_HUB_OFFLINE", "1")
-    _make_cache(
-        hf_cache, "sentence-transformers/all-MiniLM-L6-v2", {"modules.json": MODULES_JSON}
-    )
+    _make_cache(hf_cache, "sentence-transformers/all-MiniLM-L6-v2", {"modules.json": MODULES_JSON})
     with _no_network():
         assert _is_embedding_model("all-MiniLM-L6-v2") is True
 
@@ -192,7 +193,12 @@ def test_offline_slashless_resolves_via_alias(hf_cache, monkeypatch):
 def test_online_passes_bounded_timeout(hf_cache):
     seen = {}
 
-    def _mi(name, token = None, timeout = None, **kw):
+    def _mi(
+        name,
+        token = None,
+        timeout = None,
+        **kw,
+    ):
         seen["timeout"] = timeout
         return SimpleNamespace(tags = ["sentence-transformers"], pipeline_tag = None)
 
@@ -290,14 +296,23 @@ def test_gate_allows_pickle_in_subdir_with_safetensors(hf_cache):
 
 
 def test_online_default_blocks_unsafe():
-    status = {"scansDone": True, "filesWithIssues": [{"path": "pytorch_model.bin", "level": "unsafe"}]}
-    with patch("huggingface_hub.model_info", side_effect = lambda *a, **k: SimpleNamespace(security_repo_status = status)):
+    status = {
+        "scansDone": True,
+        "filesWithIssues": [{"path": "pytorch_model.bin", "level": "unsafe"}],
+    }
+    with patch(
+        "huggingface_hub.model_info",
+        side_effect = lambda *a, **k: SimpleNamespace(security_repo_status = status),
+    ):
         assert evaluate_file_security("org/x").blocked is True
 
 
 def test_online_default_allows_clean():
     status = {"scansDone": True, "filesWithIssues": []}
-    with patch("huggingface_hub.model_info", side_effect = lambda *a, **k: SimpleNamespace(security_repo_status = status)):
+    with patch(
+        "huggingface_hub.model_info",
+        side_effect = lambda *a, **k: SimpleNamespace(security_repo_status = status),
+    ):
         assert evaluate_file_security("org/x").blocked is False
 
 
@@ -306,7 +321,6 @@ def test_online_default_allows_clean():
 
 def test_guard_offline_blocks_pickle_only(hf_cache):
     from core.rag.embeddings import UnsafeEmbeddingModelError, _guard_model_security
-
     _make_cache(hf_cache, "org/pk", {"config.json": "{}", "pytorch_model.bin": "x"})
     with _no_network():
         with pytest.raises(UnsafeEmbeddingModelError):
@@ -315,7 +329,6 @@ def test_guard_offline_blocks_pickle_only(hf_cache):
 
 def test_guard_offline_allows_safetensors(hf_cache):
     from core.rag.embeddings import _guard_model_security
-
     _make_cache(hf_cache, "org/st", {"modules.json": MODULES_JSON, "model.safetensors": "x"})
     with _no_network():
         _guard_model_security("org/st", local_only = True)  # must not raise
@@ -323,7 +336,15 @@ def test_guard_offline_allows_safetensors(hf_cache):
 
 def _install_fake_sentence_transformers(monkeypatch, captured):
     class FakeSentenceTransformer:
-        def __init__(self, name, *, device = None, model_kwargs = None, local_files_only = False, **kw):
+        def __init__(
+            self,
+            name,
+            *,
+            device = None,
+            model_kwargs = None,
+            local_files_only = False,
+            **kw,
+        ):
             captured["name"] = name
             captured["device"] = device
             captured["local_files_only"] = local_files_only
