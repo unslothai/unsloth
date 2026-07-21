@@ -112,7 +112,7 @@ export const es = {
         "Se usa para cargar modelos restringidos y subir artefactos.",
       hideToken: "Ocultar token",
       showToken: "Mostrar token",
-      tokenSaved: "Token guardado",
+      tokenValidated: "Token validado",
       password: "Contraseña",
       passwordDescription:
         "Cambia la contraseña de esta cuenta de Unsloth.",

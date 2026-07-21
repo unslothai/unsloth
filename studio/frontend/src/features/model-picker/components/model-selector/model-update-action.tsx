@@ -1,12 +1,20 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-import { subscribeJobListeners } from "@/features/hub/download-manager";
-import { UpdateConfirmDialog } from "@/features/hub/catalog/download-card";
-import { ggufVariantsMatch } from "@/features/hub/lib/model-identity";
+import {
+  UpdateConfirmDialog,
+  ggufVariantsMatch,
+  subscribeJobListeners,
+} from "@/features/hub";
 import { cn } from "@/lib/utils";
 import { RefreshCw } from "lucide-react";
-import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
+import {
+  type ReactNode,
+  useCallback,
+  useEffect,
+  useRef,
+  useState,
+} from "react";
 import { toast } from "sonner";
 
 interface ModelUpdateActionProps {
@@ -42,10 +50,10 @@ export function ModelUpdateAction({
 }: ModelUpdateActionProps) {
   const [open, setOpen] = useState(false);
 
-  // Refresh the caller when this repo+variant's download finishes so the "update available" cue
-  // clears. A ref keeps the subscription stable across renders.
   const onUpdatedRef = useRef(onUpdated);
-  onUpdatedRef.current = onUpdated;
+  useEffect(() => {
+    onUpdatedRef.current = onUpdated;
+  }, [onUpdated]);
   useEffect(() => {
     return subscribeJobListeners("model", repoId, {
       onComplete: (completedVariant) => {
@@ -83,7 +91,8 @@ export function ModelUpdateAction({
         disabled={disabled}
         className={cn(
           "shrink-0 rounded-md p-1.5 text-muted-foreground/60 transition-colors hover:bg-amber-500/10 hover:text-amber-700 dark:hover:bg-amber-500/15 dark:hover:text-amber-300",
-          disabled && "cursor-not-allowed opacity-40 hover:bg-transparent hover:text-muted-foreground/60",
+          disabled &&
+            "cursor-not-allowed opacity-40 hover:bg-transparent hover:text-muted-foreground/60",
           buttonClassName,
         )}
       >
