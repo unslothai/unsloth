@@ -1532,9 +1532,7 @@ class _AssetGZipMiddleware(GZipMiddleware):
     """Serve range requests uncompressed; gzip + 206 mislabels Content-Range."""
 
     async def __call__(self, scope, receive, send):
-        if scope["type"] == "http" and any(
-            key == b"range" for key, _ in scope["headers"]
-        ):
+        if scope["type"] == "http" and any(key == b"range" for key, _ in scope["headers"]):
             await self.app(scope, receive, send)
             return
         await super().__call__(scope, receive, send)
