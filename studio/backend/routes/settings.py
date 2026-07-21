@@ -494,8 +494,11 @@ def update_embedding_model(
             # like gte-modernbert) is unverifiable without the Hub metadata. If the repo is
             # already cached and loadable, accept it rather than raising a 409 that online
             # would not -- SentenceTransformer can load any cached encoder. Uncached -> 409.
-            from utils.utils import hf_cache_snapshot_dir
-            offline_cached = local_only_load and hf_cache_snapshot_dir(model) is not None
+            from utils.utils import hf_cache_snapshot_is_loadable
+
+            # Require a genuinely loadable cache (config + weights), not just a resolved
+            # refs/main, so a metadata-only partial cache still gets the forceable 409.
+            offline_cached = local_only_load and hf_cache_snapshot_is_loadable(model)
             if not offline_cached:
                 raise HTTPException(
                     status_code = 409,
@@ -505,7 +508,11 @@ def update_embedding_model(
                         "you may be offline)."
                     ),
                 )
-        gguf_error = _local_gguf_backend_error(model) or _hf_gguf_backend_error(model, hf_token)
+        # The GGUF availability probe below calls the Hub (list_repo_files); skip it offline
+        # so a dead-DNS session cannot hang. A local GGUF check stays (no network).
+        gguf_error = _local_gguf_backend_error(model)
+        if gguf_error is None and not local_only_load:
+            gguf_error = _hf_gguf_backend_error(model, hf_token)
         if gguf_error:
             raise HTTPException(status_code = 409, detail = gguf_error)
     set_rag_embedding_model(model)

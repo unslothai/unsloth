@@ -116,14 +116,15 @@ def test_offline_cached_non_st_model_is_accepted(client, monkeypatch):
     import utils.utils as _uu
 
     monkeypatch.setattr(_models, "is_embedding_model", lambda *a, **k: False)
-    monkeypatch.setattr(_uu, "hf_cache_snapshot_dir", lambda name: "cached-snapshot")
+    monkeypatch.setattr(_uu, "hf_cache_snapshot_is_loadable", lambda name: True)
     r = c.put("/embedding-model", json = {"embedding_model": "acme/gte-modernbert"})
     assert r.status_code == 200
     assert saved.get("model") == "acme/gte-modernbert"
 
 
-def test_offline_uncached_model_still_409(client, monkeypatch):
-    # Offline but NOT cached: the load would fail anyway, so keep the forceable 409.
+def test_offline_partial_or_uncached_model_still_409(client, monkeypatch):
+    # Offline but NOT loadable (uncached or a metadata-only partial cache): keep the forceable
+    # 409, since the cache-only load would fail anyway.
     c, _saved = client
     monkeypatch.setitem(sys.modules, "utils.security", _security_stub(blocked = False))
     monkeypatch.setenv("HF_HUB_OFFLINE", "1")
@@ -131,9 +132,28 @@ def test_offline_uncached_model_still_409(client, monkeypatch):
     import utils.utils as _uu
 
     monkeypatch.setattr(_models, "is_embedding_model", lambda *a, **k: False)
-    monkeypatch.setattr(_uu, "hf_cache_snapshot_dir", lambda name: None)
+    monkeypatch.setattr(_uu, "hf_cache_snapshot_is_loadable", lambda name: False)
     r = c.put("/embedding-model", json = {"embedding_model": "acme/uncached-embedder"})
     assert r.status_code == 409
+
+
+def test_offline_skips_remote_gguf_probe(client, monkeypatch):
+    # Offline + llama backend: the remote GGUF probe (list_repo_files) must be skipped so a
+    # dead-DNS session cannot hang.
+    c, _saved = client
+    monkeypatch.setenv("HF_HUB_OFFLINE", "1")
+    monkeypatch.setattr(settings, "_llama_backend_active", lambda: True)
+    monkeypatch.setattr(settings, "_local_gguf_backend_error", lambda model: None)
+
+    def _boom(*a, **k):
+        raise AssertionError("hit the network for the GGUF probe")
+
+    monkeypatch.setattr(settings, "_hf_gguf_backend_error", _boom)
+    import utils.models as _models
+
+    monkeypatch.setattr(_models, "is_embedding_model", lambda *a, **k: True)
+    r = c.put("/embedding-model", json = {"embedding_model": "acme/embedder"})
+    assert r.status_code == 200
 
 
 def test_llama_backend_skips_the_st_pickle_scan(monkeypatch):

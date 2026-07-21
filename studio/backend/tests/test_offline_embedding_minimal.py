@@ -23,7 +23,12 @@ from unittest.mock import patch
 import pytest
 
 from utils.security import evaluate_file_security
-from utils.utils import hf_cache_snapshot_dir, hf_env_offline, st_repo_id_candidates
+from utils.utils import (
+    hf_cache_snapshot_dir,
+    hf_cache_snapshot_is_loadable,
+    hf_env_offline,
+    st_repo_id_candidates,
+)
 
 # A minimal sentence-transformers modules.json (the marker the local-path check keys on).
 MODULES_JSON = (
@@ -210,6 +215,21 @@ def test_snapshot_dir_st_home_is_exclusive(tmp_path, monkeypatch):
     monkeypatch.delenv("HF_HOME", raising = False)
     _make_cache(hub, "org/emb", {"modules.json": MODULES_JSON})  # only in the HF hub cache
     assert hf_cache_snapshot_dir("org/emb") is None
+
+
+def test_snapshot_is_loadable_with_config_and_weights(hf_cache):
+    _make_cache(hf_cache, "org/emb", {"config.json": "{}", "model.safetensors": "x"})
+    assert hf_cache_snapshot_is_loadable("org/emb") is True
+
+
+def test_snapshot_is_not_loadable_when_metadata_only(hf_cache):
+    # A partial cache (refs/main resolves, but no weight files) is not loadable.
+    _make_cache(hf_cache, "org/partial", {"config.json": "{}", "modules.json": MODULES_JSON})
+    assert hf_cache_snapshot_is_loadable("org/partial") is False
+
+
+def test_snapshot_is_not_loadable_when_uncached(hf_cache):
+    assert hf_cache_snapshot_is_loadable("org/missing") is False
 
 
 def test_gate_blocks_pickle_in_sentence_transformers_home(tmp_path, monkeypatch):
@@ -480,12 +500,14 @@ def _install_fake_sentence_transformers(monkeypatch, captured):
     monkeypatch.setitem(sys.modules, "sentence_transformers", module)
 
 
-def test_get_offline_threads_local_files_only(hf_cache, monkeypatch):
+def test_get_offline_loads_from_local_snapshot(hf_cache, monkeypatch):
     from core.rag import embeddings
 
-    _make_cache(hf_cache, "org/st", {"modules.json": MODULES_JSON, "model.safetensors": "x"})
-    # TRANSFORMERS_OFFLINE only: local_files_only is passed per-call so the load is cache-only
-    # regardless of the process-wide (import-frozen) HF_HUB_OFFLINE constant.
+    snapshot = _make_cache(
+        hf_cache, "org/st", {"modules.json": MODULES_JSON, "model.safetensors": "x"}
+    )
+    # TRANSFORMERS_OFFLINE only: a cached model is loaded from its local snapshot dir, a local
+    # path that never touches the Hub -- offline-safe on ANY sentence-transformers version.
     monkeypatch.setenv("TRANSFORMERS_OFFLINE", "1")
     monkeypatch.delenv("HF_HUB_OFFLINE", raising = False)
     monkeypatch.setattr(embeddings, "_model", None, raising = False)
@@ -496,7 +518,29 @@ def test_get_offline_threads_local_files_only(hf_cache, monkeypatch):
     _install_fake_sentence_transformers(monkeypatch, captured)
     with _no_network():
         embeddings._get("org/st")
-    assert captured["name"] == "org/st"
+    assert captured["name"] == str(snapshot)
+
+
+def test_get_offline_uncached_uses_local_files_only(tmp_path, monkeypatch):
+    from core.rag import embeddings
+
+    empty = tmp_path / "hub"
+    empty.mkdir()
+    monkeypatch.setenv("HF_HUB_CACHE", str(empty))
+    monkeypatch.delenv("HF_HOME", raising = False)
+    monkeypatch.delenv("SENTENCE_TRANSFORMERS_HOME", raising = False)
+    monkeypatch.setenv("TRANSFORMERS_OFFLINE", "1")
+    monkeypatch.delenv("HF_HUB_OFFLINE", raising = False)
+    monkeypatch.setattr(embeddings, "_model", None, raising = False)
+    monkeypatch.setattr(embeddings, "_name", None, raising = False)
+    monkeypatch.setattr(embeddings, "_install_torchao_stub_once", lambda: None)
+    monkeypatch.setattr(embeddings, "_device", lambda: "cpu")
+    # No cache -> fall back to a repo-id load forced cache-only (fails fast offline, not a hang).
+    monkeypatch.setattr(embeddings, "_guard_model_security", lambda name, local_only = False: None)
+    captured = {}
+    _install_fake_sentence_transformers(monkeypatch, captured)
+    embeddings._get("org/uncached-xyz")
+    assert captured["name"] == "org/uncached-xyz"
     assert captured["local_files_only"] is True
 
 

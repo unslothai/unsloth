@@ -190,13 +190,20 @@ def _get(model_name: str | None = None):
             logger.info("loading embedding model %s on %s", name, device)
             _guard_model_security(name, local_only)
             st_kwargs = dict(device = device, model_kwargs = dtype_kwargs("float16"))
-            if local_only and _st_accepts_local_files_only(SentenceTransformer):
-                # local_files_only forces snapshot_download to cache-only for this call,
-                # independent of the process-wide HF_HUB_OFFLINE (frozen at import). An older ST
-                # without this arg relies on a launch-time HF_HUB_OFFLINE / TRANSFORMERS_OFFLINE,
-                # which huggingface_hub folds into its offline mode when first imported.
-                st_kwargs["local_files_only"] = True
-            _model = SentenceTransformer(name, **st_kwargs)
+            load_target = name
+            if local_only:
+                from utils.utils import hf_cache_snapshot_dir
+
+                snapshot = hf_cache_snapshot_dir(name)
+                if snapshot is not None:
+                    # Load from the resolved local snapshot dir: a local path never touches the
+                    # Hub, so this is offline-safe on ANY sentence-transformers version (even ones
+                    # predating local_files_only). If nothing is cached we fall through to a
+                    # cache-only repo load, which fails fast offline instead of hanging.
+                    load_target = str(snapshot)
+                elif _st_accepts_local_files_only(SentenceTransformer):
+                    st_kwargs["local_files_only"] = True
+            _model = SentenceTransformer(load_target, **st_kwargs)
             _name = name
         return _model
 

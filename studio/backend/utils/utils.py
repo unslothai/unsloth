@@ -106,6 +106,33 @@ def hf_cache_snapshot_dir(model_name: str) -> Optional[Path]:
     return None
 
 
+# Weight file suffixes a load can consume. Presence of one (plus a config) distinguishes a
+# real cached model from a metadata-only partial cache that would fail at load time.
+_LOADABLE_WEIGHT_SUFFIXES = frozenset(
+    {".safetensors", ".bin", ".gguf", ".pt", ".pth", ".ckpt"}
+)
+
+
+def hf_cache_snapshot_is_loadable(model_name: str) -> bool:
+    """True when ``model_name``'s active snapshot is cached AND actually loadable -- it has a
+    config (``config.json`` or ``modules.json``) and at least one weight file -- rather than a
+    metadata-only partial cache that resolves a ``refs/main`` but would fail at load. No network.
+    """
+    snapshot = hf_cache_snapshot_dir(model_name)
+    if snapshot is None:
+        return False
+    try:
+        has_config = (snapshot / "config.json").is_file() or (snapshot / "modules.json").is_file()
+        if not has_config:
+            return False
+        for path in snapshot.rglob("*"):
+            if path.suffix.lower() in _LOADABLE_WEIGHT_SUFFIXES and path.is_file():
+                return True
+    except OSError:
+        return False
+    return False
+
+
 # ── Client-safe error helpers ───────────────────────────────────
 # Never return raw exception text to clients; log server-side, return generic.
 
