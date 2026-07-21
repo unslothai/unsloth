@@ -2132,12 +2132,15 @@ _has_amd_rocm_gpu() {
 # whose ROCm kernel interface (/dev/kfd) is absent shows here but not in
 # _has_amd_rocm_gpu. vendor 0x1002 = AMD/ATI; class 0x03* = display controller.
 _amd_gpu_present_via_pci() {
+    [ -d /sys/bus/pci/devices ] || return 1
     for _pci_vendor in /sys/bus/pci/devices/*/vendor; do
         [ -r "$_pci_vendor" ] || continue
-        [ "$(cat "$_pci_vendor" 2>/dev/null)" = "0x1002" ] || continue
-        case "$(cat "${_pci_vendor%vendor}class" 2>/dev/null)" in
-            0x03*) return 0 ;;
-        esac
+        read -r _v < "$_pci_vendor" 2>/dev/null || continue
+        [ "$_v" = "0x1002" ] || continue
+        _cls="${_pci_vendor%vendor}class"
+        [ -r "$_cls" ] || continue
+        read -r _c < "$_cls" 2>/dev/null || continue
+        case "$_c" in 0x03*) return 0 ;; esac
     done
     return 1
 }
@@ -3046,7 +3049,9 @@ case "$TORCH_INDEX_URL" in
                 substep "  driver is current; or run unsloth/scripts/install_rocm_wsl_strixhalo.sh yourself."
             else
                 substep "AMD ROCm users: see https://docs.unsloth.ai/get-started/install-and-update/amd"
-                if _amd_gpu_present_via_pci; then
+                # Only when ROCm truly can't see the GPU: a detected-but-too-old
+                # ROCm (rocminfo works, wheels need 6.0+) has its own guidance.
+                if ! _has_amd_rocm_gpu && _amd_gpu_present_via_pci; then
                     substep "An AMD GPU is on the PCI bus but ROCm cannot see it (no /dev/kfd," "$C_WARN"
                     substep "  rocminfo, or amd-smi). Install the ROCm kernel stack so /dev/kfd exists;"
                     substep "  Strix Halo (gfx1151/gfx1150) needs a recent kernel (6.11+) and ROCm 7.x."
