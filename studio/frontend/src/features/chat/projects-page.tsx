@@ -76,7 +76,7 @@ const PROJECTS_PAGE_STEP = 12;
 // Visible count before the fit-to-height measurement runs.
 const PROJECTS_INITIAL_FALLBACK = 8;
 // Approx list row height in px, used to estimate how many rows fit the page.
-const PROJECTS_ROW_HEIGHT = 57;
+const PROJECTS_ROW_HEIGHT = 68;
 
 // Modified column, matching a file-list feel: Today / Yesterday / N days ago,
 // then a short date once it is over a week old.
@@ -490,7 +490,7 @@ export function ProjectsPage() {
           {Array.from({ length: 6 }).map((_, index) => (
             <div
               key={index}
-              className="flex items-center gap-3 rounded-2xl px-5 py-3"
+              className="flex items-center gap-3 rounded-xl px-5 py-4"
             >
               <Skeleton className="mr-1 size-9 shrink-0 rounded-[10px]" />
               <Skeleton className="h-4 w-40 rounded-[8px]" />
@@ -562,7 +562,7 @@ export function ProjectsPage() {
                   openProject(project.id);
                 }
               }}
-              className="group/project-row relative flex cursor-pointer items-center gap-3 rounded-2xl px-5 py-2.5 text-left transition-colors duration-150 hover:bg-muted/70 dark:hover:bg-white/[0.055] focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+              className="group/project-row relative flex cursor-pointer items-center gap-3 rounded-xl px-5 py-4 text-left transition-colors duration-150 hover:bg-muted/70 dark:hover:bg-white/[0.055] focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
             >
               <span className="mr-1 flex size-9 shrink-0 items-center justify-center rounded-[10px] bg-muted text-foreground/70 transition-colors group-hover/project-row:bg-primary/10 group-hover/project-row:text-primary">
                 <HugeiconsIcon
