@@ -573,7 +573,7 @@ export function ResourcesTab() {
               {t("settings.resources.storage.changeAction")}
             </Button>
             {cacheLocationDetail || hfCache?.isCustom ? (
-              <div className="col-span-2 flex min-w-0 items-center justify-between gap-2 px-1 text-xs text-muted-foreground">
+              <div className="col-span-2 flex min-w-0 items-center justify-between gap-2 pl-3.5 pr-1 text-xs text-muted-foreground">
                 {cacheLocationDetail ? (
                   <span
                     title={cacheLocationDetail}
