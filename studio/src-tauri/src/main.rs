@@ -1,5 +1,6 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+mod app_layout;
 mod commands;
 mod desktop_auth;
 mod desktop_backend_owner;
@@ -7,6 +8,7 @@ mod desktop_update_policy;
 mod diagnostics;
 mod install;
 mod native_backend_lease;
+mod native_file_dialogs;
 mod native_intents;
 mod native_path_policy;
 mod preflight;
@@ -195,6 +197,9 @@ fn main() {
         .manage(process::new_shutdown_flag())
         .manage(update::new_update_state())
         .invoke_handler(tauri::generate_handler![
+            app_layout::has_initialized_app_window_layout,
+            app_layout::mark_app_window_layout_initialized,
+            app_layout::reset_app_window_layout_initialized,
             commands::check_install_status,
             commands::desktop_preflight,
             commands::start_install,
@@ -213,6 +218,8 @@ fn main() {
             desktop_update_policy::check_desktop_manual_update,
             desktop_update_policy::desktop_update_policy,
             diagnostics::collect_support_diagnostics,
+            native_file_dialogs::save_native_file,
+            native_file_dialogs::pick_native_chat_import,
             native_intents::drain_native_intents,
             native_intents::register_native_model_path,
             native_intents::pick_native_model,

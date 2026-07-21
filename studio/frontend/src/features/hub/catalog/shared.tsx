@@ -2,11 +2,18 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import {
+  Tooltip,
+  TooltipContent,
+  TooltipTrigger,
+} from "@/components/ui/tooltip";
+import { cn } from "@/lib/utils";
+import {
   BrainIcon,
   Chat01Icon,
   CodeIcon,
   GlobeIcon,
   HeadphonesIcon,
+  ImageIcon,
   LockIcon,
   LockKeyIcon,
   SparklesIcon,
@@ -15,12 +22,6 @@ import {
 } from "@hugeicons/core-free-icons";
 import type { IconSvgElement } from "@hugeicons/react";
 import { HugeiconsIcon } from "@hugeicons/react";
-import {
-  Tooltip,
-  TooltipContent,
-  TooltipTrigger,
-} from "@/components/ui/tooltip";
-import { cn } from "@/lib/utils";
 import type { Capability, CapabilityKey } from "../lib/model-capabilities";
 
 const CAPABILITY_ICON: Record<CapabilityKey, IconSvgElement> = {
@@ -30,6 +31,7 @@ const CAPABILITY_ICON: Record<CapabilityKey, IconSvgElement> = {
   reasoning: BrainIcon,
   code: CodeIcon,
   embedding: SparklesIcon,
+  diffusion: ImageIcon,
   multilingual: GlobeIcon,
   conversational: Chat01Icon,
 };
@@ -45,6 +47,8 @@ const CAPABILITY_TONE: Record<CapabilityKey, string> = {
   code: "bg-cyan-500/10 text-cyan-800 dark:bg-cyan-400/20 dark:text-cyan-300",
   embedding:
     "bg-emerald-500/10 text-emerald-700 dark:bg-emerald-400/20 dark:text-emerald-300",
+  diffusion:
+    "bg-pink-500/10 text-pink-700 dark:bg-pink-400/20 dark:text-pink-300",
   multilingual:
     "bg-sky-500/10 text-sky-700 dark:bg-sky-400/20 dark:text-sky-300",
   conversational:
@@ -59,9 +63,7 @@ export function AccessChip({ label }: { label: string }) {
   );
 }
 
-function isGatedAccess(
-  gated: false | "auto" | "manual" | undefined,
-): boolean {
+function isGatedAccess(gated: false | "auto" | "manual" | undefined): boolean {
   return gated !== false && gated !== undefined;
 }
 

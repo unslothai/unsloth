@@ -48,7 +48,6 @@ import { prepareHfTokenForUse } from "@/features/hf-auth";
 import { GuidedTour, useGuidedTourController } from "@/features/tour";
 import {
   type LocalModelInfo,
-  listLocalModels,
   useTrainingConfigStore,
 } from "@/features/training";
 import { useDebouncedValue, useHfTokenValidation } from "@/hooks";
@@ -67,7 +66,6 @@ import { useSearch } from "@tanstack/react-router";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useShallow } from "zustand/react/shallow";
 import type { ModelCheckpoints } from "./api/export-api";
-import { fetchCheckpoints } from "./api/export-api";
 import { ExportRunPanel } from "./components/export-run-panel";
 import { MethodPicker } from "./components/method-picker";
 import { QuantPicker } from "./components/quant-picker";
@@ -83,6 +81,12 @@ import {
   mergedFormatPayload,
 } from "./constants";
 import { useExportSizeEstimate } from "./hooks/use-export-size-estimate";
+import {
+  getCachedCheckpoints,
+  getCachedLocalModels,
+  refreshCheckpoints,
+  refreshLocalModels,
+} from "./export-navigation-cache";
 import {
   isExportPanelActive,
   useExportRuntimeStore,
@@ -172,8 +176,12 @@ export function ExportPage() {
   );
 
   // ---- API-driven checkpoint state ----
-  const [models, setModels] = useState<ModelCheckpoints[]>([]);
-  const [loadingCheckpoints, setLoadingCheckpoints] = useState(true);
+  const [models, setModels] = useState<ModelCheckpoints[]>(
+    () => getCachedCheckpoints() ?? [],
+  );
+  const [loadingCheckpoints, setLoadingCheckpoints] = useState(
+    getCachedCheckpoints() === null,
+  );
   const [checkpointError, setCheckpointError] = useState<string | null>(null);
 
   const [selectedModelIdx, setSelectedModelIdx] = useState<string | null>(null);
@@ -185,8 +193,12 @@ export function ExportPage() {
     null,
   );
   const [localModelInput, setLocalModelInput] = useState("");
-  const [localModels, setLocalModels] = useState<LocalModelInfo[]>([]);
-  const [isLoadingLocalModels, setIsLoadingLocalModels] = useState(true);
+  const [localModels, setLocalModels] = useState<LocalModelInfo[]>(
+    () => getCachedLocalModels() ?? [],
+  );
+  const [isLoadingLocalModels, setIsLoadingLocalModels] = useState(
+    getCachedLocalModels() === null,
+  );
   const [localModelsError, setLocalModelsError] = useState<string | null>(null);
   const debouncedModelQuery = useDebouncedValue(modelInput);
   const debouncedHfToken = useDebouncedValue(hfToken, 500);
@@ -295,16 +307,15 @@ export function ExportPage() {
   // ---- Fetch checkpoints on mount ----
   useEffect(() => {
     let cancelled = false;
-    setLoadingCheckpoints(true);
-    setCheckpointError(null);
-    fetchCheckpoints()
-      .then((data) => {
+    const hadCache = getCachedCheckpoints() !== null;
+    refreshCheckpoints()
+      .then((models) => {
         if (!cancelled) {
-          setModels(data.models);
+          setModels(models);
         }
       })
       .catch((err) => {
-        if (!cancelled) {
+        if (!cancelled && !hadCache) {
           setCheckpointError(
             err instanceof Error ? err.message : "Failed to load checkpoints",
           );
@@ -343,14 +354,15 @@ export function ExportPage() {
 
   // ---- Fetch local models for direct export ----
   useEffect(() => {
-    const controller = new AbortController();
-    void listLocalModels(controller.signal)
+    let cancelled = false;
+    const hadCache = getCachedLocalModels() !== null;
+    void refreshLocalModels()
       .then((models) => {
-        if (controller.signal.aborted) return;
+        if (cancelled) return;
         setLocalModels(models);
       })
       .catch((error) => {
-        if (controller.signal.aborted) return;
+        if (cancelled || hadCache) return;
         setLocalModelsError(
           error instanceof Error
             ? error.message
@@ -358,10 +370,12 @@ export function ExportPage() {
         );
       })
       .finally(() => {
-        if (controller.signal.aborted) return;
+        if (cancelled) return;
         setIsLoadingLocalModels(false);
       });
-    return () => controller.abort();
+    return () => {
+      cancelled = true;
+    };
   }, []);
 
   // ---- Derived state ----

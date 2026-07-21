@@ -2,10 +2,7 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { getAuthToken } from "@/features/auth";
-import {
-  loadRememberedLoadSettings,
-  rememberedLoadSettingsKey,
-} from "@/components/assistant-ui/model-selector/remembered-load-settings";
+import { resolveInitialConfig } from "@/features/model-picker";
 import { projectHasSources } from "@/features/rag/api/rag-api";
 import { apiUrl } from "@/lib/api-base";
 import { parseParamCountB } from "@/lib/model-size";
@@ -46,7 +43,7 @@ import {
   type PendingImageEditReference,
   type RagAutoInject,
   GPU_LAYERS_AUTO,
-  loadedGpuMemoryFieldsUnlessStaged,
+  loadedGpuMemoryFields,
   reconcilePersistedGpuIds,
   resolveLoadedSpeculativeSettings,
   resolveSpeculativeSettingsForLoad,
@@ -1535,65 +1532,56 @@ async function autoLoadSmallestModel(): Promise<{
     }
     const currentStore = useChatRuntimeStore.getState();
     const modelPath = candidate.loadId ?? candidate.id;
-    // Blobs are saved for GGUF picks only (the sheet gates on it), so don't
-    // let a legacy non-GGUF blob feed a stale context/spec choice into a
-    // safetensors auto-load.
-    const remembered =
-      candidate.kind === "gguf"
-        ? loadRememberedLoadSettings(
-            rememberedLoadSettingsKey({
-              id: candidate.id,
-              ggufVariant: candidate.ggufVariant,
-            }),
-          )
-        : null;
+    const { config } = resolveInitialConfig(candidate.id, candidate.ggufVariant);
     const effectiveMaxSeqLength = resolveLoadMaxSeqLength({
       modelId: candidate.id,
       ggufVariant: candidate.ggufVariant,
       isGguf: candidate.kind === "gguf",
-      customContextLength: remembered?.contextLength ?? null,
+      customContextLength: config.customContextLength,
       ggufContextLength: null,
       currentCheckpoint: currentStore.params.checkpoint,
       activeGgufVariant: currentStore.activeGgufVariant,
-      maxSeqLength: candidate.maxSeqLength,
+      maxSeqLength: config.maxSeqLength ?? candidate.maxSeqLength,
       presetSource: currentStore.activePresetSource,
     });
-    // The GPU knobs are per-model, so read them from the same remembered
-    // settings that fed effectiveMaxSeqLength -- on a background auto-load the
-    // live store holds session defaults, not the saved Manual mode / layer pin /
-    // GPU pick. Absent fields fall back like applyRememberedLoadSettings: the
-    // mode to the store (a persisted standing preference), the per-model knobs to
-    // their defaults. The saved GPU pick is reconciled against the GPUs present
-    // now, like the interactive restore.
+    // The GPU knobs are per-model, so read them from the same per-model config
+    // that fed effectiveMaxSeqLength -- on a background auto-load the live store
+    // holds session defaults, not the saved Manual mode / layer pin / GPU pick.
+    // Absent fields fall back like the interactive restore: the mode to the store
+    // (a persisted standing preference), the per-model knobs to their defaults.
+    // The saved GPU pick is reconciled against the GPUs present now.
     const effectiveGpuMemoryMode =
-      remembered?.gpuMemoryMode ?? currentStore.gpuMemoryMode;
-    const effectiveGpuLayers = remembered?.gpuLayers ?? GPU_LAYERS_AUTO;
-    const effectiveNCpuMoe = remembered?.nCpuMoe ?? 0;
-    if (remembered?.selectedGpuIds != null) {
+      config.gpuMemoryMode ?? currentStore.gpuMemoryMode;
+    const effectiveGpuLayers = config.gpuLayers ?? GPU_LAYERS_AUTO;
+    const effectiveNCpuMoe = config.nCpuMoe ?? 0;
+    if (config.selectedGpuIds != null) {
       // Warm the device cache first: on a cold cache the reconcile passes the
       // saved pick through unvalidated, and a stale cross-host pick then fails
       // the load with the picker hidden.
       await ensureGpuDeviceCache();
     }
     const effectiveGpuIds =
-      remembered?.selectedGpuIds !== undefined
-        ? reconcilePersistedGpuIds(remembered.selectedGpuIds)
+      config.selectedGpuIds !== undefined
+        ? reconcilePersistedGpuIds(config.selectedGpuIds)
         : null;
     // Under Manual GPU memory + Auto layers, llama.cpp's --fit owns context
     // sizing, so send 0 (or the pinned length). GGUF-only; a no-op otherwise.
-    // The context pin is per-model too, so it comes from remembered settings,
-    // not the live store.
+    // The context pin is per-model too, so it comes from the saved config, not
+    // the live store.
     const fitMaxSeqLength = resolveFitMaxSeqLength(
       candidate.kind === "gguf",
       effectiveGpuMemoryMode,
       effectiveGpuLayers,
-      remembered?.contextLength ?? null,
+      config.customContextLength ?? null,
       effectiveMaxSeqLength,
     );
     const effectiveSpeculativeType =
-      remembered?.speculativeType ?? specSettings.speculativeType;
+      config.speculativeType ?? specSettings.speculativeType;
     const effectiveSpecDraftNMax =
-      remembered?.specDraftNMax ?? specSettings.specDraftNMax;
+      config.specDraftNMax ?? specSettings.specDraftNMax;
+    const effectiveChatTemplateOverride = config.chatTemplateOverride?.trim()
+      ? config.chatTemplateOverride
+      : null;
     if (
       !(await canAutoLoad({
         model_path: modelPath,
@@ -1623,10 +1611,11 @@ async function autoLoadSmallestModel(): Promise<{
       is_lora: false,
       gguf_variant: candidate.ggufVariant,
       trust_remote_code: trustRemoteCode,
-      cache_type_kv: remembered?.kvCacheDtype ?? null,
+      chat_template_override: effectiveChatTemplateOverride,
+      cache_type_kv: config.kvCacheDtype,
       speculative_type: effectiveSpeculativeType,
       spec_draft_n_max: effectiveSpecDraftNMax,
-      tensor_parallel: remembered?.tensorParallel ?? false,
+      tensor_parallel: config.tensorParallel,
       // GGUF-only: the safetensors fallback loads via HF auto-placement (no
       // explicit pins). The split ratio is deliberately never remembered
       // (positionally bound to an exact GPU set), so auto-load leaves llama.cpp's
@@ -1640,7 +1629,12 @@ async function autoLoadSmallestModel(): Promise<{
           }
         : {}),
     });
-    saveSpeculativeType(effectiveSpeculativeType);
+    // Only persist the global preference when the value came from the global
+    // settings. A per-model config's choice must stay load-local, or autoloading
+    // a remembered model on startup would rewrite the global default.
+    if (config.speculativeType == null) {
+      saveSpeculativeType(effectiveSpeculativeType);
+    }
     // Self-gates on is_gguf (skips diffusion), so persists only for a real GGUF load.
     persistGpuMemoryModeOnLoad(loadResp, effectiveGpuMemoryMode);
     useChatRuntimeStore
@@ -1652,6 +1646,9 @@ async function autoLoadSmallestModel(): Promise<{
     );
     store.setParams({
       ...store.params,
+      ...(candidate.kind === "gguf"
+        ? {}
+        : { maxSeqLength: effectiveMaxSeqLength }),
       maxTokens:
         candidate.kind === "gguf"
           ? loadResp.context_length ?? 131072
@@ -1678,7 +1675,7 @@ async function autoLoadSmallestModel(): Promise<{
       const keepCustomCtx = resolveManualAutoCtxPin(
         effectiveGpuMemoryMode,
         effectiveGpuLayers,
-        remembered?.contextLength ?? null,
+        config.customContextLength ?? null,
       );
       useChatRuntimeStore.setState({
         ggufContextLength: loadResp.context_length ?? 131072,
@@ -1696,13 +1693,14 @@ async function autoLoadSmallestModel(): Promise<{
         loadedKvCacheDtype: loadResp.cache_type_kv ?? null,
         tensorParallel: loadResp.tensor_parallel ?? false,
         loadedTensorParallel: loadResp.tensor_parallel ?? false,
-        ...loadedGpuMemoryFieldsUnlessStaged(loadResp, {
-          customContextLength: keepCustomCtx,
-        }),
+        ...loadedGpuMemoryFields(loadResp),
         loadedCustomContextLength: keepCustomCtx,
         defaultChatTemplate: loadResp.chat_template ?? null,
-        chatTemplateOverride: null,
-        loadedChatTemplateOverride: null,
+        chatTemplateOverride: effectiveChatTemplateOverride,
+        loadedChatTemplateOverride: effectiveChatTemplateOverride,
+        // Retain the saved requested context so re-saving the config keeps the
+        // override; null stays null (auto/VRAM-fit).
+        customContextLength: config.customContextLength,
         loadedIsMultimodal: isMultimodalResponse(loadResp),
         loadedIsDiffusion: loadResp.is_diffusion ?? false,
         ...resolveLoadedSpeculativeSettings(loadResp),
@@ -1722,10 +1720,11 @@ async function autoLoadSmallestModel(): Promise<{
         loadedTensorParallel: loadResp.tensor_parallel ?? false,
         // Non-GGUF response: clears any stale GPU baseline a prior manual-GPU
         // GGUF load left, matching the interactive/status sibling load paths.
-        ...loadedGpuMemoryFieldsUnlessStaged(loadResp),
+        ...loadedGpuMemoryFields(loadResp),
         defaultChatTemplate: loadResp.chat_template ?? null,
-        chatTemplateOverride: null,
-        loadedChatTemplateOverride: null,
+        chatTemplateOverride: effectiveChatTemplateOverride,
+        loadedChatTemplateOverride: effectiveChatTemplateOverride,
+        customContextLength: null,
         ...resolveLoadedSpeculativeSettings(loadResp),
         loadedIsMultimodal: isMultimodalResponse(loadResp),
         loadedIsDiffusion: loadResp.is_diffusion ?? false,
@@ -1994,7 +1993,7 @@ async function autoLoadSmallestModel(): Promise<{
         loadedKvCacheDtype: loadResp.cache_type_kv ?? null,
         tensorParallel: loadResp.tensor_parallel ?? false,
         loadedTensorParallel: loadResp.tensor_parallel ?? false,
-        ...loadedGpuMemoryFieldsUnlessStaged(loadResp),
+        ...loadedGpuMemoryFields(loadResp),
         // Drives the GPU Memory controls' diffusion gate; set alongside the
         // GPU fields on every load path so the gate can't read stale.
         loadedIsDiffusion: loadResp.is_diffusion ?? false,
