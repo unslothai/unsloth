@@ -2124,22 +2124,25 @@ def _explicit_studio_tool_loop_requested(payload) -> bool:
 def _permission_mode_confirm(payload) -> bool:
     """Effective confirm-gate intent for Unsloth's own local tool loop.
 
-    The product default is "auto" ("Approve for me"), so an unset permission_mode
-    normalizes to "auto" at the request boundary. An explicit confirm_tool_calls
-    (True or False) wins; ask/auto engage the gate (auto only prompts for a
-    high-risk call, decided per-call in the loop; a non-streaming request that
-    could reach such a call is rejected up front, since it cannot prompt);
-    off/full never prompt. Used at the pre-switch guard and the per-backend tool
-    paths so a forced tool loop (CLI --enable-tools) still gates correctly.
+    An unset permission_mode defaults to the product default "auto" ("Approve for
+    me") for the loop's per-call gate, but the gate can only prompt while
+    streaming, so at the route an unset mode stays lenient: a non-streaming
+    request keeps the legacy run-without-gate behavior instead of 400ing, so
+    non-streaming clients and health checks keep working. An explicit
+    confirm_tool_calls (True or False) wins; explicit ask/auto always engage the
+    gate (a non-streaming one is then rejected, since it cannot prompt); off/full
+    never prompt. Used at the pre-switch guard and the per-backend tool paths so a
+    forced tool loop (CLI --enable-tools) with the default mode still gates
+    streaming requests.
     """
     if payload.confirm_tool_calls is not None:
         return bool(payload.confirm_tool_calls)
     mode = getattr(payload, "permission_mode", None)
+    if mode in ("ask", "auto"):
+        return True
     if mode in ("off", "full"):
         return False
-    # ask/auto -> gate on; a residual unset (unvalidated internal payload) defaults
-    # to auto, the product default, rather than the old stream-dependent behavior.
-    return True
+    return bool(getattr(payload, "stream", False))
 
 
 def _confirm_gate_needs_stream(payload) -> bool:

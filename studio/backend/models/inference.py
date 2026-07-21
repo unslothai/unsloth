@@ -860,17 +860,19 @@ class ThinkingConfig(BaseModel):
 
 
 # Recognized permission_mode values. The field accepts a plain string rather than
-# a Literal so an unrecognized value from a newer UI/client degrades to a safe gate
-# ("ask") instead of a 422. The product default is "auto" ("Approve for me"), so an
-# unset/explicit-null mode normalizes to "auto"; an unrecognized value still falls
-# back to the stricter "ask". The Field defaults below are also "auto" so an omitted
-# field (which skips before-validators) resolves the same way.
+# a Literal so an unrecognized value from a newer UI/client degrades to the safest
+# gate ("ask") instead of a 422. None stays unset at the request boundary: the tool
+# loops normalize an unset mode to the product default "auto" ("Approve for me") for
+# the per-call gate, while the route's confirm-gate derivation keeps an unset mode
+# lenient (a non-streaming request, which cannot prompt, runs), so non-streaming
+# clients and health checks keep working. An unrecognized value still falls back to
+# the stricter "ask".
 _KNOWN_PERMISSION_MODES = ("ask", "auto", "off", "full")
 
 
 def _normalize_permission_mode(value: Any) -> Any:
     if value is None:
-        return "auto"
+        return None
     if value not in _KNOWN_PERMISSION_MODES:
         return "ask"
     return value
@@ -1022,17 +1024,18 @@ class ChatCompletionRequest(BaseModel):
         description = "[x-unsloth] Bypass Permissions: when true, skip the tool-call confirmation gate AND disable the python/terminal execution sandbox (safety checks, command blocklist, resource limits). Secret env vars are still stripped. Takes precedence over confirm_tool_calls.",
     )
     permission_mode: Optional[str] = Field(
-        "auto",
+        None,
         description = (
             "[x-unsloth] Permission level for local tool calls. 'ask' pauses every "
             "call for approval; 'ask'/'auto' enable the confirmation gate on their "
             "own (needs a streaming request to deliver prompts). 'auto' ('Approve for "
-            "me', the default) only pauses calls detected as high risk (credential "
-            "reads, privilege escalation, destructive/persistence, network exfil); "
-            "ordinary calls run immediately, and the sandbox stays on. 'full' is "
-            "equivalent to bypass_permissions=true (no confirmation, no sandbox). "
-            "Unset behaves as 'auto'. An unrecognized value (e.g. from a newer "
-            "client) is treated as 'ask'."
+            "me') only pauses calls detected as high risk (credential reads, privilege "
+            "escalation, destructive/persistence, network exfil); ordinary calls run "
+            "immediately, and the sandbox stays on. 'full' is equivalent to "
+            "bypass_permissions=true (no confirmation, no sandbox). Unset defaults to "
+            "'auto' for the per-call gate; a non-streaming request without an explicit "
+            "mode cannot prompt and runs the loop. An unrecognized value (e.g. from a "
+            "newer client) is treated as 'ask'."
         ),
     )
     auto_heal_tool_calls: Optional[bool] = Field(
@@ -2000,8 +2003,8 @@ class AnthropicMessagesRequest(BaseModel):
         description = "[x-unsloth] Bypass Permissions: when true, disable the python/terminal execution sandbox (safety checks, command blocklist, resource limits) for server-side tool calls. Secret env vars are still stripped. Declared explicitly (not relied on via extra='allow') so omitted requests default to False instead of raising AttributeError.",
     )
     permission_mode: Optional[str] = Field(
-        "auto",
-        description = "[x-unsloth] Permission level for local tool calls: 'ask' pauses every call, 'auto' ('Approve for me', the default) only pauses calls detected as high risk, 'off' never pauses (sandbox stays on), 'full' equals bypass_permissions=true. Unset behaves as 'auto'; an unrecognized value (e.g. from a newer client) is treated as 'ask'.",
+        None,
+        description = "[x-unsloth] Permission level for local tool calls: 'ask' pauses every call, 'auto' ('Approve for me') only pauses calls detected as high risk, 'off' never pauses (sandbox stays on), 'full' equals bypass_permissions=true. Unset defaults to 'auto' for the per-call gate; a non-streaming request without an explicit mode runs the loop. An unrecognized value (e.g. from a newer client) is treated as 'ask'. Declared explicitly so omitted requests default to None instead of raising AttributeError.",
     )
     auto_heal_tool_calls: Optional[bool] = Field(
         True,

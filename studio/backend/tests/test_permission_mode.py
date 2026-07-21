@@ -4,11 +4,11 @@
 """Tests for permission_mode ("Ask for approval" / "Approve for me" /
 "Off" / "Full access") permission levels.
 
-Covers the auto-mode safety classifier in tools.py and the loop-level
-behavior of run_safetensors_tool_loop: in "auto" mode only calls detected
-as potentially unsafe pause for confirmation, in "full" mode nothing
-pauses and the sandbox is dropped, and unset/unknown modes behave as
-"ask" (every call pauses when confirm_tool_calls is on).
+Covers the high-risk classifier in tools.py and the loop-level behavior of
+run_safetensors_tool_loop: in "auto" mode only calls detected as high risk
+pause for confirmation, in "full" mode nothing pauses and the sandbox is
+dropped, and an unset mode normalizes to the "auto" default for the loop gate
+(an unknown mode falls back to "ask").
 """
 
 import os
@@ -1556,8 +1556,9 @@ def test_bypass_permissions_folds_to_full_on_request_models():
 def test_unknown_permission_mode_normalizes_to_ask_on_request_models():
     # An unrecognized mode from a newer UI/client must degrade to the safest gate
     # ("ask") at the API boundary instead of a 422, so the forward-compat fallback
-    # the tool loops already apply (unknown -> ask) is reachable. None now defaults
-    # to the product default "auto"; the four known modes pass through untouched.
+    # the tool loops already apply (unknown -> ask) is reachable. None stays unset at
+    # the boundary (the loops normalize it to the "auto" default for gating); the four
+    # known modes pass through untouched.
     for cls in (ChatCompletionRequest, AnthropicMessagesRequest):
         for unknown in ("paranoid", "readonly", "bogus", ""):
             req = cls(
@@ -1567,7 +1568,7 @@ def test_unknown_permission_mode_normalizes_to_ask_on_request_models():
             assert req.permission_mode == "ask", (cls.__name__, unknown)
         assert (
             cls(messages = [{"role": "user", "content": "hi"}], permission_mode = None).permission_mode
-            == "auto"
+            is None
         )
         for known in ("ask", "auto", "off", "full"):
             req = cls(
@@ -1657,8 +1658,9 @@ def test_ask_auto_self_enable_confirm_on_chat_request():
 
 def test_permission_mode_confirm_derivation():
     # The route derives the effective confirm gate from permission_mode so that a
-    # tool loop forced on by CLI policy (no request-level tool flag) still honors
-    # the documented "unset behaves as auto" default.
+    # tool loop forced on by CLI policy (no request-level tool flag) still gates
+    # correctly. Unset defaults to "auto" for the loop gate, but the route keeps it
+    # lenient (streaming gates, non-streaming runs) since it cannot prompt.
     from routes.inference import _permission_mode_confirm
 
     def req(**kw):
@@ -1674,11 +1676,12 @@ def test_permission_mode_confirm_derivation():
     # off/full never prompt.
     assert _permission_mode_confirm(req(permission_mode = "off")) is False
     assert _permission_mode_confirm(req(permission_mode = "full")) is False
-    # An unset mode now defaults to "auto", which engages the gate (realizable
-    # only on a streaming request; a non-streaming one is rejected by the guard
-    # that reads this, exactly like an explicit auto).
+    # An unset mode defaults to "auto" for the loop gate, but that is only
+    # realizable on a streaming request; a non-streaming unset request keeps the
+    # legacy run-without-gate behavior (it cannot prompt) instead of 400ing, so
+    # non-streaming clients keep working.
     assert _permission_mode_confirm(req(stream = True)) is True
-    assert _permission_mode_confirm(req(stream = False)) is True
+    assert _permission_mode_confirm(req(stream = False)) is False
 
 
 def test_confirm_gate_needs_stream():
