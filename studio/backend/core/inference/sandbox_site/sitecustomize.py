@@ -28,7 +28,6 @@ Identical with and without output streaming because the child env is.
 """
 
 import builtins
-import contextvars
 import importlib
 import importlib.machinery
 import importlib.util
@@ -232,40 +231,6 @@ class _GuardedHttpcoreModule(types.ModuleType):
         return types.ModuleType.__delattr__(self, name)
 
 
-def _make_httpcore_network_gate():
-    active = contextvars.ContextVar("unsloth_httpcore_network_active", default = None)
-    active_markers = set()
-    trusted_request = _trusted_httpx_in_call_stack
-    blocked = _raise_blocked_network_module
-
-    def enter():
-        if not trusted_request(2):
-            blocked("httpcore")
-        marker = object()
-        active_markers.add(id(marker))
-        return active.set(marker), marker
-
-    def exit(state):
-        token, marker = state
-        try:
-            active.reset(token)
-        finally:
-            active_markers.discard(id(marker))
-
-    def is_active():
-        marker = active.get()
-        return marker is not None and id(marker) in active_markers
-
-    return enter, exit, is_active
-
-
-(
-    _enter_httpcore_network,
-    _exit_httpcore_network,
-    _httpcore_network_is_active,
-) = _make_httpcore_network_gate()
-
-
 def _make_httpcore_backend_dispatchers():
     originals = {}
 
@@ -296,8 +261,6 @@ def _guard_httpcore_backend_method(cls, method_name):
         return
 
     key = _register_httpcore_backend(original)
-    network_enter = _enter_httpcore_network
-    network_exit = _exit_httpcore_network
     trusted_request = _trusted_httpx_in_call_stack
     blocked = _raise_blocked_network_module
     code = getattr(original, "__code__", None)
@@ -307,11 +270,7 @@ def _guard_httpcore_backend_method(cls, method_name):
         async def guarded(*args, **kwargs):
             if not trusted_request(2):
                 blocked("httpcore")
-            state = network_enter()
-            try:
-                return await dispatch(key, *args, **kwargs)
-            finally:
-                network_exit(state)
+            return await dispatch(key, *args, **kwargs)
 
     else:
         dispatch = _dispatch_httpcore_backend
@@ -319,11 +278,7 @@ def _guard_httpcore_backend_method(cls, method_name):
         def guarded(*args, **kwargs):
             if not trusted_request(2):
                 blocked("httpcore")
-            state = network_enter()
-            try:
-                return dispatch(key, *args, **kwargs)
-            finally:
-                network_exit(state)
+            return dispatch(key, *args, **kwargs)
 
     guarded._unsloth_httpcore_backend_guard = True
     guarded.__name__ = getattr(original, "__name__", method_name)
@@ -469,7 +424,6 @@ def _make_network_guard_audit():
     realpath = os.path.realpath
     relpath = os.path.relpath
     shim_path = realpath(__file__)
-    httpcore_network_active = _httpcore_network_is_active
 
     def blocked_error(root):
         raise ModuleNotFoundError(
@@ -578,16 +532,20 @@ def _make_network_guard_audit():
             return
         if event not in {"socket.connect", "socket.connect_ex", "socket.getaddrinfo"}:
             return
-        if httpcore_network_active():
-            return
         root = blocked_origin_in_stack(2)
-        if root is not None:
+        if root in blocked:
+            blocked_error(root)
+        if root in direct_blocked:
+            if package_in_stack("httpx", 2):
+                return
             blocked_error(root)
         if (
             package_in_stack("httpcore", 2)
             or package_in_stack("anyio", 2)
             or package_in_stack("trio", 2)
         ):
+            if package_in_stack("httpx", 2):
+                return
             blocked_error("httpcore")
 
     return audit

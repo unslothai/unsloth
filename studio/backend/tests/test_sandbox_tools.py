@@ -565,12 +565,12 @@ class TestSandboxEnvIsolation:
         assert result.returncode != 0
         assert "Blocked: low-level network module 'httpcore'" in result.stderr
 
-    def test_runtime_import_guard_blocks_httpcore_context_flag_tampering(self, tmp_path):
+    def test_runtime_import_guard_blocks_httpcore_backend_reflection(self, tmp_path):
         from core.inference.tools import _build_safe_env
 
         code = (
             "import sys, types\n"
-            "import httpx, sitecustomize\n"
+            "import httpx\n"
             "client = httpx.Client()\n"
             "client.close()\n"
             "module = sys.modules['httpcore._backends.sync']\n"
@@ -590,21 +590,10 @@ class TestSandboxEnvIsolation:
             "    if type(value) is dict:\n"
             "        originals = value\n"
             "original = originals[key]\n"
-            "tokens = []\n"
-            "for value in vars(sitecustomize).values():\n"
-            "    for cell in getattr(value, '__closure__', ()) or ():\n"
-            "        content = cell.cell_contents\n"
-            "        if type(content).__name__ == 'ContextVar':\n"
-            "            tokens.append((content, content.set(True)))\n"
-            "assert tokens\n"
-            "try:\n"
-            "    original(\n"
-            "        backend_type(), '127.0.0.1', 9,\n"
-            "        timeout=0.01, local_address=None, socket_options=None,\n"
-            "    )\n"
-            "finally:\n"
-            "    for content, token in reversed(tokens):\n"
-            "        content.reset(token)\n"
+            "original(\n"
+            "    backend_type(), '127.0.0.1', 9,\n"
+            "    timeout=0.01, local_address=None, socket_options=None,\n"
+            ")\n"
         )
         result = subprocess.run(
             [sys.executable, "-c", code],
@@ -616,6 +605,27 @@ class TestSandboxEnvIsolation:
         )
         assert result.returncode != 0
         assert "Blocked: low-level network module 'httpcore'" in result.stderr
+
+    def test_runtime_import_guard_allows_httpx_backend_connect(self, tmp_path):
+        from core.inference.tools import _build_safe_env
+
+        code = (
+            "import httpx\n"
+            "try:\n"
+            "    httpx.get('http://127.0.0.1:9/probe', timeout=0.01)\n"
+            "except Exception as exc:\n"
+            "    print(type(exc).__name__)\n"
+        )
+        result = subprocess.run(
+            [sys.executable, "-c", code],
+            cwd = tmp_path,
+            env = _build_safe_env(str(tmp_path)),
+            capture_output = True,
+            text = True,
+            check = False,
+        )
+        assert result.returncode == 0, result.stderr
+        assert "Blocked: low-level network module" not in result.stderr
 
     def test_runtime_import_guard_blocks_local_module_httpcore_import(self, tmp_path):
         from core.inference.tools import _build_safe_env
