@@ -6,9 +6,9 @@ import {
   PopoverContent,
   PopoverTrigger,
 } from "@/components/ui/popover";
-import { cn } from "@/lib/utils";
-import { Tick02Icon } from "@/lib/tick-icon";
 import { ChevronDownStandardIcon } from "@/lib/chevron-icons";
+import { Tick02Icon } from "@/lib/tick-icon";
+import { cn } from "@/lib/utils";
 import { HugeiconsIcon } from "@hugeicons/react";
 import {
   type KeyboardEvent,
@@ -71,7 +71,9 @@ export function HubOptionMenu<T extends string>({
       ? -1
       : Math.min(activeIndex, options.length - 1);
   const activeOptionId =
-    resolvedActiveIndex >= 0 ? `${idBase}-option-${resolvedActiveIndex}` : undefined;
+    resolvedActiveIndex >= 0
+      ? `${idBase}-option-${resolvedActiveIndex}`
+      : undefined;
 
   const activateIndex = useCallback((index: number) => {
     setActiveIndex((current) => (current === index ? current : index));
@@ -161,7 +163,7 @@ export function HubOptionMenu<T extends string>({
 
   return (
     <Popover open={open} onOpenChange={handleOpenChange}>
-      <PopoverTrigger asChild>
+      <PopoverTrigger asChild={true}>
         <button
           ref={triggerRef}
           type="button"
@@ -171,7 +173,7 @@ export function HubOptionMenu<T extends string>({
           aria-label={ariaLabel}
           title={title}
           className={cn(
-            "field-trigger hub-menu-trigger field-soft field-filter inline-flex h-9 shrink-0 cursor-pointer items-center justify-between gap-0.5 rounded-full pl-3 pr-2 text-[12.5px] transition-colors",
+            "field-trigger hub-menu-trigger field-soft field-filter inline-flex h-9 shrink-0 cursor-pointer items-center justify-between gap-2.5 rounded-full pl-3 pr-2.5 text-[12.5px] transition-colors",
             "focus-visible:border-border focus-visible:ring-0 focus-visible:ring-offset-0",
             className,
           )}
@@ -183,7 +185,10 @@ export function HubOptionMenu<T extends string>({
           }}
         >
           <span className="min-w-0 flex-1 truncate text-left">
-            {triggerContent ?? selected?.triggerLabel ?? selected?.label ?? value}
+            {triggerContent ??
+              selected?.triggerLabel ??
+              selected?.label ??
+              value}
           </span>
           {showChevron && (
             <HugeiconsIcon

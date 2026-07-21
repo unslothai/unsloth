@@ -9,6 +9,7 @@ import {
   TooltipContent,
   TooltipTrigger,
 } from "@/components/ui/tooltip";
+import type { HfSortKey } from "@/features/hub/hooks/use-hub-model-search";
 import { cn } from "@/lib/utils";
 import {
   AiChipIcon,
@@ -19,26 +20,25 @@ import {
   SlidersHorizontalIcon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
-import type { HfSortKey } from "@/features/hub/hooks/use-hub-model-search";
-import type {
-  CapabilityFilter,
-  ModelFormatFilter,
-  ModelsTab,
-  ResourceTypeFilter,
-} from "../types";
-import {
-  CAPABILITY_FILTER_OPTIONS,
-  FORMAT_FILTER_OPTIONS,
-} from "../lib/view-models";
-import { HubOptionMenu, type HubOption } from "./hub-option-menu";
+import { memo, useMemo, useState } from "react";
 import {
   clearRecentSearches,
   recordRecentSearch,
   removeRecentSearch,
   useRecentSearches,
 } from "../lib/recent-searches";
+import {
+  CAPABILITY_FILTER_OPTIONS,
+  FORMAT_FILTER_OPTIONS,
+} from "../lib/view-models";
+import type {
+  CapabilityFilter,
+  ModelFormatFilter,
+  ModelsTab,
+  ResourceTypeFilter,
+} from "../types";
+import { type HubOption, HubOptionMenu } from "./hub-option-menu";
 import { RecentSearches } from "./recent-searches";
-import { memo, useMemo, useState } from "react";
 
 // Widened so the format dropdown can carry the "Fine-tune ready" pseudo-option,
 // which opens the curated channel instead of becoming the active format filter.
@@ -175,7 +175,7 @@ export const ModelsToolbar = memo(function ModelsToolbar({
     <div className="flex min-w-0 flex-col gap-2 lg:flex-row lg:flex-nowrap lg:items-center">
       <div
         className={cn(
-          "hub-menu-trigger hub-tab-toggle relative inline-flex h-9 w-full shrink-0 items-center rounded-full lg:w-[240px]",
+          "hub-menu-trigger hub-tab-toggle relative inline-flex h-9 w-full shrink-0 items-center rounded-full lg:w-[280px]",
         )}
         role="radiogroup"
         aria-label="View"
@@ -219,88 +219,88 @@ export const ModelsToolbar = memo(function ModelsToolbar({
       </div>
 
       <div className="relative min-w-0 flex-1 lg:flex-[1_1_360px]">
-          <HugeiconsIcon
-            icon={Search01Icon}
-            strokeWidth={1.8}
-            className="pointer-events-none absolute left-3.5 top-1/2 size-4 -translate-y-1/2 text-muted-foreground"
-          />
-          <Input
-            // `type="search"` plus these flags stop password managers and noisy
-            // text assistance from acting on this field.
-            type="search"
-            name="hub-search"
-            autoComplete="off"
-            autoCorrect="off"
-            autoCapitalize="off"
-            spellCheck={false}
-            enterKeyHint="search"
-            data-1p-ignore={true}
-            data-lpignore={true}
-            data-form-type="other"
-            value={query}
-            onChange={(event) => onQueryChange(event.target.value)}
-            onFocus={() => setSearchFocused(true)}
-            onBlur={() => {
-              setSearchFocused(false);
-              if (isDiscover) {
-                recordRecentSearch(query);
-              }
-            }}
-            onKeyDown={(event) => {
-              if (event.key === "Enter" && isDiscover) {
-                recordRecentSearch(query);
-              } else if (event.key === "Escape" && showRecentSearches) {
-                event.currentTarget.blur();
-              }
-            }}
-            placeholder={
-              tab === "downloaded"
-                ? `Search on-device ${isDataset ? "datasets" : "models"}`
-                : isDataset
-                  ? "Search datasets"
-                  : "Search all models"
+        <HugeiconsIcon
+          icon={Search01Icon}
+          strokeWidth={1.8}
+          className="pointer-events-none absolute left-3.5 top-1/2 size-4 -translate-y-1/2 text-muted-foreground"
+        />
+        <Input
+          // `type="search"` plus these flags stop password managers and noisy
+          // text assistance from acting on this field.
+          type="search"
+          name="hub-search"
+          autoComplete="off"
+          autoCorrect="off"
+          autoCapitalize="off"
+          spellCheck={false}
+          enterKeyHint="search"
+          data-1p-ignore={true}
+          data-lpignore={true}
+          data-form-type="other"
+          value={query}
+          onChange={(event) => onQueryChange(event.target.value)}
+          onFocus={() => setSearchFocused(true)}
+          onBlur={() => {
+            setSearchFocused(false);
+            if (isDiscover) {
+              recordRecentSearch(query);
             }
-            className={cn(
-              "field-soft h-9 rounded-full !border-0 pl-10 text-[13px] placeholder:text-muted-foreground/80 focus-visible:!ring-0",
-              hasTrailing ? "pr-10" : "pr-4",
-            )}
-          />
-          {query ? (
-            <button
-              type="button"
-              aria-label="Clear search"
-              // Keep focus on the input so clearing reveals recent searches
-              // rather than dismissing the field.
-              onMouseDown={(event) => event.preventDefault()}
-              onClick={() => onQueryChange("")}
-              className="absolute right-2.5 top-1/2 inline-flex size-6 -translate-y-1/2 items-center justify-center rounded-full text-muted-foreground/70 transition-colors hover:text-foreground"
-            >
-              <HugeiconsIcon
-                icon={CancelCircleIcon}
-                strokeWidth={1.75}
-                className="size-[18px]"
-              />
-            </button>
-          ) : isDiscover && isLoading ? (
-            <Spinner className="pointer-events-none absolute right-3.5 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" />
-          ) : null}
-          {showRecentSearches && (
-            <RecentSearches
-              searches={recentSearches}
-              onSelect={(value) => {
-                recordRecentSearch(value);
-                onQueryChange(value);
-              }}
-              onRemove={removeRecentSearch}
-              onClear={clearRecentSearches}
-            />
+          }}
+          onKeyDown={(event) => {
+            if (event.key === "Enter" && isDiscover) {
+              recordRecentSearch(query);
+            } else if (event.key === "Escape" && showRecentSearches) {
+              event.currentTarget.blur();
+            }
+          }}
+          placeholder={
+            tab === "downloaded"
+              ? `Search on-device ${isDataset ? "datasets" : "models"}`
+              : isDataset
+                ? "Search datasets"
+                : "Search all models"
+          }
+          className={cn(
+            "field-soft h-9 rounded-full !border-0 pl-10 text-[13px] placeholder:text-muted-foreground/80 focus-visible:!ring-0",
+            hasTrailing ? "pr-10" : "pr-4",
           )}
-        </div>
+        />
+        {query ? (
+          <button
+            type="button"
+            aria-label="Clear search"
+            // Keep focus on the input so clearing reveals recent searches
+            // rather than dismissing the field.
+            onMouseDown={(event) => event.preventDefault()}
+            onClick={() => onQueryChange("")}
+            className="absolute right-2.5 top-1/2 inline-flex size-6 -translate-y-1/2 items-center justify-center rounded-full text-muted-foreground/70 transition-colors hover:text-foreground"
+          >
+            <HugeiconsIcon
+              icon={CancelCircleIcon}
+              strokeWidth={1.75}
+              className="size-[18px]"
+            />
+          </button>
+        ) : isDiscover && isLoading ? (
+          <Spinner className="pointer-events-none absolute right-3.5 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" />
+        ) : null}
+        {showRecentSearches && (
+          <RecentSearches
+            searches={recentSearches}
+            onSelect={(value) => {
+              recordRecentSearch(value);
+              onQueryChange(value);
+            }}
+            onRemove={removeRecentSearch}
+            onClear={clearRecentSearches}
+          />
+        )}
+      </div>
 
       <div className="flex min-w-0 flex-wrap items-center gap-2 lg:flex-[0_0_auto] lg:flex-nowrap lg:justify-end">
         {tab === "downloaded" && !isDataset && (
           <Tooltip>
-            <TooltipTrigger asChild>
+            <TooltipTrigger asChild={true}>
               <button
                 type="button"
                 onClick={onManageLocalFolders}
@@ -359,7 +359,7 @@ export const ModelsToolbar = memo(function ModelsToolbar({
             footer={
               isDataset ? undefined : (
                 <Tooltip>
-                  <TooltipTrigger asChild>
+                  <TooltipTrigger asChild={true}>
                     <button
                       type="button"
                       role="checkbox"
@@ -370,7 +370,7 @@ export const ModelsToolbar = memo(function ModelsToolbar({
                       <Checkbox
                         checked={fitOnDeviceOnly}
                         tabIndex={-1}
-                        aria-hidden
+                        aria-hidden={true}
                         className="pointer-events-none size-3.5 rounded-full [&_svg]:!size-2.5"
                       />
                       Only show models that fit
@@ -402,7 +402,7 @@ export const ModelsToolbar = memo(function ModelsToolbar({
             )}
           />
           <Tooltip>
-            <TooltipTrigger asChild>
+            <TooltipTrigger asChild={true}>
               <button
                 type="button"
                 role="radio"
@@ -428,7 +428,7 @@ export const ModelsToolbar = memo(function ModelsToolbar({
             </TooltipContent>
           </Tooltip>
           <Tooltip>
-            <TooltipTrigger asChild>
+            <TooltipTrigger asChild={true}>
               <button
                 type="button"
                 role="radio"

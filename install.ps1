@@ -2128,6 +2128,10 @@ exit 0
             "gfx1151" = "gfx1151";     "gfx1150" = "gfx1150"       # RDNA 3.5 (Strix Halo/Point)
             "gfx1103" = "gfx110X-all"; "gfx1102" = "gfx110X-all"   # RDNA 3
             "gfx1101" = "gfx110X-all"; "gfx1100" = "gfx110X-all"
+            "gfx1036" = "gfx103X-all"; "gfx1035" = "gfx103X-all"   # RDNA 2 (RX 6000)
+            "gfx1034" = "gfx103X-all"; "gfx1033" = "gfx103X-all"
+            "gfx1032" = "gfx103X-all"; "gfx1031" = "gfx103X-all"
+            "gfx1030" = "gfx103X-all"
             "gfx90a"  = "gfx90a";      "gfx908"  = "gfx908"        # MI200/MI100
         }
         # gfx120X (RDNA 4) and gfx1151/gfx1150 (Strix) have a null-pointer bug in
@@ -2418,6 +2422,13 @@ exit 0
                 return (Exit-InstallFailure "Failed to install unsloth (exit code $baseInstallExit)" $baseInstallExit)
             }
         }
+    }
+
+    $installedPackageVersion = (& $VenvPython -c "from importlib.metadata import version; import sys; print(version(sys.argv[1]))" $PackageName 2>$null | Out-String).Trim()
+    if ($LASTEXITCODE -eq 0 -and $installedPackageVersion) {
+        step $PackageName "$installedPackageVersion installed"
+    } else {
+        substep "[WARN] installed $PackageName version could not be determined" "Yellow"
     }
 
     # ── Enforce the installed torch flavor matches the detected GPU build ──

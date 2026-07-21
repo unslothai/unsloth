@@ -3,6 +3,7 @@
 
 "use client";
 
+import { Input } from "@/components/ui/input";
 import {
   Popover,
   PopoverContent,
@@ -10,7 +11,7 @@ import {
 } from "@/components/ui/popover";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { usePlatformStore } from "@/config/env";
-import { isCustomProviderType } from "@/features/chat/external-providers";
+import { isCustomProviderType } from "@/features/chat";
 import { ChevronDownStandardIcon } from "@/lib/chevron-icons";
 import { cn } from "@/lib/utils";
 import {
@@ -33,7 +34,11 @@ import {
   useRef,
   useState,
 } from "react";
-import { Input } from "../ui/input";
+import {
+  type PerModelConfig,
+  resolveInitialConfig,
+} from "../model-config/per-model-config";
+import { ModelConfigPage } from "./model-config-page";
 import { HubModelPicker, hasDownloadedModels } from "./model-selector/pickers";
 import { PillTabs } from "./model-selector/pill-tabs";
 import {
@@ -45,6 +50,7 @@ import type {
   ExternalModelOption,
   LoraModelOption,
   ModelOption,
+  ModelPickTarget,
   ModelSelectorChangeMeta,
 } from "./model-selector/types";
 
@@ -122,6 +128,10 @@ interface ModelSelectorProps {
   value?: string;
   defaultValue?: string;
   activeGgufVariant?: string | null;
+  activeModelConfig?: PerModelConfig | null;
+  activeGgufContextLength?: number | null;
+  selectedConfig?: PerModelConfig | null;
+  selectedGgufVariant?: string | null;
   onValueChange?: (value: string, meta: ModelSelectorChangeMeta) => void;
   onEject?: () => void;
   onFoldersChange?: () => void;
@@ -183,15 +193,12 @@ function ModelSelectorTrigger({
       >
         {isLoaded &&
           (onEject ? (
-            // Loaded status doubles as a mouse eject shortcut: green checkmark
-            // at rest, red eject icon on pill hover, click to eject. A plain
-            // span (no role/tabIndex) keeps it out of the trigger button's
-            // content model, which forbids focusable descendants. Keyboard and
-            // screen-reader users eject via the picker's "Eject model" button.
-            // aria-hidden marks it decorative; stopPropagation stops the
-            // popover from toggling. On touch (no hover) the eject icon and
-            // tooltip never reveal, so pointer-events-none disables the
-            // shortcut there and taps open the picker instead of ejecting.
+            // Loaded status doubles as a mouse eject shortcut (checkmark at rest,
+            // eject icon on hover). A plain span keeps it out of the trigger
+            // button's content model (no focusable descendants); keyboard/SR users
+            // eject via the "Eject model" button. aria-hidden marks it decorative;
+            // stopPropagation stops the popover toggling. On touch (no hover)
+            // pointer-events-none disables it so taps open the picker instead.
             <span
               aria-hidden={true}
               title="Eject model"
@@ -285,7 +292,8 @@ function saveLastHubSection(section: HubSection): void {
 // when they have downloads, else Recommended.
 function defaultHubSection(): HubSection {
   return (
-    loadLastHubSection() ?? (hasDownloadedModels() ? "downloaded" : "recommended")
+    loadLastHubSection() ??
+    (hasDownloadedModels() ? "downloaded" : "recommended")
   );
 }
 
@@ -308,6 +316,11 @@ function ModelSelectorContent({
   loraModels,
   externalModels,
   value,
+  activeGgufVariant,
+  activeModelConfig,
+  activeGgufContextLength,
+  selectedConfig,
+  selectedGgufVariant,
   onSelect,
   onEject,
   onFoldersChange,
@@ -323,6 +336,11 @@ function ModelSelectorContent({
   loraModels: LoraModelOption[];
   externalModels: ExternalModelOption[];
   value?: string;
+  activeGgufVariant?: string | null;
+  activeModelConfig?: PerModelConfig | null;
+  activeGgufContextLength?: number | null;
+  selectedConfig?: PerModelConfig | null;
+  selectedGgufVariant?: string | null;
   onSelect: (id: string, meta: ModelSelectorChangeMeta) => void;
   onEject?: () => void;
   onFoldersChange?: () => void;
@@ -337,8 +355,7 @@ function ModelSelectorContent({
   const chatOnly = usePlatformStore((s) => s.isChatOnly());
   const hasExternal = externalModels.length > 0;
   // The Fine-tuned tab is for fine-tuned models only. Local models (LM Studio,
-  // Ollama, custom folders) carry source "local" and live in the Hub tab's
-  // Downloaded / Custom sections instead.
+  // Ollama, custom folders) carry source "local" and live in the Hub tab instead.
   const fineTunedModels = useMemo(
     () => loraModels.filter((model) => isFineTunedSource(model.source)),
     [loraModels],
@@ -391,9 +408,12 @@ function ModelSelectorContent({
   const effectiveHubSection: HubSection =
     hubSection === "connected" && !hasExternal ? "recommended" : hubSection;
 
-  // The picker below remounts on each open, but this tab state does not, so a
-  // persisted selection that lands in lora/external after async load would
-  // reopen on Hub. Re-derive the default tab on the open edge.
+  const [configTarget, setConfigTarget] = useState<ModelPickTarget | null>(
+    null,
+  );
+
+  // The picker remounts on each open but this tab state does not, so re-derive
+  // the default tab on the open edge (else a lora/external selection reopens on Hub).
   const wasOpen = useRef(open);
   useEffect(() => {
     if (open && !wasOpen.current) {
@@ -401,6 +421,9 @@ function ModelSelectorContent({
       // Connected when an external model is active, else On Device when the
       // user has downloads, else their last section.
       setHubSection(wantsConnectedDefault ? "connected" : defaultHubSection());
+    }
+    if (!open && wasOpen.current) {
+      setConfigTarget(null);
     }
     wasOpen.current = open;
   }, [
@@ -452,6 +475,29 @@ function ModelSelectorContent({
     }
   }
 
+  const visibleConfigTarget = open ? configTarget : null;
+  const openConfigPage = (id: string, meta: ModelSelectorChangeMeta) => {
+    const leaf = id.includes("/") ? id.slice(id.lastIndexOf("/") + 1) : id;
+    setConfigTarget({
+      id,
+      displayName: meta.ggufVariant ? `${leaf} · ${meta.ggufVariant}` : leaf,
+      ggufVariant: meta.ggufVariant ?? null,
+      isGguf: meta.isGguf ?? Boolean(meta.ggufVariant),
+      meta,
+    });
+  };
+  const handlePick = (id: string, meta: ModelSelectorChangeMeta) => {
+    if (meta.source === "external") {
+      onSelect(id, meta);
+      return;
+    }
+    const resolved = resolveInitialConfig(id, meta.ggufVariant);
+    onSelect(id, {
+      ...meta,
+      ...(resolved.remembered ? { config: resolved.config } : {}),
+    });
+  };
+
   return (
     <PopoverContent
       align="start"
@@ -459,12 +505,17 @@ function ModelSelectorContent({
       data-tour={dataTour}
       onKeyDown={handlePickerEntryKeyDown}
       className={cn(
-        "unsloth-model-selector-menu menu-soft-surface ring-0 max-w-[calc(100vw-1rem)] min-w-0 gap-0 pt-4 pb-0 pl-4",
-        // Sized so the left-packed row keeps uniform gaps and the last dropdown's
-        // right gap matches the pill's left gap (pl-4 vs pr-4).
-        hasExternal
-          ? "w-[min(614px,calc(100vw-1rem))] pr-4"
-          : "w-[min(506px,calc(100vw-1rem))] pr-2",
+        "unsloth-model-selector-menu menu-soft-surface ring-0 max-w-[calc(100vw-1rem)] min-w-0 gap-0",
+        visibleConfigTarget
+          ? "w-[min(468px,calc(100vw-1rem))] px-4 pt-4 pb-4"
+          : cn(
+              "pt-4 pb-0 pl-4",
+              // Sized so the left-packed row keeps uniform gaps and the last
+              // dropdown's right gap matches the pill's left gap (pl-4 vs pr-4).
+              hasExternal
+                ? "w-[min(614px,calc(100vw-1rem))] pr-4"
+                : "w-[min(506px,calc(100vw-1rem))] pr-2",
+            ),
         className,
       )}
     >
@@ -477,6 +528,42 @@ function ModelSelectorContent({
         skipDelayDuration={0}
         disableHoverableContent={true}
       >
+        {visibleConfigTarget ? (
+          <ModelConfigPage
+            key={`${visibleConfigTarget.id}::${visibleConfigTarget.ggufVariant ?? ""}`}
+            target={visibleConfigTarget}
+            onBack={() => setConfigTarget(null)}
+            onRun={(config) =>
+              onSelect(visibleConfigTarget.id, {
+                ...visibleConfigTarget.meta,
+                config,
+                forceReload: true,
+              })
+            }
+            loadedConfig={
+              value === visibleConfigTarget.id &&
+              (activeGgufVariant ?? null) ===
+                (visibleConfigTarget.ggufVariant ?? null)
+                ? (activeModelConfig ?? null)
+                : null
+            }
+            loadedContextLength={
+              value === visibleConfigTarget.id &&
+              (activeGgufVariant ?? null) ===
+                (visibleConfigTarget.ggufVariant ?? null)
+                ? (activeGgufContextLength ?? null)
+                : null
+            }
+            initialConfig={
+              value === visibleConfigTarget.id &&
+              (selectedGgufVariant ?? null) ===
+                (visibleConfigTarget.ggufVariant ?? null)
+                ? (selectedConfig ?? null)
+                : null
+            }
+          />
+        ) : (
+          <>
         {tabs.length > 1 ? (
           <PillTabs
             ariaLabel="Model source"
@@ -494,13 +581,14 @@ function ModelSelectorContent({
             loraModels={fineTunedModels}
             externalModels={externalModels}
             value={value}
-            onSelect={onSelect}
+            onSelect={handlePick}
             onFoldersChange={onFoldersChange}
             onBrowseHub={onBrowseHub}
             onModelsChange={onModelsChange}
+            onConfigure={openConfigPage}
             deleteDisabled={deleteDisabled}
-            section={effectiveHubSection}
             onEject={hasSelection && onEject ? onEject : undefined}
+            section={effectiveHubSection}
             sectionToggle={
               <PillTabs
                 ariaLabel="Hub section"
@@ -538,10 +626,8 @@ function ModelSelectorContent({
             </button>
           </div>
         ) : null}
-        {/* Hub renders Eject inline as the last list row; other tabs keep the
-          footer button. */}
         {effectiveTab !== "hub" && hasSelection && onEject ? (
-          <div className="mt-1.5 pt-1.5">
+          <div className="mt-1.5 border-t border-border/70 pt-1.5 pb-2">
             <button
               type="button"
               onClick={onEject}
@@ -553,6 +639,8 @@ function ModelSelectorContent({
             </button>
           </div>
         ) : null}
+          </>
+        )}
       </TooltipProvider>
     </PopoverContent>
   );
@@ -565,6 +653,10 @@ export function ModelSelector({
   value,
   defaultValue,
   activeGgufVariant,
+  activeModelConfig,
+  activeGgufContextLength,
+  selectedConfig,
+  selectedGgufVariant,
   onValueChange,
   onEject,
   onFoldersChange,
@@ -693,6 +785,11 @@ export function ModelSelector({
         loraModels={loraModels}
         externalModels={externalModels}
         value={selected}
+        activeGgufVariant={activeGgufVariant}
+        activeModelConfig={activeModelConfig}
+        activeGgufContextLength={activeGgufContextLength}
+        selectedConfig={selectedConfig}
+        selectedGgufVariant={selectedGgufVariant}
         onSelect={handleSelect}
         onEject={onEject ? handleEject : undefined}
         onFoldersChange={onFoldersChange}
