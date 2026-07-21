@@ -55,6 +55,7 @@ import {
   Archive03Icon,
   ArrowRight02Icon,
   BadgeInfoIcon,
+  BubbleChatIcon,
   ChefHatIcon,
   CloudIcon,
   CpuIcon,
@@ -468,7 +469,6 @@ export function AppSidebar() {
   // first). The section only appears once at least one project is pinned.
   const pinnedProjectIds = usePinnedProjectsStore((s) => s.pinnedIds);
   const unpinProject = usePinnedProjectsStore((s) => s.unpin);
-  const [projectsOpen, setProjectsOpen] = useState(true);
   const pinnedProjectRecords = useMemo(() => {
     const byId = new Map(projects.map((p) => [p.id, p]));
     return pinnedProjectIds
@@ -885,6 +885,8 @@ export function AppSidebar() {
       // pl-3 (12px) over the content's pl-1.5 (6px) = 18px, aligning the
       // title with the nav items above.
       variant === "project" ? "pl-[39px]" : "pl-3",
+      // Pinned chats carry a chat icon, so add the nav-item icon gap.
+      isPinned && variant !== "project" && "gap-[8.5px]",
       variant === "project"
         ? "group-hover/project-chat-item:pr-6 group-has-[.sidebar-row-action[data-state=open]]/project-chat-item:pr-6"
         : isPinned
@@ -946,6 +948,9 @@ export function AppSidebar() {
             closeMobileIfOpen();
           }}
         >
+          {isPinned && variant !== "project" && (
+            <HugeiconsIcon icon={BubbleChatIcon} strokeWidth={1.75} className="size-icon! shrink-0" />
+          )}
           <span className="truncate">
             {pendingRename?.id === item.id ? pendingRename.title : item.title}
           </span>
@@ -1401,19 +1406,16 @@ export function AppSidebar() {
           </SidebarGroup>
         </Collapsible>
 
-        {/* Projects: the ones the user pinned, above Recents */}
+        {/* Pinned: pinned projects (with their chats) and pinned chats */}
         {!isStudioRoute &&
           !showTrainingRecents &&
-          pinnedProjectRecords.length > 0 && (
-            <Collapsible
-              open={projectsOpen}
-              onOpenChange={setProjectsOpen}
-              asChild
-            >
+          (pinnedProjectRecords.length > 0 ||
+            pinnedChatItems.length > 0) && (
+            <Collapsible open={pinnedOpen} onOpenChange={setPinnedOpen} asChild>
               <SidebarGroup className="group-data-[collapsible=icon]:hidden px-0 py-0">
                 <SidebarGroupLabel className={cn("sidebar-sticky-label sidebar-sticky-label-following", scrolled && "is-scrolled")} asChild>
                   <CollapsibleTrigger className="cursor-pointer flex w-full items-center gap-1 group/sb-collap">
-                    Projects
+                    Pinned
                     <ChevronDown className="size-3.5 opacity-0 transition-[transform,opacity] duration-200 group-hover/sb-collap:opacity-100 group-focus-visible/sb-collap:opacity-100 data-[state=open]:rotate-0 [[data-state=closed]_&]:rotate-[-90deg] [[data-state=closed]_&]:opacity-100" />
                   </CollapsibleTrigger>
                 </SidebarGroupLabel>
@@ -1538,9 +1540,9 @@ export function AppSidebar() {
                             <SidebarMenuItem>
                               <SidebarMenuButton
                                 onClick={() => toggleProjectShowAll(project.id)}
-                                className="sidebar-nav-btn h-[33px] rounded-full pl-9 pr-4 font-medium text-sidebar-foreground/55"
+                                className="sidebar-nav-btn h-[30px] rounded-full pl-9 pr-4 font-medium text-muted-foreground"
                               >
-                                <span className="text-[14.5px] leading-[19px] tracking-nav">
+                                <span className="text-[13px] leading-[18px] tracking-nav">
                                   {showAll ? "Show less" : "Show more"}
                                 </span>
                               </SidebarMenuButton>
@@ -1549,35 +1551,15 @@ export function AppSidebar() {
                         </Fragment>
                         );
                       })}
+                      {pinnedChatItems.map((item) =>
+                        renderChatSidebarItem(item, "recent"),
+                      )}
                     </SidebarMenu>
                   </SidebarGroupContent>
                 </CollapsibleContent>
               </SidebarGroup>
             </Collapsible>
           )}
-
-        {/* Pinned chats: own section above Recents */}
-        {!isStudioRoute && !showTrainingRecents && pinnedChatItems.length > 0 && (
-          <Collapsible open={pinnedOpen} onOpenChange={setPinnedOpen} asChild>
-            <SidebarGroup className="group-data-[collapsible=icon]:hidden px-0 py-0">
-              <SidebarGroupLabel className={cn("sidebar-sticky-label sidebar-sticky-label-following", scrolled && "is-scrolled")} asChild>
-                <CollapsibleTrigger className="cursor-pointer flex w-full items-center gap-1 group/sb-collap">
-                  Pinned
-                  <ChevronDown className="size-3.5 opacity-0 transition-[transform,opacity] duration-200 group-hover/sb-collap:opacity-100 group-focus-visible/sb-collap:opacity-100 data-[state=open]:rotate-0 [[data-state=closed]_&]:rotate-[-90deg] [[data-state=closed]_&]:opacity-100" />
-                </CollapsibleTrigger>
-              </SidebarGroupLabel>
-              <CollapsibleContent>
-                <SidebarGroupContent className="pl-1.5 pr-2">
-                  <SidebarMenu>
-                    {pinnedChatItems.map((item) =>
-                      renderChatSidebarItem(item, "recent"),
-                    )}
-                  </SidebarMenu>
-                </SidebarGroupContent>
-              </CollapsibleContent>
-            </SidebarGroup>
-          </Collapsible>
-        )}
 
         {!isStudioRoute && !showTrainingRecents && (
           <Collapsible open={chatOpen} onOpenChange={setChatOpen} asChild>
