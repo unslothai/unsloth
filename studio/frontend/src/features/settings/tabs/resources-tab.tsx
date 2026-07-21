@@ -3,6 +3,7 @@
 
 import { FolderBrowser } from "@/components/assistant-ui/model-selector/folder-browser";
 import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
 import { Progress } from "@/components/ui/progress";
 import { Switch } from "@/components/ui/switch";
 import {
@@ -320,6 +321,22 @@ export function ResourcesTab() {
     : hfCacheLoaded
       ? t("settings.resources.environment.unknown")
       : t("common.loading");
+  const cacheLocationDetail = hfCache
+    ? hfCache.source === "environment"
+      ? t("settings.resources.storage.environmentManaged", {
+          variable: hfCache.environmentVariable ?? "HF_HOME",
+        })
+      : [
+          t("settings.resources.storage.futureDownloads"),
+          hfCache.freeBytes !== null
+            ? t("settings.resources.storage.locationFree", {
+                free: formatBytes(hfCache.freeBytes) ?? "",
+              })
+            : null,
+        ]
+          .filter(Boolean)
+          .join(" · ")
+    : null;
   const unknownLabel = t("settings.resources.environment.unknown");
 
   return (
@@ -511,66 +528,59 @@ export function ResourcesTab() {
         />
         <SettingsRow
           label={t("settings.resources.storage.modelsFolder")}
-          description={
-            <span className="flex flex-col gap-1">
-              <span>
-                {t("settings.resources.storage.modelsFolderDescription")}
-              </span>
-              {hfCache?.source === "environment" ? (
-                <span>
-                  {t("settings.resources.storage.environmentManaged", {
-                    variable: hfCache.environmentVariable ?? "HF_HOME",
-                  })}
-                </span>
-              ) : (
-                <span>{t("settings.resources.storage.futureDownloads")}</span>
-              )}
-              {hfCache?.freeBytes !== null && hfCache?.freeBytes !== undefined ? (
-                <span>
-                  {t("settings.resources.storage.locationFree", {
-                    free: formatBytes(hfCache.freeBytes) ?? "",
-                  })}
-                </span>
-              ) : null}
-            </span>
-          }
+          description={t("settings.resources.storage.modelsFolderDescription")}
           className="max-sm:flex-col max-sm:items-start max-sm:gap-2"
-          alignTop
         >
-          <div className="flex min-w-0 max-w-[430px] flex-wrap items-center justify-end gap-2 max-sm:max-w-[calc(100vw-5rem)] max-sm:justify-start">
-            <span
-              title={hfCache?.cacheHome}
-              className="min-w-0 max-w-[280px] truncate font-mono text-xs text-muted-foreground max-sm:max-w-[180px]"
-            >
-              {modelsFolderPath}
-            </span>
-            <Button
-              variant="outline"
-              size="sm"
-              disabled={!hfCache}
-              onClick={() => void handleCacheFolder()}
-            >
-              {isTauri
-                ? t("settings.resources.storage.openAction")
-                : t("settings.resources.storage.copyAction")}
-            </Button>
-            <Button
-              variant="outline"
-              size="sm"
-              disabled={!hfCache?.editable || cacheSaving}
-              onClick={() => void changeCacheFolder()}
-            >
-              {t("settings.resources.storage.changeAction")}
-            </Button>
-            {hfCache?.isCustom ? (
+          <div className="flex min-w-0 max-w-[430px] flex-col items-end gap-1.5 max-sm:w-full max-sm:max-w-[calc(100vw-5rem)] max-sm:items-start">
+            <div className="flex min-w-0 items-center gap-2 max-sm:w-full">
+              <Input
+                readOnly
+                aria-label={t("settings.resources.storage.modelsFolder")}
+                value={modelsFolderPath}
+                title={hfCache?.cacheHome}
+                className="h-8 w-[220px] font-mono text-xs max-sm:min-w-0 max-sm:flex-1"
+              />
               <Button
-                variant="ghost"
+                variant="outline"
                 size="sm"
-                disabled={cacheSaving}
-                onClick={() => void saveCacheFolder(null)}
+                disabled={!hfCache}
+                onClick={() => void handleCacheFolder()}
               >
-                {t("settings.resources.storage.resetAction")}
+                {isTauri
+                  ? t("settings.resources.storage.openAction")
+                  : t("settings.resources.storage.copyAction")}
               </Button>
+              <Button
+                variant="outline"
+                size="sm"
+                disabled={!hfCache?.editable || cacheSaving}
+                onClick={() => void changeCacheFolder()}
+              >
+                {t("settings.resources.storage.changeAction")}
+              </Button>
+            </div>
+            {cacheLocationDetail || hfCache?.isCustom ? (
+              <div className="flex items-center justify-end gap-2 text-xs text-muted-foreground max-sm:justify-start">
+                {cacheLocationDetail ? (
+                  <span
+                    title={cacheLocationDetail}
+                    className="max-w-[330px] truncate text-right max-sm:text-left"
+                  >
+                    {cacheLocationDetail}
+                  </span>
+                ) : null}
+                {hfCache?.isCustom ? (
+                  <Button
+                    variant="link"
+                    size="xs"
+                    className="h-auto px-0 text-xs"
+                    disabled={cacheSaving}
+                    onClick={() => void saveCacheFolder(null)}
+                  >
+                    {t("settings.resources.storage.resetAction")}
+                  </Button>
+                ) : null}
+              </div>
             ) : null}
           </div>
         </SettingsRow>

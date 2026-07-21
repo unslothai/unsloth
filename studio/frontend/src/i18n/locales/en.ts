@@ -492,10 +492,9 @@ export const en = {
         diskFree: "{free} free",
         modelsFolder: "Model downloads",
         modelsFolderDescription: "Hugging Face cache used for model downloads.",
-        futureDownloads:
-          "Changes apply to future jobs. Running downloads continue in their original location, and existing files are not moved.",
+        futureDownloads: "New downloads only",
         environmentManaged: "Managed by the {variable} environment variable.",
-        locationFree: "{free} free at this location.",
+        locationFree: "{free} free",
         openAction: "Open",
         copyAction: "Copy path",
         changeAction: "Change",
