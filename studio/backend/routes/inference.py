@@ -4544,12 +4544,18 @@ async def _load_model_impl(request: LoadRequest, fastapi_request: Request, curre
             _draft_extra = request.llama_extra_args
             if _draft_extra is None:
                 _loaded_llama = get_llama_cpp_backend()
-                if (
-                    _loaded_llama.is_loaded
-                    and _loaded_llama.model_identifier
-                    and _loaded_llama.model_identifier.lower() == model_identifier.lower()
-                ):
-                    _draft_extra = _loaded_llama.extra_args
+                if _loaded_llama.is_loaded and _loaded_llama.extra_args:
+                    source = _loaded_llama.extra_args_source
+                    resolved_variant = (config.gguf_variant or "").lower()
+                    request_variant = (request.gguf_variant or "").lower()
+                    stored_variant = (source[1] or "").lower() if source else ""
+                    same_model = bool(source and source[0] and source[0].lower() == model_identifier.lower())
+                    if request.gguf_variant:
+                        variant_mismatch = request_variant != stored_variant
+                    else:
+                        variant_mismatch = bool(stored_variant and resolved_variant != stored_variant)
+                    if same_model and not variant_mismatch:
+                        _draft_extra = _loaded_llama.extra_args
             _draft_dev_pin = _extra_args_draft_device_pin(_draft_extra)
             if _draft_dev_pin is not None:
                 raise HTTPException(
@@ -5215,22 +5221,28 @@ async def validate_model(
             # pin. ValidateModelRequest carries no llama_extra_args, so only the
             # inherited backend extras are checkable here (#7188).
             _loaded_llama = get_llama_cpp_backend()
-            if (
-                _loaded_llama.is_loaded
-                and _loaded_llama.model_identifier
-                and _loaded_llama.model_identifier.lower() == model_identifier.lower()
-            ):
-                _draft_dev_pin = _extra_args_draft_device_pin(_loaded_llama.extra_args)
-                if _draft_dev_pin is not None:
-                    raise HTTPException(
-                        status_code = 400,
-                        detail = (
-                            f"A draft-model device override ('{_draft_dev_pin}') cannot be "
-                            "combined with explicit gpu_ids: it would place the speculative "
-                            "drafter outside the pinned GPUs the training guard budgeted. "
-                            "Remove the draft-device flag to follow gpu_ids, or set it to cpu."
-                        ),
-                    )
+            if _loaded_llama.is_loaded and _loaded_llama.extra_args:
+                source = _loaded_llama.extra_args_source
+                resolved_variant = (config.gguf_variant or "").lower()
+                request_variant = (request.gguf_variant or "").lower()
+                stored_variant = (source[1] or "").lower() if source else ""
+                same_model = bool(source and source[0] and source[0].lower() == model_identifier.lower())
+                if request.gguf_variant:
+                    variant_mismatch = request_variant != stored_variant
+                else:
+                    variant_mismatch = bool(stored_variant and resolved_variant != stored_variant)
+                if same_model and not variant_mismatch:
+                    _draft_dev_pin = _extra_args_draft_device_pin(_loaded_llama.extra_args)
+                    if _draft_dev_pin is not None:
+                        raise HTTPException(
+                            status_code = 400,
+                            detail = (
+                                f"A draft-model device override ('{_draft_dev_pin}') cannot be "
+                                "combined with explicit gpu_ids: it would place the speculative "
+                                "drafter outside the pinned GPUs the training guard budgeted. "
+                                "Remove the draft-device flag to follow gpu_ids, or set it to cpu."
+                            ),
+                        )
             # A Vulkan build treats gpu_ids as Vulkan ordinals, so defer to the backend
             # probe even on a CUDA-visible host; otherwise keep the CUDA resolver (#6414/#7188).
             _gguf_vulkan_build = await asyncio.to_thread(_loaded_llama.is_vulkan_build)

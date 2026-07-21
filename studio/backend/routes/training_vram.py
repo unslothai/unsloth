@@ -300,13 +300,19 @@ def can_load_chat_during_training(
             # A multi-GPU pin shards the model (~needed/N per device), so require each
             # visible GPU to hold one shard, not the whole model. With the mapping unknown,
             # min_free is the safe bound: if the least-free card holds a shard, any mapping
-            # does (#7188). Returns early, so it never reaches the GGUF per-GPU-floor skip below.
+            # does. Also apply the aggregate multi-GPU overhead so a sharded load does not
+            # start with too little protected headroom and OOM the training run (#7188).
             per_gpu_needed_gb = needed_gb / len(requested_gpu_ids)
             min_free_gb = min(free_vals)
-            return min_free_gb >= per_gpu_needed_gb, {
+            ranked = sorted(free_vals, reverse = True)
+            usable_gb = ranked[0] + sum(f * _MULTI_GPU_OVERHEAD for f in ranked[1:])
+            aggregate_fits = usable_gb >= needed_gb
+            per_gpu_fits = min_free_gb >= per_gpu_needed_gb
+            return per_gpu_fits and aggregate_fits, {
                 "mode": "gguf_vulkan",
                 "required_gb": round(required_gb, 3),
                 "needed_gb": round(needed_gb, 3),
+                "usable_gb": round(usable_gb, 3),
                 "per_gpu_needed_gb": round(per_gpu_needed_gb, 3),
                 "min_free_gb": round(min_free_gb, 3),
             }
