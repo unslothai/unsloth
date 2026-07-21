@@ -49,6 +49,7 @@ def _host(
     compute_caps: tuple[str, ...] = (),
     driver_cuda_version: tuple[int, int] | None = None,
     torch_runtime_line: str | None = None,
+    macos_version: tuple[int, int] | None = None,
 ) -> HostInfo:
     ext = ".zip" if whisper_os == "windows" else ".tar.gz"
     return HostInfo(
@@ -66,6 +67,7 @@ def _host(
         compute_caps = compute_caps,
         driver_cuda_version = driver_cuda_version,
         torch_runtime_line = torch_runtime_line,
+        macos_version = macos_version,
     )
 
 
@@ -128,7 +130,9 @@ def test_detect_host(monkeypatch, system, machine, exp_os, exp_arch, exp_ext):
     monkeypatch.setattr(
         M,
         "detect_nvidia_caps",
-        lambda: NvidiaCaps(has_usable_nvidia = False, compute_caps = [], driver_cuda_version = None),
+        lambda **_kw: NvidiaCaps(
+            has_usable_nvidia = False, compute_caps = [], driver_cuda_version = None
+        ),
     )
     monkeypatch.setattr(M, "_detect_rocm_gfx", lambda: (False, None))
     host = M.detect_host()
@@ -143,7 +147,7 @@ def test_detect_host_populates_nvidia_caps(monkeypatch):
     monkeypatch.setattr(
         M,
         "detect_nvidia_caps",
-        lambda: NvidiaCaps(
+        lambda **_kw: NvidiaCaps(
             has_usable_nvidia = True, compute_caps = ["10.0"], driver_cuda_version = (13, 0)
         ),
     )
@@ -706,6 +710,7 @@ def test_resolve_prebuilt_reports_available(tmp_path, monkeypatch):
         cpu_fallback = False,
     )
     assert payload["prebuilt_available"] is True
+    assert payload["repo"] == "unslothai/whisper.cpp"
     assert payload["release_tag"] == RELEASE_TAG
     assert payload["backend"] == "cpu"
     assert payload["asset"] == asset
@@ -735,6 +740,148 @@ def test_emit_resolver_output_json_and_plain(capsys):
     assert json.loads(capsys.readouterr().out.strip())["asset"] == payload["asset"]
     M.emit_resolver_output(payload, output_format = "plain")
     assert capsys.readouterr().out.strip() == payload["asset"]
+
+
+def test_resolve_mode_keeps_stdout_json_only(monkeypatch, capsys):
+    # Even in a CUDA host where selection emits diagnostics, --resolve-prebuilt
+    # must keep stdout to exactly the JSON line (setup.sh / whisper_cpp_update.py
+    # parse it); the cuda_selection log noise belongs on stderr.
+    host = _host(
+        "linux",
+        "x64",
+        has_usable_nvidia = True,
+        compute_caps = ("10.0",),
+        driver_cuda_version = (13, 0),
+    )
+    manifest = _cuda_manifest()
+    bundle = M.ReleaseBundle(
+        repo = "unslothai/whisper.cpp",
+        release_tag = RELEASE_TAG,
+        manifest = manifest,
+        asset_urls = {
+            a["asset"]: f"https://example.invalid/{a['asset']}" for a in manifest["artifacts"]
+        },
+    )
+    monkeypatch.setattr(M, "detect_host", lambda: host)
+    monkeypatch.setattr(
+        M, "fetch_release_for_install", lambda repo, *, published_release_tag = None: (bundle, {})
+    )
+    # A prior install test may have left the module flag True; the resolver must
+    # force it back to stderr regardless.
+    monkeypatch.setattr(M, "_LOG_TO_STDOUT", True, raising = False)
+
+    rc = M.main(["--resolve-prebuilt", "--output-format", "json"])
+    assert rc == M.EXIT_SUCCESS
+    captured = capsys.readouterr()
+    payload = json.loads(captured.out.strip())  # exactly one JSON line, parseable
+    assert payload["asset"] == "whisper-linux-x64-cuda13-newer.tar.gz"
+    assert "[whisper-prebuilt]" not in captured.out  # no log noise on stdout
+    assert "cuda_selection:" in captured.err  # diagnostics routed to stderr
+
+
+def test_main_maps_prebuilt_fallback_to_exit_fallback(tmp_path, monkeypatch):
+    def boom(*a, **kw):
+        raise PrebuiltFallback("no prebuilt")
+
+    monkeypatch.setattr(M, "install_prebuilt", boom)
+    rc = M.main(["--install-dir", str(tmp_path / "whisper.cpp"), "--backend", "cpu"])
+    assert rc == M.EXIT_FALLBACK
+
+
+def test_main_maps_unexpected_error_to_exit_error(tmp_path, monkeypatch):
+    def boom(*a, **kw):
+        raise RuntimeError("kaboom")
+
+    monkeypatch.setattr(M, "install_prebuilt", boom)
+    rc = M.main(["--install-dir", str(tmp_path / "whisper.cpp"), "--backend", "cpu"])
+    assert rc == M.EXIT_ERROR
+
+
+def test_resolve_mode_unexpected_error_reports_unavailable(monkeypatch, capsys):
+    # An unexpected failure inside the probe maps to prebuilt_available=False, not
+    # a traceback, so the caller falls back cleanly.
+    host = _host("linux", "x64")
+    monkeypatch.setattr(M, "detect_host", lambda: host)
+
+    def boom(repo, *, published_release_tag = None):
+        raise RuntimeError("network down")
+
+    monkeypatch.setattr(M, "fetch_release_for_install", boom)
+    rc = M.main(["--resolve-prebuilt", "--output-format", "json"])
+    assert rc == M.EXIT_SUCCESS
+    payload = json.loads(capsys.readouterr().out.strip())
+    assert payload == {"prebuilt_available": False, "repo": "unslothai/whisper.cpp"}
+
+
+# ── macOS min_os enforcement ──
+def test_macos_min_os_filters_incompatible_metal():
+    host = _host("macos", "arm64", macos_version = (14, 0))
+    manifest = M.parse_manifest(
+        _manifest(
+            [
+                _artifact(
+                    "macos",
+                    "arm64",
+                    "metal",
+                    "whisper-macos-arm64-metal-new.tar.gz",
+                    "b" * 64,
+                    min_os = "15.0",
+                ),
+                _artifact(
+                    "macos",
+                    "arm64",
+                    "metal",
+                    "whisper-macos-arm64-metal.tar.gz",
+                    "a" * 64,
+                    min_os = "13.0",
+                ),
+            ]
+        )
+    )
+    # host 14.0 can't load the 15.0 bundle; the 13.0 bundle is picked instead.
+    assert M.select_artifact(manifest, host, "metal")["asset"] == "whisper-macos-arm64-metal.tar.gz"
+
+
+def test_macos_min_os_excludes_all_when_host_too_old():
+    host = _host("macos", "arm64", macos_version = (13, 0))
+    manifest = M.parse_manifest(
+        _manifest(
+            [
+                _artifact(
+                    "macos",
+                    "arm64",
+                    "metal",
+                    "whisper-macos-arm64-metal-new.tar.gz",
+                    "b" * 64,
+                    min_os = "15.0",
+                )
+            ]
+        )
+    )
+    assert M.select_artifact(manifest, host, "metal") is None
+
+
+def test_macos_min_os_unknown_host_version_keeps_artifact():
+    # Unknown host macOS version -> defer to runtime validation, don't reject.
+    host = _host("macos", "arm64", macos_version = None)
+    manifest = M.parse_manifest(
+        _manifest(
+            [
+                _artifact(
+                    "macos",
+                    "arm64",
+                    "metal",
+                    "whisper-macos-arm64-metal-new.tar.gz",
+                    "b" * 64,
+                    min_os = "15.0",
+                )
+            ]
+        )
+    )
+    assert (
+        M.select_artifact(manifest, host, "metal")["asset"]
+        == "whisper-macos-arm64-metal-new.tar.gz"
+    )
 
 
 # ── existing_install_matches contract ──

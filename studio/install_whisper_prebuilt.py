@@ -79,6 +79,7 @@ from backend.utils.prebuilt import selection as _sel  # noqa: E402
 from backend.utils.prebuilt.hosts import (  # noqa: E402
     detect_nvidia_caps,
     detect_torch_cuda_runtime_line,
+    parse_macos_version,
 )
 
 
@@ -152,6 +153,10 @@ class HostInfo:
     compute_caps: tuple[str, ...] = ()
     driver_cuda_version: tuple[int, int] | None = None
     torch_runtime_line: str | None = None
+    # (major, minor) from platform.mac_ver(); None off macOS or if unparseable.
+    # Used to enforce a macOS artifact's min_os so we never pick a bundle that
+    # cannot load on this OS version. Mirrors install_llama_prebuilt.py.
+    macos_version: tuple[int, int] | None = None
 
 
 def _has_usable_nvidia() -> bool:
@@ -244,6 +249,7 @@ def detect_host() -> HostInfo:
 
     is_apple_silicon = is_macos and whisper_arch == "arm64"
     archive_ext = ".zip" if is_windows else ".tar.gz"
+    macos_version = parse_macos_version(platform.mac_ver()[0]) if is_macos else None
 
     has_usable_nvidia = False
     has_rocm = False
@@ -256,7 +262,7 @@ def detect_host() -> HostInfo:
         # The shared probe reports the GPU compute caps + driver CUDA version so
         # an SM-appropriate CUDA bundle can be picked (llama parity), honoring
         # CUDA_VISIBLE_DEVICES.
-        nvidia = detect_nvidia_caps()
+        nvidia = detect_nvidia_caps(is_linux = system == "Linux")
         has_usable_nvidia = nvidia.has_usable_nvidia
         compute_caps = tuple(nvidia.compute_caps)
         driver_cuda_version = nvidia.driver_cuda_version
@@ -280,6 +286,7 @@ def detect_host() -> HostInfo:
         compute_caps = compute_caps,
         driver_cuda_version = driver_cuda_version,
         torch_runtime_line = torch_runtime_line,
+        macos_version = macos_version,
     )
 
 
@@ -414,16 +421,31 @@ def parse_manifest(payload: Any, *, label: str = MANIFEST_ASSET_NAME) -> dict[st
     }
 
 
+def _macos_min_os_ok(host: HostInfo, min_os: Any) -> bool:
+    """True if a macOS artifact requiring `min_os` can load on this host. Unknown
+    host version or unknown/unparseable min_os -> True (defer to runtime
+    validation), mirroring install_llama_prebuilt.py `host_supports_macos_minos`."""
+    required = parse_macos_version(str(min_os)) if min_os else None
+    if required is None or host.macos_version is None:
+        return True
+    return host.macos_version >= required
+
+
 def _artifacts_for_host(
     manifest: dict[str, Any], host: HostInfo, backend: str
 ) -> list[dict[str, Any]]:
-    """All manifest artifacts matching this host os/arch and the given backend."""
+    """All manifest artifacts matching this host os/arch and the given backend.
+
+    On macOS, an artifact whose `min_os` exceeds the host's OS version is dropped
+    so we never pick a bundle that cannot load (llama parity). Off macOS `min_os`
+    is not meaningful and is ignored."""
     return [
         artifact
         for artifact in manifest.get("artifacts", [])
         if artifact.get("os") == host.whisper_os
         and artifact.get("arch") == host.whisper_arch
         and artifact.get("backend") == backend
+        and (not host.is_macos or _macos_min_os_ok(host, artifact.get("min_os")))
     ]
 
 
@@ -1647,12 +1669,17 @@ def build_arg_parser() -> argparse.ArgumentParser:
 
 def main(argv: list[str] | None = None) -> int:
     global _LOG_TO_STDOUT
-    _LOG_TO_STDOUT = True
 
     parser = build_arg_parser()
     args = parser.parse_args(argv)
 
     if args.resolve_prebuilt is not None:
+        # The resolver is a read-only probe: its ONLY stdout is the JSON/asset line
+        # (setup.sh and whisper_cpp_update.py parse it), so diagnostics stay on
+        # stderr. Force _LOG_TO_STDOUT False (not just "leave it") so the routing
+        # is deterministic. Any unexpected failure maps to "not available" rather
+        # than a traceback so the caller falls back cleanly.
+        _LOG_TO_STDOUT = False
         try:
             host = apply_host_overrides(
                 detect_host(),
@@ -1669,8 +1696,14 @@ def main(argv: list[str] | None = None) -> int:
             )
         except PrebuiltFallback:
             payload = {"prebuilt_available": False, "repo": args.published_repo}
+        except Exception as exc:  # noqa: BLE001 - probe must never crash the caller
+            log(f"resolve failed: {exc}")
+            payload = {"prebuilt_available": False, "repo": args.published_repo}
         emit_resolver_output(payload, output_format = args.output_format)
         return EXIT_SUCCESS
+
+    # Install path: progress logs go to stdout so setup surfaces them.
+    _LOG_TO_STDOUT = True
 
     if not args.install_dir:
         parser.error("--install-dir is required unless --resolve-prebuilt is used")

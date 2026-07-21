@@ -52,6 +52,40 @@ def test_detected_linux_runtime_lines_requires_both_libs(tmp_path, monkeypatch):
     assert rl.detected_linux_runtime_lines() == []
 
 
+def test_detected_linux_runtime_lines_requires_soname_not_versioned_only(tmp_path, monkeypatch):
+    # Only the fully-versioned files (libcudart.so.13.0.88) with no SONAME symlink
+    # (libcudart.so.13): the dynamic linker resolves the SONAME, so this is NOT
+    # loadable and must not be reported. A `{lib}*` glob would wrongly match here.
+    libdir = tmp_path / "versioned_only"
+    libdir.mkdir()
+    (libdir / "libcudart.so.13.0.88").write_text("x")
+    (libdir / "libcublas.so.13.0.88").write_text("x")
+    monkeypatch.setenv("CUDA_RUNTIME_LIB_DIR", str(libdir))
+    _isolate(monkeypatch)
+    assert rl.detected_linux_runtime_lines() == []
+
+
+def test_detected_linux_runtime_lines_accepts_soname_symlink(tmp_path, monkeypatch):
+    # SONAME symlink present (points at the versioned file) -> loadable -> detected.
+    libdir = tmp_path / "with_symlink"
+    libdir.mkdir()
+    (libdir / "libcudart.so.13.0.88").write_text("x")
+    (libdir / "libcublas.so.13.0.88").write_text("x")
+    (libdir / "libcudart.so.13").symlink_to(libdir / "libcudart.so.13.0.88")
+    (libdir / "libcublas.so.13").symlink_to(libdir / "libcublas.so.13.0.88")
+    monkeypatch.setenv("CUDA_RUNTIME_LIB_DIR", str(libdir))
+    _isolate(monkeypatch)
+    assert rl.detected_linux_runtime_lines() == ["cuda13"]
+
+
+def test_dir_has_exact_library(tmp_path):
+    (tmp_path / "libcudart.so.13").write_text("x")
+    (tmp_path / "libcublas.so.13.0.88").write_text("x")  # versioned-only
+    assert rl._dir_has_exact_library(str(tmp_path), "libcudart.so.13") is True
+    assert rl._dir_has_exact_library(str(tmp_path), "libcublas.so.13") is False
+    assert rl._dir_has_exact_library(str(tmp_path), "") is False
+
+
 def test_detected_linux_runtime_lines_empty_when_nothing_present(tmp_path, monkeypatch):
     empty = tmp_path / "empty"
     empty.mkdir()

@@ -82,10 +82,13 @@ def cuda_runtime_lines_for_major(major: int) -> list[str]:
 
 
 def compatible_runtime_lines_for_driver(driver_cuda_version: tuple[int, int] | None) -> list[str]:
-    """CUDA runtime lines the installed driver supports (newest first). whisper's
-    CUDA bundles ship their own CUDA runtime co-located with the server, so the
-    driver's advertised CUDA version -- not an on-disk toolkit scan -- is the
-    binding constraint (an older-major bundle runs under a newer driver)."""
+    """CUDA runtime lines the installed *driver* can support (newest major first).
+    A driver of major N runs its own major and any older one down to the floor
+    (CUDA minor-version compatibility). This is only the driver's upper bound: the
+    bundles do NOT ship libcudart/libcublas, so the caller must still intersect
+    these lines with the on-disk runtime scan (see
+    `select_cuda_attempts(detected_runtime_lines=...)`). Empty below the floor or
+    when the driver version is unknown."""
     if not driver_cuda_version:
         return []
     major, _minor = driver_cuda_version
@@ -332,17 +335,18 @@ def select_cuda_attempts(
         return []
 
     ordered = list(runtime_lines)
-    if host_is_blackwell(host_sms):
-        blackwell_lines = [
-            line
-            for line in blackwell_capable_runtime_lines(host_sms, candidates)
-            if line in ordered
-        ]
-        if blackwell_lines:
-            ordered = blackwell_lines + [line for line in ordered if line not in blackwell_lines]
-            log.append(
-                "cuda_selection: blackwell_runtime_override prefer=" + ",".join(blackwell_lines)
-            )
+    # Key on `blackwell_lines` (not `host_is_blackwell`) so a Blackwell host whose
+    # covering lines were filtered out by the driver/on-disk intersection still
+    # falls through to the torch preference, exactly like llama's
+    # `linux_cuda_choice_from_release`.
+    blackwell_lines = (
+        [line for line in blackwell_capable_runtime_lines(host_sms, candidates) if line in ordered]
+        if host_is_blackwell(host_sms)
+        else []
+    )
+    if blackwell_lines:
+        ordered = blackwell_lines + [line for line in ordered if line not in blackwell_lines]
+        log.append("cuda_selection: blackwell_runtime_override prefer=" + ",".join(blackwell_lines))
     elif torch_runtime_line and torch_runtime_line in ordered:
         ordered = [torch_runtime_line] + [line for line in ordered if line != torch_runtime_line]
         log.append(f"cuda_selection: torch_preferred_runtime_line={torch_runtime_line}")

@@ -97,7 +97,10 @@ def ldconfig_runtime_dirs(required_libraries: Iterable[str]) -> list[str]:
         if "=>" not in line:
             continue
         library, _, location = line.partition("=>")
-        library = library.strip().split()[0]
+        parts = library.strip().split()
+        if not parts:
+            continue
+        library = parts[0]
         if required and library not in required:
             continue
         candidates.append(str(Path(location.strip()).parent))
@@ -148,18 +151,35 @@ def _linux_runtime_dirs_for_required_libraries(required_libraries: Iterable[str]
 def _glob_hit(directories: Iterable[str], pattern: str) -> bool:
     """True when `pattern` matches at least one file in any of `directories`.
     (Note: `any(Path(d).glob(p) for d in dirs)` is always truthy because each
-    element is a generator object -- the match must be consumed per directory.)"""
+    element is a generator object -- the match must be consumed per directory.)
+    Used for Windows DLL probing where the patterns carry real wildcards; the
+    Linux SONAME check is exact (see `_dir_has_exact_library`)."""
     return any(any(Path(directory).glob(pattern)) for directory in directories)
 
 
+def _dir_has_exact_library(directory: str, library: str) -> bool:
+    """True when `directory` contains a file/symlink named exactly `library`. The
+    dynamic linker resolves the SONAME (e.g. libcudart.so.13), so a bare versioned
+    file (libcudart.so.13.0.88) *without* that symlink is not loadable -- match the
+    exact name, not a `{library}*` glob. Lifted from install_llama_prebuilt.py
+    `dir_provides_exact_library`."""
+    if not library:
+        return False
+    candidate = Path(directory) / library
+    return candidate.exists() and (candidate.is_file() or candidate.is_symlink())
+
+
 def detected_linux_runtime_lines() -> list[str]:
-    """`cuda<major>` lines whose libcudart + libcublas are present on disk, newest
-    major first. Ported from install_llama_prebuilt.py."""
+    """`cuda<major>` lines whose libcudart + libcublas SONAMEs are present on disk,
+    newest major first. Ported from install_llama_prebuilt.py."""
     detected: list[str] = []
     for major in range(_MAX_PROBE_CUDA_MAJOR, _MIN_CUDA_MAJOR - 1, -1):
         required = [f"libcudart.so.{major}", f"libcublas.so.{major}"]
         dirs = _linux_runtime_dirs_for_required_libraries(required)
-        if all(_glob_hit(dirs, f"{library}*") for library in required):
+        if all(
+            any(_dir_has_exact_library(directory, library) for directory in dirs)
+            for library in required
+        ):
             detected.append(f"cuda{major}")
     return detected
 
