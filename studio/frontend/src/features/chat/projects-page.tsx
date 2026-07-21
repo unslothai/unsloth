@@ -30,6 +30,8 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
+import { isTauri } from "@/lib/api-base";
+import { isDownloadCancelled, pickNativeChatImport } from "@/lib/native-files";
 import { toast } from "@/lib/toast";
 import {
   createChatProject,
@@ -118,6 +120,40 @@ export function ProjectsPage() {
     }
   }
 
+
+  async function selectGlobalImportFile() {
+    if (!isTauri) {
+      globalImportRef.current?.click();
+      return;
+    }
+    try {
+      const selected = await pickNativeChatImport();
+      if (!selected) return;
+      setImportTargetId(projects[0]?.id ?? null);
+      setImportFile(new File([selected.content], selected.name));
+    } catch (error) {
+      toast.error("Import failed.", {
+        description: error instanceof Error ? error.message : String(error),
+      });
+    }
+  }
+
+  async function selectProjectImportFile(projectId: string) {
+    if (!isTauri) {
+      projectImportRefs.current.get(projectId)?.click();
+      return;
+    }
+    try {
+      const selected = await pickNativeChatImport();
+      if (!selected) return;
+      await handleImport(new File([selected.content], selected.name), projectId);
+    } catch (error) {
+      toast.error("Import failed.", {
+        description: error instanceof Error ? error.message : String(error),
+      });
+    }
+  }
+
   async function commitImport() {
     if (!importFile) return;
     const file = importFile;
@@ -183,8 +219,10 @@ export function ProjectsPage() {
       const threads = await listStoredChatThreads({ projectId: project.id, includeArchived: false });
       const ids = [...new Set(threads.map((t) => t.id))];
       await exportProjectConversations(ids, fmt, project.name);
-    } catch {
-      toast.error("Export failed.");
+    } catch (error) {
+      if (!isDownloadCancelled(error)) {
+        toast.error("Export failed.");
+      }
     }
   }
 
@@ -215,8 +253,10 @@ export function ProjectsPage() {
       } else {
         await exportBulkConversationsSeparate(ids, fmt, basename);
       }
-    } catch {
-      toast.error("Export failed.");
+    } catch (error) {
+      if (!isDownloadCancelled(error)) {
+        toast.error("Export failed.");
+      }
     }
   }
 
@@ -294,7 +334,7 @@ export function ProjectsPage() {
               </Button>
             </DropdownMenuTrigger>
             <DropdownMenuContent align="end" className="w-56">
-              <DropdownMenuItem onSelect={() => globalImportRef.current?.click()}>
+              <DropdownMenuItem onSelect={() => void selectGlobalImportFile()}>
                 <HugeiconsIcon icon={Upload01Icon} strokeWidth={1.75} className="size-icon" />
                 Import chats…
               </DropdownMenuItem>
@@ -470,7 +510,7 @@ export function ProjectsPage() {
                     <DropdownMenuItem
                       onSelect={(e) => {
                         e.stopPropagation();
-                        projectImportRefs.current.get(project.id)?.click();
+                        void selectProjectImportFile(project.id);
                       }}
                     >
                       <HugeiconsIcon icon={Upload01Icon} strokeWidth={1.75} className="size-icon" />
