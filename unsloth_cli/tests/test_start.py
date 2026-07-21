@@ -640,8 +640,13 @@ def fake_studio(tmp_path, monkeypatch):
         if url.endswith("/api/auth/api-keys"):
             return {"key": "sk-unsloth-feedfacefeedface"}
         if url.endswith("/api/inference/load"):
+            already_loaded = state["models"][0]["id"] == payload["model_path"]
             state["models"] = [{"id": payload["model_path"], "context_length": 4096}]
-            return {}
+            return {
+                "status": "already_loaded" if already_loaded else "loaded",
+                "model": payload["model_path"],
+                "display_name": payload["model_path"],
+            }
         raise AssertionError(f"unexpected request: {method} {url}")
 
     monkeypatch.setattr(start, "find_studio_server", lambda: BASE)
@@ -864,7 +869,6 @@ def test_resolve_model_matches_loaded_canonical_case_after_load(monkeypatch, cap
     assert entry["id"] == "unsloth/gemma-4-E2B-it-GGUF"
     assert any(c[1].endswith("/api/inference/load") for c in calls)
     output = capsys.readouterr().out
-    assert "Loading model: unsloth/gemma-4-e2b-it-gguf:UD-Q4_K_XL\n" in output
     assert "please wait" not in output
 
 
@@ -1236,11 +1240,11 @@ def test_connect_model_flag_loads_on_server(fake_studio):
     assert loads == [
         ("POST", f"{BASE}/api/inference/load", {"model_path": "unsloth/Qwen3.5-35B-A3B"})
     ]
-    assert (
-        f"Switching the Unsloth server from {MODEL['id']} to unsloth/Qwen3.5-35B-A3B"
-        in result.output
+    assert result.output.index(
+        f"Switching the Unsloth server from {MODEL['id']} to unsloth/Qwen3.5-35B-A3B.\n"
+    ) < result.output.index(
+        "This unloads the current model for every attached session.\n"
     )
-    assert "unloads the current model for every attached session" in result.output
     _assert_env_set(result.output, "ANTHROPIC_MODEL", "unsloth/Qwen3.5-35B-A3B")
 
 
@@ -1331,6 +1335,7 @@ def test_connect_model_bare_id_matches_loaded_without_reload(fake_studio):
     assert result.exit_code == 0, result.output
     loads = [c for c in fake_studio if c[1].endswith("/api/inference/load")]
     assert loads == []
+    assert f"Reusing loaded model: {MODEL['id']}\n" in result.output
     _assert_env_set(result.output, "ANTHROPIC_MODEL", MODEL["id"])
 
 
@@ -1352,6 +1357,7 @@ def test_connect_model_variant_suffix_defers_to_server_dedup(fake_studio):
             {"model_path": MODEL["id"], "gguf_variant": "UD-Q4_K_XL"},
         )
     ]
+    assert f"Reusing loaded model: {MODEL['id']}:UD-Q4_K_XL\n" in result.output
     _assert_env_set(result.output, "ANTHROPIC_MODEL", MODEL["id"])
 
 

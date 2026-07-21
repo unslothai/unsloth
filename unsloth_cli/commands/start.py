@@ -634,8 +634,12 @@ def _load_model_with_progress(
 
     threading.Thread(target = _load, name = "unsloth-model-load", daemon = True).start()
     progress = _ModelDownloadProgress(base, key, model, load.gguf_variant)
+    loading_announced = False
     try:
         while not done.wait(_DOWNLOAD_POLL_INTERVAL_S):
+            if not loading_announced:
+                typer.echo(f"Loading model: {_display_model_spec(model, load.gguf_variant)}")
+                loading_announced = True
             progress.poll()
         ok, value = result[0]
         if not ok:
@@ -1102,6 +1106,7 @@ def _resolve_model(
     load: LoadOptions = LoadOptions(),
 ) -> dict:
     models = _loaded_models(base, key)
+    load_requested = False
     # Only casefold-match ids against a loopback Unsloth, where _is_hub_model_id's
     # local existence probe can actually reject a server-side path; see the note there.
     allow_casefold = is_loopback_url(base)
@@ -1131,6 +1136,7 @@ def _resolve_model(
         )
     )
     if requested and match is None:
+        load_requested = True
         active = next((m for m in models if m.get("loaded") is not False), None)
         active_id = active.get("id") if active else None
         if active_id and not _model_id_matches(
@@ -1138,11 +1144,8 @@ def _resolve_model(
             requested,
             allow_casefold = allow_casefold,
         ):
-            typer.echo(
-                f"Switching the Unsloth server from {active_id} to {requested}. "
-                "This unloads the current model for every attached session."
-            )
-        typer.echo(f"Loading model: {_display_model_spec(requested, load.gguf_variant)}")
+            typer.echo(f"Switching the Unsloth server from {active_id} to {requested}.")
+            typer.echo("This unloads the current model for every attached session.")
         # Mirror `unsloth run`'s load knobs; keep the default payload as just
         # model_path so a bare `--model` load is unchanged.
         payload = {"model_path": requested}
@@ -1155,6 +1158,8 @@ def _resolve_model(
         if load.tensor_parallel:
             payload["tensor_parallel"] = True
         loaded = _load_model_with_progress(base, key, requested, load, payload)
+        if loaded.get("status") == "already_loaded":
+            typer.echo(f"Reusing loaded model: {_display_model_spec(requested, load.gguf_variant)}")
         # Unsloth registers the model under a canonical id (resolved identifier,
         # casing) that /v1/models echoes but which may differ from the path we
         # passed; match on the id the load reports so we don't silently fall
@@ -1174,6 +1179,8 @@ def _resolve_model(
             None,
         )
     if match is not None:
+        if requested and not load_requested:
+            typer.echo(f"Reusing loaded model: {_display_model_spec(requested, load.gguf_variant)}")
         return match
     if requested:
         # We asked Unsloth to load it and it didn't surface in /v1/models; don't
