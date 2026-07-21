@@ -481,7 +481,7 @@ export function ProjectsPage() {
       </div>
 
       {!hasLoaded ? (
-        <div className="mt-10">
+        <div className="mt-16">
           <div className="mb-1 flex items-center gap-3 px-5 pb-1 text-[13px] font-medium text-muted-foreground">
             <span className="flex-1">Name</span>
             <span className="w-40 shrink-0">Modified</span>
@@ -523,7 +523,7 @@ export function ProjectsPage() {
         </div>
       ) : (
         <>
-        <div className="mt-10">
+        <div className="mt-16">
           {/* Column header. Name starts at the folder icon's left edge; the
               right-anchored columns keep Modified over its values. */}
           <div className="mb-1 flex items-center gap-3 px-5 pb-1 text-[13px] font-medium text-muted-foreground">
