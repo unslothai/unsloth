@@ -16,6 +16,7 @@ import {
   type ChatSearch,
 } from "@/features/chat";
 import { RemoteCodeConsentDialog } from "@/features/security";
+import { HfTokenWarningDialog } from "@/features/hf-auth";
 import { TransformersUpgradeDialog } from "@/features/transformers-upgrade";
 import { useTrainingUnloadGuard } from "@/features/training";
 import { useExportRuntimeLifecycle } from "@/features/export";
@@ -230,6 +231,7 @@ function RootLayout() {
     <AppProvider>
       <PersonalizationSyncMount />
       {!isAuthFlowRoute && <SettingsDialog />}
+      <HfTokenWarningDialog />
       <RemoteCodeConsentDialog />
       <TransformersUpgradeDialog />
       {hideNavbar ? (
