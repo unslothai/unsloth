@@ -619,6 +619,65 @@ def test_write_codex_config_omits_catalog_for_old_codex(tmp_path, monkeypatch):
     assert not (tmp_path / "model-catalog.json").exists()
 
 
+def test_write_codex_subagent_config_keeps_parent_model_out(tmp_path, monkeypatch):
+    monkeypatch.setattr(start, "_codex_supports_model_catalog", lambda: True)
+    local = {**MODEL, "id": MODEL["id"] + ":UD-Q4_K_XL"}
+    path = start.write_codex_subagent_config(BASE, local, tmp_path)
+    agent = _parse_toml(path.read_text())
+    assert agent["name"] == "unsloth"
+    assert "local agent" in agent["description"].lower()
+    assert agent["model_provider"] == start._CODEX_PROFILE
+    assert agent["model"] == local["id"]
+    assert agent["model_context_window"] == MODEL["context_length"]
+    assert agent["model_providers"][start._CODEX_PROFILE] == {
+        "name": "Unsloth Studio",
+        "base_url": f"{BASE}/v1",
+        "env_key": start._CODEX_ENV_KEY,
+        "wire_api": "responses",
+        "requires_openai_auth": False,
+    }
+    catalog = json.loads((tmp_path / agent["model_catalog_json"]).read_text())
+    assert catalog["models"][0]["slug"] == local["id"]
+
+
+@pytest.mark.skipif(os.name == "nt", reason = "WSL scenario")
+def test_agent_config_path_translates_for_windows_agent(monkeypatch, tmp_path):
+    windows_path = r"\\wsl.localhost\Ubuntu\tmp\unsloth.toml"
+    monkeypatch.setenv("WSL_DISTRO_NAME", "Ubuntu")
+    monkeypatch.setattr(
+        start.shutil,
+        "which",
+        lambda _: "/mnt/c/Users/x/AppData/Roaming/npm/codex",
+    )
+    monkeypatch.setattr(start.subprocess, "check_output", lambda *args, **kwargs: windows_path)
+
+    assert start._agent_config_path(tmp_path / "unsloth.toml", ["codex"]) == windows_path
+
+
+def test_subagent_model_id_preserves_explicit_variant(monkeypatch):
+    monkeypatch.setattr(
+        start,
+        "_http_json",
+        lambda *args, **kwargs: pytest.fail("explicit variant should not need status"),
+    )
+    assert (
+        start._subagent_model_id(BASE, "key", MODEL, MODEL["id"], "UD-Q4_K_XL")
+        == MODEL["id"] + ":UD-Q4_K_XL"
+    )
+
+
+def test_subagent_model_id_uses_loaded_variant(monkeypatch):
+    monkeypatch.setattr(
+        start,
+        "_http_json",
+        lambda *args, **kwargs: {"is_gguf": True, "gguf_variant": "Q5_K_M"},
+    )
+    assert (
+        start._subagent_model_id(BASE, "key", MODEL, None, None)
+        == MODEL["id"] + ":Q5_K_M"
+    )
+
+
 @pytest.fixture()
 def fake_studio(tmp_path, monkeypatch):
     calls = []
@@ -812,6 +871,35 @@ def test_connect_codex_no_launch(fake_studio, tmp_path):
     _assert_env_set(result.output, "CODEX_HOME", str(home))
     assert (home / "config.toml").exists()
     assert (home / "unsloth_api.config.toml").exists()
+
+
+def test_connect_codex_as_subagent_preserves_cloud_parent(fake_studio, tmp_path, monkeypatch):
+    monkeypatch.setattr(start, "_codex_supports_model_catalog", lambda: True)
+    result = CliRunner().invoke(
+        start.start_app,
+        [
+            "codex",
+            "--as-subagent",
+            "--no-launch",
+            "--model",
+            MODEL["id"] + ":UD-Q4_K_XL",
+        ],
+    )
+    assert result.exit_code == 0, result.output
+    command = _launch_command(result.output)
+    assert command[0] == "codex"
+    assert command[1:3] == ["--enable", "multi_agent"]
+    assert "--oss" not in command
+    assert "--profile" not in command
+    assert "--model" not in command
+    assert "CODEX_HOME" not in result.output
+    _assert_env_set(result.output, start._CODEX_ENV_KEY, "sk-unsloth-feedfacefeedface")
+    home = tmp_path / "agents" / "codex-subagent"
+    agent_path = home / "unsloth.toml"
+    agent = _parse_toml(agent_path.read_text())
+    assert agent["model"] == MODEL["id"] + ":UD-Q4_K_XL"
+    assert f"agents.unsloth.config_file={json.dumps(str(agent_path))}" in command
+    assert "Ask Codex to spawn an Unsloth or local agent." in result.output
 
 
 def test_connect_codex_matches_requested_model_case_insensitively(fake_studio, tmp_path):
@@ -2402,6 +2490,36 @@ def test_write_opencode_config_keeps_foreign_disabled_providers(tmp_path):
     assert config["disabled_providers"] == ["openai", "gemini"]
 
 
+def test_write_opencode_config_as_subagent_preserves_parent_model(tmp_path):
+    path = tmp_path / "opencode.json"
+    path.write_text(
+        json.dumps(
+            {
+                "model": "anthropic/claude-sonnet-4-5",
+                "small_model": "anthropic/claude-haiku-4-5",
+                "compaction": {"auto": False},
+            }
+        )
+    )
+    local = {**MODEL, "id": MODEL["id"] + ":UD-Q4_K_XL"}
+    start.write_opencode_config(
+        BASE,
+        "sk-unsloth-abc",
+        local,
+        path,
+        as_subagent = True,
+    )
+    config = json.loads(path.read_text())
+    assert config["model"] == "anthropic/claude-sonnet-4-5"
+    assert config["small_model"] == "anthropic/claude-haiku-4-5"
+    assert config["compaction"] == {"auto": False}
+    agent = config["agent"]["unsloth"]
+    assert agent["mode"] == "subagent"
+    assert agent["model"] == f"{start._OPENCODE_PROVIDER}/{local['id']}"
+    assert "local agent" in agent["description"].lower()
+    assert local["id"] in config["provider"][start._OPENCODE_PROVIDER]["models"]
+
+
 def _opencode_inline_config(output: str) -> dict:
     # --no-launch prints OPENCODE_CONFIG_CONTENT as a POSIX `export NAME=<shell-quoted>`
     # line on Unix/WSL and a PowerShell `$env:NAME = "<escaped>"` line on native Windows;
@@ -2488,6 +2606,32 @@ def test_connect_opencode_no_launch(fake_studio, tmp_path):
     # driver may append); the model is forced by the inline pin above.
     assert _launch_command(result.output) == ["opencode"]
     assert not any(c[1].endswith("/api/inference/status") for c in fake_studio)
+
+
+def test_connect_opencode_as_subagent_preserves_cloud_parent(fake_studio, tmp_path):
+    result = CliRunner().invoke(
+        start.start_app,
+        [
+            "opencode",
+            "--as-subagent",
+            "--no-launch",
+            "--model",
+            MODEL["id"] + ":UD-Q4_K_XL",
+        ],
+    )
+    assert result.exit_code == 0, result.output
+    assert _launch_command(result.output) == ["opencode"]
+    assert "OPENCODE_CONFIG_CONTENT" not in result.output
+    path = tmp_path / "agents" / "opencode-subagent" / "opencode.json"
+    config = json.loads(path.read_text())
+    assert "model" not in config
+    assert "small_model" not in config
+    assert "compaction" not in config
+    agent = config["agent"]["unsloth"]
+    assert agent["model"] == (
+        f"{start._OPENCODE_PROVIDER}/{MODEL['id']}:UD-Q4_K_XL"
+    )
+    assert "Unsloth is available as @unsloth and in /models." in result.output
 
 
 # ── Hermes (OpenAI /v1/chat/completions, key via env) ────────────────
@@ -2630,6 +2774,34 @@ def test_connect_pi_no_launch(fake_studio, tmp_path):
         {"id": MODEL["id"], "contextWindow": MODEL["context_length"], "maxTokens": 8192}
     ]
     assert not any(c[1].endswith("/api/inference/status") for c in fake_studio)
+
+
+def test_connect_pi_as_subagent_preserves_cloud_parent(fake_studio):
+    result = CliRunner().invoke(
+        start.start_app,
+        [
+            "pi",
+            "--as-subagent",
+            "--no-launch",
+            "--model",
+            MODEL["id"] + ":UD-Q4_K_XL",
+        ],
+    )
+    assert result.exit_code == 0, result.output
+    command = _launch_command(result.output)
+    assert command[:2] == ["pi", "--extension"]
+    assert command[2].endswith("unsloth_cli/pi_subagent.ts")
+    assert "--provider" not in command
+    assert "--model" not in command
+    assert "PI_CODING_AGENT_DIR" not in result.output
+    assert "export HOME=" not in result.output
+    _assert_env_set(result.output, "UNSLOTH_PI_SUBAGENT_BASE_URL", f"{BASE}/v1")
+    _assert_env_set(
+        result.output,
+        "UNSLOTH_PI_SUBAGENT_MODEL",
+        MODEL["id"] + ":UD-Q4_K_XL",
+    )
+    assert "Ask Pi to spawn an Unsloth or local agent." in result.output
 
 
 def test_connect_pi_no_launch_windows_relocates_userprofile(fake_studio, tmp_path, monkeypatch):

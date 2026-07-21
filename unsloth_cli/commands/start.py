@@ -73,6 +73,17 @@ _HERMES_POSIX_INSTALL_HINT = (
 # windows and scales the compaction threshold back down to the real window.
 _HERMES_MIN_CONTEXT = 65536
 _PI_PROVIDER = "unsloth"
+_SUBAGENT_NAME = "unsloth"
+_SUBAGENT_DESCRIPTION = (
+    "Local subagent powered by Unsloth for quick debugging, fast implementation, and research. "
+    "Use when the user asks to spawn an Unsloth or local agent."
+)
+_SUBAGENT_INSTRUCTIONS = (
+    "You are a local coding subagent powered by Unsloth. Complete the assigned task directly, "
+    "use the available tools when useful, verify your work, and return a concise result to the "
+    "parent agent."
+)
+_PI_SUBAGENT_EXTENSION = Path(__file__).parent.parent / "pi_subagent.ts"
 # OpenCode selects a model by "<providerID>/<modelID>" and honors a user
 # disabled_providers list. Register the session provider under a dedicated id a
 # user's disable list would never target, so the model is always selectable
@@ -157,6 +168,11 @@ _PERSIST_OPTION = typer.Option(
         "`unsloth start codex --persist resume` or `claude --resume <id>`; those flow to "
         "the agent unchanged."
     ),
+)
+_AS_SUBAGENT_OPTION = typer.Option(
+    False,
+    "--as-subagent",
+    help = "Keep the coding agent's current model and add Unsloth as a local subagent.",
 )
 
 # Per-agent CLI flag for "run tools without prompting". OpenCode (native --auto is
@@ -332,6 +348,37 @@ def _display_model_spec(model: str, variant: Optional[str]) -> str:
     repo, inline_variant = _split_repo_variant(model)
     selected_variant = variant or inline_variant
     return f"{repo}:{selected_variant}" if selected_variant else model
+
+
+def _subagent_model_id(
+    base: str,
+    key: str,
+    entry: dict,
+    requested_model: Optional[str],
+    requested_variant: Optional[str],
+) -> str:
+    """Return an API model id that preserves the selected GGUF variant.
+
+    Coding-agent model definitions outlive the initial load. If Studio later
+    unloads the model, a bare repository id may resolve to a different cached
+    quant. Include the explicit or currently loaded variant so an automatic
+    reload selects the same weights.
+    """
+    model_id = str(entry["id"])
+    _, inline_variant = _split_repo_variant(requested_model or "")
+    variant = requested_variant or inline_variant
+    if not variant:
+        try:
+            status = _http_json("GET", f"{base}/api/inference/status", key)
+        except Exception:
+            status = {}
+        if status.get("is_gguf"):
+            variant = status.get("gguf_variant")
+    return (
+        _display_model_spec(model_id, str(variant))
+        if variant and _is_hub_model_id(model_id)
+        else model_id
+    )
 
 
 def _fail(message: str) -> NoReturn:
@@ -1380,6 +1427,60 @@ def write_codex_config(base: str, model: dict, home: Path) -> None:
         typer.echo(f"Updated {profile}")
 
 
+def write_codex_subagent_config(base: str, model: dict, home: Path) -> Path:
+    """Write a session-scoped Codex custom agent without replacing the main model."""
+    home.mkdir(parents = True, exist_ok = True)
+    model_id = model["id"]
+    window = model.get("context_length") or model.get("max_context_length")
+    catalog_name = "unsloth-model-catalog.json"
+    text = (
+        f"name = {json.dumps(_SUBAGENT_NAME)}\n"
+        f"description = {json.dumps(_SUBAGENT_DESCRIPTION)}\n"
+        f"developer_instructions = {json.dumps(_SUBAGENT_INSTRUCTIONS)}\n"
+        f"model_provider = {json.dumps(_CODEX_PROFILE)}\n"
+        f"model = {json.dumps(model_id)}\n"
+    )
+    if _codex_supports_model_catalog() and _CODEX_FALLBACK_PROMPT.is_file():
+        catalog = home / catalog_name
+        catalog_text = json.dumps(_codex_model_catalog(model), indent = 2) + "\n"
+        if not catalog.exists() or catalog.read_text(encoding = "utf-8") != catalog_text:
+            catalog.write_text(catalog_text, encoding = "utf-8")
+            typer.echo(f"Updated {catalog}")
+        text += f"model_catalog_json = {json.dumps(catalog_name)}\n"
+    if window:
+        text += f"model_context_window = {int(window)}\n"
+    text += (
+        f"\n{_PROVIDER_HEADER}\n"
+        'name = "Unsloth Studio"\n'
+        f"base_url = {json.dumps(base + '/v1')}\n"
+        f'env_key = "{_CODEX_ENV_KEY}"\n'
+        'wire_api = "responses"\n'
+        "requires_openai_auth = false\n"
+    )
+    path = home / f"{_SUBAGENT_NAME}.toml"
+    if not path.exists() or path.read_text(encoding = "utf-8") != text:
+        path.write_text(text, encoding = "utf-8")
+        typer.echo(f"Updated {path}")
+    return path
+
+
+def _agent_config_path(path: Path, command: list) -> str:
+    """Translate a generated config path when a Windows agent runs through WSL."""
+    return _wsl_windows_path(path) if _wsl_windows_executable(command) else str(path)
+
+
+def _codex_subagent_flags(path: Path) -> list[str]:
+    config_path = _agent_config_path(path, ["codex"])
+    return [
+        "--enable",
+        "multi_agent",
+        "-c",
+        f"agents.{_SUBAGENT_NAME}.description={json.dumps(_SUBAGENT_DESCRIPTION)}",
+        "-c",
+        f"agents.{_SUBAGENT_NAME}.config_file={json.dumps(config_path)}",
+    ]
+
+
 def _wsl_windows_executable(command: list) -> Optional[str]:
     if os.name == "nt" or not os.environ.get("WSL_DISTRO_NAME"):
         return None
@@ -1960,6 +2061,7 @@ def write_opencode_config(
     model: dict,
     path: Path,
     yolo: bool = False,
+    as_subagent: bool = False,
 ) -> dict:
     config = _read_json_object(path)
     if config is None:
@@ -1989,9 +2091,33 @@ def write_opencode_config(
         "options": {"baseURL": f"{base}/v1", "apiKey": key},
         "models": {model["id"]: model_entry},
     }
-    # OpenCode selects a model by "<providerID>/<modelID>".
-    config["model"] = f"{_OPENCODE_PROVIDER}/{model['id']}"
-    if window:
+    # OpenCode selects a model by "<providerID>/<modelID>". Normal mode pins it
+    # as the session model. Subagent mode leaves the user's main and small models
+    # alone, while making the same local model available to @unsloth and /models.
+    opencode_model = f"{_OPENCODE_PROVIDER}/{model['id']}"
+    if as_subagent:
+        for field in ("model", "small_model"):
+            if str(config.get(field) or "").startswith(f"{_OPENCODE_PROVIDER}/"):
+                config.pop(field, None)
+        managed_compaction = (
+            {"auto": True, "reserved": max(1, window // 10)} if window else None
+        )
+        if managed_compaction and config.get("compaction") == managed_compaction:
+            config.pop("compaction", None)
+        _subdict(config, "agent")[_SUBAGENT_NAME] = {
+            "description": _SUBAGENT_DESCRIPTION,
+            "mode": "subagent",
+            "model": opencode_model,
+            "prompt": _SUBAGENT_INSTRUCTIONS,
+        }
+    else:
+        config["model"] = opencode_model
+        agents = config.get("agent")
+        if isinstance(agents, dict):
+            agents.pop(_SUBAGENT_NAME, None)
+            if not agents:
+                config.pop("agent", None)
+    if window and not as_subagent:
         # Compact with ~10% headroom (near 90% full). The fixed 20k-token default
         # buffer over-compacts, or never settles, on a small local context.
         compaction = _subdict(config, "compaction")
@@ -2223,6 +2349,7 @@ def codex(
     serve: bool = _SERVE_OPTION,
     yolo: bool = _YOLO_OPTION,
     persist: bool = _PERSIST_OPTION,
+    as_subagent: bool = _AS_SUBAGENT_OPTION,
 ):
     """Point OpenAI Codex at the running Unsloth server and start it."""
     base, key, entry = _connect(
@@ -2240,6 +2367,30 @@ def codex(
     except BaseException:
         _shutdown_auto_served()
         raise
+    if as_subagent:
+        subagent_id = _subagent_model_id(base, key, entry, model, gguf_variant)
+        subagent_model = {**entry, "id": subagent_id}
+        with _session_config("codex-subagent", launch, persist = persist) as home:
+            agent_config = write_codex_subagent_config(base, subagent_model, home)
+            command = [
+                "codex",
+                *_codex_subagent_flags(agent_config),
+                *_yolo_command_flags("codex", yolo),
+                *ctx.args,
+            ]
+            typer.echo(
+                "Unsloth is available as the `unsloth` local agent. "
+                "Ask Codex to spawn an Unsloth or local agent."
+            )
+            _run(
+                base,
+                subagent_model,
+                {_CODEX_ENV_KEY: key},
+                command,
+                launch = launch,
+                install_hint = "npm install -g @openai/codex",
+            )
+        return
     command = [
         "codex",
         "--oss",
@@ -2324,6 +2475,7 @@ def opencode(
     serve: bool = _SERVE_OPTION,
     yolo: bool = _YOLO_OPTION,
     persist: bool = _PERSIST_OPTION,
+    as_subagent: bool = _AS_SUBAGENT_OPTION,
 ):
     """Point OpenCode at the running Unsloth server and start it."""
     base, key, entry = _connect(
@@ -2333,6 +2485,39 @@ def opencode(
         serve = serve,
         launch = launch,
     )
+    if as_subagent:
+        subagent_id = _subagent_model_id(base, key, entry, model, gguf_variant)
+        subagent_model = {**entry, "id": subagent_id}
+        route_native_auto = yolo and _opencode_supports_native_auto()
+        opencode_args, native_auto = _opencode_native_auto_args(
+            list(ctx.args), route_native_auto
+        )
+        command = ["opencode", *opencode_args]
+        with _session_config("opencode-subagent", launch, persist = persist) as cfg:
+            config_path = cfg / "opencode.json"
+            session_permission = write_opencode_config(
+                base,
+                key,
+                subagent_model,
+                config_path,
+                yolo = yolo and not native_auto,
+                as_subagent = True,
+            )
+            env = {"OPENCODE_CONFIG": str(config_path)}
+            if session_permission:
+                env["OPENCODE_CONFIG_CONTENT"] = json.dumps(
+                    {"permission": session_permission}
+                )
+            typer.echo("Unsloth is available as @unsloth and in /models.")
+            _run(
+                base,
+                subagent_model,
+                env,
+                command,
+                launch = launch,
+                install_hint = "npm install -g opencode-ai",
+            )
+        return
     opencode_model = f"{_OPENCODE_PROVIDER}/{entry['id']}"
     # The inline OPENCODE_CONFIG_CONTENT below pins the model in the highest-priority
     # layer, so the session model is forced without a --model flag. Only add --model for
@@ -2450,6 +2635,7 @@ def pi(
     serve: bool = _SERVE_OPTION,
     yolo: bool = _YOLO_OPTION,
     persist: bool = _PERSIST_OPTION,
+    as_subagent: bool = _AS_SUBAGENT_OPTION,
 ):
     """Point Pi (coding agent) at the running Unsloth server and start it."""
     base, key, entry = _connect(
@@ -2459,6 +2645,46 @@ def pi(
         serve = serve,
         launch = launch,
     )
+    install_hint = "npm install -g --ignore-scripts @earendil-works/pi-coding-agent"
+    if as_subagent:
+        if not _PI_SUBAGENT_EXTENSION.is_file():
+            _fail(f"Missing Pi subagent extension: {_PI_SUBAGENT_EXTENSION}")
+        subagent_id = _subagent_model_id(base, key, entry, model, gguf_variant)
+        subagent_model = {**entry, "id": subagent_id}
+        window = subagent_model.get("context_length") or subagent_model.get(
+            "max_context_length"
+        )
+        extension = _agent_config_path(_PI_SUBAGENT_EXTENSION, ["pi"])
+        command = [
+            "pi",
+            "--extension",
+            extension,
+            *_yolo_command_flags("pi", yolo),
+            *ctx.args,
+        ]
+        env = {
+            "UNSLOTH_PI_SUBAGENT_BASE_URL": f"{base}/v1",
+            "UNSLOTH_PI_SUBAGENT_API_KEY": key,
+            "UNSLOTH_PI_SUBAGENT_MODEL": subagent_id,
+        }
+        if window:
+            window = int(window)
+            env["UNSLOTH_PI_SUBAGENT_CONTEXT_WINDOW"] = str(window)
+            env["UNSLOTH_PI_SUBAGENT_MAX_TOKENS"] = str(min(window // 4, 8192))
+        typer.echo(
+            "Unsloth is available as a local agent and in /model. "
+            "Ask Pi to spawn an Unsloth or local agent."
+        )
+        _run(
+            base,
+            subagent_model,
+            env,
+            command,
+            launch = launch,
+            install_hint = install_hint,
+            clear_screen = True,
+        )
+        return
     # Pi defaults to the google provider, so pin our provider/model on the command
     # line; the custom OpenAI-compatible endpoint itself is only configurable via
     # ~/.pi/agent/models.json.
@@ -2473,7 +2699,6 @@ def pi(
     ]
     # --ignore-scripts matches Pi's documented install recipe (its README notes Pi needs
     # no install scripts), so accepting the prompt skips dependency lifecycle scripts.
-    install_hint = "npm install -g --ignore-scripts @earendil-works/pi-coding-agent"
     with _session_config("pi", launch, persist = persist) as home:
         # Pi resolves its config dir from PI_CODING_AGENT_DIR first (getAgentDir() prefers
         # it over $HOME/.pi/agent), so pin it at the session dir: an inherited
