@@ -922,3 +922,348 @@ def test_mlx_vlm_normalizes_native_reasoning_channels(monkeypatch):
         "<think>vision</think>",
         "<think>vision</think> answer",
     ]
+
+
+class _FakeLRUPromptCache:
+    def __init__(
+        self,
+        max_size = 10,
+        max_bytes = 1 << 63,
+    ):
+        self.max_size = max_size
+        self.max_bytes = max_bytes
+        self.entries = {}
+
+    def fetch_nearest_cache(self, key, tokens):
+        import copy
+
+        stored = self.entries.get(key, {})
+        exact = stored.get(tuple(tokens))
+        if exact is not None:
+            return copy.deepcopy(exact), []
+        best = None
+        for candidate, cache in stored.items():
+            if len(candidate) < len(tokens) and tuple(tokens[: len(candidate)]) == candidate:
+                if best is None or len(candidate) > len(best[0]):
+                    best = (candidate, cache)
+        if best is not None:
+            return copy.deepcopy(best[1]), list(tokens[len(best[0]) :])
+        return None, list(tokens)
+
+    def insert_cache(
+        self,
+        key,
+        tokens,
+        prompt_cache,
+        *,
+        cache_type = "assistant",
+    ):
+        import copy
+        self.entries.setdefault(key, {})[tuple(tokens)] = copy.deepcopy(prompt_cache)
+
+
+def _install_fake_prompt_cache_api(monkeypatch, trimmable = True):
+    from core.inference import mlx_inference
+
+    def _make_prompt_cache(_model):
+        return [{"n": 0}]
+
+    def _can_trim_prompt_cache(_cache):
+        return trimmable
+
+    def _trim_prompt_cache(cache, num):
+        cache[0]["n"] = max(cache[0]["n"] - num, 0)
+        return num
+
+    monkeypatch.setattr(
+        mlx_inference,
+        "_mlx_prompt_cache_api",
+        lambda: (
+            _FakeLRUPromptCache,
+            _make_prompt_cache,
+            _can_trim_prompt_cache,
+            _trim_prompt_cache,
+        ),
+    )
+
+
+def test_mlx_prompt_cache_max_bytes_budget(monkeypatch):
+    from core.inference.mlx_inference import (
+        PROMPT_CACHE_FALLBACK_BYTES,
+        PROMPT_CACHE_MEMORY_FRACTION,
+        _prompt_cache_max_bytes,
+    )
+
+    monkeypatch.delenv("UNSLOTH_MLX_PROMPT_CACHE_BYTES", raising = False)
+    # Metal unavailable (no recommended working set) still yields a real cap.
+    assert _prompt_cache_max_bytes(None) == PROMPT_CACHE_FALLBACK_BYTES
+    assert _prompt_cache_max_bytes(20.0) == int(20.0 * 1e9 * PROMPT_CACHE_MEMORY_FRACTION)
+
+    monkeypatch.setenv("UNSLOTH_MLX_PROMPT_CACHE_BYTES", "4096")
+    assert _prompt_cache_max_bytes(20.0) == 4096
+    # 0 is an explicit opt-out, not a fall-through to the default.
+    monkeypatch.setenv("UNSLOTH_MLX_PROMPT_CACHE_BYTES", "0")
+    assert _prompt_cache_max_bytes(20.0) == 0
+    monkeypatch.setenv("UNSLOTH_MLX_PROMPT_CACHE_BYTES", "not-a-number")
+    assert _prompt_cache_max_bytes(20.0) == int(20.0 * 1e9 * PROMPT_CACHE_MEMORY_FRACTION)
+
+
+def test_mlx_prompt_cache_never_returns_empty_remainder(monkeypatch):
+    _install_fake_prompt_cache_api(monkeypatch)
+    from core.inference.mlx_inference import _MLXPromptCacheHistory
+
+    history = _MLXPromptCacheHistory(6, 1 << 30)
+    tokens = list(range(10))
+    cache, rest = history.fetch(object(), "key", tokens)
+    assert len(rest) == 10  # cold: full prefill
+    history.insert("key", tokens, cache)
+
+    # Exact re-request: trimmed back by one so decoding has a seed token.
+    _cache, rest = history.fetch(object(), "key", tokens)
+    assert rest == tokens[-1:]
+
+    # A longer prompt reuses the stored prefix and prefills only the new tail.
+    longer = tokens + [99, 100]
+    _cache, rest = history.fetch(object(), "key", longer)
+    assert rest == [99, 100]
+
+    _install_fake_prompt_cache_api(monkeypatch, trimmable = False)
+    history = _MLXPromptCacheHistory(6, 1 << 30)
+    cache, _rest = history.fetch(object(), "key", tokens)
+    history.insert("key", tokens, cache)
+    _cache, rest = history.fetch(object(), "key", tokens)
+    assert rest == tokens, "untrimmable entry must not be reused"
+
+
+def test_mlx_prompt_cache_key_isolates_adapter_state(monkeypatch):
+    _install_fake_prompt_cache_api(monkeypatch)
+    _install_fake_mlx(monkeypatch)
+    from core.inference.mlx_inference import MLXInferenceBackend
+
+    class _Tok:
+        bos_token = None
+
+        def encode(
+            self,
+            text,
+            add_special_tokens = True,
+        ):
+            return [ord(c) for c in text]
+
+    backend = MLXInferenceBackend()
+    backend._model = object()
+    backend._tokenizer = _Tok()
+    backend.active_model_name = "model-a"
+
+    prompt = "shared prefix"
+    _rest, cache, key, tokens, cached = backend._prepare_prompt_cache(prompt, True)
+    assert cached == 0
+    backend._prompt_cache_history.insert(key, tokens, cache)
+
+    # Same adapter state: reuses the prefix.
+    _rest, _cache, _key, _tokens, cached_same = backend._prepare_prompt_cache(prompt, True)
+    assert cached_same > 0
+    # Flipped adapter state: must miss.
+    _rest, _cache, _key, _tokens, cached_flipped = backend._prepare_prompt_cache(prompt, False)
+    assert cached_flipped == 0
+
+
+def _install_fake_text_stack(
+    monkeypatch,
+    token_map,
+    captured,
+    markers = None,
+):
+    import types as _types
+
+    from core.inference import mlx_inference
+
+    _install_fake_mlx(monkeypatch)
+    monkeypatch.setattr(
+        mlx_inference,
+        "_temporary_mlx_adapter_state",
+        lambda _model, _state: __import__("contextlib").nullcontext(),
+    )
+    monkeypatch.setattr(
+        "core.inference.chat_template_helpers.apply_chat_template_for_generation",
+        lambda _tok, messages, **_kw: messages[-1]["content"],
+    )
+    monkeypatch.setattr(
+        "core.inference.chat_template_helpers.render_with_native_template_fallback",
+        lambda formatted_prompt, **_kw: SimpleNamespace(
+            prompt = formatted_prompt,
+            reasoning_channel_markers = markers,
+        ),
+    )
+    monkeypatch.setattr(
+        "core.inference.chat_template_helpers.detect_think_prefill",
+        lambda *_a, **_kw: "",
+    )
+
+    class _Resp:
+        def __init__(self, token, processed):
+            self.token = token
+            self.text = f"<{token}>"
+            self.prompt_tokens = processed
+            self.prompt_tps = 10.0
+            self.generation_tokens = 1
+            self.generation_tps = 5.0
+
+    def _stream_generate(_model, _tokenizer, **kwargs):
+        captured.append(kwargs)
+        processed = len(kwargs["prompt"])
+        for token in token_map["generated"]:
+            yield _Resp(token, processed)
+
+    mlx_lm_pkg = _types.ModuleType("mlx_lm")
+    mlx_lm_pkg.stream_generate = _stream_generate
+    mlx_lm_sample = _types.ModuleType("mlx_lm.sample_utils")
+    mlx_lm_sample.make_sampler = lambda **_kw: object()
+    mlx_lm_sample.make_logits_processors = lambda **_kw: []
+    monkeypatch.setitem(sys.modules, "mlx_lm", mlx_lm_pkg)
+    monkeypatch.setitem(sys.modules, "mlx_lm.sample_utils", mlx_lm_sample)
+
+    class _Tok:
+        bos_token = None
+        chat_template = "x"
+
+        def encode(
+            self,
+            text,
+            add_special_tokens = True,
+        ):
+            return list(token_map[text])
+
+        def decode(
+            self,
+            ids,
+            skip_special_tokens = False,
+        ):
+            return "".join(str(i) for i in ids)
+
+    from core.inference.mlx_inference import MLXInferenceBackend
+
+    backend = MLXInferenceBackend()
+    backend._model = object()
+    backend._tokenizer = _Tok()
+    backend._is_vlm = False
+    backend.active_model_name = "model-a"
+    return backend
+
+
+def _run_turn(backend, prompt):
+    list(
+        backend.generate_chat_response(
+            messages = [{"role": "user", "content": prompt}],
+            max_new_tokens = 4,
+        )
+    )
+
+
+def test_mlx_text_reuses_prompt_cache_on_the_next_turn(monkeypatch):
+    _install_fake_prompt_cache_api(monkeypatch)
+    captured = []
+    token_map = {
+        "P1": [1, 2, 3],
+        # P1 + generated + the new user turn.
+        "P2": [1, 2, 3, 7, 8, 9, 10],
+        "generated": [7, 8],
+    }
+    backend = _install_fake_text_stack(monkeypatch, token_map, captured)
+
+    _run_turn(backend, "P1")
+    assert captured[0]["prompt"] == [1, 2, 3]  # cold: full prefill
+    assert "prompt_cache" in captured[0]
+    assert backend.last_generation_stats["timings"]["cache_n"] == 0
+
+    _run_turn(backend, "P2")
+    assert captured[1]["prompt"] == [9, 10], "turn two should prefill only the new tail"
+
+    stats = backend.last_generation_stats
+    assert stats["timings"]["cache_n"] == 5
+    assert stats["timings"]["prompt_n"] == 2
+    # usage keeps reporting the whole prompt.
+    assert stats["usage"]["prompt_tokens"] == 7
+
+
+def test_mlx_text_without_lru_prompt_cache_prefills_the_full_prompt(monkeypatch):
+    from core.inference import mlx_inference
+
+    monkeypatch.setattr(mlx_inference, "_mlx_prompt_cache_api", lambda: None)
+    captured = []
+    token_map = {"P1": [1, 2, 3], "generated": [7]}
+    backend = _install_fake_text_stack(monkeypatch, token_map, captured)
+
+    _run_turn(backend, "P1")
+    assert captured[0]["prompt"] == "P1"  # unchanged: the rendered string
+    assert "prompt_cache" not in captured[0]
+    assert backend.last_generation_stats["timings"]["cache_n"] == 0
+
+
+def test_mlx_text_tracks_tokens_on_the_native_reasoning_path(monkeypatch):
+    _install_fake_prompt_cache_api(monkeypatch)
+    captured = []
+    token_map = {"P1": [1, 2, 3], "P2": [1, 2, 3, 7, 8, 9], "generated": [7, 8]}
+    backend = _install_fake_text_stack(monkeypatch, token_map, captured, markers = ("<a>", "</a>"))
+
+    _run_turn(backend, "P1")
+    _run_turn(backend, "P2")
+    # A miss here would mean the generated tokens never entered the cache key.
+    assert captured[1]["prompt"] == [9]
+
+
+def test_mlx_presence_penalty_latches_the_first_decode_step():
+    mx = pytest.importorskip("mlx.core")  # real MLX arrays; Apple Silicon only
+    import numpy as np
+
+    from core.inference.mlx_inference import _make_mlx_presence_penalty_processor
+
+    processor = _make_mlx_presence_penalty_processor(2.0)
+    # First step: the single seed token left over after prefill/cache restore.
+    logits = mx.zeros((1, 5))
+    out = processor(mx.array([3]), logits)
+    assert np.array_equal(np.array(out), np.zeros((1, 5))), "prompt must not be penalized"
+    # Subsequent steps penalize only what was generated, not the seed token.
+    out = processor(mx.array([3, 1]), mx.zeros((1, 5)))
+    penalized = np.array(out)[0]
+    assert penalized[1] == -2.0
+    assert penalized[3] == 0.0
+
+
+def test_mlx_prompt_cache_survives_reset_but_not_unload(monkeypatch):
+    _install_fake_prompt_cache_api(monkeypatch)
+    _install_fake_mlx(monkeypatch)
+    sys.modules["mlx.core"].clear_cache = lambda: None
+    from core.inference.mlx_inference import MLXInferenceBackend
+
+    backend = MLXInferenceBackend()
+    backend.active_model_name = "model-a"
+    history = backend._prompt_cache()
+    assert history is not None
+
+    backend.reset_generation_state()
+    assert backend._prompt_cache_history is history
+
+    backend.unload_model("model-a")
+    assert backend._prompt_cache_history is None
+
+
+def test_mlx_prompt_cache_skips_entries_over_budget(monkeypatch):
+    # An over-budget entry makes LRUPromptCache evict itself *and* every other
+    # conversation, so a single huge chat would silently wipe the cache.
+    _install_fake_prompt_cache_api(monkeypatch)
+    from core.inference.mlx_inference import _MLXPromptCacheHistory
+
+    class _Sized:
+        def __init__(self, nbytes):
+            self.nbytes = nbytes
+
+    history = _MLXPromptCacheHistory(6, 1000)
+    history.insert("key", [1, 2, 3], [_Sized(400)])
+    assert len(history._lru.entries.get("key", {})) == 1
+
+    history.insert("key", list(range(50)), [_Sized(5000)])
+    # The oversized entry is dropped and the earlier one survives.
+    stored = history._lru.entries.get("key", {})
+    assert tuple([1, 2, 3]) in stored
+    assert tuple(range(50)) not in stored
