@@ -297,10 +297,7 @@ def test_backend_imports_subprocess_for_macos_pid_identity():
     """The backend function must have subprocess in its real module globals."""
     tree = ast.parse(_BACKEND_RUN_SOURCE)
     imported = {
-        alias.name
-        for node in tree.body
-        if isinstance(node, ast.Import)
-        for alias in node.names
+        alias.name for node in tree.body if isinstance(node, ast.Import) for alias in node.names
     }
     assert "subprocess" in imported
 
