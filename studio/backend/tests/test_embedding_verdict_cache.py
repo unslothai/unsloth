@@ -230,6 +230,39 @@ def test_uninspectable_cache_blocks(home, tmp_path, monkeypatch):
     assert _blocked(monkeypatch, snap) is True
 
 
+def test_sharded_safetensors_index_credited_only_at_root(home, tmp_path, monkeypatch):
+    # A complete model.safetensors.index.json covers a sibling pickle ONLY at a from_pretrained
+    # root. A non-Transformer ST module (Dense/WordEmbeddings) loads via load_torch_weights, which
+    # ignores the index and reads pytorch_model.bin -- so a sharded index there must NOT credit the
+    # pickle, or it deserializes unblocked offline.
+    index = json.dumps({"weight_map": {"w": "model-00001-of-00001.safetensors"}})
+
+    # Module dir (not root): index does NOT credit the pickle -> blocked.
+    mod = _snap(
+        tmp_path,
+        {
+            "modules.json": json.dumps([{"path": "0_Dense", "type": "..."}]),
+            "0_Dense/pytorch_model.bin": b"pickle",
+            "0_Dense/model.safetensors.index.json": index,
+            "0_Dense/model-00001-of-00001.safetensors": b"\0",
+        },
+        commit = "cmod",
+    )
+    assert _blocked(monkeypatch, mod) is True
+
+    # Snapshot root (from_pretrained): the same index DOES credit the pickle -> allowed.
+    root = _snap(
+        tmp_path,
+        {
+            "pytorch_model.bin": b"pickle",
+            "model.safetensors.index.json": index,
+            "model-00001-of-00001.safetensors": b"\0",
+        },
+        commit = "croot",
+    )
+    assert _blocked(monkeypatch, root) is False
+
+
 def test_unresolvable_snapshot_blocks(home, monkeypatch):
     # A snapshot that ERRORS on resolution (not a clean None) fails closed.
     def _boom(name):

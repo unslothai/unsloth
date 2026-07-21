@@ -396,14 +396,24 @@ def _exact_named(files: dict, name: str):
     return None
 
 
-def _dir_has_loadable_safetensors(files: dict) -> bool:
-    """True when *files* (lower-name -> Path for one directory) hold a safetensors weight a
-    from_pretrained load will read INSTEAD of a pickle sibling: an unsharded base file, or a
-    complete indexed shard set. A bare adapter or an orphan shard does not qualify. The
-    safetensors credit is case-SENSITIVE (see :func:`_exact_named`) so a mis-cased decoy the
-    loader would skip cannot vouch for a live pickle."""
+def _dir_has_loadable_safetensors(files: dict, is_root: bool = False) -> bool:
+    """True when *files* (lower-name -> Path for one directory) hold a safetensors weight the loader
+    will read INSTEAD of a pickle sibling: an unsharded ``model.safetensors``, or -- ONLY at a
+    ``from_pretrained`` root -- a complete ``model.safetensors.index.json`` shard set. A bare
+    adapter or an orphan shard does not qualify. The safetensors credit is case-SENSITIVE (see
+    :func:`_exact_named`) so a mis-cased decoy the loader would skip cannot vouch for a live pickle.
+
+    ``is_root`` gates the SHARDED-index credit. A sharded safetensors index is honored only by
+    ``from_pretrained`` (the snapshot root / a Transformer root loaded via ``AutoModel``). A
+    non-Transformer SentenceTransformer module (``Dense``, ``WordEmbeddings``, ``StaticEmbedding``)
+    loads through ``Module.load_torch_weights``, which probes only ``model.safetensors`` then
+    ``pytorch_model.bin`` and NEVER reads the index -- so crediting a sharded index in such a module
+    dir would let its ``pytorch_model.bin`` deserialize unblocked. The unsharded ``model.safetensors``
+    credit is honored by both loaders and applies everywhere."""
     if any(_exact_named(files, name) is not None for name in _SAFETENSORS_BASE_UNSHARDED):
         return True
+    if not is_root:
+        return False
     for index_name in _SAFETENSORS_BASE_INDEX:
         index_path = _exact_named(files, index_name)
         if index_path is not None and _safetensors_index_complete(index_path):
@@ -520,7 +530,7 @@ def _cached_pickle_weight_paths(snap, load_subdirs = ()) -> list:
         # reads the exact-case one, and a mis-cased sibling that is never loaded is only over-blocked
         # (safe). Keying by lowered name would drop one and could hash a decoy instead of the target.
         base = [p for p in pickle_paths if _PICKLE_WEIGHT_RE.match(p.name.lower())]
-        if base and not _dir_has_loadable_safetensors(files):
+        if base and not _dir_has_loadable_safetensors(files, is_root = directory == snap):
             hits.update(base)
         # An adapter pickle is deserialized only when from_pretrained auto-detects the adapter
         # (adapter_config.json present) and there is no adapter_model.safetensors to load instead.
@@ -541,7 +551,7 @@ def _cached_pickle_weight_paths(snap, load_subdirs = ()) -> list:
     for root_dir in roots:
         files = by_dir_files.get(root_dir, {})
         index_path = files.get(_PICKLE_INDEX_FILE)
-        if index_path is None or _dir_has_loadable_safetensors(files):
+        if index_path is None or _dir_has_loadable_safetensors(files, is_root = root_dir == snap):
             continue
         for shard_rel in _index_weight_map_values(index_path):
             if _file_suffix(shard_rel) not in _PICKLE_SUFFIXES:

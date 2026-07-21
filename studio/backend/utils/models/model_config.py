@@ -2221,14 +2221,14 @@ def _names_have_tokenizer(names: set) -> bool:
 
 
 def _dir_has_complete_torch_weights(names: set) -> bool:
-    """True when *names* form a COMPLETE Torch weight set: a single ``model.safetensors`` /
-    ``pytorch_model.bin``, or a full shard set (every index ``1..total`` plus its
-    ``.index.json`` map). A lone shard or a missing index map is incomplete -- it would
-    validate then fail under local_files_only."""
-    for stem in ("model", "pytorch_model"):
-        for ext in ("safetensors", "bin"):
-            if f"{stem}.{ext}" in names:
-                return True
+    """True when *names* form a COMPLETE Torch weight set: a single unsharded weight the loader
+    actually probes (``model.safetensors`` or ``pytorch_model.bin`` -- NOT ``model.bin`` or
+    ``pytorch_model.safetensors``, which from_pretrained / Module.load_torch_weights never read), or
+    a full shard set (every index ``1..total`` plus its ``.index.json`` map). A lone shard, a missing
+    index map or a decoy-named base weight is incomplete -- it would validate then fail under
+    local_files_only."""
+    if "model.safetensors" in names or "pytorch_model.bin" in names:
+        return True
     shards: dict = {}
     for name in names:
         m = _ST_SHARD_RE.match(name)
@@ -2300,23 +2300,27 @@ def _dir_weight_set_is_complete(dir_path: Path, names: set) -> bool:
     (authoritative, resolved relative to *dir_path*, subdirectory values included); else the
     filename-numbering shard heuristic (:func:`_dir_has_complete_torch_weights`) as a fallback for
     an unreadable / stub index. Never raises."""
-    # 1. An unsharded base weight is always sufficient.
-    for stem in ("model", "pytorch_model"):
-        for ext in ("safetensors", "bin"):
-            if f"{stem}.{ext}" in names:
-                return True
-    # 2. A present, parseable weight-index is authoritative: require every mapped shard present.
-    saw_parseable_index = False
+    # 1. An unsharded base weight the loader actually probes: model.safetensors (safetensors) or
+    #    pytorch_model.bin (pickle). from_pretrained / Module.load_torch_weights never read
+    #    ``model.bin`` or ``pytorch_model.safetensors``, so a cache holding only one of those is NOT
+    #    loadable (the security gate treats ``pytorch_model.safetensors`` as a decoy for the same
+    #    reason) -- classifying it as complete accepts a snapshot the local_files_only load then 409s.
+    if "model.safetensors" in names or "pytorch_model.bin" in names:
+        return True
+    # 2. A PRESENT weight-index is authoritative: transformers / sentence-transformers open and parse
+    #    it to locate the sharded weights, so if any index file exists it must fully resolve. One that
+    #    maps a complete shard set validates; one missing a mapped shard OR unreadable / lacking a
+    #    ``weight_map`` (a stub or truncated write) makes the local_files_only load fail -- so do NOT
+    #    fall back to the filename-numbering heuristic when an index file is present.
+    saw_index = False
     for index_name in _ST_WEIGHT_INDEX_FILES:
         if index_name in names:
-            verdict = _index_weight_set_complete(dir_path / index_name)
-            if verdict is True:
+            saw_index = True
+            if _index_weight_set_complete(dir_path / index_name) is True:
                 return True
-            if verdict is False:
-                saw_parseable_index = True
-    if saw_parseable_index:
-        return False  # a mapped shard is missing -> the local_files_only load would fail
-    # 3. Fallback: numbering heuristic on basenames (unreadable / stub index, or no index at all).
+    if saw_index:
+        return False
+    # 3. No index file at all: the filename-numbering shard heuristic on basenames.
     return _dir_has_complete_torch_weights(names)
 
 
@@ -2504,6 +2508,13 @@ _ST_ROUTER_CONFIG_FILE = "router_config.json"
 # the same check without being listed here.
 _ST_TRANSFORMER_SHAPED_MODULE_NAMES = frozenset({"clipmodel"})
 
+# ``CLIPModel.load()`` builds its processor via ``AutoProcessor.from_pretrained``, which for CLIP is
+# a ``CLIPProcessor`` = image processor + tokenizer. The image processor reads its own config
+# (``preprocessor_config.json``); a tokenizer alone does not satisfy it, so a CLIP dir with config +
+# weights + only tokenizer files validates offline and then fails the local_files_only load (#7218
+# P3). Required IN ADDITION to the Transformer load-root shape (config + tokenizer + weights).
+_ST_CLIP_PROCESSOR_FILE = "preprocessor_config.json"
+
 # ``SparseStaticEmbedding.load()`` (sparse_encoder/modules/sparse_static_embedding.py:157-226) reads
 # a tokenizer (``AutoTokenizer.from_pretrained``, line 193) and then EITHER, when ``config.json``
 # names a ``.json`` ``path``, an IDF json via ``from_json`` -> ``load_file_path(..., "idf.json")``
@@ -2526,6 +2537,21 @@ _ST_CONFIG_ONLY_MODULE_NAMES = frozenset(
 def _dir_has_module_config(names: set) -> bool:
     """True when *names* hold a module config (``config.json`` or any ``*_config.json``)."""
     return any(name == "config.json" or name.endswith("_config.json") for name in names)
+
+
+def _sparse_config_selects_idf_json(dir_path: Path) -> bool:
+    """True when a ``SparseStaticEmbedding`` dir's ``config.json`` selects the idf-json variant: its
+    ``path`` value is a string ending ``.json``. ``SparseStaticEmbedding.load()`` uses ``idf.json``
+    ONLY through that field (``path = config.pop("path"); if path is not None and
+    path.endswith(".json"): from_json(...)``, sparse_static_embedding.py:202-205); otherwise it falls
+    through to ``load_torch_weights`` and RAISES without a Torch weight set. So a tokenizer + bare
+    ``idf.json`` with a config that does NOT declare the JSON path is not loadable. Never raises."""
+    try:
+        config = json.loads((dir_path / "config.json").read_text(encoding = "utf-8"))
+    except (OSError, ValueError):
+        return False
+    path = config.get("path") if isinstance(config, dict) else None
+    return isinstance(path, str) and path.endswith(".json")
 
 
 def _module_dir_is_loadable(cls: str, is_root: bool, dir_path: Path) -> bool:
@@ -2557,7 +2583,13 @@ def _module_dir_is_loadable(cls: str, is_root: bool, dir_path: Path) -> bool:
     names = _dir_file_names(dir_path)
     # Transformer-shaped: a full HF load root (config + tokenizer/processor + weights), root or subdir.
     if "transformer" in cls or cls in _ST_TRANSFORMER_SHAPED_MODULE_NAMES:
-        return _dir_is_transformer_load_root(dir_path, names)
+        if not _dir_is_transformer_load_root(dir_path, names):
+            return False
+        # A CLIP-shaped module additionally needs the image-processor config for AutoProcessor;
+        # a tokenizer alone (checked above) is not enough.
+        if cls in _ST_TRANSFORMER_SHAPED_MODULE_NAMES:
+            return _ST_CLIP_PROCESSOR_FILE in names
+        return True
     # Router / Asym: loadable when its router_config.json children are (no weights of its own).
     if cls in _ST_ROUTER_MODULE_NAMES:
         return _router_dir_is_loadable(dir_path)
@@ -2569,11 +2601,15 @@ def _module_dir_is_loadable(cls: str, is_root: bool, dir_path: Path) -> bool:
         return _ST_STATIC_EMBEDDING_TOKENIZER_FILE in names and _dir_weight_set_is_complete(
             dir_path, names
         )
-    # SparseStaticEmbedding: a tokenizer + (an idf.json OR a complete Torch weight set).
+    # SparseStaticEmbedding: a tokenizer + EITHER a complete Torch weight set, OR an idf.json THAT
+    # config.json actually selects (a "path" ending .json) -- a bare idf.json the config does not
+    # name falls through to load_torch_weights and raises.
     if cls == "sparsestaticembedding":
         if not _names_have_tokenizer(names):
             return False
-        return _ST_SPARSE_IDF_DATA_FILE in names or _dir_weight_set_is_complete(dir_path, names)
+        if _dir_weight_set_is_complete(dir_path, names):
+            return True
+        return _ST_SPARSE_IDF_DATA_FILE in names and _sparse_config_selects_idf_json(dir_path)
     # A weighted non-Transformer module: its module config AND a complete Torch weight set.
     if cls in _ST_WEIGHTED_MODULE_NAMES:
         if not _dir_has_module_config(names) or not _dir_weight_set_is_complete(dir_path, names):
@@ -2821,13 +2857,18 @@ def is_embedding_model(model_name: str, hf_token: Optional[str] = None) -> bool:
         if snapshot is not None and _snapshot_is_loadable_st_model(snapshot):
             return True
         active_commit = _active_commit(model_name)
-        # Trust an online-confirmed positive (memo or persisted allowlist) only when the
-        # active snapshot has a complete weight set: a recorded True proves the Hub tagged it
-        # an embedder, not that its files are on disk. The weight gate covers a downloaded
-        # tag-only embedder (no modules.json) while rejecting a config-only or half-sharded
-        # snapshot.
+        # Trust an online-confirmed positive (memo or persisted allowlist) only for a TAG-ONLY
+        # embedder -- one with NO modules.json -- whose active snapshot has a complete root weight
+        # set. A recorded True proves the Hub tagged it an embedder, not that its files load. The
+        # tag-only fallback (_snapshot_has_complete_weights) treats an unreadable manifest like a
+        # plain root Transformer, so it must NOT run when modules.json is PRESENT: with the file
+        # present the loader takes the modules.json path (base/model.py _load_config_modules) and a
+        # present-but-empty / malformed manifest builds zero modules or raises rather than falling
+        # back to the root weights (#7218). A present, well-formed manifest is already handled
+        # authoritatively by _snapshot_is_loadable_st_model above.
         if (
             snapshot is not None
+            and not (snapshot / "modules.json").is_file()
             and _known_embedder(model_name, cache_key, active_commit)
             and _snapshot_has_complete_weights(snapshot)
         ):

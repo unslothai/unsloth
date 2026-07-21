@@ -497,14 +497,53 @@ def _stmt_binds_all(node: ast.AST) -> bool:
     )
 
 
+def _declares_global_all(func: ast.AST) -> bool:
+    """True when *func*'s OWN body declares ``global __all__`` (so an ``__all__`` assignment in it
+    writes the module export set). Does not descend into nested functions/classes -- their
+    ``global`` statements belong to their own scope."""
+    stack = list(ast.iter_child_nodes(func))
+    while stack:
+        node = stack.pop()
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+            continue  # a nested scope; its `global` decls are its own
+        if isinstance(node, ast.Global) and "__all__" in node.names:
+            return True
+        stack.extend(ast.iter_child_nodes(node))
+    return False
+
+
 def _all_bound_outside_module_body(tree: ast.Module) -> bool:
-    """True when ``__all__`` is bound / mutated anywhere OTHER than a top-level module statement --
-    inside a module-level ``if`` / ``try`` / ``for`` / ``while`` / ``with`` / ``match`` (a
-    conditional whose final value cannot be replayed statically), or inside a nested scope. The
-    caller then marks ``__all__`` opaque, so a conditionally-added re-export is not mistaken for an
-    unused hoist. Only ever ADDS opacity, so it cannot create a false blocker."""
+    """True when the module's runtime ``__all__`` may be mutated somewhere a static read cannot
+    replay: a MODULE-LEVEL binding nested in a conditional (``if`` / ``try`` / ``for`` / ``while``
+    / ``with`` / ``match``, whose final value is not the replayed top-level sequence), or an
+    ``__all__`` assignment inside a function that declares ``global __all__``. An ``__all__`` bound
+    as a LOCAL in a nested function or class body (no ``global __all__``) CANNOT change the module
+    export set, so it is ignored -- otherwise a stray local named ``__all__`` would mask a genuinely
+    unused hoisted import. The caller marks ``__all__`` opaque on True; this only ever ADDS opacity
+    at module scope, so it cannot create a false blocker."""
     top_level = {id(node) for node in tree.body}
-    return any(id(node) not in top_level and _stmt_binds_all(node) for node in ast.walk(tree))
+
+    def _walk(node: ast.AST) -> bool:
+        # Descends only module-level statements/blocks; nested scopes are handled without recursing.
+        for child in ast.iter_child_nodes(node):
+            if isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                # A __all__ assignment inside the function reaches module scope ONLY via
+                # `global __all__`; otherwise it is a local and cannot taint the export set.
+                if _declares_global_all(child) and any(
+                    _stmt_binds_all(n) for n in ast.walk(child)
+                ):
+                    return True
+                # else: a purely-local __all__ -> ignore this function entirely.
+            elif isinstance(child, ast.ClassDef):
+                continue  # a class-body __all__ is a class attribute, not the module's -> ignore
+            else:
+                if id(child) not in top_level and _stmt_binds_all(child):
+                    return True  # module-level conditional mutation (not the replayed top sequence)
+                if _walk(child):
+                    return True
+        return False
+
+    return _walk(tree)
 
 
 def _collect_dunder_all(tree: ast.Module) -> tuple[set[str], bool]:
@@ -937,6 +976,23 @@ _SELF_TESTS = {
         # as an unused hoist (the collector previously scanned only tree.body and missed it)
         'from pkg import a\n__all__ = ["a"]\n',
         'from pkg import a\nfrom pkg import b\n__all__ = ["a"]\nif True:\n    __all__ += ["b"]\n',
+        None,
+    ),
+    "nested_local_all_does_not_mask_unused_hoist": (
+        # a __all__ bound as a LOCAL inside a nested function cannot change the module export set,
+        # so it must NOT make the module __all__ opaque -- a genuinely unused hoisted import is
+        # still a bad hoist and must block
+        'from pkg import a\n__all__ = ["a"]\n',
+        'from pkg import a\nfrom pkg import b\n__all__ = ["a"]\n'
+        'def f():\n    __all__ = ["local"]\n    return __all__\n',
+        "BLOCKER",
+    ),
+    "global_all_mutation_in_function_is_opaque": (
+        # a function that declares `global __all__` and assigns it DOES change the module export
+        # set at runtime -> opaque, so a re-export supplied that way must not be flagged as unused
+        'from pkg import a\n__all__ = ["a"]\n',
+        'from pkg import a\nfrom pkg import b\n__all__ = ["a"]\n'
+        'def register():\n    global __all__\n    __all__ = __all__ + ["b"]\n',
         None,
     ),
     "readable_reassign_resets_opacity": (

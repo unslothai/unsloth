@@ -375,10 +375,19 @@ def test_marker_rejects_non_base_weight_bins(tmp_path, monkeypatch):
             "model-00001-of-00002.safetensors",
             "model-00002-of-00002.safetensors",
         ),
+        (  # #7218: complete numbered shards but a PRESENT-but-unreadable index. transformers opens
+            # and parses the index to locate the shards, so a stub / truncated one (no weight_map)
+            # fails the local_files_only load -- it must NOT fall back to the filename-numbering
+            # heuristic and accept. (_cache_repo_with_files stubs every file as b"\0".)
+            "model-00001-of-00002.safetensors",
+            "model-00002-of-00002.safetensors",
+            "model.safetensors.index.json",
+        ),
     ],
 )
 def test_marker_rejects_incomplete_shard_set(tmp_path, monkeypatch, weights):
-    # An incomplete shard set (or one missing its index map) must not validate.
+    # An incomplete shard set (one missing its index map, or one whose present index is unreadable)
+    # must not validate.
     _cache_repo_with_files(tmp_path, monkeypatch, *weights)
     assert mc._embedding_marker_in_hf_cache("org/model") is False
 
@@ -386,12 +395,8 @@ def test_marker_rejects_incomplete_shard_set(tmp_path, monkeypatch, weights):
 @pytest.mark.parametrize(
     "weights",
     [
-        ("pytorch_model.bin",),  # torch .bin
-        (  # sharded: every index plus the index map
-            "model-00001-of-00002.safetensors",
-            "model-00002-of-00002.safetensors",
-            "model.safetensors.index.json",
-        ),
+        ("model.safetensors",),  # unsharded safetensors the loader probes
+        ("pytorch_model.bin",),  # torch .bin the loader probes
         (  # ST module dir that is itself a complete load root
             "0_Transformer/model.safetensors",
             "0_Transformer/config.json",
@@ -400,9 +405,21 @@ def test_marker_rejects_incomplete_shard_set(tmp_path, monkeypatch, weights):
     ],
 )
 def test_marker_accepts_recognized_torch_weights(tmp_path, monkeypatch, weights):
-    # Must not over-reject: single bin, complete sharded set, and a complete module dir.
+    # Must not over-reject: an unsharded base weight the loader actually probes, and a complete
+    # module dir. (A complete SHARDED set needs a real weight_map index -- covered separately with
+    # _sharded_transformer_repo -- because _cache_repo_with_files can only stub the index.)
     _cache_repo_with_files(tmp_path, monkeypatch, *weights)
     assert mc._embedding_marker_in_hf_cache("org/model") is True
+
+
+@pytest.mark.parametrize("decoy", ["pytorch_model.safetensors", "model.bin"])
+def test_marker_rejects_decoy_base_weights(tmp_path, monkeypatch, decoy):
+    # #7218: from_pretrained / Module.load_torch_weights probe model.safetensors + pytorch_model.bin,
+    # never pytorch_model.safetensors or model.bin. A cache holding config + tokenizer + only one of
+    # those decoys validated offline (the pristine loop credited any {model,pytorch_model} x
+    # {safetensors,bin}) and then 409'd at the local_files_only load, so it must NOT be loadable.
+    _cache_repo_with_files(tmp_path, monkeypatch, decoy)
+    assert mc._embedding_marker_in_hf_cache("org/model") is False
 
 
 def test_marker_rejects_weights_split_from_their_config(tmp_path, monkeypatch):
@@ -1322,9 +1339,12 @@ def _tag_only_repo(
     monkeypatch,
     commit,
     repo_id = "org/emb",
+    modules_json = None,
 ):
     """A complete, loadable snapshot with NO modules.json -- the tag-only embedder shape,
-    which the marker cannot recognize, so detection falls through to the recorded verdict."""
+    which the marker cannot recognize, so detection falls through to the recorded verdict.
+    ``modules_json`` (raw body) writes a modules.json when given, to exercise the case where the
+    tag-only fallback must NOT run because a manifest is present."""
     hf_root = tmp_path / "hf"
     repo = hf_root / f"models--{repo_id.replace('/', '--')}"
     snap = repo / "snapshots" / commit
@@ -1332,6 +1352,8 @@ def _tag_only_repo(
     (snap / "config.json").write_text("{}")
     (snap / "tokenizer.json").write_text("{}")
     (snap / "model.safetensors").write_bytes(b"\0")
+    if modules_json is not None:
+        (snap / "modules.json").write_text(modules_json)
     (repo / "refs").mkdir(parents = True)
     (repo / "refs" / "main").write_text(commit)
     _fake_hf_cache(monkeypatch, hf_root)
@@ -1345,6 +1367,21 @@ def test_online_verdict_still_applies_at_the_confirmed_revision(tmp_path, monkey
     _tag_only_repo(tmp_path, monkeypatch, "commit_a")
     monkeypatch.setenv("HF_HUB_OFFLINE", "1")
     assert mc.is_embedding_model("org/emb") is True
+
+
+def test_offline_tag_only_fallback_skipped_when_modules_json_present(tmp_path, monkeypatch):
+    # #7218: the offline tag-only fallback (_known_embedder + _snapshot_has_complete_weights) treats
+    # a cache like a plain root Transformer, so it must run ONLY when modules.json is ABSENT. With a
+    # present-but-unloadable modules.json ("[]" builds ZERO modules) the loader takes the modules.json
+    # path (base/model.py _load_config_modules) and never falls back to the root weights, so even a
+    # known embedder with a complete root weight set is not loadable offline. Pre-fix the ungated
+    # fallback fired on the same commit + complete weights and returned True, then the local-only
+    # load 409'd. Same shape as the control above but with the present manifest.
+    monkeypatch.setattr(mc, "_load_persisted_embedders", lambda: {"org/emb": "commit_a"})
+    monkeypatch.setattr(mc, "_persist_embedder", lambda name, commit: None)
+    _tag_only_repo(tmp_path, monkeypatch, "commit_a", modules_json = "[]")
+    monkeypatch.setenv("HF_HUB_OFFLINE", "1")
+    assert mc.is_embedding_model("org/emb") is False
 
 
 def test_online_verdict_stops_applying_when_the_revision_advances(tmp_path, monkeypatch):
@@ -1619,12 +1656,14 @@ def _clip_repo(
     monkeypatch,
     *,
     complete,
+    processor = True,
     commit = "aaa",
 ):
     """A SentenceTransformer whose modules.json declares a CLIPModel at 0_CLIPModel. CLIPModel(load)
     -> Transformer.__init__ reads AutoConfig + AutoModel.from_pretrained (weights) + AutoProcessor
-    (processor/tokenizer), so a config-only dir is NOT loadable. complete=False writes only
-    config.json (no processor/tokenizer asset, no weights)."""
+    (image processor + tokenizer), so a config-only dir is NOT loadable. complete=False writes only
+    config.json (no processor asset, no weights). ``processor=False`` writes the tokenizer + weights
+    but omits the image-processor config (preprocessor_config.json) AutoProcessor needs for CLIP."""
     hf_root = tmp_path / "hf"
     repo = hf_root / f"models--{_CLIP.replace('/', '--')}"
     snap = repo / "snapshots" / commit
@@ -1635,8 +1674,11 @@ def _clip_repo(
     (snap / "config_sentence_transformers.json").write_text("{}")
     (snap / "0_CLIPModel" / "config.json").write_text("{}")
     if complete:
-        (snap / "0_CLIPModel" / "tokenizer.json").write_text("{}")  # AutoProcessor asset
+        (snap / "0_CLIPModel" / "tokenizer.json").write_text("{}")  # AutoProcessor tokenizer asset
         (snap / "0_CLIPModel" / "model.safetensors").write_bytes(b"\0")
+        if processor:
+            # AutoProcessor's image-processor half reads its own config.
+            (snap / "0_CLIPModel" / "preprocessor_config.json").write_text("{}")
     (repo / "refs").mkdir(parents = True)
     (repo / "refs" / "main").write_text(commit)
     _fake_hf_cache(monkeypatch, hf_root)
@@ -1651,8 +1693,18 @@ def test_marker_rejects_config_only_clip_module(tmp_path, monkeypatch):
     assert mc._embedding_marker_in_hf_cache(_CLIP) is False
 
 
+def test_marker_rejects_clip_module_without_processor_config(tmp_path, monkeypatch):
+    # #7218: CLIP's AutoProcessor is a CLIPProcessor = image processor + tokenizer. The image
+    # processor reads preprocessor_config.json; a tokenizer alone does not satisfy it. A CLIP dir with
+    # config + tokenizer + weights but NO preprocessor_config.json validated offline (the generic
+    # Transformer load-root shape was met) and then failed the local_files_only processor load, so it
+    # must NOT be loadable.
+    _clip_repo(tmp_path, monkeypatch, complete = True, processor = False)
+    assert mc._embedding_marker_in_hf_cache(_CLIP) is False
+
+
 def test_marker_accepts_complete_clip_module(tmp_path, monkeypatch):
-    # Companion: config + processor/tokenizer + weights make the CLIP module a loadable HF load root.
+    # Companion: config + tokenizer + preprocessor_config + weights make the CLIP module loadable.
     _clip_repo(tmp_path, monkeypatch, complete = True)
     assert mc._embedding_marker_in_hf_cache(_CLIP) is True
 
@@ -1672,9 +1724,11 @@ def _sparse_static_repo(
     commit = "aaa",
 ):
     """A SparseEncoder whose modules.json declares a SparseStaticEmbedding at 0_SparseStaticEmbedding.
-    Its load() reads a tokenizer (AutoTokenizer.from_pretrained) + EITHER an idf.json (from_json
-    branch, NO weights) OR a complete Torch weight set (load_torch_weights). ``payload`` selects what
-    backs it: "idf" (idf.json), "weights" (model.safetensors) or "none" (neither)."""
+    Its load() reads a tokenizer (AutoTokenizer.from_pretrained) + EITHER an idf.json THROUGH a
+    config.json whose ``path`` names it (from_json branch, NO weights) OR a complete Torch weight set
+    (load_torch_weights). ``payload`` selects what backs it: "idf" (config path -> idf.json),
+    "idf_unselected" (idf.json present but config does NOT name a ``.json`` path, so load() falls
+    through to load_torch_weights and raises), "weights" (model.safetensors) or "none" (neither)."""
     hf_root = tmp_path / "hf"
     repo = hf_root / f"models--{_SPARSE_STATIC.replace('/', '--')}"
     snap = repo / "snapshots" / commit
@@ -1690,10 +1744,12 @@ def _sparse_static_repo(
         )
     )
     (snap / "config_sentence_transformers.json").write_text("{}")
-    (mod / "config.json").write_text("{}")
+    # config.json names the idf json ONLY for the "idf" variant; the loader keys off its ``path``.
+    config_body = json.dumps({"path": "idf.json"}) if payload == "idf" else "{}"
+    (mod / "config.json").write_text(config_body)
     if include_tokenizer:
         (mod / "tokenizer.json").write_text("{}")
-    if payload == "idf":
+    if payload in ("idf", "idf_unselected"):
         (mod / "idf.json").write_text("{}")
     elif payload == "weights":
         (mod / "model.safetensors").write_bytes(b"\0")
@@ -1723,6 +1779,16 @@ def test_marker_rejects_sparse_static_embedding_without_tokenizer(tmp_path, monk
     # AutoTokenizer.from_pretrained is unconditional in SparseStaticEmbedding.load(), so an idf.json +
     # config WITHOUT any tokenizer asset is not loadable -- pristine accepted it on the config alone.
     _sparse_static_repo(tmp_path, monkeypatch, payload = "idf", include_tokenizer = False)
+    assert mc._embedding_marker_in_hf_cache(_SPARSE_STATIC) is False
+
+
+def test_marker_rejects_sparse_static_idf_not_selected_by_config(tmp_path, monkeypatch):
+    # #7218: SparseStaticEmbedding.load() reads idf.json ONLY when config.json declares a ``path``
+    # ending ``.json`` (path = config.pop("path"); if path and path.endswith(".json"): from_json).
+    # A tokenizer + a bare idf.json whose config does NOT name that path falls through to
+    # load_torch_weights and RAISES (no Torch weight set), so it is not loadable. Pristine credited
+    # the idf.json unconditionally and accepted it.
+    _sparse_static_repo(tmp_path, monkeypatch, payload = "idf_unselected")
     assert mc._embedding_marker_in_hf_cache(_SPARSE_STATIC) is False
 
 
@@ -1851,6 +1917,22 @@ def test_marker_accepts_sharded_index_with_subdir_shards(tmp_path, monkeypatch):
             "weights/model-00001-of-00002.safetensors",
             "weights/model-00002-of-00002.safetensors",
         ],
+    )
+    assert mc._embedding_marker_in_hf_cache(_SHARDED) is True
+
+
+def test_marker_accepts_sharded_index_with_every_mapped_shard(tmp_path, monkeypatch):
+    # A well-formed index whose weight_map resolves to every present shard is loadable -- the
+    # positive counterpart to the malformed / missing-shard rejections (a stub index is now rejected,
+    # so the accept case must carry a real weight_map).
+    _sharded_transformer_repo(
+        tmp_path,
+        monkeypatch,
+        weight_map = {
+            "a": "model-00001-of-00002.safetensors",
+            "b": "model-00002-of-00002.safetensors",
+        },
+        present_shards = ["model-00001-of-00002.safetensors", "model-00002-of-00002.safetensors"],
     )
     assert mc._embedding_marker_in_hf_cache(_SHARDED) is True
 
