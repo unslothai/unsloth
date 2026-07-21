@@ -5738,11 +5738,14 @@ def _native_linux_system_rocm_lib_dirs(binary_dir: str = "") -> list[str]:
         return []
     if not _bundled_hip_present(binary_dir):
         return []
-    candidates = ["/opt/rocm"]
+    # Env-configured ROCm root first; /opt/rocm only as a fallback so a stale
+    # /opt/rocm doesn't shadow the driver-matching install these vars point at.
+    candidates = []
     for var in ("HIP_PATH", "HIP_PATH_57", "ROCM_PATH"):
         val = os.environ.get(var)
         if val:
             candidates.append(val)
+    candidates.append("/opt/rocm")
     out: list[str] = []
     seen: set[str] = set()
     for base in candidates:
