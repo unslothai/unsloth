@@ -1760,6 +1760,12 @@ def run(
             "decode speed, MoE usually don't."
         ),
     ),
+    start_api_key_marker: bool = typer.Option(
+        False,
+        "--start-api-key-marker",
+        hidden = True,
+        help = "Emit an early API key marker for the unsloth start parent process.",
+    ),
     password: str = typer.Option(
         "",
         "--password",
@@ -1985,6 +1991,8 @@ def run(
             args.append("--no-cloudflare")
         args.append("--secure" if secure else "--no-secure")
         args.append("--tensor-parallel" if tensor_parallel else "--no-tensor-parallel")
+        if start_api_key_marker:
+            args.append("--start-api-key-marker")
         if verbose:
             args.append("--verbose")
         # llama-server pass-through extras → child ctx.args → load payload.
@@ -2045,6 +2053,11 @@ def run(
 
         # 4. Create API key in-process.
         api_key = _create_api_key_inprocess(api_key_name)
+        if start_api_key_marker:
+            # `unsloth start` redirects this process to a private 0600 log and
+            # uses the key to authenticate download-progress polling before the
+            # blocking load returns. The normal `unsloth run` output is unchanged.
+            typer.echo(f"UNSLOTH_START_API_KEY: {api_key}")
 
         # 5. Load model via HTTP.
         if not silent:

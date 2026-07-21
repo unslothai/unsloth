@@ -20,6 +20,7 @@ if str(_REPO_ROOT) not in sys.path:
 
 
 import pytest
+import typer
 from typer.testing import CliRunner
 
 import unsloth_cli.commands.start as start
@@ -92,12 +93,23 @@ def test_claude_flags_passed_to_supported_claude(monkeypatch):
         "--exclude-dynamic-system-prompt-sections",
         "--settings",
         start._claude_settings_overlay(MODEL["id"]),
+        "--append-system-prompt",
+        start._GEMMA_CLAUDE_NUDGE,
     ]
 
 
 def test_claude_flags_skipped_on_old_claude(monkeypatch):
     _fake_claude(monkeypatch, "2.0.14 (Claude Code)\n")
     assert start._claude_flags(MODEL["id"]) == []
+
+
+def test_claude_nudge_is_gemma_only(monkeypatch):
+    _fake_claude(monkeypatch, "2.1.215 (Claude Code)\n")
+
+    flags = start._claude_flags("unsloth/Qwen3.5-9B-GGUF")
+
+    assert "--append-system-prompt" not in flags
+    assert start._GEMMA_CLAUDE_NUDGE not in flags
 
 
 def test_claude_flags_skipped_on_unparseable_version(monkeypatch):
@@ -113,6 +125,8 @@ def test_claude_flags_detected_when_version_not_first_token(monkeypatch):
         "--exclude-dynamic-system-prompt-sections",
         "--settings",
         start._claude_settings_overlay(MODEL["id"]),
+        "--append-system-prompt",
+        start._GEMMA_CLAUDE_NUDGE,
     ]
 
 
@@ -426,6 +440,8 @@ def test_claude_flags_detects_supported_agent_only_in_install_dir(monkeypatch, t
         "--exclude-dynamic-system-prompt-sections",
         "--settings",
         start._claude_settings_overlay(MODEL["id"]),
+        "--append-system-prompt",
+        start._GEMMA_CLAUDE_NUDGE,
     ]
 
 
@@ -931,6 +947,25 @@ def test_resolve_model_attaches_to_loaded_catalog_hit_without_reload(monkeypatch
     assert not any(u.endswith("/api/inference/load") for _, u in calls)
 
 
+def test_resolve_model_without_request_rejects_unloaded_catalog(monkeypatch):
+    monkeypatch.setattr(
+        start,
+        "_http_json",
+        lambda *a, **k: {
+            "data": [
+                {
+                    "id": "unsloth/Gemma-4-GGUF",
+                    "loaded": False,
+                    "context_length": 131072,
+                }
+            ]
+        },
+    )
+
+    with pytest.raises(typer.Exit):
+        start._resolve_model(BASE, "sk-test", None)
+
+
 def test_resolve_model_remote_studio_does_not_casefold_attach(monkeypatch):
     # Against a remote Unsloth the local existence probe cannot see server-side paths,
     # so a case-variant loaded id must NOT attach without a load: it could be a distinct
@@ -1213,6 +1248,11 @@ def test_connect_model_flag_loads_on_server(fake_studio):
     assert loads == [
         ("POST", f"{BASE}/api/inference/load", {"model_path": "unsloth/Qwen3.5-35B-A3B"})
     ]
+    assert (
+        f"Switching the Unsloth server from {MODEL['id']} to unsloth/Qwen3.5-35B-A3B"
+        in result.output
+    )
+    assert "unloads the current model for every attached session" in result.output
     _assert_env_set(result.output, "ANTHROPIC_MODEL", "unsloth/Qwen3.5-35B-A3B")
 
 
@@ -1761,13 +1801,130 @@ def test_start_studio_server_builds_command_and_waits(monkeypatch):
     assert cmd[cmd.index("--gguf-variant") + 1] == "UD-Q4_K_XL"
     assert cmd[cmd.index("--context-length") + 1] == "8192"
     assert "--tensor-parallel" in cmd
+    assert "--start-api-key-marker" in cmd
     assert cmd[cmd.index("-p") + 1] == "8888"
     assert start.LoadOptions().load_in_4bit is True and "--no-load-in-4bit" not in cmd
     assert captured["kwargs"].get("start_new_session") is True  # own process group
     assert server.pid == 4321
 
 
-def test_auto_serves_when_no_server_then_tears_down(fake_studio, monkeypatch):
+def test_start_studio_server_polls_progress_from_early_key(monkeypatch):
+    class FakePopen:
+        pid = 4321
+
+        def poll(self):
+            return None
+
+    tails = iter(
+        [
+            "UNSLOTH_START_API_KEY: sk-unsloth-early\nLoading model...",
+            "UNSLOTH_START_API_KEY: sk-unsloth-early\nModel loaded: owner/model",
+        ]
+    )
+    created = []
+
+    class FakeProgress:
+        def __init__(self, base, key, model, variant):
+            created.append((base, key, model, variant, "created"))
+
+        def poll(self):
+            created.append("poll")
+
+        def close(self):
+            created.append("close")
+
+        def complete(self):
+            created.append("complete")
+
+    monkeypatch.setattr(start.subprocess, "Popen", lambda *a, **k: FakePopen())
+    monkeypatch.setattr(start, "_studio_healthy", lambda *a, **k: True)
+    monkeypatch.setattr(start, "_log_tail", lambda *a, **k: next(tails))
+    monkeypatch.setattr(start, "_ModelDownloadProgress", FakeProgress)
+    monkeypatch.setattr(start.time, "sleep", lambda _s: None)
+
+    server = start._start_studio_server(
+        BASE,
+        "owner/model-GGUF",
+        start.LoadOptions(gguf_variant = "Q4_K_M"),
+    )
+
+    assert server.pid == 4321
+    assert created[0] == (
+        BASE,
+        "sk-unsloth-early",
+        "owner/model-GGUF",
+        "Q4_K_M",
+        "created",
+    )
+    assert created.count("poll") == 2
+    assert created[-2:] == ["complete", "close"]
+
+
+def test_load_model_with_progress_uses_selected_gguf_size(monkeypatch, capsys):
+    release = start.threading.Event()
+    calls = []
+
+    def http_json(method, url, token, payload = None, timeout = 30, error = None):
+        calls.append((method, url, payload))
+        if url.endswith("/api/inference/load"):
+            assert release.wait(timeout = 2)
+            return {"model": "owner/model-GGUF"}
+        if "/api/hub/gguf-variants?" in url:
+            return {
+                "default_variant": "Q8_0",
+                "variants": [
+                    {
+                        "quant": "UD-Q4_K_XL",
+                        "filename": "model-UD-Q4_K_XL.gguf",
+                        "size_bytes": 4 * 1024**3,
+                        "download_size_bytes": 4 * 1024**3,
+                    }
+                ],
+            }
+        if "/api/hub/gguf-download-progress?" in url:
+            release.set()
+            return {
+                "downloaded_bytes": 2 * 1024**3,
+                "expected_bytes": 4 * 1024**3,
+                "progress": 0.5,
+            }
+        raise AssertionError(f"unexpected request: {method} {url}")
+
+    monkeypatch.setattr(start, "_http_json", http_json)
+    monkeypatch.setattr(start, "_DOWNLOAD_POLL_INTERVAL_S", 0.001)
+    result = start._load_model_with_progress(
+        BASE,
+        "sk-test",
+        "owner/model-GGUF",
+        start.LoadOptions(gguf_variant = "UD-Q4_K_XL"),
+        {"model_path": "owner/model-GGUF", "gguf_variant": "UD-Q4_K_XL"},
+    )
+
+    assert result == {"model": "owner/model-GGUF"}
+    output = capsys.readouterr().out
+    assert "Downloading model" in output
+    assert "100%" in output
+    progress_url = next(url for method, url, _ in calls if "gguf-download-progress" in url)
+    assert "variant=UD-Q4_K_XL" in progress_url
+    assert f"expected_bytes={4 * 1024**3}" in progress_url
+
+
+def test_download_progress_ignores_fully_cached_bytes(capsys):
+    display = start._DownloadProgressDisplay()
+    display.update(
+        {
+            "downloaded_bytes": 4 * 1024**3,
+            "completed_bytes": 4 * 1024**3,
+            "expected_bytes": 4 * 1024**3,
+            "progress": 0.99,
+        }
+    )
+    display.close()
+
+    assert capsys.readouterr().out == ""
+
+
+def test_auto_serves_when_no_server_then_keeps_server(fake_studio, monkeypatch):
     monkeypatch.setattr(start, "find_studio_server", lambda: None)
     started = {}
     fake = SimpleNamespace(pid = 999, poll = lambda: None)
@@ -1793,8 +1950,82 @@ def test_auto_serves_when_no_server_then_tears_down(fake_studio, monkeypatch):
     assert started["model"] == "unsloth/Qwen3-1.7B-GGUF"
     assert started["load"].gguf_variant == "UD-Q4_K_XL"
     assert started["base"] == BASE
-    # Torn down after the agent session ended.
-    assert started.get("down") is fake
+    # A successful agent exit releases ownership and leaves the server available
+    # for another terminal. Explicit startup failures still use the cleanup path.
+    assert "down" not in started
+    assert start._auto_served_server is None
+    assert "is still running" in result.output
+    assert "unsloth studio stop" in result.output
+
+
+def test_auto_served_agent_launch_failure_stops_server(fake_studio, monkeypatch):
+    monkeypatch.setattr(start, "find_studio_server", lambda: None)
+    stopped = []
+    fake = SimpleNamespace(pid = 999, poll = lambda: None)
+
+    def fake_start(*_args):
+        start._auto_served_server = fake
+        return fake
+
+    monkeypatch.setattr(start, "_start_studio_server", fake_start)
+    monkeypatch.setattr(start, "_shutdown_server", stopped.append)
+    monkeypatch.setattr(
+        start,
+        "_launch",
+        lambda *a, **k: (_ for _ in ()).throw(RuntimeError("agent launch failed")),
+    )
+
+    result = CliRunner().invoke(
+        start.start_app,
+        ["claude", "--model", "unsloth/Qwen3-1.7B-GGUF"],
+    )
+
+    assert result.exit_code == 1
+    assert stopped == [fake]
+    assert "is still running" not in result.output
+
+
+def test_auto_served_server_exit_is_not_reported_as_running(fake_studio, monkeypatch):
+    monkeypatch.setattr(start, "find_studio_server", lambda: None)
+    fake = SimpleNamespace(pid = 999, poll = lambda: 1)
+
+    def fake_start(*_args):
+        start._auto_served_server = fake
+        return fake
+
+    monkeypatch.setattr(start, "_start_studio_server", fake_start)
+    monkeypatch.setattr(start, "_launch", lambda *a, **k: 0)
+
+    result = CliRunner().invoke(
+        start.start_app,
+        ["claude", "--model", "unsloth/Qwen3-1.7B-GGUF"],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert "stopped during the session" in result.output
+    assert "is still running" not in result.output
+
+
+def test_attached_server_prints_stop_hint_after_agent_exits(fake_studio, monkeypatch):
+    monkeypatch.setattr(start.shutil, "which", lambda _: "/usr/local/bin/claude")
+    monkeypatch.setattr(start, "_claude_flags", lambda *a, **k: [])
+    monkeypatch.setattr(
+        start.subprocess,
+        "run",
+        lambda command, env: SimpleNamespace(returncode = 0),
+    )
+
+    result = CliRunner().invoke(start.start_app, ["claude"])
+
+    assert result.exit_code == 0, result.output
+    assert f"Unsloth Studio is still running at {BASE}." in result.output
+    assert "unsloth studio stop" in result.output
+
+
+def test_no_launch_recipe_does_not_print_stop_hint(fake_studio):
+    result = CliRunner().invoke(start.start_app, ["claude", "--no-launch"])
+    assert result.exit_code == 0, result.output
+    assert "is still running" not in result.output
 
 
 def test_codex_preflight_failure_tears_down_auto_served(fake_studio, monkeypatch):

@@ -235,6 +235,13 @@ def test_reexec_forwards_parallel_all_aliases(monkeypatch, flag, value):
     ), f"{flag} {value} was dropped on re-exec; argv = {argv}"
 
 
+def test_reexec_forwards_start_api_key_marker(monkeypatch):
+    """The internal progress marker must survive the studio-venv re-exec."""
+    result, captured = _invoke_run(monkeypatch, _BASE + ["--start-api-key-marker"])
+    assert len(captured) == 1, result.output
+    assert "--start-api-key-marker" in captured[0]["argv"]
+
+
 @pytest.mark.parametrize("platform", ["linux", "darwin", "win32"])
 def test_reexec_argv_is_consistent_across_platforms(monkeypatch, platform):
     """Linux/Darwin (execvp) and Windows (Popen) must build the same argv."""
