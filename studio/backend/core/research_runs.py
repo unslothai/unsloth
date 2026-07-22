@@ -42,7 +42,7 @@ _SOURCES_HEADING = re.compile(
 _NUMBERED_CITATION = re.compile(r"(?<!\^)\[(\d+)]")
 _AUTOLINK = re.compile(r"<(https?://[^>\s]+)>")
 _RAW_URL = re.compile(r"https?://[^\s<>]+")
-_DOCUMENT_CITATION = re.compile(r"\[Document:[^\]]+\]")
+_DOCUMENT_CITATION = re.compile(r"\[Document:(?:[^\[\]]+|\[[^\[\]]*\])*\]")
 # Wrapper delimiters used in the decision/synthesis prompts. Any occurrence inside
 # untrusted evidence is escaped so gathered content cannot close a block early.
 _PROMPT_DELIMITER_TAGS = re.compile(

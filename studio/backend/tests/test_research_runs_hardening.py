@@ -111,6 +111,16 @@ def test_document_citation_strips_unknown_source():
     assert "not-a-real-file" not in out
 
 
+def test_document_citation_strips_unknown_source_with_brackets():
+    # An invalid citation whose filename contains brackets must be removed whole; the old regex
+    # stopped at the first ``]`` and left the tail (".pdf, p. 9]") behind.
+    report = "Ghost cite [Document: invented [final].pdf, p. 9] end."
+    out = _validate_report_document_sources(report, [{"filename": "real.pdf", "page": 1}])
+    assert "invented" not in out
+    assert ".pdf" not in out
+    assert out == "Ghost cite  end."
+
+
 def _make_payload(**overrides) -> CreateResearchRun:
     payload = {"threadId": "t1", "userMessageId": "u1", "inferenceRequest": {"model": "m"}}
     payload.update(overrides)
