@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { getClientPlatform } from "@/components/tauri/window-titlebar";
 import { fetchDeviceType, usePlatformStore } from "@/config/env";
 import { useT } from "@/i18n";
 import type { TranslationKey } from "@/i18n";
@@ -111,25 +112,30 @@ function InlineCommand({ command }: { command: string }) {
   const { copied, copy } = useCopyButton(command);
 
   return (
-    <button
-      type="button"
-      onClick={copy}
-      title={copied ? t("settings.agents.copied") : t("settings.agents.copy")}
-      aria-label={`${
-        copied ? t("settings.agents.copied") : t("settings.agents.copy")
-      }: ${command}`}
-      className="inline-flex shrink-0 items-center gap-2 rounded-md border border-border bg-muted/40 py-1.5 pl-2.5 pr-2 font-mono text-xs text-foreground transition-colors hover:bg-accent hover:text-accent-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring dark:bg-white/[0.04]"
-    >
-      <span className="whitespace-nowrap">{command}</span>
-      <HugeiconsIcon
-        icon={copied ? Tick02Icon : Copy01Icon}
-        strokeWidth={2}
-        className={cn(
-          "size-3.5 shrink-0",
-          copied ? "text-control-accent" : "text-muted-foreground",
-        )}
-      />
-    </button>
+    <>
+      <button
+        type="button"
+        onClick={copy}
+        title={copied ? t("settings.agents.copied") : t("settings.agents.copy")}
+        aria-label={`${
+          copied ? t("settings.agents.copied") : t("settings.agents.copy")
+        }: ${command}`}
+        className="inline-flex shrink-0 items-center gap-2 rounded-md border border-border bg-muted/40 py-1.5 pl-2.5 pr-2 font-mono text-xs text-foreground transition-colors hover:bg-accent hover:text-accent-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring dark:bg-white/[0.04]"
+      >
+        <span className="whitespace-nowrap">{command}</span>
+        <HugeiconsIcon
+          icon={copied ? Tick02Icon : Copy01Icon}
+          strokeWidth={2}
+          className={cn(
+            "size-3.5 shrink-0",
+            copied ? "text-control-accent" : "text-muted-foreground",
+          )}
+        />
+      </button>
+      <span className="sr-only" role="status" aria-live="polite">
+        {copied ? t("settings.agents.copied") : ""}
+      </span>
+    </>
   );
 }
 
@@ -164,14 +170,12 @@ const OPTION_ROWS: { flag: string; descKey: TranslationKey }[] = [
 
 const QUICKSTART_CMD = "unsloth start claude";
 
-const MODEL_SUFFIX_CMD = `unsloth start codex \\
-  --model unsloth/gemma-4-E2B-it-GGUF:UD-Q4_K_XL \\
-  --context-length 32768`;
+// Single line so the copied command pastes as-is in POSIX, PowerShell and cmd.
+const MODEL_SUFFIX_CMD =
+  "unsloth start codex --model unsloth/gemma-4-E2B-it-GGUF:UD-Q4_K_XL --context-length 32768";
 
-const MODEL_VARIANT_CMD = `unsloth start codex \\
-  --model unsloth/gemma-4-E2B-it-GGUF \\
-  --gguf-variant UD-Q4_K_XL \\
-  --context-length 32768`;
+const MODEL_VARIANT_CMD =
+  "unsloth start codex --model unsloth/gemma-4-E2B-it-GGUF --gguf-variant UD-Q4_K_XL --context-length 32768";
 
 const REMOTE_CMD_UNIX = `export UNSLOTH_STUDIO_URL=https://studio.example.com
 export UNSLOTH_API_KEY=sk-unsloth-...
@@ -182,8 +186,11 @@ const REMOTE_CMD_WINDOWS = `$env:UNSLOTH_STUDIO_URL = "https://studio.example.co
 $env:UNSLOTH_API_KEY = "sk-unsloth-..."
 unsloth start claude`;
 
-const PASSTHROUGH_CMD = `unsloth start claude --continue
-unsloth start codex --persist resume --last`;
+// Independent alternatives, each with its own copy button (not one script).
+const PASSTHROUGH_COMMANDS = [
+  "unsloth start claude --continue",
+  "unsloth start codex --persist resume --last",
+];
 
 const DRY_RUN_CMD = "unsloth start claude --no-launch";
 
@@ -211,18 +218,28 @@ function CommandBlock({ command }: { command: string }) {
           strokeWidth={2}
         />
       </button>
+      <span className="sr-only" role="status" aria-live="polite">
+        {copied ? t("settings.agents.copied") : ""}
+      </span>
     </div>
   );
 }
 
 export function AgentsTab() {
   const t = useT();
-  const deviceType = usePlatformStore((s) => s.deviceType);
   const serverUrl = usePlatformStore((s) => s.serverUrl);
   const [info, setInfo] = useState<CodingAgentsInfo | null>(null);
 
   const origin = typeof window !== "undefined" ? window.location.origin : "";
   const localDetection = canUseLocalAgentDetection(serverUrl ?? origin);
+
+  // The remote snippet runs on the client's machine, so pick its shell from the
+  // client platform, not the server-reported deviceType. Match "win"/"windows"
+  // at the start (a bare includes("win") would also match "darwin").
+  const [isWindowsClient] = useState(() => {
+    const p = getClientPlatform();
+    return p.startsWith("win") || p.includes("windows");
+  });
 
   useEffect(() => {
     void fetchDeviceType({ force: true });
@@ -231,10 +248,7 @@ export function AgentsTab() {
   // Only probe PATH when detection is meaningful; a remote backend's PATH says
   // nothing about the machine the copied command will run on.
   useEffect(() => {
-    if (!localDetection) {
-      setInfo(null);
-      return;
-    }
+    if (!localDetection) return;
     let cancelled = false;
     loadCodingAgents()
       .then((next) => {
@@ -248,9 +262,10 @@ export function AgentsTab() {
     };
   }, [localDetection]);
 
-  const detected = new Set(info?.detected ?? []);
-  const remoteCommand =
-    deviceType === "windows" ? REMOTE_CMD_WINDOWS : REMOTE_CMD_UNIX;
+  // Derive visibility from localDetection instead of clearing info in the effect.
+  const visibleInfo = localDetection ? info : null;
+  const detected = new Set(visibleInfo?.detected ?? []);
+  const remoteCommand = isWindowsClient ? REMOTE_CMD_WINDOWS : REMOTE_CMD_UNIX;
 
   return (
     <div className="flex min-w-0 max-w-full flex-col gap-6">
@@ -319,7 +334,7 @@ export function AgentsTab() {
             </div>
           ))}
         </div>
-        {localDetection && info !== null && detected.size === 0 ? (
+        {visibleInfo !== null && detected.size === 0 ? (
           <p className="pt-3 text-xs text-muted-foreground">
             {t("settings.agents.quickstart.noneDetected")}
           </p>
@@ -380,8 +395,10 @@ export function AgentsTab() {
         title={t("settings.agents.passthrough.title")}
         description={t("settings.agents.passthrough.description")}
       >
-        <div className="pt-2">
-          <CommandBlock command={PASSTHROUGH_CMD} />
+        <div className="flex flex-col gap-2 pt-2">
+          {PASSTHROUGH_COMMANDS.map((command) => (
+            <CommandBlock key={command} command={command} />
+          ))}
         </div>
       </SettingsSection>
 
