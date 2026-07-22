@@ -811,6 +811,32 @@ def _rocm_classify_unified_memory(props: Any) -> tuple[str, bool]:
     return gcn_arch, is_unified
 
 
+def _nvidia_classify_spark_unified_memory(props: Any) -> tuple[str, bool]:
+    """Classify an NVIDIA device as Spark-class unified-memory or discrete.
+
+    Returns ``(marker, is_unified)``; marker is ``"is_integrated"`` or the matched
+    name token, else ``""``. Spark-class parts (DGX Spark / GB10, N1X "RTX Spark")
+    share one memory pool with the OS, so like the ROCm APUs they need a
+    ``set_per_process_memory_fraction`` cap -- exhausting the pool can stall the box.
+
+    ``is_integrated`` is authoritative on native Linux, but WSL2 paravirtualization
+    masks it to 0 and renames the device (N1X reports ``JMJWOA-Generic-GPU``,
+    verified live) -- hence the name-token fallback. Tokens mirror
+    ``_DGX_SPARK_DEVICE_TOKENS`` in ``unsloth/models/_utils.py`` (duplicated since
+    this guard runs before any ML import).
+    """
+    if getattr(props, "is_integrated", 0):
+        return "is_integrated", True
+    name_upper = (getattr(props, "name", "") or "").upper()
+    import re
+
+    for token in ("GB10", "GB110", "JMJWOA", "N1X", "DGX SPARK"):
+        # Whole-token match so "GB10" doesn't match discrete "GB100"/"GB10X".
+        if re.search(r"(?<![A-Z0-9])" + re.escape(token) + r"(?![A-Z0-9])", name_upper):
+            return token, True
+    return "", False
+
+
 def _tilelang_platform_supported() -> bool:
     """True iff a tilelang 0.1.8 wheel will load: Linux x86_64/aarch64, non-HIP torch.
 
@@ -2395,6 +2421,53 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
 
     from utils.hardware import hardware as _hw
 
+    # Set PYTORCH_CUDA_ALLOC_CONF before the first CUDA touch: detect_hardware()
+    # below calls get_device_properties, which latches the allocator config for
+    # this process (verified: expandable_segments set after init is a no-op).
+    # CUDA-free nvidia-smi sniff (mirrors _is_dgx_spark_no_cuda_init) honoring
+    # UNSLOTH_FORCE_DGX_SPARK, same append-don't-override behavior and
+    # UNSLOTH_NO_EXPANDABLE_SEGMENTS opt-out.
+    try:
+        import platform as _plat
+        import re as _re
+
+        _force_spark = os.environ.get("UNSLOTH_FORCE_DGX_SPARK")
+        if _force_spark == "1":
+            _spark_smi = True
+        elif _force_spark == "0":
+            _spark_smi = False
+        else:
+            _spark_smi = False
+            if _plat.machine().lower() in ("aarch64", "arm64"):
+                import shutil as _shutil
+
+                # The WoA shim execs the venv binary directly (no login shell),
+                # where /usr/lib/wsl/lib can be off PATH -- resolve explicitly.
+                _smi_bin = "nvidia-smi"
+                if _shutil.which(_smi_bin) is None and os.path.exists(
+                    "/usr/lib/wsl/lib/nvidia-smi"
+                ):
+                    _smi_bin = "/usr/lib/wsl/lib/nvidia-smi"
+                _smi = _sp.run(
+                    [_smi_bin, "--query-gpu=name", "--format=csv,noheader"],
+                    capture_output = True,
+                    text = True,
+                    timeout = 5,
+                )
+                _names_u = (_smi.stdout or "").upper()
+                _spark_smi = any(
+                    _re.search(r"(?<![A-Z0-9])" + _re.escape(t) + r"(?![A-Z0-9])", _names_u)
+                    for t in ("GB10", "GB110", "JMJWOA", "N1X", "DGX SPARK")
+                )
+        if _spark_smi and os.environ.get("UNSLOTH_NO_EXPANDABLE_SEGMENTS") != "1":
+            _conf = os.environ.get("PYTORCH_CUDA_ALLOC_CONF", "")
+            if "expandable_segments" not in _conf:
+                os.environ["PYTORCH_CUDA_ALLOC_CONF"] = (
+                    _conf + "," if _conf else ""
+                ) + "expandable_segments:True"
+    except Exception:
+        pass
+
     _hw.detect_hardware()
     if mlx_backend_requested or should_use_mlx_training_backend(device = _hw.DEVICE):
         run_mlx_training_process(
@@ -2889,6 +2962,57 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
                             )
                     except Exception:
                         pass
+        except Exception as _oom_guard_err:
+            logger.debug("Could not set GPU memory fraction: %s", _oom_guard_err)
+
+    # ── 1h. NVIDIA Spark-class unified-memory OOM guard ──
+    # NVIDIA flavor of the ROCm APU guard above: Spark-class parts share one pool
+    # with the OS, so over-allocation can stall the box instead of raising a
+    # catchable OutOfMemoryError. Cap at 0.80 like Strix Halo (20% headroom for
+    # OS/page cache). UNSLOTH_SPARK_MEM_FRACTION overrides; outside (0, 1] disables.
+    # Discrete NVIDIA GPUs untouched.
+    else:
+        try:
+            # PYTORCH_CUDA_ALLOC_CONF is appended before detect_hardware() near the
+            # top of run_training_process: by here CUDA has long been initialized
+            # and the allocator config is latched, so only the runtime-adjustable
+            # memory fraction is set at this point.
+            import torch as _torch_mem
+            if _torch_mem.cuda.is_available():
+                _props = _torch_mem.cuda.get_device_properties(0)
+                # Same UNSLOTH_FORCE_DGX_SPARK override the detectors honor, so a
+                # forced Spark with an unlisted name still gets the fraction guard
+                # and FORCE=0 can disable it on a token-matched device.
+                _force_spark = os.environ.get("UNSLOTH_FORCE_DGX_SPARK")
+                if _force_spark == "1":
+                    _marker, _is_spark_uma = "forced", True
+                elif _force_spark == "0":
+                    _marker, _is_spark_uma = "forced-off", False
+                else:
+                    _marker, _is_spark_uma = _nvidia_classify_spark_unified_memory(_props)
+                if _is_spark_uma:
+                    _mem_fraction = 0.80
+                    _frac_env = os.environ.get("UNSLOTH_SPARK_MEM_FRACTION")
+                    if _frac_env:
+                        try:
+                            _mem_fraction = float(_frac_env)
+                        except ValueError:
+                            _mem_fraction = 0.80
+                    if 0.0 < _mem_fraction <= 1.0:
+                        _torch_mem.cuda.set_per_process_memory_fraction(_mem_fraction)
+                        logger.info(
+                            "Spark unified-memory OOM guard: "
+                            "set_per_process_memory_fraction(%.2f) — %s (matched %s)",
+                            _mem_fraction,
+                            _props.name,
+                            _marker,
+                        )
+                    else:
+                        logger.info(
+                            "Spark unified-memory OOM guard disabled "
+                            "(UNSLOTH_SPARK_MEM_FRACTION=%s)",
+                            _frac_env,
+                        )
         except Exception as _oom_guard_err:
             logger.debug("Could not set GPU memory fraction: %s", _oom_guard_err)
 

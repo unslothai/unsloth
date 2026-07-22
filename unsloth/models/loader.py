@@ -16,6 +16,7 @@ from ._utils import (
     _prepare_model_for_qat,
     is_bfloat16_supported,
     is_vLLM_available,
+    is_dgx_spark,
     HAS_FLASH_ATTENTION,
     HAS_FLASH_ATTENTION_SOFTCAPPING,
     USE_MODELSCOPE,
@@ -463,10 +464,10 @@ class FastLanguageModel(FastLlamaModel):
                 )
             if DEVICE_TYPE_TORCH == "cuda":
                 for i in range(DEVICE_COUNT):
-                    # [TODO] DGX Spark vLLM breaks
-                    if "NVIDIA GB10" in str(torch.cuda.get_device_name(i)).upper():
+                    # [TODO] DGX Spark / N1X (Spark-class) vLLM breaks
+                    if is_dgx_spark():
                         print(
-                            "Unsloth: DGX Spark detected - `fast_inference=True` is currently broken as of January 2026.\n"
+                            "Unsloth: DGX Spark / N1X (Spark-class GPU) detected - `fast_inference=True` is currently broken as of January 2026.\n"
                             "Defaulting to native Unsloth inference."
                         )
                         fast_inference = False
@@ -1158,10 +1159,10 @@ class FastModel(FastBaseModel):
                 )
             if DEVICE_TYPE_TORCH == "cuda":
                 for i in range(DEVICE_COUNT):
-                    # [TODO] DGX Spark vLLM breaks
-                    if "NVIDIA GB10" in str(torch.cuda.get_device_name(i)).upper():
+                    # [TODO] DGX Spark / N1X (Spark-class) vLLM breaks
+                    if is_dgx_spark():
                         print(
-                            "Unsloth: DGX Spark detected - `fast_inference=True` is currently broken as of January 2026.\n"
+                            "Unsloth: DGX Spark / N1X (Spark-class GPU) detected - `fast_inference=True` is currently broken as of January 2026.\n"
                             "Defaulting to native Unsloth inference."
                         )
                         fast_inference = False

@@ -842,9 +842,9 @@ _open_browser() {
     elif grep -qi microsoft /proc/version 2>/dev/null; then
         # WSL: xdg-open is unreliable; use Windows browser via PowerShell or cmd
         if command -v powershell.exe >/dev/null 2>&1; then
-            powershell.exe -NoProfile -Command "Start-Process '$_url'" >/dev/null 2>&1 &
+            powershell.exe -NoProfile -Command "Start-Process '$_url'" </dev/null >/dev/null 2>&1 &
         elif command -v cmd.exe >/dev/null 2>&1; then
-            cmd.exe /c start "" "$_url" >/dev/null 2>&1 &
+            cmd.exe /c start "" "$_url" </dev/null >/dev/null 2>&1 &
         elif command -v xdg-open >/dev/null 2>&1; then
             xdg-open "$_url" >/dev/null 2>&1 &
         else
@@ -1285,7 +1285,8 @@ STUB_EOF
         fi
         _css_created=1
 
-    elif [ "$_css_os" = "wsl" ]; then
+    elif [ "$_css_os" = "wsl" ] && [ "${UNSLOTH_SKIP_WSL_WINDOWS_SHORTCUT:-0}" != "1" ] \
+            && [ ! -f "$HOME/.unsloth/.skip-wsl-windows-shortcut" ]; then
         # ── WSL: create Windows Desktop and Start Menu shortcuts ──
         # Detect current WSL distro for targeted shortcut
         _css_distro="${WSL_DISTRO_NAME:-}"
@@ -1333,9 +1334,11 @@ STUB_EOF
 \$WshShell = New-Object -ComObject WScript.Shell
 \$targetExe = (Get-Command '$_css_sc_target' -ErrorAction SilentlyContinue).Source
 if (-not \$targetExe) { exit 1 }
-# Best-effort: fetch the Unsloth icon to a stable Windows path (shared with a
-# native install if one exists) so the WSL shortcut shows the proper icon.
-\$iconDir = Join-Path \$env:LOCALAPPDATA 'Unsloth Studio'
+# Best-effort: fetch the Unsloth icon to a stable Windows path so the shortcut
+# shows the proper icon. Use %USERPROFILE%\.unsloth, NOT %LOCALAPPDATA%: on
+# Windows-on-ARM the sandboxed icon broker can't read a standalone .ico under
+# AppData\Local (renders blank); a profile-path icon renders everywhere.
+\$iconDir = Join-Path \$env:USERPROFILE '.unsloth'
 \$iconPath = Join-Path \$iconDir 'unsloth.ico'
 \$preIconHash = \$null
 if (Test-Path -LiteralPath \$iconPath) {
@@ -1411,7 +1414,7 @@ WSLPS1_EOF
             # Convert WSL path to Windows path for powershell.exe
             _css_ps1_win=$(wslpath -w "$_css_ps1_tmp" 2>/dev/null)
             if [ -n "$_css_ps1_win" ]; then
-                powershell.exe -NoProfile -ExecutionPolicy Bypass -File "$_css_ps1_win" >/dev/null 2>&1 && _css_created=1
+                powershell.exe -NoProfile -ExecutionPolicy Bypass -File "$_css_ps1_win" </dev/null >/dev/null 2>&1 && _css_created=1
             fi
             rm -f "$_css_ps1_tmp"
         fi
@@ -1599,6 +1602,11 @@ _has_usable_nvidia_gpu() {
     _nvsmi=""
     if command -v nvidia-smi >/dev/null 2>&1; then
         _nvsmi="nvidia-smi"
+    elif [ -x "/usr/lib/wsl/lib/nvidia-smi" ]; then
+        # WSL2 GPU-PV ships nvidia-smi ONLY here, and root login shells drop
+        # the dir from PATH; without this fallback the WSL install detects no
+        # NVIDIA GPU and picks CPU torch wheels.
+        _nvsmi="/usr/lib/wsl/lib/nvidia-smi"
     elif [ -x "/usr/bin/nvidia-smi" ]; then
         _nvsmi="/usr/bin/nvidia-smi"
     fi
@@ -2181,6 +2189,9 @@ get_torch_index_url() {
         _nvidia_detected=1
         if command -v nvidia-smi >/dev/null 2>&1; then
             _smi="nvidia-smi"
+        elif [ -x "/usr/lib/wsl/lib/nvidia-smi" ]; then
+            # Same WSL2 GPU-PV location fallback as _has_usable_nvidia_gpu.
+            _smi="/usr/lib/wsl/lib/nvidia-smi"
         elif [ -x "/usr/bin/nvidia-smi" ]; then
             _smi="/usr/bin/nvidia-smi"
         fi
@@ -3404,6 +3415,14 @@ elif [ -n "$TORCH_INDEX_URL" ]; then
         run_install_cmd_retry "overlay unsloth-zoo (git main)" uv pip install --python "$_VENV_PY" \
             --no-deps --reinstall-package unsloth-zoo \
             "unsloth-zoo @ git+https://github.com/unslothai/unsloth-zoo"
+    elif [ -n "${UNSLOTH_INSTALL_REF:-}" ] && [ "${UNSLOTH_INSTALL_REF}" != "main" ] && [ "$PACKAGE_NAME" = "unsloth" ]; then
+        # Pre-merge testing: install unsloth from a git ref (set by install.ps1)
+        # so the branch's setup.sh + patches run. Name unsloth-zoo explicitly --
+        # not a base dep, and SKIP_STUDIO_BASE skips base.txt, so it never installs.
+        substep "installing unsloth from git ref '$UNSLOTH_INSTALL_REF'..."
+        run_install_cmd "install unsloth (@$UNSLOTH_INSTALL_REF)" uv pip install --python "$_VENV_PY" \
+            --upgrade-package unsloth --upgrade-package unsloth-zoo \
+            "unsloth @ git+https://github.com/unslothai/unsloth@${UNSLOTH_INSTALL_REF}" unsloth-zoo
     else
         run_install_cmd_retry "install unsloth" uv pip install --python "$_VENV_PY" \
             ${_UNSLOTH_TORCH_OVERRIDES:+--overrides "$_UNSLOTH_TORCH_OVERRIDES"} \
@@ -3411,6 +3430,26 @@ elif [ -n "$TORCH_INDEX_URL" ]; then
     fi
     [ -n "$_UNSLOTH_TORCH_OVERRIDES" ] && rm -f "$_UNSLOTH_TORCH_OVERRIDES"
     _UNSLOTH_TORCH_OVERRIDES=""
+    # aarch64 + NVIDIA (DGX Spark / GB10 / N1X): unsloth's x86_64-oriented cuXXX
+    # extras break 4-bit QLoRA, but aarch64 manylinux wheels work (verified on
+    # sm_121 via PTX JIT). Best-effort: no wheel keeps 16-bit LoRA / full finetuning.
+    # SKIP_TORCH gate stops a --no-torch (GGUF-only) install dragging torch back in.
+    # nvidia-smi may live only in /usr/lib/wsl/lib (WSL2 GPU-PV), which root login
+    # shells drop from PATH -- resolve explicitly (same order as setup.sh's
+    # _resolve_nvsmi) so the WoA/WSL install still gets 4-bit QLoRA support.
+    _bnb_nvsmi="$(command -v nvidia-smi 2>/dev/null || true)"
+    [ -z "$_bnb_nvsmi" ] && [ -x /usr/lib/wsl/lib/nvidia-smi ] && _bnb_nvsmi=/usr/lib/wsl/lib/nvidia-smi
+    [ -z "$_bnb_nvsmi" ] && [ -x /usr/bin/nvidia-smi ] && _bnb_nvsmi=/usr/bin/nvidia-smi
+    if [ "$SKIP_TORCH" = false ] \
+            && { [ "$(uname -m)" = "aarch64" ] || [ "$(uname -m)" = "arm64" ]; } \
+            && [ -n "$_bnb_nvsmi" ] \
+            && "$_bnb_nvsmi" -L 2>/dev/null | awk '/^GPU[[:space:]]+[0-9]+:/{found=1} END{exit !found}' \
+            && ! "$_VENV_PY" -c "import bitsandbytes" >/dev/null 2>&1; then
+        substep "installing bitsandbytes (aarch64 wheels; enables 4-bit QLoRA)..."
+        if ! uv pip install --python "$_VENV_PY" "bitsandbytes>=0.45.5,!=0.46.0,!=0.48.0" >/dev/null 2>&1; then
+            substep "(no bitsandbytes wheel for this platform; 16-bit LoRA + full finetuning still work)"
+        fi
+    fi
     # AMD ROCm: repair torch if the unsloth/unsloth-zoo install pulled in
     # CUDA torch from PyPI, overwriting the ROCm wheels installed in Step 1.
     if [ "$SKIP_TORCH" = false ] && [ "$_torch_index_is_rocm_family" = true ]; then
