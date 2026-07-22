@@ -243,6 +243,34 @@ def test_knowledge_search_honors_cancellation_and_timeout(monkeypatch):
         tools._RAG_SEARCH_SLOT.release()
 
 
+def test_timed_out_search_frees_slot_for_next_lookup(monkeypatch):
+    # A search that outlives its timeout must not keep holding the sole RAG slot, or every later
+    # lookup would starve. The caller frees the slot when it stops waiting; the detached worker
+    # finishes later without re-holding it.
+    from core.inference import tools
+
+    started = threading.Event()
+    release = threading.Event()
+
+    def stalled_search(arguments, rag_scope):
+        started.set()
+        release.wait()
+        return "late"
+
+    monkeypatch.setattr(tools, "_search_knowledge_base", stalled_search)
+    try:
+        timed_out = tools._search_knowledge_base_with_budget(
+            {"query": "q"}, {"kb_id": "a"}, timeout = 1
+        )
+        assert "timed out" in timed_out.lower()
+        assert started.is_set()
+        # The worker is still stalled, but the slot must be free for the next lookup.
+        assert tools._RAG_SEARCH_SLOT.acquire(timeout = 1)
+        tools._RAG_SEARCH_SLOT.release()
+    finally:
+        release.set()
+
+
 def test_search_for_autoinject_gates_on_dense_score(rag_conn, bow_embeddings, monkeypatch):
     _add_doc(rag_conn, "kb_a", "d1", "paper.pdf", "h1", "body text here", page = 3)
 

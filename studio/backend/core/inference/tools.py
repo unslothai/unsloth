@@ -3357,18 +3357,34 @@ def _search_knowledge_base_with_budget(
             return "Error: knowledge base search cancelled."
         if deadline is not None and time.monotonic() >= deadline:
             return "Error: knowledge base search timed out."
-    if cancel_event is not None and cancel_event.is_set():
+
+    # Release the admission slot exactly once, whether the search finishes or the caller stops
+    # waiting on timeout/cancel. Freeing it as soon as the caller gives up keeps a slow or hung
+    # retrieval from holding the sole slot forever and starving every later lookup; the detached
+    # worker then finishes without touching the slot.
+    _slot_lock = threading.Lock()
+    _slot_released = False
+
+    def release_slot() -> None:
+        nonlocal _slot_released
+        with _slot_lock:
+            if _slot_released:
+                return
+            _slot_released = True
         _RAG_SEARCH_SLOT.release()
+
+    if cancel_event is not None and cancel_event.is_set():
+        release_slot()
         return "Error: knowledge base search cancelled."
     if deadline is not None and time.monotonic() >= deadline:
-        _RAG_SEARCH_SLOT.release()
+        release_slot()
         return "Error: knowledge base search timed out."
 
     if timeout is None and cancel_event is None:
         try:
             return _search_knowledge_base(arguments, rag_scope)
         finally:
-            _RAG_SEARCH_SLOT.release()
+            release_slot()
 
     result: queue.Queue = queue.Queue(maxsize = 1)
 
@@ -3378,17 +3394,19 @@ def _search_knowledge_base_with_budget(
         except BaseException as exc:
             result.put((False, exc))
         finally:
-            _RAG_SEARCH_SLOT.release()
+            release_slot()
 
     try:
         threading.Thread(target = search, name = "rag-tool-search", daemon = True).start()
     except Exception:
-        _RAG_SEARCH_SLOT.release()
+        release_slot()
         raise
     while True:
         if cancel_event is not None and cancel_event.is_set():
+            release_slot()
             return "Error: knowledge base search cancelled."
         if deadline is not None and time.monotonic() >= deadline:
+            release_slot()
             return "Error: knowledge base search timed out."
         wait = 0.05
         if deadline is not None:
