@@ -2,6 +2,8 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { Button } from "@/components/ui/button";
+import { Telescope01Icon } from "@hugeicons/core-free-icons";
+import { HugeiconsIcon } from "@hugeicons/react";
 import {
   Dialog,
   DialogContent,
@@ -12,7 +14,7 @@ import {
 } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { cn } from "@/lib/utils";
-import { ChevronDownIcon, TelescopeIcon, XIcon } from "lucide-react";
+import { ChevronDownIcon, XIcon } from "lucide-react";
 import { type KeyboardEvent, useState } from "react";
 import { useChatRuntimeStore } from "../stores/chat-runtime-store";
 import type { ResearchWebsitePolicy } from "../types/research";
@@ -152,7 +154,7 @@ export function DeepResearchComposerButton({
         }}
         className="composer-pill-glyph cursor-pointer"
       >
-        <TelescopeIcon className="size-[15px]" />
+        <HugeiconsIcon icon={Telescope01Icon} className="size-[15px]" />
         <XIcon className="composer-pill-x" />
       </span>
       <span>Deep research</span>
