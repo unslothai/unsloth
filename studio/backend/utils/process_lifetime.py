@@ -152,36 +152,142 @@ def _install_windows_job() -> None:
 # ── Child binding ──
 
 
-def _pdeathsig_preexec() -> None:
-    # Runs in the forked child before exec. prctl is Linux-only; the getppid
-    # check closes the race where the parent died before this ran.
+def _arm_parent_death_signal() -> None:
+    # Linux-only: ask the kernel to send us SIGTERM if our parent dies later.
+    import ctypes
+    ctypes.CDLL("libc.so.6", use_errno = True).prctl(_PR_SET_PDEATHSIG, signal.SIGTERM)
+
+
+def _pdeathsig_preexec(expected_parent_pid: int) -> None:
+    # Runs in the forked child before exec. Arm PDEATHSIG first, then close the
+    # race where the parent died between fork and here: if we have been
+    # reparented our parent is no longer the process that forked us, so bail.
+    # Comparing against the real parent pid -- captured in the parent before the
+    # fork -- rather than the literal 1 keeps this correct when Studio itself is
+    # PID 1 (a container with no init), where every healthy child has
+    # getppid() == 1 from birth and must not be mistaken for an orphan.
     try:
-        import ctypes
-        ctypes.CDLL("libc.so.6", use_errno = True).prctl(_PR_SET_PDEATHSIG, signal.SIGTERM)
-        if os.getppid() == 1:
+        _arm_parent_death_signal()
+        if os.getppid() != expected_parent_pid:
             os._exit(1)
     except Exception:
         pass
 
 
+def _spawn_parent_pid() -> int:
+    """The pid to compare our live getppid() against -- our real OS parent.
+
+    For a spawn/fork multiprocessing worker, multiprocessing records the
+    spawning parent's pid, which is also our OS parent and stays put after it
+    dies, so it survives reparenting to init -- unlike getppid(), which returns 1
+    once orphaned and would make an already-dead parent look like a healthy PID-1
+    one. For a forkserver worker, though, parent_process().pid is the LOGICAL
+    process that requested us while our OS parent is the forkserver, so using it
+    would make _pdeathsig_preexec kill a healthy child immediately; there we use
+    the live getppid() (the forkserver). Also getppid() when not started via
+    multiprocessing, or on any lookup failure."""
+    try:
+        import multiprocessing
+
+        # forkserver: OS parent (getppid) != recorded logical parent, so the
+        # recorded pid is not a valid reparent baseline -- trust getppid().
+        if multiprocessing.get_start_method(allow_none = True) != "forkserver":
+            parent = multiprocessing.parent_process()
+            if parent is not None and parent.pid is not None:
+                return parent.pid
+    except Exception:
+        pass
+    return os.getppid()
+
+
+def _watch_parent_sentinel() -> None:
+    """Exit if the LOGICAL parent -- the process that started this multiprocessing
+    worker -- dies. PDEATHSIG only covers the OS parent, which for a forkserver
+    worker is the forkserver, not Studio; the multiprocessing parent sentinel
+    tracks the requesting process across spawn / fork / forkserver (and works off
+    Linux). A no-op when not started via multiprocessing. Best-effort daemon
+    watcher; never raises."""
+    try:
+        import multiprocessing
+        import multiprocessing.connection as _connection
+
+        parent = multiprocessing.parent_process()
+        if parent is None:
+            return
+        sentinel = getattr(parent, "sentinel", None)
+        if sentinel is None:
+            return
+
+        def _wait_then_exit() -> None:
+            try:
+                _connection.wait([sentinel])  # blocks until the logical parent dies
+            except Exception:
+                return
+            os._exit(1)
+
+        threading.Thread(
+            target = _wait_then_exit, daemon = True, name = "unsloth-parent-death-watch"
+        ).start()
+    except Exception:
+        pass
+
+
+def _needs_sentinel_watcher() -> bool:
+    """True when the sentinel thread is the ONLY cover for logical-parent death.
+
+    On Linux, PDEATHSIG already fires on the logical parent for spawn/fork
+    workers -- ``_spawn_parent_pid()`` resolves to that very process -- so the
+    watcher would add a thread for nothing. That matters because the thread is
+    still alive when the training worker later forces ``fork`` for
+    ``dataset.map(num_proc=...)``: Python 3.12+ warns that forking a
+    multi-threaded process may deadlock, and that is the normal training path.
+
+    It is still required for forkserver workers, whose OS parent is the
+    forkserver rather than Studio, and on platforms with no PDEATHSIG at all.
+    """
+    if not _is_linux():
+        return True
+    try:
+        import multiprocessing
+        return multiprocessing.get_start_method(allow_none = True) == "forkserver"
+    except Exception:
+        return True  # cannot tell: keep the safety net
+
+
 def bind_current_process_to_parent_lifetime() -> None:
-    """Bind the CURRENT process to its parent's death (Linux). For multiprocessing
-    children, which cannot take a preexec_fn, so the parent cannot set
-    PR_SET_PDEATHSIG for them -- the child must do it itself at startup."""
+    """Bind the CURRENT process to the death of the process that started it. For
+    multiprocessing children, which cannot take a preexec_fn, so the parent
+    cannot set PR_SET_PDEATHSIG for them -- the child must do it itself at
+    startup.
+
+    Two complementary mechanisms: PR_SET_PDEATHSIG (Linux) fires on OS-parent
+    death, and the multiprocessing parent-sentinel watcher fires on LOGICAL
+    parent (Studio) death -- needed for forkserver workers, whose OS parent is
+    the forkserver rather than Studio.
+
+    The watcher is started only where it actually adds cover (see
+    :func:`_needs_sentinel_watcher`), so a Linux spawn/fork training worker does
+    not carry a live thread into the ``dataset.map(num_proc=...)`` fork."""
     if _is_linux():
-        _pdeathsig_preexec()
+        _pdeathsig_preexec(_spawn_parent_pid())
+    if _needs_sentinel_watcher():
+        _watch_parent_sentinel()
 
 
 def compose_preexec(existing: Optional[Callable[[], None]]) -> Optional[Callable[[], None]]:
-    """Run the PDEATHSIG hook then any caller-supplied preexec (Linux only)."""
+    """Run the PDEATHSIG hook then any caller-supplied preexec (Linux only).
+
+    The parent pid is captured here -- in the parent, before the fork -- so the
+    child can tell a genuine reparent (parent died) from being a healthy child
+    of a PID-1 parent."""
     if not _is_linux():
         return existing
-    if existing is None:
-        return _pdeathsig_preexec
+    parent_pid = os.getpid()
 
     def _composed() -> None:
-        _pdeathsig_preexec()
-        existing()
+        _pdeathsig_preexec(parent_pid)
+        if existing is not None:
+            existing()
 
     return _composed
 
