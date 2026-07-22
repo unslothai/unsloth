@@ -2836,15 +2836,25 @@ case "$TORCH_INDEX_URL" in
         fi
         ;;
 esac
+# 0 when URL's generic rocmX.Y tag is older than floor $2.$3 (int compare, so
+# rocm7.2 < rocm7.13). Non-rocm / arch (gfx) / unparseable URLs return 1.
+_rocm_index_below() {
+    _rb=$(printf '%s' "$1" | grep -oE 'rocm[0-9]+\.[0-9]+' | head -1 || true)
+    [ -n "$_rb" ] || return 1
+    _rb=${_rb#rocm}
+    if [ "${_rb%%.*}" -lt "$2" ]; then return 0; fi
+    if [ "${_rb%%.*}" -eq "$2" ] && [ "${_rb#*.}" -lt "$3" ]; then return 0; fi
+    return 1
+}
 # ── Strix Halo / Strix Point: route to the AMD arch-specific index ───────────
-# gfx1151 (Strix Halo) and gfx1150 (Strix Point) need torch 2.11+rocm7.13 from
-# repo.amd.com/rocm/whl/gfx<arch>/, which carries AMD's real fixes (the ROCm 7.1
-# _grouped_mm segfault, moe_utils.py:167, plus later Strix kernel bugs). Modern
-# ROCm (7.3+) caps to the generic rocm7.2 index, and the Radeon repo can be
-# unavailable (unslothai#7264) -- both leave Strix on a non-arch-specific build.
-# Reroute when the index is rocm7.1 or rocm7.2 and a Strix GPU is detected.
+# gfx1151/gfx1150 need torch 2.11+rocm7.13 from repo.amd.com/rocm/whl/gfx<arch>/,
+# which carries AMD's real fixes (the rocm7.1 _grouped_mm segfault, moe_utils.py:167,
+# and later Strix kernel bugs). Every generic pytorch.org index below rocm7.13 lacks
+# them (and the Radeon repo can be offline, unslothai#7264), so reroute a detected
+# Strix GPU whenever the picked index is older than the arch build -- covers today's
+# rocm6.0-7.2 and any future 7.x < 7.13; rocm7.13+ already has the fixes, so leave it.
 case "$TORCH_INDEX_URL" in
-    */rocm7.1|*/rocm7.1.*|*/rocm7.2|*/rocm7.2.*)
+    */rocm[0-9]*)
         # Collect every gfx token in rocminfo / amd-smi enumeration order
         # (skip duplicates), then index by HIP_VISIBLE_DEVICES /
         # ROCR_VISIBLE_DEVICES so a mixed Strix iGPU + non-Strix dGPU box
@@ -2884,7 +2894,9 @@ case "$TORCH_INDEX_URL" in
         case "$_runtime_gfx" in
             gfx1151|gfx1150) _strix_gfx="$_runtime_gfx" ;;
         esac
-        if [ -n "$_strix_gfx" ]; then
+        # Skip rocm7.13+ generic indexes: they already ship the fixes, so the
+        # arch build (rocm7.13) would be a downgrade rather than a rescue.
+        if [ -n "$_strix_gfx" ] && _rocm_index_below "$TORCH_INDEX_URL" 7 13; then
             echo "" >&2
             echo "  [WARN] $_strix_gfx (Strix) detected -- routing to the AMD arch-specific index" >&2
             echo "  [WARN] torch 2.11+rocm7.13 has AMD's real gfx1150/gfx1151 fixes (the ROCm 7.1" >&2
