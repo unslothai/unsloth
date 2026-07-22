@@ -105,9 +105,10 @@ export const SETTINGS_SEARCH_INDEX: Record<SettingsTab, TranslationKey[]> = {
     "settings.apiKeys.accessTokens",
   ],
   agents: [
-    "settings.agents.quickstart.title",
-    "settings.agents.supportedAgents.title",
-    "settings.agents.models.title",
+    "settings.agents.agent",
+    "settings.agents.model",
+    "settings.agents.quantization",
+    "settings.agents.subagent.title",
     "settings.agents.options.title",
     "settings.agents.remote.title",
     "settings.agents.passthrough.title",

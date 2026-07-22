@@ -141,8 +141,9 @@ const AGENT_LABELS: Record<string, string> = {
 };
 
 const j = (s: string): string => JSON.stringify(s);
-const shSingle = (s: string): string => s.replace(/'/g, "'\\''");
-const psSingle = (s: string): string => s.replace(/'/g, "''");
+// Inner escaping for a single-quoted argument (POSIX '\'' , PowerShell '').
+export const shSingle = (s: string): string => s.replace(/'/g, "'\\''");
+export const psSingle = (s: string): string => s.replace(/'/g, "''");
 const toolsJson = TOOLS.map(j).join(", ");
 
 function bodyExtraLines(variant: Variant, indent: string): string[] {

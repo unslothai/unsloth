@@ -14,12 +14,13 @@ import signal
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 import urllib.error
 import urllib.request
 from pathlib import Path
 from typing import NamedTuple, NoReturn, Optional
-from urllib.parse import urlparse
+from urllib.parse import urlencode, urlparse
 
 import click
 import typer
@@ -72,11 +73,21 @@ _HERMES_POSIX_INSTALL_HINT = (
 # windows and scales the compaction threshold back down to the real window.
 _HERMES_MIN_CONTEXT = 65536
 _PI_PROVIDER = "unsloth"
-# OpenCode selects a model by "<providerID>/<modelID>" and honors a user
-# disabled_providers list. Register the session provider under a dedicated id a
-# user's disable list would never target, so the model is always selectable
-# without the wrapper having to reconstruct (and override) OpenCode's full,
-# multi-layer disabled_providers resolution.
+_SUBAGENT_NAME = "unsloth"
+_SUBAGENT_DESCRIPTION = (
+    "Local coding subagent powered by Unsloth for debugging, implementation, and codebase "
+    "research. Use when the user asks to spawn an Unsloth or local agent."
+)
+_SUBAGENT_INSTRUCTIONS = (
+    "You are a local coding subagent powered by Unsloth. Complete the assigned task directly, "
+    "use the available tools when useful, verify your work, and return a concise result to the "
+    "parent agent."
+)
+_CLAUDE_SUBAGENT_MCP_MODULE = "unsloth_cli.claude_subagent_mcp"
+_CLAUDE_SUBAGENT_TOOL = "mcp__plugin_unsloth-local-agent_unsloth__unsloth_agent"
+_PI_SUBAGENT_EXTENSION = Path(__file__).parent.parent / "pi_subagent.ts"
+# OpenCode selects a model by "<providerID>/<modelID>". Use a dedicated id to avoid
+# colliding with a user's providers; provider filters are set in the launch-time overlay.
 _OPENCODE_PROVIDER = "unsloth-studio"
 _PROVIDER_HEADER = f"[model_providers.{_CODEX_PROFILE}]"
 _PASSTHROUGH = {"allow_extra_args": True, "ignore_unknown_options": True}
@@ -105,8 +116,8 @@ _SERVE_OPTION = typer.Option(
     True,
     "--serve/--no-serve",
     help = (
-        "If no Unsloth server is running, auto-start one for --model and stop it when the "
-        "agent exits. --no-serve keeps the old behavior of erroring out."
+        "If no Unsloth server is running, auto-start one for --model and keep it available "
+        "after the agent exits. --no-serve keeps the old behavior of erroring out."
     ),
 )
 # Model-load knobs mirrored from `unsloth run`; only used when --model triggers a
@@ -156,6 +167,11 @@ _PERSIST_OPTION = typer.Option(
         "`unsloth start codex --persist resume` or `claude --resume <id>`; those flow to "
         "the agent unchanged."
     ),
+)
+_AS_SUBAGENT_OPTION = typer.Option(
+    False,
+    "--as-subagent",
+    help = "Keep the coding agent's current model and add Unsloth as a local subagent.",
 )
 
 # Per-agent CLI flag for "run tools without prompting". OpenCode (native --auto is
@@ -326,9 +342,59 @@ def _split_repo_variant(model: str) -> tuple:
     return repo, variant
 
 
+def _display_model_spec(model: str, variant: Optional[str]) -> str:
+    """Return a user-facing model name that includes the selected GGUF variant."""
+    repo, inline_variant = _split_repo_variant(model)
+    selected_variant = variant or inline_variant
+    return f"{repo}:{selected_variant}" if selected_variant else model
+
+
+def _subagent_model_id(
+    base: str,
+    key: str,
+    entry: dict,
+    requested_model: Optional[str],
+    requested_variant: Optional[str],
+) -> str:
+    """Return an API model id that preserves the selected GGUF variant.
+
+    Coding-agent model definitions outlive the initial load. If Unsloth later
+    unloads the model, a bare repository id may resolve to a different cached
+    quant. Include the explicit or currently loaded variant so an automatic
+    reload selects the same weights.
+    """
+    model_id = str(entry["id"])
+    _, inline_variant = _split_repo_variant(requested_model or "")
+    variant = requested_variant or inline_variant
+    if not variant:
+        try:
+            status = _http_json("GET", f"{base}/api/inference/status", key)
+        except Exception:
+            status = {}
+            typer.echo(
+                "Warning: could not verify the loaded GGUF variant; a later reload "
+                "may pick a different cached quant. Pass :variant to pin it.",
+                err = True,
+            )
+        if status.get("is_gguf"):
+            variant = status.get("gguf_variant")
+    return (
+        _display_model_spec(model_id, str(variant))
+        if variant and _is_hub_model_id(model_id)
+        else model_id
+    )
+
+
 def _fail(message: str) -> NoReturn:
     typer.echo(message, err = True)
     raise typer.Exit(code = 1)
+
+
+def _reject_as_subagent(agent: str, args: list) -> None:
+    # Reject early; otherwise the flag reaches the agent binary and fails after
+    # Studio has already loaded the model.
+    if any(arg == "--as-subagent" or arg.startswith("--as-subagent=") for arg in args):
+        _fail(f"--as-subagent is not supported for {agent}.")
 
 
 def _http_error_detail(exc: urllib.error.HTTPError) -> str:
@@ -373,11 +439,265 @@ def _http_json(
 
 
 # A server that WE auto-started (never one we merely found). Kept at module scope so
-# _run's finally and the atexit backstop can tear it down without threading a handle
+# failure paths and the atexit backstop can tear it down without threading a handle
 # through all six agent commands. Only one agent runs per process, so one slot is enough.
 _auto_served_server: Optional[subprocess.Popen] = None
 # Model download + load can be slow; give the auto-started server room before giving up.
 _SERVER_START_TIMEOUT_S = 900
+_DOWNLOAD_POLL_INTERVAL_S = 1.0
+_START_API_KEY_PREFIX = "UNSLOTH_START_API_KEY: "
+_START_API_KEY_MARKER_ENV = "_UNSLOTH_START_API_KEY_MARKER"
+
+
+def _format_download_bytes(value: int) -> str:
+    value = max(0, int(value))
+    for unit in ("B", "KiB", "MiB", "GiB", "TiB"):
+        if value < 1024 or unit == "TiB":
+            precision = 0 if unit in ("B", "KiB") else 1
+            return f"{value:.{precision}f} {unit}"
+        value /= 1024
+    return "0 B"
+
+
+def _format_download_eta(seconds: float) -> str:
+    seconds = max(0, int(seconds))
+    if seconds < 60:
+        return f"{seconds}s"
+    minutes, seconds = divmod(seconds, 60)
+    if minutes < 60:
+        return f"{minutes}m {seconds:02d}s"
+    hours, minutes = divmod(minutes, 60)
+    return f"{hours}h {minutes:02d}m"
+
+
+class _DownloadProgressDisplay:
+    """Render download progress without making redirected output noisy."""
+
+    def __init__(self) -> None:
+        self._samples: list[tuple[float, int]] = []
+        self._shown = False
+        self._last_bucket = -1
+        self._last_line_length = 0
+        self._last_expected = 0
+        self._interactive = bool(getattr(sys.stdout, "isatty", lambda: False)())
+
+    def update(self, progress: dict) -> None:
+        downloaded = max(0, int(progress.get("downloaded_bytes") or 0))
+        completed = max(0, int(progress.get("completed_bytes") or 0))
+        expected = max(0, int(progress.get("expected_bytes") or 0))
+        self._last_expected = max(self._last_expected, expected)
+        fraction = float(progress.get("progress") or 0)
+        if downloaded <= 0:
+            return
+        # A fully cached snapshot can report 99% with no incomplete bytes; that is
+        # not a transfer, so don't show it as a download.
+        if completed >= downloaded > 0:
+            return
+
+        now = time.monotonic()
+        if self._samples and downloaded < self._samples[-1][1]:
+            self._samples.clear()
+        self._samples.append((now, downloaded))
+        cutoff = now - 15.0
+        while len(self._samples) > 2 and self._samples[0][0] < cutoff:
+            self._samples.pop(0)
+
+        rate = 0.0
+        if len(self._samples) >= 2:
+            elapsed = self._samples[-1][0] - self._samples[0][0]
+            delta = self._samples[-1][1] - self._samples[0][1]
+            if elapsed >= 1.0 and delta > 0:
+                rate = delta / elapsed
+
+        if expected > 0:
+            # The endpoint caps at 99% while bytes remain in an incomplete file; trust it.
+            fraction = min(1.0, max(0.0, fraction))
+            percent = min(100, max(0, int(fraction * 100)))
+            filled = min(24, int(fraction * 24))
+            bar = "=" * filled + ">" + "." * max(0, 23 - filled) if filled < 24 else "=" * 24
+            line = (
+                f"Downloading model [{bar}] {percent:3d}% "
+                f"{_format_download_bytes(downloaded)} / {_format_download_bytes(expected)}"
+            )
+            bucket = percent // 10
+            if rate > 0:
+                line += f" | {_format_download_bytes(rate)}/s"
+                if downloaded < expected:
+                    line += f" | ETA {_format_download_eta((expected - downloaded) / rate)}"
+        else:
+            line = f"Downloading model: {_format_download_bytes(downloaded)}"
+            bucket = downloaded // (1024**3)
+            if rate > 0:
+                line += f" | {_format_download_bytes(rate)}/s"
+
+        if self._interactive:
+            padding = " " * max(0, self._last_line_length - len(line))
+            typer.echo(f"\r{line}{padding}", nl = False)
+            sys.stdout.flush()
+            self._last_line_length = len(line)
+        elif not self._shown or bucket > self._last_bucket:
+            typer.echo(line)
+            self._last_bucket = bucket
+        self._shown = True
+
+    def close(self) -> None:
+        if self._interactive and self._shown:
+            typer.echo()
+        self._last_line_length = 0
+
+    def complete(self) -> None:
+        """Finish a displayed transfer after the model load confirms success."""
+        if not self._shown:
+            return
+        downloaded = self._samples[-1][1] if self._samples else 0
+        expected = max(downloaded, getattr(self, "_last_expected", 0))
+        self.update(
+            {
+                "downloaded_bytes": expected,
+                "expected_bytes": expected,
+                "progress": 1.0,
+            }
+        )
+
+
+def _normalized_variant(value: object) -> str:
+    return re.sub(r"[^a-z0-9]", "", str(value or "").lower())
+
+
+class _ModelDownloadProgress:
+    """Best-effort polling of the model download endpoints."""
+
+    def __init__(self, base: str, key: str, model: str, variant: Optional[str]) -> None:
+        self._base = base
+        self._key = key
+        self._model = model
+        self._variant = variant or ""
+        self._expected_bytes = 0
+        self._display = _DownloadProgressDisplay()
+        self._configured = False
+        self._disabled = not _is_hub_model_id(model)
+        self._progress_prefix = "/api/hub"
+
+    def _configure(self) -> None:
+        self._configured = True
+        if self._disabled:
+            return
+        # GGUF repos need the selected quant's size; the repo endpoint totals every
+        # quant. Resolve the variant first, otherwise show bytes only.
+        if self._variant or "gguf" in self._model.lower():
+            try:
+                params = urlencode({"repo_id": self._model})
+                try:
+                    info = _http_json(
+                        "GET",
+                        f"{self._base}/api/hub/gguf-variants?{params}",
+                        self._key,
+                        timeout = 10,
+                    )
+                except urllib.error.HTTPError as exc:
+                    if exc.code != 404:
+                        raise
+                    self._progress_prefix = "/api/models"
+                    info = _http_json(
+                        "GET",
+                        f"{self._base}/api/models/gguf-variants?{params}",
+                        self._key,
+                        timeout = 10,
+                    )
+                self._variant = self._variant or str(info.get("default_variant") or "")
+                wanted = _normalized_variant(self._variant)
+                for item in info.get("variants") or []:
+                    quant = _normalized_variant(item.get("quant"))
+                    filename = _normalized_variant(item.get("filename"))
+                    if wanted and (wanted == quant or wanted in filename):
+                        self._expected_bytes = int(
+                            item.get("download_size_bytes") or item.get("size_bytes") or 0
+                        )
+                        break
+            except Exception:
+                # Older servers lack this endpoint; byte progress is still useful.
+                pass
+
+    def poll(self) -> None:
+        if not self._configured:
+            self._configure()
+        if self._disabled:
+            return
+        try:
+            if self._variant or "gguf" in self._model.lower():
+                params = urlencode(
+                    {
+                        "repo_id": self._model,
+                        "variant": self._variant,
+                        "expected_bytes": self._expected_bytes,
+                    }
+                )
+                url = f"{self._base}{self._progress_prefix}/gguf-download-progress?{params}"
+            else:
+                url = (
+                    f"{self._base}{self._progress_prefix}/download-progress?"
+                    f"{urlencode({'repo_id': self._model})}"
+                )
+            try:
+                reading = _http_json("GET", url, self._key, timeout = 10)
+            except urllib.error.HTTPError as exc:
+                if exc.code != 404 or self._progress_prefix == "/api/models":
+                    raise
+                self._progress_prefix = "/api/models"
+                self.poll()
+                return
+            self._display.update(reading)
+        except Exception:
+            # Progress is best-effort; never fail the load over a polling error.
+            self._disabled = True
+
+    def close(self) -> None:
+        self._display.close()
+
+    def complete(self) -> None:
+        self._display.complete()
+
+
+def _load_model_with_progress(
+    base: str, key: str, model: str, load: LoadOptions, payload: dict
+) -> dict:
+    """Run the blocking load request while polling its download progress."""
+    result: list[tuple[bool, object]] = []
+    done = threading.Event()
+
+    def _load() -> None:
+        try:
+            value = _http_json(
+                "POST",
+                f"{base}/api/inference/load",
+                key,
+                payload,
+                timeout = 3600,
+                error = "Model load failed",
+            )
+            result.append((True, value))
+        except BaseException as exc:
+            result.append((False, exc))
+        finally:
+            done.set()
+
+    threading.Thread(target = _load, name = "unsloth-model-load", daemon = True).start()
+    progress = _ModelDownloadProgress(base, key, model, load.gguf_variant)
+    loading_announced = False
+    try:
+        while not done.wait(_DOWNLOAD_POLL_INTERVAL_S):
+            if not loading_announced:
+                typer.echo(f"Loading model: {_display_model_spec(model, load.gguf_variant)}")
+                loading_announced = True
+            progress.poll()
+        ok, value = result[0]
+        if not ok:
+            assert isinstance(value, BaseException)
+            raise value
+        progress.complete()
+        return value if isinstance(value, dict) else {}
+    finally:
+        progress.close()
 
 
 def _studio_healthy(base: str, timeout: float = 3.0) -> bool:
@@ -394,6 +714,11 @@ def _log_tail(path: Path, lines: int = 20) -> str:
         return "\n".join(path.read_text(encoding = "utf-8", errors = "replace").splitlines()[-lines:])
     except OSError:
         return "(no server log)"
+
+
+def _redacted_log_tail(path: Path, lines: int = 20) -> str:
+    """Tail with minted keys removed; only for tails shown on the terminal."""
+    return re.sub(r"sk-unsloth-\S+", "sk-unsloth-[redacted]", _log_tail(path, lines))
 
 
 def _shutdown_server(server: Optional[subprocess.Popen]) -> None:
@@ -438,6 +763,14 @@ def _shutdown_auto_served() -> None:
         _shutdown_server(server)
 
 
+def _keep_auto_served() -> bool:
+    """Release ownership so a successfully started server survives this CLI."""
+    global _auto_served_server
+    server, _auto_served_server = _auto_served_server, None
+    atexit.unregister(_shutdown_auto_served)
+    return server is not None and server.poll() is None
+
+
 def _start_studio_server(base: str, model: str, load: LoadOptions) -> subprocess.Popen:
     """Spawn `unsloth run` for `model`, wait until it is fully ready, and return it."""
     global _auto_served_server
@@ -467,9 +800,8 @@ def _start_studio_server(base: str, model: str, load: LoadOptions) -> subprocess
         command += ["--tensor-parallel"]
 
     log_path = Path(tempfile.gettempdir()) / f"unsloth-start-server-{os.getpid()}.log"
-    typer.echo(
-        f"No Unsloth server at {base}. Starting one for {model} (loading the model can take a while)…"
-    )
+    typer.echo("Starting Unsloth server")
+    typer.echo(f"Model: {_display_model_spec(model, load.gguf_variant)}")
     typer.echo(f"Server log: {log_path}")
     # 0600: the `unsloth run` banner in this log carries the minted sk-unsloth- key, and
     # the tempdir is world-traversable. Unlink first so a stale looser-mode file (pid
@@ -477,8 +809,17 @@ def _start_studio_server(base: str, model: str, load: LoadOptions) -> subprocess
     log_path.unlink(missing_ok = True)
     log = os.fdopen(os.open(log_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600), "wb")
     # Own session/process group so a mid-session Ctrl+C (cancel a turn) doesn't reach the
-    # server; we tear it down explicitly when the agent exits.
-    kwargs: dict = {"stdout": log, "stderr": subprocess.STDOUT, "stdin": subprocess.DEVNULL}
+    # server. It survives a successful agent session; torn down on startup/launch failure.
+    child_env = os.environ.copy()
+    # Pass the marker via env so an older launcher ignores it instead of treating an
+    # unknown CLI flag as a llama-server arg; new launchers preserve it across re-exec.
+    child_env[_START_API_KEY_MARKER_ENV] = "1"
+    kwargs: dict = {
+        "stdout": log,
+        "stderr": subprocess.STDOUT,
+        "stdin": subprocess.DEVNULL,
+        "env": child_env,
+    }
     if os.name == "nt":
         kwargs["creationflags"] = subprocess.CREATE_NEW_PROCESS_GROUP
     else:
@@ -491,17 +832,45 @@ def _start_studio_server(base: str, model: str, load: LoadOptions) -> subprocess
     atexit.register(_shutdown_auto_served)
 
     deadline = time.monotonic() + _SERVER_START_TIMEOUT_S
-    while time.monotonic() < deadline:
-        if server.poll() is not None:
-            tail = _log_tail(log_path)
-            _shutdown_auto_served()
-            _fail(f"The Unsloth server stopped before it was ready. Last log lines:\n{tail}")
-        # `unsloth run` prints the minted key only after the server is up AND the model is
-        # loaded, so it is the fully-ready signal (same contract serve-unsloth-run.sh uses).
-        if _studio_healthy(base) and "sk-unsloth-" in _log_tail(log_path, lines = 400):
-            typer.echo(f"Unsloth server ready at {base}.")
-            return server
-        time.sleep(2.0)
+    progress: Optional[_ModelDownloadProgress] = None
+    early_key_seen = False
+    try:
+        while time.monotonic() < deadline:
+            if server.poll() is not None:
+                # The early key marker lands here before load finishes; redact it.
+                tail = _redacted_log_tail(log_path)
+                _shutdown_auto_served()
+                _fail(f"The Unsloth server stopped before it was ready. Last log lines:\n{tail}")
+            tail = _log_tail(log_path, lines = 400)
+            if progress is None:
+                marker = re.search(
+                    rf"^{re.escape(_START_API_KEY_PREFIX)}(sk-unsloth-[^\s]+)$",
+                    tail,
+                    flags = re.MULTILINE,
+                )
+                if marker:
+                    early_key_seen = True
+                    progress = _ModelDownloadProgress(
+                        base,
+                        marker.group(1),
+                        model,
+                        load.gguf_variant,
+                    )
+            if progress is not None:
+                progress.poll()
+            # New children emit an early key marker, so wait for the final model banner;
+            # older children only print the key after load, so fall back to that.
+            ready_signal = "Model loaded:" in tail if early_key_seen else "sk-unsloth-" in tail
+            if _studio_healthy(base) and ready_signal:
+                if progress is not None:
+                    progress.complete()
+                    progress.close()
+                    progress = None
+                return server
+            time.sleep(2.0)
+    finally:
+        if progress is not None:
+            progress.close()
     _shutdown_auto_served()
     _fail(
         f"The Unsloth server didn't become ready within {_SERVER_START_TIMEOUT_S}s. See {log_path}."
@@ -796,6 +1165,7 @@ def _resolve_model(
     load: LoadOptions = LoadOptions(),
 ) -> dict:
     models = _loaded_models(base, key)
+    load_requested = False
     # Only casefold-match ids against a loopback Unsloth, where _is_hub_model_id's
     # local existence probe can actually reject a server-side path; see the note there.
     allow_casefold = is_loopback_url(base)
@@ -825,11 +1195,30 @@ def _resolve_model(
         )
     )
     if requested and match is None:
-        typer.echo(
-            f"Loading {requested} - please wait…"
-            if load_has_overrides
-            else f"Loading {requested} on the Unsloth server (this can take a while)…"
-        )
+        load_requested = True
+        active = next((m for m in models if m.get("loaded") is not False), None)
+        active_id = active.get("id") if active else None
+        if active_id and not _model_id_matches(
+            active_id,
+            requested,
+            allow_casefold = allow_casefold,
+        ):
+            typer.echo(f"Switching the Unsloth server from {active_id} to {requested}.")
+            typer.echo("This unloads the current model for every attached session.")
+        elif active_id and load.gguf_variant:
+            # Same repo id but an explicit quant still replaces the resident
+            # weights; /v1/models has no variant, so ask the status endpoint.
+            try:
+                status = _http_json("GET", f"{base}/api/inference/status", key)
+            except Exception:
+                status = {}
+            resident = status.get("gguf_variant") if status.get("is_gguf") else None
+            if resident and _normalized_variant(resident) != _normalized_variant(load.gguf_variant):
+                typer.echo(
+                    f"Switching the Unsloth server from {active_id}:{resident} "
+                    f"to {requested}:{load.gguf_variant}."
+                )
+                typer.echo("This unloads the current model for every attached session.")
         # Mirror `unsloth run`'s load knobs; keep the default payload as just
         # model_path so a bare `--model` load is unchanged.
         payload = {"model_path": requested}
@@ -841,14 +1230,9 @@ def _resolve_model(
             payload["load_in_4bit"] = False
         if load.tensor_parallel:
             payload["tensor_parallel"] = True
-        loaded = _http_json(
-            "POST",
-            f"{base}/api/inference/load",
-            key,
-            payload,
-            timeout = 3600,
-            error = "Model load failed",
-        )
+        loaded = _load_model_with_progress(base, key, requested, load, payload)
+        if loaded.get("status") == "already_loaded":
+            typer.echo(f"Reusing loaded model: {_display_model_spec(requested, load.gguf_variant)}")
         # Unsloth registers the model under a canonical id (resolved identifier,
         # casing) that /v1/models echoes but which may differ from the path we
         # passed; match on the id the load reports so we don't silently fall
@@ -861,13 +1245,16 @@ def _resolve_model(
             (
                 m
                 for m in models
-                if any(
+                if m.get("loaded") is not False
+                and any(
                     _model_id_matches(m.get("id"), w, allow_casefold = allow_casefold) for w in wanted
                 )
             ),
             None,
         )
     if match is not None:
+        if requested and not load_requested:
+            typer.echo(f"Reusing loaded model: {_display_model_spec(requested, load.gguf_variant)}")
         return match
     if requested:
         # We asked Unsloth to load it and it didn't surface in /v1/models; don't
@@ -881,7 +1268,13 @@ def _resolve_model(
             "No model is loaded in Unsloth. Load one from the model dropdown in "
             "the UI, or pass --model <hf-id-or-path> to load it from here."
         )
-    return models[0]
+    resident = next((m for m in models if m.get("loaded") is not False), None)
+    if resident is None:
+        _fail(
+            "No model is currently resident in Unsloth. Pass --model <hf-id-or-path> "
+            "to reload one, or load it from the model dropdown in the UI."
+        )
+    return resident
 
 
 def _require_gguf_for_codex(base: str, key: str, model_id: str) -> None:
@@ -941,6 +1334,25 @@ def _claude_flags(model_id: str) -> list:
     if version is not None and version < (2, 1, 98):
         return []
     return [_DYNAMIC_SECTIONS_FLAG, "--settings", _claude_settings_overlay(model_id)]
+
+
+def _claude_local_env(base: str, key: str, entry: dict) -> dict:
+    """Build the local endpoint, cache, display, and compaction environment."""
+    model_id = entry["id"]
+    env = {
+        "ANTHROPIC_BASE_URL": base,
+        "ANTHROPIC_AUTH_TOKEN": key,
+        "ANTHROPIC_MODEL": model_id,
+        "CLAUDE_CODE_ATTRIBUTION_HEADER": "0",
+        "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC": "1",
+        "CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS": "1",
+        "CLAUDE_CODE_NO_FLICKER": "1",
+    }
+    window = entry.get("context_length") or entry.get("max_context_length")
+    if window:
+        env["CLAUDE_CODE_AUTO_COMPACT_WINDOW"] = str(int(window))
+        env["CLAUDE_AUTOCOMPACT_PCT_OVERRIDE"] = "90"
+    return env
 
 
 def _merge_codex_config(existing: str, base: str) -> str:
@@ -1054,6 +1466,214 @@ def write_codex_config(base: str, model: dict, home: Path) -> None:
     if not profile.exists() or profile.read_text(encoding = "utf-8") != profile_text:
         profile.write_text(profile_text, encoding = "utf-8")
         typer.echo(f"Updated {profile}")
+
+
+def write_codex_subagent_config(base: str, key: str, model: dict, home: Path) -> Path:
+    """Write a session-scoped Codex custom agent without replacing the main model."""
+    home.mkdir(parents = True, exist_ok = True)
+    model_id = model["id"]
+    window = model.get("context_length") or model.get("max_context_length")
+    catalog_name = "unsloth-model-catalog.json"
+    text = (
+        f"name = {json.dumps(_SUBAGENT_NAME)}\n"
+        f"description = {json.dumps(_SUBAGENT_DESCRIPTION)}\n"
+        f"developer_instructions = {json.dumps(_SUBAGENT_INSTRUCTIONS)}\n"
+        f"model_provider = {json.dumps(_CODEX_PROFILE)}\n"
+        f"model = {json.dumps(model_id)}\n"
+    )
+    if _codex_supports_model_catalog() and _CODEX_FALLBACK_PROMPT.is_file():
+        catalog = home / catalog_name
+        catalog_text = json.dumps(_codex_model_catalog(model), indent = 2) + "\n"
+        if not catalog.exists() or catalog.read_text(encoding = "utf-8") != catalog_text:
+            catalog.write_text(catalog_text, encoding = "utf-8")
+            typer.echo(f"Updated {catalog}")
+        text += f"model_catalog_json = {json.dumps(catalog_name)}\n"
+    if window:
+        text += f"model_context_window = {int(window)}\n"
+    credential = home / "unsloth-auth.json"
+    _write_private_json(credential, {"token": key})
+    auth_command = sys.executable
+    auth_args = [
+        "-c",
+        "import json,sys; print(json.load(open(sys.argv[1], encoding='utf-8'))['token'])",
+        str(credential),
+    ]
+    if _wsl_windows_executable(["codex"]):
+        auth_command = "wsl.exe"
+        auth_args = [
+            "-d",
+            os.environ["WSL_DISTRO_NAME"],
+            "--",
+            sys.executable,
+            *auth_args,
+        ]
+    text += (
+        f"\n{_PROVIDER_HEADER}\n"
+        'name = "Unsloth Studio"\n'
+        f"base_url = {json.dumps(base + '/v1')}\n"
+        'wire_api = "responses"\n'
+        f"\n{_PROVIDER_HEADER[:-1]}.auth]\n"
+        f"command = {json.dumps(auth_command)}\n"
+        f"args = {json.dumps(auth_args)}\n"
+        "timeout_ms = 5000\n"
+    )
+    path = home / f"{_SUBAGENT_NAME}.toml"
+    if not path.exists() or path.read_text(encoding = "utf-8") != text:
+        path.write_text(text, encoding = "utf-8")
+        typer.echo(f"Updated {path}")
+    return path
+
+
+def _agent_config_path(path: Path, command: list) -> str:
+    """Translate a generated config path when a Windows agent runs through WSL."""
+    return _wsl_windows_path(path) if _wsl_windows_executable(command) else str(path)
+
+
+def _opencode_subagent_inline_config(path: Path, permission: dict) -> dict:
+    """Keep the local provider visible without hiding the parent's allowed providers."""
+    inline: dict = {}
+    inherited = os.environ.get("OPENCODE_CONFIG_CONTENT")
+    if inherited:
+        try:
+            parsed = json.loads(inherited)
+        except ValueError:
+            _fail("OPENCODE_CONFIG_CONTENT is not valid JSON.")
+        if not isinstance(parsed, dict):
+            _fail("OPENCODE_CONFIG_CONTENT must contain a JSON object.")
+        inline.update(parsed)
+
+    def merge_provider_filters(effective_config: dict) -> None:
+        enabled = effective_config.get("enabled_providers")
+        if isinstance(enabled, list):
+            inherited_enabled = inline.get("enabled_providers")
+            if not isinstance(inherited_enabled, list):
+                inherited_enabled = []
+            providers = [
+                provider
+                for provider in [*inherited_enabled, *enabled]
+                if provider != _OPENCODE_PROVIDER
+            ]
+            inline["enabled_providers"] = list(dict.fromkeys([*providers, _OPENCODE_PROVIDER]))
+        disabled = effective_config.get("disabled_providers")
+        if isinstance(disabled, list) and _OPENCODE_PROVIDER in disabled:
+            inline["disabled_providers"] = [
+                provider for provider in disabled if provider != _OPENCODE_PROVIDER
+            ]
+
+    # The inherited inline layer is already highest priority. Merge it even when
+    # OpenCode is not installed yet, as in fresh-install and --no-launch flows.
+    merge_provider_filters(inline)
+    effective = inline
+
+    executable = _which_with_install_dirs("opencode")
+    if executable is None:
+        typer.echo(
+            f"Warning: OpenCode is not installed, so provider filters could not be checked. "
+            f"The target configuration must allow '{_OPENCODE_PROVIDER}'.",
+            err = True,
+        )
+    else:
+        env = os.environ.copy()
+        env["OPENCODE_CONFIG"] = _agent_config_path(path, ["opencode"])
+        try:
+            resolved = subprocess.run(
+                [executable, "debug", "config"],
+                capture_output = True,
+                text = True,
+                timeout = 15,
+                env = env,
+            )
+        except Exception as exc:
+            _fail(f"Could not inspect OpenCode provider filters: {exc}")
+        if resolved.returncode != 0:
+            detail = resolved.stderr.strip() or resolved.stdout.strip()
+            _fail(f"Could not inspect OpenCode provider filters: {detail or 'unknown error'}")
+        try:
+            effective = json.loads(resolved.stdout)
+        except ValueError:
+            _fail("Could not inspect OpenCode provider filters: invalid JSON response.")
+        if not isinstance(effective, dict):
+            _fail("Could not inspect OpenCode provider filters: expected a JSON object.")
+
+        merge_provider_filters(effective)
+
+    depth = effective.get("subagent_depth")
+    inline["subagent_depth"] = (
+        depth if isinstance(depth, int) and not isinstance(depth, bool) and depth > 0 else 1
+    )
+    if permission:
+        inline["permission"] = permission
+    return inline
+
+
+def write_claude_subagent_plugin(path: Path, server_env: dict) -> Path:
+    """Write a session plugin that exposes the local Claude child through MCP."""
+    plugin = path / "unsloth-local-agent"
+    command = sys.executable
+    args = ["-m", _CLAUDE_SUBAGENT_MCP_MODULE]
+    mcp_env = dict(server_env)
+    if _wsl_windows_executable(["claude"]):
+        command = "wsl.exe"
+        args = [
+            "-d",
+            os.environ["WSL_DISTRO_NAME"],
+            "--",
+            sys.executable,
+            "-m",
+            _CLAUDE_SUBAGENT_MCP_MODULE,
+        ]
+        mcp_env["WSLENV"] = _merge_wslenv(
+            os.environ.get("WSLENV", ""),
+            _wsl_bridge_names(server_env, ()),
+        )
+    _write_private_json(
+        plugin / ".claude-plugin" / "plugin.json",
+        {
+            "name": "unsloth-local-agent",
+            "version": "1.0.0",
+            "description": _SUBAGENT_DESCRIPTION,
+            "author": {"name": "Unsloth AI"},
+        },
+    )
+    _write_private_json(
+        plugin / ".mcp.json",
+        {
+            "mcpServers": {
+                "unsloth": {
+                    "type": "stdio",
+                    "command": command,
+                    "args": args,
+                    "env": mcp_env,
+                }
+            }
+        },
+    )
+    skill = plugin / "skills" / "local-agent" / "SKILL.md"
+    skill.parent.mkdir(parents = True, exist_ok = True, mode = 0o700)
+    skill.write_text(
+        "---\n"
+        "description: Delegate a task to the local agent powered by Unsloth. Use when the "
+        "user asks to spawn an Unsloth agent or local agent.\n"
+        "---\n\n"
+        "Call the Unsloth local agent tool once with the complete task. Return its result "
+        "to the user without claiming that the cloud parent completed the local work.\n",
+        encoding = "utf-8",
+    )
+    return plugin
+
+
+def _codex_subagent_flags(path: Path) -> list[str]:
+    config_path = _agent_config_path(path, ["codex"])
+    return [
+        "--enable",
+        "multi_agent",
+        "-c",
+        "agents.max_depth=1",
+        "-c",
+        f"agents.{_SUBAGENT_NAME}.description={json.dumps(_SUBAGENT_DESCRIPTION)}",
+        "-c",
+        f"agents.{_SUBAGENT_NAME}.config_file={json.dumps(config_path)}",
+    ]
 
 
 def _wsl_windows_executable(command: list) -> Optional[str]:
@@ -1356,7 +1976,7 @@ def _launch(
     env: dict,
     install_hint: str,
     unset_env: tuple = (),
-) -> NoReturn:
+) -> int:
     # Resolve well-known install dirs (e.g. ~/.local/bin) first, so an already-installed
     # agent not yet on PATH is found instead of prompting a needless reinstall.
     _augment_path_with_install_dirs()
@@ -1382,7 +2002,7 @@ def _launch(
     finally:
         signal.signal(signal.SIGINT, previous)
     # Negative returncode means killed by signal N; shells expect 128+N.
-    raise typer.Exit(code = code if code >= 0 else 128 - code)
+    return code if code >= 0 else 128 - code
 
 
 def _connect(
@@ -1434,16 +2054,35 @@ def _run(
     # --no-launch recipes stay intact.
     if launch and clear_screen:
         click.clear()
-    typer.echo(f"Unsloth {base} · model {entry['id']}")
+    typer.echo(f"Unsloth ready at {base} · model {entry['id']}")
     if not launch:
         env, wsl_env_bridge = _wsl_shim_env(command, env, unset_env)
         _print_env(env, command, unset_env = unset_env, wsl_env_bridge = wsl_env_bridge)
+        if _keep_auto_served():
+            typer.echo(f"Unsloth Studio is still running at {base}.")
+            typer.echo("Stop it with: unsloth studio stop")
         return
     try:
-        _launch(command, env, install_hint = install_hint, unset_env = unset_env)
-    finally:
-        # Tear down a server we auto-started once the agent session ends (no-op otherwise).
+        code = _launch(command, env, install_hint = install_hint, unset_env = unset_env)
+    except BaseException:
+        # Startup succeeded but the agent failed to launch; tear the server down
+        # rather than orphan it.
         _shutdown_auto_served()
+        raise
+    auto_started = _auto_served_server is not None
+    kept = _keep_auto_served()
+    if auto_started and not kept:
+        typer.echo(f"The auto-started Unsloth server at {base} stopped during the session.")
+        raise typer.Exit(code = code)
+    if code:
+        # The server status below must not read as a successful agent session.
+        typer.echo(f"The agent exited with code {code}.")
+    if is_loopback_url(base):
+        typer.echo(f"Unsloth Studio is still running at {base}.")
+        typer.echo("Stop it with: unsloth studio stop")
+    else:
+        typer.echo(f"The remote Unsloth server is still running at {base}.")
+    raise typer.Exit(code = code)
 
 
 def _agents_config_root() -> Path:
@@ -1620,6 +2259,7 @@ def write_opencode_config(
     model: dict,
     path: Path,
     yolo: bool = False,
+    as_subagent: bool = False,
 ) -> dict:
     config = _read_json_object(path)
     if config is None:
@@ -1631,10 +2271,8 @@ def write_opencode_config(
         return {}
     before = json.dumps(config, sort_keys = True)
     config.setdefault("$schema", "https://opencode.ai/config.json")
-    # The session provider is registered under a dedicated id (_OPENCODE_PROVIDER)
-    # that a user's disabled_providers list would never target, so it is always
-    # selectable without this overlay having to reconstruct or override OpenCode's
-    # disabled_providers resolution.
+    # Keep the provider definition in this private session file. The launch path
+    # adjusts effective provider filters in the higher-priority inline overlay.
     model_entry = {"name": model["id"]}
     window = model.get("context_length") or model.get("max_context_length")
     if window:
@@ -1649,15 +2287,36 @@ def write_opencode_config(
         "options": {"baseURL": f"{base}/v1", "apiKey": key},
         "models": {model["id"]: model_entry},
     }
-    # OpenCode selects a model by "<providerID>/<modelID>".
-    config["model"] = f"{_OPENCODE_PROVIDER}/{model['id']}"
-    if window:
+    # Normal mode pins this as the session model. Subagent mode leaves the user's
+    # main/small models alone and exposes the local model to @unsloth and /models.
+    opencode_model = f"{_OPENCODE_PROVIDER}/{model['id']}"
+    if as_subagent:
+        for field in ("model", "small_model"):
+            if str(config.get(field) or "").startswith(f"{_OPENCODE_PROVIDER}/"):
+                config.pop(field, None)
+        managed_compaction = {"auto": True, "reserved": max(1, window // 10)} if window else None
+        if managed_compaction and config.get("compaction") == managed_compaction:
+            config.pop("compaction", None)
+        _subdict(config, "agent")[_SUBAGENT_NAME] = {
+            "description": _SUBAGENT_DESCRIPTION,
+            "mode": "subagent",
+            "model": opencode_model,
+            "prompt": _SUBAGENT_INSTRUCTIONS,
+        }
+    else:
+        config["model"] = opencode_model
+        agents = config.get("agent")
+        if isinstance(agents, dict):
+            agents.pop(_SUBAGENT_NAME, None)
+            if not agents:
+                config.pop("agent", None)
+    if window and not as_subagent:
         # Compact with ~10% headroom (near 90% full). The fixed 20k-token default
         # buffer over-compacts, or never settles, on a small local context.
         compaction = _subdict(config, "compaction")
         compaction["auto"] = True
         compaction["reserved"] = max(1, window // 10)
-    tools = ("edit", "bash", "webfetch")
+    tools = ("edit", "bash", "webfetch", *(("task",) if as_subagent else ()))
     if yolo:
         # Fallback for commands without native --auto and for the append-safe bare
         # --no-launch command (subcommand unknown yet). Rides inline (OPENCODE_CONFIG_CONTENT)
@@ -1786,6 +2445,29 @@ def write_pi_config(base: str, key: str, model: dict, path: Path) -> None:
         typer.echo(f"Updated {path}")
 
 
+def write_pi_subagent_config(
+    base: str,
+    key: str,
+    model: dict,
+    path: Path,
+    approve: bool = False,
+) -> None:
+    """Write private bootstrap data for the bundled Pi extension."""
+    window = model.get("context_length") or model.get("max_context_length")
+    window = int(window) if window else 32768
+    _write_private_json(
+        path,
+        {
+            "baseUrl": f"{base}/v1",
+            "apiKey": key,
+            "model": model["id"],
+            "contextWindow": window,
+            "maxTokens": min(window // 4, 8192),
+            "approve": approve,
+        },
+    )
+
+
 @start_app.command("claude", context_settings = _PASSTHROUGH)
 def claude(
     ctx: typer.Context,
@@ -1799,6 +2481,7 @@ def claude(
     serve: bool = _SERVE_OPTION,
     yolo: bool = _YOLO_OPTION,
     persist: bool = _PERSIST_OPTION,
+    as_subagent: bool = _AS_SUBAGENT_OPTION,
 ):
     """Point Claude Code at the running Unsloth server and start it."""
     base, key, entry = _connect(
@@ -1809,37 +2492,52 @@ def claude(
         launch = launch,
     )
     model_id = entry["id"]
+    install_hint = (
+        "irm https://claude.ai/install.ps1 | iex"
+        if os.name == "nt"
+        else "curl -fsSL https://claude.ai/install.sh | bash"
+    )
+    if as_subagent:
+        subagent_id = _subagent_model_id(base, key, entry, model, gguf_variant)
+        subagent_model = {**entry, "id": subagent_id}
+        window = subagent_model.get("context_length") or subagent_model.get("max_context_length")
+        server_env = {
+            "UNSLOTH_CLAUDE_SUBAGENT_BASE_URL": base,
+            "UNSLOTH_CLAUDE_SUBAGENT_API_KEY": key,
+            "UNSLOTH_CLAUDE_SUBAGENT_MODEL": subagent_id,
+            "UNSLOTH_CLAUDE_SUBAGENT_BYPASS_PERMISSIONS": "1" if yolo else "0",
+        }
+        if window:
+            server_env["UNSLOTH_CLAUDE_SUBAGENT_CONTEXT_WINDOW"] = str(int(window))
+        with _session_config("claude-subagent", launch, persist = persist) as config:
+            plugin = write_claude_subagent_plugin(config, server_env)
+            command = [
+                "claude",
+                "--plugin-dir",
+                _agent_config_path(plugin, ["claude"]),
+                # Before ctx.args: a forwarded `--` would turn later flags positional.
+                "--allowedTools",
+                _CLAUDE_SUBAGENT_TOOL,
+                *_yolo_command_flags("claude", yolo),
+                *ctx.args,
+            ]
+            typer.echo(
+                "Unsloth is available as a local agent. "
+                "Ask Claude to spawn an Unsloth or local agent."
+            )
+            _run(
+                base,
+                subagent_model,
+                {},
+                command,
+                launch = launch,
+                install_hint = install_hint,
+            )
+        return
 
-    env = {
-        "ANTHROPIC_BASE_URL": base,
-        "ANTHROPIC_AUTH_TOKEN": key,
-        "ANTHROPIC_MODEL": model_id,
-        # Session-only (no ~/.claude write): suppress the attribution header so
-        # llama.cpp KV-cache reuse is preserved; --settings below reinforces it.
-        "CLAUDE_CODE_ATTRIBUTION_HEADER": "0",
-        # Update checks, beta features, and other background requests either
-        # stall against a local server or evict the conversation from
-        # llama-server's KV-cache slots, so turn off everything nonessential.
-        "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC": "1",
-        "CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS": "1",
-        # A local server streams in bursts; disable the full-screen TUI redraw so the
-        # terminal doesn't flicker between tokens.
-        "CLAUDE_CODE_NO_FLICKER": "1",
-    }
-    # Claude Code auto-compacts against its native (~600k token) window; a local
-    # model's context is usually far smaller, so size the window to the loaded
-    # model's real context length. Otherwise the conversation overflows the
-    # server's window (silent truncation) long before Claude decides to compact.
-    # codex/openclaw get the same value through their config (model_context_window
-    # / contextWindow); Claude has no config file, so it rides on the env var.
-    window = entry.get("context_length") or entry.get("max_context_length")
-    if window:
-        env["CLAUDE_CODE_AUTO_COMPACT_WINDOW"] = str(int(window))
-        # Compact at 90% of that window; the override only takes effect once the
-        # window is set, and it can only lower the threshold, so it just guarantees
-        # headroom before the server's context limit instead of relying on Claude's
-        # default (which is tuned for its native 200K/1M window).
-        env["CLAUDE_AUTOCOMPACT_PCT_OVERRIDE"] = "90"
+    env = _claude_local_env(base, key, entry)
+    # Claude Code auto-compacts against its native context window. The local env
+    # above supplies the loaded model's real window and a 90% threshold instead.
     # --yolo (or its aliases) maps to Claude's own --dangerously-skip-permissions.
     # IS_SANDBOX is left unset on purpose: Claude refuses bypass mode as root unless a
     # sandbox is detected, and we don't want to falsely claim one on the user's host.
@@ -1854,11 +2552,6 @@ def claude(
         *_yolo_command_flags("claude", yolo),
         *ctx.args,
     ]
-    install_hint = (
-        "irm https://claude.ai/install.ps1 | iex"
-        if os.name == "nt"
-        else "curl -fsSL https://claude.ai/install.sh | bash"
-    )
     _run(
         base,
         entry,
@@ -1883,6 +2576,7 @@ def codex(
     serve: bool = _SERVE_OPTION,
     yolo: bool = _YOLO_OPTION,
     persist: bool = _PERSIST_OPTION,
+    as_subagent: bool = _AS_SUBAGENT_OPTION,
 ):
     """Point OpenAI Codex at the running Unsloth server and start it."""
     base, key, entry = _connect(
@@ -1893,13 +2587,37 @@ def codex(
         launch = launch,
     )
     # This preflight runs after _connect may have auto-started a server but before _run
-    # installs its teardown finally, so tear the server down here if it rejects the model
+    # takes over its lifecycle, so tear the server down here if it rejects the model
     # (e.g. a transformers-backend model) rather than leaving it on the atexit backstop.
     try:
         _require_gguf_for_codex(base, key, entry["id"])
     except BaseException:
         _shutdown_auto_served()
         raise
+    if as_subagent:
+        subagent_id = _subagent_model_id(base, key, entry, model, gguf_variant)
+        subagent_model = {**entry, "id": subagent_id}
+        with _session_config("codex-subagent", launch, persist = persist) as home:
+            agent_config = write_codex_subagent_config(base, key, subagent_model, home)
+            command = [
+                "codex",
+                *_codex_subagent_flags(agent_config),
+                *_yolo_command_flags("codex", yolo),
+                *ctx.args,
+            ]
+            typer.echo(
+                "Unsloth is available as the `unsloth` local agent. "
+                "Ask Codex to spawn an Unsloth or local agent."
+            )
+            _run(
+                base,
+                subagent_model,
+                {},
+                command,
+                launch = launch,
+                install_hint = "npm install -g @openai/codex",
+            )
+        return
     command = [
         "codex",
         "--oss",
@@ -1929,6 +2647,7 @@ def openclaw(
     persist: bool = _PERSIST_OPTION,
 ):
     """Point OpenClaw at the running Unsloth server and start it."""
+    _reject_as_subagent("openclaw", ctx.args)
     base, key, entry = _connect(
         api_key,
         model,
@@ -1984,6 +2703,7 @@ def opencode(
     serve: bool = _SERVE_OPTION,
     yolo: bool = _YOLO_OPTION,
     persist: bool = _PERSIST_OPTION,
+    as_subagent: bool = _AS_SUBAGENT_OPTION,
 ):
     """Point OpenCode at the running Unsloth server and start it."""
     base, key, entry = _connect(
@@ -1993,6 +2713,50 @@ def opencode(
         serve = serve,
         launch = launch,
     )
+    if as_subagent:
+        subagent_id = _subagent_model_id(base, key, entry, model, gguf_variant)
+        subagent_model = {**entry, "id": subagent_id}
+        # Stay append-safe for a bare no-launch recipe: a later `run <prompt>` would make
+        # `opencode --auto run ...` parse as the TUI, so keep yolo in the inline fallback.
+        route_native_auto = yolo and _opencode_supports_native_auto() and (launch or bool(ctx.args))
+        opencode_args, native_auto = _opencode_native_auto_args(list(ctx.args), route_native_auto)
+        command = ["opencode", *opencode_args]
+        with _session_config("opencode-subagent", launch, persist = persist) as cfg:
+            config_path = cfg / "opencode.json"
+            session_permission = write_opencode_config(
+                base,
+                key,
+                subagent_model,
+                config_path,
+                yolo = yolo and not native_auto,
+                as_subagent = True,
+            )
+            env = {"OPENCODE_CONFIG": str(config_path)}
+            if launch and _which_with_install_dirs("opencode") is None:
+                # Provider-filter inspection needs the binary; offer the install now so
+                # a global/project allowlist is honored on this first launch instead of
+                # being read only after _launch installs OpenCode.
+                _install_agent("opencode", "npm install -g opencode-ai")
+            inline_config = _opencode_subagent_inline_config(config_path, session_permission)
+            # A project opencode.json outranks the session file and could field-merge its
+            # own agent.unsloth over ours. Pin ours in the inline overlay so it wins.
+            inline_config.setdefault("agent", {})[_SUBAGENT_NAME] = {
+                "description": _SUBAGENT_DESCRIPTION,
+                "mode": "subagent",
+                "model": f"{_OPENCODE_PROVIDER}/{subagent_model['id']}",
+                "prompt": _SUBAGENT_INSTRUCTIONS,
+            }
+            env["OPENCODE_CONFIG_CONTENT"] = json.dumps(inline_config)
+            typer.echo("Unsloth is available as @unsloth and in /models.")
+            _run(
+                base,
+                subagent_model,
+                env,
+                command,
+                launch = launch,
+                install_hint = "npm install -g opencode-ai",
+            )
+        return
     opencode_model = f"{_OPENCODE_PROVIDER}/{entry['id']}"
     # The inline OPENCODE_CONFIG_CONTENT below pins the model in the highest-priority
     # layer, so the session model is forced without a --model flag. Only add --model for
@@ -2079,6 +2843,7 @@ def hermes(
     persist: bool = _PERSIST_OPTION,
 ):
     """Point Hermes (Nous Research) at the running Unsloth server and start it."""
+    _reject_as_subagent("hermes", ctx.args)
     native_args = [*_yolo_command_flags("hermes", yolo), *ctx.args]
     command = ["hermes", *_hermes_resume_oneshot_args(native_args)]
     base, key, entry = _connect(
@@ -2110,6 +2875,7 @@ def pi(
     serve: bool = _SERVE_OPTION,
     yolo: bool = _YOLO_OPTION,
     persist: bool = _PERSIST_OPTION,
+    as_subagent: bool = _AS_SUBAGENT_OPTION,
 ):
     """Point Pi (coding agent) at the running Unsloth server and start it."""
     base, key, entry = _connect(
@@ -2119,6 +2885,43 @@ def pi(
         serve = serve,
         launch = launch,
     )
+    install_hint = "npm install -g --ignore-scripts @earendil-works/pi-coding-agent"
+    if as_subagent:
+        if not _PI_SUBAGENT_EXTENSION.is_file():
+            _fail(f"Missing Pi subagent extension: {_PI_SUBAGENT_EXTENSION}")
+        subagent_id = _subagent_model_id(base, key, entry, model, gguf_variant)
+        subagent_model = {**entry, "id": subagent_id}
+        extension = _agent_config_path(_PI_SUBAGENT_EXTENSION, ["pi"])
+        with _session_config("pi-subagent", launch, persist = persist) as config:
+            config_path = config / "subagent.json"
+            write_pi_subagent_config(
+                base,
+                key,
+                subagent_model,
+                config_path,
+                approve = yolo,
+            )
+            command = [
+                "pi",
+                "--extension",
+                extension,
+                *_yolo_command_flags("pi", yolo),
+                *ctx.args,
+            ]
+            typer.echo(
+                "Unsloth is available as a local agent and in /model. "
+                "Ask Pi to spawn an Unsloth or local agent."
+            )
+            _run(
+                base,
+                subagent_model,
+                {"UNSLOTH_PI_SUBAGENT_CONFIG": str(config_path)},
+                command,
+                launch = launch,
+                install_hint = install_hint,
+                clear_screen = True,
+            )
+        return
     # Pi defaults to the google provider, so pin our provider/model on the command
     # line; the custom OpenAI-compatible endpoint itself is only configurable via
     # ~/.pi/agent/models.json.
@@ -2133,7 +2936,6 @@ def pi(
     ]
     # --ignore-scripts matches Pi's documented install recipe (its README notes Pi needs
     # no install scripts), so accepting the prompt skips dependency lifecycle scripts.
-    install_hint = "npm install -g --ignore-scripts @earendil-works/pi-coding-agent"
     with _session_config("pi", launch, persist = persist) as home:
         # Pi resolves its config dir from PI_CODING_AGENT_DIR first (getAgentDir() prefers
         # it over $HOME/.pi/agent), so pin it at the session dir: an inherited

@@ -407,7 +407,8 @@ export const en = {
             "Unsupported file type. Use .woff2, .woff, .ttf, or .otf.",
           errorTooLarge: "Font file is too large (max 1.5 MB).",
           errorLimit: "You can import up to 3 fonts.",
-          errorStorageFull: "Not enough local storage for this font. Remove an imported font first.",
+          errorStorageFull:
+            "Not enough local storage for this font. Remove an imported font first.",
           errorFailed: "Could not load this font file.",
         },
         uiFontSize: {
@@ -512,16 +513,47 @@ export const en = {
       },
     },
     agents: {
-      title: "Agents (unsloth start)",
+      title: "Agents",
       description:
         "Connect coding agents like Claude Code and Codex to a model running locally in Unsloth.",
       intro:
-        "connects Claude Code, Codex, Hermes, OpenCode and other agents to a model served locally by Unsloth, fully offline on your own hardware. It runs a OpenAI-compatible server for the agent and never touches your agent's config files.",
+        "connects Claude Code, Codex, Hermes, OpenCode and other agents to a model served locally by Unsloth, fully offline on your own hardware. It runs an OpenAI-compatible server for the agent and never touches your agent's config files.",
       readDocs: "Read the docs",
       copy: "Copy",
       copied: "Copied",
+      commandBuilder: "Command builder",
+      agent: "Coding agent",
+      model: "Model",
+      searchModels: "Search GGUF models...",
+      noModels: "No matching GGUF models.",
+      showingModels:
+        "Showing {shown} of {total} matches. Keep typing to narrow the list.",
+      quantization: "Quantization",
+      loadingQuantizations: "Loading quantizations...",
+      noQuantizations: "No separate quantization",
+      recommended: "Recommended",
+      downloaded: "Downloaded",
+      quantizationLoadError:
+        "Couldn't load all quantizations. The command will use the available model value.",
+      generatedCommand: "Generated command",
+      docs: "Docs",
+      agentDocs: "Open {agent} setup docs",
+      copyGeneratedCommand: "Copy generated command",
+      modelNote:
+        "Codex requires a GGUF model served by llama-server. Other agents can also use transformer-backed models; remove --model to use the model already loaded in Unsloth Studio.",
+      subagent: {
+        title: "Use a local model as a subagent",
+        description:
+          "Keep {agent} on its current model and delegate selected tasks to this local Unsloth model.",
+        setupCommand: "Setup command",
+        copySetupCommand: "Copy subagent setup command",
+        usagePrompt: "Then in {agent}, type:",
+        copyUsagePrompt: "Copy subagent usage prompt",
+        defaultPrompt: "Spawn a local agent to implement this function.",
+        opencodePrompt: "@unsloth find the cause of this test failure",
+      },
       quickstart: {
-        title: "Quickstart",
+        title: "Build a command",
         description:
           "Launch an agent against the model currently loaded in Studio. Load a model first, then swap claude for any supported agent below.",
         noneDetected: "No supported agent CLIs were found on your PATH.",
@@ -552,6 +584,8 @@ export const en = {
         serve: "Enable or disable the automatic local server.",
         launch: "Launch the agent, or just print the command and environment.",
         persist: "Keep Unsloth-managed agent storage between runs.",
+        asSubagent:
+          "Keep the parent on its current model and register Unsloth as a local subagent (Claude Code, Codex, OpenCode, and Pi).",
         apiKey: "Provide your Unsloth API key (or set UNSLOTH_API_KEY).",
         yolo: "Skip approval prompts. Use only in trusted environments.",
       },
