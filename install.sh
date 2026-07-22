@@ -2917,7 +2917,9 @@ case "$_torch_index_leaf" in
         # here on a generic rocm index; re-probe unmasked or a masked-out Strix
         # box keeps the broken generic wheels. Partial masks never get here
         # (they enumerate at least one agent above) and keep their selection.
-        if [ -z "$_gfx_all" ] && [ -n "${ROCR_VISIBLE_DEVICES:-}${HIP_VISIBLE_DEVICES:-}" ]; then
+        # ${VAR+x} (not :-): a SET-but-empty mask also hides every agent and
+        # must trigger the re-probe too.
+        if [ -z "$_gfx_all" ] && [ -n "${ROCR_VISIBLE_DEVICES+x}${HIP_VISIBLE_DEVICES+x}" ]; then
             if command -v rocminfo >/dev/null 2>&1; then
                 _gfx_all=$( (unset ROCR_VISIBLE_DEVICES HIP_VISIBLE_DEVICES; rocminfo 2>/dev/null) | grep -oE 'gfx[1-9][0-9a-z]{2,3}' || true)
             fi

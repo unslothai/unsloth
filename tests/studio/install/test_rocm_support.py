@@ -3486,12 +3486,14 @@ class TestStrixRocm71Override:
         )
         assert block, "could not extract the gfx-detection block"
         with tempfile.TemporaryDirectory() as d:
-            # rocminfo honours ROCR_VISIBLE_DEVICES like the real tool: -1 hides
-            # both agents, 1 renumbers to the dGPU only, unset shows both.
+            # rocminfo honours ROCR_VISIBLE_DEVICES like the real tool: -1 and
+            # set-but-empty hide both agents, 1 renumbers to the dGPU only,
+            # unset shows both.
             rocminfo = (
                 "#!/bin/sh\n"
-                'case "${ROCR_VISIBLE_DEVICES-}" in\n'
-                '  -1) echo "no visible agents" ;;\n'
+                'case "${ROCR_VISIBLE_DEVICES-__unset__}" in\n'
+                '  __unset__) printf "Name: gfx1151\\nName: gfx1201\\n" ;;\n'
+                '  ""|-1) echo "no visible agents" ;;\n'
                 '  1) printf "Name: gfx1201\\n" ;;\n'
                 '  *) printf "Name: gfx1151\\nName: gfx1201\\n" ;;\n'
                 "esac\n"
@@ -3517,6 +3519,11 @@ class TestStrixRocm71Override:
             r = run(ROCR_VISIBLE_DEVICES = "-1")
             assert r.returncode == 0, f"masked probe aborted: {r.stderr}"
             assert "OK:gfx1151" in r.stdout, f"reroute blinded by full mask: {r.stdout!r}"
+            # A SET-but-empty mask also hides every agent and must re-probe too
+            # (the ${VAR+x} guard, not ${VAR:-}).
+            r0 = run(ROCR_VISIBLE_DEVICES = "")
+            assert r0.returncode == 0, f"empty-mask probe aborted: {r0.stderr}"
+            assert "OK:gfx1151" in r0.stdout, f"reroute blinded by empty mask: {r0.stdout!r}"
             # Partial mask: enumeration already reflects it; the dGPU selection
             # must survive (no unmasked re-probe overriding the user's pick).
             r2 = run(ROCR_VISIBLE_DEVICES = "1")
