@@ -262,12 +262,16 @@ def _bundled_hip_present(binary_dir: str) -> bool:
 def _native_linux_system_rocm_lib_dirs(binary_dir: str = "") -> "list[str]":
     """System ROCm lib dir(s) to load before a prebuilt's bundled HIP, on native Linux.
 
-    The bundled bare-metal HIP runtime can be incompatible with the host's
-    kernel driver (amdkfd) and crash inside hsa_init(); prepending the system
-    ROCm libs loads the matching libhsa-runtime64 / libamdhip64 while the
-    bundle still supplies libggml-hip / librocblas with GPU kernels.
-    No-op on WSL (handled by _wsl_system_rocm_lib_dirs), non-Linux, or via
-    UNSLOTH_LLAMA_NO_SYSTEM_ROCM=1 (keep the bundled runtime).
+    The bundled bare-metal HIP runtime can be incompatible with the host kernel
+    driver (amdkfd) and crash inside hsa_init(); prepending the system ROCm lib
+    dir loads a version-consistent, driver-matched stack (libhsa-runtime64 /
+    libamdhip64 / librocblas) ahead of the bundle, while the bundle still
+    supplies libggml-hip. The whole dir is used deliberately: keeping the
+    bundle's per-gfx rocBLAS while loading a different-version system HIP/ROCR
+    risks missing-symbol failures, so the consistent system stack wins when the
+    host ROCm supports this GPU (it must, for the ROCm torch build to run).
+    UNSLOTH_LLAMA_NO_SYSTEM_ROCM=1 keeps the pure bundle for a host whose system
+    ROCm lacks this arch's compute kernels. No-op on WSL / non-Linux.
     """
     if os.environ.get("UNSLOTH_LLAMA_NO_SYSTEM_ROCM") == "1":
         return []
