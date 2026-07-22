@@ -1353,6 +1353,27 @@ class TestInstallShStructure:
         sh_path = PACKAGE_ROOT / "install.sh"
         source = sh_path.read_text(encoding = "utf-8")
         assert "amd-smi" in source
+
+    def test_cpu_index_note_respects_explicit_pin(self):
+        """An explicit UNSLOTH_TORCH_INDEX_URL/_FAMILY CPU pin is a request, not
+        a detection failure: the */cpu wheel note must report the pin instead of
+        claiming ROCm/HIP is unusable, the WSL setup guidance must be skipped,
+        and the gpu summary must not label a pinned AMD host "no usable ROCm"."""
+        sh_path = PACKAGE_ROOT / "install.sh"
+        source = sh_path.read_text(encoding = "utf-8")
+        note = source.find('substep "AMD GPU detected, but no usable ROCm/HIP install')
+        assert note != -1
+        assert '[ "$_torch_index_pinned" = true ]' in source[note - 400 : note], (
+            "the */cpu note must check the explicit pin before diagnosing ROCm"
+        )
+        assert '[ "$OS" = "wsl" ] && [ "$_torch_index_pinned" = false ]' in source, (
+            "ROCm-on-WSL guidance is detection advice; skip it for pinned installs"
+        )
+        summary = source.find('step "gpu" "AMD GPU (no usable ROCm -- CPU fallback)"')
+        assert summary != -1
+        assert '[ "$_torch_index_pinned" = true ]' in source[summary - 700 : summary], (
+            "the gpu summary must not claim no usable ROCm for a pinned index"
+        )
         assert "rocm" in source.lower()
 
     def test_cuda_precedence(self):

@@ -3081,10 +3081,16 @@ elif [ "$OS" = "macos" ] && [ "$_ARCH" = "arm64" ]; then
     # Apple Silicon: PyTorch gets Metal (MPS) acceleration over unified memory, so not CPU-only.
     step "gpu" "Apple Silicon (Metal, unified memory)"
 elif _has_amd_rocm_gpu; then
-    # AMD GPU visible to the kernel but the torch index stayed CPU: no usable
-    # ROCm userspace to pick a wheel. "none" would repeat the false diagnosis
-    # this installer used to give.
-    step "gpu" "AMD GPU (no usable ROCm -- CPU fallback)" "$C_WARN"
+    if [ "$_torch_index_pinned" = true ]; then
+        # An explicit UNSLOTH_TORCH_INDEX_URL/_FAMILY pin skipped all probing;
+        # do not claim ROCm is unusable when a CPU/other index was requested.
+        step "gpu" "AMD GPU (torch index pinned: $_torch_index_leaf)" "$C_WARN"
+    else
+        # AMD GPU visible to the kernel but the torch index stayed CPU: no usable
+        # ROCm userspace to pick a wheel. "none" would repeat the false diagnosis
+        # this installer used to give.
+        step "gpu" "AMD GPU (no usable ROCm -- CPU fallback)" "$C_WARN"
+    fi
 else
     step "gpu" "none (CPU-only)" "$C_WARN"
 fi
@@ -3093,13 +3099,17 @@ fi
 case "$TORCH_INDEX_URL" in
     */cpu)
         if [ "$SKIP_TORCH" = false ] && [ "$OS" != "macos" ]; then
-            if _has_amd_rocm_gpu; then
+            if [ "$_torch_index_pinned" = true ]; then
+                # An explicit CPU pin is a request, not a detection failure:
+                # skip the SDK guidance (ROCm may be perfectly healthy here).
+                substep "CPU-only PyTorch (index pinned via UNSLOTH_TORCH_INDEX_URL / _FAMILY)."
+            elif _has_amd_rocm_gpu; then
                 substep "AMD GPU detected, but no usable ROCm/HIP install -- installing CPU-only PyTorch." "$C_WARN"
                 substep "Install the ROCm/HIP SDK and re-run this installer for GPU PyTorch." "$C_WARN"
             else
                 substep "No GPU detected -- installing CPU-only PyTorch." "$C_WARN"
             fi
-            if [ "$OS" = "wsl" ]; then
+            if [ "$OS" = "wsl" ] && [ "$_torch_index_pinned" = false ]; then
                 # WSL + no GPU detected (detection above found nothing). Common
                 # cause: an AMD GPU whose ROCm-on-WSL runtime isn't exposed yet --
                 # /dev/dxg present (graphics) but no ROCm runtime.
