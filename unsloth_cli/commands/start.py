@@ -2445,7 +2445,13 @@ def write_pi_config(base: str, key: str, model: dict, path: Path) -> None:
         typer.echo(f"Updated {path}")
 
 
-def write_pi_subagent_config(base: str, key: str, model: dict, path: Path) -> None:
+def write_pi_subagent_config(
+    base: str,
+    key: str,
+    model: dict,
+    path: Path,
+    approve: bool = False,
+) -> None:
     """Write private bootstrap data for the bundled Pi extension."""
     window = model.get("context_length") or model.get("max_context_length")
     window = int(window) if window else 32768
@@ -2457,6 +2463,7 @@ def write_pi_subagent_config(base: str, key: str, model: dict, path: Path) -> No
             "model": model["id"],
             "contextWindow": window,
             "maxTokens": min(window // 4, 8192),
+            "approve": approve,
         },
     )
 
@@ -2887,7 +2894,13 @@ def pi(
         extension = _agent_config_path(_PI_SUBAGENT_EXTENSION, ["pi"])
         with _session_config("pi-subagent", launch, persist = persist) as config:
             config_path = config / "subagent.json"
-            write_pi_subagent_config(base, key, subagent_model, config_path)
+            write_pi_subagent_config(
+                base,
+                key,
+                subagent_model,
+                config_path,
+                approve = yolo,
+            )
             command = [
                 "pi",
                 "--extension",

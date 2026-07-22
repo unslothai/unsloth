@@ -689,6 +689,16 @@ export function AgentsTab() {
     let cancelled = false;
 
     if (!isHuggingFaceRepo(selectedModel)) {
+      queueMicrotask(() => {
+        if (cancelled) {
+          return;
+        }
+        setVariants([]);
+        setDefaultVariant(null);
+        setSelectedVariant(preferredVariant);
+        setVariantsFailed(false);
+        setVariantsLoading(false);
+      });
       return () => {
         cancelled = true;
       };

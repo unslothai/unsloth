@@ -3179,21 +3179,26 @@ def test_connect_pi_no_launch(fake_studio, tmp_path):
     assert not any(c[1].endswith("/api/inference/status") for c in fake_studio)
 
 
-def test_connect_pi_as_subagent_preserves_cloud_parent(fake_studio, tmp_path):
+@pytest.mark.parametrize("yolo", [False, True])
+def test_connect_pi_as_subagent_preserves_cloud_parent(fake_studio, tmp_path, yolo):
+    args = [
+        "pi",
+        "--as-subagent",
+        "--no-launch",
+        "--model",
+        MODEL["id"] + ":UD-Q4_K_XL",
+    ]
+    if yolo:
+        args.insert(2, "--yolo")
     result = CliRunner().invoke(
         start.start_app,
-        [
-            "pi",
-            "--as-subagent",
-            "--no-launch",
-            "--model",
-            MODEL["id"] + ":UD-Q4_K_XL",
-        ],
+        args,
     )
     assert result.exit_code == 0, result.output
     command = _launch_command(result.output)
     assert command[:2] == ["pi", "--extension"]
     assert command[2].endswith("unsloth_cli/pi_subagent.ts")
+    assert ("--approve" in command) is yolo
     assert "--provider" not in command
     assert "--model" not in command
     assert "PI_CODING_AGENT_DIR" not in result.output
@@ -3208,6 +3213,7 @@ def test_connect_pi_as_subagent_preserves_cloud_parent(fake_studio, tmp_path):
         "model": MODEL["id"] + ":UD-Q4_K_XL",
         "contextWindow": 4096,
         "maxTokens": 1024,
+        "approve": yolo,
     }
     assert "Ask Pi to spawn an Unsloth or local agent." in result.output
 
