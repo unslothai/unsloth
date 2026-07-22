@@ -379,6 +379,7 @@ def _try_http_retry(
             repo_type,
             repo_id,
             progress_blob_hashes,
+            root = Path(original_metadata.hub_cache) if original_metadata.hub_cache else None,
         )
         if progress_blob_hashes
         else 0

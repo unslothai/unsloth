@@ -689,16 +689,24 @@ def incomplete_blob_hashes(
     return out
 
 
-def completed_blob_bytes(repo_type: str, repo_id: str, blob_hashes: frozenset[str]) -> int:
-    """Sum finalized blob bytes for *blob_hashes* in the active HF cache root.
+def completed_blob_bytes(
+    repo_type: str,
+    repo_id: str,
+    blob_hashes: frozenset[str],
+    *,
+    root: Optional[Path] = None,
+) -> int:
+    """Sum finalized blob bytes for *blob_hashes* in a single HF cache root.
 
-    A worker only writes to the active ``HF_HUB_CACHE`` root, so a baseline must
-    ignore legacy/default roots that ``snapshot_download`` won't reuse this run.
+    A worker only writes to its captured ``HF_HUB_CACHE`` root, so a baseline
+    must be scoped to that root (``root``), not re-resolved to whatever cache is
+    active now; otherwise a runtime cache switch makes the retry baseline count
+    bytes from the wrong disk.
     """
     if not blob_hashes:
         return 0
     total = 0
-    for entry in iter_active_repo_cache_dirs(repo_type, repo_id):
+    for entry in iter_active_repo_cache_dirs(repo_type, repo_id, root = root):
         blobs_dir = entry / "blobs"
         if not blobs_dir.is_dir():
             continue
