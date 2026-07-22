@@ -2022,6 +2022,11 @@ else
         if [ "${UNSLOTH_WHISPER_FORCE_COMPILE:-0}" = "1" ] && [ -f "$_WHISPER_BUILD" ] \
                 && command -v cmake >/dev/null 2>&1 && command -v git >/dev/null 2>&1; then
             substep "whisper.cpp prebuilt unavailable; building from source (UNSLOTH_WHISPER_FORCE_COMPILE=1)..."
+            # The source build overwrites whisper-server in the managed dir but
+            # knows nothing about the prebuilt marker; a stale marker would make
+            # a later setup run report "already matches" and skip repairing the
+            # prebuilt over the source binary. Drop it before building.
+            rm -f "$WHISPER_CPP_DIR/UNSLOTH_WHISPER_PREBUILT_INFO.json" 2>/dev/null || true
             if run_quiet_no_exit "whisper.cpp source build" sh "$_WHISPER_BUILD"; then
                 step "whisper.cpp" "source build installed"
                 if [ "$_STUDIO_HOME_IS_CUSTOM" = true ] && [ -d "$WHISPER_CPP_DIR" ]; then

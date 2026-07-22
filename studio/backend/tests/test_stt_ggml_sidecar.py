@@ -242,6 +242,22 @@ def test_child_env_scrubs_secrets_and_adds_lib_dir(monkeypatch, tmp_path):
     assert str(tmp_path.resolve()) in env[_loader_path_var()].split(os.pathsep)
 
 
+def test_child_env_isolates_home_and_cred_locations(monkeypatch, tmp_path):
+    # The downloaded server must not see the real home (token caches live
+    # there) nor explicit cred-store pointers like HF_HOME / NETRC.
+    monkeypatch.setenv("HOME", "/real/home")
+    monkeypatch.setenv("HF_HOME", "/real/hf")
+    monkeypatch.setenv("NETRC", "/real/.netrc")
+    monkeypatch.setattr(ggml_module, "_managed_whisper_cpp_dir", lambda: tmp_path / "managed")
+    binary = tmp_path / "whisper-server"
+    binary.write_text("#!/bin/sh\n")
+    env = ggml_module._whisper_server_child_env(str(binary))
+    assert env["HOME"] == str(tmp_path / "managed" / ".child_home")
+    assert "HF_HOME" not in env
+    assert "NETRC" not in env
+    assert (tmp_path / "managed" / ".child_home").is_dir()
+
+
 def test_child_env_wsl_rocm_prepends_system_hip(monkeypatch, tmp_path):
     if sys.platform != "linux":
         pytest.skip("WSL ROCm library precedence is Linux-only")

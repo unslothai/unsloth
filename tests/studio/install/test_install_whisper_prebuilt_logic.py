@@ -834,6 +834,41 @@ def test_link_ggml_runtime_wires_windows_libomp(tmp_path):
     assert not (whisper_bin / "llama.dll").exists()
 
 
+def test_existing_install_requires_executable_server(tmp_path, monkeypatch):
+    # A marker-matching install with a non-executable server must reinstall:
+    # the sidecar refuses it via os.access(X_OK), so "already matches" would
+    # otherwise leave dictation permanently broken.
+    host = _host("linux", "x64")
+    selection = object()
+    monkeypatch.setattr(M.core, "existing_install_matches", lambda *a: True)
+    server = tmp_path / "build" / "bin" / "whisper-server"
+    server.parent.mkdir(parents = True)
+    server.write_text("bin")
+    monkeypatch.setattr(M, "installed_server_path", lambda d, h: server)
+    monkeypatch.setattr(M, "load_prebuilt_metadata", lambda d: {})
+    server.chmod(0o644)
+    assert M.existing_install_matches(tmp_path, host, selection) is False
+    server.chmod(0o755)
+    assert M.existing_install_matches(tmp_path, host, selection) is True
+
+
+def test_existing_slim_install_requires_wired_libraries(tmp_path, monkeypatch):
+    # A slim install whose hardlinked ggml files vanished (llama dir deleted)
+    # must reinstall so update re-wires instead of reporting up to date.
+    host = _host("linux", "x64")
+    monkeypatch.setattr(M.core, "existing_install_matches", lambda *a: True)
+    server = tmp_path / "build" / "bin" / "whisper-server"
+    server.parent.mkdir(parents = True)
+    server.write_text("bin")
+    server.chmod(0o755)
+    monkeypatch.setattr(M, "installed_server_path", lambda d, h: server)
+    marker = {"install_kind": "slim", "linked_libraries": ["libggml.so.0"]}
+    monkeypatch.setattr(M, "load_prebuilt_metadata", lambda d: marker)
+    assert M.existing_install_matches(tmp_path, host, object()) is False
+    (server.parent / "libggml.so.0").write_text("lib")
+    assert M.existing_install_matches(tmp_path, host, object()) is True
+
+
 def test_link_ggml_runtime_libomp_alone_is_not_a_pairing(tmp_path):
     # A libomp without any ggml library is not a usable llama runtime.
     bin_dir = tmp_path / "llama_bin"

@@ -274,6 +274,7 @@ def _install_latest(
     backend: Optional[str],
     script: Path,
     set_progress,
+    pin_release_tag: Optional[str] = None,
 ) -> dict:
     """Unload the warm whisper sidecar, run the installer for the latest
     prebuilt, then refresh caches so the next load uses the new build. Runs as
@@ -306,10 +307,11 @@ def _install_latest(
     # Preserve the installed accelerator across updates. Left unpinned the
     # installer re-detects the host, which is fine on unchanged hardware but
     # can reroute a deliberate choice (e.g. cpu on a GPU box); forwarding the
-    # marker's backend keeps the same slice. No --published-release-tag:
-    # the installer resolves the newest published release itself.
+    # marker's backend keeps the same slice.
     if isinstance(backend, str) and backend:
         cmd.extend(["--backend", backend])
+    if pin_release_tag:
+        cmd.extend(["--published-release-tag", pin_release_tag])
     cmd.extend(_rocm_install_args(asset))
     logger.info("whisper update: installing", cmd = " ".join(cmd))
     env = dict(os.environ, UNSLOTH_PROGRESS_PERCENT_STEP = "5")
@@ -393,6 +395,12 @@ def chained_phase_plan(*, force_refresh: bool = False) -> dict:
         "asset": marker.get("asset"),
         "backend": marker.get("backend"),
         "script": script,
+        # Install exactly the release the check offered: the installer's own
+        # unpinned "latest" prefers the download-host /releases/latest pointer,
+        # which sorts by commit date and can lag the published_at pick the
+        # freshness check used, reinstalling an older build in a loop (the
+        # same #6219 class the llama phase pins against).
+        "pin_release_tag": status.get("latest_tag"),
     }
     return plan
 
@@ -408,4 +416,5 @@ def run_chained_phase(phase: dict, set_progress) -> dict:
         phase["backend"],
         phase["script"],
         set_progress,
+        pin_release_tag = phase.get("pin_release_tag"),
     )

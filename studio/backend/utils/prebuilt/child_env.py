@@ -82,6 +82,49 @@ def scrub_env(env: Mapping[str, str]) -> dict[str, str]:
     }
 
 
+# Filesystem pointers a downloaded binary could follow to on-disk credential
+# stores (token caches under $HF_HOME, ~/.netrc, XDG config). Dropped rather
+# than repointed; the offline inference server needs none of them. Mirrors the
+# cred-location list of the tools bypass env (core/inference/tools.py).
+CRED_LOCATION_ENV_NAMES = frozenset(
+    {
+        "HF_HOME",
+        "HF_HUB_CACHE",
+        "HUGGINGFACE_HUB_CACHE",
+        "HF_XET_CACHE",
+        "TRANSFORMERS_CACHE",
+        "HF_DATASETS_CACHE",
+        "XDG_CONFIG_HOME",
+        "XDG_CACHE_HOME",
+        "XDG_DATA_HOME",
+        "NETRC",
+        "BASH_ENV",
+        "GIT_CONFIG_GLOBAL",
+        "GIT_CONFIG_SYSTEM",
+        "GIT_ASKPASS",
+        "SSH_ASKPASS",
+        "HOMEDRIVE",
+        "HOMEPATH",
+    }
+)
+# Home dirs are repointed (not dropped): loaders and SDKs expect them present,
+# but they must not resolve to the user's real profile with its token caches.
+HOME_ENV_NAMES = ("HOME", "USERPROFILE", "APPDATA", "LOCALAPPDATA")
+
+
+def isolate_home(env: dict[str, str], scratch_dir: str) -> dict[str, str]:
+    """Repoint home/profile vars at ``scratch_dir`` and drop credential-store
+    pointers, so a compromised downloaded server cannot read token caches or
+    cred files through the environment. Mutates and returns ``env``."""
+    os.makedirs(scratch_dir, exist_ok = True)
+    for name in HOME_ENV_NAMES:
+        if name in env:
+            env[name] = scratch_dir
+    for name in CRED_LOCATION_ENV_NAMES:
+        env.pop(name, None)
+    return env
+
+
 def wsl_system_rocm_lib_dirs() -> list[str]:
     """System ROCm lib dir(s) to load before a bundle's HIP on WSL2. Strict no-op
     off WSL (needs /dev/dxg, a "microsoft" /proc/version, and a librocdxg)."""

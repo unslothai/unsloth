@@ -163,8 +163,12 @@ export function useLlamaUpdateCheck({
   // can drop or double-fire the notification.
   const notifyReloadIfNeeded = useCallback(
     (job: Pick<LlamaUpdateJob, "state" | "reload_required" | "finished_at">) => {
+      // "error" is included for partial chained updates: the llama phase can
+      // land (and unload the server) before a later phase fails, and the
+      // backend keeps reload_required set in exactly that case. Without the
+      // resync the chat UI would keep pointing at the unloaded model.
       if (
-        job.state === "success" &&
+        (job.state === "success" || job.state === "error") &&
         job.reload_required &&
         job.finished_at !== reloadNotifiedForRef.current
       ) {
@@ -202,7 +206,9 @@ export function useLlamaUpdateCheck({
             reloadRequired: s.job.reload_required,
           });
         } else if (s.job.state === "error") {
-          // Keep the banner visible so retry is available.
+          // Keep the banner visible so retry is available. A partial chained
+          // update can still have unloaded the llama server before failing.
+          notifyReloadIfNeeded(s.job);
           onDone?.({ ok: false, error: s.job.error });
         } else {
           onDone?.({ ok: false, error: "update did not complete" });

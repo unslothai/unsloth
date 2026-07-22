@@ -3768,6 +3768,50 @@ if ($LocalLlamaCppLinked) {
 }
 
 # ==========================================================================
+#  PHASE 3.4: Install the whisper.cpp prebuilt (dictation runtime)
+# ==========================================================================
+# Mirrors the llama.cpp prebuilt install above; current whisper releases are
+# slim bundles that reuse the llama install's ggml runtime, so this runs after
+# llama. Failure is never fatal: local dictation falls back to Transformers STT.
+$WhisperCppDir = Join-Path $UnslothHome "whisper.cpp"
+$WhisperInstaller = Join-Path $PSScriptRoot "install_whisper_prebuilt.py"
+if (Test-Path -LiteralPath $WhisperInstaller) {
+    $whisperArgs = @($WhisperInstaller, "--install-dir", $WhisperCppDir)
+    $prevEAPWhisper = $ErrorActionPreference
+    $ErrorActionPreference = "Continue"
+    $previousNativeErrorPreferenceW = $null
+    $restoreNativeErrorPreferenceW = $false
+    if ($PSVersionTable.PSVersion.Major -ge 7) {
+        $previousNativeErrorPreferenceW = $PSNativeCommandUseErrorActionPreference
+        $PSNativeCommandUseErrorActionPreference = $false
+        $restoreNativeErrorPreferenceW = $true
+    }
+    try {
+        $whisperOutput = & python @whisperArgs 2>&1 | Out-String
+        $whisperExit = $LASTEXITCODE
+    } finally {
+        if ($restoreNativeErrorPreferenceW) {
+            $PSNativeCommandUseErrorActionPreference = $previousNativeErrorPreferenceW
+        }
+    }
+    $ErrorActionPreference = $prevEAPWhisper
+    if ($whisperExit -eq 0) {
+        if ($whisperOutput -match "already matches") {
+            step "whisper.cpp" "prebuilt up to date"
+        } else {
+            step "whisper.cpp" "prebuilt installed"
+        }
+        if ($StudioHomeIsCustom -and (Test-Path -LiteralPath $WhisperCppDir -PathType Container)) {
+            Mark-StudioOwned -Path $WhisperCppDir
+        }
+    } elseif ($whisperExit -eq 3) {
+        step "whisper.cpp" "install busy; keeping existing runtime" "Yellow"
+    } else {
+        substep "whisper.cpp prebuilt unavailable; local dictation uses Transformers STT"
+    }
+}
+
+# ==========================================================================
 #  PHASE 3.5: Install OpenSSL dev (for HTTPS support in llama-server)
 # ==========================================================================
 # llama-server needs OpenSSL to download models from HuggingFace via -hf.

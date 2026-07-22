@@ -2087,7 +2087,9 @@ def write_prebuilt_metadata(ops: ModuleOps, install_dir: Path, selection: Instal
         payload["linked_from"] = selection.linked_from
         if selection.linked_libraries is not None:
             payload["linked_libraries"] = list(selection.linked_libraries)
-    ops.metadata_path(install_dir).write_text(json.dumps(payload, indent = 2) + "\n")
+    ops.metadata_path(install_dir).write_text(
+        json.dumps(payload, indent = 2) + "\n", encoding = "utf-8"
+    )
 
 
 def load_prebuilt_metadata(ops: ModuleOps, install_dir: Path) -> dict[str, Any] | None:

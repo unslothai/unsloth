@@ -408,7 +408,12 @@ def run_chained_update(phases: list[dict], *, job: dict, job_lock: threading.Loc
             )
         if result.get("message"):
             done_messages.append(result["message"])
-        reload_required = reload_required or bool(result.get("reload_required"))
+        # Only phases that affect the primary (llama) server may raise the
+        # job-level reload flag: the frontend resyncs chat model state off it,
+        # and a whisper-only sidecar reload must not clear the chat checkpoint.
+        # Per-phase reload_required stays visible under job["phases"].
+        if phase.get("affects_job_reload", True):
+            reload_required = reload_required or bool(result.get("reload_required"))
         if primary_to_tag is None:
             primary_to_tag = result.get("to_tag")
 

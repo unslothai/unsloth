@@ -56,7 +56,7 @@ from core.inference.stt_sidecar import (
     _training_active,
     normalize_whisper_language,
 )
-from utils.prebuilt.child_env import scrub_env, wsl_system_rocm_lib_dirs
+from utils.prebuilt.child_env import isolate_home, scrub_env, wsl_system_rocm_lib_dirs
 from utils.prebuilt.runtime_libs import dedupe_existing_dirs
 from utils.process_lifetime import adopt_pid, child_popen_kwargs, forget_pid
 
@@ -269,9 +269,12 @@ _dedupe_existing_dirs = dedupe_existing_dirs
 
 
 def _whisper_server_child_env(binary: str) -> dict[str, str]:
-    """Env for the whisper-server subprocess: secrets scrubbed, co-located libs on
-    the loader path, WSL system HIP first on WSL2 ROCm."""
+    """Env for the whisper-server subprocess: secrets scrubbed, home/profile
+    vars repointed at a managed scratch dir (a downloaded binary must not see
+    the real home's token caches), co-located libs on the loader path, WSL
+    system HIP first on WSL2 ROCm."""
     env = scrub_env(os.environ)
+    isolate_home(env, str(_managed_whisper_cpp_dir() / ".child_home"))
     bin_dir = str(Path(binary).parent)
     # A CUDA bundle needs the CUDA-from-PyTorch wheel dirs so libcudart/libcublas
     # resolve at launch when they live only in site-packages/nvidia/*/lib. After

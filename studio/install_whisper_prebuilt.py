@@ -679,7 +679,31 @@ def load_prebuilt_metadata(install_dir: Path) -> dict[str, Any] | None:
 def existing_install_matches(
     install_dir: Path, host: HostInfo, selection: InstallSelection
 ) -> bool:
-    return core.existing_install_matches(_OPS, install_dir, host, selection)
+    """Core fingerprint match, hardened for repairability: a marker-matching
+    install is only "current" when the server is actually executable (the
+    sidecar refuses non-executable binaries, so setup must repair rather than
+    skip) and, for slim installs, every wired ggml library is still present
+    (a deleted/moved llama dir otherwise leaves dictation broken while update
+    reports up to date)."""
+    if not core.existing_install_matches(_OPS, install_dir, host, selection):
+        return False
+    server = installed_server_path(install_dir, host)
+    if not host.is_windows and not os.access(server, os.X_OK):
+        log(f"existing install at {install_dir} has a non-executable server; reinstalling")
+        return False
+    marker = load_prebuilt_metadata(install_dir) or {}
+    if marker.get("install_kind") == "slim":
+        bin_dir = server.parent
+        missing = [
+            name for name in marker.get("linked_libraries") or [] if not (bin_dir / name).is_file()
+        ]
+        if missing:
+            log(
+                f"existing slim install at {install_dir} is missing wired ggml "
+                f"libraries ({', '.join(missing[:4])}); reinstalling"
+            )
+            return False
+    return True
 
 
 # ── Orchestration ──

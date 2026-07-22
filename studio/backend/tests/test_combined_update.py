@@ -326,6 +326,38 @@ def test_whisper_plan_eligible_when_behind(monkeypatch, tmp_path):
     assert plan["phase"]["install_dir"] == install_dir
     assert plan["phase"]["repo"] == "unslothai/whisper.cpp"
     assert plan["phase"]["backend"] == "cpu"
+    # Pin to the exact release the freshness check offered: unpinned, the
+    # installer's download-host /releases/latest pointer can lag published_at
+    # and reinstall an older build in a loop.
+    assert plan["phase"]["pin_release_tag"] == "v1.9.2-unsloth.1"
+
+
+def test_whisper_phase_pins_installer_to_checked_release(monkeypatch, tmp_path):
+    calls = []
+    monkeypatch.setattr(
+        wupd._flow,
+        "stream_installer",
+        lambda cmd, env, **kw: calls.append(cmd),
+    )
+    monkeypatch.setattr(wupd, "reset_caches", lambda **kw: None)
+    monkeypatch.setattr(wupd, "latest_published_release", lambda repo, **kw: "v9")
+    install_dir = tmp_path / "whisper.cpp"
+    binary = _write_whisper_install(install_dir, "v9")
+    monkeypatch.setattr(wupd, "_find_binary", lambda: binary)
+    wupd.run_chained_phase(
+        {
+            "install_dir": install_dir,
+            "repo": "unslothai/whisper.cpp",
+            "asset": None,
+            "backend": "cpu",
+            "script": tmp_path / "install_whisper_prebuilt.py",
+            "pin_release_tag": "v9",
+        },
+        lambda f: None,
+    )
+    cmd = calls[0]
+    assert "--published-release-tag" in cmd
+    assert cmd[cmd.index("--published-release-tag") + 1] == "v9"
 
 
 # --- apply: the chained job ---
@@ -400,6 +432,30 @@ def test_apply_whisper_only_noops_llama(monkeypatch, tmp_path):
     assert job["phases"]["llama"]["reason"] == "up_to_date"
     assert job["phases"]["whisper"]["state"] == "success"
     assert "Updated whisper.cpp to v1.9.2-unsloth.1." in job["message"]
+
+
+def test_whisper_reload_never_raises_job_reload_flag(monkeypatch, tmp_path):
+    # A whisper-only update that had to unload a warm sidecar reports
+    # reload_required on its phase, but the JOB flag stays down: the chat
+    # frontend resyncs (and clears the local checkpoint) off the job flag,
+    # which must mean "the llama server changed", not "the sidecar restarted".
+    _setup_llama(monkeypatch, tmp_path, installed = "b9518", latest = "b9518")
+    _setup_whisper(monkeypatch, tmp_path)
+    (tmp_path / "install_whisper_prebuilt.py").write_text("stub")
+
+    def _whisper_phase(phase, set_progress):
+        return {
+            "to_tag": "v1.9.2-unsloth.1",
+            "reload_required": True,
+            "message": "Updated whisper.cpp to v1.9.2-unsloth.1.",
+        }
+
+    monkeypatch.setattr(wupd, "run_chained_phase", _whisper_phase)
+    assert upd.start_update()["started"] is True
+    job = _wait_for_job()
+    assert job["state"] == "success", job
+    assert job["phases"]["whisper"]["reload_required"] is True
+    assert not job["reload_required"]
 
 
 def test_apply_refuses_when_both_current(monkeypatch, tmp_path):

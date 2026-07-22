@@ -670,6 +670,9 @@ def start_update() -> dict:
             "name": "whisper",
             "weight": _WHISPER_PHASE_WEIGHT,
             "failure_message": "whisper.cpp update failed.",
+            # The sidecar reload is whisper-internal; it must not trip the
+            # job-level reload flag the chat frontend resyncs on.
+            "affects_job_reload": False,
             "skip_reason": (whisper_plan or {}).get("skip_reason") or "unavailable",
             "run": (
                 (lambda set_progress: _whisper.run_chained_phase(whisper_spec, set_progress))
