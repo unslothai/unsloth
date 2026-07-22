@@ -8,11 +8,10 @@ export function buildModelProvider(
   config: ModelProviderConfig,
   errors: string[],
 ): Record<string, unknown> {
-  // Local providers do not use any of the advanced request overrides -
-  // the backend overrides endpoint/api_key/provider_type and strips the
-  // extra fields in _inject_local_providers. Skip parsing the hidden
-  // JSON inputs here so imported or hydrated recipes with stale extra
-  // headers/body cannot block the client-side validation step.
+  // Local providers ignore advanced request overrides: the backend overrides
+  // endpoint/api_key/provider_type and strips extras in _inject_local_providers.
+  // Skip parsing hidden JSON inputs so stale headers/body in imported recipes
+  // can't block client-side validation.
   if (config.is_local === true) {
     return {
       name: config.name,
@@ -28,6 +27,7 @@ export function buildModelProvider(
     };
   }
 
+  const providerType = config.provider_type.trim().toLowerCase() || "openai";
   const extraHeaders = parseJsonObject(
     config.extra_headers,
     `Provider ${config.name} extra_headers`,
@@ -42,7 +42,7 @@ export function buildModelProvider(
     name: config.name,
     endpoint: config.endpoint,
     // biome-ignore lint/style/useNamingConvention: api schema
-    provider_type: "openai",
+    provider_type: providerType,
     // biome-ignore lint/style/useNamingConvention: api schema
     api_key_env: config.api_key_env?.trim() || undefined,
     // biome-ignore lint/style/useNamingConvention: api schema
@@ -54,55 +54,62 @@ export function buildModelProvider(
   };
 }
 
-export function buildModelConfig(
+function assignFiniteNumber(
+  target: Record<string, unknown>,
+  key: string,
+  rawValue: string | undefined,
+  transform: (value: number) => number = (value) => value,
+): void {
+  const trimmed = rawValue?.trim();
+  if (!trimmed) {
+    return;
+  }
+
+  const parsed = Number(trimmed);
+  if (Number.isFinite(parsed)) {
+    target[key] = transform(parsed);
+  }
+}
+
+function buildInferenceParameters(
   config: ModelConfig,
   errors: string[],
 ): Record<string, unknown> {
   const inference: Record<string, unknown> = {};
-  const temp = config.inference_temperature?.trim();
-  const topP = config.inference_top_p?.trim();
-  const maxTokens = config.inference_max_tokens?.trim();
-  const timeout = config.inference_timeout?.trim();
+  assignFiniteNumber(inference, "temperature", config.inference_temperature);
+  assignFiniteNumber(inference, "top_p", config.inference_top_p);
+  assignFiniteNumber(inference, "max_tokens", config.inference_max_tokens);
+  assignFiniteNumber(
+    inference,
+    "timeout",
+    config.inference_timeout,
+    Math.trunc,
+  );
+
   const extraBody = parseJsonObject(
     config.inference_extra_body,
     `Model ${config.name} inference extra_body`,
     errors,
   );
-
-  if (temp) {
-    const parsed = Number(temp);
-    if (Number.isFinite(parsed)) {
-      inference.temperature = parsed;
-    }
-  }
-  if (topP) {
-    const parsed = Number(topP);
-    if (Number.isFinite(parsed)) {
-      // biome-ignore lint/style/useNamingConvention: api schema
-      inference.top_p = parsed;
-    }
-  }
-  if (maxTokens) {
-    const parsed = Number(maxTokens);
-    if (Number.isFinite(parsed)) {
-      // biome-ignore lint/style/useNamingConvention: api schema
-      inference.max_tokens = parsed;
-    }
-  }
-  if (timeout) {
-    const parsed = Number(timeout);
-    if (Number.isFinite(parsed)) {
-      inference.timeout = Math.trunc(parsed);
-    }
-  }
   if (extraBody) {
-    // biome-ignore lint/style/useNamingConvention: api schema
     inference.extra_body = extraBody;
   }
+
+  return inference;
+}
+
+export function buildModelConfig(
+  config: ModelConfig,
+  errors: string[],
+): Record<string, unknown> {
+  const inference = buildInferenceParameters(config, errors);
+  const ggufVariant = config.gguf_variant?.trim();
 
   return {
     alias: config.name,
     model: config.model,
+    // biome-ignore lint/style/useNamingConvention: api schema
+    gguf_variant: ggufVariant || undefined,
     provider: config.provider || undefined,
     // biome-ignore lint/style/useNamingConvention: api schema
     inference_parameters:

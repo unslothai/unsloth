@@ -1,15 +1,20 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-import { DEFAULT_HYPERPARAMS, LR_DEFAULT_FULL, LR_DEFAULT_LORA, STEPS } from "@/config/training";
+import { CPT_TARGET_MODULES, DEFAULT_HYPERPARAMS, LR_DEFAULT_CPT, LR_DEFAULT_FULL, LR_DEFAULT_LORA, STEPS, TARGET_MODULES } from "@/config/training";
 import { authFetch } from "@/features/auth";
+import { getHfToken, mirrorHfTokenInto, useHfTokenStore } from "@/features/hub";
 import { isAdapterMethod } from "@/types/training";
+import type { DatasetFormat } from "@/types/training";
 import type { ModelType, StepNumber, TrainingMethod } from "@/types/training";
+import { toast } from "sonner";
 import { create } from "zustand";
 import { persist } from "zustand/middleware";
 import { checkDatasetFormat } from "../api/datasets-api";
 import { checkVisionModel, getModelConfig } from "../api/models-api";
 import { mapBackendModelConfigToTrainingPatch } from "../lib/model-defaults";
+import { isRawTextDatasetFormat } from "../lib/training-methods";
+import { validateS3Source } from "../lib/validation";
 import type { BackendModelConfig } from "../api/models-api";
 import type { TrainingConfigState, TrainingConfigStore } from "../types/config";
 
@@ -17,11 +22,8 @@ const MIN_STEP: StepNumber = 1;
 const MAX_STEP: StepNumber = STEPS.length as StepNumber;
 
 /**
- * Auto-select LoRA (16-bit) vs QLoRA (4-bit) based on model size and GPU memory.
- *
- * Rule: if model_size_gb * 1.5 * context_scale fits in free VRAM, use "lora" (16-bit).
- * Otherwise use "qlora" (4-bit).
- *
+ * Auto-select LoRA (16-bit) vs QLoRA (4-bit) by model size and GPU memory.
+ * Use "lora" if model_size_gb * 1.5 * context_scale fits in free VRAM, else "qlora".
  * Context scale: <=8192 = 1.0, >8192 = 1.7, >=16384 = 2.0, >=32768 = 4.0
  */
 async function autoSelectTrainingMethod(
@@ -57,6 +59,7 @@ const initialState: TrainingConfigState = {
   currentStep: MIN_STEP,
   modelType: null,
   selectedModel: null,
+  projectName: "",
   trainingMethod: "qlora",
   hfToken: "",
   datasetSource: "huggingface",
@@ -65,6 +68,7 @@ const initialState: TrainingConfigState = {
   datasetSubset: null,
   datasetSplit: null,
   datasetEvalSplit: null,
+  datasetStreaming: false,
   datasetManualMapping: emptyManualMapping(),
   datasetSystemPrompt: "",
   datasetUserTemplate: "",
@@ -95,24 +99,30 @@ let _datasetCheckController: AbortController | null = null;
 // AbortController for in-flight model default loads.
 let _modelConfigController: AbortController | null = null;
 
-// Track whether the user has manually toggled trainOnCompletions
-// since the last auto-set (model load or dataset change).
+// Has the user manually toggled trainOnCompletions since the last auto-set
+// (model load or dataset change)?
 let _trainOnCompletionsManuallySet = false;
 
-// Track whether the user has manually edited the learning rate
-// since the last model load. When false, switching training method
-// auto-sets LR to 2e-4 (LoRA/QLoRA) or 2e-5 (full fine-tune).
+// Has the user manually edited the LR since the last model load? When false,
+// switching method auto-sets LR to 2e-4 (LoRA/QLoRA) or 2e-5 (full fine-tune).
 let _learningRateManuallySet = false;
 
-// Stash the model-config-provided (YAML) learning rate so that
-// setTrainingMethod can restore it when switching back from full to adapter.
+// Stash the YAML learning rate so setTrainingMethod can restore it when
+// switching back from full to adapter.
 let _yamlLearningRate: number | undefined = undefined;
 
+// Track whether entering CPT auto-forced datasetFormat="raw" so that
+// leaving CPT can restore the prior user-visible format.
+let _datasetFormatBeforeCpt: DatasetFormat | null = null;
+let _datasetFormatAutoForcedByCpt = false;
+
+// modelType / isVisionModel / isAudioModel persist so multimodal-only UI
+// paints right on reload; the model-config fetch still re-derives them.
+// hfToken mirrors the shared hf-token-store and is persisted there instead.
 const NON_PERSISTED_STATE_KEYS: ReadonlySet<keyof TrainingConfigState> = new Set([
-  "modelType",
+  "hfToken",
   "isCheckingVision",
   "isEmbeddingModel",
-  "isAudioModel",
   "isLoadingModelDefaults",
   "modelDefaultsError",
   "modelDefaultsAppliedFor",
@@ -121,6 +131,7 @@ const NON_PERSISTED_STATE_KEYS: ReadonlySet<keyof TrainingConfigState> = new Set
   "isDatasetAudio",
   "trainOnCompletions",
   "maxPositionEmbeddings",
+  "s3Config",
 ]);
 
 function partializePersistedState(
@@ -145,15 +156,198 @@ function canProceedForStep(state: TrainingConfigState): boolean {
     case 2:
       return state.selectedModel !== null;
     case 3:
-      return state.datasetSource === "upload"
-        ? state.uploadedFile !== null
-        : state.dataset !== null;
+      if (state.datasetSource === "upload") {
+        return state.uploadedFile !== null;
+      }
+      if (state.datasetSource === "s3") {
+        return validateS3Source(state).ok;
+      }
+      return state.dataset !== null;
     case 4:
     case 5:
       return true;
     default:
       return false;
   }
+}
+
+// Single source of truth for the "streaming + eval needs a distinct split"
+// rule. Shared between the store's compatibility patch and the UI gate
+// (DatasetSection) so the two never drift apart.
+export function hasSeparateStreamingEvalSplit(
+  state: Pick<
+    TrainingConfigState,
+    "evalSteps" | "datasetSplit" | "datasetEvalSplit"
+  >,
+): boolean {
+  if (state.evalSteps <= 0) return true;
+  const trainSplit = state.datasetSplit || "train";
+  return !!state.datasetEvalSplit && state.datasetEvalSplit !== trainSplit;
+}
+
+function streamingCompatiblePatch(
+  state: TrainingConfigState,
+): Partial<TrainingConfigState> {
+  const patch: Partial<TrainingConfigState> = {};
+
+  if (state.datasetStreaming && state.maxSteps <= 0) {
+    patch.datasetStreaming = false;
+  }
+
+  // Evaluate the remaining streaming constraints against the *post-patch*
+  // streaming value. If streaming is being turned off in this same patch
+  // (e.g. maxSteps dropped to 0), its other constraints are moot and we must
+  // NOT clobber unrelated user preferences like trainOnCompletions/evalSteps.
+  const willStream =
+    patch.datasetStreaming !== undefined
+      ? patch.datasetStreaming
+      : state.datasetStreaming;
+
+  if (willStream && state.trainOnCompletions) {
+    patch.trainOnCompletions = false;
+  }
+
+  if (willStream && !hasSeparateStreamingEvalSplit(state)) {
+    patch.evalSteps = 0;
+  }
+
+  return patch;
+}
+
+// streamingCompatiblePatch can silently flip streaming-coupled fields. Surface a
+// toast when it does, so the indirect setters (split / eval-split / max-steps /
+// eval-steps) match setDatasetStreaming's "tell the user what changed" behavior.
+function notifyStreamingCompat(patch: Partial<TrainingConfigState>): void {
+  if (patch.datasetStreaming === false) {
+    toast.info("Streaming turned off: streaming needs a fixed Max Steps > 0.");
+    return;
+  }
+  const disabled = [
+    patch.trainOnCompletions === false && "assistant-completions-only",
+    patch.evalSteps === 0 && "evaluation (needs a separate eval split)",
+  ].filter(Boolean);
+  if (disabled.length > 0) {
+    toast.info(
+      `Adjusted for streaming. Disabled incompatible options: ${disabled.join(", ")}.`,
+    );
+  }
+}
+
+type TrainingMethodStatePatch = Partial<
+  Pick<
+    TrainingConfigState,
+    | "trainingMethod"
+    | "learningRate"
+    | "loraRank"
+    | "loraAlpha"
+    | "loraVariant"
+    | "targetModules"
+    | "datasetFormat"
+    | "trainOnCompletions"
+  >
+>;
+
+function getCptTrainingPatch(): TrainingMethodStatePatch {
+  return {
+    loraRank: 128,
+    loraAlpha: 32,
+    loraVariant: "rslora",
+    targetModules: CPT_TARGET_MODULES,
+    datasetFormat: "raw",
+    trainOnCompletions: false,
+  };
+}
+
+function getCptModelDefaultsPatch(): TrainingMethodStatePatch {
+  return {
+    ...getCptTrainingPatch(),
+    learningRate: LR_DEFAULT_CPT,
+  };
+}
+
+function getRestoreFromCptPatch(): TrainingMethodStatePatch {
+  return {
+    loraRank: DEFAULT_HYPERPARAMS.loraRank,
+    loraAlpha: DEFAULT_HYPERPARAMS.loraAlpha,
+    loraVariant: DEFAULT_HYPERPARAMS.loraVariant,
+    targetModules: TARGET_MODULES,
+  };
+}
+
+function clearCptDatasetFormatTracking(): void {
+  _datasetFormatBeforeCpt = null;
+  _datasetFormatAutoForcedByCpt = false;
+}
+
+function recordCptDatasetFormatOverride(currentDatasetFormat: DatasetFormat): void {
+  if (isRawTextDatasetFormat(currentDatasetFormat)) {
+    clearCptDatasetFormatTracking();
+    return;
+  }
+  _datasetFormatBeforeCpt = currentDatasetFormat;
+  _datasetFormatAutoForcedByCpt = true;
+}
+
+function getRestoreDatasetFormatFromCptPatch(): TrainingMethodStatePatch {
+  if (!_datasetFormatAutoForcedByCpt || _datasetFormatBeforeCpt == null) {
+    clearCptDatasetFormatTracking();
+    return {};
+  }
+
+  const previousDatasetFormat = _datasetFormatBeforeCpt;
+  clearCptDatasetFormatTracking();
+  return { datasetFormat: previousDatasetFormat };
+}
+
+function resolveTrainingMethodLearningRate(
+  prevMethod: TrainingMethod,
+  nextMethod: TrainingMethod,
+): number | undefined {
+  if (_learningRateManuallySet) {
+    return undefined;
+  }
+
+  const wasCpt = prevMethod === "cpt";
+  const wasAdapter = isAdapterMethod(prevMethod);
+  const nowAdapter = isAdapterMethod(nextMethod);
+
+  if (nextMethod === "cpt") {
+    return LR_DEFAULT_CPT;
+  }
+  if (wasCpt && nowAdapter) {
+    return _yamlLearningRate ?? LR_DEFAULT_LORA;
+  }
+  if (wasAdapter && nowAdapter) {
+    return undefined;
+  }
+  return nowAdapter ? _yamlLearningRate ?? LR_DEFAULT_LORA : LR_DEFAULT_FULL;
+}
+
+function buildTrainingMethodPatch(
+  prevMethod: TrainingMethod,
+  nextMethod: TrainingMethod,
+  currentDatasetFormat: DatasetFormat,
+): TrainingMethodStatePatch {
+  const patch: TrainingMethodStatePatch = { trainingMethod: nextMethod };
+
+  if (prevMethod !== "cpt" && nextMethod === "cpt") {
+    recordCptDatasetFormatOverride(currentDatasetFormat);
+    Object.assign(patch, getCptTrainingPatch());
+  }
+  if (prevMethod === "cpt" && nextMethod !== "cpt") {
+    Object.assign(
+      patch,
+      getRestoreFromCptPatch(),
+      getRestoreDatasetFormatFromCptPatch(),
+    );
+  }
+
+  const learningRate = resolveTrainingMethodLearningRate(prevMethod, nextMethod);
+  if (learningRate !== undefined) {
+    patch.learningRate = learningRate;
+  }
+
+  return patch;
 }
 
 export const useTrainingConfigStore = create<TrainingConfigStore>()(
@@ -179,20 +373,18 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
             _yamlLearningRate = undefined;
             const patch = mapBackendModelConfigToTrainingPatch(modelDetails.config);
 
-            // If the model config provides a specific learning rate, treat
-            // it as authoritative so the async auto-select does not overwrite it.
+            // Treat a model-config LR as authoritative so async auto-select
+            // won't overwrite it.
             const modelConfigHasLR = patch.learningRate !== undefined;
             _yamlLearningRate = patch.learningRate;
 
-            // YAML learning rates are tuned for adapter methods (LoRA/QLoRA).
-            // If the user is currently on full fine-tune, override with the
-            // full-finetune default instead of applying the YAML adapter LR.
+            // YAML LRs are tuned for adapters (LoRA/QLoRA); on full fine-tune,
+            // use the full-finetune default instead of the YAML adapter LR.
             if (modelConfigHasLR && !isAdapterMethod(get().trainingMethod)) {
               patch.learningRate = LR_DEFAULT_FULL;
             }
 
-            // If vision model + image dataset already known, override
-            // trainOnCompletions to false regardless of backend default.
+            // Vision model + known image dataset: force trainOnCompletions off.
             if (modelDetails.is_vision && get().isDatasetImage === true) {
               patch.trainOnCompletions = false;
             }
@@ -207,20 +399,19 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
               patch.trainOnCompletions = false;
             }
 
-            // Use backend-provided model_type when available, otherwise
-            // infer from capability flags.
+            // Use backend model_type when available, else infer from flags.
             const isEmbedding = !!modelDetails.is_embedding;
             const inferredModelType: ModelType = modelDetails.model_type
               ?? (isEmbedding ? "embeddings" : modelDetails.is_vision ? "vision" : modelDetails.is_audio ? "audio" : "text");
 
-            // Auto-select training method based on model size vs GPU memory.
-            // If model_size * 1.5 * context_scale fits in free VRAM, use LoRA 16-bit.
-            // Otherwise use QLoRA 4-bit.
+            // Auto-select LoRA vs QLoRA by model size vs GPU memory (see
+            // autoSelectTrainingMethod). Skip if the user chose CPT.
             const modelSizeBytes = modelDetails.model_size_bytes;
-            if (modelSizeBytes && modelSizeBytes > 0) {
+            if (modelSizeBytes && modelSizeBytes > 0 && get().trainingMethod !== "cpt") {
               void autoSelectTrainingMethod(modelSizeBytes, patch.contextLength ?? get().contextLength)
                 .then((method) => {
                   if (get().selectedModel !== modelName) return;
+                  if (get().trainingMethod === "cpt") return;
                   if (method) {
                     const lrPatch = !_learningRateManuallySet && !modelConfigHasLR
                       ? { learningRate: method === "full" ? LR_DEFAULT_FULL : LR_DEFAULT_LORA }
@@ -230,8 +421,16 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
                 });
             }
 
+            // Preserve CPT hyperparams: YAML adapter defaults (r/alpha/targets/LR)
+            // are tuned for standard LoRA and would clobber CPT settings.
+            const cptOverrides =
+              get().trainingMethod === "cpt"
+                ? getCptModelDefaultsPatch()
+                : {};
+
             set({
               ...patch,
+              ...cptOverrides,
               modelType: inferredModelType,
               isVisionModel: modelDetails.is_vision,
               isEmbeddingModel: isEmbedding,
@@ -255,10 +454,12 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
                 error instanceof Error
                   ? error.message
                   : "Failed to load model defaults",
+              // Defaults load failed; reset so no prior model's value lingers.
+              visionImageSize: DEFAULT_HYPERPARAMS.visionImageSize,
             });
 
-            // Fallback vision check if config endpoint fails.
-            void checkVisionModel(modelName)
+            // Fallback vision check; pass the token so a gated/private VLM classifies right.
+            void checkVisionModel(modelName, get().hfToken || undefined)
               .then((isVision) => {
                 if (get().selectedModel !== modelName) return;
                 set({
@@ -363,7 +564,35 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
         },
         setSelectedModel: (selectedModel) => {
           const previousModel = get().selectedModel;
-          set({ selectedModel, modelDefaultsError: null });
+          // Reset vision_image_size on a true switch only; same-model reloads
+          // go through the mapper, which preserves the user's choice.
+          const patch: {
+            selectedModel: string | null;
+            modelDefaultsError: null;
+            visionImageSize?: number | null;
+            trustRemoteCode?: boolean;
+            approvedRemoteCodeFingerprint?: string | null;
+            isVisionModel?: boolean;
+            isAudioModel?: boolean;
+            isEmbeddingModel?: boolean;
+          } = {
+            selectedModel,
+            modelDefaultsError: null,
+          };
+          if (selectedModel !== previousModel) {
+            patch.visionImageSize = DEFAULT_HYPERPARAMS.visionImageSize;
+            // Clear the prior model's approval so a clean model is not trained with a
+            // stale trust_remote_code=true (disables fused CE). Its own YAML default is
+            // re-applied below, and a custom-code model re-opens the dialog before start.
+            patch.trustRemoteCode = false;
+            patch.approvedRemoteCodeFingerprint = null;
+            // Reset capability flags so a mid-fetch reload can't persist the
+            // previous model's vision/audio flags against the new model.
+            patch.isVisionModel = false;
+            patch.isAudioModel = false;
+            patch.isEmbeddingModel = false;
+          }
+          set(patch);
 
           if (!selectedModel) {
             _modelConfigController?.abort();
@@ -395,33 +624,18 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
           if (state.modelDefaultsAppliedFor === state.selectedModel) return;
           void loadAndApplyModelDefaults(state.selectedModel);
         },
+        setProjectName: (projectName) => set({ projectName }),
         setTrainingMethod: (trainingMethod) => {
-          if (_learningRateManuallySet) {
-            set({ trainingMethod });
-            return;
-          }
-
-          const prev = get().trainingMethod;
-          const wasAdapter = isAdapterMethod(prev);
-          const nowAdapter = isAdapterMethod(trainingMethod);
-
-          // qlora <-> lora: same LR range, don't touch learning rate
-          if (wasAdapter && nowAdapter) {
-            set({ trainingMethod });
-            return;
-          }
-
-          // Category changed (adapter <-> full)
-          if (nowAdapter) {
-            // Switching TO adapter: restore YAML LR if available
-            set({ trainingMethod, learningRate: _yamlLearningRate ?? LR_DEFAULT_LORA });
-          } else {
-            // Switching TO full: no YAML full-LR exists, use constant
-            set({ trainingMethod, learningRate: LR_DEFAULT_FULL });
-          }
+          const state = get();
+          set(
+            buildTrainingMethodPatch(
+              state.trainingMethod,
+              trainingMethod,
+              state.datasetFormat,
+            ),
+          );
         },
-        setHfToken: (hfToken) =>
-          set({ hfToken: hfToken.trim().replace(/^["']+|["']+$/g, "") }),
+        setHfToken: (hfToken) => useHfTokenStore.getState().setToken(hfToken),
         setDatasetSource: (datasetSource) => set({ datasetSource }),
         selectHfDataset: (dataset) => {
           _datasetCheckController?.abort();
@@ -448,7 +662,37 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
             runDatasetCheck(uploadedFile, "train");
           }
         },
-        setDatasetFormat: (datasetFormat) => set({ datasetFormat }),
+        selectS3Source: () => {
+          _datasetCheckController?.abort();
+          _datasetCheckController = null;
+          _trainOnCompletionsManuallySet = false;
+          set({
+            datasetSource: "s3",
+            dataset: null,
+            uploadedFile: null,
+            ...resetDatasetState(),
+          });
+        },
+        setDatasetFormat: (datasetFormat) =>
+          set((state) => {
+            if (state.trainingMethod === "cpt") {
+              if (isRawTextDatasetFormat(datasetFormat)) {
+                clearCptDatasetFormatTracking();
+              }
+              return {
+                datasetFormat: "raw",
+                trainOnCompletions: false,
+              };
+            }
+
+            return {
+              datasetFormat,
+              trainOnCompletions:
+                isRawTextDatasetFormat(datasetFormat)
+                  ? false
+                  : state.trainOnCompletions,
+            };
+          }),
         setDataset: (dataset) => {
           _datasetCheckController?.abort();
           _datasetCheckController = null;
@@ -481,15 +725,19 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
           });
         },
         setDatasetSplit: (datasetSplit) => {
+          const state = get();
+          const nextState = { ...state, datasetSplit };
+          const streamingPatch = streamingCompatiblePatch(nextState);
           set({
             datasetSplit,
             datasetManualMapping: emptyManualMapping(),
             isDatasetImage: null,
             isDatasetAudio: false,
             isCheckingDataset: false,
+            ...streamingPatch,
           });
+          notifyStreamingCompat(streamingPatch);
 
-          const state = get();
           const datasetName =
             state.datasetSource === "huggingface"
               ? state.dataset
@@ -513,10 +761,53 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
           runDatasetCheck(datasetName, split);
         },
         setDatasetEvalSplit: (datasetEvalSplit) => {
+          const state = get();
+          const evalSteps = datasetEvalSplit ? 0.1 : 0;
+          const streamingPatch = streamingCompatiblePatch({
+            ...state,
+            datasetEvalSplit,
+            evalSteps,
+          });
           set({
             datasetEvalSplit,
-            evalSteps: datasetEvalSplit ? 0.1 : 0,
+            evalSteps,
+            ...streamingPatch,
           });
+          notifyStreamingCompat(streamingPatch);
+        },
+        setDatasetStreaming: (datasetStreaming) => {
+          if (!datasetStreaming) {
+            set({ datasetStreaming: false });
+            return;
+          }
+
+          const state = get();
+          if (state.maxSteps <= 0) {
+            set({ datasetStreaming: false });
+            toast.warning(
+              "Streaming needs a fixed Max Steps (streaming datasets have no known length). Set Max Steps > 0 first.",
+            );
+            return;
+          }
+
+          const dropsTrainOnCompletions = state.trainOnCompletions;
+          const dropsEval = !hasSeparateStreamingEvalSplit(state);
+
+          set({
+            datasetStreaming: true,
+            trainOnCompletions: false,
+            evalSteps: dropsEval ? 0 : state.evalSteps,
+          });
+
+          if (dropsTrainOnCompletions || dropsEval) {
+            const disabled = [
+              dropsTrainOnCompletions && "assistant-completions-only",
+              dropsEval && "evaluation (needs a separate eval split)",
+            ].filter(Boolean);
+            toast.info(
+              `Streaming enabled. Disabled incompatible options: ${disabled.join(", ")}.`,
+            );
+          }
         },
         setDatasetManualMapping: (datasetManualMapping) =>
           set({ datasetManualMapping }),
@@ -562,10 +853,13 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
         }),
         setEpochs: (epochs) => set({ epochs }),
         setContextLength: (contextLength) => set({ contextLength }),
+        setVisionImageSize: (visionImageSize) => set({ visionImageSize }),
         setLearningRate: (learningRate) => {
           _learningRateManuallySet = true;
           set({ learningRate });
         },
+        setEmbeddingLearningRate: (embeddingLearningRate) =>
+          set({ embeddingLearningRate }),
         setOptimizerType: (optimizerType) => set({ optimizerType }),
         setLrSchedulerType: (lrSchedulerType) => set({ lrSchedulerType }),
         setLoraRank: (loraRank) => set({ loraRank }),
@@ -577,13 +871,34 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
           set({ gradientAccumulation }),
         setWeightDecay: (weightDecay) => set({ weightDecay }),
         setWarmupSteps: (warmupSteps) => set({ warmupSteps }),
-        setMaxSteps: (maxSteps) => set({ maxSteps }),
+        setMaxSteps: (maxSteps) => {
+          const state = get();
+          // streamingCompatiblePatch already turns streaming off when maxSteps<=0,
+          // so no separate datasetStreaming reset is needed here.
+          const streamingPatch = streamingCompatiblePatch({ ...state, maxSteps });
+          set({
+            maxSteps,
+            ...streamingPatch,
+          });
+          notifyStreamingCompat(streamingPatch);
+        },
         setSaveSteps: (saveSteps) => set({ saveSteps }),
-        setEvalSteps: (evalSteps) => set({ evalSteps }),
+        setEvalSteps: (evalSteps) => {
+          const state = get();
+          const streamingPatch = streamingCompatiblePatch({ ...state, evalSteps });
+          set({
+            evalSteps,
+            ...streamingPatch,
+          });
+          notifyStreamingCompat(streamingPatch);
+        },
         setPacking: (packing) => set({ packing }),
         setTrainOnCompletions: (trainOnCompletions) => {
           _trainOnCompletionsManuallySet = true;
-          set({ trainOnCompletions });
+          set({
+            trainOnCompletions,
+            ...(trainOnCompletions ? { datasetStreaming: false } : {}),
+          });
         },
         setGradientCheckpointing: (gradientCheckpointing) =>
           set({ gradientCheckpointing }),
@@ -603,17 +918,22 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
         setFinetuneMLPModules: (finetuneMLPModules) =>
           set({ finetuneMLPModules }),
         setTargetModules: (targetModules) => set({ targetModules }),
+        setS3Config: (s3Config) => set({ s3Config }),
         canProceed: () => canProceedForStep(get()),
         reset: () => {
           _trainOnCompletionsManuallySet = false;
           _learningRateManuallySet = false;
           _yamlLearningRate = undefined;
-          set(initialState);
+          clearCptDatasetFormatTracking();
+          set({ ...initialState, hfToken: getHfToken() });
         },
         resetToModelDefaults: () => {
           const { selectedModel } = get();
           if (!selectedModel) return;
-          set({ modelDefaultsAppliedFor: null });
+          set({
+            modelDefaultsAppliedFor: null,
+            visionImageSize: DEFAULT_HYPERPARAMS.visionImageSize,
+          });
           loadAndApplyModelDefaults(selectedModel);
         },
         applyConfigPatch: (config: BackendModelConfig) => {
@@ -629,7 +949,7 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
     },
     {
       name: "unsloth_training_config_v1",
-      version: 9,
+      version: 12,
       migrate: (persisted, version) => {
         const s = persisted as Record<string, unknown>;
         if (version < 2 && s.datasetSubset == null && s.datasetConfig != null) {
@@ -665,9 +985,56 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
             s.weightDecay = DEFAULT_HYPERPARAMS.weightDecay;
           }
         }
+        if (version < 10 && s.trainingMethod === "cpt") {
+          // Backfill CPT defaults for state persisted before they existed.
+          s.loraRank = 128;
+          s.loraAlpha = 32;
+          s.loraVariant = "rslora";
+          s.targetModules = CPT_TARGET_MODULES;
+          s.datasetFormat = "raw";
+          if (s.learningRate == null || s.learningRate === LR_DEFAULT_LORA) {
+            s.learningRate = LR_DEFAULT_CPT;
+          }
+        }
+        if (version < 11) {
+          // Standalone bump: users already on main's v10 (CPT) skipped the
+          // streaming backfill when it was nested under v<10, so give it its
+          // own version guard.
+          s.datasetStreaming ??= false;
+        }
+        if (version < 12) {
+          // hfToken moved to the shared hf-token-store; seed it once so an
+          // existing Unsloth-only token isn't lost.
+          const legacyToken = typeof s.hfToken === "string" ? s.hfToken.trim() : "";
+          if (legacyToken && !getHfToken()) {
+            useHfTokenStore.getState().setToken(legacyToken);
+          }
+          delete s.hfToken;
+        }
         return s as unknown as TrainingConfigStore;
       },
       partialize: partializePersistedState,
+      onRehydrateStorage: () => (state) => {
+        // datasetStreaming is persisted, but constraint-coupled fields like
+        // trainOnCompletions / maxSteps / evalSteps are NON_PERSISTED and
+        // rehydrate to defaults. That can resurrect an invalid combo (e.g.
+        // streaming=true with a default trainOnCompletions) that the backend
+        // rejects with 422. Reconcile immediately on load instead of relying
+        // on a post-mount effect.
+        if (!state) return;
+        const patch = streamingCompatiblePatch(state);
+        if (Object.keys(patch).length > 0) {
+          // Sync localStorage hydration runs inside create(), before
+          // useTrainingConfigStore is assigned (TDZ). Defer to a microtask so the
+          // store exists when we reconcile the persisted streaming combo.
+          queueMicrotask(() => useTrainingConfigStore.setState(patch));
+        }
+      },
     },
   ),
 );
+
+const unsubscribeHfTokenMirror = mirrorHfTokenInto(useTrainingConfigStore);
+if (import.meta.hot) {
+  import.meta.hot.dispose(unsubscribeHfTokenMirror);
+}

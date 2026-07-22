@@ -25,6 +25,7 @@ import textwrap
 import warnings
 import sys
 import functools
+import inspect
 
 # We cannot do from unsloth_zoo.log import logger since FBGEMM might cause seg faults.
 UNSLOTH_ENABLE_LOGGING = os.environ.get("UNSLOTH_ENABLE_LOGGING", "0") in (
@@ -34,14 +35,10 @@ UNSLOTH_ENABLE_LOGGING = os.environ.get("UNSLOTH_ENABLE_LOGGING", "0") in (
 )
 logger = logging.getLogger(__name__)
 if UNSLOTH_ENABLE_LOGGING:
-    logging.basicConfig(
-        level = logging.INFO, format = "[%(name)s|%(levelname)s]%(message)s"
-    )
+    logging.basicConfig(level = logging.INFO, format = "[%(name)s|%(levelname)s]%(message)s")
     logger.setLevel(logging.INFO)
 else:
-    logging.basicConfig(
-        level = logging.WARNING, format = "[%(name)s|%(levelname)s]%(message)s"
-    )
+    logging.basicConfig(level = logging.WARNING, format = "[%(name)s|%(levelname)s]%(message)s")
     logger.setLevel(logging.WARNING)
 
 _AMDGPU_IDS_MISSING_TEXT = "amdgpu.ids: No such file or directory"
@@ -52,14 +49,13 @@ def Version(version):
         new_version = str(version)
         new_version = re.match(r"[0-9\.]{1,}", new_version)
         if new_version is None:
-            raise Exception(str(e))
+            raise ValueError(f"Could not parse version: {version}")
         new_version = new_version.group(0).rstrip(".")
         if new_version != version:
             new_version += ".1"  # Add .1 for dev / alpha / beta / rc
         return TrueVersion(new_version)
     except:
         from inspect import getframeinfo, stack
-
         caller = getframeinfo(stack()[1][0])
         raise RuntimeError(
             f"Unsloth: Could not get version for `{version}`\n"
@@ -110,11 +106,10 @@ except Exception:
 def suppress_cuda_printf():
     """Suppress CUDA device-side printf by redirecting stdout/stderr fds to /dev/null.
 
-    CUDA device printf (eg CUTLASS "Arch conditional MMA" errors on Blackwell)
-    writes to stdout fd 1 at the C level, bypassing Python sys.stdout entirely.
-    The existing HidePrintMessage filter on sys.stderr cannot catch these since
-    they go to a different fd at a different layer. This context manager redirects
-    both fd 1 and fd 2 at the OS level, syncs CUDA, then restores them.
+    CUDA device printf (e.g. CUTLASS "Arch conditional MMA" errors on Blackwell)
+    writes to fd 1 at the C level, bypassing Python's sys.stdout, so the
+    HidePrintMessage filter can't catch it. Redirect fd 1 and 2 at the OS level,
+    sync CUDA, then restore.
     """
     sys.stdout.flush()
     sys.stderr.flush()
@@ -129,7 +124,6 @@ def suppress_cuda_printf():
     finally:
         try:
             import torch
-
             if torch.cuda.is_available():
                 torch.cuda.synchronize()
         except Exception:
@@ -158,23 +152,30 @@ if not UNSLOTH_ENABLE_LOGGING:
     sys.stderr.add_filter("CUTE_INVALID_CONTROL_PATH")
     # CUTLASS TMA-related errors when not targeting correct architecture
     sys.stderr.add_filter("Trying to use tma without CUTE_ARCH_TMA")
-    # Skipping import of cpp extensions due to incompatible torch version 2.9.0+cu128 for torchao version 0.15.0
-    logging.getLogger("torchao").setLevel(logging.ERROR)
-    # Also filter torchao print to stderr about cpp extensions
-    sys.stderr.add_filter("Skipping import of cpp extensions")
-    # SyntaxWarning: invalid escape sequence '\.'
-    warnings.filterwarnings(
-        "ignore", message = "invalid escape sequence", category = SyntaxWarning
+    # torchao logs a cosmetic "Skipping import of cpp extensions" WARNING on torch < 2.11. The
+    # bnb-4bit / Unsloth paths don't use torchao's cpp kernels, so drop only that record rather
+    # than raising the whole torchao logger to ERROR.
+    logging.getLogger("torchao").addFilter(
+        HideLoggingMessage("Skipping import of cpp extensions due to incompatible torch version")
     )
+    # torch >= 2.11 path: torchao dlopens each prebuilt _C*.so and logs "Failed to load
+    # .../_C*.so" when one can't (ABI tag mismatch in the wheel, e.g. a cp310 .so under a
+    # cp312 runtime on Colab, or an arch-specific kernel the GPU lacks). It falls back to
+    # non-cpp paths and Unsloth doesn't use these kernels, so drop the cosmetic record.
+    logging.getLogger("torchao").addFilter(HideLoggingMessage("Failed to load "))
+    # SyntaxWarning: invalid escape sequence '\.'
+    warnings.filterwarnings("ignore", message = "invalid escape sequence", category = SyntaxWarning)
     # PYTORCH_CUDA_ALLOC_CONF is deprecated warning from torch
     warnings.filterwarnings("ignore", message = "PYTORCH_CUDA_ALLOC_CONF is deprecated")
     # TF32 precision deprecation warning from torch
-    warnings.filterwarnings(
-        "ignore", message = "Please use the new API settings to control TF32"
-    )
+    warnings.filterwarnings("ignore", message = "Please use the new API settings to control TF32")
     # Deprecation warnings from torchao
     warnings.filterwarnings("ignore", message = "`int4_weight_only` is deprecated")
     warnings.filterwarnings("ignore", message = "`int8_weight_only` is deprecated")
+    # torch._check_is_size FutureWarning (called by bitsandbytes 4-bit dequant)
+    warnings.filterwarnings(
+        "ignore", message = r"_check_is_size will be removed", category = FutureWarning
+    )
 
     # TorchAO deprecated import paths (https://github.com/pytorch/ao/issues/2752)
     warnings.filterwarnings(
@@ -210,12 +211,8 @@ if not UNSLOTH_ENABLE_LOGGING:
     )
 
     # Resource warnings from internal socket/file operations
-    warnings.filterwarnings(
-        "ignore", message = r"unclosed.*socket", category = ResourceWarning
-    )
-    warnings.filterwarnings(
-        "ignore", message = r"unclosed file.*dev/null", category = ResourceWarning
-    )
+    warnings.filterwarnings("ignore", message = r"unclosed.*socket", category = ResourceWarning)
+    warnings.filterwarnings("ignore", message = r"unclosed file.*dev/null", category = ResourceWarning)
 
     # torch 2.9+ pin_memory/is_pinned device arg deprecation
     warnings.filterwarnings(
@@ -260,6 +257,30 @@ if not UNSLOTH_ENABLE_LOGGING:
     )
 
 
+def fix_torch_check_is_size():
+    """Shim torch._check_is_size if a future torch removes it (bitsandbytes 4-bit
+    dequant calls it). The FutureWarning is silenced in suppress_cuda_printf."""
+    try:
+        import torch
+
+        if hasattr(torch, "_check_is_size"):
+            return
+
+        def _check_is_size(
+            i,
+            message = None,
+            *,
+            max = None,
+        ):
+            torch._check(i >= 0, message)
+            if max is not None:
+                torch._check(i <= max, message)
+
+        torch._check_is_size = _check_is_size
+    except Exception:
+        return
+
+
 # Fix up AttributeError: 'MessageFactory' object has no attribute 'GetPrototype'
 # MUST do this at the start primarily due to tensorflow causing issues
 def fix_message_factory_issue():
@@ -281,18 +302,14 @@ def fix_message_factory_issue():
             google.protobuf.message_factory.MessageFactory = MessageFactory
         elif (
             hasattr(google.protobuf.message_factory, "MessageFactory")
-            and not hasattr(
-                google.protobuf.message_factory.MessageFactory, "GetPrototype"
-            )
+            and not hasattr(google.protobuf.message_factory.MessageFactory, "GetPrototype")
             and not hasattr(google.protobuf.message_factory, "GetMessageClass")
         ):
             google.protobuf.message_factory.MessageFactory = MessageFactory
             logger.info("Unsloth: Patching protobuf.MessageFactory as it doesn't exist")
         elif (
             hasattr(google.protobuf.message_factory, "MessageFactory")
-            and not hasattr(
-                google.protobuf.message_factory.MessageFactory, "GetPrototype"
-            )
+            and not hasattr(google.protobuf.message_factory.MessageFactory, "GetPrototype")
             and hasattr(google.protobuf.message_factory, "GetMessageClass")
         ):
             GetMessageClass = google.protobuf.message_factory.GetMessageClass
@@ -333,9 +350,7 @@ def fix_xformers_performance_issue():
                         f.seek(0)
                         f.write(text)
                         f.truncate()
-                        logger.info(
-                            "Unsloth: Patching Xformers to fix some performance issues."
-                        )
+                        logger.info("Unsloth: Patching Xformers to fix some performance issues.")
         except Exception as e:
             logger.info(f"Unsloth: Failed patching Xformers with error = {str(e)}")
 
@@ -358,7 +373,6 @@ def patch_vllm_for_notebooks():
     if ipython is None:
         try:
             import builtins
-
             _get_ipython = getattr(builtins, "get_ipython", None)
             if callable(_get_ipython):
                 ipython = _get_ipython()
@@ -370,9 +384,7 @@ def patch_vllm_for_notebooks():
 
     try:
         shell = ipython.__class__.__name__
-        is_notebook = shell == "ZMQInteractiveShell" or "google.colab" in str(
-            type(ipython)
-        )
+        is_notebook = shell == "ZMQInteractiveShell" or "google.colab" in str(type(ipython))
     except Exception:
         return
 
@@ -442,13 +454,79 @@ def fix_vllm_aimv2_issue():
             logger.info(f"Unsloth: Failed patching vLLM with error = {str(e)}")
 
 
+# vLLM >= 0.22 (PR #35024) deleted `vllm.transformers_utils.tokenizer`, but an
+# older unsloth_zoo still imports it unguarded and crashes (issue #6385). Supply
+# a stub via a meta path finder appended AFTER the real finders, so it only
+# activates when vLLM no longer ships the module.
+_VLLM_LORA_TOKENIZER_MODULE = "vllm.transformers_utils.tokenizer"
+_VLLM_TOKENIZER_STUB_SENTINEL = "__unsloth_vllm_tokenizer_stub__"
+
+
+def _unsloth_return_no_lora_tokenizer(*args, **kwargs):
+    # None -> vLLM uses the base tokenizer for LoRA (matches unsloth_zoo).
+    return None
+
+
+class _VllmLoraTokenizerStubLoader(importlib.abc.Loader):
+    __slots__ = ("module_name",)
+
+    def __init__(self, module_name):
+        self.module_name = module_name
+
+    def create_module(self, spec):
+        import types
+
+        module = types.ModuleType(self.module_name)
+        module.__file__ = f"<unsloth stub: {self.module_name}>"
+        module.__package__ = self.module_name.rpartition(".")[0]
+        setattr(module, _VLLM_TOKENIZER_STUB_SENTINEL, True)
+        module.get_lora_tokenizer = _unsloth_return_no_lora_tokenizer
+        module.get_lora_tokenizer_async = _unsloth_return_no_lora_tokenizer
+        return module
+
+    def exec_module(self, module):
+        return None
+
+
+class _VllmLoraTokenizerStubFinder(importlib.abc.MetaPathFinder):
+    __slots__ = (_VLLM_TOKENIZER_STUB_SENTINEL,)
+
+    def __init__(self):
+        setattr(self, _VLLM_TOKENIZER_STUB_SENTINEL, True)
+
+    def find_spec(
+        self,
+        fullname,
+        path = None,
+        target = None,
+    ):
+        if fullname != _VLLM_LORA_TOKENIZER_MODULE:
+            return None
+        return importlib.machinery.ModuleSpec(
+            name = fullname,
+            loader = _VllmLoraTokenizerStubLoader(fullname),
+            is_package = False,
+        )
+
+
+def fix_vllm_lora_tokenizer_module():
+    if importlib.util.find_spec("vllm") is None:
+        return
+    for finder in sys.meta_path:
+        if getattr(finder, _VLLM_TOKENIZER_STUB_SENTINEL, False):
+            return
+    # Appended, not inserted at 0, so a real module on older vLLM always wins.
+    sys.meta_path.append(_VllmLoraTokenizerStubFinder())
+    logger.info(
+        "Unsloth: Installed `vllm.transformers_utils.tokenizer` compatibility "
+        "stub for newer vLLM versions"
+    )
+
+
 def fix_vllm_guided_decoding_params():
     def _maybe_raise_vllm_transformers_mismatch(error):
         error_text = str(error)
-        if (
-            "ALLOWED_LAYER_TYPES" in error_text
-            or "transformers.configuration_utils" in error_text
-        ):
+        if "ALLOWED_LAYER_TYPES" in error_text or "transformers.configuration_utils" in error_text:
             try:
                 vllm_version = importlib_version("vllm")
             except Exception:
@@ -484,16 +562,39 @@ def fix_vllm_guided_decoding_params():
             vllm.sampling_params, "StructuredOutputsParams"
         ):
             raise
-        vllm.sampling_params.GuidedDecodingParams = (
-            vllm.sampling_params.StructuredOutputsParams
-        )
+        vllm.sampling_params.GuidedDecodingParams = vllm.sampling_params.StructuredOutputsParams
+
+
+def fix_trl_vllm_ascend():
+    # transformers >= 4.48's `_is_package_available(name)` returns a tuple
+    # (bool, version_or_None). TRL caches that tuple in module-level
+    # `_*_available` flags and the matching `is_*_available()` accessors
+    # return the tuple directly. A non-empty tuple is always truthy, so
+    # `if is_X_available():` fires even when X is absent, triggering an
+    # unconditional `import X` that fails. The surfaced case is
+    # `vllm_ascend` (blocks `from trl import GRPOConfig, GRPOTrainer`
+    # outside Huawei Ascend hosts); `llm_blender`, `deepspeed`, `joblib`
+    # share the same shape. Coerce every tuple-cached flag in
+    # trl.import_utils to bool; the existing accessors that just return
+    # the cached value then naturally yield a bool.
+    if importlib.util.find_spec("trl") is None:
+        return
+    try:
+        import trl.import_utils as tiu
+    except Exception:
+        return
+    for attr in list(vars(tiu)):
+        if not (attr.startswith("_") and attr.endswith("_available")):
+            continue
+        cached = getattr(tiu, attr)
+        if isinstance(cached, tuple):
+            setattr(tiu, attr, bool(cached and cached[0]))
 
 
 def ignore_logger_messages():
     # Ignore Environment variable `HF_TOKEN` is set
     try:
         from huggingface_hub._login import logger as huggingface_hub_logger
-
         huggingface_hub_logger.addFilter(HideLoggingMessage("`HF_TOKEN`"))
         del huggingface_hub_logger
     except:
@@ -528,7 +629,6 @@ def patch_ipykernel_hf_xet():
             "https://github.com/huggingface/xet-core/issues/526"
         )
         from huggingface_hub.utils import disable_progress_bars
-
         disable_progress_bars()
 
 
@@ -550,9 +650,7 @@ def patch_datasets():
         return
 
     datasets_version = Version(importlib_version("datasets"))
-    if (datasets_version <= Version("4.5.0")) and (
-        datasets_version >= Version("4.4.0")
-    ):
+    if (datasets_version <= Version("4.5.0")) and (datasets_version >= Version("4.4.0")):
         raise NotImplementedError(
             f"#### Unsloth: Using `datasets = {str(datasets_version)}` will cause recursion errors.\n"
             "Please downgrade datasets to `datasets==4.3.0"
@@ -580,22 +678,18 @@ def check_fbgemm_gpu_version():
 
 
 def patch_enable_input_require_grads():
-    """
-    Patch transformers PreTrainedModel.enable_input_require_grads to handle vision models
-    that raise NotImplementedError from get_input_embeddings().
-
-    """
+    """Patch PreTrainedModel.enable_input_require_grads to tolerate vision models
+    that raise NotImplementedError from get_input_embeddings()."""
     import inspect
     from transformers import PreTrainedModel
 
-    # Check if the original function iterates over self.modules() instead of just returning the enable_input_require_grads
+    # Only patch the new variant that iterates over self.modules().
     # Ref: https://github.com/huggingface/transformers/pull/41993/files#diff-6b72b98c4c2dcfc6cc606843917733f5d858374fbc22a735ff483bbc0c1e63eaL1979-R1996
     try:
         original_source = inspect.getsource(PreTrainedModel.enable_input_require_grads)
     except:
         return
 
-    # Only patch if the new pattern exists (iterating over self.modules())
     if "for module in self.modules()" not in original_source:
         return
 
@@ -608,16 +702,15 @@ def patch_enable_input_require_grads():
 
         for module in self.modules():
             if not (
-                isinstance(module, PreTrainedModel)
-                and hasattr(module, "get_input_embeddings")
+                isinstance(module, PreTrainedModel) and hasattr(module, "get_input_embeddings")
             ):
                 continue
 
             try:
                 input_embeddings = module.get_input_embeddings()
             except NotImplementedError:
-                # Vision models may not implement get_input_embeddings - skip them
-                # For GLM V4.6 for example, this skips only `self.visual`
+                # Vision models may not implement get_input_embeddings (e.g. GLM
+                # V4.6 skips only `self.visual`); skip them
                 continue
 
             if input_embeddings is None:
@@ -628,9 +721,7 @@ def patch_enable_input_require_grads():
                 continue
 
             seen_modules.add(embedding_id)
-            hooks.append(
-                input_embeddings.register_forward_hook(make_inputs_require_grads)
-            )
+            hooks.append(input_embeddings.register_forward_hook(make_inputs_require_grads))
 
         self._require_grads_hooks = hooks
         if hooks:
@@ -638,18 +729,84 @@ def patch_enable_input_require_grads():
 
     PreTrainedModel.enable_input_require_grads = _patched_enable_input_require_grads
 
-    logger.info(
-        "Unsloth: Patched enable_input_require_grads for vision model compatibility"
-    )
+    logger.info("Unsloth: Patched enable_input_require_grads for vision model compatibility")
+
+
+def patch_unsafe_trainer_rng_load():
+    """Harden Trainer._load_rng_state against CVE-2026-1839 (RCE from a malicious
+    rng_state.pth on resume). Hardens only the rng torch.load, via a thread-local
+    flag, so it forces weights_only=True (defeats TORCH_FORCE_NO_WEIGHTS_ONLY_LOAD)
+    and refuses torch < 2.6 (CVE-2025-32434), while rng-less resumes and unrelated
+    torch.load calls are untouched. No-op if transformers is absent or already
+    guards the load (>= 5.0.0rc3)."""
+    if importlib.util.find_spec("transformers") is None:
+        return
+    try:
+        from transformers.trainer import Trainer
+    except Exception:
+        return
+    load_rng_state = getattr(Trainer, "_load_rng_state", None)
+    if load_rng_state is None or getattr(load_rng_state, "_unsloth_safe_rng_load", False):
+        return
+    try:
+        source = inspect.getsource(load_rng_state)
+    except Exception:
+        return
+    if "torch.load" not in source or "check_torch_load_is_safe" in source:
+        return
+
+    import threading, torch
+
+    try:
+        # Older supported transformers (>= 4.51.3) may not export the helper.
+        from transformers.utils.import_utils import check_torch_load_is_safe
+    except Exception:
+
+        def check_torch_load_is_safe():
+            if TrueVersion(torch.__version__.split("+")[0]) < TrueVersion("2.6"):
+                raise RuntimeError(
+                    "Unsloth: refusing to load checkpoint RNG state on torch < 2.6 "
+                    "(CVE-2026-1839 / CVE-2025-32434); upgrade to torch >= 2.6."
+                )
+
+    # Install one process-wide torch.load shim that stays inert unless the calling
+    # thread is inside _load_rng_state, so we gate only at the real rng load with
+    # no global-swap race and no effect on other torch.load callers.
+    if not getattr(torch.load, "_unsloth_rng_guard", False):
+        _orig_load = torch.load
+        _rng_active = threading.local()
+
+        @functools.wraps(_orig_load)
+        def _guarded_torch_load(*args, **kwargs):
+            if getattr(_rng_active, "on", False):
+                check_torch_load_is_safe()  # raises on torch < 2.6 (CVE-2025-32434)
+                kwargs.setdefault("weights_only", True)
+            return _orig_load(*args, **kwargs)
+
+        _guarded_torch_load._unsloth_rng_guard = True
+        _guarded_torch_load._unsloth_rng_flag = _rng_active
+        torch.load = _guarded_torch_load
+    _rng_active = torch.load._unsloth_rng_flag
+
+    @functools.wraps(load_rng_state)
+    def _unsloth_safe_load_rng_state(self, checkpoint):
+        _rng_active.on = True
+        try:
+            return load_rng_state(self, checkpoint)
+        finally:
+            _rng_active.on = False
+
+    _unsloth_safe_load_rng_state._unsloth_safe_rng_load = True
+    Trainer._load_rng_state = _unsloth_safe_load_rng_state
+    logger.info("Unsloth: Hardened Trainer._load_rng_state rng loading (CVE-2026-1839).")
 
 
 def _is_custom_torch_build(raw_version_str):
     """Check if a raw version string indicates a custom or source build.
-    Must operate on the raw string from importlib_version(), not the parsed
-    Version object, since our custom Version() strips local identifiers.
 
-    Standard PyTorch releases use: +cu124, +rocm6.3, +cpu, +xpu
-    Source/custom builds use: +gitXXXXXXX, +HEXHASH, or other suffixes.
+    Operates on the raw importlib_version() string (our Version() strips local
+    identifiers). Standard releases use +cu124/+rocm6.3/+cpu/+xpu; custom builds
+    use +gitXXXX or other suffixes.
     """
     if "+" not in raw_version_str:
         return False
@@ -711,13 +868,12 @@ def torchvision_compatibility_check():
         (2, 4): (0, 19),
     }
 
-    # Extract major.minor from the parsed version
     torch_release = torch_v.release
     if len(torch_release) < 2:
         return
     torch_major, torch_minor = torch_release[0], torch_release[1]
 
-    # Try known table first, then fall back to formula for forward compatibility
+    # Known table first, then the formula for forward compatibility
     required = TORCH_TORCHVISION_COMPAT.get((torch_major, torch_minor))
 
     if required is None:
@@ -805,9 +961,7 @@ def fix_openenv_no_vllm():
                 f.seek(0)
                 f.write(text)
                 f.truncate()
-                logger.info(
-                    "Unsloth: Patching TRL OpenEnv to fix SamplingParams not defined"
-                )
+                logger.info("Unsloth: Patching TRL OpenEnv to fix SamplingParams not defined")
     except Exception as e:
         logger.info(f"Unsloth: Failed patching TRL OpenEnv with error = {str(e)}")
 
@@ -886,11 +1040,8 @@ def fix_diffusers_warnings():
 def fix_huggingface_hub():
     # huggingface_hub.is_offline_mode got removed, so add it back
     import huggingface_hub
-
     if not hasattr(huggingface_hub, "is_offline_mode"):
-        huggingface_hub.is_offline_mode = (
-            lambda: huggingface_hub.constants.HF_HUB_OFFLINE
-        )
+        huggingface_hub.is_offline_mode = lambda: huggingface_hub.constants.HF_HUB_OFFLINE
 
 
 def fix_triton_compiled_kernel_missing_attrs():
@@ -941,6 +1092,135 @@ def fix_triton_compiled_kernel_missing_attrs():
     )
 
 
+def fix_dynamo_config_thread_visibility():
+    """torch 2.12 made torch._dynamo/_inductor config overrides thread-local
+    (ContextVars), so `config.recompile_limit = 1024` set on the main thread is
+    invisible to the autograd worker threads that run backward. Gradient
+    checkpointing recompiles fullgraph gpt-oss kernels there against the default
+    limit of 8, raising FailOnRecompileLimitHit at step 0. Mirror direct config
+    assignments into the process-global entry default (torch <= 2.11 semantics).
+    config.patch(...) and config.load_config(...) also assign via __setattr__ but
+    are thread-local by design, so skip mirroring while inside one (tracked per
+    thread). No-op below torch 2.12 and on any torch without this internal layout.
+    """
+    try:
+        import torch
+
+        if Version(torch.__version__) < Version("2.12.0"):
+            return
+        import torch._dynamo.config as _dynamo_config
+        from torch.utils._config_module import ConfigModule
+        from contextvars import ContextVar
+    except Exception:
+        return
+
+    try:
+        probe = getattr(_dynamo_config, "_config", {}).get("recompile_limit", None)
+        if probe is None or not isinstance(getattr(probe, "user_override", None), ContextVar):
+            # Overrides are not context-local on this torch; nothing to fix.
+            return
+        original_setattr = ConfigModule.__setattr__
+        if getattr(original_setattr, "__unsloth_patched__", False):
+            return
+    except Exception:
+        return
+
+    mirrored_modules = ("torch._dynamo.config", "torch._inductor.config")
+
+    # config.patch(...) and config.load_config(...) also assign via __setattr__, but
+    # their writes are thread-local by design; a per-thread depth counter marks them
+    # so they are not mirrored into the process-global default.
+    import threading
+
+    _scoped_depth = threading.local()
+
+    def _in_scoped_write():
+        return getattr(_scoped_depth, "n", 0) > 0
+
+    def _bump(delta):
+        _scoped_depth.n = getattr(_scoped_depth, "n", 0) + delta
+
+    original_patch = ConfigModule.patch
+    if not getattr(original_patch, "__unsloth_patched__", False):
+
+        @functools.wraps(original_patch)
+        def _patched_patch(self, *args, **kwargs):
+            ctx = original_patch(self, *args, **kwargs)
+            try:
+                cls = type(ctx)  # patch() builds a fresh ConfigPatch class each call
+                if not getattr(cls, "__unsloth_patch_wrapped__", False):
+                    _enter0, _exit0 = cls.__enter__, cls.__exit__
+
+                    def _enter(s, _e = _enter0):
+                        _bump(1)
+                        try:
+                            return _e(s)
+                        finally:
+                            _bump(-1)
+
+                    def _exit(
+                        s,
+                        *a,
+                        _x = _exit0,
+                    ):
+                        _bump(1)
+                        try:
+                            return _x(s, *a)
+                        finally:
+                            _bump(-1)
+
+                    cls.__enter__, cls.__exit__ = _enter, _exit
+                    cls.__unsloth_patch_wrapped__ = True
+            except Exception:
+                pass
+            return ctx
+
+        _patched_patch.__unsloth_patched__ = True
+        ConfigModule.patch = _patched_patch
+
+    # load_config restores a saved config by calling setattr per key (thread-local).
+    original_load_config = getattr(ConfigModule, "load_config", None)
+    if callable(original_load_config) and not getattr(
+        original_load_config, "__unsloth_patched__", False
+    ):
+
+        @functools.wraps(original_load_config)
+        def _patched_load_config(self, *args, **kwargs):
+            _bump(1)
+            try:
+                return original_load_config(self, *args, **kwargs)
+            finally:
+                _bump(-1)
+
+        _patched_load_config.__unsloth_patched__ = True
+        ConfigModule.load_config = _patched_load_config
+
+    @functools.wraps(original_setattr)
+    def _patched_setattr(self, name, value):
+        original_setattr(self, name, value)
+        if _in_scoped_write():
+            return  # transient patch / load_config write: keep it thread-local
+        # Aliases (cache_size_limit -> recompile_limit) re-enter with the real name.
+        if self.__dict__.get("__name__", None) in mirrored_modules:
+            try:
+                entry = self.__dict__["_config"].get(name, None)
+                if entry is not None and entry.alias is None:
+                    entry.default = value
+            except Exception:
+                pass
+
+    _patched_setattr.__unsloth_patched__ = True
+    ConfigModule.__setattr__ = _patched_setattr
+
+    # No replay of existing overrides: unsloth installs this before it sets any
+    # dynamo/inductor config, so the wrapper mirrors every later assignment. Replaying
+    # would also bake a still-active config.patch override into the global default.
+    logger.info(
+        "Unsloth: Patched torch config modules so dynamo/inductor settings "
+        "(e.g. recompile_limit) apply across threads on torch >= 2.12."
+    )
+
+
 def patch_trunc_normal_precision_issue():
     """
     Patch torch.nn.init.trunc_normal_ for low precision tensors to run init in fp32.
@@ -972,9 +1252,7 @@ def patch_trunc_normal_precision_issue():
         if generator is None:
             return original_trunc_normal(target, mean = mean, std = std, a = a, b = b)
         try:
-            return original_trunc_normal(
-                target, mean = mean, std = std, a = a, b = b, generator = generator
-            )
+            return original_trunc_normal(target, mean = mean, std = std, a = a, b = b, generator = generator)
         except TypeError as exc:
             # Older torch versions may not accept a generator keyword argument.
             msg = str(exc).lower()
@@ -1035,11 +1313,10 @@ def check_vllm_torch_sm100_compatibility():
     This check runs early (before vLLM import) to provide a helpful error message
     instead of a cryptic std::bad_alloc crash.
     """
-    # Check if vLLM is installed (without importing it)
+    # vLLM installed? (without importing it)
     if importlib.util.find_spec("vllm") is None:
         return
 
-    # Check torch version
     try:
         torch_version = Version(importlib_version("torch"))
         if torch_version >= Version("2.9.0"):
@@ -1047,7 +1324,7 @@ def check_vllm_torch_sm100_compatibility():
     except Exception:
         return  # Can't determine torch version, skip check
 
-    # Check if any CUDA GPU is SM100 (Blackwell)
+    # Any SM100 (Blackwell) GPU?
     try:
         import torch
 
@@ -1068,13 +1345,12 @@ def check_vllm_torch_sm100_compatibility():
     except Exception:
         return
 
-    # Get vLLM version for the error message
     try:
         vllm_version = importlib_version("vllm")
     except Exception:
         vllm_version = "unknown"
 
-    # Incompatible combination detected - raise helpful error
+    # Incompatible combination: raise a helpful error
     raise RuntimeError(
         f"Unsloth: Incompatible configuration detected.\n\n"
         f"  GPU: {sm100_gpu_name} (SM100 / Blackwell architecture)\n"
@@ -1102,14 +1378,13 @@ def fix_vllm_pdl_blackwell():
     if importlib.util.find_spec("vllm") is None:
         return
 
-    # Check if any CUDA GPU is SM100 (Blackwell)
+    # Any SM100 (Blackwell) GPU? Fix applies globally via env var + monkey-patch.
     try:
         import torch
 
         if not torch.cuda.is_available():
             return
 
-        # Scan all GPUs for SM100 - fix applies globally via env var and monkey-patch
         has_sm100 = False
         sm100_gpu_name = None
         for i in range(torch.cuda.device_count()):
@@ -1124,14 +1399,13 @@ def fix_vllm_pdl_blackwell():
     except Exception:
         return
 
-    # Helper to check if module spec exists
     def _spec_exists(name):
         try:
             return importlib.util.find_spec(name) is not None
         except (ImportError, OSError, ModuleNotFoundError, ValueError):
             return False
 
-    # Check if vLLM has the PDL-related modules before doing internet check
+    # PDL-related modules present?
     has_utils = _spec_exists("vllm.lora.ops.triton_ops.utils")
     has_expand_op = _spec_exists("vllm.lora.ops.triton_ops.lora_expand_op")
     has_shrink_op = _spec_exists("vllm.lora.ops.triton_ops.lora_shrink_op")
@@ -1140,7 +1414,7 @@ def fix_vllm_pdl_blackwell():
         # Old vLLM version without PDL support - nothing to patch
         return
 
-    # Check if vLLM version includes the fix
+    # vLLM version already includes the fix?
     VLLM_PDL_FIX_VERSION = "0.15.0"
     try:
         vllm_version = Version(importlib_version("vllm"))
@@ -1151,9 +1425,7 @@ def fix_vllm_pdl_blackwell():
             )
             return
     except Exception as e:
-        logger.debug(
-            f"Unsloth: vLLM version check failed ({e}), applying PDL workaround."
-        )
+        logger.debug(f"Unsloth: vLLM version check failed ({e}), applying PDL workaround.")
 
     # Apply the PDL fix
     os.environ["TRITON_DISABLE_PDL"] = "1"
@@ -1169,9 +1441,8 @@ def fix_vllm_pdl_blackwell():
             patched.append(name)
             patched_names.add(name)
 
-    # First, patch the source module (utils.py) where supports_pdl is defined.
-    # This is critical because supports_pdl uses @lru_cache - we must clear the
-    # cache to prevent stale cached results from the original function.
+    # Patch the source module (utils.py) where supports_pdl is defined. It uses
+    # @lru_cache, so clear the cache to avoid stale results.
     try:
         utils_module = importlib.import_module("vllm.lora.ops.triton_ops.utils")
         if hasattr(utils_module, "supports_pdl"):
@@ -1183,9 +1454,7 @@ def fix_vllm_pdl_blackwell():
     except (ImportError, ModuleNotFoundError, AttributeError):
         pass
 
-    # Also patch the consumer modules that import supports_pdl from utils.
-    # This ensures the patched function is used even if the module was already
-    # imported before this fix runs.
+    # Also patch consumer modules that imported supports_pdl before this ran.
     consumer_modules = {
         "lora_expand_op": "vllm.lora.ops.triton_ops.lora_expand_op",
         "lora_shrink_op": "vllm.lora.ops.triton_ops.lora_shrink_op",
@@ -1211,8 +1480,7 @@ def fix_vllm_pdl_blackwell():
 
     if patched:
         logger.info(
-            f"Unsloth: Applied PDL fix for SM100 ({sm100_gpu_name}) - "
-            f"patched: {', '.join(patched)}"
+            f"Unsloth: Applied PDL fix for SM100 ({sm100_gpu_name}) - patched: {', '.join(patched)}"
         )
     else:
         # Just set the env var - vLLM might be an older version without supports_pdl
@@ -1238,11 +1506,8 @@ def patch_openspiel_env_async():
 
         try:
             import nest_asyncio
-
             nest_asyncio.apply()
-            logger.info(
-                "Unsloth: Applied nest_asyncio for OpenEnv EnvClient async compatibility"
-            )
+            logger.info("Unsloth: Applied nest_asyncio for OpenEnv EnvClient async compatibility")
         except ImportError:
             logger.info(
                 "Unsloth: nest_asyncio not installed, OpenEnv async methods may need manual wrapping"
@@ -1255,39 +1520,65 @@ def patch_torchcodec_audio_decoder():
     """Call unsloth_zoo's AudioDecoder patch."""
     try:
         from unsloth_zoo.dataset_utils import patch_torchcodec_audio_decoder as _patch
-
         _patch()
     except (ImportError, AttributeError, RuntimeError):
         pass
 
 
 def disable_torchcodec_if_broken():
-    """Disable torchcodec in transformers if it cannot actually load.
+    """Make broken torchcodec behave as if uninstalled (#5446).
 
-    transformers checks if torchcodec is installed via importlib.util.find_spec(),
-    but this returns True even when torchcodec cannot load its native libraries
-    (e.g., when FFmpeg is missing). This causes runtime errors when transformers
-    tries to use torchcodec for audio loading.
-
-    This function tests if torchcodec can actually load and if not, patches
-    transformers to think torchcodec is unavailable so it falls back to librosa.
+    transformers and datasets both detect torchcodec via find_spec, which
+    returns True even when the native libs cannot dlopen. We flip their
+    flags and seat a sys.modules sentinel so downstream imports fall through
+    their existing except ImportError handlers cleanly.
     """
     try:
         import importlib.util
-
         if importlib.util.find_spec("torchcodec") is None:
-            return  # torchcodec not installed, nothing to do
+            return  # absent or already disabled
 
-        # Test if torchcodec can actually load
+        # RuntimeError on dlopen failure; OSError covers chained libavutil.so misses.
         from torchcodec.decoders import AudioDecoder
     except (ImportError, RuntimeError, OSError):
-        # torchcodec cannot load - disable it in transformers
+        # transformers: flip flag (<5) and/or rebind lru_cache'd func (>=5).
         try:
             import transformers.utils.import_utils as tf_import_utils
 
-            tf_import_utils._torchcodec_available = False
-        except (ImportError, AttributeError):
+            try:
+                tf_import_utils._torchcodec_available = False
+            except AttributeError:
+                pass
+
+            is_avail = getattr(tf_import_utils, "is_torchcodec_available", None)
+            if is_avail is not None:
+                try:
+                    is_avail.cache_clear()
+                except AttributeError:
+                    pass
+                tf_import_utils.is_torchcodec_available = lambda: False
+        except ImportError:
             pass
+
+        # datasets >= 4.0: own flag gating audio/video/features/formatters.
+        try:
+            import datasets.config as datasets_config
+            if hasattr(datasets_config, "TORCHCODEC_AVAILABLE"):
+                datasets_config.TORCHCODEC_AVAILABLE = False
+        except ImportError:
+            pass
+
+        # Drop half-loaded entries and seat the absence sentinel. After this,
+        # import torchcodec raises ModuleNotFoundError and find_spec returns None.
+        for _stale in [
+            n
+            for n in list(sys.modules)
+            if n == "torchcodec"
+            or n.startswith("torchcodec.")
+            or n == "datasets.features._torchcodec"
+        ]:
+            sys.modules.pop(_stale, None)
+        sys.modules["torchcodec"] = None
 
 
 def disable_broken_wandb():
@@ -1321,28 +1612,524 @@ def disable_broken_wandb():
         # Patch transformers' is_wandb_available (used by most trl trainers)
         try:
             import transformers.integrations.integration_utils as tf_integration
-
             tf_integration.is_wandb_available = _wandb_false
         except (ImportError, AttributeError):
             pass
-        # Patch accelerate's is_wandb_available (used by trl/trainer/callbacks.py).
-        # Must patch both the source module AND the re-export namespace since
-        # `from accelerate.utils import is_wandb_available` reads from
-        # accelerate.utils, not accelerate.utils.imports.
+        # Patch accelerate's is_wandb_available. Patch both the source module and
+        # the re-export namespace, since `from accelerate.utils import
+        # is_wandb_available` reads accelerate.utils, not accelerate.utils.imports.
         try:
             import accelerate.utils.imports as acc_imports
-
             acc_imports.is_wandb_available = _wandb_false
         except (ImportError, AttributeError):
             pass
         try:
             import accelerate.utils as acc_utils
-
             acc_utils.is_wandb_available = _wandb_false
         except (ImportError, AttributeError):
             pass
         # Set env var as additional fallback
         os.environ["WANDB_DISABLED"] = "true"
+
+
+# ---------------------------------------------------------------------------
+# peft 0.19.x + transformers 4.x drift
+# ---------------------------------------------------------------------------
+# peft 0.19.x's ``peft/utils/transformers_weight_conversion.py`` unconditionally
+# imports ``transformers.conversion_mapping`` and ``transformers.core_model_loading``
+# at module top. Neither submodule exists on transformers <5, so the import
+# explodes with ModuleNotFoundError -- silently swallowed by the bare except
+# in ``patch_peft_weight_converter_compatibility`` below. Fix: when (and only
+# when) the import is broken, stub the two missing submodules with the symbols
+# peft pulls at module top. The stubs are inert at runtime because peft itself
+# only calls into them behind ``if is_transformers_ge_v5:`` gates.
+# ---------------------------------------------------------------------------
+
+# Stamped on stub modules so a second call is a strict no-op and so third
+# parties can introspect ``__unsloth_stub__`` to detect our patch.
+_UNSLOTH_STUB_SENTINEL = "__unsloth_stub__"
+_PEFT_TENSOR_PARALLEL_FALLBACK_SYMBOLS = (
+    "ALL_PARALLEL_STYLES",
+    "ColwiseParallel",
+    "EmbeddingParallel",
+    "RowwiseParallel",
+)
+
+
+def _extract_peft_tensor_parallel_imported_symbols():
+    """Return names PEFT imports from ``transformers.integrations.tensor_parallel``.
+
+    Parsed from ``peft.utils.save_and_load._maybe_shard_state_dict_for_tp`` to
+    avoid a stale hard-coded symbol list.
+    """
+    try:
+        import peft.utils.save_and_load as _save_and_load
+    except Exception:
+        return ()
+    try:
+        sharding_fn = _save_and_load._maybe_shard_state_dict_for_tp
+    except AttributeError:
+        return ()
+
+    try:
+        source = inspect.getsource(sharding_fn)
+    except Exception as exc:
+        logger.debug("Failed to inspect PEFT tensor-parallel imports: %r", exc)
+        return _PEFT_TENSOR_PARALLEL_FALLBACK_SYMBOLS
+
+    import_pattern = re.compile(
+        r"from\s+transformers\.integrations\.tensor_parallel\s+import\s*\((.*?)\)",
+        re.S,
+    )
+    import_pattern_single = re.compile(
+        r"from\s+transformers\.integrations\.tensor_parallel\s+import\s+([A-Za-z_][A-Za-z0-9_\s,]*)",
+        re.S,
+    )
+    matches = import_pattern.findall(source)
+    if not matches:
+        matches = import_pattern_single.findall(source)
+
+    symbols = []
+    seen = set()
+    for match in matches:
+        pieces = re.split(r"[,\n]", match)
+        for piece in pieces:
+            candidate = piece.strip()
+            if not candidate:
+                continue
+            if candidate.endswith(")"):
+                candidate = candidate[:-1].strip()
+            if not candidate.isidentifier():
+                continue
+            if candidate in seen:
+                continue
+            symbols.append(candidate)
+            seen.add(candidate)
+    return tuple(symbols) or _PEFT_TENSOR_PARALLEL_FALLBACK_SYMBOLS
+
+
+def _raise_on_peft_tensor_parallel_symbol_use(symbol_name):
+    raise NotImplementedError(
+        f"Unsloth: cannot use unsupported "
+        f"`transformers.integrations.tensor_parallel.{symbol_name}` on this "
+        f"transformers installation. Please upgrade transformers before "
+        f"using PEFT tensor-parallel adapter sharding features."
+    )
+
+
+def fix_peft_transformers_tensor_parallel_import_compat():
+    """Add placeholders to ``transformers.integrations.tensor_parallel`` for symbols
+    PEFT expects but this transformers build omits, keeping existing objects.
+
+    Returns ``True`` when patched, ``False`` when no patch is needed, ``None``
+    when transformers / PEFT context is absent.
+    """
+    try:
+        tensor_parallel_spec = importlib.util.find_spec("transformers.integrations.tensor_parallel")
+    except ModuleNotFoundError:
+        return None
+    if tensor_parallel_spec is None:
+        return None
+
+    required_symbols = _extract_peft_tensor_parallel_imported_symbols()
+    if not required_symbols:
+        return None
+
+    try:
+        tp_mod = importlib.import_module("transformers.integrations.tensor_parallel")
+    except ModuleNotFoundError as exc:
+        if exc.name not in {
+            "transformers",
+            "transformers.integrations",
+            "transformers.integrations.tensor_parallel",
+        }:
+            raise
+        return None
+    missing = [symbol for symbol in required_symbols if not hasattr(tp_mod, symbol)]
+    if not missing:
+        return False
+
+    def _install_symbol_placeholder(symbol_name):
+        if symbol_name == "ALL_PARALLEL_STYLES":
+
+            class _UnslothTensorParallelStyles(dict):
+                def __getitem__(self, key):
+                    _raise_on_peft_tensor_parallel_symbol_use(symbol_name)
+
+                def get(self, *args, **kwargs):
+                    _raise_on_peft_tensor_parallel_symbol_use(symbol_name)
+
+                def __contains__(self, key):
+                    _raise_on_peft_tensor_parallel_symbol_use(symbol_name)
+
+                def __iter__(self):
+                    _raise_on_peft_tensor_parallel_symbol_use(symbol_name)
+
+                def __len__(self):
+                    _raise_on_peft_tensor_parallel_symbol_use(symbol_name)
+
+            value = _UnslothTensorParallelStyles()
+        else:
+
+            class _UnslothTensorParallelPlaceholder:
+                def __init__(self, *args, **kwargs):
+                    _raise_on_peft_tensor_parallel_symbol_use(symbol_name)
+
+            value = _UnslothTensorParallelPlaceholder
+            value.__name__ = f"UnslothTensorParallelPlaceholder{symbol_name}"
+
+        setattr(value, _UNSLOTH_STUB_SENTINEL, True)
+        setattr(tp_mod, symbol_name, value)
+
+    for symbol in missing:
+        _install_symbol_placeholder(symbol)
+
+    return True
+
+
+def _peft_stub_module_importable(name):
+    """True iff ``import {name}`` would succeed without side effects."""
+    if name in sys.modules and sys.modules[name] is not None:
+        return True
+    try:
+        return importlib.util.find_spec(name) is not None
+    except (ImportError, ValueError, ModuleNotFoundError):
+        return False
+
+
+def _make_peft_stub_module(fullname):
+    import types as _types
+
+    mod = _types.ModuleType(fullname)
+    mod.__file__ = f"<unsloth stub: {fullname}>"
+    mod.__package__ = fullname.rpartition(".")[0]
+    setattr(mod, _UNSLOTH_STUB_SENTINEL, True)
+    return mod
+
+
+def _install_transformers_conversion_mapping_stub():
+    """Stub the 3 symbols peft 0.19.x imports from this module at top level."""
+    name = "transformers.conversion_mapping"
+    existing = sys.modules.get(name)
+    if existing is not None and getattr(existing, _UNSLOTH_STUB_SENTINEL, False):
+        return existing
+
+    mod = _make_peft_stub_module(name)
+
+    # peft does ``.copy()`` + keyed assignment at module top; real dict suffices.
+    mod._MODEL_TO_CONVERSION_PATTERN = {}
+
+    def get_checkpoint_conversion_mapping(model_type, *args, **kwargs):
+        # ``None`` = peft's "no conversion registered"; both callsites
+        # early-return on it.
+        return None
+
+    def get_model_conversion_mapping(model, *args, **kwargs):
+        return None
+
+    mod.get_checkpoint_conversion_mapping = get_checkpoint_conversion_mapping
+    mod.get_model_conversion_mapping = get_model_conversion_mapping
+
+    sys.modules[name] = mod
+    # Attach to parent so attribute-style access matches a real submodule.
+    parent = sys.modules.get("transformers")
+    if parent is not None and not hasattr(parent, "conversion_mapping"):
+        try:
+            parent.conversion_mapping = mod
+        except Exception:
+            # Frozen parent: sys.modules entry is enough for ``from ... import``.
+            pass
+    return mod
+
+
+def _install_transformers_core_model_loading_stub():
+    """Stub the 8 symbols peft 0.19.x imports from this module at top level.
+
+    ``Concatenate`` and ``ConversionOps`` MUST be real classes (peft
+    subclasses them at module top); the rest only appear in runtime
+    ``isinstance`` / construction calls gated behind ``is_transformers_ge_v5``."""
+    name = "transformers.core_model_loading"
+    existing = sys.modules.get(name)
+    if existing is not None and getattr(existing, _UNSLOTH_STUB_SENTINEL, False):
+        return existing
+
+    mod = _make_peft_stub_module(name)
+
+    class ConversionOps:
+        def convert(self, *args, **kwargs):  # pragma: no cover - inert stub
+            raise NotImplementedError(
+                "unsloth stub: transformers.core_model_loading.ConversionOps "
+                "is a no-op on transformers <5. Upgrade transformers to v5+ "
+                "to use peft.utils.transformers_weight_conversion at runtime."
+            )
+
+        @property
+        def reverse_op(self):  # pragma: no cover - inert stub
+            raise NotImplementedError
+
+    class Concatenate(ConversionOps):
+        def __init__(
+            self,
+            dim = 0,
+            *args,
+            **kwargs,
+        ):
+            self.dim = dim
+
+    class MergeModulelist(ConversionOps):
+        def __init__(self, *args, **kwargs):
+            pass
+
+    class Transpose(ConversionOps):
+        def __init__(
+            self,
+            dim0 = 0,
+            dim1 = 1,
+            *args,
+            **kwargs,
+        ):
+            self.dim0 = dim0
+            self.dim1 = dim1
+
+    class WeightConverter:
+        def __init__(self, *args, **kwargs):
+            # Accept any signature; upstream class evolves.
+            self.args = args
+            self.kwargs = kwargs
+
+    class WeightRenaming:
+        def __init__(
+            self,
+            source_patterns = None,
+            target_patterns = None,
+            *args,
+            **kwargs,
+        ):
+            self.source_patterns = source_patterns
+            self.target_patterns = target_patterns
+
+    def dot_natural_key(key):
+        return key
+
+    def rename_source_key(original_key, renamings, converters):
+        return original_key, None
+
+    mod.ConversionOps = ConversionOps
+    mod.Concatenate = Concatenate
+    mod.MergeModulelist = MergeModulelist
+    mod.Transpose = Transpose
+    mod.WeightConverter = WeightConverter
+    mod.WeightRenaming = WeightRenaming
+    mod.dot_natural_key = dot_natural_key
+    mod.rename_source_key = rename_source_key
+
+    sys.modules[name] = mod
+    parent = sys.modules.get("transformers")
+    if parent is not None and not hasattr(parent, "core_model_loading"):
+        try:
+            parent.core_model_loading = mod
+        except Exception:
+            pass
+    return mod
+
+
+def fix_peft_transformers_weight_conversion_import():
+    """Make ``from peft.utils import transformers_weight_conversion`` import
+    cleanly on (peft 0.19.x, transformers 4.x) by stubbing the two missing
+    transformers-v5 submodules. See header block above for details.
+
+    Must run BEFORE ``patch_peft_weight_converter_compatibility`` -- that
+    function's bare ``except (ImportError, AttributeError): return`` would
+    otherwise silently no-op.
+
+    No-op if peft / transformers missing, or if the peft module already
+    imports cleanly. Idempotent and strictly additive (never overwrites a
+    real ``transformers.conversion_mapping`` / ``core_model_loading``).
+
+    Returns True if patched, False if no action needed, None if peft absent."""
+    if importlib.util.find_spec("peft") is None:
+        return None
+
+    # Already importable? Either we patched, or transformers is v5+.
+    try:
+        importlib.import_module("peft.utils.transformers_weight_conversion")
+        return False
+    except ModuleNotFoundError as exc:
+        # Only act on our specific drift class.
+        missing = getattr(exc, "name", "") or ""
+        if missing not in (
+            "transformers.conversion_mapping",
+            "transformers.core_model_loading",
+        ):
+            return False
+    except ImportError as exc:
+        # Older Python ImportError has no `.name`; string-match instead.
+        msg = str(exc)
+        if (
+            "transformers.conversion_mapping" not in msg
+            and "transformers.core_model_loading" not in msg
+        ):
+            return False
+
+    # Need transformers loaded to attach stubs to its package.
+    transformers_root = sys.modules.get("transformers")
+    if transformers_root is None:
+        try:
+            transformers_root = importlib.import_module("transformers")
+        except Exception:
+            return False
+
+    # Stub only the genuinely missing submodules; never clobber real ones.
+    patched_any = False
+    if not _peft_stub_module_importable("transformers.conversion_mapping"):
+        _install_transformers_conversion_mapping_stub()
+        patched_any = True
+
+    if not _peft_stub_module_importable("transformers.core_model_loading"):
+        _install_transformers_core_model_loading_stub()
+        patched_any = True
+
+    if not patched_any:
+        # Real submodules present; failure was for some other reason.
+        return False
+
+    # Force a fresh import now that stubs are in place. Drop any cached
+    # ``None`` entry first so importlib retries.
+    pkg = "peft.utils.transformers_weight_conversion"
+    if pkg in sys.modules and sys.modules[pkg] is None:
+        del sys.modules[pkg]
+    try:
+        importlib.import_module(pkg)
+    except Exception:
+        # Other upstream drift; stubs stay installed so a later retry succeeds.
+        return True
+
+    logger.info(
+        "Unsloth: stubbed transformers.conversion_mapping / "
+        "transformers.core_model_loading so peft.utils."
+        "transformers_weight_conversion imports cleanly on "
+        "transformers <5."
+    )
+    return True
+
+
+def patch_peft_weight_converter_compatibility():
+    """Allow PEFT converter rebuilds on legacy converter constructors."""
+    try:
+        from peft.utils import transformers_weight_conversion as twc
+    except (ImportError, AttributeError):
+        return
+
+    _patch_peft_moe_target_conversion(twc)
+
+    if getattr(twc, "_unsloth_weight_converter_compat_patch", False):
+        return
+
+    import threading
+
+    original_build = twc.build_peft_weight_mapping
+    patch_lock = threading.RLock()
+
+    def _patch_weight_converter_ctors(weight_conversions, patched):
+        seen_classes = set()
+
+        for conversion in weight_conversions:
+            conversion_cls = conversion.__class__
+            if conversion_cls in seen_classes:
+                continue
+            seen_classes.add(conversion_cls)
+
+            original_init = conversion_cls.__init__
+            params = inspect.signature(original_init).parameters
+            supports_kwargs = any(p.kind == inspect.Parameter.VAR_KEYWORD for p in params.values())
+            supports_distributed = "distributed_operation" in params
+            supports_quantization = "quantization_operation" in params
+            if supports_kwargs or (supports_distributed and supports_quantization):
+                continue
+
+            def _compat_init(
+                self,
+                *args,
+                __original_init = original_init,
+                __supports_distributed = supports_distributed,
+                __supports_quantization = supports_quantization,
+                **kwargs,
+            ):
+                unsupported = {}
+                if not __supports_distributed and "distributed_operation" in kwargs:
+                    unsupported["distributed_operation"] = kwargs.pop("distributed_operation")
+                if not __supports_quantization and "quantization_operation" in kwargs:
+                    unsupported["quantization_operation"] = kwargs.pop("quantization_operation")
+                result = __original_init(self, *args, **kwargs)
+                for name, value in unsupported.items():
+                    if hasattr(self, name):
+                        setattr(self, name, value)
+                return result
+
+            conversion_cls.__init__ = _compat_init
+            patched.append((conversion_cls, original_init))
+
+    @functools.wraps(original_build)
+    def _build_peft_weight_mapping_compat(
+        weight_conversions,
+        adapter_name,
+        peft_config = None,
+    ):
+        if not weight_conversions:
+            return original_build(weight_conversions, adapter_name, peft_config)
+
+        patched_classes = []
+        with patch_lock:
+            try:
+                _patch_weight_converter_ctors(weight_conversions, patched_classes)
+                return original_build(weight_conversions, adapter_name, peft_config)
+            finally:
+                for conversion_cls, original_init in patched_classes:
+                    conversion_cls.__init__ = original_init
+
+    twc.build_peft_weight_mapping = _build_peft_weight_mapping_compat
+    twc._unsloth_weight_converter_compat_patch = True
+
+
+def _patch_peft_moe_target_conversion(twc):
+    """Keep PEFT 0.19 MoE conversion from rewriting explicit Unsloth targets."""
+    if getattr(twc, "_unsloth_moe_target_conversion_patch", False):
+        return
+
+    original_convert_moe = getattr(twc, "_convert_peft_config_moe", None)
+    if original_convert_moe is None:
+        return
+
+    @functools.wraps(original_convert_moe)
+    def _convert_peft_config_moe_unsloth(peft_config, model_type: str) -> None:
+        if getattr(peft_config, "target_parameters", None):
+            return
+
+        target_modules = getattr(peft_config, "target_modules", None)
+        if isinstance(target_modules, str):
+            if "." in target_modules:
+                return
+            return original_convert_moe(peft_config, model_type)
+
+        if not target_modules:
+            return original_convert_moe(peft_config, model_type)
+
+        explicit_targets = {
+            target for target in target_modules if isinstance(target, str) and "." in target
+        }
+        if not explicit_targets:
+            return original_convert_moe(peft_config, model_type)
+
+        bare_targets = set(target_modules) - explicit_targets
+        if not bare_targets:
+            return
+
+        peft_config.target_modules = bare_targets
+        original_convert_moe(peft_config, model_type)
+        peft_config.target_modules = set(peft_config.target_modules or ()) | explicit_targets
+
+    twc._convert_peft_config_moe = _convert_peft_config_moe_unsloth
+    twc._unsloth_moe_target_conversion_patch = True
 
 
 CAUSAL_CONV1D_BROKEN = False
@@ -1385,9 +2172,7 @@ def _is_rocm_torch_build() -> bool:
     try:
         torch_version_raw = str(importlib_version("torch")).lower()
         if "rocm" in torch_version_raw:
-            _log_rocm_detection(
-                "Unsloth: ROCm detection matched torch version tag (+rocm)."
-            )
+            _log_rocm_detection("Unsloth: ROCm detection matched torch version tag (+rocm).")
             return True
     except Exception:
         pass
@@ -1396,18 +2181,14 @@ def _is_rocm_torch_build() -> bool:
     for key in _ROCM_ENV_HINT_KEYS:
         value = os.environ.get(key, "")
         if isinstance(value, str) and value.strip():
-            _log_rocm_detection(
-                f"Unsloth: ROCm detection matched environment key `{key}`."
-            )
+            _log_rocm_detection(f"Unsloth: ROCm detection matched environment key `{key}`.")
             return True
 
     # Filesystem / driver hints for ROCm stacks.
     for path in _ROCM_PATH_HINTS:
         try:
             if path.exists():
-                _log_rocm_detection(
-                    f"Unsloth: ROCm detection matched filesystem hint `{path}`."
-                )
+                _log_rocm_detection(f"Unsloth: ROCm detection matched filesystem hint `{path}`.")
                 return True
         except Exception:
             continue
@@ -1472,14 +2253,346 @@ def configure_amdgpu_asic_id_table_path():
             if candidate.is_file():
                 os.environ[_AMDGPU_ASIC_ID_TABLE_PATH_ENV] = str(candidate)
                 if UNSLOTH_ENABLE_LOGGING:
-                    logger.info(
-                        f"Unsloth: Set {_AMDGPU_ASIC_ID_TABLE_PATH_ENV}={candidate}"
-                    )
+                    logger.info(f"Unsloth: Set {_AMDGPU_ASIC_ID_TABLE_PATH_ENV}={candidate}")
                 return str(candidate)
         except Exception:
             continue
 
     return None
+
+
+# ---------------------------------------------------------------------------
+# bitsandbytes Windows ROCm fix: cextension.py runs get_rocm_gpu_arch()
+# (bnb >= 0.47) and get_rocm_warpsize() (0.49.x) at import, shelling out to
+# rocminfo / hipinfo.exe via PATH. Neither is on PATH on Windows (AMD torch
+# wheels put hipInfo.exe in venv Scripts), so every import logs ERROR +
+# WARNING, ROCM_GPU_ARCH becomes "unknown", and warp size defaults to 64:
+# wrong on RDNA (wave 32), breaking 4-bit blocksizes and
+# ALLOW_PREQUANTIZED_MODELS. Upstream fix unmerged (bitsandbytes#1969), so a
+# MetaPathFinder swaps both helpers for torch-device-props-first versions
+# right after bitsandbytes.cuda_specs executes, before cextension reads
+# them. Must run before `import unsloth_zoo` (imports bnb on ROCm).
+# ---------------------------------------------------------------------------
+
+_BNB_CUDA_SPECS_MODULE = "bitsandbytes.cuda_specs"
+_BNB_ROCM_FIX_FINDER_SENTINEL = "_unsloth_bnb_rocm_fix_finder"
+_BNB_ROCM_FIX_FUNCTION_FLAG = "__unsloth_bnb_rocm_fix__"
+
+
+def _torch_rocm_device_props():
+    """Device-0 props on a ROCm torch build with a visible GPU, else None.
+    Never raises; bnb's own import initializes the device context anyway."""
+    try:
+        import torch
+
+        if not getattr(getattr(torch, "version", None), "hip", None):
+            return None
+        if not torch.cuda.is_available():
+            return None
+        return torch.cuda.get_device_properties(0)
+    except Exception:
+        return None
+
+
+def _iter_hipinfo_paths():
+    """Yield existing hipInfo.exe paths: PATH, interpreter scripts dir (venv
+    and conda layouts), then HIP SDK / AMD installer locations."""
+    import shutil
+    import sysconfig
+
+    candidates = []
+    try:
+        resolved = shutil.which("hipinfo.exe")
+        if resolved:
+            candidates.append(resolved)
+    except Exception:
+        pass
+    try:
+        scripts_dir = sysconfig.get_path("scripts")
+        if scripts_dir:
+            candidates.append(os.path.join(scripts_dir, "hipInfo.exe"))
+    except Exception:
+        pass
+    executable_dir = os.path.dirname(sys.executable or "")
+    if executable_dir:
+        candidates.append(os.path.join(executable_dir, "hipInfo.exe"))
+        candidates.append(os.path.join(executable_dir, "Scripts", "hipInfo.exe"))
+    for env_key in ("HIP_PATH", "ROCM_PATH"):
+        root = os.environ.get(env_key, "").strip()
+        if root:
+            candidates.append(os.path.join(root, "bin", "hipInfo.exe"))
+    rocm_root = os.path.join(os.environ.get("ProgramFiles", r"C:\Program Files"), "AMD", "ROCm")
+    try:
+        if os.path.isdir(rocm_root):
+            for version_dir in sorted(os.listdir(rocm_root), reverse = True):
+                candidates.append(os.path.join(rocm_root, version_dir, "bin", "hipInfo.exe"))
+    except Exception:
+        pass
+
+    seen = set()
+    for candidate in candidates:
+        try:
+            key = os.path.normcase(os.path.normpath(candidate))
+            if key in seen:
+                continue
+            seen.add(key)
+            if os.path.isfile(candidate):
+                yield candidate
+        except Exception:
+            continue
+
+
+def _run_hipinfo(hipinfo_path):
+    """Run hipInfo.exe and return its stdout, or "" on any failure."""
+    import subprocess
+    try:
+        result = subprocess.run(
+            [hipinfo_path],
+            capture_output = True,
+            text = True,
+            timeout = 15,
+            creationflags = getattr(subprocess, "CREATE_NO_WINDOW", 0),
+        )
+        return result.stdout or ""
+    except Exception as e:
+        _log_rocm_detection(f"Unsloth: `{hipinfo_path}` failed: {e}")
+        return ""
+
+
+def _unsloth_get_rocm_gpu_arch():
+    """Replaces bnb's get_rocm_gpu_arch: torch device props first (no
+    subprocess), then hipInfo.exe by absolute path, then a quiet "unknown"."""
+    try:
+        import torch
+        if not getattr(getattr(torch, "version", None), "hip", None):
+            return "unknown"
+    except Exception:
+        return "unknown"
+    props = _torch_rocm_device_props()
+    if props is not None:
+        try:
+            # gcnArchName may carry feature flags, e.g. "gfx90a:sramecc+:xnack-"
+            arch = str(props.gcnArchName).split(":")[0].strip()
+            if arch.startswith("gfx"):
+                return arch
+        except Exception:
+            pass
+    for hipinfo_path in _iter_hipinfo_paths():
+        match = re.search(r"gcnArchName:\s+gfx([a-zA-Z\d]+)", _run_hipinfo(hipinfo_path))
+        if match:
+            return "gfx" + match.group(1)
+    _log_rocm_detection(
+        "Unsloth: Could not detect the ROCm GPU architecture - bitsandbytes will see `unknown`."
+    )
+    return "unknown"
+
+
+def _unsloth_get_rocm_warpsize():
+    """Replaces bnb 0.49.x get_rocm_warpsize: upstream defaults to 64 when
+    rocminfo is missing, wrong on RDNA (wave 32)."""
+    try:
+        import torch
+        if not getattr(getattr(torch, "version", None), "hip", None):
+            return 32  # upstream behavior: NVIDIA warp size is always 32
+    except Exception:
+        return 64  # upstream behavior: default to 64 on failure
+    props = _torch_rocm_device_props()
+    if props is not None:
+        # torch 2.11 ROCm exposes warp_size; some builds used warpSize.
+        for attribute_name in ("warp_size", "warpSize"):
+            warp_size = getattr(props, attribute_name, None)
+            if isinstance(warp_size, int) and warp_size in (32, 64):
+                return warp_size
+    for hipinfo_path in _iter_hipinfo_paths():
+        match = re.search(r"^\s*warpSize:\s+(\d+)", _run_hipinfo(hipinfo_path), re.MULTILINE)
+        if match and int(match.group(1)) in (32, 64):
+            return int(match.group(1))
+    _log_rocm_detection(
+        "Unsloth: Could not detect the ROCm warp size - defaulting to 64 "
+        "(bitsandbytes' own default)."
+    )
+    return 64
+
+
+setattr(_unsloth_get_rocm_gpu_arch, _BNB_ROCM_FIX_FUNCTION_FLAG, True)
+setattr(_unsloth_get_rocm_warpsize, _BNB_ROCM_FIX_FUNCTION_FLAG, True)
+
+
+def _bnb_rocm_helper_is_broken(function):
+    """True only for upstream's subprocess-only detectors; co_names works
+    where getsource fails. Versions consulting torch props are untouched."""
+    if function is None or not callable(function):
+        return False
+    if getattr(function, _BNB_ROCM_FIX_FUNCTION_FLAG, False):
+        return False  # Already ours.
+    try:
+        function = inspect.unwrap(function)
+    except Exception:
+        pass
+    code = getattr(function, "__code__", None)
+    co_names = getattr(code, "co_names", ()) if code is not None else ()
+    if not co_names:
+        return False  # C function or opaque wrapper -- do not touch.
+    if "get_device_properties" in co_names or "gcnArchName" in co_names:
+        return False  # Fixed upstream -- no-op.
+    return "subprocess" in co_names
+
+
+def _patch_bnb_cuda_specs_module(module):
+    """Swap broken ROCm detection helpers on an executed cuda_specs module.
+    Returns True when the module ends up patched (now or previously)."""
+    patched = False
+    for attribute_name, replacement in (
+        ("get_rocm_gpu_arch", _unsloth_get_rocm_gpu_arch),
+        ("get_rocm_warpsize", _unsloth_get_rocm_warpsize),
+    ):
+        original = getattr(module, attribute_name, None)
+        if getattr(original, _BNB_ROCM_FIX_FUNCTION_FLAG, False):
+            patched = True  # Already ours.
+            continue
+        if not _bnb_rocm_helper_is_broken(original):
+            continue
+        setattr(module, attribute_name, replacement)
+        patched = True
+        logger.info(
+            f"Unsloth: Patched bitsandbytes.cuda_specs.{attribute_name} - "
+            f"avoids PATH-dependent subprocess GPU detection on Windows ROCm."
+        )
+    return patched
+
+
+class _BnbCudaSpecsPatchLoader(importlib.abc.Loader):
+    __slots__ = ("_loader",)
+
+    def __init__(self, loader):
+        self._loader = loader
+
+    def create_module(self, spec):
+        create_module = getattr(self._loader, "create_module", None)
+        if create_module is None:
+            return None
+        return create_module(spec)
+
+    def exec_module(self, module):
+        self._loader.exec_module(module)
+        # Patch after the module body ran, before cextension calls it. The
+        # finder stays on sys.meta_path (same lifecycle as the blockers
+        # above) so importlib.reload(bitsandbytes.cuda_specs) re-patches.
+        try:
+            _patch_bnb_cuda_specs_module(module)
+        except Exception as e:
+            _log_rocm_detection(f"Unsloth: bitsandbytes ROCm detection patch failed: {e}")
+
+    def __getattr__(self, name):
+        # Delegate get_source / get_filename etc. so introspection works.
+        return getattr(self._loader, name)
+
+
+class _BnbCudaSpecsPatchFinder(importlib.abc.MetaPathFinder):
+    __slots__ = (_BNB_ROCM_FIX_FINDER_SENTINEL,)
+
+    def __init__(self):
+        setattr(self, _BNB_ROCM_FIX_FINDER_SENTINEL, True)
+
+    def find_spec(
+        self,
+        fullname,
+        path = None,
+        target = None,
+    ):
+        if fullname != _BNB_CUDA_SPECS_MODULE:
+            return None
+        # Delegate to remaining finders (editable installs, frozen apps)
+        # and wrap the loader that would actually be used.
+        spec = None
+        for finder in sys.meta_path:
+            if finder is self or getattr(finder, _BNB_ROCM_FIX_FINDER_SENTINEL, False):
+                continue
+            finder_find_spec = getattr(finder, "find_spec", None)
+            if finder_find_spec is None:
+                continue
+            try:
+                spec = finder_find_spec(fullname, path, target)
+            except Exception:
+                spec = None
+            if spec is not None:
+                break
+        if spec is None or spec.loader is None:
+            return None
+        if not hasattr(spec.loader, "exec_module"):
+            return None  # Legacy loader -- let the stock machinery handle it.
+        spec.loader = _BnbCudaSpecsPatchLoader(spec.loader)
+        return spec
+
+
+def _repair_imported_bitsandbytes_rocm_constants():
+    """bnb imported before unsloth: noise already fired, but fix detectors
+    and cached constants, incl. by-value ROCM_WARP_SIZE_64 copies."""
+    cuda_specs = sys.modules.get(_BNB_CUDA_SPECS_MODULE)
+    if cuda_specs is None:
+        return
+    if not _patch_bnb_cuda_specs_module(cuda_specs):
+        return
+
+    try:
+        arch = cuda_specs.get_rocm_gpu_arch()
+    except Exception:
+        arch = "unknown"
+    warp_size_64 = None
+    get_rocm_warpsize = getattr(cuda_specs, "get_rocm_warpsize", None)
+    if callable(get_rocm_warpsize):
+        try:
+            warp_size_64 = get_rocm_warpsize() == 64
+        except Exception:
+            warp_size_64 = None
+
+    for module_name, module in list(sys.modules.items()):
+        if module is None or module is cuda_specs:
+            continue
+        if module_name != "bitsandbytes" and not module_name.startswith("bitsandbytes."):
+            continue
+        try:
+            if arch != "unknown" and getattr(module, "ROCM_GPU_ARCH", None) == "unknown":
+                module.ROCM_GPU_ARCH = arch
+            if warp_size_64 is not None and isinstance(
+                getattr(module, "ROCM_WARP_SIZE_64", None), bool
+            ):
+                module.ROCM_WARP_SIZE_64 = warp_size_64
+        except Exception:
+            continue
+    logger.info("Unsloth: Repaired bitsandbytes ROCm arch / warp-size constants in place.")
+
+
+def fix_bitsandbytes_rocm_arch_detection():
+    """Fix bnb's import-time ROCm arch / warp-size detection on Windows
+    (see header above). No-op on non-Windows, non-ROCm, missing or
+    upstream-fixed bnb. Idempotent. Opt out: UNSLOTH_DISABLE_BNB_ROCM_FIX=1."""
+    if os.environ.get("UNSLOTH_DISABLE_BNB_ROCM_FIX", "0") == "1":
+        return
+    if sys.platform != "win32":
+        return
+    if not _is_rocm_torch_build():
+        return
+
+    # Already imported: prevention impossible, repair in place instead.
+    if _BNB_CUDA_SPECS_MODULE in sys.modules:
+        try:
+            _repair_imported_bitsandbytes_rocm_constants()
+        except Exception:
+            pass
+        return
+
+    try:
+        if importlib.util.find_spec("bitsandbytes") is None:
+            return
+    except Exception:
+        return
+
+    for finder in sys.meta_path:
+        if getattr(finder, _BNB_ROCM_FIX_FINDER_SENTINEL, False):
+            return  # Already installed -- idempotent.
+    sys.meta_path.insert(0, _BnbCudaSpecsPatchFinder())
+    _log_rocm_detection("Unsloth: Installed the bitsandbytes ROCm arch detection patch hook.")
 
 
 def _is_causal_conv1d_name(module_name: str) -> bool:
@@ -1515,9 +2628,7 @@ def _is_broken_causal_conv1d_error(error) -> bool:
             or ("causal_conv1d" in message and "undefined symbol" in message)
         ):
             return True
-        current = getattr(current, "__cause__", None) or getattr(
-            current, "__context__", None
-        )
+        current = getattr(current, "__cause__", None) or getattr(current, "__context__", None)
     return False
 
 
@@ -1536,15 +2647,11 @@ def _is_broken_vllm_error(error) -> bool:
             )
         ) or ("vllm" in message and "undefined symbol" in message):
             return True
-        # Also catch CUDA shared library mismatches during vllm import
-        # e.g. "libcudart.so.12: cannot open shared object file"
-        if (
-            "libcudart" in message or "libcublas" in message or "libnvrtc" in message
-        ) and "cannot open shared object file" in message:
+        # Forced extension load raises the bare loader error (no "vllm._C"
+        # wrapper); match any .so failure as callers feed only vLLM imports.
+        if "cannot open shared object file" in message:
             return True
-        current = getattr(current, "__cause__", None) or getattr(
-            current, "__context__", None
-        )
+        current = getattr(current, "__cause__", None) or getattr(current, "__context__", None)
     return False
 
 
@@ -1563,9 +2670,7 @@ def _get_vllm_cuda_mismatch_message(error):
         if match:
             wanted_cuda = match.group(1)
             break
-        current = getattr(current, "__cause__", None) or getattr(
-            current, "__context__", None
-        )
+        current = getattr(current, "__cause__", None) or getattr(current, "__context__", None)
     if wanted_cuda is None:
         return None
 
@@ -1574,7 +2679,6 @@ def _get_vllm_cuda_mismatch_message(error):
     system_cuda_tag = None  # For wheel URL, e.g. "130"
     try:
         import torch
-
         cuda_version = torch.version.cuda  # e.g. "13.0" or "12.8"
         if cuda_version:
             system_cuda_display = cuda_version
@@ -1593,7 +2697,6 @@ def _get_vllm_cuda_mismatch_message(error):
     cpu_arch = "x86_64"
     try:
         import platform
-
         cpu_arch = platform.machine()
     except Exception:
         pass
@@ -1627,7 +2730,12 @@ class _CausalConv1dImportBlockerFinder(importlib.abc.MetaPathFinder):
     def __init__(self):
         setattr(self, _CAUSAL_CONV1D_BLOCKER_SENTINEL, True)
 
-    def find_spec(self, fullname, path = None, target = None):
+    def find_spec(
+        self,
+        fullname,
+        path = None,
+        target = None,
+    ):
         if not CAUSAL_CONV1D_BROKEN or not _is_causal_conv1d_name(fullname):
             return None
         return importlib.machinery.ModuleSpec(
@@ -1656,7 +2764,12 @@ class _VllmImportBlockerFinder(importlib.abc.MetaPathFinder):
     def __init__(self):
         setattr(self, _VLLM_BLOCKER_SENTINEL, True)
 
-    def find_spec(self, fullname, path = None, target = None):
+    def find_spec(
+        self,
+        fullname,
+        path = None,
+        target = None,
+    ):
         if not VLLM_BROKEN or not _is_vllm_name(fullname):
             return None
         return importlib.machinery.ModuleSpec(
@@ -1728,6 +2841,16 @@ def _clear_vllm_modules():
             sys.modules.pop(module_name, None)
 
 
+# vLLM's compiled extensions. A CUDA-major ABI break hits all of them, so
+# probing the eagerly-loaded _C and its siblings reliably trips it.
+_VLLM_COMPILED_EXTENSIONS = (
+    "vllm._C",
+    "vllm._C_stable_libtorch",
+    "vllm._moe_C",
+    "vllm._rocm_C",
+)
+
+
 def disable_broken_vllm(error = None):
     """Disable vLLM dynamically when its shared library is ABI-broken."""
     global VLLM_BROKEN
@@ -1746,6 +2869,14 @@ def disable_broken_vllm(error = None):
         try:
             import vllm  # noqa: F401
 
+            # Lazy vLLM lets a bare `import vllm` succeed even when an extension
+            # is ABI-broken; force-load each to surface the .so failure here.
+            # A missing one raises ModuleNotFoundError (skipped below).
+            for _ext in _VLLM_COMPILED_EXTENSIONS:
+                try:
+                    importlib.import_module(_ext)
+                except ModuleNotFoundError:
+                    pass
             return False
         except Exception as import_error:
             failure = import_error
@@ -1807,7 +2938,6 @@ def disable_broken_causal_conv1d():
 
     try:
         import causal_conv1d  # noqa: F401
-
         return
     except Exception as error:
         if not _is_broken_causal_conv1d_error(error):
@@ -1821,3 +2951,181 @@ def disable_broken_causal_conv1d():
         "Unsloth: Detected broken causal_conv1d binary; "
         "disabling causal_conv1d fast path and continuing import."
     )
+
+
+_BNB_ROCM_DLL_RE = re.compile(r"libbitsandbytes_rocm(\d+)\.dll", re.IGNORECASE)
+
+
+def _is_hip_torch_build():
+    """True only when torch itself is a HIP/ROCm build. Env hints (HIP_PATH
+    etc.) do not count: CUDA bitsandbytes raises at import when the ROCm
+    override is set. Wheel tag first (no torch import); torch.version.hip
+    fallback for source builds."""
+    try:
+        if "rocm" in str(importlib_version("torch")).lower():
+            return True
+    except Exception:
+        pass
+    try:
+        import torch
+        return bool(getattr(torch.version, "hip", None))
+    except Exception:
+        return False
+
+
+def _detect_installed_bnb_rocm_version():
+    """Highest installed ``libbitsandbytes_rocm<NN>.dll`` suffix ("72", "713")
+    or ``None``. Listing order is unordered, so take the numeric max."""
+    try:
+        spec = importlib.util.find_spec("bitsandbytes")
+    except Exception:
+        return None
+    if spec is None or not spec.submodule_search_locations:
+        return None
+
+    suffixes = []
+    for pkg_dir in spec.submodule_search_locations:
+        try:
+            entries = os.listdir(pkg_dir)
+        except Exception:
+            continue
+        for entry in entries:
+            match = _BNB_ROCM_DLL_RE.fullmatch(entry)
+            if match is not None:
+                suffixes.append(match.group(1))
+    if not suffixes:
+        return None
+    return max(suffixes, key = lambda value: int(value))
+
+
+def maybe_set_windows_rocm_bnb_version():
+    """Pin ``BNB_ROCM_VERSION`` from the installed wheel on Windows + ROCm torch.
+
+    AMD's Windows wheel ships one ``libbitsandbytes_rocm<NN>.dll`` whose
+    suffix can disagree with ``torch.version.hip`` (HIP 7.13 vs rocm72.dll),
+    breaking the native 4-bit/8-bit paths. Pin the installed suffix before
+    bitsandbytes is first imported.
+
+    No-op unless ALL of: Windows, a real HIP torch build (env hints like
+    HIP_PATH do not count), a ROCm DLL installed, and no explicit user value.
+    Linux is untouched. Values seeded by Unsloth's venv sitecustomize.py
+    (marked ``UNSLOTH_BNB_ROCM_VERSION_SOURCE=sitecustomize``) are
+    redetectable defaults, not overrides; ``UNSLOTH_SKIP_BNB_ROCM_VERSION=1``
+    opts out and drops a seeded default. Returns the value set, else None.
+    """
+    if sys.platform != "win32":
+        return None
+    if os.environ.get("UNSLOTH_SKIP_BNB_ROCM_VERSION") == "1":
+        # Real opt-out: drop our seeded default (marker present); explicit
+        # user values carry no marker and are kept.
+        if os.environ.get("UNSLOTH_BNB_ROCM_VERSION_SOURCE") == "sitecustomize":
+            os.environ.pop("BNB_ROCM_VERSION", None)
+            os.environ.pop("UNSLOTH_BNB_ROCM_VERSION_SOURCE", None)
+        return None
+    if "BNB_ROCM_VERSION" in os.environ and (
+        os.environ.get("UNSLOTH_BNB_ROCM_VERSION_SOURCE") != "sitecustomize"
+    ):
+        return None
+    if not _is_hip_torch_build():
+        return None
+    version = _detect_installed_bnb_rocm_version()
+    if version is None:
+        return None
+    os.environ["BNB_ROCM_VERSION"] = version
+    os.environ["UNSLOTH_BNB_ROCM_VERSION_SOURCE"] = "detected"
+    if UNSLOTH_ENABLE_LOGGING:
+        logger.info(
+            f"Unsloth: set BNB_ROCM_VERSION={version} "
+            "(detected from the installed bitsandbytes ROCm wheel on Windows)."
+        )
+    return version
+
+
+def patch_accelerate_recursively_apply():
+    """
+    Make Accelerate's recursive utilities tolerate Unsloth's EmptyLogits
+    sentinel. recursively_apply returns the sentinel unchanged instead of
+    raising TypeError, and find_device skips it while still finding real
+    tensors, falling back to PartialState().device only for sentinel-only
+    payloads. Both wrappers are idempotent and are propagated to every
+    already imported accelerate namespace.
+    """
+    try:
+        import accelerate.utils.operations as acc_ops
+    except Exception:
+        return
+
+    original_recursively_apply = getattr(acc_ops, "recursively_apply", None)
+    if original_recursively_apply is not None and not getattr(
+        original_recursively_apply, "__unsloth_patched__", False
+    ):
+
+        @functools.wraps(original_recursively_apply)
+        def _patched_recursively_apply(func, data, *args, **kwargs):
+            if type(data).__name__ == "EmptyLogits":
+                cls = type(data)
+                if cls.__eq__ is object.__eq__:
+                    # Debug mode compares gathered metadata across ranks with ==
+                    cls.__eq__ = lambda self, other: type(other).__name__ == "EmptyLogits"
+                return data
+            return original_recursively_apply(func, data, *args, **kwargs)
+
+        _patched_recursively_apply.__unsloth_patched__ = True
+
+        for mod_name, mod in tuple(sys.modules.items()):
+            if mod_name.startswith("accelerate") and mod is not None:
+                if getattr(mod, "recursively_apply", None) is original_recursively_apply:
+                    try:
+                        setattr(mod, "recursively_apply", _patched_recursively_apply)
+                    except Exception:
+                        pass
+
+    original_find_device = getattr(acc_ops, "find_device", None)
+    if original_find_device is not None and not getattr(
+        original_find_device, "__unsloth_patched__", False
+    ):
+        from collections.abc import Mapping
+
+        @functools.wraps(original_find_device)
+        def _patched_find_device(data):
+            import torch
+
+            found_sentinel = False
+
+            def _search(obj):
+                nonlocal found_sentinel
+                if type(obj).__name__ == "EmptyLogits":
+                    found_sentinel = True
+                elif isinstance(obj, Mapping):
+                    for value in obj.values():
+                        device = _search(value)
+                        if device is not None:
+                            return device
+                elif isinstance(obj, (tuple, list)):
+                    for value in obj:
+                        device = _search(value)
+                        if device is not None:
+                            return device
+                elif isinstance(obj, torch.Tensor):
+                    return obj.device
+                return None
+
+            device = _search(data)
+            if device is None and found_sentinel:
+                # Debug mode calls find_device(...).type on gather/broadcast inputs
+                try:
+                    from accelerate.state import PartialState
+                    return PartialState().device
+                except Exception:
+                    pass
+            return device
+
+        _patched_find_device.__unsloth_patched__ = True
+
+        for mod_name, mod in tuple(sys.modules.items()):
+            if mod_name.startswith("accelerate") and mod is not None:
+                if getattr(mod, "find_device", None) is original_find_device:
+                    try:
+                        setattr(mod, "find_device", _patched_find_device)
+                    except Exception:
+                        pass

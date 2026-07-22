@@ -3,12 +3,16 @@ __pycache__/
 *.py[cod]
 *.class
 unsloth_compiled_cache/
+# Notebook-validator runtime PyPI metadata cache (CI repopulates).
+scripts/data/pypi_cache/
 # ML artifacts (large files)
 feature/
 outputs/
 exports/
 /datasets/
 studio/backend/assets/datasets/
+# Generated async worker / reviewer transcripts (never part of the product).
+studio/backend/async_task_outputs/
 unsloth_training_checkpoints/
 *.gguf
 *.safetensors
@@ -24,8 +28,8 @@ dist/
 downloads/
 eggs/
 .eggs/
-lib/
-lib64/
+/lib/
+/lib64/
 parts/
 sdist/
 var/
@@ -204,6 +208,18 @@ tmp/
 **/node_modules/
 auth.db
 
+# Tauri local build/generated output
+studio/src-tauri/target/
+studio/src-tauri/gen/
+studio/src-tauri/artifacts/
+studio/src-tauri/icons/android/
+studio/src-tauri/icons/ios/
+studio/src-tauri/icons/128x128@2x.png
+studio/src-tauri/icons/64x64.png
+studio/src-tauri/icons/Square*Logo.png
+studio/src-tauri/icons/StoreLogo.png
+studio/src-tauri/icons/squarehq.png
+
 # Local working docs
 **/CLAUDE.md
 **/claude.md
@@ -215,4 +231,11 @@ log.txt
 setup_leo.sh
 server.pid
 *.log
+# Ignore stray lockfiles; real npm projects opt back in below (npm ci needs them).
 package-lock.json
+!studio/frontend/package-lock.json
+!studio/backend/core/data_recipe/oxc-validator/package-lock.json
+!studio/package-lock.json
+llama.cpp/
+# Stray "~" dir some tools create from a literal ~ TMPDIR; never part of the repo.
+/~/

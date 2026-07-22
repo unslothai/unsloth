@@ -1,27 +1,11 @@
-# OpenEnv dependencies
-tomli
-tomli-w
-
-# ExecuTorch dependencies
-ruamel.yaml
-# coremltools                    # 10.2 MB - Apple CoreML, no imports in unsloth/zoo/studio
-expecttest
+# transitive dep of onnxruntime (via data-designer's pymupdf4llm)
 flatbuffers
-hydra-core
-hypothesis
-kgb
-parameterized
-pytest<9.0
-pytest-json-report
-pytest-rerunfailures==15.1
-pytest-xdist
-# Also needed by sentence_transformers (installed with --no-deps in extras-no-deps.txt)
+# Also needed by sentence_transformers (installed with --no-deps in extras-no-deps.txt);
+# librosa pulls it in too, but is skipped in no-torch mode.
 scikit-learn==1.7.1
 
 # Additional extras
-pybind11
-langid
-jiwer
+jiwer                            # WER/CER metrics for vision OCR save-merge benchmarks
 omegaconf
 einx
 pyloudnorm
@@ -39,19 +23,13 @@ ftfy
 importlib-resources
 librosa
 markdown2
-matplotlib
+matplotlib==3.10.9
 pystoi
 soundfile
 tensorboard
 torch-stoi
-evaluate
 timm
-transformers-cfg
-open_spiel
-addict
-easydict
 einops
 tabulate
-fastmcp>=3.0.2
 openai>=2.7.2
 websockets>=15.0.1

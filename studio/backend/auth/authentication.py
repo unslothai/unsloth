@@ -10,10 +10,12 @@ from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 import jwt
 
 from .storage import (
+    API_KEY_PREFIX,
     get_jwt_secret,
     get_user_and_secret,
     load_jwt_secret,
     save_refresh_token,
+    validate_api_key,
     verify_refresh_token,
 )
 
@@ -50,13 +52,17 @@ def _decode_subject_without_verification(token: str) -> Optional[str]:
 def create_access_token(
     subject: str,
     expires_delta: Optional[timedelta] = None,
+    *,
+    desktop: bool = False,
 ) -> str:
     """
     Create a signed JWT for the given subject (e.g. username).
 
-    Tokens are valid across restarts because the signing secret is stored in SQLite.
+    Valid across restarts: the signing secret is stored in SQLite.
     """
     to_encode = {"sub": subject}
+    if desktop:
+        to_encode["desktop"] = True
     expire = datetime.now(timezone.utc) + (
         expires_delta or timedelta(minutes = ACCESS_TOKEN_EXPIRE_MINUTES)
     )
@@ -68,48 +74,84 @@ def create_access_token(
     )
 
 
-def create_refresh_token(subject: str) -> str:
+def is_desktop_access_token(token: str) -> bool:
+    """Return true only for a valid desktop-issued JWT access token."""
+    if token.startswith(API_KEY_PREFIX):
+        return False
+
+    subject = _decode_subject_without_verification(token)
+    if subject is None:
+        return False
+
+    record = get_user_and_secret(subject)
+    if record is None:
+        return False
+
+    _salt, _pwd_hash, jwt_secret, _must_change_password = record
+    try:
+        payload = jwt.decode(token, jwt_secret, algorithms = [ALGORITHM])
+    except jwt.InvalidTokenError:
+        return False
+
+    return payload.get("sub") == subject and payload.get("desktop") is True
+
+
+def create_refresh_token(subject: str, *, desktop: bool = False) -> str:
     """
     Create a random refresh token, store its hash in SQLite, and return it.
 
-    Refresh tokens are opaque (not JWTs) and expire after REFRESH_TOKEN_EXPIRE_DAYS.
+    Refresh tokens are opaque (not JWTs); expire after REFRESH_TOKEN_EXPIRE_DAYS.
     """
     token = secrets.token_urlsafe(48)
     expires_at = datetime.now(timezone.utc) + timedelta(days = REFRESH_TOKEN_EXPIRE_DAYS)
-    save_refresh_token(token, subject, expires_at.isoformat())
+    save_refresh_token(token, subject, expires_at.isoformat(), is_desktop = desktop)
     return token
 
 
-def refresh_access_token(refresh_token: str) -> Tuple[Optional[str], Optional[str]]:
+def refresh_access_token(refresh_token: str) -> Tuple[Optional[str], Optional[str], bool]:
     """
     Validate a refresh token and issue a new access token.
 
-    The refresh token itself is NOT consumed — it stays valid until expiry.
-    Returns a new access_token or None if the refresh token is invalid/expired.
+    The refresh token is NOT consumed; it stays valid until expiry.
+    Returns a new access_token, or None if the refresh token is invalid/expired.
     """
-    username = verify_refresh_token(refresh_token)
-    if username is None:
-        return None, None
-    return create_access_token(subject = username), username
+    verified = verify_refresh_token(refresh_token)
+    if verified is None:
+        return None, None, False
+    username, is_desktop = verified
+    return (
+        create_access_token(subject = username, desktop = is_desktop),
+        username,
+        is_desktop,
+    )
 
 
 def reload_secret() -> None:
     """
-    Keep legacy API compatibility for callers expecting auth storage init.
+    Legacy API compat for callers expecting auth storage init.
 
     Auth now resolves the current signing secret directly from SQLite.
     """
     load_jwt_secret()
 
 
-async def get_current_subject(
-    credentials: HTTPAuthorizationCredentials = Depends(security),
-) -> str:
+async def get_current_subject(credentials: HTTPAuthorizationCredentials = Depends(security)) -> str:
     """Validate JWT and require the password-change flow to be completed."""
     return await _get_current_subject(
         credentials,
         allow_password_change = False,
     )
+
+
+async def authenticated_via_api_key(
+    credentials: HTTPAuthorizationCredentials = Depends(security),
+) -> bool:
+    """True when the caller used an sk-unsloth API key, not a UI session JWT.
+
+    Lets routes treat programmatic API callers differently from the Unsloth UI
+    (e.g. refuse a teardown the UI would allow).
+    """
+    return bool(credentials and credentials.credentials.startswith(API_KEY_PREFIX))
 
 
 async def get_current_subject_allow_password_change(
@@ -123,20 +165,22 @@ async def get_current_subject_allow_password_change(
 
 
 async def _get_current_subject(
-    credentials: HTTPAuthorizationCredentials,
-    *,
-    allow_password_change: bool,
+    credentials: HTTPAuthorizationCredentials, *, allow_password_change: bool
 ) -> str:
-    """
-    FastAPI dependency to validate the JWT and return the subject.
-
-    Use this as a dependency on routes that should be protected, e.g.:
-
-        @router.get("/secure")
-        async def secure_endpoint(current_subject: str = Depends(get_current_subject)):
-            ...
-    """
+    """FastAPI dependency: validate the JWT and return the subject. Use on protected routes."""
     token = credentials.credentials
+
+    # --- API key path (sk-unsloth-...) ---
+    if token.startswith(API_KEY_PREFIX):
+        username = validate_api_key(token)
+        if username is None:
+            raise HTTPException(
+                status_code = status.HTTP_401_UNAUTHORIZED,
+                detail = "Invalid or expired API key",
+            )
+        return username
+
+    # --- JWT path ---
     subject = _decode_subject_without_verification(token)
     if subject is None:
         raise HTTPException(
@@ -159,7 +203,8 @@ async def _get_current_subject(
                 status_code = status.HTTP_401_UNAUTHORIZED,
                 detail = "Invalid token payload",
             )
-        if must_change_password and not allow_password_change:
+        is_desktop = payload.get("desktop") is True
+        if must_change_password and not allow_password_change and not is_desktop:
             raise HTTPException(
                 status_code = status.HTTP_403_FORBIDDEN,
                 detail = "Password change required",

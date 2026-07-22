@@ -27,6 +27,7 @@ from ..utils.attention_dispatch import (
     run_attention,
     SDPA,
     select_attention_backend,
+    resolve_prefix_seg_info,
 )
 from .llama import (
     LlamaRotaryEmbedding,
@@ -97,9 +98,7 @@ def MistralAttention_fast_forward(
     self.rotary_emb.extend_rope_embedding(V, seq_len = kv_seq_len)
     cos, sin = self.rotary_emb.get_cached(kv_seq_len, Q.device.index)
 
-    rope_position_ids = (
-        position_ids if position_ids is not None else kwargs.get("position_ids")
-    )
+    rope_position_ids = position_ids if position_ids is not None else kwargs.get("position_ids")
     # Useful for LongRoPE
     Q, K = fast_rope_embedding(Q, K, cos, sin, rope_position_ids)
 
@@ -113,12 +112,8 @@ def MistralAttention_fast_forward(
     sw = kv_seq_len if (sw_cfg is None or sw_cfg == "null") else sw_cfg
     window_size = (-1, -1) if (kv_seq_len <= sw) else (sw, sw)
 
-    use_varlen = (
-        seq_info is not None and past_key_value is None and window_size == (-1, -1)
-    )
-    backend = (
-        SDPA if attention_mask is not None else select_attention_backend(use_varlen)
-    )
+    use_varlen = seq_info is not None and past_key_value is None and window_size == (-1, -1)
+    backend = SDPA if attention_mask is not None else select_attention_backend(use_varlen)
     attention_config = AttentionConfig(
         backend = backend,
         n_kv_heads = n_kv_heads,
@@ -130,6 +125,9 @@ def MistralAttention_fast_forward(
             "softmax_scale": getattr(self, "softmax_scale", None),
         },
     )
+    # PrefixGrouper seg table rides in **kwargs from the GRPO logprob forward; misuse
+    # (KV cache / padding mask) raises. None => byte-identical default.
+    _pg_seg = resolve_prefix_seg_info(kwargs, past_key_value, attention_mask)
     context = AttentionContext(
         bsz = bsz,
         q_len = q_len,
@@ -140,6 +138,7 @@ def MistralAttention_fast_forward(
         seq_info = seq_info,
         attention_mask = attention_mask,
         causal_mask = causal_mask,
+        prefix_seg_info = _pg_seg,
     )
 
     A = run_attention(config = attention_config, context = context, Q = Q, K = K, V = V)
@@ -167,17 +166,19 @@ def MistralForCausalLM_fast_forward(
     *args,
     **kwargs,
 ) -> Union[Tuple, CausalLMOutputWithPast]:
-    if causal_mask is None and past_key_values is None:
+    # PrefixGrouper brings its own mask: a synthesized causal attention_mask would trip
+    # resolve_prefix_seg_info on the no-xFormers path and force a fallback.
+    if (
+        causal_mask is None
+        and past_key_values is None
+        and kwargs.get("prefix_seg_info", None) is None
+    ):
         bsz, q_len = input_ids.shape
         sliding_window = getattr(self.config, "sliding_window", None)
 
         if HAS_XFORMERS:
             # Always create causal mask for xformers
-            if (
-                sliding_window is None
-                or sliding_window == "null"
-                or sliding_window <= 0
-            ):
+            if sliding_window is None or sliding_window == "null" or sliding_window <= 0:
                 causal_mask = xformers.attn_bias.LowerTriangularMask()
             elif q_len <= sliding_window:
                 causal_mask = xformers.attn_bias.LowerTriangularMask()
@@ -189,13 +190,9 @@ def MistralForCausalLM_fast_forward(
             # If attention_mask exists, it will be handled in the attention forward
 
         elif self.training:
-            # During training, LlamaModel_fast_forward's DPO embed-masking
-            # block requires a 2D attention_mask (it does
-            # inputs_embeds *= attention_mask.unsqueeze(0).transpose(0, 1).transpose(1, 2)).
-            # Afterwards, LlamaModel_fast_forward sets attention_mask=None
-            # before the attention layers anyway, so leaving the 2D mask
-            # untouched here is safe and avoids converting to 4D (which would
-            # crash the DPO block).
+            # LlamaModel_fast_forward's DPO embed-masking block needs the 2D
+            # attention_mask; it nulls the mask before attention anyway, so
+            # leaving it 2D is safe and avoids a 4D conversion that crashes DPO.
             pass
 
         else:
@@ -225,9 +222,7 @@ def MistralForCausalLM_fast_forward(
 
             # Combine with existing attention_mask if present
             if attention_mask is None:
-                attention_mask = causal_mask_values[None, None, :, :].expand(
-                    bsz, 1, q_len, q_len
-                )
+                attention_mask = causal_mask_values[None, None, :, :].expand(bsz, 1, q_len, q_len)
             else:
                 if attention_mask.dim() == 2:
                     # Convert 0/1 padding mask to additive format: 1->0 (keep), 0->-inf (mask)
@@ -238,27 +233,19 @@ def MistralForCausalLM_fast_forward(
                     )
                     attention_mask = causal_mask_values[None, None, :, :] + padding_mask
                 else:
-                    attention_mask = (
-                        attention_mask + causal_mask_values[None, None, :, :]
-                    )
+                    attention_mask = attention_mask + causal_mask_values[None, None, :, :]
 
-            attention_mask = attention_mask.to(
-                dtype = _get_dtype(dtype_from_config(self.config))
-            )
+            attention_mask = attention_mask.to(dtype = _get_dtype(dtype_from_config(self.config)))
 
     output_attentions = (
-        output_attentions
-        if output_attentions is not None
-        else self.config.output_attentions
+        output_attentions if output_attentions is not None else self.config.output_attentions
     )
     output_hidden_states = (
         output_hidden_states
         if output_hidden_states is not None
         else self.config.output_hidden_states
     )
-    return_dict = (
-        return_dict if return_dict is not None else self.config.use_return_dict
-    )
+    return_dict = return_dict if return_dict is not None else self.config.use_return_dict
 
     # decoder outputs consists of (dec_features, layer_state, dec_hidden, dec_attn)
     self.model._has_no_labels = labels is None
@@ -297,9 +284,16 @@ def MistralForCausalLM_fast_forward(
     if labels is not None:
         labels = labels.to(lm_head_device)
 
+    # Merge legacy / new spellings before branching so the decode-time
+    # last-token slice fires on the normal path too. Skip int max() if
+    # either is a tensor (HF selective-decode form).
+    if isinstance(num_logits_to_keep, torch.Tensor) or isinstance(logits_to_keep, torch.Tensor):
+        num_logits_to_keep = 0
+    else:
+        num_logits_to_keep = max(num_logits_to_keep, logits_to_keep)
+
     # If we are in GRPO mode, return raw hidden states
     if os.environ.get("UNSLOTH_RETURN_HIDDEN_STATES", "0") == "1":
-        num_logits_to_keep = max(num_logits_to_keep, logits_to_keep)
         if num_logits_to_keep != 0:
             hidden_states = hidden_states[:, -num_logits_to_keep:, :]
         return CausalLMOutputWithPast(
@@ -314,9 +308,7 @@ def MistralForCausalLM_fast_forward(
         logits = torch.mv(lm_head, hidden_states.ravel().to(lm_head.dtype))
         logits = logits.unsqueeze(0).unsqueeze(0)
     elif num_logits_to_keep != 0:
-        logits = self.lm_head(
-            hidden_states[:, -num_logits_to_keep:, :].to(lm_head.dtype)
-        )
+        logits = self.lm_head(hidden_states[:, -num_logits_to_keep:, :].to(lm_head.dtype))
     else:
         RETURN_LOGITS = os.environ.get("UNSLOTH_RETURN_LOGITS", "0") == "1"
         # < 1024 Normal Unsloth uses less VRAM!
@@ -351,7 +343,9 @@ def MistralForCausalLM_fast_forward(
                 logit_softcapping = logit_softcapping,
             )
             if not return_dict:
-                output = (logits,) + outputs[1:]
+                # Fused CE never materializes `logits`; use EMPTY_LOGITS
+                # like the return_dict branch below (fixes #2068).
+                output = (EMPTY_LOGITS,) + outputs[1:]
                 return (loss,) + output if loss is not None else output
 
             output = CausalLMOutputWithPast(
@@ -451,9 +445,7 @@ class FastMistralModel(FastLlamaModel):
         # https://github.com/huggingface/transformers/blob/v4.37.2/src/transformers/models/llama/modeling_llama.py
         import transformers.models.mistral.modeling_mistral
 
-        transformers.models.mistral.modeling_mistral.MistralRotaryEmbedding = (
-            LlamaRotaryEmbedding
-        )
+        transformers.models.mistral.modeling_mistral.MistralRotaryEmbedding = LlamaRotaryEmbedding
         return
 
     @staticmethod

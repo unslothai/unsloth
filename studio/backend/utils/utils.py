@@ -1,9 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""
-Shared backend utilities
-"""
+"""Shared backend utilities."""
 
 import os
 import structlog
@@ -17,17 +15,69 @@ import tempfile
 logger = get_logger(__name__)
 
 
+# ── Client-safe error helpers ───────────────────────────────────
+# Never return raw exception text to clients; log server-side, return generic.
+
+
+def safe_error_detail(error: Exception, fallback: str = "An internal error occurred") -> str:
+    """Map an exception to a generic, client-safe message (never raw
+    ``str(error)``, which can leak paths). Log the real exception server-side.
+    """
+    text = str(error).lower()
+    if (
+        isinstance(error, (ConnectionError, TimeoutError))
+        or "connection" in text
+        or "timed out" in text
+        or "timeout" in text
+    ):
+        return "Could not reach an upstream service. Please try again."
+    if "out of memory" in text or "cuda error" in text:
+        return "Ran out of memory. Try a smaller model or shorter input."
+    return fallback
+
+
+def safe_curated_detail(error: Exception, fallback: str = "An internal error occurred") -> str:
+    """Client-safe text for curated domain/validation exceptions.
+
+    Keeps the message (paths stripped) instead of a generic fallback; for known
+    exception types only (use ``safe_error_detail`` for generic ``Exception``).
+    """
+    from utils.native_path_leases import redact_native_paths
+
+    msg = redact_native_paths(str(error)).strip()
+    return msg or fallback
+
+
+def log_and_http_error(
+    error: Exception,
+    status_code: int,
+    public_message: str,
+    *,
+    event: str = "request_failed",
+    log = None,
+):
+    """Log ``error`` in full server-side and return an ``HTTPException`` whose
+    ``detail`` is only ``public_message`` -- never the raw exception text.
+
+    Usage:  raise log_and_http_error(e, 500, "Failed to start training")
+    """
+    from fastapi import HTTPException
+
+    # exc_info=error works for both structlog and stdlib loggers.
+    (log or logger).error(f"{event}: {error}", exc_info = error)
+    return HTTPException(status_code = status_code, detail = public_message)
+
+
 @contextmanager
 def without_hf_auth():
     """
-    Context manager to temporarily disable HuggingFace authentication.
+    Temporarily disable HuggingFace authentication.
 
     Usage:
         with without_hf_auth():
             # Code that should run without cached tokens
             model_info(model_name, token=None)
     """
-    # Save environment variables
     saved_env = {}
     env_vars = ["HF_TOKEN", "HUGGINGFACE_HUB_TOKEN", "HF_HOME"]
     for var in env_vars:
@@ -35,11 +85,10 @@ def without_hf_auth():
             saved_env[var] = os.environ[var]
             del os.environ[var]
 
-    # Save disable flag
     saved_disable = os.environ.get("HF_HUB_DISABLE_IMPLICIT_TOKEN")
     os.environ["HF_HUB_DISABLE_IMPLICIT_TOKEN"] = "1"
 
-    # Move token files temporarily
+    # Move token files aside temporarily
     token_files = []
     token_locations = [
         Path.home() / ".cache" / "huggingface" / "token",
@@ -64,7 +113,7 @@ def without_hf_auth():
             except Exception as e:
                 logger.error(f"Failed to restore token {original}: {e}")
 
-        # Restore environment
+        # Restore env
         for var, value in saved_env.items():
             os.environ[var] = value
 
@@ -74,16 +123,33 @@ def without_hf_auth():
             os.environ.pop("HF_HUB_DISABLE_IMPLICIT_TOKEN", None)
 
 
+def is_hf_authentication_error(error: Exception) -> bool:
+    """Return whether an exception chain contains a definitive HF auth failure."""
+    seen: set[int] = set()
+    current: BaseException | None = error
+    while current is not None and id(current) not in seen:
+        seen.add(id(current))
+        response = getattr(current, "response", None)
+        status = getattr(response, "status_code", None)
+        try:
+            if status is not None and int(status) == 401:
+                return True
+        except (TypeError, ValueError):
+            pass
+        message = str(current).lower()
+        if "invalid user token" in message or "invalid hf token" in message:
+            return True
+        current = current.__cause__ or current.__context__
+    return False
+
+
 def format_error_message(error: Exception, model_name: str) -> str:
     """
-    Format user-friendly error messages for common issues.
+    Format a user-friendly error message for common load issues.
 
     Args:
         error: The exception that occurred
         model_name: Name of the model being loaded
-
-    Returns:
-        User-friendly error string
     """
     error_str = str(error).lower()
     model_short = model_name.split("/")[-1] if "/" in model_name else model_name
@@ -114,5 +180,4 @@ def format_error_message(error: Exception, model_name: str) -> str:
         )
         return f"Not enough {device_label} memory to load '{model_short}'. Try a smaller model or free memory."
 
-    # Generic fallback
     return str(error)

@@ -1,5 +1,6 @@
 "use client";
 
+import { openLink } from "@/lib/open-link";
 import {
   memo,
   useState,
@@ -93,8 +94,8 @@ function Source({
   variant,
   size,
   asChild = false,
-  target = "_blank",
-  rel = "noopener noreferrer",
+  href,
+  onClick,
   ...props
 }: SourceProps) {
   return (
@@ -103,14 +104,20 @@ function Source({
       variant={variant}
       size={size}
       className={cn(
-        "cursor-pointer outline-none focus-visible:border-ring focus-visible:ring-[3px] focus-visible:ring-ring/50",
+        "rounded-full cursor-pointer outline-none hover:bg-chat-icon-bg-hover! hover:text-chat-icon-fg-hover! focus-visible:border-ring",
         className,
       )}
     >
       <a
         data-slot="source"
-        target={target}
-        rel={rel}
+        href={href}
+        rel="noopener noreferrer"
+        onClick={(e) => {
+          if (href && openLink(href)) {
+            e.preventDefault();
+          }
+          onClick?.(e);
+        }}
         {...(props as ComponentProps<"a">)}
       />
     </Badge>
@@ -120,6 +127,11 @@ function Source({
 // ── Source badge with hover card ─────────────────────────────
 
 interface SourceData {
+  /**
+   * Stable per-citation key. Two Anthropic citations into different spans of
+   * the same source share a `url`, so React keys on `id` to keep them distinct.
+   */
+  id: string;
   url: string;
   title: string;
   description?: string;
@@ -130,7 +142,7 @@ const SourceBadge: FC<{ source: SourceData }> = ({ source }) => {
   const displayTitle = source.title || domain;
 
   return (
-    <HoverCard openDelay={300} closeDelay={100}>
+    <HoverCard openDelay={0} closeDelay={0}>
       <HoverCardTrigger asChild>
         <span className="inline-block">
           <Source href={source.url}>
@@ -139,16 +151,21 @@ const SourceBadge: FC<{ source: SourceData }> = ({ source }) => {
           </Source>
         </span>
       </HoverCardTrigger>
-      <HoverCardContent side="top" align="start" className="w-72 p-3">
+      <HoverCardContent
+        side="top"
+        align="start"
+        className="!bg-black !text-white !w-72 !p-3 !rounded-2xl !shadow-md !ring-0 !duration-0"
+        style={{ animation: "none" }}
+      >
         <div className="flex gap-2.5">
           <SourceIcon url={source.url} size={4} className="mt-0.5 shrink-0" />
           <div className="min-w-0 space-y-1">
             <p className="text-sm font-semibold leading-tight truncate">
               {source.title || domain}
             </p>
-            <p className="text-xs text-muted-foreground truncate">{domain}</p>
+            <p className="text-xs text-white/60 truncate">{domain}</p>
             {source.description && (
-              <p className="text-xs text-muted-foreground leading-relaxed line-clamp-3">
+              <p className="text-xs text-white/70 leading-relaxed line-clamp-3">
                 {source.description}
               </p>
             )}
@@ -167,7 +184,6 @@ const SourcesGroup: FC = () => {
   const [visibleCount, setVisibleCount] = useState<number | null>(null);
   const [expanded, setExpanded] = useState(false);
 
-  // Extract source parts from the message
   const sources: SourceData[] = [];
   if (message.content) {
     for (const part of message.content) {
@@ -178,8 +194,14 @@ const SourcesGroup: FC = () => {
         "url" in part &&
         part.url
       ) {
+        const url = part.url as string;
+        const partId =
+          typeof (part as { id?: unknown }).id === "string"
+            ? ((part as { id: string }).id)
+            : url;
         sources.push({
-          url: part.url as string,
+          id: partId,
+          url,
           title: (part as { title?: string }).title || "",
           description: (part as { metadata?: { description?: string } })
             .metadata?.description,
@@ -196,7 +218,6 @@ const SourcesGroup: FC = () => {
     const children = Array.from(container.children) as HTMLElement[];
     if (children.length === 0) return;
 
-    // Find the top of the first child as baseline
     const firstTop = children[0].offsetTop;
     let rowCount = 1;
     let prevTop = firstTop;
@@ -238,27 +259,36 @@ const SourcesGroup: FC = () => {
   const hiddenCount = sources.length - (visibleCount ?? sources.length);
 
   return (
-    <div className="relative mt-2">
-      {/* Hidden measurement container — renders all badges to measure row positions */}
+    <div className="relative mt-2 mb-3">
+      {/* Hidden measurement container: renders all badges off-screen to read
+          each child's offsetTop and decide how many fit in two rows. The
+          absolute/h-0/overflow-hidden wrapper clips the pills so they don't add
+          to scrollHeight (~30px per row) and create a phantom empty scroll area
+          below the message. offsetTop reads correctly because the wrapper is
+          positioned (absolute) and the flex-wrapped children measure against it. */}
       <div
-        ref={containerRef}
         aria-hidden
-        className="flex w-full flex-wrap gap-1 invisible absolute pointer-events-none"
+        className="absolute pointer-events-none overflow-hidden h-0 w-full left-0 top-0"
       >
-        {sources.map((source) => (
-          <span key={source.url} className="inline-block">
-            <Source href={source.url}>
-              <SourceIcon url={source.url} />
-              <SourceTitle>{source.title || extractDomain(source.url)}</SourceTitle>
-            </Source>
-          </span>
-        ))}
+        <div
+          ref={containerRef}
+          className="flex w-full flex-wrap gap-1 invisible"
+        >
+          {sources.map((source) => (
+            <span key={source.id} className="inline-block">
+              <Source href={source.url}>
+                <SourceIcon url={source.url} />
+                <SourceTitle>{source.title || extractDomain(source.url)}</SourceTitle>
+              </Source>
+            </span>
+          ))}
+        </div>
       </div>
 
       {/* Visible container */}
       <div className="flex flex-wrap gap-1">
         {displayedSources.map((source) => (
-          <SourceBadge key={source.url} source={source} />
+          <SourceBadge key={source.id} source={source} />
         ))}
         {shouldCollapse && !expanded && (
           <button
@@ -266,7 +296,7 @@ const SourcesGroup: FC = () => {
             onClick={() => setExpanded(true)}
             className={cn(
               badgeVariants({ variant: "outline", size: "default" }),
-              "cursor-pointer text-muted-foreground hover:text-foreground",
+              "rounded-full cursor-pointer text-muted-foreground hover:bg-chat-icon-bg-hover! hover:text-chat-icon-fg-hover!",
             )}
           >
             +{hiddenCount} more
@@ -278,7 +308,7 @@ const SourcesGroup: FC = () => {
             onClick={() => setExpanded(false)}
             className={cn(
               badgeVariants({ variant: "outline", size: "default" }),
-              "cursor-pointer text-muted-foreground hover:text-foreground",
+              "rounded-full cursor-pointer text-muted-foreground hover:bg-chat-icon-bg-hover! hover:text-chat-icon-fg-hover!",
             )}
           >
             Show less

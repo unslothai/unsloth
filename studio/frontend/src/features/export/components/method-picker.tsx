@@ -61,14 +61,15 @@ export function MethodPicker({ value, onChange, disabledMethods = [], disabledRe
               key={m.value}
               type="button"
               disabled={isDisabled}
+              aria-pressed={selected}
               onClick={() => !isDisabled && onChange(m.value)}
               className={cn(
-                "flex items-start gap-3 rounded-xl p-4 text-left ring-1 transition-all",
+                "flex items-start gap-3 rounded-xl p-4 text-left ring-1 transition-colors",
                 isDisabled
                   ? "ring-border opacity-40 cursor-not-allowed"
                   : selected
-                    ? "ring-2 ring-primary bg-primary/5"
-                    : "ring-border hover:-translate-y-0.5 hover:shadow-sm",
+                    ? "ring-1 ring-ring-strong bg-primary/5"
+                    : "ring-border hover:bg-muted/40",
               )}
             >
               <div

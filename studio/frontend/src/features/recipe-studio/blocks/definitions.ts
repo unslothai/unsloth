@@ -12,6 +12,7 @@ import {
   EqualSignIcon,
   FingerPrintIcon,
   FunctionIcon,
+  GithubIcon,
   Plug01Icon,
   Parabola02Icon,
   PencilEdit02Icon,
@@ -58,11 +59,16 @@ export type BlockType =
   | "seed_hf"
   | "seed_local"
   | "seed_unstructured"
+  | "seed_github"
   | "model_provider"
   | "model_config"
   | "tool_config";
 
-export type SeedBlockType = "seed_hf" | "seed_local" | "seed_unstructured";
+export type SeedBlockType =
+  | "seed_hf"
+  | "seed_local"
+  | "seed_unstructured"
+  | "seed_github";
 
 type IconType = typeof CodeIcon;
 
@@ -168,6 +174,15 @@ const BLOCK_DEFINITIONS: BlockDefinition[] = [
     icon: DocumentAttachmentIcon,
     dialogKey: "seed",
     createConfig: (id, existing) => makeSeedConfig(id, existing, "unstructured"),
+  },
+  {
+    kind: "seed",
+    type: "seed_github",
+    title: "GitHub repositories",
+    description: "Crawl issues, pull requests, and commits from one or more GitHub repos.",
+    icon: GithubIcon,
+    dialogKey: "seed",
+    createConfig: (id, existing) => makeSeedConfig(id, existing, "github_repo"),
   },
   {
     kind: "sampler",
@@ -388,6 +403,7 @@ export function getBlockDefinitionForConfig(
       hf: "seed_hf",
       local: "seed_local",
       unstructured: "seed_unstructured",
+      github_repo: "seed_github",
     };
     return getBlockDefinition("seed", seedType[config.seed_source_type ?? "hf"]);
   }

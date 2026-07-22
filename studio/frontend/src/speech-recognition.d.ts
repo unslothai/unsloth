@@ -28,6 +28,11 @@ interface SpeechRecognitionEvent extends Event {
   readonly results: SpeechRecognitionResultList;
 }
 
+interface SpeechRecognitionErrorEvent extends Event {
+  readonly error: string;
+  readonly message: string;
+}
+
 interface SpeechRecognition extends EventTarget {
   continuous: boolean;
   interimResults: boolean;
@@ -35,7 +40,7 @@ interface SpeechRecognition extends EventTarget {
   onresult: ((event: SpeechRecognitionEvent) => void) | null;
   onerror: ((event: Event) => void) | null;
   onend: (() => void) | null;
-  start(): void;
+  start(audioTrack?: MediaStreamTrack): void;
   stop(): void;
   abort(): void;
 }
@@ -49,4 +54,4 @@ interface Window {
   webkitSpeechRecognition?: SpeechRecognitionConstructor;
 }
 
-declare var SpeechRecognition: SpeechRecognitionConstructor | undefined;
+declare const SpeechRecognition: SpeechRecognitionConstructor | undefined;

@@ -1,2 +1,13 @@
 # Normalize Python files to LF line endings
 *.py text eol=lf
+
+# Always check out shell scripts with LF endings. Without this rule a Windows
+# clone (core.autocrlf=true) rewrites them to CRLF, and the trailing \r breaks
+# them when run in WSL/Linux (e.g. `set -e` -> "set: Illegal option -").
+*.sh text eol=lf
+
+# Normalize Unsloth frontend sources to LF. Scoped to the frontend tree (rather
+# than repo-wide *.ts/*.tsx/... rules) so the policy can't force LF on files
+# elsewhere. text=auto lets Git detect and leave binary assets (logos, fonts)
+# untouched while text files (.ts/.tsx/.json/.html/.svg/...) are stored as LF.
+studio/frontend/** text=auto eol=lf

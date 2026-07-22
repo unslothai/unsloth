@@ -93,9 +93,7 @@ def GemmaDecoderLayer_fast_forward(
     *args,
     **kwargs,
 ):
-    if use_cache and hasattr(
-        self, "_flag_for_generation"
-    ):  # past_key_value is not None:
+    if use_cache and hasattr(self, "_flag_for_generation"):  # past_key_value is not None:
         out_weight = torch.empty(
             self.input_layernorm.weight.shape,
             dtype = torch.float32,
@@ -129,9 +127,7 @@ def GemmaDecoderLayer_fast_forward(
         hidden_states += residual
     else:
         residual = hidden_states
-        hidden_states = fast_rms_layernorm(
-            self.input_layernorm, hidden_states, gemma = True
-        )
+        hidden_states = fast_rms_layernorm(self.input_layernorm, hidden_states, gemma = True)
         hidden_states, self_attn_weights, present_key_value = self.self_attn(
             hidden_states = hidden_states,
             causal_mask = causal_mask,
@@ -147,9 +143,7 @@ def GemmaDecoderLayer_fast_forward(
 
         # Fully Connected
         residual = hidden_states
-        hidden_states = fast_rms_layernorm(
-            self.post_attention_layernorm, hidden_states, gemma = True
-        )
+        hidden_states = fast_rms_layernorm(self.post_attention_layernorm, hidden_states, gemma = True)
         hidden_states = self.mlp(hidden_states)
         hidden_states = residual + hidden_states
 
@@ -187,9 +181,7 @@ def GemmaModel_fast_forward_inference(
     hidden_states = hidden_states.to(_get_dtype(dtype_from_config(self.config)))
     # 3072**0.5 = 55.5000 in bfloat16, whilst 55.4256 in float32
     # 2048**0.5 = 45.2500 in bfloat16, whilst 45.2548 in float32
-    hidden_states *= torch.tensor(
-        math_sqrt(self.config.hidden_size), dtype = hidden_states.dtype
-    )
+    hidden_states *= torch.tensor(math_sqrt(self.config.hidden_size), dtype = hidden_states.dtype)
 
     bsz, q_len, hd = hidden_states.shape
     seq_len = past_key_values[0][0].shape[-2]
@@ -211,9 +203,7 @@ def GemmaModel_fast_forward_inference(
     next_decoder_cache = []
     for idx, decoder_layer in enumerate(self.model.layers):
         device_index = getattr(decoder_layer, "_per_layer_device_index", 0)
-        hidden_states, position_ids = move_to_device(
-            device_index, hidden_states, position_ids
-        )
+        hidden_states, position_ids = move_to_device(device_index, hidden_states, position_ids)
 
         residual = hidden_states
         hidden_states = fast_rms_layernorm_inference_gemma(
@@ -268,20 +258,14 @@ class GemmaFixedRotaryEmbedding(torch.nn.Module):
     ):
         super().__init__()
         # In transformers 5.0+, RotaryEmbedding(config) passes config as first positional arg (dim)
-        if (
-            config is None
-            and dim is not None
-            and hasattr(dim, "max_position_embeddings")
-        ):
+        if config is None and dim is not None and hasattr(dim, "max_position_embeddings"):
             config = dim
             dim = None
         if config is not None:
             # [TODO] Hack to pass in config - need to remove later
             base = _get_rope_theta(config, default = base)
             partial_rotary_factor = (
-                config.partial_rotary_factor
-                if hasattr(config, "partial_rotary_factor")
-                else 1.0
+                config.partial_rotary_factor if hasattr(config, "partial_rotary_factor") else 1.0
             )
             dim = getattr(config, "head_dim", None)
             if dim is None:
@@ -322,9 +306,7 @@ class GemmaFixedRotaryEmbedding(torch.nn.Module):
             torch.arange(self.dim // 2, dtype = torch.int64, device = "cpu").float()
         )
         timescale = self.base**freq_exponents
-        positions = torch.arange(
-            self.current_rope_size, device = "cpu", dtype = torch.int64
-        ).float()
+        positions = torch.arange(self.current_rope_size, device = "cpu", dtype = torch.int64).float()
         radians_new = positions[..., None] / timescale[None, None, :]
         radians_new = radians_new.squeeze(0)
 
@@ -336,7 +318,12 @@ class GemmaFixedRotaryEmbedding(torch.nn.Module):
         self.multi_gpu_sin_cached[device.index] = sin
         return cos, sin
 
-    def forward(self, x, position_ids = None, seq_len = None):
+    def forward(
+        self,
+        x,
+        position_ids = None,
+        seq_len = None,
+    ):
         # x: [bs, num_attention_heads, seq_len, head_size]
         if seq_len is not None and seq_len > self.current_rope_size:
             self._set_cos_sin_cache(seq_len = seq_len, device = x.device, dtype = x.dtype)
@@ -348,12 +335,14 @@ class GemmaFixedRotaryEmbedding(torch.nn.Module):
             self.multi_gpu_sin_cached[device_index][:seq_len],
         )
 
-    def get_cached(self, seq_len = None, device_index = None):
+    def get_cached(
+        self,
+        seq_len = None,
+        device_index = None,
+    ):
         if device_index is None:
             device_index = get_current_device()
-        return self.multi_gpu_cos_cached[device_index], self.multi_gpu_sin_cached[
-            device_index
-        ]
+        return self.multi_gpu_cos_cached[device_index], self.multi_gpu_sin_cached[device_index]
 
     def extend_rope_embedding(self, x, seq_len):
         if seq_len <= self.current_rope_size:
@@ -402,9 +391,7 @@ class GemmaFixedLinearScalingRotaryEmbedding(GemmaFixedRotaryEmbedding):
             torch.arange(self.dim // 2, dtype = torch.int64, device = "cpu").float()
         )
         timescale = self.base**freq_exponents
-        positions = torch.arange(
-            self.current_rope_size, device = "cpu", dtype = torch.int64
-        ).float()
+        positions = torch.arange(self.current_rope_size, device = "cpu", dtype = torch.int64).float()
         positions = positions / self.scaling_factor
         radians_new = positions[..., None] / timescale[None, None, :]
         radians_new = radians_new.squeeze(0)
@@ -435,9 +422,7 @@ class FastGemmaModel(FastLlamaModel):
         GemmaFlashAttention2.forward = LlamaAttention_fast_forward
         GemmaDecoderLayer.forward = GemmaDecoderLayer_fast_forward
         GemmaModel.forward = LlamaModel_fast_forward
-        GemmaForCausalLM.forward = CausalLM_fast_forward(
-            GemmaModel_fast_forward_inference
-        )
+        GemmaForCausalLM.forward = CausalLM_fast_forward(GemmaModel_fast_forward_inference)
         PeftModelForCausalLM.forward = PeftModel_fast_forward
         fix_prepare_inputs_for_generation(GemmaForCausalLM)
 
@@ -448,13 +433,15 @@ class FastGemmaModel(FastLlamaModel):
         # https://github.com/huggingface/transformers/blob/v4.37.2/src/transformers/models/llama/modeling_llama.py
         import transformers.models.gemma.modeling_gemma
 
-        transformers.models.gemma.modeling_gemma.GemmaRotaryEmbedding = (
-            GemmaFixedRotaryEmbedding
-        )
+        transformers.models.gemma.modeling_gemma.GemmaRotaryEmbedding = GemmaFixedRotaryEmbedding
         return
 
     @staticmethod
-    def post_patch(model, tokenizer, correct_dtype = None):
+    def post_patch(
+        model,
+        tokenizer,
+        correct_dtype = None,
+    ):
         # Gemma does not downcast RoPE
         model, tokenizer = patch_model_and_tokenizer(
             model, tokenizer, downcast_rope = False, correct_dtype = correct_dtype
@@ -482,9 +469,7 @@ class FastGemmaModel(FastLlamaModel):
                 # Leave + 1 to Triton kernel itself
                 # module.weight += 1.0 # return output * (1 + self.weight)
                 if not hasattr(module, "variance_epsilon"):
-                    module.variance_epsilon = (
-                        module.eps
-                    )  # Gemma doesn't use variance_epsilon
+                    module.variance_epsilon = module.eps  # Gemma doesn't use variance_epsilon
 
         # Clear deleted GPU items
         import gc

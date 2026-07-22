@@ -1,6 +1,12 @@
 #!/usr/bin/env bash
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 set -euo pipefail
+
+# PyPI/Unsloth release publishing must use `./build.sh publish` (or an
+# equivalent stamp -> build -> verify-dist -> upload flow) so packaged Unsloth
+# artifacts include the display-only Unsloth release version.
 
 # 1. Build frontend (Vite outputs to dist/)
 cd studio/frontend
@@ -29,10 +35,19 @@ _restore_gitignores() {
 }
 trap _restore_gitignores EXIT
 
+# Corporate-mirror / proxy escape hatch (#6491). When UNSLOTH_NPM_REGISTRY is set we
+# thread it as `--registry <url>` into the installs (overrides frontend/.npmrc's pinned
+# registry for both bun and npm; min-release-age / save-exact stay in force). Empty
+# array (the default) expands to nothing under `set -u`.
+_NPM_REGISTRY_ARGS=()
+if [ -n "${UNSLOTH_NPM_REGISTRY:-}" ]; then
+    _NPM_REGISTRY_ARGS=(--registry "$UNSLOTH_NPM_REGISTRY")
+fi
+
 # Use bun for install if available (faster), fall back to npm.
 _install_ok=false
 if command -v bun &>/dev/null; then
-    if bun install; then
+    if bun install "${_NPM_REGISTRY_ARGS[@]+"${_NPM_REGISTRY_ARGS[@]}"}"; then
         _install_ok=true
     else
         echo "⚠ bun install failed, falling back to npm"
@@ -40,8 +55,10 @@ if command -v bun &>/dev/null; then
     fi
 fi
 if [ "$_install_ok" != "true" ]; then
-    if ! npm install; then
+    if ! npm install "${_NPM_REGISTRY_ARGS[@]+"${_NPM_REGISTRY_ARGS[@]}"}"; then
         echo "❌ ERROR: package install failed" >&2
+        echo "   If you are behind a corporate firewall/proxy, set UNSLOTH_NPM_REGISTRY to your mirror and retry, e.g.:" >&2
+        echo "   UNSLOTH_NPM_REGISTRY=https://your-mirror.example/api/npm/ ./build.sh" >&2
         exit 1
     fi
 fi
@@ -70,10 +87,33 @@ cd ../..
 # 2. Clean old artifacts
 rm -rf build dist *.egg-info
 
-# 3. Build wheel
+# 3. Stamp display-only Unsloth release metadata for packaged builds.
+_STUDIO_BUILD_INFO="studio/backend/utils/_studio_release_build.py"
+_STUDIO_BUILD_INFO_BACKUP="$(mktemp)"
+cp "$_STUDIO_BUILD_INFO" "$_STUDIO_BUILD_INFO_BACKUP"
+_restore_studio_build_info() {
+    cp "$_STUDIO_BUILD_INFO_BACKUP" "$_STUDIO_BUILD_INFO" 2>/dev/null || true
+    rm -f "$_STUDIO_BUILD_INFO_BACKUP"
+}
+trap _restore_studio_build_info EXIT
+
+if [ "${1:-}" = "publish" ]; then
+    STUDIO_STAMPED_VERSION="$(python scripts/stamp_studio_release.py --require-release)"
+else
+    STUDIO_STAMPED_VERSION="$(python scripts/stamp_studio_release.py)"
+fi
+
+# 4. Build wheel/sdist
 python -m build
 
-# 4. Optionally publish
+if [ "${1:-}" = "publish" ]; then
+    python scripts/stamp_studio_release.py --verify-dist dist --expected "$STUDIO_STAMPED_VERSION"
+fi
+
+_restore_studio_build_info
+trap - EXIT
+
+# 5. Optionally publish
 if [ "${1:-}" = "publish" ]; then
     python -m twine upload dist/*
 fi

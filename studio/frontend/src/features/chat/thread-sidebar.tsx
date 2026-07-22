@@ -1,12 +1,12 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { useState } from "react";
 import {
   SidebarContent,
   SidebarFooter,
   SidebarGroup,
   SidebarGroupContent,
-  SidebarGroupLabel,
   SidebarHeader,
   SidebarMenu,
   SidebarMenuAction,
@@ -14,54 +14,67 @@ import {
   SidebarMenuItem,
 } from "@/components/ui/sidebar";
 import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuSeparator,
+  DropdownMenuSub,
+  DropdownMenuSubContent,
+  DropdownMenuSubTrigger,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
+import {
+  Dialog,
+  DialogContent,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
+import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import {
   BookOpen02Icon,
   ColumnInsertIcon,
   Delete02Icon,
+  Download01Icon,
+  MoreHorizontalIcon,
   NewReleasesIcon,
   PencilEdit02Icon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
-import { db, useLiveQuery } from "./db";
+import { isDownloadCancelled } from "@/lib/native-files";
+import { toast } from "sonner";
 import { useChatRuntimeStore } from "./stores/chat-runtime-store";
-import type { ChatView, ThreadRecord } from "./types";
+import type { ChatView } from "./types";
+import {
+  deleteChatItem,
+  renameChatItem,
+  useChatSidebarItems,
+} from "./hooks/use-chat-sidebar-items";
+import type { SidebarItem } from "./hooks/use-chat-sidebar-items";
+import {
+  exportConversationRawJsonl,
+  exportConversationCsv,
+  exportConversationShareGPT,
+  exportBulkConversationsMerged,
+  exportBulkConversationsSeparate,
+  EXPORT_FORMATS_LIST,
+  type ConvExportFormat,
+} from "./prompt-storage/prompt-storage-dialog";
+import {
+  listStoredChatThreads,
+} from "./utils/chat-history-storage";
 
-interface SidebarItem {
-  type: "single" | "compare";
-  id: string;
-  title: string;
-  createdAt: number;
-}
+const EXPORT_FORMATS = [
+  { label: "Raw JSONL", fn: exportConversationRawJsonl },
+  { label: "CSV", fn: exportConversationCsv },
+  { label: "ShareGPT JSONL", fn: exportConversationShareGPT },
+] as const;
 
-function groupThreads(threads: ThreadRecord[]): SidebarItem[] {
-  const items: SidebarItem[] = [];
-  const seenPairs = new Set<string>();
-
-  for (const t of threads) {
-    if (t.archived) {
-      continue;
-    }
-    if (t.pairId) {
-      if (seenPairs.has(t.pairId)) {
-        continue;
-      }
-      seenPairs.add(t.pairId);
-      items.push({
-        type: "compare",
-        id: t.pairId,
-        title: t.title,
-        createdAt: t.createdAt,
-      });
-    } else if (!t.pairId) {
-      items.push({
-        type: "single",
-        id: t.id,
-        title: t.title,
-        createdAt: t.createdAt,
-      });
-    }
-  }
-
-  return items.sort((a, b) => b.createdAt - a.createdAt);
+async function getThreadIdsForItem(item: SidebarItem): Promise<string[]> {
+  if (item.type === "single") return [item.id];
+  const threads = await listStoredChatThreads({ pairId: item.id });
+  return threads.map((t) => t.id);
 }
 
 export function ThreadSidebar({
@@ -77,17 +90,17 @@ export function ThreadSidebar({
   onNewCompare: () => void;
   showCompare: boolean;
 }) {
-  const allThreads = useLiveQuery(async () => {
-    const threadIdsWithMessage = new Set(
-      (await db.messages.orderBy("threadId").uniqueKeys()) as string[],
-    );
-    const rows = await db.threads.orderBy("createdAt").reverse().toArray();
-    return rows.filter((t) => !t.archived && threadIdsWithMessage.has(t.id));
-  }, []);
-  const items = groupThreads(allThreads ?? []);
+  const { items } = useChatSidebarItems();
   const storeThreadId = useChatRuntimeStore((s) => s.activeThreadId);
   const activeId =
-    view.mode === "single" ? (view.threadId ?? storeThreadId) : view.pairId;
+    view.mode === "single"
+      ? (view.threadId ?? storeThreadId)
+      : view.mode === "compare"
+        ? view.pairId
+        : view.projectId;
+
+  const [renamingItem, setRenamingItem] = useState<SidebarItem | null>(null);
+  const [renameDraft, setRenameDraft] = useState("");
 
   function viewForItem(item: SidebarItem): ChatView {
     return item.type === "single"
@@ -96,22 +109,68 @@ export function ThreadSidebar({
   }
 
   async function handleDelete(item: SidebarItem) {
-    if (item.type === "single") {
-      await db.messages.where("threadId").equals(item.id).delete();
-      await db.threads.delete(item.id);
-    } else {
-      const paired = await db.threads.where("pairId").equals(item.id).toArray();
-      for (const t of paired) {
-        await db.messages.where("threadId").equals(t.id).delete();
-        await db.threads.delete(t.id);
+    await deleteChatItem(item, activeId ?? undefined, onSelect);
+  }
+
+  function openRename(item: SidebarItem) {
+    setRenameDraft(item.title);
+    setRenamingItem(item);
+  }
+
+  async function commitRename() {
+    if (!renamingItem) return;
+    try {
+      await renameChatItem(renamingItem, renameDraft);
+    } catch {
+      toast.error("Failed to rename chat.");
+    } finally {
+      setRenamingItem(null);
+    }
+  }
+
+  async function handleExport(
+    item: SidebarItem,
+    fn: (threadId: string) => Promise<void>,
+  ) {
+    try {
+      const ids = await getThreadIdsForItem(item);
+      for (const id of ids) {
+        await fn(id);
+      }
+    } catch (error) {
+      if (!isDownloadCancelled(error)) {
+        toast.error("Export failed.");
       }
     }
-    if (activeId === item.id) {
-      // Directly set a new view with a nonce rather than going through
-      // onNewThread(), which may return early if the guard sees no
-      // threadId and no activeThreadId (after we just cleared it).
-      useChatRuntimeStore.getState().setActiveThreadId(null);
-      onSelect({ mode: "single", newThreadNonce: crypto.randomUUID() });
+  }
+
+  async function getBulkThreadIds(scope: "recents" | "all"): Promise<string[]> {
+    const threads = await listStoredChatThreads({
+      includeArchived: false,
+      ...(scope === "recents" ? { projectId: null } : {}),
+    });
+    return [...new Set(threads.map((t) => t.id))];
+  }
+
+  async function handleBulkExport(
+    scope: "recents" | "all",
+    fmt: ConvExportFormat,
+    merged: boolean,
+  ) {
+    try {
+      const ids = await getBulkThreadIds(scope);
+      if (ids.length === 0) { toast.info("No conversations to export."); return; }
+      const ts = new Date().toISOString().slice(0, 10);
+      const basename = `${scope === "all" ? "all-chats" : "recents"}-${ts}`;
+      if (merged) {
+        await exportBulkConversationsMerged(ids, fmt, basename);
+      } else {
+        await exportBulkConversationsSeparate(ids, fmt, basename);
+      }
+    } catch (error) {
+      if (!isDownloadCancelled(error)) {
+        toast.error("Export failed.");
+      }
     }
   }
 
@@ -142,7 +201,61 @@ export function ThreadSidebar({
           </SidebarGroupContent>
         </SidebarGroup>
         <SidebarGroup className="flex-1 px-4">
-          <SidebarGroupLabel className="text-xs font-medium text-muted-foreground/80">Your Chats</SidebarGroupLabel>
+          {/* Recents label with export-all menu */}
+          <div className="flex items-center justify-between px-2 py-1.5">
+            <span className="text-xs font-medium text-muted-foreground/80">Recents</span>
+            <DropdownMenu>
+              <DropdownMenuTrigger asChild>
+                <button
+                  type="button"
+                  className="flex items-center justify-center rounded-sm p-0.5 text-muted-foreground hover:bg-accent focus:outline-none focus-visible:ring-0"
+                  title="Export options"
+                >
+                  <HugeiconsIcon icon={MoreHorizontalIcon} className="size-3.5" />
+                </button>
+              </DropdownMenuTrigger>
+              <DropdownMenuContent side="bottom" align="end" className="w-56">
+                <DropdownMenuSub>
+                  <DropdownMenuSubTrigger>
+                    <HugeiconsIcon icon={Download01Icon} className="mr-2 size-4" />
+                    Export Recents
+                  </DropdownMenuSubTrigger>
+                  <DropdownMenuSubContent avoidCollisions={false} className="w-52">
+                    {EXPORT_FORMATS_LIST.map(({ fmt, label }) => (
+                      <DropdownMenuItem key={`r-m-${fmt}`} onSelect={() => void handleBulkExport("recents", fmt, true)}>
+                        {label} — combined
+                      </DropdownMenuItem>
+                    ))}
+                    <DropdownMenuSeparator />
+                    {EXPORT_FORMATS_LIST.map(({ fmt, label }) => (
+                      <DropdownMenuItem key={`r-s-${fmt}`} onSelect={() => void handleBulkExport("recents", fmt, false)}>
+                        {label} — per chat
+                      </DropdownMenuItem>
+                    ))}
+                  </DropdownMenuSubContent>
+                </DropdownMenuSub>
+                <DropdownMenuSub>
+                  <DropdownMenuSubTrigger>
+                    <HugeiconsIcon icon={Download01Icon} className="mr-2 size-4" />
+                    Export Recents + Projects
+                  </DropdownMenuSubTrigger>
+                  <DropdownMenuSubContent avoidCollisions={false} className="w-52">
+                    {EXPORT_FORMATS_LIST.map(({ fmt, label }) => (
+                      <DropdownMenuItem key={`a-m-${fmt}`} onSelect={() => void handleBulkExport("all", fmt, true)}>
+                        {label} — combined
+                      </DropdownMenuItem>
+                    ))}
+                    <DropdownMenuSeparator />
+                    {EXPORT_FORMATS_LIST.map(({ fmt, label }) => (
+                      <DropdownMenuItem key={`a-s-${fmt}`} onSelect={() => void handleBulkExport("all", fmt, false)}>
+                        {label} — per chat
+                      </DropdownMenuItem>
+                    ))}
+                  </DropdownMenuSubContent>
+                </DropdownMenuSub>
+              </DropdownMenuContent>
+            </DropdownMenu>
+          </div>
           <SidebarGroupContent>
             <SidebarMenu>
               {items.map((item) => (
@@ -151,15 +264,54 @@ export function ThreadSidebar({
                     isActive={activeId === item.id}
                     onClick={() => onSelect(viewForItem(item))}
                   >
+                    {item.isFork ? (
+                      <span
+                        className="mr-1 rounded-sm bg-primary/10 px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-primary"
+                        title="Forked from another chat"
+                      >
+                        fork
+                      </span>
+                    ) : null}
                     <span>{item.title}</span>
                   </SidebarMenuButton>
-                  <SidebarMenuAction
-                    showOnHover={true}
-                    onClick={() => handleDelete(item)}
-                    title="Delete"
-                  >
-                    <HugeiconsIcon icon={Delete02Icon} />
-                  </SidebarMenuAction>
+                  <DropdownMenu>
+                    <DropdownMenuTrigger asChild>
+                      <SidebarMenuAction showOnHover className="focus:outline-none focus-visible:ring-0" onClick={(e) => e.stopPropagation()}>
+                        <HugeiconsIcon icon={MoreHorizontalIcon} className="size-4" />
+                        <span className="sr-only">More options</span>
+                      </SidebarMenuAction>
+                    </DropdownMenuTrigger>
+                    <DropdownMenuContent side="bottom" align="end" className="w-44">
+                      <DropdownMenuItem onSelect={() => openRename(item)}>
+                        <HugeiconsIcon icon={PencilEdit02Icon} className="mr-2 size-4" />
+                        Rename
+                      </DropdownMenuItem>
+                      <DropdownMenuSub>
+                        <DropdownMenuSubTrigger>
+                          <HugeiconsIcon icon={Download01Icon} className="mr-2 size-4" />
+                          Export
+                        </DropdownMenuSubTrigger>
+                        <DropdownMenuSubContent avoidCollisions={false} className="w-52">
+                          {EXPORT_FORMATS.map(({ label, fn }) => (
+                            <DropdownMenuItem
+                              key={label}
+                              onSelect={() => handleExport(item, fn)}
+                            >
+                              {label}
+                            </DropdownMenuItem>
+                          ))}
+                        </DropdownMenuSubContent>
+                      </DropdownMenuSub>
+                      <DropdownMenuSeparator />
+                      <DropdownMenuItem
+                        className="text-destructive focus:text-destructive"
+                        onSelect={() => void handleDelete(item)}
+                      >
+                        <HugeiconsIcon icon={Delete02Icon} className="mr-2 size-4" />
+                        Delete
+                      </DropdownMenuItem>
+                    </DropdownMenuContent>
+                  </DropdownMenu>
                 </SidebarMenuItem>
               ))}
             </SidebarMenu>
@@ -191,6 +343,30 @@ export function ThreadSidebar({
           <span>What&apos;s new</span>
         </a>
       </SidebarFooter>
+
+      {/* Rename dialog */}
+      <Dialog open={renamingItem !== null} onOpenChange={(open) => { if (!open) setRenamingItem(null); }}>
+        <DialogContent className="corner-squircle dialog-soft-surface sm:max-w-sm">
+          <DialogHeader>
+            <DialogTitle>Rename chat</DialogTitle>
+          </DialogHeader>
+          <Input
+            value={renameDraft}
+            onChange={(e) => setRenameDraft(e.target.value)}
+            onKeyDown={(e) => { if (e.key === "Enter") void commitRename(); }}
+            autoFocus
+          />
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setRenamingItem(null)}>Cancel</Button>
+            <Button
+              onClick={() => void commitRename()}
+              disabled={!renameDraft.trim() || renameDraft.trim() === renamingItem?.title}
+            >
+              Rename
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </>
   );
 }

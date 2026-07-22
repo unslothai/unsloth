@@ -64,8 +64,57 @@ class TestGetModelName(unittest.TestCase):
                 "unsloth/Ministral-3-3B-Instruct-2512",
                 True,
             ),
+            (
+                "allenai/Olmo-3-7B-Instruct",
+                True,
+                "unsloth/Olmo-3-7B-Instruct-unsloth-bnb-4bit",
+                True,
+            ),
+            (
+                "allenai/Olmo-3-7B-Instruct",
+                False,
+                "unsloth/Olmo-3-7B-Instruct",
+                True,
+            ),
+            (
+                "allenai/Olmo-3-7B-Think",
+                True,
+                "unsloth/Olmo-3-7B-Think-unsloth-bnb-4bit",
+                True,
+            ),
+            (
+                "allenai/Olmo-3-7B-Think",
+                False,
+                "unsloth/Olmo-3-7B-Think",
+                True,
+            ),
+            (
+                "allenai/Olmo-3-32B-Think",
+                True,
+                "unsloth/Olmo-3-32B-Think-unsloth-bnb-4bit",
+                True,
+            ),
+            (
+                "allenai/Olmo-3-32B-Think",
+                False,
+                "unsloth/Olmo-3-32B-Think",
+                True,
+            ),
             ("unsloth/Kimi-K2-Instruct", True, "unsloth/Kimi-K2-Instruct-BF16", True),
             ("unsloth/Kimi-K2-Instruct", False, "unsloth/Kimi-K2-Instruct", False),
+            # DeepScaleR-1.5B must resolve to its own 16bit repo, not another model
+            (
+                "agentica-org/DeepScaleR-1.5B-Preview",
+                False,
+                "unsloth/DeepScaleR-1.5B-Preview",
+                True,
+            ),
+            (
+                "agentica-org/DeepScaleR-1.5B-Preview",
+                True,
+                "unsloth/DeepScaleR-1.5B-Preview-unsloth-bnb-4bit",
+                True,
+            ),
             # Fallback-to-original behavior
             "nonexistent-user/nonexistent-model-123",
             "google/gemma-3-random-prototype-123",
@@ -101,9 +150,7 @@ class TestGetModelName(unittest.TestCase):
             else:
                 model_name, load_in_4bit, expected, should_change = case
                 with self.subTest(model_name = model_name, load_in_4bit = load_in_4bit):
-                    self._assert_mapping(
-                        model_name, load_in_4bit, expected, should_change
-                    )
+                    self._assert_mapping(model_name, load_in_4bit, expected, should_change)
 
     def test_static_mapper_contract(self):
         contracts = [
@@ -113,13 +160,19 @@ class TestGetModelName(unittest.TestCase):
                 "mistralai/ministral-3-3b-instruct-2512",
                 "unsloth/ministral-3-3b-instruct-2512-unsloth-bnb-4bit",
             ),
+            (
+                "allenai/olmo-3-7b-instruct",
+                "unsloth/olmo-3-7b-instruct-unsloth-bnb-4bit",
+            ),
             ("unsloth/kimi-k2-instruct", "unsloth/kimi-k2-instruct-bf16"),
         ]
         for src, expected in contracts:
             with self.subTest(src = src):
                 self.assertEqual(FLOAT_TO_INT_MAPPER[src], expected)
+        self.assertEqual(MAP_TO_UNSLOTH_16bit["qwen/qwen3-8b-fp8"], "unsloth/Qwen3-8B-FP8")
         self.assertEqual(
-            MAP_TO_UNSLOTH_16bit["qwen/qwen3-8b-fp8"], "unsloth/Qwen3-8B-FP8"
+            MAP_TO_UNSLOTH_16bit["agentica-org/deepscaler-1.5b-preview"],
+            "unsloth/DeepScaleR-1.5B-Preview",
         )
 
 

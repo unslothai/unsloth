@@ -1,5 +1,7 @@
 #!/usr/bin/env python3
-"""Run `ruff format` followed by kwarg spacing enforcement."""
+"""Run a pre-pass (normalize def-signature magic commas + collapse short
+multi-line asserts), then `ruff format`, then the kwarg-spacing / import /
+string-merge post-pass."""
 
 from __future__ import annotations
 
@@ -15,12 +17,20 @@ def main(argv: list[str]) -> int:
     if not files:
         return 0
 
+    spacing_script = HERE / "enforce_kwargs_spacing.py"
+
+    # Pre-ruff: normalize def-signature magic commas and strip the magic comma
+    # from short multi-line asserts so ruff wraps/joins accordingly.
+    pre_cmd = [sys.executable, str(spacing_script), "--pre", *files]
+    pre_proc = subprocess.run(pre_cmd)
+    if pre_proc.returncode != 0:
+        return pre_proc.returncode
+
     ruff_cmd = [sys.executable, "-m", "ruff", "format", *files]
     ruff_proc = subprocess.run(ruff_cmd)
     if ruff_proc.returncode != 0:
         return ruff_proc.returncode
 
-    spacing_script = HERE / "enforce_kwargs_spacing.py"
     spacing_cmd = [sys.executable, str(spacing_script), *files]
     spacing_proc = subprocess.run(spacing_cmd)
     return spacing_proc.returncode

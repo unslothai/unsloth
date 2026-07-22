@@ -44,8 +44,8 @@ max_seq_length = 2048
 model, tokenizer = FastLanguageModel.from_pretrained(
     model_name = "unsloth/Llasa-1B",
     max_seq_length = max_seq_length,
-    dtype = None,  # Select None for auto detection
-    load_in_4bit = False,  # Choose True for 4bit which reduces memory
+    dtype = None,
+    load_in_4bit = False,
     # token = "hf_...", # use one if using gated models like meta-llama/Llama-2-7b-hf
 )
 
@@ -54,16 +54,15 @@ base_model_class = model.__class__.__name__
 
 model = FastLanguageModel.get_peft_model(
     model,
-    r = 128,  # Choose any number > 0 ! Suggested 8, 16, 32, 64, 128
+    r = 128,
     target_modules = ["q_proj", "v_proj"],
     lora_alpha = 128,
-    lora_dropout = 0,  # Supports any, but = 0 is optimized
-    bias = "none",  # Supports any, but = "none" is optimized
-    # [NEW] "unsloth" uses 30% less VRAM, fits 2x larger batch sizes!
-    use_gradient_checkpointing = "unsloth",  # True or "unsloth" for very long context
+    lora_dropout = 0,
+    bias = "none",
+    use_gradient_checkpointing = "unsloth",
     random_state = 3407,
-    use_rslora = False,  # We support rank stabilized LoRA
-    loftq_config = None,  # And LoftQ
+    use_rslora = False,
+    loftq_config = None,
 )
 
 print("✅ Model and LoRA adapters loaded successfully!")
@@ -104,7 +103,7 @@ print("🔍 SECTION 4: Saving and Merging Model")
 print(f"{'='*80}")
 
 with warnings.catch_warnings():
-    warnings.simplefilter("error")  # Treat warnings as errors
+    warnings.simplefilter("error")  # save/merge must emit no warnings
     try:
         model.save_pretrained_merged("lasa", tokenizer)
         print("✅ Model saved and merged successfully without warnings!")
@@ -119,8 +118,8 @@ print(f"{'='*80}")
 model, tokenizer = FastLanguageModel.from_pretrained(
     model_name = "./lasa",
     max_seq_length = max_seq_length,
-    dtype = None,  # Select None for auto detection
-    load_in_4bit = False,  # Choose True for 4bit which reduces memory
+    dtype = None,
+    load_in_4bit = False,
     # token = "hf_...", # use one if using gated models like meta-llama/Llama-2-7b-hf
 )
 
@@ -164,14 +163,10 @@ def extract_speech_ids(speech_tokens_str):
     return speech_ids
 
 
-# TTS start!
 with torch.inference_mode():
     with torch.amp.autocast("cuda", dtype = model.dtype):
-        formatted_text = (
-            f"<|TEXT_UNDERSTANDING_START|>{input_text}<|TEXT_UNDERSTANDING_END|>"
-        )
+        formatted_text = f"<|TEXT_UNDERSTANDING_START|>{input_text}<|TEXT_UNDERSTANDING_END|>"
 
-        # Tokenize the text
         chat = [
             {"role": "user", "content": "Convert the text to speech:" + formatted_text},
             {"role": "assistant", "content": "<|SPEECH_GENERATION_START|>"},
@@ -184,26 +179,23 @@ with torch.inference_mode():
 
         speech_end_id = tokenizer.convert_tokens_to_ids("<|SPEECH_GENERATION_END|>")
 
-        # Generate the speech autoregressively
         outputs = model.generate(
             input_ids,
-            max_length = 2048,  # We trained our model with a max length of 2048
+            max_length = 2048,
             eos_token_id = speech_end_id,
             do_sample = True,
-            top_p = 1.2,  #  Adjusts the diversity of generated content
-            temperature = 1.2,  #  Controls randomness in output
+            top_p = 1.2,
+            temperature = 1.2,
         )
-    # Extract the speech tokens
     generated_ids = outputs[0][input_ids.shape[1] : -1]
 
     speech_tokens = tokenizer.batch_decode(generated_ids, skip_special_tokens = True)
 
-    # Convert  token <|s_23456|> to int 23456
+    # Convert token <|s_23456|> to int 23456.
     speech_tokens = extract_speech_ids(speech_tokens)
 
     speech_tokens = torch.tensor(speech_tokens).cpu().unsqueeze(0).unsqueeze(0)
 
-    # Decode the speech tokens to speech waveform
     gen_wav = codec_model.decode_code(speech_tokens)
 try:
     sf.write(output_audio_path, gen_wav[0, 0, :].cpu().numpy(), 16000)

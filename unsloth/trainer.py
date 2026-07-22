@@ -17,25 +17,30 @@ import os
 import psutil
 import warnings
 from dataclasses import dataclass, field
+from types import SimpleNamespace
 from typing import Optional, List
 from functools import wraps
 
 import trl
 import inspect
 from trl import SFTTrainer
-from . import is_bfloat16_supported
+
+# why: bypass partially-initialised unsloth ns during _gpu_init load
+from .models._utils import is_bfloat16_supported
 from unsloth.utils import (
     configure_padding_free,
     configure_sample_packing,
     enable_padding_free_metadata,
     enable_sample_packing,
 )
+from unsloth.utils.packing import patch_hybrid_linear_attention_varlen
 from unsloth_zoo.training_utils import (
     unsloth_train as _unsloth_train,
 )
 from unsloth_zoo.vision_utils import (
-    UnslothVisionDataCollator,
+    UnslothVisionDataCollator as _UnslothVisionDataCollatorBase,
 )
+from unsloth.models.vision import check_dataset_for_missing_videos
 from unsloth_zoo.hf_utils import get_transformers_model_type
 from unsloth_zoo.utils import Version
 import dataclasses
@@ -47,9 +52,47 @@ __all__ = [
     "_patch_trl_trainer",
     "UnslothVisionDataCollator",
     "QGaloreConfig",
+    "check_dataset_for_missing_videos",
 ]
 
 logger = logging.getLogger(__name__)
+
+
+class UnslothVisionDataCollator(_UnslothVisionDataCollatorBase):
+    """
+    Drop-in zoo collator that validates local video paths on every batch
+    (deduped across batches), applying formatting_func first so formatter-made
+    paths are checked too. Raises FileNotFoundError on missing files instead
+    of silently training on empty video tensors (issue #5085).
+    """
+
+    __slots__ = ("_checked_video_paths",)
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self._checked_video_paths = set()
+
+    def __call__(self, examples):
+        formatting_func = self.formatting_func
+        if formatting_func is not None:
+            examples = [formatting_func(example) for example in examples]
+
+        check_dataset_for_missing_videos(
+            examples,
+            raise_error = True,
+            checked = self._checked_video_paths,
+        )
+
+        if formatting_func is None:
+            return super().__call__(examples)
+
+        # why: base __call__ would reapply formatting_func; applied above.
+        self.formatting_func = None
+        try:
+            return super().__call__(examples)
+        finally:
+            self.formatting_func = formatting_func
+
 
 _AUTO_PADDING_FREE_ENV_DISABLED = os.environ.get(
     "UNSLOTH_DISABLE_AUTO_PADDING_FREE", ""
@@ -59,6 +102,10 @@ PADDING_FREE_BLOCKLIST = {
     "gemma2",  # - gemma2:  Uses slow_attention_softcapping which has torch.compile issues
     "gpt_oss",  # - gpt_oss: Uses Flex Attention which doesn't handle padding_free correctly
 }
+# Hybrid linear-attention / state-space models (Qwen3.5, Qwen3-Next, ...) carry a
+# recurrent gated-delta state plus a causal conv1d that leak across sequence
+# boundaries once packing flattens the batch. Detected structurally by
+# _is_hybrid_linear_attention_model, not by model name.
 
 
 def _should_pack(config) -> bool:
@@ -68,11 +115,7 @@ def _should_pack(config) -> bool:
 
 
 def _should_auto_padding_free(config) -> bool:
-    if (
-        config is None
-        or _AUTO_PADDING_FREE_ENV_DISABLED
-        or getattr(config, "packing", False)
-    ):
+    if config is None or _AUTO_PADDING_FREE_ENV_DISABLED or getattr(config, "packing", False):
         return False
     return getattr(config, "padding_free", None) is None
 
@@ -98,6 +141,183 @@ _AUTO_PACK_SKIP_MESSAGES = (
 def _should_skip_auto_packing_error(exc: Exception) -> bool:
     message = str(exc).lower()
     return any(msg in message for msg in _AUTO_PACK_SKIP_MESSAGES)
+
+
+_VISION_DATASET_KEYS = frozenset(
+    {
+        "image",
+        "images",
+        "image_grid_thw",
+        "image_position_ids",
+        "image_sizes",
+        "mm_token_type_ids",
+        "pixel_attention_mask",
+        "pixel_position_ids",
+        "pixel_values",
+        "pixel_values_videos",
+        "video",
+        "videos",
+        "video_grid_thw",
+    }
+)
+
+
+def _is_vlm_config(config, model_types = ()) -> bool:
+    if any(
+        hasattr(config, attr)
+        for attr in ("vision_config", "img_processor", "image_token_index", "projector_config")
+    ):
+        return True
+
+    architectures = getattr(config, "architectures", None) or ()
+    try:
+        from transformers.models.auto import modeling_auto
+
+        mappings = (
+            getattr(modeling_auto, "MODEL_FOR_IMAGE_TEXT_TO_TEXT_MAPPING_NAMES", {}) or {},
+            getattr(modeling_auto, "MODEL_FOR_VISION_2_SEQ_MAPPING_NAMES", {}) or {},
+        )
+        registry_types = set().union(*(mapping.keys() for mapping in mappings))
+        registry_classes = set().union(*(mapping.values() for mapping in mappings))
+        config_types = set(model_types or ())
+        model_type = getattr(config, "model_type", None)
+        if model_type is not None:
+            config_types.add(model_type)
+        if not config_types.isdisjoint(registry_types) or any(
+            architecture in registry_classes for architecture in architectures
+        ):
+            return True
+    except Exception:
+        pass
+    return any(
+        isinstance(architecture, str) and architecture.endswith("ForVisionText2Text")
+        for architecture in architectures
+    )
+
+
+def _is_vision_dataset(dataset, *, unknown_is_vision = False) -> bool:
+    if dataset is None:
+        return False
+    column_names = getattr(dataset, "column_names", None)
+    if column_names is not None:
+        return not _VISION_DATASET_KEYS.isdisjoint(column_names)
+    # Unknown-schema streams cannot be safely probed without potentially dropping a sample.
+    return unknown_is_vision
+
+
+def _is_vision_eval_dataset(dataset, *, unknown_is_vision = False) -> bool:
+    if isinstance(dataset, dict):
+        return any(
+            _is_vision_dataset(split, unknown_is_vision = unknown_is_vision)
+            for split in dataset.values()
+        )
+    return _is_vision_dataset(dataset, unknown_is_vision = unknown_is_vision)
+
+
+_HYBRID_CONFIG_MARKERS = (
+    "linear_conv_kernel_dim",
+    "linear_key_head_dim",
+    "linear_value_head_dim",
+    "full_attention_interval",
+)
+
+
+def _is_hybrid_linear_attention_model(model) -> bool:
+    """Detect models mixing linear-attention / state-space mixers (gated-delta,
+    Mamba-style) with a causal conv1d, e.g. Qwen3.5 / Qwen3-Next. Packing and
+    padding-free flatten the batch, and those recurrent + conv ops leak state
+    across sequence boundaries, so they must not be packed. Uses composite
+    structural evidence rather than a model-name match."""
+    if model is None:
+        return False
+
+    # Config-level: explicit hybrid layer schedule or linear-attn markers.
+    for config in (
+        getattr(model, "config", None),
+        getattr(getattr(model, "config", None), "text_config", None),
+    ):
+        if config is None:
+            continue
+        layer_types = getattr(config, "layer_types", None)
+        if isinstance(layer_types, (list, tuple)) and any(
+            isinstance(t, str) and "linear_attention" in t for t in layer_types
+        ):
+            return True
+        if any(hasattr(config, marker) for marker in _HYBRID_CONFIG_MARKERS):
+            return True
+
+    # Module-level: a mixer carrying a recurrent gated-delta op plus a conv1d.
+    named_modules = getattr(model, "named_modules", None)
+    if named_modules is None:
+        return False
+    seen = set()
+    for _, module in named_modules():
+        if id(module) in seen:
+            continue
+        seen.add(id(module))
+        cls = type(module).__name__
+        if not (
+            cls.endswith("GatedDeltaNet") or "LinearAttention" in cls or cls.endswith("Mamba2Mixer")
+        ):
+            continue
+        has_recurrent = any(
+            hasattr(module, attr)
+            for attr in ("chunk_gated_delta_rule", "recurrent_gated_delta_rule", "A_log")
+        )
+        if has_recurrent and hasattr(module, "conv1d"):
+            return True
+    return False
+
+
+def _resolve_string_model_config(model_name, config_arg):
+    """TRL materializes a string ``model=`` inside ``__init__``; resolve its config
+    up front so the packing guards run before the dataset is packed. Best-effort:
+    returns None if the config cannot be loaded."""
+    try:
+        from transformers import AutoConfig
+
+        init_kwargs = getattr(config_arg, "model_init_kwargs", None) or {}
+        # why: forward auth + cache args too. Dropping token/use_auth_token made a
+        # private hybrid fail to load (resolve as None) -> treated as non-hybrid ->
+        # packing enabled without the shim even though TRL later loads it with the token.
+        forward = {
+            key: init_kwargs[key]
+            for key in (
+                "trust_remote_code",
+                "revision",
+                "subfolder",
+                "token",
+                "use_auth_token",
+                "cache_dir",
+                "code_revision",
+            )
+            if key in init_kwargs
+        }
+        # why: TRL merges top-level args.trust_remote_code into the load via setdefault
+        # before create_model_from_path, so honor it here (model_init_kwargs wins), else
+        # a remote-code hybrid with SFTConfig(trust_remote_code=True) resolves as None
+        # and skips the guard.
+        top_level_trust_remote_code = getattr(config_arg, "trust_remote_code", None)
+        if top_level_trust_remote_code is not None:
+            forward.setdefault("trust_remote_code", top_level_trust_remote_code)
+        return AutoConfig.from_pretrained(model_name, **forward)
+    except Exception:
+        return None
+
+
+def _chunked_loss_bypasses_forward(config) -> bool:
+    """TRL's default ``loss_type="chunked_nll"`` patches the model forward and calls
+    the backbone directly, so a forward wrapper never runs. Detect it so hybrid
+    packing stays on the padded path instead of silently skipping the varlen shim."""
+    try:
+        import trl.trainer.sft_trainer as _sft_trainer
+    except Exception:
+        return False
+    if not hasattr(_sft_trainer, "_patch_chunked_ce_lm_head"):
+        return False  # TRL has no chunked-CE path -> forward is not bypassed
+    if getattr(config, "use_liger_kernel", False):
+        return False  # liger forces loss_type="nll" -> normal forward
+    return getattr(config, "loss_type", None) in (None, "chunked_nll")
 
 
 # Unsloth gradient accumulation fix:
@@ -225,9 +445,7 @@ class UnslothTrainer(SFTTrainer):
             return super().create_optimizer()
 
         if self.optimizer is None:
-            optimizer_cls, optimizer_kwargs = SFTTrainer.get_optimizer_cls_and_kwargs(
-                self.args
-            )
+            optimizer_cls, optimizer_kwargs = SFTTrainer.get_optimizer_cls_and_kwargs(self.args)
             self.optimizer = _create_unsloth_optimizer(
                 self.model,
                 optimizer_cls,
@@ -236,7 +454,11 @@ class UnslothTrainer(SFTTrainer):
             )
         return self.optimizer
 
-    def _create_q_galore_optimizer(self, config: "QGaloreConfig", embedding_lr = None):
+    def _create_q_galore_optimizer(
+        self,
+        config: "QGaloreConfig",
+        embedding_lr = None,
+    ):
         """Build the Q-GaLore optimizer from a QGaloreConfig."""
         from unsloth.optimizers.q_galore_adamw import (
             QGaLoreAdamW8bit,
@@ -268,20 +490,19 @@ class UnslothTrainer(SFTTrainer):
 
         # --- Split embedding params with custom LR (Fix #2) ---
         if embedding_lr is not None:
-            # Build a fast param->name lookup (O(N) instead of O(N*M))
+            # Fast param->name lookup (O(N) instead of O(N*M))
             param_to_name = {id(p): name for name, p in self.model.named_parameters()}
 
             new_groups = []
             for group in param_groups:
                 if "rank" in group:
-                    # GaLore group — keep as-is (embeddings are never in here)
+                    # GaLore group: keep as-is (no embeddings here)
                     new_groups.append(group)
                     continue
                 # Non-GaLore group: split out embedding params
                 embed_params = []
                 other_params = []
                 for p in group["params"]:
-                    # Check if this param belongs to a modules_to_save embedding
                     name = param_to_name.get(id(p))
                     if name and name.endswith("modules_to_save.default.weight"):
                         partial_name = name[: -len(".modules_to_save.default.weight")]
@@ -312,7 +533,6 @@ class UnslothTrainer(SFTTrainer):
             eps = self.args.adam_epsilon,
         )
 
-        # Initialize INT8 weight quantization if enabled
         if config.weight_quant:
             QGaLoreAdamW8bit.init_weight_quantization(
                 self.model,
@@ -320,9 +540,8 @@ class UnslothTrainer(SFTTrainer):
                 group_size = config.weight_group_size,
                 stochastic = config.stochastic_round,
             )
-            # Forward pre-hooks dequantize INT8 weights to float before each
-            # forward pass, allowing the optimizer to free float weight memory
-            # between steps.
+            # Pre-hooks dequantize INT8 weights to float before each forward,
+            # letting the optimizer free float weight memory between steps.
             install_weight_quant_hooks(self.model)
 
         n_galore = sum(len(g["params"]) for g in param_groups if "rank" in g)
@@ -341,16 +560,14 @@ class UnslothTrainer(SFTTrainer):
 def _resolve_trainer_params(trainer_class, init_fn):
     """Resolve the real named parameters for a trainer __init__.
 
-    Some TRL trainers (e.g., ORPOTrainer in TRL 0.27.1) are thin wrappers
-    with only ``def __init__(self, *args, **kwargs)``.  For those, walk the
-    MRO and return the first parent class that has real named parameters.
+    Some TRL trainers are thin ``*args, **kwargs`` wrappers; for those, walk the
+    MRO and return the first parent with real named parameters.
     """
     params = inspect.signature(init_fn).parameters
     named = {
         k
         for k, v in params.items()
-        if v.kind
-        in (inspect.Parameter.POSITIONAL_OR_KEYWORD, inspect.Parameter.KEYWORD_ONLY)
+        if v.kind in (inspect.Parameter.POSITIONAL_OR_KEYWORD, inspect.Parameter.KEYWORD_ONLY)
         and k != "self"
     }
     if named:
@@ -387,7 +604,7 @@ def _backwards_compatible_trainer(trainer_class, config_class):
 
     @wraps(original_init)
     def new_init(self, *args, **kwargs):
-        # All Trainer tokenizer are now called processing_class
+        # tokenizer is now processing_class
         trainer_params = _resolve_trainer_params(trainer_class, original_init)
 
         if "processing_class" in trainer_params and "tokenizer" in kwargs:
@@ -396,25 +613,21 @@ def _backwards_compatible_trainer(trainer_class, config_class):
         if ("args" in kwargs) and (Version(trl) >= Version("0.13.0.dev0")):
             training_args = kwargs.pop("args", None)
 
-            # Get parameters that Trainer.__init__ actually expects
             trainer_params.remove("self")
             trainer_params.remove("args")
 
-            # Get fields that should be passed to Config init
+            # Fields that should be passed to Config init
             config_fields = {
-                field.name: field
-                for field in dataclasses.fields(config_class)
-                if field.init
+                field.name: field for field in dataclasses.fields(config_class) if field.init
             }
 
-            # Create config dict with valid fields from training_args
             config_dict = {
                 name: getattr(training_args, name)
                 for name in config_fields
                 if hasattr(training_args, name)
             }
 
-            # Get parameters that exist in Config but not in TrainingArguments
+            # Params in Config but not in TrainingArguments
             from transformers import TrainingArguments
 
             moved_params = set(inspect.signature(config_class).parameters.keys()) - set(
@@ -433,14 +646,11 @@ def _backwards_compatible_trainer(trainer_class, config_class):
                 else:
                     additional_config_kwargs[key] = value
 
-            # Update config_dict with additional kwargs
             config_dict.update(additional_config_kwargs)
 
-            # Create Config with all the collected parameters
-            # Reinitialising config class with parameters (that were none initially but populated on first init)
-            # causes the 2nd init to fail as there are mutual exclusive checks on pairs of parameters.
-            # Refer: https://github.com/huggingface/trl/blob/main/trl/trainer/grpo_config.py#L499-L502 for example
-            # So we only create config class if the previous init was not TrainingArguments
+            # Only build the config if the previous init wasn't TrainingArguments:
+            # reinitialising it would re-trigger mutually-exclusive param checks.
+            # See https://github.com/huggingface/trl/blob/main/trl/trainer/grpo_config.py#L499-L502
             if not isinstance(training_args, TrainingArguments):
                 config = config_class(**config_dict)
             else:
@@ -471,37 +681,69 @@ def _patch_sft_trainer_auto_packing(trl_module):
         else:
             config_arg = kwargs.get("args")
 
-        # Check if model type is unsupported for padding_free
-        model = kwargs.get("model")
-        is_unsupported_model = False
+        model = args[0] if len(args) >= 1 else kwargs.get("model")
         is_vlm = False
+        is_unsupported_model = False
+        is_hybrid = False
+        is_encoder_decoder = False
+        hybrid_varlen_active = False
         if model is not None:
             model_config = getattr(model, "config", None)
+            if model_config is None and isinstance(model, str):
+                # TRL builds a string model inside __init__; resolve its config now.
+                model_config = _resolve_string_model_config(model, config_arg)
             if model_config is not None:
                 model_types = get_transformers_model_type(model_config)
-                # Blocklist: models that don't work correctly with padding_free
-                is_unsupported_model = any(
-                    x in PADDING_FREE_BLOCKLIST for x in model_types
-                )
+                is_unsupported_model = any(x in PADDING_FREE_BLOCKLIST for x in model_types)
+                is_vlm = _is_vlm_config(model_config, model_types)
+                is_encoder_decoder = bool(getattr(model_config, "is_encoder_decoder", False))
+            hybrid_target = (
+                SimpleNamespace(config = model_config)
+                if isinstance(model, str) and model_config is not None
+                else model
+            )
+            is_hybrid = _is_hybrid_linear_attention_model(hybrid_target)
+            # Hybrid models corrupt packed batches unless the gated-delta conv + scan
+            # reset at sequence boundaries. Enable the experimental varlen shim (flag +
+            # kernels) so packing stays correct, else keep them blocked. A string model
+            # (patched only after init) and TRL's chunked-loss forward bypass both leave
+            # the shim off, so hybrid packing falls back to the padded path.
+            if (
+                is_hybrid
+                and not isinstance(model, str)
+                and not _chunked_loss_bypasses_forward(config_arg)
+            ):
+                try:
+                    hybrid_varlen_active = patch_hybrid_linear_attention_varlen(model)
+                except Exception:
+                    hybrid_varlen_active = False
 
-                # Check if VLM
-                architectures = getattr(model_config, "architectures", None)
-                if architectures is None:
-                    architectures = []
-                is_vlm = any(
-                    x.endswith("ForConditionalGeneration") for x in architectures
-                )
-                is_vlm = is_vlm or hasattr(model_config, "vision_config")
+        processing_class = (
+            args[5] if len(args) >= 6 else kwargs.get("processing_class") or kwargs.get("tokenizer")
+        )
+        data_collator = args[2] if len(args) >= 3 else kwargs.get("data_collator")
+        train_dataset = args[3] if len(args) >= 4 else kwargs.get("train_dataset")
+        eval_dataset = args[4] if len(args) >= 5 else kwargs.get("eval_dataset")
+        is_processor = isinstance(processing_class, ProcessorMixin)
+        is_auto_processor_vlm = is_vlm and processing_class is None
+        is_vision_dataset = (
+            data_collator is None
+            and not is_processor
+            and (
+                _is_vision_dataset(train_dataset, unknown_is_vision = is_vlm)
+                or _is_vision_eval_dataset(eval_dataset, unknown_is_vision = is_vlm)
+            )
+        )
 
-        processing_class = kwargs.get("processing_class") or kwargs.get("tokenizer")
-        data_collator = kwargs.get("data_collator")
-
-        # We also disable vision language models for padding free collators
+        # Disable padding-free for VLMs / custom collators / blocklisted models
         blocked = (
             (data_collator is not None)
-            or isinstance(processing_class, ProcessorMixin)
-            or is_vlm
+            or is_processor
+            or is_auto_processor_vlm
+            or is_vision_dataset
             or is_unsupported_model
+            or is_encoder_decoder
+            or (is_hybrid and not hybrid_varlen_active)
             or (
                 os.environ.get("UNSLOTH_RETURN_LOGITS", "0") == "1"
             )  # Disable padding free on forced logits
@@ -515,13 +757,19 @@ def _patch_sft_trainer_auto_packing(trl_module):
 
         if blocked and requested_pack:
             reason = "custom data collator"
-            if data_collator is None and isinstance(processing_class, ProcessorMixin):
+            if data_collator is None and is_processor:
                 reason = "processor-based model"
-            elif is_vlm:
-                reason = "vision-language model"
+            elif is_auto_processor_vlm:
+                reason = "vision-language model with auto processor"
+            elif is_vision_dataset:
+                reason = "vision dataset"
+            elif is_encoder_decoder:
+                reason = "encoder-decoder model"
+            elif is_hybrid and not hybrid_varlen_active:
+                reason = "hybrid linear-attention model"
             elif is_unsupported_model:
                 reason = f"unsupported model type(s): {', '.join(model_types)}"
-            message = "Unsloth: Sample packing skipped " f"({reason} detected)."
+            message = f"Unsloth: Sample packing skipped ({reason} detected)."
             print(message)
 
         packing_active = False
@@ -539,9 +787,7 @@ def _patch_sft_trainer_auto_packing(trl_module):
             elif _should_auto_padding_free(config_arg):
                 configure_padding_free(config_arg)
                 auto_padding_free_active = True
-                logger.info(
-                    "Unsloth: Padding-free batching auto-enabled for SFTTrainer instance."
-                )
+                logger.info("Unsloth: Padding-free batching auto-enabled for SFTTrainer instance.")
 
         try:
             original_init(self, *args, **kwargs)
@@ -559,24 +805,16 @@ def _patch_sft_trainer_auto_packing(trl_module):
 
         trainer_args = getattr(self, "args", None)
         trainer_packing = bool(trainer_args and getattr(trainer_args, "packing", False))
-        trainer_padding_free = bool(
-            trainer_args and getattr(trainer_args, "padding_free", False)
-        )
+        trainer_padding_free = bool(trainer_args and getattr(trainer_args, "padding_free", False))
 
         if blocked and trainer_args is not None:
             # Mirror the block on the trainer args to avoid re-enabling later
             setattr(trainer_args, "packing", False)
             setattr(trainer_args, "padding_free", False)
 
-        if (
-            not blocked
-            and trainer_packing
-            and (packing_active or _should_pack(trainer_args))
-        ):
+        if not blocked and trainer_packing and (packing_active or _should_pack(trainer_args)):
             enable_sample_packing(self.model, self)
-            print(
-                "🦥 Unsloth: Packing enabled - training is >2x faster and uses less VRAM!"
-            )
+            print("🦥 Unsloth: Packing enabled - training is >2x faster and uses less VRAM!")
         elif not blocked and trainer_padding_free:
             enable_padding_free_metadata(self.model, self)
             message = (
@@ -585,6 +823,30 @@ def _patch_sft_trainer_auto_packing(trl_module):
                 else "🦥 Unsloth: Padding-free enabled, enabling faster training."
             )
             print(message)
+
+        # get_peft_model installs a pre-train forward detector for plain LoRA/vision models,
+        # but only RL trainers run the reset via prepare_for_training_mode. Wire it into the
+        # SFT train() path too, else a grad-enabled probe before train() leaves the poisoned
+        # Dynamo cache in place and the detector hook installed on every training forward.
+        # (For UnslothSFTTrainer the later prepare_for_training_mode assignment supersedes this.)
+        if not getattr(self, "_unsloth_train_reset_wrapped", False):
+            try:
+                from unsloth.models._utils import _unsloth_reset_stray_compile_cache
+
+                _orig_train = self.train
+
+                @wraps(_orig_train)
+                def _train_with_reset(*train_args, **train_kwargs):
+                    try:
+                        _unsloth_reset_stray_compile_cache(self)
+                    except Exception:
+                        pass
+                    return _orig_train(*train_args, **train_kwargs)
+
+                self.train = _train_with_reset
+                self._unsloth_train_reset_wrapped = True
+            except Exception:
+                pass
 
     sft_trainer.__init__ = new_init
     sft_trainer._unsloth_auto_packing_wrapped = True
@@ -601,9 +863,7 @@ def _patch_trl_trainer():
     import trl.trainer
 
     trl_classes = dir(trl.trainer)
-    trl_trainers = set(
-        x[: -len("Trainer")] for x in trl_classes if x.endswith("Trainer")
-    )
+    trl_trainers = set(x[: -len("Trainer")] for x in trl_classes if x.endswith("Trainer"))
     trl_configs = set(x[: -len("Config")] for x in trl_classes if x.endswith("Config"))
     trl_classes = list(trl_trainers & trl_configs)
 

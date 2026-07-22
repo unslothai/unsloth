@@ -1,0 +1,1529 @@
+/* SPDX-License-Identifier: AGPL-3.0-only */
+/* Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0 */
+
+/* Hub feature CSS.
+
+   Lives with the Hub feature module so the styling stays bundled with the
+   Hub. Wired into the build via a single @import in studio/frontend/src/index.css.
+
+   Format/status color tokens are defined at :root and :root.dark so Tailwind
+   utilities like `bg-format-gguf` or `text-status-success` resolve everywhere
+   the Hub UI is rendered. Rule bodies are scoped to .hub-page or hub-prefixed
+   classes so they do not bleed into chat, train or settings surfaces. */
+
+:root {
+  --format-gguf: #60a5fa;
+  --format-checkpoint: #f472b6;
+  --format-adapter: #8b5cf6;
+  --format-mlx: #f59e0b;
+  --status-warning: #eab308;
+  --status-danger: #ef4444;
+  --status-success: #11b686;
+}
+
+.dark {
+  --format-gguf: #60a5fa;
+  --format-checkpoint: #f472b6;
+  --format-adapter: #a78bfa;
+  --format-mlx: #fbbf24;
+  --status-warning: #fbbf24;
+  --status-danger: #ef4444;
+  --status-success: #11b686;
+}
+
+@theme inline {
+  --color-format-gguf: var(--format-gguf);
+  --color-format-checkpoint: var(--format-checkpoint);
+  --color-format-adapter: var(--format-adapter);
+  --color-format-mlx: var(--format-mlx);
+  --color-status-warning: var(--status-warning);
+  --color-status-danger: var(--status-danger);
+  --color-status-success: var(--status-success);
+}
+
+@layer base {
+  /* Filled-control surface — Hub search, Hub filter triggers, picker
+	   search bars. Borderless soft fill matching the .hub-tab-toggle pills:
+	     - Resting: 5% bg, no border
+	     - Hover / open: 8% bg
+	     - Focus: keyboard-only (:focus-visible) so a mouse click never
+	       leaves the control looking "selected"; the open dropdown stays
+	       lit via [data-state="open"].
+	   `!important` is required because these controls also carry shadcn
+	   Input utilities (bg-input/30, border, focus ring) that live in the
+	   utilities layer and would otherwise win over this base layer. */
+  .field-soft {
+    background-color: color-mix(in srgb, var(--foreground) 5%, transparent) !important;
+    border: 0;
+    box-shadow: none;
+    transition: background-color 160ms ease;
+  }
+
+  .field-soft:hover,
+  .field-soft[data-state="open"] {
+    background-color: color-mix(in srgb, var(--foreground) 8%, transparent) !important;
+  }
+
+  .field-soft:focus-visible {
+    background-color: color-mix(in srgb, var(--foreground) 8%, transparent) !important;
+    box-shadow: none !important;
+    outline: none;
+  }
+
+  .dark .field-soft {
+    background-color: color-mix(in srgb, var(--foreground) 5%, transparent) !important;
+  }
+
+  .dark .field-soft:hover,
+  .dark .field-soft[data-state="open"] {
+    background-color: color-mix(in srgb, var(--foreground) 9%, transparent) !important;
+  }
+
+  .dark .field-soft:focus-visible {
+    background-color: #1c1c1c !important;
+    box-shadow: none !important;
+  }
+
+  /* The Hub search field is `type="search"` (so the browser won't offer saved
+     passwords on it). Suppress the native WebKit clear button / decoration so
+     the field keeps its custom trailing ⌘K hint and spinner. */
+  .field-soft[type="search"]::-webkit-search-cancel-button,
+  .field-soft[type="search"]::-webkit-search-decoration {
+    -webkit-appearance: none;
+    appearance: none;
+  }
+
+  .hub-page .hub-canvas {
+    background-color: var(--background);
+  }
+
+  html.dark .hub-page .hub-canvas {
+    background-color: var(--background);
+  }
+
+  .hub-page .hub-detail-bar {
+    background-color: var(--background);
+  }
+
+  .hub-page .hub-detail-bar::after {
+    content: "";
+    position: absolute;
+    left: 0;
+    right: 0;
+    top: 100%;
+    height: 40px;
+    pointer-events: none;
+    opacity: 0;
+    transition: opacity 240ms ease;
+    background: linear-gradient(
+      to bottom,
+      var(--background),
+      color-mix(in srgb, var(--background) 55%, transparent) 48%,
+      transparent
+    );
+  }
+
+  .hub-page .hub-scroll-fade {
+    pointer-events: none;
+    opacity: 0;
+    transition: opacity 240ms ease;
+    /* Thin solid band right under the search bar, then fade quickly so the
+       white area stays slim. */
+    background: linear-gradient(
+      to bottom,
+      var(--background),
+      var(--background) 8%,
+      color-mix(in srgb, var(--background) 55%, transparent) 38%,
+      transparent
+    );
+  }
+
+  .hub-page .hub-detail-bar[data-scrolled="true"]::after,
+  .hub-page .hub-scroll-fade[data-scrolled="true"] {
+    opacity: 1;
+  }
+
+  .hub-page .hub-carousel-fade {
+    pointer-events: none;
+    position: absolute;
+    z-index: 5;
+    width: 44px;
+    opacity: 0;
+    transition: opacity 240ms ease;
+  }
+
+  .hub-page .hub-carousel-fade[data-visible="true"] {
+    opacity: 1;
+  }
+
+  .hub-page .hub-carousel-fade-left {
+    /* -8px matches the scroller's -mx-2 bleed so the opaque edge sits on the
+       clip edge and no card peeks out beside the fade. */
+    left: -8px;
+    background: linear-gradient(
+      to right,
+      var(--background),
+      color-mix(in srgb, var(--background) 55%, transparent) 48%,
+      transparent
+    );
+  }
+
+  .hub-page .hub-carousel-fade-right {
+    /* Mirror of fade-left: offset by the -mx-2 bleed to reach the clip edge. */
+    right: -8px;
+    background: linear-gradient(
+      to left,
+      var(--background),
+      color-mix(in srgb, var(--background) 55%, transparent) 48%,
+      transparent
+    );
+  }
+
+  .hub-page .hub-model-card {
+    --hub-card-border-accent: var(--foreground);
+    --hub-card-edge-mix: 2.2%;
+    --hub-card-inner-accent: var(--background);
+    --hub-card-inner-mix: 12%;
+    --hub-card-inner-opacity: 0.14;
+    --hub-card-corner-mix: 8.5%;
+    --hub-card-corner-opacity: 0.48;
+    --hub-card-hover-edge-mix: 5.5%;
+    --hub-card-edge: color-mix(
+      in srgb,
+      var(--hub-card-border-accent) var(--hub-card-edge-mix),
+      transparent
+    );
+    --hub-card-inner-edge: color-mix(
+      in srgb,
+      var(--hub-card-inner-accent) var(--hub-card-inner-mix),
+      transparent
+    );
+    --hub-card-corner-edge: color-mix(
+      in srgb,
+      var(--hub-card-border-accent) var(--hub-card-corner-mix),
+      transparent
+    );
+    --hub-card-hover-edge: color-mix(
+      in srgb,
+      var(--hub-card-border-accent) var(--hub-card-hover-edge-mix),
+      transparent
+    );
+    position: relative;
+    overflow: hidden;
+    border-radius: 18px;
+    background-color: color-mix(in srgb, var(--foreground) 2.5%, transparent);
+    border: 1px solid transparent;
+    box-shadow: none;
+    transition: background-color 160ms ease, border-color 160ms ease;
+  }
+
+  .hub-page .hub-model-card::after {
+    position: absolute;
+    border-radius: inherit;
+    content: "";
+    pointer-events: none;
+    z-index: 2;
+  }
+
+  .hub-page .hub-model-card::after {
+    inset: 0;
+    border: 1px solid var(--hub-card-corner-edge);
+    opacity: 0;
+    -webkit-mask:
+      linear-gradient(
+        90deg,
+        #000 0 76px,
+        rgb(0 0 0 / 94%) 34%,
+        rgb(0 0 0 / 58%) 76%,
+        transparent 100%
+      )
+      top left / 48% 44px no-repeat,
+      linear-gradient(
+        180deg,
+        #000 0 54px,
+        rgb(0 0 0 / 68%) 86px,
+        transparent 140px
+      )
+      top left / 44px 160px no-repeat,
+      linear-gradient(
+        270deg,
+        #000 0 76px,
+        rgb(0 0 0 / 94%) 34%,
+        rgb(0 0 0 / 58%) 76%,
+        transparent 100%
+      )
+      bottom right / 48% 44px no-repeat,
+      linear-gradient(
+        0deg,
+        #000 0 54px,
+        rgb(0 0 0 / 68%) 86px,
+        transparent 140px
+      )
+      bottom right / 44px 160px no-repeat;
+    mask:
+      linear-gradient(
+        90deg,
+        #000 0 76px,
+        rgb(0 0 0 / 94%) 34%,
+        rgb(0 0 0 / 58%) 76%,
+        transparent 100%
+      )
+      top left / 48% 44px no-repeat,
+      linear-gradient(
+        180deg,
+        #000 0 54px,
+        rgb(0 0 0 / 68%) 86px,
+        transparent 140px
+      )
+      top left / 44px 160px no-repeat,
+      linear-gradient(
+        270deg,
+        #000 0 76px,
+        rgb(0 0 0 / 94%) 34%,
+        rgb(0 0 0 / 58%) 76%,
+        transparent 100%
+      )
+      bottom right / 48% 44px no-repeat,
+      linear-gradient(
+        0deg,
+        #000 0 54px,
+        rgb(0 0 0 / 68%) 86px,
+        transparent 140px
+      )
+      bottom right / 44px 160px no-repeat;
+  }
+
+  .hub-page .hub-model-card:hover {
+    background-color: color-mix(in srgb, var(--foreground) 4.5%, transparent);
+    border-color: transparent;
+  }
+
+  html.dark .hub-page .hub-model-card {
+    --hub-card-border-accent: var(--foreground);
+    --hub-card-edge-mix: 2.8%;
+    --hub-card-inner-accent: var(--foreground);
+    --hub-card-inner-mix: 2.5%;
+    --hub-card-inner-opacity: 0.22;
+    --hub-card-corner-mix: 9.5%;
+    --hub-card-hover-edge-mix: 6%;
+    background-color: color-mix(in srgb, var(--foreground) 7%, transparent);
+    border-color: transparent;
+  }
+
+  html.dark .hub-page .hub-model-card:hover {
+    background-color: #202020;
+    border-color: transparent;
+  }
+
+  .hub-page .hub-model-card-art {
+    --hub-model-card-accent: var(
+      --hub-card-art-accent,
+      var(--hub-card-border-accent)
+    );
+    --hub-model-card-art-base: var(--background);
+    position: relative;
+    background: radial-gradient(
+        115% 90% at 18% 8%,
+        color-mix(in srgb, var(--hub-model-card-accent) 20%, transparent),
+        transparent 58%
+      ),
+      radial-gradient(
+        90% 80% at 86% 18%,
+        color-mix(in srgb, var(--hub-model-card-accent) 14%, transparent),
+        transparent 60%
+      ),
+      linear-gradient(
+        160deg,
+        color-mix(
+            in srgb,
+            var(--hub-model-card-accent) 10%,
+            var(--hub-model-card-art-base)
+          )
+          0%,
+        color-mix(
+            in srgb,
+            var(--hub-model-card-accent) 18%,
+            var(--hub-model-card-art-base)
+          )
+          52%,
+        color-mix(
+            in srgb,
+            var(--hub-model-card-accent) 11%,
+            var(--hub-model-card-art-base)
+          )
+          100%
+      );
+  }
+
+  .hub-page .hub-model-card-art::after {
+    position: absolute;
+    inset: 0;
+    z-index: 1;
+    border-radius: inherit;
+    background: linear-gradient(
+        90deg,
+        var(--hub-card-inner-edge),
+        transparent 72%
+      )
+      top left / 58% 1px no-repeat,
+      linear-gradient(270deg, var(--hub-card-inner-edge), transparent 72%) top
+      right / 42% 1px no-repeat;
+    content: "";
+    opacity: 0;
+    pointer-events: none;
+  }
+
+  html.dark .hub-page .hub-model-card-art {
+    background: linear-gradient(
+      160deg,
+      color-mix(in srgb, var(--hub-model-card-accent) 76%, #0b0b0d) 0%,
+      color-mix(in srgb, var(--hub-model-card-accent) 92%, #0b0b0d) 52%,
+      color-mix(in srgb, var(--hub-model-card-accent) 70%, #0b0b0d) 100%
+    );
+  }
+
+  .hub-page .hub-trending-card {
+    /* Flat neutral surface shared by the featured, trending and fine-tune
+       cards: a clean elevated body, no border, no colour, no gradient. Dark
+       defaults here; the html:not(.dark) block recolours for the light theme
+       and adds the (light-only) drop shadow. */
+    --hub-trending-surface: color-mix(in srgb, var(--foreground) 7%, var(--background));
+    --hub-trending-surface-hover: color-mix(in srgb, var(--foreground) 10%, var(--background));
+    --hub-trending-title-ink: rgb(255 255 255 / 0.94);
+    --hub-trending-muted-ink: rgb(255 255 255 / 0.68);
+    isolation: isolate;
+    border: 0;
+    border-radius: 18px;
+    background-color: var(--hub-trending-surface);
+    box-shadow: none;
+    transition: background-color 160ms ease;
+  }
+
+  html:not(.dark) .hub-page .hub-trending-card {
+    --hub-trending-surface: var(--card);
+    --hub-trending-surface-hover: var(--card);
+    --hub-trending-title-ink: var(--foreground);
+    --hub-trending-muted-ink: var(--muted-foreground);
+    box-shadow: 0 2px 8px -2px rgba(0, 0, 0, 0.16);
+    transition:
+      box-shadow 200ms ease,
+      background-color 160ms ease;
+  }
+
+  html:not(.dark) .hub-page .hub-model-card.hub-trending-card {
+    transition:
+      box-shadow 200ms ease,
+      transform 200ms ease,
+      background-color 160ms ease;
+  }
+
+  html:not(.dark) .hub-page .hub-model-card.hub-trending-card:hover {
+    box-shadow: 0 2px 8px -2px rgba(0, 0, 0, 0.16);
+    transform: translateY(-2px);
+  }
+
+  .hub-page .hub-trending-card > * {
+    position: relative;
+    z-index: 1;
+  }
+
+  .hub-page .hub-trending-card:hover {
+    background-color: var(--hub-trending-surface-hover);
+  }
+
+  .hub-page .hub-trending-card::after {
+    opacity: 0;
+  }
+
+  /* Dark spotlight cards keep their avatars frameless; the light theme lets the
+     smooth hairline show so white-background logos read cleanly against the
+     pale surface instead of blending into it. */
+  html.dark .hub-page .hub-trending-card .hub-avatar-tile::after {
+    opacity: 0;
+  }
+
+  .hub-page .hub-trending-card .hub-model-card-art,
+  html.dark .hub-page .hub-trending-card .hub-model-card-art {
+    background: transparent;
+  }
+
+  .hub-page .hub-trending-card .hub-model-card-art::after {
+    opacity: 0;
+  }
+
+  .hub-page .hub-trending-title {
+    color: var(--hub-trending-title-ink);
+  }
+
+  .hub-page .hub-trending-owner,
+  .hub-page .hub-trending-stats .text-muted-foreground\/75 {
+    color: var(--hub-trending-muted-ink);
+  }
+
+  /* Dark theme paints the size chip with a translucent white fill against the
+     dark surface; in the light theme it falls through to the base .hub-chip
+     style, which is already theme-aware. */
+  html.dark .hub-page .hub-trending-card .hub-chip {
+    background-color: rgb(255 255 255 / 0.12);
+    color: rgb(255 255 255 / 0.82);
+  }
+
+  .hub-page .hub-focused-heading {
+    font-size: 18px;
+    font-weight: 600;
+    letter-spacing: 0;
+    color: var(--foreground);
+  }
+
+  .hub-page .page-title-halo {
+    text-shadow: 0 0 24px #e4e3df, 0 0 56px #ebeae6, 0 0 96px #efeeea;
+  }
+
+  html.dark .hub-page .page-title-halo {
+    text-shadow: none;
+  }
+
+  html:not(.dark) .hub-page {
+    background-color: var(--background);
+  }
+
+  html:not(.dark) .hub-page .border-b,
+  html:not(.dark) .hub-page .border-r,
+  html:not(.dark) .hub-page .border-t.border-border {
+    border-color: color-mix(in srgb, var(--foreground) 6%, transparent);
+  }
+
+  html:not(.dark) .hub-page .hub-side-surface {
+    background-color: var(--background);
+  }
+
+  html:not(.dark) .hub-page .hub-tag-soft,
+  html:not(.dark) .hub-page .hub-tag-meta {
+    background-color: transparent;
+    transition: background-color 160ms ease, border-color 160ms ease;
+  }
+
+  html:not(.dark) .hub-page .hub-tag-soft:hover,
+  html:not(.dark) .hub-page .hub-tag-meta:hover {
+    background-color: color-mix(in srgb, var(--foreground) 4%, transparent);
+  }
+
+  html.dark .hub-page {
+    background-color: var(--background);
+  }
+
+  html.dark .hub-page [class*="bg-card"],
+  html.dark .hub-page [class*="bg-background"] {
+    background-color: var(--popover);
+  }
+
+  html.dark .hub-page .border-b,
+  html.dark .hub-page .border-r,
+  html.dark .hub-page .border-t.border-border {
+    border-color: color-mix(in srgb, var(--foreground) 5%, transparent);
+  }
+
+  html.dark .hub-page .hub-side-surface {
+    background-color: transparent;
+  }
+
+  html.dark .hub-page .hub-tag-soft,
+  html.dark .hub-page .hub-tag-meta {
+    background-color: transparent;
+    transition: background-color 160ms ease, border-color 160ms ease;
+  }
+
+  html.dark .hub-page .hub-tag-soft {
+    color: var(--muted-foreground);
+  }
+
+  html.dark .hub-page .hub-tag-meta {
+    color: var(--muted-foreground);
+  }
+
+  html.dark .hub-page .hub-tag-soft:hover,
+  html.dark .hub-page .hub-tag-meta:hover {
+    background-color: color-mix(in srgb, var(--foreground) 4%, transparent);
+  }
+
+  /* List rows share the cards' flat neutral surface: no border, no gradient,
+     and a wide spread shadow that is present only in the light theme (dark gets
+     the flat surface with no shadow). The shadow paints freely past the content
+     column; the scroll pane (not the column) bounds it. */
+  .hub-page .hub-result-row {
+    border: 0;
+    border-radius: 14px;
+    background-color: var(--card);
+    box-shadow: 0 2px 8px -2px rgba(0, 0, 0, 0.16);
+    transition:
+      background-color 160ms ease,
+      box-shadow 180ms ease,
+      transform 180ms ease;
+  }
+
+  .hub-page .hub-result-row.hub-result-card {
+    border-radius: 16px;
+  }
+
+  .hub-page .hub-result-row:hover {
+    background-color: var(--card);
+    box-shadow: 0 2px 8px -2px rgba(0, 0, 0, 0.16);
+  }
+
+  html:not(.dark) .hub-page .hub-result-row:hover {
+    transform: translateY(-1px);
+  }
+
+  html.dark .hub-page .hub-result-row {
+    background-color: color-mix(in srgb, var(--foreground) 7%, var(--background));
+    box-shadow: none;
+  }
+
+  html.dark .hub-page .hub-result-row:hover {
+    background-color: color-mix(in srgb, var(--foreground) 10%, var(--background));
+    box-shadow: none;
+  }
+
+  /* On-device rows reuse the result-row card but carry selection/active state:
+     a neutral tint for the inspected row and a success tint with a primary edge
+     for the model currently loaded. Discover rows never set these attributes. */
+  .hub-page .hub-result-row[data-selected="true"] {
+    background-color: color-mix(in srgb, var(--foreground) 5%, var(--card));
+  }
+
+  .hub-page .hub-result-row[data-active="true"] {
+    background-color: color-mix(in srgb, var(--status-success) 7%, var(--card));
+    box-shadow: 0 2px 8px -2px rgba(0, 0, 0, 0.16), inset 2px 0 0 0 var(--primary);
+  }
+
+  html.dark .hub-page .hub-result-row[data-selected="true"] {
+    background-color: color-mix(in srgb, var(--foreground) 11%, var(--background));
+    box-shadow: none;
+  }
+
+  html.dark .hub-page .hub-result-row[data-active="true"] {
+    background-color: color-mix(in srgb, var(--status-success) 14%, var(--background));
+    box-shadow: inset 2px 0 0 0 var(--primary);
+  }
+
+  /* Recent-searches suggestion panel. The surface comes from
+     .menu-soft-surface; these rules add the row + control hover affordances
+     using the same neutral foreground mixes as the option menus and list
+     rows, so it reads as part of the same family. */
+  .hub-page .hub-recent-item {
+    transition: background-color 120ms ease;
+  }
+
+  .hub-page .hub-recent-item:hover {
+    background-color: color-mix(in srgb, var(--foreground) 6%, transparent);
+  }
+
+  html.dark .hub-page .hub-recent-item:hover {
+    background-color: color-mix(in srgb, var(--foreground) 8%, transparent);
+  }
+
+  .hub-page .hub-recent-clear:hover,
+  .hub-page .hub-recent-remove:hover {
+    background-color: color-mix(in srgb, var(--foreground) 10%, transparent);
+  }
+
+  .hub-menu-instant {
+    animation: none !important;
+    transition: none !important;
+    transform: none !important;
+    --tw-translate-x: 0px !important;
+    --tw-translate-y: 0px !important;
+    --tw-scale-x: 1 !important;
+    --tw-scale-y: 1 !important;
+    translate: 0 0 !important;
+    user-select: none;
+    -webkit-user-select: none;
+    will-change: auto !important;
+  }
+
+  .hub-menu-instant.menu-soft-surface {
+    --menu-soft-blur: 18px;
+    --menu-soft-spread: -8px;
+  }
+
+  .hub-menu-instant [data-slot="select-item"]:focus,
+  .hub-menu-instant [data-slot="select-item"][data-highlighted],
+  .hub-menu-instant [role="option"][data-highlighted] {
+    background-color: color-mix(in srgb, var(--foreground) 6%, transparent);
+    color: var(--foreground);
+  }
+
+  html.dark .hub-menu-instant [data-slot="select-item"]:focus,
+  html.dark .hub-menu-instant [data-slot="select-item"][data-highlighted],
+  html.dark .hub-menu-instant [role="option"][data-highlighted] {
+    background-color: color-mix(in srgb, var(--foreground) 8%, transparent);
+    color: var(--foreground);
+  }
+
+  html.dark .hub-menu-instant {
+    background-color: #2e2f31 !important;
+  }
+
+  .hub-menu-instant *,
+  .hub-menu-instant *::before,
+  .hub-menu-instant *::after,
+  .hub-menu-trigger,
+  .hub-menu-trigger * {
+    animation: none !important;
+    transition: none !important;
+    user-select: none;
+    -webkit-user-select: none;
+  }
+
+  /* Canonical segmented-control look. Un-scoped from .hub-page so every
+     segmented toggle in the app (Hub Discover/On Device, Models/Datasets,
+     Unsloth/All, Recent/Name/Size, plus Settings + Train tabs) shares one
+     design: a soft track with a white, softly-shadowed sliding pill. */
+  html:not(.dark) .hub-tab-toggle {
+    background-color: color-mix(in srgb, var(--foreground) 5%, transparent);
+    border: 0;
+    box-shadow: none;
+  }
+
+  html.dark .hub-tab-toggle {
+    background-color: color-mix(in srgb, var(--foreground) 4.5%, transparent);
+    border: 0;
+    box-shadow: none;
+  }
+
+  html:not(.dark) .hub-tab-toggle-pill {
+    background-color: var(--background);
+    border: 0;
+    box-shadow: 0 2px 8px -2px rgba(0, 0, 0, 0.16);
+  }
+
+  html:not(.dark) .hub-tab-toggle-pill:hover {
+    background-color: #f3f3f3;
+  }
+
+  html.dark .hub-tab-toggle-pill {
+    background-color: color-mix(in srgb, var(--foreground) 10%, transparent);
+    border: 0;
+    box-shadow: none;
+  }
+
+  html.dark .hub-tab-toggle-pill:hover {
+    background-color: color-mix(in srgb, var(--foreground) 18%, transparent);
+  }
+
+  html:not(.dark) .hub-page .catalog-row {
+    background-color: transparent;
+    border-color: transparent;
+    box-shadow: none;
+    transition: background-color 160ms ease;
+  }
+
+  html:not(.dark) .hub-page .catalog-row:hover {
+    background-color: color-mix(in srgb, var(--foreground) 3.5%, transparent);
+  }
+
+  html:not(.dark) .hub-page .catalog-row[data-selected="true"] {
+    background-color: color-mix(in srgb, var(--foreground) 6%, transparent);
+  }
+
+  /* Currently-loaded checkpoint: a brand-green left stripe plus a faint
+	   green wash, orthogonal to the neutral selected tint so a row that is
+	   both loaded and selected still reads as loaded. */
+  html:not(.dark) .hub-page .catalog-row[data-active="true"] {
+    background-color: color-mix(in srgb, var(--status-success) 7%, transparent);
+    box-shadow: inset 2px 0 0 0 var(--primary);
+  }
+
+  html.dark .hub-page .catalog-row {
+    background-color: transparent;
+    border-color: transparent;
+    box-shadow: none;
+    transition: background-color 160ms ease;
+  }
+
+  html.dark .hub-page .catalog-row:hover {
+    background-color: color-mix(in srgb, var(--foreground) 3.5%, transparent);
+  }
+
+  html.dark .hub-page .catalog-row[data-selected="true"] {
+    background-color: color-mix(in srgb, var(--foreground) 7%, transparent);
+  }
+
+  html.dark .hub-page .catalog-row[data-active="true"] {
+    background-color: color-mix(in srgb, var(--status-success) 12%, transparent);
+    box-shadow: inset 2px 0 0 0 var(--primary);
+  }
+}
+
+@layer utilities {
+  .hub-tag-soft,
+  .hub-tag-meta {
+    @apply min-h-[26px] rounded-full bg-muted/70 ring-1 ring-inset;
+    --tw-ring-color: color-mix(in srgb, var(--foreground) 3.5%, transparent);
+  }
+
+  .dark .hub-tag-soft,
+  .dark .hub-tag-meta {
+    @apply bg-white/[0.05] ring-white/[0.035];
+  }
+  .hub-download-card {
+    @apply flex w-full flex-col gap-2 rounded-[22px] p-2;
+    background-color: color-mix(in srgb, var(--foreground) 3%, transparent);
+    border: 1px solid color-mix(in srgb, var(--foreground) 5.5%, transparent);
+    box-shadow: none;
+  }
+
+  .hub-download-card:not(:has(> :nth-child(2))) {
+    border-radius: 9999px;
+  }
+
+  .dark .hub-download-card {
+    background-color: color-mix(in srgb, var(--foreground) 3.5%, transparent);
+    border: 1px solid color-mix(in srgb, var(--foreground) 5.5%, transparent);
+    box-shadow: none;
+  }
+
+  .hub-download-panel {
+    border-radius: 20px;
+    background-color: var(--popover);
+    border: 1px solid color-mix(in srgb, var(--foreground) 6%, transparent);
+    box-shadow: 0 2px 8px -2px rgba(0, 0, 0, 0.16);
+  }
+
+  .dark .hub-download-panel {
+    border-color: color-mix(in srgb, var(--foreground) 8%, transparent);
+    box-shadow: none;
+  }
+
+  .hub-download-fab {
+    position: relative;
+    display: inline-flex;
+    width: 2.75rem;
+    height: 2.75rem;
+    cursor: pointer;
+    align-items: center;
+    justify-content: center;
+    border-radius: 9999px;
+    color: var(--muted-foreground);
+    background-color: var(--popover);
+    border: 1px solid color-mix(in srgb, var(--foreground) 6%, transparent);
+    box-shadow: 0 2px 8px -2px rgba(0, 0, 0, 0.16);
+    transition: color 150ms ease, background-color 150ms ease, box-shadow 150ms
+      ease, transform 150ms ease;
+  }
+
+  .hub-download-fab:hover {
+    color: var(--foreground);
+    transform: translateY(-1px);
+    box-shadow: 0 2px 8px -2px rgba(0, 0, 0, 0.16);
+  }
+
+  .dark .hub-download-fab {
+    border-color: color-mix(in srgb, var(--foreground) 8%, transparent);
+    box-shadow: none;
+  }
+
+  .dark .hub-download-fab:hover {
+    box-shadow: none;
+  }
+
+  .hub-download-fab-badge {
+    position: absolute;
+    top: -3px;
+    right: -3px;
+    display: inline-flex;
+    width: 1.125rem;
+    min-width: 1.125rem;
+    height: 1.125rem;
+    align-items: center;
+    justify-content: center;
+    border-radius: 9999px;
+    padding-inline: 0;
+    background-color: var(--status-success);
+    color: var(--primary-foreground);
+    font-size: 10.5px;
+    font-weight: 600;
+    line-height: 1;
+    font-variant-numeric: tabular-nums;
+    border: 2px solid var(--popover);
+  }
+
+  .hub-page .hub-carousel {
+    scrollbar-width: none !important;
+    -ms-overflow-style: none !important;
+    overflow-y: hidden;
+    -webkit-overflow-scrolling: touch;
+    overscroll-behavior-x: contain;
+  }
+
+  .hub-page .hub-carousel::-webkit-scrollbar {
+    display: none !important;
+    width: 0 !important;
+    height: 0 !important;
+  }
+
+  .hub-page .hub-carousel-arrow {
+    background-color: color-mix(in srgb, var(--background) 80%, transparent);
+    backdrop-filter: blur(10px);
+    -webkit-backdrop-filter: blur(10px);
+    border: 1px solid color-mix(in srgb, var(--foreground) 4%, transparent);
+    color: var(--foreground);
+    box-shadow: 0 2px 8px -2px rgba(0, 0, 0, 0.16);
+    transition: opacity 160ms ease, background-color 160ms ease, border-color
+      160ms ease;
+  }
+
+  .hub-page .hub-carousel-arrow:hover {
+    background-color: var(--background);
+    border-color: color-mix(in srgb, var(--foreground) 8%, transparent);
+  }
+}
+
+@layer base {
+  .hub-avatar-tile {
+    /* Frame colour for the hairline drawn by ::after. Light theme keeps it a
+       soft, low-contrast value that cleanly frames white logo tiles; the
+       .dark override below lifts it against the dark surfaces. */
+    --hub-avatar-corner-edge: color-mix(
+      in srgb,
+      var(--foreground) 12%,
+      transparent
+    );
+    position: relative;
+    box-shadow: none;
+  }
+
+  .hub-avatar-tile::after {
+    position: absolute;
+    inset: 0;
+    border: 1px solid var(--hub-avatar-corner-edge);
+    border-radius: inherit;
+    content: "";
+    opacity: 0.92;
+    pointer-events: none;
+    -webkit-mask:
+      linear-gradient(
+        90deg,
+        #000 0 38%,
+        rgb(0 0 0 / 72%) 68%,
+        transparent 100%
+      )
+      top left / 82% 34% no-repeat,
+      linear-gradient(
+        180deg,
+        #000 0 38%,
+        rgb(0 0 0 / 72%) 68%,
+        transparent 100%
+      )
+      top left / 34% 82% no-repeat,
+      linear-gradient(
+        270deg,
+        #000 0 38%,
+        rgb(0 0 0 / 72%) 68%,
+        transparent 100%
+      )
+      bottom right / 82% 34% no-repeat,
+      linear-gradient(
+        0deg,
+        #000 0 38%,
+        rgb(0 0 0 / 72%) 68%,
+        transparent 100%
+      )
+      bottom right / 34% 82% no-repeat;
+    mask:
+      linear-gradient(
+        90deg,
+        #000 0 38%,
+        rgb(0 0 0 / 72%) 68%,
+        transparent 100%
+      )
+      top left / 82% 34% no-repeat,
+      linear-gradient(
+        180deg,
+        #000 0 38%,
+        rgb(0 0 0 / 72%) 68%,
+        transparent 100%
+      )
+      top left / 34% 82% no-repeat,
+      linear-gradient(
+        270deg,
+        #000 0 38%,
+        rgb(0 0 0 / 72%) 68%,
+        transparent 100%
+      )
+      bottom right / 82% 34% no-repeat,
+      linear-gradient(
+        0deg,
+        #000 0 38%,
+        rgb(0 0 0 / 72%) 68%,
+        transparent 100%
+      )
+      bottom right / 34% 82% no-repeat;
+  }
+
+  /* Light theme renders the frame as a single smooth hairline. The corner-mask
+     "bracket" treatment (kept for the dark surfaces below) stair-steps along
+     the rounded corners on light backgrounds and reads as pixelated, so it is
+     dropped here in favour of a clean, anti-aliased full-perimeter ring. */
+  html:not(.dark) .hub-avatar-tile::after {
+    -webkit-mask: none;
+    mask: none;
+  }
+
+  .dark .hub-avatar-tile {
+    --hub-avatar-corner-edge: color-mix(
+      in srgb,
+      var(--foreground) 58%,
+      transparent
+    );
+  }
+
+  /* Verified badge: solid badge shape with a check-shaped hole punched
+	   through, so whatever sits behind shows through the check. The badge
+	   fill follows currentColor (so `text-primary` makes it Unsloth green;
+	   any text-* utility recolors it). Use as: `<span class="hub-verified-badge
+	   size-4 text-primary" />`. */
+  .hub-verified-badge {
+    display: inline-block;
+    background-color: currentColor;
+    mask: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'><defs><mask id='c'><rect width='24' height='24' fill='white'/><path d='m8.75 12.5 2.5 2.5 4.25-5.25' stroke='black' stroke-width='1.85' stroke-linecap='round' stroke-linejoin='round' fill='none'/></mask></defs><path d='M8.603 3.799A4.49 4.49 0 0 1 12 2.25c1.357 0 2.573.6 3.397 1.549a4.49 4.49 0 0 1 3.498 1.307 4.491 4.491 0 0 1 1.307 3.497A4.49 4.49 0 0 1 21.75 12a4.49 4.49 0 0 1-1.549 3.397 4.491 4.491 0 0 1-1.307 3.497 4.491 4.491 0 0 1-3.497 1.307A4.49 4.49 0 0 1 12 21.75a4.49 4.49 0 0 1-3.397-1.549 4.49 4.49 0 0 1-3.498-1.306 4.491 4.491 0 0 1-1.307-3.498A4.49 4.49 0 0 1 2.25 12c0-1.357.6-2.573 1.549-3.397a4.49 4.49 0 0 1 1.307-3.497 4.49 4.49 0 0 1 3.497-1.307Z' fill='white' mask='url(%23c)'/></svg>")
+      center / contain no-repeat;
+    -webkit-mask: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'><defs><mask id='c'><rect width='24' height='24' fill='white'/><path d='m8.75 12.5 2.5 2.5 4.25-5.25' stroke='black' stroke-width='1.85' stroke-linecap='round' stroke-linejoin='round' fill='none'/></mask></defs><path d='M8.603 3.799A4.49 4.49 0 0 1 12 2.25c1.357 0 2.573.6 3.397 1.549a4.49 4.49 0 0 1 3.498 1.307 4.491 4.491 0 0 1 1.307 3.497A4.49 4.49 0 0 1 21.75 12a4.49 4.49 0 0 1-1.549 3.397 4.491 4.491 0 0 1-1.307 3.497 4.491 4.491 0 0 1-3.497 1.307A4.49 4.49 0 0 1 12 21.75a4.49 4.49 0 0 1-3.397-1.549 4.49 4.49 0 0 1-3.498-1.306 4.491 4.491 0 0 1-1.307-3.498A4.49 4.49 0 0 1 2.25 12c0-1.357.6-2.573 1.549-3.397a4.49 4.49 0 0 1 1.307-3.497 4.49 4.49 0 0 1 3.497-1.307Z' fill='white' mask='url(%23c)'/></svg>")
+      center / contain no-repeat;
+  }
+
+  @keyframes hub-loading-sweep {
+    0% {
+      opacity: 0;
+      transform: translate3d(-120%, 0, 0);
+    }
+
+    16% {
+      opacity: 0.92;
+    }
+
+    78% {
+      opacity: 0.92;
+    }
+
+    100% {
+      opacity: 0;
+      transform: translate3d(520%, 0, 0);
+    }
+  }
+
+  .hub-loading-bar {
+    pointer-events: none;
+    position: relative;
+    overflow: hidden;
+    width: 100%;
+    height: 3px;
+  }
+
+  .hub-loading-bar::after {
+    content: "";
+    display: none;
+    position: absolute;
+    inset-block: 0;
+    left: 0;
+    width: 36%;
+    background: linear-gradient(
+      90deg,
+      transparent,
+      color-mix(in srgb, var(--foreground) 20%, transparent),
+      color-mix(in srgb, var(--foreground) 58%, transparent),
+      color-mix(in srgb, var(--foreground) 20%, transparent),
+      transparent
+    );
+    will-change: opacity, transform;
+  }
+
+  html.dark .hub-loading-bar::after {
+    background: linear-gradient(
+      90deg,
+      transparent,
+      color-mix(in srgb, var(--foreground) 22%, transparent),
+      color-mix(in srgb, var(--foreground) 60%, transparent),
+      color-mix(in srgb, var(--foreground) 22%, transparent),
+      transparent
+    );
+  }
+
+  .hub-loading-bar[data-active="true"]::after {
+    display: block;
+    animation: hub-loading-sweep 3s cubic-bezier(0.22, 0.72, 0.18, 1) infinite;
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .hub-loading-bar[data-active="true"]::after {
+      animation-duration: 3s !important;
+      animation-iteration-count: infinite !important;
+    }
+  }
+
+  /* README markdown can be thousands of nodes. Keep its paint/layout work
+	   scoped so unrelated overlays, like the sidebar account menu, do less
+	   route-wide recalculation while the Hub is open. */
+  .hub-readme-prose {
+    content-visibility: auto;
+    contain-intrinsic-size: auto 640px;
+  }
+
+  .hub-readme-prose > * {
+    content-visibility: auto;
+    contain-intrinsic-size: auto 140px;
+  }
+
+  .hub-readme-prose > hr:first-child {
+    display: none;
+  }
+
+  .hub-readme-prose :is(p, div):has(> a:nth-of-type(2) > img) {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 0.5rem;
+  }
+
+  .hub-readme-prose :is(p, div):has(> a:nth-of-type(2) > img) > br {
+    display: none;
+  }
+
+  .hub-readme-prose :is(p, div):has(> a:nth-of-type(2) > img) > a {
+    display: inline-flex;
+    align-items: center;
+  }
+
+  .hub-readme-prose :is(p, div):has(> a:nth-of-type(2) > img) img {
+    margin-block: 0;
+  }
+
+  /* Inspector action pills (Download / Run / Train / Cancel) for the hub
+	   inspector card. Centralized so all three sections (GGUF, safetensors,
+	   datasets) stay in lock-step on type scale, padding, hover surface, and
+	   the 16px icon size — mirrors the pattern used for `.sidebar-nav-btn`.
+	   Width and disabled tint are layered inline by callers (some buttons
+	   are w-24 in a pair, some are w-28 standalone). Raw CSS rather than
+	   @apply so the cascade is explicit and predictable. */
+  .hub-action-btn {
+    display: inline-flex;
+    height: 2.25rem;
+    cursor: pointer;
+    align-items: center;
+    justify-content: center;
+    gap: 0.5rem;
+    white-space: nowrap;
+    border-radius: 9999px;
+    background-color: transparent;
+    padding-left: 0.75rem;
+    padding-right: 0.75rem;
+    font-size: 13px;
+    font-weight: 500;
+    line-height: 18px;
+    letter-spacing: -0.025em;
+    color: var(--foreground);
+    transition: color 150ms, background-color 150ms;
+  }
+
+  .hub-action-btn:hover:not(:disabled) {
+    background-color: color-mix(in srgb, var(--foreground) 4%, transparent);
+  }
+
+  .dark .hub-action-btn:hover:not(:disabled) {
+    background-color: color-mix(in srgb, var(--foreground) 5%, transparent);
+  }
+
+  .hub-action-btn:disabled {
+    cursor: not-allowed;
+  }
+
+  /* Every glyph inside a hub action button — explicit icon, spinner, or
+	   embedded SVG — locks to 16px so swapping icons or replacing the
+	   spinner can't drift the layout. */
+  .hub-action-btn svg {
+    width: 1rem;
+    height: 1rem;
+    flex-shrink: 0;
+  }
+
+  /* Primary "Run" action — confirms loading/running a model. Pill shape
+	   (rounded-full) so it reads as the unmistakable CTA in a row of
+	   ghost actions and matches the live-model status-success token used
+	   elsewhere in the app. Same h-9 geometry, 13px
+	   medium type, tracking-tight, and 16px icon slot as .hub-action-btn
+	   so the height aligns with adjacent ghost buttons. */
+  .hub-run-action-btn {
+    display: inline-flex;
+    height: 2.25rem;
+    cursor: pointer;
+    align-items: center;
+    justify-content: center;
+    gap: 0.4rem;
+    white-space: nowrap;
+    border-radius: 9999px;
+    background-color: var(--status-success);
+    padding-left: 1rem;
+    padding-right: 1rem;
+    font-size: 13px;
+    font-weight: 600;
+    line-height: 18px;
+    letter-spacing: -0.025em;
+    color: var(--primary-foreground);
+    transition: background-color 150ms, transform 150ms;
+    box-shadow: inset 0 1px 0
+      color-mix(in srgb, var(--primary-foreground) 18%, transparent), 0 1px 2px
+      color-mix(in srgb, var(--status-success) 22%, transparent);
+  }
+
+  .hub-run-action-btn:hover:not(:disabled) {
+    background-color: color-mix(in srgb, var(--status-success) 88%, black);
+  }
+
+  .hub-run-action-btn:active:not(:disabled) {
+    transform: scale(0.98);
+  }
+
+  .hub-run-action-btn:disabled {
+    cursor: not-allowed;
+    opacity: 0.5;
+  }
+
+  .hub-run-action-btn svg {
+    width: 0.9rem;
+    height: 0.9rem;
+    flex-shrink: 0;
+  }
+
+  /* Spinner-default / cancel-on-hover swap inside `.hub-action-btn`.
+	   Two glyphs occupy the same 16×16 slot; the button's :hover toggles
+	   their opacities so the percentage label beside them never shifts. */
+  .hub-cta-indicator {
+    position: relative;
+    display: inline-flex;
+    width: 1rem;
+    height: 1rem;
+    flex-shrink: 0;
+    align-items: center;
+    justify-content: center;
+  }
+
+  .hub-cta-indicator-spinner,
+  .hub-cta-indicator-cancel {
+    transition: opacity 150ms;
+  }
+
+  .hub-cta-indicator-cancel {
+    position: absolute;
+    opacity: 0;
+  }
+
+  .hub-action-btn:hover .hub-cta-indicator-spinner {
+    opacity: 0;
+  }
+
+  .hub-action-btn:hover .hub-cta-indicator-cancel {
+    opacity: 1;
+  }
+
+  /* Hover-revealed inline action overlay (used for the row-end trash on
+	   downloaded models and datasets in the inspector). Wrapper 28×28 with a
+	   16px glyph — same icon size as `.hub-action-btn` so the destructive
+	   affordance reads consistently with the primary actions. Relies on a
+	   `.group/dl` ancestor for the hover scope (the Hub download row). */
+  .hub-row-action {
+    position: absolute;
+    right: 0.25rem;
+    top: 50%;
+    display: inline-flex;
+    width: 1.75rem;
+    height: 1.75rem;
+    transform: translateY(-50%);
+    align-items: center;
+    justify-content: center;
+    border-radius: 8px;
+    color: var(--muted-foreground);
+    opacity: 0;
+    cursor: pointer;
+    transition: opacity 150ms, color 150ms;
+  }
+
+  .group\/dl:hover .hub-row-action,
+  .hub-row-action:focus-visible {
+    opacity: 1;
+  }
+
+  .hub-row-action:hover {
+    color: rgb(225 29 72);
+  }
+
+  .dark .hub-row-action:hover {
+    color: rgb(251 113 133);
+  }
+
+  .hub-row-action svg {
+    width: 1rem;
+    height: 1rem;
+    flex-shrink: 0;
+  }
+}
+
+@layer base {
+  .hub-page .field-trigger.field-filter {
+    color: var(--muted-foreground);
+    font-weight: 400;
+    padding-top: 0.25rem;
+    padding-bottom: 0.25rem;
+    line-height: 1.25rem;
+  }
+
+  .hub-page .field-trigger.field-filter:hover {
+    color: var(--foreground);
+  }
+
+  .hub-page .hub-stat-pill {
+    display: inline-flex;
+    flex-shrink: 0;
+    align-items: center;
+    gap: 0.4rem;
+    height: 2rem;
+    padding-inline: 0.7rem;
+    border-radius: 9999px;
+    border: 1px solid color-mix(in srgb, var(--foreground) 8%, transparent);
+    background-color: color-mix(in srgb, var(--foreground) 2.5%, transparent);
+    font-size: 12px;
+    line-height: 1;
+    color: var(--muted-foreground);
+    white-space: nowrap;
+  }
+
+  html.dark .hub-page .hub-stat-pill {
+    background-color: color-mix(in srgb, var(--foreground) 4%, transparent);
+  }
+
+  .hub-page .hub-stat-pill-value {
+    font-weight: 600;
+    color: var(--foreground);
+    font-variant-numeric: tabular-nums;
+  }
+
+  .hub-page .hub-hero {
+    --hub-hero-fill: color-mix(in srgb, var(--foreground) 3.2%, transparent);
+    --hub-card-border-accent: var(--foreground);
+    --hub-card-edge-mix: 2.2%;
+    --hub-card-inner-accent: var(--background);
+    --hub-card-inner-mix: 12%;
+    --hub-card-inner-opacity: 0.14;
+    --hub-card-corner-mix: 8.5%;
+    --hub-card-corner-opacity: 0.48;
+    --hub-hero-edge: color-mix(
+      in srgb,
+      var(--hub-card-border-accent) var(--hub-card-edge-mix),
+      transparent
+    );
+    --hub-hero-inner-edge: color-mix(
+      in srgb,
+      var(--hub-card-inner-accent) var(--hub-card-inner-mix),
+      transparent
+    );
+    --hub-hero-corner-edge: color-mix(
+      in srgb,
+      var(--hub-card-border-accent) var(--hub-card-corner-mix),
+      transparent
+    );
+    position: relative;
+    overflow: hidden;
+    border-radius: 24px;
+    border: 1px solid transparent;
+    background-color: var(--hub-hero-fill);
+  }
+
+  .hub-page .hub-hero::before,
+  .hub-page .hub-hero::after {
+    position: absolute;
+    border-radius: inherit;
+    content: "";
+    pointer-events: none;
+  }
+
+  .hub-page .hub-hero::before {
+    inset: 1px;
+    border: 1px solid var(--hub-hero-inner-edge);
+    opacity: 0;
+  }
+
+  .hub-page .hub-hero::after {
+    inset: 0;
+    border: 1px solid var(--hub-hero-corner-edge);
+    opacity: 0;
+    -webkit-mask:
+      linear-gradient(
+        90deg,
+        #000 0 76px,
+        rgb(0 0 0 / 94%) 34%,
+        rgb(0 0 0 / 58%) 76%,
+        transparent 100%
+      )
+      top left / 48% 44px no-repeat,
+      linear-gradient(
+        180deg,
+        #000 0 54px,
+        rgb(0 0 0 / 68%) 86px,
+        transparent 140px
+      )
+      top left / 44px 160px no-repeat,
+      linear-gradient(
+        270deg,
+        #000 0 76px,
+        rgb(0 0 0 / 94%) 34%,
+        rgb(0 0 0 / 58%) 76%,
+        transparent 100%
+      )
+      bottom right / 48% 44px no-repeat,
+      linear-gradient(
+        0deg,
+        #000 0 54px,
+        rgb(0 0 0 / 68%) 86px,
+        transparent 140px
+      )
+      bottom right / 44px 160px no-repeat;
+    mask:
+      linear-gradient(
+        90deg,
+        #000 0 76px,
+        rgb(0 0 0 / 94%) 34%,
+        rgb(0 0 0 / 58%) 76%,
+        transparent 100%
+      )
+      top left / 48% 44px no-repeat,
+      linear-gradient(
+        180deg,
+        #000 0 54px,
+        rgb(0 0 0 / 68%) 86px,
+        transparent 140px
+      )
+      top left / 44px 160px no-repeat,
+      linear-gradient(
+        270deg,
+        #000 0 76px,
+        rgb(0 0 0 / 94%) 34%,
+        rgb(0 0 0 / 58%) 76%,
+        transparent 100%
+      )
+      bottom right / 48% 44px no-repeat,
+      linear-gradient(
+        0deg,
+        #000 0 54px,
+        rgb(0 0 0 / 68%) 86px,
+        transparent 140px
+      )
+      bottom right / 44px 160px no-repeat;
+  }
+
+  html.dark .hub-page .hub-hero {
+    --hub-hero-fill: #1c1c1c;
+    --hub-card-border-accent: var(--foreground);
+    --hub-card-edge-mix: 2.8%;
+    --hub-card-inner-accent: var(--foreground);
+    --hub-card-inner-mix: 2.5%;
+    --hub-card-inner-opacity: 0.22;
+    --hub-card-corner-mix: 9.5%;
+  }
+
+  .hub-page .hub-hero-panel {
+    border-radius: 18px;
+    border: 1px solid transparent;
+    background-color: color-mix(in srgb, var(--background) 72%, transparent);
+  }
+
+  html.dark .hub-page .hub-hero-panel {
+    border-color: transparent;
+    background-color: #202020;
+  }
+
+  .hub-page .hub-hero-orb {
+    position: absolute;
+    border-radius: 9999px;
+    background-color: color-mix(in srgb, var(--foreground) 4.5%, transparent);
+    opacity: 0.42;
+  }
+
+  .hub-page .hub-hero-orb-accent {
+    background-color: color-mix(in srgb, var(--foreground) 8%, transparent);
+    opacity: 0.34;
+  }
+
+  .hub-page .hub-section-chevron {
+    transition: color 150ms ease, transform 150ms ease;
+  }
+
+  .hub-page .hub-section-chevron:hover {
+    color: var(--foreground);
+  }
+
+  .hub-page .hub-section-title:hover .hub-section-chevron {
+    color: var(--foreground);
+    transform: translateX(2px);
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .hub-page .hub-section-chevron {
+      transition: none;
+    }
+
+    .hub-page .hub-section-title:hover .hub-section-chevron {
+      transform: none;
+    }
+  }
+}
+
+@layer utilities {
+  .hub-chip {
+    @apply inline-flex items-center gap-1 rounded-full px-2 py-[3px] text-[11px] font-medium leading-none;
+    background-color: color-mix(in srgb, var(--foreground) 5%, transparent);
+    color: var(--muted-foreground);
+  }
+
+  .dark .hub-chip {
+    background-color: color-mix(in srgb, var(--foreground) 7%, transparent);
+  }
+
+  .hub-meta-tag {
+    @apply inline-flex h-[18px] shrink-0 items-center gap-1 rounded-full px-2 text-[11px] font-medium leading-none;
+    background-color: color-mix(in srgb, var(--foreground) 5%, transparent);
+    color: var(--muted-foreground);
+  }
+
+  .dark .hub-meta-tag {
+    background-color: color-mix(in srgb, var(--foreground) 7.5%, transparent);
+  }
+}
+
+html:not(.dark) .hub-page [data-hub-scroll="true"] {
+  scrollbar-color: oklch(0.5 0 0 / 0.22) transparent;
+}
+
+html.dark .hub-page [data-hub-scroll="true"] {
+  scrollbar-color: oklch(0.55 0 0 / 0.16) transparent;
+}
+
+html:not(.dark) .hub-page [data-hub-scroll="true"]::-webkit-scrollbar-thumb {
+  background: oklch(0.5 0 0 / 0.22);
+}
+
+html.dark .hub-page [data-hub-scroll="true"]::-webkit-scrollbar-thumb {
+  background: oklch(0.55 0 0 / 0.16);
+}
+
+/* While a modal dialog is open (delete confirmation, transport-mode swap, the
+   folder manager) Radix locks the background: it sets body[data-scroll-locked]
+   and body { pointer-events: none }. A few Hub affordances (the cached-size
+   chip, the row delete button) opt back into pointer events with
+   `pointer-events-auto` so they can sit above the row's full-bleed click
+   overlay. That opt-in must NOT survive an open modal, or hovering the
+   background fires their tooltips behind the dialog. Re-disable only those
+   opt-ins while the scroll lock is active; everything else is already blocked
+   by the body-level rule, and the dialog's own portaled content never carries
+   this class. */
+body[data-scroll-locked] .hub-modal-pe-guard {
+  pointer-events: none !important;
+}

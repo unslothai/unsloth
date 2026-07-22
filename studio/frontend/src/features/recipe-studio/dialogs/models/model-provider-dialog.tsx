@@ -7,9 +7,20 @@ import {
   CollapsibleTrigger,
 } from "@/components/ui/collapsible";
 import { Input } from "@/components/ui/input";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
 import { Textarea } from "@/components/ui/textarea";
-import { type ReactElement, useState } from "react";
+import { type ReactElement, useMemo, useState } from "react";
 import type { ModelProviderConfig } from "../../types";
+import {
+  MODEL_PROVIDER_TYPE_OPTIONS,
+  normalizeModelProviderType,
+} from "../../utils/model-provider-types";
 import { CollapsibleSectionTriggerButton } from "../shared/collapsible-section-trigger";
 import { FieldLabel } from "../shared/field-label";
 import { NameField } from "../shared/name-field";
@@ -26,10 +37,28 @@ export function ModelProviderDialog({
   const [optionalOpen, setOptionalOpen] = useState(false);
   const isLocal = config.is_local ?? false;
   const endpointId = `${config.id}-endpoint`;
+  const providerTypeId = `${config.id}-provider-type`;
   const apiKeyEnvId = `${config.id}-api-key-env`;
   const apiKeyId = `${config.id}-api-key`;
   const extraHeadersId = `${config.id}-extra-headers`;
   const extraBodyId = `${config.id}-extra-body`;
+  const providerType =
+    normalizeModelProviderType(config.provider_type) || "openai";
+  const providerTypeOptions = useMemo<
+    Array<{ value: string; label: string }>
+  >(() => {
+    if (
+      MODEL_PROVIDER_TYPE_OPTIONS.some(
+        (option) => option.value === providerType,
+      )
+    ) {
+      return [...MODEL_PROVIDER_TYPE_OPTIONS];
+    }
+    return [
+      { value: providerType, label: providerType },
+      ...MODEL_PROVIDER_TYPE_OPTIONS,
+    ];
+  }, [providerType]);
   const updateField = <K extends keyof ModelProviderConfig>(
     key: K,
     value: ModelProviderConfig[K],
@@ -53,7 +82,7 @@ export function ModelProviderDialog({
             type="button"
             className={`rounded-xl border px-4 py-3 text-left transition-colors ${
               isLocal
-                ? "border-primary/40 bg-primary/5"
+                ? "border-ring-strong bg-primary/5"
                 : "border-border/60 bg-muted/10 hover:border-border"
             }`}
             onClick={() =>
@@ -67,9 +96,7 @@ export function ModelProviderDialog({
               })
             }
           >
-            <p className="text-sm font-semibold text-foreground">
-              Local model
-            </p>
+            <p className="text-sm font-semibold text-foreground">Local model</p>
             <p className="mt-0.5 text-xs text-muted-foreground">
               Use the model loaded in the Chat tab
             </p>
@@ -78,7 +105,7 @@ export function ModelProviderDialog({
             type="button"
             className={`rounded-xl border px-4 py-3 text-left transition-colors ${
               !isLocal
-                ? "border-primary/40 bg-primary/5"
+                ? "border-ring-strong bg-primary/5"
                 : "border-border/60 bg-muted/10 hover:border-border"
             }`}
             onClick={() => onUpdate({ is_local: false })}
@@ -92,12 +119,9 @@ export function ModelProviderDialog({
           </button>
         </div>
       </div>
-
       {isLocal ? (
         <div className="rounded-2xl border border-border/60 bg-muted/10 px-4 py-3">
-          <p className="text-sm font-semibold text-foreground">
-            Ready to go
-          </p>
+          <p className="text-sm font-semibold text-foreground">Ready to go</p>
           <p className="mt-1 text-xs text-muted-foreground">
             Recipes will use whatever model is loaded in the Chat tab when you
             hit run. No endpoint or API key needed.
@@ -127,6 +151,28 @@ export function ModelProviderDialog({
               value={config.endpoint}
               onChange={(event) => updateField("endpoint", event.target.value)}
             />
+          </div>
+          <div className="grid gap-1.5">
+            <FieldLabel
+              label="Provider type"
+              htmlFor={providerTypeId}
+              hint="SDK used for API calls. Most providers are OpenAI-compatible."
+            />
+            <Select
+              value={providerType}
+              onValueChange={(value) => updateField("provider_type", value)}
+            >
+              <SelectTrigger id={providerTypeId} className="nodrag">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                {providerTypeOptions.map((opt) => (
+                  <SelectItem key={opt.value} value={opt.value}>
+                    {opt.label}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
           </div>
           <div className="grid gap-1.5">
             <FieldLabel

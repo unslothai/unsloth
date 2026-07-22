@@ -1,9 +1,5 @@
 # -*- coding: utf-8 -*-
-"""test_Llama3_1_(3B)_GRPO_LoRA (1).ipynb
-
-### Unsloth
-
-"""
+"""Llama 3.1 (3B) GRPO LoRA train + merged-model save/eval."""
 
 from unsloth import FastLanguageModel
 import torch
@@ -20,24 +16,28 @@ from tests.utils.cleanup_utils import safe_remove_directory
 from tests.utils.aime_eval import evaluate_model_aime, compare_aime_results
 
 
-max_seq_length = 2048  # Can increase for longer reasoning traces
-lora_rank = 64  # Larger rank = smarter, but slower
+max_seq_length = 2048
+lora_rank = 64
 
 
-def evaluate_merged_model(result_queue, load_in_4bit = False, load_in_8bit = False):
+def evaluate_merged_model(
+    result_queue,
+    load_in_4bit = False,
+    load_in_8bit = False,
+):
     from unsloth import FastLanguageModel
     from tests.utils.aime_eval import evaluate_model_aime
 
-    max_seq_length = 2048  # Can increase for longer reasoning traces
-    lora_rank = 64  # Larger rank = smarter, but slower
+    max_seq_length = 2048
+    lora_rank = 64
 
     model, tokenizer = FastLanguageModel.from_pretrained(
         model_name = "./final_merged_model",
         max_seq_length = max_seq_length,
-        load_in_4bit = True,  # False for LoRA 16bit
-        fast_inference = True,  # Enable vLLM fast inference
+        load_in_4bit = True,
+        fast_inference = True,
         max_lora_rank = lora_rank,
-        gpu_memory_utilization = 0.8,  # Reduce if out of memory
+        gpu_memory_utilization = 0.8,
     )
 
     print(f"\n{'='*60}")
@@ -71,15 +71,14 @@ def evaluate_merged_model(result_queue, load_in_4bit = False, load_in_8bit = Fal
     gc.collect()
 
 
-# Main execution code should be wrapped in this guard
 def training_run(result_queue):
     model, tokenizer = FastLanguageModel.from_pretrained(
         model_name = "meta-llama/Llama-3.2-3B-Instruct",
         max_seq_length = max_seq_length,
-        load_in_4bit = False,  # False for LoRA 16bit
-        fast_inference = True,  # Enable vLLM fast inference
+        load_in_4bit = False,
+        fast_inference = True,
         max_lora_rank = lora_rank,
-        gpu_memory_utilization = 0.8,  # Reduce if out of memory
+        gpu_memory_utilization = 0.8,
     )
 
     """### Helper Functions
@@ -141,12 +140,10 @@ def training_run(result_queue):
     </answer>"""
 
         def format_limo(example):
-            # Create the assistant response
             assistant_response = f"<reasoning>\n{example['solution']}\n</reasoning>\n<answer>\n{example['answer']}\n</answer>"
 
-            # Return a DICTIONARY with the conversation in a field
             return {
-                "prompt": [  # ← This is the key change - wrap in a dict
+                "prompt": [
                     {"role": "system", "content": system_prompt},
                     {"role": "user", "content": example["question"]},
                     {"role": "assistant", "content": assistant_response},
@@ -176,18 +173,20 @@ def training_run(result_queue):
         avg_length = sum(lengths) / len(lengths)
         min_length = min(lengths)
 
-        print(
-            f"Prompt lengths - Min: {min_length}, Max: {max_length}, Avg: {avg_length:.1f}"
-        )
+        print(f"Prompt lengths - Min: {min_length}, Max: {max_length}, Avg: {avg_length:.1f}")
         return max_length, avg_length
 
-    def extract_unsloth_answer(text, start_tag = "<SOLUTION>", end_tag = "</SOLUTION>"):
+    def extract_unsloth_answer(
+        text,
+        start_tag = "<SOLUTION>",
+        end_tag = "</SOLUTION>",
+    ):
         """Extract answer from Unsloth SOLUTION tags"""
         pattern = re.escape(start_tag) + r"(.*?)" + re.escape(end_tag)
         matches = re.findall(pattern, text, re.DOTALL)
 
         if matches:
-            answer = matches[-1]  # Get the last match
+            answer = matches[-1]
             answer = re.sub(r"[%$,]", "", answer).strip()
             return answer
         return ""
@@ -265,9 +264,7 @@ def training_run(result_queue):
             ground_truth_num = float(norm_ground_truth)
 
             if ground_truth_num != 0:
-                relative_error = abs(extracted_num - ground_truth_num) / abs(
-                    ground_truth_num
-                )
+                relative_error = abs(extracted_num - ground_truth_num) / abs(ground_truth_num)
 
                 if relative_error < 0.01:
                     return True, True, 0.9
@@ -302,10 +299,7 @@ def training_run(result_queue):
         )
 
         responses = [completion[0]["content"] for completion in completions]
-        rewards = [
-            3.0 if re.match(pattern, response, re.DOTALL) else 0.0
-            for response in responses
-        ]
+        rewards = [3.0 if re.match(pattern, response, re.DOTALL) else 0.0 for response in responses]
         return rewards
 
     def match_format_approximately(completions, **kwargs):
@@ -378,7 +372,6 @@ def training_run(result_queue):
         print("COMPREHENSIVE MODEL COMPARISON")
         print(f"{'='*80}")
 
-        # Main table
         print(
             f"{'Model':<15} {'Format %':<10} {'Exact %':<10} {'Plausible %':<12} {'Confidence':<12}"
         )
@@ -393,7 +386,6 @@ def training_run(result_queue):
                 f"{result['avg_confidence']:<12.3f}"
             )
 
-        # Improvement analysis
         if len(all_results) > 1:
             print(f"\n{'='*50}")
             print("IMPROVEMENT ANALYSIS")
@@ -405,9 +397,7 @@ def training_run(result_queue):
                 format_improvement = (
                     result["correct_format_pct"] - base_result["correct_format_pct"]
                 )
-                exact_improvement = (
-                    result["exact_match_pct"] - base_result["exact_match_pct"]
-                )
+                exact_improvement = result["exact_match_pct"] - base_result["exact_match_pct"]
                 plausible_improvement = (
                     result["plausible_match_pct"] - base_result["plausible_match_pct"]
                 )
@@ -416,7 +406,6 @@ def training_run(result_queue):
                 print(f"  Exact matches:     {exact_improvement:+.1f}%")
                 print(f"  Plausible matches: {plausible_improvement:+.1f}%")
 
-        # Save comparison
         comparison_data = {
             "summary": all_results,
             "best_model": max(all_results, key = lambda x: x["exact_match_pct"]),
@@ -440,31 +429,23 @@ def training_run(result_queue):
         if torch.cuda.is_available():
             allocated = torch.cuda.memory_allocated() / 1024**3
             reserved = torch.cuda.memory_reserved() / 1024**3
-            print(
-                f"GPU memory - Allocated: {allocated:.2f} GB, Reserved: {reserved:.2f} GB"
-            )
+            print(f"GPU memory - Allocated: {allocated:.2f} GB, Reserved: {reserved:.2f} GB")
 
     """#### Data Loading and Preparation"""
 
     from datasets import load_dataset
 
-    # Load GSM8K
     gsm8k_dataset = load_dataset("openai/gsm8k", "main", split = "train")
-
-    # Load LIMO (adjust this based on your access method)
     limo_train = load_dataset("GAIR/LIMO", split = "train")
 
-    # Prepare datasets
     gsm8k_train = prepare_gsm8k_dataset(gsm8k_dataset)
     limo_train = prepare_limo_dataset(limo_train)
 
     print(f"  GSM8K train: {len(gsm8k_train)}")
     print(f"  LIMO train:  {len(limo_train) if limo_train else 0}")
 
-    # Store results
     all_results = []
 
-    # Single temperature evaluation on combined dataset
     results = evaluate_model_aime(
         model = model,
         tokenizer = tokenizer,
@@ -486,9 +467,7 @@ def training_run(result_queue):
     def formatting_prompts_func(examples):
         convos = examples["prompt"]
         texts = [
-            tokenizer.apply_chat_template(
-                convo, tokenize = False, add_generation_prompt = False
-            )
+            tokenizer.apply_chat_template(convo, tokenize = False, add_generation_prompt = False)
             for convo in convos
         ]
         return {
@@ -510,7 +489,7 @@ def training_run(result_queue):
 
     model = FastLanguageModel.get_peft_model(
         model,
-        r = lora_rank,  # Choose any number > 0 ! Suggested 8, 16, 32, 64, 128
+        r = lora_rank,
         target_modules = [
             "q_proj",
             "k_proj",
@@ -519,9 +498,9 @@ def training_run(result_queue):
             "gate_proj",
             "up_proj",
             "down_proj",
-        ],  # Remove QKVO if out of memory
+        ],
         lora_alpha = lora_rank,
-        use_gradient_checkpointing = "unsloth",  # Enable long context finetuning
+        use_gradient_checkpointing = "unsloth",
         random_state = 3407,
     )
 
@@ -534,12 +513,12 @@ def training_run(result_queue):
             max_seq_length = max_seq_length,
             data_collator = DataCollatorForSeq2Seq(tokenizer = tokenizer),
             dataset_num_proc = 2,
-            packing = False,  # Can make training 5x faster for short sequences.
+            packing = False,
             args = TrainingArguments(
                 per_device_train_batch_size = 2,
                 gradient_accumulation_steps = 4,
                 warmup_steps = 5,
-                num_train_epochs = 1,  # Set this for 1 full training run.
+                num_train_epochs = 1,
                 # max_steps = 60,
                 learning_rate = 2e-4,
                 fp16 = not is_bfloat16_supported(),
@@ -550,7 +529,7 @@ def training_run(result_queue):
                 lr_scheduler_type = "linear",
                 seed = 3407,
                 output_dir = "outputs",
-                report_to = "none",  # Use this for WandB etc
+                report_to = "none",
             ),
         )
 
@@ -562,16 +541,13 @@ def training_run(result_queue):
             response_part = "<|start_header_id|>assistant<|end_header_id|>\n\n",
         )
 
-        # Train
         print(f"🚂 Starting SFT training on {len(limo_train)} examples...")
         trainer.train()
 
-        # Save checkpoint
         model.save_pretrained("qlora_checkpoint")
         tokenizer.save_pretrained("qlora_checkpoint")
         print("💾 Qlora checkpoint saved!")
 
-        # Cleanup
         del trainer
         cleanup_memory()
 
@@ -579,7 +555,6 @@ def training_run(result_queue):
     else:
         print("⚠️ Skipping Qlora training - no LIMO dataset available")
 
-    # Cleanup
     cleanup_memory()
 
     global PRINTED_TIMES
@@ -601,7 +576,6 @@ def training_run(result_queue):
         ]
 
         scores = []
-        # Print only every few steps
         global PRINTED_TIMES
         global PRINT_EVERY_STEPS
         if PRINTED_TIMES % PRINT_EVERY_STEPS == 0:
@@ -618,10 +592,8 @@ def training_run(result_queue):
             if guess is None:
                 scores.append(0)
                 continue
-            # Convert to numbers
             try:
                 true_answer = float(true_answer.strip())
-                # Remove commas like in 123,456
                 guess = float(guess.strip().replace(",", ""))
                 scores.append(1.5 if guess == true_answer else -0.5)
             except:
@@ -633,9 +605,8 @@ def training_run(result_queue):
     print("🎯 STAGE 2: GRPO Fine-Tuning on GSM8K")
     print(f"{'*'*60}")
 
-    # Get max prompt length
     max_prompt_length, _ = get_max_prompt_length(gsm8k_train, tokenizer)
-    max_prompt_length = min(max_prompt_length + 10, 512)  # Add buffer, cap at 512
+    max_prompt_length = min(max_prompt_length + 10, 512)
 
     print(f"Using max_prompt_length: {max_prompt_length}")
 
@@ -649,8 +620,8 @@ def training_run(result_queue):
         optim = "adamw_torch_fused",
         logging_steps = 1,
         per_device_train_batch_size = 1,
-        gradient_accumulation_steps = 4,  # Increase to 4 for smoother training
-        num_generations = 8,  # Decrease if out of memory
+        gradient_accumulation_steps = 4,
+        num_generations = 8,
         max_prompt_length = max_prompt_length,
         max_completion_length = max_seq_length - max_prompt_length,
         # num_train_epochs = 1, # Set to 1 for a full training run
@@ -658,7 +629,7 @@ def training_run(result_queue):
         max_steps = 1000,
         save_steps = 250,
         max_grad_norm = 0.1,
-        report_to = "none",  # Can use Weights & Biases
+        report_to = "none",
         output_dir = "outputs",
     )
 
@@ -675,16 +646,13 @@ def training_run(result_queue):
         train_dataset = gsm8k_train,
     )
 
-    # Train
     print(f"🚂 Starting GRPO training on {len(gsm8k_train)} examples...")
     trainer.train()
 
-    # Save checkpoint
     model.save_pretrained("grpo_checkpoint")
     tokenizer.save_pretrained("grpo_checkpoint")
     print("💾 GRPO checkpoint saved!")
 
-    # Cleanup
     del trainer
     del training_args
     cleanup_memory()
@@ -713,11 +681,8 @@ def training_run(result_queue):
     print("💾 SAVING FINAL MODEL")
     print(f"{'='*60}")
 
-    # Save as merged model
     try:
-        model.save_pretrained_merged(
-            "final_merged_model", tokenizer, save_method = "merged_16bit"
-        )
+        model.save_pretrained_merged("final_merged_model", tokenizer, save_method = "merged_16bit")
         print("✅ Merged model saved to: final_merged_model/")
     except Exception as e:
         print(f"⚠️ Could not save merged model: {e}")
@@ -729,7 +694,6 @@ def training_run(result_queue):
 
     result_queue.put(results)
 
-    # Clean up
     del model
     del tokenizer
     torch.cuda.empty_cache()
@@ -778,7 +742,6 @@ if __name__ == "__main__":
     result_queue = mp.Queue()
     all_results = []
 
-    # run main finetuning and grpo loop
     p = mp.Process(target = training_run, args = (result_queue,))
     p.start()
     p.join()
@@ -786,7 +749,7 @@ if __name__ == "__main__":
     results = result_queue.get()
     all_results = results
 
-    # evaluate merged model loaded 16bits
+    # Evaluate merged model loaded 16bit.
     p = mp.Process(target = evaluate_merged_model, args = (result_queue, False, False))
     p.start()
     p.join()
@@ -815,11 +778,8 @@ if __name__ == "__main__":
 
     safe_remove_directory("./unsloth_compiled_cache")
 
-    # AIME-specific comparison function
-
     print(f"\n{'='*80}")
     print("🏆 FINAL TRAINING PIPELINE RESULTS")
     print(f"{'='*80}")
 
-    # Use the AIME-specific comparison
     compare_aime_results(all_results)

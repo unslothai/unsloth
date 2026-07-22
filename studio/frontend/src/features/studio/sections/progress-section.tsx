@@ -26,12 +26,16 @@ import {
   useTrainingConfigStore,
   useTrainingRuntimeStore,
 } from "@/features/training";
+import { getTrainingMethodLabel } from "@/features/training/lib/training-methods";
 import type { TrainingViewData } from "@/features/training";
+import type { RunConfigOverride } from "./run-config-override";
 import { useGpuUtilization } from "@/hooks";
+import type { GpuUtilization } from "@/hooks/use-gpu-utilization";
 import { cn } from "@/lib/utils";
 import {
   ChartAverageIcon,
   DashboardSpeed01Icon,
+  FolderExportIcon,
   Notebook01Icon,
   RamMemoryIcon,
   StopIcon,
@@ -40,20 +44,33 @@ import {
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { Link, useNavigate } from "@tanstack/react-router";
-import { type ReactElement, type ReactNode, useState } from "react";
+import { type ReactElement, type ReactNode, useEffect, useState } from "react";
 import { useShallow } from "zustand/react/shallow";
 import { ChartSettingsSheet } from "./charts/chart-settings-sheet";
 import {
   formatDuration,
   formatNumber,
   phaseColors,
-  phaseLabel,
 } from "./progress-section-lib";
+import { useT, type TranslationKey } from "@/i18n";
 
 type ConfigGroup = {
   section: string;
   rows: [string, string | number | null | undefined][];
 };
+
+const phaseLabelKeys = {
+  idle: "studio.progress.phase.idle",
+  downloading_model: "studio.progress.phase.downloadingModel",
+  downloading_dataset: "studio.progress.phase.downloadingDataset",
+  loading_model: "studio.progress.phase.loadingModel",
+  loading_dataset: "studio.progress.phase.loadingDataset",
+  configuring: "studio.progress.phase.configuring",
+  training: "studio.progress.phase.training",
+  completed: "studio.progress.phase.completed",
+  error: "studio.progress.phase.error",
+  stopped: "studio.progress.phase.stopped",
+} satisfies Record<TrainingViewData["phase"], TranslationKey>;
 
 function configRow(
   label: string,
@@ -65,19 +82,7 @@ function configRow(
 interface ProgressSectionProps {
   data: TrainingViewData;
   isHistorical?: boolean;
-  configOverride?: {
-    epochs?: number;
-    batchSize?: number;
-    learningRate?: string;
-    maxSteps?: number;
-    contextLength?: number;
-    warmupSteps?: number;
-    optimizerType?: string;
-    loraRank?: number;
-    loraAlpha?: number;
-    loraDropout?: number;
-    loraVariant?: string;
-  };
+  configOverride?: RunConfigOverride;
 }
 
 export function ProgressSection({
@@ -85,7 +90,9 @@ export function ProgressSection({
   isHistorical = false,
   configOverride,
 }: ProgressSectionProps): ReactElement {
+  const t = useT();
   const navigate = useNavigate();
+  const trainingMethodLabel = getTrainingMethodLabel(data.trainingMethod);
 
   const config = useTrainingConfigStore(
     useShallow((state) => ({
@@ -106,18 +113,17 @@ export function ProgressSection({
   const [stopDialogOpen, setStopDialogOpen] = useState(false);
   const [stopRequestedLocal, setStopRequestedLocal] = useState(false);
 
-  // Auto-reset when training stops -- no useEffect needed
   const stopRequested = data.isTrainingRunning && stopRequestedLocal;
 
   const pct =
     data.totalSteps > 0
       ? Math.min(
-          100,
-          Math.max(
-            0,
-            Math.round((data.currentStep / data.totalSteps) * 100),
-          ),
-        )
+        100,
+        Math.max(
+          0,
+          Math.round((data.currentStep / data.totalSteps) * 100),
+        ),
+      )
       : Math.round(data.progressPercent);
 
   const elapsed = data.elapsedSeconds;
@@ -137,6 +143,21 @@ export function ProgressSection({
     await navigate({ to: "/chat" });
   };
 
+  // A finished run can be exported to GGUF: deep-link to the Export page with
+  // this run preselected (its output-dir basename is the export model name).
+  const exportRunName = data.outputDir
+    ? (data.outputDir.replace(/[/\\]+$/, "").split(/[/\\]/).pop() || null)
+    : null;
+  const canExportGguf =
+    !data.isTrainingRunning &&
+    !!exportRunName &&
+    !data.resumedLater &&
+    (data.phase === "completed" || data.phase === "stopped");
+  const handleExportGguf = () => {
+    if (!exportRunName) return;
+    void navigate({ to: "/export", search: { run: exportRunName } });
+  };
+
   const stoppedLoss = getDisplayMetric(
     data.isTrainingRunning,
     data.currentLoss,
@@ -151,17 +172,20 @@ export function ProgressSection({
     ? data.currentGradNorm
     : (lastValue(data.gradNormHistory) ?? data.currentGradNorm);
 
-  const cfgEpochs = isHistorical ? configOverride?.epochs : config.epochs;
-  const cfgBatchSize = isHistorical ? configOverride?.batchSize : config.batchSize;
-  const cfgLearningRate = isHistorical ? configOverride?.learningRate : config.learningRate;
-  const cfgMaxSteps = isHistorical ? configOverride?.maxSteps : config.maxSteps;
-  const cfgContextLength = isHistorical ? configOverride?.contextLength : config.contextLength;
-  const cfgWarmupSteps = isHistorical ? configOverride?.warmupSteps : config.warmupSteps;
-  const cfgOptimizerType = isHistorical ? configOverride?.optimizerType : config.optimizerType;
-  const cfgLoraRank = isHistorical ? configOverride?.loraRank : config.loraRank;
-  const cfgLoraAlpha = isHistorical ? configOverride?.loraAlpha : config.loraAlpha;
-  const cfgLoraDropout = isHistorical ? configOverride?.loraDropout : config.loraDropout;
-  const cfgLoraVariant = isHistorical ? configOverride?.loraVariant : config.loraVariant;
+  // Prefer the run's saved snapshot when present (#6853). Live falls back to the
+  // editable form store until it loads; History shows blanks, never live form values.
+  const cfg = configOverride ?? (isHistorical ? undefined : config);
+  const cfgEpochs = cfg?.epochs;
+  const cfgBatchSize = cfg?.batchSize;
+  const cfgLearningRate = cfg?.learningRate;
+  const cfgMaxSteps = cfg?.maxSteps;
+  const cfgContextLength = cfg?.contextLength;
+  const cfgWarmupSteps = cfg?.warmupSteps;
+  const cfgOptimizerType = cfg?.optimizerType;
+  const cfgLoraRank = cfg?.loraRank;
+  const cfgLoraAlpha = cfg?.loraAlpha;
+  const cfgLoraDropout = cfg?.loraDropout;
+  const cfgLoraVariant = cfg?.loraVariant;
 
   const optimizerLabel =
     OPTIMIZER_OPTIONS.find((o) => o.value === cfgOptimizerType)?.label ??
@@ -169,52 +193,65 @@ export function ProgressSection({
 
   const configItems: ConfigGroup[] = [
     {
-      section: "Hyperparams",
+      section: t("studio.progress.hyperparams"),
       rows: [
-        configRow("Epochs", cfgEpochs),
-        configRow("Batch size", cfgBatchSize),
-        configRow("Learning rate", cfgLearningRate),
-        configRow("Optimizer", optimizerLabel),
-        configRow("Max steps", cfgMaxSteps),
-        configRow("Context length", cfgContextLength),
-        configRow("Warmup steps", cfgWarmupSteps),
+        configRow(t("studio.progress.epochs"), cfgEpochs),
+        configRow(t("studio.progress.batchSize"), cfgBatchSize),
+        configRow(t("studio.progress.learningRate"), cfgLearningRate),
+        configRow(t("studio.progress.optimizer"), optimizerLabel),
+        configRow(t("studio.progress.maxSteps"), cfgMaxSteps),
+        configRow(t("studio.progress.contextLength"), cfgContextLength),
+        configRow(t("studio.progress.warmupSteps"), cfgWarmupSteps),
       ],
     },
     ...(data.trainingMethod !== "full"
       ? [
-          {
-            section: "LoRA",
-            rows: [
-              configRow("Rank", cfgLoraRank),
-              configRow("Alpha", cfgLoraAlpha),
-              configRow("Dropout", cfgLoraDropout),
-              configRow("Variant", cfgLoraVariant),
-            ],
-          },
-        ]
+        {
+          section: "LoRA",
+          rows: [
+            configRow(t("studio.progress.rank"), cfgLoraRank),
+            configRow(t("studio.progress.alpha"), cfgLoraAlpha),
+            configRow(t("studio.progress.dropout"), cfgLoraDropout),
+            configRow(t("studio.progress.variant"), cfgLoraVariant),
+          ],
+        },
+      ]
       : []),
   ];
 
   return (
     <SectionCard
       icon={<HugeiconsIcon icon={ChartAverageIcon} className="size-5" />}
-      title="Training Progress"
-      description={data.message || "Live training metrics"}
+      title={t("studio.progress.title")}
+      description={data.message || t("studio.progress.liveMetrics")}
       accent="emerald"
       className="shadow-border border border-border/60 bg-card/90 ring-0 backdrop-blur-sm"
       headerAction={
-        isHistorical ? (
-          <ConfigPopoverButton configItems={configItems} />
-        ) : (
-          <LiveTrainingHeaderActions
-            configItems={configItems}
-            isTrainingRunning={data.isTrainingRunning}
-            onOpenStopDialog={setStopDialogOpen}
-            stopDialogOpen={stopDialogOpen}
-            stopRequested={stopRequested}
-            onSetStopRequested={setStopRequestedLocal}
-          />
-        )
+        <div className="flex items-center gap-2">
+          {canExportGguf && (
+            <Button
+              size="sm"
+              variant="outline"
+              className="h-8 gap-1.5 text-xs"
+              onClick={handleExportGguf}
+            >
+              <HugeiconsIcon icon={FolderExportIcon} className="size-3.5" />
+              {t("studio.progress.exportGguf")}
+            </Button>
+          )}
+          {isHistorical ? (
+            <ConfigPopoverButton configItems={configItems} />
+          ) : (
+            <LiveTrainingHeaderActions
+              configItems={configItems}
+              isTrainingRunning={data.isTrainingRunning}
+              onOpenStopDialog={setStopDialogOpen}
+              stopDialogOpen={stopDialogOpen}
+              stopRequested={stopRequested}
+              onSetStopRequested={setStopRequestedLocal}
+            />
+          )}
+        </div>
       }
     >
       <div className="grid grid-cols-1 gap-5 lg:grid-cols-[minmax(0,1.2fr)_minmax(18rem,0.8fr)]">
@@ -223,24 +260,34 @@ export function ProgressSection({
             <span
               className={`rounded-full px-2.5 py-1 text-[10px] font-semibold ${phaseColors[data.phase]}`}
             >
-              {phaseLabel[data.phase]}
+              {t(phaseLabelKeys[data.phase])}
             </span>
+            {data.projectName && (
+              <span className="rounded-full border border-border/60 px-2.5 py-1 text-[10px] font-medium text-foreground/80">
+                {data.projectName}
+              </span>
+            )}
             <span className="text-[10px] tabular-nums text-muted-foreground">
-              Epoch {formatNumber(data.currentEpoch, 2)}
+              {t("studio.progress.epoch", {
+                value: formatNumber(data.currentEpoch, 2),
+              })}
             </span>
             <span className="rounded-full border border-border/60 px-2.5 py-1 text-[10px] font-medium tabular-nums text-muted-foreground">
-              {pct}% complete
+              {t("studio.progress.percentComplete", { percent: pct })}
             </span>
           </div>
 
           <div className="flex flex-col gap-2">
             <div className="flex justify-between text-xs text-muted-foreground">
               <span>
-                Step {data.currentStep} / {data.totalSteps || "--"}
+                {t("studio.progress.stepProgress", {
+                  current: data.currentStep,
+                  total: data.totalSteps || "--",
+                })}
               </span>
               <span>{pct}%</span>
             </div>
-            <Progress value={pct} className="h-2 bg-foreground/[0.05]" />
+            <Progress value={pct} className="h-2 bg-foreground/5" />
           </div>
 
           {!isHistorical && (
@@ -257,35 +304,49 @@ export function ProgressSection({
             </p>
           )}
 
-          <div className="grid gap-x-4 gap-y-3 pt-1 sm:grid-cols-2 xl:grid-cols-5">
+          <div
+            className={cn(
+              "grid gap-x-4 gap-y-3 pt-1 sm:grid-cols-2",
+              data.projectName ? "xl:grid-cols-6" : "xl:grid-cols-5",
+            )}
+          >
             <MetricStat
-              label="Loss"
+              label={t("studio.progress.loss")}
               valueClassName="text-2xl font-bold tracking-tight"
             >
               {stoppedLoss != null ? stoppedLoss.toFixed(4) : "--"}
             </MetricStat>
-            <MetricStat label="LR">{stoppedLr != null ? stoppedLr.toExponential(2) : "--"}</MetricStat>
-            <MetricStat label="Grad Norm">
+            <MetricStat label={t("studio.progress.lr")}>{stoppedLr != null ? stoppedLr.toExponential(2) : "--"}</MetricStat>
+            <MetricStat label={t("studio.progress.gradNorm")}>
               {formatNumber(stoppedGradNorm, 3)}
             </MetricStat>
-            <MetricStat label="Model" valueClassName="truncate">
+            {data.projectName && (
+              <MetricStat label={t("studio.progress.project")} valueClassName="truncate">
+                {data.projectName}
+              </MetricStat>
+            )}
+            <MetricStat label={t("studio.progress.model")} valueClassName="truncate">
               {data.modelName || "--"}
             </MetricStat>
-            <MetricStat label="Method">
-              {data.trainingMethod === "qlora" ? "QLoRA" : data.trainingMethod === "lora" ? "LoRA" : "Full"}
+            <MetricStat label={t("studio.progress.method")}>
+              {trainingMethodLabel}
             </MetricStat>
           </div>
 
           <div className="flex flex-wrap gap-x-4 gap-y-1 text-xs text-muted-foreground">
-            <span>Elapsed: {formatDuration(elapsed)}</span>
-            {!isHistorical && <span>ETA: {formatDuration(eta)}</span>}
+            <span>{t("studio.progress.elapsed", { value: formatDuration(elapsed) })}</span>
+            {!isHistorical && (
+              <span>{t("studio.progress.eta", { value: formatDuration(eta) })}</span>
+            )}
             <span>
               {stepsPerSecond == null
-                ? "-- steps/s"
-                : `${stepsPerSecond.toFixed(2)} steps/s`}
+                ? t("studio.progress.noStepsPerSecond")
+                : t("studio.progress.stepsPerSecond", {
+                  value: stepsPerSecond.toFixed(2),
+                })}
             </span>
             {data.currentNumTokens != null && (
-              <span>Tokens: {data.currentNumTokens}</span>
+              <span>{t("studio.progress.tokens", { value: data.currentNumTokens })}</span>
             )}
           </div>
         </div>
@@ -303,64 +364,96 @@ function LiveGpuPanel({
 }: {
   isTrainingRunning: boolean;
 }): ReactElement {
-  const gpu = useGpuUtilization(isTrainingRunning);
+  const t = useT();
+  const [selectedGpu, setSelectedGpu] = useState(0);
+  const gpuData = useGpuUtilization(isTrainingRunning);
+  const gpus: GpuUtilization[] =
+    Array.isArray(gpuData?.devices) && gpuData.devices.length > 0
+      ? gpuData.devices
+      : gpuData && Object.keys(gpuData).length > 0
+        ? [gpuData]
+        : [];
+
+  useEffect(() => {
+    if (selectedGpu > 0 && selectedGpu >= gpus.length) {
+      setSelectedGpu(0);
+    }
+  }, [gpus.length, selectedGpu]);
+
+  const gpuCount = gpus.length;
+  const currentGpu: Partial<GpuUtilization> = gpus[selectedGpu] || gpus[0] || {};
 
   return (
     <div className="flex flex-col gap-3">
-      <div className="flex items-center justify-between">
-        <p className="text-xs font-medium text-muted-foreground">
-          GPU Monitor
-        </p>
-        <span className="text-[11px] text-muted-foreground">Live</span>
+      <div className="flex items-center justify-between gap-4">
+        <div className="flex items-center gap-2">
+          <p className="text-xs font-medium text-muted-foreground">
+            {t("studio.progress.gpuMonitor")}
+          </p>
+          {gpuCount > 1 && (
+            <select
+              value={selectedGpu}
+              onChange={(e) => setSelectedGpu(Number(e.target.value))}
+              className="h-6 cursor-pointer rounded-md border border-border bg-popover px-1.5 py-0.5 text-[11px] text-popover-foreground outline-none hover:bg-muted focus:border-ring transition-colors font-medium appearance-none"
+              title="Select GPU"
+            >
+              {gpus.map((device, index) => (
+                <option
+                  key={device.index ?? index}
+                  value={index}
+                  className="bg-popover text-popover-foreground dark:bg-zinc-900 dark:text-zinc-100"
+                >
+                  GPU {device.visible_ordinal ?? index} - {device.backend} ({device.vram_total_gb ? `${Math.round(device.vram_total_gb)}GiB` : "N/A"})
+                </option>
+              ))}
+            </select>
+          )}
+        </div>
+        <span className="text-[11px] text-muted-foreground">
+          {t("studio.progress.live")}
+        </span>
       </div>
       <div className="grid grid-cols-2 gap-2.5">
         <GpuStat
-          label="Utilization"
-          icon={
-            <HugeiconsIcon
-              icon={DashboardSpeed01Icon}
-              className="size-3.5"
-            />
-          }
+          label={t("studio.progress.utilization")}
+          icon={<HugeiconsIcon icon={DashboardSpeed01Icon} className="size-3.5" />}
           value={
-            gpu.gpu_utilization_pct != null
-              ? `${gpu.gpu_utilization_pct}%`
+            currentGpu.gpu_utilization_pct != null
+              ? `${currentGpu.gpu_utilization_pct}%`
               : "--"
           }
-          pct={gpu.gpu_utilization_pct ?? 0}
+          pct={currentGpu.gpu_utilization_pct ?? 0}
         />
         <GpuStat
-          label="Temperature"
-          icon={
-            <HugeiconsIcon icon={TemperatureIcon} className="size-3.5" />
-          }
+          label={t("studio.progress.temperature")}
+          icon={<HugeiconsIcon icon={TemperatureIcon} className="size-3.5" />}
           value={
-            gpu.temperature_c != null ? `${gpu.temperature_c}°C` : "--"
+            currentGpu.temperature_c != null ? `${currentGpu.temperature_c}°C` : "--"
           }
-          pct={gpu.temperature_c ?? 0}
+          pct={currentGpu.temperature_c ?? 0}
           max={100}
         />
         <GpuStat
-          label="VRAM"
+          label={t("studio.progress.vram")}
           icon={<HugeiconsIcon icon={RamMemoryIcon} className="size-3.5" />}
           value={
-            gpu.vram_used_gb != null && gpu.vram_total_gb != null
-              ? `${gpu.vram_used_gb} / ${gpu.vram_total_gb} GB`
+            currentGpu.vram_used_gb != null && currentGpu.vram_total_gb != null
+              ? `${currentGpu.vram_used_gb} / ${currentGpu.vram_total_gb} GiB`
               : "--"
           }
-          pct={gpu.vram_utilization_pct ?? 0}
+          pct={currentGpu.vram_utilization_pct ?? 0}
         />
         <GpuStat
-          label="Power"
+          label={t("studio.progress.power")}
           icon={<HugeiconsIcon icon={ZapIcon} className="size-3.5" />}
           value={
-            gpu.power_draw_w != null
-              ? gpu.power_limit_w != null
-                ? `${gpu.power_draw_w} / ${gpu.power_limit_w} W`
-                : `${gpu.power_draw_w} W`
+            currentGpu.power_draw_w != null
+              ? currentGpu.power_limit_w != null
+                ? `${currentGpu.power_draw_w} / ${currentGpu.power_limit_w} W`
+                : `${currentGpu.power_draw_w} W`
               : "--"
           }
-          pct={gpu.power_utilization_pct ?? 0}
+          pct={currentGpu.power_utilization_pct ?? 0}
         />
       </div>
     </div>
@@ -415,6 +508,7 @@ function ConfigPopoverButton({
 }: {
   configItems: ConfigGroup[];
 }): ReactElement {
+  const t = useT();
   return (
     <Popover>
       <PopoverTrigger asChild={true}>
@@ -423,14 +517,14 @@ function ConfigPopoverButton({
           variant="ghost"
           size="icon-sm"
           className="rounded-full text-muted-foreground hover:bg-muted hover:text-foreground"
-          aria-label="Open training config"
+          aria-label={t("studio.progress.openConfig")}
         >
           <HugeiconsIcon icon={Notebook01Icon} className="size-4" />
         </Button>
       </PopoverTrigger>
       <PopoverContent className="w-72" align="end">
         <div className="flex flex-col gap-3">
-          <p className="text-xs font-semibold">Training Config</p>
+          <p className="text-xs font-semibold">{t("studio.progress.configLabel")}</p>
           {configItems.map((group) => (
             <div key={group.section} className="flex flex-col gap-1">
               <p className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
@@ -467,6 +561,7 @@ function TrainingHeaderActions({
   stopDialogOpen: boolean;
   stopRequested: boolean;
 }): ReactElement {
+  const t = useT();
   return (
     <div className="flex items-center gap-2">
       <ConfigPopoverButton configItems={configItems} />
@@ -484,25 +579,28 @@ function TrainingHeaderActions({
           disabled={!isTrainingRunning || stopRequested}
         >
           <HugeiconsIcon icon={StopIcon} className="size-3" />
-          {stopRequested ? "Stopping…" : "Stop"}
+          {stopRequested ? t("studio.training.stopping") : t("studio.training.stopAction")}
         </Button>
-        <AlertDialogContent overlayClassName="bg-background/40 supports-backdrop-filter:backdrop-blur-[1px]">
+        <AlertDialogContent
+          className="w-max max-w-[95vw]"
+          overlayClassName="bg-background/40 supports-backdrop-filter:backdrop-blur-[1px]"
+        >
           <AlertDialogHeader>
-            <AlertDialogTitle>Stop Training</AlertDialogTitle>
+            <AlertDialogTitle>{t("studio.training.stopTitle")}</AlertDialogTitle>
             <AlertDialogDescription>
-              Choose how you want to stop the current training run.
+              {t("studio.training.stopDescription")}
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>
-            <AlertDialogCancel>Continue Training</AlertDialogCancel>
+            <AlertDialogCancel>{t("studio.training.continueAction")}</AlertDialogCancel>
             <AlertDialogAction
               variant="destructive"
               onClick={() => onRequestStop(false)}
             >
-              Cancel Training
+              {t("studio.training.cancelAction")}
             </AlertDialogAction>
             <AlertDialogAction onClick={() => onRequestStop(true)}>
-              Stop and Save
+              {t("studio.training.stopAndSave")}
             </AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>
@@ -520,6 +618,7 @@ function MilestoneCallout({
   showHalfwayHint: boolean;
   onCompareInChat: () => Promise<void>;
 }): ReactElement | null {
+  const t = useT();
   if (!(showHalfwayHint || showCompletedHint)) {
     return null;
   }
@@ -530,7 +629,7 @@ function MilestoneCallout({
         <div className="min-w-0">
           {!showCompletedHint && (
             <p className="text-[10px] font-medium uppercase tracking-[0.12em] text-muted-foreground">
-              Milestone
+              {t("studio.training.milestone")}
             </p>
           )}
           <p
@@ -540,8 +639,8 @@ function MilestoneCallout({
             )}
           >
             {showCompletedHint
-              ? "Training done. Next step: compare base vs fine-tuned outputs."
-              : "Halfway done. Training is past 50%."}
+              ? t("studio.training.doneNextStep")
+              : t("studio.training.halfwayDone")}
           </p>
         </div>
         {!showCompletedHint && (
@@ -553,10 +652,10 @@ function MilestoneCallout({
       {showCompletedHint && (
         <div className="mt-2 flex flex-wrap gap-2">
           <Button size="xs" onClick={onCompareInChat}>
-            Compare in Chat
+            {t("studio.training.compareInChat")}
           </Button>
           <Button asChild={true} size="xs" variant="outline">
-            <Link to="/export">Export Model</Link>
+            <Link to="/export">{t("studio.training.exportModel")}</Link>
           </Button>
         </div>
       )}
@@ -618,7 +717,7 @@ function GpuStat({
   const clamped = Math.max(0, Math.min(pct, max ?? 100));
   let barColor = "bg-red-500";
   if (clamped < 60) {
-    barColor = "bg-emerald-500";
+    barColor = "bg-control-accent";
   } else if (clamped < 95) {
     barColor = "bg-amber-500";
   }

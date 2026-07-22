@@ -23,10 +23,7 @@ from tests.utils.cleanup_utils import safe_remove_directory
 
 print("\n📊 Loading and preparing dataset...")
 dataset = load_dataset("lbourdois/OCR-liboaccn-OPUS-MIT-5M-clean", "en", split = "train")
-# To select the first 2000 examples
 train_dataset = dataset.select(range(2000))
-
-# To select the next 200 examples for evaluation
 eval_dataset = dataset.select(range(2000, 2200))
 
 print(f"✅ Dataset loaded successfully!")
@@ -34,7 +31,7 @@ print(f"   📈 Training samples: {len(train_dataset)}")
 print(f"   📊 Evaluation samples: {len(eval_dataset)}")
 
 
-# Convert dataset to OAI messages
+# Convert to OAI messages format
 def format_data(sample):
     return {
         "messages": [
@@ -65,8 +62,7 @@ def format_data(sample):
 
 print("\n🔄 Formatting dataset for vision training...")
 system_message = "You are an expert french ocr system."
-# Convert dataset to OAI messages
-# need to use list comprehension to keep Pil.Image type, .mape convert image to bytes
+# Use a list comprehension (not .map) to keep PIL.Image type; .map converts images to bytes.
 train_dataset = [format_data(sample) for sample in train_dataset]
 eval_dataset = [format_data(sample) for sample in eval_dataset]
 print("✅ Dataset formatting completed!")
@@ -77,7 +73,6 @@ print("✅ Dataset formatting completed!")
 print("\n" + "=" * 80)
 print("=== MODEL LOADING AND SETUP ===".center(80))
 print("=" * 80 + "\n")
-# Load Base Model
 print("🤖 Loading base vision model...")
 try:
     model, tokenizer = FastVisionModel.from_pretrained(
@@ -100,7 +95,7 @@ try:
         finetune_vision_layers = True,  # Turn off for just text!
         finetune_language_layers = True,  # Should leave on!
         finetune_attention_modules = True,  # Attention good for GRPO
-        finetune_mlp_modules = True,  # SHould leave on always!
+        finetune_mlp_modules = True,  # Should leave on always!
         r = 16,  # Choose any number > 0 ! Suggested 8, 16, 32, 64, 128
         lora_alpha = 32,
         lora_dropout = 0,  # Supports any, but = 0 is optimized
@@ -139,10 +134,8 @@ try:
             per_device_train_batch_size = 2,
             gradient_accumulation_steps = 4,
             gradient_checkpointing = True,
-            gradient_checkpointing_kwargs = {
-                "use_reentrant": False
-            },  # use reentrant checkpointing
-            max_grad_norm = 0.3,  # max gradient norm based on QLoRA paper
+            gradient_checkpointing_kwargs = {"use_reentrant": False},
+            max_grad_norm = 0.3,  # from QLoRA paper
             warmup_ratio = 0.03,
             # num_train_epochs = 2, # Set this instead of max_steps for full training runs
             max_steps = 10,
@@ -178,7 +171,6 @@ except Exception as e:
 print("\n" + "=" * 80)
 print("=== STARTING TRAINING ===".center(80))
 print("=" * 80 + "\n")
-# run training
 try:
     print("🚀 Starting training process...")
     trainer_stats = trainer.train()
@@ -215,7 +207,6 @@ success = {
     "upload": False,
     "download": False,
 }
-# Stage 1: Upload model to Hub
 try:
     print("\n" + "=" * 80)
     print("=== UPLOADING MODEL TO HUB ===".center(80))
@@ -234,19 +225,16 @@ try:
     print("=== TESTING MODEL DOWNLOAD ===".center(80))
     print("=" * 80 + "\n")
     print("📥 Testing model download...")
-    # Force download even if cached
     test_model, test_tokenizer = FastVisionModel.from_pretrained(repo_name)
     success["download"] = True
     print("✅ Model downloaded successfully!")
 
-    # Clean up test model
     del test_model, test_tokenizer
     torch.cuda.empty_cache()
 except Exception as e:
     print(f"❌ Download failed: {e}")
     raise Exception("Model download failed.")
 
-# Final report
 print("\n" + "=" * 80)
 print("=== VALIDATION REPORT ===".center(80))
 print("=" * 80 + "\n")
@@ -262,7 +250,6 @@ else:
     raise Exception("Validation failed for one or more stages.")
 
 
-# Final cleanup
 print("\n🧹 Cleaning up temporary files...")
 safe_remove_directory("./checkpoints")
 safe_remove_directory("./unsloth_compiled_cache")

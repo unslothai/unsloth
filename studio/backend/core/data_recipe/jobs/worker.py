@@ -21,6 +21,15 @@ from ..service import build_config_builder, create_data_designer
 from utils.paths import ensure_dir, recipe_datasets_root
 
 _ARTIFACT_ROOT = recipe_datasets_root()
+_RE_GITHUB_CURSOR = re.compile(r"\bcursor=[^\s,]+")
+_RE_SECRET_TOKEN = re.compile(
+    r"\b(?:(?:ghp|gho|ghu|ghs|ghr|github_pat)_[A-Za-z0-9_]+|sk-unsloth-[A-Za-z0-9]+)"
+)
+
+
+def _sanitize_log_message(message: str) -> str:
+    message = _RE_GITHUB_CURSOR.sub("cursor=<redacted>", message)
+    return _RE_SECRET_TOKEN.sub("<redacted-token>", message)
 
 
 class _QueueLogHandler(logging.Handler):
@@ -35,7 +44,7 @@ class _QueueLogHandler(logging.Handler):
                 "ts": record.created,
                 "level": record.levelname,
                 "logger": record.name,
-                "message": record.getMessage(),
+                "message": _sanitize_log_message(record.getMessage()),
             }
             self._q.put(event)
         except (OSError, RuntimeError, ValueError):
@@ -51,9 +60,7 @@ def _slugify_run_name(value: str) -> str:
     return slug[:80].strip("-")
 
 
-def _build_dataset_name(
-    *, run_name: str | None, job_id: str, artifact_root: Path
-) -> str:
+def _build_dataset_name(*, run_name: str | None, job_id: str, artifact_root: Path) -> str:
     fallback = f"recipe_{job_id}"
     slug = _slugify_run_name(run_name or "")
     base_name = f"recipe_{slug}" if slug else fallback
@@ -65,21 +72,11 @@ def _build_dataset_name(
     return candidate
 
 
-def run_job_process(
-    *,
-    event_queue,
-    recipe: dict[str, Any],
-    run: dict[str, Any],
-) -> None:
-    """
-    Subprocess entrypoint.
-    Sends events to `event_queue`.
-    """
+def run_job_process(*, event_queue, recipe: dict[str, Any], run: dict[str, Any]) -> None:
+    """Subprocess entrypoint. Sends events to `event_queue`."""
     import os
 
-    os.environ["PYTHONWARNINGS"] = (
-        "ignore"  # Suppress warnings at C-level before imports
-    )
+    os.environ["PYTHONWARNINGS"] = "ignore"  # suppress C-level warnings before imports
 
     import warnings
     from loggers.config import LogConfig
@@ -115,14 +112,20 @@ def run_job_process(
         builder = build_config_builder(recipe)
         designer = create_data_designer(recipe, artifact_path = str(_ARTIFACT_ROOT))
 
-        # DataDesigner configures root logging in DataDesigner.__init__.
-        # Attach queue logger directly to `data_designer` so parser events survive root resets.
+        # DataDesigner resets root logging in __init__; attach the queue handler
+        # to the named loggers directly so parser events survive.
         handler = _QueueLogHandler(event_queue)
         handler.setLevel(logging.INFO)
-        data_designer_logger = logging.getLogger("data_designer")
-        data_designer_logger.addHandler(handler)
-        data_designer_logger.setLevel(logging.INFO)
-        data_designer_logger.propagate = True
+        for logger_name in (
+            "data_designer",
+            "scraper",
+            "gh_client",
+            "data_designer_github_repo_seed",
+        ):
+            logger = logging.getLogger(logger_name)
+            logger.addHandler(handler)
+            logger.setLevel(logging.INFO)
+            logger.propagate = True
 
         if run_config_raw:
             designer.set_run_config(RunConfig.model_validate(run_config_raw))
@@ -157,14 +160,10 @@ def run_job_process(
                 }
             )
         else:
-            results = designer.create(
-                builder, num_records = rows, dataset_name = dataset_name
-            )
+            results = designer.create(builder, num_records = rows, dataset_name = dataset_name)
             analysis = to_jsonable(results.load_analysis().model_dump(mode = "json"))
             if merge_batches:
-                _merge_batches_to_single_parquet(
-                    results.artifact_storage.base_dataset_path
-                )
+                _merge_batches_to_single_parquet(results.artifact_storage.base_dataset_path)
             artifact_path = str(results.artifact_storage.base_dataset_path)
             event_queue.put(
                 {
@@ -180,8 +179,8 @@ def run_job_process(
             {
                 "type": EVENT_JOB_ERROR,
                 "ts": time.time(),
-                "error": str(exc),
-                "stack": traceback.format_exc(limit = 20),
+                "error": _sanitize_log_message(str(exc)),
+                "stack": _sanitize_log_message(traceback.format_exc(limit = 20)),
             }
         )
 

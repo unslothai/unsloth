@@ -18,16 +18,16 @@ import {
 interface ShutdownDialogProps {
   open: boolean;
   onOpenChange: (open: boolean) => void;
-  /** Called right before the shutdown API request so callers can remove the
-   *  beforeunload listener — otherwise the "Server stopped" page would still
-   *  trigger a "Leave site?" prompt when the user tries to close it. */
-  onBeforeShutdown?: () => void;
+  /** Called after shutdown succeeds, before we replace document.body. Lets
+   *  callers remove their beforeunload listener so the browser doesn't prompt
+   *  "Leave site?" when closing the final tab. */
+  onAfterShutdown?: () => void;
 }
 
 export function ShutdownDialog({
   open,
   onOpenChange,
-  onBeforeShutdown,
+  onAfterShutdown,
 }: ShutdownDialogProps) {
   const [stopping, setStopping] = useState(false);
 
@@ -43,13 +43,13 @@ export function ShutdownDialog({
         return;
       }
     } catch {
-      // Network error — shutdown request never reached the server
+      // Network error: request never reached the server
       toastError("Could not reach server");
       setStopping(false);
       return;
     }
 
-    onBeforeShutdown?.();
+    onAfterShutdown?.();
     document.body.innerHTML = `
       <div style="display:flex;flex-direction:column;align-items:center;justify-content:center;height:100vh;font-family:sans-serif;gap:12px">
         <p style="font-size:1.1rem;font-weight:600;margin:0">Unsloth Studio has stopped.</p>

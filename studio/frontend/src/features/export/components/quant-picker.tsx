@@ -18,9 +18,11 @@ import { QUANT_OPTIONS } from "../constants";
 interface QuantPickerProps {
   value: string[];
   onChange: (v: string[]) => void;
+  /** quant value -> "~X GB"; blank/missing when the model size is unknown. */
+  sizes?: Record<string, string>;
 }
 
-export function QuantPicker({ value, onChange }: QuantPickerProps) {
+export function QuantPicker({ value, onChange, sizes }: QuantPickerProps) {
   const toggle = (qv: string) => {
     onChange(
       value.includes(qv) ? value.filter((q) => q !== qv) : [...value, qv],
@@ -66,15 +68,17 @@ export function QuantPicker({ value, onChange }: QuantPickerProps) {
       <div className="flex flex-wrap gap-2 py-1 pl-1">
         {QUANT_OPTIONS.map((q) => {
           const active = value.includes(q.value);
+          const sizeLabel = sizes?.[q.value] ?? "";
           return (
             <button
               key={q.value}
               type="button"
+              aria-pressed={active}
               onClick={() => toggle(q.value)}
               className={cn(
-                "inline-flex items-center gap-1.5 rounded-full px-3 py-1.5 text-xs font-medium ring-1 transition-all",
+                "inline-flex items-center gap-1.5 rounded-full px-3 py-1.5 text-xs font-medium ring-1 transition-colors",
                 active
-                  ? "ring-primary bg-primary/10 text-foreground"
+                  ? "ring-ring-strong bg-primary/10 text-foreground"
                   : "ring-border text-muted-foreground hover:text-foreground hover:ring-foreground/20",
               )}
             >
@@ -85,7 +89,9 @@ export function QuantPicker({ value, onChange }: QuantPickerProps) {
                 />
               )}
               {q.label}
-              <span className="text-[10px] opacity-60">{q.size}</span>
+              {sizeLabel && (
+                <span className="text-[10px] opacity-60">{sizeLabel}</span>
+              )}
               {q.recommended && !active && (
                 <span className="rounded-full bg-emerald-100 px-1.5 py-0 text-[9px] font-semibold text-emerald-700 dark:bg-emerald-900 dark:text-emerald-300">
                   rec

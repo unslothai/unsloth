@@ -4,13 +4,20 @@ transformers==4.57.6
 trl==0.23.1
 huggingface-hub==0.36.2
 
-# Studio stack
+# Unsloth stack
 datasets==4.3.0
 pyarrow==23.0.1
 
-# FastMCP/OpenEnv compat
+# FastMCP compat
 fastmcp>=3.0.2
 mcp>=1.24,<2
 websockets>=15.0.1
+
+# Cap anyio <4.14: 4.14's new asyncio per-task cancel scope (TaskHandle/_run_coro)
+# gets exited in the wrong task on Python 3.13 under starlette's collapsing task
+# group, raising "RuntimeError: ... exit a cancel scope that isn't the current
+# task's" on streaming responses (#6483); 4.13 has no such code. Global cap so
+# later with-deps steps can't re-resolve it up.
+anyio<4.14.0
 
 pandas==2.3.3

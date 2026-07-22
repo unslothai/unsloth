@@ -6,10 +6,10 @@
 /unsloth/models/rl_replacements.py @Datta0 @pluesclues @danielhanchen
 /unsloth/trainer.py @danielhanchen
 /unsloth/models/sentence_transformer.py @Etherll @danielhanchen
-/unsloth/save.py @rolandtannous @danielhanchen
+/unsloth/save.py @danielhanchen
 /unsloth/tokenizer_utils.py @mmathew23 @danielhanchen
-/unsloth/chat_templates.py @rolandtannous @danielhanchen
-/unsloth/ollama_template_mappers.py @rolandtannous @danielhanchen
+/unsloth/chat_templates.py @danielhanchen
+/unsloth/ollama_template_mappers.py @danielhanchen
 /unsloth/kernels/moe/*.py @Datta0
 /unsloth/import_fixes.py @danielhanchen
 /unsloth/device_type.py @danielhanchen
@@ -45,11 +45,18 @@
 /unsloth/utils/hf_hub.py @mmathew23
 /unsloth/utils/packing.py @mmathew23
 
-/cli/ @rolandtannous @Manan17
-/studio/frontend/ @Shine1i @rolandtannous @Manan17
+/cli/ @Manan17
+/studio/frontend/ @Shine1i @Manan17
 /studio/frontend/public/ @Shine1i
-/studio/backend/ @rolandtannous
-/studio/backend/core/data_recipe/ @rolandtannous
-/studio/backend/tests/ @rolandtannous @danielhanchen
-/tests/ @rolandtannous @danielhanchen
-/scripts/ @rolandtannous @danielhanchen
+/studio/backend/
+/studio/backend/core/data_recipe/
+/studio/backend/tests/ @danielhanchen
+/tests/ @danielhanchen
+/scripts/ @danielhanchen
+
+# Snapshot data for the notebook linter / Colab oracle. Drift in these
+# files changes the pin floor for every Unsloth notebook, so refreshes
+# must be reviewed by the notebook owners directly. CODEOWNERS later
+# wins, so this overrides the broader /scripts/ rule above.
+/scripts/data/colab_*.txt  @danielhanchen @shimmyshimmer
+/scripts/data/colab_*.json @danielhanchen @shimmyshimmer

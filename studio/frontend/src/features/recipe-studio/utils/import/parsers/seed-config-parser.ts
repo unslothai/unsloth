@@ -80,6 +80,12 @@ function parseSeedSettings(seedConfigRaw: unknown): Partial<SeedConfig> {
   let resolved_paths: string[] = [];
   let unstructured_chunk_size = "1200";
   let unstructured_chunk_overlap = "200";
+  let github_repo_slug = "";
+  let github_token = "";
+  let github_limit = "100";
+  let github_item_types: ("issues" | "pulls" | "commits")[] = ["issues", "pulls"];
+  let github_include_comments = true;
+  let github_max_comments_per_item = "30";
   const sourceRaw = seedConfigRaw.source;
   if (isRecord(sourceRaw)) {
     const seedType = readString(sourceRaw.seed_type);
@@ -107,6 +113,26 @@ function parseSeedSettings(seedConfigRaw: unknown): Partial<SeedConfig> {
       unstructuredFileNames = [];
       unstructured_chunk_size = readNumberString(sourceRaw.chunk_size) || "1200";
       unstructured_chunk_overlap = readNumberString(sourceRaw.chunk_overlap) || "200";
+    } else if (seedType === "github_repo") {
+      seed_source_type = "github_repo";
+      const rawRepos = Array.isArray(sourceRaw.repos) ? sourceRaw.repos : [];
+      const repos = rawRepos.filter((r): r is string => typeof r === "string");
+      github_repo_slug = repos.join("\n");
+      github_token = readString(sourceRaw.token) ?? "";
+      github_limit = readNumberString(sourceRaw.limit) || "100";
+      const rawItems = Array.isArray(sourceRaw.item_types) ? sourceRaw.item_types : [];
+      const validItems = rawItems.filter(
+        (t): t is "issues" | "pulls" | "commits" =>
+          t === "issues" || t === "pulls" || t === "commits",
+      );
+      if (validItems.length > 0) {
+        github_item_types = validItems;
+      }
+      if (typeof sourceRaw.include_comments === "boolean") {
+        github_include_comments = sourceRaw.include_comments;
+      }
+      github_max_comments_per_item =
+        readNumberString(sourceRaw.max_comments_per_item) || "30";
     }
   }
 
@@ -147,6 +173,12 @@ function parseSeedSettings(seedConfigRaw: unknown): Partial<SeedConfig> {
     resolved_paths,
     unstructured_chunk_size,
     unstructured_chunk_overlap,
+    github_repo_slug,
+    github_token,
+    github_limit,
+    github_item_types,
+    github_include_comments,
+    github_max_comments_per_item,
     sampling_strategy,
     selection_type,
     selection_start,
@@ -165,17 +197,26 @@ export function parseSeedConfig(
     seed_drop_columns?: string[];
     seed_preview_rows?: Record<string, unknown>[];
     local_file_name?: string;
+    unstructuredUploadUid?: string;
     unstructuredFileIds?: string[];
     unstructuredFileNames?: string[];
     unstructuredFileSizes?: number[];
     unstructured_chunk_size?: string;
     unstructured_chunk_overlap?: string;
+    preserveUnstructuredUploads?: boolean;
   },
 ): SeedConfig | null {
   if (!seedConfigRaw) {
     return null;
   }
-  const parsed = parseSeedSettings(seedConfigRaw);
+  const parsed = { ...parseSeedSettings(seedConfigRaw) };
+  if (
+    parsed.seed_source_type === "unstructured" &&
+    options?.preserveUnstructuredUploads !== true
+  ) {
+    parsed.hf_path = "";
+    parsed.resolved_paths = [];
+  }
   let sourceType: SeedSourceType = "hf";
   if (parsed.seed_source_type === "hf") {
     sourceType = "hf";
@@ -197,6 +238,9 @@ export function parseSeedConfig(
       : {}),
     ...(options?.local_file_name !== undefined
       ? { local_file_name: options.local_file_name }
+      : {}),
+    ...(options?.unstructuredUploadUid
+      ? { unstructured_upload_uid: options.unstructuredUploadUid }
       : {}),
     ...(options?.unstructuredFileIds !== undefined
       ? { unstructured_file_ids: options.unstructuredFileIds }

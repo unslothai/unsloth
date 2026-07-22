@@ -1,17 +1,28 @@
-# Studio UI backend dependencies
+# Unsloth UI backend dependencies
 typer
 fastapi
 uvicorn
 pydantic
-matplotlib
+packaging
+matplotlib==3.10.9
 pandas
 nest_asyncio
 datasets==4.3.0
 pyjwt
-easydict
-addict
-# gradio>=4.0.0                  # 148 MB - Studio uses React + FastAPI, not Gradio
+# gradio>=4.0.0                  # 148 MB - Unsloth uses React + FastAPI, not Gradio
 huggingface-hub==0.36.2
 structlog>=24.1.0
 diceware
 ddgs
+cryptography>=42.0.0
+boto3>=1.34.0                    # optional: S3 dataset loading
+httpx>=0.27.0
+fastmcp>=3.0.2
+# RAG (knowledge bases, hybrid retrieval). sentence-transformers lives in
+# extras-no-deps.txt; these add the lexical+dense store and document parsing.
+sqlite-vec==0.1.9
+pymupdf==1.27.2.3
+# 0.3.x keeps pymupdf-layout (which pulls onnxruntime) an optional extra; the
+# lockstep 1.27.x line makes it a hard dep we do not need for to_markdown().
+pymupdf4llm==0.3.4
+python-docx==1.2.0

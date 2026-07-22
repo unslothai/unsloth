@@ -232,7 +232,11 @@ class LoRA_MLP(torch.autograd.Function):
 from .swiglu import swiglu_fg_kernel, swiglu_DWf_DW_dfg_kernel
 
 
-def apply_lora_mlp_swiglu(self, X, inplace = True):
+def apply_lora_mlp_swiglu(
+    self,
+    X,
+    inplace = True,
+):
     X = _maybe_fake_quantize_activations(X, self.gate_proj)
     gateW, gateW_quant, gateA, gateB, gateS = get_lora_parameters(self.gate_proj)
     upW, upW_quant, upA, upB, upS = get_lora_parameters(self.up_proj)
@@ -264,7 +268,11 @@ def apply_lora_mlp_swiglu(self, X, inplace = True):
 from .geglu import geglu_exact_forward_kernel, geglu_exact_backward_kernel
 
 
-def apply_lora_mlp_geglu_exact(self, X, inplace = True):
+def apply_lora_mlp_geglu_exact(
+    self,
+    X,
+    inplace = True,
+):
     X = _maybe_fake_quantize_activations(X, self.gate_proj)
     gateW, gateW_quant, gateA, gateB, gateS = get_lora_parameters(self.gate_proj)
     upW, upW_quant, upA, upB, upS = get_lora_parameters(self.up_proj)
@@ -532,7 +540,11 @@ class LoRA_QKV(torch.autograd.Function):
         )
 
 
-def apply_lora_qkv(self, X, inplace = True):
+def apply_lora_qkv(
+    self,
+    X,
+    inplace = True,
+):
     X = _maybe_fake_quantize_activations(X, self.q_proj)
     QW, QW_quant, QA, QB, QS = get_lora_parameters(self.q_proj)
     KW, KW_quant, KA, KB, KS = get_lora_parameters(self.k_proj)
@@ -650,9 +662,7 @@ IDENTITY_DROPOUT = torch.nn.Identity
 
 @torch._disable_dynamo
 def fast_lora_forward(self, x: torch.Tensor, *args, **kwargs) -> torch.Tensor:
-    raise NotImplementedError(
-        "Unsloth: Currently not supported yet - reshaping done incorrectly"
-    )
+    raise NotImplementedError("Unsloth: Currently not supported yet - reshaping done incorrectly")
     self._check_forward_args(x, *args, **kwargs)
     adapter_names = kwargs.pop("adapter_names", None)
 
@@ -661,9 +671,7 @@ def fast_lora_forward(self, x: torch.Tensor, *args, **kwargs) -> torch.Tensor:
             self.unmerge()
         result = self.base_layer(x, *args, **kwargs)
     elif adapter_names is not None:
-        result = self._mixed_batch_forward(
-            x, *args, adapter_names = adapter_names, **kwargs
-        )
+        result = self._mixed_batch_forward(x, *args, adapter_names = adapter_names, **kwargs)
     elif self.merged:
         result = self.base_layer(x, *args, **kwargs)
     else:
@@ -674,10 +682,7 @@ def fast_lora_forward(self, x: torch.Tensor, *args, **kwargs) -> torch.Tensor:
                 return self.base_layer(x, *args, **kwargs)
 
             dropout = self.lora_dropout[active_adapter]
-            if (
-                isinstance(dropout, IDENTITY_DROPOUT)
-                and not self.use_dora[active_adapter]
-            ):
+            if isinstance(dropout, IDENTITY_DROPOUT) and not self.use_dora[active_adapter]:
                 lora_A = self.lora_A[active_adapter].weight
                 lora_B = self.lora_B[active_adapter].weight
                 scaling = self.scaling[active_adapter]
@@ -687,11 +692,8 @@ def fast_lora_forward(self, x: torch.Tensor, *args, **kwargs) -> torch.Tensor:
         pass
 
         result = self.base_layer(x, *args, **kwargs)
-        # As per Tim Dettmers, for 4bit, we need to defensively clone here.
-        # The reason is that in some cases, an error can occur that backprop
-        # does not work on a manipulated view. This issue may be solved with
-        # newer PyTorch versions but this would need extensive testing to be
-        # sure.
+        # Per Tim Dettmers: for 4bit, defensively clone -- backprop can fail on a
+        # manipulated view (may be fixed in newer PyTorch, untested).
         result = result.clone()
 
         for active_adapter in self.active_adapters:

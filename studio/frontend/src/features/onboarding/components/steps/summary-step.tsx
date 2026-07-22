@@ -5,6 +5,7 @@ import { Badge } from "@/components/ui/badge";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Separator } from "@/components/ui/separator";
 import { useTrainingConfigStore } from "@/features/training";
+import { getTrainingMethodLabel } from "@/features/training/lib/training-methods";
 import { useHardwareInfo } from "@/hooks";
 import { isAdapterMethod } from "@/types/training";
 import { ChipIcon, Database02Icon, GpuIcon, Settings04Icon } from "@hugeicons/core-free-icons";
@@ -49,6 +50,7 @@ export function SummaryStep() {
   const {
     modelType,
     selectedModel,
+    projectName,
     trainingMethod,
     datasetSource,
     datasetFormat,
@@ -67,6 +69,7 @@ export function SummaryStep() {
       ({
         modelType,
         selectedModel,
+        projectName,
         trainingMethod,
         datasetSource,
         datasetFormat,
@@ -83,6 +86,7 @@ export function SummaryStep() {
       }) => ({
         modelType,
         selectedModel,
+        projectName,
         trainingMethod,
         datasetSource,
         datasetFormat,
@@ -102,6 +106,7 @@ export function SummaryStep() {
 
   const showLoraParams = isAdapterMethod(trainingMethod);
   const datasetName = datasetSource === "upload" ? uploadedFile : dataset;
+  const trainingMethodLabel = getTrainingMethodLabel(trainingMethod);
 
   return (
     <div className="grid grid-cols-2 gap-3">
@@ -113,14 +118,14 @@ export function SummaryStep() {
         </CardHeader>
         <CardContent className="flex flex-1 flex-col">
           <div className="flex items-start gap-3">
-            <div className="mt-0.5 flex size-8 shrink-0 items-center justify-center rounded-lg bg-emerald-500/10">
-              <HugeiconsIcon icon={GpuIcon} className="size-4 text-emerald-600" />
+            <div className="mt-0.5 flex size-8 shrink-0 items-center justify-center rounded-lg bg-control-accent/10">
+              <HugeiconsIcon icon={GpuIcon} className="size-4 text-control-accent" />
             </div>
             <div className="flex flex-1 flex-col">
               <span className="text-xs text-muted-foreground">GPU</span>
               <div className="flex items-center gap-2">
                 <span className="text-sm font-medium">{hw.gpuName ?? "---"}</span>
-                <Badge variant="secondary">{hw.vramTotalGb != null ? `${hw.vramTotalGb} GB` : "---"}</Badge>
+                <Badge variant="secondary">{hw.vramTotalGb != null ? `${hw.vramTotalGb} GiB` : "---"}</Badge>
               </div>
             </div>
           </div>
@@ -139,8 +144,8 @@ export function SummaryStep() {
         </CardHeader>
         <CardContent className="flex flex-1 flex-col">
           <div className="flex items-start gap-3">
-            <div className="mt-0.5 flex size-8 shrink-0 items-center justify-center rounded-lg bg-emerald-500/10">
-              <HugeiconsIcon icon={ChipIcon} className="size-4 text-emerald-600" />
+            <div className="mt-0.5 flex size-8 shrink-0 items-center justify-center rounded-lg bg-control-accent/10">
+              <HugeiconsIcon icon={ChipIcon} className="size-4 text-control-accent" />
             </div>
             <div className="flex flex-1 flex-col overflow-hidden">
               <span className="text-xs text-muted-foreground">Model</span>
@@ -150,7 +155,8 @@ export function SummaryStep() {
           <Separator className="my-2" />
           <div className="space-y-1 text-sm">
             <Row label="Type" value={modelType} capitalize />
-            <Row label="Method" value={trainingMethod === "qlora" ? "QLoRA" : trainingMethod === "lora" ? "LoRA" : "Full"} />
+            <Row label="Project" value={projectName || "--"} />
+            <Row label="Method" value={trainingMethodLabel} />
           </div>
         </CardContent>
       </Card>
@@ -199,7 +205,7 @@ export function SummaryStep() {
             <div className="flex flex-1 flex-col">
               <span className="text-xs text-muted-foreground">Training</span>
               <span className="text-sm font-medium">
-                {trainingMethod === "qlora" ? "QLoRA" : trainingMethod === "lora" ? "LoRA" : "Full"}
+                {trainingMethodLabel}
               </span>
             </div>
           </div>

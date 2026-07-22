@@ -5,6 +5,7 @@
 @import "tw-animate-css";
 @import "shadcn/tailwind.css";
 @import "streamdown/styles.css";
+@import "./features/hub/hub.css";
 @import "@fontsource-variable/figtree";
 @import "@fontsource-variable/space-grotesk";
 @import "@fontsource-variable/inter";
@@ -14,432 +15,2643 @@
 
 @custom-variant dark (&:is(.dark *));
 
+@layer components {
+	/* Sidebar scroll area (Gemini-style). The BOTTOM edge always fades so the
+	   last rows dissolve into the profile footer (no divider line). Once
+	   scrolled, the TOP edge also fades so rows dissolve as they pass under the
+	   pinned New Chat / Search header. */
+	/* Top edge: when scrolled, rows dissolve as they pass under the pinned
+	   New Chat / Search header (mask — fades content to transparent). */
+	.sidebar-scroll-fade.is-scrolled {
+		-webkit-mask-image: linear-gradient(to bottom, transparent 0, #000 14px);
+		mask-image: linear-gradient(to bottom, transparent 0, #000 14px);
+	}
+	/* Bottom edge: Gemini-style sticky gradient OVERLAY painted in the sidebar
+	   background colour, so the last rows wash into the profile footer. Uses a
+	   zero-height sticky anchor with an absolutely-positioned gradient so it
+	   never takes layout space. */
+	.sidebar-bottom-fade {
+		position: sticky;
+		bottom: 0;
+		height: 0;
+		z-index: 1;
+		pointer-events: none;
+	}
+	.sidebar-bottom-fade::after {
+		content: "";
+		position: absolute;
+		inset-inline: 0;
+		bottom: 0;
+		height: 40px;
+		/* Fade to sidebar colour at 0 alpha, not `transparent` (transparent
+		   black), which shows a grey midtone in Safari 27 Liquid Glass. */
+		background: linear-gradient(
+			to top,
+			var(--sidebar),
+			rgb(from var(--sidebar) r g b / 0)
+		);
+	}
+	/* Model picker list: once scrolled, the top edge fades so rows dissolve as
+	   they pass under the pinned search / tab bar. */
+	.model-list-scroll.is-scrolled {
+		-webkit-mask-image: linear-gradient(to bottom, transparent 0, #000 14px);
+		mask-image: linear-gradient(to bottom, transparent 0, #000 14px);
+	}
+	/* Bottom edge fades while more rows sit below the fold. */
+	.model-list-scroll.is-bottom-faded {
+		-webkit-mask-image: linear-gradient(
+			to bottom,
+			#000 calc(100% - 16px),
+			transparent
+		);
+		mask-image: linear-gradient(to bottom, #000 calc(100% - 16px), transparent);
+	}
+	/* Both edges fade when scrolled with rows above and below. */
+	.model-list-scroll.is-scrolled.is-bottom-faded {
+		-webkit-mask-image: linear-gradient(
+			to bottom,
+			transparent 0,
+			#000 14px,
+			#000 calc(100% - 16px),
+			transparent
+		);
+		mask-image: linear-gradient(
+			to bottom,
+			transparent 0,
+			#000 14px,
+			#000 calc(100% - 16px),
+			transparent
+		);
+	}
+	/* RAG chip strip: sidebar-style bottom fade while more chips sit below
+	   the scroll fold (JS-toggled). */
+	.rag-docs-bottom-fade {
+		-webkit-mask-image: linear-gradient(
+			to bottom,
+			#000 calc(100% - 16px),
+			transparent
+		);
+		mask-image: linear-gradient(to bottom, #000 calc(100% - 16px), transparent);
+	}
+}
+
+@layer base {
+	h1,
+	h2,
+	h3,
+	[data-slot="dialog-title"],
+	[data-slot="alert-dialog-title"] {
+		/* Via the token so the heading-font setting applies here too. */
+		font-family: var(--font-heading) !important;
+		font-weight: 500 !important;
+	}
+}
+
+
+
 @font-face {
-  font-family: "Hellix";
-  src: url("/fonts/Hellix-SemiBold.woff2") format("woff2"),
-    url("/fonts/Hellix-SemiBold.woff") format("woff");
-  font-weight: 600;
-  font-style: normal;
-  font-display: swap;
+	font-family: "Hellix";
+	src: url("/fonts/Hellix-Regular.woff") format("woff");
+	font-weight: 400;
+	font-style: normal;
+	font-display: swap;
+}
+
+@font-face {
+	font-family: "Hellix";
+	src: url("/fonts/Hellix-Medium.woff") format("woff");
+	font-weight: 500;
+	font-style: normal;
+	font-display: swap;
+}
+
+@font-face {
+	font-family: "Hellix";
+	src: url("/fonts/Hellix-SemiBold.woff2") format("woff2"),
+		url("/fonts/Hellix-SemiBold.woff") format("woff");
+	font-weight: 600;
+	font-style: normal;
+	font-display: swap;
+}
+
+@font-face {
+	font-family: "Fira Code";
+	src: url("/fonts/FiraCode-VariableFont_wght.ttf") format("truetype-variations");
+	font-weight: 300 700;
+	font-style: normal;
+	font-display: swap;
 }
 
 :root {
-  /* Animation timing */
-  --duration-micro: 100ms;
-  --duration-fast: 150ms;
-  --duration-normal: 200ms;
+	/* Animation timing */
+	--duration-micro: 100ms;
+	--duration-fast: 150ms;
+	--duration-normal: 200ms;
 
-  /* Easing curves (Emil Kowalski) */
-  --ease-out-quart: cubic-bezier(0.165, 0.84, 0.44, 1);
-  --ease-out-cubic: cubic-bezier(0.215, 0.61, 0.355, 1);
+	/* Easing curves (Emil Kowalski) */
+	--ease-out-quart: cubic-bezier(0.165, 0.84, 0.44, 1);
+	--ease-out-cubic: cubic-bezier(0.215, 0.61, 0.355, 1);
 
-  --background: oklch(1 0 0);
-  --foreground: oklch(0.2686 0 0);
-  --card: oklch(1 0 0);
-  --card-foreground: oklch(0.1281 0.0179 169.2764);
-  --popover: oklch(1 0 0);
-  --popover-foreground: oklch(0.1281 0.0179 169.2764);
-  --primary: oklch(0.6929 0.1396 166.5513);
-  --primary-foreground: oklch(1 0 0);
-  --secondary: oklch(0.9596 0.0275 167.8295);
-  --secondary-foreground: oklch(0.2868 0.0649 159.9823);
-  --muted: oklch(0.9702 0 0);
-  --muted-foreground: oklch(0.5486 0 0);
-  --accent: oklch(0.9596 0.0275 167.8295);
-  --accent-foreground: oklch(0.2868 0.0649 159.9823);
-  --destructive: oklch(0.6368 0.2078 25.3313);
-  --border: oklch(0.9208 0.0101 164.8536);
-  --input: oklch(0.9208 0.0101 164.8536);
-  --ring: oklch(0.6929 0.1396 166.5513);
-  --chart-1: oklch(0.6929 0.1396 166.5513);
-  --chart-2: oklch(0.694 0.1395 136.6059);
-  --chart-3: oklch(0.7014 0.1193 197.5897);
-  --chart-4: oklch(0.6926 0.1112 346.5775);
-  --chart-5: oklch(0.7497 0.1003 85.0057);
-  --radius: 1.2rem;
-  --sidebar: oklch(0.975 0 0);
-  --sidebar-foreground: oklch(0.1281 0.0179 169.2764);
-  --sidebar-primary: oklch(0.6929 0.1396 166.5513);
-  --sidebar-primary-foreground: oklch(1 0 0);
-  --sidebar-accent: oklch(0.96 0.0279 166.55);
-  --sidebar-accent-foreground: oklch(0.2868 0.0649 159.9823);
-  --sidebar-border: oklch(0.9208 0.0101 164.8536);
-  --sidebar-ring: oklch(0.6929 0.1396 166.5513);
-  --destructive-foreground: oklch(1 0 0);
-  --font-sans: "Inter Variable", ui-sans-serif, sans-serif, system-ui;
-  --font-heading: "Hellix", "Space Grotesk Variable", var(--font-sans);
-  --font-serif: Source Serif 4, serif;
-  --font-mono: JetBrains Mono, monospace;
-  --shadow-color: hsl(0 0% 0%);
-  --shadow-opacity: 0;
-  --shadow-blur: 0px;
-  --shadow-spread: 0px;
-  --shadow-offset-x: 0px;
-  --shadow-offset-y: 0px;
-  --letter-spacing: 0em;
-  --spacing: 0.25rem;
-  /*--shadow-2xs: 0px 0px 0px 0px hsl(0 0% 0% / 0);*/
-  /*--shadow-xs: 0px 0px 0px 0px hsl(0 0% 0% / 0);*/
-  /*--shadow-sm:*/
-  /*    0px 0px 0px 0px hsl(0 0% 0% / 0),*/
-  /*    0px 1px 2px 0px hsl(0 0% 0% / 0);*/
-  /*--shadow:*/
-  /*    0px 0px 0px 0px hsl(0 0% 0% / 0),*/
-  /*    0px 1px 2px 0px hsl(0 0% 0% / 0);*/
-  /*--shadow-md:*/
-  /*    0px 0px 0px 0px hsl(0 0% 0% / 0),*/
-  /*    0px 2px 4px 0px hsl(0 0% 0% / 0);*/
-  /*--shadow-lg:*/
-  /*    0px 0px 0px 0px hsl(0 0% 0% / 0),*/
-  /*    0px 4px 6px 0px hsl(0 0% 0% / 0);*/
-  /*--shadow-xl:*/
-  /*    0px 0px 0px 0px hsl(0 0% 0% / 0),*/
-  /*    0px 8px 10px 0px hsl(0 0% 0% / 0);*/
-  /*--shadow-2xl: 0px 0px 0px 0px hsl(0 0% 0% / 0);*/
-  --tracking-normal: 0em;
+	/* Slightly warm off white; every page (and the chat surface) shares it. */
+	--background: #fefefd;
+	--foreground: oklch(0.2686 0 0);
+	--card: oklch(1 0 0);
+	--card-foreground: oklch(0.1281 0.0179 169.2764);
+	--popover: oklch(1 0 0);
+	--popover-foreground: oklch(0.1281 0.0179 169.2764);
+	--primary: #17b88b;
+	--primary-foreground: oklch(1 0 0);
+	--secondary: oklch(0.9596 0.0275 167.8295);
+	--secondary-foreground: oklch(0.2868 0.0649 159.9823);
+	--muted: oklch(0.9702 0 0);
+	--muted-foreground: oklch(0.5486 0 0);
+	/* Hover/active washes are neutral grey (matches the sidebar), not the
+	   brand green; green stays on primary controls only. */
+	--accent: #ececec;
+	--accent-foreground: #262626;
+	--destructive: oklch(0.6368 0.2078 25.3313);
+	/* Bypass permissions accent: bright, saturated yellow (not dark gold). */
+	--bypass: #c99d00;
+	--border: oklch(0.9208 0.0101 164.8536);
+	--input: oklch(0.9208 0.0101 164.8536);
+	--ring: #262626;
+	/* Focus and selection indicators: the element's own border, darker.
+	   Derived from the live border/foreground tokens so every palette and
+	   mode gets the right shade from these definitions. Focus/hover uses the
+	   soft shade; selected state uses the deeper one (still never black). */
+	--ring-soft: color-mix(in srgb, var(--foreground) 22%, var(--border));
+	--ring-select: color-mix(in srgb, var(--foreground) 48%, var(--border));
+	--chart-1: #17b88b;
+	--chart-2: oklch(0.694 0.1395 136.6059);
+	--chart-3: oklch(0.7014 0.1193 197.5897);
+	--chart-4: oklch(0.6926 0.1112 346.5775);
+	--chart-5: oklch(0.7497 0.1003 85.0057);
+	--radius: 1.1rem;
+	/* White sidebar against the warm off-white page; the tone difference is
+	   the separator now that the right-edge divider is gone. */
+	--sidebar: #ffffff;
+	--sidebar-foreground: oklch(0.1281 0.0179 169.2764);
+	--sidebar-primary: #17b88b;
+	--sidebar-primary-foreground: oklch(1 0 0);
+	--sidebar-accent: #ececec;
+	--sidebar-accent-foreground: #262626;
+	--sidebar-border: #f2f2f2;
+	--sidebar-ring: #262626;
+	--destructive-foreground: oklch(1 0 0);
+	--font-sans: "Inter Variable", ui-sans-serif, sans-serif, system-ui;
+	--font-heading: "Hellix", "Space Grotesk Variable", var(--font-sans);
+	--font-serif: Source Serif 4, serif;
+	--font-mono: JetBrains Mono, monospace;
+	--shadow-color: hsl(0 0% 0%);
+	--shadow-opacity: 0;
+	--shadow-blur: 0px;
+	--shadow-spread: 0px;
+	--shadow-offset-x: 0px;
+	--shadow-offset-y: 0px;
+	--letter-spacing: 0em;
+	--spacing: 0.25rem;
+	/*--shadow-2xs: 0px 0px 0px 0px hsl(0 0% 0% / 0);*/
+	/*--shadow-xs: 0px 0px 0px 0px hsl(0 0% 0% / 0);*/
+	/*--shadow-sm:*/
+	/*    0px 0px 0px 0px hsl(0 0% 0% / 0),*/
+	/*    0px 1px 2px 0px hsl(0 0% 0% / 0);*/
+	/*--shadow:*/
+	/*    0px 0px 0px 0px hsl(0 0% 0% / 0),*/
+	/*    0px 1px 2px 0px hsl(0 0% 0% / 0);*/
+	/*--shadow-md:*/
+	/*    0px 0px 0px 0px hsl(0 0% 0% / 0),*/
+	/*    0px 2px 4px 0px hsl(0 0% 0% / 0);*/
+	/*--shadow-lg:*/
+	/*    0px 0px 0px 0px hsl(0 0% 0% / 0),*/
+	/*    0px 4px 6px 0px hsl(0 0% 0% / 0);*/
+	/*--shadow-xl:*/
+	/*    0px 0px 0px 0px hsl(0 0% 0% / 0),*/
+	/*    0px 8px 10px 0px hsl(0 0% 0% / 0);*/
+	/*--shadow-2xl: 0px 0px 0px 0px hsl(0 0% 0% / 0);*/
+	--tracking-normal: 0em;
+
+	/* Hex (not OKLCH) so the rendered surface matches the design mockup pixel-for-pixel. */
+	--nav-fg: #383835;
+	--nav-fg-muted: #858279;
+	--nav-surface-hover: #f0f0f0;
+	--nav-icon-idle: #8f8f8f;
+	--nav-beta-border: #e0ded6;
+	--panel-surface-hover: #ebebeb;
+	/* Right-side chat-parameters panel: matches the chat content
+	   surface in both themes — distinction from the left sidebar
+	   (#f9faf9) is handled by the left border alone. Tracks
+	   `--background` so any future tweaks to the chat surface flow
+	   through automatically. */
+	--panel-surface: var(--background);
+	--panel-surface-fg: var(--foreground);
+	--panel-input-surface: #f5f5f5;
+	--panel-input-surface-hover: #efefef;
+	/* Muted gray with a one-step warmer-blue last channel (#779 vs flat #777)
+	   so the tone has a faint hue rather than pure neutral — keeps text and
+	   sliders quiet but not lifeless. */
+	--panel-surface-fg-muted: #777779;
+	/* Slider track-fill / thumb / hover halo. Decoupled from
+	   --panel-surface-fg-muted so the slider can be tuned independently
+	   from muted text. Light mode: lighter than the muted-text gray for
+	   a softer feel. Dark mode (further down) keeps parity with the
+	   muted-text token. */
+	--panel-slider-fg: #9a9a9c;
+	/* Chat-message action icons (assistant action bar, branch picker
+	   chevrons + numbers, message-timing token counter, code-block
+	   copy/download, user action bar, delete button). One token drives
+	   all of them so the row reads as a single coherent control strip.
+	   Mid-dark gray on the light surface — visible enough to read as
+	   active controls, not so dark that they compete with message
+	   text. */
+	--chat-icon-fg: #555555;
+	--chat-icon-fg-hover: var(--foreground);
+	--chat-icon-bg-hover: #ededec;
+
+	/* Control accent: switches, "New" badges, notification-style chips.
+	   Follows the brand accent by default; palettes that keep their primary
+	   neutral (Classic) override this so small controls still get a hue.
+	   References resolve at use, so .dark's --primary flows through. */
+	--control-accent: var(--primary);
+	--control-accent-foreground: var(--primary-foreground);
+
+	/* Status color for meaning-carrying marks (verified badges, token
+	   indicators). Pinned to the brand green in every palette and mode so
+	   the signal never changes with the theme. */
+	--verified: #17b88b;
+
+	/* Standard interactive-icon size for nav, menus, action bars, and
+	   in-message code-block actions. Sized one step above body text so
+	   icons read as minimally larger than adjacent labels (~14px text).
+	   Theme-independent — declared once in :root. */
+	--icon-size: 18px;
+	/* Inset of a centered .size-icon glyph within a 2rem (size-8) action
+	   button — i.e. (32px − icon-size) / 2. Use as a negative margin on a
+	   chat-message action bar so the leftmost icon's visual edge aligns
+	   with the message text edge. Auto-tracks --icon-size. */
+	--icon-btn-inset: calc((2rem - var(--icon-size)) / 2);
 }
+
 .dark {
-  --background: oklch(0.24 0 0);
-  --foreground: oklch(0.98 0 0);
-  --card: oklch(0.28 0 0);
-  --card-foreground: oklch(0.98 0 0);
-  --popover: oklch(0.28 0 0);
-  --popover-foreground: oklch(0.98 0 0);
-  --primary: oklch(0.6929 0.1396 166.5513);
-  --primary-foreground: oklch(1 0 0);
-  --secondary: oklch(0.33 0 0);
-  --secondary-foreground: oklch(0.98 0 0);
-  --muted: oklch(0.33 0 0);
-  --muted-foreground: oklch(0.70 0 0);
-  --accent: oklch(0.33 0 0);
-  --accent-foreground: oklch(0.98 0 0);
-  --destructive: oklch(0.6368 0.2078 25.3313);
-  --border: oklch(0.38 0 0);
-  --input: oklch(0.38 0 0);
-  --ring: oklch(0.6929 0.1396 166.5513);
-  --chart-1: oklch(0.7511 0.1407 166.2284);
-  --chart-2: oklch(0.75 0.14 136.5572);
-  --chart-3: oklch(0.7554 0.1285 197.339);
-  --chart-4: oklch(0.7503 0.1199 346.7805);
-  --chart-5: oklch(0.799 0.1196 84.6633);
-  --sidebar: oklch(0.24 0 0);
-  --sidebar-foreground: oklch(0.98 0 0);
-  --sidebar-primary: oklch(0.6929 0.1396 166.5513);
-  --sidebar-primary-foreground: oklch(1 0 0);
-  --sidebar-accent: oklch(0.33 0 0);
-  --sidebar-accent-foreground: oklch(0.98 0 0);
-  --sidebar-border: oklch(0.38 0 0);
-  --sidebar-ring: oklch(0.6929 0.1396 166.5513);
-  --destructive-foreground: oklch(1 0 0);
-  --radius: 1.2rem;
-  --font-sans: Geist, ui-sans-serif, sans-serif, system-ui;
-  --font-serif: Source Serif 4, serif;
-  --font-mono: JetBrains Mono, monospace;
-  --shadow-color: hsl(0 0% 0%);
-  --shadow-opacity: 0;
-  --shadow-blur: 0px;
-  --shadow-spread: 0px;
-  --shadow-offset-x: 0px;
-  --shadow-offset-y: 0px;
-  --letter-spacing: 0em;
-  --spacing: 0.25rem;
-  --shadow-2xs: 0px 0px 0px 0px hsl(0 0% 0% / 0);
-  --shadow-xs: 0px 0px 0px 0px hsl(0 0% 0% / 0);
-  --shadow-sm: 0px 0px 0px 0px hsl(0 0% 0% / 0), 0px 1px 2px 0px
-  hsl(0 0% 0% / 0);
-  --shadow: 0px 0px 0px 0px hsl(0 0% 0% / 0), 0px 1px 2px 0px hsl(0 0% 0% / 0);
-  --shadow-md: 0px 0px 0px 0px hsl(0 0% 0% / 0), 0px 2px 4px 0px
-  hsl(0 0% 0% / 0);
-  --shadow-lg: 0px 0px 0px 0px hsl(0 0% 0% / 0), 0px 4px 6px 0px
-  hsl(0 0% 0% / 0);
-  --shadow-xl: 0px 0px 0px 0px hsl(0 0% 0% / 0), 0px 8px 10px 0px
-  hsl(0 0% 0% / 0);
-  --shadow-2xl: 0px 0px 0px 0px hsl(0 0% 0% / 0);
+	/* Dark surfaces shared by ALL palettes: #181818 page, elevated #1f1f1f
+	   sidebar, #212121 cards. Palette dark blocks override only accent
+	   tokens so dark mode stays consistent across themes. */
+	--background: #181818;
+	--foreground: #ececec;
+	--card: #212121;
+	--card-foreground: #ececec;
+	--popover: #212121;
+	--popover-foreground: #ececec;
+	--primary: #17b88b;
+	--primary-foreground: oklch(1 0 0);
+	--secondary: #242424;
+	--secondary-foreground: #ececec;
+	--muted: #242424;
+	--muted-foreground: #9b9b9b;
+	/* One step lighter than --popover so menu item hover reads clearly. */
+	--accent: #2e2e2e;
+	--accent-foreground: #ececec;
+	--destructive: oklch(0.6368 0.2078 25.3313);
+	/* Bypass permissions accent: bright, saturated neon yellow on dark. */
+	--bypass: #ffd60a;
+	/* --border / --input one step lighter than --muted so outlines and form
+	   borders stay visible on muted surfaces (right config panel, export
+	   tiles, quant chips) and keep subtle contrast on card. */
+	--border: #303030;
+	--input: #303030;
+	--ring: #ececec;
+	--chart-1: oklch(0.7511 0.1407 166.2284);
+	--chart-2: oklch(0.75 0.14 136.5572);
+	--chart-3: oklch(0.7554 0.1285 197.339);
+	--chart-4: oklch(0.7503 0.1199 346.7805);
+	--chart-5: oklch(0.799 0.1196 84.6633);
+	/* Elevated a step lighter than --background; the tone difference is
+	   the separator. */
+	--sidebar: #1f1f1f;
+	--sidebar-foreground: #ececec;
+	--sidebar-primary: #17b88b;
+	--sidebar-primary-foreground: oklch(1 0 0);
+	--sidebar-accent: #2a2a2a;
+	--sidebar-accent-foreground: #ececec;
+	--sidebar-border: #2a2a2a;
+	--sidebar-ring: #ececec;
+	--destructive-foreground: oklch(1 0 0);
+	/* Match light's radius so every rounded-* element is the same in both themes. */
+	--radius: 1.1rem;
+	--font-sans: "Inter Variable", ui-sans-serif, sans-serif, system-ui;
+	--font-serif: Source Serif 4, serif;
+	--font-mono: JetBrains Mono, monospace;
+	--shadow-color: hsl(0 0% 0%);
+	--shadow-opacity: 0;
+	--shadow-blur: 0px;
+	--shadow-spread: 0px;
+	--shadow-offset-x: 0px;
+	--shadow-offset-y: 0px;
+	--letter-spacing: 0em;
+	--spacing: 0.25rem;
+	--shadow-2xs: 0px 0px 0px 0px hsl(0 0% 0% / 0);
+	--shadow-xs: 0px 0px 0px 0px hsl(0 0% 0% / 0);
+	--shadow-sm: 0px 0px 0px 0px hsl(0 0% 0% / 0), 0px 1px 2px 0px hsl(0 0% 0% / 0);
+	--shadow: 0px 0px 0px 0px hsl(0 0% 0% / 0), 0px 1px 2px 0px hsl(0 0% 0% / 0);
+	--shadow-md: 0px 0px 0px 0px hsl(0 0% 0% / 0), 0px 2px 4px 0px hsl(0 0% 0% / 0);
+	--shadow-lg: 0px 0px 0px 0px hsl(0 0% 0% / 0), 0px 4px 6px 0px hsl(0 0% 0% / 0);
+	--shadow-xl: 0px 0px 0px 0px hsl(0 0% 0% / 0), 0px 8px 10px 0px hsl(0 0% 0% / 0);
+	--shadow-2xl: 0px 0px 0px 0px hsl(0 0% 0% / 0);
+
+	--nav-fg: #c9c9c9;
+	--nav-fg-muted: #969696;
+	--nav-surface-hover: #2a2a2a;
+	--nav-icon-idle: #5c5c5c;
+	--nav-beta-border: #333333;
+	--panel-surface-hover: #333333;
+	/* Right-side chat-parameters panel: matches the chat content
+	   surface in both themes — distinction from the left sidebar
+	   is handled by the left border alone. Tracks `--background` so
+	   any future tweaks to the chat surface flow through
+	   automatically. */
+	--panel-surface: var(--background);
+	--panel-surface-fg: var(--foreground);
+	/* Translucent white so the same fill reads correctly on the #181818
+	   page AND on #212121 cards/dialogs. */
+	--panel-input-surface: rgba(255, 255, 255, 0.07);
+	--panel-input-surface-hover: rgba(255, 255, 255, 0.11);
+	/* Soft neutral gray for muted text and sliders. Pure-ish #ababab
+	   reads as quiet on the dark panel without going colored. */
+	--panel-surface-fg-muted: #ababab;
+	/* Dark-mode slider tone matches muted text — user wants the dark
+	   theme slider unchanged from the previous behavior. */
+	--panel-slider-fg: #ababab;
+	/* Chat-message action icons. A touch lighter than the previous
+	   #b8b8b8 so the icons read clearly without going near pure white;
+	   hover restores full --foreground for affordance. */
+	--chat-icon-fg: #d8d8d8;
+	--chat-icon-fg-hover: var(--foreground);
+	--chat-icon-bg-hover: #2a2a2a;
+}
+
+/* ---------------------------------------------------------------------------
+   Color palettes.
+
+   The palette is a second theming dimension, orthogonal to light/dark. It is
+   carried on <html> as `data-palette` (managed by theme-store.ts alongside the
+   light/dark class):
+
+     (no attribute)            → Standard: the signature Unsloth green.
+     data-palette="classic"    → Classic: neutral grays with a calm blue
+                                 accent; enterprise-safe.
+     data-palette="minimal"    → Minimal: strictly black, white, and gray.
+
+   Each palette overrides only color tokens; typography, radii, spacing, and
+   shadows are inherited from the base :root/.dark blocks so layout is
+   identical across palettes. Light blocks are scoped with :not(.dark) so the
+   base .dark block always wins the mode dimension. */
+
+/* -------------------------------- Classic --------------------------------
+   White content and the standard white sidebar in light, shared dark
+   surfaces in dark, neutral gray hovers, and blue (#339cff) as the accent. */
+:root[data-palette="classic"]:not(.dark) {
+	--background: #ffffff;
+	--foreground: #1a1c1f;
+	--card: #ffffff;
+	--card-foreground: #1a1c1f;
+	--popover: #ffffff;
+	--popover-foreground: #1a1c1f;
+	/* Neutral black primary; blue is reserved for small controls via
+	   --control-accent (toggles, badges, focus rings). */
+	--primary: #0d0d0d;
+	--primary-foreground: #ffffff;
+	--control-accent: #339cff;
+	--control-accent-foreground: #ffffff;
+	--secondary: #f5f5f5;
+	--secondary-foreground: #1a1c1f;
+	--muted: #f7f7f7;
+	--muted-foreground: #8f8f8f;
+	--accent: #ececec;
+	--accent-foreground: #1a1c1f;
+	--bypass: #9a7b1e;
+	--border: #e6e6e6;
+	--input: #e6e6e6;
+	--ring: #1a1c1f;
+	--chart-1: #339cff;
+	--chart-2: #8fa3b8;
+	--chart-3: #0f6fd6;
+	--chart-4: #b8c4d0;
+	--chart-5: #5b7189;
+	/* Same as the standard palette; the sidebar surface does not change
+	   with the palette. */
+	--sidebar: #ffffff;
+	--sidebar-foreground: #1a1c1f;
+	--sidebar-primary: #0d0d0d;
+	--sidebar-primary-foreground: #ffffff;
+	--sidebar-accent: #ececec;
+	--sidebar-accent-foreground: #1a1c1f;
+	--sidebar-border: #f2f2f2;
+	--sidebar-ring: #1a1c1f;
+
+	--nav-fg: #2d2f31;
+	--nav-fg-muted: #8f8f8f;
+	--nav-surface-hover: #ececec;
+	--nav-icon-idle: #8f8f8f;
+	--nav-beta-border: #e0e0e0;
+	--panel-surface-hover: #ececec;
+	--panel-input-surface: #f4f4f4;
+	--panel-input-surface-hover: #ededed;
+	--panel-surface-fg-muted: #7a7c7e;
+	--panel-slider-fg: #9b9d9f;
+	--chat-icon-fg: #5d5f61;
+	--chat-icon-bg-hover: #ececec;
+}
+
+/* Dark surfaces come from the shared base .dark block; Classic only swaps
+   the accents: neutral (white) buttons, blue on small controls via
+   --control-accent. */
+:root[data-palette="classic"].dark {
+	--primary: #ececec;
+	--primary-foreground: #0d0d0d;
+	--control-accent: #4dabff;
+	--control-accent-foreground: #ffffff;
+	--bypass: #d9b40b;
+	--ring: #ececec;
+	--chart-1: #4dabff;
+	--chart-2: #8ab6de;
+	--chart-3: #1f7fe8;
+	--chart-4: #b3d4f5;
+	--chart-5: #6d87a3;
+	--sidebar-primary: #ececec;
+	--sidebar-primary-foreground: #0d0d0d;
+	--sidebar-ring: #ececec;
+}
+
+/* -------------------------------- Minimal -------------------------------- */
+:root[data-palette="minimal"]:not(.dark) {
+	--background: #ffffff;
+	--foreground: #171717;
+	--card: #ffffff;
+	--card-foreground: #171717;
+	--popover: #ffffff;
+	--popover-foreground: #171717;
+	--primary: #171717;
+	--primary-foreground: #ffffff;
+	--secondary: #f5f5f5;
+	--secondary-foreground: #262626;
+	--muted: #f5f5f5;
+	--muted-foreground: #6f6f6f;
+	--accent: #ebebeb;
+	--accent-foreground: #171717;
+	--bypass: #6f6f6f;
+	--border: #e2e2e2;
+	--input: #e2e2e2;
+	--ring: #171717;
+	--chart-1: #171717;
+	--chart-2: #4d4d4d;
+	--chart-3: #7a7a7a;
+	--chart-4: #a6a6a6;
+	--chart-5: #d1d1d1;
+	/* White sidebar on white content; the border alone is the separator. */
+	--sidebar: #ffffff;
+	--sidebar-foreground: #171717;
+	--sidebar-primary: #171717;
+	--sidebar-primary-foreground: #ffffff;
+	--sidebar-accent: #ebebeb;
+	--sidebar-accent-foreground: #171717;
+	--sidebar-border: #e8e8e8;
+	--sidebar-ring: #171717;
+
+	--nav-fg: #333333;
+	--nav-fg-muted: #8a8a8a;
+	--nav-surface-hover: #efefef;
+	--nav-icon-idle: #8f8f8f;
+	--nav-beta-border: #dddddd;
+	--panel-surface-hover: #ececec;
+	--panel-input-surface: #f4f4f4;
+	--panel-input-surface-hover: #ededed;
+	--panel-surface-fg-muted: #757575;
+	--panel-slider-fg: #9b9b9b;
+	--chat-icon-fg: #555555;
+	--chat-icon-bg-hover: #ececec;
+}
+
+/* Dark surfaces come from the shared base .dark block; Minimal only swaps
+   the accents to pure monochrome (white buttons, gray chart ramp). */
+:root[data-palette="minimal"].dark {
+	--primary: #ededed;
+	--primary-foreground: #111111;
+	--bypass: #9c9c9c;
+	--ring: #ededed;
+	--chart-1: #ededed;
+	--chart-2: #bdbdbd;
+	--chart-3: #8f8f8f;
+	--chart-4: #616161;
+	--chart-5: #3d3d3d;
+	--sidebar-primary: #ededed;
+	--sidebar-primary-foreground: #111111;
+	--sidebar-ring: #ededed;
+}
+
+/* ---------------------------------------------------------------------------
+   Appearance customization hooks (Settings → Appearance).
+
+   Every rule below is gated on a class or data attribute that
+   appearance-custom-store.ts toggles on <html>. With no customization active,
+   none of these selectors match and the stylesheet behaves exactly as stock.
+   Custom colors/fonts are applied as inline CSS variables on <html> (inline
+   wins over every :root/.dark/palette block), so they need no rules here. */
+
+/* Contrast slider: remap border and muted-text tokens by mixing their base
+   values toward the foreground (higher contrast) or background (lower).
+   --input mirrors --border in every palette, so it serves as the untouched
+   base for --border; --panel-surface-fg-muted is the closest stable base for
+   --muted-foreground. --contrast-mix / --contrast-target are set inline. */
+html[data-contrast-adjust] {
+	--border: color-mix(in oklab, var(--input), var(--contrast-target) var(--contrast-mix));
+	--sidebar-border: color-mix(in oklab, var(--input), var(--contrast-target) var(--contrast-mix));
+	--muted-foreground: color-mix(
+		in oklab,
+		var(--panel-surface-fg-muted),
+		var(--contrast-target) var(--contrast-mix)
+	);
+}
+
+/* Code font size: only overrides when the user sets an explicit size, so the
+   per-element Tailwind sizes stay authoritative by default. */
+html[data-code-font-size] :is(pre, code, kbd, samp) {
+	font-size: var(--custom-code-font-size) !important;
+}
+
+/* Pointer cursors: hand cursor over interactive elements. */
+html.pointer-cursors
+	:is(
+		button:not(:disabled),
+		[role="button"],
+		a[href],
+		select,
+		summary,
+		[role="tab"],
+		[role="menuitem"],
+		[role="option"],
+		[role="switch"],
+		[role="checkbox"],
+		input[type="checkbox"],
+		input[type="radio"],
+		input[type="range"],
+		label[for]
+	) {
+	cursor: pointer;
+}
+
+/* Force reduced motion: collapses CSS animations/transitions app-wide.
+   JS-driven springs are handled separately via MotionConfig in the provider. */
+html.force-reduced-motion *,
+html.force-reduced-motion *::before,
+html.force-reduced-motion *::after {
+	animation-duration: 0.01ms !important;
+	animation-iteration-count: 1 !important;
+	transition-duration: 0.01ms !important;
+	scroll-behavior: auto !important;
+}
+
+/* Same loader exceptions as the OS-level media block below: freezing
+   spinners removes the only signal that work is in flight. */
+html.force-reduced-motion .animate-spin {
+	animation-duration: 1.5s !important;
+	animation-iteration-count: infinite !important;
+}
+html.force-reduced-motion .generated-image-loading-dot {
+	animation-duration: 1850ms !important;
+	animation-iteration-count: infinite !important;
+}
+html.force-reduced-motion .loading-bar-slide {
+	animation-duration: 1.3s !important;
+	animation-iteration-count: infinite !important;
+}
+html.force-reduced-motion .unsloth-composer-plus svg {
+	transition-duration: 250ms !important;
+}
+
+/* Font smoothing toggle: back to the browser's subpixel default. */
+html.no-font-smoothing body {
+	-webkit-font-smoothing: auto;
+	-moz-osx-font-smoothing: auto;
+}
+
+/* Chat font: only applies while a custom chat font is set. Elements with
+   explicit font utilities (headings, code) keep their own families. */
+html[data-chat-font] .aui-root {
+	font-family: var(--custom-chat-font);
+}
+
+/* Palette cards: the active ring keys off html[data-palette] so it swaps
+   in the same style pass that swaps the color tokens. Driving it from
+   React state paints one frame late while the whole page recalculates,
+   which briefly leaves the ring on the previous card. */
+.palette-card:hover {
+	border-color: var(--ring-soft);
+}
+:root:not([data-palette]) .palette-card[data-palette-value="standard"],
+:root[data-palette="classic"] .palette-card[data-palette-value="classic"],
+:root[data-palette="minimal"] .palette-card[data-palette-value="minimal"] {
+	/* Selection keeps the card's own border weight, only darker. */
+	border-color: var(--ring-select);
+}
+
+/* Settings search: brief highlight on the row a result jumped to. */
+.settings-search-hit {
+	animation: settings-search-hit 1.6s ease-out;
+	border-radius: 12px;
+}
+@keyframes settings-search-hit {
+	0%,
+	35% {
+		background-color: var(--accent);
+	}
+	100% {
+		background-color: transparent;
+	}
 }
 
 @theme inline {
-  --font-sans: "Inter Variable", ui-sans-serif, sans-serif, system-ui;
-  --font-heading: "Hellix", "Space Grotesk Variable", var(--font-sans);
-  --color-sidebar-ring: var(--sidebar-ring);
-  --color-sidebar-border: var(--sidebar-border);
-  --color-sidebar-accent-foreground: var(--sidebar-accent-foreground);
-  --color-sidebar-accent: var(--sidebar-accent);
-  --color-sidebar-primary-foreground: var(--sidebar-primary-foreground);
-  --color-sidebar-primary: var(--sidebar-primary);
-  --color-sidebar-foreground: var(--sidebar-foreground);
-  --color-sidebar: var(--sidebar);
-  --color-chart-5: var(--chart-5);
-  --color-chart-4: var(--chart-4);
-  --color-chart-3: var(--chart-3);
-  --color-chart-2: var(--chart-2);
-  --color-chart-1: var(--chart-1);
-  --color-ring: var(--ring);
-  --color-input: var(--input);
-  --color-border: var(--border);
-  --color-destructive: var(--destructive);
-  --color-accent-foreground: var(--accent-foreground);
-  --color-accent: var(--accent);
-  --color-muted-foreground: var(--muted-foreground);
-  --color-muted: var(--muted);
-  --color-secondary-foreground: var(--secondary-foreground);
-  --color-secondary: var(--secondary);
-  --color-primary-foreground: var(--primary-foreground);
-  --color-primary: var(--primary);
-  --color-popover-foreground: var(--popover-foreground);
-  --color-popover: var(--popover);
-  --color-card-foreground: var(--card-foreground);
-  --color-card: var(--card);
-  --color-foreground: var(--foreground);
-  --color-background: var(--background);
-  --radius-sm: calc(var(--radius) - 4px);
-  --radius-md: calc(var(--radius) - 2px);
-  --radius-lg: var(--radius);
-  --radius-xl: calc(var(--radius) + 4px);
-  --radius-2xl: calc(var(--radius) + 8px);
-  --radius-3xl: calc(var(--radius) + 12px);
-  --radius-4xl: calc(var(--radius) + 16px);
-  --font-mono: JetBrains Mono, monospace;
-  --font-serif: Source Serif 4, serif;
-  --radius: 1.2rem;
-  --tracking-tighter: calc(var(--tracking-normal) - 0.05em);
-  --tracking-tight: calc(var(--tracking-normal) - 0.025em);
-  --tracking-wide: calc(var(--tracking-normal) + 0.025em);
-  --tracking-wider: calc(var(--tracking-normal) + 0.05em);
-  --tracking-widest: calc(var(--tracking-normal) + 0.1em);
-  --tracking-normal: var(--tracking-normal);
-  /*--shadow-2xl: var(--shadow-2xl);*/
-  /*--shadow-xl: var(--shadow-xl);*/
-  /*--shadow-lg: var(--shadow-lg);*/
-  /*--shadow-md: var(--shadow-md);*/
-  /*--shadow: var(--shadow);*/
-  /*--shadow-sm: var(--shadow-sm);*/
-  /*--shadow-xs: var(--shadow-xs);*/
-  /*--shadow-2xs: var(--shadow-2xs);*/
-  /*--spacing: var(--spacing);*/
-  /*--letter-spacing: var(--letter-spacing);*/
-  /*--shadow-offset-y: var(--shadow-offset-y);*/
-  /*--shadow-offset-x: var(--shadow-offset-x);*/
-  /*--shadow-spread: var(--shadow-spread);*/
-  /*--shadow-blur: var(--shadow-blur);*/
-  /*--shadow-opacity: var(--shadow-opacity);*/
-  /*--color-shadow-color: var(--shadow-color);*/
-  --color-destructive-foreground: var(--destructive-foreground);
-  --animate-pulse: pulse var(--duration) ease-out infinite;
-  @keyframes pulse {
-    0%,
-    100% {
-      box-shadow: 0 0 0 0 var(--pulse-color);
-    }
-    50% {
-      box-shadow: 0 0 0 8px var(--pulse-color);
-    }
-  }
-  --animate-shiny-text: shiny-text 8s infinite;
-  @keyframes shiny-text {
-    0%,
-    90%,
-    100% {
-      background-position: calc(-100% - var(--shiny-width)) 0;
-    }
-    30%,
-    60% {
-      background-position: calc(100% + var(--shiny-width)) 0;
-    }
-  }
-  --animate-shine: shine var(--duration) infinite linear
-;
-  @keyframes shine {
-  0% {
-    background-position: 0% 0%;
-    }
-  50% {
-    background-position: 100% 100%;
-    }
-  to {
-    background-position: 0% 0%;
-    }
-  }}
+	/* Reference the :root tokens instead of literal stacks so the runtime
+	   font overrides (Settings > Appearance) reach every font-* utility. */
+	--font-sans: var(--font-sans);
+	--font-heading: var(--font-heading);
+	--color-verified: var(--verified);
+	--color-sidebar-ring: var(--ring-soft);
+	--color-sidebar-border: var(--sidebar-border);
+	--color-sidebar-accent-foreground: var(--sidebar-accent-foreground);
+	--color-sidebar-accent: var(--sidebar-accent);
+	--color-sidebar-primary-foreground: var(--sidebar-primary-foreground);
+	--color-sidebar-primary: var(--sidebar-primary);
+	--color-sidebar-foreground: var(--sidebar-foreground);
+	--color-sidebar: var(--sidebar);
+	--color-chart-5: var(--chart-5);
+	--color-chart-4: var(--chart-4);
+	--color-chart-3: var(--chart-3);
+	--color-chart-2: var(--chart-2);
+	--color-chart-1: var(--chart-1);
+	--color-code-block: #181818;
+	/* Tailwind ring/border/outline "ring" utilities are focus indicators
+	   across the app, so they map to the soft derived shade; persistent
+	   selection styling uses ring-strong (the raw --ring). */
+	--color-ring: var(--ring-soft);
+	--color-ring-strong: var(--ring-select);
+	--color-input: var(--input);
+	--color-border: var(--border);
+	--color-destructive: var(--destructive);
+	--color-bypass: var(--bypass);
+	--color-accent-foreground: var(--accent-foreground);
+	--color-accent: var(--accent);
+	--color-muted-foreground: var(--muted-foreground);
+	--color-muted: var(--muted);
+	--color-secondary-foreground: var(--secondary-foreground);
+	--color-secondary: var(--secondary);
+	--color-primary-foreground: var(--primary-foreground);
+	--color-primary: var(--primary);
+	--color-control-accent: var(--control-accent);
+	--color-control-accent-foreground: var(--control-accent-foreground);
+	--color-popover-foreground: var(--popover-foreground);
+	--color-popover: var(--popover);
+	--color-card-foreground: var(--card-foreground);
+	--color-card: var(--card);
+	--color-foreground: var(--foreground);
+	--color-background: var(--background);
+	--radius-sm: calc(var(--radius) - 4px);
+	--radius-md: calc(var(--radius) - 2px);
+	--radius-lg: var(--radius);
+	--radius-xl: calc(var(--radius) + 4px);
+	--radius-2xl: calc(var(--radius) + 8px);
+	--radius-3xl: calc(var(--radius) + 12px);
+	--radius-4xl: calc(var(--radius) + 16px);
+	--font-mono: var(--font-mono);
+	--font-serif: var(--font-serif);
+	--radius: 1.1rem;
+	--tracking-tighter: 0em;
+	--tracking-tight: 0em;
+	--tracking-wide: calc(var(--tracking-normal) + 0.025em);
+	--tracking-wider: calc(var(--tracking-normal) + 0.05em);
+	--tracking-widest: calc(var(--tracking-normal) + 0.1em);
+	--tracking-normal: var(--tracking-normal);
+	/*--shadow-2xl: var(--shadow-2xl);*/
+	/*--shadow-xl: var(--shadow-xl);*/
+	/*--shadow-lg: var(--shadow-lg);*/
+	/*--shadow-md: var(--shadow-md);*/
+	/*--shadow: var(--shadow);*/
+	/*--shadow-sm: var(--shadow-sm);*/
+	/*--shadow-xs: var(--shadow-xs);*/
+	/*--shadow-2xs: var(--shadow-2xs);*/
+	/*--spacing: var(--spacing);*/
+	/*--letter-spacing: var(--letter-spacing);*/
+	/*--shadow-offset-y: var(--shadow-offset-y);*/
+	/*--shadow-offset-x: var(--shadow-offset-x);*/
+	/*--shadow-spread: var(--shadow-spread);*/
+	/*--shadow-blur: var(--shadow-blur);*/
+	/*--shadow-opacity: var(--shadow-opacity);*/
+	/*--color-shadow-color: var(--shadow-color);*/
+	--color-destructive-foreground: var(--destructive-foreground);
+
+	--color-nav-fg: var(--nav-fg);
+	--color-nav-fg-muted: var(--nav-fg-muted);
+	--color-nav-surface-hover: var(--nav-surface-hover);
+	--color-nav-icon-idle: var(--nav-icon-idle);
+	--color-nav-beta-border: var(--nav-beta-border);
+	--color-panel-surface-hover: var(--panel-surface-hover);
+	--color-panel-surface: var(--panel-surface);
+	--color-panel-surface-fg: var(--panel-surface-fg);
+	--color-panel-surface-fg-muted: var(--panel-surface-fg-muted);
+	--color-panel-input-surface: var(--panel-input-surface);
+	--color-panel-input-surface-hover: var(--panel-input-surface-hover);
+	--color-chat-icon-fg: var(--chat-icon-fg);
+	--color-chat-icon-fg-hover: var(--chat-icon-fg-hover);
+	--color-chat-icon-bg-hover: var(--chat-icon-bg-hover);
+
+	--animate-pulse: pulse var(--duration) ease-out infinite;
+
+	@keyframes pulse {
+
+		0%,
+		100% {
+			box-shadow: 0 0 0 0 var(--pulse-color);
+		}
+
+		50% {
+			box-shadow: 0 0 0 8px var(--pulse-color);
+		}
+	}
+
+	--animate-shiny-text: shiny-text 8s infinite;
+
+	@keyframes shiny-text {
+
+		0%,
+		90%,
+		100% {
+			background-position: calc(-100% - var(--shiny-width)) 0;
+		}
+
+		30%,
+		60% {
+			background-position: calc(100% + var(--shiny-width)) 0;
+		}
+	}
+
+	--animate-icon-pop: icon-pop 0.3s ease-out;
+
+	@keyframes icon-pop {
+		0% {
+			transform: scale(1);
+		}
+
+		45% {
+			transform: scale(1.08);
+		}
+
+		100% {
+			transform: scale(1);
+		}
+	}
+
+	--animate-shine: shine var(--duration) infinite linear;
+
+	@keyframes shine {
+		0% {
+			background-position: 0% 0%;
+		}
+
+		50% {
+			background-position: 100% 100%;
+		}
+
+		to {
+			background-position: 0% 0%;
+		}
+	}
+}
 
 @layer base {
-  * {
-    @apply border-border outline-ring/50;
-  }
-  body {
-    @apply font-sans bg-background text-foreground;
-    letter-spacing: var(--tracking-normal);
-  }
-  html {
-    @apply font-sans;
-    scrollbar-gutter: stable;
-  }
-  body[data-scroll-locked] {
-    margin-right: 0 !important;
-  }
-  h1,
-  h2,
-  h3,
-  h4,
-  h5,
-  h6 {
-    font-family: var(--font-heading);
-  }
-  .font-medium,
-  .font-semibold,
-  .font-bold {
-    font-family: var(--font-heading);
-  }
+	* {
+		@apply border-border outline-ring/50;
+	}
+
+	body {
+		@apply font-sans bg-background text-foreground;
+		letter-spacing: var(--tracking-normal);
+		-webkit-font-smoothing: antialiased;
+		-moz-osx-font-smoothing: grayscale;
+		text-rendering: optimizeLegibility;
+	}
+
+	html {
+		@apply font-sans h-full;
+	}
+
+	body,
+	#root {
+		@apply h-full;
+	}
+
+	body[data-scroll-locked] {
+		margin-right: 0 !important;
+	}
+
+	/* Firefox makes scrollable containers keyboard focusable; swap the 3px
+	   UA outline for the app's soft 1px indicator. :where keeps specificity
+	   at zero so interactive components keep their own focus styles. */
+	:where(div, main, section, aside, ul, ol):focus-visible {
+		outline: 1px solid var(--ring-soft);
+		outline-offset: -1px;
+	}
+
+	/* Number fields use the shared grey stepper instead of native spinners. */
+	input[type="number"] {
+		appearance: textfield;
+		-moz-appearance: textfield;
+	}
+
+	input[type="number"]::-webkit-inner-spin-button,
+	input[type="number"]::-webkit-outer-spin-button {
+		-webkit-appearance: none;
+		margin: 0;
+	}
+
+	h1,
+	h2,
+	h3,
+	h4,
+	h5,
+	h6 {
+		font-family: var(--font-sans);
+		letter-spacing: 0;
+	}
 }
 
 @layer utilities {
-  /* Heading font utility */
-  .font-heading {
-    font-family: var(--font-heading);
-  }
 
-  /* Elevated surface shadow (use ring-* for borders) */
-  .shadow-border {
-    --tw-shadow: 0 4px 16px rgba(0, 0, 0, 0.1);
-    --tw-shadow-colored: 0 4px 16px var(--tw-shadow-color);
-    box-shadow: var(--tw-ring-offset-shadow, 0 0 #0000),
-      var(--tw-ring-shadow, 0 0 #0000), var(--tw-shadow);
-  }
-  .dark .shadow-border {
-    --tw-shadow: 0 4px 16px rgba(0, 0, 0, 0.3);
-  }
+	/* Heading font utility — the logo applies its own dark-mode tracking
+	   to offset optical bloom at large sizes. For small UI text (menus,
+	   nav items) we keep a single tight tracking in both themes, relying
+	   on global antialiased font-smoothing to neutralize the bloom. */
+	.font-heading {
+		font-family: var(--font-heading);
+		letter-spacing: 0;
+	}
 
-  /* Fine-tuning Studio: equal default height, expandable when needed (md+) */
-  .min-h-studio-config-column {
-    @apply md:min-h-[470px];
-  }
-  .h-studio-config-column {
-    @apply md:h-[470px];
-  }
+	.tracking-nav {
+		letter-spacing: 0;
+	}
+	.dark .tracking-nav {
+		letter-spacing: 0;
+	}
 
-  [data-streamdown="unordered-list"] {
-    list-style-type: disc;
-    list-style-position: outside;
-    padding-left: 1.25rem;
-    margin-block: 0.5rem;
-  }
+	.nav-icon-btn {
+		@apply inline-flex h-7 w-7 items-center justify-center rounded-full transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring;
+	}
 
-  [data-streamdown="ordered-list"] {
-    list-style-type: decimal;
-    list-style-position: outside;
-    padding-left: 1.25rem;
-    margin-block: 0.5rem;
-  }
+	/* Standard icon size — drives every nav/menu/action-bar icon
+	   (left sidebar, app-user menu, settings tabs, chat config toggle,
+	   right-panel close, chat message action bars, code-block actions).
+	   Pulls from --icon-size so a single edit retunes them all. */
+	.size-icon {
+		width: var(--icon-size);
+		height: var(--icon-size);
+	}
 
-  [data-streamdown="list-item"] {
-    display: list-item;
-  }
+	/* Pins Inter across themes; parent `font-heading` resolves to Geist in dark. */
+	.nav-badge {
+		font-family: "Inter Variable", ui-sans-serif, system-ui, sans-serif;
+	}
 
-  /* Flatten code blocks: single border, language label, then code directly */
-  [data-streamdown="code-block-body"] {
-    border: none !important;
-    border-radius: 0 !important;
-    background: transparent !important;
-    padding: 0 !important;
-  }
-  [data-streamdown="code-block"] {
-    gap: 0;
-    padding: 0.5rem;
-    /* Wide lines must scroll inside the thread column, not widen past the composer (flex min-width:auto). */
-    max-width: 100%;
-    min-width: 0;
-    overflow-x: auto;
-  }
-  [data-streamdown="code-block-header"] {
-    padding-left: 0.75rem;
-  }
+	.sidebar-nav-btn {
+		color: var(--nav-fg);
+	}
+	/* Gemini-style: hovering or opening the row action (3 dots) shows only
+	   the action's circle; the row highlights only when hovering the row
+	   itself. */
+	.sidebar-nav-btn:hover,
+	.sidebar-nav-btn[data-active="true"],
+	.sidebar-nav-btn[data-state="open"],
+	.group\/project-item:hover:not(:has(.sidebar-row-action:hover)) .sidebar-nav-btn,
+	.group\/project-chat-item:hover:not(:has(.sidebar-row-action:hover)) .sidebar-nav-btn,
+	.group\/projects-item:hover:not(:has(.sidebar-row-action:hover)) .sidebar-nav-btn,
+	.group\/recent-item:hover:not(:has(.sidebar-row-action:hover)) .sidebar-nav-btn,
+	.group\/run-item:hover:not(:has(.sidebar-row-action:hover)) .sidebar-nav-btn {
+		background-color: var(--nav-surface-hover) !important;
+		color: #000 !important;
+	}
+	.dark .sidebar-nav-btn:hover,
+	.dark .sidebar-nav-btn[data-active="true"],
+	.dark .sidebar-nav-btn[data-state="open"],
+	.dark .group\/project-item:hover:not(:has(.sidebar-row-action:hover)) .sidebar-nav-btn,
+	.dark .group\/project-chat-item:hover:not(:has(.sidebar-row-action:hover)) .sidebar-nav-btn,
+	.dark .group\/projects-item:hover:not(:has(.sidebar-row-action:hover)) .sidebar-nav-btn,
+	.dark .group\/recent-item:hover:not(:has(.sidebar-row-action:hover)) .sidebar-nav-btn,
+	.dark .group\/run-item:hover:not(:has(.sidebar-row-action:hover)) .sidebar-nav-btn {
+		color: #fff !important;
+	}
 
-  /* Chat thread: code slightly smaller by default; step up when the thread column is wide. */
-  .aui-thread-root [data-streamdown="code-block"] {
-    font-size: 0.8125rem;
-    line-height: 1.55;
-  }
+	.sidebar-row-action {
+		@apply absolute top-0 bottom-0 right-0 inline-flex cursor-pointer items-center justify-end pl-2 pr-1.5 opacity-0 pointer-events-none outline-none;
+	}
+	.sidebar-row-action[data-state="open"] {
+		@apply opacity-100 pointer-events-auto;
+	}
+	.sidebar-row-action-glyph {
+		@apply inline-flex size-6 items-center justify-center rounded-full text-sidebar-foreground/55;
+	}
+	/* Secondary row action (the pinned-chat unpin button) sits just left of
+	   the primary "…" options button. */
+	.sidebar-row-action.is-unpin-action {
+		right: 1.875rem;
+	}
 
-  .aui-thread-root [data-streamdown="code-block-header"] {
-    font-size: 0.6875rem;
-  }
+	/* Branch picker chevron buttons sit beside action bar icon buttons
+	   (size-8, rounded-full). Height + radius match for visual
+	   alignment, but width is tighter so the small chevron glyph reads
+	   as a compact control rather than a full-size icon button. */
+	.aui-branch-chevron-btn {
+		@apply inline-flex h-8 w-6 cursor-pointer items-center justify-center rounded-full p-0 text-chat-icon-fg transition-colors hover:bg-chat-icon-bg-hover hover:text-chat-icon-fg-hover focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-30 disabled:hover:bg-transparent;
+	}
+	.sidebar-row-action:hover .sidebar-row-action-glyph,
+	.sidebar-row-action[data-state="open"] .sidebar-row-action-glyph {
+		@apply text-nav-fg;
+		/* A step darker than the row hover so the circle reads on top of it. */
+		background-color: color-mix(in srgb, var(--foreground) 11%, transparent);
+	}
+	.dark .sidebar-row-action:hover .sidebar-row-action-glyph,
+	.dark .sidebar-row-action[data-state="open"] .sidebar-row-action-glyph {
+		color: #fff;
+	}
 
-  @container (min-width: 36rem) {
-    .aui-thread-root [data-streamdown="code-block"] {
-      font-size: 0.875rem;
-    }
+	.sidebar-sticky-label {
+		@apply rounded-none bg-sidebar pt-0 pb-[8px] pl-[16px] pr-4 text-[14px]! leading-[17px] font-medium normal-case focus-visible:ring-0! focus-visible:outline-none transition-shadow duration-150;
+		/* Muted section-header gray, matching Gemini's "Notebooks"/"Recents".
+		   Lightened from #5f6368 so the label reads as a header, clearly
+		   lighter than the near-black nav items. */
+		color: #80868b;
+		letter-spacing: 0;
+	}
+	.sidebar-sticky-label-following {
+		@apply pt-[21px];
+	}
+	.dark .sidebar-sticky-label {
+		/* Muted gray, clearly dimmer than the near-white nav items (#ececee) so
+		   "Train"/"Recents" read as section headers — like Gemini's dark mode. */
+		color: #9aa0a6;
+		letter-spacing: 0;
+	}
+	/* Panel input fields. Light mode matches the settings fields: white
+	   fill with a subtle border. Dark mode keeps the borderless
+	   translucent surface shared with the rest of the panel. */
+	.panel-input-group {
+		@apply !h-9 min-h-9 min-w-0 items-stretch gap-0 rounded-full pr-0 transition-colors focus-within:ring-0 focus-within:shadow-none;
+		border: 1px solid var(--border) !important;
+		background-color: var(--background);
+	}
+	.panel-input-group:has([data-slot="input-group-control"]:focus-visible) {
+		border-color: var(--ring-soft) !important;
+		box-shadow: none;
+	}
+	.dark .panel-input-group,
+	.dark .panel-input-group:has([data-slot="input-group-control"]:focus-visible) {
+		border: 0 !important;
+		background-color: var(--panel-input-surface);
+	}
 
-    .aui-thread-root [data-streamdown="code-block-header"] {
-      font-size: 0.75rem;
-    }
-  }
+	/* Larger panel text containers (system prompt preview button and
+	   chat-template textarea) share the same treatment. */
+	.panel-text-surface {
+		@apply rounded-[20px] transition-colors;
+		border: 1px solid var(--border);
+		background-color: var(--background);
+	}
+	.dark .panel-text-surface {
+		border-color: transparent;
+		background-color: var(--panel-input-surface);
+	}
+	.dark .panel-text-surface:hover {
+		border-color: transparent;
+		background-color: var(--panel-input-surface-hover);
+	}
+	/* Typing/clicking into the box darkens its border (dark mode surfaces are
+	   borderless, so the brighter hover fill marks focus there). */
+	.panel-text-surface:focus-within {
+		border-color: var(--ring-soft);
+	}
+	.dark .panel-text-surface:focus-within {
+		border-color: transparent;
+		background-color: var(--panel-input-surface-hover);
+	}
 
-  /* Chat: use the app sans stack for UI + prose. */
-  .aui-thread-root {
-    --font-heading: var(--font-sans);
-    font-family: var(--font-sans);
-  }
+	/* Sidebar sliders: soft neutral grays — active fill and thumb stay
+	   in the same neutral family as the panel surface so the controls
+	   read as quiet, modern, and uncluttered. Flat (no shadow), small
+	   thumb, no ring. The track's translucent neutral adapts to either
+	   theme; the fill/thumb pick a mid-gray with enough contrast to
+	   read on the panel without competing with text. */
+	/* Inactive track: barely-there alpha so it reads as a faint hint
+	   rather than a visible bar — the active fill carries the value,
+	   the track just suggests the slider's extent. Same alpha both
+	   themes; the black/white base flips automatically per theme. */
+	.panel-slider [data-slot="slider-track"] {
+		height: 0.25rem !important;
+		background-color: rgb(0 0 0 / 0.025) !important;
+	}
+	.dark .panel-slider [data-slot="slider-track"] {
+		background-color: rgb(255 255 255 / 0.025) !important;
+	}
+	/* Sliders in the right-side parameters panel.
+	 *
+	 * Color: every interactive surface (active fill, thumb body, thumb
+	 * border, hover/press halo) resolves through a single token —
+	 * `--panel-surface-fg-muted` — so the slider always belongs to the
+	 * same gray family as the panel's muted text. Theme switching and
+	 * future tone tweaks happen in one place.
+	 *
+	 * Pressure feedback: only the halo expresses interaction. The
+	 * shared <Slider /> component (components/ui/slider.tsx) applies
+	 * `hover:scale-110`, `active:scale-95`, `hover:ring-4`, and
+	 * `shadow-sm` to the thumb via Tailwind utilities. Suppressing
+	 * `transform` and `box-shadow` on the base rule prevents those from
+	 * competing with the halo's transition — without that, two
+	 * animations run on different durations/curves and the interaction
+	 * reads as jittery.
+	 *
+	 * Track-press detection: Radix's slider thumb only exposes
+	 * `data-disabled` and `data-orientation` (verified against the
+	 * package source) — there is no active-state attribute on the
+	 * thumb. We anchor the press selector on the slider root
+	 * (`.panel-slider:active`), which receives `:active` for any
+	 * pointer-down inside the slider, including presses that start on
+	 * the track. This is the only DOM-faithful way to show the halo
+	 * during a track-press without patching the shared component.
+	 *
+	 * Halo lifecycle: deliberately no `:focus` — pointer focus persists
+	 * after release and would leave a stale halo. `:focus-visible`
+	 * keeps keyboard navigation accessible (Tab + arrows). */
+	.panel-slider .bg-primary {
+		background-color: var(--panel-slider-fg) !important;
+	}
+	.panel-slider [data-slot="slider-thumb"] {
+		width: 0.875rem !important;
+		height: 0.875rem !important;
+		background-color: var(--panel-slider-fg) !important;
+		border-color: var(--panel-slider-fg) !important;
+		transform: none !important;
+		box-shadow: none !important;
+		transition: box-shadow 140ms ease-out !important;
+	}
+	.panel-slider [data-slot="slider-thumb"]:hover,
+	.panel-slider [data-slot="slider-thumb"]:focus-visible,
+	.panel-slider:active [data-slot="slider-thumb"] {
+		box-shadow: 0 0 0 10px
+			color-mix(in srgb, var(--panel-slider-fg) 18%, transparent) !important;
+	}
+	/* Active press: slightly larger / more opaque ring than passive
+	   hover, so the haptic reads stronger when the user is actively
+	   manipulating the value. */
+	.panel-slider:active [data-slot="slider-thumb"] {
+		box-shadow: 0 0 0 12px
+			color-mix(in srgb, var(--panel-slider-fg) 22%, transparent) !important;
+	}
 
-  /* Keep monospace for code fences and inline code (not KaTeX). */
-  .aui-thread-root [data-streamdown="code-block"] pre,
-  .aui-thread-root [data-streamdown="code-block"] code {
-    font-family: var(--font-mono), ui-monospace, monospace;
-  }
+	/* Inline numeric input — used for slider values and Context Length.
+	   Designed to read as *editable text* rather than a pill button so
+	   it doesn't mirror the Select/dropdown components on the panel.
+	   Default: transparent box, no border, no ring; the component sets
+	   an inline width that hugs the value. Hover/focus: very light bg
+	   fade-in, just enough to read as interactive without competing
+	   with the slider row's quiet aesthetic. */
+	.panel-number-input {
+		@apply h-7 min-w-8 shrink-0 rounded-full border-0 bg-transparent px-2 text-right text-[13px]! font-medium tabular-nums text-nav-fg shadow-none transition-colors hover:bg-black/[0.04] focus:bg-black/[0.05] focus-visible:ring-0! focus-visible:outline-none md:text-[13px]!;
+	}
+	.dark .panel-number-input {
+		@apply hover:bg-white/[0.04] focus:bg-white/[0.06];
+	}
 
-  .aui-thread-root :where(p, li, td, th, blockquote, h1, h2, h3, h4, h5, h6) code {
-    font-family: var(--font-mono), ui-monospace, monospace;
-  }
+	/* Switch — unsloth-green track when active, slider-gray thumb in
+	   both states. Keeps the on-state recognizable as an "engaged"
+	   primary control while the moving thumb sits in the same neutral
+	   palette as the panel sliders, tying every control in the panel
+	   to a single gray family. Unchecked track keeps shadcn's default
+	   bg-input for the standard off affordance. */
+	.panel-switch[data-state="checked"] {
+		background-color: var(--primary) !important;
+	}
+	.panel-switch [data-slot="switch-thumb"] {
+		background-color: var(--panel-slider-fg) !important;
+	}
+	.panel-switch[data-state="checked"] [data-slot="switch-thumb"] {
+		background-color: #ffffff !important;
+	}
 
-  /* Align fenced code blocks with the main chat column even when nested in lists. */
-  .aui-thread-root [data-streamdown="list-item"] > [data-streamdown="code-block"],
-  .aui-thread-root [data-streamdown="list-item"] [data-streamdown="code-block"] {
-    margin-left: -1.25rem;
-    width: calc(100% + 1.25rem);
-    max-width: calc(100% + 1.25rem);
-  }
+	.tooltip-compact {
+		@apply rounded-[11px] border-transparent bg-black px-2.5 py-1.5 text-[11px] font-medium leading-snug text-white shadow-md;
+	}
+
+	/* Dialog popups: borderless; chatbox shadow in light, flat card
+	   surface in dark. */
+	.dialog-soft-surface {
+		@apply border-0 ring-0 bg-background/98 shadow-[0_2px_8px_-2px_rgba(0,0,0,0.16)] dark:bg-card dark:shadow-none;
+	}
+
+	/* Rich tooltip — used for the context-usage and token-counter
+	   popups (multi-row metric breakdowns). Same black surface as the
+	   compact tooltips so chat-area popovers feel like one family.
+	   Corner radius matches the user-profile dropdown in the left
+	   sidebar (14px) so panel-level menu surfaces share a single
+	   roundness. Uses the heading font with tracking for the structured
+	   content. Same in both themes. */
+	.tooltip-rich {
+		@apply rounded-[16px] border-transparent bg-black px-4 py-3 font-heading tracking-wide text-white shadow-[0_8px_28px_-6px_rgba(0,0,0,0.32)];
+	}
+	/* Row-label color override — the popups reuse the existing prose
+	   `text-muted-foreground` class. Fixed light gray on the black
+	   surface keeps the label clearly legible while staying distinct
+	   from the values (full white). */
+	.tooltip-rich .text-muted-foreground {
+		color: #b1b1b1 !important;
+	}
+	.tooltip-rich .border-border\/40 {
+		border-color: rgb(255 255 255 / 0.12) !important;
+	}
+
+	.app-user-menu [data-slot="dropdown-menu-item"],
+	.app-user-menu [data-slot="dropdown-menu-sub-trigger"] {
+		height: 36px;
+		padding: 0 0.75rem !important;
+		gap: 9.5px !important;
+		border-radius: 12px;
+		font-weight: 500;
+		font-size: 15px;
+		line-height: 20px;
+		letter-spacing: 0;
+		color: var(--nav-fg);
+	}
+	.dark .app-user-menu [data-slot="dropdown-menu-item"],
+	.dark .app-user-menu [data-slot="dropdown-menu-sub-trigger"] {
+		letter-spacing: 0;
+	}
+	.app-user-menu [data-slot="dropdown-menu-item"] svg,
+	.app-user-menu [data-slot="dropdown-menu-sub-trigger"] svg {
+		width: 19px !important;
+		height: 19px !important;
+		flex-shrink: 0;
+	}
+	.app-user-menu [data-slot="dropdown-menu-item"]:focus,
+	.app-user-menu [data-slot="dropdown-menu-sub-trigger"]:focus,
+	.app-user-menu [data-slot="dropdown-menu-sub-trigger"][data-state="open"] {
+		background-color: var(--nav-surface-hover);
+		color: #000;
+	}
+	.dark .app-user-menu [data-slot="dropdown-menu-item"]:focus,
+	.dark .app-user-menu [data-slot="dropdown-menu-sub-trigger"]:focus,
+	.dark .app-user-menu [data-slot="dropdown-menu-sub-trigger"][data-state="open"] {
+		/* --nav-surface-hover is tuned for the page bg; on the lighter menu
+		   surface it is invisible, so use the menu hover token instead. */
+		background-color: var(--accent);
+		color: #fff;
+	}
+	.app-user-menu [data-slot="dropdown-menu-item"]:focus *,
+	.app-user-menu [data-slot="dropdown-menu-sub-trigger"]:focus *,
+	.app-user-menu [data-slot="dropdown-menu-sub-trigger"][data-state="open"] * {
+		color: #000 !important;
+	}
+	.dark .app-user-menu [data-slot="dropdown-menu-item"]:focus *,
+	.dark .app-user-menu [data-slot="dropdown-menu-sub-trigger"]:focus *,
+	.dark .app-user-menu [data-slot="dropdown-menu-sub-trigger"][data-state="open"] * {
+		color: #fff !important;
+	}
+
+	.menu-flat-destructive {
+		--destructive: #dc4848;
+	}
+	.dark .menu-flat-destructive {
+		--destructive: #ed7878;
+	}
+	.app-user-menu [data-slot="dropdown-menu-item"][data-variant="destructive"],
+	.app-user-menu [data-slot="dropdown-menu-item"][data-variant="destructive"]:focus {
+		color: var(--destructive);
+	}
+	.app-user-menu [data-slot="dropdown-menu-item"][data-variant="destructive"]:focus {
+		background-color: color-mix(in oklab, var(--destructive) 10%, transparent);
+	}
+	.app-user-menu [data-slot="dropdown-menu-item"][data-variant="destructive"]:focus * {
+		color: var(--destructive) !important;
+	}
+
+	/* Elevated surface shadow (use ring-* for borders) */
+	.shadow-border {
+		/* Chatbox shadow; dark mode drops it. */
+		--tw-shadow: 0 2px 8px -2px rgba(0, 0, 0, 0.16);
+		--tw-shadow-colored: 0 2px 8px -2px var(--tw-shadow-color);
+		box-shadow: var(--tw-ring-offset-shadow, 0 0 #0000),
+			var(--tw-ring-shadow, 0 0 #0000), var(--tw-shadow);
+	}
+
+	.dark .shadow-border {
+		box-shadow: none;
+	}
+
+	/* Settings dialog: no shadow in dark mode. */
+	.dark .settings-surface.shadow-border {
+		box-shadow: none;
+	}
+
+	/* Lift the dialog off the page bg; halfway to --card keeps the inner
+	   bg-muted / bg-background fills readable. */
+	.dark .settings-surface {
+		background-color: color-mix(in srgb, var(--background) 50%, var(--card));
+	}
+
+	/* App-wide: every clickable control shows the hand cursor. Disabled ones
+	   (native :disabled, aria-disabled, Radix data-disabled) keep the default. */
+	button:not(:disabled):not([aria-disabled="true"]),
+	summary,
+	label[for],
+	select:not(:disabled),
+	a[href],
+	:is(
+		[role="button"],
+		[role="tab"],
+		[role="switch"],
+		[role="radio"],
+		[role="checkbox"],
+		[role="menuitem"],
+		[role="menuitemcheckbox"],
+		[role="menuitemradio"],
+		[role="option"],
+		[role="combobox"],
+		[role="link"]
+	):not([aria-disabled="true"]):not([data-disabled]):not(:disabled) {
+		cursor: pointer;
+	}
+
+	/* Model selector: pointer cursor on every clickable element. */
+	.unsloth-model-selector-trigger,
+	.unsloth-model-selector-menu button {
+		cursor: pointer;
+	}
+
+	.unsloth-model-selector-trigger:disabled,
+	.unsloth-model-selector-menu button:disabled {
+		cursor: not-allowed;
+	}
+
+	/* Chat search box: borderless, soft Gemini-style elevation. */
+	.chat-search-surface {
+		border: none;
+		/* Pin to the dark --radius so rounded-3xl corners stay consistent. */
+		--radius: 0.625rem;
+		/* Prominent, wide ChatGPT-style elevation. */
+		box-shadow: 0 24px 70px -16px rgba(0, 0, 0, 0.28),
+			0 8px 24px -12px rgba(0, 0, 0, 0.18);
+	}
+
+	/* Dark: page-bg shadow so the dialog does not merge into same-color
+	   content behind it (same convention as the dropdowns). */
+	.dark .chat-search-surface {
+		box-shadow: 0 4px 14px var(--background);
+	}
+
+	.menu-soft-surface,
+	.menu-soft-surface-up {
+		/* Light: chatbox shadow geometry. */
+		--menu-soft-edge: rgba(0, 0, 0, 0.14);
+		--menu-soft-shadow: rgba(0, 0, 0, 0.16);
+		--menu-soft-offset-y: 2px;
+		--menu-soft-blur: 8px;
+		--menu-soft-spread: -2px;
+		@apply bg-popover text-popover-foreground;
+		box-shadow:
+			inset 0 0 0 1px var(--menu-soft-edge),
+			0 var(--menu-soft-offset-y) var(--menu-soft-blur)
+				var(--menu-soft-spread) var(--menu-soft-shadow);
+	}
+	.dark .menu-soft-surface,
+	.dark .menu-soft-surface-up {
+		--menu-soft-edge: rgba(255, 255, 255, 0.07);
+		--menu-soft-shadow: rgba(0, 0, 0, 0.28);
+		--menu-soft-offset-y: 8px;
+		--menu-soft-blur: 28px;
+		--menu-soft-spread: -6px;
+	}
+	.dark .menu-soft-surface-up {
+		--menu-soft-offset-y: -6px;
+		--menu-soft-spread: -8px;
+	}
+
+	/* Model selector: drop the inset edge ring, keep the soft drop shadow.
+	   Pin --radius to the light value so the corners match in both themes. */
+	.unsloth-model-selector-menu.menu-soft-surface {
+		--radius: 1.25rem;
+		box-shadow: 0 var(--menu-soft-offset-y) var(--menu-soft-blur)
+			var(--menu-soft-spread) var(--menu-soft-shadow);
+	}
+
+	.dark .unsloth-model-selector-menu.menu-soft-surface {
+		/* Match the left sidebar background. */
+		background-color: var(--sidebar);
+		box-shadow: none;
+	}
+
+	/* List menus: one radius in both themes, slightly tighter than --radius-lg
+	   and matching the sidebar buttons. !important beats per-menu rounded-*. */
+	[data-slot="dropdown-menu-content"],
+	[data-slot="dropdown-menu-sub-content"],
+	[data-slot="select-content"],
+	[data-slot="combobox-content"] {
+		border-radius: 14px !important;
+	}
+
+	/* Account menu: a touch rounder than standard list menus. */
+	[data-slot="dropdown-menu-content"].app-user-menu.menu-soft-surface-up {
+		border-radius: 18px !important;
+	}
+
+	/* Every dropdown/menu/select/popover: borderless, chatbox shadow in light,
+	   none in dark. !important so it also overrides the bespoke menu shadows. */
+	[data-slot="dropdown-menu-content"],
+	[data-slot="dropdown-menu-sub-content"],
+	[data-slot="select-content"],
+	[data-slot="combobox-content"],
+	[data-slot="popover-content"] {
+		box-shadow: 0 2px 8px -2px rgba(0, 0, 0, 0.16) !important;
+	}
+	/* Dark: keep the chat-box dropdown shadow so menus don't merge into a
+	   same-color surface (e.g. a menu overlapping the composer). */
+	.dark [data-slot="dropdown-menu-content"],
+	.dark [data-slot="dropdown-menu-sub-content"],
+	.dark [data-slot="select-content"],
+	.dark [data-slot="combobox-content"],
+	.dark [data-slot="popover-content"] {
+		box-shadow: 0 4px 14px var(--background) !important;
+	}
+
+	/* Model selector: shadow in the page-bg color so it lifts off the
+	   composer it overlaps (chatbox geometry). Account menu stays flat. */
+	.dark .unsloth-model-selector-menu {
+		box-shadow: 0 2px 8px -2px var(--background) !important;
+	}
+	.dark .app-user-menu.menu-soft-surface-up {
+		box-shadow: none !important;
+	}
+
+	/* Context menus (chat, run, project): drop the inset edge ring, keep the soft shadow. */
+	.app-user-menu.menu-soft-surface {
+		box-shadow: 0 var(--menu-soft-offset-y) var(--menu-soft-blur)
+			var(--menu-soft-spread) var(--menu-soft-shadow);
+	}
+
+	/* Account menu: drop the inset edge ring and use the composer's soft shadow. */
+	.app-user-menu.menu-soft-surface-up {
+		box-shadow: 0 2px 8px -2px rgba(0, 0, 0, 0.16);
+	}
+	.dark .app-user-menu.menu-soft-surface-up {
+		box-shadow: 0 8px 28px -6px rgba(0, 0, 0, 0.28);
+	}
+
+	.chat-composer-surface {
+		@apply relative flex w-full flex-col rounded-[32px] bg-background dark:bg-card px-1 pt-2 outline-none transition-shadow;
+		container-type: inline-size;
+		font-family: var(--font-sans);
+		background-clip: padding-box;
+		background-color: #ffffff;
+		/* Gemini-style composer shadow. */
+		box-shadow: 0 2px 8px -2px rgba(0, 0, 0, 0.16);
+		transition: box-shadow 0.1s;
+	}
+
+	.dark .chat-composer-surface {
+		background-color: var(--card);
+		box-shadow: none;
+	}
+
+	.composer-pill-btn {
+		@apply flex cursor-pointer items-center gap-1.5 rounded-full py-1.5 pl-2 pr-2.5 text-[14px] font-medium text-muted-foreground/70 transition-colors hover:bg-primary/10 dark:hover:bg-white/[0.1] disabled:cursor-not-allowed disabled:opacity-40;
+	}
+
+	/* Caret pills (RAG, MCP): the chevron carries its own whitespace, so the
+	   trailing padding is tightened to keep the hover pill balanced. */
+	.composer-pill-btn:has(.composer-pill-caret) {
+		@apply pr-1.5;
+	}
+
+	/* Icon-only (compact) pills drop their label, so make the button a square
+	   and center the glyph; the rounded-full hover highlight then reads as a
+	   circle around the icon rather than a wide rounded rectangle. */
+	[data-pill-compact="true"] .composer-pill-btn:not([data-keep-label]) {
+		@apply size-8 justify-center px-0;
+	}
+
+	.composer-pill-btn[data-active="true"] {
+		color: var(--primary);
+	}
+	/* Permission-level pill: higher-contrast grey than the resting pills so
+	   the active level stays legible (darker in light mode, lighter in dark).
+	   Full access keeps the danger yellow below. */
+	.composer-pill-btn.composer-pill-permissions:not([data-variant="danger"]) {
+		color: color-mix(in oklab, var(--foreground) 60%, transparent);
+	}
+	.dark .composer-pill-btn.composer-pill-permissions:not([data-variant="danger"]) {
+		color: color-mix(in oklab, var(--foreground) 72%, transparent);
+	}
+	/* Bypass permissions badge: bright yellow text, no resting fill; the
+	   rounded hover pill picks up the yellow accent like other toggles. */
+	.composer-pill-btn[data-variant="danger"] {
+		background-color: transparent;
+		color: var(--bypass);
+	}
+	.composer-pill-btn[data-variant="danger"]:hover {
+		background-color: color-mix(in oklab, var(--bypass) 7%, transparent);
+	}
+	/* Match the hover-X circle to the yellow accent instead of the green primary. */
+	.composer-pill-btn[data-variant="danger"] .composer-pill-x {
+		background-color: color-mix(in oklab, var(--bypass) 13%, transparent);
+	}
+
+	/* With more than 4 tools on, drop pill labels to icons only to cut clutter.
+	   Compare and the bypass-permissions pill keep their labels via
+	   data-keep-label; the permission pill sits before the collapsed icons, so
+	   they line up to its right. */
+	[data-pill-compact="true"]
+		.composer-pill-btn:not([data-keep-label])
+		> span:not(.composer-pill-glyph) {
+		display: none;
+	}
+
+	/* Drop the MCP dropdown caret when collapsed so the icon is not squished. */
+	[data-pill-compact="true"]
+		.composer-pill-btn:not([data-keep-label])
+		.composer-pill-caret {
+		display: none;
+	}
+
+	/* Fixed-width icon slot so every pill's icon occupies the same space and
+	   the labels line up on an even rhythm, regardless of icon size. */
+	.composer-pill-glyph {
+		@apply relative inline-flex w-[19px] shrink-0 items-center justify-center transition-opacity;
+	}
+
+	/* On hover the icon swaps for an X inside a soft circle (ChatGPT-style),
+	   filling the icon slot so every pill's X is identical and centered. */
+	.composer-pill-x {
+		@apply pointer-events-none absolute inset-0 m-auto size-[19px] rounded-full bg-primary/15 p-[3px] opacity-0 transition-opacity dark:bg-white/[0.14];
+	}
+
+	/* Icon-only (compact) pills are too small for the circle, so show a bare x. */
+	[data-pill-compact="true"]
+		.composer-pill-btn:not([data-keep-label])
+		.composer-pill-x {
+		@apply size-[15px] bg-transparent p-0 dark:bg-transparent;
+	}
+
+	/* Compact pills hide their labels, so surface the name as a hover
+	   tooltip styled like .tooltip-compact. */
+	[data-pill-compact="true"]
+		.composer-pill-btn:not([data-keep-label])[data-pill-label] {
+		position: relative;
+	}
+	[data-pill-compact="true"]
+		.composer-pill-btn:not([data-keep-label])[data-pill-label]:hover::after {
+		content: attr(data-pill-label);
+		/* Always one nowrap line, so always a full pill. */
+		@apply pointer-events-none absolute bottom-[calc(100%+6px)] left-1/2 z-50 -translate-x-1/2 rounded-full bg-black px-2.5 py-1.5 text-[11px] font-medium leading-snug whitespace-nowrap text-white shadow-md;
+	}
+
+	/* Compact caret pills (RAG, MCP) open their menu on click instead of
+	   toggling off, so keep the icon and skip the X swap. No data-active
+	   requirement: the off-switch glyph rules below hide the icon on hover
+	   even for inactive pills, which left a blank slot in compact mode. */
+	[data-pill-compact="true"]
+		.composer-pill-btn:not([data-keep-label]):has(.composer-pill-caret):hover
+		.composer-pill-glyph
+		> :not(.composer-pill-x) {
+		opacity: 1;
+	}
+	[data-pill-compact="true"]
+		.composer-pill-btn:not([data-keep-label]):has(.composer-pill-caret)
+		.composer-pill-x {
+		display: none;
+	}
+
+	/* Hovering an active pill swaps the icon for an X (click to turn off). */
+	.composer-pill-btn[data-active="true"]:has(.composer-pill-x):hover .composer-pill-glyph > :not(.composer-pill-x),
+	.unsloth-thinking-pill[data-active="true"]:hover .composer-pill-glyph > :not(.composer-pill-x) {
+		@apply opacity-0;
+	}
+
+	.composer-pill-btn[data-active="true"]:has(.composer-pill-x):hover .composer-pill-x,
+	.unsloth-thinking-pill[data-active="true"]:hover .composer-pill-x {
+		@apply opacity-100;
+	}
+
+	/* Pills whose icon is an off switch (RAG, MCP) only render while the
+	   feature is on, so reveal the X on hover even when the pill is not in
+	   its active look (MCP with no servers enabled, RAG without a model). */
+	.composer-pill-btn:has(> .composer-pill-glyph[role="button"]):hover
+		.composer-pill-glyph
+		> :not(.composer-pill-x) {
+		@apply opacity-0;
+	}
+
+	.composer-pill-btn:has(> .composer-pill-glyph[role="button"]):hover
+		.composer-pill-x {
+		@apply opacity-100;
+	}
+
+	.composer-input {
+		@apply mt-2 mb-1 mx-3 min-h-12 w-[calc(100%-1.5rem)] resize-none overflow-y-auto bg-transparent pl-2 pr-4 pt-2 pb-3 text-sm font-[450] outline-none placeholder:text-muted-foreground focus-visible:ring-0;
+	}
+
+	.composer-action-wrapper {
+		@apply relative mx-2 mb-2 flex items-center justify-between;
+	}
+
+	.composer-footer-note {
+		@apply mt-1.5 text-center text-[11px] tracking-[0em] text-muted-foreground;
+		font-family: var(--font-sans);
+	}
+
+	/* Pill composer; own classes so compare-mode keeps its stacked layout. */
+	.unsloth-composer-surface {
+		@apply relative flex w-full flex-col rounded-[32px] bg-background dark:bg-card px-3 py-3 outline-none transition-shadow;
+		container-type: inline-size;
+		font-family: var(--font-sans);
+		background-clip: padding-box;
+		background-color: #ffffff;
+		/* Gemini-style composer shadow. */
+		box-shadow: 0 2px 8px -2px rgba(0, 0, 0, 0.16);
+		transition: box-shadow 0.1s;
+	}
+
+	.unsloth-composer-surface:focus-within {
+		box-shadow: 0 2px 8px -2px rgba(0, 0, 0, 0.16);
+	}
+
+	.dark .unsloth-composer-surface {
+		background-color: var(--card);
+		box-shadow: none;
+	}
+
+	/* Keep the expand/collapse width swap instant. A transition on width (e.g.
+	   the reduced-motion blanket rule) makes getComputedStyle().width lag a
+	   frame, so autosize measures the stale width and leaves a stray blank row. */
+	.unsloth-composer-line,
+	.unsloth-composer-line .unsloth-composer-input,
+	.unsloth-composer-left {
+		transition-property: none !important;
+	}
+
+	/* Composer row: one centered line when empty; two rows (input over controls)
+	   when filled, so the textarea never remounts. */
+	.unsloth-composer-line {
+		@apply flex w-full flex-wrap items-center gap-0.5 px-1;
+	}
+
+	.unsloth-composer-left {
+		@apply flex min-w-0 flex-wrap items-center gap-0.5;
+		order: 1;
+		/* Pull the plus button closer to the composer edge. */
+		margin-left: -0.25rem;
+	}
+
+	.unsloth-composer-line .unsloth-composer-input {
+		order: 2;
+	}
+
+	.unsloth-composer-line .aui-composer-action-wrapper {
+		order: 3;
+		margin-left: auto;
+		/* Inset the send circle from the edge, Gemini-style. */
+		margin-right: -0.125rem;
+	}
+
+	.unsloth-composer-line[data-expanded="true"] .unsloth-composer-input {
+		order: 1;
+		flex-basis: 100%;
+		width: 100%;
+		/* Sits close to the left edge, near the plus. */
+		padding-left: 0.375rem;
+		padding-top: 0.5rem;
+		padding-bottom: 0.5rem;
+	}
+
+	/* Two-row gap between text and controls. On the line, not the input, so
+	   the placeholder max-height clamp never crops it like padding would. */
+	.unsloth-composer-line[data-expanded="true"] {
+		row-gap: 0.75rem;
+	}
+
+	.unsloth-composer-line[data-expanded="true"] .unsloth-composer-left {
+		order: 2;
+	}
+
+	/* Empty (placeholder shown): clamp back to one row. max-height beats the
+	   autosize textarea's inline !important height, so a cleared message leaves
+	   no stale tall box or stray scrollbar. */
+	.unsloth-composer-input:placeholder-shown {
+		max-height: 40px !important;
+		overflow-y: hidden !important;
+	}
+
+	.unsloth-composer-input {
+		@apply min-h-[40px] min-w-0 flex-1 resize-none overflow-y-auto bg-transparent pl-0.5 pr-2 py-2 text-[15px] font-[450] leading-6 outline-none placeholder:text-muted-foreground focus-visible:ring-0;
+	}
+
+	.unsloth-composer-plus {
+		@apply flex size-9 shrink-0 cursor-pointer items-center justify-center rounded-full text-foreground transition-colors hover:bg-muted-foreground/15 disabled:cursor-not-allowed disabled:opacity-40;
+	}
+
+	.unsloth-composer-plus[data-state="open"] {
+		@apply bg-muted-foreground/15;
+		/* Radix's modal menu sets body pointer-events:none; re-enable on the open
+		   trigger so the cursor and click-to-close work. */
+		pointer-events: auto;
+		cursor: pointer;
+	}
+
+	/* Open menu rotates the plus 45deg into an x. Ease-in-out for a smooth
+	   spin; keep it at 45deg so it never passes back through a "+". */
+	.unsloth-composer-plus svg {
+		transition: transform 250ms cubic-bezier(0.65, 0, 0.35, 1);
+		will-change: transform;
+	}
+
+	.unsloth-composer-plus[data-state="open"] svg {
+		transform: rotate(45deg);
+	}
+
+	/* Keyboard focus shows a subtle brand ring, not the browser's blue outline;
+	   mouse clicks (no :focus-visible) stay ring-free. */
+	.composer-pill-btn:focus-visible,
+	.unsloth-thinking-pill:focus-visible,
+	.unsloth-composer-plus:focus-visible {
+		outline: none;
+		box-shadow: 0 0 0 1px var(--ring-soft);
+	}
+
+	/* Clickable controls never show the browser's blue outline (Radix re-focuses
+	   triggers on menu close, which lights them up). Mouse focus also drops the
+	   Tailwind ring; keyboard focus (:focus-visible) keeps custom rings so the
+	   focused control stays visible. Inputs keep their own focus styles. Zeroing
+	   the ring vars leaves decorative shadow-* utilities intact. */
+	button:focus,
+	a:focus,
+	summary:focus,
+	[role="button"]:focus {
+		outline: none !important;
+	}
+	/* Pressed controls are exempt: their ring marks SELECTION, and the just
+	   clicked control is exactly the one holding mouse focus. */
+	button:focus:not(:focus-visible):not([aria-pressed="true"]),
+	a:focus:not(:focus-visible),
+	summary:focus:not(:focus-visible),
+	[role="button"]:focus:not(:focus-visible):not([aria-pressed="true"]) {
+		--tw-ring-shadow: 0 0 #0000 !important;
+		--tw-ring-offset-shadow: 0 0 #0000 !important;
+	}
+
+	/* The greeting is a heading: it follows the user's heading font and
+	   defaults to Hellix. Restored on the element because the base h1 rule
+	   reads --font-heading with !important and .aui-thread-root resets
+	   that var to sans for chat prose. */
+	.unsloth-welcome-title {
+		--font-heading: var(
+			--custom-heading-font,
+			"Hellix",
+			"Space Grotesk Variable",
+			var(--font-sans)
+		);
+		font-family: var(
+			--custom-heading-font,
+			"Hellix",
+			"Space Grotesk Variable",
+			var(--font-sans)
+		);
+		font-weight: 500;
+	}
+
+	/* Right-side Thinking pill (toggle or dropdown). pl-2 matches the left
+	   pills so the hover X is not pushed in too far. */
+	.unsloth-thinking-pill {
+		@apply inline-flex shrink-0 cursor-pointer items-center gap-1 rounded-full py-1.5 pl-2 pr-2.5 text-[14px] font-medium text-muted-foreground transition-colors hover:bg-primary/10 dark:hover:bg-white/[0.1] disabled:cursor-not-allowed disabled:opacity-40;
+		/* Reserve a text line so the icon-only (inactive) pill matches the
+		   text pills' height instead of collapsing to the icon. */
+		min-height: calc(1lh + 0.75rem);
+	}
+
+	.unsloth-thinking-pill[data-active="true"] {
+		color: var(--primary);
+	}
+
+	.unsloth-thinking-pill[data-state="open"] {
+		@apply bg-muted-foreground/10;
+		/* See .unsloth-composer-plus: re-enable pointer-events on the open trigger. */
+		pointer-events: auto;
+		cursor: pointer;
+	}
+
+	/* Keep Thinking on the control row in narrow split layouts. */
+	@container (max-width: 36rem) {
+		.unsloth-thinking-pill {
+			@apply size-8 justify-center gap-0 px-0;
+			min-height: 2rem;
+		}
+
+		.unsloth-thinking-label,
+		.unsloth-thinking-caret {
+			display: none;
+		}
+
+		.unsloth-thinking-pill[data-pill-label] {
+			position: relative;
+		}
+
+		.unsloth-thinking-pill[data-pill-label]:not([data-state="open"]):hover::after {
+			content: attr(data-pill-label);
+			@apply pointer-events-none absolute bottom-[calc(100%+6px)] left-1/2 z-50 -translate-x-1/2 rounded-full bg-black px-2.5 py-1.5 text-[11px] font-medium leading-snug whitespace-nowrap text-white shadow-md;
+		}
+	}
+
+	/* Smaller tick for selected Thinking options. */
+	.unsloth-tick {
+		width: 0.8rem !important;
+		height: 0.8rem !important;
+	}
+
+	/* Soft elevation; [data-slot] outranks the component ring-1, dropping the border. */
+	.unsloth-plus-menu[data-slot] {
+		/* Concentric with the item hover boxes: container radius =
+		   item radius (12px) + side gutter (9px), so the curves run parallel.
+		   !important beats the global 14px dropdown radius. */
+		border-radius: 21px !important;
+		padding-top: 0.5rem;
+		padding-bottom: 0.5rem;
+		/* Side gutter ~matches the 0.5rem top/bottom padding so the hover box
+		   sits evenly inset on all four sides. */
+		padding-left: 9px;
+		padding-right: 9px;
+		box-shadow: 0 2px 8px -2px rgba(0, 0, 0, 0.16);
+	}
+
+	/* Width does not change the concentric radius; the MCP menu uses the same
+	   item radius + gutter, so it keeps the same container radius. */
+	.unsloth-plus-menu.mcp-menu[data-slot] {
+		border-radius: 22px !important;
+	}
+
+	/* One-line menus keep the standard menu shape (same radius as multi-line),
+	   so a lone row doesn't balloon into a fully rounded pill. */
+
+	.dark .unsloth-plus-menu[data-slot] {
+		background-color: var(--card);
+		/* Shadow tinted to the page bg so it blends, not a dark halo. */
+		box-shadow: 0 4px 14px var(--background);
+	}
+
+	/* Compact items; also applied to portaled sub-content. */
+	.unsloth-plus-menu :is(
+			[data-slot="dropdown-menu-item"],
+			[data-slot="dropdown-menu-sub-trigger"]
+		) {
+		@apply gap-3 pl-3 pr-3 py-2 text-[14px];
+		cursor: pointer;
+		/* Pin hover-box radius so dark matches light (container radius minus the
+		   side gutter keeps the curves concentric). */
+		border-radius: 12px;
+	}
+
+	.unsloth-plus-menu [data-slot="dropdown-menu-label"] {
+		@apply pl-3 pr-3 py-1.5 text-[12px];
+	}
+
+	/* Active (green) items keep their primary text and icon color on hover. */
+	.unsloth-plus-menu [data-slot="dropdown-menu-item"].text-primary:is(:hover, :focus, :focus-visible, [data-highlighted]),
+	.unsloth-plus-menu [data-slot="dropdown-menu-item"].text-primary:is(:hover, :focus, :focus-visible, [data-highlighted]) svg {
+		color: var(--primary) !important;
+	}
+
+	/* Light hover: neutral grey, not the green accent. */
+	.unsloth-plus-menu :is(
+			[data-slot="dropdown-menu-item"],
+			[data-slot="dropdown-menu-sub-trigger"]
+		):is(:hover, :focus, :focus-visible, [data-highlighted], [data-state="open"]) {
+		background-color: rgba(0, 0, 0, 0.06) !important;
+	}
+
+	/* Dark hover: the accent nearly matches the surface, so use a clear overlay. */
+	.dark .unsloth-plus-menu :is(
+			[data-slot="dropdown-menu-item"],
+			[data-slot="dropdown-menu-sub-trigger"]
+		):is(:hover, :focus, :focus-visible, [data-highlighted], [data-state="open"]) {
+		background-color: rgba(255, 255, 255, 0.1) !important;
+	}
+
+	/* Hover tints only the background; the item and every descendant (text, icons,
+	   labels) keep their resting color, overriding Radix's focus:**:text-accent-
+	   foreground. The active green rule above still wins via higher specificity. */
+	.unsloth-plus-menu :is(
+			[data-slot="dropdown-menu-item"],
+			[data-slot="dropdown-menu-sub-trigger"]
+		):is(:hover, :focus, :focus-visible, [data-highlighted], [data-state="open"]),
+	.unsloth-plus-menu :is(
+			[data-slot="dropdown-menu-item"],
+			[data-slot="dropdown-menu-sub-trigger"]
+		):is(:hover, :focus, :focus-visible, [data-highlighted], [data-state="open"]) * {
+		color: inherit !important;
+	}
+
+	.unsloth-plus-menu :is(
+			[data-slot="dropdown-menu-item"],
+			[data-slot="dropdown-menu-sub-trigger"]
+		)
+		svg {
+		width: 1.15rem;
+		height: 1.15rem;
+	}
+
+	/* Destructive items keep red text and a red-tinted hover, not the grey one. */
+	.unsloth-plus-menu [data-slot="dropdown-menu-item"][data-variant="destructive"],
+	.unsloth-plus-menu [data-slot="dropdown-menu-item"][data-variant="destructive"] * {
+		color: var(--destructive) !important;
+	}
+	.unsloth-plus-menu [data-slot="dropdown-menu-item"][data-variant="destructive"]:is(:hover, :focus, :focus-visible, [data-highlighted]) {
+		background-color: color-mix(in oklab, var(--destructive) 10%, transparent) !important;
+	}
+
+	/* Thinking menu: tighter gap; nowrap keeps "Preserve thinking" on one line
+	   so the menu sizes to its content. */
+	.unsloth-thinking-menu :is(
+			[data-slot="dropdown-menu-item"],
+			[data-slot="dropdown-menu-sub-trigger"]
+		) {
+		@apply gap-1.5 pl-2.5 pr-2.5;
+		white-space: nowrap;
+	}
+	.artifact-panel-shell {
+		box-shadow: 0 2px 8px -2px rgba(0, 0, 0, 0.16);
+	}
+
+	.dark .artifact-panel-shell {
+		box-shadow: none;
+	}
+
+	.chat-artifact-split[data-artifact-layout-animating="true"] > [data-panel] {
+		transition:
+			flex-basis 260ms var(--ease-out-cubic),
+			flex-grow 260ms var(--ease-out-cubic),
+			flex-shrink 260ms var(--ease-out-cubic);
+		will-change: flex-basis, flex-grow;
+	}
+
+	.chat-artifact-pop-surface {
+		pointer-events: none;
+		opacity: 0;
+		transform: scale(0.965) translateY(8px);
+		transform-origin: center center;
+		transition:
+			opacity 180ms var(--ease-out-cubic),
+			transform 220ms var(--ease-out-cubic);
+		will-change: opacity, transform;
+	}
+
+	.chat-artifact-pop-surface[data-artifact-surface-visible="true"] {
+		pointer-events: auto;
+		opacity: 1;
+		transform: scale(1) translateY(0);
+	}
+
+	@media (prefers-reduced-motion: reduce) {
+		html:not(.force-motion) .chat-artifact-pop-surface {
+			transition: none;
+			transform: none;
+		}
+	}
+
+	.artifact-card-shimmer {
+		background: linear-gradient(
+			105deg,
+			transparent 0%,
+			color-mix(in oklch, var(--muted-foreground) 4%, transparent) 40%,
+			color-mix(in oklch, var(--muted-foreground) 8%, transparent) 50%,
+			color-mix(in oklch, var(--muted-foreground) 4%, transparent) 60%,
+			transparent 100%
+		);
+		transform: translateX(-120%);
+		animation: artifact-card-shimmer 1.55s var(--ease-out-cubic) infinite;
+	}
+
+	.artifact-loading-line {
+		width: 48%;
+		background: color-mix(in oklch, var(--primary) 88%, transparent);
+		transform: translate3d(-125%, 0, 0) scaleX(0.78);
+		transform-origin: center center;
+		animation: artifact-loading-line 1.7s linear infinite;
+	}
+
+	.artifact-panel-shell::before,
+	.artifact-panel-shell::after {
+		content: "";
+		position: absolute;
+		z-index: 20;
+		pointer-events: none;
+		transition:
+			border-color 150ms var(--ease-out-cubic),
+			background-color 150ms var(--ease-out-cubic),
+			box-shadow 150ms var(--ease-out-cubic),
+			transform 150ms var(--ease-out-cubic);
+	}
+
+	.artifact-panel-shell::before {
+		inset: 0;
+		border: 2px solid transparent;
+		border-radius: inherit;
+		-webkit-mask: linear-gradient(90deg, #000 0 24px, transparent 24px);
+		mask: linear-gradient(90deg, #000 0 24px, transparent 24px);
+	}
+
+	.artifact-panel-shell::after {
+		top: 50%;
+		left: -2px;
+		height: 28px;
+		width: 4px;
+		border-radius: 999px;
+		background: transparent;
+		transform: translateY(-50%);
+	}
+
+	[data-slot="resizable-handle"]:hover
+		+ [data-slot="resizable-panel"]
+		.artifact-panel-shell::before,
+	[data-slot="resizable-handle"]:active
+		+ [data-slot="resizable-panel"]
+		.artifact-panel-shell::before,
+	[data-slot="resizable-handle"][data-resize-handle-state="hover"]
+		+ [data-slot="resizable-panel"]
+		.artifact-panel-shell::before,
+	[data-slot="resizable-handle"][data-resize-handle-state="drag"]
+		+ [data-slot="resizable-panel"]
+		.artifact-panel-shell::before {
+		border-color: color-mix(in oklch, var(--primary) 58%, var(--border));
+	}
+
+	[data-slot="resizable-handle"]:hover
+		+ [data-slot="resizable-panel"]
+		.artifact-panel-shell::after,
+	[data-slot="resizable-handle"]:active
+		+ [data-slot="resizable-panel"]
+		.artifact-panel-shell::after,
+	[data-slot="resizable-handle"][data-resize-handle-state="hover"]
+		+ [data-slot="resizable-panel"]
+		.artifact-panel-shell::after,
+	[data-slot="resizable-handle"][data-resize-handle-state="drag"]
+		+ [data-slot="resizable-panel"]
+		.artifact-panel-shell::after {
+		background: color-mix(in oklch, var(--primary) 58%, var(--border));
+		box-shadow: none;
+		transform: translateY(-50%) scaleY(1.06);
+	}
+
+	@keyframes artifact-card-shimmer {
+		to {
+			transform: translateX(120%);
+		}
+	}
+
+	/* Indeterminate loading bar: a 1/3-width segment sweeping the track. */
+	.loading-bar-slide {
+		animation: loading-bar-slide 1.3s ease-in-out infinite;
+	}
+
+	@keyframes loading-bar-slide {
+		from {
+			transform: translateX(-110%);
+		}
+		to {
+			transform: translateX(420%);
+		}
+	}
+
+	@keyframes artifact-loading-line {
+		0% {
+			transform: translate3d(-125%, 0, 0) scaleX(0.78);
+		}
+		35% {
+			transform: translate3d(-18%, 0, 0) scaleX(0.96);
+		}
+		62% {
+			transform: translate3d(72%, 0, 0) scaleX(1.12);
+		}
+		82% {
+			transform: translate3d(132%, 0, 0) scaleX(1.26);
+		}
+		94% {
+			transform: translate3d(188%, 0, 0) scaleX(1.36);
+		}
+		100% {
+			transform: translate3d(220%, 0, 0) scaleX(1.42);
+		}
+	}
+
+	/* Fine-tuning Studio: equal minimum card height, grows with content (md+) */
+	.min-h-studio-config-column {
+		@apply md:min-h-[520px];
+	}
+
+	[data-streamdown="unordered-list"] {
+		list-style-type: disc;
+		list-style-position: outside;
+		padding-left: 1.25rem;
+		margin-block: 0.5rem;
+	}
+
+	[data-streamdown="ordered-list"] {
+		list-style-type: decimal;
+		list-style-position: outside;
+		padding-left: 1.25rem;
+		margin-block: 0.5rem;
+	}
+
+	[data-streamdown="list-item"] {
+		display: list-item;
+	}
+
+	/* Flatten code blocks: single border, language label, then code directly */
+	[data-streamdown="code-block-body"] {
+		border: none !important;
+		border-radius: 0 !important;
+		background: transparent !important;
+		padding: 0 !important;
+	}
+
+	.aui-thread-root [data-streamdown="code-block-body"] {
+		/* Keep overlay scrollbars below one-line code. */
+		padding-bottom: 0.625rem !important;
+	}
+
+	[data-streamdown="code-block"] {
+		gap: 0.25rem;
+		padding: 0.75rem 1rem;
+		border-radius: 1.5rem;
+		/* Wide lines must scroll inside the thread column, not widen past the composer (flex min-width:auto). */
+		max-width: 100%;
+		min-width: 0;
+		overflow-x: auto;
+	}
+
+	[data-streamdown="code-block-header"] {
+		padding-left: 0;
+	}
+
+	.aui-thread-root [data-streamdown="code-block"] code > span::before {
+		content: none !important;
+		display: none !important;
+		margin: 0 !important;
+		width: 0 !important;
+	}
+
+	/* Chat thread: code slightly smaller by default; step up when the thread column is wide. */
+	.aui-thread-root [data-streamdown="code-block"] {
+		font-size: 0.8125rem;
+		line-height: 1.55;
+	}
+
+	.aui-thread-root [data-streamdown="code-block-header"] {
+		font-size: 0.6875rem;
+	}
+
+	@container (min-width: 36rem) {
+		.aui-thread-root [data-streamdown="code-block"] {
+			font-size: 0.875rem;
+		}
+
+		.aui-thread-root [data-streamdown="code-block-header"] {
+			font-size: 0.75rem;
+		}
+	}
+
+	/* Chat: use the app sans stack for UI + prose. */
+	.aui-thread-root {
+		--font-heading: var(--font-sans);
+		font-family: var(--font-sans);
+	}
+
+	/* Normalize the trailing margin of the last element inside an
+	   assistant message so the gap above the action bar is the same
+	   regardless of whether the response ends with a paragraph
+	   (margin-bottom: 0 by Tailwind preflight) or a streamdown block
+	   like a code fence (margin-bottom: 1rem from `my-4`). Browser
+	   block layout doesn't collapse trailing margin into a sibling
+	   container, so we zero it explicitly along the deepest
+	   `:last-child` path. Streamdown wraps content in several
+	   nested divs, so code blocks land 4–5 levels deep — the chain
+	   walks that depth without using a generic descendant `:last-child`
+	   (which would also zero last-paragraph-in-list margins). The
+	   visible gap is then driven solely by the footer's own `mt-*`. */
+	.aui-assistant-message-content > *:last-child,
+	.aui-assistant-message-content > *:last-child > *:last-child,
+	.aui-assistant-message-content > *:last-child > *:last-child > *:last-child,
+	.aui-assistant-message-content > *:last-child > *:last-child > *:last-child > *:last-child,
+	.aui-assistant-message-content > *:last-child > *:last-child > *:last-child > *:last-child > *:last-child,
+	.aui-assistant-message-content > *:last-child > *:last-child > *:last-child > *:last-child > *:last-child > *:last-child {
+		margin-bottom: 0 !important;
+	}
+
+	/* The streamdown code-block wrapper carries `my-4` (16px top + 16px
+	   bottom margin). The bottom margin is what stretches the gap
+	   between the code-block box and the action-bar below it on a
+	   trailing code block. We zero `margin-bottom` on every code block
+	   inside an assistant message body. CSS margin collapsing handles
+	   the non-trailing case correctly: when a code block is followed by
+	   a paragraph (or any block with `my-4` mt), the rendered gap is
+	   `max(prev.mb, next.mt)` — so removing the code block's `mb` still
+	   leaves the next element's `mt-4` as the visible spacer. The only
+	   case actually affected is the trailing position (no next element),
+	   where `mb=0` collapses the gap to just the footer's `mt-2`,
+	   matching a text-trailing message. The wrapper's own
+	   `padding-bottom` is preserved, so the last line of code keeps its
+	   natural breathing room inside the box. */
+	.aui-assistant-message-content [data-streamdown="code-block"] {
+		margin-bottom: 0 !important;
+	}
+
+	/* Keep monospace for code fences and inline code (not KaTeX). The custom
+	   Code font (--custom-code-font) overrides when set, else Fira Code. */
+	.aui-thread-root [data-streamdown="code-block"] pre,
+	.aui-thread-root [data-streamdown="code-block"] code {
+		font-family: var(--custom-code-font, "Fira Code", ui-monospace, monospace);
+	}
+
+	.aui-thread-root :where(p, li, td, th, blockquote, h1, h2, h3, h4, h5, h6) code {
+		font-family: var(--custom-code-font, "Fira Code", ui-monospace, monospace);
+	}
+
+	/* Align fenced code blocks with the main chat column even when nested in lists. */
+	.aui-thread-root [data-streamdown="list-item"] > [data-streamdown="code-block"],
+	.aui-thread-root [data-streamdown="list-item"] [data-streamdown="code-block"] {
+		margin-left: -1.25rem;
+		width: calc(100% + 1.25rem);
+		max-width: calc(100% + 1.25rem);
+	}
+
+	.dark .aui-thread-root [data-streamdown="code-block"] {
+		/* Streamdown `pre` uses `dark:bg-[var(--shiki-dark-bg,...)]`; keep one surface on the outer shell. */
+		--shiki-dark-bg: transparent;
+		background: var(--color-code-block);
+		border: 1px solid oklch(1 0 0 / 0.08);
+	}
+
+	/* Streamdown code-block stability hardening.
+	 *
+	 * Two streamdown internals cause a visible "reload"-style flicker on
+	 * trailing code blocks the moment streaming ends. Both are addressable
+	 * purely in CSS without patching the library:
+	 *
+	 * 1. `content-visibility: auto` + `contain-intrinsic-size: auto 200px`
+	 *    (set inline by streamdown's <ot> wrapper). The IntersectionObserver
+	 *    that gates content-visibility flips rendered height between the
+	 *    200px placeholder and the actual code-block height as the block
+	 *    sits near the viewport edge during stream finalization. The
+	 *    height jump is small but visible, and the rendering optimization
+	 *    is unnecessary for chat content (thread length is bounded). We
+	 *    force `visible` to keep the rendered height of code blocks fully
+	 *    determined by their actual content at all times.
+	 *
+	 * 2. `[data-sd-animate]` (`sd-fadeIn`, 150ms). Streamdown wraps each
+	 *    streaming text segment in a span carrying this attribute. When
+	 *    shiki re-renders the code body at stream end, those wrapper
+	 *    spans get re-keyed and the fade animation replays across the
+	 *    whole block at once — exactly the visual that reads as the chat
+	 *    area "reloading for a frame." We disable the animation only
+	 *    inside code blocks; prose token fade-in elsewhere is untouched. */
+	.aui-thread-root [data-streamdown="code-block"] {
+		content-visibility: visible !important;
+		contain-intrinsic-size: none !important;
+	}
+	.aui-thread-root [data-streamdown="code-block"] [data-sd-animate] {
+		animation: none !important;
+	}
 }
 
-/* Minimal scrollbar — thumb only, no track */
+/* No border line; same drop shadow as the composer (.unsloth-composer-surface).
+   !important because Sonner injects its base rules at runtime. */
+[data-sonner-toast][data-styled='true'] {
+	padding: 12px 18px !important;
+	box-shadow: 0 2px 8px -2px rgba(0, 0, 0, 0.16) !important;
+}
+
+[data-sonner-toast][data-styled='true']:has([data-close-button]):not(:has([data-cancel])) {
+	padding-right: 48px !important;
+}
+
+[data-sonner-toast][data-styled='true']:has([data-cancel]):has([data-close-button]) {
+	padding-right: 88px !important;
+}
+
+[data-sonner-toast][data-styled='true'].chat-model-load-toast,
+[data-sonner-toast][data-styled='true'].chat-model-loaded-toast {
+	padding-top: 14px !important;
+	padding-bottom: 14px !important;
+}
+
+/* Downloading state shows a progress bar as the last row; give it a little
+   extra breathing room below the bar. */
+[data-sonner-toast][data-styled='true'].chat-model-load-toast:has([role='progressbar']) {
+	padding-bottom: 18px !important;
+}
+
+[data-sonner-toast][data-styled='true'].chat-model-loaded-toast [data-close-button] {
+	top: calc(50% - 0.25px) !important;
+	transform: translateY(-50%) !important;
+}
+
+[data-sonner-toast][data-styled='true'].chat-model-load-toast:not(:has([data-cancel])) [data-close-button] {
+	top: calc(50% - 0.25px) !important;
+	transform: translateY(-50%) !important;
+}
+
+[data-sonner-toast][data-styled="true"]:has([data-cancel]) [data-cancel] {
+	position: absolute !important;
+	right: 36px !important;
+	top: 50% !important;
+	transform: translateY(-50%) !important;
+	margin: 0 !important;
+}
+
+/* Dark toasts share the chatbox surface color (.chat-composer-surface
+   uses var(--card) in dark); the composer shadow lifts them off the page. */
+.dark [data-sonner-toast][data-styled='true'] {
+	background-color: var(--card) !important;
+	box-shadow: 0 2px 8px -2px rgba(0, 0, 0, 0.16) !important;
+}
+
+/* Selectable toast text; non-selectable toast buttons. */
+[data-sonner-toast],
+[data-sonner-toast] [data-content],
+[data-sonner-toast] [data-title],
+[data-sonner-toast] [data-description],
+[data-sonner-toast] p,
+[data-sonner-toast] span {
+	-webkit-user-select: text;
+	user-select: text;
+}
+
+/* Text cursor only on actual text nodes, so the toast container does
+   not pretend to be an input. */
+[data-sonner-toast] [data-title],
+[data-sonner-toast] [data-description],
+[data-sonner-toast] p,
+[data-sonner-toast] span {
+	cursor: text;
+}
+
+[data-sonner-toast] button,
+[data-sonner-toast] [data-button],
+[data-sonner-toast] [data-cancel],
+[data-sonner-toast] [data-close-button] {
+	-webkit-user-select: none;
+	user-select: none;
+	cursor: pointer;
+}
+
+/* Flat scrollbar chrome */
 * {
-  scrollbar-width: thin;
-  scrollbar-color: transparent transparent;
+	scrollbar-width: thin;
+	scrollbar-color: oklch(0.5 0 0 / 0.54) transparent;
 }
-*:hover {
-  scrollbar-color: oklch(0.6 0 0 / 0.3) transparent;
-}
-.dark *:hover {
-  scrollbar-color: oklch(0.5 0 0 / 0.35) transparent;
+
+.dark * {
+	scrollbar-color: oklch(0.67 0 0 / 0.5) transparent;
 }
 
 /* Webkit (Chrome, Safari, Edge) */
 ::-webkit-scrollbar {
-  width: 6px;
-  height: 6px;
+	width: 8px;
+	height: 8px;
+	background: transparent;
+	border: none;
+	box-shadow: none;
 }
+
 ::-webkit-scrollbar-track {
-  background: transparent;
+	background: transparent;
+	border: none;
+	box-shadow: none;
 }
+
+::-webkit-scrollbar-track-piece {
+	background: transparent;
+	border: none;
+	box-shadow: none;
+}
+
 ::-webkit-scrollbar-thumb {
-  background: transparent;
-  border-radius: 9999px;
+	background: oklch(0.5 0 0 / 0.54);
+	border-radius: 9999px;
+	border: none;
+	box-shadow: none;
 }
-*:hover::-webkit-scrollbar-thumb {
-  background: oklch(0.6 0 0 / 0.3);
+
+::-webkit-scrollbar-corner {
+	background: transparent;
+	border: none;
+	box-shadow: none;
 }
-.dark *:hover::-webkit-scrollbar-thumb {
-  background: oklch(0.5 0 0 / 0.35);
+
+::-webkit-scrollbar-button {
+	display: none;
+	width: 0;
+	height: 0;
+}
+
+.dark *::-webkit-scrollbar-thumb {
+	background: oklch(0.67 0 0 / 0.5);
+}
+
+/* Composer textarea: keep the scroll thumb faint until the user hovers or
+   drags the thumb itself, so a tall draft never shows a heavy dark rail. */
+.composer-input,
+.unsloth-composer-input {
+	scrollbar-color: oklch(0.5 0 0 / 0.16) transparent;
+}
+
+.composer-input::-webkit-scrollbar-thumb,
+.unsloth-composer-input::-webkit-scrollbar-thumb {
+	background: oklch(0.5 0 0 / 0.16);
+}
+
+.composer-input::-webkit-scrollbar-thumb:hover,
+.unsloth-composer-input::-webkit-scrollbar-thumb:hover,
+.composer-input::-webkit-scrollbar-thumb:active,
+.unsloth-composer-input::-webkit-scrollbar-thumb:active {
+	background: oklch(0.5 0 0 / 0.45);
+}
+
+.dark .composer-input,
+.dark .unsloth-composer-input {
+	scrollbar-color: oklch(0.72 0 0 / 0.18) transparent;
+}
+
+.dark .composer-input::-webkit-scrollbar-thumb,
+.dark .unsloth-composer-input::-webkit-scrollbar-thumb {
+	background: oklch(0.72 0 0 / 0.18);
+}
+
+.dark .composer-input::-webkit-scrollbar-thumb:hover,
+.dark .unsloth-composer-input::-webkit-scrollbar-thumb:hover,
+.dark .composer-input::-webkit-scrollbar-thumb:active,
+.dark .unsloth-composer-input::-webkit-scrollbar-thumb:active {
+	background: oklch(0.72 0 0 / 0.5);
+}
+
+/* Sidebars, settings and search: hide the scroll thumb at rest and reveal it
+   only while the area is hovered, so the rail never sits visible over content. */
+.sidebar-scroll-fade,
+.run-settings-scroll,
+.hover-scrollbar {
+	scrollbar-color: transparent transparent;
+}
+
+.sidebar-scroll-fade::-webkit-scrollbar-thumb,
+.run-settings-scroll::-webkit-scrollbar-thumb,
+.hover-scrollbar::-webkit-scrollbar-thumb {
+	background: transparent;
+}
+
+.sidebar-scroll-fade:hover,
+.run-settings-scroll:hover,
+.hover-scrollbar:hover {
+	scrollbar-color: oklch(0.5 0 0 / 0.4) transparent;
+}
+
+.sidebar-scroll-fade:hover::-webkit-scrollbar-thumb,
+.run-settings-scroll:hover::-webkit-scrollbar-thumb,
+.hover-scrollbar:hover::-webkit-scrollbar-thumb {
+	background: oklch(0.5 0 0 / 0.4);
+}
+
+.dark .sidebar-scroll-fade:hover,
+.dark .run-settings-scroll:hover,
+.dark .hover-scrollbar:hover {
+	scrollbar-color: oklch(0.72 0 0 / 0.4) transparent;
+}
+
+.dark .sidebar-scroll-fade:hover::-webkit-scrollbar-thumb,
+.dark .run-settings-scroll:hover::-webkit-scrollbar-thumb,
+.dark .hover-scrollbar:hover::-webkit-scrollbar-thumb {
+	background: oklch(0.72 0 0 / 0.4);
+}
+
+/* Run settings: always reserve the scrollbar gutter so the header close
+   button keeps its position whether or not the scrollbar is showing. */
+.run-settings-scroll {
+	scrollbar-gutter: stable;
+}
+
+/* Chat viewport: solid track matching sidebar so the scrollbar reads as a
+   full-height rail flush to the right edge, without a separate decorative strip. */
+.aui-thread-viewport {
+	scrollbar-color: oklch(0.5 0 0 / 0.54) var(--sidebar);
+	/* Reserve scrollbar space always so absolute-positioned overlays (topbar)
+	   can stop flush with the gutter edge without covering the scrollbar. */
+	scrollbar-gutter: stable;
+}
+
+/* Marker class applied only to actual streaming-thread viewports
+   (see ThreadPrimitive.Viewport in components/assistant-ui/thread.tsx).
+   Scoped separately from `.aui-thread-viewport` because that class is
+   reused elsewhere for shared scrollbar styling on non-streaming scroll
+   areas; the stabilizer must only attach to viewports the
+   useIntentAwareAutoScroll hook actually drives. */
+.aui-stream-viewport {
+	/* Scroll stabilizer: compensates for transient scrollHeight shrinks
+	   (most visibly, shiki re-highlighting a trailing code block the
+	   instant streaming ends). The useIntentAwareAutoScroll hook sets
+	   this variable to the exact pixel amount of any content shrink
+	   observed while the follow window is active; that padding keeps
+	   scrollHeight monotonic, so the browser never auto-clamps scrollTop,
+	   so no jump is ever painted. Released back to 0 as content
+	   genuinely grows past its prior high-water mark, and on user
+	   detach so the bottom stays flush when they come back. */
+	padding-bottom: var(--aui-scroll-stabilizer, 0px);
+}
+
+.dark .aui-thread-viewport {
+	scrollbar-color: oklch(0.72 0 0 / 0.25) #23252a;
+}
+
+.dark .aui-thread-viewport::-webkit-scrollbar-thumb {
+	background: oklch(0.72 0 0 / 0.25);
+}
+
+.aui-thread-viewport::-webkit-scrollbar-track {
+	background: var(--sidebar);
+}
+
+.dark .aui-thread-viewport::-webkit-scrollbar-track {
+	background: #23252a;
+}
+
+
+/* Search list: re-enable the native scrollbar (CommandList defaults to no-scrollbar). */
+.cmd-native-scrollbar {
+	scrollbar-width: thin;
+	-ms-overflow-style: auto;
+}
+.cmd-native-scrollbar::-webkit-scrollbar {
+	display: block;
+	width: 8px;
+	height: 8px;
 }
 
 /*---break---*/
 
 @layer base {
-  * {
-    @apply border-border outline-ring/50;
-  }
-  body {
-    @apply bg-background text-foreground;
-  }
+	* {
+		@apply border-border outline-ring/50;
+	}
+
+	body {
+		@apply bg-background text-foreground;
+	}
 }
 
-::view-transition-old(root), ::view-transition-new(root) {
-    animation: none;
-    mix-blend-mode: normal;
+::view-transition-old(root),
+::view-transition-new(root) {
+	animation: none;
+	mix-blend-mode: normal;
+}
+
+/* Keep Sonner close button inside the toast and pin to theme tokens (--gray2 hover ignores data-sonner-theme). */
+[data-sonner-toast][data-styled="true"] [data-close-button] {
+	top: 8px !important;
+	transform: none !important;
+	background: var(--popover) !important;
+	color: var(--popover-foreground) !important;
+	border-color: transparent !important;
+}
+
+/* Keep the (borderless) close button blended with the dark toast surface. */
+.dark [data-sonner-toast][data-styled="true"] [data-close-button] {
+	background: var(--card) !important;
+}
+
+[data-sonner-toast][data-styled="true"] [data-close-button] svg {
+	stroke-width: 2.25;
+}
+[data-sonner-toast][data-styled="true"]:hover [data-close-button]:hover {
+	background: var(--muted) !important;
+	color: var(--popover-foreground) !important;
+	border-color: transparent !important;
+}
+
+.generated-image-loading-card {
+	position: relative;
+	overflow: hidden;
+	contain: paint;
+}
+
+.generated-image-loading-wave {
+	position: relative;
+	display: grid;
+	grid-template-columns: repeat(8, minmax(0, 1fr));
+	gap: 14px;
+	width: min(66%, 18rem);
+	padding: 1.5rem;
+	border-radius: 1.5rem;
+}
+
+.generated-image-loading-dot {
+	width: 7px;
+	height: 7px;
+	border-radius: 9999px;
+	background: color-mix(in oklch, var(--muted-foreground) 82%, var(--primary));
+	opacity: 0.12;
+	transform: translate3d(0, 4px, 0) scale(0.72);
+	animation: generated-image-dot-wave 1850ms var(--ease-out-quart) infinite;
+	animation-delay: calc((var(--dot-row) * 72ms) + (var(--dot-col) * 72ms));
+	will-change: transform, opacity;
+}
+
+@keyframes generated-image-dot-wave {
+	0%,
+	22%,
+	100% {
+		opacity: 0.1;
+		transform: translate3d(0, 4px, 0) scale(0.72);
+	}
+
+	46% {
+		opacity: 0.46;
+		transform: translate3d(0, -3px, 0) scale(0.96);
+	}
+
+	66% {
+		opacity: 0.2;
+		transform: translate3d(0, 0, 0) scale(0.82);
+	}
+}
+
+/*
+ * prefers-reduced-motion: honour the OS-level "reduce motion" preference.
+ * Tailwind animate-in/out, Radix open/close transforms, infinite shine/pulse
+ * keyframes, and Framer Motion layout transitions all ignore the media query
+ * by default. Forcing every animation/transition to ~0ms collapses zoom-ins,
+ * slide-ins, and continuous shimmers to a single frame without removing the
+ * end state. Hover colour changes become instant rather than fading, which is
+ * the documented WCAG outcome (motion is "minimised, not removed").
+ *
+ * .animate-spin and generated image loading dots are the exceptions: loading
+ * indicators across Unsloth (tool execution loaders, sonner toasts, Tauri
+ * startup / update screens, the <Spinner /> primitive, and image generation
+ * cards). Freezing them removes the only visual signal that work is in flight,
+ * so they keep animating.
+ */
+@media (prefers-reduced-motion: reduce) {
+	/* html.force-motion (Reduce motion set to Off) opts back out of the
+	   OS preference, so these rules only apply without it. */
+	html:not(.force-motion) *,
+	html:not(.force-motion) *::before,
+	html:not(.force-motion) *::after {
+		animation-duration: 0.01ms !important;
+		animation-iteration-count: 1 !important;
+		transition-duration: 0.01ms !important;
+		scroll-behavior: auto !important;
+	}
+
+	html:not(.force-motion) .animate-spin {
+		animation-duration: 1.5s !important;
+		animation-iteration-count: infinite !important;
+	}
+
+	html:not(.force-motion) .generated-image-loading-dot {
+		animation-duration: 1850ms !important;
+		animation-iteration-count: infinite !important;
+	}
+
+	html:not(.force-motion) .loading-bar-slide {
+		animation-duration: 1.3s !important;
+		animation-iteration-count: infinite !important;
+	}
+
+	/* Keep the plus/x morph animating under reduced motion (small rotation,
+	   like the spinners above). */
+	html:not(.force-motion) .unsloth-composer-plus svg {
+		transition-duration: 250ms !important;
+	}
+}
+
+/*
+ * Tool-call chevron visibility:
+ *  - A solo tool call (not wrapped in a multi-tool group) always shows its
+ *    collapsible chevron.
+ *  - When the tool call is part of a multi-tool group (.aui-tool-group-root),
+ *    the chevron stays hidden and only reveals on hover / keyboard focus.
+ */
+.aui-tool-fallback-trigger-chevron {
+  opacity: 1;
+}
+.aui-tool-group-root .aui-tool-fallback-trigger-chevron {
+  opacity: 0;
+}
+.aui-tool-group-root .aui-tool-fallback-trigger:hover .aui-tool-fallback-trigger-chevron,
+.aui-tool-group-root .aui-tool-fallback-trigger:focus-visible .aui-tool-fallback-trigger-chevron {
+  opacity: 1;
 }

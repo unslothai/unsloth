@@ -1,6 +1,14 @@
 {
   "_comment": "Per-model-family inference parameter defaults. Sources: (1) Ollama params blobs, (2) Existing Unsloth Studio YAML configs. Patterns ordered longest-match-first.",
   "families": {
+    "qwen3.6": {
+      "temperature": 0.7,
+      "top_p": 0.8,
+      "top_k": 20,
+      "min_p": 0.0,
+      "repetition_penalty": 1.0,
+      "presence_penalty": 1.5
+    },
     "qwen3.5": {
       "temperature": 0.7,
       "top_p": 0.8,
@@ -227,6 +235,13 @@
       "min_p": 0.1,
       "repetition_penalty": 1.0
     },
+    "deepseek-v4": {
+      "temperature": 1.0,
+      "top_p": 1.0,
+      "top_k": -1,
+      "min_p": 0.0,
+      "repetition_penalty": 1.0
+    },
     "deepseek-r1": {
       "temperature": 0.6,
       "top_p": 0.95,
@@ -266,6 +281,13 @@
       "temperature": 1.0,
       "top_p": 1.0,
       "top_k": -1,
+      "min_p": 0.01,
+      "repetition_penalty": 1.0
+    },
+    "minimax-m2.7": {
+      "temperature": 1.0,
+      "top_p": 0.95,
+      "top_k": 40,
       "min_p": 0.01,
       "repetition_penalty": 1.0
     },
@@ -369,7 +391,7 @@
     }
   },
   "patterns": [
-    "qwen3.5",
+    "qwen3.6", "qwen3.5",
     "qwen3-coder", "qwen3-next", "qwen3-vl", "qwen3",
     "qwen2.5-coder", "qwen2.5-vl", "qwen2.5-omni", "qwen2.5-math", "qwen2.5",
     "qwen2-vl", "qwen2",
@@ -379,10 +401,10 @@
     "phi-4", "phi-3",
     "mistral-nemo", "mistral-small", "mistral-large", "magistral", "ministral",
     "devstral", "pixtral",
-    "deepseek-r1", "deepseek-v3", "deepseek-ocr",
+    "deepseek-v4", "deepseek-r1", "deepseek-v3", "deepseek-ocr",
     "glm-5", "glm-4",
     "nemotron",
-    "minimax-m2.5", "minimax",
+    "minimax-m2.7", "minimax-m2.5", "minimax",
     "gpt-oss", "granite-4",
     "kimi-k2", "kimi",
     "lfm2", "smollm", "olmo", "falcon", "ernie", "seed", "grok", "mimo"

@@ -1,7 +1,9 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { apiUrl } from "@/lib/api-base";
 import { Button } from "@/components/ui/button";
+import { MascotImg } from "@/components/mascot-img";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Link, useNavigate } from "@tanstack/react-router";
@@ -9,11 +11,10 @@ import { Eye, EyeOff } from "lucide-react";
 import { useEffect, useState } from "react";
 import type { ReactElement } from "react";
 import type { SyntheticEvent } from "react";
-import { usePlatformStore } from "@/config/env";
 import { refreshSession } from "../api";
 
-// Bootstrap credentials injected into index.html by the backend
-// (only present while default admin must_change_password is true)
+// Bootstrap credentials injected into index.html by the backend (only present
+// while default admin must_change_password is true)
 declare global {
   interface Window {
     __UNSLOTH_BOOTSTRAP__?: { username: string; password: string };
@@ -49,7 +50,7 @@ async function loginWithPassword(
   username: string,
   password: string,
 ): Promise<TokenResponse> {
-  const response = await fetch("/api/auth/login", {
+  const response = await fetch(apiUrl("/api/auth/login"), {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
@@ -78,6 +79,7 @@ export function AuthForm({ mode }: AuthFormProps): ReactElement | null {
   const navigate = useNavigate();
   const isLoginMode = mode === "login";
   const [showPassword, setShowPassword] = useState(false);
+  const [showNewPassword, setShowNewPassword] = useState(false);
   const username = HIDDEN_LOGIN_USERNAME;
   const [password, setPassword] = useState("");
   const [newPassword, setNewPassword] = useState("");
@@ -92,29 +94,34 @@ export function AuthForm({ mode }: AuthFormProps): ReactElement | null {
     let canceled = false;
 
     async function initializeAuthForm(): Promise<void> {
-      // Always check the server first — localStorage flags can be stale
-      // (e.g. tokens from a previous install attempt).  The server's
-      // /api/auth/status is the source of truth for requires_password_change.
+      // Always check the server first; localStorage flags can be stale (e.g.
+      // tokens from a previous install). /api/auth/status is the source of
+      // truth for requires_password_change.
       try {
-        const response = await fetch("/api/auth/status");
+        const response = await fetch(apiUrl("/api/auth/status"));
         if (!response.ok) throw new Error("Failed to load auth status.");
         const result = (await response.json()) as AuthStatusResponse;
         if (!canceled) {
           setInitialized(result.initialized);
           setRequiresPasswordChange(result.requires_password_change);
 
-          // Redirect between login ↔ change-password based on server state
+          // Server truth wins; keep localStorage in sync both ways.
+          if (result.requires_password_change !== mustChangePassword()) {
+            setMustChangePassword(result.requires_password_change);
+          }
+
+          // Redirect between login / change-password per server state
           if (mode === "login" && result.requires_password_change) {
             navigate({ to: "/change-password" });
             return;
           }
-          if (mode === "change-password" && !result.requires_password_change && !mustChangePassword()) {
+          if (mode === "change-password" && !result.requires_password_change) {
             navigate({ to: "/login" });
             return;
           }
 
-          // On login page, if user already has a valid session and no
-          // password change is required, skip straight to the app.
+          // On login, skip to the app if a valid session exists and no
+          // password change is required.
           if (isLoginMode && !result.requires_password_change) {
             if (hasRefreshToken()) {
               const refreshed = await refreshSession();
@@ -147,27 +154,28 @@ export function AuthForm({ mode }: AuthFormProps): ReactElement | null {
     };
   }, [navigate]);
 
-  // Seed password from bootstrap credentials injected into HTML
+  // Seed password from bootstrap credentials injected into HTML by web CLI.
   useEffect(() => {
-    const bootstrap = window.__UNSLOTH_BOOTSTRAP__;
-    if (bootstrap) {
-      if (!isLoginMode && !password) {
+    function loadBootstrap() {
+      const bootstrap = window.__UNSLOTH_BOOTSTRAP__;
+      if (bootstrap && !isLoginMode && !password) {
         setPassword(bootstrap.password);
       }
     }
+    loadBootstrap();
   }, []);
 
   const blockedByState =
     initialized === false ||
     (mode === "login" && requiresPasswordChange) ||
-    (mode === "change-password" && !requiresPasswordChange && !mustChangePassword());
+    (mode === "change-password" && !requiresPasswordChange);
 
   let helperText: string | null = null;
   if (initialized === false) {
     helperText = "Auth is still bootstrapping the default admin account.";
   } else if (isLoginMode && requiresPasswordChange) {
     helperText = "Sign in once with the seeded credentials to change the password.";
-  } else if (!isLoginMode && !requiresPasswordChange && !mustChangePassword()) {
+  } else if (!isLoginMode && !requiresPasswordChange) {
     helperText = "Password already updated. Use the login screen.";
   }
   const title = isLoginMode ? "Welcome back" : "Setup your account";
@@ -180,9 +188,16 @@ export function AuthForm({ mode }: AuthFormProps): ReactElement | null {
   const switchLinkTo = "/login";
   const switchLinkText = "Back to login";
   const currentPassword = password || window.__UNSLOTH_BOOTSTRAP__?.password || "";
+  // On first boot the backend injects __UNSLOTH_BOOTSTRAP__ and we silently
+  // reuse that password; the Current password input is only rendered for the
+  // admin-forced must_change_password path where no bootstrap is available.
+  const hasBootstrapPassword = Boolean(window.__UNSLOTH_BOOTSTRAP__?.password);
   const invalidChangePasswordForm =
     !isLoginMode &&
-    (newPassword.length < 8 || newPassword !== confirmPassword || currentPassword === newPassword);
+    (currentPassword.length < 8 ||
+      newPassword.length < 8 ||
+      newPassword !== confirmPassword ||
+      currentPassword === newPassword);
   const showPasswordMismatchWarning =
     !isLoginMode &&
     newPassword.length > 0 &&
@@ -194,8 +209,13 @@ export function AuthForm({ mode }: AuthFormProps): ReactElement | null {
     setError(null);
 
     if (!isLoginMode) {
-      if (!currentPassword) {
-        setError("Unable to initialize setup. Reload the page and try again.");
+      // Mirror the disable gate: Enter / autofill can bypass the button.
+      if (currentPassword.length < 8) {
+        setError(
+          currentPassword
+            ? "Current password must be at least 8 characters."
+            : "Unable to initialize setup. Reload the page and try again.",
+        );
         return;
       }
       if (newPassword.length < 8) {
@@ -235,13 +255,12 @@ export function AuthForm({ mode }: AuthFormProps): ReactElement | null {
           storeAuthTokens(
             bootstrapToken.access_token,
             bootstrapToken.refresh_token,
-            bootstrapToken.must_change_password,
           );
           setMustChangePassword(bootstrapToken.must_change_password);
           accessToken = bootstrapToken.access_token;
         }
 
-        const response = await fetch("/api/auth/change-password", {
+        const response = await fetch(apiUrl("/api/auth/change-password"), {
           method: "POST",
           headers: {
             "Content-Type": "application/json",
@@ -272,20 +291,16 @@ export function AuthForm({ mode }: AuthFormProps): ReactElement | null {
       } else {
         setMustChangePassword(token.must_change_password);
       }
-      storeAuthTokens(
-        token.access_token,
-        token.refresh_token,
-        token.must_change_password,
-      );
+      storeAuthTokens(token.access_token, token.refresh_token);
       navigate({ to: getPostAuthRoute() });
     } catch (err: unknown) {
-      let msg = err instanceof Error ? err.message : "Auth failed.";
-      if (msg.includes("unsloth studio reset-password") && usePlatformStore.getState().deviceType === "windows") {
-        msg = msg.replace(
-          "unsloth studio reset-password",
-          ".\\unsloth_studio\\Scripts\\unsloth.exe studio reset-password",
-        );
-      }
+      // The backend returns the correct PATH-based command ("unsloth studio
+      // reset-password"), which the installer puts on PATH on every platform.
+      // Do NOT rewrite it to a relative Windows path like
+      // ".\unsloth_studio\Scripts\unsloth.exe ..." -- that only resolves inside
+      // the Unsloth home dir and fails with CommandNotFoundException elsewhere.
+      // Show the backend message as-is.
+      const msg = err instanceof Error ? err.message : "Auth failed.";
       setError(msg);
     } finally {
       setLoading(false);
@@ -297,9 +312,8 @@ export function AuthForm({ mode }: AuthFormProps): ReactElement | null {
   return (
     <div className="w-full max-w-sm space-y-6">
       <div className="space-y-1.5 text-center">
-        <img
-          src="/Sloth emojis/large sloth wave.png"
-          alt="Unsloth waving mascot"
+        <MascotImg
+          src="Sloth emojis/large sloth wave.png"
           className="mx-auto mb-2 h-20 w-20 object-contain"
         />
         <h2 className="text-2xl font-semibold text-foreground">{title}</h2>
@@ -339,12 +353,42 @@ export function AuthForm({ mode }: AuthFormProps): ReactElement | null {
 
         {!isLoginMode && (
           <>
+            {!hasBootstrapPassword && (
+              <div className="space-y-2">
+                <Label htmlFor="current-password">Current password</Label>
+                <div className="relative">
+                  <Input
+                    id="current-password"
+                    type={showPassword ? "text" : "password"}
+                    className="pr-10"
+                    autoComplete="current-password"
+                    value={password}
+                    onChange={(event) => setPassword(event.target.value)}
+                    minLength={8}
+                    required
+                  />
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="icon"
+                    className="absolute right-0 top-0 h-full px-3 text-muted-foreground hover:bg-transparent"
+                    onClick={() => setShowPassword((prev) => !prev)}
+                  >
+                    {showPassword ? (
+                      <EyeOff className="h-4 w-4" />
+                    ) : (
+                      <Eye className="h-4 w-4" />
+                    )}
+                  </Button>
+                </div>
+              </div>
+            )}
             <div className="space-y-2">
               <Label htmlFor="new-password">New password</Label>
               <div className="relative">
                 <Input
                   id="new-password"
-                  type={showPassword ? "text" : "password"}
+                  type={showNewPassword ? "text" : "password"}
                   className="pr-10"
                   autoComplete="new-password"
                   value={newPassword}
@@ -357,9 +401,9 @@ export function AuthForm({ mode }: AuthFormProps): ReactElement | null {
                   variant="ghost"
                   size="icon"
                   className="absolute right-0 top-0 h-full px-3 text-muted-foreground hover:bg-transparent"
-                  onClick={() => setShowPassword((prev) => !prev)}
+                  onClick={() => setShowNewPassword((prev) => !prev)}
                 >
-                  {showPassword ? (
+                  {showNewPassword ? (
                     <EyeOff className="h-4 w-4" />
                   ) : (
                     <Eye className="h-4 w-4" />
@@ -399,7 +443,7 @@ export function AuthForm({ mode }: AuthFormProps): ReactElement | null {
 
         <Button
           type="submit"
-          className="w-full"
+          className="mx-auto flex w-fit px-4"
           disabled={
             loading ||
             statusLoading ||

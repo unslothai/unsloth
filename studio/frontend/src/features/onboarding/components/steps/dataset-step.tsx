@@ -35,12 +35,9 @@ import {
   TooltipContent,
   TooltipTrigger,
 } from "@/components/ui/tooltip";
-import {
-  useDebouncedValue,
-  useHfDatasetSearch,
-  useHfTokenValidation,
-  useInfiniteScroll,
-} from "@/hooks";
+import { useDebouncedValue, useHfTokenValidation } from "@/hooks";
+import { useHubDatasetSearch } from "@/features/hub/hooks/use-hub-dataset-search";
+import { useHubInfiniteScroll } from "@/features/hub/hooks/use-hub-infinite-scroll";
 import { cn } from "@/lib/utils";
 import {
   HfDatasetSubsetSplitSelectors,
@@ -63,6 +60,7 @@ const FORMAT_OPTIONS: { value: DatasetFormat; label: string }[] = [
   { value: "alpaca", label: "Alpaca" },
   { value: "chatml", label: "ChatML" },
   { value: "sharegpt", label: "ShareGPT" },
+  { value: "raw", label: "Raw Text" },
 ];
 
 export function DatasetStep() {
@@ -116,8 +114,9 @@ export function DatasetStep() {
     isLoading,
     isLoadingMore,
     fetchMore,
+    scannedCount,
     error: hfSearchError,
-  } = useHfDatasetSearch(debouncedQuery, {
+  } = useHubDatasetSearch(debouncedQuery, {
     modelType,
     accessToken: hfToken || undefined,
   });
@@ -128,10 +127,11 @@ export function DatasetStep() {
   const resultIds = useMemo(() => hfResults.map((r) => r.id), [hfResults]);
 
   const comboboxAnchorRef = useRef<HTMLDivElement>(null);
-  const { scrollRef, sentinelRef } = useInfiniteScroll(
-    fetchMore,
-    hfResults.length,
-  );
+  const { scrollRef, sentinelRef } = useHubInfiniteScroll(fetchMore, scannedCount, {
+    isFetching: isLoading || isLoadingMore,
+    resultCount: hfResults.length,
+    resetKey: debouncedQuery,
+  });
 
   const handleFileUpload = () => {
     setUploadedFile("my_dataset.jsonl");
@@ -150,7 +150,7 @@ export function DatasetStep() {
             className="flex-1"
           >
             <img
-              src="/huggingface.svg"
+              src={`${import.meta.env.BASE_URL}huggingface.svg`}
               alt=""
               className="size-4 invert"
               data-icon="inline-start"
@@ -322,8 +322,8 @@ export function DatasetStep() {
             <button
               type="button"
               className={cn(
-                "border-2 border-dashed rounded-xl p-8 text-center transition-colors cursor-pointer hover:border-primary/50 hover:bg-muted/50",
-                uploadedFile && "border-primary/50 bg-primary/5",
+                "border-2 border-dashed rounded-xl p-8 text-center transition-colors cursor-pointer hover:border-ring hover:bg-muted/50",
+                uploadedFile && "border-ring-strong bg-primary/5",
               )}
               onClick={handleFileUpload}
             >

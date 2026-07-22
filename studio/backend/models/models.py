@@ -1,9 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""
-Pydantic schemas for Model Management API
-"""
+"""Pydantic schemas for Model Management API"""
 
 from pydantic import BaseModel, Field
 from typing import Optional, List, Dict, Any, Literal
@@ -14,9 +12,7 @@ ModelType = Literal["text", "vision", "audio", "embeddings"]
 class CheckpointInfo(BaseModel):
     """Information about a discovered checkpoint directory."""
 
-    display_name: str = Field(
-        ..., description = "User-friendly checkpoint name (folder name)"
-    )
+    display_name: str = Field(..., description = "User-friendly checkpoint name (folder name)")
     path: str = Field(..., description = "Full path to the checkpoint directory")
     loss: Optional[float] = Field(None, description = "Training loss at this checkpoint")
 
@@ -57,38 +53,49 @@ class CheckpointListResponse(BaseModel):
     )
 
 
+class ExportSizeResponse(BaseModel):
+    """Model fp16/bf16-equivalent size; size fields are null when unknown."""
+
+    model: str = Field(..., description = "Model id or path the estimate was computed for")
+    fp16_bytes: Optional[int] = Field(
+        None,
+        description = "Estimated FP16/BF16-equivalent on-disk size in bytes, or null if unknown",
+    )
+    total_params: Optional[int] = Field(
+        None,
+        description = "Estimated total parameter count (fp16_bytes // 2), or null if unknown",
+    )
+    source: str = Field(
+        "unavailable",
+        description = "How the estimate was derived (e.g. safetensors, config, local, vllm, unavailable)",
+    )
+
+
 class ModelDetails(BaseModel):
-    """Detailed model configuration and metadata - can be used for both list and detail views"""
+    """Model configuration and metadata; used for both list and detail views"""
 
     id: str = Field(..., description = "Model identifier")
     model_name: Optional[str] = Field(
         None, description = "Model identifier (alias for id, for backward compatibility)"
     )
     name: Optional[str] = Field(None, description = "Display name for the model")
-    config: Optional[Dict[str, Any]] = Field(
-        None, description = "Model configuration dictionary"
-    )
+    config: Optional[Dict[str, Any]] = Field(None, description = "Model configuration dictionary")
     is_vision: bool = Field(False, description = "Whether model is a vision model")
     is_embedding: bool = Field(
         False, description = "Whether model is an embedding/sentence-transformer model"
     )
     is_lora: bool = Field(False, description = "Whether model is a LoRA adapter")
-    is_gguf: bool = Field(
-        False, description = "Whether model is a GGUF model (llama.cpp format)"
+    is_gguf: bool = Field(False, description = "Whether model is a GGUF model (llama.cpp format)")
+    is_mlx: bool = Field(
+        False, description = "Whether model is served via the MLX backend (Apple Silicon)"
     )
     is_audio: bool = Field(False, description = "Whether model is a TTS audio model")
-    audio_type: Optional[str] = Field(
-        None, description = "Audio codec type: snac, csm, bicodec, dac"
-    )
-    has_audio_input: bool = Field(
-        False, description = "Whether model accepts audio input (ASR)"
-    )
+    audio_type: Optional[str] = Field(None, description = "Audio codec type: snac, csm, bicodec, dac")
+    has_audio_input: bool = Field(False, description = "Whether model accepts audio input (ASR)")
     model_type: Optional[ModelType] = Field(
         None, description = "Collapsed model modality: text, vision, audio, or embeddings"
     )
-    base_model: Optional[str] = Field(
-        None, description = "Base model if this is a LoRA adapter"
-    )
+    base_model: Optional[str] = Field(None, description = "Base model if this is a LoRA adapter")
     max_position_embeddings: Optional[int] = Field(
         None, description = "Maximum context length supported by the model"
     )
@@ -101,9 +108,7 @@ class LoRAInfo(BaseModel):
     """LoRA adapter or exported model information"""
 
     display_name: str = Field(..., description = "Display name for the LoRA")
-    adapter_path: str = Field(
-        ..., description = "Path to the LoRA adapter or exported model"
-    )
+    adapter_path: str = Field(..., description = "Path to the LoRA adapter or exported model")
     base_model: Optional[str] = Field(None, description = "Base model identifier")
     source: Optional[str] = Field(None, description = "'training' or 'exported'")
     export_type: Optional[str] = Field(
@@ -114,33 +119,29 @@ class LoRAInfo(BaseModel):
 class LoRAScanResponse(BaseModel):
     """Response schema for scanning trained LoRA adapters"""
 
-    loras: List[LoRAInfo] = Field(
-        default_factory = list, description = "List of found LoRA adapters"
-    )
+    loras: List[LoRAInfo] = Field(default_factory = list, description = "List of found LoRA adapters")
     outputs_dir: str = Field(..., description = "Directory that was scanned")
 
 
 class ModelListResponse(BaseModel):
     """Response schema for listing models"""
 
-    models: List[ModelDetails] = Field(
-        default_factory = list, description = "List of models"
-    )
-    default_models: List[str] = Field(
-        default_factory = list, description = "List of default model IDs"
-    )
+    models: List[ModelDetails] = Field(default_factory = list, description = "List of models")
+    default_models: List[str] = Field(default_factory = list, description = "List of default model IDs")
 
 
 class GgufVariantDetail(BaseModel):
     """A single GGUF quantization variant in a HuggingFace repo."""
 
-    filename: str = Field(
-        ..., description = "GGUF filename (e.g., 'gemma-3-4b-it-Q4_K_M.gguf')"
-    )
+    filename: str = Field(..., description = "GGUF filename (e.g., 'gemma-3-4b-it-Q4_K_M.gguf')")
     quant: str = Field(..., description = "Quantization label (e.g., 'Q4_K_M')")
     size_bytes: int = Field(0, description = "File size in bytes")
+    download_size_bytes: int = Field(0, description = "Total bytes needed to download this variant")
     downloaded: bool = Field(
         False, description = "Whether this variant is already in the local HF cache"
+    )
+    update_available: bool = Field(
+        False, description = "Whether a newer version of this variant is available on HF"
     )
 
 
@@ -156,6 +157,10 @@ class GgufVariantsResponse(BaseModel):
     )
     default_variant: Optional[str] = Field(
         None, description = "Recommended default quantization variant"
+    )
+    context_length: Optional[int] = Field(
+        None,
+        description = "Native max context from GGUF metadata; set once a variant is downloaded",
     )
 
 
@@ -173,6 +178,11 @@ class LocalModelInfo(BaseModel):
         None,
         description = "HF repo id for cached models, e.g. org/model",
     )
+    model_format: Optional[str] = Field(
+        None,
+        description = "Detected weights format ('gguf' when known). Lets the UI "
+        "classify scanned folders whose name lacks a -GGUF suffix.",
+    )
     updated_at: Optional[float] = Field(
         None,
         description = "Unix timestamp of latest observed update",
@@ -182,9 +192,7 @@ class LocalModelInfo(BaseModel):
 class LocalModelListResponse(BaseModel):
     """Response schema for listing local/cached models."""
 
-    models_dir: str = Field(
-        ..., description = "Directory scanned for custom local models"
-    )
+    models_dir: str = Field(..., description = "Directory scanned for custom local models")
     hf_cache_dir: Optional[str] = Field(
         None,
         description = "HF cache root that was scanned",
@@ -202,9 +210,7 @@ class LocalModelListResponse(BaseModel):
 class AddScanFolderRequest(BaseModel):
     """Request body for adding a custom scan folder."""
 
-    path: str = Field(
-        ..., description = "Absolute or relative directory path to scan for models"
-    )
+    path: str = Field(..., description = "Absolute or relative directory path to scan for models")
 
 
 class ScanFolderInfo(BaseModel):
@@ -213,3 +219,68 @@ class ScanFolderInfo(BaseModel):
     id: int = Field(..., description = "Database row ID")
     path: str = Field(..., description = "Normalized absolute path")
     created_at: str = Field(..., description = "ISO 8601 creation timestamp")
+
+
+class BrowseEntry(BaseModel):
+    """A directory entry surfaced by the folder browser."""
+
+    name: str = Field(..., description = "Entry name (basename, not full path)")
+    has_models: bool = Field(
+        False,
+        description = (
+            "Hint that the directory likely contains models "
+            "(*.gguf, *.safetensors, config.json, or HF-style "
+            "`models--*` subfolders). Used by the UI to highlight "
+            "promising candidates; the scanner itself is authoritative."
+        ),
+    )
+    hidden: bool = Field(
+        False,
+        description = "Name starts with a dot (e.g. `.cache`)",
+    )
+
+
+class BrowseFoldersResponse(BaseModel):
+    """Response schema for the folder browser endpoint."""
+
+    current: str = Field(..., description = "Absolute path of the directory just listed")
+    parent: Optional[str] = Field(
+        None,
+        description = (
+            "Parent directory of `current`, or null if `current` is the "
+            "filesystem root. The frontend uses this to render an `Up` row."
+        ),
+    )
+    entries: List[BrowseEntry] = Field(
+        default_factory = list,
+        description = (
+            "Subdirectories of `current`. Sorted with model-bearing "
+            "directories first, then alphabetically case-insensitive; "
+            "hidden entries come last within each group."
+        ),
+    )
+    suggestions: List[str] = Field(
+        default_factory = list,
+        description = (
+            "Handy starting points (home, HF cache, already-registered "
+            "scan folders). Rendered as quick-pick chips above the list."
+        ),
+    )
+    truncated: bool = Field(
+        False,
+        description = (
+            "True when the listing was capped because the directory had "
+            "more subfolders than the server is willing to enumerate in "
+            "one request. The UI should show a hint telling the user to "
+            "narrow their path."
+        ),
+    )
+    model_files_here: int = Field(
+        0,
+        description = (
+            "Count of GGUF/safetensors files immediately inside "
+            "``current``. Used by the UI to surface a hint on leaf "
+            "model directories (which otherwise look `empty` because "
+            "they contain only files, no subdirectories)."
+        ),
+    )

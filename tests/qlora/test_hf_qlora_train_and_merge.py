@@ -91,9 +91,7 @@ if __name__ == "__main__":
         print(training_args)
         print(peft_config)
 
-    trainer = setup_trainer(
-        model, tokenizer, dataset, training_args, peft_config = peft_config
-    )
+    trainer = setup_trainer(model, tokenizer, dataset, training_args, peft_config = peft_config)
 
     with header_footer_context("Model"):
         print(type(model.model))

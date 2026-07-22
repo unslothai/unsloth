@@ -17,8 +17,11 @@
 
 from __future__ import annotations
 
+import inspect
 import logging
+import os
 from collections import OrderedDict
+from functools import wraps
 from typing import Any, Iterable, Optional, Sequence, Tuple
 
 import torch
@@ -52,10 +55,7 @@ def _window_cache_key(sliding_window: Optional[int]) -> int:
     return int(sliding_window)
 
 
-def _get_cached_block_mask(
-    lengths: Tuple[int, ...],
-    sliding_window: Optional[int],
-):
+def _get_cached_block_mask(lengths: Tuple[int, ...], sliding_window: Optional[int]):
     if _XFormersBlockMask is None:
         return None
 
@@ -169,9 +169,7 @@ def enable_sample_packing(
                     if isinstance(ids, Iterable):
                         seq_lengths.append(len(ids))
             if seq_lengths:
-                batch["packed_seq_lengths"] = torch.tensor(
-                    seq_lengths, dtype = torch.int32
-                )
+                batch["packed_seq_lengths"] = torch.tensor(seq_lengths, dtype = torch.int32)
                 if "attention_mask" in batch:
                     batch.pop("attention_mask")
         return batch
@@ -223,9 +221,307 @@ def enable_padding_free_metadata(model, trainer):
     collator._unsloth_padding_free_lengths_wrapped = True
 
 
+# --- Experimental: correct packing / padding-free for hybrid linear-attention ---
+# Qwen3.5 / Qwen3-Next mix a gated-delta recurrence with a causal conv1d. Packing
+# flattens the batch, and both ops leak state across sequence boundaries unless we
+# pass seq_idx (conv) and cu_seqlens (scan). Only the accelerated kernels accept
+# these, so we fail closed on the pure-torch fallbacks. Gated behind an env flag.
+#
+# Overrides only the per-module prefill kernels (causal_conv1d_fn /
+# chunk_gated_delta_rule), leaving decode untouched so generation is unaffected.
+# Recompute-safe under gradient checkpointing; never fires for cached forwards.
+# Feature-detect (never version-detect), fail closed, idempotent, one deduped
+# diagnostic when it declines to activate.
+_HYBRID_PACKING_ENV_VAR = "UNSLOTH_EXPERIMENTAL_HYBRID_PACKING"
+_HYBRID_LOGGER = logging.getLogger("unsloth.hybrid_packing")
+_HYBRID_WARNED: set = set()
+
+
+def _hybrid_packing_enabled() -> bool:
+    # Read at call time so setting the flag after `import unsloth` still takes effect.
+    return os.environ.get(_HYBRID_PACKING_ENV_VAR, "0").strip().lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }
+
+
+def _hybrid_reject(reason: str) -> bool:
+    # One deduped diagnostic explaining why hybrid packing stayed on the padded path.
+    if reason not in _HYBRID_WARNED:
+        _HYBRID_WARNED.add(reason)
+        _HYBRID_LOGGER.warning(
+            "Unsloth: hybrid linear-attention packing disabled (padded path): %s.",
+            reason,
+        )
+    return False
+
+
+def _iter_gated_delta_modules(model):
+    modules, seen = [], set()
+    for module in model.modules():
+        if id(module) in seen:
+            continue
+        seen.add(id(module))
+        if type(module).__name__.endswith("GatedDeltaNet") and hasattr(module, "conv1d"):
+            modules.append(module)
+    return modules
+
+
+def _hybrid_varlen_kernels_available(gated_delta_modules) -> Optional[str]:
+    """None if every module can use the accelerated varlen path, else a short
+    reason string. All modules are validated before any are mutated; signatures
+    are read off the captured originals when already wrapped.
+
+    Dispatch (the mixer actually calling self.causal_conv1d_fn /
+    self.chunk_gated_delta_rule) is verified at RUNTIME by the forward-wrapper
+    handshake, not statically: Unsloth's compile-disable shim hides it from
+    inspect.getsource, and every supported transformers release dispatches
+    through the instance attribute."""
+    if not gated_delta_modules:
+        return "no gated-delta modules found"
+    for module in gated_delta_modules:
+        conv = getattr(module, "_unsloth_varlen_orig_conv", None) or getattr(
+            module,
+            "causal_conv1d_fn",
+            None,
+        )
+        scan = getattr(module, "_unsloth_varlen_orig_scan", None) or getattr(
+            module,
+            "chunk_gated_delta_rule",
+            None,
+        )
+        if conv is None or scan is None:
+            return "accelerated kernels missing (install causal_conv1d and fla)"
+        if getattr(scan, "__name__", "").startswith("torch_") or getattr(
+            conv,
+            "__name__",
+            "",
+        ).startswith("torch_"):
+            return "pure-torch kernel fallback in use"
+        try:
+            if "seq_idx" not in inspect.signature(conv).parameters:
+                return "conv kernel does not accept seq_idx"
+            if "cu_seqlens" not in inspect.signature(scan).parameters:
+                return "scan kernel does not accept cu_seqlens"
+        except (TypeError, ValueError):
+            return "kernel signature not introspectable"
+    return None
+
+
+def _varlen_from_position_ids(position_ids):
+    """(cu_seqlens int32[n+1], seq_idx int32[1,T]) for a flattened padding-free
+    batch, else None. Padding-free position_ids reset to 0 at each sequence start;
+    accepts only a validated single-row pack (normal batch or single sequence ->
+    None). Fallback used only when packed_seq_lengths is absent: it assumes
+    right-packed reset position_ids and would mis-segment a left-padded row, which
+    is why packed_seq_lengths is always preferred."""
+    if position_ids is None:
+        return None
+    pos = position_ids
+    if pos.dim() == 3:  # MRoPE [n_planes, 1, T] -> text plane is index 0
+        pos = pos[0]
+    if pos.dim() != 2 or pos.shape[0] != 1:
+        return None
+    row = pos[0]
+    total = row.shape[0]
+    starts = (row == 0).nonzero(as_tuple = False).flatten()
+    if starts.numel() <= 1 or int(starts[0].item()) != 0:
+        return None
+    cu_seqlens = torch.cat(
+        [
+            starts.to(torch.int32),
+            torch.tensor([total], dtype = torch.int32, device = row.device),
+        ]
+    )
+    return _seq_idx_from_cu_seqlens(cu_seqlens, total)
+
+
+def _seq_idx_from_cu_seqlens(cu_seqlens, total):
+    """(cu_seqlens int32[n+1], seq_idx int32[1,total]) partitioning [0, total),
+    else None. Appends a trailing segment for pad_to_multiple_of zero tokens so the
+    boundaries always cover the full flattened length the kernels see."""
+    if cu_seqlens is None or cu_seqlens.numel() < 2 or int(cu_seqlens[0].item()) != 0:
+        return None
+    boundaries = cu_seqlens.to(torch.int32)
+    last = int(boundaries[-1].item())
+    if last > total:
+        return None
+    if last < total:  # trailing pad tokens -> one final segment
+        boundaries = torch.cat(
+            [
+                boundaries,
+                torch.tensor([total], dtype = torch.int32, device = boundaries.device),
+            ]
+        )
+    lengths = boundaries[1:] - boundaries[:-1]
+    if not bool((lengths > 0).all()):
+        return None
+    seq_idx = torch.repeat_interleave(
+        torch.arange(lengths.numel(), dtype = torch.int32, device = boundaries.device),
+        lengths.to(torch.int64),
+    ).unsqueeze(0)
+    return boundaries, seq_idx
+
+
+def _hybrid_varlen_metadata(kwargs):
+    """Boundary metadata (cu_seqlens, seq_idx) for one flattened packed forward,
+    else None. Prefers the authoritative packed_seq_lengths, falls back to
+    reset-style position_ids. Returns None for cached forwards and non-packed
+    batches so decode / eval / normal batches are a strict no-op."""
+    if kwargs.get("use_cache"):
+        return None
+    if kwargs.get("past_key_values") is not None or kwargs.get("cache_params") is not None:
+        return None
+    total, device = None, None
+    for key in ("input_ids", "inputs_embeds", "position_ids"):
+        tensor = kwargs.get(key)
+        if tensor is not None and hasattr(tensor, "shape"):
+            total = tensor.shape[1] if key == "inputs_embeds" else tensor.shape[-1]
+            device = tensor.device
+            break
+    if total is None:
+        return None
+    psl = kwargs.get("packed_seq_lengths")
+    if psl is not None and getattr(psl, "numel", lambda: 1)() > 0:  # skip empty (no max())
+        info = get_packed_info_from_kwargs(kwargs, device)
+        if info is not None:
+            _, cu_seqlens, _ = info
+            built = _seq_idx_from_cu_seqlens(cu_seqlens, total)
+            if built is not None:
+                return built
+    return _varlen_from_position_ids(kwargs.get("position_ids"))
+
+
+def patch_hybrid_linear_attention_varlen(model) -> bool:
+    """Feed seq_idx / cu_seqlens to the gated-delta conv + scan so packing and
+    padding-free reset state at sequence boundaries. Gated by
+    UNSLOTH_EXPERIMENTAL_HYBRID_PACKING and fail-closed. Returns True when the
+    varlen path is active, so the caller may allow packing for the model.
+    Idempotent: repeat calls on an already-patched model return True."""
+    if not _hybrid_packing_enabled():
+        return False
+    gated_delta_modules = _iter_gated_delta_modules(model)
+
+    # Idempotency: an already fully-patched model stays active without re-validation.
+    if (
+        getattr(model, "_unsloth_varlen_forward_wrapped", False)
+        and gated_delta_modules
+        and all(getattr(m, "_unsloth_varlen_wrapped", False) for m in gated_delta_modules)
+    ):
+        return True
+
+    reason = _hybrid_varlen_kernels_available(gated_delta_modules)
+    if reason is not None:
+        return _hybrid_reject(reason)
+
+    # Transactional: every module validated above, now wrap each and stash originals.
+    for module in gated_delta_modules:
+        if getattr(module, "_unsloth_varlen_wrapped", False):
+            continue
+        conv_orig, scan_orig = module.causal_conv1d_fn, module.chunk_gated_delta_rule
+        module._unsloth_varlen_orig_conv = conv_orig
+        module._unsloth_varlen_orig_scan = scan_orig
+
+        @wraps(conv_orig)
+        def conv_fn(
+            *args,
+            _orig = conv_orig,
+            _module = module,
+            **kwargs,
+        ):
+            varlen = getattr(_module, "_unsloth_varlen", None)
+            if varlen is not None:
+                _module._unsloth_varlen_conv_hit = True  # runtime dispatch handshake
+                if kwargs.get("seq_idx") is None:
+                    kwargs["seq_idx"] = varlen[1]
+            return _orig(*args, **kwargs)
+
+        @wraps(scan_orig)
+        def scan_fn(
+            *args,
+            _orig = scan_orig,
+            _module = module,
+            **kwargs,
+        ):
+            varlen = getattr(_module, "_unsloth_varlen", None)
+            if varlen is not None:
+                _module._unsloth_varlen_scan_hit = True
+                if kwargs.get("cu_seqlens") is None:
+                    kwargs["cu_seqlens"] = varlen[0]
+            return _orig(*args, **kwargs)
+
+        module.causal_conv1d_fn = conv_fn
+        module.chunk_gated_delta_rule = scan_fn
+        module._unsloth_varlen = None
+        module._unsloth_varlen_wrapped = True
+
+    # Refresh the boundary stash on the outermost forward (once per step, outside
+    # gradient-checkpoint recompute, so it stays valid for recomputed inner
+    # forwards). Read from both positional and keyword args via the bound signature.
+    if not getattr(model, "_unsloth_varlen_forward_wrapped", False):
+        forward_orig = model.forward
+        try:
+            forward_sig = inspect.signature(forward_orig)
+        except (TypeError, ValueError):
+            forward_sig = None
+
+        @wraps(forward_orig)
+        def forward_with_varlen(*args, **kwargs):
+            try:
+                bound = dict(kwargs)
+                if forward_sig is not None and args:
+                    bound.update(forward_sig.bind_partial(*args).arguments)
+                varlen = _hybrid_varlen_metadata(bound)
+            except Exception:
+                varlen = None
+            first_pack = varlen is not None and not getattr(
+                model,
+                "_unsloth_varlen_handshake_done",
+                False,
+            )
+            for module in gated_delta_modules:
+                module._unsloth_varlen = varlen
+                if first_pack:
+                    module._unsloth_varlen_conv_hit = False
+                    module._unsloth_varlen_scan_hit = False
+            out = forward_orig(*args, **kwargs)
+            # Runtime dispatch handshake: on the first packed forward, confirm BOTH
+            # boundary kernels ran for EVERY module. seq_idx (conv) and cu_seqlens
+            # (scan) are both load-bearing, so a partial/absent dispatch (a future
+            # version no longer routing through self.<kernel>) leaves cross-sequence
+            # contamination. The batch is already flattened with no padded recovery,
+            # so abort before loss/backward rather than train on corrupted data.
+            if first_pack:
+                model._unsloth_varlen_handshake_done = True
+                missing = [
+                    type(m).__name__
+                    for m in gated_delta_modules
+                    if not (
+                        getattr(m, "_unsloth_varlen_conv_hit", False)
+                        and getattr(m, "_unsloth_varlen_scan_hit", False)
+                    )
+                ]
+                if missing:
+                    for m in gated_delta_modules:
+                        m._unsloth_varlen = None
+                    _hybrid_reject("varlen conv/scan not both dispatched (dispatch changed?)")
+                    raise RuntimeError(
+                        "Unsloth: experimental hybrid packing cannot continue because the "
+                        "varlen conv/scan wrappers were not both invoked for "
+                        f"{sorted(set(missing))}. Unset UNSLOTH_EXPERIMENTAL_HYBRID_PACKING "
+                        "to train these models on the padded path."
+                    )
+            return out
+
+        model.forward = forward_with_varlen
+        model._unsloth_varlen_forward_wrapped = True
+    return True
+
+
 def get_packed_info_from_kwargs(
-    kwargs: dict,
-    device: torch.device,
+    kwargs: dict, device: torch.device
 ) -> Optional[Tuple[torch.Tensor, torch.Tensor, int]]:
     """Return packed sequence metadata expected by the attention kernels."""
 
@@ -261,11 +557,7 @@ def build_xformers_block_causal_mask(
         device = seq_lengths.device
         params = (sliding_window,)
         entry = _XFORMERS_BLOCK_MASK_CACHE.get(device)
-        if (
-            entry is not None
-            and entry["seq_lengths"] is seq_lengths
-            and entry["params"] == params
-        ):
+        if entry is not None and entry["seq_lengths"] is seq_lengths and entry["params"] == params:
             return entry["mask"]
 
         lengths_tensor = seq_lengths.to("cpu", torch.int32)
@@ -303,11 +595,7 @@ def build_sdpa_packed_attention_mask(
 
     params = (dtype, sliding_window)
     entry = _SDPA_MASK_CACHE.get(device)
-    if (
-        entry is not None
-        and entry["seq_lengths"] is seq_lengths
-        and entry["params"] == params
-    ):
+    if entry is not None and entry["seq_lengths"] is seq_lengths and entry["params"] == params:
         return entry["mask"]
 
     total_tokens = int(seq_lengths.sum().item())
@@ -323,15 +611,9 @@ def build_sdpa_packed_attention_mask(
         if length <= 0:
             continue
         block = torch.zeros((length, length), dtype = dtype, device = device)
-        upper = torch.triu(
-            torch.ones((length, length), device = device), diagonal = 1
-        ).bool()
+        upper = torch.triu(torch.ones((length, length), device = device), diagonal = 1).bool()
         block = block.masked_fill(upper, float("-inf"))
-        if (
-            sliding_window is not None
-            and sliding_window > 0
-            and length > sliding_window
-        ):
+        if sliding_window is not None and sliding_window > 0 and length > sliding_window:
             idx = torch.arange(length, device = device)
             dist = idx.unsqueeze(1) - idx.unsqueeze(0)
             window_mask = dist >= sliding_window
@@ -348,11 +630,7 @@ def build_sdpa_packed_attention_mask(
     return result
 
 
-def _normalize_packed_lengths(
-    seq_lengths: Any,
-    *,
-    device: torch.device,
-) -> Optional[torch.Tensor]:
+def _normalize_packed_lengths(seq_lengths: Any, *, device: torch.device) -> Optional[torch.Tensor]:
     if seq_lengths is None:
         return None
     if isinstance(seq_lengths, torch.Tensor):

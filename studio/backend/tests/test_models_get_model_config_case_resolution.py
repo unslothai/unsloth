@@ -50,9 +50,7 @@ def test_get_model_config_resolves_cached_case_before_model_checks(monkeypatch):
         return _DummyModelConfig()
 
     monkeypatch.setattr(models_route, "is_local_path", lambda _: False)
-    monkeypatch.setattr(
-        models_route, "resolve_cached_repo_id_case", lambda _: "Org/Model"
-    )
+    monkeypatch.setattr(models_route, "resolve_cached_repo_id_case", lambda _: "Org/Model")
     monkeypatch.setattr(models_route, "load_model_defaults", _record_load)
     monkeypatch.setattr(models_route, "is_vision_model", _record_vision)
     monkeypatch.setattr(models_route, "is_embedding_model", _record_embedding)
@@ -79,3 +77,29 @@ def test_get_model_config_resolves_cached_case_before_model_checks(monkeypatch):
     assert calls["is_embedding_model"] == "Org/Model"
     assert calls["detect_audio_type"] == "Org/Model"
     assert calls["from_identifier"] == "Org/Model"
+
+
+def test_repo_in_any_hf_cache_matches_case_variant_in_legacy_cache(tmp_path, monkeypatch):
+    # A case-variant in a legacy/default cache must read as present (case resolution only
+    # covers the active cache; discard deletes case-insensitively, so detection must too,
+    # else a decline deletes a pre-existing user repo).
+    import utils.paths as paths_pkg
+    import huggingface_hub.constants as hf_constants
+
+    active = tmp_path / "active"
+    legacy = tmp_path / "legacy"
+    default = tmp_path / "default"
+    for d in (active, legacy, default):
+        d.mkdir()
+    # Differently-cased entry in the legacy cache only.
+    (legacy / "models--Unsloth--Foo").mkdir()
+
+    # No active-cache variant; case resolution is a no-op here.
+    monkeypatch.setattr(paths_pkg, "resolve_cached_repo_id_case", lambda name: name)
+    monkeypatch.setattr(paths_pkg, "legacy_hf_cache_dir", lambda: legacy)
+    monkeypatch.setattr(paths_pkg, "hf_default_cache_dir", lambda: default)
+    monkeypatch.setattr(hf_constants, "HF_HUB_CACHE", str(active))
+
+    assert models_route._repo_in_any_hf_cache("unsloth/foo") is True
+    # Absent from every cache -> reported absent.
+    assert models_route._repo_in_any_hf_cache("unsloth/not-cached") is False

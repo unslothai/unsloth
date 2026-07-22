@@ -1,27 +1,68 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""
-Datasets API routes
-"""
+"""Datasets API routes."""
 
 import base64
 import io
 import json
 import sys
+from contextlib import suppress
 from pathlib import Path
 from uuid import uuid4
-from fastapi import APIRouter, Depends, HTTPException, UploadFile
+from typing import Optional
+from fastapi import APIRouter, Depends, HTTPException, Query, UploadFile
+import re as _re
 import structlog
 from loggers import get_logger
 
-# Add backend directory to path
+_VALID_REPO_ID = _re.compile(r"^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$")
+
+
+def _is_valid_repo_id(repo_id: str) -> bool:
+    return bool(_VALID_REPO_ID.fullmatch(repo_id))
+
+
+_dataset_size_cache: dict[str, int] = {}
+
+
+def _get_dataset_size_cached(repo_id: str) -> int:
+    if repo_id in _dataset_size_cache:
+        return _dataset_size_cache[repo_id]
+    try:
+        from huggingface_hub import dataset_info as hf_dataset_info
+
+        info = hf_dataset_info(repo_id, token = None, files_metadata = True)
+        total = sum(s.size for s in info.siblings if getattr(s, "size", None))
+        _dataset_size_cache[repo_id] = total
+        return total
+    except Exception:
+        return 0
+
+
+def _resolve_hf_cache_realpath(repo_dir: Path) -> Optional[str]:
+    """Resolved realpath for a HF cache repo dir: most-recent snapshot, else cache root.
+
+    Mirrors routes/models.py; duplicated here to keep this module self-contained.
+    """
+    try:
+        snapshots_dir = repo_dir / "snapshots"
+        if snapshots_dir.is_dir():
+            snaps = [s for s in snapshots_dir.iterdir() if s.is_dir()]
+            if snaps:
+                latest = max(snaps, key = lambda s: s.stat().st_mtime)
+                return str(latest.resolve())
+        return str(repo_dir.resolve())
+    except Exception:
+        return None
+
+
 backend_path = Path(__file__).parent.parent.parent
 if str(backend_path) not in sys.path:
     sys.path.insert(0, str(backend_path))
 
-# Import dataset utilities
 from utils.datasets import check_dataset_format
+from utils.upload_limits import get_upload_limit_bytes, get_upload_limit_label
 from auth.authentication import get_current_subject
 
 router = APIRouter()
@@ -46,13 +87,12 @@ from utils.paths import (
 
 
 def _serialize_preview_value(value):
-    """make it json safe for client preview ⊂(◉‿◉)つ"""
+    """Make a value JSON-safe for the client preview."""
     if value is None or isinstance(value, (str, int, float, bool)):
         return value
 
     try:
         from PIL.Image import Image as PILImage
-
         if isinstance(value, PILImage):
             buffer = io.BytesIO()
             value.convert("RGB").save(buffer, format = "JPEG", quality = 85)
@@ -82,17 +122,15 @@ def _serialize_preview_rows(rows):
     ]
 
 
-# --- Endpoints ---
-
-# Recognized data-file extensions for the single-file fallback approach.
-# Tabular formats are preferred over archives for Tier 1 preview because
-# archives (e.g. images.zip) may be loaded as ImageFolder datasets with
-# synthetic columns (image/label) that don't match the real dataset schema.
-_TABULAR_EXTS = (".parquet", ".json", ".jsonl", ".csv", ".tsv", ".arrow")
-_ARCHIVE_EXTS = (".tar", ".tar.gz", ".tgz", ".gz", ".zst", ".zip", ".txt")
-DATA_EXTS = _TABULAR_EXTS + _ARCHIVE_EXTS
+# Data-file extensions for single-file preview. Tier 1 only uses tabular
+# files; archives/text/config fall through to full load_dataset.
+_COLUMNAR_EXTS = (".parquet", ".arrow")
+_RECORD_EXTS = (".jsonl", ".csv", ".tsv")
+_JSON_EXTS = (".json",)
+_TABULAR_EXTS = _COLUMNAR_EXTS + _RECORD_EXTS + _JSON_EXTS
 LOCAL_FILE_EXTS = (".json", ".jsonl", ".csv", ".parquet")
 LOCAL_UPLOAD_EXTS = {".csv", ".json", ".jsonl", ".parquet"}
+# sync: training dataset upload limits are exposed by /api/settings/upload-limit
 LOCAL_DATASETS_ROOT = recipe_datasets_root()
 DATASET_UPLOAD_DIR = dataset_uploads_root()
 
@@ -105,6 +143,166 @@ def _safe_read_metadata(path: Path) -> dict | None:
     if not isinstance(payload, dict):
         return None
     return payload
+
+
+_HF_PREVIEW_EXT_PRIORITY = {
+    ".parquet": 0,
+    ".arrow": 0,
+    ".jsonl": 1,
+    ".csv": 2,
+    ".tsv": 3,
+    ".json": 4,
+}
+_HF_NON_DATA_EXACT_FILENAMES = {
+    ".gitattributes",
+    "builder_config.json",
+    "config.json",
+    "dataset_info.json",
+    "dataset_infos.json",
+    "metadata.json",
+}
+_HF_NON_DATA_CARD_FILENAMES = {"card.json", "dataset_card.json"}
+
+
+def _normalize_hf_repo_path(path: str) -> str:
+    return path.strip().replace("\\", "/").lstrip("./")
+
+
+def _hf_preview_extension(path: str) -> str | None:
+    lower = path.lower()
+    for ext in _HF_PREVIEW_EXT_PRIORITY:
+        if lower.endswith(ext):
+            return ext
+    return None
+
+
+def _is_known_hf_non_data_file(path: str) -> bool:
+    name = Path(path).name.lower()
+    if name in _HF_NON_DATA_EXACT_FILENAMES:
+        return True
+    if name in _HF_NON_DATA_CARD_FILENAMES:
+        return True
+    if name == "readme" or name.startswith("readme."):
+        return True
+    if name.endswith("_config.json") or name.endswith("-config.json"):
+        return True
+    if name.endswith("_card.json") or name.endswith("-card.json"):
+        return True
+    return False
+
+
+def _is_hf_preview_data_file(path: str) -> bool:
+    normalized = _normalize_hf_repo_path(path)
+    if not normalized or _is_known_hf_non_data_file(normalized):
+        return False
+    return _hf_preview_extension(normalized) is not None
+
+
+def _extract_hf_metadata_data_paths(metadata: dict | None) -> list[str]:
+    if not metadata:
+        return []
+    file_paths = metadata.get("file_paths")
+    if not isinstance(file_paths, dict):
+        return []
+    raw_data_paths = file_paths.get("data")
+    if isinstance(raw_data_paths, str):
+        values = [raw_data_paths]
+    elif isinstance(raw_data_paths, list):
+        values = raw_data_paths
+    else:
+        return []
+
+    paths: list[str] = []
+    for value in values:
+        if not isinstance(value, str):
+            continue
+        normalized = _normalize_hf_repo_path(value)
+        if normalized:
+            paths.append(normalized)
+    return paths
+
+
+def _select_best_hf_preview_candidate(
+    candidates: list[str], *, subset: str | None, split: str | None
+) -> str | None:
+    if not candidates:
+        return None
+    subset_lower = subset.lower() if subset else None
+    split_lower = split.lower() if split else None
+
+    def score(path: str) -> tuple[int, int, int, int, str]:
+        ext = _hf_preview_extension(path)
+        ext_priority = _HF_PREVIEW_EXT_PRIORITY[ext] if ext else 99
+        stem = Path(path).stem.lower()
+        path_lower = path.lower()
+
+        subset_miss = 0
+        if subset_lower:
+            subset_miss = 0 if subset_lower in stem or subset_lower in path_lower else 1
+
+        split_miss = 0
+        if split_lower:
+            split_hit = (
+                stem == split_lower
+                or stem.startswith(f"{split_lower}_")
+                or stem.startswith(f"{split_lower}-")
+                or f"/{split_lower}/" in path_lower
+                or f"_{split_lower}." in path_lower
+                or f"-{split_lower}." in path_lower
+                or f"/{split_lower}." in path_lower
+                or f"/{split_lower}_" in path_lower
+                or f"/{split_lower}-" in path_lower
+            )
+            split_miss = 0 if split_hit else 1
+
+        return (subset_miss, split_miss, ext_priority, len(path), path)
+
+    return sorted(candidates, key = score)[0]
+
+
+def _select_hf_preview_file(
+    repo_files: list[str], *, metadata: dict | None, subset: str | None, split: str | None
+) -> str | None:
+    normalized_repo_files = [_normalize_hf_repo_path(path) for path in repo_files]
+    repo_file_set = set(normalized_repo_files)
+
+    metadata_candidates = [
+        path
+        for path in _extract_hf_metadata_data_paths(metadata)
+        if path in repo_file_set and _is_hf_preview_data_file(path)
+    ]
+    if metadata_candidates:
+        return _select_best_hf_preview_candidate(metadata_candidates, subset = subset, split = split)
+
+    data_candidates = [path for path in normalized_repo_files if _is_hf_preview_data_file(path)]
+    return _select_best_hf_preview_candidate(data_candidates, subset = subset, split = split)
+
+
+def _download_hf_metadata(*, repo_id: str, repo_files: list[str], token: str | None) -> dict | None:
+    metadata_file = next(
+        (
+            path
+            for path in repo_files
+            if Path(_normalize_hf_repo_path(path)).name.lower() == "metadata.json"
+        ),
+        None,
+    )
+    if not metadata_file:
+        return None
+
+    try:
+        from huggingface_hub import hf_hub_download
+        local_path = hf_hub_download(
+            repo_id = repo_id,
+            filename = metadata_file,
+            repo_type = "dataset",
+            token = token,
+        )
+    except Exception as exc:
+        logger.warning(f"Could not read HF dataset metadata for {repo_id}: {exc}")
+        return None
+
+    return _safe_read_metadata(Path(local_path))
 
 
 def _safe_read_rows_from_metadata(payload: dict | None) -> int | None:
@@ -213,10 +411,9 @@ def _build_local_dataset_items() -> list[LocalDatasetItem]:
     return items
 
 
-def _load_local_preview_slice(
-    *, dataset_path: Path, train_split: str, preview_size: int
-):
-    from datasets import load_dataset
+def _load_local_preview_slice(*, dataset_path: Path, train_split: str, preview_size: int):
+    # Non-streaming loads take the cached builder lock; use the EACCES-safe wrapper.
+    from utils.datasets.cache_safe import load_dataset_cache_safe as load_dataset
 
     if dataset_path.is_dir():
         parquet_dir = (
@@ -250,9 +447,7 @@ def _load_local_preview_slice(
     elif dataset_path.suffix == ".csv":
         dataset = load_dataset("csv", data_files = str(dataset_path), split = train_split)
     elif dataset_path.suffix == ".parquet":
-        dataset = load_dataset(
-            "parquet", data_files = str(dataset_path), split = train_split
-        )
+        dataset = load_dataset("parquet", data_files = str(dataset_path), split = train_split)
     else:
         raise HTTPException(
             status_code = 400, detail = f"Unsupported file format: {dataset_path.suffix}"
@@ -272,8 +467,7 @@ def _sanitize_filename(filename: str) -> str:
 
 @router.post("/upload", response_model = UploadDatasetResponse)
 async def upload_dataset(
-    file: UploadFile,
-    current_subject: str = Depends(get_current_subject),
+    file: UploadFile, current_subject: str = Depends(get_current_subject)
 ) -> UploadDatasetResponse:
     filename = _sanitize_filename(file.filename or "dataset_upload")
     ext = Path(filename).suffix.lower()
@@ -289,10 +483,30 @@ async def upload_dataset(
     stored_name = f"{uuid4().hex}_{stem}{ext}"
     stored_path = DATASET_UPLOAD_DIR / stored_name
 
-    # Stream file to disk in chunks to avoid holding entire file in memory
-    with open(stored_path, "wb") as f:
-        while chunk := await file.read(1024 * 1024):
-            f.write(chunk)
+    # Stream to disk in chunks to avoid holding the whole file in memory. The
+    # route-level cap gives a clear training-dataset error and avoids leaving
+    # oversized partial files in the Unsloth uploads directory.
+    upload_limit_bytes = get_upload_limit_bytes()
+    total_bytes = 0
+    upload_complete = False
+    try:
+        with open(stored_path, "wb") as f:
+            while chunk := await file.read(1024 * 1024):
+                total_bytes += len(chunk)
+                if total_bytes > upload_limit_bytes:
+                    raise HTTPException(
+                        status_code = 413,
+                        detail = (
+                            "Training dataset upload too large. "
+                            f"Maximum is {get_upload_limit_label()}."
+                        ),
+                    )
+                f.write(chunk)
+        upload_complete = True
+    finally:
+        if not upload_complete:
+            with suppress(OSError):
+                stored_path.unlink(missing_ok = True)
 
     if stored_path.stat().st_size == 0:
         stored_path.unlink(missing_ok = True)
@@ -308,23 +522,93 @@ def list_local_datasets(
     return LocalDatasetsResponse(datasets = _build_local_dataset_items())
 
 
-@router.post("/check-format", response_model = CheckFormatResponse)
-def check_format(
-    request: CheckFormatRequest,
+@router.get("/download-progress")
+async def get_dataset_download_progress(
+    repo_id: str = Query(..., description = "HuggingFace dataset repo ID, e.g. 'unsloth/LaTeX_OCR'"),
     current_subject: str = Depends(get_current_subject),
 ):
-    """
-    Check if a dataset requires manual column mapping.
+    """Return download progress for a HuggingFace dataset repo.
 
-    Strategy for HuggingFace datasets:
-      1. list_repo_files → pick the first data file → load_dataset(data_files=[…])
-         Avoids resolving thousands of files; typically ~2-4 s.
+    Mirrors ``GET /api/models/download-progress`` but scans the
+    ``datasets--owner--name`` cache dir under HF_HUB_CACHE, where in-progress
+    download bytes are visible. Returns ``cache_path`` so the UI can show it.
+    """
+    _empty = {
+        "downloaded_bytes": 0,
+        "expected_bytes": 0,
+        "progress": 0,
+        "cache_path": None,
+    }
+    try:
+        if not _is_valid_repo_id(repo_id):
+            return _empty
+
+        from huggingface_hub import constants as hf_constants
+
+        cache_dir = Path(hf_constants.HF_HUB_CACHE)
+        target = f"datasets--{repo_id.replace('/', '--')}".lower()
+        completed_bytes = 0
+        in_progress_bytes = 0
+        cache_path: Optional[str] = None
+
+        if cache_dir.is_dir():
+            for entry in cache_dir.iterdir():
+                if entry.name.lower() != target:
+                    continue
+                cache_path = _resolve_hf_cache_realpath(entry)
+                blobs_dir = entry / "blobs"
+                if not blobs_dir.is_dir():
+                    break
+                for f in blobs_dir.iterdir():
+                    if not f.is_file():
+                        continue
+                    if f.name.endswith(".incomplete"):
+                        in_progress_bytes += f.stat().st_size
+                    else:
+                        completed_bytes += f.stat().st_size
+                break
+
+        downloaded_bytes = completed_bytes + in_progress_bytes
+        if downloaded_bytes == 0:
+            return {**_empty, "cache_path": cache_path}
+
+        expected_bytes = _get_dataset_size_cached(repo_id)
+        if expected_bytes <= 0:
+            return {
+                "downloaded_bytes": downloaded_bytes,
+                "expected_bytes": 0,
+                "progress": 0,
+                "cache_path": cache_path,
+            }
+
+        # 95% threshold (as in the model endpoint): HF blob dedup makes
+        # completed_bytes drift under expected_bytes; inter-file gaps look "done".
+        if completed_bytes >= expected_bytes * 0.95:
+            progress = 1.0
+        else:
+            progress = min(downloaded_bytes / expected_bytes, 0.99)
+        return {
+            "downloaded_bytes": downloaded_bytes,
+            "expected_bytes": expected_bytes,
+            "progress": round(progress, 3),
+            "cache_path": cache_path,
+        }
+    except Exception as e:
+        logger.warning(f"Error checking dataset download progress for {repo_id}: {e}")
+        return _empty
+
+
+@router.post("/check-format", response_model = CheckFormatResponse)
+def check_format(request: CheckFormatRequest, current_subject: str = Depends(get_current_subject)):
+    """Check if a dataset requires manual column mapping.
+
+    HuggingFace strategy:
+      1. list_repo_files -> select one tabular data file -> load_dataset
+         (avoids resolving thousands of files; ~2-4 s).
       2. Full streaming load_dataset as a last-resort fallback.
 
-    Local files are loaded directly.
-
-    Using a plain `def` (not async) so FastAPI runs this in a thread-pool,
-    preventing any blocking IO from freezing the event loop.
+    Local files load directly. Plain `def` (not async) so FastAPI runs it in a
+    thread-pool, keeping blocking IO off the event loop.
     """
     try:
         from itertools import islice
@@ -348,7 +632,7 @@ def check_format(
             )
         else:
             # ── HuggingFace dataset ─────────────────────────────────
-            # Tier 1: list_repo_files → load only the first data file
+            # Tier 1: list_repo_files -> load one selected tabular data file
             preview_slice = None
 
             try:
@@ -360,34 +644,23 @@ def check_format(
                     repo_type = "dataset",
                     token = request.hf_token or None,
                 )
-                data_files = [
-                    f for f in repo_files if any(f.endswith(ext) for ext in DATA_EXTS)
-                ]
+                metadata = _download_hf_metadata(
+                    repo_id = request.dataset_name,
+                    repo_files = repo_files,
+                    token = request.hf_token or None,
+                )
+                selected_file = _select_hf_preview_file(
+                    repo_files,
+                    metadata = metadata,
+                    subset = request.subset,
+                    split = request.train_split or "train",
+                )
 
-                # Prefer tabular formats over archives (e.g. images.zip → ImageFolder
-                # with synthetic image/label columns that don't match the real schema).
-                tabular_files = [
-                    f
-                    for f in data_files
-                    if any(f.endswith(ext) for ext in _TABULAR_EXTS)
-                ]
-                candidates = tabular_files or data_files
-
-                # When a subset is specified, narrow to files whose name matches
-                # (e.g. subset="testmini" → prefer "testmini.parquet").
-                if request.subset and candidates:
-                    subset_matches = [
-                        f for f in candidates if request.subset in Path(f).stem
-                    ]
-                    if subset_matches:
-                        candidates = subset_matches
-
-                if candidates:
-                    first_file = candidates[0]
-                    logger.info(f"Tier 1: loading single file {first_file}")
+                if selected_file:
+                    logger.info(f"Tier 1: loading single file {selected_file}")
                     load_kwargs = {
                         "path": request.dataset_name,
-                        "data_files": [first_file],
+                        "data_files": [selected_file],
                         "split": "train",
                         "streaming": True,
                     }
@@ -402,7 +675,7 @@ def check_format(
                 logger.warning(f"Tier 1 (single-file) failed: {e}")
 
             if preview_slice is None:
-                # Tier 2: full streaming (resolves all files — slow for large repos)
+                # Tier 2: full streaming (resolves all files; slow for large repos)
                 logger.info("Tier 2: falling back to full streaming load_dataset")
                 load_kwargs = {
                     "path": request.dataset_name,
@@ -426,46 +699,40 @@ def check_format(
                 preview_slice = Dataset.from_list(rows)
             total_rows = None
 
-        # Run lightweight format check on the preview slice
         result = check_dataset_format(preview_slice, is_vlm = request.is_vlm)
 
         logger.info(
             f"Format check result: requires_mapping={result['requires_manual_mapping']}, format={result['detected_format']}, is_image={result.get('is_image', False)}"
         )
 
-        # Generate preview samples
         preview_samples = None
         if not result["requires_manual_mapping"]:
             if result.get("suggested_mapping"):
                 # Heuristic-detected: show raw data so columns match the API response.
-                # Processing (column stripping) happens at training time, not preview.
+                # Column stripping happens at training time, not preview.
                 preview_samples = _serialize_preview_rows(preview_slice)
             else:
                 try:
                     format_result = format_dataset(
                         preview_slice,
                         format_type = "auto",
-                        num_proc = None,  # Only 10 preview rows -- no need for multiprocessing
+                        num_proc = None,  # Only 10 preview rows
                     )
                     processed = format_result["dataset"]
                     preview_samples = _serialize_preview_rows(processed)
                 except Exception as e:
-                    logger.warning(
-                        f"Processed preview generation failed (non-fatal): {e}"
-                    )
+                    logger.warning(f"Processed preview generation failed (non-fatal): {e}")
                     preview_samples = _serialize_preview_rows(preview_slice)
         else:
             preview_samples = _serialize_preview_rows(preview_slice)
 
-        # Collect warnings: from check_dataset_format + URL-based image detection
+        # Warnings from check_dataset_format plus URL-based image detection.
         warning = result.get("warning")
         image_col = result.get("detected_image_column")
         if image_col and image_col in (result.get("columns") or []):
             try:
                 sample_val = preview_slice[0][image_col]
-                if isinstance(sample_val, str) and sample_val.startswith(
-                    ("http://", "https://")
-                ):
+                if isinstance(sample_val, str) and sample_val.startswith(("http://", "https://")):
                     url_warning = (
                         "This dataset contains image URLs instead of embedded images. "
                         "Images will be downloaded during training, which may be slow for large datasets."
@@ -487,6 +754,7 @@ def check_format(
             detected_audio_column = result.get("detected_audio_column"),
             detected_text_column = result.get("detected_text_column"),
             detected_speaker_column = result.get("detected_speaker_column"),
+            chat_column = result.get("chat_column"),
             preview_samples = preview_samples,
             total_rows = total_rows,
             warning = warning,
@@ -496,33 +764,25 @@ def check_format(
         raise
     except Exception as e:
         logger.error(f"Error checking dataset format: {e}", exc_info = True)
-        raise HTTPException(
-            status_code = 500, detail = f"Failed to check dataset format: {str(e)}"
-        )
+        raise HTTPException(status_code = 500, detail = "Failed to check dataset format")
 
 
 @router.post("/ai-assist-mapping", response_model = AiAssistMappingResponse)
 def ai_assist_mapping(
-    request: AiAssistMappingRequest,
-    current_subject: str = Depends(get_current_subject),
+    request: AiAssistMappingRequest, current_subject: str = Depends(get_current_subject)
 ):
-    """
-    Run LLM-assisted dataset conversion advisor (user-triggered).
+    """Run LLM-assisted dataset conversion advisor (user-triggered).
 
-    Multi-pass analysis using a 7B helper model:
-      Pass 1: Classify dataset type from HF card + samples
-      Pass 2: Generate conversion strategy (system prompt, templates)
-      Pass 3: Validate conversion quality
-
-    Falls back to simple column classification if the advisor fails.
+    Multi-pass analysis with a 7B helper model: classify dataset type, generate
+    conversion strategy, validate quality. Falls back to simple column
+    classification if the advisor fails.
     """
     try:
         from utils.datasets.llm_assist import llm_conversion_advisor
 
-        # Truncate sample values for the LLM prompt
+        # Truncate sample values for the LLM prompt.
         truncated = [
-            {col: str(s.get(col, ""))[:200] for col in request.columns}
-            for s in request.samples[:5]
+            {col: str(s.get(col, ""))[:200] for col in request.columns} for s in request.samples[:5]
         ]
 
         result = llm_conversion_advisor(
@@ -554,4 +814,4 @@ def ai_assist_mapping(
 
     except Exception as e:
         logger.error(f"AI assist mapping failed: {e}", exc_info = True)
-        raise HTTPException(status_code = 500, detail = f"AI assist failed: {str(e)}")
+        raise HTTPException(status_code = 500, detail = "AI assist failed")

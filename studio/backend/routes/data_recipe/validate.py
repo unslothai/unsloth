@@ -7,16 +7,66 @@ from __future__ import annotations
 
 from typing import Any
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter
 
 from core.data_recipe.service import (
     build_config_builder,
     create_data_designer,
     validate_recipe,
 )
+from loggers import get_logger
 from models.data_recipe import RecipePayload, ValidateError, ValidateResponse
+from utils.utils import safe_error_detail, safe_curated_detail, log_and_http_error
 
+logger = get_logger(__name__)
 router = APIRouter()
+
+_GITHUB_VALIDATE_NOTE = (
+    "Recipe shape is valid. GitHub access and rate limits are checked when the run starts."
+)
+_GITHUB_ITEM_TYPES = {"issues", "pulls", "commits"}
+
+
+def _github_seed_source(recipe: dict[str, Any]) -> dict[str, Any] | None:
+    seed_config = recipe.get("seed_config")
+    if not isinstance(seed_config, dict):
+        return None
+    source = seed_config.get("source")
+    if not isinstance(source, dict) or source.get("seed_type") != "github_repo":
+        return None
+    return source
+
+
+def _validate_github_seed_static(source: dict[str, Any]) -> list[ValidateError]:
+    errors: list[ValidateError] = []
+
+    repos = source.get("repos")
+    if not isinstance(repos, list) or not repos:
+        errors.append(ValidateError(message = "GitHub seed requires at least one repo."))
+    else:
+        for repo in repos:
+            if not isinstance(repo, str) or not repo.strip() or "/" not in repo:
+                errors.append(ValidateError(message = "GitHub repos must be owner/name strings."))
+                break
+
+    item_types = source.get("item_types")
+    if not isinstance(item_types, list) or not item_types:
+        errors.append(ValidateError(message = "GitHub seed requires at least one item type."))
+    else:
+        invalid_items = [item for item in item_types if item not in _GITHUB_ITEM_TYPES]
+        if invalid_items:
+            errors.append(
+                ValidateError(message = "GitHub item types must be issues, pulls, or commits.")
+            )
+
+    try:
+        limit = int(source.get("limit"))
+    except (TypeError, ValueError):
+        limit = 0
+    if limit < 1 or limit > 5000:
+        errors.append(ValidateError(message = "GitHub limit must be from 1 to 5000."))
+
+    return errors
 
 
 def _collect_validation_errors(recipe: dict[str, Any]) -> list[ValidateError]:
@@ -71,9 +121,8 @@ def _collect_validation_errors(recipe: dict[str, Any]) -> list[ValidateError]:
 def _patch_local_providers(recipe: dict[str, Any]) -> None:
     """Strip is_local and fill a dummy endpoint so validation doesn't choke.
 
-    Uses a strict `is True` check to match _inject_local_providers in
-    jobs.py - malformed payloads with truthy but non-boolean is_local
-    values should not be treated as local.
+    Strict `is True` matches _inject_local_providers: truthy non-boolean values
+    aren't treated as local.
     """
     for provider in recipe.get("model_providers", []):
         if not isinstance(provider, dict):
@@ -93,12 +142,55 @@ def validate(payload: RecipePayload) -> ValidateResponse:
 
     _patch_local_providers(recipe)
 
+    github_source = _github_seed_source(recipe)
+    if github_source is not None:
+        static_errors = _validate_github_seed_static(github_source)
+        if static_errors:
+            return ValidateResponse(valid = False, errors = static_errors)
+        try:
+            build_config_builder(recipe)
+        except ModuleNotFoundError as exc:
+            # data_designer is an optional runtime dep; static validation passed
+            # and full validation is deferred to run start, so a missing import
+            # shouldn't block the recipe. Restrict the bypass to data_designer so
+            # other ImportErrors still surface as failures.
+            if not (exc.name or "").startswith("data_designer"):
+                raise
+            logger.debug(
+                "data_designer not installed; deferring full config validation to run start",
+                missing_module = exc.name,
+            )
+        except Exception as exc:
+            logger.error(
+                "data_recipe.validate.github_config_failed",
+                error = str(exc),
+                exc_info = True,
+            )
+            detail = safe_error_detail(exc, fallback = "Validation failed.")
+            return ValidateResponse(
+                valid = False,
+                errors = [ValidateError(message = detail)],
+                raw_detail = detail,
+            )
+        return ValidateResponse(valid = True, raw_detail = _GITHUB_VALIDATE_NOTE)
+
     try:
         validate_recipe(recipe)
     except RuntimeError as exc:
-        raise HTTPException(status_code = 503, detail = str(exc)) from exc
+        raise log_and_http_error(
+            exc,
+            503,
+            safe_error_detail(exc),
+            event = "data_recipe.validate.service_unavailable",
+            log = logger,
+        ) from exc
     except Exception as exc:
-        detail = str(exc).strip() or "Validation failed."
+        logger.error(
+            "data_recipe.validate.recipe_failed",
+            error = str(exc),
+            exc_info = True,
+        )
+        detail = safe_curated_detail(exc, fallback = "Validation failed.")
         parsed_errors = _collect_validation_errors(recipe)
         return ValidateResponse(
             valid = False,

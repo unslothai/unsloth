@@ -13,41 +13,85 @@ import {
 } from "@/components/ui/alert-dialog";
 import { Button } from "@/components/ui/button";
 import type { TrainingRunSummary } from "@/features/training";
-import { deleteTrainingRun, listTrainingRuns } from "@/features/training";
+import {
+  deleteTrainingRun,
+  getTrainingRunDisplayTitle,
+  getTrainingRunModelSubtitle,
+  emitTrainingRunDeleted,
+  listTrainingRuns,
+  onTrainingRunDeleted,
+  onTrainingRunsChanged,
+  onTrainingRunUpdated,
+  useTrainingActions,
+  useTrainingRuntimeStore,
+} from "@/features/training";
 import { formatDuration } from "@/features/studio/sections/progress-section-lib";
+import { fetchDeviceType, usePlatformStore } from "@/config/env";
 import { cn } from "@/lib/utils";
+import { copyToClipboard } from "@/lib/copy-to-clipboard";
+import { toast } from "@/lib/toast";
 import { Delete02Icon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { type ReactElement, useCallback, useEffect, useRef, useState } from "react";
 import { Spinner } from "@/components/ui/spinner";
+import { translate, useT } from "@/i18n";
+
+type StudioT = ReturnType<typeof useT>;
 
 const PAGE_SIZE = 12;
 const RUNNING_POLL_INTERVAL_MS = 5000;
 
 const statusBadge: Record<
   string,
-  { label: string; className: string }
+  { className: string }
 > = {
   completed: {
-    label: "Completed",
     className:
       "bg-emerald-100 text-emerald-700 dark:bg-emerald-950 dark:text-emerald-400",
   },
   stopped: {
-    label: "Stopped",
     className:
       "bg-amber-100 text-amber-700 dark:bg-amber-950 dark:text-amber-400",
   },
   error: {
-    label: "Error",
     className: "bg-red-100 text-red-700 dark:bg-red-950 dark:text-red-400",
   },
   running: {
-    label: "Running",
     className:
       "bg-blue-100 text-blue-700 dark:bg-blue-950 dark:text-blue-400",
   },
+  resumed_later: {
+    className:
+      "bg-emerald-100 text-emerald-700 dark:bg-emerald-950 dark:text-emerald-400",
+  },
 };
+
+function formatStatusLabel(status: string, t: StudioT): string {
+  if (status === "completed") return t("studio.history.status.completed");
+  if (status === "stopped") return t("studio.history.status.stopped");
+  if (status === "running") return t("studio.history.status.running");
+  if (status === "resumed_later") return t("studio.history.status.continued");
+  return t("studio.history.status.error");
+}
+
+function wasContinuedInVisibleRuns(
+  run: TrainingRunSummary,
+  runs: TrainingRunSummary[],
+): boolean {
+  if ((run.status !== "stopped" && run.status !== "error") || !run.output_dir)
+    return false;
+  const startedAt = new Date(run.started_at).getTime();
+  return runs.some(
+    (other) =>
+      other.id !== run.id &&
+      other.output_dir === run.output_dir &&
+      (other.status === "stopped" ||
+        other.status === "completed" ||
+        other.status === "error" ||
+        other.status === "running") &&
+      new Date(other.started_at).getTime() > startedAt,
+  );
+}
 
 function catmullRomPath(points: { x: number; y: number }[]): string {
   if (points.length < 2) return "";
@@ -68,7 +112,15 @@ function catmullRomPath(points: { x: number; y: number }[]): string {
   return d.join(" ");
 }
 
-function Sparkline({ values, id }: { values: number[]; id: string }): ReactElement | null {
+function Sparkline({
+  values,
+  id,
+  ariaLabel,
+}: {
+  values: number[];
+  id: string;
+  ariaLabel: string;
+}): ReactElement | null {
   if (!values || values.length < 2) return null;
   let min = values[0]!;
   let max = values[0]!;
@@ -82,7 +134,7 @@ function Sparkline({ values, id }: { values: number[]; id: string }): ReactEleme
   const w = 120;
   const gradientId = `sparkFill-${id}`;
 
-  // Build points with vertical padding so the stroke isn't clipped
+  // Vertical padding so the stroke isn't clipped.
   const pts = values.map((v, i) => ({
     x: (i / (values.length - 1)) * w,
     y: pad + (1 - (v - min) / range) * (h - pad * 2),
@@ -94,7 +146,7 @@ function Sparkline({ values, id }: { values: number[]; id: string }): ReactEleme
   const fillPath = `${linePath} L${last.x.toFixed(1)},${h} L${first.x.toFixed(1)},${h} Z`;
 
   return (
-    <svg viewBox={`0 0 ${w} ${h}`} className="h-8 w-full" preserveAspectRatio="none" role="img" aria-label="Loss trend sparkline">
+    <svg viewBox={`0 0 ${w} ${h}`} className="h-8 w-full" preserveAspectRatio="none" role="img" aria-label={ariaLabel}>
       <defs>
         <linearGradient id={gradientId} x1="0" y1="0" x2="0" y2="1">
           <stop offset="0%" stopColor="currentColor" stopOpacity="0.12" />
@@ -119,40 +171,73 @@ function Sparkline({ values, id }: { values: number[]; id: string }): ReactEleme
   );
 }
 
-function formatRelativeTime(isoDate: string): string {
+function formatRelativeTime(isoDate: string, t: StudioT): string {
   const diff = Date.now() - new Date(isoDate).getTime();
   const mins = Math.floor(diff / 60000);
-  if (mins < 1) return "just now";
-  if (mins < 60) return `${mins}m ago`;
+  if (mins < 1) return t("studio.history.relativeJustNow");
+  if (mins < 60) return t("studio.history.relativeMinutesAgo", { count: mins });
   const hrs = Math.floor(mins / 60);
-  if (hrs < 24) return `${hrs}h ago`;
+  if (hrs < 24) return t("studio.history.relativeHoursAgo", { count: hrs });
   const days = Math.floor(hrs / 24);
-  return `${days}d ago`;
+  return t("studio.history.relativeDaysAgo", { count: days });
 }
 
 
 interface HistoryCardGridProps {
   onSelectRun: (runId: string) => void;
+  onResumeStarted?: () => void;
 }
 
 export function HistoryCardGrid({
   onSelectRun,
+  onResumeStarted,
 }: HistoryCardGridProps): ReactElement {
+  const t = useT();
   const [runs, setRuns] = useState<TrainingRunSummary[]>([]);
   const [total, setTotal] = useState(0);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [deleteError, setDeleteError] = useState<string | null>(null);
   const [deleteTarget, setDeleteTarget] = useState<string | null>(null);
+  const [resumeTarget, setResumeTarget] = useState<string | null>(null);
   const [manualFetchInFlight, setManualFetchInFlight] = useState(false);
+  const { resumeTrainingRunFromHistory } = useTrainingActions();
+  const isStarting = useTrainingRuntimeStore((state) => state.isStarting);
+  // Copy-link base: Cloudflare tunnel > LAN host:port > origin. The tunnel
+  // registers shortly after startup, so poll (bounded) until it shows.
+  const cloudflareUrl = usePlatformStore((s) => s.cloudflareUrl);
+  const serverUrl = usePlatformStore((s) => s.serverUrl);
+  useEffect(() => {
+    if (cloudflareUrl) return;
+    let cancelled = false;
+    void (async () => {
+      for (let attempt = 0; attempt < 12 && !cancelled; attempt++) {
+        try {
+          await fetchDeviceType({ force: true });
+        } catch {
+          // Ignore startup blips; copy-link falls back to serverUrl/origin.
+        }
+        if (cancelled || usePlatformStore.getState().cloudflareUrl) return;
+        await new Promise((r) => setTimeout(r, 2500));
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [cloudflareUrl]);
 
   const userControllerRef = useRef<AbortController | null>(null);
   const pollControllerRef = useRef<AbortController | null>(null);
   const fetchIdRef = useRef(0);
   const pollIdRef = useRef(0);
+  const runsLengthRef = useRef(0);
+
+  useEffect(() => {
+    runsLengthRef.current = runs.length;
+  }, [runs.length]);
 
   const fetchRuns = useCallback(async (offset = 0, append = false, limit = PAGE_SIZE) => {
-    // Cancel any in-flight poll so its stale response can't clobber this fresher fetch
+    // Cancel any in-flight poll so its stale response can't clobber this fetch.
     pollControllerRef.current?.abort();
     userControllerRef.current?.abort();
     const controller = new AbortController();
@@ -170,7 +255,7 @@ export function HistoryCardGrid({
     } catch (err) {
       if (err instanceof DOMException && err.name === "AbortError") return;
       if (fetchIdRef.current !== id) return;
-      if (!append) setError("Failed to load training runs");
+      if (!append) setError(translate("studio.history.loadError"));
     } finally {
       if (fetchIdRef.current === id) {
         setLoading(false);
@@ -186,7 +271,28 @@ export function HistoryCardGrid({
     };
   }, [fetchRuns]);
 
-  // Poll while any run is still "running" so the card shows live progress
+  useEffect(() => {
+    const offUpdated = onTrainingRunUpdated((updated) => {
+      setRuns((prev) =>
+        prev.map((run) => (run.id === updated.id ? updated : run)),
+      );
+    });
+    const offDeleted = onTrainingRunDeleted((runId) => {
+      setRuns((prev) => prev.filter((run) => run.id !== runId));
+      setTotal((prev) => Math.max(0, prev - 1));
+    });
+    const offChanged = onTrainingRunsChanged(() => {
+      const limit = Math.max(PAGE_SIZE, runsLengthRef.current);
+      void fetchRuns(0, false, limit);
+    });
+    return () => {
+      offUpdated();
+      offDeleted();
+      offChanged();
+    };
+  }, [fetchRuns]);
+
+  // Poll while any run is "running" so cards show live progress.
   const hasRunningRun = runs.some((r) => r.status === "running");
   const visibleCount = runs.length;
   useEffect(() => {
@@ -200,11 +306,11 @@ export function HistoryCardGrid({
       try {
         const limit = Math.max(PAGE_SIZE, visibleCount);
         const result = await listTrainingRuns(limit, 0, controller.signal);
-        if (pollIdRef.current !== pid) return; // stale poll — discard
+        if (pollIdRef.current !== pid) return; // stale poll
         setRuns(result.runs);
         setTotal(result.total);
       } catch {
-        // silently handle — poll will retry
+        // ignore; poll will retry
       }
     }, RUNNING_POLL_INTERVAL_MS);
     return () => {
@@ -218,27 +324,40 @@ export function HistoryCardGrid({
     setDeleteError(null);
     try {
       await deleteTrainingRun(deleteTarget);
-      // Optimistically remove the card so it disappears immediately
-      setRuns((prev) => prev.filter((r) => r.id !== deleteTarget));
-      setTotal((prev) => Math.max(0, prev - 1));
-      // Re-fetch preserving visible count so offsets stay consistent for "Load more"
+      emitTrainingRunDeleted(deleteTarget);
+      // Re-fetch preserving visible count so "Load more" offsets stay consistent.
       const currentCount = runs.length - 1;
       const limit = Math.max(PAGE_SIZE, currentCount);
       fetchRuns(0, false, limit).catch(() => {
-        // Refresh failed — card is already removed, no stale display
+        // Refresh failed; card is already removed, no stale display.
       });
     } catch {
-      setDeleteError("Failed to delete training run. Please try again.");
+      setDeleteError(translate("studio.history.deleteError"));
     }
     setDeleteTarget(null);
   };
 
+  const handleResume = async (runId: string) => {
+    setResumeTarget(runId);
+    try {
+      const ok = await resumeTrainingRunFromHistory(runId);
+      if (ok) {
+        onResumeStarted?.();
+      }
+    } finally {
+      setResumeTarget(null);
+    }
+  };
+
   if (!loading && error && runs.length === 0) {
     return (
-      <div className="flex flex-col items-center gap-2 py-16 text-center">
+      <div
+        className="flex flex-col items-center gap-2 py-16 text-center"
+        aria-label={t("studio.history.title")}
+      >
         <p className="text-sm text-destructive">{error}</p>
         <Button variant="outline" size="sm" onClick={() => void fetchRuns(0)}>
-          Retry
+          {t("studio.history.retry")}
         </Button>
       </div>
     );
@@ -246,17 +365,19 @@ export function HistoryCardGrid({
 
   if (!loading && runs.length === 0) {
     return (
-      <div className="flex flex-col items-center gap-2 py-16 text-center">
+      <div
+        className="flex flex-col items-center gap-2 py-16 text-center"
+        aria-label={t("studio.history.title")}
+      >
         <p className="text-sm text-muted-foreground">
-          No training runs yet. Start your first training run in the Configure
-          tab.
+          {t("studio.history.emptyDescription")}
         </p>
       </div>
     );
   }
 
   return (
-    <>
+    <div className="contents" aria-label={t("studio.history.title")}>
       {deleteError && (
         <div className="mb-4 rounded-lg border border-destructive/50 bg-destructive/10 px-4 py-2 text-sm text-destructive">
           {deleteError}
@@ -264,18 +385,34 @@ export function HistoryCardGrid({
       )}
       <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-3">
         {runs.map((run) => {
-          const badge = statusBadge[run.status] ?? statusBadge.error;
+          const wasContinued =
+            run.resumed_later || wasContinuedInVisibleRuns(run, runs);
+          const badge = wasContinued
+            ? statusBadge.resumed_later
+            : (statusBadge[run.status] ?? statusBadge.error);
           const isRunning = run.status === "running";
+          const canResume = run.can_resume && !wasContinued;
+          const isResuming = resumeTarget === run.id;
+
+          const title = getTrainingRunDisplayTitle(run);
+          const modelSubtitle = getTrainingRunModelSubtitle(run);
+
+          const projectSubtitle =
+            run.project_name && title !== run.project_name ? run.project_name : null;
+          // Backend /p ref + its capability token. Both are required: the link
+          // is useless (404s) without the signature, so don't offer to copy it.
+          const canCopyPreview = !!run.preview_ref && !!run.preview_sig;
           return (
             <div
               role="button"
               tabIndex={0}
               key={run.id}
               className={cn(
-                "group relative flex cursor-pointer flex-col gap-3 rounded-xl border bg-card p-4 text-left transition-colors hover:border-border hover:bg-accent/30",
+                "group relative flex h-[11.5rem] cursor-pointer flex-col gap-3 rounded-xl border bg-card p-4 text-left transition-colors hover:border-border hover:bg-accent/30",
                 isRunning
                   ? "border-blue-400/50 dark:border-blue-500/30"
                   : "border-border/60",
+                (canResume || canCopyPreview) && "gap-2",
               )}
               onClick={() => onSelectRun(run.id)}
               onKeyDown={(e) => {
@@ -293,33 +430,107 @@ export function HistoryCardGrid({
                   )}
                 >
                   {isRunning && <Spinner className="size-2.5" />}
-                  {badge.label}
+                  {formatStatusLabel(wasContinued ? "resumed_later" : run.status, t)}
                 </span>
                 <span className="text-[10px] text-muted-foreground">
-                  {formatRelativeTime(run.started_at)}
+                  {formatRelativeTime(run.started_at, t)}
                 </span>
               </div>
+              {canResume && (
+                <Button
+                  type="button"
+                  size="xs"
+                  variant="outline"
+                  className="absolute bottom-3 left-4 h-6 rounded-full px-2.5 text-[11px] leading-none shadow-sm"
+                  disabled={isStarting || isResuming}
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    void handleResume(run.id);
+                  }}
+                >
+                  {isResuming ? t("studio.history.resuming") : t("studio.history.resumeTraining")}
+                </Button>
+              )}
+              {canCopyPreview && (
+                <Button
+                  type="button"
+                  size="xs"
+                  variant="outline"
+                  className="absolute bottom-3 right-4 h-6 rounded-full px-2.5 text-[11px] leading-none shadow-sm"
+                  onClick={async (e) => {
+                    e.stopPropagation();
+                    // Encode each segment but keep "/" so the /p route matches.
+                    const ref = (run.preview_ref ?? "")
+                      .split("/")
+                      .map(encodeURIComponent)
+                      .join("/");
+                    const base = (
+                      cloudflareUrl ??
+                      serverUrl ??
+                      window.location.origin
+                    ).replace(/\/+$/, "");
+                    // The signature is a bearer capability carried as ?k=; the
+                    // recipient's page forwards it on its chat requests.
+                    const url = `${base}/p/${ref}?k=${encodeURIComponent(run.preview_sig ?? "")}`;
+                    const ok = await copyToClipboard(url);
+                    toast[ok ? "success" : "error"](
+                      t(
+                        ok
+                          ? "studio.history.previewLinkCopied"
+                          : "studio.history.previewLinkCopyFailed",
+                      ),
+                    );
+                  }}
+                >
+                  {t("studio.history.copyPreviewLink")}
+                </Button>
+              )}
               <div className="min-w-0">
                 <p
                   className="truncate text-sm font-medium"
-                  title={run.model_name}
+                  title={title}
                 >
-                  {run.model_name}
+                  {title}
                 </p>
-                <p className="truncate text-xs text-muted-foreground">
+                {modelSubtitle && (
+                  <p
+                    className="truncate text-xs text-muted-foreground"
+                    title={modelSubtitle}
+                  >
+                    {modelSubtitle}
+                  </p>
+                )}
+                <p
+                  className="truncate text-xs text-muted-foreground"
+                  title={run.dataset_name}
+                >
                   {run.dataset_name}
                 </p>
+                {projectSubtitle && (
+                  <p
+                    className="truncate text-xs text-muted-foreground/80"
+                    title={projectSubtitle}
+                  >
+                    {projectSubtitle}
+                  </p>
+                )}
               </div>
               {run.loss_sparkline && run.loss_sparkline.length >= 2 && (
-                <Sparkline values={run.loss_sparkline} id={run.id} />
+                <div className={cn((canResume || canCopyPreview) && "h-7 overflow-hidden")}>
+                  <Sparkline
+                    values={run.loss_sparkline}
+                    id={run.id}
+                    ariaLabel={t("studio.history.lossTrendSparkline")}
+                  />
+                </div>
               )}
               <div className="flex flex-wrap gap-x-4 gap-y-1 text-[11px] text-muted-foreground">
                 <span>
-                  Loss:{" "}
+                  {t("studio.history.loss")}:{" "}
                   {run.final_loss != null ? run.final_loss.toFixed(4) : "--"}
                 </span>
                 <span>
-                  Steps: {run.final_step ?? 0}/{run.total_steps ?? "--"}
+                  {t("studio.history.steps")}: {run.final_step ?? 0}/{run.total_steps ?? "--"}
                 </span>
                 <span>{formatDuration(run.duration_seconds)}</span>
               </div>
@@ -327,7 +538,7 @@ export function HistoryCardGrid({
                 <button
                   type="button"
                   className="absolute right-3 top-3 rounded-md p-1 text-muted-foreground/50 opacity-0 transition-opacity hover:bg-destructive/10 hover:text-destructive group-hover:opacity-100 focus-visible:opacity-100"
-                  aria-label="Delete run"
+                  aria-label={t("studio.history.deleteRun")}
                   onClick={(e) => {
                     e.stopPropagation();
                     setDeleteTarget(run.id);
@@ -348,7 +559,7 @@ export function HistoryCardGrid({
             onClick={() => void fetchRuns(runs.length, true)}
             disabled={loading}
           >
-            {loading ? "Loading..." : "Load more"}
+            {loading ? t("studio.history.loading") : t("studio.history.loadMore")}
           </Button>
         </div>
       )}
@@ -370,23 +581,22 @@ export function HistoryCardGrid({
       >
         <AlertDialogContent>
           <AlertDialogHeader>
-            <AlertDialogTitle>Delete training run?</AlertDialogTitle>
+            <AlertDialogTitle>{t("studio.history.deleteTitle")}</AlertDialogTitle>
             <AlertDialogDescription>
-              This will permanently delete this training run and all its metrics.
-              This action cannot be undone.
+              {t("studio.history.deleteDescription")}
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>
-            <AlertDialogCancel>Cancel</AlertDialogCancel>
+            <AlertDialogCancel>{t("common.cancel")}</AlertDialogCancel>
             <AlertDialogAction
               variant="destructive"
               onClick={() => void handleDelete()}
             >
-              Delete
+              {t("common.delete")}
             </AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>
-    </>
+    </div>
   );
 }

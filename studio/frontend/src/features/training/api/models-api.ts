@@ -2,6 +2,7 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { authFetch } from "@/features/auth";
+import { hubTokenHeader } from "@/features/hub";
 
 interface VisionCheckResponse {
   model_name: string;
@@ -27,6 +28,7 @@ interface BackendTrainingDefaults {
   eval_steps?: number;
   weight_decay?: number;
   random_seed?: number;
+  vision_image_size?: number | string | null;
   packing?: boolean;
   train_on_completions?: boolean;
   gradient_checkpointing?: "none" | "true" | "unsloth";
@@ -91,13 +93,15 @@ interface LocalModelListResponse {
   models: LocalModelInfo[];
 }
 
-/**
- * Check whether a model is a vision model by asking the backend.
- * Calls GET /api/models/check-vision/{model_name}.
- */
-export async function checkVisionModel(modelName: string): Promise<boolean> {
+/** GET /api/models/check-vision; pass the token so a gated/private VLM is not misread as non-vision. */
+export async function checkVisionModel(
+  modelName: string,
+  hfToken?: string | null,
+): Promise<boolean> {
   const encoded = encodeURIComponent(modelName);
-  const response = await authFetch(`/api/models/check-vision/${encoded}`);
+  const response = await authFetch(`/api/models/check-vision/${encoded}`, {
+    headers: hubTokenHeader(hfToken?.trim() || null),
+  });
   if (!response.ok) {
     // If the check fails (e.g. network error), default to non-vision
     return false;
@@ -106,15 +110,15 @@ export async function checkVisionModel(modelName: string): Promise<boolean> {
   return data.is_vision;
 }
 
-/**
- * Check whether a model is an embedding model by asking the backend.
- * Calls GET /api/models/check-embedding/{model_name}.
- */
+/** GET /api/models/check-embedding; pass the token for gated/private repos. */
 export async function checkEmbeddingModel(
   modelName: string,
+  hfToken?: string | null,
 ): Promise<boolean> {
   const encoded = encodeURIComponent(modelName);
-  const response = await authFetch(`/api/models/check-embedding/${encoded}`);
+  const response = await authFetch(`/api/models/check-embedding/${encoded}`, {
+    headers: hubTokenHeader(hfToken?.trim() || null),
+  });
   if (!response.ok) {
     // If the check fails (e.g. network error), default to non-embedding
     return false;
@@ -129,8 +133,10 @@ export async function getModelConfig(
   hfToken?: string,
 ): Promise<ModelConfigResponse> {
   const encoded = encodeURIComponent(modelName);
-  const params = hfToken ? `?hf_token=${encodeURIComponent(hfToken)}` : "";
-  const response = await authFetch(`/api/models/config/${encoded}${params}`, { signal });
+  const response = await authFetch(`/api/models/config/${encoded}`, {
+    headers: hubTokenHeader(hfToken?.trim() || null),
+    signal,
+  });
   if (!response.ok) {
     throw new Error(`Failed to fetch model config (${response.status})`);
   }
