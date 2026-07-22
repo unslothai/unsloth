@@ -1812,7 +1812,12 @@ def test_start_claude_parses_sampling_flags(fake_studio, monkeypatch):
     captured = {}
     fake = SimpleNamespace(pid = 1, poll = lambda: None)
 
-    def fake_start(base, model, load, server_options = None):
+    def fake_start(
+        base,
+        model,
+        load,
+        server_options = None,
+    ):
         captured["server_options"] = server_options
         start._auto_served_server = fake
         return fake
@@ -1824,7 +1829,15 @@ def test_start_claude_parses_sampling_flags(fake_studio, monkeypatch):
 
     result = CliRunner().invoke(
         start.start_app,
-        ["claude", "--model", "unsloth/gemma-4-E2B-it-GGUF", "--temperature", "0.3", "--top-k", "40"],
+        [
+            "claude",
+            "--model",
+            "unsloth/gemma-4-E2B-it-GGUF",
+            "--temperature",
+            "0.3",
+            "--top-k",
+            "40",
+        ],
     )
     assert result.exit_code == 0, result.output
     so = captured["server_options"]

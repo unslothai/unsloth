@@ -88,10 +88,10 @@ def test_unknown_model_falls_back_to_schema_defaults(monkeypatch):
     "raw, expected",
     [
         ("0.5", 0.5),
-        ("abc", None),   # unparseable
-        ("9.0", None),   # above temperature max (2.0)
-        ("-1", None),    # below temperature min (0.0)
-        ("   ", None),   # blank
+        ("abc", None),  # unparseable
+        ("9.0", None),  # above temperature max (2.0)
+        ("-1", None),  # below temperature min (0.0)
+        ("   ", None),  # blank
     ],
 )
 def test_operator_override_parsing(monkeypatch, raw, expected):
