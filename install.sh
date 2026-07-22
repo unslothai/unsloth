@@ -2209,13 +2209,17 @@ get_torch_index_url() {
         # A user-supplied UNSLOTH_ROCM_GFX_ARCH is authoritative (setup.sh honors it
         # for llama.cpp too); otherwise probe rocminfo/amd-smi like the reroute does.
         _amd_gfx_probe=$(printf '%s' "${UNSLOTH_ROCM_GFX_ARCH:-}" | tr '[:upper:]' '[:lower:]')
+        # rocminfo/amd-smi honor ROCR/HIP_VISIBLE_DEVICES, so a container mask
+        # (e.g. ROCR_VISIBLE_DEVICES=-1) hides the GPU and would force CPU even
+        # though KFD detection is env-independent -- read the arch with the masks
+        # cleared (the Strix reroute keeps them for per-GPU index selection).
         if [ -z "$_amd_gfx_probe" ] && command -v rocminfo >/dev/null 2>&1; then
-            _amd_gfx_probe=$(rocminfo 2>/dev/null | grep -oE 'gfx[1-9][0-9a-z]{2,3}' || true)
+            _amd_gfx_probe=$( (unset ROCR_VISIBLE_DEVICES HIP_VISIBLE_DEVICES; rocminfo 2>/dev/null) | grep -oE 'gfx[1-9][0-9a-z]{2,3}' || true)
         fi
         if [ -z "$_amd_gfx_probe" ] && command -v amd-smi >/dev/null 2>&1; then
-            _amd_gfx_probe=$(amd-smi list 2>/dev/null | grep -oE 'gfx[1-9][0-9a-z]{2,3}' || true)
+            _amd_gfx_probe=$( (unset ROCR_VISIBLE_DEVICES HIP_VISIBLE_DEVICES; amd-smi list 2>/dev/null) | grep -oE 'gfx[1-9][0-9a-z]{2,3}' || true)
             [ -z "$_amd_gfx_probe" ] && \
-                _amd_gfx_probe=$(amd-smi static --asic 2>/dev/null | grep -oE 'gfx[1-9][0-9a-z]{2,3}' || true)
+                _amd_gfx_probe=$( (unset ROCR_VISIBLE_DEVICES HIP_VISIBLE_DEVICES; amd-smi static --asic 2>/dev/null) | grep -oE 'gfx[1-9][0-9a-z]{2,3}' || true)
         fi
         if [ -z "$_amd_gfx_probe" ]; then
             echo "[WARN] AMD GPU detected but its gfx arch can't be read (rocminfo/amd-smi missing or not enumerating the GPU) -- installing CPU-only PyTorch." >&2
