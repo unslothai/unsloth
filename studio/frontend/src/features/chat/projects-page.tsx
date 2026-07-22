@@ -795,8 +795,8 @@ export function ProjectsPage() {
             <DialogTitle>Delete project</DialogTitle>
           </DialogHeader>
           <p className="text-sm text-muted-foreground">
-            Are you sure you want to delete <em>{deleting?.name}</em>? Chats in this
-            project will be moved back to Recents.
+            Are you sure you want to delete <em>{deleting?.name}</em>? Its chats will
+            be permanently deleted.
           </p>
           <DialogFooter className="flex-wrap gap-2 sm:justify-end">
             <Button type="button" variant="ghost" onClick={() => setDeleting(null)}>

@@ -103,7 +103,7 @@ import {
   useState,
 } from "react";
 import type { PanelImperativeHandle } from "react-resizable-panels";
-import { listLocalModels } from "./api/chat-api";
+import { listLocalModels, notifyChatHistoryUpdated } from "./api/chat-api";
 import { ArtifactSurface } from "./artifacts/artifact-surface";
 import {
   clearAutoOpenedArtifacts,
@@ -1061,6 +1061,9 @@ function ProjectLanding({
     setDeletingProject(false);
     try {
       await deleteChatProject(projectId);
+      // Refresh chat history so the project's now-deleted chats don't linger
+      // in the sidebar, matching the sidebar delete path.
+      notifyChatHistoryUpdated();
       useChatRuntimeStore.getState().setActiveProjectId(null);
       navigate({ to: "/chat", search: { new: createThreadNonce() } });
     } catch (err) {
@@ -1588,7 +1591,7 @@ function ProjectLanding({
         </div>
       )}
       <AlertDialog
-        open={confirmingDelete !== null}
+        open={active && confirmingDelete !== null}
         onOpenChange={(open) => {
           if (!open) setConfirmingDelete(null);
         }}
@@ -1666,7 +1669,7 @@ function ProjectLanding({
           <AlertDialogHeader>
             <AlertDialogTitle>Delete project</AlertDialogTitle>
             <AlertDialogDescription>
-              Delete "{projectName}"? Its chats will be moved back to Recents.
+              Delete "{projectName}"? Its chats will be permanently deleted.
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>
