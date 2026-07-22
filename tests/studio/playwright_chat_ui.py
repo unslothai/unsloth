@@ -936,6 +936,101 @@ with sync_playwright() as p:
             page.keyboard.press("Escape")
         page.wait_for_timeout(300)
 
+    # The production stylesheet uses separate Linux compensation for light and
+    # dark text. Exercise the compiled selector directly so this remains
+    # deterministic even if the theme menu animation is slow on CI.
+    step("chat font-weight platform, theme, and opt-out matrix")
+    weight_matrix = robust_evaluate(
+        page,
+        """() => {
+            const root = document.documentElement;
+            const assistant = Array.from(
+                document.querySelectorAll('.aui-assistant-message-root')
+            );
+            const user = Array.from(
+                document.querySelectorAll('.aui-user-message-root')
+            );
+            if (assistant.length === 0 || user.length === 0) {
+                return { error: 'chat message roots are missing' };
+            }
+
+            const saved = {
+                cls: root.getAttribute('class'),
+                chatFont: root.getAttribute('data-chat-font'),
+                uiFont: root.getAttribute('data-ui-font'),
+            };
+            const ua = navigator.userAgent.toLowerCase();
+            const actualRenderLinux = root.classList.contains('render-linux');
+            const isDesktopLinux = ua.includes('linux') && !ua.includes('android');
+            const read = () => ({
+                assistant: [...new Set(assistant.map(
+                    (node) => getComputedStyle(node).fontWeight
+                ))],
+                user: [...new Set(user.map(
+                    (node) => getComputedStyle(node).fontWeight
+                ))],
+            });
+
+            try {
+                root.classList.add('render-linux');
+                root.classList.remove('dark', 'no-font-smoothing');
+                root.removeAttribute('data-chat-font');
+                root.removeAttribute('data-ui-font');
+                const light = read();
+
+                root.classList.add('dark');
+                const dark = read();
+
+                root.classList.add('no-font-smoothing');
+                const smoothingOff = read();
+                root.classList.remove('no-font-smoothing');
+
+                root.setAttribute('data-chat-font', '');
+                const chatFont = read();
+                root.removeAttribute('data-chat-font');
+
+                root.setAttribute('data-ui-font', '');
+                const uiFont = read();
+
+                return {
+                    actualRenderLinux,
+                    isDesktopLinux,
+                    light,
+                    dark,
+                    smoothingOff,
+                    chatFont,
+                    uiFont,
+                };
+            } finally {
+                if (saved.cls === null) root.removeAttribute('class');
+                else root.setAttribute('class', saved.cls);
+                if (saved.chatFont === null) root.removeAttribute('data-chat-font');
+                else root.setAttribute('data-chat-font', saved.chatFont);
+                if (saved.uiFont === null) root.removeAttribute('data-ui-font');
+                else root.setAttribute('data-ui-font', saved.uiFont);
+            }
+        }""",
+    )
+    if weight_matrix.get("error"):
+        fail(weight_matrix["error"])
+    if weight_matrix["actualRenderLinux"] != weight_matrix["isDesktopLinux"]:
+        fail(f"desktop Linux detection mismatch: {weight_matrix!r}")
+    for branch, expected in (
+        ("light", "390"),
+        ("dark", "350"),
+        ("smoothingOff", "410"),
+        ("chatFont", "410"),
+        ("uiFont", "410"),
+    ):
+        for role in ("assistant", "user"):
+            actual = weight_matrix[branch][role]
+            if actual != [expected]:
+                fail(
+                    f"chat font weight {branch}/{role}: "
+                    f"expected {expected}, got {actual!r}"
+                )
+    info("OK chat font-weight matrix")
+
     # ─────────────────────────────────────────────────────
     # 9. Theme toggle -- multiple cycles + computed-bg-color check
     # (light is near-white >240; dark is near-black <40).

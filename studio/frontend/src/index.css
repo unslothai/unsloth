@@ -633,9 +633,15 @@ html.no-font-smoothing body {
 	-moz-osx-font-smoothing: auto;
 }
 
-/* Match Inter's lighter macOS rendering. Keep 410 when smoothing is off or a
-   custom font reaches chat. */
+/* Match Inter's lighter macOS rendering. Dark surfaces need a stronger
+   correction than light surfaces. Keep 410 when smoothing is off or a custom
+   font reaches chat. */
 html.render-linux:not(.no-font-smoothing):not([data-chat-font]):not([data-ui-font])
+	:is(.aui-assistant-message-root, .aui-user-message-root) {
+	font-weight: 390;
+}
+
+html.dark.render-linux:not(.no-font-smoothing):not([data-chat-font]):not([data-ui-font])
 	:is(.aui-assistant-message-root, .aui-user-message-root) {
 	font-weight: 350;
 }
