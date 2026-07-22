@@ -410,7 +410,9 @@ def _delete_cached_dataset_blocking(repo_id: str, cache_path: Optional[str] = No
     # can't touch, yet the fallback scanner shows them; purge the whole dir.
     cache_purged = purge_repo_cache_dirs("dataset", repo_id, root = target_root)
     partial_purged = purge_partial_repo("dataset", repo_id, root = target_root)
-    state_purged = download_manifest.purge_all_state_for_repo("dataset", repo_id) > 0
+    state_purged = (
+        download_manifest.purge_all_state_for_repo("dataset", repo_id, hub_cache = target_root) > 0
+    )
     if not (deleted or processed_deleted or cache_purged or partial_purged or state_purged):
         raise HTTPException(status_code = 404, detail = "Dataset not found in cache")
     return {"status": "deleted", "repo_id": repo_id}

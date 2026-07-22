@@ -280,7 +280,7 @@ def _delete_gguf_variant_from_repos(
             ),
         )
 
-    state_purged = download_manifest.purge_state("model", repo_id, variant)
+    state_purged = download_manifest.purge_state("model", repo_id, variant, hub_cache = root)
     # Reclaim the empty quant folder so it stops 404ing on delete.
     removed_dirs, dir_failures = _remove_empty_variant_dirs(target_repos, variant)
     removed_snap_dirs, snap_dir_failures = _remove_empty_snapshot_dirs(target_repos)
@@ -694,7 +694,12 @@ def _delete_cached_model_blocking(
                 cache_purged = purge_repo_cache_dirs(
                     "model", repo_id, root = target_root
                 ) or purge_partial_repo("model", repo_id, root = target_root)
-                state_purged = download_manifest.purge_all_state_for_repo("model", repo_id) > 0
+                state_purged = (
+                    download_manifest.purge_all_state_for_repo(
+                        "model", repo_id, hub_cache = target_root
+                    )
+                    > 0
+                )
                 if cache_purged or state_purged:
                     return {"status": "deleted", "repo_id": repo_id}
             if variant:
@@ -718,6 +723,7 @@ def _delete_cached_model_blocking(
                     "model",
                     repo_id,
                     variant,
+                    hub_cache = target_root,
                 )
                 if incomplete_result.deleted > 0 or state_purged:
                     return {
@@ -755,7 +761,9 @@ def _delete_cached_model_blocking(
 
         cache_purged = purge_repo_cache_dirs("model", repo_id, root = target_root)
         partial_purged = purge_partial_repo("model", repo_id, root = target_root)
-        state_purged = download_manifest.purge_all_state_for_repo("model", repo_id) > 0
+        state_purged = (
+            download_manifest.purge_all_state_for_repo("model", repo_id, hub_cache = target_root) > 0
+        )
 
         if not (deleted_revisions or cache_purged or partial_purged or state_purged):
             raise HTTPException(status_code = 404, detail = "No revisions found for model")

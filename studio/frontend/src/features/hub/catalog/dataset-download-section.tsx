@@ -50,7 +50,7 @@ export function DatasetDownloadSection({
   const hfToken = useHfTokenStore((s) => s.token);
   const [deleteOpen, setDeleteOpen] = useState(false);
   const { deleting, runDelete } = useCardDelete({
-    action: () => deleteCachedDataset(repoId),
+    action: () => deleteCachedDataset(repoId, cachePath ?? undefined),
     resourceName: "dataset",
     successMessage: () => `Deleted ${repoId}`,
     onSuccess: () => {

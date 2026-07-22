@@ -115,7 +115,7 @@ def test_delete_cached_dataset_scopes_delete_to_selected_root(monkeypatch, tmp_p
     monkeypatch.setattr(
         cache_inventory.download_manifest,
         "purge_all_state_for_repo",
-        lambda *_args: 0,
+        lambda *_args, **_kwargs: 0,
     )
     monkeypatch.setattr(
         "utils.hf_cache_settings.get_hf_cache_paths",
@@ -165,7 +165,7 @@ def test_delete_cached_dataset_purges_blob_only_repo_dir(monkeypatch):
     monkeypatch.setattr(
         cache_inventory.download_manifest,
         "purge_all_state_for_repo",
-        lambda *_args: 0,
+        lambda *_args, **_kwargs: 0,
     )
 
     result = cache_inventory._delete_cached_dataset_blocking("Org/Data")
@@ -198,7 +198,7 @@ def test_delete_cached_dataset_absent_everywhere_raises_404(monkeypatch):
     monkeypatch.setattr(
         cache_inventory.download_manifest,
         "purge_all_state_for_repo",
-        lambda *_args: 0,
+        lambda *_args, **_kwargs: 0,
     )
 
     with pytest.raises(HTTPException) as exc_info:

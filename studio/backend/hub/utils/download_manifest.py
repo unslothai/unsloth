@@ -563,13 +563,31 @@ def purge_state(
     repo_type: RepoType,
     repo_id: str,
     variant: Optional[str] = None,
+    *,
+    hub_cache: Optional[str | Path] = None,
 ) -> bool:
     """Remove manifest + cancel marker for this triple. Returns ``True``
-    when anything was present on disk before the call. Idempotent."""
-    paths = (
-        *_all_matching_state_paths(manifests_dir(), repo_type, repo_id, variant),
-        *_all_matching_state_paths(cancelled_dir(), repo_type, repo_id, variant),
-    )
+    when anything was present on disk before the call. Idempotent.
+
+    With ``hub_cache`` set, only that cache's scoped state (plus any legacy
+    unscoped file) is removed, so purging one cache's copy never clears another
+    cache's resumable/cancel state."""
+    if hub_cache is None:
+        paths = (
+            *_all_matching_state_paths(manifests_dir(), repo_type, repo_id, variant),
+            *_all_matching_state_paths(cancelled_dir(), repo_type, repo_id, variant),
+        )
+    else:
+        paths = tuple(
+            p
+            for p in (
+                manifest_path(repo_type, repo_id, variant, hub_cache = hub_cache),
+                marker_path(repo_type, repo_id, variant, hub_cache = hub_cache),
+                manifest_path(repo_type, repo_id, variant),
+                marker_path(repo_type, repo_id, variant),
+            )
+            if p is not None
+        )
     removed = False
     for path in paths:
         try:
@@ -581,21 +599,44 @@ def purge_state(
     return removed
 
 
-def purge_all_state_for_repo(repo_type: RepoType, repo_id: str) -> int:
+def purge_all_state_for_repo(
+    repo_type: RepoType,
+    repo_id: str,
+    *,
+    hub_cache: Optional[str | Path] = None,
+) -> int:
     """Remove the snapshot-level manifest + marker AND every variant-keyed
     manifest + marker for this repo. Used by the route delete handlers so
     scanner state never outlives the cache it described. Returns the count
-    of (repo, variant) triples that had any state on disk."""
+    of (repo, variant) triples that had any state on disk.
+
+    With ``hub_cache`` set, only that cache's scoped state (plus any legacy
+    unscoped file) is enumerated and removed, so deleting one cache's copy does
+    not clear another cache's resumable/cancel state."""
     removed = 0
-    if purge_state(repo_type, repo_id, None):
+    if purge_state(repo_type, repo_id, None, hub_cache = hub_cache):
         removed += 1
     variants: set[str] = set()
-    for parent in (manifests_dir(), cancelled_dir()):
-        if parent is None:
-            continue
-        prefix = variant_filename_prefix(repo_type, repo_id)
+    prefix = variant_filename_prefix(repo_type, repo_id)
+    if hub_cache is None:
+        search = [(p, True) for p in (manifests_dir(), cancelled_dir()) if p is not None]
+    else:
+        # This cache's scoped dir (parent of its scoped path) plus the legacy
+        # unscoped base; glob (not rglob) so other caches' dirs are not swept.
+        search = []
+        for scoped, base in (
+            (manifest_path(repo_type, repo_id, None, hub_cache = hub_cache), manifests_dir()),
+            (marker_path(repo_type, repo_id, None, hub_cache = hub_cache), cancelled_dir()),
+        ):
+            if scoped is not None:
+                search.append((scoped.parent, False))
+            if base is not None:
+                search.append((base, False))
+    for parent, recursive in search:
         try:
-            entries = tuple(parent.rglob(f"{prefix}*.json"))
+            entries = tuple(
+                parent.rglob(f"{prefix}*.json") if recursive else parent.glob(f"{prefix}*.json")
+            )
         except OSError:
             continue
         for entry in entries:
@@ -604,7 +645,7 @@ def purge_all_state_for_repo(repo_type: RepoType, repo_id: str) -> int:
             fallback = entry.stem[len(prefix) :]
             variants.add(_variant_from_state_file(entry, fallback))
     for variant in variants:
-        if purge_state(repo_type, repo_id, variant):
+        if purge_state(repo_type, repo_id, variant, hub_cache = hub_cache):
             removed += 1
     return removed
 

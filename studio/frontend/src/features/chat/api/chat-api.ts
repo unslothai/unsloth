@@ -365,6 +365,9 @@ export interface CachedModelRepo {
   /** Epoch seconds of the newest downloaded weight file; sorts Downloaded
    * newest-first. Optional for older-backend compatibility. */
   last_modified?: number;
+  /** Owning cache dir; sent so a delete targets this copy, not the active
+   * cache. Optional for older-backend compatibility. */
+  cache_path?: string | null;
 }
 
 export async function listCachedModels(

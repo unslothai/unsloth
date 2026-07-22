@@ -61,6 +61,7 @@ export function SafetensorsDownloadCard({
   canRun = true,
   isActive,
   isLoadingThisModel,
+  cachePath,
   knownBytes,
   onLoad,
   onEject,
@@ -75,7 +76,7 @@ export function SafetensorsDownloadCard({
   canRun?: boolean;
   isActive: boolean;
   isLoadingThisModel: boolean;
-  /** Accepted for API parity; the options menu resolves the path itself. */
+  /** Owning cache dir, threaded into delete so it targets this copy. */
   cachePath?: string | null;
   knownBytes?: number | null;
   onLoad: (opts: { ggufVariant?: string; expectedBytes?: number }) => void;
@@ -100,7 +101,8 @@ export function SafetensorsDownloadCard({
         : null;
   const [deleteRepoOpen, setDeleteRepoOpen] = useState(false);
   const { deleting, runDelete } = useCardDelete({
-    action: () => deleteCachedModel(repoId, undefined, hfToken || undefined),
+    action: () =>
+      deleteCachedModel(repoId, undefined, hfToken || undefined, cachePath ?? undefined),
     resourceName: "model",
     successMessage: () => `Deleted ${repoId}`,
     onSuccess: () => {

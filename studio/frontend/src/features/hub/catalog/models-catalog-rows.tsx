@@ -768,10 +768,19 @@ export const InventoryRow = memo(function InventoryRow({
           ),
           successMessage: `Deleted ${cacheDeletableRepoId}`,
           onConfirm: async () => {
+            // Delete only the copy this row shows: cache rows carry the owning
+            // cache path, so pass it through and leave other caches untouched.
+            const rowCachePath =
+              row.kind === "cache" ? (row.cachePath ?? undefined) : undefined;
             if (isDataset) {
-              await deleteCachedDataset(cacheDeletableRepoId);
+              await deleteCachedDataset(cacheDeletableRepoId, rowCachePath);
             } else {
-              await deleteCachedModel(cacheDeletableRepoId);
+              await deleteCachedModel(
+                cacheDeletableRepoId,
+                undefined,
+                undefined,
+                rowCachePath,
+              );
               // Deleted repos can't stay pinned: drop the repo pin and any of
               // its per-quant pins so stale rows don't linger up top.
               const { pinned, togglePinned: toggle } =

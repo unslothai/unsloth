@@ -2912,7 +2912,12 @@ export function HubModelPicker({
                 updateGgufVariant(c.repo_id, quant, expectedBytes),
               updateDisabled: loadedModelId === c.repo_id,
               onDelete: async (quant) => {
-                await deleteCachedModel(c.repo_id, quant, hfToken || undefined);
+                await deleteCachedModel(
+                  c.repo_id,
+                  quant,
+                  hfToken || undefined,
+                  c.cache_path || undefined,
+                );
                 prunePinnedQuantValidation(c.repo_id, quant);
                 refreshCachedLists();
               },
@@ -2990,7 +2995,12 @@ export function HubModelPicker({
             successMessage: `Deleted ${c.repo_id}`,
             disabled: deleteDisabled,
             onConfirm: async () => {
-              await deleteCachedModel(c.repo_id, undefined, hfToken || undefined);
+              await deleteCachedModel(
+                c.repo_id,
+                undefined,
+                hfToken || undefined,
+                c.cache_path || undefined,
+              );
               if (pinnedSet.has(pinKey(c.repo_id))) {
                 togglePinned(c.repo_id);
               }
