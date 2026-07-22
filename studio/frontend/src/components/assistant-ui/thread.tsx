@@ -145,6 +145,7 @@ import {
   Image03Icon,
   McpServerIcon,
   PencilRulerIcon,
+  Telescope02Icon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { useNavigate } from "@tanstack/react-router";
@@ -162,7 +163,6 @@ import {
   PlusIcon,
   RefreshCwIcon,
   SquareIcon,
-  TelescopeIcon,
   TerminalIcon,
   Volume2Icon,
   VolumeXIcon,
@@ -3148,7 +3148,7 @@ const ComposerToolsMenu: FC<{
             }
             onSelect={() => setDeepResearchEnabled(!deepResearchEnabled)}
           >
-            <TelescopeIcon />
+            <HugeiconsIcon icon={Telescope02Icon} strokeWidth={2} />
             Deep research
             {deepResearchEnabled && !researchDisabled ? (
               <HugeiconsIcon

@@ -87,11 +87,11 @@ import {
   MoreVerticalIcon,
   PinIcon,
   PinOffIcon,
+  Telescope02Icon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { useNavigate } from "@tanstack/react-router";
 import { Tooltip as TooltipPrimitive } from "radix-ui";
-import { Telescope } from "lucide-react";
 import {
   type CSSProperties,
   type ReactElement,
@@ -3351,7 +3351,11 @@ export function ChatPage({
                     aria-label="Open research activity"
                     aria-pressed={openResearchRunId === latestResearchRun.id}
                   >
-                    <Telescope className="size-icon" strokeWidth={1.75} />
+                    <HugeiconsIcon
+                      icon={Telescope02Icon}
+                      className="size-icon"
+                      strokeWidth={1.75}
+                    />
                     {!['completed', 'failed', 'cancelled'].includes(latestResearchRun.status) ? (
                       <span className="absolute right-1 top-1 size-1.5 rounded-full bg-primary ring-2 ring-background" />
                     ) : null}

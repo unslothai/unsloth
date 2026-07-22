@@ -11,7 +11,9 @@ import { Button } from "@/components/ui/button";
 import { Spinner } from "@/components/ui/spinner";
 import { cn } from "@/lib/utils";
 import { useAuiState } from "@assistant-ui/react";
-import { Check, Telescope, TriangleAlert } from "lucide-react";
+import { Telescope02Icon } from "@hugeicons/core-free-icons";
+import { HugeiconsIcon } from "@hugeicons/react";
+import { Check, TriangleAlert } from "lucide-react";
 import { type ReactElement, useEffect } from "react";
 import {
   ensureResearchRunFollowed,
@@ -133,7 +135,7 @@ export function ResearchMessage(): ReactElement {
           {failed ? (
             <TriangleAlert className="size-4" />
           ) : cancelled ? (
-            <Telescope className="size-4" />
+            <HugeiconsIcon icon={Telescope02Icon} className="size-4" />
           ) : (
             <Spinner className="size-4" />
           )}

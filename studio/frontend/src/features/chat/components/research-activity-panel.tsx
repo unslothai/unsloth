@@ -26,6 +26,8 @@ import { Textarea } from "@/components/ui/textarea";
 import { openLink } from "@/lib/open-link";
 import { toast } from "@/lib/toast";
 import { cn } from "@/lib/utils";
+import { Telescope02Icon } from "@hugeicons/core-free-icons";
+import { HugeiconsIcon } from "@hugeicons/react";
 import {
   ArrowDown,
   ArrowUp,
@@ -41,7 +43,6 @@ import {
   RotateCcw,
   Search,
   Square,
-  Telescope,
   Trash2,
   X,
 } from "lucide-react";
@@ -703,7 +704,11 @@ function PlanReview({ runId }: { runId: string }): ReactElement | null {
                 }
                 onClick={() => void start()}
               >
-                {pending ? <Spinner /> : <Telescope />}
+                {pending ? (
+                  <Spinner />
+                ) : (
+                  <HugeiconsIcon icon={Telescope02Icon} />
+                )}
                 {editing ? "Save and start" : "Start research"}
               </Button>
             </div>
@@ -830,7 +835,7 @@ export function ResearchActivityPanel({
       <header className="shrink-0 border-b border-border/70 px-4 py-3.5">
         <div className="flex items-start gap-3">
           <div className="flex size-9 shrink-0 items-center justify-center rounded-[13px] bg-primary/10 text-primary">
-            <Telescope className="size-[18px]" />
+            <HugeiconsIcon icon={Telescope02Icon} className="size-[18px]" />
           </div>
           <div className="min-w-0 flex-1">
             <div className="flex items-center gap-2">
