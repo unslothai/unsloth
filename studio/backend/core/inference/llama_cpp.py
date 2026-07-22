@@ -2859,7 +2859,15 @@ class LlamaCppBackend:
         on the ordinal->physical mapping."""
         try:
             import torch
-            is_rocm = getattr(torch.version, "hip", None) is not None
+            # Same ROCm detection as _emit_child_gpu_visibility: AMD SDK wheels
+            # leave version.hip unset but encode "rocm" in __version__. The two
+            # must agree, else an inherited ROCR mask reads back as "no mask",
+            # ordinal 0 is labelled physical 0, and the child's new ROCR pin
+            # re-exposes the GPU the inherited mask was hiding.
+            is_rocm = (
+                getattr(torch.version, "hip", None) is not None
+                or "rocm" in getattr(torch, "__version__", "").lower()
+            )
         except Exception:
             is_rocm = False
         if is_rocm:

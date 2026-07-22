@@ -839,6 +839,32 @@ def test_cuda_wheel_hip_none_gets_no_rocm_mask(monkeypatch):
     assert "HIP_VISIBLE_DEVICES" not in env
 
 
+def test_resolve_physical_ids_reads_rocr_on_amd_sdk_wheel(monkeypatch):
+    # _resolve_visible_physical_ids must use the same ROCm detection as
+    # _emit_child_gpu_visibility: on an AMD SDK wheel (hip=None, rocm in
+    # __version__) an inherited ROCR mask IS the ordinal->physical mapping.
+    # Reading it as "no mask" labels ordinal 0 as physical 0 and the child's
+    # ROCR pin then re-exposes the GPU the mask was hiding (#7272 review).
+    _amd_sdk_torch_stub(monkeypatch)
+    for var in ("HIP_VISIBLE_DEVICES", "CUDA_VISIBLE_DEVICES"):
+        monkeypatch.delenv(var, raising = False)
+    monkeypatch.setenv("ROCR_VISIBLE_DEVICES", "1")
+    assert LlamaCppBackend._resolve_visible_physical_ids() == [1]
+
+
+def test_resolve_physical_ids_ignores_rocr_on_cuda_wheel(monkeypatch):
+    # A CUDA wheel (hip=None, no "rocm") keeps CUDA-only semantics: a stray
+    # ROCR var must not be read as the mask.
+    torch_stub = _types.ModuleType("torch")
+    torch_stub.version = _types.SimpleNamespace(hip = None)
+    torch_stub.__version__ = "2.9.1+cu124"
+    monkeypatch.setitem(sys.modules, "torch", torch_stub)
+    for var in ("HIP_VISIBLE_DEVICES", "CUDA_VISIBLE_DEVICES"):
+        monkeypatch.delenv(var, raising = False)
+    monkeypatch.setenv("ROCR_VISIBLE_DEVICES", "1")
+    assert LlamaCppBackend._resolve_visible_physical_ids() is None
+
+
 # ── Diffusion single-device selection ───────────────────────────────────────
 
 
