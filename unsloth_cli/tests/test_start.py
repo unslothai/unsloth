@@ -1661,7 +1661,12 @@ def test_start_local_gguf_path_keeps_no_default_variant(fake_studio, monkeypatch
     captured = {}
     fake = SimpleNamespace(pid = 1, poll = lambda: None)
 
-    def fake_start(base, model, load, server_options = None):
+    def fake_start(
+        base,
+        model,
+        load,
+        server_options = None,
+    ):
         captured["load"] = load
         start._auto_served_server = fake
         return fake
@@ -1669,9 +1674,7 @@ def test_start_local_gguf_path_keeps_no_default_variant(fake_studio, monkeypatch
     monkeypatch.setattr(start, "_start_studio_server", fake_start)
     monkeypatch.setattr(start, "_shutdown_server", lambda server: None)
     monkeypatch.setattr(start.shutil, "which", lambda _: "/usr/local/bin/claude")
-    monkeypatch.setattr(
-        start.subprocess, "run", lambda command, env: SimpleNamespace(returncode = 0)
-    )
+    monkeypatch.setattr(start.subprocess, "run", lambda command, env: SimpleNamespace(returncode = 0))
 
     result = CliRunner().invoke(start.start_app, ["claude", "--model", str(local)])
     assert result.exit_code == 0, result.output
