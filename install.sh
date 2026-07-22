@@ -1636,7 +1636,7 @@ _maybe_reroute_strixhalo_to_2404() {
     # CUDA_VISIBLE_DEVICES=""/-1 and the /proc/driver/nvidia fallback for PATH/timeout gaps.
     if _has_usable_nvidia_gpu; then return 0; fi
     # Strix APUs show in /proc/cpuinfo; discrete cards don't, so also try WMI. Either reroutes.
-    if ! grep -qiE 'Ryzen AI Max|Radeon 80[0-9]0S|Strix Halo' /proc/cpuinfo 2>/dev/null \
+    if ! grep -qiE 'Ryzen AI Max|Radeon 80[0-9][05]S|Strix Halo' /proc/cpuinfo 2>/dev/null \
        && ! _wsl_amd_gpu_name >/dev/null 2>&1; then
         return 0
     fi
@@ -2127,10 +2127,9 @@ _has_amd_rocm_gpu() {
     return 1
 }
 
-# Returns 0 if an AMD display GPU is on the PCI bus, regardless of whether ROCm
-# can use it. Used only to sharpen the "no GPU detected" hint: a Strix Halo iGPU
-# whose ROCm kernel interface (/dev/kfd) is absent shows here but not in
-# _has_amd_rocm_gpu. vendor 0x1002 = AMD/ATI; class 0x03* = display controller.
+# Returns 0 if an AMD display GPU is on the PCI bus even when ROCm can't use it
+# (e.g. a Strix Halo iGPU with no /dev/kfd). Only sharpens the "no GPU detected"
+# hint. vendor 0x1002 = AMD/ATI; class 0x03* = display controller.
 _amd_gpu_present_via_pci() {
     [ -d /sys/bus/pci/devices ] || return 1
     for _pci_vendor in /sys/bus/pci/devices/*/vendor; do
@@ -2667,7 +2666,7 @@ _maybe_bootstrap_rocm_wsl() {
     [ -e /dev/dxg ] || return 0
     # Strix APUs show in /proc/cpuinfo (the CPU model); discrete cards don't, so also
     # ask the Windows host. Either signal suffices; the bootstrap detects arch from rocminfo.
-    if ! grep -qiE 'Ryzen AI Max|Radeon 80[0-9]0S|Strix Halo' /proc/cpuinfo 2>/dev/null \
+    if ! grep -qiE 'Ryzen AI Max|Radeon 80[0-9][05]S|Strix Halo' /proc/cpuinfo 2>/dev/null \
        && ! _wsl_amd_gpu_name >/dev/null 2>&1; then
         return 0
     fi
@@ -2836,31 +2835,45 @@ case "$TORCH_INDEX_URL" in
         fi
         ;;
 esac
+# 0 when a rocmX.Y index leaf ($1, the final path segment) is older than floor
+# $2.$3 (int compare, so rocm7.2 < rocm7.13). Non-rocm leaves (gfx*, cu*, cpu) and
+# non-numeric versions return 1. Leaf-based (like $_torch_index_leaf) so a mirror
+# base holding its own rocm token compares the family leaf, not the base path.
+_rocm_leaf_below() {
+    case "$1" in rocm[0-9]*.[0-9]*) : ;; *) return 1 ;; esac
+    _rb=${1#rocm}; _maj=${_rb%%.*}; _min=${_rb#*.}; _min=${_min%%.*}
+    case "$_maj$_min" in *[!0-9]*) return 1 ;; esac
+    if [ "$_maj" -lt "$2" ]; then return 0; fi
+    if [ "$_maj" -eq "$2" ] && [ "$_min" -lt "$3" ]; then return 0; fi
+    return 1
+}
 # ── Strix Halo / Strix Point: route to the AMD arch-specific index ───────────
-# gfx1151 (Strix Halo) and gfx1150 (Strix Point) need torch 2.11+rocm7.13 from
-# repo.amd.com/rocm/whl/gfx<arch>/, which carries AMD's real fixes (the ROCm 7.1
-# _grouped_mm segfault, moe_utils.py:167, plus later Strix kernel bugs). Modern
-# ROCm (7.3+) caps to the generic rocm7.2 index, and the Radeon repo can be
-# unavailable (unslothai#7264, unslothai#7280) -- both leave Strix on a
-# non-arch-specific build. Reroute when the index is rocm7.1 or rocm7.2 and a
-# Strix GPU is detected.
-case "$TORCH_INDEX_URL" in
-    */rocm7.1|*/rocm7.1.*|*/rocm7.2|*/rocm7.2.*)
+# gfx1151/gfx1150 need torch 2.11+rocm7.13 from repo.amd.com/rocm/whl/gfx<arch>/,
+# which carries AMD's real fixes (the rocm7.1 _grouped_mm segfault, moe_utils.py:167,
+# and later Strix kernel bugs). Every generic pytorch.org index below rocm7.13 lacks
+# them (and the Radeon repo can be offline, unslothai#7264), so reroute a detected
+# Strix GPU whenever the picked index is older than the arch build -- covers today's
+# rocm6.0-7.2 and any future 7.x < 7.13; rocm7.13+ already has the fixes, so leave it.
+case "$_torch_index_leaf" in
+    rocm[0-9]*)
         # Collect every gfx token in rocminfo / amd-smi enumeration order
         # (skip duplicates), then index by HIP_VISIBLE_DEVICES /
         # ROCR_VISIBLE_DEVICES so a mixed Strix iGPU + non-Strix dGPU box
         # where the user selected the dGPU does NOT get rerouted to the
         # Strix per-gfx index.
+        # || true on each probe: no gfx match makes grep exit 1, which under
+        # set -euo pipefail would abort the installer before the next fallback
+        # runs (now that the case matches every rocm* index, not just rocm7.1).
         _gfx_all=""
         if command -v rocminfo >/dev/null 2>&1; then
-            _gfx_all=$(rocminfo 2>/dev/null | grep -oE 'gfx[1-9][0-9a-z]{2,3}')
+            _gfx_all=$(rocminfo 2>/dev/null | grep -oE 'gfx[1-9][0-9a-z]{2,3}' || true)
         fi
         if [ -z "$_gfx_all" ] && command -v amd-smi >/dev/null 2>&1; then
-            _gfx_all=$(amd-smi list 2>/dev/null | grep -oE 'gfx[1-9][0-9a-z]{2,3}')
+            _gfx_all=$(amd-smi list 2>/dev/null | grep -oE 'gfx[1-9][0-9a-z]{2,3}' || true)
             # PowerShell paths also probe `amd-smi static --asic`; mirror it
             # so a host with hipinfo-less amd-smi reports the gfx target.
             if [ -z "$_gfx_all" ]; then
-                _gfx_all=$(amd-smi static --asic 2>/dev/null | grep -oE 'gfx[1-9][0-9a-z]{2,3}')
+                _gfx_all=$(amd-smi static --asic 2>/dev/null | grep -oE 'gfx[1-9][0-9a-z]{2,3}' || true)
             fi
         fi
         _runtime_gfx=""
@@ -2885,7 +2898,9 @@ case "$TORCH_INDEX_URL" in
         case "$_runtime_gfx" in
             gfx1151|gfx1150) _strix_gfx="$_runtime_gfx" ;;
         esac
-        if [ -n "$_strix_gfx" ]; then
+        # Skip rocm7.13+ generic indexes: they already ship the fixes, so the
+        # arch build (rocm7.13) would be a downgrade rather than a rescue.
+        if [ -n "$_strix_gfx" ] && _rocm_leaf_below "$_torch_index_leaf" 7 13; then
             echo "" >&2
             echo "  [WARN] $_strix_gfx (Strix) detected -- routing to the AMD arch-specific index" >&2
             echo "  [WARN] torch 2.11+rocm7.13 has AMD's real gfx1150/gfx1151 fixes (the ROCm 7.1" >&2
@@ -2979,7 +2994,7 @@ elif case "$TORCH_INDEX_URL" in */rocm*|*/gfx*) true ;; *) false ;; esac; then
         case "$_gpu_disp_mkt" in
             *"9070 XT"*|*9080*)                                                                            _gpu_disp_gfx="gfx1201" ;;  # RDNA 4
             *9070*|*9060*)                                                                                 _gpu_disp_gfx="gfx1200" ;;  # RDNA 4
-            *"8060S"*|*"8050S"*|*"8040S"*|*"Strix Halo"*|*"Ryzen AI Max"*|*"AI Max"*) _gpu_disp_gfx="gfx1151" ;;  # RDNA 3.5 (Strix Halo: Radeon 8060S/8050S/8040S iGPU, Ryzen AI Max+)
+            *"8065S"*|*"8060S"*|*"8050S"*|*"8040S"*|*"Strix Halo"*|*"Ryzen AI Max"*|*"AI Max"*) _gpu_disp_gfx="gfx1151" ;;  # RDNA 3.5 (Strix Halo + Gorgon Halo: Radeon 8065S/8060S/8050S/8040S iGPU, Ryzen AI Max / Max+)
             *"890M"*|*"880M"*|*"860M"*|*"840M"*|*"Strix Point"*|*"Krackan"*|*"HX 37"*|*"AI 9 HX"*|*"AI 9 36"*|*"AI 7 35"*|*"AI 5 34"*|*"AI 7 PRO 35"*|*"AI 5 33"*) _gpu_disp_gfx="gfx1150" ;;  # RDNA 3.5 (Strix/Krackan Point: Radeon 890M/880M iGPU, Ryzen AI 9 HX 370/375)
             *"RX 7600"*|*"RX 7700S"*|*"RX 7650"*|*"PRO W7600"*|*"PRO W7500"*|*"PRO V710"*)                  _gpu_disp_gfx="gfx1102" ;;  # RDNA 3 (Navi 33)
             *"RX 7900"*|*"RX 7800"*|*"RX 7700"*|*"PRO W7900"*|*"PRO W7800"*|*"PRO W7700"*)                  _gpu_disp_gfx="gfx1100" ;;  # RDNA 3 desktop / workstation (Navi 31)

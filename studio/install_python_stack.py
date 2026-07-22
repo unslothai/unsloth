@@ -82,10 +82,16 @@ def _generic_pytorch_rocm_tag(ver: tuple[int, int]) -> str | None:
     )
 
 
+_ROCM_ARCH_INDEX_FLOOR = (7, 13)  # AMD per-arch index ships torch 2.11+rocm7.13
+
+
 def _strix_needs_amd_arch_index(ver: tuple[int, int]) -> bool:
-    """True when install.sh would land Strix on generic rocm7.1/7.2 indexes."""
-    tag = _generic_pytorch_rocm_tag(ver)
-    return tag in {"rocm7.1", "rocm7.2"}
+    """True when Strix's generic pytorch.org index sits below the AMD arch floor
+    (7.13), so gfx1150/1151 must use repo.amd.com's per-arch wheels. Mirrors
+    install.sh _rocm_leaf_below: reroute any generic rocm index (6.x/7.0/7.2 and a
+    future 7.3+), never one at/above the floor."""
+    key = next((k for k in sorted(_ROCM_TORCH_INDEX, reverse = True) if ver >= k), None)
+    return key is not None and key < _ROCM_ARCH_INDEX_FLOOR
 
 
 # AMD per-arch leaves needing the torch 2.11 floor (the _grouped_mm <2.11 bug).
@@ -734,8 +740,8 @@ def _detect_windows_gfx_arch() -> str | None:
 _WIN_GPU_NAME_ARCH_TABLE: "list[tuple[str, str]]" = [
     (r"9070 XT|9080", "gfx1201"),  # RDNA 4 (Radeon RX 9070 XT / 9080)
     (r"9070|9060", "gfx1200"),  # RDNA 4 (Radeon RX 9070 / 9060)
-    # RDNA 3.5 (Strix Halo: Radeon 8060S/8050S/8040S iGPU, Ryzen AI Max+)
-    (r"8060S|8050S|8040S|Strix Halo|Ryzen AI Max|AI Max", "gfx1151"),
+    # RDNA 3.5 (Strix Halo + Gorgon Halo: Radeon 8065S/8060S/8050S/8040S iGPU, Ryzen AI Max / Max+)
+    (r"8065S|8060S|8050S|8040S|Strix Halo|Ryzen AI Max|AI Max", "gfx1151"),
     # RDNA 3.5 (Strix/Krackan Point: Radeon 890M/880M iGPU, Ryzen AI 9 HX 370/375)
     (
         r"890M|880M|860M|840M|Strix Point|Krackan|HX 37[05]|AI 9 HX|AI 9 36[05]"
@@ -1707,8 +1713,8 @@ def _ensure_rocm_torch() -> None:
     rocm_torch_ready = has_hip_torch and not _rocm_pin_mismatch
 
     # Strix Halo / Point (gfx1151 / gfx1150) need torch from AMD's per-gfx index
-    # (2.11+rocm7.13) instead of the generic pytorch.org rocm7.1/7.2 indexes.
-    # Modern ROCm (7.3+) caps to rocm7.2; ROCm 7.1 has a _grouped_mm segfault.
+    # (2.11+rocm7.13); any generic pytorch.org rocm index lacks the fixes (ROCm 7.1
+    # segfaults in _grouped_mm). See _strix_needs_amd_arch_index for the floor gate.
     _strix_override_url: "str | None" = None
     _strix_override_pkgs: "tuple[str, str, str] | None" = None
     # An explicit ROCm pin is authoritative: never auto-reroute it.

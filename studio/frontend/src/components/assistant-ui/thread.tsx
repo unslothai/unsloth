@@ -176,6 +176,7 @@ import {
 } from "react";
 import { create } from "zustand";
 import { extractTaggedText, updateThreadMessage } from "@/features/chat/utils/update-thread-message";
+import { useIsMobile } from "@/hooks/use-mobile";
 
 // True while a file is dragged anywhere over the chat page, so the composer
 // can show its "Drop files here" affordance.
@@ -1370,7 +1371,13 @@ export const ProjectComposer: FC<{
 }> = ({ disabled, placeholder }) => {
   return (
     <GeneratedImageOverlayProvider>
-      <ComposerAnimated disabled={disabled} placeholder={placeholder} />
+      {/* New chat in a project: queuing follow-ups here misbinds the thread,
+          so the queue only runs once the user is inside a chat session. */}
+      <ComposerAnimated
+        disabled={disabled}
+        placeholder={placeholder}
+        disableQueue
+      />
     </GeneratedImageOverlayProvider>
   );
 };
@@ -1380,11 +1387,17 @@ const ComposerAnimated: FC<{
   placeholder?: string;
   threadId?: string | null;
   menuSide?: "top" | "bottom";
-}> = ({ disabled, threadId, menuSide }) => {
+  disableQueue?: boolean;
+}> = ({ disabled, threadId, menuSide, disableQueue }) => {
   return (
     <div className="relative mx-auto min-w-0 w-full max-w-[46rem]">
       <div className="relative z-10 w-full">
-        <Composer disabled={disabled} threadId={threadId} menuSide={menuSide} />
+        <Composer
+          disabled={disabled}
+          threadId={threadId}
+          menuSide={menuSide}
+          disableQueue={disableQueue}
+        />
       </div>
     </div>
   );
@@ -1419,7 +1432,8 @@ const Composer: FC<{
   placeholder?: string;
   threadId?: string | null;
   menuSide?: "top" | "bottom";
-}> = ({ disabled, threadId, menuSide }) => {
+  disableQueue?: boolean;
+}> = ({ disabled, threadId, menuSide, disableQueue }) => {
   const aui = useAui();
   const pageDragging = useContext(PageDragContext);
   const { overlay, closeOverlay } = useGeneratedImageOverlay();
@@ -1436,14 +1450,16 @@ const Composer: FC<{
   const mcpEnabledForChat = useChatRuntimeStore((s) => s.mcpEnabledForChat);
   const ragEnabled = useChatRuntimeStore((s) => s.ragEnabled);
   // More than 4 pills: collapse to icons only. Search, Code, and permissions
-  // always show; Images, RAG, Canvas and MCP are conditional.
-  const pillsCompact =
+  // always show; Images, RAG, Canvas and MCP are conditional. Narrow viewports
+  // collapse too: the labelled row is wider than a phone-width composer.
+  const isMobile = useIsMobile();
+  const pillCount =
     3 +
-      (ragEnabled ? 1 : 0) +
-      (supportsBuiltinImageGeneration ? 1 : 0) +
-      (artifactsEnabled ? 1 : 0) +
-      (mcpEnabledForChat ? 1 : 0) >
-    4;
+    (ragEnabled ? 1 : 0) +
+    (supportsBuiltinImageGeneration ? 1 : 0) +
+    (artifactsEnabled ? 1 : 0) +
+    (mcpEnabledForChat ? 1 : 0);
+  const pillsCompact = isMobile || pillCount > 4;
   const activeThreadId = useChatRuntimeStore((s) => s.activeThreadId);
   const setPendingImageEditReference = useChatRuntimeStore(
     (s) => s.setPendingImageEditReference,
@@ -1726,6 +1742,11 @@ const Composer: FC<{
 
       if (threadIsRunning || promptQueueActive) {
         event.preventDefault();
+        // Project new-chat composer: never queue, just ask the user to wait.
+        if (disableQueue) {
+          toast.error("Wait for the current response to finish");
+          return;
+        }
         if (!canQueueCurrentPrompt) {
           if (overlay || hasAttachments || hasPendingAudio) {
             toast.error(
@@ -1803,6 +1824,7 @@ const Composer: FC<{
       composerText,
       createPromptQueueTarget,
       disabled,
+      disableQueue,
       hasAttachments,
       hasPendingAudio,
       interceptSend,
@@ -1822,9 +1844,12 @@ const Composer: FC<{
 
   const startQueue = useCallback(
     (items: string[], waitForCurrentRun = threadIsRunning) => {
+      // Saved-prompt Run-list calls this directly, so honour disableQueue here
+      // too: queuing from the project new-chat composer misbinds the thread.
+      if (disableQueue) return;
       startPromptQueue(items, createPromptQueueTarget(), waitForCurrentRun);
     },
-    [createPromptQueueTarget, threadIsRunning],
+    [createPromptQueueTarget, threadIsRunning, disableQueue],
   );
 
   const queueContextValue: PromptQueueCallbacks = { startQueue, stopQueue };
@@ -1884,8 +1909,11 @@ const Composer: FC<{
             isComposing ||
             hasPendingAttachments
           }
-          queueDisabled={!canQueueCurrentPrompt}
+          // disableQueue (project new-chat composer) also blocks the queue
+          // button, so a running thread shows Stop instead of Queue.
+          queueDisabled={disableQueue || !canQueueCurrentPrompt}
           onQueueClick={() => {
+            if (disableQueue) return;
             const queuedPrompt = composerText.trim();
             if (queuedPrompt.length === 0) {
               return;
