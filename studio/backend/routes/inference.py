@@ -6789,6 +6789,119 @@ async def _proxy_to_external_provider(
     # `model_fields_set` tracks explicit-vs-default per request.
     _top_k_explicit = payload.top_k if "top_k" in payload.model_fields_set else None
 
+    # OAI-compat Connections (ollama / llama.cpp / vLLM / custom) can drive
+    # Unsloth's local tool runtime against the remote model (#7282). Hosted
+    # providers stay on the pure-proxy + supportsBuiltin* path.
+    from core.inference.external_agentic import (
+        provider_supports_local_tool_runtime,
+        stream_external_local_tool_loop,
+    )
+    from state.tool_policy import get_tool_policy as _get_tool_policy_ext
+
+    _cli_policy_ext = _get_tool_policy_ext()
+    _tools_on_ext = _effective_enable_tools(payload)
+    _mcp_allowed_ext = bool(payload.mcp_enabled) and _cli_policy_ext is not False
+    _use_local_tool_runtime = (
+        provider_supports_local_tool_runtime(provider_type)
+        and payload.stream
+        and (_tools_on_ext or _mcp_allowed_ext)
+        and not payload.tools  # client-supplied tools stay on passthrough
+    )
+
+    async def _stream_local_tools():
+        tools_to_use = await _select_request_tools(
+            payload, tools_on = bool(_tools_on_ext), mcp_allowed = _mcp_allowed_ext
+        )
+        if not tools_to_use:
+            # Nothing to run — reuse the plain proxy stream (incl. client.close).
+            async for line in _stream():
+                yield line
+            return
+
+        # Inject the same tool-action nudge local GGUF turns get so small
+        # remote models know when to call tools.
+        _nudge = _build_tool_action_nudge(tools = tools_to_use, model_name = model)
+        _nudge = _apply_rag_nudge(_nudge, tools_to_use, rag_scope = payload.rag_scope)
+        loop_messages = list(chat_messages)
+        if _nudge:
+            loop_messages = [{"role": "system", "content": _nudge}, *loop_messages]
+
+        _confirm = _permission_mode_confirm(payload)
+        cancel_event = threading.Event()
+        _cancel_keys = (payload.cancel_id, payload.session_id, None)
+        with _TrackedCancel(cancel_event, *_cancel_keys):
+            gen = stream_external_local_tool_loop(
+                client = client,
+                messages = loop_messages,
+                model = model,
+                tools = tools_to_use,
+                temperature = payload.temperature,
+                top_p = payload.top_p,
+                max_tokens = _effective_max_tokens(payload),
+                presence_penalty = payload.presence_penalty,
+                top_k = _top_k_explicit,
+                enable_thinking = payload.enable_thinking,
+                reasoning_effort = payload.reasoning_effort,
+                tool_choice = payload.tool_choice,
+                confirm_tool_calls = bool(_confirm) and not bool(payload.bypass_permissions),
+                bypass_permissions = bool(payload.bypass_permissions),
+                permission_mode = getattr(payload, "permission_mode", None),
+                session_id = getattr(payload, "session_id", None),
+                thread_id = getattr(payload, "thread_id", None),
+                cancel_event = cancel_event,
+            )
+            try:
+                sent_done = False
+                stream_failed = False
+                async for line in gen:
+                    monitor_event = _monitor_openai_sse_line(monitor_id, line)
+                    if monitor_event is None:
+                        try:
+                            parsed = json.loads(
+                                line[5:].strip() if line.startswith("data:") else line
+                            )
+                            if isinstance(parsed, dict) and parsed.get("type") not in (
+                                "tool_start",
+                                "tool_end",
+                                "tool_status",
+                                "tool_output",
+                                "tool_args",
+                            ):
+                                _monitor_openai_chunk(monitor_id, parsed)
+                        except Exception:
+                            pass
+                    if monitor_event == "error":
+                        stream_failed = True
+                    yield f"{line}\n\n"
+                    if monitor_event == "done" or line.strip() == "data: [DONE]":
+                        sent_done = True
+                if not sent_done:
+                    if not stream_failed:
+                        api_monitor.finish(monitor_id)
+                    yield "data: [DONE]\n\n"
+            except asyncio.CancelledError:
+                cancel_event.set()
+                api_monitor.finish(monitor_id, "cancelled")
+                raise
+            except Exception as exc:
+                cancel_event.set()
+                logger.error("external_provider.local_tool_stream_error", error = str(exc))
+                api_monitor.fail(monitor_id, _friendly_error(exc))
+                yield (
+                    "data: "
+                    + json.dumps(
+                        {"error": {"message": _friendly_error(exc), "type": "server_error"}}
+                    )
+                    + "\n\n"
+                )
+                yield "data: [DONE]\n\n"
+            finally:
+                try:
+                    await gen.aclose()
+                except RuntimeError:
+                    pass
+                await client.close()
+
     async def _stream():
         gen = client.stream_chat_completion(
             messages = chat_messages,
@@ -6855,7 +6968,7 @@ async def _proxy_to_external_provider(
             await client.close()
 
     return StreamingResponse(
-        _stream(),
+        _stream_local_tools() if _use_local_tool_runtime else _stream(),
         media_type = "text/event-stream",
         headers = {
             "Cache-Control": "no-cache",
@@ -7088,8 +7201,25 @@ async def openai_chat_completions(
         from core.inference.llama_keepwarm import untrack_current_request
 
         untrack_current_request(request.scope)
+
+        # Resolve provider type early so OAI-compat Connections (ollama /
+        # llama.cpp / vLLM / custom) can use Unsloth's local tool runtime
+        # (#7282) instead of being rejected on confirm_tool_calls.
+        _ext_provider_type = payload.provider_type
+        if payload.provider_id and not _ext_provider_type:
+            _cfg = providers_db.get_provider(payload.provider_id)
+            if _cfg is not None:
+                _ext_provider_type = _cfg.get("provider_type")
+        from core.inference.external_agentic import provider_supports_local_tool_runtime
+
+        _ext_local_tools = provider_supports_local_tool_runtime(_ext_provider_type) and (
+            payload.enable_tools is True
+            or bool(payload.enabled_tools)
+            or bool(payload.mcp_enabled)
+        )
         # Bypass Permissions suppresses the confirm gate, so do not reject a
         # request that sets both flags (effective confirm is then False).
+        # Local-runtime remotes support confirm on stream=true (same as GGUF).
         if (
             payload.confirm_tool_calls
             and not payload.bypass_permissions
@@ -7100,6 +7230,7 @@ async def openai_chat_completions(
                 or bool(payload.openai_code_exec_container_id)
                 or bool(payload.anthropic_code_exec_container_id)
             )
+            and not (_ext_local_tools and payload.stream)
         ):
             raise HTTPException(
                 status_code = 400,

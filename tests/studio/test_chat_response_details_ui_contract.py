@@ -81,8 +81,14 @@ def test_response_details_metadata_is_persisted_without_backend_schema_change():
     assert "buildResponseDetails" in src
     assert "responseDetails: buildResponseDetails(finishedAt)" in src
     assert "toolCalls: Array.from(" in src
+    # Response-details metadata: Search/Code/MCP can come from hosted builtins
+    # OR from Unsloth's local tool runtime on OAI-compat Connections (#7282).
+    assert "localWebSearchEnabledForThisTurn" in src
+    assert "localCodeToolsEnabledForThisTurn" in src
+    assert "localMcpEnabledForThisTurn" in src
     assert "!isExternalRequest && supportsTools && toolsEnabled" in src
     assert "!isExternalRequest && supportsTools && codeToolsEnabled" in src
+    assert "providerSupportsLocalToolRuntime" in src
     assert re.search(r"selectedModelSummary\?\.name\s*\|\|\s*responseModelId", src)
     assert "providerName" in src
     assert "cancelId" in src
