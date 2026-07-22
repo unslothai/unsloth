@@ -73,13 +73,24 @@ def test_local_child_uses_explicit_unsloth_profile(
 ):
     config = _write_config(tmp_path, bypass_permissions = bypass_permissions)
     monkeypatch.setenv(bridge._CODEX_SUBAGENT_CONFIG_ENV, str(config))
-    for name in bridge._CODEX_ENV_UNSET:
+    credential_names = ("OPENAI_API_KEY", "CODEX_API_KEY", "CODEX_ACCESS_TOKEN")
+    for name in credential_names:
         monkeypatch.setenv(name, "cloud-key")
+    monkeypatch.setenv("CODEX_SQLITE_HOME", str(tmp_path / "parent-sqlite"))
     if wsl_bridge:
         monkeypatch.setattr(
             bridge,
             "_wsl_shim_env",
-            lambda command, env, unset: (env, (*unset, "PWD/p")),
+            lambda command, env, unset: (
+                env,
+                (
+                    bridge._CODEX_ENV_KEY,
+                    "CODEX_HOME/p",
+                    "CODEX_SQLITE_HOME/p",
+                    *unset,
+                    "PWD/p",
+                ),
+            ),
         )
     monkeypatch.setattr(bridge.shutil, "which", lambda _: "/usr/local/bin/codex")
     captured = {}
@@ -131,13 +142,18 @@ def test_local_child_uses_explicit_unsloth_profile(
     else:
         assert captured["start_new_session"] is True
     assert captured["env"]["CODEX_HOME"] == str(tmp_path / "child")
+    assert captured["env"]["CODEX_SQLITE_HOME"] == str(tmp_path / "child")
     assert captured["env"][bridge._CODEX_ENV_KEY] == "sk-unsloth-test"
     if wsl_bridge:
-        assert all(captured["env"][name] == "" for name in bridge._CODEX_ENV_UNSET)
-        assert all(name in captured["env"]["WSLENV"].split(":") for name in bridge._CODEX_ENV_UNSET)
-        assert "PWD/p" in captured["env"]["WSLENV"].split(":")
+        assert all(captured["env"][name] == "" for name in credential_names)
+        wslenv = captured["env"]["WSLENV"].split(":")
+        assert all(
+            name in {entry.split("/", 1)[0] for entry in wslenv} for name in bridge._CODEX_ENV_UNSET
+        )
+        assert "CODEX_SQLITE_HOME/p" in wslenv
+        assert "PWD/p" in wslenv
     else:
-        assert all(name not in captured["env"] for name in bridge._CODEX_ENV_UNSET)
+        assert all(name not in captured["env"] for name in credential_names)
 
 
 def test_local_child_returns_last_agent_message():

@@ -107,6 +107,7 @@ def run_local_agent(task: str, cancel_event: threading.Event | None = None) -> s
     local_env = {
         _CODEX_ENV_KEY: config["api_key"],
         "CODEX_HOME": config["codex_home"],
+        "CODEX_SQLITE_HOME": config["codex_home"],
     }
     bridged, wsl_names = _wsl_shim_env(command, local_env, _CODEX_ENV_UNSET)
     child_env = dict(os.environ)

@@ -28,6 +28,8 @@ const baseUrl = typeof config.baseUrl === "string" ? config.baseUrl : "";
 const apiKey = typeof config.apiKey === "string" ? config.apiKey : "";
 const contextWindow = positiveInt(config.contextWindow, 32768);
 const maxTokens = positiveInt(config.maxTokens, Math.min(Math.floor(contextWindow / 4), 8192));
+let activeAgents = 0;
+const waitingAgents: Array<() => boolean> = [];
 
 function positiveInt(value: unknown, fallback: number): number {
 	const parsed = Number.parseInt(typeof value === "string" ? value : String(value || ""), 10);
@@ -46,6 +48,45 @@ function finalText(message: any): string {
 function boundedResult(text: string): string {
 	if (text.length <= maxResultCharacters) return text;
 	return `${text.slice(0, maxResultCharacters)}\n\n[Local agent output truncated]`;
+}
+
+function agentSlotRelease(): () => void {
+	let released = false;
+	return () => {
+		if (released) return;
+		released = true;
+		while (waitingAgents.length) {
+			if (waitingAgents.shift()!()) return;
+		}
+		activeAgents -= 1;
+	};
+}
+
+function acquireAgentSlot(signal: AbortSignal | undefined): Promise<() => void> {
+	if (signal?.aborted) return Promise.reject(new Error("The local Unsloth agent was cancelled."));
+	if (activeAgents < maxParallelAgents) {
+		activeAgents += 1;
+		return Promise.resolve(agentSlotRelease());
+	}
+	return new Promise((resolve, reject) => {
+		let waiting = true;
+		const grant = () => {
+			if (!waiting) return false;
+			waiting = false;
+			signal?.removeEventListener("abort", cancel);
+			resolve(agentSlotRelease());
+			return true;
+		};
+		const cancel = () => {
+			if (!waiting) return;
+			waiting = false;
+			const index = waitingAgents.indexOf(grant);
+			if (index >= 0) waitingAgents.splice(index, 1);
+			reject(new Error("The local Unsloth agent was cancelled."));
+		};
+		waitingAgents.push(grant);
+		signal?.addEventListener("abort", cancel, { once: true });
+	});
 }
 
 function piInvocation(args: string[]): { command: string; args: string[] } {
@@ -308,7 +349,9 @@ export default function unslothSubagent(pi: ExtensionAPI): void {
 			};
 			await Promise.all(
 				tasks.map(async (task, index) => {
+					let releaseAgentSlot: (() => void) | undefined;
 					try {
+						releaseAgentSlot = await acquireAgentSlot(signal);
 						results[index] = await runLocalAgent(task, ctx.cwd, signal, (partial) => {
 							results[index] = partial;
 							emitUpdate();
@@ -321,6 +364,7 @@ export default function unslothSubagent(pi: ExtensionAPI): void {
 							error: String(error),
 						};
 					} finally {
+						releaseAgentSlot?.();
 						completed += 1;
 						emitUpdate();
 					}
