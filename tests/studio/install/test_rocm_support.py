@@ -3468,12 +3468,12 @@ class TestStrixRocm71Override:
             # rocminfo honours ROCR_VISIBLE_DEVICES like the real tool: -1 hides
             # both agents, 1 renumbers to the dGPU only, unset shows both.
             rocminfo = (
-                '#!/bin/sh\n'
+                "#!/bin/sh\n"
                 'case "${ROCR_VISIBLE_DEVICES-}" in\n'
                 '  -1) echo "no visible agents" ;;\n'
                 '  1) printf "Name: gfx1201\\n" ;;\n'
                 '  *) printf "Name: gfx1151\\nName: gfx1201\\n" ;;\n'
-                'esac\n'
+                "esac\n"
             )
             for name, body in (("rocminfo", rocminfo), ("amd-smi", "#!/bin/sh\nexit 0\n")):
                 p = os.path.join(d, name)
@@ -3481,9 +3481,7 @@ class TestStrixRocm71Override:
                     f.write(body)
                 os.chmod(p, 0o755)
             script = (
-                'set -euo pipefail\n'
-                + block.group(0)
-                + '\nprintf "OK:%s\\n" "$_runtime_gfx"\n'
+                "set -euo pipefail\n" + block.group(0) + '\nprintf "OK:%s\\n" "$_runtime_gfx"\n'
             )
 
             def run(**extra):
