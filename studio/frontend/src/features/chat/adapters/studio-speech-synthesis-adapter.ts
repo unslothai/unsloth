@@ -59,8 +59,8 @@ function voiceBaseName(voice: SpeechSynthesisVoice): string {
   return name;
 }
 
-// Well-known natural English voices, best first. Breaks ties when the platform
-// gives no quality hint in the name, so basic voices are not just alphabetical.
+// Well-known natural English voices, best first. Breaks ties when the name
+// carries no quality hint, so basic voices are not just alphabetical.
 const PREFERRED_VOICE_NAMES = [
   "samantha",
   "alex",
@@ -153,9 +153,9 @@ export function curateSystemVoices(
     return a.name.localeCompare(b.name);
   });
 
-  // macOS reports some voices twice (a compact and an enhanced copy) under the
-  // same name. Keep one per name and language, preferring the selected voice
-  // then the best ranked, so the list shows no duplicates.
+  // macOS reports some voices twice (compact + enhanced) under one name. Keep
+  // one per name and language, preferring the selected voice then the best
+  // ranked, so no duplicates show.
   const keyOf = (voice: SpeechSynthesisVoice) =>
     `${voiceBaseName(voice)}|${voice.lang.toLowerCase()}`;
   const winners = new Map<string, string>();

@@ -4,22 +4,21 @@
 """whisper.cpp (GGML/GGUF) speech-to-text sidecar for Studio dictation.
 
 Runs the same curated Whisper checkpoints as the Transformers sidecar
-(stt_sidecar.py) through whisper.cpp's `whisper-server`, which is ~2.5x faster
-at identical transcription quality on Apple Silicon and CPU hosts because its
-Metal/CPU kernels run the weights in f16 where PyTorch MPS requires fp32.
+(stt_sidecar.py) through whisper.cpp's `whisper-server`, ~2.5x faster at
+identical quality on Apple Silicon and CPU because its Metal/CPU kernels run
+the weights in f16 where PyTorch MPS requires fp32.
 
-The sidecar owns a single `whisper-server` subprocess bound to 127.0.0.1 on an
-ephemeral port. The model loads on demand, stays warm between dictations, and
-unloads after the same keep-alive as the Transformers sidecar. Curated GGML
-checkpoints are single files from the Unsloth-hosted `unslothai/whisper-*-GGUF`
-repositories; they are downloaded directly, which is why this engine does not
-go through the Model Hub flow -- the Hub's variant planner only handles
-`.gguf` chat-model layouts.
+Owns a single `whisper-server` subprocess bound to 127.0.0.1 on an ephemeral
+port; the model loads on demand, stays warm between dictations, and unloads
+after the same keep-alive as the Transformers sidecar. Curated GGML checkpoints
+are single files from `unslothai/whisper-*-GGUF`, downloaded directly rather
+than through the Model Hub (whose variant planner only handles `.gguf` chat
+layouts).
 
-Binary discovery mirrors `_find_llama_server_binary`: an explicit env override
-first, then the managed Studio home, then PATH. When no binary is found the
-engine reports unavailable and dictation falls back to the Transformers
-sidecar; `scripts/build_whisper_cpp.sh` builds and installs the binary.
+Binary discovery mirrors `_find_llama_server_binary`: env override, then managed
+Studio home, then PATH. With no binary the engine is unavailable and dictation
+falls back to the Transformers sidecar; `scripts/build_whisper_cpp.sh` installs
+the binary.
 """
 
 from __future__ import annotations
@@ -59,9 +58,9 @@ from utils.process_lifetime import adopt_pid, child_popen_kwargs, forget_pid
 
 logger = get_logger(__name__)
 
-# Unsloth-hosted GGML checkpoints, one repository per curated model. Keys are
-# the same stable ids the Transformers sidecar curates so the frontend can
-# reuse one model picker; values are the single file inside each repository.
+# Curated GGML checkpoints, one repo per model. Keys match the Transformers
+# sidecar's ids so the frontend reuses one picker; values are the single file
+# inside each repo.
 GGML_STT_REPOS: dict[str, str] = {
     "tiny": "unslothai/whisper-tiny-GGUF",
     "base": "unslothai/whisper-base-GGUF",
@@ -100,10 +99,10 @@ def resolve_ggml_model_id(model: Optional[str]) -> str:
 
 
 def _managed_whisper_cpp_dir() -> Path:
-    """`<STUDIO_HOME>/whisper.cpp` in custom mode, else legacy `~/.unsloth/whisper.cpp`.
+    """`<STUDIO_HOME>/whisper.cpp` in custom mode, else `~/.unsloth/whisper.cpp`.
 
-    Mirrors `managed_node_dir` / `_find_llama_server_binary` so every managed
-    runtime shares one parent directory.
+    Mirrors `managed_node_dir` / `_find_llama_server_binary` so managed runtimes
+    share one parent directory.
     """
     legacy = Path.home() / ".unsloth" / "whisper.cpp"
     try:
@@ -170,7 +169,7 @@ def is_available() -> bool:
     try:
         import av  # noqa: F401
     except Exception:
-        # Decoding uploads needs PyAV; without it every transcription 501s.
+        # No PyAV means every transcription 501s on decode.
         return False
     return True
 
@@ -228,14 +227,13 @@ class _GgmlDownloadState:
     def _incomplete_bytes(self) -> Optional[int]:
         """Best-effort progress: size of the in-flight blob in the HF cache.
 
-        hf_hub_download writes to ``blobs/<etag>.incomplete``; prefer the blob
-        for this file's etag, falling back to the largest in-flight blob.
+        hf_hub_download writes ``blobs/<etag>.incomplete``; prefer this file's
+        etag, else the largest in-flight blob.
         """
         try:
             from huggingface_hub.constants import HF_HUB_CACHE
 
-            # Callers may already hold self._lock (non-reentrant); bare
-            # attribute reads are safe without it.
+            # Caller may hold the non-reentrant self._lock; bare reads are safe.
             model_id = self._model_id
             if not model_id:
                 return None
@@ -288,7 +286,7 @@ class _GgmlDownloadState:
                 hf_hub_url,
             )
             try:
-                # One HEAD request for the progress total and etag.
+                # One HEAD request for the total and etag.
                 meta = get_hf_file_metadata(hf_hub_url(repo_id, filename), token = hf_token or None)
                 with self._lock:
                     self._total_bytes = meta.size
@@ -353,26 +351,25 @@ class GgmlSttSidecar:
         self._idle_timer: Optional[threading.Timer] = None
         self._idle_generation = 0
         self._keep_alive_seconds = keep_alive_seconds
-        # Set while whisper-server is starting so training admission can account
-        # for the accelerator memory it is about to bind. Read without the lock.
+        # Set while whisper-server starts so training admission can account for
+        # the accelerator memory it is about to bind. Read without the lock.
         self._loading = False
         # A still-starting whisper-server is cancellable so training can preempt
-        # it before it finishes binding accelerator memory. Both are assigned
-        # inside self._lock but read/acted on without it: cancel_pending_load()
-        # runs while load() holds the lock, so the event is the source of truth
-        # and terminating the process is a best-effort fast path.
+        # it before it binds accelerator memory. Assigned inside self._lock but
+        # acted on without it: cancel_pending_load() runs while load() holds the
+        # lock, so the event is the source of truth and terminating the process
+        # is a best-effort fast path.
         self._load_cancel_event: Optional[threading.Event] = None
         self._starting_process: Optional[subprocess.Popen] = None
 
     @property
     def loaded_model(self) -> Optional[str]:
-        # Lock-free status read, mirroring the Transformers sidecar
-        # (stt_sidecar.py). transcribe() holds self._lock across the whole
-        # inference call (up to _TRANSCRIBE_TIMEOUT_SECONDS), and /audio/stt
-        # status polls plus training admission must not block behind it.
-        # _process_alive() snapshots self._process before poll(), and Popen.poll()
-        # is guarded by subprocess's own _waitpid_lock, so a concurrent unload is
-        # safe.
+        # Lock-free status read (like stt_sidecar.py): transcribe() holds
+        # self._lock for the whole inference call (up to
+        # _TRANSCRIBE_TIMEOUT_SECONDS), and status polls plus training admission
+        # must not block behind it. _process_alive() snapshots self._process
+        # before poll(), which subprocess guards with _waitpid_lock, so a
+        # concurrent unload is safe.
         return self._model_id if self._process_alive() else None
 
     @property
@@ -380,8 +377,8 @@ class GgmlSttSidecar:
         return "whisper.cpp" if self._process_alive() else None
 
     def is_loading(self) -> bool:
-        # True only while whisper-server is starting (may take seconds to bind
-        # its GPU backend); load() sets and clears the flag around that window.
+        # True only while whisper-server is starting (seconds to bind its GPU
+        # backend); load() sets and clears the flag around that window.
         return self._loading
 
     @property
@@ -390,8 +387,8 @@ class GgmlSttSidecar:
 
     def _process_alive(self) -> bool:
         # Snapshot self._process once: a concurrent unload() nulls it under the
-        # lock, and the lock-free readers (loaded_model/device) would otherwise
-        # re-read a None between the truthiness check and .poll().
+        # lock, so lock-free readers would otherwise re-read None between the
+        # truthiness check and .poll().
         process = self._process
         return process is not None and process.poll() is None
 
@@ -443,11 +440,11 @@ class GgmlSttSidecar:
             self._release_locked()
 
     def cancel_pending_load(self) -> bool:
-        # Preempt a whisper-server still in startup so training does not launch
-        # while it is binding accelerator memory. load() holds self._lock for the
-        # whole startup window, so act without the lock: signal the load to abort
-        # and terminate the starting process. _wait_for_server observes the event
-        # and raises, then load() reaps the process and releases the lock.
+        # Preempt a starting whisper-server so training does not launch while it
+        # binds accelerator memory. load() holds self._lock for the whole startup,
+        # so act without the lock: signal abort and terminate the starting
+        # process. _wait_for_server observes the event and raises, then load()
+        # reaps the process and releases the lock.
         if not self._loading:
             return False
         event = self._load_cancel_event
@@ -463,9 +460,9 @@ class GgmlSttSidecar:
         return True
 
     def wait_for_load_to_settle(self) -> None:
-        # load() holds self._lock across the whole startup and its cancel
-        # cleanup, so acquiring the lock blocks until a cancelled server has been
-        # killed and reaped and its accelerator memory released.
+        # load() holds self._lock across startup and cancel cleanup, so acquiring
+        # it blocks until a cancelled server is killed, reaped, and its
+        # accelerator memory released.
         with self._lock:
             pass
 
@@ -497,9 +494,9 @@ class GgmlSttSidecar:
             port = self._find_free_port()
             command = [binary, "-m", model_path, "--host", "127.0.0.1", "--port", str(port)]
             if _training_active():
-                # Keep whisper.cpp off the accelerator during training, matching
-                # the Transformers sidecar's CPU device choice, so a mid-training
-                # dictation cannot reclaim the VRAM training just freed.
+                # Keep whisper.cpp off the accelerator during training (like the
+                # Transformers sidecar's CPU choice) so a mid-training dictation
+                # cannot reclaim the VRAM training just freed.
                 command.append("--no-gpu")
             logger.info(
                 "Starting whisper-server for STT model %s on 127.0.0.1:%s",
@@ -516,7 +513,7 @@ class GgmlSttSidecar:
                     stderr = subprocess.DEVNULL,
                     stdin = subprocess.DEVNULL,
                     # Die with Studio (Linux PDEATHSIG, Windows job) so a crash
-                    # never orphans a server still holding the model.
+                    # never orphans a server holding the model.
                     **child_popen_kwargs(),
                 )
                 self._starting_process = process
@@ -585,8 +582,8 @@ class GgmlSttSidecar:
             raise SttLanguageError(
                 f"Language '{language}' is not supported by STT model '{model_id}'."
             )
-        # Reject a missing model before decoding so a long clip cannot burn CPU
-        # only to 409, matching the Transformers sidecar's download preflight.
+        # Reject a missing model before decoding so a long clip does not burn CPU
+        # only to 409 (matches the Transformers sidecar's preflight).
         self._ensure_model_downloaded(model_id)
         decoded_audio = _decode_audio_bounded(audio)
         wav_bytes = _pcm_to_wav_bytes(decoded_audio)
@@ -609,8 +606,7 @@ class GgmlSttSidecar:
         fields = {
             "temperature": "0.0",
             "response_format": "json",
-            # Match the Transformers sidecar decoding policy: five-way beam
-            # search by default, single-candidate greedy for fast dictation.
+            # Match the Transformers sidecar: 5-way beam search, greedy for fast.
             "beam_size": "1" if fast else "5",
             "language": lang or "auto",
         }

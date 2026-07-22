@@ -1869,7 +1869,7 @@ const Composer: FC<{
         </>
       ) : null}
       {/* Keep indexing state subscribed while dictating, but hide its chips so
-          the waveform remains the composer's only status indicator. */}
+          the waveform stays the composer's only status indicator. */}
       <div className={isDictating ? "hidden" : "contents"}>
         <ThreadDocumentsBar
           threadId={referenceThreadId}
@@ -1889,12 +1889,11 @@ const Composer: FC<{
           data-pill-compact={pillsCompact ? "true" : undefined}
         >
           <ComposerToolsMenu side={effectiveMenuSide} />
-          {/* While dictating, show only the "+"; hide the pill and tool
-              toggles so the waveform is the sole status indicator. */}
+          {/* While dictating, show only the "+"; hide the pill and tool toggles
+              so the waveform is the sole status indicator. */}
           {!isDictating ? (
             <>
-              {/* Permission-level pill: always visible and opens the
-                  permission level dropdown. */}
+              {/* Permission-level pill: always visible, opens the level dropdown. */}
               <PermissionModeComposerPill side={effectiveMenuSide} />
               <WebSearchToggle />
               <CodeToolsToggle />
@@ -1908,8 +1907,8 @@ const Composer: FC<{
           ) : null}
         </div>
         {isDictating ? (
-          // The recording UI replaces the input and send controls while
-          // dictating; only the left plus stays visible alongside it.
+          // The recording UI replaces the input and send controls; only the
+          // left plus stays visible alongside it.
           <ChatDictationBar />
         ) : (
           <>

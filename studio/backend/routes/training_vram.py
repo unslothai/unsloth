@@ -85,12 +85,11 @@ def summarize_resident_stt() -> Dict[str, Any]:
         model = sidecar.loaded_model
         device = sidecar.device
         loading = sidecar.is_loading()
-        # The whisper.cpp engine holds GPU memory through its own subprocess, and
-        # both engines can be live at once (an engine switch or direct
-        # /audio/stt/load calls). Always fold the GGUF sidecar in -- a resident
-        # Transformers model (e.g. after its CPU fallback) must not mask a GGUF
-        # server still binding its accelerator backend, or admission would let
-        # training launch into that startup and OOM.
+        # whisper.cpp holds GPU memory via its subprocess, and both engines can be
+        # live at once (engine switch or direct /audio/stt/load). Always fold the
+        # GGUF sidecar in: a resident Transformers model must not mask a GGUF
+        # server still binding its backend, or admission lets training launch into
+        # that startup and OOM.
         ggml = get_ggml_stt_sidecar()
         if not model:
             model = ggml.loaded_model
@@ -411,12 +410,11 @@ def free_stt_model_for_training(reason: str) -> List[str]:
         sidecar = get_stt_sidecar()
         if sidecar.is_loading() and sidecar.cancel_pending_load():
             logger.info("Cancelling STT model load for training (%s)", reason)
-            # The loader may still be inside from_pretrained()/.to(device) and
-            # holding VRAM; wait for it to observe the cancel and release before
-            # training claims the memory.
+            # The loader may still be in from_pretrained()/.to(device) holding
+            # VRAM; wait for it to observe the cancel and release first.
             sidecar.wait_for_load_to_settle()
-            # A load that finished before observing the cancel leaves a resident
-            # model; unload it so training actually gets the memory back.
+            # A load that finished before seeing the cancel leaves a resident
+            # model; unload it so training gets the memory back.
             if sidecar.loaded_model:
                 sidecar.unload()
             freed.append("stt:loading")
@@ -430,15 +428,15 @@ def free_stt_model_for_training(reason: str) -> List[str]:
         logger.warning("Could not unload Transformers STT model: %s", e)
 
     # Check the GGUF sidecar even after a cancelled/failed Transformers unload;
-    # both engines can hold memory at once (engine switch or direct load calls).
+    # both engines can hold memory at once (engine switch or direct load).
     try:
         from core.inference.stt_ggml_sidecar import get_ggml_stt_sidecar
         ggml = get_ggml_stt_sidecar()
         if ggml.is_loading() and ggml.cancel_pending_load():
             logger.info("Cancelling GGUF STT model load for training (%s)", reason)
-            # whisper-server may still be binding its accelerator backend; wait
-            # for the cancelled startup to be killed and reaped before training
-            # claims the memory (its loaded_model stays unset until it is ready).
+            # whisper-server may still be binding its backend; wait for the
+            # cancelled startup to be killed and reaped before training claims
+            # the memory (loaded_model stays unset until it is ready).
             ggml.wait_for_load_to_settle()
             if ggml.loaded_model:
                 ggml.unload()

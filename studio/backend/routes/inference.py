@@ -6138,12 +6138,11 @@ def _resolve_stt_engine(engine: Optional[str]) -> str:
 def _resolve_serving_stt_engine(engine: Optional[str]) -> str:
     """Resolve the engine that will actually serve a model.
 
-    whisper.cpp (gguf) only accepts curated ids, which the Transformers engine
-    serves too, so when whisper-server is not installed (the common case, since
-    `unsloth studio update` does not yet build it) fall back to Transformers
-    instead of 501-ing on every recording -- the GGUF sidecar's documented
-    contract. Used for download/load/transcribe; unload targets a specific engine
-    and keeps _resolve_stt_engine.
+    whisper.cpp (gguf) only accepts curated ids, which Transformers serves too,
+    so when whisper-server is not installed (the common case: `unsloth studio
+    update` does not yet build it) fall back to Transformers instead of 501-ing
+    on every recording. Used for download/load/transcribe; unload targets a
+    specific engine via _resolve_stt_engine.
     """
     resolved = _resolve_stt_engine(engine)
     if resolved == "gguf":
@@ -6194,9 +6193,8 @@ async def stt_status(
             "keep_alive_seconds": sidecar.keep_alive_seconds,
             "default_model": DEFAULT_STT_MODEL,
             "models": list(STT_MODELS.keys()),
-            # Transformers engine, in the same shape as "gguf" below so
-            # clients can read either engine generically. The top-level
-            # fields above are kept for existing clients.
+            # Transformers engine, same shape as "gguf" below so clients read
+            # either generically. Top-level fields above kept for old clients.
             "transformers": {
                 "available": is_available(),
                 "loaded_model": sidecar.loaded_model,
@@ -6236,10 +6234,9 @@ async def stt_download(
 ):
     """Start a background download of a dictation model.
 
-    Both engines download directly (a GGML checkpoint is a single file in one
-    large multi-model repository, which the Model Hub's GGUF variant planner
-    cannot express; a Transformers checkpoint is a whole snapshot). Progress
-    is reported by /audio/stt/status.
+    Both engines download directly (a GGML checkpoint is a single file the Model
+    Hub's GGUF variant planner cannot express; a Transformers checkpoint is a
+    whole snapshot). Progress is reported by /audio/stt/status.
     """
     from core.inference import stt_ggml_sidecar, stt_sidecar
     from core.inference.stt_sidecar import (
@@ -6251,11 +6248,10 @@ async def stt_download(
     engine = _resolve_serving_stt_engine(payload.engine)
     module = stt_ggml_sidecar if engine == "gguf" else stt_sidecar
     try:
-        # The Transformers engine accepts arbitrary custom `owner/model` repos, so
-        # confirm the repo is a Whisper checkpoint (metadata-only, no weights) before
-        # snapshot_download pulls a possibly-large non-STT repository into the shared
-        # HF cache. Curated ids short-circuit; the GGUF engine only accepts curated
-        # ids (resolve_ggml_model_id rejects custom), so it needs no repo check.
+        # Transformers accepts custom `owner/model` repos, so confirm the repo is
+        # a Whisper checkpoint (metadata-only) before snapshot_download pulls a
+        # possibly-large non-STT repo into the shared cache. Curated ids
+        # short-circuit; GGUF only accepts curated ids, so it needs no check.
         if engine != "gguf":
             await asyncio.to_thread(validate_remote_model, payload.model, hf_token)
         await asyncio.to_thread(module.start_model_download, payload.model, hf_token)
@@ -6329,13 +6325,12 @@ async def stt_unload(
     if engine is None:
         engines = ["transformers", "gguf"]
     else:
-        # Resolve through the serving resolver, not the plain normalizer: a
-        # "gguf" pick on a host without whisper-server is actually served by the
-        # Transformers fallback, so unloading must target that same engine or the
-        # resident model is never freed.
+        # Use the serving resolver: a "gguf" pick without whisper-server is
+        # actually served by the Transformers fallback, so unload must target
+        # that same engine or the resident model is never freed.
         engines = [_resolve_serving_stt_engine(engine)]
-    # Attempt every engine even if one raises, so a failure unloading one backend
-    # never skips freeing the other (both can be resident after an engine switch).
+    # Attempt every engine even if one raises, so failing to unload one never
+    # skips freeing the other (both can be resident after a switch).
     failed: list[str] = []
     for name in engines:
         try:

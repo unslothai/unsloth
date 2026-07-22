@@ -32,12 +32,11 @@ _DEFAULT_EMBEDDING_REPO_IDS = {
 # fallback for Studio's static default embedder only; configured custom repos
 # remain exact-match-only.
 _DEFAULT_EMBEDDING_PATH_BASENAMES = {"bge-small-en-v1.5"}
-# Curated Whisper dictation checkpoints. They are STT models, never chat models,
-# so the chat model inventory and pickers hide them: the Transformers safetensors
-# repos (unsloth/whisper-*) and their whisper.cpp GGUF companions served by the
-# GGUF dictation engine (unslothai/whisper-*-GGUF). Custom Whisper checkpoints are
-# caught by config below, but the GGUF companions carry a raw .bin (no whisper
-# config.json), so they must be listed here by id or they leak into chat pickers.
+# Curated Whisper dictation checkpoints (STT, never chat), hidden from the chat
+# inventory and pickers: Transformers safetensors repos (unsloth/whisper-*) and
+# their GGUF companions (unslothai/whisper-*-GGUF). Custom checkpoints are caught
+# by config below, but the GGUF companions carry a raw .bin (no config.json), so
+# they must be listed here by id or they leak into chat pickers.
 _HIDDEN_STT_REPO_IDS = frozenset(
     {
         "unsloth/whisper-tiny",

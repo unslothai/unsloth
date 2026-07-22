@@ -19,16 +19,15 @@ import {
   resolveDictationChatId,
 } from "./studio-web-speech-dictation-adapter";
 
-// Finer timeslice inside a segment so the buffer is ready the moment a segment
-// is cut or the user stops.
+// Fine timeslice so the buffer is ready the moment a segment is cut or stopped.
 const SEGMENT_TIMESLICE_MS = 250;
-// Whisper pads input to 30 seconds. Keep short dictation in one clip. For long
-// dictation, cut at the first pause after 20s or before the 30s boundary.
+// Whisper pads input to 30s. Short dictation stays one clip; long dictation cuts
+// at the first pause after 20s or before the 30s boundary.
 const MIN_SEGMENT_MS = 20_000;
 const MAX_SEGMENT_MS = 28_000;
 const SILENCE_CUT_MS = 280;
-// Raw RMS (0..1) above which a frame counts as speech. Noise suppression keeps
-// the room floor well below this.
+// Raw RMS (0..1) above which a frame counts as speech (well above the room floor
+// after noise suppression).
 const VOICE_RMS = 0.015;
 
 // Prefer Opus (small, widely supported); fall back to whatever the browser
@@ -54,9 +53,8 @@ const stopStream = (stream: MediaStream | null) => {
   }
 };
 
-/** Backend STT engine, decided by the selected model: the curated ids run
- * GGML checkpoints through whisper.cpp; a custom Hugging Face repository is
- * a safetensors checkpoint and runs through Transformers. */
+/** Backend STT engine, decided by the model: curated ids run GGML through
+ * whisper.cpp; a custom HF repo is safetensors and runs through Transformers. */
 export type SttEngine = "transformers" | "gguf";
 
 export function sttEngineFor(model: string): SttEngine {
@@ -140,8 +138,8 @@ export interface SttStatus {
   gguf?: SttEngineStatus;
 }
 
-// Keep load and unload requests ordered. In particular, a new recording must
-// not race an unload still finishing for the previous recording.
+// Keep load/unload requests ordered so a new recording cannot race an unload
+// still finishing for the previous one.
 let sttLifecycle: Promise<void> = Promise.resolve();
 
 function queueSttLifecycle(operation: () => Promise<void>): Promise<void> {
@@ -151,7 +149,7 @@ function queueSttLifecycle(operation: () => Promise<void>): Promise<void> {
 }
 
 /** Report whether STT is installed and which model, if any, is resident.
- * Passing a model extends the downloaded check to custom repositories. */
+ * Passing a model extends the downloaded check to custom repos. */
 export async function fetchSttStatus(
   refreshKey?: number,
   model?: string,
@@ -243,9 +241,9 @@ export function unloadSttModel(): Promise<void> {
 }
 
 /**
- * Local model dictation. Short recordings use one pass. Long recordings split
- * near Whisper's 30-second window. Confirm keeps text, discard removes it, and
- * either action releases the microphone immediately.
+ * Local model dictation. Short recordings use one pass; long ones split near
+ * Whisper's 30s window. Confirm keeps text, discard removes it, and either
+ * releases the microphone immediately.
  */
 export class StudioModelDictationAdapter implements DictationAdapter {
   private readonly chatId: string | null | undefined;
@@ -268,9 +266,9 @@ export class StudioModelDictationAdapter implements DictationAdapter {
       throw new Error("Recording is not supported in this browser.");
     }
 
-    // Pin the model, language, and linked chat chosen when recording began so
-    // later segments are not transcribed with settings the user changed
-    // mid-session and a thread switch cannot relink the saved transcript.
+    // Pin the model, language, and linked chat chosen when recording began, so a
+    // mid-session settings change or thread switch cannot affect later segments
+    // or relink the saved transcript.
     const { sttModel: sessionModel, dictationLanguage } =
       useVoiceSettingsStore.getState();
     const sessionLanguage = resolveModelDictationLanguage(
@@ -307,8 +305,8 @@ export class StudioModelDictationAdapter implements DictationAdapter {
     });
 
     // --- Background transcription pipeline ---------------------------------
-    // Each recorded segment is a self-contained clip transcribed on its own.
-    // Results are stored by segment index so the final text keeps its order.
+    // Each segment is a self-contained clip transcribed on its own; results are
+    // stored by index so the final text keeps its order.
     type Segment = {
       index: number;
       chunks: Blob[];
@@ -405,8 +403,7 @@ export class StudioModelDictationAdapter implements DictationAdapter {
           if (!cancelled) results[item.index] = text;
         } catch (error) {
           if (!cancelled && !abortController.signal.aborted) {
-            // Keep any successfully transcribed segments, but never hide that
-            // part of the recording was lost.
+            // Keep transcribed segments, but never hide that part was lost.
             reportTranscriptionError(error);
           }
         } finally {
@@ -454,8 +451,8 @@ export class StudioModelDictationAdapter implements DictationAdapter {
         const blob = new Blob(seg.chunks, {
           type: seg.recorder.mimeType || "audio/webm",
         });
-        // If Web Audio is unavailable, no analyser frames arrive. Preserve the
-        // recording instead of treating every segment as silence.
+        // No Web Audio means no analyser frames; keep the recording instead of
+        // treating every segment as silence.
         enqueueSegment(seg.index, blob, seg.voiced || !seg.metered);
       });
       pendingRecorders += 1;
@@ -468,8 +465,8 @@ export class StudioModelDictationAdapter implements DictationAdapter {
       }
     };
 
-    // Close the current segment at a pause and immediately open the next, so
-    // recording is continuous while each clip stays independently decodable.
+    // Close the current segment at a pause and open the next, so recording stays
+    // continuous while each clip is independently decodable.
     const cutSegment = () => {
       const seg = currentSeg;
       if (cutting || !seg || finalizing) return;
@@ -494,8 +491,8 @@ export class StudioModelDictationAdapter implements DictationAdapter {
       startSegment();
     };
 
-    // Pause detector: mark voiced frames. Short dictations remain one segment;
-    // long ones cut at a pause after the target duration, or at the hard limit.
+    // Pause detector: mark voiced frames. Short dictations stay one segment; long
+    // ones cut at a pause after the target duration, or at the hard limit.
     onAudioFrame = (rawRms, now) => {
       const seg = currentSeg;
       if (!seg || finalizing) {
@@ -523,12 +520,12 @@ export class StudioModelDictationAdapter implements DictationAdapter {
       stop: async () => {
         if (!ended && !finalizing) {
           finalizing = true;
-          // Stop publishing zero-valued analyser frames as soon as recording
-          // ends. The UI can switch immediately to its transcription shimmer.
+          // Stop publishing zero-valued frames at once so the UI can switch to
+          // its transcription shimmer.
           stopLevelMeter();
           const seg = currentSeg;
-          // Cut the final segment (its buffer survives) so only the short tail
-          // is left to transcribe, then release the mic immediately.
+          // Cut the final segment (its buffer survives) so only the short tail is
+          // left to transcribe, then release the mic immediately.
           if (seg && seg.recorder.state !== "inactive") {
             seg.recorder.addEventListener(
               "stop",
@@ -601,7 +598,7 @@ export class StudioModelDictationAdapter implements DictationAdapter {
                 : baseAudio,
           });
         } catch (error) {
-          // Saved mic may be unplugged; fall back to the default device.
+          // Saved mic may be unplugged; fall back to the default.
           if (micDeviceId !== "default" && isMissingDeviceError(error)) {
             stream = await navigator.mediaDevices.getUserMedia({
               audio: baseAudio,
@@ -615,8 +612,8 @@ export class StudioModelDictationAdapter implements DictationAdapter {
           stream = null;
           return;
         }
-        // Wait for microphone access before warming the selected on-device
-        // model. The backend uses cache-only loading and never downloads here.
+        // Warm the model only after mic access. The backend loads cache-only
+        // and never downloads here.
         void loadSttModel(sessionModel, sessionEngine).catch(
           reportTranscriptionError,
         );

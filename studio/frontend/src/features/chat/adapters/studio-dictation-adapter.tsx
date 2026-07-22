@@ -14,10 +14,9 @@ import {
   StudioWebSpeechDictationAdapter,
 } from "./studio-web-speech-dictation-adapter";
 
-// The one live dictation session, so the recording bar's discard (X) button can
-// cancel it without going through assistant-ui (which only exposes stop, i.e.
-// transcribe). Cancelling ends the session without emitting a transcript, so
-// the user's existing composer text is untouched.
+// The one live dictation session, so the recording bar's discard (X) can cancel
+// it without going through assistant-ui (which only exposes stop, i.e.
+// transcribe). Cancelling emits no transcript, so composer text is untouched.
 let activeSession: StudioDictationSession | null = null;
 
 /** Discard the current dictation without transcribing. Safe to call when idle. */
@@ -37,8 +36,8 @@ function usesModelRecording(dictationEngine: DictationEngine): boolean {
 }
 
 export class StudioDictationAdapter implements DictationAdapter {
-  // Chat linked in Recent dictations. undefined follows the active single
-  // chat; null records no chat (composers outside it, e.g. Compare).
+  // Chat linked in Recent dictations. undefined follows the active single chat;
+  // null records no chat (composers outside it, e.g. Compare).
   private readonly chatId: string | null | undefined;
 
   constructor(options: { chatId?: string | null } = {}) {
@@ -57,8 +56,8 @@ export class StudioDictationAdapter implements DictationAdapter {
   listen(): StudioDictationSession {
     const session = this.createSession();
     // A second entry point (chat, Compare, settings test) replaces the active
-    // session; cancel the old one so it cannot keep the microphone open or
-    // save a transcript with no discard button pointing at it.
+    // session; cancel the old one so it cannot keep the mic open or save a
+    // transcript with no discard button pointing at it.
     cancelActiveStudioDictation();
     activeSession = session;
     // Forget the session once it ends so a later cancel is a no-op.
@@ -115,8 +114,8 @@ export function notifyStudioDictationUnavailable(
     toast.error("Voice recording isn't available in this browser.");
     return;
   }
-  // Browser Web Speech is missing (e.g. Firefox). Stack the text and button so
-  // the action sits below, not squeezed into a side column.
+  // Browser Web Speech is missing (e.g. Firefox). Stack text and button so the
+  // action sits below, not squeezed into a side column.
   const toastId = toast.error("Voice typing isn't available in this browser.", {
     description: (
       <div className="mt-0.5 flex flex-col items-start gap-2 pb-1.5">

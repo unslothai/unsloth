@@ -15,9 +15,8 @@ export interface RecentDictation {
   chatId?: string;
 }
 
-// Dictation history is kept in full; the list view paginates instead of the
-// store discarding entries. QUOTA_TRIM_KEEP is the emergency floor if
-// localStorage itself runs out of room (see the persist storage wrapper).
+// Dictation history is kept in full; the list view paginates. QUOTA_TRIM_KEEP is
+// the emergency floor if localStorage runs out of room (see persist wrapper).
 const QUOTA_TRIM_KEEP = 200;
 // Cap stored transcript length so a few long dictations cannot bloat the
 // persisted blob and trip a synchronous localStorage quota error on save.
@@ -68,8 +67,8 @@ export function getSttModelRepo(model: SttModel): string {
   return STT_MODEL_REPOS[model as DefaultSttModel] ?? normalizeSttModel(model);
 }
 
-// All curated models are multilingual. Custom `.en` Whisper checkpoints are
-// treated as English-only so a later language change falls back safely.
+// All curated models are multilingual. Custom `.en` checkpoints are treated as
+// English-only so a later language change falls back safely.
 export const ENGLISH_ONLY_STT_MODELS: ReadonlySet<SttModel> = new Set([]);
 
 /** Whether a model can honor the selected dictation language. */
@@ -91,9 +90,9 @@ export function isSttModelLanguageCompatible(
 export type DictationEngine = "browser" | "model";
 
 /**
- * Whether a model id is one of the five curated Whisper choices. Curated
- * models run as GGML checkpoints through whisper.cpp; custom repositories
- * are safetensors checkpoints and run through Transformers.
+ * Whether a model id is one of the five curated Whisper choices. Curated models
+ * run GGML through whisper.cpp; custom repos are safetensors and run through
+ * Transformers.
  */
 export function isCuratedSttModel(model: SttModel): boolean {
   return (STT_MODELS as readonly string[]).includes(model.trim());
@@ -105,9 +104,8 @@ export interface VoiceSettingsState {
   setMicDeviceId: (value: string) => void;
 
   /**
-   * "browser": Web Speech API. "model": local transcription; the selected
-   * model decides the backend (whisper.cpp for curated GGML checkpoints,
-   * Transformers for custom safetensors repositories).
+   * "browser": Web Speech API. "model": local transcription; the model decides
+   * the backend (whisper.cpp for curated GGML, Transformers for custom repos).
    */
   dictationEngine: DictationEngine;
   setDictationEngine: (value: DictationEngine) => void;
@@ -155,9 +153,8 @@ export interface VoiceSettingsState {
 }
 
 /**
- * localStorage wrapper that keeps the full dictation history until the
- * browser's quota is actually hit, then drops the oldest entries instead of
- * throwing away the whole save.
+ * localStorage wrapper that keeps the full dictation history until the browser's
+ * quota is hit, then drops the oldest entries instead of losing the whole save.
  */
 const quotaSafeLocalStorage = {
   getItem: (key: string) => localStorage.getItem(key),
@@ -411,11 +408,10 @@ export function resolveDictationLanguage(setting?: string): string {
     : "en-US";
 }
 
-// Whisper's language codes: transformers `LANGUAGES` keys mirrored here the way
-// STT_MODELS mirrors the backend, plus the backend's BCP-47 aliases
-// (stt_sidecar.py `_WHISPER_LANGUAGE_ALIASES`). Keep in sync with
-// `_known_whisper_languages()` in the backend; Auto only resolves to a language
-// in this set, so a UI locale Whisper cannot honor stays on auto-detect.
+// Whisper's language codes: transformers `LANGUAGES` keys plus the backend's
+// BCP-47 aliases (stt_sidecar.py `_WHISPER_LANGUAGE_ALIASES`). Keep in sync with
+// `_known_whisper_languages()`; Auto only resolves to a code in this set, so a
+// UI locale Whisper cannot honor stays on auto-detect.
 const WHISPER_DICTATION_LANGUAGES = new Set([
   "af", "am", "ar", "as", "az", "ba", "be", "bg", "bn", "bo", "br", "bs",
   "ca", "cmn", "cs", "cy", "da", "de", "el", "en", "es", "et", "eu", "fa",
@@ -429,12 +425,12 @@ const WHISPER_DICTATION_LANGUAGES = new Set([
 ]);
 
 /**
- * Resolve Auto for the model STT engine (the browser engine already resolves it
- * via `resolveDictationLanguage`). Only the literal "auto" is resolved to a
- * concrete locale; an explicit language (or an empty/malformed setting) passes
- * through unchanged. Resolution is further gated so Auto only becomes a language
- * the model AND Whisper can honor; otherwise it stays auto-detect rather than
- * forcing a locale Whisper cannot handle (e.g. Irish) or 422ing every dictation.
+ * Resolve Auto for the model STT engine (the browser engine resolves it via
+ * `resolveDictationLanguage`). Only the literal "auto" resolves to a concrete
+ * locale; an explicit or malformed setting passes through unchanged. Gated so
+ * Auto only becomes a language the model AND Whisper can honor, else it stays
+ * auto-detect rather than forcing a locale Whisper cannot handle (e.g. Irish)
+ * or 422ing every dictation.
  */
 export function resolveModelDictationLanguage(
   model: SttModel,

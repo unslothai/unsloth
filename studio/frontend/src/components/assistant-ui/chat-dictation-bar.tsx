@@ -11,14 +11,14 @@ import { TooltipIconButton } from "./tooltip-icon-button";
 
 // Dense row of dots that rise into centered recording bars.
 const BAR_COUNT = 84;
-// Peak height multiple for the loudest audio (dot is 4px). Kept under the 40px
-// pill so bars don't touch the edges.
+// Peak height multiple for the loudest audio (dot is 4px). Under the 40px pill
+// so bars don't touch the edges.
 const MAX_SCALE = 8;
-// Time for a sample to slide one bar-width left; sets the drift speed. Bars
-// interpolate between samples each frame, so a slower interval stays smooth.
+// Time for a sample to slide one bar-width left (drift speed). Bars interpolate
+// between samples each frame, so a slower interval stays smooth.
 const PUSH_INTERVAL_MS = 165;
-// If no real mic level arrives for this long (for example, Web Audio is
-// unavailable), fall back to a gentle idle shimmer so the bar is alive.
+// If no real mic level arrives for this long (e.g. Web Audio unavailable), fall
+// back to a gentle idle shimmer so the bar stays alive.
 const IDLE_AFTER_MS = 450;
 const WAVE_BAR_IDS = Array.from(
   { length: BAR_COUNT },
@@ -33,9 +33,9 @@ function formatElapsed(ms: number): string {
 }
 
 /**
- * Recording UI rendered in place of the composer input: a live waveform in
- * the middle with discard and confirm controls on the right. Confirm
- * transcribes the recording; discard keeps the existing composer text.
+ * Recording UI shown in place of the composer input: a live waveform with
+ * discard and confirm on the right. Confirm transcribes; discard keeps the
+ * existing composer text.
  */
 export const ChatDictationBar: FC = () => {
   const aui = useAui();
@@ -61,11 +61,10 @@ export const ChatDictationBar: FC = () => {
           (el): el is HTMLElement => el instanceof HTMLElement,
         )
       : [];
-    // Paint the bars imperatively (not via React state) so the waveform does
-    // not thrash renders. The spans carry no style prop, so React never
-    // overwrites these transforms when the elapsed timer re-renders. At rest
-    // each span is a small round dot (scaleY 1); louder audio scales it up into
-    // a thin centered bar.
+    // Paint the bars imperatively (not via React state) so the waveform does not
+    // thrash renders. The spans carry no style prop, so React never overwrites
+    // these transforms on an elapsed-timer re-render. At rest each is a round dot
+    // (scaleY 1); louder audio scales it into a thin centered bar.
     for (const el of barEls) {
       el.style.transform = "scaleY(1)";
       el.style.opacity = "0.62";
@@ -79,8 +78,8 @@ export const ChatDictationBar: FC = () => {
       if (Date.now() - lastLevelAt > IDLE_AFTER_MS) {
         level = 0.075 + 0.055 * (1 + Math.sin(Date.now() / 360));
       }
-      // Quiet speech needs a perceptual lift. Fast attack plus a slower release
-      // removes twitching while preserving clear peaks and larger bars.
+      // Quiet speech needs a perceptual lift. Fast attack, slower release:
+      // removes twitching while preserving clear peaks.
       const visual = Math.min(1, Math.max(0, level) ** 0.62 * 1.45);
       smoothed =
         visual >= smoothed
@@ -92,8 +91,8 @@ export const ChatDictationBar: FC = () => {
       }
     };
 
-    // Keep the loudest mic level between advances so quiet gaps at the mic frame
-    // rate don't swallow peaks when we downsample to PUSH_INTERVAL_MS.
+    // Keep the loudest mic level between advances so downsampling to
+    // PUSH_INTERVAL_MS doesn't swallow peaks in quiet gaps.
     const unsub = subscribeDictationLevel((level) => {
       if (level > peak) {
         peak = level;
@@ -101,8 +100,8 @@ export const ChatDictationBar: FC = () => {
       lastLevelAt = Date.now();
     });
 
-    // Repaint every frame; bars interpolate between samples so the wave glides
-    // instead of hopping. Timer updates at most once per second.
+    // Repaint every frame; bars interpolate between samples so the wave glides.
+    // Timer updates at most once per second.
     let lastPushAt = performance.now();
     let shownSecond = -1;
     let raf = 0;
@@ -145,8 +144,8 @@ export const ChatDictationBar: FC = () => {
     };
     raf = requestAnimationFrame(frame);
 
-    // Reset in cleanup (runs when dictation ends or on unmount) so the next
-    // session starts fresh, without a synchronous setState in the effect body.
+    // Reset in cleanup (dictation end or unmount) so the next session starts
+    // fresh, without a synchronous setState in the effect body.
     return () => {
       unsub();
       cancelAnimationFrame(raf);
@@ -166,8 +165,8 @@ export const ChatDictationBar: FC = () => {
   };
 
   const confirm = () => {
-    // Freeze the timer + waveform immediately, before the transcription round
-    // trip completes and the session ends.
+    // Freeze the timer + waveform before the transcription round trip completes
+    // and the session ends.
     transcribingRef.current = true;
     setTranscribing(true);
     aui.composer().stopDictation();

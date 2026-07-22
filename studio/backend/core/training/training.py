@@ -754,8 +754,8 @@ class TrainingBackend:
     def __init__(self):
         # Subprocess state
         self._proc: Optional[mp.Process] = None
-        # True after the sidecar-swap handshake until the worker is recorded, so
-        # installs and concurrent STT loads treat the startup window as active.
+        # True from the sidecar-swap handshake until the worker is recorded, so
+        # installs and STT loads treat the startup window as active.
         self._spawn_in_progress: bool = False
         self._event_queue: Any = None
         self._stop_queue: Any = None

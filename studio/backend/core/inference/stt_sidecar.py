@@ -5,14 +5,10 @@
 Standalone speech-to-text (STT) sidecar for dictation.
 
 Loads a Whisper model (via Transformers) in the backend process, separate from
-the chat model that runs in the inference subprocess. This lets a user dictate
-into any chat model, including text-only ones, without evicting it.
-
-Five Unsloth-curated Whisper models are offered by default. Users may also
-select another Transformers-compatible Whisper repository from Hugging Face.
-Weights are downloaded explicitly through Studio's Model Hub and kept warm
-briefly between dictations. CUDA runs in float16; Apple Silicon (MPS) and CPU
-run in float32.
+the chat model's inference subprocess, so dictation works with any chat model
+without evicting it. Curated defaults plus any Transformers-compatible Whisper
+repo; weights come through Studio's Model Hub and stay warm briefly between
+dictations. CUDA runs float16; MPS and CPU run float32.
 """
 
 from __future__ import annotations
@@ -29,9 +25,8 @@ from loggers import get_logger
 
 logger = get_logger(__name__)
 
-# Multilingual Whisper defaults. Keys are stable API/UI ids; values are the
-# repositories downloaded through Studio's Model Hub. A request may also use a
-# validated Hugging Face `owner/model` id for another Whisper-compatible model.
+# Multilingual Whisper defaults: stable API/UI id -> Hub repository. A request
+# may instead pass a validated Hugging Face `owner/model` id.
 STT_MODELS: dict[str, str] = {
     "tiny": "unsloth/whisper-tiny",
     "base": "unsloth/whisper-base",
@@ -43,8 +38,8 @@ DEFAULT_STT_MODEL = "small"
 STT_KEEP_ALIVE_SECONDS = 5 * 60
 _HF_REPO_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,95}/[A-Za-z0-9][A-Za-z0-9._-]{0,95}$")
 
-# Bound decoded audio so a crafted upload cannot exhaust memory. Callers also
-# cap the encoded bytes; this bounds the decoded PCM length.
+# Bound decoded PCM length so a crafted upload cannot exhaust memory (callers
+# also cap the encoded bytes).
 _MAX_AUDIO_SECONDS = 30 * 60
 _TARGET_SAMPLE_RATE = 16000
 
@@ -82,7 +77,7 @@ class SttLanguageError(ValueError):
 
 
 _WHISPER_LANGUAGE_ALIASES = {
-    # Common legacy/browser BCP-47 primaries whose Whisper code differs.
+    # Legacy/browser BCP-47 primaries whose Whisper code differs.
     "cmn": "zh",
     "fil": "tl",
     "in": "id",
@@ -109,8 +104,7 @@ def _known_whisper_languages() -> Optional[frozenset[str]]:
     try:
         from transformers.models.whisper.tokenization_whisper import LANGUAGES
     except Exception:
-        # Preserve the normal 501 response when Transformers is unavailable,
-        # and tolerate a future release moving this constant.
+        # Transformers unavailable or the constant moved: skip the check.
         return None
     return frozenset(LANGUAGES)
 
@@ -209,11 +203,8 @@ def validate_remote_model(model: Optional[str], hf_token: Optional[str] = None) 
 
 
 def _is_missing_local_model_error(exc: BaseException) -> bool:
-    """Recognize a local-cache-only miss without importing HF internals.
-
-    The Model Hub owns downloads, so loading is local-only. Name and message
-    based checks tolerate huggingface_hub/Transformers moving the exception.
-    """
+    """Recognize a local-cache-only miss by name/message, without importing HF
+    internals (tolerates huggingface_hub/Transformers moving the exception)."""
     current: Optional[BaseException] = exc
     seen: set[int] = set()
     while current is not None and id(current) not in seen:
@@ -228,18 +219,16 @@ def _is_missing_local_model_error(exc: BaseException) -> bool:
 
 
 def _snapshot_is_complete(snapshot: Path) -> bool:
-    """True when a cached snapshot holds every file loading actually needs.
+    """True when a cached snapshot holds every file loading needs.
 
-    An aborted download can leave a snapshot directory holding only small
-    metadata files, and an offline cache lookup cannot know the repository's
-    full file list -- so verify config, preprocessor, and weights directly.
-    is_file() follows the cache symlinks, so a link left behind by an
+    An aborted download can leave only metadata behind, and an offline lookup
+    cannot know the repo's full file list, so verify config, preprocessor, and
+    weights directly. is_file() follows cache symlinks, so a link from an
     interrupted blob download does not count.
     """
     index = snapshot / "model.safetensors.index.json"
     if index.is_file():
-        # Sharded checkpoint: one present shard is not enough; every
-        # shard in the index must exist.
+        # Sharded checkpoint: every shard in the index must exist.
         weight_map = _read_json_object(index).get("weight_map")
         if not isinstance(weight_map, dict) or not weight_map:
             return False
@@ -275,8 +264,8 @@ def is_model_downloaded(model: Optional[str]) -> bool:
 class _SnapshotDownloadState:
     """Tracks one background snapshot_download of a dictation repository.
 
-    Mirrors stt_ggml_sidecar's per-file tracker, but a Transformers checkpoint
-    is a whole repository, so progress is the byte count of its cache blobs.
+    Like stt_ggml_sidecar's tracker, but a Transformers checkpoint is a whole
+    repo, so progress is the byte count of its cache blobs.
     """
 
     def __init__(self) -> None:
@@ -299,16 +288,15 @@ class _SnapshotDownloadState:
             }
 
     def _blob_bytes(self) -> Optional[int]:
-        """Best-effort progress: bytes in the repository's HF cache blobs.
+        """Best-effort progress: bytes in the repo's HF cache blobs.
 
-        Counts finished and ``.incomplete`` blobs alike; the repositories are
-        dedicated Whisper checkpoints, so every blob belongs to this download.
+        Counts finished and ``.incomplete`` blobs alike; the repo is a
+        dedicated Whisper checkpoint, so every blob is part of this download.
         """
         try:
             from huggingface_hub.constants import HF_HUB_CACHE
 
-            # Callers may already hold self._lock (non-reentrant); a bare
-            # attribute read is safe without it.
+            # Caller may hold the non-reentrant self._lock; a bare read is safe.
             repo = self._repo
             if not repo:
                 return None
@@ -400,8 +388,8 @@ def _pick_device():
     try:
         import torch
 
-        # New STT loads use CPU during training. A resident GPU model may stay
-        # loaded when the training admission check confirms enough headroom.
+        # New loads use CPU during training; a resident GPU model may stay put
+        # when the training admission check confirms enough headroom.
         training_active = _training_active()
         if not training_active and torch.cuda.is_available():
             return "cuda", torch.float16
@@ -419,11 +407,11 @@ def _pick_device():
 
 
 def _decode_audio_bounded(audio: bytes):
-    """Decode to 16 kHz mono PCM without ever buffering unbounded audio.
+    """Decode to 16 kHz mono PCM without buffering unbounded audio.
 
-    A small, highly-compressed upload can expand far beyond the encoded request
-    limit once decoded. Decode frame-by-frame and enforce the sample cap as
-    frames arrive, then hand the array straight to Whisper (no second decode).
+    A small, highly-compressed upload can expand far past the encoded request
+    limit once decoded, so decode frame-by-frame and enforce the sample cap as
+    frames arrive, then hand the array straight to Whisper.
     """
     try:
         import av
@@ -443,8 +431,8 @@ def _decode_audio_bounded(audio: bytes):
         layout = "mono",
         rate = _TARGET_SAMPLE_RATE,
     )
-    # Group frames before resampling so short dictation clips usually need only
-    # one resampler call instead of one call per codec frame.
+    # Group frames before resampling so short clips need one resampler call
+    # rather than one per codec frame.
     fifo = av.audio.fifo.AudioFifo()
 
     def write_frame(frame) -> None:
@@ -468,8 +456,7 @@ def _decode_audio_bounded(audio: bytes):
                 except StopIteration:
                     break
                 except InvalidDataError:
-                    # Skip a corrupt frame when the rest of the stream remains
-                    # decodable, rather than failing the whole transcription.
+                    # Skip a corrupt frame rather than fail the whole transcription.
                     continue
                 frame.pts = None
                 fifo.write(frame)
@@ -532,11 +519,11 @@ class WhisperSttSidecar:
             return True
 
     def wait_for_load_to_settle(self) -> None:
-        """Block until any in-flight load() has exited and released its memory.
+        """Block until any in-flight load() has exited and freed its memory.
 
-        load() holds self._lock for its whole duration, including the blocking
-        from_pretrained()/.to(device) allocation and the cancel cleanup, so
-        acquiring the lock here waits for that memory to be freed.
+        load() holds self._lock throughout, including the from_pretrained()/
+        .to(device) allocation and cancel cleanup, so acquiring the lock here
+        waits for that memory to be freed.
         """
         with self._lock:
             pass
@@ -630,10 +617,10 @@ class WhisperSttSidecar:
             raise
 
     def _ensure_model_downloaded(self, model_id: str) -> Optional[bool]:
-        """Validate the local snapshot before decode or resident-model replacement.
+        """Validate the local snapshot before decode or model replacement.
 
         Returns the checkpoint's multilingual flag when local metadata provides
-        it. Studio's curated defaults are known multilingual.
+        it. Curated defaults are known multilingual.
         """
         model_id = resolve_model_id(model_id)
         with self._lock:
@@ -660,7 +647,7 @@ class WhisperSttSidecar:
 
         snapshot_path = Path(snapshot)
         # A resolvable snapshot can still be partial (aborted download); fail
-        # here so callers do not decode audio before load() hits missing files.
+        # here so callers do not decode audio before load() hits the gap.
         if not _snapshot_is_complete(snapshot_path):
             raise SttModelNotDownloadedError(
                 f"STT model '{model_id}' is not downloaded. "
@@ -723,13 +710,12 @@ class WhisperSttSidecar:
                         raise not_downloaded(exc) from exc
                     if device == "cpu":
                         raise
-                    # Retry on CPU when the accelerator cannot load the model.
                     logger.warning("STT load on %s failed (%s); retrying on CPU", device, exc)
                     retry_on_cpu = True
                 if retry_on_cpu:
-                    # Retried outside the handler: live exception state pins
-                    # frames that still reference the partly loaded model, so
-                    # leave it before clearing the cache to release that memory.
+                    # Retry outside the handler: live exception state pins frames
+                    # referencing the partly loaded model, so leave it before
+                    # clearing the cache to release that memory.
                     _clear_device_cache(device)
                     try:
                         candidate = self._build_model(
@@ -767,9 +753,9 @@ class WhisperSttSidecar:
     def _transcribe_decoded(self, model_id: str, decoded_audio, generate_kwargs: dict) -> str:
         """Run Whisper on already-decoded 16 kHz mono PCM and return text.
 
-        Feeds the processor a pre-decoded array so nothing here touches the
-        Transformers audio path (torchcodec/ffmpeg). Splits into 30s windows
-        (Whisper's receptive field); short dictation clips take one pass.
+        Feeds a pre-decoded array so nothing here touches the Transformers audio
+        path (torchcodec/ffmpeg). Splits into 30s windows (Whisper's receptive
+        field); short clips take one pass.
         """
         import torch
 
@@ -777,9 +763,8 @@ class WhisperSttSidecar:
         effective_generate_kwargs = dict(generate_kwargs)
         generation_config = getattr(model, "generation_config", None)
         if getattr(generation_config, "is_multilingual", None) is False:
-            # Transformers rejects both controls for English-only Whisper
-            # checkpoints; their generation config already fixes the language
-            # and transcription task.
+            # English-only checkpoints fix language and task in their generation
+            # config, and Transformers rejects passing them here.
             effective_generate_kwargs.pop("task", None)
             effective_generate_kwargs.pop("language", None)
         window = 30 * _TARGET_SAMPLE_RATE
@@ -815,11 +800,10 @@ class WhisperSttSidecar:
         Accepts any container PyAV can decode: wav, mp3, opus/webm, ogg,
         m4a/aac. Returns {text, language, duration, model}.
         """
-        # Reject a missing runtime before the model cache and the bounded decode,
-        # so an unavailable server 501s up front instead of decoding first.
+        # Reject a missing runtime up front, before the cache and bounded decode.
         ensure_stt_available()
-        # A set language is faster/more accurate than auto-detect. The API takes
-        # BCP-47 locales; Whisper wants short codes like en or fr.
+        # A set language beats auto-detect. API takes BCP-47; Whisper wants short
+        # codes like en or fr.
         lang = normalize_whisper_language(language)
         # Pin the requested id: another request may switch the resident model
         # mid-transcription, so sidecar state is not this request's identity.
@@ -836,7 +820,7 @@ class WhisperSttSidecar:
             )
         decoded_audio = _decode_audio_bounded(audio)
         # condition_on_prev_tokens=False stops a fresh clip inheriting prior
-        # context, which otherwise causes runaway repeats.
+        # context, which causes runaway repeats.
         generate_kwargs = {
             "task": "transcribe",
             "condition_on_prev_tokens": False,
@@ -845,8 +829,7 @@ class WhisperSttSidecar:
         if lang is not None:
             generate_kwargs["language"] = lang
         if fast:
-            # Dictation clips are short and already voiced, so greedy decoding
-            # drops the five-way beam search for much lower latency.
+            # Short voiced clips: greedy decoding drops beam search for latency.
             generate_kwargs["num_beams"] = 1
         # Serialize inference with model switches and unloads.
         with self._lock:

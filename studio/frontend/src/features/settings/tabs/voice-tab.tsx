@@ -81,9 +81,8 @@ const DICTATION_LANGUAGES: { value: string; label: string }[] = [
   { value: "ar-SA", label: "العربية" },
 ];
 
-// Speech-recognition models, not voices. Name and download size are kept apart
-// so the list can right-align the size; the speed/accuracy note lives in the
-// row description.
+// Speech-recognition models, not voices. Name and size are separate so the list
+// can right-align the size; the speed/accuracy note lives in the row description.
 const STT_MODEL_NAMES: Record<DefaultSttModel, string> = {
   tiny: "Whisper Tiny",
   base: "Whisper Base",
@@ -118,9 +117,9 @@ function sttModelSource(model: SttModel): string {
 
 /**
  * Model picker for local transcription. Lists the curated whisper.cpp
- * checkpoints and searches Hugging Face for other Whisper repositories,
- * which run as safetensors through Transformers. The trigger is a plain
- * button so the selection never renders inside a text input.
+ * checkpoints and searches Hugging Face for other Whisper repos (safetensors via
+ * Transformers). The trigger is a plain button so the selection never renders
+ * inside a text input.
  */
 function SttModelPicker({
   value,
@@ -256,8 +255,8 @@ function SttModelPicker({
             </div>
           ) : (
             items.map((model) => {
-              // A custom repo's name is its id; those rows are one line and
-              // keep a pill shape, two-line rows use a subtler radius.
+              // A custom repo's name is its id: one-line rows keep a pill shape,
+              // two-line rows use a subtler radius.
               const twoLines = sttModelSource(model) !== sttModelName(model);
               return (
                 <button
@@ -425,8 +424,8 @@ export function VoiceTab() {
   const [sttDownloadStarting, setSttDownloadStarting] = useState(false);
   const [sttUnloading, setSttUnloading] = useState(false);
   const isLocalEngine = dictationEngine === "model";
-  // The selected model decides the backend: curated ids run GGML files
-  // through whisper.cpp, custom repositories run through Transformers.
+  // The model decides the backend: curated ids run GGML through whisper.cpp,
+  // custom repos run through Transformers.
   const isGgufModel = isCuratedSttModel(sttModel);
   // Progress of the selected engine's model download, from /stt/status.
   const [sttDownload, setSttDownload] = useState<SttDownloadStatus | null>(
@@ -447,8 +446,8 @@ export function VoiceTab() {
     try {
       await loadSttModel(model);
     } catch {
-      // Not downloaded (or the engine is busy): the status poll resets the
-      // phase; the user still sees the Download button.
+      // Not downloaded (or the engine is busy): the status poll resets the phase
+      // and the user still sees the Download button.
     } finally {
       setStatusNonce((nonce) => nonce + 1);
     }
@@ -478,11 +477,10 @@ export function VoiceTab() {
       try {
         const status = await fetchSttStatus(statusNonce, sttModel);
         if (cancelled) return;
-        // A curated model prefers the GGUF (whisper.cpp) engine, but when
-        // whisper-server is not installed the backend serves it through the
-        // Transformers engine instead of failing, so fall back to the
-        // Transformers status here too; otherwise the model shows as unavailable
-        // and download is blocked even though dictation works.
+        // A curated model prefers the GGUF (whisper.cpp) engine, but without
+        // whisper-server the backend serves it through Transformers instead of
+        // failing. Fall back to the Transformers status here too, or the model
+        // shows as unavailable and download is blocked even though it works.
         const engineStatus =
           isGgufModel && status.gguf?.available ? status.gguf : status.transformers;
         if (!engineStatus?.available) {
@@ -580,8 +578,8 @@ export function VoiceTab() {
       case "on-demand":
         return t("settings.voice.dictation.sttOnDemand");
       case "ready":
-        // The GGML backend reports its runtime name, not a device; show a
-        // plain "Loaded" rather than surfacing it.
+        // The GGML backend reports its runtime name, not a device; show a plain
+        // "Loaded" rather than surfacing it.
         return sttDevice && sttDevice !== "whisper.cpp"
           ? t("settings.voice.dictation.sttReady", {
               device: sttDevice.toUpperCase(),
@@ -912,8 +910,8 @@ export function VoiceTab() {
                         size="sm"
                         className="h-7 px-2 text-xs"
                         disabled={sttDownloadStarting || downloadingThisModel}
-                        // Restart the download; the sidecar error is sticky
-                        // until a new start(), so re-polling alone never clears it.
+                        // Restart the download; the sidecar error is sticky until
+                        // a new start(), so re-polling alone never clears it.
                         onClick={beginSttDownload}
                       >
                         {t("settings.voice.dictation.sttRetry")}
@@ -946,8 +944,8 @@ export function VoiceTab() {
                             : t("settings.voice.dictation.sttUnload")}
                         </Button>
                       ) : sttPhase === "loading" || sttPhase === "checking" ? (
-                        // The status line already says "Loading model…";
-                        // the button only needs the spinner.
+                        // The status line already says "Loading model…"; the
+                        // button only needs the spinner.
                         <Button
                           variant="outline"
                           size="sm"
