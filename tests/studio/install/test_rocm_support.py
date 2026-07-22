@@ -1488,6 +1488,21 @@ class TestInstallShStructure:
             "sibling sysfs file, not a line in properties, so it never matches there"
         )
 
+    def test_setup_sh_kfd_awk_matches_install_sh(self):
+        """setup.sh's KFD fallback must use the same per-line vendor_id check as install.sh.
+
+        setup.sh re-probes AMD detection independently of install.sh; if its copy keeps
+        the dead gpu_id-inside-properties pairing, a host that install.sh routes to ROCm
+        still gets a CPU llama.cpp from the setup step (_setup_amd_detected stays false).
+        """
+        source = (PACKAGE_ROOT / "studio" / "setup.sh").read_text(encoding = "utf-8")
+        assert "$2 == 4098" in source, (
+            "setup.sh KFD awk must match `vendor_id 4098` as a single-line condition"
+        )
+        assert "/gpu_id/" not in source, (
+            "setup.sh KFD awk must not key on a gpu_id line inside properties"
+        )
+
     def test_get_torch_index_url_uses_nvidia_detected_flag(self):
         """get_torch_index_url must track NVIDIA via _nvidia_detected (proc-only NVIDIA still picks CUDA)."""
         sh_path = PACKAGE_ROOT / "install.sh"

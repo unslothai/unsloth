@@ -3037,6 +3037,11 @@ elif case "$TORCH_INDEX_URL" in */rocm*|*/gfx*) true ;; *) false ;; esac; then
 elif [ "$OS" = "macos" ] && [ "$_ARCH" = "arm64" ]; then
     # Apple Silicon: PyTorch gets Metal (MPS) acceleration over unified memory, so not CPU-only.
     step "gpu" "Apple Silicon (Metal, unified memory)"
+elif _has_amd_rocm_gpu; then
+    # AMD GPU visible to the kernel but the torch index stayed CPU: no usable
+    # ROCm userspace to pick a wheel. "none" would repeat the false diagnosis
+    # this installer used to give.
+    step "gpu" "AMD GPU (no usable ROCm -- CPU fallback)" "$C_WARN"
 else
     step "gpu" "none (CPU-only)" "$C_WARN"
 fi
@@ -3045,7 +3050,12 @@ fi
 case "$TORCH_INDEX_URL" in
     */cpu)
         if [ "$SKIP_TORCH" = false ] && [ "$OS" != "macos" ]; then
-            substep "No GPU detected -- installing CPU-only PyTorch." "$C_WARN"
+            if _has_amd_rocm_gpu; then
+                substep "AMD GPU detected, but no usable ROCm/HIP install -- installing CPU-only PyTorch." "$C_WARN"
+                substep "Install the ROCm/HIP SDK and re-run this installer for GPU PyTorch." "$C_WARN"
+            else
+                substep "No GPU detected -- installing CPU-only PyTorch." "$C_WARN"
+            fi
             if [ "$OS" = "wsl" ]; then
                 # WSL + no GPU detected (detection above found nothing). Common
                 # cause: an AMD GPU whose ROCm-on-WSL runtime isn't exposed yet --
