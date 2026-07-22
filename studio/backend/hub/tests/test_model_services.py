@@ -3609,12 +3609,19 @@ def _build_variant_cache_repo(repo_dir, blob_specs, snapshot_links):
     return repo
 
 
-def _patch_variant_delete_side_effects(monkeypatch):
+def _patch_variant_delete_side_effects(monkeypatch, hub_cache = None):
     monkeypatch.setattr(
         deletion.download_manifest,
         "purge_state",
         lambda *_args, **_kwargs: False,
     )
+    # The repo under test lives in this cache; make it the active one so the
+    # delete scopes to it (default target root is the active hub cache).
+    if hub_cache is not None:
+        monkeypatch.setattr(
+            "utils.hf_cache_settings.get_hf_cache_paths",
+            lambda: SimpleNamespace(hub_cache = hub_cache),
+        )
 
 
 def test_snapshot_progress_filters_stale_blobs(monkeypatch, tmp_path):
@@ -3792,7 +3799,7 @@ def test_delete_variant_keeps_blob_shared_with_other_snapshot(monkeypatch, tmp_p
         "all_hf_cache_scans",
         lambda: [SimpleNamespace(repos = [repo])],
     )
-    _patch_variant_delete_side_effects(monkeypatch)
+    _patch_variant_delete_side_effects(monkeypatch, tmp_path)
 
     result = deletion._delete_cached_model_blocking("Org/Repo-GGUF", "Q4_K_M", None)
 
@@ -3819,7 +3826,7 @@ def test_delete_variant_unlinks_unshared_blob(monkeypatch, tmp_path):
         "all_hf_cache_scans",
         lambda: [SimpleNamespace(repos = [repo])],
     )
-    _patch_variant_delete_side_effects(monkeypatch)
+    _patch_variant_delete_side_effects(monkeypatch, tmp_path)
 
     result = deletion._delete_cached_model_blocking("Org/Repo-GGUF", "Q4_K_M", None)
 
@@ -3845,7 +3852,7 @@ def test_delete_variant_surfaces_locked_file_as_conflict(monkeypatch, tmp_path):
         "all_hf_cache_scans",
         lambda: [SimpleNamespace(repos = [repo])],
     )
-    _patch_variant_delete_side_effects(monkeypatch)
+    _patch_variant_delete_side_effects(monkeypatch, tmp_path)
 
     real_unlink = Path.unlink
 

@@ -416,6 +416,7 @@ def delete_variant_incomplete_blobs_result(
     *,
     extra_hashes: frozenset[str] = frozenset(),
     companions: bool = True,
+    root: Optional[Path] = None,
 ) -> VariantIncompleteDeleteResult:
     # With a sibling still downloading, ``companions=False`` keeps a shared mmproj
     # from being unlinked out from under it; the repo's last delete reclaims it.
@@ -437,8 +438,9 @@ def delete_variant_incomplete_blobs_result(
         )
     deleted = 0
     # Destructive iterator: only the exact-case match (or abort if ambiguous),
-    # so a case-variant sibling repo's partials are never unlinked.
-    for entry in iter_destructive_repo_cache_dirs("model", repo_id):
+    # so a case-variant sibling repo's partials are never unlinked. ``root`` scopes
+    # the purge to one cache so a delete never touches another cache's partials.
+    for entry in iter_destructive_repo_cache_dirs("model", repo_id, root = root):
         blobs_dir = entry / "blobs"
         if not blobs_dir.is_dir():
             continue

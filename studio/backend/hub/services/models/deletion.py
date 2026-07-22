@@ -22,6 +22,7 @@ from hub.utils.hf_cache_state import (
     iter_repo_cache_dirs,
     purge_partial_repo,
     purge_repo_cache_dirs,
+    resolve_delete_target_root,
 )
 from hub.utils.paths import (
     is_valid_gguf_variant as _is_valid_gguf_variant,
@@ -185,6 +186,7 @@ def _delete_gguf_variant_from_repos(
     hf_token: Optional[str],
     *,
     sibling_active: bool = False,
+    root: Optional[Path] = None,
 ) -> dict:
     failures: list[str] = []
     removed_snapshots = 0
@@ -266,6 +268,7 @@ def _delete_gguf_variant_from_repos(
         hf_token,
         extra_hashes = frozenset(completed_hashes),
         companions = not sibling_active,
+        root = root,
     )
     if incomplete_result.unresolved:
         raise HTTPException(
@@ -587,6 +590,7 @@ async def delete_cached_model_response(
     repo_id: str,
     variant: Optional[str] = None,
     hf_token: Optional[str] = None,
+    cache_path: Optional[str] = None,
 ):
     """Delete a cached model repo (or a specific GGUF variant) from the HF cache.
 
@@ -630,14 +634,19 @@ async def delete_cached_model_response(
         )
         raise HTTPException(status_code = 400, detail = detail)
     try:
-        return await asyncio.to_thread(_delete_cached_model_blocking, repo_id, variant, hf_token)
+        return await asyncio.to_thread(
+            _delete_cached_model_blocking, repo_id, variant, hf_token, cache_path
+        )
     finally:
         downloads.registry.end_delete(repo_key, variant)
         cache_inventory.invalidate_hf_cache_scans()
 
 
 def _delete_cached_model_blocking(
-    repo_id: str, variant: Optional[str], hf_token: Optional[str]
+    repo_id: str,
+    variant: Optional[str],
+    hf_token: Optional[str],
+    cache_path: Optional[str] = None,
 ) -> dict:
     try:
         # If a sibling quant is downloading concurrently, restrict this delete to
@@ -648,13 +657,26 @@ def _delete_cached_model_blocking(
 
         cache_scans = cache_inventory.all_hf_cache_scans()
 
-        candidate_entries = []
+        # A repo can live in several remembered caches. Group its copies by the
+        # cache root that owns each, then target exactly one cache so a delete
+        # never removes copies in other, previously selected caches.
+        owners: dict = {}
         for hf_cache in cache_scans:
             for repo_info in hf_cache.repos:
                 if str(repo_info.repo_type) != "model":
                     continue
-                if repo_info.repo_id.lower() == repo_id.lower():
-                    candidate_entries.append((hf_cache, repo_info))
+                if repo_info.repo_id.lower() != repo_id.lower():
+                    continue
+                try:
+                    owner = Path(repo_info.repo_path).parent.resolve(strict = False)
+                except (OSError, RuntimeError, ValueError):
+                    continue
+                owners.setdefault(owner, []).append((hf_cache, repo_info))
+
+        target_root = resolve_delete_target_root("model", repo_id, cache_path, owners.keys())
+        if target_root is None:
+            raise HTTPException(status_code = 400, detail = "Invalid cache_path")
+        candidate_entries = owners.get(target_root, [])
 
         matched_repo_ids = resolve_destructive_repo_ids(
             repo_id,
@@ -669,9 +691,9 @@ def _delete_cached_model_blocking(
 
         if not target_entries:
             if variant is None:
-                cache_purged = purge_repo_cache_dirs("model", repo_id) or purge_partial_repo(
-                    "model", repo_id
-                )
+                cache_purged = purge_repo_cache_dirs(
+                    "model", repo_id, root = target_root
+                ) or purge_partial_repo("model", repo_id, root = target_root)
                 state_purged = download_manifest.purge_all_state_for_repo("model", repo_id) > 0
                 if cache_purged or state_purged:
                     return {"status": "deleted", "repo_id": repo_id}
@@ -681,6 +703,7 @@ def _delete_cached_model_blocking(
                     variant,
                     hf_token,
                     companions = not sibling_active,
+                    root = target_root,
                 )
                 if incomplete_result.unresolved:
                     raise HTTPException(
@@ -711,6 +734,7 @@ def _delete_cached_model_blocking(
                 [repo for _cache, repo in target_entries],
                 hf_token,
                 sibling_active = sibling_active,
+                root = target_root,
             )
 
         deleted_revisions = False
@@ -729,8 +753,8 @@ def _delete_cached_model_blocking(
             delete_strategy.execute()
             deleted_revisions = True
 
-        cache_purged = purge_repo_cache_dirs("model", repo_id)
-        partial_purged = purge_partial_repo("model", repo_id)
+        cache_purged = purge_repo_cache_dirs("model", repo_id, root = target_root)
+        partial_purged = purge_partial_repo("model", repo_id, root = target_root)
         state_purged = download_manifest.purge_all_state_for_repo("model", repo_id) > 0
 
         if not (deleted_revisions or cache_purged or partial_purged or state_purged):

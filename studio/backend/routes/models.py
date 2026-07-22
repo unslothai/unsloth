@@ -3141,12 +3141,13 @@ async def list_cached_models(
 async def delete_cached_model(
     repo_id: str = Body(...),
     variant: Optional[str] = Body(None),
+    cache_path: Optional[str] = Body(None),
     hf_token: Optional[str] = Depends(get_hf_token),
     current_subject: str = Depends(get_current_subject),
 ):
     """Compatibility route backed by the shared multi-cache deletion service."""
     from hub.services.models import deletion
-    return await deletion.delete_cached_model_response(repo_id, variant, hf_token)
+    return await deletion.delete_cached_model_response(repo_id, variant, hf_token, cache_path)
 
 
 def _resolve_cached_model_path(repo_id: str, variant: Optional[str]) -> Path:
