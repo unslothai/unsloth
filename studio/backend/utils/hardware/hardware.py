@@ -1392,8 +1392,9 @@ def _overlay_system_wide_vram(devices: list[Dict[str, Any]]) -> None:
     llama-server process reads as ~0 used even with the GPU full (#7072). On
     Linux, DRM sysfs (``mem_info_vram_{used,total}``) gives per-card system-wide
     figures the kernel updates across all processes. Sources are matched by the
-    device's PHYSICAL index (never by list position), so a reordering visibility
-    mask (HIP_VISIBLE_DEVICES=1,0) keeps each card's figures on the right GPU.
+    device's PHYSICAL index (never by list position), and only when no visibility
+    mask is active and the device count equals the host GPU count; under any mask
+    the index is not a verifiable host ordinal, so torch's figures are kept.
     Best-effort, in place; a device with no matching card keeps its torch
     figures, and a unified-memory APU whose sysfs total is below torch's
     GTT-backed total keeps torch's (mirrors _apply_unified_memory_correction).
