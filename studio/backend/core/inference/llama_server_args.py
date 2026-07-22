@@ -70,6 +70,8 @@ _DENYLIST_GROUPS: tuple[frozenset[str], ...] = (
     # llama-server's own built-in tools flag would silently stack on top of
     # Unsloth's --enable-tools / --disable-tools policy resolver.
     frozenset({"--tools"}),
+    # Slot-state dir: Studio owns it for KV persistence across idle unload.
+    frozenset({"--slot-save-path"}),
 )
 
 _DENYLIST: frozenset[str] = frozenset().union(*_DENYLIST_GROUPS)
@@ -186,12 +188,25 @@ _SPLIT_MODE_FLAGS: frozenset[str] = frozenset({"-sm", "--split-mode"})
 _TENSOR_SPLIT_FLAGS: frozenset[str] = frozenset({"-ts", "--tensor-split"})
 _SPLIT_SHADOWING_FLAGS: frozenset[str] = _SPLIT_MODE_FLAGS | _TENSOR_SPLIT_FLAGS
 
+# GPU-offload flags. Stripped only when the GPU Memory mode owns offload
+# (manual emits --fit / --gpu-layers / --n-cpu-moe); in auto, a user's
+# inherited -ngl is respected (the offload_overridden path), so this group is
+# opt-in, not default. Layer flags are shared with llama_cpp's override
+# detection; the MoE flags are strip-only (manual's --n-cpu-moe slider owns them).
+_LAYER_OFFLOAD_FLAGS: frozenset[str] = frozenset(
+    {"-ngl", "--gpu-layers", "--n-gpu-layers", "-fit", "--fit"}
+)
+_MOE_OFFLOAD_FLAGS: frozenset[str] = frozenset({"-ncmoe", "--n-cpu-moe", "-cmoe", "--cpu-moe"})
+_OFFLOAD_SHADOWING_FLAGS: frozenset[str] = _LAYER_OFFLOAD_FLAGS | _MOE_OFFLOAD_FLAGS
+
 _SHADOWING_FLAGS: frozenset[str] = (
     _CONTEXT_FLAGS | _CACHE_FLAGS | _SPEC_FLAGS | _TEMPLATE_FLAGS | _SPLIT_SHADOWING_FLAGS
 )
 
 # Shadowing flags that take no value -- strip the flag only, not the next token.
-_BOOLEAN_SHADOWING_FLAGS: frozenset[str] = frozenset({"--spec-default", "--jinja", "--no-jinja"})
+_BOOLEAN_SHADOWING_FLAGS: frozenset[str] = frozenset(
+    {"--spec-default", "--jinja", "--no-jinja", "-cmoe", "--cpu-moe"}
+)
 
 
 def parse_ctx_override(args: Optional[Iterable[str]]) -> Optional[int]:
@@ -424,6 +439,8 @@ def strip_shadowing_flags(
     strip_spec: bool = True,
     strip_template: bool = True,
     strip_split_mode: bool = True,
+    strip_tensor_split: bool = False,
+    strip_offload: bool = False,
 ) -> list[str]:
     """Strip flags that shadow first-class Unsloth settings.
 
@@ -432,6 +449,12 @@ def strip_shadowing_flags(
     (same for cache / spec / template / split-mode). Each ``strip_*``
     toggle controls one group; the route only strips groups whose
     first-class field the caller actually supplied.
+
+    ``strip_split_mode`` removes both ``--split-mode`` and the coupled
+    ``--tensor-split`` (the Tensor Parallelism toggle owns the whole split).
+    ``strip_tensor_split`` removes ``--tensor-split`` *alone*, so manual mode can
+    replace an inherited per-GPU ratio while leaving the user's ``--split-mode``
+    row/none/layer choice intact.
     """
     shadowing: set[str] = set()
     if strip_context:
@@ -444,6 +467,10 @@ def strip_shadowing_flags(
         shadowing |= _TEMPLATE_FLAGS
     if strip_split_mode:
         shadowing |= _SPLIT_SHADOWING_FLAGS
+    if strip_tensor_split:
+        shadowing |= _TENSOR_SPLIT_FLAGS
+    if strip_offload:
+        shadowing |= _OFFLOAD_SHADOWING_FLAGS
 
     tokens = [str(a) for a in (args or [])]
     out: list[str] = []

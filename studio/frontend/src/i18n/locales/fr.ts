@@ -112,7 +112,7 @@ export const fr = {
         "Utilisé pour charger des modèles restreints et publier des artefacts.",
       hideToken: "Masquer le token",
       showToken: "Afficher le token",
-      tokenSaved: "Token enregistré",
+      tokenValidated: "Jeton validé",
       password: "Mot de passe",
       passwordDescription:
         "Changez le mot de passe de ce compte Unsloth.",

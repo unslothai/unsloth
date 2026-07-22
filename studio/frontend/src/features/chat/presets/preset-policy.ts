@@ -339,3 +339,34 @@ export function resolveLoadMaxSeqLength({
   }
   return maxSeqLength;
 }
+
+/**
+ * Adjust a resolved max-seq-length for the GPU Memory mode. Under Manual + Auto
+ * layers (GGUF, gpuLayers < 0) llama.cpp's --fit owns context sizing, so send 0
+ * (the backend omits -c) unless the user pinned a length; every other case keeps
+ * the resolved fallback. Shared by every GGUF load path so they can't drift.
+ */
+export function resolveFitMaxSeqLength(
+  isGguf: boolean | null | undefined,
+  gpuMemoryMode: "auto" | "manual",
+  gpuLayers: number,
+  customContextLength: number | null,
+  fallback: number,
+): number {
+  if (!isGguf || gpuMemoryMode !== "manual" || gpuLayers >= 0) return fallback;
+  return customContextLength && customContextLength > 0 ? customContextLength : 0;
+}
+
+// A Manual + Auto-layers load sends its positive context pin as max_seq_length;
+// keep it across a status reseed/Apply so the model isn't reverted to auto-fit
+// sizing. Anything else (Auto mode, pinned layers, no pin) baselines to null.
+// The caller keeps its own isGguf/targetIsGguf guard inline.
+export function resolveManualAutoCtxPin(
+  gpuMemoryMode: "auto" | "manual",
+  gpuLayers: number,
+  customContextLength: number | null,
+): number | null {
+  return gpuMemoryMode === "manual" && gpuLayers < 0 && (customContextLength ?? 0) > 0
+    ? customContextLength
+    : null;
+}

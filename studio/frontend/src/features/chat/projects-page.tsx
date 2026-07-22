@@ -30,6 +30,8 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
+import { isTauri } from "@/lib/api-base";
+import { isDownloadCancelled, pickNativeChatImport } from "@/lib/native-files";
 import { toast } from "@/lib/toast";
 import {
   createChatProject,
@@ -37,6 +39,7 @@ import {
   renameChatProject,
   useChatProjects,
   useChatRuntimeStore,
+  usePinnedProjectsStore,
   type ProjectRecord,
 } from "@/features/chat";
 import {
@@ -45,13 +48,15 @@ import {
   Edit03Icon,
   Folder02Icon,
   FolderAddIcon,
+  PinIcon,
+  PinOffIcon,
   Search01Icon,
   Upload01Icon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { MoreHorizontalIcon } from "lucide-react";
 import { useNavigate } from "@tanstack/react-router";
-import { useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
   exportProjectConversations,
   exportBulkConversationsMerged,
@@ -66,21 +71,38 @@ import {
 
 type SortMode = "activity" | "name";
 
-function formatUpdatedAgo(ts: number): string {
-  const diff = Date.now() - ts;
-  if (!Number.isFinite(diff) || diff < 0) return "just now";
-  const s = Math.floor(diff / 1000);
-  if (s < 60) return "just now";
-  const m = Math.floor(s / 60);
-  if (m < 60) return `${m} minute${m === 1 ? "" : "s"} ago`;
-  const h = Math.floor(m / 60);
-  if (h < 24) return `${h} hour${h === 1 ? "" : "s"} ago`;
-  const d = Math.floor(h / 24);
-  if (d < 30) return `${d} day${d === 1 ? "" : "s"} ago`;
-  const mo = Math.floor(d / 30);
-  if (mo < 12) return `${mo} month${mo === 1 ? "" : "s"} ago`;
-  const y = Math.floor(mo / 12);
-  return `${y} year${y === 1 ? "" : "s"} ago`;
+// Reveal this many more projects each time the user scrolls near the bottom.
+const PROJECTS_PAGE_STEP = 12;
+// Visible count before the fit-to-height measurement runs.
+const PROJECTS_INITIAL_FALLBACK = 8;
+// Approx list row height in px, used to estimate how many rows fit the page.
+const PROJECTS_ROW_HEIGHT = 68;
+
+// Modified column, matching a file-list feel: Today / Yesterday / N days ago,
+// then a short date once it is over a week old.
+function formatModified(ts: number): string {
+  if (!Number.isFinite(ts)) return "";
+  const now = new Date();
+  const then = new Date(ts);
+  const startOfToday = new Date(
+    now.getFullYear(),
+    now.getMonth(),
+    now.getDate(),
+  ).getTime();
+  const startOfThen = new Date(
+    then.getFullYear(),
+    then.getMonth(),
+    then.getDate(),
+  ).getTime();
+  const dayDiff = Math.round((startOfToday - startOfThen) / 86_400_000);
+  if (dayDiff <= 0) return "Today";
+  if (dayDiff === 1) return "Yesterday";
+  if (dayDiff < 7) return `${dayDiff} days ago`;
+  return then.toLocaleDateString(undefined, {
+    month: "short",
+    day: "numeric",
+    year: then.getFullYear() === now.getFullYear() ? undefined : "numeric",
+  });
 }
 
 export function ProjectsPage() {
@@ -89,6 +111,17 @@ export function ProjectsPage() {
 
   const [query, setQuery] = useState("");
   const [sortMode, setSortMode] = useState<SortMode>("activity");
+  // Rows that fit the page height (measured), plus any revealed via Show more.
+  const [baseFit, setBaseFit] = useState(PROJECTS_INITIAL_FALLBACK);
+  const [extraCount, setExtraCount] = useState(0);
+  const listRef = useRef<HTMLDivElement>(null);
+  const sentinelRef = useRef<HTMLDivElement>(null);
+  const pinnedProjectIds = usePinnedProjectsStore((s) => s.pinnedIds);
+  const togglePinProject = usePinnedProjectsStore((s) => s.togglePin);
+  const pinnedProjectIdSet = useMemo(
+    () => new Set(pinnedProjectIds),
+    [pinnedProjectIds],
+  );
 
   const [creating, setCreating] = useState(false);
   const [nameDraft, setNameDraft] = useState("");
@@ -118,6 +151,40 @@ export function ProjectsPage() {
     }
   }
 
+
+  async function selectGlobalImportFile() {
+    if (!isTauri) {
+      globalImportRef.current?.click();
+      return;
+    }
+    try {
+      const selected = await pickNativeChatImport();
+      if (!selected) return;
+      setImportTargetId(projects[0]?.id ?? null);
+      setImportFile(new File([selected.content], selected.name));
+    } catch (error) {
+      toast.error("Import failed.", {
+        description: error instanceof Error ? error.message : String(error),
+      });
+    }
+  }
+
+  async function selectProjectImportFile(projectId: string) {
+    if (!isTauri) {
+      projectImportRefs.current.get(projectId)?.click();
+      return;
+    }
+    try {
+      const selected = await pickNativeChatImport();
+      if (!selected) return;
+      await handleImport(new File([selected.content], selected.name), projectId);
+    } catch (error) {
+      toast.error("Import failed.", {
+        description: error instanceof Error ? error.message : String(error),
+      });
+    }
+  }
+
   async function commitImport() {
     if (!importFile) return;
     const file = importFile;
@@ -126,7 +193,7 @@ export function ProjectsPage() {
     await handleImport(file, target);
   }
 
-  const visibleProjects = useMemo(() => {
+  const sortedProjects = useMemo(() => {
     const trimmed = query.trim().toLowerCase();
     const filtered = trimmed
       ? projects.filter((p) => p.name.toLowerCase().includes(trimmed))
@@ -138,6 +205,51 @@ export function ProjectsPage() {
     );
     return filtered;
   }, [projects, query, sortMode]);
+  // Default view shows as many rows as fit the page, then loads more as the
+  // user scrolls near the bottom. Search always spans every project.
+  const isSearching = query.trim() !== "";
+  const visibleCount = baseFit + extraCount;
+  const visibleProjects = isSearching
+    ? sortedProjects
+    : sortedProjects.slice(0, visibleCount);
+  const hasMore = !isSearching && sortedProjects.length > visibleCount;
+
+  // Estimate how many rows fit below the list's top so the first page fills the
+  // screen without loading everything up front.
+  useEffect(() => {
+    function measure() {
+      const el = listRef.current;
+      if (!el) return;
+      const top = el.getBoundingClientRect().top;
+      const reserve = 24; // bottom breathing room
+      const fits = Math.floor(
+        (window.innerHeight - top - reserve) / PROJECTS_ROW_HEIGHT,
+      );
+      setBaseFit(Math.max(PROJECTS_PAGE_STEP, fits));
+    }
+    measure();
+    window.addEventListener("resize", measure);
+    return () => window.removeEventListener("resize", measure);
+  }, [hasLoaded]);
+
+  // Infinite scroll: reveal another page-step whenever the sentinel near the
+  // list bottom scrolls into view.
+  useEffect(() => {
+    const el = sentinelRef.current;
+    if (!el || !hasMore) return;
+    const io = new IntersectionObserver(
+      (entries) => {
+        if (entries[0]?.isIntersecting) {
+          setExtraCount((n) => n + PROJECTS_PAGE_STEP);
+        }
+      },
+      { rootMargin: "300px" },
+    );
+    io.observe(el);
+    return () => io.disconnect();
+    // Re-observe after each load so it keeps filling while the sentinel stays
+    // in view (IntersectionObserver does not re-fire on a steady intersection).
+  }, [hasMore, visibleCount]);
 
   function openProject(projectId: string) {
     const runtime = useChatRuntimeStore.getState();
@@ -183,8 +295,10 @@ export function ProjectsPage() {
       const threads = await listStoredChatThreads({ projectId: project.id, includeArchived: false });
       const ids = [...new Set(threads.map((t) => t.id))];
       await exportProjectConversations(ids, fmt, project.name);
-    } catch {
-      toast.error("Export failed.");
+    } catch (error) {
+      if (!isDownloadCancelled(error)) {
+        toast.error("Export failed.");
+      }
     }
   }
 
@@ -215,8 +329,10 @@ export function ProjectsPage() {
       } else {
         await exportBulkConversationsSeparate(ids, fmt, basename);
       }
-    } catch {
-      toast.error("Export failed.");
+    } catch (error) {
+      if (!isDownloadCancelled(error)) {
+        toast.error("Export failed.");
+      }
     }
   }
 
@@ -234,7 +350,7 @@ export function ProjectsPage() {
   }
 
   return (
-    <main className="mx-auto w-full max-w-6xl px-6 py-10 font-heading sm:px-10">
+    <main className="mx-auto w-full max-w-5xl px-6 pb-10 pt-16 font-heading sm:px-10">
       {/* Global import file input */}
       <input
         ref={globalImportRef}
@@ -294,7 +410,7 @@ export function ProjectsPage() {
               </Button>
             </DropdownMenuTrigger>
             <DropdownMenuContent align="end" className="w-56">
-              <DropdownMenuItem onSelect={() => globalImportRef.current?.click()}>
+              <DropdownMenuItem onSelect={() => void selectGlobalImportFile()}>
                 <HugeiconsIcon icon={Upload01Icon} strokeWidth={1.75} className="size-icon" />
                 Import chats…
               </DropdownMenuItem>
@@ -365,16 +481,22 @@ export function ProjectsPage() {
       </div>
 
       {!hasLoaded ? (
-        <div className="mt-12 grid grid-cols-1 gap-5 sm:grid-cols-2 lg:grid-cols-3">
+        <div className="mt-16">
+          <div className="mb-1 flex items-center gap-3 px-5 pb-1 text-[13px] font-medium text-muted-foreground">
+            <span className="flex-1">Name</span>
+            <span className="w-40 shrink-0">Modified</span>
+            <span className="w-8 shrink-0" />
+          </div>
           {Array.from({ length: 6 }).map((_, index) => (
             <div
               key={index}
-              className="min-h-[172px] rounded-[26px] bg-card p-6 shadow-[0_2px_12px_-4px_rgba(0,0,0,0.10)] dark:shadow-none"
+              className="flex items-center gap-3 rounded-xl px-5 py-4"
             >
-              <Skeleton className="size-10 rounded-[14px]" />
-              <Skeleton className="mt-4 h-5 w-2/3 rounded-[8px]" />
-              <Skeleton className="mt-2 h-4 w-4/5 rounded-[8px]" />
-              <Skeleton className="mt-8 h-3 w-24 rounded-[8px]" />
+              <Skeleton className="mr-1 size-9 shrink-0 rounded-[10px]" />
+              <Skeleton className="h-4 w-40 rounded-[8px]" />
+              <span className="flex-1" />
+              <Skeleton className="h-4 w-16 rounded-[8px]" />
+              <span className="w-8 shrink-0" />
             </div>
           ))}
         </div>
@@ -400,9 +522,20 @@ export function ProjectsPage() {
           )}
         </div>
       ) : (
-        <div className="mt-12 grid grid-cols-1 gap-5 sm:grid-cols-2 lg:grid-cols-3">
-          {visibleProjects.map((project) => (
-            <div key={`wrap-${project.id}`} className="contents">
+        <>
+        <div className="mt-16">
+          {/* Column header. Name starts at the folder icon's left edge; the
+              right-anchored columns keep Modified over its values. */}
+          <div className="mb-1 flex items-center gap-3 px-5 pb-1 text-[13px] font-medium text-muted-foreground">
+            <span className="flex-1">Name</span>
+            <span className="w-40 shrink-0">Modified</span>
+            <span className="w-8 shrink-0" />
+          </div>
+          <div ref={listRef}>
+          {visibleProjects.map((project) => {
+            const pinned = pinnedProjectIdSet.has(project.id);
+            return (
+            <div key={`wrap-${project.id}`}>
             <input
               key={`import-${project.id}`}
               type="file"
@@ -429,23 +562,37 @@ export function ProjectsPage() {
                   openProject(project.id);
                 }
               }}
-              className="group/project-card relative flex min-h-[172px] cursor-pointer flex-col rounded-[26px] bg-card p-6 text-left shadow-[0_2px_12px_-4px_rgba(0,0,0,0.10)] transition-colors duration-150 hover:bg-[#f2f2f2] dark:shadow-none dark:hover:bg-accent/30 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+              className="group/project-row relative flex cursor-pointer items-center gap-3 rounded-xl px-5 py-4 text-left transition-colors duration-150 hover:bg-muted/70 dark:hover:bg-white/[0.055] focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
             >
-              <div className="flex items-start justify-between gap-2">
-                <span className="flex size-10 shrink-0 items-center justify-center rounded-[14px] bg-muted text-foreground/70 transition-colors group-hover/project-card:bg-primary/10 group-hover/project-card:text-primary">
-                  <HugeiconsIcon
-                    icon={Folder02Icon}
-                    strokeWidth={1.75}
-                    className="size-5"
-                  />
-                </span>
+              <span className="mr-1 flex size-9 shrink-0 items-center justify-center rounded-[10px] bg-muted text-foreground/70 transition-colors group-hover/project-row:bg-primary/10 group-hover/project-row:text-primary">
+                <HugeiconsIcon
+                  icon={Folder02Icon}
+                  strokeWidth={1.75}
+                  className="size-5"
+                />
+              </span>
+              <span className="min-w-0 flex-1 truncate text-[15px] font-semibold text-foreground">
+                {project.name}
+              </span>
+              <span className="w-40 shrink-0 text-sm text-muted-foreground">
+                {formatModified(project.updatedAt)}
+              </span>
+              <div className="relative flex w-8 shrink-0 items-center justify-end">
+                {/* Pin fades out and the kebab fades in on hover, focus, or
+                    menu open. Absolute + opacity gating keeps them from
+                    overlapping while leaving the button keyboard-focusable. */}
+                {pinned && (
+                  <span className="text-muted-foreground transition-opacity group-hover/project-row:opacity-0 group-focus-within/project-row:opacity-0 group-has-[[data-state=open]]/project-row:opacity-0">
+                    <HugeiconsIcon icon={PinIcon} strokeWidth={1.75} className="size-4" />
+                  </span>
+                )}
                 <DropdownMenu>
                   <DropdownMenuTrigger asChild>
                     <button
                       type="button"
                       onClick={(e) => e.stopPropagation()}
                       aria-label="Project options"
-                      className="-mr-1 -mt-1 inline-flex size-7 shrink-0 items-center justify-center rounded-full text-muted-foreground opacity-0 transition-opacity hover:bg-black/5 hover:text-foreground dark:hover:bg-white/10 focus-visible:opacity-100 group-hover/project-card:opacity-100 data-[state=open]:bg-black/5 data-[state=open]:opacity-100 dark:data-[state=open]:bg-white/10"
+                      className="absolute right-0 flex size-7 shrink-0 items-center justify-center rounded-full text-muted-foreground opacity-0 transition hover:bg-black/5 hover:text-foreground focus-visible:opacity-100 group-hover/project-row:opacity-100 data-[state=open]:bg-black/5 data-[state=open]:opacity-100 dark:hover:bg-white/10 dark:data-[state=open]:bg-white/10"
                     >
                       <MoreHorizontalIcon strokeWidth={1.75} className="size-icon" />
                     </button>
@@ -459,6 +606,16 @@ export function ProjectsPage() {
                     className="app-user-menu menu-soft-surface menu-flat-destructive ring-0 w-44 py-2 font-heading rounded-[14px] border-0"
                   >
                     <DropdownMenuItem
+                      onSelect={() => togglePinProject(project.id)}
+                    >
+                      <HugeiconsIcon
+                        icon={pinned ? PinOffIcon : PinIcon}
+                        strokeWidth={1.75}
+                        className="size-icon"
+                      />
+                      <span>{pinned ? "Unpin project" : "Pin project"}</span>
+                    </DropdownMenuItem>
+                    <DropdownMenuItem
                       onSelect={() => {
                         setRenameDraft(project.name);
                         setRenaming(project);
@@ -470,7 +627,7 @@ export function ProjectsPage() {
                     <DropdownMenuItem
                       onSelect={(e) => {
                         e.stopPropagation();
-                        projectImportRefs.current.get(project.id)?.click();
+                        void selectProjectImportFile(project.id);
                       }}
                     >
                       <HugeiconsIcon icon={Upload01Icon} strokeWidth={1.75} className="size-icon" />
@@ -506,21 +663,15 @@ export function ProjectsPage() {
                   </DropdownMenuContent>
                 </DropdownMenu>
               </div>
-              <h2 className="mt-4 truncate text-[16px] font-semibold text-foreground">
-                {project.name}
-              </h2>
-              {project.instructions ? (
-                <p className="mt-1.5 line-clamp-2 text-sm leading-relaxed text-muted-foreground">
-                  {project.instructions}
-                </p>
-              ) : null}
-              <span className="mt-auto pt-4 text-xs text-muted-foreground/80">
-                Updated {formatUpdatedAgo(project.updatedAt)}
-              </span>
             </div>
             </div>
-          ))}
+            );
+          })}
+          {/* Loads the next page-step when scrolled into view. */}
+          {hasMore && <div ref={sentinelRef} className="h-px w-full" />}
+          </div>
         </div>
+        </>
       )}
 
       {/* Create project */}
@@ -644,8 +795,8 @@ export function ProjectsPage() {
             <DialogTitle>Delete project</DialogTitle>
           </DialogHeader>
           <p className="text-sm text-muted-foreground">
-            Are you sure you want to delete <em>{deleting?.name}</em>? Chats in this
-            project will be moved back to Recents.
+            Are you sure you want to delete <em>{deleting?.name}</em>? Its chats will
+            be permanently deleted.
           </p>
           <DialogFooter className="flex-wrap gap-2 sm:justify-end">
             <Button type="button" variant="ghost" onClick={() => setDeleting(null)}>
