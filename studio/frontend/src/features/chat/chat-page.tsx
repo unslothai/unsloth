@@ -157,6 +157,7 @@ import {
   providerSupportsBuiltinImageGeneration,
   providerSupportsBuiltinWebFetch,
   providerSupportsBuiltinWebSearch,
+  providerSupportsLocalToolRuntime,
 } from "./provider-capabilities";
 import {
   ChatActiveContext,
@@ -2153,6 +2154,9 @@ export function ChatPage({
       selection.modelId,
       provider?.baseUrl,
     );
+    const supportsLocalToolRuntime = providerSupportsLocalToolRuntime(
+      provider?.providerType,
+    );
     const supportsBuiltinImageGeneration =
       providerSupportsBuiltinImageGeneration(
         provider?.providerType,
@@ -2189,7 +2193,9 @@ export function ChatPage({
       ? isKimi
         ? false
         : (storedToolsEnabled ?? searchOnByDefault)
-      : false;
+      : supportsLocalToolRuntime
+        ? (storedToolsEnabled ?? false)
+        : false;
     useChatRuntimeStore.setState({
       supportsReasoning: reasoningCaps.supportsReasoning,
       reasoningAlwaysOn: reasoningCaps.reasoningAlwaysOn,
@@ -2205,20 +2211,20 @@ export function ChatPage({
           : true
         : state.reasoningEnabled,
       supportsPreserveThinking: false,
-      // External models have no local tool runtime, so `supportsTools` is
-      // false. The `supportsBuiltin*` flags cover providers that run tools
-      // server-side: WebSearch lights the Search pill (OpenAI/Anthropic/
-      // OpenRouter/Kimi), CodeExecution the Code pill (Claude 4.x, gpt-5.5),
-      // ImageGeneration the Images pill (OpenAI cloud Responses-API only).
-      supportsTools: false,
+      // Hosted providers have no local tool runtime, so supportsTools stays
+      // false and supportsBuiltin* carries server-side capability. OAI-compat
+      // Connections (ollama / llama.cpp / vLLM / custom) can drive Unsloth's
+      // local Search/Code/MCP tools against the remote model (#7282).
+      supportsTools: supportsLocalToolRuntime,
       supportsBuiltinWebSearch,
       supportsBuiltinCodeExecution,
       supportsBuiltinImageGeneration,
       supportsBuiltinWebFetch,
       toolsEnabled: nextToolsEnabled,
-      codeToolsEnabled: supportsBuiltinCodeExecution
-        ? (storedCodeToolsEnabled ?? false)
-        : false,
+      codeToolsEnabled:
+        supportsBuiltinCodeExecution || supportsLocalToolRuntime
+          ? (storedCodeToolsEnabled ?? false)
+          : false,
       imageToolsEnabled: supportsBuiltinImageGeneration
         ? (storedImageToolsEnabled ?? false)
         : false,
@@ -2685,6 +2691,9 @@ export function ChatPage({
             selectedExternal?.modelId,
             selectedProvider?.baseUrl,
           );
+        const supportsLocalToolRuntime = providerSupportsLocalToolRuntime(
+          selectedProvider?.providerType,
+        );
         const supportsBuiltinImageGeneration =
           providerSupportsBuiltinImageGeneration(
             selectedProvider?.providerType,
@@ -2718,7 +2727,9 @@ export function ChatPage({
           ? isKimi
             ? false
             : (storedToolsEnabled ?? searchOnByDefault)
-          : false;
+          : supportsLocalToolRuntime
+            ? (storedToolsEnabled ?? false)
+            : false;
         useChatRuntimeStore.setState({
           activeGgufVariant: null,
           ggufContextLength: null,
@@ -2744,19 +2755,18 @@ export function ChatPage({
               : true
             : store.reasoningEnabled,
           supportsPreserveThinking: false,
-          // External models have no local tool runtime → supportsTools false.
-          // The supportsBuiltin* flags carry server-side capability per pill:
-          // Search, Code (Claude 4.x + gpt-5.5), Images (OpenAI cloud
-          // Responses-API).
-          supportsTools: false,
+          // Hosted providers → supportsTools false + supportsBuiltin*.
+          // OAI-compat Connections can drive local Search/Code/MCP (#7282).
+          supportsTools: supportsLocalToolRuntime,
           supportsBuiltinWebSearch,
           supportsBuiltinCodeExecution,
           supportsBuiltinImageGeneration,
           supportsBuiltinWebFetch,
           toolsEnabled: nextToolsEnabled,
-          codeToolsEnabled: supportsBuiltinCodeExecution
-            ? (storedCodeToolsEnabled ?? false)
-            : false,
+          codeToolsEnabled:
+            supportsBuiltinCodeExecution || supportsLocalToolRuntime
+              ? (storedCodeToolsEnabled ?? false)
+              : false,
           imageToolsEnabled: supportsBuiltinImageGeneration
             ? (storedImageToolsEnabled ?? false)
             : false,
