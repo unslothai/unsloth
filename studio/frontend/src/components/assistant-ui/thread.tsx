@@ -1371,7 +1371,13 @@ export const ProjectComposer: FC<{
 }> = ({ disabled, placeholder }) => {
   return (
     <GeneratedImageOverlayProvider>
-      <ComposerAnimated disabled={disabled} placeholder={placeholder} />
+      {/* New chat in a project: queuing follow-ups here misbinds the thread,
+          so the queue only runs once the user is inside a chat session. */}
+      <ComposerAnimated
+        disabled={disabled}
+        placeholder={placeholder}
+        disableQueue
+      />
     </GeneratedImageOverlayProvider>
   );
 };
@@ -1381,11 +1387,17 @@ const ComposerAnimated: FC<{
   placeholder?: string;
   threadId?: string | null;
   menuSide?: "top" | "bottom";
-}> = ({ disabled, threadId, menuSide }) => {
+  disableQueue?: boolean;
+}> = ({ disabled, threadId, menuSide, disableQueue }) => {
   return (
     <div className="relative mx-auto min-w-0 w-full max-w-[46rem]">
       <div className="relative z-10 w-full">
-        <Composer disabled={disabled} threadId={threadId} menuSide={menuSide} />
+        <Composer
+          disabled={disabled}
+          threadId={threadId}
+          menuSide={menuSide}
+          disableQueue={disableQueue}
+        />
       </div>
     </div>
   );
@@ -1420,7 +1432,8 @@ const Composer: FC<{
   placeholder?: string;
   threadId?: string | null;
   menuSide?: "top" | "bottom";
-}> = ({ disabled, threadId, menuSide }) => {
+  disableQueue?: boolean;
+}> = ({ disabled, threadId, menuSide, disableQueue }) => {
   const aui = useAui();
   const pageDragging = useContext(PageDragContext);
   const { overlay, closeOverlay } = useGeneratedImageOverlay();
@@ -1729,6 +1742,11 @@ const Composer: FC<{
 
       if (threadIsRunning || promptQueueActive) {
         event.preventDefault();
+        // Project new-chat composer: never queue, just ask the user to wait.
+        if (disableQueue) {
+          toast.error("Wait for the current response to finish");
+          return;
+        }
         if (!canQueueCurrentPrompt) {
           if (overlay || hasAttachments || hasPendingAudio) {
             toast.error(
@@ -1806,6 +1824,7 @@ const Composer: FC<{
       composerText,
       createPromptQueueTarget,
       disabled,
+      disableQueue,
       hasAttachments,
       hasPendingAudio,
       interceptSend,
@@ -1825,9 +1844,12 @@ const Composer: FC<{
 
   const startQueue = useCallback(
     (items: string[], waitForCurrentRun = threadIsRunning) => {
+      // Saved-prompt Run-list calls this directly, so honour disableQueue here
+      // too: queuing from the project new-chat composer misbinds the thread.
+      if (disableQueue) return;
       startPromptQueue(items, createPromptQueueTarget(), waitForCurrentRun);
     },
-    [createPromptQueueTarget, threadIsRunning],
+    [createPromptQueueTarget, threadIsRunning, disableQueue],
   );
 
   const queueContextValue: PromptQueueCallbacks = { startQueue, stopQueue };
@@ -1887,8 +1909,11 @@ const Composer: FC<{
             isComposing ||
             hasPendingAttachments
           }
-          queueDisabled={!canQueueCurrentPrompt}
+          // disableQueue (project new-chat composer) also blocks the queue
+          // button, so a running thread shows Stop instead of Queue.
+          queueDisabled={disableQueue || !canQueueCurrentPrompt}
           onQueueClick={() => {
+            if (disableQueue) return;
             const queuedPrompt = composerText.trim();
             if (queuedPrompt.length === 0) {
               return;
