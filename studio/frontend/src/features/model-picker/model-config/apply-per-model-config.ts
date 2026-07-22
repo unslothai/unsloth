@@ -54,6 +54,7 @@ export function applyPerModelConfigToRuntime(config: PerModelConfig): void {
       config.selectedGpuIds !== undefined
         ? reconcilePersistedGpuIds(config.selectedGpuIds)
         : null,
+    ggufMemoryMode: config.ggufMemoryMode ?? null,
   });
 }
 
@@ -86,6 +87,7 @@ export function currentRuntimePerModelConfig(
     gpuLayers: s.gpuLayers,
     nCpuMoe: s.nCpuMoe,
     selectedGpuIds: s.selectedGpuIds,
+    ggufMemoryMode: s.ggufMemoryMode ?? undefined,
   };
 }
 
@@ -119,6 +121,7 @@ export function gpuFieldsSignature(config: PerModelConfig): string {
     config.selectedGpuIds == null
       ? "all"
       : [...config.selectedGpuIds].sort((a, b) => a - b).join(","),
+    config.ggufMemoryMode ?? "unset",
   ].join("|");
 }
 

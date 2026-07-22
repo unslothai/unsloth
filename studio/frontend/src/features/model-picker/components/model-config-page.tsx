@@ -82,7 +82,8 @@ function hasNonDefaultAdvanced(config: PerModelConfig): boolean {
     (config.gpuMemoryMode ?? "auto") !== "auto" ||
     (config.gpuLayers != null && config.gpuLayers >= 0) ||
     (config.nCpuMoe ?? 0) > 0 ||
-    config.selectedGpuIds != null
+    config.selectedGpuIds != null ||
+    config.ggufMemoryMode != null
   );
 }
 
@@ -387,6 +388,42 @@ function GpuMemorySettings({
           </div>
         </div>
       )}
+      <div className={ROW_CLASS}>
+        <div className="flex min-w-0 items-center gap-1.5">
+          <span className={LABEL_CLASS}>Host Memory</span>
+          <InfoHint>
+            Default preserves inherited llama.cpp settings. Auto clears inherited
+            placement flags. Pinned locks mapped model pages in RAM. Resident also
+            disables memory mapping and loads the full model into locked RAM.
+          </InfoHint>
+        </div>
+        <Select
+          value={config.ggufMemoryMode ?? "default"}
+          onValueChange={(value) =>
+            update({
+              ggufMemoryMode:
+                value === "default"
+                  ? undefined
+                  : (value as "auto" | "pinned" | "resident"),
+            })
+          }
+        >
+          <SelectTrigger
+            animateRadius={false}
+            icon={ChevronDownStandardIcon}
+            iconClassName="size-3.5"
+            className={`w-[124px] shrink-0 ${SELECT_TRIGGER_CLASS}`}
+          >
+            <SelectValue />
+          </SelectTrigger>
+          <SelectContent className="menu-soft-surface ring-0 border-0 rounded-lg">
+            <SelectItem value="default">Default</SelectItem>
+            <SelectItem value="auto">Auto</SelectItem>
+            <SelectItem value="pinned">Pinned</SelectItem>
+            <SelectItem value="resident">Resident</SelectItem>
+          </SelectContent>
+        </Select>
+      </div>
     </>
   );
 }

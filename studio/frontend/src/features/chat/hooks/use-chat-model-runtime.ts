@@ -669,6 +669,7 @@ export function useChatModelRuntime() {
           let loadSelectedGpuIds = reconcilePersistedGpuIds(
             stateBeforeUnload.selectedGpuIds,
           );
+          let loadMemoryMode = stateBeforeUnload.ggufMemoryMode;
           let loadSpeculativeType = stateBeforeUnload.speculativeType;
           let loadSpecDraftNMax = stateBeforeUnload.specDraftNMax;
           try {
@@ -692,15 +693,6 @@ export function useChatModelRuntime() {
             const resetsPerModelSettings = Boolean(
               currentCheckpoint && switchingModelOrVariant && !keepSpeculative,
             );
-            // GGUF host-memory residency is per-model and backend-owned (no UI
-            // editor): activeMemoryMode only mirrors the loaded model's /status.
-            // On a model/variant switch, reusing it would pin the new model to
-            // the prior model's residency, so drop to auto (null); a same-model
-            // Apply/reload keeps it so an API-set value survives the reload.
-            const loadMemoryMode =
-              currentCheckpoint && switchingModelOrVariant
-                ? null
-                : stateBeforeUnload.activeMemoryMode;
             const validateCustomContextLength = resetsPerModelSettings
               ? null
               : loadCustomContextLength;
@@ -813,6 +805,7 @@ export function useChatModelRuntime() {
                 // Per-model GPU knobs must not follow onto a different model
                 // (gpuMemoryMode is a standing preference and is kept).
                 selectedGpuIds: null,
+                ggufMemoryMode: null,
                 gpuLayers: GPU_LAYERS_AUTO,
                 nCpuMoe: 0,
                 splitRatio: null,
@@ -827,6 +820,7 @@ export function useChatModelRuntime() {
               // previous model's (gpuMemoryMode is standing, so left as captured).
               loadCustomContextLength = null;
               loadSelectedGpuIds = null;
+              loadMemoryMode = null;
               loadGpuLayers = GPU_LAYERS_AUTO;
               loadNCpuMoe = 0;
               loadSplitRatio = null;
