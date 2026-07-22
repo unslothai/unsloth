@@ -181,19 +181,27 @@ def _vlm_messages_have_tool_history(messages):
     )
 
 
-def _build_generation_stats(prompt_n, prompt_tps, gen_n, gen_tps):
+def _build_generation_stats(
+    prompt_n,
+    prompt_tps,
+    gen_n,
+    gen_tps,
+    cached_n = 0,
+):
     """Map mlx stream stats onto the usage/timings shape llama-server emits."""
     prompt_n = int(prompt_n or 0)
     gen_n = int(gen_n or 0)
+    cached_n = int(cached_n or 0)
     prompt_tps = float(prompt_tps or 0.0)
     gen_tps = float(gen_tps or 0.0)
     prompt_ms = (prompt_n / prompt_tps * 1000.0) if prompt_tps > 0 else 0.0
     predicted_ms = (gen_n / gen_tps * 1000.0) if gen_tps > 0 else 0.0
+    total_prompt_n = prompt_n + cached_n
     return {
         "usage": {
-            "prompt_tokens": prompt_n,
+            "prompt_tokens": total_prompt_n,
             "completion_tokens": gen_n,
-            "total_tokens": prompt_n + gen_n,
+            "total_tokens": total_prompt_n + gen_n,
         },
         "timings": {
             "prompt_n": prompt_n,
@@ -204,9 +212,121 @@ def _build_generation_stats(prompt_n, prompt_tps, gen_n, gen_tps):
             "predicted_ms": predicted_ms,
             "predicted_per_token_ms": (predicted_ms / gen_n) if gen_n > 0 else 0.0,
             "predicted_per_second": gen_tps,
-            "cache_n": 0,
+            "cache_n": cached_n,
         },
     }
+
+
+PROMPT_CACHE_ENTRIES = 6
+PROMPT_CACHE_MEMORY_FRACTION = 0.15
+PROMPT_CACHE_FALLBACK_BYTES = 2 * 1024**3
+
+
+def _mlx_prompt_cache_api():
+    try:
+        from mlx_lm.models.cache import (
+            LRUPromptCache,
+            can_trim_prompt_cache,
+            make_prompt_cache,
+            trim_prompt_cache,
+        )
+    except ImportError:
+        return None
+    return LRUPromptCache, make_prompt_cache, can_trim_prompt_cache, trim_prompt_cache
+
+
+def _prompt_cache_max_bytes(recommended_gb = None):
+    override = os.environ.get("UNSLOTH_MLX_PROMPT_CACHE_BYTES")
+    if override:
+        try:
+            return max(int(override), 0)
+        except ValueError:
+            logger.warning("Ignoring non-integer UNSLOTH_MLX_PROMPT_CACHE_BYTES=%r", override)
+    if recommended_gb:
+        return int(recommended_gb * 1e9 * PROMPT_CACHE_MEMORY_FRACTION)
+    return PROMPT_CACHE_FALLBACK_BYTES
+
+
+def _flatten_kv_entries(cache):
+    for entry in cache:
+        nested = getattr(entry, "caches", None)
+        if nested is None:
+            yield entry
+        else:
+            yield from _flatten_kv_entries(nested)
+
+
+def _kv_prefix_coverage(cache):
+    covered = None
+    for entry in _flatten_kv_entries(cache):
+        offset = getattr(entry, "offset", None)
+        if offset is None:
+            return None
+        if getattr(entry, "start_position", 0):
+            return None
+        window = getattr(entry, "max_size", None)
+        if window is not None and offset > window:
+            return None
+        if covered is None:
+            covered = offset
+        elif covered != offset:
+            return None
+    return covered
+
+
+class _MLXPromptCacheHistory:
+    def __init__(self, max_entries, max_bytes):
+        api = _mlx_prompt_cache_api()
+        if api is None:
+            raise RuntimeError("mlx-lm is too old for LRUPromptCache")
+        lru_cls, make, can_trim, trim = api
+        self._make_prompt_cache = make
+        self._can_trim = can_trim
+        self._trim = trim
+        self._max_bytes = max_bytes
+        self._lru = lru_cls(max_size = max_entries, max_bytes = max_bytes)
+
+    def fetch(self, model, key, tokens):
+        cache, rest = self._lru.fetch_nearest_cache(key, list(tokens))
+        if cache is not None:
+            if rest:
+                return cache, list(rest)
+            if self._can_trim(cache) and self._trim(cache, 1) == 1:
+                return cache, list(tokens[-1:])
+        if len(tokens) > 1:
+            head = list(tokens[:-1])
+            cache, rest = self._lru.fetch_nearest_cache(key, head)
+            if cache is not None:
+                covered = len(head) - len(rest)
+                return cache, list(tokens[covered:])
+        return self._make_prompt_cache(model), list(tokens)
+
+    def insert(self, key, tokens, cache):
+        # An over-budget entry evicts itself and every other conversation.
+        nbytes = sum(getattr(entry, "nbytes", 0) for entry in cache)
+        if nbytes > self._max_bytes:
+            logger.debug(
+                "MLX prompt cache: skipping %.2f GB entry over the %.2f GB budget",
+                nbytes / 1e9,
+                self._max_bytes / 1e9,
+            )
+            return
+        covered = _kv_prefix_coverage(cache)
+        if covered is None:
+            logger.debug("MLX prompt cache: skipping cache with unverifiable prefix coverage")
+            return
+        tokens = list(tokens)
+        if covered > len(tokens):
+            logger.debug(
+                "MLX prompt cache: cache covers %d tokens but only %d were tracked",
+                covered,
+                len(tokens),
+            )
+            return
+        tokens = tokens[:covered]
+        if not tokens:
+            return
+        self._lru.insert_cache(key, tokens, cache)
 
 
 def _mlx_distributed_rank_size(group = None):
@@ -312,6 +432,55 @@ class MLXInferenceBackend:
 
         # Recorded for unload to release pinned memory back to the OS.
         self._memory_limits_applied = {}
+
+        self._prompt_cache_history = None
+        self._prompt_cache_unavailable = False
+
+    def _prompt_cache(self):
+        if self._prompt_cache_history is not None or self._prompt_cache_unavailable:
+            return self._prompt_cache_history
+        max_bytes = _prompt_cache_max_bytes(self._memory_limits_applied.get("recommended_gb"))
+        if max_bytes <= 0:
+            self._prompt_cache_unavailable = True
+            logger.info("MLX prompt cache disabled by budget")
+            return None
+        try:
+            self._prompt_cache_history = _MLXPromptCacheHistory(
+                PROMPT_CACHE_ENTRIES,
+                max_bytes,
+            )
+        except Exception as exc:
+            self._prompt_cache_unavailable = True
+            logger.info("MLX prompt cache unavailable (%s); prefilling every request", exc)
+            return None
+        logger.info(
+            "MLX prompt cache: %d entries, %.2f GB budget",
+            PROMPT_CACHE_ENTRIES,
+            max_bytes / 1e9,
+        )
+        return self._prompt_cache_history
+
+    def _clear_prompt_cache(self):
+        self._prompt_cache_history = None
+        self._prompt_cache_unavailable = False
+
+    def _prepare_prompt_cache(self, prompt, adapter_state):
+        history = self._prompt_cache()
+        if history is None:
+            return prompt, None, None, None, 0
+        try:
+            tokenizer = self._tokenizer
+            bos = getattr(tokenizer, "bos_token", None)
+            add_special_tokens = bos is None or not prompt.startswith(bos)
+            tokens = list(tokenizer.encode(prompt, add_special_tokens = add_special_tokens))
+            if not tokens:
+                return prompt, None, None, None, 0
+            key = f"{self.active_model_name}|{adapter_state!r}"
+            cache, rest = history.fetch(self._model, key, tokens)
+        except Exception as exc:
+            logger.debug("MLX prompt cache lookup failed: %s", exc)
+            return prompt, None, None, None, 0
+        return rest, cache, key, tokens, len(tokens) - len(rest)
 
     def _configure_memory_limits(self):
         """Apply Metal memory caps before loading a model.
@@ -535,6 +704,7 @@ class MLXInferenceBackend:
         self._distributed_world_size = 1
         if self.active_model_name == model_name:
             self.active_model_name = None
+        self._clear_prompt_cache()
         gc.collect()
         mx.clear_cache()
 
@@ -731,24 +901,34 @@ class MLXInferenceBackend:
         # <think> prefix on every native-protocol snapshot just as the normal
         # decoding path does below.
         normalized_output = think_prefix
-        logger.info(
-            "Generating: prompt_len=%d, max_tokens=%d, model=%s, tokenizer=%s",
-            len(prompt),
-            max_new_tokens,
-            type(self._model).__name__,
-            type(self._tokenizer).__name__,
-        )
         with self._generation_lock, _temporary_mlx_adapter_state(self._model, _adapter_state):
+            (
+                gen_prompt,
+                prompt_cache,
+                cache_key,
+                prompt_tokens,
+                cached_n,
+            ) = self._prepare_prompt_cache(prompt, _adapter_state)
+            logger.info(
+                "Generating: prompt_len=%d, cached=%d, max_tokens=%d, model=%s, tokenizer=%s",
+                len(prompt),
+                cached_n,
+                max_new_tokens,
+                type(self._model).__name__,
+                type(self._tokenizer).__name__,
+            )
             final_response = None
             try:
                 # Enter request-scoped model state before yielding any response.
                 if think_prefix:
                     yield think_prefix
                 gen_kwargs = dict(
-                    prompt = prompt,
+                    prompt = gen_prompt,
                     max_tokens = max_new_tokens,
                     sampler = sampler,
                 )
+                if prompt_cache is not None:
+                    gen_kwargs["prompt_cache"] = prompt_cache
                 if logits_processors is not None:
                     gen_kwargs["logits_processors"] = logits_processors
                 for response in stream_generate(
@@ -757,6 +937,7 @@ class MLXInferenceBackend:
                     **gen_kwargs,
                 ):
                     final_response = response
+                    token_ids.append(response.token)
                     if preserve_native_channels:
                         piece = getattr(response, "text", None) or ""
                         delta = normalizer.feed(piece)
@@ -764,7 +945,6 @@ class MLXInferenceBackend:
                             normalized_output += delta
                             yield normalized_output
                     else:
-                        token_ids.append(response.token)
                         cumulative = self._tokenizer.decode(
                             token_ids,
                             skip_special_tokens = True,
@@ -773,6 +953,13 @@ class MLXInferenceBackend:
 
                     if cancel_event and cancel_event.is_set():
                         break
+                if prompt_cache is not None and prompt_tokens is not None:
+                    history = self._prompt_cache_history
+                    if history is not None:
+                        try:
+                            history.insert(cache_key, prompt_tokens + token_ids, prompt_cache)
+                        except Exception as exc:
+                            logger.debug("MLX prompt cache insert failed: %s", exc)
             except Exception as e:
                 import traceback
                 logger.error("stream_generate failed:\n%s", traceback.format_exc())
@@ -785,6 +972,7 @@ class MLXInferenceBackend:
                         getattr(final_response, "prompt_tps", 0.0),
                         getattr(final_response, "generation_tokens", 0),
                         getattr(final_response, "generation_tps", 0.0),
+                        cached_n,
                     )
         if normalizer is not None:
             cancelled = cancel_event is not None and cancel_event.is_set()

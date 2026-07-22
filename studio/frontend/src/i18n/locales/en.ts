@@ -32,11 +32,11 @@ export const en = {
       runOptions: "Run options",
     },
     navigation: {
-      newChat: "New Chat",
+      newChat: "New chat",
       returnToChat: "Return to Chat",
       compare: "Compare",
       search: "Search",
-      hub: "Hub",
+      hub: "Models",
       train: "Train",
       recipes: "Recipes",
       export: "Export",

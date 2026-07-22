@@ -1670,6 +1670,13 @@ except:
 from transformers.modeling_utils import logger as transformers_logger
 
 
+# Faster safetensors loads on UMA (integrated) GPUs; lazy gate keeps this import
+# fork-safe (no CUDA init). No-op off-UMA. Opt out: UNSLOTH_DISABLE_UMA_CLONE_LOAD=1.
+from ._uma_safetensors import patch_unified_memory_safetensors_load
+
+patch_unified_memory_safetensors_load()
+
+
 def _all_missing_keys_are_position_ids(record_str):
     """True only when EVERY key in the 'newly initialized: [...]' list is a position_ids
     buffer.

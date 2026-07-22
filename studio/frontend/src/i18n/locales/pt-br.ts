@@ -39,7 +39,7 @@ export const ptBR = {
       returnToChat: "Retornar ao Chat",
       compare: "Comparar",
       search: "Buscar",
-      hub: "Hub",
+      hub: "Modelos",
       train: "Treinar",
       recipes: "Receitas",
       export: "Exportar",
