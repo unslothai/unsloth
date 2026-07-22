@@ -1504,21 +1504,23 @@ class TestInstallShStructure:
         ), "setup.sh KFD awk must not key on a gpu_id line inside properties"
 
     def test_kfd_only_torch_falls_back_to_cpu(self):
-        """A KFD-only AMD host (detected via /dev/kfd, no rocminfo/amd-smi) must route
-        torch to CPU, not a generic rocm index. Without those tools the gfx arch is
-        unknown, so a Strix box (gfx1150/1151) would otherwise get the broken
-        _grouped_mm wheels instead of the arch-specific index."""
+        """An AMD host whose gfx arch can't be read (rocminfo/amd-smi missing, or
+        present but not enumerating the GPU) must route torch to CPU, not a generic
+        rocm index: a Strix box (gfx1150/1151) would otherwise get the broken
+        _grouped_mm wheels because the reroute has no gfx to correct it."""
         source = (PACKAGE_ROOT / "install.sh").read_text(encoding = "utf-8")
         body = _extract_sh_function_body(source, "get_torch_index_url")
-        guard = body.find("! command -v rocminfo")
-        assert guard >= 0, "get_torch_index_url must guard the KFD-only path on rocminfo absence"
-        assert (
-            "! command -v amd-smi" in body[guard : guard + 200]
-        ), "the KFD-only guard must require BOTH rocminfo and amd-smi to be absent"
-        # The guard must intercept before the generic rocm version/index selection.
-        assert guard < body.find(
+        probe = body.find("_amd_gfx_probe")
+        assert probe >= 0, "get_torch_index_url must probe the gfx arch before picking a rocm index"
+        # The probe reads gfx (not just tests binary presence), from rocminfo AND
+        # amd-smi, so an installed-but-not-enumerating probe still falls to CPU.
+        assert "rocminfo 2>/dev/null | grep -oE 'gfx" in body, "probe must read gfx from rocminfo"
+        assert "amd-smi list 2>/dev/null | grep -oE 'gfx" in body, "probe must read gfx from amd-smi"
+        cpu_guard = body.find('if [ -z "$_amd_gfx_probe" ]')
+        assert cpu_guard >= 0, "unreadable gfx must fall back to CPU"
+        assert cpu_guard < body.find(
             "_rocm_tag="
-        ), "KFD-only CPU fallback must run before the ROCm version/index selection"
+        ), "the gfx gate must run before the ROCm version/index selection"
 
     def test_kfd_only_llama_requires_hipcc(self):
         """setup.sh must forward --has-rocm for a gfx-unknown (KFD-only) host only when
@@ -1528,13 +1530,16 @@ class TestInstallShStructure:
         source = (PACKAGE_ROOT / "studio" / "setup.sh").read_text(encoding = "utf-8")
         idx = source.find("_PREBUILT_CMD+=(--has-rocm)")
         assert idx >= 0, "setup.sh must still be able to forward --has-rocm"
-        window = source[max(0, idx - 500) : idx]
+        window = source[max(0, idx - 900) : idx]
         assert (
             "hipcc" in window
         ), "the gfx-unknown --has-rocm branch must gate on hipcc (a usable HIP toolchain)"
         assert (
             "command -v hipcc" in window or "/opt/rocm/bin/hipcc" in window
         ), "hipcc presence must be checked via command -v or the rocm bin path"
+        assert (
+            "/opt/rocm-*/bin/hipcc" in window
+        ), "the hipcc gate must also accept a versioned /opt/rocm-*/bin/hipcc toolchain"
 
     def test_get_torch_index_url_uses_nvidia_detected_flag(self):
         """get_torch_index_url must track NVIDIA via _nvidia_detected (proc-only NVIDIA still picks CUDA)."""

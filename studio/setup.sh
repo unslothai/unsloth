@@ -1358,9 +1358,11 @@ else
     if [ -n "${_setup_gfx:-}" ]; then
         _PREBUILT_CMD+=(--rocm-gfx "$_setup_gfx")
     elif [ "$_setup_amd_detected" = true ] && \
-         { command -v hipcc >/dev/null 2>&1 || [ -x /opt/rocm/bin/hipcc ]; }; then
+         { command -v hipcc >/dev/null 2>&1 || [ -x /opt/rocm/bin/hipcc ] || \
+           ls /opt/rocm-*/bin/hipcc >/dev/null 2>&1; }; then
         # AMD detected but gfx unknown (KFD-only host): forward --has-rocm only when
-        # hipcc can actually build llama.cpp. With no gfx the prebuilt resolver finds
+        # hipcc can actually build llama.cpp (incl. a versioned /opt/rocm-*/bin, the
+        # same paths the source build uses). With no gfx the prebuilt resolver finds
         # no ROCm bundle and the source build would fail, so without hipcc fall
         # through to the CPU prebuilt instead of breaking the install.
         _PREBUILT_CMD+=(--has-rocm)
