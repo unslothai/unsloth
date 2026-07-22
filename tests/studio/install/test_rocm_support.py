@@ -3289,9 +3289,7 @@ class TestStrixRocm71Override:
             "03:00.0 VGA compatible controller [0300]: Advanced Micro Devices, Inc. [AMD/ATI]"
             " Navi 31 [Radeon RX 7900 XT] [1002:744c]\n"
         )
-        nvidia_only = (
-            "01:00.0 3D controller [0302]: NVIDIA Corporation GM107M [GeForce GTX 860M] [10de:1392]\n"
-        )
+        nvidia_only = "01:00.0 3D controller [0302]: NVIDIA Corporation GM107M [GeForce GTX 860M] [10de:1392]\n"
         domain_prefixed = (
             "0000:c5:00.0 VGA compatible controller [0300]: Advanced Micro Devices, Inc. [AMD/ATI]"
             " Strix Halo [Radeon Graphics / Radeon 8060S] [1002:150e]\n"
@@ -3360,9 +3358,9 @@ class TestStrixRocm71Override:
                 env = dict(os.environ, PATH = d + os.pathsep + os.environ.get("PATH", ""))
                 r = subprocess.run([shell, "-c", script], env = env, capture_output = True, text = True)
                 assert r.returncode == 0, f"scan aborted: {r.stderr}"
-                assert r.stdout.splitlines()[-1] == expected, (
-                    f"lspci scan wrong for {lspci_out!r}: {r.stdout!r}"
-                )
+                assert (
+                    r.stdout.splitlines()[-1] == expected
+                ), f"lspci scan wrong for {lspci_out!r}: {r.stdout!r}"
 
     def test_install_sh_infer_gfx_gated_on_wsl_runtime(self):
         """install.sh's _infer_linux_amd_gfx_arch must, like the Python side, skip
