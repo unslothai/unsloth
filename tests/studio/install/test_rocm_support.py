@@ -3512,7 +3512,6 @@ class TestStrixRocm71Override:
         assert stack_mod._strix_needs_amd_arch_index((7, 0)) is True
         assert stack_mod._strix_needs_amd_arch_index((6, 0)) is True
         assert stack_mod._strix_needs_amd_arch_index((5, 0)) is False
->>>>>>> origin/main
 
     def test_torch_constraint_updated_for_strix_amd_index(self):
         """install.sh must set TORCH_CONSTRAINT>=2.11 when routing Strix to AMD index."""
