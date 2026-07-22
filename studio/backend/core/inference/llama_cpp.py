@@ -1068,8 +1068,13 @@ def _cached_variant_candidates(
                 str(main_path), main, shards, {}
             ):
                 continue
-            if require_mmproj and not _pick_mmproj(cached_files):
-                continue
+            if require_mmproj:
+                from utils.models.model_config import mmproj_matches_model_family
+                compatible = [
+                    path for path in cached_files if mmproj_matches_model_family(main, path)
+                ]
+                if not _pick_mmproj(compatible):
+                    continue
             yield str(main_path), main, shards, snap
     except Exception as e:
         logger.debug(f"Cache lookup for variant failed: {e}")
@@ -1202,6 +1207,7 @@ def _cached_companion_for_repo(
     pick: Callable[[list[str]], Optional[str]],
     *,
     current_ref_only: bool = False,
+    revision: Optional[str] = None,
 ) -> Optional[str]:
     """Find a cached companion, preferring the main GGUF's snapshot."""
     cached = _companion_snapshot_sibling(near_path, pick)
@@ -1213,17 +1219,14 @@ def _cached_companion_for_repo(
         near_snapshot = _snapshot_dir_of(near_path)
         snapshots = [snap for snap in _iter_hf_cache_snapshots(hf_repo) if snap != near_snapshot]
         if current_ref_only:
-            from huggingface_hub import try_to_load_from_cache
-
-            hf_repo = _resolve_repo_id_casing(hf_repo)
-            candidates = sorted(
-                {filename for snap in snapshots for filename in _gguf_snapshot_files(snap)}
-            )
-            while (sibling := pick(candidates)) is not None:
-                current = try_to_load_from_cache(hf_repo, sibling)
-                if isinstance(current, str) and Path(current).is_file():
-                    return current
-                candidates.remove(sibling)
+            if not revision:
+                return None
+            for snap in snapshots:
+                if snap.name != revision:
+                    continue
+                sibling = pick(_gguf_snapshot_files(snap))
+                if sibling and (candidate := snap / sibling).is_file():
+                    return str(candidate)
             return None
         for snap in snapshots:
             sibling = pick(_gguf_snapshot_files(snap))
@@ -1275,16 +1278,24 @@ def _hub_download_blocks_gguf_load(
             return True
     except Exception:
         return False
-    return (
-        cached_gguf_for_load(
-            hf_repo,
-            hf_variant,
-            require_mmproj = require_mmproj,
-            verify_sizes = True,
-            hf_token = hf_token,
-        )
-        is None
+    cached_main = cached_gguf_for_load(
+        hf_repo,
+        hf_variant,
+        verify_sizes = True,
+        hf_token = hf_token,
     )
+    if cached_main is None:
+        return True
+    if not require_mmproj:
+        return False
+    cached_pair = cached_gguf_for_load(
+        hf_repo,
+        hf_variant,
+        require_mmproj = True,
+        verify_sizes = True,
+        hf_token = hf_token,
+    )
+    return cached_pair != cached_main
 
 
 # Active GGUF loads by normalized repo ID.
@@ -5332,10 +5343,22 @@ class LlamaCppBackend:
         copy co-located with the main GGUF's cache snapshot.
         """
 
+        pick = _pick_mmproj
+        if near_path:
+            from utils.models.model_config import mmproj_matches_model_family
+            def pick(candidates):
+                return _pick_mmproj(
+                    [
+                        filename
+                        for filename in candidates
+                        if mmproj_matches_model_family(near_path, filename)
+                    ]
+                )
+
         return self._download_companion_gguf(
             hf_repo = hf_repo,
             hf_token = hf_token,
-            pick = _pick_mmproj,
+            pick = pick,
             label = "mmproj",
             cancel_event = cancel_event,
             near_path = near_path,

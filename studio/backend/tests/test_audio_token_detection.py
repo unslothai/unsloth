@@ -76,6 +76,7 @@ def test_structured_model_type_controls_chat_capability(model_type, audio_type, 
 @pytest.mark.parametrize("model_type", ["qwen3_asr", "whisper", "jukebox", "speech_to_text_2"])
 def test_unknown_non_chat_config_uses_raw_model_type(tmp_path, model_type):
     (tmp_path / "config.json").write_text(f'{{"model_type": "{model_type}"}}')
+    (tmp_path / "model-Q4_K_M.gguf").write_bytes(b"gguf")
     with patch("utils.models.model_config.load_model_config", side_effect = ValueError("unknown")):
         config = ModelConfig.from_identifier(str(tmp_path))
 

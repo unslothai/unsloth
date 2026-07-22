@@ -1932,8 +1932,14 @@ def _list_gguf_variants_from_hf_cache(
 
 
 def list_gguf_variants(
-    repo_id: str, hf_token: Optional[str] = None
-) -> tuple[list[GgufVariantInfo], bool]:
+    repo_id: str,
+    hf_token: Optional[str] = None,
+    *,
+    include_revision: bool = False,
+) -> Union[
+    tuple[list[GgufVariantInfo], bool],
+    tuple[list[GgufVariantInfo], bool, Optional[str]],
+]:
     """List all GGUF quant variants in a HF repo.
 
     Separates main model files from mmproj (vision projection) files; mmproj
@@ -1941,6 +1947,8 @@ def list_gguf_variants(
 
     Returns:
         (variants, has_vision): non-mmproj GGUF variants + vision flag.
+        When ``include_revision`` is true, append the live Hub revision SHA or
+        ``None`` when the result came from offline cache fallback.
     """
     from huggingface_hub import model_info as hf_model_info
 
@@ -1948,7 +1956,7 @@ def list_gguf_variants(
     if _env_offline():
         cached = _list_gguf_variants_from_hf_cache(repo_id, hf_token)
         if cached is not None:
-            return cached
+            return (*cached, None) if include_revision else cached
 
     try:
         info = hf_model_info(repo_id, token = hf_token, files_metadata = True)
@@ -1971,7 +1979,7 @@ def list_gguf_variants(
                 repo_id,
                 e.__class__.__name__,
             )
-            return cached
+            return (*cached, None) if include_revision else cached
         raise
     variants: list[GgufVariantInfo] = []
     has_vision = False
@@ -2013,6 +2021,8 @@ def list_gguf_variants(
     # demotion happen client-side where GPU VRAM info exists.
     variants.sort(key = lambda v: -v.size_bytes)
 
+    if include_revision:
+        return variants, has_vision, getattr(info, "sha", None)
     return variants, has_vision
 
 
@@ -2930,7 +2940,7 @@ class ModelConfig:
                     config_source,
                     gguf_audio_type,
                     hf_token,
-                    inspect_model_config = ambiguous_audio_projector,
+                    inspect_model_config = gguf_audio_type is None,
                 )
                 has_audio_in = has_audio_in or ambiguous_audio_projector
 
@@ -2980,7 +2990,9 @@ class ModelConfig:
                     raise LlamaServerNotFoundError(LLAMA_SERVER_NOT_FOUND_DETAIL)
 
                 # list_gguf_variants() detects vision & resolves the variant
-                variants, has_vision = list_gguf_variants(identifier, hf_token = hf_token)
+                variants, has_vision, live_revision = list_gguf_variants(
+                    identifier, hf_token = hf_token, include_revision = True
+                )
                 variant = gguf_variant
                 if not variant:  # auto-select best quant
                     variant_filenames = [v.filename for v in variants]
@@ -3001,7 +3013,23 @@ class ModelConfig:
                 ambiguous_projector_has_audio = False
                 if cached_gguf:
                     embedded_audio_type = detect_gguf_audio_type(cached_gguf)
-                    cached_mmproj = _companion_snapshot_sibling(cached_gguf, _pick_mmproj)
+                    cached_config_source = _local_gguf_config_source(
+                        cached_gguf, _snapshot_dir_of(cached_gguf)
+                    )
+                    if (Path(cached_config_source) / "config.json").is_file():
+                        config_source = cached_config_source
+                        inspect_model_config = embedded_audio_type is None
+
+                    def _pick_matching_mmproj(candidates):
+                        return _pick_mmproj(
+                            [
+                                filename
+                                for filename in candidates
+                                if mmproj_matches_model_family(cached_gguf, filename)
+                            ]
+                        )
+
+                    cached_mmproj = _companion_snapshot_sibling(cached_gguf, _pick_matching_mmproj)
                     if cached_mmproj and mmproj_matches_model_family(cached_gguf, cached_mmproj):
                         has_vision = True
                     if embedded_audio_type is None and has_vision:
@@ -3013,15 +3041,16 @@ class ModelConfig:
                             )
                             if offline:
                                 cached_mmproj = _cached_companion_for_repo(
-                                    identifier, cached_gguf, _pick_mmproj
+                                    identifier, cached_gguf, _pick_matching_mmproj
                                 )
                             else:
                                 inspect_model_config = True
                                 fallback_mmproj = _cached_companion_for_repo(
                                     identifier,
                                     cached_gguf,
-                                    _pick_mmproj,
+                                    _pick_matching_mmproj,
                                     current_ref_only = True,
+                                    revision = live_revision,
                                 )
                                 if fallback_mmproj and mmproj_matches_model_family(
                                     cached_gguf, fallback_mmproj

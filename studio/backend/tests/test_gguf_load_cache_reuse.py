@@ -80,6 +80,8 @@ from utils.models.model_config import ModelConfig
 REPO = "unsloth/gemma-test-GGUF"
 VARIANT = "UD-Q4_K_XL"
 MAIN = f"gemma-test-{VARIANT}.gguf"
+MATCHING_MMPROJ = "mmproj-gemma-F16.gguf"
+MISMATCHED_MMPROJ = "mmproj-llama-F16.gguf"
 
 
 def _build_cache(
@@ -423,18 +425,20 @@ class TestLoadReusesCachedCopy:
 
         assert out == str(snap / fallback)
 
-    def test_companion_prefers_main_snapshot_sibling(self, hf_cache):
-        """A cached mmproj is reused from the main model's snapshot."""
+    def test_companion_skips_mismatched_main_snapshot_sibling(self, hf_cache):
         backend = LlamaCppBackend()
-        snap = _build_cache(hf_cache, REPO, {MAIN: 4, "mmproj-F16.gguf": 2})
+        snap = _build_cache(hf_cache, REPO, {MAIN: 4, MISMATCHED_MMPROJ: 2})
 
-        def _fail_list(*_args, **_kwargs):
-            raise AssertionError("snapshot sibling must resolve without a repo listing")
-
-        with patch("huggingface_hub.list_repo_files", _fail_list):
+        with (
+            patch("huggingface_hub.list_repo_files", return_value = [MATCHING_MMPROJ]),
+            patch(
+                "core.inference.llama_cpp.hf_hub_download_with_xet_fallback",
+                return_value = "/downloaded/mmproj-gemma-F16.gguf",
+            ),
+        ):
             out = backend._download_mmproj(hf_repo = REPO, near_path = str(snap / MAIN))
 
-        assert out == str(snap / "mmproj-F16.gguf")
+        assert out == "/downloaded/mmproj-gemma-F16.gguf"
 
     def test_companion_finds_snapshot_through_hf_symlink(self, hf_cache):
         backend = LlamaCppBackend()
@@ -458,11 +462,9 @@ class TestLoadReusesCachedCopy:
 
     def test_cross_snapshot_projector_controls_cached_validation(self, hf_cache, monkeypatch):
         requested_repo = REPO.lower()
-        main = _build_cache(hf_cache, REPO, {MAIN: 4}, snapshot_sha = "a" * 40)
-        projector = _build_cache(hf_cache, REPO, {"mmproj-F16.gguf": 2}, snapshot_sha = "b" * 40)
-        same_snapshot_mmproj = main / "mmproj-F16.gguf"
-        same_snapshot_mmproj.write_bytes(b"mmproj")
-        (main / "config.json").write_text('{"model_type": "qwen3_asr"}')
+        main = _build_cache(hf_cache, REPO, {MAIN: 4, MISMATCHED_MMPROJ: 2}, snapshot_sha = "a" * 40)
+        projector = _build_cache(hf_cache, REPO, {MATCHING_MMPROJ: 2}, snapshot_sha = "b" * 40)
+        same_snapshot_mmproj = main / MISMATCHED_MMPROJ
 
         def load_config(source, **_kwargs):
             if source == requested_repo:
@@ -483,14 +485,15 @@ class TestLoadReusesCachedCopy:
                 side_effect = lambda repo: repo,
             ),
             patch("utils.models.model_config.detect_gguf_model_remote", return_value = MAIN),
-            patch("utils.models.model_config.list_gguf_variants", return_value = ([], True)),
+            patch(
+                "utils.models.model_config.list_gguf_variants",
+                return_value = ([], True, projector.name),
+            ),
             patch("huggingface_hub.get_paths_info", return_value = []) as hub_probe,
             patch("core.inference.llama_cpp._probe_dns_dead", return_value = True),
             patch(
                 "utils.models.model_config.detect_gguf_audio_type",
-                side_effect = lambda path: (
-                    "asr" if "mmproj" in path and path != str(same_snapshot_mmproj) else None
-                ),
+                side_effect = lambda path: "asr" if str(projector) in path else None,
             ),
             patch("utils.models.model_config.read_mmproj_audio_capability", return_value = True),
             patch(
@@ -503,10 +506,6 @@ class TestLoadReusesCachedCopy:
             ),
         ):
             assert chat_capable() is False
-            with patch("utils.models.model_config.list_gguf_variants", return_value = ([], False)):
-                selected = ModelConfig.from_identifier(requested_repo, gguf_variant = VARIANT)
-                assert selected.is_vision is True
-                assert selected.has_audio_input is True
             same_snapshot_mmproj.unlink()
 
             monkeypatch.setenv("HF_HUB_OFFLINE", "0")
@@ -515,13 +514,10 @@ class TestLoadReusesCachedCopy:
             ):
                 refs = projector.parent.parent / "refs"
                 refs.mkdir()
-                (refs / "main").write_text(projector.name)
-                _build_cache(
-                    hf_cache,
-                    REPO,
-                    {"mmproj-old-F16.gguf": 2},
-                    snapshot_sha = "c" * 40,
+                stale_projector = _build_cache(
+                    hf_cache, REPO, {MATCHING_MMPROJ: 2}, snapshot_sha = "c" * 40
                 )
+                (refs / "main").write_text(stale_projector.name)
                 with patch(
                     "utils.models.model_config._raw_config_model_type",
                     return_value = "future_audio",
@@ -542,7 +538,6 @@ class TestLoadReusesCachedCopy:
                 ):
                     assert chat_capable() is False
 
-                (main / "config.json").unlink()
                 (projector / "config.json").write_text('{"model_type": "qwen3_asr"}')
                 with (
                     patch("utils.models.model_config.detect_gguf_audio_type", return_value = None),
@@ -618,6 +613,9 @@ class TestCachedGgufForLoadProbe:
         assert cached_gguf_for_load(REPO, VARIANT) == str(snap / MAIN)
         assert cached_gguf_for_load(REPO, VARIANT, require_mmproj = True) is None
 
+        (snap / MISMATCHED_MMPROJ).write_bytes(b"mmproj")
+        assert cached_gguf_for_load(REPO, VARIANT, require_mmproj = True) is None
+        (snap / MISMATCHED_MMPROJ).unlink()
         (snap / "mmproj-F16.gguf").write_bytes(b"mmproj")
         assert cached_gguf_for_load(REPO, VARIANT, require_mmproj = True) == str(snap / MAIN)
 
@@ -763,7 +761,7 @@ class TestLoadHubDownloadExclusion:
         registry.set_job(key, "complete")
         assert registry.has_active_variant(REPO, VARIANT) is False
 
-    def test_other_variant_job_still_allows_complete_cached_load(self):
+    def test_other_variant_job_blocks_cross_snapshot_projector_pair(self):
         from core.inference.llama_cpp import _hub_download_blocks_gguf_load
         from hub.utils.download_registry import DownloadRegistry, TRANSPORT_HTTP
 
@@ -779,18 +777,10 @@ class TestLoadHubDownloadExclusion:
             patch("hub.utils.download_registry.get_models_registry", lambda: registry),
             patch(
                 "core.inference.llama_cpp.cached_gguf_for_load",
-                return_value = "/cached/model.gguf",
-            ) as cached_probe,
+                side_effect = ["/cached/new/model.gguf", "/cached/old/model.gguf"],
+            ),
         ):
-            assert _hub_download_blocks_gguf_load(REPO, VARIANT) is False
-
-        cached_probe.assert_called_once_with(
-            REPO,
-            VARIANT,
-            require_mmproj = False,
-            verify_sizes = True,
-            hf_token = None,
-        )
+            assert _hub_download_blocks_gguf_load(REPO, VARIANT, require_mmproj = True) is True
 
     def test_cancelled_request_keeps_marker_until_load_thread_finishes(self):
         from core.inference.llama_cpp import _with_gguf_load_marker
