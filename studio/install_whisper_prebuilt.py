@@ -165,7 +165,12 @@ SLIM_BACKEND_MODULE_GLOBS = {
 # Everything the slim wiring must mirror from the llama bin dir: the core ggml
 # sonames plus every dlopen'd backend module (CPU variants included). libggml*
 # matches the .so and .dylib names alike; ggml*.dll covers the Windows layout.
-SLIM_GGML_LIBRARY_GLOBS = ("libggml*", "ggml*.dll")
+# libomp*.dll rides along with the ggml objects: llama's clang-built
+# windows-arm64 ggml-base.dll imports libomp140.aarch64.dll, shipped in the
+# llama bundle but never a system DLL, so the loader needs it next to
+# whisper-server.exe (MSVC x64 uses vcomp140.dll from System32; Linux ggml
+# needs system libgomp.so.1, a requirement llama itself already imposes).
+SLIM_GGML_LIBRARY_GLOBS = ("libggml*", "ggml*.dll", "libomp*.dll")
 
 INSTALL_STAGING_ROOT_NAME = ".staging"
 
@@ -608,7 +613,7 @@ def link_ggml_runtime(llama_bin_dir: Path, whisper_bin_dir: Path) -> list[str]:
             if path.is_file()
         }
     )
-    if not sources:
+    if not any(source.name.startswith(("libggml", "ggml")) for source in sources):
         raise PrebuiltFallback(
             f"no ggml libraries found in {llama_bin_dir} to pair the slim whisper install"
         )

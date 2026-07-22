@@ -920,6 +920,30 @@ def test_link_ggml_runtime_fails_closed_on_empty_runtime(tmp_path):
         M.link_ggml_runtime(empty, tmp_path / "whisper_bin")
 
 
+def test_link_ggml_runtime_wires_windows_libomp(tmp_path):
+    # llama's clang-built windows-arm64 ggml-base.dll imports
+    # libomp140.aarch64.dll (bundled, not a system DLL): the wiring must place
+    # it next to whisper-server.exe or the loader dies with DLL_NOT_FOUND.
+    bin_dir = tmp_path / "llama_bin"
+    bin_dir.mkdir()
+    for name in ("ggml.dll", "ggml-base.dll", "ggml-cpu.dll", "libomp140.aarch64.dll"):
+        (bin_dir / name).write_bytes(b"x")
+    (bin_dir / "llama.dll").write_bytes(b"x")  # never wired
+    whisper_bin = tmp_path / "whisper_bin"
+    linked = M.link_ggml_runtime(bin_dir, whisper_bin)
+    assert linked == ["ggml-base.dll", "ggml-cpu.dll", "ggml.dll", "libomp140.aarch64.dll"]
+    assert not (whisper_bin / "llama.dll").exists()
+
+
+def test_link_ggml_runtime_libomp_alone_is_not_a_pairing(tmp_path):
+    # A libomp without any ggml library is not a usable llama runtime.
+    bin_dir = tmp_path / "llama_bin"
+    bin_dir.mkdir()
+    (bin_dir / "libomp140.aarch64.dll").write_bytes(b"x")
+    with pytest.raises(PrebuiltFallback):
+        M.link_ggml_runtime(bin_dir, tmp_path / "whisper_bin")
+
+
 def _build_slim_bundle(tmp_path: Path, host: HostInfo) -> tuple[Path, str]:
     """Slim archive per the CI contract: whisper-server + libwhisper only."""
     archive = tmp_path / SLIM_ASSET
