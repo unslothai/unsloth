@@ -530,6 +530,7 @@ export const en = {
         "Showing {shown} of {total} matches. Keep typing to narrow the list.",
       quantization: "Quantization",
       loadingQuantizations: "Loading quantizations...",
+      noQuantizations: "No separate quantization",
       recommended: "Recommended",
       downloaded: "Downloaded",
       quantizationLoadError:

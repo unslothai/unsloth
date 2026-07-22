@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { getClientPlatform } from "@/components/tauri/window-titlebar";
 import {
   Command,
   CommandEmpty,
@@ -27,6 +28,7 @@ import {
   listGgufVariants,
   listModels,
 } from "@/features/chat";
+import { useHfTokenStore } from "@/features/hub";
 import type { TranslationKey } from "@/i18n";
 import { useT } from "@/i18n";
 import { isTauri } from "@/lib/api-base";
@@ -45,6 +47,7 @@ import { ApiProviderLogo } from "../../chat/api-provider-logo";
 import { loadCodingAgents } from "../api/coding-agents";
 import { isLoopbackHost, normalizeHost } from "../components/agent-command";
 import { SettingsSection } from "../components/settings-section";
+import { psSingle, shSingle } from "../components/usage-examples";
 
 const DOCS_URL = "https://unsloth.ai/docs/integrations/unsloth-start";
 const EXAMPLE_MODEL_REPO = "unsloth/gemma-4-E4B-it-GGUF";
@@ -368,15 +371,24 @@ function CommandBlock({ command }: { command: string }) {
   );
 }
 
+// Quote a --model value for copy-paste. Safe identifiers are left as-is; only
+// values with shell metacharacters (e.g. a local path with spaces) are quoted.
+function quoteShellArg(value: string, windows: boolean): string {
+  if (/^[A-Za-z0-9_./:@%+=,-]+$/.test(value)) {
+    return value;
+  }
+  return windows ? `'${psSingle(value)}'` : `'${shSingle(value)}'`;
+}
+
 function SubagentSection({
   agent,
-  commandModel,
+  commandModelArg,
 }: {
   agent: AgentDetails;
-  commandModel: string;
+  commandModelArg: string;
 }) {
   const t = useT();
-  const command = `unsloth start ${agent.id} --as-subagent --model ${commandModel}`;
+  const command = `unsloth start ${agent.id} --as-subagent --model ${commandModelArg}`;
   const prompt =
     agent.id === "opencode"
       ? t("settings.agents.subagent.opencodePrompt")
@@ -460,8 +472,14 @@ function SubagentSection({
 
 export function AgentsTab() {
   const t = useT();
-  const deviceType = usePlatformStore((s) => s.deviceType);
   const serverUrl = usePlatformStore((s) => s.serverUrl);
+  const hfToken = useHfTokenStore((s) => s.token);
+  // The copied commands run on the client's machine, so quote and pick the
+  // remote shell from the client platform, not the server-reported deviceType.
+  const [isWindowsClient] = useState(() => {
+    const p = getClientPlatform();
+    return p.startsWith("win") || p.includes("windows");
+  });
   const origin = typeof window !== "undefined" ? window.location.origin : "";
   const localDetection = canUseLocalAgentDetection(serverUrl ?? origin);
   const [agents, setAgents] = useState<string[]>(
@@ -514,14 +532,14 @@ export function AgentsTab() {
   const commandModel = selectedVariant
     ? `${selectedModel}:${selectedVariant}`
     : selectedModel;
-  const command = `unsloth start ${selectedAgent} --model ${commandModel}`;
+  const commandModelArg = quoteShellArg(commandModel, isWindowsClient);
+  const command = `unsloth start ${selectedAgent} --model ${commandModelArg}`;
   const {
     copied,
     copy: handleCopy,
     reset: resetCopied,
   } = useCopyButton(command);
-  const remoteCommand =
-    deviceType === "windows" ? REMOTE_CMD_WINDOWS : REMOTE_CMD_UNIX;
+  const remoteCommand = isWindowsClient ? REMOTE_CMD_WINDOWS : REMOTE_CMD_UNIX;
 
   useEffect(() => {
     void fetchDeviceType({ force: true });
@@ -591,11 +609,13 @@ export function AgentsTab() {
       };
     }
 
-    listGgufVariants(selectedModel)
+    listGgufVariants(selectedModel, hfToken || undefined)
       .then((info) => {
         if (cancelled) {
           return;
         }
+        // Clear a prior failure once a later request (e.g. after adding a token) succeeds.
+        setVariantsFailed(false);
         const uniqueVariants = Array.from(
           new Map(
             info.variants.map((variant) => [variant.quant, variant]),
@@ -644,7 +664,7 @@ export function AgentsTab() {
     return () => {
       cancelled = true;
     };
-  }, [preferredVariant, selectedModel]);
+  }, [hfToken, preferredVariant, selectedModel]);
 
   return (
     <div className="flex min-w-0 max-w-full flex-col gap-6">
@@ -854,7 +874,11 @@ export function AgentsTab() {
                 className="w-full rounded-lg font-mono text-xs"
               >
                 <SelectValue
-                  placeholder={t("settings.agents.loadingQuantizations")}
+                  placeholder={
+                    variantsLoading
+                      ? t("settings.agents.loadingQuantizations")
+                      : t("settings.agents.noQuantizations")
+                  }
                 >
                   {selectedVariant}
                 </SelectValue>
@@ -917,8 +941,8 @@ export function AgentsTab() {
 
         <SubagentSection
           key={`${selectedAgent}:${commandModel}`}
+          commandModelArg={commandModelArg}
           agent={selectedAgentDetails}
-          commandModel={commandModel}
         />
 
         <p className="text-[11px] leading-relaxed text-muted-foreground">
