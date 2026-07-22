@@ -3210,6 +3210,36 @@ class TestStrixRocm71Override:
         with patch.object(Path, "read_text", return_value = "model name : AMD Radeon 8065S\n"):
             assert stack_mod._linux_amd_gfx_from_cpuinfo() == "gfx1151"
 
+    def test_infer_gfx_gated_out_of_wsl_without_runtime(self):
+        """On WSL the cpuinfo/lspci inference must be skipped unless the WSL ROCDXG
+        runtime (librocdxg) is present: a bare `unsloth studio update` must not
+        install per-arch ROCm wheels into an env that still can't expose the GPU.
+        An explicit UNSLOTH_ROCM_GFX_ARCH override stays authoritative regardless."""
+        m = stack_mod
+        with patch.object(m, "_linux_amd_gfx_from_cpuinfo", return_value = "gfx1151"), patch.object(
+            m, "_linux_gpu_marketing_name_from_lspci", return_value = None
+        ), patch.dict(os.environ, {"UNSLOTH_ROCM_GFX_ARCH": ""}):
+            # WSL + no runtime -> inference suppressed (CPU torch stays).
+            with patch.object(m, "_is_wsl", return_value = True), patch.object(
+                m, "_wsl_rocm_runtime_present", return_value = False
+            ):
+                assert m._infer_linux_amd_gfx_arch() is None
+            # WSL + runtime present (this dev box) -> inference still runs.
+            with patch.object(m, "_is_wsl", return_value = True), patch.object(
+                m, "_wsl_rocm_runtime_present", return_value = True
+            ):
+                assert m._infer_linux_amd_gfx_arch() == "gfx1151"
+            # Native Linux (not WSL) -> the gate never applies.
+            with patch.object(m, "_is_wsl", return_value = False), patch.object(
+                m, "_wsl_rocm_runtime_present", return_value = False
+            ):
+                assert m._infer_linux_amd_gfx_arch() == "gfx1151"
+        # Explicit override wins even on a bare WSL box (no runtime).
+        with patch.object(m, "_is_wsl", return_value = True), patch.object(
+            m, "_wsl_rocm_runtime_present", return_value = False
+        ), patch.dict(os.environ, {"UNSLOTH_ROCM_GFX_ARCH": "gfx1151"}):
+            assert m._infer_linux_amd_gfx_arch() == "gfx1151"
+
     def test_strix_gfx_detection_in_install_sh(self):
         """install.sh must detect gfx1151 and gfx1150 for the override."""
         source = _INSTALL_SH_PATH.read_text(encoding = "utf-8")

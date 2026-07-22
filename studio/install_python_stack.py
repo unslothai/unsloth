@@ -792,11 +792,39 @@ def _linux_gpu_marketing_name_from_lspci() -> "str | None":
     return None
 
 
+def _is_wsl() -> bool:
+    """True on WSL, where the AMD GPU is reached via /dev/dxg (not /dev/kfd)."""
+    if os.path.exists("/dev/dxg"):
+        return True
+    try:
+        with open("/proc/version", encoding = "utf-8", errors = "replace") as fh:
+            return "microsoft" in fh.read().lower()
+    except OSError:
+        return False
+
+
+def _wsl_rocm_runtime_present() -> bool:
+    """librocdxg (the WSL ROCDXG bridge that lets HIP reach the GPU over /dev/dxg)
+    under a ROCm lib dir. Its absence marks a WSL box whose ROCm was never set up."""
+    dirs = ["/opt/rocm/lib", "/opt/rocm/lib64"]
+    dirs += glob.glob("/opt/rocm-*/lib") + glob.glob("/opt/rocm-*/lib64")
+    return any(
+        os.path.exists(os.path.join(d, so))
+        for d in dirs
+        for so in ("librocdxg.so", "librocdxg.so.1")
+    )
+
+
 def _infer_linux_amd_gfx_arch() -> "str | None":
     """Infer gfx when ROCm runtime is absent but the host is a known AMD arch (unslothai#7301)."""
     override = (os.environ.get("UNSLOTH_ROCM_GFX_ARCH") or "").strip().lower()
     if override:
         return override
+    # cpuinfo/lspci see the host APU even on a WSL box whose ROCDXG runtime was
+    # never bootstrapped; inferring there would install per-arch ROCm wheels into
+    # an env that still can't expose the GPU. Skip unless that runtime is present.
+    if _is_wsl() and not _wsl_rocm_runtime_present():
+        return None
     cpu_gfx = _linux_amd_gfx_from_cpuinfo()
     if cpu_gfx:
         return cpu_gfx
