@@ -2486,10 +2486,11 @@ def claude(
                 "claude",
                 "--plugin-dir",
                 _agent_config_path(plugin, ["claude"]),
-                *_yolo_command_flags("claude", yolo),
-                *ctx.args,
+                # Before ctx.args: a forwarded `--` would turn later flags positional.
                 "--allowedTools",
                 _CLAUDE_SUBAGENT_TOOL,
+                *_yolo_command_flags("claude", yolo),
+                *ctx.args,
             ]
             typer.echo(
                 "Unsloth is available as a local agent. "
@@ -2702,6 +2703,11 @@ def opencode(
                 as_subagent = True,
             )
             env = {"OPENCODE_CONFIG": str(config_path)}
+            if launch and _which_with_install_dirs("opencode") is None:
+                # Provider-filter inspection needs the binary; offer the install now so
+                # a global/project allowlist is honored on this first launch instead of
+                # being read only after _launch installs OpenCode.
+                _install_agent("opencode", "npm install -g opencode-ai")
             inline_config = _opencode_subagent_inline_config(config_path, session_permission)
             # A project opencode.json outranks the session file and could field-merge its
             # own agent.unsloth over ours. Pin ours in the inline overlay so it wins.

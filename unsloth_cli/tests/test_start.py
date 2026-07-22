@@ -807,9 +807,9 @@ def test_connect_claude_as_subagent_preserves_cloud_parent(fake_studio, tmp_path
         "claude",
         "--plugin-dir",
         str(plugin),
-        "hello",
         "--allowedTools",
         start._CLAUDE_SUBAGENT_TOOL,
+        "hello",
     ]
     assert "--model" not in command
     parent_base = "$env:ANTHROPIC_BASE_URL" if os.name == "nt" else "export ANTHROPIC_BASE_URL="
@@ -2832,6 +2832,51 @@ def test_connect_opencode_as_subagent_preserves_cloud_parent(fake_studio, tmp_pa
     agent = config["agent"]["unsloth"]
     assert agent["model"] == expected_model
     assert "Unsloth is available as @unsloth and in /models." in result.output
+
+
+def test_claude_subagent_allowed_tools_precede_forwarded_delimiter(fake_studio):
+    # A forwarded `--` makes everything after it positional; the tool pre-approval
+    # must be parsed as an option, so it rides before ctx.args.
+    result = CliRunner().invoke(
+        start.start_app,
+        ["claude", "--as-subagent", "--no-launch", "--", "--resume", "abc123"],
+    )
+    assert result.exit_code == 0, result.output
+    command = _launch_command(result.output)
+    assert command.index("--allowedTools") < command.index("--resume")
+
+
+def test_opencode_subagent_installs_binary_before_filter_inspection(fake_studio, monkeypatch):
+    # The effective-config inspection needs the opencode binary; a first launch must
+    # offer the install before building the overlay, or a global allowlist read only
+    # after _launch installs OpenCode would filter out the new provider.
+    installed = {}
+    monkeypatch.setattr(
+        start,
+        "_which_with_install_dirs",
+        lambda name: "/usr/local/bin/opencode" if installed.get("done") else None,
+    )
+
+    def install(name, hint):
+        installed["done"] = True
+        installed["name"] = name
+        return "/usr/local/bin/opencode"
+
+    monkeypatch.setattr(start, "_install_agent", install)
+    inspected = {}
+
+    def inline(path, permission):
+        inspected["binary"] = start._which_with_install_dirs("opencode")
+        return {}
+
+    monkeypatch.setattr(start, "_opencode_subagent_inline_config", inline)
+    monkeypatch.setattr(start, "_run", lambda *a, **k: None)
+
+    result = CliRunner().invoke(start.start_app, ["opencode", "--as-subagent"])
+
+    assert result.exit_code == 0, result.output
+    assert installed["name"] == "opencode"
+    assert inspected["binary"] == "/usr/local/bin/opencode"
 
 
 def test_opencode_subagent_pins_agent_in_inline_overlay(fake_studio, monkeypatch):
