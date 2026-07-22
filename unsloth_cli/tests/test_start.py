@@ -2515,8 +2515,7 @@ def test_write_opencode_config_fresh(tmp_path):
         MODEL["id"]: {"name": MODEL["id"], "limit": {"context": 131072, "output": 8192}}
     }
     assert config["model"] == f"{start._OPENCODE_PROVIDER}/{MODEL['id']}"
-    # The overlay never writes disabled_providers; the dedicated provider id is one a
-    # user's disable list would not target, so nothing needs re-enabling.
+    # Provider filters belong to the launch-time inline overlay, not this config writer.
     assert "disabled_providers" not in config
     # Compaction buffer scaled to ~10% of the window (compact near 90%).
     assert config["compaction"] == {"auto": True, "reserved": 131072 // 10}
@@ -2585,6 +2584,41 @@ def test_write_opencode_config_as_subagent_preserves_parent_model(tmp_path):
     assert agent["model"] == f"{start._OPENCODE_PROVIDER}/{local['id']}"
     assert "local agent" in agent["description"].lower()
     assert local["id"] in config["provider"][start._OPENCODE_PROVIDER]["models"]
+
+
+def test_opencode_subagent_inline_keeps_parent_provider_filters(monkeypatch, tmp_path):
+    config_path = tmp_path / "opencode.json"
+    inherited = {"theme": "tokyonight"}
+    monkeypatch.setenv("OPENCODE_CONFIG_CONTENT", json.dumps(inherited))
+    monkeypatch.setattr(start, "_which_with_install_dirs", lambda _: "/usr/bin/opencode")
+    captured = {}
+
+    def run(command, **kwargs):
+        captured["command"] = command
+        captured.update(kwargs)
+        return SimpleNamespace(
+            returncode = 0,
+            stdout = json.dumps(
+                {
+                    "enabled_providers": ["opencode-go"],
+                    "disabled_providers": ["ollama", start._OPENCODE_PROVIDER],
+                }
+            ),
+            stderr = "",
+        )
+
+    monkeypatch.setattr(start.subprocess, "run", run)
+    permission = {"edit": "allow"}
+    inline = start._opencode_subagent_inline_config(config_path, permission)
+
+    assert captured["command"] == ["/usr/bin/opencode", "debug", "config"]
+    assert captured["env"]["OPENCODE_CONFIG"] == str(config_path)
+    assert inline == {
+        "theme": "tokyonight",
+        "enabled_providers": ["opencode-go", start._OPENCODE_PROVIDER],
+        "disabled_providers": ["ollama"],
+        "permission": permission,
+    }
 
 
 def _opencode_inline_config(output: str) -> dict:
@@ -2675,7 +2709,8 @@ def test_connect_opencode_no_launch(fake_studio, tmp_path):
     assert not any(c[1].endswith("/api/inference/status") for c in fake_studio)
 
 
-def test_connect_opencode_as_subagent_preserves_cloud_parent(fake_studio, tmp_path):
+def test_connect_opencode_as_subagent_preserves_cloud_parent(fake_studio, tmp_path, monkeypatch):
+    monkeypatch.setattr(start, "_opencode_subagent_inline_config", lambda path, permission: {})
     result = CliRunner().invoke(
         start.start_app,
         [
@@ -2697,6 +2732,32 @@ def test_connect_opencode_as_subagent_preserves_cloud_parent(fake_studio, tmp_pa
     agent = config["agent"]["unsloth"]
     assert agent["model"] == (f"{start._OPENCODE_PROVIDER}/{MODEL['id']}:UD-Q4_K_XL")
     assert "Unsloth is available as @unsloth and in /models." in result.output
+
+
+def test_connect_opencode_subagent_yolo_no_launch_stays_append_safe(fake_studio, monkeypatch):
+    monkeypatch.setattr(start, "_opencode_supports_native_auto", lambda: True)
+    captured = {}
+
+    def inline(path, permission):
+        captured["permission"] = permission
+        return {"permission": permission}
+
+    monkeypatch.setattr(start, "_opencode_subagent_inline_config", inline)
+    result = CliRunner().invoke(
+        start.start_app,
+        ["opencode", "--as-subagent", "--no-launch", "--yolo"],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert _launch_command(result.output) == ["opencode"]
+    assert "--auto" not in result.output
+    assert captured["permission"] == {
+        "edit": "allow",
+        "bash": "allow",
+        "webfetch": "allow",
+        "external_directory": {"*": "allow"},
+    }
+    assert _opencode_inline_config(result.output)["permission"] == captured["permission"]
 
 
 # ── Hermes (OpenAI /v1/chat/completions, key via env) ────────────────

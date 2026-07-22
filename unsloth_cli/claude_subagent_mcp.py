@@ -7,9 +7,11 @@ from __future__ import annotations
 
 import json
 import os
+import signal
 import shutil
 import subprocess
 import sys
+import threading
 from typing import Any, Callable
 
 from unsloth_cli.commands.start import (
@@ -22,6 +24,8 @@ from unsloth_cli.commands.start import (
 )
 
 _MAX_RESULT_CHARACTERS = 100_000
+_CANCEL_POLL_SECONDS = 0.1
+_CANCEL_GRACE_SECONDS = 2.0
 
 
 def _required_env(name: str) -> str:
@@ -55,7 +59,39 @@ def _result_text(stdout: str) -> str:
     raise RuntimeError("The local Claude agent returned no readable result.")
 
 
-def run_local_agent(task: str) -> str:
+def _stop_child(process: subprocess.Popen) -> None:
+    """Stop the Claude child and any tool processes it started."""
+    if process.poll() is not None:
+        return
+    if os.name == "nt":
+        try:
+            subprocess.run(
+                ["taskkill", "/PID", str(process.pid), "/T", "/F"],
+                capture_output = True,
+                timeout = 15,
+                check = False,
+            )
+        except Exception:
+            process.terminate()
+    else:
+        try:
+            os.killpg(process.pid, signal.SIGTERM)
+        except OSError:
+            process.terminate()
+    try:
+        process.wait(timeout = _CANCEL_GRACE_SECONDS)
+    except subprocess.TimeoutExpired:
+        if os.name == "nt":
+            process.kill()
+        else:
+            try:
+                os.killpg(process.pid, signal.SIGKILL)
+            except OSError:
+                process.kill()
+        process.wait()
+
+
+def run_local_agent(task: str, cancel_event: threading.Event | None = None) -> str:
     base = _required_env("UNSLOTH_CLAUDE_SUBAGENT_BASE_URL")
     key = _required_env("UNSLOTH_CLAUDE_SUBAGENT_API_KEY")
     model = _required_env("UNSLOTH_CLAUDE_SUBAGENT_MODEL")
@@ -67,6 +103,9 @@ def run_local_agent(task: str) -> str:
     executable = shutil.which("claude")
     if executable is None:
         raise RuntimeError("`claude` is not installed or is not on PATH.")
+    cancel_event = cancel_event or threading.Event()
+    if cancel_event.is_set():
+        raise RuntimeError("The local Claude agent was cancelled.")
     command = [
         "claude",
         "--model",
@@ -98,19 +137,40 @@ def run_local_agent(task: str) -> str:
         for name in _CLAUDE_ENV_UNSET:
             child_env.pop(name, None)
     child_env.update(bridged)
-    completed = subprocess.run(
+    popen_kwargs: dict[str, Any] = {
+        "cwd": os.environ.get("CLAUDE_PROJECT_DIR") or os.getcwd(),
+        "env": child_env,
+        "stdout": subprocess.PIPE,
+        "stderr": subprocess.PIPE,
+        "text": True,
+    }
+    if os.name == "nt":
+        popen_kwargs["creationflags"] = subprocess.CREATE_NEW_PROCESS_GROUP
+    else:
+        popen_kwargs["start_new_session"] = True
+    process = subprocess.Popen(
         [executable, *command[1:]],
-        cwd = os.environ.get("CLAUDE_PROJECT_DIR") or os.getcwd(),
-        env = child_env,
-        capture_output = True,
-        text = True,
+        **popen_kwargs,
     )
-    if completed.returncode != 0:
-        detail = completed.stderr.strip() or completed.stdout.strip()
+    try:
+        while True:
+            try:
+                stdout, stderr = process.communicate(timeout = _CANCEL_POLL_SECONDS)
+                break
+            except subprocess.TimeoutExpired:
+                if cancel_event.is_set():
+                    _stop_child(process)
+                    raise RuntimeError("The local Claude agent was cancelled.")
+    except BaseException:
+        if process.poll() is None:
+            _stop_child(process)
+        raise
+    if process.returncode != 0:
+        detail = stderr.strip() or stdout.strip()
         raise RuntimeError(
-            _bounded(detail) or f"Local Claude exited with code {completed.returncode}."
+            _bounded(detail) or f"Local Claude exited with code {process.returncode}."
         )
-    return _result_text(completed.stdout)
+    return _result_text(stdout)
 
 
 def _response(request: dict, run_agent: Callable[[str], str] = run_local_agent) -> dict | None:
@@ -182,20 +242,78 @@ def _response(request: dict, run_agent: Callable[[str], str] = run_local_agent) 
     return {"jsonrpc": "2.0", "id": request_id, "result": result}
 
 
-def serve(stdin: Any = sys.stdin, stdout: Any = sys.stdout) -> None:
-    for line in stdin:
-        try:
-            request = json.loads(line)
-            response = _response(request) if isinstance(request, dict) else None
-        except Exception as exc:
-            response = {
-                "jsonrpc": "2.0",
-                "id": None,
-                "error": {"code": -32603, "message": str(exc)},
-            }
-        if response is not None:
+def serve(
+    stdin: Any = sys.stdin,
+    stdout: Any = sys.stdout,
+    run_agent: Callable[[str, threading.Event], str] = run_local_agent,
+) -> None:
+    active: dict[object, threading.Event] = {}
+    workers: list[threading.Thread] = []
+    state_lock = threading.Lock()
+    output_lock = threading.Lock()
+
+    def send(response: dict | None) -> None:
+        if response is None:
+            return
+        with output_lock:
             stdout.write(json.dumps(response, separators = (",", ":")) + "\n")
             stdout.flush()
+
+    def call_tool(request: dict, request_id: object, cancel_event: threading.Event) -> None:
+        try:
+            response = _response(
+                request,
+                run_agent = lambda task: run_agent(task, cancel_event),
+            )
+            if not cancel_event.is_set():
+                send(response)
+        finally:
+            with state_lock:
+                if active.get(request_id) is cancel_event:
+                    active.pop(request_id, None)
+
+    try:
+        for line in stdin:
+            try:
+                request = json.loads(line)
+                if not isinstance(request, dict):
+                    response = None
+                elif request.get("method") == "notifications/cancelled":
+                    request_id = (request.get("params") or {}).get("requestId")
+                    with state_lock:
+                        cancel_event = active.get(request_id)
+                    if cancel_event is not None:
+                        cancel_event.set()
+                    response = None
+                elif request.get("method") == "tools/call" and request.get("id") is not None:
+                    request_id = request["id"]
+                    cancel_event = threading.Event()
+                    with state_lock:
+                        active[request_id] = cancel_event
+                    worker = threading.Thread(
+                        target = call_tool,
+                        args = (request, request_id, cancel_event),
+                        name = f"unsloth-agent-{request_id}",
+                    )
+                    workers.append(worker)
+                    worker.start()
+                    response = None
+                else:
+                    response = _response(request)
+            except Exception as exc:
+                response = {
+                    "jsonrpc": "2.0",
+                    "id": None,
+                    "error": {"code": -32603, "message": str(exc)},
+                }
+            send(response)
+    finally:
+        with state_lock:
+            pending = list(active.values())
+        for cancel_event in pending:
+            cancel_event.set()
+        for worker in workers:
+            worker.join()
 
 
 if __name__ == "__main__":

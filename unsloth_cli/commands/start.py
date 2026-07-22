@@ -86,11 +86,10 @@ _SUBAGENT_INSTRUCTIONS = (
 _CLAUDE_SUBAGENT_MCP_MODULE = "unsloth_cli.claude_subagent_mcp"
 _CLAUDE_SUBAGENT_TOOL = "mcp__plugin_unsloth-local-agent_unsloth__unsloth_agent"
 _PI_SUBAGENT_EXTENSION = Path(__file__).parent.parent / "pi_subagent.ts"
-# OpenCode selects a model by "<providerID>/<modelID>" and honors a user
-# disabled_providers list. Register the session provider under a dedicated id a
-# user's disable list would never target, so the model is always selectable
-# without the wrapper having to reconstruct (and override) OpenCode's full,
-# multi-layer disabled_providers resolution.
+# OpenCode selects a model by "<providerID>/<modelID>". Keep the session provider
+# under a dedicated id to avoid colliding with a user's configured providers. Its
+# enabled and disabled provider filters are handled in the highest-priority session
+# overlay at launch time.
 _OPENCODE_PROVIDER = "unsloth-studio"
 _PROVIDER_HEADER = f"[model_providers.{_CODEX_PROFILE}]"
 _PASSTHROUGH = {"allow_extra_args": True, "ignore_unknown_options": True}
@@ -1490,6 +1489,63 @@ def _agent_config_path(path: Path, command: list) -> str:
     return _wsl_windows_path(path) if _wsl_windows_executable(command) else str(path)
 
 
+def _opencode_subagent_inline_config(path: Path, permission: dict) -> dict:
+    """Keep the local provider visible without hiding the parent's allowed providers."""
+    inline: dict = {}
+    inherited = os.environ.get("OPENCODE_CONFIG_CONTENT")
+    if inherited:
+        try:
+            parsed = json.loads(inherited)
+        except ValueError:
+            _fail("OPENCODE_CONFIG_CONTENT is not valid JSON.")
+        if not isinstance(parsed, dict):
+            _fail("OPENCODE_CONFIG_CONTENT must contain a JSON object.")
+        inline.update(parsed)
+
+    executable = _which_with_install_dirs("opencode")
+    if executable is None:
+        typer.echo(
+            f"Warning: OpenCode is not installed, so provider filters could not be checked. "
+            f"The target configuration must allow '{_OPENCODE_PROVIDER}'.",
+            err = True,
+        )
+    else:
+        env = os.environ.copy()
+        env["OPENCODE_CONFIG"] = _agent_config_path(path, ["opencode"])
+        try:
+            resolved = subprocess.run(
+                [executable, "debug", "config"],
+                capture_output = True,
+                text = True,
+                timeout = 15,
+                env = env,
+            )
+        except Exception as exc:
+            _fail(f"Could not inspect OpenCode provider filters: {exc}")
+        if resolved.returncode != 0:
+            detail = resolved.stderr.strip() or resolved.stdout.strip()
+            _fail(f"Could not inspect OpenCode provider filters: {detail or 'unknown error'}")
+        try:
+            effective = json.loads(resolved.stdout)
+        except ValueError:
+            _fail("Could not inspect OpenCode provider filters: invalid JSON response.")
+        if not isinstance(effective, dict):
+            _fail("Could not inspect OpenCode provider filters: expected a JSON object.")
+
+        enabled = effective.get("enabled_providers")
+        if isinstance(enabled, list):
+            inline["enabled_providers"] = list(dict.fromkeys([*enabled, _OPENCODE_PROVIDER]))
+        disabled = effective.get("disabled_providers")
+        if isinstance(disabled, list) and _OPENCODE_PROVIDER in disabled:
+            inline["disabled_providers"] = [
+                provider for provider in disabled if provider != _OPENCODE_PROVIDER
+            ]
+
+    if permission:
+        inline["permission"] = permission
+    return inline
+
+
 def write_claude_subagent_plugin(path: Path) -> Path:
     """Write a session plugin that exposes the local Claude child through MCP."""
     plugin = path / "unsloth-local-agent"
@@ -2144,10 +2200,8 @@ def write_opencode_config(
         return {}
     before = json.dumps(config, sort_keys = True)
     config.setdefault("$schema", "https://opencode.ai/config.json")
-    # The session provider is registered under a dedicated id (_OPENCODE_PROVIDER)
-    # that a user's disabled_providers list would never target, so it is always
-    # selectable without this overlay having to reconstruct or override OpenCode's
-    # disabled_providers resolution.
+    # Keep the provider definition in this private session file. The launch path
+    # adjusts effective provider filters in the higher-priority inline overlay.
     model_entry = {"name": model["id"]}
     window = model.get("context_length") or model.get("max_context_length")
     if window:
@@ -2567,7 +2621,10 @@ def opencode(
     if as_subagent:
         subagent_id = _subagent_model_id(base, key, entry, model, gguf_variant)
         subagent_model = {**entry, "id": subagent_id}
-        route_native_auto = yolo and _opencode_supports_native_auto()
+        # A bare no-launch recipe must stay append-safe. The eventual driver may append
+        # `run <prompt>`, and `opencode --auto run ...` is parsed as the TUI with project
+        # `run`. With no command yet, keep yolo in the inline permission fallback.
+        route_native_auto = yolo and _opencode_supports_native_auto() and (launch or bool(ctx.args))
         opencode_args, native_auto = _opencode_native_auto_args(list(ctx.args), route_native_auto)
         command = ["opencode", *opencode_args]
         with _session_config("opencode-subagent", launch, persist = persist) as cfg:
@@ -2581,8 +2638,9 @@ def opencode(
                 as_subagent = True,
             )
             env = {"OPENCODE_CONFIG": str(config_path)}
-            if session_permission:
-                env["OPENCODE_CONFIG_CONTENT"] = json.dumps({"permission": session_permission})
+            inline_config = _opencode_subagent_inline_config(config_path, session_permission)
+            if inline_config:
+                env["OPENCODE_CONFIG_CONTENT"] = json.dumps(inline_config)
             typer.echo("Unsloth is available as @unsloth and in /models.")
             _run(
                 base,
