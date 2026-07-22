@@ -2861,16 +2861,19 @@ case "$_torch_index_leaf" in
         # ROCR_VISIBLE_DEVICES so a mixed Strix iGPU + non-Strix dGPU box
         # where the user selected the dGPU does NOT get rerouted to the
         # Strix per-gfx index.
+        # || true on each probe: no gfx match makes grep exit 1, which under
+        # set -euo pipefail would abort the installer before the next fallback
+        # runs (now that the case matches every rocm* index, not just rocm7.1).
         _gfx_all=""
         if command -v rocminfo >/dev/null 2>&1; then
-            _gfx_all=$(rocminfo 2>/dev/null | grep -oE 'gfx[1-9][0-9a-z]{2,3}')
+            _gfx_all=$(rocminfo 2>/dev/null | grep -oE 'gfx[1-9][0-9a-z]{2,3}' || true)
         fi
         if [ -z "$_gfx_all" ] && command -v amd-smi >/dev/null 2>&1; then
-            _gfx_all=$(amd-smi list 2>/dev/null | grep -oE 'gfx[1-9][0-9a-z]{2,3}')
+            _gfx_all=$(amd-smi list 2>/dev/null | grep -oE 'gfx[1-9][0-9a-z]{2,3}' || true)
             # PowerShell paths also probe `amd-smi static --asic`; mirror it
             # so a host with hipinfo-less amd-smi reports the gfx target.
             if [ -z "$_gfx_all" ]; then
-                _gfx_all=$(amd-smi static --asic 2>/dev/null | grep -oE 'gfx[1-9][0-9a-z]{2,3}')
+                _gfx_all=$(amd-smi static --asic 2>/dev/null | grep -oE 'gfx[1-9][0-9a-z]{2,3}' || true)
             fi
         fi
         _runtime_gfx=""

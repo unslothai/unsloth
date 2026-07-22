@@ -7,6 +7,7 @@ import re
 import shutil
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
 from unittest.mock import MagicMock, mock_open, patch, PropertyMock
 
@@ -3221,6 +3222,34 @@ class TestStrixRocm71Override:
             assert below(leaf), f"{leaf} must reroute (below arch floor 7.13)"
         for leaf in ("rocm7.13", "rocm7.14", "rocm8.0", "gfx1151", "cu128", "cpu"):
             assert not below(leaf), f"{leaf} must NOT reroute (>= floor or non-rocm)"
+
+    def test_gfx_probe_survives_no_match_under_set_e(self):
+        """A gfx probe whose grep finds no match must not abort install.sh under
+        set -euo pipefail before the amd-smi fallback runs. The reroute case now
+        matches every rocm* index, so this would break ordinary 6.x/7.2 installs
+        with a flaky rocminfo. Executed with shimmed tools, not a text match."""
+        shell = shutil.which("bash")
+        if not shell:
+            pytest.skip("bash needed to execute the probe block")
+        source = _INSTALL_SH_PATH.read_text(encoding = "utf-8")
+        block = re.search(
+            r'^        _gfx_all=""\n.*?(?=^        _strix_gfx="")', source, re.S | re.M
+        )
+        assert block, "could not extract the gfx-detection block"
+        with tempfile.TemporaryDirectory() as d:
+            # rocminfo emits no gfx token; amd-smi supplies gfx1151 (the fallback)
+            for name, out in (("rocminfo", "no gpu here"), ("amd-smi", "GPU: gfx1151")):
+                p = os.path.join(d, name)
+                with open(p, "w", encoding = "utf-8") as f:
+                    f.write(f'#!/bin/sh\ncat <<"EOT"\n{out}\nEOT\n')
+                os.chmod(p, 0o755)
+            script = ('set -euo pipefail\nHIP_VISIBLE_DEVICES=""\nROCR_VISIBLE_DEVICES=""\n'
+                      + block.group(0) + '\nprintf "OK:%s\\n" "$_gfx_all"\n')
+            env = dict(os.environ, PATH = d + os.pathsep + os.environ.get("PATH", ""))
+            r = subprocess.run([shell, "-c", script], env = env,
+                               capture_output = True, text = True)
+            assert r.returncode == 0, f"probe aborted under set -e: {r.stderr}"
+            assert "OK:gfx1151" in r.stdout, f"amd-smi fallback not reached: {r.stdout!r}"
 
     def test_torch_constraint_updated_for_strix_amd_index(self):
         """install.sh must set TORCH_CONSTRAINT>=2.11 when routing Strix to AMD index."""
