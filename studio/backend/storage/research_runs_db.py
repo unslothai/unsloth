@@ -192,11 +192,25 @@ def create_run(
                     if isinstance(existing_metadata, dict)
                     else None
                 )
+                # Only bind to an empty placeholder or this run's own message. An
+                # untagged reply carries text/source parts that _update_assistant
+                # drops on completion, so binding one silently overwrites an
+                # existing answer (for example a retry reusing a prior answer id).
+                existing_answer = any(
+                    isinstance(part, dict)
+                    and (
+                        (part.get("type") == "text" and (part.get("text") or "").strip())
+                        or part.get("type") == "source"
+                    )
+                    and part.get("researchRunId") is None
+                    for part in _loads(message["content_json"], [])
+                )
                 if (
                     message["thread_id"] != thread_id
                     or message["role"] != "assistant"
                     or message["parent_id"] != user_message_id
                     or existing_run_id not in (None, run_id)
+                    or (existing_run_id is None and existing_answer)
                 ):
                     raise ResearchConflictError(
                         "Assistant message does not match this research run"

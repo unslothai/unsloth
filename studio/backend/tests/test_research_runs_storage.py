@@ -2208,6 +2208,43 @@ def test_create_run_conflict_rolls_back_placeholder_and_run(research_home):
     assert studio_db.get_chat_message("thread-1", "conflict")["parentId"] is None
 
 
+def test_create_run_rejects_binding_to_populated_reply(research_home):
+    # A prior answer under the same user turn (untagged, no researchRunId) must
+    # not be adopted as the placeholder: _update_assistant would drop its
+    # text/source parts on completion and silently overwrite that answer.
+    studio_db.upsert_chat_message(
+        {
+            "id": "prior-answer",
+            "threadId": "thread-1",
+            "parentId": "user-1",
+            "role": "assistant",
+            "content": [
+                {"type": "text", "text": "existing answer"},
+                {"type": "source", "sourceType": "url", "url": "https://kept.example"},
+            ],
+            "createdAt": 4,
+        }
+    )
+    with pytest.raises(research_db.ResearchConflictError):
+        _create(assistant_message_id = "prior-answer")
+    assert research_db.get_run("run-1") is None
+    preserved = studio_db.get_chat_message("thread-1", "prior-answer")
+    assert preserved["content"][0]["text"] == "existing answer"
+    # An empty placeholder under the same turn is still accepted.
+    studio_db.upsert_chat_message(
+        {
+            "id": "empty-placeholder",
+            "threadId": "thread-1",
+            "parentId": "user-1",
+            "role": "assistant",
+            "content": [],
+            "createdAt": 5,
+        }
+    )
+    run = _create(assistant_message_id = "empty-placeholder")
+    assert run["assistantMessageId"] == "empty-placeholder"
+
+
 def test_update_assistant_replaces_report_parts_without_duplication(research_home):
     from core.research_runs import _update_assistant
 
