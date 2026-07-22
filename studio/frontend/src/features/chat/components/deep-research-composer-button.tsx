@@ -160,7 +160,6 @@ export function DeepResearchComposerButton({
       <span>Deep research</span>
       <span className="composer-pill-caret flex items-center gap-0.5 text-primary/70">
         <GlobeLockIcon className={cn("size-3.5", !limited && "opacity-55")} />
-        <span className="text-[11px] font-medium">Websites</span>
         <ChevronDownIcon className="size-3" />
       </span>
     </button>
