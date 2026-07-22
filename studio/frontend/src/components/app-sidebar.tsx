@@ -1358,6 +1358,18 @@ export function AppSidebar() {
           <SidebarGroupContent>
             <SidebarMenu>
               <NavItem
+                icon={DashboardCircleIcon}
+                label={t("shell.navigation.hub")}
+                active={pathname === "/hub" || pathname.startsWith("/hub/")}
+                onClick={() => {
+                  navigate({ to: "/hub" });
+                  closeMobileIfOpen();
+                }}
+                onIntent={() => {
+                  preloadSilently(router.preloadRoute({ to: "/hub" }));
+                }}
+              />
+              <NavItem
                 icon={Folder01Icon}
                 label="Projects"
                 active={
@@ -1392,18 +1404,6 @@ export function AppSidebar() {
                   </span>
                 </button>
               </NavItem>
-              <NavItem
-                icon={DashboardCircleIcon}
-                label={t("shell.navigation.hub")}
-                active={pathname === "/hub" || pathname.startsWith("/hub/")}
-                onClick={() => {
-                  navigate({ to: "/hub" });
-                  closeMobileIfOpen();
-                }}
-                onIntent={() => {
-                  preloadSilently(router.preloadRoute({ to: "/hub" }));
-                }}
-              />
               {/* Train has a labelled section when expanded; plain icon here only when collapsed. */}
               <NavItem
                 icon={TestTubeOutlineIcon}
