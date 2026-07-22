@@ -41,6 +41,7 @@ export const zhCN = {
       search: "搜索",
       hub: "Hub",
       train: "训练",
+      notebooks: "笔记本",
       recipes: "配方",
       export: "导出",
       recents: "最近",

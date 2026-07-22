@@ -303,6 +303,7 @@ from routes import (
     inference_studio_router,
     mcp_servers_router,
     models_router,
+    notebooks_router,
     providers_router,
     rag_router,
     training_history_router,
@@ -993,6 +994,7 @@ app.include_router(datasets_router, prefix = "/api/datasets", tags = ["datasets"
 app.include_router(data_recipe_router, prefix = "/api/data-recipe", tags = ["data-recipe"])
 app.include_router(llama_router, prefix = "/api/llama", tags = ["llama"])
 app.include_router(export_router, prefix = "/api/export", tags = ["export"])
+app.include_router(notebooks_router, prefix = "/api/notebooks", tags = ["notebooks"])
 app.include_router(rag_router, prefix = "/api/rag", tags = ["rag"])
 app.include_router(training_history_router, prefix = "/api/train", tags = ["training-history"])
 app.include_router(hub_inventory_router, prefix = "/api/hub", tags = ["hub"])
