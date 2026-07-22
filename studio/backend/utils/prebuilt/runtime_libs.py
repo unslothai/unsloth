@@ -22,10 +22,13 @@ def dedupe_existing_dirs(paths: Iterable[str | Path]) -> list[str]:
     for raw in paths:
         if not raw:
             continue
-        path = Path(raw).expanduser()
-        if not path.is_dir():
+        try:
+            path = Path(raw).expanduser()
+            if not path.is_dir():
+                continue
+            resolved = str(path.resolve())
+        except (OSError, ValueError):
             continue
-        resolved = str(path.resolve())
         if resolved in seen:
             continue
         seen.add(resolved)

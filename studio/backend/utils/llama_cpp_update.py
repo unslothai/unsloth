@@ -17,17 +17,18 @@ Design notes:
   thread; callers poll get_update_status() for the job state.
 - Everything fails open: a missing marker / offline GitHub / source build just
   reports update_available=False and never blocks the app.
+- The mechanics (managed-root resolution, local-link detection, the resolve
+  probe, the streamed installer run) live in utils.prebuilt.update_flow; this
+  module keeps the llama policy and the job dict its callers poll.
 """
 
 from __future__ import annotations
 
-import json
 import os
 import re
 import subprocess
 import sys
 import threading
-import time
 from pathlib import Path
 from typing import Optional
 
@@ -43,7 +44,7 @@ from utils.llama_cpp_freshness import (
     reset_caches,
     update_download_size_bytes,
 )
-from utils.process_lifetime import child_popen_kwargs
+from utils.prebuilt import update_flow as _flow
 
 logger = structlog.get_logger(__name__)
 
@@ -51,33 +52,18 @@ DEFAULT_PUBLISHED_REPO = "unslothai/llama.cpp"
 _INSTALL_TIMEOUT_SECONDS = 1800  # 30 min ceiling for download + build/validate
 
 # Background job state. Single in-flight update at a time, guarded by _job_lock.
-_JOB_IDLE = "idle"
-_JOB_RUNNING = "running"
-_JOB_SUCCESS = "success"
-_JOB_ERROR = "error"
+_JOB_IDLE = _flow.JOB_IDLE
+_JOB_RUNNING = _flow.JOB_RUNNING
+_JOB_SUCCESS = _flow.JOB_SUCCESS
+_JOB_ERROR = _flow.JOB_ERROR
 
 _job_lock = threading.Lock()
-_job: dict = {
-    "state": _JOB_IDLE,
-    "message": "",
-    "from_tag": None,
-    "to_tag": None,
-    "reload_required": None,
-    "error": None,
-    "progress": None,
-    "started_at": None,
-    "finished_at": None,
-}
+_job: dict = _flow.new_job()
 
-# Matches the installer's download progress lines, e.g.
-# "Downloading x.zip:  35.0% (12.3 MiB/35.1 MiB) at 8.2 MiB/s".
-_PROGRESS_LINE_RE = re.compile(r"(\d+(?:\.\d+)?)%\s*\(")
-# The download dominates the update; extract/validate fill the last slice.
-_DOWNLOAD_PROGRESS_CEILING = 0.95
-
-
-def _utcnow() -> str:
-    return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+_utcnow = _flow.utcnow
+_is_under = _flow.is_under
+_is_external_link = _flow.is_external_link
+_rocm_install_args = _flow.rocm_install_args
 
 
 def _find_binary() -> Optional[str]:
@@ -94,37 +80,19 @@ def _find_binary() -> Optional[str]:
 
 def _install_dir_for(binary_path: Optional[str]) -> Optional[Path]:
     """The directory holding UNSLOTH_PREBUILT_INFO.json -- i.e. the install root
-    install_llama_prebuilt.py wrote and the one we re-install into. Walks up from
-    the binary the same way read_install_marker() does."""
-    if not binary_path:
-        return None
-    p = Path(binary_path)
-    for parent in p.parents[:5]:
-        if (parent / _INSTALL_MARKER_NAME).is_file():
-            return parent
-    return None
+    install_llama_prebuilt.py wrote and the one we re-install into."""
+    return _flow.install_dir_for(binary_path, marker_name = _INSTALL_MARKER_NAME)
 
 
 def _installer_script() -> Optional[Path]:
-    """Locate install_llama_prebuilt.py. Honours UNSLOTH_LLAMA_INSTALLER, then
-    searches up from this file for both ``<root>/install_llama_prebuilt.py`` and
-    ``<root>/studio/install_llama_prebuilt.py`` so it works in the dev tree and
-    in an installed Unsloth layout."""
-    env = os.environ.get("UNSLOTH_LLAMA_INSTALLER")
-    if env and Path(env).is_file():
-        return Path(env)
-    here = Path(__file__).resolve()
-    for up in here.parents:
-        for cand in (up / "install_llama_prebuilt.py", up / "studio" / "install_llama_prebuilt.py"):
-            if cand.is_file():
-                return cand
-    return None
+    """Locate install_llama_prebuilt.py (UNSLOTH_LLAMA_INSTALLER wins)."""
+    return _flow.find_installer_script(
+        env_var = "UNSLOTH_LLAMA_INSTALLER", script_name = "install_llama_prebuilt.py"
+    )
 
 
 # Markerless (source-build) installs have no UNSLOTH_PREBUILT_INFO.json, so we
-# ask the installer whether an official prebuilt now exists for this host. Memo
-# is 24h; only successful answers are cached so a network blip retries.
-_RESOLVE_TTL_SECONDS = 24 * 60 * 60
+# ask the installer whether an official prebuilt now exists for this host.
 _resolve_memo: dict = {}
 
 
@@ -132,39 +100,12 @@ def _resolve_prebuilt_for_host(*, force_refresh: bool = False) -> Optional[dict]
     """Run install_llama_prebuilt.py --resolve-prebuilt (no download) and return
     {prebuilt_available, repo, release_tag, llama_tag, asset, install_kind} or
     None. Fail-open: any error -> None so a source build never blocks the app."""
-    now = time.time()
-    if not force_refresh and _resolve_memo:
-        if now - _resolve_memo.get("at", 0.0) < _RESOLVE_TTL_SECONDS:
-            return _resolve_memo.get("value")
-    script = _installer_script()
-    if script is None:
-        return None
-    value: Optional[dict] = None
-    try:
-        proc = subprocess.run(
-            [
-                sys.executable,
-                str(script),
-                "--resolve-prebuilt",
-                "latest",
-                "--output-format",
-                "json",
-            ],
-            capture_output = True,
-            text = True,
-            timeout = 60,
-        )
-        out = (proc.stdout or "").strip()
-        if proc.returncode == 0 and out:
-            parsed = json.loads(out.splitlines()[-1])
-            if isinstance(parsed, dict):
-                value = parsed
-    except Exception as exc:  # pragma: no cover - subprocess/json defensive
-        logger.debug("llama update: resolve-prebuilt failed", error = str(exc))
-        value = None
-    if value is not None:  # cache real answers; let failures retry next poll
-        _resolve_memo.update(at = now, value = value)
-    return value
+    return _flow.resolve_prebuilt_for_host(
+        force_refresh = force_refresh,
+        memo = _resolve_memo,
+        installer_script = lambda: _installer_script(),
+        log_message = "llama update: resolve-prebuilt failed",
+    )
 
 
 def _installed_build_number(binary: Optional[str]) -> Optional[int]:
@@ -218,38 +159,16 @@ def get_installed_llama_version() -> Optional[str]:
     return f"b{n}" if n is not None else None
 
 
-def _is_under(path: Path, root: Path) -> bool:
-    try:
-        p, r = path.resolve(), root.resolve()
-    except (OSError, ValueError):
-        p, r = path, root
-    return p == r or r in p.parents
-
-
 def _llama_install_root(binary: Optional[str]) -> Optional[Path]:
     """The Unsloth-managed llama.cpp root the active binary lives under, or None
-    when the binary is unmanaged. Installing anywhere the active binary is not
-    would not replace what _find_llama_server_binary runs (which prefers a pinned
-    LLAMA_SERVER_PATH, then UNSLOTH_LLAMA_CPP_PATH, then a llama.cpp tree), so we
-    refuse rather than silently install into an inactive or foreign tree."""
-    marked = _install_dir_for(binary)
-    if marked is not None:
-        return marked
-    if not binary:
-        return None
-    # LLAMA_SERVER_PATH is an explicit user pin that always wins in discovery;
-    # never auto-replace its tree (even a user's own llama.cpp checkout).
-    if os.environ.get("LLAMA_SERVER_PATH"):
-        return None
-    p = Path(binary)
-    env = os.environ.get("UNSLOTH_LLAMA_CPP_PATH")
-    if env and _is_under(p, Path(env)):
-        return Path(env)
-    for parent in p.parents:
-        if parent.name == "llama.cpp":
-            return parent
-    # PATH / system / custom install: not a managed tree, so do not offer.
-    return None
+    when the binary is unmanaged (see update_flow.managed_install_root)."""
+    return _flow.managed_install_root(
+        binary,
+        marker_root = _install_dir_for(binary),
+        server_path_var = "LLAMA_SERVER_PATH",
+        cpp_path_var = "UNSLOTH_LLAMA_CPP_PATH",
+        dir_name = "llama.cpp",
+    )
 
 
 def _source_build_status(binary: str, *, force_refresh: bool) -> Optional[dict]:
@@ -324,62 +243,16 @@ def _source_build_status(binary: str, *, force_refresh: bool) -> Optional[dict]:
     }
 
 
-def _is_external_link(path: Optional[Path]) -> bool:
-    """True when ``path`` is a --with-llama-cpp-dir local link: a POSIX symlink
-    or a Windows directory junction / reparse point. Such a link resolves into
-    the user's own llama.cpp checkout, so Unsloth must never auto-update it."""
-    if path is None:
-        return False
-    try:
-        if os.path.islink(path):
-            return True
-    except OSError:
-        return False
-    if os.name == "nt":
-        try:
-            import stat
-            attrs = os.lstat(path).st_file_attributes  # type: ignore[attr-defined]
-            return bool(attrs & stat.FILE_ATTRIBUTE_REPARSE_POINT)
-        except (OSError, AttributeError):
-            return False
-    return False
-
-
 def _active_install_is_local_link(binary: Optional[str]) -> bool:
     """True when the active llama-server resolves through a --with-llama-cpp-dir
-    local link at the canonical llama.cpp directory. An update would write
-    through that link into the user's own checkout (or fail), so the install is
-    treated as externally managed: no update is offered or applied. Checks only
-    up to and including the ``llama.cpp`` dir so a symlinked HOME / studio root
-    above it can't trip a false positive."""
-    if not binary:
-        return False
-    for parent in Path(binary).parents:
-        if _is_external_link(parent):
-            return True
-        if parent.name == "llama.cpp":
-            break
-    return False
+    local link at the canonical llama.cpp directory (see
+    update_flow.active_install_is_local_link)."""
+    return _flow.active_install_is_local_link(binary, dir_name = "llama.cpp")
 
 
 def _local_link_status() -> dict:
     """Status payload for a local-link install: unmanaged, no update offered."""
-    with _job_lock:
-        job = dict(_job)
-    return {
-        "supported": False,
-        "update_available": False,
-        "stale": False,
-        "installed_tag": None,
-        "latest_tag": None,
-        "published_repo": None,
-        "installed_at_utc": None,
-        "age_days": None,
-        "source_build": False,
-        "local_link": True,
-        "update_size_bytes": None,
-        "job": job,
-    }
+    return _flow.local_link_status(_job, _job_lock)
 
 
 def get_update_status(*, force_refresh: bool = False) -> dict:
@@ -456,23 +329,6 @@ def get_update_status(*, force_refresh: bool = False) -> dict:
     }
 
 
-def _rocm_install_args(asset: Optional[str]) -> list[str]:
-    """Forward --rocm-gfx/--has-rocm from the marker asset, mirroring setup.sh.
-    The installer probe can miss the gfx arch on amd-smi-only hosts; per-gfx
-    ROCm bundles carry the family in the name (rocm-gfx110X), version-tagged
-    bundles only rocm/hip."""
-    if not asset:
-        return []
-    low = asset.lower()
-    if "rocm" not in low and "hip" not in low:
-        return []
-    gfx = re.search(r"-gfx[0-9a-z]+", low)
-    if gfx:
-        # _normalize_forwarded_gfx accepts the family form (gfx110x -> gfx110X).
-        return ["--rocm-gfx", gfx.group(0).lstrip("-")]
-    return ["--has-rocm"]
-
-
 def _run_update(
     install_dir: Path,
     repo: str,
@@ -523,7 +379,6 @@ def _run_update(
             cmd.extend(["--published-release-tag", pin_release_tag])
         cmd.extend(_rocm_install_args(asset))
         logger.info("llama update: installing", cmd = " ".join(cmd))
-        # Stream progress lines into job["progress"].
         env = dict(os.environ, UNSLOTH_PROGRESS_PERCENT_STEP = "5")
         # Preserve a Vulkan install across updates: detect_host on a CUDA/ROCm
         # box would otherwise re-route and silently replace the Vulkan build.
@@ -531,44 +386,13 @@ def _run_update(
         # _rocm_install_args).
         if asset and "vulkan" in asset.lower():
             env["UNSLOTH_FORCE_VULKAN"] = "1"
-        proc = subprocess.Popen(
+        _flow.stream_installer(
             cmd,
-            stdout = subprocess.PIPE,
-            stderr = subprocess.STDOUT,
-            text = True,
-            env = env,
-            **child_popen_kwargs(),
+            env,
+            job = _job,
+            job_lock = _job_lock,
+            timeout_seconds = _INSTALL_TIMEOUT_SECONDS,
         )
-        timed_out = threading.Event()
-
-        def _kill_on_timeout() -> None:
-            timed_out.set()
-            proc.kill()
-
-        watchdog = threading.Timer(_INSTALL_TIMEOUT_SECONDS, _kill_on_timeout)
-        watchdog.daemon = True
-        watchdog.start()
-        tail_lines: list[str] = []
-        try:
-            assert proc.stdout is not None
-            for line in proc.stdout:
-                tail_lines.append(line)
-                if len(tail_lines) > 80:
-                    del tail_lines[0]
-                m = _PROGRESS_LINE_RE.search(line)
-                if m is None:
-                    continue
-                fraction = min(float(m.group(1)) / 100.0, 1.0) * _DOWNLOAD_PROGRESS_CEILING
-                with _job_lock:
-                    _job["progress"] = max(_job.get("progress") or 0.0, fraction)
-            returncode = proc.wait()
-        finally:
-            watchdog.cancel()
-        if timed_out.is_set():
-            raise RuntimeError(f"installer timed out after {_INSTALL_TIMEOUT_SECONDS}s")
-        if returncode != 0:
-            tail = "".join(tail_lines).strip()[-1500:]
-            raise RuntimeError(f"installer exited {returncode}: {tail or 'no output'}")
 
         # Drop stale caches so the banner re-checks the swapped marker.
         # If GitHub is offline, latest stays unknown and the banner fails open.
@@ -745,15 +569,4 @@ def start_update() -> dict:
 
 def _reset_job_for_tests() -> None:
     """Test-only: return the job tracker to idle."""
-    with _job_lock:
-        _job.update(
-            state = _JOB_IDLE,
-            message = "",
-            from_tag = None,
-            to_tag = None,
-            reload_required = None,
-            error = None,
-            progress = None,
-            started_at = None,
-            finished_at = None,
-        )
+    _flow.reset_job(_job, _job_lock)
