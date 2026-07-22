@@ -981,6 +981,8 @@ export const en = {
       optimizer: "Optimizer",
       optimizerTooltip:
         "Optimization algorithm. 8-bit variants reduce memory usage. Fused is recommended for vision models.",
+      optimizerTooltipMlx:
+        "Optimization algorithm. AdamW is the default. Lion uses less memory but usually needs a lower learning rate.",
       lrScheduler: "LR scheduler",
       lrSchedulerTooltip:
         "How the learning rate changes over training. Linear decays steadily; cosine decays in a curve.",

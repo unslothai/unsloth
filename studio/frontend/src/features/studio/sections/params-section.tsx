@@ -783,7 +783,11 @@ export function ParamsSection(): ReactElement {
                     label={t("studio.params.optimizer")}
                     tooltip={
                       <>
-                        {t("studio.params.optimizerTooltip")}{" "}
+                        {t(
+                          isMac
+                            ? "studio.params.optimizerTooltipMlx"
+                            : "studio.params.optimizerTooltip",
+                        )}{" "}
                         <a
                           href="https://unsloth.ai/docs/get-started/fine-tuning-llms-guide/lora-hyperparameters-guide"
                           target="_blank"
