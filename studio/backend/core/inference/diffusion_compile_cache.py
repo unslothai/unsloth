@@ -15,6 +15,15 @@ error. Hence an EXACT-MATCH fingerprint with SILENT FALLBACK to local compile (a
 normal), and per-arch bundles keyed by the full fingerprint. See
 ``outputs/compile_cache/DISTRIBUTION.md``.
 
+GGUF loads participate too (fingerprinted ``quant="gguf"``, a different compiled graph
+than the dense family): ``torch.compile`` mode="default" runs clean over diffusers'
+GGUF dequant path (measured on torch 2.10 / diffusers 0.39), but the cold warmup is
+HEAVY at batched shapes -- ~159 s first-pass wall on a 12B-class 4-step model at
+batch 32, up to ~655 s on a 20B CFG-batched model at 1024px -- which is exactly the
+cost this bundle amortises to once-ever. Batched generation registers every distinct
+(width, height, batch) chunk shape it runs via ``register_shape`` so a static-compile
+bundle grows to cover the batch sizes actually used, OOM-backoff halves included.
+
 Lifecycle (around ``_compile_repeated_blocks``): ``begin`` builds the fingerprint, points
 ``TORCHINDUCTOR_CACHE_DIR`` at a per-key dir, and loads a matching bundle (before the
 first compiled forward); ``save`` writes the bundle + manifest after the warmup forward

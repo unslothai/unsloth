@@ -14413,6 +14413,8 @@ async def generate_diffusion_image(
             guidance = request.guidance,
             seed = request.seed,
             batch_size = request.batch_size,
+            prompts = request.prompts,
+            seeds = request.seeds,
             init_image = request.init_image,
             mask_image = request.mask_image,
             strength = request.strength,
@@ -14451,9 +14453,9 @@ async def generate_diffusion_image(
         logger.error("diffusion.generate_failed: %s", exc, exc_info = True)
         raise HTTPException(status_code = 500, detail = "Image generation failed.")
 
-    # Persist each image with its full recipe embedded. The diffusers batch shares one seed
-    # (drawn sequentially from one generator); the native sd.cpp batch uses a distinct seed
-    # per image, returned in ``seeds`` so each is reproducible.
+    # Persist each image with its full recipe embedded. BOTH engines batch with a distinct
+    # seed per image (diffusers via one torch.Generator per image, native sd.cpp via
+    # base + index), returned in ``seeds`` so each image is individually reproducible.
     created_at = time.time()
     per_image_seeds = result.get("seeds")
 
@@ -14469,7 +14471,13 @@ async def generate_diffusion_image(
                 image_gallery.save(
                     image,
                     {
-                        "prompt": request.prompt,
+                        # A prompts-list batch records each image's OWN prompt so its recipe
+                        # replays exactly; otherwise every image shares the single prompt.
+                        "prompt": (
+                            request.prompts[index]
+                            if request.prompts and index < len(request.prompts)
+                            else request.prompt
+                        ),
                         "negative_prompt": request.negative_prompt,
                         # Persist the ACTUAL output size, not the request sliders:
                         # Transform/Inpaint/Edit derive it from the uploaded image, Extend grows

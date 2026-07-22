@@ -269,7 +269,11 @@ class _FakePipe:
             "cfg_trunc_ratio": cfg_trunc_ratio,
             **kwargs,
         }
+        # Mirror diffusers batching: a prompt LIST yields one image per prompt, and
+        # num_images_per_prompt fans each prompt out.
         n = kwargs.get("num_images_per_prompt", 1)
+        if isinstance(prompt, list):
+            n *= len(prompt)
         return types.SimpleNamespace(images = [_FakeImage() for _ in range(n)])
 
 
@@ -481,9 +485,11 @@ def test_load_generate_unload_gguf(fake_runtime, tmp_path):
     gen2 = backend.generate(prompt = "again", seed = 99)
     assert gen2["seed"] == 99
 
-    # batch_size produces that many images in one call, all sharing the seed.
+    # batch_size produces that many images in one call, seeded base..base+2 per image
+    # (matching the native engine) so each batch member replays alone from its recipe.
     batch = backend.generate(prompt = "batch", seed = 7, batch_size = 3)
     assert len(batch["images"]) == 3 and batch["seed"] == 7
+    assert batch["seeds"] == [7, 8, 9]
 
     assert backend.unload()["loaded"] is False
     assert backend.is_loaded is False
@@ -3551,3 +3557,141 @@ def test_unload_waits_for_in_flight_denoise_before_teardown():
     assert unloaded.is_set()
     # Teardown ran exactly once, and only AFTER the denoise had exited (denoise_active was False).
     assert teardown_saw == [False]
+
+
+# Batched generation (prompt/seed lists, per-image generators, OOM backoff)
+
+
+def _load_zimage_backend(tmp_path):
+    (tmp_path / "model.gguf").write_bytes(b"weights")
+    backend = DiffusionBackend()
+    backend.load_pipeline(
+        str(tmp_path),
+        gguf_filename = "model.gguf",
+        base_repo = "base/repo",
+        family_override = "z-image",
+    )
+    return backend
+
+
+def test_generate_seed_list_uses_one_generator_per_image(fake_runtime, tmp_path):
+    backend = _load_zimage_backend(tmp_path)
+    out = backend.generate(prompt = "a sloth", seeds = [11, 22, 33, 44])
+    assert len(out["images"]) == 4
+    assert out["seeds"] == [11, 22, 33, 44]
+    assert out["seed"] == 11  # base seed = first per-image seed
+    call = backend._state.pipe.last_kwargs
+    # A uniform prompt is encoded ONCE and fanned out; each image gets its own generator.
+    assert call["prompt"] == "a sloth"
+    assert call["num_images_per_prompt"] == 4
+    assert [g.manual for g in call["generator"]] == [11, 22, 33, 44]
+
+
+def test_generate_prompt_list_one_image_per_prompt(fake_runtime, tmp_path):
+    backend = _load_zimage_backend(tmp_path)
+    out = backend.generate(prompt = "fallback", prompts = ["a", "b", "c"], seed = 100)
+    assert len(out["images"]) == 3
+    assert out["seeds"] == [100, 101, 102]  # derived from the base seed
+    call = backend._state.pipe.last_kwargs
+    assert call["prompt"] == ["a", "b", "c"]
+    assert call["num_images_per_prompt"] == 1
+    assert [g.manual for g in call["generator"]] == [100, 101, 102]
+
+
+def test_generate_prompt_list_with_matching_seed_list(fake_runtime, tmp_path):
+    backend = _load_zimage_backend(tmp_path)
+    out = backend.generate(prompt = "fallback", prompts = ["a", "b"], seeds = [5, 6])
+    assert out["seeds"] == [5, 6]
+    with pytest.raises(ValueError, match = "same length"):
+        backend.generate(prompt = "fallback", prompts = ["a", "b"], seeds = [5])
+
+
+def test_generate_single_image_keeps_scalar_generator(fake_runtime, tmp_path):
+    # The single-image call shape is the bit-identical reference path: scalar prompt,
+    # ONE scalar generator (not a 1-list), num_images_per_prompt=1.
+    backend = _load_zimage_backend(tmp_path)
+    out = backend.generate(prompt = "one", seed = 5)
+    call = backend._state.pipe.last_kwargs
+    assert not isinstance(call["generator"], list)
+    assert call["generator"].manual == 5
+    assert call["num_images_per_prompt"] == 1
+    assert out["seeds"] == [5]
+
+
+def test_generate_batched_seed_matches_solo_replay(fake_runtime, tmp_path):
+    # Per-image reproducibility contract: image i of a batched call is driven by the
+    # exact generator seed a solo replay of that image uses.
+    backend = _load_zimage_backend(tmp_path)
+    backend.generate(prompt = "p", seeds = [3, 9])
+    batched = [g.manual for g in backend._state.pipe.last_kwargs["generator"]]
+    backend.generate(prompt = "p", seed = 9)
+    solo = backend._state.pipe.last_kwargs["generator"].manual
+    assert batched[1] == solo == 9
+
+
+def test_generate_prompt_list_rejected_off_txt2img(fake_runtime, tmp_path):
+    backend = _load_zimage_backend(tmp_path)
+    with pytest.raises(ValueError, match = "text-to-image only"):
+        backend.generate(
+            prompt = "x", prompts = ["a", "b"], init_image = _tiny_png_b64()
+        )
+
+
+class _CountingPipe(_FakePipe):
+    """Records each forward's image count; optionally OOMs above ``max_images``."""
+
+    def __init__(self, max_images = None):
+        super().__init__()
+        self.batch_attempts = []
+        self.max_images = max_images
+
+    def __call__(self, *, prompt = None, **kwargs):
+        n = kwargs.get("num_images_per_prompt", 1)
+        if isinstance(prompt, list):
+            n *= len(prompt)
+        self.batch_attempts.append(n)
+        if self.max_images is not None and n > self.max_images:
+            raise _FakeOutOfMemoryError("CUDA out of memory. Tried to allocate everything")
+        return super().__call__(prompt = prompt, **kwargs)
+
+
+# Structural stand-in for torch.cuda.OutOfMemoryError (matched by class name).
+_FakeOutOfMemoryError = type("OutOfMemoryError", (RuntimeError,), {})
+
+
+def test_generate_explicit_batch_size_caps_per_forward(fake_runtime, tmp_path):
+    backend = _load_zimage_backend(tmp_path)
+    pipe = _CountingPipe()
+    object.__setattr__(backend._state, "pipe", pipe)
+    out = backend.generate(prompt = "p", seeds = [1, 2, 3, 4], batch_size = 2)
+    assert pipe.batch_attempts == [2, 2]
+    assert len(out["images"]) == 4
+    assert out["seeds"] == [1, 2, 3, 4]
+
+
+def test_generate_oom_backoff_halves_the_batch(fake_runtime, tmp_path):
+    backend = _load_zimage_backend(tmp_path)
+    pipe = _CountingPipe(max_images = 2)
+    object.__setattr__(backend._state, "pipe", pipe)
+    out = backend.generate(prompt = "p", seeds = [1, 2, 3, 4])
+    # The full batch OOMs once, then both halves run; images + seeds stay complete.
+    assert pipe.batch_attempts == [4, 2, 2]
+    assert len(out["images"]) == 4
+    assert out["seeds"] == [1, 2, 3, 4]
+
+
+class _BoomPipe(_CountingPipe):
+    """Fails every forward with a NON-OOM error (must not trigger backoff)."""
+
+    def __call__(self, *, prompt = None, **kwargs):
+        self.batch_attempts.append(kwargs.get("num_images_per_prompt", 1))
+        raise RuntimeError("shape mismatch")
+
+
+def test_generate_non_oom_error_is_not_retried(fake_runtime, tmp_path):
+    backend = _load_zimage_backend(tmp_path)
+    pipe = _BoomPipe()
+    object.__setattr__(backend._state, "pipe", pipe)
+    with pytest.raises(RuntimeError, match = "shape mismatch"):
+        backend.generate(prompt = "p", seeds = [1, 2, 3, 4])
+    assert pipe.batch_attempts == [4]  # no backoff retries on a non-OOM error

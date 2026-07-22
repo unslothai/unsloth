@@ -83,7 +83,15 @@ from .diffusion_attention import (
     _ensure_attention_backend_installed,
 )
 from . import diffusion_compile_cache as compile_cache
+from . import diffusion_cond_cache as cond_cache
 from . import diffusion_gguf_compile as gguf_compile
+from .diffusion_batched import (
+    chunk_jobs,
+    is_oom_error,
+    resolve_batch_jobs,
+    split_chunk,
+    uniform_prompt,
+)
 from .diffusion_cache import (
     FBCACHE_MIN_STEPS,
     TC_AUTO,
@@ -467,6 +475,46 @@ def _resolve_diffusion_compute_dtype(fam: Optional[DiffusionFamily], dtype: Any)
     import torch
 
     return torch.float32 if dtype == torch.float16 else dtype
+
+
+def _install_gguf_prefix_strip(transformer_cls: Any, logger: Any) -> None:
+    """Wrap the class's diffusers single-file converter to strip the
+    ``model.diffusion_model.`` container prefix that sd.cpp-converted GGUFs
+    carry on every tensor.
+
+    diffusers (<= 0.39) handles the prefix inconsistently: the FLUX.1 converter
+    strips it natively, but the FLUX.2 converter never does and KeyErrors on the
+    prefixed keys (``'double_blocks.0.img_attn.norm.key_norm'`` misparse in
+    ``convert_flux2_transformer_checkpoint_to_diffusers``), and the Qwen-Image
+    mapping fn is an identity, so every prefixed tensor is reported "not used",
+    the model stays on meta, and ``.to(cuda)`` dies with "Cannot copy out of
+    meta tensor". Stripping the prefix when present is a no-op for already-clean
+    checkpoints, so the shim applies to every GGUF transformer class uniformly.
+    Idempotent (the wrapper is marked) and best-effort."""
+    try:
+        from diffusers.loaders import single_file_model as sfm
+
+        entry = sfm.SINGLE_FILE_LOADABLE_CLASSES.get(
+            getattr(transformer_cls, "__name__", str(transformer_cls))
+        )
+        if not isinstance(entry, dict):
+            return
+        original = entry.get("checkpoint_mapping_fn")
+        if not callable(original) or getattr(original, "_unsloth_prefix_strip", False):
+            return
+        prefix = "model.diffusion_model."
+
+        def _stripped_mapping_fn(checkpoint = None, **kwargs):
+            checkpoint = {
+                (key[len(prefix):] if key.startswith(prefix) else key): value
+                for key, value in (checkpoint or {}).items()
+            }
+            return original(checkpoint = checkpoint, **kwargs)
+
+        _stripped_mapping_fn._unsloth_prefix_strip = True
+        entry["checkpoint_mapping_fn"] = _stripped_mapping_fn
+    except Exception as exc:  # noqa: BLE001 — loader-compat shim only, never fail the load
+        logger.warning("diffusion.gguf: prefix-strip shim not installed: %s", exc)
 
 
 class DiffusionBackend:
@@ -1502,6 +1550,9 @@ class DiffusionBackend:
                             sf_kwargs["quantization_config"] = diffusers.GGUFQuantizationConfig(
                                 compute_dtype = dtype
                             )
+                            # sd.cpp-converted GGUFs prefix tensors with model.diffusion_model.;
+                            # the FLUX.2 / Qwen-Image converters crash or meta-strand on it.
+                            _install_gguf_prefix_strip(transformer_cls, logger)
                         # A safetensors single-file (fp8) carries its own dtype: no GGUF dequant config.
                         transformer = transformer_cls.from_single_file(
                             single_file_path, **sf_kwargs
@@ -1673,7 +1724,11 @@ class DiffusionBackend:
                             transformer = getattr(pipe, "transformer", None)
                             or getattr(pipe, "unet", None),
                             dtype = getattr(target, "dtype", None),
-                            quant = transformer_quant_engaged,
+                            # A GGUF transformer compiles a DIFFERENT graph (the dequant op
+                            # chain under `default`, dequant+block fusion under `max`) than a
+                            # dense load of the same family, so it must key its own bundles
+                            # instead of sharing (and cross-hitting) the dense fingerprint.
+                            quant = "gguf" if gguf_transformer else transformer_quant_engaged,
                             attention_backend = attention_engaged,
                             compile_kwargs = {
                                 # Mirrors apply_speed_optims' fullgraph decision: an active or
@@ -1717,6 +1772,22 @@ class DiffusionBackend:
                         mode = text_encoder_quant,
                         family = fam.name,
                         offload_active = plan.offload_policy != OFFLOAD_NONE,
+                        logger = logger,
+                    )
+
+                    # Inference-side persistent conditioning cache (opt-in via
+                    # UNSLOTH_DIFFUSION_COND_CACHE_DIR, the inference sibling of the
+                    # trainers' cond_cache_dir): repeated prompts skip the text-encoder
+                    # forward entirely, so warm prompts never onload the multi-GB encoders
+                    # under an offload policy. Installed AFTER the TE quant above so the
+                    # cache key reflects the encoders that actually run. Instance-level;
+                    # dies with the pipe on unload.
+                    cond_cache.install(
+                        pipe,
+                        family = fam.name,
+                        repo_id = repo_id,
+                        dtype = dtype,
+                        te_quant = te_quant,
                         logger = logger,
                     )
 
@@ -2528,7 +2599,8 @@ class DiffusionBackend:
                 transformer = getattr(state.pipe, "transformer", None)
                 or getattr(state.pipe, "unet", None),
                 dtype = getattr(target, "dtype", None),
-                quant = state.transformer_quant,
+                # Same GGUF-vs-dense graph distinction as the load-time begin().
+                quant = "gguf" if gguf_transformer else state.transformer_quant,
                 attention_backend = attention_engaged,
                 compile_kwargs = {
                     # Mirrors the load-time fullgraph decision: an engaged or
@@ -2586,6 +2658,13 @@ class DiffusionBackend:
         guidance: float = 0.0,
         seed: Optional[int] = None,
         batch_size: int = 1,
+        # Batched multi-image generation (see diffusion_batched.py): ``prompts`` renders one
+        # image per prompt (txt2img only); ``seeds`` renders one image per seed. Each image
+        # gets its OWN torch.Generator, so any image regenerated alone with its recorded seed
+        # is bit-identical to its batched rendition. With neither, ``batch_size`` derives
+        # per-image seeds as base..base+batch_size-1 (matching the native engine).
+        prompts: Optional[list[str]] = None,
+        seeds: Optional[list[int]] = None,
         # Image-conditioned (base64/data-URL): init alone = img2img; init + mask = inpaint.
         # ``strength`` is the denoise strength (0 = keep source, 1 = full redraw). None = txt2img.
         init_image: Optional[str] = None,
@@ -2620,14 +2699,19 @@ class DiffusionBackend:
                 self._gen = _GenState(total_steps = steps)
             try:
                 # The local `state` ref keeps the pipe alive even if unload() nulls _state.
-                generator = torch.Generator(device = state.device)
-                if seed is None:
-                    # Keep the seed in JS's safe-integer range (< 2**53) so it round-trips
-                    # through JSON and reproduces the image (a raw 64-bit seed loses precision).
-                    seed = generator.seed() & ((1 << 53) - 1)
-                else:
-                    seed = int(seed)
-                generator.manual_seed(seed)
+                # Resolve the per-image (prompt, seed) jobs up front: N prompts, one prompt x
+                # N seeds, or the legacy single prompt whose batch derives per-image seeds as
+                # base..base+batch_size-1 (matching the native sd.cpp engine, so a gallery
+                # recipe replays any batch member alone). A fresh base seed is drawn in JS's
+                # safe-integer range (< 2**53) so it round-trips through JSON.
+                jobs, seed = resolve_batch_jobs(
+                    prompt = prompt,
+                    prompts = prompts,
+                    seed = seed,
+                    seeds = seeds,
+                    batch_size = batch_size,
+                    draw_seed = torch.Generator(device = state.device).seed,
+                )
 
                 # Deferred speed auto: engage the compile profile on the 3rd image, before the LoRA/
                 # workflow wiring (load-time ordering). Best-effort; a failure stays eager and never retries.
@@ -2784,6 +2868,15 @@ class DiffusionBackend:
                         cn_scale, cn_gstart, cn_gend = cn_strength, cn_gs, cn_ge
                         # Flux Union CN selects its head by an integer control_mode; map the type.
                         cn_mode = diffusion_controlnet.union_control_mode(cn_id, cn_type)
+                # A prompt LIST batches plain text-to-image only: the image-conditioned and
+                # ControlNet workflows are tuned around one conditioning image per call, and a
+                # silent broadcast would pair every prompt with the same image. Multiple SEEDS
+                # of one prompt remain valid everywhere (per-image generators only).
+                if uniform_prompt(jobs) is None and workflow != "txt2img":
+                    raise ValueError(
+                        "A prompts list is supported for plain text-to-image only; the "
+                        f"{workflow} workflow takes one prompt per call (seed lists still work)."
+                    )
                 # Snap odd-sized inputs to a multiple of 16 for workflows whose OUTPUT size comes
                 # from the input image (img2img/inpaint/edit); txt2img/reference use the slider,
                 # upscale already produced a /16 target. Mask is matched to the snapped image.
@@ -2804,13 +2897,12 @@ class DiffusionBackend:
                 call_params = inspect.signature(pipe.__call__).parameters
 
                 kwargs: dict[str, Any] = {
-                    "prompt": prompt,
+                    # prompt / generator / num_images_per_prompt are set per chunk below:
+                    # each per-forward chunk carries its own prompt slice and one
+                    # torch.Generator PER IMAGE (individual seed reproducibility).
                     "num_inference_steps": steps,
                     # Most pipelines use "guidance_scale"; Qwen-Image uses "true_cfg_scale".
                     state.family.cfg_kwarg: guidance,
-                    "generator": generator,
-                    # Whole batch in one forward pass; all share this call's seed.
-                    "num_images_per_prompt": batch_size,
                 }
                 if state.family.name == IDEOGRAM4_FAMILY_NAME:
                     # Ideogram 4 drives CFG via EITHER a constant guidance_scale OR a per-step
@@ -2864,12 +2956,20 @@ class DiffusionBackend:
                     if "control_mode" in call_params and cn_mode is not None:
                         kwargs["control_mode"] = cn_mode
 
-                gen = _GenState(total_steps = steps)
+                # Per-forward chunks: the whole job list in ONE forward by default (the
+                # measured sweet spot: batch 32 on 4-step models, ~10-22x over serial
+                # engines), bounded by an explicit batch_size cap; OOM backoff below
+                # halves a failed chunk instead of failing the call.
+                chunks = chunk_jobs(jobs, batch_size)
+                gen = _GenState(total_steps = steps * len(chunks))
+                # Steps completed by FINISHED chunks, so the progress bar spans the whole
+                # multi-chunk call (mutable cell: _on_step closes over it).
+                steps_done = [0]
 
                 def _on_step(pipe, step_index, timestep, callback_kwargs):
                     # Monotonic: a wall-clock adjustment (NTP) mid-denoise would skew the ETA.
                     now = time.monotonic()
-                    gen.step = step_index + 1
+                    gen.step = steps_done[0] + step_index + 1
                     if gen.first_step_at == 0.0:
                         gen.first_step_at = now
                     gen.eta_seconds = _estimate_eta(
@@ -2922,37 +3022,104 @@ class DiffusionBackend:
                     self._reset_step_cache(state.pipe)
 
                 self._gen = gen
-                # inference_mode is faster than no_grad and numerically identical here.
-                with torch.inference_mode():
-                    images = pipe(**kwargs).images
+                images: list[Any] = []
+                per_image_seeds: list[int] = []
+                chunk_shapes: list[int] = []
+                pending = list(chunks)
+                while pending:
+                    chunk = pending.pop(0)
+                    chunk_kwargs = dict(kwargs)
+                    shared = uniform_prompt(chunk)
+                    generators = [
+                        torch.Generator(device = state.device).manual_seed(s)
+                        for _, s in chunk
+                    ]
+                    if len(jobs) == 1:
+                        # Single image: scalar prompt + generator, exactly the pre-batching
+                        # call shape (the regression harness checks this path bit-identical).
+                        chunk_kwargs["prompt"] = shared
+                        chunk_kwargs["generator"] = generators[0]
+                        chunk_kwargs["num_images_per_prompt"] = 1
+                    elif shared is not None:
+                        # Uniform prompt: encode it ONCE and fan out per-image generators.
+                        chunk_kwargs["prompt"] = shared
+                        chunk_kwargs["generator"] = generators
+                        chunk_kwargs["num_images_per_prompt"] = len(chunk)
+                    else:
+                        # Distinct prompts: one image per prompt in a single forward.
+                        chunk_kwargs["prompt"] = [p for p, _ in chunk]
+                        chunk_kwargs["generator"] = generators
+                        chunk_kwargs["num_images_per_prompt"] = 1
+                    try:
+                        # inference_mode is faster than no_grad and numerically identical here.
+                        with torch.inference_mode():
+                            out = pipe(**chunk_kwargs).images
+                    except Exception as exc:  # noqa: BLE001 — reraised unless a splittable OOM
+                        if len(chunk) < 2 or not is_oom_error(exc):
+                            raise
+                        # OOM backoff: halve the failed chunk and retry; finished chunks keep
+                        # their images and per-image seeds keep every retry reproducible.
+                        empty_cache = getattr(
+                            getattr(torch, "cuda", None), "empty_cache", None
+                        )
+                        if callable(empty_cache):
+                            empty_cache()
+                        first_half, second_half = split_chunk(chunk)
+                        pending[:0] = [first_half, second_half]
+                        gen.total_steps += steps  # one extra chunk to run
+                        logger.warning(
+                            "diffusion.generate: batch of %d hit OOM; retrying as %d + %d",
+                            len(chunk),
+                            len(first_half),
+                            len(second_half),
+                        )
+                        continue
+                    # A cancelled denoise returns a partial/garbage image; don't persist it
+                    # (nor run any remaining chunks).
+                    if cancel.is_set():
+                        raise RuntimeError(DIFFUSION_CANCELLED_MSG)
+                    images.extend(out)
+                    per_image_seeds.extend(s for _, s in chunk)
+                    chunk_shapes.append(len(chunk))
+                    steps_done[0] += steps
                 # Keep progress ACTIVE through the post-denoise work below (the compile-cache save can
                 # take a moment) -- don't null _gen here. The route persists the image AFTER this
                 # returns, so a reload's mount probe that read idle now would refresh the gallery
                 # before the result exists. The outer finally clears _gen on every exit (return/raise).
-                # A cancelled denoise returns a partial/garbage image; don't persist it.
-                if cancel.is_set():
-                    raise RuntimeError(DIFFUSION_CANCELLED_MSG)
                 # Persist the warm torch.compile bundle after the first compiled generation. A
                 # STATIC compile makes new artifacts per (w,h,batch), so register this shape first
                 # (an uncovered shape re-dirties the context and the save rewrites the bundle).
                 # Idempotent + best-effort.
                 try:
                     # Register the dims the forward ACTUALLY compiled with (image-conditioned
-                    # workflows run at the input image's size, not the slider; see _compile_shape_dims).
+                    # workflows run at the input image's size, not the slider; see
+                    # _compile_shape_dims). A static compile makes one artifact per BATCH size
+                    # too, so every distinct chunk size this call ran (OOM backoff can produce
+                    # several) registers its own (w, h, batch) shape.
                     reg_width, reg_height = _compile_shape_dims(workflow, init_pil, width, height)
-                    compile_cache.register_shape(
-                        state.compile_cache_ctx,
-                        (reg_width, reg_height, int(batch_size)),
-                        static = "compiled" in (state.speed_optims or ())
-                        and compiled_shapes_are_static(state.pipe, state.speed_mode),
-                    )
+                    static_shapes = "compiled" in (
+                        state.speed_optims or ()
+                    ) and compiled_shapes_are_static(state.pipe, state.speed_mode)
+                    for chunk_batch in sorted(set(chunk_shapes)):
+                        compile_cache.register_shape(
+                            state.compile_cache_ctx,
+                            (reg_width, reg_height, int(chunk_batch)),
+                            static = static_shapes,
+                        )
                     compile_cache.save(state.compile_cache_ctx, logger = logger)
                 except Exception:  # noqa: BLE001 — cache persistence is best-effort
                     pass
                 # Count the finished generation (drives deferred speed); a batch is one generation.
                 object.__setattr__(state, "generation_count", state.generation_count + 1)
                 # Return the PIL images (unencoded); the route embeds recipes and persists them.
-                return {"images": list(images), "seed": int(seed), "repo_id": state.repo_id}
+                # ``seeds`` records each image's OWN seed (the native engine already reports
+                # these), so every batch member replays individually from its recipe.
+                return {
+                    "images": list(images),
+                    "seed": int(seed),
+                    "seeds": [int(s) for s in per_image_seeds],
+                    "repo_id": state.repo_id,
+                }
             finally:
                 # Deregister so a later unload/load can't poke a finished generation (if still ours).
                 with self._lock:

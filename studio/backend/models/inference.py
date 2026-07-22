@@ -1994,6 +1994,52 @@ class DiffusionGenerateRequest(BaseModel):
     batch_size: int = Field(
         1, ge = 1, le = 32, description = "Images generated in one forward pass (VRAM-heavy)"
     )
+    # Batched multi-image generation (diffusers engine): a prompt list renders one image per
+    # prompt in a single batched forward (txt2img only); a seed list renders one image per
+    # seed. Each image carries its OWN generator seed, so any batch member replays alone.
+    prompts: Optional[list[str]] = Field(
+        None,
+        min_length = 1,
+        max_length = 32,
+        description = "Prompt list for batched generation: one image per prompt in a single "
+        "forward pass (plain text-to-image only). Overrides `prompt` for the images; "
+        "`prompt` is still required as the fallback/display value.",
+    )
+    seeds: Optional[list[int]] = Field(
+        None,
+        min_length = 1,
+        max_length = 32,
+        description = "Per-image seeds for batched generation: one image per seed (with "
+        "`prompts`, lengths must match; alone, every image uses `prompt`). Each image is "
+        "individually reproducible from its own seed.",
+    )
+
+    @field_validator("prompts")
+    @classmethod
+    def _non_empty_prompts(cls, value: Optional[list[str]]) -> Optional[list[str]]:
+        if value is not None and any(not p.strip() for p in value):
+            raise ValueError("every prompt in prompts must be non-empty")
+        return value
+
+    @field_validator("seeds")
+    @classmethod
+    def _seeds_json_safe(cls, value: Optional[list[int]]) -> Optional[list[int]]:
+        # Same JSON safe-integer bound as `seed`, so every per-image seed survives the
+        # round-trip through the gallery recipe.
+        if value is not None and any(s < 0 or s > 2**53 - 1 for s in value):
+            raise ValueError("every seed must be between 0 and 2**53 - 1")
+        return value
+
+    @model_validator(mode = "after")
+    def _prompts_seeds_lengths_match(self) -> "DiffusionGenerateRequest":
+        if self.prompts is not None and self.seeds is not None and len(self.prompts) != len(
+            self.seeds
+        ):
+            raise ValueError(
+                f"prompts and seeds must have the same length (got {len(self.prompts)} "
+                f"prompts, {len(self.seeds)} seeds)"
+            )
+        return self
     # Image-conditioned workflows (base64 or data-URL): init_image alone runs img2img,
     # init_image + mask_image runs inpaint. Both require a family with the matching pipeline or
     # the load is rejected. Cap each base64 string so one request can't buffer a multi-GB payload

@@ -728,6 +728,11 @@ class SdCppDiffusionBackend:
         guidance: float = 0.0,
         seed: Optional[int] = None,
         batch_size: int = 1,
+        # Batched prompt/seed lists are diffusers-engine features (one batched DiT forward);
+        # accepted for interface parity and rejected clearly below (sd-cli renders serially,
+        # so a "batched" list here would silently be a slow loop).
+        prompts: Optional[list[str]] = None,
+        seeds: Optional[list[int]] = None,
         # Accepted for interface parity; native is text-to-image only, so image-conditioned
         # requests are rejected clearly below rather than silently dropped.
         init_image: Optional[str] = None,
@@ -756,6 +761,12 @@ class SdCppDiffusionBackend:
             raise ValueError(
                 "img2img / inpaint / reference / upscale are not yet supported on the native "
                 "sd.cpp engine; run on a GPU (diffusers) for image-conditioned workflows."
+            )
+        if prompts is not None or seeds is not None:
+            raise ValueError(
+                "Batched prompt/seed lists are not supported on the native sd.cpp engine "
+                "(it renders serially); run on a GPU (diffusers) for batched generation, "
+                "or use batch_size for a serial native batch."
             )
         # strength 0/None disables ControlNet (matches diffusers), so no-op it rather than 400.
         if controlnet is not None and controlnet[3] in (None, 0, 0.0):
