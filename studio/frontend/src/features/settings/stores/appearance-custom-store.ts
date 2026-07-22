@@ -479,6 +479,8 @@ export function applyCustomizationToDocument(
     "--font-sans",
     c.uiFont ? `"${c.uiFont}", ${DEFAULT_SANS_STACK}` : null,
   );
+  // Custom interface fonts cascade into chat and opt out of its Inter tuning.
+  el.toggleAttribute("data-ui-font", Boolean(c.uiFont));
   setVar(
     "--font-heading",
     c.headingFont ? `"${c.headingFont}", ${DEFAULT_HEADING_STACK}` : null,
