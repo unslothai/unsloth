@@ -14,12 +14,13 @@ import signal
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 import urllib.error
 import urllib.request
 from pathlib import Path
 from typing import NamedTuple, NoReturn, Optional
-from urllib.parse import urlparse
+from urllib.parse import urlencode, urlparse
 
 import click
 import typer
@@ -105,8 +106,8 @@ _SERVE_OPTION = typer.Option(
     True,
     "--serve/--no-serve",
     help = (
-        "If no Unsloth server is running, auto-start one for --model and stop it when the "
-        "agent exits. --no-serve keeps the old behavior of erroring out."
+        "If no Unsloth server is running, auto-start one for --model and keep it available "
+        "after the agent exits. --no-serve keeps the old behavior of erroring out."
     ),
 )
 # Model-load knobs mirrored from `unsloth run`; only used when --model triggers a
@@ -326,6 +327,13 @@ def _split_repo_variant(model: str) -> tuple:
     return repo, variant
 
 
+def _display_model_spec(model: str, variant: Optional[str]) -> str:
+    """Return a user-facing model name that includes the selected GGUF variant."""
+    repo, inline_variant = _split_repo_variant(model)
+    selected_variant = variant or inline_variant
+    return f"{repo}:{selected_variant}" if selected_variant else model
+
+
 def _fail(message: str) -> NoReturn:
     typer.echo(message, err = True)
     raise typer.Exit(code = 1)
@@ -373,11 +381,265 @@ def _http_json(
 
 
 # A server that WE auto-started (never one we merely found). Kept at module scope so
-# _run's finally and the atexit backstop can tear it down without threading a handle
+# failure paths and the atexit backstop can tear it down without threading a handle
 # through all six agent commands. Only one agent runs per process, so one slot is enough.
 _auto_served_server: Optional[subprocess.Popen] = None
 # Model download + load can be slow; give the auto-started server room before giving up.
 _SERVER_START_TIMEOUT_S = 900
+_DOWNLOAD_POLL_INTERVAL_S = 1.0
+_START_API_KEY_PREFIX = "UNSLOTH_START_API_KEY: "
+_START_API_KEY_MARKER_ENV = "_UNSLOTH_START_API_KEY_MARKER"
+
+
+def _format_download_bytes(value: int) -> str:
+    value = max(0, int(value))
+    for unit in ("B", "KiB", "MiB", "GiB", "TiB"):
+        if value < 1024 or unit == "TiB":
+            precision = 0 if unit in ("B", "KiB") else 1
+            return f"{value:.{precision}f} {unit}"
+        value /= 1024
+    return "0 B"
+
+
+def _format_download_eta(seconds: float) -> str:
+    seconds = max(0, int(seconds))
+    if seconds < 60:
+        return f"{seconds}s"
+    minutes, seconds = divmod(seconds, 60)
+    if minutes < 60:
+        return f"{minutes}m {seconds:02d}s"
+    hours, minutes = divmod(minutes, 60)
+    return f"{hours}h {minutes:02d}m"
+
+
+class _DownloadProgressDisplay:
+    """Render download progress without making redirected output noisy."""
+
+    def __init__(self) -> None:
+        self._samples: list[tuple[float, int]] = []
+        self._shown = False
+        self._last_bucket = -1
+        self._last_line_length = 0
+        self._last_expected = 0
+        self._interactive = bool(getattr(sys.stdout, "isatty", lambda: False)())
+
+    def update(self, progress: dict) -> None:
+        downloaded = max(0, int(progress.get("downloaded_bytes") or 0))
+        completed = max(0, int(progress.get("completed_bytes") or 0))
+        expected = max(0, int(progress.get("expected_bytes") or 0))
+        self._last_expected = max(self._last_expected, expected)
+        fraction = float(progress.get("progress") or 0)
+        if downloaded <= 0:
+            return
+        # A fully cached snapshot can report 99% with no incomplete bytes; that is
+        # not a transfer, so don't show it as a download.
+        if completed >= downloaded > 0:
+            return
+
+        now = time.monotonic()
+        if self._samples and downloaded < self._samples[-1][1]:
+            self._samples.clear()
+        self._samples.append((now, downloaded))
+        cutoff = now - 15.0
+        while len(self._samples) > 2 and self._samples[0][0] < cutoff:
+            self._samples.pop(0)
+
+        rate = 0.0
+        if len(self._samples) >= 2:
+            elapsed = self._samples[-1][0] - self._samples[0][0]
+            delta = self._samples[-1][1] - self._samples[0][1]
+            if elapsed >= 1.0 and delta > 0:
+                rate = delta / elapsed
+
+        if expected > 0:
+            # The endpoint caps at 99% while bytes remain in an incomplete file; trust it.
+            fraction = min(1.0, max(0.0, fraction))
+            percent = min(100, max(0, int(fraction * 100)))
+            filled = min(24, int(fraction * 24))
+            bar = "=" * filled + ">" + "." * max(0, 23 - filled) if filled < 24 else "=" * 24
+            line = (
+                f"Downloading model [{bar}] {percent:3d}% "
+                f"{_format_download_bytes(downloaded)} / {_format_download_bytes(expected)}"
+            )
+            bucket = percent // 10
+            if rate > 0:
+                line += f" | {_format_download_bytes(rate)}/s"
+                if downloaded < expected:
+                    line += f" | ETA {_format_download_eta((expected - downloaded) / rate)}"
+        else:
+            line = f"Downloading model: {_format_download_bytes(downloaded)}"
+            bucket = downloaded // (1024**3)
+            if rate > 0:
+                line += f" | {_format_download_bytes(rate)}/s"
+
+        if self._interactive:
+            padding = " " * max(0, self._last_line_length - len(line))
+            typer.echo(f"\r{line}{padding}", nl = False)
+            sys.stdout.flush()
+            self._last_line_length = len(line)
+        elif not self._shown or bucket > self._last_bucket:
+            typer.echo(line)
+            self._last_bucket = bucket
+        self._shown = True
+
+    def close(self) -> None:
+        if self._interactive and self._shown:
+            typer.echo()
+        self._last_line_length = 0
+
+    def complete(self) -> None:
+        """Finish a displayed transfer after the model load confirms success."""
+        if not self._shown:
+            return
+        downloaded = self._samples[-1][1] if self._samples else 0
+        expected = max(downloaded, getattr(self, "_last_expected", 0))
+        self.update(
+            {
+                "downloaded_bytes": expected,
+                "expected_bytes": expected,
+                "progress": 1.0,
+            }
+        )
+
+
+def _normalized_variant(value: object) -> str:
+    return re.sub(r"[^a-z0-9]", "", str(value or "").lower())
+
+
+class _ModelDownloadProgress:
+    """Best-effort polling of the model download endpoints."""
+
+    def __init__(self, base: str, key: str, model: str, variant: Optional[str]) -> None:
+        self._base = base
+        self._key = key
+        self._model = model
+        self._variant = variant or ""
+        self._expected_bytes = 0
+        self._display = _DownloadProgressDisplay()
+        self._configured = False
+        self._disabled = not _is_hub_model_id(model)
+        self._progress_prefix = "/api/hub"
+
+    def _configure(self) -> None:
+        self._configured = True
+        if self._disabled:
+            return
+        # GGUF repos need the selected quant's size; the repo endpoint totals every
+        # quant. Resolve the variant first, otherwise show bytes only.
+        if self._variant or "gguf" in self._model.lower():
+            try:
+                params = urlencode({"repo_id": self._model})
+                try:
+                    info = _http_json(
+                        "GET",
+                        f"{self._base}/api/hub/gguf-variants?{params}",
+                        self._key,
+                        timeout = 10,
+                    )
+                except urllib.error.HTTPError as exc:
+                    if exc.code != 404:
+                        raise
+                    self._progress_prefix = "/api/models"
+                    info = _http_json(
+                        "GET",
+                        f"{self._base}/api/models/gguf-variants?{params}",
+                        self._key,
+                        timeout = 10,
+                    )
+                self._variant = self._variant or str(info.get("default_variant") or "")
+                wanted = _normalized_variant(self._variant)
+                for item in info.get("variants") or []:
+                    quant = _normalized_variant(item.get("quant"))
+                    filename = _normalized_variant(item.get("filename"))
+                    if wanted and (wanted == quant or wanted in filename):
+                        self._expected_bytes = int(
+                            item.get("download_size_bytes") or item.get("size_bytes") or 0
+                        )
+                        break
+            except Exception:
+                # Older servers lack this endpoint; byte progress is still useful.
+                pass
+
+    def poll(self) -> None:
+        if not self._configured:
+            self._configure()
+        if self._disabled:
+            return
+        try:
+            if self._variant or "gguf" in self._model.lower():
+                params = urlencode(
+                    {
+                        "repo_id": self._model,
+                        "variant": self._variant,
+                        "expected_bytes": self._expected_bytes,
+                    }
+                )
+                url = f"{self._base}{self._progress_prefix}/gguf-download-progress?{params}"
+            else:
+                url = (
+                    f"{self._base}{self._progress_prefix}/download-progress?"
+                    f"{urlencode({'repo_id': self._model})}"
+                )
+            try:
+                reading = _http_json("GET", url, self._key, timeout = 10)
+            except urllib.error.HTTPError as exc:
+                if exc.code != 404 or self._progress_prefix == "/api/models":
+                    raise
+                self._progress_prefix = "/api/models"
+                self.poll()
+                return
+            self._display.update(reading)
+        except Exception:
+            # Progress is best-effort; never fail the load over a polling error.
+            self._disabled = True
+
+    def close(self) -> None:
+        self._display.close()
+
+    def complete(self) -> None:
+        self._display.complete()
+
+
+def _load_model_with_progress(
+    base: str, key: str, model: str, load: LoadOptions, payload: dict
+) -> dict:
+    """Run the blocking load request while polling its download progress."""
+    result: list[tuple[bool, object]] = []
+    done = threading.Event()
+
+    def _load() -> None:
+        try:
+            value = _http_json(
+                "POST",
+                f"{base}/api/inference/load",
+                key,
+                payload,
+                timeout = 3600,
+                error = "Model load failed",
+            )
+            result.append((True, value))
+        except BaseException as exc:
+            result.append((False, exc))
+        finally:
+            done.set()
+
+    threading.Thread(target = _load, name = "unsloth-model-load", daemon = True).start()
+    progress = _ModelDownloadProgress(base, key, model, load.gguf_variant)
+    loading_announced = False
+    try:
+        while not done.wait(_DOWNLOAD_POLL_INTERVAL_S):
+            if not loading_announced:
+                typer.echo(f"Loading model: {_display_model_spec(model, load.gguf_variant)}")
+                loading_announced = True
+            progress.poll()
+        ok, value = result[0]
+        if not ok:
+            assert isinstance(value, BaseException)
+            raise value
+        progress.complete()
+        return value if isinstance(value, dict) else {}
+    finally:
+        progress.close()
 
 
 def _studio_healthy(base: str, timeout: float = 3.0) -> bool:
@@ -394,6 +656,11 @@ def _log_tail(path: Path, lines: int = 20) -> str:
         return "\n".join(path.read_text(encoding = "utf-8", errors = "replace").splitlines()[-lines:])
     except OSError:
         return "(no server log)"
+
+
+def _redacted_log_tail(path: Path, lines: int = 20) -> str:
+    """Tail with minted keys removed; only for tails shown on the terminal."""
+    return re.sub(r"sk-unsloth-\S+", "sk-unsloth-[redacted]", _log_tail(path, lines))
 
 
 def _shutdown_server(server: Optional[subprocess.Popen]) -> None:
@@ -438,6 +705,14 @@ def _shutdown_auto_served() -> None:
         _shutdown_server(server)
 
 
+def _keep_auto_served() -> bool:
+    """Release ownership so a successfully started server survives this CLI."""
+    global _auto_served_server
+    server, _auto_served_server = _auto_served_server, None
+    atexit.unregister(_shutdown_auto_served)
+    return server is not None and server.poll() is None
+
+
 def _start_studio_server(base: str, model: str, load: LoadOptions) -> subprocess.Popen:
     """Spawn `unsloth run` for `model`, wait until it is fully ready, and return it."""
     global _auto_served_server
@@ -467,9 +742,8 @@ def _start_studio_server(base: str, model: str, load: LoadOptions) -> subprocess
         command += ["--tensor-parallel"]
 
     log_path = Path(tempfile.gettempdir()) / f"unsloth-start-server-{os.getpid()}.log"
-    typer.echo(
-        f"No Unsloth server at {base}. Starting one for {model} (loading the model can take a while)…"
-    )
+    typer.echo("Starting Unsloth server")
+    typer.echo(f"Model: {_display_model_spec(model, load.gguf_variant)}")
     typer.echo(f"Server log: {log_path}")
     # 0600: the `unsloth run` banner in this log carries the minted sk-unsloth- key, and
     # the tempdir is world-traversable. Unlink first so a stale looser-mode file (pid
@@ -477,8 +751,17 @@ def _start_studio_server(base: str, model: str, load: LoadOptions) -> subprocess
     log_path.unlink(missing_ok = True)
     log = os.fdopen(os.open(log_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600), "wb")
     # Own session/process group so a mid-session Ctrl+C (cancel a turn) doesn't reach the
-    # server; we tear it down explicitly when the agent exits.
-    kwargs: dict = {"stdout": log, "stderr": subprocess.STDOUT, "stdin": subprocess.DEVNULL}
+    # server. It survives a successful agent session; torn down on startup/launch failure.
+    child_env = os.environ.copy()
+    # Pass the marker via env so an older launcher ignores it instead of treating an
+    # unknown CLI flag as a llama-server arg; new launchers preserve it across re-exec.
+    child_env[_START_API_KEY_MARKER_ENV] = "1"
+    kwargs: dict = {
+        "stdout": log,
+        "stderr": subprocess.STDOUT,
+        "stdin": subprocess.DEVNULL,
+        "env": child_env,
+    }
     if os.name == "nt":
         kwargs["creationflags"] = subprocess.CREATE_NEW_PROCESS_GROUP
     else:
@@ -491,17 +774,45 @@ def _start_studio_server(base: str, model: str, load: LoadOptions) -> subprocess
     atexit.register(_shutdown_auto_served)
 
     deadline = time.monotonic() + _SERVER_START_TIMEOUT_S
-    while time.monotonic() < deadline:
-        if server.poll() is not None:
-            tail = _log_tail(log_path)
-            _shutdown_auto_served()
-            _fail(f"The Unsloth server stopped before it was ready. Last log lines:\n{tail}")
-        # `unsloth run` prints the minted key only after the server is up AND the model is
-        # loaded, so it is the fully-ready signal (same contract serve-unsloth-run.sh uses).
-        if _studio_healthy(base) and "sk-unsloth-" in _log_tail(log_path, lines = 400):
-            typer.echo(f"Unsloth server ready at {base}.")
-            return server
-        time.sleep(2.0)
+    progress: Optional[_ModelDownloadProgress] = None
+    early_key_seen = False
+    try:
+        while time.monotonic() < deadline:
+            if server.poll() is not None:
+                # The early key marker lands here before load finishes; redact it.
+                tail = _redacted_log_tail(log_path)
+                _shutdown_auto_served()
+                _fail(f"The Unsloth server stopped before it was ready. Last log lines:\n{tail}")
+            tail = _log_tail(log_path, lines = 400)
+            if progress is None:
+                marker = re.search(
+                    rf"^{re.escape(_START_API_KEY_PREFIX)}(sk-unsloth-[^\s]+)$",
+                    tail,
+                    flags = re.MULTILINE,
+                )
+                if marker:
+                    early_key_seen = True
+                    progress = _ModelDownloadProgress(
+                        base,
+                        marker.group(1),
+                        model,
+                        load.gguf_variant,
+                    )
+            if progress is not None:
+                progress.poll()
+            # New children emit an early key marker, so wait for the final model banner;
+            # older children only print the key after load, so fall back to that.
+            ready_signal = "Model loaded:" in tail if early_key_seen else "sk-unsloth-" in tail
+            if _studio_healthy(base) and ready_signal:
+                if progress is not None:
+                    progress.complete()
+                    progress.close()
+                    progress = None
+                return server
+            time.sleep(2.0)
+    finally:
+        if progress is not None:
+            progress.close()
     _shutdown_auto_served()
     _fail(
         f"The Unsloth server didn't become ready within {_SERVER_START_TIMEOUT_S}s. See {log_path}."
@@ -796,6 +1107,7 @@ def _resolve_model(
     load: LoadOptions = LoadOptions(),
 ) -> dict:
     models = _loaded_models(base, key)
+    load_requested = False
     # Only casefold-match ids against a loopback Unsloth, where _is_hub_model_id's
     # local existence probe can actually reject a server-side path; see the note there.
     allow_casefold = is_loopback_url(base)
@@ -825,11 +1137,30 @@ def _resolve_model(
         )
     )
     if requested and match is None:
-        typer.echo(
-            f"Loading {requested} - please wait…"
-            if load_has_overrides
-            else f"Loading {requested} on the Unsloth server (this can take a while)…"
-        )
+        load_requested = True
+        active = next((m for m in models if m.get("loaded") is not False), None)
+        active_id = active.get("id") if active else None
+        if active_id and not _model_id_matches(
+            active_id,
+            requested,
+            allow_casefold = allow_casefold,
+        ):
+            typer.echo(f"Switching the Unsloth server from {active_id} to {requested}.")
+            typer.echo("This unloads the current model for every attached session.")
+        elif active_id and load.gguf_variant:
+            # Same repo id but an explicit quant still replaces the resident
+            # weights; /v1/models has no variant, so ask the status endpoint.
+            try:
+                status = _http_json("GET", f"{base}/api/inference/status", key)
+            except Exception:
+                status = {}
+            resident = status.get("gguf_variant") if status.get("is_gguf") else None
+            if resident and _normalized_variant(resident) != _normalized_variant(load.gguf_variant):
+                typer.echo(
+                    f"Switching the Unsloth server from {active_id}:{resident} "
+                    f"to {requested}:{load.gguf_variant}."
+                )
+                typer.echo("This unloads the current model for every attached session.")
         # Mirror `unsloth run`'s load knobs; keep the default payload as just
         # model_path so a bare `--model` load is unchanged.
         payload = {"model_path": requested}
@@ -841,14 +1172,9 @@ def _resolve_model(
             payload["load_in_4bit"] = False
         if load.tensor_parallel:
             payload["tensor_parallel"] = True
-        loaded = _http_json(
-            "POST",
-            f"{base}/api/inference/load",
-            key,
-            payload,
-            timeout = 3600,
-            error = "Model load failed",
-        )
+        loaded = _load_model_with_progress(base, key, requested, load, payload)
+        if loaded.get("status") == "already_loaded":
+            typer.echo(f"Reusing loaded model: {_display_model_spec(requested, load.gguf_variant)}")
         # Unsloth registers the model under a canonical id (resolved identifier,
         # casing) that /v1/models echoes but which may differ from the path we
         # passed; match on the id the load reports so we don't silently fall
@@ -861,13 +1187,16 @@ def _resolve_model(
             (
                 m
                 for m in models
-                if any(
+                if m.get("loaded") is not False
+                and any(
                     _model_id_matches(m.get("id"), w, allow_casefold = allow_casefold) for w in wanted
                 )
             ),
             None,
         )
     if match is not None:
+        if requested and not load_requested:
+            typer.echo(f"Reusing loaded model: {_display_model_spec(requested, load.gguf_variant)}")
         return match
     if requested:
         # We asked Unsloth to load it and it didn't surface in /v1/models; don't
@@ -881,7 +1210,13 @@ def _resolve_model(
             "No model is loaded in Unsloth. Load one from the model dropdown in "
             "the UI, or pass --model <hf-id-or-path> to load it from here."
         )
-    return models[0]
+    resident = next((m for m in models if m.get("loaded") is not False), None)
+    if resident is None:
+        _fail(
+            "No model is currently resident in Unsloth. Pass --model <hf-id-or-path> "
+            "to reload one, or load it from the model dropdown in the UI."
+        )
+    return resident
 
 
 def _require_gguf_for_codex(base: str, key: str, model_id: str) -> None:
@@ -1356,7 +1691,7 @@ def _launch(
     env: dict,
     install_hint: str,
     unset_env: tuple = (),
-) -> NoReturn:
+) -> int:
     # Resolve well-known install dirs (e.g. ~/.local/bin) first, so an already-installed
     # agent not yet on PATH is found instead of prompting a needless reinstall.
     _augment_path_with_install_dirs()
@@ -1382,7 +1717,7 @@ def _launch(
     finally:
         signal.signal(signal.SIGINT, previous)
     # Negative returncode means killed by signal N; shells expect 128+N.
-    raise typer.Exit(code = code if code >= 0 else 128 - code)
+    return code if code >= 0 else 128 - code
 
 
 def _connect(
@@ -1434,16 +1769,35 @@ def _run(
     # --no-launch recipes stay intact.
     if launch and clear_screen:
         click.clear()
-    typer.echo(f"Unsloth {base} · model {entry['id']}")
+    typer.echo(f"Unsloth ready at {base} · model {entry['id']}")
     if not launch:
         env, wsl_env_bridge = _wsl_shim_env(command, env, unset_env)
         _print_env(env, command, unset_env = unset_env, wsl_env_bridge = wsl_env_bridge)
+        if _keep_auto_served():
+            typer.echo(f"Unsloth Studio is still running at {base}.")
+            typer.echo("Stop it with: unsloth studio stop")
         return
     try:
-        _launch(command, env, install_hint = install_hint, unset_env = unset_env)
-    finally:
-        # Tear down a server we auto-started once the agent session ends (no-op otherwise).
+        code = _launch(command, env, install_hint = install_hint, unset_env = unset_env)
+    except BaseException:
+        # Startup succeeded but the agent failed to launch; tear the server down
+        # rather than orphan it.
         _shutdown_auto_served()
+        raise
+    auto_started = _auto_served_server is not None
+    kept = _keep_auto_served()
+    if auto_started and not kept:
+        typer.echo(f"The auto-started Unsloth server at {base} stopped during the session.")
+        raise typer.Exit(code = code)
+    if code:
+        # The server status below must not read as a successful agent session.
+        typer.echo(f"The agent exited with code {code}.")
+    if is_loopback_url(base):
+        typer.echo(f"Unsloth Studio is still running at {base}.")
+        typer.echo("Stop it with: unsloth studio stop")
+    else:
+        typer.echo(f"The remote Unsloth server is still running at {base}.")
+    raise typer.Exit(code = code)
 
 
 def _agents_config_root() -> Path:
@@ -1893,7 +2247,7 @@ def codex(
         launch = launch,
     )
     # This preflight runs after _connect may have auto-started a server but before _run
-    # installs its teardown finally, so tear the server down here if it rejects the model
+    # takes over its lifecycle, so tear the server down here if it rejects the model
     # (e.g. a transformers-backend model) rather than leaving it on the atexit backstop.
     try:
         _require_gguf_for_codex(base, key, entry["id"])

@@ -20,6 +20,7 @@ if str(_REPO_ROOT) not in sys.path:
 
 
 import pytest
+import typer
 from typer.testing import CliRunner
 
 import unsloth_cli.commands.start as start
@@ -639,8 +640,13 @@ def fake_studio(tmp_path, monkeypatch):
         if url.endswith("/api/auth/api-keys"):
             return {"key": "sk-unsloth-feedfacefeedface"}
         if url.endswith("/api/inference/load"):
+            already_loaded = state["models"][0]["id"] == payload["model_path"]
             state["models"] = [{"id": payload["model_path"], "context_length": 4096}]
-            return {}
+            return {
+                "status": "already_loaded" if already_loaded else "loaded",
+                "model": payload["model_path"],
+                "display_name": payload["model_path"],
+            }
         raise AssertionError(f"unexpected request: {method} {url}")
 
     monkeypatch.setattr(start, "find_studio_server", lambda: BASE)
@@ -824,7 +830,7 @@ def test_connect_codex_matches_requested_model_case_insensitively(fake_studio, t
     assert profile["model"] == MODEL["id"]
 
 
-def test_resolve_model_matches_loaded_canonical_case_after_load(monkeypatch):
+def test_resolve_model_matches_loaded_canonical_case_after_load(monkeypatch, capsys):
     calls = []
     state = {"loaded": False}
 
@@ -862,6 +868,8 @@ def test_resolve_model_matches_loaded_canonical_case_after_load(monkeypatch):
 
     assert entry["id"] == "unsloth/gemma-4-E2B-it-GGUF"
     assert any(c[1].endswith("/api/inference/load") for c in calls)
+    output = capsys.readouterr().out
+    assert "please wait" not in output
 
 
 def test_resolve_model_loads_when_catalog_hit_is_not_loaded(monkeypatch):
@@ -903,6 +911,35 @@ def test_resolve_model_loads_when_catalog_hit_is_not_loaded(monkeypatch):
     assert any(u.endswith("/api/inference/load") for _, u in calls)
 
 
+def test_resolve_model_does_not_attach_if_catalog_stays_unloaded(monkeypatch):
+    def http_json(
+        method,
+        url,
+        token,
+        payload = None,
+        timeout = 30,
+        error = None,
+    ):
+        if url.endswith("/v1/models"):
+            return {
+                "data": [
+                    {
+                        "id": "unsloth/Gemma-4-GGUF",
+                        "loaded": False,
+                        "context_length": 131072,
+                    }
+                ]
+            }
+        if url.endswith("/api/inference/load"):
+            return {"status": "loaded", "model": "unsloth/Gemma-4-GGUF"}
+        raise AssertionError(f"unexpected request: {method} {url}")
+
+    monkeypatch.setattr(start, "_http_json", http_json)
+
+    with pytest.raises(typer.Exit):
+        start._resolve_model(BASE, "sk-test", "unsloth/gemma-4-gguf")
+
+
 def test_resolve_model_attaches_to_loaded_catalog_hit_without_reload(monkeypatch):
     # The mirror case: a loaded entry (loaded == True) that case-matches attaches with
     # no /api/inference/load call.
@@ -929,6 +966,25 @@ def test_resolve_model_attaches_to_loaded_catalog_hit_without_reload(monkeypatch
 
     assert entry["id"] == "unsloth/Gemma-4-GGUF"
     assert not any(u.endswith("/api/inference/load") for _, u in calls)
+
+
+def test_resolve_model_without_request_rejects_unloaded_catalog(monkeypatch):
+    monkeypatch.setattr(
+        start,
+        "_http_json",
+        lambda *a, **k: {
+            "data": [
+                {
+                    "id": "unsloth/Gemma-4-GGUF",
+                    "loaded": False,
+                    "context_length": 131072,
+                }
+            ]
+        },
+    )
+
+    with pytest.raises(typer.Exit):
+        start._resolve_model(BASE, "sk-test", None)
 
 
 def test_resolve_model_remote_studio_does_not_casefold_attach(monkeypatch):
@@ -1213,6 +1269,9 @@ def test_connect_model_flag_loads_on_server(fake_studio):
     assert loads == [
         ("POST", f"{BASE}/api/inference/load", {"model_path": "unsloth/Qwen3.5-35B-A3B"})
     ]
+    assert result.output.index(
+        f"Switching the Unsloth server from {MODEL['id']} to unsloth/Qwen3.5-35B-A3B.\n"
+    ) < result.output.index("This unloads the current model for every attached session.\n")
     _assert_env_set(result.output, "ANTHROPIC_MODEL", "unsloth/Qwen3.5-35B-A3B")
 
 
@@ -1303,6 +1362,7 @@ def test_connect_model_bare_id_matches_loaded_without_reload(fake_studio):
     assert result.exit_code == 0, result.output
     loads = [c for c in fake_studio if c[1].endswith("/api/inference/load")]
     assert loads == []
+    assert f"Reusing loaded model: {MODEL['id']}\n" in result.output
     _assert_env_set(result.output, "ANTHROPIC_MODEL", MODEL["id"])
 
 
@@ -1324,6 +1384,7 @@ def test_connect_model_variant_suffix_defers_to_server_dedup(fake_studio):
             {"model_path": MODEL["id"], "gguf_variant": "UD-Q4_K_XL"},
         )
     ]
+    assert f"Reusing loaded model: {MODEL['id']}:UD-Q4_K_XL\n" in result.output
     _assert_env_set(result.output, "ANTHROPIC_MODEL", MODEL["id"])
 
 
@@ -1730,8 +1791,9 @@ def _reset_auto_served():
     start._auto_served_server = None
 
 
-def test_start_studio_server_builds_command_and_waits(monkeypatch):
+def test_start_studio_server_builds_command_and_waits(monkeypatch, capsys):
     captured = {}
+    monkeypatch.setenv(start._START_API_KEY_MARKER_ENV, "parent")
 
     class FakePopen:
         def __init__(self, command, **kwargs):
@@ -1761,13 +1823,200 @@ def test_start_studio_server_builds_command_and_waits(monkeypatch):
     assert cmd[cmd.index("--gguf-variant") + 1] == "UD-Q4_K_XL"
     assert cmd[cmd.index("--context-length") + 1] == "8192"
     assert "--tensor-parallel" in cmd
+    assert "--start-api-key-marker" not in cmd
+    assert captured["kwargs"]["env"][start._START_API_KEY_MARKER_ENV] == "1"
+    assert start.os.environ[start._START_API_KEY_MARKER_ENV] == "parent"
     assert cmd[cmd.index("-p") + 1] == "8888"
     assert start.LoadOptions().load_in_4bit is True and "--no-load-in-4bit" not in cmd
     assert captured["kwargs"].get("start_new_session") is True  # own process group
     assert server.pid == 4321
+    output = capsys.readouterr().out
+    assert "Starting Unsloth server\n" in output
+    assert "Model: unsloth/Qwen3-1.7B-GGUF:UD-Q4_K_XL\n" in output
+    assert "No Unsloth server at" not in output
+    assert "server ready" not in output
 
 
-def test_auto_serves_when_no_server_then_tears_down(fake_studio, monkeypatch):
+def test_start_studio_server_polls_progress_from_early_key(monkeypatch):
+    class FakePopen:
+        pid = 4321
+
+        def poll(self):
+            return None
+
+    tails = iter(
+        [
+            "UNSLOTH_START_API_KEY: sk-unsloth-early\nLoading model...",
+            "UNSLOTH_START_API_KEY: sk-unsloth-early\nModel loaded: owner/model",
+        ]
+    )
+    created = []
+
+    class FakeProgress:
+        def __init__(self, base, key, model, variant):
+            created.append((base, key, model, variant, "created"))
+
+        def poll(self):
+            created.append("poll")
+
+        def close(self):
+            created.append("close")
+
+        def complete(self):
+            created.append("complete")
+
+    monkeypatch.setattr(start.subprocess, "Popen", lambda *a, **k: FakePopen())
+    monkeypatch.setattr(start, "_studio_healthy", lambda *a, **k: True)
+    monkeypatch.setattr(start, "_log_tail", lambda *a, **k: next(tails))
+    monkeypatch.setattr(start, "_ModelDownloadProgress", FakeProgress)
+    monkeypatch.setattr(start.time, "sleep", lambda _s: None)
+    monkeypatch.setattr(
+        start.typer,
+        "echo",
+        lambda message = "", **_kwargs: created.append(("echo", message)),
+    )
+
+    server = start._start_studio_server(
+        BASE,
+        "owner/model-GGUF",
+        start.LoadOptions(gguf_variant = "Q4_K_M"),
+    )
+
+    assert server.pid == 4321
+    assert (BASE, "sk-unsloth-early", "owner/model-GGUF", "Q4_K_M", "created") in created
+    assert created.count("poll") == 2
+    assert created[-2:] == ["complete", "close"]
+    assert not any(isinstance(event, tuple) and "server ready" in event[-1] for event in created)
+
+
+def test_load_model_with_progress_uses_selected_gguf_size(monkeypatch, capsys):
+    release = start.threading.Event()
+    calls = []
+
+    def http_json(
+        method,
+        url,
+        token,
+        payload = None,
+        timeout = 30,
+        error = None,
+    ):
+        calls.append((method, url, payload))
+        if url.endswith("/api/inference/load"):
+            assert release.wait(timeout = 2)
+            return {"model": "owner/model-GGUF"}
+        if "/api/hub/gguf-variants?" in url:
+            return {
+                "default_variant": "Q8_0",
+                "variants": [
+                    {
+                        "quant": "UD-Q4_K_XL",
+                        "filename": "model-UD-Q4_K_XL.gguf",
+                        "size_bytes": 4 * 1024**3,
+                        "download_size_bytes": 4 * 1024**3,
+                    }
+                ],
+            }
+        if "/api/hub/gguf-download-progress?" in url:
+            release.set()
+            return {
+                "downloaded_bytes": 2 * 1024**3,
+                "expected_bytes": 4 * 1024**3,
+                "progress": 0.5,
+            }
+        raise AssertionError(f"unexpected request: {method} {url}")
+
+    monkeypatch.setattr(start, "_http_json", http_json)
+    monkeypatch.setattr(start, "_DOWNLOAD_POLL_INTERVAL_S", 0.001)
+    result = start._load_model_with_progress(
+        BASE,
+        "sk-test",
+        "owner/model-GGUF",
+        start.LoadOptions(gguf_variant = "UD-Q4_K_XL"),
+        {"model_path": "owner/model-GGUF", "gguf_variant": "UD-Q4_K_XL"},
+    )
+
+    assert result == {"model": "owner/model-GGUF"}
+    output = capsys.readouterr().out
+    assert "Downloading model" in output
+    assert "100%" in output
+    progress_url = next(url for method, url, _ in calls if "gguf-download-progress" in url)
+    assert "variant=UD-Q4_K_XL" in progress_url
+    assert f"expected_bytes={4 * 1024**3}" in progress_url
+
+
+def test_download_progress_ignores_fully_cached_bytes(capsys):
+    display = start._DownloadProgressDisplay()
+    display.update(
+        {
+            "downloaded_bytes": 4 * 1024**3,
+            "completed_bytes": 4 * 1024**3,
+            "expected_bytes": 4 * 1024**3,
+            "progress": 0.99,
+        }
+    )
+    display.close()
+
+    assert capsys.readouterr().out == ""
+
+
+def test_resolve_model_warns_on_same_repo_quant_switch(monkeypatch, capsys):
+    models = [{"id": "owner/model-GGUF", "loaded": True}]
+
+    def http_json(
+        method,
+        url,
+        key,
+        payload = None,
+        timeout = 30,
+        error = None,
+    ):
+        assert url.endswith("/api/inference/status"), url
+        return {"is_gguf": True, "gguf_variant": "Q4_K_M"}
+
+    monkeypatch.setattr(start, "_loaded_models", lambda base, key: models)
+    monkeypatch.setattr(start, "_http_json", http_json)
+    monkeypatch.setattr(
+        start,
+        "_load_model_with_progress",
+        lambda base, key, model, load, payload: {"status": "loaded", "model": "owner/model-GGUF"},
+    )
+
+    start._resolve_model(BASE, "key", "owner/model-GGUF", start.LoadOptions(gguf_variant = "Q8_0"))
+
+    out = capsys.readouterr().out
+    assert (
+        "Switching the Unsloth server from owner/model-GGUF:Q4_K_M to owner/model-GGUF:Q8_0." in out
+    )
+    assert "every attached session" in out
+
+
+def test_resolve_model_same_quant_prints_no_switch_warning(monkeypatch, capsys):
+    models = [{"id": "owner/model-GGUF", "loaded": True}]
+
+    monkeypatch.setattr(start, "_loaded_models", lambda base, key: models)
+    monkeypatch.setattr(
+        start,
+        "_http_json",
+        lambda *a, **k: {"is_gguf": True, "gguf_variant": "Q8_0"},
+    )
+    monkeypatch.setattr(
+        start,
+        "_load_model_with_progress",
+        lambda base, key, model, load, payload: {
+            "status": "already_loaded",
+            "model": "owner/model-GGUF",
+        },
+    )
+
+    start._resolve_model(BASE, "key", "owner/model-GGUF", start.LoadOptions(gguf_variant = "Q8_0"))
+
+    out = capsys.readouterr().out
+    assert "Switching" not in out
+    assert "Reusing loaded model: owner/model-GGUF:Q8_0" in out
+
+
+def test_auto_serves_when_no_server_then_keeps_server(fake_studio, monkeypatch):
     monkeypatch.setattr(start, "find_studio_server", lambda: None)
     started = {}
     fake = SimpleNamespace(pid = 999, poll = lambda: None)
@@ -1793,8 +2042,134 @@ def test_auto_serves_when_no_server_then_tears_down(fake_studio, monkeypatch):
     assert started["model"] == "unsloth/Qwen3-1.7B-GGUF"
     assert started["load"].gguf_variant == "UD-Q4_K_XL"
     assert started["base"] == BASE
-    # Torn down after the agent session ended.
-    assert started.get("down") is fake
+    # A successful agent exit releases ownership and leaves the server available
+    # for another terminal. Explicit startup failures still use the cleanup path.
+    assert "down" not in started
+    assert start._auto_served_server is None
+    assert "is still running" in result.output
+    assert "unsloth studio stop" in result.output
+
+
+def test_auto_served_agent_launch_failure_stops_server(fake_studio, monkeypatch):
+    monkeypatch.setattr(start, "find_studio_server", lambda: None)
+    stopped = []
+    fake = SimpleNamespace(pid = 999, poll = lambda: None)
+
+    def fake_start(*_args):
+        start._auto_served_server = fake
+        return fake
+
+    monkeypatch.setattr(start, "_start_studio_server", fake_start)
+    monkeypatch.setattr(start, "_shutdown_server", stopped.append)
+    monkeypatch.setattr(
+        start,
+        "_launch",
+        lambda *a, **k: (_ for _ in ()).throw(RuntimeError("agent launch failed")),
+    )
+
+    result = CliRunner().invoke(
+        start.start_app,
+        ["claude", "--model", "unsloth/Qwen3-1.7B-GGUF"],
+    )
+
+    assert result.exit_code == 1
+    assert stopped == [fake]
+    assert "is still running" not in result.output
+
+
+def test_auto_served_server_exit_is_not_reported_as_running(fake_studio, monkeypatch):
+    monkeypatch.setattr(start, "find_studio_server", lambda: None)
+    fake = SimpleNamespace(pid = 999, poll = lambda: 1)
+
+    def fake_start(*_args):
+        start._auto_served_server = fake
+        return fake
+
+    monkeypatch.setattr(start, "_start_studio_server", fake_start)
+    monkeypatch.setattr(start, "_launch", lambda *a, **k: 0)
+
+    result = CliRunner().invoke(
+        start.start_app,
+        ["claude", "--model", "unsloth/Qwen3-1.7B-GGUF"],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert "stopped during the session" in result.output
+    assert "is still running" not in result.output
+
+
+def test_attached_server_prints_stop_hint_after_agent_exits(fake_studio, monkeypatch):
+    monkeypatch.setattr(start.shutil, "which", lambda _: "/usr/local/bin/claude")
+    monkeypatch.setattr(start, "_claude_flags", lambda *a, **k: [])
+    monkeypatch.setattr(
+        start.subprocess,
+        "run",
+        lambda command, env: SimpleNamespace(returncode = 0),
+    )
+
+    result = CliRunner().invoke(start.start_app, ["claude"])
+
+    assert result.exit_code == 0, result.output
+    assert f"Unsloth ready at {BASE} · model {MODEL['id']}\n" in result.output
+    assert f"Unsloth Studio is still running at {BASE}." in result.output
+    assert "Stop it with: unsloth studio stop\n" in result.output
+
+
+def test_no_launch_recipe_does_not_print_stop_hint(fake_studio):
+    result = CliRunner().invoke(start.start_app, ["claude", "--no-launch"])
+    assert result.exit_code == 0, result.output
+    assert "is still running" not in result.output
+
+
+def test_nonzero_agent_exit_notes_code_before_stop_hint(fake_studio, monkeypatch):
+    monkeypatch.setattr(start.shutil, "which", lambda _: "/usr/local/bin/claude")
+    monkeypatch.setattr(start, "_claude_flags", lambda *a, **k: [])
+    monkeypatch.setattr(
+        start.subprocess,
+        "run",
+        lambda command, env: SimpleNamespace(returncode = 3),
+    )
+
+    result = CliRunner().invoke(start.start_app, ["claude"])
+
+    assert result.exit_code == 3
+    assert "The agent exited with code 3." in result.output
+    assert f"Unsloth Studio is still running at {BASE}." in result.output
+
+
+def test_redacted_log_tail_strips_minted_keys(tmp_path):
+    log = tmp_path / "server.log"
+    log.write_text(
+        "booting\nUNSLOTH_START_API_KEY: sk-unsloth-feedfacefeedface\nerror: load failed\n",
+        encoding = "utf-8",
+    )
+
+    tail = start._redacted_log_tail(log)
+
+    assert "sk-unsloth-feedfacefeedface" not in tail
+    assert "sk-unsloth-[redacted]" in tail
+    assert "error: load failed" in tail
+
+
+def test_startup_failure_output_redacts_minted_key(monkeypatch, tmp_path, capsys):
+    monkeypatch.setattr(start.tempfile, "gettempdir", lambda: str(tmp_path))
+    fake = SimpleNamespace(pid = 4242, poll = lambda: 1)
+
+    def fake_popen(command, **kwargs):
+        # The child prints the early key marker, then dies before it is ready.
+        kwargs["stdout"].write(b"UNSLOTH_START_API_KEY: sk-unsloth-secretsecret\nload failed\n")
+        kwargs["stdout"].flush()
+        return fake
+
+    monkeypatch.setattr(start.subprocess, "Popen", fake_popen)
+
+    with pytest.raises(start.typer.Exit):
+        start._start_studio_server(BASE, "owner/model-GGUF", start.LoadOptions())
+
+    err = capsys.readouterr().err
+    assert "stopped before it was ready" in err
+    assert "sk-unsloth-secretsecret" not in err
+    assert "sk-unsloth-[redacted]" in err
 
 
 def test_codex_preflight_failure_tears_down_auto_served(fake_studio, monkeypatch):
