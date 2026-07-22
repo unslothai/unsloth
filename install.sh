@@ -2200,16 +2200,22 @@ _infer_linux_amd_gfx_arch() {
         echo gfx1150
         return 0
     fi
-    _mkt=""
     if command -v lspci >/dev/null 2>&1; then
-        _mkt=$(lspci -nn 2>/dev/null | awk -F: '/VGA compatible controller|3D controller|Display controller/{sub(/^[^:]*:[^:]*:[[:space:]]*/,""); print; exit}')
-    fi
-    if [ -n "$_mkt" ]; then
-        _gfx=$(_infer_amd_gfx_arch_from_gpu_name "$_mkt") || _gfx=""
-        if [ -n "$_gfx" ]; then
-            echo "$_gfx"
-            return 0
-        fi
+        # A non-AMD controller can enumerate first (Intel/ASPEED before an AMD
+        # dGPU), so scan every display-class line and take the first AMD one
+        # that maps. The vendor guard is case-SENSITIVE (a -i "ATI" would match
+        # "CorporATIon" on every Intel/NVIDIA line); whole-line matching also
+        # survives the 0000: PCI domain prefix. Mirrors install_python_stack.py.
+        _amd_disp=$(lspci -nn 2>/dev/null | grep -E 'VGA compatible controller|3D controller|Display controller' | grep -E 'AMD|ATI' || true)
+        while IFS= read -r _ln; do
+            [ -n "$_ln" ] || continue
+            if _gfx=$(_infer_amd_gfx_arch_from_gpu_name "$_ln"); then
+                echo "$_gfx"
+                return 0
+            fi
+        done <<EOF
+$_amd_disp
+EOF
     fi
     return 1
 }

@@ -9,6 +9,7 @@ import subprocess
 import sys
 import tempfile
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import MagicMock, mock_open, patch, PropertyMock
 
 import pytest
@@ -3239,7 +3240,7 @@ class TestStrixRocm71Override:
         m = stack_mod
         with (
             patch.object(m, "_linux_amd_gfx_from_cpuinfo", return_value = "gfx1151"),
-            patch.object(m, "_linux_gpu_marketing_name_from_lspci", return_value = None),
+            patch.object(m, "_linux_amd_gfx_from_lspci", return_value = None),
             patch.dict(os.environ, {"UNSLOTH_ROCM_GFX_ARCH": ""}),
         ):
             # WSL + no runtime -> inference suppressed (CPU torch stays).
@@ -3267,6 +3268,101 @@ class TestStrixRocm71Override:
             patch.dict(os.environ, {"UNSLOTH_ROCM_GFX_ARCH": "gfx1151"}),
         ):
             assert m._infer_linux_amd_gfx_arch() == "gfx1151"
+
+    def test_lspci_scan_covers_all_display_controllers(self):
+        """The lspci fallback must scan every display-class line, not just the
+        first: a non-AMD controller (Intel iGPU, ASPEED BMC) often enumerates
+        before the AMD dGPU. Non-AMD vendors must never map (an NVIDIA GeForce
+        GTX 860M would otherwise hit the AMD 860M pattern), and a 0000: PCI
+        domain prefix must not break matching."""
+        m = stack_mod
+
+        def fake_lspci(stdout):
+            result = SimpleNamespace(returncode = 0, stdout = stdout)
+            return (
+                patch.object(m.shutil, "which", return_value = "/usr/bin/lspci"),
+                patch.object(m.subprocess, "run", return_value = result),
+            )
+
+        intel_then_amd = (
+            "00:02.0 VGA compatible controller [0300]: Intel Corporation Raptor Lake-S GT1 [8086:a780]\n"
+            "03:00.0 VGA compatible controller [0300]: Advanced Micro Devices, Inc. [AMD/ATI]"
+            " Navi 31 [Radeon RX 7900 XT] [1002:744c]\n"
+        )
+        nvidia_only = (
+            "01:00.0 3D controller [0302]: NVIDIA Corporation GM107M [GeForce GTX 860M] [10de:1392]\n"
+        )
+        domain_prefixed = (
+            "0000:c5:00.0 VGA compatible controller [0300]: Advanced Micro Devices, Inc. [AMD/ATI]"
+            " Strix Halo [Radeon Graphics / Radeon 8060S] [1002:150e]\n"
+        )
+        unmapped_then_mapped = (
+            "03:00.0 Display controller [0380]: Advanced Micro Devices, Inc. [AMD/ATI]"
+            " Cape Verde [FirePro W600] [1002:6821]\n"
+            "04:00.0 VGA compatible controller [0300]: Advanced Micro Devices, Inc. [AMD/ATI]"
+            " Navi 33 [Radeon RX 7600] [1002:7480]\n"
+        )
+        for stdout, expected in (
+            (intel_then_amd, "gfx1100"),
+            (nvidia_only, None),
+            (domain_prefixed, "gfx1151"),
+            (unmapped_then_mapped, "gfx1102"),
+        ):
+            w, r = fake_lspci(stdout)
+            with w, r:
+                assert m._linux_amd_gfx_from_lspci() == expected, stdout
+
+    def test_install_sh_lspci_scan_covers_all_display_controllers(self):
+        """install.sh mirror of the scan-all behaviour, executed with a shimmed
+        lspci: Intel-first still finds the AMD dGPU, NVIDIA-only maps nothing
+        (860M collision), a domain-prefixed AMD line still maps."""
+        shell = shutil.which("bash")
+        if not shell:
+            pytest.skip("bash needed to execute the probe block")
+        source = _INSTALL_SH_PATH.read_text(encoding = "utf-8")
+        name_fn = re.search(
+            r"^_infer_amd_gfx_arch_from_gpu_name\(\) \{\n.*?\n\}\n", source, re.S | re.M
+        )
+        scan = re.search(
+            r"^    if command -v lspci[^\n]*\n.*?\nEOF\n    fi\n    return 1\n", source, re.S | re.M
+        )
+        assert name_fn and scan, "could not extract the lspci scan block"
+        cases = (
+            (
+                "00:02.0 VGA compatible controller [0300]: Intel Corporation UHD [8086:a780]\n"
+                "03:00.0 VGA compatible controller [0300]: Advanced Micro Devices, Inc. [AMD/ATI]"
+                " Navi 31 [Radeon RX 7900 XT] [1002:744c]",
+                "OK:gfx1100",
+            ),
+            (
+                "01:00.0 3D controller [0302]: NVIDIA Corporation GM107M [GeForce GTX 860M] [10de:1392]",
+                "OK:",
+            ),
+            (
+                "0000:c5:00.0 VGA compatible controller [0300]: Advanced Micro Devices, Inc."
+                " [AMD/ATI] Strix Halo [Radeon 8060S] [1002:150e]",
+                "OK:gfx1151",
+            ),
+        )
+        for lspci_out, expected in cases:
+            with tempfile.TemporaryDirectory() as d:
+                p = os.path.join(d, "lspci")
+                with open(p, "w", encoding = "utf-8") as f:
+                    f.write(f'#!/bin/sh\ncat <<"EOT"\n{lspci_out}\nEOT\n')
+                os.chmod(p, 0o755)
+                script = (
+                    "set -euo pipefail\n"
+                    + name_fn.group(0)
+                    + "probe() {\n"
+                    + scan.group(0)
+                    + "}\nprintf 'OK:%s\\n' \"$(probe || true)\"\n"
+                )
+                env = dict(os.environ, PATH = d + os.pathsep + os.environ.get("PATH", ""))
+                r = subprocess.run([shell, "-c", script], env = env, capture_output = True, text = True)
+                assert r.returncode == 0, f"scan aborted: {r.stderr}"
+                assert r.stdout.splitlines()[-1] == expected, (
+                    f"lspci scan wrong for {lspci_out!r}: {r.stdout!r}"
+                )
 
     def test_install_sh_infer_gfx_gated_on_wsl_runtime(self):
         """install.sh's _infer_linux_amd_gfx_arch must, like the Python side, skip

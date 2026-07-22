@@ -787,8 +787,12 @@ def _linux_amd_gfx_from_cpuinfo() -> "str | None":
     return None
 
 
-def _linux_gpu_marketing_name_from_lspci() -> "str | None":
-    """Best-effort VGA marketing name via lspci (Linux hosts without rocminfo)."""
+def _linux_amd_gfx_from_lspci() -> "str | None":
+    """First AMD display-class lspci line mapping to a known gfx arch. A non-AMD
+    controller can enumerate first (Intel/ASPEED before an AMD dGPU), so scan
+    them all. The vendor guard is case-SENSITIVE: a -i "ATI" would match
+    "CorporATIon" on every Intel/NVIDIA line. Whole-line matching also survives
+    the 0000: PCI domain prefix."""
     lspci = shutil.which("lspci")
     if not lspci:
         return None
@@ -805,11 +809,13 @@ def _linux_gpu_marketing_name_from_lspci() -> "str | None":
     if result.returncode != 0:
         return None
     for line in result.stdout.splitlines():
-        if re.search(r"VGA compatible controller|3D controller|Display controller", line, re.I):
-            parts = line.split(":", 2)
-            if len(parts) >= 3:
-                name = parts[2].strip()
-                return name or None
+        if not re.search(r"VGA compatible controller|3D controller|Display controller", line, re.I):
+            continue
+        if not re.search(r"AMD|ATI", line):
+            continue
+        arch = _gfx_arch_from_gpu_name(line)
+        if arch:
+            return arch
     return None
 
 
@@ -849,10 +855,7 @@ def _infer_linux_amd_gfx_arch() -> "str | None":
     cpu_gfx = _linux_amd_gfx_from_cpuinfo()
     if cpu_gfx:
         return cpu_gfx
-    lspci_name = _linux_gpu_marketing_name_from_lspci()
-    if lspci_name:
-        return _gfx_arch_from_gpu_name(lspci_name)
-    return None
+    return _linux_amd_gfx_from_lspci()
 
 
 def _amd_arch_index_url(gfx_arch: str | None) -> str | None:
