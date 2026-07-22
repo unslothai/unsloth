@@ -5,7 +5,9 @@
 
 from pathlib import Path
 from typing import Dict, Any, Optional
+from functools import lru_cache
 import json
+import os
 import yaml
 import structlog
 from loggers import get_logger
@@ -154,9 +156,115 @@ def load_inference_config(model_identifier: str) -> Dict[str, Any]:
         "top_k": _get_param("top_k", -1),
         "min_p": _get_param("min_p", 0.01),
         "presence_penalty": _get_param("presence_penalty", 0.0),
+        # Family defaults (inference_defaults.json) carry repetition_penalty; surface it too so
+        # a recommended value isn't silently dropped when resolving sampling for a request.
+        "repetition_penalty": _get_param("repetition_penalty", 1.0),
         "trust_remote_code": model_inference.get(
             "trust_remote_code", default_inference.get("trust_remote_code", False)
         ),
     }
 
     return inference_config
+
+
+# ── Effective sampling resolution for `unsloth run` / `unsloth start` ──────────
+#
+# Per-model recommended sampling is applied to a request only for the fields the
+# client omitted; an operator can pin a field from the CLI via UNSLOTH_SAMPLING_*
+# (a hard override that wins even over an explicit client value). Precedence per
+# field: operator pin -> client explicit -> per-model recommendation -> the static
+# schema default (mirroring ChatCompletionRequest, so behavior is unchanged when
+# nothing is recommended or pinned).
+
+# field -> (env var, static default, min, max, is_int)
+_SAMPLING_FIELDS = {
+    "temperature": ("UNSLOTH_SAMPLING_TEMPERATURE", 0.6, 0.0, 2.0, False),
+    "top_p": ("UNSLOTH_SAMPLING_TOP_P", 0.95, 0.0, 1.0, False),
+    "top_k": ("UNSLOTH_SAMPLING_TOP_K", 20, -1, 100, True),
+    "min_p": ("UNSLOTH_SAMPLING_MIN_P", 0.01, 0.0, 1.0, False),
+    "repetition_penalty": ("UNSLOTH_SAMPLING_REPETITION_PENALTY", 1.0, 1.0, 2.0, False),
+    "presence_penalty": ("UNSLOTH_SAMPLING_PRESENCE_PENALTY", 0.0, 0.0, 2.0, False),
+}
+
+# Public, ordered tuple of the sampling fields callers resolve.
+SAMPLING_FIELD_NAMES = tuple(_SAMPLING_FIELDS)
+
+
+def _operator_sampling_override(field: str):
+    """Operator-pinned value for a sampling field from UNSLOTH_SAMPLING_*, or None.
+
+    An unparseable or out-of-range value is ignored so a bad env var can never
+    reach llama-server; the field then falls back to the client / recommended value.
+    """
+    env_var, _default, lo, hi, is_int = _SAMPLING_FIELDS[field]
+    raw = os.environ.get(env_var)
+    if raw is None or raw.strip() == "":
+        return None
+    try:
+        val = int(raw) if is_int else float(raw)
+    except (TypeError, ValueError):
+        return None
+    if val < lo or val > hi:
+        return None
+    return val
+
+
+@lru_cache(maxsize = 128)
+def _recommended_sampling(model_id: str) -> Dict[str, Any]:
+    """Per-model recommended sampling values (model-specific YAML or family defaults only).
+
+    The generic ``default.yaml`` tier that :func:`load_inference_config` falls back to is
+    intentionally excluded: a model with no specific/family recommendation keeps the
+    request's schema defaults instead of shifting every unknown model to the generic
+    baseline. Model-specific YAML wins over the family default. Cached by model id.
+    """
+    if not model_id:
+        return {}
+    # load_model_defaults() falls back to default.yaml for an unknown model, so gate the
+    # model-YAML tier on _has_specific_yaml (mirrors load_inference_config) to keep the
+    # generic default.yaml out of "recommended".
+    try:
+        if _has_specific_yaml(model_id):
+            model_inference = (load_model_defaults(model_id) or {}).get("inference", {}) or {}
+        else:
+            model_inference = {}
+    except Exception as e:
+        logger.debug(f"Could not load model defaults for '{model_id}': {e}")
+        model_inference = {}
+    try:
+        family = get_family_inference_params(model_id) or {}
+    except Exception as e:
+        logger.debug(f"Could not load family sampling for '{model_id}': {e}")
+        family = {}
+
+    recommended: Dict[str, Any] = {}
+    for field in _SAMPLING_FIELDS:
+        for source in (model_inference, family):
+            val = source.get(field)
+            if isinstance(val, (int, float)) and not isinstance(val, bool):
+                recommended[field] = val
+                break
+    return recommended
+
+
+def resolve_effective_sampling(model_id: Optional[str], explicit: Dict[str, Any]) -> Dict[str, Any]:
+    """Resolve the effective sampling params for a request.
+
+    ``explicit`` maps each field in :data:`SAMPLING_FIELD_NAMES` to the client-sent
+    value, or ``None`` when the client omitted it. Precedence (highest first): an
+    operator ``UNSLOTH_SAMPLING_*`` pin, then the client's explicit value, then the
+    per-model recommendation, then the static schema default.
+    """
+    recommended = _recommended_sampling(model_id or "")
+    effective: Dict[str, Any] = {}
+    for field, (_env, default, _lo, _hi, _int) in _SAMPLING_FIELDS.items():
+        override = _operator_sampling_override(field)
+        if override is not None:
+            effective[field] = override
+        elif explicit.get(field) is not None:
+            effective[field] = explicit[field]
+        elif field in recommended:
+            effective[field] = recommended[field]
+        else:
+            effective[field] = default
+    return effective

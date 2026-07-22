@@ -5,6 +5,14 @@
 Inference utility functions
 """
 
-from utils.inference.inference_config import load_inference_config
+from utils.inference.inference_config import (
+    load_inference_config,
+    resolve_effective_sampling,
+    SAMPLING_FIELD_NAMES,
+)
 
-__all__ = ["load_inference_config"]
+__all__ = [
+    "load_inference_config",
+    "resolve_effective_sampling",
+    "SAMPLING_FIELD_NAMES",
+]

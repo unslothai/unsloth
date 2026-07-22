@@ -7381,6 +7381,26 @@ async def delete_openai_container(
         await client.close()
 
 
+def _fill_recommended_sampling_openai(payload, model_id) -> None:
+    """Apply per-model recommended sampling (and any operator UNSLOTH_SAMPLING_* pin) to a
+    ChatCompletionRequest in place.
+
+    Only the sampling fields the client did NOT explicitly send (tracked via
+    ``model_fields_set``) are overwritten, so a client that sets a field stays byte-identical
+    unless an operator pins it. Fields with neither a recommendation nor a pin keep their
+    existing (schema-default) value.
+    """
+    from utils.inference import resolve_effective_sampling, SAMPLING_FIELD_NAMES
+
+    explicit = {
+        f: (getattr(payload, f) if f in payload.model_fields_set else None)
+        for f in SAMPLING_FIELD_NAMES
+    }
+    effective = resolve_effective_sampling(model_id, explicit)
+    for field, value in effective.items():
+        setattr(payload, field, value)
+
+
 @router.post("/chat/completions")
 async def openai_chat_completions(
     payload: ChatCompletionRequest,
@@ -7852,6 +7872,18 @@ async def openai_chat_completions(
                 param = "n",
             ),
         )
+
+    # Apply per-model recommended sampling (and any operator UNSLOTH_SAMPLING_* pin) to the
+    # fields the client omitted, so agents and API clients get the model's tuned defaults
+    # unless they set the field explicitly. Placed after external-provider routing (which
+    # returned above) so only local llama-server / transformers requests are touched, and it
+    # covers both the passthrough and non-passthrough branches below since both read payload.*.
+    _reco_model_id = (
+        getattr(llama_backend, "model_identifier", None)
+        if using_gguf
+        else getattr(backend, "active_model_name", None)
+    ) or model_name
+    _fill_recommended_sampling_openai(payload, _reco_model_id)
 
     # ── Standard OpenAI function-calling pass-through (GGUF only) ────
     # When a client (opencode / Claude Code via OpenAI compat / Cursor /
@@ -11588,6 +11620,9 @@ async def _responses_stream(
             detail = "Image provided but current GGUF model does not support vision.",
         )
 
+    # Streaming /v1/responses builds the passthrough body directly (bypassing
+    # openai_chat_completions), so apply recommended sampling here too.
+    _fill_recommended_sampling_openai(chat_req, getattr(llama_backend, "model_identifier", None))
     body = _build_openai_passthrough_body(
         chat_req, backend_ctx = llama_backend.context_length, llama_backend = llama_backend
     )
@@ -13019,14 +13054,28 @@ async def anthropic_messages(
     # endpoint matches /v1/chat/completions.
     _has_image = _normalize_anthropic_openai_images(openai_messages, llama_backend.is_vision)
 
-    temperature = payload.temperature if payload.temperature is not None else 0.6
-    top_p = payload.top_p if payload.top_p is not None else 0.95
-    top_k = payload.top_k if payload.top_k is not None else 20
-    min_p = payload.min_p if payload.min_p is not None else 0.01
-    repetition_penalty = (
-        payload.repetition_penalty if payload.repetition_penalty is not None else 1.0
+    # Fill omitted sampling fields with the per-model recommendation (or an operator
+    # UNSLOTH_SAMPLING_* pin); an explicit client value wins unless the operator pinned it.
+    # Anthropic sampling fields are Optional, so None already marks "client omitted".
+    from utils.inference import resolve_effective_sampling
+
+    _anthropic_sampling = resolve_effective_sampling(
+        getattr(llama_backend, "model_identifier", None) or model_name,
+        {
+            "temperature": payload.temperature,
+            "top_p": payload.top_p,
+            "top_k": payload.top_k,
+            "min_p": payload.min_p,
+            "repetition_penalty": payload.repetition_penalty,
+            "presence_penalty": payload.presence_penalty,
+        },
     )
-    presence_penalty = payload.presence_penalty if payload.presence_penalty is not None else 0.0
+    temperature = _anthropic_sampling["temperature"]
+    top_p = _anthropic_sampling["top_p"]
+    top_k = _anthropic_sampling["top_k"]
+    min_p = _anthropic_sampling["min_p"]
+    repetition_penalty = _anthropic_sampling["repetition_penalty"]
+    presence_penalty = _anthropic_sampling["presence_penalty"]
     stop = payload.stop_sequences or None
 
     # Translate Anthropic tool_choice to OpenAI format for llama-server. Falls
