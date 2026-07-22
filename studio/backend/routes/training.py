@@ -110,8 +110,7 @@ async def get_hardware_utilization(current_subject: str = Depends(get_current_su
 async def get_visible_hardware_utilization(current_subject: str = Depends(get_current_subject)):
     from utils.hardware import get_visible_gpu_utilization
 
-    # Off the event loop: the ROCm fallbacks shell out (PowerShell perf
-    # counters on Windows, sysfs reads), and the System view polls this route.
+    # Off the event loop: the ROCm fallbacks shell out (Windows perf counters, sysfs) and the System view polls this route.
     return await asyncio.to_thread(get_visible_gpu_utilization)
 
 

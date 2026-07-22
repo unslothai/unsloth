@@ -734,32 +734,26 @@ def _rocm_linux_sysfs_vram_gb() -> tuple[Optional[float], Optional[float]]:
         return None, None
 
 
-# 0x1002. The NVIDIA open kernel module (560+) also registers KFD topology nodes,
-# with vendor_id 4318 (0x10DE) -- install.sh filters on this same id for exactly
-# that reason. A non-AMD node is not a HIP device and must never take an ordinal.
+# 0x1002. NVIDIA's open kernel module also registers KFD nodes (vendor_id 0x10DE);
+# a non-AMD node is not a HIP device and must never take an ordinal.
 _AMD_PCI_VENDOR_ID = 4098
 
 
 def _rocm_kfd_gpu_pci_ids() -> list[str]:
     """PCI addresses of the GPUs ROCm enumerates, in HIP device order.
 
-    Reads /sys/class/kfd/kfd/topology/nodes/<N>/properties -- the topology the
-    ROCm runtime itself enumerates from. AMD GPU nodes (``simd_count`` > 0, which
-    excludes CPU nodes, and ``vendor_id`` == AMD, which excludes NVIDIA nodes)
-    taken in node-id order are HIP's device order, and each carries its PCI
-    location, so position N here IS ROCm physical device N.
+    Reads /sys/class/kfd/kfd/topology/nodes/<N>/properties, the topology ROCm
+    itself enumerates from: AMD GPU nodes (simd_count > 0 excludes CPUs,
+    vendor_id == AMD excludes NVIDIA) in node-id order are HIP's device order, so
+    position N is ROCm physical device N. Unlike DRM sysfs, an amdgpu adapter HIP
+    cannot enumerate has no node here, so it never consumes an ordinal.
 
-    This is the authoritative device->identity link that DRM sysfs alone cannot
-    provide: an amdgpu-bound adapter HIP cannot enumerate (an unsupported older
-    AMD GPU) has no GPU node here, so it never consumes an ordinal.
+    Returns [] (disabling the overlay) when KFD is absent, and FAILS CLOSED the
+    same way on any unreadable node or an AMD node with no location_id: dropping
+    one would shift every later ordinal and let a similar-capacity GPU pass the
+    total-size guard while showing another card's usage.
 
-    Returns [] -- disabling the overlay rather than guessing -- when KFD is
-    unavailable, and FAILS CLOSED the same way if any node cannot be read or an
-    AMD GPU node has no ``location_id``: dropping one would silently shift every
-    later ordinal, and a similar-capacity GPU would then pass the total-size
-    guard while showing another card's usage.
-
-    ``location_id`` is the kernel's ``(bus << 8) | devfn``; ``domain`` is separate.
+    location_id is the kernel's (bus << 8) | devfn; domain is separate.
     """
     nodes: list[tuple[int, str]] = []
     try:
@@ -799,20 +793,17 @@ def _rocm_kfd_gpu_pci_ids() -> list[str]:
 
 
 def _rocm_linux_amdgpu_cards() -> list[tuple[str, int, str]]:
-    """The amdgpu-bound DRM cards, in PCI order: ``(pci_bdf, card_no, device_dir)``.
+    """The amdgpu-bound DRM cards in PCI order: ``(pci_bdf, card_no, device_dir)``.
 
-    Membership is decided by the BOUND DRIVER (``device/driver`` resolves to
-    amdgpu), not by the presence of the VRAM sysfs files: an AMD device with
-    incomplete sysfs support (some APUs expose no mem_info_vram_* at all) is still
-    a device that consumes a ROCm ordinal, and dropping it would shift every later
-    card down one. PCI order is ROCm/HIP's default enumeration order, so the
-    position in this list is the ROCm ordinal; the DRM card number is a stable
-    tiebreak (the kernel assigns it in PCI-probe order too) for when the device
-    symlink cannot be resolved to a BDF.
+    Membership is by the BOUND DRIVER, not the VRAM sysfs files: an AMD device
+    with incomplete sysfs support (some APUs expose no mem_info_vram_*) still
+    consumes a ROCm ordinal, and dropping it would shift every later card down.
+    PCI order is HIP's default enumeration order, so list position is the ROCm
+    ordinal; card_no is a stable tiebreak when the BDF cannot be resolved.
 
-    NOTE this is a superset of the ROCm-visible set: an amdgpu-bound but
-    HIP-unsupported adapter appears here too. Callers must therefore not assume a
-    1:1 mapping onto torch devices without checking the counts agree.
+    NOTE this is a superset of the ROCm-visible set (a HIP-unsupported amdgpu
+    adapter appears too), so callers must check the counts agree before assuming
+    a 1:1 mapping onto torch devices.
     """
     if platform.system() != "Linux":
         return []
@@ -844,17 +835,13 @@ def _rocm_linux_amdgpu_cards() -> list[tuple[str, int, str]]:
 def _rocm_linux_sysfs_vram_by_pci_gb() -> dict[str, tuple[float, float]]:
     """System-wide AMD VRAM via Linux DRM sysfs, keyed by the card's PCI address.
 
-    Reads /sys/class/drm/card<N>/device/mem_info_vram_{used,total} (amdgpu-only
-    files, kernel-updated across all processes) so each GPU gets its own figure,
-    unlike _rocm_linux_sysfs_vram_gb which sums the host. Returns
-    ``{pci_bdf: (used_gb, total_gb)}``; empty on failure or off Linux.
-
-    Keyed by PCI address rather than any ordinal, so the caller can join it to the
-    ROCm device order from _rocm_kfd_gpu_pci_ids() by identity. Position-based
-    keying cannot express this correctly: DRM card numbers include foreign
-    adapters, and the amdgpu set includes cards HIP does not enumerate, so any
-    ordinal derived from this list alone can be shifted relative to ROCm's.
-    A card whose figures are missing, unreadable or zero-total simply has no entry.
+    Reads each card's mem_info_vram_{used,total} (kernel-updated across all
+    processes) so every GPU gets its own figure, unlike _rocm_linux_sysfs_vram_gb
+    which sums the host. Keyed by PCI address, not an ordinal, so the caller can
+    join it to _rocm_kfd_gpu_pci_ids() by identity: DRM card numbers include
+    foreign adapters and this set includes cards HIP does not enumerate, so any
+    ordinal from this list alone can be shifted relative to ROCm's. A card with
+    missing/unreadable/zero-total figures simply has no entry. Empty off Linux.
     """
     if platform.system() != "Linux":
         return {}
@@ -1385,49 +1372,32 @@ def _rocm_visibility_mask_active() -> bool:
 
 
 def _overlay_system_wide_vram(devices: list[Dict[str, Any]]) -> None:
-    """Replace process-local torch VRAM figures with system-wide ones on Linux
-    ROCm.
+    """Replace process-local torch VRAM with system-wide Linux ROCm figures.
 
     The torch fallback is process-local, so a model served by the separate
-    llama-server process reads as ~0 used even with the GPU full (#7072). On
-    Linux, DRM sysfs (``mem_info_vram_{used,total}``) gives per-card system-wide
-    figures the kernel updates across all processes. Sources are matched by the
-    device's PHYSICAL index (never by list position), and only when no visibility
-    mask is active and the device count equals the host GPU count; under any mask
-    the index is not a verifiable host ordinal, so torch's figures are kept.
-    Best-effort, in place; a device with no matching card keeps its torch
-    figures, and a unified-memory APU whose sysfs total is below torch's
-    GTT-backed total keeps torch's (mirrors _apply_unified_memory_correction).
+    llama-server process reads as ~0 used even with the GPU full (#7072). DRM
+    sysfs gives per-card figures the kernel updates across all processes. Sources
+    are matched by the device's PHYSICAL index (never list position), and only
+    when NO visibility mask is active and the device count equals the host GPU
+    count; under any mask the index is not a verifiable host ordinal, so torch's
+    figures are kept. Best-effort, in place: a device with no matching card, or a
+    unified-memory APU whose sysfs total is below torch's GTT-backed total, keeps
+    torch's (mirrors _apply_unified_memory_correction).
 
-    Windows is intentionally not overlaid: the per-adapter Performance Counters
-    cannot be reliably mapped to ROCm device ordinals (the wildcard query also
-    returns non-ROCm/iGPU adapters, LUID order is not device order) and read
-    only Dedicated Usage, missing WDDM shared memory on unified-memory GPUs -- so
-    the multi-GPU view keeps the torch fallback there rather than risk
-    misattributing another adapter's usage."""
+    Windows is intentionally not overlaid: its per-adapter perf counters cannot be
+    mapped to ROCm ordinals and miss WDDM shared memory, so the multi-GPU view
+    keeps torch there rather than risk misattributing another adapter's usage.
+    """
     if not devices or platform.system() != "Linux":
         return
-    # Match devices to cards by PCI IDENTITY, never by position. KFD topology is
-    # what the ROCm runtime enumerates from, so index N there is ROCm physical
-    # device N and carries that GPU's PCI address; DRM sysfs supplies the
-    # system-wide figures under the same address.
-    #
-    # That join is only meaningful while the reported ``index`` really is a
-    # HOST-physical ordinal, and torch cannot tell us its device's PCI id to check
-    # directly. So overlay only when host visibility is positively verified:
-    #
-    #   * No visibility mask. Any of them makes ``index`` something other than a
-    #     host-physical ordinal -- a layered HIP-over-ROCR value is ROCR-relative,
-    #     GPU_DEVICE_ORDINAL is not consulted when the index is assigned at all,
-    #     and under device-cgroup filtering a mask indexes the container's set.
-    #   * The device count matches the host's GPU count. A container that exposes
-    #     only some render devices through device cgroups sets no env var, yet
-    #     torch compacts what it can see to ordinals from zero while the
-    #     host-mounted KFD/DRM trees still list every GPU. Equal counts is what
-    #     rules that out and pins the indices to host-physical 0..n-1.
-    #
-    # Anything else keeps torch's process-local figures: less informative, but
-    # never another card's usage attributed to this GPU.
+    # Match by PCI identity, never list position: index N in KFD topology is ROCm
+    # physical device N and carries its PCI address, which DRM sysfs keys on too.
+    # The two gates below verify ``index`` really is a host-physical ordinal
+    # (torch exposes no PCI id to check directly):
+    #   * No visibility mask -- any mask makes ``index`` container/ROCR-relative
+    #     rather than a host ordinal.
+    #   * Device count == host GPU count -- rules out a device-cgroup container
+    #     that sets no env var yet compacts torch's indices from zero.
     pci_by_ordinal = _rocm_kfd_gpu_pci_ids()
     if not pci_by_ordinal:
         return
@@ -1443,17 +1413,12 @@ def _overlay_system_wide_vram(devices: list[Dict[str, Any]]) -> None:
             continue
         used, total = entry
         dev_total = dev.get("vram_total_gb") or 0.0
-        # Overlay only a device that maps 1:1 to this whole physical card: its
-        # torch total must match the card's sysfs total (within ~10%). A mismatch
-        # in EITHER direction means sysfs describes a different memory scope than
-        # the torch device and must not overwrite it:
-        #   * unified-memory APU (Strix Halo): sysfs reports only the small
-        #     dedicated VRAM slice while torch sees the larger GTT-backed pool;
-        #   * partitioned ROCm device (MI300 CPX mode): HIP exposes several
-        #     logical devices per card while sysfs reports the whole card's
-        #     aggregate, so the card total dwarfs a partition's torch total.
-        # Overlaying either would misstate the device's capacity and free VRAM
-        # (a partition would look like it has the whole card free).
+        # Overlay only a device that maps 1:1 to the whole card: torch total must
+        # match sysfs total within ~10%. A mismatch either way means a different
+        # memory scope -- a unified-memory APU (sysfs sees only the dedicated
+        # slice, torch the GTT pool) or a partitioned MI300 (sysfs reports the
+        # whole card, dwarfing a partition) -- and overlaying would misstate free
+        # VRAM (a partition would look like it has the whole card free).
         if dev_total <= 0 or abs(total - dev_total) > 0.1 * dev_total:
             continue
         dev["vram_used_gb"] = used
@@ -1557,14 +1522,10 @@ def get_visible_gpu_utilization() -> Dict[str, Any]:
                     }
                 )
             if IS_ROCM and index_kind == "physical":
-                # Torch VRAM here is process-local; swap in system-wide readings
-                # (Linux DRM sysfs) so a model held by the separate llama-server
-                # process shows up (#7072). Mirrors the fallbacks
-                # get_gpu_utilization already applies to the primary GPU.
-                # Physical-index only: under a UUID/MIG mask ``index`` is a visible
-                # ordinal (index_kind == "relative"), so it is not a host GPU id.
-                # The overlay verifies the rest of that claim itself before
-                # touching anything.
+                # Swap process-local torch VRAM for system-wide sysfs so a model
+                # held by the separate llama-server process shows up (#7072).
+                # Physical-index only: a relative index (UUID/MIG mask) is not a
+                # host GPU id. The overlay verifies the rest itself.
                 _overlay_system_wide_vram(devices)
             return {
                 "available": True,
