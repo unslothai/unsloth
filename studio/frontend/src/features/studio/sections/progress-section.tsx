@@ -19,7 +19,7 @@ import {
   PopoverTrigger,
 } from "@/components/ui/popover";
 import { Progress } from "@/components/ui/progress";
-import { OPTIMIZER_OPTIONS } from "@/config/training";
+import { MLX_OPTIMIZER_OPTIONS, OPTIMIZER_OPTIONS } from "@/config/training";
 import { setTrainingCompareHandoff } from "@/features/chat";
 import {
   useTrainingActions,
@@ -188,8 +188,9 @@ export function ProgressSection({
   const cfgLoraVariant = cfg?.loraVariant;
 
   const optimizerLabel =
-    OPTIMIZER_OPTIONS.find((o) => o.value === cfgOptimizerType)?.label ??
-    cfgOptimizerType;
+    [...OPTIMIZER_OPTIONS, ...MLX_OPTIMIZER_OPTIONS].find(
+      (o) => o.value === cfgOptimizerType,
+    )?.label ?? cfgOptimizerType;
 
   const configItems: ConfigGroup[] = [
     {

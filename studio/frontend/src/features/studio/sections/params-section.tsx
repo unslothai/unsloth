@@ -36,6 +36,7 @@ import {
   CONTEXT_LENGTHS,
   CPT_TARGET_MODULES,
   LR_SCHEDULER_OPTIONS,
+  MLX_OPTIMIZER_OPTIONS,
   OPTIMIZER_OPTIONS,
   TARGET_MODULES,
 } from "@/config/training";
@@ -203,6 +204,23 @@ export function ParamsSection(): ReactElement {
   useEffect(() => {
     setCtxInput(String(store.contextLength));
   }, [store.contextLength]);
+
+  // On Apple Silicon the MLX trainer supports a different optimizer set than
+  // the CUDA/bitsandbytes list, so offer the MLX names there.
+  const isMac = platformDeviceType === "mac";
+  const optimizerOptions = isMac ? MLX_OPTIMIZER_OPTIONS : OPTIMIZER_OPTIONS;
+
+  // On Mac, the MLX backend normalizes every CUDA/bitsandbytes optimizer in
+  // OPTIMIZER_OPTIONS (including the shared default) to plain AdamW, so show
+  // AdamW for those to keep the control truthful and non-blank. Any other
+  // value -- an MLX optimizer the user picked, or an unrecognized/non-canonical
+  // imported one -- is shown as-is rather than mislabeled as AdamW, since the
+  // backend would run or reject it on its own terms. Non-Mac display unchanged.
+  const isCudaAliasOptimizer = OPTIMIZER_OPTIONS.some(
+    (o) => o.value === store.optimizerType,
+  );
+  const selectedOptimizer =
+    isMac && isCudaAliasOptimizer ? "adamw" : store.optimizerType;
 
   const trySetContextLength = (input: string): number | null => {
     const n = Number(input);
@@ -778,14 +796,14 @@ export function ParamsSection(): ReactElement {
                     }
                   >
                     <Select
-                      value={store.optimizerType}
+                      value={selectedOptimizer}
                       onValueChange={(v) => store.setOptimizerType(v)}
                     >
                       <SelectTrigger className="w-48">
                         <SelectValue />
                       </SelectTrigger>
                       <SelectContent>
-                        {OPTIMIZER_OPTIONS.map((opt) => (
+                        {optimizerOptions.map((opt) => (
                           <SelectItem key={opt.value} value={opt.value}>
                             {formatOptimizerLabel(opt.value, opt.label, t)}
                           </SelectItem>
