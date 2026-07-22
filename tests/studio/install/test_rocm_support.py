@@ -3208,10 +3208,15 @@ class TestStrixRocm71Override:
         match = re.search(r"^_rocm_leaf_below\(\) \{.*?^\}", source, re.S | re.M)
         assert match, "could not extract _rocm_leaf_below from install.sh"
         fn = match.group(0)
+
         def below(leaf):
-            return subprocess.run(
-                [shell, "-c", f'{fn}\n_rocm_leaf_below "$1" 7 13', "_", leaf]
-            ).returncode == 0
+            return (
+                subprocess.run(
+                    [shell, "-c", f'{fn}\n_rocm_leaf_below "$1" 7 13', "_", leaf]
+                ).returncode
+                == 0
+            )
+
         for leaf in ("rocm6.0", "rocm7.0", "rocm7.1", "rocm7.2", "rocm7.12"):
             assert below(leaf), f"{leaf} must reroute (below arch floor 7.13)"
         for leaf in ("rocm7.13", "rocm7.14", "rocm8.0", "gfx1151", "cu128", "cpu"):
