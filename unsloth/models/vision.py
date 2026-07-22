@@ -2047,6 +2047,14 @@ class FastBaseModel:
             raise RuntimeError("Unsloth: Unsuccessfully patched inner_training_loop")
         patch_saving_functions(model, vision = True)
 
+        from ..kernels.utils import (
+            UNSLOTH_QUANTIZE_ACTIVATIONS,
+            patch_lora_for_int8_activations,
+        )
+
+        if UNSLOTH_QUANTIZE_ACTIVATIONS:
+            model = patch_lora_for_int8_activations(model)
+
         # Patch tokenizer to pad to the left
         m = model
         while hasattr(m, "model"):

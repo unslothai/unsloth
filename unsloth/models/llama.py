@@ -3603,6 +3603,8 @@ class FastLlamaModel:
             apply_lora_mlp = apply_lora_mlp_swiglu
         elif model_type == "qwen3moe":
             apply_lora_mlp = apply_lora_mlp_swiglu
+        elif model_type == "qwen3_5":
+            apply_lora_mlp = apply_lora_mlp_swiglu
         else:
             raise NotImplementedError(f"Unsloth: {model_type} is not yet implemented!")
 
@@ -3699,10 +3701,15 @@ class FastLlamaModel:
                         )
 
                 # QKV attention patching
-                q_proj = layer.self_attn.q_proj
-                k_proj = layer.self_attn.k_proj
-                v_proj = layer.self_attn.v_proj
-                if (
+                # DeltaNet layers (e.g. Qwen3.6 hybrid) don't have q/k/v projections.
+                try:
+                    q_proj = layer.self_attn.q_proj
+                    k_proj = layer.self_attn.k_proj
+                    v_proj = layer.self_attn.v_proj
+                except AttributeError:
+                    q_proj = k_proj = v_proj = None
+
+                if q_proj is not None and (
                     hasattr(q_proj, "lora_A")
                     and hasattr(k_proj, "lora_A")
                     and hasattr(v_proj, "lora_A")
@@ -3715,7 +3722,7 @@ class FastLlamaModel:
                 ):
                     layer.self_attn.apply_qkv = apply_lora_qkv
                     n_qkv += 1
-                else:
+                elif q_proj is not None:
                     if model_type == "qwen2":
                         n_qkv += 1
                     else:
@@ -3725,15 +3732,19 @@ class FastLlamaModel:
                         )
 
                 # O attention patching
-                o_proj = layer.self_attn.o_proj
-                if (
+                try:
+                    o_proj = layer.self_attn.o_proj
+                except AttributeError:
+                    o_proj = None
+
+                if o_proj is not None and (
                     hasattr(o_proj, "lora_A")
                     and (getattr(o_proj, "base_layer", o_proj).bias is None)
                     and (len(getattr(o_proj, "lora_magnitude_vector", []) or []) == 0)
                 ):
                     layer.self_attn.apply_o = apply_lora_o
                     n_o += 1
-                else:
+                elif o_proj is not None:
                     logger.warning_once(
                         "Not an error, but Unsloth cannot patch O projection layer with our manual autograd engine since either LoRA adapters\n"
                         "are not enabled or a bias term (like in Qwen) is used."
