@@ -2122,6 +2122,7 @@ class TestGfxArchNameFallback:
         "name, expected",
         [
             ("AMD Radeon(TM) 8060S Graphics", "gfx1151"),
+            ("AMD Radeon(TM) 8065S Graphics", "gfx1151"),
             ("AMD Ryzen AI MAX+ 395 w/ Radeon 8060S", "gfx1151"),
             ("AMD Radeon(TM) 890M", "gfx1150"),
             ("AMD Ryzen AI 9 HX 370 w/ Radeon 890M", "gfx1150"),
@@ -3202,6 +3203,12 @@ class TestStrixRocm71Override:
             Path,
             "read_text",
             return_value = "model name : AMD Ryzen AI Max+ 395 w/ Radeon 8060S\n",
+        ):
+            assert stack_mod._linux_amd_gfx_from_cpuinfo() == "gfx1151"
+        # 8065S (Gorgon Halo) must match on the Radeon name alone, even without the
+        # "Ryzen AI Max" branding (mirrors setup.sh / setup.ps1 which list 8065S).
+        with patch.object(
+            Path, "read_text", return_value = "model name : AMD Radeon 8065S\n"
         ):
             assert stack_mod._linux_amd_gfx_from_cpuinfo() == "gfx1151"
 

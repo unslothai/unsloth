@@ -754,7 +754,7 @@ def _linux_amd_gfx_from_cpuinfo() -> "str | None":
         text = Path("/proc/cpuinfo").read_text(encoding = "utf-8", errors = "replace")
     except OSError:
         return None
-    if re.search(r"Ryzen AI Max|Radeon 80[0-9]0S|Strix Halo", text, re.IGNORECASE):
+    if re.search(r"Ryzen AI Max|Radeon 80[0-9][05]S|Strix Halo", text, re.IGNORECASE):
         return "gfx1151"
     if re.search(
         r"890M|880M|860M|840M|Strix Point|Krackan|HX 37[05]|AI 9 HX|AI 9 36[05]"
