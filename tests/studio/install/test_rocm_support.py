@@ -3,6 +3,8 @@
 import importlib.util
 import json
 import os
+import re
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -3191,13 +3193,29 @@ class TestStrixRocm71Override:
         source = _INSTALL_SH_PATH.read_text(encoding = "utf-8")
         assert "moe_utils" in source or "_grouped_mm" in source
 
-    def test_strix_override_only_fires_on_rocm71(self):
-        """install.sh must scope the Strix override to rocm7.1 only (not rocm7.2+)."""
+    def test_strix_override_scoped_below_arch_floor(self):
+        """Strix reroute must fire for rocm leaves BELOW the arch floor (7.13) and
+        NOT at/above it. Executed via _rocm_leaf_below so it verifies the actual
+        version comparison, not a text match that a comment could satisfy."""
         source = _INSTALL_SH_PATH.read_text(encoding = "utf-8")
-        strix_idx = source.find("_strix_gfx")
-        assert strix_idx != -1
-        context_before = source[max(0, strix_idx - 2400) : strix_idx]
-        assert "rocm7.1" in context_before
+        # Selector + gate must switch on the index LEAF, not the whole URL (a mirror
+        # base path with its own rocm token would false-positive otherwise).
+        assert 'case "$_torch_index_leaf" in' in source
+        assert '_rocm_leaf_below "$_torch_index_leaf" 7 13' in source
+        shell = shutil.which("sh") or shutil.which("bash")
+        if not shell:
+            pytest.skip("no POSIX shell to execute _rocm_leaf_below")
+        match = re.search(r"^_rocm_leaf_below\(\) \{.*?^\}", source, re.S | re.M)
+        assert match, "could not extract _rocm_leaf_below from install.sh"
+        fn = match.group(0)
+        def below(leaf):
+            return subprocess.run(
+                [shell, "-c", f'{fn}\n_rocm_leaf_below "$1" 7 13', "_", leaf]
+            ).returncode == 0
+        for leaf in ("rocm6.0", "rocm7.0", "rocm7.1", "rocm7.2", "rocm7.12"):
+            assert below(leaf), f"{leaf} must reroute (below arch floor 7.13)"
+        for leaf in ("rocm7.13", "rocm7.14", "rocm8.0", "gfx1151", "cu128", "cpu"):
+            assert not below(leaf), f"{leaf} must NOT reroute (>= floor or non-rocm)"
 
     def test_torch_constraint_updated_for_strix_amd_index(self):
         """install.sh must set TORCH_CONSTRAINT>=2.11 when routing Strix to AMD index."""

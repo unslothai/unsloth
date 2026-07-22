@@ -2835,14 +2835,16 @@ case "$TORCH_INDEX_URL" in
         fi
         ;;
 esac
-# 0 when URL's generic rocmX.Y tag is older than floor $2.$3 (int compare, so
-# rocm7.2 < rocm7.13). Non-rocm / arch (gfx) / unparseable URLs return 1.
-_rocm_index_below() {
-    _rb=$(printf '%s' "$1" | grep -oE 'rocm[0-9]+\.[0-9]+' | head -1 || true)
-    [ -n "$_rb" ] || return 1
-    _rb=${_rb#rocm}
-    if [ "${_rb%%.*}" -lt "$2" ]; then return 0; fi
-    if [ "${_rb%%.*}" -eq "$2" ] && [ "${_rb#*.}" -lt "$3" ]; then return 0; fi
+# 0 when a rocmX.Y index leaf ($1, the final path segment) is older than floor
+# $2.$3 (int compare, so rocm7.2 < rocm7.13). Non-rocm leaves (gfx*, cu*, cpu) and
+# non-numeric versions return 1. Leaf-based (like $_torch_index_leaf) so a mirror
+# base holding its own rocm token compares the family leaf, not the base path.
+_rocm_leaf_below() {
+    case "$1" in rocm[0-9]*.[0-9]*) : ;; *) return 1 ;; esac
+    _rb=${1#rocm}; _maj=${_rb%%.*}; _min=${_rb#*.}; _min=${_min%%.*}
+    case "$_maj$_min" in *[!0-9]*) return 1 ;; esac
+    if [ "$_maj" -lt "$2" ]; then return 0; fi
+    if [ "$_maj" -eq "$2" ] && [ "$_min" -lt "$3" ]; then return 0; fi
     return 1
 }
 # ── Strix Halo / Strix Point: route to the AMD arch-specific index ───────────
@@ -2852,8 +2854,8 @@ _rocm_index_below() {
 # them (and the Radeon repo can be offline, unslothai#7264), so reroute a detected
 # Strix GPU whenever the picked index is older than the arch build -- covers today's
 # rocm6.0-7.2 and any future 7.x < 7.13; rocm7.13+ already has the fixes, so leave it.
-case "$TORCH_INDEX_URL" in
-    */rocm[0-9]*)
+case "$_torch_index_leaf" in
+    rocm[0-9]*)
         # Collect every gfx token in rocminfo / amd-smi enumeration order
         # (skip duplicates), then index by HIP_VISIBLE_DEVICES /
         # ROCR_VISIBLE_DEVICES so a mixed Strix iGPU + non-Strix dGPU box
@@ -2895,7 +2897,7 @@ case "$TORCH_INDEX_URL" in
         esac
         # Skip rocm7.13+ generic indexes: they already ship the fixes, so the
         # arch build (rocm7.13) would be a downgrade rather than a rescue.
-        if [ -n "$_strix_gfx" ] && _rocm_index_below "$TORCH_INDEX_URL" 7 13; then
+        if [ -n "$_strix_gfx" ] && _rocm_leaf_below "$_torch_index_leaf" 7 13; then
             echo "" >&2
             echo "  [WARN] $_strix_gfx (Strix) detected -- routing to the AMD arch-specific index" >&2
             echo "  [WARN] torch 2.11+rocm7.13 has AMD's real gfx1150/gfx1151 fixes (the ROCm 7.1" >&2
