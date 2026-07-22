@@ -236,8 +236,12 @@ export function ExportPage() {
   const [ggufTarget, setGgufTarget] = useState<"model" | "lora">("model");
 
   const hardware = useHardwareInfo();
+  const deviceType = usePlatformStore((s) => s.deviceType);
   // GGUF LoRA conversion is rejected on the macOS / MLX path, so gate it out on a Mac host.
-  const isMacHost = usePlatformStore((s) => s.deviceType) === "mac";
+  const isMacHost = deviceType === "mac";
+  // Backend truth for the torchao gate (single source). Not re-derived from `rocm`: AMD SDK
+  // wheels leave torch.version.hip unset, so `rocm` alone would miss Windows ROCm.
+  const isWindowsRocm = hardware.win32Rocm;
   // Real CUDA (not ROCm); gates the NVIDIA-only compressed-tensors formats.
   const hasNvidia = hardware.cuda != null && hardware.rocm == null;
   // Only gray out on an authoritative unsupported response; while unloaded the backend route guard
@@ -252,21 +256,30 @@ export function ExportPage() {
       MERGED_FORMATS.filter((f) => {
         // compressed-tensors (llm-compressor) is the NVIDIA path; shown only on an NVIDIA GPU.
         if (f.backend === "compressed") return hasNvidia;
-        // Portable torchao is the fallback for hosts without the NVIDIA compressed path, i.e. a
-        // CPU / non-NVIDIA box. Hidden on NVIDIA (use compressed-tensors) and on macOS/MLX (the
-        // backend rejects quantized export there).
-        if (f.backend === "torchao") return !hasNvidia && !isMacHost;
+        // Portable torchao: shown on non-NVIDIA hosts. Hidden on NVIDIA (use compressed-tensors),
+        // macOS/MLX (rejected), and Windows ROCm (torchao unavailable: no torch.distributed).
+        if (f.backend === "torchao") return !hasNvidia && !isMacHost && !isWindowsRocm;
         // Plain 16-bit is available everywhere.
         return true;
       }),
-    [hasNvidia, isMacHost],
+    [hasNvidia, isMacHost, isWindowsRocm],
   );
   const toggleFormat = useCallback((value: string) => {
     setSelectedFormats((prev) =>
       prev.includes(value) ? prev.filter((v) => v !== value) : [...prev, value],
     );
   }, []);
-  // availableFormats already drops NVIDIA-only formats on other hardware, so no pruning needed.
+  // Drop a selected format the gate removed (e.g. torchao once win32Rocm resolves). Gate on
+  // hardware.loaded: before the authoritative response hasNvidia is false, so pruning would
+  // permanently drop a running NVIDIA FP8/NVFP4 pick that the later response can't restore.
+  useEffect(() => {
+    if (!hardware.loaded) return;
+    const allowed = new Set(availableFormats.map((f) => f.value));
+    setSelectedFormats((prev) => {
+      const next = prev.filter((v) => allowed.has(v));
+      return next.length === prev.length ? prev : next;
+    });
+  }, [availableFormats, hardware.loaded]);
   // IQ quants are imatrix-only: force imatrix on when one is selected, else llama.cpp rejects it.
   const requiresImatrix = quantLevels.some(
     (q) => QUANT_OPTIONS.find((o) => o.value === q)?.imatrix,
@@ -1532,11 +1545,18 @@ export function ExportPage() {
                       </div>
                     )}
 
-                    {!hasNvidia && (
+                    {!hasNvidia && !isWindowsRocm && (
                       <div className="text-[11px] text-muted-foreground">
                         No NVIDIA GPU detected: compressed-tensors formats are
                         hidden. 16-bit and portable FP8/INT8 (torchao) still
                         work here and load in vLLM.
+                      </div>
+                    )}
+
+                    {isWindowsRocm && (
+                      <div className="text-[11px] text-muted-foreground">
+                        Windows ROCm: quantized FP8/INT8 (torchao) export is
+                        unavailable (no torch.distributed). Use 16-bit or GGUF.
                       </div>
                     )}
                   </div>

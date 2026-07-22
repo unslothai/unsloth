@@ -100,36 +100,43 @@ class _StubSubpackageFinder(importlib.abc.MetaPathFinder):
         )
 
 
+def is_win32_rocm() -> bool:
+    """True on Windows ROCm, where torch.distributed (and thus torchao) is unavailable.
+
+    Gate on the runtime torch, not env vars (HIP_PATH persists after a CUDA revert). AMD SDK
+    wheels lack torch.version.hip but tag "rocm" in __version__, so accept either. Shared by the
+    import stub and the export gate so they can't drift.
+    """
+    if sys.platform != "win32":
+        return False
+    try:
+        import torch
+        return bool(
+            getattr(getattr(torch, "version", None), "hip", None)
+            or "rocm" in getattr(torch, "__version__", "").lower()
+        )
+    except Exception:
+        return False
+
+
 def install_torchao_windows_rocm_stub() -> None:
     """Pre-stub torchao on Windows ROCm so transformers/peft imports don't crash.
 
     No-op elsewhere (incl. Windows CUDA, where torchao is real). Must run before
     importing transformers / unsloth_zoo. Safe to call once per worker.
     """
-    # Gate on the active torch runtime, not env-var presence -- HIP_PATH/ROCM_PATH
-    # persist after reverting to a CUDA wheel. Some ROCm wheels lack
-    # torch.version.hip but still encode "rocm" in __version__, so accept either.
-    _is_win32_rocm = False
-    if sys.platform == "win32":
-        try:
-            import torch as _torch_probe
-            _is_win32_rocm = bool(
-                getattr(getattr(_torch_probe, "version", None), "hip", None)
-                or "rocm" in getattr(_torch_probe, "__version__", "").lower()
-            )
-            del _torch_probe
-        except Exception:
-            pass
-    if _is_win32_rocm:
-        # Register the finder only on Windows ROCm.
+    if not is_win32_rocm():
+        return
+    # Register the finder only on Windows ROCm, and only once (no duplicates on re-call).
+    if not any(isinstance(_f, _StubSubpackageFinder) for _f in sys.meta_path):
         sys.meta_path.append(_StubSubpackageFinder())
-        # Seed torchao top-level + key submodules; the finder handles the rest.
-        for _tao_name in (
-            "torchao",
-            "torchao.quantization",
-            "torchao.dtypes",
-            "torchao.float8",
-            "torchao.utils",
-        ):
-            if _tao_name not in sys.modules:
-                sys.modules[_tao_name] = _make_mod_stub(_tao_name)
+    # Seed torchao top-level + key submodules; the finder handles the rest.
+    for _tao_name in (
+        "torchao",
+        "torchao.quantization",
+        "torchao.dtypes",
+        "torchao.float8",
+        "torchao.utils",
+    ):
+        if _tao_name not in sys.modules:
+            sys.modules[_tao_name] = _make_mod_stub(_tao_name)

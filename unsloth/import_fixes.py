@@ -3129,3 +3129,366 @@ def patch_accelerate_recursively_apply():
                         setattr(mod, "find_device", _patched_find_device)
                     except Exception:
                         pass
+
+
+# ---------------------------------------------------------------------------
+# torchao Windows-ROCm import shim
+# ---------------------------------------------------------------------------
+# Legacy Windows ROCm wheels ship without the torch.distributed C-extension
+# (torch._C._distributed_c10d absent, torch.ops._c10d_functional.* unregistered), yet torchao
+# imports the distributed chain unconditionally at module load (float8/distributed_utils.py:
+# `import torch.distributed._functional_collectives` + `from torch.distributed._tensor import
+# DTensor`), so `import torchao` raises `No module named 'torch._C._distributed_c10d'` even on
+# paths that never use distributed. unsloth_zoo/Studio work around that by stubbing torchao off,
+# disabling FP8/INT8 export; this shim instead makes REAL torchao importable by faking the absent
+# C-ext module and FRAGMENT-registering the missing _c10d_functional/_dtensor schemas (schema-only
+# -- torch attaches its own Meta kernels, an actual collective still fails loudly, and weight-only
+# export invokes none). Fully transactional (any failure rolls back to torchao-unimportable, so
+# unsloth_zoo's stub still catches it: no regression) and capability-gated -- a strict no-op off
+# Windows-ROCm and once real torch.distributed is present (ROCm/TheRock#5694, torch >= 2.9).
+# FRAGMENT (not DEF) never collides with a native TORCH_LIBRARY. Opt out
+# UNSLOTH_DISABLE_TORCHAO_ROCM_SHIM=1; retire once torchao guards its float8 imports (pytorch/ao#1066).
+# ---------------------------------------------------------------------------
+
+_TORCHAO_ROCM_SHIM_SENTINEL = "__unsloth_torchao_rocm_shim__"
+_C10D_EXT_MODULE = "torch._C._distributed_c10d"
+# (fake_module, [Library, ...]) after a successful install; retained for the process so
+# GC does not drop the FRAGMENT-defined schemas.
+_TORCHAO_ROCM_SHIM_STATE = None
+
+# Per torch (major, minor): the exact `_c10d_functional` op schemas (namespace prefix added by
+# the Library). torch DEFs these only in C++, so they are absent on a distributed-less ROCm wheel
+# and torch's own _functional_collectives IMPL registrations fail at import. Verified: 2.9 vs the
+# installed dispatcher, 2.10/2.11 vs the v2.10.0/v2.11.0 Functional.cpp source. Fail closed on any
+# other minor (shim no-ops -> torchao stays stubbed, no regression).
+_C10D_FUNCTIONAL_SCHEMAS = {
+    (2, 9): (
+        "all_reduce(Tensor input, str reduce_op, str group_name) -> Tensor",
+        "all_reduce_(Tensor(a!) input, str reduce_op, str group_name) -> Tensor(a!)",
+        "all_reduce_coalesced(Tensor[] inputs, str reduce_op, str group_name) -> Tensor[]",
+        "all_reduce_coalesced_(Tensor[](a!) inputs, str reduce_op, str group_name) -> Tensor[](a!)",
+        "wait_tensor(Tensor tensor) -> Tensor",
+        "all_gather_into_tensor(Tensor input, int group_size, str group_name) -> Tensor",
+        "all_gather_into_tensor_out(Tensor input, int group_size, str group_name, *, Tensor(a!) out) -> Tensor(a!)",
+        "all_gather_into_tensor_coalesced(Tensor[] inputs, int group_size, str group_name) -> Tensor[]",
+        "reduce_scatter_tensor(Tensor input, str reduce_op, int group_size, str group_name) -> Tensor",
+        "reduce_scatter_tensor_coalesced(Tensor[] inputs, str reduce_op, int group_size, str group_name) -> Tensor[]",
+        "all_to_all_single(Tensor input, SymInt[] output_split_sizes, SymInt[] input_split_sizes, str group_name) -> Tensor",
+        "broadcast(Tensor input, int src, str group_name) -> Tensor",
+        "broadcast_(Tensor(a!) input, int src, str group_name) -> Tensor(a!)",
+    ),
+}
+# 2.10 and 2.11 add reduce_scatter_tensor_out; the other 13 schemas are unchanged (str
+# group_name), verified against the v2.10.0 / v2.11.0 Functional.cpp source.
+_C10D_FUNCTIONAL_SCHEMAS[(2, 10)] = _C10D_FUNCTIONAL_SCHEMAS[(2, 9)] + (
+    "reduce_scatter_tensor_out(Tensor input, str reduce_op, int group_size, str group_name, *, Tensor(a!) out) -> Tensor(a!)",
+)
+_C10D_FUNCTIONAL_SCHEMAS[(2, 11)] = _C10D_FUNCTIONAL_SCHEMAS[(2, 10)]
+
+# `_dtensor` is likewise C++-only, so absent on a distributed-less wheel. torchao's
+# `from torch.distributed._tensor import DTensor` loads tensor._collective_utils, whose
+# module-level `register_fake("_dtensor::shard_dim_alltoall")` raises unless the op is defined --
+# so the shim must define it in the same transaction or `import torchao` still rolls back. Schema
+# verified vs the live 2.9 dispatcher and v2.11.0 Functional.cpp (stable 2.9-2.11); else fail closed.
+_DTENSOR_SCHEMAS = {
+    (2, 9): (
+        "shard_dim_alltoall(Tensor input, int gather_dim, int shard_dim, str group_name) -> Tensor",
+    ),
+}
+_DTENSOR_SCHEMAS[(2, 10)] = _DTENSOR_SCHEMAS[(2, 9)]
+_DTENSOR_SCHEMAS[(2, 11)] = _DTENSOR_SCHEMAS[(2, 9)]
+
+
+def _schema_op_name(schema):
+    """`all_reduce(Tensor ...) -> Tensor` -> `all_reduce`."""
+    return schema.split("(", 1)[0].strip()
+
+
+def _torchao_shim_torch_minor(torch):
+    base = torch.__version__.split("+", 1)[0].split(".")
+    return (int(base[0]), int(base[1]))
+
+
+_TORCHAO_ROCM_NATIVE_PREFIXES = ("_c10d_functional::", "_dtensor::")
+
+
+def _native_c10d_functional_present(torch):
+    """True if the dispatcher already has any `_c10d_functional::` or `_dtensor::` op (real
+    torch distributed present). Both namespaces are DEF'd in the same C++ Functional.cpp, so
+    either being present means the shim must not register over it. Fail closed: an unexpected
+    error counts as present, so the shim never registers over a real namespace."""
+    get_ops = getattr(torch._C, "_dispatch_get_all_op_names", None)
+    if not callable(get_ops):
+        return True
+    try:
+        return any(n.startswith(_TORCHAO_ROCM_NATIVE_PREFIXES) for n in get_ops())
+    except Exception:
+        return True
+
+
+_TORCHAO_ROCM_LEGACY_ERR = (
+    "Unsloth: torch.distributed is unavailable on this legacy Windows ROCm build; this is "
+    "an import-only compatibility shim for torchao and cannot perform real distributed / "
+    "collective work. Upgrade to a Windows ROCm PyTorch wheel built with GLOO "
+    "(ROCm/TheRock#5694)."
+)
+
+# Optional transport backends: must stay ABSENT so torch's guarded
+# `from torch._C._distributed_c10d import ProcessGroupX` probes conclude the backend is
+# unavailable (they sit behind try/except or capability checks).
+_TORCHAO_ROCM_OPTIONAL_BACKENDS = frozenset(
+    {
+        "ProcessGroupNCCL",
+        "ProcessGroupGloo",
+        "ProcessGroupMPI",
+        "ProcessGroupUCC",
+        "ProcessGroupXCCL",
+        "_ProcessGroupWrapper",
+        "_c10d_init",
+    }
+)
+
+
+class _TorchaoRocmSentinelMeta(type):
+    """Metaclass for import-only sentinel types: isinstance-safe (never matches a real
+    object), chainable via attribute access, and loud on construction (an accidental
+    runtime use raises rather than silently returning a wrong result)."""
+
+    def __instancecheck__(cls, instance):
+        return False
+
+    def __subclasscheck__(cls, subclass):
+        return False
+
+    def __getattr__(cls, name):
+        if name.startswith("__") and name.endswith("__"):
+            raise AttributeError(name)
+        child = _TorchaoRocmSentinelMeta(f"{cls.__name__}.{name}", (), {})
+        setattr(cls, name, child)
+        return child
+
+    def __call__(cls, *args, **kwargs):
+        raise RuntimeError(_TORCHAO_ROCM_LEGACY_ERR)
+
+
+def _torchao_rocm_sentinel(name):
+    return _TorchaoRocmSentinelMeta(str(name), (), {})
+
+
+def _make_torchao_rocm_fake_c10d():
+    """Build a fake `torch._C._distributed_c10d` so torchao's unconditional
+    `from torch._C._distributed_c10d import (...)` (via torch.distributed.distributed_c10d)
+    resolves. Explicit semantic fakes for the names read while torch's distributed Python
+    modules initialize; a bounded-dynamic `__getattr__` gives isinstance-safe loud sentinel
+    types for unknown import-only names but raises AttributeError for dunders and optional
+    backends. No `_c10d_init` and is_available() stays False: device_mesh.py self-stubs when
+    unavailable and the crash site imports the C-ext unconditionally, so the fake alone
+    unblocks the import."""
+    import types
+
+    mod = types.ModuleType(_C10D_EXT_MODULE)
+    mod.__package__ = "torch._C"
+    setattr(mod, _TORCHAO_ROCM_SHIM_SENTINEL, True)
+
+    # Option data-holders: constructible no-ops (torch builds them at import), kept distinct
+    # from the loud sentinels so import-time construction can't raise.
+    for name in (
+        "_DistributedBackendOptions",
+        "AllgatherOptions",
+        "AllreduceCoalescedOptions",
+        "AllreduceOptions",
+        "AllToAllOptions",
+        "BarrierOptions",
+        "BroadcastOptions",
+        "GatherOptions",
+        "ReduceOptions",
+        "ReduceScatterOptions",
+        "ScatterOptions",
+    ):
+        setattr(mod, name, type(name, (), {"__init__": lambda self, *a, **k: None}))
+    for name in ("PrefixStore", "Store", "HashStore", "Work"):
+        setattr(mod, name, _torchao_rocm_sentinel(name))
+    for name in (
+        "_register_process_group",
+        "_resolve_process_group",
+        "_unregister_all_process_groups",
+        "_unregister_process_group",
+    ):
+
+        def _loud(*a, **k):
+            raise RuntimeError(_TORCHAO_ROCM_LEGACY_ERR)
+
+        setattr(mod, name, _loud)
+
+    ReduceOp = _torchao_rocm_sentinel("ReduceOp")
+    _reduce_members = (
+        "SUM",
+        "AVG",
+        "PRODUCT",
+        "MIN",
+        "MAX",
+        "BAND",
+        "BOR",
+        "BXOR",
+        "PREMUL_SUM",
+        "UNUSED",
+    )
+    for m in _reduce_members:
+        setattr(ReduceOp, m, _torchao_rocm_sentinel(f"ReduceOp.{m}"))
+    RedOpType = _torchao_rocm_sentinel("ReduceOp.RedOpType")
+    RedOpType.__members__ = {m: getattr(ReduceOp, m) for m in _reduce_members}
+    ReduceOp.RedOpType = RedOpType
+    mod.ReduceOp = ReduceOp
+
+    ProcessGroup = _torchao_rocm_sentinel("ProcessGroup")
+    BackendType = _torchao_rocm_sentinel("ProcessGroup.BackendType")
+    for m in ("UNDEFINED", "GLOO", "NCCL", "UCC", "MPI", "XCCL", "CUSTOM"):
+        setattr(BackendType, m, _torchao_rocm_sentinel(f"ProcessGroup.BackendType.{m}"))
+    ProcessGroup.BackendType = BackendType
+    mod.ProcessGroup = ProcessGroup
+
+    DebugLevel = _torchao_rocm_sentinel("DebugLevel")
+    for m in ("OFF", "INFO", "DETAIL"):
+        setattr(DebugLevel, m, _torchao_rocm_sentinel(f"DebugLevel.{m}"))
+    mod.DebugLevel = DebugLevel
+    mod.get_debug_level = lambda *a, **k: DebugLevel.OFF
+
+    _dynamic_cache = {}
+
+    def _module_getattr(name):
+        if name.startswith("__") and name.endswith("__"):
+            raise AttributeError(name)
+        if name in _TORCHAO_ROCM_OPTIONAL_BACKENDS:
+            raise AttributeError(name)
+        if name in _dynamic_cache:
+            return _dynamic_cache[name]
+        child = _torchao_rocm_sentinel(name)
+        _dynamic_cache[name] = child
+        return child
+
+    mod.__getattr__ = _module_getattr
+    return mod
+
+
+def fix_torchao_windows_rocm_import():
+    """On a legacy Windows ROCm wheel (no torch.distributed C-extension), make real torchao
+    importable by faking `torch._C._distributed_c10d` and FRAGMENT-registering the
+    `_c10d_functional` and `_dtensor` op schemas, so torchao's module-top distributed imports
+    resolve and portable FP8/INT8 export works instead of torchao being stubbed off.
+
+    Strict no-op unless every capability guard holds (Windows + HIP torch + distributed
+    genuinely absent + known torch minor + torchao installed and not yet imported). Fully
+    transactional: any failure rolls back and leaves torchao unimportable, so unsloth_zoo's
+    stub still catches it (no regression). Idempotent. Opt out:
+    UNSLOTH_DISABLE_TORCHAO_ROCM_SHIM=1."""
+    global _TORCHAO_ROCM_SHIM_STATE
+
+    if os.environ.get("UNSLOTH_DISABLE_TORCHAO_ROCM_SHIM", "0") == "1":
+        return
+    if sys.platform != "win32":
+        return
+
+    with _get_torchao_rocm_shim_lock():
+        if _TORCHAO_ROCM_SHIM_STATE is not None:
+            return  # already installed this process
+        try:
+            import torch
+
+            # ROCm build: mirror the Studio is_win32_rocm() detector (HIP field OR a "rocm"
+            # __version__ tag -- AMD SDK wheels lack torch.version.hip) so the shim re-enables
+            # exactly the wheels the export gate disables. Capability guards below rule out false positives.
+            if not (
+                getattr(getattr(torch, "version", None), "hip", None)
+                or "rocm" in getattr(torch, "__version__", "").lower()
+            ):
+                return
+            minor = _torchao_shim_torch_minor(torch)
+            schemas = _C10D_FUNCTIONAL_SCHEMAS.get(minor)
+            dtensor_schemas = _DTENSOR_SCHEMAS.get(minor)
+            if schemas is None or dtensor_schemas is None:
+                return  # unknown torch minor -> fail closed
+            if importlib.util.find_spec("torchao") is None:
+                return
+            if any(n == "torchao" or n.startswith("torchao.") for n in list(sys.modules)):
+                return  # real- or stub-imported already; cannot safely convert
+            dist = getattr(torch, "distributed", None)
+            if dist is None or dist.is_available() is not False:
+                return  # real distributed present (fixed wheel) -> nothing to do
+            if hasattr(torch._C, "_c10d_init"):
+                return
+            if hasattr(torch._C, "_distributed_c10d") or _C10D_EXT_MODULE in sys.modules:
+                return
+            if _native_c10d_functional_present(torch):
+                return  # dispatcher already has the ops -> never register over them
+        except Exception:
+            return
+
+        # ---- transaction: snapshot -> register -> acceptance import -> commit/rollback ---
+        modules_before = set(sys.modules)
+        had_c10d_attr = hasattr(torch._C, "_distributed_c10d")
+        fake = None
+        libs = []
+        try:
+            # Re-check the dispatcher immediately before touching it (TOCTOU guard).
+            if _native_c10d_functional_present(torch):
+                return
+            # FRAGMENT (never DEF): defines the schemas torch's distributed Python modules
+            # register impls / fakes against at import. `_c10d_functional` for
+            # _functional_collectives, `_dtensor` for tensor._collective_utils.
+            for namespace, ns_schemas in (
+                ("_c10d_functional", schemas),
+                ("_dtensor", dtensor_schemas),
+            ):
+                lib = torch.library.Library(namespace, "FRAGMENT")
+                libs.append(lib)
+                for schema in ns_schemas:
+                    lib.define(schema)
+            fake = _make_torchao_rocm_fake_c10d()
+            sys.modules[_C10D_EXT_MODULE] = fake
+            setattr(torch._C, "_distributed_c10d", fake)
+            # Acceptance test: the real torchao must import end to end.
+            importlib.import_module("torchao")
+        except BaseException:
+            # Atomic rollback: destroy schemas, drop the fake, purge only the torchao /
+            # distributed submodules this transaction newly created.
+            for lib in libs:
+                try:
+                    lib._destroy()
+                except Exception:
+                    pass
+            if fake is not None:
+                if not had_c10d_attr and getattr(torch._C, "_distributed_c10d", None) is fake:
+                    try:
+                        delattr(torch._C, "_distributed_c10d")
+                    except Exception:
+                        pass
+                if sys.modules.get(_C10D_EXT_MODULE) is fake:
+                    del sys.modules[_C10D_EXT_MODULE]
+            for name in [
+                n
+                for n in set(sys.modules) - modules_before
+                if n == "torchao"
+                or n.startswith("torchao.")
+                or n == "torch.distributed"
+                or n.startswith("torch.distributed.")
+            ]:
+                sys.modules.pop(name, None)
+            return
+
+        # Commit: keep strong refs so the FRAGMENT schemas outlive GC.
+        _TORCHAO_ROCM_SHIM_STATE = {"fake_module": fake, "libraries": libs}
+        _log_rocm_detection(
+            "Unsloth: Installed the torchao Windows-ROCm import shim "
+            "(fake torch._C._distributed_c10d + _c10d_functional/_dtensor schemas)."
+        )
+
+
+_torchao_rocm_shim_lock = None
+
+
+def _get_torchao_rocm_shim_lock():
+    global _torchao_rocm_shim_lock
+    if _torchao_rocm_shim_lock is None:
+        import threading
+        _torchao_rocm_shim_lock = threading.RLock()
+    return _torchao_rocm_shim_lock

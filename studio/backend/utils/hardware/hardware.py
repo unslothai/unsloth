@@ -275,13 +275,19 @@ def export_capability() -> dict:
     import and has no CPU path), so it is supported iff ``get_device() in {CUDA, XPU, MLX}``. The
     reason distinguishes a --no-torch install from a bare-CPU host. Safe to call without torch.
 
-    Returns {export_supported, export_unsupported_reason, export_unsupported_message}.
+    Returns {export_supported, export_unsupported_reason, export_unsupported_message, win32_rocm}.
+    ``win32_rocm`` is the UI's single source of truth for the torchao gate (mirrors
+    is_win32_rocm()): torchao is unavailable on Windows ROCm.
     """
-    if get_device() in (DeviceType.CUDA, DeviceType.XPU, DeviceType.MLX):
+    device = get_device()
+    # get_device() ran detect_hardware(), so IS_ROCM (hip OR "rocm" tag) is authoritative here.
+    win32_rocm = sys.platform == "win32" and IS_ROCM
+    if device in (DeviceType.CUDA, DeviceType.XPU, DeviceType.MLX):
         return {
             "export_supported": True,
             "export_unsupported_reason": None,
             "export_unsupported_message": None,
+            "win32_rocm": win32_rocm,
         }
     # No accelerator: name the blocker. Apple Silicon first -- its path is MLX, so "install PyTorch"
     # would be wrong advice on a Mac even when torch is also absent.
@@ -308,6 +314,7 @@ def export_capability() -> dict:
         "export_supported": False,
         "export_unsupported_reason": reason,
         "export_unsupported_message": message,
+        "win32_rocm": win32_rocm,
     }
 
 
