@@ -1122,12 +1122,12 @@ __INT_TO_FLOAT_MAPPER = \
     },
     "unsloth/Apertus-70B-Instruct-2509-unsloth-bnb-4bit" : (
         "unsloth/Apertus-70B-Instruct-2509",
-        "swiss-ai/Apertus-70B-2509",
+        "swiss-ai/Apertus-70B-Instruct-2509",
         "unsloth/Apertus-70B-Instruct-2509-unsloth-bnb-4bit",
     ),
     "unsloth/Apertus-8B-Instruct-2509-unsloth-bnb-4bit" : (
         "unsloth/Apertus-8B-Instruct-2509",
-        "swiss-ai/Apertus-8B-2509",
+        "swiss-ai/Apertus-8B-Instruct-2509",
         "unsloth/Apertus-8B-Instruct-2509-unsloth-bnb-4bit",
     ),
     "unsloth/granite-4.0-micro-unsloth-bnb-4bit" : (

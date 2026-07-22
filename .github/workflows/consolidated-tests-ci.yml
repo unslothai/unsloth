@@ -371,6 +371,7 @@ jobs:
             tests/test_bad_mappings_redirect.py \
             tests/test_prefetch_snapshot_scope.py \
             tests/test_gemma_2b_mapper_key.py \
+            tests/test_apertus_instruct_mapping.py \
             --deselect 'tests/utils/test_attention_masks.py::test_run_attention_flash_varlen_receives_window_and_softcap'
           # The deselected test monkeypatches flash_attn_varlen_func, which is
           # only bound on the module when `flash_attn` is importable. flash_attn
