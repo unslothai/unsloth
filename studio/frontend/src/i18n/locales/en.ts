@@ -182,7 +182,7 @@ export const en = {
         "Used to load gated models and push artifacts.",
       hideToken: "Hide token",
       showToken: "Show token",
-      tokenSaved: "Token saved",
+      tokenValidated: "Token validated",
       password: "Password",
       passwordDescription: "Change the password for this Unsloth account.",
       passwordDialog: {
@@ -258,7 +258,7 @@ export const en = {
       },
       permissions: {
         sectionTitle: "Permissions",
-        bypassLabel: "Bypass permissions",
+        bypassLabel: "Tool permissions",
         bypassDescription:
           "How Unsloth approves chat tool calls (terminal, python, web, MCP) before they run. Full access disables approvals and the code sandbox.",
       },
@@ -1053,7 +1053,8 @@ export const en = {
       continueAction: "Continue Training",
       cancelAction: "Cancel Training",
       stopTitle: "Stop Training",
-      stopDescription: "Choose how you want to stop the current training run.",
+      stopDescription:
+        "Choose how you want to stop the current training run. Stop and Save writes a checkpoint you can resume from later; Stop cannot be resumed.",
       stopAction: "Stop",
       stopping: "Stopping...",
       stopAndSave: "Stop and Save",

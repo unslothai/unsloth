@@ -1844,7 +1844,7 @@ exit 0
                 $nameArchTable = @(
                     @{ P = "9070 XT|9080";                                        A = "gfx1201" }  # RDNA 4 (RX 9070 XT / 9080)
                     @{ P = "9070|9060";                                           A = "gfx1200" }  # RDNA 4 (RX 9070 / 9060)
-                    @{ P = "8060S|8050S|8040S|Strix Halo|Ryzen AI Max|AI Max"; A = "gfx1151" }  # RDNA 3.5 (Strix Halo: Radeon 8060S/8050S/8040S iGPU, Ryzen AI Max+)
+                    @{ P = "8065S|8060S|8050S|8040S|Strix Halo|Ryzen AI Max|AI Max"; A = "gfx1151" }  # RDNA 3.5 (Strix Halo + Gorgon Halo: Radeon 8065S/8060S/8050S/8040S iGPU, Ryzen AI Max / Max+)
                     @{ P = "890M|880M|860M|840M|Strix Point|Krackan|HX 37[05]|AI 9 HX|AI 9 36[05]|AI 7 35[05]|AI 5 34[05]|AI 7 PRO 35|AI 5 33"; A = "gfx1150" }  # RDNA 3.5 (Strix/Krackan Point: Radeon 890M/880M iGPU, Ryzen AI 9 HX 370/375)
                     @{ P = "RX 7900|RX 7800|RX 7700(?!S)|PRO W7900|PRO W7800|PRO W7700"; A = "gfx1100" }  # RDNA 3 desktop/workstation (Navi 31)
                     @{ P = "RX 7600|RX 7700S|RX 7650|PRO W7600|PRO W7500|PRO V710"; A = "gfx1102" }  # RDNA 3 (Navi 33)
@@ -2030,16 +2030,18 @@ exit 0
     # _strip_index_url_credentials (install.sh / py / setup.ps1).
     function Remove-IndexUrlCredentials {
         param([string]$Url)
-        $sep = $Url.IndexOf('://')
+        # Ordinal, not culture-aware: on non-English locales (e.g. th-TH) linguistic
+        # IndexOf treats "://" as ignorable, mis-locates it, and crashes Substring (issue #7279).
+        $sep = $Url.IndexOf('://', [System.StringComparison]::Ordinal)
         if ($sep -lt 0) { return $Url }
         $scheme = $Url.Substring(0, $sep)
         $rest = $Url.Substring($sep + 3)
         # Drop query / fragment (may hold auth tokens).
         $q = $rest.IndexOfAny([char[]]('?', '#'))
         if ($q -ge 0) { $rest = $rest.Substring(0, $q) }
-        $slash = $rest.IndexOf('/')
+        $slash = $rest.IndexOf('/', [System.StringComparison]::Ordinal)
         $authority = if ($slash -ge 0) { $rest.Substring(0, $slash) } else { $rest }
-        $at = $authority.LastIndexOf('@')
+        $at = $authority.LastIndexOf('@', [System.StringComparison]::Ordinal)
         $host_ = if ($at -ge 0) { $authority.Substring($at + 1) } else { $authority }
         if ($slash -ge 0) { return "${scheme}://${host_}$($rest.Substring($slash))" }
         return "${scheme}://${host_}"
@@ -2128,6 +2130,10 @@ exit 0
             "gfx1151" = "gfx1151";     "gfx1150" = "gfx1150"       # RDNA 3.5 (Strix Halo/Point)
             "gfx1103" = "gfx110X-all"; "gfx1102" = "gfx110X-all"   # RDNA 3
             "gfx1101" = "gfx110X-all"; "gfx1100" = "gfx110X-all"
+            "gfx1036" = "gfx103X-all"; "gfx1035" = "gfx103X-all"   # RDNA 2 (RX 6000)
+            "gfx1034" = "gfx103X-all"; "gfx1033" = "gfx103X-all"
+            "gfx1032" = "gfx103X-all"; "gfx1031" = "gfx103X-all"
+            "gfx1030" = "gfx103X-all"
             "gfx90a"  = "gfx90a";      "gfx908"  = "gfx908"        # MI200/MI100
         }
         # gfx120X (RDNA 4) and gfx1151/gfx1150 (Strix) have a null-pointer bug in
@@ -2266,7 +2272,7 @@ exit 0
         if ($SkipTorch) {
             # No-torch: install unsloth + unsloth-zoo with --no-deps, then
             # runtime deps (typer, safetensors, transformers, etc.) with --no-deps.
-            $baseInstallExit = Invoke-InstallCommandRetry -Label "install unsloth (migrated no-torch)" { uv pip install --python $VenvPython --no-deps --reinstall-package unsloth --reinstall-package unsloth-zoo "unsloth>=2026.7.3" "unsloth-zoo>=2026.7.3" }
+            $baseInstallExit = Invoke-InstallCommandRetry -Label "install unsloth (migrated no-torch)" { uv pip install --python $VenvPython --no-deps --reinstall-package unsloth --reinstall-package unsloth-zoo "unsloth>=2026.7.4" "unsloth-zoo>=2026.7.4" }
             if ($baseInstallExit -eq 0) {
                 # Resolve pydantic WITH deps so pip pins pydantic-core
                 # to the matching version (no-torch-runtime.txt below
@@ -2280,7 +2286,7 @@ exit 0
                 }
             }
         } else {
-            $baseInstallExit = Invoke-InstallCommandRetry -Label "install unsloth (migrated)" { uv pip install --python $VenvPython --reinstall-package unsloth --reinstall-package unsloth-zoo "unsloth>=2026.7.3" "unsloth-zoo>=2026.7.3" }
+            $baseInstallExit = Invoke-InstallCommandRetry -Label "install unsloth (migrated)" { uv pip install --python $VenvPython --reinstall-package unsloth --reinstall-package unsloth-zoo "unsloth>=2026.7.4" "unsloth-zoo>=2026.7.4" }
         }
         if ($baseInstallExit -ne 0) {
             Write-Host "[ERROR] Failed to install unsloth (exit code $baseInstallExit)" -ForegroundColor Red
@@ -2354,7 +2360,7 @@ exit 0
         if ($SkipTorch) {
             # No-torch: install unsloth + unsloth-zoo with --no-deps, then
             # runtime deps (typer, safetensors, transformers, etc.) with --no-deps.
-            $baseInstallExit = Invoke-InstallCommandRetry -Label "install unsloth (no-torch)" { uv pip install --python $VenvPython --no-deps --upgrade-package unsloth --upgrade-package unsloth-zoo "unsloth>=2026.7.3" "unsloth-zoo>=2026.7.3" }
+            $baseInstallExit = Invoke-InstallCommandRetry -Label "install unsloth (no-torch)" { uv pip install --python $VenvPython --no-deps --upgrade-package unsloth --upgrade-package unsloth-zoo "unsloth>=2026.7.4" "unsloth-zoo>=2026.7.4" }
             if ($baseInstallExit -eq 0) {
                 # Same pydantic-with-deps trick as the migrated branch.
                 $baseInstallExit = Invoke-InstallCommandRetry -Label "install pydantic" { uv pip install --python $VenvPython pydantic }
@@ -2366,7 +2372,7 @@ exit 0
                 }
             }
         } elseif ($StudioLocalInstall) {
-            $baseInstallExit = Invoke-InstallCommandRetry -Label "install unsloth (local)" { uv pip install --python $VenvPython --upgrade-package unsloth "unsloth>=2026.7.3" "unsloth-zoo>=2026.7.3" }
+            $baseInstallExit = Invoke-InstallCommandRetry -Label "install unsloth (local)" { uv pip install --python $VenvPython --upgrade-package unsloth "unsloth>=2026.7.4" "unsloth-zoo>=2026.7.4" }
         } else {
             $baseInstallExit = Invoke-InstallCommandRetry -Label "install unsloth" { uv pip install --python $VenvPython --upgrade-package unsloth -- "$PackageName" }
         }
@@ -2394,7 +2400,7 @@ exit 0
         Write-TauriLog "STEP" "Installing unsloth"
         substep "installing unsloth (this may take a few minutes)..."
         if ($StudioLocalInstall) {
-            $baseInstallExit = Invoke-InstallCommandRetry -Label "install unsloth (auto torch backend)" { uv pip install --python $VenvPython "unsloth-zoo>=2026.7.3" "unsloth>=2026.7.3" --torch-backend=auto }
+            $baseInstallExit = Invoke-InstallCommandRetry -Label "install unsloth (auto torch backend)" { uv pip install --python $VenvPython "unsloth-zoo>=2026.7.4" "unsloth>=2026.7.4" --torch-backend=auto }
             if ($baseInstallExit -ne 0) {
                 Write-Host "[ERROR] Failed to install unsloth (exit code $baseInstallExit)" -ForegroundColor Red
                 return (Exit-InstallFailure "Failed to install unsloth (exit code $baseInstallExit)" $baseInstallExit)
@@ -2418,6 +2424,13 @@ exit 0
                 return (Exit-InstallFailure "Failed to install unsloth (exit code $baseInstallExit)" $baseInstallExit)
             }
         }
+    }
+
+    $installedPackageVersion = (& $VenvPython -c "from importlib.metadata import version; import sys; print(version(sys.argv[1]))" $PackageName 2>$null | Out-String).Trim()
+    if ($LASTEXITCODE -eq 0 -and $installedPackageVersion) {
+        step $PackageName "$installedPackageVersion installed"
+    } else {
+        substep "[WARN] installed $PackageName version could not be determined" "Yellow"
     }
 
     # ── Enforce the installed torch flavor matches the detected GPU build ──

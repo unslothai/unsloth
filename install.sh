@@ -1636,7 +1636,7 @@ _maybe_reroute_strixhalo_to_2404() {
     # CUDA_VISIBLE_DEVICES=""/-1 and the /proc/driver/nvidia fallback for PATH/timeout gaps.
     if _has_usable_nvidia_gpu; then return 0; fi
     # Strix APUs show in /proc/cpuinfo; discrete cards don't, so also try WMI. Either reroutes.
-    if ! grep -qiE 'Ryzen AI Max|Radeon 80[0-9]0S|Strix Halo' /proc/cpuinfo 2>/dev/null \
+    if ! grep -qiE 'Ryzen AI Max|Radeon 80[0-9][05]S|Strix Halo' /proc/cpuinfo 2>/dev/null \
        && ! _wsl_amd_gpu_name >/dev/null 2>&1; then
         return 0
     fi
@@ -2124,6 +2124,23 @@ _has_amd_rocm_gpu() {
         # NVIDIA-only hosts to the ROCm install path.
         return 0
     fi
+    return 1
+}
+
+# Returns 0 if an AMD display GPU is on the PCI bus even when ROCm can't use it
+# (e.g. a Strix Halo iGPU with no /dev/kfd). Only sharpens the "no GPU detected"
+# hint. vendor 0x1002 = AMD/ATI; class 0x03* = display controller.
+_amd_gpu_present_via_pci() {
+    [ -d /sys/bus/pci/devices ] || return 1
+    for _pci_vendor in /sys/bus/pci/devices/*/vendor; do
+        [ -r "$_pci_vendor" ] || continue
+        read -r _v < "$_pci_vendor" 2>/dev/null || continue
+        [ "$_v" = "0x1002" ] || continue
+        _cls="${_pci_vendor%vendor}class"
+        [ -r "$_cls" ] || continue
+        read -r _c < "$_cls" 2>/dev/null || continue
+        case "$_c" in 0x03*) return 0 ;; esac
+    done
     return 1
 }
 
@@ -2649,7 +2666,7 @@ _maybe_bootstrap_rocm_wsl() {
     [ -e /dev/dxg ] || return 0
     # Strix APUs show in /proc/cpuinfo (the CPU model); discrete cards don't, so also
     # ask the Windows host. Either signal suffices; the bootstrap detects arch from rocminfo.
-    if ! grep -qiE 'Ryzen AI Max|Radeon 80[0-9]0S|Strix Halo' /proc/cpuinfo 2>/dev/null \
+    if ! grep -qiE 'Ryzen AI Max|Radeon 80[0-9][05]S|Strix Halo' /proc/cpuinfo 2>/dev/null \
        && ! _wsl_amd_gpu_name >/dev/null 2>&1; then
         return 0
     fi
@@ -2818,29 +2835,45 @@ case "$TORCH_INDEX_URL" in
         fi
         ;;
 esac
-# ── Strix Halo / Strix Point: force rocm7.2 wheels, bypass Radeon repo ───────
-# gfx1151 (Strix Halo) and gfx1150 (Strix Point) have a ROCm 7.1 driver bug
-# that causes a segfault in torch._grouped_mm (moe_utils.py line 167).
-# The Radeon repo now ships cp313 wheels for rocm-rel-7.1, so when
-# _amd_gpu_radeon=true the installer silently lands on the broken combo.
-# Detect these GPUs when TORCH_INDEX_URL is rocm7.1 and override to rocm7.2.
-case "$TORCH_INDEX_URL" in
-    */rocm7.1|*/rocm7.1.*)
+# 0 when a rocmX.Y index leaf ($1, the final path segment) is older than floor
+# $2.$3 (int compare, so rocm7.2 < rocm7.13). Non-rocm leaves (gfx*, cu*, cpu) and
+# non-numeric versions return 1. Leaf-based (like $_torch_index_leaf) so a mirror
+# base holding its own rocm token compares the family leaf, not the base path.
+_rocm_leaf_below() {
+    case "$1" in rocm[0-9]*.[0-9]*) : ;; *) return 1 ;; esac
+    _rb=${1#rocm}; _maj=${_rb%%.*}; _min=${_rb#*.}; _min=${_min%%.*}
+    case "$_maj$_min" in *[!0-9]*) return 1 ;; esac
+    if [ "$_maj" -lt "$2" ]; then return 0; fi
+    if [ "$_maj" -eq "$2" ] && [ "$_min" -lt "$3" ]; then return 0; fi
+    return 1
+}
+# ── Strix Halo / Strix Point: route to the AMD arch-specific index ───────────
+# gfx1151/gfx1150 need torch 2.11+rocm7.13 from repo.amd.com/rocm/whl/gfx<arch>/,
+# which carries AMD's real fixes (the rocm7.1 _grouped_mm segfault, moe_utils.py:167,
+# and later Strix kernel bugs). Every generic pytorch.org index below rocm7.13 lacks
+# them (and the Radeon repo can be offline, unslothai#7264), so reroute a detected
+# Strix GPU whenever the picked index is older than the arch build -- covers today's
+# rocm6.0-7.2 and any future 7.x < 7.13; rocm7.13+ already has the fixes, so leave it.
+case "$_torch_index_leaf" in
+    rocm[0-9]*)
         # Collect every gfx token in rocminfo / amd-smi enumeration order
         # (skip duplicates), then index by HIP_VISIBLE_DEVICES /
         # ROCR_VISIBLE_DEVICES so a mixed Strix iGPU + non-Strix dGPU box
         # where the user selected the dGPU does NOT get rerouted to the
         # Strix per-gfx index.
+        # || true on each probe: no gfx match makes grep exit 1, which under
+        # set -euo pipefail would abort the installer before the next fallback
+        # runs (now that the case matches every rocm* index, not just rocm7.1).
         _gfx_all=""
         if command -v rocminfo >/dev/null 2>&1; then
-            _gfx_all=$(rocminfo 2>/dev/null | grep -oE 'gfx[1-9][0-9a-z]{2,3}')
+            _gfx_all=$(rocminfo 2>/dev/null | grep -oE 'gfx[1-9][0-9a-z]{2,3}' || true)
         fi
         if [ -z "$_gfx_all" ] && command -v amd-smi >/dev/null 2>&1; then
-            _gfx_all=$(amd-smi list 2>/dev/null | grep -oE 'gfx[1-9][0-9a-z]{2,3}')
+            _gfx_all=$(amd-smi list 2>/dev/null | grep -oE 'gfx[1-9][0-9a-z]{2,3}' || true)
             # PowerShell paths also probe `amd-smi static --asic`; mirror it
             # so a host with hipinfo-less amd-smi reports the gfx target.
             if [ -z "$_gfx_all" ]; then
-                _gfx_all=$(amd-smi static --asic 2>/dev/null | grep -oE 'gfx[1-9][0-9a-z]{2,3}')
+                _gfx_all=$(amd-smi static --asic 2>/dev/null | grep -oE 'gfx[1-9][0-9a-z]{2,3}' || true)
             fi
         fi
         _runtime_gfx=""
@@ -2865,13 +2898,14 @@ case "$TORCH_INDEX_URL" in
         case "$_runtime_gfx" in
             gfx1151|gfx1150) _strix_gfx="$_runtime_gfx" ;;
         esac
-        if [ -n "$_strix_gfx" ]; then
+        # Skip rocm7.13+ generic indexes: they already ship the fixes, so the
+        # arch build (rocm7.13) would be a downgrade rather than a rescue.
+        if [ -n "$_strix_gfx" ] && _rocm_leaf_below "$_torch_index_leaf" 7 13; then
             echo "" >&2
-            echo "  [WARN] $_strix_gfx (Strix) + ROCm 7.1 detected -- known _grouped_mm segfault" >&2
-            echo "  [WARN] ROCm 7.1 wheels are broken for gfx1150/gfx1151 (moe_utils.py:167)" >&2
-            echo "  [WARN] Routing to AMD arch-specific index (torch 2.11+rocm7.13 has the real fix)" >&2
-            echo "  [WARN] Upgrade ROCm to 7.2+ to use the standard index:" >&2
-            echo "  [WARN]   https://rocm.docs.amd.com/en/latest/deploy/linux/index.html" >&2
+            echo "  [WARN] $_strix_gfx (Strix) detected -- routing to the AMD arch-specific index" >&2
+            echo "  [WARN] torch 2.11+rocm7.13 has AMD's real gfx1150/gfx1151 fixes (the ROCm 7.1" >&2
+            echo "  [WARN] _grouped_mm segfault, moe_utils.py:167, and later Strix kernel bugs)," >&2
+            echo "  [WARN] and is more reliable than the rocm7.2 index or an offline Radeon repo." >&2
             echo "" >&2
             # AMD's arch-specific index serves torch 2.11.0+rocm7.13.0 which has AMD's
             # actual fix for the gfx1151/gfx1150 _grouped_mm kernel bug -- preferred
@@ -2960,7 +2994,7 @@ elif case "$TORCH_INDEX_URL" in */rocm*|*/gfx*) true ;; *) false ;; esac; then
         case "$_gpu_disp_mkt" in
             *"9070 XT"*|*9080*)                                                                            _gpu_disp_gfx="gfx1201" ;;  # RDNA 4
             *9070*|*9060*)                                                                                 _gpu_disp_gfx="gfx1200" ;;  # RDNA 4
-            *"8060S"*|*"8050S"*|*"8040S"*|*"Strix Halo"*|*"Ryzen AI Max"*|*"AI Max"*) _gpu_disp_gfx="gfx1151" ;;  # RDNA 3.5 (Strix Halo: Radeon 8060S/8050S/8040S iGPU, Ryzen AI Max+)
+            *"8065S"*|*"8060S"*|*"8050S"*|*"8040S"*|*"Strix Halo"*|*"Ryzen AI Max"*|*"AI Max"*) _gpu_disp_gfx="gfx1151" ;;  # RDNA 3.5 (Strix Halo + Gorgon Halo: Radeon 8065S/8060S/8050S/8040S iGPU, Ryzen AI Max / Max+)
             *"890M"*|*"880M"*|*"860M"*|*"840M"*|*"Strix Point"*|*"Krackan"*|*"HX 37"*|*"AI 9 HX"*|*"AI 9 36"*|*"AI 7 35"*|*"AI 5 34"*|*"AI 7 PRO 35"*|*"AI 5 33"*) _gpu_disp_gfx="gfx1150" ;;  # RDNA 3.5 (Strix/Krackan Point: Radeon 890M/880M iGPU, Ryzen AI 9 HX 370/375)
             *"RX 7600"*|*"RX 7700S"*|*"RX 7650"*|*"PRO W7600"*|*"PRO W7500"*|*"PRO V710"*)                  _gpu_disp_gfx="gfx1102" ;;  # RDNA 3 (Navi 33)
             *"RX 7900"*|*"RX 7800"*|*"RX 7700"*|*"PRO W7900"*|*"PRO W7800"*|*"PRO W7700"*)                  _gpu_disp_gfx="gfx1100" ;;  # RDNA 3 desktop / workstation (Navi 31)
@@ -3031,6 +3065,13 @@ case "$TORCH_INDEX_URL" in
                 substep "  driver is current; or run unsloth/scripts/install_rocm_wsl_strixhalo.sh yourself."
             else
                 substep "AMD ROCm users: see https://docs.unsloth.ai/get-started/install-and-update/amd"
+                # Only when ROCm truly can't see the GPU: a detected-but-too-old
+                # ROCm (rocminfo works, wheels need 6.0+) has its own guidance.
+                if ! _has_amd_rocm_gpu && _amd_gpu_present_via_pci; then
+                    substep "An AMD GPU is on the PCI bus but ROCm cannot see it (no /dev/kfd," "$C_WARN"
+                    substep "  rocminfo, or amd-smi). Install the ROCm kernel stack so /dev/kfd exists;"
+                    substep "  Strix Halo (gfx1151/gfx1150) needs a recent kernel (6.11+) and ROCm 7.x."
+                fi
             fi
             substep "Re-run with --no-torch for GGUF-only (faster, no PyTorch):"
             substep "  curl -fsSL https://unsloth.ai/install.sh | sh -s -- --no-torch"
@@ -3096,7 +3137,7 @@ if [ "$_MIGRATED" = true ]; then
         # to prevent transitive torch resolution.
         run_install_cmd_retry "install unsloth (migrated no-torch)" uv pip install --python "$_VENV_PY" --no-deps \
             --reinstall-package unsloth --reinstall-package unsloth-zoo \
-            "unsloth>=2026.7.3" "unsloth-zoo>=2026.7.3"
+            "unsloth>=2026.7.4" "unsloth-zoo>=2026.7.4"
         # Resolve pydantic WITH deps so pip pins pydantic-core to the
         # matching version (no-torch-runtime.txt below is --no-deps).
         # All transitive deps are torch-free.
@@ -3113,7 +3154,7 @@ if [ "$_MIGRATED" = true ]; then
         run_install_cmd_retry "install unsloth (migrated)" uv pip install --python "$_VENV_PY" \
             ${_UNSLOTH_TORCH_OVERRIDES:+--overrides "$_UNSLOTH_TORCH_OVERRIDES"} \
             --reinstall-package unsloth --reinstall-package unsloth-zoo \
-            "unsloth>=2026.7.3" "unsloth-zoo>=2026.7.3" ${_MLX_LM_EXCLUDE_ARG:-}
+            "unsloth>=2026.7.4" "unsloth-zoo>=2026.7.4" ${_MLX_LM_EXCLUDE_ARG:-}
         [ -n "$_UNSLOTH_TORCH_OVERRIDES" ] && rm -f "$_UNSLOTH_TORCH_OVERRIDES"
         _UNSLOTH_TORCH_OVERRIDES=""
     fi
@@ -3337,7 +3378,7 @@ elif [ -n "$TORCH_INDEX_URL" ]; then
         # runtime deps (typer, safetensors, transformers, etc.) with --no-deps.
         run_install_cmd_retry "install unsloth (no-torch)" uv pip install --python "$_VENV_PY" --no-deps \
             --upgrade-package unsloth --upgrade-package unsloth-zoo \
-            "unsloth>=2026.7.3" "unsloth-zoo>=2026.7.3"
+            "unsloth>=2026.7.4" "unsloth-zoo>=2026.7.4"
         # Same pydantic-with-deps trick as the migrated branch.
         run_install_cmd_retry "install pydantic (with deps for compatible core)" \
             uv pip install --python "$_VENV_PY" pydantic
@@ -3356,7 +3397,7 @@ elif [ -n "$TORCH_INDEX_URL" ]; then
     elif [ "$STUDIO_LOCAL_INSTALL" = true ]; then
         run_install_cmd_retry "install unsloth (local)" uv pip install --python "$_VENV_PY" \
             ${_UNSLOTH_TORCH_OVERRIDES:+--overrides "$_UNSLOTH_TORCH_OVERRIDES"} \
-            --upgrade-package unsloth "unsloth>=2026.7.3" "unsloth-zoo>=2026.7.3"
+            --upgrade-package unsloth "unsloth>=2026.7.4" "unsloth-zoo>=2026.7.4"
         substep "overlaying local repo (editable)..."
         run_install_cmd "overlay local repo" uv pip install --python "$_VENV_PY" -e "$_REPO_ROOT" --no-deps
         substep "overlaying unsloth-zoo from git main..."
@@ -3384,7 +3425,7 @@ else
     tauri_log "STEP" "Installing Unsloth"
     substep "installing unsloth (this may take a few minutes)..."
     if [ "$STUDIO_LOCAL_INSTALL" = true ]; then
-        run_install_cmd_retry "install unsloth (auto torch backend)" uv pip install --python "$_VENV_PY" "unsloth-zoo>=2026.7.3" "unsloth>=2026.7.3" --torch-backend=auto
+        run_install_cmd_retry "install unsloth (auto torch backend)" uv pip install --python "$_VENV_PY" "unsloth-zoo>=2026.7.4" "unsloth>=2026.7.4" --torch-backend=auto
         substep "overlaying local repo (editable)..."
         run_install_cmd "overlay local repo" uv pip install --python "$_VENV_PY" -e "$_REPO_ROOT" --no-deps
         substep "overlaying unsloth-zoo from git main..."
@@ -3394,6 +3435,15 @@ else
     else
         run_install_cmd_retry "install unsloth (auto torch backend)" uv pip install --python "$_VENV_PY" --torch-backend=auto -- "$PACKAGE_NAME"
     fi
+fi
+
+_installed_package_version=$("$_VENV_PY" -c \
+    'from importlib.metadata import version; import sys; print(version(sys.argv[1]))' \
+    "$PACKAGE_NAME" 2>/dev/null || true)
+if [ -n "$_installed_package_version" ]; then
+    step "$PACKAGE_NAME" "$_installed_package_version installed"
+else
+    substep "[WARN] installed $PACKAGE_NAME version could not be determined" "$C_WARN"
 fi
 
 # ── Enforce the installed torch flavor matches the detected GPU build ──

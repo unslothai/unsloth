@@ -461,7 +461,7 @@ def test_pre_import_gate_is_transformers_free():
         _sys.modules.pop(m, None)
 
     try:
-        with patch.object(fs, "_fetch_security_status", return_value = (None, None)):
+        with patch.object(fs, "_fetch_security_status", return_value = None):
             fs.evaluate_file_security("nvidia/Nemotron-H-8B", load_subdirs = ())
         with patch.object(
             consent, "_load_remote_code_configs", return_value = [{"model_type": "nemotron_h"}]

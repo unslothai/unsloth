@@ -111,7 +111,7 @@ export const hi = {
         "गेटेड मॉडल लोड करने और आर्टिफैक्ट पुश करने के लिए उपयोग किया जाता है।",
       hideToken: "token छिपाएं",
       showToken: "token दिखाएं",
-      tokenSaved: "Token सहेजा गया",
+      tokenValidated: "Token सत्यापित",
       password: "पासवर्ड",
       passwordDescription: "इस Unsloth खाते के लिए पासवर्ड बदलें।",
       passwordDialog: {

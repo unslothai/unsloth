@@ -22,6 +22,7 @@ from typing import Callable
 
 from utils.hardware.hardware import DeviceType, get_device
 from utils.transformers_dtype import dtype_kwargs
+from utils.utils import hf_env_offline
 
 from . import config
 
@@ -80,193 +81,96 @@ def _ambient_hf_token() -> str | None:
         return None
 
 
-def _st_module_subdirs(name: str, token: str | None, local_only: bool) -> tuple[str, ...]:
-    """The module directories a SentenceTransformer load reads weights from, so the online
-    security scan scopes them as load roots (a flagged pickle directly under one must block).
-    Two sources, both repo-controlled:
-
-    * each module's non-empty ``path`` in ``modules.json`` (e.g. ``0_Transformer``), from which
-      ST deserializes ``pytorch_model.bin``;
-    * the child sub-modules of any ``Router`` (legacy ``Asym``) module. A Router declares its
-      children only in ``router_config.json`` (``types`` maps ``{route}_{idx}_{ClassName}`` ->
-      class), NOT in ``modules.json``, and ``Router.load()`` deserializes each from its own
-      subdir -- so a flagged pickle in a child (``query_0_WordEmbeddings/pytorch_model.bin``) is
-      a load root too. This mirrors the offline gate's ``_router_child_dirs`` expansion; without
-      it the online scan would drop that child pickle as an unreferenced nested shard while the
-      loader still deserialized it. The config is read only for a Router-typed module, so a plain
-      embedder pays no extra fetch.
-
-    Returns () on any failure (no modules.json, offline, malformed) so the guard never bricks the
-    embedder. A traversing declared path (``0/../evil``) is dropped, matching the offline gate.
-
-    ``local_only`` MUST be the value the caller captured for the load, not a fresh env read
-    (``_hf_offline_if_dns_dead()`` flips the offline vars mid-load): re-reading could force
-    this probe local-only, return (), and leave the scan with no module roots while the
-    loader still deserializes a flagged pickle under ``0_Transformer/``.
+def _st_module_subdirs(name: str, token: str | None) -> tuple[str, ...]:
+    """The module directories a SentenceTransformer load reads weights from, taken from
+    the repo's ``modules.json`` (each module's non-empty ``path``, e.g. ``0_Transformer``).
+    ST deserializes ``pytorch_model.bin`` from these dirs, so they are load roots for the
+    security scan: a flagged pickle directly under one must block. Returns () on any
+    failure (no modules.json, offline, malformed) so the guard never bricks the embedder.
     """
     try:
         import json
-        import posixpath
-        import re
 
         from utils.paths import is_local_path
 
-        local_root = None
         if is_local_path(name):
             from pathlib import Path
             from utils.paths import normalize_path
-            local_root = Path(normalize_path(name)).expanduser()
 
-        def _read_repo_json(rel: str):
-            """Parse a repo-relative JSON file (local dir or Hub download honoring
-            ``local_only``), or None when missing / malformed / unreachable."""
+            path = Path(normalize_path(name)).expanduser() / "modules.json"
+            if not path.is_file():
+                return ()
+            data = json.loads(path.read_text())
+        else:
+            from huggingface_hub import hf_hub_download
+            from huggingface_hub.utils import EntryNotFoundError
+
             try:
-                if local_root is not None:
-                    path = local_root.joinpath(*rel.split("/"))
-                    if not path.is_file():
-                        return None
-                    return json.loads(path.read_text())
-                from huggingface_hub import hf_hub_download
-                from huggingface_hub.utils import EntryNotFoundError
-
-                try:
-                    # CAPTURED predicate, never a fresh env read (see docstring); hf honors only
-                    # HF_HUB_OFFLINE, so offline would otherwise block on timeouts.
-                    local = hf_hub_download(
-                        name, rel, token = token or None, local_files_only = local_only
-                    )
-                except EntryNotFoundError:
-                    return None
-                return json.loads(open(local).read())
-            except Exception:
-                return None
-
-        def _safe_subdir(rel) -> str | None:
-            """Canonical repo-relative subdir (``""`` = root), or None if it is absolute or escapes
-            the repo. Mirrors the offline gate so a traversing (``0/../evil``) or absolute
-            (``/etc``, ``C:/x``) declared path cannot read or scope a directory outside the repo."""
-            raw = str(rel).strip().replace("\\", "/")
-            if raw.startswith("/") or re.match(r"^[A-Za-z]:/", raw):
-                return None
-            norm = posixpath.normpath(raw.strip("/"))
-            if norm in ("", "."):
-                return ""
-            if norm == ".." or norm.startswith("../"):
-                return None
-            return norm
-
-        data = _read_repo_json("modules.json")
-        if not isinstance(data, list):
-            return ()
+                local = hf_hub_download(name, "modules.json", token = token or None)
+            except EntryNotFoundError:
+                return ()
+            data = json.loads(open(local).read())
         subdirs = []
-        pending = []  # (canonical-prefix, type-string) nodes that MIGHT be Routers to expand
-        for module in data:
-            if not isinstance(module, dict):
-                continue
-            sub = _safe_subdir(module.get("path", ""))
-            if sub is None:
-                continue  # absolute / traversing module path -> drop (the offline gate drops it too)
+        for module in data or ():
+            sub = str((module or {}).get("path", "")).strip().strip("/")
             if sub:
                 subdirs.append(sub)
-            pending.append((sub, str(module.get("type", ""))))
-        # A Router child can itself be a Router, so expand recursively (bounded by a seen-set),
-        # mirroring the offline _st_load_roots BFS -- otherwise a flagged GRANDCHILD pickle
-        # (child_Router/grand_WordEmbeddings/pytorch_model.bin) is scoped offline but not online and
-        # could be recorded clean. router_config.json is read only for a Router/Asym-typed node, so
-        # a plain embedder pays no extra fetch.
-        seen: set[str] = set()
-        while pending:
-            prefix, mtype = pending.pop()
-            if mtype.rsplit(".", 1)[-1].lower() not in ("router", "asym") or prefix in seen:
-                continue
-            seen.add(prefix)
-            cfg = _read_repo_json(posixpath.join(prefix, "router_config.json"))
-            types = cfg.get("types") if isinstance(cfg, dict) else None
-            if not isinstance(types, dict):
-                continue
-            for model_id, child_type in types.items():
-                child = _safe_subdir(posixpath.join(prefix, str(model_id)))
-                if not child:
-                    continue
-                subdirs.append(child)
-                pending.append((child, str(child_type)))
         return tuple(dict.fromkeys(subdirs))
     except Exception:
         return ()
 
 
-def _security_load_subdirs(name: str, token: str | None, local_only: bool) -> tuple[str, ...]:
-    """The subdirs a load calls ``from_pretrained`` on, for scoping the security scan: the audio
-    load roots unioned with the ST module dirs (Transformer module + Router children) from
-    ``modules.json`` / ``router_config.json``, so a flagged pickle directly under one blocks
-    instead of passing as an unreferenced nested shard. Shared by the guard and the verdict
-    recorder so both scope the SAME roots."""
-    from utils.security import security_load_subdirs
-    return tuple(
-        dict.fromkeys(
-            (
-                *security_load_subdirs(name, token),
-                *_st_module_subdirs(name, token, local_only),
-            )
-        )
-    )
-
-
-def _guard_model_security(name: str, local_only_load: bool):
+def _guard_model_security(name: str, local_only: bool = False) -> None:
     """Refuse to load a repo HF flagged as unsafe: a poisoned pickle deserializes inside
     SentenceTransformer regardless of trust_remote_code. Defense in depth behind the
     /settings gate (a name can also arrive via env/default); local paths and unreachable
     scans fail open inside evaluate_file_security. Never bricks the embedder on a gate error.
-    Returns the ``FileSecurityDecision`` (or None on a gate error) so a clean ONLINE load can be
-    recorded for later offline reuse; raises ``UnsafeEmbeddingModelError`` when blocked.
 
-    ``local_only_load`` MUST equal the ``local_files_only`` the caller passes to
-    SentenceTransformer -- it is what licenses skipping the Hub scan. ``_hf_offline_if_dns_dead()``
-    mutates then restores the offline vars, so two reads can disagree and the scan could be
-    skipped while the constructor fetched the unscanned repo.
+    ``local_only`` (offline) inspects the local cache and fails closed on an unscanned pickle
+    weight; the subdir probes are skipped because they would hit the network and hang, and
+    the offline gate walks the whole snapshot anyway.
     """
     try:
-        from utils.security import evaluate_file_security
+        from utils.security import evaluate_file_security, security_load_subdirs
 
         token = _ambient_hf_token()
-        decision = evaluate_file_security(
-            name,
-            hf_token = token,
-            load_subdirs = _security_load_subdirs(name, token, local_only_load),
-            local_only_load = local_only_load,
-        )
-        blocked = decision.blocked  # read inside the guard so a gate error never bricks the load
-    except Exception as exc:
-        # An OFFLINE load cannot be re-scanned, so a gate error must fail CLOSED -- otherwise the
-        # constructor would deserialize the unscanned cached pickle unguarded. Online, the Hub scan
-        # is best-effort and a gate error stays fail-open (return None).
-        if local_only_load:
-            raise UnsafeEmbeddingModelError(
-                f"Could not verify cached embedding model {name!r} offline; refusing the load. "
-                "Reconnect once to scan, or use safetensors weights."
-            ) from exc
-        return None
-    if blocked:
-        raise UnsafeEmbeddingModelError(
-            f"Embedding model {name!r} is flagged as unsafe by Hugging Face's security "
-            "scan; refusing to load. Set a different RAG embedding model."
-        )
-    return decision
-
-
-def _record_embedding_verdict_safe(name: str, commit: str | None) -> None:
-    """After a clean ONLINE load, persist the Hub verdict so a later OFFLINE load of the same
-    content is not fail-closed. Best-effort: recomputes the scan load roots (files are now cached),
-    hashes each load-root pickle, and records under the scanned commit. Never disturbs the loaded
-    model."""
-    try:
-        from utils.security import record_embedding_verdict
-        token = _ambient_hf_token()
-        record_embedding_verdict(
-            name, commit, _security_load_subdirs(name, token, local_only = False)
-        )
+        if local_only:
+            load_subdirs = ()
+        else:
+            # Union the audio-model load roots with the ST module dirs so a flagged pickle
+            # directly under a Transformer module dir (0_Transformer/) blocks instead of
+            # passing as an unreferenced nested shard.
+            load_subdirs = tuple(
+                dict.fromkeys(
+                    (*security_load_subdirs(name, token), *_st_module_subdirs(name, token))
+                )
+            )
+        blocked = evaluate_file_security(
+            name, hf_token = token, load_subdirs = load_subdirs, local_only_load = local_only
+        ).blocked
     except Exception:
-        pass
+        return
+    if blocked:
+        reason = (
+            "has cached pickle weights that cannot be security-scanned offline and no "
+            "safetensors alternative"
+            if local_only
+            else "is flagged as unsafe by Hugging Face's security scan"
+        )
+        raise UnsafeEmbeddingModelError(
+            f"Embedding model {name!r} {reason}; refusing to load. "
+            "Set a different RAG embedding model."
+        )
+
+
+def _st_accepts_local_files_only(st_cls) -> bool:
+    """Whether this SentenceTransformer version accepts ``local_files_only`` (added in newer
+    releases). Passing it to an older constructor raises, so gate on the signature."""
+    try:
+        import inspect
+        return "local_files_only" in inspect.signature(st_cls.__init__).parameters
+    except Exception:
+        return False
 
 
 def _get(model_name: str | None = None):
@@ -274,59 +178,33 @@ def _get(model_name: str | None = None):
     for a ~1.5x speedup at negligible accuracy loss."""
     global _model, _name
     name = model_name or config.effective_embedding_model()
-    record: tuple[str, str | None] | None = (
-        None  # (load_name, scanned_commit) for a clean online load
-    )
+    # Capture the offline state once so the security gate and the load agree (no window
+    # where the gate is skipped as offline but the constructor then reaches the network).
+    local_only = hf_env_offline()
     with _lock:
         if _model is None or _name != name:
             _install_torchao_stub_once()
             from sentence_transformers import SentenceTransformer
 
-            from utils.utils import hf_env_offline
-
             device = _device()
-            # Resolve to the exact cache casing the offline local_files_only load needs. The
-            # /settings route persists that spelling for a custom override but leaves the
-            # configured default verbatim, so resolve here to cover the default too. No-op
-            # for a local path or nothing cached.
-            load_name = name
-            from utils.paths import is_local_path
-
-            if not is_local_path(load_name):
-                from utils.models import resolve_st_cached_repo_id_case
-                load_name = resolve_st_cached_repo_id_case(load_name)
-            logger.info("loading embedding model %s on %s", load_name, device)
-            # Read the offline state ONCE for both the gate and the loader:
-            # _hf_offline_if_dns_dead() mutates then restores the offline vars, so re-reading
-            # for the constructor could yield False after the guard skipped the Hub scan on
-            # True.
-            local_only = hf_env_offline()
-            decision = _guard_model_security(load_name, local_only)
-            # huggingface_hub honors only HF_HUB_OFFLINE, so a TRANSFORMERS_OFFLINE-only
-            # session would otherwise still fetch missing repo files.
-            #
-            # pyproject sets no lower bound on sentence-transformers and the
-            # ``local_files_only`` constructor arg is absent on older releases, so pass it
-            # ONLY when we actually need an offline load. Online (local_only False) then never
-            # forwards it -- an old install warms the Hub-backed embedder exactly as before,
-            # while offline (the new capability) still requires a version that supports it.
-            st_kwargs = {
-                "device": device,
-                "model_kwargs": dtype_kwargs("float16"),
-            }
+            logger.info("loading embedding model %s on %s", name, device)
+            _guard_model_security(name, local_only)
+            st_kwargs = dict(device = device, model_kwargs = dtype_kwargs("float16"))
+            load_target = name
             if local_only:
-                st_kwargs["local_files_only"] = True
-            _model = SentenceTransformer(load_name, **st_kwargs)
+                from utils.utils import hf_cache_snapshot_dir
+                snapshot = hf_cache_snapshot_dir(name)
+                if snapshot is not None:
+                    # Load from the resolved local snapshot dir: a local path never touches the
+                    # Hub, so this is offline-safe on ANY sentence-transformers version (even ones
+                    # predating local_files_only). If nothing is cached we fall through to a
+                    # cache-only repo load, which fails fast offline instead of hanging.
+                    load_target = str(snapshot)
+                elif _st_accepts_local_files_only(SentenceTransformer):
+                    st_kwargs["local_files_only"] = True
+            _model = SentenceTransformer(load_target, **st_kwargs)
             _name = name
-            # An ONLINE load that HF definitively scanned clean is now fully cached: record the
-            # verdict (outside the lock, so hashing stays off the hot path) so a later offline
-            # load of this exact content is not fail-closed.
-            if not local_only and decision is not None and decision.scanned_clean:
-                record = (load_name, decision.commit)
-        model = _model
-    if record is not None:
-        _record_embedding_verdict_safe(*record)
-    return model
+        return _model
 
 
 @lru_cache(maxsize = 1)

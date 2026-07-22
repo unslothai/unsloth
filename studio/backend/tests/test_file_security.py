@@ -438,29 +438,6 @@ def test_indexed_shard_under_load_subdir_blocks():
     assert d.blocked is True
 
 
-def test_flagged_router_child_pickle_blocks_via_deepest_load_root():
-    # A nested Router emits BOTH its own dir and each child as load subdirs, and Router.load()
-    # deserializes the child pickle directly. The flagged child must scope against the DEEPEST
-    # matching load root (its own dir) so it lands root-level there and blocks -- stripping only
-    # the parent prefix would leave "query_0_WordEmbeddings/pytorch_model.bin" looking like an
-    # unreferenced nested shard and, with no index, slip the online gate.
-    status = {
-        "scansDone": False,
-        "filesWithIssues": [
-            {"path": "0_Router/query_0_WordEmbeddings/pytorch_model.bin", "level": "unsafe"}
-        ],
-    }
-    with _patch_status(status), _patch_no_index():
-        d = evaluate_file_security(
-            "org/router-embedder",
-            load_subdirs = ("0_Router", "0_Router/query_0_WordEmbeddings"),
-        )
-    assert d.blocked is True
-    assert d.unsafe_files == [
-        {"path": "0_Router/query_0_WordEmbeddings/pytorch_model.bin", "level": "unsafe"}
-    ]
-
-
 # -- Source files are the consent gate's domain, not a deserialization vector --
 
 

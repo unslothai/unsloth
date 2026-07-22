@@ -43,9 +43,7 @@ def client(monkeypatch):
     # offline and deterministic for the endpoint tests that use this fixture.
     import core.rag.embeddings as embeddings
 
-    monkeypatch.setattr(
-        embeddings, "_st_module_subdirs", lambda name, token = None, local_only = False: ()
-    )
+    monkeypatch.setattr(embeddings, "_st_module_subdirs", lambda name, token = None: ())
     saved: dict = {}
     monkeypatch.setattr(settings, "default_embedding_model", lambda: "unsloth/default-embed")
     monkeypatch.setattr(settings, "validate_embedding_model", lambda v: v)
@@ -108,6 +106,56 @@ def test_hard_block_uses_non_forceable_status(client, monkeypatch):
     assert unverified.status_code == 409
 
 
+def test_offline_cached_non_st_model_is_accepted(client, monkeypatch):
+    # Offline, a cached transformers-native embedder (no modules.json) is unverifiable via HF
+    # metadata; since SentenceTransformer can load any cached encoder, accept it (no 409).
+    c, saved = client
+    monkeypatch.setitem(sys.modules, "utils.security", _security_stub(blocked = False))
+    monkeypatch.setenv("HF_HUB_OFFLINE", "1")
+    import utils.models as _models
+    import utils.utils as _uu
+
+    monkeypatch.setattr(_models, "is_embedding_model", lambda *a, **k: False)
+    monkeypatch.setattr(_uu, "hf_cache_snapshot_is_loadable", lambda name: True)
+    r = c.put("/embedding-model", json = {"embedding_model": "acme/gte-modernbert"})
+    assert r.status_code == 200
+    assert saved.get("model") == "acme/gte-modernbert"
+
+
+def test_offline_partial_or_uncached_model_still_409(client, monkeypatch):
+    # Offline but NOT loadable (uncached or a metadata-only partial cache): keep the forceable
+    # 409, since the cache-only load would fail anyway.
+    c, _saved = client
+    monkeypatch.setitem(sys.modules, "utils.security", _security_stub(blocked = False))
+    monkeypatch.setenv("HF_HUB_OFFLINE", "1")
+    import utils.models as _models
+    import utils.utils as _uu
+
+    monkeypatch.setattr(_models, "is_embedding_model", lambda *a, **k: False)
+    monkeypatch.setattr(_uu, "hf_cache_snapshot_is_loadable", lambda name: False)
+    r = c.put("/embedding-model", json = {"embedding_model": "acme/uncached-embedder"})
+    assert r.status_code == 409
+
+
+def test_offline_skips_remote_gguf_probe(client, monkeypatch):
+    # Offline + llama backend: the remote GGUF probe (list_repo_files) must be skipped so a
+    # dead-DNS session cannot hang.
+    c, _saved = client
+    monkeypatch.setenv("HF_HUB_OFFLINE", "1")
+    monkeypatch.setattr(settings, "_llama_backend_active", lambda: True)
+    monkeypatch.setattr(settings, "_local_gguf_backend_error", lambda model: None)
+
+    def _boom(*a, **k):
+        raise AssertionError("hit the network for the GGUF probe")
+
+    monkeypatch.setattr(settings, "_hf_gguf_backend_error", _boom)
+    import utils.models as _models
+
+    monkeypatch.setattr(_models, "is_embedding_model", lambda *a, **k: True)
+    r = c.put("/embedding-model", json = {"embedding_model": "acme/embedder"})
+    assert r.status_code == 200
+
+
 def test_llama_backend_skips_the_st_pickle_scan(monkeypatch):
     # On the llama-server backend the embedder loads GGUF (inert), not the ST repo's
     # pickle, so a flagged ST repo with a clean GGUF companion must not be rejected here.
@@ -156,9 +204,7 @@ def test_runtime_llama_fallback_skips_the_st_pickle_scan(monkeypatch):
     # though the auto resolver would still say sentence-transformers.
     monkeypatch.setattr(embeddings, "_backend", LlamaServerBackend())
     monkeypatch.setattr(embeddings, "_resolve_auto", lambda: "sentence-transformers")
-    monkeypatch.setattr(
-        embeddings, "_st_module_subdirs", lambda name, token = None, local_only = False: ()
-    )
+    monkeypatch.setattr(embeddings, "_st_module_subdirs", lambda name, token = None: ())
 
     saved: dict = {}
     monkeypatch.setattr(settings, "default_embedding_model", lambda: "unsloth/default-embed")
@@ -241,9 +287,7 @@ def test_settings_scan_scopes_module_subdirs(monkeypatch):
     import core.rag.embeddings as embeddings
 
     monkeypatch.setattr(
-        embeddings,
-        "_st_module_subdirs",
-        lambda name, token = None, local_only = False: ("0_Transformer",),
+        embeddings, "_st_module_subdirs", lambda name, token = None: ("0_Transformer",)
     )
     seen = {}
 
@@ -282,106 +326,17 @@ def test_clean_repo_saves_under_force(client, monkeypatch):
     }
 
 
-def test_custom_model_saved_in_cache_casing(client, monkeypatch):
-    # Persisted in the cache casing so the offline exact-case ST load finds it.
-    c, saved = client
-    monkeypatch.setitem(sys.modules, "utils.security", _security_stub(blocked = False))
-    import utils.models as _models
-
-    monkeypatch.setattr(_models, "resolve_st_cached_repo_id_case", lambda m: "BAAI/bge-m3")
-    r = c.put("/embedding-model", json = {"embedding_model": "baai/bge-m3", "force": True})
-    assert r.status_code == 200
-    assert saved.get("model") == "BAAI/bge-m3"
-
-
-def test_local_path_model_is_not_casing_normalized(client, monkeypatch, tmp_path):
-    # A local directory is loaded from disk; recasing would resolve to a cache collision.
-    c, saved = client
-    monkeypatch.setitem(sys.modules, "utils.security", _security_stub(blocked = False))
-    import utils.models as _models
-
-    def _must_not_run(m):
-        raise AssertionError("a local path must not be casing-normalized")
-
-    monkeypatch.setattr(_models, "resolve_st_cached_repo_id_case", _must_not_run)
-    local_dir = tmp_path / "org" / "model"
-    local_dir.mkdir(parents = True)
-    r = c.put("/embedding-model", json = {"embedding_model": str(local_dir), "force": True})
-    assert r.status_code == 200
-    assert saved.get("model") == str(local_dir)
-
-
-def test_casing_alias_of_the_default_is_stored_as_the_default(client, monkeypatch):
-    # Repo ids are case-insensitive, but set_rag_embedding_model() compares exact
-    # strings: persisting "Unsloth/default-embed" against a default of
-    # "unsloth/default-embed" would store a custom override, so later changes to the
-    # configured default would stop applying and the UI would show a custom selection.
-    c, saved = client
-    monkeypatch.setitem(sys.modules, "utils.security", _security_stub(blocked = False))
-    import utils.models as _models
-
-    def _must_not_run(m):
-        raise AssertionError("a casing alias of the default must not be ST-normalized")
-
-    monkeypatch.setattr(_models, "resolve_st_cached_repo_id_case", _must_not_run)
-    r = c.put("/embedding-model", json = {"embedding_model": "Unsloth/Default-Embed"})
-    assert r.status_code == 200
-    assert saved.get("model") == "unsloth/default-embed"  # the canonical default
-
-
-def test_llama_backend_model_is_not_casing_normalized(monkeypatch):
-    # The llama backend fetches a GGUF companion from the HUB cache, so an ST_HOME recasing
-    # could point at a GGUF repo _hf_gguf_backend_error() never validated.
-    saved: dict = {}
-    monkeypatch.setattr(settings, "default_embedding_model", lambda: "unsloth/default-embed")
-    monkeypatch.setattr(settings, "validate_embedding_model", lambda v: v)
-    monkeypatch.setattr(settings, "set_rag_embedding_model", lambda v: saved.setdefault("model", v))
-    monkeypatch.setattr(settings, "_llama_backend_active", lambda: True)
-    monkeypatch.setattr(settings, "_resolves_as_local_gguf", lambda m: False)
-    monkeypatch.setattr(settings, "get_rag_embedding_model", lambda: saved.get("model", ""))
-    monkeypatch.setattr(settings, "get_stored_embedding_model", lambda: saved.get("model"))
-    monkeypatch.setitem(sys.modules, "utils.security", _security_stub(blocked = False))
-    import utils.models as _models
-
-    def _must_not_run(m):
-        raise AssertionError("the llama backend must not be ST-casing-normalized")
-
-    monkeypatch.setattr(_models, "resolve_st_cached_repo_id_case", _must_not_run)
-
-    app = FastAPI()
-    app.include_router(settings.router)
-    app.dependency_overrides[settings.get_current_subject] = lambda: "admin"
-    c = TestClient(app, raise_server_exceptions = False)
-    r = c.put("/embedding-model", json = {"embedding_model": "baai/bge-m3", "force": True})
-    assert r.status_code == 200
-    assert saved.get("model") == "baai/bge-m3"
-
-
-def test_default_model_is_not_casing_normalized(client, monkeypatch):
-    # Recasing the default would make set_rag_embedding_model() treat it as a custom override.
-    c, saved = client
-    import utils.models as _models
-
-    def _must_not_run(m):
-        raise AssertionError("the default must not be casing-normalized")
-
-    monkeypatch.setattr(_models, "resolve_st_cached_repo_id_case", _must_not_run)
-    r = c.put("/embedding-model", json = {"embedding_model": "unsloth/default-embed"})
-    assert r.status_code == 200
-    assert saved.get("model") == "unsloth/default-embed"
-
-
 def test_load_sink_refuses_flagged_model(monkeypatch):
     monkeypatch.setitem(sys.modules, "utils.security", _security_stub(blocked = True))
     import core.rag.embeddings as embeddings
     with pytest.raises(embeddings.UnsafeEmbeddingModelError):
-        embeddings._guard_model_security("attacker/malicious-embed", False)
+        embeddings._guard_model_security("attacker/malicious-embed")
 
 
 def test_load_sink_allows_clean_model(monkeypatch):
     monkeypatch.setitem(sys.modules, "utils.security", _security_stub(blocked = False))
     import core.rag.embeddings as embeddings
-    embeddings._guard_model_security("acme/clean-embed", False)
+    embeddings._guard_model_security("acme/clean-embed")  # no raise
 
 
 def test_sink_threads_ambient_token_into_scan(monkeypatch):
@@ -389,17 +344,17 @@ def test_sink_threads_ambient_token_into_scan(monkeypatch):
     # loader's own token to the scan, or it fails open for the repo that still loads.
     seen = {}
     mod = _types.ModuleType("utils.security")
-    mod.security_load_subdirs = lambda name, token = None: (
-        seen.setdefault("subdirs_token", token) or ()
+    mod.security_load_subdirs = (
+        lambda name, token = None: seen.setdefault("subdirs_token", token) or ()
     )
-    mod.evaluate_file_security = lambda *a, **k: (
-        seen.setdefault("scan_token", k.get("hf_token")) or _Decision(False)
-    )
+    mod.evaluate_file_security = lambda *a, **k: seen.setdefault(
+        "scan_token", k.get("hf_token")
+    ) or _Decision(False)
     monkeypatch.setitem(sys.modules, "utils.security", mod)
     import core.rag.embeddings as embeddings
 
     monkeypatch.setattr(embeddings, "_ambient_hf_token", lambda: "hf_ambient")
-    embeddings._guard_model_security("acme/gated-embed", False)
+    embeddings._guard_model_security("acme/gated-embed")
     assert seen["scan_token"] == "hf_ambient"
     assert seen["subdirs_token"] == "hf_ambient"
 
@@ -415,18 +370,16 @@ def test_sink_scopes_st_module_subdirs_into_scan(monkeypatch):
         return _Decision(False)
 
     mod = _types.ModuleType("utils.security")
-    mod.security_load_subdirs = lambda name, token = None, local_only = False: ()
+    mod.security_load_subdirs = lambda name, token = None: ()
     mod.evaluate_file_security = _capture
     monkeypatch.setitem(sys.modules, "utils.security", mod)
     import core.rag.embeddings as embeddings
 
     monkeypatch.setattr(embeddings, "_ambient_hf_token", lambda: None)
     monkeypatch.setattr(
-        embeddings,
-        "_st_module_subdirs",
-        lambda name, token = None, local_only = False: ("0_Transformer",),
+        embeddings, "_st_module_subdirs", lambda name, token = None: ("0_Transformer",)
     )
-    embeddings._guard_model_security("acme/embed-with-module-dir", False)
+    embeddings._guard_model_security("acme/embed-with-module-dir")
     assert "0_Transformer" in seen["subdirs"]
 
 
@@ -445,7 +398,7 @@ def test_st_module_subdirs_reads_local_modules_json(tmp_path, monkeypatch):
             ]
         )
     )
-    subdirs = embeddings._st_module_subdirs(str(tmp_path), None, False)
+    subdirs = embeddings._st_module_subdirs(str(tmp_path), None)
     assert subdirs == ("0_Transformer", "1_Pooling")
 
 
@@ -459,181 +412,7 @@ def test_st_module_subdirs_swallows_errors(monkeypatch):
         raise RuntimeError("offline")
 
     monkeypatch.setattr(huggingface_hub, "hf_hub_download", _boom)
-    assert embeddings._st_module_subdirs("acme/no-such-repo-xyz", None, False) == ()
-
-
-def test_st_module_subdirs_expands_root_router_children(tmp_path):
-    # A Router saved in root (path "") declares its child sub-modules only in
-    # router_config.json; Router.load() deserializes each from its own subdir, so those subdirs
-    # are load roots too. The scan must scope them or a flagged child pickle
-    # (query_0_WordEmbeddings/pytorch_model.bin) slips through as an unreferenced nested shard.
-    import json
-    import core.rag.embeddings as embeddings
-
-    (tmp_path / "modules.json").write_text(
-        json.dumps(
-            [
-                {
-                    "idx": 0,
-                    "name": "0",
-                    "path": "",
-                    "type": "sentence_transformers.models.Router.Router",
-                }
-            ]
-        )
-    )
-    (tmp_path / "router_config.json").write_text(
-        json.dumps(
-            {
-                "types": {
-                    "query_0_WordEmbeddings": "sentence_transformers.models.WordEmbeddings.WordEmbeddings",
-                    "document_0_Transformer": "sentence_transformers.models.Transformer.Transformer",
-                }
-            }
-        )
-    )
-    subdirs = embeddings._st_module_subdirs(str(tmp_path), None, False)
-    assert "query_0_WordEmbeddings" in subdirs
-    assert "document_0_Transformer" in subdirs
-
-
-def test_st_module_subdirs_expands_nested_router_children(tmp_path):
-    # A Router nested at a module path prefixes its children with that path.
-    import json
-    import core.rag.embeddings as embeddings
-
-    (tmp_path / "modules.json").write_text(
-        json.dumps(
-            [
-                {"idx": 0, "name": "0", "path": "0_Transformer", "type": "..."},
-                {
-                    "idx": 1,
-                    "name": "1",
-                    "path": "1_Router",
-                    "type": "sentence_transformers.models.Asym.Asym",
-                },
-            ]
-        )
-    )
-    (tmp_path / "1_Router").mkdir()
-    (tmp_path / "1_Router" / "router_config.json").write_text(
-        json.dumps({"types": {"query_0_WordEmbeddings": "..."}})
-    )
-    subdirs = embeddings._st_module_subdirs(str(tmp_path), None, False)
-    assert "0_Transformer" in subdirs
-    assert "1_Router/query_0_WordEmbeddings" in subdirs
-
-
-def test_st_module_subdirs_ignores_router_config_without_router_module(tmp_path):
-    # A stray router_config.json is read ONLY for a Router-typed module, so a plain embedder
-    # neither expands children nor pays the extra fetch.
-    import json
-    import core.rag.embeddings as embeddings
-
-    (tmp_path / "modules.json").write_text(
-        json.dumps([{"idx": 0, "name": "0", "path": "0_Transformer", "type": "..."}])
-    )
-    (tmp_path / "router_config.json").write_text(
-        json.dumps({"types": {"query_0_WordEmbeddings": "..."}})
-    )
-    subdirs = embeddings._st_module_subdirs(str(tmp_path), None, False)
-    assert subdirs == ("0_Transformer",)
-
-
-def test_st_module_subdirs_drops_traversing_router_child(tmp_path):
-    # A malicious router_config.json child that traverses out of the repo (../evil) is dropped,
-    # matching the offline gate; a legitimate sibling is still scoped.
-    import json
-    import core.rag.embeddings as embeddings
-
-    (tmp_path / "modules.json").write_text(
-        json.dumps(
-            [
-                {
-                    "idx": 0,
-                    "name": "0",
-                    "path": "",
-                    "type": "sentence_transformers.models.Router.Router",
-                }
-            ]
-        )
-    )
-    (tmp_path / "router_config.json").write_text(
-        json.dumps({"types": {"../evil": "...", "query_0_WordEmbeddings": "..."}})
-    )
-    subdirs = embeddings._st_module_subdirs(str(tmp_path), None, False)
-    assert "query_0_WordEmbeddings" in subdirs
-    assert not any(".." in s for s in subdirs)
-
-
-def test_st_module_subdirs_expands_grandchild_router_children(tmp_path):
-    # A Router child that is ITSELF a Router must expand recursively (mirroring the offline BFS), so
-    # a flagged grandchild pickle is scoped online too and cannot be recorded clean.
-    import json
-    import core.rag.embeddings as embeddings
-
-    (tmp_path / "modules.json").write_text(
-        json.dumps([{"path": "", "type": "sentence_transformers.models.Router.Router"}])
-    )
-    (tmp_path / "router_config.json").write_text(
-        json.dumps({"types": {"child_Router": "sentence_transformers.models.Router.Router"}})
-    )
-    (tmp_path / "child_Router").mkdir()
-    (tmp_path / "child_Router" / "router_config.json").write_text(
-        json.dumps({"types": {"grand_WordEmbeddings": "..."}})
-    )
-    subdirs = embeddings._st_module_subdirs(str(tmp_path), None, False)
-    assert "child_Router" in subdirs
-    assert "child_Router/grand_WordEmbeddings" in subdirs
-
-
-def test_st_module_subdirs_drops_absolute_module_path(tmp_path):
-    # An absolute (or drive/UNC) module path is dropped: the loader would resolve it outside the
-    # snapshot, so canonicalizing it into an in-snapshot relative dir would scope the wrong place.
-    import json
-    import core.rag.embeddings as embeddings
-
-    (tmp_path / "modules.json").write_text(
-        json.dumps([{"path": "/etc/evil", "type": "..."}, {"path": "0_Transformer", "type": "..."}])
-    )
-    subdirs = embeddings._st_module_subdirs(str(tmp_path), None, False)
-    assert subdirs == ("0_Transformer",)
-    assert not any(s.startswith("/") or "etc" in s for s in subdirs)
-
-
-def test_st_module_subdirs_router_expansion_over_hub(monkeypatch, tmp_path):
-    # The Hub (non-local) path expands Router children symmetrically: hf_hub_download serves
-    # modules.json then the Router's router_config.json.
-    import json
-    import huggingface_hub
-    import core.rag.embeddings as embeddings
-
-    (tmp_path / "modules.json").write_text(
-        json.dumps(
-            [
-                {
-                    "idx": 0,
-                    "name": "0",
-                    "path": "",
-                    "type": "sentence_transformers.models.Router.Router",
-                }
-            ]
-        )
-    )
-    (tmp_path / "router_config.json").write_text(
-        json.dumps({"types": {"query_0_WordEmbeddings": "..."}})
-    )
-
-    def _fake_download(repo_id, filename, **kwargs):
-        p = tmp_path / filename
-        if not p.is_file():
-            from huggingface_hub.utils import EntryNotFoundError
-            raise EntryNotFoundError(f"no {filename}")
-        return str(p)
-
-    monkeypatch.setattr(huggingface_hub, "hf_hub_download", _fake_download)
-    subdirs = embeddings._st_module_subdirs("acme/router-embed", None, False)
-    assert "query_0_WordEmbeddings" in subdirs
+    assert embeddings._st_module_subdirs("acme/no-such-repo-xyz", None) == ()
 
 
 def test_security_block_is_not_swallowed_by_llama_fallback(monkeypatch):

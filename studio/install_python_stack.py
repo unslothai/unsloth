@@ -352,6 +352,13 @@ _GFX_TO_AMD_INDEX_ARCH: dict[str, str] = {
     "gfx1102": "gfx110X-all",  # RDNA 3
     "gfx1101": "gfx110X-all",
     "gfx1100": "gfx110X-all",
+    "gfx1036": "gfx103X-all",
+    "gfx1035": "gfx103X-all",  # RDNA 2 (RX 6000)
+    "gfx1034": "gfx103X-all",
+    "gfx1033": "gfx103X-all",
+    "gfx1032": "gfx103X-all",
+    "gfx1031": "gfx103X-all",
+    "gfx1030": "gfx103X-all",
     "gfx90a": "gfx90a",
     "gfx908": "gfx908",  # MI200/MI100
 }
@@ -712,8 +719,8 @@ def _detect_windows_gfx_arch() -> str | None:
 _WIN_GPU_NAME_ARCH_TABLE: "list[tuple[str, str]]" = [
     (r"9070 XT|9080", "gfx1201"),  # RDNA 4 (Radeon RX 9070 XT / 9080)
     (r"9070|9060", "gfx1200"),  # RDNA 4 (Radeon RX 9070 / 9060)
-    # RDNA 3.5 (Strix Halo: Radeon 8060S/8050S/8040S iGPU, Ryzen AI Max+)
-    (r"8060S|8050S|8040S|Strix Halo|Ryzen AI Max|AI Max", "gfx1151"),
+    # RDNA 3.5 (Strix Halo + Gorgon Halo: Radeon 8065S/8060S/8050S/8040S iGPU, Ryzen AI Max / Max+)
+    (r"8065S|8060S|8050S|8040S|Strix Halo|Ryzen AI Max|AI Max", "gfx1151"),
     # RDNA 3.5 (Strix/Krackan Point: Radeon 890M/880M iGPU, Ryzen AI 9 HX 370/375)
     (
         r"890M|880M|860M|840M|Strix Point|Krackan|HX 37[05]|AI 9 HX|AI 9 36[05]"

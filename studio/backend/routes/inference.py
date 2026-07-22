@@ -1778,7 +1778,7 @@ from core.inference.providers import get_base_url
 from core.inference.external_provider import ExternalProviderClient
 from core.inference.chat_templates import resolve_effective_chat_template_override
 from storage import providers_db
-from utils.utils import safe_error_detail, log_and_http_error
+from utils.utils import is_hf_authentication_error, safe_error_detail, log_and_http_error
 
 import io
 import base64
@@ -5144,10 +5144,10 @@ async def validate_model(
                 latest_tier_active_for, config.identifier, request.hf_token
             ):
                 effective_load_in_4bit = False
-        # A metadata-only probe just reads the GGUF header and allocates no VRAM,
-        # so it must not be refused by the training guard. Real loads validate
-        # without include_context_length and /load applies the guard again.
-        if not request.include_context_length:
+        # A metadata-only probe reads the GGUF header and allocates no VRAM, so the
+        # training guard must not refuse it. Real loads omit include_context_length /
+        # include_chat_template, and /load applies the guard again.
+        if not (request.include_context_length or request.include_chat_template):
             # Match /load's inherited llama.cpp extras and parallel slot count so
             # validation cannot pass a smaller estimate than the subsequent load.
             effective_extra_args = _resolve_inherited_extra_args(
@@ -5189,9 +5189,15 @@ async def validate_model(
         context_length: Optional[int] = None
         layer_count: Optional[int] = None
         moe_layer_count: Optional[int] = None
-        if request.include_context_length and is_gguf:
+        chat_template: Optional[str] = None
+        # Both header probes read the same local GGUF, so resolve it once.
+        if (request.include_context_length or request.include_chat_template) and is_gguf:
             from hub.utils.gguf import resolve_local_gguf_path
-            from utils.models.gguf_metadata import read_gguf_staged_dims
+            from picker.schemas import MAX_CHAT_TEMPLATE_BYTES
+            from utils.models.gguf_metadata import (
+                read_gguf_chat_template,
+                read_gguf_staged_dims,
+            )
 
             # Best-effort: a header-read failure must never fail validation of an
             # otherwise-valid model (the outer except turns it into a 400).
@@ -5207,13 +5213,24 @@ async def validate_model(
                         model_identifier, request.gguf_variant
                     )
                 if local_gguf:
-                    # Header walk reads tokenizer arrays for dense models (tens of
-                    # ms); keep it off the event loop.
-                    dims = await asyncio.to_thread(read_gguf_staged_dims, local_gguf)
-                    if dims:
-                        context_length = dims["context_length"]
-                        layer_count = dims["layer_count"]
-                        moe_layer_count = dims["moe_layer_count"]
+                    if request.include_context_length:
+                        # Header walk reads tokenizer arrays (tens of ms); keep it
+                        # off the event loop.
+                        dims = await asyncio.to_thread(read_gguf_staged_dims, local_gguf)
+                        if dims:
+                            context_length = dims["context_length"]
+                            layer_count = dims["layer_count"]
+                            moe_layer_count = dims["moe_layer_count"]
+                    if request.include_chat_template:
+                        # Read only the leased GGUF's own embedded template (the copy
+                        # llama.cpp loads), never a sibling sidecar: the native grant
+                        # authorizes just this path, so neighbours would be scope escalation.
+                        raw_template = await asyncio.to_thread(read_gguf_chat_template, local_gguf)
+                        if (
+                            raw_template is not None
+                            and len(raw_template.encode("utf-8")) <= MAX_CHAT_TEMPLATE_BYTES
+                        ):
+                            chat_template = raw_template
             except Exception as e:
                 logger.debug("Header probe failed for %s: %s", model_log_label, e)
 
@@ -5232,6 +5249,7 @@ async def validate_model(
             context_length = context_length,
             layer_count = layer_count,
             moe_layer_count = moe_layer_count,
+            chat_template = chat_template,
             requires_transformers_upgrade = transformers_upgrade is not None,
             transformers_upgrade = transformers_upgrade,
         )
@@ -5244,6 +5262,14 @@ async def validate_model(
         raise HTTPException(status_code = 400, detail = str(e))
     except Exception as e:
         redacted_msg = redact_native_paths(str(e))
+        if is_hf_authentication_error(e):
+            raise HTTPException(
+                status_code = 400,
+                detail = (
+                    "Hugging Face authentication failed. Check or clear the token "
+                    "in Settings, and confirm access to this gated repository."
+                ),
+            )
         if _is_unsupported_nvfp4_inference_error(redacted_msg):
             logger.warning(
                 "NVFP4 inference is not supported yet while validating '%s'",

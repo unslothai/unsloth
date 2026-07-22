@@ -8,11 +8,127 @@ import structlog
 from loggers import get_logger
 from contextlib import contextmanager
 from pathlib import Path
+from typing import Optional
 import shutil
 import tempfile
 
 
 logger = get_logger(__name__)
+
+
+# ── Offline / HF-cache helpers ──────────────────────────────────
+# An offline model load must never touch the network: a DNS-dead session hangs on
+# huggingface_hub download retries. These read the local HF cache the load itself uses.
+
+_HF_OFFLINE_TRUE_VALUES = frozenset({"1", "true", "yes", "on"})
+
+
+def hf_env_offline() -> bool:
+    """True when ``HF_HUB_OFFLINE`` or ``TRANSFORMERS_OFFLINE`` requests offline mode.
+
+    Broader than huggingface_hub, which honors only ``HF_HUB_OFFLINE``; the studio also
+    honors ``TRANSFORMERS_OFFLINE`` because users set it to keep transformers loads local.
+    """
+    for var in ("HF_HUB_OFFLINE", "TRANSFORMERS_OFFLINE"):
+        if os.environ.get(var, "").strip().lower() in _HF_OFFLINE_TRUE_VALUES:
+            return True
+    return False
+
+
+def st_repo_id_candidates(model_name: str) -> list:
+    """Repo ids a Sentence-Transformers load may resolve ``model_name`` to. A slashless
+    name (``all-MiniLM-L6-v2``) is loaded as ``sentence-transformers/all-MiniLM-L6-v2``,
+    so both are candidate cache repos.
+    """
+    name = (model_name or "").strip().strip("/")
+    if not name:
+        return []
+    candidates = [name]
+    if "/" not in name:
+        candidates.append(f"sentence-transformers/{name}")
+    return candidates
+
+
+def _expand_path(raw: str) -> Path:
+    """Expand ``~`` and ``$VARS`` the way huggingface_hub does for its cache paths, so the gate
+    resolves the same directory the loader will."""
+    return Path(os.path.expandvars(os.path.expanduser(raw)))
+
+
+def _hf_cache_roots() -> list:
+    """The single local cache root a Sentence-Transformers / huggingface_hub load resolves to,
+    by the loader's own precedence (it selects ONE ``cache_folder`` and does not fall through):
+    an explicit ``SENTENCE_TRANSFORMERS_HOME`` (ST's cache_folder), else ``HF_HUB_CACHE``, else
+    ``HF_HOME/hub``, else ``~/.cache/huggingface/hub`` (mirroring huggingface_hub). Expanded
+    (``~`` / ``$VARS``), read from the env at call time. Returned as a one-element list.
+    """
+    st_home = os.environ.get("SENTENCE_TRANSFORMERS_HOME")
+    if st_home:
+        return [_expand_path(st_home)]
+    hub = os.environ.get("HF_HUB_CACHE") or os.environ.get("HUGGINGFACE_HUB_CACHE")
+    if hub:
+        return [_expand_path(hub)]
+    hf_home = os.environ.get("HF_HOME")
+    if hf_home:
+        return [_expand_path(hf_home) / "hub"]
+    return [Path.home() / ".cache" / "huggingface" / "hub"]
+
+
+def hf_cache_snapshot_dir(model_name: str) -> Optional[Path]:
+    """Active local snapshot dir for ``model_name``'s ``main`` revision, or None when the repo
+    is not cached in any known cache root (including ``SENTENCE_TRANSFORMERS_HOME``). Reads
+    ``refs/main`` then ``snapshots/<commit>``; never touches the network. Tries the
+    ``sentence-transformers/`` alias for a slashless name.
+    """
+    try:
+        from huggingface_hub.file_download import repo_folder_name
+    except Exception:
+        repo_folder_name = None
+    for cache_root in _hf_cache_roots():
+        for repo_id in st_repo_id_candidates(model_name):
+            try:
+                if repo_folder_name is not None:
+                    folder = repo_folder_name(repo_id = repo_id, repo_type = "model")
+                else:
+                    folder = "models--" + repo_id.replace("/", "--")
+                repo_dir = cache_root / folder
+                ref = repo_dir / "refs" / "main"
+                if not ref.is_file():
+                    continue
+                commit = ref.read_text().strip()
+                if not commit:
+                    continue
+                snapshot = repo_dir / "snapshots" / commit
+                if snapshot.is_dir():
+                    return snapshot
+            except OSError:
+                continue
+    return None
+
+
+# Weight file suffixes a load can consume. Presence of one (plus a config) distinguishes a
+# real cached model from a metadata-only partial cache that would fail at load time.
+_LOADABLE_WEIGHT_SUFFIXES = frozenset({".safetensors", ".bin", ".gguf", ".pt", ".pth", ".ckpt"})
+
+
+def hf_cache_snapshot_is_loadable(model_name: str) -> bool:
+    """True when ``model_name``'s active snapshot is cached AND actually loadable -- it has a
+    config (``config.json`` or ``modules.json``) and at least one weight file -- rather than a
+    metadata-only partial cache that resolves a ``refs/main`` but would fail at load. No network.
+    """
+    snapshot = hf_cache_snapshot_dir(model_name)
+    if snapshot is None:
+        return False
+    try:
+        has_config = (snapshot / "config.json").is_file() or (snapshot / "modules.json").is_file()
+        if not has_config:
+            return False
+        for path in snapshot.rglob("*"):
+            if path.suffix.lower() in _LOADABLE_WEIGHT_SUFFIXES and path.is_file():
+                return True
+    except OSError:
+        return False
+    return False
 
 
 # ── Client-safe error helpers ───────────────────────────────────
@@ -123,6 +239,26 @@ def without_hf_auth():
             os.environ.pop("HF_HUB_DISABLE_IMPLICIT_TOKEN", None)
 
 
+def is_hf_authentication_error(error: Exception) -> bool:
+    """Return whether an exception chain contains a definitive HF auth failure."""
+    seen: set[int] = set()
+    current: BaseException | None = error
+    while current is not None and id(current) not in seen:
+        seen.add(id(current))
+        response = getattr(current, "response", None)
+        status = getattr(response, "status_code", None)
+        try:
+            if status is not None and int(status) == 401:
+                return True
+        except (TypeError, ValueError):
+            pass
+        message = str(current).lower()
+        if "invalid user token" in message or "invalid hf token" in message:
+            return True
+        current = current.__cause__ or current.__context__
+    return False
+
+
 def format_error_message(error: Exception, model_name: str) -> str:
     """
     Format a user-friendly error message for common load issues.
@@ -161,20 +297,3 @@ def format_error_message(error: Exception, model_name: str) -> str:
         return f"Not enough {device_label} memory to load '{model_short}'. Try a smaller model or free memory."
 
     return str(error)
-
-
-_HF_OFFLINE_TRUE_VALUES = {"1", "true", "yes", "on"}
-
-
-def _offline_flag(name: str) -> bool:
-    return os.environ.get(name, "").strip().lower() in _HF_OFFLINE_TRUE_VALUES
-
-
-def hf_env_offline() -> bool:
-    """True when HF_HUB_OFFLINE or TRANSFORMERS_OFFLINE is truthy (strip+lower, on/true/yes/1).
-
-    The user's intent to work offline, broader than ``huggingface_hub`` (which ignores
-    ``TRANSFORMERS_OFFLINE``). Does NOT itself stop a fetch -- callers needing that must pass
-    ``local_files_only = hf_env_offline()`` to the loader.
-    """
-    return _offline_flag("HF_HUB_OFFLINE") or _offline_flag("TRANSFORMERS_OFFLINE")

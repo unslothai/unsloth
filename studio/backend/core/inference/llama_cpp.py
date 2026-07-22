@@ -247,6 +247,59 @@ def _wsl_system_rocm_lib_dirs() -> "list[str]":
     return out
 
 
+def _bundled_hip_present(binary_dir: str) -> bool:
+    """True when a prebuilt bundle ships its own HIP backend library."""
+    if not binary_dir:
+        return False
+    try:
+        # Glob the version suffix (libggml-hip.so, .so.0, .so.0.11.1) the same
+        # way the installer's runtime health check matches libggml-hip.so*.
+        return any(Path(str(binary_dir)).glob("libggml-hip.so*"))
+    except OSError:
+        return False
+
+
+def _native_linux_system_rocm_lib_dirs(binary_dir: str = "") -> "list[str]":
+    """System ROCm lib dir(s) to prepend before a prebuilt's bundled HIP, on native Linux.
+
+    The bundled bare-metal HIP runtime can mismatch the host amdkfd driver and crash
+    in hsa_init(); prepending the whole system ROCm lib dir loads a driver-matched,
+    version-consistent stack (libhsa-runtime64 / libamdhip64 / librocblas) ahead of it.
+    The whole dir is deliberate: mixing the bundle's rocBLAS with a different-version
+    system HIP/ROCR risks missing symbols. UNSLOTH_LLAMA_NO_SYSTEM_ROCM=1 keeps the pure
+    bundle (for a host whose system ROCm lacks this arch); no-op on WSL / non-Linux.
+    """
+    if os.environ.get("UNSLOTH_LLAMA_NO_SYSTEM_ROCM") == "1":
+        return []
+    if sys.platform != "linux" or os.path.exists("/dev/dxg"):
+        return []
+    if not os.path.exists("/dev/kfd"):
+        return []
+    if not _bundled_hip_present(binary_dir):
+        return []
+    # Env-configured ROCm root first; /opt/rocm only as a fallback so a stale
+    # /opt/rocm doesn't shadow the driver-matching install these vars point at.
+    candidates = []
+    for var in ("HIP_PATH", "HIP_PATH_57", "ROCM_PATH"):
+        val = os.environ.get(var)
+        if val:
+            candidates.append(val)
+    candidates.append("/opt/rocm")
+    out: "list[str]" = []
+    seen: "set[str]" = set()
+    for base in candidates:
+        for lib_sub in ("lib", "lib64"):
+            d = os.path.join(base, lib_sub)
+            if d in seen:
+                continue
+            seen.add(d)
+            if os.path.exists(os.path.join(d, "libhsa-runtime64.so")) or os.path.exists(
+                os.path.join(d, "libhsa-runtime64.so.1")
+            ):
+                out.append(d)
+    return out
+
+
 # Plan-without-action re-prompt state now lives in tool_call_parser (imported above).
 
 # Default max_tokens to the effective context when known. The floor is high
@@ -3592,6 +3645,9 @@ class LlamaCppBackend:
             lib_dirs.extend(_wsl_system_rocm_lib_dirs())
             if lib_dirs:
                 env.setdefault("HSA_ENABLE_DXG_DETECTION", "1")
+            # Native Linux AMD: system ROCm libs before the bundle's HIP runtime,
+            # which can be incompatible with the host amdkfd driver.
+            lib_dirs.extend(_native_linux_system_rocm_lib_dirs(binary_dir))
             lib_dirs.append(binary_dir)
             _arch = platform.machine()  # x86_64, aarch64, etc.
 
@@ -7563,8 +7619,9 @@ class LlamaCppBackend:
                 else:
                     self._api_key = None
 
-                # Windows + full offload: disable KV checkpoints (WDDM/PCI-E
-                # overhead). CPU/partial offload keeps prompt caching. #5692.
+                # Windows + full offload: drop the host-RAM KV checkpoints that cause
+                # WDDM/PCI-E overhead, but keep prompt caching (in-VRAM prefix reuse) so
+                # a repeated prompt is not re-prefilled on every request. #5692.
                 if sys.platform == "win32" and full_offload_tuning_active:
                     unsupported_cache_flags: list[str] = []
                     if server_caps.get("supports_cache_ram"):
@@ -7575,11 +7632,6 @@ class LlamaCppBackend:
                         cmd.extend(["--ctx-checkpoints", "0"])
                     else:
                         unsupported_cache_flags.append("--ctx-checkpoints")
-                    if server_caps.get("supports_no_cache_prompt"):
-                        cmd.append("--no-cache-prompt")
-                        self._prompt_cache_disabled = True
-                    else:
-                        unsupported_cache_flags.append("--no-cache-prompt")
                     if unsupported_cache_flags:
                         logger.info(
                             "Skipping unsupported Windows cache flags for llama-server: %s",
@@ -9908,6 +9960,75 @@ class LlamaCppBackend:
             logger.debug("Could not close httpx client", exc_info = True)
 
     @staticmethod
+    def _install_cancel_aware_read(
+        client: "httpx.Client",
+        cancel_event: threading.Event,
+        response: Optional["httpx.Response"] = None,
+        poll_s: float = 0.2,
+    ) -> None:
+        """Wrap the httpcore stream so the reader interrupts its own blocked recv() on cancel.
+
+        A cross-thread socket shutdown wakes a parked recv() on POSIX but not on
+        Windows (Winsock), so read in short slices and poll cancel_event between them
+        (plain or TLS); slice timeouts are swallowed so a slow-but-alive stream survives.
+        httpcore snapshots request.extensions["timeout"]["read"] once at body start, so
+        given ``response`` we re-read the live value per call to honor the post-first-token
+        stall timeout instead of the long prefill timeout."""
+        import httpcore
+
+        def _live_read_timeout() -> Optional[float]:
+            if response is None:
+                return None
+            try:
+                ext = response.request.extensions.get("timeout")
+                if isinstance(ext, dict):
+                    value = ext.get("read")
+                    if isinstance(value, (int, float)):
+                        return float(value)
+            except Exception:
+                pass
+            return None
+
+        try:
+            pool = getattr(getattr(client, "_transport", None), "_pool", None)
+            for connection in list(getattr(pool, "_connections", []) or []):
+                inner = getattr(connection, "_connection", None)
+                stream = getattr(inner, "_network_stream", None)
+                if stream is None or getattr(stream, "_unsloth_cancel_wrapped", False):
+                    continue
+                orig_read = stream.read
+
+                def read(
+                    max_bytes,
+                    timeout = None,
+                    _orig = orig_read,
+                ):
+                    live = _live_read_timeout()
+                    effective = live if live is not None else timeout
+                    deadline = None if effective is None else time.monotonic() + effective
+                    while True:
+                        if cancel_event.is_set():
+                            raise httpcore.ReadError("stream cancelled by user")
+                        if deadline is None:
+                            step = poll_s
+                        else:
+                            remaining = deadline - time.monotonic()
+                            if remaining <= 0:
+                                raise httpcore.ReadTimeout("read operation timed out")
+                            step = min(poll_s, remaining)
+                        try:
+                            return _orig(max_bytes, timeout = step)
+                        except httpcore.ReadTimeout:
+                            if deadline is not None and time.monotonic() >= deadline:
+                                raise
+                            continue  # slow but alive: keep reading
+
+                stream.read = read
+                stream._unsloth_cancel_wrapped = True
+        except Exception:
+            logger.debug("Could not install cancel-aware read", exc_info = True)
+
+    @staticmethod
     @contextlib.contextmanager
     def _stream_with_retry(
         client: "httpx.Client",
@@ -9964,6 +10085,11 @@ class LlamaCppBackend:
                 headers = headers,
             ) as response:
                 _response_ref[0] = response
+                if cancel_event is not None:
+                    # Portable mid-stream cancel: the reader polls cancel itself, so
+                    # Stop interrupts a stalled read where the watcher's Windows socket
+                    # shutdown does not. Pass response to honor the live stall timeout.
+                    LlamaCppBackend._install_cancel_aware_read(client, cancel_event, response)
                 if cancel_event is not None and cancel_event.is_set():
                     raise _LlamaStreamCancelled
                 yield response

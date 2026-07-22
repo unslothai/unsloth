@@ -403,8 +403,7 @@ def update_embedding_model(
     A repo flagged unsafe by HF's security scan returns 403 instead: a hard block
     that ``force`` cannot bypass, so the UI must not offer "save anyway".
     Documents indexed under the previous model must be re-uploaded."""
-    from utils.models import is_embedding_model, resolve_st_cached_repo_id_case
-    from utils.paths import is_local_path
+    from utils.models import is_embedding_model
 
     try:
         model = validate_embedding_model(payload.embedding_model)
@@ -417,15 +416,11 @@ def update_embedding_model(
             log = logger,
         ) from exc
     hf_token = (payload.hf_token or "").strip() or None
-    # Repo ids are case-insensitive, so a casing-only alias of the default IS the
-    # default. Canonicalize before any comparison: set_rag_embedding_model() and the
-    # gates below all compare exact strings, so leaving the alias in place would run
-    # the verification/scan for a custom model AND persist an override, after which
-    # later changes to the configured default would stop applying and the UI would
-    # report a custom selection.
-    _default_model = default_embedding_model()
-    if not is_local_path(model) and model.casefold() == _default_model.casefold():
-        model = _default_model
+    from utils.utils import hf_env_offline
+
+    # Capture the offline state once: offline, both the Hub malware scan and the is-embedding
+    # metadata check are unreachable, so both degrade to the local cache below.
+    local_only_load = hf_env_offline()
     # The env/default model needs no verification; saving it is a no-op override.
     # A local GGUF on the llama-server backend is accepted as-is: it is exactly
     # what the backend loads, and HF metadata cannot verify a local path.
@@ -435,12 +430,9 @@ def update_embedding_model(
     # (inert) from effective_gguf_repo(), so scanning the ST repo's pickle here would
     # wrongly reject a custom repo whose GGUF companion is clean; the GGUF availability
     # checks below cover that path instead.
-    scan_st_pickle = model != _default_model and not is_local_gguf and not _llama_backend_active()
-    # Read the offline state ONCE: the module probe and the scan must agree, and
-    # _hf_offline_if_dns_dead() can flip the vars between two reads.
-    from utils.utils import hf_env_offline
-
-    local_only_load = hf_env_offline()
+    scan_st_pickle = (
+        model != default_embedding_model() and not is_local_gguf and not _llama_backend_active()
+    )
     if scan_st_pickle:
         # Malware/pickle gate before we persist a repo the embedder later loads with
         # SentenceTransformer. Runs even under force (force only skips the is-embedding
@@ -452,18 +444,22 @@ def update_embedding_model(
         # Fall back to the loader's own token so a gated/private repo is actually scanned
         # (a token-less scan fails open for exactly the repo that would still load).
         scan_token = hf_token or _ambient_hf_token()
-        # Include the ST module dirs (0_Transformer/) so a flagged pickle directly under
-        # one blocks instead of passing as an unreferenced nested shard.
-        load_subdirs = tuple(
-            dict.fromkeys(
-                (
-                    *security_load_subdirs(model, scan_token),
-                    *_st_module_subdirs(model, scan_token, local_only_load),
+        # Offline the Hub scan is unreachable and the subdir probes below would hit the
+        # network and hang on a dead DNS; the offline gate walks the whole cached snapshot,
+        # so no load-subdir hints are needed.
+        if local_only_load:
+            load_subdirs = ()
+        else:
+            # Include the ST module dirs (0_Transformer/) so a flagged pickle directly under
+            # one blocks instead of passing as an unreferenced nested shard.
+            load_subdirs = tuple(
+                dict.fromkeys(
+                    (
+                        *security_load_subdirs(model, scan_token),
+                        *_st_module_subdirs(model, scan_token),
+                    )
                 )
             )
-        )
-        # local_only_load: this gate covers the RAG embedder, whose loader pins
-        # SentenceTransformer to the local cache with the same predicate.
         if evaluate_file_security(
             model,
             hf_token = scan_token,
@@ -472,14 +468,19 @@ def update_embedding_model(
         ).blocked:
             # 403, not 409: the client routes every 409 into the forceable "save anyway"
             # flow, but this block is a hard, non-forceable security refusal.
-            raise HTTPException(
-                status_code = 403,
+            if local_only_load:
+                detail = (
+                    f"{model!r} has cached pickle weights that cannot be security-scanned "
+                    "offline and no safetensors alternative, so it cannot be used as the "
+                    "embedding model. Re-download it with safetensors weights while online."
+                )
+            else:
                 detail = (
                     f"{model!r} is flagged as unsafe by Hugging Face's security scan and "
                     "cannot be used as the embedding model."
-                ),
-            )
-    if model != _default_model and not payload.force and not is_local_gguf:
+                )
+            raise HTTPException(status_code = 403, detail = detail)
+    if model != default_embedding_model() and not payload.force and not is_local_gguf:
         from core.rag import config as rag_config
 
         # A GGUF-named repo on the llama-server backend is loaded from its .gguf
@@ -488,29 +489,32 @@ def update_embedding_model(
         # which would wrongly 409 a valid online GGUF embedder.
         gguf_named = _llama_backend_active() and rag_config._names_gguf(model)
         if not gguf_named and not is_embedding_model(model, hf_token = hf_token):
-            raise HTTPException(
-                status_code = 409,
-                detail = (
-                    f"Could not verify {model!r} as an embedding model on "
-                    "Hugging Face (it may be the wrong model type, gated, or "
-                    "you may be offline)."
-                ),
-            )
-        gguf_error = _local_gguf_backend_error(model) or _hf_gguf_backend_error(model, hf_token)
+            # Offline, is_embedding_model can only confirm the Sentence-Transformers layout
+            # (modules.json); a transformers-native embedder (e.g. a feature-extraction model
+            # like gte-modernbert) is unverifiable without the Hub metadata. If the repo is
+            # already cached and loadable, accept it rather than raising a 409 that online
+            # would not -- SentenceTransformer can load any cached encoder. Uncached -> 409.
+            from utils.utils import hf_cache_snapshot_is_loadable
+
+            # Require a genuinely loadable cache (config + weights), not just a resolved
+            # refs/main, so a metadata-only partial cache still gets the forceable 409.
+            offline_cached = local_only_load and hf_cache_snapshot_is_loadable(model)
+            if not offline_cached:
+                raise HTTPException(
+                    status_code = 409,
+                    detail = (
+                        f"Could not verify {model!r} as an embedding model on "
+                        "Hugging Face (it may be the wrong model type, gated, or "
+                        "you may be offline)."
+                    ),
+                )
+        # The GGUF availability probe below calls the Hub (list_repo_files); skip it offline
+        # so a dead-DNS session cannot hang. A local GGUF check stays (no network).
+        gguf_error = _local_gguf_backend_error(model)
+        if gguf_error is None and not local_only_load:
+            gguf_error = _hf_gguf_backend_error(model, hf_token)
         if gguf_error:
             raise HTTPException(status_code = 409, detail = gguf_error)
-    # Persist the exact cache casing: validation accepts a case-insensitive hit but the
-    # offline ST load resolves the cache by exact case (against ST_HOME if set, else the Hub
-    # cache). No-op when nothing case-matching is cached. Three cases are left alone:
-    #
-    #   * the default, including a casing-only alias of it -- rewriting it would make
-    #     set_rag_embedding_model()'s exact-string default comparison treat it as an
-    #     override, so later default changes stop applying;
-    #   * a local path -- loaded from disk; a cache-collision recasing would stop resolving to it;
-    #   * the llama-server backend -- loads a GGUF companion from the HUB cache, so an ST_HOME
-    #     spelling could pick a repo _hf_gguf_backend_error() never validated.
-    if model != _default_model and not is_local_path(model) and not _llama_backend_active():
-        model = resolve_st_cached_repo_id_case(model)
     set_rag_embedding_model(model)
     logger.info(
         "settings.embedding_model_updated subject=%s model=%s forced=%s",

@@ -1,12 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-import { TrainIcon } from "../components/train-icon";
-import {
-  HUB_GGUF_RUN_ACTIONS_VISIBLE,
-  HUB_NON_GGUF_RUN_ACTIONS_VISIBLE,
-  HUB_POST_DOWNLOAD_ACTIONS_VISIBLE,
-} from "../lib/hub-feature-flags";
 import {
   Popover,
   PopoverContent,
@@ -18,37 +12,44 @@ import {
   TooltipContent,
   TooltipTrigger,
 } from "@/components/ui/tooltip";
+import { ChevronDownStandardIcon } from "@/lib/chevron-icons";
+import { cn } from "@/lib/utils";
 import {
-  type BaseModelSource,
-  type LocalModelInfo,
-  type ModelInventoryFormat,
-  deleteCachedModel,
-} from "../inventory";
+  Alert02Icon,
+  CubeIcon,
+  PlayIcon,
+  RemoveCircleIcon,
+  Share05Icon,
+} from "@hugeicons/core-free-icons";
+import { HugeiconsIcon } from "@hugeicons/react";
+import { useCallback, useMemo, useState } from "react";
+import { TrainIcon } from "../components/train-icon";
 import {
   downloadManager,
   jobKeyOf,
   selectActiveJob,
   useDownloadManagerStore,
 } from "../download-manager";
-import { formatBytes } from "../lib/format";
-import { ggufVariantsMatch } from "../lib/model-identity";
-import { cn } from "@/lib/utils";
-import { confirmExternalLink } from "../stores/external-link-confirm";
-import { useHfTokenStore } from "../stores/hf-token-store";
+import { useOnlineStatus } from "../hooks/use-online-status";
 import {
-  Alert02Icon,
-  CubeIcon,
-  PencilEdit02Icon,
-  PlayIcon,
-  Share05Icon,
-} from "@hugeicons/core-free-icons";
-import { ChevronDownStandardIcon } from "@/lib/chevron-icons";
-import { HugeiconsIcon } from "@hugeicons/react";
-import { useCallback, useMemo, useState } from "react";
+  type BaseModelSource,
+  type LocalModelInfo,
+  type ModelInventoryFormat,
+  deleteCachedModel,
+} from "../inventory";
+import { formatBytes } from "../lib/format";
 import {
   ggufVariantDisplayLabel,
   sortLocalGgufVariants,
 } from "../lib/gguf-variant-sort";
+import {
+  HUB_GGUF_RUN_ACTIONS_VISIBLE,
+  HUB_NON_GGUF_RUN_ACTIONS_VISIBLE,
+  HUB_POST_DOWNLOAD_ACTIONS_VISIBLE,
+} from "../lib/hub-feature-flags";
+import { ggufVariantsMatch } from "../lib/model-identity";
+import { confirmExternalLink } from "../stores/external-link-confirm";
+import { useHfTokenStore } from "../stores/hf-token-store";
 import { DotTag } from "./dot-tag";
 import {
   CardDeleteButton,
@@ -60,7 +61,6 @@ import { PathInfoButton } from "./path-info-button";
 import { TransportConflictDialog } from "./transport-conflict-dialog";
 import { useCardDelete } from "./use-card-delete";
 import { useGgufVariantFetchState } from "./use-gguf-variant-fetch-state";
-import { useOnlineStatus } from "../hooks/use-online-status";
 
 type LocalLoadOptions = {
   ggufVariant?: string;
@@ -91,7 +91,9 @@ interface LocalOnDeviceCardProps {
   systemRamGb?: number;
   unsupportedReason?: string | null;
   onLoad: (opts?: LocalLoadOptions) => void;
+  /** Accepted for API parity; the run bar ejects instead of opening chat. */
   onUseInChat: () => void;
+  onEject?: () => void;
   onTrain?: () => void;
   onChange?: () => void;
 }
@@ -151,7 +153,7 @@ function BaseModelReference({
       </div>
       {canOpenHub && (
         <Tooltip>
-          <TooltipTrigger asChild>
+          <TooltipTrigger asChild={true}>
             <a
               href={`https://huggingface.co/${baseModelHubId}`}
               target="_blank"
@@ -160,7 +162,11 @@ function BaseModelReference({
               className="inline-flex size-7 shrink-0 items-center justify-center rounded-full text-muted-foreground transition-colors hover:bg-background hover:text-foreground"
               onClick={(event) => {
                 event.stopPropagation();
-                if (confirmExternalLink(`https://huggingface.co/${baseModelHubId}`)) {
+                if (
+                  confirmExternalLink(
+                    `https://huggingface.co/${baseModelHubId}`,
+                  )
+                ) {
                   event.preventDefault();
                 }
               }}
@@ -205,7 +211,7 @@ export function LocalOnDeviceCard({
   systemRamGb,
   unsupportedReason,
   onLoad,
-  onUseInChat,
+  onEject,
   onTrain,
   onChange,
 }: LocalOnDeviceCardProps) {
@@ -371,18 +377,20 @@ export function LocalOnDeviceCard({
   const handleConfirmUpdate = () => {
     if (!repoId || !updateTargetVariant) return;
     setUpdateOpen(false);
-    void downloadManager.requestStart({
-      kind: "model",
-      repoId,
-      variant: updateTargetVariant,
-      expectedBytes: updateExpectedBytes,
-    }).then((outcome) => {
-      if (outcome === "conflict") {
-        setUpdateConflictKey(jobKeyOf("model", repoId, updateTargetVariant));
-      }
-      void currentVariantState.refresh();
-      void remoteVariantState.refresh();
-    });
+    void downloadManager
+      .requestStart({
+        kind: "model",
+        repoId,
+        variant: updateTargetVariant,
+        expectedBytes: updateExpectedBytes,
+      })
+      .then((outcome) => {
+        if (outcome === "conflict") {
+          setUpdateConflictKey(jobKeyOf("model", repoId, updateTargetVariant));
+        }
+        void currentVariantState.refresh();
+        void remoteVariantState.refresh();
+      });
   };
   const selectedVariantIsActive =
     needsVariantSelection && selectedQuant
@@ -428,7 +436,8 @@ export function LocalOnDeviceCard({
             can still keep it on disk, or delete it to free space.
           </span>
         </div>
-      )}<div className="hub-download-card">
+      )}
+      <div className="hub-download-card">
         <div className="group/dl flex items-center">
           <div className="relative flex h-9 min-w-0 flex-1 items-center pl-3 pr-2">
             <span className="flex min-w-0 items-center gap-1.5 text-[12px] text-muted-foreground">
@@ -540,7 +549,7 @@ export function LocalOnDeviceCard({
               {canUpdate && (
                 <CardUpdateButton
                   label={`Update ${repoId}`}
-                  emphasized
+                  emphasized={true}
                   onClick={() => setUpdateOpen(true)}
                 />
               )}
@@ -550,11 +559,7 @@ export function LocalOnDeviceCard({
                   onClick={() => setDeleteOpen(true)}
                 />
               )}
-              <PathInfoButton
-                path={path}
-                title={sourceLabel}
-                description="Where this model lives on disk."
-              />
+              <PathInfoButton path={path} />
             </div>
           </div>
           {onTrain && HUB_POST_DOWNLOAD_ACTIONS_VISIBLE && (
@@ -585,7 +590,7 @@ export function LocalOnDeviceCard({
               onClick={() => {
                 if (!canRun) return;
                 if (selectedVariantIsActive) {
-                  onUseInChat();
+                  onEject?.();
                   return;
                 }
                 if (needsVariantSelection) {
@@ -615,23 +620,23 @@ export function LocalOnDeviceCard({
                 </>
               ) : selectedVariantIsActive ? (
                 <>
-                  <HugeiconsIcon icon={PencilEdit02Icon} strokeWidth={1.75} />
-                  Chat
+                  <HugeiconsIcon icon={RemoveCircleIcon} strokeWidth={1.75} />
+                  Eject
                 </>
               ) : variantActionPending ? (
                 <>
                   <Spinner />
                   Loading…
                 </>
-              ) : !canRun ? (
-                <>
-                  <HugeiconsIcon icon={Alert02Icon} strokeWidth={1.75} />
-                  No run
-                </>
-              ) : (
+              ) : canRun ? (
                 <>
                   <HugeiconsIcon icon={PlayIcon} strokeWidth={1.75} />
                   Run
+                </>
+              ) : (
+                <>
+                  <HugeiconsIcon icon={Alert02Icon} strokeWidth={1.75} />
+                  No run
                 </>
               )}
             </button>

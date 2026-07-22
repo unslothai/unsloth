@@ -992,7 +992,7 @@ _AUDIO_TOKEN_PATTERNS = {
         and "<|text_start|>" in tokens
         and "<|text_end|>" in tokens
     ),
-    "snac": lambda tokens: sum(1 for t in tokens if t.startswith("<custom_token_")) > 10000,
+    "snac": lambda tokens: (sum(1 for t in tokens if t.startswith("<custom_token_")) > 10000),
 }
 
 
@@ -1249,6 +1249,77 @@ def _iter_gguf_files(directory: Path, recursive: bool = False):
             yield f
 
 
+_GGUF_SPLIT_FILE_RE = re.compile(
+    r"^(?P<prefix>.+)-(?P<index>\d{5})-of-(?P<total>\d{5})\.gguf$",
+    re.IGNORECASE,
+)
+
+
+def _colocated_first_split_shard(path: Path) -> tuple[Optional[Path], bool]:
+    """Return shard 1 and whether every shard is beside *path*."""
+    match = _GGUF_SPLIT_FILE_RE.match(path.name)
+    if match is None:
+        return None, False
+
+    prefix = match.group("prefix").casefold()
+    total_text = match.group("total")
+    total = int(total_text)
+    if total < 1:
+        return None, False
+
+    first: Optional[Path] = None
+    indices: set[int] = set()
+    try:
+        siblings = path.parent.iterdir()
+        for sibling in siblings:
+            sibling_match = _GGUF_SPLIT_FILE_RE.match(sibling.name)
+            if (
+                sibling_match is None
+                or sibling_match.group("prefix").casefold() != prefix
+                or sibling_match.group("total") != total_text
+            ):
+                continue
+            try:
+                if not sibling.is_file():
+                    continue
+            except OSError:
+                continue
+            index = int(sibling_match.group("index"))
+            if not 1 <= index <= total:
+                continue
+            indices.add(index)
+            if index == 1:
+                first = sibling
+    except OSError:
+        return None, False
+
+    return first, first is not None and len(indices) == total
+
+
+def _local_gguf_load_path(path: Path) -> Path:
+    """Choose a loadable local path while preserving complete symlink sets."""
+    if _GGUF_SPLIT_FILE_RE.match(path.name) is None:
+        return path.absolute()
+
+    first, complete = _colocated_first_split_shard(path)
+    if complete and first is not None:
+        return first.absolute()
+
+    try:
+        is_symlink = path.is_symlink()
+    except OSError:
+        is_symlink = False
+    if is_symlink:
+        try:
+            target = path.resolve()
+        except OSError:
+            return (first or path).absolute()
+        target_first, _ = _colocated_first_split_shard(target)
+        return (target_first or target).absolute()
+
+    return (first or path).absolute()
+
+
 def detect_mmproj_file(path: str, search_root: Optional[str] = None) -> Optional[str]:
     """Find the mmproj GGUF for a model.
 
@@ -1434,7 +1505,7 @@ def detect_gguf_model(path: str) -> Optional[str]:
         except OSError:
             is_dir = False  # stat() unavailable in the lock window
         if not is_dir:
-            return str(p.absolute())  # absolute() keeps symlink names readable
+            return str(_local_gguf_load_path(p))
         # Directory named "*.gguf": fall through to the dir scan below.
 
     # Case 2: directory containing .gguf files (skip mmproj / MTP drafter)
@@ -1452,7 +1523,7 @@ def detect_gguf_model(path: str) -> Optional[str]:
             gguf_files.append(f)
         gguf_files.sort(key = lambda f: f.stat().st_size, reverse = True)
         if gguf_files:
-            return str(gguf_files[0].resolve())
+            return str(_local_gguf_load_path(gguf_files[0]))
 
     return None
 
@@ -1643,144 +1714,32 @@ def _local_gguf_companion_search_root(selected_path: str, gguf_file: str) -> str
     return str(gguf_dir)
 
 
-def _hf_hub_cache_root() -> list[Path]:
-    """The Hub cache root -- what ``hf_hub_download`` uses with no ``cache_dir``."""
+def _iter_hf_cache_snapshots(repo_id: str):
+    """Yield HF cache snapshot dirs for *repo_id*, newest first.
+
+    Empty if HF_HUB_CACHE is missing, the repo isn't cached, or has no
+    snapshots. Repo name match is case-insensitive to handle casing drift
+    between download time and lookup.
+    """
     try:
         from huggingface_hub import constants as hf_constants
-        return [Path(hf_constants.HF_HUB_CACHE)]
     except Exception:
-        return []
+        return
 
-
-def _st_cache_roots() -> list[Path]:
-    """Cache root a SentenceTransformer load searches: SENTENCE_TRANSFORMERS_HOME if set,
-    else the Hub cache -- never the union (that would pass validation on a repo cached only
-    in the other root)."""
-    st_home = (os.environ.get("SENTENCE_TRANSFORMERS_HOME") or "").strip()
-    if st_home:
-        try:
-            return [Path(st_home).expanduser()]
-        except Exception:
-            return []
-    return _hf_hub_cache_root()
-
-
-def _iter_cache_snapshots_in(repo_id: str, roots: list[Path]):
-    """Snapshot dirs for *repo_id* under *roots*, newest first."""
+    cache_dir = Path(hf_constants.HF_HUB_CACHE)
     target = f"models--{repo_id.replace('/', '--')}".lower()
     repo_dirs: list[Path] = []
-    for cache_dir in roots:
-        try:
-            if not cache_dir.is_dir():
-                continue
-            for entry in cache_dir.iterdir():
-                if entry.is_dir() and entry.name.lower() == target:
-                    repo_dirs.append(entry)
-        except OSError:
-            continue
-    yield from _iter_snapshots_of(repo_dirs)
+    try:
+        if not cache_dir.is_dir():
+            return
+        for entry in cache_dir.iterdir():
+            if entry.is_dir() and entry.name.lower() == target:
+                repo_dirs.append(entry)
+    except OSError:
+        return
+    if not repo_dirs:
+        return
 
-
-def resolve_st_cached_repo_id_case(repo_id: str) -> str:
-    """*repo_id* recased (and org-qualified) to match the cache dir the ST loader actually
-    opens, so the offline exact-case ``local_files_only`` load finds it; unchanged for a local
-    path or nothing cached.
-
-    Resolved through :func:`_st_cache_repo_dir`, which already follows the loader's short-name
-    alias: a slashless name like ``all-minilm-l6-v2`` is rewritten to
-    ``sentence-transformers/<name>`` and looked up CASE-SENSITIVELY, so it must map to the
-    canonical ``sentence-transformers/all-MiniLM-L6-v2`` cache dir rather than being persisted
-    verbatim and missing that lookup. A slashed name recases the same way (exact-case dir
-    preferred, else a deterministic case variant)."""
-    if is_local_path(repo_id):
-        return repo_id
-    repo_dir = _st_cache_repo_dir(repo_id)
-    if repo_dir is None:
-        return repo_id
-    prefix = "models--"
-    name = repo_dir.name
-    if not name.startswith(prefix):
-        return repo_id
-    return name[len(prefix) :].replace("--", "/")
-
-
-_ORIGINAL_TRANSFORMER_MODELS_CACHE: Optional[frozenset] = None
-
-
-def _original_transformer_models() -> frozenset:
-    """The lowercased ``ORIGINAL_TRANSFORMER_MODELS`` list SentenceTransformer treats as plain HF
-    models: these slashless names load BARE, while every OTHER slashless name is rewritten to the
-    ``sentence-transformers/`` org. Imported once and memoized; an import failure yields an empty
-    set, so every slashless name then resolves to the namespaced org -- the constructor's dominant
-    behavior."""
-    global _ORIGINAL_TRANSFORMER_MODELS_CACHE
-    if _ORIGINAL_TRANSFORMER_MODELS_CACHE is None:
-        try:
-            from sentence_transformers.util import ORIGINAL_TRANSFORMER_MODELS
-            _ORIGINAL_TRANSFORMER_MODELS_CACHE = frozenset(
-                str(m).lower() for m in ORIGINAL_TRANSFORMER_MODELS
-            )
-        except Exception:
-            _ORIGINAL_TRANSFORMER_MODELS_CACHE = frozenset()
-    return _ORIGINAL_TRANSFORMER_MODELS_CACHE
-
-
-def _st_repo_id_candidates(repo_id: str) -> list[str]:
-    """Repo ids the ST loader could resolve *repo_id* to, in the order it tries them.
-
-    Mirrors the SentenceTransformer constructor: a slashless short name like ``all-MiniLM-L6-v2`` is
-    rewritten to ``sentence-transformers/<name>`` and loaded from THERE (never the bare id), UNLESS
-    it is one of the basic transformer models (``ORIGINAL_TRANSFORMER_MODELS``, e.g.
-    ``bert-base-uncased``), which load bare. The local-only security gate must inspect the SAME
-    snapshot the constructor loads, so the constructor's target is tried FIRST; the other spelling
-    stays only as a defensive fallback for an unusually laid-out cache. Probing the bare name first
-    would let a pickle in ``models--sentence-transformers--<name>`` -- the dir the constructor
-    actually loads -- slip the gate when a bare ``models--<name>`` also exists."""
-    if "/" in repo_id:
-        return [repo_id]
-    namespaced = f"sentence-transformers/{repo_id}"
-    if repo_id.lower() in _original_transformer_models():
-        return [repo_id, namespaced]  # a basic transformer model loads bare
-    return [namespaced, repo_id]  # the constructor rewrites a non-basic slashless name to the org
-
-
-def _st_cache_repo_dir(repo_id: str) -> Optional[Path]:
-    """The ONE cache repo dir the ST loader opens for *repo_id*, or None -- following the
-    same short-name alias fallback the loader uses."""
-    for candidate in _st_repo_id_candidates(repo_id):
-        found = _repo_dir_for_exact_id(candidate)
-        if found is not None:
-            return found
-    return None
-
-
-def _repo_dir_for_exact_id(repo_id: str) -> Optional[Path]:
-    """The cache dir for exactly *repo_id* (exact case, then a deterministic case variant),
-    or None. Scoping to one dir avoids judging a duplicate case variant that is not the one
-    loaded."""
-    prefix = "models--"
-    expected = f"{prefix}{repo_id.replace('/', '--')}"
-    target = expected.lower()
-    variants: list[Path] = []
-    for cache_dir in _st_cache_roots():
-        try:
-            if not cache_dir.is_dir():
-                continue
-            exact = cache_dir / expected
-            if exact.is_dir():
-                return exact
-            for entry in cache_dir.iterdir():
-                if entry.is_dir() and entry.name.lower() == target:
-                    variants.append(entry)
-        except OSError:
-            continue
-    if variants:
-        return sorted(variants, key = lambda path: path.name)[0]
-    return None
-
-
-def _iter_snapshots_of(repo_dirs: list[Path]):
-    """Snapshot dirs across *repo_dirs*, newest first."""
     snap_dirs: list[Path] = []
     for repo_dir in repo_dirs:
         snapshots = repo_dir / "snapshots"
@@ -1794,6 +1753,8 @@ def _iter_snapshots_of(repo_dirs: list[Path]):
                         continue
         except OSError:
             continue
+    if not snap_dirs:
+        return
     snap_dirs_with_mtime = []
     for snap_dir in snap_dirs:
         try:
@@ -1802,13 +1763,6 @@ def _iter_snapshots_of(repo_dirs: list[Path]):
             continue
     snap_dirs_with_mtime.sort(key = lambda item: item[0], reverse = True)
     yield from (snap_dir for _, snap_dir in snap_dirs_with_mtime)
-
-
-def _iter_hf_cache_snapshots(repo_id: str):
-    """Hub cache snapshot dirs for *repo_id*, newest first. Hub cache ONLY -- its GGUF
-    callers download via ``hf_hub_download`` (the ST probe is :func:`_st_cache_repo_dir`);
-    case-insensitive match for casing drift between download and lookup."""
-    yield from _iter_cache_snapshots_in(repo_id, _hf_hub_cache_root())
 
 
 def _list_gguf_variants_from_hf_cache(repo_id: str) -> Optional[tuple[list[GgufVariantInfo], bool]]:
@@ -1996,7 +1950,7 @@ def _find_local_gguf_by_variant(directory: str, variant: str) -> Optional[str]:
     For sharded GGUFs (multiple files sharing a quant label), returns the
     first shard (sorted by name), which is what ``llama-server -m`` expects.
 
-    Returns the resolved absolute path, or ``None`` if no match.
+    Returns the absolute path, or ``None`` if no match.
     """
     p = _resolve_gguf_dir(Path(directory))
     if p is None:
@@ -2017,7 +1971,7 @@ def _find_local_gguf_by_variant(directory: str, variant: str) -> Optional[str]:
         matches.append(f)
     matches.sort()
     if matches:
-        return str(matches[0].resolve())
+        return str(_local_gguf_load_path(matches[0]))
     return None
 
 
@@ -2120,728 +2074,27 @@ def download_gguf_file(
 
 # Cache embedding detection per session to avoid repeated HF API calls
 _embedding_detection_cache: Dict[tuple, bool] = {}
-# refs/main commit a positive verdict was confirmed AT (None when the repo was not
-# cached then). A verdict says the Hub tagged THAT revision an embedder, so it must
-# not be trusted once the active revision moves on.
-_embedding_verdict_commit: Dict[tuple, Optional[str]] = {}
 
 
-def _persisted_embedders_path() -> Path:
-    """On-disk store (under Studio home) of repo ids confirmed embedders online, so it
-    survives a restart -- without it a tag-only embedder (no ``modules.json`` in cache) is
-    misclassified the first offline call after the session memo is lost."""
-    return _studio_root() / "embedding_verdicts.json"
-
-
-# Serializes the read-modify-write in _persist_embedder. Cross-process writes are
-# best-effort: os.replace is atomic and a dropped verdict is only a missed optimization a
-# later online re-confirmation heals.
-_persist_lock = threading.Lock()
-
-
-def _verdict_key(model_name: str) -> str:
-    """Case-folded allowlist key: model_info() runs under the requested casing but the
-    settings route saves the cache-resolved casing, so fold both sides (repo ids are
-    case-insensitive)."""
-    return model_name.casefold()
-
-
-def _load_persisted_embedders() -> dict:
-    """Case-folded repo id -> the refs/main commit the verdict was confirmed at (None when
-    unknown). Empty on any error (missing / empty / corrupt read as "nothing recorded").
-    A legacy list file is read as ids with an unknown revision. Never raises."""
-    try:
-        with open(_persisted_embedders_path(), encoding = "utf-8") as fh:
-            data = json.load(fh)
-        if isinstance(data, dict):
-            return {
-                _verdict_key(name): (commit if isinstance(commit, str) and commit else None)
-                for name, commit in data.items()
-                if isinstance(name, str)
-            }
-        if isinstance(data, list):  # pre-revision-pinning format
-            return {_verdict_key(name): None for name in data if isinstance(name, str)}
-    except Exception:
-        pass
-    return {}
-
-
-def _persist_embedder(model_name: str, commit: Optional[str]) -> None:
-    """Record *model_name* as an online-confirmed embedder AT *commit*, best-effort.
-    Positive Hub verdicts only, case-folded, serialized under ``_persist_lock`` via a
-    per-thread temp file. Any failure is swallowed -- persistence is an optimization, not a
-    correctness requirement."""
-    try:
-        key = _verdict_key(model_name)
-        with _persist_lock:
-            current = _load_persisted_embedders()
-            if current.get(key) == commit and key in current:
-                return
-            current[key] = commit
-            path = _persisted_embedders_path()
-            path.parent.mkdir(parents = True, exist_ok = True)
-            tmp = path.with_name(path.name + f".{os.getpid()}.{threading.get_ident()}.tmp")
-            with open(tmp, "w", encoding = "utf-8") as fh:
-                json.dump(current, fh, sort_keys = True)
-            os.replace(tmp, path)
-    except Exception as e:
-        logger.debug(f"Could not persist embedder verdict for {model_name}: {e}")
-
-
-def _known_embedder(model_name: str, cache_key: tuple, active_commit: Optional[str]) -> bool:
-    """True when *model_name* was confirmed an embedder online FOR THE ACTIVE REVISION.
-
-    A verdict records that the Hub tagged one particular revision an embedder. If
-    ``refs/main`` has since advanced -- say to a complete but non-embedding Transformer
-    snapshot -- the recorded positive says nothing about the revision that would now load,
-    so it is not trusted and the caller falls through to re-verification.
-
-    A verdict with no recorded revision (a legacy entry from before pinning) proves nothing
-    about what would load now, so it is NOT trusted -- the next online check re-records it
-    against info.sha. Callers still gate on a materialized snapshot.
-    """
-    known, recorded = False, None
-    if _embedding_detection_cache.get(cache_key) is True:
-        known, recorded = True, _embedding_verdict_commit.get(cache_key)
-    else:
-        persisted = _load_persisted_embedders()
-        key = _verdict_key(model_name)
-        if key in persisted:
-            known, recorded = True, persisted[key]
-    if not known or recorded is None or active_commit is None:
-        return False
-    return recorded == active_commit
-
-
-# Base-model weight files the default Torch SentenceTransformer backend consumes:
-# model/pytorch_model .safetensors/.bin, plain or sharded. Matched by NAME not suffix so a
-# training_args.bin / adapter-only artifact can't pass offline validation then fail on load.
-_ST_WEIGHT_FILE_RE = re.compile(r"^(model|pytorch_model)(-\d+-of-\d+)?\.(safetensors|bin)$")
-_ST_SHARD_RE = re.compile(r"^(model|pytorch_model)-(\d+)-of-(\d+)\.(safetensors|bin)$")
-# Only these (stem, ext) shard sets exist in transformers / sentence-transformers: safetensors shards
-# are named ``model-*.safetensors`` (index ``model.safetensors.index.json``), pickle shards
-# ``pytorch_model-*.bin`` (index ``pytorch_model.bin.index.json``). The crossed combinations
-# (``model-*.bin`` / ``pytorch_model-*.safetensors`` and their index maps) are decoys no loader ever
-# probes, so a cache carrying only one of them is NOT loadable.
-_ST_SHARD_EXT_FOR_STEM = {"model": "safetensors", "pytorch_model": "bin"}
-
-# A Transformer module also loads an AutoTokenizer, so weights without any tokenizer asset
-# fail the local_files_only load. Any ONE of these suffices -- a permissive union, so only
-# a genuinely tokenizer-less partial download is rejected.
-# Real tokenizer ARTIFACTS -- a serialized tokenizer or its vocabulary. Note that
-# A tokenizer counts only as a COMPLETE artifact set. Deliberately absent:
-# tokenizer_config.json (only DESCRIBES a tokenizer, supplies no vocabulary) and half a
-# BPE pair. Either would validate here and then fail at first indexing.
-_ST_TOKENIZER_SOLO_FILES = frozenset(
-    {
-        "tokenizer.json",  # serialized fast tokenizer: self-contained
-        "tokenizer.model",  # sentencepiece
-        "spiece.model",
-        "sentencepiece.bpe.model",
-        "vocab.txt",  # wordpiece (BERT-style)
-    }
-)
-# BPE needs BOTH halves: vocab.json or merges.txt alone still fails
-# AutoTokenizer.from_pretrained(local_files_only=True) unless tokenizer.json is there.
-_ST_TOKENIZER_BPE_PAIR = ("vocab.json", "merges.txt")
-
-
-def _names_have_tokenizer(names: set) -> bool:
-    """True when *names* (one directory's files) supply a usable tokenizer."""
-    if names & _ST_TOKENIZER_SOLO_FILES:
-        return True
-    return all(part in names for part in _ST_TOKENIZER_BPE_PAIR)
-
-
-def _dir_has_complete_torch_weights(names: set) -> bool:
-    """True when *names* form a COMPLETE Torch weight set: a single unsharded weight the loader
-    actually probes (``model.safetensors`` or ``pytorch_model.bin`` -- NOT ``model.bin`` or
-    ``pytorch_model.safetensors``, which from_pretrained / Module.load_torch_weights never read), or
-    a full shard set (every index ``1..total`` plus its ``.index.json`` map). A lone shard, a missing
-    index map or a decoy-named base weight is incomplete -- it would validate then fail under
-    local_files_only."""
-    if "model.safetensors" in names or "pytorch_model.bin" in names:
-        return True
-    shards: dict = {}
-    for name in names:
-        m = _ST_SHARD_RE.match(name)
-        # Only a valid stem<->ext shard set counts; a decoy such as model-*.bin is never probed.
-        if m and _ST_SHARD_EXT_FOR_STEM.get(m.group(1)) == m.group(4):
-            shards.setdefault((m.group(1), m.group(4), int(m.group(3))), set()).add(int(m.group(2)))
-    for (stem, ext, total), indices in shards.items():
-        index_map = f"{stem}.{ext}.index.json"
-        if total > 0 and indices == set(range(1, total + 1)) and index_map in names:
-            return True
-    return False
-
-
-def _index_weight_set_complete(index_path: Path) -> Optional[bool]:
-    """Parse a weight-index and confirm every shard its ``weight_map`` references is present,
-    resolved RELATIVE TO the index's own directory (a ``weight_map`` value may name a
-    subdirectory, e.g. ``weights/model-00001-of-00002.safetensors``). Mirrors
-    ``utils/security/file_security._safetensors_index_complete`` on the classification side (#7218
-    P5) so a snapshot with a sharded index but a MISSING shard is rejected instead of validated
-    then 409'd at the local_files_only load.
-
-    Returns True when every mapped shard is present, False when the index parses but its shard set
-    is empty or incomplete, and None when the index is unreadable / not valid JSON / has no
-    ``weight_map`` (a stub or partial write) so the caller can fall back to the filename-numbering
-    heuristic. Never raises."""
-    try:
-        data = json.loads(index_path.read_text(encoding = "utf-8"))
-    except (OSError, ValueError):
-        return None
-    weight_map = data.get("weight_map") if isinstance(data, dict) else None
-    if not isinstance(weight_map, dict):
-        return None
-    shards = set()
-    for shard in weight_map.values():
-        rel = str(shard).strip().replace("\\", "/")
-        while rel.startswith("./"):
-            rel = rel[2:]
-        rel = rel.lstrip("/")
-        if rel:
-            shards.add(rel)
-    if not shards:
-        return None
-    base = index_path.parent
-    for shard_rel in shards:
-        try:
-            if not base.joinpath(*shard_rel.split("/")).is_file():
-                return False
-        except OSError:
-            return False
-    return True
-
-
-def _dir_weight_set_is_complete(dir_path: Path, names: set) -> bool:
-    """True when *dir_path* (whose direct file basenames are *names*) holds a COMPLETE Torch weight
-    set the way a load reads it: a single unsharded ``model.safetensors`` / ``pytorch_model.bin``;
-    or, when a weight-index is present AND parseable, every shard its ``weight_map`` references
-    (authoritative, resolved relative to *dir_path*, subdirectory values included); else the
-    filename-numbering shard heuristic (:func:`_dir_has_complete_torch_weights`) as a fallback for
-    an unreadable / stub index. Never raises."""
-    # Mirror the from_pretrained / sentence-transformers probe ORDER exactly: the FIRST present weight
-    # source wins, and a present safetensors weight/index makes the loader IGNORE a sibling pickle.
-    #   1. unsharded model.safetensors
-    #   2. sharded model.safetensors.index.json  (present index is authoritative -> must fully resolve)
-    #   3. unsharded pytorch_model.bin
-    #   4. sharded pytorch_model.bin.index.json   (present index is authoritative -> must fully resolve)
-    # from_pretrained / Module.load_torch_weights never read ``model.bin`` or
-    # ``pytorch_model.safetensors`` (nor their decoy index maps), so those do not count. A pickle
-    # sibling behind a malformed/incomplete safetensors index does NOT rescue the load -- the loader
-    # follows the bad index and fails rather than falling back to the bin.
-    if "model.safetensors" in names:
-        return True
-    if "model.safetensors.index.json" in names:
-        return _index_weight_set_complete(dir_path / "model.safetensors.index.json") is True
-    if "pytorch_model.bin" in names:
-        return True
-    if "pytorch_model.bin.index.json" in names:
-        return _index_weight_set_complete(dir_path / "pytorch_model.bin.index.json") is True
-    # No loader-probed base weight or index by exact name: the filename-numbering shard heuristic.
-    return _dir_has_complete_torch_weights(names)
-
-
-_ST_CONFIG_FILES = ("config.json", "config_sentence_transformers.json")
-
-
-def _dir_is_transformer_load_root(dir_path: Path, names: set) -> bool:
-    """True when one directory's files (*names*, taken from *dir_path*) form a COMPLETE Transformer
-    / plain-HF load root: an ST/HF config, a usable tokenizer and a complete Torch weight set, all
-    co-located. This is the shape ``modules.json`` sends a Transformer module (or a bare
-    from_pretrained) at -- the per-directory unit the snapshot checks share. *dir_path* is threaded
-    through so a sharded weight-index is validated against its ``weight_map`` (#7218 P5)."""
-    if not any(cfg in names for cfg in _ST_CONFIG_FILES):
-        return False
-    if not _names_have_tokenizer(names):
-        return False
-    return _dir_weight_set_is_complete(dir_path, names)
-
-
-def _declared_load_root_dirs(snap: Path) -> set:
-    """The directories a load actually opens as a Transformer/plain-HF load root for *snap*:
-    the snapshot ROOT plus every module ``path`` declared in ``modules.json``.
-
-    ``modules.json`` is authoritative about WHERE a SentenceTransformer load reads from -- it
-    calls ``module_class.load(path)`` for each declared module, NOT for an arbitrary complete
-    directory that happens to sit in the snapshot. So the Transformer-shaped completeness check
-    must only judge these roots: a complete directory at an UNDECLARED path is never opened by
-    the loader and must not vouch for a snapshot whose declared modules are incomplete.
-
-    When ``modules.json`` is absent / unreadable / not a list (a plain ``from_pretrained``
-    model, or the tag-only embedder shape whose weights live at the root), the load reads the
-    snapshot root, so return just ``{snap}``. Mirrors the path resolution in
-    :func:`_snapshot_modules_all_loadable` (empty / ``.`` -> the root; a ``..`` component is
-    rejected as it would resolve outside the snapshot). Never raises."""
-    roots = {snap}
-    try:
-        modules = json.loads((snap / "modules.json").read_text(encoding = "utf-8"))
-    except (OSError, ValueError):
-        return roots
-    if not isinstance(modules, list):
-        return roots
-    for module in modules:
-        if not isinstance(module, dict):
-            continue
-        raw_path = str(module.get("path") or "").strip()
-        if raw_path in ("", "."):
-            continue  # the root, already included
-        rel = raw_path.strip("/")
-        if not rel or ".." in Path(rel).parts:
-            continue  # never resolve a module path outside the snapshot
-        roots.add(snap / rel)
-    return roots
-
-
-def _snapshot_has_complete_weights(snap: Path) -> bool:
-    """True when some DECLARED LOAD ROOT inside *snap* is complete: a config, a tokenizer and a
-    COMPLETE Torch weight set, all in the SAME directory.
-
-    Co-location is the point. ``modules.json`` can send SentenceTransformer at a module
-    subdirectory (``0_Transformer/``), loaded from that directory -- so a snapshot with the
-    config at the root, a tokenizer elsewhere and ``0_Transformer/model.safetensors`` but no
-    ``0_Transformer/config.json`` would pass a scattered any-of check and then fail the
-    local-only load. Per-directory covers both layouts: a plain HF model has all three at
-    the root, an ST model inside its Transformer module dir.
-
-    The candidate directories are restricted to the roots a load actually opens
-    (:func:`_declared_load_root_dirs`): the snapshot root plus each ``modules.json`` module
-    ``path``. A complete Transformer sitting at some UNDECLARED path (e.g. a stray copy the
-    loader never reads) must NOT validate a snapshot whose declared modules are incomplete.
-    For a well-formed snapshot -- a normal download / ``save_pretrained`` places its complete
-    files only at the root or a declared module path -- this yields the identical verdict."""
-    try:
-        candidate_dirs = _declared_load_root_dirs(snap)
-        by_dir: dict = {}
-        for path in snap.rglob("*"):
-            try:
-                if path.is_file() and path.parent in candidate_dirs:
-                    by_dir.setdefault(path.parent, set()).add(path.name)
-            except OSError:
-                continue
-        for dir_path, names in by_dir.items():
-            if _dir_is_transformer_load_root(dir_path, names):
-                return True
-        return False
-    except OSError:
-        return False
-
-
-# Sentence-transformers modules whose ST ``load()`` reads no embedding payload of their own --
-# a ``modules.json`` listing ONLY these has no source of embeddings, so it is not a loadable
-# model on its own and must not validate the non-Transformer acceptance path below.
-_ST_STRUCTURAL_MODULE_NAMES = frozenset({"pooling", "normalize"})
-
-
-def _dir_file_names(dir_path: Path) -> set:
-    """The file basenames directly in *dir_path* (not recursive), or an empty set when the
-    directory is absent / unreadable / not a directory. Never raises."""
-    try:
-        return {entry.name for entry in dir_path.iterdir() if entry.is_file()}
-    except OSError:
-        return set()
-
-
-# Non-Transformer sentence-transformers modules whose ``load()`` HARD-loads a serialized Torch
-# weight set: each ends in ``Module.load_torch_weights`` (sentence_transformers/base/modules/
-# module.py), which loads ``model.safetensors`` else ``pytorch_model.bin`` and RAISES
-# ``ValueError`` ("Could not find 'model.safetensors' or 'pytorch_model.bin' ...") when NEITHER
-# exists. So each needs its module config AND a complete Torch weight set -- a config alone would
-# pass offline validation here and then 409 at the local-only load (#7218 P2). Enumerated from the
-# sentence-transformers v5 source; each cite is the ``file:line`` of the ``load_torch_weights``
-# call in that class's ``load()``:
-#   * WordEmbeddings        sentence_transformer/modules/word_embeddings.py:141  (+ tokenizer, below)
-#   * Dense                 base/modules/dense.py:124
-#   * CNN                   sentence_transformer/modules/cnn.py:90               (cnn_config.json)
-#   * LSTM                  sentence_transformer/modules/lstm.py:96              (lstm_config.json)
-#   * LayerNorm             sentence_transformer/modules/layer_norm.py:52
-#   * WeightedLayerPooling  sentence_transformer/modules/weighted_layer_pooling.py:74
-#   * SparseAutoEncoder     sparse_encoder/modules/sparse_auto_encoder.py:226
-# All ship a ``config.json`` / ``*_config.json`` (LayerNorm / WeightedLayerPooling /
-# SparseAutoEncoder inherit the default ``config_file_name = "config.json"``), so they satisfy the
-# module-config gate in their branch. Deliberately EXCLUDED (their ``load()`` reads no weight file):
-# ``Pooling`` / ``SpladePooling`` / ``Normalize`` / ``Dropout`` read nothing; ``BoW`` /
-# ``WordWeights`` keep their data in ``config.json`` and reconstruct it on the config-only base
-# ``Module.load()`` (their ``save()`` writes weights, but ``load()`` never reads them).
-# ``StaticEmbedding`` (no config: tokenizer + weights) is handled by its own branch above, and
-# ``SparseStaticEmbedding`` is only CONDITIONALLY weighted (its ``load()`` skips the weight file
-# when ``config.json`` names an ``idf.json`` ``path``), so neither is listed here.
-_ST_WEIGHTED_MODULE_NAMES = frozenset(
-    {
-        "wordembeddings",
-        "dense",
-        "cnn",
-        "lstm",
-        "layernorm",
-        "weightedlayerpooling",
-        "sparseautoencoder",
-    }
-)
-
-# ``StaticEmbedding.load()`` (sentence_transformers/models/StaticEmbedding.py) reads a
-# ``tokenizer.json`` via ``Tokenizer.from_file`` and then ``model.safetensors`` else
-# ``pytorch_model.bin`` -- ``save()`` emits ONLY those two files and NO config. So a
-# ``StaticEmbedding`` module placed in its own subdir (e.g.
-# ``sentence-transformers/static-retrieval-mrl-en-v1`` -> ``0_StaticEmbedding/`` holding just
-# ``tokenizer.json`` + ``model.safetensors``) is a WEIGHTED content module recognized by that
-# tokenizer plus a complete Torch weight set, NOT by a module config. (A model2vec-style
-# StaticEmbedding at the root path ``.`` ships a ``config.json`` and already validates via the
-# root / Transformer load-root path.)
-_ST_STATIC_EMBEDDING_TOKENIZER_FILE = "tokenizer.json"
-
-# ``WordEmbeddings.load()`` rebuilds its tokenizer by calling the configured
-# ``tokenizer_class.load(dir)`` from the SAME module dir: ``WhitespaceTokenizer`` /
-# ``PhraseTokenizer`` read a ``<class>_config.json`` (see sentence_transformers/models/
-# tokenizer/*.py); a transformers-backed wrapper (newer sentence-transformers) reads the shared
-# HF tokenizer assets instead. So a WordEmbeddings dir needs a tokenizer artifact ON TOP of its
-# ``wordembedding_config.json`` + weights, else it validates on the config+weights path and then
-# fails at ``tokenizer_class.load()``. ``Dense`` / ``CNN`` / ``LSTM`` read no tokenizer.
-_ST_WORD_TOKENIZER_CONFIG_FILES = frozenset(
-    {"whitespacetokenizer_config.json", "phrasetokenizer_config.json"}
-)
-
-
-def _names_have_word_embeddings_tokenizer(names: set) -> bool:
-    """True when *names* supply the tokenizer ``WordEmbeddings.load()`` rebuilds from the module
-    dir: a ``WhitespaceTokenizer`` / ``PhraseTokenizer`` ``*_config.json`` (its own ``load()``
-    reads it), or a shared HF tokenizer asset for a transformers-backed wrapper."""
-    return bool(names & _ST_WORD_TOKENIZER_CONFIG_FILES) or _names_have_tokenizer(names)
-
-
-# ``Router.load()`` (a.k.a. the legacy ``Asym``) reads ``router_config.json`` and loads each child
-# sub-module from its OWN subdir named there; it carries no Transformer weights of its own, so a
-# root Router without root config/tokenizer/weights is still loadable when its children are. The
-# children are declared only in this config (never the top-level modules.json).
-_ST_ROUTER_MODULE_NAMES = frozenset({"router", "asym"})
-_ST_ROUTER_CONFIG_FILE = "router_config.json"
-
-# Transformer-SHAPED module classes: sentence-transformers loads each as a full HF model with a
-# tokenizer/processor, so a directory needs config + tokenizer/processor + weights (a Transformer
-# load root), not a config alone. ``CLIPModel(Transformer)`` (sentence_transformer/modules/
-# clip_model.py:11) -- its ``load()`` calls ``Transformer._load_init_kwargs`` then
-# ``Transformer.__init__``, which reads ``AutoConfig`` + ``AutoModel.from_pretrained`` (weights) +
-# ``AutoProcessor.from_pretrained`` (processor/tokenizer) (base/modules/transformer.py:654-674), so
-# a config-only CLIP dir validates offline then 409s at the local-only load (#7218 P3). Classes
-# whose name already contains ``transformer`` (``Transformer`` / ``MLMTransformer``) route through
-# the same check without being listed here.
-_ST_TRANSFORMER_SHAPED_MODULE_NAMES = frozenset({"clipmodel"})
-
-# ``CLIPModel.load()`` builds its processor via ``AutoProcessor.from_pretrained``, which for CLIP is
-# a ``CLIPProcessor`` = image processor + tokenizer. The image processor reads its own config
-# (``preprocessor_config.json``); a tokenizer alone does not satisfy it, so a CLIP dir with config +
-# weights + only tokenizer files validates offline and then fails the local_files_only load (#7218
-# P3). Required IN ADDITION to the Transformer load-root shape (config + tokenizer + weights).
-_ST_CLIP_PROCESSOR_FILE = "preprocessor_config.json"
-
-# ``SparseStaticEmbedding.load()`` (sparse_encoder/modules/sparse_static_embedding.py:157-226) reads
-# a tokenizer (``AutoTokenizer.from_pretrained``, line 193) and then EITHER, when ``config.json``
-# names a ``.json`` ``path``, an IDF json via ``from_json`` -> ``load_file_path(..., "idf.json")``
-# (line 131-141, NO weight file) OR a complete Torch weight set via ``load_torch_weights``
-# (line 217, RAISES without ``model.safetensors`` / ``pytorch_model.bin``). So it is CONDITIONALLY
-# weight-bearing -- adding it to ``_ST_WEIGHTED_MODULE_NAMES`` would wrongly require weights for the
-# idf.json variant -- and gets its own branch requiring tokenizer + (idf data OR weights) (#7218 P3).
-_ST_SPARSE_IDF_DATA_FILE = "idf.json"
-
-# Sentence-transformers module classes whose ``load()`` reads ONLY a config file (no weights, no
-# tokenizer): a present module config is their sole load requirement. From the v5 source:
-# ``Pooling`` / ``SpladePooling`` / ``Dropout`` read config only; ``BoW`` / ``WordWeights`` keep
-# their vocab/weights INSIDE ``config.json`` and reconstruct it on the config-only base
-# ``Module.load()`` (their ``save()`` writes a weight file, but ``load()`` never reads it).
-_ST_CONFIG_ONLY_MODULE_NAMES = frozenset(
-    {"pooling", "spladepooling", "dropout", "bow", "wordweights"}
-)
-
-
-def _dir_has_module_config(names: set) -> bool:
-    """True when *names* hold a module config (``config.json`` or any ``*_config.json``)."""
-    return any(name == "config.json" or name.endswith("_config.json") for name in names)
-
-
-def _sparse_config_selects_idf_json(dir_path: Path) -> bool:
-    """True when a ``SparseStaticEmbedding`` dir's ``config.json`` selects the idf-json variant: its
-    ``path`` value is a string ending ``.json``. ``SparseStaticEmbedding.load()`` uses ``idf.json``
-    ONLY through that field (``path = config.pop("path"); if path is not None and
-    path.endswith(".json"): from_json(...)``, sparse_static_embedding.py:202-205); otherwise it falls
-    through to ``load_torch_weights`` and RAISES without a Torch weight set. So a tokenizer + bare
-    ``idf.json`` with a config that does NOT declare the JSON path is not loadable. Never raises."""
-    try:
-        config = json.loads((dir_path / "config.json").read_text(encoding = "utf-8"))
-    except (OSError, ValueError):
-        return False
-    path = config.get("path") if isinstance(config, dict) else None
-    return isinstance(path, str) and path.endswith(".json")
-
-
-def _module_dir_is_loadable(cls: str, is_root: bool, dir_path: Path) -> bool:
-    """True when *dir_path* carries the files the sentence-transformers module class *cls*
-    reads in its own ``load()`` (see sentence_transformers/{base,sentence_transformer,sparse_encoder}
-    /modules/*.py). Dispatch is on *cls* FIRST, BEFORE any root-Transformer fallback: a module with
-    ``save_in_root = True`` (every ``InputModule`` -- ``WordEmbeddings`` / ``StaticEmbedding`` /
-    ``SparseStaticEmbedding`` / ``Transformer`` / ``Router`` ...) is saved at the snapshot ROOT
-    (path ``""``; base/model.py:661-666), so a declared non-Transformer root module must be judged by
-    ITS OWN ``load()``, not held to Transformer root requirements it never writes (#7218 P1):
-
-    * a ``Transformer`` / ``MLMTransformer`` / ``CLIPModel`` module is a full HF load root
-      (config + tokenizer/processor + weights), at the root or in a subdir;
-    * a ``Router`` / ``Asym`` reads ``router_config.json`` and loads its declared children, so it
-      is loadable when those children are -- even at the root, where it has no weights of its own;
-    * ``Normalize`` reads nothing;
-    * ``StaticEmbedding`` reads a ``tokenizer.json`` + a complete Torch weight set and NO config;
-    * ``SparseStaticEmbedding`` reads a tokenizer + EITHER an ``idf.json`` OR a complete Torch weight
-      set (conditionally weight-bearing);
-    * a WEIGHTED module (``WordEmbeddings`` / ``Dense`` / ``CNN`` / ``LSTM`` / ``LayerNorm`` /
-      ``WeightedLayerPooling`` / ``SparseAutoEncoder``) needs its module config AND a complete Torch
-      weight set (its ``load()`` hard-loads ``model.safetensors`` / ``pytorch_model.bin``);
-      ``WordEmbeddings`` additionally rebuilds a tokenizer from the dir, so it also needs a tokenizer;
-    * a recognized config-only module (``BoW`` / ``Pooling`` / ``Dropout`` / ``WordWeights`` /
-      ``SpladePooling``) reads only a config, so a present module config is the load requirement;
-    * an UNRECOGNIZED / absent class falls back to the plain-``from_pretrained`` load root at the
-      snapshot root (config + tokenizer + weights), else the lenient config-only requirement in a
-      declared subdir (preserves prior behaviour for module classes not enumerated here)."""
-    names = _dir_file_names(dir_path)
-    # Transformer-shaped: a full HF load root (config + tokenizer/processor + weights), root or subdir.
-    if "transformer" in cls or cls in _ST_TRANSFORMER_SHAPED_MODULE_NAMES:
-        if not _dir_is_transformer_load_root(dir_path, names):
-            return False
-        # A CLIP-shaped module additionally needs the image-processor config for AutoProcessor;
-        # a tokenizer alone (checked above) is not enough.
-        if cls in _ST_TRANSFORMER_SHAPED_MODULE_NAMES:
-            return _ST_CLIP_PROCESSOR_FILE in names
-        return True
-    # Router / Asym: loadable when its router_config.json children are (no weights of its own).
-    if cls in _ST_ROUTER_MODULE_NAMES:
-        return _router_dir_is_loadable(dir_path)
-    # Normalize reads nothing.
-    if cls == "normalize":
-        return True
-    # StaticEmbedding: a tokenizer.json + a complete Torch weight set, and NO config file.
-    if cls == "staticembedding":
-        return _ST_STATIC_EMBEDDING_TOKENIZER_FILE in names and _dir_weight_set_is_complete(
-            dir_path, names
-        )
-    # SparseStaticEmbedding: a tokenizer + EITHER a complete Torch weight set, OR an idf.json THAT
-    # config.json actually selects (a "path" ending .json) -- a bare idf.json the config does not
-    # name falls through to load_torch_weights and raises.
-    if cls == "sparsestaticembedding":
-        if not _names_have_tokenizer(names):
-            return False
-        if _dir_weight_set_is_complete(dir_path, names):
-            return True
-        return _ST_SPARSE_IDF_DATA_FILE in names and _sparse_config_selects_idf_json(dir_path)
-    # A weighted non-Transformer module: its module config AND a complete Torch weight set.
-    if cls in _ST_WEIGHTED_MODULE_NAMES:
-        if not _dir_has_module_config(names) or not _dir_weight_set_is_complete(dir_path, names):
-            return False
-        if cls == "wordembeddings":
-            return _names_have_word_embeddings_tokenizer(names)
-        return True
-    # A recognized config-only module: a present module config is the load requirement.
-    if cls in _ST_CONFIG_ONLY_MODULE_NAMES:
-        return _dir_has_module_config(names)
-    # Unrecognized / absent class: the plain from_pretrained load root at the snapshot root, else the
-    # lenient config-only requirement in a declared subdir.
-    if is_root:
-        return _dir_is_transformer_load_root(dir_path, names)
-    return _dir_has_module_config(names)
-
-
-def _router_dir_is_loadable(dir_path: Path) -> bool:
-    """True when *dir_path* holds a loadable sentence-transformers ``Router`` (legacy ``Asym``):
-    a readable ``router_config.json`` whose ``types`` maps each child ``{route}_{idx}_{ClassName}``
-    to a module class, with every child subdir carrying the files that child's own ``load()`` reads
-    (validated through :func:`_module_dir_is_loadable`, so nested routers and every child type are
-    covered) and at least one embedding-producing child. ``Router.load()`` reads this config and
-    loads each child from its subdir, so a Router directory needs no Transformer weights of its own.
-    A child reference is a subdir name, so a normalized child path always resolves DEEPER; a
-    self-referential entry (a ``types`` key of ``"."`` -> the same dir) is rejected so a malformed
-    ``router_config.json`` cannot recurse forever -- this function never raises."""
-    try:
-        config = json.loads((dir_path / _ST_ROUTER_CONFIG_FILE).read_text(encoding = "utf-8"))
-    except (OSError, ValueError):
-        return False
-    if not isinstance(config, dict):
-        return False
-    types = config.get("types")
-    if not isinstance(types, dict) or not types:
-        return False
-    saw_content_module = False
-    for model_id, module_type in types.items():
-        child_cls = str(module_type or "").rsplit(".", 1)[-1].strip().lower()
-        rel = str(model_id or "").strip().strip("/")
-        if not child_cls or not rel or ".." in Path(rel).parts:
-            return False  # malformed / traversing child reference
-        child_dir = dir_path / rel
-        if child_dir == dir_path:
-            return False  # self-referential child (e.g. "."): would recurse until RecursionError
-        if not _module_dir_is_loadable(child_cls, False, child_dir):
-            return False
-        if child_cls not in _ST_STRUCTURAL_MODULE_NAMES:
-            saw_content_module = True
-    return saw_content_module
-
-
-def _snapshot_modules_all_loadable(snap: Path) -> bool:
-    """True when *snap* is a COMPLETE non-Transformer sentence-transformers model that the
-    Transformer-shaped :func:`_snapshot_has_complete_weights` misses -- e.g. one built from a
-    ``0_WordEmbeddings`` module (``wordembedding_config.json`` + embedding weights, no HF
-    ``config.json`` / tokenizer) or ``BoW`` (vocab in ``config.json``). The offline
-    ``local_files_only`` load builds these from ``modules.json`` by calling
-    ``module_class.load(path)`` per declared module.
-
-    When ``modules.json`` declares a non-empty list this is the AUTHORITATIVE snapshot check:
-    :func:`_snapshot_is_loadable_st_model` calls it INSTEAD of the Transformer-shaped
-    :func:`_snapshot_has_complete_weights`, because the load builds EVERY declared module and one
-    complete ``0_Transformer`` must NOT vouch for a sibling module (e.g. ``LayerNorm`` /
-    ``WeightedLayerPooling`` / ``Dense``) whose serialized weights are missing (#7218 P2). It
-    validates only when ``modules.json`` parses as a non-empty list AND every declared module's
-    ``path`` directory carries the files that module's own ``load()`` reads -- so a bare / pruned
-    cache (empty ``modules.json``, a missing module directory, a weight-bearing module with its
-    weights stripped) does not validate. It also requires at least one embedding-producing module,
-    so a degenerate Pooling/Normalize-only list is rejected. Behaviour-preserving for a WELL-FORMED
-    complete snapshot (every declared module has its files, so acceptance is unchanged). Never
-    raises."""
-    try:
-        modules = json.loads((snap / "modules.json").read_text(encoding = "utf-8"))
-    except (OSError, ValueError):
-        return False
-    if not isinstance(modules, list) or not modules:
-        return False
-    saw_content_module = False
-    for module in modules:
-        if not isinstance(module, dict):
-            return False
-        cls = str(module.get("type") or "").rsplit(".", 1)[-1].strip().lower()
-        if not cls:
-            return False
-        raw_path = str(module.get("path") or "").strip()
-        is_root = raw_path in ("", ".")
-        if is_root:
-            dir_path = snap
-        else:
-            rel = raw_path.strip("/")
-            if not rel or ".." in Path(rel).parts:
-                return False  # never resolve a module path outside the snapshot
-            dir_path = snap / rel
-        if not _module_dir_is_loadable(cls, is_root, dir_path):
-            return False
-        if is_root or cls not in _ST_STRUCTURAL_MODULE_NAMES:
-            saw_content_module = True
-    return saw_content_module
-
-
-def _modules_json_declares_modules(snap: Path) -> bool:
-    """True when *snap*'s ``modules.json`` parses as a NON-EMPTY list of module entries.
-
-    ``modules.json`` is authoritative about what a SentenceTransformer load builds: when it
-    declares one or more modules the loader calls ``module_class.load(path)`` for EVERY one, so
-    the whole declared set must be loadable. An empty list / a non-list / an unreadable file
-    declares nothing usable, and (because ``modules.json`` is PRESENT) the load does NOT fall back
-    to a root Transformer -- an empty list builds zero modules and a malformed file raises -- so the
-    caller reads such a snapshot as not loadable. Never raises."""
-    try:
-        modules = json.loads((snap / "modules.json").read_text(encoding = "utf-8"))
-    except (OSError, ValueError):
-        return False
-    return isinstance(modules, list) and len(modules) > 0
-
-
-def _snapshot_is_loadable_st_model(snap: Path) -> bool:
-    """True when *snap* holds a loadable sentence-transformers model. ``modules.json`` alone
-    is insufficient -- the security preflight downloads exactly that file, so require the marker
-    plus a complete load.
-
-    ``modules.json`` is authoritative about what the loader builds. When it declares a non-empty
-    list of modules, a SentenceTransformer load builds EVERY one, so the whole declared set must
-    be loadable (:func:`_snapshot_modules_all_loadable`): a complete ``0_Transformer`` must NOT
-    vouch for a sibling module (e.g. ``LayerNorm`` / ``WeightedLayerPooling`` / ``Dense``) whose
-    serialized weights are missing -- that snapshot passes offline validation and then 409s at
-    the local-only load (#7218 P2).
-
-    A PRESENT ``modules.json`` that declares nothing usable (an empty list / not a list) or is
-    malformed is NOT a loadable model and does NOT fall back to a root Transformer: with
-    ``modules.json`` present the loader takes ``base/model.py`` ``_load_config_modules``, which
-    ``json.load``s the file (a malformed body RAISES) and iterates the list (an empty list builds
-    ZERO modules); the plain-Transformer fallback (``_load_default_modules``) is reached ONLY when
-    ``modules.json`` is ABSENT (``_load_modules`` -> ``modules_json_path is None``). So the earlier
-    fall-through to :func:`_snapshot_has_complete_weights` here was a false positive -- a snapshot
-    with a stub/empty ``modules.json`` but complete root weights was accepted and then 409'd at the
-    local-only load (#7218 P4). The plain ``from_pretrained`` root (a tag-only embedder with NO
-    ``modules.json``) is classified elsewhere in :func:`is_embedding_model` via the recorded verdict
-    plus :func:`_snapshot_has_complete_weights`, so restricting this marker check to a real declared
-    module set does not regress it."""
-    try:
-        if not (snap / "modules.json").is_file():
-            return False
-        if _modules_json_declares_modules(snap):
-            return _snapshot_modules_all_loadable(snap)
-        return False
-    except OSError:
-        return False
-
-
-def _active_commit(repo_id: str) -> Optional[str]:
-    """The commit ``refs/main`` resolves to for *repo_id*, or None when not cached /
-    unreadable. This is the revision an offline load would use, so it is what an
-    online verdict has to be pinned to."""
-    try:
-        repo_dir = _st_cache_repo_dir(repo_id)
-        if repo_dir is None:
-            return None
-        commit = (repo_dir / "refs" / "main").read_text(encoding = "utf-8").strip()
-        return commit or None
-    except Exception:
-        return None
-
-
-def _active_snapshot_dir(repo_id: str) -> Optional[Path]:
-    """The materialized snapshot dir the offline ``local_files_only`` load resolves for
-    *repo_id*, or None. Mirrors that resolution: the :func:`_st_cache_repo_dir` repo dir, its
-    ``refs/main`` commit (the loader resolves the default revision through that ref, so a
-    missing/empty/unreadable ref is a cache MISS, not a reason to scan historical
-    snapshots), and that commit's snapshot dir. Never raises."""
-    try:
-        repo_dir = _st_cache_repo_dir(repo_id)
-        if repo_dir is None:
-            return None
-        try:
-            commit = (repo_dir / "refs" / "main").read_text(encoding = "utf-8").strip()
-        except OSError:
-            return None
-        if not commit:
-            return None
-        snapshot = repo_dir / "snapshots" / commit
-        if not snapshot.is_dir():
-            return None
-        return snapshot
-    except Exception:
-        return None
-
-
-def _embedding_marker_in_hf_cache(repo_id: str) -> Optional[bool]:
-    """Sentence-transformers detection from the local cache, no network. Models what an
-    offline ``local_files_only`` load resolves (via :func:`_active_snapshot_dir`): the active
-    ``refs/main`` snapshot must be materialized and loadable (marker plus config plus
-    weights, not the bare ``modules.json`` the preflight fetches). None when nothing usable
-    is cached; never raises."""
-    snapshot = _active_snapshot_dir(repo_id)
-    if snapshot is None:
-        return None
-    return _snapshot_is_loadable_st_model(snapshot)
-
-
-# Bounded metadata fetch for the ONLINE branch (#6817). With NEITHER HF_HUB_OFFLINE nor
-# TRANSFORMERS_OFFLINE set, an unbounded model_info() can hang on connect / DNS retries when the
-# network is dead or the Hub is unreachable -- the #6817 symptom for users who never set an
-# offline flag. Cap the call (mirrors utils/security/file_security's bounded model_info fetch,
-# _REQUEST_TIMEOUT=10 / _RETRY_TIMEOUT=20) so an unreachable Hub raises FAST and the transient-
-# failure handler below resolves a cached model, WITHOUT surrendering the Hub-authoritative
-# verdict when the Hub IS reachable (metadata answers well inside this window, so a reachable Hub
-# still wins). CAVEAT: huggingface_hub forwards timeout to requests' get(..., timeout=...), which
-# bounds the connect + read; a stalled DNS getaddrinfo() can still block past it on some
-# resolvers, so this NARROWS -- but does not fully close -- the hang window. HF_HUB_OFFLINE
-# remains the only hard guarantee.
+# Bound the Hub metadata lookup so a DNS-dead session fails fast (and falls back to the
+# local cache) instead of hanging on huggingface_hub's default retry loop.
 _HUB_MODEL_INFO_TIMEOUT = 15.0
+
+
+def _embedding_marker_in_hf_cache(model_name: str) -> bool:
+    """True when ``model_name``'s active cached snapshot carries a ``modules.json`` -- the
+    Sentence-Transformers marker, mirroring the local-path check. Cache-only, no network;
+    used offline and as a fallback when a bounded Hub lookup times out.
+    """
+    from utils.utils import hf_cache_snapshot_dir
+
+    snapshot = hf_cache_snapshot_dir(model_name)
+    if snapshot is None:
+        return False
+    try:
+        return (snapshot / "modules.json").is_file()
+    except OSError:
+        return False
 
 
 def is_embedding_model(model_name: str, hf_token: Optional[str] = None) -> bool:
@@ -2859,45 +2112,26 @@ def is_embedding_model(model_name: str, hf_token: Optional[str] = None) -> bool:
         True if embedding model, else False (default for local paths or errors).
     """
     cache_key = (model_name, hf_token)
+    if cache_key in _embedding_detection_cache:
+        return _embedding_detection_cache[cache_key]
 
-    # Local path: modules.json marker is authoritative, so memoize.
+    # Local paths: check for sentence-transformer marker (modules.json)
     if is_local_path(model_name):
-        if cache_key in _embedding_detection_cache:
-            return _embedding_detection_cache[cache_key]
         local_dir = normalize_path(model_name)
         is_emb = os.path.isfile(os.path.join(local_dir, "modules.json"))
         _embedding_detection_cache[cache_key] = is_emb
         return is_emb
 
-    if _env_offline():
-        # Offline: the local cache is the only source; a network call would hang on DNS
-        # (#6817). Re-probe every call without the memo so a negative never sticks.
-        snapshot = _active_snapshot_dir(model_name)
-        if snapshot is not None and _snapshot_is_loadable_st_model(snapshot):
-            return True
-        active_commit = _active_commit(model_name)
-        # Trust an online-confirmed positive (memo or persisted allowlist) only for a TAG-ONLY
-        # embedder -- one with NO modules.json -- whose active snapshot has a complete root weight
-        # set. A recorded True proves the Hub tagged it an embedder, not that its files load. The
-        # tag-only fallback (_snapshot_has_complete_weights) treats an unreadable manifest like a
-        # plain root Transformer, so it must NOT run when modules.json is PRESENT: with the file
-        # present the loader takes the modules.json path (base/model.py _load_config_modules) and a
-        # present-but-empty / malformed manifest builds zero modules or raises rather than falling
-        # back to the root weights (#7218). A present, well-formed manifest is already handled
-        # authoritatively by _snapshot_is_loadable_st_model above.
-        if (
-            snapshot is not None
-            and not (snapshot / "modules.json").is_file()
-            and _known_embedder(model_name, cache_key, active_commit)
-            and _snapshot_has_complete_weights(snapshot)
-        ):
-            return True
-        return False
+    # Offline: never call the Hub -- a DNS-dead session hangs on model_info retries.
+    # Classify from the local cache the load will use: a cached modules.json marks a
+    # Sentence-Transformers repo, mirroring the local-path check above.
+    from utils.utils import hf_env_offline
 
-    # Online: the Hub is authoritative for the current revision (the local marker can lag).
-    # Only Hub-derived results are memoized, so a transient failure never poisons the cache.
-    if cache_key in _embedding_detection_cache:
-        return _embedding_detection_cache[cache_key]
+    if hf_env_offline():
+        is_emb = _embedding_marker_in_hf_cache(model_name)
+        _embedding_detection_cache[cache_key] = is_emb
+        return is_emb
+
     try:
         from huggingface_hub import model_info as hf_model_info
 
@@ -2913,14 +2147,6 @@ def is_embedding_model(model_name: str, hf_token: Optional[str] = None) -> bool:
 
         _embedding_detection_cache[cache_key] = is_emb
         if is_emb:
-            # Durably record the positive so a later offline session can recognize a
-            # downloaded tag-only embedder -- pinned to the revision whose metadata was
-            # actually verified. That is info.sha, the Hub revision model_info() just
-            # described, NOT the local cache's refs/main: with a stale cache the two differ
-            # and pinning the local one would allowlist a snapshot nobody verified.
-            confirmed_at = getattr(info, "sha", None) or None
-            _embedding_verdict_commit[cache_key] = confirmed_at
-            _persist_embedder(model_name, confirmed_at)
             logger.info(
                 f"Model {model_name} detected as embedding model: "
                 f"pipeline_tag={pipeline_tag}, "
@@ -2930,42 +2156,12 @@ def is_embedding_model(model_name: str, hf_token: Optional[str] = None) -> bool:
         return is_emb
 
     except Exception as e:
-        # A permanent Hub error (deleted / gated / bad revision / typo) is authoritative:
-        # return False and let the settings route surface its 409, rather than passing a
-        # repo the loader can no longer fetch.
-        if type(e).__name__ in (
-            "RepositoryNotFoundError",
-            "GatedRepoError",
-            "RevisionNotFoundError",
-            "EntryNotFoundError",
-        ):
-            logger.warning(f"Could not determine if {model_name} is embedding model: {e}")
-            return False
-        # Transient / 5xx failure: fall back to the local cache, uncached. Mirror the offline
-        # branch so the two agree on a downloaded tag-only embedder (no modules.json): accept a
-        # complete cached snapshot whose embedder verdict is pinned to the active revision, not
-        # only one that carries a modules.json marker.
-        marker = _embedding_marker_in_hf_cache(model_name)
-        if marker is True:
-            logger.info(
-                f"Model {model_name} detected as embedding model via HF cache "
-                f"(modules.json) after Hub lookup failed: {e}"
-            )
-            return True
-        snapshot = _active_snapshot_dir(model_name)
-        if (
-            snapshot is not None
-            and not (snapshot / "modules.json").is_file()
-            and _known_embedder(model_name, cache_key, _active_commit(model_name))
-            and _snapshot_has_complete_weights(snapshot)
-        ):
-            logger.info(
-                f"Model {model_name} recognized as a previously-verified embedding model "
-                f"from the local cache after Hub lookup failed: {e}"
-            )
-            return True
+        # A bounded timeout or transient network error must not hang or hard-fail the UI.
+        # Best-effort fall back to the local cache marker before giving up.
         logger.warning(f"Could not determine if {model_name} is embedding model: {e}")
-        return False
+        is_emb = _embedding_marker_in_hf_cache(model_name)
+        _embedding_detection_cache[cache_key] = is_emb
+        return is_emb
 
 
 def _has_model_weight_files(model_dir: Path) -> bool:

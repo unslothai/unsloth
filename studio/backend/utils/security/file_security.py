@@ -15,10 +15,8 @@ Policy:
   * Block whenever ``filesWithIssues`` lists a non-``safe`` level, regardless of
     ``scansDone`` (often false even for clean repos). Unknown/future levels fail
     CLOSED (block) so Hub schema drift cannot silently allow a bad verdict; only a
-    small allowlist of clean / not-yet-scanned levels is non-blocking. An
-    unavailable status (missing field / error) fails open, but an explicit
-    local-only (offline) load fails CLOSED against the cached files instead: an
-    unscanned cached pickle is blocked, a pickle-free (safetensors) cache allowed.
+    small allowlist of clean / not-yet-scanned levels is non-blocking. The sole
+    fail-open path is an unavailable status (missing field / offline / error).
   * Scope to the load-path RCE vector: a root-level (or load-subdir-level),
     code-executing file. Inert formats (safetensors / gguf / config / text) and
     subdirectory pickles that no root weight-index references are NOT loaded, so
@@ -33,23 +31,40 @@ Policy:
 
 import re
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Optional
 
 from loggers import get_logger
 
 logger = get_logger(__name__)
 
+# Pickle-format weight files (plain or sharded) that execute code when a load deserializes
+# them; safetensors/gguf are inert (tensor-only). Grouped by weight family so an inert
+# safetensors only suppresses the pickle it actually replaces (below): the base loader will
+# not use an adapter's safetensors in place of pytorch_model.bin, and vice versa.
+_PICKLE_WEIGHT_RE = re.compile(
+    r"^(model|pytorch_model|adapter_model|consolidated)(-\d+-of-\d+)?"
+    r"\.(bin|pt|pth|ckpt|pkl|pickle)$",
+    re.IGNORECASE,
+)
+# Base-model safetensors weight set. HF saves the torch pickle as ``pytorch_model.bin`` but the
+# safetensors as ``model.safetensors`` (the stems differ), so a base pickle is inert-replaced by
+# ``model.safetensors``, its shards, or the sharded index -- not by an adapter's safetensors.
+_BASE_SAFETENSORS_RE = re.compile(
+    r"^(model(-\d+-of-\d+)?\.safetensors|model\.safetensors\.index\.json)$",
+    re.IGNORECASE,
+)
+# Adapter (PEFT) safetensors weight set: ``adapter_model.safetensors``, its shards, or index.
+_ADAPTER_SAFETENSORS_RE = re.compile(
+    r"^(adapter_model(-\d+-of-\d+)?\.safetensors|adapter_model\.safetensors\.index\.json)$",
+    re.IGNORECASE,
+)
+
 # Non-blocking levels: clean or not-yet-finished. Anything else (unsafe/suspicious/
 # malicious or a future label) blocks, so Hub schema drift fails CLOSED.
 _NONBLOCKING_LEVELS = frozenset(
     {"", "safe", "pending", "scanning", "queued", "unscanned", "error", "unknown", "none"}
 )
-
-# Levels that are a DEFINITIVE clean result for a file. A durable clean record (for the offline
-# cache) may only be written when every flagged file is at one of these; the other non-blocking
-# levels ("pending"/"scanning"/"queued"/"unscanned"/"error"/"unknown") mean the scan did not
-# cleanly finish on that file, so they do not block the online load but do disqualify recording.
-_DEFINITIVELY_SAFE_LEVELS = frozenset({"", "safe", "none"})
 
 # Suffixes that cannot execute code on load (tensor-only safetensors, non-pickle gguf,
 # text/markup/images), so a flag on one is never an RCE vector.
@@ -99,39 +114,6 @@ def _normalize_repo_path(path: str) -> str:
     return p
 
 
-def _canonical_rel(rel: str):
-    """A repo-relative path with ``.`` / ``..`` components collapsed lexically (no filesystem
-    access), or None when it is empty, the repo root, or escapes the root (a leading ``..``
-    after normalization).
-
-    A ``modules.json`` / ``router_config.json`` / load-subdir / ``weight_map`` entry is
-    repo-controlled. The loader resolves an entry such as ``0/../evil`` to ``evil/`` and
-    deserializes ``evil/pytorch_model.bin`` -- the offline gate already scopes that SAME
-    normalized directory (via :func:`_canonical_load_dir`) and the ONLINE scan must agree, or
-    the raw ``0/../evil`` never equals the canonical ``evil/...`` the Hub reports for the
-    flagged file and the pickle slips the gate. A legitimate declared path never traverses
-    upward, so an escaping path is rejected. An ABSOLUTE or drive/UNC path is also rejected: the
-    loader resolves it OUTSIDE the snapshot (``os.path.join`` discards the base on an absolute
-    join), so collapsing it into an in-snapshot relative directory would scope the wrong dir; a
-    declared repo path is always relative."""
-    import posixpath
-
-    raw = _normalize_repo_path(rel)  # backslashes -> "/", "./" prefixes stripped
-    if raw.startswith("/") or re.match(r"^[A-Za-z]:/", raw):
-        return None
-    norm = posixpath.normpath(raw.strip("/"))
-    if norm in ("", ".") or norm == ".." or norm.startswith("../"):
-        return None
-    return norm
-
-
-def _canonical_load_dir(base, rel: str):
-    """``base`` / ``rel`` with ``.`` / ``..`` collapsed lexically, or None when ``rel`` is
-    empty, the base itself, or escapes ``base``. String form: :func:`_canonical_rel`."""
-    norm = _canonical_rel(rel)
-    return None if norm is None else base / norm
-
-
 def _file_suffix(path: str) -> str:
     """Lowercase ``.ext`` of the basename, or ``""`` if none."""
     base = _normalize_repo_path(path).rsplit("/", 1)[-1]
@@ -143,36 +125,19 @@ def _load_relative_path(norm: str, load_subdirs) -> str:
     snapshot SUBDIRECTORY (Spark-TTS / BiCodec load ``<snapshot>/LLM``), where a file
     directly under the subdir is root-level, not nested. Strips the matching load-subdir
     prefix, or returns ``norm`` unchanged when it is not under one.
-
-    A load-subdir is repo-controlled (the RAG guard unions in each ``modules.json`` module
-    ``path``), so it is canonicalized (``0/../evil`` -> ``evil``) to match the canonical repo
-    path the Hub reports for a flagged file -- the raw ``0/../evil`` would never prefix
-    ``evil/pytorch_model.bin`` and the file would slip through as an unreferenced nested shard,
-    though the offline gate (which canonicalizes the same path) blocks it.
-
-    The DEEPEST matching load-subdir wins: a nested Router emits both its own dir and its child
-    (``0_Router`` and ``0_Router/query_0_WordEmbeddings``), and ``Router.load()`` deserializes the
-    child pickle directly. Stripping only the parent prefix would leave ``query_0_WordEmbeddings/...``
-    looking like an unreferenced nested shard (allowed); stripping the longest matching prefix makes
-    the child pickle root-level under its own load root and blocks.
     """
-    best = norm
-    best_len = -1
     for subdir in load_subdirs or ():
-        prefix = _canonical_rel(subdir)
-        if prefix and norm.startswith(prefix + "/") and len(prefix) > best_len:
-            best = norm[len(prefix) + 1 :]
-            best_len = len(prefix)
-    return best
+        prefix = _normalize_repo_path(subdir).strip("/")
+        if prefix and norm.startswith(prefix + "/"):
+            return norm[len(prefix) + 1 :]
+    return norm
 
 
 def _index_prefixes(load_subdirs) -> tuple:
-    """Prefixes to look for weight-index files under: repo root plus each load subdir. Each
-    subdir is canonicalized (see :func:`_load_relative_path`) so a traversing declared path
-    resolves to the same directory offline and online."""
+    """Prefixes to look for weight-index files under: repo root plus each load subdir."""
     prefixes = [""]
     for subdir in load_subdirs or ():
-        p = _canonical_rel(subdir)
+        p = _normalize_repo_path(subdir).strip("/")
         if p:
             prefixes.append(p + "/")
     return tuple(prefixes)
@@ -216,14 +181,7 @@ def _indexed_shard_paths(
                     # weight_map paths are relative to the index file's directory.
                     if prefix and not shard_norm.startswith(prefix):
                         shard_norm = prefix + shard_norm
-                    # Collapse . / .. (a repo-controlled weight_map may traverse, e.g.
-                    # "sub/../evil/pytorch_model.bin") so the recorded path is the canonical
-                    # one the Hub reports for the flagged shard -- mirrors the offline gate,
-                    # which resolves the same traversal on disk. An escaping shard (leading
-                    # ..) can never name a repo file, so drop it.
-                    shard_canon = _canonical_rel(shard_norm)
-                    if shard_canon is not None:
-                        paths.add(shard_canon)
+                    paths.add(shard_norm)
             except Exception:
                 inconclusive = True
     # Any transient failure -> inconclusive (the shard could be listed only by the index
@@ -247,12 +205,6 @@ class FileSecurityDecision:
     blocked: bool
     unsafe_files: list = field(default_factory = list)  # [{"path", "level"}]
     reason: str = ""
-    # The commit SHA the Hub scan reported (online only), and whether that scan was a DEFINITIVE
-    # clean verdict (a completed scan with no load-path issue) -- not merely a non-block. The
-    # embedding recorder persists a clean verdict only when ``scanned_clean`` and the loaded commit
-    # equals ``commit``; both stay unset for local-only and fail-open (unavailable) decisions.
-    commit: Optional[str] = None
-    scanned_clean: bool = False
 
     def response_payload(self) -> dict:
         """Machine-readable detail merged into the preflight payload the dialog reads."""
@@ -308,580 +260,9 @@ def _load_scan_target(model_name: str, load_subdirs: tuple) -> tuple:
     return model_name, load_subdirs
 
 
-# Pickle weight formats a from_pretrained load deserializes (the RCE vector); safetensors
-# and gguf are inert. Matched by base-model NAME so training_args.bin / optimizer.pt (not
-# loaded as model weights) do not trip the offline gate.
-_PICKLE_WEIGHT_RE = re.compile(
-    r"^(model|pytorch_model)(-\d+-of-\d+)?\.(bin|pt|pth|ckpt|pkl|pickle)$"
-)
-
-# PEFT adapter pickle weights. from_pretrained auto-detects an adapter_config.json in the load
-# root and deserializes the adapter weights on top of the base model, so an adapter pickle is a
-# SEPARATE RCE vector from the base weights -- a safetensors base does not cover it. It has its
-# own safetensors preference: adapter_model.safetensors is loaded in place of the pickle.
-_ADAPTER_PICKLE_RE = re.compile(r"^adapter_model\.(bin|pt|pth|ckpt|pkl|pickle)$")
-
-# Suffixes a from_pretrained load deserializes as a pickle (the RCE vector). Used for shards a
-# weight-index maps, which are model weights regardless of their exact filename.
-_PICKLE_SUFFIXES = frozenset({".bin", ".pt", ".pth", ".ckpt", ".pkl", ".pickle"})
-
-# Root pickle weight-index. Its weight_map can point shards into SUBDIRECTORIES; from_pretrained
-# follows the map and deserializes them wherever they live.
-_PICKLE_INDEX_FILE = "pytorch_model.bin.index.json"
-
-# SentenceTransformer Router (a.k.a. the legacy Asym) config. It declares the router's child
-# sub-modules in its ``types`` map ({route}_{idx}_{ClassName} -> module class) and is the ONLY
-# place they are declared -- the top-level modules.json lists just the Router. Router.load()
-# deserializes each child from its own subdir, so those subdirs are load roots too.
-_ROUTER_CONFIG_FILE = "router_config.json"
-
-
-def _index_weight_map_values(index_path) -> set:
-    """Repo-relative shard paths a weight-index maps (its ``weight_map`` values), or empty on
-    an unreadable / malformed index."""
-    import json
-
-    try:
-        weight_map = (json.loads(index_path.read_text(encoding = "utf-8")) or {}).get(
-            "weight_map"
-        ) or {}
-    except (OSError, ValueError):
-        return set()
-    return {_normalize_repo_path(str(shard)) for shard in weight_map.values()}
-
-
-# A from_pretrained load prefers safetensors over a pickle ONLY when the directory holds a
-# safetensors weight it can actually load in its place: an unsharded base file, or an index
-# whose every referenced shard is present. A bare adapter (``adapter_model.safetensors``) or
-# an orphan shard with no index is NOT a loadable base weight -- the loader falls back to and
-# deserializes the pickle, which therefore stays the live RCE vector.
-#
-# Only the EXACT names the loader resolves count. transformers' SAFE_WEIGHTS_NAME /
-# SAFE_WEIGHTS_INDEX_NAME and sentence-transformers' Module.load_torch_weights both look up
-# ``model.safetensors`` (then its index); neither ever looks up ``pytorch_model.safetensors``,
-# so crediting that name would let a repo shipping an inert ``pytorch_model.safetensors`` decoy
-# beside a live ``pytorch_model.bin`` pass unblocked while the loader deserialized the pickle.
-_SAFETENSORS_BASE_UNSHARDED = ("model.safetensors",)
-_SAFETENSORS_BASE_INDEX = ("model.safetensors.index.json",)
-
-
-def _safetensors_index_complete(index_path) -> bool:
-    """True when every shard the safetensors index maps is present, resolved RELATIVE TO the
-    index's own directory -- a ``weight_map`` value may name a subdirectory
-    (``weights/model-00001-of-00002.safetensors``), so comparing basenames alone would miss a
-    complete set and wrongly treat the inert safetensors as absent."""
-    import json
-
-    try:
-        weight_map = (json.loads(index_path.read_text(encoding = "utf-8")) or {}).get(
-            "weight_map"
-        ) or {}
-    except (OSError, ValueError):
-        return False  # unreadable index -> not a usable safetensors set -> keep the pickle blocked
-    shards = {_normalize_repo_path(str(shard)) for shard in weight_map.values()}
-    if not shards:
-        return False
-    base = index_path.parent
-    for shard_rel in shards:
-        try:
-            if not base.joinpath(*shard_rel.split("/")).is_file():
-                return False
-        except OSError:
-            return False
-    return True
-
-
-def _exact_named(files: dict, name: str):
-    """The Path in *files* (lower-name -> Path for one directory) whose REAL basename is
-    exactly *name* (case-sensitive), or None. A safetensors CREDIT must match the loader's
-    exact lookup: transformers / sentence-transformers request ``model.safetensors`` verbatim,
-    so on a case-sensitive filesystem (the Studio default) a mixed-case ``Model.SafeTensors``
-    decoy is NOT the file the loader reads -- it falls back to and deserializes the pickle. The
-    lower-name key would fold the decoy in and fail OPEN, so credit is decided by ``Path.name``.
-    """
-    for path in files.values():
-        if path.name == name:
-            return path
-    return None
-
-
-def _dir_has_loadable_safetensors(files: dict, honors_sharded_index: bool = False) -> bool:
-    """True when *files* (lower-name -> Path for one directory) hold a safetensors weight the loader
-    will read INSTEAD of a pickle sibling: an unsharded ``model.safetensors``, or -- ONLY where the
-    loader honors it -- a complete ``model.safetensors.index.json`` shard set. A bare adapter or an
-    orphan shard does not qualify. The safetensors credit is case-SENSITIVE (see
-    :func:`_exact_named`) so a mis-cased decoy the loader would skip cannot vouch for a live pickle.
-
-    ``honors_sharded_index`` gates the SHARDED-index credit. A sharded safetensors index is honored
-    only by ``AutoModel.from_pretrained`` -- the snapshot root, or a Transformer-typed module
-    subdirectory (``0_Transformer/``). A non-Transformer SentenceTransformer module (``Dense``,
-    ``WordEmbeddings``, ``StaticEmbedding``) loads through ``Module.load_torch_weights``, which probes
-    only ``model.safetensors`` then ``pytorch_model.bin`` and NEVER reads the index -- so crediting a
-    sharded index in such a module dir would let its ``pytorch_model.bin`` deserialize unblocked. The
-    unsharded ``model.safetensors`` credit is honored by both loaders and applies everywhere."""
-    if any(_exact_named(files, name) is not None for name in _SAFETENSORS_BASE_UNSHARDED):
-        return True
-    if not honors_sharded_index:
-        return False
-    for index_name in _SAFETENSORS_BASE_INDEX:
-        index_path = _exact_named(files, index_name)
-        if index_path is not None and _safetensors_index_complete(index_path):
-            return True
-    return False
-
-
-def _router_child_dirs(root, snap) -> set:
-    """Child sub-module directories a SentenceTransformer ``Router`` (legacy ``Asym``) at *root*
-    deserializes. A Router declares its children only in ``router_config.json`` (``types`` maps
-    ``{route}_{idx}_{ClassName}`` -> module class), NOT in the top-level ``modules.json``, and
-    ``Router.load()`` loads each from ``Path(subfolder, model_id)`` -- the child ``model_id``
-    resolved RELATIVE TO the Router dir *root*. A child such as ``query_0_WordEmbeddings/`` holds
-    ``wordembedding_config.json`` + ``pytorch_model.bin`` and no ``config.json``, so its pickle is
-    still deserialized and its dir must be a load root.
-
-    A ``model_id`` may use ``..`` to point at a SIBLING dir that is still inside the snapshot
-    (``1_Router`` + ``../evil`` -> ``evil/``): the local loader follows it and deserializes
-    ``evil/pytorch_model.bin``, so it is canonicalized against the SNAPSHOT (not the Router dir) and
-    retained as a load root. A child that escapes the snapshot ITSELF (a root Router with
-    ``../evil``) is a traversal the local loader would follow out of the cache, so it fails closed
-    (:class:`_SnapshotEscapeError`). Returns an empty set when there is no readable router config."""
-    import json
-
-    try:
-        config = json.loads((root / _ROUTER_CONFIG_FILE).read_text(encoding = "utf-8"))
-    except (OSError, ValueError):
-        return set()
-    if not isinstance(config, dict):
-        return set()
-    types = config.get("types")
-    if not isinstance(types, dict):
-        return set()
-    try:
-        root_rel = root.relative_to(snap).as_posix()
-    except ValueError:
-        return set()  # a Router dir not under the snapshot (should not happen) -> scan nothing
-    children: set = set()
-    for model_id in types:
-        combined = str(model_id) if root_rel in ("", ".") else root_rel + "/" + str(model_id)
-        child_rel = _canonical_rel(combined)
-        if child_rel is None:
-            raise _SnapshotEscapeError(f"router child escapes the snapshot: {str(model_id)!r}")
-        children.add(snap.joinpath(*child_rel.split("/")))
-    return children
-
-
-def _load_root_or_raise(snap, raw_rel: str):
-    """Resolve a repo-declared load path (a ``modules.json`` module ``path`` or a ``load_subdirs``
-    entry) to an in-snapshot directory, or None for a ROOT-like path (empty / ``.`` -- loads from
-    *snap*, already a root). Raises :class:`_SnapshotEscapeError` for an ABSOLUTE or
-    snapshot-ESCAPING path: ``SentenceTransformer`` resolves such a declared path OUTSIDE the
-    snapshot and would deserialize an external ``pytorch_model.bin`` the gate cannot scan, so the
-    cache is unverifiable and must fail closed rather than silently drop the module."""
-    root = _canonical_load_dir(snap, raw_rel)
-    if root is not None:
-        return root
-    import posixpath
-
-    norm = posixpath.normpath(_normalize_repo_path(raw_rel).strip("/"))
-    if norm in ("", "."):
-        return None  # a root module loads from snap, already a root
-    raise _SnapshotEscapeError(f"declared load path escapes the snapshot: {raw_rel!r}")
-
-
-def _st_load_roots(snap, load_subdirs = ()) -> set:
-    """Directories a load opens ``from_pretrained`` on: the snapshot root, every module path
-    ``modules.json`` declares, and each passed-in ``load_subdirs`` entry. A SentenceTransformer
-    module can load from a directory without ``config.json`` -- e.g. a ``0_WordEmbeddings/``
-    module with ``wordembedding_config.json`` + ``pytorch_model.bin`` -- so a pickle there is
-    still deserialized and must be treated as a load root.
-
-    An absolute or snapshot-escaping declared path fails closed (:class:`_SnapshotEscapeError`): the
-    loader resolves it outside the snapshot, so the cache cannot be verified."""
-    roots = {snap}
-    for subdir in load_subdirs or ():
-        root = _load_root_or_raise(snap, str(subdir))
-        if root is not None:
-            roots.add(root)
-    try:
-        import json
-        modules = json.loads((snap / "modules.json").read_text(encoding = "utf-8"))
-    except (OSError, ValueError):
-        modules = None
-    if isinstance(modules, list):
-        for module in modules:
-            if isinstance(module, dict):
-                root = _load_root_or_raise(snap, str(module.get("path") or ""))
-                if root is not None:
-                    roots.add(root)
-    # A Router/Asym module declares its child sub-modules in router_config.json, not modules.json,
-    # and Router.load() deserializes each child's weights from its own subdir. Treat those child
-    # dirs as load roots too so a pickle in a config.json-less child (e.g.
-    # query_0_WordEmbeddings/pytorch_model.bin) is scanned. Bounded BFS: each child canonicalizes to
-    # an in-snapshot dir and a visited set (roots) stops any cycle; the finite set of in-snapshot
-    # dirs bounds it. Scanning extra dirs only tightens the gate.
-    pending = list(roots)
-    while pending:
-        current = pending.pop()
-        for child in _router_child_dirs(current, snap):
-            if child not in roots:
-                roots.add(child)
-                pending.append(child)
-    return roots
-
-
-def _is_transformer_module_type(type_str) -> bool:
-    """True for a Transformer-SHAPED SentenceTransformer module -- ``Transformer`` and its subclasses
-    ``MLMTransformer`` / ``CLIPModel``, all of which load via ``AutoModel.from_pretrained`` and so
-    honor a ``model.safetensors.index.json`` shard set. Mirrors the classifier's
-    ``_ST_TRANSFORMER_SHAPED_MODULE_NAMES`` + ``"transformer" in cls`` dispatch. ``Dense`` /
-    ``WordEmbeddings`` / ``StaticEmbedding`` read a single flat weight file through
-    ``Module.load_torch_weights`` and never consult an index, so their sharded-index credit stays
-    gated off."""
-    cls = str(type_str).rsplit(".", 1)[-1].strip().lower()
-    return "transformer" in cls or cls == "clipmodel"
-
-
-def _transformer_load_roots(snap) -> set:
-    """The load roots whose loader honors a sharded ``model.safetensors.index.json``: the
-    Transformer-typed modules ``modules.json`` declares (loaded via ``AutoModel.from_pretrained``).
-    A complete safetensors shard set in such a SUBMODULE (e.g. ``0_Transformer/``) means the loader
-    reads safetensors and never the sibling ``pytorch_model.bin``, so that pickle must not block.
-    The declared type is authoritative -- the loader instantiates the module by the SAME type, so a
-    mis-declared dir loads through its declared loader too. A missing / malformed ``modules.json``
-    yields an empty set, leaving the shard credit unextended (the conservative over-block
-    direction). The snapshot root is credited separately by the caller."""
-    import json
-
-    roots: set = set()
-    try:
-        modules = json.loads((snap / "modules.json").read_text(encoding = "utf-8"))
-    except (OSError, ValueError):
-        return roots
-    if isinstance(modules, list):
-        for module in modules:
-            if isinstance(module, dict) and _is_transformer_module_type(module.get("type")):
-                root = _canonical_load_dir(snap, str(module.get("path") or ""))
-                if root is not None:
-                    roots.add(root)
-    return roots
-
-
-def _root_honors_sharded_index(snap) -> bool:
-    """Whether the snapshot ROOT is loaded through an index-honoring path
-    (``AutoModel.from_pretrained``). True with no / unreadable ``modules.json`` (a plain
-    ``from_pretrained`` root, or one that loads no root weights at all), or when a ROOT module is
-    Transformer-shaped. False when ``modules.json`` declares a ROOT module of a NON-Transformer type
-    (``StaticEmbedding`` / ``WordEmbeddings`` / ``Dense`` ...), whose ``load()`` reads
-    ``pytorch_model.bin`` and ignores the sharded index -- crediting a root shard index would then
-    suppress a LIVE root pickle."""
-    import json
-    import posixpath
-
-    try:
-        modules = json.loads((snap / "modules.json").read_text(encoding = "utf-8"))
-    except (OSError, ValueError):
-        return True
-    if not isinstance(modules, list):
-        return True
-    for module in modules:
-        if not isinstance(module, dict):
-            continue
-        norm = posixpath.normpath(_normalize_repo_path(str(module.get("path") or "")).strip("/"))
-        if norm in ("", ".") and not _is_transformer_module_type(module.get("type")):
-            return False  # a non-Transformer ROOT module reads the root pickle, ignoring the index
-    return True
-
-
-class _SnapshotEscapeError(OSError):
-    """A repo-controlled load path -- a weight-index ``weight_map`` value or a ``Router``
-    ``router_config.json`` child -- resolves OUTSIDE the snapshot via a ``../`` traversal.
-    Subclasses ``OSError`` so the offline caller's fail-closed enumeration handler blocks the load;
-    raised instead of following the path, because offline the loader resolves it on the local
-    filesystem (reading an out-of-snapshot pickle) and an online load would hash+record that
-    external file as this commit's clean content."""
-
-
-def _cached_pickle_weight_paths(snap, load_subdirs = ()) -> list:
-    """The pickle weight FILES (as ``Path`` objects under *snap*) a from_pretrained load actually
-    deserializes: at a real load root and with NO loadable safetensors alternative there. A load
-    root is the snapshot root, a directory ``modules.json`` / ``load_subdirs`` declares, or a plain
-    from_pretrained root (holds ``config.json``). A stray pickle in a non-load subdir (``archive/``,
-    ``nemo/``) that no load opens is not a vector, matching the online scan's load-path scoping. Two
-    weight classes are scoped independently: a BASE pickle (``pytorch_model.bin`` ...) is covered by
-    a loadable base safetensors the loader picks instead; a PEFT ADAPTER pickle (``adapter_model.bin``),
-    which from_pretrained auto-loads when ``adapter_config.json`` is present, is covered only by
-    ``adapter_model.safetensors`` -- a safetensors base does NOT cover it. A bare adapter or an
-    orphan shard leaves its pickle live. Returns the concrete Paths (not basenames) so the offline
-    verdict cache can hash exactly the files the loader reads and never conflate two module dirs that
-    ship the same pickle basename.
-
-    Raises ``OSError`` if the snapshot tree cannot be enumerated (``rglob`` failure), so the offline
-    caller fails CLOSED rather than treat an unreadable cache as pickle-free."""
-    roots = _st_load_roots(snap, load_subdirs)
-    # Dirs whose loader (AutoModel.from_pretrained) honors a sharded safetensors index: each
-    # Transformer-typed module subdir, plus the snapshot root -- but ONLY when the root is actually
-    # loaded through a Transformer/from_pretrained path. A modules.json root module of a
-    # non-Transformer type reads pytorch_model.bin and ignores the index, so crediting the root shard
-    # index there would suppress a live root pickle. Elsewhere a sharded index is NOT a substitute for
-    # a live pickle (see _dir_has_loadable_safetensors).
-    index_honoring = _transformer_load_roots(snap)
-    if _root_honors_sharded_index(snap):
-        index_honoring = index_honoring | {snap}
-    by_dir_pickle: dict = {}  # directory -> [Path] (EVERY case variant, not last-wins)
-    by_dir_files: dict = {}  # directory -> {lower-name: Path} (safetensors credit; last-wins is safe)
-    # A whole-tree rglob failure propagates (fail-closed); a single unstattable entry is skipped.
-    for path in snap.rglob("*"):
-        try:
-            if not path.is_file():
-                continue
-        except OSError:
-            continue
-        low = path.name.lower()
-        by_dir_files.setdefault(path.parent, {})[low] = path
-        if _PICKLE_WEIGHT_RE.match(low) or _ADAPTER_PICKLE_RE.match(low):
-            by_dir_pickle.setdefault(path.parent, []).append(path)
-    hits: set = set()
-    for directory, pickle_paths in by_dir_pickle.items():
-        files = by_dir_files.get(directory, {})
-        # A pickle is deserialized only at an actual load root: the snapshot root, a declared
-        # modules.json / load_subdirs dir, or a Router child (all resolved by _st_load_roots).
-        # A stray config.json in an UNREFERENCED subdir (a nested checkpoint-500/ or archive/)
-        # does NOT make it a load root -- from_pretrained never descends into it and the ST load
-        # opens only declared modules -- so it must not block, matching the online scan which
-        # ignores the same unindexed subdir pickle.
-        if directory not in roots:
-            continue
-        # Hash EVERY case-colliding pickle candidate, not one representative: on a case-sensitive
-        # filesystem ``pytorch_model.bin`` and ``PYTORCH_MODEL.BIN`` are distinct files; the loader
-        # reads the exact-case one, and a mis-cased sibling that is never loaded is only over-blocked
-        # (safe). Keying by lowered name would drop one and could hash a decoy instead of the target.
-        base = [p for p in pickle_paths if _PICKLE_WEIGHT_RE.match(p.name.lower())]
-        if base and not _dir_has_loadable_safetensors(
-            files, honors_sharded_index = directory in index_honoring
-        ):
-            hits.update(base)
-        # An adapter pickle is deserialized only when from_pretrained auto-detects the adapter
-        # (adapter_config.json present) and there is no adapter_model.safetensors to load instead.
-        # The safetensors credit is case-SENSITIVE (a mixed-case Adapter_Model.SafeTensors decoy
-        # is not the file PEFT loads), so it is matched by real basename; the config presence
-        # stays case-insensitive (over-blocking a mis-cased adapter is the safe direction).
-        adapter = [p for p in pickle_paths if _ADAPTER_PICKLE_RE.match(p.name.lower())]
-        if (
-            adapter
-            and "adapter_config.json" in files
-            and _exact_named(files, "adapter_model.safetensors") is None
-        ):
-            hits.update(adapter)
-    # A load-root pickle index (pytorch_model.bin.index.json) can map shards into SUBDIRECTORIES
-    # that are not themselves load roots; from_pretrained follows the map and deserializes them,
-    # so include those referenced pickle shards (unless a loadable base safetensors at the index
-    # root covers the base weights). Mirrors the online _indexed_shard_paths scan, read from disk.
-    for root_dir in roots:
-        files = by_dir_files.get(root_dir, {})
-        index_path = files.get(_PICKLE_INDEX_FILE)
-        if index_path is None or _dir_has_loadable_safetensors(
-            files, honors_sharded_index = root_dir in index_honoring
-        ):
-            continue
-        try:
-            root_rel = root_dir.relative_to(snap).as_posix()
-        except ValueError:
-            continue  # a load root not under the snapshot (should not happen) -> skip conservatively
-        for shard_rel in _index_weight_map_values(index_path):
-            if _file_suffix(shard_rel) not in _PICKLE_SUFFIXES:
-                continue
-            # A weight_map value is relative to the index dir (root_dir). Canonicalize it against the
-            # snapshot root and REFUSE any that escape it: a repo-controlled index can map "../.." into
-            # a sibling snapshot, and unlike the Hub (which cannot serve "../"), an offline
-            # from_pretrained resolves it on the local filesystem and would deserialize an
-            # out-of-snapshot pickle -- an online load would then hash+record that external file as
-            # this commit's clean content. Fail closed rather than follow it.
-            combined = shard_rel if root_rel in ("", ".") else root_rel + "/" + shard_rel
-            shard_canon = _canonical_rel(combined)
-            if shard_canon is None:
-                raise _SnapshotEscapeError(
-                    f"weight index maps a shard outside the snapshot: {shard_rel!r}"
-                )
-            shard = snap.joinpath(*shard_canon.split("/"))
-            try:
-                if shard.is_file():
-                    hits.add(shard)
-            except OSError:
-                continue
-    return sorted(hits)
-
-
-def _snapshot_relative(path, snap) -> str:
-    """*path* as a snapshot-relative posix string, or its basename if it is somehow not under
-    *snap* (only for display / the blocked-file list)."""
-    try:
-        return path.relative_to(snap).as_posix()
-    except ValueError:
-        return path.name
-
-
-def _pickle_hash_map(snap, paths):
-    """``{snapshot-relative posix name: sha256}`` for *paths*, or None if any file cannot be hashed
-    (an unreadable pickle must never verify or record as clean)."""
-    from utils.security import embedding_scan_verdicts
-
-    out = {}
-    for p in paths:
-        digest = embedding_scan_verdicts.sha256_file(p)
-        if digest is None:
-            return None
-        out[_snapshot_relative(p, snap)] = digest
-    return out
-
-
-def _matches_clean_verdict(model_name: str, snap, paths) -> bool:
-    """True when a recorded clean Hub verdict covers EXACTLY this load-root pickle set at the active
-    cached commit: same commit, same relative-name set, same sha256 for every file. A missing
-    record, moved commit, changed / added / unreadable pickle, or any error -> False (fail-closed).
-
-    The commit is taken from the snapshot directory name (``snapshots/<commit>``) -- the exact
-    revision being inspected -- so it needs no second ``refs/main`` read and cannot skew from the
-    ``snap`` whose files are hashed."""
-    try:
-        from utils.security import embedding_scan_verdicts
-
-        commit = snap.name  # snapshots/<commit>
-        if not commit:
-            return False
-        recorded = embedding_scan_verdicts.lookup(model_name, commit)
-        if not recorded:
-            return False
-        current = _pickle_hash_map(snap, paths)
-        return current is not None and current == recorded
-    except Exception:
-        return False
-
-
-def record_embedding_verdict(
-    model_name: str,
-    scanned_commit,
-    load_subdirs = (),
-) -> None:
-    """Record a clean Hub verdict for an embedding repo just loaded ONLINE, so a later offline load
-    of the same content is not fail-closed. Persists the sha256 of every load-root pickle keyed by
-    its snapshot-relative name. Enumeration is PINNED to the scanned commit's snapshot
-    (``snapshots/<scanned_commit>``): if that snapshot is not present (the branch moved between the
-    scan and the load), nothing is recorded, so an unscanned commit is never blessed. Also records
-    nothing when there are no load-root pickles (an inert cache is already allowed) or any file
-    cannot be hashed. Never raises into the load path."""
-    try:
-        from utils.models.model_config import _st_cache_repo_dir
-        from utils.security import embedding_scan_verdicts
-
-        if not scanned_commit:
-            return
-        repo_dir = _st_cache_repo_dir(model_name)
-        if repo_dir is None:
-            return
-        snap = repo_dir / "snapshots" / str(scanned_commit)
-        if not snap.is_dir():
-            return
-        paths = _cached_pickle_weight_paths(snap, load_subdirs)
-        if not paths:
-            return
-        pickles = _pickle_hash_map(snap, paths)
-        if pickles is None:
-            return
-        embedding_scan_verdicts.record_clean(model_name, scanned_commit, pickles)
-    except Exception as exc:
-        logger.debug("Could not record embedding scan verdict for '%s': %s", model_name, exc)
-
-
-def _evaluate_local_only(model_name: str, load_subdirs = ()) -> "FileSecurityDecision":
-    """Fail-CLOSED security decision for an offline (local_files_only) load.
-
-    The Hub scan cannot be fetched offline, so instead of failing OPEN we inspect the cached
-    files we already have: block the actual RCE vector -- a pickle weight the load
-    deserializes -- and allow only a pickle-free cache (safetensors / gguf are inert). A
-    previously-scanned pickle model must be reloaded online once to pass, or shipped as
-    safetensors. Nothing cached means there is nothing to deserialize, so it is not blocked
-    (the load fails downstream on its own, which is not a security event). But a snapshot that
-    exists yet cannot be RESOLVED or ENUMERATED (an I/O error, not a clean "not cached") is
-    blocked: an unreadable cache must not be mistaken for an inert one.
-    """
-    try:
-        from utils.models.model_config import _active_snapshot_dir
-        snap = _active_snapshot_dir(model_name)
-    except Exception:
-        # Distinct from a clean None (nothing cached): resolution ERRORED, so we cannot vouch for
-        # the cache. Fail closed rather than allow an unverifiable snapshot.
-        logger.warning(
-            "Blocking offline load of '%s': snapshot could not be resolved; cannot verify.",
-            model_name,
-        )
-        return FileSecurityDecision(
-            model_name, True, reason = "offline; snapshot could not be resolved, cannot verify"
-        )
-    if snap is None:
-        return FileSecurityDecision(model_name, False, reason = "offline; nothing cached to scan")
-
-    try:
-        paths = _cached_pickle_weight_paths(snap, load_subdirs)
-    except _SnapshotEscapeError as exc:
-        # A repo-controlled load path (weight-index shard or Router child) resolves outside the
-        # snapshot via "../". Following it would deserialize an out-of-snapshot pickle, so refuse
-        # the load outright.
-        logger.warning("Blocking offline load of '%s': %s; cannot verify.", model_name, exc)
-        return FileSecurityDecision(
-            model_name,
-            True,
-            reason = "offline; a cached load path resolves outside the snapshot, cannot verify",
-        )
-    except OSError:
-        # The cache tree could not be fully enumerated: an undiscovered pickle might exist, so a
-        # partial "pickle-free" reading is unsafe. Fail closed.
-        logger.warning(
-            "Blocking offline load of '%s': cached model could not be inspected; cannot verify.",
-            model_name,
-        )
-        return FileSecurityDecision(
-            model_name, True, reason = "offline; cached model could not be inspected, cannot verify"
-        )
-    if not paths:
-        return FileSecurityDecision(
-            model_name, False, reason = "offline; cached weights are pickle-free (inert)"
-        )
-
-    # A pickle model the user already loaded ONLINE (and HF scanned clean) may load offline when
-    # its exact content is unchanged. Allow only when the active cached commit and EVERY load-root
-    # pickle's sha256 match the recorded clean verdict; a missing record, moved commit, hash
-    # mismatch, unreadable file, or any error falls through to the fail-closed block below.
-    if _matches_clean_verdict(model_name, snap, paths):
-        return FileSecurityDecision(
-            model_name,
-            False,
-            reason = "offline; cached pickle weights match a recorded clean Hub scan",
-        )
-
-    pickles = [_snapshot_relative(p, snap) for p in paths]
-    names = ", ".join(pickles)
-    logger.warning(
-        "Blocking offline load of '%s': cached pickle weights cannot be security-scanned "
-        "offline (%s). Reconnect once to scan, or use safetensors weights.",
-        model_name,
-        names,
-    )
-    return FileSecurityDecision(
-        model_name,
-        True,
-        unsafe_files = [{"path": p, "level": "unscanned"} for p in pickles],
-        reason = (
-            "offline: cached pickle weights are unscanned and cannot be verified; "
-            f"reconnect once to scan, or use safetensors weights ({names})"
-        ),
-    )
-
-
 def _fetch_security_status(model_name: str, hf_token: Optional[str]):
-    """``(security_repo_status, commit_sha)`` from a single Hub metadata call, or ``(None, None)``
-    if unavailable. The commit is the SHA the scan applies to (used to bind a recorded clean
-    verdict to immutable content). Metadata only; retries once on a transient error, then returns
-    ``(None, None)`` so the caller fails open.
+    """``security_repo_status`` (a dict) or None if unavailable. Hub metadata only;
+    retries once on a transient error, then returns None so the caller fails open.
     """
     from huggingface_hub import model_info as hf_model_info
 
@@ -895,7 +276,7 @@ def _fetch_security_status(model_name: str, hf_token: Optional[str]):
                 securityStatus = True,
                 timeout = timeout,
             )
-            return getattr(info, "security_repo_status", None), getattr(info, "sha", None)
+            return getattr(info, "security_repo_status", None)
         except Exception as exc:  # network/offline/gated/404/unsupported-client
             last_exc = exc
             if attempt == 0:
@@ -905,7 +286,108 @@ def _fetch_security_status(model_name: str, hf_token: Optional[str]):
         model_name,
         type(last_exc).__name__ if last_exc else "unknown",
     )
-    return None, None
+    return None
+
+
+def _st_load_roots(snapshot: Path) -> list:
+    """Directories a SentenceTransformer load actually deserializes weights from: the snapshot
+    root plus each module ``path`` in ``modules.json`` (e.g. ``0_Transformer``), read locally,
+    no network. Mirrors the online gate, which ignores unreferenced nested pickles (an example
+    artifact or a ``nemo/`` pickle ST never loads), so the offline gate does not over-block.
+    """
+    roots = [snapshot]
+    try:
+        import json
+        modules = json.loads((snapshot / "modules.json").read_text())
+    except (OSError, ValueError):
+        return roots  # no / invalid modules.json -> the snapshot root is the only load root
+    for module in modules or ():
+        path = str((module or {}).get("path", "")).strip().strip("/")
+        # A relative module path only; ignore a crafted "../" escape.
+        if path and ".." not in path.split("/"):
+            candidate = snapshot / path
+            if candidate not in roots:
+                roots.append(candidate)
+    return roots
+
+
+def _cached_pickle_weight_files(snapshot: Path) -> list:
+    """Pickle-format weight files in ``snapshot``'s ST load roots a load would deserialize,
+    EXCLUDING those whose own weight family also ships an inert ``safetensors`` in the same
+    directory (the load prefers the safetensors). A base pickle (``pytorch_model.bin`` /
+    ``model.bin`` / ``consolidated``) is suppressed only by a base ``model.safetensors`` weight;
+    an ``adapter_model`` pickle only by an ``adapter_model.safetensors`` -- an unrelated
+    safetensors is not a substitute the loader would pick. Scans only the load roots (not every
+    nested file). Raises ``OSError`` if the snapshot root cannot be read (caller blocks).
+    """
+    blocked = []
+    for root in _st_load_roots(snapshot):
+        try:
+            entries = [p for p in root.iterdir() if p.is_file()]
+        except OSError:
+            if root == snapshot:
+                raise  # top-level unreadable -> fail closed
+            continue  # an unreadable module subdir: nothing loadable to attest here
+        has_base_safetensors = any(_BASE_SAFETENSORS_RE.match(p.name) for p in entries)
+        has_adapter_safetensors = any(_ADAPTER_SAFETENSORS_RE.match(p.name) for p in entries)
+        for path in entries:
+            if not _PICKLE_WEIGHT_RE.match(path.name):
+                continue
+            is_adapter = path.name.lower().startswith("adapter_model")
+            has_alternative = has_adapter_safetensors if is_adapter else has_base_safetensors
+            if not has_alternative:
+                blocked.append(path)
+    return blocked
+
+
+def _evaluate_local_only(model_name: str) -> FileSecurityDecision:
+    """Offline security gate. The Hub malware scan is unreachable, so inspect the local cache
+    and fail CLOSED on an unscanned pickle weight (code-executing on load) that has no inert
+    ``safetensors`` alternative, instead of failing open or hanging on the network. A
+    safetensors/gguf-only cache loads normally; nothing cached -> nothing to load -> allowed.
+    """
+    from utils.utils import hf_cache_snapshot_dir
+
+    try:
+        snapshot = hf_cache_snapshot_dir(model_name)
+    except Exception:
+        logger.warning("Offline gate: could not resolve the cache for '%s'; blocking.", model_name)
+        return FileSecurityDecision(
+            model_name, True, reason = "offline; could not inspect the local cache"
+        )
+
+    if snapshot is None:
+        return FileSecurityDecision(model_name, False, reason = "offline; nothing cached to load")
+
+    try:
+        pickles = _cached_pickle_weight_files(snapshot)
+    except OSError:
+        logger.warning("Offline gate: could not read the cache for '%s'; blocking.", model_name)
+        return FileSecurityDecision(
+            model_name, True, reason = "offline; could not read the local cache"
+        )
+
+    if not pickles:
+        return FileSecurityDecision(
+            model_name, False, reason = "offline; cached weights are inert (safetensors/gguf)"
+        )
+
+    # Report snapshot-relative posix paths (matching the online gate, and disambiguating a
+    # same-named pickle in different module dirs).
+    rel_paths = sorted(p.relative_to(snapshot).as_posix() for p in pickles)
+    names = ", ".join(rel_paths)
+    logger.warning(
+        "Blocking offline load of '%s': cached pickle weight(s) cannot be malware-scanned "
+        "offline and have no safetensors alternative (%s).",
+        model_name,
+        names,
+    )
+    return FileSecurityDecision(
+        model_name,
+        True,
+        unsafe_files = [{"path": rel, "level": "unscanned"} for rel in rel_paths],
+        reason = f"offline; unscanned pickle weights with no safetensors alternative: {names}",
+    )
 
 
 def evaluate_file_security(
@@ -925,12 +407,9 @@ def evaluate_file_security(
     for Spark-TTS / BiCodec, loading ``<snapshot>/LLM``): a flagged file directly under one
     is root-level there and blocks, and an index inside it is honored when scoping shards.
 
-    ``local_only_load`` marks a load the caller GUARANTEES cannot fetch (e.g. the RAG
-    embedder, which passes ``local_files_only`` to SentenceTransformer from the same
-    predicate). It cannot reach the Hub scan, so it is evaluated fail-CLOSED against the
-    cached files (:func:`_evaluate_local_only`): a cached pickle weight is blocked, a
-    pickle-free (safetensors) cache is allowed. Pass it only with that guarantee; claiming
-    local-only while the loader can still fetch changes gate semantics. Default False.
+    ``local_only_load`` marks an offline load (``HF_HUB_OFFLINE`` / ``TRANSFORMERS_OFFLINE``):
+    the Hub scan is unreachable, so instead of hanging or failing open, inspect the local
+    cache and fail CLOSED on an unscanned pickle weight with no safetensors alternative.
     """
     # Scan the repo the load actually fetches, not the literal alias (which 404s and
     # fails open): the Spark-TTS "<parent>/LLM" alias is really unsloth/<parent> from LLM/.
@@ -946,24 +425,16 @@ def evaluate_file_security(
         # Cannot classify the path -> do not block on that account.
         return FileSecurityDecision(model_name, False, reason = "path check failed; not blocked")
 
-    # An offline (local-only) load cannot fetch the Hub scan: fail CLOSED against the cache
-    # instead of skipping the gate, so an unscanned cached pickle cannot deserialize.
+    # Offline: the Hub scan is unreachable; inspect the local cache and fail closed on an
+    # unscanned pickle weight instead of hanging on model_info or failing open.
     if local_only_load:
-        return _evaluate_local_only(model_name, load_subdirs)
+        return _evaluate_local_only(model_name)
 
-    status, commit = _fetch_security_status(model_name, hf_token)
+    status = _fetch_security_status(model_name, hf_token)
     if not isinstance(status, dict):
         return FileSecurityDecision(
             model_name, False, reason = "scan unavailable; allowed (fail-open)"
         )
-    # A DEFINITIVE clean verdict (for the durable offline cache) is STRICTER than the block
-    # decision: it requires a COMPLETED scan (``scansDone is True`` -- an identity check, so a
-    # truthy string like ``"false"`` does not qualify), a well-formed ``filesWithIssues`` list, and
-    # NO concerning flagged file anywhere (any non-``safe`` level, or a malformed entry,
-    # disqualifies). The block decision below is unchanged (not gated on scansDone); ``recordable``
-    # only governs whether the verdict may be persisted for later offline reuse.
-    issues = status.get("filesWithIssues")
-    recordable = (status.get("scansDone") is True) and isinstance(issues, list)
 
     # Block a non-``safe`` flagged file scoped to the load-path RCE vector (root-level,
     # code-executing). Not gated on ``scansDone`` (often false even when clean; a flagged
@@ -973,16 +444,10 @@ def evaluate_file_security(
     unsafe = []
     skipped = []  # flagged, but not a load-path RCE vector (subdir artifact / inert)
     maybe_shard = []  # flagged subdir pickle: a load vector ONLY if a root index lists it
-    for entry in issues or []:
+    for entry in status.get("filesWithIssues") or []:
         if not isinstance(entry, dict):
-            recordable = False  # a malformed manifest entry cannot vouch for cleanliness
             continue
         level = str(entry.get("level", "")).lower()
-        if level not in _DEFINITIVELY_SAFE_LEVELS:
-            # Any non-benign level -- an unsafe finding OR an incomplete/uncertain one
-            # (pending/error/unknown) -- means this is not a clean COMPLETED scan, so it cannot be
-            # persisted as a durable clean verdict (the block decision below is unaffected).
-            recordable = False
         if level in _NONBLOCKING_LEVELS:
             continue
         path = entry.get("path", "")
@@ -1022,13 +487,7 @@ def evaluate_file_security(
                 model_name,
                 ", ".join(f"{s['path']}({s['level']})" for s in skipped),
             )
-        return FileSecurityDecision(
-            model_name,
-            False,
-            reason = "no unsafe files in the load path",
-            commit = commit,
-            scanned_clean = recordable,
-        )
+        return FileSecurityDecision(model_name, False, reason = "no unsafe files in the load path")
 
     names = ", ".join(u["path"] for u in unsafe if u["path"]) or "unknown files"
     logger.warning(
@@ -1036,17 +495,9 @@ def evaluate_file_security(
         model_name,
         names,
     )
-    # An authoritative unsafe verdict revokes any stale clean record for this repo, so a
-    # now-flagged commit cannot keep loading offline on a previously recorded verdict.
-    try:
-        from utils.security import embedding_scan_verdicts
-        embedding_scan_verdicts.forget(model_name)
-    except Exception:
-        pass
     return FileSecurityDecision(
         model_name,
         True,
         unsafe_files = unsafe,
         reason = f"Hugging Face security scan flagged unsafe files: {names}",
-        commit = commit,
     )

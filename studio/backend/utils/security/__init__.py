@@ -20,7 +20,6 @@ from utils.security.consent import (  # noqa: F401
 from utils.security.file_security import (  # noqa: F401
     FileSecurityDecision,
     evaluate_file_security,
-    record_embedding_verdict,
     security_load_subdirs,
 )
 from utils.security.remote_code_scan import (  # noqa: F401
@@ -48,7 +47,6 @@ __all__ = [
     "preflight_remote_code_consent",
     "preflight_remote_code_consent_for_targets",
     "evaluate_file_security",
-    "record_embedding_verdict",
     "security_load_subdirs",
     "FileSecurityDecision",
     "RemoteCodeDecision",

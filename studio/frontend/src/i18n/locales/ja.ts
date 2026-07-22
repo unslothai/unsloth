@@ -114,7 +114,7 @@ export const ja = {
       huggingFaceTokenDescription: "ゲート付きモデルの読み込みや、アーティファクトのプッシュに使用されます。",
       hideToken: "トークンを非表示",
       showToken: "トークンを表示",
-      tokenSaved: "トークンを保存しました",
+      tokenValidated: "トークンは検証済みです",
       password: "パスワード",
       passwordDescription: "この Unsloth アカウントのパスワードを変更します。",
       passwordDialog: {

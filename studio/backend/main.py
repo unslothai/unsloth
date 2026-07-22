@@ -289,6 +289,7 @@ from fastapi import Depends, FastAPI, HTTPException, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse, HTMLResponse, Response
+from starlette.middleware.gzip import GZipMiddleware
 from pathlib import Path
 from datetime import datetime
 
@@ -312,7 +313,9 @@ from routes.preview import router as preview_router
 from hub.routes import (
     inventory_router as hub_inventory_router,
     datasets_router as hub_datasets_router,
+    token_router as hub_token_router,
 )
+from picker.routes import templates_router as picker_templates_router
 from hub.schemas.downloads import TransportCapabilities
 from hub.utils.download_registry import (
     get_download_transport_capabilities,
@@ -762,6 +765,7 @@ _BODY_PROTECTED_PREFIXES = (
     "/v1/completions",
     "/p/",
     "/api/inference",
+    "/api/picker",
     "/api/data-recipe",
     "/api/datasets",
     "/api/hub",
@@ -993,6 +997,8 @@ app.include_router(rag_router, prefix = "/api/rag", tags = ["rag"])
 app.include_router(training_history_router, prefix = "/api/train", tags = ["training-history"])
 app.include_router(hub_inventory_router, prefix = "/api/hub", tags = ["hub"])
 app.include_router(hub_datasets_router, prefix = "/api/hub/datasets", tags = ["hub"])
+app.include_router(picker_templates_router, prefix = "/api/picker", tags = ["picker"])
+app.include_router(hub_token_router, prefix = "/api/hub", tags = ["hub"])
 
 # Re-wrap client-error responses on the /v1/* surface into OpenAI/Anthropic
 # error envelopes; non-/v1 paths keep FastAPI's default {"detail": ...} shape.
@@ -1149,11 +1155,15 @@ def _get_cached_system_gpu_info(logger) -> dict[str, Any]:
             util = util_devices.get(idx, {})
 
             total_vram = util.get("vram_total_gb") or dev.get("memory_total_gb") or 0
-            used_vram = util.get("vram_used_gb") or 0
+            # Keep None (usage unknown, e.g. Windows ROCm perf counter) so the UI
+            # shows unknown, not a fabricated 0 used / full free.
+            used_vram = util.get("vram_used_gb")
 
             enriched_dev = dict(dev)
             enriched_dev["vram_used_gb"] = used_vram
-            enriched_dev["vram_free_gb"] = round(total_vram - used_vram, 2) if total_vram else 0
+            enriched_dev["vram_free_gb"] = (
+                round(total_vram - used_vram, 2) if total_vram and used_vram is not None else None
+            )
             enriched_dev["vram_utilization_pct"] = util.get("vram_utilization_pct")
             enriched_devices.append(enriched_dev)
 
@@ -1503,6 +1513,34 @@ def _should_inject_bootstrap(request: Request) -> bool:
     return _is_local_bootstrap_request(request)
 
 
+_IMMUTABLE_ASSET_CACHE_CONTROL = "public, max-age=31536000, immutable"
+
+
+class ImmutableStaticFiles(StaticFiles):
+    """Serve Vite's content-hashed assets without browser revalidation."""
+
+    def file_response(
+        self,
+        full_path,
+        stat_result,
+        scope,
+        status_code = 200,
+    ):
+        response = super().file_response(full_path, stat_result, scope, status_code)
+        response.headers["Cache-Control"] = _IMMUTABLE_ASSET_CACHE_CONTROL
+        return response
+
+
+class _AssetGZipMiddleware(GZipMiddleware):
+    """Serve range requests uncompressed; gzip + 206 mislabels Content-Range."""
+
+    async def __call__(self, scope, receive, send):
+        if scope["type"] == "http" and any(key == b"range" for key, _ in scope["headers"]):
+            await self.app(scope, receive, send)
+            return
+        await super().__call__(scope, receive, send)
+
+
 def setup_frontend(app: FastAPI, build_path: Path):
     """Mount frontend static files (optional)"""
     if not build_path.exists():
@@ -1510,7 +1548,12 @@ def setup_frontend(app: FastAPI, build_path: Path):
 
     assets_dir = build_path / "assets"
     if assets_dir.exists():
-        app.mount("/assets", StaticFiles(directory = assets_dir), name = "assets")
+        assets_app = _AssetGZipMiddleware(
+            ImmutableStaticFiles(directory = assets_dir),
+            minimum_size = 1024,
+            compresslevel = 6,
+        )
+        app.mount("/assets", assets_app, name = "assets")
 
     def _build_index_response(request: Request) -> Response:
         content = (build_path / "index.html").read_bytes()
