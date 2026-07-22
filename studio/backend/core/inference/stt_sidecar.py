@@ -43,6 +43,27 @@ _HF_REPO_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,95}/[A-Za-z0-9][A-Za-z0-
 _MAX_AUDIO_SECONDS = 30 * 60
 _TARGET_SAMPLE_RATE = 16000
 
+# Only the file classes WhisperProcessor/WhisperForConditionalGeneration load:
+# weights, config, tokenizer, and audio preprocessor. Keeps a custom-repo
+# snapshot_download from pulling unrelated (possibly huge) repo contents.
+_STT_SNAPSHOT_ALLOW_PATTERNS = [
+    "config.json",
+    "generation_config.json",
+    "preprocessor_config.json",
+    "processor_config.json",
+    "tokenizer.json",
+    "tokenizer_config.json",
+    "vocab.json",
+    "merges.txt",
+    "normalizer.json",
+    "special_tokens_map.json",
+    "added_tokens.json",
+    "*.safetensors",
+    "model.safetensors.index.json",
+    "pytorch_model*.bin",
+    "pytorch_model.bin.index.json",
+]
+
 
 class SttUnavailableError(RuntimeError):
     """The STT backend (PyTorch/Transformers or PyAV) is not installed."""
@@ -199,7 +220,9 @@ def validate_remote_model(model: Optional[str], hf_token: Optional[str] = None) 
         raise SttModelCompatibilityError(
             f"STT model '{model_id}' is not a compatible Transformers Whisper model."
         )
-    return {"model": model_id, "repo": repo}
+    # The commit that was validated; the download pins to it so the repo cannot
+    # be swapped between validation and snapshot_download (TOCTOU).
+    return {"model": model_id, "repo": repo, "revision": getattr(info, "sha", None)}
 
 
 def _is_missing_local_model_error(exc: BaseException) -> bool:
@@ -222,13 +245,20 @@ def _snapshot_is_complete(snapshot: Path) -> bool:
     """True when a cached snapshot holds every file loading needs.
 
     An aborted download can leave only metadata behind, and an offline lookup
-    cannot know the repo's full file list, so verify config, preprocessor, and
-    weights directly. is_file() follows cache symlinks, so a link from an
-    interrupted blob download does not count.
+    cannot know the repo's full file list, so verify config, preprocessor,
+    tokenizer, and weights directly. is_file() follows cache symlinks, so a
+    link from an interrupted blob download does not count.
     """
-    index = snapshot / "model.safetensors.index.json"
-    if index.is_file():
-        # Sharded checkpoint: every shard in the index must exist.
+    index = next(
+        (
+            snapshot / name
+            for name in ("model.safetensors.index.json", "pytorch_model.bin.index.json")
+            if (snapshot / name).is_file()
+        ),
+        None,
+    )
+    if index is not None:
+        # Sharded checkpoint (safetensors or PyTorch): every shard must exist.
         weight_map = _read_json_object(index).get("weight_map")
         if not isinstance(weight_map, dict) or not weight_map:
             return False
@@ -239,8 +269,14 @@ def _snapshot_is_complete(snapshot: Path) -> bool:
             for pattern in ("*.safetensors", "pytorch_model*.bin")
             for p in snapshot.glob(pattern)
         )
+    # WhisperProcessor needs the tokenizer: either the fast tokenizer.json or
+    # the slow vocab.json + merges.txt pair.
+    has_tokenizer = (snapshot / "tokenizer.json").is_file() or (
+        (snapshot / "vocab.json").is_file() and (snapshot / "merges.txt").is_file()
+    )
     return (
         has_weights
+        and has_tokenizer
         and (snapshot / "config.json").is_file()
         and (snapshot / "preprocessor_config.json").is_file()
     )
@@ -311,6 +347,7 @@ class _SnapshotDownloadState:
         self,
         model_id: str,
         hf_token: Optional[str] = None,
+        revision: Optional[str] = None,
     ) -> None:
         model_id = resolve_model_id(model_id)
         with self._lock:
@@ -325,11 +362,18 @@ class _SnapshotDownloadState:
             self._repo = resolve_model_repo(model_id)
             self._error = None
             self._total_bytes = None
-            thread = threading.Thread(target = self._run, args = (self._repo, hf_token), daemon = True)
+            thread = threading.Thread(
+                target = self._run, args = (self._repo, hf_token, revision), daemon = True
+            )
             self._thread = thread
             thread.start()
 
-    def _run(self, repo: str, hf_token: Optional[str]) -> None:
+    def _run(
+        self,
+        repo: str,
+        hf_token: Optional[str],
+        revision: Optional[str] = None,
+    ) -> None:
         try:
             from huggingface_hub import HfApi, snapshot_download
             try:
@@ -339,9 +383,18 @@ class _SnapshotDownloadState:
                 total = sum(s.size or 0 for s in info.siblings or [])
                 with self._lock:
                     self._total_bytes = total or None
+                if not revision:
+                    # No validated commit was passed (curated repo): pin to the
+                    # commit whose metadata sized the progress bar.
+                    revision = getattr(info, "sha", None)
             except Exception:
                 pass
-            snapshot_download(repo_id = repo, token = hf_token or None)
+            snapshot_download(
+                repo_id = repo,
+                revision = revision,
+                allow_patterns = _STT_SNAPSHOT_ALLOW_PATTERNS,
+                token = hf_token or None,
+            )
         except Exception as exc:
             logger.warning("STT snapshot download failed for %s: %s", repo, exc)
             with self._lock:
@@ -351,8 +404,12 @@ class _SnapshotDownloadState:
 _download_state = _SnapshotDownloadState()
 
 
-def start_model_download(model: Optional[str], hf_token: Optional[str] = None) -> None:
-    _download_state.start(resolve_model_id(model), hf_token)
+def start_model_download(
+    model: Optional[str],
+    hf_token: Optional[str] = None,
+    revision: Optional[str] = None,
+) -> None:
+    _download_state.start(resolve_model_id(model), hf_token, revision = revision)
 
 
 def download_status() -> dict:

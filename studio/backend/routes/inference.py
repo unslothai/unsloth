@@ -6253,8 +6253,17 @@ async def stt_download(
         # possibly-large non-STT repo into the shared cache. Curated ids
         # short-circuit; GGUF only accepts curated ids, so it needs no check.
         if engine != "gguf":
-            await asyncio.to_thread(validate_remote_model, payload.model, hf_token)
-        await asyncio.to_thread(module.start_model_download, payload.model, hf_token)
+            validated = await asyncio.to_thread(validate_remote_model, payload.model, hf_token)
+            # Pin the download to the commit that was just validated so the
+            # repo cannot be swapped between validation and snapshot_download.
+            await asyncio.to_thread(
+                module.start_model_download,
+                payload.model,
+                hf_token,
+                validated.get("revision"),
+            )
+        else:
+            await asyncio.to_thread(module.start_model_download, payload.model, hf_token)
     except SttModelIdError as e:
         raise HTTPException(status_code = 422, detail = str(e))
     except SttModelCompatibilityError as e:

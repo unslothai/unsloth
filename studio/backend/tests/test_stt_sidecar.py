@@ -159,7 +159,12 @@ def test_remote_custom_model_validation_requires_whisper_config(monkeypatch):
 
     result = validate_remote_model("owner/custom-whisper", "hf_private")
 
-    assert result == {"model": "owner/custom-whisper", "repo": "owner/custom-whisper"}
+    assert result == {
+        "model": "owner/custom-whisper",
+        "repo": "owner/custom-whisper",
+        # No sha on the stubbed metadata: nothing to pin.
+        "revision": None,
+    }
     assert calls == [
         ("token", "hf_private"),
         (
@@ -965,6 +970,7 @@ def test_sharded_snapshot_with_missing_shard_is_not_downloaded(monkeypatch, tmp_
     snap.mkdir(parents = True)
     (snap / "config.json").write_bytes(b"{}")
     (snap / "preprocessor_config.json").write_bytes(b"{}")
+    (snap / "tokenizer.json").write_bytes(b"{}")
     index = {
         "weight_map": {
             "a": "model-00001-of-00002.safetensors",
@@ -998,6 +1004,7 @@ def test_preflight_rejects_partial_snapshot(monkeypatch, tmp_path, model_id):
 
     # Completing the snapshot clears the preflight.
     (tmp_path / "preprocessor_config.json").write_text("{}")
+    (tmp_path / "tokenizer.json").write_text("{}")
     (tmp_path / "model.safetensors").write_bytes(b"w" * 8)
     WhisperSttSidecar(keep_alive_seconds = 0)._ensure_model_downloaded(model_id)
 

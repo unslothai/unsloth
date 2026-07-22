@@ -467,10 +467,17 @@ class GgmlSttSidecar:
             pass
 
     @staticmethod
-    def _find_free_port() -> int:
-        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-            s.bind(("127.0.0.1", 0))
-            return s.getsockname()[1]
+    def _reserve_free_port() -> tuple[socket.socket, int]:
+        """Bind an ephemeral port and keep the socket held.
+
+        The caller closes the reservation immediately before spawning
+        whisper-server, shrinking the window in which another local process
+        could bind the port. SO_REUSEADDR lets the child rebind right after.
+        """
+        s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        s.bind(("127.0.0.1", 0))
+        return s, s.getsockname()[1]
 
     def _ensure_model_downloaded(self, model_id: str) -> str:
         path = _cached_model_path(model_id)
@@ -491,7 +498,7 @@ class GgmlSttSidecar:
                 return
             model_path = self._ensure_model_downloaded(model_id)
             self._release_locked()
-            port = self._find_free_port()
+            reservation, port = self._reserve_free_port()
             command = [binary, "-m", model_path, "--host", "127.0.0.1", "--port", str(port)]
             if _training_active():
                 # Keep whisper.cpp off the accelerator during training (like the
@@ -507,6 +514,9 @@ class GgmlSttSidecar:
             self._load_cancel_event = cancel_event
             self._loading = True
             try:
+                # Release the reservation as late as possible: whisper-server
+                # binds the port moments after this close.
+                reservation.close()
                 process = subprocess.Popen(
                     command,
                     stdout = subprocess.DEVNULL,
@@ -531,6 +541,7 @@ class GgmlSttSidecar:
                 self._model_id = model_id
                 self._schedule_idle_unload_locked()
             finally:
+                reservation.close()  # no-op when already released before spawn
                 self._loading = False
                 self._load_cancel_event = None
                 self._starting_process = None
@@ -552,13 +563,32 @@ class GgmlSttSidecar:
                     "The local transcription runtime exited before becoming "
                     "ready; the model file may be corrupt or unsupported."
                 )
-            try:
-                req = urllib.request.Request(f"http://127.0.0.1:{port}/", method = "GET")
-                with urllib.request.urlopen(req, timeout = 2):
-                    return
-            except Exception:
-                time.sleep(0.2)
+            # Require a whisper-server-specific response twice, with the managed
+            # child alive around each probe. An arbitrary local process that won
+            # the bind race would otherwise be mistaken for the sidecar and
+            # receive the user's microphone audio.
+            if GgmlSttSidecar._probe_is_whisper_server(process, port) and (
+                GgmlSttSidecar._probe_is_whisper_server(process, port)
+            ):
+                return
+            time.sleep(0.2)
         raise SttEngineUnavailableError("The local transcription runtime did not start in time.")
+
+    @staticmethod
+    def _probe_is_whisper_server(process: subprocess.Popen, port: int) -> bool:
+        """One readiness probe: our child is alive and the responder looks like
+        whisper.cpp's server (its index page and errors identify whisper)."""
+        if process.poll() is not None:
+            return False
+        try:
+            req = urllib.request.Request(f"http://127.0.0.1:{port}/", method = "GET")
+            with urllib.request.urlopen(req, timeout = 2) as response:
+                body = response.read(65536)
+        except Exception:
+            return False
+        if process.poll() is not None:
+            return False
+        return b"whisper" in body.lower()
 
     # -- transcription ------------------------------------------------------
 

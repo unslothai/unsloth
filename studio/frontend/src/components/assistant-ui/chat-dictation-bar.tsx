@@ -2,8 +2,10 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { Spinner } from "@/components/ui/spinner";
-import { subscribeDictationLevel } from "@/features/chat/adapters/dictation-level";
-import { cancelActiveStudioDictation } from "@/features/chat/adapters/studio-dictation-adapter";
+import {
+  cancelActiveStudioDictation,
+  subscribeDictationLevel,
+} from "@/features/chat";
 import { useAui, useAuiState } from "@assistant-ui/react";
 import { CheckIcon, XIcon } from "lucide-react";
 import { type FC, useEffect, useRef, useState } from "react";

@@ -312,7 +312,6 @@ export class StudioModelDictationAdapter implements DictationAdapter {
       chunks: Blob[];
       startedAt: number;
       voiced: boolean;
-      metered: boolean;
       recorder: MediaRecorder;
     };
     const results: string[] = [];
@@ -413,8 +412,12 @@ export class StudioModelDictationAdapter implements DictationAdapter {
       })();
     };
 
-    const enqueueSegment = (index: number, blob: Blob, voiced: boolean) => {
-      if (voiced && blob.size > 0) {
+    // Every non-empty recording is transcribed. The RMS meter only shapes
+    // segment boundaries; a quiet microphone or suspended AudioContext can keep
+    // it below VOICE_RMS for real speech, so it must never discard audio.
+    // Whisper returns an empty transcript for genuine silence.
+    const enqueueSegment = (index: number, blob: Blob) => {
+      if (blob.size > 0) {
         queue.push({ index, blob });
         processQueue();
       } else {
@@ -431,7 +434,6 @@ export class StudioModelDictationAdapter implements DictationAdapter {
         chunks: [],
         startedAt: performance.now(),
         voiced: false,
-        metered: false,
         recorder: new MediaRecorder(
           stream,
           mimeType ? { mimeType } : undefined,
@@ -451,9 +453,7 @@ export class StudioModelDictationAdapter implements DictationAdapter {
         const blob = new Blob(seg.chunks, {
           type: seg.recorder.mimeType || "audio/webm",
         });
-        // No Web Audio means no analyser frames; keep the recording instead of
-        // treating every segment as silence.
-        enqueueSegment(seg.index, blob, seg.voiced || !seg.metered);
+        enqueueSegment(seg.index, blob);
       });
       pendingRecorders += 1;
       try {
@@ -499,7 +499,6 @@ export class StudioModelDictationAdapter implements DictationAdapter {
         lastFrameAt = now;
         return;
       }
-      seg.metered = true;
       if (rawRms > VOICE_RMS) {
         seg.voiced = true;
         silenceMs = 0;

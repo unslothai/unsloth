@@ -6,17 +6,19 @@ import { useVoiceSettingsStore } from "@/features/settings/stores/voice-settings
 import { toast } from "@/lib/toast";
 import type { SpeechSynthesisAdapter } from "@assistant-ui/react";
 
-/** Voice for a stored voiceURI; undefined lets the browser pick. */
+/** Voice for a stored voiceURI. "default" resolves to the voice the platform
+ * marks as its default, so the "System default" choice means what it says
+ * instead of falling back to a curated pick. Undefined lets the browser pick. */
 export function findTtsVoice(
   voiceURI: string,
 ): SpeechSynthesisVoice | undefined {
   if (typeof window === "undefined" || !window.speechSynthesis) {
     return undefined;
   }
-  if (!voiceURI || voiceURI === "default") return undefined;
-  return window.speechSynthesis
-    .getVoices()
-    .find((voice) => voice.voiceURI === voiceURI);
+  if (!voiceURI) return undefined;
+  const voices = window.speechSynthesis.getVoices();
+  if (voiceURI === "default") return voices.find((voice) => voice.default);
+  return voices.find((voice) => voice.voiceURI === voiceURI);
 }
 
 // macOS novelty and legacy Eloquence voices that sound robotic and flood the picker.

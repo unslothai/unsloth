@@ -223,8 +223,12 @@ function useDictation(
   // Re-render support state when the user switches recognition engines.
   const dictationEngine = useVoiceSettingsStore((s) => s.dictationEngine);
   const [isDictating, setIsDictating] = useState(false);
+  // True while a stopped recording's final audio is still transcribing; a
+  // second click then cancels the pending transcription instead of re-stopping.
+  const [isFinalizing, setIsFinalizing] = useState(false);
   const sessionRef = useRef<StudioDictationSession | null>(null);
   const startingRef = useRef(false);
+  const finalizingRef = useRef(false);
 
   const start = useCallback(async () => {
     if (startingRef.current || sessionRef.current) return;
@@ -261,6 +265,8 @@ function useDictation(
     });
     session.onEnd?.(() => {
       if (sessionRef.current === session) sessionRef.current = null;
+      finalizingRef.current = false;
+      setIsFinalizing(false);
       setIsDictating(false);
     });
     startingRef.current = false;
@@ -269,11 +275,26 @@ function useDictation(
   const stop = useCallback(() => {
     const session = sessionRef.current;
     if (!session) return;
+    // A second click while the final segment is transcribing discards the
+    // pending transcription instead of leaving the pane stuck until timeout.
+    if (finalizingRef.current) {
+      session.cancel();
+      if (sessionRef.current === session) sessionRef.current = null;
+      finalizingRef.current = false;
+      setIsFinalizing(false);
+      setIsDictating(false);
+      return;
+    }
+    finalizingRef.current = true;
+    setIsFinalizing(true);
     // Keep the session and dictation state alive while its final audio segment
     // is transcribed. onEnd clears both after the transcript callbacks run.
     void session.stop().catch((error) => {
       console.error("Could not stop dictation:", error);
+      session.cancel();
       if (sessionRef.current === session) sessionRef.current = null;
+      finalizingRef.current = false;
+      setIsFinalizing(false);
       setIsDictating(false);
     });
   }, []);
@@ -287,7 +308,7 @@ function useDictation(
 
   const supported = StudioDictationAdapter.isSupported(dictationEngine);
 
-  return { isDictating, start, stop, supported };
+  return { isDictating, isFinalizing, start, stop, supported };
 }
 
 export type CompareHandles = MutableRefObject<Record<string, CompareHandle>>;
@@ -732,6 +753,7 @@ export function SharedComposer({
 
   const {
     isDictating,
+    isFinalizing: isDictationFinalizing,
     start: startDictation,
     stop: stopDictation,
   } = useDictation(setText);
@@ -2182,13 +2204,21 @@ export function SharedComposer({
                 </TooltipIconButton>
               ) : (
                 <TooltipIconButton
-                  tooltip="Stop dictation"
+                  tooltip={
+                    isDictationFinalizing
+                      ? "Cancel transcription"
+                      : "Stop dictation"
+                  }
                   side="bottom"
                   variant="ghost"
                   size="icon"
                   className="size-8 rounded-full text-destructive"
                   onClick={stopDictation}
-                  aria-label="Stop dictation"
+                  aria-label={
+                    isDictationFinalizing
+                      ? "Cancel transcription"
+                      : "Stop dictation"
+                  }
                 >
                   <SquareIcon className="size-3 animate-pulse fill-current" />
                 </TooltipIconButton>

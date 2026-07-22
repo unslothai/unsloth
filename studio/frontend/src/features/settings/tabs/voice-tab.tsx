@@ -26,19 +26,17 @@ import {
   startSttDownload,
   unloadSttModel,
   validateSttModel,
-} from "@/features/chat/adapters/studio-model-dictation-adapter";
-import {
   StudioSpeechSynthesisAdapter,
   createConfiguredUtterance,
   curateSystemVoices,
   generateStudioTtsAudio,
-} from "@/features/chat/adapters/studio-speech-synthesis-adapter";
-import { DownloadProgressBar } from "@/features/hub";
-import { useHubModelSearch } from "@/features/hub/hooks/use-hub-model-search";
+} from "@/features/chat";
 import {
+  DownloadProgressBar,
   hfApiToken,
   useHfTokenStore,
-} from "@/features/hub/stores/hf-token-store";
+  useHubModelSearch,
+} from "@/features/hub";
 import { useDebouncedValue } from "@/hooks";
 import { useT } from "@/i18n";
 import { ChevronDownStandardIcon } from "@/lib/chevron-icons";

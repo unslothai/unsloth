@@ -73,7 +73,9 @@ def test_validated_transformers_repo_downloads(monkeypatch):
         stt_module, "validate_remote_model", lambda model, hf_token = None: {"model": model}
     )
     monkeypatch.setattr(
-        stt_module, "start_model_download", lambda model, hf_token = None: started.append(model)
+        stt_module,
+        "start_model_download",
+        lambda model, hf_token = None, revision = None: started.append(model),
     )
     monkeypatch.setattr(stt_module, "download_status", lambda: {"downloading": True})
 
@@ -139,7 +141,9 @@ def test_gguf_download_falls_back_to_transformers_when_server_absent(monkeypatch
         stt_module, "validate_remote_model", lambda model, hf_token = None: {"model": model}
     )
     monkeypatch.setattr(
-        stt_module, "start_model_download", lambda model, hf_token = None: tf_started.append(model)
+        stt_module,
+        "start_model_download",
+        lambda model, hf_token = None, revision = None: tf_started.append(model),
     )
     monkeypatch.setattr(stt_module, "download_status", lambda: {"downloading": True})
     monkeypatch.setattr(

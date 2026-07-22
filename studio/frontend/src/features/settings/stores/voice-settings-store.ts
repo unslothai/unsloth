@@ -166,22 +166,29 @@ const quotaSafeLocalStorage = {
     } catch {
       // Quota exceeded: trim dictation history, oldest first, and retry.
     }
-    for (const keep of [QUOTA_TRIM_KEEP, 20]) {
+    let parsed: { state?: { recentDictations?: RecentDictation[] } };
+    try {
+      parsed = JSON.parse(value) as typeof parsed;
+    } catch {
+      return;
+    }
+    const state = parsed.state;
+    const recents = state?.recentDictations;
+    if (!state || !Array.isArray(recents)) return;
+    // Halve the history until the save fits, down to an empty history, so even
+    // a small history shrinks when another store already consumed the quota.
+    let keep = Math.min(QUOTA_TRIM_KEEP, recents.length);
+    for (;;) {
+      keep = keep >= recents.length ? Math.floor(recents.length / 2) : keep;
       try {
-        const parsed = JSON.parse(value) as {
-          state?: { recentDictations?: RecentDictation[] };
-        };
-        const state = parsed.state;
-        const recents = state?.recentDictations;
-        if (!state || !Array.isArray(recents) || recents.length <= keep) {
-          continue;
-        }
         state.recentDictations = recents.slice(0, keep);
         localStorage.setItem(key, JSON.stringify(parsed));
         return;
       } catch {
-        // Fall through to the next, more aggressive trim.
+        // Still over quota: trim harder.
       }
+      if (keep === 0) return;
+      keep = Math.floor(keep / 2);
     }
   },
 };

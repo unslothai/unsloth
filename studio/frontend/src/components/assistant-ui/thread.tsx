@@ -38,7 +38,7 @@ import { ChatDictationBar } from "@/components/assistant-ui/chat-dictation-bar";
 import {
   isStudioDictationAvailable,
   notifyStudioDictationUnavailable,
-} from "@/features/chat/adapters/studio-dictation-adapter";
+} from "@/features/chat";
 import { TooltipIconButton } from "@/components/assistant-ui/tooltip-icon-button";
 import {
   IntentAwareScrollProvider,
