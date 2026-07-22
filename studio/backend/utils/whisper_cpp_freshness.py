@@ -24,6 +24,7 @@ from typing import Optional
 import structlog
 
 from utils.prebuilt import freshness_flow as _flow
+from utils.prebuilt.whisper_layout import lookup_marker
 
 logger = structlog.get_logger(__name__)
 
@@ -50,12 +51,14 @@ def _cache_dir() -> Path:
 def read_install_marker(binary_path: Optional[str]) -> Optional[dict]:
     """Walk up from binary_path to find UNSLOTH_WHISPER_PREBUILT_INFO.json.
     None = no marker (source build / custom path) or invalid JSON."""
-    return _flow.read_install_marker(
-        binary_path,
-        marker_name = _INSTALL_MARKER_NAME,
-        cache = _marker_cache,
-        log_message = "failed to parse whisper install marker",
-    )
+    if not binary_path:
+        return None
+    cached = _marker_cache.get(binary_path)
+    if cached is not None or binary_path in _marker_cache:
+        return cached
+    marker = lookup_marker(binary_path).marker
+    _marker_cache[binary_path] = marker
+    return marker
 
 
 def _load_disk_cache(repo: str) -> Optional[tuple[float, Optional[str]]]:

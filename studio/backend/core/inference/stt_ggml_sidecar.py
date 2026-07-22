@@ -58,6 +58,7 @@ from core.inference.stt_sidecar import (
 )
 from utils.prebuilt.child_env import isolate_home, scrub_env, wsl_system_rocm_lib_dirs
 from utils.prebuilt.runtime_libs import dedupe_existing_dirs
+from utils.prebuilt.whisper_layout import lookup_marker
 from utils.process_lifetime import adopt_pid, child_popen_kwargs, forget_pid
 
 logger = get_logger(__name__)
@@ -174,22 +175,9 @@ def _is_runnable(p: Path) -> bool:
     return p.is_file() and (sys.platform == "win32" or os.access(p, os.X_OK))
 
 
-# Marker install_whisper_prebuilt.py writes at the install root; a slim install
-# records install_kind "slim" and rides hardlinked ggml libs from llama.cpp.
-_WHISPER_MARKER_NAME = "UNSLOTH_WHISPER_PREBUILT_INFO.json"
-
-
 def _whisper_install_marker(binary: str) -> Optional[dict]:
     """The prebuilt install marker above ``binary``, or None (source/custom builds)."""
-    for parent in Path(binary).parents[:5]:
-        path = parent / _WHISPER_MARKER_NAME
-        if path.is_file():
-            try:
-                payload = json.loads(path.read_text(encoding = "utf-8"))
-            except (OSError, ValueError):
-                return None
-            return payload if isinstance(payload, dict) else None
-    return None
+    return lookup_marker(binary).marker
 
 
 def slim_runtime_intact(binary: str) -> bool:
@@ -199,9 +187,27 @@ def slim_runtime_intact(binary: str) -> bool:
     field fall back to the per-OS core ggml name globs. A broken slim install
     reads as engine-unavailable (reinstall via `unsloth studio update`), never a
     crash at load."""
-    marker = _whisper_install_marker(binary)
+    lookup = lookup_marker(binary)
+    marker = lookup.marker
+    if lookup.invalid or marker is None:
+        return not lookup.slim_collision
     if not marker or marker.get("install_kind") != "slim":
         return True
+    if lookup.authoritative:
+        valid = marker.get("component") == "whisper.cpp"
+        valid = valid and isinstance(marker.get("schema_version"), int)
+        valid = valid and all(
+            isinstance(marker.get(key), str) and marker[key]
+            for key in ("release_tag", "backend", "paired_llama_tag")
+        )
+        valid = valid and isinstance(marker.get("linked_libraries"), list)
+        valid = valid and bool(marker.get("linked_libraries"))
+        valid = valid and all(
+            isinstance(name, str) and name and Path(name).name == name
+            for name in marker["linked_libraries"]
+        )
+        if not valid:
+            return False
     bin_dir = Path(binary).parent
     linked = marker.get("linked_libraries")
     if isinstance(linked, list) and linked and all(isinstance(name, str) for name in linked):
@@ -214,6 +220,21 @@ def slim_runtime_intact(binary: str) -> bool:
         else:
             required = ("libggml.so*", "libggml-base.so*")
         intact = all(any(p.is_file() for p in bin_dir.glob(pattern)) for pattern in required)
+    runtime_dirs = marker.get("linked_runtime_directories")
+    if intact and isinstance(runtime_dirs, list) and runtime_dirs:
+        intact = all(
+            isinstance(name, str)
+            and name
+            and (bin_dir / name).is_dir()
+            and any(path.is_file() for path in (bin_dir / name).rglob("*"))
+            for name in runtime_dirs
+        )
+    if intact and marker.get("backend") == "rocm":
+        intact = (
+            marker.get("runtime_wiring_version") == 2
+            and isinstance(runtime_dirs, list)
+            and set(runtime_dirs) == {"hipblaslt", "rocblas"}
+        )
     if not intact:
         logger.warning(
             "slim whisper install is missing its linked ggml runtime at "

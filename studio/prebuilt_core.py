@@ -1981,6 +1981,8 @@ class InstallSelection:
     # Filenames the slim wiring hardlinked beside the server; the sidecar launch
     # guard verifies exactly these instead of hardcoded per-OS names.
     linked_libraries: tuple[str, ...] | None = None
+    runtime_wiring_version: int | None = None
+    linked_runtime_directories: tuple[str, ...] | None = None
 
     def fingerprint(self) -> str:
         return compute_install_fingerprint(
@@ -2053,6 +2055,10 @@ def write_prebuilt_metadata(ops: ModuleOps, install_dir: Path, selection: Instal
         payload["linked_from"] = selection.linked_from
         if selection.linked_libraries is not None:
             payload["linked_libraries"] = list(selection.linked_libraries)
+        if selection.runtime_wiring_version is not None:
+            payload["runtime_wiring_version"] = selection.runtime_wiring_version
+        if selection.linked_runtime_directories is not None:
+            payload["linked_runtime_directories"] = list(selection.linked_runtime_directories)
     ops.metadata_path(install_dir).write_text(
         json.dumps(payload, indent = 2) + "\n", encoding = "utf-8"
     )

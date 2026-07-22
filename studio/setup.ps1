@@ -3825,8 +3825,22 @@ if ($env:WHISPER_SERVER_PATH -or $env:UNSLOTH_WHISPER_CPP_PATH) {
         }
     } elseif ($whisperExit -eq 3) {
         step "whisper.cpp" "install busy; keeping existing runtime" "Yellow"
+    } elseif ($whisperExit -eq 2) {
+        $requiredWhisperLlamaTag = "unknown"
+        if ($whisperOutput -match "slim bundle requires llama\.cpp ([^;\s]+)") {
+            $requiredWhisperLlamaTag = $Matches[1]
+        }
+        $installedWhisperLlamaTag = "unknown"
+        $llamaMarker = Join-Path $LlamaCppDir "UNSLOTH_PREBUILT_INFO.json"
+        if (Test-Path -LiteralPath $llamaMarker -PathType Leaf) {
+            try {
+                $markerPayload = Get-Content -LiteralPath $llamaMarker -Raw | ConvertFrom-Json
+                if ($markerPayload.release_tag) { $installedWhisperLlamaTag = $markerPayload.release_tag }
+            } catch {}
+        }
+        step "whisper.cpp" "no compatible prebuilt (installed llama.cpp $installedWhisperLlamaTag; whisper requires $requiredWhisperLlamaTag); curated whisper.cpp dictation is unavailable; publish paired releases in llama.cpp then whisper.cpp order; browser and Transformers dictation remain available" "Yellow"
     } else {
-        substep "whisper.cpp prebuilt unavailable; local dictation uses Transformers STT"
+        step "whisper.cpp" "prebuilt install failed; curated whisper.cpp dictation is unavailable; retry setup or inspect verbose output; browser and Transformers dictation remain available" "Yellow"
     }
 }
 

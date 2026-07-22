@@ -309,6 +309,16 @@ def test_whisper_plan_skips_source_build(monkeypatch, tmp_path):
     assert plan["phase"] is None
 
 
+def test_whisper_update_targets_canonical_root_when_inner_marker_exists(tmp_path):
+    install_dir = tmp_path / "whisper.cpp"
+    binary = install_dir / "build" / "bin" / "whisper-server"
+    binary.parent.mkdir(parents=True)
+    binary.write_text("stub")
+    (install_dir / WHISPER_MARKER).write_text("{}")
+    (binary.parent / WHISPER_MARKER).write_text("{}")
+    assert wupd._install_dir_for(str(binary)) == install_dir
+
+
 def test_whisper_plan_skips_when_not_installed(monkeypatch):
     monkeypatch.setattr(wupd, "_find_binary", lambda: None)
     plan = wupd.chained_phase_plan()

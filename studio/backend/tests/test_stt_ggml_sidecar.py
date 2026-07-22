@@ -67,6 +67,7 @@ def test_custom_repo_ids_are_rejected():
 
 def test_curated_ids_mirror_transformers_sidecar():
     from core.inference.stt_sidecar import STT_MODELS
+
     assert list(GGML_STT_MODELS.keys()) == list(STT_MODELS.keys())
 
 
@@ -134,6 +135,9 @@ def _slim_install(
     install_kind = "slim",
     with_ggml = True,
     linked_libraries = None,
+    backend = "cpu",
+    linked_runtime_directories = None,
+    runtime_wiring_version = None,
 ) -> str:
     """A managed-looking install tree: marker at the root, server in build/bin."""
     install_dir = tmp_path / "whisper.cpp"
@@ -142,11 +146,25 @@ def _slim_install(
     binary = bin_dir / "whisper-server"
     binary.write_text("#!/bin/sh\n")
     binary.chmod(0o755)
-    marker: dict = {"component": "whisper.cpp", "release_tag": "v1.9.1-unsloth.1"}
+    marker: dict = {
+        "schema_version": 1,
+        "component": "whisper.cpp",
+        "release_tag": "v1.9.1-unsloth.1",
+        "backend": backend,
+        "paired_llama_tag": "b10069-mix-fb3d4ca",
+    }
     if install_kind is not None:
         marker["install_kind"] = install_kind
     if linked_libraries is not None:
         marker["linked_libraries"] = linked_libraries
+    if linked_runtime_directories is not None:
+        marker["linked_runtime_directories"] = linked_runtime_directories
+        for name in linked_runtime_directories:
+            catalog = bin_dir / name
+            catalog.mkdir()
+            (catalog / "kernel.dat").write_bytes(b"kernel")
+    if runtime_wiring_version is not None:
+        marker["runtime_wiring_version"] = runtime_wiring_version
     (install_dir / "UNSLOTH_WHISPER_PREBUILT_INFO.json").write_text(json.dumps(marker))
     if with_ggml:
         names = (
@@ -171,7 +189,8 @@ def test_slim_guard_flags_missing_ggml_links(monkeypatch, tmp_path):
 
 
 def test_slim_guard_passes_with_links_in_place(monkeypatch, tmp_path):
-    binary = _slim_install(tmp_path, with_ggml = True)
+    names = ["libggml.so.0", "libggml-base.so.0"]
+    binary = _slim_install(tmp_path, with_ggml=True, linked_libraries=names)
     assert ggml_module.slim_runtime_intact(binary) is True
     monkeypatch.setattr(ggml_module, "find_whisper_server_binary", lambda: binary)
     assert ggml_module.ensure_engine_available() == binary
@@ -192,20 +211,45 @@ def test_slim_guard_verifies_the_marker_linked_libraries(monkeypatch, tmp_path):
     assert ggml_module.ensure_engine_available() == binary
 
 
-def test_slim_guard_malformed_linked_libraries_uses_legacy_names(tmp_path):
-    # A non-list / empty field falls back to the per-OS core ggml globs, so old
-    # markers and hand-edited ones keep the pre-field behavior.
+def test_slim_guard_malformed_authoritative_marker_fails_closed(tmp_path):
     for bad in ("not-a-list", [], [1, 2]):
         root = tmp_path / f"case_{type(bad).__name__}_{len(str(bad))}"
         root.mkdir()
         binary = _slim_install(root, with_ggml = True, linked_libraries = bad)
-        assert ggml_module.slim_runtime_intact(binary) is True
-        broken = _slim_install(
-            tmp_path / f"broken_{type(bad).__name__}_{len(str(bad))}",
-            with_ggml = False,
-            linked_libraries = bad,
-        )
-        assert ggml_module.slim_runtime_intact(broken) is False
+        assert ggml_module.slim_runtime_intact(binary) is False
+
+
+def test_slim_guard_prefers_authoritative_root_marker(tmp_path):
+    names = ["libggml.so.0", "libggml-base.so.0"]
+    binary = _slim_install(tmp_path, with_ggml = True, linked_libraries = names)
+    packaging_marker = Path(binary).parent / "UNSLOTH_WHISPER_PREBUILT_INFO.json"
+    packaging_marker.write_text(json.dumps({"backend": "slim", "release_tag": "packaging"}))
+    assert ggml_module._whisper_install_marker(binary)["install_kind"] == "slim"
+    assert ggml_module.slim_runtime_intact(binary) is True
+
+
+def test_slim_guard_rejects_invalid_root_even_with_inner_marker(tmp_path):
+    binary = _slim_install(tmp_path, with_ggml = True, linked_libraries = ["libggml.so.0"])
+    root_marker = Path(binary).parents[2] / "UNSLOTH_WHISPER_PREBUILT_INFO.json"
+    root_marker.write_text("not json")
+    (Path(binary).parent / root_marker.name).write_text(json.dumps({"backend": "slim"}))
+    assert ggml_module.slim_runtime_intact(binary) is False
+
+
+def test_slim_guard_rejects_missing_rocm_catalog(tmp_path):
+    names = ["libggml.so.0", "libggml-base.so.0", "libggml-hip.so"]
+    binary = _slim_install(
+        tmp_path,
+        linked_libraries = names,
+        backend = "rocm",
+        linked_runtime_directories = ["hipblaslt", "rocblas"],
+        runtime_wiring_version = 2,
+    )
+    bin_dir = Path(binary).parent
+    (bin_dir / "libggml-hip.so").write_bytes(b"ggml")
+    assert ggml_module.slim_runtime_intact(binary) is True
+    (bin_dir / "rocblas" / "kernel.dat").unlink()
+    assert ggml_module.slim_runtime_intact(binary) is False
 
 
 def test_slim_guard_ignores_fat_and_markerless_installs(tmp_path):
@@ -471,6 +515,47 @@ def test_training_forces_whisper_server_off_gpu(monkeypatch):
     training.load("small")
     assert "--no-gpu" in commands[1]
     training.unload()
+
+
+def test_cpu_root_marker_forces_no_gpu_despite_inner_packaging_marker(monkeypatch, tmp_path):
+    names = ["libggml.so.0", "libggml-base.so.0"]
+    binary = _slim_install(tmp_path, with_ggml=True, linked_libraries=names)
+    (Path(binary).parent / "UNSLOTH_WHISPER_PREBUILT_INFO.json").write_text(
+        json.dumps({"backend": "slim"})
+    )
+    monkeypatch.setattr(ggml_module, "find_whisper_server_binary", lambda: binary)
+    monkeypatch.setattr(ggml_module, "_cached_model_path", lambda model_id: "/tmp/ggml.bin")
+    commands: list[list[str]] = []
+
+    class FakeProcess:
+        pid = 4244
+
+        def __init__(self, command, *args, **kwargs):
+            commands.append(command)
+
+        def poll(self):
+            return None
+
+        def terminate(self):
+            pass
+
+        def wait(self, timeout=None):
+            return 0
+
+    monkeypatch.setattr(ggml_module.subprocess, "Popen", FakeProcess)
+    monkeypatch.setattr(ggml_module, "adopt_pid", lambda pid: None)
+    monkeypatch.setattr(ggml_module, "forget_pid", lambda pid: None)
+    monkeypatch.setattr(ggml_module, "_training_active", lambda: False)
+    monkeypatch.setattr(
+        GgmlSttSidecar,
+        "_wait_for_server",
+        staticmethod(lambda process, port, cancel_event=None: None),
+    )
+
+    sidecar = GgmlSttSidecar()
+    sidecar.load("small")
+    assert "--no-gpu" in commands[0]
+    sidecar.unload()
 
 
 def test_startup_is_cancellable_before_training(monkeypatch):

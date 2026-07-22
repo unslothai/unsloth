@@ -37,6 +37,7 @@ from typing import Optional
 import structlog
 
 from utils.prebuilt import update_flow as _flow
+from utils.prebuilt.whisper_layout import canonical_install_root
 from utils.whisper_cpp_freshness import (
     _INSTALL_MARKER_NAME,
     check_prebuilt_freshness,
@@ -77,6 +78,9 @@ def _install_dir_for(binary_path: Optional[str]) -> Optional[Path]:
     """The directory holding UNSLOTH_WHISPER_PREBUILT_INFO.json: the install root
     install_whisper_prebuilt.py wrote (``<install-dir>`` whose canonical server is
     ``build/bin/whisper-server``) and the one we re-install into."""
+    root = canonical_install_root(binary_path)
+    if root is not None and (root / _INSTALL_MARKER_NAME).is_file():
+        return root
     return _flow.install_dir_for(binary_path, marker_name = _INSTALL_MARKER_NAME)
 
 

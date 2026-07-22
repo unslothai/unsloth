@@ -2012,12 +2012,10 @@ else
         step "whisper.cpp" "install busy; keeping existing runtime" "$C_WARN"
         rm -f "$_WHISPER_LOG"
     else
-        # No usable prebuilt (fork release/pins not published yet, or unsupported
-        # host). A source build is opt-in (UNSLOTH_WHISPER_FORCE_COMPILE=1) so a
-        # toolchain host does not silently recompile whisper.cpp on every update
-        # while the prebuilt is unavailable; otherwise stay quiet -- Transformers
-        # STT and browser dictation remain the fallback.
-        rm -f "$_WHISPER_LOG"
+        # A source build is opt-in. Keep the installer log until fallback has
+        # finished so setup can distinguish release skew from an operational
+        # installer failure and report the exact pairing when available.
+        _WHISPER_RECOVERED=false
         _WHISPER_BUILD="$SCRIPT_DIR/../scripts/build_whisper_cpp.sh"
         if [ "${UNSLOTH_WHISPER_FORCE_COMPILE:-0}" = "1" ] && [ -f "$_WHISPER_BUILD" ] \
                 && command -v cmake >/dev/null 2>&1 && command -v git >/dev/null 2>&1; then
@@ -2028,16 +2026,33 @@ else
             # prebuilt over the source binary. Drop it before building.
             rm -f "$WHISPER_CPP_DIR/UNSLOTH_WHISPER_PREBUILT_INFO.json" 2>/dev/null || true
             if run_quiet_no_exit "whisper.cpp source build" sh "$_WHISPER_BUILD"; then
+                _WHISPER_RECOVERED=true
                 step "whisper.cpp" "source build installed"
                 if [ "$_STUDIO_HOME_IS_CUSTOM" = true ] && [ -d "$WHISPER_CPP_DIR" ]; then
                     : > "$WHISPER_CPP_DIR/$_STUDIO_OWNED_MARKER" 2>/dev/null || true
                 fi
             else
-                verbose_substep "whisper.cpp unavailable; local dictation uses Transformers STT"
+                :
             fi
-        else
-            verbose_substep "whisper.cpp prebuilt unavailable; local dictation uses Transformers STT"
         fi
+        if [ "$_WHISPER_RECOVERED" != true ]; then
+            if [ "$_WHISPER_STATUS" -eq 2 ]; then
+                _WHISPER_REQUIRED_TAG="$(sed -n 's/.*slim bundle requires llama\.cpp \([^; ]*\).*/\1/p' "$_WHISPER_LOG" | tail -n 1)"
+                _WHISPER_INSTALLED_TAG="$(python - "$UNSLOTH_HOME/llama.cpp/UNSLOTH_PREBUILT_INFO.json" <<'PY' 2>/dev/null || true
+import json, sys
+try:
+    print(json.load(open(sys.argv[1], encoding="utf-8")).get("release_tag", ""))
+except Exception:
+    pass
+PY
+)"
+                _WHISPER_PAIRING="installed llama.cpp ${_WHISPER_INSTALLED_TAG:-unknown}; whisper requires ${_WHISPER_REQUIRED_TAG:-unknown}"
+                step "whisper.cpp" "no compatible prebuilt ($_WHISPER_PAIRING); curated whisper.cpp dictation is unavailable; publish the paired releases in llama.cpp then whisper.cpp order; browser and Transformers dictation remain available" "$C_WARN"
+            else
+                step "whisper.cpp" "prebuilt install failed; curated whisper.cpp dictation is unavailable; retry setup or inspect verbose output; browser and Transformers dictation remain available" "$C_WARN"
+            fi
+        fi
+        rm -f "$_WHISPER_LOG"
     fi
 fi
 

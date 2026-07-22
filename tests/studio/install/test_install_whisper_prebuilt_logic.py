@@ -834,6 +834,65 @@ def test_link_ggml_runtime_wires_windows_libomp(tmp_path):
     assert not (whisper_bin / "llama.dll").exists()
 
 
+def test_assemble_does_not_copy_packaging_marker_beside_server(tmp_path):
+    host = _host("linux", "x64")
+    bundle = tmp_path / "bundle"
+    bundle.mkdir()
+    (bundle / "whisper-server").write_text("server")
+    (bundle / M.METADATA_FILENAME).write_text('{"backend":"slim"}')
+    staged = tmp_path / "staged"
+    M.assemble_install_tree(bundle, staged, host)
+    assert not (staged / "build" / "bin" / M.METADATA_FILENAME).exists()
+
+
+def test_rocm_runtime_wires_packaged_dependency_closure_and_catalogs(tmp_path, monkeypatch):
+    llama_bin = _fake_llama_bin(tmp_path, backend_module="libggml-hip.so")
+    for name in ("libamdhip64.so.6", "libhipblas.so.2", "libcustomrocm.so.1"):
+        (llama_bin / name).write_bytes(name.encode())
+    for directory in M.SLIM_ROCM_RUNTIME_DIRS:
+        catalog = llama_bin / directory / "library" / "gfx1100"
+        catalog.mkdir(parents=True)
+        (catalog / "kernel.dat").write_bytes(directory.encode())
+
+    dependencies = {
+        "libggml-hip.so": {"libamdhip64.so.6", "libcustomrocm.so.1"},
+        "libamdhip64.so.6": {"libhipblas.so.2"},
+    }
+    monkeypatch.setattr(M, "_elf_needed", lambda path: dependencies.get(path.name, set()))
+    whisper_bin = tmp_path / "whisper-bin"
+    linked = M.link_ggml_runtime(llama_bin, whisper_bin, backend="rocm")
+    linked_dirs = M.link_runtime_directories(llama_bin, whisper_bin, backend="rocm")
+
+    assert "libcustomrocm.so.1" in linked
+    assert "libhipblas.so.2" in linked
+    assert linked_dirs == ["hipblaslt", "rocblas"]
+    for directory in linked_dirs:
+        linked_catalog = whisper_bin / directory / "library" / "gfx1100" / "kernel.dat"
+        source_catalog = llama_bin / directory / "library" / "gfx1100" / "kernel.dat"
+        assert linked_catalog.stat().st_ino == source_catalog.stat().st_ino
+
+
+def test_rocm_runtime_requires_both_kernel_catalogs(tmp_path):
+    llama_bin = _fake_llama_bin(tmp_path, backend_module="libggml-hip.so")
+    (llama_bin / "hipblaslt").mkdir()
+    (llama_bin / "hipblaslt" / "kernel.dat").write_bytes(b"kernel")
+    with pytest.raises(PrebuiltFallback, match="rocblas"):
+        M.link_runtime_directories(llama_bin, tmp_path / "whisper-bin", backend="rocm")
+
+
+def test_rocm_runtime_catalog_copy_fallback(tmp_path, monkeypatch):
+    llama_bin = _fake_llama_bin(tmp_path, backend_module="libggml-hip.so")
+    for directory in M.SLIM_ROCM_RUNTIME_DIRS:
+        catalog = llama_bin / directory
+        catalog.mkdir()
+        (catalog / "kernel.dat").write_bytes(directory.encode())
+    monkeypatch.setattr(M.os, "link", lambda *args: (_ for _ in ()).throw(OSError("xdev")))
+    whisper_bin = tmp_path / "whisper-bin"
+    M.link_runtime_directories(llama_bin, whisper_bin, backend="rocm")
+    for directory in M.SLIM_ROCM_RUNTIME_DIRS:
+        assert (whisper_bin / directory / "kernel.dat").read_bytes() == directory.encode()
+
+
 def test_existing_install_requires_executable_server(tmp_path, monkeypatch):
     # A marker-matching install with a non-executable server must reinstall:
     # the sidecar refuses it via os.access(X_OK), so "already matches" would
@@ -862,8 +921,15 @@ def test_existing_slim_install_requires_wired_libraries(tmp_path, monkeypatch):
     server.write_text("bin")
     server.chmod(0o755)
     monkeypatch.setattr(M, "installed_server_path", lambda d, h: server)
-    marker = {"install_kind": "slim", "linked_libraries": ["libggml.so.0"]}
+    marker = {
+        "install_kind": "slim",
+        "runtime_wiring_version": M.SLIM_RUNTIME_WIRING_VERSION,
+        "linked_libraries": ["libggml.so.0"],
+    }
     monkeypatch.setattr(M, "load_prebuilt_metadata", lambda d: marker)
+    marker.pop("runtime_wiring_version")
+    assert M.existing_install_matches(tmp_path, host, object()) is False
+    marker["runtime_wiring_version"] = M.SLIM_RUNTIME_WIRING_VERSION
     assert M.existing_install_matches(tmp_path, host, object()) is False
     (server.parent / "libggml.so.0").write_text("lib")
     assert M.existing_install_matches(tmp_path, host, object()) is True
@@ -954,6 +1020,8 @@ def test_slim_install_wires_links_and_marker(tmp_path, monkeypatch):
         "libggml-cuda.so",
         "libggml.so.0",
     ]
+    assert marker["runtime_wiring_version"] == M.SLIM_RUNTIME_WIRING_VERSION
+    assert marker["linked_runtime_directories"] == []
 
 
 def test_slim_links_survive_a_llama_dir_swap(tmp_path, monkeypatch):

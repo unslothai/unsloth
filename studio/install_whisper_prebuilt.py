@@ -54,6 +54,7 @@ from __future__ import annotations
 
 import argparse
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -166,6 +167,14 @@ SLIM_BACKEND_MODULE_GLOBS = {
 # the loader needs it next to whisper-server.exe (MSVC x64 uses System32
 # vcomp140.dll; Linux ggml needs system libgomp.so.1, which llama already requires).
 SLIM_GGML_LIBRARY_GLOBS = ("libggml*", "ggml*.dll", "libomp*.dll")
+SLIM_ROCM_LIBRARY_GLOBS = (
+    "libamd*.so*",
+    "libhip*.so*",
+    "libhsa*.so*",
+    "libroc*.so*",
+)
+SLIM_ROCM_RUNTIME_DIRS = ("hipblaslt", "rocblas")
+SLIM_RUNTIME_WIRING_VERSION = 2
 
 INSTALL_STAGING_ROOT_NAME = ".staging"
 
@@ -519,6 +528,8 @@ def _assemble_install_tree(bundle_root: Path, staged_root: Path, host: HostInfo)
     bin_dir = runtime_bin_dir(staged_root, host)
     bin_dir.mkdir(parents = True, exist_ok = True)
     for entry in sorted(bundle_root.iterdir()):
+        if entry.name == METADATA_FILENAME:
+            continue
         dest = bin_dir / entry.name
         if entry.is_dir() and not entry.is_symlink():
             shutil.copytree(entry, dest, symlinks = True)
@@ -567,7 +578,84 @@ def validate_staged_server(staged_root: Path, host: HostInfo) -> None:
 
 
 # ── Slim install wiring (llama ggml runtime into the whisper bin dir) ──
-def link_ggml_runtime(llama_bin_dir: Path, whisper_bin_dir: Path) -> list[str]:
+def _elf_needed(path: Path) -> set[str] | None:
+    """Read ELF DT_NEEDED names when a standard inspection tool is available."""
+    commands = (("readelf", "-d"), ("objdump", "-p"))
+    for command in commands:
+        try:
+            result = subprocess.run(
+                [*command, str(path)], capture_output=True, text=True, timeout=10
+            )
+        except (OSError, subprocess.SubprocessError):
+            continue
+        if result.returncode != 0:
+            continue
+        needed: set[str] = set()
+        for line in result.stdout.splitlines():
+            match = re.search(r"\(NEEDED\).*\[([^]]+)\]", line)
+            if match:
+                needed.add(match.group(1))
+                continue
+            match = re.match(r"\s*NEEDED\s+(\S+)", line)
+            if match:
+                needed.add(match.group(1))
+        return needed
+    return None
+
+
+def _runtime_library_sources(llama_bin_dir: Path, backend: str | None) -> list[Path]:
+    patterns = list(SLIM_GGML_LIBRARY_GLOBS)
+    sources = {
+        path for pattern in patterns for path in llama_bin_dir.glob(pattern) if path.is_file()
+    }
+    if backend == "rocm":
+        by_name = {path.name: path for path in llama_bin_dir.iterdir() if path.is_file()}
+        pending = list(sources)
+        inspected_hip = False
+        system_libraries = {
+            "libc.so.6",
+            "libdl.so.2",
+            "libgcc_s.so.1",
+            "libm.so.6",
+            "libpthread.so.0",
+            "librt.so.1",
+            "libstdc++.so.6",
+        }
+        while pending:
+            source = pending.pop()
+            needed = _elf_needed(source)
+            if needed is None:
+                continue
+            if source.name.startswith("libggml-hip"):
+                inspected_hip = True
+            for name in needed - system_libraries:
+                dependency = by_name.get(name)
+                if dependency is not None and dependency not in sources:
+                    sources.add(dependency)
+                    pending.append(dependency)
+        if not inspected_hip:
+            sources.update(
+                path
+                for pattern in SLIM_ROCM_LIBRARY_GLOBS
+                for path in llama_bin_dir.glob(pattern)
+                if path.is_file()
+            )
+    return sorted(sources)
+
+
+def _link_or_copy(source: Path, destination: Path) -> None:
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    if destination.exists() or destination.is_symlink():
+        destination.unlink()
+    try:
+        os.link(source, destination)
+    except OSError:
+        shutil.copy2(source, destination)
+
+
+def link_ggml_runtime(
+    llama_bin_dir: Path, whisper_bin_dir: Path, *, backend: str | None = None
+) -> list[str]:
     """Hardlink every ggml library from the llama runtime into the whisper bin
     dir; returns the wired filenames (sorted) for the marker / sidecar launch guard.
 
@@ -577,30 +665,37 @@ def link_ggml_runtime(llama_bin_dir: Path, whisper_bin_dir: Path) -> list[str]:
     against. Falls back to a copy where linking is unsupported or crosses devices.
     Re-run on every install/update so the links track the current pairing.
     """
-    sources = sorted(
-        {
-            path
-            for pattern in SLIM_GGML_LIBRARY_GLOBS
-            for path in llama_bin_dir.glob(pattern)
-            if path.is_file()
-        }
-    )
+    sources = _runtime_library_sources(llama_bin_dir, backend)
     if not any(source.name.startswith(("libggml", "ggml")) for source in sources):
         raise PrebuiltFallback(
             f"no ggml libraries found in {llama_bin_dir} to pair the slim whisper install"
         )
     whisper_bin_dir.mkdir(parents = True, exist_ok = True)
     for source in sources:
-        dest = whisper_bin_dir / source.name
-        if dest.exists() or dest.is_symlink():
-            dest.unlink()
-        try:
-            # Follows a libggml.so.0 -> libggml.so.0.x symlink to its inode, so
-            # every created name is a real hardlink surviving a dir swap.
-            os.link(source, dest)
-        except OSError:
-            shutil.copy2(source, dest)
+        # Follows a libggml.so.0 -> libggml.so.0.x symlink to its inode, so every
+        # created name is a real hardlink surviving a dir swap.
+        _link_or_copy(source, whisper_bin_dir / source.name)
     return [source.name for source in sources]
+
+
+def link_runtime_directories(
+    llama_bin_dir: Path, whisper_bin_dir: Path, *, backend: str
+) -> list[str]:
+    """Mirror GPU kernel catalogs that packaged ROCm libraries load at runtime."""
+    if backend != "rocm":
+        return []
+    linked: list[str] = []
+    for name in SLIM_ROCM_RUNTIME_DIRS:
+        source_root = llama_bin_dir / name
+        if not source_root.is_dir():
+            raise PrebuiltFallback(f"paired ROCm runtime is missing its {name} kernel catalog")
+        files = [path for path in source_root.rglob("*") if path.is_file()]
+        if not files:
+            raise PrebuiltFallback(f"paired ROCm runtime has an empty {name} kernel catalog")
+        for source in files:
+            _link_or_copy(source, whisper_bin_dir / name / source.relative_to(source_root))
+        linked.append(name)
+    return linked
 
 
 def prepare_runtime_payload(staged_root: Path, host: HostInfo, selection: Any) -> Any:
@@ -610,9 +705,17 @@ def prepare_runtime_payload(staged_root: Path, host: HostInfo, selection: Any) -
     nothing (the archive carries its ggml) and return None."""
     if getattr(selection, "install_kind", None) != "slim" or not selection.linked_from:
         return None
-    linked = link_ggml_runtime(Path(selection.linked_from), runtime_bin_dir(staged_root, host))
+    source = Path(selection.linked_from)
+    destination = runtime_bin_dir(staged_root, host)
+    linked = link_ggml_runtime(source, destination, backend=selection.backend)
+    linked_dirs = link_runtime_directories(source, destination, backend=selection.backend)
     log(f"slim install: hardlinked {len(linked)} ggml libraries from {selection.linked_from}")
-    return replace(selection, linked_libraries = tuple(linked))
+    return replace(
+        selection,
+        linked_libraries=tuple(linked),
+        runtime_wiring_version=SLIM_RUNTIME_WIRING_VERSION,
+        linked_runtime_directories=tuple(linked_dirs),
+    )
 
 
 # ── Metadata / marker ──
@@ -685,13 +788,44 @@ def existing_install_matches(
     marker = load_prebuilt_metadata(install_dir) or {}
     if marker.get("install_kind") == "slim":
         bin_dir = server.parent
-        missing = [
-            name for name in marker.get("linked_libraries") or [] if not (bin_dir / name).is_file()
-        ]
+        if marker.get("runtime_wiring_version") != SLIM_RUNTIME_WIRING_VERSION:
+            log(f"existing slim install at {install_dir} has stale runtime wiring; reinstalling")
+            return False
+        linked_libraries = marker.get("linked_libraries")
+        if (
+            not isinstance(linked_libraries, list)
+            or not linked_libraries
+            or not all(
+                isinstance(name, str) and name and Path(name).name == name
+                for name in linked_libraries
+            )
+        ):
+            log(f"existing slim install at {install_dir} has invalid runtime wiring; reinstalling")
+            return False
+        missing = [name for name in linked_libraries if not (bin_dir / name).is_file()]
         if missing:
             log(
                 f"existing slim install at {install_dir} is missing wired ggml "
                 f"libraries ({', '.join(missing[:4])}); reinstalling"
+            )
+            return False
+        runtime_dirs = marker.get("linked_runtime_directories")
+        if marker.get("backend") == "rocm" and (
+            not isinstance(runtime_dirs, list) or set(runtime_dirs) != set(SLIM_ROCM_RUNTIME_DIRS)
+        ):
+            log(f"existing ROCm install at {install_dir} lacks kernel catalogs; reinstalling")
+            return False
+        missing_dirs = [
+            name
+            for name in runtime_dirs or []
+            if not isinstance(name, str)
+            or not (bin_dir / name).is_dir()
+            or not any(path.is_file() for path in (bin_dir / name).rglob("*"))
+        ]
+        if missing_dirs:
+            log(
+                f"existing slim install at {install_dir} is missing runtime directories "
+                f"({', '.join(str(name) for name in missing_dirs[:4])}); reinstalling"
             )
             return False
     return True
