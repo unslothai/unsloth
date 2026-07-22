@@ -166,7 +166,7 @@ def test_research_presentation_is_integrated() -> None:
     assert '? "30%"' in page
     assert '? "58%"' in page
     assert "key={openResearchRunId}" in page
-    assert "effectiveDeepResearchEnabled ||" in thread
+    assert "effectiveDeepResearchEnabled ? (" in thread
     assert "replayFrom: session?.lastAppliedSeq ?? 0" in coordinator
     assert "loadBool(CHAT_DEEP_RESEARCH_ENABLED_KEY, false)" in store
     checkpoint_update = store.split("setCheckpoint: (modelId, ggufVariant) =>", 1)[1].split(
