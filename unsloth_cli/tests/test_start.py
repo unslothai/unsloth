@@ -1587,6 +1587,18 @@ def test_consume_positional_model_leading_token():
     assert rest == ["--continue"]
 
 
+def test_looks_like_model_leaves_existing_local_dir_for_agent(tmp_path, monkeypatch):
+    # A relative `owner/repo` that actually exists (e.g. an OpenCode project dir) must
+    # stay an agent argument, not be consumed as a model.
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "owner" / "repo").mkdir(parents = True)
+    assert start._looks_like_model("owner/repo") is False
+    model, rest = start._consume_positional_model(None, ["owner/repo"])
+    assert model is None and rest == ["owner/repo"]
+    # The same shape, when it does not exist locally, is still treated as a model.
+    assert start._looks_like_model("owner/absent-repo") is True
+
+
 def test_consume_positional_model_ignores_non_leading_and_explicit_model():
     # An org/name that is an option value (not leading) is never stolen.
     model, rest = start._consume_positional_model(None, ["--profile", "owner/repo"])
@@ -1637,6 +1649,33 @@ def test_start_positional_model_defaults_variant_on_auto_serve(fake_studio, monk
     assert result.exit_code == 0, result.output
     assert captured["model"] == "unsloth/gemma-4-E2B-it-GGUF"
     assert captured["load"].gguf_variant == "UD-Q4_K_XL"
+
+
+def test_start_local_gguf_path_keeps_no_default_variant(fake_studio, monkeypatch, tmp_path):
+    # A local GGUF dir/path ending in -GGUF must NOT get a forced default quant: the dir
+    # may only hold a different quant, and pre-PR the server picked whatever was available.
+    monkeypatch.setenv("UNSLOTH_STUDIO_URL", "http://127.0.0.1:8888")
+    monkeypatch.setattr(start, "find_studio_server", lambda: None)
+    local = tmp_path / "Qwen3-1.7B-GGUF"
+    local.mkdir()
+    captured = {}
+    fake = SimpleNamespace(pid = 1, poll = lambda: None)
+
+    def fake_start(base, model, load, server_options = None):
+        captured["load"] = load
+        start._auto_served_server = fake
+        return fake
+
+    monkeypatch.setattr(start, "_start_studio_server", fake_start)
+    monkeypatch.setattr(start, "_shutdown_server", lambda server: None)
+    monkeypatch.setattr(start.shutil, "which", lambda _: "/usr/local/bin/claude")
+    monkeypatch.setattr(
+        start.subprocess, "run", lambda command, env: SimpleNamespace(returncode = 0)
+    )
+
+    result = CliRunner().invoke(start.start_app, ["claude", "--model", str(local)])
+    assert result.exit_code == 0, result.output
+    assert captured["load"].gguf_variant is None
 
 
 def test_start_studio_server_forwards_tool_flags_via_command_and_env(monkeypatch):

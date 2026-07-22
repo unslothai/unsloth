@@ -392,18 +392,17 @@ def _split_repo_variant(model: str) -> tuple:
     return repo, variant
 
 
-# A Hugging Face-style `org/name` id, optionally with a `:variant` suffix. Anchored so a
-# path, flag, or spaced token never matches.
-_MODEL_REPO_RE = re.compile(r"^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+(:[A-Za-z0-9._-]+)?$")
-
-
 def _looks_like_model(token: str) -> bool:
-    """True for a bare `org/name(:variant)` token that is not a flag, path or drive."""
-    if not token or " " in token or token.startswith(("-", "/", ".", "~")):
+    """True for a bare `org/name(:variant)` hub id that is not a flag or a local path.
+
+    Reuses `_is_hub_model_id`, so a relative dir like `owner/repo` that actually exists
+    is left for the agent (e.g. OpenCode opens it as a project) instead of being taken
+    as a model; a non-existent `org/name` is treated as a hub id.
+    """
+    if not token or token.startswith("-") or " " in token:
         return False
-    if len(token) >= 2 and token[1] == ":" and token[0].isalpha():  # Windows drive C:\...
-        return False
-    return bool(_MODEL_REPO_RE.match(token))
+    repo, _ = _split_repo_variant(token)
+    return _is_hub_model_id(repo)
 
 
 def _consume_positional_model(model: Optional[str], args: list) -> tuple:
@@ -1012,11 +1011,13 @@ def _require_studio(
         # returned base hit the same server we launch (not a portless :80).
         expected = _effective_base(expected)
         load = load or LoadOptions()
-        # A bare GGUF repo with no variant would let the fresh server pick an arbitrary
+        # A bare GGUF hub repo with no variant would let the fresh server pick an arbitrary
         # cached quant; default it so `unsloth start unsloth/Model-GGUF` is deterministic.
-        # Scoped to the auto-serve path so attaching to a loaded model never reloads.
-        if not load.gguf_variant and _split_repo_variant(model)[0].lower().endswith("-gguf"):
-            load = load._replace(gguf_variant = _default_gguf_variant(model))
+        # Only for a hub id (not a local path/dir, which may only hold a different quant) and
+        # only on the auto-serve path so attaching to a loaded model never reloads.
+        repo = _split_repo_variant(model)[0]
+        if not load.gguf_variant and repo.lower().endswith("-gguf") and _is_hub_model_id(repo):
+            load = load._replace(gguf_variant = _default_gguf_variant(repo))
         return expected, _start_studio_server(expected, model, load, server_options)
     model_hint = "" if model else " Pass --model to have it start one for you, or"
     _fail(
