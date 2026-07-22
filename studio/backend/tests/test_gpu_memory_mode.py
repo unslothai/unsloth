@@ -786,6 +786,39 @@ def test_cpu_only_pin_keeps_hip_even_with_prefer_rocr(monkeypatch):
     assert "ROCR_VISIBLE_DEVICES" not in env
 
 
+def _amd_sdk_torch_stub(monkeypatch):
+    # AMD SDK wheel: torch.version.hip is None but __version__ encodes rocm.
+    torch_stub = _types.ModuleType("torch")
+    torch_stub.version = _types.SimpleNamespace(hip = None)
+    torch_stub.__version__ = "2.9.1+rocm7.2.1"
+    monkeypatch.setitem(sys.modules, "torch", torch_stub)
+
+
+def test_amd_sdk_wheel_hip_none_still_masks_rocr(monkeypatch):
+    # An AMD SDK wheel leaves torch.version.hip unset but has "rocm" in __version__.
+    # It must still get the ROCR mask, else only CUDA_VISIBLE_DEVICES is set and an
+    # unsupported iGPU keeps enumerating and can crash llama-server.
+    _amd_sdk_torch_stub(monkeypatch)
+    env = {"HIP_VISIBLE_DEVICES": "9"}
+    LlamaCppBackend._emit_child_gpu_visibility(env, "0", prefer_rocr = True)
+    assert env["ROCR_VISIBLE_DEVICES"] == "0"
+    assert "HIP_VISIBLE_DEVICES" not in env
+
+
+def test_cuda_wheel_hip_none_gets_no_rocm_mask(monkeypatch):
+    # A CUDA wheel (hip=None, no "rocm" in __version__) must NOT get a HIP/ROCR mask
+    # -- only CUDA_VISIBLE_DEVICES -- so the version-string check can't false-positive.
+    torch_stub = _types.ModuleType("torch")
+    torch_stub.version = _types.SimpleNamespace(hip = None)
+    torch_stub.__version__ = "2.9.1+cu124"
+    monkeypatch.setitem(sys.modules, "torch", torch_stub)
+    env = {}
+    LlamaCppBackend._emit_child_gpu_visibility(env, "0", prefer_rocr = True)
+    assert env["CUDA_VISIBLE_DEVICES"] == "0"
+    assert "ROCR_VISIBLE_DEVICES" not in env
+    assert "HIP_VISIBLE_DEVICES" not in env
+
+
 # ── Diffusion single-device selection ───────────────────────────────────────
 
 

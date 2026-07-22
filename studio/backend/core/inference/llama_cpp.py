@@ -2905,7 +2905,10 @@ class LlamaCppBackend:
         env["CUDA_VISIBLE_DEVICES"] = pinned
         try:
             import torch as _torch
-            if getattr(_torch.version, "hip", None) is not None:
+            # torch.version.hip is set on ROCm, None on CUDA; AMD SDK wheels may
+            # leave it unset but encode "rocm" in __version__ (mirrors detect_hardware).
+            if getattr(_torch.version, "hip", None) is not None \
+                    or "rocm" in getattr(_torch, "__version__", "").lower():
                 if prefer_rocr and pinned != "-1":
                     env["ROCR_VISIBLE_DEVICES"] = pinned
                     env.pop("HIP_VISIBLE_DEVICES", None)
