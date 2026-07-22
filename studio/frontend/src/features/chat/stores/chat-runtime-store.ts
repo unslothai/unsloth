@@ -629,8 +629,7 @@ export function loadedGpuMemoryFields(resp: {
       loadedSplitRatio: null,
       ggufLayerCount: null,
       moeLayerCount: null,
-      // Host-memory residency is meaningful only for GGUF; a non-GGUF load has
-      // no mode, so reset to null (see the GGUF branch's note below).
+      ggufMemoryMode: null,
       activeMemoryMode: resp.gguf_memory_mode ?? null,
     };
   }
@@ -676,9 +675,9 @@ export function loadedGpuMemoryFields(resp: {
     // The picker reflects what loaded (the request sent the user's pick).
     selectedGpuIds: gpuIds,
     loadedGpuIds: gpuIds,
-    // Commit the residency the backend actually applied. GGUF host-memory
-    // residency is backend-owned (no UI editor); mirroring it here on every
-    // load path keeps activeMemoryMode from carrying a previous model's mode.
+    // Commit the residency the backend actually applied. Mirroring both the
+    // editable value and loaded baseline keeps every load path in sync.
+    ggufMemoryMode: resp.gguf_memory_mode ?? null,
     // Otherwise, after a switch (compare/auto/rollback load) the store keeps
     // the prior value, so an immediate same-model Apply could resend a stale
     // mode. Non-GGUF and auto loads report null, resetting it.
@@ -908,9 +907,10 @@ type ChatRuntimeStore = {
   /** Picked physical GPU indices (null = use all / automatic). */
   selectedGpuIds: number[] | null;
   loadedGpuIds: number[] | null;
+  /** Requested GGUF host-memory residency. null = backend/default behavior. */
+  ggufMemoryMode: "auto" | "pinned" | "resident" | null;
   /** Backend-reported GGUF host-memory residency mode (--mlock/--no-mmap),
-   *  mirrored read-only from /status. Set only via the API/extras; re-sent on a
-   *  same-model reload so an API-set value is preserved. null = unset/auto. */
+   *  used as the loaded baseline for status hydration and rollback. */
   activeMemoryMode: "auto" | "pinned" | "resident" | null;
   /** Persisted: expand every On Device GGUF repo's quantizations by default
    *  instead of waiting for a click. */
@@ -1361,6 +1361,7 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
   moeLayerCount: null,
   selectedGpuIds: null,
   loadedGpuIds: null,
+  ggufMemoryMode: null,
   activeMemoryMode: null,
   expandQuantizations: loadBool(CHAT_EXPAND_QUANTIZATIONS_KEY, false),
   showAllQuantizations: loadBool(CHAT_SHOW_ALL_QUANTIZATIONS_KEY, true),
@@ -1616,6 +1617,7 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
       moeLayerCount: null,
       selectedGpuIds: null,
       loadedGpuIds: null,
+      ggufMemoryMode: null,
       activeMemoryMode: null,
       loadedIsMultimodal: false,
       loadedIsDiffusion: false,

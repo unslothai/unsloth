@@ -25,6 +25,7 @@ export interface PerModelConfig {
   gpuLayers?: number;
   nCpuMoe?: number;
   selectedGpuIds?: number[] | null;
+  ggufMemoryMode?: "auto" | "pinned" | "resident";
 }
 
 export const DEFAULT_PER_MODEL_CONFIG: PerModelConfig = {
@@ -88,6 +89,7 @@ const STORED_CONFIG_FIELDS = new Set([
   "gpuLayers",
   "nCpuMoe",
   "selectedGpuIds",
+  "ggufMemoryMode",
 ]);
 
 function normalizeGpuFields(partial: RawConfig): {
@@ -95,12 +97,14 @@ function normalizeGpuFields(partial: RawConfig): {
   gpuLayers?: number;
   nCpuMoe?: number;
   selectedGpuIds?: number[] | null;
+  ggufMemoryMode?: "auto" | "pinned" | "resident";
 } {
   const out: {
     gpuMemoryMode?: "auto" | "manual";
     gpuLayers?: number;
     nCpuMoe?: number;
     selectedGpuIds?: number[] | null;
+    ggufMemoryMode?: "auto" | "pinned" | "resident";
   } = {};
   // Only "manual" is a real override; persisting "auto" would pin the model and
   // stop it following later changes to the global GPU Memory preference.
@@ -129,6 +133,13 @@ function normalizeGpuFields(partial: RawConfig): {
     )
   ) {
     out.selectedGpuIds = partial.selectedGpuIds.map((n) => Math.trunc(n));
+  }
+  if (
+    partial.ggufMemoryMode === "auto" ||
+    partial.ggufMemoryMode === "pinned" ||
+    partial.ggufMemoryMode === "resident"
+  ) {
+    out.ggufMemoryMode = partial.ggufMemoryMode;
   }
   return out;
 }
@@ -298,6 +309,12 @@ function legacyEntryToConfig(raw: Record<string, unknown>): PerModelConfig {
         : Array.isArray(raw.selectedGpuIds)
           ? (raw.selectedGpuIds as number[])
           : undefined,
+    ggufMemoryMode:
+      raw.ggufMemoryMode === "auto" ||
+      raw.ggufMemoryMode === "pinned" ||
+      raw.ggufMemoryMode === "resident"
+        ? raw.ggufMemoryMode
+        : undefined,
   });
 }
 
@@ -601,7 +618,8 @@ function gpuFieldsAtDefault(config: PerModelConfig): boolean {
     (config.gpuMemoryMode ?? "auto") === "auto" &&
     (config.gpuLayers == null || config.gpuLayers < 0) &&
     (config.nCpuMoe == null || config.nCpuMoe === 0) &&
-    config.selectedGpuIds == null
+    config.selectedGpuIds == null &&
+    config.ggufMemoryMode == null
   );
 }
 

@@ -28,6 +28,7 @@ export function useActiveModelConfig(): ActiveModelConfigState {
   const gpuLayers = useChatRuntimeStore((s) => s.gpuLayers);
   const nCpuMoe = useChatRuntimeStore((s) => s.nCpuMoe);
   const selectedGpuIds = useChatRuntimeStore((s) => s.selectedGpuIds);
+  const ggufMemoryMode = useChatRuntimeStore((s) => s.ggufMemoryMode);
 
   const isGguf =
     activeGgufVariant != null ||
@@ -56,6 +57,7 @@ export function useActiveModelConfig(): ActiveModelConfigState {
       gpuLayers,
       nCpuMoe,
       selectedGpuIds,
+      ggufMemoryMode: ggufMemoryMode ?? undefined,
     };
   }, [
     checkpoint,
@@ -71,6 +73,7 @@ export function useActiveModelConfig(): ActiveModelConfigState {
     gpuLayers,
     nCpuMoe,
     selectedGpuIds,
+    ggufMemoryMode,
   ]);
 
   return { checkpoint, isGguf, config };
