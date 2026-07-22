@@ -1823,7 +1823,15 @@ def _ensure_rocm_torch() -> None:
     rocm_torch_ready = has_hip_torch and not _rocm_pin_mismatch
 
     # Inferred-gfx path: ROCm runtime missing but install.sh would route to AMD wheels.
-    if _inferred_linux_gfx and not has_hip_torch and _rocm_pin is None:
+    # Gated on the runtime NOT enumerating a GPU: when it can, the runtime-visible
+    # arch (Strix override / generic below) decides, not cpuinfo -- a mixed Strix
+    # APU + dGPU box with HIP_VISIBLE_DEVICES on the dGPU must not get APU wheels.
+    if (
+        _inferred_linux_gfx
+        and not has_hip_torch
+        and _rocm_pin is None
+        and not _has_rocm_gpu()
+    ):
         index_url = _amd_arch_index_url(_inferred_linux_gfx)
         if index_url is not None:
             _torch_pkg, _vision_pkg, _audio_pkg = _WINDOWS_ROCM_TORCH_PKG_SPECS.get(

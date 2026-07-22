@@ -626,6 +626,31 @@ class TestEnsureRocmTorch:
     @patch.object(stack_mod, "pip_install")
     @patch.object(stack_mod, "_has_usable_nvidia_gpu", return_value = False)
     @patch.object(stack_mod, "_has_rocm_gpu", return_value = True)
+    @patch.object(stack_mod, "_infer_linux_amd_gfx_arch", return_value = "gfx1151")
+    @patch.object(stack_mod, "_detect_amd_gfx_codes", return_value = ["gfx1100"])
+    @patch.object(stack_mod, "_detect_rocm_version", return_value = (7, 1))
+    def test_inference_yields_to_runtime_visible_gpu(
+        self, mock_ver, mock_gfx, mock_infer, mock_gpu, mock_nvidia, mock_pip, mock_pip_try
+    ):
+        """When the runtime CAN enumerate a GPU, the cpuinfo inference must not
+        install wheels: a mixed Strix APU + dGPU box with the dGPU selected would
+        otherwise get gfx1151 wheels for a gfx1100 GPU. The runtime-visible arch
+        (Strix override / generic branch) decides instead."""
+        mock_probe = MagicMock()
+        mock_probe.returncode = 0
+        mock_probe.stdout = b"|2.10.0+cpu\n"
+        with patch("os.path.isdir", return_value = True):
+            with patch("subprocess.run", return_value = mock_probe):
+                _ensure_rocm_torch()
+        all_calls = str(mock_pip.call_args_list) + str(mock_pip_try.call_args_list)
+        assert "gfx1151" not in all_calls, all_calls
+        assert "rocm7.1" in all_calls, all_calls
+
+    @patch.object(stack_mod, "IS_WINDOWS", False)
+    @patch.object(stack_mod, "pip_install_try", return_value = True)
+    @patch.object(stack_mod, "pip_install")
+    @patch.object(stack_mod, "_has_usable_nvidia_gpu", return_value = False)
+    @patch.object(stack_mod, "_has_rocm_gpu", return_value = True)
     @patch.object(stack_mod, "_detect_rocm_version", return_value = (7, 1))
     def test_cuda_torch_on_amd_host_reinstalls(
         self, mock_ver, mock_gpu, mock_nvidia, mock_pip, mock_pip_try
