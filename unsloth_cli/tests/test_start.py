@@ -127,6 +127,8 @@ def test_claude_settings_overlay_pins_served_model():
     assert overlay["availableModels"] == [MODEL["id"]]
     # The attribution-header suppression is preserved alongside it.
     assert overlay["env"]["CLAUDE_CODE_ATTRIBUTION_HEADER"] == "0"
+    # Subagents fall through to the served model instead of a user's opus/sonnet pin.
+    assert overlay["env"]["CLAUDE_CODE_SUBAGENT_MODEL"] == "inherit"
 
 
 def test_install_agent_prompts_then_installs(monkeypatch):
@@ -797,16 +799,10 @@ def test_connect_claude_no_launch(fake_studio):
 
 
 def test_connect_claude_as_subagent_preserves_cloud_parent(fake_studio, tmp_path):
+    variant = MODEL["id"] + ":UD-Q4_K_XL"
     result = CliRunner().invoke(
         start.start_app,
-        [
-            "claude",
-            "--as-subagent",
-            "--no-launch",
-            "--model",
-            MODEL["id"] + ":UD-Q4_K_XL",
-            "hello",
-        ],
+        ["claude", "--as-subagent", "--no-launch", "--model", variant, "hello"],
     )
     assert result.exit_code == 0, result.output
     command = _launch_command(result.output)
@@ -826,19 +822,15 @@ def test_connect_claude_as_subagent_preserves_cloud_parent(fake_studio, tmp_path
     )
     assert parent_base not in result.output
     assert parent_token not in result.output
-    assert "unset ANTHROPIC_API_KEY" not in result.output
     assert "UNSLOTH_CLAUDE_SUBAGENT_API_KEY" not in result.output
     assert "sk-unsloth-feedfacefeedface" not in result.output
-    assert json.loads((plugin / ".claude-plugin" / "plugin.json").read_text())["name"] == (
-        "unsloth-local-agent"
-    )
     mcp = json.loads((plugin / ".mcp.json").read_text())["mcpServers"]["unsloth"]
     assert mcp["command"] == sys.executable
     assert mcp["args"] == ["-m", start._CLAUDE_SUBAGENT_MCP_MODULE]
     assert mcp["env"] == {
         "UNSLOTH_CLAUDE_SUBAGENT_BASE_URL": BASE,
         "UNSLOTH_CLAUDE_SUBAGENT_API_KEY": "sk-unsloth-feedfacefeedface",
-        "UNSLOTH_CLAUDE_SUBAGENT_MODEL": MODEL["id"] + ":UD-Q4_K_XL",
+        "UNSLOTH_CLAUDE_SUBAGENT_MODEL": variant,
         "UNSLOTH_CLAUDE_SUBAGENT_BYPASS_PERMISSIONS": "0",
         "UNSLOTH_CLAUDE_SUBAGENT_CONTEXT_WINDOW": "4096",
     }
@@ -848,29 +840,60 @@ def test_connect_claude_as_subagent_preserves_cloud_parent(fake_studio, tmp_path
     assert "Ask Claude to spawn an Unsloth or local agent." in result.output
 
 
-@pytest.mark.skipif(os.name == "nt", reason = "WSL scenario")
-def test_claude_subagent_plugin_uses_wsl_for_windows_claude(monkeypatch, tmp_path):
-    monkeypatch.setenv("WSL_DISTRO_NAME", "Ubuntu")
-    monkeypatch.setenv("WSLENV", "EXISTING")
-    monkeypatch.setattr(
-        start.shutil,
-        "which",
-        lambda _: "/mnt/c/Users/x/AppData/Local/Programs/claude.exe",
+def test_connect_claude_native_subagent_runs_local_parent(fake_studio, tmp_path):
+    variant = MODEL["id"] + ":UD-Q4_K_XL"
+    result = CliRunner().invoke(
+        start.start_app,
+        ["claude", "--native-subagent", "--no-launch", "--model", variant, "hello"],
     )
-    server_env = {"UNSLOTH_CLAUDE_SUBAGENT_API_KEY": "secret"}
-    plugin = start.write_claude_subagent_plugin(tmp_path, server_env)
-    mcp = json.loads((plugin / ".mcp.json").read_text())["mcpServers"]["unsloth"]
-    assert mcp["command"] == "wsl.exe"
-    assert mcp["args"] == [
-        "-d",
-        "Ubuntu",
-        "--",
-        sys.executable,
-        "-m",
-        start._CLAUDE_SUBAGENT_MCP_MODULE,
+    assert result.exit_code == 0, result.output
+    command = _launch_command(result.output)
+    plugin = tmp_path / "agents" / "claude-native-subagent" / "unsloth-local-agent"
+    # Parent runs on the local endpoint so the in-process subagent can reach the model.
+    assert command == [
+        "claude",
+        "--model",
+        variant,
+        "--exclude-dynamic-system-prompt-sections",
+        "--settings",
+        start._claude_settings_overlay(variant),
+        "--plugin-dir",
+        str(plugin),
+        "hello",
     ]
-    assert mcp["env"]["UNSLOTH_CLAUDE_SUBAGENT_API_KEY"] == "secret"
-    assert mcp["env"]["WSLENV"].split(":") == ["EXISTING", "UNSLOTH_CLAUDE_SUBAGENT_API_KEY"]
+    _assert_env_set(result.output, "ANTHROPIC_BASE_URL", BASE)
+    _assert_env_set(result.output, "ANTHROPIC_AUTH_TOKEN", "sk-unsloth-feedfacefeedface")
+    _assert_env_set(result.output, "ANTHROPIC_MODEL", variant)
+    _assert_env_unset(result.output, "ANTHROPIC_API_KEY")
+    # No MCP bridge: the plugin ships a native subagent, not an .mcp.json child process.
+    assert not (plugin / ".mcp.json").exists()
+    assert json.loads((plugin / ".claude-plugin" / "plugin.json").read_text())["name"] == (
+        "unsloth-local-agent"
+    )
+    agent = (plugin / "agents" / f"{start._CLAUDE_SUBAGENT_NAME}.md").read_text()
+    assert f'model: "{variant}"' in agent
+    assert f"'{start._CLAUDE_SUBAGENT_NAME}'" in result.output
+
+
+def test_write_claude_native_subagent_plugin_pins_local_model(tmp_path):
+    plugin = start.write_claude_native_subagent_plugin(
+        tmp_path, {"id": MODEL["id"] + ":Q4_K_M"}
+    )
+    agent = (plugin / "agents" / f"{start._CLAUDE_SUBAGENT_NAME}.md").read_text()
+    # Frontmatter pins the local model and drops plan-mode tools; body is the instructions.
+    assert f'name: "{start._CLAUDE_SUBAGENT_NAME}"' in agent
+    assert f'model: "{MODEL["id"]}:Q4_K_M"' in agent
+    assert 'disallowedTools: "EnterPlanMode, ExitPlanMode"' in agent
+    assert start._SUBAGENT_INSTRUCTIONS in agent
+
+
+def test_connect_claude_rejects_both_subagent_modes(fake_studio):
+    result = CliRunner().invoke(
+        start.start_app,
+        ["claude", "--as-subagent", "--native-subagent", "--no-launch"],
+    )
+    assert result.exit_code != 0
+    assert "Choose either --as-subagent or --native-subagent, not both." in result.output
 
 
 def test_connect_claude_compact_window_omitted_without_context(fake_studio, monkeypatch):
@@ -1580,6 +1603,192 @@ def test_split_repo_variant(model, expected):
     assert start._split_repo_variant(model) == expected
 
 
+@pytest.mark.parametrize(
+    "token, expected",
+    [
+        ("unsloth/gemma-4-E2B-it-GGUF", True),
+        ("unsloth/gemma-4-E2B-it-GGUF:UD-Q4_K_XL", True),
+        ("some-org/model.name_1", True),
+        ("--continue", False),  # flag
+        ("resume", False),  # single word, no slash
+        ("/models/local.gguf", False),  # absolute path
+        ("./rel.gguf", False),  # relative path
+        ("C:\\models\\x.gguf", False),  # Windows drive
+        ("my models/foo", False),  # has a space
+        ("owner/repo/extra", False),  # too many segments
+    ],
+)
+def test_looks_like_model(token, expected):
+    assert start._looks_like_model(token) is expected
+
+
+def test_consume_positional_model_leading_token():
+    # A leading org/name positional routes to --model and is dropped from the passthrough.
+    model, rest = start._consume_positional_model(None, ["unsloth/Model-GGUF", "--continue"])
+    assert model == "unsloth/Model-GGUF"
+    assert rest == ["--continue"]
+
+
+def test_looks_like_model_leaves_existing_local_dir_for_agent(tmp_path, monkeypatch):
+    # A relative `owner/repo` that actually exists (e.g. an OpenCode project dir) must
+    # stay an agent argument, not be consumed as a model.
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "owner" / "repo").mkdir(parents = True)
+    assert start._looks_like_model("owner/repo") is False
+    model, rest = start._consume_positional_model(None, ["owner/repo"])
+    assert model is None and rest == ["owner/repo"]
+    # The same shape, when it does not exist locally, is still treated as a model.
+    assert start._looks_like_model("owner/absent-repo") is True
+
+
+def test_consume_positional_model_ignores_non_leading_and_explicit_model():
+    # An org/name that is an option value (not leading) is never stolen.
+    model, rest = start._consume_positional_model(None, ["--profile", "owner/repo"])
+    assert model is None and rest == ["--profile", "owner/repo"]
+    # An explicit --model always wins; the positional is left untouched.
+    model, rest = start._consume_positional_model("explicit/model", ["owner/repo"])
+    assert model == "explicit/model" and rest == ["owner/repo"]
+
+
+def test_start_positional_model_routes_to_model_on_auto_serve(fake_studio, monkeypatch):
+    # `unsloth start claude unsloth/Model-GGUF` (no --model): the positional becomes the
+    # model; the GGUF variant is left unset so the server's own quant preference selects it.
+    monkeypatch.setenv("UNSLOTH_STUDIO_URL", "http://127.0.0.1:8888")
+    monkeypatch.setattr(start, "find_studio_server", lambda: None)
+    captured = {}
+    fake = SimpleNamespace(pid = 1, poll = lambda: None)
+
+    def fake_start(
+        base,
+        model,
+        load,
+        server_options = None,
+    ):
+        captured["model"] = model
+        captured["load"] = load
+        captured["server_options"] = server_options
+        start._auto_served_server = fake
+        return fake
+
+    monkeypatch.setattr(start, "_start_studio_server", fake_start)
+    monkeypatch.setattr(start, "_shutdown_server", lambda server: None)
+    monkeypatch.setattr(start.shutil, "which", lambda _: "/usr/local/bin/claude")
+    monkeypatch.setattr(start.subprocess, "run", lambda command, env: SimpleNamespace(returncode = 0))
+
+    result = CliRunner().invoke(start.start_app, ["claude", "unsloth/gemma-4-E2B-it-GGUF"])
+    assert result.exit_code == 0, result.output
+    assert captured["model"] == "unsloth/gemma-4-E2B-it-GGUF"
+    assert captured["load"].gguf_variant is None
+
+
+def test_start_local_gguf_path_keeps_no_default_variant(fake_studio, monkeypatch, tmp_path):
+    # A local GGUF dir/path ending in -GGUF must NOT get a forced default quant: the dir
+    # may only hold a different quant, and pre-PR the server picked whatever was available.
+    monkeypatch.setenv("UNSLOTH_STUDIO_URL", "http://127.0.0.1:8888")
+    monkeypatch.setattr(start, "find_studio_server", lambda: None)
+    local = tmp_path / "Qwen3-1.7B-GGUF"
+    local.mkdir()
+    captured = {}
+    fake = SimpleNamespace(pid = 1, poll = lambda: None)
+
+    def fake_start(
+        base,
+        model,
+        load,
+        server_options = None,
+    ):
+        captured["load"] = load
+        start._auto_served_server = fake
+        return fake
+
+    monkeypatch.setattr(start, "_start_studio_server", fake_start)
+    monkeypatch.setattr(start, "_shutdown_server", lambda server: None)
+    monkeypatch.setattr(start.shutil, "which", lambda _: "/usr/local/bin/claude")
+    monkeypatch.setattr(start.subprocess, "run", lambda command, env: SimpleNamespace(returncode = 0))
+
+    result = CliRunner().invoke(start.start_app, ["claude", "--model", str(local)])
+    assert result.exit_code == 0, result.output
+    assert captured["load"].gguf_variant is None
+
+
+def test_start_studio_server_forwards_tool_flags_via_command_and_env(monkeypatch):
+    captured = {}
+
+    class FakePopen:
+        def __init__(self, command, **kwargs):
+            captured["command"] = command
+            captured["kwargs"] = kwargs
+            self.pid = 1
+
+        def poll(self):
+            return None
+
+    monkeypatch.setattr(start.subprocess, "Popen", FakePopen)
+    monkeypatch.setattr(start, "_studio_healthy", lambda base, timeout = 3.0: True)
+    monkeypatch.setattr(start, "_log_tail", lambda path, lines = 20: "API Key: sk-unsloth-x")
+    monkeypatch.setattr(start.time, "sleep", lambda _s: None)
+    # No inherited kill switches, so the omitted-flag default applies.
+    monkeypatch.delenv("UNSLOTH_DISABLE_TOOL_CALL_HEALING", raising = False)
+    monkeypatch.delenv("UNSLOTH_TOOL_CALL_NUDGE", raising = False)
+
+    # Default start: tools off (passthrough), healing + nudging on.
+    start._start_studio_server("http://127.0.0.1:8888", "unsloth/M-GGUF", start.LoadOptions())
+    cmd, env = captured["command"], captured["kwargs"]["env"]
+    assert "--disable-tools" in cmd and "--enable-tools" not in cmd
+    assert env["UNSLOTH_DISABLE_TOOL_CALL_HEALING"] == "0"
+    assert env["UNSLOTH_TOOL_CALL_NUDGE"] == "1"
+
+    # Flipped: tools on, healing off, nudging off.
+    start._start_studio_server(
+        "http://127.0.0.1:8888",
+        "unsloth/M-GGUF",
+        start.LoadOptions(),
+        start.ServerOptions(enable_tools = True, tool_call_healing = False, tool_call_nudging = False),
+    )
+    cmd, env = captured["command"], captured["kwargs"]["env"]
+    assert "--enable-tools" in cmd and "--disable-tools" not in cmd
+    assert env["UNSLOTH_DISABLE_TOOL_CALL_HEALING"] == "1"
+    assert env["UNSLOTH_TOOL_CALL_NUDGE"] == "0"
+
+
+def test_start_studio_server_respects_inherited_tool_call_env(monkeypatch):
+    # With the flags omitted, an operator's pre-exported kill switch must survive into the
+    # child server instead of being overwritten with the start defaults.
+    captured = {}
+
+    class FakePopen:
+        def __init__(self, command, **kwargs):
+            captured["kwargs"] = kwargs
+            self.pid = 1
+
+        def poll(self):
+            return None
+
+    monkeypatch.setattr(start.subprocess, "Popen", FakePopen)
+    monkeypatch.setattr(start, "_studio_healthy", lambda base, timeout = 3.0: True)
+    monkeypatch.setattr(start, "_log_tail", lambda path, lines = 20: "API Key: sk-unsloth-x")
+    monkeypatch.setattr(start.time, "sleep", lambda _s: None)
+    monkeypatch.setenv("UNSLOTH_DISABLE_TOOL_CALL_HEALING", "1")
+    monkeypatch.setenv("UNSLOTH_TOOL_CALL_NUDGE", "0")
+
+    # Flags omitted -> inherited values are preserved.
+    start._start_studio_server("http://127.0.0.1:8888", "unsloth/M-GGUF", start.LoadOptions())
+    env = captured["kwargs"]["env"]
+    assert env["UNSLOTH_DISABLE_TOOL_CALL_HEALING"] == "1"
+    assert env["UNSLOTH_TOOL_CALL_NUDGE"] == "0"
+
+    # An explicit flag still overrides the inherited env.
+    start._start_studio_server(
+        "http://127.0.0.1:8888",
+        "unsloth/M-GGUF",
+        start.LoadOptions(),
+        start.ServerOptions(tool_call_healing = True, tool_call_nudging = True),
+    )
+    env = captured["kwargs"]["env"]
+    assert env["UNSLOTH_DISABLE_TOOL_CALL_HEALING"] == "0"
+    assert env["UNSLOTH_TOOL_CALL_NUDGE"] == "1"
+
+
 def test_connect_model_bare_id_matches_loaded_without_reload(fake_studio):
     # A bare `--model <loaded repo>` (no load knobs) attaches to the already-loaded model
     # without touching /api/inference/load, so it can never evict another session.
@@ -2246,7 +2455,12 @@ def test_auto_serves_when_no_server_then_keeps_server(fake_studio, monkeypatch):
     started = {}
     fake = SimpleNamespace(pid = 999, poll = lambda: None)
 
-    def fake_start(base, model, load):
+    def fake_start(
+        base,
+        model,
+        load,
+        server_options = None,
+    ):
         started.update(base = base, model = model, load = load)
         start._auto_served_server = fake
         return fake
@@ -2405,7 +2619,12 @@ def test_codex_preflight_failure_tears_down_auto_served(fake_studio, monkeypatch
     started = {}
     fake = SimpleNamespace(pid = 999, poll = lambda: None)
 
-    def fake_start(base, model, load):
+    def fake_start(
+        base,
+        model,
+        load,
+        server_options = None,
+    ):
         started.update(base = base, model = model)
         start._auto_served_server = fake
         return fake
@@ -2500,7 +2719,12 @@ def test_auto_serve_normalizes_portless_url(fake_studio, monkeypatch):
     started = {}
     fake = SimpleNamespace(pid = 999, poll = lambda: None)
 
-    def fake_start(base, model, load):
+    def fake_start(
+        base,
+        model,
+        load,
+        server_options = None,
+    ):
         started["base"] = base
         start._auto_served_server = fake
         return fake
@@ -2960,16 +3184,16 @@ def test_connect_opencode_as_subagent_preserves_cloud_parent(fake_studio, tmp_pa
     assert "Unsloth is available as @unsloth and in /models." in result.output
 
 
-def test_claude_subagent_allowed_tools_precede_forwarded_delimiter(fake_studio):
-    # A forwarded `--` makes everything after it positional; the tool pre-approval
-    # must be parsed as an option, so it rides before ctx.args.
+def test_claude_subagent_plugin_dir_precedes_forwarded_delimiter(fake_studio):
+    # A forwarded `--` makes everything after it positional; the plugin flag must be
+    # parsed as an option, so it rides before ctx.args.
     result = CliRunner().invoke(
         start.start_app,
         ["claude", "--as-subagent", "--no-launch", "--", "--resume", "abc123"],
     )
     assert result.exit_code == 0, result.output
     command = _launch_command(result.output)
-    assert command.index("--allowedTools") < command.index("--resume")
+    assert command.index("--plugin-dir") < command.index("--resume")
 
 
 def test_opencode_subagent_installs_binary_before_filter_inspection(fake_studio, monkeypatch):
