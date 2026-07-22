@@ -1532,12 +1532,12 @@ html[data-chat-font] .aui-root {
 	}
 
 	/* Hovering an active pill swaps the icon for an X (click to turn off). */
-	.composer-pill-btn[data-active="true"]:hover .composer-pill-glyph > :not(.composer-pill-x),
+	.composer-pill-btn[data-active="true"]:has(.composer-pill-x):hover .composer-pill-glyph > :not(.composer-pill-x),
 	.unsloth-thinking-pill[data-active="true"]:hover .composer-pill-glyph > :not(.composer-pill-x) {
 		@apply opacity-0;
 	}
 
-	.composer-pill-btn[data-active="true"]:hover .composer-pill-x,
+	.composer-pill-btn[data-active="true"]:has(.composer-pill-x):hover .composer-pill-x,
 	.unsloth-thinking-pill[data-active="true"]:hover .composer-pill-x {
 		@apply opacity-100;
 	}
@@ -1612,7 +1612,7 @@ html[data-chat-font] .aui-root {
 	}
 
 	.unsloth-composer-left {
-		@apply flex shrink-0 items-center gap-0.5;
+		@apply flex min-w-0 flex-wrap items-center gap-0.5;
 		order: 1;
 		/* Pull the plus button closer to the composer edge. */
 		margin-left: -0.25rem;

@@ -24,6 +24,13 @@ export interface RagDocument {
   createdAt?: string | null;
 }
 
+/** RagDocument enriched for the global uploaded-files list (settings Data tab). */
+export interface UploadedDocument extends RagDocument {
+  sizeBytes?: number | null;
+  kbName?: string | null;
+  projectName?: string | null;
+}
+
 export interface DocumentUploadResult {
   documentId: string;
   jobId: string;

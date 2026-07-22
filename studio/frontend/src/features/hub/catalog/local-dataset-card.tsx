@@ -34,11 +34,7 @@ export function LocalDatasetCard({
             )}
           </span>
           <div className="ml-auto flex items-center gap-0.5">
-            <PathInfoButton
-              path={path}
-              title={sourceLabel}
-              description="Where this dataset lives on disk."
-            />
+            <PathInfoButton path={path} />
           </div>
         </div>
         {HUB_POST_DOWNLOAD_ACTIONS_VISIBLE && (
