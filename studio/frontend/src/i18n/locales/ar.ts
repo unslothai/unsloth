@@ -39,7 +39,7 @@ export const ar = {
       returnToChat: "العودة إلى المحادثة",
       compare: "مقارنة",
       search: "بحث",
-      hub: "Hub",
+      hub: "النماذج",
       train: "تدريب",
       recipes: "الوصفات",
       export: "تصدير",
@@ -111,7 +111,7 @@ export const ar = {
         "يُستخدم لتحميل النماذج المقيّدة ورفع المخرجات.",
       hideToken: "إخفاء التوكن",
       showToken: "إظهار التوكن",
-      tokenSaved: "تم حفظ التوكن",
+      tokenValidated: "تم التحقق من الرمز",
       password: "كلمة المرور",
       passwordDescription: "تغيير كلمة المرور لحساب Unsloth هذا.",
       passwordDialog: {

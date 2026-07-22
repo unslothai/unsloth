@@ -14,6 +14,7 @@ import pytest
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import Response
 from fastapi.testclient import TestClient
+from starlette.middleware.gzip import GZipMiddleware
 
 
 _BACKEND_ROOT = Path(__file__).resolve().parents[1]
@@ -469,6 +470,71 @@ class TestSecurityHeadersMiddleware:
         names = {n.lower() for n, _ in start["headers"]}
         assert b"content-security-policy" in names
         assert b"server" in names
+
+
+class TestFrontendAssets:
+    def test_hashed_assets_are_compressed_and_cached(self, tmp_path, main_module):
+        content = b"export const value = 'responsive';\n" * 200
+        (tmp_path / "page-abc123.js").write_bytes(content)
+        app = FastAPI()
+        assets_app = GZipMiddleware(
+            main_module.ImmutableStaticFiles(directory = tmp_path),
+            minimum_size = 1024,
+            compresslevel = 6,
+        )
+        app.mount("/assets", assets_app, name = "assets")
+
+        response = TestClient(app).get(
+            "/assets/page-abc123.js",
+            headers = {"Accept-Encoding": "gzip"},
+        )
+
+        assert response.status_code == 200
+        assert response.content == content
+        assert response.headers["content-encoding"] == "gzip"
+        assert response.headers["cache-control"] == (main_module._IMMUTABLE_ASSET_CACHE_CONTROL)
+        assert "accept-encoding" in response.headers["vary"].lower()
+
+    def test_asset_revalidation_keeps_immutable_cache_header(self, tmp_path, main_module):
+        (tmp_path / "page-abc123.js").write_text("export {};", encoding = "utf-8")
+        app = FastAPI()
+        app.mount(
+            "/assets",
+            main_module.ImmutableStaticFiles(directory = tmp_path),
+            name = "assets",
+        )
+        client = TestClient(app)
+        first = client.get("/assets/page-abc123.js")
+
+        response = client.get(
+            "/assets/page-abc123.js",
+            headers = {"If-None-Match": first.headers["etag"]},
+        )
+
+        assert response.status_code == 304
+        assert response.headers["cache-control"] == (main_module._IMMUTABLE_ASSET_CACHE_CONTROL)
+
+    def test_range_request_is_not_compressed(self, tmp_path, main_module):
+        content = b"export const value = 'responsive';\n" * 200
+        (tmp_path / "page-abc123.js").write_bytes(content)
+        app = FastAPI()
+        assets_app = main_module._AssetGZipMiddleware(
+            main_module.ImmutableStaticFiles(directory = tmp_path),
+            minimum_size = 1024,
+            compresslevel = 6,
+        )
+        app.mount("/assets", assets_app, name = "assets")
+
+        response = TestClient(app).get(
+            "/assets/page-abc123.js",
+            headers = {"Accept-Encoding": "gzip", "Range": "bytes=0-99"},
+        )
+
+        assert response.status_code == 206
+        assert response.headers.get("content-encoding") != "gzip"
+        assert response.headers["content-range"] == f"bytes 0-99/{len(content)}"
+        assert response.content == content[:100]
+        assert response.headers["cache-control"] == (main_module._IMMUTABLE_ASSET_CACHE_CONTROL)
 
 
 # /api/health auth gate

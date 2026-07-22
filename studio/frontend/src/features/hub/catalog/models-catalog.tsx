@@ -54,6 +54,7 @@ export interface ModelsCatalogState {
   hasMore: boolean;
   manualFetchAvailable: boolean;
   hasActiveFilters: boolean;
+  typeFilterActive: boolean;
 }
 
 export interface ModelsCatalogPagination {
@@ -117,6 +118,7 @@ export const ModelsCatalog = memo(function ModelsCatalog({
     loadingIntentCount,
     hasMore,
     hasActiveFilters,
+    typeFilterActive,
   } = state;
   const { scrollRef, sentinelRef, isLoadingMore } = pagination;
   const {
@@ -469,6 +471,8 @@ export const ModelsCatalog = memo(function ModelsCatalog({
                 downloadedReady={downloadedReady}
                 inventoryError={inventoryError}
                 query={query}
+                typeFilterActive={typeFilterActive}
+                onClearFilters={onClearFilters}
                 scrollElement={downloadedScrollEl}
                 activeCheckpoint={activeCheckpoint}
                 activeGgufVariant={activeGgufVariant}

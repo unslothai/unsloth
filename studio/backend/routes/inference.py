@@ -3406,9 +3406,8 @@ async def _acquire_swap_gate() -> None:
         await asyncio.sleep(0.02)
 
 
-# Counts in-flight auto-switch requests per (target, variant). The busy guard
-# subtracts same-target waiters so concurrent requests for one model load once
-# instead of each 409-ing the other.
+# Counts auto-switch requests queued to load each (target, variant). They are not
+# generating, so the drain wait below excludes them from the active inference count.
 _auto_switch_waiters: dict[tuple[str, str], int] = {}
 _auto_switch_waiters_guard = threading.Lock()
 
@@ -3426,35 +3425,31 @@ def _note_switch_waiter(key: tuple[str, str], delta: int) -> None:
             _auto_switch_waiters.pop(key, None)
 
 
-def _same_target_waiters(key: tuple[str, str]) -> int:
+def _switch_waiter_count() -> int:
     with _auto_switch_waiters_guard:
-        return _auto_switch_waiters.get(key, 0)
+        return sum(max(0, count) for count in _auto_switch_waiters.values())
 
 
-# A second waiter map keyed by the raw requested model, registered before the
-# (slow) resolve. The middleware counts a concurrent same-model request as
-# in-flight before it resolves and joins _auto_switch_waiters, so without this
-# the first request would see it as an unrelated request and 409.
-_auto_switch_request_waiters: dict[str, int] = {}
-_auto_switch_request_waiters_guard = threading.Lock()
+async def _wait_for_model_switch_idle(*, current_request_counted: bool) -> None:
+    """Wait until a model replacement cannot interrupt active inference.
 
-
-def _request_waiter_key(requested_model: str) -> str:
-    return requested_model.strip().lower()
-
-
-def _note_request_waiter(key: str, delta: int) -> None:
-    with _auto_switch_request_waiters_guard:
-        n = _auto_switch_request_waiters.get(key, 0) + delta
-        if n > 0:
-            _auto_switch_request_waiters[key] = n
-        else:
-            _auto_switch_request_waiters.pop(key, None)
-
-
-def _same_request_waiters(key: str) -> int:
-    with _auto_switch_request_waiters_guard:
-        return _auto_switch_request_waiters.get(key, 0)
+    The caller holds ``inference_lifecycle_gate``, which prevents new inference
+    from starting while existing requests drain. Auto-switch requests that have
+    resolved their targets are scheduler waiters, not active generations, so
+    exclude them to avoid a queue deadlock.
+    """
+    from core.inference.llama_keepwarm import other_inference_request_count
+    while True:
+        queued_switches = _switch_waiter_count()
+        if current_request_counted and queued_switches > 0:
+            queued_switches -= 1
+        active_others = other_inference_request_count(
+            current_request_counted = current_request_counted,
+            include_pending = False,
+        )
+        if active_others <= queued_switches:
+            return
+        await asyncio.sleep(0.02)
 
 
 def _llama_public_model_id(llama_backend, fallback: Optional[str] = None) -> Optional[str]:
@@ -3582,7 +3577,6 @@ async def _maybe_auto_switch_model(
     from core.inference.local_model_resolver import resolve_local_gguf
     from core.inference.llama_keepwarm import (
         get_last_unloaded_model,
-        other_inference_request_count,
         inference_lifecycle_gate,
     )
 
@@ -3603,12 +3597,7 @@ async def _maybe_auto_switch_model(
     if not auto_switch_on and get_auto_unload_idle_seconds() <= 0:
         return
 
-    # Register by the raw requested model before resolving (which can be slow):
-    # the middleware already counts a concurrent same-model request as in-flight,
-    # so the busy guard must know it shares this target even while it resolves.
-    request_key = _request_waiter_key(requested_model)
-    _note_request_waiter(request_key, 1)
-    try:
+    async def _resolve_and_switch() -> None:
         # Off the loop: a cold-cache rebuild walks several model dirs + HF caches.
         # With auto-switch off (or an omitted-model reload-only request), skip the
         # resolve so only the reload-stash path runs and no name is ever matched.
@@ -3706,6 +3695,7 @@ async def _maybe_auto_switch_model(
             )
         key = _switch_key(override_id, variant)
         _note_switch_waiter(key, 1)
+        waiter_noted = True
         try:
             async with _auto_switch_lock():
                 # The asyncio lock is per loop; add a process-wide gate so a swap on
@@ -3718,31 +3708,6 @@ async def _maybe_auto_switch_model(
                         if _already_serving():
                             _record_serving_alias()
                             return
-                        # Single slot: refuse a cross-model swap while another inference
-                        # request is active rather than killing its response. Requests
-                        # heading to this same target (by resolved id or raw name) are
-                        # excluded, so concurrent requests for one model load once. A
-                        # pending request is still in the middleware, not generating, so
-                        # it is not counted here.
-                        same_others = max(
-                            _same_target_waiters(key) - 1, _same_request_waiters(request_key) - 1, 0
-                        )
-                        others = other_inference_request_count(
-                            current_request_counted = True, include_pending = False
-                        )
-                        # Not gated on the GGUF being loaded: _load_model_impl also
-                        # tears down an active Unsloth backend before loading a GGUF,
-                        # so refuse whenever any other inference request is in flight.
-                        if others > same_others:
-                            raise HTTPException(
-                                status_code = 409,
-                                detail = openai_error_body(
-                                    "Cannot switch models while another inference request is in progress.",
-                                    status = 409,
-                                    code = "model_switch_busy",
-                                    param = "model",
-                                ),
-                            )
                         # Apply this model's saved launch flags so the swap honors the config.
                         override = get_model_override(override_id)
                         load_kwargs = {"model_path": target_id, "gguf_variant": variant}
@@ -3757,16 +3722,22 @@ async def _maybe_auto_switch_model(
                             LoadRequest(**load_kwargs),
                             fastapi_request,
                             current_subject,
+                            current_request_counted = True,
                         )
                         # Advertise the repo id (not the concrete load path) as the loaded
                         # model's public id and override key for /v1/models and idle stash.
                         get_llama_cpp_backend()._openai_advertised_id = override_id
                 finally:
+                    # Deregister before releasing the gate: otherwise a swap on another
+                    # loop counts this finished request as queued and unloads its model.
+                    _note_switch_waiter(key, -1)
+                    waiter_noted = False
                     _auto_switch_process_lock.release()
         finally:
-            _note_switch_waiter(key, -1)
-    finally:
-        _note_request_waiter(request_key, -1)
+            if waiter_noted:
+                _note_switch_waiter(key, -1)
+
+    await _resolve_and_switch()
 
 
 async def _auto_switch_from_request_body(request: Request, current_subject: str):
@@ -4186,6 +4157,15 @@ def _maybe_unsupported_message(msg: str) -> str:
     return msg
 
 
+def _raise_if_sidecar_swap_in_progress() -> None:
+    from utils.transformers_version import sidecar_swap_in_progress
+    if sidecar_swap_in_progress():
+        raise HTTPException(
+            status_code = 409,
+            detail = "A transformers installation is in progress. Retry when it completes.",
+        )
+
+
 @router.post("/load", response_model = LoadResponse)
 async def load_model(
     request: LoadRequest,
@@ -4206,24 +4186,23 @@ async def load_model(
     # install can reserve while this request queues on the gate, so the pre-gate
     # check alone is only a fast path.
     from core.inference.llama_keepwarm import inference_lifecycle_gate
-    from utils.transformers_version import sidecar_swap_in_progress
 
-    _swap_409 = HTTPException(
-        status_code = 409,
-        detail = "A transformers installation is in progress. Retry when it completes.",
-    )
-    if sidecar_swap_in_progress():
-        raise _swap_409
+    _raise_if_sidecar_swap_in_progress()
     # Hold the lifecycle gate across the load so idle auto-unload can't unload the
     # model mid-load. Auto-switch calls _load_model_impl directly since it already
     # holds this gate.
     async with inference_lifecycle_gate():
-        if sidecar_swap_in_progress():
-            raise _swap_409
+        _raise_if_sidecar_swap_in_progress()
         return await _load_model_impl(request, fastapi_request, current_subject)
 
 
-async def _load_model_impl(request: LoadRequest, fastapi_request: Request, current_subject: str):
+async def _load_model_impl(
+    request: LoadRequest,
+    fastapi_request: Request,
+    current_subject: str,
+    *,
+    current_request_counted: bool = False,
+):
     from core.inference.llama_cpp import LlamaServerNotFoundError
 
     # A new load starts here; arm the progress throttle so this load's first
@@ -4557,6 +4536,13 @@ async def _load_model_impl(request: LoadRequest, fastapi_request: Request, curre
                         ),
                     )
 
+            # Keep the resident model alive until every active generation finishes;
+            # the caller's lifecycle gate blocks new starts.
+            await _wait_for_model_switch_idle(current_request_counted = current_request_counted)
+            # A sidecar install can reserve the gate while inference drains, after the
+            # route-level checks above, so recheck before replacing either backend.
+            _raise_if_sidecar_swap_in_progress()
+
             # Unload any active Unsloth model only after every hub conflict check.
             if unsloth_backend.active_model_name:
                 logger.info(
@@ -4767,6 +4753,8 @@ async def _load_model_impl(request: LoadRequest, fastapi_request: Request, curre
 
         # Unload any active GGUF model first
         llama_backend = get_llama_cpp_backend()
+        await _wait_for_model_switch_idle(current_request_counted = current_request_counted)
+        _raise_if_sidecar_swap_in_progress()
         if llama_backend.is_loaded:
             logger.info("Unloading GGUF model before loading Unsloth model")
             llama_backend.unload_model()
@@ -5144,10 +5132,10 @@ async def validate_model(
                 latest_tier_active_for, config.identifier, request.hf_token
             ):
                 effective_load_in_4bit = False
-        # A metadata-only probe just reads the GGUF header and allocates no VRAM,
-        # so it must not be refused by the training guard. Real loads validate
-        # without include_context_length and /load applies the guard again.
-        if not request.include_context_length:
+        # A metadata-only probe reads the GGUF header and allocates no VRAM, so the
+        # training guard must not refuse it. Real loads omit include_context_length /
+        # include_chat_template, and /load applies the guard again.
+        if not (request.include_context_length or request.include_chat_template):
             # Match /load's inherited llama.cpp extras and parallel slot count so
             # validation cannot pass a smaller estimate than the subsequent load.
             effective_extra_args = _resolve_inherited_extra_args(
@@ -5189,9 +5177,15 @@ async def validate_model(
         context_length: Optional[int] = None
         layer_count: Optional[int] = None
         moe_layer_count: Optional[int] = None
-        if request.include_context_length and is_gguf:
+        chat_template: Optional[str] = None
+        # Both header probes read the same local GGUF, so resolve it once.
+        if (request.include_context_length or request.include_chat_template) and is_gguf:
             from hub.utils.gguf import resolve_local_gguf_path
-            from utils.models.gguf_metadata import read_gguf_staged_dims
+            from picker.schemas import MAX_CHAT_TEMPLATE_BYTES
+            from utils.models.gguf_metadata import (
+                read_gguf_chat_template,
+                read_gguf_staged_dims,
+            )
 
             # Best-effort: a header-read failure must never fail validation of an
             # otherwise-valid model (the outer except turns it into a 400).
@@ -5207,13 +5201,24 @@ async def validate_model(
                         model_identifier, request.gguf_variant
                     )
                 if local_gguf:
-                    # Header walk reads tokenizer arrays for dense models (tens of
-                    # ms); keep it off the event loop.
-                    dims = await asyncio.to_thread(read_gguf_staged_dims, local_gguf)
-                    if dims:
-                        context_length = dims["context_length"]
-                        layer_count = dims["layer_count"]
-                        moe_layer_count = dims["moe_layer_count"]
+                    if request.include_context_length:
+                        # Header walk reads tokenizer arrays (tens of ms); keep it
+                        # off the event loop.
+                        dims = await asyncio.to_thread(read_gguf_staged_dims, local_gguf)
+                        if dims:
+                            context_length = dims["context_length"]
+                            layer_count = dims["layer_count"]
+                            moe_layer_count = dims["moe_layer_count"]
+                    if request.include_chat_template:
+                        # Read only the leased GGUF's own embedded template (the copy
+                        # llama.cpp loads), never a sibling sidecar: the native grant
+                        # authorizes just this path, so neighbours would be scope escalation.
+                        raw_template = await asyncio.to_thread(read_gguf_chat_template, local_gguf)
+                        if (
+                            raw_template is not None
+                            and len(raw_template.encode("utf-8")) <= MAX_CHAT_TEMPLATE_BYTES
+                        ):
+                            chat_template = raw_template
             except Exception as e:
                 logger.debug("Header probe failed for %s: %s", model_log_label, e)
 
@@ -5232,6 +5237,7 @@ async def validate_model(
             context_length = context_length,
             layer_count = layer_count,
             moe_layer_count = moe_layer_count,
+            chat_template = chat_template,
             requires_transformers_upgrade = transformers_upgrade is not None,
             transformers_upgrade = transformers_upgrade,
         )
@@ -7078,7 +7084,7 @@ async def openai_chat_completions(
     if payload.provider_id or payload.provider_type:
         # External provider: this request won't touch the local GGUF, so drop it
         # from the keep-warm count or its in-flight stream would falsely block a
-        # concurrent local auto-switch with model_switch_busy.
+        # concurrent local model switch from proceeding.
         from core.inference.llama_keepwarm import untrack_current_request
 
         untrack_current_request(request.scope)
