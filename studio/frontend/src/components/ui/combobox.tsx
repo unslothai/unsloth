@@ -7,6 +7,7 @@
 
 import { Combobox as ComboboxPrimitive } from "@base-ui/react";
 import * as React from "react";
+import { useWheelScrollRef } from "@/hooks";
 import { createContext, useState } from "react";
 
 import { Button } from "@/components/ui/button";
@@ -201,42 +202,7 @@ function ComboboxList({
   className,
   ...props
 }: ComboboxPrimitive.List.Props): React.ReactElement {
-  // When the popup is portaled inside a modal Dialog, react-remove-scroll's
-  // wheel handler cancels native wheel scrolling for the (body-portaled) popup,
-  // so the list can only be scrolled by dragging the scrollbar. Drive the scroll
-  // manually from a non-passive wheel listener so the mouse wheel works again.
-  const detachWheelRef = React.useRef<(() => void) | null>(null);
-  const listRef = React.useCallback((node: HTMLDivElement | null) => {
-    detachWheelRef.current?.();
-    detachWheelRef.current = null;
-    if (!node) {
-      return;
-    }
-    const onWheel = (event: WheelEvent) => {
-      if (event.ctrlKey || node.scrollHeight <= node.clientHeight) {
-        return;
-      }
-      const step =
-        event.deltaMode === 1
-          ? 16
-          : event.deltaMode === 2
-            ? node.clientHeight
-            : 1;
-      const delta = event.deltaY * step;
-      if (delta === 0) {
-        return;
-      }
-      node.scrollTop += delta;
-      // Cancel the default (blocked) scroll and stop react-remove-scroll from
-      // double-handling the same wheel event.
-      event.preventDefault();
-      event.stopPropagation();
-    };
-    node.addEventListener("wheel", onWheel, { passive: false });
-    detachWheelRef.current = () => {
-      node.removeEventListener("wheel", onWheel);
-    };
-  }, []);
+  const listRef = useWheelScrollRef<HTMLDivElement>();
 
   return (
     <ComboboxPrimitive.List

@@ -181,6 +181,8 @@ def test_snapshot_without_tokenizer_assets_is_incomplete(tmp_path):
 
 
 def test_validate_remote_model_returns_the_validated_revision(monkeypatch):
+    revision = "a" * 40
+
     class _FakeApi:
         def __init__(self, token = None):
             pass
@@ -191,17 +193,19 @@ def test_validate_remote_model_returns_the_validated_revision(monkeypatch):
             expand = None,
             timeout = None,
         ):
-            return SimpleNamespace(config = {"model_type": "whisper"}, sha = "abc123")
+            return SimpleNamespace(config={"model_type": "whisper"}, sha=revision)
 
     import huggingface_hub
 
     monkeypatch.setattr(huggingface_hub, "HfApi", _FakeApi)
     result = validate_remote_model("someone/custom-whisper")
-    assert result["revision"] == "abc123"
+    assert result["revision"] == revision
 
 
 def test_download_pins_revision_and_limits_patterns(monkeypatch):
     captured = {}
+    validated_revision = "a" * 40
+    head_revision = "b" * 40
 
     def fake_snapshot_download(**kwargs):
         captured.update(kwargs)
@@ -214,10 +218,20 @@ def test_download_pins_revision_and_limits_patterns(monkeypatch):
         def model_info(
             self,
             repo,
+            revision=None,
             files_metadata = None,
             timeout = None,
         ):
-            return SimpleNamespace(siblings = [], sha = "head456")
+            names = (
+                "config.json",
+                "preprocessor_config.json",
+                "tokenizer.json",
+                "model.safetensors",
+            )
+            siblings = [
+                SimpleNamespace(rfilename=name, size=10, blob_id=name, lfs=None) for name in names
+            ]
+            return SimpleNamespace(siblings=siblings, sha=head_revision)
 
     import huggingface_hub
 
@@ -226,17 +240,17 @@ def test_download_pins_revision_and_limits_patterns(monkeypatch):
 
     state = stt_sidecar_module._SnapshotDownloadState()
     # The revision resolved at validation time wins over the current head.
-    state._run("someone/custom-whisper", None, revision = "abc123")
-    assert captured["revision"] == "abc123"
+    state._run("someone/custom-whisper", None, revision=validated_revision)
+    assert captured["revision"] == validated_revision
     patterns = captured["allow_patterns"]
-    assert "*.safetensors" in patterns and "tokenizer.json" in patterns
+    assert "model.safetensors" in patterns and "tokenizer.json" in patterns
     # No wildcard that would admit arbitrary repo contents.
     assert "*" not in patterns
 
     # Without a validated revision (curated repos), pin to the metadata head.
     captured.clear()
     state._run("someone/custom-whisper", None)
-    assert captured["revision"] == "head456"
+    assert captured["revision"] == head_revision
     assert captured["allow_patterns"]
 
 

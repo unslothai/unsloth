@@ -14,10 +14,14 @@ dictations. CUDA runs float16; MPS and CPU run float32.
 from __future__ import annotations
 
 import gc
+import hashlib
 import io
 import json
+import os
 import re
 import threading
+import uuid
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
 
@@ -37,16 +41,17 @@ STT_MODELS: dict[str, str] = {
 DEFAULT_STT_MODEL = "small"
 STT_KEEP_ALIVE_SECONDS = 5 * 60
 _HF_REPO_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,95}/[A-Za-z0-9][A-Za-z0-9._-]{0,95}$")
+_HF_COMMIT_SHA = re.compile(r"^[0-9a-f]{40}$")
 
 # Bound decoded PCM length so a crafted upload cannot exhaust memory (callers
 # also cap the encoded bytes).
 _MAX_AUDIO_SECONDS = 30 * 60
 _TARGET_SAMPLE_RATE = 16000
 
-# Only the file classes WhisperProcessor/WhisperForConditionalGeneration load:
-# weights, config, tokenizer, and audio preprocessor. Keeps a custom-repo
-# snapshot_download from pulling unrelated (possibly huge) repo contents.
-_STT_SNAPSHOT_ALLOW_PATTERNS = [
+# Non-weight files WhisperProcessor/WhisperForConditionalGeneration may load.
+# Weight selection is built from pinned Hub metadata so repositories publishing
+# both formats do not download the same checkpoint twice.
+_STT_SNAPSHOT_SUPPORT_FILES = (
     "config.json",
     "generation_config.json",
     "preprocessor_config.json",
@@ -58,11 +63,25 @@ _STT_SNAPSHOT_ALLOW_PATTERNS = [
     "normalizer.json",
     "special_tokens_map.json",
     "added_tokens.json",
-    "*.safetensors",
-    "model.safetensors.index.json",
-    "pytorch_model*.bin",
-    "pytorch_model.bin.index.json",
-]
+)
+_STT_SAFETENSORS_INDEX = "model.safetensors.index.json"
+_STT_PYTORCH_INDEX = "pytorch_model.bin.index.json"
+_STT_SAFETENSORS_WEIGHTS = "model.safetensors"
+_STT_PYTORCH_WEIGHTS = "pytorch_model.bin"
+_STT_REVISION_RECORD_VERSION = 1
+
+
+@dataclass(frozen=True)
+class _SelectedHubFile:
+    path: str
+    size: int
+    blob_key: Optional[str]
+
+
+@dataclass(frozen=True)
+class _CachedSttSnapshot:
+    path: Optional[Path]
+    is_multilingual: Optional[bool]
 
 
 class SttUnavailableError(RuntimeError):
@@ -196,6 +215,175 @@ def _read_json_object(path: Path) -> dict:
         return {}
 
 
+def _active_hf_hub_cache() -> Path:
+    """Return the active Hub cache while respecting runtime test overrides."""
+    explicit = (os.environ.get("HF_HUB_CACHE") or "").strip()
+    if explicit:
+        return Path(explicit).expanduser()
+    hf_home = (os.environ.get("HF_HOME") or "").strip()
+    if hf_home:
+        return Path(hf_home).expanduser() / "hub"
+    from huggingface_hub.constants import HF_HUB_CACHE
+
+    return Path(HF_HUB_CACHE)
+
+
+def _repo_cache_dir(repo: str) -> Path:
+    return _active_hf_hub_cache() / f"models--{repo.replace('/', '--')}"
+
+
+def _revision_record_path(repo: str) -> Path:
+    from utils.paths.storage_roots import cache_root
+
+    digest = hashlib.sha256(repo.encode("utf-8")).hexdigest()
+    return cache_root() / "stt-revisions" / f"{digest}.json"
+
+
+def _write_revision_record(repo: str, revision: str) -> None:
+    """Persist immutable identity only, never an HF-cache absolute path."""
+    if not _HF_COMMIT_SHA.fullmatch(revision):
+        return
+    path = _revision_record_path(repo)
+    tmp = path.with_name(f".{path.name}.tmp-{uuid.uuid4().hex[:8]}")
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with tmp.open("w", encoding="utf-8") as handle:
+            json.dump(
+                {
+                    "version": _STT_REVISION_RECORD_VERSION,
+                    "repo": repo,
+                    "revision": revision,
+                },
+                handle,
+            )
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(tmp, path)
+    except OSError as exc:
+        logger.debug("Could not persist STT revision for %s: %s", repo, exc)
+        try:
+            tmp.unlink(missing_ok=True)
+        except OSError:
+            pass
+
+
+def _read_revision_record(repo: str) -> Optional[str]:
+    payload = _read_json_object(_revision_record_path(repo))
+    if payload.get("version") != _STT_REVISION_RECORD_VERSION or payload.get("repo") != repo:
+        return None
+    revision = payload.get("revision")
+    return revision if isinstance(revision, str) and _HF_COMMIT_SHA.fullmatch(revision) else None
+
+
+def _safe_snapshot_for_revision(repo: str, revision: str) -> Optional[Path]:
+    """Resolve a canonical SHA below this repository's active snapshots dir."""
+    if not _HF_COMMIT_SHA.fullmatch(revision):
+        return None
+    snapshots = _repo_cache_dir(repo) / "snapshots"
+    candidate = snapshots / revision
+    try:
+        snapshots_resolved = snapshots.resolve()
+        candidate_resolved = candidate.resolve()
+    except (OSError, RuntimeError):
+        return None
+    if snapshots_resolved not in candidate_resolved.parents or not candidate_resolved.is_dir():
+        return None
+    return candidate_resolved
+
+
+def _snapshot_usable(model_id: str, snapshot: Path) -> bool:
+    if not _snapshot_is_complete(snapshot):
+        return False
+    if model_id not in STT_MODELS:
+        return _is_whisper_config(_read_json_object(snapshot / "config.json"))
+    return True
+
+
+def _find_complete_cached_snapshot(model: Optional[str]) -> Optional[Path]:
+    """Find one complete local snapshot without contacting the Hub."""
+    model_id = resolve_model_id(model)
+    repo = resolve_model_repo(model_id)
+
+    recorded = _read_revision_record(repo)
+    if recorded:
+        snapshot = _safe_snapshot_for_revision(repo, recorded)
+        if snapshot is not None and _snapshot_usable(model_id, snapshot):
+            return snapshot
+
+    ref = _repo_cache_dir(repo) / "refs" / "main"
+    try:
+        revision = ref.read_text(encoding="utf-8").strip()
+    except OSError:
+        revision = ""
+    snapshot = _safe_snapshot_for_revision(repo, revision)
+    if snapshot is not None and _snapshot_usable(model_id, snapshot):
+        _write_revision_record(repo, revision)
+        return snapshot
+
+    snapshots = _repo_cache_dir(repo) / "snapshots"
+    try:
+        revisions = sorted(
+            (
+                (path.stat().st_mtime_ns, path.name)
+                for path in snapshots.iterdir()
+                if path.is_dir() and _HF_COMMIT_SHA.fullmatch(path.name)
+            ),
+            reverse=True,
+        )
+    except OSError:
+        return None
+    for _mtime, revision in revisions:
+        snapshot = _safe_snapshot_for_revision(repo, revision)
+        if snapshot is not None and _snapshot_usable(model_id, snapshot):
+            _write_revision_record(repo, revision)
+            return snapshot
+    return None
+
+
+def _selected_file_from_sibling(sibling) -> _SelectedHubFile:
+    lfs = getattr(sibling, "lfs", None)
+    blob_key = getattr(lfs, "sha256", None) or getattr(sibling, "blob_id", None)
+    return _SelectedHubFile(
+        path=sibling.rfilename,
+        size=max(0, int(getattr(sibling, "size", 0) or 0)),
+        blob_key=blob_key if isinstance(blob_key, str) and blob_key else None,
+    )
+
+
+def _select_snapshot_files(info, load_index) -> tuple[_SelectedHubFile, ...]:
+    """Select support files and exactly one complete Transformers weight format."""
+    siblings = {
+        sibling.rfilename: sibling
+        for sibling in (getattr(info, "siblings", None) or [])
+        if isinstance(getattr(sibling, "rfilename", None), str)
+    }
+    selected = {name for name in _STT_SNAPSHOT_SUPPORT_FILES if name in siblings}
+
+    index_name: Optional[str] = None
+    if _STT_SAFETENSORS_INDEX in siblings:
+        index_name = _STT_SAFETENSORS_INDEX
+    elif _STT_SAFETENSORS_WEIGHTS in siblings:
+        selected.add(_STT_SAFETENSORS_WEIGHTS)
+    elif _STT_PYTORCH_INDEX in siblings:
+        index_name = _STT_PYTORCH_INDEX
+    elif _STT_PYTORCH_WEIGHTS in siblings:
+        selected.add(_STT_PYTORCH_WEIGHTS)
+    else:
+        raise SttModelCompatibilityError("The STT repository has no complete model weights.")
+
+    if index_name is not None:
+        weight_map = load_index(index_name).get("weight_map")
+        if not isinstance(weight_map, dict) or not weight_map:
+            raise SttModelCompatibilityError(f"Invalid checkpoint index '{index_name}'.")
+        shards = set(weight_map.values())
+        if not all(isinstance(shard, str) and shard in siblings for shard in shards):
+            raise SttModelCompatibilityError(f"Checkpoint index '{index_name}' has missing shards.")
+        selected.add(index_name)
+        selected.update(shards)
+
+    return tuple(_selected_file_from_sibling(siblings[name]) for name in sorted(selected))
+
+
 def validate_remote_model(model: Optional[str], hf_token: Optional[str] = None) -> dict:
     """Verify a custom Hub repository is Whisper-compatible without downloading weights."""
     model_id = resolve_model_id(model)
@@ -205,9 +393,10 @@ def validate_remote_model(model: Optional[str], hf_token: Optional[str] = None) 
 
     try:
         from huggingface_hub import HfApi
+
         info = HfApi(token = hf_token or False).model_info(
             repo,
-            expand = ["config"],
+            expand=["config", "sha"],
             timeout = 10,
         )
     except Exception as exc:
@@ -220,9 +409,14 @@ def validate_remote_model(model: Optional[str], hf_token: Optional[str] = None) 
         raise SttModelCompatibilityError(
             f"STT model '{model_id}' is not a compatible Transformers Whisper model."
         )
+    revision = getattr(info, "sha", None)
+    if not isinstance(revision, str) or not _HF_COMMIT_SHA.fullmatch(revision):
+        raise SttModelCompatibilityError(
+            f"Could not resolve an immutable revision for STT model '{model_id}'."
+        )
     # The commit that was validated; the download pins to it so the repo cannot
     # be swapped between validation and snapshot_download (TOCTOU).
-    return {"model": model_id, "repo": repo, "revision": getattr(info, "sha", None)}
+    return {"model": model_id, "repo": repo, "revision": revision}
 
 
 def _is_missing_local_model_error(exc: BaseException) -> bool:
@@ -265,9 +459,7 @@ def _snapshot_is_complete(snapshot: Path) -> bool:
         has_weights = all((snapshot / shard).is_file() for shard in set(weight_map.values()))
     else:
         has_weights = any(
-            p.is_file()
-            for pattern in ("*.safetensors", "pytorch_model*.bin")
-            for p in snapshot.glob(pattern)
+            (snapshot / name).is_file() for name in (_STT_SAFETENSORS_WEIGHTS, _STT_PYTORCH_WEIGHTS)
         )
     # WhisperProcessor needs the tokenizer: either the fast tokenizer.json or
     # the slow vocab.json + merges.txt pair.
@@ -285,14 +477,7 @@ def _snapshot_is_complete(snapshot: Path) -> bool:
 def is_model_downloaded(model: Optional[str]) -> bool:
     """True when a usable Whisper snapshot exists in the local HF cache."""
     try:
-        from huggingface_hub import snapshot_download
-        snapshot = Path(
-            snapshot_download(
-                repo_id = resolve_model_repo(resolve_model_id(model)),
-                local_files_only = True,
-            )
-        )
-        return _snapshot_is_complete(snapshot)
+        return _find_complete_cached_snapshot(model) is not None
     except Exception:
         return False
 
@@ -311,35 +496,47 @@ class _SnapshotDownloadState:
         self._repo: Optional[str] = None
         self._error: Optional[str] = None
         self._total_bytes: Optional[int] = None
+        self._selected_files: tuple[_SelectedHubFile, ...] = ()
+        self._complete = False
 
     def status(self) -> dict:
         with self._lock:
             downloading = self._thread is not None and self._thread.is_alive()
+            show_progress = downloading or self._complete
             return {
                 "downloading": downloading,
                 "model": self._model_id if downloading else None,
                 "error": self._error,
-                "bytes_total": self._total_bytes if downloading else None,
-                "bytes_done": self._blob_bytes() if downloading else None,
+                "bytes_total": self._total_bytes if show_progress else None,
+                "bytes_done": self._blob_bytes() if show_progress else None,
             }
 
     def _blob_bytes(self) -> Optional[int]:
         """Best-effort progress: bytes in the repo's HF cache blobs.
 
-        Counts finished and ``.incomplete`` blobs alike; the repo is a
-        dedicated Whisper checkpoint, so every blob is part of this download.
+        Counts only the selected support files and one selected weight format,
+        including in-progress ``.incomplete`` blobs.
         """
         try:
-            from huggingface_hub.constants import HF_HUB_CACHE
-
             # Caller may hold the non-reentrant self._lock; a bare read is safe.
             repo = self._repo
-            if not repo:
+            selected_files = self._selected_files
+            if not repo or not selected_files:
                 return None
-            blobs = Path(HF_HUB_CACHE) / f"models--{repo.replace('/', '--')}" / "blobs"
+            blobs = _repo_cache_dir(repo) / "blobs"
             if not blobs.is_dir():
-                return None
-            return sum(p.stat().st_size for p in blobs.iterdir() if p.is_file())
+                return 0
+            done = 0
+            for selected in selected_files:
+                if not selected.blob_key:
+                    continue
+                complete = blobs / selected.blob_key
+                incomplete = blobs / f"{selected.blob_key}.incomplete"
+                candidate = complete if complete.is_file() else incomplete
+                if candidate.is_file():
+                    done += min(candidate.stat().st_size, selected.size)
+            total = self._total_bytes
+            return min(done, total) if total is not None else done
         except Exception:
             return None
 
@@ -362,6 +559,8 @@ class _SnapshotDownloadState:
             self._repo = resolve_model_repo(model_id)
             self._error = None
             self._total_bytes = None
+            self._selected_files = ()
+            self._complete = False
             thread = threading.Thread(
                 target = self._run, args = (self._repo, hf_token, revision), daemon = True
             )
@@ -375,26 +574,50 @@ class _SnapshotDownloadState:
         revision: Optional[str] = None,
     ) -> None:
         try:
-            from huggingface_hub import HfApi, snapshot_download
-            try:
-                info = HfApi(token = hf_token or None).model_info(
-                    repo, files_metadata = True, timeout = 30
-                )
-                total = sum(s.size or 0 for s in info.siblings or [])
-                with self._lock:
-                    self._total_bytes = total or None
-                if not revision:
-                    # No validated commit was passed (curated repo): pin to the
-                    # commit whose metadata sized the progress bar.
-                    revision = getattr(info, "sha", None)
-            except Exception:
-                pass
-            snapshot_download(
-                repo_id = repo,
+            from huggingface_hub import HfApi, hf_hub_download, snapshot_download
+
+            info = HfApi(token = hf_token or None).model_info(
+                repo,
                 revision = revision,
-                allow_patterns = _STT_SNAPSHOT_ALLOW_PATTERNS,
-                token = hf_token or None,
+                files_metadata = True,
+                timeout = 30,
             )
+            if not revision:
+                revision = getattr(info, "sha", None)
+            if not isinstance(revision, str) or not _HF_COMMIT_SHA.fullmatch(revision):
+                raise SttModelCompatibilityError(
+                    f"Could not resolve an immutable revision for STT model '{repo}'."
+                )
+
+            def load_index(filename: str) -> dict:
+                path = hf_hub_download(
+                    repo_id = repo,
+                    filename = filename,
+                    revision = revision,
+                    token = hf_token or None,
+                )
+                return _read_json_object(Path(path))
+
+            selected_files = _select_snapshot_files(info, load_index)
+            total = sum(selected.size for selected in selected_files)
+            with self._lock:
+                self._selected_files = selected_files
+                self._total_bytes = total or None
+            snapshot = Path(
+                snapshot_download(
+                    repo_id = repo,
+                    revision = revision,
+                    allow_patterns = [selected.path for selected in selected_files],
+                    token = hf_token or None,
+                )
+            )
+            if not _snapshot_is_complete(snapshot):
+                raise SttModelCompatibilityError(
+                    f"Downloaded STT snapshot for '{repo}' is incomplete."
+                )
+            _write_revision_record(repo, revision)
+            with self._lock:
+                self._complete = True
         except Exception as exc:
             logger.warning("STT snapshot download failed for %s: %s", repo, exc)
             with self._lock:
@@ -419,6 +642,7 @@ def download_status() -> dict:
 def _training_active() -> bool:
     try:
         from core.training import get_training_backend
+
         return bool(get_training_backend().is_training_active())
     except Exception:
         return False
@@ -428,6 +652,7 @@ def _clear_device_cache(device: Optional[str]) -> None:
     gc.collect()
     try:
         import torch
+
         if device == "cuda":
             torch.cuda.empty_cache()
         elif device == "mps":
@@ -460,6 +685,7 @@ def _pick_device():
     except Exception as exc:
         logger.debug("STT device detection failed, using CPU: %s", exc)
         import torch
+
         return "cpu", torch.float32
 
 
@@ -645,7 +871,7 @@ class WhisperSttSidecar:
         del engine
         _clear_device_cache(device)
 
-    def _build_model(self, repo: str, device: str, dtype, cancel_event: threading.Event):
+    def _build_model(self, snapshot_path: str, device: str, dtype, cancel_event: threading.Event):
         """Load a Whisper model + processor from the local Hub cache.
 
         local_files_only keeps the Model Hub the only download path; a cache
@@ -657,10 +883,10 @@ class WhisperSttSidecar:
         processor = None
         model = None
         try:
-            processor = WhisperProcessor.from_pretrained(repo, local_files_only = True)
+            processor = WhisperProcessor.from_pretrained(snapshot_path, local_files_only = True)
             self._raise_if_load_cancelled(cancel_event)
             model = WhisperForConditionalGeneration.from_pretrained(
-                repo, torch_dtype = dtype, local_files_only = True
+                snapshot_path, torch_dtype = dtype, local_files_only = True
             )
             self._raise_if_load_cancelled(cancel_event)
             model.to(torch.device(device))
@@ -673,7 +899,7 @@ class WhisperSttSidecar:
             _clear_device_cache(device)
             raise
 
-    def _ensure_model_downloaded(self, model_id: str) -> Optional[bool]:
+    def _ensure_model_downloaded(self, model_id: str) -> _CachedSttSnapshot:
         """Validate the local snapshot before decode or model replacement.
 
         Returns the checkpoint's multilingual flag when local metadata provides
@@ -687,32 +913,21 @@ class WhisperSttSidecar:
                 )
                 generation_config = getattr(resident_model, "generation_config", None)
                 is_multilingual = getattr(generation_config, "is_multilingual", None)
-                return is_multilingual if isinstance(is_multilingual, bool) else None
-        try:
-            from huggingface_hub import snapshot_download
-            snapshot = snapshot_download(
-                repo_id = resolve_model_repo(model_id),
-                local_files_only = True,
-            )
-        except Exception as exc:
-            if _is_missing_local_model_error(exc):
-                raise SttModelNotDownloadedError(
-                    f"STT model '{model_id}' is not downloaded. "
-                    "Download it in Settings, then Voice, before loading it."
-                ) from exc
-            raise
-
-        snapshot_path = Path(snapshot)
-        # A resolvable snapshot can still be partial (aborted download); fail
-        # here so callers do not decode audio before load() hits the gap.
-        if not _snapshot_is_complete(snapshot_path):
+                return _CachedSttSnapshot(
+                    path = None,
+                    is_multilingual = is_multilingual
+                    if isinstance(is_multilingual, bool)
+                    else None,
+                )
+        snapshot_path = _find_complete_cached_snapshot(model_id)
+        if snapshot_path is None:
             raise SttModelNotDownloadedError(
                 f"STT model '{model_id}' is not downloaded. "
                 "Download it in Settings, then Voice, before loading it."
             )
 
         if model_id in STT_MODELS:
-            return True
+            return _CachedSttSnapshot(path = snapshot_path, is_multilingual = True)
 
         if not _is_whisper_config(_read_json_object(snapshot_path / "config.json")):
             raise SttModelCompatibilityError(
@@ -721,10 +936,10 @@ class WhisperSttSidecar:
         generation_config = _read_json_object(snapshot_path / "generation_config.json")
         is_multilingual = generation_config.get("is_multilingual")
         if isinstance(is_multilingual, bool):
-            return is_multilingual
+            return _CachedSttSnapshot(path = snapshot_path, is_multilingual = is_multilingual)
         if resolve_model_repo(model_id).lower().endswith(".en"):
-            return False
-        return None
+            return _CachedSttSnapshot(path = snapshot_path, is_multilingual = False)
+        return _CachedSttSnapshot(path = snapshot_path, is_multilingual = None)
 
     def load(self, model: Optional[str] = None):
         """Load (or switch to) a model, reusing it if already resident.
@@ -743,12 +958,17 @@ class WhisperSttSidecar:
             candidate = None
             device: Optional[str] = None
             try:
-                self._ensure_model_downloaded(model_id)
+                cached = self._ensure_model_downloaded(model_id)
+                snapshot_path = cached.path
+                if snapshot_path is None:
+                    raise SttModelNotDownloadedError(
+                        f"STT model '{model_id}' is not downloaded. "
+                        "Download it in Settings, then Voice, before loading it."
+                    )
                 self._raise_if_load_cancelled(cancel_event)
                 device, dtype = _pick_device()
                 self._release_engine_locked()
-                repo = resolve_model_repo(model_id)
-                logger.info("Loading STT model %s (%s) on %s", model_id, repo, device)
+                logger.info("Loading STT model %s (%s) on %s", model_id, snapshot_path, device)
 
                 def not_downloaded(cause: BaseException) -> SttModelNotDownloadedError:
                     return SttModelNotDownloadedError(
@@ -758,7 +978,7 @@ class WhisperSttSidecar:
 
                 retry_on_cpu = False
                 try:
-                    candidate = self._build_model(repo, device, dtype, cancel_event)
+                    candidate = self._build_model(str(snapshot_path), device, dtype, cancel_event)
                     self._raise_if_load_cancelled(cancel_event)
                 except SttLoadCancelledError:
                     raise
@@ -776,7 +996,7 @@ class WhisperSttSidecar:
                     _clear_device_cache(device)
                     try:
                         candidate = self._build_model(
-                            repo,
+                            str(snapshot_path),
                             "cpu",
                             torch.float32,
                             cancel_event,
@@ -870,8 +1090,8 @@ class WhisperSttSidecar:
             raise SttLanguageError(
                 f"Language '{language}' is not supported by STT model '{model_id}'."
             )
-        is_multilingual = self._ensure_model_downloaded(model_id)
-        if is_multilingual is False and lang not in (None, "en"):
+        cached = self._ensure_model_downloaded(model_id)
+        if cached.is_multilingual is False and lang not in (None, "en"):
             raise SttLanguageError(
                 f"Language '{language}' is not supported by English-only STT model '{model_id}'."
             )

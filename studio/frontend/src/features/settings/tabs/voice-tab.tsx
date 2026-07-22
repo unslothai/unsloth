@@ -37,7 +37,7 @@ import {
   useHfTokenStore,
   useHubModelSearch,
 } from "@/features/hub";
-import { useDebouncedValue } from "@/hooks";
+import { useDebouncedValue, useWheelScrollRef } from "@/hooks";
 import { useT } from "@/i18n";
 import { ChevronDownStandardIcon } from "@/lib/chevron-icons";
 import { MicIcon } from "@/lib/mic-icon";
@@ -133,6 +133,7 @@ function SttModelPicker({
   const [open, setOpen] = useState(false);
   const [query, setQuery] = useState("");
   const [validating, setValidating] = useState(false);
+  const resultsRef = useWheelScrollRef<HTMLDivElement>();
   const debouncedQuery = useDebouncedValue(query.trim());
 
   const { results, isLoading } = useHubModelSearch(debouncedQuery, {
@@ -228,7 +229,9 @@ function SttModelPicker({
           <Input
             value={query}
             onChange={(event) => setQuery(event.target.value)}
-            placeholder={t("settings.voice.dictation.sttModelSearchPlaceholder")}
+            placeholder={t(
+              "settings.voice.dictation.sttModelSearchPlaceholder",
+            )}
             className="h-8 pl-8 text-sm"
             autoFocus={true}
             onKeyDown={(event) => {
@@ -239,7 +242,11 @@ function SttModelPicker({
             }}
           />
         </div>
-        <div className="max-h-64 overflow-y-auto p-1">
+        <div
+          ref={resultsRef}
+          data-testid="stt-model-results"
+          className="max-h-64 overflow-y-auto p-1"
+        >
           {(isLoading && debouncedQuery) || validating ? (
             <div className="flex items-center gap-2 px-3 py-3 text-xs text-muted-foreground">
               <Spinner className="size-3.5" />
@@ -312,11 +319,29 @@ function useAudioInputDevices() {
   }, []);
 
   useEffect(() => {
-    void refresh();
     const media = navigator.mediaDevices;
-    if (!media?.addEventListener) return;
+    if (!media?.addEventListener) {
+      return;
+    }
+    let cancelled = false;
+    media
+      .enumerateDevices()
+      .then((all) => {
+        if (cancelled) {
+          return;
+        }
+        const inputs = all.filter((device) => device.kind === "audioinput");
+        setDevices(inputs);
+        setHasLabels(inputs.some((device) => device.label));
+      })
+      .catch(() => {
+        // Enumeration can fail in insecure contexts; leave the list empty.
+      });
     media.addEventListener("devicechange", refresh);
-    return () => media.removeEventListener("devicechange", refresh);
+    return () => {
+      cancelled = true;
+      media.removeEventListener("devicechange", refresh);
+    };
   }, [refresh]);
 
   // Labels are hidden until mic permission; open a short stream to get them.
@@ -462,9 +487,6 @@ export function VoiceTab() {
       : "checking";
   useEffect(() => {
     if (!isLocalEngine || !modelSttSupported) {
-      setSttPhase("idle");
-      setSttDevice(null);
-      setSttDownload(null);
       return;
     }
     let cancelled = false;
@@ -480,7 +502,9 @@ export function VoiceTab() {
         // failing. Fall back to the Transformers status here too, or the model
         // shows as unavailable and download is blocked even though it works.
         const engineStatus =
-          isGgufModel && status.gguf?.available ? status.gguf : status.transformers;
+          isGgufModel && status.gguf?.available
+            ? status.gguf
+            : status.transformers;
         if (!engineStatus?.available) {
           setSttPhase("unavailable");
           return;
@@ -602,7 +626,8 @@ export function VoiceTab() {
       const total = sttDownload?.bytes_total ?? 0;
       const done = sttDownload?.bytes_done ?? 0;
       return t("settings.voice.dictation.sttDownloading", {
-        progress: total > 0 ? Math.min(99, Math.round((done / total) * 100)) : 0,
+        progress:
+          total > 0 ? Math.min(99, Math.round((done / total) * 100)) : 0,
       });
     }
     if (sttPhase === "unavailable") {
@@ -649,7 +674,6 @@ export function VoiceTab() {
       });
     }
   };
-
 
   const releaseSttModel = async () => {
     setSttUnloading(true);
@@ -816,6 +840,11 @@ export function VoiceTab() {
               if (next !== dictationEngine) {
                 // Unload whichever backend was resident for the old engine.
                 void unloadSttModel().catch(() => {});
+                if (next === "model") {
+                  setSttPhase("checking");
+                  setSttDevice(null);
+                  setSttDownload(null);
+                }
               }
               setDictationEngine(next);
             }}
@@ -868,7 +897,8 @@ export function VoiceTab() {
                         expectedBytes: sttDownload?.bytes_total ?? 0,
                         downloadedBytes: sttDownload?.bytes_done ?? 0,
                         fraction:
-                          sttDownload?.bytes_total && sttDownload.bytes_total > 0
+                          sttDownload?.bytes_total &&
+                          sttDownload.bytes_total > 0
                             ? (sttDownload.bytes_done ?? 0) /
                               sttDownload.bytes_total
                             : 0,

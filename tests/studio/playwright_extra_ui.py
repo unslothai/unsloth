@@ -501,6 +501,7 @@ with sync_playwright() as p:
             "Appearance",
             "Chat",
             "Developer",
+            "Voice",
             "About",
         )
         seen_tabs = []
@@ -528,6 +529,39 @@ with sync_playwright() as p:
                     soft_fail(f"Settings tab '{tab_name}' body suspiciously short: {body_text}")
             except Exception as exc:
                 soft_fail(f"Settings tab '{tab_name}' click failed: {exc!r}")
+        step("Voice model picker: real mouse-wheel scrolling")
+        voice_tab = page.get_by_role(
+            "button", name=re.compile(r"^\s*Voice(?:\s+New)?\s*$", re.I)
+        ).first
+        if voice_tab.count() == 0:
+            fail("Voice settings tab not found")
+        else:
+            voice_tab.click()
+            page.get_by_label("Dictation engine").click()
+            page.get_by_role("option", name="Local transcription").click()
+            page.get_by_label("Speech recognition model").click()
+            page.get_by_placeholder("Search model").fill("whisper")
+            results = page.get_by_test_id("stt-model-results")
+            try:
+                page.wait_for_function(
+                    """() => {
+                        const node = document.querySelector('[data-testid="stt-model-results"]');
+                        return !!node && node.scrollHeight > node.clientHeight;
+                    }""",
+                    timeout=30_000,
+                )
+                results.hover()
+                page.mouse.wheel(0, 700)
+                page.wait_for_function(
+                    """() => {
+                        const node = document.querySelector('[data-testid="stt-model-results"]');
+                        return !!node && node.scrollTop > 0;
+                    }""",
+                    timeout=5_000,
+                )
+                info("OK Voice model picker mouse wheel changed scrollTop")
+            except Exception as exc:
+                fail(f"Voice model picker did not wheel-scroll: {exc!r}")
         shoot("10-settings-tabs-visited")
         page.keyboard.press("Escape")
         page.wait_for_timeout(300)

@@ -68,14 +68,17 @@ def test_custom_non_whisper_repo_is_rejected_before_download(monkeypatch):
 
 def test_validated_transformers_repo_downloads(monkeypatch):
     started: list = []
+    revision = "a" * 40
 
     monkeypatch.setattr(
-        stt_module, "validate_remote_model", lambda model, hf_token = None: {"model": model}
+        stt_module,
+        "validate_remote_model",
+        lambda model, hf_token=None: {"model": model, "revision": revision},
     )
     monkeypatch.setattr(
         stt_module,
         "start_model_download",
-        lambda model, hf_token = None, revision = None: started.append(model),
+        lambda model, hf_token=None, revision=None: started.append((model, revision)),
     )
     monkeypatch.setattr(stt_module, "download_status", lambda: {"downloading": True})
 
@@ -88,7 +91,7 @@ def test_validated_transformers_repo_downloads(monkeypatch):
     )
 
     assert resp.status_code == 200
-    assert started == ["owner/real-whisper"]
+    assert started == [("owner/real-whisper", revision)]
 
 
 def test_gguf_engine_skips_the_transformers_repo_check(monkeypatch):
