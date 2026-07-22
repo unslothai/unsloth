@@ -73,11 +73,11 @@ const METHOD_DOTS: Record<string, string> = {
 };
 
 const DARK_TRIGGER =
-  "w-full bg-foreground text-background hover:bg-foreground/90 dark:bg-foreground dark:text-background dark:hover:bg-foreground [&_svg]:text-background/50";
+  "w-full bg-foreground text-background hover:bg-foreground/90 dark:bg-foreground dark:text-background dark:hover:bg-foreground dark:has-[[data-slot=input-group-control]:focus-visible]:bg-foreground [&_svg]:text-background/50";
 const DARK_CONTENT =
   "bg-foreground text-background shadow-xl border-background/10 [--accent:rgba(255,255,255,0.1)] [--accent-foreground:white] dark:[--accent:rgba(2,6,23,0.08)] dark:[--accent-foreground:rgb(2,6,23)] [&_[data-slot=select-item]]:text-white/80 dark:[&_[data-slot=select-item]]:text-slate-900 [&_[data-slot=select-scroll-up-button]]:bg-foreground [&_[data-slot=select-scroll-down-button]]:bg-foreground";
 const DARK_COMBOBOX_CONTENT =
-  "bg-foreground text-background shadow-xl border-background/10 dark:[--accent:rgba(2,6,23,0.08)] dark:[--accent-foreground:rgb(2,6,23)] dark:[&_[data-slot=combobox-item]]:text-slate-900 dark:[&_.text-muted-foreground]:text-slate-500";
+  "bg-foreground text-background shadow-xl border-background/10 [--accent:rgba(255,255,255,0.1)] [--accent-foreground:white] dark:[--accent:rgba(2,6,23,0.08)] dark:[--accent-foreground:rgb(2,6,23)] dark:[&_[data-slot=combobox-item]]:text-slate-900 dark:[&_.text-muted-foreground]:text-slate-500";
 
 export function ModelSection() {
   const t = useT();
@@ -321,7 +321,7 @@ export function ModelSection() {
                       ? t("studio.model.scanningLocalAndCachedModels")
                       : "./models/my-model"
                   }
-                  className="w-full bg-foreground text-background [&_input]:text-background [&_input]:placeholder:text-background/40 [&_svg]:text-background/50 hover:bg-foreground/90"
+                  className={`${DARK_TRIGGER} [&_input]:text-background [&_input]:placeholder:text-background/40`}
                   onBlur={() => applyLocalModel(localModelInput)}
                   onKeyDown={(event) => {
                     if (event.key !== "Enter") return;
