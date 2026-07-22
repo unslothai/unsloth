@@ -3451,6 +3451,40 @@ class TestStrixRocm71Override:
             'case "$_ARCH" in x86_64|amd64)' in window
         ), "the inferred-gfx reroute must guard on x86_64|amd64 arch"
 
+    def test_install_sh_reroute_skips_visible_rocm_gpu(self):
+        """A */cpu index on a host whose AMD GPU IS visible to the ROCm probes is a
+        deliberate fallback (unsupported/unreadable ROCm version, warned about in
+        get_torch_index_url), not a missing runtime: the reroute must not override
+        it with inferred per-arch wheels. The explicit UNSLOTH_ROCM_GFX_ARCH
+        override must still win either way."""
+        source = _INSTALL_SH_PATH.read_text(encoding = "utf-8")
+        idx = source.find("_linux_inferred_gfx=$(_infer_linux_amd_gfx_arch")
+        assert idx >= 0, "reroute consumer not found"
+        window = source[max(0, idx - 700) : idx]
+        assert (
+            "! _has_amd_rocm_gpu" in window
+        ), "the reroute must be gated on _has_amd_rocm_gpu being false"
+        assert (
+            '[ -n "${UNSLOTH_ROCM_GFX_ARCH:-}" ] || ! _has_amd_rocm_gpu' in window
+        ), "an explicit UNSLOTH_ROCM_GFX_ARCH override must bypass the visible-GPU gate"
+
+    def test_install_sh_reroute_exports_gfx_for_setup_sh(self):
+        """The inferred arch must be exported as UNSLOTH_ROCM_GFX_ARCH so the
+        downstream setup.sh run (which re-probes ROCm independently and finds
+        nothing on these runtime-less hosts) routes llama.cpp to the matching
+        ROCm prebuilt instead of the CPU one -- setup.sh and
+        install_llama_prebuilt.py both read that env var."""
+        source = _INSTALL_SH_PATH.read_text(encoding = "utf-8")
+        assign = source.find('TORCH_INDEX_URL="${_amd_mirror}/${_amd_family}/"')
+        assert assign >= 0, "inferred-gfx index assignment not found"
+        block_end = source.find("esac", assign)
+        assert (
+            'export UNSLOTH_ROCM_GFX_ARCH="$_linux_inferred_gfx"' in source[assign:block_end]
+        ), "the reroute must export the inferred gfx for the setup.sh handoff"
+        # setup.sh's side of the handoff must still exist.
+        setup_source = (PACKAGE_ROOT / "studio" / "setup.sh").read_text(encoding = "utf-8")
+        assert 'UNSLOTH_ROCM_GFX_ARCH' in setup_source
+
     def test_amd_arch_index_url_linux_honors_amd_mirror(self):
         """On Linux the inferred-gfx repair must honour UNSLOTH_AMD_ROCM_MIRROR (the
         var install.sh uses), not the Windows mirror var, so a mirrored/air-gapped

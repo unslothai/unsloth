@@ -2831,8 +2831,14 @@ TORCH_INDEX_URL=$(get_torch_index_url)
 # Linux: ROCm runtime missing but a supported AMD gfx arch is inferable (Strix Halo
 # in /proc/cpuinfo, lspci marketing name, UNSLOTH_ROCM_GFX_ARCH). Route to AMD's
 # per-arch wheels like install.ps1 does on Windows (unslothai#7301).
+# Gated on _has_amd_rocm_gpu being FALSE: a */cpu index on a host whose GPU IS
+# visible to the ROCm probes is a deliberate fallback (unsupported/unreadable
+# ROCm version, after its own warning), not a missing runtime -- rerouting it
+# would contradict that decision. An explicit UNSLOTH_ROCM_GFX_ARCH override
+# stays authoritative either way.
 if [ "$_torch_index_pinned" = false ] && [ "$SKIP_TORCH" = false ] && \
    ! _has_usable_nvidia_gpu && \
+   { [ -n "${UNSLOTH_ROCM_GFX_ARCH:-}" ] || ! _has_amd_rocm_gpu; } && \
    case "$(uname -s)" in Linux) true ;; *) false ;; esac && \
    case "$_ARCH" in x86_64|amd64) true ;; *) false ;; esac; then
     # ROCm torch wheels are x86_64-only; get_torch_index_url returns CPU on other
@@ -2848,6 +2854,14 @@ if [ "$_torch_index_pinned" = false ] && [ "$SKIP_TORCH" = false ] && \
                         _amd_mirror="${_amd_mirror%/}"
                     done
                     TORCH_INDEX_URL="${_amd_mirror}/${_amd_family}/"
+                    # Hand the inferred arch to setup.sh (llama.cpp): it re-probes
+                    # ROCm on its own, and on these runtime-less hosts its probes
+                    # find nothing, so without this it classifies the box as
+                    # non-ROCm and installs the CPU prebuilt while torch just got
+                    # AMD per-arch wheels. setup.sh and install_llama_prebuilt.py
+                    # both honor UNSLOTH_ROCM_GFX_ARCH, so exporting it is the
+                    # whole handoff (a user-set override re-exports unchanged).
+                    export UNSLOTH_ROCM_GFX_ARCH="$_linux_inferred_gfx"
                     case "$_linux_inferred_gfx" in
                         gfx1201|gfx1200|gfx1151|gfx1150)
                             TORCH_CONSTRAINT="torch>=2.11.0,<2.12.0"
