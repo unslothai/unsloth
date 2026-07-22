@@ -3483,7 +3483,7 @@ class TestStrixRocm71Override:
         ), "the reroute must export the inferred gfx for the setup.sh handoff"
         # setup.sh's side of the handoff must still exist.
         setup_source = (PACKAGE_ROOT / "studio" / "setup.sh").read_text(encoding = "utf-8")
-        assert 'UNSLOTH_ROCM_GFX_ARCH' in setup_source
+        assert "UNSLOTH_ROCM_GFX_ARCH" in setup_source
 
     def test_amd_arch_index_url_linux_honors_amd_mirror(self):
         """On Linux the inferred-gfx repair must honour UNSLOTH_AMD_ROCM_MIRROR (the
