@@ -501,9 +501,7 @@ def _shell_alias_definitions(command: str) -> dict[str, str]:
     return aliases
 
 
-def _segment_with_alias_expansion(
-    segment: list[str], aliases: dict[str, str]
-) -> list[str] | None:
+def _segment_with_alias_expansion(segment: list[str], aliases: dict[str, str]) -> list[str] | None:
     if not aliases:
         return None
     cmd_index = 0
