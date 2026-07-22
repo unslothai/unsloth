@@ -1626,7 +1626,7 @@ class TestInstallShStructure:
             # rocminfo that mimics ROCR_VISIBLE_DEVICES=-1 hiding all agents.
             with open(os.path.join(d, "rocminfo"), "w", encoding = "utf-8") as f:
                 f.write(
-                    '#!/bin/sh\n'
+                    "#!/bin/sh\n"
                     'if [ "${ROCR_VISIBLE_DEVICES:-}" = "-1" ]; then echo "no agents"; exit 0; fi\n'
                     'echo "  Name:  gfx1151"\n'
                 )
@@ -1643,9 +1643,9 @@ class TestInstallShStructure:
 
             r = run(ROCR_VISIBLE_DEVICES = "-1")
             assert r.returncode == 0, f"masked probe aborted: {r.stderr}"
-            assert "OK:gfx1151" in r.stdout, (
-                f"a visibility mask must not blind the gfx probe: {r.stdout!r}"
-            )
+            assert (
+                "OK:gfx1151" in r.stdout
+            ), f"a visibility mask must not blind the gfx probe: {r.stdout!r}"
 
     def test_get_torch_index_url_uses_nvidia_detected_flag(self):
         """get_torch_index_url must track NVIDIA via _nvidia_detected (proc-only NVIDIA still picks CUDA)."""
