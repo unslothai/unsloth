@@ -517,13 +517,10 @@ def _adapter_base_from_hf_cache(model_name: str) -> str | None:
     """
     if not _is_canonical_repo_id(model_name):
         return None
-    hub = (
-        os.environ.get("HF_HUB_CACHE")
-        or os.environ.get("HUGGINGFACE_HUB_CACHE")
-        or os.path.join(
-            os.environ.get("HF_HOME") or os.path.expanduser("~/.cache/huggingface"), "hub"
-        )
-    )
+    # Route through the selected cache: after a no-restart /settings switch the
+    # process HF_HUB_CACHE env is stale, but the model loads from the selected
+    # cache, which get_hf_cache_paths() reflects (the DB switch).
+    hub = str(get_hf_cache_paths().hub_cache)
     repo_dir = Path(hub) / ("models--" + model_name.replace("/", "--"))
     candidates = []
     ref_main = repo_dir / "refs" / "main"
@@ -682,13 +679,10 @@ def _config_json_from_hf_cache(model_name: str) -> dict | None:
     # Only a canonical ``owner/repo`` Hub id maps to a cache dir; reject local paths.
     if not model_name or model_name.count("/") != 1 or model_name[0] in "/.~" or "\\" in model_name:
         return None
-    hub = (
-        os.environ.get("HF_HUB_CACHE")
-        or os.environ.get("HUGGINGFACE_HUB_CACHE")
-        or os.path.join(
-            os.environ.get("HF_HOME") or os.path.expanduser("~/.cache/huggingface"), "hub"
-        )
-    )
+    # Route through the selected cache: after a no-restart /settings switch the
+    # process HF_HUB_CACHE env is stale, but the model loads from the selected
+    # cache, which get_hf_cache_paths() reflects (the DB switch).
+    hub = str(get_hf_cache_paths().hub_cache)
     repo_dir = Path(hub) / ("models--" + model_name.replace("/", "--"))
     candidates = []
     ref_main = repo_dir / "refs" / "main"

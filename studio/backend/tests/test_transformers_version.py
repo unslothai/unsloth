@@ -160,6 +160,25 @@ class TestResolveBaseModel:
 class TestRemoteLoraBase:
     """_remote_lora_base reads a remote adapter's base from its Hub adapter_config.json."""
 
+    @pytest.fixture(autouse = True)
+    def _selected_cache_follows_env(self, monkeypatch):
+        # The cache helpers now read the selected cache (get_hf_cache_paths),
+        # which snapshots env at import; make it follow the HF_HUB_CACHE these
+        # tests set so they keep driving the lookup via env.
+        monkeypatch.setattr(
+            "utils.transformers_version.get_hf_cache_paths",
+            lambda: _types.SimpleNamespace(
+                hub_cache = Path(
+                    os.environ.get("HF_HUB_CACHE")
+                    or os.environ.get("HUGGINGFACE_HUB_CACHE")
+                    or os.path.join(
+                        os.environ.get("HF_HOME") or os.path.expanduser("~/.cache/huggingface"),
+                        "hub",
+                    )
+                )
+            ),
+        )
+
     @staticmethod
     def _resp(cfg: dict):
         class _Resp:
@@ -644,6 +663,24 @@ def _hf_response(cfg: dict):
 
 class TestConfigJsonHfCacheFallback:
     """HF hub cache is consulted only offline or after a failed fetch (never stale online)."""
+
+    @pytest.fixture(autouse = True)
+    def _selected_cache_follows_env(self, monkeypatch):
+        # As above: route the selected-cache lookup through the HF_HUB_CACHE env
+        # these tests set, since get_hf_cache_paths snapshots env at import.
+        monkeypatch.setattr(
+            "utils.transformers_version.get_hf_cache_paths",
+            lambda: _types.SimpleNamespace(
+                hub_cache = Path(
+                    os.environ.get("HF_HUB_CACHE")
+                    or os.environ.get("HUGGINGFACE_HUB_CACHE")
+                    or os.path.join(
+                        os.environ.get("HF_HOME") or os.path.expanduser("~/.cache/huggingface"),
+                        "hub",
+                    )
+                )
+            ),
+        )
 
     def setup_method(self):
         _config_json_cache.clear()

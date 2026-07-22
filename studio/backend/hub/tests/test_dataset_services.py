@@ -110,7 +110,7 @@ def test_delete_cached_dataset_scopes_delete_to_selected_root(monkeypatch, tmp_p
     monkeypatch.setattr(
         cache_inventory,
         "_delete_processed_dataset_cache",
-        lambda _repo_id: (False, []),
+        lambda _repo_id, **_kwargs: (False, []),
     )
     monkeypatch.setattr(
         cache_inventory.download_manifest,
@@ -151,13 +151,36 @@ def test_delete_processed_only_dataset_accepts_processed_cache_path(monkeypatch,
     monkeypatch.setattr(
         cache_inventory,
         "_delete_processed_dataset_cache",
-        lambda repo_id: (processed_calls.append(repo_id) or True, []),
+        lambda repo_id, **_kwargs: (processed_calls.append(repo_id) or True, []),
     )
 
     result = cache_inventory._delete_cached_dataset_blocking("Org/Data", str(processed_dir))
 
     assert result == {"status": "deleted", "repo_id": "Org/Data"}
     assert processed_calls == ["Org/Data"]
+
+
+def test_delete_processed_dataset_scopes_to_selected_root(monkeypatch, tmp_path):
+    """A dataset processed under two HF_DATASETS_CACHE roots is deleted only from
+    the selected root; the copy under the other cache home survives (real delete,
+    not stubbed)."""
+    selected_root = tmp_path / "selected" / "datasets"
+    other_root = tmp_path / "other" / "datasets"
+    for root in (selected_root, other_root):
+        (root / "Org___Data").mkdir(parents = True)
+
+    monkeypatch.setattr(cache_inventory, "_collect_hf_cache_scans", lambda: ([], set()))
+    monkeypatch.setattr(
+        cache_inventory, "_hf_datasets_cache_roots", lambda: [selected_root, other_root]
+    )
+
+    result = cache_inventory._delete_cached_dataset_blocking(
+        "Org/Data", str(selected_root / "Org___Data")
+    )
+
+    assert result == {"status": "deleted", "repo_id": "Org/Data"}
+    assert not (selected_root / "Org___Data").exists()  # the selected copy is deleted
+    assert (other_root / "Org___Data").exists()  # the other cache home is untouched
 
 
 def test_delete_cached_dataset_purges_blob_only_repo_dir(monkeypatch):
@@ -174,7 +197,7 @@ def test_delete_cached_dataset_purges_blob_only_repo_dir(monkeypatch):
     monkeypatch.setattr(
         cache_inventory,
         "_delete_processed_dataset_cache",
-        lambda _repo_id: (False, []),
+        lambda _repo_id, **_kwargs: (False, []),
     )
     monkeypatch.setattr(
         cache_inventory,
@@ -207,7 +230,7 @@ def test_delete_cached_dataset_absent_everywhere_raises_404(monkeypatch):
     monkeypatch.setattr(
         cache_inventory,
         "_delete_processed_dataset_cache",
-        lambda _repo_id: (False, []),
+        lambda _repo_id, **_kwargs: (False, []),
     )
     monkeypatch.setattr(
         cache_inventory,

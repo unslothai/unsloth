@@ -416,7 +416,26 @@ def _delete_cached_dataset_blocking(repo_id: str, cache_path: Optional[str] = No
                 exc_info = True,
             )
 
-    processed_deleted, processed_failures = _delete_processed_dataset_cache(repo_id)
+    # Restrict the processed Arrow-cache delete to the selected cache's datasets
+    # root so it never removes copies under other cache homes. A processed
+    # cache_path scopes to its own root; a Hub target scopes to the datasets root
+    # sharing its cache home; an unspecified cache_path stays global (legacy).
+    processed_roots: Optional[set[Path]]
+    if not cache_path:
+        processed_roots = None
+    elif _is_processed_dataset_cache_path(repo_id, cache_path):
+        processed_roots = {Path(cache_path).expanduser().resolve(strict = False).parent}
+    else:
+        home = target_root.parent if target_root is not None else None
+        processed_roots = {
+            root.resolve(strict = False)
+            for root in _hf_datasets_cache_roots()
+            if home is not None and root.resolve(strict = False).parent == home
+        }
+
+    processed_deleted, processed_failures = _delete_processed_dataset_cache(
+        repo_id, only_roots = processed_roots
+    )
     failures.extend(processed_failures)
     if failures:
         raise HTTPException(
@@ -443,7 +462,9 @@ def _delete_cached_dataset_blocking(repo_id: str, cache_path: Optional[str] = No
     return {"status": "deleted", "repo_id": repo_id}
 
 
-def _delete_processed_dataset_cache(repo_id: str) -> tuple[bool, list[str]]:
+def _delete_processed_dataset_cache(
+    repo_id: str, only_roots: Optional[set[Path]] = None
+) -> tuple[bool, list[str]]:
     import shutil
 
     target = repo_id.replace("/", "___")
@@ -451,6 +472,10 @@ def _delete_processed_dataset_cache(repo_id: str) -> tuple[bool, list[str]]:
     deleted = False
     failures: list[str] = []
     for root in _hf_datasets_cache_roots():
+        # Scope to the selected cache's datasets root(s): a delete must not remove
+        # processed copies living under other, previously selected cache homes.
+        if only_roots is not None and root.resolve(strict = False) not in only_roots:
+            continue
         try:
             entries = [
                 entry
