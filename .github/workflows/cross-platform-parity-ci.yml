@@ -23,6 +23,7 @@ on:
       - 'install.ps1'
       - 'tests/test_installer_skip_autostart.py'
       - 'tests/python/test_cross_platform_parity.py'
+      - 'tests/studio/test_install_rollback_lifecycle.ps1'
       - '.github/workflows/cross-platform-parity-ci.yml'
   push:
     branches: [main]
@@ -31,6 +32,7 @@ on:
       - 'install.ps1'
       - 'tests/test_installer_skip_autostart.py'
       - 'tests/python/test_cross_platform_parity.py'
+      - 'tests/studio/test_install_rollback_lifecycle.ps1'
       - '.github/workflows/cross-platform-parity-ci.yml'
   workflow_dispatch:
 
@@ -67,3 +69,7 @@ jobs:
           tests/python/test_cross_platform_parity.py
           tests/test_installer_skip_autostart.py
           -q
+      - name: PowerShell rollback lifecycle tests
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: pwsh -NoProfile -File tests/studio/test_install_rollback_lifecycle.ps1
