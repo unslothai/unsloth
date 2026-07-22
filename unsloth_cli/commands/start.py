@@ -2716,9 +2716,7 @@ def claude(
     if as_subagent:
         subagent_id = _subagent_model_id(base, key, entry, model, gguf_variant)
         subagent_model = {**entry, "id": subagent_id}
-        window = subagent_model.get("context_length") or subagent_model.get(
-            "max_context_length"
-        )
+        window = subagent_model.get("context_length") or subagent_model.get("max_context_length")
         server_env = {
             "UNSLOTH_CLAUDE_SUBAGENT_BASE_URL": base,
             "UNSLOTH_CLAUDE_SUBAGENT_API_KEY": key,
