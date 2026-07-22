@@ -3,8 +3,11 @@
 import importlib.util
 import json
 import os
+import re
+import shutil
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
 from unittest.mock import MagicMock, mock_open, patch, PropertyMock
 
@@ -3191,13 +3194,64 @@ class TestStrixRocm71Override:
         source = _INSTALL_SH_PATH.read_text(encoding = "utf-8")
         assert "moe_utils" in source or "_grouped_mm" in source
 
-    def test_strix_override_only_fires_on_rocm71(self):
-        """install.sh must scope the Strix override to rocm7.1 only (not rocm7.2+)."""
+    def test_strix_override_scoped_below_arch_floor(self):
+        """Strix reroute must fire for rocm leaves BELOW the arch floor (7.13) and
+        NOT at/above it. Executed via _rocm_leaf_below so it verifies the actual
+        version comparison, not a text match that a comment could satisfy."""
         source = _INSTALL_SH_PATH.read_text(encoding = "utf-8")
-        strix_idx = source.find("_strix_gfx")
-        assert strix_idx != -1
-        context_before = source[max(0, strix_idx - 2400) : strix_idx]
-        assert "rocm7.1" in context_before
+        # Selector + gate must switch on the index LEAF, not the whole URL (a mirror
+        # base path with its own rocm token would false-positive otherwise).
+        assert 'case "$_torch_index_leaf" in' in source
+        assert '_rocm_leaf_below "$_torch_index_leaf" 7 13' in source
+        shell = shutil.which("sh") or shutil.which("bash")
+        if not shell:
+            pytest.skip("no POSIX shell to execute _rocm_leaf_below")
+        match = re.search(r"^_rocm_leaf_below\(\) \{.*?^\}", source, re.S | re.M)
+        assert match, "could not extract _rocm_leaf_below from install.sh"
+        fn = match.group(0)
+
+        def below(leaf):
+            return (
+                subprocess.run(
+                    [shell, "-c", f'{fn}\n_rocm_leaf_below "$1" 7 13', "_", leaf]
+                ).returncode
+                == 0
+            )
+
+        for leaf in ("rocm6.0", "rocm7.0", "rocm7.1", "rocm7.2", "rocm7.12"):
+            assert below(leaf), f"{leaf} must reroute (below arch floor 7.13)"
+        for leaf in ("rocm7.13", "rocm7.14", "rocm8.0", "gfx1151", "cu128", "cpu"):
+            assert not below(leaf), f"{leaf} must NOT reroute (>= floor or non-rocm)"
+
+    def test_gfx_probe_survives_no_match_under_set_e(self):
+        """A gfx probe whose grep finds no match must not abort install.sh under
+        set -euo pipefail before the amd-smi fallback runs. The reroute case now
+        matches every rocm* index, so this would break ordinary 6.x/7.2 installs
+        with a flaky rocminfo. Executed with shimmed tools, not a text match."""
+        shell = shutil.which("bash")
+        if not shell:
+            pytest.skip("bash needed to execute the probe block")
+        source = _INSTALL_SH_PATH.read_text(encoding = "utf-8")
+        block = re.search(
+            r'^        _gfx_all=""\n.*?(?=^        _strix_gfx="")', source, re.S | re.M
+        )
+        assert block, "could not extract the gfx-detection block"
+        with tempfile.TemporaryDirectory() as d:
+            # rocminfo emits no gfx token; amd-smi supplies gfx1151 (the fallback)
+            for name, out in (("rocminfo", "no gpu here"), ("amd-smi", "GPU: gfx1151")):
+                p = os.path.join(d, name)
+                with open(p, "w", encoding = "utf-8") as f:
+                    f.write(f'#!/bin/sh\ncat <<"EOT"\n{out}\nEOT\n')
+                os.chmod(p, 0o755)
+            script = (
+                'set -euo pipefail\nHIP_VISIBLE_DEVICES=""\nROCR_VISIBLE_DEVICES=""\n'
+                + block.group(0)
+                + '\nprintf "OK:%s\\n" "$_gfx_all"\n'
+            )
+            env = dict(os.environ, PATH = d + os.pathsep + os.environ.get("PATH", ""))
+            r = subprocess.run([shell, "-c", script], env = env, capture_output = True, text = True)
+            assert r.returncode == 0, f"probe aborted under set -e: {r.stderr}"
+            assert "OK:gfx1151" in r.stdout, f"amd-smi fallback not reached: {r.stdout!r}"
 
     def test_torch_constraint_updated_for_strix_amd_index(self):
         """install.sh must set TORCH_CONSTRAINT>=2.11 when routing Strix to AMD index."""
