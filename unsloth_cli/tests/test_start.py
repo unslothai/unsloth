@@ -671,9 +671,7 @@ def test_codex_subagent_bridge_uses_wsl_for_windows_codex(monkeypatch, tmp_path)
     assert f"from {start._CODEX_SUBAGENT_MCP_MODULE} import main" in server["args"][5]
     assert server["required"] is True
     assert server["enabled_tools"] == [start._CODEX_SUBAGENT_MCP_TOOL]
-    assert (
-        f"developer_instructions={json.dumps(start._CODEX_SUBAGENT_PARENT_INSTRUCTIONS)}" in flags
-    )
+    assert not any(value.startswith("developer_instructions=") for value in flags)
 
 
 @pytest.mark.skipif(os.name == "nt", reason = "WSL scenario")
@@ -1037,9 +1035,7 @@ def test_connect_codex_as_subagent_preserves_cloud_parent(fake_studio, tmp_path,
     assert "sys.path.insert" in server["args"][1]
     assert f"from {start._CODEX_SUBAGENT_MCP_MODULE} import main" in server["args"][1]
     assert server["enabled_tools"] == [start._CODEX_SUBAGENT_MCP_TOOL]
-    assert (
-        f"developer_instructions={json.dumps(start._CODEX_SUBAGENT_PARENT_INSTRUCTIONS)}" in command
-    )
+    assert not any(value.startswith("developer_instructions=") for value in command)
     assert "Ask Codex to spawn an Unsloth or local agent." in result.output
 
 

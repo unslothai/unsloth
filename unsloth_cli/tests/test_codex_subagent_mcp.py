@@ -50,11 +50,16 @@ def test_protocol_uses_codex_specific_tool_name():
         output,
         run_agent = lambda task, cancel_event: f"completed: {task}",
         tool_name = bridge._CODEX_SUBAGENT_MCP_TOOL,
+        tool_description = bridge._CODEX_SUBAGENT_TOOL_DESCRIPTION,
     )
     responses = {
         response["id"]: response for response in map(json.loads, output.getvalue().splitlines())
     }
     assert responses[1]["result"]["tools"][0]["name"] == "spawn_local_agent"
+    assert (
+        "Use this tool instead of the built-in spawn_agent tool"
+        in responses[1]["result"]["tools"][0]["description"]
+    )
     assert responses[2]["result"] == {
         "content": [{"type": "text", "text": "completed: inspect this"}],
         "isError": False,
@@ -62,10 +67,20 @@ def test_protocol_uses_codex_specific_tool_name():
 
 
 @pytest.mark.parametrize("bypass_permissions", [False, True])
-def test_local_child_uses_explicit_unsloth_profile(monkeypatch, tmp_path, bypass_permissions):
+@pytest.mark.parametrize("wsl_bridge", [False, True])
+def test_local_child_uses_explicit_unsloth_profile(
+    monkeypatch, tmp_path, bypass_permissions, wsl_bridge
+):
     config = _write_config(tmp_path, bypass_permissions = bypass_permissions)
     monkeypatch.setenv(bridge._CODEX_SUBAGENT_CONFIG_ENV, str(config))
-    monkeypatch.setenv("OPENAI_API_KEY", "cloud-key")
+    for name in bridge._CODEX_ENV_UNSET:
+        monkeypatch.setenv(name, "cloud-key")
+    if wsl_bridge:
+        monkeypatch.setattr(
+            bridge,
+            "_wsl_shim_env",
+            lambda command, env, unset: (env, (*unset, "PWD/p")),
+        )
     monkeypatch.setattr(bridge.shutil, "which", lambda _: "/usr/local/bin/codex")
     captured = {}
 
@@ -117,6 +132,12 @@ def test_local_child_uses_explicit_unsloth_profile(monkeypatch, tmp_path, bypass
         assert captured["start_new_session"] is True
     assert captured["env"]["CODEX_HOME"] == str(tmp_path / "child")
     assert captured["env"][bridge._CODEX_ENV_KEY] == "sk-unsloth-test"
+    if wsl_bridge:
+        assert all(captured["env"][name] == "" for name in bridge._CODEX_ENV_UNSET)
+        assert all(name in captured["env"]["WSLENV"].split(":") for name in bridge._CODEX_ENV_UNSET)
+        assert "PWD/p" in captured["env"]["WSLENV"].split(":")
+    else:
+        assert all(name not in captured["env"] for name in bridge._CODEX_ENV_UNSET)
 
 
 def test_local_child_returns_last_agent_message():
@@ -139,8 +160,18 @@ def test_local_child_returns_last_agent_message():
     assert bridge._result_text(output) == "final"
 
 
-def test_local_child_reports_failed_turn():
-    output = json.dumps({"type": "turn.failed", "error": {"message": "local failure"}})
+def test_local_child_prioritizes_failed_turn_over_progress():
+    output = "\n".join(
+        [
+            json.dumps(
+                {
+                    "type": "item.completed",
+                    "item": {"type": "agent_message", "text": "still working"},
+                }
+            ),
+            json.dumps({"type": "turn.failed", "error": {"message": "local failure"}}),
+        ]
+    )
     with pytest.raises(RuntimeError, match = "local failure"):
         bridge._result_text(output)
 

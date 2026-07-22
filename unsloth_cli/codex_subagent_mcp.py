@@ -17,9 +17,11 @@ from typing import Any
 from unsloth_cli.claude_subagent_mcp import _bounded, _stop_child, serve
 from unsloth_cli.commands.start import (
     _CODEX_ENV_KEY,
+    _CODEX_ENV_UNSET,
     _CODEX_PROFILE,
     _CODEX_SUBAGENT_CONFIG_ENV,
     _CODEX_SUBAGENT_MCP_TOOL,
+    _CODEX_SUBAGENT_TOOL_DESCRIPTION,
     _SUBAGENT_INSTRUCTIONS,
     _merge_wslenv,
     _wsl_shim_env,
@@ -69,10 +71,10 @@ def _result_text(stdout: str) -> str:
                 detail = detail.get("message") or json.dumps(detail)
             if detail:
                 errors.append(str(detail))
-    if messages:
-        return _bounded(messages[-1])
     if errors:
         raise RuntimeError(_bounded(errors[-1]))
+    if messages:
+        return _bounded(messages[-1])
     raise RuntimeError("The local Codex agent returned no readable result.")
 
 
@@ -106,11 +108,16 @@ def run_local_agent(task: str, cancel_event: threading.Event | None = None) -> s
         _CODEX_ENV_KEY: config["api_key"],
         "CODEX_HOME": config["codex_home"],
     }
-    bridged, wsl_names = _wsl_shim_env(command, local_env, ())
+    bridged, wsl_names = _wsl_shim_env(command, local_env, _CODEX_ENV_UNSET)
     child_env = dict(os.environ)
     if wsl_names:
         bridged = {**bridged, "PWD": os.getcwd()}
         child_env["WSLENV"] = _merge_wslenv(child_env.get("WSLENV", ""), wsl_names)
+        for name in _CODEX_ENV_UNSET:
+            child_env[name] = ""
+    else:
+        for name in _CODEX_ENV_UNSET:
+            child_env.pop(name, None)
     child_env.update(bridged)
     popen_kwargs: dict[str, Any] = {
         "cwd": os.getcwd(),
@@ -149,7 +156,11 @@ def run_local_agent(task: str, cancel_event: threading.Event | None = None) -> s
 def main() -> None:
     if len(sys.argv) > 1:
         os.environ[_CODEX_SUBAGENT_CONFIG_ENV] = sys.argv[1]
-    serve(run_agent = run_local_agent, tool_name = _CODEX_SUBAGENT_MCP_TOOL)
+    serve(
+        run_agent = run_local_agent,
+        tool_name = _CODEX_SUBAGENT_MCP_TOOL,
+        tool_description = _CODEX_SUBAGENT_TOOL_DESCRIPTION,
+    )
 
 
 if __name__ == "__main__":

@@ -210,6 +210,7 @@ def _response(
     request: dict,
     run_agent: Callable[[str], str] = run_local_agent,
     tool_name: str = "unsloth_agent",
+    tool_description: str | None = None,
     run_read_only_agent: Callable[[str], str] | None = None,
     read_only_tool_name: str | None = None,
 ) -> dict | None:
@@ -253,7 +254,7 @@ def _response(
                 "_meta": {"anthropic/maxResultSizeChars": _MAX_RESULT_CHARACTERS},
             }
 
-        tools = [tool_definition(tool_name, _SUBAGENT_DESCRIPTION, False)]
+        tools = [tool_definition(tool_name, tool_description or _SUBAGENT_DESCRIPTION, False)]
         if read_only_tool_name and run_read_only_agent:
             tools.append(tool_definition(read_only_tool_name, _SUBAGENT_PLAN_DESCRIPTION, True))
         result = {"tools": tools}
@@ -299,6 +300,7 @@ def serve(
     stdout: Any = sys.stdout,
     run_agent: Callable[[str, threading.Event], str] = run_local_agent,
     tool_name: str = "unsloth_agent",
+    tool_description: str | None = None,
     run_read_only_agent: Callable[[str, threading.Event], str] | None = None,
     read_only_tool_name: str | None = None,
 ) -> None:
@@ -341,6 +343,7 @@ def serve(
                 request,
                 run_agent = lambda task: run_agent(task, cancel_event),
                 tool_name = tool_name,
+                tool_description = tool_description,
                 run_read_only_agent = (
                     (lambda task: run_read_only_agent(task, cancel_event))
                     if run_read_only_agent
@@ -385,6 +388,7 @@ def serve(
                     response = _response(
                         request,
                         tool_name = tool_name,
+                        tool_description = tool_description,
                         run_read_only_agent = (
                             (lambda task: run_read_only_agent(task, threading.Event()))
                             if run_read_only_agent

@@ -273,6 +273,24 @@ const event = {{
     }},
 }};
 console.log(JSON.stringify(event));
+console.log(JSON.stringify({{
+    type: "tool_execution_end",
+    toolCallId: `tool_${{task}}`,
+    toolName: "read",
+    result: {{ content: [{{ type: "text", text: `TOOL_${{task}}` }}] }},
+    isError: false,
+}}));
+console.log(JSON.stringify({{
+    type: "turn_end",
+    message: event.message,
+    toolResults: [{{
+        role: "toolResult",
+        toolCallId: `tool_${{task}}`,
+        toolName: "read",
+        content: [{{ type: "text", text: `TOOL_${{task}}` }}],
+        isError: false,
+    }}],
+}}));
 """,
         encoding = "utf-8",
     )
@@ -316,8 +334,12 @@ test("parallel tasks launch one child each and retain their transcripts", async 
     expect(result.content[0].text).toContain("DONE_BETA");
     expect(result.details.mode).toBe("parallel");
     expect(result.details.results).toHaveLength(2);
+    expect(result.details.results[0].transcript).toHaveLength(2);
+    expect(result.details.results[1].transcript).toHaveLength(2);
     expect(result.details.results[0].transcript[0].content[0].text).toBe("DONE_ALPHA");
+    expect(result.details.results[0].transcript[1].content[0].text).toBe("TOOL_ALPHA");
     expect(result.details.results[1].transcript[0].content[0].text).toBe("DONE_BETA");
+    expect(result.details.results[1].transcript[1].content[0].text).toBe("TOOL_BETA");
 }}, 10_000);
 """,
         encoding = "utf-8",

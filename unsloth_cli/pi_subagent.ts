@@ -145,8 +145,16 @@ async function runLocalAgent(
 	const processLine = (line: string) => {
 		try {
 			const event = JSON.parse(line);
-			if ((event.type === "message_end" || event.type === "tool_result_end") && event.message) {
+			if (event.type === "message_end" && event.message) {
 				result.transcript.push(event.message);
+				onProgress(result);
+			}
+			if (
+				event.type === "turn_end" &&
+				Array.isArray(event.toolResults) &&
+				event.toolResults.length
+			) {
+				result.transcript.push(...event.toolResults);
 				onProgress(result);
 			}
 			if (event.type !== "message_end") return;

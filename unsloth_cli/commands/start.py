@@ -99,11 +99,9 @@ _CODEX_SUBAGENT_MCP_MODULE = "unsloth_cli.codex_subagent_mcp"
 _CODEX_SUBAGENT_MCP_SERVER = "unsloth_local_agent"
 _CODEX_SUBAGENT_MCP_TOOL = "spawn_local_agent"
 _CODEX_SUBAGENT_CONFIG_ENV = "UNSLOTH_CODEX_SUBAGENT_CONFIG"
-_CODEX_SUBAGENT_PARENT_INSTRUCTIONS = (
-    "When the user asks to spawn an Unsloth agent or local agent, call "
-    f"mcp__{_CODEX_SUBAGENT_MCP_SERVER}__{_CODEX_SUBAGENT_MCP_TOOL} with the complete task. "
-    "Do not use the built-in spawn_agent tool for those requests. Return the local agent's "
-    "result to the user. Other subagent requests may use the built-in tools normally."
+_CODEX_SUBAGENT_TOOL_DESCRIPTION = (
+    f"{_SUBAGENT_DESCRIPTION} Use this tool instead of the built-in spawn_agent tool for those "
+    "requests. Other subagent requests may use the built-in tools normally."
 )
 _PI_SUBAGENT_EXTENSION = Path(__file__).parent.parent / "pi_subagent.ts"
 # OpenCode selects a model by "<providerID>/<modelID>". Use a dedicated id to avoid
@@ -112,6 +110,7 @@ _OPENCODE_PROVIDER = "unsloth-studio"
 _PROVIDER_HEADER = f"[model_providers.{_CODEX_PROFILE}]"
 _PASSTHROUGH = {"allow_extra_args": True, "ignore_unknown_options": True}
 _CLAUDE_ENV_UNSET = ("ANTHROPIC_API_KEY", "CLAUDE_CODE_OAUTH_TOKEN")
+_CODEX_ENV_UNSET = ("OPENAI_API_KEY", "CODEX_API_KEY", "CODEX_ACCESS_TOKEN")
 
 # Shared by every agent command; only the config/env/command differ.
 _MODEL_OPTION = typer.Option(
@@ -1663,12 +1662,7 @@ def _codex_subagent_flags(path: Path) -> list[str]:
         f"required = true, enabled_tools = [{json.dumps(_CODEX_SUBAGENT_MCP_TOOL)}], "
         "startup_timeout_sec = 15, tool_timeout_sec = 3600 }"
     )
-    return [
-        "-c",
-        f"developer_instructions={json.dumps(_CODEX_SUBAGENT_PARENT_INSTRUCTIONS)}",
-        "-c",
-        f"mcp_servers.{_CODEX_SUBAGENT_MCP_SERVER}={server}",
-    ]
+    return ["-c", f"mcp_servers.{_CODEX_SUBAGENT_MCP_SERVER}={server}"]
 
 
 def _wsl_windows_executable(command: list) -> Optional[str]:
