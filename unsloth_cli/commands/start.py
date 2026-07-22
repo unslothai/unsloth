@@ -1501,6 +1501,7 @@ def _opencode_subagent_inline_config(path: Path, permission: dict) -> dict:
         if not isinstance(parsed, dict):
             _fail("OPENCODE_CONFIG_CONTENT must contain a JSON object.")
         inline.update(parsed)
+    effective = inline
 
     executable = _which_with_install_dirs("opencode")
     if executable is None:
@@ -1541,6 +1542,10 @@ def _opencode_subagent_inline_config(path: Path, permission: dict) -> dict:
                 provider for provider in disabled if provider != _OPENCODE_PROVIDER
             ]
 
+    depth = effective.get("subagent_depth")
+    inline["subagent_depth"] = (
+        depth if isinstance(depth, int) and not isinstance(depth, bool) and depth > 0 else 1
+    )
     if permission:
         inline["permission"] = permission
     return inline
@@ -2246,7 +2251,7 @@ def write_opencode_config(
         compaction = _subdict(config, "compaction")
         compaction["auto"] = True
         compaction["reserved"] = max(1, window // 10)
-    tools = ("edit", "bash", "webfetch")
+    tools = ("edit", "bash", "webfetch", *(("task",) if as_subagent else ()))
     if yolo:
         # Fallback for commands without native --auto and for the append-safe bare
         # --no-launch command (subcommand unknown yet). Rides inline (OPENCODE_CONFIG_CONTENT)

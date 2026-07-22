@@ -1,4 +1,4 @@
-import { spawn } from "node:child_process";
+import { spawn, type ChildProcess } from "node:child_process";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -7,6 +7,7 @@ import { Type } from "typebox";
 
 const provider = "unsloth";
 const maxResultCharacters = 100_000;
+const cancelGraceMilliseconds = 2_000;
 const model = process.env.UNSLOTH_PI_SUBAGENT_MODEL || "";
 const baseUrl = process.env.UNSLOTH_PI_SUBAGENT_BASE_URL || "";
 const contextWindow = positiveInt(process.env.UNSLOTH_PI_SUBAGENT_CONTEXT_WINDOW, 32768);
@@ -43,6 +44,55 @@ function piInvocation(args: string[]): { command: string; args: string[] } {
 	const executable = path.basename(process.execPath).toLowerCase();
 	if (!/^(node|bun)(\.exe)?$/.test(executable)) return { command: process.execPath, args };
 	return { command: "pi", args };
+}
+
+function signalProcessGroup(child: ChildProcess, signal: NodeJS.Signals): void {
+	if (!child.pid) return;
+	try {
+		process.kill(-child.pid, signal);
+	} catch {
+		try {
+			child.kill(signal);
+		} catch {
+			// The process tree already exited.
+		}
+	}
+}
+
+async function stopChildTree(child: ChildProcess): Promise<void> {
+	if (!child.pid) return;
+	if (process.platform === "win32") {
+		await new Promise<void>((resolve) => {
+			const killer = spawn("taskkill", ["/PID", String(child.pid), "/T", "/F"], {
+				shell: false,
+				stdio: "ignore",
+				windowsHide: true,
+			});
+			killer.once("error", () => {
+				try {
+					child.kill("SIGKILL");
+				} catch {
+					// The child already exited.
+				}
+				resolve();
+			});
+			killer.once("close", (code) => {
+				if (code !== 0) {
+					try {
+						child.kill("SIGKILL");
+					} catch {
+						// The child already exited.
+					}
+				}
+				resolve();
+			});
+		});
+		return;
+	}
+
+	signalProcessGroup(child, "SIGTERM");
+	await new Promise((resolve) => setTimeout(resolve, cancelGraceMilliseconds));
+	signalProcessGroup(child, "SIGKILL");
 }
 
 export default function unslothSubagent(pi: ExtensionAPI): void {
@@ -115,15 +165,21 @@ export default function unslothSubagent(pi: ExtensionAPI): void {
 			const exitCode = await new Promise<number>((resolve, reject) => {
 				const child = spawn(invocation.command, invocation.args, {
 					cwd: ctx.cwd,
+					detached: process.platform !== "win32",
 					shell: false,
 					stdio: ["ignore", "pipe", "pipe"],
 					env: { ...process.env, UNSLOTH_PI_SUBAGENT_CHILD: "1" },
 				});
+				let cleanup: Promise<void> | undefined;
 				const cancel = () => {
+					if (aborted) return;
 					aborted = true;
-					child.kill();
+					cleanup = stopChildTree(child);
 				};
-				child.on("error", reject);
+				child.on("error", (error) => {
+					signal?.removeEventListener("abort", cancel);
+					reject(error);
+				});
 				child.stdout.on("data", (chunk) => {
 					output += chunk.toString();
 					const lines = output.split("\n");
@@ -133,8 +189,9 @@ export default function unslothSubagent(pi: ExtensionAPI): void {
 				child.stderr.on("data", (chunk) => {
 					stderr = (stderr + chunk.toString()).slice(-100_000);
 				});
-				child.on("close", (code) => {
+				child.on("close", async (code) => {
 					signal?.removeEventListener("abort", cancel);
+					await cleanup;
 					if (output.trim()) processLine(output);
 					resolve(code ?? 1);
 				});

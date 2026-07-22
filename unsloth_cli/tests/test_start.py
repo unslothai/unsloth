@@ -2602,6 +2602,7 @@ def test_opencode_subagent_inline_keeps_parent_provider_filters(monkeypatch, tmp
                 {
                     "enabled_providers": ["opencode-go"],
                     "disabled_providers": ["ollama", start._OPENCODE_PROVIDER],
+                    "subagent_depth": 0,
                 }
             ),
             stderr = "",
@@ -2617,8 +2618,26 @@ def test_opencode_subagent_inline_keeps_parent_provider_filters(monkeypatch, tmp
         "theme": "tokyonight",
         "enabled_providers": ["opencode-go", start._OPENCODE_PROVIDER],
         "disabled_providers": ["ollama"],
+        "subagent_depth": 1,
         "permission": permission,
     }
+
+
+def test_opencode_subagent_inline_preserves_positive_depth(monkeypatch, tmp_path):
+    monkeypatch.setattr(start, "_which_with_install_dirs", lambda _: "/usr/bin/opencode")
+    monkeypatch.setattr(
+        start.subprocess,
+        "run",
+        lambda *args, **kwargs: SimpleNamespace(
+            returncode = 0,
+            stdout = json.dumps({"subagent_depth": 3}),
+            stderr = "",
+        ),
+    )
+
+    inline = start._opencode_subagent_inline_config(tmp_path / "opencode.json", {})
+
+    assert inline["subagent_depth"] == 3
 
 
 def _opencode_inline_config(output: str) -> dict:
@@ -2755,6 +2774,7 @@ def test_connect_opencode_subagent_yolo_no_launch_stays_append_safe(fake_studio,
         "edit": "allow",
         "bash": "allow",
         "webfetch": "allow",
+        "task": "allow",
         "external_directory": {"*": "allow"},
     }
     assert _opencode_inline_config(result.output)["permission"] == captured["permission"]
@@ -3471,6 +3491,27 @@ def test_opencode_non_yolo_flips_only_explicit_allow(tmp_path):
     config = json.loads(path.read_text())
     assert config["permission"] == {"edit": "ask", "bash": "deny", "read": "ask"}
     assert session == {}  # a non-yolo session carries no permission inline
+
+
+def test_opencode_subagent_non_yolo_clears_yolo_task_permission(tmp_path):
+    path = tmp_path / "opencode.json"
+    start.write_opencode_config(
+        BASE,
+        "sk-unsloth-abc",
+        MODEL,
+        path,
+        yolo = True,
+        as_subagent = True,
+    )
+    start.write_opencode_config(
+        BASE,
+        "sk-unsloth-abc",
+        MODEL,
+        path,
+        as_subagent = True,
+    )
+
+    assert json.loads(path.read_text())["permission"]["task"] == "ask"
 
 
 def test_opencode_non_yolo_leaves_string_permission(tmp_path):
