@@ -2915,6 +2915,14 @@ class LlamaCppBackend:
                 if prefer_rocr and pinned != "-1":
                     env["ROCR_VISIBLE_DEVICES"] = pinned
                     env.pop("HIP_VISIBLE_DEVICES", None)
+                    # ROCR re-indexes the visible agents from 0, and with HIP
+                    # cleared HIP honours CUDA_VISIBLE_DEVICES -- so it must carry
+                    # the post-ROCR ordinals (0..N-1), not the physical ids, else a
+                    # non-zero pick points out of range and HIP sees 0 devices (the
+                    # same stacking the default path avoids by clearing ROCR).
+                    env["CUDA_VISIBLE_DEVICES"] = ",".join(
+                        str(i) for i in range(len(pinned.split(",")))
+                    )
                 else:
                     env["HIP_VISIBLE_DEVICES"] = pinned
                     env.pop("ROCR_VISIBLE_DEVICES", None)

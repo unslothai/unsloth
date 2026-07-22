@@ -766,6 +766,26 @@ def test_subset_pin_masks_via_rocr_on_rocm(monkeypatch):
     assert "HIP_VISIBLE_DEVICES" not in env
 
 
+def test_prefer_rocr_remaps_cuda_to_post_rocr_ordinals(monkeypatch):
+    # ROCR re-indexes the visible agents from 0, and HIP (cleared here) falls back
+    # to CUDA_VISIBLE_DEVICES -- so on the prefer_rocr path CUDA must carry the
+    # post-ROCR ordinals, not the physical ids, else a non-zero pick indexes out
+    # of range and the child sees no GPU and drops to CPU (#7272 review).
+    _rocm_torch_stub(monkeypatch)
+    # Single non-zero GPU: ROCR keeps the physical id, CUDA becomes ordinal 0.
+    env = {}
+    LlamaCppBackend._emit_child_gpu_visibility(env, "1", prefer_rocr = True)
+    assert env["ROCR_VISIBLE_DEVICES"] == "1"
+    assert env["CUDA_VISIBLE_DEVICES"] == "0"
+    assert "HIP_VISIBLE_DEVICES" not in env
+    # Multi-GPU subset: ROCR keeps the physical ids, CUDA is the 0-based ordinals.
+    env = {}
+    LlamaCppBackend._emit_child_gpu_visibility(env, "1,3", prefer_rocr = True)
+    assert env["ROCR_VISIBLE_DEVICES"] == "1,3"
+    assert env["CUDA_VISIBLE_DEVICES"] == "0,1"
+    assert "HIP_VISIBLE_DEVICES" not in env
+
+
 def test_subset_pin_default_still_uses_hip_and_clears_rocr(monkeypatch):
     # Without prefer_rocr the masking is unchanged: HIP narrows, inherited ROCR
     # is cleared so the two can't double-mask.
