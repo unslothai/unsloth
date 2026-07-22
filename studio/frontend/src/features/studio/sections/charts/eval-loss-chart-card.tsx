@@ -17,6 +17,7 @@ import type { ReactElement } from "react";
 import { CartesianGrid, Line, LineChart, XAxis, YAxis } from "recharts";
 import {
   CHART_CONTAINER_CLASS,
+  CHART_FONT_SIZE,
   DEFAULT_CHART_MARGIN,
   DEFAULT_Y_AXIS_WIDTH,
   formatAxisMetric,
@@ -46,13 +47,18 @@ export function EvalLossChartCard({
   return (
     <Card data-tour="studio-eval-loss" size="sm">
       <CardHeader>
-        <CardTitle className={`text-sm${data.length > 0 ? "" : " text-muted-foreground"}`}>
+        <CardTitle
+          className={`text-sm${data.length > 0 ? "" : " text-muted-foreground"}`}
+        >
           {t("studio.charts.evalLoss")}
         </CardTitle>
       </CardHeader>
       <CardContent>
         {data.length > 0 ? (
-          <ChartContainer config={evalLossConfig} className={CHART_CONTAINER_CLASS}>
+          <ChartContainer
+            config={evalLossConfig}
+            className={CHART_CONTAINER_CLASS}
+          >
             <LineChart
               data={data}
               accessibilityLayer={true}
@@ -70,7 +76,7 @@ export function EvalLossChartCard({
                 tickLine={false}
                 axisLine={false}
                 tickMargin={8}
-                fontSize={10}
+                fontSize={CHART_FONT_SIZE}
                 tickFormatter={(value) => formatStepTick(Number(value))}
                 interval="preserveStartEnd"
               />
@@ -81,7 +87,7 @@ export function EvalLossChartCard({
                 axisLine={false}
                 tickMargin={8}
                 tickCount={5}
-                fontSize={10}
+                fontSize={CHART_FONT_SIZE}
                 width={DEFAULT_Y_AXIS_WIDTH}
                 tickFormatter={(value) => formatAxisMetric(Number(value))}
               />
@@ -132,7 +138,7 @@ export function EvalLossChartCard({
                   tickLine={false}
                   axisLine={false}
                   tickMargin={8}
-                  fontSize={10}
+                  fontSize={CHART_FONT_SIZE}
                   interval="preserveStartEnd"
                 />
                 <YAxis
@@ -140,7 +146,7 @@ export function EvalLossChartCard({
                   axisLine={false}
                   tickMargin={8}
                   tickCount={5}
-                  fontSize={10}
+                  fontSize={CHART_FONT_SIZE}
                   width={DEFAULT_Y_AXIS_WIDTH}
                 />
                 <Line

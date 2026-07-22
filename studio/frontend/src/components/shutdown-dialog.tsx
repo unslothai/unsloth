@@ -1,9 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-import { authFetch } from "@/features/auth";
-import { toastError } from "@/shared/toast";
-import { useState } from "react";
 import {
   AlertDialog,
   AlertDialogAction,
@@ -14,6 +11,9 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
+import { authFetch } from "@/features/auth";
+import { toastError } from "@/shared/toast";
+import { useState } from "react";
 
 interface ShutdownDialogProps {
   open: boolean;
@@ -52,8 +52,8 @@ export function ShutdownDialog({
     onAfterShutdown?.();
     document.body.innerHTML = `
       <div style="display:flex;flex-direction:column;align-items:center;justify-content:center;height:100vh;font-family:sans-serif;gap:12px">
-        <p style="font-size:1.1rem;font-weight:600;margin:0">Unsloth Studio has stopped.</p>
-        <p style="font-size:0.9rem;color:#888;margin:0">You can now close this tab.</p>
+        <p style="font-size:calc(1.1rem * var(--ui-font-scale, 1));font-weight:600;margin:0">Unsloth Studio has stopped.</p>
+        <p style="font-size:calc(0.9rem * var(--ui-font-scale, 1));color:#888;margin:0">You can now close this tab.</p>
       </div>`;
   };
 

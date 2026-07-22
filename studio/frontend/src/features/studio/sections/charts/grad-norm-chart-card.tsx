@@ -15,8 +15,9 @@ import type { ReactElement } from "react";
 import { CartesianGrid, Line, LineChart, XAxis, YAxis } from "recharts";
 import type { ScaleMode } from "./types";
 import {
-  CHART_SYNC_ID,
   CHART_CONTAINER_CLASS,
+  CHART_FONT_SIZE,
+  CHART_SYNC_ID,
   DEFAULT_CHART_MARGIN,
   DEFAULT_Y_AXIS_WIDTH,
   formatAxisMetric,
@@ -58,7 +59,10 @@ export function GradNormChartCard({
         </CardTitle>
       </CardHeader>
       <CardContent>
-        <ChartContainer config={gradNormConfig} className={CHART_CONTAINER_CLASS}>
+        <ChartContainer
+          config={gradNormConfig}
+          className={CHART_CONTAINER_CLASS}
+        >
           <LineChart
             data={data}
             syncId={CHART_SYNC_ID}
@@ -78,7 +82,7 @@ export function GradNormChartCard({
               tickLine={false}
               axisLine={false}
               tickMargin={8}
-              fontSize={10}
+              fontSize={CHART_FONT_SIZE}
               tickFormatter={(value) => formatStepTick(Number(value))}
               interval="preserveStartEnd"
             />
@@ -89,7 +93,7 @@ export function GradNormChartCard({
               axisLine={false}
               tickMargin={8}
               tickCount={5}
-              fontSize={10}
+              fontSize={CHART_FONT_SIZE}
               width={DEFAULT_Y_AXIS_WIDTH}
               tickFormatter={(value) => {
                 const num = Number(value);

@@ -17,6 +17,8 @@ import {
   useTrainingConfigStore,
   validateTrainingConfig,
 } from "@/features/training";
+import { useT } from "@/i18n";
+import { toast } from "@/lib/toast";
 import {
   Archive04Icon,
   ChartAverageIcon,
@@ -26,9 +28,7 @@ import {
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { useRef } from "react";
-import { toast } from "@/lib/toast";
 import { CartesianGrid, Line, LineChart, XAxis, YAxis } from "recharts";
-import { useT } from "@/i18n";
 
 const placeholderData = [
   { step: 0, loss: 2.5 },
@@ -65,11 +65,15 @@ export function TrainingSection() {
       try {
         const config = parseYamlConfig(reader.result as string);
         store.applyConfigPatch(config);
-        toast.success(t("studio.training.configLoaded"), { description: file.name });
+        toast.success(t("studio.training.configLoaded"), {
+          description: file.name,
+        });
       } catch (err) {
         toast.error(t("studio.training.failedToLoadConfig"), {
           description:
-            err instanceof Error ? err.message : t("studio.training.invalidYamlFile"),
+            err instanceof Error
+              ? err.message
+              : t("studio.training.invalidYamlFile"),
         });
       }
     };
@@ -105,7 +109,10 @@ export function TrainingSection() {
     const model = (store.selectedModel ?? "model").split("/").pop();
     const method = store.trainingMethod ?? "qlora";
     const dataset = (store.dataset ?? "dataset").split("/").pop();
-    const timestamp = new Date().toISOString().replace(/[:T]/g, "-").slice(0, 19);
+    const timestamp = new Date()
+      .toISOString()
+      .replace(/[:T]/g, "-")
+      .slice(0, 19);
     a.download = `${model}_${method}_${dataset}_${timestamp}.yaml`;
 
     a.click();
@@ -127,135 +134,153 @@ export function TrainingSection() {
         className="min-h-studio-config-column"
       >
         <div className="flex flex-col gap-4">
-        {/* Loss chart */}
-        <div className="relative  ">
-          <ChartContainer
-            config={chartConfig}
-            className="h-[180px] w-full relative right-8 blur"
-          >
-            <LineChart data={placeholderData} accessibilityLayer={true}>
-              <CartesianGrid vertical={false} strokeDasharray="3 3" />
-              <XAxis
-                dataKey="step"
-                tickLine={false}
-                axisLine={false}
-                tickMargin={8}
-                fontSize={10}
+          {/* Loss chart */}
+          <div className="relative  ">
+            <ChartContainer
+              config={chartConfig}
+              className="h-[180px] w-full relative right-8 blur"
+            >
+              <LineChart data={placeholderData} accessibilityLayer={true}>
+                <CartesianGrid vertical={false} strokeDasharray="3 3" />
+                <XAxis
+                  dataKey="step"
+                  tickLine={false}
+                  axisLine={false}
+                  tickMargin={8}
+                  fontSize="calc(10px * var(--ui-font-scale, 1))"
+                />
+                <YAxis
+                  tickLine={false}
+                  axisLine={false}
+                  tickMargin={8}
+                  fontSize="calc(10px * var(--ui-font-scale, 1))"
+                />
+                <Line
+                  type="monotone"
+                  dataKey="loss"
+                  stroke="var(--color-loss)"
+                  strokeWidth={2}
+                  dot={false}
+                />
+              </LineChart>
+            </ChartContainer>
+            <div className="absolute inset-0 flex flex-col items-center justify-center gap-1">
+              <HugeiconsIcon
+                icon={ChartAverageIcon}
+                className="size-5 text-muted-foreground/50"
               />
-              <YAxis
-                tickLine={false}
-                axisLine={false}
-                tickMargin={8}
-                fontSize={10}
-              />
-              <Line
-                type="monotone"
-                dataKey="loss"
-                stroke="var(--color-loss)"
-                strokeWidth={2}
-                dot={false}
-              />
-            </LineChart>
-          </ChartContainer>
-          <div className="absolute inset-0 flex flex-col items-center justify-center gap-1">
-            <HugeiconsIcon
-              icon={ChartAverageIcon}
-              className="size-5 text-muted-foreground/50"
-            />
-            <p className="text-sm font-medium text-muted-foreground">
-              {t("studio.training.chartNoDataTitle")}
-            </p>
-            <p className="text-xs text-muted-foreground/60">
-              {t("studio.training.chartNoDataDescription")}
-            </p>
+              <p className="text-sm font-medium text-muted-foreground">
+                {t("studio.training.chartNoDataTitle")}
+              </p>
+              <p className="text-xs text-muted-foreground/60">
+                {t("studio.training.chartNoDataDescription")}
+              </p>
+            </div>
           </div>
-        </div>
 
-        {/* Start/Stop */}
-        <Button
-          data-tour="studio-start"
-          className="w-full cursor-pointer bg-primary text-primary-foreground hover:bg-primary/90"
-          onClick={() => void startTrainingRun()}
-          disabled={isStarting || isIncompatible || store.isCheckingDataset || isLoadingModel || !configValidation.ok}
-        >
-          <HugeiconsIcon icon={Rocket01Icon} className="size-4" />
-          {isStarting
-            ? t("studio.training.starting")
-            : isLoadingModel
-              ? t("studio.training.loadingModel")
-              : store.isCheckingDataset
-                ? t("studio.training.checkingDataset")
-                : t("studio.training.startTraining")}
-        </Button>
-        {startError && (
-          <p className="text-xs text-red-500 leading-relaxed">{startError}</p>
-        )}
-        {isIncompatible && (
-          <p className="text-xs text-red-500 leading-relaxed">
-            {!store.isAudioModel && store.isDatasetAudio === true
-              ? t("studio.training.audioIncompatible")
-              : t("studio.training.visionIncompatible")}
+          {/* Start/Stop */}
+          <Button
+            data-tour="studio-start"
+            className="w-full cursor-pointer bg-primary text-primary-foreground hover:bg-primary/90"
+            onClick={() => void startTrainingRun()}
+            disabled={
+              isStarting ||
+              isIncompatible ||
+              store.isCheckingDataset ||
+              isLoadingModel ||
+              !configValidation.ok
+            }
+          >
+            <HugeiconsIcon icon={Rocket01Icon} className="size-4" />
+            {isStarting
+              ? t("studio.training.starting")
+              : isLoadingModel
+                ? t("studio.training.loadingModel")
+                : store.isCheckingDataset
+                  ? t("studio.training.checkingDataset")
+                  : t("studio.training.startTraining")}
+          </Button>
+          {startError && (
+            <p className="text-xs text-red-500 leading-relaxed">{startError}</p>
+          )}
+          {isIncompatible && (
+            <p className="text-xs text-red-500 leading-relaxed">
+              {!store.isAudioModel && store.isDatasetAudio === true
+                ? t("studio.training.audioIncompatible")
+                : t("studio.training.visionIncompatible")}
+            </p>
+          )}
+          {!configValidation.ok &&
+            configValidation.message &&
+            !isIncompatible && (
+              <p className="text-xs text-red-500 leading-relaxed">
+                {configValidation.message}
+              </p>
+            )}
+
+          {/* Upload / Save / Reset */}
+          <p className="text-xs text-muted-foreground">
+            {t("studio.training.configLabel")}
           </p>
-        )}
-        {!configValidation.ok && configValidation.message && !isIncompatible && (
-          <p className="text-xs text-red-500 leading-relaxed">{configValidation.message}</p>
-        )}
-
-        {/* Upload / Save / Reset */}
-        <p className="text-xs text-muted-foreground">{t("studio.training.configLabel")}</p>
-        <div className="grid grid-cols-3 gap-2">
-          <Tooltip>
-            <TooltipTrigger asChild>
-              <Button
-                variant="outline"
-                size="sm"
-                className="cursor-pointer"
-                onClick={() => fileInputRef.current?.click()}
-              >
-                <HugeiconsIcon icon={CloudUploadIcon} className="size-3.5" />
-                {t("studio.training.upload")}
-              </Button>
-            </TooltipTrigger>
-            <TooltipContent>{t("studio.training.uploadConfigTooltip")}</TooltipContent>
-          </Tooltip>
-          <Tooltip>
-            <TooltipTrigger asChild>
-              <Button
-                data-tour="studio-save"
-                variant="outline"
-                size="sm"
-                className="cursor-pointer"
-                onClick={handleSaveConfig}
-              >
-                <HugeiconsIcon icon={Archive04Icon} className="size-3.5" />
-                {t("studio.training.save")}
-              </Button>
-            </TooltipTrigger>
-            <TooltipContent>{t("studio.training.saveConfigTooltip")}</TooltipContent>
-          </Tooltip>
-          <Tooltip>
-            <TooltipTrigger asChild>
-              <Button
-                variant="outline"
-                size="sm"
-                className="cursor-pointer"
-                onClick={handleResetConfig}
-                disabled={!store.selectedModel}
-              >
-                <HugeiconsIcon icon={CleanIcon} className="size-3.5" />
-                {t("studio.training.reset")}
-              </Button>
-            </TooltipTrigger>
-            <TooltipContent>{t("studio.training.resetConfigTooltip")}</TooltipContent>
-          </Tooltip>
-        </div>
-        <input
-          ref={fileInputRef}
-          type="file"
-          accept=".yaml,.yml"
-          className="hidden"
-          onChange={handleFileUpload}
-        />
+          <div className="grid grid-cols-3 gap-2">
+            <Tooltip>
+              <TooltipTrigger asChild={true}>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  className="cursor-pointer"
+                  onClick={() => fileInputRef.current?.click()}
+                >
+                  <HugeiconsIcon icon={CloudUploadIcon} className="size-3.5" />
+                  {t("studio.training.upload")}
+                </Button>
+              </TooltipTrigger>
+              <TooltipContent>
+                {t("studio.training.uploadConfigTooltip")}
+              </TooltipContent>
+            </Tooltip>
+            <Tooltip>
+              <TooltipTrigger asChild={true}>
+                <Button
+                  data-tour="studio-save"
+                  variant="outline"
+                  size="sm"
+                  className="cursor-pointer"
+                  onClick={handleSaveConfig}
+                >
+                  <HugeiconsIcon icon={Archive04Icon} className="size-3.5" />
+                  {t("studio.training.save")}
+                </Button>
+              </TooltipTrigger>
+              <TooltipContent>
+                {t("studio.training.saveConfigTooltip")}
+              </TooltipContent>
+            </Tooltip>
+            <Tooltip>
+              <TooltipTrigger asChild={true}>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  className="cursor-pointer"
+                  onClick={handleResetConfig}
+                  disabled={!store.selectedModel}
+                >
+                  <HugeiconsIcon icon={CleanIcon} className="size-3.5" />
+                  {t("studio.training.reset")}
+                </Button>
+              </TooltipTrigger>
+              <TooltipContent>
+                {t("studio.training.resetConfigTooltip")}
+              </TooltipContent>
+            </Tooltip>
+          </div>
+          <input
+            ref={fileInputRef}
+            type="file"
+            accept=".yaml,.yml"
+            className="hidden"
+            onChange={handleFileUpload}
+          />
         </div>
       </SectionCard>
     </div>

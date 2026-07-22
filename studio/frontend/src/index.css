@@ -577,6 +577,43 @@ html[data-code-font-size] :is(pre, code, kbd, samp) {
 	font-size: var(--custom-code-font-size) !important;
 }
 
+/* UI font size scales text and icons only. The root rem stays fixed, so
+   --spacing / --radius (every box, gap, height, and corner) are untouched. We
+   retune the Tailwind text tokens that all text-* utilities read, plus the
+   shared icon size, by --ui-font-scale. */
+html[data-ui-font-size] {
+	--text-xs: calc(0.75rem * var(--ui-font-scale));
+	--text-sm: calc(0.875rem * var(--ui-font-scale));
+	--text-base: calc(1rem * var(--ui-font-scale));
+	--text-lg: calc(1.125rem * var(--ui-font-scale));
+	--text-xl: calc(1.25rem * var(--ui-font-scale));
+	--text-2xl: calc(1.5rem * var(--ui-font-scale));
+	--text-3xl: calc(1.875rem * var(--ui-font-scale));
+	--text-4xl: calc(2.25rem * var(--ui-font-scale));
+	--text-5xl: calc(3rem * var(--ui-font-scale));
+	--text-6xl: calc(3.75rem * var(--ui-font-scale));
+	--text-7xl: calc(4.5rem * var(--ui-font-scale));
+	--text-8xl: calc(6rem * var(--ui-font-scale));
+	--text-9xl: calc(8rem * var(--ui-font-scale));
+	--icon-size: calc(18px * var(--ui-font-scale));
+}
+
+/* Composer text uses fixed px, not a token, so scale it explicitly. */
+html[data-ui-font-size] .unsloth-composer-input {
+	font-size: calc(15px * var(--ui-font-scale));
+}
+html[data-ui-font-size] .composer-pill-btn {
+	font-size: calc(14px * var(--ui-font-scale));
+}
+
+/* Scale composer glyphs without resizing their button boxes. The "+" is left
+   out since it owns a rotate transform for its open state. */
+html[data-ui-font-size]
+	:is(.composer-pill-btn, .aui-composer-action-wrapper) svg {
+	transform: scale(var(--ui-font-scale));
+	transform-origin: center;
+}
+
 /* Pointer cursors: hand cursor over interactive elements. */
 html.pointer-cursors
 	:is(

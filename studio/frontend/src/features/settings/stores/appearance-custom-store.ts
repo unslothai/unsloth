@@ -2,7 +2,11 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { create } from "zustand";
-import { createJSONStorage, persist, type StateStorage } from "zustand/middleware";
+import {
+  type StateStorage,
+  createJSONStorage,
+  persist,
+} from "zustand/middleware";
 import type { ResolvedTheme } from "./theme-store";
 
 // Best-effort persistence: localStorage can be blocked (private browsing) and
@@ -200,7 +204,9 @@ function sanitizeImportedFonts(value: unknown): ImportedFont[] {
     const source = (entry ?? {}) as Partial<ImportedFont>;
     // Cap to the backend name length so an over-long name can't fail the PUT.
     const rawName = sanitizeFont(source.name);
-    const name = rawName ? rawName.slice(0, MAX_IMPORTED_FONT_NAME_LENGTH) : null;
+    const name = rawName
+      ? rawName.slice(0, MAX_IMPORTED_FONT_NAME_LENGTH)
+      : null;
     if (!name || seen.has(name)) continue;
     const dataUrl = source.dataUrl;
     if (
@@ -397,7 +403,10 @@ function readableForeground(hex: string): string {
  * FontFaces registered for imported fonts, keyed by family name. The dataUrl is
  * tracked too so a re-import under the same name (new bytes) replaces the face.
  */
-const registeredFontFaces = new Map<string, { face: FontFace; dataUrl: string }>();
+const registeredFontFaces = new Map<
+  string,
+  { face: FontFace; dataUrl: string }
+>();
 
 function syncImportedFonts(fonts: ImportedFont[]): void {
   if (typeof document === "undefined" || !("fonts" in document)) return;
@@ -510,11 +519,19 @@ export function applyCustomizationToDocument(
     setVar("--custom-chat-font", null);
   }
 
+  // Scale text via a factor, not the root rem, so layout dimensions stay fixed.
   if (c.uiFontSize !== null && c.uiFontSize !== UI_FONT_SIZE_RANGE.default) {
-    style.fontSize = `${c.uiFontSize}px`;
+    el.setAttribute("data-ui-font-size", "");
+    setVar(
+      "--ui-font-scale",
+      String(c.uiFontSize / UI_FONT_SIZE_RANGE.default),
+    );
   } else {
-    style.removeProperty("font-size");
+    el.removeAttribute("data-ui-font-size");
+    setVar("--ui-font-scale", null);
   }
+  // Drop the root font-size older builds set, so it never lingers.
+  style.removeProperty("font-size");
 
   if (c.codeFontSize !== null) {
     el.setAttribute("data-code-font-size", "");
@@ -554,7 +571,8 @@ export function applyCustomizationToDocument(
  * (canvas-confetti, view transitions) that CSS/MotionConfig cannot reach.
  */
 export function prefersReducedMotion(): boolean {
-  const setting = useAppearanceCustomStore.getState().customization.reduceMotion;
+  const setting =
+    useAppearanceCustomStore.getState().customization.reduceMotion;
   if (setting === "on") return true;
   if (setting === "off") return false;
   return (
