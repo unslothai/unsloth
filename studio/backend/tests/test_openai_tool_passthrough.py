@@ -518,9 +518,7 @@ class TestChatCompletionRequestToolFields:
         assert body["error"]["param"] == "confirm_tool_calls"
         assert "only supported for local streaming tools" in body["error"]["message"]
 
-    def test_confirm_tool_calls_allowed_for_oai_compat_local_tool_runtime(
-        self, monkeypatch
-    ):
+    def test_confirm_tool_calls_allowed_for_oai_compat_local_tool_runtime(self, monkeypatch):
         """Ollama/llama.cpp/vLLM/custom may confirm local tools on stream=true (#7282)."""
         import routes.inference as inference_route
 
@@ -529,7 +527,11 @@ class TestChatCompletionRequestToolFields:
 
         seen = {"called": False}
 
-        async def _fake_proxy(payload, request, current_subject = None):
+        async def _fake_proxy(
+            payload,
+            request,
+            current_subject = None,
+        ):
             seen["called"] = True
             assert payload.provider_type == "ollama"
             assert payload.confirm_tool_calls is True
