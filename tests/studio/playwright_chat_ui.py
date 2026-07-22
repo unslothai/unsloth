@@ -939,7 +939,7 @@ with sync_playwright() as p:
     # The production stylesheet uses separate Linux compensation for light and
     # dark text. Exercise the compiled selector directly so this remains
     # deterministic even if the theme menu animation is slow on CI.
-    step("chat font-weight platform, theme, and opt-out matrix")
+    step("chat typography platform, theme, and opt-out matrix")
     weight_matrix = robust_evaluate(
         page,
         """() => {
@@ -962,14 +962,29 @@ with sync_playwright() as p:
             const ua = navigator.userAgent.toLowerCase();
             const actualRenderLinux = root.classList.contains('render-linux');
             const isDesktopLinux = ua.includes('linux') && !ua.includes('android');
-            const read = () => ({
-                assistant: [...new Set(assistant.map(
-                    (node) => getComputedStyle(node).fontWeight
-                ))],
-                user: [...new Set(user.map(
-                    (node) => getComputedStyle(node).fontWeight
-                ))],
-            });
+            const read = () => {
+                const role = (nodes) => {
+                    const styles = nodes.map((node) => {
+                        const style = getComputedStyle(node);
+                        return {
+                            fontWeight: style.fontWeight,
+                            letterSpacing: style.letterSpacing,
+                        };
+                    });
+                    return {
+                        fontWeight: [...new Set(
+                            styles.map((style) => style.fontWeight)
+                        )],
+                        letterSpacing: [...new Set(
+                            styles.map((style) => style.letterSpacing)
+                        )],
+                    };
+                };
+                return {
+                    assistant: role(assistant),
+                    user: role(user),
+                };
+            };
 
             try {
                 root.classList.add('render-linux');
@@ -1023,10 +1038,21 @@ with sync_playwright() as p:
         ("uiFont", "410"),
     ):
         for role in ("assistant", "user"):
-            actual = weight_matrix[branch][role]
+            actual = weight_matrix[branch][role]["fontWeight"]
             if actual != [expected]:
                 fail(f"chat font weight {branch}/{role}: " f"expected {expected}, got {actual!r}")
-    info("OK chat font-weight matrix")
+    for branch, expected in (
+        ("light", "0.155px"),
+        ("dark", "0.3565px"),
+        ("smoothingOff", "0.31px"),
+        ("chatFont", "0.31px"),
+        ("uiFont", "0.31px"),
+    ):
+        for role in ("assistant", "user"):
+            actual = weight_matrix[branch][role]["letterSpacing"]
+            if actual != [expected]:
+                fail(f"chat letter spacing {branch}/{role}: " f"expected {expected}, got {actual!r}")
+    info("OK chat typography matrix")
 
     # ─────────────────────────────────────────────────────
     # 9. Theme toggle -- multiple cycles + computed-bg-color check

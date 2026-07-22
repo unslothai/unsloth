@@ -644,6 +644,9 @@ html.render-linux:not(.no-font-smoothing):not([data-chat-font]):not([data-ui-fon
 html.dark.render-linux:not(.no-font-smoothing):not([data-chat-font]):not([data-ui-font])
 	:is(.aui-assistant-message-root, .aui-user-message-root) {
 	font-weight: 350;
+	/* The lighter variable-font instance has narrower advances. Reduce
+	   dark-mode line-wrap drift without changing custom-font paths. */
+	letter-spacing: 0.023em;
 }
 
 /* Chat font: only applies while a custom chat font is set. Elements with
