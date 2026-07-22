@@ -8,11 +8,116 @@ import structlog
 from loggers import get_logger
 from contextlib import contextmanager
 from pathlib import Path
+from typing import Optional
 import shutil
 import tempfile
 
 
 logger = get_logger(__name__)
+
+
+# ── Offline / HF-cache helpers ──────────────────────────────────
+# An offline load must never touch the network (a DNS-dead session hangs on hub retries);
+# these read the local HF cache the load itself uses.
+
+_HF_OFFLINE_TRUE_VALUES = frozenset({"1", "true", "yes", "on"})
+
+
+def hf_env_offline() -> bool:
+    """True when HF_HUB_OFFLINE or TRANSFORMERS_OFFLINE requests offline mode.
+
+    Also honors TRANSFORMERS_OFFLINE (hub honors only HF_HUB_OFFLINE) since users set it
+    to keep transformers loads local.
+    """
+    for var in ("HF_HUB_OFFLINE", "TRANSFORMERS_OFFLINE"):
+        if os.environ.get(var, "").strip().lower() in _HF_OFFLINE_TRUE_VALUES:
+            return True
+    return False
+
+
+def st_repo_id_candidates(model_name: str) -> list:
+    """Repo ids a Sentence-Transformers load may resolve model_name to; a slashless name
+    also resolves under the sentence-transformers/ namespace, so both are candidates."""
+    name = (model_name or "").strip().strip("/")
+    if not name:
+        return []
+    candidates = [name]
+    if "/" not in name:
+        candidates.append(f"sentence-transformers/{name}")
+    return candidates
+
+
+def _expand_path(raw: str) -> Path:
+    """Expand ~ and $VARS as huggingface_hub does, so the gate resolves the loader's dir."""
+    return Path(os.path.expandvars(os.path.expanduser(raw)))
+
+
+def _hf_cache_roots() -> list:
+    """The one cache root the loader resolves to, by its own precedence (it picks ONE
+    cache_folder, no fall-through): SENTENCE_TRANSFORMERS_HOME, else HF_HUB_CACHE, else
+    HF_HOME/hub, else ~/.cache/huggingface/hub. Expanded, read from env, one-element list."""
+    st_home = os.environ.get("SENTENCE_TRANSFORMERS_HOME")
+    if st_home:
+        return [_expand_path(st_home)]
+    hub = os.environ.get("HF_HUB_CACHE") or os.environ.get("HUGGINGFACE_HUB_CACHE")
+    if hub:
+        return [_expand_path(hub)]
+    hf_home = os.environ.get("HF_HOME")
+    if hf_home:
+        return [_expand_path(hf_home) / "hub"]
+    return [Path.home() / ".cache" / "huggingface" / "hub"]
+
+
+def hf_cache_snapshot_dir(model_name: str) -> Optional[Path]:
+    """Active local snapshot dir for model_name's main revision, or None if not cached.
+    Reads refs/main then snapshots/<commit>; no network. Tries the ST alias for slashless names."""
+    try:
+        from huggingface_hub.file_download import repo_folder_name
+    except Exception:
+        repo_folder_name = None
+    for cache_root in _hf_cache_roots():
+        for repo_id in st_repo_id_candidates(model_name):
+            try:
+                if repo_folder_name is not None:
+                    folder = repo_folder_name(repo_id = repo_id, repo_type = "model")
+                else:
+                    folder = "models--" + repo_id.replace("/", "--")
+                repo_dir = cache_root / folder
+                ref = repo_dir / "refs" / "main"
+                if not ref.is_file():
+                    continue
+                commit = ref.read_text().strip()
+                if not commit:
+                    continue
+                snapshot = repo_dir / "snapshots" / commit
+                if snapshot.is_dir():
+                    return snapshot
+            except OSError:
+                continue
+    return None
+
+
+# A weight file plus a config distinguishes a real cached model from a metadata-only
+# partial cache that resolves refs/main but would fail at load time.
+_LOADABLE_WEIGHT_SUFFIXES = frozenset({".safetensors", ".bin", ".gguf", ".pt", ".pth", ".ckpt"})
+
+
+def hf_cache_snapshot_is_loadable(model_name: str) -> bool:
+    """True when model_name's snapshot is cached and loadable: a config (config.json or
+    modules.json) plus at least one weight file, not a metadata-only partial cache. No network."""
+    snapshot = hf_cache_snapshot_dir(model_name)
+    if snapshot is None:
+        return False
+    try:
+        has_config = (snapshot / "config.json").is_file() or (snapshot / "modules.json").is_file()
+        if not has_config:
+            return False
+        for path in snapshot.rglob("*"):
+            if path.suffix.lower() in _LOADABLE_WEIGHT_SUFFIXES and path.is_file():
+                return True
+    except OSError:
+        return False
+    return False
 
 
 # ── Client-safe error helpers ───────────────────────────────────

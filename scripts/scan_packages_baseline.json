@@ -1545,6 +1545,22 @@
       "severity": "HIGH",
       "evidence": "Obfusc: L836:         code = compile(module, \"<werkzeug routing>\", \"exec\")\nExec: L736:         exec(code, globs, locs)",
       "evidence_hash": "5c0992c90f05c772abd94d00784f157de337e1f8567f8b3aee1b15e46c96cd5d"
+    },
+    {
+      "package": "unsloth-zoo",
+      "file": "tests/test_mlx_save_export_regressions.py",
+      "check": "Writes to /tmp and executes (staged dropper)",
+      "severity": "CRITICAL",
+      "evidence": "L165:         temporary_location=\"/tmp/ignored\", sha256:ab5c587f9ec31a0cc10ee55698ab133a417148d9d3f371bbc81b1e13fa119c13",
+      "evidence_hash": "93a11159147aad94f353ec4d2e0b8486b256abef88cd96d741813222cd32b138"
+    },
+    {
+      "package": "unsloth-zoo",
+      "file": "tests/test_vision_collator_audio.py",
+      "check": "Writes to /tmp and executes (staged dropper)",
+      "severity": "CRITICAL",
+      "evidence": "L111:         out = extract_audio_info(msgs({\"type\": \"audio\", key: \"/tmp/a.wav\"})) sha256:2efe23ffbe2b91b8403aec9b700736919b59e5ca770f8e1f5501651b44b7d398",
+      "evidence_hash": "d416b79dd17b24214f3f7653ac01354507d7bf0fc464dee30a4a4b8998f063ba"
     }
   ]
 }
