@@ -385,6 +385,7 @@ from .save import *
 from .chat_templates import *
 from .tokenizer_utils import *
 from .trainer import *
+from .callbacks import *
 
 # Export dataprep utilities for CLI and downstream users
 from .dataprep.raw_text import RawTextDataLoader, TextPreprocessor
