@@ -109,7 +109,9 @@ async def get_hardware_utilization(current_subject: str = Depends(get_current_su
 @router.get("/hardware/visible")
 async def get_visible_hardware_utilization(current_subject: str = Depends(get_current_subject)):
     from utils.hardware import get_visible_gpu_utilization
-    return get_visible_gpu_utilization()
+
+    # Off the event loop: the ROCm fallbacks shell out (Windows perf counters, sysfs) and the System view polls this route.
+    return await asyncio.to_thread(get_visible_gpu_utilization)
 
 
 @router.post("/start")

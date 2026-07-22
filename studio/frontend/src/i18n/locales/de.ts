@@ -39,7 +39,7 @@ export const de = {
       returnToChat: "Zurück zum Chat",
       compare: "Vergleichen",
       search: "Suchen",
-      hub: "Hub",
+      hub: "Modelle",
       train: "Trainieren",
       recipes: "Rezepte",
       export: "Exportieren",
