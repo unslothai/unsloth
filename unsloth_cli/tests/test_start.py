@@ -647,6 +647,28 @@ def test_write_codex_subagent_bridge_keeps_parent_credentials_out(tmp_path, monk
     assert catalog["models"][0]["slug"] == local["id"]
 
 
+def test_write_codex_parent_overlay_preserves_user_state_and_instructions(tmp_path, monkeypatch):
+    source = tmp_path / "user-codex"
+    source.mkdir()
+    (source / "config.toml").write_text('model = "cloud-model"\n')
+    (source / "auth.json").write_text('{"auth": "cloud"}\n')
+    (source / "sessions").mkdir()
+    (source / "AGENTS.override.md").write_text("Keep my existing instructions.\n")
+    monkeypatch.setenv("CODEX_HOME", str(source))
+
+    overlay = start.write_codex_parent_overlay(tmp_path / "managed")
+
+    assert (overlay / "config.toml").read_text() == 'model = "cloud-model"\n'
+    assert (overlay / "auth.json").read_text() == '{"auth": "cloud"}\n'
+    assert (overlay / "sessions").is_dir()
+    instructions = (overlay / "AGENTS.override.md").read_text()
+    assert instructions.startswith("Keep my existing instructions.\n")
+    assert start._CODEX_SUBAGENT_ROUTING_INSTRUCTIONS in instructions
+    assert not (overlay / "AGENTS.md").exists()
+    assert (overlay / "AGENTS.override.md").stat().st_mode & 0o077 == 0
+    assert (source / "AGENTS.override.md").read_text() == "Keep my existing instructions.\n"
+
+
 @pytest.mark.skipif(os.name == "nt", reason = "WSL scenario")
 def test_codex_subagent_bridge_uses_wsl_for_windows_codex(monkeypatch, tmp_path):
     monkeypatch.setenv("WSL_DISTRO_NAME", "Ubuntu")
@@ -1023,6 +1045,11 @@ def test_connect_codex_no_launch(fake_studio, tmp_path):
 
 def test_connect_codex_as_subagent_preserves_cloud_parent(fake_studio, tmp_path, monkeypatch):
     monkeypatch.setattr(start, "_codex_supports_model_catalog", lambda: True)
+    source_home = tmp_path / "user-codex"
+    source_home.mkdir()
+    (source_home / "config.toml").write_text('model = "cloud-model"\n')
+    (source_home / "AGENTS.md").write_text("Keep the user's guidance.\n")
+    monkeypatch.setenv("CODEX_HOME", str(source_home))
     result = CliRunner().invoke(
         start.start_app,
         [
@@ -1039,7 +1066,8 @@ def test_connect_codex_as_subagent_preserves_cloud_parent(fake_studio, tmp_path,
     assert "--oss" not in command
     assert "--profile" not in command
     assert "--model" not in command
-    assert "CODEX_HOME" not in result.output
+    parent_home = tmp_path / "agents" / "codex-subagent" / "parent"
+    _assert_env_set(result.output, "CODEX_HOME", str(parent_home))
     assert start._CODEX_ENV_KEY not in result.output
     assert "sk-unsloth-feedfacefeedface" not in result.output
     home = tmp_path / "agents" / "codex-subagent"
@@ -1060,6 +1088,9 @@ def test_connect_codex_as_subagent_preserves_cloud_parent(fake_studio, tmp_path,
     assert f"from {start._CODEX_SUBAGENT_MCP_MODULE} import main" in server["args"][1]
     assert server["enabled_tools"] == [start._CODEX_SUBAGENT_MCP_TOOL]
     assert not any(value.startswith("developer_instructions=") for value in command)
+    parent_instructions = (parent_home / "AGENTS.md").read_text()
+    assert parent_instructions.startswith("Keep the user's guidance.\n")
+    assert start._CODEX_SUBAGENT_ROUTING_INSTRUCTIONS in parent_instructions
     assert "Ask Codex to spawn an Unsloth or local agent." in result.output
 
 

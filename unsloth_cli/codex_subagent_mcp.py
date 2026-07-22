@@ -22,18 +22,14 @@ from unsloth_cli.commands.start import (
     _CODEX_SUBAGENT_CONFIG_ENV,
     _CODEX_SUBAGENT_MCP_TOOL,
     _CODEX_SUBAGENT_TOOL_DESCRIPTION,
+    _CODEX_SUBAGENT_ROUTING_INSTRUCTIONS,
     _SUBAGENT_INSTRUCTIONS,
     _merge_wslenv,
     _wsl_shim_env,
 )
 
 _CANCEL_POLL_SECONDS = 0.1
-_SERVER_INSTRUCTIONS = (
-    "You must call spawn_local_agent whenever the user asks to spawn an Unsloth agent "
-    "or local agent. Pass the complete task to that tool. Do not answer, simulate the "
-    "result, call wait, or use Codex's built-in spawn_agent before calling the tool, even "
-    "for a trivial task. Use built-in agents for other subagent requests."
-)
+_SERVER_INSTRUCTIONS = _CODEX_SUBAGENT_ROUTING_INSTRUCTIONS
 
 
 def _config() -> dict:

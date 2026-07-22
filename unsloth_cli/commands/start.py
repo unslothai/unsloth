@@ -103,6 +103,12 @@ _CODEX_SUBAGENT_TOOL_DESCRIPTION = (
     f"{_SUBAGENT_DESCRIPTION} Use this tool instead of the built-in spawn_agent tool for those "
     "requests. Other subagent requests may use the built-in tools normally."
 )
+_CODEX_SUBAGENT_ROUTING_INSTRUCTIONS = (
+    "When the user asks to spawn an Unsloth agent or local agent, you must call the "
+    "spawn_local_agent MCP tool once with the complete task. Do not answer, simulate the "
+    "result, call wait, or use a built-in subagent before calling the tool. Use built-in "
+    "subagents for other delegation requests."
+)
 _CLAUDE_SUBAGENT_NAME = "local-subagent"
 _PI_SUBAGENT_EXTENSION = Path(__file__).parent.parent / "pi_subagent.ts"
 # OpenCode selects a model by "<providerID>/<modelID>". Use a dedicated id to avoid
@@ -1098,6 +1104,13 @@ def _write_private_json(path: Path, data: dict) -> None:
         handle.write(json.dumps(data, indent = 2) + "\n")
 
 
+def _write_private_text(path: Path, text: str) -> None:
+    path.parent.mkdir(parents = True, exist_ok = True, mode = 0o700)
+    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "w", encoding = "utf-8") as handle:
+        handle.write(text)
+
+
 def _read_json_object(path: Path) -> Optional[dict]:
     # {} when missing, None when it can't be parsed as an object (so the caller
     # leaves a user-managed file untouched rather than clobbering it).
@@ -1620,6 +1633,55 @@ def write_codex_subagent_bridge(
         },
     )
     return path
+
+
+def write_codex_parent_overlay(path: Path) -> Path:
+    """Add local-agent routing without replacing the cloud parent's configuration."""
+    source_home = Path(os.environ.get("CODEX_HOME") or Path.home() / ".codex").expanduser()
+    overlay = path / "parent"
+    overlay.mkdir(parents = True, exist_ok = True, mode = 0o700)
+
+    # Keep the user's auth, config, plugins, agents, skills, rules, and session state visible.
+    # Symlinks make this an overlay rather than a stale copy. Windows may deny symlink creation;
+    # copy the small configuration surfaces there and leave bulky runtime state session-local.
+    fallback_dirs = {"agents", "skills", "rules", "plugins", "marketplaces"}
+    if source_home.is_dir():
+        for source in source_home.iterdir():
+            if source.name in {"AGENTS.md", "AGENTS.override.md"}:
+                continue
+            target = overlay / source.name
+            if target.exists() or target.is_symlink():
+                continue
+            try:
+                target.symlink_to(source, target_is_directory = source.is_dir())
+            except OSError:
+                if source.is_file():
+                    shutil.copy2(source, target)
+                elif source.is_dir() and source.name in fallback_dirs:
+                    shutil.copytree(source, target)
+
+    inherited = ""
+    instruction_name = "AGENTS.md"
+    for candidate in (source_home / "AGENTS.override.md", source_home / "AGENTS.md"):
+        try:
+            text = candidate.read_text(encoding = "utf-8")
+        except FileNotFoundError:
+            continue
+        except OSError as exc:
+            _fail(f"Could not preserve Codex instructions from {candidate}: {exc}")
+        if text.strip():
+            inherited = text.rstrip()
+            instruction_name = candidate.name
+            break
+
+    other_name = "AGENTS.md" if instruction_name == "AGENTS.override.md" else "AGENTS.override.md"
+    other = overlay / other_name
+    if other.is_file() or other.is_symlink():
+        other.unlink()
+    routing = _CODEX_SUBAGENT_ROUTING_INSTRUCTIONS
+    combined = f"{inherited}\n\n{routing}\n" if inherited else f"{routing}\n"
+    _write_private_text(overlay / instruction_name, combined)
+    return overlay
 
 
 def _agent_config_path(path: Path, command: list) -> str:
@@ -2787,6 +2849,7 @@ def codex(
                 home,
                 yolo = yolo,
             )
+            parent_home = write_codex_parent_overlay(home)
             command = [
                 "codex",
                 *_codex_subagent_flags(bridge_config),
@@ -2800,7 +2863,7 @@ def codex(
             _run(
                 base,
                 subagent_model,
-                {},
+                {"CODEX_HOME": str(parent_home)},
                 command,
                 launch = launch,
                 install_hint = "npm install -g @openai/codex",
