@@ -2812,15 +2812,44 @@ def test_connect_opencode_as_subagent_preserves_cloud_parent(fake_studio, tmp_pa
     )
     assert result.exit_code == 0, result.output
     assert _launch_command(result.output) == ["opencode"]
-    assert "OPENCODE_CONFIG_CONTENT" not in result.output
+    expected_model = f"{start._OPENCODE_PROVIDER}/{MODEL['id']}:UD-Q4_K_XL"
+    # The agent definition is pinned in the inline overlay (above project config)
+    # and nothing else rides along from the empty inline base.
+    assert _opencode_inline_config(result.output) == {
+        "agent": {
+            "unsloth": {
+                "description": start._SUBAGENT_DESCRIPTION,
+                "mode": "subagent",
+                "model": expected_model,
+                "prompt": start._SUBAGENT_INSTRUCTIONS,
+            }
+        }
+    }
     path = tmp_path / "agents" / "opencode-subagent" / "opencode.json"
     config = json.loads(path.read_text())
     assert "model" not in config
     assert "small_model" not in config
     assert "compaction" not in config
     agent = config["agent"]["unsloth"]
-    assert agent["model"] == (f"{start._OPENCODE_PROVIDER}/{MODEL['id']}:UD-Q4_K_XL")
+    assert agent["model"] == expected_model
     assert "Unsloth is available as @unsloth and in /models." in result.output
+
+
+def test_opencode_subagent_pins_agent_in_inline_overlay(fake_studio, monkeypatch):
+    # A project opencode.json outranks the OPENCODE_CONFIG session file, so the
+    # agent definition must ride in OPENCODE_CONFIG_CONTENT where it cannot be
+    # field-merged over by a repo's own agent.unsloth entry.
+    monkeypatch.setattr(start, "_opencode_subagent_inline_config", lambda path, permission: {})
+    result = CliRunner().invoke(
+        start.start_app,
+        ["opencode", "--as-subagent", "--no-launch", "--model", MODEL["id"] + ":UD-Q4_K_XL"],
+    )
+    assert result.exit_code == 0, result.output
+    agent = _opencode_inline_config(result.output)["agent"]["unsloth"]
+    assert agent["mode"] == "subagent"
+    assert agent["model"] == f"{start._OPENCODE_PROVIDER}/{MODEL['id']}:UD-Q4_K_XL"
+    assert agent["prompt"] == start._SUBAGENT_INSTRUCTIONS
+    assert agent["description"] == start._SUBAGENT_DESCRIPTION
 
 
 def test_connect_opencode_subagent_yolo_no_launch_stays_append_safe(fake_studio, monkeypatch):

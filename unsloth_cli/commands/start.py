@@ -2708,8 +2708,16 @@ def opencode(
             )
             env = {"OPENCODE_CONFIG": str(config_path)}
             inline_config = _opencode_subagent_inline_config(config_path, session_permission)
-            if inline_config:
-                env["OPENCODE_CONFIG_CONTENT"] = json.dumps(inline_config)
+            # A project opencode.json outranks the OPENCODE_CONFIG session file and
+            # would field-merge its own agent.unsloth over the session entry. Pin the
+            # definition in the higher-priority inline overlay so it cannot be shadowed.
+            inline_config.setdefault("agent", {})[_SUBAGENT_NAME] = {
+                "description": _SUBAGENT_DESCRIPTION,
+                "mode": "subagent",
+                "model": f"{_OPENCODE_PROVIDER}/{subagent_model['id']}",
+                "prompt": _SUBAGENT_INSTRUCTIONS,
+            }
+            env["OPENCODE_CONFIG_CONTENT"] = json.dumps(inline_config)
             typer.echo("Unsloth is available as @unsloth and in /models.")
             _run(
                 base,
