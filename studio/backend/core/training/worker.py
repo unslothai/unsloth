@@ -775,8 +775,9 @@ def _rocm_classify_unified_memory(props: Any) -> tuple[str, bool]:
     3. Device-name substring match (last resort when all arch attrs absent;
        AMD SDK / Radeon wheels may not populate them):
          - gfx1150 Strix Point: ``Radeon 890M``, ``Radeon 880M``
-         - gfx1151 Strix Halo:  ``Radeon 8060S`` (Ryzen AI MAX+ 395),
-                                ``Radeon 8050S`` (cut-down SKU)
+         - gfx1151 Strix Halo / Gorgon Halo:  ``Radeon 8065S`` (Ryzen AI
+                                Max+ 495), ``Radeon 8060S`` (Ryzen AI MAX+
+                                395), ``Radeon 8050S`` (cut-down SKU)
     """
     gcn_arch = ""
     for _attr in ("gcnArchName", "gcn_arch_name", "arch_name", "gfx_arch_name"):
@@ -801,7 +802,11 @@ def _rocm_classify_unified_memory(props: Any) -> tuple[str, bool]:
     # Arch attrs absent — fall back to device-name matching.
     dev_lower = (getattr(props, "name", "") or "").lower()
     is_unified = (
-        "890m" in dev_lower or "880m" in dev_lower or "8060s" in dev_lower or "8050s" in dev_lower
+        "890m" in dev_lower
+        or "880m" in dev_lower
+        or "8065s" in dev_lower
+        or "8060s" in dev_lower
+        or "8050s" in dev_lower
     )
     return gcn_arch, is_unified
 
