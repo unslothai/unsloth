@@ -2747,7 +2747,10 @@ def test_write_opencode_config_as_subagent_preserves_parent_model(tmp_path):
 
 def test_opencode_subagent_inline_keeps_parent_provider_filters(monkeypatch, tmp_path):
     config_path = tmp_path / "opencode.json"
-    inherited = {"theme": "tokyonight"}
+    inherited = {
+        "theme": "tokyonight",
+        "enabled_providers": ["anthropic"],
+    }
     monkeypatch.setenv("OPENCODE_CONFIG_CONTENT", json.dumps(inherited))
     monkeypatch.setattr(start, "_which_with_install_dirs", lambda _: "/usr/bin/opencode")
     captured = {}
@@ -2775,7 +2778,11 @@ def test_opencode_subagent_inline_keeps_parent_provider_filters(monkeypatch, tmp
     assert captured["env"]["OPENCODE_CONFIG"] == str(config_path)
     assert inline == {
         "theme": "tokyonight",
-        "enabled_providers": ["opencode-go", start._OPENCODE_PROVIDER],
+        "enabled_providers": [
+            "anthropic",
+            "opencode-go",
+            start._OPENCODE_PROVIDER,
+        ],
         "disabled_providers": ["ollama"],
         "subagent_depth": 1,
         "permission": permission,

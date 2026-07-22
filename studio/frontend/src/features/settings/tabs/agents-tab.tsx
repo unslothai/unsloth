@@ -727,6 +727,8 @@ export function AgentsTab() {
           return;
         }
         setVariantsFailed(true);
+        setVariants([]);
+        setDefaultVariant(null);
         setSelectedVariant(preferredVariant);
         if (preferredVariant) {
           setVariants([

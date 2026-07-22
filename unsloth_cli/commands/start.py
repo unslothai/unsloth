@@ -1545,7 +1545,15 @@ def _opencode_subagent_inline_config(path: Path, permission: dict) -> dict:
     def merge_provider_filters(effective_config: dict) -> None:
         enabled = effective_config.get("enabled_providers")
         if isinstance(enabled, list):
-            inline["enabled_providers"] = list(dict.fromkeys([*enabled, _OPENCODE_PROVIDER]))
+            inherited_enabled = inline.get("enabled_providers")
+            if not isinstance(inherited_enabled, list):
+                inherited_enabled = []
+            providers = [
+                provider
+                for provider in [*inherited_enabled, *enabled]
+                if provider != _OPENCODE_PROVIDER
+            ]
+            inline["enabled_providers"] = list(dict.fromkeys([*providers, _OPENCODE_PROVIDER]))
         disabled = effective_config.get("disabled_providers")
         if isinstance(disabled, list) and _OPENCODE_PROVIDER in disabled:
             inline["disabled_providers"] = [
