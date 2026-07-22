@@ -1991,7 +1991,11 @@ SUPPORTS_BFLOAT16 = False
 HAS_FLASH_ATTENTION = False
 HAS_FLASH_ATTENTION_SOFTCAPPING = False
 
-if DEVICE_TYPE == "cuda":
+if DEVICE_TYPE == "cuda" and not torch.cuda.is_available():
+    # UNSLOTH_ALLOW_CPU=1 keeps DEVICE_TYPE "cuda" on driverless hosts;
+    # bf16 CPU kernels exist, fp16 ones largely do not.
+    SUPPORTS_BFLOAT16 = True
+elif DEVICE_TYPE == "cuda":
     major_version, minor_version = torch.cuda.get_device_capability()
     torch.cuda.get_device_capability = functools.cache(torch.cuda.get_device_capability)
 
@@ -2100,7 +2104,7 @@ try:
     # causing sm_90a kernels to be attempted on non-Hopper GPUs (CUDA error in
     # flash_fwd_launch_template.h:188). Fixed in 0.0.33 with `<= (9, 0)`.
     # See https://github.com/facebookresearch/xformers/issues/1329
-    if DEVICE_TYPE == "cuda":
+    if DEVICE_TYPE == "cuda" and torch.cuda.is_available():
         major_version, minor_version = torch.cuda.get_device_capability()
         if (f"{major_version}.{minor_version}" in ("10.0", "11.0", "12.0")) and (
             Version(xformers_version) <= Version("0.0.32.post2")

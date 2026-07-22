@@ -1,0 +1,6 @@
+/* "Unsloth Dark" theme entry point.
+ * Start from the built-in JupyterLab Dark theme (theme.css pulls in its full
+ * variable set + base rules), then override the palette with the Sublime/Colab
+ * Monokai colors in variables.css. */
+@import url('@jupyterlab/theme-dark-extension/style/theme.css');
+@import url('./variables.css');

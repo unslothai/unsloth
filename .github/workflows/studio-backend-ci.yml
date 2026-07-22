@@ -30,6 +30,9 @@ on:
       - 'unsloth/**'
       - 'unsloth_cli/**'
       - 'tests/**'
+      # The validate_studio_features.py step below guards docker/jupyter and the
+      # docker notebook helpers, so a docker-only change must trigger this CI.
+      - 'docker/**'
       - 'pyproject.toml'
       - '.github/workflows/studio-backend-ci.yml'
   push:
@@ -228,6 +231,7 @@ jobs:
               tests/sh/test_system_node_readonly.sh \
               tests/sh/test_nvcc_meets_llama_minimum.sh \
               tests/sh/test_resolve_cuda_archs.sh \
+              tests/sh/test_select_cuda_jit_tools.sh \
               tests/sh/test_tauri_install_exit_order.sh \
               tests/sh/test_torch_constraint.sh \
               tests/sh/test_torch_flavor.sh \
@@ -238,3 +242,7 @@ jobs:
               echo "::endgroup::"
           done
 
+      - name: Docker JupyterLab/notebook feature validation
+        # Named validate_studio_features.py (not test_*.py) so pytest skips it;
+        # run explicitly so notebook/Colab/branding regressions fail CI.
+        run: python tests/validate_studio_features.py

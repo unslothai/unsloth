@@ -267,7 +267,9 @@ class SyntheticDataKit:
             stderr = subprocess.PIPE,
             start_new_session = True,
         )
-        ready_re = re.compile(r"Starting vLLM API server(?:\s+\d+)?\s+on\b")
+        # Accept both "Starting vLLM API server on" (<= 0.18) and "Starting vLLM
+        # server on" (0.19), with the optional server index some versions insert.
+        ready_re = re.compile(r"Starting vLLM(?:\s+API)?\s+server(?:\s+\d+)?\s+on\b")
         self.vllm_process = vllm_process
         self.stdout_capture = PipeCapture(
             vllm_process.stdout,
@@ -282,12 +284,29 @@ class SyntheticDataKit:
             keep_lines = 2000,
             echo = False,
             name = "vLLM STDERR",
-            ready_regex = None,
+            # vLLM >= 0.19 logs startup lines to STDERR; watching stdout alone
+            # makes a healthy server look like a timeout and get killed.
+            ready_regex = ready_re,
             text = False,
         )
         # we don't print stderr to console but self.stderr_capture.tail(200) will print the last 200 lines
 
-        ready = self.stdout_capture.wait_for_ready(timeout = timeout)
+        ready = False
+        # timeout None/0 waits indefinitely (large models / slow downloads);
+        # a positive value is a deadline.
+        deadline = (time.monotonic() + timeout) if timeout else None
+        while True:
+            # Cap the wait to the remaining budget so we don't overshoot the deadline.
+            _wait = 1 if deadline is None else min(1, deadline - time.monotonic())
+            if _wait <= 0:
+                break
+            if self.stdout_capture.wait_for_ready(
+                timeout = _wait
+            ) or self.stderr_capture.wait_for_ready(timeout = 0):
+                ready = True
+                break
+            if self.vllm_process.poll() is not None:
+                break
         if not ready:
             if self.stdout_capture.has_closed() or self.vllm_process.poll() is not None:
                 print("Stdout stream ended before readiness message detected.")

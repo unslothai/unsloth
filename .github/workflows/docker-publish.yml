@@ -1,0 +1,556 @@
+# Builds and publishes the Blackwell-compatible Unsloth Docker image.
+#
+# Runs on free GPU-less GitHub Ubuntu runners: cu128 wheels are fat binaries
+# (sm_70..sm_120 amd64, sm_80;90;100;120 aarch64), the Dockerfile pins explicit
+# wheel URLs, the build-time check uses torch._C._cuda_getArchFlags() (no CUDA
+# device needed), and UNSLOTH_COMPILE_DISABLE=1 blocks GPU-keyed JIT.
+#
+# Multi-arch: amd64 + arm64 build in parallel on native runners (ubuntu-latest +
+# ubuntu-24.04-arm), then merge per-arch digests into one manifest. Native arm64
+# is ~3x faster and less flaky than QEMU; DGX Spark / Grace pull the arm64 child.
+#
+# Required secrets: DOCKERHUB_USERNAME, DOCKERHUB_TOKEN
+# Optional variable HAS_GPU_RUNNER='true' gates the smoke-test job.
+
+name: Publish Blackwell Docker image
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  schedule:
+    - cron: '17 4 * * 1'   # weekly Mon 04:17 UTC (off-the-hour on purpose)
+  workflow_dispatch:
+    inputs:
+      unsloth_ref:
+        # Blank means "the dispatched branch" (resolver falls back to sha, then
+        # main). The stable-tag gates require this EMPTY, so a non-blank default
+        # would make every UI-default dispatch publish SHA tags only.
+        description: 'unsloth git ref override (blank = dispatched branch + stable tags)'
+        required: false
+        default: ''
+      unsloth_zoo_ref:
+        description: 'unsloth-zoo git ref to bake in'
+        required: false
+        default: 'main'
+      llama_prebuilt_tag:
+        description: 'unslothai/llama.cpp prebuilt release tag to bake (blank = newest)'
+        required: false
+        default: ''
+      notebooks_ref:
+        description: 'unslothai/notebooks git ref to bake (resolved to one commit)'
+        required: false
+        default: 'main'
+
+env:
+  REGISTRY: docker.io
+  IMAGE_NAME: unsloth/unsloth
+
+# Serialise per-ref runs so two pushes don't both retag :latest from different
+# commits. Don't cancel in-progress -- the build is expensive and a half-built
+# image is worse than a briefly stale :latest.
+concurrency:
+  group: docker-publish-${{ github.ref }}
+  cancel-in-progress: false
+
+# Least-privilege default for GITHUB_TOKEN. Pushes use Docker Hub registry creds,
+# not GITHUB_TOKEN, so read is enough; jobs needing more declare packages: write.
+permissions:
+  contents: read
+
+jobs:
+  # ---------------------------------------------------------------------------
+  # Resolve every upstream ref ONCE (llama tag + unsloth/zoo shas + notebooks
+  # commit) so both arch legs and Studio bake identical bits. A dispatch input
+  # pins a frozen value; else a branch/tag is frozen to a sha via ls-remote, and
+  # llama "latest" follows the /releases/latest redirect (mirrors build.sh).
+  # ---------------------------------------------------------------------------
+  prepare:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    outputs:
+      llama_tag: ${{ steps.llama.outputs.tag }}
+      # Resolved once, shared by every consumer -- see the job header.
+      unsloth_ref: ${{ steps.unsloth_ref.outputs.ref }}
+      zoo_ref: ${{ steps.zoo_ref.outputs.ref }}
+      notebooks_commit: ${{ steps.notebooks.outputs.commit }}
+    steps:
+      - name: Resolve llama.cpp prebuilt tag
+        id: llama
+        env:
+          INPUT_TAG: ${{ github.event.inputs.llama_prebuilt_tag }}
+        run: |
+          TAG="$INPUT_TAG"
+          if [ -z "$TAG" ]; then
+              TAG="$(curl -fsSL -o /dev/null -w '%{url_effective}' \
+                  https://github.com/unslothai/llama.cpp/releases/latest \
+                  | sed -n 's#.*/releases/tag/##p')"
+          fi
+          echo "tag=${TAG:-latest}" >> "$GITHUB_OUTPUT"
+          echo "llama.cpp prebuilt tag: ${TAG:-latest}"
+
+      # Requested-ref precedence: dispatch input, else pushed tag, else trigger
+      # sha, else main -- then frozen to one sha per the job header.
+      - name: Resolve unsloth ref
+        id: unsloth_ref
+        env:
+          INPUT_REF: ${{ github.event.inputs.unsloth_ref }}
+          TAG_REF: ${{ startsWith(github.ref, 'refs/tags/') && github.ref_name || '' }}
+          PUSH_SHA: ${{ github.sha }}
+        run: |
+          REF="$INPUT_REF"
+          [ -n "$REF" ] || REF="$TAG_REF"
+          [ -n "$REF" ] || REF="$PUSH_SHA"
+          REF="${REF:-main}"
+          if printf '%s' "$REF" | grep -Eq '^[0-9a-f]{40}$'; then
+              SHA="$REF"
+          else
+              SHA="$(git ls-remote https://github.com/unslothai/unsloth "$REF" | awk 'NR==1{print $1}')"
+              [ -n "$SHA" ] || SHA="$REF"
+          fi
+          echo "ref=${SHA}" >> "$GITHUB_OUTPUT"
+          echo "unsloth ref: ${SHA}"
+
+      # Mirror the unsloth tag into the zoo ONLY when that tag exists there:
+      # unsloth's v* tags are Studio releases the zoo never cuts, so blindly
+      # mirroring github.ref_name made every tag publish fail at zoo install.
+      - name: Resolve unsloth-zoo ref
+        id: zoo_ref
+        run: |
+          REF="${{ github.event.inputs.unsloth_zoo_ref }}"
+          if [ -z "$REF" ] && [ "${{ startsWith(github.ref, 'refs/tags/') }}" = "true" ]; then
+              if git ls-remote --exit-code --tags https://github.com/unslothai/unsloth-zoo \
+                  "refs/tags/${{ github.ref_name }}" >/dev/null 2>&1; then
+                  REF="${{ github.ref_name }}"
+              fi
+          fi
+          REF="${REF:-main}"
+          # Freeze to one sha per the job header; a 40-char sha already is one.
+          if printf '%s' "$REF" | grep -Eq '^[0-9a-f]{40}$'; then
+              SHA="$REF"
+          else
+              SHA="$(git ls-remote https://github.com/unslothai/unsloth-zoo "$REF" | awk 'NR==1{print $1}')"
+              [ -n "$SHA" ] || SHA="$REF"
+          fi
+          echo "ref=${SHA}" >> "$GITHUB_OUTPUT"
+          echo "unsloth-zoo ref: ${SHA}"
+
+      # Freeze notebooks to ONE commit per the job header, so baked templates +
+      # .unsloth_template_commit are identical across legs and reruns.
+      - name: Resolve unsloth/notebooks commit
+        id: notebooks
+        env:
+          INPUT_REF: ${{ github.event.inputs.notebooks_ref }}
+        run: |
+          REF="${INPUT_REF:-main}"
+          if printf '%s' "$REF" | grep -Eq '^[0-9a-f]{40}$'; then
+              SHA="$REF"
+          else
+              SHA="$(git ls-remote https://github.com/unslothai/notebooks "$REF" | awk 'NR==1{print $1}')"
+              [ -n "$SHA" ] || SHA="$REF"
+          fi
+          echo "commit=${SHA}" >> "$GITHUB_OUTPUT"
+          echo "notebooks commit: ${SHA}"
+
+  # ---------------------------------------------------------------------------
+  # Per-arch build: two parallel jobs on native runners, each pushing a single-arch
+  # image by digest (no tag); the merge job stitches them into one manifest. Avoids
+  # the "last push wins" race of two jobs pushing the same tag.
+  # ---------------------------------------------------------------------------
+  build:
+    needs: prepare
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: linux/amd64
+            runner:   ubuntu-latest
+          - platform: linux/arm64
+            runner:   ubuntu-24.04-arm
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 90
+    permissions:
+      contents: read
+      packages: write
+
+    steps:
+      - uses: actions/checkout@v4
+
+      # Free up ~20GB so cu128 wheels + cudnn fit. Runner layouts differ (arm64
+      # lacks /usr/share/dotnet), hence `|| true`.
+      - name: Reclaim disk
+        run: |
+          # None of these toolchains are used; paths differ across runners, hence `|| true`.
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc \
+                      /opt/hostedtoolcache "$AGENT_TOOLSDIRECTORY" \
+                      /usr/local/.ghcup /usr/share/swift \
+                      /usr/local/share/powershell /usr/local/lib/node_modules \
+                      /usr/local/julia* /opt/microsoft /usr/share/miniconda \
+                      /opt/az /usr/local/share/boost /usr/local/share/chromium || true
+          sudo docker image prune -af >/dev/null 2>&1 || true
+          df -h /
+
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Log in to Docker Hub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      # Labels/annotations for the FINAL manifest. No tags here -- each per-arch
+      # build pushes by digest only; tags are attached by the merge job.
+      - name: Resolve labels
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+
+      - name: Build and push (per-arch by digest)
+        id: build
+        uses: docker/build-push-action@v6
+        with:
+          context: ./docker
+          file: ./docker/Dockerfile
+          platforms: ${{ matrix.platform }}
+          labels: ${{ steps.meta.outputs.labels }}
+          # Per-arch build cache: the platform suffix keeps the two legs from colliding.
+          cache-from: type=gha,scope=build-${{ matrix.platform }}
+          cache-to:   type=gha,scope=build-${{ matrix.platform }},mode=max
+          outputs:    type=image,name=${{ env.REGISTRY }}/${{ env.IMAGE_NAME }},push-by-digest=true,name-canonical=true,push=true
+          # Keep prose OUT of build-args -- build-push-action forwards every
+          # non-empty line verbatim, so a #-line becomes a bogus --build-arg. All
+          # four values come from the prepare job (resolved once).
+          build-args: |
+            CUDA_VERSION=12.8.1
+            UBUNTU_VERSION=24.04
+            PYTHON_VERSION=3.12
+            UNSLOTH_REF=${{ needs.prepare.outputs.unsloth_ref }}
+            UNSLOTH_ZOO_REF=${{ needs.prepare.outputs.zoo_ref }}
+            LLAMA_PREBUILT_TAG=${{ needs.prepare.outputs.llama_tag }}
+            UNSLOTH_NOTEBOOKS_REF=${{ needs.prepare.outputs.notebooks_commit }}
+
+      # Stash the per-arch digest as an artifact for the merge job. `platform`
+      # has a slash, so substitute a dash for a unique filename.
+      - name: Export digest
+        run: |
+          mkdir -p /tmp/digests
+          digest='${{ steps.build.outputs.digest }}'
+          touch "/tmp/digests/${digest#sha256:}"
+
+      - name: Upload digest
+        uses: actions/upload-artifact@v4
+        with:
+          name: digests-core-${{ matrix.platform == 'linux/amd64' && 'amd64' || 'arm64' }}
+          path: /tmp/digests/*
+          if-no-files-found: error
+          retention-days: 1
+
+  # ---------------------------------------------------------------------------
+  # Merge the two per-arch digests into a multi-platform manifest under the real
+  # user-facing tag(s). Runs only after both build legs succeed.
+  # ---------------------------------------------------------------------------
+  merge:
+    runs-on: ubuntu-latest
+    needs: build
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      packages: write
+    outputs:
+      # Manifest digest of the just-published base image; build-studio FROMs this
+      # exact digest so Studio layers on THIS run's bits, not whatever `base`
+      # points at later.
+      digest: ${{ steps.manifest_digest.outputs.digest }}
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: /tmp/digests
+          pattern: digests-core-*
+          merge-multiple: true
+
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Log in to Docker Hub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Resolve tags
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          # The base image must NEVER claim :latest. metadata-action defaults to
+          # flavor latest=auto, which would tag :latest on a v* (semver) tag push
+          # and collide with the Studio image that legitimately owns :latest.
+          flavor: latest=false
+          tags: |
+            # The lean training image publishes under the core- prefix; the
+            # full Studio image (build-studio/merge-studio below) owns
+            # :latest, matching what the previous production image shipped.
+            # Only tag :core when the workflow ran on the default branch
+            # AND the operator did NOT override ANY baked input on dispatch
+            # (unsloth_ref, unsloth_zoo_ref, notebooks_ref, llama_prebuilt_tag;
+            # push/schedule leave inputs null == '', and the 'main' defaults
+            # are accepted explicitly). Without these conditions a maintainer
+            # testing a feature ref could overwrite :core with non-main bits.
+            type=raw,value=core,enable=${{ github.ref == format('refs/heads/{0}', github.event.repository.default_branch) && github.event.inputs.unsloth_ref == '' && (github.event.inputs.unsloth_zoo_ref == '' || github.event.inputs.unsloth_zoo_ref == 'main') && (github.event.inputs.notebooks_ref == '' || github.event.inputs.notebooks_ref == 'main') && github.event.inputs.llama_prebuilt_tag == '' }}
+            type=ref,event=tag,prefix=core-
+            type=schedule,pattern=core-nightly
+            type=sha,prefix=core-sha-,format=short
+
+      - name: Create multi-arch manifest
+        working-directory: /tmp/digests
+        run: |
+          docker buildx imagetools create \
+              $(jq -cr '.tags | map("-t " + .) | join(" ")' <<<"$DOCKER_METADATA_OUTPUT_JSON") \
+              $(printf '${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}@sha256:%s ' *)
+
+      - name: Inspect the result
+        run: |
+          for tag in $(jq -r '.tags[]' <<<"$DOCKER_METADATA_OUTPUT_JSON"); do
+              echo "=== $tag ==="
+              docker buildx imagetools inspect "$tag"
+          done
+
+      - name: Export manifest digest
+        id: manifest_digest
+        run: |
+          TAG="$(jq -r '.tags[0]' <<<"$DOCKER_METADATA_OUTPUT_JSON")"
+          DIGEST="$(docker buildx imagetools inspect "$TAG" --format '{{json .Manifest.Digest}}' | tr -d '"')"
+          test -n "$DIGEST"
+          echo "digest=${DIGEST}" >> "$GITHUB_OUTPUT"
+          echo "base manifest: ${TAG} @ ${DIGEST}"
+
+  # ---------------------------------------------------------------------------
+  # Full image: base + Unsloth Studio + JupyterLab + sshd (Dockerfile.studio).
+  # This is :latest. Same by-digest build + merge pattern as the base, FROMing the
+  # base manifest digest from the merge job. The arm64 leg builds Studio's vite
+  # frontend natively (the long pole), hence the larger timeout.
+  # ---------------------------------------------------------------------------
+  build-studio:
+    # `merge` for the freshly-published base manifest digest; `prepare` for the
+    # one resolved zoo ref (job outputs only flow through direct `needs`).
+    needs: [prepare, merge]
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: linux/amd64
+            runner:   ubuntu-latest
+          - platform: linux/arm64
+            runner:   ubuntu-24.04-arm
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 150
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Reclaim disk
+        run: |
+          # None of these toolchains are used; paths differ across runners, hence `|| true`.
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc \
+                      /opt/hostedtoolcache "$AGENT_TOOLSDIRECTORY" \
+                      /usr/local/.ghcup /usr/share/swift \
+                      /usr/local/share/powershell /usr/local/lib/node_modules \
+                      /usr/local/julia* /opt/microsoft /usr/share/miniconda \
+                      /opt/az /usr/local/share/boost /usr/local/share/chromium || true
+          sudo docker image prune -af >/dev/null 2>&1 || true
+          df -h /
+
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Log in to Docker Hub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Resolve labels
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+
+      - name: Build and push (per-arch by digest)
+        id: build
+        uses: docker/build-push-action@v6
+        with:
+          context: ./docker
+          file: ./docker/Dockerfile.studio
+          platforms: ${{ matrix.platform }}
+          labels: ${{ steps.meta.outputs.labels }}
+          # mode=min (final layers only): mode=max on this ~24GB image would blow
+          # the 10GB GHA cache quota and evict the base build's cache for no gain.
+          cache-from: type=gha,scope=studio-${{ matrix.platform }}
+          cache-to:   type=gha,scope=studio-${{ matrix.platform }},mode=min
+          outputs:    type=image,name=${{ env.REGISTRY }}/${{ env.IMAGE_NAME }},push-by-digest=true,name-canonical=true,push=true
+          # All three pins are the SAME values the base build baked (prepare job),
+          # so Studio, its zoo overlay and its llama.cpp match the base even if
+          # upstream moved mid-run. (build-args must be KEY=VALUE only.)
+          build-args: |
+            BASE_IMAGE=${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}@${{ needs.merge.outputs.digest }}
+            UNSLOTH_STUDIO_REF=${{ needs.prepare.outputs.unsloth_ref }}
+            UNSLOTH_STUDIO_ZOO_REF=${{ needs.prepare.outputs.zoo_ref }}
+            LLAMA_PREBUILT_TAG=${{ needs.prepare.outputs.llama_tag }}
+
+      - name: Export digest
+        run: |
+          mkdir -p /tmp/digests
+          digest='${{ steps.build.outputs.digest }}'
+          touch "/tmp/digests/${digest#sha256:}"
+
+      - name: Upload digest
+        uses: actions/upload-artifact@v4
+        with:
+          name: digests-studio-${{ matrix.platform == 'linux/amd64' && 'amd64' || 'arm64' }}
+          path: /tmp/digests/*
+          if-no-files-found: error
+          retention-days: 1
+
+  merge-studio:
+    runs-on: ubuntu-latest
+    needs: build-studio
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: /tmp/digests
+          pattern: digests-studio-*
+          merge-multiple: true
+
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Log in to Docker Hub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Resolve tags
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          # latest=false disables metadata-action's implicit latest=auto, which
+          # would otherwise emit :latest on a v* tag push and bypass the
+          # default-branch-only gate below. :latest is published only by the
+          # explicit type=raw rule (default-branch pushes), matching the base job.
+          flavor: latest=false
+          tags: |
+            # The full Studio image owns the unprefixed namespace, headed by
+            # :latest plus a stable :studio alias (default branch only). Tag
+            # pushes publish the version tag. Same gating rationale as the core job.
+            type=raw,value=latest,enable=${{ github.ref == format('refs/heads/{0}', github.event.repository.default_branch) && github.event.inputs.unsloth_ref == '' && (github.event.inputs.unsloth_zoo_ref == '' || github.event.inputs.unsloth_zoo_ref == 'main') && (github.event.inputs.notebooks_ref == '' || github.event.inputs.notebooks_ref == 'main') && github.event.inputs.llama_prebuilt_tag == '' }}
+            type=raw,value=studio,enable=${{ github.ref == format('refs/heads/{0}', github.event.repository.default_branch) && github.event.inputs.unsloth_ref == '' && (github.event.inputs.unsloth_zoo_ref == '' || github.event.inputs.unsloth_zoo_ref == 'main') && (github.event.inputs.notebooks_ref == '' || github.event.inputs.notebooks_ref == 'main') && github.event.inputs.llama_prebuilt_tag == '' }}
+            type=ref,event=tag
+            type=schedule,pattern=nightly
+            type=sha,prefix=sha-,format=short
+
+      - name: Create multi-arch manifest
+        working-directory: /tmp/digests
+        run: |
+          docker buildx imagetools create \
+              $(jq -cr '.tags | map("-t " + .) | join(" ")' <<<"$DOCKER_METADATA_OUTPUT_JSON") \
+              $(printf '${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}@sha256:%s ' *)
+
+      - name: Inspect the result
+        run: |
+          for tag in $(jq -r '.tags[]' <<<"$DOCKER_METADATA_OUTPUT_JSON"); do
+              echo "=== $tag ==="
+              docker buildx imagetools inspect "$tag"
+          done
+
+  # ---------------------------------------------------------------------------
+  # Optional: pull the freshly published image onto a self-hosted GPU runner and
+  # run smoke_test.py. Skipped when no GPU runner is registered.
+  # ---------------------------------------------------------------------------
+  smoke-test:
+    needs: [merge, merge-studio]
+    if: ${{ vars.HAS_GPU_RUNNER == 'true' }}
+    runs-on: [self-hosted, gpu]
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      # Re-compute the tag list from the same metadata-action config the merge job
+      # used, so a run pulls the image it just published. IMPORTANT: keep the
+      # `enable=` expressions byte-identical to the merge jobs' gates above, else
+      # smoke could pull a previously-published :latest instead of the merged image.
+      - name: Resolve published base tag
+        id: meta_base
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          # Keep the base image off :latest here too (this recomputes the same
+          # tag list the merge step pushed, so the smoke test pulls the right ref).
+          flavor: latest=false
+          tags: |
+            type=raw,value=core,enable=${{ github.ref == format('refs/heads/{0}', github.event.repository.default_branch) && github.event.inputs.unsloth_ref == '' && (github.event.inputs.unsloth_zoo_ref == '' || github.event.inputs.unsloth_zoo_ref == 'main') && (github.event.inputs.notebooks_ref == '' || github.event.inputs.notebooks_ref == 'main') && github.event.inputs.llama_prebuilt_tag == '' }}
+            type=ref,event=tag,prefix=core-
+            type=schedule,pattern=core-nightly
+            type=sha,prefix=core-sha-,format=short
+
+      - name: Pull and smoke-test the base image
+        run: |
+          # Use the first tag from the metadata output -- that is the image we
+          # just published. Falls back to :core only when the metadata is
+          # empty (defensive; should not happen on default-branch runs).
+          TAG="$(jq -r '.tags[0] // ""' <<<"$STEPS_META_BASE_JSON")"
+          if [ -z "$TAG" ]; then
+              TAG="${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:core"
+          fi
+          echo "smoke-testing $TAG"
+          docker pull "$TAG"
+          docker run --rm --gpus all "$TAG" python /workspace/smoke_test.py
+        env:
+          STEPS_META_BASE_JSON: ${{ steps.meta_base.outputs.json }}
+
+      - name: Resolve published studio tag
+        id: meta_studio
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          # Mirror the studio tag rules (incl. latest=false) so the smoke test
+          # pulls the tag just published, not an implicit latest=auto :latest.
+          flavor: latest=false
+          tags: |
+            type=raw,value=latest,enable=${{ github.ref == format('refs/heads/{0}', github.event.repository.default_branch) && github.event.inputs.unsloth_ref == '' && (github.event.inputs.unsloth_zoo_ref == '' || github.event.inputs.unsloth_zoo_ref == 'main') && (github.event.inputs.notebooks_ref == '' || github.event.inputs.notebooks_ref == 'main') && github.event.inputs.llama_prebuilt_tag == '' }}
+            type=raw,value=studio,enable=${{ github.ref == format('refs/heads/{0}', github.event.repository.default_branch) && github.event.inputs.unsloth_ref == '' && (github.event.inputs.unsloth_zoo_ref == '' || github.event.inputs.unsloth_zoo_ref == 'main') && (github.event.inputs.notebooks_ref == '' || github.event.inputs.notebooks_ref == 'main') && github.event.inputs.llama_prebuilt_tag == '' }}
+            type=ref,event=tag
+            type=schedule,pattern=nightly
+            type=sha,prefix=sha-,format=short
+
+      - name: Boot the full image and probe Studio + Jupyter
+        run: |
+          TAG="$(jq -r '.tags[0] // ""' <<<"$STEPS_META_STUDIO_JSON")"
+          if [ -z "$TAG" ]; then
+              TAG="${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:latest"
+          fi
+          echo "booting $TAG"
+          docker pull "$TAG"
+          CID="$(docker run -d --gpus all -p 18000:8000 -p 18888:8888 "$TAG")"
+          trap 'docker logs --tail 100 "$CID"; docker rm -f "$CID"' EXIT
+          ok_studio=0; ok_jupyter=0
+          for i in $(seq 1 60); do
+              if curl -fsS http://localhost:18000/api/health >/dev/null 2>&1; then ok_studio=1;  fi
+              # Probe /login, not /api: the launcher sets a password hash so /api
+              # returns 403; /login is unauthenticated and 200s once up.
+              if curl -fsS http://localhost:18888/login      >/dev/null 2>&1; then ok_jupyter=1; fi
+              [ "$ok_studio" = 1 ] && [ "$ok_jupyter" = 1 ] && break
+              sleep 5
+          done
+          [ "$ok_studio"  = 1 ] || { echo "Studio /api/health never went healthy"; exit 1; }
+          [ "$ok_jupyter" = 1 ] || { echo "Jupyter /login never responded"; exit 1; }
+          echo "Studio + Jupyter healthy"
+        env:
+          STEPS_META_STUDIO_JSON: ${{ steps.meta_studio.outputs.json }}

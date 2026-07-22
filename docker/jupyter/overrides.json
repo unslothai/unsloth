@@ -1,0 +1,40 @@
+{
+  "@jupyterlab/apputils-extension:themes": {
+    "theme": "Unsloth Dark",
+    "theme-scrollbars": true,
+    "adaptive-theme": true,
+    "preferred-light-theme": "JupyterLab Light",
+    "preferred-dark-theme": "Unsloth Dark"
+  },
+  "@jupyterlab/notebook-extension:tracker": {
+    "windowingMode": "none",
+    "scrollPastEnd": true,
+    "codeCellConfig": {
+      "autoClosingBrackets": true
+    }
+  },
+  "@jupyterlab/cell-toolbar-extension:plugin": {
+    "toolbar": [
+      {
+        "name": "run-cell-no-advance",
+        "command": "notebook:run-cell",
+        "icon": "ui-components:run",
+        "rank": 0
+      }
+    ]
+  },
+  "@jupyterlab/notebook-extension:panel": {
+    "toolbar": [
+      {
+        "name": "restart-and-run",
+        "command": "notebook:restart-run-all",
+        "label": "Restart & Run All",
+        "rank": 33
+      }
+    ]
+  },
+  "@jupyterlab/apputils-extension:notification": {
+    "fetchNews": "false",
+    "checkForUpdates": false
+  }
+}

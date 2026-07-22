@@ -237,5 +237,7 @@ package-lock.json
 !studio/backend/core/data_recipe/oxc-validator/package-lock.json
 !studio/package-lock.json
 llama.cpp/
+async_task_outputs/
+individual_reviews/
 # Stray "~" dir some tools create from a literal ~ TMPDIR; never part of the repo.
 /~/

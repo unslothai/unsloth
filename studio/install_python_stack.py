@@ -2519,6 +2519,10 @@ def install_python_stack() -> int:
     package_name = os.environ.get("STUDIO_PACKAGE_NAME", "unsloth")
     # --local overlays a local repo checkout after updating deps.
     local_repo = os.environ.get("STUDIO_LOCAL_REPO", "")
+    # unsloth-zoo git ref for the --local overlay. Honor UNSLOTH_ZOO_REF so the
+    # Studio venv tracks the requested zoo, not always main. Unset -> main.
+    zoo_ref = os.environ.get("UNSLOTH_ZOO_REF", "").strip() or "main"
+    zoo_git_spec = "unsloth-zoo @ git+https://github.com/unslothai/unsloth-zoo@" + zoo_ref
     base_total = 11 if IS_WINDOWS else 12  # +1 for the anyio repair check (step 8b)
     if IS_MACOS:
         base_total -= 1  # triton step is skipped on macOS
@@ -2628,13 +2632,13 @@ def install_python_stack() -> int:
                 local_repo,
                 constrain = False,
             )
-            _step(_LABEL, "overlaying unsloth-zoo from git main")
+            _step(_LABEL, f"overlaying unsloth-zoo from git {zoo_ref}")
             pip_install(
-                "Overlaying unsloth-zoo from git main",
+                f"Overlaying unsloth-zoo from git {zoo_ref}",
                 "--no-cache-dir",
                 "--no-deps",
                 "--force-reinstall",
-                "unsloth-zoo @ git+https://github.com/unslothai/unsloth-zoo",
+                zoo_git_spec,
                 constrain = False,
             )
     elif local_repo:
@@ -2659,13 +2663,13 @@ def install_python_stack() -> int:
             local_repo,
             constrain = False,
         )
-        _step(_LABEL, "overlaying unsloth-zoo from git main")
+        _step(_LABEL, f"overlaying unsloth-zoo from git {zoo_ref}")
         pip_install(
-            "Overlaying unsloth-zoo from git main",
+            f"Overlaying unsloth-zoo from git {zoo_ref}",
             "--no-cache-dir",
             "--no-deps",
             "--force-reinstall",
-            "unsloth-zoo @ git+https://github.com/unslothai/unsloth-zoo",
+            zoo_git_spec,
             constrain = False,
         )
     elif package_name != "unsloth":
