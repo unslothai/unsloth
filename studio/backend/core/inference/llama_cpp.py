@@ -2910,7 +2910,9 @@ class LlamaCppBackend:
         (e.g. a gfx1103 iGPU under a gfx110X prebuilt), before llama-server logs a
         line. ROCR drops the device at the driver layer, consuming physical ids.
         The CPU-only sentinel ("-1") has no portable ROCR spelling, so it keeps
-        the HIP mask."""
+        the HIP mask. Windows keeps the HIP mask too: ROCR_VISIBLE_DEVICES is a
+        Linux ROCr variable (Windows HIP has no ROCr layer), so the ROCR pin
+        would be dead there while the cleared HIP mask stops selecting."""
         env["CUDA_VISIBLE_DEVICES"] = pinned
         try:
             import torch as _torch
@@ -2921,7 +2923,7 @@ class LlamaCppBackend:
                 getattr(_torch.version, "hip", None) is not None
                 or "rocm" in getattr(_torch, "__version__", "").lower()
             ):
-                if prefer_rocr and pinned != "-1":
+                if prefer_rocr and pinned != "-1" and sys.platform != "win32":
                     env["ROCR_VISIBLE_DEVICES"] = pinned
                     env.pop("HIP_VISIBLE_DEVICES", None)
                     # ROCR re-indexes the visible agents from 0, and with HIP

@@ -751,6 +751,9 @@ def _rocm_torch_stub(monkeypatch):
     torch_stub = _types.ModuleType("torch")
     torch_stub.version = _types.SimpleNamespace(hip = "6.0")
     monkeypatch.setitem(sys.modules, "torch", torch_stub)
+    # prefer_rocr is Linux-only (ROCR is an ROCr variable); pin the platform so
+    # these Linux-behaviour tests also pass on a Windows dev box.
+    monkeypatch.setattr(sys, "platform", "linux")
 
 
 def test_subset_pin_masks_via_rocr_on_rocm(monkeypatch):
@@ -812,6 +815,22 @@ def _amd_sdk_torch_stub(monkeypatch):
     torch_stub.version = _types.SimpleNamespace(hip = None)
     torch_stub.__version__ = "2.9.1+rocm7.2.1"
     monkeypatch.setitem(sys.modules, "torch", torch_stub)
+    monkeypatch.setattr(sys, "platform", "linux")
+
+
+def test_prefer_rocr_falls_back_to_hip_on_windows(monkeypatch):
+    # ROCR_VISIBLE_DEVICES is a Linux ROCr variable (Windows HIP has no ROCr
+    # layer), so on Windows ROCm prefer_rocr must keep the HIP mask or a nonzero
+    # pick loses its only effective selector (#7272 review).
+    torch_stub = _types.ModuleType("torch")
+    torch_stub.version = _types.SimpleNamespace(hip = "6.0")
+    monkeypatch.setitem(sys.modules, "torch", torch_stub)
+    monkeypatch.setattr(sys, "platform", "win32")
+    env = {"ROCR_VISIBLE_DEVICES": "9"}
+    LlamaCppBackend._emit_child_gpu_visibility(env, "1", prefer_rocr = True)
+    assert env["HIP_VISIBLE_DEVICES"] == "1"
+    assert env["CUDA_VISIBLE_DEVICES"] == "1"
+    assert "ROCR_VISIBLE_DEVICES" not in env
 
 
 def test_amd_sdk_wheel_hip_none_still_masks_rocr(monkeypatch):
