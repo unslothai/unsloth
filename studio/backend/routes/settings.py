@@ -418,8 +418,8 @@ def update_embedding_model(
     hf_token = (payload.hf_token or "").strip() or None
     from utils.utils import hf_env_offline
 
-    # Capture the offline state once: offline, both the Hub malware scan and the is-embedding
-    # metadata check are unreachable, so both degrade to the local cache below.
+    # Offline, both the Hub malware scan and the is-embedding check are unreachable and degrade
+    # to the local cache below; capture the state once.
     local_only_load = hf_env_offline()
     # The env/default model needs no verification; saving it is a no-op override.
     # A local GGUF on the llama-server backend is accepted as-is: it is exactly
@@ -444,14 +444,13 @@ def update_embedding_model(
         # Fall back to the loader's own token so a gated/private repo is actually scanned
         # (a token-less scan fails open for exactly the repo that would still load).
         scan_token = hf_token or _ambient_hf_token()
-        # Offline the Hub scan is unreachable and the subdir probes below would hit the
-        # network and hang on a dead DNS; the offline gate walks the whole cached snapshot,
-        # so no load-subdir hints are needed.
+        # Offline: subdir probes would hit the network and hang; the offline gate walks the
+        # whole cached snapshot, so no load-subdir hints are needed.
         if local_only_load:
             load_subdirs = ()
         else:
-            # Include the ST module dirs (0_Transformer/) so a flagged pickle directly under
-            # one blocks instead of passing as an unreferenced nested shard.
+            # Include ST module dirs (0_Transformer/) so a flagged pickle directly under one
+            # blocks instead of passing as an unreferenced nested shard.
             load_subdirs = tuple(
                 dict.fromkeys(
                     (
@@ -489,15 +488,14 @@ def update_embedding_model(
         # which would wrongly 409 a valid online GGUF embedder.
         gguf_named = _llama_backend_active() and rag_config._names_gguf(model)
         if not gguf_named and not is_embedding_model(model, hf_token = hf_token):
-            # Offline, is_embedding_model can only confirm the Sentence-Transformers layout
-            # (modules.json); a transformers-native embedder (e.g. a feature-extraction model
-            # like gte-modernbert) is unverifiable without the Hub metadata. If the repo is
-            # already cached and loadable, accept it rather than raising a 409 that online
-            # would not -- SentenceTransformer can load any cached encoder. Uncached -> 409.
+            # Offline, is_embedding_model can only confirm the ST layout (modules.json); a
+            # transformers-native embedder (e.g. gte-modernbert) is unverifiable without Hub
+            # metadata. If already cached and loadable, accept it rather than raising a 409 that
+            # online would not (ST can load any cached encoder). Uncached -> 409.
             from utils.utils import hf_cache_snapshot_is_loadable
 
-            # Require a genuinely loadable cache (config + weights), not just a resolved
-            # refs/main, so a metadata-only partial cache still gets the forceable 409.
+            # Require a genuinely loadable cache (config + weights), not just a resolved refs/main,
+            # so a metadata-only partial cache still gets the forceable 409.
             offline_cached = local_only_load and hf_cache_snapshot_is_loadable(model)
             if not offline_cached:
                 raise HTTPException(
@@ -508,8 +506,7 @@ def update_embedding_model(
                         "you may be offline)."
                     ),
                 )
-        # The GGUF availability probe below calls the Hub (list_repo_files); skip it offline
-        # so a dead-DNS session cannot hang. A local GGUF check stays (no network).
+        # The Hub GGUF probe (list_repo_files) can hang offline; skip it. Local check stays.
         gguf_error = _local_gguf_backend_error(model)
         if gguf_error is None and not local_only_load:
             gguf_error = _hf_gguf_backend_error(model, hf_token)

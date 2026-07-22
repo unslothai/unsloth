@@ -108,7 +108,7 @@ def test_hard_block_uses_non_forceable_status(client, monkeypatch):
 
 def test_offline_cached_non_st_model_is_accepted(client, monkeypatch):
     # Offline, a cached transformers-native embedder (no modules.json) is unverifiable via HF
-    # metadata; since SentenceTransformer can load any cached encoder, accept it (no 409).
+    # metadata, but ST can load any cached encoder, so accept it (no 409).
     c, saved = client
     monkeypatch.setitem(sys.modules, "utils.security", _security_stub(blocked = False))
     monkeypatch.setenv("HF_HUB_OFFLINE", "1")
@@ -123,7 +123,7 @@ def test_offline_cached_non_st_model_is_accepted(client, monkeypatch):
 
 
 def test_offline_partial_or_uncached_model_still_409(client, monkeypatch):
-    # Offline but NOT loadable (uncached or a metadata-only partial cache): keep the forceable
+    # Offline but not loadable (uncached or metadata-only partial cache): keep the forceable
     # 409, since the cache-only load would fail anyway.
     c, _saved = client
     monkeypatch.setitem(sys.modules, "utils.security", _security_stub(blocked = False))

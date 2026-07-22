@@ -126,9 +126,8 @@ def _guard_model_security(name: str, local_only: bool = False) -> None:
     /settings gate (a name can also arrive via env/default); local paths and unreachable
     scans fail open inside evaluate_file_security. Never bricks the embedder on a gate error.
 
-    ``local_only`` (offline) inspects the local cache and fails closed on an unscanned pickle
-    weight; the subdir probes are skipped because they would hit the network and hang, and
-    the offline gate walks the whole snapshot anyway.
+    ``local_only`` (offline) inspects the local cache; subdir probes are skipped (they'd hit the
+    network and hang, and the offline gate walks the whole snapshot anyway).
     """
     try:
         from utils.security import evaluate_file_security, security_load_subdirs
@@ -137,9 +136,8 @@ def _guard_model_security(name: str, local_only: bool = False) -> None:
         if local_only:
             load_subdirs = ()
         else:
-            # Union the audio-model load roots with the ST module dirs so a flagged pickle
-            # directly under a Transformer module dir (0_Transformer/) blocks instead of
-            # passing as an unreferenced nested shard.
+            # Union audio-model load roots with ST module dirs so a flagged pickle under a
+            # Transformer module dir blocks instead of passing as an unreferenced nested shard.
             load_subdirs = tuple(
                 dict.fromkeys(
                     (*security_load_subdirs(name, token), *_st_module_subdirs(name, token))
@@ -164,8 +162,8 @@ def _guard_model_security(name: str, local_only: bool = False) -> None:
 
 
 def _st_accepts_local_files_only(st_cls) -> bool:
-    """Whether this SentenceTransformer version accepts ``local_files_only`` (added in newer
-    releases). Passing it to an older constructor raises, so gate on the signature."""
+    """Whether this SentenceTransformer version accepts local_files_only; passing it to an
+    older constructor raises, so gate on the signature."""
     try:
         import inspect
         return "local_files_only" in inspect.signature(st_cls.__init__).parameters
@@ -178,8 +176,8 @@ def _get(model_name: str | None = None):
     for a ~1.5x speedup at negligible accuracy loss."""
     global _model, _name
     name = model_name or config.effective_embedding_model()
-    # Capture the offline state once so the security gate and the load agree (no window
-    # where the gate is skipped as offline but the constructor then reaches the network).
+    # Capture offline state once so the gate and the load agree (no window where the gate is
+    # skipped as offline but the constructor then reaches the network).
     local_only = hf_env_offline()
     with _lock:
         if _model is None or _name != name:
@@ -195,10 +193,9 @@ def _get(model_name: str | None = None):
                 from utils.utils import hf_cache_snapshot_dir
                 snapshot = hf_cache_snapshot_dir(name)
                 if snapshot is not None:
-                    # Load from the resolved local snapshot dir: a local path never touches the
-                    # Hub, so this is offline-safe on ANY sentence-transformers version (even ones
-                    # predating local_files_only). If nothing is cached we fall through to a
-                    # cache-only repo load, which fails fast offline instead of hanging.
+                    # Load from the local snapshot dir: a local path never touches the Hub, so
+                    # this is offline-safe on ANY sentence-transformers version (even ones
+                    # predating local_files_only).
                     load_target = str(snapshot)
                 elif _st_accepts_local_files_only(SentenceTransformer):
                     st_kwargs["local_files_only"] = True

@@ -17,17 +17,17 @@ logger = get_logger(__name__)
 
 
 # ── Offline / HF-cache helpers ──────────────────────────────────
-# An offline model load must never touch the network: a DNS-dead session hangs on
-# huggingface_hub download retries. These read the local HF cache the load itself uses.
+# An offline load must never touch the network (a DNS-dead session hangs on hub retries);
+# these read the local HF cache the load itself uses.
 
 _HF_OFFLINE_TRUE_VALUES = frozenset({"1", "true", "yes", "on"})
 
 
 def hf_env_offline() -> bool:
-    """True when ``HF_HUB_OFFLINE`` or ``TRANSFORMERS_OFFLINE`` requests offline mode.
+    """True when HF_HUB_OFFLINE or TRANSFORMERS_OFFLINE requests offline mode.
 
-    Broader than huggingface_hub, which honors only ``HF_HUB_OFFLINE``; the studio also
-    honors ``TRANSFORMERS_OFFLINE`` because users set it to keep transformers loads local.
+    Also honors TRANSFORMERS_OFFLINE (hub honors only HF_HUB_OFFLINE) since users set it
+    to keep transformers loads local.
     """
     for var in ("HF_HUB_OFFLINE", "TRANSFORMERS_OFFLINE"):
         if os.environ.get(var, "").strip().lower() in _HF_OFFLINE_TRUE_VALUES:
@@ -36,10 +36,8 @@ def hf_env_offline() -> bool:
 
 
 def st_repo_id_candidates(model_name: str) -> list:
-    """Repo ids a Sentence-Transformers load may resolve ``model_name`` to. A slashless
-    name (``all-MiniLM-L6-v2``) is loaded as ``sentence-transformers/all-MiniLM-L6-v2``,
-    so both are candidate cache repos.
-    """
+    """Repo ids a Sentence-Transformers load may resolve model_name to; a slashless name
+    also resolves under the sentence-transformers/ namespace, so both are candidates."""
     name = (model_name or "").strip().strip("/")
     if not name:
         return []
@@ -50,18 +48,14 @@ def st_repo_id_candidates(model_name: str) -> list:
 
 
 def _expand_path(raw: str) -> Path:
-    """Expand ``~`` and ``$VARS`` the way huggingface_hub does for its cache paths, so the gate
-    resolves the same directory the loader will."""
+    """Expand ~ and $VARS as huggingface_hub does, so the gate resolves the loader's dir."""
     return Path(os.path.expandvars(os.path.expanduser(raw)))
 
 
 def _hf_cache_roots() -> list:
-    """The single local cache root a Sentence-Transformers / huggingface_hub load resolves to,
-    by the loader's own precedence (it selects ONE ``cache_folder`` and does not fall through):
-    an explicit ``SENTENCE_TRANSFORMERS_HOME`` (ST's cache_folder), else ``HF_HUB_CACHE``, else
-    ``HF_HOME/hub``, else ``~/.cache/huggingface/hub`` (mirroring huggingface_hub). Expanded
-    (``~`` / ``$VARS``), read from the env at call time. Returned as a one-element list.
-    """
+    """The one cache root the loader resolves to, by its own precedence (it picks ONE
+    cache_folder, no fall-through): SENTENCE_TRANSFORMERS_HOME, else HF_HUB_CACHE, else
+    HF_HOME/hub, else ~/.cache/huggingface/hub. Expanded, read from env, one-element list."""
     st_home = os.environ.get("SENTENCE_TRANSFORMERS_HOME")
     if st_home:
         return [_expand_path(st_home)]
@@ -75,11 +69,8 @@ def _hf_cache_roots() -> list:
 
 
 def hf_cache_snapshot_dir(model_name: str) -> Optional[Path]:
-    """Active local snapshot dir for ``model_name``'s ``main`` revision, or None when the repo
-    is not cached in any known cache root (including ``SENTENCE_TRANSFORMERS_HOME``). Reads
-    ``refs/main`` then ``snapshots/<commit>``; never touches the network. Tries the
-    ``sentence-transformers/`` alias for a slashless name.
-    """
+    """Active local snapshot dir for model_name's main revision, or None if not cached.
+    Reads refs/main then snapshots/<commit>; no network. Tries the ST alias for slashless names."""
     try:
         from huggingface_hub.file_download import repo_folder_name
     except Exception:
@@ -106,16 +97,14 @@ def hf_cache_snapshot_dir(model_name: str) -> Optional[Path]:
     return None
 
 
-# Weight file suffixes a load can consume. Presence of one (plus a config) distinguishes a
-# real cached model from a metadata-only partial cache that would fail at load time.
+# A weight file plus a config distinguishes a real cached model from a metadata-only
+# partial cache that resolves refs/main but would fail at load time.
 _LOADABLE_WEIGHT_SUFFIXES = frozenset({".safetensors", ".bin", ".gguf", ".pt", ".pth", ".ckpt"})
 
 
 def hf_cache_snapshot_is_loadable(model_name: str) -> bool:
-    """True when ``model_name``'s active snapshot is cached AND actually loadable -- it has a
-    config (``config.json`` or ``modules.json``) and at least one weight file -- rather than a
-    metadata-only partial cache that resolves a ``refs/main`` but would fail at load. No network.
-    """
+    """True when model_name's snapshot is cached and loadable: a config (config.json or
+    modules.json) plus at least one weight file, not a metadata-only partial cache. No network."""
     snapshot = hf_cache_snapshot_dir(model_name)
     if snapshot is None:
         return False

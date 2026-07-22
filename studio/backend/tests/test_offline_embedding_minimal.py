@@ -3,15 +3,11 @@
 
 """Offline RAG embedding-model handling (issue #6817).
 
-Offline, the studio must never call the Hub: a DNS-dead session hangs on model_info /
-download retries. These tests build a fake HF cache under a temp ``HF_HUB_CACHE`` and
-assert that, offline:
-  * ``is_embedding_model`` classifies from the cached ``modules.json`` and never calls
-    the Hub (``model_info`` patched to raise if reached);
-  * the file-security gate fails CLOSED on an unscanned pickle weight with no safetensors
-    alternative, and allows an inert (safetensors/gguf) cache;
-  * the embedder threads ``local_files_only`` into the SentenceTransformer load.
-Online behavior is unchanged: a bounded ``model_info`` timeout with a local-cache fallback.
+Offline the studio must never call the Hub (a DNS-dead session hangs on retries). Using a fake
+HF cache under a temp HF_HUB_CACHE, assert that offline: is_embedding_model classifies from the
+cached modules.json without the Hub; the file-security gate fails CLOSED on an unscanned pickle
+weight with no safetensors alternative and allows an inert cache; the embedder threads
+local_files_only into the load. Online behavior is unchanged (bounded timeout + cache fallback).
 """
 
 import sys
@@ -30,14 +26,14 @@ from utils.utils import (
     st_repo_id_candidates,
 )
 
-# A minimal sentence-transformers modules.json (the marker the local-path check keys on).
+# Minimal sentence-transformers modules.json (the marker the gate keys on).
 MODULES_JSON = (
     '[{"idx": 0, "name": "0", "path": "", "type": "sentence_transformers.models.Transformer"}]'
 )
 
 
 def _modules_json(*paths):
-    """A modules.json listing one Transformer module per ``path`` (a load root)."""
+    """modules.json listing one Transformer module per path (a load root)."""
     import json
     return json.dumps(
         [
@@ -61,8 +57,8 @@ def _make_cache(
     files,
     commit = _COMMIT,
 ):
-    """Build a canonical HF-cache snapshot (``refs/main`` + ``snapshots/<commit>/``) for
-    ``repo_id`` under ``root`` with ``{relpath: contents}``. Returns the snapshot dir."""
+    """Build a canonical HF-cache snapshot (refs/main + snapshots/<commit>/) for repo_id under
+    root from {relpath: contents}; returns the snapshot dir."""
     from huggingface_hub.file_download import repo_folder_name
 
     repo_dir = Path(root) / repo_folder_name(repo_id = repo_id, repo_type = "model")
@@ -78,7 +74,7 @@ def _make_cache(
 
 
 def _no_network():
-    """Patch the Hub metadata call to fail loudly if any offline path reaches it."""
+    """Patch model_info to fail loudly if any offline path reaches the network."""
     return patch("huggingface_hub.model_info", side_effect = AssertionError("hit the network"))
 
 
@@ -89,7 +85,7 @@ def _is_embedding_model(*args, **kwargs):
 
 @pytest.fixture
 def hf_cache(tmp_path, monkeypatch):
-    """Point the HF cache at a fresh temp dir the resolver reads at call time."""
+    """Point the HF cache at a fresh temp dir."""
     root = tmp_path / "hub"
     root.mkdir()
     monkeypatch.setenv("HF_HOME", str(tmp_path))
@@ -99,7 +95,7 @@ def hf_cache(tmp_path, monkeypatch):
 
 @pytest.fixture(autouse = True)
 def _clean_env(monkeypatch):
-    """Each test starts online with an empty detection cache; offline tests opt in."""
+    """Start each test online with an empty detection cache; offline tests opt in."""
     monkeypatch.delenv("HF_HUB_OFFLINE", raising = False)
     monkeypatch.delenv("TRANSFORMERS_OFFLINE", raising = False)
     from utils.models import model_config as mc
@@ -180,7 +176,7 @@ def test_snapshot_dir_none_when_snapshot_missing(hf_cache):
 
 
 def test_snapshot_dir_expands_env_vars_in_cache_path(tmp_path, monkeypatch):
-    # HF_HUB_CACHE with an unexpanded $VAR must resolve to the same place the loader uses.
+    # An unexpanded $VAR in HF_HUB_CACHE must resolve where the loader looks.
     real = tmp_path / "hub"
     real.mkdir()
     monkeypatch.setenv("MY_HF_CACHE", str(real))
@@ -192,8 +188,7 @@ def test_snapshot_dir_expands_env_vars_in_cache_path(tmp_path, monkeypatch):
 
 
 def test_snapshot_dir_uses_sentence_transformers_home(tmp_path, monkeypatch):
-    # SentenceTransformer uses SENTENCE_TRANSFORMERS_HOME as its cache_folder, so the gate must
-    # inspect it too.
+    # ST uses SENTENCE_TRANSFORMERS_HOME as its cache_folder, so the gate must inspect it too.
     st_home = tmp_path / "st_home"
     st_home.mkdir()
     monkeypatch.setenv("SENTENCE_TRANSFORMERS_HOME", str(st_home))
@@ -204,8 +199,8 @@ def test_snapshot_dir_uses_sentence_transformers_home(tmp_path, monkeypatch):
 
 
 def test_snapshot_dir_st_home_is_exclusive(tmp_path, monkeypatch):
-    # With SENTENCE_TRANSFORMERS_HOME set, ST loads only from it; a model that lives only under
-    # HF_HUB_CACHE is not what the loader would use, so the resolver must not report it.
+    # With SENTENCE_TRANSFORMERS_HOME set, ST loads only from it, so a model living only under
+    # HF_HUB_CACHE must not be reported.
     st_home = tmp_path / "st_home"
     st_home.mkdir()
     hub = tmp_path / "hub"
@@ -223,7 +218,7 @@ def test_snapshot_is_loadable_with_config_and_weights(hf_cache):
 
 
 def test_snapshot_is_not_loadable_when_metadata_only(hf_cache):
-    # A partial cache (refs/main resolves, but no weight files) is not loadable.
+    # A partial cache (refs/main resolves but no weights) is not loadable.
     _make_cache(hf_cache, "org/partial", {"config.json": "{}", "modules.json": MODULES_JSON})
     assert hf_cache_snapshot_is_loadable("org/partial") is False
 
@@ -233,7 +228,7 @@ def test_snapshot_is_not_loadable_when_uncached(hf_cache):
 
 
 def test_gate_blocks_pickle_in_sentence_transformers_home(tmp_path, monkeypatch):
-    # A pickle cached under SENTENCE_TRANSFORMERS_HOME must still fail closed offline.
+    # A pickle under SENTENCE_TRANSFORMERS_HOME must still fail closed offline.
     st_home = tmp_path / "st_home"
     st_home.mkdir()
     monkeypatch.setenv("SENTENCE_TRANSFORMERS_HOME", str(st_home))
@@ -276,9 +271,8 @@ def test_offline_slashless_resolves_via_alias(hf_cache, monkeypatch):
 
 def test_offline_ignores_stale_online_memo(hf_cache, monkeypatch):
     # An online lookup memoizes True for an UNCACHED repo (tags say embedding, no weights). Once
-    # the session goes offline (the studio flips HF_HUB_OFFLINE in-process on a dead DNS),
-    # is_embedding_model must reclassify from the empty cache and return False -- not the stale
-    # online True that would make settings accept a repo _get() cannot load.
+    # offline, is_embedding_model must reclassify from the empty cache and return False, not the
+    # stale online True that would make settings accept a repo _get() cannot load.
     with patch(
         "huggingface_hub.model_info",
         side_effect = lambda *a, **k: SimpleNamespace(
@@ -293,9 +287,8 @@ def test_offline_ignores_stale_online_memo(hf_cache, monkeypatch):
 
 
 def test_offline_recomputes_after_cache_materializes(hf_cache, monkeypatch):
-    # Offline, an uncached repo is False; because the offline branch never records a memo, once
-    # its snapshot materializes (another process populates the shared cache) the next call
-    # re-reports True instead of returning a stale negative.
+    # Because the offline branch never records a memo, once an uncached repo's snapshot
+    # materializes (another process populates the cache) the next call re-reports True.
     monkeypatch.setenv("HF_HUB_OFFLINE", "1")
     with _no_network():
         assert _is_embedding_model("org/later") is False  # uncached
@@ -411,8 +404,8 @@ def test_gate_allows_pickle_in_subdir_with_safetensors(hf_cache):
 
 
 def test_gate_allows_unreferenced_nested_pickle(hf_cache):
-    # A pickle in a dir NOT referenced by modules.json (e.g. nemo/) is never deserialized by
-    # SentenceTransformer, so it must not block the offline load (matches the online gate).
+    # A pickle in a dir NOT referenced by modules.json (e.g. nemo/) is never deserialized, so it
+    # must not block the offline load (matches the online gate).
     _make_cache(
         hf_cache,
         "org/aux",
@@ -441,8 +434,8 @@ def test_gate_allows_adapter_pickle_with_adapter_safetensors(hf_cache):
 
 
 def test_gate_blocks_base_pickle_with_only_adapter_safetensors_decoy(hf_cache):
-    # A decoy adapter_model.safetensors must NOT suppress a base pytorch_model.bin: the base
-    # loader would still deserialize the unscanned pickle.
+    # A decoy adapter_model.safetensors must NOT suppress a base pytorch_model.bin (the base
+    # loader would still deserialize the unscanned pickle).
     _make_cache(hf_cache, "org/decoy", {"pytorch_model.bin": "x", "adapter_model.safetensors": "y"})
     with _no_network():
         assert _offline_decision("org/decoy").blocked is True
@@ -535,8 +528,8 @@ def test_get_offline_loads_from_local_snapshot(hf_cache, monkeypatch):
     snapshot = _make_cache(
         hf_cache, "org/st", {"modules.json": MODULES_JSON, "model.safetensors": "x"}
     )
-    # TRANSFORMERS_OFFLINE only: a cached model is loaded from its local snapshot dir, a local
-    # path that never touches the Hub -- offline-safe on ANY sentence-transformers version.
+    # TRANSFORMERS_OFFLINE only: a cached model loads from its local snapshot dir (a local path,
+    # never the Hub), offline-safe on ANY sentence-transformers version.
     monkeypatch.setenv("TRANSFORMERS_OFFLINE", "1")
     monkeypatch.delenv("HF_HUB_OFFLINE", raising = False)
     monkeypatch.setattr(embeddings, "_model", None, raising = False)
@@ -564,7 +557,7 @@ def test_get_offline_uncached_uses_local_files_only(tmp_path, monkeypatch):
     monkeypatch.setattr(embeddings, "_name", None, raising = False)
     monkeypatch.setattr(embeddings, "_install_torchao_stub_once", lambda: None)
     monkeypatch.setattr(embeddings, "_device", lambda: "cpu")
-    # No cache -> fall back to a repo-id load forced cache-only (fails fast offline, not a hang).
+    # No cache -> repo-id load forced cache-only (fails fast offline, not a hang).
     monkeypatch.setattr(embeddings, "_guard_model_security", lambda name, local_only = False: None)
     captured = {}
     _install_fake_sentence_transformers(monkeypatch, captured)

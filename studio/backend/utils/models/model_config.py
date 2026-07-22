@@ -2076,16 +2076,13 @@ def download_gguf_file(
 _embedding_detection_cache: Dict[tuple, bool] = {}
 
 
-# Bound the Hub metadata lookup so a DNS-dead session fails fast (and falls back to the
-# local cache) instead of hanging on huggingface_hub's default retry loop.
+# Bound the Hub lookup so a DNS-dead session fails fast to the cache instead of hanging on retries.
 _HUB_MODEL_INFO_TIMEOUT = 15.0
 
 
 def _embedding_marker_in_hf_cache(model_name: str) -> bool:
-    """True when ``model_name``'s active cached snapshot carries a ``modules.json`` -- the
-    Sentence-Transformers marker, mirroring the local-path check. Cache-only, no network;
-    used offline and as a fallback when a bounded Hub lookup times out.
-    """
+    """True when model_name's cached snapshot carries a modules.json (the ST marker).
+    Cache-only, no network; used offline and as a fallback when the Hub lookup times out."""
     from utils.utils import hf_cache_snapshot_dir
 
     snapshot = hf_cache_snapshot_dir(model_name)
@@ -2113,14 +2110,10 @@ def is_embedding_model(model_name: str, hf_token: Optional[str] = None) -> bool:
     """
     from utils.utils import hf_env_offline
 
-    # Offline (remote repo): reclassify from the local HF cache on EVERY call, before and without
-    # consulting the process memo. Never call the Hub -- a DNS-dead session hangs on model_info
-    # retries -- and never trust or record a memo here: an online lookup can memoize True from
-    # tags without any weights cached, so returning that once the session goes offline (the studio
-    # flips HF_HUB_OFFLINE in-process on a dead DNS) would accept a repo _get() cannot load; a
-    # cached negative could likewise be invalidated by a later cache materialization. A cached
-    # modules.json marks a Sentence-Transformers repo, mirroring the local-path check below. The
-    # probe is local-filesystem only, so recomputing per call is cheap.
+    # Offline (remote repo): reclassify from the local cache on every call, before/without the
+    # memo. An online lookup can memoize True from tags with no weights cached, so trusting it once
+    # the session goes offline would accept a repo _get() cannot load; a cached negative can also be
+    # invalidated by later cache materialization. The cache probe is local-only, so it's cheap.
     if not is_local_path(model_name) and hf_env_offline():
         return _embedding_marker_in_hf_cache(model_name)
 
@@ -2159,8 +2152,7 @@ def is_embedding_model(model_name: str, hf_token: Optional[str] = None) -> bool:
         return is_emb
 
     except Exception as e:
-        # A bounded timeout or transient network error must not hang or hard-fail the UI.
-        # Best-effort fall back to the local cache marker before giving up.
+        # Timeout or transient network error: fall back to the local cache marker, don't hard-fail.
         logger.warning(f"Could not determine if {model_name} is embedding model: {e}")
         is_emb = _embedding_marker_in_hf_cache(model_name)
         _embedding_detection_cache[cache_key] = is_emb
