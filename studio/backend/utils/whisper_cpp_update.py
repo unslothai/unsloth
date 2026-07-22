@@ -307,78 +307,100 @@ def get_update_status(*, force_refresh: bool = False) -> dict:
     }
 
 
+def _install_latest(
+    install_dir: Path,
+    repo: str,
+    asset: Optional[str],
+    backend: Optional[str],
+    script: Path,
+    set_progress,
+) -> dict:
+    """Unload the warm whisper sidecar, run the installer for the latest
+    prebuilt, then refresh caches so the next load uses the new build. Shared by
+    the standalone job worker and the llama-chained whisper phase. Returns
+    {to_tag, reload_required, message}; raises on failure."""
+    # Free the binary while the installer swaps it. whisper.cpp is served by a
+    # single sidecar subprocess (not a multi-backend registry like llama), so
+    # a single unload is enough; reload_required reflects whether a model was
+    # actually loaded before we tore it down.
+    model_was_active = False
+    try:
+        from core.inference.stt_ggml_sidecar import get_ggml_stt_sidecar
+
+        sidecar = get_ggml_stt_sidecar()
+        model_was_active = bool(sidecar.loaded_model)
+        sidecar.unload()
+    except Exception as exc:
+        logger.debug("whisper update: sidecar unload failed", error = str(exc))
+
+    cmd = [
+        sys.executable,
+        str(script),
+        "--install-dir",
+        str(install_dir),
+        "--whisper-tag",
+        "latest",
+        "--published-repo",
+        repo,
+    ]
+    # Preserve the installed accelerator across updates. Left unpinned the
+    # installer re-detects the host, which is fine on unchanged hardware but
+    # can reroute a deliberate choice (e.g. cpu on a GPU box); forwarding the
+    # marker's backend keeps the same slice. No --published-release-tag:
+    # the installer resolves the newest published release itself.
+    if isinstance(backend, str) and backend:
+        cmd.extend(["--backend", backend])
+    cmd.extend(_rocm_install_args(asset))
+    logger.info("whisper update: installing", cmd = " ".join(cmd))
+    env = dict(os.environ, UNSLOTH_PROGRESS_PERCENT_STEP = "5")
+    _flow.stream_installer(
+        cmd,
+        env,
+        set_progress = set_progress,
+        timeout_seconds = _INSTALL_TIMEOUT_SECONDS,
+    )
+
+    # Drop stale caches so the banner re-checks the swapped marker.
+    # If GitHub is offline, latest stays unknown and the banner fails open.
+    reset_caches(drop_disk = True)
+    try:
+        latest_published_release(repo, force_refresh = True)
+    except Exception as exc:  # pragma: no cover - network defensive
+        logger.debug("whisper update: post-install freshness refresh failed", error = str(exc))
+    new_marker = read_install_marker(_find_binary())
+    new_tag = (new_marker or {}).get("release_tag")
+    logger.info("whisper update: success", to_tag = new_tag)
+    return {
+        "to_tag": new_tag,
+        "reload_required": model_was_active,
+        "message": (
+            f"Updated whisper.cpp to {new_tag}."
+            + (" Reload your model to use it." if model_was_active else "")
+        ),
+    }
+
+
 def _run_update(
     install_dir: Path, repo: str, asset: Optional[str], backend: Optional[str], script: Path
 ) -> None:
-    """Worker: unload the warm whisper sidecar, run the installer for the latest
-    prebuilt, then refresh caches so the next load uses the new build."""
-    model_was_active = False
+    """Worker for the standalone whisper update job."""
     try:
-        # Free the binary while the installer swaps it. whisper.cpp is served by a
-        # single sidecar subprocess (not a multi-backend registry like llama), so
-        # a single unload is enough; reload_required reflects whether a model was
-        # actually loaded before we tore it down.
-        try:
-            from core.inference.stt_ggml_sidecar import get_ggml_stt_sidecar
 
-            sidecar = get_ggml_stt_sidecar()
-            model_was_active = bool(sidecar.loaded_model)
-            sidecar.unload()
-        except Exception as exc:
-            logger.debug("whisper update: sidecar unload failed", error = str(exc))
+        def _set_progress(fraction: float) -> None:
+            with _job_lock:
+                _job["progress"] = max(_job.get("progress") or 0.0, fraction)
 
-        cmd = [
-            sys.executable,
-            str(script),
-            "--install-dir",
-            str(install_dir),
-            "--whisper-tag",
-            "latest",
-            "--published-repo",
-            repo,
-        ]
-        # Preserve the installed accelerator across updates. Left unpinned the
-        # installer re-detects the host, which is fine on unchanged hardware but
-        # can reroute a deliberate choice (e.g. cpu on a GPU box); forwarding the
-        # marker's backend keeps the same slice. No --published-release-tag:
-        # the installer resolves the newest published release itself.
-        if isinstance(backend, str) and backend:
-            cmd.extend(["--backend", backend])
-        cmd.extend(_rocm_install_args(asset))
-        logger.info("whisper update: installing", cmd = " ".join(cmd))
-        env = dict(os.environ, UNSLOTH_PROGRESS_PERCENT_STEP = "5")
-        _flow.stream_installer(
-            cmd,
-            env,
-            job = _job,
-            job_lock = _job_lock,
-            timeout_seconds = _INSTALL_TIMEOUT_SECONDS,
-        )
-
-        # Drop stale caches so the banner re-checks the swapped marker.
-        # If GitHub is offline, latest stays unknown and the banner fails open.
-        reset_caches(drop_disk = True)
-        try:
-            latest_published_release(repo, force_refresh = True)
-        except Exception as exc:  # pragma: no cover - network defensive
-            logger.debug("whisper update: post-install freshness refresh failed", error = str(exc))
-        new_marker = read_install_marker(_find_binary())
-        new_tag = (new_marker or {}).get("release_tag")
-
+        result = _install_latest(install_dir, repo, asset, backend, script, _set_progress)
         with _job_lock:
             _job.update(
                 state = _JOB_SUCCESS,
-                message = (
-                    f"Updated whisper.cpp to {new_tag}."
-                    + (" Reload your model to use it." if model_was_active else "")
-                ),
-                to_tag = new_tag,
-                reload_required = model_was_active,
+                message = result["message"],
+                to_tag = result["to_tag"],
+                reload_required = result["reload_required"],
                 error = None,
                 progress = 1.0,
                 finished_at = _utcnow(),
             )
-        logger.info("whisper update: success", to_tag = new_tag)
     except Exception as exc:
         logger.warning("whisper update: failed", error = str(exc))
         with _job_lock:
@@ -501,6 +523,78 @@ def start_update() -> dict:
     )
     thread.start()
     return {"started": True, "reason": None, "job": job_snapshot}
+
+
+def chained_phase_plan(*, force_refresh: bool = False) -> dict:
+    """Whisper's side of the combined llama+whisper update item.
+
+    Returns {status, update_available, skip_reason, phase}: `status` is the
+    marker-path status dict (or a minimal one when whisper is skipped),
+    `update_available` says the chained apply would actually run a whisper
+    phase, and `phase` carries what run_chained_phase needs. Only marker-managed
+    installs are chained: local links, source builds and unmanaged/pinned paths
+    are silently skipped so whisper can never block a llama update. Never
+    raises; failures degrade to a skip."""
+    binary = _find_binary()
+    if _active_install_is_local_link(binary):
+        return {
+            "status": _local_link_status(),
+            "update_available": False,
+            "skip_reason": "local_link",
+            "phase": None,
+        }
+    marker = read_install_marker(binary)
+    if marker is None:
+        # No marker: whisper is absent or a source/custom build. The standalone
+        # utils API can still update source builds; the chain does not.
+        return {
+            "status": None,
+            "update_available": False,
+            "skip_reason": "source_build" if binary else "not_installed",
+            "phase": None,
+        }
+    status = get_update_status(force_refresh = force_refresh)
+    plan: dict = {"status": status, "update_available": False, "skip_reason": None, "phase": None}
+    if not status.get("update_available"):
+        plan["skip_reason"] = "up_to_date"
+        return plan
+    # A standalone whisper job already in flight must not be doubled by a
+    # chained apply racing it.
+    with _job_lock:
+        if _job["state"] == _JOB_RUNNING:
+            plan["skip_reason"] = "busy"
+            return plan
+    script = _installer_script()
+    if script is None:
+        plan["skip_reason"] = "installer_missing"
+        return plan
+    install_dir = _install_dir_for(binary)
+    if install_dir is None:
+        plan["skip_reason"] = "no_install_dir"
+        return plan
+    plan["update_available"] = True
+    plan["phase"] = {
+        "install_dir": install_dir,
+        "repo": marker.get("published_repo") or DEFAULT_PUBLISHED_REPO,
+        "asset": marker.get("asset"),
+        "backend": marker.get("backend"),
+        "script": script,
+    }
+    return plan
+
+
+def run_chained_phase(phase: dict, set_progress) -> dict:
+    """Run the whisper phase of a combined update (spec from chained_phase_plan):
+    same unload/install/cache-refresh path as the standalone job, reporting
+    progress through the chained job's window instead of whisper's own job."""
+    return _install_latest(
+        phase["install_dir"],
+        phase["repo"],
+        phase["asset"],
+        phase["backend"],
+        phase["script"],
+        set_progress,
+    )
 
 
 def _reset_job_for_tests() -> None:

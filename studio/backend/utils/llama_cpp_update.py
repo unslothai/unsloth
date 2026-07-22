@@ -20,6 +20,10 @@ Design notes:
 - The mechanics (managed-root resolution, local-link detection, the resolve
   probe, the streamed installer run) live in utils.prebuilt.update_flow; this
   module keeps the llama policy and the job dict its callers poll.
+- This is the single main update item: whisper.cpp piggybacks on it. Status
+  folds in a whisper sub-status (update_available becomes the union) and apply
+  chains a whisper phase after the llama phase when whisper is behind (see
+  update_flow.run_chained_update and whisper_cpp_update.chained_phase_plan).
 """
 
 from __future__ import annotations
@@ -255,11 +259,54 @@ def _local_link_status() -> dict:
     return _flow.local_link_status(_job, _job_lock)
 
 
-def get_update_status(*, force_refresh: bool = False) -> dict:
-    """Report whether a newer prebuilt exists plus the current job state.
+def _whisper_chain_status(*, force_refresh: bool = False) -> Optional[dict]:
+    """Whisper's piggyback plan for the combined update item (see
+    whisper_cpp_update.chained_phase_plan). None disables the piggyback --
+    fail-open so whisper can never break the llama status or apply."""
+    try:
+        from utils import whisper_cpp_update
+        return whisper_cpp_update.chained_phase_plan(force_refresh = force_refresh)
+    except Exception as exc:  # pragma: no cover - defensive
+        logger.debug("llama update: whisper piggyback probe failed", error = str(exc))
+        return None
 
-    force_refresh bypasses the 24h release cache for an explicit "check now".
+
+def _merge_whisper_status(status: dict, *, force_refresh: bool = False) -> dict:
+    """Fold the whisper sub-status into the llama status payload: the llama
+    update item is the single UI surface, so update_available becomes the union
+    (llama behind OR whisper behind) while llama_update_available keeps the
+    llama-only flag. All pre-existing top-level fields are preserved."""
+    status["llama_update_available"] = bool(status.get("update_available"))
+    plan = _whisper_chain_status(force_refresh = force_refresh)
+    if plan is None:
+        status["whisper"] = None
+        return status
+    sub = plan.get("status") or {}
+    status["whisper"] = {
+        "update_available": bool(plan.get("update_available")),
+        "installed_tag": sub.get("installed_tag"),
+        "latest_tag": sub.get("latest_tag"),
+        "update_size_bytes": sub.get("update_size_bytes"),
+        "skip_reason": plan.get("skip_reason"),
+    }
+    if plan.get("update_available"):
+        status["update_available"] = True
+    return status
+
+
+def get_update_status(*, force_refresh: bool = False) -> dict:
+    """Report whether an update is available plus the current job state.
+
+    This is the single main update item: llama.cpp drives it and the whisper
+    piggyback is folded in (see _merge_whisper_status). force_refresh bypasses
+    the 24h release cache for an explicit "check now".
     """
+    status = _llama_only_status(force_refresh = force_refresh)
+    return _merge_whisper_status(status, force_refresh = force_refresh)
+
+
+def _llama_only_status(*, force_refresh: bool = False) -> dict:
+    """The llama.cpp half of get_update_status (no whisper sub-status)."""
     binary = _find_binary()
     # A --with-llama-cpp-dir local link is the user's own tree; never offer to
     # replace it. Bail before any network/freshness work.
@@ -329,15 +376,18 @@ def get_update_status(*, force_refresh: bool = False) -> dict:
     }
 
 
-def _run_update(
+def _run_llama_phase(
     install_dir: Path,
     repo: str,
     asset: Optional[str],
     script: Path,
-    pin_release_tag: Optional[str] = None,
-) -> None:
-    """Worker: put the backend into a maintenance state, run the installer for
-    the latest prebuilt, then refresh caches so the next load uses the new build.
+    pin_release_tag: Optional[str],
+    set_progress,
+) -> dict:
+    """The llama phase of a chained update: put the backend into a maintenance
+    state, run the installer for the latest prebuilt, then refresh caches so the
+    next load uses the new build. Returns {to_tag, reload_required, message};
+    raises on failure.
 
     pin_release_tag pins the installer to that exact published release instead
     of letting it re-resolve "latest" itself (see start_update for why)."""
@@ -389,8 +439,7 @@ def _run_update(
         _flow.stream_installer(
             cmd,
             env,
-            job = _job,
-            job_lock = _job_lock,
+            set_progress = set_progress,
             timeout_seconds = _INSTALL_TIMEOUT_SECONDS,
         )
 
@@ -414,29 +463,18 @@ def _run_update(
         ):
             raise RuntimeError(f"pinned release {pin_release_tag} but installer produced {new_tag}")
 
-        with _job_lock:
-            _job.update(
-                state = _JOB_SUCCESS,
-                message = (
-                    f"Updated llama.cpp to {new_tag}."
-                    + (" Reload your model to use it." if model_was_active else "")
-                ),
-                to_tag = new_tag,
-                reload_required = model_was_active,
-                error = None,
-                progress = 1.0,
-                finished_at = _utcnow(),
-            )
         logger.info("llama update: success", to_tag = new_tag)
+        return {
+            "to_tag": new_tag,
+            "reload_required": model_was_active,
+            "message": (
+                f"Updated llama.cpp to {new_tag}."
+                + (" Reload your model to use it." if model_was_active else "")
+            ),
+        }
     except Exception as exc:
         logger.warning("llama update: failed", error = str(exc))
-        with _job_lock:
-            _job.update(
-                state = _JOB_ERROR,
-                message = "llama.cpp update failed.",
-                error = str(exc),
-                finished_at = _utcnow(),
-            )
+        raise
     finally:
         # Always clear maintenance state.
         if backend is not None:
@@ -446,50 +484,58 @@ def _run_update(
                 pass
 
 
-def start_update() -> dict:
-    """Kick off a background update. Idempotent: a second call while one is
-    running returns the in-flight job rather than starting another."""
+# Combined-job progress split when both phases run (download sizes: the llama
+# bundle dwarfs the whisper one); normalized to 0..1 when a phase is skipped.
+_LLAMA_PHASE_WEIGHT = 0.7
+_WHISPER_PHASE_WEIGHT = 0.3
+
+
+def _plan_llama_phase() -> dict:
+    """Decide how the llama phase of a combined update runs. Returns {"spec"}
+    when llama should install, else {"skip_reason", "refusal"}: skip_reason
+    marks the phase skipped inside a chained job, refusal is the started=False
+    response when the whisper phase has nothing to run either."""
     binary = _find_binary()
     # Refuse to update a --with-llama-cpp-dir local link: installing a prebuilt
     # here would write through the link into the user's own checkout (or fail)
     # and silently drop the link the flag created.
     if _active_install_is_local_link(binary):
         return {
-            "started": False,
-            "reason": "local_link",
-            "message": (
-                "llama.cpp is a local directory linked with --with-llama-cpp-dir; "
-                "Unsloth won't replace it. Update your own llama.cpp checkout instead."
-            ),
-            "job": get_update_status()["job"],
+            "skip_reason": "local_link",
+            "refusal": {
+                "started": False,
+                "reason": "local_link",
+                "message": (
+                    "llama.cpp is a local directory linked with --with-llama-cpp-dir; "
+                    "Unsloth won't replace it. Update your own llama.cpp checkout instead."
+                ),
+            },
         }
     marker = read_install_marker(binary)
     script = _installer_script()
     if script is None:
         return {
-            "started": False,
-            "reason": "installer_missing",
-            "message": "install_llama_prebuilt.py could not be located.",
-            "job": get_update_status()["job"],
+            "skip_reason": "installer_missing",
+            "refusal": {
+                "started": False,
+                "reason": "installer_missing",
+                "message": "install_llama_prebuilt.py could not be located.",
+            },
         }
-
-    # A job already in flight wins over any freshness re-check below (and skips
-    # its network call). The final lock block re-checks to close the TOCTOU.
-    with _job_lock:
-        if _job["state"] == _JOB_RUNNING:
-            return {"started": False, "reason": "already_running", "job": dict(_job)}
 
     if marker:
         # Mirror the detection guard: a direct POST or a stale banner must not
         # start an install when the latest is not actually newer (force a fresh
         # check so a stale 24h cache can't wrongly block a real update either).
-        status = get_update_status(force_refresh = True)
+        status = _llama_only_status(force_refresh = True)
         if not status.get("update_available"):
             return {
-                "started": False,
-                "reason": "up_to_date",
-                "message": "The installed llama.cpp build is already at the latest prebuilt.",
-                "job": status["job"],
+                "skip_reason": "up_to_date",
+                "refusal": {
+                    "started": False,
+                    "reason": "up_to_date",
+                    "message": "The installed llama.cpp build is already at the latest prebuilt.",
+                },
             }
         install_dir = _install_dir_for(binary)
         repo = marker.get("published_repo") or DEFAULT_PUBLISHED_REPO
@@ -509,20 +555,27 @@ def start_update() -> dict:
         src = _source_build_status(binary, force_refresh = True) if binary else None
         if src is None:
             return {
-                "started": False,
-                "reason": "no_prebuilt_available",
-                "message": (
-                    "No official llama.cpp prebuilt is available for this host, "
-                    "so the source build cannot be swapped automatically."
-                ),
-                "job": get_update_status()["job"],
+                "skip_reason": "no_prebuilt_available",
+                "refusal": {
+                    "started": False,
+                    "reason": "no_prebuilt_available",
+                    "message": (
+                        "No official llama.cpp prebuilt is available for this host, "
+                        "so the source build cannot be swapped automatically."
+                    ),
+                },
             }
         if not src.get("update_available"):
             return {
-                "started": False,
-                "reason": "up_to_date",
-                "message": "The installed llama.cpp build is already at or newer than the latest prebuilt.",
-                "job": get_update_status()["job"],
+                "skip_reason": "up_to_date",
+                "refusal": {
+                    "started": False,
+                    "reason": "up_to_date",
+                    "message": (
+                        "The installed llama.cpp build is already at or newer than the "
+                        "latest prebuilt."
+                    ),
+                },
             }
         res = _resolve_prebuilt_for_host()
         install_dir = _llama_install_root(binary)
@@ -535,31 +588,109 @@ def start_update() -> dict:
 
     if install_dir is None:
         return {
-            "started": False,
-            "reason": "no_install_dir",
-            "message": "Could not determine the llama.cpp install directory.",
-            "job": get_update_status()["job"],
+            "skip_reason": "no_install_dir",
+            "refusal": {
+                "started": False,
+                "reason": "no_install_dir",
+                "message": "Could not determine the llama.cpp install directory.",
+            },
         }
+    return {
+        "spec": {
+            "install_dir": install_dir,
+            "repo": repo,
+            "asset": asset,
+            "script": script,
+            "pin_release_tag": pin_release_tag,
+            "from_tag": from_tag,
+        }
+    }
+
+
+def start_update() -> dict:
+    """Kick off a background update job. The job chains the llama phase (the
+    existing flow) with a whisper phase that runs only when whisper is actually
+    behind; either phase no-ops cleanly when its component is current or
+    unmanaged. Idempotent: a second call while one is running returns the
+    in-flight job rather than starting another."""
+    # A job already in flight wins over any freshness re-check below (and skips
+    # its network calls). The final lock block re-checks to close the TOCTOU.
+    with _job_lock:
+        if _job["state"] == _JOB_RUNNING:
+            return {"started": False, "reason": "already_running", "job": dict(_job)}
+
+    llama_plan = _plan_llama_phase()
+    llama_spec = llama_plan.get("spec")
+    whisper_plan = _whisper_chain_status(force_refresh = True)
+    whisper_spec = (whisper_plan or {}).get("phase")
+    if llama_spec is None and whisper_spec is None:
+        # Nothing to run in either phase: answer with the llama refusal so the
+        # existing reasons (local_link / up_to_date / ...) keep their meaning.
+        refusal = dict(llama_plan["refusal"])
+        with _job_lock:
+            refusal["job"] = dict(_job)
+        return refusal
+
+    from utils import whisper_cpp_update as _whisper
+
+    phases = [
+        {
+            "name": "llama",
+            "weight": _LLAMA_PHASE_WEIGHT,
+            "failure_message": "llama.cpp update failed.",
+            "skip_reason": llama_plan.get("skip_reason"),
+            "run": (
+                (
+                    lambda set_progress: _run_llama_phase(
+                        llama_spec["install_dir"],
+                        llama_spec["repo"],
+                        llama_spec["asset"],
+                        llama_spec["script"],
+                        llama_spec["pin_release_tag"],
+                        set_progress,
+                    )
+                )
+                if llama_spec
+                else None
+            ),
+        },
+        {
+            "name": "whisper",
+            "weight": _WHISPER_PHASE_WEIGHT,
+            "failure_message": "whisper.cpp update failed.",
+            "skip_reason": (whisper_plan or {}).get("skip_reason") or "unavailable",
+            "run": (
+                (lambda set_progress: _whisper.run_chained_phase(whisper_spec, set_progress))
+                if whisper_spec
+                else None
+            ),
+        },
+    ]
+    running = " + ".join(
+        name for name, spec in (("llama.cpp", llama_spec), ("whisper.cpp", whisper_spec)) if spec
+    )
 
     with _job_lock:
         if _job["state"] == _JOB_RUNNING:
             return {"started": False, "reason": "already_running", "job": dict(_job)}
         _job.update(
             state = _JOB_RUNNING,
-            message = "Downloading and installing the latest llama.cpp prebuilt...",
-            from_tag = from_tag,
+            message = f"Downloading and installing the latest {running} prebuilt...",
+            from_tag = (llama_spec or {}).get("from_tag"),
             to_tag = None,
             reload_required = None,
             error = None,
             progress = 0.0,
             started_at = _utcnow(),
             finished_at = None,
+            phases = None,
         )
         job_snapshot = dict(_job)
 
     thread = threading.Thread(
-        target = _run_update,
-        args = (install_dir, repo, asset, script, pin_release_tag),
+        target = _flow.run_chained_update,
+        args = (phases,),
+        kwargs = {"job": _job, "job_lock": _job_lock},
         name = "llama-cpp-update",
         daemon = True,
     )

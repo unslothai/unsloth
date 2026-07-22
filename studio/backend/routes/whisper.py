@@ -1,14 +1,15 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""whisper.cpp prebuilt update endpoints.
+"""whisper.cpp prebuilt status endpoint.
 
 GET  /api/whisper/update-status  -> is a newer prebuilt available + job state
-POST /api/whisper/update         -> download + atomically swap to the latest
 
-Detection reuses utils.whisper_cpp_freshness; the swap reuses
-install_whisper_prebuilt.py via utils.whisper_cpp_update. Both fail open so the
-UI never blocks on a missing marker / offline GitHub.
+Detection reuses utils.whisper_cpp_freshness and fails open so the UI never
+blocks on a missing marker / offline GitHub. There is no whisper-only update
+trigger here: whisper updates piggyback on the single main update item
+(POST /api/llama/update chains a whisper phase when whisper is behind), and
+utils.whisper_cpp_update.start_update stays available for CLI/tests.
 """
 
 from __future__ import annotations
@@ -22,7 +23,7 @@ from pydantic import BaseModel, Field
 
 from auth.authentication import get_current_subject
 from loggers import get_logger
-from utils.whisper_cpp_update import get_update_status, start_update
+from utils.whisper_cpp_update import get_update_status
 
 logger = get_logger(__name__)
 router = APIRouter()
@@ -60,15 +61,8 @@ class WhisperUpdateStatusResponse(BaseModel):
         False, description = "True when there is no marker (source build) but a prebuilt is offered."
     )
     update_size_bytes: Optional[int] = Field(
-        None, description = "Download size of the prebuilt Update would fetch, in bytes."
+        None, description = "Download size of the prebuilt an update would fetch, in bytes."
     )
-    job: WhisperUpdateJob = Field(default_factory = WhisperUpdateJob)
-
-
-class WhisperUpdateActionResponse(BaseModel):
-    started: bool
-    reason: Optional[str] = None
-    message: Optional[str] = None
     job: WhisperUpdateJob = Field(default_factory = WhisperUpdateJob)
 
 
@@ -105,11 +99,3 @@ async def whisper_update_status(
     resp = WhisperUpdateStatusResponse(**status)
     _log_whisper_update_progress(resp.job)
     return resp
-
-
-@router.post("/update", response_model = WhisperUpdateActionResponse)
-async def whisper_update(
-    current_subject: str = Depends(get_current_subject),
-) -> WhisperUpdateActionResponse:
-    action = await asyncio.to_thread(start_update)
-    return WhisperUpdateActionResponse(**action)

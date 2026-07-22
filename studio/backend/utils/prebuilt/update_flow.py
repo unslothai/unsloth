@@ -43,6 +43,13 @@ JOB_RUNNING = "running"
 JOB_SUCCESS = "success"
 JOB_ERROR = "error"
 
+# Per-phase states inside a chained job's "phases" breakdown.
+PHASE_PENDING = "pending"
+PHASE_RUNNING = "running"
+PHASE_SUCCESS = "success"
+PHASE_ERROR = "error"
+PHASE_SKIPPED = "skipped"
+
 _IDLE_JOB_FIELDS = dict(
     state = JOB_IDLE,
     message = "",
@@ -53,6 +60,7 @@ _IDLE_JOB_FIELDS = dict(
     progress = None,
     started_at = None,
     finished_at = None,
+    phases = None,
 )
 
 
@@ -261,12 +269,21 @@ def stream_installer(
     cmd: list[str],
     env: dict[str, str],
     *,
-    job: dict,
-    job_lock: threading.Lock,
     timeout_seconds: int,
+    job: Optional[dict] = None,
+    job_lock: Optional[threading.Lock] = None,
+    set_progress: Optional[Callable[[float], None]] = None,
 ) -> None:
-    """Run the installer, streaming its progress lines into job["progress"].
+    """Run the installer, streaming its progress lines into job["progress"]
+    (or through set_progress when given, e.g. a chained-phase progress window).
     Raises RuntimeError on timeout or a nonzero exit (with an output tail)."""
+    if set_progress is None:
+        assert job is not None and job_lock is not None
+
+        def set_progress(fraction: float) -> None:
+            with job_lock:
+                job["progress"] = max(job.get("progress") or 0.0, fraction)
+
     proc = subprocess.Popen(
         cmd,
         stdout = subprocess.PIPE,
@@ -294,9 +311,7 @@ def stream_installer(
             m = PROGRESS_LINE_RE.search(line)
             if m is None:
                 continue
-            fraction = min(float(m.group(1)) / 100.0, 1.0) * DOWNLOAD_PROGRESS_CEILING
-            with job_lock:
-                job["progress"] = max(job.get("progress") or 0.0, fraction)
+            set_progress(min(float(m.group(1)) / 100.0, 1.0) * DOWNLOAD_PROGRESS_CEILING)
         returncode = proc.wait()
     finally:
         watchdog.cancel()
@@ -305,3 +320,105 @@ def stream_installer(
     if returncode != 0:
         tail = "".join(tail_lines).strip()[-1500:]
         raise RuntimeError(f"installer exited {returncode}: {tail or 'no output'}")
+
+
+def _new_phase_record(spec: dict) -> dict:
+    """Initial breakdown entry for one phase of a chained job."""
+    runnable = spec.get("run") is not None
+    return {
+        "state": PHASE_PENDING if runnable else PHASE_SKIPPED,
+        "reason": None if runnable else spec.get("skip_reason"),
+        "progress": None,
+        "to_tag": None,
+        "reload_required": None,
+        "message": "",
+        "error": None,
+    }
+
+
+def run_chained_update(phases: list[dict], *, job: dict, job_lock: threading.Lock) -> None:
+    """Run update phases in order into one shared job dict (the worker of a
+    combined llama+whisper apply).
+
+    Each phase spec: ``name`` (breakdown key), ``weight`` (progress slice,
+    normalized over runnable phases), ``run`` (callable(set_progress) -> result
+    dict with to_tag/reload_required/message, raises on failure; None = phase
+    skipped) and ``skip_reason`` / ``failure_message``. A failing phase aborts
+    the chain: later phases are marked skipped (reason "aborted") and the job
+    goes to error, keeping the reload_required and messages of the phases that
+    already succeeded so a partial success stays visible."""
+    runnable = [p for p in phases if p.get("run") is not None]
+    total_weight = sum(float(p.get("weight") or 1.0) for p in runnable) or 1.0
+    with job_lock:
+        job["phases"] = {p["name"]: _new_phase_record(p) for p in phases}
+
+    offset = 0.0
+    done_messages: list[str] = []
+    reload_required = False
+    primary_to_tag: Optional[str] = None
+    for index, phase in enumerate(phases):
+        if phase.get("run") is None:
+            continue
+        name = phase["name"]
+        weight = float(phase.get("weight") or 1.0) / total_weight
+        with job_lock:
+            job["phases"][name].update(state = PHASE_RUNNING, progress = 0.0)
+
+        def set_progress(
+            fraction: float,
+            *,
+            _name: str = name,
+            _base: float = offset,
+            _slice: float = weight,
+        ) -> None:
+            f = max(0.0, min(float(fraction), 1.0))
+            with job_lock:
+                record = job["phases"][_name]
+                record["progress"] = max(record.get("progress") or 0.0, f)
+                job["progress"] = max(job.get("progress") or 0.0, _base + f * _slice)
+
+        try:
+            result = phase["run"](set_progress) or {}
+        except Exception as exc:
+            failure = phase.get("failure_message") or f"{name} update failed."
+            with job_lock:
+                job["phases"][name].update(state = PHASE_ERROR, error = str(exc))
+                for later in phases[index + 1 :]:
+                    if later.get("run") is not None:
+                        job["phases"][later["name"]].update(state = PHASE_SKIPPED, reason = "aborted")
+                # A partial success keeps its messages and reload_required so
+                # the caller sees the earlier phase did land.
+                job.update(
+                    state = JOB_ERROR,
+                    message = " ".join(done_messages + [failure]),
+                    error = str(exc),
+                    finished_at = utcnow(),
+                )
+                if done_messages:
+                    job["reload_required"] = reload_required
+            return
+        set_progress(1.0)
+        offset += weight
+        with job_lock:
+            job["phases"][name].update(
+                state = PHASE_SUCCESS,
+                to_tag = result.get("to_tag"),
+                reload_required = result.get("reload_required"),
+                message = result.get("message") or "",
+            )
+        if result.get("message"):
+            done_messages.append(result["message"])
+        reload_required = reload_required or bool(result.get("reload_required"))
+        if primary_to_tag is None:
+            primary_to_tag = result.get("to_tag")
+
+    with job_lock:
+        job.update(
+            state = JOB_SUCCESS,
+            message = " ".join(done_messages) or "Already up to date.",
+            to_tag = primary_to_tag,
+            reload_required = reload_required,
+            error = None,
+            progress = 1.0,
+            finished_at = utcnow(),
+        )

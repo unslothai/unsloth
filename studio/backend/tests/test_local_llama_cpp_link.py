@@ -21,6 +21,13 @@ from utils import llama_cpp_update as u
 from core.inference.llama_cpp import LlamaCppBackend
 
 
+@pytest.fixture(autouse = True)
+def _no_whisper_piggyback(monkeypatch):
+    # Keep the whisper piggyback probe off the host: these tests exercise the
+    # llama local-link contract only.
+    monkeypatch.setattr(u, "_whisper_chain_status", lambda *, force_refresh = False: None)
+
+
 def _make_link(link: Path, target: Path) -> None:
     """Create a directory junction (Windows) / symlink (POSIX); neither needs
     elevation."""
