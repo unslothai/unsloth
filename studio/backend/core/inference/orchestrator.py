@@ -54,9 +54,8 @@ class GenStreamError(str):
     """A stream chunk carrying a real backend/generation error, not model text.
 
     Subclasses str so existing display/logging consumers are unaffected, while
-    callers that must abort a distributed run on error (raise_on_streamed_error)
-    can distinguish a real error from model output whose visible text starts with
-    "Error:" by checking isinstance(chunk, GenStreamError).
+    callers can distinguish a real error from model output whose visible text
+    starts with "Error:" by checking isinstance(chunk, GenStreamError).
     """
 
     __slots__ = ("public",)
@@ -1502,14 +1501,27 @@ class InferenceOrchestrator:
 
         Uses the dispatcher path (no _gen_lock) so compare-mode requests
         don't block each other; the subprocess serializes them via its
-        sequential command loop.
+        sequential command loop. Backend failures raise instead of becoming
+        assistant text.
         """
-        yield from self._generate_dispatched(
+        stream = self._generate_dispatched(
             use_adapter = use_adapter,
             cancel_event = cancel_event,
             stats_holder = stats_holder,
             **gen_kwargs,
         )
+        try:
+            for chunk in stream:
+                if isinstance(chunk, GenStreamError):
+                    # Preserve the public/operational flag so the route can surface
+                    # the real message (e.g. "model is being unloaded") instead of a
+                    # generic error. Mirrors the safetensors tool loop's _single_turn.
+                    raise GenStreamErrorRaised(str(chunk), public = chunk.public)
+                yield chunk
+        finally:
+            close = getattr(stream, "close", None)
+            if callable(close):
+                close()
 
     def _generate_inner(
         self,

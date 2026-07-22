@@ -2047,7 +2047,7 @@ def get_chat_template(
         .replace("'assistant'", "'" + mapping["assistant"] + "'")
 
     if use_zoo_tokenizer_patch:
-        # Studio MLX avoids the model-utils tokenizer wrapper because that
+        # Unsloth MLX avoids the model-utils tokenizer wrapper because that
         # import path pulls in Torch/GPU-specific modules before MLX training.
         from unsloth_zoo.tokenizer_utils import patch_tokenizer
     else:
@@ -2650,6 +2650,12 @@ extra_eos_tokens = None,
                 modelfile += '\nSYSTEM "' + default_system_message + '"'
             partial_system += "{% else %}"\
                 "{{ '" + full_system + "' }}"\
+                "{% set loop_messages = messages %}"\
+            "{% endif %}"
+        elif "{SYSTEM}" in system_part:
+            # Only bind loop_messages when the template can render a caller system
+            # message. A static prefix with no {SYSTEM} must still raise, not drop it.
+            partial_system += "{% else %}"\
                 "{% set loop_messages = messages %}"\
             "{% endif %}"
         else:

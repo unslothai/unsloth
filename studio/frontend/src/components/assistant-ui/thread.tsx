@@ -112,6 +112,7 @@ import { applyQwenThinkingParams } from "@/features/chat/utils/qwen-params";
 import { isTauri } from "@/lib/api-base";
 import { copyToClipboard } from "@/lib/copy-to-clipboard";
 import { MicIcon } from "@/lib/mic-icon";
+import { downloadFile, isDownloadCancelled } from "@/lib/native-files";
 import { toast } from "@/lib/toast";
 import { Tick02Icon } from "@/lib/tick-icon";
 import { cn } from "@/lib/utils";
@@ -1491,8 +1492,7 @@ const Composer: FC<{
   // permission pill shows in every mode except "off" (it renders null there);
   // Images, RAG, Canvas and MCP are conditional.
   const pillsCompact =
-    2 +
-      (permissionMode !== "off" ? 1 : 0) +
+    3 +
       (ragEnabled ? 1 : 0) +
       (supportsBuiltinImageGeneration ? 1 : 0) +
       (artifactsEnabled ? 1 : 0) +
@@ -1914,7 +1914,9 @@ const Composer: FC<{
       <ToolStatusDisplay />
       <div
         className="unsloth-composer-line"
-        data-expanded={composerExpanded ? "true" : "false"}
+        // The permission pill is always visible, so keep the two-row layout
+        // expanded and leave the primary tool toggles accessible in every mode.
+        data-expanded="true"
       >
         <div
           className="unsloth-composer-left"
@@ -2040,7 +2042,7 @@ function isNativeComposing(event: Event) {
 }
 
 // Fallback timeout for stuck IME composition. With Chrome on Windows against
-// a WSL-hosted Studio (issue #5546), `compositionend` never fires after the
+// a WSL-hosted Unsloth (issue #5546), `compositionend` never fires after the
 // candidate commits, so `composingRef` stays true and Send stays disabled.
 // Every compositionupdate / non-composing input resets the timer; only a true
 // gap-after-commit lets it fire. 2500ms is above a normal candidate-window
@@ -3006,9 +3008,9 @@ const ComposerToolsMenu: FC<{
           <DropdownMenuItem
             onSelect={() => {
               if (!activeThreadId) return;
-              exportConversationRawJsonl(activeThreadId).catch(() =>
-                toast.error("Export failed."),
-              );
+              exportConversationRawJsonl(activeThreadId).catch((error) => {
+                if (!isDownloadCancelled(error)) toast.error("Export failed.");
+              });
             }}
           >
             Raw JSONL
@@ -3016,9 +3018,9 @@ const ComposerToolsMenu: FC<{
           <DropdownMenuItem
             onSelect={() => {
               if (!activeThreadId) return;
-              exportConversationCsv(activeThreadId).catch(() =>
-                toast.error("Export failed."),
-              );
+              exportConversationCsv(activeThreadId).catch((error) => {
+                if (!isDownloadCancelled(error)) toast.error("Export failed.");
+              });
             }}
           >
             CSV
@@ -3026,9 +3028,9 @@ const ComposerToolsMenu: FC<{
           <DropdownMenuItem
             onSelect={() => {
               if (!activeThreadId) return;
-              exportConversationShareGPT(activeThreadId).catch(() =>
-                toast.error("Export failed."),
-              );
+              exportConversationShareGPT(activeThreadId).catch((error) => {
+                if (!isDownloadCancelled(error)) toast.error("Export failed.");
+              });
             }}
           >
             ShareGPT JSONL
@@ -4170,6 +4172,21 @@ const EditAssistantMessageButton: FC = () => {
   );
 };
 
+async function exportMessageMarkdown(content: string): Promise<void> {
+  try {
+    await downloadFile(
+      content,
+      `message-${Date.now()}.md`,
+      "text/markdown",
+    );
+  } catch (error) {
+    if (!isDownloadCancelled(error)) {
+      toast.error("Could not save Markdown export.", {
+        description: error instanceof Error ? error.message : String(error),
+      });
+    }
+  }
+}
 const AssistantActionBar: FC = () => {
   const { forkMessage, forkDisabled } = useForkMessageAction();
   const researchRunId = useResearchMessageRunId();
@@ -4242,7 +4259,10 @@ const AssistantActionBar: FC = () => {
               <GitBranchIcon strokeWidth={1.75} className="size-icon" />
               Fork in new chat
             </ActionBarMorePrimitive.Item>
-            <ActionBarPrimitive.ExportMarkdown asChild={true}>
+            <ActionBarPrimitive.ExportMarkdown
+              asChild={true}
+              onExport={exportMessageMarkdown}
+            >
               <ActionBarMorePrimitive.Item className="aui-action-bar-more-item flex cursor-pointer select-none items-center gap-2 rounded-[12px] px-3 py-2 text-sm outline-none hover:bg-accent hover:text-accent-foreground focus:bg-accent focus:text-accent-foreground">
                 <HugeiconsIcon
                   icon={Download01Icon}

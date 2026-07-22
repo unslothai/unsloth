@@ -14,6 +14,7 @@ import {
   listLocalModels,
 } from "./api";
 import { useDebouncedValue } from "@/hooks/use-debounced-value";
+import { ensureHiddenModelMatchers } from "../lib/hidden-models";
 import { fingerprintToken } from "@/features/hub/lib/token-fingerprint";
 import { useInventoryVersion } from "@/features/hub/stores/inventory-events";
 import { useCallback, useEffect, useMemo } from "react";
@@ -146,12 +147,15 @@ async function runSourceFetch<K extends DeviceInventorySource>(
 ): Promise<DeviceInventoryRows[K]> {
   switch (source) {
     case "cachedGguf":
+      await ensureHiddenModelMatchers();
       return (await listCachedGguf(hfToken)) as DeviceInventoryRows[K];
     case "cachedModels":
+      await ensureHiddenModelMatchers();
       return (await listCachedModels(hfToken)) as DeviceInventoryRows[K];
     case "cachedDatasets":
       return (await listCachedDatasets()) as DeviceInventoryRows[K];
     case "localModels":
+      await ensureHiddenModelMatchers();
       return (await listLocalModels()).models as DeviceInventoryRows[K];
     case "localDatasets":
       return (await listLocalDatasets()).datasets as DeviceInventoryRows[K];

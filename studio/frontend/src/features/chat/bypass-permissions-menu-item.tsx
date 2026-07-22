@@ -20,16 +20,12 @@ import {
   DropdownMenuSubTrigger,
 } from "@/components/ui/dropdown-menu";
 import { useChatRuntimeStore } from "@/features/chat/stores/chat-runtime-store";
-import { PermissionModeMenuItems } from "./permission-mode-select";
+import {
+  FULL_ACCESS_WARNING,
+  PermissionModeMenuItems,
+} from "./permission-mode-select";
 
-// "Bypass permissions" entry for the composer "+" -> More menu. Like the MCP
-// pill, it opens a submenu where the user picks the permission level (Ask for
-// approval / Approve for me / Full access). Picking Full access demands the
-// danger warning; the other levels apply immediately. The menu closes normally
-// on select (no preventDefault) -- the warning dialog lives outside the menu
-// (BypassPermissionsConfirmDialog, mounted once at the chat-page root and
-// driven by the store), so it survives the menu unmounting and the "+"/More
-// popovers don't stay frozen.
+// Tool permissions entry for the composer "+" menu.
 export function BypassPermissionsMenuItem() {
   const permissionMode = useChatRuntimeStore((s) => s.permissionMode);
   const setBypassConfirmOpen = useChatRuntimeStore(
@@ -44,7 +40,7 @@ export function BypassPermissionsMenuItem() {
         }
       >
         <HugeiconsIcon icon={ShieldBanIcon} strokeWidth={2} />
-        Bypass permissions
+        Tool permissions
       </DropdownMenuSubTrigger>
       <DropdownMenuSubContent className="unsloth-plus-menu w-[300px]">
         <PermissionModeMenuItems
@@ -75,9 +71,7 @@ export function BypassPermissionsConfirmDialog() {
         <AlertDialogHeader>
           <AlertDialogTitle>Enable Full access?</AlertDialogTitle>
           <AlertDialogDescription>
-            Full access (Bypass permissions) is dangerous since the AI model
-            might delete, corrupt your machine, and or cause real world damage
-            to you or the world - only accept if you are certain
+            {FULL_ACCESS_WARNING}
           </AlertDialogDescription>
         </AlertDialogHeader>
         <AlertDialogFooter>

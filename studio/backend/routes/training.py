@@ -127,9 +127,9 @@ async def start_training(
     try:
         logger.info(f"Starting training job with model: {request.model_name}")
 
-        # When Studio is driven as an inference API (API-key auth), refuse to start
+        # When Unsloth is driven as an inference API (API-key auth), refuse to start
         # training while a request is in flight: training frees VRAM by unloading
-        # the chat model, which would kill the stream. The Studio UI (session auth)
+        # the chat model, which would kill the stream. The Unsloth UI (session auth)
         # still starts training and coexists/frees VRAM as before. (A mixed UI+API
         # session is not yet special-cased.)
         if via_api_key is True:
@@ -139,7 +139,7 @@ async def start_training(
                     status_code = 409,
                     detail = (
                         "Cannot start training over the API while an inference request is in "
-                        "progress. Wait for it to finish, or start training from the Studio UI."
+                        "progress. Wait for it to finish, or start training from the Unsloth UI."
                     ),
                 )
 
@@ -196,6 +196,7 @@ async def start_training(
                 request.local_eval_datasets, "Local eval dataset"
             )
         resume_output_dir: Optional[str] = None
+        resume_run: Optional[dict] = None
         if request.resume_from_checkpoint:
             try:
                 resume_output_dir = normalize_resume_output_dir(request.resume_from_checkpoint)
@@ -208,7 +209,7 @@ async def start_training(
             if not resume_run or not can_resume_run(resume_run):
                 raise HTTPException(
                     status_code = 400,
-                    detail = "Resume checkpoint must belong to a stopped run with saved trainer state.",
+                    detail = "Resume checkpoint must belong to a stopped or errored run with complete saved trainer state.",
                 )
             resume_checkpoint = get_resume_checkpoint_path(resume_output_dir)
             if not resume_checkpoint:
@@ -458,7 +459,10 @@ async def start_training(
 
         try:
             success = backend.start_training(
-                job_id = job_id, before_spawn = _free_vram_for_training, **training_kwargs
+                job_id = job_id,
+                before_spawn = _free_vram_for_training,
+                resume_source_run_id = resume_run["id"] if resume_run else None,
+                **training_kwargs,
             )
         except SidecarSwapInProgress as exc:
             # Expected loss of the race against a sidecar install: a retryable
@@ -521,7 +525,10 @@ async def stop_training(
                 status = "idle", message = "No training job is currently running"
             )
 
-        backend.stop_training(save = body.save)
+        if not backend.stop_training(save = body.save):
+            return TrainingStopResponse(
+                status = "idle", message = "No training job is currently running"
+            )
 
         return TrainingStopResponse(
             status = "stopped",
@@ -637,9 +644,9 @@ async def get_training_status(current_subject: str = Depends(get_current_subject
                 "loss": getattr(progress, "loss", None),
                 "learning_rate": getattr(progress, "learning_rate", None),
             }
-            output_dir = getattr(backend, "_output_dir", None)
-            if output_dir:
-                details["output_dir"] = output_dir
+            # Always present: an explicit null tells the client to drop a cached
+            # path (stop without save clears the run's output_dir).
+            details["output_dir"] = getattr(backend, "_output_dir", None) or None
 
         # Metric history for chart recovery after SSE reconnection.
         metric_history = None

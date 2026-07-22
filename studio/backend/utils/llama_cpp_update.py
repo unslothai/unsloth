@@ -82,7 +82,7 @@ def _utcnow() -> str:
 
 def _find_binary() -> Optional[str]:
     """Locate the active llama-server binary via the inference backend's own
-    resolver, so update targets exactly what Studio runs. Lazy import keeps the
+    resolver, so update targets exactly what Unsloth runs. Lazy import keeps the
     heavy inference module off this module's import path."""
     try:
         from core.inference.llama_cpp import LlamaCppBackend
@@ -109,7 +109,7 @@ def _installer_script() -> Optional[Path]:
     """Locate install_llama_prebuilt.py. Honours UNSLOTH_LLAMA_INSTALLER, then
     searches up from this file for both ``<root>/install_llama_prebuilt.py`` and
     ``<root>/studio/install_llama_prebuilt.py`` so it works in the dev tree and
-    in an installed Studio layout."""
+    in an installed Unsloth layout."""
     env = os.environ.get("UNSLOTH_LLAMA_INSTALLER")
     if env and Path(env).is_file():
         return Path(env)
@@ -227,7 +227,7 @@ def _is_under(path: Path, root: Path) -> bool:
 
 
 def _llama_install_root(binary: Optional[str]) -> Optional[Path]:
-    """The Studio-managed llama.cpp root the active binary lives under, or None
+    """The Unsloth-managed llama.cpp root the active binary lives under, or None
     when the binary is unmanaged. Installing anywhere the active binary is not
     would not replace what _find_llama_server_binary runs (which prefers a pinned
     LLAMA_SERVER_PATH, then UNSLOTH_LLAMA_CPP_PATH, then a llama.cpp tree), so we
@@ -327,7 +327,7 @@ def _source_build_status(binary: str, *, force_refresh: bool) -> Optional[dict]:
 def _is_external_link(path: Optional[Path]) -> bool:
     """True when ``path`` is a --with-llama-cpp-dir local link: a POSIX symlink
     or a Windows directory junction / reparse point. Such a link resolves into
-    the user's own llama.cpp checkout, so Studio must never auto-update it."""
+    the user's own llama.cpp checkout, so Unsloth must never auto-update it."""
     if path is None:
         return False
     try:
@@ -479,6 +479,7 @@ def _run_update(
     asset: Optional[str],
     script: Path,
     pin_release_tag: Optional[str] = None,
+    force_cpu: bool = False,
 ) -> None:
     """Worker: put the backend into a maintenance state, run the installer for
     the latest prebuilt, then refresh caches so the next load uses the new build.
@@ -522,6 +523,12 @@ def _run_update(
         if pin_release_tag:
             cmd.extend(["--published-release-tag", pin_release_tag])
         cmd.extend(_rocm_install_args(asset))
+        # Re-assert a deliberate CPU install (--force-cpu) so detect_host on a GPU host
+        # does not re-route to a GPU/Vulkan bundle and revive the crash (#7213). --force-cpu
+        # (not --cpu-fallback) also re-persists force_cpu, keeping the choice across future
+        # updates. A natural fallback (or a legacy marker without the flag) heals to GPU (#6097).
+        if force_cpu:
+            cmd.append("--force-cpu")
         logger.info("llama update: installing", cmd = " ".join(cmd))
         # Stream progress lines into job["progress"].
         env = dict(os.environ, UNSLOTH_PROGRESS_PERCENT_STEP = "5")
@@ -635,7 +642,7 @@ def start_update() -> dict:
             "reason": "local_link",
             "message": (
                 "llama.cpp is a local directory linked with --with-llama-cpp-dir; "
-                "Studio won't replace it. Update your own llama.cpp checkout instead."
+                "Unsloth won't replace it. Update your own llama.cpp checkout instead."
             ),
             "job": get_update_status()["job"],
         }
@@ -671,6 +678,7 @@ def start_update() -> dict:
         repo = marker.get("published_repo") or DEFAULT_PUBLISHED_REPO
         from_tag = marker.get("tag") or marker.get("release_tag")
         asset = marker.get("asset")
+        force_cpu = bool(marker.get("force_cpu"))
         # Install exactly the release the banner offered: the installer's own
         # "latest" is commit-date ordered and can lag the published_at pick
         # above, reinstalling the current build in a loop (the #6219 class).
@@ -705,6 +713,8 @@ def start_update() -> dict:
         repo = (res or {}).get("repo") or DEFAULT_PUBLISHED_REPO
         from_tag = None
         asset = (res or {}).get("asset")
+        # Source builds carry no forced-CPU marker, so nothing to preserve here.
+        force_cpu = False
         # No pin: source-build detection resolves via --resolve-prebuilt latest,
         # the same resolver the unpinned apply uses, so the two already agree.
         pin_release_tag = None
@@ -735,7 +745,7 @@ def start_update() -> dict:
 
     thread = threading.Thread(
         target = _run_update,
-        args = (install_dir, repo, asset, script, pin_release_tag),
+        args = (install_dir, repo, asset, script, pin_release_tag, force_cpu),
         name = "llama-cpp-update",
         daemon = True,
     )

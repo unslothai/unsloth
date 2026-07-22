@@ -2503,7 +2503,7 @@ def _build_safe_env(workdir: str) -> dict[str, str]:
     shim directory.
     """
     # Start from the running interpreter's dir so 'python'/'pip' resolve to the
-    # same environment the Studio server runs in.
+    # same environment the Unsloth server runs in.
     exe_dir = os.path.dirname(sys.executable)
     path_entries = [exe_dir] if exe_dir else []
 
@@ -2793,7 +2793,7 @@ def _bypass_preexec():
     """Minimal pre-exec for bypass exec: os.setsid() only.
 
     Required, not a restriction: _kill_process_tree does killpg(getpgid(child)),
-    so without a new session a timeout/cancel would kill the Studio server too.
+    so without a new session a timeout/cancel would kill the Unsloth server too.
     """
     try:
         os.setsid()
@@ -2801,13 +2801,13 @@ def _bypass_preexec():
         pass
 
 
-# Hardening the Studio parent is done once (PR_SET_DUMPABLE is process-global
+# Hardening the Unsloth parent is done once (PR_SET_DUMPABLE is process-global
 # and sticky); guarded so repeated bypass calls do not re-issue the prctl.
 _parent_proc_hardened = False
 
 
 def _harden_parent_against_proc_env_leak() -> bool:
-    """Make the Studio process's /proc/<pid>/environ unreadable to its children.
+    """Make the Unsloth process's /proc/<pid>/environ unreadable to its children.
 
     Stripping the child env is not enough on Linux: a bypassed same-UID child
     can read /proc/<getppid()>/environ to recover the parent's unfiltered
@@ -5577,7 +5577,7 @@ def _truncate(text: str, limit: int = _MAX_OUTPUT_CHARS) -> str:
 
 
 # ChatGPT code-interpreter path conventions models write out of habit; none
-# exist in the Studio sandbox, so a failure on one earns the retry hint.
+# exist in the Unsloth sandbox, so a failure on one earns the retry hint.
 _MISSING_PATH_PREFIXES = (
     "/mnt/data",
     "/mnt/outputs",
@@ -5783,7 +5783,7 @@ def _python_exec(
         # Close the /proc/<parent>/environ secret-recovery path first; if it
         # cannot be applied, fail closed rather than leak the parent environ.
         return (
-            "Execution error: could not harden the Studio process against "
+            "Execution error: could not harden the Unsloth process against "
             "/proc environment reads; refusing bypass execution."
         )
 
@@ -5928,7 +5928,7 @@ def _bash_exec(
         # Close the /proc/<parent>/environ secret-recovery path first; if it
         # cannot be applied, fail closed rather than leak the parent environ.
         return (
-            "Execution error: could not harden the Studio process against "
+            "Execution error: could not harden the Unsloth process against "
             "/proc environment reads; refusing bypass execution."
         )
 

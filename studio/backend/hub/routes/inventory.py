@@ -28,6 +28,7 @@ from hub.schemas.inventory import (
     CachedModelsResponse,
     DeleteCachedModelResponse,
     GgufVariantsResponse,
+    HiddenModelsResponse,
     LocalModelListResponse,
     ModelsFolderResponse,
     RecommendedFoldersResponse,
@@ -212,6 +213,16 @@ async def list_cached_models(
     current_subject: str = Depends(get_current_subject),
 ):
     return await cache_inventory.list_cached_models_response(hf_token)
+
+
+@router.get("/hidden-models", response_model = HiddenModelsResponse)
+async def list_hidden_models(current_subject: str = Depends(get_current_subject)):
+    import asyncio
+
+    from routes.models import hidden_model_matchers
+
+    needles, exact_ids, exact_paths = await asyncio.to_thread(hidden_model_matchers)
+    return HiddenModelsResponse(needles = needles, exact_ids = exact_ids, exact_paths = exact_paths)
 
 
 @router.delete(

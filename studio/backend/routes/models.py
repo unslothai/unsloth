@@ -59,59 +59,51 @@ def _safe_is_dir(path) -> bool:
         return False
 
 
-# Hub repo id shape ("owner/name", no leading separator); anything else is
-# treated as a local filesystem path.
-_HF_REPO_ID_RE = re.compile(r"^[A-Za-z0-9][\w.\-]*/[\w.\-]+$")
+# Shared with the hub inventory scans; keep the private aliases so existing
+# importers stay valid. ``_HF_REPO_ID_RE`` is the Hub repo id shape ("owner/name");
+# anything else is treated as a local filesystem path.
+from utils.hidden_models import (
+    _HF_REPO_ID_RE,
+    _existing_resolved_path,
+    _safe_resolve,
+    is_hidden_model as _is_hidden_model,
+)
 
 
-def _is_hidden_model(*values: str | None) -> bool:
-    """True if any id/path is the RAG embedding model (EMBEDDING_MODEL or
-    EMBED_GGUF_REPO basename) or the llama.cpp install validation probe
-    (ggml-org/models / stories260K), so pickers hide them (GGUF and non-GGUF).
-    None are usable chat models; the probe can be cached as a side effect of
-    installing the prebuilt llama-server and otherwise sorts smallest, so it
-    would be auto-selected. A local-path embedder is matched by exact resolved
-    path only: a generic basename like "model" must not substring-hide
-    unrelated chat models."""
+def hidden_model_matchers() -> tuple[list[str], list[str], list[str]]:
+    """Substring needles, exact repo ids, and exact resolved paths identifying
+    infra models (the RAG embedder and the llama.cpp install validation probe)
+    that pickers hide. Served by the ``/api/hub/hidden-models`` endpoint. A
+    configured HF-repo embedder is published as its exact lowercased repo id
+    (mirroring ``utils.hidden_models.is_hidden_model``) and a local-path
+    embedder as its exact resolved path only: a generic basename like "model"
+    must not substring-hide unrelated chat models."""
     from core.rag import config as rag_config
 
     needles = [
-        # The validation probe's repo (matches the cached repo id) and its exact
-        # filename (matches the on-disk path). The filename carries the .gguf so
-        # it does not hide unrelated repos like ``user/stories260K-finetune-GGUF``.
+        # The validation probe's repo and its exact filename. The filename carries
+        # .gguf so it won't hide unrelated repos like ``user/stories260K-finetune-GGUF``.
         "ggml-org/models",
         "stories260k.gguf",
     ]
+    exact_ids: list[str] = []
     exact_paths: list[str] = []
     for model in (
         rag_config.effective_embedding_model(),
         rag_config.effective_gguf_repo(),
     ):
-        if _HF_REPO_ID_RE.match(model):
-            needles.append(model.split("/")[-1].lower())
+        # Resolve an existing local path before the repo-id regex: a local embedder
+        # shaped like "models/embedder" is an exact path, not a Hub repo id.
+        existing_path = _existing_resolved_path(model)
+        if existing_path:
+            exact_paths.append(existing_path.lower())
+        elif _HF_REPO_ID_RE.match(model):
+            exact_ids.append(model.lower())
         else:
             resolved = _safe_resolve(Path(model).expanduser())
             if resolved:
                 exact_paths.append(resolved.lower())
-    for v in values:
-        if not v:
-            continue
-        low = v.lower()
-        if any(n in low for n in needles):
-            return True
-        if exact_paths:
-            resolved = _safe_resolve(Path(v).expanduser())
-            if resolved and resolved.lower() in exact_paths:
-                return True
-    return False
-
-
-def _safe_resolve(path: Path) -> Optional[str]:
-    """resolve() to a string, or None when the path is inaccessible."""
-    try:
-        return str(path.resolve())
-    except OSError:
-        return None
+    return needles, exact_ids, exact_paths
 
 
 backend_path = Path(__file__).parent.parent.parent
@@ -138,6 +130,7 @@ try:
         _pick_best_gguf,
         _extract_quant_label,
         _is_big_endian_gguf_path,
+        _is_mtp_drafter,
         is_audio_input_type,
     )
     from core.inference import get_inference_backend
@@ -170,6 +163,7 @@ except ImportError:
         _pick_best_gguf,
         _extract_quant_label,
         _is_big_endian_gguf_path,
+        _is_mtp_drafter,
         is_audio_input_type,
     )
     from core.inference import get_inference_backend
@@ -544,7 +538,7 @@ def _ollama_links_dir(ollama_dir: Path) -> Optional[Path]:
     """Return a writable directory for Ollama ``.gguf`` symlinks.
 
     Prefers ``<ollama_dir>/.studio_links/`` so links sit next to their
-    blobs; falls back to a per-ollama-dir namespace under Studio's cache
+    blobs; falls back to a per-ollama-dir namespace under Unsloth's cache
     when the models dir is read-only (common for system installs).
     """
     from utils.paths.storage_roots import cache_root
@@ -555,7 +549,7 @@ def _ollama_links_dir(ollama_dir: Path) -> Optional[Path]:
         return primary
     except OSError as e:
         logger.debug(
-            "Ollama dir %s not writable for .studio_links (%s); falling back to Studio cache",
+            "Ollama dir %s not writable for .studio_links (%s); falling back to Unsloth cache",
             ollama_dir,
             e,
         )
@@ -594,7 +588,7 @@ def _scan_ollama_dir(ollama_dir: Path, limit: Optional[int] = None) -> List[Loca
     model, keyed by a short hash of the manifest path, so
     ``detect_mmproj_file`` only sees that model's projector). Links are
     symlinks when possible, else hardlinks; the link dir is
-    ``.studio_links/`` when writable, else Studio's cache.
+    ``.studio_links/`` when writable, else Unsloth's cache.
     """
     manifests_root = ollama_dir / "manifests"
     if not manifests_root.is_dir():
@@ -850,10 +844,10 @@ def collect_local_models(models_root: Path) -> List[LocalModelInfo]:
 
     models = sorted(
         deduped.values(),
-        key = lambda item: (item.updated_at or 0),
+        key = lambda item: item.updated_at or 0,
         reverse = True,
     )
-    return [m for m in models if not _is_hidden_model(m.id, m.path)]
+    return [m for m in models if not _is_hidden_model(m.id, m.model_id, m.path)]
 
 
 @router.get("/local", response_model = LocalModelListResponse)
@@ -1194,7 +1188,7 @@ def _build_browse_allowlist(
     """Return the root directories the folder browser may walk.
 
     The same list seeds the sidebar suggestion chips, so chip targets are
-    always reachable. Roots: HOME, resolved HF cache dirs, Studio's
+    always reachable. Roots: HOME, resolved HF cache dirs, Unsloth's
     outputs/exports/studio root, registered scan folders, and well-known
     local-LLM dirs (LM Studio, Ollama, ``~/models``); each added only if
     it resolves to a real directory.
@@ -1486,7 +1480,7 @@ def browse_folders(
             "Directory to list. If omitted, defaults to the current user's "
             "home directory. Tilde (`~`) and relative paths are expanded. "
             "Must resolve inside the allowlist of browseable roots (HOME, "
-            "HF cache, Studio dirs, registered scan folders, well-known "
+            "HF cache, Unsloth dirs, registered scan folders, well-known "
             "model dirs)."
         ),
     ),
@@ -1797,9 +1791,11 @@ def _get_model_size_bytes(model_name: str, hf_token: Optional[str] = None) -> Op
 async def get_model_config(
     model_name: str,
     hf_token: Optional[str] = Query(None),
+    header_hf_token: Optional[str] = Depends(get_hf_token),
     current_subject: str = Depends(get_current_subject),
 ):
     """Get configuration for a specific model (wraps load_model_defaults)."""
+    hf_token = _normalize_hf_token(header_hf_token) or _normalize_hf_token(hf_token)
     try:
         if not is_local_path(model_name):
             resolved = resolve_cached_repo_id_case(model_name)
@@ -2251,15 +2247,15 @@ async def delete_finetuned_model(
     gguf_variant: Optional[str] = Body(None),
     current_subject: str = Depends(get_current_subject),
 ):
-    """Delete a Studio-trained or exported model from disk.
+    """Delete an Unsloth-trained or exported model from disk.
 
-    Only paths under Studio's outputs/exports roots are accepted.
+    Only paths under Unsloth's outputs/exports roots are accepted.
     Exported GGUF entries can delete one quant variant at a time.
     """
     if source not in {"training", "exported"}:
         raise HTTPException(
             status_code = 400,
-            detail = "Only trained or exported Studio models can be deleted",
+            detail = "Only trained or exported Unsloth models can be deleted",
         )
 
     if not model_path or not model_path.strip():
@@ -2291,14 +2287,14 @@ async def delete_finetuned_model(
         if not _is_path_under_lexically(delete_path, allowed_root):
             raise HTTPException(
                 status_code = 400,
-                detail = "Model path is outside Studio storage",
+                detail = "Model path is outside Unsloth storage",
             )
         if export_type == "gguf" and gguf_variant:
             target_path = delete_path.resolve()
             if not _is_path_under(target_path, allowed_root):
                 raise HTTPException(
                     status_code = 400,
-                    detail = "Model path is outside Studio storage",
+                    detail = "Model path is outside Unsloth storage",
                 )
         else:
             target_path = delete_path
@@ -2311,7 +2307,7 @@ async def delete_finetuned_model(
     if should_check_resolved_path and not _is_path_under(target_path, allowed_root):
         raise HTTPException(
             status_code = 400,
-            detail = "Model path is outside Studio storage",
+            detail = "Model path is outside Unsloth storage",
         )
     if target_path == allowed_root:
         raise HTTPException(
@@ -2518,6 +2514,7 @@ async def get_lora_base_model(lora_path: str, current_subject: str = Depends(get
 async def check_vision_model(
     model_name: str,
     hf_token: Optional[str] = Query(None),
+    header_hf_token: Optional[str] = Depends(get_hf_token),
     current_subject: str = Depends(get_current_subject),
 ):
     """
@@ -2525,6 +2522,7 @@ async def check_vision_model(
 
     This endpoint wraps the backend is_vision_model function.
     """
+    hf_token = _normalize_hf_token(header_hf_token) or _normalize_hf_token(hf_token)
     try:
         logger.info(f"Checking if vision model: {model_name}")
         # Authenticate so a gated/private VLM classifies correctly (else 404 -> non-vision).
@@ -2550,6 +2548,7 @@ async def check_vision_model(
 async def check_embedding_model(
     model_name: str,
     hf_token: Optional[str] = Query(None),
+    header_hf_token: Optional[str] = Depends(get_hf_token),
     current_subject: str = Depends(get_current_subject),
 ):
     """
@@ -2557,6 +2556,7 @@ async def check_embedding_model(
 
     This endpoint wraps the backend is_embedding_model function.
     """
+    hf_token = _normalize_hf_token(header_hf_token) or _normalize_hf_token(hf_token)
     try:
         logger.info(f"Checking if embedding model: {model_name}")
         is_embedding = is_embedding_model(model_name, hf_token = hf_token)
@@ -2620,12 +2620,6 @@ def _resolve_quant_gguf(repo_id: str, quant: str, is_local: bool) -> tuple[Optio
     Q8_0 weights). Never raises.
     """
     try:
-        from utils.models.model_config import (
-            _extract_quant_label,
-            _is_big_endian_gguf_path,
-            _is_mtp_drafter,
-        )
-
         if is_local:
             roots = [Path(repo_id)]
         else:
@@ -2642,25 +2636,19 @@ def _resolve_quant_gguf(repo_id: str, quant: str, is_local: bool) -> tuple[Optio
                     if snaps.is_dir():
                         roots.extend(s for s in snaps.iterdir() if s.is_dir())
 
-        want = quant.lower().replace("-", "").replace("_", "")
+        want = _normalized_quant_label(quant)
         best_total = 0
         best_first: Optional[str] = None
         for root in roots:
             matches: list[tuple[str, Path]] = []
             total = 0
             for f in _iter_gguf_paths(root):
-                if _is_mmproj_filename(f.name):
-                    continue
                 try:
                     rel = f.relative_to(root).as_posix()
                 except ValueError:
                     rel = f.name
-                if _is_mtp_drafter(rel):
-                    continue
-                q = _extract_quant_label(rel)
-                if _is_big_endian_gguf_path(rel, q):
-                    continue
-                if q.lower().replace("-", "").replace("_", "") != want:
+                q = _main_variant_gguf_label(rel)
+                if q is None or _normalized_quant_label(q) != want:
                     continue
                 try:
                     total += f.stat().st_size
@@ -2778,7 +2766,11 @@ async def get_gguf_variants(
             ],
             has_vision = response.has_vision,
             default_variant = response.default_variant,
-            context_length = _read_native_context_length(repo_id, is_local = local),
+            # The header walk reads tokenizer arrays on dense models (tens of
+            # ms per uncached file); keep it off the event loop.
+            context_length = await asyncio.to_thread(
+                _read_native_context_length, repo_id, is_local = local
+            ),
         )
     except HTTPException:
         raise
@@ -3076,6 +3068,22 @@ def _is_main_gguf_filename(name: str) -> bool:
     """A GGUF file that is a primary weight, not an mmproj vision
     adapter."""
     return _is_gguf_filename(name) and not _is_mmproj_filename(name)
+
+
+def _main_variant_gguf_label(rel_path: str) -> Optional[str]:
+    name = rel_path.rsplit("/", 1)[-1]
+    if not _is_main_gguf_filename(name):
+        return None
+    if _is_mtp_drafter(rel_path):
+        return None
+    label = _extract_quant_label(rel_path)
+    if _is_big_endian_gguf_path(rel_path, label):
+        return None
+    return label
+
+
+def _normalized_quant_label(label: str) -> str:
+    return label.lower().replace("-", "").replace("_", "")
 
 
 def _repo_has_mmproj(repo_info) -> bool:
@@ -3405,6 +3413,170 @@ async def delete_cached_model(
         )
 
 
+def _resolve_cached_model_path(repo_id: str, variant: Optional[str]) -> Path:
+    """Absolute path of a cached repo (newest snapshot dir) or, with *variant*,
+    that quant's main GGUF file (first split of a sharded quant). Paths come
+    from the HF cache scan only, so callers can't probe arbitrary paths."""
+    cache_scans = _all_hf_cache_scans()
+
+    matching_repos = []
+    for hf_cache in cache_scans:
+        for repo_info in hf_cache.repos:
+            if repo_info.repo_type != "model":
+                continue
+            if repo_info.repo_id.lower() == repo_id.lower():
+                matching_repos.append(repo_info)
+    if not matching_repos:
+        raise HTTPException(status_code = 404, detail = "Model not found in cache")
+
+    if variant:
+        want = _normalized_quant_label(variant)
+        candidate_revisions = sorted(
+            (rev for repo_info in matching_repos for rev in repo_info.revisions),
+            key = lambda rev: getattr(rev, "last_modified", 0) or 0,
+            reverse = True,
+        )
+        for rev in candidate_revisions:
+            snapshot = getattr(rev, "snapshot_path", None)
+            matches = []
+            for f in rev.files:
+                p = Path(f.file_path)
+                rel = f.file_name
+                if snapshot:
+                    try:
+                        rel = p.relative_to(snapshot).as_posix()
+                    except ValueError:
+                        pass
+                label = _main_variant_gguf_label(rel)
+                if label is None or _normalized_quant_label(label) != want:
+                    continue
+                if p.exists() or p.is_symlink():
+                    matches.append((rel, p))
+            if matches:
+                # Path-sorted so a sharded quant deterministically yields its first split.
+                return sorted(matches, key = lambda m: m[0].lower())[0][1]
+        raise HTTPException(
+            status_code = 404,
+            detail = f"Variant {variant} not found in cache for {repo_id}",
+        )
+
+    def repo_size(repo_info) -> int:
+        gguf_size = _repo_gguf_size_bytes(repo_info)
+        if gguf_size > 0:
+            return gguf_size
+        return sum(
+            (getattr(f, "size_on_disk", None) or 0)
+            for rev in repo_info.revisions
+            for f in rev.files
+        )
+
+    def repo_last_modified(repo_info) -> float:
+        return max(
+            (getattr(rev, "last_modified", 0) or 0 for rev in repo_info.revisions),
+            default = 0,
+        )
+
+    target_repo = max(
+        matching_repos,
+        key = lambda repo_info: (repo_size(repo_info), repo_last_modified(repo_info)),
+    )
+
+    # Whole repo: the newest revision's snapshot dir holds the visible files.
+    revisions = sorted(
+        (rev for rev in target_repo.revisions if getattr(rev, "snapshot_path", None)),
+        key = lambda rev: getattr(rev, "last_modified", 0) or 0,
+        reverse = True,
+    )
+    for rev in revisions:
+        p = Path(rev.snapshot_path)
+        if p.exists():
+            return p
+    p = Path(target_repo.repo_path)
+    if p.exists():
+        return p
+    raise HTTPException(status_code = 404, detail = "Cached model path not found")
+
+
+def _wsl_reveal_in_explorer(path: Path) -> bool:
+    import subprocess
+
+    from utils.paths.path_utils import _IS_WSL
+
+    if not _IS_WSL:
+        return False
+    try:
+        windows_path = subprocess.run(
+            ["wslpath", "-w", str(path)],
+            capture_output = True,
+            text = True,
+            check = True,
+            timeout = 10,
+        ).stdout.strip()
+        if not windows_path:
+            return False
+        argument = f"/select,{windows_path}" if path.is_file() else windows_path
+        subprocess.Popen(["explorer.exe", argument])
+        return True
+    except (OSError, subprocess.SubprocessError):
+        return False
+
+
+def _reveal_in_file_manager(path: Path) -> None:
+    """Open the OS file manager with *path* selected (best effort per platform)."""
+    import subprocess
+
+    target = str(path)
+    if sys.platform == "darwin":
+        cmd = ["open", "-R", target] if path.is_file() else ["open", target]
+        subprocess.Popen(cmd)
+    elif os.name == "nt":
+        if path.is_file():
+            subprocess.Popen(["explorer", f"/select,{target}"])
+        else:
+            os.startfile(target)  # noqa: S606 - local user's own file manager
+    elif not _wsl_reveal_in_explorer(path):
+        # No cross-desktop "select file" standard on Linux; open the directory.
+        directory = target if path.is_dir() else str(path.parent)
+        subprocess.Popen(["xdg-open", directory])
+
+
+class CachedModelPathResponse(BaseModel):
+    path: str
+    is_dir: bool
+
+
+@router.get("/cached-model-path", response_model = CachedModelPathResponse)
+async def get_cached_model_path(
+    repo_id: str = Query(..., description = "HuggingFace repo ID"),
+    variant: str = Query("", description = "Quantization variant (empty for whole repo)"),
+    current_subject: str = Depends(get_current_subject),
+):
+    """Absolute on-disk path of a cached repo or one of its GGUF variants."""
+    if not _is_valid_repo_id(repo_id):
+        raise HTTPException(status_code = 400, detail = "Invalid repo_id format")
+    path = await asyncio.to_thread(_resolve_cached_model_path, repo_id, variant.strip() or None)
+    return {"path": str(path), "is_dir": path.is_dir()}
+
+
+@router.post("/reveal-cached-model")
+async def reveal_cached_model(
+    repo_id: str = Body(...),
+    variant: Optional[str] = Body(None),
+    current_subject: str = Depends(get_current_subject),
+):
+    """Reveal a cached repo (or one GGUF variant's file) in the OS file manager."""
+    if not _is_valid_repo_id(repo_id):
+        raise HTTPException(status_code = 400, detail = "Invalid repo_id format")
+    variant = (variant or "").strip() or None
+    path = await asyncio.to_thread(_resolve_cached_model_path, repo_id, variant)
+    try:
+        await asyncio.to_thread(_reveal_in_file_manager, path)
+    except Exception as e:
+        logger.error(f"Failed to reveal {path}: {e}")
+        raise HTTPException(status_code = 500, detail = "Failed to open file manager")
+    return {"status": "ok", "path": str(path)}
+
+
 @router.get("/checkpoints", response_model = CheckpointListResponse)
 async def list_checkpoints(
     outputs_dir: str = Query(
@@ -3456,7 +3628,7 @@ _EXPORT_SIZE_CACHE: dict[str, tuple[int, int, str]] = {}
 
 
 def _is_sizable_local_path(model: str) -> bool:
-    """True only for local paths under a Studio data root.
+    """True only for local paths under an Unsloth data root.
 
     Containment is decided lexically (no filesystem access) before the path is
     touched, then the path is symlink-resolved and re-checked so a symlink

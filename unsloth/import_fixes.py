@@ -3008,7 +3008,7 @@ def maybe_set_windows_rocm_bnb_version():
 
     No-op unless ALL of: Windows, a real HIP torch build (env hints like
     HIP_PATH do not count), a ROCm DLL installed, and no explicit user value.
-    Linux is untouched. Values seeded by Studio's venv sitecustomize.py
+    Linux is untouched. Values seeded by Unsloth's venv sitecustomize.py
     (marked ``UNSLOTH_BNB_ROCM_VERSION_SOURCE=sitecustomize``) are
     redetectable defaults, not overrides; ``UNSLOTH_SKIP_BNB_ROCM_VERSION=1``
     opts out and drops a seeded default. Returns the value set, else None.
