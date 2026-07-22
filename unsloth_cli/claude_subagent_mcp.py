@@ -64,7 +64,7 @@ def _stop_child(process: subprocess.Popen) -> None:
     """Stop the Claude child and any tool processes it started."""
     if process.poll() is not None:
         if os.name != "nt":
-            # The leader exited, but tool processes in its group may survive.
+            # Leader exited, but its tool processes may still be running.
             try:
                 os.killpg(process.pid, signal.SIGTERM)
             except OSError:
@@ -106,7 +106,7 @@ def _stop_child(process: subprocess.Popen) -> None:
         process.wait()
     else:
         if os.name != "nt":
-            # The leader is gone; make sure no group member outlives cancellation.
+            # Leader is gone; kill any surviving group members.
             try:
                 os.killpg(process.pid, signal.SIGKILL)
             except OSError:
@@ -283,9 +283,8 @@ def serve(
             cancel_event.set()
 
     def handle_shutdown(_signum: int, _frame: Any) -> None:
-        # Claude Code stops stdio MCP servers with SIGINT when a tool call is
-        # cancelled, and may send it more than once. Only the first signal should
-        # unwind stdin; later signals must not interrupt process-tree cleanup.
+        # Claude Code sends SIGINT (possibly repeatedly) to cancel a tool call. Only
+        # the first unwinds stdin; later ones must not interrupt process-tree cleanup.
         first_signal = not shutdown_started.is_set()
         shutdown_started.set()
         cancel_active()

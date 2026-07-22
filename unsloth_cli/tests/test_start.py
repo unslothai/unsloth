@@ -2813,8 +2813,7 @@ def test_connect_opencode_as_subagent_preserves_cloud_parent(fake_studio, tmp_pa
     assert result.exit_code == 0, result.output
     assert _launch_command(result.output) == ["opencode"]
     expected_model = f"{start._OPENCODE_PROVIDER}/{MODEL['id']}:UD-Q4_K_XL"
-    # The agent definition is pinned in the inline overlay (above project config)
-    # and nothing else rides along from the empty inline base.
+    # The agent rides in the inline overlay; nothing else comes from the empty base.
     assert _opencode_inline_config(result.output) == {
         "agent": {
             "unsloth": {
@@ -2836,9 +2835,8 @@ def test_connect_opencode_as_subagent_preserves_cloud_parent(fake_studio, tmp_pa
 
 
 def test_opencode_subagent_pins_agent_in_inline_overlay(fake_studio, monkeypatch):
-    # A project opencode.json outranks the OPENCODE_CONFIG session file, so the
-    # agent definition must ride in OPENCODE_CONFIG_CONTENT where it cannot be
-    # field-merged over by a repo's own agent.unsloth entry.
+    # A project opencode.json outranks the session file, so the agent must ride in
+    # OPENCODE_CONFIG_CONTENT where a repo's own agent.unsloth cannot field-merge over it.
     monkeypatch.setattr(start, "_opencode_subagent_inline_config", lambda path, permission: {})
     result = CliRunner().invoke(
         start.start_app,

@@ -86,10 +86,8 @@ _SUBAGENT_INSTRUCTIONS = (
 _CLAUDE_SUBAGENT_MCP_MODULE = "unsloth_cli.claude_subagent_mcp"
 _CLAUDE_SUBAGENT_TOOL = "mcp__plugin_unsloth-local-agent_unsloth__unsloth_agent"
 _PI_SUBAGENT_EXTENSION = Path(__file__).parent.parent / "pi_subagent.ts"
-# OpenCode selects a model by "<providerID>/<modelID>". Keep the session provider
-# under a dedicated id to avoid colliding with a user's configured providers. Its
-# enabled and disabled provider filters are handled in the highest-priority session
-# overlay at launch time.
+# OpenCode selects a model by "<providerID>/<modelID>". Use a dedicated id to avoid
+# colliding with a user's providers; provider filters are set in the launch-time overlay.
 _OPENCODE_PROVIDER = "unsloth-studio"
 _PROVIDER_HEADER = f"[model_providers.{_CODEX_PROFILE}]"
 _PASSTHROUGH = {"allow_extra_args": True, "ignore_unknown_options": True}
@@ -373,7 +371,6 @@ def _subagent_model_id(
             status = _http_json("GET", f"{base}/api/inference/status", key)
         except Exception:
             status = {}
-            # Silence here would defeat the exact-variant guarantee unnoticed.
             typer.echo(
                 "Warning: could not verify the loaded GGUF variant; a later reload "
                 "may pick a different cached quant. Pass :variant to pin it.",
@@ -394,8 +391,8 @@ def _fail(message: str) -> NoReturn:
 
 
 def _reject_as_subagent(agent: str, args: list) -> None:
-    # Unsupported agents would otherwise forward the flag to the agent binary
-    # and fail late, after Studio has already loaded the model.
+    # Reject early; otherwise the flag reaches the agent binary and fails after
+    # Studio has already loaded the model.
     if "--as-subagent" in args:
         _fail(f"--as-subagent is not supported for {agent}.")
 
@@ -2268,9 +2265,8 @@ def write_opencode_config(
         "options": {"baseURL": f"{base}/v1", "apiKey": key},
         "models": {model["id"]: model_entry},
     }
-    # OpenCode selects a model by "<providerID>/<modelID>". Normal mode pins it
-    # as the session model. Subagent mode leaves the user's main and small models
-    # alone, while making the same local model available to @unsloth and /models.
+    # Normal mode pins this as the session model. Subagent mode leaves the user's
+    # main/small models alone and exposes the local model to @unsloth and /models.
     opencode_model = f"{_OPENCODE_PROVIDER}/{model['id']}"
     if as_subagent:
         for field in ("model", "small_model"):
@@ -2690,9 +2686,8 @@ def opencode(
     if as_subagent:
         subagent_id = _subagent_model_id(base, key, entry, model, gguf_variant)
         subagent_model = {**entry, "id": subagent_id}
-        # A bare no-launch recipe must stay append-safe. The eventual driver may append
-        # `run <prompt>`, and `opencode --auto run ...` is parsed as the TUI with project
-        # `run`. With no command yet, keep yolo in the inline permission fallback.
+        # Stay append-safe for a bare no-launch recipe: a later `run <prompt>` would make
+        # `opencode --auto run ...` parse as the TUI, so keep yolo in the inline fallback.
         route_native_auto = yolo and _opencode_supports_native_auto() and (launch or bool(ctx.args))
         opencode_args, native_auto = _opencode_native_auto_args(list(ctx.args), route_native_auto)
         command = ["opencode", *opencode_args]
@@ -2708,9 +2703,8 @@ def opencode(
             )
             env = {"OPENCODE_CONFIG": str(config_path)}
             inline_config = _opencode_subagent_inline_config(config_path, session_permission)
-            # A project opencode.json outranks the OPENCODE_CONFIG session file and
-            # would field-merge its own agent.unsloth over the session entry. Pin the
-            # definition in the higher-priority inline overlay so it cannot be shadowed.
+            # A project opencode.json outranks the session file and could field-merge its
+            # own agent.unsloth over ours. Pin ours in the inline overlay so it wins.
             inline_config.setdefault("agent", {})[_SUBAGENT_NAME] = {
                 "description": _SUBAGENT_DESCRIPTION,
                 "mode": "subagent",
