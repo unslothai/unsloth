@@ -42,7 +42,7 @@ version = {attr = "unsloth.models._utils.__version__"}
 include-package-data = true
 
 [tool.setuptools.package-data]
-unsloth_cli = ["codex_fallback_prompt.md"]
+unsloth_cli = ["codex_fallback_prompt.md", "pi_subagent.ts"]
 studio = [
     "*.sh",
     "*.ps1",
