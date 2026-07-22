@@ -19,6 +19,8 @@ from unsloth_cli.commands.start import (
     _CLAUDE_ENV_UNSET,
     _SUBAGENT_DESCRIPTION,
     _SUBAGENT_INSTRUCTIONS,
+    _SUBAGENT_PLAN_DESCRIPTION,
+    _SUBAGENT_PLAN_INSTRUCTIONS,
     _claude_flags,
     _claude_local_env,
     _wsl_shim_env,
@@ -113,7 +115,11 @@ def _stop_child(process: subprocess.Popen) -> None:
                 pass
 
 
-def run_local_agent(task: str, cancel_event: threading.Event | None = None) -> str:
+def run_local_agent(
+    task: str,
+    cancel_event: threading.Event | None = None,
+    read_only: bool = False,
+) -> str:
     base = _required_env("UNSLOTH_CLAUDE_SUBAGENT_BASE_URL")
     key = _required_env("UNSLOTH_CLAUDE_SUBAGENT_API_KEY")
     model = _required_env("UNSLOTH_CLAUDE_SUBAGENT_MODEL")
@@ -135,16 +141,20 @@ def run_local_agent(task: str, cancel_event: threading.Event | None = None) -> s
         *_claude_flags(model),
         "--permission-mode",
         (
-            "bypassPermissions"
-            if os.environ.get("UNSLOTH_CLAUDE_SUBAGENT_BYPASS_PERMISSIONS") == "1"
-            else "acceptEdits"
+            "plan"
+            if read_only
+            else (
+                "bypassPermissions"
+                if os.environ.get("UNSLOTH_CLAUDE_SUBAGENT_BYPASS_PERMISSIONS") == "1"
+                else "acceptEdits"
+            )
         ),
         "--print",
         "--output-format",
         "json",
         "--no-session-persistence",
         "--append-system-prompt",
-        _SUBAGENT_INSTRUCTIONS,
+        _SUBAGENT_PLAN_INSTRUCTIONS if read_only else _SUBAGENT_INSTRUCTIONS,
         f"Task: {task}",
     ]
     bridged, wsl_names = _wsl_shim_env(command, local_env, _CLAUDE_ENV_UNSET)
@@ -200,6 +210,8 @@ def _response(
     request: dict,
     run_agent: Callable[[str], str] = run_local_agent,
     tool_name: str = "unsloth_agent",
+    run_read_only_agent: Callable[[str], str] | None = None,
+    read_only_tool_name: str | None = None,
 ) -> dict | None:
     request_id = request.get("id")
     method = request.get("method")
@@ -215,37 +227,51 @@ def _response(
     elif method == "ping":
         result = {}
     elif method == "tools/list":
-        result = {
-            "tools": [
-                {
-                    "name": tool_name,
-                    "title": "Unsloth local agent",
-                    "description": _SUBAGENT_DESCRIPTION,
-                    "inputSchema": {
-                        "type": "object",
-                        "properties": {
-                            "task": {
-                                "type": "string",
-                                "description": "The complete task for the local Unsloth agent.",
-                            }
-                        },
-                        "required": ["task"],
-                        "additionalProperties": False,
+        def tool_definition(name: str, description: str, read_only: bool) -> dict:
+            return {
+                "name": name,
+                "title": "Unsloth local plan agent" if read_only else "Unsloth local agent",
+                "description": description,
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "task": {
+                            "type": "string",
+                            "description": "The complete task for the local Unsloth agent.",
+                        }
                     },
-                    "annotations": {
-                        "readOnlyHint": False,
-                        "destructiveHint": True,
-                        "idempotentHint": False,
-                        "openWorldHint": True,
-                    },
-                    "_meta": {"anthropic/maxResultSizeChars": _MAX_RESULT_CHARACTERS},
-                }
-            ]
-        }
+                    "required": ["task"],
+                    "additionalProperties": False,
+                },
+                "annotations": {
+                    "readOnlyHint": read_only,
+                    "destructiveHint": not read_only,
+                    "idempotentHint": read_only,
+                    "openWorldHint": True,
+                },
+                "_meta": {"anthropic/maxResultSizeChars": _MAX_RESULT_CHARACTERS},
+            }
+
+        tools = [tool_definition(tool_name, _SUBAGENT_DESCRIPTION, False)]
+        if read_only_tool_name and run_read_only_agent:
+            tools.append(
+                tool_definition(read_only_tool_name, _SUBAGENT_PLAN_DESCRIPTION, True)
+            )
+        result = {"tools": tools}
     elif method == "tools/call":
         params = request.get("params") or {}
         arguments = params.get("arguments") or {}
-        task = arguments.get("task") if params.get("name") == tool_name else None
+        requested_tool = params.get("name")
+        selected_agent = (
+            run_agent
+            if requested_tool == tool_name
+            else (
+                run_read_only_agent
+                if requested_tool == read_only_tool_name and run_read_only_agent
+                else None
+            )
+        )
+        task = arguments.get("task") if selected_agent else None
         if not isinstance(task, str) or not task.strip():
             result = {
                 "content": [{"type": "text", "text": "A non-empty task is required."}],
@@ -253,7 +279,7 @@ def _response(
             }
         else:
             try:
-                text = run_agent(task.strip())
+                text = selected_agent(task.strip())
                 result = {"content": [{"type": "text", "text": text}], "isError": False}
             except Exception as exc:
                 result = {
@@ -274,6 +300,8 @@ def serve(
     stdout: Any = sys.stdout,
     run_agent: Callable[[str, threading.Event], str] = run_local_agent,
     tool_name: str = "unsloth_agent",
+    run_read_only_agent: Callable[[str, threading.Event], str] | None = None,
+    read_only_tool_name: str | None = None,
 ) -> None:
     active: dict[object, threading.Event] = {}
     workers: list[threading.Thread] = []
@@ -314,6 +342,12 @@ def serve(
                 request,
                 run_agent = lambda task: run_agent(task, cancel_event),
                 tool_name = tool_name,
+                run_read_only_agent = (
+                    (lambda task: run_read_only_agent(task, cancel_event))
+                    if run_read_only_agent
+                    else None
+                ),
+                read_only_tool_name = read_only_tool_name,
             )
             if not cancel_event.is_set():
                 send(response)
@@ -349,7 +383,16 @@ def serve(
                     worker.start()
                     response = None
                 else:
-                    response = _response(request, tool_name = tool_name)
+                    response = _response(
+                        request,
+                        tool_name = tool_name,
+                        run_read_only_agent = (
+                            (lambda task: run_read_only_agent(task, threading.Event()))
+                            if run_read_only_agent
+                            else None
+                        ),
+                        read_only_tool_name = read_only_tool_name,
+                    )
             except Exception as exc:
                 response = {
                     "jsonrpc": "2.0",
@@ -368,5 +411,14 @@ def serve(
             signal.signal(signum, handler)
 
 
+def main() -> None:
+    serve(
+        run_read_only_agent = lambda task, cancel_event: run_local_agent(
+            task, cancel_event, read_only = True
+        ),
+        read_only_tool_name = "unsloth_plan_agent",
+    )
+
+
 if __name__ == "__main__":
-    serve()
+    main()

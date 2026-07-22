@@ -83,8 +83,18 @@ _SUBAGENT_INSTRUCTIONS = (
     "use the available tools when useful, verify your work, and return a concise result to the "
     "parent agent."
 )
+_SUBAGENT_PLAN_DESCRIPTION = (
+    "Read-only local coding subagent powered by Unsloth for planning and codebase research. "
+    "Use this local agent when Claude is in plan mode."
+)
+_SUBAGENT_PLAN_INSTRUCTIONS = (
+    "You are a read-only local coding subagent powered by Unsloth. Investigate the assigned "
+    "task with read-only tools, produce a concrete plan or answer, and return a concise result "
+    "to the parent agent. Do not modify files."
+)
 _CLAUDE_SUBAGENT_MCP_MODULE = "unsloth_cli.claude_subagent_mcp"
 _CLAUDE_SUBAGENT_TOOL = "mcp__plugin_unsloth-local-agent_unsloth__unsloth_agent"
+_CLAUDE_SUBAGENT_PLAN_TOOL = "mcp__plugin_unsloth-local-agent_unsloth__unsloth_plan_agent"
 _CODEX_SUBAGENT_MCP_MODULE = "unsloth_cli.codex_subagent_mcp"
 _CODEX_SUBAGENT_MCP_SERVER = "unsloth_local_agent"
 _CODEX_SUBAGENT_MCP_TOOL = "spawn_local_agent"
@@ -1624,8 +1634,9 @@ def write_claude_subagent_plugin(path: Path, server_env: dict) -> Path:
         "description: Delegate a task to the local agent powered by Unsloth. Use when the "
         "user asks to spawn an Unsloth agent or local agent.\n"
         "---\n\n"
-        "Call the Unsloth local agent tool once with the complete task. Return its result "
-        "to the user without claiming that the cloud parent completed the local work.\n",
+        "Call the Unsloth local agent tool once with the complete task. In plan mode, call "
+        "the read-only Unsloth plan agent instead. Return its result to the user without "
+        "claiming that the cloud parent completed the local work.\n",
         encoding = "utf-8",
     )
     return plugin
@@ -2499,7 +2510,7 @@ def claude(
                 _agent_config_path(plugin, ["claude"]),
                 # Before ctx.args: a forwarded `--` would turn later flags positional.
                 "--allowedTools",
-                _CLAUDE_SUBAGENT_TOOL,
+                f"{_CLAUDE_SUBAGENT_TOOL},{_CLAUDE_SUBAGENT_PLAN_TOOL}",
                 *_yolo_command_flags("claude", yolo),
                 *ctx.args,
             ]

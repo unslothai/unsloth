@@ -818,7 +818,7 @@ def test_connect_claude_as_subagent_preserves_cloud_parent(fake_studio, tmp_path
         "--plugin-dir",
         str(plugin),
         "--allowedTools",
-        start._CLAUDE_SUBAGENT_TOOL,
+        f"{start._CLAUDE_SUBAGENT_TOOL},{start._CLAUDE_SUBAGENT_PLAN_TOOL}",
         "hello",
     ]
     assert "--model" not in command
@@ -846,6 +846,7 @@ def test_connect_claude_as_subagent_preserves_cloud_parent(fake_studio, tmp_path
     }
     skill = (plugin / "skills" / "local-agent" / "SKILL.md").read_text()
     assert "spawn an Unsloth agent or local agent" in skill
+    assert "In plan mode" in skill
     assert "Ask Claude to spawn an Unsloth or local agent." in result.output
 
 
