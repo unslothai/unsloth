@@ -3216,28 +3216,35 @@ class TestStrixRocm71Override:
         install per-arch ROCm wheels into an env that still can't expose the GPU.
         An explicit UNSLOTH_ROCM_GFX_ARCH override stays authoritative regardless."""
         m = stack_mod
-        with patch.object(m, "_linux_amd_gfx_from_cpuinfo", return_value = "gfx1151"), patch.object(
-            m, "_linux_gpu_marketing_name_from_lspci", return_value = None
-        ), patch.dict(os.environ, {"UNSLOTH_ROCM_GFX_ARCH": ""}):
+        with (
+            patch.object(m, "_linux_amd_gfx_from_cpuinfo", return_value = "gfx1151"),
+            patch.object(m, "_linux_gpu_marketing_name_from_lspci", return_value = None),
+            patch.dict(os.environ, {"UNSLOTH_ROCM_GFX_ARCH": ""}),
+        ):
             # WSL + no runtime -> inference suppressed (CPU torch stays).
-            with patch.object(m, "_is_wsl", return_value = True), patch.object(
-                m, "_wsl_rocm_runtime_present", return_value = False
+            with (
+                patch.object(m, "_is_wsl", return_value = True),
+                patch.object(m, "_wsl_rocm_runtime_present", return_value = False),
             ):
                 assert m._infer_linux_amd_gfx_arch() is None
             # WSL + runtime present (this dev box) -> inference still runs.
-            with patch.object(m, "_is_wsl", return_value = True), patch.object(
-                m, "_wsl_rocm_runtime_present", return_value = True
+            with (
+                patch.object(m, "_is_wsl", return_value = True),
+                patch.object(m, "_wsl_rocm_runtime_present", return_value = True),
             ):
                 assert m._infer_linux_amd_gfx_arch() == "gfx1151"
             # Native Linux (not WSL) -> the gate never applies.
-            with patch.object(m, "_is_wsl", return_value = False), patch.object(
-                m, "_wsl_rocm_runtime_present", return_value = False
+            with (
+                patch.object(m, "_is_wsl", return_value = False),
+                patch.object(m, "_wsl_rocm_runtime_present", return_value = False),
             ):
                 assert m._infer_linux_amd_gfx_arch() == "gfx1151"
         # Explicit override wins even on a bare WSL box (no runtime).
-        with patch.object(m, "_is_wsl", return_value = True), patch.object(
-            m, "_wsl_rocm_runtime_present", return_value = False
-        ), patch.dict(os.environ, {"UNSLOTH_ROCM_GFX_ARCH": "gfx1151"}):
+        with (
+            patch.object(m, "_is_wsl", return_value = True),
+            patch.object(m, "_wsl_rocm_runtime_present", return_value = False),
+            patch.dict(os.environ, {"UNSLOTH_ROCM_GFX_ARCH": "gfx1151"}),
+        ):
             assert m._infer_linux_amd_gfx_arch() == "gfx1151"
 
     def test_strix_gfx_detection_in_install_sh(self):
