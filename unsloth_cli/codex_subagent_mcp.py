@@ -29,9 +29,10 @@ from unsloth_cli.commands.start import (
 
 _CANCEL_POLL_SECONDS = 0.1
 _SERVER_INSTRUCTIONS = (
-    "When the user asks to spawn an Unsloth agent or a local agent, call "
-    "spawn_local_agent with the complete task. Do not use Codex's built-in "
-    "spawn_agent for those requests. Use built-in agents for other subagent requests."
+    "You must call spawn_local_agent whenever the user asks to spawn an Unsloth agent "
+    "or local agent. Pass the complete task to that tool. Do not answer, simulate the "
+    "result, call wait, or use Codex's built-in spawn_agent before calling the tool, even "
+    "for a trivial task. Use built-in agents for other subagent requests."
 )
 
 

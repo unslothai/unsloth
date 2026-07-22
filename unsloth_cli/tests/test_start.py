@@ -673,6 +673,7 @@ def test_codex_subagent_bridge_uses_wsl_for_windows_codex(monkeypatch, tmp_path)
     assert f"from {start._CODEX_SUBAGENT_MCP_MODULE} import main" in server["args"][5]
     assert server["required"] is True
     assert server["enabled_tools"] == [start._CODEX_SUBAGENT_MCP_TOOL]
+    assert server["default_tools_approval_mode"] == "approve"
     assert not any(value.startswith("developer_instructions=") for value in flags)
 
 

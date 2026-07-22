@@ -1806,6 +1806,7 @@ def _codex_subagent_flags(path: Path) -> list[str]:
         f"command = {json.dumps(command)}, "
         f"args = {json.dumps(args)}, "
         f"required = true, enabled_tools = [{json.dumps(_CODEX_SUBAGENT_MCP_TOOL)}], "
+        'default_tools_approval_mode = "approve", '
         "startup_timeout_sec = 15, tool_timeout_sec = 3600 }"
     )
     return ["-c", f"mcp_servers.{_CODEX_SUBAGENT_MCP_SERVER}={server}"]

@@ -58,6 +58,7 @@ def test_protocol_uses_codex_specific_tool_name():
         response["id"]: response for response in map(json.loads, output.getvalue().splitlines())
     }
     assert responses[0]["result"]["instructions"] == bridge._SERVER_INSTRUCTIONS
+    assert len(bridge._SERVER_INSTRUCTIONS) <= 512
     assert responses[1]["result"]["tools"][0]["name"] == "spawn_local_agent"
     assert (
         "Use this tool instead of the built-in spawn_agent tool"
