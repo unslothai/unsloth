@@ -76,8 +76,12 @@ class AudioCodecManager:
         if self._snac_model is not None:
             return
         from snac import SNAC
+        from utils.hf_cache_settings import active_hf_hub_cache
 
-        self._snac_model = SNAC.from_pretrained("hubertsiuzdak/snac_24khz").to(device).eval()
+        # Route weights to the selected cache; this can run in the main process.
+        self._snac_model = SNAC.from_pretrained(
+            "hubertsiuzdak/snac_24khz", cache_dir = active_hf_hub_cache()
+        ).to(device).eval()
         logger.info("Loaded SNAC codec (24kHz)")
 
     def _load_bicodec(
