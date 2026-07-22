@@ -1374,6 +1374,40 @@ class TestInstallShStructure:
         assert (
             '[ "$_torch_index_pinned" = true ]' in source[summary - 700 : summary]
         ), "the gpu summary must not claim no usable ROCm for a pinned index"
+
+    def test_rocm_version_chain_survives_no_source_under_set_e(self):
+        """When every ROCm version source is missing (e.g. rocminfo present but
+        rocm-core not installed, so dpkg-query/rpm exit 1), the _rocm_tag ||
+        chain fails as a whole; without the || guard set -e kills the installer
+        BEFORE the actionable no-version WARN it feeds. Executed, not text."""
+        shell = shutil.which("bash")
+        if not shell:
+            pytest.skip("bash needed to execute the version chain")
+        sh_path = PACKAGE_ROOT / "install.sh"
+        source = sh_path.read_text(encoding = "utf-8")
+        chain = re.search(
+            r'^        _rocm_tag=\$\(\{ command -v amd-smi.*?\|\| _rocm_tag=""\n',
+            source,
+            re.S | re.M,
+        )
+        assert chain, "could not extract the guarded _rocm_tag chain"
+        with tempfile.TemporaryDirectory() as d:
+            # Tools exist on PATH but yield nothing usable, like a box with the
+            # probe tools installed and no rocm-core package.
+            for name in ("amd-smi", "hipconfig", "dpkg-query", "rpm"):
+                p = os.path.join(d, name)
+                with open(p, "w", encoding = "utf-8") as f:
+                    f.write("#!/bin/sh\nexit 1\n")
+                os.chmod(p, 0o755)
+            script = (
+                "set -euo pipefail\n"
+                + chain.group(0)
+                + '\nprintf "SURVIVED:%s\\n" "$_rocm_tag"\n'
+            )
+            env = dict(os.environ, PATH = d + os.pathsep + os.environ.get("PATH", ""))
+            r = subprocess.run([shell, "-c", script], env = env, capture_output = True, text = True)
+            assert r.returncode == 0, f"version chain aborted under set -e: {r.stderr}"
+            assert r.stdout.startswith("SURVIVED:"), r.stdout
         assert "rocm" in source.lower()
 
     def test_cuda_precedence(self):

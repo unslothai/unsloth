@@ -2242,7 +2242,11 @@ get_torch_index_url() {
             { command -v rpm >/dev/null 2>&1 && \
                 ver="$(rpm -q --qf '%{VERSION}\n' rocm-core 2>/dev/null)" && \
                 [ -n "$ver" ] && \
-                printf '%s\n' "$ver" | awk -F'[.-]' '{print "rocm"$1"."$2; exit}'; }) 2>/dev/null
+                printf '%s\n' "$ver" | awk -F'[.-]' '{print "rocm"$1"."$2; exit}'; }) 2>/dev/null || _rocm_tag=""
+        # ^ || guard: when EVERY version source is missing (e.g. rocminfo present
+        # but rocm-core not installed, so dpkg-query/rpm exit 1), the whole ||
+        # chain fails and set -e would kill the installer BEFORE the actionable
+        # no-version WARN below -- exactly the fresh-install case it exists for.
         # Validate _rocm_tag: must match "rocmX.Y" with major >= 1
         case "$_rocm_tag" in
             rocm[1-9]*.[0-9]*) : ;;  # valid (major >= 1)
