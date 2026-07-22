@@ -192,6 +192,7 @@ def test_local_child_uses_unsloth_without_overwriting_parent_auth(
     assert command[command.index("--permission-mode") + 1] == permission
     assert "--no-session-persistence" in command
     assert captured["cwd"] == str(tmp_path)
+    assert captured["stdin"] is bridge.subprocess.DEVNULL
     assert captured["stdout"] is bridge.subprocess.PIPE
     assert captured["stderr"] is bridge.subprocess.PIPE
     if os.name == "nt":

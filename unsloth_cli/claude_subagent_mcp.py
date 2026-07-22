@@ -140,6 +140,7 @@ def run_local_agent(task: str, cancel_event: threading.Event | None = None) -> s
     popen_kwargs: dict[str, Any] = {
         "cwd": os.environ.get("CLAUDE_PROJECT_DIR") or os.getcwd(),
         "env": child_env,
+        "stdin": subprocess.DEVNULL,
         "stdout": subprocess.PIPE,
         "stderr": subprocess.PIPE,
         "text": True,

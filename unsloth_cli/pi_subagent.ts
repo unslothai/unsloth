@@ -8,16 +8,28 @@ import { Type } from "typebox";
 const provider = "unsloth";
 const maxResultCharacters = 100_000;
 const cancelGraceMilliseconds = 2_000;
-const model = process.env.UNSLOTH_PI_SUBAGENT_MODEL || "";
-const baseUrl = process.env.UNSLOTH_PI_SUBAGENT_BASE_URL || "";
-const contextWindow = positiveInt(process.env.UNSLOTH_PI_SUBAGENT_CONTEXT_WINDOW, 32768);
-const maxTokens = positiveInt(
-	process.env.UNSLOTH_PI_SUBAGENT_MAX_TOKENS,
-	Math.min(Math.floor(contextWindow / 4), 8192),
-);
+const configPath = process.env.UNSLOTH_PI_SUBAGENT_CONFIG || "";
+delete process.env.UNSLOTH_PI_SUBAGENT_CONFIG;
+let config: Record<string, unknown> = {};
+if (configPath) {
+	try {
+		const parsed = JSON.parse(fs.readFileSync(configPath, "utf8"));
+		if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+			throw new Error("expected a JSON object");
+		}
+		config = parsed;
+	} catch (error) {
+		throw new Error(`Could not read Unsloth subagent configuration: ${error}`);
+	}
+}
+const model = typeof config.model === "string" ? config.model : "";
+const baseUrl = typeof config.baseUrl === "string" ? config.baseUrl : "";
+const apiKey = typeof config.apiKey === "string" ? config.apiKey : "";
+const contextWindow = positiveInt(config.contextWindow, 32768);
+const maxTokens = positiveInt(config.maxTokens, Math.min(Math.floor(contextWindow / 4), 8192));
 
-function positiveInt(value: string | undefined, fallback: number): number {
-	const parsed = Number.parseInt(value || "", 10);
+function positiveInt(value: unknown, fallback: number): number {
+	const parsed = Number.parseInt(typeof value === "string" ? value : String(value || ""), 10);
 	return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
 }
 
@@ -96,14 +108,14 @@ async function stopChildTree(child: ChildProcess): Promise<void> {
 }
 
 export default function unslothSubagent(pi: ExtensionAPI): void {
-	if (!model || !baseUrl) {
+	if (!model || !baseUrl || !apiKey || !configPath) {
 		throw new Error("Unsloth subagent configuration is incomplete.");
 	}
 
 	pi.registerProvider(provider, {
 		name: "Unsloth Studio",
 		baseUrl,
-		apiKey: "$UNSLOTH_PI_SUBAGENT_API_KEY",
+		apiKey,
 		api: "openai-completions",
 		authHeader: true,
 		models: [
@@ -168,7 +180,11 @@ export default function unslothSubagent(pi: ExtensionAPI): void {
 					detached: process.platform !== "win32",
 					shell: false,
 					stdio: ["ignore", "pipe", "pipe"],
-					env: { ...process.env, UNSLOTH_PI_SUBAGENT_CHILD: "1" },
+					env: {
+						...process.env,
+						UNSLOTH_PI_SUBAGENT_CHILD: "1",
+						UNSLOTH_PI_SUBAGENT_CONFIG: configPath,
+					},
 				});
 				let cleanup: Promise<void> | undefined;
 				const cancel = () => {

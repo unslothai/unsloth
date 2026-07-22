@@ -622,7 +622,7 @@ def test_write_codex_config_omits_catalog_for_old_codex(tmp_path, monkeypatch):
 def test_write_codex_subagent_config_keeps_parent_model_out(tmp_path, monkeypatch):
     monkeypatch.setattr(start, "_codex_supports_model_catalog", lambda: True)
     local = {**MODEL, "id": MODEL["id"] + ":UD-Q4_K_XL"}
-    path = start.write_codex_subagent_config(BASE, local, tmp_path)
+    path = start.write_codex_subagent_config(BASE, "private-token", local, tmp_path)
     agent = _parse_toml(path.read_text())
     assert agent["name"] == "unsloth"
     assert "local agent" in agent["description"].lower()
@@ -632,12 +632,38 @@ def test_write_codex_subagent_config_keeps_parent_model_out(tmp_path, monkeypatc
     assert agent["model_providers"][start._CODEX_PROFILE] == {
         "name": "Unsloth Studio",
         "base_url": f"{BASE}/v1",
-        "env_key": start._CODEX_ENV_KEY,
         "wire_api": "responses",
-        "requires_openai_auth": False,
+        "auth": {
+            "command": sys.executable,
+            "args": [
+                "-c",
+                "import json,sys; print(json.load(open(sys.argv[1], encoding='utf-8'))['token'])",
+                str(tmp_path / "unsloth-auth.json"),
+            ],
+            "timeout_ms": 5000,
+        },
     }
+    assert json.loads((tmp_path / "unsloth-auth.json").read_text()) == {"token": "private-token"}
     catalog = json.loads((tmp_path / agent["model_catalog_json"]).read_text())
     assert catalog["models"][0]["slug"] == local["id"]
+
+
+@pytest.mark.skipif(os.name == "nt", reason = "WSL scenario")
+def test_codex_subagent_auth_uses_wsl_for_windows_codex(monkeypatch, tmp_path):
+    monkeypatch.setenv("WSL_DISTRO_NAME", "Ubuntu")
+    monkeypatch.setattr(start, "_codex_supports_model_catalog", lambda: False)
+    monkeypatch.setattr(
+        start.shutil,
+        "which",
+        lambda _: "/mnt/c/Users/x/AppData/Roaming/npm/codex.exe",
+    )
+
+    path = start.write_codex_subagent_config(BASE, "private-token", MODEL, tmp_path)
+    auth = _parse_toml(path.read_text())["model_providers"][start._CODEX_PROFILE]["auth"]
+
+    assert auth["command"] == "wsl.exe"
+    assert auth["args"][:5] == ["-d", "Ubuntu", "--", sys.executable, "-c"]
+    assert auth["args"][-1] == str(tmp_path / "unsloth-auth.json")
 
 
 @pytest.mark.skipif(os.name == "nt", reason = "WSL scenario")
@@ -777,19 +803,21 @@ def test_connect_claude_as_subagent_preserves_cloud_parent(fake_studio, tmp_path
     assert parent_base not in result.output
     assert parent_token not in result.output
     assert "unset ANTHROPIC_API_KEY" not in result.output
-    _assert_env_set(result.output, "UNSLOTH_CLAUDE_SUBAGENT_BASE_URL", BASE)
-    _assert_env_set(
-        result.output,
-        "UNSLOTH_CLAUDE_SUBAGENT_MODEL",
-        MODEL["id"] + ":UD-Q4_K_XL",
-    )
-    _assert_env_set(result.output, "UNSLOTH_CLAUDE_SUBAGENT_BYPASS_PERMISSIONS", "0")
+    assert "UNSLOTH_CLAUDE_SUBAGENT_API_KEY" not in result.output
+    assert "sk-unsloth-feedfacefeedface" not in result.output
     assert json.loads((plugin / ".claude-plugin" / "plugin.json").read_text())["name"] == (
         "unsloth-local-agent"
     )
     mcp = json.loads((plugin / ".mcp.json").read_text())["mcpServers"]["unsloth"]
     assert mcp["command"] == sys.executable
     assert mcp["args"] == ["-m", start._CLAUDE_SUBAGENT_MCP_MODULE]
+    assert mcp["env"] == {
+        "UNSLOTH_CLAUDE_SUBAGENT_BASE_URL": BASE,
+        "UNSLOTH_CLAUDE_SUBAGENT_API_KEY": "sk-unsloth-feedfacefeedface",
+        "UNSLOTH_CLAUDE_SUBAGENT_MODEL": MODEL["id"] + ":UD-Q4_K_XL",
+        "UNSLOTH_CLAUDE_SUBAGENT_BYPASS_PERMISSIONS": "0",
+        "UNSLOTH_CLAUDE_SUBAGENT_CONTEXT_WINDOW": "4096",
+    }
     skill = (plugin / "skills" / "local-agent" / "SKILL.md").read_text()
     assert "spawn an Unsloth agent or local agent" in skill
     assert "Ask Claude to spawn an Unsloth or local agent." in result.output
@@ -798,12 +826,14 @@ def test_connect_claude_as_subagent_preserves_cloud_parent(fake_studio, tmp_path
 @pytest.mark.skipif(os.name == "nt", reason = "WSL scenario")
 def test_claude_subagent_plugin_uses_wsl_for_windows_claude(monkeypatch, tmp_path):
     monkeypatch.setenv("WSL_DISTRO_NAME", "Ubuntu")
+    monkeypatch.setenv("WSLENV", "EXISTING")
     monkeypatch.setattr(
         start.shutil,
         "which",
         lambda _: "/mnt/c/Users/x/AppData/Local/Programs/claude.exe",
     )
-    plugin = start.write_claude_subagent_plugin(tmp_path)
+    server_env = {"UNSLOTH_CLAUDE_SUBAGENT_API_KEY": "secret"}
+    plugin = start.write_claude_subagent_plugin(tmp_path, server_env)
     mcp = json.loads((plugin / ".mcp.json").read_text())["mcpServers"]["unsloth"]
     assert mcp["command"] == "wsl.exe"
     assert mcp["args"] == [
@@ -814,6 +844,8 @@ def test_claude_subagent_plugin_uses_wsl_for_windows_claude(monkeypatch, tmp_pat
         "-m",
         start._CLAUDE_SUBAGENT_MCP_MODULE,
     ]
+    assert mcp["env"]["UNSLOTH_CLAUDE_SUBAGENT_API_KEY"] == "secret"
+    assert mcp["env"]["WSLENV"].split(":") == ["EXISTING", "UNSLOTH_CLAUDE_SUBAGENT_API_KEY"]
 
 
 def test_connect_claude_compact_window_omitted_without_context(fake_studio, monkeypatch):
@@ -956,15 +988,18 @@ def test_connect_codex_as_subagent_preserves_cloud_parent(fake_studio, tmp_path,
     command = _launch_command(result.output)
     assert command[0] == "codex"
     assert command[1:3] == ["--enable", "multi_agent"]
+    assert "agents.max_depth=1" in command
     assert "--oss" not in command
     assert "--profile" not in command
     assert "--model" not in command
     assert "CODEX_HOME" not in result.output
-    _assert_env_set(result.output, start._CODEX_ENV_KEY, "sk-unsloth-feedfacefeedface")
+    assert start._CODEX_ENV_KEY not in result.output
+    assert "sk-unsloth-feedfacefeedface" not in result.output
     home = tmp_path / "agents" / "codex-subagent"
     agent_path = home / "unsloth.toml"
     agent = _parse_toml(agent_path.read_text())
     assert agent["model"] == MODEL["id"] + ":UD-Q4_K_XL"
+    assert "env_key" not in agent["model_providers"][start._CODEX_PROFILE]
     assert f"agents.unsloth.config_file={json.dumps(str(agent_path))}" in command
     assert "Ask Codex to spawn an Unsloth or local agent." in result.output
 
@@ -2640,6 +2675,25 @@ def test_opencode_subagent_inline_preserves_positive_depth(monkeypatch, tmp_path
     assert inline["subagent_depth"] == 3
 
 
+def test_opencode_subagent_inline_merges_inherited_filters_without_binary(monkeypatch, tmp_path):
+    monkeypatch.setenv(
+        "OPENCODE_CONFIG_CONTENT",
+        json.dumps(
+            {
+                "enabled_providers": ["opencode-go"],
+                "disabled_providers": ["ollama", start._OPENCODE_PROVIDER],
+            }
+        ),
+    )
+    monkeypatch.setattr(start, "_which_with_install_dirs", lambda _: None)
+
+    inline = start._opencode_subagent_inline_config(tmp_path / "opencode.json", {})
+
+    assert inline["enabled_providers"] == ["opencode-go", start._OPENCODE_PROVIDER]
+    assert inline["disabled_providers"] == ["ollama"]
+    assert inline["subagent_depth"] == 1
+
+
 def _opencode_inline_config(output: str) -> dict:
     # --no-launch prints OPENCODE_CONFIG_CONTENT as a POSIX `export NAME=<shell-quoted>`
     # line on Unix/WSL and a PowerShell `$env:NAME = "<escaped>"` line on native Windows;
@@ -2922,7 +2976,7 @@ def test_connect_pi_no_launch(fake_studio, tmp_path):
     assert not any(c[1].endswith("/api/inference/status") for c in fake_studio)
 
 
-def test_connect_pi_as_subagent_preserves_cloud_parent(fake_studio):
+def test_connect_pi_as_subagent_preserves_cloud_parent(fake_studio, tmp_path):
     result = CliRunner().invoke(
         start.start_app,
         [
@@ -2941,12 +2995,17 @@ def test_connect_pi_as_subagent_preserves_cloud_parent(fake_studio):
     assert "--model" not in command
     assert "PI_CODING_AGENT_DIR" not in result.output
     assert "export HOME=" not in result.output
-    _assert_env_set(result.output, "UNSLOTH_PI_SUBAGENT_BASE_URL", f"{BASE}/v1")
-    _assert_env_set(
-        result.output,
-        "UNSLOTH_PI_SUBAGENT_MODEL",
-        MODEL["id"] + ":UD-Q4_K_XL",
-    )
+    assert "UNSLOTH_PI_SUBAGENT_API_KEY" not in result.output
+    assert "sk-unsloth-feedfacefeedface" not in result.output
+    config_path = tmp_path / "agents" / "pi-subagent" / "subagent.json"
+    _assert_env_set(result.output, "UNSLOTH_PI_SUBAGENT_CONFIG", str(config_path))
+    assert json.loads(config_path.read_text()) == {
+        "baseUrl": f"{BASE}/v1",
+        "apiKey": "sk-unsloth-feedfacefeedface",
+        "model": MODEL["id"] + ":UD-Q4_K_XL",
+        "contextWindow": 4096,
+        "maxTokens": 1024,
+    }
     assert "Ask Pi to spawn an Unsloth or local agent." in result.output
 
 

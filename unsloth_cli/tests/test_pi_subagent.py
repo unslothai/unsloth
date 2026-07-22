@@ -3,6 +3,7 @@
 
 import os
 from pathlib import Path
+import json
 import shutil
 import subprocess
 
@@ -17,6 +18,19 @@ def test_pi_cancel_kills_child_process_group(tmp_path):
 
     ready = tmp_path / "grandchild-ready"
     marker = tmp_path / "grandchild-survived"
+    config = tmp_path / "subagent.json"
+    config.write_text(
+        json.dumps(
+            {
+                "baseUrl": "http://127.0.0.1:8000/v1",
+                "apiKey": "private-token",
+                "model": "local-model",
+                "contextWindow": 32768,
+                "maxTokens": 8192,
+            }
+        ),
+        encoding = "utf-8",
+    )
     driver = tmp_path / "pi-driver.js"
     driver.write_text(
         """
@@ -54,18 +68,21 @@ mock.module("typebox", () => ({{
 }}));
 
 test("cancellation stops the Pi child process group", async () => {{
-    process.env.UNSLOTH_PI_SUBAGENT_MODEL = "local-model";
-    process.env.UNSLOTH_PI_SUBAGENT_BASE_URL = "http://127.0.0.1:8000/v1";
+    process.env.UNSLOTH_PI_SUBAGENT_CONFIG = {str(config)!r};
     process.env.PI_CHILD_READY = {str(ready)!r};
     process.env.PI_CANCEL_MARKER = {str(marker)!r};
     process.argv[1] = {str(driver)!r};
 
     const loaded = await import(pathToFileURL({str(extension)!r}).href);
     let tool;
+    let provider;
     loaded.default({{
-        registerProvider() {{}},
+        registerProvider(_name, value) {{ provider = value; }},
         registerTool(value) {{ tool = value; }},
     }});
+    expect(process.env.UNSLOTH_PI_SUBAGENT_CONFIG).toBeUndefined();
+    expect(process.env.UNSLOTH_PI_SUBAGENT_API_KEY).toBeUndefined();
+    expect(provider.apiKey).toBe("private-token");
 
     const controller = new AbortController();
     const execution = tool.execute(
