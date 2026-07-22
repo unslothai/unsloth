@@ -75,8 +75,11 @@ export function ProjectSwitcher({
         side="bottom"
         align="start"
         sideOffset={0}
-        className="unsloth-plus-menu ring-0 min-w-56 max-w-72 max-h-72 font-heading"
+        className="unsloth-plus-menu ring-0 min-w-56 max-w-72 font-heading"
       >
+        {/* Scroll the list here, not the container, so the rounded corners on
+            the scrollbar side are not squared off. */}
+        <div className="max-h-72 overflow-y-auto">
         {showLoadingRow ? (
           <DropdownMenuItem disabled={true} className="text-muted-foreground">
             Loading…
@@ -117,6 +120,7 @@ export function ProjectSwitcher({
         <DropdownMenuItem onSelect={onViewAllProjects}>
           View all projects
         </DropdownMenuItem>
+        </div>
       </DropdownMenuContent>
     </DropdownMenu>
   );

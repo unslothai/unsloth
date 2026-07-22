@@ -1606,7 +1606,7 @@ html[data-chat-font] .aui-root {
 	}
 
 	.unsloth-composer-left {
-		@apply flex shrink-0 items-center gap-0.5;
+		@apply flex min-w-0 flex-wrap items-center gap-0.5;
 		order: 1;
 		/* Pull the plus button closer to the composer edge. */
 		margin-left: -0.25rem;

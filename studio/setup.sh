@@ -1136,7 +1136,7 @@ elif [ "$_setup_amd_detected" = true ]; then
         case "$_setup_mkt" in
             *"9070 XT"*|*9080*)                                                                            _setup_gfx="gfx1201" ;;  # RDNA 4
             *9070*|*9060*)                                                                                 _setup_gfx="gfx1200" ;;  # RDNA 4
-            *"8060S"*|*"8050S"*|*"8040S"*|*"Strix Halo"*|*"Ryzen AI Max"*|*"AI Max"*) _setup_gfx="gfx1151" ;;  # RDNA 3.5 (Strix Halo: Radeon 8060S/8050S/8040S iGPU, Ryzen AI Max+)
+            *"8065S"*|*"8060S"*|*"8050S"*|*"8040S"*|*"Strix Halo"*|*"Ryzen AI Max"*|*"AI Max"*) _setup_gfx="gfx1151" ;;  # RDNA 3.5 (Strix Halo + Gorgon Halo: Radeon 8065S/8060S/8050S/8040S iGPU, Ryzen AI Max / Max+)
             *"890M"*|*"880M"*|*"860M"*|*"840M"*|*"Strix Point"*|*"Krackan"*|*"HX 37"*|*"AI 9 HX"*|*"AI 9 36"*|*"AI 7 35"*|*"AI 5 34"*|*"AI 7 PRO 35"*|*"AI 5 33"*) _setup_gfx="gfx1150" ;;  # RDNA 3.5 (Strix/Krackan Point: Radeon 890M/880M iGPU, Ryzen AI 9 HX 370/375)
             *"RX 7600"*|*"RX 7700S"*|*"RX 7650"*|*"PRO W7600"*|*"PRO W7500"*|*"PRO V710"*)                  _setup_gfx="gfx1102" ;;  # RDNA 3 (Navi 33)
             *"RX 7900"*|*"RX 7800"*|*"RX 7700"*|*"PRO W7900"*|*"PRO W7800"*|*"PRO W7700"*)                  _setup_gfx="gfx1100" ;;  # RDNA 3 desktop / workstation (Navi 31)
