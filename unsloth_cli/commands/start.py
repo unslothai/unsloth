@@ -1635,10 +1635,9 @@ def write_codex_subagent_bridge(
     return path
 
 
-def write_codex_parent_overlay(path: Path) -> Path:
+def write_codex_parent_overlay(overlay: Path) -> Path:
     """Add local-agent routing without replacing the cloud parent's configuration."""
     source_home = Path(os.environ.get("CODEX_HOME") or Path.home() / ".codex").expanduser()
-    overlay = path / "parent"
     overlay.mkdir(parents = True, exist_ok = True, mode = 0o700)
 
     # Keep the user's auth, config, plugins, agents, skills, rules, and session state visible.
@@ -1682,6 +1681,20 @@ def write_codex_parent_overlay(path: Path) -> Path:
     combined = f"{inherited}\n\n{routing}\n" if inherited else f"{routing}\n"
     _write_private_text(overlay / instruction_name, combined)
     return overlay
+
+
+@contextlib.contextmanager
+def _codex_parent_overlay(session_home: Path, *, launch: bool, persist: bool):
+    if launch and not persist:
+        temp_root = _agents_config_root() / ".tmp"
+        temp_root.mkdir(parents = True, exist_ok = True, mode = 0o700)
+        overlay = Path(tempfile.mkdtemp(prefix = "codex-parent-", dir = temp_root))
+        try:
+            yield write_codex_parent_overlay(overlay)
+        finally:
+            shutil.rmtree(overlay, ignore_errors = True)
+    else:
+        yield write_codex_parent_overlay(session_home / "parent")
 
 
 def _agent_config_path(path: Path, command: list) -> str:
@@ -2849,25 +2862,25 @@ def codex(
                 home,
                 yolo = yolo,
             )
-            parent_home = write_codex_parent_overlay(home)
-            command = [
-                "codex",
-                *_codex_subagent_flags(bridge_config),
-                *_yolo_command_flags("codex", yolo),
-                *ctx.args,
-            ]
-            typer.echo(
-                "Unsloth is available as a local agent. "
-                "Ask Codex to spawn an Unsloth or local agent."
-            )
-            _run(
-                base,
-                subagent_model,
-                {"CODEX_HOME": str(parent_home)},
-                command,
-                launch = launch,
-                install_hint = "npm install -g @openai/codex",
-            )
+            with _codex_parent_overlay(home, launch = launch, persist = persist) as parent_home:
+                command = [
+                    "codex",
+                    *_codex_subagent_flags(bridge_config),
+                    *_yolo_command_flags("codex", yolo),
+                    *ctx.args,
+                ]
+                typer.echo(
+                    "Unsloth is available as a local agent. "
+                    "Ask Codex to spawn an Unsloth or local agent."
+                )
+                _run(
+                    base,
+                    subagent_model,
+                    {"CODEX_HOME": str(parent_home)},
+                    command,
+                    launch = launch,
+                    install_hint = "npm install -g @openai/codex",
+                )
         return
     command = [
         "codex",

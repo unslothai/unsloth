@@ -656,7 +656,7 @@ def test_write_codex_parent_overlay_preserves_user_state_and_instructions(tmp_pa
     (source / "AGENTS.override.md").write_text("Keep my existing instructions.\n")
     monkeypatch.setenv("CODEX_HOME", str(source))
 
-    overlay = start.write_codex_parent_overlay(tmp_path / "managed")
+    overlay = start.write_codex_parent_overlay(tmp_path / "managed" / "parent")
 
     assert (overlay / "config.toml").read_text() == 'model = "cloud-model"\n'
     assert (overlay / "auth.json").read_text() == '{"auth": "cloud"}\n'
@@ -667,6 +667,24 @@ def test_write_codex_parent_overlay_preserves_user_state_and_instructions(tmp_pa
     assert not (overlay / "AGENTS.md").exists()
     assert (overlay / "AGENTS.override.md").stat().st_mode & 0o077 == 0
     assert (source / "AGENTS.override.md").read_text() == "Keep my existing instructions.\n"
+
+
+def test_codex_parent_overlay_launch_uses_private_temp_root_and_cleans_up(tmp_path, monkeypatch):
+    source = tmp_path / "user-codex"
+    source.mkdir()
+    (source / "auth.json").write_text("{}\n")
+    monkeypatch.setenv("CODEX_HOME", str(source))
+    agents_root = tmp_path / "agents"
+    monkeypatch.setattr(start, "_agents_config_root", lambda: agents_root)
+
+    with start._codex_parent_overlay(
+        tmp_path / "session", launch = True, persist = False
+    ) as overlay:
+        assert overlay.parent == agents_root / ".tmp"
+        assert start._CODEX_SUBAGENT_ROUTING_INSTRUCTIONS in (overlay / "AGENTS.md").read_text()
+        assert overlay.exists()
+
+    assert not overlay.exists()
 
 
 @pytest.mark.skipif(os.name == "nt", reason = "WSL scenario")
