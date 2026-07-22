@@ -3207,9 +3207,7 @@ class TestStrixRocm71Override:
             assert stack_mod._linux_amd_gfx_from_cpuinfo() == "gfx1151"
         # 8065S (Gorgon Halo) must match on the Radeon name alone, even without the
         # "Ryzen AI Max" branding (mirrors setup.sh / setup.ps1 which list 8065S).
-        with patch.object(
-            Path, "read_text", return_value = "model name : AMD Radeon 8065S\n"
-        ):
+        with patch.object(Path, "read_text", return_value = "model name : AMD Radeon 8065S\n"):
             assert stack_mod._linux_amd_gfx_from_cpuinfo() == "gfx1151"
 
     def test_strix_gfx_detection_in_install_sh(self):
