@@ -2194,6 +2194,9 @@ class InstallSelection:
     install_kind: str | None = None
     paired_llama_tag: str | None = None
     linked_from: str | None = None
+    # Filenames the slim wiring hardlinked beside the server; the sidecar
+    # launch guard verifies exactly these instead of hardcoded per-OS names.
+    linked_libraries: tuple[str, ...] | None = None
 
     def fingerprint(self) -> str:
         return compute_install_fingerprint(
@@ -2264,6 +2267,8 @@ def write_prebuilt_metadata(ops: ModuleOps, install_dir: Path, selection: Instal
         payload["install_kind"] = "slim"
         payload["paired_llama_tag"] = selection.paired_llama_tag
         payload["linked_from"] = selection.linked_from
+        if selection.linked_libraries is not None:
+            payload["linked_libraries"] = list(selection.linked_libraries)
     ops.metadata_path(install_dir).write_text(json.dumps(payload, indent = 2) + "\n")
 
 
@@ -2418,8 +2423,12 @@ def install_from_bundle(
         staged_root = staging / "staged"
         ops.assemble_install_tree(bundle_root, staged_root, host)
         # Component hook (default no-op): slim whisper wires the llama ggml
-        # runtime in here so staged validation sees the final, linked tree.
-        ops.prepare_runtime_payload(staged_root, host, selection)
+        # runtime in here so staged validation sees the final, linked tree; a
+        # returned selection (carrying the wired filenames) supersedes the input
+        # so the marker records what was actually linked.
+        updated = ops.prepare_runtime_payload(staged_root, host, selection)
+        if updated is not None:
+            selection = updated
         ops.validate_staged_server(staged_root, host)
         ops.write_prebuilt_metadata(staged_root, selection)
         ops._swap_into_place(staged_root, install_dir)
@@ -2551,10 +2560,11 @@ def resolve_prebuilt(
     return payload
 
 
-def prepare_runtime_payload(staged_root: Path, host: Any, selection: InstallSelection) -> None:
+def prepare_runtime_payload(staged_root: Path, host: Any, selection: InstallSelection) -> Any:
     """Post-assemble install hook; the core stages nothing extra. Components
     override it to wire external runtime files into the staged bin dir (whisper
-    slim hardlinks the llama install's ggml libraries) before validation."""
+    slim hardlinks the llama install's ggml libraries) before validation, and
+    may return an updated InstallSelection the marker should record instead."""
     return None
 
 

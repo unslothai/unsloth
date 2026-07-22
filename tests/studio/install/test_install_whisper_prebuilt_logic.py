@@ -803,8 +803,9 @@ def test_slim_requires_the_accel_backend_module(tmp_path, monkeypatch):
     assert artifact["asset"] == FAT_CUDA_ASSET
 
 
-def test_slim_never_offered_for_cpu_backend(tmp_path, monkeypatch):
-    # A perfect pairing must not slim a cpu install: cpu bundles stay fat.
+def test_slim_selected_for_cpu_backend_on_linux(tmp_path, monkeypatch):
+    # Slim-only releases must serve cpu too: with the llama cpu modules present
+    # the cpu backend rides the same slim bundle as the GPUs.
     bin_dir = _fake_llama_bin(tmp_path)
     monkeypatch.setattr(
         M, "installed_llama_runtime", lambda: (bin_dir, SLIM_LLAMA_TAG, "cuda13-newer")
@@ -812,14 +813,167 @@ def test_slim_never_offered_for_cpu_backend(tmp_path, monkeypatch):
     artifact, backend, _fb = M.select_artifact_with_fallback(
         _slim_manifest(), _host("linux", "x64"), "cpu"
     )
+    assert artifact["asset"] == SLIM_ASSET and backend == "cpu"
+
+
+def test_slim_cpu_requires_a_cpu_module(tmp_path, monkeypatch):
+    # Sonames present but no libggml-cpu* variant in the llama bin dir -> fat cpu.
+    bin_dir = tmp_path / "llama.cpp" / "build" / "bin"
+    bin_dir.mkdir(parents = True)
+    for name in ("libggml.so.0", "libggml-base.so.0"):
+        (bin_dir / name).write_bytes(b"ggml")
+    monkeypatch.setattr(
+        M, "installed_llama_runtime", lambda: (bin_dir, SLIM_LLAMA_TAG, "linux-cpu")
+    )
+    artifact, backend, _fb = M.select_artifact_with_fallback(
+        _slim_manifest(), _host("linux", "x64"), "cpu"
+    )
     assert artifact["asset"] == CPU_ASSET and backend == "cpu"
+
+
+WIN_SLIM_ASSET = "whisper-v1.9.1-unsloth.1-windows-x64-slim.zip"
+
+
+def test_slim_selected_for_cpu_backend_on_windows(tmp_path, monkeypatch):
+    bin_dir = tmp_path / "llama.cpp" / "build" / "bin" / "Release"
+    bin_dir.mkdir(parents = True)
+    for name in ("ggml.dll", "ggml-base.dll", "ggml-cpu-haswell.dll"):
+        (bin_dir / name).write_bytes(b"ggml")
+    monkeypatch.setattr(
+        M, "installed_llama_runtime", lambda: (bin_dir, SLIM_LLAMA_TAG, "windows-cpu")
+    )
+    manifest = M.parse_manifest(
+        _manifest(
+            [
+                _slim_artifact(
+                    os = "windows",
+                    arch = "x64",
+                    asset = WIN_SLIM_ASSET,
+                    requires_ggml_sonames = ["ggml.dll", "ggml-base.dll"],
+                )
+            ]
+        )
+    )
+    artifact, backend, _fb = M.select_artifact_with_fallback(
+        manifest, _host("windows", "x64"), "cpu"
+    )
+    assert artifact["asset"] == WIN_SLIM_ASSET and backend == "cpu"
+
+
+MAC_SLIM_ASSET = "whisper-v1.9.1-unsloth.1-macos-arm64-slim.tar.gz"
+
+
+def _fake_llama_bin_macos(tmp_path: Path) -> Path:
+    """The dylib names the live llama macos bundle ships (core + cpu + metal)."""
+    bin_dir = tmp_path / "llama.cpp" / "build" / "bin"
+    bin_dir.mkdir(parents = True, exist_ok = True)
+    for name in (
+        "libggml.dylib",
+        "libggml-base.dylib",
+        "libggml-cpu.dylib",
+        "libggml-metal.dylib",
+        "libggml-blas.dylib",
+    ):
+        (bin_dir / name).write_bytes(b"ggml-" + name.encode())
+    (bin_dir / "libllama.dylib").write_bytes(b"not-ggml")
+    return bin_dir
+
+
+def _macos_slim_manifest(arch: str = "arm64") -> dict:
+    return M.parse_manifest(
+        _manifest(
+            [
+                _slim_artifact(
+                    os = "macos",
+                    arch = arch,
+                    asset = MAC_SLIM_ASSET,
+                    requires_ggml_sonames = ["libggml.dylib", "libggml-base.dylib"],
+                )
+            ]
+        )
+    )
+
+
+@pytest.mark.parametrize("backend", ["metal", "cpu"])
+def test_slim_selected_for_metal_and_cpu_on_macos(tmp_path, monkeypatch, backend):
+    bin_dir = _fake_llama_bin_macos(tmp_path)
+    monkeypatch.setattr(
+        M, "installed_llama_runtime", lambda: (bin_dir, SLIM_LLAMA_TAG, "macos-metal-arm64")
+    )
+    host = _host("macos", "arm64", macos_version = (14, 0))
+    artifact, effective, _fb = M.select_artifact_with_fallback(
+        _macos_slim_manifest(), host, backend
+    )
+    assert artifact["asset"] == MAC_SLIM_ASSET
+    assert effective == backend  # the accel identity, never "slim"
+
+
+def test_macos_auto_backends_route_to_slim(tmp_path, monkeypatch):
+    # auto -> metal on Apple Silicon, cpu on Intel macs; both must pick slim.
+    bin_dir = _fake_llama_bin_macos(tmp_path)
+    monkeypatch.setattr(
+        M, "installed_llama_runtime", lambda: (bin_dir, SLIM_LLAMA_TAG, "macos-metal-arm64")
+    )
+    silicon = _host("macos", "arm64", macos_version = (14, 0))
+    assert M.resolve_backend(silicon, "auto", cpu_fallback = False) == "metal"
+    artifact, backend, _fb = M.select_artifact_with_fallback(
+        _macos_slim_manifest(), silicon, "metal"
+    )
+    assert artifact["asset"] == MAC_SLIM_ASSET and backend == "metal"
+
+    intel = _host("macos", "x64", macos_version = (14, 0))
+    assert M.resolve_backend(intel, "auto", cpu_fallback = False) == "cpu"
+    artifact, backend, _fb = M.select_artifact_with_fallback(
+        _macos_slim_manifest(arch = "x64"), intel, "cpu"
+    )
+    assert artifact["asset"] == MAC_SLIM_ASSET and backend == "cpu"
+
+
+def test_slim_metal_requires_the_metal_module(tmp_path, monkeypatch):
+    # A macos llama runtime without libggml-metal*.dylib cannot back metal; the
+    # cpu fallback still rides the same slim bundle via the cpu module.
+    bin_dir = tmp_path / "llama.cpp" / "build" / "bin"
+    bin_dir.mkdir(parents = True)
+    for name in ("libggml.dylib", "libggml-base.dylib", "libggml-cpu.dylib"):
+        (bin_dir / name).write_bytes(b"ggml")
+    monkeypatch.setattr(
+        M, "installed_llama_runtime", lambda: (bin_dir, SLIM_LLAMA_TAG, "macos-cpu-x64")
+    )
+    host = _host("macos", "arm64", macos_version = (14, 0))
+    artifact, backend, used_fallback = M.select_artifact_with_fallback(
+        _macos_slim_manifest(), host, "metal"
+    )
+    assert artifact["asset"] == MAC_SLIM_ASSET
+    assert backend == "cpu" and used_fallback is True
+
+
+def test_slim_only_release_pairing_failure_is_actionable(tmp_path, monkeypatch):
+    # A slim-only release with no llama install: nothing selects, the resolver
+    # falls to PrebuiltFallback (exit 2 -> source build), and the log names the
+    # fix before the fallback fires.
+    lines: list[str] = []
+    monkeypatch.setattr(M, "log", lines.append)
+    monkeypatch.setattr(M, "installed_llama_runtime", lambda: None)
+    manifest = M.parse_manifest(_manifest([_slim_artifact()]))
+    with pytest.raises(PrebuiltFallback):
+        M.select_artifact_with_fallback(manifest, _cuda_host(), "cuda")
+    assert any(
+        f"slim bundle requires llama.cpp {SLIM_LLAMA_TAG}; "
+        "install or update llama.cpp first" in line
+        for line in lines
+    )
 
 
 def test_link_ggml_runtime_hardlinks_every_ggml_library(tmp_path):
     bin_dir = _fake_llama_bin(tmp_path)
     whisper_bin = tmp_path / "whisper.cpp" / "build" / "bin"
     linked = M.link_ggml_runtime(bin_dir, whisper_bin)
-    assert linked == 4  # libggml.so.0, libggml-base.so.0, libggml-cuda.so, libggml-cpu-x64.so
+    assert linked == [
+        "libggml-base.so.0",
+        "libggml-cpu-x64.so",
+        "libggml-cuda.so",
+        "libggml.so.0",
+    ]
     for name in ("libggml.so.0", "libggml-base.so.0", "libggml-cuda.so", "libggml-cpu-x64.so"):
         source, dest = bin_dir / name, whisper_bin / name
         assert dest.is_file() and not dest.is_symlink()
@@ -834,10 +988,29 @@ def test_link_ggml_runtime_copy_fallback(tmp_path, monkeypatch):
     monkeypatch.setattr(M.os, "link", no_link)
     bin_dir = _fake_llama_bin(tmp_path)
     whisper_bin = tmp_path / "whisper.cpp" / "build" / "bin"
-    assert M.link_ggml_runtime(bin_dir, whisper_bin) == 4
+    assert len(M.link_ggml_runtime(bin_dir, whisper_bin)) == 4
     dest = whisper_bin / "libggml.so.0"
     assert dest.read_bytes() == (bin_dir / "libggml.so.0").read_bytes()
     assert dest.stat().st_nlink == 1  # a copy, not a link
+
+
+def test_link_ggml_runtime_hardlinks_dylibs(tmp_path):
+    # macOS wiring: the libggml* glob must take the .dylib names too.
+    bin_dir = _fake_llama_bin_macos(tmp_path)
+    whisper_bin = tmp_path / "whisper.cpp" / "build" / "bin"
+    linked = M.link_ggml_runtime(bin_dir, whisper_bin)
+    assert linked == [
+        "libggml-base.dylib",
+        "libggml-blas.dylib",
+        "libggml-cpu.dylib",
+        "libggml-metal.dylib",
+        "libggml.dylib",
+    ]
+    for name in linked:
+        source, dest = bin_dir / name, whisper_bin / name
+        assert dest.is_file() and not dest.is_symlink()
+        assert dest.stat().st_ino == source.stat().st_ino  # a true hardlink
+    assert not (whisper_bin / "libllama.dylib").exists()
 
 
 def test_link_ggml_runtime_fails_closed_on_empty_runtime(tmp_path):
@@ -915,6 +1088,14 @@ def test_slim_install_wires_links_and_marker(tmp_path, monkeypatch):
     assert marker["install_kind"] == "slim"
     assert marker["paired_llama_tag"] == SLIM_LLAMA_TAG
     assert marker["linked_from"] == str(llama_bin)
+    # The wired filenames land in the marker; the sidecar launch guard
+    # verifies exactly these names instead of hardcoded per-OS globs.
+    assert marker["linked_libraries"] == [
+        "libggml-base.so.0",
+        "libggml-cpu-x64.so",
+        "libggml-cuda.so",
+        "libggml.so.0",
+    ]
 
 
 def test_slim_links_survive_a_llama_dir_swap(tmp_path, monkeypatch):
@@ -962,7 +1143,7 @@ def test_fat_marker_gains_no_slim_fields(tmp_path, monkeypatch):
     install_dir = tmp_path / "whisper.cpp"
     assert M.install_prebuilt(install_dir, backend = "cpu") == M.EXIT_SUCCESS
     marker = json.loads((install_dir / M.METADATA_FILENAME).read_text())
-    for key in ("install_kind", "paired_llama_tag", "linked_from"):
+    for key in ("install_kind", "paired_llama_tag", "linked_from", "linked_libraries"):
         assert key not in marker  # fat markers keep the legacy payload exactly
 
 
@@ -1015,3 +1196,19 @@ def test_resolver_reports_install_kind_slim_when_paired(tmp_path, monkeypatch, c
     assert payload["install_kind"] == "slim"
     assert payload["asset"] == SLIM_ASSET
     assert payload["backend"] == "cuda"
+
+
+def test_resolver_reports_metal_slim_on_macos(tmp_path, monkeypatch, capsys):
+    # Same contract shape on macs: backend stays the accel (metal), the one
+    # additive field says the asset installs slim.
+    bin_dir = _fake_llama_bin_macos(tmp_path)
+    monkeypatch.setattr(
+        M, "installed_llama_runtime", lambda: (bin_dir, SLIM_LLAMA_TAG, "macos-metal-arm64")
+    )
+    host = _host("macos", "arm64", macos_version = (14, 0))
+    payload = _resolver_payload(monkeypatch, capsys, _macos_slim_manifest(), host)
+    assert set(payload) == _LEGACY_RESOLVER_KEYS | {"install_kind"}
+    assert payload["install_kind"] == "slim"
+    assert payload["asset"] == MAC_SLIM_ASSET
+    assert payload["backend"] == "metal"
+    assert payload["requested_backend"] == "metal"

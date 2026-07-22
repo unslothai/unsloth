@@ -133,19 +133,30 @@ SUPPORTED_BACKENDS = ("cpu", "cuda", "metal", "vulkan", "rocm")
 FALLBACK_BACKEND = "cpu"
 
 # Backends whose slim (ggml-less) whisper bundle can ride the ggml runtime of
-# the installed llama.cpp prebuilt. cpu and metal always install fat.
-SLIM_ELIGIBLE_BACKENDS = ("cuda", "rocm", "vulkan")
+# the installed llama.cpp prebuilt. Every backend is eligible: the next whisper
+# release publishes only slim bundles, so cpu and metal pair like the GPUs do.
+SLIM_ELIGIBLE_BACKENDS = ("cpu", "cuda", "metal", "rocm", "vulkan")
 
-# ggml backend module the llama bin dir must provide per accelerator, as
-# (linux glob, windows glob) following llama's bundle layout / health globs.
+# ggml backend module the llama bin dir must provide per accelerator, keyed by
+# the asset os token, following llama's bundle layout / health globs. A backend
+# with no glob for the host os (metal off macOS) is never slim there. llama's
+# x64 cpu bundles ship per-arch libggml-cpu-<variant> modules, macOS a single
+# libggml-cpu; the cpu globs cover both shapes.
 SLIM_BACKEND_MODULE_GLOBS = {
-    "cuda": ("libggml-cuda.so*", "ggml-cuda.dll"),
-    "rocm": ("libggml-hip.so*", "*hip*.dll"),
-    "vulkan": ("libggml-vulkan.so*", "ggml-vulkan.dll"),
+    "cpu": {
+        "linux": "libggml-cpu*.so*",
+        "windows": "ggml-cpu*.dll",
+        "macos": "libggml-cpu*.dylib",
+    },
+    "cuda": {"linux": "libggml-cuda.so*", "windows": "ggml-cuda.dll"},
+    "metal": {"macos": "libggml-metal*.dylib"},
+    "rocm": {"linux": "libggml-hip.so*", "windows": "*hip*.dll"},
+    "vulkan": {"linux": "libggml-vulkan.so*", "windows": "ggml-vulkan.dll"},
 }
 
 # Everything the slim wiring must mirror from the llama bin dir: the core ggml
-# sonames plus every dlopen'd backend module (CPU variants included).
+# sonames plus every dlopen'd backend module (CPU variants included). libggml*
+# matches the .so and .dylib names alike; ggml*.dll covers the Windows layout.
 SLIM_GGML_LIBRARY_GLOBS = ("libggml*", "ggml*.dll")
 
 INSTALL_STAGING_ROOT_NAME = ".staging"
@@ -395,8 +406,10 @@ def slim_pairing_for_artifact(
     if missing:
         log(f"slim_selection: {asset} skipped: llama runtime missing {', '.join(missing)}")
         return None
-    linux_glob, windows_glob = SLIM_BACKEND_MODULE_GLOBS[backend]
-    module_glob = windows_glob if host.is_windows else linux_glob
+    module_glob = SLIM_BACKEND_MODULE_GLOBS.get(backend, {}).get(host.whisper_os)
+    if module_glob is None:
+        log(f"slim_selection: {asset} skipped: no {backend} ggml module on {host.whisper_os}")
+        return None
     if not any(path.is_file() for path in llama_bin_dir.glob(module_glob)):
         log(f"slim_selection: {asset} skipped: llama runtime has no {module_glob} module")
         return None
@@ -407,21 +420,30 @@ def slim_pairing_for_artifact(
 def select_slim_artifact(
     manifest: dict[str, Any], host: HostInfo, backend: str
 ) -> dict[str, Any] | None:
-    """The paired slim artifact for a GPU backend, or None. macOS stays fat; slim
-    assets carry backend "slim" so the fat os/arch/backend matching never sees
-    them and the fat chain is untouched by construction."""
-    if backend not in SLIM_ELIGIBLE_BACKENDS or host.is_macos:
+    """The paired slim artifact for any backend (cpu and metal included), or
+    None. Slim assets carry backend "slim" so the fat os/arch/backend matching
+    never sees them and the fat chain is untouched by construction. When the
+    release ships slim candidates but none pair, log the actionable reason: on
+    a slim-only release the fat chain then finds nothing and setup falls back
+    to a source build."""
+    if backend not in SLIM_ELIGIBLE_BACKENDS:
         return None
     os_token, arch_token = host_platform_tokens(host)
-    for artifact in manifest.get("artifacts", []):
-        if (
-            artifact.get("os") == os_token
-            and artifact.get("arch") == arch_token
-            and artifact.get("backend") == "slim"
-            and artifact.get("install_kind") == "slim"
-            and slim_pairing_for_artifact(artifact, host, backend) is not None
-        ):
+    candidates = [
+        artifact
+        for artifact in manifest.get("artifacts", [])
+        if artifact.get("os") == os_token
+        and artifact.get("arch") == arch_token
+        and artifact.get("backend") == "slim"
+        and artifact.get("install_kind") == "slim"
+        and (not host.is_macos or _macos_min_os_ok(host, artifact.get("min_os")))
+    ]
+    for artifact in candidates:
+        if slim_pairing_for_artifact(artifact, host, backend) is not None:
             return artifact
+    if candidates:
+        required_tag = candidates[0].get("requires_llama_tag")
+        log(f"slim bundle requires llama.cpp {required_tag}; install or update llama.cpp first")
     return None
 
 
@@ -598,9 +620,10 @@ def validate_staged_server(staged_root: Path, host: HostInfo) -> None:
 
 
 # ── Slim install wiring (llama ggml runtime into the whisper bin dir) ──
-def link_ggml_runtime(llama_bin_dir: Path, whisper_bin_dir: Path) -> int:
+def link_ggml_runtime(llama_bin_dir: Path, whisper_bin_dir: Path) -> list[str]:
     """Hardlink every ggml library from the llama runtime into the whisper bin
-    dir; returns how many were wired.
+    dir; returns the wired filenames (sorted) so the marker can record them for
+    the sidecar launch guard.
 
     Hardlinks (not symlinks) on purpose: when the llama updater atomically swaps
     its install dir, the old inodes stay alive under these links, so a
@@ -632,17 +655,19 @@ def link_ggml_runtime(llama_bin_dir: Path, whisper_bin_dir: Path) -> int:
             os.link(source, dest)
         except OSError:
             shutil.copy2(source, dest)
-    return len(sources)
+    return [source.name for source in sources]
 
 
-def prepare_runtime_payload(staged_root: Path, host: HostInfo, selection: Any) -> None:
+def prepare_runtime_payload(staged_root: Path, host: HostInfo, selection: Any) -> Any:
     """Slim installs wire the paired llama ggml runtime into the staged bin dir
-    before validation, so the activated tree is self-contained. Fat installs
-    need nothing (the archive already carries its ggml)."""
+    before validation, so the activated tree is self-contained; the returned
+    selection carries the wired filenames for the marker. Fat installs need
+    nothing (the archive already carries its ggml) and return None."""
     if getattr(selection, "install_kind", None) != "slim" or not selection.linked_from:
-        return
+        return None
     linked = link_ggml_runtime(Path(selection.linked_from), runtime_bin_dir(staged_root, host))
-    log(f"slim install: hardlinked {linked} ggml libraries from {selection.linked_from}")
+    log(f"slim install: hardlinked {len(linked)} ggml libraries from {selection.linked_from}")
+    return replace(selection, linked_libraries = tuple(linked))
 
 
 # ── Metadata / marker ──

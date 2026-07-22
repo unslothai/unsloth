@@ -9,6 +9,7 @@ import sys
 import threading
 import time
 import wave
+from pathlib import Path
 
 import numpy as np
 import pytest
@@ -132,6 +133,7 @@ def _slim_install(
     *,
     install_kind = "slim",
     with_ggml = True,
+    linked_libraries = None,
 ) -> str:
     """A managed-looking install tree: marker at the root, server in build/bin."""
     install_dir = tmp_path / "whisper.cpp"
@@ -143,6 +145,8 @@ def _slim_install(
     marker: dict = {"component": "whisper.cpp", "release_tag": "v1.9.1-unsloth.1"}
     if install_kind is not None:
         marker["install_kind"] = install_kind
+    if linked_libraries is not None:
+        marker["linked_libraries"] = linked_libraries
     (install_dir / "UNSLOTH_WHISPER_PREBUILT_INFO.json").write_text(json.dumps(marker))
     if with_ggml:
         names = (
@@ -171,6 +175,37 @@ def test_slim_guard_passes_with_links_in_place(monkeypatch, tmp_path):
     assert ggml_module.slim_runtime_intact(binary) is True
     monkeypatch.setattr(ggml_module, "find_whisper_server_binary", lambda: binary)
     assert ggml_module.ensure_engine_available() == binary
+
+
+def test_slim_guard_verifies_the_marker_linked_libraries(monkeypatch, tmp_path):
+    # New markers record the exact wired filenames; one missing name flips the
+    # install to unavailable even when the legacy core ggml names are present.
+    names = ["libggml.dylib", "libggml-base.dylib", "libggml-metal.dylib"]
+    binary = _slim_install(tmp_path, with_ggml = True, linked_libraries = names)
+    bin_dir = Path(binary).parent
+    for name in names[:-1]:
+        (bin_dir / name).write_bytes(b"ggml")
+    assert ggml_module.slim_runtime_intact(binary) is False  # metal dylib absent
+    (bin_dir / names[-1]).write_bytes(b"ggml")
+    assert ggml_module.slim_runtime_intact(binary) is True
+    monkeypatch.setattr(ggml_module, "find_whisper_server_binary", lambda: binary)
+    assert ggml_module.ensure_engine_available() == binary
+
+
+def test_slim_guard_malformed_linked_libraries_uses_legacy_names(tmp_path):
+    # A non-list / empty field falls back to the per-OS core ggml globs, so old
+    # markers and hand-edited ones keep the pre-field behavior.
+    for bad in ("not-a-list", [], [1, 2]):
+        root = tmp_path / f"case_{type(bad).__name__}_{len(str(bad))}"
+        root.mkdir()
+        binary = _slim_install(root, with_ggml = True, linked_libraries = bad)
+        assert ggml_module.slim_runtime_intact(binary) is True
+        broken = _slim_install(
+            tmp_path / f"broken_{type(bad).__name__}_{len(str(bad))}",
+            with_ggml = False,
+            linked_libraries = bad,
+        )
+        assert ggml_module.slim_runtime_intact(broken) is False
 
 
 def test_slim_guard_ignores_fat_and_markerless_installs(tmp_path):

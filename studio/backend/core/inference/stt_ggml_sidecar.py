@@ -194,18 +194,26 @@ def _whisper_install_marker(binary: str) -> Optional[dict]:
 
 def slim_runtime_intact(binary: str) -> bool:
     """True unless the marker says slim and the linked ggml runtime is missing
-    beside the server. A broken slim install must read as engine-unavailable
-    (reinstall via `unsloth studio update`), never crash at load."""
+    beside the server. New markers record the exact wired filenames
+    (linked_libraries) and every one must be present; legacy markers without
+    the field fall back to the per-OS core ggml name globs. A broken slim
+    install must read as engine-unavailable (reinstall via
+    `unsloth studio update`), never crash at load."""
     marker = _whisper_install_marker(binary)
     if not marker or marker.get("install_kind") != "slim":
         return True
     bin_dir = Path(binary).parent
-    required = (
-        ("ggml.dll", "ggml-base.dll")
-        if sys.platform == "win32"
-        else ("libggml.so*", "libggml-base.so*")
-    )
-    intact = all(any(p.is_file() for p in bin_dir.glob(pattern)) for pattern in required)
+    linked = marker.get("linked_libraries")
+    if isinstance(linked, list) and linked and all(isinstance(name, str) for name in linked):
+        intact = all((bin_dir / name).is_file() for name in linked)
+    else:
+        if sys.platform == "win32":
+            required = ("ggml.dll", "ggml-base.dll")
+        elif sys.platform == "darwin":
+            required = ("libggml*.dylib", "libggml-base*.dylib")
+        else:
+            required = ("libggml.so*", "libggml-base.so*")
+        intact = all(any(p.is_file() for p in bin_dir.glob(pattern)) for pattern in required)
     if not intact:
         logger.warning(
             "slim whisper install is missing its linked ggml runtime at "

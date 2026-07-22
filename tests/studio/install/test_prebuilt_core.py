@@ -1083,6 +1083,7 @@ def test_slim_selection_fields_are_additive(component, tmp_path):
         install_kind = "slim",
         paired_llama_tag = "b10069-mix-fb3d4ca",
         linked_from = "/llama/build/bin",
+        linked_libraries = ("libggml.so.0", "libggml-base.so.0"),
     )
     assert slim.fingerprint() == selection.fingerprint()  # no change to the computation
 
@@ -1090,14 +1091,20 @@ def test_slim_selection_fields_are_additive(component, tmp_path):
     fat_dir.mkdir(), slim_dir.mkdir()
     component.ops.write_prebuilt_metadata(fat_dir, selection)
     fat_marker = json.loads((fat_dir / component.descriptor.metadata_filename).read_text())
-    for key in ("install_kind", "paired_llama_tag", "linked_from"):
+    for key in ("install_kind", "paired_llama_tag", "linked_from", "linked_libraries"):
         assert key not in fat_marker
     component.ops.write_prebuilt_metadata(slim_dir, slim)
     slim_marker = json.loads((slim_dir / component.descriptor.metadata_filename).read_text())
     assert slim_marker["install_kind"] == "slim"
     assert slim_marker["paired_llama_tag"] == "b10069-mix-fb3d4ca"
     assert slim_marker["linked_from"] == "/llama/build/bin"
-    assert set(slim_marker) == set(fat_marker) | {"install_kind", "paired_llama_tag", "linked_from"}
+    assert slim_marker["linked_libraries"] == ["libggml.so.0", "libggml-base.so.0"]
+    assert set(slim_marker) == set(fat_marker) | {
+        "install_kind",
+        "paired_llama_tag",
+        "linked_from",
+        "linked_libraries",
+    }
 
 
 def test_core_slim_hooks_default_inert(component, tmp_path):
