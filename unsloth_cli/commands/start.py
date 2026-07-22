@@ -83,8 +83,7 @@ _SUBAGENT_INSTRUCTIONS = (
     "use the available tools when useful, verify your work, and return a concise result to the "
     "parent agent."
 )
-_CLAUDE_SUBAGENT_MCP_MODULE = "unsloth_cli.claude_subagent_mcp"
-_CLAUDE_SUBAGENT_TOOL = "mcp__plugin_unsloth-local-agent_unsloth__unsloth_agent"
+_CLAUDE_SUBAGENT_NAME = "local-subagent"
 _PI_SUBAGENT_EXTENSION = Path(__file__).parent.parent / "pi_subagent.ts"
 # OpenCode selects a model by "<providerID>/<modelID>". Use a dedicated id to avoid
 # colliding with a user's providers; provider filters are set in the launch-time overlay.
@@ -171,7 +170,7 @@ _PERSIST_OPTION = typer.Option(
 _AS_SUBAGENT_OPTION = typer.Option(
     False,
     "--as-subagent",
-    help = "Keep the coding agent's current model and add Unsloth as a local subagent.",
+    help = "Register the local Unsloth model as a delegatable subagent of the coding agent.",
 )
 
 # Per-agent CLI flag for "run tools without prompting". OpenCode (native --auto is
@@ -1299,10 +1298,18 @@ _DYNAMIC_SECTIONS_FLAG = "--exclude-dynamic-system-prompt-sections"
 
 def _claude_settings_overlay(model_id: str) -> str:
     # Session-only `claude --settings` overlay (command-line tier, no ~/.claude write):
-    # suppress the attribution header, and pin availableModels to the served model so a
-    # user allowlist can't reject it. The pin must be non-empty; [] is ignored.
+    # suppress the attribution header, keep every subagent on the served model (a user
+    # CLAUDE_CODE_SUBAGENT_MODEL pin would otherwise route delegated work off the local
+    # endpoint), and pin availableModels to the served model so a user allowlist can't
+    # reject it. The pin must be non-empty; [] is ignored.
     return json.dumps(
-        {"env": {"CLAUDE_CODE_ATTRIBUTION_HEADER": "0"}, "availableModels": [model_id]}
+        {
+            "env": {
+                "CLAUDE_CODE_ATTRIBUTION_HEADER": "0",
+                "CLAUDE_CODE_SUBAGENT_MODEL": "inherit",
+            },
+            "availableModels": [model_id],
+        }
     )
 
 
@@ -1598,26 +1605,9 @@ def _opencode_subagent_inline_config(path: Path, permission: dict) -> dict:
     return inline
 
 
-def write_claude_subagent_plugin(path: Path, server_env: dict) -> Path:
-    """Write a session plugin that exposes the local Claude child through MCP."""
+def write_claude_subagent_plugin(path: Path, model: dict) -> Path:
+    """Write a session plugin whose native subagent runs on the local model."""
     plugin = path / "unsloth-local-agent"
-    command = sys.executable
-    args = ["-m", _CLAUDE_SUBAGENT_MCP_MODULE]
-    mcp_env = dict(server_env)
-    if _wsl_windows_executable(["claude"]):
-        command = "wsl.exe"
-        args = [
-            "-d",
-            os.environ["WSL_DISTRO_NAME"],
-            "--",
-            sys.executable,
-            "-m",
-            _CLAUDE_SUBAGENT_MCP_MODULE,
-        ]
-        mcp_env["WSLENV"] = _merge_wslenv(
-            os.environ.get("WSLENV", ""),
-            _wsl_bridge_names(server_env, ()),
-        )
     _write_private_json(
         plugin / ".claude-plugin" / "plugin.json",
         {
@@ -1627,30 +1617,20 @@ def write_claude_subagent_plugin(path: Path, server_env: dict) -> Path:
             "author": {"name": "Unsloth AI"},
         },
     )
-    _write_private_json(
-        plugin / ".mcp.json",
-        {
-            "mcpServers": {
-                "unsloth": {
-                    "type": "stdio",
-                    "command": command,
-                    "args": args,
-                    "env": mcp_env,
-                }
-            }
-        },
-    )
-    skill = plugin / "skills" / "local-agent" / "SKILL.md"
-    skill.parent.mkdir(parents = True, exist_ok = True, mode = 0o700)
-    skill.write_text(
-        "---\n"
-        "description: Delegate a task to the local agent powered by Unsloth. Use when the "
-        "user asks to spawn an Unsloth agent or local agent.\n"
-        "---\n\n"
-        "Call the Unsloth local agent tool once with the complete task. Return its result "
-        "to the user without claiming that the cloud parent completed the local work.\n",
-        encoding = "utf-8",
-    )
+    # A native subagent, not an MCP tool: the parent already runs on the local endpoint,
+    # so a `model:` frontmatter pin keeps delegated work on the local model in-process.
+    # json.dumps quotes each value so a `repo:quant` id stays a valid YAML scalar.
+    front = {
+        "name": _CLAUDE_SUBAGENT_NAME,
+        "description": _SUBAGENT_DESCRIPTION,
+        "model": model["id"],
+        "disallowedTools": "EnterPlanMode, ExitPlanMode",
+        "color": "purple",
+    }
+    header = "\n".join(f"{key}: {json.dumps(value)}" for key, value in front.items())
+    agent = plugin / "agents" / f"{_CLAUDE_SUBAGENT_NAME}.md"
+    agent.parent.mkdir(parents = True, exist_ok = True, mode = 0o700)
+    agent.write_text(f"---\n{header}\n---\n\n{_SUBAGENT_INSTRUCTIONS}\n", encoding = "utf-8")
     return plugin
 
 
@@ -2483,40 +2463,37 @@ def claude(
         else "curl -fsSL https://claude.ai/install.sh | bash"
     )
     if as_subagent:
+        # The parent runs on the local endpoint too: a native subagent shares the
+        # session's single ANTHROPIC_BASE_URL, so a local model is only reachable when
+        # the whole session points at it. Everything stays a local process.
         subagent_id = _subagent_model_id(base, key, entry, model, gguf_variant)
         subagent_model = {**entry, "id": subagent_id}
-        window = subagent_model.get("context_length") or subagent_model.get("max_context_length")
-        server_env = {
-            "UNSLOTH_CLAUDE_SUBAGENT_BASE_URL": base,
-            "UNSLOTH_CLAUDE_SUBAGENT_API_KEY": key,
-            "UNSLOTH_CLAUDE_SUBAGENT_MODEL": subagent_id,
-            "UNSLOTH_CLAUDE_SUBAGENT_BYPASS_PERMISSIONS": "1" if yolo else "0",
-        }
-        if window:
-            server_env["UNSLOTH_CLAUDE_SUBAGENT_CONTEXT_WINDOW"] = str(int(window))
+        env = _claude_local_env(base, key, subagent_model)
         with _session_config("claude-subagent", launch, persist = persist) as config:
-            plugin = write_claude_subagent_plugin(config, server_env)
+            plugin = write_claude_subagent_plugin(config, subagent_model)
             command = [
                 "claude",
+                "--model",
+                subagent_id,
+                *_claude_flags(subagent_id),
+                # Before ctx.args: a forwarded `--` would turn later flags positional.
                 "--plugin-dir",
                 _agent_config_path(plugin, ["claude"]),
-                # Before ctx.args: a forwarded `--` would turn later flags positional.
-                "--allowedTools",
-                _CLAUDE_SUBAGENT_TOOL,
                 *_yolo_command_flags("claude", yolo),
                 *ctx.args,
             ]
             typer.echo(
-                "Unsloth is available as a local agent. "
-                "Ask Claude to spawn an Unsloth or local agent."
+                f"Unsloth is available as the local subagent '{_CLAUDE_SUBAGENT_NAME}'. "
+                "Ask Claude to delegate to it."
             )
             _run(
                 base,
                 subagent_model,
-                {},
+                env,
                 command,
                 launch = launch,
                 install_hint = install_hint,
+                unset_env = _CLAUDE_ENV_UNSET,
             )
         return
 

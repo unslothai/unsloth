@@ -86,7 +86,7 @@ Replace `claude` with any supported agent:
 | OpenCode | `unsloth start opencode` |
 | Pi Coding Agent | `unsloth start pi` |
 
-Claude Code, Codex, OpenCode and Pi can keep their current model and use Unsloth as a local
+Claude Code, Codex, OpenCode and Pi can also register a local Unsloth model as a delegatable
 subagent:
 
 ```bash
