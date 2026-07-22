@@ -561,9 +561,13 @@ class TestDetectRocmVersion:
 class TestEnsureRocmTorch:
     """Verify ROCm torch reinstall logic."""
 
+    # _infer_linux_amd_gfx_arch mocked to None: on a real Strix host the live
+    # /proc/cpuinfo would otherwise take the inferred-install path and break
+    # these "must not install" hosts (environment leak, not the code under test).
     @patch.object(stack_mod, "pip_install")
     @patch.object(stack_mod, "_has_usable_nvidia_gpu", return_value = False)
-    def test_no_rocm_skips(self, mock_nvidia, mock_pip):
+    @patch.object(stack_mod, "_infer_linux_amd_gfx_arch", return_value = None)
+    def test_no_rocm_skips(self, mock_infer, mock_nvidia, mock_pip):
         """No ROCm toolchain should skip entirely."""
         # Pin _detect_windows_gfx_arch to None so a real AMD test host's WMI
         # fallback can't defeat the "no ROCm anywhere" premise.
@@ -757,9 +761,10 @@ class TestEnsureRocmTorch:
     @patch.object(stack_mod, "pip_install")
     @patch.object(stack_mod, "_has_usable_nvidia_gpu", return_value = False)
     @patch.object(stack_mod, "_has_rocm_gpu", return_value = True)
+    @patch.object(stack_mod, "_infer_linux_amd_gfx_arch", return_value = None)
     @patch.object(stack_mod, "_detect_rocm_version", return_value = None)
     def test_version_unreadable_prints_warning(
-        self, mock_ver, mock_gpu, mock_nvidia, mock_pip, capsys
+        self, mock_ver, mock_infer, mock_gpu, mock_nvidia, mock_pip, capsys
     ):
         """ROCm detected but version unreadable should print warning and skip."""
         with patch("os.path.isdir", return_value = True):
@@ -1116,7 +1121,8 @@ class TestEnsureRocmTorch:
     @patch.object(stack_mod, "pip_install")
     @patch.object(stack_mod, "_has_usable_nvidia_gpu", return_value = False)
     @patch.object(stack_mod, "_has_rocm_gpu", return_value = False)
-    def test_no_gpu_with_rocm_tools_skips(self, mock_gpu, mock_nvidia, mock_pip):
+    @patch.object(stack_mod, "_infer_linux_amd_gfx_arch", return_value = None)
+    def test_no_gpu_with_rocm_tools_skips(self, mock_infer, mock_gpu, mock_nvidia, mock_pip):
         """ROCm tools present but no actual AMD GPU should skip entirely."""
         # Pin the Windows arch probe to None so a real AMD host's WMI fallback
         # can't defeat the "no actual GPU" premise.
