@@ -208,11 +208,18 @@ def _validate_cache_home(raw_path: str) -> Path:
     if resolved.parent == resolved:
         raise ValueError("Choose a folder inside the filesystem or drive root.")
     try:
-        from hub.storage.scan_folders import is_denied_system_path
-        if is_denied_system_path(str(resolved)):
-            raise ValueError("System folders cannot be used for model downloads.")
+        from hub.storage.scan_folders import (
+            contains_sensitive_path_component,
+            is_denied_system_path,
+        )
     except ImportError:
-        pass
+        contains_sensitive_path_component = is_denied_system_path = None
+    if is_denied_system_path is not None and is_denied_system_path(str(resolved)):
+        raise ValueError("System folders cannot be used for model downloads.")
+    if contains_sensitive_path_component is not None and contains_sensitive_path_component(
+        str(resolved)
+    ):
+        raise ValueError("Credential or config folders cannot be used for model downloads.")
 
     parent = resolved.parent
     if not parent.exists() or not parent.is_dir():
