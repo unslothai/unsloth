@@ -1025,10 +1025,7 @@ with sync_playwright() as p:
         for role in ("assistant", "user"):
             actual = weight_matrix[branch][role]
             if actual != [expected]:
-                fail(
-                    f"chat font weight {branch}/{role}: "
-                    f"expected {expected}, got {actual!r}"
-                )
+                fail(f"chat font weight {branch}/{role}: " f"expected {expected}, got {actual!r}")
     info("OK chat font-weight matrix")
 
     # ─────────────────────────────────────────────────────
