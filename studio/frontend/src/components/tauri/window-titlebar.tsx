@@ -115,7 +115,7 @@ export function WindowTitlebar({
       ? "var(--studio-sidebar-expanded-width,17.5rem)"
       : "var(--studio-sidebar-collapsed-width,3rem)"
     : "0px";
-  const contentBorderLeft = `calc(${sidebarWidth} + 12px)`;
+  const contentBorderLeft = pinned ? `calc(${sidebarWidth} + 12px)` : "0px";
 
   const refreshMaximized = useCallback(async () => {
     if (!enabled) {
@@ -232,10 +232,10 @@ export function WindowTitlebar({
         )}
         aria-label="Window titlebar"
       >
-        {showSidebarSurface && (
+        {showSidebarSurface && pinned && (
           <div
             aria-hidden="true"
-            className="pointer-events-none absolute top-full h-3 w-px -translate-x-px bg-sidebar"
+            className="pointer-events-none absolute top-full size-3 -translate-x-px bg-sidebar"
             style={{ left: sidebarWidth }}
           />
         )}
@@ -246,7 +246,7 @@ export function WindowTitlebar({
             style={{ left: contentBorderLeft, right: 0 }}
           />
         )}
-        {showSidebarSurface && (
+        {showSidebarSurface && pinned && (
           <div
             aria-hidden="true"
             className="pointer-events-none absolute top-full size-3 -translate-x-px rounded-tl-[12px] border-l border-t border-sidebar-border bg-background"
@@ -257,7 +257,7 @@ export function WindowTitlebar({
           <div
             className={cn(
               "pointer-events-auto absolute left-0 top-0 flex h-full min-w-0 items-center",
-              pinned ? "gap-2 px-3" : "justify-center",
+              pinned ? "gap-2 pl-3" : "justify-center",
             )}
             style={{ width: sidebarWidth }}
             onMouseDown={handleDragMouseDown}

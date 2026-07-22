@@ -881,6 +881,104 @@ def test_chat_compare_on_mlx_loads_base_model_side_by_side(monkeypatch):
         ("real_error", 1),
     ],
 )
+def test_inference_local_handles_stream(monkeypatch, chunk_kind, expected_exit):
+    from unsloth_cli.commands import inference as infermod
+    from unsloth_cli._inference import ensure_studio_backend_path
+
+    ensure_studio_backend_path()
+    from core.inference.orchestrator import GenStreamError
+
+    chunks = {
+        "answer": ["answer"],
+        "model_text_error": ["Error: printed by the model, not a backend failure"],
+        "real_error": [GenStreamError("Error: generation failed")],
+    }[chunk_kind]
+    closed = []
+
+    class _FakeBackend:
+        def stream(self, messages, **kwargs):
+            return iter(chunks)
+
+        def close(self):
+            closed.append(True)
+
+    monkeypatch.setattr(
+        infermod,
+        "connect_studio_server",
+        lambda *_a, **_k: (_ for _ in ()).throw(AssertionError("server disabled")),
+    )
+    monkeypatch.setattr(infermod, "load_chat_backend", lambda *a, **k: _FakeBackend())
+
+    result = CliRunner().invoke(
+        _inference_app(),
+        ["fake-model", "hello", "--no-server"],
+    )
+
+    assert result.exit_code == expected_exit, result.output
+    assert closed == [True]
+    if chunk_kind == "real_error":
+        assert result.stdout == "Assistant:\n"
+        assert result.stderr == "Error: generation failed\n"
+    else:
+        assert chunks[0] in result.output
+
+
+@pytest.mark.parametrize("chunk_kind", ["answer", "model_text_error", "real_error"])
+def test_chat_local_handles_stream(monkeypatch, chunk_kind):
+    from unsloth_cli._inference import ensure_studio_backend_path
+
+    ensure_studio_backend_path()
+    from core.inference.orchestrator import GenStreamError
+
+    first_chunk = {
+        "answer": "answer",
+        "model_text_error": "Error: printed by the model, not a backend failure",
+        "real_error": GenStreamError("Error: generation failed"),
+    }[chunk_kind]
+    calls, closed = [], []
+
+    class _FakeChatBackend:
+        def stream(self, messages, **kwargs):
+            calls.append([dict(message) for message in messages])
+            return iter([first_chunk if len(calls) == 1 else "second answer"])
+
+        def close(self):
+            closed.append(True)
+
+    monkeypatch.setattr(chatmod, "resolve_model_config", lambda *a, **k: _FakeConfig())
+    monkeypatch.setattr(chatmod, "connect_studio_server", lambda *a, **k: None)
+    monkeypatch.setattr(chatmod, "load_chat_backend", lambda *a, **k: _FakeChatBackend())
+    monkeypatch.setattr(chatmod, "_compare_needs_second_model", lambda: False)
+
+    result = CliRunner().invoke(
+        _chat_app(),
+        ["fake-model"],
+        input = "first\nsecond\n/exit\n",
+    )
+
+    assert result.exit_code == 0, result.output
+    assert closed == [True]
+    if chunk_kind == "real_error":
+        assert calls[1] == [{"role": "user", "content": "second"}]
+        assert "(error: generation failed)" in result.output
+        assert "Error: generation failed" not in result.output
+    else:
+        assert calls[1] == [
+            {"role": "user", "content": "first"},
+            {"role": "assistant", "content": first_chunk},
+            {"role": "user", "content": "second"},
+        ]
+        assert first_chunk in result.output
+
+
+@pytest.mark.parametrize(
+    ("chunk_kind", "expected_exit"),
+    [
+        ("answer", 0),
+        ("model_text_error", 0),
+        ("real_error", 1),
+    ],
+)
 def test_inference_under_mlx_launch_handles_stream(monkeypatch, chunk_kind, expected_exit):
     from unsloth_cli.commands import inference as infermod
     from unsloth_cli._inference import ensure_studio_backend_path

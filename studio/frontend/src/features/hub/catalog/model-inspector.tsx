@@ -17,9 +17,9 @@ import {
   formatRelativeShort,
   formatShortDate,
 } from "@/features/hub/lib/format";
-import { cn, formatCompact } from "@/lib/utils";
-import { confirmExternalLink } from "../stores/external-link-confirm";
 import { useHfTokenStore } from "@/features/hub/stores/hf-token-store";
+import { Tick02Icon } from "@/lib/tick-icon";
+import { cn, formatCompact } from "@/lib/utils";
 import {
   Calendar03Icon,
   CalendarAdd01Icon,
@@ -37,10 +37,10 @@ import {
   RamMemoryIcon,
   Share05Icon,
 } from "@hugeicons/core-free-icons";
-import { Tick02Icon } from "@/lib/tick-icon";
 import type { IconSvgElement } from "@hugeicons/react";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { memo, useDeferredValue, useMemo } from "react";
+import { selectActiveJob, useDownloadManagerStore } from "../download-manager";
 import { useCopyFeedback } from "../hooks/use-copy-feedback";
 import { useDatasetSize } from "../hooks/use-dataset-size";
 import {
@@ -49,8 +49,8 @@ import {
   formatPipelineTag,
   parseLanguageTags,
 } from "../lib/view-models";
+import { confirmExternalLink } from "../stores/external-link-confirm";
 import type { SelectedModelView } from "../types";
-import { selectActiveJob, useDownloadManagerStore } from "../download-manager";
 import { DatasetDownloadSection } from "./dataset-download-section";
 import { DownloadSection } from "./download-section";
 import { LocalDatasetCard } from "./local-dataset-card";
@@ -58,6 +58,13 @@ import { LocalOnDeviceCard } from "./local-on-device-card";
 import { ModelReadme } from "./model-readme";
 import { OwnerAvatar } from "./owner-avatar";
 import { AccessChip, CapabilityPill } from "./shared";
+
+// HF pipeline_tag values authoritative for embedding-only repos; capability
+// labels (code/vision/audio) can leak onto them via name or tags.
+const EMBEDDING_PIPELINE_TAGS: ReadonlySet<string> = new Set([
+  "feature-extraction",
+  "sentence-similarity",
+]);
 
 function ViewRepositoryButton({
   repoId,
@@ -392,6 +399,7 @@ export type ModelInspectorActions = {
     expectedBytes?: number;
   }) => void;
   onUseInChat: () => void;
+  onEject?: () => void;
   onTrain?: () => void;
   onInventoryChange?: () => void;
   onSearchHub?: (query: string) => void;
@@ -426,6 +434,7 @@ export const ModelInspector = memo(function ModelInspector({
     onLoad,
     onLoadLocal,
     onUseInChat,
+    onEject,
     onTrain,
     onInventoryChange,
     onSearchHub,
@@ -510,7 +519,9 @@ export const ModelInspector = memo(function ModelInspector({
     ? formatRelativeShort(model.updatedAt)
     : formatLocalUpdated(model.localUpdatedAt);
   const updatedLabel = updatedRaw === "Unknown update" ? "N/A" : updatedRaw;
-  const createdLabel = model.createdAt ? formatShortDate(model.createdAt) : null;
+  const createdLabel = model.createdAt
+    ? formatShortDate(model.createdAt)
+    : null;
   const libraryLabel = isDataset ? null : formatLibrary(model.libraryName);
   const gatedAccess = model.gated !== false && model.gated !== undefined;
   const downloadsTooltip =
@@ -531,11 +542,27 @@ export const ModelInspector = memo(function ModelInspector({
     ? formatCompact(model.totalParams)
     : "N/A";
   const unslothSupported = unslothSupport.status !== "unsupported";
+  // Embedding-only non-GGUF repos have no generative head, so keep them out of
+  // the Run gate. Prefer the pipeline tag, else the capability heuristic.
+  const isEmbeddingOnly =
+    !model.isGguf &&
+    model.capabilities.some((c) => c.key === "embedding") &&
+    (EMBEDDING_PIPELINE_TAGS.has(model.pipelineTag?.toLowerCase() ?? "") ||
+      !model.capabilities.some(
+        (c) =>
+          c.key === "conversational" ||
+          c.key === "tools" ||
+          c.key === "reasoning" ||
+          c.key === "code" ||
+          c.key === "vision" ||
+          c.key === "audio",
+      ));
   // Chat-only hosts (no supported GPU / usable MLX) run inference only through
   // llama.cpp, so only GGUF is loadable.
   const canRunModel =
     !isDataset &&
     (model.runtimeCapabilities?.canChat ?? true) &&
+    !isEmbeddingOnly &&
     (model.isGguf || (!chatOnly && unslothSupported));
   const canTrainModel =
     !isDataset &&
@@ -673,6 +700,7 @@ export const ModelInspector = memo(function ModelInspector({
               }
               onLoad={onLoadLocal}
               onUseInChat={onUseInChat}
+              onEject={onEject}
               onTrain={
                 model.isDownloaded && canTrainModel ? onTrain : undefined
               }
@@ -696,6 +724,7 @@ export const ModelInspector = memo(function ModelInspector({
               knownBytes={model.cachedBytes}
               onLoad={model.isLocal ? onLoadLocal : onLoad}
               onUseInChat={onUseInChat}
+              onEject={onEject}
               onTrain={
                 model.isDownloaded && canTrainModel ? onTrain : undefined
               }

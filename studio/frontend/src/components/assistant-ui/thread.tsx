@@ -102,6 +102,7 @@ import { applyQwenThinkingParams } from "@/features/chat/utils/qwen-params";
 import { isTauri } from "@/lib/api-base";
 import { copyToClipboard } from "@/lib/copy-to-clipboard";
 import { MicIcon } from "@/lib/mic-icon";
+import { downloadFile, isDownloadCancelled } from "@/lib/native-files";
 import { toast } from "@/lib/toast";
 import { Tick02Icon } from "@/lib/tick-icon";
 import { cn } from "@/lib/utils";
@@ -175,6 +176,7 @@ import {
 } from "react";
 import { create } from "zustand";
 import { extractTaggedText, updateThreadMessage } from "@/features/chat/utils/update-thread-message";
+import { useIsMobile } from "@/hooks/use-mobile";
 
 // True while a file is dragged anywhere over the chat page, so the composer
 // can show its "Drop files here" affordance.
@@ -1369,7 +1371,13 @@ export const ProjectComposer: FC<{
 }> = ({ disabled, placeholder }) => {
   return (
     <GeneratedImageOverlayProvider>
-      <ComposerAnimated disabled={disabled} placeholder={placeholder} />
+      {/* New chat in a project: queuing follow-ups here misbinds the thread,
+          so the queue only runs once the user is inside a chat session. */}
+      <ComposerAnimated
+        disabled={disabled}
+        placeholder={placeholder}
+        disableQueue
+      />
     </GeneratedImageOverlayProvider>
   );
 };
@@ -1379,11 +1387,17 @@ const ComposerAnimated: FC<{
   placeholder?: string;
   threadId?: string | null;
   menuSide?: "top" | "bottom";
-}> = ({ disabled, threadId, menuSide }) => {
+  disableQueue?: boolean;
+}> = ({ disabled, threadId, menuSide, disableQueue }) => {
   return (
     <div className="relative mx-auto min-w-0 w-full max-w-[46rem]">
       <div className="relative z-10 w-full">
-        <Composer disabled={disabled} threadId={threadId} menuSide={menuSide} />
+        <Composer
+          disabled={disabled}
+          threadId={threadId}
+          menuSide={menuSide}
+          disableQueue={disableQueue}
+        />
       </div>
     </div>
   );
@@ -1418,7 +1432,8 @@ const Composer: FC<{
   placeholder?: string;
   threadId?: string | null;
   menuSide?: "top" | "bottom";
-}> = ({ disabled, threadId, menuSide }) => {
+  disableQueue?: boolean;
+}> = ({ disabled, threadId, menuSide, disableQueue }) => {
   const aui = useAui();
   const pageDragging = useContext(PageDragContext);
   const { overlay, closeOverlay } = useGeneratedImageOverlay();
@@ -1434,18 +1449,17 @@ const Composer: FC<{
   const artifactsEnabled = useChatRuntimeStore((s) => s.artifactsEnabled);
   const mcpEnabledForChat = useChatRuntimeStore((s) => s.mcpEnabledForChat);
   const ragEnabled = useChatRuntimeStore((s) => s.ragEnabled);
-  const permissionMode = useChatRuntimeStore((s) => s.permissionMode);
-  // More than 4 pills: collapse to icons only. Search and Code always show; the
-  // permission pill shows in every mode except "off" (it renders null there);
-  // Images, RAG, Canvas and MCP are conditional.
-  const pillsCompact =
-    2 +
-      (permissionMode !== "off" ? 1 : 0) +
-      (ragEnabled ? 1 : 0) +
-      (supportsBuiltinImageGeneration ? 1 : 0) +
-      (artifactsEnabled ? 1 : 0) +
-      (mcpEnabledForChat ? 1 : 0) >
-    4;
+  // More than 4 pills: collapse to icons only. Search, Code, and permissions
+  // always show; Images, RAG, Canvas and MCP are conditional. Narrow viewports
+  // collapse too: the labelled row is wider than a phone-width composer.
+  const isMobile = useIsMobile();
+  const pillCount =
+    3 +
+    (ragEnabled ? 1 : 0) +
+    (supportsBuiltinImageGeneration ? 1 : 0) +
+    (artifactsEnabled ? 1 : 0) +
+    (mcpEnabledForChat ? 1 : 0);
+  const pillsCompact = isMobile || pillCount > 4;
   const activeThreadId = useChatRuntimeStore((s) => s.activeThreadId);
   const setPendingImageEditReference = useChatRuntimeStore(
     (s) => s.setPendingImageEditReference,
@@ -1556,20 +1570,6 @@ const Composer: FC<{
     const t = setTimeout(() => writeComposerDraft(draftKey, composerText), 300);
     return () => clearTimeout(t);
   }, [composerText, draftKey]);
-  // Two-row layout shows once the input wraps or a tool is on. Tools can
-  // pre-select before a model loads, so an active toggle expands it either way.
-  // Keep the composer expanded whenever the permission pill is visible.
-  const composerExpanded =
-    isMultiline ||
-    hasAttachments ||
-    hasPendingAudio ||
-    toolsEnabled ||
-    codeToolsEnabled ||
-    imageToolsEnabled ||
-    ragEnabled ||
-    artifactsEnabled ||
-    mcpEnabledForChat ||
-    permissionMode !== "off";
   // react-textarea-autosize re-measures only on value change or window resize,
   // not on the width swap from expanding, so it keeps the taller height and
   // leaves a stray blank row. Nudge a resize whenever input width changes.
@@ -1742,6 +1742,11 @@ const Composer: FC<{
 
       if (threadIsRunning || promptQueueActive) {
         event.preventDefault();
+        // Project new-chat composer: never queue, just ask the user to wait.
+        if (disableQueue) {
+          toast.error("Wait for the current response to finish");
+          return;
+        }
         if (!canQueueCurrentPrompt) {
           if (overlay || hasAttachments || hasPendingAudio) {
             toast.error(
@@ -1819,6 +1824,7 @@ const Composer: FC<{
       composerText,
       createPromptQueueTarget,
       disabled,
+      disableQueue,
       hasAttachments,
       hasPendingAudio,
       interceptSend,
@@ -1838,9 +1844,12 @@ const Composer: FC<{
 
   const startQueue = useCallback(
     (items: string[], waitForCurrentRun = threadIsRunning) => {
+      // Saved-prompt Run-list calls this directly, so honour disableQueue here
+      // too: queuing from the project new-chat composer misbinds the thread.
+      if (disableQueue) return;
       startPromptQueue(items, createPromptQueueTarget(), waitForCurrentRun);
     },
-    [createPromptQueueTarget, threadIsRunning],
+    [createPromptQueueTarget, threadIsRunning, disableQueue],
   );
 
   const queueContextValue: PromptQueueCallbacks = { startQueue, stopQueue };
@@ -1856,27 +1865,25 @@ const Composer: FC<{
       <ToolStatusDisplay />
       <div
         className="unsloth-composer-line"
-        data-expanded={composerExpanded ? "true" : "false"}
+        // The permission pill is always visible, so keep the two-row layout
+        // expanded and leave the primary tool toggles accessible in every mode.
+        data-expanded="true"
       >
         <div
           className="unsloth-composer-left"
           data-pill-compact={pillsCompact ? "true" : undefined}
         >
           <ComposerToolsMenu side={effectiveMenuSide} />
-          {/* Permission-level pill: always visible, even while the pill row
-              is collapsed; opens the permission level dropdown. */}
+          {/* Permission-level pill: always visible and opens the permission
+              level dropdown. */}
           <PermissionModeComposerPill side={effectiveMenuSide} />
-          {composerExpanded ? (
-            <>
-              <WebSearchToggle />
-              <CodeToolsToggle />
-              <ImagesToggle />
-              <KnowledgeBaseComposerButton side={effectiveMenuSide} />
-              {artifactsEnabled ? <ArtifactsToggle /> : null}
-              {mcpEnabledForChat ? (
-                <McpComposerButton side={effectiveMenuSide} />
-              ) : null}
-            </>
+          <WebSearchToggle />
+          <CodeToolsToggle />
+          <ImagesToggle />
+          <KnowledgeBaseComposerButton side={effectiveMenuSide} />
+          {artifactsEnabled ? <ArtifactsToggle /> : null}
+          {mcpEnabledForChat ? (
+            <McpComposerButton side={effectiveMenuSide} />
           ) : null}
         </div>
         <ComposerPrimitive.Input
@@ -1902,8 +1909,11 @@ const Composer: FC<{
             isComposing ||
             hasPendingAttachments
           }
-          queueDisabled={!canQueueCurrentPrompt}
+          // disableQueue (project new-chat composer) also blocks the queue
+          // button, so a running thread shows Stop instead of Queue.
+          queueDisabled={disableQueue || !canQueueCurrentPrompt}
           onQueueClick={() => {
+            if (disableQueue) return;
             const queuedPrompt = composerText.trim();
             if (queuedPrompt.length === 0) {
               return;
@@ -2930,9 +2940,9 @@ const ComposerToolsMenu: FC<{ side?: "top" | "bottom" }> = ({
           <DropdownMenuItem
             onSelect={() => {
               if (!activeThreadId) return;
-              exportConversationRawJsonl(activeThreadId).catch(() =>
-                toast.error("Export failed."),
-              );
+              exportConversationRawJsonl(activeThreadId).catch((error) => {
+                if (!isDownloadCancelled(error)) toast.error("Export failed.");
+              });
             }}
           >
             Raw JSONL
@@ -2940,9 +2950,9 @@ const ComposerToolsMenu: FC<{ side?: "top" | "bottom" }> = ({
           <DropdownMenuItem
             onSelect={() => {
               if (!activeThreadId) return;
-              exportConversationCsv(activeThreadId).catch(() =>
-                toast.error("Export failed."),
-              );
+              exportConversationCsv(activeThreadId).catch((error) => {
+                if (!isDownloadCancelled(error)) toast.error("Export failed.");
+              });
             }}
           >
             CSV
@@ -2950,9 +2960,9 @@ const ComposerToolsMenu: FC<{ side?: "top" | "bottom" }> = ({
           <DropdownMenuItem
             onSelect={() => {
               if (!activeThreadId) return;
-              exportConversationShareGPT(activeThreadId).catch(() =>
-                toast.error("Export failed."),
-              );
+              exportConversationShareGPT(activeThreadId).catch((error) => {
+                if (!isDownloadCancelled(error)) toast.error("Export failed.");
+              });
             }}
           >
             ShareGPT JSONL
@@ -3915,6 +3925,21 @@ const EditAssistantMessageButton: FC = () => {
   );
 };
 
+async function exportMessageMarkdown(content: string): Promise<void> {
+  try {
+    await downloadFile(
+      content,
+      `message-${Date.now()}.md`,
+      "text/markdown",
+    );
+  } catch (error) {
+    if (!isDownloadCancelled(error)) {
+      toast.error("Could not save Markdown export.", {
+        description: error instanceof Error ? error.message : String(error),
+      });
+    }
+  }
+}
 const AssistantActionBar: FC = () => {
   const { forkMessage, forkDisabled } = useForkMessageAction();
   const [detailsOpen, setDetailsOpen] = useState(false);
@@ -3983,7 +4008,10 @@ const AssistantActionBar: FC = () => {
               <GitBranchIcon strokeWidth={1.75} className="size-icon" />
               Fork in new chat
             </ActionBarMorePrimitive.Item>
-            <ActionBarPrimitive.ExportMarkdown asChild={true}>
+            <ActionBarPrimitive.ExportMarkdown
+              asChild={true}
+              onExport={exportMessageMarkdown}
+            >
               <ActionBarMorePrimitive.Item className="aui-action-bar-more-item flex cursor-pointer select-none items-center gap-2 rounded-[12px] px-3 py-2 text-sm outline-none hover:bg-accent hover:text-accent-foreground focus:bg-accent focus:text-accent-foreground">
                 <HugeiconsIcon
                   icon={Download01Icon}
