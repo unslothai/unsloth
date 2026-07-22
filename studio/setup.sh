@@ -251,6 +251,35 @@ _resolve_cuda_archs() {
     printf '%s' "$_archs"
 }
 
+# Opt-in staged GPU smoke test after a source build (#5854 gap 2). Default off:
+# llama-server's first GPU forward pass JIT-compiles CUDA kernels and stalls
+# installs for minutes on Blackwell. Same env as install_llama_prebuilt.py.
+_staged_validation_enabled() {
+    case "${UNSLOTH_LLAMA_STAGED_VALIDATION:-}" in
+        1|true|TRUE|yes|YES|on|ON) return 0 ;;
+        *) return 1 ;;
+    esac
+}
+
+# Map the source-build GPU backend to install_llama_prebuilt --install-kind so
+# validate_server enables --n-gpu-layers for the right backends.
+_source_smoke_install_kind() {
+    if [ "${_TRY_METAL_CPU_FALLBACK:-false}" = true ]; then
+        printf '%s' "macos-arm64"
+        return 0
+    fi
+    case "${GPU_BACKEND:-}" in
+        cuda)
+            case "$(uname -m 2>/dev/null || true)" in
+                aarch64|arm64) printf '%s' "linux-arm64-cuda" ;;
+                *) printf '%s' "linux-cuda" ;;
+            esac
+            ;;
+        rocm) printf '%s' "linux-rocm" ;;
+        *) printf '%s' "" ;;
+    esac
+}
+
 # Run a GPU probe under a 10s timeout when `timeout` is available so a wedged
 # NVIDIA driver cannot hang setup; fall back to a bare call where it is not.
 _setup_run_smi() {
@@ -1892,6 +1921,36 @@ else
             # Best-effort: the DiffusionGemma visual server (an example target, present
             # on llama.cpp PR #24423). No-op when the diffusion example is not configured.
             run_quiet_no_exit "build diffusion visual server" cmake --build "$_BUILD_TMP/build" --config Release --target llama-diffusion-gemma-visual-server -j"$NCPU" || true
+        fi
+
+        # Opt-in post-build GPU smoke test (#5854 gap 2). Default off (Blackwell
+        # CUDA JIT stalls). On failure, reuse the CPU fallback path so the user
+        # still gets a working llama-server. Runs before the install swap.
+        if [ "$BUILD_OK" = true ] && _staged_validation_enabled; then
+            _FB_LABEL="$(_gpu_fallback_label)"
+            _SMOKE_KIND="$(_source_smoke_install_kind)"
+            if [ -n "$_FB_LABEL" ]; then
+                _SMOKE_CMD=(
+                    python "$SCRIPT_DIR/install_llama_prebuilt.py"
+                    --validate-install "$_BUILD_TMP"
+                )
+                [ -n "$_SMOKE_KIND" ] && _SMOKE_CMD+=(--install-kind "$_SMOKE_KIND")
+                if ! run_quiet_no_exit "validate source llama.cpp" "${_SMOKE_CMD[@]}"; then
+                    substep "$_FB_LABEL source build failed smoke test; retrying CPU build..." "$C_WARN"
+                    _TRY_METAL_CPU_FALLBACK=false
+                    rm -rf "$_BUILD_TMP/build"
+                    if run_quiet_no_exit "cmake llama.cpp (cpu fallback)" cmake $CMAKE_GENERATOR_ARGS -S "$_BUILD_TMP" -B "$_BUILD_TMP/build" $CPU_FALLBACK_CMAKE_ARGS; then
+                        _BUILD_DESC="building (CPU fallback after $_FB_LABEL smoke failed)"
+                        GPU_BACKEND=""
+                        run_quiet_no_exit "build llama-server (cpu fallback)" cmake --build "$_BUILD_TMP/build" --config Release --target llama-server -j"$NCPU" || BUILD_OK=false
+                        if [ "$BUILD_OK" = true ]; then
+                            run_quiet_no_exit "build llama-quantize (cpu fallback)" cmake --build "$_BUILD_TMP/build" --config Release --target llama-quantize -j"$NCPU" || true
+                        fi
+                    else
+                        BUILD_OK=false
+                    fi
+                fi
+            fi
         fi
 
         # Swap only after build succeeds -- preserves existing install on failure
