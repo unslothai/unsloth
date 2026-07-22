@@ -1,0 +1,57 @@
+ARG BASE_DOCKER=rocm/vllm-dev:nightly_main_20250914
+FROM $BASE_DOCKER
+
+# ARG GPU_ARCH=gfx942
+WORKDIR /unsloth-workspace
+
+# Single RUN so the apt index can't go stale; cleanup keeps the layer small.
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends zip unzip wget build-essential cmake \
+    && rm -rf /var/lib/apt/lists/*
+
+ARG COMPUTE_BACKEND="hip"
+ARG BNB_ROCM_ARCHS="gfx942"
+# bnb PR #1887 floor (0.50.0.dev0); earlier builds NaN at 4-bit GEMV decode on AMD.
+ARG BNB_COMMIT="713a3b83e405d32449e1cb392e5e25985ab927c6"
+ARG BNB_REPO="https://github.com/bitsandbytes-foundation/bitsandbytes.git"
+
+# Shallow-fetch only the pinned commit.
+RUN mkdir bitsandbytes \
+    && cd bitsandbytes \
+    && git init \
+    && git remote add origin ${BNB_REPO} \
+    && git fetch --depth 1 origin ${BNB_COMMIT} \
+    && git checkout FETCH_HEAD \
+    && rm -rf .git \
+    && cmake -S . -B build \
+         -DCOMPUTE_BACKEND=${COMPUTE_BACKEND} \
+         -DBNB_ROCM_ARCH="${BNB_ROCM_ARCHS}" \
+    && cmake --build build -j"$(nproc)" \
+    && pip install -e . \
+    && rm -rf build
+
+ARG UNSLOTH_REPO="https://github.com/unslothai/unsloth.git"
+ARG UNSLOTH_BRANCH="main"
+
+
+# huggingfacenotorch pulls the HF training stack without torch/torchvision, so
+# the base image's ROCm torch survives; bare `-e .` can't train.
+RUN git clone --branch ${UNSLOTH_BRANCH} --depth 1 ${UNSLOTH_REPO} unsloth \
+    && cd unsloth \
+    && rm -rf .git \
+    && pip install -e '.[huggingfacenotorch]'
+
+
+ARG UNSLOTH_ZOO_REPO="https://github.com/unslothai/unsloth-zoo.git"
+ARG UNSLOTH_ZOO_BRANCH="main"
+
+RUN git clone --branch ${UNSLOTH_ZOO_BRANCH} --depth 1 ${UNSLOTH_ZOO_REPO} unsloth-zoo \
+    && cd unsloth-zoo \
+    && rm -rf .git \
+    && pip install -e .
+
+
+# Verify all three installed.
+RUN for pkg in bitsandbytes unsloth unsloth-zoo; do \
+        pip show "$pkg" >/dev/null || { echo "$pkg not installed!"; exit 1; }; \
+    done
