@@ -163,6 +163,9 @@ class TestDeviceNameFallback:
             "AMD Radeon 8060S",
             "Radeon 8050S Graphics",  # cut-down Strix Halo SKU
             "AMD Radeon 8050S",
+            # gfx1151 Gorgon Halo (Ryzen AI Max 400 refresh)
+            "Radeon 8065S Graphics",  # Ryzen AI Max+ 495
+            "AMD Radeon 8065S",
             # case variants
             "RADEON 8060S GRAPHICS",
             "radeon 8050s",

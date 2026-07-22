@@ -1498,7 +1498,7 @@ if (-not $HasNvidiaSmi) {
             $nameArchTable = @(
                 @{ P = "9070 XT|9080";                                        A = "gfx1201" }  # RDNA 4 (Radeon RX 9070 XT / 9080)
                 @{ P = "9070|9060";                                           A = "gfx1200" }  # RDNA 4 (Radeon RX 9070 / 9060)
-                @{ P = "8060S|8050S|8040S|Strix Halo|Ryzen AI Max|AI Max"; A = "gfx1151" }  # RDNA 3.5 (Strix Halo: Radeon 8060S/8050S/8040S iGPU, Ryzen AI Max+)
+                @{ P = "8065S|8060S|8050S|8040S|Strix Halo|Ryzen AI Max|AI Max"; A = "gfx1151" }  # RDNA 3.5 (Strix Halo + Gorgon Halo: Radeon 8065S/8060S/8050S/8040S iGPU, Ryzen AI Max / Max+)
                 @{ P = "890M|880M|860M|840M|Strix Point|Krackan|HX 37[05]|AI 9 HX|AI 9 36[05]|AI 7 35[05]|AI 5 34[05]|AI 7 PRO 35|AI 5 33"; A = "gfx1150" }  # RDNA 3.5 (Strix/Krackan Point: Radeon 890M/880M iGPU, Ryzen AI 9 HX 370/375)
                 @{ P = "RX 7900|RX 7800|RX 7700(?!S)|PRO W7900|PRO W7800|PRO W7700"; A = "gfx1100" }  # RDNA 3 desktop / workstation (Navi 31)
                 @{ P = "RX 7600|RX 7700S|RX 7650|PRO W7600|PRO W7500|PRO V710"; A = "gfx1102" }  # RDNA 3 (Navi 33)
@@ -2774,6 +2774,7 @@ if ((Test-Path -LiteralPath $VenvDir -PathType Container) -and -not $NoTorchMode
                 "gfx1201", "gfx1200",           # RDNA 4
                 "gfx1151", "gfx1150",           # RDNA 3.5 (Strix Halo/Point)
                 "gfx1103", "gfx1102", "gfx1101", "gfx1100",  # RDNA 3
+                "gfx1036", "gfx1035", "gfx1034", "gfx1033", "gfx1032", "gfx1031", "gfx1030",  # RDNA 2 (RX 6000)
                 "gfx90a", "gfx908"              # MI200 / MI100
             )
             if ($script:ROCmGfxArch -and ($_rocmWheelArches -contains $script:ROCmGfxArch)) {
@@ -3064,6 +3065,10 @@ if (-not $TorchIndexPinned -and ($HasROCm -or $ROCmGfxArch) -and $CuTag -eq "cpu
         "gfx1151" = "gfx1151";     "gfx1150" = "gfx1150"      # RDNA 3.5 (Strix Halo/Point)
         "gfx1103" = "gfx110X-all"; "gfx1102" = "gfx110X-all"  # RDNA 3
         "gfx1101" = "gfx110X-all"; "gfx1100" = "gfx110X-all"
+        "gfx1036" = "gfx103X-all"; "gfx1035" = "gfx103X-all"  # RDNA 2 (RX 6000)
+        "gfx1034" = "gfx103X-all"; "gfx1033" = "gfx103X-all"
+        "gfx1032" = "gfx103X-all"; "gfx1031" = "gfx103X-all"
+        "gfx1030" = "gfx103X-all"
         "gfx90a"  = "gfx90a";      "gfx908"  = "gfx908"       # MI200/MI100
     }
     # gfx120X and Strix have a null _grouped_mm kernel on torch <2.11.0.
@@ -3098,7 +3103,7 @@ if (-not $TorchIndexPinned -and ($HasROCm -or $ROCmGfxArch) -and $CuTag -eq "cpu
         # GPU arch detected but not in the supported wheel map — warn explicitly
         # so the user knows why they are getting CPU PyTorch instead of ROCm.
         substep "[WARN] AMD GPU ($ROCmGfxArch) not in supported arch list -- falling back to CPU-only PyTorch" "Yellow"
-        substep "       Supported: gfx1200/1201 (RDNA 4), gfx1150/1151 (RDNA 3.5), gfx1100-1103 (RDNA 3), gfx90a, gfx908" "Yellow"
+        substep "       Supported: gfx1200/1201 (RDNA 4), gfx1150/1151 (RDNA 3.5), gfx1100-1103 (RDNA 3), gfx1030-1036 (RDNA 2), gfx90a, gfx908" "Yellow"
     } else {
         # HIP SDK present ($HasROCm=true via amd-smi) but gcnArchName was not
         # readable — warn rather than silently falling back to CPU PyTorch.

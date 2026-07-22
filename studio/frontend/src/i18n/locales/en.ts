@@ -32,11 +32,11 @@ export const en = {
       runOptions: "Run options",
     },
     navigation: {
-      newChat: "New Chat",
+      newChat: "New chat",
       returnToChat: "Return to Chat",
       compare: "Compare",
       search: "Search",
-      hub: "Hub",
+      hub: "Models",
       train: "Train",
       recipes: "Recipes",
       export: "Export",
@@ -182,7 +182,7 @@ export const en = {
         "Used to load gated models and push artifacts.",
       hideToken: "Hide token",
       showToken: "Show token",
-      tokenSaved: "Token saved",
+      tokenValidated: "Token validated",
       password: "Password",
       passwordDescription: "Change the password for this Unsloth account.",
       passwordDialog: {
@@ -1053,7 +1053,8 @@ export const en = {
       continueAction: "Continue Training",
       cancelAction: "Cancel Training",
       stopTitle: "Stop Training",
-      stopDescription: "Choose how you want to stop the current training run.",
+      stopDescription:
+        "Choose how you want to stop the current training run. Stop and Save writes a checkpoint you can resume from later; Stop cannot be resumed.",
       stopAction: "Stop",
       stopping: "Stopping...",
       stopAndSave: "Stop and Save",

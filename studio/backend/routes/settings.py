@@ -416,6 +416,11 @@ def update_embedding_model(
             log = logger,
         ) from exc
     hf_token = (payload.hf_token or "").strip() or None
+    from utils.utils import hf_env_offline
+
+    # Offline, both the Hub malware scan and the is-embedding check are unreachable and degrade
+    # to the local cache below; capture the state once.
+    local_only_load = hf_env_offline()
     # The env/default model needs no verification; saving it is a no-op override.
     # A local GGUF on the llama-server backend is accepted as-is: it is exactly
     # what the backend loads, and HF metadata cannot verify a local path.
@@ -439,26 +444,41 @@ def update_embedding_model(
         # Fall back to the loader's own token so a gated/private repo is actually scanned
         # (a token-less scan fails open for exactly the repo that would still load).
         scan_token = hf_token or _ambient_hf_token()
-        # Include the ST module dirs (0_Transformer/) so a flagged pickle directly under
-        # one blocks instead of passing as an unreferenced nested shard.
-        load_subdirs = tuple(
-            dict.fromkeys(
-                (
-                    *security_load_subdirs(model, scan_token),
-                    *_st_module_subdirs(model, scan_token),
+        # Offline: subdir probes would hit the network and hang; the offline gate walks the
+        # whole cached snapshot, so no load-subdir hints are needed.
+        if local_only_load:
+            load_subdirs = ()
+        else:
+            # Include ST module dirs (0_Transformer/) so a flagged pickle directly under one
+            # blocks instead of passing as an unreferenced nested shard.
+            load_subdirs = tuple(
+                dict.fromkeys(
+                    (
+                        *security_load_subdirs(model, scan_token),
+                        *_st_module_subdirs(model, scan_token),
+                    )
                 )
             )
-        )
-        if evaluate_file_security(model, hf_token = scan_token, load_subdirs = load_subdirs).blocked:
+        if evaluate_file_security(
+            model,
+            hf_token = scan_token,
+            load_subdirs = load_subdirs,
+            local_only_load = local_only_load,
+        ).blocked:
             # 403, not 409: the client routes every 409 into the forceable "save anyway"
             # flow, but this block is a hard, non-forceable security refusal.
-            raise HTTPException(
-                status_code = 403,
+            if local_only_load:
+                detail = (
+                    f"{model!r} has cached pickle weights that cannot be security-scanned "
+                    "offline and no safetensors alternative, so it cannot be used as the "
+                    "embedding model. Re-download it with safetensors weights while online."
+                )
+            else:
                 detail = (
                     f"{model!r} is flagged as unsafe by Hugging Face's security scan and "
                     "cannot be used as the embedding model."
-                ),
-            )
+                )
+            raise HTTPException(status_code = 403, detail = detail)
     if model != default_embedding_model() and not payload.force and not is_local_gguf:
         from core.rag import config as rag_config
 
@@ -468,15 +488,28 @@ def update_embedding_model(
         # which would wrongly 409 a valid online GGUF embedder.
         gguf_named = _llama_backend_active() and rag_config._names_gguf(model)
         if not gguf_named and not is_embedding_model(model, hf_token = hf_token):
-            raise HTTPException(
-                status_code = 409,
-                detail = (
-                    f"Could not verify {model!r} as an embedding model on "
-                    "Hugging Face (it may be the wrong model type, gated, or "
-                    "you may be offline)."
-                ),
-            )
-        gguf_error = _local_gguf_backend_error(model) or _hf_gguf_backend_error(model, hf_token)
+            # Offline, is_embedding_model can only confirm the ST layout (modules.json); a
+            # transformers-native embedder (e.g. gte-modernbert) is unverifiable without Hub
+            # metadata. If already cached and loadable, accept it rather than raising a 409 that
+            # online would not (ST can load any cached encoder). Uncached -> 409.
+            from utils.utils import hf_cache_snapshot_is_loadable
+
+            # Require a genuinely loadable cache (config + weights), not just a resolved refs/main,
+            # so a metadata-only partial cache still gets the forceable 409.
+            offline_cached = local_only_load and hf_cache_snapshot_is_loadable(model)
+            if not offline_cached:
+                raise HTTPException(
+                    status_code = 409,
+                    detail = (
+                        f"Could not verify {model!r} as an embedding model on "
+                        "Hugging Face (it may be the wrong model type, gated, or "
+                        "you may be offline)."
+                    ),
+                )
+        # The Hub GGUF probe (list_repo_files) can hang offline; skip it. Local check stays.
+        gguf_error = _local_gguf_backend_error(model)
+        if gguf_error is None and not local_only_load:
+            gguf_error = _hf_gguf_backend_error(model, hf_token)
         if gguf_error:
             raise HTTPException(status_code = 409, detail = gguf_error)
     set_rag_embedding_model(model)
