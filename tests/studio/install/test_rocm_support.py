@@ -598,6 +598,33 @@ class TestEnsureRocmTorch:
     @patch.object(stack_mod, "pip_install_try", return_value = True)
     @patch.object(stack_mod, "pip_install")
     @patch.object(stack_mod, "_has_usable_nvidia_gpu", return_value = False)
+    @patch.object(stack_mod, "_has_rocm_gpu", return_value = False)
+    @patch.object(stack_mod, "_infer_linux_amd_gfx_arch", return_value = "gfx1151")
+    @patch.object(stack_mod, "_detect_amd_gfx_codes", return_value = [])
+    @patch.object(stack_mod, "_detect_rocm_version", return_value = (7, 1))
+    def test_inferred_gfx_not_overwritten_when_rocm_userland_readable(
+        self, mock_ver, mock_gfx, mock_infer, mock_gpu, mock_nvidia, mock_pip, mock_pip_try
+    ):
+        """Codex P1 #7305: after an inferred per-arch install, do not fall through to the
+        generic pytorch.org/rocmX.Y reinstall just because has_hip_torch is still False.
+        Readable ROCm userland without /dev/kfd is exactly the case that used to overwrite
+        the AMD gfx wheels."""
+        mock_probe = MagicMock()
+        mock_probe.returncode = 0
+        mock_probe.stdout = b"|2.10.0+cpu\n"
+        with patch("os.path.isdir", return_value = True):
+            with patch("subprocess.run", return_value = mock_probe):
+                _ensure_rocm_torch()
+        assert mock_pip.call_count == 1, mock_pip.call_args_list
+        torch_call = str(mock_pip.call_args_list[0])
+        assert "gfx1151" in torch_call
+        assert "rocm7.1" not in torch_call
+        assert "download.pytorch.org" not in torch_call
+
+    @patch.object(stack_mod, "IS_WINDOWS", False)
+    @patch.object(stack_mod, "pip_install_try", return_value = True)
+    @patch.object(stack_mod, "pip_install")
+    @patch.object(stack_mod, "_has_usable_nvidia_gpu", return_value = False)
     @patch.object(stack_mod, "_has_rocm_gpu", return_value = True)
     @patch.object(stack_mod, "_detect_rocm_version", return_value = (7, 1))
     def test_cuda_torch_on_amd_host_reinstalls(

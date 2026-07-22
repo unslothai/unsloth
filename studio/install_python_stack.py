@@ -1912,8 +1912,11 @@ def _ensure_rocm_torch() -> None:
             constrain = False,
         )
         rocm_torch_ready = True
-    elif not has_hip_torch or _rocm_pin_mismatch:
+    elif not rocm_torch_ready:
         # Reinstall when torch is not ROCm yet, OR a ROCm build's family differs from a pin.
+        # Gate on rocm_torch_ready (not has_hip_torch alone) so a successful inferred-gfx
+        # install above is not overwritten by the generic pytorch.org/rocmX.Y path -- that
+        # would undo the fresh-ROCm/no-/dev/kfd repair this path exists for (Codex P1 #7305).
         # Honour a ROCm pin verbatim; else pick the newest wheel tag <= host.
         _override_idx = _explicit_rocm_torch_index_url()
         if _override_idx is not None:
