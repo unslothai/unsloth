@@ -1509,6 +1509,18 @@ def test_model_replacements_recheck_sidecar_swap_before_either_backend_is_unload
     assert standard_wait < standard_sidecar_check < unload_gguf
 
 
+def test_switch_waiter_deregisters_before_swap_gate_release():
+    # A waiter left registered after the swap gate is released would let a swap on
+    # another event loop count the finished request as still queued, pass the drain
+    # early, and unload the model that request is about to generate against.
+    import inspect
+
+    src = inspect.getsource(inference_route._maybe_auto_switch_model)
+    deregister = src.index("_note_switch_waiter(key, -1)")
+    release = src.index("_auto_switch_process_lock.release()")
+    assert deregister < release
+
+
 def _anthropic_payload(max_tokens = None):
     from models.inference import AnthropicMessagesRequest, AnthropicMessage
     return AnthropicMessagesRequest(

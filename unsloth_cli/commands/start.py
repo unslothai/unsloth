@@ -664,6 +664,11 @@ def _log_tail(path: Path, lines: int = 20) -> str:
         return "(no server log)"
 
 
+def _redacted_log_tail(path: Path, lines: int = 20) -> str:
+    """Tail with minted keys removed; only for tails shown on the terminal."""
+    return re.sub(r"sk-unsloth-\S+", "sk-unsloth-[redacted]", _log_tail(path, lines))
+
+
 def _shutdown_server(server: Optional[subprocess.Popen]) -> None:
     # Idempotent teardown of a server WE started, plus its own children (llama-server,
     # cloudflared). A no-op once the process is already gone.
@@ -782,7 +787,9 @@ def _start_studio_server(base: str, model: str, load: LoadOptions) -> subprocess
     try:
         while time.monotonic() < deadline:
             if server.poll() is not None:
-                tail = _log_tail(log_path)
+                # The early key marker lands in this log before the load finishes,
+                # so redact minted keys from any tail shown on the terminal.
+                tail = _redacted_log_tail(log_path)
                 _shutdown_auto_served()
                 _fail(f"The Unsloth server stopped before it was ready. Last log lines:\n{tail}")
             tail = _log_tail(log_path, lines = 400)
@@ -1150,6 +1157,20 @@ def _resolve_model(
         ):
             typer.echo(f"Switching the Unsloth server from {active_id} to {requested}.")
             typer.echo("This unloads the current model for every attached session.")
+        elif active_id and load.gguf_variant:
+            # Same repo id but an explicit quant still replaces the resident
+            # weights; /v1/models has no variant, so ask the status endpoint.
+            try:
+                status = _http_json("GET", f"{base}/api/inference/status", key)
+            except Exception:
+                status = {}
+            resident = status.get("gguf_variant") if status.get("is_gguf") else None
+            if resident and _normalized_variant(resident) != _normalized_variant(load.gguf_variant):
+                typer.echo(
+                    f"Switching the Unsloth server from {active_id}:{resident} "
+                    f"to {requested}:{load.gguf_variant}."
+                )
+                typer.echo("This unloads the current model for every attached session.")
         # Mirror `unsloth run`'s load knobs; keep the default payload as just
         # model_path so a bare `--model` load is unchanged.
         payload = {"model_path": requested}
@@ -1778,6 +1799,9 @@ def _run(
     if auto_started and not kept:
         typer.echo(f"The auto-started Unsloth server at {base} stopped during the session.")
         raise typer.Exit(code = code)
+    if code:
+        # The server status below must not read as a successful agent session.
+        typer.echo(f"The agent exited with code {code}.")
     if is_loopback_url(base):
         typer.echo(f"Unsloth Studio is still running at {base}.")
         typer.echo("Stop it with: unsloth studio stop")

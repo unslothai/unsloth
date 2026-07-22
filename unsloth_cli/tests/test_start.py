@@ -1960,6 +1960,56 @@ def test_download_progress_ignores_fully_cached_bytes(capsys):
     assert capsys.readouterr().out == ""
 
 
+def test_resolve_model_warns_on_same_repo_quant_switch(monkeypatch, capsys):
+    models = [{"id": "owner/model-GGUF", "loaded": True}]
+
+    def http_json(method, url, key, payload = None, timeout = 30, error = None):
+        assert url.endswith("/api/inference/status"), url
+        return {"is_gguf": True, "gguf_variant": "Q4_K_M"}
+
+    monkeypatch.setattr(start, "_loaded_models", lambda base, key: models)
+    monkeypatch.setattr(start, "_http_json", http_json)
+    monkeypatch.setattr(
+        start,
+        "_load_model_with_progress",
+        lambda base, key, model, load, payload: {"status": "loaded", "model": "owner/model-GGUF"},
+    )
+
+    start._resolve_model(BASE, "key", "owner/model-GGUF", start.LoadOptions(gguf_variant = "Q8_0"))
+
+    out = capsys.readouterr().out
+    assert (
+        "Switching the Unsloth server from owner/model-GGUF:Q4_K_M to owner/model-GGUF:Q8_0."
+        in out
+    )
+    assert "every attached session" in out
+
+
+def test_resolve_model_same_quant_prints_no_switch_warning(monkeypatch, capsys):
+    models = [{"id": "owner/model-GGUF", "loaded": True}]
+
+    monkeypatch.setattr(start, "_loaded_models", lambda base, key: models)
+    monkeypatch.setattr(
+        start,
+        "_http_json",
+        lambda *a, **k: {"is_gguf": True, "gguf_variant": "Q8_0"},
+    )
+    monkeypatch.setattr(
+        start,
+        "_load_model_with_progress",
+        lambda base, key, model, load, payload: {
+            "status": "already_loaded",
+            "model": "owner/model-GGUF",
+        },
+    )
+
+    start._resolve_model(BASE, "key", "owner/model-GGUF", start.LoadOptions(gguf_variant = "Q8_0"))
+
+    out = capsys.readouterr().out
+    assert "Switching" not in out
+    assert "Reusing loaded model: owner/model-GGUF:Q8_0" in out
+
+
 def test_auto_serves_when_no_server_then_keeps_server(fake_studio, monkeypatch):
     monkeypatch.setattr(start, "find_studio_server", lambda: None)
     started = {}
@@ -2063,6 +2113,57 @@ def test_no_launch_recipe_does_not_print_stop_hint(fake_studio):
     result = CliRunner().invoke(start.start_app, ["claude", "--no-launch"])
     assert result.exit_code == 0, result.output
     assert "is still running" not in result.output
+
+
+def test_nonzero_agent_exit_notes_code_before_stop_hint(fake_studio, monkeypatch):
+    monkeypatch.setattr(start.shutil, "which", lambda _: "/usr/local/bin/claude")
+    monkeypatch.setattr(start, "_claude_flags", lambda *a, **k: [])
+    monkeypatch.setattr(
+        start.subprocess,
+        "run",
+        lambda command, env: SimpleNamespace(returncode = 3),
+    )
+
+    result = CliRunner().invoke(start.start_app, ["claude"])
+
+    assert result.exit_code == 3
+    assert "The agent exited with code 3." in result.output
+    assert f"Unsloth Studio is still running at {BASE}." in result.output
+
+
+def test_redacted_log_tail_strips_minted_keys(tmp_path):
+    log = tmp_path / "server.log"
+    log.write_text(
+        "booting\nUNSLOTH_START_API_KEY: sk-unsloth-feedfacefeedface\nerror: load failed\n",
+        encoding = "utf-8",
+    )
+
+    tail = start._redacted_log_tail(log)
+
+    assert "sk-unsloth-feedfacefeedface" not in tail
+    assert "sk-unsloth-[redacted]" in tail
+    assert "error: load failed" in tail
+
+
+def test_startup_failure_output_redacts_minted_key(monkeypatch, tmp_path, capsys):
+    monkeypatch.setattr(start.tempfile, "gettempdir", lambda: str(tmp_path))
+    fake = SimpleNamespace(pid = 4242, poll = lambda: 1)
+
+    def fake_popen(command, **kwargs):
+        # The child prints the early key marker, then dies before it is ready.
+        kwargs["stdout"].write(b"UNSLOTH_START_API_KEY: sk-unsloth-secretsecret\nload failed\n")
+        kwargs["stdout"].flush()
+        return fake
+
+    monkeypatch.setattr(start.subprocess, "Popen", fake_popen)
+
+    with pytest.raises(start.typer.Exit):
+        start._start_studio_server(BASE, "owner/model-GGUF", start.LoadOptions())
+
+    err = capsys.readouterr().err
+    assert "stopped before it was ready" in err
+    assert "sk-unsloth-secretsecret" not in err
+    assert "sk-unsloth-[redacted]" in err
 
 
 def test_codex_preflight_failure_tears_down_auto_served(fake_studio, monkeypatch):

@@ -3696,6 +3696,7 @@ async def _maybe_auto_switch_model(
             )
         key = _switch_key(override_id, variant)
         _note_switch_waiter(key, 1)
+        waiter_noted = True
         try:
             async with _auto_switch_lock():
                 # The asyncio lock is per loop; add a process-wide gate so a swap on
@@ -3728,9 +3729,15 @@ async def _maybe_auto_switch_model(
                         # model's public id and override key for /v1/models and idle stash.
                         get_llama_cpp_backend()._openai_advertised_id = override_id
                 finally:
+                    # Deregister before releasing the gate: a swap on another loop
+                    # could otherwise count this finished request as still queued and
+                    # unload the model it is about to generate against.
+                    _note_switch_waiter(key, -1)
+                    waiter_noted = False
                     _auto_switch_process_lock.release()
         finally:
-            _note_switch_waiter(key, -1)
+            if waiter_noted:
+                _note_switch_waiter(key, -1)
 
     await _resolve_and_switch()
 

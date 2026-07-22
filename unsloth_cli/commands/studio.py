@@ -2267,7 +2267,8 @@ def stop():
     # Send SIGTERM (graceful shutdown) or TerminateProcess on Windows
     try:
         if sys.platform == "win32":
-            subprocess.run(["taskkill", "/PID", str(pid), "/F"], check = True)
+            # /T also stops llama-server children, which otherwise keep GPU and port.
+            subprocess.run(["taskkill", "/PID", str(pid), "/T", "/F"], check = True)
         else:
             os.kill(pid, _signal.SIGTERM)
         typer.echo(f"Sent shutdown signal to Unsloth server (PID {pid}).")
