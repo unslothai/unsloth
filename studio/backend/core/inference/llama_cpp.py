@@ -2888,26 +2888,20 @@ class LlamaCppBackend:
         *,
         prefer_rocr: bool = False,
     ) -> None:
-        """Write the child's GPU visibility mask (CUDA, plus the ROCm mirror on
-        AMD, where narrowing only CUDA_VISIBLE_DEVICES leaves an AMD child seeing
-        the full set).
+        """Write the child's GPU visibility mask: CUDA, plus a ROCm mirror on AMD
+        (masking only CUDA_VISIBLE_DEVICES leaves an AMD child seeing every GPU).
 
-        Default ROCm masking uses HIP_VISIBLE_DEVICES and clears any inherited
-        ROCR mask so the two can't apply twice: ROCR reduces and re-indexes from
-        0, then a non-zero HIP pin points out of range, HIP enumerates 0 devices,
-        and llama.cpp falls back to CPU. The HIP mask alone narrows correctly.
+        Default: HIP_VISIBLE_DEVICES, clearing any inherited ROCR mask so the two
+        can't stack (ROCR re-indexes from 0, then a non-zero HIP pin points out of
+        range, HIP sees 0 devices, and llama.cpp falls back to CPU).
 
-        prefer_rocr masks via ROCR_VISIBLE_DEVICES (the ROCr/HSA layer) instead,
-        clearing HIP. Selecting a SUBSET of GPUs must exclude the rest at the HSA
-        layer: a HIP mask still lets the HSA runtime ENUMERATE every GPU agent
-        before it filters, and that enumeration SEGFAULTS at startup on a GPU the
-        build has no kernels for (e.g. a gfx1103 iGPU alongside a gfx110X-only
-        prebuilt) -- before llama-server logs a line, so it surfaces only as a
-        bare signal. ROCR drops the device at the driver layer so it is never
-        touched. Exactly one layer is masked (HIP cleared) so there is no
-        double-mask, and the pinned ids are physical driver ids -- what ROCR
-        consumes. The CPU-only sentinel ("-1") never routes through ROCR (which
-        has no portable "hide everything" spelling); it keeps the HIP mask."""
+        prefer_rocr masks at the ROCr/HSA layer instead (clearing HIP). A HIP mask
+        filters only AFTER the HSA runtime enumerates every agent, and that
+        enumeration segfaults at startup on a GPU the build has no kernels for
+        (e.g. a gfx1103 iGPU under a gfx110X prebuilt), before llama-server logs a
+        line. ROCR drops the device at the driver layer, consuming physical ids.
+        The CPU-only sentinel ("-1") has no portable ROCR spelling, so it keeps
+        the HIP mask."""
         env["CUDA_VISIBLE_DEVICES"] = pinned
         try:
             import torch as _torch
@@ -7706,11 +7700,9 @@ class LlamaCppBackend:
                     # default FASTEST_FIRST order (#5025).
                     if gpu_ids:
                         env["CUDA_DEVICE_ORDER"] = "PCI_BUS_ID"
-                    # Mask the selection at the ROCr/HSA layer on AMD: HIP-only
-                    # masking still enumerates every GPU agent first, which
-                    # segfaults llama-server before it logs when a deselected GPU
-                    # is unsupported by the build (e.g. a gfx1103 iGPU under a
-                    # gfx110X prebuilt). ROCR excludes it so it is never touched.
+                    # Mask on AMD at the ROCr/HSA layer: HIP-only masking still
+                    # enumerates every agent first, which segfaults on a deselected
+                    # unsupported GPU (e.g. gfx1103 iGPU under a gfx110X prebuilt).
                     self._emit_child_gpu_visibility(
                         env, ",".join(str(i) for i in gpu_indices), prefer_rocr = True
                     )
