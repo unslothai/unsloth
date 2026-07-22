@@ -87,6 +87,10 @@ class RawTextDataLoader:
                 text_content, self.chunk_size, self.stride, return_tokenized
             )
             all_chunks.extend(chunks)
+        if not all_chunks:
+            # All files empty/whitespace: raise like load_from_file instead of
+            # create_causal_dataset([]) returning a 0-row text-column dataset.
+            raise ValueError("All files are empty or contain only whitespace")
         return self.create_causal_dataset(all_chunks)
 
     def chunk_text(
@@ -139,6 +143,12 @@ class RawTextDataLoader:
                 f"stride ({stride}) must be smaller than chunk_size ({chunk_size}) to progress the chunking loop"
             )
 
+        # Skip empty/whitespace text before tokenizing: BPE/SentencePiece emit
+        # real tokens for spaces/newlines, so a len(tokens)==0 check misses it
+        # and would yield a degenerate lone-EOS sample. Mirrors load_from_file.
+        if not text or not text.strip():
+            return []
+
         # Tokenize the whole text once for accurate token counts
         tokenized = self.tokenizer(text, return_tensors = "pt", add_special_tokens = False)
         tokens = tokenized["input_ids"]
@@ -150,13 +160,6 @@ class RawTextDataLoader:
         elif isinstance(tokens, int):
             # Tokenizer returned a count; build a range
             tokens = list(range(tokens))
-
-        if len(tokens) == 0:
-            # Empty / whitespace-only text tokenizes to nothing. Emit no chunks
-            # rather than a degenerate sample (a lone-EOS "document", or a
-            # zero-length ``input_ids`` when the tokenizer has no eos_token_id,
-            # which would break a downstream collator/trainer).
-            return []
 
         if len(tokens) <= chunk_size:
             # Fits in a single chunk
