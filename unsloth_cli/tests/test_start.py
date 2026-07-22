@@ -1561,6 +1561,118 @@ def test_split_repo_variant(model, expected):
     assert start._split_repo_variant(model) == expected
 
 
+@pytest.mark.parametrize(
+    "token, expected",
+    [
+        ("unsloth/gemma-4-E2B-it-GGUF", True),
+        ("unsloth/gemma-4-E2B-it-GGUF:UD-Q4_K_XL", True),
+        ("some-org/model.name_1", True),
+        ("--continue", False),  # flag
+        ("resume", False),  # single word, no slash
+        ("/models/local.gguf", False),  # absolute path
+        ("./rel.gguf", False),  # relative path
+        ("C:\\models\\x.gguf", False),  # Windows drive
+        ("my models/foo", False),  # has a space
+        ("owner/repo/extra", False),  # too many segments
+    ],
+)
+def test_looks_like_model(token, expected):
+    assert start._looks_like_model(token) is expected
+
+
+def test_consume_positional_model_leading_token():
+    # A leading org/name positional routes to --model and is dropped from the passthrough.
+    model, rest = start._consume_positional_model(None, ["unsloth/Model-GGUF", "--continue"])
+    assert model == "unsloth/Model-GGUF"
+    assert rest == ["--continue"]
+
+
+def test_consume_positional_model_ignores_non_leading_and_explicit_model():
+    # An org/name that is an option value (not leading) is never stolen.
+    model, rest = start._consume_positional_model(None, ["--profile", "owner/repo"])
+    assert model is None and rest == ["--profile", "owner/repo"]
+    # An explicit --model always wins; the positional is left untouched.
+    model, rest = start._consume_positional_model("explicit/model", ["owner/repo"])
+    assert model == "explicit/model" and rest == ["owner/repo"]
+
+
+@pytest.mark.parametrize(
+    "repo, expected",
+    [
+        ("unsloth/Model-GGUF", "UD-Q4_K_XL"),
+        ("unsloth-community/Model-GGUF", "Q4_K_M"),  # exact namespace, not a prefix
+        ("someorg/Model-GGUF", "Q4_K_M"),
+    ],
+)
+def test_default_gguf_variant(repo, expected):
+    assert start._default_gguf_variant(repo) == expected
+
+
+def test_start_positional_model_defaults_variant_on_auto_serve(fake_studio, monkeypatch):
+    # `unsloth start claude unsloth/Model-GGUF` (no --model): the positional becomes the
+    # model and a fresh auto-served server gets the default UD-Q4_K_XL quant.
+    monkeypatch.setenv("UNSLOTH_STUDIO_URL", "http://127.0.0.1:8888")
+    monkeypatch.setattr(start, "find_studio_server", lambda: None)
+    captured = {}
+    fake = SimpleNamespace(pid = 1, poll = lambda: None)
+
+    def fake_start(base, model, load, server_options = None):
+        captured["model"] = model
+        captured["load"] = load
+        captured["server_options"] = server_options
+        start._auto_served_server = fake
+        return fake
+
+    monkeypatch.setattr(start, "_start_studio_server", fake_start)
+    monkeypatch.setattr(start, "_shutdown_server", lambda server: None)
+    monkeypatch.setattr(start.shutil, "which", lambda _: "/usr/local/bin/claude")
+    monkeypatch.setattr(
+        start.subprocess, "run", lambda command, env: SimpleNamespace(returncode = 0)
+    )
+
+    result = CliRunner().invoke(start.start_app, ["claude", "unsloth/gemma-4-E2B-it-GGUF"])
+    assert result.exit_code == 0, result.output
+    assert captured["model"] == "unsloth/gemma-4-E2B-it-GGUF"
+    assert captured["load"].gguf_variant == "UD-Q4_K_XL"
+
+
+def test_start_studio_server_forwards_tool_flags_via_command_and_env(monkeypatch):
+    captured = {}
+
+    class FakePopen:
+        def __init__(self, command, **kwargs):
+            captured["command"] = command
+            captured["kwargs"] = kwargs
+            self.pid = 1
+
+        def poll(self):
+            return None
+
+    monkeypatch.setattr(start.subprocess, "Popen", FakePopen)
+    monkeypatch.setattr(start, "_studio_healthy", lambda base, timeout = 3.0: True)
+    monkeypatch.setattr(start, "_log_tail", lambda path, lines = 20: "API Key: sk-unsloth-x")
+    monkeypatch.setattr(start.time, "sleep", lambda _s: None)
+
+    # Default start: tools off (passthrough), healing + nudging on.
+    start._start_studio_server("http://127.0.0.1:8888", "unsloth/M-GGUF", start.LoadOptions())
+    cmd, env = captured["command"], captured["kwargs"]["env"]
+    assert "--disable-tools" in cmd and "--enable-tools" not in cmd
+    assert env["UNSLOTH_DISABLE_TOOL_CALL_HEALING"] == "0"
+    assert env["UNSLOTH_TOOL_CALL_NUDGE"] == "1"
+
+    # Flipped: tools on, healing off, nudging off.
+    start._start_studio_server(
+        "http://127.0.0.1:8888",
+        "unsloth/M-GGUF",
+        start.LoadOptions(),
+        start.ServerOptions(enable_tools = True, tool_call_healing = False, tool_call_nudging = False),
+    )
+    cmd, env = captured["command"], captured["kwargs"]["env"]
+    assert "--enable-tools" in cmd and "--disable-tools" not in cmd
+    assert env["UNSLOTH_DISABLE_TOOL_CALL_HEALING"] == "1"
+    assert env["UNSLOTH_TOOL_CALL_NUDGE"] == "0"
+
+
 def test_connect_model_bare_id_matches_loaded_without_reload(fake_studio):
     # A bare `--model <loaded repo>` (no load knobs) attaches to the already-loaded model
     # without touching /api/inference/load, so it can never evict another session.
@@ -2227,7 +2339,7 @@ def test_auto_serves_when_no_server_then_keeps_server(fake_studio, monkeypatch):
     started = {}
     fake = SimpleNamespace(pid = 999, poll = lambda: None)
 
-    def fake_start(base, model, load):
+    def fake_start(base, model, load, server_options = None):
         started.update(base = base, model = model, load = load)
         start._auto_served_server = fake
         return fake
@@ -2386,7 +2498,7 @@ def test_codex_preflight_failure_tears_down_auto_served(fake_studio, monkeypatch
     started = {}
     fake = SimpleNamespace(pid = 999, poll = lambda: None)
 
-    def fake_start(base, model, load):
+    def fake_start(base, model, load, server_options = None):
         started.update(base = base, model = model)
         start._auto_served_server = fake
         return fake
@@ -2481,7 +2593,7 @@ def test_auto_serve_normalizes_portless_url(fake_studio, monkeypatch):
     started = {}
     fake = SimpleNamespace(pid = 999, poll = lambda: None)
 
-    def fake_start(base, model, load):
+    def fake_start(base, model, load, server_options = None):
         started["base"] = base
         start._auto_served_server = fake
         return fake
