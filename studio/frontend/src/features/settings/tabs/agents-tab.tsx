@@ -104,6 +104,9 @@ type AgentDetails = {
   name: string;
   docsUrl: string;
   logo?: string;
+  icon?: string;
+  darkIcon?: string;
+  invertIconInDark?: boolean;
   color?: string;
   mark?: string;
 };
@@ -130,29 +133,27 @@ const SUPPORTED_AGENTS: AgentDetails[] = [
     id: "hermes",
     name: "Hermes Agent",
     docsUrl: "https://unsloth.ai/docs/integrations/hermes-agent",
-    color: "#8B5CF6",
-    mark: "He",
+    icon: "hermes.svg",
+    invertIconInDark: true,
   },
   {
     id: "openclaw",
     name: "OpenClaw",
     docsUrl: "https://unsloth.ai/docs/integrations/openclaw",
-    color: "#F59E0B",
-    mark: "Cl",
+    icon: "openclaw.svg",
   },
   {
     id: "opencode",
     name: "OpenCode",
     docsUrl: "https://unsloth.ai/docs/integrations/opencode",
-    color: "#3B82F6",
-    mark: "Oc",
+    icon: "opencode-light.svg",
+    darkIcon: "opencode-dark.svg",
   },
   {
     id: "pi",
     name: "Pi Coding Agent",
     docsUrl: DOCS_URL,
-    color: "#EC4899",
-    mark: "Pi",
+    icon: "pi.svg",
   },
 ];
 
@@ -233,13 +234,19 @@ function discoverGgufModels(items: BackendModelDetails[]): {
   return { models, variants };
 }
 
-/** Official brand logo when available, else a brand-colored monogram tile. */
+/** Official provider or agent logo when available, else a monogram tile. */
 function AgentIcon({
   logo,
+  icon,
+  darkIcon,
+  invertIconInDark,
   color,
   mark,
 }: {
   logo?: string;
+  icon?: string;
+  darkIcon?: string;
+  invertIconInDark?: boolean;
   color?: string;
   mark?: string;
 }) {
@@ -247,6 +254,34 @@ function AgentIcon({
     return (
       <span className="flex size-7 shrink-0 items-center justify-center overflow-hidden rounded-md">
         <ApiProviderLogo providerType={logo} className="size-7 rounded-md" />
+      </span>
+    );
+  }
+  if (icon) {
+    const iconSrc = `${import.meta.env.BASE_URL}agent-logos/${icon}`;
+    const darkIconSrc = darkIcon
+      ? `${import.meta.env.BASE_URL}agent-logos/${darkIcon}`
+      : null;
+    return (
+      <span className="flex size-7 shrink-0 items-center justify-center overflow-hidden rounded-md">
+        <img
+          src={iconSrc}
+          alt=""
+          aria-hidden={true}
+          className={cn(
+            "size-7 object-contain",
+            darkIconSrc && "dark:hidden",
+            invertIconInDark && "dark:invert",
+          )}
+        />
+        {darkIconSrc ? (
+          <img
+            src={darkIconSrc}
+            alt=""
+            aria-hidden={true}
+            className="hidden size-7 object-contain dark:block"
+          />
+        ) : null}
       </span>
     );
   }
@@ -677,6 +712,9 @@ export function AgentsTab() {
                 <span className="flex min-w-0 items-center gap-2">
                   <AgentIcon
                     logo={selectedAgentDetails.logo}
+                    icon={selectedAgentDetails.icon}
+                    darkIcon={selectedAgentDetails.darkIcon}
+                    invertIconInDark={selectedAgentDetails.invertIconInDark}
                     color={selectedAgentDetails.color}
                     mark={selectedAgentDetails.mark}
                   />
@@ -692,6 +730,9 @@ export function AgentsTab() {
                     <span className="flex min-w-0 items-center gap-2">
                       <AgentIcon
                         logo={agent.logo}
+                        icon={agent.icon}
+                        darkIcon={agent.darkIcon}
+                        invertIconInDark={agent.invertIconInDark}
                         color={agent.color}
                         mark={agent.mark}
                       />
