@@ -2930,9 +2930,7 @@ class LlamaCppBackend:
             # ROCr layer, so a stray ROCR var there does not mask the runtime and
             # must not be read as the ordinal->physical mapping (mirrors the
             # Windows gate in _emit_child_gpu_visibility).
-            rocr_v = (
-                None if sys.platform == "win32" else os.environ.get("ROCR_VISIBLE_DEVICES")
-            )
+            rocr_v = None if sys.platform == "win32" else os.environ.get("ROCR_VISIBLE_DEVICES")
             cvd = (
                 hip_v
                 if hip_v is not None
