@@ -2,7 +2,7 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { Button } from "@/components/ui/button";
-import { Telescope01Icon } from "@hugeicons/core-free-icons";
+import { Telescope02Icon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import {
   Dialog,
@@ -154,7 +154,7 @@ export function DeepResearchComposerButton({
         }}
         className="composer-pill-glyph cursor-pointer"
       >
-        <HugeiconsIcon icon={Telescope01Icon} className="size-[15px]" />
+        <HugeiconsIcon icon={Telescope02Icon} className="size-[15px]" />
         <XIcon className="composer-pill-x" />
       </span>
       <span>Deep research</span>
