@@ -453,7 +453,22 @@ def test_wait_for_dns_gives_up_at_deadline(monkeypatch):
     ct._wait_for_dns("words.trycloudflare.com", ct.time.monotonic() + 0.05)
 
 
-def test_wait_for_dns_bails_on_doh_error(monkeypatch):
+def test_wait_for_dns_retries_transient_doh_error(monkeypatch):
+    calls = []
+
+    def handler(req):
+        calls.append(req.full_url)
+        if len(calls) < 3:
+            raise OSError("transient")
+        return _FakeResponse(b'{"Status":0,"Answer":[{"data":"104.16.0.1"}]}')
+
+    _patch_urlopen(monkeypatch, handler)
+    monkeypatch.setattr(ct.time, "sleep", lambda _s: None)
+    ct._wait_for_dns("words.trycloudflare.com", ct.time.monotonic() + 5)
+    assert len(calls) == 3
+
+
+def test_wait_for_dns_bails_on_persistent_doh_errors(monkeypatch):
     calls = []
 
     def handler(req):
@@ -461,8 +476,9 @@ def test_wait_for_dns_bails_on_doh_error(monkeypatch):
         raise OSError("blocked")
 
     _patch_urlopen(monkeypatch, handler)
+    monkeypatch.setattr(ct.time, "sleep", lambda _s: None)
     ct._wait_for_dns("words.trycloudflare.com", ct.time.monotonic() + 5)
-    assert len(calls) == 1
+    assert len(calls) == ct._DNS_MAX_DOH_ERRORS
 
 
 def test_verify_public_url_accepts_studio_marker(monkeypatch):

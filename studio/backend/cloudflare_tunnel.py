@@ -53,6 +53,8 @@ _PUBLIC_PROBE_RETRY_DELAY = 1.0
 # Wait for the hostname via DoH first: an early OS lookup negative-caches the
 # NXDOMAIN for up to 30 min.
 _DNS_POLL_DELAY = 2.0
+# Retry transient DoH failures, but give up fast when DoH is blocked outright.
+_DNS_MAX_DOH_ERRORS = 3
 _DOH_URL = "https://cloudflare-dns.com/dns-query?name={host}&type=A"
 
 
@@ -209,7 +211,9 @@ def ensure_cloudflared() -> Optional[str]:
 def _wait_for_dns(host: str, deadline: float) -> None:
     import json
     import urllib.request
+    errors = 0
     while True:
+        answered = False
         try:
             req = urllib.request.Request(
                 _DOH_URL.format(host = host),
@@ -217,8 +221,11 @@ def _wait_for_dns(host: str, deadline: float) -> None:
             )
             with urllib.request.urlopen(req, timeout = 5) as response:
                 answered = bool(json.loads(response.read(65536)).get("Answer"))
+            errors = 0
         except Exception:
-            return
+            errors += 1
+            if errors >= _DNS_MAX_DOH_ERRORS:
+                return
         if answered:
             return
         remaining = deadline - time.monotonic()
