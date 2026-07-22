@@ -1463,16 +1463,29 @@ class TestInstallShStructure:
             "4098" in func_body
         ), "_has_amd_rocm_gpu sysfs fallback must require AMD vendor_id 4098 (0x1002)"
 
-    def test_kfd_awk_resets_state_per_file(self):
-        """KFD sysfs awk must reset gpu/amd state per file (FNR==1) to avoid Ryzen+NVIDIA false positives."""
+    def test_kfd_awk_vendor_check_is_per_line(self):
+        """KFD sysfs awk must decide on a single vendor_id line, with no cross-node state.
+
+        The old awk paired two per-node flags (gpu_id + vendor_id) and needed an FNR==1
+        reset so flags from different KFD nodes could not combine into a Ryzen+NVIDIA
+        false positive. gpu_id is a sibling sysfs file and never appears inside
+        properties, so that pairing also never matched at all (every ROCm-less AMD host
+        was reported as no-GPU). The replacement keys on one atomic line: only an AMD
+        GPU node reports `vendor_id 4098` (KFD CPU nodes report 0, NVIDIA's open kernel
+        module registers 4318), so there is no cross-file state left to reset.
+        """
         sh_path = PACKAGE_ROOT / "install.sh"
         source = sh_path.read_text(encoding = "utf-8")
         func_start = source.find("_has_amd_rocm_gpu()")
         func_end = source.find("\n}", func_start)
         func_body = source[func_start:func_end]
-        assert "FNR==1" in func_body, (
-            "_has_amd_rocm_gpu KFD awk must reset state per file with FNR==1 "
-            "to avoid false positives on Ryzen+NVIDIA hosts with multiple KFD nodes"
+        assert "$2 == 4098" in func_body, (
+            "_has_amd_rocm_gpu KFD awk must match `vendor_id 4098` as a single-line "
+            "condition so no per-node state can leak across KFD nodes"
+        )
+        assert "/gpu_id/" not in func_body, (
+            "_has_amd_rocm_gpu KFD awk must not key on a gpu_id line: gpu_id is a "
+            "sibling sysfs file, not a line in properties, so it never matches there"
         )
 
     def test_get_torch_index_url_uses_nvidia_detected_flag(self):
