@@ -1720,9 +1720,7 @@ def run(
     port: int = typer.Option(8888, "--port", "-p", rich_help_panel = _RUN_PANEL_SERVER),
     host: str = typer.Option("127.0.0.1", "--host", "-H", rich_help_panel = _RUN_PANEL_SERVER),
     # `-f` removed (clustered `-fa`/`-fit*`); studio_default keeps it.
-    frontend: Optional[Path] = typer.Option(
-        None, "--frontend", rich_help_panel = _RUN_PANEL_SERVER
-    ),
+    frontend: Optional[Path] = typer.Option(None, "--frontend", rich_help_panel = _RUN_PANEL_SERVER),
     api_only: bool = typer.Option(
         False,
         "--api-only",
@@ -1730,9 +1728,7 @@ def run(
         help = "Serve only the API (no web UI), for a headless model server. "
         "Pairs with --secure to expose the API over the Cloudflare link alone.",
     ),
-    silent: bool = typer.Option(
-        False, "--silent", "-q", rich_help_panel = _RUN_PANEL_ADVANCED
-    ),
+    silent: bool = typer.Option(False, "--silent", "-q", rich_help_panel = _RUN_PANEL_ADVANCED),
     enable_tools: Optional[bool] = typer.Option(
         None,
         "--enable-tools/--disable-tools",

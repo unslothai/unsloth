@@ -155,8 +155,7 @@ _TOOL_CALL_HEALING_OPTION = typer.Option(
     True,
     "--enable-tool-call-healing/--disable-tool-call-healing",
     rich_help_panel = _PANEL_SERVER,
-    help = "Promote text-form tool calls from small GGUFs back into structured calls. "
-    "Default on.",
+    help = "Promote text-form tool calls from small GGUFs back into structured calls. Default on.",
 )
 _TOOL_CALL_NUDGING_OPTION = typer.Option(
     True,
@@ -856,7 +855,10 @@ def _keep_auto_served() -> bool:
 
 
 def _start_studio_server(
-    base: str, model: str, load: LoadOptions, server: ServerOptions = ServerOptions()
+    base: str,
+    model: str,
+    load: LoadOptions,
+    server: ServerOptions = ServerOptions(),
 ) -> subprocess.Popen:
     """Spawn `unsloth run` for `model`, wait until it is fully ready, and return it."""
     global _auto_served_server

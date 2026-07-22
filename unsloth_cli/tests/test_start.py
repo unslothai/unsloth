@@ -1616,7 +1616,12 @@ def test_start_positional_model_defaults_variant_on_auto_serve(fake_studio, monk
     captured = {}
     fake = SimpleNamespace(pid = 1, poll = lambda: None)
 
-    def fake_start(base, model, load, server_options = None):
+    def fake_start(
+        base,
+        model,
+        load,
+        server_options = None,
+    ):
         captured["model"] = model
         captured["load"] = load
         captured["server_options"] = server_options
@@ -1626,9 +1631,7 @@ def test_start_positional_model_defaults_variant_on_auto_serve(fake_studio, monk
     monkeypatch.setattr(start, "_start_studio_server", fake_start)
     monkeypatch.setattr(start, "_shutdown_server", lambda server: None)
     monkeypatch.setattr(start.shutil, "which", lambda _: "/usr/local/bin/claude")
-    monkeypatch.setattr(
-        start.subprocess, "run", lambda command, env: SimpleNamespace(returncode = 0)
-    )
+    monkeypatch.setattr(start.subprocess, "run", lambda command, env: SimpleNamespace(returncode = 0))
 
     result = CliRunner().invoke(start.start_app, ["claude", "unsloth/gemma-4-E2B-it-GGUF"])
     assert result.exit_code == 0, result.output
@@ -2339,7 +2342,12 @@ def test_auto_serves_when_no_server_then_keeps_server(fake_studio, monkeypatch):
     started = {}
     fake = SimpleNamespace(pid = 999, poll = lambda: None)
 
-    def fake_start(base, model, load, server_options = None):
+    def fake_start(
+        base,
+        model,
+        load,
+        server_options = None,
+    ):
         started.update(base = base, model = model, load = load)
         start._auto_served_server = fake
         return fake
@@ -2498,7 +2506,12 @@ def test_codex_preflight_failure_tears_down_auto_served(fake_studio, monkeypatch
     started = {}
     fake = SimpleNamespace(pid = 999, poll = lambda: None)
 
-    def fake_start(base, model, load, server_options = None):
+    def fake_start(
+        base,
+        model,
+        load,
+        server_options = None,
+    ):
         started.update(base = base, model = model)
         start._auto_served_server = fake
         return fake
@@ -2593,7 +2606,12 @@ def test_auto_serve_normalizes_portless_url(fake_studio, monkeypatch):
     started = {}
     fake = SimpleNamespace(pid = 999, poll = lambda: None)
 
-    def fake_start(base, model, load, server_options = None):
+    def fake_start(
+        base,
+        model,
+        load,
+        server_options = None,
+    ):
         started["base"] = base
         start._auto_served_server = fake
         return fake
