@@ -270,6 +270,40 @@ def test_reexeced_child_consumes_start_api_key_marker_env(monkeypatch):
     assert studio_mod._START_API_KEY_MARKER_ENV not in studio_mod.os.environ
 
 
+def test_run_default_sets_tool_call_env(monkeypatch):
+    """Plain `unsloth run` enables healing and nudging via the inherited env
+    (written before the re-exec so the child server picks them up at import)."""
+    studio_mod = _load_run_command()
+    monkeypatch.delenv("UNSLOTH_DISABLE_TOOL_CALL_HEALING", raising = False)
+    monkeypatch.delenv("UNSLOTH_TOOL_CALL_NUDGE", raising = False)
+    _invoke_run(monkeypatch, _BASE)
+    assert studio_mod.os.environ["UNSLOTH_DISABLE_TOOL_CALL_HEALING"] == "0"
+    assert studio_mod.os.environ["UNSLOTH_TOOL_CALL_NUDGE"] == "1"
+
+
+def test_run_disable_flags_set_tool_call_env(monkeypatch):
+    """`--disable-tool-call-healing --disable-tool-call-nudging` flips both env vars."""
+    studio_mod = _load_run_command()
+    monkeypatch.delenv("UNSLOTH_DISABLE_TOOL_CALL_HEALING", raising = False)
+    monkeypatch.delenv("UNSLOTH_TOOL_CALL_NUDGE", raising = False)
+    _invoke_run(
+        monkeypatch,
+        _BASE + ["--disable-tool-call-healing", "--disable-tool-call-nudging"],
+    )
+    assert studio_mod.os.environ["UNSLOTH_DISABLE_TOOL_CALL_HEALING"] == "1"
+    assert studio_mod.os.environ["UNSLOTH_TOOL_CALL_NUDGE"] == "0"
+
+
+def test_run_omitted_flag_respects_inherited_env(monkeypatch):
+    """When the flag is omitted, a value the parent set (e.g. `unsloth start`) wins
+    instead of being reset to the default."""
+    studio_mod = _load_run_command()
+    monkeypatch.setenv("UNSLOTH_TOOL_CALL_NUDGE", "0")
+    monkeypatch.delenv("UNSLOTH_DISABLE_TOOL_CALL_HEALING", raising = False)
+    _invoke_run(monkeypatch, _BASE)
+    assert studio_mod.os.environ["UNSLOTH_TOOL_CALL_NUDGE"] == "0"
+
+
 @pytest.mark.parametrize("platform", ["linux", "darwin", "win32"])
 def test_reexec_argv_is_consistent_across_platforms(monkeypatch, platform):
     """Linux/Darwin (execvp) and Windows (Popen) must build the same argv."""

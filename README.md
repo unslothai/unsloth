@@ -86,11 +86,17 @@ Replace `claude` with any supported agent:
 | OpenCode | `unsloth start opencode` |
 | Pi Coding Agent | `unsloth start pi` |
 
-Claude Code, Codex, OpenCode and Pi can also register a local Unsloth model as a delegatable
+Claude Code, Codex, OpenCode and Pi can keep their current model and use Unsloth as a local
 subagent:
 
 ```bash
 unsloth start claude --as-subagent --model unsloth/model-GGUF:quant
+```
+
+Claude Code can instead run both the parent and native subagents on Unsloth:
+
+```bash
+unsloth start claude --native-subagent --model unsloth/model-GGUF:quant
 ```
 
 ## 📥 Install
