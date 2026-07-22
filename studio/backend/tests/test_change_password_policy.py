@@ -2,6 +2,7 @@
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import asyncio
+import importlib.util
 import sys
 from pathlib import Path
 
@@ -13,7 +14,14 @@ if str(_BACKEND_ROOT) not in sys.path:
     sys.path.insert(0, str(_BACKEND_ROOT))
 
 from models.auth import ChangePasswordRequest  # noqa: E402
-from routes import auth as auth_routes  # noqa: E402
+
+# Load routes/auth.py directly so collection does not execute routes/__init__.py,
+# which pulls in the heavy training/models/inference routers.
+_route_path = _BACKEND_ROOT / "routes" / "auth.py"
+_spec = importlib.util.spec_from_file_location("_change_password_route", _route_path)
+assert _spec is not None and _spec.loader is not None
+auth_routes = importlib.util.module_from_spec(_spec)
+_spec.loader.exec_module(auth_routes)
 
 
 @pytest.fixture
