@@ -1363,17 +1363,17 @@ class TestInstallShStructure:
         source = sh_path.read_text(encoding = "utf-8")
         note = source.find('substep "AMD GPU detected, but no usable ROCm/HIP install')
         assert note != -1
-        assert '[ "$_torch_index_pinned" = true ]' in source[note - 400 : note], (
-            "the */cpu note must check the explicit pin before diagnosing ROCm"
-        )
-        assert '[ "$OS" = "wsl" ] && [ "$_torch_index_pinned" = false ]' in source, (
-            "ROCm-on-WSL guidance is detection advice; skip it for pinned installs"
-        )
+        assert (
+            '[ "$_torch_index_pinned" = true ]' in source[note - 400 : note]
+        ), "the */cpu note must check the explicit pin before diagnosing ROCm"
+        assert (
+            '[ "$OS" = "wsl" ] && [ "$_torch_index_pinned" = false ]' in source
+        ), "ROCm-on-WSL guidance is detection advice; skip it for pinned installs"
         summary = source.find('step "gpu" "AMD GPU (no usable ROCm -- CPU fallback)"')
         assert summary != -1
-        assert '[ "$_torch_index_pinned" = true ]' in source[summary - 700 : summary], (
-            "the gpu summary must not claim no usable ROCm for a pinned index"
-        )
+        assert (
+            '[ "$_torch_index_pinned" = true ]' in source[summary - 700 : summary]
+        ), "the gpu summary must not claim no usable ROCm for a pinned index"
         assert "rocm" in source.lower()
 
     def test_cuda_precedence(self):
