@@ -29,6 +29,13 @@ so the manifest + checksum index are fetched with **zero ``api.github.com`` call
 (that API is rate-limited to 60 req/hour unauthenticated); the GitHub API is only
 used as a fallback on a 404 / malformed asset.
 
+The heavy machinery -- verified downloads with retries and token-safe redirects,
+safe archive extraction, the install lock, host detection (NVIDIA caps + driver,
+ROCm gfx, macOS version), and the coverage-aware CUDA selection primitives -- is
+imported from ``install_llama_prebuilt.py`` (same directory); this module only
+keeps the whisper manifest dialect, install-tree assembly, CPU fallback policy,
+marker, and CLI.
+
 Mirrors ``install_node_prebuilt.py`` / ``install_llama_prebuilt.py`` so the setup
 scripts drive it the same way. Exit codes: 0 success (or already current), 1 error,
 2 source fallback, 3 busy. A re-run that already matches logs "already matches"
@@ -41,57 +48,52 @@ import argparse
 import hashlib
 import json
 import os
-import platform
 import shutil
 import socket
 import subprocess
 import sys
+import tarfile
 import tempfile
 import time
 import urllib.error
 import urllib.parse
 import urllib.request
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any
 
-# Put studio/ on sys.path so the shared prebuilt-consumer core (`backend.*`)
-# resolves whether run as a script or imported, like install_python_stack.py.
+# Put studio/ on sys.path so install_llama_prebuilt resolves whether this file is
+# run as a script (from any cwd) or imported by the tests.
 _STUDIO_DIR = os.path.dirname(os.path.abspath(__file__))
 if _STUDIO_DIR not in sys.path:
     sys.path.insert(0, _STUDIO_DIR)
 
-from backend.utils.prebuilt import logs as _logs  # noqa: E402
-from backend.utils.prebuilt import runtime_libs as _runtime_libs  # noqa: E402
-from backend.utils.prebuilt import selection as _sel  # noqa: E402
-from backend.utils.prebuilt.archive import extract_archive  # noqa: E402
-from backend.utils.prebuilt.errors import BusyInstallConflict, PrebuiltFallback  # noqa: E402
-from backend.utils.prebuilt.hosts import (  # noqa: E402
-    detect_nvidia_caps,
-    detect_torch_cuda_runtime_line,
-    parse_macos_version,
-    pick_rocm_gfx_target,
-)
+import install_llama_prebuilt as llama  # noqa: E402
 
-# Re-exported as module globals so the retained release/checksum helpers resolve
-# them by bare name (kept monkeypatchable) and tests can reach M.<name> directly.
-from backend.utils.prebuilt.http import (  # noqa: E402
-    auth_headers,
-    download_bytes,
-    download_file,
-    fetch_json,
-    sha256_file,
-    _URL_OPENER,
-)
-from backend.utils.prebuilt.locking import (  # noqa: E402
-    install_lock,
-    install_lock_path,
-    _windows_hidden_kwargs,
-)
+# Shared machinery re-exported as module globals. The retained code resolves these
+# by bare name at call time so tests can monkeypatch them on this module.
+PrebuiltFallback = llama.PrebuiltFallback
+BusyInstallConflict = llama.BusyInstallConflict
+auth_headers = llama.auth_headers
+download_bytes = llama.download_bytes
+download_file = llama.download_file
+fetch_json = llama.fetch_json
+sha256_file = llama.sha256_file
+_URL_OPENER = llama._URL_OPENER
+install_lock = llama.install_lock
+install_lock_path = llama.install_lock_path
+parse_macos_version = llama.parse_macos_version
+llama_detect_host = llama.detect_host
+detect_torch_cuda_runtime_preference = llama.detect_torch_cuda_runtime_preference
 
-# Shared plumbing logs under this component's prefix; main() selects the stream.
-_logs.configure("[whisper-prebuilt] ")
-log = _logs.log
+
+# Resolver mode keeps stdout to the JSON payload only (setup.sh parses it);
+# main() flips this on the install path so setup surfaces progress.
+_LOG_TO_STDOUT = False
+
+
+def log(message: str) -> None:
+    print(f"[whisper-prebuilt] {message}", file = sys.stdout if _LOG_TO_STDOUT else sys.stderr)
 
 
 EXIT_SUCCESS = 0
@@ -123,7 +125,7 @@ INSTALL_STAGING_ROOT_NAME = ".staging"
 _RUN_STAGED_PREBUILT_VALIDATION = False
 
 
-# ── Host detection ──
+# ── Host detection (probes shared with install_llama_prebuilt) ──
 @dataclass(frozen = True)
 class HostInfo:
     system: str  # platform.system()
@@ -137,88 +139,30 @@ class HostInfo:
     has_usable_nvidia: bool = False
     has_rocm: bool = False
     rocm_gfx: str | None = None
-    # NVIDIA GPU compute capabilities (bare SM strings, e.g. ("89",)) and the
-    # driver's CUDA version, used to pick an SM-appropriate CUDA bundle. Empty /
-    # None on non-NVIDIA hosts. `torch_runtime_line` ('cuda12'/'cuda13') is torch's
-    # build preference, a tie-break on non-Blackwell hosts.
+    # NVIDIA GPU compute capabilities (SM strings) and the driver's CUDA version,
+    # used to pick an SM-appropriate CUDA bundle. Empty / None on non-NVIDIA
+    # hosts. `torch_runtime_line` ('cuda12'/'cuda13') is torch's build
+    # preference, a tie-break on non-Blackwell hosts.
     compute_caps: tuple[str, ...] = ()
     driver_cuda_version: tuple[int, int] | None = None
     torch_runtime_line: str | None = None
     # (major, minor) from platform.mac_ver(); None off macOS or if unparseable.
     # Used to enforce a macOS artifact's min_os so we never pick a bundle that
-    # cannot load on this OS version. Mirrors install_llama_prebuilt.py.
+    # cannot load on this OS version.
     macos_version: tuple[int, int] | None = None
 
 
-def _has_usable_nvidia() -> bool:
-    """Best-effort: an nvidia-smi that lists at least one GPU. Never raises."""
-    smi = shutil.which("nvidia-smi")
-    if not smi:
-        return False
-    try:
-        result = subprocess.run(
-            [smi, "--query-gpu=name", "--format=csv,noheader"],
-            capture_output = True,
-            text = True,
-            timeout = 10,
-            **_windows_hidden_kwargs(),
-        )
-    except (OSError, ValueError, subprocess.SubprocessError):
-        return False
-    return result.returncode == 0 and any(line.strip() for line in result.stdout.splitlines())
-
-
-def _detect_rocm_gfx() -> tuple[bool, str | None]:
-    """Best-effort ROCm detection returning (has_rocm, gfx_target). Never raises."""
-    # WSL2 ROCDXG: rocminfo enumerates the GPU over /dev/dxg only when
-    # HSA_ENABLE_DXG_DETECTION=1 (a no-op on bare metal), and can live only under
-    # /opt/rocm/bin (its profile.d PATH drop-in reaches login shells only). Probe
-    # accordingly or a WSL ROCm host is misdetected as CPU-only. Mirrors
-    # install_llama_prebuilt.py's WSL detection.
-    dxg_env = {**os.environ}
-    dxg_env.setdefault("HSA_ENABLE_DXG_DETECTION", "1")
-    for tool, args in (
-        ("rocminfo", []),
-        ("amd-smi", ["static", "--asic"]),
-    ):
-        binary = shutil.which(tool)
-        if not binary and tool == "rocminfo" and os.access("/opt/rocm/bin/rocminfo", os.X_OK):
-            binary = "/opt/rocm/bin/rocminfo"
-        if not binary:
-            continue
-        try:
-            result = subprocess.run(
-                [binary, *args],
-                capture_output = True,
-                text = True,
-                timeout = 10,
-                env = dxg_env if tool == "rocminfo" else None,
-                **_windows_hidden_kwargs(),
-            )
-        except (OSError, ValueError, subprocess.SubprocessError):
-            continue
-        if result.returncode != 0:
-            continue
-        # gfx for the active GPU (honors *_VISIBLE_DEVICES) since the exact ROCm
-        # matcher treats this token as the host GPU; a first-match would install
-        # the wrong archive. Shared with llama via pick_rocm_gfx_target.
-        gfx = pick_rocm_gfx_target(result.stdout)
-        if gfx is not None:
-            return True, gfx
-    return False, None
-
-
-def detect_host() -> HostInfo:
-    system = platform.system()
-    machine = platform.machine().lower()
-    is_windows = system == "Windows"
-    is_macos = system == "Darwin"
-
+def host_from_llama(base: Any) -> HostInfo:
+    """Map install_llama_prebuilt's detected host (NVIDIA caps + driver honoring
+    CUDA_VISIBLE_DEVICES, ROCm gfx incl. WSL, macOS version) onto the whisper
+    asset tokens. Raises PrebuiltFallback on an unsupported OS/arch."""
+    system = base.system
+    machine = base.machine.lower()
     if system == "Linux":
         whisper_os = "linux"
-    elif is_macos:
+    elif system == "Darwin":
         whisper_os = "macos"
-    elif is_windows:
+    elif system == "Windows":
         whisper_os = "windows"
     else:
         raise PrebuiltFallback(f"unsupported operating system for whisper.cpp prebuilt: {system}")
@@ -230,47 +174,30 @@ def detect_host() -> HostInfo:
     else:
         raise PrebuiltFallback(f"unsupported CPU architecture for whisper.cpp prebuilt: {machine}")
 
-    is_apple_silicon = is_macos and whisper_arch == "arm64"
-    archive_ext = ".zip" if is_windows else ".tar.gz"
-    macos_version = parse_macos_version(platform.mac_ver()[0]) if is_macos else None
-
-    has_usable_nvidia = False
-    has_rocm = False
-    rocm_gfx: str | None = None
-    compute_caps: tuple[str, ...] = ()
-    driver_cuda_version: tuple[int, int] | None = None
-    torch_runtime_line: str | None = None
-    if system == "Linux" or is_windows:
-        # macOS has no CUDA/ROCm; skip the probes there.
-        # The shared probe reports the GPU compute caps + driver CUDA version so
-        # an SM-appropriate CUDA bundle can be picked (llama parity), honoring
-        # CUDA_VISIBLE_DEVICES.
-        nvidia = detect_nvidia_caps(is_linux = system == "Linux")
-        has_usable_nvidia = nvidia.has_usable_nvidia
-        compute_caps = tuple(nvidia.compute_caps)
-        driver_cuda_version = nvidia.driver_cuda_version
-        if has_usable_nvidia:
-            torch_runtime_line = detect_torch_cuda_runtime_line()
-        else:
-            has_rocm, rocm_gfx = _detect_rocm_gfx()
+    # Self-guarded: returns None unless the host has usable NVIDIA + torch CUDA.
+    torch_runtime_line = detect_torch_cuda_runtime_preference(base).runtime_line
 
     return HostInfo(
         system = system,
         machine = machine,
         whisper_os = whisper_os,
         whisper_arch = whisper_arch,
-        archive_ext = archive_ext,
-        is_windows = is_windows,
-        is_macos = is_macos,
-        is_apple_silicon = is_apple_silicon,
-        has_usable_nvidia = has_usable_nvidia,
-        has_rocm = has_rocm,
-        rocm_gfx = rocm_gfx,
-        compute_caps = compute_caps,
-        driver_cuda_version = driver_cuda_version,
+        archive_ext = ".zip" if base.is_windows else ".tar.gz",
+        is_windows = base.is_windows,
+        is_macos = base.is_macos,
+        is_apple_silicon = base.is_macos and whisper_arch == "arm64",
+        has_usable_nvidia = base.has_usable_nvidia,
+        has_rocm = base.has_rocm,
+        rocm_gfx = base.rocm_gfx_target,
+        compute_caps = tuple(base.compute_caps),
+        driver_cuda_version = base.driver_cuda_version,
         torch_runtime_line = torch_runtime_line,
-        macos_version = macos_version,
+        macos_version = base.macos_version,
     )
+
+
+def detect_host() -> HostInfo:
+    return host_from_llama(llama_detect_host())
 
 
 def apply_host_overrides(
@@ -281,8 +208,6 @@ def apply_host_overrides(
     force_cpu: bool = False,
 ) -> HostInfo:
     """Apply CLI overrides (setup forwards hardware hints) onto a detected host."""
-    from dataclasses import replace
-
     if force_cpu:
         return replace(
             host,
@@ -435,14 +360,173 @@ def _artifacts_for_host(
     ]
 
 
+# ── On-disk CUDA runtime detection (llama's dir scan, exact SONAMEs) ──
+def detected_linux_runtime_lines() -> list[str]:
+    """`cuda<major>` lines whose libcudart + libcublas SONAMEs are on disk, newest
+    first. Exact-name matching: the loader resolves the SONAME (libcudart.so.13),
+    so a versioned-only file without that symlink is not loadable and a `{lib}*`
+    glob would overreport."""
+    detected: list[str] = []
+    for major in range(llama._MAX_PROBE_CUDA_MAJOR, llama._MIN_CUDA_MAJOR - 1, -1):
+        required = [f"libcudart.so.{major}", f"libcublas.so.{major}"]
+        dirs = llama.linux_runtime_dirs_for_required_libraries(required)
+        if all(
+            any(llama.dir_provides_exact_library(directory, library) for directory in dirs)
+            for library in required
+        ):
+            detected.append(f"cuda{major}")
+    return detected
+
+
+def detected_cuda_runtime_lines(*, is_windows: bool) -> list[str]:
+    """Platform-appropriate on-disk CUDA runtime-line detection (newest first)."""
+    if is_windows:
+        return llama.detected_windows_runtime_lines()[0]
+    return detected_linux_runtime_lines()
+
+
+# ── Coverage-aware selection (llama primitives over the whisper manifest) ──
+def _coerce_int(value: Any) -> int | None:
+    if value is None:
+        return None
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _published_view(artifact: dict[str, Any]) -> Any:
+    """Adapt a whisper manifest artifact to llama's PublishedLlamaArtifact so the
+    shared coverage primitives apply, normalizing dotted SMs to bare strings."""
+    return llama.PublishedLlamaArtifact(
+        asset_name = str(artifact.get("asset") or ""),
+        install_kind = "whisper",
+        runtime_line = artifact.get("runtime_line"),
+        coverage_class = artifact.get("coverage_class"),
+        supported_sms = [
+            sm
+            for sm in (
+                llama.normalize_compute_cap(value)
+                for value in (artifact.get("supported_sms") or ())
+            )
+            if sm is not None
+        ],
+        min_sm = _coerce_int(artifact.get("min_sm")),
+        max_sm = _coerce_int(artifact.get("max_sm")),
+        bundle_profile = None,
+        rank = _coerce_int(artifact.get("rank")) or 0,
+        gfx_target = artifact.get("gfx_target"),
+        mapped_targets = [str(value) for value in (artifact.get("mapped_targets") or ())],
+    )
+
+
+def _select_cuda_artifact(
+    candidates: list[dict[str, Any]], host: HostInfo, log_lines: list[str]
+) -> dict[str, Any] | None:
+    """Coverage-aware CUDA pick (llama's linux_cuda_choice_from_release policy):
+    a runtime line is usable only when the driver supports it AND its libs are on
+    disk (bundles omit libcudart/libcublas); a Blackwell host prefers the highest
+    covering major, torch's line is a non-Blackwell tie-break; within a line every
+    host SM must be covered, tightest SM range wins, portable is the per-line
+    fallback (and the only acceptable class with unknown caps). None when nothing
+    covers -- the caller then falls back to CPU."""
+    views = [(_published_view(artifact), artifact) for artifact in candidates]
+    host_sms = llama.normalize_compute_caps(host.compute_caps)
+    detected = detected_cuda_runtime_lines(is_windows = host.is_windows)
+    # Duck-typed on driver_cuda_version; the major floor is platform independent.
+    driver_lines = llama.compatible_linux_runtime_lines(host)
+    runtime_lines = [line for line in detected if line in driver_lines]
+    log_lines.append(
+        f"cuda_selection: detected_sms={','.join(host_sms) if host_sms else 'unknown'}"
+    )
+    log_lines.append("cuda_selection: driver_runtime_lines=" + (",".join(driver_lines) or "none"))
+    log_lines.append("cuda_selection: detected_runtime_lines=" + (",".join(detected) or "none"))
+    log_lines.append(
+        "cuda_selection: compatible_runtime_lines=" + (",".join(runtime_lines) or "none")
+    )
+    if not runtime_lines:
+        log_lines.append("cuda_selection: no usable CUDA runtime line (driver + on-disk runtime)")
+        return None
+
+    ordered = list(runtime_lines)
+    blackwell_lines = (
+        [
+            line
+            for line in llama._blackwell_capable_linux_runtime_lines(
+                host_sms, [view for view, _ in views]
+            )
+            if line in ordered
+        ]
+        if llama._host_is_blackwell(host)
+        else []
+    )
+    if blackwell_lines:
+        ordered = blackwell_lines + [line for line in ordered if line not in blackwell_lines]
+        log_lines.append(
+            "cuda_selection: blackwell_runtime_override prefer=" + ",".join(blackwell_lines)
+        )
+    elif host.torch_runtime_line in ordered:
+        ordered = [host.torch_runtime_line] + [
+            line for line in ordered if line != host.torch_runtime_line
+        ]
+        log_lines.append(f"cuda_selection: torch_preferred_runtime_line={host.torch_runtime_line}")
+
+    for runtime_line in ordered:
+        # llama's accept rule: full SM coverage with real metadata; with unknown
+        # caps only a portable bundle is acceptable.
+        accepted = [
+            (view, raw)
+            for view, raw in views
+            if view.runtime_line == runtime_line
+            and llama._artifact_covers_sms(view, host_sms)
+            and (host_sms or view.coverage_class == "portable")
+        ]
+        coverage = [(view, raw) for view, raw in accepted if view.coverage_class != "portable"]
+        chosen = (
+            min(
+                coverage,
+                key = lambda item: (llama._sm_range(item[0]), item[0].rank, item[0].max_sm or 0),
+            )
+            if coverage
+            else next(iter(accepted), None)
+        )
+        if chosen is not None:
+            view, raw = chosen
+            log_lines.append(
+                f"cuda_selection: selected {view.asset_name} runtime_line={runtime_line} "
+                f"coverage_class={view.coverage_class}"
+            )
+            return raw
+    log_lines.append("cuda_selection: no artifact covered the host GPUs")
+    return None
+
+
+def _select_rocm_artifact(
+    candidates: list[dict[str, Any]], host_gfx: str | None, log_lines: list[str]
+) -> dict[str, Any] | None:
+    """Exact ROCm match: the host gfx must be listed in the bundle's
+    mapped_targets or equal its umbrella gfx_target -- never a loose prefix, so an
+    in-family but unbuilt arch (e.g. gfx1033) is not served the family bundle."""
+    if not host_gfx:
+        return None
+    gfx = host_gfx.lower().strip()
+    for artifact in candidates:
+        mapped = {str(target).lower() for target in (artifact.get("mapped_targets") or ())}
+        family = str(artifact.get("gfx_target") or "").lower()
+        if gfx in mapped or (family and gfx == family):
+            log_lines.append(f"rocm_selection: gpu={host_gfx} selected {artifact.get('asset')}")
+            return artifact
+    return None
+
+
 def select_artifact(
     manifest: dict[str, Any], host: HostInfo, backend: str
 ) -> dict[str, Any] | None:
     """Best manifest artifact for this host os/arch and backend, or None.
 
-    CPU/Metal/Vulkan take the first match. CUDA and ROCm are coverage-aware via the
-    shared core (same as llama): CUDA matches compute caps + driver against each
-    bundle's supported_sms/min_sm/max_sm/runtime_line and picks the tightest
+    CPU/Metal/Vulkan take the first match. CUDA and ROCm are coverage-aware via
+    llama's primitives: CUDA matches compute caps + driver against each bundle's
+    supported_sms/min_sm/max_sm/runtime_line and picks the tightest
     Blackwell-aware profile, ROCm matches the gfx target exactly. So a B200
     (sm_100) gets a Blackwell bundle. None when nothing covers the host -- the
     caller then falls back to CPU."""
@@ -452,27 +536,14 @@ def select_artifact(
     if backend not in {"cuda", "rocm"}:
         # cpu / metal / vulkan: no per-GPU coverage to match; first match wins.
         return candidates[0]
-
-    sel_candidates = [_sel.SelArtifact.from_manifest(artifact) for artifact in candidates]
     log_lines: list[str] = []
     if backend == "cuda":
-        # Bundles omit libcudart/libcublas, so a runtime line is usable only when
-        # its libs are on disk (llama parity): intersect the scan with the driver.
-        detected = _runtime_libs.detected_cuda_runtime_lines(is_windows = host.is_windows)
-        attempts = _sel.select_cuda_attempts(
-            sel_candidates,
-            _sel.normalize_compute_caps(host.compute_caps),
-            host.driver_cuda_version,
-            host.torch_runtime_line,
-            log_lines,
-            detected_runtime_lines = detected,
-        )
-        chosen = attempts[0] if attempts else None
-    else:  # rocm
-        chosen = _sel.match_rocm_artifact(sel_candidates, host.rocm_gfx, log_lines)
+        chosen = _select_cuda_artifact(candidates, host, log_lines)
+    else:
+        chosen = _select_rocm_artifact(candidates, host.rocm_gfx, log_lines)
     for line in log_lines:
         log(line)
-    return chosen.raw if chosen is not None else None
+    return chosen
 
 
 def select_artifact_with_cpu_fallback(
@@ -610,6 +681,8 @@ def expected_sha256_for(
 def download_file_verified(
     url: str, destination: Path, *, expected_sha256: str, label: str
 ) -> None:
+    # Kept local (llama's variant calls its own download_file): resolving the
+    # module-global download_file keeps the test seam monkeypatchable.
     for attempt in range(1, 3):
         download_file(url, destination)
         actual = sha256_file(destination)
@@ -818,6 +891,23 @@ def _resolve_release_via_download_host(
     return bundle, checksums
 
 
+# ── Archive extraction (llama's guarded extractor + tar exec-bit restore) ──
+def extract_archive(archive_path: Path, destination: Path) -> None:
+    """llama's traversal/symlink-guarded extraction, then restore tar exec bits
+    (llama writes plain files; whisper-server must stay executable)."""
+    llama.extract_archive(archive_path, destination)
+    if os.name == "nt" or not archive_path.name.endswith(".tar.gz"):
+        return
+    with tarfile.open(archive_path, "r:gz") as archive:
+        for member in archive.getmembers():
+            if not (member.isfile() and member.mode & 0o111):
+                continue
+            # Paths were already traversal-validated by the extractor above.
+            target = destination / Path(member.name.replace("\\", "/"))
+            if target.is_file():
+                os.chmod(target, target.stat().st_mode | 0o111)
+
+
 # ── Install layout ──
 def server_binary_name(host: HostInfo) -> str:
     return "whisper-server.exe" if host.is_windows else "whisper-server"
@@ -898,7 +988,7 @@ def _validate_staged_server(staged_root: Path, host: HostInfo) -> None:
             text = True,
             timeout = 60,
             env = env,
-            **_windows_hidden_kwargs(),
+            **llama.windows_hidden_subprocess_kwargs(),
         )
     except (OSError, subprocess.SubprocessError) as exc:
         raise PrebuiltFallback(f"staged whisper-server failed to launch: {exc}") from exc
@@ -1311,6 +1401,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
 
 
 def main(argv: list[str] | None = None) -> int:
+    global _LOG_TO_STDOUT
     parser = build_arg_parser()
     args = parser.parse_args(argv)
 
@@ -1318,7 +1409,7 @@ def main(argv: list[str] | None = None) -> int:
         # Read-only probe: stdout is only the JSON/asset line (setup.sh and
         # whisper_cpp_update.py parse it), so force diagnostics to stderr and map
         # any failure to "not available" instead of a traceback.
-        _logs.set_to_stdout(False)
+        _LOG_TO_STDOUT = False
         try:
             host = apply_host_overrides(
                 detect_host(),
@@ -1342,7 +1433,7 @@ def main(argv: list[str] | None = None) -> int:
         return EXIT_SUCCESS
 
     # Install path: progress logs go to stdout so setup surfaces them.
-    _logs.set_to_stdout(True)
+    _LOG_TO_STDOUT = True
 
     if not args.install_dir:
         parser.error("--install-dir is required unless --resolve-prebuilt is used")

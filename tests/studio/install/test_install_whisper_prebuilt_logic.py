@@ -16,8 +16,8 @@ import pytest
 
 PACKAGE_ROOT = Path(__file__).resolve().parents[3]
 MODULE_PATH = PACKAGE_ROOT / "studio" / "install_whisper_prebuilt.py"
-# The installer imports the shared prebuilt core via `from backend...`; make
-# studio/ importable so that resolves under spec-based loading.
+# The installer imports install_llama_prebuilt (same directory); make studio/
+# importable so that resolves under spec-based loading.
 _STUDIO_DIR = str(MODULE_PATH.parent)
 if _STUDIO_DIR not in sys.path:
     sys.path.insert(0, _STUDIO_DIR)
@@ -26,8 +26,6 @@ assert SPEC is not None and SPEC.loader is not None
 M = importlib.util.module_from_spec(SPEC)
 sys.modules[SPEC.name] = M
 SPEC.loader.exec_module(M)
-
-from backend.utils.prebuilt.hosts import NvidiaCaps  # noqa: E402
 
 HostInfo = M.HostInfo
 PrebuiltFallback = M.PrebuiltFallback
@@ -106,13 +104,46 @@ def _default_detected_runtime(monkeypatch):
     Default that scan to "both majors present" so the SM/driver matrix is
     deterministic on any test host; on-disk-gating tests override it."""
     monkeypatch.setattr(
-        M._runtime_libs,
+        M,
         "detected_cuda_runtime_lines",
         lambda *, is_windows: ["cuda13", "cuda12"],
     )
 
 
-# ── Host detection ──
+# ── Host detection (probes come from install_llama_prebuilt.detect_host) ──
+def _llama_host(
+    system: str,
+    machine: str,
+    *,
+    has_usable_nvidia: bool = False,
+    compute_caps: list[str] | None = None,
+    driver_cuda_version: tuple[int, int] | None = None,
+    has_rocm: bool = False,
+    rocm_gfx: str | None = None,
+    macos_version: tuple[int, int] | None = None,
+):
+    """A fake install_llama_prebuilt HostInfo, as llama_detect_host would return."""
+    lowered = machine.lower()
+    return M.llama.HostInfo(
+        system = system,
+        machine = machine,
+        is_windows = system == "Windows",
+        is_linux = system == "Linux",
+        is_macos = system == "Darwin",
+        is_x86_64 = lowered in {"x86_64", "amd64"},
+        is_arm64 = lowered in {"arm64", "aarch64"},
+        nvidia_smi = None,
+        driver_cuda_version = driver_cuda_version,
+        compute_caps = list(compute_caps or []),
+        visible_cuda_devices = None,
+        has_physical_nvidia = has_usable_nvidia,
+        has_usable_nvidia = has_usable_nvidia,
+        has_rocm = has_rocm,
+        rocm_gfx_target = rocm_gfx,
+        macos_version = macos_version,
+    )
+
+
 @pytest.mark.parametrize(
     "system,machine,exp_os,exp_arch,exp_ext",
     [
@@ -125,16 +156,7 @@ def _default_detected_runtime(monkeypatch):
     ],
 )
 def test_detect_host(monkeypatch, system, machine, exp_os, exp_arch, exp_ext):
-    monkeypatch.setattr(M.platform, "system", lambda: system)
-    monkeypatch.setattr(M.platform, "machine", lambda: machine)
-    monkeypatch.setattr(
-        M,
-        "detect_nvidia_caps",
-        lambda **_kw: NvidiaCaps(
-            has_usable_nvidia = False, compute_caps = [], driver_cuda_version = None
-        ),
-    )
-    monkeypatch.setattr(M, "_detect_rocm_gfx", lambda: (False, None))
+    monkeypatch.setattr(M, "llama_detect_host", lambda: _llama_host(system, machine))
     host = M.detect_host()
     assert (host.whisper_os, host.whisper_arch, host.archive_ext) == (exp_os, exp_arch, exp_ext)
     assert host.is_windows == (exp_os == "windows")
@@ -142,21 +164,39 @@ def test_detect_host(monkeypatch, system, machine, exp_os, exp_arch, exp_ext):
 
 
 def test_detect_host_populates_nvidia_caps(monkeypatch):
-    monkeypatch.setattr(M.platform, "system", lambda: "Linux")
-    monkeypatch.setattr(M.platform, "machine", lambda: "x86_64")
     monkeypatch.setattr(
         M,
-        "detect_nvidia_caps",
-        lambda **_kw: NvidiaCaps(
-            has_usable_nvidia = True, compute_caps = ["10.0"], driver_cuda_version = (13, 0)
+        "llama_detect_host",
+        lambda: _llama_host(
+            "Linux",
+            "x86_64",
+            has_usable_nvidia = True,
+            compute_caps = ["100"],
+            driver_cuda_version = (13, 0),
         ),
     )
-    monkeypatch.setattr(M, "detect_torch_cuda_runtime_line", lambda: "cuda13")
+    monkeypatch.setattr(
+        M,
+        "detect_torch_cuda_runtime_preference",
+        lambda base: types.SimpleNamespace(runtime_line = "cuda13"),
+    )
     host = M.detect_host()
     assert host.has_usable_nvidia is True
-    assert host.compute_caps == ("10.0",)
+    assert host.compute_caps == ("100",)
     assert host.driver_cuda_version == (13, 0)
     assert host.torch_runtime_line == "cuda13"
+
+
+def test_detect_host_maps_rocm_fields(monkeypatch):
+    monkeypatch.setattr(
+        M,
+        "llama_detect_host",
+        lambda: _llama_host("Linux", "x86_64", has_rocm = True, rocm_gfx = "gfx1100"),
+    )
+    host = M.detect_host()
+    assert host.has_rocm is True
+    assert host.rocm_gfx == "gfx1100"
+    assert host.has_usable_nvidia is False
 
 
 @pytest.mark.parametrize(
@@ -164,48 +204,9 @@ def test_detect_host_populates_nvidia_caps(monkeypatch):
     [("Plan9", "x86_64"), ("Linux", "sparc64"), ("Linux", "armv7l")],
 )
 def test_detect_host_unsupported(monkeypatch, system, machine):
-    monkeypatch.setattr(M.platform, "system", lambda: system)
-    monkeypatch.setattr(M.platform, "machine", lambda: machine)
+    monkeypatch.setattr(M, "llama_detect_host", lambda: _llama_host(system, machine))
     with pytest.raises(PrebuiltFallback):
         M.detect_host()
-
-
-def test_detect_rocm_gfx_wsl_env_and_skips_cpu_agent(monkeypatch):
-    # rocminfo lists the CPU agent (gfx000) before the real GPU (gfx1100); the
-    # probe must skip gfx000 and pick gfx1100, and pass HSA_ENABLE_DXG_DETECTION
-    # so a WSL /dev/dxg host enumerates at all.
-    rocminfo_out = "  Name:  gfx000\n  Marketing: CPU\n  Name:  gfx1100\n"
-    captured = {}
-    # The gfx picker honors *_VISIBLE_DEVICES; clear them so this asserts the
-    # default (first GPU) path deterministically regardless of the CI env.
-    for _var in ("HIP_VISIBLE_DEVICES", "ROCR_VISIBLE_DEVICES", "CUDA_VISIBLE_DEVICES"):
-        monkeypatch.delenv(_var, raising = False)
-
-    def fake_run(cmd, *a, **kw):
-        captured["env"] = kw.get("env")
-        return types.SimpleNamespace(returncode = 0, stdout = rocminfo_out, stderr = "")
-
-    monkeypatch.setattr(
-        M.shutil, "which", lambda name: "/usr/bin/rocminfo" if name == "rocminfo" else None
-    )
-    monkeypatch.setattr(M.subprocess, "run", fake_run)
-    has_rocm, gfx = M._detect_rocm_gfx()
-    assert (has_rocm, gfx) == (True, "gfx1100")
-    assert captured["env"]["HSA_ENABLE_DXG_DETECTION"] == "1"
-
-
-def test_detect_rocm_gfx_cpu_only_returns_false(monkeypatch):
-    # Only the CPU agent + a generic ISA line: no real GPU -> not ROCm.
-    out = "  Name:  gfx000\n  Name:  gfx11-generic\n"
-    monkeypatch.setattr(
-        M.shutil, "which", lambda name: "/usr/bin/rocminfo" if name == "rocminfo" else None
-    )
-    monkeypatch.setattr(
-        M.subprocess,
-        "run",
-        lambda *a, **kw: types.SimpleNamespace(returncode = 0, stdout = out, stderr = ""),
-    )
-    assert M._detect_rocm_gfx() == (False, None)
 
 
 # ── Backend override + auto-detect ──
@@ -385,9 +386,7 @@ def test_cuda_on_disk_runtime_gates_the_line(monkeypatch):
     # B200 under a CUDA-13 driver, but only cuda12 runtime libs on disk (e.g.
     # torch-cuda12): the bundles don't ship libcudart/libcublas, so the cuda13
     # line is unusable and selection must fall to cuda12-newer.
-    monkeypatch.setattr(
-        M._runtime_libs, "detected_cuda_runtime_lines", lambda *, is_windows: ["cuda12"]
-    )
+    monkeypatch.setattr(M, "detected_cuda_runtime_lines", lambda *, is_windows: ["cuda12"])
     host = _host(
         "linux",
         "x64",
@@ -403,7 +402,7 @@ def test_cuda_on_disk_runtime_gates_the_line(monkeypatch):
 
 def test_cuda_no_on_disk_runtime_returns_none(monkeypatch):
     # No CUDA runtime libraries anywhere -> no usable line -> None (CPU fallback).
-    monkeypatch.setattr(M._runtime_libs, "detected_cuda_runtime_lines", lambda *, is_windows: [])
+    monkeypatch.setattr(M, "detected_cuda_runtime_lines", lambda *, is_windows: [])
     host = _host(
         "linux",
         "x64",
@@ -433,6 +432,71 @@ def test_cuda_selection_stable_under_manifest_shuffle():
         shuffled["artifacts"] = arts
         picks.add(M.select_artifact(shuffled, host, "cuda")["asset"])
     assert picks == {"whisper-linux-x64-cuda13-newer.tar.gz"}
+
+
+def test_cuda_torch_preference_tie_break_on_non_blackwell():
+    # sm_89 with both lines usable; torch built for cuda12 moves that line first
+    # (Blackwell hosts ignore torch and prefer the highest covering major).
+    host = _host(
+        "linux",
+        "x64",
+        has_usable_nvidia = True,
+        compute_caps = ("8.9",),
+        driver_cuda_version = (13, 0),
+        torch_runtime_line = "cuda12",
+    )
+    assert (
+        M.select_artifact(_cuda_manifest(), host, "cuda")["asset"]
+        == "whisper-linux-x64-cuda12-older.tar.gz"
+    )
+
+
+def test_cuda_manifest_dotted_sms_are_normalized():
+    # A manifest using "10.0"-style SMs must still cover a sm_100 host (llama
+    # parity: supported_sms are normalized to bare SM strings before matching).
+    art = _artifact(
+        "linux",
+        "x64",
+        "cuda",
+        "whisper-linux-x64-cuda13-newer.tar.gz",
+        "b" * 64,
+        runtime_line = "cuda13",
+        coverage_class = "newer",
+        supported_sms = ["8.6", "8.9", "9.0", "10.0"],
+        min_sm = 86,
+        max_sm = 100,
+    )
+    host = _host(
+        "linux",
+        "x64",
+        has_usable_nvidia = True,
+        compute_caps = ("10.0",),
+        driver_cuda_version = (13, 0),
+    )
+    manifest = M.parse_manifest(_manifest([art]))
+    assert M.select_artifact(manifest, host, "cuda")["asset"] == art["asset"]
+
+
+def test_cuda_targeted_artifact_missing_sm_metadata_rejected():
+    # A targeted (non-portable) bundle without supported_sms/min/max coverage
+    # metadata can never be proven to cover the host -> rejected, not guessed.
+    art = _artifact(
+        "linux",
+        "x64",
+        "cuda",
+        "whisper-linux-x64-cuda13-x.tar.gz",
+        "b" * 64,
+        runtime_line = "cuda13",
+        coverage_class = "newer",
+    )
+    host = _host(
+        "linux",
+        "x64",
+        has_usable_nvidia = True,
+        compute_caps = ("9.0",),
+        driver_cuda_version = (13, 0),
+    )
+    assert M.select_artifact(M.parse_manifest(_manifest([art])), host, "cuda") is None
 
 
 def test_cuda_no_driver_version_returns_none_then_cpu_fallback():
@@ -965,3 +1029,69 @@ def test_existing_install_matches_requires_marker_and_binary(tmp_path):
     # a different backend has a different fingerprint -> not a match
     other = M.InstallSelection(**{**selection.__dict__, "backend": "cuda"})
     assert M.existing_install_matches(install_dir, host, other) is False
+
+
+# ── On-disk CUDA runtime detection (exact SONAMEs over llama's dir scan) ──
+def _isolate_runtime_dirs(monkeypatch):
+    """Neutralise every runtime-dir source except CUDA_RUNTIME_LIB_DIR so the scan
+    sees only the test's temp dir (not the host's real CUDA install). The dir
+    sources are llama module globals resolved at call time."""
+    monkeypatch.setattr(M.llama, "python_runtime_dirs", lambda: [])
+    monkeypatch.setattr(M.llama, "ldconfig_runtime_dirs", lambda required: [])
+    monkeypatch.setattr(M.llama, "glob_paths", lambda *patterns: [])
+    for var in ("LD_LIBRARY_PATH", "CUDA_HOME", "CUDA_PATH", "CUDA_ROOT"):
+        monkeypatch.delenv(var, raising = False)
+
+
+def test_detected_linux_runtime_lines_matches_only_present_major(tmp_path, monkeypatch):
+    libdir = tmp_path / "cuda13"
+    libdir.mkdir()
+    (libdir / "libcudart.so.13").write_text("x")
+    (libdir / "libcublas.so.13").write_text("x")
+    monkeypatch.setenv("CUDA_RUNTIME_LIB_DIR", str(libdir))
+    _isolate_runtime_dirs(monkeypatch)
+    assert M.detected_linux_runtime_lines() == ["cuda13"]  # not cuda12/14/...
+
+
+def test_detected_linux_runtime_lines_requires_both_libs(tmp_path, monkeypatch):
+    # libcudart present but libcublas missing -> the line is NOT usable.
+    libdir = tmp_path / "partial"
+    libdir.mkdir()
+    (libdir / "libcudart.so.13").write_text("x")
+    monkeypatch.setenv("CUDA_RUNTIME_LIB_DIR", str(libdir))
+    _isolate_runtime_dirs(monkeypatch)
+    assert M.detected_linux_runtime_lines() == []
+
+
+def test_detected_linux_runtime_lines_requires_soname_not_versioned_only(tmp_path, monkeypatch):
+    # Only the fully-versioned files (libcudart.so.13.0.88) with no SONAME symlink
+    # (libcudart.so.13): the dynamic linker resolves the SONAME, so this is NOT
+    # loadable and must not be reported. A `{lib}*` glob would wrongly match here.
+    libdir = tmp_path / "versioned_only"
+    libdir.mkdir()
+    (libdir / "libcudart.so.13.0.88").write_text("x")
+    (libdir / "libcublas.so.13.0.88").write_text("x")
+    monkeypatch.setenv("CUDA_RUNTIME_LIB_DIR", str(libdir))
+    _isolate_runtime_dirs(monkeypatch)
+    assert M.detected_linux_runtime_lines() == []
+
+
+def test_detected_linux_runtime_lines_accepts_soname_symlink(tmp_path, monkeypatch):
+    # SONAME symlink present (points at the versioned file) -> loadable -> detected.
+    libdir = tmp_path / "with_symlink"
+    libdir.mkdir()
+    (libdir / "libcudart.so.13.0.88").write_text("x")
+    (libdir / "libcublas.so.13.0.88").write_text("x")
+    (libdir / "libcudart.so.13").symlink_to(libdir / "libcudart.so.13.0.88")
+    (libdir / "libcublas.so.13").symlink_to(libdir / "libcublas.so.13.0.88")
+    monkeypatch.setenv("CUDA_RUNTIME_LIB_DIR", str(libdir))
+    _isolate_runtime_dirs(monkeypatch)
+    assert M.detected_linux_runtime_lines() == ["cuda13"]
+
+
+def test_detected_linux_runtime_lines_empty_when_nothing_present(tmp_path, monkeypatch):
+    empty = tmp_path / "empty"
+    empty.mkdir()
+    monkeypatch.setenv("CUDA_RUNTIME_LIB_DIR", str(empty))
+    _isolate_runtime_dirs(monkeypatch)
+    assert M.detected_linux_runtime_lines() == []
