@@ -73,11 +73,21 @@ _HERMES_POSIX_INSTALL_HINT = (
 # windows and scales the compaction threshold back down to the real window.
 _HERMES_MIN_CONTEXT = 65536
 _PI_PROVIDER = "unsloth"
-# OpenCode selects a model by "<providerID>/<modelID>" and honors a user
-# disabled_providers list. Register the session provider under a dedicated id a
-# user's disable list would never target, so the model is always selectable
-# without the wrapper having to reconstruct (and override) OpenCode's full,
-# multi-layer disabled_providers resolution.
+_SUBAGENT_NAME = "unsloth"
+_SUBAGENT_DESCRIPTION = (
+    "Local coding subagent powered by Unsloth for debugging, implementation, and codebase "
+    "research. Use when the user asks to spawn an Unsloth or local agent."
+)
+_SUBAGENT_INSTRUCTIONS = (
+    "You are a local coding subagent powered by Unsloth. Complete the assigned task directly, "
+    "use the available tools when useful, verify your work, and return a concise result to the "
+    "parent agent."
+)
+_CLAUDE_SUBAGENT_MCP_MODULE = "unsloth_cli.claude_subagent_mcp"
+_CLAUDE_SUBAGENT_TOOL = "mcp__plugin_unsloth-local-agent_unsloth__unsloth_agent"
+_PI_SUBAGENT_EXTENSION = Path(__file__).parent.parent / "pi_subagent.ts"
+# OpenCode selects a model by "<providerID>/<modelID>". Use a dedicated id to avoid
+# colliding with a user's providers; provider filters are set in the launch-time overlay.
 _OPENCODE_PROVIDER = "unsloth-studio"
 _PROVIDER_HEADER = f"[model_providers.{_CODEX_PROFILE}]"
 _PASSTHROUGH = {"allow_extra_args": True, "ignore_unknown_options": True}
@@ -157,6 +167,11 @@ _PERSIST_OPTION = typer.Option(
         "`unsloth start codex --persist resume` or `claude --resume <id>`; those flow to "
         "the agent unchanged."
     ),
+)
+_AS_SUBAGENT_OPTION = typer.Option(
+    False,
+    "--as-subagent",
+    help = "Keep the coding agent's current model and add Unsloth as a local subagent.",
 )
 
 # Per-agent CLI flag for "run tools without prompting". OpenCode (native --auto is
@@ -334,9 +349,52 @@ def _display_model_spec(model: str, variant: Optional[str]) -> str:
     return f"{repo}:{selected_variant}" if selected_variant else model
 
 
+def _subagent_model_id(
+    base: str,
+    key: str,
+    entry: dict,
+    requested_model: Optional[str],
+    requested_variant: Optional[str],
+) -> str:
+    """Return an API model id that preserves the selected GGUF variant.
+
+    Coding-agent model definitions outlive the initial load. If Unsloth later
+    unloads the model, a bare repository id may resolve to a different cached
+    quant. Include the explicit or currently loaded variant so an automatic
+    reload selects the same weights.
+    """
+    model_id = str(entry["id"])
+    _, inline_variant = _split_repo_variant(requested_model or "")
+    variant = requested_variant or inline_variant
+    if not variant:
+        try:
+            status = _http_json("GET", f"{base}/api/inference/status", key)
+        except Exception:
+            status = {}
+            typer.echo(
+                "Warning: could not verify the loaded GGUF variant; a later reload "
+                "may pick a different cached quant. Pass :variant to pin it.",
+                err = True,
+            )
+        if status.get("is_gguf"):
+            variant = status.get("gguf_variant")
+    return (
+        _display_model_spec(model_id, str(variant))
+        if variant and _is_hub_model_id(model_id)
+        else model_id
+    )
+
+
 def _fail(message: str) -> NoReturn:
     typer.echo(message, err = True)
     raise typer.Exit(code = 1)
+
+
+def _reject_as_subagent(agent: str, args: list) -> None:
+    # Reject early; otherwise the flag reaches the agent binary and fails after
+    # Studio has already loaded the model.
+    if "--as-subagent" in args:
+        _fail(f"--as-subagent is not supported for {agent}.")
 
 
 def _http_error_detail(exc: urllib.error.HTTPError) -> str:
@@ -1267,6 +1325,25 @@ def _claude_flags(model_id: str) -> list:
     return [_DYNAMIC_SECTIONS_FLAG, "--settings", _claude_settings_overlay(model_id)]
 
 
+def _claude_local_env(base: str, key: str, entry: dict) -> dict:
+    """Build the local endpoint, cache, display, and compaction environment."""
+    model_id = entry["id"]
+    env = {
+        "ANTHROPIC_BASE_URL": base,
+        "ANTHROPIC_AUTH_TOKEN": key,
+        "ANTHROPIC_MODEL": model_id,
+        "CLAUDE_CODE_ATTRIBUTION_HEADER": "0",
+        "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC": "1",
+        "CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS": "1",
+        "CLAUDE_CODE_NO_FLICKER": "1",
+    }
+    window = entry.get("context_length") or entry.get("max_context_length")
+    if window:
+        env["CLAUDE_CODE_AUTO_COMPACT_WINDOW"] = str(int(window))
+        env["CLAUDE_AUTOCOMPACT_PCT_OVERRIDE"] = "90"
+    return env
+
+
 def _merge_codex_config(existing: str, base: str) -> str:
     chunks = re.split(r"(?m)^(?=\[)", existing)  # preamble, then one chunk per table
     if not re.search(r"(?m)^\s*oss_provider\s*=", chunks[0]):
@@ -1378,6 +1455,206 @@ def write_codex_config(base: str, model: dict, home: Path) -> None:
     if not profile.exists() or profile.read_text(encoding = "utf-8") != profile_text:
         profile.write_text(profile_text, encoding = "utf-8")
         typer.echo(f"Updated {profile}")
+
+
+def write_codex_subagent_config(base: str, key: str, model: dict, home: Path) -> Path:
+    """Write a session-scoped Codex custom agent without replacing the main model."""
+    home.mkdir(parents = True, exist_ok = True)
+    model_id = model["id"]
+    window = model.get("context_length") or model.get("max_context_length")
+    catalog_name = "unsloth-model-catalog.json"
+    text = (
+        f"name = {json.dumps(_SUBAGENT_NAME)}\n"
+        f"description = {json.dumps(_SUBAGENT_DESCRIPTION)}\n"
+        f"developer_instructions = {json.dumps(_SUBAGENT_INSTRUCTIONS)}\n"
+        f"model_provider = {json.dumps(_CODEX_PROFILE)}\n"
+        f"model = {json.dumps(model_id)}\n"
+    )
+    if _codex_supports_model_catalog() and _CODEX_FALLBACK_PROMPT.is_file():
+        catalog = home / catalog_name
+        catalog_text = json.dumps(_codex_model_catalog(model), indent = 2) + "\n"
+        if not catalog.exists() or catalog.read_text(encoding = "utf-8") != catalog_text:
+            catalog.write_text(catalog_text, encoding = "utf-8")
+            typer.echo(f"Updated {catalog}")
+        text += f"model_catalog_json = {json.dumps(catalog_name)}\n"
+    if window:
+        text += f"model_context_window = {int(window)}\n"
+    credential = home / "unsloth-auth.json"
+    _write_private_json(credential, {"token": key})
+    auth_command = sys.executable
+    auth_args = [
+        "-c",
+        "import json,sys; print(json.load(open(sys.argv[1], encoding='utf-8'))['token'])",
+        str(credential),
+    ]
+    if _wsl_windows_executable(["codex"]):
+        auth_command = "wsl.exe"
+        auth_args = [
+            "-d",
+            os.environ["WSL_DISTRO_NAME"],
+            "--",
+            sys.executable,
+            *auth_args,
+        ]
+    text += (
+        f"\n{_PROVIDER_HEADER}\n"
+        'name = "Unsloth Studio"\n'
+        f"base_url = {json.dumps(base + '/v1')}\n"
+        'wire_api = "responses"\n'
+        f"\n{_PROVIDER_HEADER[:-1]}.auth]\n"
+        f"command = {json.dumps(auth_command)}\n"
+        f"args = {json.dumps(auth_args)}\n"
+        "timeout_ms = 5000\n"
+    )
+    path = home / f"{_SUBAGENT_NAME}.toml"
+    if not path.exists() or path.read_text(encoding = "utf-8") != text:
+        path.write_text(text, encoding = "utf-8")
+        typer.echo(f"Updated {path}")
+    return path
+
+
+def _agent_config_path(path: Path, command: list) -> str:
+    """Translate a generated config path when a Windows agent runs through WSL."""
+    return _wsl_windows_path(path) if _wsl_windows_executable(command) else str(path)
+
+
+def _opencode_subagent_inline_config(path: Path, permission: dict) -> dict:
+    """Keep the local provider visible without hiding the parent's allowed providers."""
+    inline: dict = {}
+    inherited = os.environ.get("OPENCODE_CONFIG_CONTENT")
+    if inherited:
+        try:
+            parsed = json.loads(inherited)
+        except ValueError:
+            _fail("OPENCODE_CONFIG_CONTENT is not valid JSON.")
+        if not isinstance(parsed, dict):
+            _fail("OPENCODE_CONFIG_CONTENT must contain a JSON object.")
+        inline.update(parsed)
+
+    def merge_provider_filters(effective_config: dict) -> None:
+        enabled = effective_config.get("enabled_providers")
+        if isinstance(enabled, list):
+            inline["enabled_providers"] = list(dict.fromkeys([*enabled, _OPENCODE_PROVIDER]))
+        disabled = effective_config.get("disabled_providers")
+        if isinstance(disabled, list) and _OPENCODE_PROVIDER in disabled:
+            inline["disabled_providers"] = [
+                provider for provider in disabled if provider != _OPENCODE_PROVIDER
+            ]
+
+    # The inherited inline layer is already highest priority. Merge it even when
+    # OpenCode is not installed yet, as in fresh-install and --no-launch flows.
+    merge_provider_filters(inline)
+    effective = inline
+
+    executable = _which_with_install_dirs("opencode")
+    if executable is None:
+        typer.echo(
+            f"Warning: OpenCode is not installed, so provider filters could not be checked. "
+            f"The target configuration must allow '{_OPENCODE_PROVIDER}'.",
+            err = True,
+        )
+    else:
+        env = os.environ.copy()
+        env["OPENCODE_CONFIG"] = _agent_config_path(path, ["opencode"])
+        try:
+            resolved = subprocess.run(
+                [executable, "debug", "config"],
+                capture_output = True,
+                text = True,
+                timeout = 15,
+                env = env,
+            )
+        except Exception as exc:
+            _fail(f"Could not inspect OpenCode provider filters: {exc}")
+        if resolved.returncode != 0:
+            detail = resolved.stderr.strip() or resolved.stdout.strip()
+            _fail(f"Could not inspect OpenCode provider filters: {detail or 'unknown error'}")
+        try:
+            effective = json.loads(resolved.stdout)
+        except ValueError:
+            _fail("Could not inspect OpenCode provider filters: invalid JSON response.")
+        if not isinstance(effective, dict):
+            _fail("Could not inspect OpenCode provider filters: expected a JSON object.")
+
+        merge_provider_filters(effective)
+
+    depth = effective.get("subagent_depth")
+    inline["subagent_depth"] = (
+        depth if isinstance(depth, int) and not isinstance(depth, bool) and depth > 0 else 1
+    )
+    if permission:
+        inline["permission"] = permission
+    return inline
+
+
+def write_claude_subagent_plugin(path: Path, server_env: dict) -> Path:
+    """Write a session plugin that exposes the local Claude child through MCP."""
+    plugin = path / "unsloth-local-agent"
+    command = sys.executable
+    args = ["-m", _CLAUDE_SUBAGENT_MCP_MODULE]
+    mcp_env = dict(server_env)
+    if _wsl_windows_executable(["claude"]):
+        command = "wsl.exe"
+        args = [
+            "-d",
+            os.environ["WSL_DISTRO_NAME"],
+            "--",
+            sys.executable,
+            "-m",
+            _CLAUDE_SUBAGENT_MCP_MODULE,
+        ]
+        mcp_env["WSLENV"] = _merge_wslenv(
+            os.environ.get("WSLENV", ""),
+            _wsl_bridge_names(server_env, ()),
+        )
+    _write_private_json(
+        plugin / ".claude-plugin" / "plugin.json",
+        {
+            "name": "unsloth-local-agent",
+            "version": "1.0.0",
+            "description": _SUBAGENT_DESCRIPTION,
+            "author": {"name": "Unsloth AI"},
+        },
+    )
+    _write_private_json(
+        plugin / ".mcp.json",
+        {
+            "mcpServers": {
+                "unsloth": {
+                    "type": "stdio",
+                    "command": command,
+                    "args": args,
+                    "env": mcp_env,
+                }
+            }
+        },
+    )
+    skill = plugin / "skills" / "local-agent" / "SKILL.md"
+    skill.parent.mkdir(parents = True, exist_ok = True, mode = 0o700)
+    skill.write_text(
+        "---\n"
+        "description: Delegate a task to the local agent powered by Unsloth. Use when the "
+        "user asks to spawn an Unsloth agent or local agent.\n"
+        "---\n\n"
+        "Call the Unsloth local agent tool once with the complete task. Return its result "
+        "to the user without claiming that the cloud parent completed the local work.\n",
+        encoding = "utf-8",
+    )
+    return plugin
+
+
+def _codex_subagent_flags(path: Path) -> list[str]:
+    config_path = _agent_config_path(path, ["codex"])
+    return [
+        "--enable",
+        "multi_agent",
+        "-c",
+        "agents.max_depth=1",
+        "-c",
+        f"agents.{_SUBAGENT_NAME}.description={json.dumps(_SUBAGENT_DESCRIPTION)}",
+        "-c",
+        f"agents.{_SUBAGENT_NAME}.config_file={json.dumps(config_path)}",
+    ]
 
 
 def _wsl_windows_executable(command: list) -> Optional[str]:
@@ -1960,6 +2237,7 @@ def write_opencode_config(
     model: dict,
     path: Path,
     yolo: bool = False,
+    as_subagent: bool = False,
 ) -> dict:
     config = _read_json_object(path)
     if config is None:
@@ -1971,10 +2249,8 @@ def write_opencode_config(
         return {}
     before = json.dumps(config, sort_keys = True)
     config.setdefault("$schema", "https://opencode.ai/config.json")
-    # The session provider is registered under a dedicated id (_OPENCODE_PROVIDER)
-    # that a user's disabled_providers list would never target, so it is always
-    # selectable without this overlay having to reconstruct or override OpenCode's
-    # disabled_providers resolution.
+    # Keep the provider definition in this private session file. The launch path
+    # adjusts effective provider filters in the higher-priority inline overlay.
     model_entry = {"name": model["id"]}
     window = model.get("context_length") or model.get("max_context_length")
     if window:
@@ -1989,15 +2265,36 @@ def write_opencode_config(
         "options": {"baseURL": f"{base}/v1", "apiKey": key},
         "models": {model["id"]: model_entry},
     }
-    # OpenCode selects a model by "<providerID>/<modelID>".
-    config["model"] = f"{_OPENCODE_PROVIDER}/{model['id']}"
-    if window:
+    # Normal mode pins this as the session model. Subagent mode leaves the user's
+    # main/small models alone and exposes the local model to @unsloth and /models.
+    opencode_model = f"{_OPENCODE_PROVIDER}/{model['id']}"
+    if as_subagent:
+        for field in ("model", "small_model"):
+            if str(config.get(field) or "").startswith(f"{_OPENCODE_PROVIDER}/"):
+                config.pop(field, None)
+        managed_compaction = {"auto": True, "reserved": max(1, window // 10)} if window else None
+        if managed_compaction and config.get("compaction") == managed_compaction:
+            config.pop("compaction", None)
+        _subdict(config, "agent")[_SUBAGENT_NAME] = {
+            "description": _SUBAGENT_DESCRIPTION,
+            "mode": "subagent",
+            "model": opencode_model,
+            "prompt": _SUBAGENT_INSTRUCTIONS,
+        }
+    else:
+        config["model"] = opencode_model
+        agents = config.get("agent")
+        if isinstance(agents, dict):
+            agents.pop(_SUBAGENT_NAME, None)
+            if not agents:
+                config.pop("agent", None)
+    if window and not as_subagent:
         # Compact with ~10% headroom (near 90% full). The fixed 20k-token default
         # buffer over-compacts, or never settles, on a small local context.
         compaction = _subdict(config, "compaction")
         compaction["auto"] = True
         compaction["reserved"] = max(1, window // 10)
-    tools = ("edit", "bash", "webfetch")
+    tools = ("edit", "bash", "webfetch", *(("task",) if as_subagent else ()))
     if yolo:
         # Fallback for commands without native --auto and for the append-safe bare
         # --no-launch command (subcommand unknown yet). Rides inline (OPENCODE_CONFIG_CONTENT)
@@ -2126,6 +2423,22 @@ def write_pi_config(base: str, key: str, model: dict, path: Path) -> None:
         typer.echo(f"Updated {path}")
 
 
+def write_pi_subagent_config(base: str, key: str, model: dict, path: Path) -> None:
+    """Write private bootstrap data for the bundled Pi extension."""
+    window = model.get("context_length") or model.get("max_context_length")
+    window = int(window) if window else 32768
+    _write_private_json(
+        path,
+        {
+            "baseUrl": f"{base}/v1",
+            "apiKey": key,
+            "model": model["id"],
+            "contextWindow": window,
+            "maxTokens": min(window // 4, 8192),
+        },
+    )
+
+
 @start_app.command("claude", context_settings = _PASSTHROUGH)
 def claude(
     ctx: typer.Context,
@@ -2139,6 +2452,7 @@ def claude(
     serve: bool = _SERVE_OPTION,
     yolo: bool = _YOLO_OPTION,
     persist: bool = _PERSIST_OPTION,
+    as_subagent: bool = _AS_SUBAGENT_OPTION,
 ):
     """Point Claude Code at the running Unsloth server and start it."""
     base, key, entry = _connect(
@@ -2149,37 +2463,52 @@ def claude(
         launch = launch,
     )
     model_id = entry["id"]
+    install_hint = (
+        "irm https://claude.ai/install.ps1 | iex"
+        if os.name == "nt"
+        else "curl -fsSL https://claude.ai/install.sh | bash"
+    )
+    if as_subagent:
+        subagent_id = _subagent_model_id(base, key, entry, model, gguf_variant)
+        subagent_model = {**entry, "id": subagent_id}
+        window = subagent_model.get("context_length") or subagent_model.get("max_context_length")
+        server_env = {
+            "UNSLOTH_CLAUDE_SUBAGENT_BASE_URL": base,
+            "UNSLOTH_CLAUDE_SUBAGENT_API_KEY": key,
+            "UNSLOTH_CLAUDE_SUBAGENT_MODEL": subagent_id,
+            "UNSLOTH_CLAUDE_SUBAGENT_BYPASS_PERMISSIONS": "1" if yolo else "0",
+        }
+        if window:
+            server_env["UNSLOTH_CLAUDE_SUBAGENT_CONTEXT_WINDOW"] = str(int(window))
+        with _session_config("claude-subagent", launch, persist = persist) as config:
+            plugin = write_claude_subagent_plugin(config, server_env)
+            command = [
+                "claude",
+                "--plugin-dir",
+                _agent_config_path(plugin, ["claude"]),
+                # Before ctx.args: a forwarded `--` would turn later flags positional.
+                "--allowedTools",
+                _CLAUDE_SUBAGENT_TOOL,
+                *_yolo_command_flags("claude", yolo),
+                *ctx.args,
+            ]
+            typer.echo(
+                "Unsloth is available as a local agent. "
+                "Ask Claude to spawn an Unsloth or local agent."
+            )
+            _run(
+                base,
+                subagent_model,
+                {},
+                command,
+                launch = launch,
+                install_hint = install_hint,
+            )
+        return
 
-    env = {
-        "ANTHROPIC_BASE_URL": base,
-        "ANTHROPIC_AUTH_TOKEN": key,
-        "ANTHROPIC_MODEL": model_id,
-        # Session-only (no ~/.claude write): suppress the attribution header so
-        # llama.cpp KV-cache reuse is preserved; --settings below reinforces it.
-        "CLAUDE_CODE_ATTRIBUTION_HEADER": "0",
-        # Update checks, beta features, and other background requests either
-        # stall against a local server or evict the conversation from
-        # llama-server's KV-cache slots, so turn off everything nonessential.
-        "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC": "1",
-        "CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS": "1",
-        # A local server streams in bursts; disable the full-screen TUI redraw so the
-        # terminal doesn't flicker between tokens.
-        "CLAUDE_CODE_NO_FLICKER": "1",
-    }
-    # Claude Code auto-compacts against its native (~600k token) window; a local
-    # model's context is usually far smaller, so size the window to the loaded
-    # model's real context length. Otherwise the conversation overflows the
-    # server's window (silent truncation) long before Claude decides to compact.
-    # codex/openclaw get the same value through their config (model_context_window
-    # / contextWindow); Claude has no config file, so it rides on the env var.
-    window = entry.get("context_length") or entry.get("max_context_length")
-    if window:
-        env["CLAUDE_CODE_AUTO_COMPACT_WINDOW"] = str(int(window))
-        # Compact at 90% of that window; the override only takes effect once the
-        # window is set, and it can only lower the threshold, so it just guarantees
-        # headroom before the server's context limit instead of relying on Claude's
-        # default (which is tuned for its native 200K/1M window).
-        env["CLAUDE_AUTOCOMPACT_PCT_OVERRIDE"] = "90"
+    env = _claude_local_env(base, key, entry)
+    # Claude Code auto-compacts against its native context window. The local env
+    # above supplies the loaded model's real window and a 90% threshold instead.
     # --yolo (or its aliases) maps to Claude's own --dangerously-skip-permissions.
     # IS_SANDBOX is left unset on purpose: Claude refuses bypass mode as root unless a
     # sandbox is detected, and we don't want to falsely claim one on the user's host.
@@ -2194,11 +2523,6 @@ def claude(
         *_yolo_command_flags("claude", yolo),
         *ctx.args,
     ]
-    install_hint = (
-        "irm https://claude.ai/install.ps1 | iex"
-        if os.name == "nt"
-        else "curl -fsSL https://claude.ai/install.sh | bash"
-    )
     _run(
         base,
         entry,
@@ -2223,6 +2547,7 @@ def codex(
     serve: bool = _SERVE_OPTION,
     yolo: bool = _YOLO_OPTION,
     persist: bool = _PERSIST_OPTION,
+    as_subagent: bool = _AS_SUBAGENT_OPTION,
 ):
     """Point OpenAI Codex at the running Unsloth server and start it."""
     base, key, entry = _connect(
@@ -2240,6 +2565,30 @@ def codex(
     except BaseException:
         _shutdown_auto_served()
         raise
+    if as_subagent:
+        subagent_id = _subagent_model_id(base, key, entry, model, gguf_variant)
+        subagent_model = {**entry, "id": subagent_id}
+        with _session_config("codex-subagent", launch, persist = persist) as home:
+            agent_config = write_codex_subagent_config(base, key, subagent_model, home)
+            command = [
+                "codex",
+                *_codex_subagent_flags(agent_config),
+                *_yolo_command_flags("codex", yolo),
+                *ctx.args,
+            ]
+            typer.echo(
+                "Unsloth is available as the `unsloth` local agent. "
+                "Ask Codex to spawn an Unsloth or local agent."
+            )
+            _run(
+                base,
+                subagent_model,
+                {},
+                command,
+                launch = launch,
+                install_hint = "npm install -g @openai/codex",
+            )
+        return
     command = [
         "codex",
         "--oss",
@@ -2269,6 +2618,7 @@ def openclaw(
     persist: bool = _PERSIST_OPTION,
 ):
     """Point OpenClaw at the running Unsloth server and start it."""
+    _reject_as_subagent("openclaw", ctx.args)
     base, key, entry = _connect(
         api_key,
         model,
@@ -2324,6 +2674,7 @@ def opencode(
     serve: bool = _SERVE_OPTION,
     yolo: bool = _YOLO_OPTION,
     persist: bool = _PERSIST_OPTION,
+    as_subagent: bool = _AS_SUBAGENT_OPTION,
 ):
     """Point OpenCode at the running Unsloth server and start it."""
     base, key, entry = _connect(
@@ -2333,6 +2684,50 @@ def opencode(
         serve = serve,
         launch = launch,
     )
+    if as_subagent:
+        subagent_id = _subagent_model_id(base, key, entry, model, gguf_variant)
+        subagent_model = {**entry, "id": subagent_id}
+        # Stay append-safe for a bare no-launch recipe: a later `run <prompt>` would make
+        # `opencode --auto run ...` parse as the TUI, so keep yolo in the inline fallback.
+        route_native_auto = yolo and _opencode_supports_native_auto() and (launch or bool(ctx.args))
+        opencode_args, native_auto = _opencode_native_auto_args(list(ctx.args), route_native_auto)
+        command = ["opencode", *opencode_args]
+        with _session_config("opencode-subagent", launch, persist = persist) as cfg:
+            config_path = cfg / "opencode.json"
+            session_permission = write_opencode_config(
+                base,
+                key,
+                subagent_model,
+                config_path,
+                yolo = yolo and not native_auto,
+                as_subagent = True,
+            )
+            env = {"OPENCODE_CONFIG": str(config_path)}
+            if launch and _which_with_install_dirs("opencode") is None:
+                # Provider-filter inspection needs the binary; offer the install now so
+                # a global/project allowlist is honored on this first launch instead of
+                # being read only after _launch installs OpenCode.
+                _install_agent("opencode", "npm install -g opencode-ai")
+            inline_config = _opencode_subagent_inline_config(config_path, session_permission)
+            # A project opencode.json outranks the session file and could field-merge its
+            # own agent.unsloth over ours. Pin ours in the inline overlay so it wins.
+            inline_config.setdefault("agent", {})[_SUBAGENT_NAME] = {
+                "description": _SUBAGENT_DESCRIPTION,
+                "mode": "subagent",
+                "model": f"{_OPENCODE_PROVIDER}/{subagent_model['id']}",
+                "prompt": _SUBAGENT_INSTRUCTIONS,
+            }
+            env["OPENCODE_CONFIG_CONTENT"] = json.dumps(inline_config)
+            typer.echo("Unsloth is available as @unsloth and in /models.")
+            _run(
+                base,
+                subagent_model,
+                env,
+                command,
+                launch = launch,
+                install_hint = "npm install -g opencode-ai",
+            )
+        return
     opencode_model = f"{_OPENCODE_PROVIDER}/{entry['id']}"
     # The inline OPENCODE_CONFIG_CONTENT below pins the model in the highest-priority
     # layer, so the session model is forced without a --model flag. Only add --model for
@@ -2419,6 +2814,7 @@ def hermes(
     persist: bool = _PERSIST_OPTION,
 ):
     """Point Hermes (Nous Research) at the running Unsloth server and start it."""
+    _reject_as_subagent("hermes", ctx.args)
     native_args = [*_yolo_command_flags("hermes", yolo), *ctx.args]
     command = ["hermes", *_hermes_resume_oneshot_args(native_args)]
     base, key, entry = _connect(
@@ -2450,6 +2846,7 @@ def pi(
     serve: bool = _SERVE_OPTION,
     yolo: bool = _YOLO_OPTION,
     persist: bool = _PERSIST_OPTION,
+    as_subagent: bool = _AS_SUBAGENT_OPTION,
 ):
     """Point Pi (coding agent) at the running Unsloth server and start it."""
     base, key, entry = _connect(
@@ -2459,6 +2856,37 @@ def pi(
         serve = serve,
         launch = launch,
     )
+    install_hint = "npm install -g --ignore-scripts @earendil-works/pi-coding-agent"
+    if as_subagent:
+        if not _PI_SUBAGENT_EXTENSION.is_file():
+            _fail(f"Missing Pi subagent extension: {_PI_SUBAGENT_EXTENSION}")
+        subagent_id = _subagent_model_id(base, key, entry, model, gguf_variant)
+        subagent_model = {**entry, "id": subagent_id}
+        extension = _agent_config_path(_PI_SUBAGENT_EXTENSION, ["pi"])
+        with _session_config("pi-subagent", launch, persist = persist) as config:
+            config_path = config / "subagent.json"
+            write_pi_subagent_config(base, key, subagent_model, config_path)
+            command = [
+                "pi",
+                "--extension",
+                extension,
+                *_yolo_command_flags("pi", yolo),
+                *ctx.args,
+            ]
+            typer.echo(
+                "Unsloth is available as a local agent and in /model. "
+                "Ask Pi to spawn an Unsloth or local agent."
+            )
+            _run(
+                base,
+                subagent_model,
+                {"UNSLOTH_PI_SUBAGENT_CONFIG": str(config_path)},
+                command,
+                launch = launch,
+                install_hint = install_hint,
+                clear_screen = True,
+            )
+        return
     # Pi defaults to the google provider, so pin our provider/model on the command
     # line; the custom OpenAI-compatible endpoint itself is only configurable via
     # ~/.pi/agent/models.json.
@@ -2473,7 +2901,6 @@ def pi(
     ]
     # --ignore-scripts matches Pi's documented install recipe (its README notes Pi needs
     # no install scripts), so accepting the prompt skips dependency lifecycle scripts.
-    install_hint = "npm install -g --ignore-scripts @earendil-works/pi-coding-agent"
     with _session_config("pi", launch, persist = persist) as home:
         # Pi resolves its config dir from PI_CODING_AGENT_DIR first (getAgentDir() prefers
         # it over $HOME/.pi/agent), so pin it at the session dir: an inherited

@@ -619,6 +619,104 @@ def test_write_codex_config_omits_catalog_for_old_codex(tmp_path, monkeypatch):
     assert not (tmp_path / "model-catalog.json").exists()
 
 
+def test_write_codex_subagent_config_keeps_parent_model_out(tmp_path, monkeypatch):
+    monkeypatch.setattr(start, "_codex_supports_model_catalog", lambda: True)
+    local = {**MODEL, "id": MODEL["id"] + ":UD-Q4_K_XL"}
+    path = start.write_codex_subagent_config(BASE, "private-token", local, tmp_path)
+    agent = _parse_toml(path.read_text())
+    assert agent["name"] == "unsloth"
+    assert "local agent" in agent["description"].lower()
+    assert agent["model_provider"] == start._CODEX_PROFILE
+    assert agent["model"] == local["id"]
+    assert agent["model_context_window"] == MODEL["context_length"]
+    assert agent["model_providers"][start._CODEX_PROFILE] == {
+        "name": "Unsloth Studio",
+        "base_url": f"{BASE}/v1",
+        "wire_api": "responses",
+        "auth": {
+            "command": sys.executable,
+            "args": [
+                "-c",
+                "import json,sys; print(json.load(open(sys.argv[1], encoding='utf-8'))['token'])",
+                str(tmp_path / "unsloth-auth.json"),
+            ],
+            "timeout_ms": 5000,
+        },
+    }
+    assert json.loads((tmp_path / "unsloth-auth.json").read_text()) == {"token": "private-token"}
+    catalog = json.loads((tmp_path / agent["model_catalog_json"]).read_text())
+    assert catalog["models"][0]["slug"] == local["id"]
+
+
+@pytest.mark.skipif(os.name == "nt", reason = "WSL scenario")
+def test_codex_subagent_auth_uses_wsl_for_windows_codex(monkeypatch, tmp_path):
+    monkeypatch.setenv("WSL_DISTRO_NAME", "Ubuntu")
+    monkeypatch.setattr(start, "_codex_supports_model_catalog", lambda: False)
+    monkeypatch.setattr(
+        start.shutil,
+        "which",
+        lambda _: "/mnt/c/Users/x/AppData/Roaming/npm/codex.exe",
+    )
+
+    path = start.write_codex_subagent_config(BASE, "private-token", MODEL, tmp_path)
+    auth = _parse_toml(path.read_text())["model_providers"][start._CODEX_PROFILE]["auth"]
+
+    assert auth["command"] == "wsl.exe"
+    assert auth["args"][:5] == ["-d", "Ubuntu", "--", sys.executable, "-c"]
+    assert auth["args"][-1] == str(tmp_path / "unsloth-auth.json")
+
+
+@pytest.mark.skipif(os.name == "nt", reason = "WSL scenario")
+def test_agent_config_path_translates_for_windows_agent(monkeypatch, tmp_path):
+    windows_path = r"\\wsl.localhost\Ubuntu\tmp\unsloth.toml"
+    monkeypatch.setenv("WSL_DISTRO_NAME", "Ubuntu")
+    monkeypatch.setattr(
+        start.shutil,
+        "which",
+        lambda _: "/mnt/c/Users/x/AppData/Roaming/npm/codex",
+    )
+    monkeypatch.setattr(start.subprocess, "check_output", lambda *args, **kwargs: windows_path)
+
+    assert start._agent_config_path(tmp_path / "unsloth.toml", ["codex"]) == windows_path
+
+
+def test_subagent_model_id_preserves_explicit_variant(monkeypatch):
+    monkeypatch.setattr(
+        start,
+        "_http_json",
+        lambda *args, **kwargs: pytest.fail("explicit variant should not need status"),
+    )
+    assert (
+        start._subagent_model_id(BASE, "key", MODEL, MODEL["id"], "UD-Q4_K_XL")
+        == MODEL["id"] + ":UD-Q4_K_XL"
+    )
+
+
+def test_subagent_model_id_uses_loaded_variant(monkeypatch):
+    monkeypatch.setattr(
+        start,
+        "_http_json",
+        lambda *args, **kwargs: {"is_gguf": True, "gguf_variant": "Q5_K_M"},
+    )
+    assert start._subagent_model_id(BASE, "key", MODEL, None, None) == MODEL["id"] + ":Q5_K_M"
+
+
+def test_subagent_model_id_warns_when_status_unavailable(monkeypatch, capsys):
+    def raise_error(*args, **kwargs):
+        raise OSError("connection refused")
+
+    monkeypatch.setattr(start, "_http_json", raise_error)
+    assert start._subagent_model_id(BASE, "key", MODEL, None, None) == MODEL["id"]
+    assert "could not verify the loaded GGUF variant" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize("agent", ["openclaw", "hermes"])
+def test_unsupported_agents_reject_as_subagent(agent):
+    result = CliRunner().invoke(start.start_app, [agent, "--as-subagent"])
+    assert result.exit_code == 1
+    assert f"--as-subagent is not supported for {agent}." in result.output
+
+
 @pytest.fixture()
 def fake_studio(tmp_path, monkeypatch):
     calls = []
@@ -688,6 +786,82 @@ def test_connect_claude_no_launch(fake_studio):
     # Overlay is passed inline (session-only), not a path into the user's ~/.claude.
     assert "--settings" in result.output
     assert ".claude/settings.json" not in result.output
+
+
+def test_connect_claude_as_subagent_preserves_cloud_parent(fake_studio, tmp_path):
+    result = CliRunner().invoke(
+        start.start_app,
+        [
+            "claude",
+            "--as-subagent",
+            "--no-launch",
+            "--model",
+            MODEL["id"] + ":UD-Q4_K_XL",
+            "hello",
+        ],
+    )
+    assert result.exit_code == 0, result.output
+    command = _launch_command(result.output)
+    plugin = tmp_path / "agents" / "claude-subagent" / "unsloth-local-agent"
+    assert command == [
+        "claude",
+        "--plugin-dir",
+        str(plugin),
+        "--allowedTools",
+        start._CLAUDE_SUBAGENT_TOOL,
+        "hello",
+    ]
+    assert "--model" not in command
+    parent_base = "$env:ANTHROPIC_BASE_URL" if os.name == "nt" else "export ANTHROPIC_BASE_URL="
+    parent_token = (
+        "$env:ANTHROPIC_AUTH_TOKEN" if os.name == "nt" else "export ANTHROPIC_AUTH_TOKEN="
+    )
+    assert parent_base not in result.output
+    assert parent_token not in result.output
+    assert "unset ANTHROPIC_API_KEY" not in result.output
+    assert "UNSLOTH_CLAUDE_SUBAGENT_API_KEY" not in result.output
+    assert "sk-unsloth-feedfacefeedface" not in result.output
+    assert json.loads((plugin / ".claude-plugin" / "plugin.json").read_text())["name"] == (
+        "unsloth-local-agent"
+    )
+    mcp = json.loads((plugin / ".mcp.json").read_text())["mcpServers"]["unsloth"]
+    assert mcp["command"] == sys.executable
+    assert mcp["args"] == ["-m", start._CLAUDE_SUBAGENT_MCP_MODULE]
+    assert mcp["env"] == {
+        "UNSLOTH_CLAUDE_SUBAGENT_BASE_URL": BASE,
+        "UNSLOTH_CLAUDE_SUBAGENT_API_KEY": "sk-unsloth-feedfacefeedface",
+        "UNSLOTH_CLAUDE_SUBAGENT_MODEL": MODEL["id"] + ":UD-Q4_K_XL",
+        "UNSLOTH_CLAUDE_SUBAGENT_BYPASS_PERMISSIONS": "0",
+        "UNSLOTH_CLAUDE_SUBAGENT_CONTEXT_WINDOW": "4096",
+    }
+    skill = (plugin / "skills" / "local-agent" / "SKILL.md").read_text()
+    assert "spawn an Unsloth agent or local agent" in skill
+    assert "Ask Claude to spawn an Unsloth or local agent." in result.output
+
+
+@pytest.mark.skipif(os.name == "nt", reason = "WSL scenario")
+def test_claude_subagent_plugin_uses_wsl_for_windows_claude(monkeypatch, tmp_path):
+    monkeypatch.setenv("WSL_DISTRO_NAME", "Ubuntu")
+    monkeypatch.setenv("WSLENV", "EXISTING")
+    monkeypatch.setattr(
+        start.shutil,
+        "which",
+        lambda _: "/mnt/c/Users/x/AppData/Local/Programs/claude.exe",
+    )
+    server_env = {"UNSLOTH_CLAUDE_SUBAGENT_API_KEY": "secret"}
+    plugin = start.write_claude_subagent_plugin(tmp_path, server_env)
+    mcp = json.loads((plugin / ".mcp.json").read_text())["mcpServers"]["unsloth"]
+    assert mcp["command"] == "wsl.exe"
+    assert mcp["args"] == [
+        "-d",
+        "Ubuntu",
+        "--",
+        sys.executable,
+        "-m",
+        start._CLAUDE_SUBAGENT_MCP_MODULE,
+    ]
+    assert mcp["env"]["UNSLOTH_CLAUDE_SUBAGENT_API_KEY"] == "secret"
+    assert mcp["env"]["WSLENV"].split(":") == ["EXISTING", "UNSLOTH_CLAUDE_SUBAGENT_API_KEY"]
 
 
 def test_connect_claude_compact_window_omitted_without_context(fake_studio, monkeypatch):
@@ -812,6 +986,38 @@ def test_connect_codex_no_launch(fake_studio, tmp_path):
     _assert_env_set(result.output, "CODEX_HOME", str(home))
     assert (home / "config.toml").exists()
     assert (home / "unsloth_api.config.toml").exists()
+
+
+def test_connect_codex_as_subagent_preserves_cloud_parent(fake_studio, tmp_path, monkeypatch):
+    monkeypatch.setattr(start, "_codex_supports_model_catalog", lambda: True)
+    result = CliRunner().invoke(
+        start.start_app,
+        [
+            "codex",
+            "--as-subagent",
+            "--no-launch",
+            "--model",
+            MODEL["id"] + ":UD-Q4_K_XL",
+        ],
+    )
+    assert result.exit_code == 0, result.output
+    command = _launch_command(result.output)
+    assert command[0] == "codex"
+    assert command[1:3] == ["--enable", "multi_agent"]
+    assert "agents.max_depth=1" in command
+    assert "--oss" not in command
+    assert "--profile" not in command
+    assert "--model" not in command
+    assert "CODEX_HOME" not in result.output
+    assert start._CODEX_ENV_KEY not in result.output
+    assert "sk-unsloth-feedfacefeedface" not in result.output
+    home = tmp_path / "agents" / "codex-subagent"
+    agent_path = home / "unsloth.toml"
+    agent = _parse_toml(agent_path.read_text())
+    assert agent["model"] == MODEL["id"] + ":UD-Q4_K_XL"
+    assert "env_key" not in agent["model_providers"][start._CODEX_PROFILE]
+    assert f"agents.unsloth.config_file={json.dumps(str(agent_path))}" in command
+    assert "Ask Codex to spawn an Unsloth or local agent." in result.output
 
 
 def test_connect_codex_matches_requested_model_case_insensitively(fake_studio, tmp_path):
@@ -2360,8 +2566,7 @@ def test_write_opencode_config_fresh(tmp_path):
         MODEL["id"]: {"name": MODEL["id"], "limit": {"context": 131072, "output": 8192}}
     }
     assert config["model"] == f"{start._OPENCODE_PROVIDER}/{MODEL['id']}"
-    # The overlay never writes disabled_providers; the dedicated provider id is one a
-    # user's disable list would not target, so nothing needs re-enabling.
+    # Provider filters belong to the launch-time inline overlay, not this config writer.
     assert "disabled_providers" not in config
     # Compaction buffer scaled to ~10% of the window (compact near 90%).
     assert config["compaction"] == {"auto": True, "reserved": 131072 // 10}
@@ -2400,6 +2605,109 @@ def test_write_opencode_config_keeps_foreign_disabled_providers(tmp_path):
     start.write_opencode_config(BASE, "sk-unsloth-abc", MODEL, path)
     config = json.loads(path.read_text())
     assert config["disabled_providers"] == ["openai", "gemini"]
+
+
+def test_write_opencode_config_as_subagent_preserves_parent_model(tmp_path):
+    path = tmp_path / "opencode.json"
+    path.write_text(
+        json.dumps(
+            {
+                "model": "anthropic/claude-sonnet-4-5",
+                "small_model": "anthropic/claude-haiku-4-5",
+                "compaction": {"auto": False},
+            }
+        )
+    )
+    local = {**MODEL, "id": MODEL["id"] + ":UD-Q4_K_XL"}
+    start.write_opencode_config(
+        BASE,
+        "sk-unsloth-abc",
+        local,
+        path,
+        as_subagent = True,
+    )
+    config = json.loads(path.read_text())
+    assert config["model"] == "anthropic/claude-sonnet-4-5"
+    assert config["small_model"] == "anthropic/claude-haiku-4-5"
+    assert config["compaction"] == {"auto": False}
+    agent = config["agent"]["unsloth"]
+    assert agent["mode"] == "subagent"
+    assert agent["model"] == f"{start._OPENCODE_PROVIDER}/{local['id']}"
+    assert "local agent" in agent["description"].lower()
+    assert local["id"] in config["provider"][start._OPENCODE_PROVIDER]["models"]
+
+
+def test_opencode_subagent_inline_keeps_parent_provider_filters(monkeypatch, tmp_path):
+    config_path = tmp_path / "opencode.json"
+    inherited = {"theme": "tokyonight"}
+    monkeypatch.setenv("OPENCODE_CONFIG_CONTENT", json.dumps(inherited))
+    monkeypatch.setattr(start, "_which_with_install_dirs", lambda _: "/usr/bin/opencode")
+    captured = {}
+
+    def run(command, **kwargs):
+        captured["command"] = command
+        captured.update(kwargs)
+        return SimpleNamespace(
+            returncode = 0,
+            stdout = json.dumps(
+                {
+                    "enabled_providers": ["opencode-go"],
+                    "disabled_providers": ["ollama", start._OPENCODE_PROVIDER],
+                    "subagent_depth": 0,
+                }
+            ),
+            stderr = "",
+        )
+
+    monkeypatch.setattr(start.subprocess, "run", run)
+    permission = {"edit": "allow"}
+    inline = start._opencode_subagent_inline_config(config_path, permission)
+
+    assert captured["command"] == ["/usr/bin/opencode", "debug", "config"]
+    assert captured["env"]["OPENCODE_CONFIG"] == str(config_path)
+    assert inline == {
+        "theme": "tokyonight",
+        "enabled_providers": ["opencode-go", start._OPENCODE_PROVIDER],
+        "disabled_providers": ["ollama"],
+        "subagent_depth": 1,
+        "permission": permission,
+    }
+
+
+def test_opencode_subagent_inline_preserves_positive_depth(monkeypatch, tmp_path):
+    monkeypatch.setattr(start, "_which_with_install_dirs", lambda _: "/usr/bin/opencode")
+    monkeypatch.setattr(
+        start.subprocess,
+        "run",
+        lambda *args, **kwargs: SimpleNamespace(
+            returncode = 0,
+            stdout = json.dumps({"subagent_depth": 3}),
+            stderr = "",
+        ),
+    )
+
+    inline = start._opencode_subagent_inline_config(tmp_path / "opencode.json", {})
+
+    assert inline["subagent_depth"] == 3
+
+
+def test_opencode_subagent_inline_merges_inherited_filters_without_binary(monkeypatch, tmp_path):
+    monkeypatch.setenv(
+        "OPENCODE_CONFIG_CONTENT",
+        json.dumps(
+            {
+                "enabled_providers": ["opencode-go"],
+                "disabled_providers": ["ollama", start._OPENCODE_PROVIDER],
+            }
+        ),
+    )
+    monkeypatch.setattr(start, "_which_with_install_dirs", lambda _: None)
+
+    inline = start._opencode_subagent_inline_config(tmp_path / "opencode.json", {})
+
+    assert inline["enabled_providers"] == ["opencode-go", start._OPENCODE_PROVIDER]
+    assert inline["disabled_providers"] == ["ollama"]
+    assert inline["subagent_depth"] == 1
 
 
 def _opencode_inline_config(output: str) -> dict:
@@ -2488,6 +2796,130 @@ def test_connect_opencode_no_launch(fake_studio, tmp_path):
     # driver may append); the model is forced by the inline pin above.
     assert _launch_command(result.output) == ["opencode"]
     assert not any(c[1].endswith("/api/inference/status") for c in fake_studio)
+
+
+def test_connect_opencode_as_subagent_preserves_cloud_parent(fake_studio, tmp_path, monkeypatch):
+    monkeypatch.setattr(start, "_opencode_subagent_inline_config", lambda path, permission: {})
+    result = CliRunner().invoke(
+        start.start_app,
+        [
+            "opencode",
+            "--as-subagent",
+            "--no-launch",
+            "--model",
+            MODEL["id"] + ":UD-Q4_K_XL",
+        ],
+    )
+    assert result.exit_code == 0, result.output
+    assert _launch_command(result.output) == ["opencode"]
+    expected_model = f"{start._OPENCODE_PROVIDER}/{MODEL['id']}:UD-Q4_K_XL"
+    # The agent rides in the inline overlay; nothing else comes from the empty base.
+    assert _opencode_inline_config(result.output) == {
+        "agent": {
+            "unsloth": {
+                "description": start._SUBAGENT_DESCRIPTION,
+                "mode": "subagent",
+                "model": expected_model,
+                "prompt": start._SUBAGENT_INSTRUCTIONS,
+            }
+        }
+    }
+    path = tmp_path / "agents" / "opencode-subagent" / "opencode.json"
+    config = json.loads(path.read_text())
+    assert "model" not in config
+    assert "small_model" not in config
+    assert "compaction" not in config
+    agent = config["agent"]["unsloth"]
+    assert agent["model"] == expected_model
+    assert "Unsloth is available as @unsloth and in /models." in result.output
+
+
+def test_claude_subagent_allowed_tools_precede_forwarded_delimiter(fake_studio):
+    # A forwarded `--` makes everything after it positional; the tool pre-approval
+    # must be parsed as an option, so it rides before ctx.args.
+    result = CliRunner().invoke(
+        start.start_app,
+        ["claude", "--as-subagent", "--no-launch", "--", "--resume", "abc123"],
+    )
+    assert result.exit_code == 0, result.output
+    command = _launch_command(result.output)
+    assert command.index("--allowedTools") < command.index("--resume")
+
+
+def test_opencode_subagent_installs_binary_before_filter_inspection(fake_studio, monkeypatch):
+    # The effective-config inspection needs the opencode binary; a first launch must
+    # offer the install before building the overlay, or a global allowlist read only
+    # after _launch installs OpenCode would filter out the new provider.
+    installed = {}
+    monkeypatch.setattr(
+        start,
+        "_which_with_install_dirs",
+        lambda name: "/usr/local/bin/opencode" if installed.get("done") else None,
+    )
+
+    def install(name, hint):
+        installed["done"] = True
+        installed["name"] = name
+        return "/usr/local/bin/opencode"
+
+    monkeypatch.setattr(start, "_install_agent", install)
+    inspected = {}
+
+    def inline(path, permission):
+        inspected["binary"] = start._which_with_install_dirs("opencode")
+        return {}
+
+    monkeypatch.setattr(start, "_opencode_subagent_inline_config", inline)
+    monkeypatch.setattr(start, "_run", lambda *a, **k: None)
+
+    result = CliRunner().invoke(start.start_app, ["opencode", "--as-subagent"])
+
+    assert result.exit_code == 0, result.output
+    assert installed["name"] == "opencode"
+    assert inspected["binary"] == "/usr/local/bin/opencode"
+
+
+def test_opencode_subagent_pins_agent_in_inline_overlay(fake_studio, monkeypatch):
+    # A project opencode.json outranks the session file, so the agent must ride in
+    # OPENCODE_CONFIG_CONTENT where a repo's own agent.unsloth cannot field-merge over it.
+    monkeypatch.setattr(start, "_opencode_subagent_inline_config", lambda path, permission: {})
+    result = CliRunner().invoke(
+        start.start_app,
+        ["opencode", "--as-subagent", "--no-launch", "--model", MODEL["id"] + ":UD-Q4_K_XL"],
+    )
+    assert result.exit_code == 0, result.output
+    agent = _opencode_inline_config(result.output)["agent"]["unsloth"]
+    assert agent["mode"] == "subagent"
+    assert agent["model"] == f"{start._OPENCODE_PROVIDER}/{MODEL['id']}:UD-Q4_K_XL"
+    assert agent["prompt"] == start._SUBAGENT_INSTRUCTIONS
+    assert agent["description"] == start._SUBAGENT_DESCRIPTION
+
+
+def test_connect_opencode_subagent_yolo_no_launch_stays_append_safe(fake_studio, monkeypatch):
+    monkeypatch.setattr(start, "_opencode_supports_native_auto", lambda: True)
+    captured = {}
+
+    def inline(path, permission):
+        captured["permission"] = permission
+        return {"permission": permission}
+
+    monkeypatch.setattr(start, "_opencode_subagent_inline_config", inline)
+    result = CliRunner().invoke(
+        start.start_app,
+        ["opencode", "--as-subagent", "--no-launch", "--yolo"],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert _launch_command(result.output) == ["opencode"]
+    assert "--auto" not in result.output
+    assert captured["permission"] == {
+        "edit": "allow",
+        "bash": "allow",
+        "webfetch": "allow",
+        "task": "allow",
+        "external_directory": {"*": "allow"},
+    }
+    assert _opencode_inline_config(result.output)["permission"] == captured["permission"]
 
 
 # ── Hermes (OpenAI /v1/chat/completions, key via env) ────────────────
@@ -2630,6 +3062,39 @@ def test_connect_pi_no_launch(fake_studio, tmp_path):
         {"id": MODEL["id"], "contextWindow": MODEL["context_length"], "maxTokens": 8192}
     ]
     assert not any(c[1].endswith("/api/inference/status") for c in fake_studio)
+
+
+def test_connect_pi_as_subagent_preserves_cloud_parent(fake_studio, tmp_path):
+    result = CliRunner().invoke(
+        start.start_app,
+        [
+            "pi",
+            "--as-subagent",
+            "--no-launch",
+            "--model",
+            MODEL["id"] + ":UD-Q4_K_XL",
+        ],
+    )
+    assert result.exit_code == 0, result.output
+    command = _launch_command(result.output)
+    assert command[:2] == ["pi", "--extension"]
+    assert command[2].endswith("unsloth_cli/pi_subagent.ts")
+    assert "--provider" not in command
+    assert "--model" not in command
+    assert "PI_CODING_AGENT_DIR" not in result.output
+    assert "export HOME=" not in result.output
+    assert "UNSLOTH_PI_SUBAGENT_API_KEY" not in result.output
+    assert "sk-unsloth-feedfacefeedface" not in result.output
+    config_path = tmp_path / "agents" / "pi-subagent" / "subagent.json"
+    _assert_env_set(result.output, "UNSLOTH_PI_SUBAGENT_CONFIG", str(config_path))
+    assert json.loads(config_path.read_text()) == {
+        "baseUrl": f"{BASE}/v1",
+        "apiKey": "sk-unsloth-feedfacefeedface",
+        "model": MODEL["id"] + ":UD-Q4_K_XL",
+        "contextWindow": 4096,
+        "maxTokens": 1024,
+    }
+    assert "Ask Pi to spawn an Unsloth or local agent." in result.output
 
 
 def test_connect_pi_no_launch_windows_relocates_userprofile(fake_studio, tmp_path, monkeypatch):
@@ -3173,6 +3638,27 @@ def test_opencode_non_yolo_flips_only_explicit_allow(tmp_path):
     config = json.loads(path.read_text())
     assert config["permission"] == {"edit": "ask", "bash": "deny", "read": "ask"}
     assert session == {}  # a non-yolo session carries no permission inline
+
+
+def test_opencode_subagent_non_yolo_clears_yolo_task_permission(tmp_path):
+    path = tmp_path / "opencode.json"
+    start.write_opencode_config(
+        BASE,
+        "sk-unsloth-abc",
+        MODEL,
+        path,
+        yolo = True,
+        as_subagent = True,
+    )
+    start.write_opencode_config(
+        BASE,
+        "sk-unsloth-abc",
+        MODEL,
+        path,
+        as_subagent = True,
+    )
+
+    assert json.loads(path.read_text())["permission"]["task"] == "ask"
 
 
 def test_opencode_non_yolo_leaves_string_permission(tmp_path):
