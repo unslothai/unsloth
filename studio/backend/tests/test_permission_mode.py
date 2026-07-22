@@ -1237,6 +1237,20 @@ def test_render_html_gated_only_when_networked():
     assert rh("<script>const k='src'; img[k]='./local.png'</script>") is False
     assert rh("<script>const k='title'; img[k]='https://evil/x'</script>") is False
     assert rh("<script>img[k]='https://evil/x'</script>") is True
+    # A dotted computed key carrying a static network URL fails closed; a
+    # dotted key assigning a non-network value stays a static canvas.
+    assert rh("<script>const o={k:'src'}; img[o.k]='https://evil/x'</script>") is True
+    assert rh("<script>const o={k:'color'}; el[o.k]='red'</script>") is False
+    # ES module loads of a remote/root URL need approval; a relative specifier
+    # (dynamic or static) stays a static canvas.
+    assert rh("<script>import('https://evil/x.js')</script>") is True
+    assert rh("<script type=module>import 'https://evil/x.js'</script>") is True
+    assert rh("<script type=module>import { a } from '/mod.js'</script>") is True
+    assert rh("<script>import('./local.js')</script>") is False
+    assert rh("<script type=module>import { a } from './util.js'</script>") is False
+    # An entity-obfuscated CSS URL is a network load after the browser decodes it.
+    assert rh('<div style="background:url(&#104;ttps://evil/x)"></div>') is True
+    assert rh('<div style="background:blue">&amp; local</div>') is False
     assert (
         rh(
             "<script>frame.setAttribute(name, "

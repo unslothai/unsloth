@@ -236,6 +236,17 @@ def test_bash_blocklist_enforced_when_sandboxed(captured_popen):
             'python -c "import asyncio; '
             "asyncio.create_subprocess_exec('python','-S','-c','import boto3')\""
         ),
+        # env -S (split-string) launches Python even behind a wrapper chain, not
+        # only when env is the first token.
+        'timeout 1 env -S "/usr/bin/python3 -S -c import\\ boto3"',
+        'find . -exec env -S "python -S -c import\\ boto3" ;',
+        # Grouped env short options: -i in a bundle clears the whole environment.
+        'env -iuPYTHONPATH /usr/bin/python3 -c "import boto3"',
+        # A bash alias that folds -S into the python command word.
+        "shopt -s expand_aliases\nalias python='python -S'\npython -c 'import boto3'",
+        # declare -x / typeset -x export an emptied PYTHONPATH to the child.
+        "declare -x PYTHONPATH=; python -c 'import boto3'",
+        "typeset -x PYTHONPATH=; python -c 'import boto3'",
     ],
 )
 def test_bash_blocks_python_startup_guard_bypasses(captured_popen, command):
@@ -266,6 +277,14 @@ def test_bash_blocks_python_startup_guard_bypasses(captured_popen, command):
         "python -c \"import subprocess; subprocess.run(['echo hi'], shell=True)\"",
         # A rebound launcher that spawns a guarded (no -S) child.
         "python -c \"import subprocess; r = subprocess.run; r(['python','-c','print(1)'])\"",
+        # A non-exported declare stays a shell local (child keeps the guard env).
+        'declare PYTHONPATH=x; python -c "print(1)"',
+        # A benign, guard-neutral env export.
+        'declare -x MYVAR=1; python -c "print(1)"',
+        # A benign alias with no Python skip flags.
+        'alias py="python"; py script.py',
+        # env -S with a plain launch (no skip flag / env mutation).
+        'env -S "python -c print(1)"',
     ],
 )
 def test_bash_allows_python_without_startup_guard_bypass(captured_popen, command):

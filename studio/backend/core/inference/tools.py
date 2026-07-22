@@ -9,6 +9,7 @@ import base64
 import binascii
 import codecs
 import fnmatch
+import html
 import http.client
 import os
 import signal
@@ -429,6 +430,27 @@ def _segment_mutates_sandbox_python_env(segment: list[str], python_index: int) -
         if lowered in {"-u", "--unset"} and index + 1 < len(before_python):
             if before_python[index + 1].upper() in _SANDBOX_PYTHON_ENV_VARS:
                 return True
+        # GNU env also accepts grouped short options: ``-i`` clears the whole
+        # environment and ``-uNAME`` unsets a variable, so a bundle like
+        # ``-iuPYTHONPATH`` both resets the environment and would drop PYTHONPATH.
+        # ``-u`` consumes the remainder of the cluster as the NAME.
+        if (
+            token.startswith("-")
+            and not token.startswith("--")
+            and len(token) > 1
+            and any(
+                os.path.basename(candidate.replace("\\", "/")).lower() == "env"
+                for candidate in before_python[:index]
+            )
+        ):
+            cluster = token[1:]
+            flags = cluster.split("u", 1)[0] if "u" in cluster else cluster
+            if "i" in flags:
+                return True
+            if "u" in cluster:
+                name = cluster.split("u", 1)[1]
+                if name and name.upper() in _SANDBOX_PYTHON_ENV_VARS:
+                    return True
     return False
 
 
@@ -444,7 +466,58 @@ def _segment_persistently_mutates_sandbox_python_env(segment: list[str]) -> bool
         return any(
             token.split("=", 1)[0].upper() in _SANDBOX_PYTHON_ENV_VARS for token in segment[1:]
         )
+    # ``declare -x``/``typeset -x`` export to the child environment, so an empty
+    # ``declare -x PYTHONPATH=`` drops the guard var. Only the exporting form
+    # (``-x`` present) reaches the child; a bare ``declare NAME=`` stays a shell
+    # local and is inherited-safe.
+    if first in {"declare", "typeset"}:
+        exported = any(
+            token.startswith("-") and not token.startswith("--") and "x" in token[1:]
+            for token in segment[1:]
+        )
+        if exported:
+            return any(
+                token.split("=", 1)[0].upper() in _SANDBOX_PYTHON_ENV_VARS
+                for token in segment[1:]
+                if not token.startswith("-")
+            )
     return False
+
+
+def _shell_alias_definitions(command: str) -> dict[str, str]:
+    """Collect ``alias NAME=VALUE`` definitions so a later use of NAME can be
+    expanded (``alias python='python -S'`` makes a subsequent ``python -c`` run
+    ``python -S -c``, skipping sitecustomize). Fail-open: only adds detections."""
+    aliases: dict[str, str] = {}
+    for segment in _shell_command_segments(command):
+        if not segment or os.path.basename(segment[0].replace("\\", "/")).lower() != "alias":
+            continue
+        for token in segment[1:]:
+            if token.startswith("-") or "=" not in token:
+                continue
+            name, value = token.split("=", 1)
+            if name:
+                aliases[name] = value
+    return aliases
+
+
+def _segment_with_alias_expansion(
+    segment: list[str], aliases: dict[str, str]
+) -> list[str] | None:
+    if not aliases:
+        return None
+    cmd_index = 0
+    while cmd_index < len(segment) and _ASSIGNMENT_RE.match(segment[cmd_index]):
+        cmd_index += 1
+    if cmd_index >= len(segment) or segment[cmd_index] not in aliases:
+        return None
+    try:
+        value_tokens = shlex.split(aliases[segment[cmd_index]])
+    except ValueError:
+        return None
+    if not value_tokens:
+        return None
+    return segment[:cmd_index] + value_tokens + segment[cmd_index + 1 :]
 
 
 def _shell_command_substitutions(command: str) -> list[str]:
@@ -1223,6 +1296,7 @@ def _sandbox_python_startup_bypasses_guard(
     for nested in _shell_command_substitutions(command):
         if _sandbox_python_startup_bypasses_guard(nested, depth + 1, environment_tainted):
             return True
+    aliases = _shell_alias_definitions(command)
     for segment in _shell_command_segments(command):
         first = os.path.basename(segment[0].replace("\\", "/")).lower()
         wrapper_context = first in _PYTHON_LAUNCH_WRAPPERS
@@ -1251,8 +1325,22 @@ def _sandbox_python_startup_bypasses_guard(
                         return True
                     break
             break
-        if first == "env":
-            for index, token in enumerate(segment):
+        # ``env -S "python -S ..."`` splits its argument into a command; this
+        # applies wherever env sits in the launcher chain (env first, or behind a
+        # wrapper such as ``timeout 1 env -S ...`` / ``find . -exec env -S ...``),
+        # not only when env is the first token.
+        for env_index, env_token in enumerate(segment):
+            if os.path.basename(env_token.replace("\\", "/")).lower() != "env":
+                continue
+            env_launch = (
+                env_index == 0
+                or wrapper_context
+                or (find_exec and any(t in _FIND_EXEC_FLAGS for t in segment[:env_index]))
+            )
+            if not env_launch:
+                continue
+            for index in range(env_index + 1, len(segment)):
+                token = segment[index]
                 if token in {"-S", "--split-string"} and index + 1 < len(segment):
                     if _sandbox_python_startup_bypasses_guard(
                         segment[index + 1], depth + 1, environment_tainted
@@ -1268,6 +1356,13 @@ def _sandbox_python_startup_bypasses_guard(
             expanded_python_index = _segment_python_index(expanded_segment)
             if expanded_python_index is not None and _segment_python_launch_bypasses_guard(
                 expanded_segment, expanded_python_index, environment_tainted, depth
+            ):
+                return True
+        aliased_segment = _segment_with_alias_expansion(segment, aliases)
+        if aliased_segment is not None:
+            aliased_python_index = _segment_python_index(aliased_segment)
+            if aliased_python_index is not None and _segment_python_launch_bypasses_guard(
+                aliased_segment, aliased_python_index, environment_tainted, depth
             ):
                 return True
         python_index = _segment_python_index(segment)
@@ -3483,6 +3578,11 @@ _RENDER_HTML_NETWORK_RE = re.compile(
     r"\bnew\s+(?:Shared)?Worker\s*\(|"
     r"@import|"
     r"url\(\s*[\"']?\s*(?:https?:|/)|"
+    # ES module loads of a remote/root URL: dynamic import('https://...') and
+    # static `import ... from 'https://...'` / side-effect `import 'https://...'`
+    # (a relative './mod.js' specifier has no https:/root prefix and stays static).
+    r"\bimport\s*\(\s*[\"'`]?\s*(?:https?:|/)|"
+    r"\bimport\b[^;\n]*?[\"'`]\s*(?:https?:|/)|"
     r"<script[^>]*\bsrc\s*=|"
     # Self-navigation sinks: location.assign/replace(...), window.open(...), and
     # assigning a URL to (window.)location(.href). location.reload()/history.back
@@ -4124,6 +4224,14 @@ def _render_html_computed_network_access(code: str, depth: int = 0) -> bool:
         member = _render_html_resolve_member(member_expression, aliases)
         if member is None:
             if "." in member_expression:
+                # A dotted computed key (img[o.k]=...) can resolve to a
+                # URL-loading attribute at runtime; fail closed when the assigned
+                # value is a static network URL. A dynamic value stays on the auto
+                # path, preserving prior behaviour for non-URL computed writes.
+                if value is not None and _render_html_value_reaches_network_without_member(
+                    value, depth
+                ):
+                    return True
                 continue
             if _render_html_value_reaches_network_without_member(value, depth):
                 return True
@@ -4197,11 +4305,21 @@ def _render_html_code_reaches_network(code: str, depth: int = 0) -> bool:
     if depth > 8:
         return True
     code = _JS_BLOCK_COMMENT_RE.sub("", code)
-    return bool(
+    if (
         _RENDER_HTML_NETWORK_RE.search(code)
         or _render_html_attributes_reach_network(code, depth)
         or _render_html_computed_network_access(code, depth)
-    )
+    ):
+        return True
+    # The browser decodes HTML character references in attribute values before
+    # CSS/URL parsing, so an entity-obfuscated URL such as
+    # style="background:url(&#104;ttps://evil/x)" is only a network load after
+    # unescaping. Re-scan the decoded markup for URL sinks.
+    if "&" in code:
+        decoded = html.unescape(code)
+        if decoded != code and _RENDER_HTML_NETWORK_RE.search(decoded):
+            return True
+    return False
 
 
 def _render_html_reaches_network(arguments: dict) -> bool:
