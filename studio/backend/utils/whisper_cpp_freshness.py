@@ -5,8 +5,9 @@
 
 Reads UNSLOTH_WHISPER_PREBUILT_INFO.json (written by install_whisper_prebuilt.py)
 and compares the installed release tag against the latest on GitHub.
-Surfaced via main.py:lifespan() and /api/inference/status. Fails open
-on any missing data so we never show a misleading banner.
+Surfaced via utils.whisper_cpp_update (GET /api/whisper/update-status and the
+combined llama+whisper update status). Fails open on any missing data so we
+never show a misleading banner.
 
 The mechanics (marker walk-up, GitHub fetch, memo + disk cache, report
 skeleton) live in utils.prebuilt.freshness_flow; this module keeps the
@@ -157,10 +158,6 @@ def update_download_size_bytes(
     return None
 
 
-def _parse_installed_at(value: object) -> Optional[datetime]:
-    return _flow.parse_installed_at(value)
-
-
 def parse_release_version(tag: object) -> Optional[tuple]:
     """Comparable key ``(upstream_major, upstream_minor, upstream_patch,
     unsloth_serial)`` for a whisper.cpp release tag like ``v1.9.1-unsloth.2``.
@@ -236,11 +233,6 @@ def check_prebuilt_freshness(
         display_tag = lambda marker: marker.get("release_tag"),
         compare_tag = lambda marker: marker.get("release_tag"),
     )
-
-
-def format_stale_warning(info: dict) -> str:
-    """Human-readable one-liner for stale prebuilt info."""
-    return _flow.format_stale_warning(info, component = "whisper.cpp")
 
 
 def reset_caches(*, drop_disk: bool = False) -> None:

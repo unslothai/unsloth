@@ -132,17 +132,13 @@ _OPS_FIRST_NAMES = {
     "fetch_download_host_json",
     "linux_runtime_dirs_for_required_libraries",
     "detected_linux_runtime_lines",
-    "detected_linux_runtime_lines_exact",
     "detected_windows_runtime_lines",
-    "detected_cuda_runtime_lines",
     "parse_manifest",
     "parse_release_checksums",
     "fetch_release_checksums",
     "expected_sha256_for",
     "macos_min_os_ok",
     "artifacts_for_host",
-    "select_cuda_artifact",
-    "select_rocm_artifact",
     "select_artifact",
     "select_artifact_with_fallback",
     "auto_detect_backend",
@@ -224,7 +220,6 @@ class ComponentDescriptor:
     # replaces; None keeps the core default (which raises if truly required).
     detect_host: Callable[[], Any] | None = None
     host_platform_tokens: Callable[[Any], tuple[str, str]] | None = None
-    selection_view: Callable[[dict[str, Any]], "ArtifactView"] | None = None
     server_binary_name: Callable[[Any], str] | None = None
     runtime_bin_dir: Callable[[Path, Any], Path] | None = None
     auto_detect_backend: Callable[[Any], str] | None = None
@@ -255,7 +250,6 @@ def component_namespace(descriptor: ComponentDescriptor) -> dict[str, Any]:
     for hook in (
         "detect_host",
         "host_platform_tokens",
-        "selection_view",
         "server_binary_name",
         "runtime_bin_dir",
         "auto_detect_backend",
@@ -1357,23 +1351,6 @@ def detected_linux_runtime_lines(ops: ModuleOps) -> tuple[list[str], dict[str, l
     return detected, runtime_dirs
 
 
-def detected_linux_runtime_lines_exact(ops: ModuleOps) -> list[str]:
-    """`cuda<major>` lines whose libcudart + libcublas SONAMEs are on disk, newest
-    first. Exact-name matching: the loader resolves the SONAME (libcudart.so.13),
-    so a versioned-only file without that symlink is not loadable and a `{lib}*`
-    glob would overreport."""
-    detected: list[str] = []
-    for major in range(_MAX_PROBE_CUDA_MAJOR, _MIN_CUDA_MAJOR - 1, -1):
-        required = [f"libcudart.so.{major}", f"libcublas.so.{major}"]
-        dirs = ops.linux_runtime_dirs_for_required_libraries(required)
-        if all(
-            any(dir_provides_exact_library(directory, library) for directory in dirs)
-            for library in required
-        ):
-            detected.append(f"cuda{major}")
-    return detected
-
-
 def windows_runtime_line_info() -> dict[str, tuple[str, ...]]:
     # Generated per CUDA major (newest first) so a new toolkit is detected
     # without a code change while the cudart64_<major>.dll naming holds.
@@ -1537,52 +1514,6 @@ def blackwell_min_toolkit_for_host(host: Any) -> tuple[int, int]:
 # Generic descriptor-driven install flow (whisper dialect: one release carries
 # a manifest of os/arch/backend artifacts plus a same-origin checksum index).
 # ════════════════════════════════════════════════════════════════════════════
-@dataclass(frozen = True)
-class ArtifactView:
-    """Canonical selection view of one manifest artifact, whatever the dialect."""
-
-    asset_name: str
-    runtime_line: str | None = None
-    coverage_class: str | None = None
-    supported_sms: tuple[str, ...] = ()
-    min_sm: int | None = None
-    max_sm: int | None = None
-    rank: int = 0
-    gfx_target: str | None = None
-    mapped_targets: tuple[str, ...] = ()
-
-
-def coerce_int(value: Any) -> int | None:
-    if value is None:
-        return None
-    try:
-        return int(value)
-    except (TypeError, ValueError):
-        return None
-
-
-def selection_view(artifact: dict[str, Any]) -> ArtifactView:
-    """Default adapter from a manifest artifact dict (whisper dialect field
-    names) to the canonical selection view, normalizing dotted SMs."""
-    return ArtifactView(
-        asset_name = str(artifact.get("asset") or ""),
-        runtime_line = artifact.get("runtime_line"),
-        coverage_class = artifact.get("coverage_class"),
-        supported_sms = tuple(
-            sm
-            for sm in (
-                normalize_compute_cap(value) for value in (artifact.get("supported_sms") or ())
-            )
-            if sm is not None
-        ),
-        min_sm = coerce_int(artifact.get("min_sm")),
-        max_sm = coerce_int(artifact.get("max_sm")),
-        rank = coerce_int(artifact.get("rank")) or 0,
-        gfx_target = artifact.get("gfx_target"),
-        mapped_targets = tuple(str(value) for value in (artifact.get("mapped_targets") or ())),
-    )
-
-
 def host_platform_tokens(host: Any) -> tuple[str, str]:
     """Default (os, arch) asset tokens for a host; components with their own
     HostInfo field names override this hook."""
@@ -1670,130 +1601,17 @@ def artifacts_for_host(
     ]
 
 
-# ── Coverage-aware selection over the canonical views ──
-def select_cuda_artifact(
-    ops: ModuleOps, candidates: list[dict[str, Any]], host: Any, log_lines: list[str]
-) -> dict[str, Any] | None:
-    """Coverage-aware CUDA pick (the llama linux_cuda_choice_from_release policy):
-    a runtime line is usable only when the driver supports it AND its libs are on
-    disk (bundles omit libcudart/libcublas); a Blackwell host prefers the highest
-    covering major, torch's line is a non-Blackwell tie-break; within a line every
-    host SM must be covered, tightest SM range wins, portable is the per-line
-    fallback (and the only acceptable class with unknown caps). None when nothing
-    covers -- the caller then applies the component's fallback policy."""
-    views = [(ops.selection_view(artifact), artifact) for artifact in candidates]
-    host_sms = normalize_compute_caps(host.compute_caps)
-    detected = ops.detected_cuda_runtime_lines(is_windows = host.is_windows)
-    # Duck-typed on driver_cuda_version; the major floor is platform independent.
-    driver_lines = compatible_linux_runtime_lines(host)
-    runtime_lines = [line for line in detected if line in driver_lines]
-    log_lines.append(
-        f"cuda_selection: detected_sms={','.join(host_sms) if host_sms else 'unknown'}"
-    )
-    log_lines.append("cuda_selection: driver_runtime_lines=" + (",".join(driver_lines) or "none"))
-    log_lines.append("cuda_selection: detected_runtime_lines=" + (",".join(detected) or "none"))
-    log_lines.append(
-        "cuda_selection: compatible_runtime_lines=" + (",".join(runtime_lines) or "none")
-    )
-    if not runtime_lines:
-        log_lines.append("cuda_selection: no usable CUDA runtime line (driver + on-disk runtime)")
-        return None
-
-    ordered = list(runtime_lines)
-    blackwell_lines = (
-        [
-            line
-            for line in blackwell_capable_linux_runtime_lines(host_sms, [view for view, _ in views])
-            if line in ordered
-        ]
-        if host_is_blackwell(host)
-        else []
-    )
-    if blackwell_lines:
-        ordered = blackwell_lines + [line for line in ordered if line not in blackwell_lines]
-        log_lines.append(
-            "cuda_selection: blackwell_runtime_override prefer=" + ",".join(blackwell_lines)
-        )
-    elif host.torch_runtime_line in ordered:
-        ordered = [host.torch_runtime_line] + [
-            line for line in ordered if line != host.torch_runtime_line
-        ]
-        log_lines.append(f"cuda_selection: torch_preferred_runtime_line={host.torch_runtime_line}")
-
-    for runtime_line in ordered:
-        # The llama accept rule: full SM coverage with real metadata; with unknown
-        # caps only a portable bundle is acceptable.
-        accepted = [
-            (view, raw)
-            for view, raw in views
-            if view.runtime_line == runtime_line
-            and artifact_covers_sms(view, host_sms)
-            and (host_sms or view.coverage_class == "portable")
-        ]
-        coverage = [(view, raw) for view, raw in accepted if view.coverage_class != "portable"]
-        chosen = (
-            min(
-                coverage,
-                key = lambda item: (sm_range(item[0]), item[0].rank, item[0].max_sm or 0),
-            )
-            if coverage
-            else next(iter(accepted), None)
-        )
-        if chosen is not None:
-            view, raw = chosen
-            log_lines.append(
-                f"cuda_selection: selected {view.asset_name} runtime_line={runtime_line} "
-                f"coverage_class={view.coverage_class}"
-            )
-            return raw
-    log_lines.append("cuda_selection: no artifact covered the host GPUs")
-    return None
-
-
-def select_rocm_artifact(
-    ops: ModuleOps, candidates: list[dict[str, Any]], host_gfx: str | None, log_lines: list[str]
-) -> dict[str, Any] | None:
-    """Exact ROCm match: the host gfx must be listed in the bundle's
-    mapped_targets or equal its umbrella gfx_target -- never a loose prefix, so an
-    in-family but unbuilt arch (e.g. gfx1033) is not served the family bundle."""
-    if not host_gfx:
-        return None
-    gfx = host_gfx.lower().strip()
-    for artifact in candidates:
-        view = ops.selection_view(artifact)
-        mapped = {str(target).lower() for target in view.mapped_targets}
-        family = str(view.gfx_target or "").lower()
-        if gfx in mapped or (family and gfx == family):
-            log_lines.append(f"rocm_selection: gpu={host_gfx} selected {view.asset_name}")
-            return artifact
-    return None
-
-
 def select_artifact(
     ops: ModuleOps, manifest: dict[str, Any], host: Any, backend: str
 ) -> dict[str, Any] | None:
-    """Best manifest artifact for this host os/arch and backend, or None.
-
-    CPU/Metal/Vulkan take the first match. CUDA and ROCm are coverage-aware:
-    CUDA matches compute caps + driver against each bundle's
-    supported_sms/min_sm/max_sm/runtime_line and picks the tightest
-    Blackwell-aware profile, ROCm matches the gfx target exactly. So a B200
-    (sm_100) gets a Blackwell bundle. None when nothing covers the host -- the
-    caller then applies the component's fallback policy."""
+    """First manifest artifact matching this host os/arch and backend, or None
+    (the caller then applies the component's fallback policy). Accelerator
+    capability matching does not happen here: whisper bundles are slim per
+    os/arch (the paired llama.cpp install's own coverage-aware installer already
+    picked SM/gfx-appropriate ggml backends), and llama keeps its shipped
+    selection chain in install_llama_prebuilt.py."""
     candidates = ops.artifacts_for_host(manifest, host, backend)
-    if not candidates:
-        return None
-    if backend not in {"cuda", "rocm"}:
-        # cpu / metal / vulkan: no per-GPU coverage to match; first match wins.
-        return candidates[0]
-    log_lines: list[str] = []
-    if backend == "cuda":
-        chosen = ops.select_cuda_artifact(candidates, host, log_lines)
-    else:
-        chosen = ops.select_rocm_artifact(candidates, host.rocm_gfx, log_lines)
-    for line in log_lines:
-        ops.log(line)
-    return chosen
+    return candidates[0] if candidates else None
 
 
 def select_artifact_with_fallback(
@@ -2571,13 +2389,6 @@ def prepare_runtime_payload(staged_root: Path, host: Any, selection: InstallSele
 def resolver_payload_extra(artifact: dict[str, Any]) -> dict[str, Any]:
     """Additive --resolve-prebuilt payload fields; the core adds none."""
     return {}
-
-
-def detected_cuda_runtime_lines(ops: ModuleOps, *, is_windows: bool) -> list[str]:
-    """Platform-appropriate on-disk CUDA runtime-line detection (newest first)."""
-    if is_windows:
-        return ops.detected_windows_runtime_lines()[0]
-    return ops.detected_linux_runtime_lines_exact()
 
 
 def installed_server_path(ops: ModuleOps, install_dir: Path, host: Any) -> Path:

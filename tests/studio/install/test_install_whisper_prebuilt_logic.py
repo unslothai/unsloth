@@ -7,7 +7,6 @@ import io
 import json
 import sys
 import tarfile
-import types
 import zipfile
 from pathlib import Path
 
@@ -44,9 +43,6 @@ def _host(
     has_usable_nvidia: bool = False,
     has_rocm: bool = False,
     rocm_gfx: str | None = None,
-    compute_caps: tuple[str, ...] = (),
-    driver_cuda_version: tuple[int, int] | None = None,
-    torch_runtime_line: str | None = None,
     macos_version: tuple[int, int] | None = None,
 ) -> HostInfo:
     ext = ".zip" if whisper_os == "windows" else ".tar.gz"
@@ -62,9 +58,6 @@ def _host(
         has_usable_nvidia = has_usable_nvidia,
         has_rocm = has_rocm,
         rocm_gfx = rocm_gfx,
-        compute_caps = compute_caps,
-        driver_cuda_version = driver_cuda_version,
-        torch_runtime_line = torch_runtime_line,
         macos_version = macos_version,
     )
 
@@ -151,30 +144,6 @@ def test_detect_host(monkeypatch, system, machine, exp_os, exp_arch, exp_ext):
     assert host.is_apple_silicon == (exp_os == "macos" and exp_arch == "arm64")
 
 
-def test_detect_host_populates_nvidia_caps(monkeypatch):
-    monkeypatch.setattr(
-        M,
-        "llama_detect_host",
-        lambda: _llama_host(
-            "Linux",
-            "x86_64",
-            has_usable_nvidia = True,
-            compute_caps = ["100"],
-            driver_cuda_version = (13, 0),
-        ),
-    )
-    monkeypatch.setattr(
-        M,
-        "detect_torch_cuda_runtime_preference",
-        lambda base: types.SimpleNamespace(runtime_line = "cuda13"),
-    )
-    host = M.detect_host()
-    assert host.has_usable_nvidia is True
-    assert host.compute_caps == ("100",)
-    assert host.driver_cuda_version == (13, 0)
-    assert host.torch_runtime_line == "cuda13"
-
-
 def test_detect_host_maps_rocm_fields(monkeypatch):
     monkeypatch.setattr(
         M,
@@ -195,25 +164,6 @@ def test_detect_host_unsupported(monkeypatch, system, machine):
     monkeypatch.setattr(M, "llama_detect_host", lambda: _llama_host(system, machine))
     with pytest.raises(PrebuiltFallback):
         M.detect_host()
-
-
-# ── Backend override + auto-detect ──
-def test_apply_host_overrides_clears_cuda_fields():
-    base = _host(
-        "linux",
-        "x64",
-        has_usable_nvidia = True,
-        compute_caps = ("10.0",),
-        driver_cuda_version = (13, 0),
-        torch_runtime_line = "cuda13",
-    )
-    rocm = M.apply_host_overrides(base, has_rocm = True, rocm_gfx = "gfx1030")
-    assert rocm.has_rocm and rocm.rocm_gfx == "gfx1030" and not rocm.has_usable_nvidia
-    # A forced-ROCm host must not carry stray CUDA detection into selection.
-    assert rocm.compute_caps == () and rocm.driver_cuda_version is None
-    forced = M.apply_host_overrides(base, force_cpu = True)
-    assert not forced.has_usable_nvidia and not forced.has_rocm and not forced.is_apple_silicon
-    assert forced.compute_caps == () and forced.driver_cuda_version is None
 
 
 # ── Asset naming (pure) ──
@@ -268,13 +218,7 @@ def test_select_artifact_never_picks_fat_gpu_bundles():
             ]
         )
     )
-    cuda_host = _host(
-        "linux",
-        "x64",
-        has_usable_nvidia = True,
-        compute_caps = ("10.0",),
-        driver_cuda_version = (13, 0),
-    )
+    cuda_host = _host("linux", "x64", has_usable_nvidia = True)
     assert M.select_artifact(manifest, cuda_host, "cuda") is None
     rocm_host = _host("linux", "x64", has_rocm = True, rocm_gfx = "gfx1100")
     assert M.select_artifact(manifest, rocm_host, "rocm") is None
@@ -294,17 +238,6 @@ def _add_file(
     info.size = len(data)
     info.mode = mode
     tar.addfile(info, io.BytesIO(data))
-
-
-def test_extract_tar_gz_preserves_exec_and_libs(tmp_path):
-    archive = tmp_path / "bundle.tar.gz"
-    with tarfile.open(archive, "w:gz") as tar:
-        _add_file(tar, "whisper-server", b"#!/bin/sh\necho ok\n", mode = 0o755)
-        _add_file(tar, "libwhisper.so", b"ELF-ish")
-    dest = tmp_path / "out"
-    M.extract_archive(archive, dest)
-    assert (dest / "whisper-server").stat().st_mode & 0o111
-    assert (dest / "libwhisper.so").is_file()
 
 
 # ── Fixture archive + full staging/activate install ──
@@ -426,25 +359,6 @@ def test_install_sha_mismatch_then_retry_fails_closed(tmp_path, monkeypatch):
     assert not (install_dir / "build" / "bin" / "whisper-server").exists()
 
 
-def test_install_cpu_fallback_when_accel_absent(tmp_path, monkeypatch):
-    host = _host("linux", "x64", has_usable_nvidia = True, driver_cuda_version = (13, 0))
-    archive, asset, sha256 = _build_cpu_bundle(tmp_path, host)
-
-    def fake_download(url, destination):
-        destination.parent.mkdir(parents = True, exist_ok = True)
-        destination.write_bytes(archive.read_bytes())
-
-    monkeypatch.setattr(M, "detect_host", lambda: host)
-    monkeypatch.setattr(M, "download_file", fake_download)
-    # Manifest only carries a cpu artifact; auto-detect wants cuda -> falls back to cpu.
-    _install_env(monkeypatch, tmp_path, host, asset = asset, sha256 = sha256, backend_in_manifest = "cpu")
-
-    install_dir = tmp_path / "whisper.cpp"
-    assert M.install_prebuilt(install_dir, backend = "auto") == M.EXIT_SUCCESS
-    marker = json.loads((install_dir / M.METADATA_FILENAME).read_text())
-    assert marker["backend"] == "cpu"
-
-
 # ── Busy lock -> exit 3 ──
 def test_busy_lock_maps_to_exit_busy(tmp_path, monkeypatch):
     host = _host("linux", "x64")
@@ -539,19 +453,11 @@ def test_resolve_mode_unexpected_error_reports_unavailable(monkeypatch, capsys):
 def test_rocm_gfx_override_implies_has_rocm():
     # --rocm-gfx alone (no --has-rocm) must enable ROCm and clear NVIDIA, else the
     # host stays on its CUDA/CPU path and never picks the ROCm bundle.
-    base = _host(
-        "linux",
-        "x64",
-        has_usable_nvidia = True,
-        compute_caps = ("10.0",),
-        driver_cuda_version = (13, 0),
-        torch_runtime_line = "cuda13",
-    )
+    base = _host("linux", "x64", has_usable_nvidia = True)
     out = M.apply_host_overrides(base, rocm_gfx = "gfx1100")
     assert out.has_rocm is True
     assert out.rocm_gfx == "gfx1100"
     assert out.has_usable_nvidia is False
-    assert out.compute_caps == () and out.driver_cuda_version is None
     assert M.auto_detect_backend(out) == "rocm"
 
 
@@ -606,14 +512,7 @@ def _slim_manifest(slim_extra: dict | None = None) -> dict:
 
 
 def _cuda_host() -> HostInfo:
-    return _host(
-        "linux",
-        "x64",
-        has_usable_nvidia = True,
-        compute_caps = ("10.0",),
-        driver_cuda_version = (13, 0),
-        torch_runtime_line = "cuda13",
-    )
+    return _host("linux", "x64", has_usable_nvidia = True)
 
 
 def test_installed_llama_runtime_reads_marker(tmp_path):
@@ -1050,25 +949,6 @@ def test_slim_links_survive_a_llama_dir_swap(tmp_path, monkeypatch):
     assert whisper_lib.stat().st_ino == old_inode  # old inode survives the swap
     assert whisper_lib.read_bytes() == old_content
     assert whisper_lib.stat().st_nlink == 1  # the llama side is gone; ours remains
-
-
-def test_fat_marker_gains_no_slim_fields(tmp_path, monkeypatch):
-    host = _host("linux", "x64")
-    archive, asset, sha256 = _build_cpu_bundle(tmp_path, host)
-
-    def fake_download(url, destination):
-        destination.parent.mkdir(parents = True, exist_ok = True)
-        destination.write_bytes(archive.read_bytes())
-
-    monkeypatch.setattr(M, "detect_host", lambda: host)
-    monkeypatch.setattr(M, "download_file", fake_download)
-    _install_env(monkeypatch, tmp_path, host, asset = asset, sha256 = sha256)
-
-    install_dir = tmp_path / "whisper.cpp"
-    assert M.install_prebuilt(install_dir, backend = "cpu") == M.EXIT_SUCCESS
-    marker = json.loads((install_dir / M.METADATA_FILENAME).read_text())
-    for key in ("install_kind", "paired_llama_tag", "linked_from", "linked_libraries"):
-        assert key not in marker  # fat markers keep the legacy payload exactly
 
 
 # The exact resolver key set shipped before slim existed; install_kind is the

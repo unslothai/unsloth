@@ -3,9 +3,10 @@
 
 """Tests for the whisper.cpp prebuilt freshness check.
 
-Pins the whisper version parser, the is_behind decision matrix (with its
-downgrade guard), the marker parser across install layouts, and the fail-open
-behaviour on missing data.
+Pins the whisper-specific version policy: the release-tag parser, the
+is_behind decision matrix (with its downgrade guard), and one end-to-end
+wiring smoke through the shared freshness flow. The shared marker-walk and
+fail-open mechanics are covered by test_llama_cpp_freshness.py.
 """
 
 from __future__ import annotations
@@ -64,21 +65,11 @@ def _write_marker(install_dir: Path, **overrides) -> Path:
     return marker
 
 
-def _fake_binary(install_dir: Path, *, layout: str = "cmake") -> Path:
-    """Stub whisper-server under a supported install layout."""
-    if layout == "cmake":
-        bin_dir = install_dir / "build" / "bin"
-        bin_name = "whisper-server"
-    elif layout == "root":
-        bin_dir = install_dir
-        bin_name = "whisper-server"
-    elif layout == "windows":
-        bin_dir = install_dir / "build" / "bin" / "Release"
-        bin_name = "whisper-server.exe"
-    else:
-        raise ValueError(f"unknown layout {layout}")
+def _fake_binary(install_dir: Path) -> Path:
+    """Stub whisper-server under the canonical cmake install layout."""
+    bin_dir = install_dir / "build" / "bin"
     bin_dir.mkdir(parents = True, exist_ok = True)
-    bin_path = bin_dir / bin_name
+    bin_path = bin_dir / "whisper-server"
     bin_path.write_text("stub\n")
     return bin_path
 
@@ -135,34 +126,6 @@ def test_is_behind_missing_side_fails_open():
     assert fr.is_behind("v1.9.1-unsloth.1", None) is False
 
 
-# read_install_marker across layouts.
-
-
-def test_read_install_marker_finds_cmake_layout(tmp_path):
-    _write_marker(tmp_path)
-    bin_path = _fake_binary(tmp_path, layout = "cmake")
-    marker = fr.read_install_marker(str(bin_path))
-    assert marker is not None
-    assert marker["release_tag"] == "v1.9.1-unsloth.1"
-
-
-def test_read_install_marker_finds_windows_layout(tmp_path):
-    _write_marker(tmp_path)
-    bin_path = _fake_binary(tmp_path, layout = "windows")
-    marker = fr.read_install_marker(str(bin_path))
-    assert marker is not None
-    assert marker["published_repo"] == "unslothai/whisper.cpp"
-
-
-def test_read_install_marker_missing_returns_none(tmp_path):
-    bin_path = _fake_binary(tmp_path, layout = "cmake")
-    assert fr.read_install_marker(str(bin_path)) is None
-
-
-def test_read_install_marker_handles_none_path():
-    assert fr.read_install_marker(None) is None
-
-
 # check_prebuilt_freshness end-to-end.
 
 
@@ -174,7 +137,7 @@ def test_check_prebuilt_freshness_reports_stale_when_old_and_behind(monkeypatch,
         .isoformat()
         .replace("+00:00", "Z"),
     )
-    bin_path = _fake_binary(tmp_path, layout = "cmake")
+    bin_path = _fake_binary(tmp_path)
     monkeypatch.setattr(fr, "latest_published_release", lambda *a, **k: "v1.9.1-unsloth.3")
     info = fr.check_prebuilt_freshness(str(bin_path))
     assert info["has_marker"] is True
@@ -182,39 +145,3 @@ def test_check_prebuilt_freshness_reports_stale_when_old_and_behind(monkeypatch,
     assert info["stale"] is True
     assert info["installed_tag"] == "v1.9.1-unsloth.1"
     assert info["latest_tag"] == "v1.9.1-unsloth.3"
-
-
-def test_check_prebuilt_freshness_not_stale_when_tag_matches(monkeypatch, tmp_path):
-    _write_marker(tmp_path, release_tag = "v1.9.1-unsloth.1")
-    bin_path = _fake_binary(tmp_path, layout = "cmake")
-    monkeypatch.setattr(fr, "latest_published_release", lambda *a, **k: "v1.9.1-unsloth.1")
-    info = fr.check_prebuilt_freshness(str(bin_path))
-    assert info["behind"] is False
-    assert info["stale"] is False
-
-
-def test_check_prebuilt_freshness_fails_open_without_marker(tmp_path):
-    bin_path = _fake_binary(tmp_path, layout = "cmake")
-    info = fr.check_prebuilt_freshness(str(bin_path))
-    assert info["has_marker"] is False
-    assert info["stale"] is False
-    assert info["behind"] is False
-
-
-def test_check_prebuilt_freshness_fails_open_when_github_unreachable(monkeypatch, tmp_path):
-    _write_marker(tmp_path)
-    bin_path = _fake_binary(tmp_path, layout = "cmake")
-    monkeypatch.setattr(fr, "latest_published_release", lambda *a, **k: None)
-    info = fr.check_prebuilt_freshness(str(bin_path))
-    assert info["has_marker"] is True
-    assert info["behind"] is False
-    assert info["stale"] is False
-
-
-def test_format_stale_warning_mentions_whisper():
-    warning = fr.format_stale_warning(
-        {"age_days": 4, "installed_tag": "v1.9.1-unsloth.1", "latest_tag": "v1.9.1-unsloth.3"}
-    )
-    assert "whisper.cpp" in warning
-    assert "v1.9.1-unsloth.1" in warning
-    assert "v1.9.1-unsloth.3" in warning

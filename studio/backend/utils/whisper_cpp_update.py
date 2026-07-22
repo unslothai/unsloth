@@ -6,20 +6,22 @@
 Builds on utils.whisper_cpp_freshness (which detects whether a newer prebuilt
 release exists) and adds the *apply* half: run install_whisper_prebuilt.py to
 download the newest bundle for this host and atomically swap it in place, so
-the next model load uses it.
+the next model load uses it. Applies only run as the whisper phase of the
+combined llama+whisper update (utils.llama_cpp_update.start_update chains
+run_chained_phase); there is no standalone whisper update trigger.
 
 Design notes:
 - Detection is delegated to check_prebuilt_freshness(). We surface an
   ``update_available`` flag (installed_tag != latest_tag) which is laxer than
   freshness' ``stale`` (which additionally requires the install to be >= 3 days
-  old). The UI shows the "Update whisper.cpp" affordance on update_available.
-- The install is slow (download + extract + validate), so it runs on a daemon
-  thread; callers poll get_update_status() for the job state.
+  old). The UI shows the single main update item on update_available.
 - Everything fails open: a missing marker / offline GitHub / source build just
   reports update_available=False and never blocks the app.
 - The mechanics (managed-root resolution, local-link detection, the resolve
   probe, the streamed installer run) live in utils.prebuilt.update_flow; this
-  module keeps the whisper policy and the job dict its callers poll.
+  module keeps the whisper policy. The ``job`` dict in the status payload is
+  kept for response-shape stability but stays idle: chained applies report
+  progress through the llama job.
 """
 
 from __future__ import annotations
@@ -51,18 +53,11 @@ logger = structlog.get_logger(__name__)
 DEFAULT_PUBLISHED_REPO = "unslothai/whisper.cpp"
 _INSTALL_TIMEOUT_SECONDS = 1800  # 30 min ceiling for download + extract/validate
 
-# Background job state. Single in-flight update at a time, guarded by _job_lock.
-_JOB_IDLE = _flow.JOB_IDLE
-_JOB_RUNNING = _flow.JOB_RUNNING
-_JOB_SUCCESS = _flow.JOB_SUCCESS
-_JOB_ERROR = _flow.JOB_ERROR
-
+# Always-idle job payload: whisper applies run inside the chained llama job, so
+# nothing ever flips this to running. Kept so status payload shapes are stable.
 _job_lock = threading.Lock()
 _job: dict = _flow.new_job()
 
-_utcnow = _flow.utcnow
-_is_under = _flow.is_under
-_is_external_link = _flow.is_external_link
 _rocm_install_args = _flow.rocm_install_args
 
 
@@ -125,36 +120,6 @@ def _installed_whisper_version(binary: Optional[str]) -> Optional[str]:
     if not m:
         return None
     return f"v{m.group(1)}"
-
-
-def get_installed_whisper_version() -> Optional[str]:
-    """Display string for the active whisper.cpp install (e.g. 'v1.9.1-unsloth.2'),
-    or None.
-
-    Prefers the install marker's release_tag -- the full unsloth release identity,
-    the same field the update banner compares as installed -- so a mix/serial
-    build reads back in full. Last resort is ``v<A.B.C>`` parsed from
-    ``whisper-server --version`` for source/custom builds that have no marker.
-
-    Lightweight: reads the local marker and at most runs ``--version``. Does no
-    network or release-freshness work (unlike get_update_status), so it is safe
-    to call from latency-sensitive paths like the About panel.
-    """
-    binary = _find_binary()
-    marker = read_install_marker(binary)
-    if marker:
-        tag = marker.get("release_tag")
-        if tag:
-            return tag
-    # Markerless/source build: the fallback execs ``whisper-server --version``.
-    # Skip it while an update is swapping the tree -- on Windows that exec can
-    # make the installer's os.replace fail (the same race get_update_status's
-    # source-build probe guards against). The panel just omits the row.
-    with _job_lock:
-        job_running = _job["state"] == _JOB_RUNNING
-    if job_running:
-        return None
-    return _installed_whisper_version(binary)
 
 
 def _whisper_install_root(binary: Optional[str]) -> Optional[Path]:
@@ -246,14 +211,9 @@ def get_update_status(*, force_refresh: bool = False) -> dict:
         return _local_link_status()
     marker = read_install_marker(binary)
 
-    with _job_lock:
-        job_running = _job["state"] == _JOB_RUNNING
-
     # No marker = source build / custom path. Offer the official prebuilt if one
-    # now exists for this host. Skipped while the updater swaps the tree: each
-    # poll would exec the half-replaced binary (on Windows that exec can make the
-    # installer's os.replace fail) and the poller only consumes job progress.
-    if marker is None and binary is not None and not job_running:
+    # now exists for this host.
+    if marker is None and binary is not None:
         src = _source_build_status(binary, force_refresh = force_refresh)
         if src is not None:
             return src
@@ -316,8 +276,8 @@ def _install_latest(
     set_progress,
 ) -> dict:
     """Unload the warm whisper sidecar, run the installer for the latest
-    prebuilt, then refresh caches so the next load uses the new build. Shared by
-    the standalone job worker and the llama-chained whisper phase. Returns
+    prebuilt, then refresh caches so the next load uses the new build. Runs as
+    the whisper phase of the chained llama+whisper update. Returns
     {to_tag, reload_required, message}; raises on failure."""
     # Free the binary while the installer swaps it. whisper.cpp is served by a
     # single sidecar subprocess (not a multi-backend registry like llama), so
@@ -380,151 +340,6 @@ def _install_latest(
     }
 
 
-def _run_update(
-    install_dir: Path, repo: str, asset: Optional[str], backend: Optional[str], script: Path
-) -> None:
-    """Worker for the standalone whisper update job."""
-    try:
-
-        def _set_progress(fraction: float) -> None:
-            with _job_lock:
-                _job["progress"] = max(_job.get("progress") or 0.0, fraction)
-
-        result = _install_latest(install_dir, repo, asset, backend, script, _set_progress)
-        with _job_lock:
-            _job.update(
-                state = _JOB_SUCCESS,
-                message = result["message"],
-                to_tag = result["to_tag"],
-                reload_required = result["reload_required"],
-                error = None,
-                progress = 1.0,
-                finished_at = _utcnow(),
-            )
-    except Exception as exc:
-        logger.warning("whisper update: failed", error = str(exc))
-        with _job_lock:
-            _job.update(
-                state = _JOB_ERROR,
-                message = "whisper.cpp update failed.",
-                error = str(exc),
-                finished_at = _utcnow(),
-            )
-
-
-def start_update() -> dict:
-    """Kick off a background update. Idempotent: a second call while one is
-    running returns the in-flight job rather than starting another."""
-    binary = _find_binary()
-    # Refuse to update a locally-linked whisper.cpp dir: installing a prebuilt
-    # here would write through the link into the user's own checkout (or fail)
-    # and silently drop the link.
-    if _active_install_is_local_link(binary):
-        return {
-            "started": False,
-            "reason": "local_link",
-            "message": (
-                "whisper.cpp is a local directory linked into the managed path; "
-                "Unsloth won't replace it. Update your own whisper.cpp checkout instead."
-            ),
-            "job": get_update_status()["job"],
-        }
-    marker = read_install_marker(binary)
-    script = _installer_script()
-    if script is None:
-        return {
-            "started": False,
-            "reason": "installer_missing",
-            "message": "install_whisper_prebuilt.py could not be located.",
-            "job": get_update_status()["job"],
-        }
-
-    # A job already in flight wins over any freshness re-check below (and skips
-    # its network call). The final lock block re-checks to close the TOCTOU.
-    with _job_lock:
-        if _job["state"] == _JOB_RUNNING:
-            return {"started": False, "reason": "already_running", "job": dict(_job)}
-
-    if marker:
-        # Mirror the detection guard: a direct POST or a stale banner must not
-        # start an install when the latest is not actually newer (force a fresh
-        # check so a stale 24h cache can't wrongly block a real update either).
-        status = get_update_status(force_refresh = True)
-        if not status.get("update_available"):
-            return {
-                "started": False,
-                "reason": "up_to_date",
-                "message": "The installed whisper.cpp build is already at the latest prebuilt.",
-                "job": status["job"],
-            }
-        install_dir = _install_dir_for(binary)
-        repo = marker.get("published_repo") or DEFAULT_PUBLISHED_REPO
-        from_tag = marker.get("release_tag")
-        asset = marker.get("asset")
-        backend = marker.get("backend")
-    else:
-        # Source build / custom path: only proceed when the same detection logic
-        # would offer the update (prebuilt exists, install is behind, root is
-        # manageable), so a direct POST cannot downgrade a newer source build.
-        src = _source_build_status(binary, force_refresh = True) if binary else None
-        if src is None:
-            return {
-                "started": False,
-                "reason": "no_prebuilt_available",
-                "message": (
-                    "No official whisper.cpp prebuilt is available for this host, "
-                    "so the source build cannot be swapped automatically."
-                ),
-                "job": get_update_status()["job"],
-            }
-        if not src.get("update_available"):
-            return {
-                "started": False,
-                "reason": "up_to_date",
-                "message": "The installed whisper.cpp build is already at or newer than the latest prebuilt.",
-                "job": get_update_status()["job"],
-            }
-        res = _resolve_prebuilt_for_host()
-        install_dir = _whisper_install_root(binary)
-        repo = (res or {}).get("repo") or DEFAULT_PUBLISHED_REPO
-        from_tag = None
-        asset = (res or {}).get("asset")
-        backend = (res or {}).get("backend")
-
-    if install_dir is None:
-        return {
-            "started": False,
-            "reason": "no_install_dir",
-            "message": "Could not determine the whisper.cpp install directory.",
-            "job": get_update_status()["job"],
-        }
-
-    with _job_lock:
-        if _job["state"] == _JOB_RUNNING:
-            return {"started": False, "reason": "already_running", "job": dict(_job)}
-        _job.update(
-            state = _JOB_RUNNING,
-            message = "Downloading and installing the latest whisper.cpp prebuilt...",
-            from_tag = from_tag,
-            to_tag = None,
-            reload_required = None,
-            error = None,
-            progress = 0.0,
-            started_at = _utcnow(),
-            finished_at = None,
-        )
-        job_snapshot = dict(_job)
-
-    thread = threading.Thread(
-        target = _run_update,
-        args = (install_dir, repo, asset, backend, script),
-        name = "whisper-cpp-update",
-        daemon = True,
-    )
-    thread.start()
-    return {"started": True, "reason": None, "job": job_snapshot}
-
-
 def chained_phase_plan(*, force_refresh: bool = False) -> dict:
     """Whisper's side of the combined llama+whisper update item.
 
@@ -563,12 +378,6 @@ def chained_phase_plan(*, force_refresh: bool = False) -> dict:
         # via the installer (prepare_runtime_payload).
         plan["skip_reason"] = "up_to_date"
         return plan
-    # A standalone whisper job already in flight must not be doubled by a
-    # chained apply racing it.
-    with _job_lock:
-        if _job["state"] == _JOB_RUNNING:
-            plan["skip_reason"] = "busy"
-            return plan
     script = _installer_script()
     if script is None:
         plan["skip_reason"] = "installer_missing"
@@ -600,8 +409,3 @@ def run_chained_phase(phase: dict, set_progress) -> dict:
         phase["script"],
         set_progress,
     )
-
-
-def _reset_job_for_tests() -> None:
-    """Test-only: return the job tracker to idle."""
-    _flow.reset_job(_job, _job_lock)

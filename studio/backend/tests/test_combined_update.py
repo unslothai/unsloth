@@ -152,7 +152,6 @@ def _clean_state(monkeypatch, tmp_path):
     freshness.reset_caches()
     wfresh.reset_caches()
     upd._reset_job_for_tests()
-    wupd._reset_job_for_tests()
     upd._resolve_memo.clear()
     wupd._resolve_memo.clear()
     monkeypatch.setattr(freshness, "_cache_dir", lambda: tmp_path / ".llama_cache")
@@ -171,7 +170,6 @@ def _clean_state(monkeypatch, tmp_path):
     freshness.reset_caches()
     wfresh.reset_caches()
     upd._reset_job_for_tests()
-    wupd._reset_job_for_tests()
     upd._resolve_memo.clear()
     wupd._resolve_memo.clear()
 

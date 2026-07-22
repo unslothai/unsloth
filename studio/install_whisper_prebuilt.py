@@ -97,7 +97,6 @@ InstallSelection = core.InstallSelection
 ReleaseBundle = core.ReleaseBundle
 llama_detect_host = llama.detect_host
 installed_llama_runtime = llama.installed_llama_runtime
-detect_torch_cuda_runtime_preference = llama.detect_torch_cuda_runtime_preference
 
 # Late-binding seam handed to prebuilt_core: name lookups hit this module's
 # globals first (so monkeypatches apply), then the core defaults.
@@ -195,13 +194,6 @@ class HostInfo:
     has_usable_nvidia: bool = False
     has_rocm: bool = False
     rocm_gfx: str | None = None
-    # NVIDIA GPU compute capabilities (SM strings) and the driver's CUDA version,
-    # used to pick an SM-appropriate CUDA bundle. Empty / None on non-NVIDIA
-    # hosts. `torch_runtime_line` ('cuda12'/'cuda13') is torch's build
-    # preference, a tie-break on non-Blackwell hosts.
-    compute_caps: tuple[str, ...] = ()
-    driver_cuda_version: tuple[int, int] | None = None
-    torch_runtime_line: str | None = None
     # (major, minor) from platform.mac_ver(); None off macOS or if unparseable.
     # Used to enforce a macOS artifact's min_os so we never pick a bundle that
     # cannot load on this OS version.
@@ -230,9 +222,6 @@ def host_from_llama(base: Any) -> HostInfo:
     else:
         raise PrebuiltFallback(f"unsupported CPU architecture for whisper.cpp prebuilt: {machine}")
 
-    # Self-guarded: returns None unless the host has usable NVIDIA + torch CUDA.
-    torch_runtime_line = detect_torch_cuda_runtime_preference(base).runtime_line
-
     return HostInfo(
         system = system,
         machine = machine,
@@ -245,9 +234,6 @@ def host_from_llama(base: Any) -> HostInfo:
         has_usable_nvidia = base.has_usable_nvidia,
         has_rocm = base.has_rocm,
         rocm_gfx = base.rocm_gfx_target,
-        compute_caps = tuple(base.compute_caps),
-        driver_cuda_version = base.driver_cuda_version,
-        torch_runtime_line = torch_runtime_line,
         macos_version = base.macos_version,
     )
 
@@ -271,9 +257,6 @@ def apply_host_overrides(
             has_rocm = False,
             rocm_gfx = None,
             is_apple_silicon = False,
-            compute_caps = (),
-            driver_cuda_version = None,
-            torch_runtime_line = None,
         )
     updates: dict[str, Any] = {}
     if has_rocm or rocm_gfx:
@@ -281,9 +264,6 @@ def apply_host_overrides(
         # its CUDA/CPU path and never picks the ROCm bundle. Drop CUDA detection too.
         updates["has_rocm"] = True
         updates["has_usable_nvidia"] = False
-        updates["compute_caps"] = ()
-        updates["driver_cuda_version"] = None
-        updates["torch_runtime_line"] = None
     if rocm_gfx:
         updates["rocm_gfx"] = rocm_gfx
     return replace(host, **updates) if updates else host

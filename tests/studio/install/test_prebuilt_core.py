@@ -6,7 +6,7 @@
 Runs the component-agnostic core against BOTH shipped descriptors -- the real
 whisper descriptor exported by install_whisper_prebuilt and a llama-flavored
 descriptor built here the way a hypothetical third ggml-family component would
-plug in (descriptor only, no installer module). Covers the selection matrix,
+plug in (descriptor only, no installer module). Covers os/arch selection,
 checksum fail-closed behavior, extraction guards, the resolver payload, and the
 ops monkeypatch seam, so a new component gets this coverage for free.
 
@@ -97,9 +97,6 @@ def make_host(
     has_usable_nvidia = False,
     has_rocm = False,
     rocm_gfx = None,
-    compute_caps = (),
-    driver_cuda_version = None,
-    torch_runtime_line = None,
     macos_version = None,
 ):
     if component.descriptor is iwp.DESCRIPTOR:
@@ -115,9 +112,6 @@ def make_host(
             has_usable_nvidia = has_usable_nvidia,
             has_rocm = has_rocm,
             rocm_gfx = rocm_gfx,
-            compute_caps = tuple(compute_caps),
-            driver_cuda_version = driver_cuda_version,
-            torch_runtime_line = torch_runtime_line,
             macos_version = macos_version,
         )
     # Descriptor-only component: the core default host_platform_tokens hook
@@ -131,9 +125,6 @@ def make_host(
         has_usable_nvidia = has_usable_nvidia,
         has_rocm = has_rocm,
         rocm_gfx = rocm_gfx,
-        compute_caps = tuple(compute_caps),
-        driver_cuda_version = driver_cuda_version,
-        torch_runtime_line = torch_runtime_line,
         macos_version = macos_version,
     )
 
@@ -222,340 +213,14 @@ def test_select_respects_os_arch(component):
     assert component.ops.select_artifact(manifest, host, "cpu") is None
 
 
-def _cuda_manifest(component):
-    return component.ops.parse_manifest(
-        manifest_for(
-            component,
-            [
-                artifact(
-                    backend = "cuda",
-                    asset = "cuda13-newer.tar.gz",
-                    runtime_line = "cuda13",
-                    coverage_class = "newer",
-                    supported_sms = ["10.0", "12.0"],
-                    min_sm = 100,
-                    max_sm = 121,
-                    rank = 1,
-                ),
-                artifact(
-                    backend = "cuda",
-                    asset = "cuda12-older.tar.gz",
-                    runtime_line = "cuda12",
-                    coverage_class = "older",
-                    supported_sms = ["7.5", "8.6", "8.9"],
-                    min_sm = 75,
-                    max_sm = 89,
-                    rank = 1,
-                ),
-                artifact(
-                    backend = "cuda",
-                    asset = "cuda12-portable.tar.gz",
-                    runtime_line = "cuda12",
-                    coverage_class = "portable",
-                    supported_sms = ["7.5", "8.6", "8.9", "9.0", "10.0", "12.0"],
-                    min_sm = 75,
-                    max_sm = 121,
-                    rank = 9,
-                ),
-                artifact(backend = "cpu", asset = "cpu.tar.gz"),
-            ],
-        ),
-        label = "m",
-    )
-
-
-def _with_runtime_lines(component, lines):
-    component.namespace["detected_cuda_runtime_lines"] = lambda *, is_windows: list(lines)
-
-
-def test_select_cuda_blackwell_prefers_covering_highest_major(component):
-    # A B200 (sm_100) with a CUDA 13 driver and both runtimes on disk must get
-    # the cuda13 Blackwell bundle even though torch reports cuda12.
-    _with_runtime_lines(component, ["cuda13", "cuda12"])
-    host = make_host(
-        component,
-        has_usable_nvidia = True,
-        compute_caps = ("10.0",),
-        driver_cuda_version = (13, 0),
-        torch_runtime_line = "cuda12",
-    )
-    chosen = component.ops.select_artifact(_cuda_manifest(component), host, "cuda")
-    assert chosen["asset"] == "cuda13-newer.tar.gz"
-
-
-def test_select_cuda_non_blackwell_honors_torch_line(component):
-    _with_runtime_lines(component, ["cuda13", "cuda12"])
-    host = make_host(
-        component,
-        has_usable_nvidia = True,
-        compute_caps = ("8.6",),
-        driver_cuda_version = (13, 0),
-        torch_runtime_line = "cuda12",
-    )
-    chosen = component.ops.select_artifact(_cuda_manifest(component), host, "cuda")
-    assert chosen["asset"] == "cuda12-older.tar.gz"
-
-
-def test_select_cuda_portable_is_per_line_fallback(component):
-    # sm_90 is outside every targeted bundle's list; the portable bundle of the
-    # usable line covers it and is chosen last.
-    _with_runtime_lines(component, ["cuda12"])
-    host = make_host(
-        component,
-        has_usable_nvidia = True,
-        compute_caps = ("9.0",),
-        driver_cuda_version = (12, 4),
-        torch_runtime_line = None,
-    )
-    chosen = component.ops.select_artifact(_cuda_manifest(component), host, "cuda")
-    assert chosen["asset"] == "cuda12-portable.tar.gz"
-
-
-def test_select_cuda_unknown_caps_only_portable(component):
-    _with_runtime_lines(component, ["cuda12"])
-    host = make_host(
-        component,
-        has_usable_nvidia = True,
-        compute_caps = (),
-        driver_cuda_version = (12, 4),
-    )
-    chosen = component.ops.select_artifact(_cuda_manifest(component), host, "cuda")
-    assert chosen["asset"] == "cuda12-portable.tar.gz"
-
-
-def test_select_cuda_requires_on_disk_runtime(component):
-    _with_runtime_lines(component, [])  # driver fine, no runtime libs on disk
-    host = make_host(
-        component,
-        has_usable_nvidia = True,
-        compute_caps = ("10.0",),
-        driver_cuda_version = (13, 0),
-    )
-    assert component.ops.select_artifact(_cuda_manifest(component), host, "cuda") is None
-
-
-def test_select_rocm_exact_gfx_match(component):
-    manifest = component.ops.parse_manifest(
-        manifest_for(
-            component,
-            [
-                artifact(
-                    backend = "rocm",
-                    asset = "rocm-gfx110X.tar.gz",
-                    gfx_target = "gfx110X",
-                    mapped_targets = ["gfx1100", "gfx1101"],
-                )
-            ],
-        ),
-        label = "m",
-    )
-    host = make_host(component, has_rocm = True, rocm_gfx = "gfx1100")
-    chosen = component.ops.select_artifact(manifest, host, "rocm")
-    assert chosen["asset"] == "rocm-gfx110X.tar.gz"
-    # In-family but unbuilt arch must not be served the family bundle.
-    host_unbuilt = make_host(component, has_rocm = True, rocm_gfx = "gfx1102")
-    assert component.ops.select_artifact(manifest, host_unbuilt, "rocm") is None
-
-
 def test_fallback_policy_differs_per_descriptor(component):
-    # No CUDA coverage: whisper degrades to the CPU asset of the same release,
-    # the llama-flavored descriptor reports no prebuilt (source-build fallback).
-    _with_runtime_lines(component, [])
-    manifest = _cuda_manifest(component)
-    host = make_host(
-        component,
-        has_usable_nvidia = True,
-        compute_caps = ("10.0",),
-        driver_cuda_version = (13, 0),
-    )
-    if component.falls_back_to_cpu:
-        chosen, backend, used_fallback = component.ops.select_artifact_with_fallback(
-            manifest, host, "cuda"
-        )
-        assert (chosen["asset"], backend, used_fallback) == ("cpu.tar.gz", "cpu", True)
-    else:
-        with pytest.raises(core.PrebuiltFallback):
-            component.ops.select_artifact_with_fallback(manifest, host, "cuda")
-
-
-# ── Full-release CUDA matrix (the seven real linux-x64 CUDA profiles + their
-# SM coverage, from the live whisper release manifest; llama publishes the same
-# shape). select_artifact must match the host's compute caps + driver.
-_CUDA_PROFILES = {
-    "cuda12-legacy": ("cuda12", "legacy", ["50", "52", "60", "61"]),
-    "cuda12-older": ("cuda12", "older", ["70", "75", "80", "86", "89"]),
-    "cuda12-newer": ("cuda12", "newer", ["86", "89", "90", "100", "103", "120"]),
-    "cuda12-portable": (
-        "cuda12",
-        "portable",
-        ["70", "75", "80", "86", "89", "90", "100", "103", "120"],
-    ),
-    "cuda13-older": ("cuda13", "older", ["75", "80", "86", "89"]),
-    "cuda13-newer": ("cuda13", "newer", ["86", "89", "90", "100", "103", "120"]),
-    "cuda13-portable": ("cuda13", "portable", ["75", "80", "86", "89", "90", "100", "103", "120"]),
-}
-
-
-def _full_cuda_manifest(component):
-    artifacts = [artifact(backend = "cpu", asset = "cpu.tar.gz")]
-    for name, (line, cls, sms) in _CUDA_PROFILES.items():
-        artifacts.append(
-            artifact(
-                backend = "cuda",
-                asset = f"{name}.tar.gz",
-                runtime_line = line,
-                coverage_class = cls,
-                supported_sms = sms,
-                min_sm = int(sms[0]),
-                max_sm = int(sms[-1]),
-            )
-        )
-    return component.ops.parse_manifest(manifest_for(component, artifacts), label = "m")
-
-
-@pytest.mark.parametrize(
-    "caps,driver,expected",
-    [
-        (["10.0"], (13, 0), "cuda13-newer"),  # B200 sm_100: legacy/older rejected
-        (["10.0"], (12, 8), "cuda12-newer"),  # B200 on a CUDA-12 driver
-        (["9.0"], (13, 0), "cuda13-newer"),  # H100 sm_90
-        (["8.9"], (13, 0), "cuda13-older"),  # 4090 sm_89: tightest covering (75-89)
-        (["8.0"], (13, 0), "cuda13-older"),  # A100 sm_80
-        (["7.5"], (13, 0), "cuda13-older"),  # T4 sm_75
-        (["7.5"], (12, 4), "cuda12-older"),  # T4 on a CUDA-12 driver
-        ([], (13, 0), "cuda13-portable"),  # unknown caps -> portable only
-    ],
-)
-def test_select_cuda_full_release_matrix(component, caps, driver, expected):
-    _with_runtime_lines(component, ["cuda13", "cuda12"])
-    host = make_host(
-        component,
-        has_usable_nvidia = True,
-        compute_caps = tuple(caps),
-        driver_cuda_version = driver,
-    )
-    chosen = component.ops.select_artifact(_full_cuda_manifest(component), host, "cuda")
-    assert chosen is not None
-    assert chosen["asset"] == f"{expected}.tar.gz"
-
-
-def test_select_cuda_multi_gpu_requires_single_covering_artifact(component):
-    # T4 (75) + B200 (100): only a portable bundle covers both.
-    _with_runtime_lines(component, ["cuda13", "cuda12"])
-    host = make_host(
-        component,
-        has_usable_nvidia = True,
-        compute_caps = ("7.5", "10.0"),
-        driver_cuda_version = (13, 0),
-    )
-    chosen = component.ops.select_artifact(_full_cuda_manifest(component), host, "cuda")
-    assert chosen["asset"] == "cuda13-portable.tar.gz"
-
-
-def test_select_cuda_on_disk_runtime_gates_the_line(component):
-    # B200 under a CUDA-13 driver, but only cuda12 runtime libs on disk (e.g.
-    # torch-cuda12): the bundles don't ship libcudart/libcublas, so the cuda13
-    # line is unusable and selection must fall to cuda12-newer.
-    _with_runtime_lines(component, ["cuda12"])
-    host = make_host(
-        component,
-        has_usable_nvidia = True,
-        compute_caps = ("10.0",),
-        driver_cuda_version = (13, 0),
-    )
-    chosen = component.ops.select_artifact(_full_cuda_manifest(component), host, "cuda")
-    assert chosen["asset"] == "cuda12-newer.tar.gz"
-
-
-def test_select_cuda_stable_under_manifest_shuffle(component):
-    import random
-
-    _with_runtime_lines(component, ["cuda13", "cuda12"])
-    host = make_host(
-        component,
-        has_usable_nvidia = True,
-        compute_caps = ("10.0",),
-        driver_cuda_version = (13, 0),
-    )
-    manifest = _full_cuda_manifest(component)
-    picks = set()
-    for seed in range(8):
-        shuffled = dict(manifest)
-        arts = list(manifest["artifacts"])
-        random.Random(seed).shuffle(arts)
-        shuffled["artifacts"] = arts
-        picks.add(component.ops.select_artifact(shuffled, host, "cuda")["asset"])
-    assert picks == {"cuda13-newer.tar.gz"}
-
-
-def test_select_cuda_dotted_manifest_sms_are_normalized(component):
-    # A manifest using "10.0"-style SMs must still cover a sm_100 host
-    # (supported_sms are normalized to bare SM strings before matching).
-    _with_runtime_lines(component, ["cuda13", "cuda12"])
+    # No asset for the requested backend: whisper degrades to the CPU asset of
+    # the same release, the llama-flavored descriptor reports no prebuilt
+    # (source-build fallback).
     manifest = component.ops.parse_manifest(
-        manifest_for(
-            component,
-            [
-                artifact(
-                    backend = "cuda",
-                    asset = "cuda13-newer.tar.gz",
-                    runtime_line = "cuda13",
-                    coverage_class = "newer",
-                    supported_sms = ["8.6", "8.9", "9.0", "10.0"],
-                    min_sm = 86,
-                    max_sm = 100,
-                )
-            ],
-        ),
-        label = "m",
+        manifest_for(component, [artifact(backend = "cpu", asset = "cpu.tar.gz")]), label = "m"
     )
-    host = make_host(
-        component,
-        has_usable_nvidia = True,
-        compute_caps = ("10.0",),
-        driver_cuda_version = (13, 0),
-    )
-    assert component.ops.select_artifact(manifest, host, "cuda")["asset"] == "cuda13-newer.tar.gz"
-
-
-def test_select_cuda_targeted_artifact_missing_sm_metadata_rejected(component):
-    # A targeted (non-portable) bundle without supported_sms/min/max coverage
-    # metadata can never be proven to cover the host -> rejected, not guessed.
-    _with_runtime_lines(component, ["cuda13", "cuda12"])
-    manifest = component.ops.parse_manifest(
-        manifest_for(
-            component,
-            [
-                artifact(
-                    backend = "cuda",
-                    asset = "cuda13-x.tar.gz",
-                    runtime_line = "cuda13",
-                    coverage_class = "newer",
-                )
-            ],
-        ),
-        label = "m",
-    )
-    host = make_host(
-        component,
-        has_usable_nvidia = True,
-        compute_caps = ("9.0",),
-        driver_cuda_version = (13, 0),
-    )
-    assert component.ops.select_artifact(manifest, host, "cuda") is None
-
-
-def test_select_cuda_no_driver_version_none_then_fallback_policy(component):
-    # nvidia-smi present but no parseable CUDA version -> no CUDA line -> None,
-    # then the descriptor's fallback policy decides (cpu bundle vs no prebuilt).
-    _with_runtime_lines(component, ["cuda13", "cuda12"])
-    host = make_host(
-        component,
-        has_usable_nvidia = True,
-        compute_caps = ("10.0",),
-        driver_cuda_version = None,
-    )
-    manifest = _full_cuda_manifest(component)
+    host = make_host(component, has_usable_nvidia = True)
     assert component.ops.select_artifact(manifest, host, "cuda") is None
     if component.falls_back_to_cpu:
         chosen, backend, used_fallback = component.ops.select_artifact_with_fallback(
@@ -565,49 +230,6 @@ def test_select_cuda_no_driver_version_none_then_fallback_policy(component):
     else:
         with pytest.raises(core.PrebuiltFallback):
             component.ops.select_artifact_with_fallback(manifest, host, "cuda")
-
-
-# ── ROCm family matrix (real gfx family -> mapped_targets shapes) ──
-_ROCM_FAMILIES = [
-    ("gfx103X", ["gfx1030", "gfx1031", "gfx1032"]),
-    ("gfx110X", ["gfx1100", "gfx1101", "gfx1102"]),
-    ("gfx120X", ["gfx1200", "gfx1201"]),
-    ("gfx1151", ["gfx1151"]),
-    ("gfx90a", ["gfx90a"]),
-    ("gfx908", ["gfx908"]),
-]
-
-
-def _rocm_family_manifest(component):
-    artifacts = [artifact(backend = "cpu", asset = "cpu.tar.gz")]
-    for label, mapped in _ROCM_FAMILIES:
-        artifacts.append(
-            artifact(
-                backend = "rocm",
-                asset = f"rocm-{label}.tar.gz",
-                gfx_target = label,
-                mapped_targets = mapped,
-            )
-        )
-    return component.ops.parse_manifest(manifest_for(component, artifacts), label = "m")
-
-
-@pytest.mark.parametrize(
-    "gfx,expected",
-    [
-        ("gfx1030", "gfx103X"),
-        ("gfx1100", "gfx110X"),
-        ("gfx1201", "gfx120X"),
-        ("gfx1151", "gfx1151"),
-        ("gfx90a", "gfx90a"),
-        ("gfx908", "gfx908"),
-        ("gfx110X", "gfx110X"),  # family token forwarded by the updater
-    ],
-)
-def test_select_rocm_family_and_exact_matching(component, gfx, expected):
-    host = make_host(component, has_rocm = True, rocm_gfx = gfx)
-    chosen = component.ops.select_artifact(_rocm_family_manifest(component), host, "rocm")
-    assert chosen["asset"] == f"rocm-{expected}.tar.gz"
 
 
 def test_macos_min_os_gate(component):
