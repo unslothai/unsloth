@@ -555,7 +555,9 @@ _is_pkg_installed() {
 # Reads /etc/os-release so the Accept? prompt can say which distro we detected and
 # that packages come from that distro's official apt repos (not a tarball).
 _apt_distro_description() {
-    _ad_label=$(
+    # Plain ( ... ) subshell — not $() — so case/;; stays bash-3.2-safe on macOS.
+    # Bash 3.2 misparses case arms inside command substitution and errors on `;;`.
+    (
         if [ ! -r /etc/os-release ]; then
             printf 'a debian-like system'
             exit 0
@@ -563,20 +565,20 @@ _apt_distro_description() {
         # shellcheck disable=SC1091
         . /etc/os-release 2>/dev/null || true
         if [ -n "${NAME:-}" ] && [ -n "${VERSION_ID:-}" ]; then
-            printf '%s %s' "$NAME" "$VERSION_ID"
+            _ad_label="$NAME $VERSION_ID"
         elif [ -n "${PRETTY_NAME:-}" ]; then
-            printf '%s' "$PRETTY_NAME"
+            _ad_label="$PRETTY_NAME"
         elif [ -n "${NAME:-}" ]; then
-            printf '%s' "$NAME"
+            _ad_label="$NAME"
         else
             printf 'a debian-like system'
             exit 0
         fi
         case " ${ID:-} ${ID_LIKE:-} " in
-            *" debian "*|*" ubuntu "*) printf ' (debian-like)' ;;
+            *" debian "*|*" ubuntu "*) _ad_label="${_ad_label} (debian-like)" ;;
         esac
+        printf '%s' "$_ad_label"
     )
-    printf '%s' "$_ad_label"
 }
 
 # ── Helper: install packages via apt, escalating to sudo only if needed ──
