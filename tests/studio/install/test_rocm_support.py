@@ -3427,6 +3427,62 @@ class TestStrixRocm71Override:
             assert r.returncode == 0, f"probe aborted under set -e: {r.stderr}"
             assert "OK:gfx1151" in r.stdout, f"amd-smi fallback not reached: {r.stdout!r}"
 
+    def test_strix_reroute_reprobes_when_mask_hides_all(self):
+        """A visibility mask hiding every agent (ROCR_VISIBLE_DEVICES=-1) must not
+        skip the Strix reroute: get_torch_index_url reads the arch unmasked, so
+        the reroute must re-probe unmasked too or a masked Strix box gets the
+        broken generic wheels. A partial mask must keep its per-GPU selection.
+        Executed with mask-honouring shims, not a text match."""
+        shell = shutil.which("bash")
+        if not shell:
+            pytest.skip("bash needed to execute the probe block")
+        source = _INSTALL_SH_PATH.read_text(encoding = "utf-8")
+        block = re.search(
+            r'^        _gfx_all=\$\(printf[^\n]*\n.*?(?=^        _strix_gfx="")',
+            source,
+            re.S | re.M,
+        )
+        assert block, "could not extract the gfx-detection block"
+        with tempfile.TemporaryDirectory() as d:
+            # rocminfo honours ROCR_VISIBLE_DEVICES like the real tool: -1 hides
+            # both agents, 1 renumbers to the dGPU only, unset shows both.
+            rocminfo = (
+                '#!/bin/sh\n'
+                'case "${ROCR_VISIBLE_DEVICES-}" in\n'
+                '  -1) echo "no visible agents" ;;\n'
+                '  1) printf "Name: gfx1201\\n" ;;\n'
+                '  *) printf "Name: gfx1151\\nName: gfx1201\\n" ;;\n'
+                'esac\n'
+            )
+            for name, body in (("rocminfo", rocminfo), ("amd-smi", "#!/bin/sh\nexit 0\n")):
+                p = os.path.join(d, name)
+                with open(p, "w", encoding = "utf-8") as f:
+                    f.write(body)
+                os.chmod(p, 0o755)
+            script = (
+                'set -euo pipefail\n'
+                + block.group(0)
+                + '\nprintf "OK:%s\\n" "$_runtime_gfx"\n'
+            )
+
+            def run(**extra):
+                env = dict(os.environ, PATH = d + os.pathsep + os.environ.get("PATH", ""), **extra)
+                env.pop("UNSLOTH_ROCM_GFX_ARCH", None)
+                env.pop("HIP_VISIBLE_DEVICES", None)
+                return subprocess.run(
+                    [shell, "-c", script], env = env, capture_output = True, text = True
+                )
+
+            # Mask hides everything: re-probe must recover the first GPU (Strix).
+            r = run(ROCR_VISIBLE_DEVICES = "-1")
+            assert r.returncode == 0, f"masked probe aborted: {r.stderr}"
+            assert "OK:gfx1151" in r.stdout, f"reroute blinded by full mask: {r.stdout!r}"
+            # Partial mask: enumeration already reflects it; the dGPU selection
+            # must survive (no unmasked re-probe overriding the user's pick).
+            r2 = run(ROCR_VISIBLE_DEVICES = "1")
+            assert r2.returncode == 0, f"partial-mask probe aborted: {r2.stderr}"
+            assert "OK:gfx1201" in r2.stdout, f"partial mask selection lost: {r2.stdout!r}"
+
     def test_torch_constraint_updated_for_strix_amd_index(self):
         """install.sh must set TORCH_CONSTRAINT>=2.11 when routing Strix to AMD index."""
         source = _INSTALL_SH_PATH.read_text(encoding = "utf-8")

@@ -2912,6 +2912,21 @@ case "$_torch_index_leaf" in
                 _gfx_all=$(amd-smi static --asic 2>/dev/null | grep -oE 'gfx[1-9][0-9a-z]{2,3}' || true)
             fi
         fi
+        # get_torch_index_url reads the arch with ROCR/HIP masks cleared, so a
+        # mask hiding every agent (e.g. ROCR_VISIBLE_DEVICES=-1) still lands
+        # here on a generic rocm index; re-probe unmasked or a masked-out Strix
+        # box keeps the broken generic wheels. Partial masks never get here
+        # (they enumerate at least one agent above) and keep their selection.
+        if [ -z "$_gfx_all" ] && [ -n "${ROCR_VISIBLE_DEVICES:-}${HIP_VISIBLE_DEVICES:-}" ]; then
+            if command -v rocminfo >/dev/null 2>&1; then
+                _gfx_all=$( (unset ROCR_VISIBLE_DEVICES HIP_VISIBLE_DEVICES; rocminfo 2>/dev/null) | grep -oE 'gfx[1-9][0-9a-z]{2,3}' || true)
+            fi
+            if [ -z "$_gfx_all" ] && command -v amd-smi >/dev/null 2>&1; then
+                _gfx_all=$( (unset ROCR_VISIBLE_DEVICES HIP_VISIBLE_DEVICES; amd-smi list 2>/dev/null) | grep -oE 'gfx[1-9][0-9a-z]{2,3}' || true)
+                [ -z "$_gfx_all" ] && \
+                    _gfx_all=$( (unset ROCR_VISIBLE_DEVICES HIP_VISIBLE_DEVICES; amd-smi static --asic 2>/dev/null) | grep -oE 'gfx[1-9][0-9a-z]{2,3}' || true)
+            fi
+        fi
         _runtime_gfx=""
         if [ -n "$_gfx_all" ]; then
             _vis="${HIP_VISIBLE_DEVICES:-${ROCR_VISIBLE_DEVICES:-}}"
