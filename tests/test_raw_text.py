@@ -322,24 +322,38 @@ def test_smart_chunk_text_empty_input_returns_no_chunks():
             self.eos_token = "</s>" if eos_token_id is not None else None
             self.eos_token_id = eos_token_id
 
-        def __call__(self, text, return_tensors = None, add_special_tokens = False):
+        def __call__(
+            self,
+            text,
+            return_tensors = None,
+            add_special_tokens = False,
+        ):
             token_ids = [ord(c) % 100 for c in text]  # whitespace -> real tokens
             if return_tensors == "pt":
                 return {"input_ids": [token_ids]}
             return {"input_ids": token_ids}
 
-        def decode(self, token_ids, skip_special_tokens = False):
+        def decode(
+            self,
+            token_ids,
+            skip_special_tokens = False,
+        ):
             return "".join(chr(32 + (t % 90)) for t in token_ids)
 
     for eos_token_id in (2, None):
-        loader = RawTextDataLoader(WhitespacePreservingTokenizer(eos_token_id), chunk_size = 2048, stride = 512)
+        loader = RawTextDataLoader(
+            WhitespacePreservingTokenizer(eos_token_id), chunk_size = 2048, stride = 512
+        )
         # Whitespace tokenizes to >0 tokens, so [] proves the pre-tokenize guard.
         assert len(loader.tokenizer("   \n\t  ")["input_ids"]) > 0
         for text in ("", "   \n\t  "):
             for return_tokenized in (True, False):
-                assert loader.smart_chunk_text(
-                    text, chunk_size = 2048, stride = 512, return_tokenized = return_tokenized
-                ) == [], f"no chunks for empty input (eos={eos_token_id}, text={text!r}, tokenized={return_tokenized})"
+                assert (
+                    loader.smart_chunk_text(
+                        text, chunk_size = 2048, stride = 512, return_tokenized = return_tokenized
+                    )
+                    == []
+                ), f"no chunks for empty input (eos={eos_token_id}, text={text!r}, tokenized={return_tokenized})"
                 assert loader.chunk_text(text, return_tokenized = return_tokenized) == [], (
                     f"chunk_text: no chunks for empty input "
                     f"(eos={eos_token_id}, text={text!r}, tokenized={return_tokenized})"
@@ -356,7 +370,12 @@ def test_load_from_files_all_empty_raises():
         eos_token = "</s>"
         eos_token_id = 2
 
-        def __call__(self, text, return_tensors = None, add_special_tokens = False):
+        def __call__(
+            self,
+            text,
+            return_tensors = None,
+            add_special_tokens = False,
+        ):
             token_ids = [ord(c) % 100 for c in text]
             if return_tensors == "pt":
                 return {"input_ids": [token_ids]}
