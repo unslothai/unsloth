@@ -12,7 +12,7 @@ import {
 } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { cn } from "@/lib/utils";
-import { ChevronDownIcon, GlobeLockIcon, TelescopeIcon, XIcon } from "lucide-react";
+import { ChevronDownIcon, TelescopeIcon, XIcon } from "lucide-react";
 import { type KeyboardEvent, useState } from "react";
 import { useChatRuntimeStore } from "../stores/chat-runtime-store";
 import type { ResearchWebsitePolicy } from "../types/research";
@@ -128,10 +128,8 @@ export function DeepResearchComposerButton({
 }) {
   const enabled = useChatRuntimeStore((state) => state.deepResearchEnabled);
   const setEnabled = useChatRuntimeStore((state) => state.setDeepResearchEnabled);
-  const policy = useChatRuntimeStore((state) => state.researchWebsitePolicy);
 
   if (!enabled) return null;
-  const limited = policy.allowedDomains.length + policy.blockedDomains.length > 0;
 
   return (
     <button
@@ -159,7 +157,6 @@ export function DeepResearchComposerButton({
       </span>
       <span>Deep research</span>
       <span className="composer-pill-caret flex items-center gap-0.5 text-primary/70">
-        <GlobeLockIcon className={cn("size-3.5", !limited && "opacity-55")} />
         <ChevronDownIcon className="size-3" />
       </span>
     </button>
