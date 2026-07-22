@@ -736,6 +736,27 @@ class TestEnsureRocmTorch:
     @patch.object(stack_mod, "pip_install")
     @patch.object(stack_mod, "_has_usable_nvidia_gpu", return_value = False)
     @patch.object(stack_mod, "_has_rocm_gpu", return_value = True)
+    @patch.object(stack_mod, "_detect_rocm_version", return_value = (7, 14))
+    @patch.object(stack_mod, "_detect_amd_gfx_codes", return_value = ["gfx1150"])
+    def test_rocm_714_strix_routes_to_amd_arch_index(
+        self, mock_gfx, mock_ver, mock_gpu, mock_nvidia, mock_pip, mock_pip_try
+    ):
+        """ROCm 7.14 caps to rocm7.2 on pytorch.org; Strix must use AMD gfx index."""
+        mock_probe = MagicMock()
+        mock_probe.returncode = 0
+        mock_probe.stdout = b"7.14.60850|2.11.0+rocm7.2\n"
+        with patch("os.path.isdir", return_value = True):
+            with patch("subprocess.run", return_value = mock_probe):
+                _ensure_rocm_torch()
+        torch_call = str(mock_pip.call_args_list[0])
+        assert "gfx1150" in torch_call
+        assert "torch>=2.11.0,<2.12.0" in torch_call
+
+    @patch.object(stack_mod, "IS_WINDOWS", False)
+    @patch.object(stack_mod, "pip_install_try", return_value = True)
+    @patch.object(stack_mod, "pip_install")
+    @patch.object(stack_mod, "_has_usable_nvidia_gpu", return_value = False)
+    @patch.object(stack_mod, "_has_rocm_gpu", return_value = True)
     @patch.object(stack_mod, "_detect_rocm_version", return_value = (6, 4))
     def test_explicit_gfx_index_honored_and_skips_strix_reroute(
         self, mock_ver, mock_gpu, mock_nvidia, mock_pip, mock_pip_try
@@ -3383,6 +3404,15 @@ class TestStrixRocm71Override:
             r = subprocess.run([shell, "-c", script], env = env, capture_output = True, text = True)
             assert r.returncode == 0, f"probe aborted under set -e: {r.stderr}"
             assert "OK:gfx1151" in r.stdout, f"amd-smi fallback not reached: {r.stdout!r}"
+
+    def test_strix_routing_helpers_cover_rocm714(self):
+        # Reroute for any generic pytorch.org index below the 7.13 arch floor (7.0,
+        # 7.2, a future 7.3+), never at/above it -- mirrors install.sh _rocm_leaf_below.
+        assert stack_mod._generic_pytorch_rocm_tag((7, 14)) == "rocm7.2"
+        assert stack_mod._strix_needs_amd_arch_index((7, 14)) is True
+        assert stack_mod._strix_needs_amd_arch_index((7, 0)) is True
+        assert stack_mod._strix_needs_amd_arch_index((6, 0)) is True
+        assert stack_mod._strix_needs_amd_arch_index((5, 0)) is False
 
     def test_torch_constraint_updated_for_strix_amd_index(self):
         """install.sh must set TORCH_CONSTRAINT>=2.11 when routing Strix to AMD index."""
