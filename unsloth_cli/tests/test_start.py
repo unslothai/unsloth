@@ -865,9 +865,7 @@ def test_connect_claude_native_subagent_runs_local_parent(fake_studio, tmp_path)
 
 
 def test_write_claude_native_subagent_plugin_pins_local_model(tmp_path):
-    plugin = start.write_claude_native_subagent_plugin(
-        tmp_path, {"id": MODEL["id"] + ":Q4_K_M"}
-    )
+    plugin = start.write_claude_native_subagent_plugin(tmp_path, {"id": MODEL["id"] + ":Q4_K_M"})
     agent = (plugin / "agents" / f"{start._CLAUDE_SUBAGENT_NAME}.md").read_text()
     # Frontmatter pins the local model and drops plan-mode tools; body is the instructions.
     assert f'name: "{start._CLAUDE_SUBAGENT_NAME}"' in agent
