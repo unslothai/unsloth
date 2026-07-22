@@ -4,10 +4,10 @@
 """Child-process environment hygiene for the managed ggml servers.
 
 Secret-env scrubbing and the WSL2 ROCm library-dir probe, shared by the STT
-sidecar (and any future backend launcher of a downloaded binary). Kept in sync
-with install_llama_prebuilt.py's scrub_env / _wsl_system_rocm_lib_dirs; the
-backend cannot import the studio/ installer scripts, so this copy stays
-importable with only the backend root on sys.path.
+sidecar (and any future launcher of a downloaded binary). Kept in sync with
+install_llama_prebuilt.py's scrub_env / _wsl_system_rocm_lib_dirs; the backend
+cannot import the studio/ installer scripts, so this copy stays importable with
+only the backend root on sys.path.
 """
 
 from __future__ import annotations
@@ -83,9 +83,9 @@ def scrub_env(env: Mapping[str, str]) -> dict[str, str]:
 
 
 # Filesystem pointers a downloaded binary could follow to on-disk credential
-# stores (token caches under $HF_HOME, ~/.netrc, XDG config). Dropped rather
-# than repointed; the offline inference server needs none of them. Mirrors the
-# cred-location list of the tools bypass env (core/inference/tools.py).
+# stores (token caches under $HF_HOME, ~/.netrc, XDG config). Dropped, not
+# repointed; the offline inference server needs none. Mirrors the cred-location
+# list of the tools bypass env (core/inference/tools.py).
 CRED_LOCATION_ENV_NAMES = frozenset(
     {
         "HF_HOME",
@@ -114,8 +114,8 @@ HOME_ENV_NAMES = ("HOME", "USERPROFILE", "APPDATA", "LOCALAPPDATA")
 
 def isolate_home(env: dict[str, str], scratch_dir: str) -> dict[str, str]:
     """Repoint home/profile vars at ``scratch_dir`` and drop credential-store
-    pointers, so a compromised downloaded server cannot read token caches or
-    cred files through the environment. Mutates and returns ``env``."""
+    pointers so a compromised downloaded server cannot read token caches or cred
+    files through the environment. Mutates and returns ``env``."""
     os.makedirs(scratch_dir, exist_ok = True)
     for name in HOME_ENV_NAMES:
         if name in env:

@@ -5,27 +5,24 @@
 """Component-agnostic machinery shared by the ggml-family prebuilt installers.
 
 ``install_llama_prebuilt.py`` and ``install_whisper_prebuilt.py`` both run on
-this module. It owns two layers:
+this module, which owns two layers:
 
 1. Primitives: HTTP fetches with retries and token-safe redirects, verified
-   downloads, safe archive extraction, the install lock, sha256 helpers, CUDA
-   runtime-line and compute-capability selection helpers. These were moved out
-   of ``install_llama_prebuilt.py`` verbatim; that module re-exports them under
-   their original names.
+   downloads, safe archive extraction, the install lock, sha256 helpers, and
+   CUDA runtime-line / compute-capability selection. Moved verbatim out of
+   ``install_llama_prebuilt.py``, which re-exports them under their old names.
 
 2. The generic descriptor-driven install flow: release resolution (download
-   host fast path with a GitHub API fallback), release checksum-index parsing,
-   coverage-aware artifact selection, verified download + extraction + staged
-   atomic activation, marker/fingerprint handling, and the resolve probe. The
-   whisper installer runs entirely on this flow; a third ggml-family component
-   can plug in with just a ``ComponentDescriptor``.
+   host fast path, GitHub API fallback), checksum-index parsing, coverage-aware
+   artifact selection, verified download + extraction + staged atomic
+   activation, marker/fingerprint handling, and the resolve probe. Whisper runs
+   entirely on this flow; a third component plugs in with a ``ComponentDescriptor``.
 
-Seam rule: every function that calls a collaborator some test monkeypatches
-takes an ``ops`` handle as its first argument. ``ops`` resolves names in the
-calling installer module's globals first (so ``monkeypatch.setattr(module,
-"download_file", ...)`` still takes effect) and falls back to this module's
-defaults, which is what lets a descriptor-only component work without a full
-installer module behind it.
+Seam rule: every function calling a collaborator tests monkeypatch takes an
+``ops`` handle first. ``ops`` resolves names in the calling installer module's
+globals first (so a ``monkeypatch.setattr`` still wins) and falls back to this
+module's defaults, letting a descriptor-only component work with no installer
+module behind it.
 """
 
 from __future__ import annotations
@@ -80,21 +77,19 @@ TTY_PROGRESS_START_DELAY_SECONDS = 0.5
 INSTALL_LOCK_TIMEOUT_SECONDS = 300
 INSTALL_STAGING_ROOT_NAME = ".staging"
 SCHEMA_VERSION = 1
-# Generic-flow default: retry the fallback backend of the same release when the
-# preferred backend has no covering asset. None disables the retry.
+# Backend to retry when the preferred one has no covering asset; None disables it.
 FALLBACK_BACKEND: str | None = "cpu"
 _RATE_LIMIT_WAIT_CAP_SECONDS = 60.0
 
-# Lowest CUDA major we ship prebuilts for, and the highest major we probe for
-# installed runtime libraries. Detection and runtime-line derivation are
-# generated per major so a new toolkit (cuda14, ...) needs no code change while
-# ggml keeps the cudart64_<major>.dll / libcudart.so.<major> naming.
+# Lowest CUDA major we ship prebuilts for, and highest we probe for installed
+# runtime libraries. Detection and runtime-line derivation are generated per
+# major, so a new toolkit (cuda14, ...) needs no code change while ggml keeps
+# the cudart64_<major>.dll / libcudart.so.<major> naming.
 _MIN_CUDA_MAJOR = 12
 _MAX_PROBE_CUDA_MAJOR = 19
 
-# Blackwell floor is sm_100: data-center parts (B100/B200 sm_100, B300/GB300
-# sm_103) sit below consumer Blackwell (RTX 50 sm_120); the family needs
-# toolkit >= 12.8, except sm_103/sm_121 which need 12.9.
+# Blackwell floor is sm_100 (B100/B200 sm_100, B300/GB300 sm_103 below consumer
+# RTX 50 sm_120); the family needs toolkit >= 12.8, sm_103/sm_121 need 12.9.
 _BLACKWELL_MIN_SM = 100
 _BLACKWELL_MIN_TOOLKIT = (12, 8)
 _BLACKWELL_SM_MIN_TOOLKIT = {103: (12, 9), 121: (12, 9)}
@@ -105,19 +100,17 @@ def log(message: str) -> None:
 
 
 def _cuda_runtime_lines_for_major(major: int) -> list[str]:
-    """Runtime lines a driver of this CUDA major can use, newest major first
-    down to the minimum we ship. A driver runs its own major and any older one
-    (backward compatibility)."""
+    """Runtime lines a driver of this CUDA major can use (its own major and any
+    older one, newest first down to the minimum we ship)."""
     return [f"cuda{m}" for m in range(major, _MIN_CUDA_MAJOR - 1, -1)]
 
 
 # ── The ops seam ──
 _MISSING = object()
 
-# Core functions that expect an ``ops`` first argument. ModuleOps binds itself
-# when a lookup falls back to the core default, so a descriptor-only component
-# gets working defaults while an installer module's own wrapper (or a test's
-# monkeypatch) always wins.
+# Core functions expecting an ``ops`` first argument. ModuleOps binds itself when
+# a lookup falls back to the core default, so a descriptor-only component gets
+# working defaults while an installer wrapper (or a test monkeypatch) always wins.
 _OPS_FIRST_NAMES = {
     "auth_headers",
     "github_api_headers",
@@ -173,9 +166,8 @@ _OPS_FIRST_NAMES = {
 class ModuleOps:
     """Late-binding name resolver over an installer module's globals.
 
-    Attribute lookup goes to the wrapped globals dict first, so a
-    ``monkeypatch.setattr`` on the installer module is always observed, then
-    falls back to this module's defaults (ops-first defaults come back bound).
+    Lookup hits the wrapped globals first (so a ``monkeypatch.setattr`` is always
+    observed), then this module's defaults (ops-first defaults come back bound).
     """
 
     def __init__(self, module_globals: dict[str, Any]) -> None:
@@ -194,11 +186,11 @@ class ModuleOps:
 
 @dataclass(frozen = True)
 class ComponentDescriptor:
-    """Everything the generic flow needs to know about one ggml-family component.
+    """Everything the generic flow needs about one ggml-family component.
 
-    Hook signatures mirror the module-level names an installer defines; a
-    descriptor-only component supplies them here and ``component_ops`` builds a
-    namespace with core defaults behind them.
+    Hooks mirror the module-level names an installer defines; a descriptor-only
+    component supplies them here and ``component_ops`` builds a namespace with
+    core defaults behind them.
     """
 
     component: str  # manifest "component" value, e.g. "whisper.cpp"
@@ -210,14 +202,14 @@ class ComponentDescriptor:
     user_agent: str
     supported_backends: tuple[str, ...] = ("cpu", "cuda", "metal", "vulkan", "rocm")
     schema_version: int = SCHEMA_VERSION
-    # Backend to retry with when the preferred backend has no covering asset:
-    # "cpu" (whisper) publishes a CPU bundle in every release; None (llama)
-    # means "report no prebuilt" so the caller can fall back to a source build.
+    # Backend to retry when the preferred one has no covering asset: "cpu"
+    # (whisper) ships a CPU bundle in every release; None (llama) reports "no
+    # prebuilt" so the caller falls back to a source build.
     fallback_backend: str | None = "cpu"
     staging_root_name: str = INSTALL_STAGING_ROOT_NAME
     run_staged_validation: bool = False
-    # Hooks. Each takes the same arguments as the module-level function it
-    # replaces; None keeps the core default (which raises if truly required).
+    # Hooks. Each mirrors the module-level function it replaces; None keeps the
+    # core default (which raises if truly required).
     detect_host: Callable[[], Any] | None = None
     host_platform_tokens: Callable[[Any], tuple[str, str]] | None = None
     server_binary_name: Callable[[Any], str] | None = None
@@ -227,7 +219,7 @@ class ComponentDescriptor:
 
 def component_namespace(descriptor: ComponentDescriptor) -> dict[str, Any]:
     """Materialize a descriptor into the module-like namespace ``ModuleOps``
-    resolves against; core defaults cover everything not listed here."""
+    resolves against; core defaults cover anything not listed here."""
     prefix = descriptor.log_prefix
 
     def component_log(message: str) -> None:
@@ -341,9 +333,8 @@ def auth_headers(ops: ModuleOps, url: str | None = None) -> dict[str, str]:
     if token and should_send_github_auth(url):
         headers["Authorization"] = f"Bearer {token}"
         return headers
-    # Anonymous huggingface.co fetches share a per-IP rate limit that CI
-    # fleets exhaust (HTTP 429), sinking the prebuilt path into a source
-    # build. Authenticate when a token is available.
+    # Anonymous huggingface.co fetches share a per-IP rate limit CI fleets
+    # exhaust (HTTP 429); authenticate when a token is available.
     hf_token = os.environ.get("HF_TOKEN") or os.environ.get("HUGGING_FACE_HUB_TOKEN")
     if hf_token and should_send_hf_auth(url):
         headers["Authorization"] = f"Bearer {hf_token}"
@@ -353,9 +344,9 @@ def auth_headers(ops: ModuleOps, url: str | None = None) -> dict[str, str]:
 class _CrossHostAuthStrippingRedirectHandler(urllib.request.HTTPRedirectHandler):
     """Drop Authorization when a redirect leaves the original host.
 
-    huggingface.co redirects file downloads to CDN hosts whose signed URLs
-    can reject foreign Authorization headers; urllib forwards headers to
-    redirect targets by default (requests/huggingface_hub strip them).
+    huggingface.co redirects downloads to CDN hosts whose signed URLs can reject
+    a foreign Authorization header; urllib forwards headers across redirects by
+    default (requests/huggingface_hub strip them).
     """
 
     def redirect_request(self, req, fp, code, msg, headers, newurl):
@@ -382,14 +373,11 @@ def is_github_api_url(url: str | None) -> bool:
 
 def is_retryable_url_error(exc: Exception) -> bool:
     if isinstance(exc, urllib.error.HTTPError):
-        # GitHub returns 403 (not the standard 429) when the API rate
-        # limit is hit. Anonymous calls share a 60-req/hour bucket per
-        # runner IP, which CI fleets can exhaust trivially. Treat 403
-        # against api.github.com as retryable so we get one or two
-        # backoff cycles before the source-build fallback fires; honour
-        # Retry-After / X-RateLimit-Reset in sleep_backoff for accurate
-        # waits. Real 403s on other hosts (private artefact downloads,
-        # auth failures) stay non-retryable.
+        # GitHub returns 403 (not 429) on API rate-limit; anonymous calls share a
+        # 60-req/hour bucket per runner IP that CI fleets exhaust. Treat 403
+        # against api.github.com as retryable so we get a backoff cycle or two
+        # (honouring Retry-After / X-RateLimit-Reset) before the source-build
+        # fallback fires. 403s on other hosts (private downloads, auth) stay non-retryable.
         if exc.code == 403:
             return is_github_api_url(getattr(exc, "url", None))
         return exc.code in RETRYABLE_HTTP_STATUS
@@ -403,11 +391,10 @@ def is_retryable_url_error(exc: Exception) -> bool:
 
 
 def _http_error_retry_delay(exc: Exception) -> float | None:
-    """Extract a recommended wait from rate-limit headers on a 403/429.
+    """Recommended wait from rate-limit headers on a 403/429.
 
-    Returns None when no header is present or the indicated wait is
-    longer than _RATE_LIMIT_WAIT_CAP_SECONDS (in which case the caller
-    should not block on it -- the source-build fallback is faster).
+    None when no header is present or the wait exceeds
+    _RATE_LIMIT_WAIT_CAP_SECONDS (the source-build fallback is faster).
     """
     if not isinstance(exc, urllib.error.HTTPError):
         return None
@@ -516,7 +503,7 @@ def format_byte_count(num_bytes: float) -> str:
 
 def _progress_percent_step() -> int:
     """Non-tty milestone granularity. The in-app updater sets
-    UNSLOTH_PROGRESS_PERCENT_STEP=5 to stream finer progress lines."""
+    UNSLOTH_PROGRESS_PERCENT_STEP=5 for finer progress lines."""
     try:
         step = int(os.environ.get("UNSLOTH_PROGRESS_PERCENT_STEP", "25"))
     except ValueError:
@@ -790,8 +777,8 @@ def download_file_verified(
 def download_file_verified_strict(
     ops: ModuleOps, url: str, destination: Path, *, expected_sha256: str, label: str
 ) -> None:
-    """Verified download with a required digest (the generic flow fails closed
-    when a release publishes no checksum, so None never reaches here)."""
+    """Verified download with a required digest (the generic flow fails closed on
+    a missing checksum, so None never reaches here)."""
     for attempt in range(1, 3):
         ops.download_file(url, destination)
         actual = ops.sha256_file(destination)
@@ -845,8 +832,8 @@ def github_release_assets(ops: ModuleOps, repo: str, tag: str) -> dict[str, str]
 
 
 def release_asset_download_url(repo: str, release_tag: str, asset_name: str) -> str:
-    """Tag-pinned asset URL on the release-assets CDN (github.com, a redirect to
-    the CDN, NOT api.github.com -- so no 60-req/hour unauthenticated limit)."""
+    """Tag-pinned asset URL on the release-assets CDN (github.com redirect, NOT
+    api.github.com, so no 60-req/hour unauthenticated limit)."""
     return (
         f"https://github.com/{urllib.parse.quote(repo, safe = '/')}/releases/download/"
         f"{urllib.parse.quote(release_tag, safe = '')}/"
@@ -857,8 +844,8 @@ def release_asset_download_url(repo: str, release_tag: str, asset_name: str) -> 
 def download_host_latest_release_tag(ops: ModuleOps, repo: str) -> str | None:
     """Latest release tag from github.com/<repo>/releases/latest via its redirect
     target (no api.github.com call). None on 404 so the caller falls back to the
-    API. Note: /releases/latest resolves by created_at/make_latest, which can lag
-    the published_at newest the freshness check uses -- acceptable for install."""
+    API. /releases/latest resolves by created_at/make_latest, which can lag the
+    published_at newest the freshness check uses -- acceptable for install."""
     url = f"https://github.com/{urllib.parse.quote(repo, safe = '/')}/releases/latest"
     request = urllib.request.Request(
         url,
@@ -909,22 +896,18 @@ def extract_archive(archive_path: Path, destination: Path) -> None:
     def _try_repair_missing_slash(
         member_name: str, link_name: str, archive_names: set[str]
     ) -> str | None:
-        """Some upstream llama.cpp Mac releases (e.g. b9165, b9169) ship
-        symlinks whose linkname is missing the directory separator AND
-        the leading character of the file basename between the
-        top-level dir and the rest of the path:
+        """Repair a mangled symlink from some upstream llama.cpp Mac releases
+        (e.g. b9165, b9169) whose linkname drops the separator AND the file
+        basename's leading char between the top-level dir and the rest:
 
             llama-b9165/libggml-rpc.0.dylib -> llama-b9165ibggml-rpc.0.11.1.dylib
 
-        That cannot be resolved as written. Detect the pattern
-        (linkname starts with the top-level dir name but no following
-        slash) and search archive entries under that dir for a real
-        file whose basename ends with the mangled suffix. Only accept
-        when the suffix uniquely identifies a real archive entry.
-        Returns the corrected linkname expressed relative to the
-        member's parent directory -- callers join it with
-        `target.parent`, so a full `top/file` path would double the
-        prefix into `top/top/file`."""
+        Detect the pattern (linkname starts with the top-level dir but no
+        following slash), then find the archive entry under that dir whose
+        basename ends with the mangled suffix; only accept a unique match.
+        Returns the corrected linkname relative to the member's parent dir --
+        callers join it with `target.parent`, so a full `top/file` path would
+        double the prefix into `top/top/file`."""
         if "/" not in member_name or "/" in link_name:
             return None
         top, _, _ = member_name.partition("/")
@@ -944,8 +927,7 @@ def extract_archive(archive_path: Path, destination: Path) -> None:
         if len(candidates) != 1:
             return None
         # Strip the top-level dir so the caller's `target.parent / Path(...)`
-        # composition resolves inside the staging dir, not into a duplicate
-        # `top/top/...` path.
+        # resolves inside the staging dir, not a duplicate `top/top/...` path.
         return candidates[0][len(prefix) :]
 
     def safe_link_target(
@@ -1057,8 +1039,8 @@ def extract_archive(archive_path: Path, destination: Path) -> None:
 
 
 def restore_tar_exec_bits(archive_path: Path, destination: Path) -> None:
-    """Re-apply tar exec bits after a guarded extraction (which writes plain
-    files); server binaries must stay executable on Unix."""
+    """Re-apply tar exec bits after the guarded extraction writes plain files;
+    server binaries must stay executable on Unix."""
     if os.name == "nt" or not archive_path.name.endswith(".tar.gz"):
         return
     with tarfile.open(archive_path, "r:gz") as archive:
@@ -1077,8 +1059,8 @@ def install_lock(lock_path: Path) -> Iterator[None]:
     lock_path.parent.mkdir(parents = True, exist_ok = True)
 
     if FileLock is None:
-        # Fallback: exclusive file creation as a simple lock.
-        # Write our PID so stale locks from crashed processes can be detected.
+        # Fallback lock: exclusive file creation, writing our PID so stale locks
+        # from crashed processes can be detected.
         fd: int | None = None
         deadline = time.monotonic() + INSTALL_LOCK_TIMEOUT_SECONDS
         while True:
@@ -1094,16 +1076,14 @@ def install_lock(lock_path: Path) -> Iterator[None]:
                     raise
                 break
             except FileExistsError:
-                # Check if the holder process is still alive
                 stale = False
                 try:
                     raw = lock_path.read_text().strip()
                 except FileNotFoundError:
-                    # Lock vanished between our open attempt and read -- retry
+                    # Lock vanished between our open and read -- retry
                     continue
                 if not raw:
-                    # File exists but PID not yet written -- another process
-                    # just created it. Wait briefly for the write to land.
+                    # Exists but PID not yet written; wait for the write to land.
                     if time.monotonic() >= deadline:
                         raise BusyInstallConflict(
                             f"timed out after {INSTALL_LOCK_TIMEOUT_SECONDS}s waiting for concurrent install lock: {lock_path}"
@@ -1114,14 +1094,11 @@ def install_lock(lock_path: Path) -> Iterator[None]:
                     holder_pid = int(raw)
                     os.kill(holder_pid, 0)  # signal 0 = existence check
                 except ValueError:
-                    # PID unreadable (corrupted file)
-                    stale = True
+                    stale = True  # PID unreadable (corrupted file)
                 except ProcessLookupError:
-                    # Process is dead
-                    stale = True
+                    stale = True  # holder is dead
                 except PermissionError:
-                    # Process is alive but owned by another user -- not stale
-                    pass
+                    pass  # alive but owned by another user -- not stale
                 if stale:
                     lock_path.unlink(missing_ok = True)
                     continue
@@ -1153,11 +1130,10 @@ def install_lock_path(install_dir: Path) -> Path:
 
 # ── macOS version parsing ──
 def parse_macos_version(value: str | None) -> tuple[int, int] | None:
-    """Parse a macOS product version string into (major, minor).
+    """Parse a macOS product version into (major, minor).
 
-    Handles "14.7.1", "15.5", "26.0" and bare "26". Returns None when the
-    value is empty or cannot be parsed (callers then defer to runtime
-    validation rather than rejecting every prebuilt)."""
+    Handles "14.7.1", "15.5", "26.0", bare "26". None when empty/unparseable
+    (callers then defer to runtime validation rather than reject every prebuilt)."""
     if not value:
         return None
     match = re.match(r"\s*(\d+)(?:\.(\d+))?", str(value))
@@ -1321,8 +1297,8 @@ def linux_runtime_dirs_for_required_libraries(
 
 
 def detected_linux_runtime_lines(ops: ModuleOps) -> tuple[list[str], dict[str, list[str]]]:
-    """`cuda<major>` lines with any matching libcudart/libcublas file on disk
-    (glob match, so a versioned-only file counts), plus the dirs that matched."""
+    """`cuda<major>` lines with a matching libcudart/libcublas file on disk (glob
+    match, so a versioned-only file counts), plus the dirs that matched."""
     line_requirements = {
         f"cuda{m}": [f"libcudart.so.{m}", f"libcublas.so.{m}"]
         for m in range(_MAX_PROBE_CUDA_MAJOR, _MIN_CUDA_MAJOR - 1, -1)
@@ -1352,8 +1328,8 @@ def detected_linux_runtime_lines(ops: ModuleOps) -> tuple[list[str], dict[str, l
 
 
 def windows_runtime_line_info() -> dict[str, tuple[str, ...]]:
-    # Generated per CUDA major (newest first) so a new toolkit is detected
-    # without a code change while the cudart64_<major>.dll naming holds.
+    # Generated per CUDA major (newest first) so a new toolkit is detected without
+    # a code change while the cudart64_<major>.dll naming holds.
     return {
         f"cuda{m}": (
             f"cudart64_{m}*.dll",
@@ -1456,8 +1432,8 @@ def detect_torch_cuda_runtime_preference(host: Any) -> CudaRuntimePreference:
 
 
 def artifact_covers_sms(artifact: Any, host_sms: Iterable[str]) -> bool:
-    """True when every host SM is listed in the artifact's supported_sms and
-    falls within its [min_sm, max_sm] range."""
+    """True when every host SM is in the artifact's supported_sms and within its
+    [min_sm, max_sm] range."""
     if not artifact.supported_sms or artifact.min_sm is None or artifact.max_sm is None:
         return False
     supported = {str(value) for value in artifact.supported_sms}
@@ -1465,25 +1441,22 @@ def artifact_covers_sms(artifact: Any, host_sms: Iterable[str]) -> bool:
 
 
 def sm_range(artifact: Any) -> int:
-    """SM-coverage span used as a sort key, where a tighter (smaller) range wins.
-    A bundle with no SM metadata (legacy/upstream-named) gets a max range so it
-    sorts last and can't outrank a real targeted bundle whose tight range would
-    otherwise sort first."""
+    """SM-coverage span as a sort key (tighter range wins). A bundle with no SM
+    metadata gets a max range so it sorts last, never outranking a targeted bundle."""
     if artifact.min_sm is not None and artifact.max_sm is not None:
         return artifact.max_sm - artifact.min_sm
     return 9999
 
 
 def blackwell_capable_linux_runtime_lines(host_sms: list[str], artifacts: list[Any]) -> list[str]:
-    """CUDA runtime lines (highest major first) shipping a bundle that covers every
+    """CUDA runtime lines (highest major first) shipping a bundle covering every
     visible host SM. Lets a Blackwell host prefer a native sm_120 line over torch's
     reported line, mirroring the Windows Blackwell preference."""
     lines: set[str] = set()
     for artifact in artifacts:
         line = artifact.runtime_line
-        # Only rank "cuda<major>" lines; ignore malformed/future-format values
-        # (e.g. "cuda13.1") so they are skipped, as pre-existing code does, rather
-        # than crashing the major sort.
+        # Only rank "cuda<major>" lines; skip malformed/future-format values
+        # (e.g. "cuda13.1") rather than crash the major sort.
         if not (line and line.startswith("cuda") and line[len("cuda") :].isdigit()):
             continue
         if not artifact.supported_sms or artifact.min_sm is None or artifact.max_sm is None:
@@ -1502,8 +1475,8 @@ def host_is_blackwell(host: Any) -> bool:
 
 
 def blackwell_min_toolkit_for_host(host: Any) -> tuple[int, int]:
-    """Minimum CUDA toolkit this Blackwell host needs: 12.8 for the family,
-    12.9 if any of its SMs is sm_103/sm_121 (no native target before 12.9)."""
+    """Minimum CUDA toolkit this Blackwell host needs: 12.8 for the family, 12.9
+    if any SM is sm_103/sm_121 (no native target before 12.9)."""
     req = _BLACKWELL_MIN_TOOLKIT
     for sm in normalize_compute_caps(host.compute_caps):
         req = max(req, _BLACKWELL_SM_MIN_TOOLKIT.get(int(sm), _BLACKWELL_MIN_TOOLKIT))
@@ -1515,8 +1488,8 @@ def blackwell_min_toolkit_for_host(host: Any) -> tuple[int, int]:
 # a manifest of os/arch/backend artifacts plus a same-origin checksum index).
 # ════════════════════════════════════════════════════════════════════════════
 def host_platform_tokens(host: Any) -> tuple[str, str]:
-    """Default (os, arch) asset tokens for a host; components with their own
-    HostInfo field names override this hook."""
+    """Default (os, arch) asset tokens; components with their own HostInfo field
+    names override this hook."""
     return host.os_token, host.arch_token
 
 
@@ -1524,9 +1497,9 @@ def host_platform_tokens(host: Any) -> tuple[str, str]:
 def parse_manifest(ops: ModuleOps, payload: Any, *, label: str) -> dict[str, Any]:
     """Validate a component prebuilt manifest and return it normalized.
 
-    Rejects a manifest with an unknown schema_version or the wrong component.
-    Returns a dict with keys: schema_version, component, studio_protocol,
-    upstream_tag, source_commit, artifacts (list of dicts).
+    Rejects an unknown schema_version or wrong component. Returns keys:
+    schema_version, component, studio_protocol, upstream_tag, source_commit,
+    artifacts (list of dicts).
     """
     component = ops.COMPONENT
     if not isinstance(payload, dict):
@@ -1571,9 +1544,9 @@ def parse_manifest(ops: ModuleOps, payload: Any, *, label: str) -> dict[str, Any
 
 def macos_min_os_ok(ops: ModuleOps, host: Any, min_os: Any) -> bool:
     """True if a macOS artifact requiring `min_os` can load here. The manifest
-    labels it `macos-<version>` (e.g. `macos-14.0`), so strip that prefix before
-    parsing or every entry parses as None and the guard is a no-op. Unknown host
-    or min_os -> True (defer to runtime validation)."""
+    labels it `macos-<version>` (e.g. `macos-14.0`); strip that prefix before
+    parsing or every entry parses as None and the guard no-ops. Unknown host or
+    min_os -> True (defer to runtime validation)."""
     if not isinstance(min_os, str) or not min_os.strip():
         return True
     raw = min_os.strip()
@@ -1589,7 +1562,7 @@ def artifacts_for_host(
     ops: ModuleOps, manifest: dict[str, Any], host: Any, backend: str
 ) -> list[dict[str, Any]]:
     """Manifest artifacts matching this host os/arch/backend. On macOS, drop any
-    whose `min_os` exceeds the host version; ignored off macOS."""
+    whose `min_os` exceeds the host version."""
     os_token, arch_token = ops.host_platform_tokens(host)
     return [
         artifact
@@ -1605,11 +1578,10 @@ def select_artifact(
     ops: ModuleOps, manifest: dict[str, Any], host: Any, backend: str
 ) -> dict[str, Any] | None:
     """First manifest artifact matching this host os/arch and backend, or None
-    (the caller then applies the component's fallback policy). Accelerator
-    capability matching does not happen here: whisper bundles are slim per
-    os/arch (the paired llama.cpp install's own coverage-aware installer already
-    picked SM/gfx-appropriate ggml backends), and llama keeps its shipped
-    selection chain in install_llama_prebuilt.py."""
+    (caller then applies the component's fallback policy). No accelerator
+    capability matching here: whisper bundles are slim per os/arch (the paired
+    llama.cpp installer already picked SM/gfx-appropriate ggml backends), and
+    llama keeps its own selection chain in install_llama_prebuilt.py."""
     candidates = ops.artifacts_for_host(manifest, host, backend)
     return candidates[0] if candidates else None
 
@@ -1619,11 +1591,10 @@ def select_artifact_with_fallback(
 ) -> tuple[dict[str, Any], str, bool]:
     """Select the backend artifact, else the descriptor's fallback-backend
     artifact of the same release (whisper: CPU; llama: none, so a GPU miss
-    surfaces as "no prebuilt" and the caller goes to a source build).
+    surfaces as "no prebuilt" and the caller does a source build).
 
-    Returns (artifact, effective_backend, used_fallback). Raises
-    PrebuiltFallback when neither the requested backend nor the fallback has an
-    asset."""
+    Returns (artifact, effective_backend, used_fallback). Raises PrebuiltFallback
+    when neither the requested backend nor the fallback has an asset."""
     os_token, arch_token = ops.host_platform_tokens(host)
     artifact = ops.select_artifact(manifest, host, backend)
     if artifact is not None:
@@ -1643,7 +1614,7 @@ def select_artifact_with_fallback(
 
 
 def artifact_coverage(artifact: dict[str, Any]) -> dict[str, Any]:
-    """The sm/gfx/min_os coverage recorded for an artifact (marker + fingerprint)."""
+    """The sm/gfx/min_os coverage recorded for an artifact (marker/fingerprint)."""
     coverage: dict[str, Any] = {}
     for key in ("sm_coverage", "gfx_coverage", "min_os", "sm", "gfx"):
         if key in artifact and artifact.get(key) is not None:
@@ -1695,11 +1666,9 @@ def parse_release_checksums(
 ) -> dict[str, str]:
     """Asset name -> sha256 from a release's checksum-index asset.
 
-    The checksum index published alongside the bundles is the authority for
-    each asset's sha256. It is validated for schema/component and that its
-    ``release_tag`` matches the release we resolved, so a redirected or
-    mismatched index is rejected. A malformed index fails closed (source
-    build)."""
+    That index is the authority for each asset's sha256. It is validated for
+    schema/component and that its ``release_tag`` matches the resolved release,
+    so a redirected or mismatched index is rejected; malformed fails closed."""
     label = f"{ops.SHA256_ASSET_NAME} in {repo}@{release_tag}"
     if not isinstance(payload, dict):
         raise PrebuiltFallback(f"{label} was not a JSON object")
@@ -1730,8 +1699,8 @@ def parse_release_checksums(
 
 
 def fetch_release_checksums(ops: ModuleOps, bundle: "ReleaseBundle") -> dict[str, str]:
-    """Download + parse the release's checksum-index asset. Fails closed
-    (source build) if the release does not publish it."""
+    """Download + parse the release's checksum-index asset; fails closed if the
+    release does not publish it."""
     sha_asset = ops.SHA256_ASSET_NAME
     url = bundle.asset_urls.get(sha_asset)
     if not url:
@@ -1760,10 +1729,9 @@ def expected_sha256_for(
     *,
     manifest_sha256: str | None = None,
 ) -> str:
-    """The sha256 the archive must match: the release checksum-index entry for
-    this asset. An asset absent from the index fails closed. If the manifest also
-    embeds a sha256 for the asset it must agree with the index (a mismatch means a
-    tampered manifest)."""
+    """The sha256 the archive must match, from the release checksum-index entry.
+    An asset absent from the index fails closed. Any sha256 the manifest embeds
+    for the asset must agree with the index (a mismatch means a tampered manifest)."""
     digest = checksums.get(asset_name)
     if digest is None:
         raise PrebuiltFallback(
@@ -1790,13 +1758,12 @@ class ReleaseBundle:
 
 
 def fetch_release_bundle(ops: ModuleOps, repo: str, release_tag: str) -> ReleaseBundle:
-    """Fetch a fork release, download+validate its manifest asset, return the bundle.
+    """Fetch a fork release, download+validate its manifest, return the bundle.
 
-    This is the single network seam for API-path release resolution; tests
-    inject a fake to exercise selection/install offline. A release that is
-    missing or unreachable (404, rate limit, no network) is surfaced as a
-    PrebuiltFallback so the caller falls back to a source build rather than
-    erroring out.
+    The single network seam for API-path release resolution; tests inject a fake
+    to exercise selection/install offline. A missing or unreachable release (404,
+    rate limit, no network) surfaces as PrebuiltFallback so the caller does a
+    source build rather than error out.
     """
     manifest_asset = ops.MANIFEST_ASSET_NAME
     try:
@@ -1839,16 +1806,15 @@ def asset_download_url(ops: ModuleOps, bundle: ReleaseBundle, asset_name: str) -
     url = bundle.asset_urls.get(asset_name)
     if url:
         return url
-    # A manifest can list an asset the release JSON did not surface; fall back to
-    # the deterministic release-download URL.
+    # A manifest can list an asset the release JSON omitted; fall back to the
+    # deterministic release-download URL.
     return ops.release_asset_download_url(bundle.repo, bundle.release_tag, asset_name)
 
 
 def resolve_newest_release_tag(ops: ModuleOps, repo: str) -> str:
-    """Newest published (non-draft/non-prerelease) release tag for `repo`, by
-    ``published_at`` -- the same selection the freshness checks use, NOT GitHub's
-    ``/releases/latest`` pointer (which sorts by commit date and can lag the
-    newest build)."""
+    """Newest published (non-draft/non-prerelease) release tag for `repo` by
+    ``published_at`` -- what the freshness checks use, NOT GitHub's
+    ``/releases/latest`` pointer (sorts by commit date, can lag the newest build)."""
     payload = ops.fetch_json(f"https://api.github.com/repos/{repo}/releases?per_page=30")
     if not isinstance(payload, list):
         raise PrebuiltFallback(f"unexpected releases payload for {repo}")
@@ -1870,8 +1836,8 @@ def resolve_newest_release_tag(ops: ModuleOps, repo: str) -> str:
 def resolve_release_tag(
     ops: ModuleOps, published_repo: str, *, published_release_tag: str | None
 ) -> str:
-    """The release tag to install: an explicit override, else the newest published
-    release resolved at runtime."""
+    """The release tag to install: an explicit override, else the newest
+    published release resolved at runtime."""
     override = (published_release_tag or "").strip()
     if override:
         return override
@@ -1882,9 +1848,9 @@ def resolve_release_via_download_host(
     ops: ModuleOps, repo: str, published_release_tag: str | None
 ) -> tuple[ReleaseBundle, dict[str, str]] | None:
     """Resolve the release + manifest + checksum index entirely from the download
-    host, with zero api.github.com calls. Returns None (caller falls back to the
-    API) on a missing/renamed asset, a 404, or a tag mismatch. Fetches the checksum
-    index first (an in-progress release can publish it before the manifest)."""
+    host, with zero api.github.com calls. None (caller falls back to the API) on a
+    missing/renamed asset, a 404, or a tag mismatch. Fetches the checksum index
+    first (an in-progress release can publish it before the manifest)."""
     manifest_asset = ops.MANIFEST_ASSET_NAME
     sha_asset = ops.SHA256_ASSET_NAME
     release_tag = (published_release_tag or "").strip() or ops._download_host_latest_release_tag(
@@ -1932,8 +1898,8 @@ def resolve_release_via_download_host(
         )
     except PrebuiltFallback:
         return None
-    # Tag-pinned CDN URLs for every asset the install may fetch; asset_download_url
-    # also reconstructs any missing one, so this stays a pure download-host path.
+    # Tag-pinned CDN URLs for every asset the install may fetch (asset_download_url
+    # reconstructs any missing one), keeping this a pure download-host path.
     names = {
         str(a.get("asset"))
         for a in manifest.get("artifacts", [])
@@ -1951,8 +1917,8 @@ def fetch_release_for_install(
     ops: ModuleOps, repo: str, *, published_release_tag: str | None
 ) -> tuple[ReleaseBundle, dict[str, str]]:
     """Resolve the release + manifest + checksum index, preferring the download
-    host (no api.github.com rate limit) and falling back to the GitHub API. This is
-    the single network seam the install/probe paths use."""
+    host (no api.github.com rate limit) and falling back to the GitHub API. The
+    single network seam the install/probe paths use."""
     fast = ops._resolve_release_via_download_host(repo, published_release_tag)
     if fast is not None:
         bundle, checksums = fast
@@ -2008,12 +1974,12 @@ class InstallSelection:
     coverage: dict[str, Any]
     studio_protocol: str | None
     # Slim pairing identity (whisper slim bundles ride the llama ggml runtime);
-    # all None for fat installs, and never part of the fingerprint.
+    # all None for fat installs, never part of the fingerprint.
     install_kind: str | None = None
     paired_llama_tag: str | None = None
     linked_from: str | None = None
-    # Filenames the slim wiring hardlinked beside the server; the sidecar
-    # launch guard verifies exactly these instead of hardcoded per-OS names.
+    # Filenames the slim wiring hardlinked beside the server; the sidecar launch
+    # guard verifies exactly these instead of hardcoded per-OS names.
     linked_libraries: tuple[str, ...] | None = None
 
     def fingerprint(self) -> str:
@@ -2081,7 +2047,7 @@ def write_prebuilt_metadata(ops: ModuleOps, install_dir: Path, selection: Instal
         "installed_at_utc": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
     }
     if selection.install_kind == "slim":
-        # Additive slim fields only; fat markers keep the legacy payload exactly.
+        # Additive slim fields; fat markers keep the legacy payload exactly.
         payload["install_kind"] = "slim"
         payload["paired_llama_tag"] = selection.paired_llama_tag
         payload["linked_from"] = selection.linked_from
@@ -2132,11 +2098,11 @@ def locate_server_in_tree(ops: ModuleOps, root: Path, host: Any) -> Path:
 
 
 def assemble_install_tree(ops: ModuleOps, bundle_root: Path, staged_root: Path, host: Any) -> Path:
-    """Lay out staged_root as a full install: <runtime bin dir>/<server + all libs>.
+    """Lay out staged_root as a full install: <runtime bin dir>/<server + libs>.
 
-    Everything sitting beside the server in the archive (shared libraries, backend
-    kernel subdirs, license/build-info) is co-located into the canonical bin dir so
-    the server's RUNPATH=$ORIGIN resolves its libs.
+    Everything beside the server in the archive (shared libs, backend kernel
+    subdirs, license/build-info) is co-located into the canonical bin dir so the
+    server's RUNPATH=$ORIGIN resolves its libs.
     """
     bin_dir = ops.runtime_bin_dir(staged_root, host)
     bin_dir.mkdir(parents = True, exist_ok = True)
@@ -2172,7 +2138,7 @@ def swap_into_place(staged_root: Path, install_dir: Path) -> None:
 
 
 def validate_staged_server(ops: ModuleOps, staged_root: Path, host: Any) -> None:
-    """Optional pre-activate smoke test. Gated off by default (see the component's
+    """Optional pre-activate smoke test, gated off by default (the component's
     _RUN_STAGED_PREBUILT_VALIDATION switch)."""
     if not ops._RUN_STAGED_PREBUILT_VALIDATION:
         return
@@ -2243,9 +2209,9 @@ def install_from_bundle(
         staged_root = staging / "staged"
         ops.assemble_install_tree(bundle_root, staged_root, host)
         # Component hook (default no-op): slim whisper wires the llama ggml
-        # runtime in here so staged validation sees the final, linked tree; a
-        # returned selection (carrying the wired filenames) supersedes the input
-        # so the marker records what was actually linked.
+        # runtime here so staged validation sees the final linked tree; a returned
+        # selection (with the wired filenames) supersedes the input so the marker
+        # records what was actually linked.
         updated = ops.prepare_runtime_payload(staged_root, host, selection)
         if updated is not None:
             selection = updated
@@ -2373,18 +2339,17 @@ def resolve_prebuilt(
         "arch": arch_token,
         "runtime_line": artifact.get("runtime_line"),
     }
-    # Component hook (default none): whisper adds install_kind slim|fat. The
-    # JSON emitter sorts keys, so an appended field cannot perturb the output
-    # order of the legacy keys.
+    # Component hook (default none): whisper adds install_kind slim|fat. The JSON
+    # emitter sorts keys, so an appended field can't perturb the legacy key order.
     payload.update(ops.resolver_payload_extra(artifact))
     return payload
 
 
 def prepare_runtime_payload(staged_root: Path, host: Any, selection: InstallSelection) -> Any:
-    """Post-assemble install hook; the core stages nothing extra. Components
-    override it to wire external runtime files into the staged bin dir (whisper
-    slim hardlinks the llama install's ggml libraries) before validation, and
-    may return an updated InstallSelection the marker should record instead."""
+    """Post-assemble hook; the core stages nothing extra. Components override it
+    to wire external runtime files into the staged bin dir (whisper slim hardlinks
+    the llama install's ggml libraries) before validation, and may return an
+    updated InstallSelection for the marker to record instead."""
     return None
 
 

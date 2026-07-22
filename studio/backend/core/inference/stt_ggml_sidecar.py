@@ -170,7 +170,7 @@ def find_whisper_server_binary() -> Optional[str]:
 def _is_runnable(p: Path) -> bool:
     """A real whisper-server is an executable file. On Windows os.access(X_OK) is
     effectively an existence check; on Unix it rejects a non-executable stub so a
-    half-written or wrong-mode file is not mistaken for the server."""
+    half-written or wrong-mode file isn't mistaken for the server."""
     return p.is_file() and (sys.platform == "win32" or os.access(p, os.X_OK))
 
 
@@ -195,10 +195,10 @@ def _whisper_install_marker(binary: str) -> Optional[dict]:
 def slim_runtime_intact(binary: str) -> bool:
     """True unless the marker says slim and the linked ggml runtime is missing
     beside the server. New markers record the exact wired filenames
-    (linked_libraries) and every one must be present; legacy markers without
-    the field fall back to the per-OS core ggml name globs. A broken slim
-    install must read as engine-unavailable (reinstall via
-    `unsloth studio update`), never crash at load."""
+    (linked_libraries), all of which must be present; legacy markers without the
+    field fall back to the per-OS core ggml name globs. A broken slim install
+    reads as engine-unavailable (reinstall via `unsloth studio update`), never a
+    crash at load."""
     marker = _whisper_install_marker(binary)
     if not marker or marker.get("install_kind") != "slim":
         return True
@@ -255,13 +255,13 @@ def ensure_engine_available() -> str:
 # whisper-server child-process environment
 # ---------------------------------------------------------------------------
 # Build the whisper-server env: prepend the binary dir (co-located libs win, and
-# as a backstop where the loader ignores the rpath), and scrub secret-bearing vars
-# the binary never needs. On WSL2 ROCm the system HIP libs go first, since a
-# bundle's bare-metal HIP cannot drive /dev/dxg. A CUDA bundle ships libggml-cuda.so
-# but not libcudart/libcublas (paired with the user's PyTorch), so add the
-# CUDA-from-PyTorch runtime dirs the selection gated on; otherwise the backend
-# cannot resolve the runtime when it lives only in wheels. Mirrors llama's
-# binary_env(); the scrub/WSL/dedupe helpers live in utils.prebuilt.
+# a backstop where the loader ignores the rpath) and scrub secret-bearing vars the
+# binary never needs. On WSL2 ROCm the system HIP libs go first, since a bundle's
+# bare-metal HIP cannot drive /dev/dxg. A CUDA bundle ships libggml-cuda.so but not
+# libcudart/libcublas (paired with the user's PyTorch), so add the
+# CUDA-from-PyTorch runtime dirs the selection gated on, else the backend cannot
+# resolve a runtime that lives only in wheels. Mirrors llama's binary_env(); the
+# scrub/WSL/dedupe helpers live in utils.prebuilt.
 
 # Module-level aliases keep the historical patch points for tests and callers.
 _wsl_system_rocm_lib_dirs = wsl_system_rocm_lib_dirs
@@ -269,16 +269,16 @@ _dedupe_existing_dirs = dedupe_existing_dirs
 
 
 def _whisper_server_child_env(binary: str) -> dict[str, str]:
-    """Env for the whisper-server subprocess: secrets scrubbed, home/profile
-    vars repointed at a managed scratch dir (a downloaded binary must not see
-    the real home's token caches), co-located libs on the loader path, WSL
-    system HIP first on WSL2 ROCm."""
+    """Env for the whisper-server subprocess: secrets scrubbed, home/profile vars
+    repointed at a managed scratch dir (a downloaded binary must not see the real
+    home's token caches), co-located libs on the loader path, WSL system HIP first
+    on WSL2 ROCm."""
     env = scrub_env(os.environ)
     isolate_home(env, str(_managed_whisper_cpp_dir() / ".child_home"))
     bin_dir = str(Path(binary).parent)
     # A CUDA bundle needs the CUDA-from-PyTorch wheel dirs so libcudart/libcublas
-    # resolve at launch when they live only in site-packages/nvidia/*/lib. After
-    # bin_dir so the bundle's co-located libs still win; empty for other bundles.
+    # resolve at launch when they live only in site-packages/nvidia/*/lib. Placed
+    # after bin_dir so co-located libs still win; empty for other bundles.
     cuda_runtime_dirs: list[str] = []
     if any((Path(bin_dir) / name).exists() for name in ("libggml-cuda.so", "ggml-cuda.dll")):
         try:

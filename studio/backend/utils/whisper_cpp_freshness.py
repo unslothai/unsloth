@@ -4,14 +4,14 @@
 """whisper.cpp prebuilt freshness check.
 
 Reads UNSLOTH_WHISPER_PREBUILT_INFO.json (written by install_whisper_prebuilt.py)
-and compares the installed release tag against the latest on GitHub.
-Surfaced via utils.whisper_cpp_update (GET /api/whisper/update-status and the
-combined llama+whisper update status). Fails open on any missing data so we
-never show a misleading banner.
+and compares the installed release tag against the latest on GitHub. Surfaced via
+utils.whisper_cpp_update (GET /api/whisper/update-status and the combined
+llama+whisper update status). Fails open on any missing data so we never show a
+misleading banner.
 
-The mechanics (marker walk-up, GitHub fetch, memo + disk cache, report
-skeleton) live in utils.prebuilt.freshness_flow; this module keeps the
-whisper version policy and the per-module caches its tests patch.
+The mechanics (marker walk-up, GitHub fetch, memo + disk cache, report skeleton)
+live in utils.prebuilt.freshness_flow; this module keeps the whisper version
+policy and the per-module caches its tests patch.
 """
 
 from __future__ import annotations
@@ -109,10 +109,10 @@ def latest_release_assets(repo: str, *, force_refresh: bool = False) -> Optional
 
 
 def _asset_platform_suffix(asset: str, installed_tag: Optional[str]) -> Optional[str]:
-    """The tag-independent ``<os>-<arch>-<accel>.<ext>`` suffix that identifies
-    this host's bundle, obtained by stripping the ``whisper-<tag>-`` prefix from
-    the installed asset name. Falls back to anchoring on the platform token when
-    the marker tag does not line up with the asset's embedded tag."""
+    """The tag-independent ``<os>-<arch>-<accel>.<ext>`` suffix identifying this
+    host's bundle, from stripping the ``whisper-<tag>-`` prefix off the installed
+    asset name. Falls back to anchoring on the platform token when the marker tag
+    does not line up with the asset's embedded tag."""
     if isinstance(installed_tag, str) and installed_tag:
         tag = installed_tag if installed_tag.startswith("v") else f"v{installed_tag}"
         prefix = f"whisper-{tag}-"
@@ -130,12 +130,12 @@ def update_download_size_bytes(
     force_refresh: bool = False,
 ) -> Optional[int]:
     """Download size of the latest-release asset matching this host's installed
-    bundle (same platform/arch/accel suffix as the installed asset). None when
-    there is no marker asset, the latest assets can't be read, or no match.
+    bundle (same platform/arch/accel suffix). None when there is no marker asset,
+    the latest assets can't be read, or no match.
 
-    whisper.cpp assets are named ``whisper-<tag>-<os>-<arch>-<accel>.<ext>`` and
-    the fork builds every slice itself, so there is only the publish repo to
-    consult (no upstream/binary_repo passthrough)."""
+    Assets are named ``whisper-<tag>-<os>-<arch>-<accel>.<ext>`` and the fork
+    builds every slice itself, so only the publish repo is consulted (no
+    upstream/binary_repo passthrough)."""
     if not marker or not latest_tag or not repo:
         return None
     installed_asset = marker.get("asset")
@@ -160,11 +160,11 @@ def update_download_size_bytes(
 
 def parse_release_version(tag: object) -> Optional[tuple]:
     """Comparable key ``(upstream_major, upstream_minor, upstream_patch,
-    unsloth_serial)`` for a whisper.cpp release tag like ``v1.9.1-unsloth.2``.
+    unsloth_serial)`` for a tag like ``v1.9.1-unsloth.2``.
 
-    Tolerant of a leading ``v`` and of a missing ``-unsloth.N`` suffix (a missing
-    serial is treated as 0). The upstream version is padded to major/minor/patch.
-    None for anything whose version component is not purely numeric."""
+    Tolerant of a leading ``v`` and a missing ``-unsloth.N`` suffix (serial then
+    0); the upstream version is padded to major/minor/patch. None when the version
+    component is not purely numeric."""
     if not isinstance(tag, str):
         return None
     s = tag.strip()
@@ -239,12 +239,11 @@ def reset_caches(*, drop_disk: bool = False) -> None:
     """Drop the in-memory freshness caches. The no-arg form is test-only.
 
     With ``drop_disk = True`` also delete the on-disk 24h release cache. Used by
-    the post-install/update path: in-memory clearing alone leaves the stale
-    same-version value on disk, so if the post-install GitHub refresh can't reach
-    the network, ``latest_published_release`` would replay that stale disk value
-    (see its last-good fallback) and the banner could linger. Dropping the disk
-    cache makes latest read as None in that offline case, so the banner fails
-    open (off) instead of pointing at the just-replaced build."""
+    the post-install/update path: clearing memory alone leaves the stale
+    same-version value on disk, so an offline post-install GitHub refresh would
+    replay it (latest_published_release's last-good fallback) and the banner could
+    linger. Dropping the disk cache makes latest read None in that offline case,
+    so the banner fails open (off) rather than point at the just-replaced build."""
     _flow.reset_caches(
         (_marker_cache, _release_memo, _assets_memo),
         drop_disk = drop_disk,

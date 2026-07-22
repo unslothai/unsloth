@@ -5,52 +5,49 @@
 """Cross-platform whisper.cpp (whisper-server) prebuilt installer for Unsloth Studio.
 
 Downloads a per-platform whisper.cpp bundle published by the Unsloth fork
-(``unslothai/whisper.cpp``) into an isolated ``<UNSLOTH_HOME>/whisper.cpp`` and
-never touches a system whisper.cpp. The canonical install target matches the
+(``unslothai/whisper.cpp``) into an isolated ``<UNSLOTH_HOME>/whisper.cpp``,
+never a system whisper.cpp. The canonical install target matches the
 sidecar/build-script contract in ``stt_ggml_sidecar.py``:
 
     <install-dir>/build/bin/whisper-server              (Unix)
     <install-dir>/build/bin/Release/whisper-server.exe  (Windows)
 
-Prebuilt bundles are dynamically linked: ``whisper-server`` needs ``libwhisper``,
+Bundles are dynamically linked: ``whisper-server`` needs ``libwhisper``,
 ``libggml*`` and any GPU backend libraries. The binaries carry ``RUNPATH=$ORIGIN``
 so the installer co-locates every shared library from the archive into the same
-``build/bin`` directory as the server, and marks the server executable on Unix.
+``build/bin`` directory and marks the server executable on Unix.
 
 Archives are verified against the release's own ``whisper-prebuilt-sha256.json``
-checksum index, fetched from the same GitHub release (the same model as
-``install_llama_prebuilt.py``). An asset absent from that index, or a release that
-does not publish it, fails closed (setup then reports the prebuilt unavailable
-and local dictation uses Transformers STT). This is a same-origin checksum -- it
-proves integrity, not authenticity -- so pair the release with GitHub artifact
-attestations for provenance.
+checksum index (same model as ``install_llama_prebuilt.py``). An asset absent
+from the index, or a release without it, fails closed (setup reports the prebuilt
+unavailable and local dictation uses Transformers STT). Being a same-origin
+checksum it proves integrity, not authenticity; pair the release with GitHub
+artifact attestations for provenance.
 
 Release resolution prefers the download host (``github.com/<repo>/releases/...``),
-so the manifest + checksum index are fetched with **zero ``api.github.com`` calls**
-(that API is rate-limited to 60 req/hour unauthenticated); the GitHub API is only
-used as a fallback on a 404 / malformed asset.
+fetching the manifest + checksum index with zero ``api.github.com`` calls (that
+API is rate-limited to 60 req/hour unauthenticated); the GitHub API is only a
+fallback on a 404 / malformed asset.
 
-The whole component-agnostic flow -- verified downloads with retries and
-token-safe redirects, safe archive extraction, the install lock, release
-resolution, checksum-index handling, the install driver and the resolve probe --
-lives in ``prebuilt_core.py`` (same directory) and is shared with
-``install_llama_prebuilt.py``. This module keeps only the whisper specifics:
-the host mapping (whisper asset tokens over llama's hardware probes), the
-install-tree layout, the slim pairing with the installed llama.cpp ggml runtime,
-the pinned-release CPU escape hatch, the marker filename, and the CLI. Every
-retained public name is a thin wrapper so tests can monkeypatch it on this
-module and the core observes the patch.
+The whole component-agnostic flow (verified downloads, safe extraction, the
+install lock, release resolution, checksum-index handling, the install driver,
+the resolve probe) lives in ``prebuilt_core.py`` and is shared with
+``install_llama_prebuilt.py``. This module keeps only the whisper specifics: the
+host mapping, install-tree layout, slim pairing with the installed llama.cpp ggml
+runtime, the pinned-release CPU escape hatch, the marker filename, and the CLI.
+Every retained public name is a thin wrapper tests can monkeypatch so the core
+observes the patch.
 
 Selection is slim-only for current releases (v1.9.1-unsloth.2+): every published
 bundle is a slim (ggml-less) whisper paired to the llama.cpp prebuilt, which
 provides all ggml backends. The per-accelerator fat selection chain was deleted
-with the fat bundles; the one legacy shape still honored is the published fat
-CPU bundle of an explicitly pinned pre-slim release.
+with the fat bundles; the one legacy shape still honored is the published fat CPU
+bundle of an explicitly pinned pre-slim release.
 
-Mirrors ``install_node_prebuilt.py`` / ``install_llama_prebuilt.py`` so the setup
-scripts drive it the same way. Exit codes: 0 success (or already current), 1 error,
-2 prebuilt unavailable, 3 busy. A re-run that already matches logs "already
-matches" and returns 0 without downloading (the scripts grep it).
+Mirrors ``install_node_prebuilt.py`` / ``install_llama_prebuilt.py``. Exit codes:
+0 success (or already current), 1 error, 2 prebuilt unavailable, 3 busy. A re-run
+that already matches logs "already matches" and returns 0 without downloading
+(the scripts grep it).
 """
 
 from __future__ import annotations
@@ -65,7 +62,7 @@ from pathlib import Path
 from typing import Any
 
 # Put studio/ on sys.path so install_llama_prebuilt / prebuilt_core resolve
-# whether this file is run as a script (from any cwd) or imported by the tests.
+# whether run as a script (from any cwd) or imported by the tests.
 _STUDIO_DIR = os.path.dirname(os.path.abspath(__file__))
 if _STUDIO_DIR not in sys.path:
     sys.path.insert(0, _STUDIO_DIR)
@@ -73,8 +70,8 @@ if _STUDIO_DIR not in sys.path:
 import install_llama_prebuilt as llama  # noqa: E402
 import prebuilt_core as core  # noqa: E402
 
-# Shared machinery re-exported as module globals. The wrappers below resolve
-# these by bare name at call time so tests can monkeypatch them on this module.
+# Shared machinery re-exported as module globals; the wrappers below resolve
+# these by bare name at call time so tests can monkeypatch them here.
 PrebuiltFallback = core.PrebuiltFallback
 BusyInstallConflict = core.BusyInstallConflict
 auth_headers = llama.auth_headers
@@ -98,13 +95,13 @@ ReleaseBundle = core.ReleaseBundle
 llama_detect_host = llama.detect_host
 installed_llama_runtime = llama.installed_llama_runtime
 
-# Late-binding seam handed to prebuilt_core: name lookups hit this module's
-# globals first (so monkeypatches apply), then the core defaults.
+# Late-binding seam for prebuilt_core: name lookups hit this module's globals
+# first (so monkeypatches apply), then the core defaults.
 _OPS = core.ModuleOps(globals())
 
 
 # Resolver mode keeps stdout to the JSON payload only (setup.sh parses it);
-# main() flips this on the install path so setup surfaces progress.
+# main() flips this on for the install path so setup surfaces progress.
 _LOG_TO_STDOUT = False
 
 
@@ -128,27 +125,27 @@ SHA256_ASSET_NAME = "whisper-prebuilt-sha256.json"
 
 METADATA_FILENAME = "UNSLOTH_WHISPER_PREBUILT_INFO.json"
 
-# Backends the installer knows how to select. They are accelerator identities
-# for the slim pairing (which llama ggml module must exist) and the marker;
-# only "cpu" can ever match a fat artifact (the pinned pre-slim escape hatch).
+# Backends the installer can select: accelerator identities for the slim pairing
+# (which llama ggml module must exist) and the marker. Only "cpu" can match a fat
+# artifact (the pinned pre-slim escape hatch).
 SUPPORTED_BACKENDS = ("cpu", "cuda", "metal", "vulkan", "rocm")
 
-# Fallback policy the core applies on a GPU-selection miss: retry with cpu so
-# the slim bundle can pair via the llama cpu modules, or -- on an explicitly
-# pinned pre-slim release -- the published fat CPU bundle installs. A miss
-# after that retry is "prebuilt unavailable" (exit 2), never a source build.
+# Fallback the core applies on a GPU-selection miss: retry with cpu so the slim
+# bundle can pair via the llama cpu modules, or -- on a pinned pre-slim release --
+# the published fat CPU bundle installs. A miss after that is "prebuilt
+# unavailable" (exit 2), never a source build.
 FALLBACK_BACKEND = "cpu"
 
-# Backends whose slim (ggml-less) whisper bundle can ride the ggml runtime of
-# the installed llama.cpp prebuilt. Every backend is eligible: the next whisper
-# release publishes only slim bundles, so cpu and metal pair like the GPUs do.
+# Backends whose slim (ggml-less) whisper bundle can ride the installed llama.cpp
+# prebuilt's ggml runtime. All are eligible: the next whisper release ships only
+# slim bundles, so cpu and metal pair like the GPUs do.
 SLIM_ELIGIBLE_BACKENDS = ("cpu", "cuda", "metal", "rocm", "vulkan")
 
 # ggml backend module the llama bin dir must provide per accelerator, keyed by
-# the asset os token, following llama's bundle layout / health globs. A backend
-# with no glob for the host os (metal off macOS) is never slim there. llama's
-# x64 cpu bundles ship per-arch libggml-cpu-<variant> modules, macOS a single
-# libggml-cpu; the cpu globs cover both shapes.
+# asset os token, following llama's bundle layout / health globs. A backend with
+# no glob for the host os (metal off macOS) is never slim there. llama's x64 cpu
+# bundles ship per-arch libggml-cpu-<variant> modules, macOS a single
+# libggml-cpu; the cpu globs cover both.
 SLIM_BACKEND_MODULE_GLOBS = {
     "cpu": {
         "linux": "libggml-cpu*.so*",
@@ -161,22 +158,21 @@ SLIM_BACKEND_MODULE_GLOBS = {
     "vulkan": {"linux": "libggml-vulkan.so*", "windows": "ggml-vulkan.dll"},
 }
 
-# Everything the slim wiring must mirror from the llama bin dir: the core ggml
+# Everything the slim wiring mirrors from the llama bin dir: the core ggml
 # sonames plus every dlopen'd backend module (CPU variants included). libggml*
-# matches the .so and .dylib names alike; ggml*.dll covers the Windows layout.
-# libomp*.dll rides along with the ggml objects: llama's clang-built
-# windows-arm64 ggml-base.dll imports libomp140.aarch64.dll, shipped in the
-# llama bundle but never a system DLL, so the loader needs it next to
-# whisper-server.exe (MSVC x64 uses vcomp140.dll from System32; Linux ggml
-# needs system libgomp.so.1, a requirement llama itself already imposes).
+# matches .so and .dylib alike; ggml*.dll covers Windows. libomp*.dll rides along
+# because llama's clang-built windows-arm64 ggml-base.dll imports
+# libomp140.aarch64.dll, shipped in the llama bundle but never a system DLL, so
+# the loader needs it next to whisper-server.exe (MSVC x64 uses System32
+# vcomp140.dll; Linux ggml needs system libgomp.so.1, which llama already requires).
 SLIM_GGML_LIBRARY_GLOBS = ("libggml*", "ggml*.dll", "libomp*.dll")
 
 INSTALL_STAGING_ROOT_NAME = ".staging"
 
 # Master switch for the staged runtime smoke test (start whisper-server + a tiny
-# transcription) before the atomic activate. Disabled by default so a bundle whose
-# GPU forward pass JIT-compiles kernels does not stall every install; the check and
-# its CPU-asset retry are kept intact -- set this True to re-enable them.
+# transcription) before the atomic activate. Off by default so a bundle whose GPU
+# forward pass JIT-compiles kernels does not stall every install; the check and
+# its CPU-asset retry stay intact -- set True to re-enable.
 _RUN_STAGED_PREBUILT_VALIDATION = False
 
 
@@ -195,15 +191,14 @@ class HostInfo:
     has_rocm: bool = False
     rocm_gfx: str | None = None
     # (major, minor) from platform.mac_ver(); None off macOS or if unparseable.
-    # Used to enforce a macOS artifact's min_os so we never pick a bundle that
-    # cannot load on this OS version.
+    # Enforces a macOS artifact's min_os so we never pick a bundle that cannot
+    # load on this OS version.
     macos_version: tuple[int, int] | None = None
 
 
 def host_from_llama(base: Any) -> HostInfo:
-    """Map install_llama_prebuilt's detected host (NVIDIA caps + driver honoring
-    CUDA_VISIBLE_DEVICES, ROCm gfx incl. WSL, macOS version) onto the whisper
-    asset tokens. Raises PrebuiltFallback on an unsupported OS/arch."""
+    """Map install_llama_prebuilt's detected host onto the whisper asset tokens.
+    Raises PrebuiltFallback on an unsupported OS/arch."""
     system = base.system
     machine = base.machine.lower()
     if system == "Linux":
@@ -260,7 +255,7 @@ def apply_host_overrides(
         )
     updates: dict[str, Any] = {}
     if has_rocm or rocm_gfx:
-        # --rocm-gfx implies --has-rocm (llama parity): otherwise the host stays on
+        # --rocm-gfx implies --has-rocm (llama parity); otherwise the host stays on
         # its CUDA/CPU path and never picks the ROCm bundle. Drop CUDA detection too.
         updates["has_rocm"] = True
         updates["has_usable_nvidia"] = False
@@ -288,9 +283,8 @@ def whisper_asset_name(release_tag: str, host: HostInfo, accel: str) -> str:
     """e.g. whisper-v1.9.1-unsloth.1-linux-x64-cpu.tar.gz.
 
     `accel` is the asset-filename accelerator token (cpu, metal, cuda12, ...),
-    which can be finer-grained than the coarse backend. The authoritative asset
-    name for an install comes from the release manifest; this constructor is used
-    for default names and diagnostics.
+    finer-grained than the coarse backend. An install's authoritative asset name
+    comes from the release manifest; this constructor is for defaults/diagnostics.
     """
     tag = release_tag if release_tag.startswith("v") else f"v{release_tag}"
     return f"whisper-{tag}-{host.whisper_os}-{host.whisper_arch}-{accel}{host.archive_ext}"
@@ -333,7 +327,7 @@ def slim_pairing_for_artifact(
 ) -> tuple[Path, str] | None:
     """(llama bin dir, llama release tag) when the installed llama runtime can
     back this slim artifact, else None. Each failed gate logs why; the caller
-    then retries via the CPU path or reports the prebuilt unavailable."""
+    then retries via CPU or reports the prebuilt unavailable."""
     asset = artifact.get("asset")
     runtime = installed_llama_runtime()
     if runtime is None:
@@ -369,12 +363,12 @@ def slim_pairing_for_artifact(
 def select_slim_artifact(
     manifest: dict[str, Any], host: HostInfo, backend: str
 ) -> dict[str, Any] | None:
-    """The paired slim artifact for any backend (cpu and metal included), or
-    None. Slim assets carry backend "slim" so the fat os/arch/backend matching
-    of the CPU escape hatch never sees them. When the release ships slim
-    candidates but none pair, log the actionable reason: on a slim-only release
-    nothing else selects, setup reports the prebuilt unavailable, and local
-    dictation keeps using Transformers STT."""
+    """The paired slim artifact for any backend (cpu and metal included), or None.
+    Slim assets carry backend "slim" so the CPU escape hatch's fat os/arch/backend
+    matching never sees them. When the release ships slim candidates but none
+    pair, log the actionable reason: on a slim-only release nothing else selects,
+    setup reports the prebuilt unavailable, and local dictation stays on
+    Transformers STT."""
     if backend not in SLIM_ELIGIBLE_BACKENDS:
         return None
     os_token, arch_token = host_platform_tokens(host)
@@ -400,9 +394,9 @@ def select_artifact(
     manifest: dict[str, Any], host: HostInfo, backend: str
 ) -> dict[str, Any] | None:
     """Slim-only: every backend resolves to the paired slim artifact. The one
-    legacy shape still honored is the published fat CPU bundle of an explicitly
-    pinned pre-slim release; a GPU-backend miss reaches it through the core's
-    CPU fallback retry. No other fat artifact is ever selected."""
+    legacy shape still honored is the published fat CPU bundle of a pinned pre-slim
+    release, reached by a GPU-backend miss through the core's CPU fallback retry.
+    No other fat artifact is ever selected."""
     slim = select_slim_artifact(manifest, host, backend)
     if slim is not None:
         return slim
@@ -481,8 +475,8 @@ def _resolve_release_via_download_host(
 
 # ── Archive extraction (core's guarded extractor + tar exec-bit restore) ──
 def extract_archive(archive_path: Path, destination: Path) -> None:
-    """The shared traversal/symlink-guarded extraction, then restore tar exec bits
-    (the extractor writes plain files; whisper-server must stay executable)."""
+    """Shared guarded extraction, then restore tar exec bits (the extractor writes
+    plain files; whisper-server must stay executable)."""
     core.extract_archive(archive_path, destination)
     core.restore_tar_exec_bits(archive_path, destination)
 
@@ -516,11 +510,11 @@ def locate_server_in_tree(root: Path, host: HostInfo) -> Path:
 
 
 def _assemble_install_tree(bundle_root: Path, staged_root: Path, host: HostInfo) -> Path:
-    """Lay out staged_root as a full install: build/bin/<server + all libs>.
+    """Lay out staged_root as a full install: build/bin/<server + libs>.
 
-    Everything sitting beside the server in the archive (shared libraries, backend
-    kernel subdirs, license/build-info) is co-located into the canonical bin dir so
-    the server's RUNPATH=$ORIGIN resolves its libs.
+    Everything beside the server in the archive (shared libs, backend kernel
+    subdirs, license/build-info) is co-located into the canonical bin dir so the
+    server's RUNPATH=$ORIGIN resolves its libs.
     """
     bin_dir = runtime_bin_dir(staged_root, host)
     bin_dir.mkdir(parents = True, exist_ok = True)
@@ -575,15 +569,13 @@ def validate_staged_server(staged_root: Path, host: HostInfo) -> None:
 # ── Slim install wiring (llama ggml runtime into the whisper bin dir) ──
 def link_ggml_runtime(llama_bin_dir: Path, whisper_bin_dir: Path) -> list[str]:
     """Hardlink every ggml library from the llama runtime into the whisper bin
-    dir; returns the wired filenames (sorted) so the marker can record them for
-    the sidecar launch guard.
+    dir; returns the wired filenames (sorted) for the marker / sidecar launch guard.
 
     Hardlinks (not symlinks) on purpose: when the llama updater atomically swaps
     its install dir, the old inodes stay alive under these links, so a
     not-yet-updated whisper keeps running the exact ggml build it was installed
-    against -- the version-skew window closes by construction. Falls back to a
-    copy where linking is unsupported or crosses devices. Re-run on every
-    install/update so the links always track the current pairing.
+    against. Falls back to a copy where linking is unsupported or crosses devices.
+    Re-run on every install/update so the links track the current pairing.
     """
     sources = sorted(
         {
@@ -604,7 +596,7 @@ def link_ggml_runtime(llama_bin_dir: Path, whisper_bin_dir: Path) -> list[str]:
             dest.unlink()
         try:
             # Follows a libggml.so.0 -> libggml.so.0.x symlink to its inode, so
-            # every created name is a real hardlink that survives a dir swap.
+            # every created name is a real hardlink surviving a dir swap.
             os.link(source, dest)
         except OSError:
             shutil.copy2(source, dest)
@@ -613,9 +605,9 @@ def link_ggml_runtime(llama_bin_dir: Path, whisper_bin_dir: Path) -> list[str]:
 
 def prepare_runtime_payload(staged_root: Path, host: HostInfo, selection: Any) -> Any:
     """Slim installs wire the paired llama ggml runtime into the staged bin dir
-    before validation, so the activated tree is self-contained; the returned
+    before validation so the activated tree is self-contained; the returned
     selection carries the wired filenames for the marker. Fat installs need
-    nothing (the archive already carries its ggml) and return None."""
+    nothing (the archive carries its ggml) and return None."""
     if getattr(selection, "install_kind", None) != "slim" or not selection.linked_from:
         return None
     linked = link_ggml_runtime(Path(selection.linked_from), runtime_bin_dir(staged_root, host))
@@ -648,8 +640,8 @@ def selection_from_artifact(
     )
     if artifact.get("install_kind") != "slim":
         return selection
-    # A slim selection carries its pairing so the install wiring and the marker
-    # know exactly which llama runtime provides the ggml libraries.
+    # A slim selection carries its pairing so the install wiring and marker know
+    # which llama runtime provides the ggml libraries.
     runtime = installed_llama_runtime()
     if runtime is None or runtime[1] != artifact.get("requires_llama_tag"):
         raise PrebuiltFallback(
@@ -680,11 +672,10 @@ def existing_install_matches(
     install_dir: Path, host: HostInfo, selection: InstallSelection
 ) -> bool:
     """Core fingerprint match, hardened for repairability: a marker-matching
-    install is only "current" when the server is actually executable (the
-    sidecar refuses non-executable binaries, so setup must repair rather than
-    skip) and, for slim installs, every wired ggml library is still present
-    (a deleted/moved llama dir otherwise leaves dictation broken while update
-    reports up to date)."""
+    install is only "current" when the server is executable (the sidecar refuses
+    non-executable binaries, so setup must repair not skip) and, for slim
+    installs, every wired ggml library is still present (else a deleted/moved
+    llama dir leaves dictation broken while update reports up to date)."""
     if not core.existing_install_matches(_OPS, install_dir, host, selection):
         return False
     server = installed_server_path(install_dir, host)
@@ -799,8 +790,8 @@ def resolve_prebuilt(
 
 
 # The whisper component descriptor: the declarative form of everything above,
-# for descriptor-driven consumers (shared tests, future tooling). The shipped
-# CLI runs through this module's wrappers so monkeypatch seams stay intact.
+# for descriptor-driven consumers (shared tests, future tooling). The shipped CLI
+# runs through this module's wrappers so monkeypatch seams stay intact.
 DESCRIPTOR = core.ComponentDescriptor(
     component = COMPONENT,
     log_prefix = "whisper-prebuilt",
@@ -884,7 +875,7 @@ def main(argv: list[str] | None = None) -> int:
     if args.resolve_prebuilt is not None:
         # Read-only probe: stdout is only the JSON/asset line (setup.sh and
         # whisper_cpp_update.py parse it), so force diagnostics to stderr and map
-        # any failure to "not available" instead of a traceback.
+        # any failure to "not available" rather than a traceback.
         _LOG_TO_STDOUT = False
         try:
             host = apply_host_overrides(

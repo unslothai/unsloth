@@ -5,9 +5,9 @@
 
 The component modules (utils.llama_cpp_freshness / utils.whisper_cpp_freshness)
 keep their public names, per-module caches, and version-comparison policy;
-everything mechanical -- marker walk-up, GitHub release fetch, memo + disk
-cache, the freshness report skeleton -- lives here, parameterized by
-call-time callables so the modules' monkeypatch seams keep working.
+everything mechanical (marker walk-up, GitHub release fetch, memo + disk cache,
+the freshness report skeleton) lives here, parameterized by call-time callables
+so the modules' monkeypatch seams keep working.
 """
 
 from __future__ import annotations
@@ -42,7 +42,7 @@ def read_install_marker(
         return cached
     p = Path(binary_path)
     marker: Optional[dict] = None
-    # Cover all managed binary layouts (binary is 1-4 dirs deep):
+    # Cover all managed binary layouts (binary is 1-4 dirs deep).
     for parent in p.parents[:5]:
         candidate = parent / marker_name
         if candidate.is_file():
@@ -97,10 +97,9 @@ def _fetch_newest_published_release(
     ``published_at``.
 
     Resolves "latest" the way the installers do, NOT via GitHub's
-    ``/releases/latest`` pointer. That pointer sorts by commit date and can lag
-    behind the build the installer actually installs, so detection and apply
-    disagreed -- the cause of the downgrade/sticky banner. None on any failure
-    (offline, rate-limited, etc)."""
+    ``/releases/latest`` pointer, which sorts by commit date and can lag the
+    build the installer installs (detection and apply then disagree -- the
+    downgrade/sticky-banner bug). None on any failure (offline, rate-limited)."""
     import os
     import urllib.error
     import urllib.request
@@ -195,7 +194,7 @@ def latest_published_release(
             return disk[1]
     latest = fetch(repo)
     if latest is None:
-        # Keep last-good disk value rather than poisoning with None.
+        # Keep the last-good disk value rather than poison it with None.
         disk = load_disk_cache(repo, cache_dir())
         if disk:
             memo[repo] = disk
@@ -214,7 +213,7 @@ def latest_release_assets(
     fetch: Callable[[str], Optional[dict[str, int]]],
 ) -> Optional[dict[str, int]]:
     """Newest-release asset sizes for `repo`, memoized (24h TTL). None when
-    offline and never fetched. In-memory only -- a restart simply re-fetches."""
+    offline and never fetched. In-memory only -- a restart re-fetches."""
     if not repo:
         return None
     now = time.time()
@@ -255,8 +254,8 @@ def check_freshness(
     compare_tag: Callable[[dict], Any],
 ) -> dict:
     """Freshness report skeleton shared by both components; the component's
-    marker-tag choice and is_behind policy come in as callables.
-    Fails open on missing data (behind/stale stay False)."""
+    marker-tag choice and is_behind policy come in as callables. Fails open on
+    missing data (behind/stale stay False)."""
     out: dict = {
         "has_marker": False,
         "stale": False,
@@ -320,7 +319,7 @@ def reset_caches(
     if drop_disk:
         import shutil
 
-        # cache_dir() is a dedicated freshness-only subdir; it is re-created on
-        # the next save_disk_cache. ignore_errors so a missing/locked dir is a
-        # no-op rather than breaking an otherwise successful install.
+        # cache_dir() is a dedicated freshness-only subdir, re-created on the next
+        # save_disk_cache. ignore_errors so a missing/locked dir is a no-op rather
+        # than breaking an otherwise successful install.
         shutil.rmtree(cache_dir(), ignore_errors = True)

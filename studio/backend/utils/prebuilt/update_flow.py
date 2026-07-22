@@ -5,9 +5,9 @@
 
 The component modules (utils.llama_cpp_update / utils.whisper_cpp_update) keep
 their public names, job dicts, and update policy (version comparison, pinning,
-pre/post install steps); everything mechanical -- managed-root resolution,
-local-link detection, the resolve probe, and the streamed installer run --
-lives here, parameterized so the modules' monkeypatch seams keep working.
+pre/post install steps); everything mechanical (managed-root resolution,
+local-link detection, the resolve probe, the streamed installer run) lives here,
+parameterized so the modules' monkeypatch seams keep working.
 """
 
 from __future__ import annotations
@@ -88,9 +88,9 @@ def is_under(path: Path, root: Path) -> bool:
 
 
 def install_dir_for(binary_path: Optional[str], *, marker_name: str) -> Optional[Path]:
-    """The directory holding the install marker -- i.e. the install root the
-    installer wrote and the one we re-install into. Walks up from the binary the
-    same way the freshness marker reader does."""
+    """The directory holding the install marker: the install root the installer
+    wrote and the one we re-install into. Walks up from the binary like the
+    freshness marker reader does."""
     if not binary_path:
         return None
     p = Path(binary_path)
@@ -123,8 +123,8 @@ def resolve_prebuilt_for_host(
     log_message: str,
 ) -> Optional[dict]:
     """Run ``<installer> --resolve-prebuilt latest --output-format json`` (no
-    download) and return the parsed payload or None. Fail-open: any error ->
-    None so a source build never blocks the app."""
+    download); return the parsed payload or None. Fail-open: any error -> None so
+    a source build never blocks the app."""
     now = time.time()
     if not force_refresh and memo:
         if now - memo.get("at", 0.0) < RESOLVE_TTL_SECONDS:
@@ -161,9 +161,9 @@ def resolve_prebuilt_for_host(
 
 
 def is_external_link(path: Optional[Path]) -> bool:
-    """True when ``path`` is a locally-linked component dir: a POSIX symlink or
-    a Windows directory junction / reparse point. Such a link resolves into the
-    user's own checkout, so Unsloth must never auto-update it."""
+    """True when ``path`` is a locally-linked component dir: a POSIX symlink or a
+    Windows junction / reparse point. Such a link resolves into the user's own
+    checkout, so Unsloth must never auto-update it."""
     if path is None:
         return False
     try:
@@ -184,9 +184,9 @@ def is_external_link(path: Optional[Path]) -> bool:
 def active_install_is_local_link(binary: Optional[str], *, dir_name: str) -> bool:
     """True when the active server binary resolves through a locally-linked
     component directory. An update would write through that link into the user's
-    own checkout (or fail), so the install is treated as externally managed: no
-    update is offered or applied. Checks only up to and including the component
-    dir so a symlinked HOME / studio root above it can't trip a false positive."""
+    checkout (or fail), so the install is treated as externally managed: none is
+    offered or applied. Checks only up to and including the component dir so a
+    symlinked HOME / studio root above it can't trip a false positive."""
     if not binary:
         return False
     for parent in Path(binary).parents:
@@ -206,16 +206,16 @@ def managed_install_root(
     dir_name: str,
 ) -> Optional[Path]:
     """The Unsloth-managed component root the active binary lives under, or None
-    when the binary is unmanaged. Installing anywhere the active binary is not
-    would not replace what the discovery order runs (a pinned server path, then
-    the custom dir, then a component tree), so we refuse rather than silently
-    install into an inactive or foreign tree."""
+    when unmanaged. Installing where the active binary is not would not replace
+    what discovery runs (a pinned server path, then the custom dir, then a
+    component tree), so we refuse rather than install into an inactive or foreign
+    tree."""
     if marker_root is not None:
         return marker_root
     if not binary:
         return None
-    # The server-path pin is an explicit user choice that always wins in
-    # discovery; never auto-replace its tree (even the user's own checkout).
+    # The server-path pin is an explicit user choice that wins in discovery; never
+    # auto-replace its tree (even the user's own checkout).
     if os.environ.get(server_path_var):
         return None
     p = Path(binary)
@@ -251,9 +251,9 @@ def local_link_status(job: dict, job_lock: threading.Lock) -> dict:
 
 def rocm_install_args(asset: Optional[str]) -> list[str]:
     """Forward --rocm-gfx/--has-rocm from the marker asset, mirroring setup.sh.
-    The installer probe can miss the gfx arch on amd-smi-only hosts; per-gfx
-    ROCm bundles carry the family in the name (rocm-gfx110X), version-tagged
-    bundles only rocm/hip."""
+    The installer probe can miss the gfx arch on amd-smi-only hosts; per-gfx ROCm
+    bundles carry the family in the name (rocm-gfx110X), version-tagged bundles
+    only rocm/hip."""
     if not asset:
         return []
     low = asset.lower()
@@ -342,11 +342,11 @@ def run_chained_update(phases: list[dict], *, job: dict, job_lock: threading.Loc
 
     Each phase spec: ``name`` (breakdown key), ``weight`` (progress slice,
     normalized over runnable phases), ``run`` (callable(set_progress) -> result
-    dict with to_tag/reload_required/message, raises on failure; None = phase
-    skipped) and ``skip_reason`` / ``failure_message``. A failing phase aborts
-    the chain: later phases are marked skipped (reason "aborted") and the job
-    goes to error, keeping the reload_required and messages of the phases that
-    already succeeded so a partial success stays visible."""
+    dict with to_tag/reload_required/message, raises on failure; None = skipped)
+    and ``skip_reason`` / ``failure_message``. A failing phase aborts the chain:
+    later phases are marked skipped (reason "aborted") and the job goes to error,
+    keeping the reload_required and messages of already-succeeded phases so a
+    partial success stays visible."""
     runnable = [p for p in phases if p.get("run") is not None]
     total_weight = sum(float(p.get("weight") or 1.0) for p in runnable) or 1.0
     with job_lock:
@@ -386,8 +386,8 @@ def run_chained_update(phases: list[dict], *, job: dict, job_lock: threading.Loc
                 for later in phases[index + 1 :]:
                     if later.get("run") is not None:
                         job["phases"][later["name"]].update(state = PHASE_SKIPPED, reason = "aborted")
-                # A partial success keeps its messages and reload_required so
-                # the caller sees the earlier phase did land.
+                # A partial success keeps its messages and reload_required so the
+                # caller sees the earlier phase did land.
                 job.update(
                     state = JOB_ERROR,
                     message = " ".join(done_messages + [failure]),
@@ -408,10 +408,10 @@ def run_chained_update(phases: list[dict], *, job: dict, job_lock: threading.Loc
             )
         if result.get("message"):
             done_messages.append(result["message"])
-        # Only phases that affect the primary (llama) server may raise the
-        # job-level reload flag: the frontend resyncs chat model state off it,
-        # and a whisper-only sidecar reload must not clear the chat checkpoint.
-        # Per-phase reload_required stays visible under job["phases"].
+        # Only phases affecting the primary (llama) server may raise the job-level
+        # reload flag: the frontend resyncs chat model state off it, and a
+        # whisper-only sidecar reload must not clear the chat checkpoint. Per-phase
+        # reload_required stays visible under job["phases"].
         if phase.get("affects_job_reload", True):
             reload_required = reload_required or bool(result.get("reload_required"))
         if primary_to_tag is None:
