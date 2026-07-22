@@ -1515,7 +1515,9 @@ class TestInstallShStructure:
         # The probe reads gfx (not just tests binary presence), from rocminfo AND
         # amd-smi, so an installed-but-not-enumerating probe still falls to CPU.
         assert "rocminfo 2>/dev/null | grep -oE 'gfx" in body, "probe must read gfx from rocminfo"
-        assert "amd-smi list 2>/dev/null | grep -oE 'gfx" in body, "probe must read gfx from amd-smi"
+        assert (
+            "amd-smi list 2>/dev/null | grep -oE 'gfx" in body
+        ), "probe must read gfx from amd-smi"
         cpu_guard = body.find('if [ -z "$_amd_gfx_probe" ]')
         assert cpu_guard >= 0, "unreadable gfx must fall back to CPU"
         assert cpu_guard < body.find(
