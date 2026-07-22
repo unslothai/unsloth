@@ -711,8 +711,11 @@ def test_subagent_model_id_warns_when_status_unavailable(monkeypatch, capsys):
 
 
 @pytest.mark.parametrize("agent", ["openclaw", "hermes"])
-def test_unsupported_agents_reject_as_subagent(agent):
-    result = CliRunner().invoke(start.start_app, [agent, "--as-subagent"])
+@pytest.mark.parametrize(
+    "flag", ["--as-subagent", "--as-subagent=true", "--as-subagent=false"]
+)
+def test_unsupported_agents_reject_as_subagent(agent, flag):
+    result = CliRunner().invoke(start.start_app, [agent, flag])
     assert result.exit_code == 1
     assert f"--as-subagent is not supported for {agent}." in result.output
 

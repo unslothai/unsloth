@@ -25,6 +25,8 @@ import { fetchDeviceType, usePlatformStore } from "@/config/env";
 import {
   type BackendModelDetails,
   type GgufVariantDetail,
+  type InferenceStatusResponse,
+  getInferenceStatus,
   listCachedGguf,
   listGgufVariants,
   listModels,
@@ -223,7 +225,10 @@ function formatBytes(bytes: number): string {
   return `${value >= 10 || unitIndex === 0 ? value.toFixed(0) : value.toFixed(1)} ${units[unitIndex]}`;
 }
 
-function discoverGgufModels(items: BackendModelDetails[]): {
+function discoverGgufModels(
+  items: BackendModelDetails[],
+  cachedRepos: string[],
+): {
   models: string[];
   variants: Record<string, string>;
 } {
@@ -241,7 +246,31 @@ function discoverGgufModels(items: BackendModelDetails[]): {
       variants[parsed.repo] = parsed.variant;
     }
   }
+  for (const repo of cachedRepos) {
+    if (!models.includes(repo)) {
+      models.push(repo);
+    }
+  }
+
   return { models, variants };
+}
+
+function activeGgufSelection(
+  status: InferenceStatusResponse | null,
+): { model: string; variant: string | null } | null {
+  if (!(status?.is_gguf && status.model_identifier)) {
+    return null;
+  }
+  const active = splitModelVariant(status.model_identifier);
+  if (!active.repo) {
+    return null;
+  }
+  return {
+    model: active.repo,
+    variant: isHuggingFaceRepo(active.repo)
+      ? (status.gguf_variant ?? active.variant)
+      : active.variant,
+  };
 }
 
 /** Official provider or agent logo when available, else a monogram tile. */
@@ -501,6 +530,7 @@ export function AgentsTab() {
     SUPPORTED_AGENTS.map((agent) => agent.id),
   );
   const [selectedAgent, setSelectedAgent] = useState(FALLBACK_AGENT.id);
+  const agentSelectionChanged = useRef(false);
   const [detectedAgents, setDetectedAgents] = useState<Set<string>>(new Set());
   const [loaded, setLoaded] = useState(false);
   const [models, setModels] = useState<string[]>([EXAMPLE_MODEL_REPO]);
@@ -508,6 +538,7 @@ export function AgentsTab() {
     [EXAMPLE_MODEL_REPO]: EXAMPLE_MODEL_VARIANT,
   });
   const [selectedModel, setSelectedModel] = useState(EXAMPLE_MODEL_REPO);
+  const modelSelectionChanged = useRef(false);
   const [modelSearch, setModelSearch] = useState("");
   const [modelPickerOpen, setModelPickerOpen] = useState(false);
   const [variants, setVariants] = useState<GgufVariantDetail[]>([]);
@@ -583,9 +614,18 @@ export function AgentsTab() {
         }
         if (next.agents.length > 0) {
           setAgents(next.agents);
-          setSelectedAgent((current) =>
-            next.agents.includes(current) ? current : next.agents[0],
-          );
+          setSelectedAgent((current) => {
+            if (agentSelectionChanged.current) {
+              return current;
+            }
+            const detected = next.detected.find((agent) =>
+              next.agents.includes(agent),
+            );
+            return (
+              detected ??
+              (next.agents.includes(current) ? current : next.agents[0])
+            );
+          });
         }
         setDetectedAgents(new Set(next.detected));
       })
@@ -607,21 +647,34 @@ export function AgentsTab() {
     Promise.all([
       listModels().catch(() => null),
       listCachedGguf().catch(() => []),
+      getInferenceStatus().catch(() => null),
     ])
-      .then(([info, cachedGgufs]) => {
+      .then(([info, cachedGgufs, status]) => {
         if (cancelled) {
           return;
         }
-        const discovered = discoverGgufModels(info?.models ?? []);
-        for (const cached of cachedGgufs) {
-          if (!discovered.models.includes(cached.repo_id)) {
-            discovered.models.push(cached.repo_id);
-          }
+        const discovered = discoverGgufModels(
+          info?.models ?? [],
+          cachedGgufs.map((cached) => cached.repo_id),
+        );
+        const active = activeGgufSelection(status);
+        const models = active
+          ? [
+              active.model,
+              ...discovered.models.filter((model) => model !== active.model),
+            ]
+          : discovered.models;
+        const knownVariants = active?.variant
+          ? { ...discovered.variants, [active.model]: active.variant }
+          : discovered.variants;
+        if (active && !modelSelectionChanged.current) {
+          setSelectedModel(active.model);
+          setSelectedVariant(active.variant);
         }
-        setModels(discovered.models);
+        setModels(models);
         setKnownVariants((current) => ({
           ...current,
-          ...discovered.variants,
+          ...knownVariants,
         }));
       })
       .catch(() => {
@@ -752,6 +805,7 @@ export function AgentsTab() {
           <Select
             value={selectedAgent}
             onValueChange={(agent) => {
+              agentSelectionChanged.current = true;
               setSelectedAgent(agent);
               resetCopied();
             }}
@@ -860,6 +914,7 @@ export function AgentsTab() {
                         value={model}
                         data-checked={model === selectedModel}
                         onSelect={() => {
+                          modelSelectionChanged.current = true;
                           setSelectedModel(model);
                           setSelectedVariant(knownVariants[model] ?? null);
                           setVariants([]);

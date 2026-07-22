@@ -393,7 +393,10 @@ def _fail(message: str) -> NoReturn:
 def _reject_as_subagent(agent: str, args: list) -> None:
     # Reject early; otherwise the flag reaches the agent binary and fails after
     # Studio has already loaded the model.
-    if "--as-subagent" in args:
+    if any(
+        arg == "--as-subagent" or arg.startswith("--as-subagent=")
+        for arg in args
+    ):
         _fail(f"--as-subagent is not supported for {agent}.")
 
 

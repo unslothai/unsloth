@@ -29,7 +29,11 @@ export {
   type LocalModelInfo,
   type ScanFolderInfo,
 } from "./api/chat-api";
-export type { BackendModelDetails, GgufVariantDetail } from "./types/api";
+export type {
+  BackendModelDetails,
+  GgufVariantDetail,
+  InferenceStatusResponse,
+} from "./types/api";
 export {
   ChatSettingsPanel,
   ParamSlider,
