@@ -2660,8 +2660,9 @@ class DiffusionBackend:
         batch_size: int = 1,
         # Batched multi-image generation (see diffusion_batched.py): ``prompts`` renders one
         # image per prompt (txt2img only); ``seeds`` renders one image per seed. Each image
-        # gets its OWN torch.Generator, so any image regenerated alone with its recorded seed
-        # is bit-identical to its batched rendition. With neither, ``batch_size`` derives
+        # gets its OWN torch.Generator: same-seed repeats at the same batch shape are
+        # bit-identical, and a solo regeneration with the recorded seed matches its batched
+        # rendition up to batch-size-dependent kernel numerics. ``batch_size`` alone derives
         # per-image seeds as base..base+batch_size-1 (matching the native engine).
         prompts: Optional[list[str]] = None,
         seeds: Optional[list[int]] = None,

@@ -15,8 +15,10 @@ forward with per-image ``torch.Generator``s is numerics-safe (LPIPS deltas withi
 0.002 of serial) and 10-22x faster end-to-end than serial per-image engines --
 batch 32 fits 4-step 12B-class models on one GPU, batch 8 fits a 20B model at
 1024px with CFG batching. Per-image generators keep every image individually
-reproducible: image ``i`` regenerated alone with its own seed is bit-identical
-to its batched rendition.
+reproducible: same-seed images within the same batch shape are bit-identical;
+regenerating an image alone with its recorded seed reproduces it up to
+batch-size-dependent kernel numerics (measured mean abs pixel delta ~2.5/255,
+LPIPS delta under 0.002), not bit-exactly.
 
 Pure and torch-free so the CPU unit tests stay light; the engine owns the
 torch.Generator construction and the actual pipeline calls.
