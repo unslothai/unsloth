@@ -52,9 +52,7 @@ def test_rejects_tabs_and_spaces_password(_user):
 
 
 def test_allows_password_containing_spaces(_user, monkeypatch):
-    monkeypatch.setattr(
-        auth_routes.storage, "update_password", lambda *args, **kwargs: True
-    )
+    monkeypatch.setattr(auth_routes.storage, "update_password", lambda *args, **kwargs: True)
     monkeypatch.setattr(auth_routes, "create_access_token", lambda subject: "at")
     monkeypatch.setattr(auth_routes, "create_refresh_token", lambda subject: "rt")
     token = _change("correct horse battery")
