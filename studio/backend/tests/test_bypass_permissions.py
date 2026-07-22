@@ -227,13 +227,13 @@ def test_bash_blocklist_enforced_when_sandboxed(captured_popen):
         # A child launch hidden inside a static ``exec`` string payload.
         (
             "python -c \"exec('import subprocess; "
-            "subprocess.run([\\\"python\\\",\\\"-S\\\",\\\"-c\\\",\\\"import boto3\\\"])')\""
+            'subprocess.run([\\"python\\",\\"-S\\",\\"-c\\",\\"import boto3\\"])\')"'
         ),
         # Non-subprocess child launchers (pty.spawn / asyncio) skip sitecustomize
         # in the child too.
         "python -c \"import pty; pty.spawn(['python','-S','-c','import boto3'])\"",
         (
-            "python -c \"import asyncio; "
+            'python -c "import asyncio; '
             "asyncio.create_subprocess_exec('python','-S','-c','import boto3')\""
         ),
     ],

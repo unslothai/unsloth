@@ -986,9 +986,7 @@ def _python_payload_launches_startup_bypass(
     assigns = [
         n
         for n in ast.walk(tree)
-        if isinstance(n, ast.Assign)
-        and len(n.targets) == 1
-        and isinstance(n.targets[0], ast.Name)
+        if isinstance(n, ast.Assign) and len(n.targets) == 1 and isinstance(n.targets[0], ast.Name)
     ]
     changed = True
     while changed:
@@ -1037,10 +1035,16 @@ def _python_payload_launches_startup_bypass(
                 if value.id in launcher_aliases and name not in launcher_aliases:
                     launcher_aliases.add(name)
                     changed = True
-                elif value.id in os_exec_aliases and os_exec_aliases.get(name) != os_exec_aliases[value.id]:
+                elif (
+                    value.id in os_exec_aliases
+                    and os_exec_aliases.get(name) != os_exec_aliases[value.id]
+                ):
                     os_exec_aliases[name] = os_exec_aliases[value.id]
                     changed = True
-                elif value.id in argv_list_launcher_aliases and name not in argv_list_launcher_aliases:
+                elif (
+                    value.id in argv_list_launcher_aliases
+                    and name not in argv_list_launcher_aliases
+                ):
                     argv_list_launcher_aliases.add(name)
                     changed = True
                 elif value.id in asyncio_exec_aliases and name not in asyncio_exec_aliases:
@@ -1057,11 +1061,7 @@ def _python_payload_launches_startup_bypass(
         # Recurse into a statically-known ``exec``/``eval`` string payload so a
         # child launch hidden inside ``exec("... subprocess.run([...]) ...")`` is
         # scanned rather than treated as an opaque call.
-        if (
-            isinstance(node.func, ast.Name)
-            and node.func.id in {"exec", "eval"}
-            and node.args
-        ):
+        if isinstance(node.func, ast.Name) and node.func.id in {"exec", "eval"} and node.args:
             inner = _static_python_string(node.args[0])
             if inner is not None and _python_payload_launches_startup_bypass(
                 inner, depth + 1, environment_tainted
