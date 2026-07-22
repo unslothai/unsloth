@@ -841,10 +841,16 @@ def test_connect_claude_no_launch(fake_studio):
 
 
 def test_connect_claude_as_subagent_preserves_cloud_parent(fake_studio, tmp_path):
-    variant = MODEL["id"] + ":UD-Q4_K_XL"
     result = CliRunner().invoke(
         start.start_app,
-        ["claude", "--as-subagent", "--no-launch", "--model", variant, "hello"],
+        [
+            "claude",
+            "--as-subagent",
+            "--no-launch",
+            "--model",
+            MODEL["id"] + ":UD-Q4_K_XL",
+            "hello",
+        ],
     )
     assert result.exit_code == 0, result.output
     command = _launch_command(result.output)
@@ -864,15 +870,19 @@ def test_connect_claude_as_subagent_preserves_cloud_parent(fake_studio, tmp_path
     )
     assert parent_base not in result.output
     assert parent_token not in result.output
+    assert "unset ANTHROPIC_API_KEY" not in result.output
     assert "UNSLOTH_CLAUDE_SUBAGENT_API_KEY" not in result.output
     assert "sk-unsloth-feedfacefeedface" not in result.output
+    assert json.loads((plugin / ".claude-plugin" / "plugin.json").read_text())["name"] == (
+        "unsloth-local-agent"
+    )
     mcp = json.loads((plugin / ".mcp.json").read_text())["mcpServers"]["unsloth"]
     assert mcp["command"] == sys.executable
     assert mcp["args"] == ["-m", start._CLAUDE_SUBAGENT_MCP_MODULE]
     assert mcp["env"] == {
         "UNSLOTH_CLAUDE_SUBAGENT_BASE_URL": BASE,
         "UNSLOTH_CLAUDE_SUBAGENT_API_KEY": "sk-unsloth-feedfacefeedface",
-        "UNSLOTH_CLAUDE_SUBAGENT_MODEL": variant,
+        "UNSLOTH_CLAUDE_SUBAGENT_MODEL": MODEL["id"] + ":UD-Q4_K_XL",
         "UNSLOTH_CLAUDE_SUBAGENT_BYPASS_PERMISSIONS": "0",
         "UNSLOTH_CLAUDE_SUBAGENT_CONTEXT_WINDOW": "4096",
     }
@@ -880,6 +890,31 @@ def test_connect_claude_as_subagent_preserves_cloud_parent(fake_studio, tmp_path
     assert "spawn an Unsloth agent or local agent" in skill
     assert "In plan mode" in skill
     assert "Ask Claude to spawn an Unsloth or local agent." in result.output
+
+
+@pytest.mark.skipif(os.name == "nt", reason = "WSL scenario")
+def test_claude_subagent_plugin_uses_wsl_for_windows_claude(monkeypatch, tmp_path):
+    monkeypatch.setenv("WSL_DISTRO_NAME", "Ubuntu")
+    monkeypatch.setenv("WSLENV", "EXISTING")
+    monkeypatch.setattr(
+        start.shutil,
+        "which",
+        lambda _: "/mnt/c/Users/x/AppData/Local/Programs/claude.exe",
+    )
+    server_env = {"UNSLOTH_CLAUDE_SUBAGENT_API_KEY": "secret"}
+    plugin = start.write_claude_subagent_plugin(tmp_path, server_env)
+    mcp = json.loads((plugin / ".mcp.json").read_text())["mcpServers"]["unsloth"]
+    assert mcp["command"] == "wsl.exe"
+    assert mcp["args"] == [
+        "-d",
+        "Ubuntu",
+        "--",
+        sys.executable,
+        "-m",
+        start._CLAUDE_SUBAGENT_MCP_MODULE,
+    ]
+    assert mcp["env"]["UNSLOTH_CLAUDE_SUBAGENT_API_KEY"] == "secret"
+    assert mcp["env"]["WSLENV"].split(":") == ["EXISTING", "UNSLOTH_CLAUDE_SUBAGENT_API_KEY"]
 
 
 def test_connect_claude_compact_window_omitted_without_context(fake_studio, monkeypatch):
@@ -3179,16 +3214,16 @@ def test_connect_opencode_as_subagent_preserves_cloud_parent(fake_studio, tmp_pa
     assert "Unsloth is available as @unsloth and in /models." in result.output
 
 
-def test_claude_subagent_plugin_dir_precedes_forwarded_delimiter(fake_studio):
-    # A forwarded `--` makes everything after it positional; the plugin flag must be
-    # parsed as an option, so it rides before ctx.args.
+def test_claude_subagent_allowed_tools_precede_forwarded_delimiter(fake_studio):
+    # A forwarded `--` makes everything after it positional; the tool pre-approval
+    # must be parsed as an option, so it rides before ctx.args.
     result = CliRunner().invoke(
         start.start_app,
         ["claude", "--as-subagent", "--no-launch", "--", "--resume", "abc123"],
     )
     assert result.exit_code == 0, result.output
     command = _launch_command(result.output)
-    assert command.index("--plugin-dir") < command.index("--resume")
+    assert command.index("--allowedTools") < command.index("--resume")
 
 
 def test_opencode_subagent_installs_binary_before_filter_inspection(fake_studio, monkeypatch):
