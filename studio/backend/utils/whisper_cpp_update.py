@@ -313,12 +313,26 @@ def _install_latest(
     cmd.extend(_rocm_install_args(asset))
     logger.info("whisper update: installing", cmd = " ".join(cmd))
     env = dict(os.environ, UNSLOTH_PROGRESS_PERCENT_STEP = "5")
-    _flow.stream_installer(
-        cmd,
-        env,
-        set_progress = set_progress,
-        timeout_seconds = _INSTALL_TIMEOUT_SECONDS,
-    )
+    try:
+        _flow.stream_installer(
+            cmd,
+            env,
+            set_progress = set_progress,
+            timeout_seconds = _INSTALL_TIMEOUT_SECONDS,
+        )
+    except _flow.InstallerExit as exc:
+        if exc.returncode != 2:
+            raise
+        # Exit 2 = no usable prebuilt for this host right now (e.g. the newest
+        # slim release needs a llama tag this host cannot run yet, common on
+        # older macOS). The existing runtime stays installed; retry next round
+        # rather than failing the combined job.
+        logger.info("whisper update: prebuilt unavailable, keeping existing runtime")
+        return {
+            "to_tag": None,
+            "reload_required": model_was_active,
+            "message": "whisper.cpp prebuilt unavailable; kept the existing runtime.",
+        }
 
     # Drop stale caches so the banner re-checks the swapped marker. If GitHub is
     # offline, latest stays unknown and the banner fails open.
@@ -397,8 +411,11 @@ def chained_phase_plan(*, force_refresh: bool = False) -> dict:
         # "latest" prefers the download-host /releases/latest pointer, which sorts
         # by commit date and can lag the published_at pick the freshness check
         # used, reinstalling an older build in a loop (the #6219 class the llama
-        # phase pins against).
-        "pin_release_tag": status.get("latest_tag"),
+        # phase pins against). Not on macOS: the llama phase is unpinned there
+        # (walk-back to an os-compatible release), so pinning whisper to the
+        # newest tag could be an impossible pairing (min_os / requires_llama_tag)
+        # on every retry.
+        "pin_release_tag": None if sys.platform == "darwin" else status.get("latest_tag"),
     }
     return plan
 

@@ -360,6 +360,32 @@ def test_whisper_phase_pins_installer_to_checked_release(monkeypatch, tmp_path):
     assert cmd[cmd.index("--published-release-tag") + 1] == "v9"
 
 
+def test_whisper_phase_exit_2_degrades_to_kept_runtime(monkeypatch, tmp_path):
+    # Installer exit 2 (no usable prebuilt for this host, e.g. an impossible
+    # macOS pairing window) must not fail the combined job; the existing
+    # runtime stays and the phase reports it.
+    def _raise_exit_2(cmd, env, **kw):
+        raise wupd._flow.InstallerExit(2, "installer exited 2: no bundle")
+
+    monkeypatch.setattr(wupd._flow, "stream_installer", _raise_exit_2)
+    install_dir = tmp_path / "whisper.cpp"
+    binary = _write_whisper_install(install_dir, "v1")
+    monkeypatch.setattr(wupd, "_find_binary", lambda: binary)
+    result = wupd.run_chained_phase(
+        {
+            "install_dir": install_dir,
+            "repo": "unslothai/whisper.cpp",
+            "asset": None,
+            "backend": "cpu",
+            "script": tmp_path / "install_whisper_prebuilt.py",
+            "pin_release_tag": None,
+        },
+        lambda f: None,
+    )
+    assert result["to_tag"] is None
+    assert "kept the existing runtime" in result["message"]
+
+
 # --- apply: the chained job ---
 
 
@@ -428,6 +454,9 @@ def test_apply_whisper_only_noops_llama(monkeypatch, tmp_path):
     job = _wait_for_job()
     assert job["state"] == "success", job
     assert events == ["whisper"]  # the llama installer never ran
+    # The legacy job-level to_tag means "llama tag"; a whisper-only round
+    # leaves it unset so the UI never reports a llama update that never ran.
+    assert job["to_tag"] is None
     assert job["phases"]["llama"]["state"] == "skipped"
     assert job["phases"]["llama"]["reason"] == "up_to_date"
     assert job["phases"]["whisper"]["state"] == "success"

@@ -3775,8 +3775,27 @@ if ($LocalLlamaCppLinked) {
 # llama. Failure is never fatal: local dictation falls back to Transformers STT.
 $WhisperCppDir = Join-Path $UnslothHome "whisper.cpp"
 $WhisperInstaller = Join-Path $PSScriptRoot "install_whisper_prebuilt.py"
-if (Test-Path -LiteralPath $WhisperInstaller) {
+# Same opt-outs as setup.sh: a user-configured binary/dir or an explicit skip
+# disables the managed install entirely.
+if ($env:WHISPER_SERVER_PATH -or $env:UNSLOTH_WHISPER_CPP_PATH) {
+    substep "whisper.cpp: using a user-configured binary/dir; skipping managed install"
+} elseif ($env:UNSLOTH_SKIP_WHISPER_INSTALL -eq "1") {
+    substep "whisper.cpp: install skipped (UNSLOTH_SKIP_WHISPER_INSTALL=1)"
+} elseif (Test-Path -LiteralPath $WhisperInstaller) {
+    # The installer's atomic activation replaces the whole directory, so the
+    # custom-home ownership guard must run first (mirrors the llama block).
+    if ($StudioHomeIsCustom) {
+        Assert-StudioOwnedOrAbsent -Path $WhisperCppDir -Label "whisper.cpp install"
+    }
     $whisperArgs = @($WhisperInstaller, "--install-dir", $WhisperCppDir)
+    if ($env:UNSLOTH_WHISPER_RELEASE_TAG) {
+        $whisperArgs += @("--published-release-tag", $env:UNSLOTH_WHISPER_RELEASE_TAG)
+    }
+    if ($script:ROCmGfxArch) {
+        $whisperArgs += @("--rocm-gfx", $script:ROCmGfxArch)
+    } elseif ($HasROCm) {
+        $whisperArgs += "--has-rocm"
+    }
     $prevEAPWhisper = $ErrorActionPreference
     $ErrorActionPreference = "Continue"
     $previousNativeErrorPreferenceW = $null

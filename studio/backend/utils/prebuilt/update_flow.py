@@ -38,6 +38,16 @@ PROGRESS_LINE_RE = re.compile(r"(\d+(?:\.\d+)?)%\s*\(")
 # The download dominates the update; extract/validate fill the last slice.
 DOWNLOAD_PROGRESS_CEILING = 0.95
 
+
+class InstallerExit(RuntimeError):
+    """Installer subprocess exited nonzero; carries the exit code so phase
+    runners can special-case contractual codes (whisper's 2 = unavailable)."""
+
+    def __init__(self, returncode: int, message: str) -> None:
+        super().__init__(message)
+        self.returncode = returncode
+
+
 JOB_IDLE = "idle"
 JOB_RUNNING = "running"
 JOB_SUCCESS = "success"
@@ -319,7 +329,7 @@ def stream_installer(
         raise RuntimeError(f"installer timed out after {timeout_seconds}s")
     if returncode != 0:
         tail = "".join(tail_lines).strip()[-1500:]
-        raise RuntimeError(f"installer exited {returncode}: {tail or 'no output'}")
+        raise InstallerExit(returncode, f"installer exited {returncode}: {tail or 'no output'}")
 
 
 def _new_phase_record(spec: dict) -> dict:
@@ -414,8 +424,11 @@ def run_chained_update(phases: list[dict], *, job: dict, job_lock: threading.Loc
         # reload_required stays visible under job["phases"].
         if phase.get("affects_job_reload", True):
             reload_required = reload_required or bool(result.get("reload_required"))
-        if primary_to_tag is None:
-            primary_to_tag = result.get("to_tag")
+            # The legacy job-level to_tag means "the llama build now installed";
+            # a whisper-only round must leave it unset or the UI reports a llama
+            # update that never ran (per-phase to_tag remains under phases).
+            if primary_to_tag is None:
+                primary_to_tag = result.get("to_tag")
 
     with job_lock:
         job.update(

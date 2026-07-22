@@ -612,10 +612,16 @@ class GgmlSttSidecar:
             self._release_locked()
             port = self._find_free_port()
             command = [binary, "-m", model_path, "--host", "127.0.0.1", "--port", str(port)]
+            marker = _whisper_install_marker(binary)
             if _training_active():
                 # Keep whisper.cpp off the accelerator during training, matching
                 # the Transformers sidecar's CPU device choice, so a mid-training
                 # dictation cannot reclaim the VRAM training just freed.
+                command.append("--no-gpu")
+            elif marker is not None and marker.get("backend") == "cpu":
+                # A deliberate CPU install must stay CPU: the slim wiring links
+                # every llama ggml backend (including CUDA/ROCm), so without
+                # this flag a cpu-selected install would still grab the GPU.
                 command.append("--no-gpu")
             logger.info(
                 "Starting whisper-server for STT model %s on 127.0.0.1:%s",
