@@ -252,7 +252,7 @@ def test_bash_blocklist_enforced_when_sandboxed(captured_popen):
         # Process substitution: the inner command is a python bypass, and a
         # generated-script form feeds python an unscannable program.
         "diff <(python -S -c 'import boto3') /dev/null",
-        'python <(printf %s "import subprocess; subprocess.run([\'python\',\'-S\',\'-c\',\'import boto3\'])")',
+        "python <(printf %s \"import subprocess; subprocess.run(['python','-S','-c','import boto3'])\")",
     ],
 )
 def test_bash_blocks_python_startup_guard_bypasses(captured_popen, command):
