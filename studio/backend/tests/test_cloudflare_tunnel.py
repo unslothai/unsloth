@@ -442,7 +442,7 @@ def test_wait_for_dns_polls_until_answer(monkeypatch):
 
     _patch_urlopen(monkeypatch, handler)
     monkeypatch.setattr(ct.time, "sleep", lambda _s: None)
-    ct._wait_for_dns("words.trycloudflare.com")
+    ct._wait_for_dns("words.trycloudflare.com", ct.time.monotonic() + 5)
     assert len(calls) == 3
     assert "name=words.trycloudflare.com" in calls[0]
 
@@ -450,7 +450,7 @@ def test_wait_for_dns_polls_until_answer(monkeypatch):
 def test_wait_for_dns_gives_up_at_deadline(monkeypatch):
     _patch_urlopen(monkeypatch, lambda req: _FakeResponse(b'{"Status":3}'))
     monkeypatch.setattr(ct.time, "sleep", lambda _s: None)
-    ct._wait_for_dns("words.trycloudflare.com", timeout = 0.05)
+    ct._wait_for_dns("words.trycloudflare.com", ct.time.monotonic() + 0.05)
 
 
 def test_wait_for_dns_bails_on_doh_error(monkeypatch):
@@ -461,7 +461,7 @@ def test_wait_for_dns_bails_on_doh_error(monkeypatch):
         raise OSError("blocked")
 
     _patch_urlopen(monkeypatch, handler)
-    ct._wait_for_dns("words.trycloudflare.com")
+    ct._wait_for_dns("words.trycloudflare.com", ct.time.monotonic() + 5)
     assert len(calls) == 1
 
 
@@ -479,7 +479,7 @@ def test_verify_public_url_accepts_studio_marker(monkeypatch):
 
 def test_verify_public_url_waits_for_dns_first(monkeypatch):
     order = []
-    monkeypatch.setattr(ct, "_wait_for_dns", lambda host, **kw: order.append(("dns", host)))
+    monkeypatch.setattr(ct, "_wait_for_dns", lambda host, deadline: order.append(("dns", host)))
 
     def handler(req):
         order.append(("probe", req.full_url))
@@ -489,6 +489,20 @@ def test_verify_public_url_waits_for_dns_first(monkeypatch):
     assert ct.verify_public_url("https://words.trycloudflare.com") is True
     assert order[0] == ("dns", "words.trycloudflare.com")
     assert order[1][0] == "probe"
+
+
+def test_verify_public_url_dns_wait_and_probe_share_deadline(monkeypatch):
+    # An exhausted DNS wait leaves the probe a single attempt, not a fresh window.
+    calls = []
+    monkeypatch.setattr(ct, "_wait_for_dns", lambda host, deadline: None)
+
+    def handler(req):
+        calls.append(req.full_url)
+        raise OSError("unreachable")
+
+    _patch_urlopen(monkeypatch, handler)
+    assert ct.verify_public_url("https://words.trycloudflare.com", timeout = 0) is False
+    assert len(calls) == 1
 
 
 def test_verify_public_url_retries_then_succeeds(monkeypatch):

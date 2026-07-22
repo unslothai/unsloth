@@ -45,13 +45,13 @@ _DOWNLOAD_TIMEOUT = 60  # urlopen timeout for the one-time binary download
 # URL is fetched once before it is advertised.
 _PUBLIC_PROBE_PATH = "/api/health"
 _PUBLIC_PROBE_MARKER = "Unsloth UI Backend"
-_PUBLIC_PROBE_TIMEOUT = 10.0
+# One deadline for DNS propagation + the health probe, bounding the startup stall.
+_PUBLIC_PROBE_TIMEOUT = 45.0
 _PUBLIC_PROBE_ATTEMPT_TIMEOUT = 5.0
 _PUBLIC_PROBE_RETRY_DELAY = 1.0
 
 # Wait for the hostname via DoH first: an early OS lookup negative-caches the
 # NXDOMAIN for up to 30 min.
-_DNS_WAIT_TIMEOUT = 45.0
 _DNS_POLL_DELAY = 2.0
 _DOH_URL = "https://cloudflare-dns.com/dns-query?name={host}&type=A"
 
@@ -206,11 +206,10 @@ def ensure_cloudflared() -> Optional[str]:
         return None
 
 
-def _wait_for_dns(host: str, timeout: float = _DNS_WAIT_TIMEOUT) -> None:
+def _wait_for_dns(host: str, deadline: float) -> None:
     import json
     import urllib.request
 
-    deadline = time.monotonic() + timeout
     while True:
         try:
             req = urllib.request.Request(
@@ -234,12 +233,12 @@ def verify_public_url(url: str, timeout: float = _PUBLIC_PROBE_TIMEOUT) -> bool:
     import urllib.request
     from urllib.parse import urlsplit
 
+    deadline = time.monotonic() + timeout
     host = urlsplit(url).hostname
     if host:
-        _wait_for_dns(host)
+        _wait_for_dns(host, deadline)
 
     probe_url = f"{url.rstrip('/')}{_PUBLIC_PROBE_PATH}"
-    deadline = time.monotonic() + timeout
     while True:
         try:
             req = urllib.request.Request(probe_url, headers = {"User-Agent": "unsloth-studio"})
