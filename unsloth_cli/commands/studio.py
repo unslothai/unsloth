@@ -1799,9 +1799,8 @@ def run(
         unsloth studio run --model some-model --chat-template-file /path/to/tpl.jinja
         unsloth studio run --model unsloth/Qwen3-27B-GGUF --gguf-variant Q8_0 --tensor-parallel
     """
-    # A newer outer CLI can re-exec into an older Studio venv. Pass this
-    # internal signal through the environment so an older child ignores it
-    # instead of treating an unknown CLI option as a llama-server argument.
+    # A newer outer CLI can re-exec into an older Studio venv; pass this signal via
+    # env so an older child ignores it instead of treating it as a llama-server arg.
     inherited_start_api_key_marker = _consume_start_api_key_marker_env()
     start_api_key_marker = start_api_key_marker or inherited_start_api_key_marker
 
@@ -2023,8 +2022,7 @@ def run(
             else:
                 os.execvp(str(studio_bin), args)
         finally:
-            # execvp does not return on success. Restore the parent environment
-            # after Windows waits for the child, or if launch fails.
+            # execvp doesn't return on success; restore env after a Windows wait or a failed launch.
             os.environ.pop(_START_API_KEY_MARKER_ENV, None)
 
     # ── 2. Start server (always suppress built-in banner) ─────────────
@@ -2072,9 +2070,8 @@ def run(
         # 4. Create API key in-process.
         api_key = _create_api_key_inprocess(api_key_name)
         if start_api_key_marker:
-            # `unsloth start` redirects this process to a private 0600 log and
-            # uses the key to authenticate download-progress polling before the
-            # blocking load returns. The normal `unsloth run` output is unchanged.
+            # `unsloth start` reads this key from a private 0600 log to authenticate
+            # download-progress polling; the normal `unsloth run` output is unchanged.
             typer.echo(f"UNSLOTH_START_API_KEY: {api_key}")
 
         # 5. Load model via HTTP.

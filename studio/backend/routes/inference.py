@@ -3406,9 +3406,8 @@ async def _acquire_swap_gate() -> None:
         await asyncio.sleep(0.02)
 
 
-# Counts auto-switch requests waiting to load each (target, variant). These
-# requests are queued for a swap but are not generating, so the drain wait below
-# excludes them from the active inference count.
+# Counts auto-switch requests queued to load each (target, variant). They are not
+# generating, so the drain wait below excludes them from the active inference count.
 _auto_switch_waiters: dict[tuple[str, str], int] = {}
 _auto_switch_waiters_guard = threading.Lock()
 
@@ -3729,9 +3728,8 @@ async def _maybe_auto_switch_model(
                         # model's public id and override key for /v1/models and idle stash.
                         get_llama_cpp_backend()._openai_advertised_id = override_id
                 finally:
-                    # Deregister before releasing the gate: a swap on another loop
-                    # could otherwise count this finished request as still queued and
-                    # unload the model it is about to generate against.
+                    # Deregister before releasing the gate: otherwise a swap on another
+                    # loop counts this finished request as queued and unloads its model.
                     _note_switch_waiter(key, -1)
                     waiter_noted = False
                     _auto_switch_process_lock.release()
@@ -4538,12 +4536,11 @@ async def _load_model_impl(
                         ),
                     )
 
-            # Keep the resident model alive until every active generation has
-            # finished. The lifecycle gate held by the caller blocks new starts.
+            # Keep the resident model alive until every active generation finishes;
+            # the caller's lifecycle gate blocks new starts.
             await _wait_for_model_switch_idle(current_request_counted = current_request_counted)
-            # The installer reserves its sidecar swap before waiting on this gate.
-            # It can do so while active inference drains, after the route-level
-            # checks above, so honor that reservation before replacing either backend.
+            # A sidecar install can reserve the gate while inference drains, after the
+            # route-level checks above, so recheck before replacing either backend.
             _raise_if_sidecar_swap_in_progress()
 
             # Unload any active Unsloth model only after every hub conflict check.

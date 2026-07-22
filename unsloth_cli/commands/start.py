@@ -431,9 +431,8 @@ class _DownloadProgressDisplay:
         fraction = float(progress.get("progress") or 0)
         if downloaded <= 0:
             return
-        # The hub endpoint can report a fully cached snapshot as 99% when an
-        # older synchronous load has no download manifest. No incomplete bytes
-        # means no transfer is occurring, so do not label model startup as a download.
+        # A fully cached snapshot can report 99% with no incomplete bytes; that is
+        # not a transfer, so don't show it as a download.
         if completed >= downloaded > 0:
             return
 
@@ -453,9 +452,7 @@ class _DownloadProgressDisplay:
                 rate = delta / elapsed
 
         if expected > 0:
-            # Trust the endpoint's capped value. It deliberately reports at
-            # most 99% while bytes still live in an incomplete file, even when
-            # that sparse file's logical size already equals the final blob.
+            # The endpoint caps at 99% while bytes remain in an incomplete file; trust it.
             fraction = min(1.0, max(0.0, fraction))
             percent = min(100, max(0, int(fraction * 100)))
             filled = min(24, int(fraction * 24))
@@ -527,9 +524,8 @@ class _ModelDownloadProgress:
         self._configured = True
         if self._disabled:
             return
-        # GGUF repos need the selected quant's size. The generic repo endpoint
-        # totals every quant in the repository and would report a misleading
-        # percentage, so resolve the variant first and otherwise show bytes only.
+        # GGUF repos need the selected quant's size; the repo endpoint totals every
+        # quant. Resolve the variant first, otherwise show bytes only.
         if self._variant or "gguf" in self._model.lower():
             try:
                 params = urlencode({"repo_id": self._model})
@@ -561,8 +557,7 @@ class _ModelDownloadProgress:
                         )
                         break
             except Exception:
-                # Older servers may not expose the variant endpoint. Byte progress
-                # is still useful, and load errors remain owned by the load request.
+                # Older servers lack this endpoint; byte progress is still useful.
                 pass
 
     def poll(self) -> None:
@@ -595,8 +590,7 @@ class _ModelDownloadProgress:
                 return
             self._display.update(reading)
         except Exception:
-            # Progress is an enhancement. Never turn an unsupported endpoint or
-            # a transient polling failure into a model-load failure.
+            # Progress is best-effort; never fail the load over a polling error.
             self._disabled = True
 
     def close(self) -> None:
@@ -757,12 +751,10 @@ def _start_studio_server(base: str, model: str, load: LoadOptions) -> subprocess
     log_path.unlink(missing_ok = True)
     log = os.fdopen(os.open(log_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600), "wb")
     # Own session/process group so a mid-session Ctrl+C (cancel a turn) doesn't reach the
-    # server. It stays available after a successful agent session and is torn down on
-    # startup or launch failure.
+    # server. It survives a successful agent session; torn down on startup/launch failure.
     child_env = os.environ.copy()
-    # Pass the marker out of band so an older launcher ignores it instead of
-    # treating an unknown CLI option as a llama-server argument. New launchers
-    # consume and preserve it across any Studio re-exec.
+    # Pass the marker via env so an older launcher ignores it instead of treating an
+    # unknown CLI flag as a llama-server arg; new launchers preserve it across re-exec.
     child_env[_START_API_KEY_MARKER_ENV] = "1"
     kwargs: dict = {
         "stdout": log,
@@ -787,8 +779,7 @@ def _start_studio_server(base: str, model: str, load: LoadOptions) -> subprocess
     try:
         while time.monotonic() < deadline:
             if server.poll() is not None:
-                # The early key marker lands in this log before the load finishes,
-                # so redact minted keys from any tail shown on the terminal.
+                # The early key marker lands here before load finishes; redact it.
                 tail = _redacted_log_tail(log_path)
                 _shutdown_auto_served()
                 _fail(f"The Unsloth server stopped before it was ready. Last log lines:\n{tail}")
@@ -809,9 +800,8 @@ def _start_studio_server(base: str, model: str, load: LoadOptions) -> subprocess
                     )
             if progress is not None:
                 progress.poll()
-            # New children emit an early key marker, so wait for the final model
-            # banner. The fallback preserves compatibility with an older child
-            # that only prints its API key after loading has completed.
+            # New children emit an early key marker, so wait for the final model banner;
+            # older children only print the key after load, so fall back to that.
             ready_signal = "Model loaded:" in tail if early_key_seen else "sk-unsloth-" in tail
             if _studio_healthy(base) and ready_signal:
                 if progress is not None:
@@ -1790,8 +1780,8 @@ def _run(
     try:
         code = _launch(command, env, install_hint = install_hint, unset_env = unset_env)
     except BaseException:
-        # Startup succeeded but the agent itself could not launch. In that failure
-        # path, retain the old cleanup behavior instead of orphaning a surprise server.
+        # Startup succeeded but the agent failed to launch; tear the server down
+        # rather than orphan it.
         _shutdown_auto_served()
         raise
     auto_started = _auto_served_server is not None
