@@ -10771,7 +10771,6 @@ class _ResponsesReasoningExtractor:
             # channel already is reasoning). Neutralize any literal markers so
             # downstream <think> wrappers / UI parsers cannot close early (#7066).
             from core.inference.chat_template_helpers import neutralize_think_markup
-
             reasoning_parts.append(neutralize_think_markup(structured_reasoning))
         if text:
             self._buffer += text
@@ -10795,9 +10794,7 @@ class _ResponsesReasoningExtractor:
                             self._buffer[:close_idx].replace(_RESPONSES_THINK_OPEN, "")
                         )
                         reasoning_parts.append(neutralize_think_markup(_RESPONSES_THINK_CLOSE))
-                        self._buffer = self._buffer[
-                            close_idx + len(_RESPONSES_THINK_CLOSE) :
-                        ]
+                        self._buffer = self._buffer[close_idx + len(_RESPONSES_THINK_CLOSE) :]
                         continue
                     reasoning_parts.append(
                         self._buffer[:close_idx].replace(_RESPONSES_THINK_OPEN, "")

@@ -6,10 +6,7 @@
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parents[2]
-PARSE_TS = (
-    REPO
-    / "studio/frontend/src/features/chat/utils/parse-assistant-content.ts"
-)
+PARSE_TS = REPO / "studio/frontend/src/features/chat/utils/parse-assistant-content.ts"
 ADAPTER_TS = REPO / "studio/frontend/src/features/chat/api/chat-adapter.ts"
 
 
