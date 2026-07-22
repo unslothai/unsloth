@@ -786,7 +786,10 @@ def test_connect_claude_no_launch(fake_studio):
     _assert_env_set(result.output, "CLAUDE_AUTOCOMPACT_PCT_OVERRIDE", "90")
     assert f"claude --model {MODEL['id']} --exclude-dynamic-system-prompt-sections" in result.output
     # Overlay is passed inline (session-only), not a path into the user's ~/.claude.
-    assert "--settings" in result.output
+    command = _launch_command(result.output)
+    settings = json.loads(command[command.index("--settings") + 1])
+    assert settings["env"]["CLAUDE_CODE_SUBAGENT_MODEL"] == "inherit"
+    assert "--plugin-dir" not in command
     assert ".claude/settings.json" not in result.output
 
 
@@ -827,60 +830,6 @@ def test_connect_claude_as_subagent_preserves_cloud_parent(fake_studio, tmp_path
         "UNSLOTH_CLAUDE_SUBAGENT_CONTEXT_WINDOW": "4096",
     }
     assert "Ask Claude to spawn an Unsloth or local agent." in result.output
-
-
-def test_connect_claude_native_subagent_runs_local_parent(fake_studio, tmp_path):
-    variant = MODEL["id"] + ":UD-Q4_K_XL"
-    result = CliRunner().invoke(
-        start.start_app,
-        ["claude", "--native-subagent", "--no-launch", "--model", variant, "hello"],
-    )
-    assert result.exit_code == 0, result.output
-    command = _launch_command(result.output)
-    plugin = tmp_path / "agents" / "claude-native-subagent" / "unsloth-local-agent"
-    # Parent runs on the local endpoint so the in-process subagent can reach the model.
-    assert command == [
-        "claude",
-        "--model",
-        variant,
-        "--exclude-dynamic-system-prompt-sections",
-        "--settings",
-        start._claude_settings_overlay(variant),
-        "--plugin-dir",
-        str(plugin),
-        "hello",
-    ]
-    _assert_env_set(result.output, "ANTHROPIC_BASE_URL", BASE)
-    _assert_env_set(result.output, "ANTHROPIC_AUTH_TOKEN", "sk-unsloth-feedfacefeedface")
-    _assert_env_set(result.output, "ANTHROPIC_MODEL", variant)
-    _assert_env_unset(result.output, "ANTHROPIC_API_KEY")
-    # No MCP bridge: the plugin ships a native subagent, not an .mcp.json child process.
-    assert not (plugin / ".mcp.json").exists()
-    assert json.loads((plugin / ".claude-plugin" / "plugin.json").read_text())["name"] == (
-        "unsloth-local-agent"
-    )
-    agent = (plugin / "agents" / f"{start._CLAUDE_SUBAGENT_NAME}.md").read_text()
-    assert f'model: "{variant}"' in agent
-    assert f"'{start._CLAUDE_SUBAGENT_NAME}'" in result.output
-
-
-def test_write_claude_native_subagent_plugin_pins_local_model(tmp_path):
-    plugin = start.write_claude_native_subagent_plugin(tmp_path, {"id": MODEL["id"] + ":Q4_K_M"})
-    agent = (plugin / "agents" / f"{start._CLAUDE_SUBAGENT_NAME}.md").read_text()
-    # Frontmatter pins the local model and drops plan-mode tools; body is the instructions.
-    assert f'name: "{start._CLAUDE_SUBAGENT_NAME}"' in agent
-    assert f'model: "{MODEL["id"]}:Q4_K_M"' in agent
-    assert 'disallowedTools: "EnterPlanMode, ExitPlanMode"' in agent
-    assert start._SUBAGENT_INSTRUCTIONS in agent
-
-
-def test_connect_claude_rejects_both_subagent_modes(fake_studio):
-    result = CliRunner().invoke(
-        start.start_app,
-        ["claude", "--as-subagent", "--native-subagent", "--no-launch"],
-    )
-    assert result.exit_code != 0
-    assert "Choose either --as-subagent or --native-subagent, not both." in result.output
 
 
 def test_connect_claude_compact_window_omitted_without_context(fake_studio, monkeypatch):

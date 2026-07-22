@@ -93,12 +93,6 @@ subagent:
 unsloth start claude --as-subagent --model unsloth/model-GGUF:quant
 ```
 
-Claude Code can instead run both the parent and native subagents on Unsloth:
-
-```bash
-unsloth start claude --native-subagent --model unsloth/model-GGUF:quant
-```
-
 ## 📥 Install
 Unsloth can be used in two ways: through **[Unsloth Studio](https://unsloth.ai/docs/new/studio/)**, the web UI, or through **Unsloth Core**, the code-based version. Each has different requirements.
 
