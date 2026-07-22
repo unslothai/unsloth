@@ -11,6 +11,7 @@ export {
   fetchGgufStagedMetadata,
   getCachedModelPath,
   getInferenceStatus,
+  listCachedGguf,
   listChatAttachments,
   listGgufVariants,
   listLocalModels,

@@ -25,6 +25,7 @@ import { fetchDeviceType, usePlatformStore } from "@/config/env";
 import {
   type BackendModelDetails,
   type GgufVariantDetail,
+  listCachedGguf,
   listGgufVariants,
   listModels,
 } from "@/features/chat";
@@ -45,7 +46,11 @@ import { HugeiconsIcon } from "@hugeicons/react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { ApiProviderLogo } from "../../chat/api-provider-logo";
 import { loadCodingAgents } from "../api/coding-agents";
-import { isLoopbackHost, normalizeHost } from "../components/agent-command";
+import {
+  buildAgentCommand,
+  isLoopbackHost,
+  normalizeHost,
+} from "../components/agent-command";
 import { SettingsSection } from "../components/settings-section";
 import { psSingle, shSingle } from "../components/usage-examples";
 
@@ -57,6 +62,7 @@ const HUGGING_FACE_REPO_PATTERN = /^[^/\\:\s]+\/[^/\\:\s]+$/;
 const SEARCH_TOKEN_PATTERN = /\s+/;
 const SAFE_SHELL_ARG_PATTERN = /^[A-Za-z0-9_./:@%+=,-]+$/;
 const SUBAGENT_AGENT_IDS = new Set(["claude", "codex", "opencode", "pi"]);
+const REMOTE_API_KEY_PLACEHOLDER = "sk-unsloth-YOUR_KEY";
 
 // Backend PATH detection is only meaningful in the desktop app on a loopback
 // backend; a browser loopback URL may be an SSH/port forward to another host.
@@ -389,13 +395,15 @@ function quoteShellArg(value: string, windows: boolean): string {
 
 function SubagentSection({
   agent,
+  baseCommand,
   commandModelArg,
 }: {
   agent: AgentDetails;
+  baseCommand: string;
   commandModelArg: string;
 }) {
   const t = useT();
-  const command = `unsloth start ${agent.id} --as-subagent --model ${commandModelArg}`;
+  const command = `${baseCommand} --as-subagent --model ${commandModelArg}`;
   const prompt =
     agent.id === "opencode"
       ? t("settings.agents.subagent.opencodePrompt")
@@ -540,7 +548,16 @@ export function AgentsTab() {
     ? `${selectedModel}:${selectedVariant}`
     : selectedModel;
   const commandModelArg = quoteShellArg(commandModel, isWindowsClient);
-  const command = `unsloth start ${selectedAgent} --model ${commandModelArg}`;
+  // Browser commands must target the Studio origin the user is viewing. The
+  // desktop app instead uses the backend URL reported by /api/health; its
+  // window origin is a Tauri URL and is not reachable by the CLI.
+  const commandBase = buildAgentCommand(
+    isTauri ? serverUrl : origin,
+    REMOTE_API_KEY_PLACEHOLDER,
+    isWindowsClient ? "windows" : "unix",
+    selectedAgent,
+  );
+  const command = `${commandBase} --model ${commandModelArg}`;
   const {
     copied,
     copy: handleCopy,
@@ -587,12 +604,20 @@ export function AgentsTab() {
 
   useEffect(() => {
     let cancelled = false;
-    listModels()
-      .then((info) => {
+    Promise.all([
+      listModels().catch(() => null),
+      listCachedGguf().catch(() => []),
+    ])
+      .then(([info, cachedGgufs]) => {
         if (cancelled) {
           return;
         }
-        const discovered = discoverGgufModels(info.models);
+        const discovered = discoverGgufModels(info?.models ?? []);
+        for (const cached of cachedGgufs) {
+          if (!discovered.models.includes(cached.repo_id)) {
+            discovered.models.push(cached.repo_id);
+          }
+        }
         setModels(discovered.models);
         setKnownVariants((current) => ({
           ...current,
@@ -948,6 +973,7 @@ export function AgentsTab() {
 
         <SubagentSection
           key={`${selectedAgent}:${commandModel}`}
+          baseCommand={commandBase}
           commandModelArg={commandModelArg}
           agent={selectedAgentDetails}
         />
