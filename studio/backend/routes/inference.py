@@ -7213,9 +7213,7 @@ async def openai_chat_completions(
         from core.inference.external_agentic import provider_supports_local_tool_runtime
 
         _ext_local_tools = provider_supports_local_tool_runtime(_ext_provider_type) and (
-            payload.enable_tools is True
-            or bool(payload.enabled_tools)
-            or bool(payload.mcp_enabled)
+            payload.enable_tools is True or bool(payload.enabled_tools) or bool(payload.mcp_enabled)
         )
         # Bypass Permissions suppresses the confirm gate, so do not reject a
         # request that sets both flags (effective confirm is then False).

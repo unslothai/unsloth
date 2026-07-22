@@ -44,9 +44,7 @@ logger = logging.getLogger(__name__)
 
 # Connections that can drive Unsloth's local tool runtime against a remote
 # OpenAI-compatible chat-completions endpoint.
-LOCAL_TOOL_RUNTIME_PROVIDER_TYPES = frozenset(
-    {"ollama", "llama_cpp", "vllm", "custom"}
-)
+LOCAL_TOOL_RUNTIME_PROVIDER_TYPES = frozenset({"ollama", "llama_cpp", "vllm", "custom"})
 
 
 def provider_supports_local_tool_runtime(provider_type: Optional[str]) -> bool:
@@ -70,9 +68,7 @@ def _parse_sse_data_line(line: str) -> Optional[dict[str, Any]]:
     return payload if isinstance(payload, dict) else None
 
 
-def _merge_tool_call_delta(
-    acc: dict[int, dict[str, Any]], tc_delta: dict[str, Any]
-) -> None:
+def _merge_tool_call_delta(acc: dict[int, dict[str, Any]], tc_delta: dict[str, Any]) -> None:
     """Accumulate a streaming ``delta.tool_calls[]`` fragment into ``acc``."""
     try:
         idx = int(tc_delta.get("index", 0))
@@ -132,7 +128,7 @@ def _openai_content_chunk_line(
         "model": model,
         "choices": [choice],
     }
-    return f"data: {json.dumps(payload, ensure_ascii=False)}"
+    return f"data: {json.dumps(payload, ensure_ascii = False)}"
 
 
 async def stream_external_local_tool_loop(
@@ -256,7 +252,7 @@ async def stream_external_local_tool_loop(
                                 }
                             ],
                         }
-                        yield f"data: {json.dumps(chunk, ensure_ascii=False)}"
+                        yield f"data: {json.dumps(chunk, ensure_ascii = False)}"
 
                 for tc_delta in delta.get("tool_calls") or []:
                     if isinstance(tc_delta, dict):
@@ -267,15 +263,9 @@ async def stream_external_local_tool_loop(
             except Exception:
                 pass
 
-        ordered_calls = [
-            tool_calls_acc[i] for i in sorted(tool_calls_acc) if tool_calls_acc[i]
-        ]
+        ordered_calls = [tool_calls_acc[i] for i in sorted(tool_calls_acc) if tool_calls_acc[i]]
         # Drop empty / nameless fragments.
-        ordered_calls = [
-            tc
-            for tc in ordered_calls
-            if (tc.get("function") or {}).get("name")
-        ]
+        ordered_calls = [tc for tc in ordered_calls if (tc.get("function") or {}).get("name")]
 
         if not ordered_calls or finish_reason not in (None, "tool_calls", "stop"):
             # No tool calls — emit a terminal finish if we streamed content.
@@ -323,9 +313,7 @@ async def stream_external_local_tool_loop(
             tool_call_id = tc["id"]
 
             # Skip tools the caller did not enable (defense in depth).
-            if enabled_names and name not in enabled_names and not str(name).startswith(
-                "mcp__"
-            ):
+            if enabled_names and name not in enabled_names and not str(name).startswith("mcp__"):
                 result = f"Error: tool '{name}' is not enabled for this request."
                 yield f"data: {json.dumps({'type': 'tool_start', 'tool_name': name, 'tool_call_id': tool_call_id, 'arguments': arguments})}"
                 yield f"data: {json.dumps({'type': 'tool_end', 'tool_name': name, 'tool_call_id': tool_call_id, 'result': result})}"
@@ -350,9 +338,7 @@ async def stream_external_local_tool_loop(
                 needs_confirm = False
 
             approval_id = new_approval_id() if needs_confirm else ""
-            decision_slot = (
-                begin_tool_decision(session_id, approval_id) if needs_confirm else None
-            )
+            decision_slot = begin_tool_decision(session_id, approval_id) if needs_confirm else None
             start_event: dict[str, Any] = {
                 "type": "tool_start",
                 "tool_name": name,
@@ -361,7 +347,7 @@ async def stream_external_local_tool_loop(
             }
             if approval_id:
                 start_event["approval_id"] = approval_id
-            yield f"data: {json.dumps(start_event, ensure_ascii=False)}"
+            yield f"data: {json.dumps(start_event, ensure_ascii = False)}"
 
             denied = False
             if needs_confirm and decision_slot is not None:
@@ -394,7 +380,7 @@ async def stream_external_local_tool_loop(
                     if decision_slot is not None:
                         abort_tool_decision(decision_slot, approval_id)
 
-            yield f"data: {json.dumps({'type': 'tool_end', 'tool_name': name, 'tool_call_id': tool_call_id, 'result': result}, ensure_ascii=False)}"
+            yield f"data: {json.dumps({'type': 'tool_end', 'tool_name': name, 'tool_call_id': tool_call_id, 'result': result}, ensure_ascii = False)}"
             conversation.append(
                 {
                     "role": "tool",

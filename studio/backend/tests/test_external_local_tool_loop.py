@@ -41,29 +41,32 @@ WEB_SEARCH_TOOL = {
 }
 
 
-def _sse_chunk(*, content = None, tool_calls = None, finish_reason = None, model = "remote"):
+def _sse_chunk(
+    *,
+    content = None,
+    tool_calls = None,
+    finish_reason = None,
+    model = "remote",
+):
     delta = {}
     if content is not None:
         delta["content"] = content
     if tool_calls is not None:
         delta["tool_calls"] = tool_calls
-    return (
-        "data: "
-        + json.dumps(
-            {
-                "id": "chatcmpl-test",
-                "object": "chat.completion.chunk",
-                "created": 1,
-                "model": model,
-                "choices": [
-                    {
-                        "index": 0,
-                        "delta": delta,
-                        "finish_reason": finish_reason,
-                    }
-                ],
-            }
-        )
+    return "data: " + json.dumps(
+        {
+            "id": "chatcmpl-test",
+            "object": "chat.completion.chunk",
+            "created": 1,
+            "model": model,
+            "choices": [
+                {
+                    "index": 0,
+                    "delta": delta,
+                    "finish_reason": finish_reason,
+                }
+            ],
+        }
     )
 
 
@@ -183,9 +186,7 @@ def test_stream_external_local_tool_loop_executes_and_continues(monkeypatch):
         assert arguments == {"query": "unsloth tools"}
         return "search hits: 3"
 
-    monkeypatch.setattr(
-        "core.inference.external_agentic.execute_tool", fake_execute_tool
-    )
+    monkeypatch.setattr("core.inference.external_agentic.execute_tool", fake_execute_tool)
 
     async def _run():
         lines = []
@@ -219,7 +220,9 @@ def test_stream_external_local_tool_loop_executes_and_continues(monkeypatch):
     # Second round must include the assistant tool_calls + tool result.
     second_msgs = client.requests[1]["messages"]
     assert any(m.get("role") == "assistant" and m.get("tool_calls") for m in second_msgs)
-    assert any(m.get("role") == "tool" and m.get("content") == "search hits: 3" for m in second_msgs)
+    assert any(
+        m.get("role") == "tool" and m.get("content") == "search hits: 3" for m in second_msgs
+    )
 
 
 def test_stream_external_local_tool_loop_rejects_disabled_tool(monkeypatch):
@@ -251,9 +254,7 @@ def test_stream_external_local_tool_loop_rejects_disabled_tool(monkeypatch):
         called["n"] += 1
         return "should not run"
 
-    monkeypatch.setattr(
-        "core.inference.external_agentic.execute_tool", fake_execute_tool
-    )
+    monkeypatch.setattr("core.inference.external_agentic.execute_tool", fake_execute_tool)
 
     async def _run():
         lines = []
@@ -340,9 +341,7 @@ def test_proxy_ollama_enable_tools_attaches_local_tools(monkeypatch):
     assert "hi" in text
     assert "data: [DONE]" in text
     names = [
-        (t.get("function") or {}).get("name")
-        for t in (seen["tools"] or [])
-        if isinstance(t, dict)
+        (t.get("function") or {}).get("name") for t in (seen["tools"] or []) if isinstance(t, dict)
     ]
     assert "web_search" in names
 
