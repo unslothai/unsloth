@@ -3262,9 +3262,9 @@ class TestStrixRocm71Override:
         assert override >= 0 and dxg >= 0 and rocdxg >= 0 and infer >= 0
         assert "microsoft" in body, "WSL gate must also detect WSL via /proc/version"
         assert override < dxg, "the explicit override must return before the WSL gate"
-        assert dxg < infer and rocdxg < infer, (
-            "the WSL/librocdxg gate must run before the cpuinfo/lspci inference"
-        )
+        assert (
+            dxg < infer and rocdxg < infer
+        ), "the WSL/librocdxg gate must run before the cpuinfo/lspci inference"
 
     def test_install_sh_reroute_is_x86_64_only(self):
         """The Linux inferred-gfx reroute must be x86_64-only: ROCm torch wheels are
@@ -3274,9 +3274,9 @@ class TestStrixRocm71Override:
         idx = source.find("_linux_inferred_gfx=$(_infer_linux_amd_gfx_arch")
         assert idx >= 0, "reroute consumer not found"
         window = source[max(0, idx - 400) : idx]
-        assert 'case "$_ARCH" in x86_64|amd64)' in window, (
-            "the inferred-gfx reroute must guard on x86_64|amd64 arch"
-        )
+        assert (
+            'case "$_ARCH" in x86_64|amd64)' in window
+        ), "the inferred-gfx reroute must guard on x86_64|amd64 arch"
 
     def test_amd_arch_index_url_linux_honors_amd_mirror(self):
         """On Linux the inferred-gfx repair must honour UNSLOTH_AMD_ROCM_MIRROR (the
@@ -3284,12 +3284,14 @@ class TestStrixRocm71Override:
         Linux install does not silently fall back to repo.amd.com. Windows still
         delegates to the Windows mirror path."""
         m = stack_mod
-        with patch.object(m, "IS_WINDOWS", False), patch.dict(
-            os.environ, {"UNSLOTH_AMD_ROCM_MIRROR": "https://mirror.local/rocm"}
+        with (
+            patch.object(m, "IS_WINDOWS", False),
+            patch.dict(os.environ, {"UNSLOTH_AMD_ROCM_MIRROR": "https://mirror.local/rocm"}),
         ):
             assert m._amd_arch_index_url("gfx1151") == "https://mirror.local/rocm/gfx1151/"
-        with patch.object(m, "IS_WINDOWS", False), patch.dict(
-            os.environ, {"UNSLOTH_AMD_ROCM_MIRROR": ""}
+        with (
+            patch.object(m, "IS_WINDOWS", False),
+            patch.dict(os.environ, {"UNSLOTH_AMD_ROCM_MIRROR": ""}),
         ):
             assert m._amd_arch_index_url("gfx1151") == "https://repo.amd.com/rocm/whl/gfx1151/"
             assert m._amd_arch_index_url("gfx9999") is None

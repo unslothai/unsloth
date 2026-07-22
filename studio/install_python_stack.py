@@ -847,9 +847,9 @@ def _amd_arch_index_url(gfx_arch: str | None) -> str | None:
     arch_family = _GFX_TO_AMD_INDEX_ARCH.get(gfx_arch or "")
     if arch_family is None:
         return None
-    base = (
-        os.environ.get("UNSLOTH_AMD_ROCM_MIRROR") or "https://repo.amd.com/rocm/whl"
-    ).rstrip("/")
+    base = (os.environ.get("UNSLOTH_AMD_ROCM_MIRROR") or "https://repo.amd.com/rocm/whl").rstrip(
+        "/"
+    )
     return f"{base}/{arch_family}/"
 
 
