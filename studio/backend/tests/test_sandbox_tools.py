@@ -297,6 +297,7 @@ class TestSandboxEnvIsolation:
             "PYTHONPATH",
             "VIRTUAL_ENV",
             "SystemRoot",
+            "PATHEXT",  # Windows only; inherited so bare names like git resolve
         }
         extras = set(env.keys()) - allowed
         assert not extras, f"sandbox env added unexpected keys: {extras}"
@@ -304,6 +305,41 @@ class TestSandboxEnvIsolation:
         # sitecustomize shim dir (code-interpreter path remap).
         assert env["PYTHONPATH"].endswith("sandbox_site")
         assert "leak-me" not in env["PYTHONPATH"]
+
+    def test_host_path_absolute_dirs_appended_after_curated(self, monkeypatch, tmp_path):
+        # #7317: Windows Git lives under Program Files, not System32. Sandbox PATH
+        # must still resolve bare `git` by appending absolute host PATH dirs after
+        # the curated interpreter / system prefix.
+        from core.inference.tools import _build_safe_env
+
+        git_dir = tmp_path / "Git" / "cmd"
+        git_dir.mkdir(parents = True)
+        junk_rel = "relative-bin"
+        monkeypatch.setenv(
+            "PATH",
+            os.pathsep.join(
+                [str(git_dir), ".", junk_rel, os.environ.get("PATH", "")]
+            ),
+        )
+        env = _build_safe_env(str(tmp_path))
+        parts = env["PATH"].split(os.pathsep)
+        assert str(git_dir) in parts
+        # Curated prefix stays ahead of host Git so Studio python/pip win.
+        assert parts.index(str(git_dir)) > 0
+        assert "." not in parts
+        assert junk_rel not in parts
+
+    def test_host_path_quoted_windows_style_entries_stripped(self, monkeypatch, tmp_path):
+        from core.inference.tools import _build_safe_env
+
+        quoted = tmp_path / "Quoted Tools"
+        quoted.mkdir()
+        # Windows PATH entries are sometimes quoted when they contain spaces.
+        monkeypatch.setenv("PATH", f'"{quoted}"{os.pathsep}{os.environ.get("PATH", "")}')
+        env = _build_safe_env(str(tmp_path))
+        parts = env["PATH"].split(os.pathsep)
+        assert str(quoted) in parts
+        assert f'"{quoted}"' not in parts
 
     def test_home_points_at_sandbox_workdir(self, tmp_path):
         from core.inference.tools import _build_safe_env

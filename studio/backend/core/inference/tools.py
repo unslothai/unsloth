@@ -2496,10 +2496,17 @@ def _build_safe_env(workdir: str) -> dict[str, str]:
 
     Whitelist-built from scratch (parent env NOT inherited): only PATH/HOME/
     TMPDIR/LANG/TERM/PYTHONIOENCODING/PYTHONPATH (+VIRTUAL_ENV or Windows
-    SystemRoot) reach the child; all credential vars (HF_TOKEN, AWS_*, etc.)
-    are absent. HOME points at the sandbox workdir so SDKs can't read the
+    SystemRoot/PATHEXT) reach the child; all credential vars (HF_TOKEN, AWS_*,
+    etc.) are absent. HOME points at the sandbox workdir so SDKs can't read the
     operator's cached creds. PYTHONPATH carries only the sandbox sitecustomize
     shim directory.
+
+    PATH starts with the Studio interpreter / venv and OS system dirs so
+    ``python``/``pip`` stay pinned, then appends absolute directories from the
+    parent PATH so user-installed tools (e.g. Windows Git under
+    ``C:\\Program Files\\Git\\cmd``) resolve by bare name like a normal
+    terminal (#7317). Relative / ``.`` entries are skipped to avoid cwd PATH
+    hijacks.
     """
     # Start from the running interpreter's dir so 'python'/'pip' resolve to the
     # same environment the Unsloth server runs in.
@@ -2518,6 +2525,14 @@ def _build_safe_env(workdir: str) -> dict[str, str]:
         path_entries.extend([os.path.join(sysroot, "System32"), sysroot])
     else:
         path_entries.extend(["/usr/local/bin", "/usr/bin", "/bin"])
+
+    # Append absolute host PATH dirs so bare tools like `git` resolve (#7317).
+    # Keep curated entries first; skip relative / "." to avoid cwd hijacks.
+    for entry in os.environ.get("PATH", "").split(os.pathsep):
+        entry = entry.strip().strip('"')
+        if not entry or entry in (".",) or not os.path.isabs(entry):
+            continue
+        path_entries.append(entry)
 
     # Deduplicate, preserving order.
     deduped = list(dict.fromkeys(p for p in path_entries if p))
@@ -2538,6 +2553,11 @@ def _build_safe_env(workdir: str) -> dict[str, str]:
     # Windows needs SystemRoot for Python/subprocess to work.
     if sys.platform == "win32":
         env["SystemRoot"] = os.environ.get("SystemRoot", r"C:\Windows")
+        # cmd.exe uses PATHEXT to map `git` -> `git.exe`. Inherit the host
+        # list when present so bare tool names resolve like a normal shell.
+        pathext = os.environ.get("PATHEXT")
+        if pathext:
+            env["PATHEXT"] = pathext
     return env
 
 
