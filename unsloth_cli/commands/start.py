@@ -373,6 +373,12 @@ def _subagent_model_id(
             status = _http_json("GET", f"{base}/api/inference/status", key)
         except Exception:
             status = {}
+            # Silence here would defeat the exact-variant guarantee unnoticed.
+            typer.echo(
+                "Warning: could not verify the loaded GGUF variant; a later reload "
+                "may pick a different cached quant. Pass :variant to pin it.",
+                err = True,
+            )
         if status.get("is_gguf"):
             variant = status.get("gguf_variant")
     return (
@@ -385,6 +391,13 @@ def _subagent_model_id(
 def _fail(message: str) -> NoReturn:
     typer.echo(message, err = True)
     raise typer.Exit(code = 1)
+
+
+def _reject_as_subagent(agent: str, args: list) -> None:
+    # Unsupported agents would otherwise forward the flag to the agent binary
+    # and fail late, after Studio has already loaded the model.
+    if "--as-subagent" in args:
+        _fail(f"--as-subagent is not supported for {agent}.")
 
 
 def _http_error_detail(exc: urllib.error.HTTPError) -> str:
@@ -2608,6 +2621,7 @@ def openclaw(
     persist: bool = _PERSIST_OPTION,
 ):
     """Point OpenClaw at the running Unsloth server and start it."""
+    _reject_as_subagent("openclaw", ctx.args)
     base, key, entry = _connect(
         api_key,
         model,
@@ -2792,6 +2806,7 @@ def hermes(
     persist: bool = _PERSIST_OPTION,
 ):
     """Point Hermes (Nous Research) at the running Unsloth server and start it."""
+    _reject_as_subagent("hermes", ctx.args)
     native_args = [*_yolo_command_flags("hermes", yolo), *ctx.args]
     command = ["hermes", *_hermes_resume_oneshot_args(native_args)]
     base, key, entry = _connect(

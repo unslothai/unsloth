@@ -12,6 +12,7 @@ import shutil
 import subprocess
 import sys
 import threading
+import time
 from typing import Any, Callable
 
 from unsloth_cli.commands.start import (
@@ -62,16 +63,30 @@ def _result_text(stdout: str) -> str:
 def _stop_child(process: subprocess.Popen) -> None:
     """Stop the Claude child and any tool processes it started."""
     if process.poll() is not None:
+        if os.name != "nt":
+            # The leader exited, but tool processes in its group may survive.
+            try:
+                os.killpg(process.pid, signal.SIGTERM)
+            except OSError:
+                return
+            time.sleep(_CANCEL_GRACE_SECONDS)
+            try:
+                os.killpg(process.pid, signal.SIGKILL)
+            except OSError:
+                pass
         return
     if os.name == "nt":
         try:
-            subprocess.run(
+            completed = subprocess.run(
                 ["taskkill", "/PID", str(process.pid), "/T", "/F"],
                 capture_output = True,
                 timeout = 15,
                 check = False,
             )
         except Exception:
+            completed = None
+        # A failed taskkill must not leave the child running through the grace wait.
+        if (completed is None or completed.returncode != 0) and process.poll() is None:
             process.terminate()
     else:
         try:
@@ -89,6 +104,13 @@ def _stop_child(process: subprocess.Popen) -> None:
             except OSError:
                 process.kill()
         process.wait()
+    else:
+        if os.name != "nt":
+            # The leader is gone; make sure no group member outlives cancellation.
+            try:
+                os.killpg(process.pid, signal.SIGKILL)
+            except OSError:
+                pass
 
 
 def run_local_agent(task: str, cancel_event: threading.Event | None = None) -> str:

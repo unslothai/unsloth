@@ -6,6 +6,9 @@ from __future__ import annotations
 import io
 import json
 import os
+import subprocess
+import sys
+import time
 
 import pytest
 
@@ -264,6 +267,7 @@ def test_windows_cancellation_stops_the_child_process_tree(monkeypatch):
     def run(command, **kwargs):
         captured["command"] = command
         captured.update(kwargs)
+        return bridge.subprocess.CompletedProcess(command, 0)
 
     monkeypatch.setattr(bridge.subprocess, "run", run)
     bridge._stop_child(Process())
@@ -272,6 +276,61 @@ def test_windows_cancellation_stops_the_child_process_tree(monkeypatch):
     assert captured["capture_output"] is True
     assert captured["check"] is False
     assert captured["wait_timeout"] == bridge._CANCEL_GRACE_SECONDS
+
+
+def test_windows_failed_taskkill_still_terminates_the_child(monkeypatch):
+    monkeypatch.setattr(bridge.os, "name", "nt")
+    captured = {}
+
+    class Process:
+        pid = 4321
+        returncode = None
+
+        def poll(self):
+            return self.returncode
+
+        def wait(self, timeout = None):
+            self.returncode = 1
+
+        def terminate(self):
+            captured["terminated"] = True
+            self.returncode = 1
+
+    monkeypatch.setattr(
+        bridge.subprocess,
+        "run",
+        lambda command, **kwargs: bridge.subprocess.CompletedProcess(command, 1),
+    )
+    bridge._stop_child(Process())
+
+    assert captured.get("terminated") is True
+
+
+@pytest.mark.skipif(os.name == "nt", reason = "POSIX process groups")
+def test_stop_child_kills_survivors_after_leader_exit(monkeypatch, tmp_path):
+    monkeypatch.setattr(bridge, "_CANCEL_GRACE_SECONDS", 0.2)
+    marker = tmp_path / "grandchild-survived"
+    grandchild = (
+        "import pathlib, sys, time; time.sleep(1.0); "
+        "pathlib.Path(sys.argv[1]).write_text('alive')"
+    )
+    process = subprocess.Popen(
+        [
+            sys.executable,
+            "-c",
+            "import subprocess, sys; "
+            "subprocess.Popen([sys.executable, '-c', sys.argv[1], sys.argv[2]])",
+            grandchild,
+            str(marker),
+        ],
+        start_new_session = True,
+    )
+    process.wait()
+
+    bridge._stop_child(process)
+
+    time.sleep(1.2)
+    assert not marker.exists()
 
 
 def test_result_parser_accepts_diagnostics_before_json():

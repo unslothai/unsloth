@@ -161,13 +161,25 @@ export default function unslothSubagent(pi: ExtensionAPI): void {
 			let output = "";
 			let stderr = "";
 			let lastResponse = "";
+			let childError = "";
 			let aborted = false;
 			const processLine = (line: string) => {
 				try {
 					const event = JSON.parse(line);
-					if (event.type === "message_end") {
-						const response = finalText(event.message);
-						if (response) lastResponse = boundedResult(response);
+					if (event.type !== "message_end") return;
+					const message = event.message;
+					// Pi reports model/API failures as message_end events while still
+					// exiting 0, so the exit status alone cannot surface them.
+					if (message?.stopReason === "error" || message?.stopReason === "aborted") {
+						childError =
+							(typeof message.errorMessage === "string" && message.errorMessage) ||
+							`The local Unsloth agent stopped: ${message.stopReason}.`;
+						return;
+					}
+					const response = finalText(message);
+					if (response) {
+						lastResponse = boundedResult(response);
+						childError = "";
 					}
 				} catch {
 					// Ignore non-JSON diagnostic lines. The exit status still reports failures.
@@ -219,6 +231,7 @@ export default function unslothSubagent(pi: ExtensionAPI): void {
 			if (exitCode !== 0) {
 				throw new Error(stderr.trim() || `The local Unsloth agent exited with code ${exitCode}.`);
 			}
+			if (childError) throw new Error(boundedResult(childError));
 			return {
 				content: [{ type: "text", text: lastResponse || "The local agent returned no text." }],
 				details: { provider, model },

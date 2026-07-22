@@ -113,3 +113,79 @@ test("cancellation stops the Pi child process group", async () => {{
     )
 
     assert completed.returncode == 0, completed.stdout + completed.stderr
+
+
+@pytest.mark.skipif(os.name == "nt", reason = "POSIX driver script")
+def test_pi_child_error_events_fail_the_tool_call(tmp_path):
+    bun = shutil.which("bun")
+    if bun is None:
+        pytest.skip("Bun is required to execute the bundled Pi extension")
+
+    config = tmp_path / "subagent.json"
+    config.write_text(
+        json.dumps(
+            {
+                "baseUrl": "http://127.0.0.1:8000/v1",
+                "apiKey": "private-token",
+                "model": "local-model",
+                "contextWindow": 32768,
+                "maxTokens": 8192,
+            }
+        ),
+        encoding = "utf-8",
+    )
+    # Pi reports model/API failures as message_end events while exiting 0.
+    driver = tmp_path / "pi-driver.js"
+    driver.write_text(
+        """
+const event = {
+    type: "message_end",
+    message: { role: "assistant", stopReason: "error", errorMessage: "backend unreachable", content: [] },
+};
+console.log(JSON.stringify(event));
+""",
+        encoding = "utf-8",
+    )
+    extension = Path(__file__).parents[1] / "pi_subagent.ts"
+    test_file = tmp_path / "pi-error.test.ts"
+    test_file.write_text(
+        f"""
+import {{ expect, mock, test }} from "bun:test";
+import {{ pathToFileURL }} from "node:url";
+
+mock.module("typebox", () => ({{
+    Type: {{ Object: (value) => value, String: (value) => value }},
+}}));
+
+test("child error events fail the tool call", async () => {{
+    process.env.UNSLOTH_PI_SUBAGENT_CONFIG = {str(config)!r};
+    process.argv[1] = {str(driver)!r};
+
+    const loaded = await import(pathToFileURL({str(extension)!r}).href);
+    let tool;
+    loaded.default({{
+        registerProvider() {{}},
+        registerTool(value) {{ tool = value; }},
+    }});
+
+    const execution = tool.execute(
+        "call",
+        {{ task: "fail" }},
+        undefined,
+        undefined,
+        {{ cwd: {str(tmp_path)!r} }},
+    );
+    await expect(execution).rejects.toThrow("backend unreachable");
+}}, 10_000);
+""",
+        encoding = "utf-8",
+    )
+
+    completed = subprocess.run(
+        [bun, "test", str(test_file)],
+        capture_output = True,
+        text = True,
+        timeout = 15,
+    )
+
+    assert completed.returncode == 0, completed.stdout + completed.stderr

@@ -701,6 +701,22 @@ def test_subagent_model_id_uses_loaded_variant(monkeypatch):
     assert start._subagent_model_id(BASE, "key", MODEL, None, None) == MODEL["id"] + ":Q5_K_M"
 
 
+def test_subagent_model_id_warns_when_status_unavailable(monkeypatch, capsys):
+    def raise_error(*args, **kwargs):
+        raise OSError("connection refused")
+
+    monkeypatch.setattr(start, "_http_json", raise_error)
+    assert start._subagent_model_id(BASE, "key", MODEL, None, None) == MODEL["id"]
+    assert "could not verify the loaded GGUF variant" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize("agent", ["openclaw", "hermes"])
+def test_unsupported_agents_reject_as_subagent(agent):
+    result = CliRunner().invoke(start.start_app, [agent, "--as-subagent"])
+    assert result.exit_code == 1
+    assert f"--as-subagent is not supported for {agent}." in result.output
+
+
 @pytest.fixture()
 def fake_studio(tmp_path, monkeypatch):
     calls = []
