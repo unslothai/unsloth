@@ -152,17 +152,18 @@ _ENABLE_TOOLS_OPTION = typer.Option(
     "Default off so the agent's own tools are relayed unchanged.",
 )
 _TOOL_CALL_HEALING_OPTION = typer.Option(
-    True,
+    None,
     "--enable-tool-call-healing/--disable-tool-call-healing",
     rich_help_panel = _PANEL_SERVER,
-    help = "Promote text-form tool calls from small GGUFs back into structured calls. Default on.",
+    help = "Promote text-form tool calls from small GGUFs back into structured calls. On by "
+    "default; when the flag is omitted an inherited UNSLOTH_DISABLE_TOOL_CALL_HEALING is kept.",
 )
 _TOOL_CALL_NUDGING_OPTION = typer.Option(
-    True,
+    None,
     "--enable-tool-call-nudging/--disable-tool-call-nudging",
     rich_help_panel = _PANEL_SERVER,
-    help = "Retry once with a nudge when a non-streaming passthrough tool call can't be "
-    "healed. Default on.",
+    help = "Retry once with a nudge when a non-streaming passthrough tool call can't be healed. "
+    "On by default; when the flag is omitted an inherited UNSLOTH_TOOL_CALL_NUDGE is kept.",
 )
 
 # Agent-session knobs.
@@ -365,8 +366,8 @@ class ServerOptions(NamedTuple):
     """Tool-call knobs forwarded to an auto-started `unsloth run` server."""
 
     enable_tools: bool = False
-    tool_call_healing: bool = True
-    tool_call_nudging: bool = True
+    tool_call_healing: Optional[bool] = None
+    tool_call_nudging: Optional[bool] = None
 
 
 def _split_repo_variant(model: str) -> tuple:
@@ -416,12 +417,6 @@ def _consume_positional_model(model: Optional[str], args: list) -> tuple:
     if model or not args or not _looks_like_model(args[0]):
         return model, args
     return args[0], args[1:]
-
-
-def _default_gguf_variant(repo: str) -> str:
-    """Default quant for a GGUF repo without an explicit variant: UD-Q4_K_XL for the
-    `unsloth` namespace (its uploads ship it), Q4_K_M elsewhere."""
-    return "UD-Q4_K_XL" if repo.split("/", 1)[0].lower() == "unsloth" else "Q4_K_M"
 
 
 def _display_model_spec(model: str, variant: Optional[str]) -> str:
@@ -905,8 +900,17 @@ def _start_studio_server(
     child_env[_START_API_KEY_MARKER_ENV] = "1"
     # Convey healing/nudging through the env; `unsloth run` reads these when its own
     # flags are omitted, so this works even if run re-execs into an older Studio venv.
-    child_env["UNSLOTH_DISABLE_TOOL_CALL_HEALING"] = "0" if server.tool_call_healing else "1"
-    child_env["UNSLOTH_TOOL_CALL_NUDGE"] = "1" if server.tool_call_nudging else "0"
+    # Only write when the operator set the flag explicitly; otherwise keep whatever they
+    # already exported (child_env is a copy of os.environ), falling back to the start
+    # defaults (healing on, nudging on) when nothing was inherited.
+    if server.tool_call_healing is not None:
+        child_env["UNSLOTH_DISABLE_TOOL_CALL_HEALING"] = "0" if server.tool_call_healing else "1"
+    elif "UNSLOTH_DISABLE_TOOL_CALL_HEALING" not in child_env:
+        child_env["UNSLOTH_DISABLE_TOOL_CALL_HEALING"] = "0"
+    if server.tool_call_nudging is not None:
+        child_env["UNSLOTH_TOOL_CALL_NUDGE"] = "1" if server.tool_call_nudging else "0"
+    elif "UNSLOTH_TOOL_CALL_NUDGE" not in child_env:
+        child_env["UNSLOTH_TOOL_CALL_NUDGE"] = "1"
     kwargs: dict = {
         "stdout": log,
         "stderr": subprocess.STDOUT,
@@ -1011,13 +1015,9 @@ def _require_studio(
         # returned base hit the same server we launch (not a portless :80).
         expected = _effective_base(expected)
         load = load or LoadOptions()
-        # A bare GGUF hub repo with no variant would let the fresh server pick an arbitrary
-        # cached quant; default it so `unsloth start unsloth/Model-GGUF` is deterministic.
-        # Only for a hub id (not a local path/dir, which may only hold a different quant) and
-        # only on the auto-serve path so attaching to a loaded model never reloads.
-        repo = _split_repo_variant(model)[0]
-        if not load.gguf_variant and repo.lower().endswith("-gguf") and _is_hub_model_id(repo):
-            load = load._replace(gguf_variant = _default_gguf_variant(repo))
+        # Leave a bare GGUF repo's variant unset: the server's own quant preference already
+        # picks the best available (UD-Q4_K_XL for Unsloth uploads, else Q4_K_M) and falls back
+        # when that exact quant is missing, which forcing a fixed variant here would break.
         return expected, _start_studio_server(expected, model, load, server_options)
     model_hint = "" if model else " Pass --model to have it start one for you, or"
     _fail(
@@ -2569,8 +2569,8 @@ def claude(
     load_in_4bit: bool = _LOAD_4BIT_OPTION,
     tensor_parallel: bool = _TENSOR_PARALLEL_OPTION,
     enable_tools: bool = _ENABLE_TOOLS_OPTION,
-    tool_call_healing: bool = _TOOL_CALL_HEALING_OPTION,
-    tool_call_nudging: bool = _TOOL_CALL_NUDGING_OPTION,
+    tool_call_healing: Optional[bool] = _TOOL_CALL_HEALING_OPTION,
+    tool_call_nudging: Optional[bool] = _TOOL_CALL_NUDGING_OPTION,
     serve: bool = _SERVE_OPTION,
     yolo: bool = _YOLO_OPTION,
     persist: bool = _PERSIST_OPTION,
@@ -2670,8 +2670,8 @@ def codex(
     load_in_4bit: bool = _LOAD_4BIT_OPTION,
     tensor_parallel: bool = _TENSOR_PARALLEL_OPTION,
     enable_tools: bool = _ENABLE_TOOLS_OPTION,
-    tool_call_healing: bool = _TOOL_CALL_HEALING_OPTION,
-    tool_call_nudging: bool = _TOOL_CALL_NUDGING_OPTION,
+    tool_call_healing: Optional[bool] = _TOOL_CALL_HEALING_OPTION,
+    tool_call_nudging: Optional[bool] = _TOOL_CALL_NUDGING_OPTION,
     serve: bool = _SERVE_OPTION,
     yolo: bool = _YOLO_OPTION,
     persist: bool = _PERSIST_OPTION,
@@ -2745,8 +2745,8 @@ def openclaw(
     load_in_4bit: bool = _LOAD_4BIT_OPTION,
     tensor_parallel: bool = _TENSOR_PARALLEL_OPTION,
     enable_tools: bool = _ENABLE_TOOLS_OPTION,
-    tool_call_healing: bool = _TOOL_CALL_HEALING_OPTION,
-    tool_call_nudging: bool = _TOOL_CALL_NUDGING_OPTION,
+    tool_call_healing: Optional[bool] = _TOOL_CALL_HEALING_OPTION,
+    tool_call_nudging: Optional[bool] = _TOOL_CALL_NUDGING_OPTION,
     serve: bool = _SERVE_OPTION,
     yolo: bool = _YOLO_OPTION,
     persist: bool = _PERSIST_OPTION,
@@ -2809,8 +2809,8 @@ def opencode(
     load_in_4bit: bool = _LOAD_4BIT_OPTION,
     tensor_parallel: bool = _TENSOR_PARALLEL_OPTION,
     enable_tools: bool = _ENABLE_TOOLS_OPTION,
-    tool_call_healing: bool = _TOOL_CALL_HEALING_OPTION,
-    tool_call_nudging: bool = _TOOL_CALL_NUDGING_OPTION,
+    tool_call_healing: Optional[bool] = _TOOL_CALL_HEALING_OPTION,
+    tool_call_nudging: Optional[bool] = _TOOL_CALL_NUDGING_OPTION,
     serve: bool = _SERVE_OPTION,
     yolo: bool = _YOLO_OPTION,
     persist: bool = _PERSIST_OPTION,
@@ -2953,8 +2953,8 @@ def hermes(
     load_in_4bit: bool = _LOAD_4BIT_OPTION,
     tensor_parallel: bool = _TENSOR_PARALLEL_OPTION,
     enable_tools: bool = _ENABLE_TOOLS_OPTION,
-    tool_call_healing: bool = _TOOL_CALL_HEALING_OPTION,
-    tool_call_nudging: bool = _TOOL_CALL_NUDGING_OPTION,
+    tool_call_healing: Optional[bool] = _TOOL_CALL_HEALING_OPTION,
+    tool_call_nudging: Optional[bool] = _TOOL_CALL_NUDGING_OPTION,
     serve: bool = _SERVE_OPTION,
     yolo: bool = _YOLO_OPTION,
     persist: bool = _PERSIST_OPTION,
@@ -2993,8 +2993,8 @@ def pi(
     load_in_4bit: bool = _LOAD_4BIT_OPTION,
     tensor_parallel: bool = _TENSOR_PARALLEL_OPTION,
     enable_tools: bool = _ENABLE_TOOLS_OPTION,
-    tool_call_healing: bool = _TOOL_CALL_HEALING_OPTION,
-    tool_call_nudging: bool = _TOOL_CALL_NUDGING_OPTION,
+    tool_call_healing: Optional[bool] = _TOOL_CALL_HEALING_OPTION,
+    tool_call_nudging: Optional[bool] = _TOOL_CALL_NUDGING_OPTION,
     serve: bool = _SERVE_OPTION,
     yolo: bool = _YOLO_OPTION,
     persist: bool = _PERSIST_OPTION,

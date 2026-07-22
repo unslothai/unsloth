@@ -1608,21 +1608,9 @@ def test_consume_positional_model_ignores_non_leading_and_explicit_model():
     assert model == "explicit/model" and rest == ["owner/repo"]
 
 
-@pytest.mark.parametrize(
-    "repo, expected",
-    [
-        ("unsloth/Model-GGUF", "UD-Q4_K_XL"),
-        ("unsloth-community/Model-GGUF", "Q4_K_M"),  # exact namespace, not a prefix
-        ("someorg/Model-GGUF", "Q4_K_M"),
-    ],
-)
-def test_default_gguf_variant(repo, expected):
-    assert start._default_gguf_variant(repo) == expected
-
-
-def test_start_positional_model_defaults_variant_on_auto_serve(fake_studio, monkeypatch):
+def test_start_positional_model_routes_to_model_on_auto_serve(fake_studio, monkeypatch):
     # `unsloth start claude unsloth/Model-GGUF` (no --model): the positional becomes the
-    # model and a fresh auto-served server gets the default UD-Q4_K_XL quant.
+    # model; the GGUF variant is left unset so the server's own quant preference selects it.
     monkeypatch.setenv("UNSLOTH_STUDIO_URL", "http://127.0.0.1:8888")
     monkeypatch.setattr(start, "find_studio_server", lambda: None)
     captured = {}
@@ -1648,7 +1636,7 @@ def test_start_positional_model_defaults_variant_on_auto_serve(fake_studio, monk
     result = CliRunner().invoke(start.start_app, ["claude", "unsloth/gemma-4-E2B-it-GGUF"])
     assert result.exit_code == 0, result.output
     assert captured["model"] == "unsloth/gemma-4-E2B-it-GGUF"
-    assert captured["load"].gguf_variant == "UD-Q4_K_XL"
+    assert captured["load"].gguf_variant is None
 
 
 def test_start_local_gguf_path_keeps_no_default_variant(fake_studio, monkeypatch, tmp_path):
@@ -1697,6 +1685,9 @@ def test_start_studio_server_forwards_tool_flags_via_command_and_env(monkeypatch
     monkeypatch.setattr(start, "_studio_healthy", lambda base, timeout = 3.0: True)
     monkeypatch.setattr(start, "_log_tail", lambda path, lines = 20: "API Key: sk-unsloth-x")
     monkeypatch.setattr(start.time, "sleep", lambda _s: None)
+    # No inherited kill switches, so the omitted-flag default applies.
+    monkeypatch.delenv("UNSLOTH_DISABLE_TOOL_CALL_HEALING", raising = False)
+    monkeypatch.delenv("UNSLOTH_TOOL_CALL_NUDGE", raising = False)
 
     # Default start: tools off (passthrough), healing + nudging on.
     start._start_studio_server("http://127.0.0.1:8888", "unsloth/M-GGUF", start.LoadOptions())
@@ -1716,6 +1707,44 @@ def test_start_studio_server_forwards_tool_flags_via_command_and_env(monkeypatch
     assert "--enable-tools" in cmd and "--disable-tools" not in cmd
     assert env["UNSLOTH_DISABLE_TOOL_CALL_HEALING"] == "1"
     assert env["UNSLOTH_TOOL_CALL_NUDGE"] == "0"
+
+
+def test_start_studio_server_respects_inherited_tool_call_env(monkeypatch):
+    # With the flags omitted, an operator's pre-exported kill switch must survive into the
+    # child server instead of being overwritten with the start defaults.
+    captured = {}
+
+    class FakePopen:
+        def __init__(self, command, **kwargs):
+            captured["kwargs"] = kwargs
+            self.pid = 1
+
+        def poll(self):
+            return None
+
+    monkeypatch.setattr(start.subprocess, "Popen", FakePopen)
+    monkeypatch.setattr(start, "_studio_healthy", lambda base, timeout = 3.0: True)
+    monkeypatch.setattr(start, "_log_tail", lambda path, lines = 20: "API Key: sk-unsloth-x")
+    monkeypatch.setattr(start.time, "sleep", lambda _s: None)
+    monkeypatch.setenv("UNSLOTH_DISABLE_TOOL_CALL_HEALING", "1")
+    monkeypatch.setenv("UNSLOTH_TOOL_CALL_NUDGE", "0")
+
+    # Flags omitted -> inherited values are preserved.
+    start._start_studio_server("http://127.0.0.1:8888", "unsloth/M-GGUF", start.LoadOptions())
+    env = captured["kwargs"]["env"]
+    assert env["UNSLOTH_DISABLE_TOOL_CALL_HEALING"] == "1"
+    assert env["UNSLOTH_TOOL_CALL_NUDGE"] == "0"
+
+    # An explicit flag still overrides the inherited env.
+    start._start_studio_server(
+        "http://127.0.0.1:8888",
+        "unsloth/M-GGUF",
+        start.LoadOptions(),
+        start.ServerOptions(tool_call_healing = True, tool_call_nudging = True),
+    )
+    env = captured["kwargs"]["env"]
+    assert env["UNSLOTH_DISABLE_TOOL_CALL_HEALING"] == "0"
+    assert env["UNSLOTH_TOOL_CALL_NUDGE"] == "1"
 
 
 def test_connect_model_bare_id_matches_loaded_without_reload(fake_studio):
