@@ -2778,18 +2778,16 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
                 )
 
     # ── 1f-linux. Linux ROCm RDNA4 _grouped_mm null kernel ──
-    # The guard above is win32-only; RDNA4 (gfx1200/gfx1201) hits the same null
-    # HIP _grouped_mm kernel on Linux at ROCm <= 7.12 (fixed in 7.13;
-    # ROCm/TheRock #5284). Gate on arch + HIP < 7.13 so NVIDIA/CUDA and non-RDNA4
-    # AMD are never touched; no-op on fixed runtimes.
+    # The win32 guard above misses Linux: RDNA4 (gfx1200/gfx1201) hits the same null
+    # HIP _grouped_mm kernel at ROCm <= 7.12 (fixed 7.13, ROCm/TheRock #5284). Gate on
+    # arch + HIP < 7.13 so NVIDIA/CUDA and non-RDNA4 AMD are untouched; no-op if fixed.
     if sys.platform.startswith("linux") and _hw.IS_ROCM:
         try:
             _torch_lin = sys.modules.get("torch")
             if _torch_lin is not None and _torch_lin.cuda.is_available():
-                # Prefer torch.version.hip, else the rocmX.Y embedded in
-                # torch.__version__ (AMD SDK / Radeon wheels leave version.hip
-                # unset). Unknown version on a recognized gfx120X ROCm build ->
-                # treat as affected unless it is a post-fix rocmsdk wheel.
+                # Prefer torch.version.hip, else rocmX.Y from torch.__version__ (AMD
+                # SDK / Radeon wheels leave version.hip unset). Unknown version on a
+                # gfx120X build -> assume affected unless it is a post-fix rocmsdk wheel.
                 _hip_str = str(getattr(getattr(_torch_lin, "version", None), "hip", "") or "")
                 _ver = getattr(_torch_lin, "__version__", "").lower()
                 _m = re.match(r"(\d+)\.(\d+)", _hip_str) or re.search(r"rocm(\d+)\.(\d+)", _ver)
@@ -2797,10 +2795,9 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
                     _hip_lt_713 = (int(_m.group(1)), int(_m.group(2))) < (7, 13)
                 else:
                     _hip_lt_713 = "rocmsdk" not in _ver
-                # Scan every visible GPU: device_map="balanced" can place layers
-                # on a later RDNA4 card, so device 0 alone is not enough. Match
-                # gfx120X by arch, or by RX 9000 / R9700 name when the wheel omits
-                # gcnArchName (name check only when arch is unknown).
+                # Scan every visible GPU (device_map="balanced" can place layers on a
+                # later RDNA4 card, so device 0 is not enough). Match gfx120X by arch,
+                # or by RX 9000 / R9700 name when the wheel omits gcnArchName.
                 _rdna4 = False
                 for _i in range(_torch_lin.cuda.device_count()):
                     _props = _torch_lin.cuda.get_device_properties(_i)
