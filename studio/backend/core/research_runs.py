@@ -61,6 +61,7 @@ _QUERY_OPAQUE_TOKEN = re.compile(
     r"\b(?:eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}"
     r"|sk-[A-Za-z0-9_-]{16,}|gh[pousr]_[A-Za-z0-9_]{20,}"
     r"|github_pat_[A-Za-z0-9_]{20,}|xox[baprs]-[A-Za-z0-9-]{16,}"
+    r"|hf_[A-Za-z0-9]{20,}|glpat-[A-Za-z0-9_-]{20,}"
     r"|AKIA[A-Z0-9]{16})\b"
 )
 # International (+CC ...) or NANP-formatted phone numbers. Requires separators or a
