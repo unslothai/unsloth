@@ -40,7 +40,7 @@ type NavigatorWithUserAgentData = Navigator & {
   };
 };
 
-function getClientPlatform(): string {
+export function getClientPlatform(): string {
   if (typeof navigator === "undefined") {
     return "";
   }

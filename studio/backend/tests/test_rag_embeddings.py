@@ -146,7 +146,7 @@ def test_sentence_transformer_load_uses_live_cache(monkeypatch, tmp_path):
         SimpleNamespace(SentenceTransformer = FakeSentenceTransformer),
     )
     monkeypatch.setattr(embeddings, "_install_torchao_stub_once", lambda: None)
-    monkeypatch.setattr(embeddings, "_guard_model_security", lambda _name: None)
+    monkeypatch.setattr(embeddings, "_guard_model_security", lambda *_a, **_k: None)
     monkeypatch.setattr(embeddings, "_device", lambda: "cpu")
     monkeypatch.setattr(
         "utils.hf_cache_settings.active_hf_hub_cache",
