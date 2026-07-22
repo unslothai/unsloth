@@ -317,9 +317,7 @@ class TestSandboxEnvIsolation:
         junk_rel = "relative-bin"
         monkeypatch.setenv(
             "PATH",
-            os.pathsep.join(
-                [str(git_dir), ".", junk_rel, os.environ.get("PATH", "")]
-            ),
+            os.pathsep.join([str(git_dir), ".", junk_rel, os.environ.get("PATH", "")]),
         )
         env = _build_safe_env(str(tmp_path))
         parts = env["PATH"].split(os.pathsep)
