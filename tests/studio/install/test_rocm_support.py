@@ -3243,11 +3243,13 @@ class TestStrixRocm71Override:
                 with open(p, "w", encoding = "utf-8") as f:
                     f.write(f'#!/bin/sh\ncat <<"EOT"\n{out}\nEOT\n')
                 os.chmod(p, 0o755)
-            script = ('set -euo pipefail\nHIP_VISIBLE_DEVICES=""\nROCR_VISIBLE_DEVICES=""\n'
-                      + block.group(0) + '\nprintf "OK:%s\\n" "$_gfx_all"\n')
+            script = (
+                'set -euo pipefail\nHIP_VISIBLE_DEVICES=""\nROCR_VISIBLE_DEVICES=""\n'
+                + block.group(0)
+                + '\nprintf "OK:%s\\n" "$_gfx_all"\n'
+            )
             env = dict(os.environ, PATH = d + os.pathsep + os.environ.get("PATH", ""))
-            r = subprocess.run([shell, "-c", script], env = env,
-                               capture_output = True, text = True)
+            r = subprocess.run([shell, "-c", script], env = env, capture_output = True, text = True)
             assert r.returncode == 0, f"probe aborted under set -e: {r.stderr}"
             assert "OK:gfx1151" in r.stdout, f"amd-smi fallback not reached: {r.stdout!r}"
 
