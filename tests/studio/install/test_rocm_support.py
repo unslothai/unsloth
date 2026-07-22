@@ -1503,6 +1503,39 @@ class TestInstallShStructure:
             "/gpu_id/" not in source
         ), "setup.sh KFD awk must not key on a gpu_id line inside properties"
 
+    def test_kfd_only_torch_falls_back_to_cpu(self):
+        """A KFD-only AMD host (detected via /dev/kfd, no rocminfo/amd-smi) must route
+        torch to CPU, not a generic rocm index. Without those tools the gfx arch is
+        unknown, so a Strix box (gfx1150/1151) would otherwise get the broken
+        _grouped_mm wheels instead of the arch-specific index."""
+        source = (PACKAGE_ROOT / "install.sh").read_text(encoding = "utf-8")
+        body = _extract_sh_function_body(source, "get_torch_index_url")
+        guard = body.find("! command -v rocminfo")
+        assert guard >= 0, "get_torch_index_url must guard the KFD-only path on rocminfo absence"
+        assert "! command -v amd-smi" in body[guard : guard + 200], (
+            "the KFD-only guard must require BOTH rocminfo and amd-smi to be absent"
+        )
+        # The guard must intercept before the generic rocm version/index selection.
+        assert guard < body.find("_rocm_tag="), (
+            "KFD-only CPU fallback must run before the ROCm version/index selection"
+        )
+
+    def test_kfd_only_llama_requires_hipcc(self):
+        """setup.sh must forward --has-rocm for a gfx-unknown (KFD-only) host only when
+        hipcc is present. With no gfx the prebuilt resolver finds no ROCm bundle and the
+        source build would fail, so without a HIP toolchain the host keeps the CPU
+        prebuilt rather than breaking the llama.cpp install."""
+        source = (PACKAGE_ROOT / "studio" / "setup.sh").read_text(encoding = "utf-8")
+        idx = source.find("_PREBUILT_CMD+=(--has-rocm)")
+        assert idx >= 0, "setup.sh must still be able to forward --has-rocm"
+        window = source[max(0, idx - 500) : idx]
+        assert "hipcc" in window, (
+            "the gfx-unknown --has-rocm branch must gate on hipcc (a usable HIP toolchain)"
+        )
+        assert "command -v hipcc" in window or "/opt/rocm/bin/hipcc" in window, (
+            "hipcc presence must be checked via command -v or the rocm bin path"
+        )
+
     def test_get_torch_index_url_uses_nvidia_detected_flag(self):
         """get_torch_index_url must track NVIDIA via _nvidia_detected (proc-only NVIDIA still picks CUDA)."""
         sh_path = PACKAGE_ROOT / "install.sh"

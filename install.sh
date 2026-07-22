@@ -2200,6 +2200,16 @@ get_torch_index_url() {
         if ! _has_amd_rocm_gpu; then
             echo "$_base/cpu"; return
         fi
+        # AMD GPU seen only via the KFD kernel fallback (neither rocminfo nor
+        # amd-smi present): the gfx arch is unknown, so we can't tell Strix
+        # (gfx1150/1151, which needs the arch-specific index) from other AMD GPUs.
+        # A generic rocm index would ship Strix the broken _grouped_mm wheels, so
+        # stay on CPU and point the user at the fix instead of guessing.
+        if ! command -v rocminfo >/dev/null 2>&1 && ! command -v amd-smi >/dev/null 2>&1; then
+            echo "[WARN] AMD GPU detected via the kernel (KFD) but rocminfo/amd-smi are missing, so the GPU arch can't be read -- installing CPU-only PyTorch." >&2
+            echo "[WARN] For GPU PyTorch, install rocminfo or amd-smi (e.g. sudo pacman -S rocm-hip-sdk) and re-run this installer." >&2
+            echo "$_base/cpu"; return
+        fi
         # AMD GPU confirmed -- detect ROCm version
         _rocm_tag=""
         _rocm_tag=$({ command -v amd-smi >/dev/null 2>&1 && \

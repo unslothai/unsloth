@@ -1357,9 +1357,12 @@ else
     # name-inferred arch). Implies --has-rocm on the installer side.
     if [ -n "${_setup_gfx:-}" ]; then
         _PREBUILT_CMD+=(--rocm-gfx "$_setup_gfx")
-    elif [ "$_setup_amd_detected" = true ]; then
-        # AMD was detected but gfx resolution failed; tell the installer ROCm is
-        # present so it can still attempt a prebuilt. Mirrors setup.ps1 behaviour.
+    elif [ "$_setup_amd_detected" = true ] && \
+         { command -v hipcc >/dev/null 2>&1 || [ -x /opt/rocm/bin/hipcc ]; }; then
+        # AMD detected but gfx unknown (KFD-only host): forward --has-rocm only when
+        # hipcc can actually build llama.cpp. With no gfx the prebuilt resolver finds
+        # no ROCm bundle and the source build would fail, so without hipcc fall
+        # through to the CPU prebuilt instead of breaking the install.
         _PREBUILT_CMD+=(--has-rocm)
     fi
     # UNSLOTH_LLAMA_CPP_BACKEND=cpu (case-insensitive, trimmed) forces the CPU-only
