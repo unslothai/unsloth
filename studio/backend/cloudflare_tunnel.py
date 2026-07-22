@@ -209,7 +209,6 @@ def ensure_cloudflared() -> Optional[str]:
 def _wait_for_dns(host: str, deadline: float) -> None:
     import json
     import urllib.request
-
     while True:
         try:
             req = urllib.request.Request(
