@@ -208,12 +208,8 @@ def verify_public_url(url: str, timeout: float = _PUBLIC_PROBE_TIMEOUT) -> bool:
     deadline = time.monotonic() + timeout
     while True:
         try:
-            req = urllib.request.Request(
-                probe_url, headers = {"User-Agent": "unsloth-studio"}
-            )
-            with urllib.request.urlopen(
-                req, timeout = _PUBLIC_PROBE_ATTEMPT_TIMEOUT
-            ) as response:
+            req = urllib.request.Request(probe_url, headers = {"User-Agent": "unsloth-studio"})
+            with urllib.request.urlopen(req, timeout = _PUBLIC_PROBE_ATTEMPT_TIMEOUT) as response:
                 body = response.read(4096)
             if json.loads(body).get("service") == _PUBLIC_PROBE_MARKER:
                 return True

@@ -422,7 +422,6 @@ class _FakeResponse:
 
 def _patch_urlopen(monkeypatch, handler):
     import urllib.request
-
     monkeypatch.setattr(urllib.request, "urlopen", lambda req, timeout = None: handler(req))
 
 
