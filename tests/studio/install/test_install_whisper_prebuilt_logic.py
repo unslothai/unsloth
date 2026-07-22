@@ -98,18 +98,6 @@ def _manifest(
     }
 
 
-@pytest.fixture(autouse = True)
-def _default_detected_runtime(monkeypatch):
-    """CUDA selection intersects the driver lines with an on-disk runtime scan.
-    Default that scan to "both majors present" so the SM/driver matrix is
-    deterministic on any test host; on-disk-gating tests override it."""
-    monkeypatch.setattr(
-        M,
-        "detected_cuda_runtime_lines",
-        lambda *, is_windows: ["cuda13", "cuda12"],
-    )
-
-
 # ── Host detection (probes come from install_llama_prebuilt.detect_host) ──
 def _llama_host(
     system: str,
@@ -252,9 +240,9 @@ def test_whisper_server_path_layout():
     assert M.whisper_server_path(Path("/w"), win) == Path("/w/build/bin/Release/whisper-server.exe")
 
 
-# ── Manifest parse + basic selection (wiring pin; the rejection matrix, the
-# CUDA/ROCm coverage matrices, extraction guards, resolver payload shape and
-# macOS min_os gating are asserted against the real whisper descriptor in
+# ── Manifest parse + basic selection (wiring pin; the rejection matrix,
+# extraction guards, resolver payload shape and macOS min_os gating are
+# asserted against the real whisper descriptor in
 # tests/studio/install/test_prebuilt_core.py) ──
 def test_parse_manifest_ok_and_basic_selection():
     cpu_asset = "whisper-v1.9.1-unsloth.1-linux-x64-cpu.tar.gz"
@@ -262,47 +250,39 @@ def test_parse_manifest_ok_and_basic_selection():
     assert manifest["component"] == "whisper.cpp"
     assert manifest["studio_protocol"] == STUDIO_PROTOCOL
     host = _host("linux", "x64")
-    # CPU/Metal need no per-GPU coverage: first os/arch/backend match / None.
+    # The pinned pre-slim escape hatch: only the fat CPU bundle ever matches.
     assert M.select_artifact(manifest, host, "cpu")["asset"] == cpu_asset
     assert M.select_artifact(manifest, host, "metal") is None
 
 
-# ── Coverage-aware CUDA selection (shared with install_llama_prebuilt.py) ──
-# The seven real linux-x64 CUDA profiles + their SM coverage, from the live
-# release manifest. select_artifact must match the host's compute caps + driver.
-_CUDA_PROFILES = {
-    "cuda12-legacy": ("cuda12", "legacy", ["50", "52", "60", "61"]),
-    "cuda12-older": ("cuda12", "older", ["70", "75", "80", "86", "89"]),
-    "cuda12-newer": ("cuda12", "newer", ["86", "89", "90", "100", "103", "120"]),
-    "cuda12-portable": (
-        "cuda12",
-        "portable",
-        ["70", "75", "80", "86", "89", "90", "100", "103", "120"],
-    ),
-    "cuda13-older": ("cuda13", "older", ["75", "80", "86", "89"]),
-    "cuda13-newer": ("cuda13", "newer", ["86", "89", "90", "100", "103", "120"]),
-    "cuda13-portable": ("cuda13", "portable", ["75", "80", "86", "89", "90", "100", "103", "120"]),
-}
-
-
-def _cuda_manifest() -> dict:
-    artifacts = [_artifact("linux", "x64", "cpu", "whisper-linux-x64-cpu.tar.gz", "a" * 64)]
-    for name, (line, cls, sms) in _CUDA_PROFILES.items():
-        artifacts.append(
-            _artifact(
-                "linux",
-                "x64",
-                "cuda",
-                f"whisper-linux-x64-{name}.tar.gz",
-                "b" * 64,
-                runtime_line = line,
-                coverage_class = cls,
-                supported_sms = sms,
-                min_sm = int(sms[0]),
-                max_sm = int(sms[-1]),
-            )
+def test_select_artifact_never_picks_fat_gpu_bundles():
+    # A pinned pre-slim release's fat GPU bundles are dead shapes: a cuda/rocm
+    # backend selects nothing (the core then retries with cpu), never the fat
+    # per-accelerator artifact.
+    manifest = M.parse_manifest(
+        _manifest(
+            [
+                _artifact("linux", "x64", "cpu", "whisper-linux-x64-cpu.tar.gz", "a" * 64),
+                _artifact("linux", "x64", "cuda", "whisper-linux-x64-cuda13.tar.gz", "b" * 64),
+                _artifact("linux", "x64", "rocm", "whisper-linux-x64-rocm.tar.gz", "c" * 64),
+            ]
         )
-    return M.parse_manifest(_manifest(artifacts))
+    )
+    cuda_host = _host(
+        "linux",
+        "x64",
+        has_usable_nvidia = True,
+        compute_caps = ("10.0",),
+        driver_cuda_version = (13, 0),
+    )
+    assert M.select_artifact(manifest, cuda_host, "cuda") is None
+    rocm_host = _host("linux", "x64", has_rocm = True, rocm_gfx = "gfx1100")
+    assert M.select_artifact(manifest, rocm_host, "rocm") is None
+    artifact, backend, used_fallback = M.select_artifact_with_fallback(
+        manifest, cuda_host, "cuda"
+    )
+    assert artifact["asset"] == "whisper-linux-x64-cpu.tar.gz"
+    assert backend == "cpu" and used_fallback is True
 
 
 # ── Traversal-safe extraction ──
@@ -488,18 +468,16 @@ def test_busy_lock_maps_to_exit_busy(tmp_path, monkeypatch):
 
 
 # ── Resolver JSON shape ──
-def test_resolve_mode_keeps_stdout_json_only(monkeypatch, capsys):
-    # Even in a CUDA host where selection emits diagnostics, --resolve-prebuilt
-    # must keep stdout to exactly the JSON line (setup.sh / whisper_cpp_update.py
-    # parse it); the cuda_selection log noise belongs on stderr.
-    host = _host(
-        "linux",
-        "x64",
-        has_usable_nvidia = True,
-        compute_caps = ("10.0",),
-        driver_cuda_version = (13, 0),
+def test_resolve_mode_keeps_stdout_json_only(tmp_path, monkeypatch, capsys):
+    # Even when the slim pairing emits diagnostics, --resolve-prebuilt must keep
+    # stdout to exactly the JSON line (setup.sh / whisper_cpp_update.py parse
+    # it); the slim_selection log noise belongs on stderr.
+    host = _cuda_host()
+    bin_dir = _fake_llama_bin(tmp_path)
+    monkeypatch.setattr(
+        M, "installed_llama_runtime", lambda: (bin_dir, SLIM_LLAMA_TAG, "cuda13-newer")
     )
-    manifest = _cuda_manifest()
+    manifest = _slim_manifest()
     bundle = M.ReleaseBundle(
         repo = "unslothai/whisper.cpp",
         release_tag = RELEASE_TAG,
@@ -520,9 +498,9 @@ def test_resolve_mode_keeps_stdout_json_only(monkeypatch, capsys):
     assert rc == M.EXIT_SUCCESS
     captured = capsys.readouterr()
     payload = json.loads(captured.out.strip())  # exactly one JSON line, parseable
-    assert payload["asset"] == "whisper-linux-x64-cuda13-newer.tar.gz"
+    assert payload["asset"] == SLIM_ASSET
     assert "[whisper-prebuilt]" not in captured.out  # no log noise on stdout
-    assert "cuda_selection:" in captured.err  # diagnostics routed to stderr
+    assert "slim_selection:" in captured.err  # diagnostics routed to stderr
 
 
 def test_main_maps_prebuilt_fallback_to_exit_fallback(tmp_path, monkeypatch):
@@ -579,76 +557,9 @@ def test_rocm_gfx_override_implies_has_rocm():
     assert M.auto_detect_backend(out) == "rocm"
 
 
-# ── On-disk CUDA runtime detection (exact SONAMEs over llama's dir scan) ──
-def _isolate_runtime_dirs(monkeypatch):
-    """Neutralise every runtime-dir source except CUDA_RUNTIME_LIB_DIR so the scan
-    sees only the test's temp dir (not the host's real CUDA install). The dir
-    sources are llama module globals resolved at call time."""
-    monkeypatch.setattr(M.llama, "python_runtime_dirs", lambda: [])
-    monkeypatch.setattr(M.llama, "ldconfig_runtime_dirs", lambda required: [])
-    monkeypatch.setattr(M.llama, "glob_paths", lambda *patterns: [])
-    for var in ("LD_LIBRARY_PATH", "CUDA_HOME", "CUDA_PATH", "CUDA_ROOT"):
-        monkeypatch.delenv(var, raising = False)
-
-
-def test_detected_linux_runtime_lines_matches_only_present_major(tmp_path, monkeypatch):
-    libdir = tmp_path / "cuda13"
-    libdir.mkdir()
-    (libdir / "libcudart.so.13").write_text("x")
-    (libdir / "libcublas.so.13").write_text("x")
-    monkeypatch.setenv("CUDA_RUNTIME_LIB_DIR", str(libdir))
-    _isolate_runtime_dirs(monkeypatch)
-    assert M.detected_linux_runtime_lines() == ["cuda13"]  # not cuda12/14/...
-
-
-def test_detected_linux_runtime_lines_requires_both_libs(tmp_path, monkeypatch):
-    # libcudart present but libcublas missing -> the line is NOT usable.
-    libdir = tmp_path / "partial"
-    libdir.mkdir()
-    (libdir / "libcudart.so.13").write_text("x")
-    monkeypatch.setenv("CUDA_RUNTIME_LIB_DIR", str(libdir))
-    _isolate_runtime_dirs(monkeypatch)
-    assert M.detected_linux_runtime_lines() == []
-
-
-def test_detected_linux_runtime_lines_requires_soname_not_versioned_only(tmp_path, monkeypatch):
-    # Only the fully-versioned files (libcudart.so.13.0.88) with no SONAME symlink
-    # (libcudart.so.13): the dynamic linker resolves the SONAME, so this is NOT
-    # loadable and must not be reported. A `{lib}*` glob would wrongly match here.
-    libdir = tmp_path / "versioned_only"
-    libdir.mkdir()
-    (libdir / "libcudart.so.13.0.88").write_text("x")
-    (libdir / "libcublas.so.13.0.88").write_text("x")
-    monkeypatch.setenv("CUDA_RUNTIME_LIB_DIR", str(libdir))
-    _isolate_runtime_dirs(monkeypatch)
-    assert M.detected_linux_runtime_lines() == []
-
-
-def test_detected_linux_runtime_lines_accepts_soname_symlink(tmp_path, monkeypatch):
-    # SONAME symlink present (points at the versioned file) -> loadable -> detected.
-    libdir = tmp_path / "with_symlink"
-    libdir.mkdir()
-    (libdir / "libcudart.so.13.0.88").write_text("x")
-    (libdir / "libcublas.so.13.0.88").write_text("x")
-    (libdir / "libcudart.so.13").symlink_to(libdir / "libcudart.so.13.0.88")
-    (libdir / "libcublas.so.13").symlink_to(libdir / "libcublas.so.13.0.88")
-    monkeypatch.setenv("CUDA_RUNTIME_LIB_DIR", str(libdir))
-    _isolate_runtime_dirs(monkeypatch)
-    assert M.detected_linux_runtime_lines() == ["cuda13"]
-
-
-def test_detected_linux_runtime_lines_empty_when_nothing_present(tmp_path, monkeypatch):
-    empty = tmp_path / "empty"
-    empty.mkdir()
-    monkeypatch.setenv("CUDA_RUNTIME_LIB_DIR", str(empty))
-    _isolate_runtime_dirs(monkeypatch)
-    assert M.detected_linux_runtime_lines() == []
-
-
 # ── Slim bundles paired with the installed llama.cpp ggml runtime ──
 SLIM_LLAMA_TAG = "b10069-mix-fb3d4ca"
 SLIM_ASSET = "whisper-v1.9.1-unsloth.1-linux-x64-slim.tar.gz"
-FAT_CUDA_ASSET = "whisper-v1.9.1-unsloth.1-linux-x64-cuda13-portable.tar.gz"
 CPU_ASSET = "whisper-v1.9.1-unsloth.1-linux-x64-cpu.tar.gz"
 
 
@@ -686,25 +597,11 @@ def _slim_artifact(**extra) -> dict:
     return art
 
 
-def _fat_cuda_artifact() -> dict:
-    return _artifact(
-        "linux",
-        "x64",
-        "cuda",
-        FAT_CUDA_ASSET,
-        "b" * 64,
-        runtime_line = "cuda13",
-        coverage_class = "portable",
-        supported_sms = ["75", "80", "86", "89", "90", "100", "103", "120"],
-        min_sm = 75,
-        max_sm = 120,
-    )
-
-
 def _slim_manifest(slim_extra: dict | None = None) -> dict:
+    """The transition-release shape: a slim bundle beside the published fat CPU
+    bundle (the pinned pre-slim escape hatch)."""
     artifacts = [
         _artifact("linux", "x64", "cpu", CPU_ASSET, "a" * 64),
-        _fat_cuda_artifact(),
         _slim_artifact(**(slim_extra or {})),
     ]
     return M.parse_manifest(_manifest(artifacts))
@@ -781,26 +678,31 @@ def test_slim_selected_when_all_pairing_checks_pass(tmp_path, monkeypatch):
         (lambda bin_dir: (bin_dir, SLIM_LLAMA_TAG, "cuda13-newer"), {"requires_ggml_sonames": []}),
     ],
 )
-def test_slim_pairing_failure_falls_back_to_fat(tmp_path, monkeypatch, runtime, slim_extra):
+def test_slim_pairing_failure_falls_back_to_pinned_cpu(tmp_path, monkeypatch, runtime, slim_extra):
+    # With the fat per-accelerator chain gone, a failed pairing degrades to the
+    # one legacy shape: the release's published fat CPU bundle.
     bin_dir = _fake_llama_bin(tmp_path)
     monkeypatch.setattr(M, "installed_llama_runtime", lambda: runtime(bin_dir))
     artifact, backend, used_fallback = M.select_artifact_with_fallback(
         _slim_manifest(slim_extra), _cuda_host(), "cuda"
     )
-    assert artifact["asset"] == FAT_CUDA_ASSET  # the fat chain, unchanged
-    assert backend == "cuda" and used_fallback is False
+    assert artifact["asset"] == CPU_ASSET
+    assert backend == "cpu" and used_fallback is True
 
 
-def test_slim_requires_the_accel_backend_module(tmp_path, monkeypatch):
-    # Sonames present but no libggml-cuda.so in the llama bin dir -> fat.
+def test_slim_missing_accel_module_rides_the_cpu_module(tmp_path, monkeypatch):
+    # Sonames present but no libggml-cuda.so in the llama bin dir: the cuda
+    # pairing fails, and the cpu retry still serves the same slim bundle via
+    # the llama cpu modules.
     bin_dir = _fake_llama_bin(tmp_path, backend_module = None)
     monkeypatch.setattr(
         M, "installed_llama_runtime", lambda: (bin_dir, SLIM_LLAMA_TAG, "cuda13-newer")
     )
-    artifact, _backend, _fb = M.select_artifact_with_fallback(
+    artifact, backend, used_fallback = M.select_artifact_with_fallback(
         _slim_manifest(), _cuda_host(), "cuda"
     )
-    assert artifact["asset"] == FAT_CUDA_ASSET
+    assert artifact["asset"] == SLIM_ASSET
+    assert backend == "cpu" and used_fallback is True
 
 
 def test_slim_selected_for_cpu_backend_on_linux(tmp_path, monkeypatch):
@@ -949,8 +851,8 @@ def test_slim_metal_requires_the_metal_module(tmp_path, monkeypatch):
 
 def test_slim_only_release_pairing_failure_is_actionable(tmp_path, monkeypatch):
     # A slim-only release with no llama install: nothing selects, the resolver
-    # falls to PrebuiltFallback (exit 2 -> source build), and the log names the
-    # fix before the fallback fires.
+    # falls to PrebuiltFallback (exit 2, prebuilt unavailable), and the log
+    # names the fix before the fallback fires.
     lines: list[str] = []
     monkeypatch.setattr(M, "log", lines.append)
     monkeypatch.setattr(M, "installed_llama_runtime", lambda: None)
@@ -1180,10 +1082,12 @@ def _resolver_payload(monkeypatch, capsys, manifest, host) -> dict:
 
 
 def test_resolver_reports_install_kind_fat_additively(monkeypatch, capsys):
-    payload = _resolver_payload(monkeypatch, capsys, _cuda_manifest(), _cuda_host())
+    # The pinned pre-slim escape hatch resolves the published fat CPU bundle.
+    manifest = M.parse_manifest(_manifest([_artifact("linux", "x64", "cpu", CPU_ASSET, "a" * 64)]))
+    payload = _resolver_payload(monkeypatch, capsys, manifest, _host("linux", "x64"))
     assert set(payload) == _LEGACY_RESOLVER_KEYS | {"install_kind"}
     assert payload["install_kind"] == "fat"
-    assert payload["asset"] == "whisper-linux-x64-cuda13-newer.tar.gz"
+    assert payload["asset"] == CPU_ASSET
 
 
 def test_resolver_reports_install_kind_slim_when_paired(tmp_path, monkeypatch, capsys):
