@@ -2189,6 +2189,11 @@ class InstallSelection:
     runtime_line: str | None
     coverage: dict[str, Any]
     studio_protocol: str | None
+    # Slim pairing identity (whisper slim bundles ride the llama ggml runtime);
+    # all None for fat installs, and never part of the fingerprint.
+    install_kind: str | None = None
+    paired_llama_tag: str | None = None
+    linked_from: str | None = None
 
     def fingerprint(self) -> str:
         return compute_install_fingerprint(
@@ -2254,6 +2259,11 @@ def write_prebuilt_metadata(ops: ModuleOps, install_dir: Path, selection: Instal
         "install_fingerprint": selection.fingerprint(),
         "installed_at_utc": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
     }
+    if selection.install_kind == "slim":
+        # Additive slim fields only; fat markers keep the legacy payload exactly.
+        payload["install_kind"] = "slim"
+        payload["paired_llama_tag"] = selection.paired_llama_tag
+        payload["linked_from"] = selection.linked_from
     ops.metadata_path(install_dir).write_text(json.dumps(payload, indent = 2) + "\n")
 
 
@@ -2407,6 +2417,9 @@ def install_from_bundle(
 
         staged_root = staging / "staged"
         ops.assemble_install_tree(bundle_root, staged_root, host)
+        # Component hook (default no-op): slim whisper wires the llama ggml
+        # runtime in here so staged validation sees the final, linked tree.
+        ops.prepare_runtime_payload(staged_root, host, selection)
         ops.validate_staged_server(staged_root, host)
         ops.write_prebuilt_metadata(staged_root, selection)
         ops._swap_into_place(staged_root, install_dir)
@@ -2518,7 +2531,7 @@ def resolve_prebuilt(
     except PrebuiltFallback:
         return {"prebuilt_available": False, "repo": published_repo}
     os_token, arch_token = ops.host_platform_tokens(host)
-    return {
+    payload = {
         "prebuilt_available": True,
         "repo": published_repo,
         "release_tag": bundle.release_tag,
@@ -2531,6 +2544,23 @@ def resolve_prebuilt(
         "arch": arch_token,
         "runtime_line": artifact.get("runtime_line"),
     }
+    # Component hook (default none): whisper adds install_kind slim|fat. The
+    # JSON emitter sorts keys, so an appended field cannot perturb the output
+    # order of the legacy keys.
+    payload.update(ops.resolver_payload_extra(artifact))
+    return payload
+
+
+def prepare_runtime_payload(staged_root: Path, host: Any, selection: InstallSelection) -> None:
+    """Post-assemble install hook; the core stages nothing extra. Components
+    override it to wire external runtime files into the staged bin dir (whisper
+    slim hardlinks the llama install's ggml libraries) before validation."""
+    return None
+
+
+def resolver_payload_extra(artifact: dict[str, Any]) -> dict[str, Any]:
+    """Additive --resolve-prebuilt payload fields; the core adds none."""
+    return {}
 
 
 def detected_cuda_runtime_lines(ops: ModuleOps, *, is_windows: bool) -> list[str]:

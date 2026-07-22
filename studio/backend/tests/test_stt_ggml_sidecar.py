@@ -123,6 +123,67 @@ def test_non_executable_binary_is_not_runnable(monkeypatch, tmp_path):
 
 
 # ---------------------------------------------------------------------------
+# Slim-install launch guard
+# ---------------------------------------------------------------------------
+
+
+def _slim_install(
+    tmp_path,
+    *,
+    install_kind = "slim",
+    with_ggml = True,
+) -> str:
+    """A managed-looking install tree: marker at the root, server in build/bin."""
+    install_dir = tmp_path / "whisper.cpp"
+    bin_dir = install_dir / "build" / "bin"
+    bin_dir.mkdir(parents = True)
+    binary = bin_dir / "whisper-server"
+    binary.write_text("#!/bin/sh\n")
+    binary.chmod(0o755)
+    marker: dict = {"component": "whisper.cpp", "release_tag": "v1.9.1-unsloth.1"}
+    if install_kind is not None:
+        marker["install_kind"] = install_kind
+    (install_dir / "UNSLOTH_WHISPER_PREBUILT_INFO.json").write_text(json.dumps(marker))
+    if with_ggml:
+        names = (
+            ("ggml.dll", "ggml-base.dll")
+            if sys.platform == "win32"
+            else ("libggml.so.0", "libggml-base.so.0")
+        )
+        for name in names:
+            (bin_dir / name).write_bytes(b"ggml")
+    return str(binary)
+
+
+def test_slim_guard_flags_missing_ggml_links(monkeypatch, tmp_path):
+    # A slim marker whose linked ggml runtime is gone must read as engine
+    # unavailable (reinstall), never crash into a server launch.
+    binary = _slim_install(tmp_path, with_ggml = False)
+    assert ggml_module.slim_runtime_intact(binary) is False
+    monkeypatch.setattr(ggml_module, "find_whisper_server_binary", lambda: binary)
+    assert not ggml_module.is_available()
+    with pytest.raises(SttEngineUnavailableError, match = "ggml"):
+        ggml_module.ensure_engine_available()
+
+
+def test_slim_guard_passes_with_links_in_place(monkeypatch, tmp_path):
+    binary = _slim_install(tmp_path, with_ggml = True)
+    assert ggml_module.slim_runtime_intact(binary) is True
+    monkeypatch.setattr(ggml_module, "find_whisper_server_binary", lambda: binary)
+    assert ggml_module.ensure_engine_available() == binary
+
+
+def test_slim_guard_ignores_fat_and_markerless_installs(tmp_path):
+    # Fat installs carry their own ggml; no marker means source/custom build.
+    fat = _slim_install(tmp_path / "fat", install_kind = None, with_ggml = False)
+    assert ggml_module.slim_runtime_intact(fat) is True
+    bare = tmp_path / "bare" / "whisper-server"
+    bare.parent.mkdir(parents = True)
+    bare.write_text("#!/bin/sh\n")
+    assert ggml_module.slim_runtime_intact(str(bare)) is True
+
+
+# ---------------------------------------------------------------------------
 # whisper-server child-process environment
 # ---------------------------------------------------------------------------
 

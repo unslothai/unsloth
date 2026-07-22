@@ -1062,6 +1062,53 @@ def test_write_and_match_marker(component, tmp_path):
     assert not component.ops.existing_install_matches(install_dir, host, other)
 
 
+def test_slim_selection_fields_are_additive(component, tmp_path):
+    """The slim pairing identity rides InstallSelection additively: it never
+    enters the fingerprint, and only a slim selection writes marker fields."""
+    manifest = component.ops.parse_manifest(
+        manifest_for(component, [artifact(backend = "cpu", asset = "cpu.tar.gz")]), label = "m"
+    )
+    selection = component.ops.selection_from_artifact(
+        published_repo = component.descriptor.published_repo,
+        release_tag = "v1",
+        manifest = manifest,
+        artifact = manifest["artifacts"][0],
+        backend = "cpu",
+        asset_sha256 = "0" * 64,
+    )
+    import dataclasses
+
+    slim = dataclasses.replace(
+        selection,
+        install_kind = "slim",
+        paired_llama_tag = "b10069-mix-fb3d4ca",
+        linked_from = "/llama/build/bin",
+    )
+    assert slim.fingerprint() == selection.fingerprint()  # no change to the computation
+
+    fat_dir, slim_dir = tmp_path / "fat", tmp_path / "slim"
+    fat_dir.mkdir(), slim_dir.mkdir()
+    component.ops.write_prebuilt_metadata(fat_dir, selection)
+    fat_marker = json.loads((fat_dir / component.descriptor.metadata_filename).read_text())
+    for key in ("install_kind", "paired_llama_tag", "linked_from"):
+        assert key not in fat_marker
+    component.ops.write_prebuilt_metadata(slim_dir, slim)
+    slim_marker = json.loads((slim_dir / component.descriptor.metadata_filename).read_text())
+    assert slim_marker["install_kind"] == "slim"
+    assert slim_marker["paired_llama_tag"] == "b10069-mix-fb3d4ca"
+    assert slim_marker["linked_from"] == "/llama/build/bin"
+    assert set(slim_marker) == set(fat_marker) | {"install_kind", "paired_llama_tag", "linked_from"}
+
+
+def test_core_slim_hooks_default_inert(component, tmp_path):
+    # A component without its own hooks stages nothing extra and adds no
+    # resolver fields (llama's probe output must stay byte-identical).
+    assert component.ops.resolver_payload_extra({"install_kind": "slim"}) == {}
+    host = make_host(component)
+    selection = object()
+    assert component.ops.prepare_runtime_payload(tmp_path, host, selection) is None
+
+
 # ── Host/GPU token helpers (component-independent core functions) ──
 # Value tables moved verbatim from the llama characterization suite; these are
 # pure functions with no descriptor sensitivity, so they run unparameterized.

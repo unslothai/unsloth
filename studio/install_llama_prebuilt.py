@@ -5507,6 +5507,52 @@ def load_prebuilt_metadata(install_dir: Path) -> dict[str, Any] | None:
     return payload
 
 
+def default_managed_llama_dir() -> Path:
+    """The managed llama.cpp install root, mirroring setup.sh and the updater:
+    the UNSLOTH_LLAMA_CPP_PATH override, else <custom studio home>/llama.cpp,
+    else the legacy ~/.unsloth/llama.cpp."""
+    override = (os.environ.get("UNSLOTH_LLAMA_CPP_PATH") or "").strip()
+    if override:
+        return Path(override).expanduser()
+    home = (os.environ.get("UNSLOTH_STUDIO_HOME") or os.environ.get("STUDIO_HOME") or "").strip()
+    if home:
+        root = Path(home).expanduser()
+        legacy_studio = Path.home() / ".unsloth" / "studio"
+        try:
+            is_legacy = root.resolve() == legacy_studio.resolve()
+        except (OSError, ValueError):
+            is_legacy = root == legacy_studio
+        if not is_legacy:
+            return root / "llama.cpp"
+    return Path.home() / ".unsloth" / "llama.cpp"
+
+
+def installed_llama_runtime(install_dir: Path | None = None) -> tuple[Path, str, str] | None:
+    """The completed managed llama.cpp prebuilt install, or None.
+
+    Returns (runtime bin dir holding the ggml libraries, installed release tag,
+    bundle profile). install_whisper_prebuilt.py reads this to pair slim whisper
+    bundles with the ggml runtime the llama install already provides; tests pass
+    an explicit ``install_dir``.
+    """
+    root = install_dir if install_dir is not None else default_managed_llama_dir()
+    metadata = load_prebuilt_metadata(root)
+    if metadata is None:
+        return None
+    release_tag = metadata.get("release_tag")
+    if not isinstance(release_tag, str) or not release_tag:
+        return None
+    # Same layout install_runtime_dir() derives; a marker on disk always
+    # belongs to this host, so the running OS picks the variant.
+    bin_dir = root / "build" / "bin"
+    if os.name == "nt":
+        bin_dir = bin_dir / "Release"
+    if not bin_dir.is_dir():
+        return None
+    profile = metadata.get("bundle_profile")
+    return bin_dir, release_tag, profile if isinstance(profile, str) else ""
+
+
 def runtime_payload_health_groups(choice: AssetChoice) -> list[list[str]]:
     if choice.install_kind in {"linux-cpu", "linux-arm64"}:
         return [

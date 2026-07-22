@@ -643,3 +643,375 @@ def test_detected_linux_runtime_lines_empty_when_nothing_present(tmp_path, monke
     monkeypatch.setenv("CUDA_RUNTIME_LIB_DIR", str(empty))
     _isolate_runtime_dirs(monkeypatch)
     assert M.detected_linux_runtime_lines() == []
+
+
+# ── Slim bundles paired with the installed llama.cpp ggml runtime ──
+SLIM_LLAMA_TAG = "b10069-mix-fb3d4ca"
+SLIM_ASSET = "whisper-v1.9.1-unsloth.1-linux-x64-slim.tar.gz"
+FAT_CUDA_ASSET = "whisper-v1.9.1-unsloth.1-linux-x64-cuda13-portable.tar.gz"
+CPU_ASSET = "whisper-v1.9.1-unsloth.1-linux-x64-cpu.tar.gz"
+
+
+def _fake_llama_bin(
+    tmp_path: Path,
+    *,
+    backend_module: str | None = "libggml-cuda.so",
+    sonames: tuple[str, ...] = ("libggml.so.0", "libggml-base.so.0"),
+) -> Path:
+    bin_dir = tmp_path / "llama.cpp" / "build" / "bin"
+    bin_dir.mkdir(parents = True, exist_ok = True)
+    for name in sonames:
+        (bin_dir / name).write_bytes(b"ggml-old-" + name.encode())
+    if backend_module:
+        (bin_dir / backend_module).write_bytes(b"ggml-backend-old")
+    (bin_dir / "libggml-cpu-x64.so").write_bytes(b"ggml-cpu-old")
+    (bin_dir / "libllama.so").write_bytes(b"not-ggml")  # must never be linked
+    return bin_dir
+
+
+def _slim_artifact(**extra) -> dict:
+    art = {
+        "os": "linux",
+        "arch": "x64",
+        "backend": "slim",
+        "asset": SLIM_ASSET,
+        "sha256": "c" * 64,
+        "install_kind": "slim",
+        "requires_llama_tag": SLIM_LLAMA_TAG,
+        "requires_ggml_version": "0.17.0",
+        "requires_ggml_sonames": ["libggml.so.0", "libggml-base.so.0"],
+        "min_os": None,
+    }
+    art.update(extra)
+    return art
+
+
+def _fat_cuda_artifact() -> dict:
+    return _artifact(
+        "linux",
+        "x64",
+        "cuda",
+        FAT_CUDA_ASSET,
+        "b" * 64,
+        runtime_line = "cuda13",
+        coverage_class = "portable",
+        supported_sms = ["75", "80", "86", "89", "90", "100", "103", "120"],
+        min_sm = 75,
+        max_sm = 120,
+    )
+
+
+def _slim_manifest(slim_extra: dict | None = None) -> dict:
+    artifacts = [
+        _artifact("linux", "x64", "cpu", CPU_ASSET, "a" * 64),
+        _fat_cuda_artifact(),
+        _slim_artifact(**(slim_extra or {})),
+    ]
+    return M.parse_manifest(_manifest(artifacts))
+
+
+def _cuda_host() -> HostInfo:
+    return _host(
+        "linux",
+        "x64",
+        has_usable_nvidia = True,
+        compute_caps = ("10.0",),
+        driver_cuda_version = (13, 0),
+        torch_runtime_line = "cuda13",
+    )
+
+
+def test_installed_llama_runtime_reads_marker(tmp_path):
+    root = tmp_path / "llama.cpp"
+    bin_dir = root / "build" / "bin"
+    bin_dir.mkdir(parents = True)
+    (root / "UNSLOTH_PREBUILT_INFO.json").write_text(
+        json.dumps({"release_tag": SLIM_LLAMA_TAG, "bundle_profile": "cuda13-newer"})
+    )
+    assert M.llama.installed_llama_runtime(root) == (bin_dir, SLIM_LLAMA_TAG, "cuda13-newer")
+
+
+@pytest.mark.parametrize(
+    "prepare",
+    [
+        lambda root: None,  # no marker at all
+        lambda root: (root / "UNSLOTH_PREBUILT_INFO.json").write_text("{}"),  # no release_tag
+        lambda root: (root / "UNSLOTH_PREBUILT_INFO.json").write_text("not json"),
+    ],
+)
+def test_installed_llama_runtime_rejects_incomplete_installs(tmp_path, prepare):
+    root = tmp_path / "llama.cpp"
+    (root / "build" / "bin").mkdir(parents = True)
+    prepare(root)
+    assert M.llama.installed_llama_runtime(root) is None
+
+
+def test_installed_llama_runtime_requires_bin_dir(tmp_path):
+    root = tmp_path / "llama.cpp"
+    root.mkdir()
+    (root / "UNSLOTH_PREBUILT_INFO.json").write_text(json.dumps({"release_tag": SLIM_LLAMA_TAG}))
+    assert M.llama.installed_llama_runtime(root) is None  # marker but no build/bin
+
+
+def test_slim_selected_when_all_pairing_checks_pass(tmp_path, monkeypatch):
+    bin_dir = _fake_llama_bin(tmp_path)
+    monkeypatch.setattr(
+        M, "installed_llama_runtime", lambda: (bin_dir, SLIM_LLAMA_TAG, "cuda13-newer")
+    )
+    artifact, backend, used_fallback = M.select_artifact_with_fallback(
+        _slim_manifest(), _cuda_host(), "cuda"
+    )
+    assert artifact["asset"] == SLIM_ASSET
+    assert backend == "cuda" and used_fallback is False
+
+
+@pytest.mark.parametrize(
+    "runtime,slim_extra",
+    [
+        # No llama install at all.
+        (lambda bin_dir: None, None),
+        # Installed llama tag does not match requires_llama_tag.
+        (lambda bin_dir: (bin_dir, "b99999-mix-0000000", "cuda13-newer"), None),
+        # A required soname is missing from the llama bin dir.
+        (
+            lambda bin_dir: (bin_dir, SLIM_LLAMA_TAG, "cuda13-newer"),
+            {"requires_ggml_sonames": ["libggml.so.0", "libggml-base.so.0", "libggml-extra.so.9"]},
+        ),
+        # Manifest omits the soname contract entirely.
+        (lambda bin_dir: (bin_dir, SLIM_LLAMA_TAG, "cuda13-newer"), {"requires_ggml_sonames": []}),
+    ],
+)
+def test_slim_pairing_failure_falls_back_to_fat(tmp_path, monkeypatch, runtime, slim_extra):
+    bin_dir = _fake_llama_bin(tmp_path)
+    monkeypatch.setattr(M, "installed_llama_runtime", lambda: runtime(bin_dir))
+    artifact, backend, used_fallback = M.select_artifact_with_fallback(
+        _slim_manifest(slim_extra), _cuda_host(), "cuda"
+    )
+    assert artifact["asset"] == FAT_CUDA_ASSET  # the fat chain, unchanged
+    assert backend == "cuda" and used_fallback is False
+
+
+def test_slim_requires_the_accel_backend_module(tmp_path, monkeypatch):
+    # Sonames present but no libggml-cuda.so in the llama bin dir -> fat.
+    bin_dir = _fake_llama_bin(tmp_path, backend_module = None)
+    monkeypatch.setattr(
+        M, "installed_llama_runtime", lambda: (bin_dir, SLIM_LLAMA_TAG, "cuda13-newer")
+    )
+    artifact, _backend, _fb = M.select_artifact_with_fallback(
+        _slim_manifest(), _cuda_host(), "cuda"
+    )
+    assert artifact["asset"] == FAT_CUDA_ASSET
+
+
+def test_slim_never_offered_for_cpu_backend(tmp_path, monkeypatch):
+    # A perfect pairing must not slim a cpu install: cpu bundles stay fat.
+    bin_dir = _fake_llama_bin(tmp_path)
+    monkeypatch.setattr(
+        M, "installed_llama_runtime", lambda: (bin_dir, SLIM_LLAMA_TAG, "cuda13-newer")
+    )
+    artifact, backend, _fb = M.select_artifact_with_fallback(
+        _slim_manifest(), _host("linux", "x64"), "cpu"
+    )
+    assert artifact["asset"] == CPU_ASSET and backend == "cpu"
+
+
+def test_link_ggml_runtime_hardlinks_every_ggml_library(tmp_path):
+    bin_dir = _fake_llama_bin(tmp_path)
+    whisper_bin = tmp_path / "whisper.cpp" / "build" / "bin"
+    linked = M.link_ggml_runtime(bin_dir, whisper_bin)
+    assert linked == 4  # libggml.so.0, libggml-base.so.0, libggml-cuda.so, libggml-cpu-x64.so
+    for name in ("libggml.so.0", "libggml-base.so.0", "libggml-cuda.so", "libggml-cpu-x64.so"):
+        source, dest = bin_dir / name, whisper_bin / name
+        assert dest.is_file() and not dest.is_symlink()
+        assert dest.stat().st_ino == source.stat().st_ino  # a true hardlink
+    assert not (whisper_bin / "libllama.so").exists()  # only ggml libraries wire over
+
+
+def test_link_ggml_runtime_copy_fallback(tmp_path, monkeypatch):
+    def no_link(src, dst, **kwargs):
+        raise OSError("cross-device link")
+
+    monkeypatch.setattr(M.os, "link", no_link)
+    bin_dir = _fake_llama_bin(tmp_path)
+    whisper_bin = tmp_path / "whisper.cpp" / "build" / "bin"
+    assert M.link_ggml_runtime(bin_dir, whisper_bin) == 4
+    dest = whisper_bin / "libggml.so.0"
+    assert dest.read_bytes() == (bin_dir / "libggml.so.0").read_bytes()
+    assert dest.stat().st_nlink == 1  # a copy, not a link
+
+
+def test_link_ggml_runtime_fails_closed_on_empty_runtime(tmp_path):
+    empty = tmp_path / "empty"
+    empty.mkdir()
+    with pytest.raises(PrebuiltFallback):
+        M.link_ggml_runtime(empty, tmp_path / "whisper_bin")
+
+
+def _build_slim_bundle(tmp_path: Path, host: HostInfo) -> tuple[Path, str]:
+    """Slim archive per the CI contract: whisper-server + libwhisper only."""
+    archive = tmp_path / SLIM_ASSET
+    with tarfile.open(archive, "w:gz") as tar:
+        _add_file(tar, M.server_binary_name(host), b"#!/bin/sh\necho whisper\n", mode = 0o755)
+        _add_file(tar, "libwhisper.so.1", b"dummy-libwhisper")
+    return archive, M.sha256_file(archive)
+
+
+def _slim_install_env(monkeypatch, tmp_path, host, *, sha256: str) -> Path:
+    llama_bin = _fake_llama_bin(tmp_path)
+    monkeypatch.setattr(
+        M,
+        "installed_llama_runtime",
+        lambda install_dir = None: (llama_bin, SLIM_LLAMA_TAG, "cuda13-newer"),
+    )
+    manifest = M.parse_manifest(
+        _manifest(
+            [
+                _artifact("linux", "x64", "cpu", CPU_ASSET, "a" * 64),
+                _slim_artifact(sha256 = sha256),
+            ]
+        )
+    )
+    bundle = M.ReleaseBundle(
+        repo = "unslothai/whisper.cpp",
+        release_tag = RELEASE_TAG,
+        manifest = manifest,
+        asset_urls = {SLIM_ASSET: f"https://example.invalid/{SLIM_ASSET}"},
+    )
+    checksums = {SLIM_ASSET: sha256, CPU_ASSET: "a" * 64}
+    monkeypatch.setattr(
+        M,
+        "fetch_release_for_install",
+        lambda repo, *, published_release_tag = None: (bundle, checksums),
+    )
+    return llama_bin
+
+
+def test_slim_install_wires_links_and_marker(tmp_path, monkeypatch):
+    host = _cuda_host()
+    archive, sha256 = _build_slim_bundle(tmp_path, host)
+
+    def fake_download(url, destination):
+        destination.parent.mkdir(parents = True, exist_ok = True)
+        destination.write_bytes(archive.read_bytes())
+
+    monkeypatch.setattr(M, "detect_host", lambda: host)
+    monkeypatch.setattr(M, "download_file", fake_download)
+    llama_bin = _slim_install_env(monkeypatch, tmp_path, host, sha256 = sha256)
+
+    install_dir = tmp_path / "whisper.cpp"
+    assert M.install_prebuilt(install_dir, backend = "cuda") == M.EXIT_SUCCESS
+
+    whisper_bin = install_dir / "build" / "bin"
+    assert (whisper_bin / "whisper-server").is_file()
+    assert (whisper_bin / "libwhisper.so.1").is_file()
+    for name in ("libggml.so.0", "libggml-base.so.0", "libggml-cuda.so", "libggml-cpu-x64.so"):
+        dest = whisper_bin / name
+        assert dest.is_file() and not dest.is_symlink()
+        assert dest.stat().st_ino == (llama_bin / name).stat().st_ino
+
+    marker = json.loads((install_dir / M.METADATA_FILENAME).read_text())
+    assert marker["backend"] == "cuda"  # the accel identity, not "slim"
+    assert marker["asset"] == SLIM_ASSET
+    assert marker["install_kind"] == "slim"
+    assert marker["paired_llama_tag"] == SLIM_LLAMA_TAG
+    assert marker["linked_from"] == str(llama_bin)
+
+
+def test_slim_links_survive_a_llama_dir_swap(tmp_path, monkeypatch):
+    # The whole point of hardlinks: replace the llama dir contents after wiring
+    # and whisper's links must still hold the OLD inodes/content.
+    host = _cuda_host()
+    archive, sha256 = _build_slim_bundle(tmp_path, host)
+
+    def fake_download(url, destination):
+        destination.parent.mkdir(parents = True, exist_ok = True)
+        destination.write_bytes(archive.read_bytes())
+
+    monkeypatch.setattr(M, "detect_host", lambda: host)
+    monkeypatch.setattr(M, "download_file", fake_download)
+    llama_bin = _slim_install_env(monkeypatch, tmp_path, host, sha256 = sha256)
+
+    install_dir = tmp_path / "whisper.cpp"
+    assert M.install_prebuilt(install_dir, backend = "cuda") == M.EXIT_SUCCESS
+    whisper_lib = install_dir / "build" / "bin" / "libggml.so.0"
+    old_inode = whisper_lib.stat().st_ino
+    old_content = whisper_lib.read_bytes()
+
+    # Simulate the llama updater swapping in a new release's libraries.
+    for path in llama_bin.iterdir():
+        path.unlink()
+    (llama_bin / "libggml.so.0").write_bytes(b"ggml-NEW")
+
+    assert whisper_lib.stat().st_ino == old_inode  # old inode survives the swap
+    assert whisper_lib.read_bytes() == old_content
+    assert whisper_lib.stat().st_nlink == 1  # the llama side is gone; ours remains
+
+
+def test_fat_marker_gains_no_slim_fields(tmp_path, monkeypatch):
+    host = _host("linux", "x64")
+    archive, asset, sha256 = _build_cpu_bundle(tmp_path, host)
+
+    def fake_download(url, destination):
+        destination.parent.mkdir(parents = True, exist_ok = True)
+        destination.write_bytes(archive.read_bytes())
+
+    monkeypatch.setattr(M, "detect_host", lambda: host)
+    monkeypatch.setattr(M, "download_file", fake_download)
+    _install_env(monkeypatch, tmp_path, host, asset = asset, sha256 = sha256)
+
+    install_dir = tmp_path / "whisper.cpp"
+    assert M.install_prebuilt(install_dir, backend = "cpu") == M.EXIT_SUCCESS
+    marker = json.loads((install_dir / M.METADATA_FILENAME).read_text())
+    for key in ("install_kind", "paired_llama_tag", "linked_from"):
+        assert key not in marker  # fat markers keep the legacy payload exactly
+
+
+# The exact resolver key set shipped before slim existed; install_kind is the
+# one additive field and must stay the only difference.
+_LEGACY_RESOLVER_KEYS = {
+    "prebuilt_available",
+    "repo",
+    "release_tag",
+    "upstream_tag",
+    "backend",
+    "requested_backend",
+    "cpu_fallback",
+    "asset",
+    "os",
+    "arch",
+    "runtime_line",
+}
+
+
+def _resolver_payload(monkeypatch, capsys, manifest, host) -> dict:
+    bundle = M.ReleaseBundle(
+        repo = "unslothai/whisper.cpp",
+        release_tag = RELEASE_TAG,
+        manifest = manifest,
+        asset_urls = {},
+    )
+    monkeypatch.setattr(M, "detect_host", lambda: host)
+    monkeypatch.setattr(
+        M, "fetch_release_for_install", lambda repo, *, published_release_tag = None: (bundle, {})
+    )
+    assert M.main(["--resolve-prebuilt", "--output-format", "json"]) == M.EXIT_SUCCESS
+    return json.loads(capsys.readouterr().out.strip())
+
+
+def test_resolver_reports_install_kind_fat_additively(monkeypatch, capsys):
+    payload = _resolver_payload(monkeypatch, capsys, _cuda_manifest(), _cuda_host())
+    assert set(payload) == _LEGACY_RESOLVER_KEYS | {"install_kind"}
+    assert payload["install_kind"] == "fat"
+    assert payload["asset"] == "whisper-linux-x64-cuda13-newer.tar.gz"
+
+
+def test_resolver_reports_install_kind_slim_when_paired(tmp_path, monkeypatch, capsys):
+    bin_dir = _fake_llama_bin(tmp_path)
+    monkeypatch.setattr(
+        M, "installed_llama_runtime", lambda: (bin_dir, SLIM_LLAMA_TAG, "cuda13-newer")
+    )
+    payload = _resolver_payload(monkeypatch, capsys, _slim_manifest(), _cuda_host())
+    assert set(payload) == _LEGACY_RESOLVER_KEYS | {"install_kind"}
+    assert payload["install_kind"] == "slim"
+    assert payload["asset"] == SLIM_ASSET
+    assert payload["backend"] == "cuda"

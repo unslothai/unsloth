@@ -88,6 +88,7 @@ _swap_into_place = core.swap_into_place
 InstallSelection = core.InstallSelection
 ReleaseBundle = core.ReleaseBundle
 llama_detect_host = llama.detect_host
+installed_llama_runtime = llama.installed_llama_runtime
 detect_torch_cuda_runtime_preference = llama.detect_torch_cuda_runtime_preference
 linux_runtime_dirs_for_required_libraries = llama.linux_runtime_dirs_for_required_libraries
 detected_windows_runtime_lines = llama.detected_windows_runtime_lines
@@ -130,6 +131,22 @@ SUPPORTED_BACKENDS = ("cpu", "cuda", "metal", "vulkan", "rocm")
 # Fallback policy the core applies on a GPU-selection miss: whisper releases
 # always publish a CPU bundle, so retry with it instead of a source build.
 FALLBACK_BACKEND = "cpu"
+
+# Backends whose slim (ggml-less) whisper bundle can ride the ggml runtime of
+# the installed llama.cpp prebuilt. cpu and metal always install fat.
+SLIM_ELIGIBLE_BACKENDS = ("cuda", "rocm", "vulkan")
+
+# ggml backend module the llama bin dir must provide per accelerator, as
+# (linux glob, windows glob) following llama's bundle layout / health globs.
+SLIM_BACKEND_MODULE_GLOBS = {
+    "cuda": ("libggml-cuda.so*", "ggml-cuda.dll"),
+    "rocm": ("libggml-hip.so*", "*hip*.dll"),
+    "vulkan": ("libggml-vulkan.so*", "ggml-vulkan.dll"),
+}
+
+# Everything the slim wiring must mirror from the llama bin dir: the core ggml
+# sonames plus every dlopen'd backend module (CPU variants included).
+SLIM_GGML_LIBRARY_GLOBS = ("libggml*", "ggml*.dll")
 
 INSTALL_STAGING_ROOT_NAME = ".staging"
 
@@ -351,9 +368,72 @@ def select_rocm_artifact(
     return _select_rocm_artifact(candidates, host_gfx, log_lines)
 
 
+def slim_pairing_for_artifact(
+    artifact: dict[str, Any], host: HostInfo, backend: str
+) -> tuple[Path, str] | None:
+    """(llama bin dir, llama release tag) when the installed llama runtime can
+    back this slim artifact, else None. Each failed gate logs why and the caller
+    falls through to the fat selection chain unchanged."""
+    asset = artifact.get("asset")
+    runtime = installed_llama_runtime()
+    if runtime is None:
+        log(f"slim_selection: {asset} skipped: no managed llama.cpp prebuilt install")
+        return None
+    llama_bin_dir, llama_tag, _profile = runtime
+    requires_tag = artifact.get("requires_llama_tag")
+    if not isinstance(requires_tag, str) or requires_tag != llama_tag:
+        log(
+            f"slim_selection: {asset} skipped: installed llama tag {llama_tag!r} "
+            f"!= required {requires_tag!r}"
+        )
+        return None
+    sonames = artifact.get("requires_ggml_sonames")
+    if not isinstance(sonames, list) or not sonames:
+        log(f"slim_selection: {asset} skipped: manifest lists no requires_ggml_sonames")
+        return None
+    missing = [str(name) for name in sonames if not (llama_bin_dir / str(name)).is_file()]
+    if missing:
+        log(f"slim_selection: {asset} skipped: llama runtime missing {', '.join(missing)}")
+        return None
+    linux_glob, windows_glob = SLIM_BACKEND_MODULE_GLOBS[backend]
+    module_glob = windows_glob if host.is_windows else linux_glob
+    if not any(path.is_file() for path in llama_bin_dir.glob(module_glob)):
+        log(f"slim_selection: {asset} skipped: llama runtime has no {module_glob} module")
+        return None
+    log(f"slim_selection: selected {asset} paired with llama {llama_tag} at {llama_bin_dir}")
+    return llama_bin_dir, llama_tag
+
+
+def select_slim_artifact(
+    manifest: dict[str, Any], host: HostInfo, backend: str
+) -> dict[str, Any] | None:
+    """The paired slim artifact for a GPU backend, or None. macOS stays fat; slim
+    assets carry backend "slim" so the fat os/arch/backend matching never sees
+    them and the fat chain is untouched by construction."""
+    if backend not in SLIM_ELIGIBLE_BACKENDS or host.is_macos:
+        return None
+    os_token, arch_token = host_platform_tokens(host)
+    for artifact in manifest.get("artifacts", []):
+        if (
+            artifact.get("os") == os_token
+            and artifact.get("arch") == arch_token
+            and artifact.get("backend") == "slim"
+            and artifact.get("install_kind") == "slim"
+            and slim_pairing_for_artifact(artifact, host, backend) is not None
+        ):
+            return artifact
+    return None
+
+
 def select_artifact(
     manifest: dict[str, Any], host: HostInfo, backend: str
 ) -> dict[str, Any] | None:
+    """Slim-first: a GPU backend prefers the paired slim artifact when the
+    installed llama runtime satisfies its requirements; any miss falls through
+    to the shared fat selection chain unchanged."""
+    slim = select_slim_artifact(manifest, host, backend)
+    if slim is not None:
+        return slim
     return core.select_artifact(_OPS, manifest, host, backend)
 
 
@@ -517,6 +597,54 @@ def validate_staged_server(staged_root: Path, host: HostInfo) -> None:
     _validate_staged_server(staged_root, host)
 
 
+# ── Slim install wiring (llama ggml runtime into the whisper bin dir) ──
+def link_ggml_runtime(llama_bin_dir: Path, whisper_bin_dir: Path) -> int:
+    """Hardlink every ggml library from the llama runtime into the whisper bin
+    dir; returns how many were wired.
+
+    Hardlinks (not symlinks) on purpose: when the llama updater atomically swaps
+    its install dir, the old inodes stay alive under these links, so a
+    not-yet-updated whisper keeps running the exact ggml build it was installed
+    against -- the version-skew window closes by construction. Falls back to a
+    copy where linking is unsupported or crosses devices. Re-run on every
+    install/update so the links always track the current pairing.
+    """
+    sources = sorted(
+        {
+            path
+            for pattern in SLIM_GGML_LIBRARY_GLOBS
+            for path in llama_bin_dir.glob(pattern)
+            if path.is_file()
+        }
+    )
+    if not sources:
+        raise PrebuiltFallback(
+            f"no ggml libraries found in {llama_bin_dir} to pair the slim whisper install"
+        )
+    whisper_bin_dir.mkdir(parents = True, exist_ok = True)
+    for source in sources:
+        dest = whisper_bin_dir / source.name
+        if dest.exists() or dest.is_symlink():
+            dest.unlink()
+        try:
+            # Follows a libggml.so.0 -> libggml.so.0.x symlink to its inode, so
+            # every created name is a real hardlink that survives a dir swap.
+            os.link(source, dest)
+        except OSError:
+            shutil.copy2(source, dest)
+    return len(sources)
+
+
+def prepare_runtime_payload(staged_root: Path, host: HostInfo, selection: Any) -> None:
+    """Slim installs wire the paired llama ggml runtime into the staged bin dir
+    before validation, so the activated tree is self-contained. Fat installs
+    need nothing (the archive already carries its ggml)."""
+    if getattr(selection, "install_kind", None) != "slim" or not selection.linked_from:
+        return
+    linked = link_ggml_runtime(Path(selection.linked_from), runtime_bin_dir(staged_root, host))
+    log(f"slim install: hardlinked {linked} ggml libraries from {selection.linked_from}")
+
+
 # ── Metadata / marker ──
 def metadata_path(install_dir: Path) -> Path:
     return install_dir / METADATA_FILENAME
@@ -531,7 +659,7 @@ def selection_from_artifact(
     backend: str,
     asset_sha256: str,
 ) -> InstallSelection:
-    return core.selection_from_artifact(
+    selection = core.selection_from_artifact(
         _OPS,
         published_repo = published_repo,
         release_tag = release_tag,
@@ -539,6 +667,22 @@ def selection_from_artifact(
         artifact = artifact,
         backend = backend,
         asset_sha256 = asset_sha256,
+    )
+    if artifact.get("install_kind") != "slim":
+        return selection
+    # A slim selection carries its pairing so the install wiring and the marker
+    # know exactly which llama runtime provides the ggml libraries.
+    runtime = installed_llama_runtime()
+    if runtime is None or runtime[1] != artifact.get("requires_llama_tag"):
+        raise PrebuiltFallback(
+            "the paired llama.cpp runtime changed underneath the slim whisper selection"
+        )
+    llama_bin_dir, llama_tag, _profile = runtime
+    return replace(
+        selection,
+        install_kind = "slim",
+        paired_llama_tag = llama_tag,
+        linked_from = str(llama_bin_dir),
     )
 
 
@@ -626,6 +770,12 @@ def install_prebuilt(
         force = force,
         host = host,
     )
+
+
+def resolver_payload_extra(artifact: dict[str, Any]) -> dict[str, Any]:
+    """Additive --resolve-prebuilt field: whether the selected asset installs
+    slim (paired with the llama ggml runtime) or fat (self-contained)."""
+    return {"install_kind": "slim" if artifact.get("install_kind") == "slim" else "fat"}
 
 
 def resolve_prebuilt(

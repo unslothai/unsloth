@@ -174,8 +174,51 @@ def _is_runnable(p: Path) -> bool:
     return p.is_file() and (sys.platform == "win32" or os.access(p, os.X_OK))
 
 
+# Marker install_whisper_prebuilt.py writes at the install root; a slim install
+# records install_kind "slim" and rides hardlinked ggml libs from llama.cpp.
+_WHISPER_MARKER_NAME = "UNSLOTH_WHISPER_PREBUILT_INFO.json"
+
+
+def _whisper_install_marker(binary: str) -> Optional[dict]:
+    """The prebuilt install marker above ``binary``, or None (source/custom builds)."""
+    for parent in Path(binary).parents[:5]:
+        path = parent / _WHISPER_MARKER_NAME
+        if path.is_file():
+            try:
+                payload = json.loads(path.read_text(encoding = "utf-8"))
+            except (OSError, ValueError):
+                return None
+            return payload if isinstance(payload, dict) else None
+    return None
+
+
+def slim_runtime_intact(binary: str) -> bool:
+    """True unless the marker says slim and the linked ggml runtime is missing
+    beside the server. A broken slim install must read as engine-unavailable
+    (reinstall via `unsloth studio update`), never crash at load."""
+    marker = _whisper_install_marker(binary)
+    if not marker or marker.get("install_kind") != "slim":
+        return True
+    bin_dir = Path(binary).parent
+    required = (
+        ("ggml.dll", "ggml-base.dll")
+        if sys.platform == "win32"
+        else ("libggml.so*", "libggml-base.so*")
+    )
+    intact = all(any(p.is_file() for p in bin_dir.glob(pattern)) for pattern in required)
+    if not intact:
+        logger.warning(
+            "slim whisper install is missing its linked ggml runtime at "
+            f"{bin_dir}; run `unsloth studio update` to reinstall it"
+        )
+    return intact
+
+
 def is_available() -> bool:
-    if find_whisper_server_binary() is None:
+    binary = find_whisper_server_binary()
+    if binary is None:
+        return False
+    if not slim_runtime_intact(binary):
         return False
     try:
         import av  # noqa: F401
@@ -191,6 +234,11 @@ def ensure_engine_available() -> str:
         raise SttEngineUnavailableError(
             "The local transcription runtime is not installed. Run "
             "`unsloth studio update` to install it."
+        )
+    if not slim_runtime_intact(binary):
+        raise SttEngineUnavailableError(
+            "The local transcription runtime is missing its paired ggml "
+            "libraries. Run `unsloth studio update` to reinstall it."
         )
     return binary
 

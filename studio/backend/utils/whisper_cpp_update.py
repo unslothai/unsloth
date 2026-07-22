@@ -556,6 +556,11 @@ def chained_phase_plan(*, force_refresh: bool = False) -> dict:
     status = get_update_status(force_refresh = force_refresh)
     plan: dict = {"status": status, "update_available": False, "skip_reason": None, "phase": None}
     if not status.get("update_available"):
+        # Skew note: when llama just updated but whisper is already latest, a
+        # slim install keeps hardlinks to the OLD llama ggml inodes -- still the
+        # exact build whisper was installed against, so skipping is correct by
+        # design and needs no re-wiring. A whisper phase that does run re-wires
+        # via the installer (prepare_runtime_payload).
         plan["skip_reason"] = "up_to_date"
         return plan
     # A standalone whisper job already in flight must not be doubled by a
