@@ -203,6 +203,39 @@ def test_bash_blocklist_enforced_when_sandboxed(captured_popen):
             "os.environ['UNSLOTH_STUDIO_SANDBOXED']='0'; "
             "subprocess.run(['python','-c','import boto3'])\""
         ),
+        # shell=True passes a sequence's first element to /bin/sh -c, so the
+        # embedded ``python -S`` is shell input, not a shlex-joined argv word.
+        'python -c "import subprocess; subprocess.run([\'python -S -c \\"import boto3\\"\'], shell=True)"',
+        # A launcher rebound by assignment (``r = subprocess.run``) still spawns
+        # an unguarded child.
+        "python -c \"import subprocess; r = subprocess.run; r(['python','-S','-c','import boto3'])\"",
+        # A command word supplied entirely by a defaulted parameter expansion
+        # (``${PYTHON:-python}`` with PYTHON unset) still runs ``python -S``.
+        '${PYTHON:-python} -S -c "import boto3"',
+        # A quoted here-doc delimiter containing a hyphen is still a here-doc; its
+        # Python body must be parsed as stdin code.
+        "python <<'PY-EOF'\nimport subprocess\nsubprocess.run(['python','-S','-c','import boto3'])\nPY-EOF",
+        # argv elements assembled from concatenated literals fold to ``python``.
+        "python -c \"import subprocess; subprocess.run(['py'+'thon','-S','-c','import boto3'])\"",
+        # ``os.environ |= {...}`` (PEP 584) can clear PYTHONPATH for the child.
+        (
+            "python -c \"import os,subprocess; os.environ |= {'PYTHONPATH': ''}; "
+            "subprocess.run(['python','-c','import boto3'])\""
+        ),
+        # GNU env's lone ``-`` implies ``-i`` (clear environment).
+        'env - /usr/bin/python -c "import boto3"',
+        # A child launch hidden inside a static ``exec`` string payload.
+        (
+            "python -c \"exec('import subprocess; "
+            "subprocess.run([\\\"python\\\",\\\"-S\\\",\\\"-c\\\",\\\"import boto3\\\"])')\""
+        ),
+        # Non-subprocess child launchers (pty.spawn / asyncio) skip sitecustomize
+        # in the child too.
+        "python -c \"import pty; pty.spawn(['python','-S','-c','import boto3'])\"",
+        (
+            "python -c \"import asyncio; "
+            "asyncio.create_subprocess_exec('python','-S','-c','import boto3')\""
+        ),
     ],
 )
 def test_bash_blocks_python_startup_guard_bypasses(captured_popen, command):
@@ -224,6 +257,15 @@ def test_bash_blocks_python_startup_guard_bypasses(captured_popen, command):
         "cat <<< 'python -S -c \"import boto3\"'",
         "echo then python -S",
         'python \\\n-c "print(1)"',
+        # A guard-neutral env merge (non-guard key) must still auto-run.
+        "python -c \"import os; os.environ |= {'MYVAR': '1'}\"",
+        # A dynamic argv element (sys.executable) is not a foldable literal, so a
+        # legitimate self-relaunch is not misclassified as a bypass.
+        "python -c \"import sys, subprocess; subprocess.run([sys.executable, '-c', 'print(1)'])\"",
+        # shell=True with an entirely benign script.
+        "python -c \"import subprocess; subprocess.run(['echo hi'], shell=True)\"",
+        # A rebound launcher that spawns a guarded (no -S) child.
+        "python -c \"import subprocess; r = subprocess.run; r(['python','-c','print(1)'])\"",
     ],
 )
 def test_bash_allows_python_without_startup_guard_bypass(captured_popen, command):

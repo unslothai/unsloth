@@ -412,7 +412,9 @@ def _segment_mutates_sandbox_python_env(segment: list[str], python_index: int) -
         if assignment and token.split("=", 1)[0].upper() in _SANDBOX_PYTHON_ENV_VARS:
             return True
         lowered = token.lower()
-        if lowered in {"-i", "--ignore-environment"} and before_python:
+        # GNU env treats a lone ``-`` as ``-i`` (clear the environment), so
+        # ``env - python`` starts the child without PYTHONPATH / the sandbox flag.
+        if lowered in {"-i", "--ignore-environment", "-"} and before_python:
             if any(
                 os.path.basename(candidate.replace("\\", "/")).lower() == "env"
                 for candidate in before_python[:index]
@@ -528,7 +530,7 @@ def _shell_command_substitutions(command: str) -> list[str]:
     return substitutions
 
 
-_HEREDOC_START_RE = re.compile(r"<<-?\s*(?P<quote>['\"]?)(?P<name>[A-Za-z_][A-Za-z0-9_]*)")
+_HEREDOC_START_RE = re.compile(r"<<-?\s*(?P<quote>['\"]?)(?P<name>[A-Za-z_][A-Za-z0-9_.-]*)")
 
 
 def _shell_here_doc_entries(command: str) -> tuple[list[tuple[str, str]], bool]:
@@ -626,6 +628,14 @@ _PYTHON_OS_EXEC_LAUNCHERS = frozenset(
         "posix_spawnp",
     }
 )
+# argv-list launchers whose first positional is the full ``[program, *args]``
+# vector (``pty.spawn(argv)``). Modelled like a subprocess sequence.
+_PYTHON_ARGV_LIST_LAUNCHERS = frozenset({"spawn"})
+# ``asyncio.create_subprocess_exec(program, *args)`` passes the program and its
+# arguments as separate positionals; ``create_subprocess_shell(cmd)`` passes a
+# single shell-script string.
+_PYTHON_ASYNCIO_EXEC_LAUNCHERS = frozenset({"create_subprocess_exec"})
+_PYTHON_ASYNCIO_SHELL_LAUNCHERS = frozenset({"create_subprocess_shell"})
 
 
 def _segment_with_shell_expansions_split(segment: list[str]) -> list[str] | None:
@@ -636,7 +646,12 @@ def _segment_with_shell_expansions_split(segment: list[str]) -> list[str] | None
             expanded.append(token)
             continue
         changed = True
-        replacement = _SHELL_EXPANSION_TOKEN_RE.sub(" ", token).split()
+        # Resolve default/alternate parameter expansions to their operand first
+        # (``${PYTHON:-python} -S`` runs ``python -S`` when PYTHON is unset), so
+        # a command word supplied entirely by a defaulted expansion is still
+        # modelled instead of dropped.
+        resolved = _expand_param_defaults(token)
+        replacement = _SHELL_EXPANSION_TOKEN_RE.sub(" ", resolved).split()
         expanded.extend(replacement)
     return expanded if changed else None
 
@@ -682,14 +697,16 @@ def _python_reads_program_from_stdin(arguments: list[str]) -> bool:
 
 
 def _static_python_command_argument(node: ast.AST) -> str | None:
-    if isinstance(node, ast.Constant) and isinstance(node.value, str):
-        return node.value
+    value = _static_python_string(node)
+    if value is not None:
+        return value
     if isinstance(node, (ast.List, ast.Tuple)):
         parts: list[str] = []
         for element in node.elts:
-            if not isinstance(element, ast.Constant) or not isinstance(element.value, str):
+            piece = _static_python_string(element)
+            if piece is None:
                 return None
-            parts.append(element.value)
+            parts.append(piece)
         return shlex.join(parts)
     return None
 
@@ -697,6 +714,23 @@ def _static_python_command_argument(node: ast.AST) -> str | None:
 def _static_python_string(node: ast.AST | None) -> str | None:
     if isinstance(node, ast.Constant) and isinstance(node.value, str):
         return node.value
+    # Fold statically concatenated string literals (``'py' + 'thon'``) and
+    # constant-only f-strings so an argv element assembled from pieces is still
+    # recognised as ``python`` rather than treated as dynamic.
+    if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Add):
+        left = _static_python_string(node.left)
+        right = _static_python_string(node.right)
+        if left is not None and right is not None:
+            return left + right
+        return None
+    if isinstance(node, ast.JoinedStr):
+        parts: list[str] = []
+        for value in node.values:
+            piece = _static_python_string(value)
+            if piece is None:
+                return None
+            parts.append(piece)
+        return "".join(parts)
     return None
 
 
@@ -719,10 +753,28 @@ def _python_call_keyword(node: ast.Call, name: str) -> ast.AST | None:
     return None
 
 
+def _python_call_is_shell_true(node: ast.Call) -> bool:
+    keyword = _python_call_keyword(node, "shell")
+    return isinstance(keyword, ast.Constant) and keyword.value is True
+
+
 def _python_env_key(node: ast.AST) -> str | None:
     if isinstance(node, ast.Constant) and isinstance(node.value, str):
         return node.value.upper()
     return None
+
+
+def _python_env_mapping_taints_guard(value: ast.AST) -> bool:
+    """True if merging ``value`` into ``os.environ`` could clear/redirect a
+    guard variable. A literal dict is safe only when every key is a known,
+    non-guard name; any unknown mapping fails closed."""
+    if isinstance(value, ast.Dict):
+        for key in value.keys:
+            name = _python_env_key(key) if key is not None else None
+            if name is None or name in _SANDBOX_PYTHON_ENV_VARS:
+                return True
+        return False
+    return True
 
 
 def _python_payload_mutates_sandbox_env(node: ast.AST, os_aliases: set[str]) -> bool:
@@ -741,6 +793,15 @@ def _python_payload_mutates_sandbox_env(node: ast.AST, os_aliases: set[str]) -> 
                 key = _python_env_key(target.slice)
                 if key is None or key in _SANDBOX_PYTHON_ENV_VARS:
                     return True
+    # ``os.environ |= {...}`` (PEP 584) merges a mapping in place; its target is
+    # an Attribute, not a Subscript, so it is checked separately here.
+    if (
+        isinstance(node, ast.AugAssign)
+        and isinstance(node.op, ast.BitOr)
+        and is_os_environ(node.target)
+    ):
+        if _python_env_mapping_taints_guard(node.value):
+            return True
     if isinstance(node, ast.Delete):
         for target in node.targets:
             if isinstance(target, ast.Subscript) and is_os_environ(target.value):
@@ -797,6 +858,18 @@ def _python_env_node_taints_guard(env_node: ast.AST, os_aliases: set[str]) -> bo
 
 
 def _python_subprocess_command_argument(node: ast.Call, command_node: ast.AST) -> str | None:
+    if _python_call_is_shell_true(node):
+        # ``shell=True`` runs the command through ``/bin/sh -c``. A string is the
+        # script verbatim; for a sequence POSIX passes element 0 as the script
+        # (later elements become ``$0``, ``$1`` ...). Either way the value is
+        # shell input, so return it raw for the shell-aware recursion rather than
+        # ``shlex.join``-ing the whole vector into one quoted word.
+        script = _static_python_string(command_node)
+        if script is not None:
+            return script
+        if isinstance(command_node, (ast.List, ast.Tuple)) and command_node.elts:
+            return _static_python_string(command_node.elts[0])
+        return None
     executable = _static_python_string(_python_call_keyword(node, "executable"))
     parts = _static_python_string_list(command_node)
     if executable and _python_executable_token(executable):
@@ -856,8 +929,13 @@ def _python_payload_launches_startup_bypass(
         return False
     subprocess_aliases = {"subprocess"}
     os_aliases = {"os"}
+    pty_aliases = {"pty"}
+    asyncio_aliases = {"asyncio"}
     launcher_aliases: set[str] = set()
     os_exec_aliases: dict[str, str] = {}
+    argv_list_launcher_aliases: set[str] = set()
+    asyncio_exec_aliases: set[str] = set()
+    asyncio_shell_aliases: set[str] = set()
     for node in ast.walk(tree):
         if isinstance(node, ast.Import):
             for alias in node.names:
@@ -865,6 +943,10 @@ def _python_payload_launches_startup_bypass(
                     subprocess_aliases.add(alias.asname or "subprocess")
                 elif alias.name == "os":
                     os_aliases.add(alias.asname or "os")
+                elif alias.name == "pty":
+                    pty_aliases.add(alias.asname or "pty")
+                elif alias.name == "asyncio":
+                    asyncio_aliases.add(alias.asname or "asyncio")
         elif isinstance(node, ast.ImportFrom):
             if node.module == "subprocess":
                 for alias in node.names:
@@ -880,17 +962,125 @@ def _python_payload_launches_startup_bypass(
                         )
                     elif alias.name in _PYTHON_OS_EXEC_LAUNCHERS:
                         os_exec_aliases[alias.asname or alias.name] = alias.name
+            elif node.module == "pty":
+                for alias in node.names:
+                    if alias.name == "*":
+                        argv_list_launcher_aliases.update(_PYTHON_ARGV_LIST_LAUNCHERS)
+                    elif alias.name in _PYTHON_ARGV_LIST_LAUNCHERS:
+                        argv_list_launcher_aliases.add(alias.asname or alias.name)
+            elif node.module == "asyncio":
+                for alias in node.names:
+                    if alias.name == "*" or alias.name in _PYTHON_ASYNCIO_EXEC_LAUNCHERS:
+                        if alias.name == "*":
+                            asyncio_exec_aliases.update(_PYTHON_ASYNCIO_EXEC_LAUNCHERS)
+                            asyncio_shell_aliases.update(_PYTHON_ASYNCIO_SHELL_LAUNCHERS)
+                        else:
+                            asyncio_exec_aliases.add(alias.asname or alias.name)
+                    elif alias.name in _PYTHON_ASYNCIO_SHELL_LAUNCHERS:
+                        asyncio_shell_aliases.add(alias.asname or alias.name)
         if _python_payload_mutates_sandbox_env(node, os_aliases):
             environment_tainted = True
+    # Propagate simple launcher aliases assigned by name
+    # (``r = subprocess.run``; ``r([...])``) to a fixpoint so chained rebinds
+    # (``a = subprocess.run; b = a``) resolve too.
+    assigns = [
+        n
+        for n in ast.walk(tree)
+        if isinstance(n, ast.Assign)
+        and len(n.targets) == 1
+        and isinstance(n.targets[0], ast.Name)
+    ]
+    changed = True
+    while changed:
+        changed = False
+        for assign in assigns:
+            name = assign.targets[0].id
+            value = assign.value
+            if isinstance(value, ast.Attribute) and isinstance(value.value, ast.Name):
+                base, attr = value.value.id, value.attr
+                if (
+                    base in subprocess_aliases
+                    and attr in _PYTHON_CHILD_LAUNCHERS
+                    and name not in launcher_aliases
+                ):
+                    launcher_aliases.add(name)
+                    changed = True
+                elif (
+                    base in os_aliases
+                    and attr in _PYTHON_OS_EXEC_LAUNCHERS
+                    and os_exec_aliases.get(name) != attr
+                ):
+                    os_exec_aliases[name] = attr
+                    changed = True
+                elif (
+                    base in pty_aliases
+                    and attr in _PYTHON_ARGV_LIST_LAUNCHERS
+                    and name not in argv_list_launcher_aliases
+                ):
+                    argv_list_launcher_aliases.add(name)
+                    changed = True
+                elif (
+                    base in asyncio_aliases
+                    and attr in _PYTHON_ASYNCIO_EXEC_LAUNCHERS
+                    and name not in asyncio_exec_aliases
+                ):
+                    asyncio_exec_aliases.add(name)
+                    changed = True
+                elif (
+                    base in asyncio_aliases
+                    and attr in _PYTHON_ASYNCIO_SHELL_LAUNCHERS
+                    and name not in asyncio_shell_aliases
+                ):
+                    asyncio_shell_aliases.add(name)
+                    changed = True
+            elif isinstance(value, ast.Name):
+                if value.id in launcher_aliases and name not in launcher_aliases:
+                    launcher_aliases.add(name)
+                    changed = True
+                elif value.id in os_exec_aliases and os_exec_aliases.get(name) != os_exec_aliases[value.id]:
+                    os_exec_aliases[name] = os_exec_aliases[value.id]
+                    changed = True
+                elif value.id in argv_list_launcher_aliases and name not in argv_list_launcher_aliases:
+                    argv_list_launcher_aliases.add(name)
+                    changed = True
+                elif value.id in asyncio_exec_aliases and name not in asyncio_exec_aliases:
+                    asyncio_exec_aliases.add(name)
+                    changed = True
+                elif value.id in asyncio_shell_aliases and name not in asyncio_shell_aliases:
+                    asyncio_shell_aliases.add(name)
+                    changed = True
     for node in ast.walk(tree):
         if not isinstance(node, ast.Call):
             continue
         nested = None
         env_tainted = _python_payload_child_env_taints_guard(node, os_aliases)
+        # Recurse into a statically-known ``exec``/``eval`` string payload so a
+        # child launch hidden inside ``exec("... subprocess.run([...]) ...")`` is
+        # scanned rather than treated as an opaque call.
+        if (
+            isinstance(node.func, ast.Name)
+            and node.func.id in {"exec", "eval"}
+            and node.args
+        ):
+            inner = _static_python_string(node.args[0])
+            if inner is not None and _python_payload_launches_startup_bypass(
+                inner, depth + 1, environment_tainted
+            ):
+                return True
         if isinstance(node.func, ast.Name) and node.func.id in launcher_aliases:
             command_node = node.args[0] if node.args else _python_call_keyword(node, "args")
             if command_node is not None:
                 nested = _python_subprocess_command_argument(node, command_node)
+        elif isinstance(node.func, ast.Name) and node.func.id in argv_list_launcher_aliases:
+            command_node = node.args[0] if node.args else None
+            if command_node is not None:
+                nested = _static_python_command_argument(command_node)
+        elif isinstance(node.func, ast.Name) and node.func.id in asyncio_exec_aliases:
+            parts = [_static_python_string(arg) for arg in node.args]
+            if parts and all(part is not None for part in parts):
+                nested = shlex.join(parts)
+        elif isinstance(node.func, ast.Name) and node.func.id in asyncio_shell_aliases:
+            nested = _static_python_string(node.args[0]) if node.args else None
         elif isinstance(node.func, ast.Name) and node.func.id in os_exec_aliases:
             launcher = os_exec_aliases[node.func.id]
             nested = _python_os_exec_command_argument(node, launcher)
@@ -919,6 +1109,28 @@ def _python_payload_launches_startup_bypass(
             ):
                 nested = _python_os_exec_command_argument(node, node.func.attr)
                 env_tainted = _python_os_exec_env_taints_guard(node, node.func.attr, os_aliases)
+            elif (
+                isinstance(node.func.value, ast.Name)
+                and node.func.value.id in pty_aliases
+                and node.func.attr in _PYTHON_ARGV_LIST_LAUNCHERS
+            ):
+                command_node = node.args[0] if node.args else None
+                if command_node is not None:
+                    nested = _static_python_command_argument(command_node)
+            elif (
+                isinstance(node.func.value, ast.Name)
+                and node.func.value.id in asyncio_aliases
+                and node.func.attr in _PYTHON_ASYNCIO_EXEC_LAUNCHERS
+            ):
+                parts = [_static_python_string(arg) for arg in node.args]
+                if parts and all(part is not None for part in parts):
+                    nested = shlex.join(parts)
+            elif (
+                isinstance(node.func.value, ast.Name)
+                and node.func.value.id in asyncio_aliases
+                and node.func.attr in _PYTHON_ASYNCIO_SHELL_LAUNCHERS
+            ):
+                nested = _static_python_string(node.args[0]) if node.args else None
         if nested is None:
             continue
         if _sandbox_python_startup_bypasses_guard(
