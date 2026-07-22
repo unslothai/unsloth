@@ -729,17 +729,10 @@ def test_probe_server_capabilities_crash_on_help_fails_open(tmp_path):
 
 def test_mtp_token_from_spec_help_prefers_draft_mtp():
     assert (
-        LlamaCppBackend._mtp_token_from_spec_help(
-            "--spec-type none,draft-mtp,mtp,ngram-mod"
-        )
+        LlamaCppBackend._mtp_token_from_spec_help("--spec-type none,draft-mtp,mtp,ngram-mod")
         == "draft-mtp"
     )
-    assert (
-        LlamaCppBackend._mtp_token_from_spec_help(
-            "--spec-type [none|mtp|ngram-cache]"
-        )
-        == "mtp"
-    )
+    assert LlamaCppBackend._mtp_token_from_spec_help("--spec-type [none|mtp|ngram-cache]") == "mtp"
     assert LlamaCppBackend._mtp_token_from_spec_help("--spec-type none,ngram-mod") is None
     # Do not match incidental substrings.
     assert LlamaCppBackend._mtp_token_from_spec_help("prompt cache") is None

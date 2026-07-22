@@ -5887,13 +5887,11 @@ class LlamaCppBackend:
         if projector_confirmed:
             return (
                 "Vision projector incompatible with this llama.cpp "
-                "build, and the text-only retry also failed: "
-                + detail
+                "build, and the text-only retry also failed: " + detail
             )
         return (
             "Vision model failed to start (llama-server crashed with "
-            "--mmproj), and the text-only retry also failed: "
-            + detail
+            "--mmproj), and the text-only retry also failed: " + detail
         )
 
     @staticmethod
@@ -8130,10 +8128,9 @@ class LlamaCppBackend:
                     # The #6415 split-axis abort is latched earlier (first spawn).
                     # Skip if a cancel/unload is pending (mirrors the MTP guard).
                     _projector_msg = self._is_projector_incompatibility(out)
-                    _signal_mmproj_guess = (
-                        self._is_signal_crash(_crash_rc)
-                        and not self._output_has_nonprojector_diagnostic(out)
-                    )
+                    _signal_mmproj_guess = self._is_signal_crash(
+                        _crash_rc
+                    ) and not self._output_has_nonprojector_diagnostic(out)
                     if (
                         launched_with_mmproj
                         and not self._cancel_event.is_set()
