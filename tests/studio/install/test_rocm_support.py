@@ -1496,12 +1496,12 @@ class TestInstallShStructure:
         still gets a CPU llama.cpp from the setup step (_setup_amd_detected stays false).
         """
         source = (PACKAGE_ROOT / "studio" / "setup.sh").read_text(encoding = "utf-8")
-        assert "$2 == 4098" in source, (
-            "setup.sh KFD awk must match `vendor_id 4098` as a single-line condition"
-        )
-        assert "/gpu_id/" not in source, (
-            "setup.sh KFD awk must not key on a gpu_id line inside properties"
-        )
+        assert (
+            "$2 == 4098" in source
+        ), "setup.sh KFD awk must match `vendor_id 4098` as a single-line condition"
+        assert (
+            "/gpu_id/" not in source
+        ), "setup.sh KFD awk must not key on a gpu_id line inside properties"
 
     def test_get_torch_index_url_uses_nvidia_detected_flag(self):
         """get_torch_index_url must track NVIDIA via _nvidia_detected (proc-only NVIDIA still picks CUDA)."""
