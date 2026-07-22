@@ -455,6 +455,33 @@ class TestSandboxEnvIsolation:
         assert "RC=1" in result.stdout
         assert "BLOCKED=1" in result.stdout
 
+    def test_runtime_import_guard_survives_env_flag_deletion_for_children(self, tmp_path):
+        # Deleting UNSLOTH_STUDIO_SANDBOXED (not just setting it to "0") before
+        # spawning a child must not unguard it: the child still re-imports this
+        # shim from the sandbox site dir on PYTHONPATH, which is the real signal.
+        from core.inference.tools import _build_safe_env
+
+        code = (
+            "import os, subprocess, sys\n"
+            "os.environ.pop('UNSLOTH_STUDIO_SANDBOXED', None)\n"
+            "r = subprocess.run([sys.executable, '-c', 'import boto3'], "
+            "capture_output=True, text=True)\n"
+            "sys.stdout.write('RC=%d\\n' % r.returncode)\n"
+            "sys.stdout.write('BLOCKED=%d\\n' % "
+            "(\"low-level network module 'boto3'\" in r.stderr))\n"
+        )
+        result = subprocess.run(
+            [sys.executable, "-c", code],
+            cwd = tmp_path,
+            env = _build_safe_env(str(tmp_path)),
+            capture_output = True,
+            text = True,
+            check = False,
+        )
+        assert result.returncode == 0, result.stderr
+        assert "RC=1" in result.stdout
+        assert "BLOCKED=1" in result.stdout
+
     @pytest.mark.parametrize(
         "code",
         [

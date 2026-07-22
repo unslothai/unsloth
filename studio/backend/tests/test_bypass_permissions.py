@@ -247,6 +247,12 @@ def test_bash_blocklist_enforced_when_sandboxed(captured_popen):
         # declare -x / typeset -x export an emptied PYTHONPATH to the child.
         "declare -x PYTHONPATH=; python -c 'import boto3'",
         "typeset -x PYTHONPATH=; python -c 'import boto3'",
+        # A here-doc piped into python feeds the body to that python as stdin.
+        "cat <<'PY' | python\nimport subprocess\nsubprocess.run(['python','-S','-c','import boto3'])\nPY",
+        # Process substitution: the inner command is a python bypass, and a
+        # generated-script form feeds python an unscannable program.
+        "diff <(python -S -c 'import boto3') /dev/null",
+        'python <(printf %s "import subprocess; subprocess.run([\'python\',\'-S\',\'-c\',\'import boto3\'])")',
     ],
 )
 def test_bash_blocks_python_startup_guard_bypasses(captured_popen, command):
@@ -285,6 +291,10 @@ def test_bash_blocks_python_startup_guard_bypasses(captured_popen, command):
         'alias py="python"; py script.py',
         # env -S with a plain launch (no skip flag / env mutation).
         'env -S "python -c print(1)"',
+        # Process substitution feeding a non-Python consumer stays static.
+        "diff <(sort a.txt) <(sort b.txt)",
+        # A here-doc piped to python whose body is a benign program.
+        "cat <<'PY' | python\nprint(1)\nPY",
     ],
 )
 def test_bash_allows_python_without_startup_guard_bypass(captured_popen, command):

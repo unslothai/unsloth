@@ -592,17 +592,18 @@ def _sandbox_guard_should_activate():
     """Decide whether to install the runtime network guard.
 
     Normal sandbox children set ``UNSLOTH_STUDIO_SANDBOXED=1``. Bypass (full
-    access) removes the variable entirely, so an absent flag means "do not
-    guard". A flag that is PRESENT but not ``"1"`` (e.g. sandbox code running
-    ``os.environ['UNSLOTH_STUDIO_SANDBOXED']='0'`` before spawning a child to
-    escape the guard) is tampering: keep the guard on as long as this shim was
-    still loaded from the sandbox site dir the launcher put on PYTHONPATH.
+    access) runs under ``bypass_site`` (which never activates this guard because
+    it is executed via ``runpy`` with ``__name__ != "sitecustomize"``) and never
+    puts this ``sandbox_site`` directory on the child's PYTHONPATH. So whenever
+    this shim actually loads *as* ``sitecustomize`` from the sandbox site dir,
+    the child is running under the sandbox launcher and must be guarded —
+    regardless of whether the flag is ``"1"``, altered (e.g. sandbox code running
+    ``os.environ['UNSLOTH_STUDIO_SANDBOXED']='0'``), or deleted outright
+    (``del os.environ['UNSLOTH_STUDIO_SANDBOXED']``) before spawning a child.
     """
     flag = os.environ.get("UNSLOTH_STUDIO_SANDBOXED")
     if flag == "1":
         return True
-    if flag is None:
-        return False
     return _loaded_from_sandbox_site()
 
 

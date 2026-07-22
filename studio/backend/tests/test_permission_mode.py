@@ -1251,6 +1251,15 @@ def test_render_html_gated_only_when_networked():
     # An entity-obfuscated CSS URL is a network load after the browser decodes it.
     assert rh('<div style="background:url(&#104;ttps://evil/x)"></div>') is True
     assert rh('<div style="background:blue">&amp; local</div>') is False
+    # Module re-exports of a remote/root URL fetch that module; relative stays static.
+    assert rh("<script type=module>export * from 'https://evil/x.js'</script>") is True
+    assert rh("<script type=module>export {a} from '/mod.js'</script>") is True
+    assert rh("<script type=module>export {a} from './util.js'</script>") is False
+    assert rh("<script>export const config = 1;</script>") is False
+    # A reassigned computed-key alias is position-dependent, so it fails closed on
+    # a network value but a same-valued redefinition stays resolvable/static.
+    assert rh("<script>var k='src'; img[k]='https://evil/x'; var k='title';</script>") is True
+    assert rh("<script>var k='src'; var k='src'; img[k]='./local.png'</script>") is False
     assert (
         rh(
             "<script>frame.setAttribute(name, "

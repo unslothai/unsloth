@@ -558,7 +558,13 @@ def _shell_command_substitutions(command: str) -> list[str]:
         if command.startswith("$((", index):
             index += 3
             continue
-        if not command.startswith("$(", index):
+        # $(...) command substitution and <(...)/>(...) process substitution all
+        # run their inner command; recurse into each.
+        if not (
+            command.startswith("$(", index)
+            or command.startswith("<(", index)
+            or command.startswith(">(", index)
+        ):
             index += 1
             continue
         start = index + 2
@@ -602,6 +608,13 @@ def _shell_command_substitutions(command: str) -> list[str]:
 
 
 _HEREDOC_START_RE = re.compile(r"<<-?\s*(?P<quote>['\"]?)(?P<name>[A-Za-z_][A-Za-z0-9_.-]*)")
+# A Python interpreter reading its program from a process substitution
+# (python <(printf ...)) runs a generated script this static scan cannot see;
+# the inner generator's output is the program, so fail closed on this shape.
+_PYTHON_PROCESS_SUB_SCRIPT_RE = re.compile(
+    r"(?:^|[\s;&|(])(?:[\w./\\-]*/)?python(?:w)?[0-9.]*(?:\.exe)?(?:\s+-[^\s]*)*\s+<\(",
+    re.IGNORECASE,
+)
 
 
 def _shell_here_doc_entries(command: str) -> tuple[list[tuple[str, str]], bool]:
@@ -633,7 +646,16 @@ def _shell_here_doc_entries(command: str) -> tuple[list[tuple[str, str]], bool]:
             if body_end >= len(lines):
                 malformed = True
                 continue
-            entries.append((line[: match.start()], "\n".join(lines[body_start:body_end])))
+            # Keep the command text after the delimiter so a here-doc piped into
+            # another process (cat <<'PY' | python) still exposes that consumer:
+            # the body is the consumer's stdin program. Only reconstruct the tail
+            # for a single here-doc on the line to avoid mis-pairing multi-doc
+            # openers (cmd <<A <<B).
+            opener = line[: match.start()]
+            if len(matches) == 1:
+                tail_start = end + 1 if quote else end
+                opener = f"{opener} {line[tail_start:]}"
+            entries.append((opener, "\n".join(lines[body_start:body_end])))
             index = max(index, body_end)
         index += 1
     return entries, malformed
@@ -1232,6 +1254,8 @@ def _sandbox_python_startup_bypasses_guard(
 ) -> bool:
     """Detect terminal-launched Python that suppresses the sandbox sitecustomize guard."""
     if depth > 4:
+        return True
+    if _PYTHON_PROCESS_SUB_SCRIPT_RE.search(command):
         return True
     here_doc_entries, malformed_here_doc = _shell_here_doc_entries(command)
     if malformed_here_doc:
@@ -3581,6 +3605,9 @@ _RENDER_HTML_NETWORK_RE = re.compile(
     # (a relative './mod.js' specifier has no https:/root prefix and stays static).
     r"\bimport\s*\(\s*[\"'`]?\s*(?:https?:|/)|"
     r"\bimport\b[^;\n]*?[\"'`]\s*(?:https?:|/)|"
+    # Module re-exports (export * from '...' / export {a} from '/...') fetch the
+    # referenced module just like a static import.
+    r"\bexport\b[^;\n]*?\bfrom\s*[\"'`]\s*(?:https?:|/)|"
     r"<script[^>]*\bsrc\s*=|"
     # Self-navigation sinks: location.assign/replace(...), window.open(...), and
     # assigning a URL to (window.)location(.href). location.reload()/history.back
@@ -3850,10 +3877,23 @@ def _static_js_assignment_string(expression: str) -> str | None:
 
 def _render_html_static_js_name_aliases(code: str) -> dict[str, str]:
     aliases: dict[str, str] = {}
+    ambiguous: set[str] = set()
     for match in _RENDER_HTML_JS_STATIC_NAME_START_RE.finditer(code):
         value = _static_js_assignment_string(code[match.end() :])
-        if value is not None:
-            aliases[match.group("name")] = value
+        if value is None:
+            continue
+        name = match.group("name")
+        if name in ambiguous:
+            continue
+        # A name reassigned to a different literal is position-dependent; this
+        # flat map cannot say which value is live at a given use, so drop it and
+        # let the caller fail closed on a network-looking assigned value rather
+        # than trusting only the final definition.
+        if name in aliases and aliases[name] != value:
+            del aliases[name]
+            ambiguous.add(name)
+            continue
+        aliases[name] = value
     return aliases
 
 
