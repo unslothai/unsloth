@@ -678,6 +678,71 @@ def test_probe_server_capabilities_reports_outdated_binary(tmp_path):
     assert caps["found"] is True
     assert caps["mtp_token"] is None
     assert caps["supports_mtp"] is False
+    assert caps["mtp_probe_inconclusive"] is False
+
+
+@_NEEDS_BASH
+def test_probe_server_capabilities_reads_mtp_from_multiline_help(tmp_path):
+    # Some builds put the --spec-type enum on the indented description line.
+    # Looking only at the first physical "--spec-type" line falsely reported
+    # "lacks MTP" (#7302).
+    fake = _make_fake_llama_server(
+        tmp_path / "llama-server",
+        "--spec-type TYPE\n"
+        "                                        speculative decoding type\n"
+        "                                        (none,draft-simple,draft-mtp,ngram-mod)\n",
+    )
+    _clear_caps_cache()
+    caps = LlamaCppBackend.probe_server_capabilities(str(fake))
+    assert caps["mtp_token"] == "draft-mtp"
+    assert caps["supports_mtp"] is True
+    assert caps["mtp_probe_inconclusive"] is False
+
+
+@_NEEDS_BASH
+def test_probe_server_capabilities_empty_help_fails_open(tmp_path):
+    # Binary exists but --help prints nothing (crash stub / empty): must not
+    # claim the prebuilt lacks MTP (#7302).
+    fake = tmp_path / "llama-server"
+    fake.write_text("#!/usr/bin/env bash\nexit 0\n")
+    fake.chmod(0o755)
+    _clear_caps_cache()
+    caps = LlamaCppBackend.probe_server_capabilities(str(fake))
+    assert caps["found"] is True
+    assert caps["mtp_token"] is None
+    assert caps["supports_mtp"] is True
+    assert caps["mtp_probe_inconclusive"] is True
+
+
+@_NEEDS_BASH
+def test_probe_server_capabilities_crash_on_help_fails_open(tmp_path):
+    fake = tmp_path / "llama-server"
+    fake.write_text("#!/usr/bin/env bash\nkill -SEGV $$\n")
+    fake.chmod(0o755)
+    _clear_caps_cache()
+    caps = LlamaCppBackend.probe_server_capabilities(str(fake))
+    assert caps["found"] is True
+    assert caps["mtp_token"] is None
+    assert caps["supports_mtp"] is True
+    assert caps["mtp_probe_inconclusive"] is True
+
+
+def test_mtp_token_from_spec_help_prefers_draft_mtp():
+    assert (
+        LlamaCppBackend._mtp_token_from_spec_help(
+            "--spec-type none,draft-mtp,mtp,ngram-mod"
+        )
+        == "draft-mtp"
+    )
+    assert (
+        LlamaCppBackend._mtp_token_from_spec_help(
+            "--spec-type [none|mtp|ngram-cache]"
+        )
+        == "mtp"
+    )
+    assert LlamaCppBackend._mtp_token_from_spec_help("--spec-type none,ngram-mod") is None
+    # Do not match incidental substrings.
+    assert LlamaCppBackend._mtp_token_from_spec_help("prompt cache") is None
 
 
 def test_probe_server_capabilities_handles_missing_binary():
@@ -685,6 +750,7 @@ def test_probe_server_capabilities_handles_missing_binary():
     caps = LlamaCppBackend.probe_server_capabilities("/no/such/llama-server")
     assert caps["found"] is False
     assert caps["supports_mtp"] is False
+    assert caps["mtp_probe_inconclusive"] is True
     assert caps["supports_cache_ram"] is False
     assert caps["supports_ctx_checkpoints"] is False
     assert caps["supports_no_cache_prompt"] is False

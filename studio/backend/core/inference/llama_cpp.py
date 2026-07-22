@@ -2705,6 +2705,7 @@ class LlamaCppBackend:
                 "found": False,
                 "mtp_token": None,
                 "supports_mtp": False,
+                "mtp_probe_inconclusive": True,
                 "ngram_mod_flavor": None,
                 "supports_ngram_mod": False,
                 "spec_draft_n_max_flag": None,
@@ -2737,6 +2738,7 @@ class LlamaCppBackend:
         supports_no_cache_prompt = False
         supports_metrics = False
         supports_slot_save = False
+        saw_spec_type = False
         try:
             probe_env = cls._llama_server_env_for_binary(bin_path)
             result = subprocess.run(
@@ -2792,17 +2794,25 @@ class LlamaCppBackend:
                     return False
                 return "argument has been removed" not in desc
 
-            # MTP token from the --spec-type line.
-            spec_line = ""
-            for line in help_text.splitlines():
-                if "--spec-type" in line:
-                    spec_line = line
-                    break
-            # PR #22673 used draft-mtp; later renamed to mtp.
-            if "draft-mtp" in spec_line:
-                mtp_token = "draft-mtp"
-            elif re.search(r"[|,\[]mtp[|,\]]", spec_line):
-                mtp_token = "mtp"
+            # MTP token from the full --spec-type help *block* (declaration
+            # line + indented continuation). Older probing only looked at the
+            # first physical line containing "--spec-type", which misses builds
+            # that put the enum on the next indented line (#7302 false
+            # "lacks MTP" reports). Prefer draft-mtp (PR #22673) over the later
+            # bare `mtp` rename.
+            spec_help = blocks.get("--spec-type") or ""
+            if not spec_help:
+                # Fallback: join every line mentioning --spec-type (covers
+                # parsers that fail to attach the block, without scanning the
+                # entire --help dump for incidental "mtp" mentions).
+                spec_help = "\n".join(
+                    line for line in help_text.splitlines() if "--spec-type" in line
+                )
+            mtp_token = cls._mtp_token_from_spec_help(spec_help)
+            # Only a resolved --spec-type block can *confirm* missing MTP.
+            # Empty/crash/--help failure leaves saw_spec_type False so we
+            # fail open on supports_mtp (no false "prebuilt lacks MTP" banner).
+            saw_spec_type = bool(spec_help.strip()) and "--spec-type" in spec_help
 
             # ngram-mod flag flavor. Post-rename builds advertise both new
             # args (real) and legacy ones (stubs); pre-rename builds only
@@ -2838,11 +2848,21 @@ class LlamaCppBackend:
             supports_slot_save = _is_real("--slot-save-path")
         except (OSError, subprocess.SubprocessError) as exc:
             logger.debug(f"llama-server --help probe failed: {exc}")
+            saw_spec_type = False
+
+        # Confirmed lack of MTP only when --help clearly listed --spec-type
+        # options without mtp/draft-mtp. An inconclusive probe (crash, empty
+        # output, missing flag) must not claim the prebuilt "lacks MTP" (#7302).
+        if saw_spec_type:
+            supports_mtp = mtp_token is not None
+        else:
+            supports_mtp = True  # fail open for UI/warning; mtp_token stays None
 
         info = {
             "found": True,
             "mtp_token": mtp_token,
-            "supports_mtp": mtp_token is not None,
+            "supports_mtp": supports_mtp,
+            "mtp_probe_inconclusive": not saw_spec_type,
             "ngram_mod_flavor": ngram_mod_flavor,
             "supports_ngram_mod": ngram_mod_flavor is not None,
             "spec_draft_n_max_flag": spec_draft_n_max_flag,
@@ -2857,6 +2877,23 @@ class LlamaCppBackend:
         }
         cls._capability_cache[cache_key] = info
         return info
+
+    @staticmethod
+    def _mtp_token_from_spec_help(spec_help: str) -> Optional[str]:
+        """Extract ``draft-mtp`` / ``mtp`` from a ``--spec-type`` help snippet.
+
+        Prefers ``draft-mtp`` (llama.cpp PR #22673) over the later bare ``mtp``
+        rename. Returns ``None`` when neither token appears as an enum value.
+        """
+        text = spec_help or ""
+        if "draft-mtp" in text:
+            return "draft-mtp"
+        # Bare `mtp` as an enum token: `|mtp|`, `,mtp,`, `[mtp]`, `(mtp)`, etc.
+        # Avoid matching substrings inside draft-mtp (already handled) or
+        # unrelated words.
+        if re.search(r"(?<![A-Za-z0-9_-])mtp(?![A-Za-z0-9_-])", text):
+            return "mtp"
+        return None
 
     # ── GPU allocation ────────────────────────────────────────────
 
@@ -5840,6 +5877,26 @@ class LlamaCppBackend:
         )
 
     @staticmethod
+    def _mmproj_retry_failure_message(*, projector_confirmed: bool, detail: str) -> str:
+        """User-facing error when the text-only --mmproj strip retry also fails.
+
+        Confirmed projector-format mismatches keep the historical wording.
+        Bare signal crashes (common on some ROCm/driver paths) must not be
+        reported as "Vision projector incompatible" — that misled #7302.
+        """
+        if projector_confirmed:
+            return (
+                "Vision projector incompatible with this llama.cpp "
+                "build, and the text-only retry also failed: "
+                + detail
+            )
+        return (
+            "Vision model failed to start (llama-server crashed with "
+            "--mmproj), and the text-only retry also failed: "
+            + detail
+        )
+
+    @staticmethod
     def _output_has_nonprojector_diagnostic(output: str) -> bool:
         """True when the output already names a concrete non-projector cause (out
         of memory, an unsupported architecture, a tensor-parallel limit). A hard
@@ -8072,23 +8129,30 @@ class LlamaCppBackend:
                     self._kill_process()
                     # The #6415 split-axis abort is latched earlier (first spawn).
                     # Skip if a cancel/unload is pending (mirrors the MTP guard).
+                    _projector_msg = self._is_projector_incompatibility(out)
+                    _signal_mmproj_guess = (
+                        self._is_signal_crash(_crash_rc)
+                        and not self._output_has_nonprojector_diagnostic(out)
+                    )
                     if (
                         launched_with_mmproj
                         and not self._cancel_event.is_set()
-                        and (
-                            self._is_projector_incompatibility(out)
-                            or (
-                                self._is_signal_crash(_crash_rc)
-                                and not self._output_has_nonprojector_diagnostic(out)
-                            )
-                        )
+                        and (_projector_msg or _signal_mmproj_guess)
                     ):
-                        logger.warning(
-                            "llama-server could not load this model's vision "
-                            "projector (--mmproj). The installed llama.cpp build is "
-                            "likely too old for it. Loading text-only for this "
-                            "session; run 'unsloth studio update' to enable vision."
-                        )
+                        if _projector_msg:
+                            logger.warning(
+                                "llama-server could not load this model's vision "
+                                "projector (--mmproj). The installed llama.cpp build is "
+                                "likely too old for it. Loading text-only for this "
+                                "session; run 'unsloth studio update' to enable vision."
+                            )
+                        else:
+                            logger.warning(
+                                "llama-server crashed while loading this model's vision "
+                                "projector (--mmproj). Retrying text-only for this "
+                                "session; if this persists, run 'unsloth studio update' "
+                                "or check GPU/driver logs."
+                            )
                         cmd = self._strip_mmproj_args(_last_spawn_cmd)
                         # This retry bypasses _spawn_and_wait, so refresh the
                         # launched-argv snapshot itself -- the zero-offload
@@ -8102,14 +8166,16 @@ class LlamaCppBackend:
                             # an OS-killed text-only retry still gets the OOM message.
                             _retry_rc = self._process.poll() if self._process is not None else None
                             self._kill_process()
+                            _retry_detail = self._classify_llama_start_failure(
+                                "\n".join(self._stdout_lines[-50:]),
+                                gguf_path,
+                                self._model_identifier,
+                                _retry_rc,
+                            )
                             raise RuntimeError(
-                                "Vision projector incompatible with this llama.cpp "
-                                "build, and the text-only retry also failed: "
-                                + self._classify_llama_start_failure(
-                                    "\n".join(self._stdout_lines[-50:]),
-                                    gguf_path,
-                                    self._model_identifier,
-                                    _retry_rc,
+                                self._mmproj_retry_failure_message(
+                                    projector_confirmed = _projector_msg,
+                                    detail = _retry_detail,
                                 )
                             )
                     else:
