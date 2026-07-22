@@ -260,18 +260,14 @@ def _bundled_hip_present(binary_dir: str) -> bool:
 
 
 def _native_linux_system_rocm_lib_dirs(binary_dir: str = "") -> "list[str]":
-    """System ROCm lib dir(s) to load before a prebuilt's bundled HIP, on native Linux.
+    """System ROCm lib dir(s) to prepend before a prebuilt's bundled HIP, on native Linux.
 
-    The bundled bare-metal HIP runtime can be incompatible with the host kernel
-    driver (amdkfd) and crash inside hsa_init(); prepending the system ROCm lib
-    dir loads a version-consistent, driver-matched stack (libhsa-runtime64 /
-    libamdhip64 / librocblas) ahead of the bundle, while the bundle still
-    supplies libggml-hip. The whole dir is used deliberately: keeping the
-    bundle's per-gfx rocBLAS while loading a different-version system HIP/ROCR
-    risks missing-symbol failures, so the consistent system stack wins when the
-    host ROCm supports this GPU (it must, for the ROCm torch build to run).
-    UNSLOTH_LLAMA_NO_SYSTEM_ROCM=1 keeps the pure bundle for a host whose system
-    ROCm lacks this arch's compute kernels. No-op on WSL / non-Linux.
+    The bundled bare-metal HIP runtime can mismatch the host amdkfd driver and crash
+    in hsa_init(); prepending the whole system ROCm lib dir loads a driver-matched,
+    version-consistent stack (libhsa-runtime64 / libamdhip64 / librocblas) ahead of it.
+    The whole dir is deliberate: mixing the bundle's rocBLAS with a different-version
+    system HIP/ROCR risks missing symbols. UNSLOTH_LLAMA_NO_SYSTEM_ROCM=1 keeps the pure
+    bundle (for a host whose system ROCm lacks this arch); no-op on WSL / non-Linux.
     """
     if os.environ.get("UNSLOTH_LLAMA_NO_SYSTEM_ROCM") == "1":
         return []
@@ -3649,8 +3645,8 @@ class LlamaCppBackend:
             lib_dirs.extend(_wsl_system_rocm_lib_dirs())
             if lib_dirs:
                 env.setdefault("HSA_ENABLE_DXG_DETECTION", "1")
-            # Native Linux AMD: system ROCm libs before the bundle's bundled HIP
-            # runtime, which can be incompatible with the host amdkfd driver.
+            # Native Linux AMD: system ROCm libs before the bundle's HIP runtime,
+            # which can be incompatible with the host amdkfd driver.
             lib_dirs.extend(_native_linux_system_rocm_lib_dirs(binary_dir))
             lib_dirs.append(binary_dir)
             _arch = platform.machine()  # x86_64, aarch64, etc.
